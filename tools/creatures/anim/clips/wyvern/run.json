@@ -1,0 +1,34 @@
+{
+  "note": "Theropod run: duty below half, so there is a moment with no foot down at all. The body pitches forward over the hips and the tail comes up level behind it as the counterweight that makes that pitch possible -- a two-legged runner that keeps its tail down falls over. Wings clamp in tight; this is a ground gait, not a take-off. The crouch is deep because it has to be: a hind leg only reaches 0.16 past its rest length, and lowering the hip is what buys the stride enough room to land.",
+  "duration": 0.52,
+  "samples": 26,
+  "stride": 0.72,
+  "stepHeight": 0.14,
+  "duty": 0.38,
+  "crouch": 0.12,
+  "toeOff": 0.5,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0.5
+  },
+  "limits": {
+    "fold": 2.2
+  },
+  "bodyBob": 0.022,
+  "bobFreq": 2,
+  "bodySway": 0.012,
+  "spinePitch": -0.34,
+  "spineYaw": 0.07,
+  "spineRoll": 0.05,
+  "tailPitch": 1.05,
+  "tailSway": 0.3,
+  "tailLift": 0.18,
+  "headPitch": 0.16,
+  "headBob": 0.07,
+  "armPitch": -0.32,
+  "armSwing": 0.22,
+  "wingSpread": -0.26,
+  "wingSweep": 0.3,
+  "wingBeat": 0.05,
+  "wingFreq": 2
+}

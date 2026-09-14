@@ -25,7 +25,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, HUE, LOD_DEG } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_DEG } from '../src/v2/render/frogs.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -58,8 +58,8 @@ const water = {
   },
 }
 const rocks = { blockTopAt: (x, z) => (inRock(x, z) ? ROCK.top : -Infinity) }
-// A drawn surface a hand above the field, to see the frogs seat on it rather than the field.
-const ground = { groundAt: () => GROUND + 0.05 }
+// A drawn surface a hand above the field, to see the frogs seat on it rather than the field; `lift` moves it, as a chunk re-splitting does, and the version ticks as the terrain's does.
+const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this.lift } }
 
 // --- the shipped asset -------------------------------------------------------
 {
@@ -171,7 +171,16 @@ frogs.place(0, 0)
   const tints = new Set(all.map((f) => `${f.r.toFixed(2)},${f.g.toFixed(2)},${f.b.toFixed(2)}`))
   check(tints.size > all.length * 0.8, 'tints vary', `${tints.size} distinct of ${all.length}`)
   const hues = all.map((f) => f.hue)
-  check(new Set(hues.map((h) => h.toFixed(3))).size > all.length * 0.8 && Math.min(...hues) < -HUE * 0.5 && Math.max(...hues) > HUE * 0.5 && hues.every((h) => Math.abs(h) <= HUE), 'hues vary either way round the wheel, within HUE', `${Math.min(...hues).toFixed(2)}..${Math.max(...hues).toFixed(2)} rad`)
+  check(new Set(hues.map((h) => h.toFixed(3))).size > all.length * 0.8 && Math.min(...hues) < -0.5 && Math.max(...hues) > 0.2, 'hues vary, from a quarter turn toward orange to a shade toward blue', `${Math.min(...hues).toFixed(2)}..${Math.max(...hues).toFixed(2)} rad`)
+  // Every frog wears one morph whole -- hue and all three tint channels inside the same entry -- and the bank holds every morph, the browns turned well toward orange and darkened warm.
+  const within = (v, [lo, hi]) => v >= lo - 1e-9 && v <= hi + 1e-9
+  const morphOf = (f) => MORPHS.find((m) => within(f.hue, m.hue) && within(f.r, m.r) && within(f.g, m.g) && within(f.b, m.b))
+  const worn = new Map(MORPHS.map((m) => [m.name, 0]))
+  for (const f of all) { const m = morphOf(f); if (m) worn.set(m.name, worn.get(m.name) + 1) }
+  check(all.every((f) => morphOf(f)) && [...worn.values()].every((n) => n > 0), 'each frog wears one morph whole and every morph is on the bank', [...worn].map(([k, v]) => `${k} ${v}`).join(', '))
+  const brown = MORPHS.find((m) => m.name === 'brown')
+  const mid = ([lo, hi]) => (lo + hi) / 2
+  check(brown && brown.hue[1] <= -0.75 && mid(brown.r) > mid(brown.g) && mid(brown.g) > mid(brown.b) && brown.r[1] < 1, 'the brown morph turns the green a quarter of the wheel and tints it dark and warm')
   check(frogs.overflow === 0, 'the pool was not saturated', `${MAX} slots`)
 }
 // Cold: standing on the boundary, the warm half has frogs and the cold half none.
@@ -277,6 +286,28 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   check(px.every((x) => x === px[0]), 'without moving')
   const phases = new Set(alive().map((f) => f.breath.toFixed(3)))
   check(phases.size > alive().length * 0.8, 'each frog breathes on its own phase', `${phases.size} distinct of ${alive().length}`)
+}
+
+// --- the drawn ground changing shape under a seated frog -------------------------
+{
+  for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
+  // One frog caught mid-hop, its arc pinned by a long flight.
+  const flier = alive()[0]
+  flier.state = 'hop'; flier.x0 = flier.x1 = flier.x; flier.z0 = flier.z1 = flier.z; flier.y0 = flier.y1 = GROUND + 0.05; flier.t = 0; flier.dur = 1e9; flier.rise = 0
+  ground.lift = 0.25
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  const sitters = alive().filter((f) => f !== flier)
+  const before = sitters.map((f) => f.y)
+  check(sitters.every((f, i) => f.y === before[i]) && Math.abs(flier.y1 - (GROUND + 0.05)) < 1e-6, 'a moved surface with the same version is not re-read', `${sitters.length} sitting`)
+  ground.groundVersion++
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  check(sitters.every((f) => Math.abs(f.y - (GROUND + 0.25)) < 1e-6), 'the version ticking puts every sitting frog on the new surface', `${sitters.length} sitting`)
+  check(Math.abs(flier.y0 - (GROUND + 0.25)) < 1e-6 && Math.abs(flier.y1 - (GROUND + 0.25)) < 1e-6, 'and a frog in the air will land on it')
+  ground.lift = 0.05
+  ground.groundVersion++
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  flier.state = 'sit'; flier.y = flier.y1
+  check(alive().every((f) => Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'and back again when it drops')
 }
 
 // --- the ladder: each frog is the tier its apparent size calls for, none under a degree ----

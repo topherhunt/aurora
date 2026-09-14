@@ -60,8 +60,11 @@ export function rebindIndex(list, want, posOf) {
   return best
 }
 
-/** `[x, y, z, width]` control points, as stored on a river or a road. */
+/** `[x, y, z, width]` control points, as stored on a road. */
 export const pathPointPos = (p) => ({ x: p[0], z: p[2] })
+
+/** `[x, z, width-or-null]` nodes, as stored on a river. */
+export const riverPointPos = (p) => ({ x: p[0], z: p[1] })
 
 /** `{x, z, delta, radius}` snow points, as SnowField holds them at runtime. */
 export const snowPointPos = (p) => ({ x: p.x, z: p.z })

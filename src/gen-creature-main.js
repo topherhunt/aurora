@@ -346,6 +346,7 @@ async function refresh() {
   $('genRig').disabled = !assets.mesh
   $('genAnim').disabled = !assets.rig
   $('editRig').disabled = !assets.rig
+  $('buildClips').disabled = !assets.rig
   // A mesh, not a rig: the armature is one of the things Blender can supply.
   $('blenderRoundTrip').disabled = !assets.mesh
   const show = renderClipSelect()
@@ -715,6 +716,28 @@ $('genRig').addEventListener('click', () => withButton($('genRig'), 'rigging (Tr
 $('editRig').addEventListener('click', () => {
   open(`/rig-edit.html?id=${encodeURIComponent(currentId())}`, '_blank')
 })
+
+// Millimetres, because that is the scale the numbers land at on a fox-sized
+// skeleton and a metre reading is unreadable at four decimal places.
+const mm = (v) => `${(v * 1000).toFixed(1)}mm`
+
+/**
+ * `slide` is the one to read: a planted foot that moves is skating, and anything
+ * past a couple of millimetres is visible. `ik` says the solver could not reach
+ * the target it was given, which is a different fault from the foot drifting.
+ */
+function renderClipStats(clips) {
+  const rows = clips.map((c) => `<div><code>${c.name}</code> ${c.duration.toFixed(2)}s / ${c.samples} keys &middot; slide ${mm(c.slide)} &middot; ik ${mm(c.ik)} &middot; sink ${mm(c.sink)}${c.speed > 0.01 ? ` &middot; ${c.speed.toFixed(2)} m/s` : ''}</div>`)
+  $('clipStats').innerHTML = rows.join('')
+}
+
+$('buildClips').addEventListener('click', () => withButton($('buildClips'), 'solving clips from this rig', async () => {
+  const j = await post(`/__creature-clips?id=${encodeURIComponent(currentId())}`, {})
+  renderClipStats(j.clips)
+  await refresh()
+  const worst = Math.max(...j.clips.map((c) => c.slide))
+  setStatus(`${j.clips.length} clip(s) solved, worst stance slide ${mm(worst)}${j.derivedRigMap ? ' (rig map derived)' : ''}`, 'ok')
+}))
 
 $('genAnim').addEventListener('click', () => withButton($('genAnim'), 'retargeting animations (Tripo)', async () => {
   const j = await post(`/__creature-animate?id=${encodeURIComponent(currentId())}`, { animations: selectedAnims() })

@@ -1,5 +1,7 @@
 # Blender: rig a creature and author its animations
 
+> **This is the fallback, not the default route.** Quadruped clips are solved from the rig's own geometry by `tools/creatures/anim/` -- one button on the bench, free, under a second for the whole library, and no foot slide to chase by hand. See §27 of the design docs, "Stage 5". Come here for a one-off a spec cannot express, for a creature the solver has no map for, or to fix a rig by hand. A clip authored here exports to the same filename and the bench cannot tell the two apart.
+
 Written against **Blender 5.2 LTS**; 5.x-vs-4.x differences are flagged inline and listed at the end.
 
 Target is the `/gen-creature` bench: one `.glb` per clip in `tools/creatures/work/<id>/`, named `anim-<clip>.glb`. The bench globs those (`tools/creatures/workspace.mjs:415`) and plays `gltf.animations[0]` (`src/gen-creature-main.js:917`), so **one clip per file** is the only hard export rule.

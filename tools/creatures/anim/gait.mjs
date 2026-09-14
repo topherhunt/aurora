@@ -171,17 +171,25 @@ export function limbSetup(skel, legMap, byName) {
 }
 
 /**
- * Place `limb`'s foot on `target` by cyclic coordinate descent. Sixteen passes
- * puts the residual under a millimetre on a fox-sized leg, which `diagnose`
- * measures rather than assumes; a target genuinely out of reach stops at the
- * nearest pose the joint limits allow instead of straining for it.
+ * Place `limb`'s foot on `target` by cyclic coordinate descent. A target
+ * genuinely out of reach stops at the nearest pose the joint limits allow
+ * instead of straining for it.
+ *
+ * CCD converges slowly for a pure CHANGE OF LENGTH, which is most of what a
+ * gait asks for: each pass the hip spends the correction on re-aiming and only
+ * the residual reaches the hinges. The shorter the chain the worse it is -- a
+ * fox's four-joint leg is inside a tenth of a millimetre in forty passes where
+ * the fen dragon's three-joint one is still skating four millimetres. So
+ * `iterations` is a ceiling, not a count: the loop exits as soon as the foot
+ * lands or a pass stops moving it, and a hard frame is free to spend what it
+ * needs.
  *
  * `pitch` tilts the paw about `pitchAxis` once the leg is placed -- the body's
  * lateral axis, for toe-off and heel strike. `fold`/`straighten`/`hipLimit`
  * override the walking joint limits for a pose that needs more range.
  */
 export function solveLimb(pose, limb, target, {
-  iterations = 16, pitch = 0, pitchAxis = null,
+  iterations = 240, pitch = 0, pitchAxis = null,
   fold = FOLD_LIMIT, straighten = STRAIGHTEN, hipLimit = HIP_LIMIT,
 } = {}) {
   const { chain, foot } = limb
@@ -191,7 +199,15 @@ export function solveLimb(pose, limb, target, {
   // puts the leg roughly where it belongs and leaves the small joints a small
   // correction; going foot-first lets the hock straighten into its stop chasing
   // a target the hip should have covered, and then it is wedged there.
+  let prev = Infinity
   for (let pass = 0; pass < iterations; pass++) {
+    // Stop when the foot is on the target, and stop when a pass no longer moves
+    // it -- an out-of-reach target plateaus, and grinding out the remaining
+    // passes buys nothing. This is what makes a high ceiling affordable.
+    const err = len(sub(target, pose.pos(foot)))
+    if (err < 1e-4 || prev - err < 1e-6) break
+    prev = err
+
     for (let i = 0; i < chain.length - 1; i++) {
       const j = chain[i]
       const at = pose.pos(j)
@@ -298,9 +314,19 @@ const DEFAULTS = {
   crouch: 0.045, toeOff: 0.3,
   // A walk and a trot rise twice per cycle, once under each diagonal pair; a
   // gallop rises once, on the single suspension, which is what `bobFreq` is for.
-  bodyBob: 0, bobFreq: 2, bodySway: 0,
+  // `bobPhase` shifts where in the cycle the top of the rise lands, in radians:
+  // a gait's bob is phase-locked to footfall by construction, but a wingbeat's
+  // is not -- a flying animal rises through the DOWNSTROKE, a quarter cycle off
+  // where the default puts it.
+  bodyBob: 0, bobFreq: 2, bobPhase: 0, bodySway: 0,
   spineYaw: 0, spineRoll: 0, spineFlex: 0,
   tailSway: 0, tailLift: 0, headBob: 0, headYaw: 0, headYawPhase: 0,
+  // Wings and forelimbs, on a rig whose map names them. Each is a MIRRORED PAIR
+  // taking one amplitude, because an animator thinks "beat the wings", not
+  // "roll the left one +0.6 and the right one -0.6". The map's `side` carries
+  // the sign, so a spec never has to know which way round the rig is built.
+  wingSpread: 0, wingSweep: 0, wingBeat: 0, wingTwist: 0, wingFreq: 1,
+  armPitch: 0, armSpread: 0, armSwing: 0,
   // Constant carriage, applied before the waves. A Tripo bind pose is whatever
   // the generator felt like -- the fox's tail lies on the ground, where it hides
   // the hind legs -- so a clip has to state the posture it wants.
@@ -308,6 +334,31 @@ const DEFAULTS = {
   // Overrides for the IK joint limits -- see `solveLimb`. A fast gait folds a
   // leg harder than a walk does.
   limits: {},
+  // In the air nothing is load-bearing, so the legs ride with the body instead
+  // of staying pinned to a world point, and no foot counts as planted. Without
+  // it a flying creature's feet hang in space while its body bobs past them.
+  airborne: false,
+  // Per-leg offsets on the stance station, in the same units as a pose clip's
+  // leg handles: `{ hindLeft: { fore, lat, lift } }`. This is what tucks the
+  // legs up under a flying animal.
+  legHold: {},
+}
+
+const NO_HOLD = { fore: 0, lat: 0, lift: 0 }
+
+/**
+ * The mirrored FK chains -- wings, forelimbs -- a rig map may name, resolved to
+ * joints. `side` is +1 on the creature's left and -1 on its right; a rig map
+ * without the group simply yields none and every handle for it goes unused.
+ */
+export function pairsOf(map, key, named) {
+  return (map[key] ?? []).map((p) => {
+    const chain = named(p.chain)
+    if (chain.length !== p.chain.length) {
+      throw new Error(`rig map ${key} "${p.id}" names a joint this rig does not have`)
+    }
+    return { id: p.id, side: p.side, chain }
+  })
 }
 
 export function solveClip(rigFile, map, rawSpec) {
@@ -328,7 +379,10 @@ export function solveClip(rigFile, map, rawSpec) {
   const spine = named(map.spine)
   const head = named(map.head)
   const tail = named(map.tail)
-  const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain)]
+  const wings = pairsOf(map, 'wings', named)
+  const arms = pairsOf(map, 'arms', named)
+  const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain),
+    ...wings.flatMap((w) => w.chain), ...arms.flatMap((a) => a.chain)]
 
   const n = spec.samples
   const times = []
@@ -347,9 +401,10 @@ export function solveClip(rigFile, map, rawSpec) {
     // Body: the standing crouch, a vertical bob at twice the stride rate -- each
     // diagonal pair passes under the body once per half cycle -- and a lateral
     // sway at the stride rate.
-    const bob = Math.cos(TAU * u * spec.bobFreq) * spec.bodyBob * map.height - spec.crouch * map.height
+    const bob = Math.cos(TAU * u * spec.bobFreq + spec.bobPhase) * spec.bodyBob * map.height - spec.crouch * map.height
     const sway = Math.sin(TAU * u) * spec.bodySway * map.height
-    pose.setOffset(add(scale(up, bob), scale(lat, sway)))
+    const body = add(scale(up, bob), scale(lat, sway))
+    pose.setOffset(body)
 
     // Spine, neck and tail: FK sinusoids phase-locked to the gait. Each joint in
     // a chain lags the one before it, which is what reads as follow-through.
@@ -372,14 +427,36 @@ export function solveClip(rigFile, map, rawSpec) {
     wave(head, spec.headBob, lat, 2, 0.5)
     wave(head, spec.headYaw, up, 1, 0.5, spec.headYawPhase)
 
+    // Wings beat about the body's forward axis, so the two have to turn
+    // opposite ways to both go down; the twist that pitches the leading edge is
+    // the same on both, and rides a quarter cycle ahead of the beat, which is
+    // where a real wing's thrust comes from. Arms swing in antiphase instead of
+    // mirrored -- that is a phase offset, not a sign flip.
+    for (const w of wings) {
+      bend(pose, w.chain, fwd, spec.wingSpread * w.side)
+      bend(pose, w.chain, up, spec.wingSweep * w.side)
+      wave(w.chain, spec.wingBeat * w.side, fwd, spec.wingFreq, 0.7)
+      wave(w.chain, spec.wingTwist, lat, spec.wingFreq, 0.5, Math.PI / 2)
+    }
+    for (const a of arms) {
+      bend(pose, a.chain, lat, spec.armPitch)
+      bend(pose, a.chain, fwd, spec.armSpread * a.side)
+      wave(a.chain, spec.armSwing, lat, 1, 0.4, a.side > 0 ? 0 : Math.PI)
+    }
+
     // Legs last: they reach a world-space target, so everything that moves a
     // shoulder has to already be in place before the IK runs.
     const feet = []
     for (const leg of legs) {
       const f = footAt(wrap01(u + leg.phase), { stride, duty: spec.duty, stepHeight, toeOff: spec.toeOff })
-      const target = add(add(leg.restFoot, scale(fwd, f.fore)), scale(up, f.lift))
+      const hold = spec.legHold[leg.id] ?? NO_HOLD
+      const target = add(add(add(
+        spec.airborne ? add(leg.restFoot, body) : leg.restFoot,
+        scale(fwd, f.fore + (hold.fore ?? 0) * map.wheelbase)),
+        scale(lat, (hold.lat ?? 0) * map.wheelbase)),
+        scale(up, f.lift + (hold.lift ?? 0) * map.height))
       solveLimb(pose, leg, target, { ...spec.limits, pitch: f.pitch, pitchAxis: lat })
-      feet.push({ id: leg.id, target, planted: f.planted, actual: pose.pos(leg.foot) })
+      feet.push({ id: leg.id, target, planted: f.planted && !spec.airborne, actual: pose.pos(leg.foot) })
     }
 
     for (const [j, q] of pose.posed()) {
@@ -418,19 +495,26 @@ export function diagnose(solved) {
   const fwd = map.frame.forward
   const speed = stride / (spec.duty * spec.duration)
 
+  // Height is measured against each leg's OWN rest foot, not against one ground
+  // plane. A foot joint sits wherever the rigger put it inside the paw -- half a
+  // metre up, on the fen dragon -- so "how far off the floor" is not a question
+  // the joint can answer, while "did this foot leave the height it plants at"
+  // is, on any rig.
+  const restY = new Map(solved.legs.map((l) => [l.id, l.restFoot[1]]))
+
   // Stance and swing residuals are different facts. A stance foot that misses
   // its target is skating; a swing foot that misses one just did not lift as far
   // as the spec asked, because the leg ran out of leg. Only the first is a bug.
-  let ikStance = 0, ikSwing = 0, lowest = Infinity, stanceFloat = 0
+  let ikStance = 0, ikSwing = 0, sunk = 0, stanceFloat = 0
   const settled = new Map()
   for (let i = 0; i < frames.length; i++) {
     for (const f of frames[i].feet) {
       const miss = len(sub(f.actual, f.target))
       if (f.planted) ikStance = Math.max(ikStance, miss)
       else ikSwing = Math.max(ikSwing, miss)
-      lowest = Math.min(lowest, f.actual[1])
+      sunk = Math.max(sunk, restY.get(f.id) - f.actual[1])
       if (!f.planted) continue
-      stanceFloat = Math.max(stanceFloat, f.actual[1] - map.ground)
+      stanceFloat = Math.max(stanceFloat, f.actual[1] - restY.get(f.id))
       // Undo the ground's motion, so a correctly planted foot holds still.
       if (!settled.has(f.id)) settled.set(f.id, [])
       settled.get(f.id).push({ i, p: add(f.actual, scale(fwd, speed * times[i])) })
@@ -462,9 +546,9 @@ export function diagnose(solved) {
     ikStance,
     ikSwing,
     stanceSlide,
-    // Below the map's ground plane is a foot through the floor; a stance foot
+    // Below the height it plants at is a foot through the floor; a stance foot
     // measurably above it is the animal skating on air.
-    penetration: Math.max(0, map.ground - lowest),
+    penetration: Math.max(0, sunk),
     stanceFloat,
     loopGap,
   }

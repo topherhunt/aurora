@@ -1,16 +1,16 @@
-// A far boulder's card, checked against the mesh it replaces: one rock drawn
-// both ways under the same light and the same eye (rock-card-probe.html), the
-// two pictures' mean colour, mean brightness and covered ground compared.
+// A far boulder's six-face hull, checked against the mesh it replaces: one
+// rock drawn both ways under the same light, the same eye and the same
+// instance matrices (rock-far-probe.html), the two pictures' mean colour,
+// mean brightness and covered ground compared.
 //
-// The card is photographed UNLIT and lit live as the mean of a sphere
-// (SPHERE_CARD_LIGHT, material.js), and stood in its own instance matrix
-// (RockBed._placeTier, spunCardFrame). Neither can be checked without a
-// renderer, so this gate drives the page in headless Chrome over the DevTools
-// protocol and reads the JSON it writes into #out. A page that never finishes
-// fails; a machine with no Chrome SKIPS loudly, as check-shaders does without
-// glslang.
+// The hull is shaded off the ellipsoid in the mesh's box and drawn through the
+// ordinary rock material, and whether that reads as the mesh's colour and
+// outline cannot be checked without a renderer, so this gate drives the page
+// in headless Chrome over the DevTools protocol and reads the JSON it writes
+// into #out. A page that never finishes fails; a machine with no Chrome SKIPS
+// loudly, as check-shaders does without glslang.
 //
-// Usage: node scripts/check-rock-card.mjs [--shot out.png]   (--shot also saves the page as a person sees it)
+// Usage: node scripts/check-rock-far.mjs [--shot out.png] [--report out.json]   (the page as a person sees it; the JSON it measured)
 
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -21,32 +21,34 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const PORT = 5213
-const PAGE = '/rock-card-probe.html'
+const PAGE = '/rock-far-probe.html'
 const PAGE_URL = `https://localhost:${PORT}${PAGE}`
 const TIMEOUT_MS = 240000
-const SHOT = process.argv.includes('--shot') ? process.argv[process.argv.indexOf('--shot') + 1] : null
+const arg = (flag) => process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : null
+const SHOT = arg('--shot')
+const REPORT = arg('--report')
 
-// Brightness and colour within a tenth; ground covered within a fifth over the
-// bed and within half again, either way, on any one rock. The sphere mean is
-// exact for a sphere and the boulder is not one, and the card is the mean
-// silhouette squeezed from the widest photograph -- see THE CARD in
-// rock-bank.js -- so a mesh seen broadside covers more than its card and one
-// seen end-on less, and only the bed's mean is the card's to match. On the
-// hill the ground cuts the card along a line and the rock around its bulge,
-// and the two part most where the eye looks square into the slope: a sunk
-// roll draws a card up to half again the rock's height on screen, a third of
-// what a box-shaped frame drew a leaned rock at. A rock the hill leaves a
-// sliver of, under a third of what one on the flat covers, may swap to a
-// sliver or to nothing, never to a whole card, and never the other way round.
+// Brightness and colour within a tenth. Ground covered: the hull is the
+// mesh's box with a vertex or an edge at every extreme, so it covers what the
+// mesh covers square on and less from every other eye -- over the flat rows
+// four fifths to nineteen twentieths on a rock, and on the hill, where the
+// bed buries a rock to its shoulders and the mesh shows a dome, the hull
+// shows a wedge: two thirds of the mesh's ground over the row, a third on the
+// rock that shows least. The gate guards a quarter over the bed, and on each
+// rock what a hull drawn on the wrong rock, at the wrong roll, or without its
+// skirt would break: on the flat within COVER_ONE either way; on the hill
+// half the row's ground and a quarter of any rock's, hidden by the hill
+// exactly when the mesh is.
 const LUMA_TOL = 0.10
 const CHROMA_TOL = 0.04
-const COVER_TOL = 0.20
-const COVER_ONE = 1.5 * 1.5
-const SLIVER = 1 / 3
+const COVER_TOL = 0.25
+const COVER_ONE = 1.4
+const COVER_HILL = 0.5
+const COVER_HILL_ONE = 0.25
 
 const chrome = findChrome()
 if (!chrome) {
-  console.log('SKIP  check-rock-card: no headless Chrome (playwright chromium_headless_shell or Google Chrome)')
+  console.log('SKIP  check-rock-far: no headless Chrome (playwright chromium_headless_shell or Google Chrome)')
   process.exit(0)
 }
 
@@ -57,7 +59,7 @@ const check = (ok, label, detail = '') => {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const profile = mkdtempSync(join(tmpdir(), 'rock-card-'))
+const profile = mkdtempSync(join(tmpdir(), 'rock-far-'))
 const vite = spawn('npx', ['vite', '--port', String(PORT), '--strictPort'], { cwd: ROOT, stdio: 'ignore', detached: true })
 let browser = null
 let report = null
@@ -94,6 +96,7 @@ try {
   cdp.close()
   if (state === 'error') throw new Error(`the probe page threw: ${text}`)
   report = JSON.parse(text)
+  if (REPORT) writeFileSync(REPORT, text)
 } catch (err) {
   failed = err
 } finally {
@@ -104,51 +107,60 @@ try {
   rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 }
 if (failed) {
-  console.log(` FAIL  check-rock-card: ${failed.message}`)
+  console.log(` FAIL  check-rock-far: ${failed.message}`)
   process.exit(1)
 }
 
-console.log(`rock card probe on ${report.renderer}`)
-console.log(`boulder ${report.measured.width.toFixed(2)} x ${report.measured.height.toFixed(2)} x ${report.measured.depth.toFixed(2)} m, plan mean ${report.measured.planMean.toFixed(2)} m`)
-check(report.baked.some((b) => b.name === 'boulder'), 'the boulder card was photographed')
+console.log(`far rock probe on ${report.renderer}`)
+console.log(`boulder ${report.measured.width.toFixed(2)} x ${report.measured.height.toFixed(2)} x ${report.measured.depth.toFixed(2)} m`)
+check(report.far.tier === 'T6' && report.far.triangles === 6, 'the far tier drawn is the six-triangle hull', `${report.far.tier}, ${report.far.triangles} triangles`)
 
 for (const row of report.rows) {
-  const { mesh, card } = row
-  const luma = card.luma / mesh.luma
+  const { mesh, far } = row
+  const luma = far.luma / mesh.luma
   // Chroma as the channel's share of the whole, so a brightness miss is not
   // counted twice.
   const share = (c) => [c.r, c.g, c.b].map((v) => v / (c.r + c.g + c.b))
   const [mr, , mb] = share(mesh)
-  const [cr, , cb] = share(card)
+  const [cr, , cb] = share(far)
   const chroma = Math.max(Math.abs(cr - mr), Math.abs(cb - mb))
-  const cover = card.pixels / mesh.pixels
+  const cover = far.pixels / mesh.pixels
   const tag = `sun ${row.sun}`
   check(Math.abs(luma - 1) <= LUMA_TOL,
-    `${tag}: the card is as bright as the mesh`,
-    `card/mesh luma ${luma.toFixed(3)} (mesh ${mesh.luma.toFixed(3)}, card ${card.luma.toFixed(3)}), want within ${LUMA_TOL}`)
+    `${tag}: the hull is as bright as the mesh`,
+    `hull/mesh luma ${luma.toFixed(3)} (mesh ${mesh.luma.toFixed(3)}, hull ${far.luma.toFixed(3)}), want within ${LUMA_TOL}`)
   check(chroma <= CHROMA_TOL,
     `${tag}: and the same colour`,
     `worst channel share off by ${chroma.toFixed(3)}, want within ${CHROMA_TOL}`)
   check(Math.abs(cover - 1) <= COVER_TOL,
     `${tag}: and covers the ground the mesh covers`,
-    `card/mesh pixels ${cover.toFixed(3)} (${card.pixels} / ${mesh.pixels}), want within ${COVER_TOL}`)
+    `hull/mesh pixels ${cover.toFixed(3)} (${far.pixels} / ${mesh.pixels}), want within ${COVER_TOL}`)
   if (mesh.each) {
-    const flat = report.placements.map((p, i) => i).filter((i) => !report.placements[i].includes('hill'))
-    const sliver = flat.reduce((sum, i) => sum + mesh.each[i], 0) / flat.length * SLIVER
-    const shown = mesh.each.map((m, i) => m >= sliver && card.each[i] >= sliver)
-    const ratios = mesh.each.map((m, i) => shown[i] ? card.each[i] / m : 1)
-    const worst = ratios.reduce((w, r, i) => Math.abs(Math.log(r)) > Math.abs(Math.log(ratios[w])) ? i : w, 0)
-    check(ratios.every((r) => r <= COVER_ONE && r >= 1 / COVER_ONE),
-      `${tag}: on every roll and lean the bed can place`,
-      `card/mesh ${Math.min(...ratios).toFixed(2)} .. ${Math.max(...ratios).toFixed(2)} over ${shown.filter(Boolean).length} rocks showing, worst ${report.placements[worst]}, want each within ${COVER_ONE}x`)
-    const half = mesh.each.map((m, i) => !shown[i] && (m >= sliver || card.each[i] >= sliver) ? i : -1).filter((i) => i >= 0)
-    check(half.length === 0,
-      `${tag}: and a rock the hill leaves a sliver of swaps to a sliver or nothing, and never the other way round`,
-      half.length ? half.map((i) => `${report.placements[i]}: mesh ${mesh.each[i]} card ${card.each[i]} px`).join('; ') : `${shown.filter((x) => !x).length} slivers, under ${sliver.toFixed(0)} px`)
+    const idx = report.placements.map((p, i) => i)
+    const flat = idx.filter((i) => !report.placements[i].includes('hill'))
+    const hill = idx.filter((i) => report.placements[i].includes('hill'))
+    const ratio = (i) => far.each[i] / mesh.each[i]
+    const worst = (list) => list.reduce((w, i) => Math.abs(Math.log(ratio(i))) > Math.abs(Math.log(ratio(w))) ? i : w, list[0])
+    const px = (i) => `${report.placements[i]} (mesh ${mesh.each[i]}, hull ${far.each[i]} px)`
+    const w = worst(flat)
+    check(flat.every((i) => ratio(i) <= COVER_ONE && ratio(i) >= 1 / COVER_ONE),
+      `${tag}: on every roll the bed can draw on the flat`,
+      `hull/mesh ${Math.min(...flat.map(ratio)).toFixed(2)} .. ${Math.max(...flat.map(ratio)).toFixed(2)}, worst ${px(w)}, want each within ${COVER_ONE}x`)
+    const sum = (list, each) => list.reduce((n, i) => n + each[i], 0)
+    const hillCover = sum(hill, far.each) / sum(hill, mesh.each)
+    check(hillCover >= COVER_HILL && hillCover <= 1 + COVER_TOL,
+      `${tag}: and sunk to the bed's cap on the hill, shows the ground the mesh shows`,
+      `hull/mesh pixels ${hillCover.toFixed(3)} over the hill rows, want ${COVER_HILL} .. ${(1 + COVER_TOL).toFixed(2)}`)
+    const buried = hill.filter((i) => (mesh.each[i] === 0) !== (far.each[i] === 0))
+    const shown = hill.filter((i) => mesh.each[i] > 0 && far.each[i] > 0)
+    const hw = worst(shown)
+    check(buried.length === 0 && shown.every((i) => ratio(i) >= COVER_HILL_ONE && ratio(i) <= COVER_ONE),
+      `${tag}: and on every rock there, hidden by the hill exactly when the mesh is`,
+      buried.length ? `hidden on one side only: ${buried.map(px).join('; ')}` : `hull/mesh ${Math.min(...shown.map(ratio)).toFixed(2)} .. ${Math.max(...shown.map(ratio)).toFixed(2)} over ${shown.length} showing, ${hill.length - shown.length} buried, worst ${px(hw)}, want each ${COVER_HILL_ONE} .. ${COVER_ONE}`)
   }
 }
 
-console.log(`\n${failures === 0 ? 'all rock card checks passed' : `${failures} FAILED`}\n`)
+console.log(`\n${failures === 0 ? 'all far rock checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)
 
 // ---------------------------------------------------------------------------

@@ -1,18 +1,16 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
-  buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, rockLodSize,
+  buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize,
 } from './props/rock.js'
 import { BOULDER, CAP, TINTS, TINT_GAIN, rockParams, capParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
-import { bakeImpostor, buildImpostorCard, BAKE_ROCK_BOUNCE } from './props/impostor.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
 import {
   createPropMaterial, setSnow, setMoss, setPropBump, getPropBump, setPropBumpTile, getPropBumpTile,
 } from './material.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import rockSource from './props/rock.js?raw'
-import impostorSource from './props/impostor.js?raw'
 
 // ---------------------------------------------------------------------------
 // The procedural rock previewer (gen-rock.html, served at /gen-rock).
@@ -26,15 +24,21 @@ import impostorSource from './props/impostor.js?raw'
 // is currently the DEFAULTS at one authored seed, so the preset and this page's
 // opening state differ by that seed alone.
 //
-// Three views do most of the work, and none of them is the default single rock:
+// Four views do most of the work, and none of them is the default single rock:
 //
 //   GALLERY -- twenty seeds of the shape. This is the view that matters most now
 //   that the world has one asset: the seed is the only thing separating one
 //   boulder from the next, so the gallery IS the variety argument.
 //
-//   LADDER -- the same rock at all three mesh tiers, side by side, at true
+//   LADDER -- the same rock at all four mesh tiers, side by side, at true
 //   size. This is the view that settles "do we need a real LOD2", because the
 //   T20 sitting next to the T80 either still reads as that rock or does not.
+//
+//   WORLD LOD -- one rock, and the camera's distance picks its tier by the rule
+//   v2/render/rocks.js applies to every instance. The ladder view says what the
+//   tiers look like; this one says what the SWAP looks like, at the apparent
+//   size it happens at. The bench cuts hard where the world cross-dissolves, so
+//   a pop seen here is the worst case.
 //
 //   TINTS -- one rock per environment colour. Every rock in the world wears one
 //   128px granite tile, so this is the whole of the variety argument.
@@ -78,7 +82,7 @@ const SLIDERS = [
   ['size', 0.06, 14, 0.02, 'largest HORIZONTAL extent in metres, measured on the dense reference. The shape is built in relative units and rescaled, and the texture scales with it, so a shape found at 2 m is the same rock at 14 m'],
   ['squash', 0.15, 2.6, 0.01, 'height / width. Under 0.4 is a slab, over 1.5 is a standing stone'],
   ['elongate', 1, 2.6, 0.01, 'x extent against z extent. 1 is round in plan'],
-  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those three whatever this says. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
+  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those four whatever this says. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
   ['lumps', 0, 0.9, 0.01, 'large-scale radial displacement -- the mass of the rock. Ceiling raised past the default because the default WAS the ceiling, which is never evidence that the ceiling is right'],
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
@@ -108,11 +112,10 @@ const SLIDERS = [
   ['bumpScale', 0.5, 8, 0.1, 'how BIG that grit reads: how many times the noise tile covers one pass of the stone tile. Separate from texRepeat on purpose -- the stone is sized to read as rock at arm\'s length and the grain that catches a low sun is finer than that. Past ~8 it aliases into sparkle no mip level can save'],
   ['snow', 0, 1, 0.01, 'snow, in patches, filling in from the top down. The same global uniform the tree bench drives, leaning twice as hard on which way the surface faces: the top whitens first, a sheer side is about half covered by the time the top is solid, an underside goes last, and a full winter reaches everything. The patches are world-space noise, so they wander across the cut facets instead of tracing their edges. Costs no triangles and nothing at all at 0'],
   ['moss', 0, 1, 0.01, 'moss, taking the up-facing surfaces first in big blotches whose edges fray into tendrils and flecks -- two domain warps, the finer of which is only live within 9 m because that is as far as 3 cm of detail survives. Unlike snow this is a real second texture (LAYER.MOSS) laid over the stone, because moss is nothing but grain -- and it deliberately does NOT take the tint, so a basalt rock and a sandstone rock grow the same green. Sits under the snow: snow falls on moss, not the other way round'],
-  ['planes', 1, 3, 1, 'CARD ONLY: quads crossed about the axis. On an opaque lump their intersection is visible as an X, which is the case against a rock card'],
 ]
 
-// WHAT IS NOT THE SHAPE. `brightness`, `bump`, `bumpScale` and `planes` are the
-// previewer and the material, `snow` and `moss` are weather and growth, and `detail` is which
+// WHAT IS NOT THE SHAPE. `brightness`, `bump` and `bumpScale` are the previewer
+// and the material, `snow` and `moss` are weather and growth, and `detail` is which
 // resolution you are looking at. None of them is a property of the rock, so
 // dragging one does not clear the preset name and loading a preset does not
 // reset one -- see the preset handler, which puts these back over whatever
@@ -130,7 +133,6 @@ const BENCH_DEFAULTS = {
   brightness: 1,
   snow: 0,
   moss: 0,
-  planes: 2,
   detail: ROCK_TIERS[0].detail,
   bump: getPropBump(),
   bumpScale: getPropBumpTile(),
@@ -227,6 +229,12 @@ function makeMaterial() {
 
 const materials = TINTS.map(() => makeMaterial())
 
+// One flat diagnostic colour per rung, finest first, as linear gains over the
+// stone tile. Saturated enough to name a tier from across the ladder, and still
+// a multiply over the photograph so the facets keep reading.
+const TIER_GAIN = [[1.9, 0.35, 0.3], [1.9, 1.2, 0.25], [0.35, 1.7, 0.4], [0.4, 0.8, 2.1]]
+const tierMaterials = ROCK_TIERS.map(() => makeMaterial())
+
 function syncMaterials() {
   // One uniform for the whole page, shared by reference into all six programs.
   // The snow LINE stays at its no-op default here, so every rock on the bench
@@ -245,6 +253,13 @@ function syncMaterials() {
   TINT_GAIN.forEach((gain, i) => {
     const m = materials[i]
     m.color.setRGB(gain[0], gain[1], gain[2]).multiplyScalar(params.brightness)
+    m.wireframe = wireframe
+    m.side = showBackfaces ? THREE.DoubleSide : THREE.FrontSide
+    m.needsUpdate = true
+  })
+  TIER_GAIN.forEach((gain, i) => {
+    const m = tierMaterials[i]
+    m.color.setRGB(gain[0], gain[1], gain[2])
     m.wireframe = wireframe
     m.side = showBackfaces ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
@@ -276,19 +291,23 @@ const GALLERY_COLS = 5
 const GALLERY_ROWS = 4
 const GALLERY_N = GALLERY_COLS * GALLERY_ROWS
 
-// gallery / ladder / tints are mutually exclusive -- each lays the group out a
-// different way -- so they are one mode rather than three toggles that fight.
+// gallery / ladder / lod / tints are mutually exclusive -- each lays the group
+// out a different way -- so they are one mode rather than four toggles that fight.
 let mode = 'one'
 let wireframe = false
 let showGrid = true
+let tierColours = false
+// World-LOD mode: the rung on screen, kept across rebuilds because the world's
+// hysteresis is a function of the rung an instance is ALREADY on. -1 is "never
+// tiered", which the world's rule treats as no stickiness at all.
+let lodTier = -1
+// Every mode's last build, so the panel can be re-reported without rebuilding
+// -- the world-LOD swap changes what is on screen but not what was built.
+let built = null
 // The world draws front faces only. Turning this on puts the back ones back: the
 // rock is a closed solid, so the two views should be identical, and that is the
 // evidence that culling costs nothing.
 let showBackfaces = false
-// Draw the impostor instead of the mesh. Deliberately not a camera move: the
-// question a card asks is "does this still read as a rock from where I am
-// standing", which you cannot answer if the view jumps when you press it.
-let cardMode = false
 
 function clearGroup() {
   for (const child of group.children) child.geometry.dispose()
@@ -331,14 +350,15 @@ function rebuild() {
       z: (Math.floor(i / GALLERY_COLS) - (GALLERY_ROWS - 1) / 2) * spacing,
       tint: tintIndex,
     }))
-  } else if (mode === 'ladder') {
+  } else if (mode === 'ladder' || mode === 'lod') {
     // `detail: null` hands the rungs back to ROCK_TIERS. Without it the
-    // resolution slider would win on all three and the ladder would be the same
-    // rock three times -- see buildRock, where a numeric `detail` overrides
-    // `tier` outright.
+    // resolution slider would win on all four and the ladder would be the same
+    // rock four times -- see buildRock, where a numeric `detail` overrides
+    // `tier` outright. World-LOD builds the same four and stacks them on the
+    // origin; stepLod() shows one at a time.
     items = ROCK_TIERS.map((_, i) => ({
       opts: rockOptions({ tier: i, detail: null }),
-      x: (i - (ROCK_TIERS.length - 1) / 2) * spacing,
+      x: mode === 'lod' ? 0 : (i - (ROCK_TIERS.length - 1) / 2) * spacing,
       z: 0,
       tint: tintIndex,
     }))
@@ -359,39 +379,13 @@ function rebuild() {
   let tris = 0
   let verts = 0
   let bytes = 0
-  let card = null
-
-  let drawn = geos
-  if (cardMode) {
-    // ONE bake feeds every card on screen, and that is not a shortcut: the world
-    // does the same thing. There is one rock and one IMPOSTOR_ROCK slice, so what
-    // the gallery shows is that single photograph worn by twenty different seeds
-    // -- which is exactly the question the card button is here to answer, since a
-    // seed the one card cannot stand in for is a seed the world draws wrong.
-    const bakeLayer = LAYER.IMPOSTOR_ROCK
-    const ext = bakeImpostor(renderer, geos[0], atlas, bakeLayer, {
-      width: Math.max(measured.width, measured.depth),
-      height: measured.height,
-      bounce: BAKE_ROCK_BOUNCE,
-    })
-    drawn = geos.map((geo) => {
-      const quad = buildImpostorCard(ext.width, ext.height, bakeLayer, params.planes)
-      tris += quad.userData.impostor.triangles
-      verts += quad.getAttribute('position').count
-      bytes += geometryBytes(quad)
-      return quad
-    })
-    card = { ...drawn[0].userData.impostor, ...ext }
-    for (const geo of geos) geo.dispose() // clearGroup only disposes what is IN the group
-  } else {
-    for (const geo of geos) {
-      tris += geo.userData.rock.triangles
-      verts += geo.userData.rock.vertices
-      bytes += geometryBytes(geo)
-    }
+  for (const geo of geos) {
+    tris += geo.userData.rock.triangles
+    verts += geo.userData.rock.vertices
+    bytes += geometryBytes(geo)
   }
 
-  drawn.forEach((geo, i) => {
+  geos.forEach((geo, i) => {
     const mesh = new THREE.Mesh(geo, materials[items[i].tint])
     mesh.position.set(items[i].x, 0, items[i].z)
     group.add(mesh)
@@ -401,7 +395,7 @@ function rebuild() {
   grid.visible = showGrid && single
   rule.visible = showGrid && single
 
-  return { tris, verts, bytes, count: items.length, card, measured, stats: geos[0].userData.rock }
+  return { tris, verts, bytes, count: items.length, measured, stats: geos[0].userData.rock }
 }
 
 // --- framing ----------------------------------------------------------------
@@ -460,14 +454,11 @@ let diskBytes = null
 async function measureDisk() {
   const png = await fetch(STONE_TEX).then((r) => r.arrayBuffer())
   const src = new TextEncoder().encode(rockSource)
-  const imp = new TextEncoder().encode(impostorSource)
   diskBytes = {
     png: png.byteLength,
     pngGz: await gzipped(png),
     src: src.byteLength,
     srcGz: await gzipped(src),
-    imp: imp.byteLength,
-    impGz: await gzipped(imp),
   }
 }
 
@@ -496,10 +487,6 @@ function switchDistance(faces, height) {
   return (height * PX_PER_METRE_AT_1M) / (TRI_PX * Math.sqrt(faces))
 }
 
-function pixelsTall(height, distance) {
-  return ((Math.atan(height / distance) * 180) / Math.PI) * 16.2
-}
-
 function refresh() {
   const s = rebuild()
   const per = Math.round(s.tris / s.count)
@@ -514,7 +501,7 @@ function refresh() {
   // shown here are the metres the world uses.
   const lod = rockLodSize(m)
   const shipAt = ROCK_LOD_AT.map((k) => k * lod)
-  const cardAt = shipAt[shipAt.length - 1]
+  const farAt = shipAt[shipAt.length - 1]
 
   // --- this rock ---
   // The rung that was BUILT, read off the geometry rather than looked up in
@@ -523,12 +510,7 @@ function refresh() {
   const tier = { name: s.stats.tier, faces: s.stats.faces }
   table(document.getElementById('geo'), [
     ['triangles', `<span class="big">${per}</span>${s.count > 1 ? ` (${s.tris} on screen)` : ''}`],
-    ...(s.card
-      ? [
-          [`&nbsp;&nbsp;card, ${s.card.planes} plane${s.card.planes > 1 ? 's' : ''}&times;2`, s.card.triangles],
-          ['&nbsp;&nbsp;baked at', `${s.card.width.toFixed(2)} &times; ${s.card.height.toFixed(2)} m`],
-        ]
-      : [[`&nbsp;&nbsp;${tier.name} &times; ${shards} shard${shards > 1 ? 's' : ''}`, `${tier.faces} &times; ${shards}`]]),
+    [`&nbsp;&nbsp;${tier.name} &times; ${shards} shard${shards > 1 ? 's' : ''}`, `${tier.faces} &times; ${shards}`],
     ['vertices', Math.round(s.verts / s.count)],
     ['rocks drawn', s.count],
     ['geometry in RAM', fmt(s.bytes)],
@@ -541,27 +523,24 @@ function refresh() {
     // than a constant anyone can look up. Both halves are worth showing: the
     // repeat count is the art direction, the metres are what the shader sees.
     ['tile repeat', `${s.stats.texRepeat.toFixed(2)}&times; &nbsp; = ${s.stats.texMetres.toFixed(2)} m`],
-    // WHERE THIS ROCK GOES TO BILLBOARD, which is the one number the ladder
-    // table below cannot put in a row of its own because it is the row that has
-    // no tier. Shown here too because it is the headline: it is how far the
-    // world will draw any mesh at all for a rock this size.
     // The size the ladder is read in, and which of the three box axes is in
     // charge, because that is the first question anyone asks of a number like
     // this. It is a plain max, so naming the winner is naming the whole rule.
     ['ladder size', `${lod.toFixed(2)} m &nbsp; <span class="k">its ${
       lod === m.height ? 'height' : lod === m.width ? 'width' : 'depth'
     }</span>`],
-    ['billboards past', `${cardAt.toFixed(0)} m`],
+    // THE HEADLINE: how far the world draws any sampled mesh at all for a rock
+    // this size. Past it the rock is the six-face hull, shards and all.
+    ['T6 past', `${farAt.toFixed(0)} m`],
   ])
-  document.getElementById('geonote').innerHTML = s.card
-    ? `The card is a photograph of the mesh taken at load into <em>LAYER.IMPOSTOR_ROCK</em> -- one layer, because the world has one rock -- so it costs no disk and cannot disagree with the mesh. It is the weakest tier here by a distance -- see the parallax note.`
-    : `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''}. ` +
-      `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
+  document.getElementById('geonote').innerHTML =
+    `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''} -- except on T6, which is one hull round the whole cluster. ` +
+    `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
 
   // --- the ladder ---
   //
-  // EVERY ROW CARRIES THE DISTANCE IT SHIPS AT, the billboard included, because
-  // a ladder without its thresholds does not say what the world does -- it only
+  // EVERY ROW CARRIES THE DISTANCE IT SHIPS AT, because a ladder without its
+  // thresholds does not say what the world does -- it only
   // says what the meshes cost. The tiers are the same for every rock; the
   // metres are this rock's alone.
   //
@@ -573,55 +552,34 @@ function refresh() {
     document.getElementById('ladderTable'),
     ROCK_TIERS.map((t, i) => {
       const from = i === 0 ? 0 : shipAt[i - 1]
-      const d = switchDistance(t.faces * shards, m.height)
+      const last = i === ROCK_TIERS.length - 1
+      const tris = last ? t.faces : t.faces * shards
+      const d = switchDistance(tris, m.height)
       return [
         t.name,
-        `${t.faces * shards} tris &nbsp; ${from.toFixed(0)}&ndash;${shipAt[i].toFixed(0)} m ` +
+        `${tris} tris &nbsp; ${last ? `beyond ${from.toFixed(0)}` : `${from.toFixed(0)}&ndash;${shipAt[i].toFixed(0)}`} m ` +
           `&nbsp; <span class="k">model ${d.toFixed(0)}</span>`,
         '',
         // Matched on the tier NAME, so an off-ladder resolution marks no row at
         // all -- which is the truth. A row index compared against the slider
         // would put "here" on T320 while a T500 rock was on screen.
-        t.name === s.stats.tier && !s.card ? 'here' : '',
+        t.name === s.stats.tier ? 'here' : '',
       ]
-    }).concat([[
-      'billboard',
-      `${2 * params.planes} tris &nbsp; beyond ${cardAt.toFixed(0)} m`,
-      '',
-      s.card ? 'here' : '',
-    ]])
+    })
   )
-
-  // --- can it be a card ---
-  const depth = Math.max(m.width, m.depth)
-  const crossover = depth * 28.6
-  const coarsest = ROCK_TIERS[ROCK_TIERS.length - 1]
-  table(document.getElementById('parallax'), [
-    ['depth (widest plan axis)', `${depth.toFixed(2)} m`],
-    ['parallax crossover', `${crossover.toFixed(0)} m`],
-    // Against the SHIPPED handover and not the model's, because the shipped one
-    // is where the billboard actually takes over. A rock whose parallax error
-    // is still visible at that range is a rock the world cards too early.
-    [`${coarsest.name} hands over at`, `${cardAt.toFixed(0)} m`],
-    ['card is honest first?', crossover <= cardAt ? 'yes' : 'no -- mesh is still cheaper', crossover <= cardAt ? 'ok' : 'warn'],
-    ['rock is this tall at 60 m', `${pixelsTall(m.height, 60).toFixed(0)} px`],
-    ['&hellip; and at 150 m', `${pixelsTall(m.height, 150).toFixed(0)} px`],
-  ])
 
   drawSwatch(s.stats)
   drawPalette()
 
   if (!diskBytes) return
 
-  const shipped = diskBytes.png + diskBytes.src + diskBytes.imp
-  const shippedGz = diskBytes.pngGz + diskBytes.srcGz + diskBytes.impGz
+  const shipped = diskBytes.png + diskBytes.src
+  const shippedGz = diskBytes.pngGz + diskBytes.srcGz
   table(document.getElementById('disk'), [
     ['stone.png (128&sup2; RGBA)', fmt(diskBytes.png)],
     ['rock.js (the generator)', fmt(diskBytes.src)],
-    ['impostor.js (the card)', fmt(diskBytes.imp)],
     ['total on disk', `<span class="big">${fmt(shipped)}</span>`],
     ['gzipped over the wire', fmt(shippedGz), 'ok'],
-    ['1 baked card layer, in RAM', fmt(TEX_SIZE * TEX_SIZE * 4)],
   ])
   document.getElementById('disknote').innerHTML =
     `No mesh file, and -- unlike the ferns -- no second texture either. Every rock in the ` +
@@ -639,8 +597,7 @@ function drawSwatch(stats) {
   ctx.imageSmoothingEnabled = false
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  const layer = cardMode ? LAYER.IMPOSTOR_ROCK : LAYER.ROCK
-  const px = layerPixels(layer)
+  const px = layerPixels(LAYER.ROCK)
   const rgb = new ImageData(TEX_SIZE, TEX_SIZE)
   const tinted = new ImageData(TEX_SIZE, TEX_SIZE)
   // Multiply in sRGB for the swatch. The shader does it in linear and this is a
@@ -677,21 +634,18 @@ function drawSwatch(stats) {
     ctx.drawImage(tmp, i * w, 0, w, canvas.height)
   })
 
-  const banner = cardMode
-    ? `baked -- IMPOSTOR_ROCK${presetName ? '' : ' (custom shape, not what ships)'}`
-    : layersLoaded
-      ? `ROCK -- stone.png, untinted | &times; ${TINTS[tintIndex][0]}`
-      : 'stone.png still loading -- this is the procedural stand-in'
+  const banner = layersLoaded
+    ? `ROCK -- stone.png, untinted | &times; ${TINTS[tintIndex][0]}`
+    : 'stone.png still loading -- this is the procedural stand-in'
   ctx.fillStyle = 'rgba(8,14,26,.78)'
   ctx.fillRect(0, canvas.height - 18, canvas.width, 18)
-  ctx.fillStyle = layersLoaded || cardMode ? '#7f96b8' : '#c9a227'
+  ctx.fillStyle = layersLoaded ? '#7f96b8' : '#c9a227'
   ctx.font = '11px monospace'
   ctx.textAlign = 'center'
   ctx.fillText(banner.replace('&times;', 'x'), canvas.width / 2, canvas.height - 5)
 
-  document.getElementById('swatchnote').innerHTML = cardMode
-    ? `The baked card. This is the only place you can read what was actually photographed -- whether the silhouette survived, whether the dilate pass left a sooty rim.`
-    : `Left: the tile as shipped -- a photograph of granite, warm and dark at a mean luma of 88/255. Right: the same tile taken to <em>${TINTS[tintIndex][0]}</em>. ` +
+  document.getElementById('swatchnote').innerHTML =
+    `Left: the tile as shipped -- a photograph of granite, warm and dark at a mean luma of 88/255. Right: the same tile taken to <em>${TINTS[tintIndex][0]}</em>. ` +
       `A tint is a destination, not a multiply: the gain divides the tile's own mean out of the way, so it brightens and white-balances rather than darkens. ` +
       `This rock covers its widest plan axis with <em>${stats.texRepeat.toFixed(2)}</em> repeats, which is ${stats.texMetres.toFixed(2)} m per tile and a ` +
       `${((stats.texMetres * 1000) / TEX_SIZE).toFixed(0)} mm texel -- but only at THIS size. The tile scales with the rock, so the mm figure moves with <em>size</em> ` +
@@ -837,7 +791,7 @@ document.getElementById('reroll').addEventListener('click', () => {
 })
 
 
-// gallery / ladder / tints are one exclusive mode; card / grid / wire / spin are
+// gallery / ladder / tints are one exclusive mode; grid / wire / spin are
 // independent of it and of each other.
 const MODE_BUTTONS = { gallery: 'gallery', ladder: 'ladder', tints: 'tints' }
 for (const [id, name] of Object.entries(MODE_BUTTONS)) {
@@ -861,7 +815,6 @@ function toggle(id, get, set) {
   })
 }
 toggle('grid', () => showGrid, (v) => { showGrid = v })
-toggle('card', () => cardMode, (v) => { cardMode = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('cull', () => showBackfaces, (v) => { showBackfaces = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
@@ -896,9 +849,7 @@ resize()
 frame()
 refresh()
 measureDisk().then(refresh)
-// And again when stone.png lands in the array -- not just to repaint the swatch:
-// a card baked before the layer arrived would be a photograph of the procedural
-// stand-in, so this is what makes `card` correct on a cold load.
+// And again when stone.png lands in the array, to repaint the swatch.
 layersReady.then(refresh)
 
 let last = performance.now()

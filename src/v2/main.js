@@ -30,7 +30,6 @@ import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
-import { bakeLitterSet } from '../props/litter.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
 import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
 
@@ -1774,7 +1773,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   }
   grassStyle = style
   grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
-    seed: SEED, style, tint: terrainTint, rocks, ...opts,
+    seed: SEED, style, tint: terrainTint, rocks, ground: terrain, ...opts,
   })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
@@ -2072,25 +2071,22 @@ async function bootWorld() {
     }
   }
 
-  // Strewn litter: the small stones, as four baked photographs stamped flat on
-  // the ground instead of as tens of thousands of modelled pebbles. It is a
-  // sibling of the rock beds rather than a fifth bed of them because it shares
-  // none of their machinery -- no bank, no tier ladder, no anchors -- and it is
-  // constructed AFTER them only for reading order. See render/litter.js.
-  //
-  // ITS FOUR ATLAS LAYERS ARE STILL BLANK AT THIS POINT and that is fine: the
-  // bake needs the renderer and hangs off the same loadImageLayers promise the
-  // impostor bakes do, a few screens down. The atlas is one texture object, so
-  // the stamps pick the pictures up the frame they land in it. What would NOT
-  // be fine is placing litter before the atlas exists at all, which is why this
-  // sits below `propTextures` like everything else that samples it.
+  // Strewn litter: the small stones underfoot, tens of thousands of one
+  // twenty-triangle pebble bedded into the ground within a few strides of her.
+  // It is a sibling of the rock beds rather than a fifth bed of them because it
+  // shares none of their machinery -- no bank, no tier ladder, no anchors -- and
+  // it is constructed AFTER them so it can refuse to bed a pebble inside one.
+  // See render/litter.js.
   await bootStep('litter')
   litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain, rocks })
   lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
   litter.place(spawn.x, spawn.z)
+  // Reachable from the console so the layer's cost can be measured on its own:
+  // the panel's litter toggle also freezes mushrooms and deadwood.
+  window.v2litter = litter
   const ls = litter.stats
   console.log(
-    `[v2] litter ${ls.placed} stamps (${ls.pool} pool) over ${ls.tiles} tiles in ` +
+    `[v2] litter ${ls.placed} pebbles (${ls.pool} pool) over ${ls.tiles} tiles in ` +
     `${ls.placeMs.toFixed(0)} ms, ${ls.tris} tris`
   )
 
@@ -2251,17 +2247,6 @@ async function bootWorld() {
     // picture serves every bed that picked it, so it lives on the bank. See
     // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
     const rockCards = bakeRockImpostor(renderer, propTextures)
-    // The four strewn-pebble patches. Same rig as the impostors above and the
-    // same reason for being here rather than on disk -- see props/litter.js.
-    const lit = bakeLitterSet(renderer, propTextures)
-    // Printed with the band they are supposed to land in, because a number with
-    // nothing to be read against is not a measurement. Over the band means
-    // something is lighting the stones twice; under it means the patch is dark
-    // grit rather than stones. See LITTER_KEY in props/litter.js.
-    console.log(
-      'litter patches baked (luma want 0.50-0.56, cover want ~0.45):',
-      lit.map((b, i) => `#${i} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
-    )
     // The one measurement that says whether the impostor bake rig is aimed
     // right, and there is nowhere else it can be taken: the bake needs a live
     // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
@@ -2298,6 +2283,7 @@ async function bootWorld() {
     markers,
     terrain,
     onDirty,
+    onRiversMoved: () => waterSurfaces.rebuild(),
     onView,
     orbitLock,
     // The heightmap's DECODED extremes, not meta.minY/maxY: the encoding's range

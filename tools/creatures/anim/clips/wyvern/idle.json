@@ -1,0 +1,29 @@
+{
+  "note": "Standing at rest on two legs. Zero stride with duty 1 keeps both feet planted for the whole cycle, so the IK holds them down while the body breathes over them. The tail is lifted off its bind droop to counterweight a body that is all chest and neck, and the wings settle on a slow half-beat rather than hanging rigid.",
+  "duration": 3.4,
+  "samples": 34,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.025,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0
+  },
+  "bodyBob": 0.005,
+  "bobFreq": 2,
+  "spinePitch": -0.05,
+  "tailPitch": 0.45,
+  "tailSway": 0.18,
+  "tailLift": 0.08,
+  "headPitch": -0.06,
+  "headBob": 0.04,
+  "headYaw": 0.05,
+  "armPitch": -0.14,
+  "armSwing": 0.05,
+  "wingSpread": -0.12,
+  "wingSweep": 0.14,
+  "wingBeat": 0.035,
+  "wingFreq": 2
+}

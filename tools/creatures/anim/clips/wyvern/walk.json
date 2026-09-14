@@ -1,0 +1,31 @@
+{
+  "note": "Two-legged walk, feet half a cycle apart. Duty above 0.5 leaves a double-support window, which is what separates a walk from a run on two legs. A biped has to put its weight over each foot in turn, so bodySway is far larger here than on a quadruped, and the tail swings against the hips to cancel the yaw that transfer produces.",
+  "duration": 0.95,
+  "samples": 26,
+  "stride": 0.6,
+  "stepHeight": 0.075,
+  "duty": 0.62,
+  "crouch": 0.05,
+  "toeOff": 0.35,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0.5
+  },
+  "bodyBob": 0.014,
+  "bobFreq": 2,
+  "bodySway": 0.022,
+  "spinePitch": -0.12,
+  "spineYaw": 0.1,
+  "spineRoll": 0.04,
+  "tailPitch": 0.62,
+  "tailSway": 0.4,
+  "tailLift": 0.12,
+  "headPitch": -0.04,
+  "headBob": 0.05,
+  "armPitch": -0.16,
+  "armSwing": 0.16,
+  "wingSpread": -0.14,
+  "wingSweep": 0.16,
+  "wingBeat": 0.05,
+  "wingFreq": 2
+}

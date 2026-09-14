@@ -1,6 +1,7 @@
 import { Heightmap } from '../height/heightmap.js'
 import { V2Height } from '../height/field.js'
 import { Layers } from '../layers/layers.js'
+import { rectToWorld } from '../height/sculpt.js'
 import { buildChunkV2 } from './chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -177,6 +178,11 @@ self.onmessage = (e) => {
     // the same rect the patch just wrote plus the halo material can travel
     // across, so it costs the rect rather than the field.
     field.coarsePatched(msg.rect)
+    // Rivers route over the ground that just moved. The main thread re-baked its
+    // own copy before posting this patch; this is the same re-bake against this
+    // worker's copy, so the chunk requests queued behind the patch mesh the
+    // re-routed river and not the old one.
+    layers.terrainChanged(rectToWorld(field.heightmap, msg.rect))
     return
   }
 

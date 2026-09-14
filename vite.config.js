@@ -983,6 +983,16 @@ function creatureGen() {
         const { animations } = JSON.parse(await readBody(req, 1 << 12))
         return { ok: true, ...(await creatures.runAnimate(id, { animations })) }
       }))
+
+      // Free, local: the clip library is synthesised from the rig's own
+      // geometry (tools/creatures/anim), so rebuilding after a spec edit costs
+      // nothing and needs neither Tripo nor Blender.
+      server.middlewares.use('/__creature-clips', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { clips } = JSON.parse(await readBody(req, 1 << 12) || '{}')
+        return { ok: true, ...creatures.buildLocalClips(id, { clips }) }
+      }))
     },
   }
 }

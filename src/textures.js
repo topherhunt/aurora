@@ -332,35 +332,9 @@ export const LAYER = {
   IMPOSTOR_MUSHROOM_PARASOL: 42,
   IMPOSTOR_MUSHROOM_INKCAP: 43,
 
-  // --- strewn litter (src/props/litter.js) ----------------------------------
-  //
-  // Written at load like the impostors, by the same argument, but photographing
-  // something that never exists as a mesh: a few dozen small stones dropped at
-  // random on a patch of ground, shot from STRAIGHT ABOVE, stamped on the
-  // terrain as a flat quad. One layer buys a square metre of stony ground for
-  // two triangles.
-  //
-  // WHY IT EXISTS: the scatter used to draw that look as geometry -- an 11 cm
-  // stone every 1.7 m across every cliff and wood, forty-one of them for every
-  // rock big enough to read as a rock, each a full BatchedMesh instance whatever
-  // its triangle count. The look is worth having and the geometry was not, which
-  // is exactly what a texture is for. See the underfoot bed in
-  // v2/render/rocks.js for the other half.
-  //
-  // FOUR AND NOT ONE, because a single patch stamped over a hillside is a repeat
-  // the eye finds immediately -- the mushroom cards' argument, and cheaper here:
-  // the scatter yaws each stamp, so four layers x four right-angle turns is
-  // sixteen apparent patches before mirroring. 256 KB for the set.
-  //
-  // NOT IN ANY SNOW LIST, deliberately. The ground under a patch is terrain, and
-  // terrain does its own snow in its own shader; whitening the patch too would
-  // put a second, differently shaped snow line on top of the first at the exact
-  // place they are guaranteed to be compared. Bare stone showing through the
-  // ground's snow is cheaper and reads as wind-scoured scree.
-  LITTER_0: 44,
-  LITTER_1: 45,
-  LITTER_2: 46,
-  LITTER_3: 47,
+  // 44-47 are unallocated. The gaps are left rather than closed because the
+  // gates only assert no collisions and no overflow, and closing one renumbers
+  // every layer above it.
 
   // --- dead wood (src/props/deadwood.js) ------------------------------------
   //

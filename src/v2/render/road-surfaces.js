@@ -102,7 +102,8 @@ export class RoadSurfaces {
 
   buildRoad(road) {
     // PathSet's own baked polyline, never a fresh flatten of the spline: the road SMOOTH reads these samples to decide where to flatten the terrain, and a ribbon built from any other set of points would be a decal on a strip it does not quite match.
-    if (road.samples === null) void this.layers.paths.segmentCount
+    // Unconditionally: a river whose level was re-solved keeps its samples array and rewrites the y in place, so a null check would miss it.
+    void this.layers.paths.segmentCount
     if (road.samples === null) throw new Error(`RoadSurfaces: PathSet left ${road.id} unbaked; samples is still null after forcing the index`)
     // No widen: see the header. `lift` goes in here rather than into the mesh's y so the ribbon's own normals are computed on the surface that is actually drawn.
     const r = ribbonVertices(road.samples, { lift: ROAD_LIFT })

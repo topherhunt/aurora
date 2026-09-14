@@ -165,10 +165,10 @@ export class Markers {
       if (!this.isVisible(path.kind, path.id, null)) continue
       const c = path.kind === 'river' ? RIVER_COLOR : ROAD_COLOR
       for (let i = 0; i < path.pts.length; i++) {
-        const p = path.pts[i]
-        if (p === null) continue
-        const [x, y, z] = p
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) throw new Error(`Markers.sync: ${path.id} point ${i} is [${p}], expected finite [x, y, z, width]`)
+        if (path.pts[i] === null) continue
+        // nodeAt, not the stored tuple: a river node stores no y, and the marker sits on the solved water level.
+        const { x, y, z } = this.layers.paths.nodeAt(path.id, i)
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) throw new Error(`Markers.sync: ${path.id} node ${i} is (${x}, ${y}, ${z}), expected finite x, y, z`)
         sp.positions.push(x, y, z)
         sp.colors.push(c.r, c.g, c.b)
         sp.records.push({ kind: 'spline', id: path.id, index: i })

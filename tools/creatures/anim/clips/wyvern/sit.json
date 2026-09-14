@@ -1,0 +1,49 @@
+{
+  "kind": "pose",
+  "note": "Settles back onto its haunches, holds, and rises again, so it loops as one clip in the bench. A game would cut it into sit-down / sit-idle / stand-up at the hold, which is why the hold is a flat pair of identical keys rather than a single instant. A two-legged sitter has no forelegs to prop on, so the tail takes the weight: it swings out behind and flattens as the body comes down.",
+  "samples": 46,
+  "limits": {
+    "hipLimit": 1.4,
+    "fold": 2.2
+  },
+  "keys": [
+    { "t": 0.0, "pose": { "tail": { "pitch": 0.45 }, "wings": { "spread": -0.12, "sweep": 0.14 }, "arms": { "pitch": -0.14 } } },
+    { "t": 0.6, "pose": {
+      "root": { "lift": -0.06 },
+      "spine": { "pitch": -0.14 },
+      "head": { "pitch": 0.1 },
+      "tail": { "pitch": 0.6 },
+      "wings": { "spread": -0.2, "sweep": 0.2 },
+      "arms": { "pitch": -0.24 },
+      "legs": { "hindLeft": { "fore": 0.1 }, "hindRight": { "fore": 0.1 } }
+    } },
+    { "t": 1.5, "pose": {
+      "root": { "lift": -0.2, "fore": -0.06 },
+      "spine": { "pitch": -0.38 },
+      "head": { "pitch": 0.34 },
+      "tail": { "pitch": 0.42, "yaw": 0.35 },
+      "wings": { "spread": -0.34, "sweep": 0.3 },
+      "arms": { "pitch": -0.4, "spread": 0.12 },
+      "legs": { "hindLeft": { "fore": 0.26, "lat": 0.05 }, "hindRight": { "fore": 0.26, "lat": -0.05 } }
+    } },
+    { "t": 3.2, "pose": {
+      "root": { "lift": -0.2, "fore": -0.06 },
+      "spine": { "pitch": -0.38 },
+      "head": { "pitch": 0.26, "yaw": 0.16 },
+      "tail": { "pitch": 0.42, "yaw": 0.35 },
+      "wings": { "spread": -0.34, "sweep": 0.3 },
+      "arms": { "pitch": -0.4, "spread": 0.12 },
+      "legs": { "hindLeft": { "fore": 0.26, "lat": 0.05 }, "hindRight": { "fore": 0.26, "lat": -0.05 } }
+    } },
+    { "t": 4.1, "pose": {
+      "root": { "lift": -0.06 },
+      "spine": { "pitch": -0.14 },
+      "head": { "pitch": 0.1 },
+      "tail": { "pitch": 0.6 },
+      "wings": { "spread": -0.2, "sweep": 0.2 },
+      "arms": { "pitch": -0.24 },
+      "legs": { "hindLeft": { "fore": 0.1 }, "hindRight": { "fore": 0.1 } }
+    } },
+    { "t": 4.7, "pose": { "tail": { "pitch": 0.45 }, "wings": { "spread": -0.12, "sweep": 0.14 }, "arms": { "pitch": -0.14 } } }
+  ]
+}

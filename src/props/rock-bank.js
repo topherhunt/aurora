@@ -1,14 +1,11 @@
 import { buildRock, ROCK_TIERS, ROCK_DEFAULTS } from './rock.js'
-import {
-  bakeImpostor, bakeImpostorPlate, buildImpostorCard, buildPlateCard,
-  impostorCardExtents, plateCardExtents, BAKE_ROCK_BOUNCE,
-} from './impostor.js'
+import { bakeImpostor, bakeImpostorPlate, BAKE_ROCK_BOUNCE } from './impostor.js'
 import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The shipping rock bank: A BOULDER AND A CAP. Two shapes, the tints they wear,
-// the baked geometry for each of their mesh tiers, and a billboard card apiece
-// for the band past the last mesh.
+// and the baked geometry for each of their tiers, the last of them the
+// five-vertex T6 hull every rock is at range.
 //
 // TWO ASSETS, AND THE SECOND IS NOT A SECOND ROCK. There is still no variant
 // table, no per-environment species and no site-tagged families: a stone
@@ -48,9 +45,7 @@ import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 //   difference between stone lying on a hillside and stone standing on one.
 //
 // Same policy as tree-bank.js and fern-bank.js: NO OFFLINE BAKE STEP. Built at
-// construction, handed to whatever copies it into an arena, disposed. The CARD tier is
-// the one thing that arrives in two pieces -- quads at construction, pixels once
-// the renderer exists. See THE CARD below.
+// construction, handed to whatever copies it into an arena, disposed.
 // ---------------------------------------------------------------------------
 
 // --- the environment palette ------------------------------------------------
@@ -234,121 +229,16 @@ function geometryBytes(geo) {
 }
 
 // ---------------------------------------------------------------------------
-// THE CARD: what a rock is past the last mesh band.
-//
-// A FOURTH TIER, past the coarsest mesh. A card looks worse than a coarse solid
-// -- a rock's whole read is the way its facets catch a moving light, and a
-// photograph has no facets -- and that is not what decides. A coarse solid costs
-// an instance, a matrix, a draw range and a scan slot exactly as a T320 does,
-// and the outermost band of a scree slope holds tens of thousands of them. Two
-// triangles that keep a grey lump on the hillside beat twenty that do, and both
-// beat the hole culling leaves in a talus field.
-//
-// TWO SHAPES, TWO KINDS OF CARD, because they are looked at from two different
-// places. `ROCK_SHAPES[].card` picks which, and the choice follows the shape's
-// aspect and its pose.
-//
-// A BOULDER GETS A SPUN BILLBOARD: ONE QUAD, TURNED IN EVERY DIRECTION. The
-// pinned call is `buildImpostorCard(w, h, LAYER.IMPOSTOR_ROCK, 1,
-// { upNormal: true, spherical: true })` and every argument is load-bearing. A
-// rock is looked DOWN on as often as across, so rocks.js is the only bed whose
-// material is built with `sphericalBillboard`; `spherical` here tells the card
-// which spin it will meet, and the difference is the bounding sphere -- centred
-// on the foot rather than around the vertices. Getting that wrong does not
-// misdraw the card, it culls a card that is still on screen. One plane is
-// normally the ILLEGAL row of buildImpostorCard's table, since a fixed single
-// quad seen along its own plane covers no pixels; `upNormal` makes it legal,
-// because a vertical normal is the mark material.js's billboardVertex tests
-// before yawing a quad toward the eye. Spun, one plane never goes edge-on, and
-// two triangles is the floor -- which a rock needs, its far band being the
-// largest population in the world.
-//
-// WHERE THE CARD STANDS AND HOW BIG IT IS ARE THE BED'S TO SAY, NOT THE
-// SHADER'S. The card is centred on its instance origin, spanning its quad's
-// width and height times the instance scale, and knows nothing of the rolled,
-// tilted, half-buried mesh it stands in for. rocks.js hands the card tier its
-// OWN instance matrix -- origin at the rolled rock's centre, a per-axis scale
-// that spans what it stands and covers, and in z the slide the shader gives
-// it up the view ray so the ground cuts it about where it cuts the rock
-// (RockBed._placeTier, spunCardFrame, CARD_SLIDE). Not in the vertex shader,
-// which could read the same off the instance matrix: the Quest's Adreno draws
-// nothing at all for that block, and says nothing.
-//
-// A CAP GETS A PLATE CARD: the same two triangles LYING FLAT, photographed from
-// straight above, at the plate's own yaw and tilt. Spinning it was wrong on
-// every count. A plate is 2 m across and 0.31 m high, so a side-on shot spends
-// four fifths of its 128-texel slice on transparent sky and the fifth that is
-// left is the plate's EDGE -- the one face of it a camera out in the valley
-// never sees. And a spun quad has to be sized to the mean silhouette over the
-// compass, which for something that flat is a compromise between its length and
-// its thickness that matches neither. Shot from above, the picture is the face
-// that is actually presented, it fills the slice, and the quad it lands on is
-// stretched exactly as the plate was. `buildPlateCard` and `bakeImpostorPlate`
-// carry the details; `PLATE_CARD_LIFT` is what holds it off the wall.
-//
-// `tri` IS DELIBERATELY NOT PASSED on either. A conifer can spend two corners of
-// its photograph because a conifer IS a triangle and the dropped corners hold no
-// needles. A rock silhouette is convex and nearly fills its own box in every
-// direction, so every corner a triangle throws away is stone: `tri: 'down'` eats
-// the foot, which is the one part a distant rock needs in order to read as
-// sitting on the ground rather than floating, and `tri: 'up'` eats the crown.
-//
-// ONE PHOTOGRAPH PER SHAPE, ONE ATLAS LAYER EACH -- LAYER.IMPOSTOR_ROCK and
-// LAYER.IMPOSTOR_ROCK_CAP. They could not share one now even in principle: the
-// two are taken down different axes. They could not before either, which is what
-// bought the second layer -- a shared picture only lands undistorted on a shape
-// with the subject's aspect, and a boulder stands three fifths as tall as it is
-// wide against a cap's fifth.
-//
-// WHAT CANCELS. The card GEOMETRY is built when the bank is and the PIXELS
-// cannot exist until there is a renderer, so the two halves can never check each
-// other. Each kind has ONE extents function that both halves ask --
-// `impostorCardExtents` for the spun card, `plateCardExtents` for the plate --
-// and neither half does the margin arithmetic itself (the bakes apply it
-// internally, which is why a bake is handed a frame and a quad the extents), so
-// the transparent border cancels exactly.
-//
-// THE BOULDER'S TWO FRAMES ARE DIFFERENT NUMBERS, deliberately. The PHOTOGRAPH
-// is framed to the subject at its WIDEST (`rockBakeFrame`, at `widestAzimuth`),
-// because a photograph that clips has thrown away silhouette it can never
-// recover. The QUAD is sized to the MEAN silhouette (`rockCardFrame`), because a
-// quad that spins is seen from every bearing -- sizing it to the widest view
-// swelled a rock by up to 1.7x at the swap. Not a contradiction: the bake
-// normalises the subject to its own frame, so the picture spans the quad's frame
-// whatever that is, leaving a horizontal squeeze of `planMean / max(w, d)`. That
-// squeeze is the only difference left between the card and the mesh it takes
-// over from. THE PLATE HAS ONE FRAME AND NEEDS ONE: it never turns away from the
-// bearing it was shot at, so the widest view and the view it gets are the same
-// view, and `plateCardExtents` serves the bake and the quad alike.
+// THE PHOTOGRAPHS. Nothing draws them: the far band is the T6 hull, a mesh like
+// the rest. `bakeRockImpostor` and what it leans on survive only because
+// v2/main.js still calls it at boot and logs the rows; take the two out
+// together, with LAYER.IMPOSTOR_ROCK and LAYER.IMPOSTOR_ROCK_CAP.
 // ---------------------------------------------------------------------------
 
 /**
- * The world extents the card QUAD is drawn at, from `userData.rock.measured`.
- *
- * WIDTH IS THE MEAN SILHOUETTE, not the box. A billboard spins to face the eye,
- * so its width is what the rock looks like from every bearing at once, and one
- * width makes the mesh-to-card swap free on average: the mean of the mesh's own
- * silhouette over the compass (`meanPlanWidth` in rock.js). The obvious
- * `max(width, depth)` measures well over the mesh silhouette -- a visible swell
- * at the swap. `rockBakeFrame` below is the OTHER framing and is deliberately
- * wider.
- */
-export function rockCardFrame(measured) {
-  if (!(measured.planMean > 0) || !(measured.height > 0)) {
-    throw new Error(`rockCardFrame: need a measured rock, got ${JSON.stringify(measured)}`)
-  }
-  return { width: measured.planMean, height: measured.height }
-}
-
-/**
- * The world extents the PHOTOGRAPH is framed to, which is the widest the subject
- * can present.
- *
- * WIDTH IS THE LARGER HORIZONTAL EXTENT, not the one on the x axis, and not the
- * mean either. The bake camera is put at `widestAzimuth` precisely so the
- * silhouette it captures is the fullest one the rock has; framing that shot to
- * anything narrower than `max(width, depth)` would clip the very thing the
- * azimuth search went looking for.
+ * The world extents the photograph is framed to: the larger horizontal extent,
+ * because the bake camera stands at `widestAzimuth` and a narrower frame would
+ * clip the silhouette that search went looking for.
  */
 export function rockBakeFrame(measured) {
   if (!(measured.width > 0) || !(measured.height > 0)) {
@@ -357,67 +247,19 @@ export function rockBakeFrame(measured) {
   return { width: Math.max(measured.width, measured.depth), height: measured.height }
 }
 
-/**
- * The seed the card photograph is taken at.
- *
- * A FIXED CONSTANT, not the bank's. `buildRockBank`'s seed is a dial someone may
- * turn, and the photograph must not move under the world when they do: the card
- * geometry is sized from the PLACED shape's measurement while the picture in it
- * comes from this seed, so a drifting subject would silently reproportion every
- * distant rock. Fixing it also means the bench and the world photograph the same
- * rock. Which seed is arbitrary.
- */
+/** The seed the photograph is taken at, fixed so the bank's own seed dial cannot move it. */
 export const ROCK_CARD_SEED = 1978
 
-/**
- * The atlas layer holding each shape's photograph -- one per shape, keyed by the
- * name `buildRockBank` files it under. The bake writes them and the card
- * geometries read them.
- */
+/** The atlas layer each shape is photographed into, keyed by its bank name. */
 export const ROCK_IMPOSTOR_LAYERS = {
   boulder: LAYER.IMPOSTOR_ROCK,
   cap: LAYER.IMPOSTOR_ROCK_CAP,
 }
 
 /**
- * How far a plate card clears the plate's OWN CROWN, as a fraction of the
- * plate's height. The card is built at `(1 + this) * height`, not at `this`.
- *
- * MEASURED FROM THE CROWN AND NOT FROM THE BED PLANE, which is the whole
- * subtlety. A plate is placed sunk: rocks.js buries it by `sinkFrac` of its own
- * standing height, up to SINK_CAP = 0.92 of it, so the bed plane the card is
- * built around is UNDER the wall by almost the plate's full thickness. A card at
- * 0.2 of the height would be inside the cliff for every instance sunk past a
- * fifth -- which is all of them, both cap beds' `sinkRange` starting at 0.4 --
- * and a flat card that is behind the terrain is not dim or speckled, it is gone.
- * The crown is the one plane guaranteed proud of the wall, since SINK_CAP is
- * under 1 exactly so that a rock nobody can see never gets built.
- *
- * The lift runs along the card's local +Y, which the instance matrix has already
- * aligned to the surface normal (both cap beds are `tilt: 1`), so this is a
- * clearance OUT OF THE FACE on a wall as much as UP on flat ground.
- *
- * WHAT IT BUYS on top of that is depth separation: a shallow-sunk plate's crown
- * is itself only a fraction of a metre off the terrain, and 0.2 of a thickness
- * more puts the card clear of a depth-buffer step -- 0.4 m on a 13 m plate at
- * the 325 m its card starts at, 2.2 m on a 70 m plate at 1750 m.
- *
- * WHAT IT COSTS is parallax. The card stands off the wall by `1.2 - sinkFrac` of
- * the plate's thickness, so between 0.28 and 0.8 of it depending on how deep
- * that instance happened to sink. On the worst case in the world, a 70 m slab
- * barely sunk, that is 8.7 m at the 1750 m its card starts at -- half a percent
- * of the range, on a plate a couple of hundred pixels wide.
- */
-export const PLATE_CARD_LIFT = 0.2
-
-/**
  * The two shapes the bank builds, in the order they enter it: the buildRock
- * options for each, the atlas layer its card is photographed into, and which of
- * the two kinds of card it draws past the last mesh -- see THE CARD above.
- *
- * ONE TABLE AND NOT TWO CODE PATHS, because the bank, the bake and the gate all
- * have to walk the same list -- a shape built here but never photographed draws
- * an empty layer at card range, which alphaTest discards silently.
+ * options for each, and for the photograph the atlas layer it lands in and
+ * whether it is shot side-on ('spun') or from straight above ('plate').
  */
 export const ROCK_SHAPES = [
   { name: 'boulder', params: rockParams, layer: ROCK_IMPOSTOR_LAYERS.boulder, card: 'spun' },
@@ -425,36 +267,9 @@ export const ROCK_SHAPES = [
 ]
 
 /**
- * Photograph every shape into its own atlas layer, in place.
- *
- * Call ONCE, after `loadImageLayers()` has resolved -- the subjects wear
- * LAYER.ROCK, and LAYER.ROCK is a PNG that arrives some hundreds of
- * milliseconds into the session. Bake before it lands and the cards are
- * photographs of untextured lumps. Until then the far band draws an empty
- * layer, which is fully transparent and so discarded by alphaTest, exactly as
- * the tree, fern and grass cards do.
- *
- * Photographed at the FINEST tier: the bake resolves to 128 px either way, so a
- * coarse subject would only donate its own faceting to a picture that is meant
- * to stand in for the fine one.
- *
- * THE BOULDER IS PHOTOGRAPHED UNLIT -- flat albedo, no key, no sky -- because
- * its spun card is lit live as the mean of the mesh it replaces
- * (material.js, SPHERE_CARD_LIGHT), and a picture that already carried a sun
- * would be shaded twice. The plate stays lit against BAKE_ROCK_BOUNCE rather
- * than the canopy rig's near-black floor, since under a cap's lower half is
- * open ground and not more crown.
- *
- * THE CAP'S SKIRT IS OUT OF FRAME BY CONSTRUCTION and needs no special case in
- * either bake. Both frustums stop at y = 0 -- the side-on one runs from the bed
- * plane up, the top-down one from above down to it -- and the skirt is the part
- * below that plane, the part that is inside the hill wherever the cap is placed.
- * So the picture is the dome and nothing else, which is exactly the part of a
- * cap a distant camera can see.
- *
- * Needs the live renderer, so it cannot live in `buildRockBank` -- that runs in
- * a constructor and in node. Returns one bake row per shape, for the caller to
- * log.
+ * Photograph every shape into its own atlas layer, in place, once
+ * `loadImageLayers()` has resolved so the subjects wear LAYER.ROCK. Needs the
+ * live renderer. Returns one bake row per shape, for the caller to log.
  */
 export function bakeRockImpostor(renderer, texArray) {
   return ROCK_SHAPES.map(({ name, params, layer, card }) => {
@@ -480,21 +295,9 @@ export function bakeRockImpostor(renderer, texArray) {
 }
 
 /**
- * The compass bearing that sees the most of a rock, in radians.
- *
- * PHOTOGRAPH THE SUBJECT AT ITS LARGEST, NEVER FLAT-ON. The shot is framed to
- * `rockBakeFrame` = `max(width, depth)`, so a bake along the rock's SHORT axis
- * prints a narrow silhouette into a wide frame and every distant rock is drawn
- * with transparent margins down both sides -- nothing is misplaced, the far band
- * is just quietly smaller than the mesh it replaced.
- *
- * A hardcoded azimuth is luck, not a property: a shape can land several degrees
- * off its widest bearing and measure a quarter narrow at the wrong one, so a new
- * seed could print a card 26% narrow. Searching costs one pass over the
- * subject's vertices, once, at boot.
- *
- * Half a turn is the whole search space: width at bearing `a` equals width at
- * `a + pi`, the projection being onto a line.
+ * The compass bearing that sees the most of a rock, in radians, so the shot
+ * fills the `rockBakeFrame` it is framed to. Half a turn is the whole search
+ * space: width at bearing `a` equals width at `a + pi`.
  */
 function widestAzimuth(geo, steps = 180) {
   const pos = geo.attributes.position.array
@@ -522,65 +325,14 @@ function widestAzimuth(geo, steps = 180) {
 }
 
 /**
- * The layers `createPropMaterial({ billboardLayers })` has to be told to spin,
- * exported the way tree-bank, mushroom-bank and grass-bank export theirs so the
- * bank stays the single place that knows which of its geometry is a billboard.
- *
- * A ROCK BATCH THAT DOES NOT PASS THIS IS BROKEN, not merely unspun. The spun
- * card is ONE plane, and material.js's billboardVertex needs BOTH conditions --
- * the layer in `uBillboardLayers` and `normal.y` over CARD_UP_MARK -- before it
- * turns a quad. The normal is authored here and always passes; the layer list is
- * the caller's half. Miss it and every distant boulder is a fixed single quad
- * with a vertical normal, which is the one row of buildImpostorCard's table
- * where the card VANISHES edge-on rather than just flattening.
- *
- * THE PLATE LAYER IS DELIBERATELY ABSENT, and the omission is the mechanism
- * rather than an oversight. A plate card lies flat, so its normal is exactly
- * (0, 1, 0) and clears CARD_UP_MARK by more than any billboard does -- listing
- * its layer would be all it took to set every distant cliff plate spinning to
- * face the eye, throwing away the one thing that card knows and a billboard does
- * not, which is which way it should point. Leaving it out zeroes `propCard` for
- * those vertices, and with it both the spin and the per-instance u-flip that
- * rides inside the same branch.
+ * How many tiers a shape reports -- exactly ROCK_TIERS, the T6 hull last. One
+ * number for both shapes: a bed indexes its tier table by band, and a cap that
+ * reported a shorter ladder would need a second one.
  */
-export function rockImpostorLayers() {
-  return ROCK_SHAPES.filter((s) => s.card === 'spun').map((s) => s.layer)
-}
+export const ROCK_BAND_COUNT = ROCK_TIERS.length
 
 /**
- * The card geometry for one entry of ROCK_SHAPES, from its measured LOD0.
- *
- * The two branches are the two kinds of card THE CARD describes, and each takes
- * its extents from the same function its own half of `bakeRockImpostor` does --
- * `plateCardExtents` against `bakeImpostorPlate`, `impostorCardExtents` against
- * `bakeImpostor`. That pairing is the whole of what makes the picture land on
- * the quad undistorted, and it is why the sizing lives in one place per kind
- * rather than being spelled out at both ends.
- */
-function buildShapeCard(spec, measured) {
-  if (spec.card === 'plate') {
-    const ext = plateCardExtents({ width: measured.width, depth: measured.depth })
-    return buildPlateCard(ext.width, ext.depth, spec.layer, {
-      lift: (1 + PLATE_CARD_LIFT) * measured.height,
-    })
-  }
-  const ext = impostorCardExtents(rockCardFrame(measured))
-  return buildImpostorCard(ext.width, ext.height, spec.layer, 1, { upNormal: true, spherical: true })
-}
-
-/**
- * How many tiers a shape reports. The last one is ALWAYS the card, so the mesh
- * ladder gets ROCK_BAND_COUNT - 1 of these -- exactly ROCK_TIERS. One number for
- * both shapes: a bed indexes its tier table by band, and a cap that reported a
- * shorter ladder would need a second one.
- */
-export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
-
-/** How many of those bands are real meshes. The rest -- one -- is the card. */
-export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
-
-/**
- * Build the bank: every shape in ROCK_SHAPES at every tier, plus a card each.
+ * Build the bank: every shape in ROCK_SHAPES at every tier.
  *
  * Returns `{ shapes, geometries, triangles, bytes }`.
  *
@@ -595,17 +347,10 @@ export const ROCK_MESH_BAND_COUNT = ROCK_BAND_COUNT - 1
  *   SHAPE'S FOUR, which is why the bank being two shapes costs the world one extra
  *   arena's worth of vertices rather than eight.
  *
- * A SHAPE'S CARD IS APPENDED LAST, so `tiers[ROCK_BAND_COUNT - 1]` is the card.
- * Note the two are different kinds of object: a mesh tier carries `userData.rock`
- * and the card carries `userData.impostor`, so anything walking the tier table
- * has to ask which it is holding rather than reaching straight for
- * `userData.rock.triangles`.
- *
  * `seed` DEFAULTS TO EACH SHAPE'S OWN and the world does not pass one -- see
  * BOULDER for why the assets are pinned while the scatter around them is not. The
  * argument survives for the bench and the gates, which need to see the generator
- * at more than one draw, and it overrides BOTH shapes' seeds together. The CARDS'
- * pictures never move with it; see ROCK_CARD_SEED.
+ * at more than one draw, and it overrides BOTH shapes' seeds together.
  */
 export function buildRockBank({ seed = null } = {}) {
   const geometries = []
@@ -623,16 +368,7 @@ export function buildRockBank({ seed = null } = {}) {
       return g
     })
 
-    // ...and only then the card, so the last band is the card. Both kinds are
-    // sized through the same extents function their own bake uses, so each
-    // agrees with `bakeRockImpostor` about the framing by construction -- see
-    // THE CARD.
     const measured = tiers[0].userData.rock.measured
-    const card = buildShapeCard(spec, measured)
-    geometries.push(card)
-    triangles += card.userData.impostor.triangles
-    bytes += geometryBytes(card)
-    tiers.push(card)
 
     // `skirt` IN METRES, at the size the shape was measured at, because the one
     // consumer that needs it is doing arithmetic in metres. rock.js hangs the rim

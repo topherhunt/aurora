@@ -51,14 +51,12 @@ import * as THREE from 'three'
 
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
-  buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, ROCK_MESH_BAND_COUNT,
-  ROCK_IMPOSTOR_LAYERS, ROCK_SHAPES, PLATE_CARD_LIFT, TINTS, TINT_GAIN, rockImpostorLayers,
+  buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
-import { buildImpostorCard, impostorCardExtents } from '../src/props/impostor.js'
-import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, spunCardFrame, CARD_FRAME_STRIDE, CARD_SLIDE } from '../src/v2/render/rocks.js'
+import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
-  LAYER, LAYER_COUNT, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
+  LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
   ROCK_TILE_MEAN, GRASS_TILE_MEAN, SNOW_TILE_MEAN,
   TERRAIN_GRASS_PLACEHOLDER, TERRAIN_SNOW_PLACEHOLDER, buildTextureArray,
 } from '../src/textures.js'
@@ -80,7 +78,7 @@ const check = (ok, label, detail = '') => {
 }
 
 // Math.min(...a) over a placed-rock array is a stack overflow waiting for a bed
-// to get wider, and it got one: widening a bed to hold a full billboard band
+// to get wider, and it got one: widening a bed to hold a full far-tier band
 // took its rock count past the argument limit and this gate died inside its own
 // helper rather than reporting anything. Anything measuring PLACED rocks uses
 // these; a spread is still fine over a fixed-length table.
@@ -185,12 +183,17 @@ for (let seed = 1; seed <= SEEDS; seed++) {
       // it is closed because rocks.js turns it through sixteen quarter turns and
       // any face of it may end up facing the sky. Only a rock with a cut face
       // may open its bottom.
+      //
+      // THE FAR TIER IS ONE HULL FOR THE WHOLE ROCK, shards and all, and is
+      // closed whatever `sit` says: six faces, never fewer, hanging the skirt
+      // off its floor corners. Section 1b holds it to the shape it stands in for.
       const stats = geo.userData.rock
+      const far = ROCK_TIERS[t].solid === 'five'
       const shards = Math.max(1, Math.round(shape.over.shards ?? ROCK_DEFAULTS.shards))
       const sit = shape.over.sit ?? ROCK_DEFAULTS.sit
-      const full = ROCK_TIERS[t].faces * shards
+      const full = far ? ROCK_TIERS[t].faces : ROCK_TIERS[t].faces * shards
       if (stats.triangles !== full - stats.dropped) bad.triCount++
-      if (sit === 0 ? stats.dropped !== 0 : stats.dropped < 0) bad.closedDropped++
+      if (sit === 0 || far ? stats.dropped !== 0 : stats.dropped < 0) bad.closedDropped++
       totalTris += stats.triangles
 
       for (const v of lay) if (v !== LAYER.ROCK) { bad.wrongLayer++; break }
@@ -207,7 +210,8 @@ for (let seed = 1; seed <= SEEDS; seed++) {
       }
       // WHERE THE LOWEST VERTEX IS MEANT TO BE. y = 0 for everything the world
       // places; one skirt-height BELOW it for a shell, whose rim is pushed down
-      // on purpose so the open bottom cannot clear the dirt. The bed plane
+      // on purpose so the open bottom cannot clear the dirt, and for the far
+      // tier standing in for that shell. The bed plane
       // itself has not moved either way -- the skirt is applied after the
       // re-seat, so `measured` and the burial arithmetic in rocks.js are reading
       // the same y = 0 they always were.
@@ -275,7 +279,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
         volume += pos[o] * cx + pos[o + 1] * cy + pos[o + 2] * cz
       }
       if (!(volume > 0)) bad.inward++
-      if (sit > 0 && floorFaces > 0) bad.floored++
+      if (sit > 0 && !far && floorFaces > 0) bad.floored++
       const degenFrac = degen / faces
       if (degenFrac > 0.2) bad.degenerate++
       worst.degenFrac = Math.max(worst.degenFrac, degenFrac)
@@ -301,29 +305,159 @@ check(bad.badNormal === 0, 'every normal is unit length', `worst |n|-1 = ${worst
 check(bad.degenerate === 0, 'the bed plane flattens only a few faces', `worst ${(worst.degenFrac * 100).toFixed(0)}% of faces`)
 check(bad.inward === 0, 'every rock is wound outward, so FrontSide culls the right half', `${bad.inward} builds inside out`)
 
-// AND THE CARD, whose front face is decided somewhere else entirely: the quad is
-// wound in object space and billboardVertex maps object +z onto the direction of
-// the eye, so the two have to agree or the whole scree field vanishes the moment
-// rocks stop being drawn double-sided. Checked on the shape the bank ships --
-// one plane, spun spherically.
-{
-  const quad = buildImpostorCard(1, 1, LAYER.IMPOSTOR_ROCK, 1, { upNormal: true, spherical: true })
-  const p = quad.attributes.position.array
-  const i = quad.index.array
-  let towardEye = 0
-  for (let f = 0; f < i.length; f += 3) {
-    const a = i[f] * 3, b = i[f + 1] * 3, c = i[f + 2] * 3
-    const abx = p[b] - p[a], aby = p[b + 1] - p[a + 1], abz = p[b + 2] - p[a + 2]
-    const acx = p[c] - p[a], acy = p[c + 1] - p[a + 1], acz = p[c + 2] - p[a + 2]
-    // Only the z of the winding normal matters: +z is where the spin puts the
-    // camera.
-    if (abx * acy - aby * acx > 0) towardEye++
-  }
-  check(towardEye === i.length / 3,
-    'the rock card winds toward the eye the spherical spin turns it to',
-    `${towardEye} of ${i.length / 3} triangles`)
-}
 console.log(`       ${builds} builds, ${totalTris} triangles`)
+
+// ---------------------------------------------------------------------------
+// 1b. The far tier is the rock's own box, on five vertices.
+// ---------------------------------------------------------------------------
+//
+// The last rung is not a sampled solid: it is five vertices and six faces fitted
+// to the measured box, textured and tinted like every other tier, and it is what
+// every rock in the world is past its last real mesh. Section 2's support
+// arithmetic is the wrong instrument for it -- a box's corners reach past any
+// hull inscribed in it -- so what is held here is what the eye reads at that
+// range: the box, the side silhouette, and that it is closed and convex.
+console.log('\nfar tier')
+{
+  const FAR = ROCK_TIERS.length - 1
+  check(ROCK_TIERS[FAR].solid === 'five' && ROCK_TIERS[FAR].faces === 6 && ROCK_TIERS[FAR].name === 'T6',
+    'the last rung of the ladder is the six-face hull', `${ROCK_TIERS[FAR].name}, ${ROCK_TIERS[FAR].solid}`)
+  check(ROCK_TIERS.slice(0, FAR).every((t) => t.solid !== 'five'),
+    'and it is the only one', ROCK_TIERS.map((t) => t.solid).join('/'))
+
+  // Convex hull area of a point set projected to two axes: the silhouette a
+  // mesh presents along the third.
+  const hullArea = (pos, a, b) => {
+    const pts = []
+    for (let i = 0; i < pos.length; i += 3) pts.push([pos[i + a], pos[i + b]])
+    pts.sort((p, q) => p[0] - q[0] || p[1] - q[1])
+    const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+    const lo = []
+    for (const p of pts) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p) }
+    const hi = []
+    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p) }
+    const h = lo.slice(0, -1).concat(hi.slice(0, -1))
+    let area = 0
+    for (let i = 0; i < h.length; i++) { const j = (i + 1) % h.length; area += h[i][0] * h[j][1] - h[j][0] * h[i][1] }
+    return Math.abs(area) / 2
+  }
+
+  const farBad = { verts: 0, box: 0, concave: 0, side: 0, plan: 0, meta: 0, sameBox: 0, shoulders: 0 }
+  const farWorst = { box: 0, side: 0, sideLo: Infinity, plan: 0, planLo: Infinity, concave: 0 }
+  let farN = 0
+  for (let seed = 1; seed <= Math.min(SEEDS, 60); seed++) {
+    for (const shape of SHAPES) {
+      const fine = buildRock({ ...shape.over, seed, tier: 0 })
+      const geo = buildRock({ ...shape.over, seed, tier: FAR })
+      const pos = geo.attributes.position.array
+      const m = geo.userData.rock.measured
+      const size = shape.over.size ?? ROCK_DEFAULTS.size
+      farN++
+
+      // FIVE VERTICES AND SIX FACES: a closed hull on the fewest vertices that
+      // can hold a box's width, depth and height apart. Distinct by exact
+      // position, since the buffer is unwelded and each face owns its corners.
+      const distinct = new Set()
+      for (let i = 0; i < pos.length; i += 3) distinct.add(`${pos[i]},${pos[i + 1]},${pos[i + 2]}`)
+      if (distinct.size !== 5 || pos.length !== 18 * 3) farBad.verts++
+
+      // THE BOX IS THE MEASURED BOX, TO THE VERTEX -- not inscribed, not gained.
+      // `measured` is what every bed places and spaces by, and this tier is
+      // seen from further than any other, so it is the one whose extent has to
+      // be the rock's own. Below the floor hangs the same skirt the finer tiers
+      // hang on a seated rock, so a bed that sinks it leaves no gap.
+      const params = { ...ROCK_DEFAULTS, ...shape.over }
+      const skirtDrop = params.sit > 0 ? Math.max(0, params.skirt) * m.height : 0
+      let lo = [Infinity, Infinity, Infinity]
+      let hi = [-Infinity, -Infinity, -Infinity]
+      for (let i = 0; i < pos.length; i += 3) {
+        for (let a = 0; a < 3; a++) {
+          if (pos[i + a] < lo[a]) lo[a] = pos[i + a]
+          if (pos[i + a] > hi[a]) hi[a] = pos[i + a]
+        }
+      }
+      const boxErr = Math.max(
+        Math.abs(lo[0] + m.width / 2), Math.abs(hi[0] - m.width / 2),
+        Math.abs(lo[1] + skirtDrop), Math.abs(hi[1] - m.height),
+        Math.abs(lo[2] + m.depth / 2), Math.abs(hi[2] - m.depth / 2)) / size
+      if (boxErr > 1e-5) farBad.box++
+      farWorst.box = Math.max(farWorst.box, boxErr)
+      // And the same box every finer tier reports, since one reference measured
+      // them all.
+      const fm = fine.userData.rock.measured
+      if (fm.width !== m.width || fm.height !== m.height || fm.depth !== m.depth) farBad.sameBox++
+
+      // CONVEX AND OUTWARD: every vertex on or inside every face's plane. An
+      // inside-out or folded hull passes the signed-volume test above by
+      // accident on a shape this small, so the planes are asked one by one.
+      let concave = 0
+      for (let f = 0; f < 6; f++) {
+        const o = f * 9
+        const abx = pos[o + 3] - pos[o], aby = pos[o + 4] - pos[o + 1], abz = pos[o + 5] - pos[o + 2]
+        const acx = pos[o + 6] - pos[o], acy = pos[o + 7] - pos[o + 1], acz = pos[o + 8] - pos[o + 2]
+        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx
+        const nl = Math.hypot(nx, ny, nz)
+        for (let i = 0; i < pos.length; i += 3) {
+          const d = ((pos[i] - pos[o]) * nx + (pos[i + 1] - pos[o + 1]) * ny + (pos[i + 2] - pos[o + 2]) * nz) / nl
+          concave = Math.max(concave, d / size)
+        }
+      }
+      if (concave > 1e-6) farBad.concave++
+      farWorst.concave = Math.max(farWorst.concave, concave)
+
+      // THE SILHOUETTE IS THE MESH'S along all three axes. That is the read a
+      // rock gives at 25 sizes out -- a lump of a certain height and width
+      // against the hill -- and it is what the shoulders' height and their
+      // pull-in from the box's corners are set by. Plan gets more room above:
+      // a sunk rock's belly is flattened into the box the hull fills, while its
+      // mesh keeps only the rim an edge below the cut, and that gap is under
+      // the spread T20 already shows against T320.
+      const fp = fine.attributes.position.array
+      const sideX = hullArea(pos, 0, 1) / hullArea(fp, 0, 1)
+      const sideZ = hullArea(pos, 2, 1) / hullArea(fp, 2, 1)
+      const plan = hullArea(pos, 0, 2) / hullArea(fp, 0, 2)
+      if (sideX < 0.85 || sideX > 1.2 || sideZ < 0.85 || sideZ > 1.2) farBad.side++
+      if (plan < 0.85 || plan > 1.3) farBad.plan++
+      farWorst.side = Math.max(farWorst.side, sideX, sideZ)
+      farWorst.sideLo = Math.min(farWorst.sideLo, sideX, sideZ)
+      farWorst.plan = Math.max(farWorst.plan, plan)
+      farWorst.planLo = Math.min(farWorst.planLo, plan)
+
+      // THE SHOULDERS STAY BELOW THE CROWN AND OFF THE FLOOR IS NOT REQUIRED: a
+      // cap whose widest ring is its cut face degenerates to a square pyramid,
+      // and that is the right hull for it. What is required is that exactly one
+      // vertex stands at the crown and two on the floor.
+      let atCrown = 0
+      let atFloor = 0
+      for (const key of distinct) {
+        const y = Number(key.split(',')[1])
+        if (y === hi[1]) atCrown++
+        if (y === lo[1]) atFloor++
+      }
+      if (atCrown !== 1 || atFloor < 2) farBad.shoulders++
+
+      const u = geo.userData.rock
+      if (u.dropped !== 0 || u.gain !== 1 || u.faces !== 6 || u.triangles !== 6 || u.vertices !== 18 || u.tier !== 'T6') farBad.meta++
+
+      fine.dispose()
+      geo.dispose()
+    }
+  }
+  check(farBad.verts === 0, 'the far tier is five distinct vertices on six faces', `${farBad.verts} of ${farN} builds off`)
+  check(farBad.box === 0, 'and its box is the measured box to the vertex, every axis',
+    `worst ${farWorst.box.toExponential(1)} of size`)
+  check(farBad.sameBox === 0, 'which is the same box the finest tier reports', `${farBad.sameBox} disagree`)
+  check(farBad.concave === 0, 'and it is convex, every vertex inside every face plane',
+    `worst ${farWorst.concave.toExponential(1)} of size outside`)
+  check(farBad.side === 0, 'its side silhouette is the finest tier\'s along both horizontal axes, within 15%',
+    `${farWorst.sideLo.toFixed(2)}x .. ${farWorst.side.toFixed(2)}x of T${ROCK_TIERS[0].faces}'s`)
+  check(farBad.plan === 0, 'and in plan it covers what the mesh covers, within 15% under and 30% over',
+    `${farWorst.planLo.toFixed(2)}x .. ${farWorst.plan.toFixed(2)}x`)
+  check(farBad.shoulders === 0, 'one vertex at the crown, two on the floor, two shoulders between',
+    `${farBad.shoulders} builds otherwise`)
+  check(farBad.meta === 0, 'and it reports itself whole: T6, 6 faces, nothing dropped, no gain',
+    `${farBad.meta} builds otherwise`)
+}
 
 // ---------------------------------------------------------------------------
 // 2. The tiers are the same rock.
@@ -380,6 +514,10 @@ for (let i = 0; i < 64; i++) {
 // `worst` is the deepest single-probe disagreement: how much silhouette this
 // tier's flat faces cut off (or its gain pushed out) at the one direction where
 // the coarse solid samples worst.
+//
+// THE SAMPLED TIERS ONLY. The far tier is a box hull, not a sampling of the
+// noise field, and section 1b holds it to the silhouette instead.
+const MESH_TIERS = ROCK_TIERS.length - 1
 const stat = ROCK_TIERS.map(() => ({ sum: 0, abs: 0, n: 0, over: 0, under: 0 }))
 let worstShapeBias = 0
 let worstShapeBiasName = ''
@@ -395,7 +533,7 @@ for (let seed = 1; seed <= Math.min(SEEDS, 60); seed++) {
     for (let i = 1; i < fine.length; i += 3) if (fine[i] > fineTop) fineTop = fine[i]
     const cy = fineTop / 2
     const reach = PROBES.reduce((s, [dx, dy, dz]) => s + support(fine, dx, dy, dz, cy), 0) / PROBES.length
-    for (let t = 1; t < ROCK_TIERS.length; t++) {
+    for (let t = 1; t < MESH_TIERS; t++) {
       const coarse = buildRock({ ...shape.over, seed, tier: t }).attributes.position.array
       let shapeSum = 0
       for (const [dx, dy, dz] of PROBES) {
@@ -437,8 +575,8 @@ for (let seed = 1; seed <= Math.min(SEEDS, 60); seed++) {
 // T20 of a lumpier rock is simply a rougher account of its corners.
 const SPREAD = { T80: [0.08, 0.6], T20: [0.13, 0.95] }
 
-check(worstShapeBias < 0.08, 'no tier reads systematically bigger or smaller', `worst ${(worstShapeBias * 100).toFixed(1)}% of reach, ${worstShapeBiasName}`)
-for (let t = 1; t < ROCK_TIERS.length; t++) {
+check(worstShapeBias < 0.08, 'no sampled tier reads systematically bigger or smaller', `worst ${(worstShapeBias * 100).toFixed(1)}% of reach, ${worstShapeBiasName}`)
+for (let t = 1; t < MESH_TIERS; t++) {
   const s = stat[t]
   const name = ROCK_TIERS[t].name
   const [meanCap, probeCap] = SPREAD[name]
@@ -467,18 +605,17 @@ for (let t = 1; t < ROCK_TIERS.length; t++) {
     ROCK_TIERS.map((t) => `${t.name}/${t.faces}`).join(' > '))
 }
 
-// And the thresholds it is walked with. One per mesh tier, because the tier
-// after the last one is the card and the card has no threshold of its own --
-// it is where a rock lands when it has fallen off the end. Ascending for the
-// same reason the faces descend: a shorter threshold behind a longer one is a
-// band no rock can ever be in.
+// And the thresholds it is walked with. One per tier but the last, which has no
+// threshold of its own -- it is where a rock lands when it has fallen off the
+// end. Ascending for the same reason the faces descend: a shorter threshold
+// behind a longer one is a band no rock can ever be in.
 {
-  let ok = ROCK_LOD_AT.length === ROCK_TIERS.length && ROCK_LOD_AT[0] > 0
+  let ok = ROCK_LOD_AT.length === ROCK_TIERS.length - 1 && ROCK_LOD_AT[0] > 0
   for (let i = 1; i < ROCK_LOD_AT.length; i++) {
     if (!(ROCK_LOD_AT[i] > ROCK_LOD_AT[i - 1])) ok = false
   }
-  check(ok, 'ROCK_LOD_AT gives every mesh tier one ascending threshold, and the card none',
-    `${ROCK_LOD_AT.join('/')} m per metre of ladder size, ${ROCK_TIERS.length} mesh tiers`)
+  check(ok, 'ROCK_LOD_AT gives every tier but the far one an ascending threshold',
+    `${ROCK_LOD_AT.join('/')} m per metre of ladder size, ${ROCK_TIERS.length} tiers`)
 }
 
 // THE THRESHOLDS ARE PER METRE AND THAT IS THE POINT, so it is worth writing
@@ -502,11 +639,11 @@ for (let t = 1; t < ROCK_TIERS.length; t++) {
   const at = (m, k) => ROCK_LOD_AT.map((v) => `${(v * rockLodSize(m) * k).toFixed(1)}`).join('/')
   const COBBLE = 0.25 / rockLodSize(boulder)
   const TOR = 9 / rockLodSize(boulder)
-  const cobbleCards = ROCK_LOD_AT[ROCK_LOD_AT.length - 1] * rockLodSize(boulder) * COBBLE
+  const cobbleFar = ROCK_LOD_AT[ROCK_LOD_AT.length - 1] * rockLodSize(boulder) * COBBLE
   const torLeavesFinest = ROCK_LOD_AT[0] * rockLodSize(boulder) * TOR
-  check(cobbleCards < torLeavesFinest,
-    'a cobble is a billboard before a tor has left its finest mesh',
-    `cobble ${at(boulder, COBBLE)} m then card; tor ${at(boulder, TOR)}`)
+  check(cobbleFar < torLeavesFinest,
+    'a cobble is on its far tier before a tor has left its finest mesh',
+    `cobble ${at(boulder, COBBLE)} m then T6; tor ${at(boulder, TOR)}`)
 
   // THE SPEC THE LADDER WAS SET FROM, pinned so a later edit to ROCK_LOD_AT has
   // to notice it: a two-metre rock steps at 8, 15 and 50 m. Two metres of WHAT
@@ -1026,8 +1163,6 @@ console.log('\nmoss.png')
 
   check(MOSS_LAYERS.includes(LAYER.ROCK), 'stone is on the list of things moss grows on',
     `MOSS_LAYERS = ${MOSS_LAYERS.join(' ')}`)
-  check(!MOSS_LAYERS.includes(LAYER.IMPOSTOR_ROCK),
-    'the rock card is out -- a card is photographed from the mesh, moss and all')
   // MOSS is sampled by the shader, never worn as a texLayer, so it must not be
   // in TILE_METRES either -- it is tiled off whatever UV the host surface has.
   check(TILE_METRES[LAYER.MOSS] === undefined, 'LAYER.MOSS is out of TILE_METRES -- it borrows its host UV')
@@ -1248,14 +1383,6 @@ console.log('\nsnow on stone')
   // the FOLIAGE weight, which is a wrong picture rather than an error.
   const both = SNOW_ROCK_LAYERS.filter((l) => SNOW_LAYERS.includes(l))
   check(both.length === 0, 'the foliage and stone lists are disjoint', `${both.length} in both`)
-  // The card is out of both lists, and that is a DELIBERATE omission rather than
-  // a consequence of its geometry. It is built with `upNormal: true`, so its
-  // normals are exactly (0, 1, 0) -- put it on either list and every distant
-  // rock takes the full SNOW_ROCK_UP weight over its whole face, flat top and
-  // all. Whether it should is open; what this pins is that nobody adds it by
-  // accident and discovers the answer on a hillside.
-  check(!SNOW_LAYERS.includes(LAYER.IMPOSTOR_ROCK) && !SNOW_ROCK_LAYERS.includes(LAYER.IMPOSTOR_ROCK),
-    'the rock card is deliberately in neither list')
 
   // OFF IS OFF. At a load of 0 no fragment reaches the cut, whatever it faces
   // and however the noise rolls -- so the slider's zero is bare stone and not a
@@ -1580,19 +1707,17 @@ console.log('\nthe one rock')
   check(Object.keys(bank.shapes).join(',') === 'boulder,cap', 'the bank ships the boulder and the cap',
     Object.keys(bank.shapes).join(', '))
   for (const [name, shape] of Object.entries(bank.shapes)) {
-    check(shape.tiers.length === ROCK_BAND_COUNT, `the ${name} has a rectangular tier table`,
-      `${shape.tiers.length} bands, ${ROCK_MESH_BAND_COUNT} of them meshes`)
+    check(shape.tiers.length === ROCK_BAND_COUNT && shape.tiers.every((g) => g.userData.rock),
+      `the ${name} has a rectangular tier table of meshes`, `${shape.tiers.length} bands`)
   }
 
-  // EVERY MESH BAND IS ITS OWN GEOMETRY, not a short ladder padded out by
-  // repeating its last entry. That padding is what the old size classes needed
-  // -- a pebble shipped two meshes and had its third band aliased to its second
-  // -- and there is nothing left to alias, so the promise flips. Held on the
-  // mesh bands alone; the card is a distinct object by construction and would
-  // flatter the count.
-  const mesh = bank.shapes.boulder.tiers.slice(0, ROCK_MESH_BAND_COUNT)
-  check(new Set(mesh).size === ROCK_MESH_BAND_COUNT,
-    'the rock builds all three mesh tiers for itself -- no padding by reference',
+  // EVERY BAND IS ITS OWN GEOMETRY, not a short ladder padded out by repeating
+  // its last entry. That padding is what the old size classes needed -- a
+  // pebble shipped two meshes and had its third band aliased to its second --
+  // and there is nothing left to alias, so the promise flips.
+  const mesh = bank.shapes.boulder.tiers
+  check(new Set(mesh).size === ROCK_BAND_COUNT,
+    'the rock builds all four tiers for itself -- no padding by reference',
     `${new Set(mesh).size} distinct meshes`)
   const unique = new Set(Object.values(bank.shapes).flatMap((sh) => sh.tiers)).size
   check(unique === bank.geometries.length, 'geometries and tier references agree', `${unique} in the arena`)
@@ -1852,223 +1977,21 @@ console.log('\nscatter')
   check(
     new Set(forestRocks.beds.flatMap((b) => b.batch.meshes.map((m) => m.material))).size === 1,
     'one material across every bed and every tier mesh',
-    'every bed billboards the one IMPOSTOR_ROCK card layer, so one program serves them all'
+    'one program serves them all'
   )
 
-  // THE CARD'S BOUNDS HAVE TO HOLD THE SPIN, and this is the gate on the bug
-  // that made rocks blink in and out as you turned your head. Any frustum test
-  // is taken against the bounding sphere of the geometry being drawn, and
-  // material.js's spherical billboard moves the card's vertices AFTER that
-  // test, rebuilding each one as `x * screenRight + y * screenUp + toEye`
-  // about the origin, the last one local z unit up the view ray. So a vertex
-  // can end up anywhere on a sphere of radius hypot(x, y) + 1 centred on the
-  // origin, and any sphere smaller than that culls a card that is still on
-  // screen.
-  //
-  // Nothing currently takes that test -- the beds are on PropArena, whose meshes
-  // are `frustumCulled = false` -- so this holds an invariant of the CARD rather
-  // than of a renderer, and it stays because the sphere is what any future
-  // culling would read and the failure is invisible until it is in a headset.
-  //
-  // Checked against the spin itself rather than against a formula: take the
-  // card's real vertices, spin them through a basis the shader could actually
-  // be handed, and demand the authored sphere still contains them. A tight
-  // sphere around the unspun quad fails this by roughly its own radius again.
-  // ONLY THE SPUN CARD OWES THIS. A plate card is never moved after the cull
-  // test -- that is the whole point of it -- so its bounds are simply the
-  // vertices, and the check it owes instead is that they really are tight, since
-  // an inflated sphere on a card that does not spin is wasted draw range on the
-  // largest population in the world. Both cases are read off the same table the
-  // bank ships rather than off a name, so a shape that changes kind changes which
-  // check it takes.
-  for (const spec of ROCK_SHAPES) {
-    const shape = forestRocks.bank.shapes[spec.name]
-    const card = shape.tiers[shape.tiers.length - 1]
-    const pos = card.attributes.position.array
-    const sph = card.boundingSphere
-    if (spec.card !== 'spun') {
-      let over = 0
-      let under = Infinity
-      for (let k = 0; k < pos.length; k += 3) {
-        const d = new THREE.Vector3(pos[k], pos[k + 1], pos[k + 2]).distanceTo(sph.center)
-        over = Math.max(over, d - sph.radius)
-        under = Math.min(under, sph.radius - d)
-      }
-      check(over <= 1e-4 && under <= 1e-4,
-        `the ${shape.name} card's bounding sphere is the tight one, because nothing moves it`,
-        `overhang ${over.toFixed(4)} m, slack ${under.toFixed(4)} m`)
-      continue
-    }
-    let over = 0
-    // Eight bases spread over the sphere, standing in for every camera the
-    // player could have. Orthonormal by construction, as the view matrix rows
-    // the shader reads are. The spin pivots on the origin, which the instance
-    // matrix puts at the rock's centre (RockBed._placeTier), and slides the
-    // card one local z toward the eye.
-    for (let a = 0; a < 8; a++) {
-      const th = (a / 8) * Math.PI * 2
-      const ph = (a % 3) * 0.7
-      const right = new THREE.Vector3(Math.cos(th), 0, Math.sin(th))
-      const up = new THREE.Vector3(-Math.sin(th) * Math.sin(ph), Math.cos(ph), Math.cos(th) * Math.sin(ph))
-      const toEye = right.clone().cross(up)
-      for (let k = 0; k < pos.length; k += 3) {
-        const v = right.clone().multiplyScalar(pos[k]).addScaledVector(up, pos[k + 1]).add(toEye)
-        over = Math.max(over, v.distanceTo(sph.center) - sph.radius)
-      }
-    }
-    check(over <= 1e-4,
-      `the ${shape.name} card's bounding sphere contains the card at every angle the spin can reach`,
-      `worst overhang ${over.toFixed(4)} m over 8 camera bases`)
-  }
-
-  // A PHOTOGRAPH PER SHAPE, AND THE CARDS THAT READ THEM. Two shapes, two
-  // layers, and the two ways that can silently go wrong are a card built against
-  // some other layer entirely -- which still resolves and still draws, as
-  // somebody else's photograph, and with a boulder and a cap in the atlas
-  // "somebody else's" is now a real possibility rather than a hypothetical --
-  // and the material's spin list drifting out of step with the layers the cards
-  // actually carry. Both look like "the far rocks are a bit off" and nothing
-  // else, so neither is left to the eye.
-  {
-    const want = ROCK_IMPOSTOR_LAYERS
-    check(want.boulder === LAYER.IMPOSTOR_ROCK && want.cap === LAYER.IMPOSTOR_ROCK_CAP
-      && want.boulder !== want.cap,
-      'the two shapes photograph onto two different atlas slices',
-      `boulder ${want.boulder}, cap ${want.cap}, atlas holds ${LAYER_COUNT} layers`)
-
-    for (const [name, shape] of Object.entries(forestRocks.bank.shapes)) {
-      const card = shape.tiers[ROCK_BAND_COUNT - 1]
-      const got = [...new Set(card.attributes.texLayer.array)]
-      check(got.length === 1 && got[0] === want[name],
-        `the ${name}'s card is drawn from its own slice and nobody else's`,
-        `carries ${got.join('/')}, wants ${want[name]}`)
-    }
-
-    // The bake writes through ROCK_IMPOSTOR_LAYERS and the card geometries read
-    // through it, so those two agree by construction. The material does NOT --
-    // it is handed `rockImpostorLayers()` separately, and material.js spins a
-    // quad only if its layer is in that list. The list has to match the SHAPES'
-    // OWN `card` kinds in both directions, and both directions are silent
-    // failures. A spun shape left off the list draws a fixed single
-    // vertical-normal plane, the one arrangement that vanishes edge-on rather
-    // than merely flattening. A PLATE shape put ON it is worse and less obvious:
-    // its normal is exactly (0, 1, 0), so it clears CARD_UP_MARK on the first
-    // try and every cliff plate in the world starts turning to face the eye,
-    // throwing away the yaw and tilt it was placed with.
-    const spun = rockImpostorLayers()
-    const wanted = ROCK_SHAPES.filter((s) => s.card === 'spun').map((s) => s.layer)
-    const plated = ROCK_SHAPES.filter((s) => s.card !== 'spun').map((s) => s.layer)
-    check(spun.length === wanted.length && wanted.every((l) => spun.includes(l))
-      && !plated.some((l) => spun.includes(l)),
-      'the material is told to spin the billboard layer and only that one',
-      `spins ${spun.join('/') || 'none'}, billboards ${wanted.join('/') || 'none'}, `
-        + `plates ${plated.join('/') || 'none'}`)
-  }
-
-  // THE PLATE CARD IS THE PLATE, laid the way the plate was laid. Four separate
-  // claims, and each of them fails in a way that reads as "the distant cliffs
-  // look a bit off" and nothing louder, so none is left to the eye.
-  {
-    const shape = forestRocks.bank.shapes.cap
-    const card = shape.tiers[ROCK_BAND_COUNT - 1]
-    const pos = card.attributes.position.array
-    const nrm = card.attributes.normal.array
-    const uv = card.attributes.uvProj.array
-    const idx = card.index.array
-
-    // ONE: it lies FLAT. Every vertex at the same height and every normal
-    // straight up -- the alternative is the vertical billboard it used to be.
-    let flat = true
-    for (let k = 0; k < pos.length; k += 3) {
-      if (Math.abs(pos[k + 1] - pos[1]) > 1e-6) flat = false
-      if (Math.abs(nrm[k]) > 1e-6 || Math.abs(nrm[k + 2]) > 1e-6 || Math.abs(nrm[k + 1] - 1) > 1e-6) flat = false
-    }
-    check(flat && card.attributes.position.count === 4 && idx.length === 6,
-      'the cap draws a flat 2-triangle plate rather than a standing billboard',
-      `${idx.length / 3} triangles, normal (${nrm[0]}, ${nrm[1]}, ${nrm[2]})`)
-
-    // TWO: it is STRETCHED AS THE PLATE IS. The quad's x:z is the measured
-    // rock's width:depth, so a plate laid at some size draws a card of the same
-    // proportions -- which is the thing a spun quad sized to the mean silhouette
-    // over the compass could not do.
-    let hw = 0
-    let hd = 0
-    for (let k = 0; k < pos.length; k += 3) {
-      hw = Math.max(hw, Math.abs(pos[k]))
-      hd = Math.max(hd, Math.abs(pos[k + 2]))
-    }
-    const aspect = (hw / hd) / (shape.measured.width / shape.measured.depth)
-    check(Math.abs(aspect - 1) < 1e-3,
-      'and it carries the plate\'s own proportions, not a mean over the compass',
-      `card ${(hw / hd).toFixed(3)} : 1 against a mesh at `
-        + `${(shape.measured.width / shape.measured.depth).toFixed(3)} : 1`)
-
-    // THREE: it is HELD OFF THE WALL, and specifically PAST THE CROWN. A plate
-    // is placed sunk by up to SINK_CAP = 0.92 of its own standing height, so its
-    // bed plane -- y = 0 on this card -- is inside the cliff. A card left near
-    // there is not a z-fight, it is behind the terrain and never drawn, which is
-    // silent and looks exactly like the far band having no plates in it. The
-    // crown is the one plane no instance can bury, so the lift is measured from
-    // there: anything at or below `height` is the bug this catches.
-    const lift = pos[1]
-    const want = (1 + PLATE_CARD_LIFT) * shape.measured.height
-    check(Math.abs(lift - want) < 1e-6 && lift > shape.measured.height,
-      'and it stands clear of its own crown by PLATE_CARD_LIFT of its thickness',
-      `${lift.toFixed(4)} m at the bank size, ${(PLATE_CARD_LIFT * 100).toFixed(0)}% past a `
-        + `${shape.measured.height.toFixed(4)} m crown`)
-
-    // FOUR: it FACES OUT. Nothing spins this card toward the eye, so the winding
-    // is the only thing deciding which side FrontSide keeps -- and the side a
-    // camera can be on is the one the plate's +Y points at, out of the cliff.
-    let outward = 0
-    for (let f = 0; f < idx.length; f += 3) {
-      const a = idx[f] * 3
-      const b = idx[f + 1] * 3
-      const c = idx[f + 2] * 3
-      const abx = pos[b] - pos[a]
-      const abz = pos[b + 2] - pos[a + 2]
-      const acx = pos[c] - pos[a]
-      const acz = pos[c + 2] - pos[a + 2]
-      // The y of the winding normal, which for a quad in the XZ plane is the
-      // whole of it: (ab x ac).y is abz*acx - abx*acz.
-      if (abz * acx - abx * acz > 0) outward++
-    }
-    check(outward === idx.length / 3,
-      'and it winds front-face along the plate\'s own up, which is out of the wall',
-      `${outward} of ${idx.length / 3} triangles`)
-
-    // AND THE PICTURE IS THE RIGHT WAY ROUND ON IT. bakeImpostorPlate stands its
-    // camera on +y with up = -z, so image-right is world +x and the image's TOP
-    // row is world -z; flipY then puts that top row at v = 0, as every other
-    // layer in the atlas has it. So u must climb with x and v must climb with z.
-    // Get either backwards and the card is a mirrored or quarter-turned
-    // photograph of exactly the right rock.
-    let uWithX = true
-    let vWithZ = true
-    for (let k = 0, t = 0; k < pos.length; k += 3, t += 2) {
-      if ((pos[k] > 0) !== (uv[t] > 0.5)) uWithX = false
-      if ((pos[k + 2] > 0) !== (uv[t + 1] > 0.5)) vWithZ = false
-    }
-    check(uWithX && vWithZ,
-      'and the photograph is laid on it the way the camera that took it was standing',
-      `u climbs with x: ${uWithX}, v climbs with z: ${vWithZ}`)
-  }
-
-  // THE CARD REACHES AN INSTANCE, which is the one thing a bake and a geometry
-  // contract cannot tell you between them. rock-bank.js builds a 2-triangle
-  // up-normal quad for every shape and check-props confirms it; what nobody
-  // confirms is that a BED ever hands one out. `tierTris` is the table `update`
-  // indexes to pick geometry, so a coarsest slot reading 2 triangles is a bed
-  // that will really draw a card at range, and one reading 8 or 20 is a bed
-  // whose card is sitting unreachable in the arena.
+  // THE FAR TIER REACHES AN INSTANCE. `tierTris` is the table `update` indexes
+  // to pick geometry, so a coarsest slot reading 6 triangles is a bed that will
+  // really draw the far hull at range, and one reading 20 is a bed whose far
+  // tier is sitting unreachable in the arena.
   //
   // ALL OF THEM. No bed opts out: the ladder is per rock and size-relative, so
-  // where an instance cards is decided by how big it was placed and not by
+  // where an instance reaches T6 is decided by how big it was placed and not by
   // which bed placed it.
   const coarse = ROCK_BAND_COUNT - 1
   check(
-    forestRocks.beds.every((b) => b.tierTris[coarse] === 2),
-    'every bed really does draw a 2-triangle card at their outermost band',
+    forestRocks.beds.every((b) => b.tierTris[coarse] === 6),
+    'every bed really does draw the 6-triangle far tier at its outermost band',
     forestRocks.beds.map((b) => `${b.cfg.name} ${b.tierTris[coarse]}`).join('  ')
   )
 
@@ -2642,7 +2565,7 @@ console.log('\nscatter')
       'on a 68-degree wall only the two beds built for a face are left standing',
       live.join(' ') || 'nothing placed at all')
 
-    // AND IT IS COARSE, 3 to 32 m, with NO SMALL END. A third of a metre of
+    // AND IT IS COARSE, 3 to 64 m, with NO SMALL END. A third of a metre of
     // stone on a cliff is invisible from anywhere you can stand to look at the
     // cliff -- instance memory and triangles spent on a speck. The floor is the
     // half of this that a median could never hold, so the whole population is
@@ -2650,12 +2573,12 @@ console.log('\nscatter')
     // this is the only bed that can put a rounded MASS on a wall, because it is
     // the only one that buries most of it.
     const face = widths(steepRocks, 'embedded')
-    check(inside(face, 3, 32), 'and every block let into it is between 3 and 32 m across -- no specks',
+    check(inside(face, 3, 64), 'and every block let into it is between 3 and 64 m across -- no specks',
       span(face))
     // The other half of "randomly vary": a bed that placed 8 m blocks and
     // nothing else would satisfy the line above exactly. Both ends of the span
     // have to be reached, or the roll has stopped being a roll.
-    check(amin(face) < 4.5 && amax(face) > 28,
+    check(amin(face) < 4.5 && amax(face) > 56,
       'and the range is really used, not clustered on one size',
       `median ${[...face].sort((a, b) => a - b)[face.length >> 1].toFixed(2)} m`)
 
@@ -3548,8 +3471,7 @@ console.log('\nscatter')
     // stretching one axis (an `elongate` applied at placement rather than in
     // the mesh, say) the identity fails, the ray is bent, and every prop on a
     // rock in that bed stands in the wrong place. Nothing about that throws and
-    // nothing about it is visible from a node gate except this. (The card's own
-    // matrix is per-axis by design; the shader inverts it per axis, see below.)
+    // nothing about it is visible from a node gate except this.
     //
     // Measured on the CLIFF, because that is where the leans are: the tilting
     // beds compose a ground tilt on top of the yaw, and a rotation
@@ -3645,11 +3567,34 @@ console.log('\nscatter')
     check(beds.every((b) => b.used > 0), 'and every bed was actually exercised by one of them',
       beds.map((b) => `${b.name} ${b.used}`).join('  '))
 
+    // THE GHOSTS NEVER EAT A TIER'S OWN SHARE. The prop clock has not ticked
+    // across the traverse, so every cross-dissolve started in twelve hundred
+    // metres of teleport is still in flight, and a ghost sits in the mesh of
+    // the tier its rock LEFT. A tier's cap is its population bound times
+    // poolBound's headroom, and only the headroom is the ghosts' to take: a
+    // ghost that took a population slot would leave the next real arrival to
+    // throw in PropArena._alloc, which is the crash that walking the giants bed
+    // with thinning off produced.
+    {
+      const over = []
+      for (const [name, r] of Object.entries(worlds)) {
+        for (const bed of r.beds) {
+          for (let t = 0; t < bed.tierIds.length - 1; t++) {
+            if (bed.ghostsAt[t] > bed.ghostRoom[t]) over.push(`${name}/${bed.cfg.name} T${t} ${bed.ghostsAt[t]} ghosts in a room of ${bed.ghostRoom[t]}`)
+          }
+        }
+      }
+      const fullest = Math.max(...Object.values(worlds).flatMap((r) => r.beds.flatMap((bed) =>
+        bed.batch.meshes.slice(0, -1).map((m, t) => m.count / bed.batch.capAt[t]))))
+      check(over.length === 0, 'ghosts never fill a mesh tier past its headroom, so an arrival never throws',
+        over.length ? over.join('; ') : `fullest mesh tier ${(fullest * 100).toFixed(0)}% of its cap`)
+    }
+
     // NO ROCK IS THINNED AWAY WHILE IT IS STILL A MESH, which is the promise the
     // whole ladder is for and the one that used to be broken: thinning is keyed
     // on a rank the rock drew and knows nothing about how big the rock is, so a
     // bed with a short `fullRadius` and a big rock in it dissolved that rock in
-    // the middle distance having never shown a billboard at all. Rocks were
+    // the middle distance having never reached its far tier at all. Rocks were
     // going at 37 m.
     //
     // Asserted per INSTANCE over both traverses rather than per bed, because the
@@ -3690,7 +3635,7 @@ console.log('\nscatter')
           for (const t of bed.tiles.values()) {
             for (let k = 0; k < t.n; k++) {
               const id = t.ids[k]
-              const cardAt = rockLodSize(bed.shape.measured) * bed.instScale[id] * LAST
+              const farAt = rockLodSize(bed.shape.measured) * bed.instScale[id] * LAST
               const swapping = bed.fadeAt[id] >= 0
               if (swapping) fading++
               const slot = fades[id]
@@ -3700,12 +3645,12 @@ console.log('\nscatter')
               const gone = bed.rim.gone[id]
               const dissolveFrom = gone * RIM_AT
               n++
-              if (dissolveFrom - cardAt < closest) closest = dissolveFrom - cardAt
-              if (dissolveFrom < cardAt - 1e-3) {
+              if (dissolveFrom - farAt < closest) closest = dissolveFrom - farAt
+              if (dissolveFrom < farAt - 1e-3) {
                 bad++
-                const gap = cardAt - dissolveFrom
+                const gap = farAt - dissolveFrom
                 if (!worst || gap > worst.gap) {
-                  worst = { gap, cardAt, dissolveFrom, bed: bed.cfg.name, world: name,
+                  worst = { gap, farAt, dissolveFrom, bed: bed.cfg.name, world: name,
                     scale: bed.instScale[id] }
                 }
               }
@@ -3714,12 +3659,12 @@ console.log('\nscatter')
         }
       }
       check(n > 0 && bad === 0,
-        'no rock starts dissolving before its billboard takes over',
+        'no rock starts dissolving before its far tier takes over',
         bad === 0
           ? `${n} instances (${fading} of them mid-swap), ` +
             `closest call ${closest.toFixed(1)} m of margin`
           : `${bad} of ${n}: worst ${worst.bed} at ${worst.scale.toFixed(2)}x (${worst.world}) ` +
-            `cards at ${worst.cardAt.toFixed(0)} m but starts going at ${worst.dissolveFrom.toFixed(0)} m`)
+            `reaches T6 at ${worst.farAt.toFixed(0)} m but starts going at ${worst.dissolveFrom.toFixed(0)} m`)
       check(slotBad === 0, 'the fade slot never holds anything but a sentinel or a stamp',
         `${slotBad} of ${n} carry a positive value that is not the never-fade 1`)
       // AND THE SHADER READS IT. Everything above tests the number the CPU
@@ -3746,21 +3691,21 @@ console.log('\nscatter')
       const rows = worlds.cliff.describeNear(cam.x, cam.y, cam.z, 60)
       const LAST = ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
       const sane = rows.every((r) =>
-        Number.isFinite(r.d) && Number.isFinite(r.size) && Number.isFinite(r.cardsAt) &&
+        Number.isFinite(r.d) && Number.isFinite(r.size) && Number.isFinite(r.farAt) &&
         Number.isFinite(r.goneAt) && typeof r.bed === 'string' &&
         // Both columns are rounded for the console, so the identity is
         // checked to the rounding and not past it: 0.005 m of size is 0.125 m
-        // of card distance.
-        Math.abs(r.cardsAt - r.size * LAST) < 0.2 &&
-        // The band the hysteresis leaves: a mesh holds on 12% past its card
-        // distance, and a card gives way again at the distance itself.
-        (r.tier === 'card' ? r.d >= r.cardsAt - 0.2 : r.d < r.cardsAt * 1.12 + 0.2))
+        // of far distance.
+        Math.abs(r.farAt - r.size * LAST) < 0.2 &&
+        // The band the hysteresis leaves: a finer tier holds on 12% past the
+        // far distance, and the far tier gives way again at the distance itself.
+        (r.tier === 'far' ? r.d >= r.farAt - 0.2 : r.d < r.farAt * 1.12 + 0.2))
       check(rows.length > 0 && sane,
-        'describeNear reports every nearby rock\'s tier, card distance and dissolve distance',
+        'describeNear reports every nearby rock\'s tier, far distance and dissolve distance',
         `${rows.length} rocks within 60 m, nearest ${rows[0].bed} at ${rows[0].d} m ` +
-          `on ${rows[0].tier}, cards at ${rows[0].cardsAt} m, dissolves from ${rows[0].dissolveFrom} m`)
-      check(rows.every((r) => r.dissolveFrom >= r.cardsAt - 1e-3),
-        'and none of them is set to dissolve before it cards',
+          `on ${rows[0].tier}, far at ${rows[0].farAt} m, dissolves from ${rows[0].dissolveFrom} m`)
+      check(rows.every((r) => r.dissolveFrom >= r.farAt - 1e-3),
+        'and none of them is set to dissolve before it reaches its far tier',
         'the same promise as above, read through the readout the browser will use')
     }
 
@@ -3776,7 +3721,7 @@ console.log('\nscatter')
 
   // --- the LOD cross-dissolve ----------------------------------------------
   //
-  // A rock changing tier used to CUT: one frame a mesh, the next a billboard,
+  // A rock changing tier used to CUT: one frame one mesh, the next another,
   // and at the ranges the last rung sits at that is a visible twitch on ground
   // covered in stone. Rocks now does what render/grass.js does -- a duplicate
   // takes the tier being left, both halves get the same clock stamp, and they
@@ -3829,23 +3774,14 @@ console.log('\nscatter')
 
     // The ghost is a real second draw of the same rock: same place, same tint,
     // the tier that was just left. If any of that drifts the pair reads as two
-    // rocks rather than one dissolving into itself. Each half wears the matrix
-    // ITS tier takes -- the mesh's, or the card's own off the same placement
-    // (RockBed._placeTier) -- so a swap across the card rung is checked against
-    // that and not against the other half.
+    // rocks rather than one dissolving into itself. Every tier takes the one
+    // placement matrix, so both halves are checked against it.
     const ma = new THREE.Matrix4()
     const mb = new THREE.Matrix4()
     const mw = new THREE.Matrix4()
     const ca = new THREE.Color()
     const cb = new THREE.Color()
-    const wantM = (id, tier, out) => {
-      if (!(bed.spunCard && tier === ROCK_BAND_COUNT - 1)) return out.fromArray(bed.instM, id * 16)
-      const c = id * CARD_FRAME_STRIDE
-      return out.compose(
-        new THREE.Vector3(bed.instX[id] + bed.instCard[c], bed.instY[id] + bed.instCard[c + 1], bed.instZ[id] + bed.instCard[c + 2]),
-        new THREE.Quaternion(),
-        new THREE.Vector3(bed.instCard[c + 3], bed.instCard[c + 4], bed.instCard[c + 5]))
-    }
+    const wantM = (id, out) => out.fromArray(bed.instM, id * 16)
     // A tenth of a millimetre: the arena holds float32, and the world is 600 m wide.
     const same = (m1, m2) => m1.elements.every((v, i) => Math.abs(v - m2.elements[i]) <= 1e-4)
     let moved = 0
@@ -3854,8 +3790,7 @@ console.log('\nscatter')
     for (const f of first) {
       bed.batch.getMatrixAt(f.orig, ma)
       bed.batch.getMatrixAt(f.dup, mb)
-      if (!same(ma, wantM(f.orig, bed.batch.geoAt[f.orig], mw)) ||
-        !same(mb, wantM(f.orig, bed.batch.geoAt[f.dup], mw))) moved++
+      if (!same(ma, wantM(f.orig, mw)) || !same(mb, wantM(f.orig, mw))) moved++
       bed.batch.getColorAt(f.orig, ca)
       bed.batch.getColorAt(f.dup, cb)
       if (Math.abs(ca.r - cb.r) + Math.abs(ca.g - cb.g) + Math.abs(ca.b - cb.b) > 1e-6) recoloured++
@@ -3863,7 +3798,7 @@ console.log('\nscatter')
       if (!bed.batch.getVisibleAt(f.dup)) sameGeom++
     }
     check(moved === 0 && recoloured === 0,
-      'the duplicate stands exactly where the rock stands, in the matrix its tier takes, and wears exactly its tint',
+      'the duplicate stands exactly where the rock stands and wears exactly its tint',
       `${first.length} pairs, ${moved} adrift, ${recoloured} off-colour`)
     check(sameGeom === 0, 'and is drawn, holding the tier the rock just left rather than the one it took',
       `${first.length} pairs, all two different geometries`)
@@ -4213,73 +4148,6 @@ console.log('\nscatter')
       'the far-field stipple rides the blob\'s own fade and reaches stone only',
       `capped at ${SNOW_ROCK.farMax}, crossfaded from ${SNOW_ROCK.fadeFar} m out`)
 
-    // --- and the card spins spherically, which nothing else in the world does -
-    //
-    // A ROCK HAS NO UP. Every other card here grows out of the ground and keeps
-    // its height vertical however the camera is pitched, which for a trunk is
-    // not an approximation but the truth. The beds that reach card range are the
-    // scree and the giants, both of them live on slopes, and a slope is looked
-    // at from above -- so a cylindrical rock card presents a side elevation to a
-    // camera that should be seeing a top, and a hillside of them tips together
-    // like signboards.
-    //
-    // TWO PROMISES, because either alone is kept by a mistake. The rock material
-    // must take the spherical branch, and the DEFAULT prop material -- trees,
-    // ferns, mushrooms, grass -- must still take the cylindrical one. A flag
-    // that turned out to be global would pass a check that only looked at rocks,
-    // and would lay every trunk in the world down on the hillside.
-    const emit = (opts) => {
-      const s = {
-        vertexShader: THREE.ShaderLib.lambert.vertexShader,
-        fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
-        uniforms: {},
-      }
-      createPropMaterial(texArray, opts).onBeforeCompile(s)
-      return s.vertexShader
-    }
-    // Read off the two branches' load-bearing lines rather than off a comment:
-    // the spherical one builds a world basis aimed at the eye and inverts it
-    // through the instance's own 3x3, the cylindrical one rotates transformed.xz
-    // in place and never leaves object space. Both materials are handed the SAME
-    // layer list, so the spin is the only thing that differs.
-    const SPHERE = 'transformed = ( bbW * bbM ) / bbS2;'
-    const YAW = 'transformed.xz = vec2('
-    const rockVs = emit({ billboardLayers: rockImpostorLayers(), sphericalBillboard: true })
-    const treeVs = emit({ billboardLayers: rockImpostorLayers() })
-    check(rockVs.includes(SPHERE) && !rockVs.includes(YAW),
-      'the rock card is spun spherically -- it lies back as the view tips over the hillside',
-      rockVs.includes(SPHERE) ? 'world basis, inverted through the instance' : 'still yawing about Y')
-    check(treeVs.includes(YAW) && !treeVs.includes(SPHERE) && !treeVs.includes('cross( bbFw, bbRw )'),
-      'and every other prop card still yaws about world Y, because a trunk IS vertical')
-
-    // AND THE TWO CANNOT SHARE A COMPILED PROGRAM. The branch is compiled in,
-    // not switched by a uniform, so the cache key has to separate them -- and
-    // this is the failure that would never be traced back here: two materials
-    // agreeing on the layer list and differing only in the flag would silently
-    // both get whichever was built first, and the symptom is rocks spinning
-    // like trees or a forest lying down, depending on load order.
-    const keyOf = (opts) => createPropMaterial(texArray, opts).customProgramCacheKey()
-    check(
-      keyOf({ billboardLayers: rockImpostorLayers(), sphericalBillboard: true }) !==
-        keyOf({ billboardLayers: rockImpostorLayers() }),
-      'and the two spins are two programs, not one program and a coin toss')
-
-    // The flag is meaningless without something to spin, and a caller who set it
-    // and no layers would be looking at unchanged pixels wondering why.
-    let refused = false
-    try {
-      createPropMaterial(texArray, { sphericalBillboard: true })
-    } catch {
-      refused = true
-    }
-    check(refused, 'a spherical spin with no billboard layers to spin is refused rather than ignored')
-
-    // And the world's own rock material is the one that asked for it, which is
-    // what joins everything above to what actually ships.
-    check(forestRocks.material.customProgramCacheKey().includes('-sph'),
-      'and the material every bed shares is that one',
-      forestRocks.material.customProgramCacheKey())
-
     setMossVary(1, 1)
     setSnowVary(1, 1)
   }
@@ -4467,296 +4335,6 @@ console.log('\nscatter')
       unsizedThrew = true
     }
     check(unsizedThrew, 'and a pick source with neither a sizeAt nor a radius throws instead of naming nothing')
-  }
-
-  // THE BILLBOARD IS THE SIZE OF THE ROCK IT REPLACED.
-  //
-  // Two halves, and both of them were broken in ways that looked like the
-  // other. The card has to be the size of the mesh IN THE BANK, and the spin
-  // has to draw it at the instance's scale ON THE HILLSIDE. It was doing the
-  // second one exactly backwards: the spherical branch of billboardVertex built
-  // its answer in world space and mapped it back through the plain inverse, so
-  // the matrix reapplied the instance scale on the way out, the two cancelled,
-  // and every spun card drew at its raw bank size however big the rock was. A
-  // boulder at scale 4.10 drew a quarter-size billboard; one at 8.33 drew an
-  // eighth. That is the "it swaps in a billboard vastly smaller than the shape
-  // it replaced" report, and it is arithmetic rather than opinion.
-  {
-    // Half one: the quad against the mesh it takes over from, in the bank.
-    // Silhouette width over 64 bearings, because a card that spins has to stand
-    // in for the rock seen from anywhere, not from the one azimuth it was
-    // measured at.
-    const BEARINGS = 64
-    const shape = forestRocks.bank.shapes.boulder
-    const frame = impostorCardExtents({ width: shape.measured.planMean, height: shape.measured.height })
-    const last = shape.tiers[ROCK_MESH_BAND_COUNT - 1]
-    const mp = last.attributes.position.array
-    let mLo = Infinity
-    let mHi = -Infinity
-    let meanW = 0
-    for (let b = 0; b < BEARINGS; b++) {
-      const ang = (b / BEARINGS) * Math.PI * 2
-      const dx = Math.cos(ang)
-      const dz = Math.sin(ang)
-      let lo = Infinity
-      let hi = -Infinity
-      for (let i = 0; i < mp.length; i += 3) {
-        const t = mp[i] * -dz + mp[i + 2] * dx
-        if (t < lo) lo = t
-        if (t > hi) hi = t
-        if (b === 0) {
-          if (mp[i + 1] < mLo) mLo = mp[i + 1]
-          if (mp[i + 1] > mHi) mHi = mp[i + 1]
-        }
-      }
-      meanW += hi - lo
-    }
-    meanW /= BEARINGS
-    const wr = shape.measured.planMean / meanW
-    const hr = shape.measured.height / (mHi - mLo)
-    check(wr > 0.7 && wr < 1.4 && hr > 0.7 && hr < 1.4,
-      'the card the bank builds is the size of the last mesh tier it takes over from',
-      `width ${wr.toFixed(2)}x, height ${hr.toFixed(2)}x of the coarsest mesh`)
-
-    // Half two: the spin, modelled in JS exactly as the shader writes it, and
-    // asked the only question that matters -- does a card on an instance of
-    // scale s come out s times as big? A model and not the GPU, so the shader
-    // text is checked against it below; the two together are what stop this
-    // silently going back to a divide.
-    const EYE = new THREE.Vector3(3, 9, 21)
-    const spun = (sx, sy, sz, local) => {
-      const batching = new THREE.Matrix4().compose(
-        new THREE.Vector3(10, 2, 30),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0.64, 0)),
-        new THREE.Vector3(sx, sy, sz)
-      )
-      const bbM = new THREE.Matrix3().setFromMatrix4(batching)
-      // The basis, aimed at the eye from the instance's own origin. Horizontal
-      // face first, then card-right off world up, then card-up off the full 3D
-      // direction -- so it is the eye's position that turns the card, not the
-      // screen's orientation.
-      const origin = new THREE.Vector3().setFromMatrixPosition(batching)
-      const bbF = new THREE.Vector2(EYE.x - origin.x, EYE.z - origin.z).normalize()
-      const bbRw = new THREE.Vector3(bbF.y, 0, -bbF.x)
-      const bbFw = EYE.clone().sub(origin).normalize()
-      const bbUw = bbFw.clone().cross(bbRw)
-      const e = bbM.elements
-      // Per-axis: the squared length of each COLUMN, not one number off column 0.
-      const bbS2 = [
-        e[0] * e[0] + e[1] * e[1] + e[2] * e[2],
-        e[3] * e[3] + e[4] * e[4] + e[5] * e[5],
-        e[6] * e[6] + e[7] * e[7] + e[8] * e[8],
-      ]
-      // The z column's length is the slide up the view ray, to the rock's
-      // near face.
-      const bbW = bbRw.clone().multiplyScalar(local.x * Math.sqrt(bbS2[0]))
-        .add(bbUw.clone().multiplyScalar(local.y * Math.sqrt(bbS2[1])))
-        .add(bbFw.clone().multiplyScalar(Math.sqrt(bbS2[2])))
-      // v * M in GLSL is M-transpose * v.
-      const transformed = new THREE.Vector3(
-        (e[0] * bbW.x + e[1] * bbW.y + e[2] * bbW.z) / bbS2[0],
-        (e[3] * bbW.x + e[4] * bbW.y + e[5] * bbW.z) / bbS2[1],
-        (e[6] * bbW.x + e[7] * bbW.y + e[8] * bbW.z) / bbS2[2]
-      )
-      const world = transformed.applyMatrix3(new THREE.Matrix3().setFromMatrix4(batching))
-      // The slide, in world metres up the view ray, and what is left of the
-      // vertex once it is taken off.
-      return { slide: world.dot(bbFw), across: world.addScaledVector(bbFw, -world.dot(bbFw)).length() }
-    }
-    // 0.16 and 8.33 are the real extremes of instScale over the placed beds.
-    const SCALES = [0.16, 0.5, 1, 2, 4.1, 8.33]
-    const err = SCALES.map((s) => Math.abs(spun(s, s, s, { x: 1, y: 0 }).across / s - 1))
-    check(amax(err) < 1e-6,
-      'and the spherical spin draws it at the instance scale instead of dividing that scale out',
-      `scale ${SCALES[0]} .. ${SCALES[SCALES.length - 1]}, worst error ${amax(err).toExponential(1)}`)
-    const stillSquare = Math.abs(spun(3, 3, 3, { x: 0, y: 1 }).across / 3 - 1) < 1e-6
-    check(stillSquare, 'and the card height rides the same scale as its width, so it is not sheared',
-      `height at scale 3 is ${spun(3, 3, 3, { x: 0, y: 1 }).across.toFixed(4)} m per local metre`)
-    // THE SLIDE IS THE Z SCALE, STRAIGHT UP THE VIEW RAY, and nothing else
-    // moves the origin: the card's centre lands the z scale nearer the eye
-    // than the instance origin, whatever the eye's elevation.
-    const slid = SCALES.map((s) => Math.abs(spun(1, 1, s, { x: 0, y: 0 }).slide / s - 1))
-    const stray = amax(SCALES.map((s) => spun(1, 1, s, { x: 0, y: 0 }).across))
-    check(amax(slid) < 1e-6 && stray < 1e-6,
-      'and slides the card its z scale up the view ray toward the eye, and nowhere else',
-      `slide err ${amax(slid).toExponential(1)}, off-ray ${stray.toExponential(1)} m over z ${SCALES[0]} .. ${SCALES[SCALES.length - 1]}`)
-
-    // AND THE INVERSE IS PER-AXIS, which only a non-uniform scale can tell you.
-    // Grass is the caller that needs it -- render/grass.js scales a tuft
-    // (sqrt(h), h, sqrt(h)) so tall grass stays narrow -- and folding an
-    // anisotropic matrix through a single-column inverse stretches the card by
-    // the ratio between the axes. h = 1.6 is inside the roll, and one number off
-    // column 0 would draw its height 1.26x too tall.
-    const ANI = [Math.sqrt(1.6), 1.6, Math.sqrt(1.6)]
-    const aniW = Math.abs(spun(...ANI, { x: 1, y: 0 }).across / ANI[0] - 1)
-    const aniH = Math.abs(spun(...ANI, { x: 0, y: 1 }).across / ANI[1] - 1)
-    check(aniW < 1e-6 && aniH < 1e-6,
-      'and a card on a non-uniformly scaled instance keeps both of its own axes',
-      `width err ${aniW.toExponential(1)}, height err ${aniH.toExponential(1)}`)
-
-    // The model above is only worth anything while the shader still says what it
-    // says: the per-axis divide, and a basis built from the instance's position
-    // rather than from the view matrix's rows.
-    const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
-    check(shaderText.includes('transformed = ( bbW * bbM ) / bbS2;') &&
-      shaderText.includes('vec3 bbUw = cross( bbFw, bbRw );') &&
-      !shaderText.includes('inversesqrt( bbS2 )'),
-      'and the shipped shader is the one the model describes, so this is not testing dead code')
-  }
-
-  // THE BILLBOARD IS BEDDED WHERE THE ROCK IT REPLACED WAS, AND IS AS BIG.
-  //
-  // The spin pivots on the instance origin, and `_growTile` seats a MESH by the
-  // lowest corner of its quarter-turned box -- so on the twelve turns in sixteen
-  // that lay the boulder on a side or its crown, the origin is a half-width or
-  // a whole height off the rock's middle, and a card pivoting on it hung in
-  // the air over a mesh sunk 40-80% into the hill. The card tier is handed its
-  // own instance matrix on the CPU (`_placeTier`, `spunCardFrame`): origin at
-  // the placed rock's centre, scaled per axis to what it stands and covers,
-  // and CARD_SLIDE of its plan radius in the z scale for the shader to slide
-  // the card up the view ray, into the rock's near bulge. Checked over
-  // the placed forest boulders against THE MESH ITSELF pushed through its
-  // matrix vertex by vertex, not against the frame's own model of the rock:
-  // the frame takes the rock for the ellipsoid in its box, which is exact on a
-  // quarter turn and a few percent off once the bed tilts and leans it, and
-  // that is the number reported: the boulder is boxier than its ellipsoid, so
-  // a leaned card stands up to a tenth short and its foot a little high, and a
-  // box in the frame's place stood a leaned card a quarter too tall. The
-  // card's plan is the mean of its widest and narrowest horizontal extent, as
-  // `planMean` is for the upright.
-  {
-    const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
-    const card = bed.shape.tiers[ROCK_BAND_COUNT - 1]
-    const mm = bed.shape.measured
-    check(bed.spunCard && card.userData.impostor.spherical === true && !card.attributes.aCardBox,
-      'the boulder card spins and carries no box of its own: where it stands is the bed\'s to say')
-    // The quad is centred on its origin, so the matrix's origin IS the card's
-    // middle and its foot is half the local height down.
-    card.computeBoundingBox()
-    const cardHalf = card.boundingBox.max.y
-    check(Math.abs(card.boundingBox.min.y + cardHalf) < 1e-6 && cardHalf > 0,
-      'and its quad is centred on its origin, the rock\'s middle, rather than standing on it',
-      `local y ${card.boundingBox.min.y.toFixed(3)} .. ${cardHalf.toFixed(3)}`)
-    const pos = bed.shape.tiers[0].attributes.position.array
-    const AZ = 12
-    const az = Array.from({ length: AZ }, (_, k) => [Math.cos(k * Math.PI / AZ), Math.sin(k * Math.PI / AZ)])
-    const meshM = new THREE.Matrix4()
-    const cardM = new THREE.Matrix4()
-    const v = new THREE.Vector3()
-    const lo2 = new Float64Array(AZ), hi2 = new Float64Array(AZ)
-    let worstFoot = 0
-    let worstStand = 0
-    let worstPlan = 0
-    let worstRadius = 0
-    let worstCentre = 0
-    let worstAxes = 0
-    let meshKept = 0
-    let originOff = 0
-    let n = 0
-    for (const t of bed.tiles.values()) {
-      for (let k = 0; k < t.n; k++) {
-        const id = t.ids[k]
-        meshM.fromArray(bed.instM, id * 16)
-        let lo = Infinity, hi = -Infinity
-        lo2.fill(Infinity); hi2.fill(-Infinity)
-        for (let i = 0; i < pos.length; i += 3) {
-          v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(meshM)
-          lo = Math.min(lo, v.y); hi = Math.max(hi, v.y)
-          for (let a = 0; a < AZ; a++) {
-            const s = v.x * az[a][0] + v.z * az[a][1]
-            lo2[a] = Math.min(lo2[a], s); hi2[a] = Math.max(hi2[a], s)
-          }
-        }
-        let wide = 0, narrow = Infinity
-        for (let a = 0; a < AZ; a++) { wide = Math.max(wide, hi2[a] - lo2[a]); narrow = Math.min(narrow, hi2[a] - lo2[a]) }
-        const stand = hi - lo
-        // The rock's middle: the centre of the box it was grown in, placed.
-        const centre = v.set(0, mm.height * 0.5, 0).applyMatrix4(meshM).clone()
-        const tier = bed.tierAt[id]
-        bed._placeTier(id, ROCK_BAND_COUNT - 1)
-        bed.batch.getMatrixAt(id, cardM)
-        const e = cardM.elements
-        // Unrotated and scaled per axis, so the columns ARE the scales. Errors
-        // as a fraction of what the rock stands, the unit the eye judges in.
-        const footErr = Math.abs(e[13] - e[5] * mm.height * 0.5 - lo) / stand
-        const standErr = Math.abs(e[5] * mm.height - stand) / stand
-        const planErr = Math.abs(e[0] * (mm.width + mm.depth) * 0.5 - (wide + narrow) * 0.5) / stand
-        worstFoot = Math.max(worstFoot, footErr)
-        worstStand = Math.max(worstStand, standErr)
-        worstPlan = Math.max(worstPlan, planErr)
-        worstRadius = Math.max(worstRadius, Math.abs(e[10] - (wide + narrow) * 0.25 * CARD_SLIDE) / stand)
-        worstCentre = Math.max(worstCentre, Math.abs(e[12] - centre.x), Math.abs(e[13] - centre.y), Math.abs(e[14] - centre.z))
-        worstAxes = Math.max(worstAxes, Math.abs(e[1]), Math.abs(e[4]), Math.abs(e[10] - bed.instCard[id * CARD_FRAME_STRIDE + 5]))
-        // And back on the tier it was on, with the mesh matrix intact.
-        bed._placeTier(id, tier)
-        if (tier < ROCK_BAND_COUNT - 1) {
-          bed.batch.getMatrixAt(id, cardM)
-          if (cardM.equals(meshM)) meshKept++
-        } else {
-          meshKept++
-        }
-        // How far the origin -- the mesh's pivot -- sits off the rock's middle,
-        // in units of what the rock stands.
-        if (Math.hypot(bed.instX[id] - centre.x, bed.instY[id] - centre.y, bed.instZ[id] - centre.z) > 0.25 * stand) originOff++
-        n++
-      }
-    }
-    check(n > 0 && worstFoot < 0.12,
-      "the spun card's foot lands under the lowest vertex of the placed mesh, so it is bedded as deep as the mesh",
-      `worst ${(worstFoot * 100).toFixed(1)}% of the stand over ${n} forest boulders`)
-    check(worstStand < 0.12 && worstPlan < 0.12,
-      'and it stands as tall as the mesh and as wide as the mesh\'s mean plan',
-      `height err ${(worstStand * 100).toFixed(1)}%, plan err ${(worstPlan * 100).toFixed(1)}% of the stand`)
-    // A flat card has no z of its own, so the column carries how far the
-    // shader slides it toward the eye: CARD_SLIDE of half the mesh's mean
-    // plan, into the rock's near bulge. Zero here and the card stands through
-    // the rock's middle, where a hillside's ground cuts it off from below.
-    check(worstRadius < 0.06,
-      'and its z scale is CARD_SLIDE of the placed rock\'s plan radius, the slide into its near bulge',
-      `worst ${(worstRadius * 100).toFixed(1)}% of the stand`)
-    // Every placed boulder is tilted or leaned a little, so the exact case is
-    // taken straight: the sixteen quarter-turn rolls, at a scale, against the
-    // corners of the box they turn.
-    let rollErr = 0
-    const rq = new THREE.Quaternion(), rx = new THREE.Quaternion()
-    const frame = new Float32Array(CARD_FRAME_STRIDE)
-    for (const scale of [1, 3.7]) {
-      for (let ri = 0; ri < 16; ri++) {
-        rq.setFromAxisAngle(new THREE.Vector3(0, 0, 1), ((ri / 4) | 0) * (Math.PI / 2))
-        rq.multiply(rx.setFromAxisAngle(new THREE.Vector3(1, 0, 0), (ri % 4) * (Math.PI / 2)))
-        meshM.compose(new THREE.Vector3(3, 5, 7), rq, new THREE.Vector3(scale, scale, scale))
-        let lo = Infinity, hi = -Infinity, x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
-        for (let corner = 0; corner < 8; corner++) {
-          v.set(corner & 1 ? mm.width * 0.5 : -mm.width * 0.5, corner & 2 ? mm.height : 0, corner & 4 ? mm.depth * 0.5 : -mm.depth * 0.5).applyMatrix4(meshM)
-          lo = Math.min(lo, v.y); hi = Math.max(hi, v.y)
-          x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x)
-          z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z)
-        }
-        spunCardFrame(meshM.elements, mm, frame)
-        rollErr = Math.max(rollErr,
-          Math.abs(3 + frame[0] - (x0 + x1) * 0.5), Math.abs(5 + frame[1] - (lo + hi) * 0.5), Math.abs(7 + frame[2] - (z0 + z1) * 0.5),
-          Math.abs(frame[4] * mm.height - (hi - lo)),
-          Math.abs(frame[3] * (mm.width + mm.depth) - ((x1 - x0) + (z1 - z0))),
-          Math.abs(frame[5] * 4 / CARD_SLIDE - ((x1 - x0) + (z1 - z0))))
-      }
-    }
-    check(rollErr < 1e-5,
-      'and exactly the turned box on a quarter turn alone, where the frame\'s ellipsoid meets it corner for corner',
-      `worst ${rollErr.toExponential(1)} m over 16 rolls at two scales`)
-    check(worstCentre < 1e-4 && worstAxes < 1e-4,
-      'centred on the placed rock, unrotated, with the z scale the frame gave it',
-      `centre off ${worstCentre.toExponential(1)} m, axes ${worstAxes.toExponential(1)}`)
-    check(meshKept === n,
-      'and the mesh tiers get the mesh matrix back, so a tier swap loses nothing',
-      `${meshKept} of ${n}`)
-    check(originOff > n * 0.4,
-      'and that is not the origin: the roll leaves it well off the rock\'s middle on most instances',
-      `${originOff} of ${n} origins over a quarter-stand from the centre`)
-    const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
-    check(!shaderText.includes('aCardBox') && !shaderText.includes('bbFoot'),
-      'and the shipped shader never moves the foot itself: the block the Quest\'s Adreno could not draw is gone')
-    check(shaderText.includes('+ bbFw * bbS.z;'),
-      'and slides the card its z scale up the view ray, as the model above does')
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

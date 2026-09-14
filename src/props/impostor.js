@@ -275,10 +275,9 @@ export function bakeImpostorPlate(
   const cam = new THREE.OrthographicCamera(-cardW / 2, cardW / 2, cardD / 2, -cardD / 2, 0.01, camY)
   cam.position.set(0, camY, 0)
   // Camera-up is world -z, which makes camera-right world +x. So the image's top
-  // row is the subject's -z edge and its right column the +x edge, which is the
-  // mapping buildPlateCard's corners are written against. Three's lookAt picks
-  // the whole basis off this one vector, and the default (0, 1, 0) is degenerate
-  // looking straight down.
+  // row is the subject's -z edge and its right column the +x edge. Three's
+  // lookAt picks the whole basis off this one vector, and the default (0, 1, 0)
+  // is degenerate looking straight down.
   cam.up.set(0, 0, -1)
   cam.lookAt(0, 0, 0)
   cam.updateMatrixWorld()
@@ -294,13 +293,12 @@ export function bakeImpostorPlate(
  * over a hemisphere whose ground is `bounce` -- or, `unlit`, as flat albedo
  * with no rig at all. Returns the bytes it stored.
  *
- * UNLIT IS FOR A SOLID WHOSE CARD IS LIT ONCE, LIVE. A canopy bakes lit because
- * its card's four normals cannot express the self-shadowing of ten thousand
- * leaves (createImpostorBakeMaterial). A convex boulder has no interior to
- * shadow, and its card is drawn through a shading that already reproduces the
- * mesh's mean light (material.js, SPHERE_CARD_LIGHT) -- so a lit bake there
- * would be the same sun applied twice, which is exactly the "far rocks are
- * black" that a bake at a third of albedo under a live sun produced.
+ * UNLIT IS FOR A CONVEX SOLID, photographed as albedo for a card that would
+ * be lit live: a canopy bakes lit because its card's four normals cannot
+ * express the self-shadowing of ten thousand leaves
+ * (createImpostorBakeMaterial), and a boulder has no interior to shadow, so a
+ * lit bake of one drawn under a live sun is the same sun applied twice.
+ * rock-bank's bakeRockImpostor is the one caller.
  *
  * The half both bakes share; what a bake chooses is its camera and where the key
  * stands. Restores the render target and clear state it found.
@@ -680,7 +678,7 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0 } = {}
+  { upNormal = false, canopy = false, tri = false, sink = 0, azimuth = 0 } = {}
 ) {
   // `sink` comes out of impostorCardExtents and is already counted INSIDE
   // `height` -- it says how much of that height hangs below y = 0, not how much
@@ -700,16 +698,6 @@ export function buildImpostorCard(
   // be a claim the geometry cannot keep. Refuse rather than ignore it.
   if (azimuth !== 0 && upNormal) {
     throw new Error('buildImpostorCard: a spun card has no fixed azimuth to be baked at')
-  }
-  // `spherical` says which of billboardVertex's two spins this card will meet.
-  // A cylindrical card stands on its origin, as a plant stands on the ground;
-  // a spherical one is CENTRED on it, because the spin pivots there and the
-  // pivot of a thing seen from every side is its middle: rocks.js puts the
-  // card's origin at the rock's centre, and the shader slides it up the view
-  // ray by the z scale (the rock's plan radius) so the ground cuts it where it
-  // cuts the mesh. See the note by the bounds at the end of this function.
-  if (spherical && !upNormal) {
-    throw new Error('buildImpostorCard: a card that is not marked for spinning cannot be spun spherically')
   }
   if (tri && tri !== 'up' && tri !== 'down') {
     throw new Error(`buildImpostorCard: tri must be 'up', 'down' or false, not ${tri}`)
@@ -757,8 +745,8 @@ export function buildImpostorCard(
     // so an apex-down triangle has real width where the subject's feet are. The
     // buried part is empty in every bake -- there is nothing under a tree -- so
     // it costs the fill of a strip the depth buffer mostly rejects against the
-    // terrain in front of it. A spherical card is centred instead: see above.
-    const y0 = spherical ? -height / 2 : -sink
+    // terrain in front of it.
+    const y0 = -sink
     const y1 = y0 + height
     const corners = tri === 'up'
       ? [[-hw, y0, 0, 1], [hw, y0, 1, 1], [0, y1, 0.5, 0]]
@@ -815,133 +803,17 @@ export function buildImpostorCard(
   geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
   geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
   geo.setIndex(indices)
+  // THE TIGHT BOUNDS HOLD THE SPIN: BatchedMesh culls each instance against the
+  // geometry's bounding sphere and billboardVertex moves the vertices after
+  // that decision, but it turns (x, z) about the instance's Y axis, so every
+  // vertex keeps its height and its horizontal radius and stays inside the box
+  // the vertices already describe.
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
-
-  // THE BOUNDS HAVE TO HOLD THE SPIN, NOT THE VERTICES. BatchedMesh culls each
-  // instance against the bounding sphere of the geometry it is drawing, and
-  // billboardVertex moves the vertices after that decision is made. So the
-  // sphere has to contain every position the spin can put them in, or the
-  // renderer drops a card that is still on screen -- which reads as rocks
-  // blinking in and out as you turn, worst near the edge of the view where a
-  // frame of head movement flips the test back and forth.
-  //
-  // The cylindrical spin is safe with the tight sphere for free: it turns
-  // (x, z) about the instance's Y axis, so every vertex keeps its height and
-  // its horizontal radius and stays inside the box the vertices already
-  // describe. That is why only rocks show this and no other card does.
-  //
-  // The spherical spin does not. It rebuilds the vertex as
-  // `x * screenRight + y * screenUp + toEye` -- an orthonormal pair and one
-  // local z unit up the view ray -- so a vertex ends up at distance
-  // hypot(x, y) + 1 from the centre, pointing anywhere at all. The envelope is
-  // therefore a sphere centred on the origin of that radius, which is exactly
-  // what is measured here. It is bigger than the tight one and that is the
-  // honest price of a quad that can face any direction. (The rock arena culls
-  // no instance against it -- PropArena is never perObjectFrustumCulled -- so
-  // this is the bound the geometry claims, not one anything draws by.)
-  if (spherical) {
-    let r2 = 0
-    for (let k = 0; k < positions.length; k += 3) {
-      const d2 = positions[k] ** 2 + positions[k + 1] ** 2 + positions[k + 2] ** 2
-      if (d2 > r2) r2 = d2
-    }
-    const r = Math.sqrt(r2) + 1
-    geo.boundingSphere.center.set(0, 0, 0)
-    geo.boundingSphere.radius = r
-    geo.boundingBox.min.set(-r, -r, -r)
-    geo.boundingBox.max.set(r, r, r)
-  }
 
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri, sink, spherical, azimuth,
+    upNormal, canopy, tri, sink, azimuth,
   }
-  return geo
-}
-
-/**
- * The card a top-down bake gets drawn on: two triangles lying FLAT in the
- * subject's own local XZ plane, `lift` above it.
- *
- * THE OTHER KIND OF CARD ENTIRELY, and that is why it is its own function rather
- * than a flag on buildImpostorCard. Every concept in there -- the crossed
- * planes, the sink, the apex triangle, the canopy fan, the u-mirror, the spin --
- * belongs to a card that STANDS UP in front of a camera at eye level and has to
- * cope with being seen from any bearing. This one does none of that. It lies on
- * the surface its subject was laid on, at the subject's own yaw and tilt, and it
- * is looked DOWN on. A flag would have had to switch off nine tenths of that
- * function to arrive here.
- *
- * IT IS NOT A BILLBOARD AND MUST NOT BE IN `uBillboardLayers`. material.js spins
- * a quad when its layer is in that list AND its normal.y clears CARD_UP_MARK,
- * and this card's normal is exactly (0, 1, 0) -- so listing its layer would spin
- * the one card in the world that already knows which way it should face. The
- * instance matrix carries the plate's yaw, its tilt into the cliff and its
- * scale, so "the same angle as the mesh it replaces" costs nothing: it is the
- * same matrix.
- *
- * THE PROPORTIONS ARE THE SUBJECT'S OWN, width by DEPTH, so a plate stretched
- * 2 : 1.2 draws a card stretched 2 : 1.2. There is no mean-over-the-compass here
- * of the kind rockCardFrame takes for a spun quad, and there does not need to be:
- * a card that keeps its own yaw is seen from the same side the photograph was
- * taken from, always.
- *
- * `lift` HOLDS IT OFF THE SURFACE, along the plate's own +Y -- which is the
- * surface normal, because that is what the instance was aligned to. It has to
- * clear not a depth-buffer step but the plate's whole BURIAL: a plate is placed
- * sunk into the face, so its bed plane, which is y = 0 here, is under the wall.
- * A card left in that plane is not dim, it is behind the terrain and gone. The
- * caller owns that arithmetic; see PLATE_CARD_LIFT in rock-bank.js.
- *
- * WINDING. The corners run counter-clockwise seen from +Y, so the front face is
- * the one pointing out of the cliff. That is the only side a camera can be on,
- * which is what makes a FrontSide material safe here without a spin to guarantee
- * it -- see the note by `side` in v2/render/rocks.js.
- *
- * UV. `bakeImpostorPlate` stands its camera on +Y with up = -z, so the image's
- * top row is the subject's -z edge and its right column the +x edge; v = 0 is
- * the top row, as it is for every other layer in the atlas (see flipY). Hence
- * u = 0 at -x, v = 0 at -z. Get this pair wrong and the card is a mirrored or
- * quarter-turned photograph of the right rock, which reads as "the distant
- * plates do not quite line up" and nothing louder.
- */
-export function buildPlateCard(width, depth, layer, { lift = 0 } = {}) {
-  if (!(width > 0) || !(depth > 0)) {
-    throw new Error(`buildPlateCard: need a positive width and depth, got ${width}x${depth}`)
-  }
-  if (!(lift >= 0)) throw new Error(`buildPlateCard: lift is a height above the surface, got ${lift}`)
-
-  const hw = width / 2
-  const hd = depth / 2
-  const corners = [
-    [-hw, hd, 0, 1],
-    [hw, hd, 1, 1],
-    [hw, -hd, 1, 0],
-    [-hw, -hd, 0, 0],
-  ]
-  const positions = []
-  const normals = []
-  const uvs = []
-  const layers = []
-  for (const [x, z, u, v] of corners) {
-    positions.push(x, lift, z)
-    normals.push(0, 1, 0)
-    uvs.push(u, v)
-    layers.push(layer)
-  }
-
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-  geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
-  geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
-  geo.setIndex([0, 1, 2, 0, 2, 3])
-  // Nothing moves these vertices after the cull test, so the tight bounds are
-  // the true ones -- the opposite of the spun card's case a few lines up.
-  geo.computeBoundingBox()
-  geo.computeBoundingSphere()
-
-  geo.userData.impostor = { plate: true, width, depth, lift, layer, planes: 1, triangles: 2 }
   return geo
 }

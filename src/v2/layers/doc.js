@@ -71,8 +71,8 @@ function id(v, path, seen) {
   return v
 }
 
-// [x, y, z, width] control points, shared by rivers and roads.
-function pointList(v, path) {
+// Road control points: [x, y, z, width], authored in 3D.
+function roadPoints(v, path) {
   array(v, path)
   if (v.length === 0) fail(path, 'must have at least one control point', v)
   for (let i = 0; i < v.length; i++) {
@@ -83,6 +83,25 @@ function pointList(v, path) {
     num(p[2], `${path}[${i}][2]`)
     positive(p[3], `${path}[${i}][3]`)
   }
+  return v
+}
+
+// River nodes: [x, z] or [x, z, width]. No y -- the water level is solved from the terrain -- and the width is optional per node, interpolated from the nodes that carry one, so at least one must.
+function riverPoints(v, path) {
+  array(v, path)
+  if (v.length === 0) fail(path, 'must have at least one control point', v)
+  let widths = 0
+  for (let i = 0; i < v.length; i++) {
+    const p = v[i]
+    if (!Array.isArray(p) || (p.length !== 2 && p.length !== 3)) fail(`${path}[${i}]`, 'must be [x, z] or [x, z, width]', p)
+    num(p[0], `${path}[${i}][0]`)
+    num(p[1], `${path}[${i}][1]`)
+    if (p.length === 3) {
+      positive(p[2], `${path}[${i}][2]`)
+      widths++
+    }
+  }
+  if (widths === 0) fail(path, 'must set a width on at least one node', v)
   return v
 }
 
@@ -130,7 +149,7 @@ export function validate(json) {
     if (r === null || typeof r !== 'object' || Array.isArray(r)) fail(`rivers[${i}]`, 'must be an object', r)
     id(r.id, `rivers[${i}].id`, seen)
     if (r.depth !== undefined) nonNegative(r.depth, `rivers[${i}].depth`)
-    pointList(r.pts, `rivers[${i}].pts`)
+    riverPoints(r.pts, `rivers[${i}].pts`)
   }
 
   array(json.roads, 'roads')
@@ -139,7 +158,7 @@ export function validate(json) {
     if (d === null || typeof d !== 'object' || Array.isArray(d)) fail(`roads[${i}]`, 'must be an object', d)
     id(d.id, `roads[${i}].id`, seen)
     if (d.feather !== undefined) nonNegative(d.feather, `roads[${i}].feather`)
-    pointList(d.pts, `roads[${i}].pts`)
+    roadPoints(d.pts, `roads[${i}].pts`)
   }
 
   return json

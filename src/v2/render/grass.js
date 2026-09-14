@@ -283,6 +283,12 @@ const TILE = 4
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 2.0
 
+// One tile in this many is re-checked each frame against the terrain chunk
+// drawing its ground, and re-seated if that chunk has changed -- litter's
+// number, and the same quarter-second correction it buys. ~80 groundKeyAt
+// calls a frame over the bed's ~1,300 resident tiles.
+const GROUND_SWEEP = 16
+
 // Only tiles this close to the last mesh band are re-tiered every frame.
 // Everything beyond it cannot change tier. The margin is more than a tile's
 // half-diagonal, so a tile joins the near set before any tuft inside it can
@@ -318,8 +324,10 @@ const PLACEMENT = {
   // of bare ground on each side. Well inside what PathSet.nearest can answer
   // for -- see the longer note in ferns.js about the segment index's padding.
   pathClearance: 0.5,
-  // Metres of the tuft's base buried, so grass on a slope does not float. Scaled
-  // by the instance's height like everything else, so a 1.5 m tuft sinks more.
+  // Metres of the tuft's base buried on FLAT ground, so the frayed foot of the
+  // picture starts under the surface. Scaled by the instance's height like
+  // everything else, so a 1.5 m tuft sinks more. On a slope the card sinks
+  // further still, by the drop of the ground under its foot -- see _footDrop.
   sink: 0.04,
 }
 
@@ -1021,7 +1029,7 @@ function buildBladeBank(bladeCount) {
 export class Grass {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
-   * @param field         V2Height. Needs heightAndSlopeAt and snowLineAt.
+   * @param field         V2Height. Needs heightAt, heightAndSlopeAt and snowLineAt.
    * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
@@ -1034,6 +1042,9 @@ export class Grass {
    *                      ground it is standing in.
    * @param bladeCount    triangles per clump, blades only. Defaults to the
    *                      model's own; see buildBladeBank for why it is a knob.
+   * @param ground        TerrainV2, or null for headless probes. With it every
+   *                      tuft stands on the DRAWN chunk mesh rather than the
+   *                      field -- see _groundFor.
    */
   constructor(
     scene,
@@ -1044,7 +1055,7 @@ export class Grass {
     {
       seed = 1, style = 'tufts', density = null, height = null,
       radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
-      tint = null, rocks = null, bladeCount = null,
+      tint = null, rocks = null, bladeCount = null, ground = null,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
@@ -1056,14 +1067,17 @@ export class Grass {
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Grass: needs a V2Height with heightAndSlopeAt')
     }
-    if (style === 'strips' && typeof field.heightAt !== 'function') {
-      throw new Error('Grass: strips need a V2Height with heightAt, to tilt onto the slope')
+    if (typeof field.heightAt !== 'function') {
+      throw new Error('Grass: needs a V2Height with heightAt, to seat every tuft on the ground')
     }
     // Optional, so a rebuild before the rock beds exist and the probes under tmp/
     // both still work. Without it a blade that lands inside a boulder is placed
     // inside it, which is the most legible placement error in the world.
     if (rocks && typeof rocks.blockTopAt !== 'function') {
       throw new Error('Grass: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
+    }
+    if (ground && typeof ground.groundAt !== 'function') {
+      throw new Error('Grass: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
     }
     // Asked once here rather than trusted per candidate: a field that answers
     // without the gradient makes every blade matrix NaN, and a NaN matrix is an
@@ -1086,6 +1100,7 @@ export class Grass {
 
     this.field = field
     this.rocks = rocks
+    this.ground = ground
     this.water = water
     this.paths = paths
     this.textureArray = textureArray
@@ -1219,6 +1234,27 @@ export class Grass {
     const cardGeo = bank.tiers[this.cardTier].geometry
     cardGeo.computeBoundingBox()
     const cardTop = cardGeo.boundingBox.max.y
+    // Where an instance's feet are, in the bank's own units, for _footDrop. A
+    // clump's are its blades' base vertices, every vertex on the geometry's
+    // floor, so the drop is measured under the exact feet the mesh draws. A
+    // card's foot is a level line half `footRadius` either side of the origin
+    // that spins to face the eye, so it is a radius rather than a list -- off
+    // the geometry for the same reason cardTop is, and the wider side in case
+    // the card is ever not centred on its origin. A strip seats its own two
+    // ends and has neither.
+    this.footRadius = this.strips || this.blades ? 0
+      : Math.max(-cardGeo.boundingBox.min.x, cardGeo.boundingBox.max.x)
+    this.feet = null
+    if (this.blades) {
+      const pos = cardGeo.getAttribute('position')
+      const floor = cardGeo.boundingBox.min.y
+      const feet = []
+      for (let i = 0; i < pos.count; i++) {
+        if (pos.getY(i) === floor) feet.push(pos.getX(i), pos.getZ(i))
+      }
+      if (feet.length < 2) throw new Error('Grass: the blade clump has no vertex on its own floor')
+      this.feet = Float32Array.from(feet)
+    }
 
     // TUFTS: the billboard list is what ties the material to
     // LAYER.IMPOSTOR_GRASS, and every quad in the bed is on it.
@@ -1306,6 +1342,11 @@ export class Grass {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // How far below the ground at (instX, instZ) the instance's origin sits on
+    // flat ground; _footDrop sinks it further on a slope. AN OFFSET AND NOT AN
+    // ABSOLUTE Y, so _reground can re-seat a tuft on a chunk that has re-split
+    // under it.
+    this.instSink = new Float32Array(this.maxInstances)
     // LOD cross-dissolves in flight: { orig, dup, start, tris }. `fadeAt` maps
     // an ORIGINAL's instance id back to its index here, so a second swap, an
     // eviction or a thin can finish a fade already running on that instance in
@@ -1373,6 +1414,10 @@ export class Grass {
     this.placed = 0
     this.samples = 0
     this.regrows = 0
+    this.regrounds = 0
+    // Which sixteenth of the tiles this frame re-checks against the terrain's
+    // chunk set -- see update.
+    this._sweep = 0
     this.nearTiles = 0
     this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0, rock: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
@@ -1512,7 +1557,22 @@ export class Grass {
     // Advance the rim's sweep phase and re-measure the camera's speed once for
     // the whole bed, then let each tile take its turn inside the loop below.
     this.rim.beginFrame(camX, camY, camZ)
+    const ground = this.ground
+    const phase = this._sweep
+    this._sweep = (this._sweep + 1) % GROUND_SWEEP
+    let ti = 0
     for (const tile of this.tiles.values()) {
+      // Follow the terrain when it re-splits under a tile -- one tile in
+      // GROUND_SWEEP a frame, before anything else can move the tuft.
+      if (ground && ti++ % GROUND_SWEEP === phase) {
+        const gkey = ground.groundKeyAt((tile.tx + 0.5) * TILE, (tile.tz + 0.5) * TILE)
+        if (gkey !== tile.gkey) {
+          tile.gkey = gkey
+          this._reground(tile)
+          this.regrounds++
+        }
+      }
+
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
       const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
@@ -1776,6 +1836,83 @@ export class Grass {
   }
 
   /**
+   * The height a tuft is seated against: the DRAWN terrain where a chunk covers
+   * the point, the field underneath it otherwise -- a headless probe, the first
+   * frames of a boot, the far rim of a fast traverse. Those tufts are corrected
+   * by the sweep in `update` within a quarter second, during which the terrain
+   * under them is popping in anyway. Same contract as Trees, Litter and Rocks;
+   * TerrainV2.groundAt has the measurement of what standing on the field costs.
+   */
+  _groundFor(x, z) {
+    if (this.ground) {
+      const g = this.ground.groundAt(x, z)
+      if (g !== null) return g
+    }
+    return this.field.heightAt(x, z)
+  }
+
+  /**
+   * How far an instance's origin must sink below the ground so that no foot is
+   * in the air, given its matrix `e` with the origin at any height. A blade
+   * clump's feet are the exact base vertices `this.feet`, carried through the
+   * matrix's rotation and scale: the clump is tilted onto the field normal and
+   * the mesh under it is the field band-limited and chorded, so the rim of its
+   * 0.4 m disc can find the drawn ground a few centimetres below the plane the
+   * origin sits in. A card's foot is a level line its width across that spins
+   * to face the eye, so from some bearing it runs straight down the fall line
+   * -- the downhill corner of a 0.55 m card on the 38 degree limit would hang
+   * 21 cm out, half a metre for a shore tuft -- and it is sampled at eight
+   * bearings, half its scaled width out. Either way the samples are of the SAME
+   * surface the origin is seated on, so a triangle edge under a foot counts;
+   * measured round the spawn against the field's own gradient instead, one
+   * card in fifty still floated at the leaf and one in thirteen at the far rim,
+   * and the eight bearings never left a corner more than 2 mm above the chord.
+   */
+  _footDrop(x, z, ground, e) {
+    let drop = 0
+    if (this.feet) {
+      const f = this.feet
+      for (let i = 0; i < f.length; i += 2) {
+        const fx = f[i], fz = f[i + 1]
+        const dx = e[0] * fx + e[8] * fz
+        const dy = e[1] * fx + e[9] * fz
+        const dz = e[2] * fx + e[10] * fz
+        const d = ground + dy - this._groundFor(x + dx, z + dz)
+        if (d > drop) drop = d
+      }
+    } else if (this.footRadius > 0) {
+      const foot = this.footRadius * Math.hypot(e[0], e[1], e[2])
+      for (let b = 0; b < 8; b++) {
+        const a = b * (Math.PI / 4)
+        const d = ground - this._groundFor(x + Math.cos(a) * foot, z + Math.sin(a) * foot)
+        if (d > drop) drop = d
+      }
+    }
+    return drop
+  }
+
+  /**
+   * Re-seat a tile's tufts on the chunk that is drawing its ground now. Only
+   * the Y translation moves: the yaw, tilt and scale a tuft was born with are
+   * already in the matrix and are overwritten in place rather than recomposed.
+   */
+  _reground(tile) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const x = this.instX[id], z = this.instZ[id]
+      const ground = this._groundFor(x, z)
+      this.batch.getMatrixAt(id, this._m)
+      const e = this._m.elements
+      const drop = this._footDrop(x, z, ground, e)
+      const y = ground - this.instSink[id] - drop
+      if (y === this.instY[id]) continue
+      this.instY[id] = y
+      e[13] = y
+      this.batch.setMatrixAt(id, this._m)
+    }
+  }
+
+  /**
    * Grow a tile, or move an existing one to a new thinning level.
    *
    * Both directions are the same operation seen from two sides: a tile's grass
@@ -1921,13 +2058,20 @@ export class Grass {
           && this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
       }
       const sy = (onShore ? height * SHORE.size : height) / this.baseHeight
+      // WHERE IT STANDS IS THE DRAWN SURFACE, NOT `h`. `h` is the exact field,
+      // which decided whether this tuft exists; the mesh under it is that field
+      // band-limited to the chunk's cell and chorded between vertices, and the
+      // two disagree by up to 11 cm at the leaf and 60 cm at the far rim of the
+      // bed -- measured round the spawn, that floated a quarter of the tufts on
+      // the leaf and nearly half further out. See _groundFor.
+      const ground = this._groundFor(x, z)
       if (this.strips) {
         // ONE EXTRA HEIGHT SAMPLE AT EACH END, and the strip is rolled onto the
         // line between them. A flat card metres long cannot follow ground any
         // other way and stay at two triangles (see buildGrassStripBank), and not
         // following it at all is not an option: 4 m of run at the 38 degree
         // slope limit is 3.1 m of rise, so one end would be underground and the
-        // other in the air. Two heightAt calls at ~0.71 us against the ~3.8 us
+        // other in the air. Two ground samples against the ~3.8 us
         // heightAndSlopeAt above, on a third as many instances as the tuft bed
         // places -- the boot gets cheaper, not dearer.
         // A WHOLE NUMBER OF TILES, each STRIP_TILE_ASPECT as wide as the strip
@@ -1942,8 +2086,8 @@ export class Grass {
         // Local +X after a yaw about Y is (cos yaw, 0, -sin yaw).
         const ax = Math.cos(yaw) * STRIP_BASE.width * sx * 0.5
         const az = -Math.sin(yaw) * STRIP_BASE.width * sx * 0.5
-        const h0 = this.field.heightAt(x - ax, z - az)
-        const h1 = this.field.heightAt(x + ax, z + az)
+        const h0 = this._groundFor(x - ax, z - az)
+        const h1 = this._groundFor(x + ax, z + az)
         // atan2 against the HORIZONTAL span, which is what makes the quad land
         // exactly on the plane through the two samples: its ends come to rest
         // at +-halfSpan*cos(tilt) horizontally and +-halfSpan*sin(tilt)
@@ -1952,6 +2096,9 @@ export class Grass {
         this._q.setFromEuler(this._e)
         this._s.set(sx, sy, sx)
         this.instY[id] = (h0 + h1) * 0.5 - this.sink * sy
+        // Relative to the centre sample, so a re-seat shifts the strip by
+        // however much the ground under its middle moved.
+        this.instSink[id] = ground - this.instY[id]
       } else {
         // Height is the roll; for a CARD, width follows it by its SQUARE ROOT
         // rather than linearly. A uniform scale would make a 1.5 m tuft 1.5 m
@@ -1973,7 +2120,9 @@ export class Grass {
           // TOUCHES. The bundle is a couple of handspans across, so on a slope a
           // vertical clump plants its middle and leaves the downhill blades in
           // the air -- which is what a floating tuft is. Tilting it onto the
-          // surface normal puts every foot on the plane the origin sits in.
+          // surface normal puts every foot on the plane the origin sits in,
+          // and _footDrop below sinks the clump by however far the drawn mesh
+          // falls away from that plane under any of its feet.
           //
           // The yaw is applied FIRST, so the spin is about the clump's own up
           // rather than the world's: `tilt * yaw` in quaternion order, which is
@@ -1984,7 +2133,12 @@ export class Grass {
           this._q.premultiply(this._qt)
         }
         this._s.set(sxz, sy, sxz)
-        this.instY[id] = h - this.sink * sy
+        // THE ORIGIN SINKS BY THE FEET'S DROP on top of the flat sink, and the
+        // feet are wherever the matrix just composed puts them -- see _footDrop.
+        this._p.set(x, 0, z)
+        this._m.compose(this._p, this._q, this._s)
+        this.instSink[id] = this.sink * sy
+        this.instY[id] = ground - this.instSink[id] - this._footDrop(x, z, ground, this._m.elements)
       }
 
       this.instX[id] = x
@@ -2050,6 +2204,11 @@ export class Grass {
       this.tiles.set(key, {
         tx, tz, ids, rank, n, q, u: uNew,
         near: false, queued: false,
+        // The terrain chunk covering this tile's centre when its tufts were last
+        // seated, or null if none was resident. The sweep in update re-seats the
+        // tile when that answer changes; the centre is enough because a chunk is
+        // never smaller than a 4 m tile.
+        gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * TILE, (tz + 0.5) * TILE) : null,
       })
     }
   }
@@ -2195,6 +2354,7 @@ export class Grass {
       nearTiles: this.nearTiles,
       queued: this.queue.length,
       regrows: this.regrows,
+      regrounds: this.regrounds,
       pool: this.maxInstances,
       used: this.maxInstances - this.freeCount,
       density: this.density,

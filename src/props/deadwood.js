@@ -357,9 +357,9 @@ export const DEADWOOD_DEFAULTS = {
 // WHAT IS ACTUALLY LOST IS THE BARK. Birch and pine were a `barkLayer` swap on
 // an identical mesh, so they cost nothing to author and four more meshes a tier
 // to draw; a dead piece is oak now. If they are wanted back, the cheap route is
-// the one render/litter.js takes -- `texLayer` is a plain attribute in
-// material.js, so a per-instance InstancedBufferAttribute would carry three
-// barks on one geometry -- and not three more variants.
+// `texLayer` as a per-instance attribute -- it is a plain attribute in
+// material.js, and InstancedArena.addInstancedAttribute would carry three barks
+// on one geometry -- and not three more variants.
 
 // What changes when the piece is lying down rather than standing up.
 //

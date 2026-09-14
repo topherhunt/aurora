@@ -54,6 +54,11 @@
       /* --- centre: viewport -------------------------------------------- */
       #stage { flex: 1 1 auto; position: relative; min-width: 0; }
       #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+      #lodhud {
+        position: absolute; left: 10px; top: 32px; pointer-events: none; white-space: pre;
+        padding: 4px 8px; background: var(--panel); border: 1px solid var(--edge); border-radius: 3px;
+      }
+      #lodhud b { color: #eaf3ff; font-weight: normal; }
 
       /* --- right: the budget ------------------------------------------- */
       /* overflow-y:auto computes overflow-x to `auto` as well, so ANY content
@@ -73,6 +78,8 @@
       td.n.wrap { white-space: normal; }
       tr.here td { color: #eaf3ff; }
       tr.here td.k::before { content: '\25B8\00a0'; }
+      tr.park { cursor: pointer; }
+      tr.park:hover td { background: #17263c; }
       .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
       .big { font-size: 15px; color: #eaf3ff; }
       .ok { color: var(--good); } .warn { color: var(--warn); }
@@ -99,17 +106,18 @@
       <div id="buttons">
         <button id="gallery">gallery</button>
         <button id="ladder">LOD ladder</button>
+        <button id="lod" title="One rock, stepped down the ladder by the camera's distance exactly as v2/render/rocks.js steps every instance -- scroll out to watch the swaps at true apparent size. Click a ladder row on the right to park the camera just past its boundary.">world LOD</button>
         <button id="tints">tints</button>
-        <button id="card">card</button>
         <button id="grid">grid</button>
         <button id="wire">wireframe</button>
+        <button id="tiercol" title="Dress each tier in its own flat colour -- T320 red, T80 amber, T20 green, T6 blue -- so which mesh is on screen is never in doubt. Off-ladder resolutions keep the tint.">tier colours</button>
         <button id="cull" title="Draw front faces only, which is what the world does. The rock is a closed solid, so off should look identical -- that is the point of the button: it proves no face is wound inside out.">backfaces</button>
         <button id="spin">spin</button>
         <button id="reset">defaults</button>
       </div>
     </div>
 
-    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom</div></div>
+    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom</div><div id="lodhud" hidden></div></div>
 
     <div id="budget">
       <h2>this rock</h2>
@@ -117,12 +125,9 @@
       <p class="note" id="geonote"></p>
 
       <h2>the LOD ladder</h2>
+      <p class="note" id="ladderRef"></p>
       <table id="ladderTable"></table>
-      <p class="note">Every tier is the <em>same displacement field</em> sampled on a coarser solid, so a tier change loses corners rather than swapping in a different rock. <strong>There is one ladder and every rock is on it</strong> -- what differs between a cobble and a tor is not which tiers they ship but the DISTANCES, which are <em>ROCK_LOD_AT</em> metres per metre of measured width. The ranges above are this rock's. The greyed <em>model</em> figure beside each is where that tier stops earning its triangles at ~3&nbsp;px each on a Quest 2 eye buffer (16.2&nbsp;px/&deg;); shipping inside it is a deliberate choice to spend less.</p>
-
-      <h2>can it be a card?</h2>
-      <table id="parallax"></table>
-      <p class="note">A billboard's defect is <em>parallax</em>: it refuses to turn, and the error that leaves is an angle. Under ~2&deg; it stops reading as wrong at walking pace, which puts the crossover at <em>depth &times; 28.6</em>. A rock is a much worse candidate than a fern -- it is an opaque convex lump, so two crossed planes show their intersection as a visible X, and a single plane vanishes edge-on. The number to beat is the handover distance above: if the coarsest mesh is still honest out to further than the crossover, the card is not earning its layer.</p>
+      <p class="note">Every sampled tier is the <em>same displacement field</em> sampled on a coarser solid, so a tier change loses corners rather than swapping in a different rock; the last rung, T6, is five vertices fitted to the measured box with the mesh's silhouette, and it is what every rock is from there out. <strong>There is one ladder and every rock is on it</strong> -- what differs between a cobble and a tor is not which tiers they ship but the DISTANCES: the <em>&times;n</em> on each row is <em>ROCK_LOD_AT</em>, metres of camera distance per metre of the ladder size named above, and the metres are that product for this rock. The greyed <em>model</em> figure is where that tier stops earning its triangles at ~3&nbsp;px each on a Quest 2 eye buffer (16.2&nbsp;px/&deg;); shipping inside it is a deliberate choice to spend less. <em>LOD ladder</em> lays the four out left to right, finest first; <em>world LOD</em> walks them by distance, and there a row is a button that parks the camera just past its boundary.</p>
 
       <h2>what ships</h2>
       <table id="disk"></table>

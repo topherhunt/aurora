@@ -120,16 +120,11 @@ export const BLADE_DEFAULTS = {
   clumpRadius: 0.40,
   // Apex offset as a fraction of blade height, at the rim of the clump.
   lean: 0.45,
-  // Metres of the clump buried. The instance is placed on the FIELD height and
-  // the terrain mesh chords across the field, so a clump on a coarse chunk can
-  // stand slightly proud of the triangles actually drawn under it. Burying the
-  // feet hides that, and it costs nothing because a buried vertex is clipped by
-  // the depth test rather than shaded.
-  //
-  // 0 because the feet now match the ground they stand on closely enough that
-  // the seam does not read, which is the better fix: a buried foot is a foot
-  // whose (1,1,1) vertex is under the surface, so the blade starts partway up
-  // its own gradient and the base colour it was given never reaches the eye.
+  // Metres of the clump buried on top of what render/grass.js sinks it by to
+  // keep every foot on or under the drawn mesh (Grass._footDrop). 0 because a
+  // buried foot is a foot whose (1,1,1) vertex is under the surface, so the
+  // blade starts partway up its own gradient and the base colour it was given
+  // never reaches the eye.
   sink: 0,
   // HOW FAR THE NORMAL IS BENT TOWARD STRAIGHT UP, 0 = the true face normal.
   // A blade lit by its own normal goes black whenever it turns edge-on to the

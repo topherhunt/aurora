@@ -1,0 +1,38 @@
+{
+  "note": "Level flapping flight. `airborne` is what makes this not a gait: no foot is load-bearing, so the legs ride with the body instead of staying pinned to a world point, and legHold tucks them up under the belly. The wings beat once per cycle about the body's forward axis; the twist that pitches the leading edge leads the beat by a quarter cycle, which is where a real wing's thrust comes from, and bobPhase puts the body's rise on the downstroke rather than on the default footfall beat. Crouch is negative, which is how an in-place clip gets off the ground: it is the one term that moves the body without a footfall behind it.",
+  "duration": 0.9,
+  "samples": 30,
+  "airborne": true,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": -0.17,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0
+  },
+  "legHold": {
+    "hindLeft": { "fore": -0.26, "lift": 0.3 },
+    "hindRight": { "fore": -0.26, "lift": 0.3 }
+  },
+  "limits": {
+    "fold": 2.8
+  },
+  "bodyBob": 0.03,
+  "bobFreq": 1,
+  "bobPhase": 1.5708,
+  "spinePitch": 0.04,
+  "tailPitch": 0.72,
+  "tailSway": 0.1,
+  "tailLift": 0.16,
+  "headPitch": -0.2,
+  "headBob": 0.03,
+  "armPitch": -0.4,
+  "armSpread": 0.14,
+  "wingSpread": 0.34,
+  "wingSweep": -0.12,
+  "wingBeat": 0.85,
+  "wingTwist": 0.22,
+  "wingFreq": 1
+}

@@ -33,7 +33,7 @@ if (LAKE_SEGMENTS % 8 !== 0) throw new Error(`ribbon.js: LAKE_SEGMENTS is ${LAKE
 // It lives in this file rather than in road-surfaces.js because it is a number the GATE has to know: check-v2-surfaces.mjs asserts the ribbon clears the flattened terrain by exactly this and no more, and importing road-surfaces.js to learn it would drag three.js into a node script that deliberately has none.
 export const ROAD_LIFT = 0.05
 
-// How far a river ribbon reaches past its own halfWidth, and the cap on that as a fraction of the halfWidth. Absolute metres alone would turn a 3 m stream into a 4.5 m one; a fraction alone would push a 60 m river 15 m into its bank. The river carve bottoms out at the centreline and returns to zero at halfWidth, so the ground is already rising at the ribbon's edge and a quarter of a half-width is enough to bury it.
+// How far a river ribbon reaches past its own halfWidth, and the cap on that as a fraction of the halfWidth. Absolute metres alone would turn a 3 m stream into a 4.5 m one; a fraction alone would push a 60 m river 15 m into its bank. The river carve puts the bed exactly at the water level at halfWidth and the bank climbs from there (paths.js BANK), so the ground is already rising at the ribbon's edge and a quarter of a half-width is enough to bury it.
 export const RIVER_WIDEN = 0.75
 export const RIVER_WIDEN_FRAC = 0.25
 

@@ -1,0 +1,29 @@
+{
+  "note": "Standing and scanning. Same planted-foot trick as idle, but the head sweeps a full arc while the body holds still under it, which is what makes it read as looking rather than fidgeting. The wings come half off the body and the tail rides high -- a two-legged animal that has noticed something is about to move.",
+  "duration": 4.2,
+  "samples": 42,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.015,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0
+  },
+  "bodyBob": 0.003,
+  "bobFreq": 2,
+  "spinePitch": -0.08,
+  "tailPitch": 0.6,
+  "tailSway": 0.12,
+  "headPitch": -0.12,
+  "headYaw": 0.5,
+  "headYawPhase": 0,
+  "headBob": 0.025,
+  "armPitch": -0.2,
+  "armSpread": 0.1,
+  "wingSpread": 0.14,
+  "wingSweep": 0.06,
+  "wingBeat": 0.06,
+  "wingFreq": 1
+}

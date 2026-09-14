@@ -271,7 +271,10 @@
         <div class="step">Tripo names joints <code>bone_17</code>. The rig editor relabels them into the Mixamo vocabulary, which is what lets a clip bind by name.</div>
 
         <h2>6. animations</h2>
-        <div class="step">Presets available for this rig type.</div>
+        <div class="step">Solved from this rig's own geometry &mdash; feet placed by IK, body and tail on waves phase-locked to the gait. Specs live in <code>tools/creatures/anim/clips/&lt;body plan&gt;/</code>; rebuild after editing one. A rig map's <code>plan</code> picks the library &mdash; <code>quadruped</code> unless it says otherwise, <code>wyvern</code> for a two-legged winged animal that also flies.</div>
+        <button id="buildClips" class="wide local" disabled>build clip library (free)</button>
+        <div id="clipStats" class="step"></div>
+        <div class="step" style="margin-top:10px">Or rent Tripo's retargeted presets for this rig type.</div>
         <div id="animList" class="field"></div>
         <button id="genAnim" class="wide spend" disabled>retarget selected</button>
         <button id="blenderRoundTrip" class="wide local" style="margin-top:4px" disabled>author in Blender (free)</button>

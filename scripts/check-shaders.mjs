@@ -358,19 +358,6 @@ const PROP_VARIANTS = [
     {},
     { vert: [...PROP_MARKS.vert, 'uBillboardLayers'], frag: PROP_MARKS.frag },
   ],
-  // The spherical spin is a SECOND body for the same branch, not an extra one
-  // spliced on top -- so the variant above cannot cover it, and it is the only
-  // GLSL in the file that touches the batching matrix as a mat3 or indexes
-  // viewMatrix by hand. Both are easy to get wrong in a way that compiles
-  // everywhere except a real driver, which is what this harness is for. Batched,
-  // because that is how the rock SHELL draws and USE_BATCHING is what selects
-  // the line; the beds themselves are the instanced variant below.
-  [
-    'billboardLayers, spherical',
-    createPropMaterial(atlas, { billboardLayers: [0, 1, 2], sphericalBillboard: true }),
-    { batched: true },
-    { vert: [...PROP_MARKS.vert, 'uBillboardLayers', 'mat3( batchingMatrix )'], frag: PROP_MARKS.frag },
-  ],
   // WHAT THE ROCK BEDS ACTUALLY DRAW, and the only INSTANCED compile in this
   // table. Since the beds came off BatchedMesh their dissolve slot is the
   // `aPropFade` attribute, which lives behind USE_INSTANCING and
@@ -379,10 +366,8 @@ const PROP_VARIANTS = [
   // is exactly what shipped. `bump` rides along because it is the one option no
   // other variant here carries.
   [
-    'instancedFade, spherical, bump',
-    createPropMaterial(atlas, {
-      billboardLayers: [0], sphericalBillboard: true, instancedFade: true, bump: true,
-    }),
+    'instancedFade, bump',
+    createPropMaterial(atlas, { instancedFade: true, bump: true }),
     { batched: false, instanced: true },
     {
       vert: [...PROP_MARKS.vert, '#define PROP_FADE_ATTRIBUTE', 'float fadeSlot = aPropFade'],

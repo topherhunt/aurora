@@ -6,7 +6,7 @@ import { History } from './history.js'
 import { raymarchGround, screenRay, pointerNdc } from './pick.js'
 import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from './lake-transform.js'
 import { restoreLayers } from './restore.js'
-import { rebindIndex, pathPointPos, snowPointPos } from './handles.js'
+import { rebindIndex, pathPointPos, riverPointPos, snowPointPos } from './handles.js'
 import { splitPoint } from './split.js'
 import { saveLocal } from './persist.js'
 import { Sculptor } from './sculptor.js'
@@ -166,8 +166,11 @@ const PREVIEW_MAX_VERTS = 512
 const CURSOR_MS = 250 // the cursor readout repaints with the panel, at 4 Hz
 
 export class Editor {
-  constructor({ scene, camera, renderer, layers, height, markers, terrain, onDirty, onView, orbitLock, elevation }) {
+  constructor({ scene, camera, renderer, layers, height, markers, terrain, onDirty, onRiversMoved, onView, orbitLock, elevation }) {
     if (typeof onDirty !== 'function') throw new Error('Editor: onDirty(rect) is required')
+    // The sculpt brush re-routes rivers without changing the document, so the
+    // water surfaces have to be told separately from onDirty.
+    if (typeof onRiversMoved !== 'function') throw new Error('Editor: onRiversMoved(rect) is required -- it is how a sculpt that moved a river reaches the water surfaces')
     // Required rather than defaulted to a no-op, because a missing one is
     // invisible: every button still works, the hidden set still fills up, and
     // the only symptom is that hiding an object does not hide it -- which is
@@ -232,7 +235,7 @@ export class Editor {
     // is what the brush writes and what the PNG writer saves; `height` itself is
     // what the player collides with, and with the erode knob on those are two
     // different surfaces. See Sculptor's constructor.
-    this.sculptor = new Sculptor({ heightmap: height.heightmap, field: height, terrain })
+    this.sculptor = new Sculptor({ heightmap: height.heightmap, field: height, terrain, onRiversMoved })
 
     this.gizmo = new Gizmo({ scene, camera, domElement: renderer.domElement, orbitLock })
     this.gizmo.onChange(() => this._onGizmoChange())
@@ -409,13 +412,19 @@ export class Editor {
     const at = handles.indexOf(index)
     if (at < 0) throw new Error(`Editor.insertPathPoint: ${id} has no live point at index ${index}`)
 
-    const pts = handles.map((h) => this._pathPoint(id, h))
+    const pts = handles.map((h) => {
+      const n = this._pathPoint(id, h)
+      return [n.x, n.y, n.z, n.width]
+    })
     const q = splitPoint(pts, at, dir, (x, z) => this.height.heightAt(x, z, 0))
     const on = this._clampXZ(q[0], q[2])
     // afterIndex is a HANDLE, not a curve position: -1 means "before the first",
     // which is what a backwards split at the head of the path is.
     const after = dir > 0 ? index : at > 0 ? handles[at - 1] : -1
-    const created = this.layers.insertPathPoint(id, after, on.x, q[1], on.z, q[3])
+    // A river node takes neither the y nor the width splitPoint offers: the
+    // level is solved and a fresh node interpolates its width from its neighbours.
+    const river = this._path(id).kind === 'river'
+    const created = this.layers.insertPathPoint(id, after, on.x, river ? null : q[1], on.z, river ? null : q[3])
     this._commit()
     this.select(this._path(id).kind, id, created)
     return created
@@ -444,15 +453,23 @@ export class Editor {
       return [{ label: `delete ${id}`, run: () => this.removeAt(kind, id, null) }]
     }
     const last = this._pathCount(id) <= 2
-    return [
+    const items = [
       { label: 'split before', run: () => this.insertPathPoint(id, index, -1) },
       { label: 'split after', run: () => this.insertPathPoint(id, index, 1) },
+    ]
+    // A river node's width is an override; clearing it hands the node back to
+    // the interpolation. Offered only when another node still carries a width,
+    // because PathSet refuses to leave a river with none.
+    if (kind === 'river' && this._pathPoint(id, index).widthAuthored && this._riverWidthCount(id) > 1) {
+      items.push({ label: 'clear width (interpolate)', run: () => this._setPathPoint({ id, index }, { width: null }) })
+    }
+    return items.concat([
       // Named for what it does rather than for what was clicked: below three
       // points removeAt takes the whole path, and a menu that says "delete point"
       // and deletes the river is worse than one that says so first.
       { label: last ? `delete point (takes ${id} with it)` : `delete point #${index}`, run: () => this.removeAt(kind, id, index) },
       { label: `delete ${kind} ${id}`, run: () => this.removeAt(kind, id, null) },
-    ]
+    ])
   }
 
   /**
@@ -669,7 +686,7 @@ export class Editor {
       const hit = this._pickEvent(ev)
       if (!hit) return
       const on = this._clampXZ(hit.x, hit.z)
-      this.draft.pts.push([on.x, hit.y, on.z, this.draft.width])
+      this.draft.pts.push([on.x, hit.y, on.z])
       return
     }
 
@@ -722,7 +739,7 @@ export class Editor {
     }
     // river / road
     this.deselect()
-    this.draft = { kind: this.tool, width: PATH_WIDTH[this.tool], pts: [[at.x, hit.y, at.z, PATH_WIDTH[this.tool]]], cursor: hit }
+    this.draft = { kind: this.tool, width: PATH_WIDTH[this.tool], pts: [[at.x, hit.y, at.z]], cursor: hit }
     this.preview.visible = true
     this._repaintPreview()
   }
@@ -789,7 +806,15 @@ export class Editor {
     // One record, not (kind, pts): depth and feather come from paths.js's own
     // defaults, so the editor does not get a second opinion about how deep a
     // river is. Returns the RECORD, with the allocated id on it.
-    const path = this.layers.addPath({ kind: d.kind, pts: d.pts })
+    //
+    // A road keeps the ground height it was clicked on. A river has no y -- its
+    // level is solved -- and gets the default width on its two ends only, so
+    // every node between them interpolates until the author overrides one.
+    const last = d.pts.length - 1
+    const pts = d.kind === 'road'
+      ? d.pts.map((p) => [p[0], p[1], p[2], d.width])
+      : d.pts.map((p, i) => (i === 0 || i === last ? [p[0], p[2], d.width] : [p[0], p[2]]))
+    const path = this.layers.addPath({ kind: d.kind, pts })
     this._commit()
     this.setTool('select')
     this.select(d.kind, path.id, null)
@@ -901,8 +926,10 @@ export class Editor {
     // base size the drag multiplies is captured here instead.
     this._dragBase = sel.kind === 'snow'
       ? { radius: this._snowPoint(sel.index).radius }
-      : { width: this._pathPoint(sel.id, sel.index)[3] }
-    return { modes: ['translate', 'scale'] }
+      : { width: this._pathPoint(sel.id, sel.index).width }
+    // A river node is authored in plan: its level is solved, so the Y arrow
+    // would drag a number nothing reads.
+    return { modes: ['translate', 'scale'], axes: sel.kind === 'river' ? { translate: 'XZ' } : {} }
   }
 
   /**
@@ -953,7 +980,7 @@ export class Editor {
       return { x: p.x, y: this.layers.snow.base + p.delta, z: p.z }
     }
     const p = this._pathPoint(sel.id, sel.index)
-    return { x: p[0], y: p[1], z: p[2] }
+    return { x: p.x, y: p.y, z: p.z }
   }
 
   /**
@@ -967,11 +994,11 @@ export class Editor {
     if (!sel || sel.index === null) return () => {}
     const want = sel.kind === 'snow'
       ? { x: this._snowPoint(sel.index).x, z: this._snowPoint(sel.index).z }
-      : pathPointPos(this._pathPoint(sel.id, sel.index))
+      : { x: this._pathPoint(sel.id, sel.index).x, z: this._pathPoint(sel.id, sel.index).z }
     return () => {
       const found = sel.kind === 'snow'
         ? rebindIndex(this.layers.snow.points, want, snowPointPos)
-        : rebindIndex(this._path(sel.id).pts, want, pathPointPos)
+        : rebindIndex(this._path(sel.id).pts, want, sel.kind === 'river' ? riverPointPos : pathPointPos)
       // Gone means the selected point was the one removed. A path falls back to
       // the whole path, which is still there; a snow point has no whole to fall
       // back to, so the selection ends.
@@ -1015,13 +1042,17 @@ export class Editor {
       this.layers.updateLake(sel.id, patch)
     } else {
       const pt = this._pathPoint(sel.id, sel.index)
-      if (at.x !== pt[0] || p.y !== pt[1] || at.z !== pt[2]) this.layers.movePathPoint(sel.id, sel.index, at.x, p.y, at.z)
+      if (sel.kind === 'river') {
+        if (at.x !== pt.x || at.z !== pt.z) this.layers.movePathPoint(sel.id, sel.index, at.x, null, at.z)
+      } else if (at.x !== pt.x || p.y !== pt.y || at.z !== pt.z) {
+        this.layers.movePathPoint(sel.id, sel.index, at.x, p.y, at.z)
+      }
       // §18 wants a river's width authored where the river is, not in a number
-      // field beside it. There is no per-point scale in the document to write --
-      // a control point is [x, y, z, w] -- so the scale drag lands on w, which
-      // is the only size a point has.
+      // field beside it. There is no per-point scale in the document to write,
+      // so the scale drag lands on the width, which is the only size a point
+      // has -- and on a river node that had none, the drag is what sets one.
       const w = Math.min(PATH_WIDTH_MAX, Math.max(MIN_PATH_WIDTH, this._dragBase.width * this._scaleFactor()))
-      if (w !== pt[3]) this.layers.setPathWidth(sel.id, sel.index, w)
+      if (w !== pt.width) this.layers.setPathWidth(sel.id, sel.index, w)
     }
     this._touch()
   }
@@ -1207,16 +1238,32 @@ export class Editor {
       ]
     }
     const p = this._pathPoint(sel.id, sel.index)
+    // The handle is an index into pts INCLUDING tombstones and the count is
+    // of the live ones, so "#5 of 4" is a correct reading of a path that has
+    // had a point deleted, not a bug in this row.
+    const head = { label: sel.kind, value: `${path.id} #${sel.index} of ${live}` }
+    const x = { label: 'x', value: p.x, step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { x: v }, c) }
+    const z = { label: 'z', value: p.z, step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { z: v }, c) }
+    const ground = { label: 'ground here', value: this.height.heightAt(p.x, p.z, 0), unit: 'm' }
+    if (sel.kind === 'river') {
+      // No y: the level is solved and shown read-only. Typing a width sets an
+      // override; an interpolated node says so, and the context menu clears it.
+      return [
+        head,
+        x,
+        z,
+        { label: p.widthAuthored ? 'width' : 'width (auto)', value: p.width, step: 0.5, min: 0.5, max: PATH_WIDTH_MAX, unit: 'm', set: (v, c) => this._setPathPoint(sel, { width: v }, c) },
+        { label: 'water level', value: p.y, unit: 'm' },
+        ground,
+      ]
+    }
     return [
-      // The handle is an index into pts INCLUDING tombstones and the count is
-      // of the live ones, so "#5 of 4" is a correct reading of a path that has
-      // had a point deleted, not a bug in this row.
-      { label: sel.kind, value: `${path.id} #${sel.index} of ${live}` },
-      { label: 'x', value: p[0], step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { x: v }, c) },
-      { label: 'y', value: p[1], step: 0.5, min: yMin, max: yMax, unit: 'm', set: (v, c) => this._setPathPoint(sel, { y: v }, c) },
-      { label: 'z', value: p[2], step: 1, ...xz, set: (v, c) => this._setPathPoint(sel, { z: v }, c) },
-      { label: 'width', value: p[3], step: 0.5, min: 0.5, max: PATH_WIDTH_MAX, unit: 'm', set: (v, c) => this._setPathPoint(sel, { width: v }, c) },
-      { label: 'ground here', value: this.height.heightAt(p[0], p[2], 0), unit: 'm' },
+      head,
+      x,
+      { label: 'y', value: p.y, step: 0.5, min: yMin, max: yMax, unit: 'm', set: (v, c) => this._setPathPoint(sel, { y: v }, c) },
+      z,
+      { label: 'width', value: p.width, step: 0.5, min: 0.5, max: PATH_WIDTH_MAX, unit: 'm', set: (v, c) => this._setPathPoint(sel, { width: v }, c) },
+      ground,
     ]
   }
 
@@ -1272,12 +1319,19 @@ export class Editor {
   // in the curve: PathSet.removePoint tombstones, so index 3 stays index 3 for
   // the rest of the session however many points below it are deleted.
   //
-  // Through pointAt rather than pts[index], because pointAt distinguishes an
+  // Through nodeAt rather than pts[index], because nodeAt distinguishes an
   // out-of-range index (arithmetic) from a tombstone (a handle held across a
   // delete) and says which. Indexing pts gives undefined or null and turns a
-  // stale selection into a silent no-op drag.
+  // stale selection into a silent no-op drag. Returns {x, y, z, width,
+  // widthAuthored}: for a river node y is the solved water level and width the
+  // authored or interpolated one, since the stored node has neither.
   _pathPoint(id, index) {
-    return this.layers.paths.pointAt(id, index)
+    return this.layers.paths.nodeAt(id, index)
+  }
+
+  /** How many of a river's live nodes carry a width of their own. */
+  _riverWidthCount(id) {
+    return this.layers.paths.pointsOf(id).filter((p) => p[2] !== null).length
   }
 
   /** Live control points of a path, tombstones excluded -- pts.length counts holes. */
@@ -1341,10 +1395,11 @@ export class Editor {
 
   _setPathPoint(sel, patch, commit = true) {
     const p = this._pathPoint(sel.id, sel.index)
+    const river = this._path(sel.id).kind === 'river'
     if ('width' in patch) this.layers.setPathWidth(sel.id, sel.index, patch.width)
     if ('x' in patch || 'y' in patch || 'z' in patch) {
-      const at = this._clampXZ('x' in patch ? patch.x : p[0], 'z' in patch ? patch.z : p[2])
-      this.layers.movePathPoint(sel.id, sel.index, at.x, 'y' in patch ? patch.y : p[1], at.z)
+      const at = this._clampXZ('x' in patch ? patch.x : p.x, 'z' in patch ? patch.z : p.z)
+      this.layers.movePathPoint(sel.id, sel.index, at.x, river ? null : 'y' in patch ? patch.y : p.y, at.z)
     }
     this._after(commit)
   }

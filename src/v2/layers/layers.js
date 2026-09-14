@@ -42,10 +42,10 @@ export class Layers {
     validate(doc)
     this.snow = new SnowField(doc.snow)
     this.lakes = new LakeSet(doc.lakes)
-    this.paths = new PathSet([
-      ...doc.rivers.map((r) => ({ ...r, kind: 'river' })),
-      ...doc.roads.map((d) => ({ ...d, kind: 'road' })),
-    ])
+    this.paths = new PathSet(
+      [...doc.rivers.map((r) => ({ ...r, kind: 'river' })), ...doc.roads.map((d) => ({ ...d, kind: 'road' }))],
+      { lakes: this.lakes }
+    )
     this.ids = new IdAllocator(doc)
     this.epoch = 0
     this._dirty = null
@@ -140,6 +140,20 @@ export class Layers {
     return this._commit({ minX: rect.minX - pad, minZ: rect.minZ - pad, maxX: rect.maxX + pad, maxZ: rect.maxZ + pad })
   }
 
+  // The terrain under `rect` was sculpted. Rivers route over the terrain and solve their level from it, so any river that can see the rect re-bakes; the union of where it was and where it now is comes back as the region to remesh, or null when no river reaches the rect. Called by the sculptor after every flush and by the worker after every height patch, each against its own copy of the field.
+  terrainChanged(rect) {
+    const d = this.paths.terrainChanged(rect)
+    if (d === null) return null
+    return this._commit(d)
+  }
+
+  // A lake edit re-pins any river that starts or ends in the lake's old or new footprint.
+  _commitLake() {
+    const rect = this.lakes.takeDirty()
+    const rivers = this.paths.waterChanged(rect)
+    return this._commit(rivers === null ? rect : unionRect(rect, rivers))
+  }
+
   // --- mutation pass-throughs ----------------------------------------------
   //
   // Thin on purpose. The editor holds ONE object and never has to know which sub-layer owns a given handle, and every edit goes through exactly one place that bumps the epoch and records the rect.
@@ -179,18 +193,18 @@ export class Layers {
     const rec = record.id === undefined ? { ...record, id: this.ids.alloc('lake') } : record
     const lake = this.lakes.add(rec)
     this.ids.observe(lake.id)
-    this._commit(this.lakes.takeDirty())
+    this._commitLake()
     return lake
   }
 
   updateLake(id, patch) {
     this.lakes.update(id, patch)
-    return this._commit(this.lakes.takeDirty())
+    return this._commitLake()
   }
 
   removeLake(id) {
     this.lakes.remove(id)
-    return this._commit(this.lakes.takeDirty())
+    return this._commitLake()
   }
 
   addPath(record) {

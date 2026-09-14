@@ -9,7 +9,7 @@ import { ribbonVertices, discVertices, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './r
  *
  * WHICH UNIFORMS ARE SHARED, since that decides whether this works at all: ALL of them. Water holds a single `this.uniforms` object, hands that same object to a single `this.material`, and `Water.update` writes `uTime` and calls `syncShading`, which writes `uTint` and `uSilTint` -- on that shared object. There is not one per-mesh uniform in the file; the meshes carry nothing but position and the shader recovers everything else from world XZ. So a mesh built here is per-frame-correct the moment it uses that material, wherever it sits in the graph. Parenting under `water.group` is therefore tidiness rather than plumbing -- it keeps every water surface in the world under one node the editor can hide -- and the group must stay at the origin, because the shader reads `modelMatrix * position` as world position.
  *
- * WHAT THIS DOES NOT INHERIT FROM v1: the rivers. §11 records rivers as built, measured and removed, and the measurement is not about ribbons -- 47.4% of v1's river segments run uphill on the rendered surface because Phase A routes flow over a carved field the mesher never sees. v2 has no such split: a river here is a hand-drawn spline carrying its own `y`, the carve cuts the channel to that same `y`, and the ribbon is drawn at it. The surface cannot climb unless someone drew it climbing.
+ * WHAT THIS DOES NOT INHERIT FROM v1: the rivers. §11 records rivers as built, measured and removed, and the measurement is not about ribbons -- 47.4% of v1's river segments run uphill on the rendered surface because Phase A routes flow over a carved field the mesher never sees. v2 has no such split: a river here is an XZ spline whose water level PathSet solves from the ground it runs through, never rising in the flow direction; the carve cuts the channel down from that level and the ribbon is drawn at it. The surface cannot climb because the solver does not let it.
  */
 
 // Bucket edge for the river lookup index, in metres. Query cost is a 3x3 block of buckets, so this is also the largest half-width levelAt can answer for -- a river wider than this would have samples outside the block and go silently missing. Asserted, not assumed.
@@ -148,7 +148,8 @@ export class WaterSurfaces {
    * This is the load-bearing choice in the whole file. The river carve reads PathSet's samples; if the ribbon were flattened again here at its own spacing it would land on very slightly different points, and the water surface would sit beside its channel rather than in it by a few centimetres that vary along the river. One bake, two readers.
    */
   samplesOf(path) {
-    if (path.samples === null) void this.layers.paths.segmentCount
+    // Unconditionally: a river whose level was re-solved keeps its samples array and rewrites the y in place, so a null check would miss it.
+    void this.layers.paths.segmentCount
     if (path.samples === null) throw new Error(`WaterSurfaces: PathSet left ${path.id} unbaked; samples is still null after forcing the index`)
     return path.samples
   }

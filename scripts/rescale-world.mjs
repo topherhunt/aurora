@@ -9,14 +9,16 @@
 // mean in metres, so re-baking with a different --maxY moves every mountain
 // without touching a texel. The authored layers do not follow: a lake's `y` is
 // an absolute elevation in metres, and after a re-bake it is an elevation of
-// the world that used to be there. A lake sits 300 m in the air, a river runs
+// the world that used to be there. A lake sits 300 m in the air, a road runs
 // along a contour that is now half way down the valley wall, and nothing
 // reports an error because every one of those numbers is still perfectly valid.
+// (Rivers are the exception: a river node is XZ only and its level is solved
+// from whatever terrain is there, so it follows a re-bake on its own.)
 //
 // WHAT SCALES AND WHAT DOES NOT, which is the only interesting decision here:
 //
 //   scales      snow.base, snow.band, every snow point's delta, every lake's y,
-//               every control point's y. These are positions in, or fractions
+//               every road control point's y. These are positions in, or fractions
 //               of, the world's vertical extent -- double the relief and they
 //               all double with it. (A snow BAND is the soft edge of the cover,
 //               which is a fraction of the relief and not a physical depth.)
@@ -55,12 +57,9 @@ export function rescaleDoc(doc, k) {
       points: doc.snow.points.map((p) => [p[0], p[1], p[2] * k, p[3]]),
     },
     lakes: doc.lakes.map((l) => ({ ...l, y: l.y * k })),
-    rivers: doc.rivers.map(scalePath),
-    roads: doc.roads.map(scalePath),
-  }
-
-  function scalePath(rec) {
-    return { ...rec, pts: rec.pts.map((p) => [p[0], p[1] * k, p[2], p[3]]) }
+    // A river node is [x, z] or [x, z, width]: no elevation to scale.
+    rivers: doc.rivers.map((r) => ({ ...r, pts: r.pts.map((p) => p.slice()) })),
+    roads: doc.roads.map((rec) => ({ ...rec, pts: rec.pts.map((p) => [p[0], p[1] * k, p[2], p[3]]) })),
   }
 
   return validate(out)
@@ -70,7 +69,7 @@ function summarise(doc) {
   const ys = []
   for (const p of doc.snow.points) if (p !== null) ys.push(doc.snow.base + p[2])
   for (const l of doc.lakes) ys.push(l.y)
-  for (const rec of [...doc.rivers, ...doc.roads]) for (const p of rec.pts) if (p !== null) ys.push(p[1])
+  for (const rec of doc.roads) for (const p of rec.pts) if (p !== null) ys.push(p[1])
   if (ys.length === 0) return 'nothing authored'
   return `${ys.length} elevations, ${Math.min(...ys).toFixed(1)} .. ${Math.max(...ys).toFixed(1)} m`
 }

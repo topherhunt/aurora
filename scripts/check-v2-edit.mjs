@@ -30,10 +30,11 @@ import { raymarchGround, pickProp } from '../src/v2/edit/pick.js'
 import { gizmoFromLake, lakeFromGizmo, MIN_LAKE_RADIUS } from '../src/v2/edit/lake-transform.js'
 import { History } from '../src/v2/edit/history.js'
 import { restoreLayers, emptyDoc } from '../src/v2/edit/restore.js'
-import { rebindIndex, pathPointPos, snowPointPos } from '../src/v2/edit/handles.js'
+import { rebindIndex, pathPointPos, riverPointPos, snowPointPos } from '../src/v2/edit/handles.js'
 import { splitPoint } from '../src/v2/edit/split.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { livePoints } from '../src/v2/layers/paths.js'
+import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -258,11 +259,17 @@ function sectionHistory() {
 // A six-point spline that stays inside the +/-4096 m world: 210 m of x and
 // 140 m of z per step, so the whole thing is about 1 km long -- a real river,
 // not a fixture at the world edge that would pass here and clamp in the editor.
+// A road point is [x, y, z, width]; a river node is [x, z, width], its level
+// being solved from the terrain.
 const mkPts = (n, ox) =>
   Array.from({ length: n }, (_, i) => [ox + i * 210, 100 - i * 3, i * 140 - 300, 8 - i * 0.4])
+const mkRiverPts = (n, ox) =>
+  Array.from({ length: n }, (_, i) => [ox + i * 210, i * 140 - 300, 8 - i * 0.4])
 
 function fixtureLayers() {
   const layers = new Layers()
+  // Every river mutation bakes, and a bake needs ground to route over and solve against.
+  layers.paths.setTerrain(terrainOf(FLAT_100))
   // Band has no setter (see restore.js); base does, and it marks the world dirty.
   layers.snow.band = 38
   layers.setSnowBase(210)
@@ -271,8 +278,8 @@ function fixtureLayers() {
   layers.addSnowPoint(120, 60, 12, 350)
   layers.addLake({ x: 0, z: 0, y: 120, rx: 80, rz: 55, rot: 0.4, shape: 0, carve: 1, depth: 8 })
   layers.addLake({ x: 900, z: -420, y: 96, rx: 40, rz: 40, rot: 0, shape: 1, carve: 1, depth: 5 })
-  layers.addPath({ kind: 'river', pts: mkPts(6, -2000) })
-  layers.addPath({ kind: 'river', pts: mkPts(6, 1400) })
+  layers.addPath({ kind: 'river', pts: mkRiverPts(6, -2000) })
+  layers.addPath({ kind: 'river', pts: mkRiverPts(6, 1400) })
   layers.addPath({ kind: 'road', pts: mkPts(5, -400) })
   return layers
 }
@@ -365,27 +372,27 @@ function sectionHandles() {
 
   const layers = fixtureLayers()
   const rec = layers.paths.paths.get('r1')
-  const held = pathPointPos(rec.pts[4])
-  const heldXYZ = [...rec.pts[4]]
+  const held = riverPointPos(rec.pts[4])
+  const heldXZ = [...rec.pts[4]]
 
   layers.removePathPoint('r1', 2)
-  const after = rebindIndex(rec.pts, held, pathPointPos)
+  const after = rebindIndex(rec.pts, held, riverPointPos)
   check(after !== null, 'a handle on a later point survives deleting a middle one', `#4 -> #${after}`)
   check(
-    after !== null && rec.pts[after][0] === heldXYZ[0] && rec.pts[after][2] === heldXYZ[2],
+    after !== null && rec.pts[after][0] === heldXZ[0] && rec.pts[after][1] === heldXZ[1],
     'and still addresses the same world position',
-    after === null ? 'lost' : `${rec.pts[after][0]}, ${rec.pts[after][2]}`
+    after === null ? 'lost' : `${rec.pts[after][0]}, ${rec.pts[after][1]}`
   )
   check(livePoints(rec).length === 5, 'the path really did lose a point', `${livePoints(rec).length} live of ${rec.pts.length} slots`)
 
   // The point that WAS deleted resolves to nothing, which is the honest answer
   // and the one the editor needs: it falls back to selecting the whole path.
-  check(rebindIndex(rec.pts, { x: -2000 + 2 * 210, z: 2 * 140 - 300 }, pathPointPos) === null, 'the deleted point itself resolves to nothing rather than to its neighbour')
+  check(rebindIndex(rec.pts, { x: -2000 + 2 * 210, z: 2 * 140 - 300 }, riverPointPos) === null, 'the deleted point itself resolves to nothing rather than to its neighbour')
 
   // A mid-insert renumbers under every convention -- the order IS the curve.
-  const beforeInsert = pathPointPos(rec.pts[4])
-  layers.insertPathPoint('r1', 0, -1900, 98, -230, 7)
-  const shifted = rebindIndex(rec.pts, beforeInsert, pathPointPos)
+  const beforeInsert = riverPointPos(rec.pts[4])
+  layers.insertPathPoint('r1', 0, -1900, null, -230, 7)
+  const shifted = rebindIndex(rec.pts, beforeInsert, riverPointPos)
   check(shifted === 5, 'an insert below the handle shifts it, and the rebind follows', `#4 -> #${shifted}`)
 
   // Snow points: same rebind, different storage shape ({x, z, ...} objects).

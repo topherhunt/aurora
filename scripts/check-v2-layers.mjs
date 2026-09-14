@@ -9,7 +9,8 @@
 //   a dirty-rect rebake is bit-identical to a full one -- the thing that makes dragging a point interactive, and the thing that fails silently by leaving a stale patch;
 //   the baked bicubic tap is O(1) in the point count -- measured, because it is the performance claim the design rests on;
 //   the spline is centripetal and not uniform -- the fixture here is an S-bend that uniform Catmull-Rom demonstrably self-intersects on, so the check is measuring the thing it claims;
-//   the carve profiles hit their stated numbers -- depth at the centreline, zero at two half-widths, road surface on the spline;
+//   the carve profiles hit their stated numbers -- a river's water sits FREEBOARD under the lowest bank tap, its bed `depth` under that, the carve ends at BANK half-widths, a road surface is on the spline;
+//   a river's level never rises in the flow direction and a mouth placed on another river or a lake meets that water's surface -- the promises that make a tributary one body of water and not two ribbons;
 //   a selection handle survives the removal of another point -- the same rule in both point-holding layers, because the failure is silent: the highlight stays put while the drag edits a different point;
 //   water is water -- waterLevelAt answers for rivers as well as lakes, or every riverbed in the world reads as dry land to whatever asks;
 //   null on the dirty-rect channel means "nothing changed" and never "everything" -- the two consumers read it in opposite directions, so the producer only ever emits the unambiguous one;
@@ -19,18 +20,21 @@
 
 import { fileURLToPath } from 'node:url'
 import { mulberry32 } from '../src/sim/mathx.js'
-import { WORLD_HALF } from '../src/v2/config.js'
+import { WORLD_HALF, WORLD_SIZE } from '../src/v2/config.js'
 import { CHUNK_RES, MAX_DEPTH } from '../src/v2/config.js'
 import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
+import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
 
 // Fixtures are sized as fractions of the world half-extent rather than in absolute metres. WORLD_SIZE is still being tuned in src/v2/config.js while the height field is built, and a gate whose sample points fall outside the baked grid does not fail -- it quietly measures edge clamping and reports a p99 error of fifty metres.
 const W = WORLD_HALF
+
+// A river fixture needs a terrain (see scripts/lib/synthetic-terrain.mjs): a PathSet with rivers throws on its first query until it has one.
 
 // snow.base and snow.band are elevations, and v2's vertical range is still being surveyed off the imported heightmap, so no check here asserts either as a number in metres. The fixture sits at base 0 so that every figure printed below IS the delta, and every claim is about the interpolant's SHAPE -- exact at its authored points, exactly zero outside every radius, smooth in between, monotone through a feather -- which holds at whatever base and band the world settles on. band is present only because SnowField carries it through to toJSON.
 const SNOW_FIXTURE = { base: 0, band: 1 }
@@ -461,40 +465,128 @@ export async function run() {
 
   console.log('\npaths: river carve')
   {
-    const paths = new PathSet([
-      { id: 'r1', kind: 'river', depth: 3, pts: [[-500, 100, 0, 20], [0, 100, 0, 20], [500, 100, 0, 20]] },
-    ])
+    // Flat ground at 100 m, a straight river along x with only its end nodes carrying a width. Everything below is stated against the SOLVED level, not an authored one: a river node has no y.
+    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 3, pts: [[-500, 0, 20], [0, 0], [500, 0, 20]] }])
+    paths.setTerrain(terrainOf(FLAT_100))
     const HW = 10
-    const H = 105
+    const H = 100
+    const LEVEL = H - FREEBOARD
+
+    const level = paths.riverLevelAt(0, 0)
+    check(Math.abs(level - LEVEL) < 1e-3, 'on flat ground the water sits FREEBOARD below the bank', `${level.toFixed(3)} m vs ${LEVEL} m`)
+    const mid = paths.nodeAt('r1', 1)
+    check(!mid.widthAuthored && Math.abs(mid.width - 20) < 1e-6 && Math.abs(mid.y - LEVEL) < 1e-3, 'a node without a width interpolates one and reports the solved level as its y', `width ${mid.width.toFixed(2)} (authored ${mid.widthAuthored}), y ${mid.y.toFixed(3)}`)
 
     const centre = paths.carveRivers(0, 0, H)
-    check(Math.abs(centre - (100 - 3)) < 0.01, 'the channel reaches its full depth at the centreline', `${centre.toFixed(4)} m vs ${(100 - 3).toFixed(2)} m`)
+    check(Math.abs(centre - (LEVEL - 3)) < 0.01, 'the channel reaches its full depth below the WATER at the centreline', `${centre.toFixed(4)} m vs ${(LEVEL - 3).toFixed(2)} m`)
 
-    const edge = paths.carveRivers(0, HW * 2, H)
-    check(edge === H, 'the carve is exactly zero at two half-widths', `${edge} vs ${H}`)
+    const edgeGround = paths.carveRivers(0, HW, H)
+    check(Math.abs(edgeGround - LEVEL) < 0.01, "at the water's edge the ground meets the water level exactly", `${edgeGround.toFixed(4)} m vs ${LEVEL} m`)
+
+    const bankEnd = paths.carveRivers(0, HW * BANK, H)
+    check(bankEnd === H, `the carve is exactly zero at BANK (${BANK}) half-widths`, `${bankEnd} vs ${H}`)
 
     let monotone = true
     let prevCut = Infinity
     let firstZero = null
+    let bankBelowWater = false
     for (let s = 0; s <= 400; s++) {
-      const d = (s / 400) * (HW * 2)
-      const cut = H - paths.carveRivers(0, d, H)
+      const d = (s / 400) * (HW * BANK)
+      const g = paths.carveRivers(0, d, H)
+      const cut = H - g
       if (cut > prevCut + 1e-9) monotone = false
       if (firstZero === null && cut <= 0) firstZero = d
+      if (d > HW + 1e-9 && g < LEVEL - 1e-6) bankBelowWater = true
       prevCut = cut
     }
-    console.log(`        depth 3 m, half-width ${HW} m: cut goes to zero at ${firstZero === null ? '>2hw' : firstZero.toFixed(2) + ' m'}, monotone ${monotone}`)
+    console.log(`        depth 3 m, half-width ${HW} m: cut goes to zero at ${firstZero === null ? '>BANK hw' : firstZero.toFixed(2) + ' m'}, monotone ${monotone}`)
     check(monotone, 'the channel profile is monotone from centreline to bank')
-    check(firstZero !== null && Math.abs(firstZero - HW * 2) < 0.2, 'and reaches zero at two half-widths and not before', `${firstZero === null ? 'never' : firstZero.toFixed(2)} m`)
+    check(firstZero !== null && Math.abs(firstZero - HW * BANK) < 0.2, 'and reaches zero at BANK half-widths and not before', `${firstZero === null ? 'never' : firstZero.toFixed(2)} m`)
+    check(!bankBelowWater, 'the bank band is never below the water: the ribbon is embedded, not floating')
 
-    // The bed follows the SPLINE's y, not the terrain's, so ground already lower than the bed is left alone rather than raised into a dam.
+    // min(h, bed): ground already lower than the bed is left alone rather than raised into a dam.
     const belowBed = paths.carveRivers(0, 0, 80)
     check(belowBed === 80, 'ground already below the bed is left where it is', `${belowBed}`)
+  }
 
-    // No crease at the bank: the profile is C1 there by construction (both halves parabolic, coefficient forced to 0.5), so the finite-difference slope must agree across d = halfWidth.
-    const slope = (d) => (paths.carveRivers(0, d + 1e-4, H) - paths.carveRivers(0, d - 1e-4, H)) / 2e-4
-    const jump = Math.abs(slope(HW + 2e-4) - slope(HW - 2e-4))
-    check(jump < 1e-2, 'the bank is C1 -- no slope crease where the channel meets the feather', `slope jump ${jump.toExponential(1)}`)
+  console.log('\npaths: river level follows the terrain down and never up')
+  {
+    // A 5% slope falling toward +x, with a 12 m ridge across the whole valley at x = 100 that the route cannot go around. Downhill of the ridge the level is the ground less FREEBOARD; on the ridge the channel is carved through rather than the water climbing over.
+    const ground = (x) => 100 - 0.05 * x + 12 * Math.exp(-(((x - 100) / 60) ** 2))
+    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[-500, 0, 20], [500, 0, 20]] }])
+    paths.setTerrain(terrainOf(ground))
+    check(paths.flowsForward('r1') === true, 'flow runs from the higher endpoint to the lower', 'source at x = -500')
+
+    let rises = 0
+    let worstRise = 0
+    let prev = Infinity
+    for (let x = -490; x <= 490; x += 1) {
+      const l = paths.riverLevelAt(x, 0)
+      if (l === null) throw new Error(`riverLevelAt found no river on its own centreline at x=${x}`)
+      if (l > prev + 1e-6) {
+        rises++
+        worstRise = Math.max(worstRise, l - prev)
+      }
+      prev = l
+    }
+    check(rises === 0, 'the water level never rises in the flow direction', `${rises} rise(s), worst ${worstRise.toFixed(3)} m`)
+
+    const onSlope = paths.riverLevelAt(-300, 0)
+    check(Math.abs(onSlope - (ground(-300) - FREEBOARD)) < 0.05, 'where the ground falls the level follows it at FREEBOARD below', `${onSlope.toFixed(3)} m vs ${(ground(-300) - FREEBOARD).toFixed(3)} m`)
+
+    const crestLevel = paths.riverLevelAt(100, 0)
+    const crestGround = ground(100)
+    const crestBed = paths.carveRivers(100, 0, crestGround)
+    console.log(`        ridge crest: ground ${crestGround.toFixed(2)} m, water ${crestLevel.toFixed(2)} m, bed ${crestBed.toFixed(2)} m`)
+    check(crestLevel < crestGround - 3, 'a ridge across the flow is carved through -- the water stays below the level it had upstream of it', `${(crestGround - crestLevel).toFixed(2)} m below the crest`)
+    check(Math.abs(crestBed - (crestLevel - 2)) < 0.01, 'and the bed is `depth` under that lower water, not under the ridge', `${crestBed.toFixed(3)} m vs ${(crestLevel - 2).toFixed(3)} m`)
+
+    // Reversing the node order changes nothing but the stored direction: the same river flows the same way.
+    const rev = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[500, 0, 20], [-500, 0, 20]] }])
+    rev.setTerrain(terrainOf(ground))
+    check(rev.flowsForward('r1') === false && Math.abs(rev.riverLevelAt(100, 0) - crestLevel) < 1e-3, 'a river authored mouth-first flows the same way and solves the same level', `${rev.riverLevelAt(100, 0).toFixed(3)} vs ${crestLevel.toFixed(3)} m`)
+  }
+
+  console.log('\npaths: a mouth meets the water it ends in')
+  {
+    // A trunk along x, falling 1 mm per metre so its flow direction is not a coin toss, crosses a trench at x = -200, so its level downstream of the trench is ~5 m below the ground there; a tributary comes down x = 0 from +z and ends on the trunk's centreline. Its own ground would put its mouth at 99.7 m; the pin ramps it down to the trunk's surface over the last few half-widths, so the two are one body of water.
+    const ground = (x) => 100 - 0.001 * x - 5 * Math.exp(-(((x + 200) / 60) ** 2))
+    const paths = new PathSet([
+      { id: 'trunk', kind: 'river', depth: 3, pts: [[-500, 0, 40], [500, 0, 40]] },
+      { id: 'trib', kind: 'river', depth: 2, pts: [[0, 400, 10], [0, 0, 10]] },
+    ])
+    paths.setTerrain(terrainOf(ground))
+    const trunkLevel = paths.riverLevelAt(0, 0)
+    check(Math.abs(trunkLevel - (95.2 - FREEBOARD)) < 0.05, 'the trunk carries the trench level downstream', `${trunkLevel.toFixed(3)} m at x = 0`)
+    const mouth = paths.nodeAt('trib', 1)
+    const source = paths.nodeAt('trib', 0)
+    check(Math.abs(mouth.y - trunkLevel) < 1e-3, "the tributary's mouth node sits at the trunk's surface", `${mouth.y.toFixed(3)} vs ${trunkLevel.toFixed(3)} m`)
+    // The tributary's own level: its lowest ground tap is the outer bank tap on the +x side, BANK half-widths off its centreline.
+    const own = ground(BANK * 5) - FREEBOARD
+    check(Math.abs(source.y - own) < 1e-3, 'while its source is still at its own level', `${source.y.toFixed(3)} m vs ${own.toFixed(3)} m`)
+    const above = paths.riverLevelAt(0, 40)
+    check(Math.abs(above - own) < 1e-3, 'and the ramp is local to the mouth: 40 m up the tributary it is at its own level again', `${above.toFixed(3)} m`)
+    let rises = 0
+    let prev = Infinity
+    for (let z = 390; z >= 0; z -= 1) {
+      const l = paths.riverLevelAt(0, z)
+      if (z >= 30 && l > prev + 1e-6) rises++
+      prev = l
+    }
+    check(rises === 0, 'the ramp never lifts the level on the way down', `${rises} rise(s)`)
+
+    // The same for a lake, both ways round: a mouth in a lake drops to the lake; a source in a lake caps the whole river at the lake, so it leaves the water rather than falling out of the air above it.
+    const lakes = new LakeSet([{ id: 'l1', x: 0, z: 0, y: 99, rx: 150, rz: 150, rot: 0, shape: 0, carve: 1, depth: 8 }])
+    const lp = new PathSet(
+      [
+        { id: 'in', kind: 'river', depth: 2, pts: [[-60, 600, 12], [-60, 0, 12]] },
+        { id: 'out', kind: 'river', depth: 2, pts: [[60, 0, 12], [60, -600, 12]] },
+      ],
+      { lakes }
+    )
+    lp.setTerrain(terrainOf(FLAT_100))
+    check(Math.abs(lp.nodeAt('in', 1).y - 99) < 1e-3 && Math.abs(lp.nodeAt('in', 0).y - (100 - FREEBOARD)) < 1e-3, 'a river ending in a lake meets the lake surface at its mouth', `${lp.nodeAt('in', 1).y.toFixed(3)} m at the mouth, ${lp.nodeAt('in', 0).y.toFixed(3)} m at the source`)
+    check(Math.abs(lp.nodeAt('out', 1).y - 99) < 1e-3, 'a river leaving a lake is capped at the lake surface all the way down', `${lp.nodeAt('out', 1).y.toFixed(3)} m 600 m away`)
   }
 
   console.log('\npaths: road surface')
@@ -535,7 +627,8 @@ export async function run() {
   console.log('\npaths: distance is to the segment, not the sample')
   {
     // A straight river binned at 2 m: at the midpoint between two samples, point-distance overestimates by up to 1 m. That error is periodic along the bank and reads as scalloping, so it is worth pinning that the query does not have it.
-    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[-200, 50, 0, 24], [200, 50, 0, 24]] }])
+    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[-200, 0, 24], [200, 0, 24]] }])
+    paths.setTerrain(terrainOf(FLAT_100))
     let worst = 0
     for (let s = 0; s < 400; s++) {
       const x = -100 + s * 0.5
@@ -549,11 +642,13 @@ export async function run() {
 
   console.log('\npaths: mutation reports a dirty rect')
   {
-    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[0, 50, 0, 20], [200, 50, 0, 20], [400, 50, 0, 20]] }])
-    const before = paths.carveRivers(200, 300, 60)
-    const rect = paths.movePoint('r1', 1, 200, 50, 300)
-    const after = paths.carveRivers(200, 300, 60)
-    check(before === 60 && after < 60, 'moving a control point actually moves the channel', `${before} -> ${after.toFixed(2)}`)
+    const paths = new PathSet([{ id: 'r1', kind: 'river', depth: 2, pts: [[0, 0, 20], [200, 0, 20], [400, 0, 20]] }])
+    paths.setTerrain(terrainOf(FLAT_100))
+    const before = paths.carveRivers(200, 300, 100)
+    paths.movePoint('r1', 1, 200, null, 300)
+    const rect = paths.takeDirty()
+    const after = paths.carveRivers(200, 300, 100)
+    check(before === 100 && after < 100, 'moving a control point actually moves the channel', `${before} -> ${after.toFixed(2)}`)
     check(
       rect.minX <= 0 && rect.maxX >= 400 && rect.minZ <= 0 && rect.maxZ >= 300,
       'the dirty rect covers both where the path was and where it now is',
@@ -565,8 +660,9 @@ export async function run() {
   {
     // The failure this guards is silent and destructive: the editor holds an index as a selection handle, a point below it is deleted, and from then on every drag of that "selection" edits a different point while the highlight stays where it was. Both point-holding layers have to answer this the same way -- see livePoints() in paths.js.
     const paths = new PathSet([
-      { id: 'r1', kind: 'river', depth: 2, pts: [[0, 50, 0, 20], [100, 50, 0, 20], [200, 50, 0, 20], [300, 50, 0, 20]] },
+      { id: 'r1', kind: 'river', depth: 2, pts: [[0, 0, 20], [100, 0], [200, 0], [300, 0, 20]] },
     ])
+    paths.setTerrain(terrainOf(FLAT_100))
     const was = paths.pointAt('r1', 3)
     paths.removePoint('r1', 1)
     // Caught rather than allowed to propagate: a layer that compacts makes handle 3 out of range and throws, and a thrown error here would abort the run and hide every check below it behind a stack trace.
@@ -574,23 +670,42 @@ export async function run() {
     try {
       now = paths.pointAt('r1', 3)
     } catch (e) {
-      now = [NaN, NaN, NaN, NaN]
+      now = [NaN, NaN, NaN]
     }
     check(
-      now[0] === was[0] && now[2] === was[2],
+      now[0] === was[0] && now[1] === was[1],
       'a path handle held on a LATER point still refers to the same world position after a removal',
-      `handle 3 was [${was[0]},${was[2]}], is [${now[0]},${now[2]}]`
+      `handle 3 was [${was[0]},${was[1]}], is [${now[0]},${now[1]}]`
     )
     check(paths.pointsOf('r1').length === 3, 'and the curve itself is down to three points', `${paths.pointsOf('r1').length}`)
     check(paths.handlesOf('r1').join(',') === '0,2,3', 'handlesOf skips the tombstone rather than renumbering', paths.handlesOf('r1').join(','))
     let threw = ''
     try {
-      paths.movePoint('r1', 1, 0, 0, 0)
+      paths.movePoint('r1', 1, 0, null, 0)
     } catch (e) {
       threw = e.message
     }
     check(/tombstone/.test(threw), 'and addressing the removed handle throws instead of editing a neighbour', threw)
     check(paths.toJSON('river')[0].pts.length === 3, 'the stored form is compacted -- tombstones are a session device, not a file format', `${paths.toJSON('river')[0].pts.length} pts`)
+
+    // A river's width lives on whichever nodes the author set it on; the last one cannot be cleared, and deleting it hands the width to a neighbour rather than leaving a river with no width.
+    threw = ''
+    try {
+      paths.setWidth('r1', 3, null)
+      paths.setWidth('r1', 0, null)
+    } catch (e) {
+      threw = e.message
+    }
+    check(/only width/.test(threw) && paths.pointAt('r1', 0)[2] === 20, "clearing the river's last width throws and leaves it set", threw)
+    paths.removePoint('r1', 0)
+    check(paths.pointAt('r1', 2)[2] === 20, 'deleting the node carrying the only width hands it to the next live node', `handle 2 width ${paths.pointAt('r1', 2)[2]}`)
+    threw = ''
+    try {
+      paths.movePoint('r1', 2, 200, 5, 0)
+    } catch (e) {
+      threw = e.message
+    }
+    check(/no y/.test(threw), 'a river node refuses a y: its level is solved, not authored', threw)
 
     // The same promise on the other side, where it was already true.
     const field = new SnowField(SNOW_FIXTURE)
@@ -650,18 +765,21 @@ export async function run() {
     }
     bad((d) => d.snow.points.push([0, 0, 'x', 100]), 'snow.points[0][2]')
     bad((d) => d.lakes.push({ id: 'l1', x: 0, z: 0, y: 0, rx: 0, rz: 10 }), 'lakes[0].rx')
-    bad((d) => d.rivers.push({ id: 'r1', pts: [[0, 0, 0, -2]] }), 'rivers[0].pts[0][3]')
+    bad((d) => d.rivers.push({ id: 'r1', pts: [[0, 0, -2]] }), 'rivers[0].pts[0][2]')
+    bad((d) => d.rivers.push({ id: 'r1', pts: [[0, 90, 0, 2]] }), 'rivers[0].pts[0]')
+    bad((d) => d.rivers.push({ id: 'r1', pts: [[0, 0], [100, 0]] }), 'rivers[0].pts')
     bad((d) => {
       d.lakes.push({ id: 'x1', x: 0, z: 0, y: 0, rx: 10, rz: 10 })
-      d.rivers.push({ id: 'x1', pts: [[0, 0, 0, 2]] })
+      d.rivers.push({ id: 'x1', pts: [[0, 0, 2]] })
     }, 'rivers[0].id')
     bad((d) => { d.v = 2 }, 'v')
 
-    // Round trip: a document that goes through Layers and back out must be the same document, or the editor's save button silently loses whatever serialize forgot.
+    // Round trip: a document that goes through Layers and back out must be the same document, or the editor's save button silently loses whatever serialize forgot. Layers has no terrain of its own; the river is stored, not baked, until one is attached, and serialize never needs the bake.
     const world = new Layers(defaultDoc())
+    world.paths.setTerrain(terrainOf(FLAT_100))
     world.addSnowPoint(1200, -800, 35, 600)
     const lake = world.addLake({ x: 100, z: 200, y: 130, rx: 60, rz: 45, rot: 0.4, shape: 0, carve: 1, depth: 9 })
-    const river = world.addPath({ kind: 'river', depth: 2.5, pts: [[-100, 90, 0, 24], [200, 84, 120, 30], [500, 78, 90, 30]] })
+    const river = world.addPath({ kind: 'river', depth: 2.5, pts: [[-100, 0, 24], [200, 120], [500, 90, 30]] })
     const road = world.addPath({ kind: 'road', feather: 10, pts: [[-200, 120, -300, 8], [400, 118, -250, 8]] })
     check(lake.id === 'l1' && river.id === 'r1' && road.id === 'd1', 'ids allocate as l1 / r1 / d1', `${lake.id} ${river.id} ${road.id}`)
 
@@ -670,13 +788,13 @@ export async function run() {
     const back = Layers.deserialize(JSON.parse(JSON.stringify(json)))
     check(JSON.stringify(back.serialize()) === JSON.stringify(json), 'a document survives a serialize / deserialize round trip unchanged')
 
-    // Point lists must be arrays of numbers on disk, not arrays of objects -- that is the difference between a world document that is kilobytes and one that is not.
+    // Point lists must be arrays of numbers on disk, not arrays of objects -- that is the difference between a world document that is kilobytes and one that is not. A river node with no width is two numbers, not three with a null.
     check(Array.isArray(json.snow.points[0]) && typeof json.snow.points[0][0] === 'number', 'snow points serialise as arrays of numbers')
-    check(Array.isArray(json.rivers[0].pts[0]) && json.rivers[0].pts[0].length === 4, 'river control points serialise as arrays of numbers')
+    check(json.rivers[0].pts[0].length === 3 && json.rivers[0].pts[1].length === 2, 'river nodes serialise as [x, z, width] with a width and [x, z] without', JSON.stringify(json.rivers[0].pts))
 
     // Ids never come back: deleting r1 and adding a river must not produce a second r1, or two objects share an undo history.
     world.removePath('r1')
-    const river2 = world.addPath({ kind: 'river', depth: 2, pts: [[0, 90, 0, 20], [100, 90, 0, 20]] })
+    const river2 = world.addPath({ kind: 'river', depth: 2, pts: [[0, 0, 20], [100, 0, 20]] })
     check(river2.id === 'r2', 'a freed id is never reissued', `${river2.id}`)
   }
 
@@ -721,14 +839,16 @@ export async function run() {
     check(world.markAllDirty().maxX >= W, 'markAllDirty is the one way to say "everything" and it says it as a rect')
     world.takeDirtyRect()
 
-    // carve() order: rivers, then lakes, then roads. A road crossing a river must read as a causeway, which means the road wins where they overlap.
-    world.addPath({ kind: 'river', depth: 4, pts: [[-300, 100, 0, 40], [300, 100, 0, 40]] })
+    // carve() order: rivers, then lakes, then roads. A road crossing a river must read as a causeway, which means the road wins where they overlap. Flat ground at 100 m, so the river's water is at 99.7 and its bed 4 m under that.
+    world.paths.setTerrain(terrainOf(FLAT_100))
+    world.addPath({ kind: 'river', depth: 4, pts: [[-300, 0, 40], [300, 0, 40]] })
     world.addPath({ kind: 'road', feather: 8, pts: [[0, 103, -300, 14], [0, 103, 300, 14]] })
-    const onCrossing = world.carve(0, 0, 110)
-    const onRiverAway = world.carve(150, 0, 110)
+    const bed = 100 - FREEBOARD - 4
+    const onCrossing = world.carve(0, 0, 100)
+    const onRiverAway = world.carve(150, 0, 100)
     console.log(`        river bed ${onRiverAway.toFixed(2)} m, road deck over the crossing ${onCrossing.toFixed(2)} m`)
     check(Math.abs(onCrossing - 103) < 0.01, 'the road flattens LAST, so a crossing is a causeway and not a dip', `${onCrossing.toFixed(3)} m vs the road y of 103 m`)
-    check(Math.abs(onRiverAway - 96) < 0.01, 'and away from the road the river still cuts to its own bed', `${onRiverAway.toFixed(3)} m vs 96 m`)
+    check(Math.abs(onRiverAway - bed) < 0.01, 'and away from the road the river still cuts to its own bed', `${onRiverAway.toFixed(3)} m vs ${bed.toFixed(2)} m`)
 
     // A lake must basin-carve after the river cuts, so a river running into a lake ends in the lake bed rather than over it.
     world.addLake({ x: 600, z: 0, y: 98, rx: 120, rz: 120, rot: 0, shape: 0, carve: 1, depth: 10 })
@@ -737,22 +857,31 @@ export async function run() {
     check(world.flattenAt(0, 0) > 0.99, 'flattenAt is saturated on a road deck')
     check(world.flattenAt(4000, 4000) === 0, 'and zero in open country')
     check(world.waterLevelAt(600, 0) === 98, 'waterLevelAt reports the lake surface')
+
+    // Sculpting the ground under a river re-solves it through the facade, and the region it hands back is what the streamer remeshes. Ground nowhere near a river reports nothing.
+    check(world.terrainChanged({ minX: 2000, minZ: 2000, maxX: 2100, maxZ: 2100 }) === null, 'a terrain edit that no river can see asks for no rebuild')
+    const e2 = world.epoch
+    const moved = world.terrainChanged({ minX: -50, minZ: -50, maxX: 50, maxZ: 50 })
+    check(moved !== null && moved.minX <= -300 && moved.maxX >= 300 && world.epoch === e2 + 1, 'a terrain edit under a river re-bakes it and reports its whole box', moved === null ? 'null' : `[${moved.minX.toFixed(0)},${moved.minZ.toFixed(0)}]..[${moved.maxX.toFixed(0)},${moved.maxZ.toFixed(0)}]`)
   }
 
   console.log('\nwater level: rivers are water too')
   {
     // "Is this point underwater" is what keeps trees out of water, and answering it from lakes alone plants a forest down the middle of every river.
     const world = new Layers(defaultDoc())
-    world.addPath({ kind: 'river', depth: 3, pts: [[-400, 90, 0, 30], [0, 90, 0, 30], [400, 90, 0, 30]] })
-    check(world.waterLevelAt(0, 0) === 90, 'a probe on a river centreline returns that river surface', `${world.waterLevelAt(0, 0)}`)
-    check(world.waterLevelAt(0, 14) === 90, 'and anywhere inside the half-width', `${world.waterLevelAt(0, 14)} at 14 m of 15 m`)
-    // The outer half of the carve profile is the feathered BANK, which the river shapes but is not in.
+    world.paths.setTerrain(terrainOf(FLAT_100))
+    world.addPath({ kind: 'river', depth: 3, pts: [[-400, 0, 30], [0, 0], [400, 0, 30]] })
+    const LEVEL = 100 - FREEBOARD
+    const near = (v) => v !== null && Math.abs(v - LEVEL) < 1e-3
+    check(near(world.waterLevelAt(0, 0)), 'a probe on a river centreline returns that river surface', `${world.waterLevelAt(0, 0)}`)
+    check(near(world.waterLevelAt(0, 14)), 'and anywhere inside the half-width', `${world.waterLevelAt(0, 14)} at 14 m of 15 m`)
+    // The outer part of the carve profile is the shaped BANK, which the river shapes but is not in.
     check(world.waterLevelAt(0, 22) === null, 'but the shaped bank outside the half-width is dry land', `${world.waterLevelAt(0, 22)} at 22 m`)
     check(world.waterLevelAt(0, 4000) === null, 'and open country is dry')
 
-    // A river running into a lake: contiguous water, so the higher surface wins. Taking the lower would sink the river's last few metres into the lake it is joining.
+    // A river running into a lake: contiguous water, so the higher surface wins. Taking the lower would sink the river's last few metres into the lake it is joining. The lake is 14 m under the ground here, so the river passing over it is not pinned to it (see _otherWaterAt) and keeps its own level.
     world.addLake({ x: 300, z: 0, y: 84, rx: 200, rz: 200, rot: 0, shape: 0, carve: 1, depth: 9 })
-    check(world.waterLevelAt(300, 0) === 90, 'where a river crosses a lake the higher surface wins', `river 90 vs lake 84 -> ${world.waterLevelAt(300, 0)}`)
+    check(near(world.waterLevelAt(300, 0)), 'where a river crosses a lake the higher surface wins', `river ${LEVEL} vs lake 84 -> ${world.waterLevelAt(300, 0)}`)
     check(world.waterLevelAt(300, 100) === 84, 'and in the lake beside the river it is the lake', `${world.waterLevelAt(300, 100)}`)
   }
 
@@ -761,14 +890,16 @@ export async function run() {
   console.log('\nper-chunk culling')
   {
     // A dozen authored objects, placed as fractions of the world so this measures the same density whatever WORLD_SIZE settles at: 4 lakes, 3 rivers, 3 roads, 2 snow points.
+    // Flat ground, so each river leg routes as the straight chord between its nodes and the fixture's footprint is the same dozen objects whatever the router does with a slope.
     const world = new Layers(defaultDoc())
+    world.paths.setTerrain(terrainOf(FLAT_100))
     world.addLake({ x: -0.29 * W, z: 0.22 * W, y: 130, rx: 120, rz: 90, rot: 0.4, shape: 0, carve: 1, depth: 9 })
     world.addLake({ x: 0.38 * W, z: -0.11 * W, y: 96, rx: 60, rz: 60, rot: 0, shape: 0, carve: 1, depth: 6 })
     world.addLake({ x: 0.06 * W, z: 0.63 * W, y: 210, rx: 200, rz: 80, rot: 1.1, shape: 1, carve: 1, depth: 12 })
     world.addLake({ x: -0.68 * W, z: -0.54 * W, y: 74, rx: 90, rz: 140, rot: 0, shape: 0, carve: 1, depth: 7 })
-    world.addPath({ kind: 'river', depth: 2, pts: [[-0.73 * W, 260, -0.37 * W, 26], [-0.37 * W, 190, -0.15 * W, 30], [0, 130, 0.05 * W, 34], [0.32 * W, 92, 0.22 * W, 40]] })
-    world.addPath({ kind: 'river', depth: 2, pts: [[0.51 * W, 300, 0.63 * W, 18], [0.37 * W, 220, 0.37 * W, 22], [0.38 * W, 150, 0.06 * W, 26]] })
-    world.addPath({ kind: 'river', depth: 2.5, pts: [[-0.85 * W, 240, 0.61 * W, 20], [-0.49 * W, 180, 0.51 * W, 24], [-0.12 * W, 120, 0.44 * W, 28]] })
+    world.addPath({ kind: 'river', depth: 2, pts: [[-0.73 * W, -0.37 * W, 26], [-0.37 * W, -0.15 * W], [0, 0.05 * W], [0.32 * W, 0.22 * W, 40]] })
+    world.addPath({ kind: 'river', depth: 2, pts: [[0.51 * W, 0.63 * W, 18], [0.37 * W, 0.37 * W], [0.38 * W, 0.06 * W, 26]] })
+    world.addPath({ kind: 'river', depth: 2.5, pts: [[-0.85 * W, 0.61 * W, 20], [-0.49 * W, 0.51 * W], [-0.12 * W, 0.44 * W, 28]] })
     world.addPath({ kind: 'road', feather: 8, pts: [[-0.85 * W, 150, 0, 10], [0, 140, 0.02 * W, 10], [0.85 * W, 160, -0.05 * W, 10]] })
     world.addPath({ kind: 'road', feather: 8, pts: [[0.15 * W, 140, -0.85 * W, 8], [0.11 * W, 150, 0, 8], [0.17 * W, 170, 0.85 * W, 8]] })
     world.addPath({ kind: 'road', feather: 6, pts: [[-0.61 * W, 120, -0.73 * W, 6], [-0.51 * W, 130, -0.61 * W, 6], [-0.37 * W, 140, -0.59 * W, 6]] })

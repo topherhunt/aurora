@@ -20,7 +20,8 @@
 // THE ONE RULE: no vertex attribute is ever interpolated or invented. Every UV
 // in the output is a UV that was in the input, and every output triangle's three
 // UVs lie inside one input island. Nothing below ever computes a new texture
-// coordinate.
+// coordinate. Positions are the one exception, and only in the fit pass at the
+// end ("the fit" below), which slides each surviving vertex along its normal.
 //
 // What DOES vary is how the vendor's atlas is kept -- `uvMode`:
 //
@@ -581,9 +582,9 @@ class CellGrid {
  * centroids, area weighted; each round pairs every sample with the closest
  * point on the coarse surface, then relaxes every coarse point by the weighted
  * mean of its samples' residuals, projected onto the point's normal so a point
- * never slides along the surface. After each step a point further outside the
- * source than `outFraction` of its diagonal -- signed by the nearest source
- * point's normal -- is pulled back to it.
+ * never slides along the surface. After each step a point outside the source
+ * (by ray parity) and further from it than `outFraction` of its diagonal is
+ * pulled back to that distance.
  */
 function fitToSurface(V, I, pointOf, pointCount, source, outFraction) {
   const n = V.length / 3
@@ -759,11 +760,14 @@ function fitToSurface(V, I, pointOf, pointCount, source, outFraction) {
  * Reduces `mesh` toward `targetTris` by half-edge collapse.
  *
  * HALF-EDGE, not the general form: the surviving vertex stays exactly where it
- * was rather than moving to an optimal position. That costs a little geometric
- * accuracy and buys the thing that matters here -- no vertex attribute is ever
- * interpolated or invented, so every UV in the output is a UV that was in the
- * input. A decimator that computes new texture coordinates is a decimator that
- * can put them in the wrong island.
+ * was rather than moving to an optimal position. That costs geometric accuracy
+ * (the fit pass buys it back afterwards, moving positions and nothing else) and
+ * buys the thing that matters here -- no vertex attribute is ever interpolated
+ * or invented, so every UV in the output is a UV that was in the input. A
+ * decimator that computes new texture coordinates is a decimator that can put
+ * them in the wrong island. `fit` turns the pass off; `fitTo` is the surface it
+ * fits to (this mesh unless a ladder passes the original); `fitOut` is how far
+ * outside that surface a point may sit, as a fraction of the diagonal.
  *
  * `mesh` is `{ positions, uvs?, sampleUvs?, normals?, indices }` of plain arrays.
  * Returns the same shape plus `stats`. `uvMode` decides whether the atlas is

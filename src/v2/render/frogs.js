@@ -17,10 +17,10 @@
 // any direction. It is tethered to where it was placed, never landing past
 // TETHER_M from home (aimed home once it is out that far), and every hop
 // target passes the same tests its placement did, so a frog
-// never hops into the water, up a rock or off the band. The ground is re-read
-// at each hop, so a frog seated on the height field before the drawn terrain
-// arrived settles onto the drawn surface at its next move; a frog whose seat
-// turns out to be inside a boulder that landed after it leaves. The mesh faces
+// never hops into the water, up a rock or off the band. A frog sits on the
+// DRAWN ground, and is put back on it whenever the terrain's render set changes
+// under it (_reseat), so a chunk re-splitting at distance never buries it; a
+// frog whose seat turns out to be inside a boulder that landed after it leaves. The mesh faces
 // +X; a hop turns it to face where it is going, and it sits with its up along
 // the field's normal there, turning from the one slope to the other in the air.
 //
@@ -56,11 +56,13 @@ export const BREATH_S = 1.3
 export const BREATH_AMP = 0.05
 // Wet skin: the one roughness the whole frog glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.3
-// The frog's tint, a per-channel multiplier on the texture, and its hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a bank holds green, olive and brown frogs.
-const TINT_R = [0.7, 1.15]
-const TINT_G = [0.8, 1.2]
-const TINT_B = [0.6, 1.1]
-export const HUE = 0.5
+// A frog's colour morph, rolled by weight `w`: its hue, a turn of that many radians round the colour wheel (critters.js hueVary; negative turns the map's green toward orange), and its tint, a per-channel multiplier on the texture. Green frogs turn a little either way from the map, olive ones sit dark on it, and brown ones turn a quarter of the wheel and go dark and warm, which lands the map's green on a tawny brown.
+export const MORPHS = [
+  { name: 'green', w: 5, hue: [-0.5, 0.5], r: [0.7, 1.15], g: [0.8, 1.2], b: [0.6, 1.1] },
+  { name: 'olive', w: 2, hue: [-0.3, 0.15], r: [0.55, 0.75], g: [0.6, 0.8], b: [0.35, 0.55] },
+  { name: 'brown', w: 3, hue: [-1.1, -0.75], r: [0.75, 0.95], g: [0.6, 0.78], b: [0.4, 0.55] },
+]
+const MORPH_W = MORPHS.reduce((sum, m) => sum + m.w, 0)
 // Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between; a walk holds one heading give or take WOBBLE, a leap picks a fresh direction every hop. Every hop rises HOP_RISE of its distance.
 const SIT_S = [2, 8]
 const WALK_P = 0.7
@@ -81,25 +83,28 @@ const _mat = new THREE.Matrix4()
 
 export class Frogs {
   /**
-   * @param height  V2Height: heightAndSlopeAt, snowLineAt
+   * @param height  V2Height: heightAt, heightAndSlopeAt, snowLineAt
    * @param water   WaterSurfaces: isSubmerged, shoreDistAt
    * @param opts.rocks   Rocks, for blockTopAt; a frog never sits on stone
    * @param opts.ground  TerrainV2 or null: the drawn surface to seat on, falling back to the field
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
    */
   constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null } = {}) {
-    if (!height || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
-      throw new Error('Frogs needs a height field with heightAndSlopeAt and snowLineAt')
+    if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
+      throw new Error('Frogs needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
     if (!water || typeof water.shoreDistAt !== 'function' || typeof water.isSubmerged !== 'function') {
       throw new Error('Frogs needs WaterSurfaces, for shoreDistAt and isSubmerged')
     }
     if (!rocks || typeof rocks.blockTopAt !== 'function') throw new Error('Frogs needs Rocks, for blockTopAt')
-    if (ground && typeof ground.groundAt !== 'function') throw new Error('Frogs: `ground` was given but has no groundAt')
+    if (ground && (typeof ground.groundAt !== 'function' || typeof ground.groundVersion !== 'number')) {
+      throw new Error('Frogs: `ground` was given but has no groundAt and groundVersion -- pass the TerrainV2 or nothing')
+    }
     this.height = height
     this.water = water
     this.rocks = rocks
     this.ground = ground
+    this.gver = ground ? ground.groundVersion : 0
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x5f0a)
 
@@ -188,6 +193,26 @@ export class Frogs {
   }
 
   /**
+   * Every frog put back on the drawn ground, which just changed shape: a chunk
+   * re-splitting swaps the leaf's half-metre cells for metre ones 19 m out (11 m
+   * in the periphery), and where the new chord rises through a seat it buries
+   * the frog until its next hop. A hop in the air has both its ends re-read, so
+   * it lands on the new surface too.
+   */
+  _reseat() {
+    for (const t of this.tiles.values()) {
+      for (const f of t.frogs) {
+        if (f.state === 'sit') {
+          f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
+        } else {
+          f.y0 = this._groundFor(f.x0, f.z0, this.height.heightAt(f.x0, f.z0))
+          f.y1 = this._groundFor(f.x1, f.z1, this.height.heightAt(f.x1, f.z1))
+        }
+      }
+    }
+  }
+
+  /**
    * Whether a frog may sit at (x, z): dry, gentle, warm, clear of stone and
    * inside the shore band. Returns the field's sample there -- height `h` and
    * the gradient `gx`, `gz` the frog sits across -- or null.
@@ -220,10 +245,12 @@ export class Frogs {
       const x = (tx + rand()) * TILE
       const z = (tz + rand()) * TILE
       const size = between(rand, SIZE_M)
-      const r = between(rand, TINT_R)
-      const g = between(rand, TINT_G)
-      const b = between(rand, TINT_B)
-      const hue = (rand() * 2 - 1) * HUE
+      let roll = rand() * MORPH_W
+      const morph = MORPHS.find((m) => (roll -= m.w) < 0) ?? MORPHS[MORPHS.length - 1]
+      const r = between(rand, morph.r)
+      const g = between(rand, morph.g)
+      const b = between(rand, morph.b)
+      const hue = between(rand, morph.hue)
       const yaw = rand() * Math.PI * 2
       const s = this.seat(x, z)
       if (s === null) continue
@@ -314,6 +341,10 @@ export class Frogs {
     this.head.z = hz
     this.time += dt
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+    if (this.ground && this.ground.groundVersion !== this.gver) {
+      this.gver = this.ground.groundVersion
+      this._reseat()
+    }
 
     const breath = (this.time * Math.PI * 2) / BREATH_S
     const counts = LOD_DEG.map(() => 0)

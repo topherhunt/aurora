@@ -17,11 +17,13 @@
  *   spine  pitch, yaw, roll   radians, spread along the chain
  *   head   pitch, yaw, roll   radians, spread along the neck
  *   tail   pitch, yaw, curl   radians, spread along the tail
+ *   wings  spread, sweep      radians, mirrored across the pair
+ *   arms   pitch, spread      radians, mirrored across the pair
  *   legs   <legId>: { fore, lat, lift, pitch }  foot target offset, paw tilt
  */
 
 import { add, loadSkeleton, scale } from './skeleton.mjs'
-import { bend, limbSetup, poser, seed, solveLimb } from './gait.mjs'
+import { bend, limbSetup, pairsOf, poser, seed, solveLimb } from './gait.mjs'
 
 const ZERO = { lift: 0, fore: 0, lat: 0, pitch: 0, yaw: 0, roll: 0, curl: 0 }
 
@@ -65,7 +67,10 @@ export function poseClip(rigFile, map, rawSpec) {
   const spine = named(map.spine)
   const head = named(map.head)
   const tail = named(map.tail)
-  const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain)]
+  const wings = pairsOf(map, 'wings', named)
+  const arms = pairsOf(map, 'arms', named)
+  const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain),
+    ...wings.flatMap((w) => w.chain), ...arms.flatMap((a) => a.chain)]
 
   // One getter per handle, so `sample` never has to know the spec's shape and a
   // key that omits a group simply reads zero.
@@ -99,6 +104,16 @@ export function poseClip(rigFile, map, rawSpec) {
     bend(pose, head, fwd, at(t, 'head', 'roll'))
     bend(pose, tail, lat, at(t, 'tail', 'pitch') + at(t, 'tail', 'curl'))
     bend(pose, tail, up, at(t, 'tail', 'yaw'))
+    // Mirrored pairs: one number opens or sweeps both, the map's `side` negating
+    // whichever has to turn the other way. See `pairsOf` in gait.mjs.
+    for (const w of wings) {
+      bend(pose, w.chain, fwd, at(t, 'wings', 'spread') * w.side)
+      bend(pose, w.chain, up, at(t, 'wings', 'sweep') * w.side)
+    }
+    for (const a of arms) {
+      bend(pose, a.chain, lat, at(t, 'arms', 'pitch'))
+      bend(pose, a.chain, fwd, at(t, 'arms', 'spread') * a.side)
+    }
 
     const feet = []
     for (const leg of legs) {

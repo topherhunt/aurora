@@ -96,6 +96,7 @@ export class V2Height {
     this._epoch = -1
     this._authored = false
     this._syncAuthored()
+    this._attachTerrain()
 
     // THE ABLATION FLOOR. Non-null replaces the whole composed field with one
     // constant height and zero slope, everywhere. See setFlat.
@@ -350,6 +351,17 @@ export class V2Height {
     if (!layers) throw new Error('V2Height.setLayers: layers is required')
     this.layers = layers
     this._syncAuthored()
+    this._attachTerrain()
+  }
+
+  // Rivers route over `ground` and solve their level from preCarveAt, so the
+  // path set is handed both as closures: `ground` is swapped by erosion and by
+  // the crease attach, and a closure follows it where a reference would not.
+  _attachTerrain() {
+    this.layers.paths.setTerrain({
+      coarse: () => this.ground,
+      groundAt: (x, z) => this.preCarveAt(x, z),
+    })
   }
 
   /** True when at least one lake or path exists, i.e. when the carve chain can do anything. */
@@ -428,6 +440,21 @@ export class V2Height {
     const hm = this.ground
     if (this._plain) return hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), 0)
     return hm.sample(x, z) + this._micro(x, z, cell, 0)
+  }
+
+  /**
+   * The composed field BEFORE the carve chain: coarse plus detail, with the
+   * detail suppressed where a layer flattens it. What a river bank will be once
+   * the channel is cut through it, and therefore what the river's level is solved
+   * against -- solving against heightAt would read the river's own bed.
+   */
+  preCarveAt(x, z) {
+    if (this.flatY !== null) return this.flatY
+    const hm = this.ground
+    const flatten = this.layers.flattenAt(x, z)
+    return this._plain
+      ? hm.sample(x, z) + this.detail.at(x, z, 0, hm.slopeAt(x, z), flatten)
+      : hm.sample(x, z) + this._micro(x, z, 0, flatten)
   }
 
   /** The composed field. `cell` is the sampling spacing in metres; 0 is exact and is the default, because Player and the editor call this with two arguments. */

@@ -1,390 +1,32 @@
-// Node-side gates for the strewn ground litter: the BAKE (src/props/litter.js, sections 1-4) and the SCATTER that stamps it on the hill (src/v2/render/litter.js, sections 5-12).
+// Node-side gates for the strewn ground litter: the pebble scatter in src/v2/render/litter.js, which beds one twenty-triangle stone into the hill tens of thousands of times inside a few strides of the player.
 //
 //   node scripts/check-litter.mjs
 //
-// WHAT THIS FILE CAN AND CANNOT SEE. litter.js is deliberately cut in half, and the cut is the reason this gate is possible: `litterPlacements` and `buildLitterPool` hold every DECISION the patch contains, while `bakeLitter` and `bakeLitterSet` hold a camera, a render target and a readback. There is no GL context in node and no headless browser here, so bakeLitter and bakeLitterSet are NOT called and nothing below asserts anything about the pixels that come out of them. What is asserted is everything upstream of the photograph: where the stones land, how big they are, what colour they are, and what geometry they are made of. If the rig itself regresses -- the ortho frustum, the camera `up`, the key direction, the downsample -- this gate will stay green and only the screen will tell you.
+// WHAT THIS FILE CAN AND CANNOT SEE. Everything below runs Litter headless on stub worlds -- a flat wood, a peak, a face, a lake bed, a shore, a sine ridge -- and reads back what it decided: where the stones landed, how many, how big, how deep, which way up, what colour. There is no GL context, so nothing here asserts anything about pixels; if the material, the lighting patch or the atlas regress, this gate stays green and only the screen will tell you.
 //
-// The five failures it exists to catch, all of which are silent:
-//
-//   A STONE HANGING OFF THE EDGE. The atlas is RepeatWrapping, so a stone touching the patch border is bilinearly blended with whatever sits on the OPPOSITE side of the same patch, and the picture also grows a row of cut-off rocks along its rim. LITTER_MARGIN exists to make both impossible, and section 3 measures it against every stone of every seed the bake actually uses rather than against the one seed somebody happened to look at.
-//
-//   THE SIZE ROLL COLLAPSING. LITTER_SIZE_POW is what makes the patch read as a spread of loose stone rather than as a hatch pattern of same-sized dots, and it fails in two opposite directions: a power that drifts toward 1 hands back the hatch pattern, and one that runs away leaves 54 specks with nothing large in the patch at all. Section 3 bounds both ends, because a floor alone would be perfectly green on a distribution that had collapsed onto one size.
-//
-//   COVERAGE DRIFTING OUT OF ITS BAND. The header's target is "a little under half": fuller than that and the transparent gaps close, the layer becomes a solid grey tile, and two patches stamped overlapping show a visible square. Emptier and the stamp is not worth its two triangles. So this is a band and not a floor.
-//
-//   THE RIG BLOWING THE CROWNS TO WHITE. The target is 8-bit and toneMapped: false, so a crown lit past 1.0 loses its colour and its curvature in the same texel and the patch turns to grey confetti. Section 3b cannot see the pixels, but the exposure is arithmetic on LITTER_KEY, LITTER_SKY and the tint's own albedo, and that it can hold.
-//
-//   THE LAYER BLOCK COLLIDING WITH SOMETHING ELSE. Four slices of a 48-layer array, hand-numbered in textures.js. A collision is not a crash: it is one feature quietly drawing another feature's photograph.
+// The private tuning constants are read out of the module SOURCE (see srcOf below) rather than re-typed here, so a retune moves the bounds with it and a check that is really "the number in the file is the number in the file" cannot pass by accident.
 
 import { readFileSync } from 'node:fs'
 
-import * as THREE from 'three'
+import THREE from '../src/three-instance.js'
 
-import {
-  LITTER_LAYERS, LITTER_PATCH_M, LITTER_MARGIN, LITTER_REACH, LITTER_RIM_KNEE, LITTER_RIM_TAPER,
-  LITTER_STONES, LITTER_SIZE, LITTER_SIZE_POW,
-  LITTER_SEEDS, LITTER_TIER, LITTER_TINTS, LITTER_KEY, LITTER_SKY,
-  buildLitterPool, litterPlacements,
-} from '../src/props/litter.js'
-import { smoothstep } from '../src/sim/mathx.js'
-import { ROCK_TIERS, BOX_MARGIN } from '../src/props/rock.js'
-import { rockParams, TINTS, TINT_GAIN } from '../src/props/rock-bank.js'
-import { LAYER, LAYER_COUNT, ROCK_TILE_MEAN, buildTextureArray } from '../src/textures.js'
-import { Litter } from '../src/v2/render/litter.js'
+import { ROCK_TIERS } from '../src/props/rock.js'
+import { setPropClock } from '../src/material.js'
+import { buildTextureArray } from '../src/textures.js'
+import { Litter, buildPebble, PEBBLE_TIER } from '../src/v2/render/litter.js'
+import { shade } from '../src/v2/terrain/chunk-mesh-v2.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
+  const tag = ok ? '  ok ' : 'FAIL '
+  console.log(`${tag} ${label}${detail ? `\n       ${detail}` : ''}`)
   if (!ok) failures++
-  console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 
-// The seeds the bake actually uses. Read off bakeLitterSet, which walks LITTER_LAYERS and passes `seed: i + 1`, so this stays in step if a fifth layer is ever added rather than silently going on testing four.
-const BAKE_SEEDS = LITTER_LAYERS.map((_, i) => i + 1)
-
-console.log(`\n=== litter checks, ${LITTER_LAYERS.length} baked patches x ${LITTER_STONES} stones ===\n`)
-
-// ---------------------------------------------------------------------------
-// 1. The four slices of the atlas the patches are baked into.
-// ---------------------------------------------------------------------------
-
-console.log('atlas layers')
-
-{
-  const distinct = new Set(LITTER_LAYERS)
-  check(distinct.size === LITTER_LAYERS.length, 'the litter patches are four different slices of the atlas, not four names for one',
-    `${LITTER_LAYERS.join(' ')}, ${distinct.size} distinct`)
-
-  const inRange = LITTER_LAYERS.filter((v) => Number.isInteger(v) && v >= 0 && v < LAYER_COUNT)
-  check(inRange.length === LITTER_LAYERS.length, 'every litter layer is a real slice of the array the world actually allocates',
-    `${LITTER_LAYERS.join(' ')} against ${LAYER_COUNT} layers`)
-
-  // Derived by scanning the enum rather than by listing the neighbours, so a new LAYER entry that lands on 45 fails here instead of quietly stamping somebody else's photograph on the ground. A litter layer is clean when EXACTLY one name in the enum claims it.
-  const owners = LITTER_LAYERS.map((v) => Object.entries(LAYER).filter(([, n]) => n === v).map(([k]) => k))
-  const clashes = owners.filter((names) => names.length !== 1)
-  check(clashes.length === 0, 'no other layer in the atlas is stored on top of a litter patch',
-    clashes.length ? clashes.map((n) => n.join(' = ')).join(', ') : `${owners.map((n) => n[0]).join(' ')}, one owner each`)
-}
-
-// ---------------------------------------------------------------------------
-// 2. The pool of rocks every patch is assembled from.
-// ---------------------------------------------------------------------------
-//
-// Fifteen meshes stand in for the two hundred-odd stones across the four layers, so anything wrong with one of them is wrong in a seventh of the picture. Two separate promises here. The layout one is ordinary: these go through the same prop material as everything else and would be refused by a BatchedMesh over a stray `uv`. The SIZE one is the load-bearing one, and it is easy to miss: buildLitterPool asks for `size: 1` and litterPlacements scales the result by an absolute metre size, so if buildRock ever returned something other than a roughly unit solid, every stone in every patch would be off by that factor and LITTER_SIZE would silently stop meaning metres.
-
-console.log('\npool')
-
-const pool = buildLitterPool()
-
-{
-  check(pool.length === LITTER_SEEDS, 'the pool is the world\'s one boulder at every litter seed',
-    `${pool.length} = ${LITTER_SEEDS} seeds of one shape`)
-
-  const LAYOUT = ['normal', 'position', 'texLayer', 'uvProj']
-  const wrongAttrs = pool.filter((g) => Object.keys(g.attributes).sort().join(',') !== LAYOUT.join(','))
-  check(wrongAttrs.length === 0, 'every pooled rock is exactly { position, normal, uvProj, texLayer }', `${wrongAttrs.length} of ${pool.length} wrong`)
-
-  const unindexed = pool.filter((g) => !g.index)
-  check(unindexed.length === 0, 'and every one of them is indexed', `${unindexed.length} of ${pool.length} not`)
-
-  // The face count LITTER_TIER implies, exactly. The rock is a closed solid, so `dropped` is 0 on every seed and the tier's face count has to come back untouched -- if it does not, the tier stopped being the tier and nothing else here would notice.
-  const tierFaces = ROCK_TIERS[LITTER_TIER].faces
-  const wrongFaces = []
-  pool.forEach((g, i) => {
-    // rockParams spreads ROCK_DEFAULTS, so `shards` is always there and a missing one is a real breakage rather than a case to default around.
-    const p = rockParams(i)
-    if (!Number.isFinite(p.shards)) throw new Error(`rockParams(${i}) no longer carries a shards count`)
-    const shards = Math.max(1, Math.round(p.shards))
-    const expect = tierFaces * shards - g.userData.rock.dropped
-    if (g.index.count / 3 !== expect || g.userData.rock.triangles !== expect) wrongFaces.push(i)
-  })
-  const faceCounts = pool.map((g) => g.index.count / 3)
-  check(wrongFaces.length === 0, `every pooled rock carries ${ROCK_TIERS[LITTER_TIER].name}'s ${tierFaces} faces, whole -- the boulder is closed, so nothing is dropped`,
-    `${Math.min(...faceCounts)}..${Math.max(...faceCounts)} faces, ${wrongFaces.length} off`)
-
-  // A REAL SOLID, AND A UNIT-SIZED ONE. Span is measured the way check-rocks.mjs measures it, as the wider of the two horizontal extents, because that is what buildRock's `size` means -- height is a consequence of `squash` and is genuinely small on a flat shingle chip (0.10 against a span of 0.98), so a bound that treated all three axes alike would fail an entirely correct rock. Measured across the fifteen: span 0.98 to 1.05, and the thinnest vertical extent 0.10. The band below is a good deal wider than that on purpose but far narrower than the +/-80% BOX_MARGIN would technically permit, so it catches a build that stopped honouring `size: 1` while leaving the noise field room to move.
-  const SPAN_BAND = [0.8, 1.3]
-  const MIN_EXTENT = 0.02
-  let worstSpan = [Infinity, 0]
-  let thinnest = Infinity
-  const flat = []
-  const wrongSpan = []
-  pool.forEach((g, i) => {
-    g.computeBoundingBox()
-    const b = g.boundingBox
-    const ext = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z]
-    if (!ext.every((v) => Number.isFinite(v) && v > MIN_EXTENT)) flat.push(i)
-    thinnest = Math.min(thinnest, ...ext)
-    const span = Math.max(ext[0], ext[2])
-    worstSpan = [Math.min(worstSpan[0], span), Math.max(worstSpan[1], span)]
-    if (span < SPAN_BAND[0] || span > SPAN_BAND[1]) wrongSpan.push(i)
-  })
-  check(flat.length === 0, 'no pooled rock is a flat sheet or a point -- all three axes have real extent',
-    `thinnest axis ${thinnest.toFixed(3)}, floor ${MIN_EXTENT}`)
-  check(wrongSpan.length === 0, 'the pool is built at unit size, which is what makes LITTER_SIZE a measurement in metres',
-    `span ${worstSpan[0].toFixed(3)}..${worstSpan[1].toFixed(3)}, band ${SPAN_BAND[0]}..${SPAN_BAND[1]} (BOX_MARGIN would allow ${BOX_MARGIN.toFixed(1)})`)
-
-  const nan = pool.filter((g) => {
-    for (const name of LAYOUT) for (const v of g.attributes[name].array) if (!Number.isFinite(v)) return true
-    return false
-  })
-  check(nan.length === 0, 'nothing in the pool carries a NaN into the bake', `${nan.length} of ${pool.length}`)
-}
-
-// ---------------------------------------------------------------------------
-// 3. What one patch contains.
-// ---------------------------------------------------------------------------
-//
-// Everything here is measured on all four of the seeds bakeLitterSet actually bakes, and reported per seed, because a bound that passes on the mean of four patches can be hiding one patch that is wrong.
-
-console.log('\nplacements')
-
-const patches = BAKE_SEEDS.map((seed) => litterPlacements(seed, pool.length))
-
-{
-  const wrongCount = patches.filter((p) => p.length !== LITTER_STONES)
-  check(wrongCount.length === 0, `every patch drops ${LITTER_STONES} stones`, `${patches.map((p) => p.length).join(' ')}`)
-}
-
-{
-  // EVERY STONE LANDS WHOLE INSIDE THE PATCH. This is what keeps cut-off rocks off the border and what keeps the RepeatWrapping bilinear blend mixing transparent with transparent instead of dragging the far side of the patch across the near one. Measured as the stone's own outer edge, |centre| + size / 2, against the half-patch.
-  const half = LITTER_PATCH_M / 2
-  let worst = 0
-  let worstAt = ''
-  patches.forEach((p, i) => {
-    for (const s of p) {
-      for (const [axis, v] of [['x', s.x], ['z', s.z]]) {
-        const edge = Math.abs(v) + s.size / 2
-        if (edge > worst) { worst = edge; worstAt = `seed ${BAKE_SEEDS[i]} ${axis}` }
-      }
-    }
-  })
-  // Measured worst across the four seeds is 0.673 m against a half-patch of 0.800, so there is 13 cm of clear rim at the tightest stone in the whole set. Asserted at the half-patch itself rather than at a padded bound because this one is not a tuning question: a stone past 0.800 IS in the wrap border.
-  check(worst <= half, 'no stone reaches the patch border, so nothing is cut off and the wrap blend has only transparency to mix',
-    `worst outer edge ${worst.toFixed(3)} m at ${worstAt}, half-patch ${half.toFixed(3)} m`)
-
-  // AND IT HOLDS FOR A STONE THAT WAS NEVER ROLLED. The check above samples 296 stones; this one is the arithmetic, and it is the thing LITTER_MARGIN is actually FOR. It fails the moment somebody raises the top of the size range, or the reach, without touching the other, which is the realistic way it breaks.
-  //
-  // SWEPT RATHER THAN EVALUATED AT ONE POINT, because the drift's two bounds pull against each other along the radius: the centre can go furthest out at the rim, where LITTER_RIM_TAPER has taken most of the size range away, and the stone can be widest in the middle, where it cannot go far. The product is what has to clear the half-patch, so the sweep walks the radius and takes the worst of it instead of assuming the answer is at one end. (It is at the rim, at 0.749 m, but that is a fact about the current numbers and not something to build the check on.)
-  let worstPossible = 0
-  let worstT = 0
-  for (let i = 0; i <= 1000; i++) {
-    const t = i / 1000
-    const rim = 1 - LITTER_RIM_TAPER * smoothstep(LITTER_RIM_KNEE, 1, t)
-    const reach = LITTER_REACH * t + (LITTER_SIZE[0] + (LITTER_SIZE[1] - LITTER_SIZE[0]) * rim) / 2
-    if (reach > worstPossible) { worstPossible = reach; worstT = t }
-  }
-  check(worstPossible <= half, 'and the margin is wide enough for the largest stone the drift can roll anywhere along its radius, not just the ones it did',
-    `worst possible ${worstPossible.toFixed(3)} m at ${(worstT * 100).toFixed(0)}% of the reach, against ${half.toFixed(3)} m, margin ${(LITTER_MARGIN * 100).toFixed(0)}%`)
-}
-
-{
-  // THE SIZE ROLL IS SKEWED SMALL, WHICH IS THE WHOLE OF LITTER_SIZE_POW, and both ends are bounded because a one-sided bound would be green on a roll that had collapsed. The median is quoted as a fraction of the size range: a uniform roll medians at 0.500 and u^2 medians at 0.250, so the ceiling below sits between them and catches a power drifting back toward 1. Measured medians across the four seeds are 0.264, 0.194, 0.157 and 0.189 -- around and mostly under u^2's own 0.250 because LITTER_RIM_TAPER takes a further bite out of the range for every stone past the knee.
-  const MEDIAN_CEIL = 0.45
-  // AND THE OTHER END, MEASURED IN METRES RATHER THAN AS A FRACTION OF THE RANGE, and the change of unit is the point. A fraction of the range was the right reading while every stone rolled against the whole of it; now the taper hands most of the patch a shorter range, so "the top quarter of LITTER_SIZE" is a bar only the stones inside LITTER_RIM_KNEE can clear at all and the count says as much about the knee as about the roll. What the picture actually needs is stones big enough to READ as stones: at LITTER_PATCH_M / 128 the texel is 1.25 cm, so 15 cm is a dozen texels across and has a recognisable outline, where the 5 cm floor of the range is four texels and is grit. Measured 18, 15, 12 and 12 of them; the floor is set well under the thinnest seed because this catches a collapse to grit, it does not police the count.
-  const STONE_M = 0.15
-  const STONE_FLOOR = 6
-  const [minS, maxS] = LITTER_SIZE
-  const frac = (s) => (s - minS) / (maxS - minS)
-
-  const medians = patches.map((p) => {
-    const sorted = p.map((s) => s.size).sort((a, b) => a - b)
-    return frac(sorted[sorted.length >> 1])
-  })
-  const stones = patches.map((p) => p.filter((s) => s.size >= STONE_M).length)
-  const all = patches.flat().map((s) => s.size)
-
-  check(Math.max(...medians) < MEDIAN_CEIL, `the size roll is skewed small, which is what LITTER_SIZE_POW = ${LITTER_SIZE_POW} is for`,
-    `median at ${medians.map((v) => v.toFixed(3)).join(' / ')} of the range, uniform would be 0.500, ceiling ${MEDIAN_CEIL}`)
-  check(Math.min(...stones) >= STONE_FLOOR, 'and it has not collapsed to grit -- every patch still has stones with an outline in it',
-    `${stones.join(' / ')} stones at or over ${STONE_M} m (a dozen texels), floor ${STONE_FLOOR}`)
-  check(Math.min(...all) >= minS - 1e-9 && Math.max(...all) <= maxS + 1e-9, 'and no stone escapes LITTER_SIZE at either end',
-    `${Math.min(...all).toFixed(4)} .. ${Math.max(...all).toFixed(4)} m against ${minS} .. ${maxS}`)
-}
-
-{
-  // THE DRIFT TAPERS TO GRIT AT ITS RIM, which is the promise that actually dissolves the patch's edge and the one thing the lobed outline cannot do on its own: a 25 cm stone sitting at the rim IS the rim, however wavy the line it sits on. So the last thing before bare ground has to be small enough that the eye cannot find a boundary in it.
-  //
-  // Measured out past 80% of the reach, and read against the ceiling LITTER_RIM_TAPER itself imposes there rather than against a number typed in here -- the assertion is that no stone in the outer fifth is bigger than the taper's own arithmetic allows, so it stays true if the knee or the taper is retuned and fails if the taper is quietly disconnected from the roll. Note the test radius is measured against LITTER_REACH while the taper is a function of the radius against the LOBED edge, which is never longer: every stone past 0.8 of the reach is therefore past 0.8 of its own edge too, and the ceiling below is the loosest one that can apply to it.
-  const RIM_FROM = 0.8
-  const ceiling = LITTER_SIZE[0] + (LITTER_SIZE[1] - LITTER_SIZE[0]) * (1 - LITTER_RIM_TAPER * smoothstep(LITTER_RIM_KNEE, 1, RIM_FROM))
-  const rims = patches.map((p) => {
-    const out = p.filter((s) => Math.hypot(s.x, s.z) > RIM_FROM * LITTER_REACH)
-    return { n: out.length, max: out.length ? Math.max(...out.map((s) => s.size)) : 0 }
-  })
-  check(rims.every((r) => r.n > 0 && r.max <= ceiling + 1e-9),
-    'and the drift thins into bare ground rather than stopping on a line -- nothing at its rim is bigger than grit',
-    `biggest past ${(RIM_FROM * 100).toFixed(0)}% of the reach is ${rims.map((r) => r.max.toFixed(3)).join(' / ')} m against the taper's own ${ceiling.toFixed(3)} m ceiling there, on ${rims.map((r) => r.n).join(' / ')} stones, range top ${LITTER_SIZE[1]} m`)
-}
-
-{
-  // AND THE COVERED GROUND IS A DRIFT AND NOT A SQUARE, which is the complaint this shape exists to answer: stones dropped uniformly on an inset square put as much gravel in the four corners as in the middle, so the layer read as a square of gravel and two of them overlapping drew the join. Rasterised at the layer's own 128 texels, because the question is about the PICTURE and a summed footprint cannot see where the ground it covers is.
-  //
-  // A corner wedge is where both |x| and |z| are past 0.55 of the half-patch -- the region a square fills and a disc of any radius under 0.78 of the half-patch can barely graze. Against it, the middle, inside 0.35 of the half-patch on both axes. The retired square covered 9%, 7%, 8% and 8% of its corners at these same wedges; the drift covers 0%, 0%, 0.03% and 0.27%, those last two being a stone's shoulder leaning in at seeds 3 and 4. So the ceiling is a whisker rather than zero -- it is the difference between a corner that has gravel in it and a corner that has a stone's shoulder leaning into it, and the second is not what makes a patch read as square.
-  const CORNER_CEIL = 0.01
-  const MIDDLE_FLOOR = 0.15
-  const N = 128
-  const cell = LITTER_PATCH_M / N
-  const half = LITTER_PATCH_M / 2
-  const rows = patches.map((p) => {
-    const g = new Uint8Array(N * N)
-    for (const s of p) {
-      const rr = (s.size / 2) ** 2
-      const i0 = Math.max(0, Math.floor((s.x - s.size / 2 + half) / cell))
-      const i1 = Math.min(N - 1, Math.ceil((s.x + s.size / 2 + half) / cell))
-      const j0 = Math.max(0, Math.floor((s.z - s.size / 2 + half) / cell))
-      const j1 = Math.min(N - 1, Math.ceil((s.z + s.size / 2 + half) / cell))
-      for (let j = j0; j <= j1; j++) {
-        const dz = (j + 0.5) * cell - half - s.z
-        for (let i = i0; i <= i1; i++) {
-          const dx = (i + 0.5) * cell - half - s.x
-          if (dx * dx + dz * dz <= rr) g[j * N + i] = 1
-        }
-      }
-    }
-    let ch = 0, ct = 0, mh = 0, mt = 0
-    for (let j = 0; j < N; j++) {
-      for (let i = 0; i < N; i++) {
-        const ax = Math.abs((i + 0.5) * cell - half) / half
-        const az = Math.abs((j + 0.5) * cell - half) / half
-        if (ax > 0.55 && az > 0.55) { ct++; ch += g[j * N + i] }
-        else if (ax < 0.35 && az < 0.35) { mt++; mh += g[j * N + i] }
-      }
-    }
-    return { corner: ch / ct, middle: mh / mt }
-  })
-  check(rows.every((r) => r.corner <= CORNER_CEIL && r.middle > MIDDLE_FLOOR),
-    'and the ground it covers has no corners in it -- the patch reads as a drift rather than as a square of gravel',
-    `corners ${rows.map((r) => `${(r.corner * 100).toFixed(2)}%`).join(' / ')} against middles ${rows.map((r) => `${(r.middle * 100).toFixed(0)}%`).join(' / ')}, ceiling ${(CORNER_CEIL * 100).toFixed(0)}% and floor ${(MIDDLE_FLOOR * 100).toFixed(0)}% (the retired square covered 7-9% of its corners)`)
-}
-
-{
-  // COVERAGE IS A BAND, NOT A FLOOR. The header's target is "a little under half": above that the transparent gaps close up and the layer becomes a solid grey tile that shows a visible square wherever two patches overlap, below it the stamp stops being worth its two triangles. Summed circular footprint over patch area, which reads a little high against what the bake reports because it ignores overlap, and that is fine as long as the bound is set from the same measurement. Measured 40.6%, 25.7%, 25.0% and 29.8% across the four seeds; the band sits about 4 points below the emptiest and 3 above the fullest, with the upper end still under the "under half" the header promises. The spread is wider than the square's was, twice over: a seed that rolls small also loses the taper's bite, and widening LITTER_SIZE's top to 0.34 means one big stone moves the summed footprint further than it used to. Seed 1 is the reason the ceiling is not tighter.
-  const COVER_BAND = [0.20, 0.44]
-  const area = LITTER_PATCH_M * LITTER_PATCH_M
-  const covers = patches.map((p) => p.reduce((sum, s) => sum + Math.PI * (s.size / 2) ** 2, 0) / area)
-  check(covers.every((c) => c > COVER_BAND[0] && c < COVER_BAND[1]),
-    'the ground is strewn, not paved -- enough stone to read as litter and enough gap to read through',
-    `${covers.map((c) => `${(c * 100).toFixed(1)}%`).join(' / ')} of the patch, band ${(COVER_BAND[0] * 100).toFixed(0)}-${(COVER_BAND[1] * 100).toFixed(0)}%`)
-}
-
-{
-  // ENOUGH COLOURS THAT IT DOES NOT READ AS TWO. LITTER_TINTS is the whole palette bar one, so seven is the ceiling and all four patches hit it; the floor of 5 is what stops a rework that narrowed the roll turning a patch into stripes of two greys.
-  const TINT_FLOOR = 5
-  const distinct = patches.map((p) => new Set(p.map((s) => s.tint)).size)
-  check(Math.min(...distinct) >= TINT_FLOOR, 'a patch carries a spread of stone colours rather than two',
-    `${distinct.join(' / ')} distinct tints out of ${LITTER_TINTS.length} available, floor ${TINT_FLOOR}`)
-
-  const bad = patches.flat().filter((s) => !Number.isInteger(s.tint) || s.tint < 0 || s.tint >= TINTS.length)
-  check(bad.length === 0, 'and every tint rolled is a real entry in the rock palette', `${bad.length} of ${patches.flat().length} out of range, ${TINTS.length} tints`)
-
-  // Found by name rather than by index, because `lichen`'s position in TINTS is not a thing litter.js knows or should know -- LITTER_TINTS filters on the name too, and hardcoding 6 here would leave this check quietly asserting nothing the day somebody reorders the palette.
-  const lichen = TINTS.findIndex(([name]) => name === 'lichen')
-  check(lichen >= 0, 'the palette still has a `lichen` entry for the litter roll to exclude', `TINTS[${lichen}]`)
-  const green = patches.flat().filter((s) => s.tint === lichen).length
-  check(green === 0, 'no chip of litter wears lichen -- loose stone has moved too recently to have grown any',
-    `${green} of ${patches.flat().length} stones`)
-}
-
-{
-  const bad = patches.flat().filter((s) => !Number.isInteger(s.shape) || s.shape < 0 || s.shape >= pool.length)
-  check(bad.length === 0, 'every stone points at a rock that is actually in the pool',
-    `${bad.length} of ${patches.flat().length} out of range, pool of ${pool.length}`)
-}
-
-// ---------------------------------------------------------------------------
-// 3b. What the rig does to those tints.
-// ---------------------------------------------------------------------------
-//
-// bakeLitter is never called here -- there is no GL context, see the header -- but its EXPOSURE is arithmetic, and arithmetic is exactly what node can hold. A stone's crown faces straight up, so it takes the key head on and the whole hemisphere besides: LITTER_KEY * 1 + LITTER_SKY of the tint's own linear albedo. The render target is 8-bit and `toneMapped: false`, so a crown over 1.0 does not come out bright, it comes out WHITE -- the stone loses its colour and its form in the same texel, and every other check in this file stays green while it happens. That is what the old 1.35 / 0.95 rig did to the palest tints in the list.
-//
-// The albedo is reconstructed the long way, TINT_GAIN[t][c] * ROCK_TILE_MEAN[c], rather than read back off the hex, because that product is precisely what the bake material puts on the screen: `color` is the gain and the photograph it multiplies averages the mean. So this fails too if TINT_GAIN ever stops dividing the tile's mean out and the gains stop meaning "land on the authored colour".
-//
-// Two-sided, because the cheap way to satisfy a ceiling is to turn the rig off. A crown at 0.2 is not a stone in daylight, it is a stone in a cupboard, and the world's own lighting on the quad only trims from what the bake landed.
-
-console.log('\nexposure')
-
-{
-  const CROWN_BAND = [0.25, 0.98]
-  const OLD_RIG = 1.35 + 0.95
-  const lit = LITTER_KEY + LITTER_SKY
-
-  let worst = [-Infinity, '', 0]
-  for (const t of LITTER_TINTS) {
-    for (let c = 0; c < 3; c++) {
-      const albedo = TINT_GAIN[t][c] * ROCK_TILE_MEAN[c]
-      if (albedo > worst[0]) worst = [albedo, TINTS[t][0], c]
-    }
-  }
-  const crown = worst[0] * lit
-  check(crown >= CROWN_BAND[0] && crown <= CROWN_BAND[1],
-    'the bake rig cannot blow a stone\'s crown to white whatever tint it draws, and has not bought that by turning itself down to nothing',
-    `brightest of the ${LITTER_TINTS.length} litter tints is ${worst[1]}'s ${'rgb'[worst[2]]} at ${worst[0].toFixed(3)} linear albedo, ` +
-      `${crown.toFixed(3)} under KEY ${LITTER_KEY} + SKY ${LITTER_SKY} = ${lit.toFixed(2)}, band ${CROWN_BAND[0]}-${CROWN_BAND[1]} ` +
-      `(the old 1.35 + 0.95 rig gave that same texel ${(worst[0] * OLD_RIG).toFixed(3)} and clipped it flat)`)
-}
-
-// ---------------------------------------------------------------------------
-// 4. The same seed is the same patch, and four seeds are four patches.
-// ---------------------------------------------------------------------------
-//
-// Both halves matter and they fail in opposite directions. Without determinism the bake stops being reproducible and a patch cannot be reasoned about at all. Without variation the four layers are one layer baked four times, the scatter's roll buys nothing, and the hillside is stamped with the same photograph everywhere -- which is the failure that would look like a texturing bug rather than like a seeding bug.
-
-console.log('\nseeds')
-
-{
-  const key = (p) => p.map((s) => `${s.shape}|${s.tint}|${s.size}|${s.x}|${s.z}|${s.yaw}`).join(' ')
-  const repeat = BAKE_SEEDS.map((seed) => key(litterPlacements(seed, pool.length)) === key(patches[BAKE_SEEDS.indexOf(seed)]))
-  check(repeat.every(Boolean), 'the same seed is the same patch, every time', `${repeat.filter(Boolean).length} of ${repeat.length} seeds reproduce`)
-}
-
-{
-  // A REAL DIFFERENCE, not merely a different object. Two things measured, because either one alone has a cheap way of passing: the multiset of shapes says the patches are not drawing the same rocks in the same proportions, and the centre of mass says they are not laid out the same way. Measured centre separations are 2.1 cm at the closest pair and 15.6 cm at the furthest, against patches 1.6 m across; the floor of 1 cm is set below the closest pair and is there to catch two seeds that have collapsed onto one stream, not to police how far apart they wander.
-  const CENTRE_FLOOR = 0.01
-  const hist = (p) => {
-    const h = new Array(pool.length).fill(0)
-    for (const s of p) h[s.shape]++
-    return h.join(',')
-  }
-  const centre = (p) => [p.reduce((a, s) => a + s.x, 0) / p.length, p.reduce((a, s) => a + s.z, 0) / p.length]
-  const hists = patches.map(hist)
-  const centres = patches.map(centre)
-
-  const sameShapes = []
-  let closest = Infinity
-  let closestAt = ''
-  for (let i = 0; i < patches.length; i++) {
-    for (let j = i + 1; j < patches.length; j++) {
-      if (hists[i] === hists[j]) sameShapes.push(`${BAKE_SEEDS[i]}/${BAKE_SEEDS[j]}`)
-      const d = Math.hypot(centres[i][0] - centres[j][0], centres[i][1] - centres[j][1])
-      if (d < closest) { closest = d; closestAt = `${BAKE_SEEDS[i]}/${BAKE_SEEDS[j]}` }
-    }
-  }
-  check(sameShapes.length === 0, 'no two of the four baked patches draw the same rocks in the same proportions',
-    sameShapes.length ? `seeds ${sameShapes.join(' ')} identical` : `${patches.length} distinct shape histograms`)
-  check(closest > CENTRE_FLOOR, 'and no two of them are laid out on top of each other',
-    `closest pair ${(closest * 100).toFixed(1)} cm apart at seeds ${closestAt}, floor ${(CENTRE_FLOOR * 100).toFixed(0)} cm, patch is ${(LITTER_PATCH_M * 100).toFixed(0)} cm across`)
-}
-
-for (const g of pool) g.dispose()
-
-// ###########################################################################
-// THE OTHER HALF: the scatter that stamps the bake on the hill.
-//
-// Everything above is a photograph nobody has looked at yet. Everything below is where those four pictures LAND: src/v2/render/litter.js, class Litter, a tiled camera-following scatter that lays one 2-triangle quad flat on the terrain per stamp. It is RockBed's machine minus the variant bank and minus the LOD ladder, and the parts it shares with the other four scatters -- tiles, ranks, graded thinning, the build budget, the rim dissolve -- are gated on the trees and the rocks and are not re-argued here.
-//
-// What is new, and what sections 5 to 12 hold, is the part that is LITTER: that the ground a player walks on has stones on it at a spacing measured in METRES, that a face gets none and gets none for the RIGHT REASON, that a lake bed gets the most stone in the world and gets it from the pass that exists to put it there, that the drift field is doing what it costs nothing to do, and that every stamp is on the ground, flat, square and pointing somewhere.
-//
-// THE ONE THAT MATTERS IS THE FIRST. This whole subsystem exists because a previous "more stone" change doubled a ratio inside one rock bed, moved the real sight from a rock every 15 m to a rock every 10.6 m, and left every gate green -- because the gate asserted the ratio. Section 5 asserts metres.
-//
-// A NOTE ON HOW THE CONSTANTS GET HERE. render/litter.js exports only the class, so MAX_SLOPE_DEG, CLIFF_TAN, LITTER_LIFT, LITTER_LIFT_VARY, SCALE, ENV_DENSITY, DENSITY and FULL_RADIUS are module-private and cannot be imported. They are READ OUT OF THE SOURCE TEXT below with a regex rather than copied into this file as literals, because a copied literal is not a gate: it goes on passing after somebody edits the module, which is the exact failure this file is meant to prevent. The three of them the class re-exposes as instance state (maxSlopeTan, fullRadius, perTile) are cross-checked against what the regex read, so a regex that has silently stopped matching the live line fails instead of quietly reading a stale number.
-// ###########################################################################
-
-console.log(`\n=== litter scatter, ${LITTER_PATCH_M} m stamps on the hill ===\n`)
-
-// The reader for those private constants. Anchored to `^const NAME = ` so a number that only appears in a COMMENT can never be picked up, and throwing rather than defaulting when the shape of the line changes -- a gate that quietly substitutes a fallback for a constant it can no longer find is worse than no gate.
+// The reader for the private constants. Anchored to `^const NAME = ` so a number that only appears in a COMMENT can never be picked up, and throwing rather than defaulting when the shape of the line changes -- a gate that quietly substitutes a fallback for a constant it can no longer find is worse than no gate.
 const SRC = readFileSync(new URL('../src/v2/render/litter.js', import.meta.url), 'utf8')
 const srcOf = (name, pattern) => {
-  const m = SRC.match(new RegExp(`^const ${name} = ${pattern}$`, 'm'))
+  const m = SRC.match(new RegExp(`^(?:export )?const ${name} = ${pattern}$`, 'm'))
   if (!m) throw new Error(`check-litter: could not read ${name} out of src/v2/render/litter.js -- the line has changed shape and the regex in this gate needs updating`)
   return m
 }
@@ -396,22 +38,63 @@ const srcRates = (name) => JSON.parse(`{${srcOf(name, '\\{([^}]*)\\}')[1].replac
 
 const MAX_SLOPE_DEG = srcNum('MAX_SLOPE_DEG')
 const CLIFF_DEG = srcDeg('CLIFF_TAN')
-const LITTER_LIFT = srcNum('LITTER_LIFT')
-const LITTER_LIFT_VARY = srcNum('LITTER_LIFT_VARY')
-const SCALE = srcPair('SCALE')
+const SIZE = srcPair('SIZE')
+const SIZE_POW = srcNum('SIZE_POW')
+const STRETCH = srcPair('STRETCH')
+const FLAT = srcPair('FLAT')
+const SINK = srcPair('SINK')
+const TONE = srcPair('TONE')
 const ENV_DENSITY = srcRates('ENV_DENSITY')
 const CLUMP_FLOOR = srcNum('CLUMP_FLOOR')
 const CLUMP_GAIN = srcNum('CLUMP_GAIN')
+const CLUMP_CELL = srcNum('CLUMP_CELL')
+const FINE_CELL = srcNum('FINE_CELL')
+const FINE_SWING = srcNum('FINE_SWING')
+const SNOW_KEEP = srcNum('SNOW_KEEP')
+const GROUND_SHARE = srcNum('GROUND_SHARE')
 const DENSITY = srcNum('DENSITY')
+const TILE = srcNum('TILE')
 const FULL_RADIUS = srcNum('FULL_RADIUS')
+const RADIUS = srcNum('RADIUS')
+
+console.log('\n=== litter checks: one T20 pebble, scattered ===\n')
 
 // ---------------------------------------------------------------------------
-// 5. Stones on the ground you walk on, counted in metres.
+// 1. The stone itself.
 // ---------------------------------------------------------------------------
 //
-// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with flattenAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span, so the flat worlds sit low on the shading ramp and the peak world sits at the top of it. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the lift assertions in section 10 exact.
+// One geometry for the whole layer, and everything the layer costs is a multiple of what it has. Twenty faces is the coarsest rung of the rock ladder and is the whole argument for the layer being geometry at all; a rung that grew would multiply the tri count of every pebble on the ground without any count in the panel changing.
 
-console.log('spacing')
+console.log('pebble')
+
+{
+  const geo = buildPebble()
+  const tris = geo.index.count / 3
+  const want = ROCK_TIERS[PEBBLE_TIER].faces
+  check(tris === want && tris <= 20, 'the pebble is the coarsest rung of the rock ladder: twenty triangles, closed, and nothing more',
+    `${tris} tris, ${geo.attributes.position.count} verts, rung ${PEBBLE_TIER} of ${ROCK_TIERS.length} is ${want} faces`)
+
+  // Built at unit size so the matrix scale is metres of stone directly. `size` is buildRock's largest horizontal extent, so the measured width is 1 and the height is the fraction the sink is taken of.
+  const m = geo.userData.rock.measured
+  check(Math.abs(m.width - 1) < 1e-6 && m.height > 0.3 && m.height < 0.8,
+    'and it is built at unit width, standing a plausible fraction of that tall, so the matrix scale is metres of pebble',
+    `width ${m.width.toFixed(4)} m, depth ${m.depth.toFixed(3)}, height ${m.height.toFixed(3)}`)
+
+  // Closed underneath: the half of the pebble under the ground is culled as back faces and never bedded on a skirt. A `sit` build would leave the underside open and the ground's cut through it would show the inside.
+  geo.computeBoundingBox()
+  check(geo.boundingBox.min.y <= 1e-6 && geo.boundingBox.min.y > -m.height * 0.5,
+    'and its bed plane is y = 0, so a pebble sunk by a fraction of its height is sunk by that much and no more',
+    `bounding box y ${geo.boundingBox.min.y.toFixed(4)} to ${geo.boundingBox.max.y.toFixed(4)}`)
+  geo.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 2. Stones on the ground you walk on, counted per square metre.
+// ---------------------------------------------------------------------------
+//
+// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with flattenAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the sink assertions in section 7 exact.
+
+console.log('\ndensity')
 
 const world = (h, tan, snowLine, level) => ({
   field: {
@@ -431,7 +114,7 @@ const world = (h, tan, snowLine, level) => ({
   },
 })
 
-// A world with real RELIEF in it, which no flat stub can have, and the only one here where the slope test partly bites instead of refusing everything or nothing. Amplitude and wavelength are check-rocks.mjs's: tan tops out at 1.10 (48 deg), so a little over half the ridge is past MAX_SLOPE_DEG and the rest is walkable ground. `tan` is the field's own analytic gradient rather than a constant, so the slope the scatter tests and the height the stamps are laid on describe one hill rather than two.
+// A world with real RELIEF in it, which no flat stub can have, and the only one here where the slope test partly bites instead of refusing everything or nothing. Amplitude and wavelength are check-rocks.mjs's: tan tops out at 1.10 (48 deg), so a stretch of the ridge is past MAX_SLOPE_DEG and the rest is walkable ground. `tan` is the field's own analytic gradient rather than a constant, so the slope the scatter tests and the height the pebbles are bedded on describe one hill rather than two.
 const RIDGE_A = 22
 const RIDGE_L = 20
 const ridge = {
@@ -443,7 +126,7 @@ const ridge = {
       return out
     },
     heightAt: (x) => 900 + RIDGE_A * Math.sin(x / RIDGE_L),
-    snowLineAt: () => 880,
+    snowLineAt: () => 1000,
     bands: { altLo: 0, altSpan: 900 },
   },
   water: { levelAt: () => null, isSubmerged: () => false },
@@ -459,11 +142,12 @@ const build = (w, seed = SEED) => {
   return l
 }
 
-// `cliff` is 38.7 deg: past MAX_SLOPE_DEG and, deliberately, still short of the 42 deg _envAt calls a cliff. See section 6. `lake` puts the water level above the ground so everything is submerged; `shore` puts it 0.5 m BELOW the ground, which _envAt still reads as `river` -- the same environment name, nothing under water.
+// `face` is 40.7 deg: past MAX_SLOPE_DEG and, deliberately, still short of the 42 deg _envAt calls a cliff. See section 3. `peak` is high ground 50 m under its snow line, which _envAt calls `peak` (PEAK_BELOW_SNOW is 55) and shade() paints bare (the snow band is 90 m, centred on the line, so cover starts 45 m under it); `snow` is the same ground 70 m above the line, fully white. `lake` puts the water level above the ground so everything is submerged; `shore` puts it 0.5 m BELOW the ground, which _envAt still reads as `river` -- the same environment name, nothing under water.
 const worlds = {
   forest: build(world(60, 0, 9999, null)),
-  cliff: build(world(60, 0.8, 9999, null)),
-  peak: build(world(900, 0.5, 880, null)),
+  face: build(world(60, 0.86, 9999, null)),
+  peak: build(world(850, 0.5, 900, null)),
+  snow: build(world(950, 0.5, 880, null)),
   lake: build(world(60, 0, 9999, 60.8)),
   shore: build(world(60, 0, 9999, 59.5)),
   ridge: build(ridge),
@@ -474,127 +158,131 @@ const liveIds = (l) => {
   for (const t of l.tiles.values()) for (let k = 0; k < t.n; k++) out.push(t.ids[k])
   return out
 }
-// Mean spacing inside the full-density radius, in metres: the side of the square each stamp has to itself. Counted inside `fullRadius` and nowhere else, because past it the graded thinning takes over and a disc that straddled the boundary would report the thinning rather than the density.
+// Stones per square metre inside the full-density radius. Counted inside `fullRadius` and nowhere else, because past it the graded thinning takes over and a disc that straddled the boundary would report the thinning rather than the density.
 const nearCount = (l) => liveIds(l).filter((id) => l.instX[id] ** 2 + l.instZ[id] ** 2 < l.fullSq).length
-const spacing = (l) => {
-  const n = nearCount(l)
-  return n ? Math.sqrt((Math.PI * l.fullRadius * l.fullRadius) / n) : Infinity
-}
+const perM2 = (l) => nearCount(l) / (Math.PI * l.fullRadius * l.fullRadius)
+// What the dry pass laid: every candidate that reached the terrain and was refused by nothing. Rock refusals are zero on every stub here (no `rocks` is passed).
+const dryLaid = (s) => s.samples - s.rejected.slope - s.rejected.env
 
 {
-  // The regexes above, checked against the three constants the class re-exposes. If one of them has gone stale every bound in this half is being measured against a number the module no longer holds.
+  // The regexes above, checked against the constants the class re-exposes. If one of them has gone stale every bound in this file is being measured against a number the module no longer holds.
   const l = worlds.forest
   const readBack = Math.atan(l.maxSlopeTan) * (180 / Math.PI)
-  check(Math.abs(readBack - MAX_SLOPE_DEG) < 1e-9 && l.fullRadius === FULL_RADIUS && l.perTile === Math.max(1, Math.round(l.tile * l.tile * DENSITY)),
+  check(Math.abs(readBack - MAX_SLOPE_DEG) < 1e-9 && l.fullRadius === FULL_RADIUS && l.radius === RADIUS && l.tile === TILE &&
+    l.perTile === Math.max(1, Math.round(l.tile * l.tile * DENSITY)),
     'the constants this gate read out of the module source are the ones the class is actually running on',
-    `MAX_SLOPE_DEG ${MAX_SLOPE_DEG} = atan(maxSlopeTan) ${readBack.toFixed(3)}, FULL_RADIUS ${FULL_RADIUS} = fullRadius ${l.fullRadius}, DENSITY ${DENSITY} -> ${l.perTile} candidates per ${l.tile} m tile`)
+    `MAX_SLOPE_DEG ${MAX_SLOPE_DEG} = atan(maxSlopeTan) ${readBack.toFixed(3)}, FULL_RADIUS ${FULL_RADIUS}, RADIUS ${RADIUS}, DENSITY ${DENSITY} -> ${l.perTile} candidates per ${l.tile} m tile`)
+
+  // The drift lattice has to be coarser than the tile, or the drifts line up with the tile grid and the seams show as rows.
+  check(CLUMP_CELL > TILE, 'and the drift lattice is coarser than the tile it is sampled in', `CLUMP_CELL ${CLUMP_CELL} m over TILE ${TILE} m`)
 }
 
 {
-  // METRES BETWEEN STAMPS, TWO-SIDED, AND IT IS THE REASON THIS SECTION EXISTS. A ratio is not a sight: doubling one moved a rock every 15 m to a rock every 10.6 m and looked identical. This is the sight.
+  // STONES PER SQUARE METRE ON THE GROUND SHE WALKS, TWO-SIDED. Measured at seed 7 inside the 8 m full-density radius: see the printout; §22 carries the table.
   //
-  // Measured at seed 7 inside the 26 m full-density radius: 3.7 m in a wood, 3.4 m on a peak, 3.3 m on a shore.
-  //
-  // THE CEILING IS THE SPARSE END and is the bug that was just fixed: at the old DENSITY of 0.08 these read 6.1 / 4.6 / 3.3 m, so 4.4 sits under the peak's old 4.6 and a revert fails here on two worlds out of three. The shore does not move between the two densities at all -- it saturates, see section 7 -- which is precisely why the check runs on three grounds and not on the densest one.
-  //
-  // THE FLOOR IS THE PAVED END. A stamp is LITTER_PATCH_M x SCALE across, so 1.8 m a side at the middle of the range: at a spacing near that the squares meet edge to edge, two overlapping rectangles of gravel show their corners, and the trick stops working. 2.5 m is where a straight doubling of DENSITY would land (3.3 / sqrt(2) = 2.33), so this end catches the opposite mistake to the one that was just made.
-  //
-  // Counting noise on 150-200 stamps is about 4% of the spacing, so both ends are several times clear of a seed change.
-  const SPACING_BAND = [2.5, 4.4]
-  const side = LITTER_PATCH_M * ((SCALE[0] + SCALE[1]) / 2)
-  const walked = ['forest', 'peak', 'shore']
-  const spacings = walked.map((n) => spacing(worlds[n]))
-  check(spacings.every((s) => s > SPACING_BAND[0] && s < SPACING_BAND[1]),
-    'the ground you walk on has stones on it, close enough together to notice and far enough apart to read as strewn',
-    walked.map((n, i) => `${n} one per ${spacings[i].toFixed(1)} m (${nearCount(worlds[n])} stamps, ${((side * side) / (spacings[i] * spacings[i]) * 100).toFixed(0)}% of the ground covered)`).join(', ') +
-      `, band ${SPACING_BAND[0]}-${SPACING_BAND[1]} m`)
+  // THE FLOOR IS THE SPARSE END: under about half a stone per square metre the ground reads as bare with the odd pebble on it, which is what the layer exists not to be. THE CEILING IS THE PAVED END: past two a stone every 70 cm in every direction is a gravel yard, and it is also where the instance count stops being a few tens of thousands. Counting noise on ~200 stones is about 7%, so both ends are several times clear of a seed change. The shore is not in the walked set because it saturates (section 5) and would not move with DENSITY.
+  const DENSITY_BAND = [0.6, 2.0]
+  const walked = ['forest', 'peak']
+  const dens = walked.map((n) => perM2(worlds[n]))
+  check(dens.every((d) => d > DENSITY_BAND[0] && d < DENSITY_BAND[1]),
+    'the ground you walk on has stones on it, enough to notice and few enough to read as strewn',
+    walked.map((n, i) => `${n} ${dens[i].toFixed(2)} per m² (${nearCount(worlds[n])} inside ${FULL_RADIUS} m)`).join(', ') +
+      `, shore ${perM2(worlds.shore).toFixed(2)}, band ${DENSITY_BAND[0]}-${DENSITY_BAND[1]}`)
 }
 
 {
-  // AND A FACE IS NOT STREWN GROUND. On the sine ridge a little over half the candidates are past the slope limit, so the litter thins to one stamp per 6.7 m, and that is the answer wanted there rather than a failure. Two-sided again, and both ends are real: it must thin (a ridge uniformly as strewn as a wood means the slope test is not biting) and it must not empty (a hill with no litter on any of its walkable ground means the test is biting everything).
-  const RIDGE_THIN = [1.25, 3.0]
-  const ratio = spacing(worlds.ridge) / spacing(worlds.forest)
+  // AND SNOW COVERS MOST OF IT. The same peak under full snow cover carries about SNOW_KEEP of the bare peak's stone -- somewhat under it, because the bare peak's rate saturates at the top of the drift and the snowed one never does. A band about the constant rather than a ratio check on one draw, since counting noise on ~70 stones is 12%.
+  const bare = nearCount(worlds.peak)
+  const snowed = nearCount(worlds.snow)
+  const ratio = snowed / bare
+  check(worlds.snow._envAt(0, 0, 950, 0.5, 880) === 'peak' && worlds.peak._envAt(0, 0, 850, 0.5, 900) === 'peak' &&
+    ratio > SNOW_KEEP * 0.5 && ratio < SNOW_KEEP * 1.3 && snowed > 20,
+    'a snowfield keeps about a quarter of the stone the same bare ground carries',
+    `${snowed} on snow against ${bare} bare inside ${FULL_RADIUS} m, ${ratio.toFixed(2)}x against SNOW_KEEP ${SNOW_KEEP}`)
+}
+
+{
+  // AND A FACE IS NOT STREWN GROUND. On the sine ridge the steep stretches are past the slope limit, so the litter thins, and that is the answer wanted there rather than a failure. Counted over the WHOLE resident disc rather than inside the full radius, because the ridge's steepest face is at x = 0 and the 8 m disc there is all of it refused -- the walkable ground begins 18 m out, in the thinned tail, and is about a quarter of the resident disc. Both worlds hold the same tiles at the same thinning levels and both are bare `forest`, so the ratio of totals is the slope test's share alone, thinned. Two-sided: it must thin (a ridge as strewn as a wood means the slope test is not biting) and it must not empty (a hill with no litter on any of its walkable ground means the test is biting everything).
+  const RIDGE_THIN = [0.06, 0.5]
+  const ratio = worlds.ridge.stats.placed / worlds.forest.stats.placed
   const s = worlds.ridge.stats
-  check(ratio > RIDGE_THIN[0] && ratio < RIDGE_THIN[1] && s.placed > 0,
+  check(ratio > RIDGE_THIN[0] && ratio < RIDGE_THIN[1] && s.placed > 0 && s.rejected.slope > 0,
     'and litter thins out where the hill stands up, without abandoning the walkable ground between the faces',
-    `one per ${spacing(worlds.ridge).toFixed(1)} m on the ridge against ${spacing(worlds.forest).toFixed(1)} m in the wood, ${ratio.toFixed(2)}x (band ${RIDGE_THIN[0]}-${RIDGE_THIN[1]}), ${s.rejected.slope} of ${s.samples} candidates refused for slope`)
+    `${s.placed} pebbles on the ridge against ${worlds.forest.stats.placed} in the wood over the same tiles, ${ratio.toFixed(2)}x (band ${RIDGE_THIN[0]}-${RIDGE_THIN[1]}), ${s.rejected.slope} of ${s.samples} candidates refused for slope`)
 }
 
 // ---------------------------------------------------------------------------
-// 6. A cliff face, and the branch of ENV_DENSITY that cannot be reached.
+// 3. A steep face, and the branch of ENV_DENSITY that cannot be reached.
 // ---------------------------------------------------------------------------
 //
-// "The cliff world places zero" is a one-sided bound and would stay green for the wrong reason -- an ENV_DENSITY.cliff that had gone to zero for the wrong ground, an environment test misnaming the slope, a scatter that had stopped placing anything anywhere. So what is asserted is the MECHANISM: the slope test refused every candidate that survived the drift field, and nothing else refused anything.
+// "The face world places zero" is a one-sided bound and would stay green for the wrong reason -- an ENV_DENSITY.cliff that had gone to zero for the wrong ground, an environment test misnaming the slope, a scatter that had stopped placing anything anywhere. So what is asserted is the MECHANISM: the slope test refused every candidate that survived the drift field, and nothing else refused anything.
 
 console.log('\nslope')
 
 {
-  const s = worlds.cliff.stats
+  const s = worlds.face.stats
   // `samples` is incremented after the drift test and before the slope test, so `slope === samples` says exactly "every candidate that reached the terrain was refused for being too steep" without this file having to know how many candidates a tile rolls.
   check(s.placed === 0 && s.rejected.slope === s.samples && s.rejected.env === 0,
-    'a cliff face gets no litter, and it is the slope test that refuses it rather than anything downstream',
+    'a steep face gets no litter, and it is the slope test that refuses it rather than anything downstream',
     `${s.placed} placed, ${s.rejected.slope} of ${s.samples} refused for slope, env ${s.rejected.env}`)
 }
 
 {
-  // THE TRAP DOCUMENTED AT ENV_DENSITY, ASSERTED. MAX_SLOPE_DEG (34) is strictly below the angle _envAt calls a cliff (CLIFF_TAN, 42 deg), so no candidate can ever carry the name `cliff` into the environment test -- the slope test has already said no. ENV_DENSITY.cliff is therefore dead code held at 0 on purpose, so that raising MAX_SLOPE_DEG past 42 cannot quietly start stamping flat pictures of gravel onto vertical rock.
+  // THE TRAP DOCUMENTED AT ENV_DENSITY, ASSERTED. MAX_SLOPE_DEG is strictly below the angle _envAt calls a cliff (CLIFF_TAN, 42 deg), so no candidate can ever carry the name `cliff` into the environment test -- the slope test has already said no. ENV_DENSITY.cliff is therefore dead code held at 0 on purpose, so that raising MAX_SLOPE_DEG past 42 cannot quietly start bedding pebbles into vertical rock.
   //
-  // Both halves are asserted, and the first is asserted twice over: once as arithmetic on the two constants, and once by asking the live _envAt what it calls the STEEPEST ground the scatter will admit. If somebody raises MAX_SLOPE_DEG past 42 this goes red, which is the point: the branch comes alive and a person has to decide about it on purpose.
-  const steepest = worlds.cliff._envAt(0, 0, 60, worlds.cliff.maxSlopeTan, 9999)
+  // Both halves are asserted, and the first is asserted twice over: once as arithmetic on the two constants, and once by asking the live _envAt what it calls the STEEPEST ground the scatter will admit.
+  const steepest = worlds.face._envAt(0, 0, 60, worlds.face.maxSlopeTan, 9999)
   check(MAX_SLOPE_DEG < CLIFF_DEG && steepest !== 'cliff' && ENV_DENSITY.cliff === 0,
-    'no stamp can ever reach the `cliff` rate, so it is held at zero rather than at a plausible-looking number',
+    'no pebble can ever reach the `cliff` rate, so it is held at zero rather than at a plausible-looking number',
     `MAX_SLOPE_DEG ${MAX_SLOPE_DEG} deg < CLIFF_TAN's ${CLIFF_DEG} deg, the steepest admitted ground is \`${steepest}\`, ENV_DENSITY.cliff ${ENV_DENSITY.cliff}`)
 }
 
 // ---------------------------------------------------------------------------
-// 7. Under the water, and beside it.
+// 4. Under the water, and beside it.
 // ---------------------------------------------------------------------------
 //
-// Two worlds and the same environment name in both, which is the whole point of the pair. `river` above the ground and `river` below it are the same rate to ENV_DENSITY, so the environment test cannot be what makes a bed denser than a bank -- it is saturated on both and has nothing left to give. What separates them is the WET PASS, which offers WET_DENSITY more candidates per square metre out of tileSeed slot 1 and throws away everything not standing under water. A gate with only the bank in it would be perfectly green on a scatter that had lost the second pass entirely, and a gate that only counted the bed's stamps would be green on one that had bought them by raising a rate -- which is the mistake this whole subsystem exists to catch, and which cannot even work here because river is already at its cap.
+// Two worlds and the same environment name in both, which is the whole point of the pair. `river` above the ground and `river` below it are the same rate to ENV_DENSITY, so the environment test cannot be what makes a bed denser than a bank -- it is saturated on both and has nothing left to give. What separates them is the WET PASS, which offers WET_DENSITY more candidates per square metre out of tileSeed slot 1 and throws away everything not standing under water.
 
 console.log('\nwater')
 
 {
-  // THE BED IS LITTERED AND IT IS THE SECOND PASS THAT DOES IT. This file used to assert the opposite -- that a lake bed got nothing and the submersion test was what stopped it -- and the claim was backwards: a riverbed and a lake floor are exactly where loose stone is washed, sorted and left, so the one ground with no litter at all should have had the most of it.
+  // THE BED IS LITTERED AND IT IS THE SECOND PASS THAT DOES IT. Asserted as the mechanism rather than as the count, because "the lake world places a lot" would stay green on a dry pass that had simply stopped testing water while the wet pass did nothing. `samplesWet` is incremented only by candidates that cleared the drift floor AND found a water level; `rejectedWet.dry` is every wet candidate thrown out for standing on land, and on a world that is water everywhere there is no land for one to stand on.
   //
-  // Asserted as the mechanism rather than as the count, because "the lake world places a lot" would stay green on a dry pass that had simply stopped testing water while the wet pass did nothing. `samplesWet` is incremented only by candidates that cleared the drift floor AND found a water level, so a positive one says the second pass ran and reached the water; `rejectedWet.dry` is every wet candidate thrown out for standing on land, and on a world that is water everywhere there is no land for one to stand on, so a zero there is the pass agreeing with the world.
-  //
-  // The last clause is what makes it a gate on the EXTRA stone rather than on any stone. The dry pass places at most one stamp per candidate that reached the terrain, which is exactly `samples`, so `placed > samples` cannot be satisfied by the dry pass however saturated it is -- the surplus can only have come from the second stream. Measured on the lake: 1701 placed against 1000 dry samples and 701 wet ones, and the two sum to the total because nothing downstream of the water test refuses anything on flat saturated shingle.
+  // The last clause is what makes it a gate on the EXTRA stone rather than on any stone: the dry pass places at most one pebble per candidate that reached the terrain, which is exactly `samples`, so `placed > samples` can only be the second stream's doing.
   const s = worlds.lake.stats
-  check(s.samplesWet > 0 && s.rejectedWet.dry === 0 && s.placed > s.samples && s.placed === s.samples + s.samplesWet,
+  const wetLaid = s.samplesWet - s.rejectedWet.dry - s.rejectedWet.slope - s.rejectedWet.env
+  check(s.samplesWet > 0 && s.rejectedWet.dry === 0 && s.placed > s.samples && s.placed === dryLaid(s) + wetLaid && wetLaid > 0,
     'a lake bed is littered, and it is the wet pass that lays the extra stone rather than the dry one being turned up',
-    `${s.placed} placed = ${s.samples} dry samples + ${s.samplesWet} wet, ${s.rejectedWet.dry} wet candidates refused for being on dry land, ` +
-      `wet slope ${s.rejectedWet.slope}, wet env ${s.rejectedWet.env}, one stamp per ${spacing(worlds.lake).toFixed(1)} m`)
+    `${s.placed} placed = ${dryLaid(s)} of ${s.samples} dry samples + ${wetLaid} of ${s.samplesWet} wet, ${s.rejectedWet.dry} wet candidates refused for being on dry land, ` +
+      `wet slope ${s.rejectedWet.slope}, wet env ${s.rejectedWet.env} against the dry pass's ${s.rejected.env}, ${perM2(worlds.lake).toFixed(2)} per m²`)
 }
 
 {
-  // The same _envAt name on both worlds, asked of the live method rather than assumed: `river` at a level above the ground and `river` at a level below it. Shingle is the densest ground in the world wet or dry, and the BED is denser than the BANK -- which is the shape the two passes make and the one a single pass cannot.
+  // The same _envAt name on both worlds, asked of the live method rather than assumed. Shingle is the densest ground in the world wet or dry, and the BED is denser than the BANK -- which is the shape the two passes make and the one a single pass cannot.
   //
-  // The bank is the dry pass alone, and that is asserted rather than described: on the shore every wet candidate that cleared the drift floor is refused for standing on dry ground (`rejectedWet.dry === samplesWet`), so `placed === samples` says the bank's density is ENV_DENSITY.river's doing and nothing else. Raise WET_DENSITY and the bank does not move by one stamp; that is the whole reason the extra density is a second pass and not a bigger number.
-  //
-  // Measured inside the 26 m full-density radius: 321 stamps on the bed against 198 on the bank, 189 on a peak and 152 in a wood. Both comparisons are floors on a real gap, not on a hair: the bed is 1.6x the bank and the bank is 1.05x the peak, so the second is the tighter one and is the one that would go red first if the walked grounds were pushed up toward shingle.
+  // The bank is the dry pass alone, and that is asserted rather than described: on the shore every wet candidate that cleared the drift floor is refused for standing on dry ground, so `placed === dryLaid` says the bank's density is the dry pass's rate and nothing else.
   const lakeEnv = worlds.lake._envAt(0, 0, 60, 0, 9999)
   const shoreEnv = worlds.shore._envAt(0, 0, 60, 0, 9999)
   const s = worlds.shore.stats
   const others = ['forest', 'peak'].map((n) => nearCount(worlds[n]))
   check(lakeEnv === 'river' && shoreEnv === 'river' &&
-    s.rejectedWet.dry === s.samplesWet && s.placed === s.samples &&
+    s.rejectedWet.dry === s.samplesWet && s.placed === dryLaid(s) &&
     nearCount(worlds.shore) > Math.max(...others) && nearCount(worlds.lake) > nearCount(worlds.shore),
     'river shingle is the densest ground in the world wet or dry, and the bed carries more of it than the bank',
     `both worlds are \`${shoreEnv}\`; the bank places ${s.placed} from ${s.samples} dry samples with all ${s.samplesWet} of its wet candidates refused for dry land, ` +
-      `${nearCount(worlds.lake)} stamps on the bed against ${nearCount(worlds.shore)} on the bank inside ${FULL_RADIUS} m, and ${others.join(' and ')} on the grounds a player walks`)
+      `${nearCount(worlds.lake)} pebbles on the bed against ${nearCount(worlds.shore)} on the bank inside ${FULL_RADIUS} m, and ${others.join(' and ')} on the grounds a player walks`)
 }
 
 // ---------------------------------------------------------------------------
-// 8. The drift field.
+// 5. The drift field.
 // ---------------------------------------------------------------------------
 //
-// Loose stone lies in drifts with swept ground between them, and a scatter without that reads as an even sprinkle, which is the tell that says "generated" faster than any amount of per-instance variety can undo. _clump is four hashes of position taken BEFORE the terrain sample -- 34 ns against the sample's 4.9 us -- so the candidates it throws away are very nearly free, and it is that freeness which pays for the density everywhere else.
+// Loose stone lies in drifts with swept ground between them, and a scatter without that reads as an even sprinkle, which is the tell that says "generated" faster than any amount of per-instance variety can undo. _clump is four hashes of position taken BEFORE the terrain sample, so the candidates it throws away are very nearly free.
 
 console.log('\ndrift')
 
 {
-  // A BAND, because both ends are a real failure: reject nothing and there are no drifts at all, reject nearly everything and there is no litter left to arrange into them. Measured 342 of 1342 candidates, 25.5%, on every world here. (The comment at CLUMP_FLOOR says "two candidates in five"; the field is bilinear value noise and piles up around 0.5, so the true share at a floor of 0.34 is a quarter. The band is set from the measurement.)
+  // A BAND, because both ends are a real failure: reject nothing and there are no drifts at all, reject nearly everything and there is no litter left to arrange into them. The field is bilinear value noise and piles up around 0.5, so the true share at a floor of 0.34 is about a quarter.
   const SHARE_BAND = [0.12, 0.45]
   const s = worlds.forest.stats
   const share = s.rejected.clump / (s.rejected.clump + s.samples)
@@ -604,7 +292,7 @@ console.log('\ndrift')
 }
 
 {
-  // AND IT IS POSITION-ONLY, which is what makes it free. The drift is taken before any terrain is touched and draws no randoms, so the SAME candidates are swept on every world -- an identical count across six completely different hills is the observable proof of that, and it is what would break the moment somebody moved the test below the terrain sample or gave it a random of its own (which would also reshuffle every patch in the world, see _growTile).
+  // AND IT IS POSITION-ONLY, which is what makes it free. The drift draws no randoms, so the SAME candidates are swept on every world -- an identical count across six completely different hills is the observable proof, and it is what would break the moment somebody moved the test below the terrain sample or gave it a random of its own (which would also reshuffle every pebble in the world, see _draw).
   const counts = Object.entries(worlds).map(([n, l]) => [n, l.stats.rejected.clump])
   const distinct = new Set(counts.map(([, c]) => c))
   check(distinct.size === 1, 'and the drift is a function of position alone, taken before the ground is ever sampled',
@@ -612,13 +300,7 @@ console.log('\ndrift')
 }
 
 {
-  // AND IT IS STILL DECIDING SOMETHING WHEN IT GETS THERE. The accept test is `envRoll >= ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump)`, and every candidate that reaches it has already cleared CLUMP_FLOOR -- so an environment whose rate at the FLOOR is already 1 refuses nothing, ever, and the gain above it is inert. The failure is silent in the worst way: raising a rate makes the ground denser right up to the point where it stops doing anything at all, and past that the extra number reads as tuning while the drift quietly flattens into an even sprinkle inside every patch it kept.
-  //
-  // `river` is the one that IS saturated, on purpose and at 0.9 -- see the RIVER IS SATURATED block above ENV_DENSITY, which gives up the gradation inside a drift because buying it back means dropping shingle under 0.842, below the peak, which is the opposite of what the entry exists to say. `cliff` is zero and unreachable and is skipped by name here rather than sliding through as a rate that happens not to saturate; section 6 is where its zero is argued.
-  //
-  // What is left is the two grounds a player actually walks: `forest` is live across the whole field (it does not reach 1 even at clump 1.0), and `peak` is live from the floor up to clump 0.61 and capped above that. Note that this is WEAKER than "peak is under saturation everywhere" -- 0.75 * 1.55 = 1.163 -- so what is bounded for peak is that the cap sits above the floor, which is what keeps the gain deciding something over most of the range. Raising forest at all, or raising peak into saturation at the floor, fails here, which is the point: it makes somebody come to this line and say so on purpose.
-  //
-  // Cross-checked against the live scatters, not just asserted as arithmetic: the shore is `river` and must refuse nothing for env, and the two walked worlds must refuse something.
+  // AND IT IS STILL DECIDING SOMETHING WHEN IT GETS THERE. The accept test is `envRoll >= ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump) * swing * snow`, taken here with the fine swing at its mean of 1 and no snow, and every candidate that reaches it has already cleared CLUMP_FLOOR -- so an environment whose rate at the FLOOR is already 1 refuses nothing the coarse drift can move, and the gain above it is inert. `river` is the one that IS saturated, on purpose, and only the fine swing's low half thins it -- so the shore still refuses some candidates, and far fewer than the wood; `cliff` is zero and unreachable and is skipped by name. What is left is the two grounds a player walks: `forest` is live across the whole field, and `peak` is live from the floor up to its cap and saturated above.
   const rateAt = (env, clump) => ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump)
   // The clump at which an environment's rate reaches 1 and the drift stops mattering. At or below CLUMP_FLOOR means saturated everywhere; above 1 means live over the whole field.
   const capAt = (env) => (1 / ENV_DENSITY[env] - 1) / CLUMP_GAIN
@@ -635,24 +317,51 @@ console.log('\ndrift')
 
   check(skipped.join(' ') === 'cliff' && ENV_DENSITY.cliff === 0 &&
     capAt('river') <= CLUMP_FLOOR && others.every((e) => capAt(e) > CLUMP_FLOOR) && capAt('forest') > 1 &&
-    envRejects.river === 0 && envRejects.forest > 0 && envRejects.peak > 0,
+    envRejects.river > 0 && envRejects.river < envRejects.forest / 2 && envRejects.forest > 0 && envRejects.peak > 0,
     'the drift field still decides something on every ground except river shingle, where saturation is the point',
     `${table} (clump floor ${CLUMP_FLOOR}, gain ${CLUMP_GAIN}, \`cliff\` skipped by name at rate ${ENV_DENSITY.cliff}); ` +
-      `live, the shore refuses ${envRejects.river} candidates for env against the wood's ${envRejects.forest} and the peak's ${envRejects.peak}`)
+      `live, the shore refuses ${envRejects.river} candidates for env -- the fine swing's low half alone -- against the wood's ${envRejects.forest} and the peak's ${envRejects.peak}`)
+}
+
+{
+  // THE FINE FIELD IS LIVE AT THE STRIDE SCALE. The coarse lattice is 12 m; what varies the density from one stride to the next is the fine one, and the proof is in the counts: the wood inside the full radius, binned into FINE_CELL squares, has a spread of stones per square well past counting noise -- a Poisson field at the same mean would put its standard deviation at sqrt(mean). Two-sided on the ratio: under 1.3x is a sprinkle with a lattice nobody can see, over 3x is a field that is mostly empty cells and a few heaps.
+  const l = worlds.forest
+  const bins = new Map()
+  for (const id of liveIds(l)) {
+    if (l.instX[id] ** 2 + l.instZ[id] ** 2 >= l.fullSq) continue
+    const k = `${Math.floor(l.instX[id] / FINE_CELL)}|${Math.floor(l.instZ[id] / FINE_CELL)}`
+    bins.set(k, (bins.get(k) || 0) + 1)
+  }
+  // Every fine cell whose centre is inside the disc, empty ones included.
+  const r = Math.ceil(l.fullRadius / FINE_CELL)
+  for (let iz = -r; iz <= r; iz++) {
+    for (let ix = -r; ix <= r; ix++) {
+      if (((ix + 0.5) * FINE_CELL) ** 2 + ((iz + 0.5) * FINE_CELL) ** 2 >= l.fullSq) continue
+      const k = `${ix}|${iz}`
+      if (!bins.has(k)) bins.set(k, 0)
+    }
+  }
+  const counts = [...bins.values()]
+  const mean = counts.reduce((a, b) => a + b, 0) / counts.length
+  const sd = Math.sqrt(counts.reduce((a, b) => a + (b - mean) ** 2, 0) / counts.length)
+  const over = sd / Math.sqrt(mean)
+  check(FINE_CELL < TILE && FINE_SWING > 0 && over > 1.3 && over < 3,
+    'and the density varies from one stride to the next, well past what a random sprinkle at the same mean would',
+    `${counts.length} cells of ${FINE_CELL} m inside ${FULL_RADIUS} m, ${mean.toFixed(1)} stones each, sd ${sd.toFixed(2)} = ${over.toFixed(2)}x Poisson's ${Math.sqrt(mean).toFixed(2)} (band 1.3-3), swing ±${FINE_SWING}`)
 }
 
 // ---------------------------------------------------------------------------
-// 9. The instance pool.
+// 6. The instance pool.
 // ---------------------------------------------------------------------------
 //
-// _poolBound running short does not degrade, it THROWS: `Litter: instance pool exhausted`. So the bound has to cover the densest ground in the world and a walk across the most broken one, and the check has to be two-sided, because a pool that is never more than a seventh full is an arena allocation nobody is using.
+// _poolBound running short does not degrade, it THROWS: `Litter: instance pool exhausted`. So the bound has to cover the densest ground in the world and a walk across the most broken one, and the check has to be two-sided, because a pool that is never more than a tenth full is an arena allocation nobody is using.
 
 console.log('\npool')
 
 {
   const FULL_BAND = [0.15, 0.95]
   const used = (l) => l.maxInstances - l.freeCount
-  const densest = worlds.shore
+  const densest = worlds.lake
 
   // The traverse: 400 steps across the ridge, draining the queue at each one so every tile is grown at every quantised level rather than at the handful the budget would allow in a frame. This is the case a single `place` cannot reach, because it never evicts and regrows anything.
   const walk = build(ridge)
@@ -663,25 +372,29 @@ console.log('\npool')
     peak = Math.max(peak, used(walk))
   }
 
-  // Measured: the shore, the densest ground there is, uses 1000 of 2309 (43%), and the traverse peaks at 623 (27%). Both ends of the band are a real failure -- 100% throws, and a pool that never passes 15% is paying for instances nothing will ever fill.
+  // Measured: the lake bed, the densest ground there is, uses 4480 of 14882 (30%), and the traverse peaks well under that. The bound assumes every tile in range is lake bed AND that both passes survive in full, which is why a real world sits at a third of it; the floor catches a bound that has run away from that.
   const worst = Math.max(used(densest), peak) / densest.maxInstances
   check(used(densest) < densest.maxInstances && worst < FULL_BAND[1] && worst > FULL_BAND[0],
     'the pool covers the densest ground in the world and a walk across the roughest, without being sized for a world that does not exist',
-    `shore ${used(densest)}/${densest.maxInstances} (${((used(densest) / densest.maxInstances) * 100).toFixed(0)}%), ridge traverse peak ${peak} (${((peak / walk.maxInstances) * 100).toFixed(0)}%), band ${(FULL_BAND[0] * 100).toFixed(0)}-${(FULL_BAND[1] * 100).toFixed(0)}%`)
+    `lake ${used(densest)}/${densest.maxInstances} (${((used(densest) / densest.maxInstances) * 100).toFixed(0)}%), ridge traverse peak ${peak} (${((peak / walk.maxInstances) * 100).toFixed(0)}%), band ${(FULL_BAND[0] * 100).toFixed(0)}-${(FULL_BAND[1] * 100).toFixed(0)}%`)
 
-  // And running dry throws rather than quietly placing less, so the fact that the densest world got here at all is half the promise. Stated as its own line because it is the failure mode a player would see as a crash on a riverbank.
   check(densest.placed > 0 && densest.freeCount > 0, 'and the densest ground in the world never ran it dry',
-    `${densest.freeCount} instances still free after ${densest.placed} stamps`)
+    `${densest.freeCount} instances still free after ${densest.placed} pebbles`)
   walk.dispose()
 }
 
 // ---------------------------------------------------------------------------
-// 10. Every stamp is on the ground, flat, square, and pointing somewhere.
+// 7. Every pebble is bedded into the ground, lying flat on it, and shaped.
 // ---------------------------------------------------------------------------
 //
-// Read back off the instance matrices the scatter actually wrote, decomposed, rather than off the arrays it kept. The ridge is what the lift and the tilt are measured on, because a flat world has a normal of exactly up and would keep the tilt promise by doing nothing at all; the flat shore is what the yaw and the scale are measured on, because there the rotation IS the yaw and can be read straight out of the matrix without this file re-deriving the tilt it is supposed to be checking.
+// Read back off the instance matrices the scatter actually wrote, decomposed, rather than off the arrays it kept. The ridge is what the sink and the tilt are measured on, because a flat world has a normal of exactly up and would keep the tilt promise by doing nothing at all; the flat shore is what the yaw and the shape are measured on, because there the rotation IS the yaw and the scale falls straight out of the columns.
 
-console.log('\nstamps')
+console.log('\nbedding')
+
+const columns = (m) => {
+  const e = m.elements
+  return [Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10])]
+}
 
 {
   const m = new THREE.Matrix4()
@@ -691,107 +404,196 @@ console.log('\nstamps')
   const up = new THREE.Vector3(0, 1, 0)
   const axis = new THREE.Vector3()
   const n = new THREE.Vector3()
+  const l = worlds.ridge
 
-  const lifts = []
+  // The sink as a FRACTION of the scaled height, which is what SINK is a band on: the matrix's Y column is `size * flat`, so (ground - y) / (pebbleHeight * sy) is the roll itself, to float32.
+  const fracs = []
   let worstTilt = 0
-  for (const id of liveIds(worlds.ridge)) {
-    worlds.ridge.batch.getMatrixAt(id, m)
+  let worstAgree = 0
+  for (const id of liveIds(l)) {
+    l.batch.getMatrixAt(id, m)
     m.decompose(p, q, s)
-    lifts.push(p.y - ridge.field.heightAt(p.x))
-    // The ridge's ANALYTIC normal, which is deliberately not the central difference _groundTilt takes: an independent derivation of the same thing, so this check cannot pass by re-implementing the code under it. Over a 1.2 m half-width the two differ by under a fiftieth of a degree at the steepest point on the hill.
+    const sy = columns(m)[1]
+    fracs.push((ridge.field.heightAt(p.x) - p.y) / (l.pebbleHeight * sy))
+    worstAgree = Math.max(worstAgree, Math.abs(l.instY[id] - p.y))
+    // The ridge's ANALYTIC normal, which is deliberately not the central difference _groundTilt takes: an independent derivation of the same thing, so this check cannot pass by re-implementing the code under it.
     n.set(-(RIDGE_A / RIDGE_L) * Math.cos(p.x / RIDGE_L), 1, 0).normalize()
     axis.copy(up).applyQuaternion(q)
     worstTilt = Math.max(worstTilt, Math.acos(Math.min(1, axis.dot(n))) * (180 / Math.PI))
   }
-  if (!lifts.length) throw new Error('no stamps on the ridge to measure')
+  if (!fracs.length) throw new Error('no pebbles on the ridge to measure')
 
-  // Headless, so _groundFor falls through to the field's own height and the lift is exact: LITTER_LIFT to LITTER_LIFT + LITTER_LIFT_VARY, no drawn-mesh disagreement in it. Measured 0.0502 to 0.0749 against 0.050 to 0.075. The tolerance is float32: instY and the matrix are both single precision and the ridge stands at 900 m, which puts about 1e-4 of slop on the difference.
-  const EPS = 2e-3
-  const lo = Math.min(...lifts)
-  const hi = Math.max(...lifts)
-  check(lo > LITTER_LIFT - EPS && hi < LITTER_LIFT + LITTER_LIFT_VARY + EPS,
-    'every stamp lies on the hill it was placed on, a few centimetres proud of it and no more',
-    `${(lo * 100).toFixed(2)}-${(hi * 100).toFixed(2)} cm above the ground over ${lifts.length} stamps, against ${(LITTER_LIFT * 100).toFixed(1)}-${((LITTER_LIFT + LITTER_LIFT_VARY) * 100).toFixed(1)} cm`)
+  // Headless, so _groundFor falls through to the field's own height and the sink is exact. The tolerance is float32 at 900 m: instY and the matrix are single precision, which puts about 1e-4 m on the difference, and dividing by a centimetre-scale height turns that into a few thousandths of the fraction.
+  const EPS = 0.02
+  const lo = Math.min(...fracs)
+  const hi = Math.max(...fracs)
+  check(lo > SINK[0] - EPS && hi < SINK[1] + EPS,
+    'every pebble is bedded INTO the hill it lies on, by a third to a half of its own height and never proud of it',
+    `sunk ${(lo * 100).toFixed(1)}-${(hi * 100).toFixed(1)}% of its height over ${fracs.length} pebbles, against ${(SINK[0] * 100).toFixed(0)}-${(SINK[1] * 100).toFixed(0)}%`)
 
-  // AND THE JITTER IS ALIVE. Litter is scattered with no overlap test, so stamps DO land on each other, and two coplanar quads at one height z-fight over their whole intersection -- the one artefact on this ground that reads instantly as broken. LITTER_LIFT_VARY is the whole defence and it fails silently: set it to zero and every check above is still green. Measured spread is 2.48 cm of the 2.5 available.
-  check(hi - lo > LITTER_LIFT_VARY * 0.5,
-    'and two stamps lying on each other are at different heights, so they cannot z-fight',
-    `${((hi - lo) * 100).toFixed(2)} cm of spread out of the ${(LITTER_LIFT_VARY * 100).toFixed(1)} cm available`)
+  // AND THE BURIAL VARIES. A row of stones all proud by the same fraction reads as placed, and the roll fails silently: set SINK to a point and every check above stays green.
+  check(hi - lo > (SINK[1] - SINK[0]) * 0.8, 'and no two stones are proud by the same fraction, so nothing reads as laid out',
+    `${((hi - lo) * 100).toFixed(1)} points of spread out of the ${((SINK[1] - SINK[0]) * 100).toFixed(0)} available`)
 
-  // FULL alignment with the field normal, which is where this file's geometry argument differs from every rock bed's: a boulder tipped all the way into the ground normal looks placed, so the beds lerp part of the way, but a picture of gravel that is not flat on the ground is a picture of gravel hovering. Measured worst 0.016 deg over the whole ridge, so a degree is a bound on the ARITHMETIC rather than on the intent -- anything that lerped the tilt at all would show up in whole degrees.
+  // THE SINK IS ALONG WORLD Y AND _reground ONLY REWRITES Y. The header's argument: instY and the matrix's translation must agree exactly, or a chunk re-split under a pebble would move it by something other than the ground moved.
+  check(worstAgree < 1e-3, 'and the height the scatter remembers is the height the matrix carries, so a re-ground moves a pebble by what the ground moved',
+    `worst disagreement ${worstAgree.toExponential(1)} m`)
+
+  // FULL alignment with the field normal, unlike every rock bed's partial lean. Measured worst well under a tenth of a degree over the whole ridge; a degree is a bound on the arithmetic, and anything that lerped the tilt at all would show up in whole degrees.
   const TILT_TOL_DEG = 1
-  check(worstTilt < TILT_TOL_DEG, 'and it lies FLAT on it -- the quad\'s own up is the ground\'s own normal, not a lean toward it',
-    `worst ${worstTilt.toFixed(3)} deg off the field normal over ${lifts.length} stamps, tolerance ${TILT_TOL_DEG} deg`)
+  check(worstTilt < TILT_TOL_DEG, 'and it lies FLAT on it -- the pebble\'s own up is the ground\'s own normal, not a lean toward it',
+    `worst ${worstTilt.toFixed(3)} deg off the field normal over ${fracs.length} pebbles, tolerance ${TILT_TOL_DEG} deg`)
 }
 
 {
-  // The flat shore: no tilt, so the matrix's rotation is the yaw alone and the scale falls out of the column lengths.
+  // The flat shore: no tilt, so the matrix's rotation is the yaw alone and the shape falls out of the column lengths. The stretch goes on x and its complement on z, so sqrt(sx * sz) is the size roll's metres, sqrt(sx / sz) is the stretch, and sy / size is the flatness.
   const m = new THREE.Matrix4()
-  const ids = liveIds(worlds.shore)
+  const l = worlds.shore
+  const ids = liveIds(l)
   const BINS = 12
   const bins = new Array(BINS).fill(0)
   const yaws = new Set()
-  let minSide = Infinity
-  let maxSide = -Infinity
-  let worstAniso = 0
-  let worstFlat = 0
+  const sizes = []
+  let minStretch = Infinity
+  let maxStretch = -Infinity
+  let minFlat = Infinity
+  let maxFlat = -Infinity
   for (const id of ids) {
-    worlds.shore.batch.getMatrixAt(id, m)
+    l.batch.getMatrixAt(id, m)
+    const [sx, sy, sz] = columns(m)
+    const size = Math.sqrt(sx * sz)
+    sizes.push(size)
+    const stretch = Math.sqrt(sx / sz)
+    minStretch = Math.min(minStretch, stretch)
+    maxStretch = Math.max(maxStretch, stretch)
+    minFlat = Math.min(minFlat, sy / size)
+    maxFlat = Math.max(maxFlat, sy / size)
     const e = m.elements
-    const sx = Math.hypot(e[0], e[1], e[2])
-    const sy = Math.hypot(e[4], e[5], e[6])
-    const sz = Math.hypot(e[8], e[9], e[10])
-    minSide = Math.min(minSide, sx, sz)
-    maxSide = Math.max(maxSide, sx, sz)
-    worstAniso = Math.max(worstAniso, Math.abs(sx - sz))
-    worstFlat = Math.max(worstFlat, Math.abs(sy - 1))
     const yaw = Math.atan2(-e[2] / sx, e[0] / sx)
     yaws.add(yaw.toFixed(5))
     bins[Math.min(BINS - 1, Math.floor(((yaw + Math.PI) / (2 * Math.PI)) * BINS))]++
   }
+  sizes.sort((a, b) => a - b)
+  const minSize = sizes[0]
+  const maxSize = sizes[sizes.length - 1]
+  const median = sizes[sizes.length >> 1]
 
-  // A stamp is SQUARE and it is the size the bake was drawn at. The quad is built at side 1 so the matrix scale is metres of patch directly: LITTER_PATCH_M x SCALE, which is 1.36 to 2.24 m, and measured 1.3613 to 2.2395. An anisotropic stamp would stretch the photographed stones out of round, which is the one distortion gravel cannot survive; the Y column stays exactly 1 because a flat quad has no thickness to scale.
-  const want = [LITTER_PATCH_M * SCALE[0], LITTER_PATCH_M * SCALE[1]]
-  check(minSide >= want[0] - 1e-4 && maxSide <= want[1] + 1e-4 && worstAniso < 1e-5 && worstFlat < 1e-5,
-    'a stamp is square, unstretched, and the size a 20 cm stone was photographed at',
-    `${minSide.toFixed(3)}-${maxSide.toFixed(3)} m a side against ${want[0].toFixed(3)}-${want[1].toFixed(3)}, worst x/z difference ${worstAniso.toExponential(1)} m`)
+  // THE SIZE IS IN METRES AND SKEWED SMALL. The pebble is built at unit width so the scale is metres of stone directly: SIZE[0] to SIZE[1], with the median of a u^SIZE_POW roll landing at SIZE[0] + (SIZE[1] - SIZE[0]) * 0.5^SIZE_POW -- loose stone is mostly grit with a few stones in it, and a uniform roll reads as a hatch of same-sized dots.
+  const wantMedian = SIZE[0] + (SIZE[1] - SIZE[0]) * Math.pow(0.5, SIZE_POW)
+  check(minSize >= SIZE[0] - 1e-4 && maxSize <= SIZE[1] + 1e-4 && Math.abs(median - wantMedian) < (SIZE[1] - SIZE[0]) * 0.08,
+    'a pebble is between a fingernail and a fist across, and most of them are near the small end',
+    `${(minSize * 100).toFixed(1)}-${(maxSize * 100).toFixed(1)} cm against ${(SIZE[0] * 100).toFixed(0)}-${(SIZE[1] * 100).toFixed(0)}, median ${(median * 100).toFixed(1)} cm against the skew's ${(wantMedian * 100).toFixed(1)}`)
 
-  // AND THE YAW IS SPREAD OVER THE WHOLE CIRCLE. Four pictures is only more than four patches because each one is stamped at a continuous rotation, so the repeat the eye can catch is a picture next to the same picture turned some other way -- which is exactly the trick that works on litter, a thing with no up, no grain and no silhouette, and would not work on a tree. Two-sided by construction: every twelfth of the circle has to carry roughly a twelfth of the stamps. Measured 71 to 98 against an expected 83.3 over 1000, and one standard deviation is 8.7, so the band sits well past three of them.
+  // AND NO TWO ARE THE SAME SHAPE. One geometry is as many silhouettes as the stretch and the flatness make of it; both have to span their bands, because a collapse of either to a point is a scatter of identical blobs and nothing else here would notice.
+  check(minStretch >= STRETCH[0] - 1e-4 && maxStretch <= STRETCH[1] + 1e-4 && maxStretch - minStretch > (STRETCH[1] - STRETCH[0]) * 0.8 &&
+    minFlat >= FLAT[0] - 1e-4 && maxFlat <= FLAT[1] + 1e-4 && maxFlat - minFlat > (FLAT[1] - FLAT[0]) * 0.8,
+    'and each one is stretched and flattened its own way, so one blob is many silhouettes',
+    `stretch ${minStretch.toFixed(3)}-${maxStretch.toFixed(3)} against ${STRETCH[0]}-${STRETCH[1]}, flatness ${minFlat.toFixed(3)}-${maxFlat.toFixed(3)} against ${FLAT[0]}-${FLAT[1]}`)
+
+  // AND THE YAW IS SPREAD OVER THE WHOLE CIRCLE, which is the cheapest of the dials and the one that would be missed first: a stretched pebble with one yaw is a field of stones all pointing the same way. Two-sided by construction: every twelfth of the circle has to carry roughly a twelfth of the stones.
   const YAW_BAND = [0.6, 1.4]
   const expect = ids.length / BINS
   const worstBin = Math.max(...bins.map((b) => Math.abs(b / expect - 1)))
   check(bins.every((b) => b > expect * YAW_BAND[0] && b < expect * YAW_BAND[1]) && yaws.size > ids.length / 2,
-    'and every one of them is turned a different way, which is what makes four pictures more than four patches',
-    `${bins.join(' ')} over ${BINS} bins, expected ${expect.toFixed(1)} each, worst ${(worstBin * 100).toFixed(0)}% off (band +/-${((YAW_BAND[1] - 1) * 100).toFixed(0)}%), ${yaws.size} distinct angles in ${ids.length} stamps`)
+    'and every one of them is turned a different way',
+    `${bins.join(' ')} over ${BINS} bins, expected ${expect.toFixed(1)} each, worst ${(worstBin * 100).toFixed(0)}% off (band +/-${((YAW_BAND[1] - 1) * 100).toFixed(0)}%), ${yaws.size} distinct angles in ${ids.length} pebbles`)
 }
 
 // ---------------------------------------------------------------------------
-// 11. All four baked pictures reach the hill.
+// 8. Colour.
 // ---------------------------------------------------------------------------
 //
-// "Which of the four pictures" is one per-instance float, `texLayer`, picked with `Math.min(3, (layerRoll * 4) | 0)` over the arena's single quad. Nothing else in the system would notice if that roll collapsed -- three of the four bakes would simply never be seen, the hill would be stamped with one photograph, and every count, spacing and matrix check above would stay green.
+// A pebble's tint is one of the rock bank's own for its environment, pulled toward the ground colour and jittered in tone. Nothing here can say the colour is RIGHT -- that is the screen's -- but it can say it is a colour, that it varies, and that two grounds with different palettes come out differently.
 
-console.log('\nlayers')
+console.log('\ncolour')
 
 {
-  const SHARE_BAND = [0.2, 0.3]
-  const l = worlds.shore
-  const counts = new Array(LITTER_LAYERS.length).fill(0)
-  for (const id of liveIds(l)) {
-    const slot = LITTER_LAYERS.indexOf(l.batch.getAttrAt(l.texLayerAttr, id))
-    if (slot < 0) throw new Error('a litter instance is wearing a texLayer that is not one of the four baked pictures')
-    counts[slot]++
+  const c = new THREE.Color()
+  const luma = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+  const stats = (l) => {
+    const ids = liveIds(l)
+    const seen = new Set()
+    let sum = [0, 0, 0]
+    let lo = Infinity
+    let hi = -Infinity
+    for (const id of ids) {
+      l.batch.getColorAt(id, c)
+      if (!(c.r > 0 && c.g > 0 && c.b > 0) || !Number.isFinite(c.r + c.g + c.b)) {
+        throw new Error(`a pebble carries a colour that is not one: ${c.r} ${c.g} ${c.b}`)
+      }
+      seen.add(`${c.r.toFixed(4)}|${c.g.toFixed(4)}|${c.b.toFixed(4)}`)
+      lo = Math.min(lo, luma(c))
+      hi = Math.max(hi, luma(c))
+      sum = [sum[0] + c.r, sum[1] + c.g, sum[2] + c.b]
+    }
+    return { n: ids.length, distinct: seen.size, lo, hi, mean: sum.map((v) => v / ids.length) }
   }
-  const total = counts.reduce((a, b) => a + b, 0)
-  const shares = counts.map((c) => c / total)
-  // Measured 0.250 / 0.263 / 0.232 / 0.255 over 1000 stamps; one standard deviation on a quarter share of 1000 is 0.014, so a 20-30% band is about three and a half of them either way. The top of the band matters as much as the floor: one picture at 40% and another at 10% is the roll drifting, not just a picture going missing.
-  check(shares.every((s) => s > SHARE_BAND[0] && s < SHARE_BAND[1]) && counts.length === LITTER_LAYERS.length,
-    'all four baked pictures are on the hill, and no one of them is doing most of the work',
-    `${counts.join(' / ')} of ${total} stamps, ${shares.map((s) => `${(s * 100).toFixed(1)}%`).join(' / ')}, band ${(SHARE_BAND[0] * 100).toFixed(0)}-${(SHARE_BAND[1] * 100).toFixed(0)}%`)
+  const forest = stats(worlds.forest)
+  const peak = stats(worlds.peak)
+
+  // TONE alone spans TONE[1] / TONE[0] in brightness, and the palette adds to that, so the brightest stone against the darkest has to be at least the tone jitter's own ratio. Distinct colours near the count says the jitter is per instance and not per tile.
+  const ratio = forest.hi / forest.lo
+  check(ratio > (TONE[1] / TONE[0]) * 0.95 && forest.distinct > forest.n * 0.9,
+    'the stones in a wood are not one colour: the brightest is well over the darkest and nearly every one differs',
+    `luma ${forest.lo.toFixed(3)}-${forest.hi.toFixed(3)}, ${ratio.toFixed(2)}x against the tone jitter's ${(TONE[1] / TONE[0]).toFixed(2)}x, ${forest.distinct} distinct in ${forest.n}`)
+
+  // A peak wears the peak palette over snowline-shaded ground and a wood the forest one over green; the mean colours must differ by more than tone noise could. Measured as the per-channel difference of the means.
+  const diff = Math.max(...forest.mean.map((v, i) => Math.abs(v - peak.mean[i])))
+  check(diff > 0.05, 'and a peak\'s stone is not a wood\'s stone: the palette and the ground cue both move the mean colour',
+    `wood mean ${forest.mean.map((v) => v.toFixed(3)).join(' ')}, peak mean ${peak.mean.map((v) => v.toFixed(3)).join(' ')}, largest channel gap ${diff.toFixed(3)}`)
+
+  // HALF THE STONES ARE THE GROUND'S HUE, AT A STONE'S BRIGHTNESS. Each pebble's chromaticity (its colour over its own sum, so brightness drops out and only the hue is compared) against the mesher's own `shade` at the same point on the wood's ground: the ground half sits on it and the tint half does not, and the two halves are near equal in count. And the ground half is NOT darker for it: both halves draw the same palette and tone, so their median lumas have to agree within a few percent -- the ground's own colour is a third the brightness of a lit stone, and a pebble that took it whole would read as a black speck.
+  const l = worlds.forest
+  const gc = new Float32Array(3)
+  const dist = { ground: [], tint: [] }
+  const lumas = { ground: [], tint: [] }
+  for (const id of liveIds(l)) {
+    l.batch.getColorAt(id, c)
+    shade(60, 1, 9999, scatterLayers.snow.band, 0, 0, 900, l.instX[id], l.instZ[id], gc, 0)
+    const cs = c.r + c.g + c.b
+    const gs = gc[0] + gc[1] + gc[2]
+    const half = l.instGround[id] ? 'ground' : 'tint'
+    dist[half].push(Math.hypot(c.r / cs - gc[0] / gs, c.g / cs - gc[1] / gs, c.b / cs - gc[2] / gs))
+    lumas[half].push(luma(c))
+  }
+  const median = (a) => a.sort((x, y) => x - y)[a.length >> 1]
+  const share = dist.ground.length / (dist.ground.length + dist.tint.length)
+  const mg = median(dist.ground)
+  const mt = median(dist.tint)
+  const lg = median(lumas.ground)
+  const lt = median(lumas.tint)
+  check(Math.abs(share - GROUND_SHARE) < 0.05 && mg < 0.01 && mt > 0.05,
+    'and half the stones in a wood take the ground\'s own hue, the other half a stone\'s',
+    `${dist.ground.length} ground-hued of ${dist.ground.length + dist.tint.length} (${(share * 100).toFixed(0)}% against GROUND_SHARE ${GROUND_SHARE}), median chromaticity off the ground ${mg.toFixed(4)} against the tint half's ${mt.toFixed(4)}`)
+  check(Math.abs(lg / lt - 1) < 0.05,
+    'and the ground-hued half is as bright as the stone-hued half',
+    `median luma ${lg.toFixed(3)} ground-hued against ${lt.toFixed(3)} stone-hued`)
 }
 
 // ---------------------------------------------------------------------------
-// 12. One seed, one scatter.
+// 9. What the panel reads.
+// ---------------------------------------------------------------------------
+//
+// The panel's `litter` row is the only instrument that says what the layer costs on a real frame, and it is `tris`, which update() computes from what the rim has not hidden. It has to be the pebble's own count times the drawn instances and nothing else.
+
+console.log('\ncost')
+
+{
+  // Driven on the prop clock the rim dissolves run on, for a second of frames at 72 Hz standing still: long enough for every tile's sweep phase to come round and every reveal to finish, so what is hidden afterwards is the rim's own margin past RADIUS and not a fade still in flight.
+  const l = build(world(60, 0, 9999, null))
+  for (let f = 0; f < 72; f++) {
+    setPropClock(f / 72)
+    l.update(0, 61.6, 0)
+  }
+  const s = l.stats
+  check(s.tris === (s.placed - s.rimHidden) * l.pebbleTris && l.pebbleTris === ROCK_TIERS[PEBBLE_TIER].faces && s.tris > 0 && s.rimFading === 0,
+    'the triangle count the panel shows is drawn pebbles times twenty, so the row is the layer\'s real cost',
+    `${s.tris} tris = (${s.placed} placed - ${s.rimHidden} hidden) x ${l.pebbleTris}, ${s.rimFading} still fading`)
+  l.dispose()
+}
+
+// ---------------------------------------------------------------------------
+// 10. One seed, one scatter.
 // ---------------------------------------------------------------------------
 //
 // Both halves, and they fail in opposite directions. Without determinism the litter moves under the player's feet as tiles are evicted and regrown, and nothing about the ground can be reasoned about at all. Without the seed doing anything, every world in the game gets the same drifts in the same places.
@@ -799,40 +601,36 @@ console.log('\nlayers')
 console.log('\nseeds')
 
 {
-  const stamps = (l) => liveIds(l).map((id) => `${l.instX[id]}|${l.instY[id]}|${l.instZ[id]}`).sort()
+  const stones = (l) => liveIds(l).map((id) => `${l.instX[id]}|${l.instY[id]}|${l.instZ[id]}`).sort()
   const flat = world(60, 0, 9999, null)
   const a = build(flat)
   const b = build(flat)
   const c = build(flat, SEED + 1)
-  const sa = stamps(a)
-  const sb = stamps(b)
-  const sc = stamps(c)
+  const sa = stones(a)
+  const sb = stones(b)
+  const sc = stones(c)
 
   check(sa.length === sb.length && sa.every((v, i) => v === sb[i]), 'the same seed is the same scatter, stone for stone',
-    `${sa.length} stamps, ${sa.filter((v, i) => v !== sb[i]).length} in a different place the second time`)
+    `${sa.length} pebbles, ${sa.filter((v, i) => v !== sb[i]).length} in a different place the second time`)
 
-  // A REAL DIFFERENCE, not merely a different count: tileSeed mixes the seed into every tile, so essentially no stamp should land where a stamp of the other seed landed. The floor is on the OVERLAP rather than on the totals, because two seeds that place the same number of stamps in the same places would pass any count-based check there is.
+  // A REAL DIFFERENCE, not merely a different count: tileSeed mixes the seed into every tile, so essentially no pebble should land where a pebble of the other seed landed.
   const shared = new Set(sa)
   const overlap = sc.filter((v) => shared.has(v)).length
   check(overlap === 0 && sc.length !== 0, 'and a different seed is a different scatter, not the same one relabelled',
-    `seed ${SEED} placed ${sa.length}, seed ${SEED + 1} placed ${sc.length}, ${overlap} stamps in common`)
+    `seed ${SEED} placed ${sa.length}, seed ${SEED + 1} placed ${sc.length}, ${overlap} pebbles in common`)
 
   a.dispose()
   b.dispose()
   c.dispose()
 }
 
-{
-  const s = worlds.shore.stats
-  console.log(`       ${s.placed} stamps, ${s.tris} tris, ${s.tiles} tiles resident, build ${s.buildMs.toFixed(1)} ms, place ${s.placeMs.toFixed(0)} ms`)
-}
-
-// --- litter around rocks ----------------------------------------------------
+// ---------------------------------------------------------------------------
+// 11. Litter around rocks.
+// ---------------------------------------------------------------------------
 //
-// Litter follows the grass rather than the trees: a twig or a cone inside a
-// boulder is skipped outright, at any rock size, because there is nothing to lift
-// it onto that would not read as debris floating on a curved face. A stub answers
-// over a disc, so what is under test is the litter's half of the contract.
+// A pebble inside a boulder is skipped outright, at any rock size, because there is nothing to lift it onto that would not read as a stone floating on a curved face. A stub answers over a disc, so what is under test is the litter's half of the contract.
+
+console.log('\nrocks')
 
 {
   const STONE = { x: 24, z: -18, r: 14 }
@@ -859,9 +657,9 @@ console.log('\nseeds')
       if (dx * dx + dz * dz < STONE.r * STONE.r) inside++
     }
   }
-  check(inside === 0, 'not one piece of litter lands inside a rock', `${inside} of ${s.placed}`)
+  check(inside === 0, 'not one pebble lands inside a rock', `${inside} of ${s.placed}`)
   check(s.rejectedRock > 0 && s.placed + s.rejectedRock === worlds.forest.stats.placed,
-    'and every stamp the rock took is accounted for as a rock rejection, not lost',
+    'and every pebble the rock took is accounted for as a rock rejection, not lost',
     `${s.rejectedRock} rejected, ${s.placed} + that against ${worlds.forest.stats.placed} without`)
   check(minSizeSeen === 0,
     'and the litter asks about ANY stone, cobbles included -- it is skipped, not lifted',
@@ -874,6 +672,11 @@ console.log('\nseeds')
   check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
 
   l.dispose()
+}
+
+{
+  const s = worlds.forest.stats
+  console.log(`\n       wood: ${s.placed} pebbles, ${s.tiles} tiles resident, pool ${s.pool}, build ${s.buildMs.toFixed(1)} ms, place ${s.placeMs.toFixed(0)} ms`)
 }
 
 for (const l of Object.values(worlds)) l.dispose()

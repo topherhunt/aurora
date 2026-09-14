@@ -15,6 +15,7 @@ import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { WORLD_HALF } from '../src/v2/config.js'
+import { terrainOf } from './lib/synthetic-terrain.mjs'
 
 // Signed area x2 in XZ, matching ribbon.js's convention exactly: NEGATIVE is an upward-facing triangle. Written out again here rather than imported, because a check that borrows the predicate it is checking proves only that a function equals itself.
 const cross2 = (ax, az, bx, bz) => ax * bz - az * bx
@@ -273,19 +274,22 @@ export async function run() {
   //
   // Sections 1 to 4 check the ribbon against itself. This one checks it against the terrain it has to sit on, which is the only place the two halves of the feature can disagree, and it does it in RELATIONSHIPS rather than in elevations: the world's vertical range is still being surveyed out of the reference jpg, so every number here is a difference between two heights the document itself supplies. An absolute metre literal in this section would be a check with a shelf life.
   //
-  // The ground handed to carve() is the spline's own y plus AMBIENT, so "the terrain before anyone dug it" is defined relative to the authored path rather than pinned to a sea level nobody has chosen yet.
+  // The river is solved against a synthetic hillside, so the ground handed to carve() under it is that hillside. A road has no terrain of its own: the ground handed to carve() is the spline's own y plus AMBIENT, so "the terrain before anyone dug it" is defined relative to the authored path rather than pinned to a sea level nobody has chosen yet.
   {
     const AMBIENT = 5
     const DEPTH = 2
     const HALF = 6
+    // Falling 1 m in 60 along +x: about 16 m over the river's run, so the level solve has a real slope to follow.
+    const ground = (x) => 60 - x / 60
     const doc = {
       v: 1,
       snow: { base: 100, band: 40, points: [] },
       lakes: [],
-      rivers: [{ id: 'r', depth: DEPTH, pts: [[-400, 60, -200, HALF], [-100, 55, -60, HALF], [220, 48, 90, HALF], [560, 44, 300, HALF]] }],
+      rivers: [{ id: 'r', depth: DEPTH, pts: [[-400, -200, 2 * HALF], [-100, -60], [220, 90], [560, 300, 2 * HALF]] }],
       roads: [{ id: 'd', feather: 8, pts: [[-500, 80, 400, 4], [-120, 74, 320, 4], [300, 66, 380, 5], [700, 61, 520, 5]] }],
     }
     const layers = new Layers(doc)
+    layers.paths.setTerrain(terrainOf(ground))
     void layers.paths.segmentCount
 
     const river = layers.paths.paths.get('r')
@@ -293,27 +297,27 @@ export async function run() {
     const rr = ribbonVertices(river.samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
     const dr = ribbonVertices(road.samples, { lift: ROAD_LIFT })
 
-    // The stated river depth is 2 m at the middle, and it is the ribbon that has to be 2 m above the bed -- not the spline, which nobody sees. Measured at every sample's centreline, where channelProfile is exactly 1.
+    // The stated river depth is 2 m at the middle, and it is the ribbon that has to be 2 m above the bed -- not the solved level, which nobody sees. Measured at every sample's centreline, where the carve is the full depth.
     let worstDepth = 0
     for (let i = 0; i < rr.count; i++) {
       const x = river.samples[i * 4]
       const y = river.samples[i * 4 + 1]
       const z = river.samples[i * 4 + 2]
-      // Both ribbon vertices of this sample carry the spline y verbatim; the river gets no lift.
+      // Both ribbon vertices of this sample carry the solved level verbatim; the river gets no lift.
       const surface = rr.positions[i * 6 + 1]
       if (Math.abs(surface - y) > 1e-4) worstDepth = Infinity
-      worstDepth = Math.max(worstDepth, Math.abs(surface - layers.carve(x, z, y + AMBIENT) - DEPTH))
+      worstDepth = Math.max(worstDepth, Math.abs(surface - layers.carve(x, z, ground(x, z)) - DEPTH))
     }
     check(worstDepth < 1e-3, `the river surface sits ${DEPTH} m above its own carved bed`, `worst error ${worstDepth.toExponential(1)} m`)
 
-    // The widened edge exists to be buried. At halfWidth the carve has already climbed most of the way back, so the ground at the ribbon's outer edge must be ABOVE the water plane -- otherwise the overhang is drawn over open air and the shoreline is the polygon edge after all.
+    // The widened edge exists to be buried. The carve returns the ground to the water level at halfWidth and climbs the bank from there, so the ground at the ribbon's outer edge must be ABOVE the water plane -- otherwise the overhang is drawn over open air and the shoreline is the polygon edge after all.
     let exposed = 0
     for (let i = 0; i < rr.count; i++) {
       const surface = rr.positions[i * 6 + 1]
       for (const v of [0, 1]) {
         const ex = rr.positions[i * 6 + v * 3]
         const ez = rr.positions[i * 6 + v * 3 + 2]
-        if (layers.carve(ex, ez, surface + AMBIENT) < surface) exposed++
+        if (layers.carve(ex, ez, ground(ex, ez)) < surface) exposed++
       }
     }
     check(exposed === 0, 'the widened river edge is under ground, not over air', `${exposed} of ${rr.vertices} edge vertices exposed`)
@@ -419,10 +423,12 @@ export async function run() {
         { id: 'round', x: 0, z: 0, y: 10, rx: 40, rz: 40, rot: 0, shape: 0, carve: 1, depth: 4 },
         { id: 'rect', x: 300, z: 0, y: 10, rx: 50, rz: 30, rot: 0, shape: 1, carve: 1, depth: 4 },
       ],
-      rivers: [{ id: 'r', depth: 2, pts: [[-200, 5, -300, WIDTH], [-60, 5, -300, WIDTH], [60, 5, -300, WIDTH], [200, 5, -300, WIDTH]] }],
+      rivers: [{ id: 'r', depth: 2, pts: [[-200, -300, WIDTH], [-60, -300], [60, -300], [200, -300, WIDTH]] }],
       roads: [],
     }
-    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: new Layers(doc) })
+    const layers = new Layers(doc)
+    layers.paths.setTerrain(terrainOf(() => 12))
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
     ws.rebuild()
     const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
     const REACH = 20

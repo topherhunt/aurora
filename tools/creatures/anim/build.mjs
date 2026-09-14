@@ -3,9 +3,13 @@
  *
  *   node tools/creatures/anim/build.mjs <id> [clip ...] [--sheet] [--view side]
  *
- * Clips are JSON specs in ./clips. Each one becomes `anim-<name>.glb` in the
- * creature's work dir, which is exactly what the /gen-creature bench globs, so a
- * rebuilt clip shows up in the dropdown with no bench change.
+ * Clips are JSON specs in ./clips/<plan>, `plan` being the body plan the rig map
+ * names -- `quadruped`, `wyvern`. A fox and a two-legged dragon do not share a
+ * walk: one lands four feet in a lateral sequence, the other alternates two and
+ * counterweights with its tail, and a wyvern additionally flies. Each spec
+ * becomes `anim-<name>.glb` in the creature's work dir, which is exactly what
+ * the /gen-creature bench globs, so a rebuilt clip shows up in the dropdown with
+ * no bench change.
  *
  * Every build prints its diagnostics. Those numbers, not the eye, are what say a
  * foot is planted -- see `diagnose()` in gait.mjs. `--sheet` additionally renders
@@ -26,13 +30,27 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../../..')
 export const CLIPS = path.join(HERE, 'clips')
 
-export const clipNames = () => fs.readdirSync(CLIPS).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''))
+/** A rig map that does not say is a quadruped -- that is what every Tripo rig is. */
+export const DEFAULT_PLAN = 'quadruped'
+export const plans = () => fs.readdirSync(CLIPS, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
 
-export function readSpec(name) {
-  const file = path.join(CLIPS, `${name}.json`)
-  if (!fs.existsSync(file)) throw new Error(`no clip spec "${name}" -- have ${clipNames().join(', ')}`)
+function planDir(plan) {
+  const dir = path.join(CLIPS, plan)
+  if (!fs.existsSync(dir)) throw new Error(`no clip specs for body plan "${plan}" -- have ${plans().join(', ')}`)
+  return dir
+}
+
+export const clipNames = (plan = DEFAULT_PLAN) => fs.readdirSync(planDir(plan))
+  .filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''))
+
+export function readSpec(name, plan = DEFAULT_PLAN) {
+  const file = path.join(planDir(plan), `${name}.json`)
+  if (!fs.existsSync(file)) throw new Error(`no ${plan} clip spec "${name}" -- have ${clipNames(plan).join(', ')}`)
   return JSON.parse(fs.readFileSync(file, 'utf8'))
 }
+
+/** The body plan whose clip library this creature is animated from. */
+export const planOf = (map) => map.plan ?? DEFAULT_PLAN
 
 /** The rig a clip is built against, same preference order as the Blender export. */
 export function rigFile(id) {
@@ -43,8 +61,8 @@ export function rigFile(id) {
 }
 
 export function buildClip(id, name) {
-  const spec = readSpec(name)
   const map = readRigMap(id)
+  const spec = readSpec(name, planOf(map))
   const source = rigFile(id)
   // A gait spec places feet and solves IK; a pose spec interpolates hand-authored
   // keyframes. Sitting has no footfall cycle, so it cannot come from a gait.
@@ -86,10 +104,12 @@ const mm = (v) => `${(v * 1000).toFixed(1)}mm`
 function main() {
   const args = process.argv.slice(2)
   const id = args.find((a) => !a.startsWith('--'))
-  if (!id) throw new Error(`usage: build.mjs <id> [clip ...] [--sheet] -- clips: ${clipNames().join(', ')}`)
+  if (!id) throw new Error(`usage: build.mjs <id> [clip ...] [--sheet] -- body plans: ${plans().join(', ')}`)
   const view = args.includes('--view') ? args[args.indexOf('--view') + 1] : 'side'
   const wanted = args.filter((a) => !a.startsWith('--') && a !== id && a !== view)
-  const names = wanted.length ? wanted : clipNames()
+  const plan = planOf(readRigMap(id))
+  const names = wanted.length ? wanted : clipNames(plan)
+  console.log(`${id}  body plan: ${plan}`)
 
   for (const name of names) {
     const { out, channels, duration, samples, stats } = buildClip(id, name)

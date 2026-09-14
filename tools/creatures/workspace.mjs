@@ -40,6 +40,8 @@ import {
 } from './tripo.mjs'
 import { CREATURES } from './creature-roster.mjs'
 import { blendRig } from './blend-rig.mjs'
+import { buildClip, clipNames, planOf, rigFile } from './anim/build.mjs'
+import { buildRigMap, mapFile, readRigMap } from './anim/rig-map.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORK = path.join(ROOT, 'tools/creatures/work')
@@ -419,6 +421,38 @@ export async function runAnimate(id, { animations }) {
     written.push(file)
   }
   return { taskId, credits, files: written }
+}
+
+/**
+ * Synthesise the clip library locally -- free, no Tripo, no Blender. Every spec
+ * for this creature's body plan -- anim/clips/<plan>, the plan named by its rig
+ * map -- is solved against its own skeleton and written as `anim-<name>.glb`,
+ * which is the same naming the retargeter uses, so the bench lists both kinds
+ * side by side.
+ *
+ * The rig map is derived and written on first call, because it is what turns a
+ * pile of Tripo bone names into legs and a spine. It is a plain JSON file meant
+ * to be hand-corrected, so an existing one is read back untouched -- rebuilding
+ * clips must never silently undo a fix the map already carries.
+ *
+ * Diagnostics come back per clip. `stanceSlide` is the one to read: see
+ * `diagnose()` in anim/gait.mjs.
+ */
+export function buildLocalClips(id, { clips = null } = {}) {
+  const file = mapFile(id)
+  const derived = !fs.existsSync(file)
+  if (derived) fs.writeFileSync(file, JSON.stringify(buildRigMap(rigFile(id)), null, 2))
+
+  const plan = planOf(readRigMap(id))
+  const names = clips?.length ? clips : clipNames(plan)
+  const built = names.map((name) => {
+    const { out, duration, samples, stats } = buildClip(id, name)
+    return {
+      name, file: path.basename(out), duration, samples,
+      slide: stats.stanceSlide, ik: stats.ikStance, sink: stats.penetration, speed: stats.speed,
+    }
+  })
+  return { derivedRigMap: derived, plan, clips: built }
 }
 
 /** What exists on disk right now, for the bench to render without guessing. */

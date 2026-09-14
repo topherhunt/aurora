@@ -1,7 +1,8 @@
 import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
-import { LITTER_LAYERS, LITTER_PATCH_M } from '../../props/litter.js'
+import { buildRock } from '../../props/rock.js'
+import { rockParams, TINTS, TINT_GAIN, ENV_TINTS } from '../../props/rock-bank.js'
 import { createPropMaterial } from '../../material.js'
 import { InstancedArena } from './instanced-arena.js'
 import { RimFade } from './rim.js'
@@ -9,119 +10,135 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
-// STREWN LITTER on the /v2 route: the small stones, drawn as pictures of small
-// stones instead of as small stones. The argument is DESIGN.md §22 -- why this is
-// a texture rather than props, the two passes, the density-is-a-spacing rule and
-// where each ENV_DENSITY rate caps.
+// STREWN LITTER on the /v2 route: the small stones underfoot, each one a
+// twenty-triangle pebble bedded into the ground. The argument is DESIGN.md §22 --
+// why it is geometry and not a picture, what the reach costs, and where each
+// ENV_DENSITY rate caps.
 //
 // The standard scatter machine (render/trees.js's header) at its smallest cut: one
 // InstancedMesh, one material, tiled camera-following scatter keyed on tileSeed,
 // graded thinning, incremental regrow, rim dissolve -- and no variant bank, no
-// tier ladder, no LOD bands, because a quad is already the floor of every ladder.
+// tier ladder, no LOD bands. A pebble is twenty triangles at every range it is
+// drawn at, and the whole layer is a few tens of thousands of them; what it
+// costs is INSTANCES, and a second tier would not reduce those by one.
 //
-// ONE GEOMETRY FOR ALL FOUR BAKED LAYERS, which is what lets the whole layer sit
-// on render/instanced-arena.js (an arena holds exactly one). material.js declares
-// `texLayer` as a plain attribute and never says at what RATE, so the four
-// pictures are told apart by an InstancedBufferAttribute of that name instead of
-// by four copies of one quad -- a divisor of 1 on the same declaration, no shader
-// change, and four vertices for the whole system rather than sixteen.
+// ONE GEOMETRY, the boulder shape at its coarsest tier (T20) built at unit size,
+// which is what lets the whole layer sit on render/instanced-arena.js (an arena
+// holds exactly one). Variety is the instance matrix's: a continuous yaw, a size
+// skewed small, an independent stretch on each horizontal axis and a flatness on
+// the vertical one, a burial depth, and a colour that is a tint off the rock
+// bank's palette or the ground's own. At five to thirty centimetres a stone IS
+// its silhouette, and one blob under those dials is as many silhouettes as
+// fifteen blobs were.
 //
 // Three lines that break silently if moved:
-//   - THE QUAD'S NORMAL IS EXACTLY (0, 1, 0), material.js's CARD_UP_MARK. Safe only
-//     because this material carries no billboard-layer list, and a ground stamp is
-//     the one prop that must never turn.
 //   - THE DRY PASS'S DRAW ORDER: every candidate draws the same randoms whether or
-//     not it survives, so one extra draw reshuffles every patch in the world. The
+//     not it survives, so one extra draw reshuffles every pebble in the world. The
 //     wet pass takes tileSeed slot 1 to leave slot 0 untouched.
-//   - THE PATCH IS A PLANE AND THE GROUND IS NOT. Laid on the field normal at the
-//     centre, lifted LITTER_LIFT; curvature inside 1.6 m is answered by the slope
-//     test, never by a bigger lift.
+//   - THE PEBBLE IS SUNK, NOT LIFTED. A closed solid bedded a third of its height
+//     into the drawn ground has no rim to show on any slope and the ground's cut
+//     through it is what hides the twenty facets' outline. Lift it and the outline
+//     is a gem sitting on the grass.
+//   - THE SINK IS ALONG WORLD Y and _reground rewrites only the matrix's Y, so the
+//     two agree. Sinking along the normal would need _reground to recompose the
+//     matrix, and the error of not doing so is three centimetres times
+//     (1 - cos 34 deg) on the steepest ground admitted.
 // ---------------------------------------------------------------------------
 
-// The side of one stamp, in metres, and the range it is scaled by. The size
-// itself belongs to the bake -- props/litter.js chose 1.6 m because that is
-// what makes a 20 cm stone sixteen texels wide -- so this file only varies it.
-// The range is narrow on purpose: scale a patch up and its stones grow with it,
-// so a 2x stamp is not a bigger patch of the same gravel, it is a patch of
-// gravel twice the size. Half a stop either way is the most the picture takes
-// before the stones stop matching the modelled rocks standing next to them.
-const SCALE = [0.85, 1.4]
-
-// How far above the DRAWN ground a stamp floats, in metres, plus the jitter that
-// separates two stamps lying on each other.
+// The seed of the one shape every pebble is, and the rung it is built at. T20 is
+// the coarsest rung of the shipping ladder (props/rock.js), the one the boulder
+// beds draw between 25 m per metre of rock and their card; here it is the ONLY
+// rung, because a 15 cm stone reaches its own "25 m per metre" at 3.75 m and
+// nothing finer would be seen from standing height. `smooth: 1` is ROCK_DEFAULTS
+// and is what keeps twenty faces from photographing as a gem.
 //
-// The base figure is ribbon.js's ROAD_LIFT, for the same reason: the smallest lift
-// that clears the depth buffer's disagreement with itself over a terrain triangle
-// at this range. The jitter is not decoration -- litter is scattered with no
-// overlap test, so patches DO land on each other, and two coplanar quads at the
-// same height z-fight over their whole intersection, the one artefact on this
-// ground that reads instantly as broken. A couple of centimetres is invisible from
-// standing height and several depth-buffer steps at 60 m.
-//
-// THE LIFT IS NOT A CURVATURE ALLOWANCE AND CANNOT BE ONE: the largest stamp
-// carries a corner 14 cm off plane over a 5-degree slope change, three times the
-// lift (§22). What keeps it rare is the slope test.
-const LITTER_LIFT = 0.05
-const LITTER_LIFT_VARY = 0.025
+// Built at `size: 1` and scaled per instance: buildRock's `size` is the largest
+// horizontal extent, so the matrix scale below is metres of pebble directly.
+export const PEBBLE_SEED = 3
+export const PEBBLE_TIER = 2
 
-// Stamps per square metre at full density, and the tile they are rolled in.
+// Largest horizontal extent of a pebble in metres, and the power that skews the
+// roll toward the small end. Two is the same skew the baked patch used, and for
+// the same reason: loose stone is mostly grit with a few stones in it, and a
+// uniform roll reads as a hatch pattern of same-sized dots. The floor is what a
+// stone needs to be to still be a few pixels at the far edge of the reach; the
+// ceiling is where a stone stops being litter and becomes something the boulder
+// beds would place.
+const SIZE = [0.06, 0.30]
+const SIZE_POW = 2.0
+
+// The per-instance shape dials, all multiplied onto the unit pebble. `STRETCH`
+// scales the horizontal axis the shape is already long in, and the other by
+// its complement, so the plan runs from round to twice as long as wide; `FLAT`
+// scales the height, so the same stone is a domed cobble or a flat chip.
+const STRETCH = [0.75, 1.25]
+const FLAT = [0.55, 1.1]
+
+// How much of a pebble's height is below the DRAWN ground. A closed solid, so a
+// deep burial costs nothing but triangles the depth buffer never fills; the top
+// of the range leaves only a crown showing, which is what most stone on a wood
+// floor does. Varied per instance because a row of stones all proud by the same
+// fraction reads as placed.
+const SINK = [0.3, 0.55]
+
+// Candidates per square metre at full density, and the tile they are rolled in.
 //
 // THE FIGURE THAT MATTERS IS THE ONE AFTER THE REJECTIONS, not this one: the drift
-// floor alone throws away a measured 25.5% of candidates and ENV_DENSITY more than
-// half again in a wood, so the number to check is METRES BETWEEN STAMPS on real
-// ground. 0.14 gives 3.7 m in a wood, 3.4 m on a peak, 3.3 m on a shore and 6.7 m
-// on the sine ridge; §22 carries the table against 0.08 and the reasoning.
+// floor throws away a third of the candidates and ENV_DENSITY a fifth of what is
+// left in a wood, so the number to check is STONES PER SQUARE METRE on real
+// ground. 2.6 lands near one per m² in a wood and on a bare peak, which is "there
+// are stones about" rather than "the ground is paved"; §22 carries the table.
 //
-// At 1.6 m a side, a stamp every 3.7 m puts litter on about a fifth of the ground,
-// and rather less carrying stone since the picture is mostly transparent. That
-// reads as "there are stones about" rather than "the ground is paved": much denser
-// and the square stamps meet edge to edge, which is where the trick stops working,
-// because two overlapping rectangles of gravel show their corners in a way one
-// never does.
-//
-// The tile is 8 m, so a full-density tile rolls nine candidates. Small tiles keep
+// The tile is 8 m, so a full-density tile rolls 218 candidates. Small tiles keep
 // the regrow granular and the per-tile arrays short; the only reason not to shrink
 // further is that the clump lattice must stay coarser than the tile or the drifts
 // line up with the grid.
-const DENSITY = 0.14
+const DENSITY = 3.4
 const TILE = 8
 
 // EXTRA candidates per square metre, offered by the wet pass and thrown away
 // everywhere not under water. ADDED to DENSITY rather than replacing it: the dry
 // pass places on the bed too -- submerged ground is `river` to _envAt and river is
-// saturated, so every dry-pass candidate landing in water is already accepted.
-//
-// SO THE NUMBER TO READ IS THE SUM, AND IT IS A SPACING RATHER THAN A RATIO, for
-// the reason DENSITY's note gives. At 8 m the tile rolls round(64 * 0.09) = 6 wet
-// candidates against the dry pass's 9, so a lake bed is offered 15/9 of what a
-// shore is and both face the same drift floor and the same saturated `river` rate.
-//
-// 0.18 IS DELIBERATELY THROUGH ITS OWN MARGIN -- 1.82 m mean spacing against an
-// 1.8 m stamp, so squares meet edge to edge. Bought knowingly, and least bad here
-// of anywhere: wet pass only, seen through moving water. If the corners show, this
-// number is the whole fix -- 0.13 is 2.13 m, 0.09 is 2.57 m (§22).
-const WET_DENSITY = 0.18
+// saturated, so a dry-pass candidate landing in water is accepted on the shore's
+// terms. At 8 m the tile rolls round(64 * 2.0) = 128 wet candidates against the
+// dry pass's 218, so a lake bed is offered 346/218 of what a shore is and both
+// face the same drift fields and the same `river` rate.
+const WET_DENSITY = 2.0
 
 // Where the litter stops. `FULL_RADIUS` is the distance inside which every
 // candidate survives; past it the keep-fraction falls as FULL_RADIUS / d, which
 // is the graded thinning every scatter in /v2 uses.
 //
-// 64 m is not the parallax rule -- a 1.6 m patch stays several pixels wide well
-// past a kilometre -- it is where litter stops being information. These are the
-// stones you see because you are walking on them; at 64 m the stamp is a smudge a
-// couple of texels of contrast from the ground under it, and the 900-odd instances
-// of it are paid for something nobody can name. The rim dissolve hides the edge.
-const FULL_RADIUS = 26
-const RADIUS = 64
+// 8 m of full density is the ground she is walking on. It is NOT the draw radius,
+// because a 15 cm stone at 8 m is twenty pixels on a desktop and a ring of them
+// arriving at that range would be the most visible thing in the layer; the
+// thinning carries the tail out to 28 m, where a stone is a few pixels and the
+// rim dissolve hides the last of them. A tile takes its level from its NEAREST
+// corner, so with the tile and the full radius both 8 m the whole 3x3 block
+// about the camera is at full density -- a 24 m square, nine discs' worth, and
+// most of what is resident.
+const FULL_RADIUS = 8
+const RADIUS = 28
 
-// The steepest ground a stamp will lie on, in degrees. Two separate reasons and
-// the second is the binding one. A flat picture on a steep face is foreshortened
-// into a band; and, far more importantly, the steeper the ground the more it
-// curves inside the patch, so this is really the curvature test wearing the only
-// cheap proxy there is. Well under the underfoot bed's 55 degrees, which could
-// afford it because a pebble is a solid the size of one terrain texel and does
-// not care what the ground does a metre away.
+// The steepest ground a pebble will lie on, in degrees, and it is the terrain's
+// own stone line: shade() starts painting a hillside as bare rock at ny 0.86
+// (31 degrees) and at 34 the ground is still under 5% stone, so litter lies only
+// where the ground is drawn as ground and never on a face. Tested twice, at two
+// scales: first on the heightmap's own slope out of scatterAt, which is in hand
+// already and throws away the obvious faces, then on the 1.2 m normal the pebble
+// is tilted by, which is near the metre the paint is classified at (CLASS_EPS,
+// chunk-mesh-v2.js) -- ground that averages walkable over the heightmap's cell
+// and stands up over a metre is drawn as stone and gets no stone. Held under the
+// 42 degrees _envAt calls a cliff so the `cliff` rate below stays unreachable.
 const MAX_SLOPE_DEG = 34
+
+// How much of the litter survives on snow, as a multiplier on the accept rate,
+// ramped by the same cover term shade() paints the snow with (its smoothstep
+// across the band about the snow line; the slope term in it is ~0 on any ground
+// the slope test admits). Stone under snow is under snow: a quarter is enough to
+// say the field is not a sheet, and the shader's own snow cap on every crown
+// carries the rest.
+const SNOW_KEEP = 0.25
 
 // How much litter each environment carries, as an accept RATE (see rocks.js's
 // BEDS -- a rate, so it caps at 1 and cannot be pushed past it by any
@@ -129,17 +146,18 @@ const MAX_SLOPE_DEG = 34
 // leaf litter; a peak is scoured rock and gravel and carries a lot.
 //
 // RIVER IS SATURATED, ON PURPOSE, AND THE ONLY ONE ALLOWED TO BE: past
-// CLUMP_FLOOR the rate it faces is at least 0.9 * (1 + 0.55 * 0.34) = 1.068, so
-// nothing is refused on shingle and CLUMP_GAIN is inert there. `forest` 0.6 tops
-// out at 0.930 and never caps; `peak` 0.75 caps above clump 0.606, 34 refusals per
-// thousand. §22 argues why the saturation is wanted here and what it costs.
+// CLUMP_FLOOR the rate it faces is at least 0.9 * (1 + 0.55 * 0.34) = 1.068 with
+// the fine swing at its mean, so the coarse drift refuses nothing on shingle and
+// CLUMP_GAIN is inert there; only the low half of FINE_SWING thins it. `forest`
+// 0.6 tops out at 0.930 and never caps; `peak` 0.75 caps above clump 0.606. §22
+// argues why the saturation is wanted here and what it costs.
 //
 // `cliff` IS ZERO AND ALSO UNREACHABLE, two different facts and both wanted.
 // _envAt only says `cliff` past CLIFF_TAN (42 degrees) and MAX_SLOPE_DEG refuses
 // past 34, so no candidate can arrive carrying that name. The entry is kept at
 // zero for what happens if someone raises MAX_SLOPE_DEG: the branch would come
-// alive, and a plausible-looking 0.22 here would quietly stamp flat pictures of
-// gravel onto vertical rock.
+// alive, and a plausible-looking 0.22 here would quietly bed pebbles into a
+// vertical face.
 const ENV_DENSITY = { river: 0.9, forest: 0.6, cliff: 0, peak: 0.75 }
 
 // The drift field: the same value-noise lattice the scree pile uses, at its own
@@ -148,74 +166,83 @@ const ENV_DENSITY = { river: 0.9, forest: 0.6, cliff: 0, peak: 0.75 }
 // reads as an even sprinkle -- which is the tell that says "generated" faster
 // than any amount of per-instance variety can undo.
 //
+// 12 m cells rather than the 21 the baked patches drifted on: the whole layer
+// now lives inside 28 m, and a drift has to be crossable in a few strides to be
+// seen as one. Still coarser than the 8 m tile, which is the constraint.
+//
 // `CLUMP_FLOOR` rejects the low ground of that field outright. It is worth
 // noting what it buys besides the look: the test is four hashes of position and
 // costs about 34 ns, where the terrain sample immediately after it costs 4.9 us,
-// so throwing away a measured quarter of the candidates here is nearly free
+// so throwing away a measured third of the candidates here is nearly free
 // and pays for the density everywhere else. Position-only, so it draws no
 // randoms and the deterministic stream is untouched.
-const CLUMP_CELL = 21
+const CLUMP_CELL = 12
 const CLUMP_FLOOR = 0.34
 const CLUMP_GAIN = 0.55
+
+// The second drift octave: the same value noise on a 3 m lattice, in its own
+// hash slot, which is the scale of the patches the eye reads standing still --
+// the coarse field says where the drifts are, this one says that inside a drift
+// the stone still gathers and thins from one stride to the next. A GAIN and not
+// a floor: it swings the accept rate between 1 - FINE_SWING and 1 + FINE_SWING
+// about a mean of 1, so it moves the density both ways and, where the rate is
+// unsaturated, leaves the count alone on average. Only the coarse floor carves
+// bare ground. On shingle the top of the swing is eaten by saturation and the
+// bottom is not, so that is the one ground it thins more than it thickens.
+const FINE_CELL = 3
+const FINE_SWING = 0.7
 
 // The thresholds that name the ground, shared in spirit with rocks.js's and
 // kept separate in fact: those are that file's constants and this one has no
 // business reaching into them, but they must not drift apart either, because
-// litter that called a shore a wood would put forest-toned gravel on the beach.
+// litter that called a shore a wood would put forest-toned stone on the beach.
 const SHORE_RISE = 1.6
 const PEAK_BELOW_SNOW = 55
 const CLIFF_TAN = Math.tan((42 * Math.PI) / 180)
 
-// HOW FAR A STAMP TAKES THE GROUND'S OWN COLOUR, and it is split into hue and
-// brightness because the two want completely different treatment.
-//
-// GROUND_HUE is the rocks' GROUND_CUE and the same construction exactly: the
-// terrain's vertex colour renormalised to unit luminance, so only its DIRECTION
-// survives and it can rotate the litter toward moss or toward dirt without also
-// dragging it toward black. It is higher than the rocks' 0.3 because that is
-// the difference in kind between the two: a boulder is an object sitting ON the
-// ground and should keep its own stone colour, while litter IS the ground.
-//
-// BRIGHTNESS IS A SEPARATE, LEASHED TERM, and it has to be separate for a
-// reason that is easy to miss: the terrain palette spans 0.048 (grass) to 0.88
-// (snow), a factor of EIGHTEEN, while the bake is a correctly exposed
-// photograph that wants a multiplier near 1. Taking the ground's magnitude
-// directly would blow every stamp on a saddle to white and delete every stamp
-// in a wood. So the ratio against GROUND_REF -- roughly C_ROCK, the bare stony
-// ground litter mostly lies on -- is square-rooted to compress it and then
-// clamped. Without any of it the four pictures read as four rectangles of the
-// same gravel dropped on every ground in the world.
-//
-// THE CEILING IS A SNOW SETTING AND NOTHING ELSE. Every un-snowed palette entry
-// compresses to between 0.81 and 0.96, so the floor guards against a repalette
-// rather than biting on any ground today; C_SNOW is 0.879, eleven times the rest of
-// the table, and the top of this range decides only what litter looks like lying in
-// snow. 2.7 puts the mean stone near 0.57 albedo against it -- darker by a stone's
-// worth rather than a hole's, where 1.6 read as wet coal (§22).
-//
-// The hue fraction is deliberately NOT ramped alongside it: C_SNOW normalised to
-// unit luminance is [0.98, 1.00, 1.06], so the tint moves under 3% at any fraction
-// and the whole of the snow problem is the magnitude.
-const GROUND_HUE = 0.55
-const GROUND_REF = 0.09
-const GROUND_BRIGHT = [0.75, 2.7]
+// Which of the bank's tints a pebble may wear, per environment: the rock beds'
+// own ENV_TINTS with `lichen` taken out, because that is the one entry that says
+// "this boulder has not moved in a century" and loose stone has, by definition.
+// Weighted by repetition the way ENV_TINTS is, so common stone stays common.
+const PEBBLE_TINTS = Object.fromEntries(
+  Object.entries(ENV_TINTS).map(([env, list]) => [env, list.filter((i) => TINTS[i][0] !== 'lichen')])
+)
 
-// Per-stamp brightness jitter, multiplied on top of everything else. Narrow,
-// because the bake already carries every stone's own tint inside the picture
-// and this is only stopping two adjacent stamps of the same layer from being
-// pixel-identical where they meet.
-const TONE = [0.88, 1.14]
+// HOW FAR A PEBBLE TAKES THE GROUND'S OWN COLOUR. The rock beds' GROUND_CUE and
+// the same construction -- the terrain's vertex colour at full magnitude, lerped
+// into the tint -- but a step higher than theirs on every ground, because that
+// is the difference in kind between the two: a boulder is an object sitting ON
+// the ground and keeps its own stone colour, while litter IS the ground. None
+// reaches 1: the stones still have to be findable against it.
+//
+// AND HALF THE STONES ARE THE GROUND'S HUE. Each pebble rolls once for which
+// half it is in: the palette half wears its bank tint pulled toward the ground
+// by GROUND_CUE; the ground half is that same stone's LUMINANCE carrying the
+// ground's chromaticity instead of its own -- the hue is exactly the ground's,
+// the brightness is exactly what the stone would have had. Not the ground's
+// colour whole: ground colour sits near 0.2 while a lit stone sits near 0.5,
+// so a pebble that simply took the ground's colour was a black speck on it.
+// A wood floor's litter is then half stone-coloured stone and half the greens
+// and browns of what it lies in at stone brightness, which is what a handful
+// of ground looks like, and each half is what stops the other reading as a
+// pattern.
+const GROUND_CUE = { river: 0.8, forest: 0.6, cliff: 0.65, peak: 0.65 }
+const GROUND_SHARE = 0.5
+
+// Per-pebble brightness jitter, multiplied on top of everything else. Wider
+// than a boulder's, because there is no texture detail at this size to tell two
+// neighbours apart and the tone is most of what does.
+const TONE = [0.8, 1.2]
 
 // The build budget and the placement grid, both copied from the siblings.
 const BUILD_BUDGET_MS = 0.6
 const PLACEMENT_CELL = 4.0
 const GROUND_SWEEP = 16
-const LOD_HYSTERESIS = 0.08
 
 /**
  * A tile's seed. Same mix as the rock scatter's with a fixed slot of its own,
  * so litter is an independent field rather than the boulders' one at a
- * different scale -- otherwise every stamp would land centred on a rock.
+ * different scale -- otherwise every pebble would land centred on a rock.
  */
 function tileSeed(tx, tz, seed, slot) {
   let h =
@@ -229,30 +256,14 @@ function tileSeed(tx, tz, seed, slot) {
 }
 
 /**
- * One 2-triangle quad lying in the XZ plane, centred on its origin.
+ * The one pebble. The world's boulder shape at PEBBLE_SEED on the T20 rung,
+ * closed (no `sit`), standing on y = 0 with its bed plane there, unit width.
+ * `userData.rock.measured` carries the height the sink is a fraction of.
  *
- * NO texLayer HERE: it is per instance (see the header), and the arena attaches
- * it to the geometry it actually draws. A per-vertex one written here would win
- * the name and stamp every stamp in the world with the same picture.
- *
- * Built at side 1 so the instance matrix's scale is in metres of patch: see
- * SCALE. Wound counter-clockwise seen from above, and the normal is exactly up
- * -- see the header note on CARD_UP_MARK for why "exactly" matters.
+ * The caller owns it and must dispose it; the arena clones what it draws.
  */
-function buildLitterQuad() {
-  const h = 0.5
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(
-    [-h, 0, h, h, 0, h, h, 0, -h, -h, 0, -h], 3
-  ))
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(
-    [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3
-  ))
-  geo.setAttribute('uvProj', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2))
-  geo.setIndex([0, 1, 2, 0, 2, 3])
-  geo.computeBoundingBox()
-  geo.computeBoundingSphere()
-  return geo
+export function buildPebble() {
+  return buildRock({ ...rockParams(PEBBLE_SEED), size: 1, tier: PEBBLE_TIER })
 }
 
 export class Litter {
@@ -261,16 +272,12 @@ export class Litter {
    * @param field         V2Height. Needs scatterAt, heightAt, snowLineAt, bands.
    * @param water         WaterSurfaces. Needs levelAt, which both the
    *                      environment test and the wet pass go through --
-   *                      isSubmerged is no longer called, because the wet pass
+   *                      isSubmerged is not called, because the wet pass
    *                      already holds the level it would look up again.
    * @param layers        Layers. Needs `snow.band` and flattenAt, for the
    *                      ground cue -- same argument Rocks and Ferns take.
    * @param textureArray  The shared prop atlas from buildTextureArray(). The
-   *                      four LITTER layers in it are EMPTY until
-   *                      bakeLitterSet() has run against a live renderer; this
-   *                      class does not wait for that and does not need to,
-   *                      because the atlas is one texture and the stamps
-   *                      re-sample it every frame.
+   *                      pebble samples LAYER.ROCK off it, like every rock.
    * @param opts.ground   TerrainV2, or null for headless probes.
    */
   constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null } = {}) {
@@ -282,9 +289,9 @@ export class Litter {
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Litter: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
     }
-    // Optional on the same terms as `ground`. Without it a stamp that lands inside
-    // a boulder is laid inside it, and a picture of pebbles cutting through a rock
-    // at the exact height of the ground beside it is unmistakable.
+    // Optional on the same terms as `ground`. Without it a pebble that lands inside
+    // a boulder is bedded inside it, invisibly -- or, on the boulder's flank, as a
+    // stone floating on a curved face.
     if (rocks && typeof rocks.blockTopAt !== 'function') {
       throw new Error('Litter: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
     }
@@ -311,6 +318,7 @@ export class Litter {
     this.radiusSq = RADIUS * RADIUS
     this.evictSq = (RADIUS + TILE * 1.5) ** 2
     this.maxSlopeTan = Math.tan((MAX_SLOPE_DEG * Math.PI) / 180)
+    this.minNy = Math.cos((MAX_SLOPE_DEG * Math.PI) / 180)
 
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / FULL_RADIUS) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
@@ -321,25 +329,23 @@ export class Litter {
     // `instancedFade` because the rim dissolve's timer has nowhere else to live
     // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
     // alpha beside the tint and the arena carries `aPropFade` instead. See
-    // material.js's FADE_VERTEX.
-    this.material = createPropMaterial(textureArray, { instancedFade: true })
+    // material.js's FADE_VERTEX. FrontSide because the pebble is a closed solid
+    // and the half of it under the ground is the half facing away.
+    this.material = createPropMaterial(textureArray, { instancedFade: true, side: THREE.FrontSide })
 
-    this.quad = buildLitterQuad()
+    this.pebble = buildPebble()
+    this.pebbleTris = this.pebble.index.count / 3
+    this.pebbleHeight = this.pebble.userData.rock.measured.height
     this.maxInstances = this._poolBound()
 
     this.batch = new InstancedArena(this.maxInstances, this.material)
     this.batch.name = 'v2-litter'
-    this.quadId = this.batch.addGeometry(this.quad)
-    // WHICH OF THE FOUR BAKED PICTURES a stamp wears, one float per instance.
-    // The fill is layer 0 rather than -1: an id no tile has stamped yet is not
-    // drawn, but a resting value that named no layer would sample outside the
-    // atlas the moment one ever were.
-    this.texLayerAttr = this.batch.addInstancedAttribute('texLayer', LITTER_LAYERS[0])
+    this.pebbleId = this.batch.addGeometry(this.pebble)
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
     for (let i = 0; i < this.maxInstances; i++) {
-      const id = this.batch.addInstance(this.quadId)
+      const id = this.batch.addInstance(this.pebbleId)
       this.batch.setVisibleAt(id, false)
       this.free[this.maxInstances - 1 - i] = id
     }
@@ -347,8 +353,12 @@ export class Litter {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
-    this.instLift = new Float32Array(this.maxInstances)
-    // The rim dissolve: which stamps are drawn, which are hidden, and the
+    // Metres of pebble below the drawn ground, so _reground can re-bed it.
+    this.instSink = new Float32Array(this.maxInstances)
+    // 1 where the pebble took the ground's hue, 0 where it wears a tint --
+    // see GROUND_SHARE. Read by the gate and by nothing in the frame.
+    this.instGround = new Uint8Array(this.maxInstances)
+    // The rim dissolve: which pebbles are drawn, which are hidden, and the
     // quarter second between. Litter has one tier, so nothing to preempt.
     this.rim = new RimFade(this.batch, this.maxInstances)
 
@@ -369,11 +379,14 @@ export class Litter {
     this._up = new THREE.Vector3(0, 1, 0)
     this._gc = new Float32Array(3)
     this._sweep = 0
-    // The three shading terms `shade` wants per stamp. Constant for a whole tile,
-    // so _growTile hoists them here once rather than per candidate, and they live
-    // on the instance rather than in _stamp's argument list because that list is
-    // already eleven long and a fourteenth positional float is a bug waiting to
-    // be written.
+    // The rolls one candidate drew, filled by whichever pass is running and read
+    // by _stamp. One object rather than nine positional floats.
+    this._roll = { u: 0, tint: 0, yaw: 0, size: 0, stretch: 0, flat: 0, sink: 0, tone: 0, ground: 0 }
+    // The rest of what _draw hands back: where the candidate is and its
+    // environment roll, which the passes read and _stamp never sees.
+    this._cand = { x: 0, z: 0, envRoll: 0 }
+    // The three shading terms `shade` wants per pebble. Constant for a whole
+    // tile, so _growTile hoists them here once rather than per candidate.
     this._altLo = 0
     this._altSpan = 0
     this._snowBand = 0
@@ -396,7 +409,7 @@ export class Litter {
     this.rejected = { slope: 0, env: 0, clump: 0 }
     this.rejectedWet = { dry: 0, clump: 0, slope: 0, env: 0 }
     // Both passes' rock drops on one counter, because the test they share lives in
-    // the one method they share (_stamp). Counted rather than silent: a stamp
+    // the one method they share (_stamp). Counted rather than silent: a pebble
     // rejected by stone is indistinguishable in the world from one that was never
     // offered, and a rock query gone wrong would thin the whole litter layer with
     // nothing in the readout to say so.
@@ -438,54 +451,75 @@ export class Litter {
     return 'forest'
   }
 
-  /** The drift field. See CLUMP_CELL; identical in form to RockBed._clump, on its own lattice. */
-  _clump(x, z) {
-    const cx = Math.floor(x / CLUMP_CELL)
-    const cz = Math.floor(z / CLUMP_CELL)
-    let fx = x / CLUMP_CELL - cx
-    let fz = z / CLUMP_CELL - cz
+  /**
+   * The drift fields: bilinear value noise on a `cell` lattice in hash `slot`,
+   * identical in form to RockBed._clump. Slot -1 at CLUMP_CELL is the coarse
+   * field the floor and gain read; slot -2 at FINE_CELL is the fine one.
+   */
+  _clump(x, z, cell, slot) {
+    const cx = Math.floor(x / cell)
+    const cz = Math.floor(z / cell)
+    let fx = x / cell - cx
+    let fz = z / cell - cz
     fx = fx * fx * (3 - 2 * fx)
     fz = fz * fz * (3 - 2 * fz)
-    const at = (ix, iz) => mulberry32(tileSeed(cx + ix, cz + iz, this.seed, -1))()
+    const at = (ix, iz) => mulberry32(tileSeed(cx + ix, cz + iz, this.seed, slot))()
     const a = at(0, 0) + (at(1, 0) - at(0, 0)) * fx
     const b = at(0, 1) + (at(1, 1) - at(0, 1)) * fx
     return a + (b - a) * fz
   }
 
   /**
-   * The rotation that lays a stamp flat on the hill.
+   * The accept rate a candidate's environment roll is tested against: the
+   * environment's rate, raised inside a drift (see CLUMP_GAIN), swung either way
+   * by the fine field (FINE_SWING), and cut on snow by the same cover ramp the
+   * mesher paints it with (SNOW_KEEP). Capped by the roll itself, which is what
+   * makes a rate past 1 saturation and not a bonus -- see ENV_DENSITY.
+   */
+  _rateAt(env, clump, fine, h, snowLine) {
+    const t = Math.min(1, Math.max(0, (h - (snowLine - this._snowBand / 2)) / this._snowBand))
+    const snow = t * t * (3 - 2 * t)
+    return ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump) * (1 - FINE_SWING + 2 * FINE_SWING * fine) *
+      (1 - (1 - SNOW_KEEP) * snow)
+  }
+
+  /**
+   * The rotation that beds a pebble into the hill.
    *
-   * FULL alignment, unlike every rock bed's partial lean, and that is the one
-   * place this file's geometry argument differs from theirs: a boulder tipped
-   * all the way into the ground normal looks placed, so the beds lerp part of
-   * the way and let the stone stand a little proud. A picture of gravel that is
-   * not flat on the ground is a picture of gravel hovering.
+   * FULL alignment, unlike every rock bed's partial lean: a boulder tipped all
+   * the way into the ground normal looks placed, so the beds lerp part of the
+   * way and let the stone stand a little proud. A pebble has no "proud" to
+   * read at its size, and one that is not flat on a slope shows more of its
+   * downhill flank than its own height, which is a stone about to roll.
    *
    * Off the FIELD rather than the drawn mesh, for RockBed._groundTilt's reason:
    * the drawn normal changes every time the chunk under it re-splits, and a
-   * patch that rocked as the terrain LOD moved would be worse than one a degree
+   * pebble that rocked as the terrain LOD moved would be worse than one a degree
    * off the triangle it lies on.
+   *
+   * Leaves the rotation in `_tiltQ` and RETURNS THE NORMAL, because the passes
+   * want its `y` for the fine slope test before _stamp wants the rotation.
    */
   _groundTilt(x, z) {
     const e = 1.2
     const hx = this.field.heightAt(x + e, z) - this.field.heightAt(x - e, z)
     const hz = this.field.heightAt(x, z + e) - this.field.heightAt(x, z - e)
     this._n.set(-hx, 2 * e, -hz).normalize()
-    return this._tiltQ.setFromUnitVectors(this._up, this._n)
+    this._tiltQ.setFromUnitVectors(this._up, this._n)
+    return this._n
   }
 
   /**
-   * The height a stamp is laid on, before its lift: the DRAWN terrain where
-   * there is one, and the field underneath it on a headless probe.
+   * The height a pebble is bedded against: the DRAWN terrain where there is
+   * one, and the field underneath it on a headless probe.
    *
-   * NOTHING HERE KNOWS ABOUT WATER AND NOTHING HERE MAY, which matters now that
-   * litter is stamped on riverbeds. A submerged stamp sits LITTER_LIFT above the
-   * BED -- the same five centimetres above the same drawn triangle as a stamp in
+   * NOTHING HERE KNOWS ABOUT WATER AND NOTHING HERE MAY. A submerged pebble sits
+   * in the BED -- the same fraction into the same drawn triangle as a pebble in
    * a wood -- and the water surface is drawn over the top of it by
    * WaterSurfaces, which is a separate mesh at a separate height. If this ever
-   * grew a levelAt call the gravel would come loose from the bottom of the river
-   * and float at the top of it, and it would do so only in the one place nobody
-   * walks up to and checks.
+   * grew a levelAt call the shingle would come loose from the bottom of the
+   * river and float at the top of it, and it would do so only in the one place
+   * nobody walks up to and checks.
    */
   _groundFor(x, z) {
     if (this.ground) {
@@ -507,15 +541,14 @@ export class Litter {
   /**
    * There is no LOD loop here, which is why this is a fifth the length of its
    * siblings': the only per-frame work is growing whatever the reseat queued and
-   * re-seating stamps whose terrain chunk has changed LOD under them.
+   * re-seating pebbles whose terrain chunk has changed LOD under them.
    *
-   * THE REGROUND SWEEP IS NOT OPTIONAL HERE the way it nearly is for a boulder.
-   * A stamp sits LITTER_LIFT -- five centimetres -- above the DRAWN surface, so
-   * the moment the chunk beneath it re-splits and the drawn height moves, the
-   * whole margin is gone and the patch is either buried or floating. A rock has
-   * its own volume to hide that in; a plane has nothing. One sixteenth of the
-   * resident tiles are checked per frame, so a chunk change is corrected inside
-   * a quarter of a second.
+   * The reground sweep matters less than it did for a flat picture -- a pebble
+   * sunk a third of its height has that third of margin before the drawn ground
+   * moving under it either buries or floats it -- but a 6 cm stone's third is
+   * two centimetres and a chunk re-split moves more than that. One sixteenth of
+   * the resident tiles are checked per frame, so a chunk change is corrected
+   * inside a quarter of a second.
    */
   update(camX, camY, camZ) {
     this._reseat(camX, camZ)
@@ -555,7 +588,7 @@ export class Litter {
 
       hidden += this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
     }
-    this.tris = (this.placed - hidden) * 2
+    this.tris = (this.placed - hidden) * this.pebbleTris
   }
 
   _reseat(cx, cz) {
@@ -597,32 +630,31 @@ export class Litter {
   }
 
   /**
-   * Lay one stamp on the ground and hand back its instance id.
+   * Bed one pebble into the ground and hand back its instance id.
    *
-   * Everything from here down is identical for a stamp in a wood and a stamp on
-   * a riverbed, which is exactly why it was lifted out of _growTile when the wet
-   * pass arrived instead of being copied into it. The two passes are allowed to
-   * differ in which candidates they offer and in nothing else; a second copy of
-   * the orientation, the ground cue and the dissolve is a second copy that can
-   * drift, and a riverbed lit half a stop off the shore beside it would be very
-   * hard to trace back to a duplicated block.
+   * Everything from here down is identical for a pebble in a wood and a pebble
+   * on a riverbed, which is exactly why it is one method rather than a copy in
+   * each pass. The two passes are allowed to differ in which candidates they
+   * offer and in nothing else; a second copy of the orientation, the ground cue
+   * and the dissolve is a second copy that can drift, and a riverbed lit half a
+   * stop off the shore beside it would be very hard to trace back to a
+   * duplicated block.
    *
-   * `u` is the candidate's rank, which the rim dissolve is set from; the rest are
-   * the rolls its own pass drew for it. The tile's three shading terms are read
-   * off the instance rather than passed -- see _altLo.
+   * The candidate's rolls are read off `this._roll`, which the running pass
+   * filled; `u` there is its rank, which the rim dissolve is set from. The
+   * tile's three shading terms are read off the instance too -- see _altLo.
    *
-   * RETURNS -1 IF THE STAMP WAS REFUSED, which happens for exactly one reason: a
+   * RETURNS -1 IF THE PEBBLE WAS REFUSED, which happens for exactly one reason: a
    * rock is already standing there. Callers must skip a -1 rather than write it
    * into their id list.
    */
-  _stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll) {
-    // NOT INSIDE A ROCK, and this is a DROP rather than a lift: litter is a
-    // photograph of small stones laid flat on the ground, and there is no version
-    // of it that belongs on top of a boulder. `0` rather than ROCK_STAND_MIN
-    // because any stone big enough to be geometry is big enough for a stamp
-    // through its middle to read as an error. Here rather than in the two passes
-    // because both want it and the shared half of the placement is this method --
-    // see the note above on what a second copy costs.
+  _stamp(x, z, h, snowLine, env) {
+    // NOT INSIDE A ROCK, and this is a DROP rather than a lift: a pebble bedded
+    // into a boulder's flank is a stone floating on a curved face, and there is
+    // no height to lift it to that reads better. `0` rather than ROCK_STAND_MIN
+    // because any stone big enough to be geometry is big enough to show the
+    // error. Here rather than in the two passes because both want it and the
+    // shared half of the placement is this method.
     if (this.rocks && this.rocks.blockTopAt(x, z, 0) > -Infinity) {
       this.rejectedRock++
       return -1
@@ -630,8 +662,8 @@ export class Litter {
 
     // Running dry THROWS rather than quietly placing less. A scatter that
     // silently stopped scattering on the densest ground in the world would be
-    // indistinguishable from one tuned that way, and the riverbed is now where
-    // that would happen first. See _poolBound for what covers it.
+    // indistinguishable from one tuned that way, and the riverbed is where that
+    // would happen first. See _poolBound for what covers it.
     if (this.freeCount === 0) {
       throw new Error(
         `Litter: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
@@ -639,54 +671,98 @@ export class Litter {
     }
 
     const id = this.free[--this.freeCount]
+    const r = this._roll
     const gc = this._gc
 
-    const lift = LITTER_LIFT + liftRoll * LITTER_LIFT_VARY
+    // The shape: size skewed small, one horizontal axis stretched and the other
+    // squeezed by the complement so the plan area stays the size's, and a
+    // flatness on the height. The unit pebble is already longer in x than z
+    // (elongate 1.25), so the stretch goes on x and a roll of 0.5 is the shape
+    // as authored.
+    const size = SIZE[0] + (SIZE[1] - SIZE[0]) * Math.pow(r.size, SIZE_POW)
+    const stretch = STRETCH[0] + r.stretch * (STRETCH[1] - STRETCH[0])
+    const flat = FLAT[0] + r.flat * (FLAT[1] - FLAT[0])
+    this._s.set(size * stretch, size * flat, size / stretch)
+
+    // Bedded: the fraction of the SCALED height that is under the drawn ground.
+    // Along world Y -- see the header on why _reground depends on that.
+    const sink = (SINK[0] + r.sink * (SINK[1] - SINK[0])) * this.pebbleHeight * size * flat
     this.instX[id] = x
     this.instZ[id] = z
-    this.instLift[id] = lift
-    // The DRAWN ground, and on a riverbed that is the BED and not the surface
-    // over it -- see _groundFor, which is where that promise is kept.
-    this.instY[id] = this._groundFor(x, z) + lift
+    this.instSink[id] = sink
+    this.instY[id] = this._groundFor(x, z) - sink
 
-    // Lie flat first, then spin about the ground's own normal, so a stamp on
-    // a slope turns in the plane it is lying in rather than about world Y --
-    // which would shear the picture as the tilt increased.
-    this._yawQ.setFromAxisAngle(this._up, yaw)
-    this._q.copy(this._groundTilt(x, z)).multiply(this._yawQ)
+    // Lie flat first, then spin about the ground's own normal, so a pebble on a
+    // slope turns in the plane it is lying in rather than about world Y. The
+    // tilt is the one the pass already took for its slope test.
+    this._yawQ.setFromAxisAngle(this._up, r.yaw)
+    this._q.copy(this._tiltQ).multiply(this._yawQ)
     this._p.set(x, this.instY[id], z)
-    const side = LITTER_PATCH_M * scale
-    this._s.set(side, 1, side)
     this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
-    // THE GROUND CUE, and it does most of the work of making a stamp belong.
-    // The terrain's own vertex colour at this point, from the chunk mesher's
-    // own `shade`, so the litter cannot drift away from what the ground is
-    // actually painted -- render/rocks.js and render/ferns.js take theirs the
-    // same way and for the same reason. See GROUND_HUE for why the hue and
-    // the brightness are pulled out of it separately.
-    shade(h, 1 / Math.hypot(tan, 1), snowLine, this._snowBand, this.layers.flattenAt(x, z),
+    // THE COLOUR: a tint off the bank's palette for this ground, pulled most of
+    // the way toward the ground it is lying on, with a tone jitter on top. The
+    // terrain's own vertex colour at this point, from the chunk mesher's own
+    // `shade`, so the litter cannot drift away from what the ground is actually
+    // painted -- render/rocks.js and render/ferns.js take theirs the same way
+    // and for the same reason. The gains in TINT_GAIN run above 1 on purpose:
+    // stone.png is dark, and every palette entry brightens it to the authored
+    // colour rather than darkening it further.
+    // `ny` is the same 1.2 m normal the tilt came from, so the pebble is shaded
+    // as the ground it is lying on rather than as the heightmap's coarser slope.
+    const pal = PEBBLE_TINTS[env]
+    const gain = TINT_GAIN[pal[Math.min(pal.length - 1, (r.tint * pal.length) | 0)]]
+    shade(h, this._n.y, snowLine, this._snowBand, this.layers.flattenAt(x, z),
       this._altLo, this._altSpan, x, z, gc, 0)
-    const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
-    const k1 = gl > 1e-5 ? GROUND_HUE / gl : 0
-    const k0 = gl > 1e-5 ? 1 - GROUND_HUE : 1
-    const bright = gl > 1e-5
-      ? Math.min(GROUND_BRIGHT[1], Math.max(GROUND_BRIGHT[0], Math.sqrt(gl / GROUND_REF)))
-      : GROUND_BRIGHT[0]
-    const v = (TONE[0] + tone * (TONE[1] - TONE[0])) * bright
-    this._c.setRGB(
-      v * (k0 + gc[0] * k1),
-      v * (k0 + gc[1] * k1),
-      v * (k0 + gc[2] * k1)
-    )
+    const k1 = GROUND_CUE[env]
+    const k0 = 1 - k1
+    const v = TONE[0] + r.tone * (TONE[1] - TONE[0])
+    this._c.setRGB(gain[0] * v * (k0 + gc[0] * k1), gain[1] * v * (k0 + gc[1] * k1), gain[2] * v * (k0 + gc[2] * k1))
+    // The ground half: the ground's chromaticity at the palette stone's
+    // luminance -- see GROUND_SHARE. Rec. 709 weights, the same luma the gate
+    // reads back. `shade` never paints black, so the ground luma is never 0.
+    const near = r.ground < GROUND_SHARE
+    this.instGround[id] = near ? 1 : 0
+    if (near) {
+      const lg = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
+      if (!(lg > 0)) throw new Error(`litter: shade painted black at ${x.toFixed(1)}, ${z.toFixed(1)}`)
+      const k = (0.2126 * this._c.r + 0.7152 * this._c.g + 0.0722 * this._c.b) / lg
+      this._c.setRGB(gc[0] * k, gc[1] * k, gc[2] * k)
+    }
     this.batch.setColorAt(id, this._c)
 
-    // The picture, per instance rather than per geometry -- see the header.
-    this.batch.setAttrAt(this.texLayerAttr, id, LITTER_LAYERS[Math.min(3, (layerRoll * 4) | 0)])
     // Hidden and FRESH until the rim has looked at it -- see rim.js. The caller
-    // marks the tile due, because a stamp is laid before its tile exists.
-    this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
+    // marks the tile due, because a pebble is laid before its tile exists.
+    this.rim.place(id, Math.min(this.fullRadius / r.u, this.radius))
     return id
+  }
+
+  /**
+   * One candidate's rolls, off whichever stream the pass is drawing from.
+   *
+   * EVERY candidate draws the same randoms whether or not it survives -- see
+   * Trees._growTile. Adding a draw here reshuffles every pebble in the world, so
+   * this is the file's most fragile block and the one worth leaving alone. Both
+   * passes call it, so they cannot drift apart by a roll.
+   */
+  _draw(rand, tx, tz) {
+    const r = this._roll
+    const x = (tx + rand()) * this.tile
+    const z = (tz + rand()) * this.tile
+    r.tint = rand()
+    const envRoll = rand()
+    r.yaw = rand() * Math.PI * 2
+    r.size = rand()
+    r.stretch = rand()
+    r.flat = rand()
+    r.sink = rand()
+    r.tone = rand()
+    r.u = rand()
+    r.ground = rand()
+    this._cand.x = x
+    this._cand.z = z
+    this._cand.envRoll = envRoll
+    return this._cand
   }
 
   _growTile(job) {
@@ -712,42 +788,30 @@ export class Litter {
     // entirely under water: the dry pass appends, then the wet pass appends
     // behind it. Nothing downstream cares which pass an entry came from --
     // _thin compacts by rank, _release and _reground walk the whole of `n` --
-    // so a stamp on a riverbed is thinned and re-seated on exactly the terms a
-    // stamp in a wood is.
+    // so a pebble on a riverbed is thinned and re-seated on exactly the terms a
+    // pebble in a wood is.
     const ids = existing ? existing.ids : new Int32Array(this.perTile + this.perTileWet)
     const rank = existing ? existing.rank : new Float32Array(this.perTile + this.perTileWet)
     let n = existing ? existing.n : 0
 
     // Hoisted onto the instance for _stamp to read: constant for the whole tile,
-    // wanted once per PLACED stamp by both passes.
+    // wanted once per PLACED pebble by both passes.
     const { altLo, altSpan } = this.field.bands
     this._altLo = altLo
     this._altSpan = altSpan
     this._snowBand = this.layers.snow.band
+    const r = this._roll
 
     // --- the dry pass: ordinary ground, and the riverbed at the shore's rate ---
     const rand = mulberry32(tileSeed(tx, tz, this.seed, 0))
     for (let k = 0; k < this.perTile; k++) {
-      // EVERY candidate draws the same randoms whether or not it survives -- see
-      // Trees._growTile. Adding a draw here reshuffles every patch in the world,
-      // so the order below is the file's most fragile line and the one worth
-      // leaving alone.
-      const x = (tx + rand()) * tile
-      const z = (tz + rand()) * tile
-      const layerRoll = rand()
-      const envRoll = rand()
-      const yaw = rand() * Math.PI * 2
-      const scale = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
-      const tone = rand()
-      const liftRoll = rand()
-      const u = rand()
-
-      if (u >= uNew || u < uOld) continue
+      const { x, z, envRoll } = this._draw(rand, tx, tz)
+      if (r.u >= uNew || r.u < uOld) continue
 
       // The drift field, taken BEFORE the terrain sample, which is what makes a
       // scatter this dense affordable. See CLUMP_FLOOR. Position-only, so it
       // draws no randoms.
-      const clump = this._clump(x, z)
+      const clump = this._clump(x, z, CLUMP_CELL, -1)
       if (clump < CLUMP_FLOOR) {
         this.rejected.clump++
         continue
@@ -755,7 +819,9 @@ export class Litter {
 
       this.samples++
       const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
-      if (tan > this.maxSlopeTan) {
+      // The slope, twice: the heightmap's own out of scatterAt, then the 1.2 m
+      // normal the pebble will be tilted by -- see MAX_SLOPE_DEG for why both.
+      if (tan > this.maxSlopeTan || this._groundTilt(x, z).y < this.minNy) {
         this.rejected.slope++
         continue
       }
@@ -766,22 +832,17 @@ export class Litter {
       // strewn instead of merely not-swept. Capped by the accept rate itself,
       // which is why the gain buys nothing at all on shingle and everything in
       // a wood -- see the RIVER IS SATURATED note above ENV_DENSITY.
-      if (envRoll >= ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump)) {
+      if (envRoll >= this._rateAt(env, clump, this._clump(x, z, FINE_CELL, -2), h, snowLine)) {
         this.rejected.env++
         continue
       }
-      // AND THERE IS NO WATER TEST HERE ANY MORE, which is the change. This pass
-      // used to refuse anything standing under water on the grounds that stone
-      // below the surface was the riverbed's business; a riverbed is where loose
-      // stone collects, so what that actually did was delete the litter from the
-      // one ground that most wants it. Submerged ground is `river` to _envAt and
-      // takes the shore's saturated rate above, and the wet pass below then lays
-      // more on top of it.
+      // No water test: submerged ground is `river` to _envAt and takes the
+      // shore's saturated rate above, and the wet pass below lays more on top.
 
-      const id = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      const id = this._stamp(x, z, h, snowLine, env)
       if (id < 0) continue
       ids[n] = id
-      rank[n] = u
+      rank[n] = r.u
       n++
     }
 
@@ -791,26 +852,14 @@ export class Litter {
     // so the two candidate fields are independent and, far more importantly, not
     // one dry candidate anywhere in the world moves by a millimetre: the draw
     // order above is untouched and this loop's draws happen after every one of
-    // them. See the header. The rank test, the drift floor, the slope limit and
-    // the environment rate are all the dry pass's, deliberately -- the ONLY two
-    // things this pass does differently are that it offers WET_DENSITY more
-    // candidates per square metre and that it demands water.
+    // them. The rank test, the drift floor, the slope limit and the environment
+    // rate are all the dry pass's, deliberately -- the ONLY two things this pass
+    // does differently are that it offers WET_DENSITY more candidates per square
+    // metre and that it demands water.
     const wet = mulberry32(tileSeed(tx, tz, this.seed, 1))
     for (let k = 0; k < this.perTileWet; k++) {
-      // The dry pass's draw block, roll for roll and in the same order, off the
-      // other stream -- and unconditional for the same reason: a draw skipped on
-      // a rejected candidate reshuffles every riverbed downstream of it.
-      const x = (tx + wet()) * tile
-      const z = (tz + wet()) * tile
-      const layerRoll = wet()
-      const envRoll = wet()
-      const yaw = wet() * Math.PI * 2
-      const scale = SCALE[0] + wet() * (SCALE[1] - SCALE[0])
-      const tone = wet()
-      const liftRoll = wet()
-      const u = wet()
-
-      if (u >= uNew || u < uOld) continue
+      const { x, z, envRoll } = this._draw(wet, tx, tz)
+      if (r.u >= uNew || r.u < uOld) continue
 
       // THE ORDER OF THE NEXT THREE TESTS IS THE COST OF THIS WHOLE PASS, and it
       // is cheapest-first. `_clump` is four hashes, ~34 ns, and throws away a
@@ -822,7 +871,7 @@ export class Litter {
       // as the first everywhere instead of only in the water.
       //
       // Both are position-only and draw no randoms.
-      const clump = this._clump(x, z)
+      const clump = this._clump(x, z, CLUMP_CELL, -1)
       if (clump < CLUMP_FLOOR) {
         this.rejectedWet.clump++
         continue
@@ -842,30 +891,28 @@ export class Litter {
         this.rejectedWet.dry++
         continue
       }
-      // The slope limit is the dry pass's and for the dry pass's reason: this is
-      // a curvature test wearing a cheap proxy (see MAX_SLOPE_DEG), and a steep
-      // submerged bank curves inside 1.6 m exactly as a steep dry one does.
-      if (tan > this.maxSlopeTan) {
+      if (tan > this.maxSlopeTan || this._groundTilt(x, z).y < this.minNy) {
         this.rejectedWet.slope++
         continue
       }
       const snowLine = this.field.snowLineAt(x, z)
       // Submerged ground is `river` by construction -- _envAt calls anything
       // under a water level `river` before it looks at anything else -- so this
-      // is ENV_DENSITY.river every time, and river is saturated, so today it
-      // refuses nothing. It is asked anyway rather than assumed: if `river` is
-      // ever dropped below saturation the riverbed thins with the shore instead
-      // of quietly becoming the one ground the rate stopped applying to.
+      // is ENV_DENSITY.river every time, saturated against the coarse drift and
+      // thinned only by the fine swing's low half, exactly as the shore is. Asked
+      // rather than assumed: if `river` is ever dropped below saturation the
+      // riverbed thins with the shore instead of quietly becoming the one ground
+      // the rate stopped applying to.
       const env = this._envAt(x, z, h, tan, snowLine)
-      if (envRoll >= ENV_DENSITY[env] * (1 + CLUMP_GAIN * clump)) {
+      if (envRoll >= this._rateAt(env, clump, this._clump(x, z, FINE_CELL, -2), h, snowLine)) {
         this.rejectedWet.env++
         continue
       }
 
-      const id = this._stamp(x, z, h, tan, snowLine, u, layerRoll, yaw, scale, tone, liftRoll)
+      const id = this._stamp(x, z, h, snowLine, env)
       if (id < 0) continue
       ids[n] = id
-      rank[n] = u
+      rank[n] = r.u
       n++
     }
 
@@ -893,7 +940,7 @@ export class Litter {
   _reground(tile) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      const y = this._groundFor(this.instX[id], this.instZ[id]) + this.instLift[id]
+      const y = this._groundFor(this.instX[id], this.instZ[id]) - this.instSink[id]
       if (y === this.instY[id]) continue
       this.instY[id] = y
       this.batch.getMatrixAt(id, this._m)
@@ -902,7 +949,7 @@ export class Litter {
     }
   }
 
-  /** Drop every stamp whose rank has fallen outside the tile's new keep-fraction. */
+  /** Drop every pebble whose rank has fallen outside the tile's new keep-fraction. */
   _thin(tile, uNew) {
     let w = 0
     for (let k = 0; k < tile.n; k++) {
@@ -958,7 +1005,7 @@ export class Litter {
     this.batch.removeFromParent()
     this.batch.dispose()
     this.material.dispose()
-    // The arena CLONED the quad and owns the clone; this is the original.
-    this.quad.dispose()
+    // The arena CLONED the pebble and owns the clone; this is the original.
+    this.pebble.dispose()
   }
 }

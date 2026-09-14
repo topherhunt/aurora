@@ -995,9 +995,9 @@ console.log('\n-- placement --')
 {
   const wet = { isSubmerged: (x, z, y) => y < 61, shoreDistAt: (x, z, reach) => reach }
   const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
-  const snowy = { heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 60 }
-  const cliff = { heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
-  const sunk = { heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
+  const snowy = { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 60 }
+  const cliff = { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
+  const sunk = { heightAt: () => 1, heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
 
   const one = (field, water, paths) => {
     const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { seed: 7, style: 'tufts' })
@@ -1778,11 +1778,6 @@ strips.dispose()
 //   count MUST COVER EVERY VISIBLE ID. It is a high-water mark, and if it ever
 //   lagged an id that was made visible, that tuft would silently not draw.
 //
-//   THE BILLBOARD MUST STAY CYLINDRICAL. Rocks are viewpoint-oriented and grass
-//   is not: a spherical billboard tips the whole carpet to face an eye 1.6 m up,
-//   which from any altitude reads as crop circles. It is one boolean in
-//   createPropMaterial and it changes nothing that throws.
-//
 //   THE GROW MUST BE WIRED, AND WIRED IN THE VERTEX STAGE. Halving the far-field
 //   density is only affordable because the survivors are twice the size out
 //   there; a bed that lost the grow would be half the grass with nothing paying
@@ -1799,7 +1794,6 @@ console.log('\n-- arena --')
   // from it, two arenas share a program and the bug is far worse than this gate.
   // So checking it is checking the shader, not a label beside it.
   const key = grass.material.customProgramCacheKey()
-  check(!key.includes('-sph'), 'and grass billboards cylindrically, not at the viewpoint', key)
   check(key.includes('-ifade'),
     'and its dissolve is compiled against the attribute, not a batch colour texture', key)
   check(key.includes(`-grow${GROW_FROM}.${GROW_TO}.${GROW_SCALE}.`),
@@ -2182,7 +2176,7 @@ console.log('\n-- blades --')
   {
     let threw = false
     try {
-      new Grass(new THREE.Scene(), { heightAndSlopeAt: () => ({ h: 60, tan: 0 }), snowLineAt: () => 9999 },
+      new Grass(new THREE.Scene(), { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0 }), snowLineAt: () => 9999 },
         dry, clear, texArray, { seed: 7, style: 'blades', tint })
     } catch { threw = true }
     check(threw, 'blades on a field with no gradient throw rather than drawing nothing')
