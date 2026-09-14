@@ -98,6 +98,20 @@ const FRESH_FADE = 5
 // save, and being late to SHOW is bought off with slack rather than frequency.
 export const RIM_PHASES = 8
 
+/**
+ * The sweep phase a tile is on, derived from its coordinates rather than taken
+ * from its position in the scatter's Map. Map order changes on every evict and
+ * admit, so an index-derived phase lets a tile go many sweeps without a turn --
+ * which is exactly what the slack is sized against, and it was measurably
+ * breaking it at speed. Both multipliers are coprime with RIM_PHASES, so any run
+ * of tiles in either axis spreads evenly over the phases instead of landing
+ * several rows on the same frame. Exported so a scatter that walks its tiles in
+ * phase buckets can put a tile in the bucket whose turn is the rim's.
+ */
+export function tilePhase(tx, tz) {
+  return (((tx * 5 + tz * 3) % RIM_PHASES) + RIM_PHASES) % RIM_PHASES
+}
+
 // The fraction of an instance's gone-distance at which the rim takes it -- the
 // midpoint of the band the shader's smoothstep used to run over, for the reason
 // in the header. Exported because the debug readouts and the gates want to name
@@ -108,8 +122,10 @@ export const RIM_AT = (1 + FADE_BAND) / 2
 // grass's, for grass's reasons: the floor covers a camera that is stationary
 // while the scatter is rebuilt underneath it, and the decay holds the recent
 // PEAK speed for about half a second so a player who accelerates hard is covered
-// by the next frame rather than the next sweep.
-const RIM_SLACK_MIN = 0.25
+// by the next frame rather than the next sweep. The floor is exported because it
+// is also the distance a scatter may let the camera drift before a tile's last
+// sweep is stale: every boundary carries at least this much.
+export const RIM_SLACK_MIN = 0.25
 const RIM_SPEED_DECAY = 0.9
 
 // The slack the BOUNDARIES use is quantised UP to a multiple of this, and that
@@ -335,14 +351,7 @@ export class RimFade {
    */
   sweepTile(tile, instX, instY, instZ, camX, camY, camZ) {
     if (tile.rimPhase === undefined) {
-      // The phase is the TILE's own, derived from its coordinates rather than
-      // taken from its position in the scatter's Map. Map order changes on every
-      // evict and admit, so an index-derived phase lets a tile go many sweeps
-      // without a turn -- which is exactly what the slack is sized against, and
-      // it was measurably breaking it at speed. Both multipliers are coprime
-      // with RIM_PHASES, so any run of tiles in either axis spreads evenly over
-      // the phases instead of landing several rows on the same frame.
-      tile.rimPhase = (((tile.tx * 5 + tile.tz * 3) % RIM_PHASES) + RIM_PHASES) % RIM_PHASES
+      tile.rimPhase = tilePhase(tile.tx, tile.tz)
       tile.rimDue = true
       tile.rimSlack = 0
       tile.rimHidden = 0

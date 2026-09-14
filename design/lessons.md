@@ -65,6 +65,12 @@ Same in lighting: the "flat night" fix was a ratio, not a level, and the gate's 
 
 Applied after lighting, fog is a lerp toward a constant. A density that erases a ridge at 600 m erases it however well that ridge is lit. Contrast falloff with distance is a *lighting* job (`farDirect`/`farAmbient`); haze is fog's. See `design/history/night-fog.md`.
 
+## A card is matched to its mesh by drawing both, not by reasoning about the bake
+
+The rock card was too dark three times over, each time with a sound argument for why the bake's lights now matched the world's: the argument was about the lights, and what actually decided the pixel was the bake lighting the rock once and the world lighting the card again. Photographing UNLIT and shading live as a sphere mean made the card a function of the same light as the mesh, and only a gate that renders one rock both ways under four suns and compares the mean colour (`scripts/check-rock-card.mjs`) could say so. The same gate found the card 1.57x the mesh's area on its first run, from a box-shaped frame that grows 1.41x on the diagonal of any yawed rock -- an error every headless number check had certified as exact, because they were checking the frame against the box the frame was built from.
+
+**Rule:** a stand-in earns its place against the thing it stands in for, rendered, under the same light and the same eye. A check against the model the stand-in was derived from is a tautology.
+
 ## Small, cheap, and true
 
 - A GLSL comment inside a JS template literal must not contain a backtick. Five did, and the `SyntaxError` pointed 100 lines away.

@@ -81,11 +81,12 @@ export const RULES = {
   rockslideNear: { interval: [20, 60], gain: [0.2, 0.6], range: [10, 30], rise: [0, 10], minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
   rockslideFoot: { chance: 0.15, gain: [0.3, 0.7] },
-  // Lake: a wave every so often within `reach` of the shore, full volume up to `near`, fading to `far` of it at the reach.
-  wave: { interval: [1.5, 3], gain: [0.3, 0.8], reach: 10, near: 3, far: 0.25 },
+  // Lake: a wave every so often while her head is within `height` of the water -- on land within `reach` of the shore, or anywhere out over open water. Full volume up to `near` metres off the shore or above the surface, fading to `far` at the reach or the height.
+  wave: { interval: [2, 5], gain: [0.3, 0.8], reach: 10, near: 3, far: 0.25, height: 10 },
   lakeBed: { level: 0.5, gain: [0.6, 1.0] },
   brook: { reach: 10, near: 2, far: 0.2, level: 0.9, gain: [0.7, 1.0] },
-  leaves: { on: 0.5, off: 0.4, full: 0.8, level: 0.7, gain: [0.6, 1.0] },
+  // Leaves: the wood's canopy, heard from the ground; it thins to nothing across the `aloft` band of metres her head is above the ground.
+  leaves: { on: 0.5, off: 0.4, full: 0.8, level: 0.7, gain: [0.6, 1.0], aloft: [12, 20] },
   // Wind: a quiet loop that rises across the `snow` band of metres about the snowline, or the `height` band of metres her head is above the ground, whichever is stronger.
   wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
@@ -332,24 +333,37 @@ export class Ambience {
     return { x: head.x + sign * dirX * reach, y: s.fieldH, z: head.z + sign * dirZ * reach }
   }
 
+  /**
+   * Whether the lake is heard, how faded, and from where: the shore when one is
+   * within reach, else the open water straight below her. `lakeLevel` is
+   * -Infinity with no lake about, which puts her infinitely above it and off.
+   */
+  lakeEar(head, s) {
+    const W = RULES.wave
+    const above = head.y - s.lakeLevel
+    const d = Math.abs(s.lakeShore)
+    const inReach = d < W.reach
+    if (!(above < W.height) || !(inReach || s.overLake)) return { on: false, fade: 0, at: null }
+    const t = Math.max(inReach ? smoothstep(W.near, W.reach, d) : 0, smoothstep(W.near, W.height, above))
+    return {
+      on: true,
+      fade: 1 - t * (1 - W.far),
+      at: inReach ? this.shoreAt(head, s, s.lakeShore, s.lakeDirX, s.lakeDirZ) : { x: head.x, y: s.lakeLevel, z: head.z },
+    }
+  }
+
   _lake(dt, head, s) {
     const W = RULES.wave
-    const d = Math.abs(s.lakeShore)
-    const fade = 1 - smoothstep(W.near, W.reach, d) * (1 - W.far)
-    if (this.due('wave', d < W.reach, W.interval, dt)) {
-      this.fire('wave', {
-        rate: this.rate(), gain: this.between(...W.gain) * fade,
-        at: this.shoreAt(head, s, s.lakeShore, s.lakeDirX, s.lakeDirZ),
-      })
+    const ear = this.lakeEar(head, s)
+    if (this.due('wave', ear.on, W.interval, dt)) {
+      this.fire('wave', { rate: this.rate(), gain: this.between(...W.gain) * ear.fade, at: ear.at })
     }
   }
 
   _loops(head, s) {
     const L = RULES.lakeBed
-    const W = RULES.wave
-    const ld = Math.abs(s.lakeShore)
-    const lakeFade = 1 - smoothstep(W.near, W.reach, ld) * (1 - W.far)
-    this._loop('lakeBed', ld < W.reach, L.level * lakeFade, this.shoreAt(head, s, s.lakeShore, s.lakeDirX, s.lakeDirZ))
+    const ear = this.lakeEar(head, s)
+    this._loop('lakeBed', ear.on, L.level * ear.fade, ear.at)
 
     const B = RULES.brook
     const rd = Math.abs(s.riverShore)
@@ -357,9 +371,10 @@ export class Ambience {
     this._loop('brook', rd < B.reach, B.level * brookFade, this.shoreAt(head, s, s.riverShore, s.riverDirX, s.riverDirZ))
 
     const V = RULES.leaves
+    const canopy = s.forest * (1 - smoothstep(V.aloft[0], V.aloft[1], head.y - s.groundH))
     // Hysteresis: on past `on`, off again only below `off`, so a forest edge does not flap.
-    if (this.leavesOn ? s.forest < V.off : s.forest > V.on) this.leavesOn = !this.leavesOn
-    this._loop('leaves', this.leavesOn, V.level * smoothstep(V.off, V.full, s.forest))
+    if (this.leavesOn ? canopy < V.off : canopy > V.on) this.leavesOn = !this.leavesOn
+    this._loop('leaves', this.leavesOn, V.level * smoothstep(V.off, V.full, canopy))
 
     const D = RULES.wind
     // Two ways up into the wind: over the snowline on foot, or aloft over anything.

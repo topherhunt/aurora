@@ -20,7 +20,7 @@
 // producing a file that cannot be loaded at all.
 
 import { applyRigEdit, compose, decompose, invert, mul, readAccessor } from '../tools/creatures/apply-rig-edit.mjs'
-import { HIERARCHY, REQUIRED, descends, expectedParent } from '../tools/creatures/quadruped-rig.mjs'
+import { HIERARCHY, QUATERNIUS_TO_MIXAMO, REQUIRED, descends, expectedParent } from '../tools/creatures/mixamo-rig.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -147,26 +147,26 @@ console.log('\nedits that must be refused')
   check(message(() => applyRigEdit(brokenRig(), { reparent: { spine: 'head' } })).includes('cycle'), 'and the error says so')
   check(throws(() => applyRigEdit(brokenRig(), { reparent: { spine: 'spine' } })), 'parenting a joint to itself')
   check(throws(() => applyRigEdit(brokenRig(), { reparent: { spine: 'nope' } })), 'naming a parent that is not in the file')
-  check(throws(() => applyRigEdit(brokenRig(), { renames: { nope: 'Body' } })), 'renaming a node that is not in the file')
+  check(throws(() => applyRigEdit(brokenRig(), { renames: { nope: 'Hips' } })), 'renaming a node that is not in the file')
   check(throws(() => applyRigEdit(brokenRig(), { renames: { spine: '' } })), 'renaming to an empty string')
   check(throws(() => applyRigEdit(brokenRig(), { renames: { spine: 'chest' } })), 'a rename that collides with another node')
   check(throws(() => applyRigEdit(brokenRig(), { scale: { spine: 2 } })), 'an edit key this tool does not implement')
   const unnamed = brokenRig()
   delete unnamed.nodes[3].name
-  check(throws(() => applyRigEdit(unnamed, { renames: { spine: 'Body' } })), 'a file with unnamed nodes, which a name-keyed edit cannot address')
+  check(throws(() => applyRigEdit(unnamed, { renames: { spine: 'Hips' } })), 'a file with unnamed nodes, which a name-keyed edit cannot address')
 }
 
 console.log('\nrenaming')
 {
   const json = brokenRig()
   const before = worlds(json)
-  applyRigEdit(json, { reparent: { tail: 'spine' }, renames: { spine: 'Body', chest: 'Torso', tail: 'Tail1' } })
-  check(json.nodes.map((n) => n.name).join(' ') === 'root Body Torso head Tail1', 'names land on the right nodes', json.nodes.map((n) => n.name).join(' '))
+  applyRigEdit(json, { reparent: { tail: 'spine' }, renames: { spine: 'Hips', chest: 'Spine', tail: 'Tail' } })
+  check(json.nodes.map((n) => n.name).join(' ') === 'root Hips Spine head Tail', 'names land on the right nodes', json.nodes.map((n) => n.name).join(' '))
 
   // Both maps are keyed by the ORIGINAL names, so a reparent and a rename of
   // the same joint in one edit is not order-dependent for the author.
   const after = worlds(json)
-  check(maxDiff(before.get('tail'), after.get('Tail1')) < 1e-6, 'and a joint renamed and reparented in one edit still holds its pose')
+  check(maxDiff(before.get('tail'), after.get('Tail')) < 1e-6, 'and a joint renamed and reparented in one edit still holds its pose')
 }
 
 // --- a fixture with a skin, because deleting and moving rewrite vertex data --
@@ -300,10 +300,10 @@ console.log('\ndeleting and moving together')
     delete: ['chest'],
     moves: { spine: [0, 0.62, 0] },
     reparent: { tail: 'head' },
-    renames: { spine: 'Back', head: 'Head' },
+    renames: { spine: 'Spine', head: 'Head' },
   }, bin)
   const after = worlds(json)
-  check(maxDiff(after.get('Back').slice(9), [0, 0.62, 0]) < 1e-6, 'a move, a delete, a reparent and a rename land in one pass')
+  check(maxDiff(after.get('Spine').slice(9), [0, 0.62, 0]) < 1e-6, 'a move, a delete, a reparent and a rename land in one pass')
   check(maxDiff(before.get('head'), after.get('Head')) < 1e-6,
     'the child of the moved joint stays put even though its own parent was deleted', maxDiff(before.get('head'), after.get('Head')).toExponential(1))
   check(maxDiff(before.get('tail'), after.get('tail')) < 1e-6, 'and the reparented joint holds its pose')
@@ -328,7 +328,7 @@ console.log('\ndeletes and moves that must be refused')
 
 // --- the vocabulary ---------------------------------------------------------
 
-console.log('\nthe canonical quadruped skeleton')
+console.log('\nthe Mixamo skeleton')
 {
   const orphans = Object.entries(HIERARCHY).filter(([name, parent]) => parent !== null && !(parent in HIERARCHY))
   check(orphans.length === 0, 'every bone names a parent that is also in the list', orphans.map(([n]) => n).join(' '))
@@ -340,18 +340,41 @@ console.log('\nthe canonical quadruped skeleton')
   })
   check(cycles.length === 0, 'and no bone is its own ancestor')
   check([...REQUIRED].every((name) => name in HIERARCHY), 'every required bone exists in the hierarchy')
-  const lopsided = [...REQUIRED].filter((n) => n.endsWith('.L') && !REQUIRED.has(`${n.slice(0, -2)}.R`))
+  const lopsided = [...REQUIRED].filter((n) => n.startsWith('Left') && !REQUIRED.has(`Right${n.slice(4)}`))
   check(lopsided.length === 0, 'and every required bone on the left has its mirror on the right', lopsided.join(' '))
-  check(descends('FrontLowerLeg.L', 'Torso2') && !descends('FrontLowerLeg.L', 'Tail1'), 'descends() walks the chain')
-  check(descends('Tail3', 'Body') && !descends('Body', 'Tail3'), 'and only in the one direction')
+  // Mixamo's side is a prefix word, never a `.L` suffix: one stray `.L` and a
+  // clip's tracks stop binding, silently, on that limb alone.
+  const suffixed = Object.keys(HIERARCHY).filter((n) => /\.[LR]$/.test(n))
+  check(suffixed.length === 0, 'no bone uses a .L / .R suffix instead of the prefix word', suffixed.join(' '))
 
-  // The required set deliberately skips Torso3, Neck2 and Neck3, so a rig that
-  // fills only what is required must still resolve to a connected hierarchy.
-  check(expectedParent('Head', REQUIRED) === 'Neck1', 'a bone whose canonical parent is unfilled falls back to the nearest one that is', expectedParent('Head', REQUIRED))
-  check(expectedParent('Neck1', REQUIRED) === 'Torso2', 'skipping Torso3 hangs the neck off the chest')
-  check(expectedParent('Body', REQUIRED) === null, 'and the root has no parent to fall back to')
-  const unreachable = [...REQUIRED].filter((n) => n !== 'Body' && expectedParent(n, REQUIRED) === null)
+  check(descends('LeftForeArm', 'Spine2') && !descends('LeftForeArm', 'Tail'), 'descends() walks the chain')
+  check(descends('Tail3', 'Hips') && !descends('Hips', 'Tail3'), 'and only in the one direction')
+  // The asymmetry that catches people: legs off the pelvis, arms off the ribcage.
+  check(descends('LeftUpLeg', 'Hips') && !descends('LeftUpLeg', 'Spine'), 'legs hang off Hips, not off the spine')
+  check(descends('LeftShoulder', 'Spine2'), 'and arms hang off Spine2')
+
+  // The required set deliberately skips Neck1, so a rig that fills only what is
+  // required must still resolve to a connected hierarchy.
+  check(expectedParent('Head', REQUIRED) === 'Neck', 'a bone whose canonical parent is unfilled falls back to the nearest one that is', expectedParent('Head', REQUIRED))
+  check(expectedParent('Hips', REQUIRED) === null, 'and the root has no parent to fall back to')
+  const unreachable = [...REQUIRED].filter((n) => n !== 'Hips' && expectedParent(n, REQUIRED) === null)
   check(unreachable.length === 0, 'so every required bone still reaches the root', unreachable.join(' '))
+}
+
+console.log('\nthe Quaternius preview mapping')
+{
+  const strays = Object.entries(QUATERNIUS_TO_MIXAMO).filter(([, to]) => !(to in HIERARCHY))
+  check(strays.length === 0, 'every mapped name is a bone this vocabulary has', strays.map(([f, t]) => `${f}->${t}`).join(' '))
+  const targets = Object.values(QUATERNIUS_TO_MIXAMO)
+  const collisions = targets.filter((t, i) => targets.indexOf(t) !== i)
+  // Two source joints driving one target would leave whichever bound last in
+  // charge, which is a silently half-played clip rather than an error.
+  check(collisions.length === 0, 'and no two source joints drive the same one', [...new Set(collisions)].join(' '))
+  // Every limb joint a walk needs has a source. The pack's spine is one joint
+  // shorter than ours between the pelvis and the chest, so Spine1 rides at rest
+  // -- the one gap, and it is named here so a wider one cannot open unnoticed.
+  const undriven = [...REQUIRED].filter((n) => !targets.includes(n))
+  check(undriven.join(' ') === 'Spine1', 'the only required bone the pack cannot drive is the spare spine joint', undriven.join(' '))
 }
 
 console.log(`\n${failures === 0 ? 'all rig-edit checks passed' : `${failures} FAILED`}\n`)

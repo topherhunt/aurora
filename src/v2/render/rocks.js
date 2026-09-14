@@ -1501,6 +1501,38 @@ function blockHull(shape) {
 }
 
 /**
+ * The spun card's frame for a mesh placed by matrix elements `e` (column-major,
+ * scale and every rotation in it) whose shape measures `measured` at scale 1:
+ * `out[o]` metres from the origin down to the placed rock's lowest point (<= 0),
+ * `out[o + 1]` the card's x scale and `out[o + 2]` its y scale.
+ *
+ * Each column is a local axis in the world, and the rock is taken as THE
+ * ELLIPSOID IN ITS BOX, centred half a height up its local y (rock.js puts the
+ * origin on the bed face), whose extent along any direction is the quadrature
+ * sum of its axes' projections. A box's would be the plain sum, and a box yawed
+ * an eighth of a turn covers 1.41x its own width, which a rounded rock does not:
+ * the card is yaw-invariant here, as a card that spins has to be. The height is
+ * the ellipsoid's vertical extent; the width is the mean of the two half-axes
+ * of its plan ellipse (the eigenvalues of the horizontal covariance) over the
+ * upright (w + d) / 2. A quarter turn maps each local axis onto a world one and
+ * both come out exact; an upright, untilted rock is its own scale on both axes.
+ * Exported for the gate that draws a rock both ways (check-rock-card).
+ */
+export function spunCardFrame(e, measured, out, o = 0) {
+  const w = measured.width, h = measured.height, d = measured.depth
+  const ux = e[1] * w, uy = e[5] * h, uz = e[9] * d
+  const halfUp = Math.sqrt(ux * ux + uy * uy + uz * uz) * 0.5
+  const a = e[0] * e[0] * w * w + e[4] * e[4] * h * h + e[8] * e[8] * d * d
+  const b = e[0] * e[2] * w * w + e[4] * e[6] * h * h + e[8] * e[10] * d * d
+  const c = e[2] * e[2] * w * w + e[6] * e[6] * h * h + e[10] * e[10] * d * d
+  const mid = (a + c) * 0.5
+  const r = Math.sqrt(((a - c) * 0.5) ** 2 + b * b)
+  out[o] = uy * 0.5 - halfUp
+  out[o + 1] = (Math.sqrt(mid + r) + Math.sqrt(Math.max(0, mid - r))) / (w + d)
+  out[o + 2] = halfUp * 2 / h
+}
+
+/**
  * One size band's scatter: its own tile grid, its own pool, its own PropArena.
  *
  * Not exported. `Rocks` owns one per BEDS entry, plus the bank and material they
@@ -1974,13 +2006,15 @@ class RockBed {
     // THE TIER TABLE, one arena id and one triangle count per band. The last slot
     // is the 2-triangle card and NO BED DECLINES IT.
     //
-    // A BOULDER'S CARD IS BEDDED WHERE ITS MESH WAS. The spin plants the card's
-    // foot on the lowest corner of the rolled box (`aCardBox`, see rock-bank's
-    // THE CARD), which is the corner `_growTile` seats the mesh by, so however
-    // the roll turned the rock and however deep the sink put it, the card is
-    // sunk the same. A PLATE'S STANDS PROUD, by whatever of its crown the sink
-    // left showing plus PLATE_CARD_LIFT, which is deliberate and is the only
-    // thing keeping a flat card out of the wall.
+    // A BOULDER'S CARD IS BEDDED WHERE ITS MESH WAS, AND STANDS AS TALL AND AS
+    // WIDE. The card tier is handed ITS OWN instance matrix (`_placeTier`): foot
+    // under the placed rock's lowest point and a per-axis scale spanning what
+    // the turned, tilted rock stands and covers, read off the final mesh matrix
+    // by `spunCardFrame`. The mesh matrix stays in `instM` for the tiers that
+    // want it and for `_surfaceAt`. A PLATE'S STANDS PROUD, by whatever of its
+    // crown the sink left showing plus PLATE_CARD_LIFT, which is deliberate and
+    // is the only thing keeping a flat card out of the wall.
+    this.spunCard = geos[ROCK_BAND_COUNT - 1].userData.impostor.spherical === true
     this.tierIds = new Int32Array(ROCK_BAND_COUNT)
     this.tierTris = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) {
@@ -2021,6 +2055,13 @@ class RockBed {
     // same reason it is the wrong one for the ladder: what must not collide is
     // the ground each rock covers, not how big it looks.
     this.instSpan = new Float32Array(this.maxInstances)
+    // THE MESH MATRIX, per instance, and the card's three numbers: how far below
+    // the origin its foot goes and its x and y scale. The arena holds ONE matrix
+    // per instance and a spun card's is not the mesh's, so every tier change
+    // writes the right one from here (`_placeTier`) and `_surfaceAt` reads the
+    // mesh's from here rather than from the arena.
+    this.instM = new Float32Array(this.maxInstances * 16)
+    this.instCard = new Float32Array(this.maxInstances * 3)
     // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
     // second between. It holds each rock's gone-distance as `rim.gone`, and it
     // shares ONE float per instance with the cross-dissolve below -- so it is
@@ -2071,10 +2112,7 @@ class RockBed {
     this.camAglQ = null
 
     this._m = new THREE.Matrix4()
-    // Its own scratch and not `_m`: blockTopAt is called from the middle of
-    // ANOTHER scatter's placement loop, and sharing would have a tree query
-    // scribble over the matrix a rock was half-composed into.
-    this._blockM = new THREE.Matrix4()
+    this._cardQ = new THREE.Quaternion()
     this._scatter = { h: 0, tan: 0 }
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
@@ -2748,6 +2786,7 @@ class RockBed {
         if (tier !== cur) {
           this.tierAt[i] = tier
           this.batch.setGeometryIdAt(i, this.tierIds[tier])
+          this._placeTier(i, tier)
           // `cur < 0` is an instance that has never been tiered -- there is no
           // departing mesh to hold, so there is nothing to dissolve past.
           if (cur >= 0) this._crossFade(i, cur, now)
@@ -3403,7 +3442,11 @@ class RockBed {
       )
       this._p.set(x, this.instY[id], z)
       this._s.set(scale, scale, scale)
-      this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
+      const e = this._m.compose(this._p, this._q, this._s).elements
+      this.instM.set(e, id * 16)
+      // Off the FINAL columns rather than the rolled box above, so the tilt and
+      // the lean are in the card's frame too.
+      spunCardFrame(e, s.measured, this.instCard, id * 3)
 
       // A TINT PER INSTANCE, ROLLED FROM THE ENVIRONMENT'S PALETTE. With one mesh
       // in the world this is most of what keeps a scree slope from being one grey
@@ -3482,6 +3525,7 @@ class RockBed {
       // near ones next frame.
       this.tierAt[id] = ROCK_BAND_COUNT - 1
       this.batch.setGeometryIdAt(id, this.tierIds[ROCK_BAND_COUNT - 1])
+      this._placeTier(id, ROCK_BAND_COUNT - 1)
 
       // Hidden until the rim's sweep has looked at it, which the tile below is
       // marked due for -- see rim.js.
@@ -3546,10 +3590,31 @@ class RockBed {
       const y = this._groundFor(this.instX[id], this.instZ[id]) - this.instSink[id]
       if (y === this.instY[id]) continue
       this.instY[id] = y
-      this.batch.getMatrixAt(id, this._m)
-      this._m.elements[13] = y
-      this.batch.setMatrixAt(id, this._m)
+      this.instM[id * 16 + 13] = y
+      this._placeTier(id, this.tierAt[id])
     }
+  }
+
+  /**
+   * Write arena slot `target`'s matrix for instance `id` drawn at `tier`: the
+   * mesh matrix from `instM`, or for a spun card its own -- foot dropped under
+   * the placed rock's lowest point, unrotated (the spin faces it), scaled per
+   * axis to what the rock stands and covers. `target` is the ghost in `_crossFade`
+   * and `id` itself everywhere else. The card's matrix is built on the CPU
+   * because the Quest's Adreno drew nothing for the shader that read it off the
+   * mesh's, and said nothing -- see material.js's billboardVertex.
+   */
+  _placeTier(id, tier, target = id) {
+    const e = this._m.elements
+    if (this.spunCard && tier === ROCK_BAND_COUNT - 1) {
+      const c = id * 3
+      this._p.set(this.instX[id], this.instY[id] + this.instCard[c], this.instZ[id])
+      this._s.set(this.instCard[c + 1], this.instCard[c + 2], this.instScale[id])
+      this._m.compose(this._p, this._cardQ, this._s)
+    } else {
+      for (let k = 0; k < 16; k++) e[k] = this.instM[id * 16 + k]
+    }
+    this.batch.setMatrixAt(target, this._m)
   }
 
   /**
@@ -3585,8 +3650,7 @@ class RockBed {
     if (this.batch.roomAt(this.tierIds[oldTier]) < 1) return
 
     const dup = this.free[--this.freeCount]
-    this.batch.getMatrixAt(i, this._m)
-    this.batch.setMatrixAt(dup, this._m)
+    this._placeTier(i, oldTier, dup)
     // The tint too, or the ghost is a different stone from the one it is
     // standing inside and the pair reads as two rocks rather than one. setColorAt
     // writes .rgb only, so the timer below is safe to stamp after it.
@@ -3664,6 +3728,7 @@ class RockBed {
       if (this.tierAt[i] === coarse) continue
       this.tierAt[i] = coarse
       this.batch.setGeometryIdAt(i, this.tierIds[coarse])
+      this._placeTier(i, coarse)
     }
   }
 
@@ -3830,16 +3895,18 @@ class RockBed {
    * the placement arrays.
    */
   _surfaceAt(id, ex, ez) {
-    this.batch.getMatrixAt(id, this._blockM)
-    const e = this._blockM.elements
+    // The MESH matrix, whichever tier the arena is drawing: a card's own would
+    // put the box on its foot with no roll.
+    const e = this.instM
+    const o = id * 16
     const s = this.instScale[id]
     const inv = 1 / (s * s)
-    const ox = (e[0] * ex + e[2] * ez) * inv
-    const oy = (e[4] * ex + e[6] * ez) * inv
-    const oz = (e[8] * ex + e[10] * ez) * inv
-    const dx = -e[1] / s
-    const dy = -e[5] / s
-    const dz = -e[9] / s
+    const ox = (e[o] * ex + e[o + 2] * ez) * inv
+    const oy = (e[o + 4] * ex + e[o + 6] * ez) * inv
+    const oz = (e[o + 8] * ex + e[o + 10] * ez) * inv
+    const dx = -e[o + 1] / s
+    const dy = -e[o + 5] / s
+    const dz = -e[o + 9] / s
     // The shape's own box, first, because the cylinder in front of this is a loose
     // reject and walking 320 triangles is an expensive way to answer a question six
     // planes settle. Slabs in the rock's frame, where the box is axis-aligned:
@@ -3898,7 +3965,7 @@ class RockBed {
       const t = (e2x * qx + e2y * qy + e2z * qz) * invDet
       if (t < near) near = t
     }
-    return near === Infinity ? -Infinity : e[13] - near * s
+    return near === Infinity ? -Infinity : e[o + 13] - near * s
   }
 
   /**

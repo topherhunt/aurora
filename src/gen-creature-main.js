@@ -345,9 +345,18 @@ async function refresh() {
   $('rigCheck').disabled = !assets.mesh
   $('genRig').disabled = !assets.mesh
   $('genAnim').disabled = !assets.rig
+  $('editRig').disabled = !assets.rig
   // A mesh, not a rig: the armature is one of the things Blender can supply.
   $('blenderRoundTrip').disabled = !assets.mesh
-  renderClipSelect()
+  const show = renderClipSelect()
+  // Nothing loads the viewport on startup, so without this a reload shows an
+  // empty stage and the creature's rig looks lost. Only when the stage is bare:
+  // refresh runs after every action, and reloading here would throw away a LOD
+  // tier the user had just clicked into the preview.
+  if (show && !model) {
+    if (/^rig/.test(show)) $('showSkeleton').checked = true
+    await showModel(show)
+  }
 }
 
 /**
@@ -700,6 +709,12 @@ $('genRig').addEventListener('click', () => withButton($('genRig'), 'rigging (Tr
   await showModel('rig')
   setStatus(`rig -> ${j.path} (${j.credits} credits)`, 'ok')
 }))
+
+// A new tab rather than a navigation: an unsaved rig edit lives only in that
+// page, and the bench behind it holds a session's billing log.
+$('editRig').addEventListener('click', () => {
+  open(`/rig-edit.html?id=${encodeURIComponent(currentId())}`, '_blank')
+})
 
 $('genAnim').addEventListener('click', () => withButton($('genAnim'), 'retargeting animations (Tripo)', async () => {
   const j = await post(`/__creature-animate?id=${encodeURIComponent(currentId())}`, { animations: selectedAnims() })
@@ -1571,8 +1586,21 @@ $('saveLod').addEventListener('click', () => withButton($('saveLod'), 'writing t
   setStatus(`${lodTiers.length} tier(s) written to work/${id}/meshes/, $0.000`, 'ok')
 }))
 
+/**
+ * Rebuild the clip dropdown and return what it now has selected.
+ *
+ * The options stay in pipeline order -- mesh, tiers, rig, clips -- but the
+ * DEFAULT is the rig, because that is the current state of the creature's
+ * skeleton and everything below it is a downstream artifact you would ask for
+ * by name. A reload that dropped you back on the naked mesh reads as "the rig I
+ * just paid for is gone", which is the bug this fixes.
+ *
+ * Whatever was showing wins over the default if that file still exists, so a
+ * refresh mid-session does not yank the preview out from under a comparison.
+ */
 function renderClipSelect() {
   const sel = $('clipSelect')
+  const was = sel.value
   sel.innerHTML = ''
   const options = []
   if (assets.mesh) options.push([assets.mesh, 'mesh (no rig)'])
@@ -1580,6 +1608,7 @@ function renderClipSelect() {
   // came from, and only the picked one's tiers are ever listed.
   for (const l of assets.lods) options.push([l, l.replace(/^meshes\/\d+-|\.glb$/g, '')])
   if (assets.rig) options.push(['rig.glb', 'rig (bind pose)'])
+  if (assets.rigFixed) options.push(['rig-fixed.glb', 'rig (renamed in rig-edit)'])
   for (const a of assets.anims) options.push([a, a.replace(/^anim-|\.glb$/g, '')])
   for (const [value, text] of options) {
     const o = document.createElement('option')
@@ -1588,6 +1617,11 @@ function renderClipSelect() {
     sel.appendChild(o)
   }
   sel.disabled = !options.length
+  if (!options.length) return null
+  const has = (v) => options.some(([value]) => value === v)
+  const fallback = ['rig-fixed.glb', 'rig.glb'].find(has) ?? options[options.length - 1][0]
+  sel.value = has(was) ? was : fallback
+  return sel.value
 }
 
 $('clipSelect').addEventListener('change', (e) => {

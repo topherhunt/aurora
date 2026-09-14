@@ -91,6 +91,43 @@ export function glint(shader) {
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\nreflectedLight.directSpecular *= ${GLINT.toFixed(2)};`)
 }
 
+// ---------------------------------------------------------------------------
+// THE HUE. One Tripo mesh wears one colour map, so without this every frog on
+// a bank is the same frog. Each instance carries its own turn round the colour
+// wheel in `aHue` (radians, either way), applied to the sampled map in the
+// fragment stage as a rotation about the grey axis in linear RGB, so a green
+// frog's neighbour is olive and the next one brown; the frogs' instanceColor
+// tint and the fish's brightness ride on top through three's own vColor. The
+// card wears it too, so a creature keeps its colour when it goes far.
+// ---------------------------------------------------------------------------
+
+/** Splice the per-instance hue turn into a material's shaders, from its onBeforeCompile. The mesh must carry an `aHue` instanced attribute. */
+export function hueVary(shader) {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute float aHue;\nvarying float vHue;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vHue;')
+    .replace(
+      '#include <map_fragment>',
+      '#include <map_fragment>\n' +
+        '{\n' +
+        '\tconst vec3 hueK = vec3( 0.57735027 );\n' +
+        '\tfloat hueC = cos( vHue );\n' +
+        '\tfloat hueS = sin( vHue );\n' +
+        '\tdiffuseColor.rgb = max( vec3( 0.0 ), diffuseColor.rgb * hueC + cross( hueK, diffuseColor.rgb ) * hueS + hueK * dot( hueK, diffuseColor.rgb ) * ( 1.0 - hueC ) );\n' +
+        '}'
+    )
+}
+
+/** The `aHue` attribute for `n` instances, set on the mesh's geometry and returned for the caller to write. */
+export function makeHueAttribute(mesh, n) {
+  const hue = new THREE.InstancedBufferAttribute(new Float32Array(n), 1)
+  hue.setUsage(THREE.DynamicDrawUsage)
+  mesh.geometry.setAttribute('aHue', hue)
+  return hue
+}
+
 /**
  * The asset onto an InstancedMesh's (empty) geometry. Returns the baked bounds
  * the caller sizes and seats the creature by: `span` is the longer horizontal
@@ -116,13 +153,16 @@ export function setCritterAsset(mesh, material, asset, label) {
 
 // ---------------------------------------------------------------------------
 // THE CROSS CARD. Past CARD_M from her head a creature is drawn as two quads
-// crossed at its body's axis -- the side view of the mesh on the XY plane and
-// the front view on the ZY plane, photographed once off the loaded GLB -- under
-// the SAME instance matrix as the mesh, so a card sits, tilts, turns and swells
-// exactly as the body it stands in for; it is not turned to the camera. Both
-// quads are double-sided, so from behind a plane you see its picture mirrored:
-// the true other side of a bilateral animal on the side quad, the face where
-// the rear should be on the front quad, and past eight metres neither reads.
+// crossed at its body's middle, each the mesh photographed once off the loaded
+// GLB from one of the VIEWS below -- the side on the XY plane always, and with
+// it the front on the ZY plane for a frog, or the top on the XZ plane for a
+// crab, which is seen clinging to a rock from above -- under the SAME instance
+// matrix as the mesh, so a card sits, tilts, turns and swells exactly as the
+// body it stands in for; it is not turned to the camera. Both quads are
+// double-sided, so from behind a plane you see its picture mirrored: the true
+// other side of a bilateral animal on the side quad, the face where the rear
+// should be on the front quad, the belly drawn as the back under a top quad,
+// and past eight metres none of it reads.
 //
 // The card is a cutout (alphaTest) drawn on every other pixel of a fixed screen
 // checkerboard, always, so the flat picture lets half the scenery through and
@@ -145,6 +185,7 @@ export function createCritterCardMaterial(label) {
       )
       // three flips a double-sided normal toward the viewer; twice is the identity, and the authored up-normal lights both faces alike.
       .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
+    hueVary(shader)
   }
   material.customProgramCacheKey = () => `${label}-card`
   return material
@@ -156,21 +197,62 @@ export function critterCardExtents({ halfX, halfZ, height }) {
   return { hx: halfX * grow, hz: halfZ * grow, y0: (height / 2) * (1 - grow), y1: (height / 2) * (1 + grow) }
 }
 
+// The two views a card is built of, by name; the frog's pair and the crab's.
+export const FROG_VIEWS = ['side', 'front']
+export const CRAB_VIEWS = ['side', 'top']
+
+/**
+ * One view's camera, in the unit mesh's frame: where it stands (ten units out
+ * from the body's middle, `at`), which way is up in its picture, and its
+ * orthographic frame -- half-width `w`, `top` and `bottom` along `up`. The
+ * quad for the view is this same frame laid in the world, so the picture and
+ * the quad agree by construction: see cardCorner.
+ */
+function cardView(name, { hx, hz, y0, y1 }) {
+  const yMid = (y0 + y1) / 2
+  const at = new THREE.Vector3(0, yMid, 0)
+  const y = new THREE.Vector3(0, 1, 0)
+  switch (name) {
+    // From +Z: +X to the right.
+    case 'side': return { at, from: new THREE.Vector3(0, yMid, 10), up: y, w: hx, top: y1 - yMid, bottom: y0 - yMid }
+    // From +X: -Z to the right.
+    case 'front': return { at, from: new THREE.Vector3(10, yMid, 0), up: y, w: hz, top: y1 - yMid, bottom: y0 - yMid }
+    // From above, laid flat at the body's middle: +X to the right, -Z up the picture.
+    case 'top': return { at, from: new THREE.Vector3(0, yMid + 10, 0), up: new THREE.Vector3(0, 0, -1), w: hx, top: hz, bottom: -hz }
+    default: throw new Error(`critter card: no view named ${name}`)
+  }
+}
+
+/** The world point at picture coordinates (u, v) of a view, u 0..1 left to right and v 0..1 bottom to top -- three's camera basis, so `right` is up x (from - at). */
+function cardCorner(view, u, v, out) {
+  const right = new THREE.Vector3().subVectors(view.from, view.at).normalize()
+  right.crossVectors(view.up, right)
+  return out.copy(view.at)
+    .addScaledVector(right, (2 * u - 1) * view.w)
+    .addScaledVector(view.up, view.bottom + (view.top - view.bottom) * v)
+}
+
 /**
  * The crossed quads onto a card InstancedMesh's (empty) geometry, sized to
- * `bounds` from setCritterAsset. u 0..0.5 is the side view (seen from +Z, +X to
- * the right) and 0.5..1 the front (seen from +X, -Z to the right), matching
- * what bakeCritterCard photographs.
+ * `bounds` from setCritterAsset: u 0..0.5 of the picture is views[0] and
+ * 0.5..1 views[1], matching what bakeCritterCard photographs.
  */
-export function setCritterCard(mesh, bounds) {
-  const { hx, hz, y0, y1 } = critterCardExtents(bounds)
-  const pos = [
-    -hx, y0, 0, hx, y0, 0, hx, y1, 0, -hx, y1, 0,
-    0, y0, hz, 0, y0, -hz, 0, y1, -hz, 0, y1, hz,
-  ]
-  const uv = [0, 0, 0.5, 0, 0.5, 1, 0, 1, 0.5, 0, 1, 0, 1, 1, 0.5, 1]
+export function setCritterCard(mesh, bounds, views) {
+  if (!Array.isArray(views) || views.length !== 2) throw new Error('setCritterCard: a card is two views')
+  const ext = critterCardExtents(bounds)
+  const pos = []
+  const uv = []
   const nrm = []
-  for (let i = 0; i < 8; i++) nrm.push(0, 1, 0)
+  const p = new THREE.Vector3()
+  views.forEach((name, i) => {
+    const view = cardView(name, ext)
+    for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+      cardCorner(view, u, v, p)
+      pos.push(p.x, p.y, p.z)
+      uv.push((i + u) / 2, v)
+      nrm.push(0, 1, 0)
+    }
+  })
   const geo = mesh.geometry
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
   geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
@@ -180,14 +262,15 @@ export function setCritterCard(mesh, bounds) {
 }
 
 /**
- * Photograph the loaded creature for its card: the two orthographic views,
+ * Photograph the loaded creature for its card: the two orthographic `views`,
  * unlit (the card is lit where it is drawn, like the mesh), supersampled and
  * dilated like the props' impostors, into one 2 * TEX_SIZE by TEX_SIZE texture.
  * Needs the renderer, so the world calls it once the GLB has landed.
  */
-export function bakeCritterCard(renderer, geometry, map, bounds) {
+export function bakeCritterCard(renderer, geometry, map, bounds, views) {
   if (!map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
-  const { hx, hz, y0, y1 } = critterCardExtents(bounds)
+  if (!Array.isArray(views) || views.length !== 2) throw new Error('bakeCritterCard: a card is two views')
+  const ext = critterCardExtents(bounds)
   const material = new THREE.MeshBasicMaterial({ map, toneMapped: false })
   const scene = new THREE.Scene()
   scene.add(new THREE.Mesh(geometry, material))
@@ -213,11 +296,12 @@ export function bakeCritterCard(renderer, geometry, map, bounds) {
   renderer.setClearColor(0x000000, 0)
 
   const raw = new Uint8Array(big * big * 4)
-  const yMid = (y0 + y1) / 2
-  const view = (half, fromX, fromZ) => {
-    const cam = new THREE.OrthographicCamera(-half, half, y1 - yMid, y0 - yMid, 0.1, 20)
-    cam.position.set(fromX, yMid, fromZ)
-    cam.lookAt(0, yMid, 0)
+  const shots = views.map((name) => {
+    const view = cardView(name, ext)
+    const cam = new THREE.OrthographicCamera(-view.w, view.w, view.top, view.bottom, 0.1, 20)
+    cam.position.copy(view.from)
+    cam.up.copy(view.up)
+    cam.lookAt(view.at)
     cam.updateMatrixWorld(true)
     renderer.clear(true, true, false)
     renderer.render(scene, cam)
@@ -225,9 +309,7 @@ export function bakeCritterCard(renderer, geometry, map, bounds) {
     const px = downsample(raw, big)
     dilate(px)
     return px
-  }
-  const side = view(hx, 0, 10)
-  const front = view(hz, 10, 0)
+  })
 
   renderer.xr.enabled = prevXR
   renderer.setRenderTarget(prevTarget)
@@ -235,12 +317,12 @@ export function bakeCritterCard(renderer, geometry, map, bounds) {
   target.dispose()
   material.dispose()
 
-  // GL hands rows back bottom first, which is the row order a DataTexture's v runs in, so the feet are at v = 0 with no flip.
+  // GL hands rows back bottom first, which is the row order a DataTexture's v runs in, so a view's bottom is at v = 0 with no flip.
   const data = new Uint8Array(TEX_SIZE * 2 * TEX_SIZE * 4)
   const row = TEX_SIZE * 4
   for (let y = 0; y < TEX_SIZE; y++) {
-    data.set(side.subarray(y * row, (y + 1) * row), y * 2 * row)
-    data.set(front.subarray(y * row, (y + 1) * row), y * 2 * row + row)
+    data.set(shots[0].subarray(y * row, (y + 1) * row), y * 2 * row)
+    data.set(shots[1].subarray(y * row, (y + 1) * row), y * 2 * row + row)
   }
   const texture = new THREE.DataTexture(data, TEX_SIZE * 2, TEX_SIZE, THREE.RGBAFormat, THREE.UnsignedByteType)
   texture.colorSpace = THREE.SRGBColorSpace

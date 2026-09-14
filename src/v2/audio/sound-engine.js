@@ -167,10 +167,14 @@ export class SoundEngine {
   /**
    * Fire a clip once. `at` is a world position {x, y, z} for a directional
    * sound, or null for one with no bearing (her own footsteps, the cricket bed).
+   * Returns the source, or null while the context is still suspended: its
+   * clock is frozen then, so every shot started would queue on the same
+   * instant and the lot would fire together the moment unlock() lands.
    */
   play(name, { rate = 1, gain = 1, at = null, bus = 'air' } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
+    if (!this.running) return null
     const ctx = this.ctx
     const src = ctx.createBufferSource()
     src.buffer = this.buffer(name)

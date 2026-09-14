@@ -250,7 +250,7 @@ function geometryBytes(geo) {
 //
 // A BOULDER GETS A SPUN BILLBOARD: ONE QUAD, TURNED IN EVERY DIRECTION. The
 // pinned call is `buildImpostorCard(w, h, LAYER.IMPOSTOR_ROCK, 1,
-// { upNormal: true, spherical: true, box })` and every argument is load-bearing. A
+// { upNormal: true, spherical: true })` and every argument is load-bearing. A
 // rock is looked DOWN on as often as across, so rocks.js is the only bed whose
 // material is built with `sphericalBillboard`; `spherical` here tells the card
 // which spin it will meet, and the difference is the bounding sphere -- centred
@@ -261,13 +261,17 @@ function geometryBytes(geo) {
 // because a vertical normal is the mark material.js's billboardVertex tests
 // before yawing a quad toward the eye. Spun, one plane never goes edge-on, and
 // two triangles is the floor -- which a rock needs, its far band being the
-// largest population in the world. `box` is the mesh's measured bounds, and it
-// is what puts the card's FOOT where the mesh's was: a bed quarter-turns the
-// boulder onto any of its faces and seats the mesh by the turned box's lowest
-// corner, so the origin ends up a half-width or a whole height above the
-// ground on twelve turns in sixteen. The spin lowers the foot to that same
-// corner, read off the instance matrix, so the card is bedded as deep as the
-// mesh it replaces instead of standing on the origin in the air.
+// largest population in the world.
+//
+// WHERE THE CARD STANDS AND HOW BIG IT IS ARE THE BED'S TO SAY, NOT THE
+// SHADER'S. The card pivots on its instance origin, spanning its quad's width
+// and height times the instance scale, and knows nothing of the rolled,
+// tilted, half-buried mesh it stands in for. rocks.js hands the card tier its
+// OWN instance matrix -- foot on the rolled box's lowest corner, the corner
+// the mesh was seated by, and a per-axis scale that spans what the rolled box
+// stands and covers (RockBed._placeTier). Not in the vertex shader, which could
+// read the same corner off the instance matrix: the Quest's Adreno draws
+// nothing at all for that block, and says nothing.
 //
 // A CAP GETS A PLATE CARD: the same two triangles LYING FLAT, photographed from
 // straight above, at the plate's own yaw and tilt. Spinning it was wrong on
@@ -433,8 +437,12 @@ export const ROCK_SHAPES = [
  * coarse subject would only donate its own faceting to a picture that is meant
  * to stand in for the fine one.
  *
- * Lit against BAKE_ROCK_BOUNCE and not the canopy rig's near-black floor: what
- * is under a boulder's lower half is open ground, not more crown.
+ * THE BOULDER IS PHOTOGRAPHED UNLIT -- flat albedo, no key, no sky -- because
+ * its spun card is lit live as the mean of the mesh it replaces
+ * (material.js, SPHERE_CARD_LIGHT), and a picture that already carried a sun
+ * would be shaded twice. The plate stays lit against BAKE_ROCK_BOUNCE rather
+ * than the canopy rig's near-black floor, since under a cap's lower half is
+ * open ground and not more crown.
  *
  * THE CAP'S SKIRT IS OUT OF FRAME BY CONSTRUCTION and needs no special case in
  * either bake. Both frustums stop at y = 0 -- the side-on one runs from the bed
@@ -463,7 +471,7 @@ export function bakeRockImpostor(renderer, texArray) {
         bounce: BAKE_ROCK_BOUNCE,
       })
       : bakeImpostor(renderer, geo, texArray, layer, {
-        ...rockBakeFrame(measured), azimuth, bounce: BAKE_ROCK_BOUNCE,
+        ...rockBakeFrame(measured), azimuth, unlit: true,
       })
     geo.dispose()
     return { name, layer, card, azimuth, ...baked }
@@ -556,15 +564,7 @@ function buildShapeCard(spec, measured) {
     })
   }
   const ext = impostorCardExtents(rockCardFrame(measured))
-  // `box` is the mesh's own bounds, which rocks.js seats an instance by: the
-  // spin lowers the card's foot to that box's lowest corner under the instance's
-  // roll, so a card lands where the mesh it replaces was bedded rather than on
-  // an origin the roll left in the air. See THE CARD.
-  return buildImpostorCard(ext.width, ext.height, spec.layer, 1, {
-    upNormal: true,
-    spherical: true,
-    box: { width: measured.width, height: measured.height, depth: measured.depth },
-  })
+  return buildImpostorCard(ext.width, ext.height, spec.layer, 1, { upNormal: true, spherical: true })
 }
 
 /**

@@ -272,6 +272,10 @@ export class TerrainV2 {
     this.ready = false
     this._render = new Set() // keys that should be visible right now
     this._standIns = new Set() // the subset of _render standing in for a miss
+    // Bumped whenever groundKeyAt's answer can have changed anywhere: the render
+    // set moving, or a drawn chunk losing its slot. A scatter that re-checks its
+    // tiles' chunk keys compares against this and asks nothing while it holds.
+    this.groundVersion = 0
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
     // Always a real object so nothing downstream has to guard for its absence.
@@ -553,6 +557,7 @@ export class TerrainV2 {
         entry.visible = false
         this._free.push(entry.slot)
         entry.slot = null
+        this.groundVersion++
       }
       this.cache.delete(key)
     }
@@ -834,6 +839,7 @@ export class TerrainV2 {
       entry.visible = false
       this._free.push(entry.slot)
       entry.slot = null
+      this.groundVersion++
     }
     this._render.delete(key)
     this._standIns.delete(key)
@@ -1080,6 +1086,12 @@ export class TerrainV2 {
     }
 
     this.queue = queue
+    // Only a set that actually differs counts as a change: this pass runs at
+    // 12 Hz with nothing moving, and a version that ticked on every pass would
+    // have every scatter re-checking every tile for the same answer.
+    let same = render.size === this._render.size
+    if (same) for (const key of render) if (!this._render.has(key)) { same = false; break }
+    if (!same) this.groundVersion++
     this._render = render
     this._standIns = standIns
     this.stats.desired = desired.length

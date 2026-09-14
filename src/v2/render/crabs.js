@@ -26,16 +26,18 @@
 // the body along Z and below its middle -- lift and fall in the vertex shader
 // while it moves.
 //
-// Past CARD_M from her head a crab is its cross card (critters.js), written to
-// the card mesh under the same matrix the body would have had, legs still; once
-// the card's picture is baked, the two meshes together hold every live crab.
+// Past CARD_M from her head a crab is its cross card (critters.js) -- its side
+// and its top, since a crab is seen clinging to a rock from above -- written to
+// the card mesh under the same matrix and hue the body would have had, legs
+// still; once the card's picture is baked, the two meshes together hold every
+// live crab.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, loadCritterGlb, setCritterAsset, setCritterCard,
-  tileKey, walkTiles,
+  CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, hueVary, loadCritterGlb, makeHueAttribute,
+  setCritterAsset, setCritterCard, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
 
@@ -56,6 +58,8 @@ const PERCH_CAP = 7
 export const MAX = 160
 // Wet shell: the one roughness the whole crab glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.7
+// A crab's hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a rock's crabs run from olive through the shipped brown to red.
+export const HUE = 0.6
 // A perch buffer this size covers a 16 m tile of the densest shore.
 const PERCH_BUF = 64
 // Scuttle for a spell, then pause. Each spell draws its own pace from `SPEED` body spans per second, the draw squared so most spells are a slow, leisurely crawl and a few a dash. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
@@ -132,6 +136,7 @@ export class Crabs {
             'transformed.y += legW * aLegs.y * sin( aLegs.x + 12.0 * position.x + sign( position.z ) * 1.5708 );'
         )
       glint(shader)
+      hueVary(shader)
     }
     this.material.customProgramCacheKey = () => 'crabs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
@@ -144,6 +149,7 @@ export class Crabs {
     this.legs = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2)
     this.legs.setUsage(THREE.DynamicDrawUsage)
     this.mesh.geometry.setAttribute('aLegs', this.legs)
+    this.hue = makeHueAttribute(this.mesh, MAX)
     // The far crabs, as cards; hidden until the picture is baked, and until then every crab is the mesh.
     this.cardMaterial = createCritterCardMaterial('crabs')
     this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
@@ -152,6 +158,7 @@ export class Crabs {
     this.card.visible = false
     this.card.frustumCulled = false
     this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.cardHue = makeHueAttribute(this.card, MAX)
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-crabs'
@@ -162,7 +169,7 @@ export class Crabs {
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, perch: null,
-        x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, speed: 0,
+        x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, hue: 0, speed: 0,
         // 'go' scuttles along ±local Z for `left` seconds, 'pause' waits; `phase` drives the legs.
         state: 'pause', left: 0, phase: 0, normalAt: 0, depth: 0,
       })
@@ -199,14 +206,14 @@ export class Crabs {
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
-    setCritterCard(this.card, this.bounds)
+    setCritterCard(this.card, this.bounds, CRAB_VIEWS)
     this.loaded = true
   }
 
   /** Photograph the loaded crab onto its card and start drawing the far crabs as cards. Once, after `ready`. */
   bakeCard(renderer) {
     if (!this.loaded) throw new Error('Crabs.bakeCard: the asset has not landed')
-    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds))
+    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds, CRAB_VIEWS))
   }
 
   setCard(map) {
@@ -270,6 +277,7 @@ export class Crabs {
       for (let k = 0; k < count; k++) {
         const size = Math.min(between(rand, SIZE_M) * mul, cap)
         const yaw = rand() * Math.PI * 2
+        const hue = (rand() * 2 - 1) * HUE
         // Up to eight tries for a point over stone inside the hull's disc; the disc is circumscribed, so its corners are air.
         let x = 0, z = 0, y = -Infinity
         for (let a = 0; a < 8 && y === -Infinity; a++) {
@@ -287,6 +295,7 @@ export class Crabs {
         c.yaw = yaw
         c.side = rand() < 0.5 ? -1 : 1
         c.size = size
+        c.hue = hue
         c.depth = depth
         c.state = 'pause'
         c.left = between(this.rand, PAUSE_S)
@@ -394,7 +403,9 @@ export class Crabs {
 
     const mat = this.mesh.instanceMatrix.array
     const legs = this.legs.array
+    const hue = this.hue.array
     const cmat = this.card.instanceMatrix.array
+    const chue = this.cardHue.array
     const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
     let n = 0
     let m = 0
@@ -431,11 +442,13 @@ export class Crabs {
           const dz = c.z - hz
           if (dx * dx + dy * dy + dz * dz > card2) {
             _mat.toArray(cmat, m * 16)
+            chue[m] = c.hue
             m++
           } else {
             _mat.toArray(mat, n * 16)
             legs[n * 2] = c.phase
             legs[n * 2 + 1] = amp
+            hue[n] = c.hue
             n++
           }
         }
@@ -444,8 +457,10 @@ export class Crabs {
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
     this.legs.needsUpdate = true
+    this.hue.needsUpdate = true
     this.card.count = m
     this.card.instanceMatrix.needsUpdate = true
+    this.cardHue.needsUpdate = true
   }
 
   dispose() {

@@ -172,7 +172,10 @@ export function impostorCardExtents({ width, height, foot = 0 }) {
  */
 export function bakeImpostor(
   renderer, geometry, texArray, layer,
-  { width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, hemFray = null, bounce = BAKE_GROUND }
+  {
+    width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, hemFray = null,
+    bounce = BAKE_GROUND, unlit = false,
+  }
 ) {
   if (!(width > 0) || !(height > 0)) {
     throw new Error(`bakeImpostor: need a positive width and height, got ${width}x${height}`)
@@ -212,7 +215,7 @@ export function bakeImpostor(
     Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
 
   const pixels = captureLayer(
-    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce })
+    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce, unlit })
   return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
 }
 
@@ -288,12 +291,24 @@ export function bakeImpostorPlate(
 
 /**
  * Render `geometry` through `cam` into `layer`, lit by a white key at `keyPos`
- * over a hemisphere whose ground is `bounce`. Returns the bytes it stored.
+ * over a hemisphere whose ground is `bounce` -- or, `unlit`, as flat albedo
+ * with no rig at all. Returns the bytes it stored.
+ *
+ * UNLIT IS FOR A SOLID WHOSE CARD IS LIT ONCE, LIVE. A canopy bakes lit because
+ * its card's four normals cannot express the self-shadowing of ten thousand
+ * leaves (createImpostorBakeMaterial). A convex boulder has no interior to
+ * shadow, and its card is drawn through a shading that already reproduces the
+ * mesh's mean light (material.js, SPHERE_CARD_LIGHT) -- so a lit bake there
+ * would be the same sun applied twice, which is exactly the "far rocks are
+ * black" that a bake at a third of albedo under a live sun produced.
  *
  * The half both bakes share; what a bake chooses is its camera and where the key
  * stands. Restores the render target and clear state it found.
  */
-function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, vertexColors, hemFray = null, bounce }) {
+function captureLayer(
+  renderer, geometry, texArray, layer, cam, keyPos,
+  { tint, vertexColors, hemFray = null, bounce, unlit = false }
+) {
   if (layer < 0 || layer >= texArray.image.depth) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
@@ -301,7 +316,7 @@ function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, 
   // `vertexColors` is the building kit's and `hemFray` the trees' -- see
   // createImpostorBakeMaterial. A prop leaves both off and carries neither
   // attribute.
-  const material = createImpostorBakeMaterial(texArray, { vertexColors, hemFray })
+  const material = createImpostorBakeMaterial(texArray, { vertexColors, hemFray, unlit })
   // A FAMILY MAY BE TINTED, and if it is, the photograph has to be tinted the
   // same way or the card is a different colour from the mesh it stands in for --
   // which is the most visible artefact an impostor can have, because the swap
@@ -325,10 +340,12 @@ function captureLayer(renderer, geometry, texArray, layer, cam, keyPos, { tint, 
   // a canopy that is nearly nothing -- the shadowed interior mass that makes a
   // distant crown read as a third of leaf albedo instead of as a flat green
   // cutout. A subject with no interior passes its own `bounce`; see BAKE_GROUND.
-  const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
-  key.position.copy(keyPos)
-  scene.add(key)
-  scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY))
+  if (!unlit) {
+    const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
+    key.position.copy(keyPos)
+    scene.add(key)
+    scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY))
+  }
 
   const big = TEX_SIZE * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {
@@ -663,28 +680,8 @@ export function buildImpostorCard(
   height,
   layer,
   planes = 3,
-  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0, box = null } = {}
+  { upNormal = false, canopy = false, tri = false, sink = 0, spherical = false, azimuth = 0 } = {}
 ) {
-  // `box` IS THE SUBJECT'S OWN BOUNDS AT SCALE 1 -- `{ width, height, depth }`
-  // spanning x and z about zero and y from 0 to `height`, which is where rock.js
-  // puts a rock's origin. A card carrying one has its foot LOWERED by
-  // billboardVertex to the lowest corner of that box under the instance's own
-  // rotation, instead of standing on the origin. That is what keeps a rolled
-  // subject's card where its mesh was: a bed that quarter-turns a rock onto its
-  // side seats the MESH by that same corner, so its origin rides half a width
-  // above the ground and a card pivoting there hangs in the air. The mesh tiers
-  // the card stands in for do not carry the attribute and never enter the spun
-  // branch, so it costs them nothing.
-  //
-  // Spherical only: the cylindrical spin turns within object space and any bed
-  // using it stands its subjects upright, so a box there would be a claim with
-  // no reader.
-  if (box && !spherical) {
-    throw new Error('buildImpostorCard: a box lowers the foot of a spherical spin and nothing else')
-  }
-  if (box && !(box.width > 0 && box.height > 0 && box.depth > 0)) {
-    throw new Error(`buildImpostorCard: box needs positive width, height and depth, got ${JSON.stringify(box)}`)
-  }
   // `sink` comes out of impostorCardExtents and is already counted INSIDE
   // `height` -- it says how much of that height hangs below y = 0, not how much
   // to add. Taking it as an addition instead would stretch every card that asks
@@ -814,14 +811,6 @@ export function buildImpostorCard(
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
   geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uvs, 2))
   geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(layers, 1))
-  // The same box on every vertex: billboardVertex reads it as a per-card
-  // constant, and a geometry attribute is the one channel that reaches a card
-  // and not the mesh tiers sharing its material.
-  if (box) {
-    const boxes = []
-    for (let k = 0; k < positions.length / 3; k++) boxes.push(box.width, box.height, box.depth)
-    geo.setAttribute('aCardBox', new THREE.Float32BufferAttribute(boxes, 3))
-  }
   geo.setIndex(indices)
   geo.computeBoundingBox()
   geo.computeBoundingSphere()
@@ -846,17 +835,13 @@ export function buildImpostorCard(
   // longest vertex, which is exactly what is measured here. It is bigger than
   // the tight one (about 2x on a square card) and that is the honest price of
   // a quad that can face any direction.
-  //
-  // A `box` lowers the foot as well, by up to the box's farthest corner from
-  // the origin -- the deepest any rotation can swing a corner under it -- so
-  // the sphere grows by that much to keep holding the card.
   if (spherical) {
     let r2 = 0
     for (let k = 0; k < positions.length; k += 3) {
       const d2 = positions[k] ** 2 + positions[k + 1] ** 2 + positions[k + 2] ** 2
       if (d2 > r2) r2 = d2
     }
-    const r = Math.sqrt(r2) + (box ? Math.hypot(box.width * 0.5, box.height, box.depth * 0.5) : 0)
+    const r = Math.sqrt(r2)
     geo.boundingSphere.center.set(0, 0, 0)
     geo.boundingSphere.radius = r
     geo.boundingBox.min.set(-r, -r, -r)
@@ -865,7 +850,7 @@ export function buildImpostorCard(
 
   geo.userData.impostor = {
     width, height, planes: n, layer, triangles: n * (tri ? 1 : 2), mirrored: n > 1,
-    upNormal, canopy, tri, sink, spherical, azimuth, box,
+    upNormal, canopy, tri, sink, spherical, azimuth,
   }
   return geo
 }

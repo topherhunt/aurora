@@ -55,7 +55,7 @@ import {
   ROCK_IMPOSTOR_LAYERS, ROCK_SHAPES, PLATE_CARD_LIFT, TINTS, TINT_GAIN, rockImpostorLayers,
 } from '../src/props/rock-bank.js'
 import { buildImpostorCard, impostorCardExtents } from '../src/props/impostor.js'
-import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX } from '../src/v2/render/rocks.js'
+import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, spunCardFrame } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, LAYER_COUNT, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
@@ -1881,13 +1881,10 @@ console.log('\nscatter')
       continue
     }
     let over = 0
-    // And the foot drop: the spin lowers a boxed card to the turned box's
-    // lowest corner, at most the box's farthest corner from the origin.
-    const box = card.userData.impostor.box
-    const drop = box ? Math.hypot(box.width * 0.5, box.height, box.depth * 0.5) : 0
     // Eight bases spread over the sphere, standing in for every camera the
     // player could have. Orthonormal by construction, as the view matrix rows
-    // the shader reads are.
+    // the shader reads are. The spin pivots on the origin; the foot drop is in
+    // the instance matrix (RockBed._placeTier), so it is not the card's to hold.
     for (let a = 0; a < 8; a++) {
       const th = (a / 8) * Math.PI * 2
       const ph = (a % 3) * 0.7
@@ -1895,13 +1892,12 @@ console.log('\nscatter')
       const up = new THREE.Vector3(-Math.sin(th) * Math.sin(ph), Math.cos(ph), Math.cos(th) * Math.sin(ph))
       for (let k = 0; k < pos.length; k += 3) {
         const v = right.clone().multiplyScalar(pos[k]).addScaledVector(up, pos[k + 1])
-        v.y -= drop
         over = Math.max(over, v.distanceTo(sph.center) - sph.radius)
       }
     }
     check(over <= 1e-4,
       `the ${shape.name} card's bounding sphere contains the card at every angle the spin can reach`,
-      `worst overhang ${over.toFixed(4)} m over 8 camera bases, foot dropped ${drop.toFixed(2)} m`)
+      `worst overhang ${over.toFixed(4)} m over 8 camera bases`)
   }
 
   // A PHOTOGRAPH PER SHAPE, AND THE CARDS THAT READ THEM. Two shapes, two
@@ -2709,7 +2705,7 @@ console.log('\nscatter')
       let count = 0
       for (const t of bed.tiles.values()) {
         for (let k = 0; k < t.n; k++) {
-          bed.batch.getMatrixAt(t.ids[k], m)
+          m.fromArray(bed.instM, t.ids[k] * 16)
           up.set(m.elements[4], m.elements[5], m.elements[6]).normalize()
           worst = Math.max(worst, Math.acos(Math.min(1, up.dot(n))))
           count++
@@ -2949,7 +2945,7 @@ console.log('\nscatter')
     for (const t of bed.tiles.values()) {
       for (let k = 0; k < t.n; k++) {
         const id = t.ids[k]
-        bed.batch.getMatrixAt(id, mat)
+        mat.fromArray(bed.instM, id * 16)
         xs.push(mat.elements[12])
         sunk.push(bed.shape.measured.width * bed.instScale[id])
       }
@@ -3092,7 +3088,7 @@ console.log('\nscatter')
         for (let k = 0; k < t.n; k++) {
           const id = t.ids[k]
           const s = bed.shape
-          bed.batch.getMatrixAt(id, mat)
+          mat.fromArray(bed.instM, id * 16)
           const hw = s.measured.width * 0.5
           const hd = s.measured.depth * 0.5
           let lo = Infinity
@@ -3245,7 +3241,7 @@ console.log('\nscatter')
       const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
       const groundOf = (b, id) => b.instY[id] + b.instSink[id]
       const boxTop = (b, id, m) => {
-        b.batch.getMatrixAt(id, m)
+        m.fromArray(b.instM, id * 16)
         const e = m.elements
         const sh = b.shape
         return e[13] + Math.abs(e[1]) * sh.measured.width * 0.5 +
@@ -3301,7 +3297,7 @@ console.log('\nscatter')
       // The box's centre is the origin plus the matrix's own up column at half the
       // shape's height.
       const midOf = (b, id) => {
-        b.batch.getMatrixAt(id, m)
+        m.fromArray(b.instM, id * 16)
         const e = m.elements
         const half = b.shape.measured.height * 0.5
         return [b.instX[id] + e[4] * half, b.instZ[id] + e[6] * half]
@@ -3348,7 +3344,7 @@ console.log('\nscatter')
               const ex = x - b.instX[id]
               const ez = z - b.instZ[id]
               if (ex * ex + ez * ez >= r * r) continue
-              b.batch.getMatrixAt(id, m)
+              m.fromArray(b.instM, id * 16)
               for (let f = 0; f < pos.length; f += 9) {
                 const a = v0.set(pos[f], pos[f + 1], pos[f + 2]).applyMatrix4(m)
                 const bb = v1.set(pos[f + 3], pos[f + 4], pos[f + 5]).applyMatrix4(m)
@@ -3464,21 +3460,21 @@ console.log('\nscatter')
         blocking.join(' '))
     }
 
-    // THE ONE ALGEBRAIC CLAIM THE SPHERICAL CARD RESTS ON. billboardVertex's
-    // spherical branch composes the card in WORLD space and hands the result
-    // back through `bbM-transpose / s2`, which is the inverse of the instance's
-    // upper 3x3 ONLY while the scale is uniform. rocks.js writes `_s.set(scale,
-    // scale, scale)` today, so it is -- and if a bed ever starts stretching one
-    // axis (an `elongate` applied at placement rather than in the mesh, say)
-    // the identity fails, the inverse is wrong, and every distant rock in that
-    // bed is a sheared photograph. Nothing about that throws and nothing about
-    // it is visible from a node gate except this.
+    // THE ONE ALGEBRAIC CLAIM THE SURFACE QUERY RESTS ON. `_surfaceAt` inverts
+    // the mesh matrix's upper 3x3 as `transpose / s2`, which is its inverse
+    // ONLY while the scale is uniform. rocks.js writes `_s.set(scale, scale,
+    // scale)` for the mesh today, so it is -- and if a bed ever starts
+    // stretching one axis (an `elongate` applied at placement rather than in
+    // the mesh, say) the identity fails, the ray is bent, and every prop on a
+    // rock in that bed stands in the wrong place. Nothing about that throws and
+    // nothing about it is visible from a node gate except this. (The card's own
+    // matrix is per-axis by design; the shader inverts it per axis, see below.)
     //
     // Measured on the CLIFF, because that is where the leans are: the tilting
     // beds compose a ground tilt on top of the yaw, and a rotation
     // is exactly where a transpose stops being an inverse if a scale is hiding
     // in it. The identity is checked as a matrix product rather than by reading
-    // the scale back out, which is the same check the shader is doing.
+    // the scale back out, which is the same inverse the query takes.
     {
       const m = new THREE.Matrix4()
       const M = new THREE.Matrix3()
@@ -3488,7 +3484,7 @@ console.log('\nscatter')
       for (const bed of cliffRocks.beds) {
         for (const t of bed.tiles.values()) {
           for (let k = 0; k < t.n; k++) {
-            bed.batch.getMatrixAt(t.ids[k], m)
+            m.fromArray(bed.instM, t.ids[k] * 16)
             M.setFromMatrix4(m)
             const e = M.elements
             const s2 = e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
@@ -3505,7 +3501,7 @@ console.log('\nscatter')
         }
       }
       check(n > 0 && worst < 1e-4,
-        'every rock instance has a uniform scale, so the card shader\'s transpose really is an inverse',
+        'every rock mesh matrix has a uniform scale, so _surfaceAt\'s transpose really is an inverse',
         `worst departure from identity ${worst.toExponential(1)} over ${n} instances`)
     }
   }
@@ -3752,18 +3748,33 @@ console.log('\nscatter')
 
     // The ghost is a real second draw of the same rock: same place, same tint,
     // the tier that was just left. If any of that drifts the pair reads as two
-    // rocks rather than one dissolving into itself.
+    // rocks rather than one dissolving into itself. Each half wears the matrix
+    // ITS tier takes -- the mesh's, or the card's own off the same placement
+    // (RockBed._placeTier) -- so a swap across the card rung is checked against
+    // that and not against the other half.
     const ma = new THREE.Matrix4()
     const mb = new THREE.Matrix4()
+    const mw = new THREE.Matrix4()
     const ca = new THREE.Color()
     const cb = new THREE.Color()
+    const wantM = (id, tier, out) => {
+      if (!(bed.spunCard && tier === ROCK_BAND_COUNT - 1)) return out.fromArray(bed.instM, id * 16)
+      const c = id * 3
+      return out.compose(
+        new THREE.Vector3(bed.instX[id], bed.instY[id] + bed.instCard[c], bed.instZ[id]),
+        new THREE.Quaternion(),
+        new THREE.Vector3(bed.instCard[c + 1], bed.instCard[c + 2], bed.instScale[id]))
+    }
+    // A tenth of a millimetre: the arena holds float32, and the world is 600 m wide.
+    const same = (m1, m2) => m1.elements.every((v, i) => Math.abs(v - m2.elements[i]) <= 1e-4)
     let moved = 0
     let recoloured = 0
     let sameGeom = 0
     for (const f of first) {
       bed.batch.getMatrixAt(f.orig, ma)
       bed.batch.getMatrixAt(f.dup, mb)
-      if (ma.elements.some((v, i) => Math.abs(v - mb.elements[i]) > 1e-6)) moved++
+      if (!same(ma, wantM(f.orig, bed.batch.geoAt[f.orig], mw)) ||
+        !same(mb, wantM(f.orig, bed.batch.geoAt[f.dup], mw))) moved++
       bed.batch.getColorAt(f.orig, ca)
       bed.batch.getColorAt(f.dup, cb)
       if (Math.abs(ca.r - cb.r) + Math.abs(ca.g - cb.g) + Math.abs(ca.b - cb.b) > 1e-6) recoloured++
@@ -3771,7 +3782,7 @@ console.log('\nscatter')
       if (!bed.batch.getVisibleAt(f.dup)) sameGeom++
     }
     check(moved === 0 && recoloured === 0,
-      'the duplicate stands exactly where the rock stands and wears exactly its tint',
+      'the duplicate stands exactly where the rock stands, in the matrix its tier takes, and wears exactly its tint',
       `${first.length} pairs, ${moved} adrift, ${recoloured} off-colour`)
     check(sameGeom === 0, 'and is drawn, holding the tier the rock just left rather than the one it took',
       `${first.length} pairs, all two different geometries`)
@@ -4498,72 +4509,133 @@ console.log('\nscatter')
       'and the shipped shader is the one the model describes, so this is not testing dead code')
   }
 
-  // THE BILLBOARD IS BEDDED WHERE THE ROCK IT REPLACED WAS.
+  // THE BILLBOARD IS BEDDED WHERE THE ROCK IT REPLACED WAS, AND IS AS BIG.
   //
   // The spin pivots on the instance origin, and `_growTile` seats a MESH by the
   // lowest corner of its quarter-turned box -- so on the twelve turns in sixteen
   // that lay the boulder on a side or its crown, the origin is a half-width or
   // a whole height above the ground and a card standing on it hung in the air
-  // over a mesh sunk 40-80% into the hill. The card now carries the box
-  // (`aCardBox`) and the shader drops its foot to that corner under the
-  // instance's own rotation. Modelled in JS exactly as the shader writes it,
-  // over the placed forest boulders, against the corner the scatter itself
-  // seated by.
+  // over a mesh sunk 40-80% into the hill. The card tier is handed its own
+  // instance matrix on the CPU (`_placeTier`, `spunCardFrame`): foot under the
+  // placed rock's lowest point, scaled per axis to what it stands and covers.
+  // Checked over the placed forest boulders against THE MESH ITSELF pushed
+  // through its matrix vertex by vertex, not against the frame's own model of
+  // the rock: the frame takes the rock for the ellipsoid in its box, which is
+  // exact on a quarter turn and a few percent off once the bed tilts and leans
+  // it, and that is the number reported: the boulder is boxier than its
+  // ellipsoid, so a leaned card stands up to a tenth short and its foot a
+  // little high, and a box in the frame's place stood a leaned card a quarter
+  // too tall. The card's plan is the mean of its widest and narrowest
+  // horizontal extent, as `planMean` is for the upright.
   {
     const bed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
     const card = bed.shape.tiers[ROCK_BAND_COUNT - 1]
-    const box = card.userData.impostor.box
-    check(box && card.attributes.aCardBox &&
-      Math.abs(card.attributes.aCardBox.getX(0) - bed.shape.measured.width) < 1e-6 &&
-      Math.abs(card.attributes.aCardBox.getY(0) - bed.shape.measured.height) < 1e-6 &&
-      Math.abs(card.attributes.aCardBox.getZ(0) - bed.shape.measured.depth) < 1e-6,
-      'the boulder card carries the mesh box the scatter seats by, on every vertex',
-      box ? `${box.width.toFixed(3)} x ${box.height.toFixed(3)} x ${box.depth.toFixed(3)}` : 'no box')
-    // The shader's foot: the y row of the world-from-object linear map against
-    // the half-extents, scale folded in through the matrix.
-    const footOf = (m4) => {
-      const e = new THREE.Matrix3().setFromMatrix4(m4).elements
-      // Column-major: e[1], e[4], e[7] are M[0][1], M[1][1], M[2][1].
-      return -Math.abs(e[1]) * box.width * 0.5 + Math.min(0, e[4]) * box.height - Math.abs(e[7]) * box.depth * 0.5
-    }
-    const mat = new THREE.Matrix4()
+    const mm = bed.shape.measured
+    check(bed.spunCard && card.userData.impostor.spherical === true && !card.attributes.aCardBox,
+      'the boulder card spins and carries no box of its own: where it stands is the bed\'s to say')
+    const pos = bed.shape.tiers[0].attributes.position.array
+    const AZ = 12
+    const az = Array.from({ length: AZ }, (_, k) => [Math.cos(k * Math.PI / AZ), Math.sin(k * Math.PI / AZ)])
+    const meshM = new THREE.Matrix4()
+    const cardM = new THREE.Matrix4()
     const v = new THREE.Vector3()
-    let worst = 0
+    const lo2 = new Float64Array(AZ), hi2 = new Float64Array(AZ)
+    let worstFoot = 0
+    let worstStand = 0
+    let worstPlan = 0
+    let worstXZ = 0
+    let meshKept = 0
     let originHigh = 0
     let n = 0
     for (const t of bed.tiles.values()) {
       for (let k = 0; k < t.n; k++) {
         const id = t.ids[k]
-        bed.batch.getMatrixAt(id, mat)
-        // The corner the eye sees the mesh standing on: the local box pushed
-        // through the matrix, exactly as the burial fraction is measured.
-        let lo = Infinity
-        for (let corner = 0; corner < 8; corner++) {
-          v.set(
-            corner & 1 ? box.width * 0.5 : -box.width * 0.5,
-            corner & 2 ? box.height : 0,
-            corner & 4 ? box.depth * 0.5 : -box.depth * 0.5
-          )
-          lo = Math.min(lo, v.applyMatrix4(mat).y)
+        meshM.fromArray(bed.instM, id * 16)
+        let lo = Infinity, hi = -Infinity
+        lo2.fill(Infinity); hi2.fill(-Infinity)
+        for (let i = 0; i < pos.length; i += 3) {
+          v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(meshM)
+          lo = Math.min(lo, v.y); hi = Math.max(hi, v.y)
+          for (let a = 0; a < AZ; a++) {
+            const s = v.x * az[a][0] + v.z * az[a][1]
+            lo2[a] = Math.min(lo2[a], s); hi2[a] = Math.max(hi2[a], s)
+          }
         }
-        const foot = bed.instY[id] + footOf(mat)
-        worst = Math.max(worst, Math.abs(foot - lo))
-        // How far the origin -- the old pivot -- stood above that corner, in
+        let wide = 0, narrow = Infinity
+        for (let a = 0; a < AZ; a++) { wide = Math.max(wide, hi2[a] - lo2[a]); narrow = Math.min(narrow, hi2[a] - lo2[a]) }
+        const stand = hi - lo
+        const tier = bed.tierAt[id]
+        bed._placeTier(id, ROCK_BAND_COUNT - 1)
+        bed.batch.getMatrixAt(id, cardM)
+        const e = cardM.elements
+        // Unrotated and scaled per axis, so the columns ARE the scales. Errors
+        // as a fraction of what the rock stands, the unit the eye judges in.
+        const footErr = Math.abs(e[13] - lo) / stand
+        const standErr = Math.abs(e[5] * mm.height - stand) / stand
+        const planErr = Math.abs(e[0] * (mm.width + mm.depth) * 0.5 - (wide + narrow) * 0.5) / stand
+        worstFoot = Math.max(worstFoot, footErr)
+        worstStand = Math.max(worstStand, standErr)
+        worstPlan = Math.max(worstPlan, planErr)
+        worstXZ = Math.max(worstXZ, Math.abs(e[12] - bed.instX[id]), Math.abs(e[14] - bed.instZ[id]),
+          Math.abs(e[1]), Math.abs(e[4]), Math.abs(e[10] - bed.instScale[id]))
+        // And back on the tier it was on, with the mesh matrix intact.
+        bed._placeTier(id, tier)
+        if (tier < ROCK_BAND_COUNT - 1) {
+          bed.batch.getMatrixAt(id, cardM)
+          if (cardM.equals(meshM)) meshKept++
+        } else {
+          meshKept++
+        }
+        // How far the origin -- the spin's pivot -- stands above that corner, in
         // units of what the rock stands.
-        if (bed.instY[id] - lo > 0.25 * bed.shape.measured.height * bed.instScale[id]) originHigh++
+        if (bed.instY[id] - lo > 0.25 * stand) originHigh++
         n++
       }
     }
-    check(n > 0 && worst < 1e-6,
-      "the spun card's foot lands on the lowest corner of the rolled mesh box, so it is bedded as deep as the mesh",
-      `worst ${worst.toExponential(1)} m over ${n} forest boulders`)
+    check(n > 0 && worstFoot < 0.12,
+      "the spun card's foot lands under the lowest vertex of the placed mesh, so it is bedded as deep as the mesh",
+      `worst ${(worstFoot * 100).toFixed(1)}% of the stand over ${n} forest boulders`)
+    check(worstStand < 0.12 && worstPlan < 0.12,
+      'and it stands as tall as the mesh and as wide as the mesh\'s mean plan',
+      `height err ${(worstStand * 100).toFixed(1)}%, plan err ${(worstPlan * 100).toFixed(1)}% of the stand`)
+    // Every placed boulder is tilted or leaned a little, so the exact case is
+    // taken straight: the sixteen quarter-turn rolls, at a scale, against the
+    // corners of the box they turn.
+    let rollErr = 0
+    const rq = new THREE.Quaternion(), rx = new THREE.Quaternion()
+    const frame = new Float32Array(3)
+    for (const scale of [1, 3.7]) {
+      for (let ri = 0; ri < 16; ri++) {
+        rq.setFromAxisAngle(new THREE.Vector3(0, 0, 1), ((ri / 4) | 0) * (Math.PI / 2))
+        rq.multiply(rx.setFromAxisAngle(new THREE.Vector3(1, 0, 0), (ri % 4) * (Math.PI / 2)))
+        meshM.compose(new THREE.Vector3(3, 5, 7), rq, new THREE.Vector3(scale, scale, scale))
+        let lo = Infinity, hi = -Infinity, x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
+        for (let corner = 0; corner < 8; corner++) {
+          v.set(corner & 1 ? mm.width * 0.5 : -mm.width * 0.5, corner & 2 ? mm.height : 0, corner & 4 ? mm.depth * 0.5 : -mm.depth * 0.5).applyMatrix4(meshM)
+          lo = Math.min(lo, v.y); hi = Math.max(hi, v.y)
+          x0 = Math.min(x0, v.x); x1 = Math.max(x1, v.x)
+          z0 = Math.min(z0, v.z); z1 = Math.max(z1, v.z)
+        }
+        spunCardFrame(meshM.elements, mm, frame)
+        rollErr = Math.max(rollErr, Math.abs(5 + frame[0] - lo), Math.abs(frame[2] * mm.height - (hi - lo)),
+          Math.abs(frame[1] * (mm.width + mm.depth) - ((x1 - x0) + (z1 - z0))))
+      }
+    }
+    check(rollErr < 1e-5,
+      'and exactly the turned box on a quarter turn alone, where the frame\'s ellipsoid meets it corner for corner',
+      `worst ${rollErr.toExponential(1)} m over 16 rolls at two scales`)
+    check(worstXZ < 1e-4,
+      'over the mesh origin, unrotated, with the z scale the mesh has',
+      `worst ${worstXZ.toExponential(1)}`)
+    check(meshKept === n,
+      'and the mesh tiers get the mesh matrix back, so a tier swap loses nothing',
+      `${meshKept} of ${n}`)
     check(originHigh > n * 0.4,
-      'and that is not the origin: the roll leaves it well above the seated corner on most instances',
-      `${originHigh} of ${n} origins over a quarter-height above the corner`)
+      'and that is not the origin: the roll leaves it well above the seated foot on most instances',
+      `${originHigh} of ${n} origins over a quarter-stand above the foot`)
     const shaderText = readFileSync(new URL('../src/material.js', import.meta.url), 'utf8')
-    check(shaderText.includes('+ min( 0.0, bbM[ 1 ][ 1 ] ) * aCardBox.y') &&
-      shaderText.includes('+ vec3( 0.0, bbFoot, 0.0 );'),
-      'and the shipped shader lowers the foot the way the model does')
+    check(!shaderText.includes('aCardBox') && !shaderText.includes('bbFoot'),
+      'and the shipped shader never moves the foot itself: the block the Quest\'s Adreno could not draw is gone')
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

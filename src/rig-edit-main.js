@@ -2,12 +2,12 @@ import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { cullTripoBackfaces } from './tripo-culling.js'
-import { BONES, HIERARCHY, REQUIRED, expectedParent } from '../tools/creatures/quadruped-rig.mjs'
+import { BONES, HIERARCHY, QUATERNIUS_TO_MIXAMO, REQUIRED, expectedParent } from '../tools/creatures/mixamo-rig.mjs'
 
 // ---------------------------------------------------------------------------
 // rig-edit.html: relabel, reparent, delete and move the joints of a generated
-// skeleton until it speaks the canonical quadruped vocabulary, then watch a
-// real animal's walk play on it.
+// skeleton until it speaks the Mixamo vocabulary, then watch a real animal's
+// walk play on it.
 //
 // The edit is a sidecar of names -- tools/creatures/apply-rig-edit.mjs is what
 // turns it into a glb, and scripts/check-rig-edit.mjs is what holds it honest.
@@ -28,6 +28,9 @@ import { BONES, HIERARCHY, REQUIRED, expectedParent } from '../tools/creatures/q
 //   `FrontShoulderL`, not `FrontShoulder.L`. Rather than reimplement three's
 //   rule, the retarget looks each track's node up in the source scene and reads
 //   its true name back off userData.
+//
+// The preview plays Quaternius clips onto Mixamo-named joints through
+// QUATERNIUS_TO_MIXAMO, because Mixamo ships no quadruped motion to play.
 // ---------------------------------------------------------------------------
 
 const PACK = '/tmp/Quaternius Animated Animals/glTF'
@@ -178,6 +181,7 @@ function drawChain() {
 
 async function loadRig(id) {
   setStatus(`loading ${id}...`)
+  history.replaceState(null, '', `?id=${encodeURIComponent(id)}`)
   let gltf
   try {
     gltf = await gltfLoader.loadAsync(`/tools/creatures/work/${id}/rig.glb`)
@@ -721,6 +725,10 @@ for (const el of [meshCheck, skeletonCheck, namesCheck, groundCheck]) el.onchang
 // --- saving -----------------------------------------------------------------
 
 const idInput = document.getElementById('creatureId')
+// ?id= is how the creature bench hands a rig over. It wins over the field's
+// default, and is written back on every load so a reload stays on this rig.
+const linkedId = new URLSearchParams(location.search).get('id')
+if (linkedId) idInput.value = linkedId
 document.getElementById('load').onclick = () => loadRig(idInput.value.trim())
 document.getElementById('revert').onclick = () => loadRig(idInput.value.trim())
 
@@ -791,7 +799,7 @@ async function refreshClips() {
     const pack = await loadPack(animalSelect.value)
     clipSelect.append(...pack.clips.map((c) => new Option(c.name, c.name)))
     clipSelect.value = pack.clips.some((c) => c.name === 'Walk') ? 'Walk' : pack.clips[0].name
-    previewNote.textContent = `${pack.clips.length} clips, retargeted by bone name`
+    previewNote.textContent = `${pack.clips.length} clips, retargeted onto the Mixamo names`
   } catch (e) {
     previewNote.textContent = `no pack in tmp/ -- ${e.message}`
   }
@@ -813,7 +821,10 @@ async function startPreview() {
     const srcBone = pack.byScene.get(track.name.slice(0, dot))
     if (!srcBone) continue
     // Back to the true glTF name: the track addresses the sanitized one.
-    const target = ours.get(srcBone.userData.name ?? srcBone.name)
+    const canonical = QUATERNIUS_TO_MIXAMO[srcBone.userData.name ?? srcBone.name]
+    // A source joint the mapping drops has no counterpart in our vocabulary.
+    if (!canonical) continue
+    const target = ours.get(canonical)
     // A deleted joint is left at rest rather than driven, which is exactly what
     // it becomes in the file: its local transform folds into its children.
     if (!target || gone.has(target)) continue

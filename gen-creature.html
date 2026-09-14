@@ -92,7 +92,9 @@
       dialog code { color: #d6ecff; }
 
       #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
-      #viewer { display: none; flex-direction: column; gap: 4px; width: 100%; }
+      /* Deliberately short of the full width, so there is always a strip of page
+         beside the canvas to grab a scroll on -- a wheel over the canvas orbits. */
+      #viewer { display: none; flex-direction: column; gap: 4px; width: 75%; }
       #viewer.on { display: flex; }
       #viewCanvas { display: block; width: 100%; height: 100%; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; cursor: grab; }
       #viewCanvas:active { cursor: grabbing; }
@@ -265,6 +267,8 @@
         <button id="rigCheck" class="wide" disabled>rig-check (free)</button>
         <div id="rigCheckOut" class="step"></div>
         <button id="genRig" class="wide spend" disabled>rig ($0.25)</button>
+        <button id="editRig" class="wide local" style="margin-top:4px" disabled>edit bone names (free)</button>
+        <div class="step">Tripo names joints <code>bone_17</code>. The rig editor relabels them into the Mixamo vocabulary, which is what lets a clip bind by name.</div>
 
         <h2>6. animations</h2>
         <div class="step">Presets available for this rig type.</div>
@@ -425,9 +429,9 @@ fingers: LeftHand{Thumb,Index,Middle,Ring,Pinky}{1,2,3,4}
         <p class="step">Nothing is renamed here &mdash; the front legs are Mixamo's arm chain and the hind legs are its leg chain, which is also anatomically right: <code>Shoulder</code> is the scapula, <code>Hand</code> and <code>ToeBase</code> are the paws, and on a digitigrade animal <code>Foot</code> is the hock held vertical. Extras Mixamo has no word for get the same numbering style: <code>Tail</code>, <code>LeftEar</code>, <code>Jaw</code>. A dragon whose wings are its forelimbs uses the arm chain and the <code>LeftHand*</code> finger names for the wing fingers; wings on top of four legs need an invented <code>LeftWing ─ LeftWing1</code>.</p>
       </details>
 
-      <p class="step"><b>Neither tree is what the tools speak yet.</b> <code>quadruped-rig.mjs</code> and the rig editor's dropdowns still use the Quaternius vocabulary (<code>Body</code>, <code>Back</code>, <code>FrontUpperLeg.L</code>, <code>FF.L</code>) because that is what plays the Quaternius clips by name. Adopting the tree above means changing that file and its gate &mdash; worth doing if you are authoring your own clips, pointless if you are still retargeting the pack's.</p>
+      <p class="step"><b>Both trees are what the tools speak.</b> <code>tools/creatures/mixamo-rig.mjs</code> holds the one hierarchy, and it is what the rig editor's dropdowns offer and what <code>scripts/check-rig-edit.mjs</code> gates.</p>
 
-      <p class="step">Mixamo itself is humanoid-only: there is no quadruped auto-rigger, so the tree above buys one convention in your head rather than access to Mixamo clips.</p>
+      <p class="step">Mixamo itself is humanoid-only: there is no quadruped auto-rigger and no quadruped clips, so on an animal the tree above buys one convention rather than access to a library. The rig editor's preview still plays the Quaternius pack, translating its names through <code>QUATERNIUS_TO_MIXAMO</code> at playback rather than baking them into the rig.</p>
 
       <h4>bring it back</h4>
       <ul>

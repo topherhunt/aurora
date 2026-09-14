@@ -13,8 +13,9 @@
 // crab smaller than the floor or out of proportion to its rock; a crab that walks off its
 // rock or never moves; a scatter that is not the same twice; a tile whose
 // rocks landed late and never got its crabs; a frame that costs more than a
-// scatter is allowed to; a far crab still drawn as the mesh, or a card that does
-// not stand on its crab's stone at its crab's tilt, or that is not dithered; a
+// scatter is allowed to; crabs all one colour; a far crab still drawn as the
+// mesh, or a card that does not stand on its crab's stone at its crab's tilt
+// and hue, that has no top to be seen from above, or that is not dithered; a
 // crab drawn as flat as its mesh or tiptoeing on the stone instead of sunk into
 // it; a crab on a steep shoulder standing straight up because the far side of
 // its footprint is off the stone, or one at the top of a face tipped over it.
@@ -26,7 +27,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -148,10 +149,13 @@ const scene = new THREE.Scene()
 const crabs = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset })
 check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${crabs.span}`)
 {
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   crabs.material.onBeforeCompile(shader)
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
+  // The hue turn: read per instance on the mesh and the card, carried across, and applied to the sampled map before it is lit.
+  check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && crabs.card.geometry.getAttribute('aHue') === crabs.cardHue, 'hue rides in aHue on the mesh and the card')
+  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\n\{\n[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && crabs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${crabs.material.type} roughness ${crabs.material.roughness}`)
   check(shader.fragmentShader.includes('<roughnessmap_fragment>') && !shader.fragmentShader.includes('sampledDiffuseColor.a'), 'the colour alpha is not read as roughness')
@@ -170,7 +174,7 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   const k = new Crabs(scene, height, water, { seed, rocks, assets: asset })
   k.place(15, 0)
   check(k.overflow === 0 && k.saturated === 0, `seed ${seed}: nothing was dropped for want of room`)
-  for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, depth: c.depth })
+  for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, hue: c.hue, depth: c.depth })
   k.dispose()
 }
 crabs.place(15, 0)
@@ -203,6 +207,8 @@ crabs.place(15, 0)
   check(all.filter((c) => boulderOf(c).name === 'floor').every((c) => c.y < LEVEL), 'lake-floor crabs are under the water')
   const sizes = all.map((c) => c.size)
   check(Math.max(...sizes) - Math.min(...sizes) > 0.05, 'sizes vary', `${Math.min(...sizes).toFixed(3)}..${Math.max(...sizes).toFixed(3)} m`)
+  const hues = all.map((c) => c.hue)
+  check(new Set(hues.map((h) => h.toFixed(3))).size > all.length * 0.8 && Math.min(...hues) < -HUE * 0.5 && Math.max(...hues) > HUE * 0.5 && hues.every((h) => Math.abs(h) <= HUE), 'hues vary either way round the wheel, within HUE', `${Math.min(...hues).toFixed(2)}..${Math.max(...hues).toFixed(2)} rad`)
 }
 // Determinism: the same rocks, the same crabs.
 const snapA = alive().map((c) => [c.x, c.z, c.size]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
@@ -290,6 +296,16 @@ const sinkOf = (c) => SINK * 0.3 * c.size
 // --- the cross card: far crabs leave the mesh for the card, under the same matrix ----
 {
   check(crabs.card.parent === crabs.batch && !crabs.card.visible && crabs.card.geometry.index.count === 12, 'the card mesh rides in the batch, hidden until its picture is baked, two quads')
+  // A crab is seen clinging to a rock from above, so its card is its side (upright on the XY plane, feet down) crossed with its TOP: a quad lying flat at the body's middle, the body's length by its breadth, reading the right half of the picture.
+  {
+    const pos = crabs.card.geometry.getAttribute('position'), uv = crabs.card.geometry.getAttribute('uv')
+    const sideY = [0, 1, 2, 3].map((i) => pos.getY(i)), topY = [4, 5, 6, 7].map((i) => pos.getY(i))
+    const topX = [4, 5, 6, 7].map((i) => pos.getX(i)), topZ = [4, 5, 6, 7].map((i) => pos.getZ(i))
+    const { halfX, halfZ, height } = crabs.bounds
+    check([0, 1, 2, 3].every((i) => pos.getZ(i) === 0) && Math.min(...sideY) < 0 && Math.max(...sideY) > height, 'the side quad stands upright on the body\'s length')
+    check(topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the other quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
+    check([4, 5, 6, 7].every((i) => uv.getX(i) >= 0.5) && [0, 1, 2, 3].every((i) => uv.getX(i) <= 0.5), 'the side reads the left half of the picture, the top the right')
+  }
   const shader = { vertexShader: '#include <common>', fragmentShader: '#include <clipping_planes_fragment>\n#include <normal_fragment_begin>' }
   crabs.cardMaterial.onBeforeCompile(shader)
   check(/gl_FragCoord\.x \+ gl_FragCoord\.y, 2\.0 \) < 1\.0 \) discard/.test(shader.fragmentShader) && crabs.cardMaterial.alphaTest === 0.5, 'the card is a cutout drawn on every other pixel of a fixed screen checkerboard')
@@ -312,14 +328,14 @@ const sinkOf = (c) => SINK * 0.3 * c.size
       const c = alive(k).find((c) => Math.abs(c.x - c.nx * sinkOf(c) - ce[i * 16 + 12]) < 1e-4 && Math.abs(c.z - c.nz * sinkOf(c) - ce[i * 16 + 14]) < 1e-4)
       if (!c) continue
       const up = new THREE.Vector3(ce[i * 16 + 4], ce[i * 16 + 5], ce[i * 16 + 6]).normalize()
-      if (Math.abs(up.x - c.nx) < 1e-5 && Math.abs(up.y - c.ny) < 1e-5 && Math.abs(up.z - c.nz) < 1e-5 && Math.abs(up.length() - 1) < 1e-5) matched++
+      if (Math.abs(up.x - c.nx) < 1e-5 && Math.abs(up.y - c.ny) < 1e-5 && Math.abs(up.z - c.nz) < 1e-5 && Math.abs(up.length() - 1) < 1e-5 && Math.abs(k.cardHue.array[i] - c.hue) < 1e-6) matched++
     }
     meshN += k.mesh.count; cardN += k.card.count; liveN += alive(k).length
     k.dispose()
   }
   check(meshN + cardN === liveN && meshN > 0 && cardN > 0, 'the mesh and the card together hold every crab', `${meshN} mesh, ${cardN} card, ${liveN} alive over ${SEEDS} seeds`)
   check(near.every((d) => d <= CARD_M) && far.every((d) => d > CARD_M), `the mesh holds the crabs within ${CARD_M} m of her head and the card the rest`, `mesh to ${Math.max(...near).toFixed(2)} m, card from ${Math.min(...far).toFixed(2)} m`)
-  check(matched === cardN, 'each card stands where its crab stands, tilted to its stone', `${matched} of ${cardN}`)
+  check(matched === cardN, 'each card stands where its crab stands, tilted to its stone, in its crab\'s hue', `${matched} of ${cardN}`)
 }
 
 // --- rocks that land late ------------------------------------------------------

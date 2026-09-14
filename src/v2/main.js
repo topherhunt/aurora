@@ -300,7 +300,13 @@ const FOVEATION = 1
 
 if (QUEST_MODE) {
   sceneEl = document.createElement('a-scene')
-  sceneEl.setAttribute('vr-mode-ui', 'enabled: true')
+  // A-Frame's own enter-VR UI is off, and the button below is the only way in.
+  // Its xr-mode-ui offers the session to the headset's toolbar button
+  // (navigator.xr.offerSession) whenever its own button is showing, and a
+  // session entered from the toolbar is no user activation on the page: the
+  // AudioContext then stays suspended until the first trigger pull. A click on
+  // a page button is the activation the audio needs.
+  sceneEl.setAttribute('xr-mode-ui', 'enabled: false')
   // A-Frame 1.8's renderer defaults already agree with normal mode's plain
   // `new THREE.WebGLRenderer(...)` below: toneMapping defaults to 'no' and
   // there is no physicallyCorrectLights property in the schema at all. What
@@ -432,6 +438,26 @@ if (QUEST_MODE) {
   rig = rigEl.object3D
   leftGrip = leftHandEl.object3D
   rightGrip = rightHandEl.object3D
+
+  // The page's one Enter VR button, in the corner three's VRButton uses in
+  // normal mode. sceneEl.enterVR() requests the session inside the click, so
+  // A-Frame keeps owning it (vr-mode state, pose target, enter-vr/exit-vr).
+  const enterVR = document.createElement('button')
+  enterVR.className = 'qa-enter-vr'
+  enterVR.textContent = 'ENTER VR'
+  enterVR.style.cssText = 'position:absolute;bottom:20px;left:calc(50% - 60px);width:120px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,0.5);color:#fff;font:normal 13px sans-serif;text-align:center;opacity:0.5;outline:none;z-index:999;cursor:pointer'
+  enterVR.onmouseenter = () => { enterVR.style.opacity = '1' }
+  enterVR.onmouseleave = () => { enterVR.style.opacity = '0.5' }
+  enterVR.onclick = () => {
+    enterVR.textContent = 'ENTERING ...'
+    sceneEl.enterVR().catch((err) => {
+      console.error('[v2] enter VR', err)
+      enterVR.textContent = `VR FAILED: ${err.message ?? err}`
+    })
+  }
+  sceneEl.addEventListener('enter-vr', () => { enterVR.hidden = true })
+  sceneEl.addEventListener('exit-vr', () => { enterVR.hidden = false; enterVR.textContent = 'ENTER VR' })
+  document.body.appendChild(enterVR)
 } else {
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
   renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
@@ -656,9 +682,9 @@ const QUEST_TOGGLE_ROWS = [
   // The two ABLATIONS on the tree layer, both starting where the world ships so
   // that "off" is the measurement. `tree tiers` takes the mesh ladder away and
   // leaves the card ring, which is what makes the reach and falloff rows above
-  // readable on their own; `tree leaf cutout` takes the alpha reject away and
-  // with it the layer's transparency. See Trees.setCardsOnly and setCutout for
-  // what each number does and does not prove.
+  // readable on their own; `tree leaf cutout` takes every `discard` out of the
+  // tree program and with it the layer's transparency. See Trees.setCardsOnly
+  // and setCutout for what each number does and does not prove.
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
   { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
   { key: 'instCull', text: 'per-instance cull' },
@@ -3420,12 +3446,20 @@ function updateAmbience(dt, state) {
 }
 
 // Browsers keep an AudioContext suspended until a user gesture on the page;
-// every gesture the world already listens for is one, and the resume is idempotent.
+// every gesture the world already listens for is one, and the resume is
+// idempotent. Entering VR is not always one: A-Frame offers the session to the
+// headset's own toolbar button (offerSession), so the resume at sessionstart
+// can be refused and the first gesture the page ever sees is a trigger pull.
+// A WebXR select is a user activation, so the session's own events unlock too.
 function unlockSound() {
   if (sound) sound.unlock()
 }
 for (const ev of ['pointerdown', 'keydown', 'touchend', 'click']) addEventListener(ev, unlockSound, { passive: true })
-renderer.xr.addEventListener('sessionstart', unlockSound)
+renderer.xr.addEventListener('sessionstart', () => {
+  unlockSound()
+  const session = renderer.xr.getSession()
+  for (const ev of ['selectstart', 'select', 'squeezestart', 'squeeze']) session.addEventListener(ev, unlockSound)
+})
 
 /**
  * The half-dozen values that are not true underwater, written over the top of

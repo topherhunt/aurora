@@ -1273,45 +1273,63 @@ function billboardGrowVertex({ from, to, scale, sink, top }) {
 }
 
 /**
- * A SPUN CARD IS LIT AS GROUND, whatever its instance did to it.
+ * A SPUN CARD IS LIT AS THE MEAN OF THE SOLID IT REPLACES.
  *
- * The card authors its normal exactly up, but the LIGHTING normal is not that
- * attribute -- `defaultnormal_vertex` runs the instance's own rotation over it,
- * and a rock instance is not a yaw. rock-bank varies one boulder shape by 16
- * quarter turns, so twelve of every sixteen cards had their up normal turned
- * sideways or straight DOWN, and a down-facing normal collects almost no light
- * from a sky-and-sun rig. That is the whole of "the distant rocks are black" --
- * the picture was fine and the surface it was pasted on was facing the floor.
+ * The card carries the rock's flat albedo (rock-bank bakes it unlit) and is
+ * shaded live, once, through the same Lambert every mesh tier goes through --
+ * so the swap from mesh to card is a colour step exactly as large as the
+ * difference between the mesh's mean shading and the card's. A card has one
+ * normal; a boulder has thousands, and the eye at card range sees their
+ * average over the silhouette. So the card is not given a normal, it is given
+ * that average, in closed form for a sphere with the disc's pixels weighted
+ * equally (projected area):
  *
- * ON THE SPHERICAL BEDS ONLY, which is rocks and nothing else. It would be a
- * no-op almost everywhere else -- a yaw plus a diagonal scale already leaves an
- * up normal up, and the arithmetic below reproduces that exactly -- but not
- * quite everywhere: a grass clump is tilted onto the terrain normal, so its card
- * is lit as the slope it stands on rather than as flat ground, and that is a
- * look somebody chose. A bed that rolls its instances and asks for a cylindrical
- * card would hit the original bug; there is no such bed, and this is where to
- * widen the gate if one appears.
+ *   sun:  mean over the disc of max(0, n.L) = (2/3) [sin t + (pi - t) cos t] / pi
+ *         with t the angle between the eye direction and the sun -- the
+ *         Lambert sphere phase function. 2/3 with the sun behind the eye,
+ *         0.212 with it overhead, 0 with it behind the rock.
+ *   sky:  mean n = (2/3) v, v the direction to the eye; the hemisphere term is
+ *         linear in n so it takes that non-unit normal as it is. Seen level
+ *         that is a plain half sky, half ground.
  *
- * WHY THIS EXPRESSION. `defaultnormal_vertex` computes `M * (n / s2)` per
- * matrix, `s2` being the squared column lengths. Wanting `up` out of that means
- * feeding in `n = up * M` (v * M is M-transpose * v in GLSL), since
- * `M * ((up * M) / s2)` is `M * M-inverse * up`. Exact for any R * S with R
- * orthonormal and S diagonal, which is every matrix a TRS compose makes,
- * including grass's non-uniform (sqrt(h), h, sqrt(h)). The two are applied
- * innermost-first so a batch under an instanced parent would also come out
- * right.
+ * The sun term cannot be a normal (an overhead sun wants n.L = 0.212 and
+ * n.y = 0 at once), so RE_Direct is redefined below to take the phase for a
+ * card and the dot product for everything else; the sky term is the normal
+ * SPHERE_CARD_NORMAL writes. The view-facing rim darkening in the
+ * normal_fragment_begin patch averages to 1.0 over a sphere's disc and is
+ * skipped for a card.
+ *
+ * ON THE SPHERICAL BEDS ONLY, which is rocks and nothing else. A fern's or a
+ * tree's card is lit with its authored normal and photographed lit -- see
+ * createImpostorBakeMaterial for why a canopy wants that.
+ *
+ * scripts/check-rock-card.mjs draws one rock as mesh and as card under one sun
+ * and asserts their mean colours agree; the numbers above are its ground.
  */
-const SPUN_CARD_NORMAL = /* glsl */ `
-        if ( propSpun > 0.0 ) {
-          vec3 cardN = vec3( 0.0, 1.0, 0.0 );
-          #ifdef USE_INSTANCING
-            cardN = cardN * mat3( instanceMatrix );
-          #endif
-          #ifdef USE_BATCHING
-            cardN = cardN * mat3( batchingMatrix );
-          #endif
-          objectNormal = cardN;
-        }`
+const SPHERE_CARD_LIGHT = /* glsl */ `
+        void RE_Direct_SphereCard( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in LambertMaterial material, inout ReflectedLight reflectedLight ) {
+          float dotNL;
+          if ( vPropSpun > 0.5 ) {
+            float c = clamp( dot( geometryViewDir, directLight.direction ), -1.0, 1.0 );
+            float t = acos( c );
+            dotNL = ( 2.0 / 3.0 ) * ( sin( t ) + ( PI - t ) * c ) / PI;
+          } else {
+            dotNL = saturate( dot( geometryNormal, directLight.direction ) );
+          }
+          reflectedLight.directDiffuse += dotNL * directLight.color * BRDF_Lambert( material.diffuseColor );
+        }
+        #undef RE_Direct
+        #define RE_Direct RE_Direct_SphereCard`
+
+// The gentle darkening of a surface seen from behind its normal -- see the
+// normal_fragment_begin patch in createPropMaterial.
+const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
+          smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) )`
+
+// `vViewPosition` is the fragment-to-eye vector in view space, the frame every
+// light direction is in.
+const SPHERE_CARD_NORMAL = /* glsl */ `
+        if ( vPropSpun > 0.5 ) normal = ( 2.0 / 3.0 ) * normalize( vViewPosition );`
 
 // Appended to `begin_vertex`, after `batching_vertex` and `beginnormal_vertex`
 // (chunk order in ShaderLib/meshlambert.glsl.js), so `batchingMatrix` is in
@@ -1320,10 +1338,10 @@ const SPUN_CARD_NORMAL = /* glsl */ `
 // THE NORMAL IS NOT SPUN WITH THE QUAD. Turning it toward the eye makes N.L a
 // function of where the player stands, so the whole fern bed brightens and dims
 // as they turn on the spot -- the most obvious artefact a billboard can have.
-// The card keeps the vertical normal SPUN_CARD_NORMAL pinned for it a few chunks
-// earlier: at this range a fern bed IS a ground surface, and lighting it as one
-// is both stable and closer to true than lighting 18,000 independent vertical
-// cards.
+// A cylindrical card keeps its authored vertical normal: at this range a fern
+// bed IS a ground surface, and lighting it as one is both stable and closer to
+// true than lighting 18,000 independent vertical cards. A spherical card is lit
+// as the mean of the solid it replaces instead -- see SPHERE_CARD_LIGHT.
 //
 // `spin` false compiles the SAME block without the yaw-to-camera rotation: the
 // grow ramp and the u-flip still run and the card stands at whatever yaw its
@@ -1404,21 +1422,10 @@ function billboardVertex(spherical, grow, spin = true) {
       // The card spans local X for its width and local Y for its height, with
       // its foot on y = 0 (buildImpostorCard). So y is already measured up from
       // the foot, and the two axes go straight onto screen right and screen up.
-      //
-      // THE FOOT IS WHERE THE MESH'S FOOT IS, NOT WHERE THE ORIGIN IS. A rock
-      // bed quarter-turns its instances, then seats each by the lowest corner
-      // of the turned box -- so a boulder on its side or its crown has its
-      // origin a half-width or a whole height above the bedded mesh, and a
-      // card pivoting on the origin stood that far up in the air while the
-      // mesh it replaced was sunk into the hill. aCardBox is that box at
-      // scale 1 (buildImpostorCard's box option), and this is its lowest corner
-      // under THIS instance's rotation, in world metres below the origin: the
-      // y row of bbM against the half-extents, with the scale already folded
-      // in through bbM. Zero for an upright instance, and zero on a card built
-      // without a box, so every other spun card pivots exactly as before.
-      float bbFoot = -abs( bbM[ 0 ][ 1 ] ) * aCardBox.x * 0.5
-        + min( 0.0, bbM[ 1 ][ 1 ] ) * aCardBox.y
-        - abs( bbM[ 2 ][ 1 ] ) * aCardBox.z * 0.5;
+      // The foot is the instance origin and nothing here moves it: a bed whose
+      // mesh does not stand on its origin hands the card tier its own matrix
+      // (RockBed._placeTier). The one attempt to read a foot off the instance
+      // matrix here drew nothing on the Quest's Adreno, silently.
       //
       // THOSE LOCAL METRES ARE THE CARD AT SCALE 1, and the instance scale has
       // to multiply them exactly as it multiplies a mesh vertex. Leave it out
@@ -1437,8 +1444,7 @@ function billboardVertex(spherical, grow, spin = true) {
       // card would have had standing still. The cylindrical branch below never
       // needed any of this: it rotates within object space and never leaves it,
       // so the scale is never divided out to begin with.
-      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw
-        + vec3( 0.0, bbFoot, 0.0 );
+      vec3 bbW = ( transformed.x * bbS.x ) * bbRw + ( transformed.y * bbS.y ) * bbUw;
       // v * M is M-transpose * v in GLSL; the divide finishes the inverse.
       transformed = ( bbW * bbM ) / bbS2;`
     : /* glsl */ `
@@ -2741,20 +2747,20 @@ export function createPropMaterial(
         '#include <beginnormal_vertex>',
         `#include <beginnormal_vertex>
         ${propCardMask(billboards ? billboards.length : 0)}
-        ${sphericalBillboard ? SPUN_CARD_NORMAL : ''}`
+        ${sphericalBillboard ? 'vPropSpun = propSpun;' : ''}`
       )
       .replace(
         '#include <common>',
         `#include <common>
         attribute float texLayer;
         attribute vec2 uvProj;
-        ${sphericalBillboard ? 'attribute vec3 aCardBox;' : ''}
         ${instancedFade ? `
         #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;` : ''}
         ${hemFray ? HEM_FRAY_GLSL.vertexCommon : ''}
         varying float vTexLayer;
         varying vec2 vUvProj;
+        ${sphericalBillboard ? 'varying float vPropSpun;' : ''}
         ${seasons ? SEASONS_VERTEX_COMMON : ''}
         uniform float uPropClock;
         varying float vPropFade;
@@ -2803,6 +2809,7 @@ export function createPropMaterial(
         varying float vTexLayer;
         varying vec2 vUvProj;
         varying float vPropFade;
+        ${sphericalBillboard ? 'varying float vPropSpun;' : ''}
         ${hemFray ? HEM_FRAY_GLSL.fragmentCommon : ''}
         ${IGN_GLSL}
         ${seasons ? SNOW_COMMON : ''}
@@ -2831,21 +2838,26 @@ export function createPropMaterial(
       // than stepped so a solid's silhouette, where the dot passes through zero,
       // does not get a hard rim.
       .replace(
+        '#include <lights_lambert_pars_fragment>',
+        `#include <lights_lambert_pars_fragment>
+        ${sphericalBillboard ? SPHERE_CARD_LIGHT : ''}`
+      )
+      .replace(
         '#include <normal_fragment_begin>',
         `#include <normal_fragment_begin>
         normal *= faceDirection;
         ${bump ? PROP_BUMP_APPLY : ''}
         ${seasons ? MOSS_APPLY : ''}
         ${seasons ? SNOW_APPLY : ''}
-        diffuseColor.rgb *= mix( 0.72, 1.0,
-          smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) );`
+        diffuseColor.rgb *= mix( ${RIM_DARKEN}, 1.0, ${sphericalBillboard ? 'vPropSpun' : '0.0'} );
+        ${sphericalBillboard ? SPHERE_CARD_NORMAL : ''}`
       )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
         `vec4 diffuseColor = vec4( diffuse, opacity );
         ${stripTiling ? STRIP_SAMPLE : 'diffuseColor *= texture( uAtlas, vec3( vUvProj, vTexLayer ) );'}
-        ${hemFray ? HEM_FRAY_GLSL.fragment(hemFray, 'vUvProj') : ''}
-        ${FADE_FRAGMENT}`
+        ${hemFray && !material.userData.noDiscard ? HEM_FRAY_GLSL.fragment(hemFray, 'vUvProj') : ''}
+        ${material.userData.noDiscard ? '' : FADE_FRAGMENT}`
       )
 
     material.userData.shader = shader
@@ -2865,8 +2877,14 @@ export function createPropMaterial(
   // bound to a mesh without that attribute reads garbage timers and dissolves at
   // random. `hemFray` for both reasons at once: an attribute and six literals.
   //
-  // The wind suffix is evaluated per CALL rather than folded into `key`, because
-  // setWindEnabled flips it under a material that is already built.
+  // The wind and noDiscard suffixes are evaluated per CALL rather than folded
+  // into `key`, because setWindEnabled and Trees.setCutout flip them under a
+  // material that is already built. `userData.noDiscard` compiles FADE_FRAGMENT
+  // and the hem fray out, which with alphaTest 0 leaves a program with NO
+  // discard at all -- the only state in which a tiler's early depth reject is
+  // on for these draws. A diagnostic: mid-dissolve instances draw solid and the
+  // frayed edge draws square while it holds. Strip tiling's discards are the
+  // tiling itself and are not gated; no strip material sets the flag.
   //
   // `side` is NOT here and must not be: three keys DOUBLE_SIDED and FLIP_SIDED
   // itself (WebGLPrograms.getProgramCacheKey), and a second copy would only be
@@ -2877,8 +2895,9 @@ export function createPropMaterial(
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
-  const key = `prop-moss-v5${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
-  material.customProgramCacheKey = () => (windSpec && !windCompiled ? `${key}-nowind` : key)
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${sphericalBillboard ? '-sph' : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
+  material.customProgramCacheKey = () =>
+    `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 
   if (windSpec) windMaterials.add(material)
 
@@ -3085,9 +3104,16 @@ const SEASONS_VERTEX = /* glsl */ `
  * because the card is the photograph of the tree at its best and every other
  * subject carries no `hem` attribute to compile against.
  */
-export function createImpostorBakeMaterial(textureArray, { vertexColors = false, hemFray = null } = {}) {
+export function createImpostorBakeMaterial(
+  textureArray, { vertexColors = false, hemFray = null, unlit = false } = {}
+) {
   if (hemFray) checkHemFray(hemFray, 'createImpostorBakeMaterial')
-  const material = new THREE.MeshLambertMaterial({
+  // `unlit` is the Basic case argued against above, and it is right for the one
+  // subject the argument does not cover: a convex solid, whose card is shaded
+  // live as the mean of the mesh it replaces (SPHERE_CARD_LIGHT). See
+  // captureLayer. Basic's fragment has no normal_fragment_begin, so that patch
+  // below is a no-op on it.
+  const material = new (unlit ? THREE.MeshBasicMaterial : THREE.MeshLambertMaterial)({
     color: 0xffffff,
     alphaTest: 0.5,
     transparent: false,
@@ -3143,6 +3169,6 @@ export function createImpostorBakeMaterial(textureArray, { vertexColors = false,
       )
   }
 
-  material.customProgramCacheKey = () => `impostor-bake-lit-v1${vertexColors ? '-vc' : ''}${hemFray ? hemFrayKey(hemFray) : ''}`
+  material.customProgramCacheKey = () => `impostor-bake-${unlit ? 'unlit' : 'lit'}-v1${vertexColors ? '-vc' : ''}${hemFray ? hemFrayKey(hemFray) : ''}`
   return material
 }

@@ -23,16 +23,17 @@
 // turns out to be inside a boulder that landed after it leaves. The mesh faces
 // +X; a hop turns it to face where it is going.
 //
-// Past CARD_M from her head a frog is its cross card (critters.js), written to
-// the card mesh under the same matrix and tint the body would have had; once
-// the card's picture is baked, the two meshes together hold every live frog.
+// Past CARD_M from her head a frog is its cross card (critters.js, side and
+// front), written to the card mesh under the same matrix, tint and hue the
+// body would have had; once the card's picture is baked, the two meshes
+// together hold every live frog.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, loadCritterGlb, setCritterAsset, setCritterCard,
-  tileSeed, walkTiles,
+  CARD_M, CRITTER_GLB, FROG_VIEWS, bakeCritterCard, createCritterCardMaterial, glint, hueVary, loadCritterGlb, makeHueAttribute,
+  setCritterAsset, setCritterCard, tileSeed, walkTiles,
 } from './critters.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
@@ -53,10 +54,11 @@ export const BREATH_S = 1.3
 export const BREATH_AMP = 0.05
 // Wet skin: the one roughness the whole frog glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.3
-// The frog's tint, a per-channel multiplier on the texture.
+// The frog's tint, a per-channel multiplier on the texture, and its hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a bank holds green, olive and brown frogs.
 const TINT_R = [0.7, 1.15]
 const TINT_G = [0.8, 1.2]
 const TINT_B = [0.6, 1.1]
+export const HUE = 0.5
 // Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between; a walk holds one heading give or take WOBBLE, a leap picks a fresh direction every hop. Every hop rises HOP_RISE of its distance.
 const SIT_S = [2, 8]
 const WALK_P = 0.7
@@ -99,7 +101,7 @@ export class Frogs {
 
     // Wet skin glints: critters.js's glint.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
-    this.material.onBeforeCompile = (shader) => glint(shader)
+    this.material.onBeforeCompile = (shader) => { glint(shader); hueVary(shader) }
     this.material.customProgramCacheKey = () => 'frogs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-frogs'
@@ -109,6 +111,7 @@ export class Frogs {
     this.mesh.frustumCulled = false
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
+    this.hue = makeHueAttribute(this.mesh, MAX)
     // The far frogs, as cards; hidden until the picture is baked, and until then every frog is the mesh.
     this.cardMaterial = createCritterCardMaterial('frogs')
     this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
@@ -118,6 +121,7 @@ export class Frogs {
     this.card.frustumCulled = false
     this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.card.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
+    this.cardHue = makeHueAttribute(this.card, MAX)
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-frogs'
@@ -128,7 +132,7 @@ export class Frogs {
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, tile: null,
-        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1,
+        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0,
         // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed. `bout` is WALK or LEAP with `hops` of it to go, `heading` the walk's line.
         state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
       })
@@ -160,14 +164,14 @@ export class Frogs {
   setAsset(asset) {
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'frogs')
     this.span = this.bounds.span
-    setCritterCard(this.card, this.bounds)
+    setCritterCard(this.card, this.bounds, FROG_VIEWS)
     this.loaded = true
   }
 
   /** Photograph the loaded frog onto its card and start drawing the far frogs as cards. Once, after `ready`. */
   bakeCard(renderer) {
     if (!this.loaded) throw new Error('Frogs.bakeCard: the asset has not landed')
-    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds))
+    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds, FROG_VIEWS))
   }
 
   setCard(map) {
@@ -212,6 +216,7 @@ export class Frogs {
       const r = between(rand, TINT_R)
       const g = between(rand, TINT_G)
       const b = between(rand, TINT_B)
+      const hue = (rand() * 2 - 1) * HUE
       const yaw = rand() * Math.PI * 2
       const h = this.seat(x, z)
       if (h === null) continue
@@ -223,6 +228,7 @@ export class Frogs {
       f.y = this._groundFor(x, z, h)
       f.size = size
       f.r = r; f.g = g; f.b = b
+      f.hue = hue
       f.yaw = yaw
       f.breath = this.rand() * Math.PI * 2
       f.state = 'sit'
@@ -300,8 +306,10 @@ export class Frogs {
     const breath = (this.time * Math.PI * 2) / BREATH_S
     const mat = this.mesh.instanceMatrix.array
     const col = this.mesh.instanceColor.array
+    const hue = this.hue.array
     const cmat = this.card.instanceMatrix.array
     const ccol = this.card.instanceColor.array
+    const chue = this.cardHue.array
     const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
     let n = 0
     let m = 0
@@ -358,10 +366,11 @@ export class Frogs {
         const dy = f.y - hy
         const dz = f.z - hz
         const far = dx * dx + dy * dy + dz * dz > card2
-        _mat.toArray(far ? cmat : mat, (far ? m : n) * 16)
-        const o = (far ? m : n) * 3
+        const w = far ? m : n
+        _mat.toArray(far ? cmat : mat, w * 16)
         const c = far ? ccol : col
-        c[o] = f.r; c[o + 1] = f.g; c[o + 2] = f.b
+        c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
+        ;(far ? chue : hue)[w] = f.hue
         if (far) m++
         else n++
       }
@@ -369,9 +378,11 @@ export class Frogs {
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
     this.mesh.instanceColor.needsUpdate = true
+    this.hue.needsUpdate = true
     this.card.count = m
     this.card.instanceMatrix.needsUpdate = true
     this.card.instanceColor.needsUpdate = true
+    this.cardHue.needsUpdate = true
   }
 
   dispose() {

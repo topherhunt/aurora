@@ -13,7 +13,7 @@
 // leap-sized or wander off its line, or that has no beat between its hops; a
 // scatter that is not the same twice; a frame that
 // costs more than a scatter is allowed to; a far frog still drawn as the mesh,
-// or a card that is not its frog's own matrix and tint, or that is not dithered.
+// or a card that is not its frog's own matrix, tint and hue, or that is not dithered.
 // The shipped GLB is checked for existence and shape too, because the world
 // loads it by name.
 //
@@ -22,7 +22,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, HUE } from '../src/v2/render/frogs.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -98,9 +98,12 @@ const scene = new THREE.Scene()
 const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset })
 check(frogs.loaded && frogs.mesh.visible && Math.abs(frogs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${frogs.span}`)
 check(frogs.mesh.instanceColor && frogs.mesh.instanceColor.isInstancedBufferAttribute, 'tint rides in instanceColor')
+check(frogs.mesh.geometry.getAttribute('aHue') === frogs.hue && frogs.hue.isInstancedBufferAttribute && frogs.card.geometry.getAttribute('aHue') === frogs.cardHue, 'hue rides in aHue on the mesh and the card')
 {
-  const shader = { vertexShader: '#include <common>\n', fragmentShader: '#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   frogs.material.onBeforeCompile(shader)
+  // The hue turn: read per instance, carried across, and applied to the sampled map before it is lit.
+  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\n\{\n[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(frogs.material.isMeshStandardMaterial && frogs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && frogs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${frogs.material.type} roughness ${frogs.material.roughness}`)
   check(shader.fragmentShader.includes('<roughnessmap_fragment>') && !shader.fragmentShader.includes('sampledDiffuseColor.a'), 'the colour alpha is not read as roughness')
@@ -125,6 +128,8 @@ frogs.place(0, 0)
   check(Math.min(...sizes) >= SIZE_M[0] && Math.max(...sizes) <= SIZE_M[1] && Math.max(...sizes) - Math.min(...sizes) > 0.03, 'sizes vary across the range', `${Math.min(...sizes).toFixed(3)}..${Math.max(...sizes).toFixed(3)} m`)
   const tints = new Set(all.map((f) => `${f.r.toFixed(2)},${f.g.toFixed(2)},${f.b.toFixed(2)}`))
   check(tints.size > all.length * 0.8, 'tints vary', `${tints.size} distinct of ${all.length}`)
+  const hues = all.map((f) => f.hue)
+  check(new Set(hues.map((h) => h.toFixed(3))).size > all.length * 0.8 && Math.min(...hues) < -HUE * 0.5 && Math.max(...hues) > HUE * 0.5 && hues.every((h) => Math.abs(h) <= HUE), 'hues vary either way round the wheel, within HUE', `${Math.min(...hues).toFixed(2)}..${Math.max(...hues).toFixed(2)} rad`)
   check(frogs.overflow === 0, 'the pool was not saturated', `${MAX} slots`)
 }
 // Cold: standing on the boundary, the warm half has frogs and the cold half none.
@@ -215,7 +220,7 @@ check(frogs.mesh.count === alive().length, 'the instance count is the live count
   check(phases.size > alive().length * 0.8, 'each frog breathes on its own phase', `${phases.size} distinct of ${alive().length}`)
 }
 
-// --- the cross card: far frogs leave the mesh for the card, under the same matrix and tint ----
+// --- the cross card: far frogs leave the mesh for the card, under the same matrix, tint and hue ----
 {
   const card = frogs.card
   check(card.parent === frogs.batch && !card.visible && card.count === 0, 'the card mesh rides in the batch, hidden until its picture is baked')
@@ -228,6 +233,9 @@ check(frogs.mesh.count === alive().length, 'the instance count is the live count
   check(pos.count === 8 && geo.index.count === 12 && xs.has('0.000') && zs.has('0.000') && xs.size === 3 && zs.size === 3, 'the card is two quads crossed on the body axis', `${pos.count} verts, ${geo.index.count} indices`)
   const sideU = [0, 1, 2, 3].map((i) => uv.getX(i)), frontU = [4, 5, 6, 7].map((i) => uv.getX(i))
   check(Math.max(...sideU) === 0.5 && Math.min(...frontU) === 0.5 && Math.max(...frontU) === 1, 'the side quad reads the left half of the picture, the front quad the right')
+  // The side quad stands on the XY plane, feet down; the front quad on the ZY plane.
+  const ys = [0, 1, 2, 3].map((i) => pos.getY(i))
+  check([0, 1, 2, 3].every((i) => pos.getZ(i) === 0) && [4, 5, 6, 7].every((i) => pos.getX(i) === 0) && Math.min(...ys) < 0 && Math.max(...ys) > frogs.bounds.height, 'the side quad stands upright on the body\'s length, the front quad upright across it')
   let up = true
   for (let i = 0; i < nrm.count; i++) if (nrm.getY(i) !== 1) up = false
   check(up, 'every card normal points straight up, so the two planes take the same light')
@@ -253,7 +261,7 @@ check(frogs.mesh.count === alive().length, 'the instance count is the live count
   for (let i = 0; i < card.count; i++) far.push(dist(at(card, i)))
   check(frogs.mesh.count + card.count === alive().length && card.count > 0 && frogs.mesh.count > 0, 'the mesh and the card together hold every frog', `${frogs.mesh.count} mesh, ${card.count} card, ${alive().length} alive`)
   check(near.every((d) => d <= CARD_M) && far.every((d) => d > CARD_M), `the mesh holds the frogs within ${CARD_M} m of her head and the card the rest`, `mesh to ${Math.max(...near).toFixed(2)} m, card from ${Math.min(...far).toFixed(2)} m`)
-  // A card instance is some far frog: same seat, same size (the matrix's scale up to the breath), same tint. The buffers are float32.
+  // A card instance is some far frog: same seat, same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
   let matched = 0
   for (let i = 0; i < card.count; i++) {
     const e = card.instanceMatrix.array
@@ -263,9 +271,9 @@ check(frogs.mesh.count === alive().length, 'the instance count is the live count
     const sx = Math.hypot(e[i * 16], e[i * 16 + 1], e[i * 16 + 2]) * frogs.span
     const c = card.instanceColor.array
     const tint = Math.abs(c[i * 3] - f.r) < 1e-6 && Math.abs(c[i * 3 + 1] - f.g) < 1e-6 && Math.abs(c[i * 3 + 2] - f.b) < 1e-6
-    if (Math.abs(sx / f.size - 1) < 0.3 && tint) matched++
+    if (Math.abs(sx / f.size - 1) < 0.3 && tint && Math.abs(frogs.cardHue.array[i] - f.hue) < 1e-6) matched++
   }
-  check(matched === card.count, 'each card carries its frog\'s own matrix and tint', `${matched} of ${card.count}`)
+  check(matched === card.count, 'each card carries its frog\'s own matrix, tint and hue', `${matched} of ${card.count}`)
   // Walk her out to the far bank: what was card is mesh.
   frogs.update(HALF + 2, GROUND + 1.6, 40, DT)
   const swapped = []

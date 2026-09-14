@@ -185,12 +185,11 @@ export class V2Height {
     // (16 km at 16 m texels, then 4 km at 4 m, then 8 km at 8 m), each time
     // leaving a literal fitted to the last one still looking plausible.
     //
-    // Measured against the import's UNEXAGGERATED relief -- the bake declares how
-    // far it stretched the image and calibrateRough divides that back out, so
-    // raising MAX_Y makes the mountains taller without making the gravel coarser.
-    // That divide is the one deliberate break in the spectral-continuity
-    // argument; see calibrateRough. `rough` pins the calibration for the gate;
-    // nothing at runtime passes it.
+    // Measured against the import AS SHIPPED, stretch included: a taller world is
+    // a rockier one at every scale, and the sub-metre end is kept from turning to
+    // gravel by SLOPE_KNEE / HURST_FINE rather than by discounting the fit. The
+    // ratio above exact continuity is DETAIL_GAIN. `rough` pins the calibration
+    // for the gate; nothing at runtime passes it.
     const knee = ground.texelSize * KNEE_TEXELS
     const exposureGain = needs.exposure && relief.exposure > 0 ? (x, z) => this._exposureGain(x, z) : null
     if (this._pinnedRough !== null) {

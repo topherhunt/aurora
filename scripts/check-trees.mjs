@@ -1308,10 +1308,28 @@ trees.place(0, 0)
     'no cutout zeroes the reject and recompiles, since USE_ALPHATEST is keyed off the threshold at compile time',
     `alphaTest ${trees.material.alphaTest}, version ${version} -> ${trees.material.version}`)
   check(trees.stats.cutout === false, 'and the stats row says so')
+  // Assemble the program the way check-shaders does, so the claim is about
+  // the GLSL and not the flag: off, no `discard` survives anywhere in it.
+  const assemble = () => {
+    const shader = {
+      uniforms: {},
+      vertexShader: THREE.ShaderLib.lambert.vertexShader,
+      fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
+    }
+    trees.material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+    return shader.fragmentShader
+  }
+  const offKey = trees.material.customProgramCacheKey()
+  check(!assemble().includes('discard'),
+    'and it compiles the dissolve discard out with it, so the opaque program has no discard at all and early depth reject is on',
+    `key ${offKey}`)
   trees.setCutout(true)
   check(trees.material.alphaTest === shipped && trees.stats.cutout === true,
     'and turning it back on restores the threshold the material shipped with rather than a number typed beside it',
     `alphaTest ${trees.material.alphaTest}, shipped ${shipped}`)
+  check(assemble().includes('abs( vPropFade ) <= fadeT ) discard') && trees.material.customProgramCacheKey() !== offKey,
+    'and the dissolve discard comes back under a different program key, so the two programs are never conflated',
+    `key ${trees.material.customProgramCacheKey()}`)
 }
 
 // --- 9b2. a dissolve never retracts -----------------------------------------

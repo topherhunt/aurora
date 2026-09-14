@@ -98,6 +98,21 @@ export const SHOULDER = HURST
 // samples can represent at all.
 export const KNEE_TEXELS = 2
 
+// How far past spectral continuity the detail amplitude sits, as a ratio. 1 is
+// the fit exactly: the composed field's curvature rms passes through the seam
+// with no kink. The stack is scaled to the SAME deficit whatever the fine-end
+// damping does, so this is the one number that sets how tall the 2-16 m band
+// stands -- at 1.33 the 8 m octave is about half a metre on the shipped field.
+//
+// Deliberately NOT divided by the import's `exaggeration`. Stretching the image
+// 3x stretches its structure function 3x, and the fit dutifully asks for 3x the
+// sub-texel roughness; taking that back out to spare the sub-metre end left the
+// 2-16 m band at a third of what the seam needs, which reads as a low-resolution
+// heightmap with a bicubic on it. The sub-metre end is damped by SLOPE_KNEE /
+// HURST_FINE instead, which is the right instrument: it acts on the band that
+// looked pockmarked and leaves this one alone.
+export const DETAIL_GAIN = 4 / 3
+
 /** The amplitude law, as one function, so the calibration and the octave table cannot disagree. */
 function amplitude(lambda, rough, knee, hurst, slopeKnee, hurstFine, shoulder) {
   if (lambda > knee) return rough * knee ** hurst * (knee / lambda) ** shoulder
@@ -451,37 +466,17 @@ function roughnessOf(f, lag, sites = CAL_SITES) {
  * structure of its own (JPEG blocking, a bad resample) and the extrapolation is
  * measuring that instead of terrain.
  *
- * THE ONE PLACE SPECTRAL CONTINUITY IS DELIBERATELY BROKEN, and it is the last
- * step: divide by the import's `exaggeration`.
+ * The last step is DETAIL_GAIN: the fit is a curvature rms and the eye is not,
+ * so the shipped amplitude sits a stated ratio above exact continuity. `rough`
+ * is linear in every measurement above, so the gain is a clean multiply and
+ * `continuous` is reported alongside it for the gate to assert the ratio.
  *
- * Continuity is the right target for an image whose metres are the terrain's
- * own. It is the wrong target for a stretched one, and this world is stretched
- * 3x (scripts/make-heightmap.mjs, NATURAL_MAX_Y). Multiplying an image by 3
- * multiplies its structure function by 3 at every lag, so every measurement
- * above scales with it and the estimator dutifully asks for three times the
- * sub-texel roughness. It is not wrong -- a mountain range three times as steep
- * really would be three times as rough -- but the stretch is a rendering
- * decision about how the horizon reads, not a claim about the rock, and the eye
- * reads the two bands separately: 3x on a 4 km massif is drama, 3x on a 20 cm
- * bump is a cratered, pockmarked ground plane at 6 cm cells.
- *
- * So the seam gets a kink of exactly the exaggeration factor, knowingly, and the
- * detail term stays calibrated against the terrain the image would describe if
- * nobody had stretched it. `rough` is linear in every measurement above, so this
- * single divide is exactly equivalent to having measured a 1/exaggeration copy
- * of the coarse field throughout.
- *
- * NOT divided out: SLOPE_BOOST's redistribution. `unitAt` is measured through
- * the same slope modulation on the same stretched field, so the world AVERAGE is
- * still matched to `deficit` -- what changes is that the stretched field's
- * steeper slopes take a larger share of that average. Detail follows the
- * exaggerated shape around while keeping its unexaggerated size, which is the
- * behaviour wanted: more rock on the cliffs, not more rock in total.
+ * SLOPE_BOOST's redistribution is measured through, not scaled: `unitAt` is
+ * taken with the same slope modulation on the same field, so the world AVERAGE
+ * is matched to `deficit` and the steeper ground takes a larger share of it --
+ * more rock on the cliffs, not more rock in total.
  */
-export function calibrateRough({ heightmap, seed, knee, sharpen = 0, exposureGain = null, exaggeration = heightmap.exaggeration, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
-  if (!Number.isFinite(exaggeration) || !(exaggeration > 0)) {
-    throw new Error(`calibrateRough: exaggeration must be a finite ratio > 0, got ${exaggeration} -- it comes from heightmap.exaggeration, i.e. from world/height.json`)
-  }
+export function calibrateRough({ heightmap, seed, knee, sharpen = 0, exposureGain = null, hurst = HURST, slopeKnee = SLOPE_KNEE, hurstFine = HURST_FINE, shoulder = SHOULDER }) {
   const coarse = (x, z) => heightmap.sample(x, z)
   const lagA = knee
   const lagB = knee * 2
@@ -522,10 +517,7 @@ export function calibrateRough({ heightmap, seed, knee, sharpen = 0, exposureGai
   const unitAt = unit.roughnessAt(probe, heightmap, exposureGain)
   if (!(unitAt > 0)) throw new Error(`calibrateRough: unit detail has no roughness at lag ${probe} m -- the octave table is empty or the band limit is inverted`)
 
-  // `continuous` is what spectral continuity alone asks for; `rough` is that
-  // with the bake's declared exaggeration taken back out. Both are reported so
-  // the gate can assert the ratio is the exaggeration and nothing else.
   const continuous = deficit / unitAt
-  const rough = continuous / exaggeration
-  return { rough, continuous, exaggeration, exponent, C, fitLagA: lagA, fitLagB: lagB, rA, rB, probe, target, imageAt, imageShare, deficit, unitAt }
+  const rough = continuous * DETAIL_GAIN
+  return { rough, continuous, exponent, C, fitLagA: lagA, fitLagB: lagB, rA, rB, probe, target, imageAt, imageShare, deficit, unitAt }
 }

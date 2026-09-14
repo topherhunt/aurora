@@ -27,7 +27,7 @@ import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
-import { GLINT, glint } from '../src/v2/render/critters.js'
+import { GLINT, glint, hueVary } from '../src/v2/render/critters.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -831,15 +831,16 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   }
 }
 
-// --- src/v2/render/critters.js: the glint -------------------------------------
+// --- src/v2/render/critters.js: the glint and the hue ---------------------------
 //
 // What a frog wears exactly, and a crab's fragment stage: a Standard at a
-// uniform roughness whose onBeforeCompile is glint, under the vertex-mode
-// lighting patch. Compiled here because the glint line lands in the slot the
-// lighting patch also splices into.
+// uniform roughness whose onBeforeCompile is glint then hueVary, under the
+// vertex-mode lighting patch. Compiled here because the glint line lands in the
+// slot the lighting patch also splices into, and the hue turn is a block of
+// GLSL of its own after map_fragment.
 {
   const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0 })
-  material.onBeforeCompile = (shader) => glint(shader)
+  material.onBeforeCompile = (shader) => { glint(shader); hueVary(shader) }
   new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-glint' })
   const lib = THREE.ShaderLib.standard
   const shader = {
@@ -862,6 +863,9 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!frag.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`)) MISSING_MARKS.push(`${label} frag: the glint scale`)
   // Tripo's roughness map is not shipped, so nothing may read the colour alpha as roughness.
   if (frag.includes('sampledDiffuseColor.a')) MISSING_MARKS.push(`${label} frag: the colour alpha read as roughness`)
+  // The hue turn, at both ends: the per-instance attribute in, the rotation applied to the sampled colour.
+  if (!vert.includes('vHue = aHue;')) MISSING_MARKS.push(`${label} vert: the hue attribute`)
+  if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

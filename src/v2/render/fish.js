@@ -1,6 +1,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
+import { hueVary, makeHueAttribute } from './critters.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -56,6 +57,10 @@ import { cullTripoBackfaces } from '../../tripo-culling.js'
 // lift from the turn and the pitch in hand, so the body arcs into every turn
 // and climb and the tail beats harder through it: a fish never swings round
 // or tilts straight as a board.
+//
+// NO TWO FISH ARE THE SAME COLOUR. Each rolls a brightness (instanceColor) and
+// a hue, a turn of up to HUE radians either way round the colour wheel
+// (critters.js hueVary), at birth.
 // ---------------------------------------------------------------------------
 
 const ASSET_URL = 'fauna/fish.json'
@@ -83,6 +88,7 @@ const BOLT_MISS = 0.15
 // How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY frames stale, so this also covers the distance a bolting fish crosses between probes.
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
+export const HUE = 0.35
 
 /**
  * The species table. Speeds in m/s, times in seconds, depths as a fraction of
@@ -186,6 +192,7 @@ export class Fish {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
+      hueVary(shader)
     }
     material.customProgramCacheKey = () => `fish-${id}`
     material.defines = { FISH_WAVE_K: '0.0' }
@@ -197,7 +204,7 @@ export class Fish {
         x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
         // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be.
         hx: 0, hz: -1, pitch: 0, roll: 0,
-        wander: 0, depthFrac: 0.5, scale: 1, margin: 0, tint: 1, born: 0,
+        wander: 0, depthFrac: 0.5, scale: 1, margin: 0, tint: 1, hue: 0, born: 0,
         phase: 0, amp: 0, curve: 0, lift: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s, plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
@@ -220,10 +227,11 @@ export class Fish {
     const swim = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 4), 4)
     swim.setUsage(THREE.DynamicDrawUsage)
     mesh.geometry.setAttribute('aSwim', swim)
+    const hue = makeHueAttribute(mesh, cfg.count)
     cullTripoBackfaces(mesh)
     this.batch.add(mesh)
     // `travel` is the metres she has swum that this species has not yet spent on a recycle.
-    return { id, cfg, material, mesh, swim, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
+    return { id, cfg, material, mesh, swim, hue, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
   }
 
   /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
@@ -406,6 +414,7 @@ export class Fish {
       f.bobHz = 0.05 + 0.1 * rand()
       f.bobAt = rand() * TAU
       f.tint = 0.85 + rand() * 0.2
+      f.hue = (rand() * 2 - 1) * HUE
       f.phase = rand() * TAU
       f.homing = 0
       f.boltIn = 0
@@ -494,6 +503,7 @@ export class Fish {
       const mat = sp.mesh.instanceMatrix.array
       const col = sp.mesh.instanceColor.array
       const swim = sp.swim.array
+      const hue = sp.hue.array
       let n = 0
       for (const f of sp.slots) {
         if (!f.alive) continue
@@ -546,12 +556,14 @@ export class Fish {
         swim[n * 4 + 1] = f.amp
         swim[n * 4 + 2] = f.curve
         swim[n * 4 + 3] = f.lift
+        hue[n] = f.hue
         n++
       }
       sp.mesh.count = n
       sp.mesh.instanceMatrix.needsUpdate = true
       sp.mesh.instanceColor.needsUpdate = true
       sp.swim.needsUpdate = true
+      sp.hue.needsUpdate = true
     }
   }
 

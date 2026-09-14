@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- rock card probe</title>
+    <style>
+      body { margin: 0; background: #05080f; color: #cfe3ff; font: 12px/1.5 monospace; }
+      canvas { display: block; }
+      #out { white-space: pre; padding: 8px 12px; }
+      #legend { padding: 8px 12px 0; color: #7f96b8; }
+    </style>
+  </head>
+  <body>
+    <div id="legend">left: the boulder mesh, right: its card, same light, same eye -- rows are sun directions</div>
+    <canvas id="view"></canvas>
+    <div id="out">baking...</div>
+    <script type="module" src="/src/rock-card-probe-main.js"></script>
+  </body>
+</html>

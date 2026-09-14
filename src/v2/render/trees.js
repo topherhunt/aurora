@@ -7,7 +7,7 @@ import {
   createPropMaterial, setSnowLine, setLeafSnowVary,
   getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS,
 } from '../../material.js'
-import { RimFade } from './rim.js'
+import { RimFade, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { PropArena } from './prop-arena.js'
 import { smoothstep } from '../../sim/mathx.js'
@@ -419,14 +419,32 @@ const BIOME = {
 // field by 0.18 m at p95, against thresholds tens of metres wide.
 const PLACEMENT_CELL = 4.0
 
-// Fraction of the resident tiles whose ground is re-checked each frame. The
-// terrain re-splits under a walking player constantly, and a tree has to follow
-// the chunk it stands on when that happens, but it does NOT have to follow it
-// the same frame: the ground beneath it just changed shape too, and the tree is
-// by construction far enough away for its chunk to be coarse. 1/16 sweeps the
-// whole disc in about a quarter second and costs a few hundred key lookups a
-// frame. Raising it does not buy accuracy, only latency.
-const GROUND_SWEEP = 16
+// THE FAR WALK IS BUCKETED BY PHASE, AND A BUCKET IS ONLY WALKED WHEN ITS ANSWER
+// CAN HAVE CHANGED. Every far tile's per-frame work -- thinning level, rim
+// sweep, near/far membership, ground re-check -- is a pure function of the
+// camera position and the terrain's render set, so the ~11,000 resident tiles
+// at 1.5 km are split into RIM_PHASES buckets (on the rim's own tile phase, so a
+// walked tile is always one whose sweep turn it is) and the bucket whose turn
+// has come is walked only if the camera has moved at least STILL_M since that
+// bucket was last walked, or the ground version has ticked. STILL_M is the
+// rim's standing slack: every boundary already carries that much, so a sweep
+// the camera has drifted less than it since is one the rim has already paid
+// for. Standing still, the walk costs eight distance compares a frame.
+//
+// Two things pull a bucket forward off its turn. The rim's `need` growing past
+// what the bucket was walked at -- a teleport or a hard acceleration -- is the
+// rim's own forcing rule, kept at bucket granularity, and it walks every bucket
+// on a jump frame. And the camera covering NEAR_MARGIN since the bucket's last
+// walk, which is the guarantee the near set's margin was sized to: a tile joins
+// it before any tree inside can need a mesh tier. The first fires once per
+// acceleration at any speed, the second only past ~300 m/s or on a jump longer
+// than the margin.
+//
+// The cadence knob is RIM_PHASES itself: fewer phases walk more tiles a frame
+// and shrink the slack the rim holds against the wait; more do the reverse.
+// Anything newly grown or thickened is walked next frame regardless, off the
+// `due` list, and the near tiles are re-tiered every frame off their own list.
+const STILL_M = RIM_SLACK_MIN
 
 // Per-instance height multiplier on the variant's own default -- so a 9 m pine
 // stands anywhere from 4.5 to 13.5 m. THIS IS THE WHOLE SIZE LADDER NOW: the
@@ -512,6 +530,11 @@ export class Trees {
     // correct, and floating (see _groundFor).
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Trees: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
+    }
+    // The tile walk asks groundKeyAt only when this has ticked; a ground without
+    // it would silently never re-seat a tree on a re-split chunk.
+    if (ground && typeof ground.groundVersion !== 'number') {
+      throw new Error('Trees: `ground` has no groundVersion -- pass the TerrainV2 or nothing')
     }
     // Optional on the same terms as `ground`, and for the same reason: the probes
     // under tmp/ have no rock scatter to hand. Without it a trunk that lands
@@ -714,15 +737,36 @@ export class Trees {
     this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
     this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
 
-    // key -> { tx, tz, ids: Int32Array, rank: Float32Array, n, q, near, queued }
+    // key -> tile; the shape is the literal at the foot of _growTile.
     this.tiles = new Map()
     this.queue = []
     this.camTileX = null
     this.camTileZ = null
 
+    // The same tiles again, as dense arrays the walk can run without the Map:
+    // one bucket per rim phase, the near set, and what must be walked next
+    // frame whatever its bucket says. Each tile carries its index into the
+    // arrays it is in (`bi`, `ni`) for O(1) swap-removal. See STILL_M.
+    this.buckets = Array.from({ length: RIM_PHASES }, () => [])
+    this.nearList = []
+    this.due = []
+    // Per bucket: where the camera stood, the rim's `need`, and the ground
+    // version, at its last walk. What decides whether the next walk can be
+    // skipped.
+    this.bucketX = new Float64Array(RIM_PHASES)
+    this.bucketY = new Float64Array(RIM_PHASES)
+    this.bucketZ = new Float64Array(RIM_PHASES)
+    this.bucketNeed = new Float32Array(RIM_PHASES)
+    this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
+    // Set by anything that moves the near boundary under every tile at once, so
+    // the next update walks all of them rather than waiting out the phases.
+    this.walkAll = true
+    // Cards drawn by the far tiles, kept as a running total because the far
+    // tiles are not walked every frame; `tile.counted` is each one's share.
+    this.farCards = 0
+
     this._m = new THREE.Matrix4()
     this._scatter = { h: 0, tan: 0 }
-    this._sweep = 0
     this.regrounds = 0
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
@@ -819,6 +863,10 @@ export class Trees {
     }
     for (const tile of this.tiles.values()) this._release(tile)
     this.tiles.clear()
+    for (const bucket of this.buckets) bucket.length = 0
+    this.nearList.length = 0
+    this.due.length = 0
+    this.farCards = 0
     this.camTileX = null
     this.camTileZ = null
     this.place(camX, camZ)
@@ -865,6 +913,7 @@ export class Trees {
     // that is supposed to be off.
     if (end === inner) this.bandSqOut[last] = this.bandSq[last]
     this.nearSq = this._near(end)
+    this.walkAll = true
   }
 
   /**
@@ -896,6 +945,7 @@ export class Trees {
   setCardsOnly(on) {
     this.cardsOnly = !!on
     this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
+    this.walkAll = true
   }
 
   /**
@@ -906,17 +956,17 @@ export class Trees {
    * fragment by `alphaTest`. Off, the cards draw as solid rectangles -- which
    * looks like nothing at all, and is the point: it prices the cutout.
    *
-   * WHAT THE A/B ACTUALLY MEASURES IS TWO THINGS, and they pull opposite ways.
-   * The reject itself goes away, and so does the transparency: an opaque card
-   * writes depth over its whole rectangle, so a near tree starts occluding the
-   * forest behind it and the layer's overdraw collapses. A win here is not
-   * evidence that the reject is expensive; it is evidence that the layer is
-   * overdraw-bound, which is the question worth asking.
-   *
-   * EARLY-Z IS OFF ON BOTH SIDES OF THE TEST, so it is not the variable. The
-   * dissolve's own `discard` (FADE_FRAGMENT) is compiled into this material
-   * whatever `alphaTest` is, and a shader that can discard anywhere cannot be
-   * depth-tested before it runs.
+   * WHAT THE A/B ACTUALLY MEASURES IS THREE THINGS. The reject itself goes
+   * away; so does the transparency, so an opaque card writes depth over its
+   * whole rectangle, a near tree starts occluding the forest behind it and the
+   * layer's overdraw collapses; and so does EVERY `discard` in the program --
+   * the dissolve's (FADE_FRAGMENT) and the near tier's hem fray are compiled
+   * out along with the alpha test's, so this is the one state in which a
+   * tiler's early depth reject (Adreno's LRZ) is on for the tree draws.
+   * Alpha-to-coverage would not get there: Qualcomm lists it beside `discard`
+   * as disabling LRZ for the draw. So "off" is the UPPER BOUND on what any
+   * discard-free scheme could win; a layer that gains nothing here has nothing
+   * to gain from one.
    *
    * Recompiles rather than setting the threshold to zero -- three keys
    * USE_ALPHATEST off `alphaTest > 0`, so this really does remove the
@@ -924,6 +974,7 @@ export class Trees {
    */
   setCutout(on) {
     this.material.alphaTest = on ? this.shippedAlphaTest : 0
+    this.material.userData.noDiscard = !on
     this.material.needsUpdate = true
   }
 
@@ -1028,70 +1079,54 @@ export class Trees {
     const tierN = this.tierN
     tierN.fill(0)
     let tris = 0
-    let nearCount = 0
-    // Which slice of the tile set gets its ground re-checked this frame. Folded
-    // into the loop that was already walking every tile, so the sweep costs the
-    // key lookups and nothing else.
-    const phase = this._sweep
-    this._sweep = (this._sweep + 1) % GROUND_SWEEP
     const ground = this.ground
-    let ti = 0
-    for (const tile of this.tiles.values()) {
-      if (ground && ti++ % GROUND_SWEEP === phase) {
-        const gkey = ground.groundKeyAt((tile.tx + 0.5) * TILE, (tile.tz + 0.5) * TILE)
-        if (gkey !== tile.gkey) {
-          tile.gkey = gkey
-          this._reground(tile)
-          this.regrounds++
-        }
-      }
+    const gver = ground ? ground.groundVersion : 0
+    const need = this.rim.need
+    const turn = this.rim.phase
+    for (let p = 0; p < RIM_PHASES; p++) {
+      const mx = camX - this.bucketX[p]
+      const my = camY - this.bucketY[p]
+      const mz = camZ - this.bucketZ[p]
+      const moved2 = mx * mx + my * my + mz * mz
+      const walk = this.walkAll
+        || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
+        || need > this.bucketNeed[p]
+        || moved2 >= NEAR_MARGIN * NEAR_MARGIN
+      if (!walk) continue
+      this.bucketX[p] = camX
+      this.bucketY[p] = camY
+      this.bucketZ[p] = camZ
+      this.bucketNeed[p] = need
+      this.bucketGver[p] = gver
+      const bucket = this.buckets[p]
+      for (let k = 0; k < bucket.length; k++) this._walkTile(bucket[k], camX, camY, camZ, gver)
+    }
+    // Grown or thickened since the last update: their trees are placed hidden
+    // until a sweep looks at them. Already covered when every bucket was walked;
+    // otherwise a tile can still be in a bucket walked above, and the second
+    // walk finds nothing to do.
+    const due = this.due
+    for (let k = 0; k < due.length; k++) {
+      due[k].due = false
+      if (!this.walkAll) this._walkTile(due[k], camX, camY, camZ, gver)
+    }
+    due.length = 0
+    this.walkAll = false
 
-      const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
-      const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
-
-      // Thinning level. Thicken IMMEDIATELY when the tile needs more trees --
-      // being late there is a visible hole opening in front of the player -- but
-      // thin only after it has fallen two whole steps behind, so a tile sitting
-      // on a level boundary does not regrow every frame. Both tests are a table
-      // read and a compare; _levelFor is only called once the answer is known to
-      // have changed, which is a handful of tiles a frame out of thousands.
-      const q = tile.q
-      const thicken = near2 < this.loSq[q]
-      const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
-      if (!tile.queued && (thicken || thin)) {
-        tile.queued = true
-        this.queue.push({
-          key: tile.tx * 0x10000 + tile.tz,
-          tx: tile.tx,
-          tz: tile.tz,
-          q: this._levelFor(near2),
-          d2: near2,
-        })
-      }
-
-      // The rim, on this tile's own phase. Returns how many of its trees are
-      // dissolved away and set invisible, which is what the triangle count below
-      // has to leave out -- they are submitted to nothing.
-      //
-      const gone = this.rim.sweepTile(
-        tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
-
+    const nearList = this.nearList
+    for (let t = 0; t < nearList.length; t++) {
+      const tile = nearList[t]
+      // Leaving the near set is checked here, every frame, rather than on the
+      // tile's bucket turn, so a tile is never re-tiered past the margin.
+      // Joining is the walk's call. The swap-remove backs the index up one so
+      // the tile moved into this slot is not skipped.
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
-      const near = dx * dx + dz * dz < this.nearSq
-      if (!near) {
-        // A tile that has just LEFT the near set has to have its instances put
-        // back to cards here -- otherwise a tree keeps whatever mesh tier it
-        // held at the moment it went out of range, and keeps it forever.
-        if (tile.near) this._demote(tile, cardTier)
-        tile.near = false
-        tris += (tile.n - gone) * this.tierTris[cardTier][0]
-        tierN[cardTier] += tile.n - gone
+      if (dx * dx + dz * dz >= this.nearSq) {
+        this._leaveNear(tile)
+        t--
         continue
       }
-      tile.near = true
-      nearCount++
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
         // Dissolved away and invisible. Skipping it here also keeps it out of
@@ -1133,13 +1168,138 @@ export class Trees {
         tierN[tier]++
       }
     }
+    tierN[cardTier] += this.farCards
     // The duplicates are drawn too, and are counted after the loop rather than
     // inside it so this frame's own swaps are in this frame's number.
-    this.tris = tris + this.fadeTris
-    this.nearTiles = nearCount
+    this.tris = tris + this.farCards * this.tierTris[cardTier][0] + this.fadeTris
+    this.nearTiles = nearList.length
     // The whole of this call, smoothed over ~20 frames: the layer's main-thread
     // bill, which the headset cannot otherwise separate from its draw cost.
     this.updateMs += (performance.now() - tStart - this.updateMs) * 0.05
+  }
+
+  /**
+   * One far tile's share of an update: follow the terrain if it has changed,
+   * queue a level change, give the rim its sweep, and admit the tile to the
+   * near set if the camera has reached it. Runs on the tile's bucket turn, or
+   * off the due list -- see STILL_M for when a bucket is walked.
+   */
+  _walkTile(tile, camX, camY, camZ, gver) {
+    // The chunk under the tile's centre, re-asked only when the terrain's
+    // render set has changed since this tile last asked. A tree follows the
+    // chunk it stands on when that re-splits, but not the same frame: the
+    // ground beneath it just changed shape too, and the tree is by construction
+    // far enough away for its chunk to be coarse.
+    if (this.ground && tile.gver !== gver) {
+      tile.gver = gver
+      const gkey = this.ground.groundKeyAt((tile.tx + 0.5) * TILE, (tile.tz + 0.5) * TILE)
+      if (gkey !== tile.gkey) {
+        tile.gkey = gkey
+        this._reground(tile)
+        this.regrounds++
+      }
+    }
+
+    const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
+    const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
+    const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+
+    // Thinning level. Thicken IMMEDIATELY when the tile needs more trees --
+    // being late there is a visible hole opening in front of the player -- but
+    // thin only after it has fallen two whole steps behind, so a tile sitting
+    // on a level boundary does not regrow every frame. Both tests are a table
+    // read and a compare; _levelFor is only called once the answer is known to
+    // have changed, which is a handful of tiles a frame out of thousands.
+    const q = tile.q
+    const thicken = near2 < this.loSq[q]
+    const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
+    if (!tile.queued && (thicken || thin)) {
+      tile.queued = true
+      this.queue.push({
+        key: tile.tx * 0x10000 + tile.tz,
+        tx: tile.tx,
+        tz: tile.tz,
+        q: this._levelFor(near2),
+        d2: near2,
+      })
+    }
+
+    // The rim, on this tile's own phase. Returns how many of its trees are
+    // dissolved away and set invisible, which is what the card count has to
+    // leave out -- they are submitted to nothing.
+    const gone = this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+
+    const dx = (tile.tx + 0.5) * TILE - camX
+    const dz = (tile.tz + 0.5) * TILE - camZ
+    if (dx * dx + dz * dz < this.nearSq) {
+      if (!tile.near) this._enterNear(tile)
+      return
+    }
+    if (tile.near) this._leaveNear(tile)
+    const cards = tile.n - gone
+    this.farCards += cards - tile.counted
+    tile.counted = cards
+  }
+
+  /** Into the per-frame re-tier list; its cards leave the far total. */
+  _enterNear(tile) {
+    tile.near = true
+    tile.ni = this.nearList.length
+    this.nearList.push(tile)
+    this.farCards -= tile.counted
+    tile.counted = 0
+  }
+
+  /**
+   * Out of the near set, with every instance put back to a card -- otherwise a
+   * tree keeps whatever mesh tier it held at the moment it went out of range,
+   * and keeps it forever.
+   */
+  _leaveNear(tile) {
+    this._demote(tile, this.cardTier)
+    tile.near = false
+    const list = this.nearList
+    const last = list.pop()
+    if (last !== tile) {
+      list[tile.ni] = last
+      last.ni = tile.ni
+    }
+    tile.counted = tile.n - tile.rimHidden
+    this.farCards += tile.counted
+  }
+
+  /** Walk the tile on the next update whatever its bucket says. */
+  _markDue(tile) {
+    this.rim.markDue(tile)
+    if (tile.due) return
+    tile.due = true
+    this.due.push(tile)
+  }
+
+  /** A tile leaves the resident set: out of every list, and its ids back to the pool. */
+  _evict(key, tile) {
+    this._release(tile)
+    this.tiles.delete(key)
+    const bucket = this.buckets[tile.phase]
+    const last = bucket.pop()
+    if (last !== tile) {
+      bucket[tile.bi] = last
+      last.bi = tile.bi
+    }
+    if (tile.near) {
+      const list = this.nearList
+      const lastNear = list.pop()
+      if (lastNear !== tile) {
+        list[tile.ni] = lastNear
+        lastNear.ni = tile.ni
+      }
+    } else {
+      this.farCards -= tile.counted
+    }
+    if (tile.due) {
+      const due = this.due
+      due.splice(due.indexOf(tile), 1)
+    }
   }
 
   /**
@@ -1367,8 +1527,7 @@ export class Trees {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
       if (dx * dx + dz * dz > this.evictSq) {
-        this._release(tile)
-        this.tiles.delete(key)
+        this._evict(key, tile)
         continue
       }
 
@@ -1587,9 +1746,11 @@ export class Trees {
       // Everything this tile just placed is hidden until the rim looks at it, so
       // a thickened tile that waited for its phase would be a hole in the forest
       // for up to eight frames.
-      this.rim.markDue(tile)
+      this._markDue(tile)
     } else {
-      this.tiles.set(key, {
+      const phase = tilePhase(tx, tz)
+      const bucket = this.buckets[phase]
+      const fresh = {
         tx,
         tz,
         ids,
@@ -1599,11 +1760,22 @@ export class Trees {
         u: uNew,
         near: false,
         queued: false,
+        due: false,
+        phase,
+        bi: bucket.length,
+        ni: -1,
+        counted: 0,
         // The terrain chunk covering this tile's CENTRE when its trees were last
-        // grounded, or null if none was resident. The tile loop compares against
-        // it to notice a re-split; see _reground for why the centre is enough.
+        // grounded, or null if none was resident, and the ground version it was
+        // read at. The walk re-asks only once the version has moved on and
+        // re-seats the tile if the answer differs; see _reground for why the
+        // centre is enough.
         gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * TILE, (tz + 0.5) * TILE) : null,
-      })
+        gver: this.ground ? this.ground.groundVersion : 0,
+      }
+      this.tiles.set(key, fresh)
+      bucket.push(fresh)
+      this._markDue(fresh)
     }
   }
 
@@ -1768,7 +1940,7 @@ export class Trees {
     this.placed -= tile.n - w
     tile.n = w
     // The tile's hidden count is now stale against a shorter id list.
-    this.rim.markDue(tile)
+    this._markDue(tile)
   }
 
   /** Put a whole tile back to the card tier in one pass. */

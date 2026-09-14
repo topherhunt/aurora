@@ -45,7 +45,7 @@
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { Heightmap } from '../src/v2/height/heightmap.js'
-import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, measureSite, measureAngle, roughnessOf } from '../src/v2/height/detail.js'
+import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, DETAIL_GAIN, measureSite, measureAngle, roughnessOf } from '../src/v2/height/detail.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
 import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/relief.js'
 import { thermalErode } from '../src/v2/height/erode.js'
@@ -150,9 +150,7 @@ export async function run({ heightmap } = {}) {
     `        probe at ${cal.probe.toFixed(3)} m: extrapolated ${cal.target.toFixed(4)} m, image supplies ${cal.imageAt.toFixed(4)} m (${pct(cal.imageShare)}), deficit ${cal.deficit.toFixed(4)} m, unit detail ${cal.unitAt.toFixed(4)} m`
   )
   console.log(`        ROUGH = ${cal.rough.toFixed(5)}   knee = ${(texel * KNEE_TEXELS).toFixed(2)} m (${KNEE_TEXELS} texels)`)
-  console.log(
-    `        exaggeration ${cal.exaggeration}x: spectral continuity alone wants ${cal.continuous.toFixed(5)}, the stretch is divided back out`
-  )
+  console.log(`        spectral continuity alone wants ${cal.continuous.toFixed(5)}; DETAIL_GAIN ${DETAIL_GAIN.toFixed(4)}x on top of it`)
   console.log('        octave table (lambda m / amplitude m):')
   console.log('        ' + field.detail.table.map((t) => `${t.lambda >= 1 ? t.lambda : t.lambda.toFixed(2)}:${t.amp.toFixed(4)}`).join('  '))
 
@@ -168,21 +166,13 @@ export async function run({ heightmap } = {}) {
   // the detail term would be doubling it.
   check(cal.imageShare < 0.5, 'the sub-texel band is genuinely missing from the import', `image supplies ${pct(cal.imageShare)} of the extrapolation at ${cal.probe.toFixed(3)} m`)
 
-  // THE STRETCH DOES NOT REACH THE GRAVEL. The bake exaggerates the import's
-  // metres for drama (make-heightmap.mjs, NATURAL_MAX_Y) and the roughness the
-  // calibration measures scales with it exactly, so without the divide in
-  // calibrateRough a taller world is also a rockier one at 6 cm cells. The first
-  // check would pass vacuously on an unstretched import, so the second one
-  // asserts this world is actually stretched.
+  // The shipped amplitude is the continuity fit times DETAIL_GAIN and nothing
+  // else -- in particular the bake's exaggeration is NOT divided back out, so a
+  // taller import is a rockier one at every scale the detail term covers.
   check(
-    Math.abs(cal.continuous / cal.rough - cal.exaggeration) < 1e-9,
-    "the bake's exaggeration is divided back out of the detail amplitude",
-    `${cal.continuous.toFixed(5)} / ${cal.rough.toFixed(5)} = ${(cal.continuous / cal.rough).toFixed(4)}x, meta says ${cal.exaggeration}x`
-  )
-  check(
-    hm.exaggeration > 1,
-    'and the shipped import really is stretched, so that check is not vacuous',
-    `height.json exaggeration ${hm.exaggeration}x -- ${(hm.max - hm.min).toFixed(0)} m of relief standing in for ${((hm.max - hm.min) / hm.exaggeration).toFixed(0)} m of terrain`
+    Math.abs(cal.rough / cal.continuous - DETAIL_GAIN) < 1e-9,
+    'the detail amplitude is the continuity fit scaled by DETAIL_GAIN alone',
+    `${cal.rough.toFixed(5)} / ${cal.continuous.toFixed(5)} = ${(cal.rough / cal.continuous).toFixed(4)}x`
   )
 
   // The shoulder is the reason the fractal does not lay a second landscape over
@@ -1690,7 +1680,11 @@ export async function run({ heightmap } = {}) {
       )
       check(deadAlive === 0, `every scale is band-limited away by a ${dead.toFixed(1)} m cell -- the term is EXACTLY 0, not small`, `${deadAlive}/${N} sites still moving at cell ${dead.toFixed(1)} m`)
       check(live > N * 0.25, 'and it is emphatically alive at cell 0, so that is not zero by inaction', `${pct(live / N)} of sites cut at the exact field`)
-      check(curveOn > curveOff * 3, 'ridge SHARPENS peak ground rather than displacing it -- teeth, not a second macro layer', `${(curveOn / curveOff).toFixed(1)}x the rms ${LAG} m curvature`)
+      // The bare field's 2 m curvature already carries the continuity-fit detail
+      // stack (DETAIL_GAIN), so ridge=12 stands 1.6x above it, not 3.7x above a
+      // near-bicubic; 1.4 is that with a little headroom, and a displacing term
+      // would sit at 1.0.
+      check(curveOn > curveOff * 1.4, 'ridge SHARPENS peak ground rather than displacing it -- teeth, not a second macro layer', `${(curveOn / curveOff).toFixed(1)}x the rms ${LAG} m curvature`)
       check(peakN > 100, 'and there are enough peaks in the world for that to mean something', `${peakN} of ${PEAK_SITES} sites are over p90 and steeper than slope01 ${PEAK_SLOPE}`)
 
       // A DOME SCORES NOTHING, which is the claim ridge.js's header rests the
@@ -2586,20 +2580,24 @@ export async function run({ heightmap } = {}) {
 
           // THE MESHER'S OWN SHARE, which is what makes the rows above attributable
           // to the knob at all. Every LOD tier resamples a band-limited field, so
-          // some movement is structural and belongs to no relief term. Measured
-          // with all four knobs off it is a fraction of a metre, so the metres in
-          // the shatter row are the term's and not the ladder's.
+          // some movement is structural and belongs to no relief term. Bounded in
+          // cells like the two shatter bounds above, because what a swap shows is
+          // the fraction of a cell a vertex jumps, not the metre: with all four
+          // knobs off the detail stack's own retiring octaves reach 0.28 of a cell
+          // at the 2 m tier (0.57 m on the steepest summit, where SLOPE_BOOST is
+          // near full) and a tenth of a cell at 16 m, against shatter's 0.53.
+          const OFF_MAX_CELLS = 0.35
           const offRow = rowsSummit[0][1]
           const offMax = offRow.reduce((a, r) => Math.max(a, r.max), 0)
           const shippedMax = shipped.reduce((a, r) => Math.max(a, r.max), 0)
           check(
-            offMax < 1,
-            `with every relief knob off, the same summits stay put to under a metre across the whole ladder -- LOD growth on a summit is a knob's doing, not the mesher's`,
-            `worst ${offMax.toFixed(2)} m at a ${offRow.reduce((a, r) => (r.max > a.max ? r : a)).cell} m cell, over ${SUMMIT_N} summits and ${SUM_CELLS.length} tiers`
+            inCells(offRow, 'max') < OFF_MAX_CELLS,
+            `with every relief knob off, no summit moves ${OFF_MAX_CELLS} of a cell across the whole ladder -- LOD growth on a summit past that is a knob's doing, not the mesher's`,
+            `worst ${inCells(offRow, 'max').toFixed(2)} cells (${offMax.toFixed(2)} m at a ${atCells(offRow, 'max')} m cell), over ${SUMMIT_N} summits and ${SUM_CELLS.length} tiers`
           )
           check(
-            shippedMax / offMax > 8,
-            `and the shatter knob moves them at least 8x further than that bare ladder does, so the residual below is the term's to answer for`,
+            shippedMax / offMax > 4,
+            `and the shatter knob moves them at least 4x further than that bare ladder does, so the residual below is the term's to answer for`,
             `${shippedMax.toFixed(2)} m against ${offMax.toFixed(2)} m, ${(shippedMax / offMax).toFixed(1)}x`
           )
 

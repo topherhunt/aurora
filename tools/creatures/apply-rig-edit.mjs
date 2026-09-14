@@ -42,8 +42,8 @@
 //
 // Tripo's rigs need all four: on red-fox the tail and both hind legs hang off a
 // ground-level root as siblings of the spine, several joints sit at ground level
-// where a hip belongs, and there are more joints than the canonical vocabulary
-// in tools/creatures/quadruped-rig.mjs has names for.
+// where a hip belongs, and there are more joints than the Mixamo vocabulary in
+// tools/creatures/mixamo-rig.mjs has names for.
 
 import fs from 'node:fs'
 import path from 'node:path'
