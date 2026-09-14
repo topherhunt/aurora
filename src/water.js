@@ -525,6 +525,13 @@ export const WAVE_LAYERS = [
   { wavelength: 0.65, slope: 0.03, rotate: 206, offset: [-441.5, -170.2], heading: 214, speed: 3.5, detail: true },
 ]
 
+// ON A RIVER the layers drift DOWNSTREAM instead, in the (along, across) frame
+// the ribbon carries (see ribbon.js flowFrame). All five in one direction would
+// slide as a single slab, so each keeps this fraction of its heading's distance
+// from the mean heading as a fan about downstream: +-26 degrees at the extremes.
+export const RIVER_SPREAD = 0.25
+const MEAN_HEADING = WAVE_LAYERS.reduce((sum, l) => sum + l.heading, 0) / WAVE_LAYERS.length
+
 // Unrolled at build time rather than looped, so the constants are visible in
 // the compiled shader instead of living in a uniform array that has to be
 // uploaded and kept in step -- and so the two detail layers can sit inside a
@@ -538,10 +545,14 @@ const layerTerm = ({ wavelength, slope, rotate, offset, heading, speed }, fadeEx
   const hd = (heading * Math.PI) / 180
   const vx = Math.sin(hd) * speed
   const vz = -Math.cos(hd) * speed
+  // River frame: +x is downstream, +y across to the right.
+  const ra = ((heading - MEAN_HEADING) * RIVER_SPREAD * Math.PI) / 180
+  const rx = Math.cos(ra) * speed
+  const ry = Math.sin(ra) * speed
   const f = (v) => v.toFixed(6)
   return `
     {
-      vec2 q = ( p - vec2( ${f(vx)}, ${f(vz)} ) * uFlow * uTime ) * ${f(freq)};
+      vec2 q = ( p - mix( vec2( ${f(vx)}, ${f(vz)} ), vec2( ${f(rx)}, ${f(ry)} ), river ) * uFlow * uTime ) * ${f(freq)};
       q = mat2( ${f(c)}, ${f(s)}, ${f(-s)}, ${f(c)} ) * q + vec2( ${f(offset[0])}, ${f(offset[1])} )${warpExpr};
       vec3 n = wNoise( q );
       // Chain rule back out through the rotation: dh/dp is R^T * (dn/dq),
@@ -608,7 +619,9 @@ const WAVE_GLSL = /* glsl */ `
 
   // Gradient of the summed height field, which is all that is wanted: the plane
   // is never displaced. 'near' fades the two detail layers; 'far' relaxes
-  // everything toward flat at extreme range.
+  // everything toward flat at extreme range. 'river' picks the frame p is in
+  // and the drift that goes with it: 0 is world XZ with the compass headings,
+  // 1 a river's (downstream, across) metres, see RIVER_SPREAD.
   //
   // DOMAIN WARP: the two detail layers are sampled at a position pushed around
   // by the largest layer's gradient, so the ripples do not merely sit on top of
@@ -619,7 +632,7 @@ const WAVE_GLSL = /* glsl */ `
   // the warped field, which would need the warp's own Jacobian. The exact
   // version costs two more multiplies and looks the same, because the warp is
   // small and slow compared to what it is warping.
-  vec3 waveNormal( vec2 p, float near, float far ) {
+  vec2 waveGrad( vec2 p, float river, float near, float far ) {
     vec2 g = vec2( 0.0 );
     vec2 w = vec2( 0.0 );
     ${WAVE_LAYERS.filter((l) => !l.detail).map((l, k) => layerTerm(l, 'far', '', k === 0)).join('')}
@@ -631,6 +644,26 @@ const WAVE_GLSL = /* glsl */ `
       ${WAVE_LAYERS.filter((l) => l.detail).map((l) => layerTerm(l, 'near', ' + w * uWarp')).join('')}
     }
 
+    return g;
+  }
+
+  // The surface normal at world p. 'flow' is the river frame's (along,
+  // across, weight) and 'dir' its unit downstream direction in world XZ; a lake
+  // carries weight 0 and takes the world frame. Inside a river the gradient is
+  // taken in the river's own metres and rotated back out through the frame --
+  // the same transpose the layer terms apply for their lattice -- so a bend
+  // carries its waves round the bend rather than shearing them. The weight
+  // blends the two only where it is mid-fade, the last few half-widths before
+  // a river meets the water it ends in, which is the one place both are paid for.
+  vec3 waveNormal( vec2 p, vec3 flow, vec2 dir, float near, float far ) {
+    vec2 g;
+    if ( flow.z <= 0.0 ) {
+      g = waveGrad( p, 0.0, near, far );
+    } else {
+      vec2 gr = waveGrad( flow.xy, 1.0, near, far );
+      g = dir * gr.x + vec2( -dir.y, dir.x ) * gr.y;
+      if ( flow.z < 1.0 ) g = mix( waveGrad( p, 0.0, near, far ), g, flow.z );
+    }
     return normalize( vec3( -g.x * uChop, 1.0, -g.y * uChop ) );
   }
 `
@@ -813,10 +846,20 @@ export class Water {
       // drops a triangle and leaves a hole. Those come back, which is a fix.
       side: THREE.DoubleSide,
       vertexShader: /* glsl */ `
+        // A river's flow frame, ribbon.js flowFrame: (along, across, weight,
+        // downstream angle). Every other sheet of water lacks the attribute and
+        // gets the material's zero default -- weight 0, the world frame.
+        attribute vec4 aFlow;
         varying vec3 vWorldPos;
+        varying vec3 vFlow;
+        varying vec2 vFlowDir;
         #include <fog_pars_vertex>
         void main() {
           vWorldPos = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
+          vFlow = aFlow.xyz;
+          // Unpacked here so the fragment stage interpolates a vector; an
+          // interpolated angle would wrap through the wrong way at +-pi.
+          vFlowDir = vec2( cos( aFlow.w ), sin( aFlow.w ) );
           vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
           gl_Position = projectionMatrix * mvPosition;
           #include <fog_vertex>
@@ -824,6 +867,8 @@ export class Water {
       `,
       fragmentShader: /* glsl */ `
         varying vec3 vWorldPos;
+        varying vec3 vFlow;
+        varying vec2 vFlowDir;
         uniform vec3 uTint;
         uniform float uMirrorDown;
         uniform vec3 uSilTint;
@@ -1042,7 +1087,7 @@ export class Water {
           float far = 1.0 - smoothstep( uDetail.y, uDetail.y * 6.0, dist );
           float near = ( 1.0 - smoothstep( uDetail.x, uDetail.y, dist ) ) * far;
 
-          vec3 N = waveNormal( vWorldPos.xz, near, far );
+          vec3 N = waveNormal( vWorldPos.xz, vFlow, normalize( vFlowDir ), near, far );
 
           // SEEN FROM UNDERNEATH. gl_FrontFacing makes this one material rather
           // than two -- same meshes, same draw calls, same uniforms, with the
@@ -1249,6 +1294,11 @@ export class Water {
         }
       `,
     })
+    // What a geometry without an aFlow buffer is drawn with: three hands a
+    // constant to the attribute (gl.vertexAttrib4fv) for any name listed here,
+    // and disables it otherwise, which reads as zero on some drivers and as
+    // whatever the slot last held on others. Only the rivers carry the buffer.
+    this.material.defaultAttributeValues.aFlow = [0, 0, 0, 0]
 
     this.lakes = new THREE.Group()
     this.lakes.name = 'lakes'

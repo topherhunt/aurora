@@ -855,6 +855,24 @@ export class PathSet {
     return rec.forward
   }
 
+  // How many metres of a river, in from its source and in from its mouth, lie on water another body holds -- the same test _applyPins uses, so a river that starts in a lake or ends in a trunk reports the run inside that body's footprint and a free end reports 0. The water renderer fades the river's own flow frame back to the shared one over exactly this, so the drift inside the lake stays the lake's. Forces the bake.
+  flowReach(id) {
+    const rec = this._get(id, `PathSet.flowReach(${id})`)
+    if (rec.kind !== 'river') throw new Error(`PathSet.flowReach(${id}): ${id} is a road`)
+    this._ensureIndex()
+    const s = rec.samples
+    const n = s.length / 4
+    const run = (from, step) => {
+      let d = 0
+      for (let i = from, k = 0; k < n; i += step, k++) {
+        if (this._otherWaterAt(s[i * 4], s[i * 4 + 2], rec) === null) break
+        if (k > 0) d += Math.hypot(s[i * 4] - s[(i - step) * 4], s[i * 4 + 2] - s[(i - step) * 4 + 2])
+      }
+      return d
+    }
+    return rec.forward ? { source: run(0, 1), mouth: run(n - 1, -1) } : { source: run(n - 1, -1), mouth: run(0, 1) }
+  }
+
   addPath(record) {
     const rec = normalise(record, `PathSet.addPath(${record && record.id})`)
     if (this.paths.has(rec.id)) throw new Error(`PathSet.addPath: duplicate path id ${rec.id}`)

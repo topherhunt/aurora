@@ -16,8 +16,8 @@ So there are **nine beds** (six shipped; the pebbles and the two cap beds are `e
 | `boulders` | 1.5 - 10 m | medium, 600 m | the forest and cliffside rocks |
 | `scree` | 0.5 - 4.5 m | dense, 280 m | the pile at the foot of a face |
 | `sunken` | 1 - 10 m | sparse, 600 m | stones on the lake floor |
-| `giants` | 1.6 - 15 m, 30 on a face or a peak | sparse, 1250 m | tors, shelves, buttresses, lips |
-| `embedded` | 2 - 10 m, 3 - 64 on a face or a peak | sparse, 1900 m | blocks let INTO a face or a bed |
+| `giants` | 1.6 - 15 m, 30 on barren ground | sparse, 1250 m | tors, shelves, buttresses, lips |
+| `embedded` | 2 - 10 m, 3 - 32 on a face, 64 on a barren one | sparse, 1250 m | blocks let INTO a face or a bed |
 | `cliff slabs` | 9 - 70 m | sparse, 4200 m | the panels a face is built of (off) |
 | `bed caps` | 0.8 - 6 m | medium, 360 m | plates showing through lake silt (off) |
 | `shore` | 0.5 - 2.5 m | dense, 80 m | the stones along a waterline |
@@ -38,6 +38,8 @@ Six beds are six `BatchedMesh`es and six draw calls, which does not violate §5'
 The order in `_envAt` is not arbitrary. Water wins outright, because a lake bed is a lake bed however steep the ground under it. Then altitude, then slope: a sheer face above the snow line is peak country, not a cliff with spires missing.
 
 The classification is a pure function of position, exactly as existence is, so a rock does not change species as the player walks toward it.
+
+**A bed's `barrenTop` opens the size range further only where the forest has nothing.** `cliff` and `peak` are one field sample each, so a 35-degree pocket in a wood is a cliff site and the wooded band under the treeline is peak country, and a rock sized for a bare face stands out of the trees there. So the giants bed's 30 m and the embedded bed's 64 m are let in only on BARREN ground: `BARREN_ABOVE_SNOW` (70 m, trees.js's `TREELINE.fade`, past which the wood is a tenth as dense and stunted by half) above the snow line, or a face still past `CLIFF_SLOPE_DEG` at all four points half the rock's width out from the site (`_barrenAt`). Everywhere else the roll lands on `sizeByEnv` as it would in a wood. The probe is paid only by a roll that would overtop the wooded range, and `maxLod`, `minReach` and the tier caps are sized off the barren top, since the bed can place it.
 
 ### And then a second, finer test: the relief
 
@@ -84,7 +86,7 @@ The moss line is derived from the snow's -- `MOSS_DROP` metres below it, fading 
 
 ## One LOD ladder, and the thresholds are per rock rather than per bed
 
-Every shape ships T320/T80/T20 and the six-triangle hull T6, and every instance steps between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size, the longest of its three box axes (`rockLodSize`, §23). That is 4 m per metre to T80, 7.5 to T20 and 25 to T6, so a two-metre rock holds sampled geometry out to 50 m, a cobble to 8.5, a twelve-metre spire to 300.
+Every shape ships T320/T80/T20 and the six-triangle hull T6, and every instance steps between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size, the longest of its three box axes (`rockLodSize`, §23). That is 4 m per metre to T80, 7.5 to T20 and 25 to T6, so a two-metre rock holds sampled geometry out to 50 m, a cobble to 8.5, a twelve-metre spire to 300. Two ceilings in plain metres sit over that (`ROCK_LOD_FAR_MAX`, `ROCK_LOD_GONE_MAX`, §23): every rock is T6 past 1,000 m whatever its size, and no bed may reach past 1,250 m, so nothing is drawn beyond it. Only the embedded bed's biggest blocks meet the first.
 
 **A table of metres per bed was wrong in both directions at once**, because a bed is not one size of rock: the embedded bed places blocks from 2 m to 20 m across and handed every one to T20 at 40 m, so a six-metre block on a cliff face became twenty triangles while it still filled a quarter of the screen, and the underfoot bed carried 180 faces on a 25 cm pebble out to 8 m. Nothing about a bed knows how big its rocks are; the instance does, at one `Float32Array`.
 
@@ -162,7 +164,7 @@ The brief's second scatter: rocks with 70 to 90% of their vertices under the sur
 
 **The river band is nearly free and the cliff band is not**, which is a budget result rather than a taste one. `hi` in the bed constructor is the max over every reachable environment and `minReach` turns that into a radius, so the RIVER band moves freely under the cliff band's top: raising it changes what a lake floor looks like and costs nothing, the reach already being sized for the cliff.
 
-The cliff and peak tops are the expensive number, because `radius` is downstream of them and reach is quadratic in cost. The embedded bed's 64 m top is what forces its 1,900 m radius -- a 64 m block reaches T6 at 1,600 m and owes a `ROCK_FAR_LIFE` band past that, so `minReach` refuses anything under 1,882 m -- and burial buys none of it back, since sinking a rock takes away its HEIGHT while the ladder reads its longest axis, which is the width still lying across the face. That is why the bed's density is a fifth of what "litter the cliffs" sounds like. §5 budgets ~190k triangles for ALL props, so a bigger top is not a knob to turn on the way past: it is affordable only when the density pays for it, a quarter the `envDensity` at twice the size holding both the bill and the fraction of face under stone flat and coarsening only the GRAIN.
+The cliff and peak tops are the expensive number, because `radius` is downstream of them and reach is quadratic in cost. The embedded bed's 64 m barren top is what forces its radius to `ROCK_LOD_GONE_MAX`, the 1,250 m no bed may reach past -- by size a 64 m block would be sampled to 1,600 m, so it is the `ROCK_LOD_FAR_MAX` ceiling that puts it on T6 at 1,000 m, and it owes a `ROCK_FAR_LIFE` band past that, so `minReach` refuses anything under 1,177 m -- and burial buys none of it back, since sinking a rock takes away its HEIGHT while the ladder reads its longest axis, which is the width still lying across the face. That is why the bed's density is a fifth of what "litter the cliffs" sounds like. §5 budgets ~190k triangles for ALL props, so a bigger top is not a knob to turn on the way past: it is affordable only when the density pays for it, a quarter the `envDensity` at twice the size holding both the bill and the fraction of face under stone flat and coarsening only the GRAIN.
 
 ## Taking the ground's colour: `GROUND_CUE`
 

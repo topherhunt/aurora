@@ -1,0 +1,42 @@
+{
+  "kind": "pose",
+  "note": "Seated idle at sit's hold pose: breathing, a glance to one side and back. Every key keeps sit's root, leg and limit numbers so the two cut together.",
+  "samples": 32,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 0.9, "pose": {
+      "root": { "lift": -0.196, "fore": -0.5 },
+      "spine": { "pitch": 0.04 },
+      "head": { "yaw": 0.12, "pitch": -0.03 },
+      "arms": { "both": { "raise": 0.17, "elbow": 0.22, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 1.8, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "head": { "yaw": 0.12 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 2.5, "pose": {
+      "root": { "lift": -0.196, "fore": -0.5 },
+      "spine": { "pitch": 0.04 },
+      "head": { "yaw": 0.02 },
+      "arms": { "both": { "raise": 0.17, "elbow": 0.22, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 3.2, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } }
+  ]
+}

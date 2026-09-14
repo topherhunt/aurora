@@ -1,0 +1,35 @@
+{
+  "kind": "pose",
+  "note": "Listening and agreeing: two nods, the second deeper, with a small forward lean toward someone standing straight ahead. All talk-* clips start and end at the idle stance and keep the head within a few degrees of straight ahead, so any of them can follow any other on two facing NPCs.",
+  "samples": 30,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.5, "pose": {
+      "spine": { "pitch": 0.04 },
+      "head": { "pitch": 0.14 },
+      "arms": { "both": { "elbow": 0.18, "spread": 0.05 } }
+    } },
+    { "t": 0.9, "pose": {
+      "spine": { "pitch": 0.04 },
+      "head": { "pitch": -0.04 },
+      "arms": { "both": { "elbow": 0.18, "spread": 0.05 } }
+    } },
+    { "t": 1.3, "pose": {
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.2, "yaw": 0.04 },
+      "arms": { "both": { "elbow": 0.2, "spread": 0.05 } }
+    } },
+    { "t": 1.8, "pose": {
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": -0.02, "yaw": 0.04 },
+      "arms": { "both": { "elbow": 0.2, "spread": 0.05 } }
+    } },
+    { "t": 2.4, "pose": {
+      "spine": { "pitch": 0.03 },
+      "head": { "pitch": 0.06 },
+      "arms": { "both": { "elbow": 0.17, "spread": 0.05 } }
+    } },
+    { "t": 3.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

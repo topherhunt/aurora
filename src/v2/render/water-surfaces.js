@@ -1,13 +1,13 @@
 import THREE from '../../three-instance.js'
 import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
-import { ribbonVertices, discVertices, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './ribbon.js'
+import { ribbonVertices, discVertices, flowFrame, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './ribbon.js'
 
 /**
  * The visible water of a v2 world: one disc per authored lake, one ribbon per authored river.
  *
  * IT REUSES src/water.js's MATERIAL, AND THAT IS THE WHOLE POINT. Everything that makes a lake read as a mirror rather than as a blue plane -- the analytic sky reflection along the reflected ray, the four drifting layers of gradient noise, the horizon-map silhouette, the thresholded glitter, the exemption from the night fog rule -- lives in that one ShaderMaterial (§11). Authoring a second water shader here would give v2 a lake that disagrees with a v1 lake about what the sky looks like, and it would disagree SLOWLY, one tuning pass at a time, which is the failure mode that never gets noticed until it is a rewrite.
  *
- * WHICH UNIFORMS ARE SHARED, since that decides whether this works at all: ALL of them. Water holds a single `this.uniforms` object, hands that same object to a single `this.material`, and `Water.update` writes `uTime` and calls `syncShading`, which writes `uTint` and `uSilTint` -- on that shared object. There is not one per-mesh uniform in the file; the meshes carry nothing but position and the shader recovers everything else from world XZ. So a mesh built here is per-frame-correct the moment it uses that material, wherever it sits in the graph. Parenting under `water.group` is therefore tidiness rather than plumbing -- it keeps every water surface in the world under one node the editor can hide -- and the group must stay at the origin, because the shader reads `modelMatrix * position` as world position.
+ * WHICH UNIFORMS ARE SHARED, since that decides whether this works at all: ALL of them. Water holds a single `this.uniforms` object, hands that same object to a single `this.material`, and `Water.update` writes `uTime` and calls `syncShading`, which writes `uTint` and `uSilTint` -- on that shared object. There is not one per-mesh uniform in the file; the meshes carry position, plus a river's `aFlow` frame, and the shader recovers everything else from world XZ. So a mesh built here is per-frame-correct the moment it uses that material, wherever it sits in the graph. Parenting under `water.group` is therefore tidiness rather than plumbing -- it keeps every water surface in the world under one node the editor can hide -- and the group must stay at the origin, because the shader reads `modelMatrix * position` as world position.
  *
  * WHAT THIS DOES NOT INHERIT FROM v1: the rivers. §11 records rivers as built, measured and removed, and the measurement is not about ribbons -- 47.4% of v1's river segments run uphill on the rendered surface because Phase A routes flow over a carved field the mesher never sees. v2 has no such split: a river here is an XZ spline whose water level PathSet solves from the ground it runs through, never rising in the flow direction; the carve cuts the channel down from that level and the ribbon is drawn at it. The surface cannot climb because the solver does not let it.
  */
@@ -20,6 +20,12 @@ const MIN_TAN = 0.01
 
 // Bucket key. A 32-bit hash of the cell pair rather than a template string: levelAt is on the prop scatter's inner loop and a string key per query allocates one string per bucket per candidate.
 const bucketKey = (i, j) => i * 100003 + j
+
+// levelAt's per-river scratch: the nearest segment's squared distance and level for each river reaching the point, indexed by slot. Module-level for the same reason the key is a hash -- the scatter calls levelAt per candidate -- and the slot count is a throw rather than a growth path, because more rivers than this through one point is not a world anyone has authored.
+const LEVEL_RUNS = 8
+const runId = new Int32Array(LEVEL_RUNS)
+const runD2 = new Float64Array(LEVEL_RUNS)
+const runY = new Float64Array(LEVEL_RUNS)
 
 export class WaterSurfaces {
   constructor({ water, layers }) {
@@ -120,7 +126,7 @@ export class WaterSurfaces {
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geo.setIndex(new THREE.BufferAttribute(indices, 1))
-    // No normal attribute. The water shader's vertex stage reads `position` and nothing else, and a normal buffer nothing samples is upload bandwidth spent on a lie -- v1 emits normals only because its geometry predates the shader.
+    // No normal attribute, and no aFlow. The water shader's vertex stage reads `position` and `aFlow`, and a lake wants the latter's default: a normal buffer nothing samples is upload bandwidth spent on a lie -- v1 emits normals only because its geometry predates the shader.
     geo.computeBoundingSphere()
 
     const mesh = new THREE.Mesh(geo, this.water.material)
@@ -160,6 +166,8 @@ export class WaterSurfaces {
 
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(r.positions, 3))
+    // The frame the shader drifts the waves in, downstream. Lakes carry no such attribute and get the material's zero default, which is the shared world frame.
+    geo.setAttribute('aFlow', new THREE.BufferAttribute(flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id)), 4))
     geo.setIndex(new THREE.BufferAttribute(r.indices, 1))
     geo.computeBoundingSphere()
 
@@ -186,13 +194,17 @@ export class WaterSurfaces {
     for (const s of this.riverSamples.values()) total += s.length / 4
     this.idxPts = new Float32Array(total * 4)
     this.idxTail = new Uint8Array(total)
+    // Which river a sample belongs to, so levelAt can keep one nearest segment per river.
+    this.idxRun = new Int32Array(total)
 
     let g = 0
+    let run = 0
     for (const s of this.riverSamples.values()) {
       const n = s.length / 4
       for (let i = 0; i < n; i++) {
         const o = i * 4
         const d = (g + i) * 4
+        this.idxRun[g + i] = run
         this.idxPts[d] = s[o]
         this.idxPts[d + 1] = s[o + 1]
         this.idxPts[d + 2] = s[o + 2]
@@ -203,6 +215,7 @@ export class WaterSurfaces {
       // The last sample of a run starts no segment, or the index would join the end of one river to the start of the next with a segment straight across the map.
       this.idxTail[g + n - 1] = 1
       g += n
+      run++
     }
 
     for (let i = 0; i < total; i++) {
@@ -241,7 +254,7 @@ export class WaterSurfaces {
    *
    * v2's replacement for Water.levelAt, which reads a Phase A raster v2 does not have and never will. The prop scatter and the player both need this: without it every tree in the world is placed as though the lakes were not there.
    *
-   * Lakes are answered before rivers, and where both cover a point the HIGHEST surface wins. A river running into a lake is under the lake's still level, not beside it, and a tributary joining a trunk is under the trunk. Taking the max is also the only answer that does not depend on the order the document happens to list bodies in.
+   * Each river answers with its NEAREST segment's level, which is the quad its ribbon draws over the point, and never with the highest segment reaching it: a segment's reach runs a half-width past its own ends, so the highest is up to that far upstream, and on a grade that is water over her head while she stands on the bank -- a metre and more on the shipped rapids. Across bodies, lakes and rivers alike, the HIGHEST surface wins. A river running into a lake is under the lake's still level, not beside it, and a tributary joining a trunk is under the trunk. Taking the max is also the only answer that does not depend on the order the document happens to list bodies in.
    *
    * TWO ANSWERS, AND THEY ARE DELIBERATELY DIFFERENT. By default this is the AUTHORED footprint: `footprint` feathers to zero at rx/rz, and the metre and a half the disc reaches past that exists to bury a polygon edge, not to make ground wet. That is the right answer for the prop scatter, which is the caller that made this fast, and treating the overhang as wet there would strip a band of props off both sides of every stream.
    *
@@ -251,6 +264,7 @@ export class WaterSurfaces {
    */
   levelAt(x, z, drawn = false) {
     let best = this.lakeLevelAt(x, z)
+    let runs = 0
 
     const bi = Math.floor(x / BUCKET)
     const bj = Math.floor(z / BUCKET)
@@ -260,6 +274,7 @@ export class WaterSurfaces {
         if (!b) continue
         for (const i of b) {
           const o = i * 4
+          const run = this.idxRun[i]
           const x0 = this.idxPts[o]
           const y0 = this.idxPts[o + 1]
           const z0 = this.idxPts[o + 2]
@@ -280,11 +295,24 @@ export class WaterSurfaces {
           if (drawn) hw += Math.min(RIVER_WIDEN, hw * RIVER_WIDEN_FRAC)
           if (d2 > hw * hw) continue
           const y = y0 + t * (y1 - y0)
-          if (best === null || y > best) best = y
+          // One answer per river: its nearest segment, which is the quad the ribbon draws over the point.
+          let k = 0
+          while (k < runs && runId[k] !== run) k++
+          if (k === runs) {
+            if (runs === LEVEL_RUNS) throw new Error(`WaterSurfaces.levelAt: more than ${LEVEL_RUNS} rivers reach (${x.toFixed(1)}, ${z.toFixed(1)})`)
+            runId[k] = run
+            runD2[k] = Infinity
+            runs++
+          }
+          if (d2 < runD2[k]) {
+            runD2[k] = d2
+            runY[k] = y
+          }
         }
       }
     }
 
+    for (let k = 0; k < runs; k++) if (best === null || runY[k] > best) best = runY[k]
     return best
   }
 

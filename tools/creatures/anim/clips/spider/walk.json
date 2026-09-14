@@ -1,0 +1,37 @@
+{
+  "note": "Alternating tetrapod, the spider's walk: legs I and III on one side step with II and IV on the other, then the other four, so four feet are always down. Each set is staggered a little from front to back, which is the metachronal ripple a real spider shows and which keeps eight identical footfalls from reading as two. The stride is short against the wheelbase because a spider's wheelbase is its leg SPAN, not its body -- 10cm of step on a 50cm span. Head pitch is a touch positive so the face stays level while the thorax dips, and the abdomen lifts a little off the bind pose and sways with the stride. The bind pose holds legs I, II and IV at full stretch, so `legHold` draws their stance stations in toward the body -- the front pair back, the back pair forward -- to give the stride somewhere to go; leg III stands sideways and its step is a swing at the hip, not a reach.",
+  "duration": 0.9,
+  "samples": 24,
+  "stride": 0.11,
+  "stepHeight": 0.16,
+  "duty": 0.6,
+  "crouch": 0.04,
+  "toeOff": 0,
+  "phases": {
+    "leg1Left": 0,
+    "leg3Left": 0.06,
+    "leg2Right": 0.03,
+    "leg4Right": 0.09,
+    "leg1Right": 0.5,
+    "leg3Right": 0.56,
+    "leg2Left": 0.53,
+    "leg4Left": 0.59
+  },
+  "bodyBob": 0.01,
+  "bobFreq": 2,
+  "bodySway": 0.008,
+  "spineYaw": 0.03,
+  "headPitch": 0.02,
+  "tailPitch": 0.12,
+  "tailSway": 0.08,
+  "tailLift": 0.05,
+  "armSwing": 0.08,
+  "legHold": {
+    "leg1Left": {"fore": -0.07},
+    "leg1Right": {"fore": -0.07},
+    "leg2Left": {"fore": -0.03, "lat": -0.03},
+    "leg2Right": {"fore": -0.03, "lat": 0.03},
+    "leg4Left": {"fore": 0.07},
+    "leg4Right": {"fore": 0.07}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "kind": "pose",
+  "note": "Threaten: leans in, raises a fist beside the head and shakes it three times while the other hand clenches at the side, then drops back to the stance.",
+  "samples": 40,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.45, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.25 },
+      "head": { "pitch": -0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.7, "spread": 0.5, "elbow": 1.6, "twist": 0.4 } }
+    } },
+    { "t": 0.7, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": -0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.5, "spread": 0.5, "elbow": 1.9, "twist": 0.4 } }
+    } },
+    { "t": 0.95, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.25 },
+      "head": { "pitch": -0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.8, "spread": 0.5, "elbow": 1.5, "twist": 0.4 } }
+    } },
+    { "t": 1.2, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": -0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.5, "spread": 0.5, "elbow": 1.9, "twist": 0.4 } }
+    } },
+    { "t": 1.45, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.25 },
+      "head": { "pitch": -0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.8, "spread": 0.5, "elbow": 1.5, "twist": 0.4 } }
+    } },
+    { "t": 1.7, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": -0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.5, "spread": 0.5, "elbow": 1.9, "twist": 0.4 } }
+    } },
+    { "t": 2.2, "pose": {
+      "root": { "fore": 0.04 },
+      "spine": { "pitch": 0.25 },
+      "head": { "pitch": -0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05, "curl": 1.2 }, "right": { "raise": 1.7, "spread": 0.5, "elbow": 1.6, "twist": 0.4 } }
+    } },
+    { "t": 3.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

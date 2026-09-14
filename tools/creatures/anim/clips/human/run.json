@@ -1,0 +1,29 @@
+{
+  "note": "Run: duty under 0.5 puts both feet in the air twice a cycle, the body leans into the stride, the hips sit lower to absorb each landing, and the arms are carried bent at the elbow and pump hard. The knees fold past a walk's limit on the swing-through, so fold is widened.",
+  "duration": 0.7,
+  "samples": 24,
+  "stride": 0.95,
+  "stepHeight": 0.08,
+  "duty": 0.4,
+  "crouch": 0.085,
+  "toeOff": 0.4,
+  "phases": {
+    "legLeft": 0,
+    "legRight": 0.5
+  },
+  "bodyBob": 0.03,
+  "bobFreq": 2,
+  "bobPhase": 0.63,
+  "bodySway": 0.008,
+  "spineYaw": 0.12,
+  "spinePitch": 0.15,
+  "headPitch": -0.12,
+  "headBob": 0.03,
+  "armSpread": 0.08,
+  "armElbow": 1.4,
+  "armSwing": 0.5,
+  "elbowSwing": 0.2,
+  "limits": {
+    "fold": 2.4
+  }
+}

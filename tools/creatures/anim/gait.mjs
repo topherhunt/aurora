@@ -21,6 +21,7 @@ import {
   add, compose, cross, decompose, dot, invert, len, loadSkeleton, mul, norm,
   qAxisAngle, qBetween, qConj, qMul, qRotate, scale, sub, xformDir,
 } from './skeleton.mjs'
+import { armSetup, isJointed, poseArm } from './arm.mjs'
 
 const TAU = Math.PI * 2
 const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
@@ -119,6 +120,15 @@ const signedAngle = (a, b, axis) => Math.atan2(dot(cross(a, b), axis), dot(a, b)
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
 
 /**
+ * A joint bent less than this at rest cannot say which way it bends: the axis
+ * of a two-degree crease is noise, and on a human rig the knee sits as often
+ * behind the hip-ankle line as in front of it. A leg map may carry `hingeAxis`,
+ * a world vector, which such joints take instead, positive fold about it being
+ * the way the knee goes; the ankle, at ninety degrees, keeps its own.
+ */
+const STRAIGHT = 0.35
+
+/**
  * Everything the IK needs about one leg, measured once from the rest pose.
  *
  * `hinge[i]` is joint i's bend axis in its OWN frame, so it rides along when the
@@ -140,6 +150,15 @@ export function limbSetup(skel, legMap, byName) {
     if (len(a) < 1e-6 || len(b) < 1e-6) throw new Error(`leg ${legMap.id} has a zero-length bone at ${skel.name(chain[i])}`)
     const da = norm(a), db = norm(b)
     const axis = cross(da, db)
+    const worldRot = decompose(skel.world(chain[i])).rotation
+    if (legMap.hingeAxis && Math.asin(Math.min(1, len(axis))) < STRAIGHT) {
+      const given = norm(legMap.hingeAxis)
+      hinge[i] = qRotate(qConj(worldRot), given)
+      // A knee already creased the right way may straighten back by that much;
+      // one creased the wrong way is treated as straight, so it can only fold.
+      restBend[i] = Math.max(0, signedAngle(da, db, given))
+      continue
+    }
     if (len(axis) < 1e-4) {
       // A dead-straight joint has no bend axis to preserve. Hinging it about an
       // arbitrary axis is worse than leaving it rigid, so it just holds.
@@ -147,7 +166,6 @@ export function limbSetup(skel, legMap, byName) {
       restBend[i] = 0
       continue
     }
-    const worldRot = decompose(skel.world(chain[i])).rotation
     hinge[i] = qRotate(qConj(worldRot), norm(axis))
     restBend[i] = Math.acos(clamp(dot(da, db), -1, 1))
   }
@@ -162,12 +180,37 @@ export function limbSetup(skel, legMap, byName) {
   const parentRot = parent === undefined ? [0, 0, 0, 1] : decompose(skel.world(parent)).rotation
   let reach = 0
   for (let i = 1; i < P.length; i++) reach += len(sub(P[i], P[i - 1]))
+  const restFoot = P[P.length - 1]
+  // A human leg is solved to the ANKLE, with the toe a rigid child: solved to
+  // the toe instead, the ankle is the joint with slack and CCD folds it through
+  // the floor. The map's `toe` names that child, and it is where the leg meets
+  // the ground -- what the toe-off pivots about and what the sink check reads.
+  let toe = null
+  if (legMap.toe) {
+    toe = byName.get(legMap.toe)
+    if (toe === undefined) throw new Error(`rig map leg ${legMap.id} names toe "${legMap.toe}", which this rig does not have`)
+    if (skel.parent.get(toe) !== foot) throw new Error(`rig map leg ${legMap.id}: toe "${legMap.toe}" is not a child of its foot "${legMap.foot}"`)
+  }
+  const restContact = toe === null ? restFoot : skel.pos(toe)
   return {
     id: legMap.id, chain, hip, foot, hinge, restBend, parent, parentIsJoint, reach,
-    restFoot: P[P.length - 1],
+    restFoot, toe, restContact, toeArm: sub(restFoot, restContact),
     footRest: decompose(skel.world(foot)).rotation,
-    restDirLocal: qRotate(qConj(parentRot), norm(sub(P[P.length - 1], P[0]))),
+    restDirLocal: qRotate(qConj(parentRot), norm(sub(restFoot, P[0]))),
   }
+}
+
+/** Where `leg` touches the ground in this pose: its toe if the map named one, else its foot. */
+export const contactOf = (pose, leg) => pose.pos(leg.toe ?? leg.foot)
+
+/**
+ * The foot target that keeps the toe still while the foot pitches: a toe-off
+ * rolls the foot over the toe, so the ankle it is solved to rises and moves
+ * forward by the same turn. A leg with no toe pitches about its foot joint.
+ */
+export function pivotOnToe(leg, target, pitch, axis) {
+  if (leg.toe === null || !pitch) return target
+  return add(target, sub(qRotate(qAxisAngle(axis, pitch), leg.toeArm), leg.toeArm))
 }
 
 /**
@@ -207,6 +250,7 @@ export function solveLimb(pose, limb, target, {
     const err = len(sub(target, pose.pos(foot)))
     if (err < 1e-4 || prev - err < 1e-6) break
     prev = err
+    let kicked = false
 
     for (let i = 0; i < chain.length - 1; i++) {
       const j = chain[i]
@@ -231,13 +275,31 @@ export function solveLimb(pose, limb, target, {
       const axis = qRotate(pose.rotation(j), limb.hinge[i])
       const a = projectPerp(cur, axis), b = projectPerp(want, axis)
       if (len(a) < 1e-9 || len(b) < 1e-9) continue
-      const wanted = signedAngle(norm(a), norm(b), axis)
-      const next = clamp(applied[i] + wanted, -limb.restBend[i] * straighten, fold)
+      let wanted = signedAngle(norm(a), norm(b), axis)
+      // A hinge at its straight stop while the foot overshoots the target is a
+      // leg too long for where it is going, and CCD cannot see it: the foot
+      // and target sit nearly in line from here, so it asks for no turn, or for
+      // one the wrong way that the clamp discards, and a leg bent a hair the
+      // wrong way at the knee never folds at all. Turning the foot cannot
+      // shorten anything, so fold by what the law of cosines says brings the
+      // foot in to the target's distance from the hip, and let the hip re-aim.
+      const lower = -limb.restBend[i] * straighten
+      if (applied[i] <= lower + 1e-9 && wanted <= 0 && len(cur) > len(want)) {
+        const hip = pose.pos(chain[0])
+        const up = sub(at, hip), u = len(up), s = len(cur), d = len(sub(target, hip))
+        const bent = Math.acos(clamp(dot(up, cur) / (u * s), -1, 1))
+        wanted = Math.acos(clamp((d * d - u * u - s * s) / (2 * u * s), -1, 1)) - bent
+        kicked = true
+      }
+      const next = clamp(applied[i] + wanted, lower, fold)
       const step = next - applied[i]
       if (Math.abs(step) < 1e-9) continue
       applied[i] = next
       pose.rotateWorld(j, qAxisAngle(axis, step))
     }
+    // That fold swings the foot off line until the hip re-aims, so the pass
+    // that made it can read as no progress. It is not a plateau.
+    if (kicked) prev = Infinity
   }
 
   // Level the paw. It is the chain's leaf, so nothing downstream depends on its
@@ -327,6 +389,11 @@ const DEFAULTS = {
   // the sign, so a spec never has to know which way round the rig is built.
   wingSpread: 0, wingSweep: 0, wingBeat: 0, wingTwist: 0, wingFreq: 1,
   armPitch: 0, armSpread: 0, armSwing: 0,
+  // A jointed arm (see arm.mjs) takes its carriage at the shoulder and elbow
+  // instead of along the chain, and swings against the leg on its own side:
+  // `armSwing` is the shoulder's amplitude, `elbowSwing` how much further the
+  // elbow folds as the arm comes forward.
+  armRaise: 0, armTwist: 0, armElbow: 0, elbowSwing: 0,
   // Constant carriage, applied before the waves. A Tripo bind pose is whatever
   // the generator felt like -- the fox's tail lies on the ground, where it hides
   // the hind legs -- so a clip has to state the posture it wants.
@@ -361,6 +428,28 @@ export function pairsOf(map, key, named) {
   })
 }
 
+/**
+ * The map's arms split by kind: `jointed` ones carry shoulder/elbow/wrist and
+ * are posed by arm.mjs, `plain` ones are mirrored chains driven like wings.
+ */
+export function armsOf(map, skel, byName, named) {
+  const all = map.arms ?? []
+  return {
+    jointed: all.filter(isJointed).map((a) => armSetup(skel, a, byName)),
+    plain: pairsOf({ arms: all.filter((a) => !isJointed(a)) }, 'arms', named),
+  }
+}
+
+/**
+ * The leg on an arm's side of the body, for swinging the arm against it. Sides
+ * are read off the rest feet rather than the map's ids, so a map that calls its
+ * legs whatever it likes still pairs them up.
+ */
+function sameSideLeg(legs, side, lat) {
+  const mid = legs.reduce((s, l) => s + dot(l.restFoot, lat), 0) / legs.length
+  return legs.find((l) => Math.sign(dot(l.restFoot, lat) - mid) === side)
+}
+
 export function solveClip(rigFile, map, rawSpec) {
   const spec = { ...DEFAULTS, ...rawSpec }
   const skel = loadSkeleton(rigFile)
@@ -380,9 +469,14 @@ export function solveClip(rigFile, map, rawSpec) {
   const head = named(map.head)
   const tail = named(map.tail)
   const wings = pairsOf(map, 'wings', named)
-  const arms = pairsOf(map, 'arms', named)
+  const arms = armsOf(map, skel, byName, named)
   const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain),
-    ...wings.flatMap((w) => w.chain), ...arms.flatMap((a) => a.chain)]
+    ...wings.flatMap((w) => w.chain), ...arms.plain.flatMap((a) => a.chain),
+    ...arms.jointed.flatMap((a) => a.chain)]
+  // A jointed arm swings in step with the opposite leg, which is the same as
+  // saying it is half a cycle off the leg on its own side: at that leg's
+  // touchdown the arm is furthest back.
+  const armPhase = arms.jointed.map((a) => sameSideLeg(legs, a.side, lat)?.phase ?? 0)
 
   const n = spec.samples
   const times = []
@@ -438,11 +532,20 @@ export function solveClip(rigFile, map, rawSpec) {
       wave(w.chain, spec.wingBeat * w.side, fwd, spec.wingFreq, 0.7)
       wave(w.chain, spec.wingTwist, lat, spec.wingFreq, 0.5, Math.PI / 2)
     }
-    for (const a of arms) {
+    for (const a of arms.plain) {
       bend(pose, a.chain, lat, spec.armPitch)
       bend(pose, a.chain, fwd, spec.armSpread * a.side)
       wave(a.chain, spec.armSwing, lat, 1, 0.4, a.side > 0 ? 0 : Math.PI)
     }
+    arms.jointed.forEach((a, k) => {
+      const swing = -Math.cos(TAU * (u + armPhase[k]))
+      poseArm(pose, a, {
+        raise: spec.armRaise + spec.armSwing * swing,
+        spread: spec.armSpread,
+        twist: spec.armTwist,
+        elbow: spec.armElbow + spec.elbowSwing * swing,
+      }, map.frame)
+    })
 
     // Legs last: they reach a world-space target, so everything that moves a
     // shoulder has to already be in place before the IK runs.
@@ -450,13 +553,13 @@ export function solveClip(rigFile, map, rawSpec) {
     for (const leg of legs) {
       const f = footAt(wrap01(u + leg.phase), { stride, duty: spec.duty, stepHeight, toeOff: spec.toeOff })
       const hold = spec.legHold[leg.id] ?? NO_HOLD
-      const target = add(add(add(
+      const target = pivotOnToe(leg, add(add(add(
         spec.airborne ? add(leg.restFoot, body) : leg.restFoot,
         scale(fwd, f.fore + (hold.fore ?? 0) * map.wheelbase)),
         scale(lat, (hold.lat ?? 0) * map.wheelbase)),
-        scale(up, f.lift + (hold.lift ?? 0) * map.height))
+        scale(up, f.lift + (hold.lift ?? 0) * map.height)), f.pitch, lat)
       solveLimb(pose, leg, target, { ...spec.limits, pitch: f.pitch, pitchAxis: lat })
-      feet.push({ id: leg.id, target, planted: f.planted && !spec.airborne, actual: pose.pos(leg.foot) })
+      feet.push({ id: leg.id, target, planted: f.planted && !spec.airborne, actual: pose.pos(leg.foot), contact: contactOf(pose, leg) })
     }
 
     for (const [j, q] of pose.posed()) {
@@ -495,12 +598,13 @@ export function diagnose(solved) {
   const fwd = map.frame.forward
   const speed = stride / (spec.duty * spec.duration)
 
-  // Height is measured against each leg's OWN rest foot, not against one ground
-  // plane. A foot joint sits wherever the rigger put it inside the paw -- half a
-  // metre up, on the fen dragon -- so "how far off the floor" is not a question
-  // the joint can answer, while "did this foot leave the height it plants at"
-  // is, on any rig.
-  const restY = new Map(solved.legs.map((l) => [l.id, l.restFoot[1]]))
+  // Height is measured against each leg's OWN rest contact, not against one
+  // ground plane. A foot joint sits wherever the rigger put it inside the paw --
+  // half a metre up, on the fen dragon -- so "how far off the floor" is not a
+  // question the joint can answer, while "did this foot leave the height it
+  // plants at" is, on any rig. Read at the toe where the map names one: a
+  // toe-off lifts the ankle by design and the toe is what must not move.
+  const restY = new Map(solved.legs.map((l) => [l.id, l.restContact[1]]))
 
   // Stance and swing residuals are different facts. A stance foot that misses
   // its target is skating; a swing foot that misses one just did not lift as far
@@ -512,12 +616,12 @@ export function diagnose(solved) {
       const miss = len(sub(f.actual, f.target))
       if (f.planted) ikStance = Math.max(ikStance, miss)
       else ikSwing = Math.max(ikSwing, miss)
-      sunk = Math.max(sunk, restY.get(f.id) - f.actual[1])
+      sunk = Math.max(sunk, restY.get(f.id) - f.contact[1])
       if (!f.planted) continue
-      stanceFloat = Math.max(stanceFloat, f.actual[1] - restY.get(f.id))
+      stanceFloat = Math.max(stanceFloat, f.contact[1] - restY.get(f.id))
       // Undo the ground's motion, so a correctly planted foot holds still.
       if (!settled.has(f.id)) settled.set(f.id, [])
-      settled.get(f.id).push({ i, p: add(f.actual, scale(fwd, speed * times[i])) })
+      settled.get(f.id).push({ i, p: add(f.contact, scale(fwd, speed * times[i])) })
     }
   }
 

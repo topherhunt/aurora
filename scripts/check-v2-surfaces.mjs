@@ -9,8 +9,9 @@
 import { pathToFileURL } from 'node:url'
 import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
-import { ribbonVertices, discVertices, discSegments, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT } from '../src/v2/render/ribbon.js'
+import { ribbonVertices, discVertices, discSegments, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from '../src/v2/render/ribbon.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { SAMPLE_SPACING } from '../src/v2/layers/paths.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
@@ -331,6 +332,24 @@ export async function run() {
     }
     check(worstGap < 1e-3, `the road surface clears the flattened terrain by exactly ${ROAD_LIFT} m`, `worst error ${worstGap.toExponential(1)} m`)
     check(ROAD_LIFT > 0, 'the road lift is a positive gap, so the depth test never has to break a tie', `${ROAD_LIFT} m`)
+
+    // levelAt is the submersion test, and it has to answer the surface DRAWN over the point, which on a grade is the nearest quad's level and not the highest level of every segment whose half-width reaches the point: a segment's reach runs a half-width past its own ends, so the highest is up to that far upstream, and on this 1:5 rapid that is 1.4 m of water over her head while she stands on the bank. Measured at every sample and across the wet width, where the nearest segment's y is the sample's own.
+    {
+      const STEEP = 5
+      const rapid = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], roads: [], rivers: [{ id: 'r', depth: DEPTH, pts: [[-200, 0, 2 * HALF], [200, 0, 2 * HALF]] }] })
+      rapid.paths.setTerrain(terrainOf((x) => 100 - x / STEEP))
+      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: rapid })
+      ws.rebuild()
+      const s = rapid.paths.paths.get('r').samples
+      let worst = 0
+      for (let i = 0; i < s.length / 4; i++) {
+        for (const f of [-0.9, 0, 0.9]) {
+          const level = ws.levelAt(s[i * 4], s[i * 4 + 2] + f * s[i * 4 + 3], true)
+          worst = Math.max(worst, level === null ? Infinity : Math.abs(level - s[i * 4 + 1]))
+        }
+      }
+      check(worst < 1e-3, `levelAt on a 1:${STEEP} rapid is the level drawn over the point, not the one a half-width upstream`, `worst ${worst.toExponential(1)} m off the sample's own level`)
+    }
   }
 
   // --- 6. handles survive a deletion -----------------------------------------
@@ -495,6 +514,115 @@ export async function run() {
     check(sea.shoreDistAt(0, 0, REACH, LEVEL - 30, 0.5) === -REACH, 'deep water clamps to -reach')
     check(sea.levelAt(0, 0) === LEVEL, 'while levelAt still answers the plane everywhere under it')
     sea.dispose()
+  }
+
+  // --- 9. the river flow frame -----------------------------------------------
+  //
+  // The waves on a river drift downstream because every ribbon vertex carries `aFlow` (ribbon.js flowFrame): metres along from the source, signed metres across, a weight, and the downstream angle. Every one of those fails silently -- a river whose waves run uphill, or drift sideways, or stop dead where it enters a lake -- so each is pinned on a straight river where the answer is plain, in both stored orders, and then the fade against the lake the river ends in is measured against PathSet.flowReach.
+  {
+    const HALF = 4
+    const W = HALF + Math.min(RIVER_WIDEN, HALF * RIVER_WIDEN_FRAC)
+    const FADE = Math.max(FLOW_FADE_HALF_WIDTHS * W, FLOW_FADE_MIN)
+    // Falling along +x, so +x is downstream whichever way the points are stored.
+    const ground = (x) => 60 - x / 60
+    const build = (pts, lakes = []) => {
+      const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes, rivers: [{ id: 'r', depth: 2, pts }], roads: [] })
+      layers.paths.setTerrain(terrainOf(ground))
+      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+      ws.rebuild()
+      return { layers, ws, mesh: ws.meshes.get('r'), flow: ws.meshes.get('r').geometry.getAttribute('aFlow') }
+    }
+    const near = (a, b, tol = 1e-4) => Math.abs(a - b) <= tol
+
+    const fwd = build([[-200, 0, 2 * HALF], [-60, 0], [60, 0], [200, 0, 2 * HALF]])
+    check(fwd.layers.paths.flowsForward('r') === true, 'the river stored source first flows forward')
+    check(fwd.flow !== undefined && fwd.flow.itemSize === 4 && fwd.flow.count === fwd.mesh.geometry.getAttribute('position').count, 'every river vertex carries a vec4 aFlow', fwd.flow ? `${fwd.flow.count} x ${fwd.flow.itemSize}` : 'no attribute')
+    {
+      const f = fwd.flow.array
+      const p = fwd.mesh.geometry.getAttribute('position').array
+      const n = fwd.flow.count / 2
+      const length = f[(n - 1) * 8]
+      let uMono = true
+      let uArc = 0
+      let vSign = 0
+      let angle = 0
+      let midWeight = 1
+      for (let i = 0; i < n; i++) {
+        const o = i * 8
+        if (i > 0 && f[o] <= f[o - 8]) uMono = false
+        // u is arc from the source: on a straight river, plan distance from the first sample plus the few centimetres its 1:60 fall adds.
+        uArc = Math.max(uArc, Math.abs(f[o] - (p[i * 6] - p[0])))
+        // Vertex a sits at +z of a +x tangent, which is the RIGHT bank looking downstream: v positive there, negative across.
+        if (!(near(f[o + 1], W) && near(f[o + 5], -W) && p[i * 6 + 2] > p[i * 6 + 5])) vSign++
+        angle = Math.max(angle, Math.abs(f[o + 3]), Math.abs(f[o + 7]))
+        if (f[o] > FADE && f[o] < length - FADE) midWeight = Math.min(midWeight, f[o + 2], f[o + 6])
+      }
+      check(uMono && uArc < 0.1, 'u runs from the source as arc metres', `worst ${uArc.toExponential(1)} m off plan distance`)
+      check(vSign === 0, 'v is the widened half-width, positive on the right bank looking downstream', `${vSign} samples off`)
+      check(angle < 1e-6, 'the downstream angle on a river flowing +x is 0', `${angle.toExponential(1)} rad`)
+      check(near(f[2], 0) && near(f[(n - 1) * 8 + 2], 0), 'a free end starts at weight 0', `${f[2]}, ${f[(n - 1) * 8 + 2]}`)
+      check(midWeight === 1, `and is at weight 1 once ${FADE.toFixed(1)} m in from both ends`, `${midWeight}`)
+      const reach = fwd.layers.paths.flowReach('r')
+      check(reach.source === 0 && reach.mouth === 0, 'a river touching no other water reports no reach at either end', JSON.stringify(reach))
+    }
+
+    // The same river stored mouth first. Downstream is still +x, so u, v and the angle must come out identical per WORLD position -- the frame follows the water, not the array.
+    const rev = build([[200, 0, 2 * HALF], [60, 0], [-60, 0], [-200, 0, 2 * HALF]])
+    check(rev.layers.paths.flowsForward('r') === false, 'the river stored mouth first flows backward')
+    {
+      const f = rev.flow.array
+      const p = rev.mesh.geometry.getAttribute('position').array
+      const n = rev.flow.count / 2
+      let uArc = 0
+      let vSign = 0
+      let angle = 0
+      const x0 = p[(n - 1) * 6]
+      for (let i = 0; i < n; i++) {
+        const o = i * 8
+        uArc = Math.max(uArc, Math.abs(f[o] - (p[i * 6] - x0)))
+        // Sample order runs -x here, so vertex a is at -z: the LEFT bank looking downstream, and v must say so.
+        if (!(near(f[o + 1], -W) && near(f[o + 5], W) && p[i * 6 + 2] < p[i * 6 + 5])) vSign++
+        angle = Math.max(angle, Math.abs(f[o + 3]), Math.abs(f[o + 7]))
+      }
+      check(uArc < 0.1, 'stored backward, u still counts from the source', `worst ${uArc.toExponential(1)} m off plan distance`)
+      check(vSign === 0, 'and v still reads positive on the right bank looking downstream', `${vSign} samples off`)
+      check(angle < 1e-6, 'and the angle still points +x', `${angle.toExponential(1)} rad`)
+    }
+
+    // Ending in a lake. Its footprint reaches 60 m back up the river, and the frame must hold the world drift over all of it and only come up to the river's own over the fade beyond, so the waves crossing the lake's edge are the lake's.
+    const R = 60
+    const lakeDoc = [{ id: 'l', x: 300, z: 0, y: ground(300) - 1, rx: R, rz: R, rot: 0, shape: 0, carve: 1, depth: 4 }]
+    const into = build([[-200, 0, 2 * HALF], [-60, 0], [120, 0], [300, 0, 2 * HALF]], lakeDoc)
+    {
+      const reach = into.layers.paths.flowReach('r')
+      check(reach.source === 0 && Math.abs(reach.mouth - R) <= 2 * SAMPLE_SPACING, `a river ending at a lake's centre reports the lake's radius as its mouth reach`, `mouth ${reach.mouth.toFixed(1)} m vs ${R} m`)
+      const f = into.flow.array
+      const p = into.mesh.geometry.getAttribute('position').array
+      const n = into.flow.count / 2
+      let inLake = 0
+      let inLakeBad = 0
+      let clear = 0
+      let clearBad = 0
+      for (let i = 0; i < n; i++) {
+        const x = p[i * 6]
+        const w = f[i * 8 + 2]
+        if (x > 300 - R + SAMPLE_SPACING) {
+          inLake++
+          if (w !== 0) inLakeBad++
+        } else if (x < 300 - R - FADE - SAMPLE_SPACING && x > -200 + FADE + SAMPLE_SPACING) {
+          clear++
+          if (w !== 1) clearBad++
+        }
+      }
+      check(inLake > 10 && inLakeBad === 0, 'inside the lake footprint the river takes the world frame', `${inLakeBad} of ${inLake} vertices weighted`)
+      check(clear > 10 && clearBad === 0, 'and its own frame once it is a fade clear of the lake', `${clearBad} of ${clear} vertices short of 1`)
+    }
+
+    // A lake disc carries no aFlow at all: it takes the material's default, which is the world frame. Asserted here because a disc that grew the attribute by accident would drift the lake with whatever zeros or garbage it was given.
+    check(into.ws.meshes.get('l').geometry.getAttribute('aFlow') === undefined, 'a lake disc carries no aFlow and takes the default')
+    fwd.ws.dispose()
+    rev.ws.dispose()
+    into.ws.dispose()
   }
 
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)

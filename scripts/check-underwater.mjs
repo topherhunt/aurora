@@ -658,7 +658,7 @@ check(
 //
 // Built on the prototype rather than through the constructor because what is
 // being checked is one pure function of the index, and standing up a Layers
-// document to reach it would test the document. The three fields below are
+// document to reach it would test the document. The four fields below are
 // exactly what levelAt reads.
 {
   const ws = Object.create(WaterSurfaces.prototype)
@@ -666,6 +666,7 @@ check(
   // One river segment, 2 m half-width, running +x at y = 100.
   ws.idxPts = new Float32Array([0, 100, 0, 2, 10, 100, 0, 2])
   ws.idxTail = new Uint8Array([0, 1])
+  ws.idxRun = new Int32Array([0, 0])
   ws.buckets = new Map([[bucketKeyFor(0, 0), [0]]])
 
   const widened = 2 + Math.min(RIVER_WIDEN, 2 * RIVER_WIDEN_FRAC)

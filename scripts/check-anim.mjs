@@ -37,11 +37,12 @@
 // gitignored, so a clone has no rig to gate against. It is deliberately
 // asymmetric -- three joints in front, four behind, and a hind leg that zig-zags
 // -- because that is the shape Tripo actually returns and the reason the solver
-// is CCD rather than a two-bone analytic. One skeleton carries two maps, because
-// a body plan is a reading of a rig rather than a different rig: every plan under
-// anim/clips needs an entry in FIXTURES or its specs go unchecked, and the gate
-// says so rather than quietly skipping them. When a rigged creature IS on disk,
-// its shipped clips get measured too, against its own plan's library.
+// is CCD rather than a two-bone analytic. One skeleton carries three maps, because
+// a body plan is a reading of a rig rather than a different rig; the biped gets
+// its own skeleton because toes and hanging arms are not a reading. Every plan
+// under anim/clips needs an entry in FIXTURES or its specs go unchecked, and the
+// gate says so rather than quietly skipping them. When a rigged creature IS on
+// disk, its shipped clips get measured too, against its own plan's library.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -52,7 +53,7 @@ import { bend, diagnose, footAt, limbSetup, poser, solveClip, solveLimb } from '
 import { poseClip } from '../tools/creatures/anim/pose.mjs'
 import { buildClip, clipNames, planOf, plans, readSpec } from '../tools/creatures/anim/build.mjs'
 import { loadSkeleton, dot, len, sub } from '../tools/creatures/anim/skeleton.mjs'
-import { readRigMap, workDir } from '../tools/creatures/anim/rig-map.mjs'
+import { buildRigMap, readRigMap, workDir } from '../tools/creatures/anim/rig-map.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -92,12 +93,18 @@ const JOINTS = {
   // above are unaffected.
   'WingUpper.L': [0.06, 0.64, 0.20], 'WingMid.L': [0.20, 0.70, 0.14], 'WingTip.L': [0.34, 0.74, 0.06],
   'WingUpper.R': [-0.06, 0.64, 0.20], 'WingMid.R': [-0.20, 0.70, 0.14], 'WingTip.R': [-0.34, 0.74, 0.06],
+  // Two more pairs of legs, sideways and arched like a spider's, for the spider
+  // reading. Only that map names them; to the other two they hang inert.
+  'MidAUpper.L': [0.10, 0.58, 0.16], 'MidAKnee.L': [0.26, 0.66, 0.16], 'MidAHock.L': [0.40, 0.30, 0.16], 'MidAFoot.L': [0.46, 0.02, 0.16],
+  'MidAUpper.R': [-0.10, 0.58, 0.16], 'MidAKnee.R': [-0.26, 0.66, 0.16], 'MidAHock.R': [-0.40, 0.30, 0.16], 'MidAFoot.R': [-0.46, 0.02, 0.16],
+  'MidBUpper.L': [0.10, 0.58, 0.04], 'MidBKnee.L': [0.26, 0.66, 0.04], 'MidBHock.L': [0.40, 0.30, 0.04], 'MidBFoot.L': [0.46, 0.02, 0.04],
+  'MidBUpper.R': [-0.10, 0.58, 0.04], 'MidBKnee.R': [-0.26, 0.66, 0.04], 'MidBHock.R': [-0.40, 0.30, 0.04], 'MidBFoot.R': [-0.46, 0.02, 0.04],
 }
 
 const CHILDREN = {
-  Back: ['Torso', 'Tail1', 'HindUpper.L', 'HindUpper.R'],
+  Back: ['Torso', 'Tail1', 'HindUpper.L', 'HindUpper.R', 'MidBUpper.L', 'MidBUpper.R'],
   Torso: ['Chest'],
-  Chest: ['Neck', 'FrontUpper.L', 'FrontUpper.R', 'WingUpper.L', 'WingUpper.R'],
+  Chest: ['Neck', 'FrontUpper.L', 'FrontUpper.R', 'WingUpper.L', 'WingUpper.R', 'MidAUpper.L', 'MidAUpper.R'],
   Neck: ['Head'],
   Tail1: ['Tail2'], Tail2: ['Tail3'],
   'FrontUpper.L': ['FrontLower.L'], 'FrontLower.L': ['FrontFoot.L'],
@@ -106,6 +113,10 @@ const CHILDREN = {
   'HindUpper.R': ['HindKnee.R'], 'HindKnee.R': ['HindHock.R'], 'HindHock.R': ['HindFoot.R'],
   'WingUpper.L': ['WingMid.L'], 'WingMid.L': ['WingTip.L'],
   'WingUpper.R': ['WingMid.R'], 'WingMid.R': ['WingTip.R'],
+  'MidAUpper.L': ['MidAKnee.L'], 'MidAKnee.L': ['MidAHock.L'], 'MidAHock.L': ['MidAFoot.L'],
+  'MidAUpper.R': ['MidAKnee.R'], 'MidAKnee.R': ['MidAHock.R'], 'MidAHock.R': ['MidAFoot.R'],
+  'MidBUpper.L': ['MidBKnee.L'], 'MidBKnee.L': ['MidBHock.L'], 'MidBHock.L': ['MidBFoot.L'],
+  'MidBUpper.R': ['MidBKnee.R'], 'MidBKnee.R': ['MidBHock.R'], 'MidBHock.R': ['MidBFoot.R'],
 }
 
 const MAP = {
@@ -142,7 +153,72 @@ const WYVERN_MAP = {
   ],
 }
 
-const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP }
+// And as a spider: the front and hind pairs are legs I and IV, the two mid pairs
+// II and III, the tail is the abdomen, and the wing chains stand in for the
+// chelicerae, which a spider spec drives through the same `arms` handles.
+const SPIDER_MAP = {
+  ...MAP,
+  legs: [
+    ...MAP.legs.filter((l) => l.id.startsWith('front')).map((l) => ({ ...l, id: l.id === 'frontLeft' ? 'leg1Left' : 'leg1Right' })),
+    { id: 'leg2Left', foot: 'MidAFoot.L', attach: 'Chest', chain: ['MidAUpper.L', 'MidAKnee.L', 'MidAHock.L', 'MidAFoot.L'] },
+    { id: 'leg2Right', foot: 'MidAFoot.R', attach: 'Chest', chain: ['MidAUpper.R', 'MidAKnee.R', 'MidAHock.R', 'MidAFoot.R'] },
+    { id: 'leg3Left', foot: 'MidBFoot.L', attach: 'Back', chain: ['MidBUpper.L', 'MidBKnee.L', 'MidBHock.L', 'MidBFoot.L'] },
+    { id: 'leg3Right', foot: 'MidBFoot.R', attach: 'Back', chain: ['MidBUpper.R', 'MidBKnee.R', 'MidBHock.R', 'MidBFoot.R'] },
+    ...MAP.legs.filter((l) => l.id.startsWith('hind')).map((l) => ({ ...l, id: l.id === 'hindLeft' ? 'leg4Left' : 'leg4Right' })),
+  ],
+  arms: WYVERN_MAP.wings,
+}
+
+// A biped is not a reading of that skeleton: it has toes, a pelvis both legs
+// share, and arms that hang off the chest through a clavicle. So it gets its
+// own, +Z forward again, with a small forward crease at each knee and elbow so
+// both have a hinge to keep.
+const HUMAN_JOINTS = {
+  Pelvis: [0, 0.52, 0],
+  Spine1: [0, 0.62, 0.01],
+  Chest: [0, 0.74, 0.02],
+  Neck: [0, 0.84, 0.02],
+  Head: [0, 0.96, 0.03],
+  'Hip.L': [0.09, 0.50, 0], 'Knee.L': [0.09, 0.27, 0.02], 'Ankle.L': [0.09, 0.05, 0], 'Toe.L': [0.09, 0.02, 0.10],
+  'Hip.R': [-0.09, 0.50, 0], 'Knee.R': [-0.09, 0.27, 0.02], 'Ankle.R': [-0.09, 0.05, 0], 'Toe.R': [-0.09, 0.02, 0.10],
+  'Clavicle.L': [0.04, 0.72, 0.02], 'Shoulder.L': [0.15, 0.70, 0.02], 'Elbow.L': [0.16, 0.48, 0.04], 'Wrist.L': [0.17, 0.27, 0.02], 'Hand.L': [0.17, 0.21, 0.03],
+  'Clavicle.R': [-0.04, 0.72, 0.02], 'Shoulder.R': [-0.15, 0.70, 0.02], 'Elbow.R': [-0.16, 0.48, 0.04], 'Wrist.R': [-0.17, 0.27, 0.02], 'Hand.R': [-0.17, 0.21, 0.03],
+}
+
+const HUMAN_CHILDREN = {
+  Pelvis: ['Spine1', 'Hip.L', 'Hip.R'],
+  Spine1: ['Chest'],
+  Chest: ['Neck', 'Clavicle.L', 'Clavicle.R'],
+  Neck: ['Head'],
+  'Hip.L': ['Knee.L'], 'Knee.L': ['Ankle.L'], 'Ankle.L': ['Toe.L'],
+  'Hip.R': ['Knee.R'], 'Knee.R': ['Ankle.R'], 'Ankle.R': ['Toe.R'],
+  'Clavicle.L': ['Shoulder.L'], 'Shoulder.L': ['Elbow.L'], 'Elbow.L': ['Wrist.L'], 'Wrist.L': ['Hand.L'],
+  'Clavicle.R': ['Shoulder.R'], 'Shoulder.R': ['Elbow.R'], 'Elbow.R': ['Wrist.R'], 'Wrist.R': ['Hand.R'],
+}
+
+// Written the way rig-map.mjs writes a biped: legs solved to the ankle with the
+// toe named as its rigid child, a lateral hinge axis for the near-straight knee,
+// and arms annotated shoulder, elbow, wrist so the jointed handles apply.
+const HUMAN_MAP = {
+  plan: 'human',
+  frame: { forward: [0, 0, 1], lateral: [1, 0, 0], centre: [0, 0.50, 0], yawDegrees: 90 },
+  ground: 0.02,
+  height: 0.94,
+  wheelbase: 0.48,
+  spine: ['Spine1', 'Chest'],
+  head: ['Neck', 'Head'],
+  tail: [],
+  legs: [
+    { id: 'legLeft', foot: 'Ankle.L', toe: 'Toe.L', attach: 'Pelvis', chain: ['Hip.L', 'Knee.L', 'Ankle.L'], hingeAxis: [1, 0, 0] },
+    { id: 'legRight', foot: 'Ankle.R', toe: 'Toe.R', attach: 'Pelvis', chain: ['Hip.R', 'Knee.R', 'Ankle.R'], hingeAxis: [1, 0, 0] },
+  ],
+  arms: [
+    { id: 'armLeft', side: 1, chain: ['Clavicle.L', 'Shoulder.L', 'Elbow.L', 'Wrist.L', 'Hand.L'], shoulder: 'Shoulder.L', elbow: 'Elbow.L', wrist: 'Wrist.L' },
+    { id: 'armRight', side: -1, chain: ['Clavicle.R', 'Shoulder.R', 'Elbow.R', 'Wrist.R', 'Hand.R'], shoulder: 'Shoulder.R', elbow: 'Elbow.R', wrist: 'Wrist.R' },
+  ],
+}
+
+const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP, spider: SPIDER_MAP, human: HUMAN_MAP }
 
 /** The handle groups a pose key may name -- and so the ones `scale` may dial. */
 const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'])
@@ -155,40 +231,44 @@ const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'
  * does. The BIN chunk is a stub: nothing here is skinned, but `bakeClip` appends
  * its samples to a buffer and so needs one to exist.
  */
-function writeFixture() {
-  const names = Object.keys(JOINTS)
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'check-anim-'))
+function writeFixture(name, joints, children) {
+  const names = Object.keys(joints)
   const index = new Map(names.map((n, i) => [n, i]))
   const parentOf = new Map()
-  for (const [p, kids] of Object.entries(CHILDREN)) for (const k of kids) parentOf.set(k, p)
+  for (const [p, kids] of Object.entries(children)) for (const k of kids) parentOf.set(k, p)
 
   const nodes = names.map((n) => {
-    const from = parentOf.has(n) ? JOINTS[parentOf.get(n)] : [0, 0, 0]
+    const from = parentOf.has(n) ? joints[parentOf.get(n)] : [0, 0, 0]
     const node = {
       name: n,
-      translation: [JOINTS[n][0] - from[0], JOINTS[n][1] - from[1], JOINTS[n][2] - from[2]],
+      translation: [joints[n][0] - from[0], joints[n][1] - from[1], joints[n][2] - from[2]],
       rotation: [0, 0, 0, 1],
       scale: [1, 1, 1],
     }
-    if (CHILDREN[n]) node.children = CHILDREN[n].map((k) => index.get(k))
+    if (children[n]) node.children = children[n].map((k) => index.get(k))
     return node
   })
   const json = {
     asset: { version: '2.0' },
     scene: 0,
-    scenes: [{ nodes: [index.get('Back')] }],
+    scenes: [{ nodes: [index.get(names[0])] }],
     nodes,
     skins: [{ joints: names.map((n) => index.get(n)) }],
     buffers: [{ byteLength: 4 }],
     bufferViews: [],
     accessors: [],
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-anim-'))
-  const file = path.join(dir, 'fixture.glb')
+  const file = path.join(TMP, `${name}.glb`)
   writeGlb(file, json, Buffer.alloc(4))
   return file
 }
 
-const FIXTURE = writeFixture()
+const FIXTURE = writeFixture('fixture', JOINTS, CHILDREN)
+const HUMAN_FIXTURE = writeFixture('human', HUMAN_JOINTS, HUMAN_CHILDREN)
+/** The skeleton a plan's specs are solved on. */
+const SKELETON_OF = { human: HUMAN_FIXTURE }
+const skeletonOf = (plan) => SKELETON_OF[plan] ?? FIXTURE
 const skel = loadSkeleton(FIXTURE)
 const byName = new Map(skel.joints.map((j) => [skel.name(j), j]))
 const named = (n) => byName.get(n)
@@ -503,6 +583,34 @@ console.log('\nbaking')
   })), 'a track short of its sample times is refused rather than written')
 }
 
+// --- a biped rig map --------------------------------------------------------
+
+console.log('\na biped rig map')
+{
+  const map = buildRigMap(HUMAN_FIXTURE)
+  check(map.plan === 'human', 'two feet on the ground read as a human', `plan ${map.plan}`)
+  check(map.frame.forward.join() === '0,0,1', 'the toes say which way it faces', `forward ${map.frame.forward.join(',')}`)
+  const legs = Object.fromEntries(map.legs.map((l) => [l.id, l]))
+  check(legs.legLeft?.foot === 'Ankle.L' && legs.legLeft?.toe === 'Toe.L' && legs.legRight?.foot === 'Ankle.R' && legs.legRight?.toe === 'Toe.R',
+    'each leg is solved to the ankle with its toe named beside it', map.legs.map((l) => `${l.id} ${l.foot}+${l.toe}`).join('  '))
+  check(legs.legLeft?.chain.join() === 'Hip.L,Knee.L,Ankle.L' && legs.legLeft?.attach === 'Pelvis' && legs.legLeft?.hingeAxis.join() === '1,0,0',
+    'a leg runs hip, knee, ankle off the pelvis and hinges about the lateral axis', `${legs.legLeft?.chain.join(' ')} off ${legs.legLeft?.attach}`)
+  const arms = Object.fromEntries((map.arms ?? []).map((a) => [a.id, a]))
+  check(arms.armLeft?.shoulder === 'Shoulder.L' && arms.armLeft?.elbow === 'Elbow.L' && arms.armLeft?.wrist === 'Wrist.L' && arms.armRight?.side === -1,
+    'an arm is annotated shoulder, elbow, wrist past its clavicle', `${arms.armLeft?.chain.join(' ')}: S ${arms.armLeft?.shoulder} E ${arms.armLeft?.elbow} W ${arms.armLeft?.wrist}`)
+  check(map.spine.join() === 'Spine1,Chest' && map.head.join() === 'Neck,Head', 'the spine runs pelvis to chest and the head chest to skull',
+    `spine ${map.spine.join(' ')}  head ${map.head.join(' ')}`)
+  check(map.unclaimed.length === 0, 'every joint is claimed', map.unclaimed.join(' '))
+
+  // Tripo leaves one leg of some villagers as a lone joint at hip height. That
+  // figure cannot walk, and the map must refuse rather than derive a hopper.
+  const joints = { ...HUMAN_JOINTS }
+  for (const n of ['Knee.R', 'Ankle.R', 'Toe.R']) delete joints[n]
+  const children = { ...HUMAN_CHILDREN }
+  for (const n of ['Hip.R', 'Knee.R', 'Ankle.R']) delete children[n]
+  check(throws(() => buildRigMap(writeFixture('one-legged', joints, children))), 'a biped with one foot on the ground refuses to be mapped')
+}
+
 // --- the shipped specs ------------------------------------------------------
 
 console.log('\nthe shipped clip specs')
@@ -547,7 +655,8 @@ for (const plan of plans()) {
   // not written for, which is the rig-agnostic claim the whole solver rests on.
   for (const name of names) {
     const spec = readSpec(name, plan)
-    const solved = spec.kind === 'pose' ? poseClip(FIXTURE, map, spec) : solveClip(FIXTURE, map, spec)
+    const file = skeletonOf(plan)
+    const solved = spec.kind === 'pose' ? poseClip(file, map, spec) : solveClip(file, map, spec)
     const stats = diagnose(solved)
     check(stats.penetration < 1e-3 && stats.loopGap < 1e-3, `${plan}/${name} solves on a skeleton it was not tuned for`,
       `sink ${mm(stats.penetration)}  loop ${deg(stats.loopGap)}`)
@@ -595,6 +704,6 @@ console.log('\nrigged creatures on disk')
   }
 }
 
-fs.rmSync(path.dirname(FIXTURE), { recursive: true, force: true })
+fs.rmSync(TMP, { recursive: true, force: true })
 console.log(`\n${failures === 0 ? 'all animation checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -1,0 +1,34 @@
+{
+  "kind": "pose",
+  "note": "Recoil in shock: the body snaps back off the feet, the head jerks up and away, both hands fly up in front of the face, then everything settles back to the stance. The feet stay planted, so the lean-back is the root sliding aft over them.",
+  "samples": 36,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.25, "pose": {
+      "root": { "fore": -0.12, "lift": -0.02 },
+      "spine": { "pitch": -0.3 },
+      "head": { "pitch": -0.25 },
+      "arms": { "both": { "raise": 1.2, "spread": 0.6, "elbow": 1.6, "wristPitch": -0.4 } }
+    } },
+    { "t": 0.45, "pose": {
+      "root": { "fore": -0.1, "lift": -0.02 },
+      "spine": { "pitch": -0.26 },
+      "head": { "pitch": -0.2, "yaw": 0.1 },
+      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } }
+    } },
+    { "t": 1.1, "pose": {
+      "root": { "fore": -0.1, "lift": -0.02 },
+      "spine": { "pitch": -0.26 },
+      "head": { "pitch": -0.2, "yaw": 0.1 },
+      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } }
+    } },
+    { "t": 1.8, "pose": {
+      "root": { "fore": -0.03 },
+      "spine": { "pitch": -0.08 },
+      "head": { "pitch": -0.05 },
+      "arms": { "both": { "raise": 0.5, "spread": 0.3, "elbow": 0.8 } }
+    } },
+    { "t": 2.4, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

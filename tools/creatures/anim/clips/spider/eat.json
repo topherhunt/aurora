@@ -1,0 +1,189 @@
+{
+  "kind": "pose",
+  "note": "Feeding: hunched over a catch held under the face. The head pitches nose-down over the meal, the abdomen lifts so the whole body arches, the front pair of legs draws in and up to hold it, and the chelicerae work it: the fangs pump in and out and open and close every other key while the body rocks over them once per four. Spine and head pitch are POSITIVE, which is nose-down; the thorax itself pitches only a little because every hip hangs off it and a real nose-down there lifts the back legs off the ground. The other six feet are pulled in toward the body so the lowered body has slack to reach the floor. Two rocks per loop, and the last key repeats the first so the clip cycles. The front feet are `unweighted` because they are holding food at rest height, not standing on it.",
+  "samples": 64,
+  "unweighted": ["leg1Left", "leg1Right"],
+  "limits": { "fold": 2.6 },
+  "keys": [
+    {
+      "t": 0,
+      "pose": {
+        "root": { "lift": -0.2, "fore": 0.02 },
+        "spine": { "pitch": 0.16 },
+        "head": { "pitch": 0.55 },
+        "tail": { "pitch": 0.4 },
+        "arms": { "pitch": 0.2, "spread": 0.4 },
+        "legs": {
+          "leg1Left": { "fore": -0.15, "lat": -0.06, "lift": 0.3 },
+          "leg1Right": { "fore": -0.15, "lat": 0.06, "lift": 0.3 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 0.2,
+      "pose": {
+        "root": { "lift": -0.23, "fore": 0.028 },
+        "spine": { "pitch": 0.19 },
+        "head": { "pitch": 0.65 },
+        "tail": { "pitch": 0.475 },
+        "arms": { "pitch": 0.6, "spread": 0 },
+        "legs": {
+          "leg1Left": { "fore": -0.16, "lat": -0.06, "lift": 0.33 },
+          "leg1Right": { "fore": -0.16, "lat": 0.06, "lift": 0.33 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 0.4,
+      "pose": {
+        "root": { "lift": -0.26, "fore": 0.035 },
+        "spine": { "pitch": 0.22 },
+        "head": { "pitch": 0.75 },
+        "tail": { "pitch": 0.55 },
+        "arms": { "pitch": 0.2, "spread": 0.4 },
+        "legs": {
+          "leg1Left": { "fore": -0.17, "lat": -0.06, "lift": 0.36 },
+          "leg1Right": { "fore": -0.17, "lat": 0.06, "lift": 0.36 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 0.6,
+      "pose": {
+        "root": { "lift": -0.23, "fore": 0.028 },
+        "spine": { "pitch": 0.19 },
+        "head": { "pitch": 0.65 },
+        "tail": { "pitch": 0.475 },
+        "arms": { "pitch": 0.6, "spread": 0 },
+        "legs": {
+          "leg1Left": { "fore": -0.16, "lat": -0.06, "lift": 0.33 },
+          "leg1Right": { "fore": -0.16, "lat": 0.06, "lift": 0.33 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 0.8,
+      "pose": {
+        "root": { "lift": -0.2, "fore": 0.02 },
+        "spine": { "pitch": 0.16 },
+        "head": { "pitch": 0.55 },
+        "tail": { "pitch": 0.4 },
+        "arms": { "pitch": 0.2, "spread": 0.4 },
+        "legs": {
+          "leg1Left": { "fore": -0.15, "lat": -0.06, "lift": 0.3 },
+          "leg1Right": { "fore": -0.15, "lat": 0.06, "lift": 0.3 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 1,
+      "pose": {
+        "root": { "lift": -0.23, "fore": 0.028 },
+        "spine": { "pitch": 0.19 },
+        "head": { "pitch": 0.65 },
+        "tail": { "pitch": 0.475 },
+        "arms": { "pitch": 0.6, "spread": 0 },
+        "legs": {
+          "leg1Left": { "fore": -0.16, "lat": -0.06, "lift": 0.33 },
+          "leg1Right": { "fore": -0.16, "lat": 0.06, "lift": 0.33 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 1.2,
+      "pose": {
+        "root": { "lift": -0.26, "fore": 0.035 },
+        "spine": { "pitch": 0.22 },
+        "head": { "pitch": 0.75 },
+        "tail": { "pitch": 0.55 },
+        "arms": { "pitch": 0.2, "spread": 0.4 },
+        "legs": {
+          "leg1Left": { "fore": -0.17, "lat": -0.06, "lift": 0.36 },
+          "leg1Right": { "fore": -0.17, "lat": 0.06, "lift": 0.36 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 1.4,
+      "pose": {
+        "root": { "lift": -0.23, "fore": 0.028 },
+        "spine": { "pitch": 0.19 },
+        "head": { "pitch": 0.65 },
+        "tail": { "pitch": 0.475 },
+        "arms": { "pitch": 0.6, "spread": 0 },
+        "legs": {
+          "leg1Left": { "fore": -0.16, "lat": -0.06, "lift": 0.33 },
+          "leg1Right": { "fore": -0.16, "lat": 0.06, "lift": 0.33 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    },
+    {
+      "t": 1.6,
+      "pose": {
+        "root": { "lift": -0.2, "fore": 0.02 },
+        "spine": { "pitch": 0.16 },
+        "head": { "pitch": 0.55 },
+        "tail": { "pitch": 0.4 },
+        "arms": { "pitch": 0.2, "spread": 0.4 },
+        "legs": {
+          "leg1Left": { "fore": -0.15, "lat": -0.06, "lift": 0.3 },
+          "leg1Right": { "fore": -0.15, "lat": 0.06, "lift": 0.3 },
+          "leg2Left": { "fore": -0.03, "lat": -0.03 },
+          "leg2Right": { "fore": -0.03, "lat": 0.03 },
+          "leg3Left": { "lat": -0.03 },
+          "leg3Right": { "lat": 0.03 },
+          "leg4Left": { "fore": 0.1, "lat": -0.02 },
+          "leg4Right": { "fore": 0.1, "lat": 0.02 }
+        }
+      }
+    }
+  ]
+}

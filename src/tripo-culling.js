@@ -13,11 +13,14 @@
 // RULE: every loader of Tripo output -- bench previews AND world placement --
 // calls this on the loaded root, so a preview fails the way the game would.
 // The world keeps culling unless a placement explicitly decides otherwise and
-// says why at the call site. The one standing exception is a Tripo trunk
-// batched into the tree prop material, which is DoubleSide because the LEAF
-// CARDS in the same draw call are single-sided geometry (material.js,
-// createPropMaterial); the trunk has no thin slabs, so that costs raster work
-// and nothing visible.
+// says why at the call site. Two standing exceptions: a Tripo trunk batched
+// into the tree prop material, which is DoubleSide because the LEAF CARDS in
+// the same draw call are single-sided geometry (material.js,
+// createPropMaterial), and the trunk has no thin slabs so that costs raster
+// work and nothing visible; and a material carrying `extras.cutout` (GLTFLoader
+// lands extras on material.userData), which marks a single-sheet cutout card
+// from tools/creatures/wing-cards.mjs -- there is no far sheet, and culling
+// it would draw a butterfly from one side only.
 //
 // scripts/check-creatures.mjs asserts that every src file loading from a Tripo
 // work directory or from public/creatures imports this module.
@@ -25,11 +28,14 @@
 
 import THREE from './three-instance.js'
 
-/** Sets FrontSide on every material under `root`; returns `root`. */
+/** Sets FrontSide on every non-cutout material under `root`; returns `root`. */
 export function cullTripoBackfaces(root) {
   root.traverse((o) => {
     if (!o.isMesh) return
-    for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.side = THREE.FrontSide
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (m.userData.cutout === true) continue
+      m.side = THREE.FrontSide
+    }
   })
   return root
 }

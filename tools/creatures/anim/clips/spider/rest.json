@@ -1,0 +1,36 @@
+{
+  "kind": "pose",
+  "note": "Settling down: every foot drawn in toward the body and the body lowered onto the ground between them, abdomen resting, chelicerae folded. The hold is a flat pair of keys so a game can cut it into down / rest / up, and the last key repeats the first so it loops as a whole. Foot offsets are fractions of the wheelbase, which for this rig is the leg span, so 0.1 is 10cm of pull-in.",
+  "samples": 72,
+  "limits": { "fold": 2.6 },
+  "keys": [
+    { "t": 0.0, "pose": { "tail": { "pitch": 0.1 } } },
+    { "t": 1.2, "pose": {
+      "root": { "lift": -0.4 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "tail": { "pitch": -0.1 },
+      "arms": { "pitch": 0.3 },
+      "legs": {
+        "leg1Left": { "fore": -0.12, "lat": -0.02 }, "leg1Right": { "fore": -0.12, "lat": 0.02 },
+        "leg2Left": { "fore": -0.08, "lat": -0.08 }, "leg2Right": { "fore": -0.08, "lat": 0.08 },
+        "leg3Left": { "fore": 0.0, "lat": -0.12 }, "leg3Right": { "fore": 0.0, "lat": 0.12 },
+        "leg4Left": { "fore": 0.1, "lat": -0.06 }, "leg4Right": { "fore": 0.1, "lat": 0.06 }
+      }
+    } },
+    { "t": 4.0, "pose": {
+      "root": { "lift": -0.4 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "tail": { "pitch": -0.1 },
+      "arms": { "pitch": 0.3 },
+      "legs": {
+        "leg1Left": { "fore": -0.12, "lat": -0.02 }, "leg1Right": { "fore": -0.12, "lat": 0.02 },
+        "leg2Left": { "fore": -0.08, "lat": -0.08 }, "leg2Right": { "fore": -0.08, "lat": 0.08 },
+        "leg3Left": { "fore": 0.0, "lat": -0.12 }, "leg3Right": { "fore": 0.0, "lat": 0.12 },
+        "leg4Left": { "fore": 0.1, "lat": -0.06 }, "leg4Right": { "fore": 0.1, "lat": 0.06 }
+      }
+    } },
+    { "t": 5.2, "pose": { "tail": { "pitch": 0.1 } } }
+  ]
+}

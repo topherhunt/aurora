@@ -1,0 +1,37 @@
+{
+  "note": "The same tetrapod at a scurry: shorter cycle, duty under a half so each set is in the air longer than it is down, a longer reach and a lower body. The stagger is halved -- at speed the ripple compresses -- and the abdomen bounces harder because at this cadence it is the mass that lags. The bind pose holds legs I, II and IV at full stretch, so `legHold` draws their stance stations in toward the body -- the front pair back, the back pair forward -- to give the stride somewhere to go; leg III stands sideways and its step is a swing at the hip, not a reach.",
+  "duration": 0.42,
+  "samples": 28,
+  "stride": 0.15,
+  "stepHeight": 0.2,
+  "duty": 0.46,
+  "crouch": 0.06,
+  "toeOff": 0,
+  "phases": {
+    "leg1Left": 0,
+    "leg3Left": 0.03,
+    "leg2Right": 0.015,
+    "leg4Right": 0.045,
+    "leg1Right": 0.5,
+    "leg3Right": 0.53,
+    "leg2Left": 0.515,
+    "leg4Left": 0.545
+  },
+  "bodyBob": 0.02,
+  "bobFreq": 2,
+  "bodySway": 0.012,
+  "spineYaw": 0.04,
+  "headPitch": 0.03,
+  "tailPitch": 0.16,
+  "tailSway": 0.1,
+  "tailLift": 0.12,
+  "armSwing": 0.12,
+  "legHold": {
+    "leg1Left": {"fore": -0.1},
+    "leg1Right": {"fore": -0.1},
+    "leg2Left": {"fore": -0.03, "lat": -0.03},
+    "leg2Right": {"fore": -0.03, "lat": 0.03},
+    "leg4Left": {"fore": 0.07},
+    "leg4Right": {"fore": 0.07}
+  }
+}

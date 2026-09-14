@@ -91,9 +91,16 @@ export const ROCK_LOD_AT = [4, 7.5, 25]
 
 // A rock only LEAVES a tier it is on this much further out than it entered it,
 // so a camera parked on a threshold does not flicker between two meshes.
-// v2/render/rocks.js still carries the same value as its local LOD_HYSTERESIS;
-// the bench's world-LOD view reads this one, so the two must agree.
 export const ROCK_LOD_HYSTERESIS = 0.12
+
+// HARD CEILINGS ON THE LADDER, in metres of camera distance, whatever the size
+// says: past ROCK_LOD_FAR_MAX every rock is T6, and past ROCK_LOD_GONE_MAX no
+// rock is drawn at all -- v2/render/rocks.js refuses a bed whose reach is
+// longer. Only the biggest rocks feel either: a 40 m block reaches T6 by size
+// exactly at the first, and the embedded bed alone places bigger. The far
+// ceiling is left the same way any rung is, ROCK_LOD_HYSTERESIS inside it.
+export const ROCK_LOD_FAR_MAX = 1000
+export const ROCK_LOD_GONE_MAX = 1250
 
 // THE METRE THE LADDER IS MEASURED IN: the LONGEST AXIS of the rock's box.
 //

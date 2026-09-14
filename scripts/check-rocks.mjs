@@ -49,7 +49,7 @@ import { readFileSync } from 'node:fs'
 
 import * as THREE from 'three'
 
-import { buildRock, ROCK_TIERS, ROCK_LOD_AT, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
+import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_FAR_MAX, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
   buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
@@ -3264,7 +3264,10 @@ console.log('\nscatter')
           for (const t of bed.tiles.values()) {
             for (let k = 0; k < t.n; k++) {
               const id = t.ids[k]
-              const farAt = rockLodSize(bed.shape.measured) * bed.instScale[id] * LAST
+              // Under the world's ceiling: past ROCK_LOD_FAR_MAX every rock is
+              // on T6, so a block that would earn its meshes further out does
+              // not get to keep them.
+              const farAt = Math.min(rockLodSize(bed.shape.measured) * bed.instScale[id] * LAST, ROCK_LOD_FAR_MAX)
               const swapping = bed.fadeAt[id] >= 0
               if (swapping) fading++
               const slot = fades[id]

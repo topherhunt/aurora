@@ -9,6 +9,13 @@
  * end on the ground in two mirrored pairs, the head end sits high, the tail
  * hangs off the back. So everything here is derived from joint POSITIONS.
  *
+ * Two chains ending on the ground is a biped, and gets the `human` reading: two
+ * legs, a spine up to wherever the arms branch, a head above that, and each arm
+ * annotated with its shoulder, elbow and wrist so a clip can drive them apart.
+ * The names are as random on a human as on a fox -- one farmer's arms hang off
+ * a joint called `Head_0` -- and the chains are not even the same length from
+ * one villager to the next, so nothing here goes by name either.
+ *
  * Two things this must not assume:
  *
  *   Axis alignment. The fox is modelled 45.9 degrees off the X axis. The body
@@ -23,7 +30,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cross, dot, loadSkeleton, norm, sub } from './skeleton.mjs'
+import { add, cross, dot, len, loadSkeleton, norm, scale, sub } from './skeleton.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 export const workDir = (id) => path.join(ROOT, 'tools/creatures/work', id)
@@ -110,15 +117,8 @@ function findLegs(skel, frame, height, ground) {
     pairs.push({ fore: (a.fore + mate.fore) / 2, left, right })
   }
   if (pairs.length < 2) {
-    // Two feet and no pair is the signature of a biped: the body frame comes
-    // from the principal horizontal axis, which only means "along the spine" on
-    // an animal longer than it is wide. A standing human has no such axis, so
-    // `forward` lands across the shoulders and the feet stop looking mirrored.
-    const hint = cand.length <= 2
-      ? 'this looks like a biped -- the gait synthesiser is quadruped-only'
-      : 'edit rig-map.json by hand'
     throw new Error(`found ${pairs.length} mirrored foot pair(s), need 2 -- `
-      + `low leaves were ${cand.map((f) => skel.name(f.j)).join(', ') || '(none)'}. ${hint}.`)
+      + `low leaves were ${cand.map((f) => skel.name(f.j)).join(', ') || '(none)'}. Edit rig-map.json by hand.`)
   }
   pairs.sort((a, b) => b.fore - a.fore)
   const front = pairs[0], hind = pairs[pairs.length - 1]
@@ -172,11 +172,41 @@ function runFrom(skel, start) {
 
 export function buildRigMap(file) {
   const skel = loadSkeleton(file)
-  const frame = bodyFrame(skel)
   const ys = skel.joints.map((j) => skel.pos(j)[1])
   const ground = Math.min(...ys), height = Math.max(...ys) - ground
   if (height < 1e-6) throw new Error('every joint is at the same height -- this rig is flat')
 
+  // How many chains end on the ground decides the reading. A quadruped's tail
+  // may hang low too, so it is "two or fewer", not "exactly two": one foot is a
+  // biped Tripo left half-rigged, and the biped reading says so.
+  const low = skel.leaves().filter((j) => skel.pos(j)[1] < ground + FOOT_BAND * height)
+  const body = low.length <= 2 ? bipedMap(skel, low, ground, height) : quadrupedMap(skel, ground, height)
+  return {
+    source: path.basename(file),
+    ...(body.plan ? { plan: body.plan } : {}),
+    // Everything below is in the creature's own frame, derived not assumed.
+    frame: {
+      forward: body.frame.forward.map(r6),
+      lateral: body.frame.lateral.map(r6),
+      centre: body.frame.centre.map(r6),
+      yawDegrees: r6((Math.atan2(body.frame.forward[2], body.frame.forward[0]) * 180) / Math.PI),
+    },
+    ground: r6(ground),
+    height: r6(height),
+    wheelbase: r6(body.wheelbase),
+    spine: body.spine.map(skel.name),
+    head: body.head.map(skel.name),
+    tail: body.tail.map(skel.name),
+    legs: body.legs,
+    ...(body.arms ? { arms: body.arms } : {}),
+    // Joints no group claimed: ears, jaw, stray Tripo extras. Not a failure --
+    // they simply hold their rest pose unless a clip names them.
+    unclaimed: skel.joints.map(skel.name).filter((n) => !body.claimed.has(n)),
+  }
+}
+
+function quadrupedMap(skel, ground, height) {
+  const frame = bodyFrame(skel)
   const legs = findLegs(skel, frame, height, ground)
   const frontAttach = skel.joints.find((j) => skel.name(j) === legs[0].attach)
   const hindAttach = skel.joints.find((j) => skel.name(j) === legs[2].attach)
@@ -184,7 +214,8 @@ export function buildRigMap(file) {
   // Head: the unbranched run from the front attachment toward the skull. Tail:
   // the longest low run hanging off the hind end that is not a leg.
   const legJoints = new Set(legs.flatMap((l) => l.chain))
-  const headRun = pathBetween(skel, frontAttach, frame.skull).filter((j) => j !== frontAttach)
+  const spine = pathBetween(skel, hindAttach, frontAttach)
+  const head = pathBetween(skel, frontAttach, frame.skull).filter((j) => j !== frontAttach)
 
   const tailCands = skel.leaves()
     .filter((j) => !legJoints.has(skel.name(j)) && j !== frame.skull)
@@ -193,32 +224,132 @@ export function buildRigMap(file) {
     .sort((a, b) => a.fore - b.fore)
   const tail = tailCands.length ? limbChain(skel, tailCands[0].j) : []
 
-  const claimed = new Set([
-    ...legJoints,
-    ...pathBetween(skel, hindAttach, frontAttach).map(skel.name),
-    ...headRun.map(skel.name),
-    ...tail.map(skel.name),
-  ])
   return {
-    source: path.basename(file),
-    // Everything below is in the creature's own frame, derived not assumed.
-    frame: {
-      forward: frame.forward.map(r6),
-      lateral: frame.lateral.map(r6),
-      centre: frame.centre.map(r6),
-      yawDegrees: r6((Math.atan2(frame.forward[2], frame.forward[0]) * 180) / Math.PI),
-    },
-    ground: r6(ground),
-    height: r6(height),
+    frame,
     // Front-to-hind foot distance: the natural stride scale for this animal.
-    wheelbase: r6(legs[0].station.fore - legs[2].station.fore),
-    spine: pathBetween(skel, hindAttach, frontAttach).map(skel.name),
-    head: headRun.map(skel.name),
-    tail: tail.map(skel.name),
-    legs,
-    // Joints no group claimed: ears, jaw, stray Tripo extras. Not a failure --
-    // they simply hold their rest pose unless a clip names them.
-    unclaimed: skel.joints.map(skel.name).filter((n) => !claimed.has(n)),
+    wheelbase: legs[0].station.fore - legs[2].station.fore,
+    spine, head, tail, legs,
+    claimed: new Set([...legJoints, ...[...spine, ...head, ...tail].map(skel.name)]),
+  }
+}
+
+/** The world axis nearest a horizontal direction, or a refusal if none is near. */
+function snapToAxis(v) {
+  const axes = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]
+  const best = axes.reduce((a, b) => (dot(b, v) > dot(a, v) ? b : a))
+  const off = Math.acos(Math.min(1, dot(best, norm(v)))) * 180 / Math.PI
+  if (off > 35) throw new Error(`the toes point ${off.toFixed(0)} degrees off every world axis -- write frame.forward into rig-map.json by hand`)
+  return best
+}
+
+/**
+ * Where an arm's shoulder, elbow and wrist are, by proportion. Tripo gives one
+ * villager three arm joints and the next seven, so they are found rather than
+ * counted: the shoulder is the first joint whose bone drops more than it reaches
+ * sideways (everything before it is clavicle), the elbow the joint nearest
+ * halfway down the arm from there, the wrist the one nearest twice the upper
+ * arm's length, and whatever follows is hand.
+ */
+function armAnatomy(skel, chain, frame) {
+  const P = chain.map(skel.pos)
+  let s = 0
+  for (; s < P.length - 2; s++) {
+    const d = sub(P[s + 1], P[s])
+    if (Math.abs(d[1]) > Math.abs(dot(d, frame.lateral))) break
+  }
+  const cum = [0]
+  for (let i = s + 1; i < P.length; i++) cum.push(cum[cum.length - 1] + len(sub(P[i], P[i - 1])))
+  const nearest = (target, lo, hi) => {
+    let best = lo
+    for (let i = lo; i <= hi; i++) if (Math.abs(cum[i] - target) < Math.abs(cum[best] - target)) best = i
+    return best
+  }
+  const e = nearest(cum[cum.length - 1] / 2, 1, cum.length - 2)
+  const w = nearest(2 * cum[e], e + 1, cum.length - 1)
+  return { shoulder: skel.name(chain[s]), elbow: skel.name(chain[s + e]), wrist: skel.name(chain[s + w]) }
+}
+
+/**
+ * The `human` reading. Forward is where the toes point -- the only cue a
+ * standing figure offers, since its spine is vertical and its width is its
+ * length -- snapped to a world axis because Tripo poses a humanoid square to
+ * one and the toes themselves splay by twenty degrees. Left is the leg on the
+ * positive lateral side, whatever Tripo called it.
+ */
+function bipedMap(skel, low, ground, height) {
+  const feet = low.map(skel.name).join(', ') || '(none)'
+  if (low.length !== 2) {
+    throw new Error(`found ${low.length} foot chain(s) reaching the ground, a biped needs 2 -- ${feet}. `
+      + 'Tripo left the other leg as a stub joint at hip height; re-rig, or write the leg into rig-map.json by hand.')
+  }
+  const chains = low.map((f) => limbChain(skel, f))
+  for (const c of chains) {
+    if (c.length < 3) throw new Error(`leg ending at ${skel.name(c[c.length - 1])} has only ${c.length} joints, need hip, knee and foot`)
+  }
+  // A last bone that runs along the ground is a toe: the leg is solved to the
+  // ankle above it (see limbSetup) and the toe says which way the figure faces.
+  const toeOf = (c) => {
+    const d = sub(skel.pos(c[c.length - 1]), skel.pos(c[c.length - 2]))
+    return c.length >= 4 && Math.hypot(d[0], d[2]) > Math.abs(d[1]) ? [d[0], 0, d[2]] : null
+  }
+  let cue = [0, 0, 0]
+  for (const c of chains) { const d = toeOf(c); if (d) cue = add(cue, d) }
+  if (len(cue) < 0.02 * height) throw new Error('neither foot has a toe joint to say which way this biped faces -- write frame.forward into rig-map.json by hand')
+  const forward = snapToAxis(cue)
+  const up = [0, 1, 0]
+  const lateral = cross(up, forward)
+  const hips = chains.map((c) => skel.pos(c[0]))
+  const skull = skel.joints.reduce((a, b) => (skel.pos(a)[1] > skel.pos(b)[1] ? a : b))
+  const frame = { centre: scale(add(hips[0], hips[1]), 0.5), forward, up, lateral, skull }
+
+  const pelvis = attachOf(skel, chains[0])
+  if (attachOf(skel, chains[1]) !== pelvis) throw new Error('the two legs hang off different joints -- write the map by hand')
+  const legs = chains.map((whole) => {
+    const toe = toeOf(whole) ? whole[whole.length - 1] : null
+    const chain = toe === null ? whole : whole.slice(0, -1)
+    const foot = chain[chain.length - 1]
+    const at = inFrame(frame, skel.pos(foot))
+    return {
+      id: at.lat > 0 ? 'legLeft' : 'legRight',
+      foot: skel.name(foot),
+      ...(toe === null ? {} : { toe: skel.name(toe) }),
+      chain: chain.map(skel.name),
+      attach: skel.name(pelvis),
+      restFoot: skel.pos(foot),
+      station: { fore: at.fore, lat: at.lat },
+      hingeAxis: lateral,
+    }
+  }).sort((a) => (a.id === 'legLeft' ? -1 : 1))
+  if (legs[0].id === legs[1].id) throw new Error(`both feet are on the same side of the body (${feet}) -- write the map by hand`)
+
+  // Arms: the two longest chains that are not legs, one each side. Stray
+  // single joints Tripo leaves at hip height have no chain and drop out here.
+  const legJoints = new Set(chains.flat())
+  const armCands = skel.leaves()
+    .filter((j) => !legJoints.has(j) && j !== skull)
+    .map((j) => ({ chain: limbChain(skel, j), lat: inFrame(frame, skel.pos(j)).lat }))
+    .filter((c) => c.chain.length >= 3)
+    .sort((a, b) => b.chain.length - a.chain.length)
+  const armOf = (side) => armCands.find((c) => Math.sign(c.lat) === side)
+  const left = armOf(1), right = armOf(-1)
+  if (!left || !right) throw new Error(`could not find an arm on ${!left ? 'the left' : 'the right'} -- write the map by hand`)
+  const chest = attachOf(skel, left.chain)
+  if (attachOf(skel, right.chain) !== chest) throw new Error('the two arms hang off different joints -- write the map by hand')
+  const arms = [[left, 'armLeft', 1], [right, 'armRight', -1]].map(([c, id, side]) => ({
+    id, side, chain: c.chain.map(skel.name), ...armAnatomy(skel, c.chain, frame),
+  }))
+
+  // The pelvis stays out of the spine: bending it would pivot the whole figure
+  // about a root joint Tripo puts on the ground between the feet.
+  const spine = pathBetween(skel, pelvis, chest).slice(1)
+  const head = pathBetween(skel, chest, skull).slice(1)
+  return {
+    plan: 'human',
+    frame,
+    // Hip height above the ground: the natural stride and reach scale on two legs.
+    wheelbase: (hips[0][1] + hips[1][1]) / 2 - ground,
+    spine, head, tail: [], legs, arms,
+    claimed: new Set([pelvis, ...chains.flat(), ...spine, ...head, ...left.chain, ...right.chain].map(skel.name)),
   }
 }
 
@@ -242,12 +373,16 @@ function main() {
 
   const map = buildRigMap(src)
   const show = (label, list) => console.log(`  ${label.padEnd(10)} ${list.length ? list.join(' -> ') : '(none found)'}`)
-  console.log(`${id}  <- ${map.source}`)
+  console.log(`${id}  <- ${map.source}${map.plan ? `  (${map.plan})` : ''}`)
   console.log(`  frame      forward ${map.frame.yawDegrees.toFixed(1)} deg off +X, ground y=${map.ground}, height ${map.height}, wheelbase ${map.wheelbase}`)
   show('spine', map.spine)
   show('head', map.head)
   show('tail', map.tail)
   for (const l of map.legs) console.log(`  ${l.id.padEnd(10)} ${l.chain.join(' -> ')}   (off ${l.attach})`)
+  for (const a of map.arms ?? []) {
+    const tag = (n) => (n === a.shoulder ? `[S]${n}` : n === a.elbow ? `[E]${n}` : n === a.wrist ? `[W]${n}` : n)
+    console.log(`  ${a.id.padEnd(10)} ${a.chain.map(tag).join(' -> ')}`)
+  }
   if (map.unclaimed.length) console.log(`  unclaimed  ${map.unclaimed.join(' ')}`)
 
   if (flags.includes('--write')) {

@@ -1,0 +1,40 @@
+{
+  "kind": "pose",
+  "note": "Making a point: the right arm comes up and points ahead at the listener, jabs twice on the beat, then a nod and back down. See talk-nod for the shared talk-* conventions.",
+  "samples": 36,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.5, "pose": {
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.1, "spread": 0.1, "elbow": 0.5, "curl": 0.9 } }
+    } },
+    { "t": 0.8, "pose": {
+      "spine": { "pitch": 0.08 },
+      "head": { "pitch": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.25, "spread": 0.1, "elbow": 0.25, "curl": 0.9 } }
+    } },
+    { "t": 1.1, "pose": {
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.03 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.1, "spread": 0.1, "elbow": 0.5, "curl": 0.9 } }
+    } },
+    { "t": 1.4, "pose": {
+      "spine": { "pitch": 0.08 },
+      "head": { "pitch": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.25, "spread": 0.1, "elbow": 0.25, "curl": 0.9 } }
+    } },
+    { "t": 2.0, "pose": {
+      "spine": { "pitch": 0.04 },
+      "head": { "pitch": 0.14 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.8, "spread": 0.1, "elbow": 0.8, "curl": 0.6 } }
+    } },
+    { "t": 2.4, "pose": {
+      "spine": { "pitch": 0.02 },
+      "head": { "pitch": 0.0 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.4, "spread": 0.08, "elbow": 0.5, "curl": 0.3 } }
+    } },
+    { "t": 3.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

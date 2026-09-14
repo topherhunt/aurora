@@ -1,0 +1,37 @@
+{
+  "kind": "pose",
+  "note": "Sits down onto a chair behind, holds, and stands again, so it loops in the bench; a game cuts it at the flat pair into sit-down / sit-idle / stand-up. The feet stay where they stood: the hips go back a thigh's length and down to knee height, so the thighs come level and the shins stay upright. The hold pose is copied verbatim into idle-sit, eat and lie. hipLimit lets the thigh swing to level.",
+  "samples": 46,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.6, "pose": {
+      "root": { "lift": -0.08, "fore": -0.25 },
+      "spine": { "pitch": 0.3 },
+      "head": { "pitch": -0.15 },
+      "arms": { "both": { "raise": 0.5, "elbow": 0.4, "spread": 0.15 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 1.4, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 3.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 3.8, "pose": {
+      "root": { "lift": -0.1, "fore": -0.27 },
+      "spine": { "pitch": 0.35 },
+      "head": { "pitch": -0.2 },
+      "arms": { "both": { "raise": 0.4, "elbow": 0.4, "spread": 0.15 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 4.6, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

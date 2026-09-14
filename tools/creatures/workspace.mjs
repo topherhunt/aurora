@@ -33,6 +33,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   MODELS, PRESETS, createMeshTask, createRigCheckTask, createRigTask, createRetargetTask,
@@ -42,6 +43,8 @@ import { CREATURES } from './creature-roster.mjs'
 import { blendRig } from './blend-rig.mjs'
 import { buildClip, clipNames, planOf, rigFile } from './anim/build.mjs'
 import { buildRigMap, mapFile, readRigMap } from './anim/rig-map.mjs'
+import { buildWingCards as buildWingCardsMesh } from './wing-cards.mjs'
+import { glbBuffer } from './apply-rig-edit.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORK = path.join(ROOT, 'tools/creatures/work')
@@ -293,21 +296,27 @@ export async function runMesh(id, opts = {}) {
   const previewUrl = task.output?.rendered_image_url ?? task.output?.rendered_image
   const preview = previewUrl ? await download(previewUrl) : null
 
-  // Everything from here to writeState runs with no `await` in it, and that is
-  // what makes the slot claim indivisible: several mesh tasks are in flight at
-  // once, and a stem read from state.meshes.length before an await is a number
-  // two of them can both win -- the second overwrites the first's file and the
-  // gallery shows one 50-credit mesh where two were paid for.
-  //
-  // Stems are claimed across CONTAINERS, because `0.glb` and `0.fbx` are the
-  // same candidate number to everything downstream (stemOf, the LOD names, the
-  // preview). `wx` on the full filename alone would let both of those land.
-  const meshDir = path.join(dir, 'meshes')
+  const file = claimMeshSlot(id, containerOf(body), body, preview)
+  return fileMesh(id, { file, taskId, credits, at: Date.now(), params })
+}
+
+/**
+ * Writes `body` as the next free meshes/<n>.<ext> and returns its filename.
+ * Runs with no `await` in it, and that is what makes the claim indivisible:
+ * several mesh tasks are in flight at once, and a stem read from
+ * state.meshes.length before an await is a number two of them can both win --
+ * the second overwrites the first's file and the gallery shows one 50-credit
+ * mesh where two were paid for.
+ *
+ * Stems are claimed across CONTAINERS, because `0.glb` and `0.fbx` are the
+ * same candidate number to everything downstream (stemOf, the LOD names, the
+ * preview). `wx` on the full filename alone would let both of those land.
+ */
+function claimMeshSlot(id, ext, body, preview) {
+  const meshDir = path.join(workDir(id), 'meshes')
   fs.mkdirSync(meshDir, { recursive: true })
   const taken = new Set(fs.readdirSync(meshDir).map((f) => f.match(/^(\d+)\./)?.[1]).filter(Boolean))
-  const ext = containerOf(body)
-  let file = null
-  for (let n = 0; n < 1000 && !file; n++) {
+  for (let n = 0; n < 1000; n++) {
     if (taken.has(String(n))) continue
     try {
       fs.writeFileSync(path.join(meshDir, `${n}.${ext}`), body, { flag: 'wx' })
@@ -315,19 +324,47 @@ export async function runMesh(id, opts = {}) {
       if (e.code !== 'EEXIST') throw e
       continue
     }
-    file = `${n}.${ext}`
     if (preview) fs.writeFileSync(path.join(meshDir, `${n}-preview.png`), preview)
+    return `${n}.${ext}`
   }
-  if (!file) throw new Error(`no free mesh slot for "${id}" -- 1000 meshes is not a workflow`)
+  throw new Error(`no free mesh slot for "${id}" -- 1000 meshes is not a workflow`)
+}
 
+/** Records a claimed mesh in state and auto-picks it only when nothing is picked yet. */
+function fileMesh(id, entry) {
   const fresh = readState(id)
-  fresh.meshes = [...(fresh.meshes ?? []), { file, taskId, credits, at: Date.now(), params }]
+  fresh.meshes = [...(fresh.meshes ?? []), entry]
   writeState(id, fresh)
-
   const autoPicked = !fresh.pickedMesh
-  if (autoPicked) pickMesh(id, file)
+  if (autoPicked) pickMesh(id, entry.file)
+  return {
+    taskId: entry.taskId, credits: entry.credits, file: entry.file, autoPicked,
+    path: path.relative(ROOT, path.join(workDir(id), 'meshes', entry.file)),
+  }
+}
 
-  return { taskId, credits, file, autoPicked, path: path.relative(ROOT, path.join(dir, 'meshes', file)) }
+/**
+ * Free, local, no Tripo. The picked candidate image cut out and laid on two
+ * textured quads meeting at the body -- the mesh for a `rigType: 'none'`
+ * creature Tripo cannot model, filed as an ordinary mesh candidate so the
+ * gallery, the LOD ladder and ship.mjs see it like any other. `seamPx` nudges
+ * the seam off the cutout's centre of mass, in source-image pixels.
+ */
+export function buildWingCards(id, { seamPx = 0 } = {}) {
+  const dir = workDir(id)
+  const source = path.join(dir, 'source.png')
+  if (!fs.existsSync(source)) throw new Error(`no source.png for "${id}" -- pick a candidate image first`)
+  const { sizeM } = readMeta(id)
+  if (!(sizeM > 0)) throw new Error(`"${id}" has no sizeM -- the wing cards have no size to be cut at`)
+
+  const [W, H] = execFileSync('magick', ['identify', '-format', '%w %h', source]).toString().split(' ').map(Number)
+  const rgba = new Uint8Array(execFileSync('magick', [source, '-depth', '8', 'rgba:-'], { maxBuffer: W * H * 4 + 1024 }))
+  if (rgba.length !== W * H * 4) throw new Error(`magick decoded ${rgba.length} bytes for ${W}x${H} source.png`)
+
+  const { json, bin, preview, stats } = buildWingCardsMesh(rgba, W, H, { sizeM, seamPx })
+  const file = claimMeshSlot(id, 'glb', glbBuffer(json, bin), preview)
+  const state = readState(id)
+  return { ...fileMesh(id, { file, taskId: null, credits: 0, at: Date.now(), kind: 'wing-cards', source: state.picked, params: { seamPx, ...stats } }), stats }
 }
 
 /**
@@ -339,6 +376,7 @@ export async function runMesh(id, opts = {}) {
  */
 function meshTaskFor(id, state) {
   const picked = (state.meshes ?? []).find((m) => m.file === state.pickedMesh)
+  if (picked?.kind === 'wing-cards') throw new Error(`"${id}" picked wing cards, which were cut locally -- Tripo has no task to rig`)
   const taskId = picked?.taskId ?? state.tasks.mesh?.taskId
   if (!taskId) throw new Error(`no mesh task for "${id}" -- generate and pick a mesh first`)
   return taskId

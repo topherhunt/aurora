@@ -1,0 +1,21 @@
+{
+  "note": "Standing. Zero stride with duty 1 keeps all eight feet planted while the body breathes over them: a slow bob, the abdomen pulsing (spiders breathe with it), and the chelicerae working slowly against each other. Two full breaths per loop so a three-second cycle does not read as a single heave.",
+  "duration": 3.2,
+  "samples": 32,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.02,
+  "phases": {
+    "leg1Left": 0, "leg1Right": 0, "leg2Left": 0, "leg2Right": 0,
+    "leg3Left": 0, "leg3Right": 0, "leg4Left": 0, "leg4Right": 0
+  },
+  "bodyBob": 0.008,
+  "bobFreq": 2,
+  "tailPitch": 0.1,
+  "tailLift": 0.06,
+  "tailSway": 0.03,
+  "headBob": 0.02,
+  "armSwing": 0.1
+}

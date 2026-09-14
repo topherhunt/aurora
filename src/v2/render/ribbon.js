@@ -37,6 +37,10 @@ export const ROAD_LIFT = 0.05
 export const RIVER_WIDEN = 0.75
 export const RIVER_WIDEN_FRAC = 0.25
 
+// Over how far, past the run a river spends inside the body it starts or ends in, its own flow frame fades in from the shared world frame: this many of its local half-widths, and never less than the metres. See flowFrame.
+export const FLOW_FADE_HALF_WIDTHS = 4
+export const FLOW_FADE_MIN = 8
+
 // How much of the corner's own circumradius the offset is allowed to use before the miter limit bites. Below 1.0 the inner offset edge cannot reach the centre of curvature, which is the point at which it inverts. 0.8 leaves headroom for the fact that a flattened spline's corner circumradius is a discrete estimate of a continuous curvature.
 const MITER_SAFETY = 0.8
 
@@ -133,6 +137,8 @@ export function discVertices(lake, opts = {}) {
  *   widen / widenFrac  extra half-width, min(widen, halfWidth * widenFrac). See RIVER_WIDEN.
  *   lift               metres added to every y. Roads use it; see road-surfaces.js.
  *   minHalf            the miter clamp's floor.
+ *
+ * Besides the buffers it returns per-sample `arc` (3D metres from sample 0), `halfWidths` (after widening and the clamps below) and `tangents` (unit XZ, in sample order), which is what the river's flow frame is built from.
  *
  * THE THING THAT WILL BITE, and it is the reason this function is longer than a strip has any right to be. On a turn tighter than the half-width the inner offset edge crosses itself: the ribbon folds, the folded quad's triangles come out with the opposite winding, and what you get is a black wedge that is lit from underneath and z-fights with the half of the ribbon it is folded over. It is not a rare case -- one control point dragged past its neighbour produces it -- so it is handled twice over: an analytic cap from the corner's circumradius, which narrows the ribbon SMOOTHLY through the turn, and then an exact per-triangle orientation test that halves whatever the analytic cap missed. The exact test is the same predicate the gate asserts, so the generator and the check cannot drift apart.
  */
@@ -245,9 +251,13 @@ export function ribbonVertices(samples, opts = {}) {
   const positions = new Float32Array(n * 2 * 3)
   const normals = new Float32Array(n * 2 * 3)
   const uvs = new Float32Array(n * 2 * 2)
+  const tangents = new Float32Array(n * 2)
   const indices = new Uint32Array((n - 1) * 6)
 
   for (let i = 0; i < n; i++) {
+    // The plan-view direction the offset is perpendicular to, in sample order: the bisector turned back a quarter turn, so vertex a lies on its right (y up, so right of +x is +z).
+    tangents[i * 2] = nz[i]
+    tangents[i * 2 + 1] = -nx[i]
     // 3D tangent, central difference where there is one, so the surface normal follows the grade rather than the plan.
     const a = i === 0 ? 0 : i - 1
     const b = i === n - 1 ? n - 1 : i + 1
@@ -310,9 +320,44 @@ export function ribbonVertices(samples, opts = {}) {
     // Float64 internally so the repair loop's halvings stay exact; handed out as Float32 because nothing downstream needs more and the editor may hold one of these per path.
     arc: Float32Array.from(arc),
     halfWidths: Float32Array.from(w),
+    tangents,
     length: arc[n - 1],
     clamped,
     triangles: (n - 1) * 2,
     vertices: n * 2,
   }
+}
+
+/**
+ * A river ribbon's flow frame: the per-vertex vec4 src/water.js reads as `aFlow`, so the waves on a river drift DOWNSTREAM instead of on the compass heading every other sheet of water shares.
+ *
+ * Per vertex: (u, v, weight, angle). `u` is metres along the river from its source and `v` signed metres across it, positive to the right looking downstream -- a plane coordinate the shader samples the same noise in, so a bend carries its waves round the bend. `angle` is the downstream direction at the sample, atan2(z, x) in world XZ, which the shader turns back into the vector it rotates the surface gradient with; an angle rather than the vector so the frame fits one attribute. `weight` is 0 where the river lies on water another body holds (`reach`, from PathSet.flowReach) and fades to 1 over FLOW_FADE_HALF_WIDTHS of the local half-width beyond that, so a tributary's drift turns into its trunk's rather than crossing it, and a river leaving a lake drifts with the lake until it is clear of it.
+ *
+ * `ribbon` is ribbonVertices' result; `forward` is PathSet.flowsForward, which says whether sample order IS downstream.
+ */
+export function flowFrame(ribbon, forward, reach) {
+  const { count: n, arc, halfWidths, tangents, length } = ribbon
+  if (typeof forward !== 'boolean') throw new Error(`flowFrame: forward must be a boolean, got ${forward}`)
+  if (!reach || !(reach.source >= 0) || !(reach.mouth >= 0)) throw new Error(`flowFrame: reach must be { source >= 0, mouth >= 0 }, got ${JSON.stringify(reach)}`)
+  const sign = forward ? 1 : -1
+  const flow = new Float32Array(n * 2 * 4)
+  for (let i = 0; i < n; i++) {
+    const w = halfWidths[i]
+    const u = forward ? arc[i] : length - arc[i]
+    const fade = Math.max(FLOW_FADE_HALF_WIDTHS * w, FLOW_FADE_MIN)
+    const fromSource = Math.min(1, Math.max(0, (u - reach.source) / fade))
+    const fromMouth = Math.min(1, Math.max(0, (length - u - reach.mouth) / fade))
+    const weight = Math.min(fromSource, fromMouth)
+    const angle = Math.atan2(sign * tangents[i * 2 + 1], sign * tangents[i * 2])
+    const o = i * 8
+    flow[o] = u
+    flow[o + 1] = sign * w
+    flow[o + 2] = weight
+    flow[o + 3] = angle
+    flow[o + 4] = u
+    flow[o + 5] = -sign * w
+    flow[o + 6] = weight
+    flow[o + 7] = angle
+  }
+  return flow
 }

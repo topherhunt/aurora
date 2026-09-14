@@ -75,6 +75,12 @@ export function readGlb(file) {
 }
 
 export function writeGlb(file, json, bin) {
+  const out = glbBuffer(json, bin)
+  fs.writeFileSync(file, out)
+  return out
+}
+
+export function glbBuffer(json, bin) {
   const jsonBytes = Buffer.from(JSON.stringify(json), 'utf8')
   // Both chunks pad to a 4-byte boundary, JSON with spaces and BIN with zeros,
   // and a decoder that trusts the declared length will read the padding.
@@ -95,7 +101,6 @@ export function writeGlb(file, json, bin) {
     out.writeUInt32LE(BIN_CHUNK, at + 4)
     bin.copy(out, at + 8)
   }
-  fs.writeFileSync(file, out)
   return out
 }
 

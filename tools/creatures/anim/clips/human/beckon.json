@@ -1,0 +1,32 @@
+{
+  "kind": "pose",
+  "note": "Beckon to follow: the right arm comes up in front, then the forearm sweeps in toward the body twice, hand curling on the pull, with a nod on each pull. Loops back to the stance.",
+  "samples": 40,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.5, "pose": {
+      "spine": { "pitch": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.0, "spread": 0.2, "elbow": 0.9, "twist": 0.3 } }
+    } },
+    { "t": 0.9, "pose": {
+      "spine": { "pitch": 0.05 },
+      "head": { "pitch": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.0, "spread": 0.2, "elbow": 1.9, "twist": 0.3, "curl": 0.8, "wristPitch": 0.4 } }
+    } },
+    { "t": 1.3, "pose": {
+      "spine": { "pitch": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.0, "spread": 0.2, "elbow": 0.9, "twist": 0.3 } }
+    } },
+    { "t": 1.7, "pose": {
+      "spine": { "pitch": 0.05 },
+      "head": { "pitch": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.0, "spread": 0.2, "elbow": 1.9, "twist": 0.3, "curl": 0.8, "wristPitch": 0.4 } }
+    } },
+    { "t": 2.1, "pose": {
+      "spine": { "pitch": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.0, "spread": 0.2, "elbow": 1.1, "twist": 0.3 } }
+    } },
+    { "t": 3.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

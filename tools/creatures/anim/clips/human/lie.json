@@ -1,0 +1,49 @@
+{
+  "kind": "pose",
+  "note": "From sit's hold pose on the edge of a bed, lies back and swings the legs up onto it, holds, and sits back up. root pitch turns the whole body about the hips, which stay on the bed edge; the legs are raised to bed height with the toes pitched skyward. The hold pose is copied verbatim into sleep.",
+  "samples": 54,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 0.8, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -0.7 },
+      "spine": { "pitch": 0.2 },
+      "head": { "pitch": 0.2 },
+      "arms": { "both": { "raise": -0.3, "elbow": 0.6, "spread": 0.3 } },
+      "legs": { "legLeft": { "fore": 0.28, "lift": 0.16, "pitch": -0.7 }, "legRight": { "fore": 0.24, "lift": 0.12, "pitch": -0.6 } }
+    } },
+    { "t": 1.7, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } },
+    { "t": 3.7, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } },
+    { "t": 4.6, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -0.7 },
+      "spine": { "pitch": 0.25 },
+      "head": { "pitch": 0.2 },
+      "arms": { "both": { "raise": -0.3, "elbow": 0.6, "spread": 0.3 } },
+      "legs": { "legLeft": { "fore": 0.26, "lift": 0.14, "pitch": -0.6 }, "legRight": { "fore": 0.3, "lift": 0.18, "pitch": -0.7 } }
+    } },
+    { "t": 5.6, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } }
+  ]
+}

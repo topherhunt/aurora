@@ -1,0 +1,21 @@
+{
+  "note": "Standing at rest. Zero stride with duty 1 keeps both feet planted for the whole cycle while the body breathes over them. crouch 0.045 is the plan's standing height: every human gait and pose clip drops the hips by the same fraction so they cut together.",
+  "duration": 3.2,
+  "samples": 32,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.045,
+  "phases": {
+    "legLeft": 0,
+    "legRight": 0
+  },
+  "bodyBob": 0.004,
+  "bobFreq": 1,
+  "headPitch": 0.02,
+  "headBob": 0.02,
+  "headYaw": 0.05,
+  "armElbow": 0.15,
+  "armSpread": 0.05
+}

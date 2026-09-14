@@ -23,7 +23,7 @@
 import { bakeHorizon, AZIMUTHS, decodeHorizon } from '../src/sim/horizon.js'
 import { SAMPLE_GLSL } from '../src/lighting.js'
 import { SKY_GLSL } from '../src/sky-glsl.js'
-import { WAVE_LAYERS, WATER } from '../src/water.js'
+import { WAVE_LAYERS, WATER, RIVER_SPREAD } from '../src/water.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -547,6 +547,27 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   check(at >= 0 && inBranch === detailLayers,
     'the detail layers are skipped at distance rather than computed and faded',
     at < 0 ? 'no distance branch found' : `${inBranch} of ${detailLayers} inside the branch`)
+
+  // --- the river frame --------------------------------------------------------
+  //
+  // A river's ribbon carries aFlow and drifts its waves downstream in it;
+  // every other sheet of water lacks the buffer and MUST fall back to the world
+  // frame through the material's default, because a vertex attribute that is
+  // declared, unbound and given no default reads as whatever the slot last
+  // held -- a lake drifting with the frame of the last river drawn.
+  const dflt = water.material.defaultAttributeValues.aFlow
+  check(/attribute vec4 aFlow;/.test(water.material.vertexShader) && /vFlow/.test(frag),
+    'the vertex stage takes the river frame as aFlow and the fragment stage reads it')
+  check(Array.isArray(dflt) && dflt.length === 4 && dflt.every((v) => v === 0),
+    'a sheet without an aFlow buffer defaults to weight 0, the world frame',
+    JSON.stringify(dflt))
+  // Downstream and a fan about it: all five in one direction would slide as a
+  // slab, and a layer more than 30 degrees off would read as a cross-current.
+  const meanHeading = WAVE_LAYERS.reduce((s, L) => s + L.heading, 0) / WAVE_LAYERS.length
+  const fan = WAVE_LAYERS.map((L) => Math.abs(L.heading - meanHeading) * RIVER_SPREAD)
+  check(Math.max(...fan) < 30 && new Set(fan.map((a) => a.toFixed(3))).size === WAVE_LAYERS.length,
+    'on a river every layer drifts within 30 degrees of downstream and no two on the same bearing',
+    fan.map((a) => `${a.toFixed(1)} deg`).join(', '))
 
   // --- the sky probe ----------------------------------------------------------
   //

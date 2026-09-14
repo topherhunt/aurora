@@ -703,7 +703,7 @@ function fishGen() {
 //   free     /__creature-roster, /__creature-list, /__creature-candidates,
 //            /__creature-assets, /__creature-save, /__creature-pick,
 //            /__creature-prompt (the assembled prompt, nothing generated),
-//            /__creature-meshes, /__creature-pick-mesh,
+//            /__creature-meshes, /__creature-pick-mesh, /__creature-wing-cards,
 //            /__creature-delete-candidate, /__creature-reveal (Finder),
 //            /__creature-lod (decimation is ours, not a vendor's),
 //            /__creature-balance, /__creature-rig-check (Tripo prices both at 0)
@@ -893,6 +893,16 @@ function creatureGen() {
         const id = idOf(req)
         const { file } = JSON.parse(await readBody(req, 1 << 12))
         return { ok: true, ...creatures.pickMesh(id, file) }
+      }))
+
+      // Free, local: the picked image cut out onto two textured quads, filed
+      // as a mesh candidate -- the mesh for a creature Tripo cannot model.
+      server.middlewares.use('/__creature-wing-cards', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { seamPx = 0 } = JSON.parse(await readBody(req, 1 << 12) || '{}')
+        if (!Number.isFinite(seamPx)) throw new Error(`seamPx must be a number, got ${JSON.stringify(seamPx)}`)
+        return { ok: true, ...creatures.buildWingCards(id, { seamPx }) }
       }))
 
       // SPENDS (OpenRouter, ~$0.015). One candidate image, saved to disk

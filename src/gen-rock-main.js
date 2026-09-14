@@ -1,7 +1,7 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
-  buildRock, rockRung, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize,
+  buildRock, rockRung, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_LOD_FAR_MAX, rockLodSize,
 } from './props/rock.js'
 import { BOULDER, CAP, TINTS, TINT_GAIN, rockParams, capParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
@@ -430,10 +430,14 @@ function drawn() {
 // THE WORLD'S RULE, VERBATIM: v2/render/rocks.js compares the squared distance
 // from the camera to the instance origin against ladder-size-squared times
 // ROCK_LOD_AT squared, and a rung the rock is already on -- or any finer one --
-// is left on a threshold 12% further out than it was entered on. `cur` is the
-// rung on screen, -1 if none yet. Anything the bench did differently here would
-// be a bench showing a different ladder than the one that ships.
+// is left on a threshold 12% further out than it was entered on, and past
+// ROCK_LOD_FAR_MAX (left with the same slack) every rock is T6 whatever its
+// size. `cur` is the rung on screen, -1 if none yet. Anything the bench did
+// differently here would be a bench showing a different ladder than the one
+// that ships.
 function worldTier(d2, size, cur) {
+  const last = ROCK_TIERS.length - 1
+  if (d2 >= (cur >= 0 && cur < last ? ROCK_LOD_FAR_MAX : ROCK_LOD_FAR_MAX / (1 + ROCK_LOD_HYSTERESIS)) ** 2) return last
   const sizeSq = size * size
   for (let b = 0; b < ROCK_LOD_AT.length; b++) {
     const sticky = cur >= 0 && cur <= b
@@ -457,7 +461,7 @@ function stepLod() {
     group.children.forEach((mesh, i) => { mesh.visible = i === tier })
     report()
   }
-  const at = ROCK_LOD_AT.map((k) => (k * built.lod).toFixed(1))
+  const at = ROCK_LOD_AT.map((k) => Math.min(k * built.lod, ROCK_LOD_FAR_MAX).toFixed(1))
   lodHud.innerHTML =
     `<b>${Math.sqrt(d2).toFixed(1)} m</b> from the rock &middot; drawing <b>${ROCK_TIERS[tier].name}</b>\n` +
     `ladder size ${built.lod.toFixed(2)} m &middot; T320 &lt; ${at[0]} &middot; T80 &lt; ${at[1]} &middot; T20 &lt; ${at[2]} &middot; T6 beyond` +
@@ -584,9 +588,10 @@ function report() {
   // the whole of what separates this rock's ladder from any other rock's. It is
   // the longest box axis -- see rockLodSize, which is the same function
   // v2/render/rocks.js measures instances through, so the metres shown here are
-  // the metres the world uses.
+  // the metres the world uses, under the world's ceiling: no rung outlives
+  // ROCK_LOD_FAR_MAX.
   const lod = s.lod
-  const shipAt = ROCK_LOD_AT.map((k) => k * lod)
+  const shipAt = ROCK_LOD_AT.map((k) => Math.min(k * lod, ROCK_LOD_FAR_MAX))
   const farAt = shipAt[shipAt.length - 1]
   // Which of the three box axes is in charge, because that is the first
   // question anyone asks of a number like this. It is a plain max, so naming

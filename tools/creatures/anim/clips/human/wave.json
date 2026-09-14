@@ -1,0 +1,38 @@
+{
+  "kind": "pose",
+  "note": "Greeting wave with the right arm: upper arm out to the side and level, forearm up, hand swinging in and out from the elbow with the wrist flapping a beat behind. Starts and ends at the idle stance so it loops and cuts cleanly.",
+  "samples": 40,
+  "crouch": 0.045,
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.5, "pose": {
+      "head": { "yaw": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.5, "wristSpread": -0.3 } }
+    } },
+    { "t": 0.8, "pose": {
+      "head": { "yaw": 0.08, "roll": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+    } },
+    { "t": 1.1, "pose": {
+      "head": { "yaw": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.35, "wristSpread": -0.4 } }
+    } },
+    { "t": 1.4, "pose": {
+      "head": { "yaw": 0.08, "roll": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+    } },
+    { "t": 1.7, "pose": {
+      "head": { "yaw": 0.08 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.35, "wristSpread": -0.4 } }
+    } },
+    { "t": 2.0, "pose": {
+      "head": { "yaw": 0.08, "roll": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+    } },
+    { "t": 2.4, "pose": {
+      "head": { "yaw": 0.05 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.3, "spread": 0.8, "elbow": 0.9 } }
+    } },
+    { "t": 3.2, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

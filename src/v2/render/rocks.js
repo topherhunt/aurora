@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINT_GAIN } from '../../props/rock-bank.js'
-import { ROCK_LOD_AT, rockLodSize } from '../../props/rock.js'
+import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_LOD_FAR_MAX, ROCK_LOD_GONE_MAX, rockLodSize } from '../../props/rock.js'
 import {
   createPropMaterial, setSnowLine, setMossLine, setSnowVary, setMossVary, setPropSolidAt,
   setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
@@ -36,7 +36,7 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 //   SCREE       0.5 - 4.5 m   dense, 280 m     the pile at the foot of a face
 //   SUNKEN      1 - 10 m      sparse, 600 m    stones standing on the lake floor
 //   GIANTS      1.6 - 15 m    sparse, 1250 m   the landmarks
-//   EMBEDDED    2 - 32 m      sparse, 1900 m   blocks let INTO a face or a bed
+//   EMBEDDED    2 - 32 m      sparse, 1250 m   blocks let INTO a face or a bed
 //   SHORE       0.5 - 2.5 m   dense, 80 m      the stones along a waterline
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
@@ -106,6 +106,9 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // holds sampled geometry out to 50 m, a cobble to 8.5, a 12 m landmark to 300. A
 // table of metres per bed was wrong in both directions at once, because a bed is
 // not one size of rock -- which is the whole reason one mesh can serve the world.
+// Two ceilings sit over the ladder, in metres rather than sizes (props/rock.js):
+// past ROCK_LOD_FAR_MAX every rock is T6, and no bed may reach past
+// ROCK_LOD_GONE_MAX. Only the embedded bed's biggest blocks meet the first.
 //
 // AND NOTHING IS CULLED BEFORE IT HAS REACHED T6 -- AND STAYED WHOLE THERE FOR A
 // WHILE. Thinning is keyed on a rank that knows nothing about how big a rock is,
@@ -530,8 +533,9 @@ const BEDS = [
     // you navigate by, so giants within a factor of two of each other read as one
     // prop repeated -- and with one mesh in the bank, SIZE is the only thing left
     // to tell two landmarks apart. 15 m is the biggest rock that stands on the
-    // ground in a wood or a river; a face or a peak stands 30 m, and past that
-    // the embedded bed takes over and buries the difference.
+    // ground anywhere a tree does; a BARREN face or peak stands 30 m (see
+    // `barrenTop`), and past that the embedded bed takes over and buries the
+    // difference.
     //
     // `sizeBias` 2 weights it small without giving up the top: the median lands
     // near 5 m, which is what the bed placed before, and the top decile near
@@ -539,9 +543,10 @@ const BEDS = [
     sizeByEnv: {
       river: [1.6, 15.0],
       forest: [1.6, 15.0],
-      cliff: [1.6, 30.0],
-      peak: [1.6, 30.0],
+      cliff: [1.6, 15.0],
+      peak: [1.6, 15.0],
     },
+    barrenTop: { cliff: 30.0, peak: 30.0 },
     sizeBias: 2,
     // NO ROCK INSIDE ANOTHER ROCK -- see the scree bed for the mechanism, and
     // the bed it mattered most on: at a full cliff rate the nearest neighbour ran
@@ -592,13 +597,15 @@ const BEDS = [
     // -- `_envAt` only calls it something else because of how high it is.
     envDensity: { river: 0.4, forest: 0, cliff: 0.15, peak: 0.15 },
     fullRadius: 120,
-    // 1900, DEMANDED BY THE 64 m TOP AND NOT NEGOTIABLE DOWN. A 64 m block reaches
-    // T6 at 1,600 m and owes the dissolve band past that, so `minReach` refuses
-    // anything under 1,882 m. Burial does not buy any of it back -- sinking a rock
-    // takes away its HEIGHT and the ladder is its longest axis, which here is the
-    // width still lying across the face. This is why the density is a fifth of what
-    // "litter" sounds like: reach is quadratic and this bed has the longest.
-    radius: 1900,
+    // ROCK_LOD_GONE_MAX, THE MOST ANY BED MAY HAVE, and the 64 m top demands
+    // nearly all of it: by size a 64 m block would be sampled to 1,600 m, so it
+    // is the far ceiling that puts it on T6 at 1,000 m, and it owes the dissolve
+    // band past that, so `minReach` refuses anything under 1,177 m. Burial does
+    // not buy any of it back -- sinking a rock takes away its HEIGHT and the
+    // ladder is its longest axis, which here is the width still lying across
+    // the face. This is why the density is a fifth of what "litter" sounds like:
+    // reach is quadratic and this bed has the longest.
+    radius: 1250,
     tile: 60,
     minElev: 0,
     // THE STEEPEST GROUND ANY BED ACCEPTS, and 72 rather than higher because past
@@ -633,20 +640,22 @@ const BEDS = [
     // is one feature among many. `forest` is absent because the bed's forest rate
     // is 0 and an entry there would be unreachable.
     //
-    // 64 ON A WALL, AND THIS IS WHAT BREAKS THE PANELLING UP. `cliff slabs` clothes
-    // a face in flat plates that all lie IN it; a block this size, seven to nine
-    // tenths buried, shows a dozen metres of curved mass ACROSS sixty of width,
-    // and that is the one thing on a face that is not a plate. It stays rare on
-    // purpose -- the bed's cliff rate is a quarter, and `sizeBias` puts only the
-    // top decile up here.
+    // 32 ON A WALL AND 64 ON A BARREN ONE, AND THIS IS WHAT BREAKS THE PANELLING
+    // UP. `cliff slabs` clothes a face in flat plates that all lie IN it; a block
+    // this size, seven to nine tenths buried, shows a dozen metres of curved mass
+    // ACROSS sixty of width, and that is the one thing on a face that is not a
+    // plate. It stays rare on purpose -- the bed's cliff rate is a quarter, and
+    // `sizeBias` puts only the top decile up here.
     sizeByEnv: {
       river: [2.0, 10.0],
-      cliff: [3.0, 64.0],
-      peak: [3.0, 64.0],
+      cliff: [3.0, 32.0],
+      peak: [3.0, 32.0],
     },
+    barrenTop: { cliff: 64.0, peak: 64.0 },
     // Weighted small, on the boulders bed's argument and more sharply, because
     // this bed's range is wider and its reach is the longest in the file: at 3 the
-    // median cliff block is 11 m and only the top decile reaches 47 m.
+    // median barren cliff block is 11 m and only the top decile reaches 47 m; on
+    // a wooded face 7 and 24.
     sizeBias: 3,
     // No block inside another block. Worth more here than anywhere: two of these
     // overlapping do not read as two rocks jammed together, they read as one
@@ -734,6 +743,16 @@ const PEAK_BELOW_SNOW = 55
 // the ground that gets cliff furniture.
 const CLIFF_SLOPE_DEG = 34
 const CLIFF_TAN = Math.tan((CLIFF_SLOPE_DEG * Math.PI) / 180)
+
+// Where a bed's `barrenTop` applies: ground the forest has given up. `cliff`
+// and `peak` are one field sample each, so a 35-degree pocket in a wood is a
+// cliff site and the wooded band under the treeline is peak country, and a rock
+// sized for a bare face stands out of the trees there. Barren is EITHER this
+// far above the snow line -- trees.js's TREELINE.fade, past which the wood is
+// a tenth as dense and stunted by half; check-rocks holds the two equal -- OR
+// a face still past CLIFF_SLOPE_DEG at every point of the rock's own footprint
+// (`_barrenAt`).
+export const BARREN_ABOVE_SNOW = 70
 
 // Metres below the snow line at which moss gives out. See Rocks.syncBands.
 const MOSS_DROP = 220
@@ -1000,8 +1019,9 @@ const FACADE_CUE = 1
 const FACADE_GAIN = ROCK_TILE_MEAN.map((m) => 1 / m)
 
 // Everything below is render/trees.js's, unchanged, and its header is the
-// explanation for all of it.
-const LOD_HYSTERESIS = 0.12
+// explanation for all of it. The hysteresis is props/rock.js's, so the bench's
+// world-LOD view and this walk cannot disagree on it.
+const LOD_HYSTERESIS = ROCK_LOD_HYSTERESIS
 const BUILD_BUDGET_MS = 1.5
 const PLACEMENT_CELL = 4.0
 
@@ -1058,6 +1078,11 @@ const TIER_HEADROOM = 1.35
 // does not flicker between two meshes.
 const LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => k * k)
 const LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
+// ROCK_LOD_FAR_MAX squared, as the ladder above is: a rock holds a mesh tier out
+// to FAR_SQ whatever its size and, once on T6, comes back only inside FAR_IN_SQ
+// -- the same slack a rung leaves, applied to the ceiling.
+const FAR_SQ = ROCK_LOD_FAR_MAX ** 2
+const FAR_IN_SQ = (ROCK_LOD_FAR_MAX / (1 + LOD_HYSTERESIS)) ** 2
 
 // HOW LONG A ROCK IS WHOLE ON T6 FOR, as a multiple of the distance the far
 // tier takes over at.
@@ -1099,7 +1124,12 @@ export const ROCK_THIN = false
  * 8% off every rock's reach for no gain but tightness.
  */
 function farGoneAt(size) {
-  return (size * ROCK_LOD_AT[ROCK_LOD_AT.length - 1] * ROCK_FAR_LIFE) / FADE_BAND
+  return (farAt(size) * ROCK_FAR_LIFE) / FADE_BAND
+}
+
+/** Where a rock of ladder size `size` metres is T6 from: its own rung, or the ceiling if that is sooner. */
+function farAt(size) {
+  return Math.min(size * ROCK_LOD_AT[ROCK_LOD_AT.length - 1], ROCK_LOD_FAR_MAX)
 }
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
@@ -1569,6 +1599,18 @@ class RockBed {
       }
     }
 
+    // THE TOP THE RANGE OPENS TO ON BARREN GROUND, per environment, 0 where the
+    // bed has none. Only past the wooded top: a barren top under it would be a
+    // range the roll never reaches and a `maxLod` that lies.
+    this.barrenTop = { river: 0, forest: 0, cliff: 0, peak: 0 }
+    for (const [env, top] of Object.entries(cfg.barrenTop ?? {})) {
+      const span = cfg.sizeByEnv[env]
+      if (!ENVIRONMENTS.includes(env) || !span || !(top > span[1])) {
+        throw new Error(`RockBed ${cfg.name}: barrenTop.${env} must be over sizeByEnv.${env}'s top`)
+      }
+      this.barrenTop[env] = top
+    }
+
     // THE BOULDER'S LADDER SIZE AT SCALE 1. A rock's live size is this times its
     // own uniform scale, which is one multiply in the per-frame loop and saves
     // carrying a second per-instance array beside `instScale`. See rockLodSize for
@@ -1594,7 +1636,7 @@ class RockBed {
     const lodPerWidth = this.shapeLod / this.shape.measured.width
     const envs = ENVIRONMENTS.filter((e) => cfg.envDensity[e] > 0)
     const lo = Math.max(...envs.map((e) => cfg.sizeByEnv[e][0]))
-    const hi = Math.max(...envs.map((e) => cfg.sizeByEnv[e][1]))
+    const hi = Math.max(...envs.map((e) => Math.max(cfg.sizeByEnv[e][1], this.barrenTop[e])))
     // Taking the max of the ends separately is an UPPER bound on the max of the
     // per-environment lines, which is what a bound has to be: each line is
     // (1-r)*lo_e + r*hi_e <= (1-r)*max(lo) + r*max(hi).
@@ -1604,12 +1646,23 @@ class RockBed {
     // Kept, because `_tierCaps` needs the same ceiling to bound how far out each
     // mesh tier can still be worn.
     this.maxLod = maxLod
-    const maxFarAt = maxLod * ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
+    const maxFarAt = farAt(maxLod)
     // The margin is the guarantee the bucketed walk leans on: a tile joins the
     // near set before any rock inside can need a mesh tier, so a bucket is
     // pulled forward off its turn once the camera has covered it. See STILL_M.
     this.nearMargin = tile * 1.5
     this.nearSq = (maxFarAt + this.nearMargin) ** 2
+
+    // A BED MAY NOT OUTREACH THE CULL CEILING: every rock's gone-distance is
+    // its bed's `radius` (see `_rankOf`), so this is the whole of what holds
+    // ROCK_LOD_GONE_MAX. Refused rather than clamped, so the table says the
+    // reach the bed really has.
+    if (cfg.radius > ROCK_LOD_GONE_MAX) {
+      throw new Error(
+        `RockBed ${cfg.name}: radius ${cfg.radius} m is past ROCK_LOD_GONE_MAX (${ROCK_LOD_GONE_MAX} m), ` +
+          `beyond which no rock may be drawn. Shrink \`radius\`.`
+      )
+    }
 
     // A BED MAY NOT END BEFORE ITS OWN LADDER DOES. `_rankOf` guarantees no rock
     // is thinned away while it is still sampled, but it cannot help one that runs
@@ -1617,7 +1670,8 @@ class RockBed {
     // whose reach is shorter than its biggest rock's far distance culls that rock
     // outright, mid-ladder. The two numbers are authored independently -- `radius`
     // by how far the feature reads across a valley, the far distance by
-    // `sizeByEnv` times ROCK_LOD_AT -- so nothing but this stops them drifting
+    // `sizeByEnv` times ROCK_LOD_AT, or ROCK_LOD_FAR_MAX if that is sooner -- so
+    // nothing but this stops them drifting
     // apart, and it has caught a real one: a bed with 10 m rocks wanting 250 m of
     // reach against a 170 m radius killed one rock in six as an LOD2 mesh at the
     // bed edge.
@@ -1855,10 +1909,12 @@ class RockBed {
     // walked on its turn).
     this.walkAll = true
 
-    // Triangles the resident tiles draw, as a running total because the tiles
-    // are not walked every frame; `tile.tris` is each one's share as of its
-    // last walk. A readout only: nothing branches on it.
-    this.tileTris = 0
+    // Instances drawn on each rung, as running totals because the tiles are not
+    // walked every frame; `tile.tierN` is each one's share as of its last walk,
+    // and `_walkN` is the scratch a walk counts into. Readouts only: nothing
+    // branches on them. `tris` is the triangles those draw plus the ghosts'.
+    this.tileTierN = new Int32Array(ROCK_BAND_COUNT)
+    this._walkN = new Int32Array(ROCK_BAND_COUNT)
     this.tris = 0
     this.walked = 0
     this.placed = 0
@@ -1922,7 +1978,8 @@ class RockBed {
     this.ghostRoom = new Int32Array(ROCK_BAND_COUNT).fill(this.maxInstances)
     for (let b = 0; b < ROCK_BAND_COUNT - 1; b++) {
       const rung = ROCK_LOD_AT[b] * (1 + LOD_HYSTERESIS)
-      const reach = this.maxLod * rung + this.tile
+      // No mesh tier is worn past the far ceiling whatever the size roll.
+      const reach = Math.min(this.maxLod * rung, ROCK_LOD_FAR_MAX) + this.tile
       const bound = poolBound(this.tile, Math.ceil(reach / this.tile) + 1, reach * reach, TIER_HEADROOM,
         (d2) => this.perTile * this.siteFrac * this._exemptFrac((Math.sqrt(d2) / rung) * perRoll))
       const cap = Math.min(this.maxInstances, Math.max(64, bound))
@@ -2052,6 +2109,21 @@ class RockBed {
     if (h > snowLine - PEAK_BELOW_SNOW) return 'peak'
     if (tan > CLIFF_TAN) return 'cliff'
     return 'forest'
+  }
+
+  /**
+   * Whether a rock `width` metres across at a site has nothing but bare ground
+   * under it -- see BARREN_ABOVE_SNOW. The site's own sample is already in, so
+   * the face test is the four points half a width out along the axes.
+   */
+  _barrenAt(x, z, h, snowLine, width) {
+    if (h - snowLine > BARREN_ABOVE_SNOW) return true
+    const r = width / 2
+    const g = this._scatter
+    return this.field.scatterAt(x + r, z, PLACEMENT_CELL, g).tan > CLIFF_TAN &&
+      this.field.scatterAt(x - r, z, PLACEMENT_CELL, g).tan > CLIFF_TAN &&
+      this.field.scatterAt(x, z + r, PLACEMENT_CELL, g).tan > CLIFF_TAN &&
+      this.field.scatterAt(x, z - r, PLACEMENT_CELL, g).tan > CLIFF_TAN
   }
 
   /**
@@ -2475,9 +2547,11 @@ class RockBed {
     due.length = 0
     this.walkAll = false
 
-    // The duplicates are drawn too; `tileTris` is exact as of each tile's last
+    // The duplicates are drawn too; `tileTierN` is exact as of each tile's last
     // walk, so up to RIM_PHASES frames stale.
-    this.tris = this.tileTris + this.fadeTris
+    let tris = this.fadeTris
+    for (let b = 0; b < ROCK_BAND_COUNT; b++) tris += this.tileTierN[b] * this.tierTris[b]
+    this.tris = tris
   }
 
   /**
@@ -2519,7 +2593,8 @@ class RockBed {
     const dx = (t.tx + 0.5) * tile - camX
     const dz = (t.tz + 0.5) * tile - camZ
     const near = dx * dx + dz * dz < this.nearSq
-    let tris = 0
+    const cnt = this._walkN
+    cnt.fill(0)
     if (!near) {
       // O(1): a far tile is entirely on `coarse`, so there is no per-rock
       // decision left to make out here. `tileHidden` is the rim's own count for
@@ -2527,7 +2602,7 @@ class RockBed {
       // as drawn, the same staleness the visibility it describes already has.
       if (t.near) this._demote(t, coarse)
       t.near = false
-      tris = (t.n - tileHidden) * this.tierTris[coarse]
+      cnt[coarse] = t.n - tileHidden
     } else {
       t.near = true
       this.walked += t.n
@@ -2548,12 +2623,17 @@ class RockBed {
         const size = this.shapeLod * this.instScale[i]
         const sizeSq = size * size
 
+        // The far ceiling first: a rock past it is T6 whatever its size, and
+        // the ladder is only read inside it. Sticky like a rung -- on a mesh
+        // tier it holds to FAR_SQ, on T6 it comes back inside FAR_IN_SQ.
         let tier = coarse
-        for (let b = 0; b < LOD_SQ.length; b++) {
-          const sticky = cur >= 0 && cur <= b
-          if (d2 < sizeSq * (sticky ? LOD_SQ_OUT[b] : LOD_SQ[b])) {
-            tier = b
-            break
+        if (d2 < (cur >= 0 && cur < coarse ? FAR_SQ : FAR_IN_SQ)) {
+          for (let b = 0; b < LOD_SQ.length; b++) {
+            const sticky = cur >= 0 && cur <= b
+            if (d2 < sizeSq * (sticky ? LOD_SQ_OUT[b] : LOD_SQ[b])) {
+              tier = b
+              break
+            }
           }
         }
 
@@ -2564,11 +2644,14 @@ class RockBed {
           // departing mesh to hold, so there is nothing to dissolve past.
           if (cur >= 0) this._crossFade(i, cur, now)
         }
-        tris += this.tierTris[tier]
+        cnt[tier]++
       }
     }
-    this.tileTris += tris - t.tris
-    t.tris = tris
+    const tierN = t.tierN
+    for (let b = 0; b < ROCK_BAND_COUNT; b++) {
+      this.tileTierN[b] += cnt[b] - tierN[b]
+      tierN[b] = cnt[b]
+    }
   }
 
   /** Walk the tile on the next update whatever its bucket says. */
@@ -3002,6 +3085,15 @@ class RockBed {
       const sizeRoll = this._sizeRoll(scaleRoll)
       const metres = cfg.sizeByEnv[env]
       if (!metres) throw new Error(`RockBed ${cfg.name}: sizeByEnv has no entry for ${env}`)
+      // THE BARREN TOP, where the bed has one and the roll would use it: the
+      // footprint probe is four field samples, paid only by the rock that
+      // would overtop the wooded range. Refused, the roll lands on that range
+      // as it would in a wood.
+      let top = metres[1]
+      if (this.barrenTop[env] > 0) {
+        const want = metres[0] + sizeRoll * (this.barrenTop[env] - metres[0])
+        if (want > top && this._barrenAt(x, z, h, snowLine, want)) top = this.barrenTop[env]
+      }
       // AND THE TOP OF THE RANGE IS A CEILING ON EVERY AXIS, not just on the one it
       // divides through. The boulder is deeper than it is wide, so the width
       // division alone comes out over the range's top -- and that number is not
@@ -3014,8 +3106,8 @@ class RockBed {
       // what the ground under this candidate can actually hold. Everything
       // derived from it is scaled by the same factor there.
       let scale = Math.min(
-        (metres[0] + sizeRoll * (metres[1] - metres[0])) / s.measured.width,
-        metres[1] / this.shapeLod
+        (metres[0] + sizeRoll * (top - metres[0])) / s.measured.width,
+        top / this.shapeLod
       )
 
       // THE QUARTER TURNS, WHICH DECIDE WHICH WAY IS UP BEFORE ANYTHING ELSE DOES.
@@ -3356,7 +3448,7 @@ class RockBed {
         due: false,
         phase,
         bi: bucket.length,
-        tris: 0,
+        tierN: new Int32Array(ROCK_BAND_COUNT),
         // The terrain chunk covering this tile's CENTRE when its rocks were last
         // grounded, or null if none was resident, and the ground version it was
         // read at. The walk re-asks only once the version has moved on.
@@ -3547,8 +3639,8 @@ class RockBed {
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
-    this.tileTris -= tile.tris
-    tile.tris = 0
+    for (let b = 0; b < ROCK_BAND_COUNT; b++) this.tileTierN[b] -= tile.tierN[b]
+    tile.tierN.fill(0)
     this.rim.releaseTile(tile)
   }
 
@@ -3845,6 +3937,11 @@ class RockBed {
       placed: this.placed,
       samples: this.samples,
       tris: this.tris,
+      // Per rung: the instances drawn on it and the triangles that costs, the
+      // ghosts of a cross-dissolve counted in the tier they are leaving. The
+      // counts sum to `placed - rimHidden` and the triangles to `tris`, each as
+      // of its tile's last walk.
+      lod: Array.from(this.tileTierN, (n, b) => ({ n, tris: (n + this.ghostsAt[b]) * this.tierTris[b] })),
       walked: this.walked,
       tiles: this.tiles.size,
       queued: this.queue.length,
@@ -4493,6 +4590,10 @@ export class Rocks {
       // counts stone the GPU never sees.
       rimHidden: beds.reduce((n, b) => n + b.rimHidden, 0),
       tris: beds.reduce((n, b) => n + b.tris, 0),
+      lod: Array.from({ length: ROCK_BAND_COUNT }, (_, t) => ({
+        n: beds.reduce((n, b) => n + b.lod[t].n, 0),
+        tris: beds.reduce((n, b) => n + b.lod[t].tris, 0),
+      })),
       walked: beds.reduce((n, b) => n + b.walked, 0),
       tiles: beds.reduce((n, b) => n + b.tiles, 0),
       updateMs: this.updateMs,

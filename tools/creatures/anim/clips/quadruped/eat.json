@@ -1,0 +1,74 @@
+{
+  "kind": "pose",
+  "note": "Browsing: the head comes down over foliage in front, works through a run of chews, tugs a mouthful free, settles back and goes on chewing, then lifts. Head pitch is POSITIVE because positive is nose-down. The chew is mostly YAW, not pitch -- a ruminant grinds side to side, and a pure up-down bob reads as a bird pecking. All four feet stay at their rest positions for the whole clip, so the animal is standing still and eating rather than shuffling. The keys at t=0.85 and t=3.65 are identical, as are the two at the ends: the flat pair bracket a loopable munch window the way `sit` and `lie` bracket their hold, so a game can cut this into down / munch / up and hold the middle for as long as the animal is feeding.",
+  "samples": 54,
+  "duration": 4.5,
+  "keys": [
+    { "t": 0.0, "pose": {
+      "tail": { "pitch": 0.1 }
+    } },
+    { "t": 0.85, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.35 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 1.15, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.42, "yaw": 0.05, "roll": 0.03 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 1.45, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.31, "yaw": -0.05, "roll": -0.03 },
+      "tail": { "pitch": 0.16 }
+    } },
+    { "t": 1.75, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.42, "yaw": 0.05, "roll": 0.03 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 2.05, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.31, "yaw": -0.05, "roll": -0.03 },
+      "tail": { "pitch": 0.16 }
+    } },
+    { "t": 2.35, "pose": {
+      "root": { "lift": -0.02, "fore": -0.02 },
+      "spine": { "pitch": 0.18 },
+      "head": { "pitch": 0.92, "yaw": -0.02 },
+      "tail": { "pitch": 0.24 }
+    } },
+    { "t": 2.75, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.38 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 3.05, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.42, "yaw": 0.05, "roll": 0.03 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 3.35, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.31, "yaw": -0.05, "roll": -0.03 },
+      "tail": { "pitch": 0.16 }
+    } },
+    { "t": 3.65, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.35 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 4.5, "pose": {
+      "tail": { "pitch": 0.1 }
+    } }
+  ]
+}

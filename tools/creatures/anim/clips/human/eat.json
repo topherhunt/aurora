@@ -1,0 +1,77 @@
+{
+  "kind": "pose",
+  "note": "Eating while seated at sit's hold pose: the right hand lifts to the mouth, the head dips to meet it and chews as the hand drops to the lap, twice. The left hand rests on the thigh as a plate-holder.",
+  "samples": 44,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 0.7, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.2 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.6, "spread": 0.2, "elbow": 2.1, "twist": 0.8, "curl": 0.6 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 1.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.22 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.6, "spread": 0.2, "elbow": 2.1, "twist": 0.8, "curl": 0.6 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 1.5, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.1, "spread": 0.1, "elbow": 0.5, "twist": 0.3, "curl": 0.3 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 1.8, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.04 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.1, "spread": 0.1, "elbow": 0.5, "twist": 0.3, "curl": 0.3 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 2.1, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.1, "spread": 0.1, "elbow": 0.5, "twist": 0.3, "curl": 0.3 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 2.7, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.2 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.6, "spread": 0.2, "elbow": 2.1, "twist": 0.8, "curl": 0.6 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 3.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.22 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.6, "spread": 0.2, "elbow": 2.1, "twist": 0.8, "curl": 0.6 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 3.5, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "head": { "pitch": 0.08 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 }, "right": { "raise": 0.05, "spread": 0.05, "elbow": 0.3, "twist": 0.1, "curl": 0.1 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } },
+    { "t": 4.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5 },
+      "spine": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.15, "elbow": 0.2, "spread": 0.05 } },
+      "legs": { "legLeft": { "fore": 0 }, "legRight": { "fore": 0 } }
+    } }
+  ]
+}

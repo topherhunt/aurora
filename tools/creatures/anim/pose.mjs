@@ -14,12 +14,18 @@
  *
  * Handles, all optional, all relative so they carry across body sizes:
  *   root   lift, fore, lat    fractions of height / wheelbase
+ *          pitch, yaw, roll   radians, the whole body turned about its hips
  *   spine  pitch, yaw, roll   radians, spread along the chain
  *   head   pitch, yaw, roll   radians, spread along the neck
  *   tail   pitch, yaw, curl   radians, spread along the tail
  *   wings  spread, sweep      radians, mirrored across the pair
  *   arms   pitch, spread      radians, mirrored across the pair
+ *          left, right, both  per-arm handles for a jointed arm, see arm.mjs;
+ *                             `both` is added to each side
  *   legs   <legId>: { fore, lat, lift, pitch }  foot target offset, paw tilt
+ *
+ * `crouch` drops the body by a fraction of height on every key, as a gait's
+ * does, so a pose clip stands at the same height as the idle it cuts from.
  *
  * `unweighted: [legId, ...]` names feet that are not carrying the animal, which
  * is what a dig needs: the forepaws work at ground level without standing on it.
@@ -35,8 +41,9 @@
  * hare's short thick tail turns inside out at the base.
  */
 
-import { add, loadSkeleton, scale } from './skeleton.mjs'
-import { bend, limbSetup, pairsOf, poser, seed, solveLimb } from './gait.mjs'
+import { add, loadSkeleton, qAxisAngle, qMul, qRotate, scale, sub } from './skeleton.mjs'
+import { armsOf, bend, contactOf, limbSetup, pairsOf, poser, seed, solveLimb } from './gait.mjs'
+import { ARM_HANDLES, poseArm } from './arm.mjs'
 
 const ZERO = { lift: 0, fore: 0, lat: 0, pitch: 0, yaw: 0, roll: 0, curl: 0 }
 
@@ -57,7 +64,7 @@ function sample(keys, t, pick) {
 }
 
 export function poseClip(rigFile, map, rawSpec) {
-  const spec = { samples: 30, loop: false, ...rawSpec }
+  const spec = { samples: 30, crouch: 0, ...rawSpec }
   if (!Array.isArray(spec.keys) || spec.keys.length < 2) {
     throw new Error('a pose clip needs at least two keys')
   }
@@ -81,15 +88,21 @@ export function poseClip(rigFile, map, rawSpec) {
   const head = named(map.head)
   const tail = named(map.tail)
   const wings = pairsOf(map, 'wings', named)
-  const arms = pairsOf(map, 'arms', named)
+  const arms = armsOf(map, skel, byName, named)
   const driven = [...spine, ...head, ...tail, ...legs.flatMap((l) => l.chain),
-    ...wings.flatMap((w) => w.chain), ...arms.flatMap((a) => a.chain)]
+    ...wings.flatMap((w) => w.chain), ...arms.plain.flatMap((a) => a.chain),
+    ...arms.jointed.flatMap((a) => a.chain)]
+  // The whole body turns about the hips, not about the root joint: Tripo puts a
+  // human's root on the ground between the feet, and a lie-down pivoted there
+  // would swing the torso through the floor.
+  const pivot = scale(legs.reduce((s, l) => add(s, skel.pos(l.hip)), [0, 0, 0]), 1 / Math.max(1, legs.length))
 
   // One getter per handle, so `sample` never has to know the spec's shape and a
   // key that omits a group simply reads zero.
   const scaleOf = spec.scale ?? {}
   const at = (t, group, field) => sample(keys, t, (k) => (k.pose[group] ?? ZERO)[field] ?? 0) * (scaleOf[group] ?? 1)
   const legAt = (t, id, field) => sample(keys, t, (k) => ((k.pose.legs ?? {})[id] ?? ZERO)[field] ?? 0) * (scaleOf.legs ?? 1)
+  const armAt = (t, which, field) => sample(keys, t, (k) => ((k.pose.arms ?? {})[which] ?? ZERO)[field] ?? 0) * (scaleOf.arms ?? 1)
   // Feet this clip declares are not carrying the animal. A digging forepaw rakes
   // backwards through the dirt at its own rest height, so by geometry it is
   // planted -- but it bears no weight, and scoring it as stance reports the
@@ -107,13 +120,27 @@ export function poseClip(rigFile, map, rawSpec) {
     const t = (i / n) * duration
     times.push(t)
     const pose = poser(skel)
-    seed(pose, driven)
     if (root === null) root = pose.roots[0]
+    // The root is a track like any other once a key turns it, so every frame
+    // has to carry it, including the ones where the turn is zero.
+    seed(pose, [root, ...driven])
 
-    pose.setOffset(add(add(
-      scale(up, at(t, 'root', 'lift') * map.height),
+    let offset = add(add(
+      scale(up, (at(t, 'root', 'lift') - spec.crouch) * map.height),
       scale(fwd, at(t, 'root', 'fore') * map.wheelbase)),
-      scale(lat, at(t, 'root', 'lat') * map.wheelbase)))
+      scale(lat, at(t, 'root', 'lat') * map.wheelbase))
+    // Turning the root joint turns everything about the root's own origin, so
+    // the offset also carries the hips back to where they were.
+    const turn = qMul(qMul(
+      qAxisAngle(fwd, at(t, 'root', 'roll')),
+      qAxisAngle(up, at(t, 'root', 'yaw'))),
+      qAxisAngle(lat, at(t, 'root', 'pitch')))
+    if (turn[3] < 1) {
+      pose.rotateWorld(root, turn)
+      const arm = sub(pivot, pose.pos(root))
+      offset = add(offset, sub(arm, qRotate(turn, arm)))
+    }
+    pose.setOffset(offset)
 
     bend(pose, spine, lat, at(t, 'spine', 'pitch'))
     bend(pose, spine, up, at(t, 'spine', 'yaw'))
@@ -129,9 +156,15 @@ export function poseClip(rigFile, map, rawSpec) {
       bend(pose, w.chain, fwd, at(t, 'wings', 'spread') * w.side)
       bend(pose, w.chain, up, at(t, 'wings', 'sweep') * w.side)
     }
-    for (const a of arms) {
+    for (const a of arms.plain) {
       bend(pose, a.chain, lat, at(t, 'arms', 'pitch'))
       bend(pose, a.chain, fwd, at(t, 'arms', 'spread') * a.side)
+    }
+    for (const a of arms.jointed) {
+      const which = a.side > 0 ? 'left' : 'right'
+      const h = {}
+      for (const f of ARM_HANDLES) h[f] = armAt(t, 'both', f) + armAt(t, which, f)
+      poseArm(pose, a, h, map.frame)
     }
 
     const feet = []
@@ -148,7 +181,7 @@ export function poseClip(rigFile, map, rawSpec) {
       // ankles 16cm up -- so against one plane a leg reads permanently airborne
       // and drops out of the slide check entirely.
       const planted = !unweighted.has(leg.id) && target[1] - leg.restFoot[1] < 1e-4
-      feet.push({ id: leg.id, target, planted, actual: pose.pos(leg.foot) })
+      feet.push({ id: leg.id, target, planted, actual: pose.pos(leg.foot), contact: contactOf(pose, leg) })
     }
 
     for (const [j, q] of pose.posed()) {

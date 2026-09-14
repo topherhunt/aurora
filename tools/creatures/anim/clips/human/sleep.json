@@ -1,0 +1,37 @@
+{
+  "kind": "pose",
+  "note": "Asleep on the back at lie's hold pose: slow breathing in the chest and a small stir of the head. Every key keeps lie's root, leg and limit numbers so the two cut together.",
+  "samples": 32,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } },
+    { "t": 1.4, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.14 },
+      "head": { "pitch": 0.08, "yaw": 0.06 },
+      "arms": { "both": { "raise": 0.12, "elbow": 0.92, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } },
+    { "t": 2.8, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1, "yaw": 0.06 },
+      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } },
+    { "t": 4.0, "pose": {
+      "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.1 },
+      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
+    } }
+  ]
+}

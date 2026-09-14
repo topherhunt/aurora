@@ -239,6 +239,12 @@
           <label><input type="checkbox" id="meshPbr" checked /> PBR maps (roughness, metallic and normal kept in the work dir beside the colour; never shipped or previewed; no extra credits)</label>
         </div>
         <button id="genMesh" class="wide spend" disabled>generate mesh</button>
+        <div class="step" style="margin-top:8px">Or, for a flat creature Tripo cannot model (a butterfly): the picked image cut out and laid on two quads that meet along the body, one 128px cutout texture drawn two-sided. Seam offset nudges the split off the cutout's centre of mass, in source pixels.</div>
+        <div class="field">
+          <label>seam offset (px)</label>
+          <input type="number" id="seamPx" value="0" step="1" />
+        </div>
+        <button id="cutWingCards" class="wide local" disabled>cut wing cards from picked image (4 tris, free)</button>
 
         <h2>4. LOD</h2>
         <div class="step">Our decimator (src/mesh/decimate.js) on the <em>selected</em> mesh candidate &mdash; click one above to switch. Free, local, re-runnable. A tier keeps the UV atlas if it can hit the target that way, and drops it for baked vertex colours if it cannot.</div>

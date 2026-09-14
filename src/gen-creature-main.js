@@ -339,6 +339,7 @@ async function refresh() {
   // every action, and without it a refresh landing inside the cooldown would
   // hand the button straight back and undo the double-click guard.
   $('genMesh').disabled = !assets.source || meshCooling
+  $('cutWingCards').disabled = !assets.source
   $('genLod').disabled = !selectedMesh
   $('genCards').disabled = !selectedMesh
   $('saveLod').disabled = lodTiers.length === 0
@@ -476,10 +477,13 @@ function renderMeshGallery() {
     const meta = document.createElement('div')
     meta.className = 'cost'
     const p = m.params
+    const how = m.kind === 'wing-cards'
+      ? `wing cards from ${m.source} @ ${p.texPx}px, seam ${(p.seamU * 100).toFixed(0)}%${p.seamPx ? ` (${p.seamPx > 0 ? '+' : ''}${p.seamPx}px)` : ''}`
+      : p ? `${p.model.replace(/-\d+$/, '')} @ ${p.faceLimit}f${p.pbr ? ' pbr' : ''}` : 'params not recorded'
     meta.innerHTML = [
       m.file,
-      p ? `${p.model.replace(/-\d+$/, '')} @ ${p.faceLimit}f${p.pbr ? ' pbr' : ''}` : 'params not recorded',
-      `${m.credits} credits`,
+      how,
+      m.kind === 'wing-cards' ? 'free' : `${m.credits} credits`,
       m.lods.length ? `${m.lods.length} lod${m.lods.length === 1 ? '' : 's'}` : 'no lods',
     ].join(' &middot; ')
 
@@ -690,6 +694,17 @@ async function queueMesh() {
     setStatus(`generating mesh failed: ${e.message}`, 'warn')
   }
 }
+
+$('cutWingCards').addEventListener('click', () => withButton($('cutWingCards'), 'cutting wing cards', async () => {
+  const id = currentId()
+  const seamPx = Number($('seamPx').value)
+  const j = await post(`/__creature-wing-cards?id=${encodeURIComponent(id)}`, { seamPx })
+  if (j.autoPicked) clearLods()
+  await refresh()
+  await selectMesh(j.file)
+  const s = j.stats
+  setStatus(`wing cards -> ${j.path}: ${s.pixels} px cut, ${s.shadow} shadow px dropped, seam at ${(s.seamU * 100).toFixed(1)}%, ${(s.widthM * 1000).toFixed(0)}x${(s.heightM * 1000).toFixed(0)} mm${j.autoPicked ? ', picked as the working mesh' : ' -- "pick" it to make it the working mesh'}`, 'ok')
+}))
 
 $('rigCheck').addEventListener('click', () => withButton($('rigCheck'), 'rig-check (free)', async () => {
   const j = await post(`/__creature-rig-check?id=${encodeURIComponent(currentId())}`)

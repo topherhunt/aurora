@@ -1510,6 +1510,14 @@ function updateQuestStats() {
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
       ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
     ],
+    // The rock row split by ladder rung, T320 to T6: drawn rocks on that rung
+    // over the triangles it costs, cross-fade ghosts included in the latter.
+    [
+      ['rock lod ', '#7f95b4'],
+      ...(questToggles.boulders
+        ? rs.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']])
+        : [['hidden'.padEnd(11), '#5c6b7d']]),
+    ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
       ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],

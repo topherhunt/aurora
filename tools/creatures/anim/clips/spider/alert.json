@@ -1,0 +1,62 @@
+{
+  "kind": "pose",
+  "note": "Threat display: the body rears -- root lifted, thorax and head pitched nose-up, abdomen dropped -- and the front pair of legs comes up off the ground, spread wide, with the fangs opened. It goes up, holds swaying between two keys, and comes down; the hold is flat so a game can cut it at either end. Spine and head pitch are NEGATIVE here, which is nose-up: `eat` uses positive ones. A pose rather than a gait because a gait scores a held-up foot as a planted one floating; here a lifted foot is simply not standing. The middle and back feet are pulled in so the lifted body still reaches the floor with them.",
+  "samples": 48,
+  "limits": { "fold": 2.6 },
+  "keys": [
+    { "t": 0.0, "pose": { "tail": { "pitch": 0.1 }, "arms": { "spread": 0.1 } } },
+    { "t": 0.6, "pose": {
+      "root": { "lift": 0.1, "fore": -0.02 },
+      "spine": { "pitch": -0.2 },
+      "head": { "pitch": -0.2 },
+      "tail": { "pitch": -0.15 },
+      "arms": { "pitch": -0.3, "spread": 0.5 },
+      "legs": {
+        "leg1Left": { "fore": -0.06, "lat": 0.06, "lift": 0.7 }, "leg1Right": { "fore": -0.06, "lat": -0.06, "lift": 0.7 },
+        "leg2Left": { "fore": -0.03, "lat": -0.04 }, "leg2Right": { "fore": -0.03, "lat": 0.04 },
+        "leg3Left": { "lat": -0.04 }, "leg3Right": { "lat": 0.04 },
+        "leg4Left": { "fore": 0.06 }, "leg4Right": { "fore": 0.06 }
+      }
+    } },
+    { "t": 1.2, "pose": {
+      "root": { "lift": 0.12, "fore": -0.02, "lat": 0.02 },
+      "spine": { "pitch": -0.22, "roll": 0.04 },
+      "head": { "pitch": -0.25, "yaw": 0.1 },
+      "tail": { "pitch": -0.15 },
+      "arms": { "pitch": -0.4, "spread": 0.6 },
+      "legs": {
+        "leg1Left": { "fore": -0.04, "lat": 0.08, "lift": 0.8 }, "leg1Right": { "fore": -0.08, "lat": -0.05, "lift": 0.6 },
+        "leg2Left": { "fore": -0.03, "lat": -0.04 }, "leg2Right": { "fore": -0.03, "lat": 0.04 },
+        "leg3Left": { "lat": -0.04 }, "leg3Right": { "lat": 0.04 },
+        "leg4Left": { "fore": 0.06 }, "leg4Right": { "fore": 0.06 }
+      }
+    } },
+    { "t": 1.8, "pose": {
+      "root": { "lift": 0.12, "fore": -0.02, "lat": -0.02 },
+      "spine": { "pitch": -0.22, "roll": -0.04 },
+      "head": { "pitch": -0.25, "yaw": -0.1 },
+      "tail": { "pitch": -0.15 },
+      "arms": { "pitch": -0.4, "spread": 0.6 },
+      "legs": {
+        "leg1Left": { "fore": -0.08, "lat": 0.05, "lift": 0.6 }, "leg1Right": { "fore": -0.04, "lat": -0.08, "lift": 0.8 },
+        "leg2Left": { "fore": -0.03, "lat": -0.04 }, "leg2Right": { "fore": -0.03, "lat": 0.04 },
+        "leg3Left": { "lat": -0.04 }, "leg3Right": { "lat": 0.04 },
+        "leg4Left": { "fore": 0.06 }, "leg4Right": { "fore": 0.06 }
+      }
+    } },
+    { "t": 2.4, "pose": {
+      "root": { "lift": 0.1, "fore": -0.02 },
+      "spine": { "pitch": -0.2 },
+      "head": { "pitch": -0.2 },
+      "tail": { "pitch": -0.15 },
+      "arms": { "pitch": -0.3, "spread": 0.5 },
+      "legs": {
+        "leg1Left": { "fore": -0.06, "lat": 0.06, "lift": 0.7 }, "leg1Right": { "fore": -0.06, "lat": -0.06, "lift": 0.7 },
+        "leg2Left": { "fore": -0.03, "lat": -0.04 }, "leg2Right": { "fore": -0.03, "lat": 0.04 },
+        "leg3Left": { "lat": -0.04 }, "leg3Right": { "lat": 0.04 },
+        "leg4Left": { "fore": 0.06 }, "leg4Right": { "fore": 0.06 }
+      }
+    } },
+    { "t": 3.0, "pose": { "tail": { "pitch": 0.1 }, "arms": { "spread": 0.1 } } }
+  ]
+}

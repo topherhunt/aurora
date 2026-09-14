@@ -229,9 +229,12 @@ const ANIMALS = [
     rigType: 'biped',
     sizeM: 1.75,
     description:
-      'a weathered middle-aged Nordic trader, broad-shouldered and stocky, wearing a heavy layered wool coat over a ' +
-      'linen tunic, a wide leather belt with hanging pouches, sturdy boots and wrapped leggings, a short greying ' +
-      'beard and a fur-lined hood pushed back off the head',
+      'a weathered middle-aged Nordic trader from the medieval era, broad-shouldered and stocky, dressed in ' +
+      'authentic early-medieval Norse clothing: a knee-length belted wool tunic with a plain round neckline over an ' +
+      'undyed linen undershirt, a heavy fur-trimmed wool cloak fastened at one shoulder with a round bronze brooch, ' +
+      'a wide leather belt with hanging drawstring pouches, wool trousers bound from knee to ankle with wrapped ' +
+      'leg cloths, soft leather turnshoes, a short greying beard and a fur-lined hood pushed back off the head. ' +
+      'No lapels, no buttons, no zips, no sewn pockets, no modern overcoat, no laced shoes',
   },
 ]
 
