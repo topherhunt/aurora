@@ -40,12 +40,19 @@
 //   forgets to cull shows z-fighting the shipped game never would, or ships
 //   it. Every src file that loads from a Tripo work directory or from
 //   public/creatures has to import src/tripo-culling.js.
+//
+//   A CREATURE SHIPS OVER THE TEXTURE CAP. Nothing generated enters the world
+//   with a colour map wider than TEX_PX_MAX, and a designated-small creature
+//   ships at TEX_PX_SMALL (design/27-creature-pipeline.md). The shippers
+//   enforce it, but a GLB copied into public/creatures by hand would not pass
+//   through them, so every shipped GLB's one image is measured here.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from '../tools/creatures/creature-prompt.mjs'
-import { CREATURES } from '../tools/creatures/creature-roster.mjs'
+import { CREATURES, TEX_PX_MAX, shipTexPx } from '../tools/creatures/creature-roster.mjs'
+import { readGlbChunks, webpSize } from '../tools/tripo-pack.mjs'
 import { MODELS, PRESETS, RIG_TYPES, createMeshTask, estimateCredits, creditsToUsd } from '../tools/creatures/tripo.mjs'
 import { workDir } from '../tools/creatures/workspace.mjs'
 
@@ -218,6 +225,31 @@ check(loaders.length >= 5, `found the Tripo loaders (${loaders.length}; the benc
 for (const f of loaders) {
   check(/from '[./]*\/tripo-culling\.js'/.test(fs.readFileSync(f, 'utf8')),
     `${path.relative(ROOT, f)} imports tripo-culling.js -- a Tripo loader that does not cull z-fights its fins`)
+}
+
+// --- every shipped creature is under the texture cap -------------------------
+
+console.log('\nshipped textures')
+const SHIPPED = path.join(ROOT, 'public/creatures')
+const shipped = fs.readdirSync(SHIPPED).filter((n) => n.endsWith('.glb'))
+check(shipped.length > 0, `found the shipped creatures (${shipped.length})`)
+for (const name of shipped) {
+  const id = name.slice(0, -4)
+  const entry = CREATURES.find((c) => c.id === id)
+  check(!!entry, `${name} is a roster creature`)
+  if (!entry) continue
+  const { json } = readGlbChunks(path.join(SHIPPED, name))
+  const images = json.images ?? []
+  check(images.length === 1 && images[0].uri === `${id}.webp` && images[0].mimeType === 'image/webp',
+    `${name} ships one WebP colour map beside it, not an embedded JPEG`, JSON.stringify(images))
+  if (images.length !== 1 || !images[0].uri) continue
+  const { width, height } = webpSize(fs.readFileSync(path.join(SHIPPED, images[0].uri)))
+  const want = shipTexPx(entry)
+  check(width === want && height === want, `${name} colour map is its designated ${want}px square`, `${width}x${height}`)
+  check(width <= TEX_PX_MAX && height <= TEX_PX_MAX, `${name} colour map is within the ${TEX_PX_MAX}px cap`)
+  const pbr = json.materials?.[0]?.pbrMetallicRoughness
+  check(json.materials?.length === 1 && pbr?.metallicFactor === 0 && pbr?.roughnessFactor === 1 && !pbr.metallicRoughnessTexture && !json.materials[0].normalTexture,
+    `${name} ships colour only: matte, no roughness or normal map`)
 }
 
 // ---------------------------------------------------------------------------

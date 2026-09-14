@@ -27,7 +27,7 @@ import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
-import { GLINT, packedPbr } from '../src/v2/render/critters.js'
+import { GLINT, glint } from '../src/v2/render/critters.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -831,17 +831,16 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   }
 }
 
-// --- src/v2/render/critters.js: the packed glint ------------------------------
+// --- src/v2/render/critters.js: the glint -------------------------------------
 //
-// What a frog wears exactly, and a crab's fragment stage: a Standard whose
-// onBeforeCompile is packedPbr, under the vertex-mode lighting patch, with
-// USE_MAP because the roughness override reads map_fragment's sample. Compiled
-// here because the override replaces a chunk of three's own and the glint line
-// lands in the slot the lighting patch also splices into.
+// What a frog wears exactly, and a crab's fragment stage: a Standard at a
+// uniform roughness whose onBeforeCompile is glint, under the vertex-mode
+// lighting patch. Compiled here because the glint line lands in the slot the
+// lighting patch also splices into.
 {
-  const material = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0.02 })
-  material.onBeforeCompile = (shader) => packedPbr(shader)
-  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-packed-pbr' })
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0 })
+  material.onBeforeCompile = (shader) => glint(shader)
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-glint' })
   const lib = THREE.ShaderLib.standard
   const shader = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
@@ -851,7 +850,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   }
   material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
   const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']
-  const label = 'critters packedPbr   '
+  const label = 'critters glint       '
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
@@ -861,8 +860,8 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!frag.includes('reflectedLight.directSpecular +=') || !/reflectedLight\.directSpecular \*= .* mix\( uFarLight\.x, 1\.0, wlNear \);/.test(frag)) MISSING_MARKS.push(`${label} frag: the shadowed glint`)
   // ...and then GLINT tames it; without the scale a jaw edge catches the whole lobe.
   if (!frag.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`)) MISSING_MARKS.push(`${label} frag: the glint scale`)
-  // Roughness is the colour map's alpha; three's own sampler must be gone, or a creature with no roughnessMap is uniformly rough 1.
-  if (!frag.includes('roughness * sampledDiffuseColor.a') || frag.includes('texture2D( roughnessMap')) MISSING_MARKS.push(`${label} frag: roughness from the colour alpha`)
+  // Tripo's roughness map is not shipped, so nothing may read the colour alpha as roughness.
+  if (frag.includes('sampledDiffuseColor.a')) MISSING_MARKS.push(`${label} frag: the colour alpha read as roughness`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

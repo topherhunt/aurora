@@ -7,24 +7,22 @@
 // Reads tools/creatures/work/<creature>/mesh.glb (the pick made in
 // gen-creature.html) for each species in TRIPO and writes public/fauna/fish.json
 // -- the mesh as plain arrays, turned nose to -Z, scaled to the roster length,
-// centred, with the per-vertex swim-bend weight fish.js's vertex stage reads,
-// and the mean of Tripo's metalness map as one number -- and
-// public/fauna/<id>.webp, the base colour map at TEX_PX a side with Tripo's
-// roughness map in its alpha (tools/tripo-pack.mjs). Re-run after picking a
-// new mesh, and commit what it writes.
+// centred, with the per-vertex swim-bend weight fish.js's vertex stage reads --
+// and public/fauna/<id>.webp, the base colour map boxed to the creature's
+// roster `texPx` (tools/tripo-pack.mjs). Re-run after picking a new mesh, and
+// commit what it writes.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SPECIES } from './fish-roster.mjs'
-import { packTexture, readGlbChunks, tripoJpegs, viewOf } from '../tripo-pack.mjs'
+import { CREATURES, shipTexPx } from '../creatures/creature-roster.mjs'
+import { packTexture, readGlbChunks, tripoColourJpeg, viewOf } from '../tripo-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORK = path.join(ROOT, 'tools/creatures/work')
 const OUT = path.join(ROOT, 'public/fauna')
-// A big deep-water pike (2.6x the roster length) swum right up to spans the screen once; Tripo bakes 2048 and the map ships at this many texels a side.
-const TEX_PX = 1024
 
 // Which creature-bench pick each species wears, and which way Tripo happened
 // to point its nose: Tripo orients the model to face the camera of its own
@@ -41,7 +39,7 @@ const TRIPO = {
 const COMPONENT = { 5121: Uint8Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array }
 const COUNTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }
 
-/** The one mesh in a Tripo glb: its node transform, attributes, indices and the bytes of the base colour and metallic-roughness images. */
+/** The one mesh in a Tripo glb: its node transform, attributes, indices and the bytes of the base colour image. */
 function readGlb(file) {
   const { json, bin } = readGlbChunks(file)
   const accessor = (i) => {
@@ -68,7 +66,7 @@ function readGlb(file) {
     nrm: accessor(prim.attributes.NORMAL),
     uv: accessor(prim.attributes.TEXCOORD_0),
     idx: accessor(prim.indices),
-    ...tripoJpegs(file, json, bin, prim.material),
+    jpeg: tripoColourJpeg(file, json, bin, prim.material),
   }
 }
 
@@ -132,20 +130,22 @@ for (const s of SPECIES) {
   for (let i = 0; i < uv.length; i += 2) { uv[i] = glb.uv[i]; uv[i + 1] = 1 - glb.uv[i + 1] }
 
   const texture = `${s.id}.webp`
-  const metalness = packTexture(glb, path.join(OUT, texture), TEX_PX)
+  const creature = CREATURES.find((c) => c.id === pick.creature)
+  if (!creature) throw new Error(`${s.id}: ${pick.creature} is not in the creature roster`)
+  const texPx = shipTexPx(creature)
+  packTexture(glb.jpeg, path.join(OUT, texture), texPx)
   const round = (v) => Math.round(v * 1e4) / 1e4
   species.push({
     id: s.id,
     lengthM,
     texture,
-    metalness: round(metalness),
     pos: Array.from(pos, round),
     nrm: Array.from(nrm, round),
     uv: Array.from(uv, round),
     bend: Array.from(bend, round),
     idx: Array.from(glb.idx),
   })
-  console.log(`ship ${s.id}: ${pick.creature} pick, ${glb.idx.length / 3} tris, ${lengthM} m, metalness ${metalness.toFixed(2)}, texture ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
+  console.log(`ship ${s.id}: ${pick.creature} pick, ${glb.idx.length / 3} tris, ${lengthM} m, texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
 }
 fs.writeFileSync(path.join(OUT, 'fish.json'), JSON.stringify({ species }) + '\n')
 console.log(`wrote public/fauna/fish.json with ${species.length} species`)

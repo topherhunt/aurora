@@ -36,6 +36,7 @@ let presets = {}
 let frames = {} // rigType -> the frame a creature with that silhouette gets by default
 let credits = {}
 let imageModels = [] // the image models the server will bill for, cheapest first
+let texPx = null // { max, small }: the shipping cap and the small designation, from the roster
 let candidates = []
 let meshCandidates = []
 let assets = { source: false, mesh: null, rig: false, rigFixed: false, anims: [], lods: [], state: {} }
@@ -76,13 +77,14 @@ async function loadRoster() {
   // middleware does not hot-reload, so a dev server older than this page is the
   // way that happens.
   if (!j.ok) throw new Error(j.error ?? 'GET /__creature-roster failed')
-  for (const k of ['presets', 'frames', 'credits', 'imageModels']) {
+  for (const k of ['presets', 'frames', 'credits', 'imageModels', 'texPx']) {
     if (!j[k]) throw new Error(`/__creature-roster answered without "${k}" -- restart the dev server, its middleware is older than this page`)
   }
   presets = j.presets
   frames = j.frames
   credits = j.credits
   imageModels = j.imageModels
+  texPx = j.texPx
   // The list comes from the server because the server is what enforces it: an id
   // the select does not offer is refused rather than billed. Cheapest first, so
   // the default is FLUX.
@@ -238,6 +240,7 @@ async function loadCreature(id) {
   // for the new one too and the selection would look like it survived.
   selectedMesh = null
   framedFor = null
+  texChoice = c.texPx ?? texPx.max
   clearLods()
   clearModel()
   await refresh()
@@ -762,6 +765,29 @@ scene.add(sun)
 const orbit = new OrbitControls(camera, renderer.domElement)
 orbit.enableDamping = true
 
+// With `rotateLight` on, a left-drag swings the SUN instead of the camera --
+// yaw about the world's up, pitch about the camera's right -- so the light
+// sweeps across a still creature, which is how a normal map is judged. The
+// orbit keeps zoom and pan either way.
+const TURN_PER_PX = 0.008
+let dragFrom = null
+canvas.addEventListener('pointerdown', (e) => { if (e.button === 0 && $('rotateLight').checked) dragFrom = { x: e.clientX, y: e.clientY } })
+window.addEventListener('pointerup', () => { dragFrom = null })
+window.addEventListener('pointermove', (e) => {
+  if (!dragFrom) return
+  const dx = e.clientX - dragFrom.x, dy = e.clientY - dragFrom.y
+  dragFrom = { x: e.clientX, y: e.clientY }
+  turnLight(dx * TURN_PER_PX, dy * TURN_PER_PX)
+})
+$('rotateLight').addEventListener('change', () => { orbit.enableRotate = !$('rotateLight').checked })
+
+const dragAxis = new THREE.Vector3()
+function turnLight(yaw, pitch) {
+  sun.position.applyAxisAngle(dragAxis.set(0, 1, 0), yaw)
+  dragAxis.setFromMatrixColumn(camera.matrixWorld, 0)
+  sun.position.applyAxisAngle(dragAxis, pitch)
+}
+
 const loader = new GLTFLoader()
 const fbxLoader = new FBXLoader()
 
@@ -771,15 +797,35 @@ const fbxLoader = new FBXLoader()
  * downloaded, which makes the extension the honest answer to which loader to use.
  */
 // Every Tripo file the bench shows comes through here, so this is where they
-// get culled (see tripo-culling.js).
+// get culled (see tripo-culling.js) and stripped to the colour map.
 async function loadScene(url) {
   if (/\.fbx(\?|$)/i.test(url)) {
     const root = await fbxLoader.loadAsync(url)
-    return { scene: cullTripoBackfaces(root), animations: root.animations ?? [] }
+    return { scene: matte(cullTripoBackfaces(root)), animations: root.animations ?? [] }
   }
   const gltf = await loader.loadAsync(url)
-  cullTripoBackfaces(gltf.scene)
+  matte(cullTripoBackfaces(gltf.scene))
   return gltf
+}
+
+/**
+ * Colour map only, fully matte. Tripo's roughness, metalness and normal maps
+ * are dropped on load: the world never ships them (design/27-creature-pipeline.md),
+ * so a preview wearing them would be judging a creature it will never be.
+ */
+function matte(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return
+    for (const m of [].concat(o.material)) {
+      m.roughnessMap = null
+      m.metalnessMap = null
+      m.normalMap = null
+      m.roughness = 1
+      m.metalness = 0
+      m.needsUpdate = true
+    }
+  })
+  return root
 }
 let model = null
 let skeletonHelper = null
@@ -896,15 +942,11 @@ async function showModel(which) {
 
   let tris = 0
   let found = null
-  let foundRough = null
   model.traverse((o) => {
     if (!o.isMesh) return
     const g = o.geometry
     tris += (g.index ? g.index.count : g.attributes.position.count) / 3
-    if (!found && o.material?.map?.image) {
-      found = o.material.map
-      foundRough = o.material.roughnessMap ?? null
-    }
+    if (!found && o.material?.map?.image) found = o.material.map
     o.material.wireframe = $('showWire').checked
   })
 
@@ -927,94 +969,76 @@ async function showModel(which) {
     mixer.clipAction(gltf.animations[0]).play()
   }
 
-  drawTexture(found, foundRough)
+  drawTexture(found)
   $('viewer').classList.add('on')
   setSize()
 }
 
-// --- the resolution comparison ----------------------------------------------
+// --- the shipping resolutions -----------------------------------------------
 //
-// Both canvases draw the same source; only the destination size differs, so what
-// the small one loses is exactly what a 128px layer would lose. The preview wears
-// the SOURCE by default: creatures ship on their own 512px array rather than in
-// the 128px prop atlas (design/27-creature-pipeline.md), so the source is the
-// shipping resolution and the 128 figure is now the comparison, not the target.
-// Clicking either figure puts that resolution on the model.
+// Both canvases draw the same Tripo source; only the destination size differs.
+// The mesh never wears the raw 2048: the world caps every creature's colour map
+// at TEX_PX_MAX and designates the small ones TEX_PX_SMALL (creature-roster.mjs,
+// design/27-creature-pipeline.md), so the preview wears the creature's own
+// designation by default and clicking the other figure shows the trade.
 
-let texChoice = 'source' // sticky across previews: a choice made once should hold
-let downrez = null // the 128px canvas as a texture, rebuilt per source
-let sourceMap = null // the map `downrez` was reduced from, and the other choice
+let texChoice = null // a side in px: the creature's designation from loadCreature, or the figure clicked since
+let twins = {} // side -> the canvas at that side as a texture, rebuilt per source
+let sourceMap = null // the map the twins were reduced from
 const originalMaps = new WeakMap() // material -> the map it arrived with
 
-function drawTexture(map, roughnessMap = null) {
+function drawTexture(map) {
   const row = $('texRow')
   sourceMap = map?.image ? map : null
-  downrez = null
+  twins = {}
   if (!sourceMap) { row.classList.remove('on'); return }
 
   // An FBX's texture is embedded and decoded through a blob URL, which the
   // loader does not wait for: the image exists with width 0, and drawing it
   // paints nothing at all rather than failing.
   if (!sourceMap.image.width) {
-    sourceMap.image.addEventListener('load', () => drawTexture(map, roughnessMap), { once: true })
+    sourceMap.image.addEventListener('load', () => drawTexture(map), { once: true })
     return
   }
 
-  for (const [id, size] of [['texFull', 256], ['tex128', 128]]) {
-    const ctx = $(id).getContext('2d')
+  for (const [id, size] of [['texMax', texPx.max], ['texSmall', texPx.small]]) {
+    const canvas = $(id)
+    canvas.width = canvas.height = size
+    const ctx = canvas.getContext('2d')
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
-    ctx.clearRect(0, 0, size, size)
     ctx.drawImage(sourceMap.image, 0, 0, size, size)
+    twins[size] = canvasTwin(canvas, sourceMap)
   }
-  drawRoughness(roughnessMap)
-
-  downrez = new THREE.CanvasTexture($('tex128'))
-  // Copied, not defaulted. CanvasTexture flips Y where a glTF texture does not,
-  // and a wrong flip reads as a plausible-looking texture on the wrong islands.
-  downrez.flipY = sourceMap.flipY
-  downrez.colorSpace = sourceMap.colorSpace
-  downrez.wrapS = sourceMap.wrapS
-  downrez.wrapT = sourceMap.wrapT
-  downrez.minFilter = sourceMap.minFilter
-  downrez.magFilter = sourceMap.magFilter
 
   row.classList.add('on')
   applyTexture()
 }
 
 /**
- * Tripo's roughness at the shipping resolution, as greyscale. glTF packs
- * roughness into the GREEN channel of the metallicRoughness texture (blue is
- * metallic, red unused), so the raw image reads as a green-blue wash and says
- * nothing; the G channel alone is the shiny/matte segmentation this figure
- * exists to judge. Hidden when the mesh was generated without PBR.
+ * A canvas as a texture wearing `like`'s sampling state. Copied, not defaulted:
+ * CanvasTexture flips Y where a glTF texture does not, and a wrong flip reads
+ * as a plausible-looking texture on the wrong islands.
  */
-function drawRoughness(roughnessMap) {
-  const fig = $('texRoughFig')
-  const image = roughnessMap?.image
-  fig.hidden = !image
-  if (!image) return
-  if (!image.width) {
-    image.addEventListener('load', () => drawRoughness(roughnessMap), { once: true })
-    return
-  }
-  const ctx = $('texRough').getContext('2d')
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = 'high'
-  ctx.drawImage(image, 0, 0, 128, 128)
-  const px = ctx.getImageData(0, 0, 128, 128)
-  const d = px.data
-  for (let i = 0; i < d.length; i += 4) d[i] = d[i + 2] = d[i + 1]
-  ctx.putImageData(px, 0, 0)
+function canvasTwin(canvasEl, like) {
+  const t = new THREE.CanvasTexture(canvasEl)
+  t.flipY = like.flipY
+  t.colorSpace = like.colorSpace
+  t.wrapS = like.wrapS
+  t.wrapT = like.wrapT
+  t.minFilter = like.minFilter
+  t.magFilter = like.magFilter
+  return t
 }
 
-/** Put the chosen resolution on every material that arrived wearing `sourceMap`. */
+/** Put the chosen side on every material that arrived wearing `sourceMap`. */
 function applyTexture() {
-  for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
-    $(id).parentElement.classList.toggle('is-active', texChoice === choice)
+  for (const [id, side] of [['texMax', texPx.max], ['texSmall', texPx.small]]) {
+    $(id).parentElement.classList.toggle('is-active', texChoice === side)
   }
   if (!model || !sourceMap) return
+  const twin = twins[texChoice]
+  if (!twin) throw new Error(`no ${texChoice}px twin of the source map`)
   model.traverse((o) => {
     if (!o.isMesh || !o.material) return
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
@@ -1022,18 +1046,17 @@ function applyTexture() {
         if (!m.map) continue
         originalMaps.set(m, m.map)
       }
-      const original = originalMaps.get(m)
-      // A second material with its own atlas keeps it: the downrez was reduced
-      // from one map, and handing it to another is showing the wrong picture.
-      if (original !== sourceMap) continue
-      m.map = texChoice === '128' && downrez ? downrez : original
+      // A second material with its own atlas keeps it: the twins were reduced
+      // from one map, and handing one to another is showing the wrong picture.
+      if (originalMaps.get(m) !== sourceMap) continue
+      m.map = twin
       m.needsUpdate = true
     }
   })
 }
 
-for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
-  $(id).parentElement.addEventListener('click', () => { texChoice = choice; applyTexture() })
+for (const [id, key] of [['texMax', 'max'], ['texSmall', 'small']]) {
+  $(id).parentElement.addEventListener('click', () => { texChoice = texPx[key]; applyTexture() })
 }
 
 // --- LOD: our decimator, run in this tab ------------------------------------
@@ -1041,16 +1064,13 @@ for (const [id, choice] of [['texFull', 'source'], ['tex128', '128']]) {
 let lodMaterial = null // the source mesh's material, reused so tiers preview textured
 
 /**
- * The source material with the atlas taken off and the bake switched on. The
- * PBR maps go with it: a drop tier has no uv attribute, so any map left on
- * would sample texel (0,0) across the whole creature.
+ * The source material with the atlas taken off and the bake switched on: a
+ * drop tier has no uv attribute, so a map left on would sample texel (0,0)
+ * across the whole creature.
  */
 function bakedMaterial() {
   const m = lodMaterial.clone()
   m.map = null
-  m.roughnessMap = null
-  m.metalnessMap = null
-  m.normalMap = null
   m.vertexColors = true
   return m
 }
@@ -1248,7 +1268,6 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
       uvMode: t.stats.uvMode,
       reason: t.stats.reason,
       texture: material.map ?? null,
-      roughness: material.roughnessMap ?? null,
       detail:
         `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
         `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned &middot; ` +
@@ -1508,7 +1527,7 @@ async function showTier(tier) {
   model.traverse((o) => { if (o.isMesh) o.material.wireframe = $('showWire').checked })
   frameModel()
   $('meshStats').innerHTML = tier.detail
-  drawTexture(tier.texture, tier.roughness ?? null)
+  drawTexture(tier.texture)
   $('viewer').classList.add('on')
   setSize()
 }

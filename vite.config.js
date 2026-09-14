@@ -13,7 +13,7 @@ import { buildFishPrompt } from './tools/fauna/fish-prompt.mjs'
 import { buildFishMesh } from './tools/fauna/loft-fish-mesh.mjs'
 import { SPECIES as FISH_SPECIES } from './tools/fauna/fish-roster.mjs'
 import { buildCreaturePrompt, frameForRig, ASPECT_RATIOS } from './tools/creatures/creature-prompt.mjs'
-import { CREATURES } from './tools/creatures/creature-roster.mjs'
+import { CREATURES, TEX_PX_MAX, TEX_PX_SMALL } from './tools/creatures/creature-roster.mjs'
 import { estimateCredits as tripoCredits, getBalance as tripoBalance, PRESETS as TRIPO_PRESETS } from './tools/creatures/tripo.mjs'
 import { applyRigEdit, readGlb, readRigEdit, writeGlb } from './tools/creatures/apply-rig-edit.mjs'
 import * as creatures from './tools/creatures/workspace.mjs'
@@ -770,6 +770,8 @@ function creatureGen() {
         // src/ is a second copy to keep in step.
         frames: Object.fromEntries([...Object.keys(TRIPO_PRESETS), 'none'].map((r) => [r, frameForRig(r)])),
         aspectRatios: ASPECT_RATIOS,
+        // The texture cap and the small designation, so the bench previews a creature at the size it ships.
+        texPx: { max: TEX_PX_MAX, small: TEX_PX_SMALL },
         imageModels: IMAGE_MODELS,
         credits: {
           mesh: tripoCredits({ step: 'mesh' }),

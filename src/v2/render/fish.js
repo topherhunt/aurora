@@ -70,7 +70,7 @@ const NEAR_RADIUS = 10
 export const RECYCLE_RADIUS = 24
 const RECYCLE_TRAVEL = 3
 // Seconds a newborn takes to grow to size, so a school seeded at the edge of the murk swims in rather than popping in.
-const BORN_FOR = 1.5
+export const BORN_FOR = 1.5
 // Water this deep, under a fish's own spot, hands out the species' full size ceiling; 0.5 m hands out the shore's.
 const DEEP_M = 12
 // Seed attempts per frame across all species. A lake shore is roughly half water, so a dozen tries a frame refills an emptied pool in well under a second.
@@ -236,7 +236,6 @@ export class Fish {
       const asset = this.assetFor(assets, sp)
       this.setAsset(sp, asset)
       const tex = await loader.loadAsync(TEXTURE_URL(asset.texture))
-      // The map is tools/tripo-pack.mjs's, Tripo's roughness in its alpha; a Lambert never reads that channel, and opaque_fragment pins the alpha to 1.
       tex.colorSpace = THREE.SRGBColorSpace
       tex.anisotropy = 4
       sp.material.map = tex
@@ -330,10 +329,11 @@ export class Fish {
 
   /**
    * One attempt to seed one school. The species with the most empty slots
-   * goes first, so a lake never fills with bass while the shoals wait. Returns
-   * true when a school was placed.
+   * goes first, so a lake never fills with bass while the shoals wait. `born`
+   * is the growth timer the school starts at: 0 swims in over BORN_FOR seconds,
+   * BORN_FOR is full-grown at once. Returns true when a school was placed.
    */
-  seed() {
+  seed(born = 0) {
     let sp = null
     let need = 0
     for (const s of this.species) {
@@ -385,7 +385,7 @@ export class Fish {
       f.scale = this.sizeAt(cfg, fLevel - fBed)
       f.margin = 0.2 * sp.lengthM * f.scale
       f.y = this.column(fBed, fLevel, f.depthFrac, f.margin)
-      f.born = 0
+      f.born = born
       f.wander = rand() * TAU
       f.hx = Math.cos(f.wander)
       f.hz = Math.sin(f.wander)
@@ -440,17 +440,23 @@ export class Fish {
   }
 
   /**
-   * One frame: retire what drifted out, seed what is empty, step every school
-   * and every fish, and write the instance buffers. (x, y, z) is her head.
+   * The pool alone: retire what drifted out, recycle, seed what is empty. What
+   * a frame costs while her head is OUT of the water -- no fish is stepped and
+   * no buffer written, but the pool keeps following her along the shore, so
+   * the moment she goes under the water around her is already stocked.
+   * Whatever seeds here is born full-grown: nobody watched it arrive, and a
+   * shoal swelling from nothing on the dive is the pop-in the pool exists to
+   * hide. (x, y, z) is her head.
    */
-  update(x, y, z, dt) {
+  follow(x, y, z) {
+    this._follow(x, y, z, BORN_FOR)
+  }
+
+  _follow(x, y, z, born) {
     const moved = Math.hypot(x - this.head.x, z - this.head.z)
     this.head.x = x
     this.head.y = y
     this.head.z = z
-    this.frame++
-    this.time += dt
-
     for (const sp of this.species) {
       let farthest = null
       let farD2 = 0
@@ -469,7 +475,17 @@ export class Fish {
         sp.travel -= RECYCLE_TRAVEL
       }
     }
-    for (let i = 0; i < SEEDS_PER_FRAME; i++) this.seed()
+    for (let i = 0; i < SEEDS_PER_FRAME; i++) this.seed(born)
+  }
+
+  /**
+   * One frame with her head under: the pool follows her, then every school
+   * and every fish is stepped and the instance buffers written.
+   */
+  update(x, y, z, dt) {
+    this._follow(x, y, z, 0)
+    this.frame++
+    this.time += dt
 
     for (const sp of this.species) {
       const cfg = sp.cfg

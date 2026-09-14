@@ -642,6 +642,11 @@ const QUEST_TOGGLE_ROWS = [
   // all three are ground scatters that only exist inside ~100 m -- so a
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
+  // ONE ROW OVER THE THREE BELOW, so a stutter can be blamed on the fauna as a
+  // whole in one press before it is chased into a species. Off, no animal is
+  // drawn, stepped or followed -- see the tick -- and the same holds for
+  // whatever animal is added next, provided it goes through animalOn.
+  { key: 'animals', text: 'animals' },
   { key: 'fish', text: 'fish' },
   { key: 'frogs', text: 'frogs' },
   { key: 'crabs', text: 'crabs' },
@@ -724,9 +729,15 @@ function applyQuestToggle(key) {
       mushrooms.batch.visible = enabled
       deadwood.batch.visible = enabled
       break
-    case 'fish': fish.batch.visible = enabled; break
-    case 'frogs': frogs.batch.visible = enabled; break
-    case 'crabs': crabs.batch.visible = enabled; break
+    // Back on, every animal layer is put down fresh at her feet: the ground
+    // may have moved under it while it was frozen, and a frozen layer is
+    // skipped by replacePropsOnMovedGround. Expect a hitch on the frame you
+    // press it -- that is the boot placement, run again.
+    case 'animals':
+      if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
+      applyAnimalVisibility()
+      break
+    case 'fish': case 'frogs': case 'crabs': applyAnimalVisibility(); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -1030,8 +1041,12 @@ function drawQuestRowCell(i) {
   uploadQuestTexture(questRowsTexture)
 }
 
-const QUEST_STATS_W = 1280
-const QUEST_STATS_H = 240
+// Sized to the FPS row, the widest: 84 columns of 28 px bold monospace when
+// the cursor's three coordinates run to `-1234` each. The panel is world-locked
+// at 2.8 m, so a wider canvas is a smaller typeface in the headset; 1536 is the
+// narrowest that holds that row.
+const QUEST_STATS_W = 1536
+const QUEST_STATS_H = 288
 let questStatsCanvas = null
 let questStatsCtx = null
 let questStatsTexture = null
@@ -1045,7 +1060,7 @@ function drawQuestStats(lines) {
   ctx.textAlign = 'left'
   lines.forEach((parts, row) => {
     let x = 16
-    const y = 22 + row * 39
+    const y = 26 + row * 46
     for (const [text, color] of parts) {
       ctx.fillStyle = color
       ctx.fillText(text, x, y)
@@ -1442,13 +1457,28 @@ function updateQuestStats() {
   const cursor = renderer.xr.isPresenting ? null : cursorPick()
   drawQuestStats([
     [
-      ['FPS ', '#7f95b4'], [`${fps.toFixed(0)}→${fps5.toFixed(0)}`.padEnd(8), fpsColor],
+      ['FPS ', '#7f95b4'], [`${fps.toFixed(0)}→${fps5.toFixed(0)}`.padEnd(7), fpsColor],
       // The worst single frame in the same five seconds. A mean that holds while
       // this sits twenty below it is a stutter, not a stable frame.
-      ['LOW ', '#7f95b4'], [low5.toFixed(0).padEnd(5), rate(low5)],
+      ['LOW ', '#7f95b4'], [low5.toFixed(0).padEnd(4), rate(low5)],
       ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
-      ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(8), '#7fd7ff'],
-      ['CALLS ', '#7f95b4'], [String(info.render.calls).padEnd(6), '#ff9a7a'],
+      ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(7), '#7fd7ff'],
+      ['CALLS ', '#7f95b4'], [String(info.render.calls).padEnd(5), '#ff9a7a'],
+      // Metres to the ground under the cursor, the only ruler this view has,
+      // and the world point it lands on. `-` is the ray reaching the horizon,
+      // not a failure. QUEST_STATS_W is sized to this row.
+      ...(cursor
+        ? [
+            ['CURSOR ', '#7f95b4'], [(cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`).padEnd(7), '#ff6b6b'],
+            ['AT ', '#7f95b4'],
+            [
+              cursor.at === null
+                ? '-'
+                : `${cursor.at.x.toFixed(0)} ${cursor.at.y.toFixed(0)} ${cursor.at.z.toFixed(0)}`,
+              '#ff6b6b',
+            ],
+          ]
+        : []),
     ],
     [
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
@@ -1469,6 +1499,13 @@ function updateQuestStats() {
       ...(questToggles.trees
         ? [
             ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
+            // Main-thread ms of Trees.update, and how many tiles have been
+            // re-seated on a re-split chunk since boot. Standing still, the
+            // second should hold; if it climbs, the head's yaw is re-splitting
+            // the terrain and every tick is a full re-upload of the card mesh's
+            // matrix buffer (prop-arena.js, setMatrixAt).
+            ['upd ', '#7f95b4'], [`${ts.updateMs.toFixed(1)}ms`.padEnd(7), ts.updateMs >= 1.5 ? '#ffd27a' : '#cfe3ff'],
+            ['rg ', '#7f95b4'], [String(ts.regrounds).padEnd(7), '#cfe3ff'],
             // Present ONLY while an ablation is on. The row describes the shipped
             // forest unless it says otherwise, and a flag that is always there stops
             // being read -- so nothing is spent on the case that needs no warning.
@@ -1497,22 +1534,6 @@ function updateQuestStats() {
       // ground.
       ['EYE ', '#7f95b4'], [`${(eyeY - player.originPosition().y).toFixed(2)}`.padEnd(6), '#cfe3ff'],
       ['WATER ', '#7f95b4'], [(waterY === null ? '-' : (eyeY - waterY).toFixed(2)).padEnd(6), submerged ? '#7fd7ff' : '#cfe3ff'],
-      // Metres to the ground under the cursor, the only ruler this view has,
-      // and the world X/Z it lands on. `-` is the ray reaching the horizon, not
-      // a failure. On this row because the canvas fits ~74 characters and the
-      // FPS row already spends 55; with coordinates running to `-1234` each,
-      // this is the row with room. Cells are padded so X/Z hold one column.
-      ...(cursor
-        ? [
-            ['CURSOR ', '#7f95b4'], [(cursor.dist === null ? '-' : `${cursor.dist.toFixed(1)}m`).padEnd(8), '#ff6b6b'],
-            [
-              cursor.at === null
-                ? 'X     - Z     -'
-                : `X ${cursor.at.x.toFixed(0).padStart(5)} Z ${cursor.at.z.toFixed(0).padStart(5)}`,
-              '#ff6b6b',
-            ],
-          ]
-        : []),
     ],
   ])
 }
@@ -1607,7 +1628,7 @@ let ready = false
 const questToggles = QUEST_MODE
   ? {
       terrain: true, lighting: true,
-      trees: true, boulders: true, grass: true, ferns: true, litter: true, fish: true, frogs: true, crabs: true,
+      trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true,
       water: true, reflections: true, aurora: true, sound: true,
       // Debug furniture, off until asked for. See buildProbeCube.
       probeCube: false,
@@ -1623,6 +1644,26 @@ const questToggles = QUEST_MODE
       teleport: false,
     }
   : null
+
+/** Whether an animal layer runs this frame: its own row and the `animals` row both on. Always, outside quest mode. */
+const animalOn = (key) => !QUEST_MODE || (questToggles.animals && questToggles[key])
+
+/**
+ * The frogs' and crabs' batches, off their rows. Not the fish's: theirs is
+ * decided every frame in the tick, because it also asks whether her head is
+ * under the water.
+ */
+function applyAnimalVisibility() {
+  frogs.batch.visible = animalOn('frogs')
+  crabs.batch.visible = animalOn('crabs')
+}
+
+/** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
+function placeAnimals(cx, cz) {
+  if (fish && animalOn('fish')) fish.place(cx, cz)
+  if (frogs && animalOn('frogs')) frogs.place(cx, cz)
+  if (crabs && animalOn('crabs')) crabs.place(cx, cz)
+}
 
 // ---------------------------------------------------------------------------
 // THE RELIEF KNOBS. See height/relief.js for what each one is; this is only
@@ -2266,9 +2307,7 @@ async function bootWorld() {
     litter.batch.visible = questToggles.litter
     mushrooms.batch.visible = questToggles.litter
     deadwood.batch.visible = questToggles.litter
-    fish.batch.visible = questToggles.fish
-    frogs.batch.visible = questToggles.frogs
-    crabs.batch.visible = questToggles.crabs
+    applyAnimalVisibility()
     // THE EDITOR OVERLAY, which had no business being in the headset and was the
     // single largest thing drawing before any layer is switched on. Markers is
     // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
@@ -2441,9 +2480,7 @@ function replacePropsOnMovedGround(cx, cz) {
     deadwood.syncSnowLine(layers)
     deadwood.place(cx, cz)
   }
-  if (fish) fish.place(cx, cz)
-  if (frogs) frogs.place(cx, cz)
-  if (crabs) crabs.place(cx, cz)
+  placeAnimals(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
   // that resolves y from the field rather than integrating toward it, and the
@@ -4262,10 +4299,23 @@ function tick() {
     mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
   }
-  // The one scatter that is also a simulation, so it takes dt. Frozen with its row like the others.
-  if (!QUEST_MODE || questToggles.fish) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
-  if (!QUEST_MODE || questToggles.frogs) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
-  if (!QUEST_MODE || questToggles.crabs) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  // The animals are simulations as well as scatters, so they take dt. Each is
+  // frozen with its row, and all of them with the `animals` row.
+  //
+  // WHAT IS UNDER THE SURFACE IS ONLY DRAWN FROM UNDER IT. The water is nearly
+  // opaque from above (WATER.clarity), so with her head in the air every fish
+  // and every sunk crab is triangles and a step spent on something nobody can
+  // see. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
+  // no fish stepped -- so the lake is stocked the moment she dives; a sunk crab
+  // simply pauses on its stone. `submerged` is last frame's answer (see
+  // applySubmersion), one frame late on the dive and the surfacing, which the
+  // eye cannot tell from the splash.
+  const fishShown = animalOn('fish') && submerged
+  fish.batch.visible = fishShown
+  if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  else if (animalOn('fish')) fish.follow(headTmp.x, headTmp.y, headTmp.z)
+  if (animalOn('frogs')) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  if (animalOn('crabs')) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

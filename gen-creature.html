@@ -92,31 +92,30 @@
       dialog code { color: #d6ecff; }
 
       #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
-      #viewer { display: none; flex-direction: column; gap: 4px; }
+      #viewer { display: none; flex-direction: column; gap: 4px; width: 100%; }
       #viewer.on { display: flex; }
-      #viewCanvas { display: block; width: 420px; height: 320px; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; }
+      #viewCanvas { display: block; width: 100%; height: 100%; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; cursor: grab; }
+      #viewCanvas:active { cursor: grabbing; }
       /* Bone names, projected onto the canvas. A skeleton helper draws every
          bone as the same white stick; which bone is which is the part that
          matters when a retargeted clip misbehaves. */
-      #viewStage { position: relative; width: 420px; height: 320px; }
+      #viewStage { position: relative; width: 100%; height: min(62vh, 640px); }
       #boneLabels { display: none; position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
       #boneLabels.on { display: block; }
       #boneLabels span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-size: 9px; color: #ffd9a0; text-shadow: 0 0 3px #000, 0 0 3px #000; }
       .label { color: var(--dim); font-size: 10px; }
-      .viewControls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; width: 420px; }
+      .viewControls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
       .viewControls label { display: flex; align-items: center; gap: 4px; color: var(--dim); font-size: 10px; }
 
-      /* The 128px check: same texture, two sizes, side by side, pixelated so
-         the downrez is judged on its own terms and not through the browser's
-         smoothing. Click either to wear it on the preview mesh; the outlined one
-         is the one the model is currently wearing. */
+      /* The shipping sizes: same texture at the 512 cap and the 128 designation,
+         side by side, pixelated so each is judged on its own terms and not
+         through the browser's smoothing. Click either to wear it on the preview
+         mesh; the outlined one is the one the model is currently wearing. */
       #texRow { display: none; gap: 14px; align-items: flex-start; }
       #texRow.on { display: flex; }
       #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer; }
       #texRow canvas { border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; image-rendering: pixelated; width: 200px; height: 200px; }
-      #texRow figure[hidden] { display: none; }
-      #texRoughFig { cursor: default; }
-      #texRow figure:not(#texRoughFig):hover canvas { border-color: #4a7fbf; }
+      #texRow figure:hover canvas { border-color: #4a7fbf; }
       #texRow figure.is-active canvas { border-color: var(--good); }
       #texRow figure.is-active figcaption { color: var(--good); }
 
@@ -235,7 +234,7 @@
           <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
         </div>
         <div class="field check">
-          <label><input type="checkbox" id="meshPbr" checked /> PBR maps (roughness/metallic/normal beside the colour; no extra credits)</label>
+          <label><input type="checkbox" id="meshPbr" checked /> PBR maps (roughness, metallic and normal kept in the work dir beside the colour; never shipped or previewed; no extra credits)</label>
         </div>
         <button id="genMesh" class="wide spend" disabled>generate mesh</button>
 
@@ -298,17 +297,18 @@
             <label><input type="checkbox" id="showSkeleton" /> skeleton</label>
             <label><input type="checkbox" id="showBoneNames" /> bone names</label>
             <label><input type="checkbox" id="showWire" /> wireframe</label>
+            <label><input type="checkbox" id="rotateLight" /> rotate light</label>
             <label>clip <select id="clipSelect"></select></label>
             <button id="refit" title="re-centre the camera on the current model">refit</button>
+            <span class="label">drag orbits the camera, or swings the sun with rotate light on; wheel zooms, right-drag pans.</span>
           </div>
           <div id="meshStats" class="label"></div>
           <div id="meshAnalysis" class="label"></div>
         </div>
         <div id="texRow">
-          <figure><canvas id="texFull" width="256" height="256"></canvas><figcaption class="label">source texture (ships)</figcaption></figure>
-          <figure><canvas id="tex128" width="128" height="128"></canvas><figcaption class="label">128px downrez</figcaption></figure>
-          <figure id="texRoughFig" hidden><canvas id="texRough" width="128" height="128"></canvas><figcaption class="label">roughness at 128px (white = matte)</figcaption></figure>
-          <p class="note">The preview wears the source by default &mdash; creatures ship on their own 512px array, not in the 128px prop atlas. The small figure is there to show what the prop atlas would cost you. Click a texture to put it on the mesh.</p>
+          <figure><canvas id="texMax" width="512" height="512"></canvas><figcaption class="label">512px (the cap)</figcaption></figure>
+          <figure><canvas id="texSmall" width="128" height="128"></canvas><figcaption class="label">128px (small creatures)</figcaption></figure>
+          <p class="note">Nothing ships or previews wider than 512px; Tripo's 2048 stays in the work dir. Butterflies, frogs, fish and crabs are designated 128px in the roster and the mesh wears that by default, everything else wears 512. Click a figure to put the other size on the mesh. The preview is fully matte, colour map only, like the world.</p>
         </div>
       </div>
 
@@ -347,8 +347,8 @@
         not the triangle count. A decimated mesh gets auto-unwrapped into a scatter of small UV
         islands, and at 128px the small ones vanish while bilinear filtering bleeds neighbours
         across every seam. P1 generates native quad topology with coherent edge flow, so the islands
-        come out fewer and larger and survive the downrez. Judge a candidate on the 128px panel, not
-        the full-size one.
+        come out fewer and larger and survive the downrez. Judge a candidate on the panel it ships
+        at, never on Tripo's 2048 source.
       </p>
       <h2>tripo wallet</h2>
       <div id="balance" class="note">checking&hellip;</div>

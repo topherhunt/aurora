@@ -139,6 +139,8 @@ export class WorldSense {
 
   /** Positions of the frogs within FROG_REACH of the head into `into` (xyz triples), nearest-first not guaranteed; returns the count. */
   frogsNear(hx, hy, hz, into) {
+    // A frog the panel has hidden is frozen where it sat, and does not croak from there.
+    if (!this.frogs.batch.visible) return 0
     let n = 0
     const r2 = FROG_REACH * FROG_REACH
     for (const tile of this.frogs.tiles.values()) {

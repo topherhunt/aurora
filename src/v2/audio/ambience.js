@@ -9,9 +9,9 @@
 // rule holds and is re-rolled when the rule first becomes true, so crossing a
 // snowline never lands a raptor on the exact step; every one-shot is pitched
 // 0.9x-1.1x and given its own volume so the same clip twice is not a machine
-// gun. LOOPS (brook, leaves, lake bed, underwater) are held by _loop(): started
-// when their rule turns on, stopped when it turns off, level and bearing
-// refreshed every update.
+// gun. LOOPS (brook, leaves, lake bed, wind, underwater) are held by _loop():
+// started when their rule turns on, stopped when it turns off, level and
+// bearing refreshed every update.
 //
 // DIRECTION IS PROXY FOR PLACE. A bird has no position in the world, so it is
 // given one: a random bearing at a plausible range and height, and the panner
@@ -44,6 +44,7 @@ export const SOUNDS = {
   lakeBed: 'sounds/water-lapping-quiet-1.mp3',
   wave: 'sounds/water-lapping-wave-1.mp3',
   leaves: 'sounds/wind-leaves-rustling-1.mp3',
+  wind: 'sounds/wind-blowing-1.mp3',
 }
 
 const RAPTORS = ['crow', 'eagle', 'hawk']
@@ -85,6 +86,8 @@ export const RULES = {
   lakeBed: { level: 0.5, gain: [0.6, 1.0] },
   brook: { reach: 10, near: 2, far: 0.2, level: 0.9, gain: [0.7, 1.0] },
   leaves: { on: 0.5, off: 0.4, full: 0.8, level: 0.7, gain: [0.6, 1.0] },
+  // Wind: a quiet loop that rises across the `snow` band of metres about the snowline, or the `height` band of metres her head is above the ground, whichever is stronger.
+  wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
 }
 
@@ -116,8 +119,10 @@ export class Ambience {
       brook: engine.loop('brook', { directional: true, gain: RULES.brook.gain }),
       lakeBed: engine.loop('lakeBed', { directional: true, gain: RULES.lakeBed.gain }),
       leaves: engine.loop('leaves', { gain: RULES.leaves.gain }),
+      wind: engine.loop('wind', { gain: RULES.wind.gain }),
     }
     this.leavesOn = false
+    this.windOn = false
     // How many times each clip has fired; window.v2ambience.fired at the console.
     this.fired = {}
   }
@@ -355,6 +360,12 @@ export class Ambience {
     // Hysteresis: on past `on`, off again only below `off`, so a forest edge does not flap.
     if (this.leavesOn ? s.forest < V.off : s.forest > V.on) this.leavesOn = !this.leavesOn
     this._loop('leaves', this.leavesOn, V.level * smoothstep(V.off, V.full, s.forest))
+
+    const D = RULES.wind
+    // Two ways up into the wind: over the snowline on foot, or aloft over anything.
+    const wind = Math.max(smoothstep(D.snow[0], D.snow[1], s.aboveSnow), smoothstep(D.height[0], D.height[1], head.y - s.groundH))
+    if (this.windOn ? wind < D.off : wind > D.on) this.windOn = !this.windOn
+    this._loop('wind', this.windOn, D.level * wind)
   }
 }
 

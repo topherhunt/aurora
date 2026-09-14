@@ -26,9 +26,11 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
+import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
+import { webpSize } from '../tools/tripo-pack.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -117,13 +119,17 @@ const boulderOf = (c) => BOULDERS.find((b) => surfaceOf(b, c.x, c.z) > -Infinity
     const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
     check(json.meshes?.length === 1 && json.meshes[0].primitives.length === 1, 'one mesh, one primitive', `${json.meshes?.length} meshes`)
     check(json.images?.length >= 1 && json.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture !== undefined, 'a base colour texture to draw')
-    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB with the roughness in its alpha, the metalness a number, and Tripo's own JPEGs are gone.
+    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB at the roster's small size, and Tripo's own JPEGs -- colour, ORM, normal -- are gone.
     const image = json.images?.[0]
     check(image?.uri?.endsWith('.webp') && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB, not an embedded JPEG', JSON.stringify(json.images))
     check(image?.uri && fs.existsSync(new URL(image.uri, file)), 'and it is shipped')
+    if (image?.uri && fs.existsSync(new URL(image.uri, file))) {
+      const { width, height } = webpSize(fs.readFileSync(new URL(image.uri, file)))
+      check(width === TEX_PX_SMALL && height === TEX_PX_SMALL && width <= TEX_PX_MAX, `the colour map is ${TEX_PX_SMALL}px square`, `${width}x${height}`)
+    }
     check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
     const pbr = json.materials?.[0]?.pbrMetallicRoughness
-    check(pbr?.metallicFactor >= 0 && pbr.metallicFactor <= 1 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'metalness is the shipper\'s number and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
+    check(pbr?.metallicFactor === 0 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'no metalness, and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
   }
 }
 
@@ -135,7 +141,6 @@ const asset = {
   uv: box.getAttribute('uv').array,
   idx: Array.from(box.index.array),
   map: null,
-  metalness: 0.02,
 }
 
 // --- construction and the shader hook -----------------------------------------
@@ -147,13 +152,10 @@ check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'as
   crabs.material.onBeforeCompile(shader)
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
-  // The glint: a Standard wearing the asset's metalness, roughness from the colour alpha, the lobe scaled by GLINT.
-  check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === 1 && crabs.material.metalness === asset.metalness, 'a Standard material with the asset\'s metalness', `${crabs.material.type} metalness ${crabs.material.metalness}`)
-  check(shader.fragmentShader.includes('roughness * sampledDiffuseColor.a') && !shader.fragmentShader.includes('<roughnessmap_fragment>'), 'roughness read from the colour alpha in place of three\'s sampler')
+  // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
+  check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && crabs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${crabs.material.type} roughness ${crabs.material.roughness}`)
+  check(shader.fragmentShader.includes('<roughnessmap_fragment>') && !shader.fragmentShader.includes('sampledDiffuseColor.a'), 'the colour alpha is not read as roughness')
   check(shader.fragmentShader.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && GLINT > 0 && GLINT < 1, 'the glint is scaled down after lights_fragment_end', `GLINT ${GLINT}`)
-  let threw = null
-  try { new Crabs(new THREE.Scene(), height, water, { seed: 11, rocks, assets: { ...asset, metalness: undefined } }) } catch (e) { threw = e.message }
-  check(threw && threw.includes('metalness'), 'an asset without metalness is refused', threw)
 }
 
 // --- placement -----------------------------------------------------------------
@@ -327,6 +329,31 @@ check(alive().length === 0, 'no rocks, no crabs')
 live = BOULDERS
 for (let i = 0; i < 400; i++) crabs.update(15, LEVEL + 1.6, 0, DT)
 check(alive().length === snapA.length, 'a tile whose rocks landed after the scan gets its crabs on the rescan', `${alive().length} of ${snapA.length}`)
+
+// --- from above the surface, a sunk crab is neither drawn nor stepped ----------
+{
+  // The first seed that puts a crab on the floor stone AND one on the beach.
+  let k = null
+  for (let seed = 1; seed <= 16 && !k; seed++) {
+    const t = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+    t.place(15, 0)
+    if (alive(t).some((c) => c.y < c.perch.level) && alive(t).some((c) => !(c.y < c.perch.level))) k = t
+    else t.dispose()
+  }
+  check(k !== null, 'some seed seats crabs both under the lake and on its beach')
+  const written = () => k.mesh.count + k.card.count
+  const sunk = alive(k).filter((c) => c.y < c.perch.level)
+  const dry = alive(k).filter((c) => !(c.y < c.perch.level))
+  check(sunk.every((c) => c.y < LEVEL) && dry.every((c) => c.y >= LEVEL), 'every crab knows its lake level, and whether it is under it', `${sunk.length} sunk, ${dry.length} dry`)
+  const pose = sunk.map((c) => [c, c.x, c.y, c.z, c.left, c.phase])
+  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL + 1.6, 0, DT, false)
+  check(written() === dry.length, 'with her head in the air only the dry crabs are written', `${written()} of ${alive(k).length}`)
+  check(pose.every(([c, x, y, z, left, phase]) => c.x === x && c.y === y && c.z === z && c.left === left && c.phase === phase), 'and no sunk crab moves or counts the time')
+  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL - 1, 0, DT, true)
+  check(written() === alive(k).length, 'under, every crab is written again', `${written()} of ${alive(k).length}`)
+  check(pose.some(([c, x, y, z, left]) => c.left !== left), 'and the sunk ones pick up where they paused')
+  k.dispose()
+}
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)

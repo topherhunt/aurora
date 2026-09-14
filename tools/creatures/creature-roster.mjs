@@ -9,6 +9,11 @@
 // (gen-butterfly.html already does that better and cheaper than a rigged solid
 // mesh would), and a frog is small enough that a hop is a whole-body transform.
 //
+// `texPx` is the side of the colour map a creature SHIPS with, and the bench
+// previews it at that size. Absent means TEX_PX_MAX; the small creatures that
+// are a few pixels tall in the world are designated 128. Tripo's 2048 stays in
+// the work dir either way, so a designation is one edit and a re-ship.
+//
 // Editable in the bench -- this is the starting point for judging whether a
 // concept is worth spending art on, not a fixed list.
 //
@@ -17,6 +22,17 @@
 
 import { createRequire } from 'node:module'
 import { describeNordicCharacter, professionsFor } from '../characters/nordic-roster.mjs'
+
+// No generated asset enters the world with a colour map wider than this.
+export const TEX_PX_MAX = 512
+export const TEX_PX_SMALL = 128
+
+/** The side the creature's map ships at, from its roster entry (or bench-saved meta). Throws on one over the cap. */
+export function shipTexPx(entry) {
+  const px = entry.texPx ?? TEX_PX_MAX
+  if (!(px > 0 && px <= TEX_PX_MAX)) throw new Error(`${entry.id}: texPx ${px} is over the ${TEX_PX_MAX}px cap`)
+  return px
+}
 
 const ANIMALS = [
   {
@@ -129,6 +145,7 @@ const ANIMALS = [
     label: 'Ironscale Bass',
     rigType: 'aquatic',
     sizeM: 0.35,
+    texPx: TEX_PX_SMALL,
     description:
       'a sturdy freshwater bass with a deep round-bodied profile, thick overlapping scales in dull bronze-olive ' +
       'darkening to iron-grey along the back, a spiny dorsal fin held stiffly upright, a blunt underslung jaw ' +
@@ -139,6 +156,7 @@ const ANIMALS = [
     label: 'Reed Pike',
     rigType: 'aquatic',
     sizeM: 0.8,
+    texPx: TEX_PX_SMALL,
     description:
       'a long torpedo-shaped predatory fish, narrow and muscular, with a flattened duck-billed snout and a wide jaw ' +
       'lined with fine needle teeth, olive-green flanks broken by pale creamy bars and gold speckling over a white ' +
@@ -149,6 +167,7 @@ const ANIMALS = [
     label: 'Glimmerfin',
     rigType: 'aquatic',
     sizeM: 0.12,
+    texPx: TEX_PX_SMALL,
     description:
       'a small plump endearing fish with rounded jewel-toned scales that catch the light like cut gemstones, facets ' +
       'of amethyst purple and sapphire blue over a softly glowing core, large round curious eyes, delicate ' +
@@ -159,6 +178,7 @@ const ANIMALS = [
     label: 'Marsh Frog',
     rigType: 'none',
     sizeM: 0.09,
+    texPx: TEX_PX_SMALL,
     description:
       'a plump marsh frog crouched low, damp mottled green and olive skin with darker blotches and a pale cream ' +
       'throat, a bright ridge line down each side of the back, long folded hind legs, splayed webbed feet, ' +
@@ -169,6 +189,7 @@ const ANIMALS = [
     label: 'Meadow Butterfly',
     rigType: 'none',
     sizeM: 0.06,
+    texPx: TEX_PX_SMALL,
     description:
       'a butterfly with wings spread flat and fully open, upper wings patterned in warm amber and chalk-white with ' +
       'a dark scalloped border and small eye spots, delicate dark veining across translucent wing membrane, ' +
@@ -189,6 +210,7 @@ const ANIMALS = [
     label: 'Shore Crab',
     rigType: 'octopod',
     sizeM: 0.12,
+    texPx: TEX_PX_SMALL,
     description:
       'a shore crab with a broad flattened carapace mottled in dark green and mud-brown with paler speckling and a ' +
       'scalloped notched front edge, two heavy asymmetric claws carried forward, eight jointed walking legs tipped ' +

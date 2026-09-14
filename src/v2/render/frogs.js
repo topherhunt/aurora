@@ -31,7 +31,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, packedPbr, setCritterAsset, setCritterCard,
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, loadCritterGlb, setCritterAsset, setCritterCard,
   tileSeed, walkTiles,
 } from './critters.js'
 
@@ -51,6 +51,8 @@ export const MAX = 200
 // A sitting frog breathes: its body swells by BREATH_AMP (more in height than in length) once every BREATH_S seconds, each frog on its own phase.
 export const BREATH_S = 1.3
 export const BREATH_AMP = 0.05
+// Wet skin: the one roughness the whole frog glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
+export const WET_ROUGHNESS = 0.3
 // The frog's tint, a per-channel multiplier on the texture.
 const TINT_R = [0.7, 1.15]
 const TINT_G = [0.8, 1.2]
@@ -95,9 +97,9 @@ export class Frogs {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x5f0a)
 
-    // Wet skin glints: critters.js's packedPbr, metalness set with the asset.
-    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 })
-    this.material.onBeforeCompile = (shader) => packedPbr(shader)
+    // Wet skin glints: critters.js's glint.
+    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
+    this.material.onBeforeCompile = (shader) => glint(shader)
     this.material.customProgramCacheKey = () => 'frogs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-frogs'
@@ -156,8 +158,6 @@ export class Frogs {
   }
 
   setAsset(asset) {
-    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error('frogs: the asset has no metalness -- run tools/creatures/ship.mjs')
-    this.material.metalness = asset.metalness
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'frogs')
     this.span = this.bounds.span
     setCritterCard(this.card, this.bounds)

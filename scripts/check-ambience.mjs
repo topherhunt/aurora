@@ -13,8 +13,9 @@
 // scripted sense, driven for simulated minutes, so every cadence and every gate
 // in the spec is a count: raptors only above the snow or by a cliff, an owl only
 // at night in dense wood, crickets on their 1.5-3 s beat, footsteps on theirs
-// and after a teleport, the brook loop on only by the river, and nothing at all
-// above the surface while she is under it.
+// and after a teleport, the brook loop on only by the river, the wind only over
+// the snow or high off the ground, and nothing at all above the surface while
+// she is under it.
 //
 // What this can NOT check: what any of it sounds like. That needs ears, in the
 // world.
@@ -203,7 +204,7 @@ const rocks = {
   blockTopAt: (x, z) => (inRock(x, z) ? ROCK.top : -Infinity),
   looseCountIn: (x0, z0, x1, z1) => (x0 < ROCK.x && ROCK.x < x1 && z0 < ROCK.z && ROCK.z < z1 ? 40 : 0),
 }
-const frogs = { tiles: new Map([[0, { frogs: [{ x: 5, y: GROUND, z: 0 }, { x: 8, y: GROUND, z: 2 }, { x: 40, y: GROUND, z: 0 }] }]]) }
+const frogs = { batch: { visible: true }, tiles: new Map([[0, { frogs: [{ x: 5, y: GROUND, z: 0 }, { x: 8, y: GROUND, z: 2 }, { x: 40, y: GROUND, z: 0 }] }]]) }
 const biome = { coverAt: (x) => (x > FOREST.x0 && x < FOREST.x1 ? 1 : 0) }
 {
   const sense = new WorldSense({ field, water, rocks, frogs, biome })
@@ -227,6 +228,10 @@ const biome = { coverAt: (x) => (x > FOREST.x0 && x < FOREST.x1 ? 1 : 0) }
   check(s.riverDirX < -0.99 && Math.abs(s.riverDirZ) < 1e-6, 'the river bearing points at the river', `${s.riverDirX.toFixed(2)}, ${s.riverDirZ.toFixed(2)}`)
   check(s.frogCount === 2, `two of three frogs are within ${FROG_REACH} m`, `${s.frogCount}`)
   check(s.frogs[0] === 5 && s.frogs[3] === 8, 'the frog positions come through')
+  frogs.batch.visible = false
+  sense.sample(RIVER_X + 8, GROUND + 1.6, 0, s)
+  check(s.frogCount === 0, 'a hidden frog layer croaks from nowhere', `${s.frogCount}`)
+  frogs.batch.visible = true
   sense.sample(RIVER_X + 40, GROUND + 1.6, 0, s)
   check(s.riverShore === SHORE_REACH && s.riverDirX === 0, 'far from the river the shore reads the reach, no bearing')
   sense.sample(LAKE.x, GROUND + 1.6, LAKE.z - LAKE.r - 6, s)
@@ -286,7 +291,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(birds >= 8 && birds <= 40, 'songbirds every 3-12 s in a daytime meadow', `${birds} in 120 s`)
   check(count(engine, ...RAPTORS) === 0, 'no raptor below the snow with no cliff')
   check(count(engine, 'owl', 'woodpecker', 'cricket', 'footstep', 'croak1', 'croak2', 'rockslide1', 'rockslide2', 'wave') === 0, 'nothing else fires standing still in a daytime meadow')
-  check(!engine.loops.brook.active && !engine.loops.leaves.active && !engine.loops.lakeBed.active && !engine.loops.underwater.active, 'no loop runs in a dry meadow')
+  check(!engine.loops.brook.active && !engine.loops.leaves.active && !engine.loops.lakeBed.active && !engine.loops.wind.active && !engine.loops.underwater.active, 'no loop runs in a dry meadow')
   const song = engine.plays.filter((p) => SONGBIRDS.includes(p.name))
   check(song.every((p) => within(p.rate, RATE[0], RATE[1])), `every songbird is pitched ${RATE[0]}-${RATE[1]}x`)
   check(song.every((p) => within(p.gain, ...RULES.songbird.gain)), 'every songbird is within its gain range')
@@ -377,6 +382,40 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   sense.s.forest = 0.35
   run(amb, 1, {})
   check(!engine.loops.leaves.active && engine.loops.leaves.stops === 1, 'leaves off below 0.4, stopped once')
+}
+{
+  // The wind: quiet, undirected, up over the snow or aloft, rising through each band.
+  const W = RULES.wind
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.groundH = GROUND
+  sense.s.aboveSnow = W.snow[0] - 50
+  const amb = new Ambience({ engine, sense, rand: mulberry32(11) })
+  const wind = engine.loops.wind
+  check(wind.opts.directional !== true && wind.opts.gain === W.gain, 'the wind loop has no bearing and walks inside its own gain range')
+  run(amb, 1, {})
+  check(!wind.active, 'no wind well below the snow on the ground')
+  sense.s.aboveSnow = 0
+  run(amb, 1, {})
+  const half = wind.level
+  check(wind.active && half > 0 && half < W.level, 'the wind is up at the snowline, at part strength', `level ${half?.toFixed(3)}`)
+  sense.s.aboveSnow = W.snow[1] + 20
+  run(amb, 1, {})
+  check(wind.active && Math.abs(wind.level - W.level) < 1e-9, 'full strength past the top of the snow band', `level ${wind.level?.toFixed(3)}`)
+  sense.s.aboveSnow = W.snow[0] - 50
+  run(amb, 1, {})
+  check(!wind.active && wind.stops === 1, 'down off the snow the wind stops once')
+  // Aloft: her head high above the ground with no snow anywhere near.
+  const up = { x: 0, y: GROUND + W.height[1] + 10, z: 0 }
+  run(amb, 1, { head: up })
+  check(wind.active && Math.abs(wind.level - W.level) < 1e-9, 'full wind flying high above snowless ground', `level ${wind.level?.toFixed(3)}`)
+  run(amb, 1, { head: { x: 0, y: GROUND + (W.height[0] + W.height[1]) / 2, z: 0 } })
+  check(wind.active && wind.level > 0 && wind.level < W.level, 'part strength midway up the height band', `level ${wind.level?.toFixed(3)}`)
+  run(amb, 1, {})
+  check(!wind.active && wind.stops === 2, 'back on the ground it stops again')
+  // Standing on a boulder, height is measured from its top, not the field.
+  sense.s.groundH = GROUND + W.height[1]
+  run(amb, 1, { head: { x: 0, y: GROUND + W.height[1] + 1.6, z: 0 } })
+  check(!wind.active, 'on top of a tall boulder the ground is the boulder')
 }
 {
   // Footsteps: only while walking, and after a teleport.

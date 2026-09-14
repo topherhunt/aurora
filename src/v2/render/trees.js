@@ -738,6 +738,7 @@ export class Trees {
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
+    this.updateMs = 0
     this.cardBakeMs = 0
 
     scene.add(this.batch)
@@ -1003,6 +1004,7 @@ export class Trees {
    * Safe to call every frame.
    */
   update(camX, camY, camZ) {
+    const tStart = performance.now()
     this._reseat(camX, camZ)
 
     const t0 = performance.now()
@@ -1135,6 +1137,9 @@ export class Trees {
     // inside it so this frame's own swaps are in this frame's number.
     this.tris = tris + this.fadeTris
     this.nearTiles = nearCount
+    // The whole of this call, smoothed over ~20 frames: the layer's main-thread
+    // bill, which the headset cannot otherwise separate from its draw cost.
+    this.updateMs += (performance.now() - tStart - this.updateMs) * 0.05
   }
 
   /**
@@ -1863,6 +1868,7 @@ export class Trees {
       buildMs: this.buildMs,
       placeMs: this.placeMs,
       lastBuildMs: this.lastBuildMs,
+      updateMs: this.updateMs,
       cardBakeMs: this.cardBakeMs,
     }
   }

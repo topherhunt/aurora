@@ -20,8 +20,10 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
+import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
+import { webpSize } from '../tools/tripo-pack.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -69,8 +71,14 @@ for (const a of assets.species) {
   check(a.idx.length / 3 >= 240, `${a.id}: shipped at the pick's density`, `${a.idx.length / 3} tris`)
   check(a.bend.every((b) => b >= 0 && b <= 1), `${a.id}: bend weights in [0, 1]`)
   check(a.uv.every((v) => v >= -1e-4 && v <= 1 + 1e-4), `${a.id}: uvs inside the map`)
-  check(fs.existsSync(new URL(`../public/fauna/${a.texture}`, import.meta.url)) && a.texture.endsWith('.webp'), `${a.id}: colour map ${a.texture} is shipped`)
-  check(a.metalness >= 0 && a.metalness <= 1, `${a.id}: metalness in [0, 1]`, `${a.metalness}`)
+  const mapFile = new URL(`../public/fauna/${a.texture}`, import.meta.url)
+  check(fs.existsSync(mapFile) && a.texture.endsWith('.webp'), `${a.id}: colour map ${a.texture} is shipped`)
+  if (fs.existsSync(mapFile)) {
+    // Every fish is designated small in the creature roster; nothing generated ships wider than TEX_PX_MAX.
+    const { width, height } = webpSize(fs.readFileSync(mapFile))
+    check(width === TEX_PX_SMALL && height === TEX_PX_SMALL && width <= TEX_PX_MAX, `${a.id}: colour map is ${TEX_PX_SMALL}px square`, `${width}x${height}`)
+  }
+  check(a.metalness === undefined, `${a.id}: no metalness -- Tripo's PBR maps are not shipped`, `${a.metalness}`)
   // Nose at -Z, centred, at the roster length: the tail fin is the blade end, so the outer tenth at +Z is narrower across than the outer tenth at -Z.
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]
   for (let i = 0; i < a.pos.length; i += 3) for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], a.pos[i + c]); hi[c] = Math.max(hi[c], a.pos[i + c]) }
@@ -320,6 +328,29 @@ for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
   const s = fish.stats
   check(fish.species.every((sp) => s[sp.id].alive > sp.cfg.count * 0.5), 'and refills within three seconds back in the water', JSON.stringify(s))
   check(alive().every(inWater), 'every refilled fish is in the water')
+}
+
+// --- out of the water, the pool follows without a fish stepped -------------
+{
+  for (let i = 0; i < 3 * 72; i++) fish.update(200, LEVEL, 0, DT)
+  check(alive().length === 0, 'the pool is empty again on dry land', JSON.stringify(fish.stats))
+  for (let i = 0; i < 3 * 72; i++) fish.follow(0, LEVEL + 1.6, 0)
+  const s = fish.stats
+  check(fish.species.every((sp) => s[sp.id].alive > sp.cfg.count * 0.5), 'follow() stocks the water around her from the shore', JSON.stringify(s))
+  check(alive().every((f) => f.born === BORN_FOR), 'and every fish it seeds is born full-grown')
+  const pose = alive().map((f) => [f, f.x, f.y, f.z, f.phase, f.hx, f.hz])
+  const frame = fish.frame
+  for (let i = 0; i < 72; i++) fish.follow(0, LEVEL + 1.6, 0)
+  check(pose.every(([f, x, y, z, ph, hx, hz]) => f.x === x && f.y === y && f.z === z && f.phase === ph && f.hx === hx && f.hz === hz), 'a second of follow() moves no fish and beats no tail')
+  check(fish.frame === frame, 'and counts no frame')
+  const before = new Set(fish.species.flatMap((sp) => sp.schools))
+  for (let i = 0; i < 20 * 72; i++) fish.follow(0, LEVEL + 1.6, -2 * i * DT)
+  const after = fish.species.flatMap((sp) => sp.schools)
+  check(after.filter((sc) => !before.has(sc)).length / after.length > 0.5, 'walking the shore turns the pool over like swimming does', `${after.filter((sc) => !before.has(sc)).length} of ${after.length} schools are new`)
+  check(alive().filter((f) => Math.hypot(f.x, f.z + 40) < 20).length > 30, 'so the water is stocked where she would dive', `${alive().filter((f) => Math.hypot(f.x, f.z + 40) < 20).length} within 20 m of her`)
+  fish.update(0, LEVEL - 1, -40, DT)
+  check(alive().every((f) => f.born === BORN_FOR), 'the first frame under keeps them full-grown')
+  for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
 }
 
 // --- cost -------------------------------------------------------------------

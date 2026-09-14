@@ -34,7 +34,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, loadCritterGlb, packedPbr, setCritterAsset, setCritterCard,
+  CARD_M, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, loadCritterGlb, setCritterAsset, setCritterCard,
   tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
@@ -54,6 +54,8 @@ export const ROCK_FRACTION = 0.2
 export const PER_PERCH = 0.5
 const PERCH_CAP = 7
 export const MAX = 160
+// Wet shell: the one roughness the whole crab glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
+export const WET_ROUGHNESS = 0.7
 // A perch buffer this size covers a 16 m tile of the densest shore.
 const PERCH_BUF = 64
 // Scuttle for a spell, then pause. Each spell draws its own pace from `SPEED` body spans per second, the draw squared so most spells are a slow, leisurely crawl and a few a dash. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
@@ -117,8 +119,8 @@ export class Crabs {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0xc4ab)
 
-    // A wet shell glints: critters.js's packedPbr, metalness set with the asset.
-    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 })
+    // A wet shell glints: critters.js's glint.
+    this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
     // `aLegs` is per instance: the wave's phase and its amplitude (zero at rest). Weighted onto the parts of the unit mesh that are legs -- out past the body along Z and low -- so the shell holds still.
     this.material.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
@@ -129,7 +131,7 @@ export class Crabs {
             'float legW = smoothstep( 0.18, 0.36, abs( position.z ) ) * ( 1.0 - smoothstep( 0.08, 0.22, position.y ) );\n' +
             'transformed.y += legW * aLegs.y * sin( aLegs.x + 12.0 * position.x + sign( position.z ) * 1.5708 );'
         )
-      packedPbr(shader)
+      glint(shader)
     }
     this.material.customProgramCacheKey = () => 'crabs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
@@ -194,8 +196,6 @@ export class Crabs {
   }
 
   setAsset(asset) {
-    if (!(asset.metalness >= 0 && asset.metalness <= 1)) throw new Error('crabs: the asset has no metalness -- run tools/creatures/ship.mjs')
-    this.material.metalness = asset.metalness
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
@@ -224,12 +224,12 @@ export class Crabs {
     return top > this.height.heightAt(x, z) + 0.02 ? top : -Infinity
   }
 
-  /** Whether a perch at (x, z) is a crab's: how deep the lake is over it (0 on a dry shore perch), or null. */
+  /** Whether a perch at (x, z) is a crab's: { depth, level } -- how deep the lake is over it and its surface, or depth 0 and level -Infinity on a dry shore perch -- or null. */
   qualify(x, z) {
     const { h, tan } = this.height.heightAndSlopeAt(x, z)
     const level = this.water.lakeLevelAt(x, z)
-    if (level !== null && level > h) return level - h
-    if (this.water.lakeShoreDistAt(x, z, SHORE_M, h, tan) < SHORE_M) return 0
+    if (level !== null && level > h) return { depth: level - h, level }
+    if (this.water.lakeShoreDistAt(x, z, SHORE_M, h, tan) < SHORE_M) return { depth: 0, level: -Infinity }
     return null
   }
 
@@ -254,12 +254,14 @@ export class Crabs {
       const rockSize = buf[o + 4]
       const key = perchKey(px, pz)
       if (t.perches.has(key)) continue
-      const perch = { x: px, z: pz, r, crabs: [] }
+      const perch = { x: px, z: pz, r, level: -Infinity, crabs: [] }
       t.perches.set(key, perch)
       // The rock as a whole must be a perch, not just the stone under one step.
       if (rockSize < PERCH_MIN) continue
-      const depth = this.qualify(px, pz)
-      if (depth === null) continue
+      const site = this.qualify(px, pz)
+      if (site === null) continue
+      const { depth, level } = site
+      perch.level = level
       const rand = mulberry32(perchSeed(px, pz, this.seed))
       const want = PER_PERCH * (1 + rand() * Math.min(PERCH_CAP, r * r))
       const count = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
@@ -369,7 +371,14 @@ export class Crabs {
     return true
   }
 
-  update(hx, hy, hz, dt) {
+  /**
+   * One frame. `under` is whether her head is below a water surface: while it
+   * is not, a crab under its lake's surface is neither stepped nor written --
+   * the surface is nearly opaque from above, so it costs its share of the
+   * frame for nothing -- and it picks up where it paused when she goes under.
+   * A crab up on the dry top of a half-sunk boulder is drawn either way.
+   */
+  update(hx, hy, hz, dt, under = true) {
     this.head.x = hx
     this.head.z = hz
     if (walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t)) > 0) {
@@ -392,6 +401,7 @@ export class Crabs {
     for (const t of this.tiles.values()) {
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
+          if (!under && c.y < p.level) continue
           c.left -= dt
           let amp = 0
           if (c.state === 'go') {

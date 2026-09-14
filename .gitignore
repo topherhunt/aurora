@@ -9,3 +9,4 @@ devops/deploy.env
 .env
 .DS_Store
 .claude/settings.local.json
+chrome-profile

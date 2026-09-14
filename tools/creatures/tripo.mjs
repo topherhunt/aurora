@@ -110,11 +110,12 @@ const REJECTS_QUAD = new Set([MODELS.p1])
  * the count deviates with geometry complexity, so the caller checks the mesh it
  * actually gets against the budget rather than trusting this number.
  *
- * `pbr` defaults ON: Tripo adds metallic/roughness and normal maps beside the
- * base colour, and the roughness map is the only per-region shininess signal
- * in the pipeline -- a fish's scales against its fins, mail against a tunic.
- * P1 charges nothing extra for it (`estimateCredits` has no pbr term). Off
- * gives base colour only.
+ * `pbr` defaults ON: Tripo adds a tangent-space normal map and a
+ * metallic/roughness map beside the base colour, all 2048px JPEG, no tangent
+ * attribute. They stay in the work dir with the pick and are never shipped or
+ * previewed (design/27-creature-pipeline.md); P1 charges nothing extra for them
+ * (`estimateCredits` has no pbr term), so keeping them costs nothing and a
+ * later change of mind needs no regeneration. Off gives base colour only.
  */
 export async function createMeshTask({
   fileToken,
