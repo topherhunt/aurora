@@ -370,7 +370,7 @@ async function bootWorld() {
 
   // Holds the terrain's live uniform objects BY REFERENCE, so the blades follow
   // the ground when its palette is retuned. 'shader' AND NOT THE DEFAULT: this
-  // bench draws the full fragment shader above, where /?quest ships the plain
+  // bench draws the full fragment shader above, where the world ships the plain
   // rung, and a bed replaying the wrong one is visibly the wrong green.
   tint = new TerrainTint(terrain.material, layers, bands, 'shader')
 

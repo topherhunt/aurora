@@ -31,7 +31,7 @@ import THREE from '../../three-instance.js'
 // the last one down into the hole. So `renderer.info` reports the props actually
 // on screen and a pool sized for the worst case does not bill for its headroom.
 //
-// NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the /?quest panel's
+// NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the menu's
 // cull row does nothing to a layer built on this: everything behind the player
 // is submitted every frame.
 //

@@ -30,7 +30,7 @@ export function fieldOf(fn) {
 // The shape PathSet.setTerrain takes.
 export function terrainOf(fn) {
   const hm = fieldOf(fn)
-  return { coarse: () => hm, groundAt: fn }
+  return { coarse: () => hm, groundAt: fn, detailAt: () => 0 }
 }
 
 export const FLAT_100 = () => 100

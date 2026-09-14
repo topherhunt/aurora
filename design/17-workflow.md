@@ -38,7 +38,7 @@ A gate visit is a checklist, not a look-around: read frametime, worst-frame, dra
 
 ### The benches
 
-`index.html` is the world. **Every other `.html` at the repo root is a bench, and that is the whole registration.** `vite.config.js` reads the root directory for both the dev-server routes and the build's entry points, and Caddy's `try_files {path} {path}.html` does the same against `dist/` in production, so a new bench is live at `/<name>` the moment the file exists -- no config edit, no dev-server restart, no provisioning step. Delete the file and the route is gone the same way.
+`index.html` is the world: `/` is what a player and a headset get, and `/?editor` is the same world with the §18 authoring panel over it. **Every other `.html` at the repo root is a bench, and that is the whole registration.** `vite.config.js` reads the root directory for both the dev-server routes and the build's entry points, and Caddy's `try_files {path} {path}.html` does the same against `dist/` in production, so a new bench is live at `/<name>` the moment the file exists -- no config edit, no dev-server restart, no provisioning step. Delete the file and the route is gone the same way.
 
 A bench exists when the thing it judges cannot be judged inside the world. For procedural content the "library" is the range the parameters cover, so the only way to see a generator is twenty seeds side by side; for a shader it is an empty sky and sixty sliders, which is not worth a terrain load and a walk to a vantage point every time you want to see what one exponent does.
 

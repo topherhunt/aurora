@@ -81,7 +81,7 @@ export class TerrainTint {
    * @param {Layers} layers  for `flattenAt` and the live snow band.
    * @param {object} bands  V2Height's, for `altLo` and `altSpan`.
    * @param {'plain'|'shader'} [chain]  which rung to replay; see the banner. The
-   *   default is what the headset draws. WRITABLE afterwards, for the /?quest
+   *   default is what the headset draws. WRITABLE afterwards, for the menu's
    *   row -- but a clump is coloured once, when it is placed, so switching this
    *   re-tints beds only as their tiles recycle under the player.
    */

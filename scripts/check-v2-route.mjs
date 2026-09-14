@@ -58,6 +58,10 @@ export async function run() {
     check(s.off < flat.texelSize * 1.5, 'on flat ground the route hugs the chord instead of running its diagonals first', `${s.off.toFixed(1)} m off over a ${Math.hypot(2400, 800).toFixed(0)} m leg`)
     check(s.gap < ROUTE_SPACING * 2.5, `waypoints come at about ROUTE_SPACING (${ROUTE_SPACING} m)`, `longest gap ${s.gap.toFixed(1)} m`)
 
+    // A leg along a line BETWEEN texel rows: the walk runs along the nearest row, and the route it hands back must be shifted onto the nodes' own line rather than jogging over to the row at each end.
+    const row = shape(routeLeg(flat, -200, -300, 200, -300).pts)
+    check(row.off < 1e-9 && row.n > 4, 'a leg between two texel rows is handed back on its own line, not on the nearest row', `${row.off.toExponential(1)} m off over ${row.n} waypoints`)
+
     const same = routeLeg(flat, -1000, -300, 1400, 500)
     check(same === r, 'the same leg on the same terrain is served from the cache')
     const short = routeLeg(flat, 10, 10, 12, 14)

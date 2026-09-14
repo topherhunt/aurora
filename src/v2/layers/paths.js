@@ -29,8 +29,11 @@ const STRIDE = 8
 const DEFAULT_RIVER_DEPTH = 2.0
 const DEFAULT_ROAD_FEATHER = 8
 
-// The river cross-section, in half-widths from the centreline. Inside u = 1 the bed is a parabola from `level - depth` at the centre to exactly `level` at the water's edge; from 1 to BANK the ground smoothsteps from the water level back up to the natural terrain. The water is flat across the whole channel because the level is one number per sample.
+// The river cross-section, in half-widths from the centreline. Inside u = 1 the bed is a parabola from `level - depth` at the centre to exactly `level` at the water's edge, with the terrain's own fractal detail kept as depth variation (see BED_SHOAL); from 1 to BANK the ground smoothsteps from the water level back up to the natural terrain. The water is flat across the whole channel because the level is one number per sample.
 export const BANK = 1.5
+
+// The channel keeps the terrain's fractal detail as variation in its depth: the parabola's centre depth is `depth - detail`, so the bed is deeper in a hollow and shallower over a rise. This is the floor on that, as a fraction of the authored depth -- the detail's swing is about the size of a default channel's depth, and a bed allowed to rise through the surface would leave a dry shoal drawn under the water sheet. The variation still vanishes at the water's edge, so the bank meets the level exactly as before.
+export const BED_SHOAL = 0.2
 
 // How far below the lowest ground tap across the channel the water is set. The taps are at seven points across the section; between them the fractal detail can still dip a little, and this is the margin that keeps the bank above the water there.
 export const FREEBOARD = 0.3
@@ -40,6 +43,9 @@ const LEVEL_TAPS = [0.5, 1, BANK]
 
 // A mouth pinned to another water body drops to that level over this many half-widths of arc, so a tributary meets its trunk with a short fall rather than a step.
 const PIN_RAMP_HALF_WIDTHS = 3
+
+// Arc-to-chord ratio above which two samples of one river whose footprints overlap count as a fold-back rather than neighbours along the reach. A semicircle's diameter is pi/2; a bend of radius fifty metres in a ten-metre channel never reaches 1.01.
+const POOL_FOLD = 1.2
 
 function unionRect(a, b) {
   if (a === null) return b
@@ -139,9 +145,13 @@ const HIT_A = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_B = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_C = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 
-// carveRivers' running claims, module scope so the per-vertex carve allocates nothing.
+// carveRivers' running claims and the terrain detail under the vertex (read once, on the first wet claim), module scope so the per-vertex carve allocates nothing.
 let claimWet = Infinity
 let claimBank = -Infinity
+let claimDetail = NaN
+let claimX = 0
+let claimZ = 0
+let claimCell = 0
 
 export class PathSet {
   // `lakes` is the LakeSet a river can start from or end in; a river whose endpoint sits in one is pinned to its level. Optional so a roads-only set, or a gate, needs none.
@@ -177,8 +187,8 @@ export class PathSet {
    * The ground a river is solved against: `coarse()` returns the heightmap the route reads (the object V2Height builds on, which erosion can swap), `groundAt(x, z)` the composed height BEFORE the carve chain -- what the bank will be once the channel is cut through it. Attaching (or re-attaching) invalidates every river's bake.
    */
   setTerrain(terrain) {
-    if (!terrain || typeof terrain.coarse !== 'function' || typeof terrain.groundAt !== 'function') {
-      throw new Error('PathSet.setTerrain: needs { coarse(): Heightmap, groundAt(x, z): number }')
+    if (!terrain || typeof terrain.coarse !== 'function' || typeof terrain.groundAt !== 'function' || typeof terrain.detailAt !== 'function') {
+      throw new Error('PathSet.setTerrain: needs { coarse(): Heightmap, groundAt(x, z): number, detailAt(x, z, cell): number }')
     }
     this._terrain = terrain
     for (const rec of this.paths.values()) {
@@ -503,24 +513,71 @@ export class PathSet {
     rec.forward = t[0] >= t[n - 1]
     const from = rec.forward ? 0 : n - 1
     const stepI = rec.forward ? 1 : -1
-    let w = t[from]
-    for (let i = from, k = 0; k < n; i += stepI, k++) {
-      if (t[i] < w) w = t[i]
-      s[i * 4 + 1] = w
+    const walk = () => {
+      let w = t[from]
+      for (let i = from, k = 0; k < n; i += stepI, k++) {
+        if (t[i] < w) w = t[i]
+        s[i * 4 + 1] = w
+      }
     }
+    walk()
+    if (this._poolBends(rec, t)) walk()
   }
 
-  // Water another body holds at (x, z), for a river endpoint sitting there: the nearest OTHER river if the point is inside its wet width, else a lake whose footprint covers the point and whose surface is within one channel depth above the ground -- the second test is what keeps a 20 km ocean rectangle from claiming every inland mouth in its footprint.
+  // Where the river folds back on itself so that two reaches' footprints overlap -- a bend tighter than the channel is wide -- the two share one pool, so the upper takes the lower's level. Without this the carve, which is the minimum over every claim, digs the inside of the bend to the lower reach's bed while the upper reach's surface is still drawn at its own level, a metre or more up in the air. Fold-back is told from plain overlap by the arc between the two samples being longer than the chord; along a straight or gently curving reach the two agree and nothing changes. Lowers `t` in place and returns whether anything moved; the caller re-walks.
+  _poolBends(rec, t) {
+    const s = rec.samples
+    const n = s.length / 4
+    const seg = this._seg
+    const arc = new Float64Array(n)
+    for (let i = 1; i < n; i++) arc[i] = arc[i - 1] + Math.hypot(s[i * 4] - s[i * 4 - 4], s[i * 4 + 2] - s[i * 4 - 2])
+    const pi = this._pathList.indexOf(rec)
+    let moved = false
+    for (let i = 0; i < n; i++) {
+      const x = s[i * 4]
+      const z = s[i * 4 + 2]
+      const hw = s[i * 4 + 3]
+      const bucket = this.grid.cellAt(x, z)
+      if (bucket === undefined) continue
+      let lo = s[i * 4 + 1]
+      for (let b = 0; b < bucket.length; b++) {
+        const si = bucket[b]
+        if (this._segPath[si] !== pi) continue
+        const k = si - rec.segStart
+        const o = si * STRIDE
+        const ax = seg[o]
+        const az = seg[o + 2]
+        const ex = seg[o + 4] - ax
+        const ez = seg[o + 6] - az
+        const len2 = ex * ex + ez * ez
+        const raw = len2 > 0 ? ((x - ax) * ex + (z - az) * ez) / len2 : 0
+        const u = raw < 0 ? 0 : raw > 1 ? 1 : raw
+        const d = Math.hypot(x - (ax + ex * u), z - (az + ez * u))
+        if (d > hw + seg[o + 3] + (seg[o + 7] - seg[o + 3]) * u) continue
+        const along = Math.abs(arc[k] + (arc[k + 1] - arc[k]) * u - arc[i])
+        if (along <= POOL_FOLD * d) continue
+        const level = Math.min(s[k * 4 + 1], s[k * 4 + 5])
+        if (level < lo) lo = level
+      }
+      if (lo < t[i]) {
+        t[i] = lo
+        moved = true
+      }
+    }
+    return moved
+  }
+
+  // Water another body holds at (x, z), for a river endpoint sitting there: the nearest OTHER river if the point is inside its wet width, else a lake whose footprint covers the point and whose surface is within one channel depth above the ground -- the second test is what keeps a 20 km ocean rectangle from claiming every inland mouth in its footprint. `reach` is how far from the point that body's own carve extends, which is where a river ending in it has to have come down to its level.
   _otherWaterAt(x, z, rec) {
-    if (this._nearestInto(x, z, 'river', HIT_C, rec) && HIT_C.dist <= HIT_C.halfWidth) return HIT_C.y
+    if (this._nearestInto(x, z, 'river', HIT_C, rec) && HIT_C.dist <= HIT_C.halfWidth) return { level: HIT_C.y, reach: BANK * HIT_C.halfWidth }
     if (this.lakes !== null) {
       const lake = this.lakes.levelAt(x, z)
-      if (lake !== null && this._terrain.groundAt(x, z) <= lake + rec.depth) return lake
+      if (lake !== null && this._terrain.groundAt(x, z) <= lake + rec.depth) return { level: lake, reach: 0 }
     }
     return null
   }
 
-  // Source in a lake or on another river: the whole river is capped at that level, so it leaves the water it starts in rather than falling out of the air above it. Mouth in one: the last few half-widths ramp down to it, so a tributary joins its trunk at the trunk's surface. Neither ever raises a level, so the downstream monotonicity the solve established survives.
+  // Source in a lake or on another river: the whole river is capped at that level, so it leaves the water it starts in rather than falling out of the air above it. Mouth in one: the level ramps down to it over the last few half-widths beyond that body's own carve, so a tributary is at its trunk's surface by the time it enters the trunk's banks. Neither ever raises a level, so the downstream monotonicity the solve established survives.
   _applyPins(rec) {
     const s = rec.samples
     const n = s.length / 4
@@ -528,20 +585,21 @@ export class PathSet {
     const mouth = rec.forward ? n - 1 : 0
     const step = rec.forward ? 1 : -1
 
-    const srcLevel = this._otherWaterAt(s[src * 4], s[src * 4 + 2], rec)
-    if (srcLevel !== null) {
-      for (let i = 0; i < n; i++) if (s[i * 4 + 1] > srcLevel) s[i * 4 + 1] = srcLevel
+    const source = this._otherWaterAt(s[src * 4], s[src * 4 + 2], rec)
+    if (source !== null) {
+      for (let i = 0; i < n; i++) if (s[i * 4 + 1] > source.level) s[i * 4 + 1] = source.level
     }
 
-    const mouthLevel = this._otherWaterAt(s[mouth * 4], s[mouth * 4 + 2], rec)
+    const into = this._otherWaterAt(s[mouth * 4], s[mouth * 4 + 2], rec)
+    const mouthLevel = into === null ? null : into.level
     if (mouthLevel !== null && s[mouth * 4 + 1] > mouthLevel) {
       const top = s[mouth * 4 + 1]
       const drop = top - mouthLevel
       const ramp = Math.max(PIN_RAMP_HALF_WIDTHS * s[mouth * 4 + 3], 2 * SAMPLE_SPACING)
       let d = 0
-      for (let i = mouth, k = 0; k < n && d < ramp; i -= step, k++) {
+      for (let i = mouth, k = 0; k < n && d < into.reach + ramp; i -= step, k++) {
         if (k > 0) d += Math.hypot(s[i * 4] - s[(i + step) * 4], s[i * 4 + 2] - s[(i + step) * 4 + 2])
-        const cap = mouthLevel + drop * smoothstep(0, 1, d / ramp)
+        const cap = mouthLevel + drop * smoothstep(0, 1, (d - into.reach) / ramp)
         if (s[i * 4 + 1] > cap) s[i * 4 + 1] = cap
       }
     }
@@ -626,14 +684,20 @@ export class PathSet {
     return smoothstep(1, 0, (u - 1) / (BANK - 1))
   }
 
-  // Ground under every river section that reaches (x, z). A section claims the point when its foot lies within the segment (a lateral distance, not a distance to a sample further along), plus the nearest segment overall so the fan outside a bend is covered. Wet claims (inside the water) win and the DEEPEST sets the ground, so every ribbon over the point is above it; with no wet claim the HIGHEST bank claim does, so the water's edge on the inside of a steep bend, or a tributary's edge over its trunk's bank, meets ground at its own level instead of hanging over the bank of a lower section beside it. Inside the water the bed is a parabola from `level - depth` at the centre to the level at the edge; across the bank band the ground smoothsteps back to natural. min(h, ...) throughout: a river never builds ground up, and a gorge deeper than the bed simply holds deeper water.
-  carveRivers(x, z, h) {
+  // Ground under every river section that reaches (x, z). A section claims the point when its foot lies within the segment (a lateral distance, not a distance to a sample further along), plus the nearest segment overall so the fan outside a bend is covered. Wet claims (inside the water) win and the DEEPEST sets the ground, so every ribbon over the point is above it; with no wet claim the HIGHEST bank claim does, so the water's edge on the inside of a steep bend, or a tributary's edge over its trunk's bank, meets ground at its own level instead of hanging over the bank of a lower section beside it. Inside the water the bed is a parabola from `level - (depth - detail)` at the centre to the level at the edge, `detail` being the terrain's fractal term at this vertex and band limit, which the flatten mask removed from `h` and which the bed keeps as its own relief; across the bank band the ground smoothsteps back to natural. min(h, ...) throughout: a river never builds ground up, and a gorge deeper than the bed simply holds deeper water.
+  //
+  // `cell` is the caller's sampling spacing, passed on to the detail read so the bed's relief is band-limited exactly as the ground around it is and a chunk split does not step the bed.
+  carveRivers(x, z, h, cell = 0) {
     this._ensureIndex()
     const bucket = this.grid.cellAt(x, z)
     if (bucket === undefined) return h
     const seg = this._seg
     claimWet = Infinity
     claimBank = -Infinity
+    claimDetail = NaN
+    claimX = x
+    claimZ = z
+    claimCell = cell
     let nearest = -1
     let nearestD2 = Infinity
     let nearestT = 0
@@ -673,7 +737,9 @@ export class PathSet {
     if (u >= BANK) return
     const w = seg[o + 1] + (seg[o + 5] - seg[o + 1]) * t
     if (u <= 1) {
-      const target = w - this._pathList[this._segPath[si]].depth * (1 - u * u)
+      if (claimDetail !== claimDetail) claimDetail = this._terrain.detailAt(claimX, claimZ, claimCell)
+      const depth = this._pathList[this._segPath[si]].depth
+      const target = w - Math.max(depth - claimDetail, depth * BED_SHOAL) * (1 - u * u)
       if (target < claimWet) claimWet = target
     } else {
       const target = w + (h - w) * smoothstep(0, 1, (u - 1) / (BANK - 1))

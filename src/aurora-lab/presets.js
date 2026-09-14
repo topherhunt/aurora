@@ -243,7 +243,7 @@ const LOWRES = {
 // that every change in that pass has something to be judged against.
 //
 // This is a pin of the WORLD's sky rather than of a set of sliders, which is
-// why it is the one builtin with the world drive ON. What /?quest draws is the
+// why it is the one builtin with the world drive ON. What the world draws is the
 // sky map with the belt, the rays, the shimmer and the exposure overwritten
 // every frame from the clock; a pin that turned the drive off would show a belt
 // the headset never shows, and comparing v2 against it would be comparing two
@@ -358,7 +358,7 @@ const SKYMAP_V1 = {
 //
 // This is a LOCK and not a copy. check-aurora-lab.mjs asserts, key for key,
 // that it equals defaultsFor( WORLD_ALGORITHM ) -- and the whole point of the
-// schema is that those defaults are what /?quest and /test-aurora both start
+// schema is that those defaults are what the world and /test-aurora both start
 // from, so pinning them is what makes "the headset draws v2" a fact rather
 // than a coincidence that held on the day it was checked. If you retune a
 // default, that check fails and names the key: either bring this preset with

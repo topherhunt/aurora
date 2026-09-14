@@ -797,7 +797,7 @@ if (pin) {
 
 // The v2 pin is the lock on the SHIPPED sky, and it is asserted key for key
 // rather than on the five knobs the pass moved. That is the difference between
-// a preset and a lock: /?quest and /test-aurora both start from
+// a preset and a lock: the world and /test-aurora both start from
 // defaultsFor( WORLD_ALGORITHM ), so this equality is the only thing that makes
 // "the headset draws v2" a fact instead of something that was true the day it
 // was looked at. When it fails, it has caught a default being retuned, and the

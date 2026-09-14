@@ -201,7 +201,7 @@ Rocks are built and stepped **before** the trees, the ferns, the grass and the l
 
 **The answer is settled INTO the stone** by `BLOCK_SETTLE` per metre of rock, capped at `BLOCK_SETTLE_MAX` -- and never past the ground the rock stands on, which is the clamp that matters on a rock bedded to `SINK_CAP` and standing a few centimetres proud. The settle pays for the LOD ladder and now pays for nothing else: a prop is seated against the T320 and the mesh it will be looking at from fifty metres is a T20 whose surface wanders either side of it -- 2 mm apart at the median, but the T20 runs up to 52 cm INSIDE the T320 at the worst corner of a 1.16 m rock, and 15% of the T320's silhouette is air in the T20 -- so a prop placed on the exact fine surface floats.
 
-**Quest mode does not turn it off.** `rocks.update` runs unconditionally; the quest toggles skip the DRAW, not the scatter, because a tree lifted onto a boulder in one mode and not the other is two different worlds rather than one world at two prices.
+**The menu's rock rows do not turn it off.** The toggles skip the DRAW, not the scatter, because a tree lifted onto a boulder with the rocks drawn and not with them hidden is two different worlds rather than one world at two prices.
 
 ## `anchorsInto`: telling another scatter where the stone is
 

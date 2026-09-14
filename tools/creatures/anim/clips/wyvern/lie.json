@@ -15,7 +15,7 @@
       "tail": { "pitch": 0.5 },
       "wings": { "spread": -0.22, "sweep": 0.22 },
       "arms": { "pitch": -0.22 },
-      "legs": { "hindLeft": { "fore": 0.12, "lat": 0.04 }, "hindRight": { "fore": 0.12, "lat": -0.04 } }
+      "legs": { "hindLeft": { "fore": 0.066, "lat": 0.022 }, "hindRight": { "fore": 0.066, "lat": -0.022 } }
     } },
     { "t": 1.9, "pose": {
       "root": { "lift": -0.36, "fore": -0.03 },
@@ -24,7 +24,7 @@
       "tail": { "pitch": 0.28, "yaw": 0.22 },
       "wings": { "spread": -0.42, "sweep": 0.34 },
       "arms": { "pitch": 0.26, "spread": 0.16 },
-      "legs": { "hindLeft": { "fore": 0.24, "lat": 0.12 }, "hindRight": { "fore": 0.24, "lat": -0.12 } }
+      "legs": { "hindLeft": { "fore": 0.132, "lat": 0.066 }, "hindRight": { "fore": 0.132, "lat": -0.066 } }
     } },
     { "t": 3.9, "pose": {
       "root": { "lift": -0.36, "fore": -0.03 },
@@ -33,7 +33,7 @@
       "tail": { "pitch": 0.28, "yaw": 0.22 },
       "wings": { "spread": -0.42, "sweep": 0.34 },
       "arms": { "pitch": 0.26, "spread": 0.16 },
-      "legs": { "hindLeft": { "fore": 0.24, "lat": 0.12 }, "hindRight": { "fore": 0.24, "lat": -0.12 } }
+      "legs": { "hindLeft": { "fore": 0.132, "lat": 0.066 }, "hindRight": { "fore": 0.132, "lat": -0.066 } }
     } },
     { "t": 5.0, "pose": {
       "root": { "lift": -0.13 },
@@ -42,7 +42,7 @@
       "tail": { "pitch": 0.5 },
       "wings": { "spread": -0.22, "sweep": 0.22 },
       "arms": { "pitch": -0.22 },
-      "legs": { "hindLeft": { "fore": 0.12, "lat": 0.04 }, "hindRight": { "fore": 0.12, "lat": -0.04 } }
+      "legs": { "hindLeft": { "fore": 0.066, "lat": 0.022 }, "hindRight": { "fore": 0.066, "lat": -0.022 } }
     } },
     { "t": 5.7, "pose": { "tail": { "pitch": 0.45 }, "wings": { "spread": -0.12, "sweep": 0.14 }, "arms": { "pitch": -0.14 } } }
   ]

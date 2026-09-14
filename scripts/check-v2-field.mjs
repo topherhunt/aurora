@@ -54,6 +54,7 @@ import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
 import { RidgeField, SHATTER_VERTEX_CELLS } from '../src/v2/height/ridge.js'
 import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { BED_SHOAL } from '../src/v2/layers/paths.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
@@ -425,28 +426,15 @@ export async function run({ heightmap } = {}) {
     const doc = new Layers()
     const y = hm.sample(0, 0)
     // A river running north-south through the origin and a road running east-west
-    // across it. The crossing is the whole test.
-    //
-    // Each river node takes its y FROM THE TERRAIN, which is both what an author
-    // dragging control points would produce and what this test needs to stay
-    // honest. A river authored at one constant y -- which is what stood here
-    // first -- is fine on gentle ground and meaningless on real relief: carveRivers
-    // deliberately leaves ground that is already below the bed alone (min, not
-    // lerp, so a channel cannot fill a gorge it crosses), so on the imported map,
-    // where the ground falls 4.2 m over the 200 m to the probe, the flat channel
-    // was simply not cutting there and the check was asserting against a carve
-    // that had correctly declined to happen. The guard below now says so out loud.
-    // Nodes every 200 m rather than every 400 m, for the same reason: with the
-    // wider spacing the Catmull-Rom chord cut across a dip and the river's own
-    // surface floated 2 m above the ground at the probe, so the channel had only
-    // 1.9 m of relief left to cut and "reaches its authored depth" was measuring
-    // the spline's sag rather than the carve. The probe below sits ON a node.
-    const river = [-400, -200, 0, 200, 400].map((z) => [0, z === 0 ? y : hm.sample(0, z), z, 12])
-    doc.addPath({ kind: 'river', depth: 4, pts: river })
+    // across it. The crossing is the whole test. The field is built before the
+    // river is added because a river bakes against the terrain the field attaches,
+    // and nodes come every 200 m so the probe below, 200 m up the channel, sits ON
+    // a node rather than on a chord the router bowed off the line.
+    const cf = new V2Height({ heightmap: hm, layers: doc, seed: WORLD_SEED })
+    doc.addPath({ kind: 'river', depth: 4, pts: [-400, -200, 0, 200, 400].map((z) => [0, z, 12]) })
     doc.addPath({ kind: 'road', feather: 10, pts: [[-400, y, 0, 6], [0, y, 0, 6], [400, y, 0, 6]] })
     const lakeY = hm.sample(1000, 1000)
     doc.addLake({ x: 1000, z: 1000, y: lakeY, rx: 150, rz: 120, carve: 1, depth: 9 })
-    const cf = new V2Height({ heightmap: hm, layers: doc, seed: WORLD_SEED })
 
     // ROADS LAST. At the crossing the road's carriageway wins, so the answer is
     // the road's own y and not the river bed 4 m below it. Run the road first and
@@ -455,17 +443,20 @@ export async function run({ heightmap } = {}) {
     check(Math.abs(atCrossing - y) < 0.02, 'a road crossing a river reads as a causeway, not a ford', `crossing ${atCrossing.toFixed(3)} m vs road surface ${y.toFixed(3)} m, bed would be ${(y - 4).toFixed(3)} m`)
 
     // And the river is really carving where the road is not: 200 m up the channel.
-    // The spline's own y comes back out of waterLevelAt -- the surface IS the
-    // spline y and the bed is depth below it -- so the expectation is read from
-    // the document rather than recomputed here from an assumption about how
-    // Catmull-Rom interpolated the nodes.
+    // The solved level comes back out of waterLevelAt -- the surface IS that level
+    // and the bed is the authored depth below it less the terrain's own detail
+    // term, which the channel keeps as its relief -- so the expectation is read
+    // from the document and the detail field rather than recomputed here from
+    // the ground taps and freeboard.
     const inChannel = cf.heightAt(0, 200)
-    const splineY = doc.waterLevelAt(0, 200)
-    const bedY = splineY - 4
+    const levelY = doc.waterLevelAt(0, 200)
+    const relief = cf.detail.at(0, 200, 0, hm.slopeAt(0, 200), 0)
+    const bedY = levelY - Math.max(4 - relief, 4 * BED_SHOAL)
     const ground = hm.sample(0, 200)
-    check(ground > bedY + 1, 'the probe sits on ground the channel has to cut through', `ground ${ground.toFixed(3)} m stands ${(ground - bedY).toFixed(3)} m above the bed`)
-    check(inChannel < ground - 3.9, 'the river carve reaches its authored depth', `bed ${inChannel.toFixed(3)} m, ${(ground - inChannel).toFixed(3)} m below the untouched ground, spline y ${splineY.toFixed(3)} m, depth 4 m`)
-    check(Math.abs(inChannel - bedY) < 0.01, 'the channel bottom sits exactly depth below the spline', `${inChannel.toFixed(3)} m vs ${bedY.toFixed(3)} m`)
+    check(levelY < ground, 'the water sits in the ground, not on it', `level ${levelY.toFixed(3)} m under ground ${ground.toFixed(3)} m`)
+    check(inChannel < ground - 3.9 + Math.max(relief, 0), 'the river carve reaches its authored depth', `bed ${inChannel.toFixed(3)} m, ${(ground - inChannel).toFixed(3)} m below the untouched ground, level ${levelY.toFixed(3)} m, depth 4 m, relief ${relief.toFixed(3)} m`)
+    check(Math.abs(inChannel - bedY) < 0.01, 'the channel bottom sits depth below the water, less the detail term it keeps as relief', `${inChannel.toFixed(3)} m vs ${bedY.toFixed(3)} m (relief ${relief.toFixed(3)} m)`)
+    check(Math.abs(cf.heightAt(0, 200, 16) - levelY + Math.max(4 - cf.detail.at(0, 200, 16, hm.slopeAt(0, 200), 0), 4 * BED_SHOAL)) < 0.01, 'and the bed relief is band-limited by the caller\'s cell, like the ground around it', `cell 16: ${cf.heightAt(0, 200, 16).toFixed(3)} m`)
 
     // The lake basin sits below its water level, or it is not a lake.
     const bed = cf.heightAt(1000, 1000)
@@ -1017,10 +1008,10 @@ export async function run({ heightmap } = {}) {
   {
     const authored = new Layers()
     const y = hm.sample(0, 0)
-    authored.addPath({ kind: 'river', depth: 3, pts: [[-2000, y, -2000, 10], [0, y, 0, 10], [2000, y, 2000, 10]] })
+    const af = new V2Height({ heightmap: hm, layers: authored, seed: WORLD_SEED })
+    authored.addPath({ kind: 'river', depth: 3, pts: [[-2000, -2000, 10], [0, 0], [2000, 2000, 10]] })
     authored.addPath({ kind: 'road', feather: 12, pts: [[-2000, y, 1000, 5], [2000, y, -1000, 5]] })
     authored.addLake({ x: 300, z: 300, y, rx: 400, rz: 300, carve: 1, depth: 8 })
-    const af = new V2Height({ heightmap: hm, layers: authored, seed: WORLD_SEED })
     af.bands
 
     const bench = (f, lyr, label) => {

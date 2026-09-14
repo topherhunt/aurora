@@ -65,9 +65,9 @@ export class Layers {
     return this.snow.snowLineAt(x, z)
   }
 
-  // §18's evaluation order, steps 3 to 5. The coarse field and the fractal detail are the caller's business; this is everything a human placed by hand.
-  carve(x, z, h) {
-    let out = this.paths.carveRivers(x, z, h)
+  // §18's evaluation order, steps 3 to 5. The coarse field and the fractal detail are the caller's business; this is everything a human placed by hand. `cell` is the caller's sampling spacing, for the river bed's band-limited relief.
+  carve(x, z, h, cell = 0) {
+    let out = this.paths.carveRivers(x, z, h, cell)
     out = this.lakes.carve(x, z, out)
     out = this.paths.smoothRoads(x, z, out)
     return out

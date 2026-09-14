@@ -763,8 +763,8 @@ export function shoreClumpAt(x, z, seed) {
 //   addGeometry throws on a second, rather than quietly drawing the first for
 //   every tier and leaving someone to wonder why the near grass looks flat.
 //
-//   NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the /?quest
-//   panel's cull row does nothing to this layer: the two thirds of the disc
+//   NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the menu's
+//   cull row does nothing to this layer: the two thirds of the disc
 //   behind the player are submitted every frame.
 //
 //   PACKING IS DENSE AND THE SWAP IS A SWAP-REMOVE, which is TreeArena's and is

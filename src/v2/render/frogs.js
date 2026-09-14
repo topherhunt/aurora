@@ -26,7 +26,7 @@
 //
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
 // (critters.js critterTier, LOD_DEG below), one InstancedMesh per tier under
-// one material, and not at all under the last degree; the tiers together hold
+// one material, and not at all under the last rung; the tiers together hold
 // every live frog she can see.
 // ---------------------------------------------------------------------------
 
@@ -39,10 +39,10 @@ import {
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
 export const TILE = 8
-// Tiles whose centre is within this of her are grown; the biggest frog is under a degree past thirty.
+// Tiles whose centre is within this of her are grown; the biggest frog is under the last rung past forty-one metres.
 export const RADIUS = 48
-// The ladder: the apparent size in degrees of arc each tier holds down to, the pick first and then the shipped -lod1..3, under the last of which a frog is not drawn. A 0.36 m frog steps down at 2.6, 5.2 and 10.3 m and is gone past 20.6.
-export const LOD_DEG = [8, 4, 2, 1]
+// The ladder: the apparent size in degrees of arc each tier holds down to, the pick first and then the shipped -lod1..3, under the last of which a frog is not drawn. A 0.36 m frog steps down at 2.6, 5.2 and 10.3 m and is gone past 27.5.
+export const LOD_DEG = [8, 4, 2, 0.75]
 // How far from the waterline a frog may sit, on the dry side.
 export const SHORE_M = 5
 // The ground a frog will not sit on: steeper than this (a tangent), or within SNOW_MARGIN metres of the snow line, which is the cold the brief excludes.

@@ -493,7 +493,7 @@ console.log('\n--- shader patches actually land ------------------------------')
   // three's program cache, so flipping any of those would re-run
   // onBeforeCompile, look the result up under the unchanged key, and get back
   // the program compiled the first time. No error, no recompile, no effect --
-  // which is how the /?quest wind switch came to read "no difference".
+  // which is how the menu's wind switch came to read "no difference".
   {
     const atlas = buildTextureArray()
     const grass = createPropMaterial(atlas, { stripTiling: true, wind: 'grass' })

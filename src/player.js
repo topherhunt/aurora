@@ -112,10 +112,21 @@ export class Player {
     // optional and the check below is skipped without it.
     this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
     this._obstacle = { x: 0, z: 0, r: 0 }
+    // Her capsule against the stone -- v2's WalkSurface.fits, which also makes
+    // its heightAt read from a foot height. v1 has neither; its heightAt ignores
+    // the third argument and the headroom check below is skipped.
+    this.capsule = typeof terrainHeight.fits === 'function' ? terrainHeight : null
+    this._push = { x: 0, z: 0 }
+    this._inStone = null
 
     this.speed = 0
     this.snapArmed = true
     this.smoothY = null
+    // The ground under her feet, undamped, and what the next ground query is
+    // asked FROM: which stone is a step and which is a ceiling depends on where
+    // her feet are, and the damped smoothY lags a mantle by up to its whole
+    // rise. null until she has stood somewhere.
+    this.standY = null
     this.blocked = false // true when the slope limiter refused a move, for the HUD
     this.flying = false
     this.travel = null // non-null while a double-click flight is in progress
@@ -180,7 +191,7 @@ export class Player {
 
   spawnAt(x, z) {
     this.rig.position.set(x, this.th.heightAt(x, z), z)
-    this.smoothY = this.rig.position.y
+    this.smoothY = this.standY = this.rig.position.y
     this.speed = 0
   }
 
@@ -188,7 +199,7 @@ export class Player {
     this.travel = null
     this.flying = false
     this.rig.position.set(x, this.th.heightAt(x, z), z)
-    this.smoothY = this.rig.position.y
+    this.smoothY = this.standY = this.rig.position.y
     this.speed = 0
     this.blocked = false
   }
@@ -201,9 +212,11 @@ export class Player {
     this.speed = 0
     this.blocked = false
     if (!on) {
+      // Asked from where she is hovering, so a landing under an overhang is on
+      // the ground beneath it rather than on top of the stone.
       const origin = this.originPosition()
-      this.rig.position.y = this.th.heightAt(origin.x, origin.z)
-      this.smoothY = this.rig.position.y
+      this.rig.position.y = this.th.heightAt(origin.x, origin.z, origin.y)
+      this.smoothY = this.standY = this.rig.position.y
     }
   }
 
@@ -282,7 +295,7 @@ export class Player {
     if (T.t >= 1) {
       this.travel = null
       this.speed = 0
-      this.smoothY = this.th.heightAt(p.x, p.z)
+      this.smoothY = this.standY = this.th.heightAt(p.x, p.z, p.y)
       p.y = this.smoothY
     }
   }
@@ -353,7 +366,10 @@ export class Player {
     // Terrain following with damping. Recompute the origin because _tryMove may
     // have shifted the rig.
     this.originPosition(origin)
-    const ground = this.th.heightAt(origin.x, origin.z)
+    const ground = this.standY === null
+      ? this.th.heightAt(origin.x, origin.z)
+      : this.th.heightAt(origin.x, origin.z, this.standY)
+    this.standY = ground
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY
@@ -460,14 +476,20 @@ export class Player {
 
     let dx = this._fwd.x * dist
     let dz = this._fwd.z * dist
+    // Before the first ground-following pass there is no foot height to ask
+    // from, and the topmost surface is the one she was spawned on.
+    if (this.standY === null) this.standY = this.th.heightAt(origin.x, origin.z)
+    const y = this.standY
+    this._inStone = null
 
-    if (!this._walkable(origin.x, origin.z, dx, dz, dist)) {
+    let h1 = this._walkable(origin.x, origin.z, y, dx, dz, dist)
+    if (Number.isNaN(h1)) {
       // Too steep head-on. Slide along the contour instead of stopping dead --
       // stopping at a wall she is pressed against feels broken, whereas sliding
       // reads as "the mountain is steering me", which is the intended experience.
       const eps = 1.0
-      const gx = (this.th.heightAt(origin.x + eps, origin.z) - this.th.heightAt(origin.x - eps, origin.z)) / (2 * eps)
-      const gz = (this.th.heightAt(origin.x, origin.z + eps) - this.th.heightAt(origin.x, origin.z - eps)) / (2 * eps)
+      const gx = (this.th.heightAt(origin.x + eps, origin.z, y) - this.th.heightAt(origin.x - eps, origin.z, y)) / (2 * eps)
+      const gz = (this.th.heightAt(origin.x, origin.z + eps, y) - this.th.heightAt(origin.x, origin.z - eps, y)) / (2 * eps)
       let cx = -gz
       let cz = gx
       const clen = Math.hypot(cx, cz)
@@ -483,7 +505,29 @@ export class Player {
       }
       dx = cx * dist
       dz = cz * dist
-      if (!this._walkable(origin.x, origin.z, dx, dz, dist)) {
+      h1 = this._walkable(origin.x, origin.z, y, dx, dz, dist)
+      if (Number.isNaN(h1)) {
+        this.blocked = true
+        return
+      }
+    }
+
+    // Stone at head height -- an overhang too low, or a boulder's flank at her
+    // shoulder. Slid along exactly as a trunk is below: the step is projected
+    // onto the tangent of the push direction fits() reports, and a push with no
+    // side to favour stops her. Only ENTERING stone blocks, see _enters.
+    if (this._enters(origin.x + dx, origin.z + dz, y, h1, this._push)) {
+      const tx = -this._push.z
+      const tz = this._push.x
+      const along = tx * dx + tz * dz
+      if (Math.abs(along) < 0.05 * dist) {
+        this.blocked = true
+        return
+      }
+      dx = tx * along
+      dz = tz * along
+      h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.abs(along))
+      if (Number.isNaN(h1) || this._enters(origin.x + dx, origin.z + dz, y, h1, null)) {
         this.blocked = true
         return
       }
@@ -514,7 +558,9 @@ export class Player {
         }
         dx = tx * along
         dz = tz * along
-        if (!this._walkable(origin.x, origin.z, dx, dz, Math.abs(along)) || this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)) {
+        h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.abs(along))
+        if (Number.isNaN(h1) || this._enters(origin.x + dx, origin.z + dz, y, h1, null) ||
+          this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)) {
           this.blocked = true
           return
         }
@@ -526,6 +572,32 @@ export class Player {
     const nz = THREE.MathUtils.clamp(this.rig.position.z + dz, -WORLD_HALF + 32, WORLD_HALF - 32)
     this.rig.position.x = nx
     this.rig.position.z = nz
+    // The ground at the far end of the step is the ground she now stands on,
+    // and what update() asks the next one from -- a mantle onto a ledge is
+    // decided here, not by the damped follower.
+    this.standY = h1
+  }
+
+  // Whether a step from feet at `y` to (x, z), feet at `h`, would take her INTO
+  // stone at head height that she is not already in. If she is already in it
+  // -- a tile regrown under her, a spawn inside a boulder -- every step out
+  // would be refused too, so the check is waived, the same way a trunk only
+  // blocks on entry. Whether she is in stone is asked once per _tryMove and
+  // only on the frames a step is refused, which are the frames she is not
+  // moving anyway. `_origin` is the origin _tryMove was handed, and `standY`
+  // her feet there.
+  //
+  // JUDGED FROM THE HIGHER OF THE TWO FOOT HEIGHTS. Stepping off a ledge drops
+  // her feet by up to reach in one 2 cm step, and judged from the lower height
+  // the ledge she was just standing on is stone at her shoulder: she could
+  // climb every step and get down off none. A body that has not fallen yet is
+  // still at the upper height, so that is where the head volume is taken.
+  _enters(x, z, y, h, out) {
+    if (!this.capsule || this.capsule.fits(x, z, y > h ? y : h, out)) return false
+    if (this._inStone === null) {
+      this._inStone = !this.capsule.fits(this._origin.x, this._origin.z, this.standY, null)
+    }
+    return !this._inStone
   }
 
   // Symmetric on purpose: blocking steep descents as well as steep ascents is
@@ -553,6 +625,15 @@ export class Player {
   //
   // The extra sample is only paid on the frames the immediate test already
   // failed, which are the frames she is not moving anyway.
+  //
+  // EVERY HEIGHT IS ASKED FROM HER FEET, `y` at the near end and the near end's
+  // answer at the far, so a stone over her head is not ground at either. On
+  // stone the probe pair is therefore near-identical rather than bit-identical:
+  // the ground at (x, z) asked from `h1` on the way back can be a stone the way
+  // out could not reach, if one tops out in (y + reach, h1 + reach]. It is
+  // always within the slope rule of where she is, so she is never fenced in --
+  // she can only find herself seated on a slightly different surface coming
+  // back than going. design/04-traversability.md has the argument.
   /**
    * Whether she could WALK the straight line from (x0, z0) to (x1, z1): every
    * step of it passes the slope rule below and none enters a trunk. What the
@@ -570,22 +651,37 @@ export class Player {
     const step = len / n
     let x = x0
     let z = z0
+    // Walked from the topmost surface at the start, which is where a teleport
+    // lands her; the headroom along the way is her own line only, since a lob
+    // is a coarse question and the ring's shoulder test at 30 cm buys nothing.
+    let y = this.th.heightAt(x, z)
     for (let i = 0; i < n; i++) {
-      if (step > 1e-6 && !this._walkable(x, z, dx, dz, step)) return false
+      let h = y
+      if (step > 1e-6) {
+        h = this._walkable(x, z, y, dx, dz, step)
+        if (Number.isNaN(h)) return false
+      }
       x += dx
       z += dz
       if (this.obstacles && this.obstacles.obstacleAt(x, z, this._obstacle)) return false
+      // The higher foot height, as _enters does, so a path can step down.
+      if (this.capsule && !this.capsule.fits(x, z, y > h ? y : h, null)) return false
+      y = h
     }
     return true
   }
 
-  _walkable(x, z, dx, dz, dist) {
-    const h0 = this.th.heightAt(x, z)
-    const h1 = this.th.heightAt(x + dx, z + dz)
-    if (Math.abs(h1 - h0) / dist <= this._maxTan) return true
+  /**
+   * The ground at the far end of a step from (x, z), feet at `y`, along (dx,
+   * dz) of length `dist` -- or NaN when the slope rule refuses the step.
+   */
+  _walkable(x, z, y, dx, dz, dist) {
+    const h0 = this.th.heightAt(x, z, y)
+    const h1 = this.th.heightAt(x + dx, z + dz, h0)
+    if (Math.abs(h1 - h0) / dist <= this._maxTan) return h1
     const k = LOCOMOTION.stride / dist
-    const h2 = this.th.heightAt(x + dx * k, z + dz * k)
-    return Math.abs(h2 - h0) / LOCOMOTION.stride <= this._maxTan
+    const h2 = this.th.heightAt(x + dx * k, z + dz * k, h0)
+    return Math.abs(h2 - h0) / LOCOMOTION.stride <= this._maxTan ? h1 : NaN
   }
 
   _unstick(origin) {

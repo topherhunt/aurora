@@ -26,7 +26,7 @@ import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet, BANK, FREEBOARD } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD, BED_SHOAL } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
 import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
@@ -507,6 +507,21 @@ export async function run() {
     // min(h, bed): ground already lower than the bed is left alone rather than raised into a dam.
     const belowBed = paths.carveRivers(0, 0, 80)
     check(belowBed === 80, 'ground already below the bed is left where it is', `${belowBed}`)
+
+    // The bed keeps the terrain's detail term as relief: the centre depth is `depth - detail`, floored at BED_SHOAL of the depth, and the edge still meets the level. The detail hook gets the caller's cell, so the relief is band-limited with the ground.
+    const relief = { value: 0, cells: [] }
+    paths.setTerrain({ ...terrainOf(FLAT_100), detailAt: (x, z, cell) => { relief.cells.push(cell); return relief.value } })
+    relief.value = -1
+    check(Math.abs(paths.carveRivers(0, 0, H) - (LEVEL - 4)) < 0.01, 'a hollow in the detail term deepens the bed by its own depth', `${paths.carveRivers(0, 0, H).toFixed(3)} m vs ${(LEVEL - 4).toFixed(2)} m`)
+    relief.value = 1
+    check(Math.abs(paths.carveRivers(0, 0, H) - (LEVEL - 2)) < 0.01, 'a rise in it shoals the bed', `${paths.carveRivers(0, 0, H).toFixed(3)} m vs ${(LEVEL - 2).toFixed(2)} m`)
+    check(Math.abs(paths.carveRivers(0, HW, H) - LEVEL) < 0.01, "and the water's edge still meets the level exactly", `${paths.carveRivers(0, HW, H).toFixed(4)} m`)
+    relief.value = 10
+    check(Math.abs(paths.carveRivers(0, 0, H) - (LEVEL - 3 * BED_SHOAL)) < 0.01, `a rise taller than the channel is deep floors the bed at BED_SHOAL (${BED_SHOAL}) of the depth, under the water`, `${paths.carveRivers(0, 0, H).toFixed(3)} m vs ${(LEVEL - 3 * BED_SHOAL).toFixed(2)} m`)
+    relief.cells.length = 0
+    paths.carveRivers(0, 0, H, 16)
+    paths.carveRivers(0, HW * 1.2, H, 16)
+    check(relief.cells.length === 1 && relief.cells[0] === 16, 'the detail term is read once per wet vertex at the caller\'s cell, and not at all on the bank', `cells read: ${relief.cells.join(', ') || 'none'}`)
   }
 
   console.log('\npaths: river level follows the terrain down and never up')
@@ -564,8 +579,11 @@ export async function run() {
     // The tributary's own level: its lowest ground tap is the outer bank tap on the +x side, BANK half-widths off its centreline.
     const own = ground(BANK * 5) - FREEBOARD
     check(Math.abs(source.y - own) < 1e-3, 'while its source is still at its own level', `${source.y.toFixed(3)} m vs ${own.toFixed(3)} m`)
-    const above = paths.riverLevelAt(0, 40)
-    check(Math.abs(above - own) < 1e-3, 'and the ramp is local to the mouth: 40 m up the tributary it is at its own level again', `${above.toFixed(3)} m`)
+    // The trunk's carve reaches BANK half-widths (30 m) from its centreline; the tributary holds the trunk's level that far, then ramps up over 3 of its own half-widths (15 m).
+    const inBanks = paths.riverLevelAt(0, 28)
+    check(Math.abs(inBanks - trunkLevel) < 1e-3, "and is at the trunk's surface everywhere inside the trunk's banks", `${inBanks.toFixed(3)} m at z = 28`)
+    const above = paths.riverLevelAt(0, 60)
+    check(Math.abs(above - own) < 1e-3, 'and the ramp is local to the mouth: 60 m up the tributary it is at its own level again', `${above.toFixed(3)} m`)
     let rises = 0
     let prev = Infinity
     for (let z = 390; z >= 0; z -= 1) {

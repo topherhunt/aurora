@@ -208,7 +208,7 @@ if (spawn) {
   // player.js answers, and this fill does not model sliding. The fine-scale
   // slope still gets measured -- that is the histogram in section 2.
   // The fill is over EDGES, not over nodes, because that is what player.js
-  // actually tests. _walkable(x, z, dx, dz, dist) compares the height where she
+  // actually tests. _walkable(x, z, y, dx, dz, dist) compares the height where she
   // is against the height where she is going and rejects the STEP; it never
   // asks whether the ground she is standing on is steep. A node mask deletes
   // every cell whose own local slope is over the limit, which severs the one

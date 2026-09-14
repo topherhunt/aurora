@@ -1,7 +1,7 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import {
-  buildRock, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize,
+  buildRock, rockRung, ROCK_DEFAULTS, ROCK_MAX_DETAIL, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize,
 } from './props/rock.js'
 import { BOULDER, CAP, TINTS, TINT_GAIN, rockParams, capParams } from './props/rock-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
@@ -78,11 +78,14 @@ const STONE_TEX = 'rocks/stone.png'
 // --- slider spec ------------------------------------------------------------
 // Ranges reach past what is useful on purpose: `cutDepth` at 1 shaves a rock
 // down to a crystal, and seeing that is how you learn where the useful end is.
+// The optional sixth entry is the label, where the param's name is not the one
+// the page should say.
 const SLIDERS = [
+  ['tier', 0, ROCK_TIERS.length - 1, 1, `which rung of the shipping ladder is on screen: ${ROCK_TIERS.map((t, i) => `${i} is ${t.name}`).join(', ')} -- the same four the LOD ladder view lays out, one at a time and in place, so a rung can be judged against the rock it replaces. Moves \`detail\` to the rung's subdivision; dragging \`detail\` off the ladder shows here as the resolution actually built`, 'LOD'],
   ['size', 0.06, 14, 0.02, 'largest HORIZONTAL extent in metres, measured on the dense reference. The shape is built in relative units and rescaled, and the texture scales with it, so a shape found at 2 m is the same rock at 14 m'],
   ['squash', 0.15, 2.6, 0.01, 'height / width. Under 0.4 is a slab, over 1.5 is a standing stone'],
   ['elongate', 1, 2.6, 0.01, 'x extent against z extent. 1 is round in plan'],
-  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those four whatever this says. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
+  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those four whatever this says. Overrides the LOD slider's rung, except T6, which has one resolution. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
   ['lumps', 0, 0.9, 0.01, 'large-scale radial displacement -- the mass of the rock. Ceiling raised past the default because the default WAS the ceiling, which is never evidence that the ceiling is right'],
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
@@ -115,15 +118,17 @@ const SLIDERS = [
 ]
 
 // WHAT IS NOT THE SHAPE. `brightness`, `bump` and `bumpScale` are the previewer
-// and the material, `snow` and `moss` are weather and growth, and `detail` is which
-// resolution you are looking at. None of them is a property of the rock, so
-// dragging one does not clear the preset name and loading a preset does not
-// reset one -- see the preset handler, which puts these back over whatever
-// rockParams returned.
+// and the material, `snow` and `moss` are weather and growth, and `tier` and
+// `detail` are which resolution you are looking at. None of them is a property
+// of the rock, so dragging one does not clear the preset name and loading a
+// preset does not reset one -- see the preset handler, which puts these back
+// over whatever rockParams returned.
 //
-// `detail` IS in ROCK_DEFAULTS, where it is null, meaning "read the ladder". The
-// bench is the one caller that gives it a number, and it must have one: a null
-// on a range input is an empty box.
+// `tier` and `detail` are BOTH in ROCK_DEFAULTS, and there `detail` is null,
+// meaning "read the ladder". The bench is the one caller that gives it a number,
+// and it must have one: a null on a range input is an empty box. The two sliders
+// are one dial seen two ways -- see the slider handler, which moves each under
+// the other -- and buildRock's rule (rockRung) is that a number in `detail` wins.
 //
 // The page OPENS ON ROCK_DEFAULTS, not on `boulder`. The boulder names lumps,
 // grain, smooth and cuts, so opening on it would silently overwrite the values
@@ -133,6 +138,7 @@ const BENCH_DEFAULTS = {
   brightness: 1,
   snow: 0,
   moss: 0,
+  tier: 0,
   detail: ROCK_TIERS[0].detail,
   bump: getPropBump(),
   bumpScale: getPropBumpTile(),
@@ -376,26 +382,93 @@ function rebuild() {
   const geos = items.map((it) => buildRock(it.opts))
   const measured = geos[0].userData.rock.measured
 
-  let tris = 0
-  let verts = 0
+  // Geometry in RAM is every tier built, world-LOD included -- the world holds
+  // all four too.
   let bytes = 0
-  for (const geo of geos) {
-    tris += geo.userData.rock.triangles
-    verts += geo.userData.rock.vertices
-    bytes += geometryBytes(geo)
-  }
+  for (const geo of geos) bytes += geometryBytes(geo)
 
+  const live = liveTier()
   geos.forEach((geo, i) => {
-    const mesh = new THREE.Mesh(geo, materials[items[i].tint])
+    // Matched on the tier NAME the geometry reports, so an off-ladder
+    // resolution wears no tier colour rather than the wrong one.
+    const rung = ROCK_TIERS.findIndex((t) => t.name === geo.userData.rock.tier)
+    const mesh = new THREE.Mesh(geo, tierColours && rung >= 0 ? tierMaterials[rung] : materials[items[i].tint])
     mesh.position.set(items[i].x, 0, items[i].z)
+    mesh.visible = live < 0 || i === live
     group.add(mesh)
   })
 
-  const single = mode === 'one'
+  const single = mode === 'one' || mode === 'lod'
   grid.visible = showGrid && single
   rule.visible = showGrid && single
 
-  return { tris, verts, bytes, count: items.length, measured, stats: geos[0].userData.rock }
+  return { geos, bytes, measured, lod: rockLodSize(measured) }
+}
+
+// The one rung on screen in world-LOD, or -1 when every built geometry is drawn.
+function liveTier() {
+  return mode === 'lod' ? Math.max(0, lodTier) : -1
+}
+
+// What is DRAWN out of what was built: in world-LOD the live rung alone, one
+// rock; everywhere else all of it. Read at report time, not build time, because
+// a world-LOD swap changes the answer without a rebuild.
+function drawn() {
+  const live = liveTier()
+  const geos = live < 0 ? built.geos : [built.geos[live]]
+  let tris = 0
+  let verts = 0
+  for (const geo of geos) {
+    tris += geo.userData.rock.triangles
+    verts += geo.userData.rock.vertices
+  }
+  return { tris, verts, count: geos.length, stats: geos[0].userData.rock }
+}
+
+// --- world LOD --------------------------------------------------------------
+//
+// THE WORLD'S RULE, VERBATIM: v2/render/rocks.js compares the squared distance
+// from the camera to the instance origin against ladder-size-squared times
+// ROCK_LOD_AT squared, and a rung the rock is already on -- or any finer one --
+// is left on a threshold 12% further out than it was entered on. `cur` is the
+// rung on screen, -1 if none yet. Anything the bench did differently here would
+// be a bench showing a different ladder than the one that ships.
+function worldTier(d2, size, cur) {
+  const sizeSq = size * size
+  for (let b = 0; b < ROCK_LOD_AT.length; b++) {
+    const sticky = cur >= 0 && cur <= b
+    const k = ROCK_LOD_AT[b] * (sticky ? 1 + ROCK_LOD_HYSTERESIS : 1)
+    if (d2 < sizeSq * k * k) return b
+  }
+  return ROCK_TIERS.length - 1
+}
+
+const lodHud = document.getElementById('lodhud')
+
+// Per frame in world-LOD mode. The rock sits on the origin, so the camera's
+// length IS the world's instance distance. A rung change swaps which of the
+// four stacked meshes is visible and re-reports the panel; the HUD is redrawn
+// every frame because the distance in it moves with every scroll notch.
+function stepLod() {
+  const d2 = camera.position.lengthSq()
+  const tier = worldTier(d2, built.lod, lodTier)
+  if (tier !== lodTier) {
+    lodTier = tier
+    group.children.forEach((mesh, i) => { mesh.visible = i === tier })
+    report()
+  }
+  const at = ROCK_LOD_AT.map((k) => (k * built.lod).toFixed(1))
+  lodHud.innerHTML =
+    `<b>${Math.sqrt(d2).toFixed(1)} m</b> from the rock &middot; drawing <b>${ROCK_TIERS[tier].name}</b>\n` +
+    `ladder size ${built.lod.toFixed(2)} m &middot; T320 &lt; ${at[0]} &middot; T80 &lt; ${at[1]} &middot; T20 &lt; ${at[2]} &middot; T6 beyond` +
+    ` &middot; leaves a rung ${Math.round(ROCK_LOD_HYSTERESIS * 100)}% further out`
+}
+
+// Put the camera `d` metres from the rock along the direction it already looks
+// from, so parking on a threshold does not also change the view of it.
+function parkAt(d) {
+  camera.position.setLength(d)
+  controls.update()
 }
 
 // --- framing ----------------------------------------------------------------
@@ -416,22 +489,30 @@ function extent() {
 
 function frame() {
   const r = extent()
-  const groundSize = Math.max(24, r * 6)
+  const dist = (r / Math.tan((camera.fov * Math.PI) / 360)) * 1.5
+  // Fog starts past the far edge of the layout AS SEEN FROM THE CAMERA, never
+  // across it: measuring a rock through haze is measuring the haze. World-LOD
+  // is framed like the single rock but the camera is going to back off to the
+  // T6 threshold and past its hysteresis, so there the clear air reaches half
+  // again beyond it. Sized off the sliders rather than a build: `size` is the
+  // horizontal extent and squash the height over it, and the ladder size is
+  // the larger of the two. The ground runs out to the fog's far edge.
+  const clear = mode === 'lod'
+    ? params.size * Math.max(1, params.squash) * ROCK_LOD_AT[ROCK_LOD_AT.length - 1] * 1.5
+    : dist + r
+  scene.fog.near = clear
+  scene.fog.far = clear * 1.7
+  const groundSize = Math.max(24, clear * 3.4)
   ground.scale.set(groundSize, 1, groundSize)
   groundTex.repeat.set(groundSize / GROUND_TILE, groundSize / GROUND_TILE)
-  // Fog closes past the far edge of the layout, never across it: measuring a
-  // rock through haze is measuring the haze.
-  scene.fog.near = r * 2.4
-  scene.fog.far = groundSize * 0.55
 
   grid.scale.setScalar(params.size)
   rule.position.set(-params.size * 0.8, 0.5, -params.size * 0.5)
   // Below ~0.6 m a one-metre rule is taller than everything on screen and reads
   // as a wall. It is still the honest scale, so it stays -- just moved out of
   // the way rather than resized into a lie.
-  rule.visible = showGrid && mode === 'one'
+  rule.visible = showGrid && (mode === 'one' || mode === 'lod')
 
-  const dist = (r / Math.tan((camera.fov * Math.PI) / 360)) * 1.5
   controls.target.set(0, params.size * 0.28, 0)
   camera.position.set(dist * 0.42, dist * 0.42 + params.size * 0.3, dist * 0.78)
 }
@@ -488,7 +569,12 @@ function switchDistance(faces, height) {
 }
 
 function refresh() {
-  const s = rebuild()
+  built = rebuild()
+  report()
+}
+
+function report() {
+  const s = { ...built, ...drawn() }
   const per = Math.round(s.tris / s.count)
   const m = s.measured
   const shards = Math.max(1, Math.round(params.shards))
@@ -496,12 +582,16 @@ function refresh() {
   // THE SHIPPED THRESHOLDS, in metres, for THIS rock. ROCK_LOD_AT is metres of
   // camera distance per metre of the rock's LADDER SIZE, so that one number is
   // the whole of what separates this rock's ladder from any other rock's. It is
-  // the height with a floor at half the width -- see rockLodSize, which is the
-  // same function v2/render/rocks.js measures instances through, so the metres
-  // shown here are the metres the world uses.
-  const lod = rockLodSize(m)
+  // the longest box axis -- see rockLodSize, which is the same function
+  // v2/render/rocks.js measures instances through, so the metres shown here are
+  // the metres the world uses.
+  const lod = s.lod
   const shipAt = ROCK_LOD_AT.map((k) => k * lod)
   const farAt = shipAt[shipAt.length - 1]
+  // Which of the three box axes is in charge, because that is the first
+  // question anyone asks of a number like this. It is a plain max, so naming
+  // the winner is naming the whole rule.
+  const axis = lod === m.height ? 'height' : lod === m.width ? 'width' : 'depth'
 
   // --- this rock ---
   // The rung that was BUILT, read off the geometry rather than looked up in
@@ -523,12 +613,8 @@ function refresh() {
     // than a constant anyone can look up. Both halves are worth showing: the
     // repeat count is the art direction, the metres are what the shader sees.
     ['tile repeat', `${s.stats.texRepeat.toFixed(2)}&times; &nbsp; = ${s.stats.texMetres.toFixed(2)} m`],
-    // The size the ladder is read in, and which of the three box axes is in
-    // charge, because that is the first question anyone asks of a number like
-    // this. It is a plain max, so naming the winner is naming the whole rule.
-    ['ladder size', `${lod.toFixed(2)} m &nbsp; <span class="k">its ${
-      lod === m.height ? 'height' : lod === m.width ? 'width' : 'depth'
-    }</span>`],
+    // The size the ladder is read in.
+    ['ladder size', `${lod.toFixed(2)} m &nbsp; <span class="k">its ${axis}</span>`],
     // THE HEADLINE: how far the world draws any sampled mesh at all for a rock
     // this size. Past it the rock is the six-face hull, shards and all.
     ['T6 past', `${farAt.toFixed(0)} m`],
@@ -542,12 +628,16 @@ function refresh() {
   // EVERY ROW CARRIES THE DISTANCE IT SHIPS AT, because a ladder without its
   // thresholds does not say what the world does -- it only
   // says what the meshes cost. The tiers are the same for every rock; the
-  // metres are this rock's alone.
+  // metres are this rock's alone, and the caption names the size they were
+  // multiplied from so two rocks' ladders can be compared at all.
   //
   // The model distance is kept beside it as the second number, because it is
   // the argument the shipped one has to answer: it says where the tier stops
   // earning its triangles at 3 px each, and a shipped threshold well inside it
   // is a deliberate choice to spend fewer triangles than the eye could use.
+  document.getElementById('ladderRef').innerHTML =
+    `Distances are for <strong>this rock</strong>: ladder size <strong>${lod.toFixed(2)} m</strong> (its ${axis}), ` +
+    `&times; ROCK_LOD_AT = ${ROCK_LOD_AT.join(' / ')} m per metre. A 1 m rock steps at ${ROCK_LOD_AT.join(', ')} m.`
   table(
     document.getElementById('ladderTable'),
     ROCK_TIERS.map((t, i) => {
@@ -555,10 +645,16 @@ function refresh() {
       const last = i === ROCK_TIERS.length - 1
       const tris = last ? t.faces : t.faces * shards
       const d = switchDistance(tris, m.height)
+      // The multiplier is the boundary the rung is ENTERED on going out, which
+      // for T6 is the last one. Tenths only under 10 m, where a cobble's
+      // thresholds live. Two lines a rung: the value column is 290 px less the
+      // key, and the model figure on the band's line did not fit it.
+      const mult = last ? ROCK_LOD_AT[i - 1] : ROCK_LOD_AT[i]
+      const metres = (x) => (x < 10 ? x.toFixed(1) : x.toFixed(0))
       return [
-        t.name,
-        `${tris} tris &nbsp; ${last ? `beyond ${from.toFixed(0)}` : `${from.toFixed(0)}&ndash;${shipAt[i].toFixed(0)}`} m ` +
-          `&nbsp; <span class="k">model ${d.toFixed(0)}</span>`,
+        `${t.name} <span class="k">&times;${mult}</span>`,
+        `${tris} tris &nbsp; ${last ? `beyond ${metres(from)}` : `${metres(from)}&ndash;${metres(shipAt[i])}`} m` +
+          `<br><span class="k">model ${d.toFixed(0)} m</span>`,
         '',
         // Matched on the tier NAME, so an off-ladder resolution marks no row at
         // all -- which is the truth. A row index compared against the slider
@@ -567,6 +663,16 @@ function refresh() {
       ]
     })
   )
+  // In world-LOD every row parks the camera just past the boundary the rung is
+  // entered on from inside, INCLUDING the hysteresis slack, so the rung shown is
+  // this one whatever the camera was on before. T320 has no boundary and parks
+  // well inside its own band.
+  if (mode === 'lod') {
+    document.querySelectorAll('#ladderTable tr').forEach((tr, i) => {
+      tr.classList.add('park')
+      tr.dataset.park = i === 0 ? lod * 1.5 : shipAt[i - 1] * (1 + ROCK_LOD_HYSTERESIS) * 1.01
+    })
+  }
 
   drawSwatch(s.stats)
   drawPalette()
@@ -702,20 +808,43 @@ const readouts = {}
 
 function showValue(key, step) {
   const v = params[key]
-  readouts[key].out.textContent = step >= 1 ? String(Math.round(v)) : Number(v).toFixed(2)
+  // The LOD slider reads as the rung that WILL BE BUILT, by buildRock's own
+  // rule, so `detail` dragged off the ladder shows as T180 here rather than as
+  // whichever rung the thumb happens to sit on.
+  readouts[key].out.textContent =
+    key === 'tier' ? rockRung(params).name : step >= 1 ? String(Math.round(v)) : Number(v).toFixed(2)
 }
 
-for (const [key, min, max, step, help] of SLIDERS) {
+// The LOD and resolution sliders are one dial: a rung sets `detail` to its
+// subdivision, and a subdivision sets `tier` to the ico rung that carries it,
+// or T320's when none does -- which leaves the hull, the one rung `detail`
+// cannot override, whenever `detail` is dragged.
+function followTier(key) {
+  if (key === 'tier') {
+    params.detail = ROCK_TIERS[params.tier].detail
+    readouts.detail.input.value = params.detail
+    showValue('detail', 1)
+  } else if (key === 'detail') {
+    const rung = ROCK_TIERS.findIndex((t) => t.solid === 'ico' && t.detail === params.detail)
+    params.tier = rung < 0 ? 0 : rung
+    readouts.tier.input.value = params.tier
+    showValue('tier', 1)
+  }
+}
+
+for (const [key, min, max, step, help, label = key] of SLIDERS) {
   const row = document.createElement('div')
   row.className = 'row'
   row.innerHTML =
-    `<label title="${help}">${key}</label>` +
+    `<label title="${help}">${label}</label>` +
     `<input type="range" min="${min}" max="${max}" step="${step}" value="${params[key]}" />` +
     `<span class="v"></span>`
   const input = row.querySelector('input')
   readouts[key] = { input, out: row.querySelector('.v'), step }
   input.addEventListener('input', () => {
     params[key] = Number(input.value)
+    // Before the readout: the LOD readout is a function of `detail`.
+    followTier(key)
     showValue(key, step)
     // Dragging a SHAPE slider means you are no longer looking at the shipping
     // rock, so the dropdown stops claiming you are. The bench/material sliders
@@ -791,19 +920,27 @@ document.getElementById('reroll').addEventListener('click', () => {
 })
 
 
-// gallery / ladder / tints are one exclusive mode; grid / wire / spin are
-// independent of it and of each other.
-const MODE_BUTTONS = { gallery: 'gallery', ladder: 'ladder', tints: 'tints' }
+// gallery / ladder / lod / tints are one exclusive mode; grid / wire / spin /
+// tier colours are independent of it and of each other.
+const MODE_BUTTONS = { gallery: 'gallery', ladder: 'ladder', lod: 'lod', tints: 'tints' }
 for (const [id, name] of Object.entries(MODE_BUTTONS)) {
   document.getElementById(id).addEventListener('click', () => {
     mode = mode === name ? 'one' : name
     for (const other of Object.keys(MODE_BUTTONS)) {
       document.getElementById(other).classList.toggle('on', mode === MODE_BUTTONS[other])
     }
+    // Entering world-LOD starts untiered, as a freshly placed instance does.
+    lodTier = -1
+    lodHud.hidden = mode !== 'lod'
     frame()
     refresh()
   })
 }
+
+document.getElementById('ladderTable').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr.park')
+  if (tr) parkAt(Number(tr.dataset.park))
+})
 
 function toggle(id, get, set) {
   const btn = document.getElementById(id)
@@ -817,6 +954,7 @@ function toggle(id, get, set) {
 toggle('grid', () => showGrid, (v) => { showGrid = v })
 toggle('wire', () => wireframe, (v) => { wireframe = v })
 toggle('cull', () => showBackfaces, (v) => { showBackfaces = v })
+toggle('tiercol', () => tierColours, (v) => { tierColours = v })
 toggle('spin', () => controls.autoRotate, (v) => { controls.autoRotate = v })
 
 document.getElementById('reset').addEventListener('click', () => {
@@ -858,5 +996,6 @@ renderer.setAnimationLoop(() => {
   const dt = (now - last) / 1000
   last = now
   controls.update(dt)
+  if (mode === 'lod') stepLod()
   renderer.render(scene, camera)
 })

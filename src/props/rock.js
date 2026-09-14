@@ -808,15 +808,22 @@ function fiveHull(p, ref, minX, maxX, cutY, maxY, minZ, maxZ, k, measured) {
   return { positions, shells, facets }
 }
 
-export function buildRock(options = {}) {
-  const p = { ...ROCK_DEFAULTS, ...options }
-  // `tier` names a RUNG OF THE SHIPPING LADDER; `detail` names a RESOLUTION, and
-  // is how the bench looks at ones the ladder does not carry yet. Null on every
-  // path but /gen-rock, so the world reads the ladder and nothing else.
+// The rung a rock is built on. `tier` names a RUNG OF THE SHIPPING LADDER;
+// `detail` names a RESOLUTION, and is how the bench looks at ones the ladder does
+// not carry yet -- a number overrides the rung, except on the hull, which has one
+// resolution. Null on every path but /gen-rock, so the world reads the ladder
+// and nothing else. Exported so the bench's readout names the rung by this rule
+// rather than a second copy of it.
+export function rockRung(p) {
   const rung = ROCK_TIERS[Math.min(ROCK_TIERS.length - 1, Math.max(0, Math.round(p.tier)))]
-  const tier = Number.isFinite(p.detail) && rung.solid !== 'five'
+  return Number.isFinite(p.detail) && rung.solid !== 'five'
     ? rockTier(Math.min(ROCK_MAX_DETAIL, p.detail), rung.solid)
     : rung
+}
+
+export function buildRock(options = {}) {
+  const p = { ...ROCK_DEFAULTS, ...options }
+  const tier = rockRung(p)
 
   // Semi-axes. `size` is applied at the very end by measuring, so these only
   // have to carry the PROPORTIONS.

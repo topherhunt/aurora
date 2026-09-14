@@ -8,14 +8,14 @@ import {
   setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
 } from '../../material.js'
 import { PropArena } from './prop-arena.js'
-import { RimFade, RIM_AT } from './rim.js'
+import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
 
 // ---------------------------------------------------------------------------
-// The stone on the /v2 route: pebbles underfoot, boulders through the wood and
-// across the cliffsides, giants on the crags and the summits. The argument is
-// DESIGN.md §25; this is the contract.
+// The stone on the /v2 route: boulders through the wood and across the
+// cliffsides, giants on the crags and the summits. The argument is DESIGN.md
+// §25; this is the contract. Stone under half a metre is render/litter.js's.
 //
 // THE SCATTER IS render/trees.js's, deliberately -- tiled, camera-following,
 // graded thinning at FULL_RADIUS / d so the instance count grows linearly in the
@@ -24,21 +24,19 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // the DRAWN ground and dissolving at each instance's own cull distance holds here
 // and is not repeated.
 //
-// TWO SHAPES, NINE BEDS. There is exactly one boulder mesh and one open cap in
-// the world (props/rock-bank.js) and everything below is about WHERE COPIES OF
-// THEM GO and HOW BIG. Nine beds, because a rock's size spans two orders of
-// magnitude and no single density-and-radius pair carries both ends. Each is a
-// complete independent scatter with its own tile grid, density, radius, LOD
-// bands and instance pool:
+// ONE SHAPE, SIX BEDS. Every bed places the bank's one boulder mesh
+// (props/rock-bank.js -- its open cap has no bed left to lay it) and everything
+// below is about WHERE COPIES OF IT GO and HOW BIG. Six beds, because a rock's
+// size spans two orders of magnitude and no
+// single density-and-radius pair carries both ends. Each is a complete
+// independent scatter with its own tile grid, density, radius, LOD bands and
+// instance pool:
 //
-//   UNDERFOOT   0.5 - 2 m     dense, 120 m     stones you step over
 //   BOULDERS    0.5 - 10 m    medium, 600 m    the forest and cliffside rocks
 //   SCREE       0.5 - 4.5 m   dense, 280 m     the pile at the foot of a face
 //   SUNKEN      1 - 10 m      sparse, 600 m    stones standing on the lake floor
 //   GIANTS      1.6 - 15 m    sparse, 1250 m   the landmarks
 //   EMBEDDED    2 - 32 m      sparse, 1900 m   blocks let INTO a face or a bed
-//   CLIFF SLABS 8 - 70 m      sparse, 4200 m   the panels a face is BUILT of
-//   BED CAPS    0.8 - 6 m     medium, 360 m    plates showing through lake silt
 //   SHORE       0.5 - 2.5 m   dense, 80 m      the stones along a waterline
 //
 // EACH BED EXISTS BECAUSE SOMETHING IT NEEDS IS PER-BED AND CANNOT BE VARIED
@@ -46,17 +44,15 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // count (`envDensity` is an accept rate capped at 1, so a saturated site cannot be
 // made denser by any multiplier), and shore needs it for the same reason on a
 // strip the boulders bed's `shoreGain` can only double; sunken needs
-// `submergedOnly` and a size range of
-// its own; embedded needs `sinkRange` -- 70 to 90% under, where every other bed's
-// burial roll tops out at 80% of the way there, and a rock cannot be sunk that far
-// and also stand on the ground in the same bed. The two cliff beds are the
-// clearest case in the file: a 70 m panel owes a 4.2 km LOD reach and wants one
-// plate every quarter hectare, a 3 m joint owes 530 m and wants ten a hectare,
-// and `radius` and `density` are per bed. Nine beds are nine PropArenas of
-// four meshes each, which does not break §5's one-material rule -- that rule forbids
-// splitting a BATCH by material. They share ONE material object, unlike trees,
-// ferns and grass, because every bed here draws the same one layer and one
-// program serves them all.
+// `submergedOnly` and a size range of its own; embedded needs `sinkRange` -- 70
+// to 90% under, where every other bed's burial roll tops out at 80% of the way
+// there, and a rock cannot be sunk that far and also stand on the ground in the
+// same bed; giants owe a 1.25 km LOD reach at a density the boulders bed could
+// not afford over that disc, and `radius` and `density` are per bed. Six beds
+// are six PropArenas of four meshes each, which does not break §5's one-material
+// rule -- that rule forbids splitting a BATCH by material. They share ONE
+// material object, unlike trees, ferns and grass, because every bed here draws
+// the same one layer and one program serves them all.
 //
 // WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. A candidate is
 // classified into one of four ENVIRONMENTS -- river, peak, cliff, forest -- from
@@ -73,7 +69,7 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // fraction of their own standing height that GROWS WITH THE SLOPE, and tilted
 // toward the ground normal, which trees deliberately are not -- a tree on a slope
 // grows up, a rock lies the way it fell. The tilt costs four field samples per
-// PLACED rock and is off for the underfoot bed. On top of the ground lean every
+// PLACED rock. On top of the ground lean every
 // rock takes a free ±15° jitter about a random HORIZONTAL world axis, which is why
 // it is applied by premultiply: composed the other way round a rolled rock's lean
 // would land on its own tipped axis and read as a second yaw.
@@ -157,104 +153,22 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // litter carries everything below it.
 const ROCK_MIN_SIZE = 0.5
 
-// A BED MAY BE SWITCHED OFF, and three of the nine are. `enabled: false` keeps
-// the entry -- its sizes, its rates and the argument behind them -- and stops it
-// being constructed, so it costs no pool, no tiles and no placement work rather
-// than being built and hidden. NOT A DELETION: remove the flag to have it back.
+// `field` SEEDS THE BED'S SCATTER (see `tileSeed`) and is the bed's slot in the
+// table this file used to carry, not its position in this one: three beds were
+// deleted from between these (pebbles underfoot, cliff slabs, bed caps -- the
+// pebbles because render/litter.js lays a stone under half a metre without this
+// file's ladder, band or reach, the caps because one of them was 88% of every
+// millisecond this file spent, to panel a wall), and seeding by array position
+// would have moved every rock in the world when they went. A new bed takes the
+// next unused number and the numbers never change.
 //
-// The bed's INDEX in this array seeds its scatter field (see `tileSeed`) and is
-// taken BEFORE the filter, so switching one off does not move the rocks of the
-// beds either side of it. check-rocks holds that, and builds the off beds with
-// `allBeds` so their rules stay gated.
-//
-// WHAT IS OFF AND WHY, measured with scripts/probe-rock-cost.mjs on a real cliff:
-//
-//   cliff slabs  2980 ms  13359 drawn  547110 candidates walked  4200 m reach
-//   underfoot      33 ms    177 drawn    5965 candidates          120 m reach
-//   bed caps       10 ms      0 drawn    4838 candidates          360 m reach
-//
-// The cap beds are off because the panelled cliff face is being reconsidered
-// whole, and `cliff slabs` alone was 88% of every millisecond this file spends --
-// a half-million candidate sites, each one a field sample, to clothe a wall. The
-// pebbles are off because a stone under half a metre is not a rock you walk
-// around, and render/litter.js already lays that scatter -- without this
-// file's tier ladder, far band or 120 m reach, which were the cost.
+// THE MEASURED COST OF A BED, from scripts/probe-rock-cost.mjs on a real cliff,
+// is a reason to keep this table short: the deleted `cliff slabs` walked 547,110
+// candidate sites, each one a field sample, for 13,359 rocks.
 const BEDS = [
   {
-    name: 'underfoot',
-    enabled: false,
-    density: 0.35,
-    // Leaf litter and turf swallow small stones; bare rock and gravel do not.
-    // OUTSIDE A STREAM BED THIS IS A TENTH OF WHAT IT WAS, which is what stops
-    // the ground being a speck carpet: at 0.5 a wood took a stone every 2.4 m
-    // and a cliff one every 1.7 m against a boulder every 15 m from the bed
-    // below -- forty-one small stones per rock big enough to read as a rock,
-    // each costing a full instance -- a pool slot, a matrix upload and a tile's
-    // worth of placement work -- whatever its triangle count. The look those
-    // specks carried is not lost, it moved to render/litter.js, which lays it
-    // inside 28 m instead of 120 and without the ladder.
-    //
-    // THE RIVERBED RATE IS DELIBERATELY TINY, where it used to be the highest in
-    // the bed at 1.0, on the reasoning that a gravel bar IS a carpet of small
-    // stones. True about gravel and false about GEOMETRY -- the distinction the
-    // litter layer had already made everywhere else. A stream bed of half-metre
-    // stones at one per 2.9 m2 was the densest geometry in the world and read as
-    // gravel, which is what LITTER does for twenty triangles a stone. So the
-    // geometry here becomes what gravel cannot be: see `sizeByEnv`, where the
-    // river range is half a metre to two. One rock per 36 m2 of riverbed,
-    // something to step around every few strides, with litter's wet pass
-    // carrying the rest.
-    envDensity: { river: 0.08, forest: 0.05, cliff: 0.1, peak: 0.09 },
-    fullRadius: 18,
-    // 120 rather than 55, set by the ladder: the bed's biggest rock is a 2 m
-    // riverbed stone, which holds a sampled tier out to 50 m and then owes a
-    // ROCK_FAR_LIFE band whole on T6, needing 118 m of reach (see the
-    // `minReach` check in the bed constructor). Not as many pebbles as it sounds
-    // -- at 118 m thinning has this bed at 18/118, a seventh of full density.
-    radius: 120,
-    tile: 11,
-    minElev: 0,
-    maxSlopeDeg: 42,
-    // A pebble in a stream bed is a pebble. The underfoot bed is the only one
-    // that may stand under water on purpose.
-    allowSubmerged: true,
-    tilt: 0,
-    // NOT AN ANCHOR, and this bed is why the flag exists. An anchor bed is one
-    // another scatter may stand something at the foot of (see Rocks.anchorsInto)
-    // and a pebble has no foot -- a mushroom clump ringing an eleven-centimetre
-    // pebble reads as a mistake. The arithmetic settles it too: in a wood this
-    // bed puts down 0.0175 rocks per square metre against the boulders' 0.0042,
-    // so offering it would fill any buffer sized for boulders with grit before
-    // the first rock worth anchoring to reached the caller.
-    anchor: false,
-    // DOES NOT DISPLACE PROPS, and this bed is why `blocks` defaults to false.
-    // Grass growing up between river stones is the look, not an error, and this is
-    // the densest bed of geometry anywhere near the player -- flagging it would put
-    // nine tile lookups over hundreds of pebbles on every blade of grass in the
-    // world to strip the ground of the grass that belongs there. See
-    // Rocks.blockTopAt.
-    blocks: false,
-    // In METRES, like every bed: a range in metres divided back through the
-    // boulder's own measured width (see where the scale is resolved in
-    // _growTile). The riverbed gets a taller range than the dry ground because a
-    // stream bed is where a stone big enough to step around belongs.
-    sizeByEnv: {
-      river: [ROCK_MIN_SIZE, 2.0],
-      forest: [ROCK_MIN_SIZE, 1.0],
-      cliff: [ROCK_MIN_SIZE, 1.0],
-      peak: [ROCK_MIN_SIZE, 1.0],
-    },
-    // NO ROCK INSIDE ANOTHER ROCK -- see the scree bed for the mechanism. It
-    // fires about once in three hundred here (2 of 591 on the ridge, 10 of 821
-    // in a stream bed, where the range runs to 2 m) and it is on anyway, so the
-    // rule is the FILE's rather than six beds' out of eight: a later hand
-    // widening this range gets the guard for free instead of discovering the
-    // need for it. Cheap despite the density -- 42 candidates a tile against
-    // scree's 196, so a quadratic pass costs a fiftieth of what that bed pays.
-    minGap: 0.6,
-  },
-  {
     name: 'boulders',
+    field: 1,
     // RAISED 2.5x, AND EVERY envDensity BELOW DIVIDED BY 2.5 TO PAY FOR IT -- a
     // no-op everywhere except at the foot of a cliff, which is the whole reason
     // for it. `envDensity` is an accept RATE and cannot push a site past 100%: a
@@ -292,8 +206,7 @@ const BEDS = [
     maxSlopeDeg: 48,
     allowSubmerged: true,
     tilt: 0.7,
-    // See SINK_DEEP. Most beds vary their burial per instance; the underfoot bed
-    // does not, because a pebble is too small for the difference to read.
+    // See SINK_DEEP: burial varies per instance.
     sinkVary: true,
     // AN ANCHOR BED, and the one a caller is really asking about: a metre and a
     // half through to ten spans everything from a block you would scramble over to
@@ -379,6 +292,7 @@ const BEDS = [
     // nothing on flat river or forest ground: a wood at the base of a crag gets its
     // stone from the boulders bed.
     name: 'scree',
+    field: 2,
     // HALVED, AND THE ROCKS MADE BIGGER TO PAY FOR IT -- see `sizeByEnv` and
     // `sizeBias`; the two numbers are one decision and moving either alone undoes
     // it. At 2.0 the foot of a cliff was a rock every metre, all about the same
@@ -430,7 +344,7 @@ const BEDS = [
     sinkVary: true,
     // Not an anchor. A talus field is not a thing you plant a mushroom ring at
     // the foot of -- it is all foot -- and offering it would swamp any buffer
-    // sized for the boulders bed, exactly as the underfoot bed would.
+    // sized for the boulders bed.
     anchor: false,
     // It does displace, though: a talus block is a metre of solid stone and a
     // sapling growing through one at the foot of a cliff is exactly the error
@@ -525,9 +439,9 @@ const BEDS = [
     // sparse: something you come across is mysterious, something there is one of
     // every four metres is gravel.
     name: 'sunken',
-    // 0.02 x 0.5 is one stone per 100 m2, about one every ten metres, against the
-    // underfoot bed's one per 36 m2 of the same floor. Roughly a quarter of the
-    // lake bed's stone by count, and all of the part with a silhouette.
+    field: 3,
+    // 0.02 x 0.5 is one stone per 100 m2, about one every ten metres: the lake
+    // bed's litter is render/litter.js's, and this is the part with a silhouette.
     density: 0.02,
     // Three hard zeroes, and not a taste call that could be reopened:
     // `submergedOnly` means a candidate in any of these environments has already
@@ -588,6 +502,7 @@ const BEDS = [
   },
   {
     name: 'giants',
+    field: 4,
     density: 0.0006,
     // A house-sized rock in a wood is a landmark and has to stay one: 0.25 of
     // 0.0006 is one per 6,700 m2, one every ~80 m -- rare enough to notice, common
@@ -669,6 +584,7 @@ const BEDS = [
     // and the quarter turn decides WHICH corners. The same boulder buried this far
     // is less recognisable as itself than at any other depth in the file.
     name: 'embedded',
+    field: 5,
     density: 0.01,
     // No forest: an embedded block in flat woodland is a boulder that has been sunk
     // too far, and the boulders bed already owns that ground with a burial band
@@ -738,257 +654,6 @@ const BEDS = [
     minGap: 0.7,
   },
   {
-    // THE PANELS A FACE IS BUILT OUT OF, AND THE ONLY BED THAT CLOTHES ONE: the
-    // biggest plates in the world, sized to the wall they are lying on rather
-    // than to a roll. A hundred-metre crag gets a handful of plates tens of
-    // metres across, deeply sunk, and they overlap into each other rather than
-    // leaving seams for anything smaller to fill.
-    //
-    // THE RULE, IN TWO LINES, AND EVERYTHING BELOW SERVES IT:
-    //
-    //   EVERY CONTIGUOUS FACE FIVE METRES ACROSS OR WIDER HOLDS A PLATE, and that
-    //   plate is as large as the face holds without protruding. `_fitFactor` is the
-    //   second half of that sentence and the lattice rate is the first -- a face
-    //   holds a plate when a candidate lands in it, so the pitch has to be finer
-    //   than the smallest face the promise covers.
-    //
-    //   AND EVERY PLATE EARNS ITS TRIANGLES: at least `packEarn` of its own face
-    //   disc must be wall no plate already covers. See `_earnedFrac`. Overlap is
-    //   not rationed -- it is what makes the joins between panels ragged instead of
-    //   a tiling, and one 2x panel over four small ones is a quarter the triangles
-    //   for the same wall. What the rule refuses is a plate mostly inside another
-    //   one, which is triangles skinned and never seen.
-    //
-    // THERE WAS A CARPET BED UNDER THIS ONE and it is gone. It ran at 0.12 and put
-    // 1,851 plates of a 3.2 m median on the steepest face against this bed's 95,
-    // for a third of the cover -- a hundred thousand instances of litter nobody
-    // can pick out from ten metres away, on ground the panels want anyway. What
-    // replaced it is the pack and a rate on THIS bed: the same wall, clothed by a
-    // few hundred plates that are tens of metres across.
-    //
-    // WHAT A FACE LOOKS LIKE WITH NEITHER: the `embedded` bed is the only other
-    // one allowed past 62 degrees, and what it puts there is a knuckle of a buried
-    // block -- a metre or three of rock every ten metres of wall, with smooth
-    // heightfield between. That reads as a hill with rocks in it. A cliff is not a
-    // hill with rocks in it; it is stone all the way across.
-    //
-    // THE SHAPE IS THE WHOLE ECONOMY. A cap is 158 triangles against the boulder's
-    // 320 and stands 0.16 of its own width tall, so a plate costs less than a 2 m
-    // boulder does whatever size it is drawn at, and nothing else in the file
-    // could be authored this large: a 70 m BOULDER on a face is a sphere balanced
-    // on a wall, and the reason it looks wrong is that it has a far side. See CAP
-    // in props/rock-bank.js for the shape and why its underside is a hole -- and
-    // it is that hole `tilt: 1` and `_fitFactor` between them exist to keep
-    // pointed into the hillside.
-    //
-    // THE SIZE IS THE SITE'S AND THE ROLL IS NOT CONSULTED. `fitFromTop` asks for
-    // seventy metres at every candidate and `fitSlope` does not reject the ones
-    // that cannot have it, it SHRINKS them until they can (see _fitFactor). So
-    // the ground answers with what it holds: tens of metres on the long faces the
-    // heightmap really has -- 21 of them with a short side over 100 m -- and nine
-    // metres on a crag that is only a crag. That is what makes a bed this sparse
-    // affordable: rejecting instead of shrinking threw away four candidates in
-    // five at this size, and the density needed to cover a wall anyway would have
-    // cost a six-figure instance pool.
-    //
-    // AND THE BIGGEST PLATES GO DOWN FIRST, which is the only ordering under which
-    // the two halves of the rule agree. The pack is greedy, so whatever is standing
-    // when a candidate is tested is what shrinks it: place small-first and a 9 m
-    // chip in the middle of a 60 m face cuts the panel that face was owed down to
-    // nothing. Phase zero of `_growTile` asks the ground for every candidate's size
-    // and phase one replays them largest first, so a face is panelled before it is
-    // filled in. That is the whole reason a packing bed grows in two passes.
-    name: 'cliff slabs',
-    enabled: false,
-    shape: 'cap',
-    roll: false,
-    // THE RATE IS A LATTICE PITCH AND THE PITCH IS THE PROMISE. With `lattice` this
-    // is not a rate at all: 220 m of tile at 0.0285 is a 37 by 37 grid, so
-    // candidates land every 5.95 m, and THAT is the number the five-metre face rule
-    // is made of -- a face narrower than the pitch can fall between two candidates
-    // and go bare. Everything else here is downstream of it.
-    //
-    // MEASURED, by probe-mask.mjs, on the three real faces a 4,000-sample sweep of
-    // the map calls steepest -- 85, 74 and 45 degrees. Of the contiguous faces over
-    // 5 m across, 1 of 7, 5 of 16 and 3 of 28 hold no plate, and they are the
-    // smallest ones: 0.0%, 0.4% and 0.1% of that wall, widest miss 7, 9 and 10 m.
-    // Worst overlapping pair 10.0% at every spot, none past it. 50.6%, 64.8% and
-    // 78.2% of the wall carries stone, from 330, 270 and 639 plates.
-    //
-    // AND FINER IS STRICTLY BETTER, WITH NO KNEE, which is why this is a budget
-    // decision and not a tuning one. Cover against pitch, same three faces:
-    // 10.5 m reads 8/28/38% for 1.7 s of cold build, 8.5 m reads 11/38/54 for
-    // 2.5 s, 7.3 m reads 24/50/64 for 3.3 s, and this one reads 51/65/78 for 4.5 s.
-    // The curve is a straight line in plate count. What stops it is the frame: a
-    // tile costs 4 ms to grow here and `update` checks its budget BEFORE a tile
-    // rather than during, so the tile the player walks into is a 4 ms spike whole.
-    // Halve the pitch-squared and that halves too, along with the cover.
-    density: 0.0285,
-    // NOT 0.85 ON CLIFF. A face the environment gate thinned was a face with holes
-    // in it, and the holes were the promise: worth 3 to 4 points of cover for
-    // nothing but the candidates it stops throwing away.
-    envDensity: { river: 0, forest: 0, cliff: 1, peak: 1 },
-    // Further out than any other bed's, because a panel is a landform: inside
-    // this nothing is thinned, and a cliff you are walking along is inside it.
-    fullRadius: 260,
-    // SET BY `minReach` AND NOTHING ELSE: a 70 m plate reaches T6 at 1,750 m and
-    // owes a full far band past that, so anything under 4,118 m would cull the
-    // bed's biggest panels while still sampled. This is the price of the
-    // 70 m top and it is most of what the bed costs.
-    radius: 4200,
-    tile: 220,
-    minElev: 0,
-    minSlopeDeg: 45,
-    maxSlopeDeg: 85,
-    // THE PROBE THAT SIZES THE PLATE. Without it a 70 m panel is a decal hanging
-    // off the side of a 20 m crag; with it, the 20 m crag gets a 20 m panel.
-    fitSlope: true,
-    allowSubmerged: false,
-    tilt: 1,
-    sinkVary: true,
-    // DEEP, because a panel is the wall rather than something lying on it. A 40 m
-    // plate stands 8.8 m; at the top of this band
-    // and the normal correction on a real face it is SINK_CAP that stops it, so
-    // what shows is a metre or two of stone across forty -- a bedding plane, not
-    // a boulder.
-    sinkRange: [0.55, 0.85],
-    sinkNormal: true,
-    anchor: false,
-    blocks: false,
-    // NINE METRES TO SEVENTY, AND NOTHING SMALLER IS PLACED ON A WALL AT ALL. The
-    // top is not the biggest face the world has -- the largest qualifying region
-    // on the heightmap spans 1.4 km -- it is the biggest plate whose LOD ladder
-    // the bed can afford to reach the end of; several of them cover a face, which
-    // is the brief. AND THE TOP IS REAL: over 24 steep spots the bed grows 12,757
-    // panels past 30 m and 1,617 past 60, so the reach `minReach` charges for is
-    // buying panels the world actually has sites for.
-    sizeByEnv: {
-      cliff: [9.0, 70.0],
-      peak: [9.0, 70.0],
-    },
-    // AND THE PROBE MAY CUT ONE TO EIGHT METRES rather than reject it, BUT NO
-    // FURTHER. A site that cannot hold eight metres is left bare -- on the steepest
-    // face that is a third of the wall, and it is the ground refusing rather than
-    // the rate missing, which is the column probe-mask.mjs prints it in. The floor
-    // is what keeps the promise that nothing under eight metres is ever laid on a
-    // cliff: below it this bed becomes the carpet it replaced.
-    fitFloor: 8.0,
-    // A QUARTER OF THE WORLD'S LEAN. Fifteen degrees on a seventy-metre panel is
-    // nine metres of rim off the hill, and the fit budget now charges for it, so
-    // the full jitter both looks like a slab peeling off the face and pays for
-    // the privilege in size. Below a quarter there is nothing left to see: this
-    // is 3.75 degrees on a shape that is already lumpy and freely yawed.
-    tiltJitter: 0.25,
-    // THE SIZE IS ASKED OF THE GROUND AND NOT OF A DIE. Every candidate starts
-    // the fit ladder at seventy metres and keeps whatever the face under it can
-    // hold, so a wide face gets a wide panel instead of whatever a roll happened
-    // to want there. `sizeBias` is not read on this bed.
-    fitFromTop: true,
-    // HALF A SPAN OF RIM MAY BE BURIED, AND THAT IS WHAT MAKES THE LADDER MEASURE A
-    // FACE. Left unbounded, ground ABOVE the plate's plane reads as a rim let into
-    // the hill, so at the foot of a cliff a plate grows across the whole hillside
-    // with most of itself under the valley floor -- no edges, no faces, one plate.
-    // The knob saturates at 1.0 (bit-identical to Infinity) and tightening it past
-    // this buys nothing: 0.25 refuses 46% of the steepest wall against 27% here,
-    // for a point or two of cover.
-    fitBury: 0.5,
-    // A JITTERED GRID RATHER THAN THE POISSON DRAW. Same candidate count, but the
-    // draw clumps, and a clump on this bed is one plate and a pile of rejects while
-    // the gap beside it goes bare. The grid is what turns the rate into a PITCH, and
-    // the pitch is what the five-metre face promise is made of.
-    lattice: true,
-    // EVERY PANEL MASKS AT LEAST THIS MUCH WALL ON ITS OWN ACCOUNT. See
-    // `_earnedFrac` for the metric, which is three-dimensional and has to be.
-    // Overlap is not rationed at all: a plate may lie two thirds inside its
-    // neighbours so long as the third that is left is real wall.
-    packEarn: 0.35,
-    // AND THE PANELS ARE THE CLIFF'S OWN COLOUR -- see FACADE_GAIN. This bed is the
-    // only one in the world that clothes a face rather than standing on it, so it is
-    // the only one that gives up the mineral palette to do it.
-    facade: true,
-    // THREE CANDIDATES IN TEN, DECLARED, AND IT PAYS FOR THE PITCH. `_poolBound`
-    // counts rank survivors and knows nothing about slope or the pack, so this bed
-    // is allocated as if every candidate placed -- 1.14M instances at this density,
-    // 91 MB of matrices for 17 MB of rock. What actually places is bounded by the
-    // PACK and not by the rate: the worst tile of the 1141 resident on the steepest
-    // ground in the world draws 207 of 1370 candidates, half of what is declared
-    // here. The margin is the point, not the fit -- a bed that overruns throws.
-    //
-    // A PROMISE, NOT AN ESTIMATE. Set it under what a world really wants and the
-    // bed does not degrade, it THROWS on the tile that overruns.
-    siteFrac: 0.3,
-  },
-  {
-    // THE SAME PLATE, UNDERWATER AND SMALL. River beds and lake floors are bedrock
-    // with a skin of silt over it, and the cap is the only shape here that can say
-    // "bedrock" -- a boulder ON a floor is an object that arrived, a plate flush
-    // WITH it is the floor showing through.
-    //
-    // WHY NOT A RATE ON `sunken`: that bed's subject is the silhouette looming out
-    // of the murk, so it is deliberately sparse, tilted halfway and rolled. This
-    // one is the opposite object in every one of those respects -- flat, aligned,
-    // unrolled, and common enough to read as a surface. Neither is expressible as
-    // a multiplier on the other.
-    name: 'bed caps',
-    enabled: false,
-    shape: 'cap',
-    roll: false,
-    // Half again the `sunken` bed's rate, and measured the same way as the cliff
-    // bed's: on a flat floor it puts 184 plates in the near 65 m, covering about a
-    // tenth of it. A tenth is right here where a half was right on a wall -- these
-    // are outcrops through silt, not the wall itself, and the underfoot bed's
-    // stones and the litter pebbles are already covering the rest.
-    density: 0.03,
-    // The three zeroes are unreachable rather than chosen -- `submergedOnly` means
-    // a candidate anywhere but `river` has already failed the water test.
-    envDensity: { river: 0.5, forest: 0, cliff: 0, peak: 0 },
-    fullRadius: 65,
-    // A 6 m plate reaches T6 at 150 m and owes the far band past it, so `minReach`
-    // wants 353. Past that it is further than this water is clear, exactly as on
-    // the `sunken` bed.
-    radius: 360,
-    tile: 24,
-    minElev: 0,
-    // A FLOOR, NOT A DROWNED BANK, on the sunken bed's argument: past forty degrees
-    // the ground under water is the side going down rather than the bottom.
-    maxSlopeDeg: 40,
-    allowSubmerged: true,
-    submergedOnly: true,
-    // Aligned to the bed normal, in full, for the cliff bed's reason: the shape
-    // has no bearing of its own and any fraction under 1 lifts its rim.
-    tilt: 1,
-    sinkVary: true,
-    // Silt is deep and uneven, and a plate that has been silting up for a while is
-    // a different object from one that was scoured clean last spring.
-    sinkRange: [0.4, 0.8],
-    // A floor is nearly flat, so the normal correction would be a multiply by
-    // about 1.05 -- nothing worth the hypot.
-    sinkNormal: false,
-    // Not an anchor, on the sunken bed's reason: the base of this one is under a
-    // lake, and the anchor query is for damp shade something can grow in.
-    anchor: false,
-    // And it displaces nothing. A plate lying flush with the floor is not in
-    // anything's way, so the two extra tile lookups every querying prop would pay
-    // would buy a displacement of nearly zero.
-    blocks: false,
-    // SIX METRES AT THE TOP, and it is the number that keeps the bed honest. This
-    // is ground seen from a few metres away in poor visibility: past six it stops
-    // being a slab of floor and becomes terrain the terrain does not know about,
-    // which is the `embedded` bed's job and it already does it in this water.
-    sizeByEnv: {
-      river: [0.8, 6.0],
-    },
-    // The cliff bed's weighting, on a range an eighth as wide: the median draw is
-    // 2.1 m and the six-metre slab stays uncommon. Nothing here is a landmark --
-    // the widest plate is just a wider plate -- so the bias is buying spread
-    // rather than rarity.
-    sizeBias: 2,
-    // Tighter than the cliff bed's, because a floor is not jointed: plates lying
-    // across each other on silt read as a pile, and the point of the bed is a
-    // surface.
-    minGap: 0.7,
-  },
-  {
     // THE STONES ALONG THE WATER'S EDGE: a frequent scatter of small and medium
     // boulders in a strip `shoreOnly` metres either side of every lake shore and
     // river bank, and nowhere else. Its own bed on the scree bed's reasoning --
@@ -998,10 +663,8 @@ const BEDS = [
     // bed that is dense and SHORT-SIGHTED at once: it reaches 80 m, so the stones
     // are populated only as she comes near the water and the disc is a fiftieth
     // of the boulders bed's.
-    //
-    // LAST IN THE TABLE ON PURPOSE. `tileSeed` takes a bed's index, so a bed
-    // added anywhere but the end would move every rock of the beds after it.
     name: 'shore',
+    field: 8,
     // Candidates per m2 over the whole disc, of which only the strip survives
     // `shoreOnly`. 0.15 x 0.6 in the strip is one rock per 11 m2: over a strip
     // 3 m each side of the line that is a stone every 1.9 m of bank.
@@ -1220,6 +883,13 @@ export const ROCK_STAND_MIN = 1
 // Floats per rock in a perchesInto buffer: x, y, z, hull radius, size. Anchors stay at 4.
 export const PERCH_STRIDE = 5
 
+// Floats per span in a columnAt buffer: bottom, top, in world metres.
+export const SPAN_STRIDE = 2
+// Where RockBed._spanAt leaves the two ends of the line through one instance:
+// [0] the lowest stone, [1] the highest. One buffer for the file, because the
+// query that reads it is per prop candidate and per walking frame.
+const span = new Float64Array(2)
+
 // --- relief, which is how the scree bed finds the foot of a face -------------
 //
 // Metres along the fall line for the direction probe and for the relief probe.
@@ -1334,7 +1004,17 @@ const FACADE_GAIN = ROCK_TILE_MEAN.map((m) => 1 / m)
 const LOD_HYSTERESIS = 0.12
 const BUILD_BUDGET_MS = 1.5
 const PLACEMENT_CELL = 4.0
-const GROUND_SWEEP = 16
+
+// THE TILE WALK IS BUCKETED BY PHASE AND A BUCKET IS WALKED ONLY WHEN ITS ANSWER
+// CAN HAVE CHANGED -- render/trees.js's STILL_M scheme, whose header argues it,
+// with one difference: here the NEAR tiles are bucketed too. A tree tile inside
+// the mesh band is re-tiered every frame; a rock's per-instance ladder is the
+// same pure function of the camera, and with six beds whose near radii run to
+// 890 m it is most of the bill (2.4 ms standing still on the headset, over
+// ~9,000 resident tiles), so it waits for its bucket's turn like the rest. A
+// rock's tier swap can therefore land up to RIM_PHASES frames late and only
+// while the camera is moving, which the cross-dissolve already covers.
+const STILL_M = RIM_SLACK_MIN
 
 // How hard a `fitSlope` bed cuts a plate that hangs off its face, per attempt.
 // See _fitFactor: the probe is a yes/no on a whole footprint, so the only way to
@@ -1434,10 +1114,10 @@ function mulberry32(a) {
 }
 
 /**
- * A tile's seed, from its own coordinates, the world seed and the BED. The bed
- * index is mixed in so the scatters are independent fields rather than the same
- * one at three scales -- without it every giant would have a pebble on its
- * exact centre.
+ * A tile's seed, from its own coordinates, the world seed and the BED (its
+ * `field` number, -1 for the clump field). The bed is mixed in so the scatters
+ * are independent fields rather than the same one at three scales -- without it
+ * every giant would have a smaller rock on its exact centre.
  */
 function tileSeed(tx, tz, seed, bed) {
   let h =
@@ -1523,7 +1203,7 @@ function sectionRadius(geo, y, what) {
  * reaches past the circle `instSpan` describes, by up to 1.67x its radius. Hence a
  * radius taken over the vertices themselves, which no roll and no lean can defeat
  * because it is the distance to the furthest one. Scaled per instance and used as
- * a vertical cylinder, it is a reject that cannot drop stone; RockBed._surfaceAt's
+ * a vertical cylinder, it is a reject that cannot drop stone; RockBed._spanAt's
  * box slab is what tightens it back up before the triangles are walked.
  *
  * CACHED ON THE SHAPE, because five beds block and they displace props with the
@@ -1573,12 +1253,11 @@ function blockHull(shape) {
  * share; nothing outside this file has any reason to hold one.
  */
 class RockBed {
-  constructor(scene, field, water, layers, material, bank, cfg, index, { seed, ground }) {
+  constructor(scene, field, water, layers, material, bank, cfg, { seed, ground }) {
     this.field = field
     this.water = water
     this.layers = layers
     this.cfg = cfg
-    this.index = index
     this.seed = seed
     this.ground = ground
 
@@ -1783,9 +1462,9 @@ class RockBed {
     for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
     for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (cfg.fullRadius * Math.pow(2, q / QUANT)) ** 2
 
-    // THE SHAPE THIS BED PLACES, out of the bank's two. Most beds take the
-    // boulder and differ only in where, how thickly, how big and how deep; the
-    // two cap beds take the open-bottomed shell instead. Named rather than
+    // THE SHAPE THIS BED PLACES, out of the bank's two. Every bed in the table
+    // takes the boulder and differs only in where, how thickly, how big and how
+    // deep; the open-bottomed cap is placeable but unplaced. Named rather than
     // defaulted-by-index so a typo is a boot-time throw and not a silent boulder.
     this.shape = bank.shapes[cfg.shape ?? 'boulder']
     if (!this.shape) {
@@ -1926,7 +1605,11 @@ class RockBed {
     // mesh tier can still be worn.
     this.maxLod = maxLod
     const maxFarAt = maxLod * ROCK_LOD_AT[ROCK_LOD_AT.length - 1]
-    this.nearSq = (maxFarAt + tile * 1.5) ** 2
+    // The margin is the guarantee the bucketed walk leans on: a tile joins the
+    // near set before any rock inside can need a mesh tier, so a bucket is
+    // pulled forward off its turn once the camera has covered it. See STILL_M.
+    this.nearMargin = tile * 1.5
+    this.nearSq = (maxFarAt + this.nearMargin) ** 2
 
     // A BED MAY NOT END BEFORE ITS OWN LADDER DOES. `_rankOf` guarantees no rock
     // is thinned away while it is still sampled, but it cannot help one that runs
@@ -2082,7 +1765,7 @@ class RockBed {
     this.instSpan = new Float32Array(this.maxInstances)
     // THE PLACEMENT MATRIX, per instance, which every tier takes. Kept here so a
     // cross-dissolve ghost and a re-ground can be written from it (`_placeTier`)
-    // and `_surfaceAt` can read it without going through the arena.
+    // and `_spanAt` can read it without going through the arena.
     this.instM = new Float32Array(this.maxInstances * 16)
     // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
     // second between. It holds each rock's gone-distance as `rim.gone`, and it
@@ -2151,10 +1834,31 @@ class RockBed {
     this._c = new THREE.Color()
     this._n = new THREE.Vector3()
     this._up = new THREE.Vector3(0, 1, 0)
-    this._sweep = 0
     // The chunk mesher writes three floats here per placed rock; see GROUND_CUE.
     this._gc = new Float32Array(3)
 
+    // The resident tiles again, as dense arrays the walk can run without the
+    // Map: one bucket per rim phase, and what must be walked next frame whatever
+    // its bucket says. Each tile carries its bucket index (`bi`) for O(1)
+    // swap-removal. See STILL_M.
+    this.buckets = Array.from({ length: RIM_PHASES }, () => [])
+    this.due = []
+    // Per bucket: where the camera stood, the rim's `need` and the ground
+    // version at its last walk -- what decides whether the next can be skipped.
+    this.bucketX = new Float64Array(RIM_PHASES)
+    this.bucketY = new Float64Array(RIM_PHASES)
+    this.bucketZ = new Float64Array(RIM_PHASES)
+    this.bucketNeed = new Float32Array(RIM_PHASES)
+    this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
+    // The first update walks every tile; nothing after construction moves every
+    // tile's answer at once (a reseat evicts and grows, and what survives it is
+    // walked on its turn).
+    this.walkAll = true
+
+    // Triangles the resident tiles draw, as a running total because the tiles
+    // are not walked every frame; `tile.tris` is each one's share as of its
+    // last walk. A readout only: nothing branches on it.
+    this.tileTris = 0
     this.tris = 0
     this.walked = 0
     this.placed = 0
@@ -2301,8 +2005,8 @@ class RockBed {
    *
    * What changes is the FLOOR. The rank alone knows nothing about how big a rock
    * is, so a bed whose `fullRadius` is shorter than its own ladder would dissolve
-   * rocks still sampled: underfoot's is 18 m and its biggest rock does not reach
-   * T6 until 50, so a high-ranked one used to vanish at 20-odd metres having
+   * rocks still sampled: the shore bed's is 25 m and its biggest rock does not
+   * reach T6 until 62, so a high-ranked one would vanish at 20-odd metres having
    * never got there. Capping the rank at `fullRadius / reach` -- the rank whose
    * tile drops it exactly at its own far distance -- means every rock lives
    * until it is on T6, after which the drawn rank takes over and the halving
@@ -2728,72 +2432,105 @@ class RockBed {
     while (this.queue.length && performance.now() - t0 < budgetMs) this._growTile(this.queue.pop())
     this.lastBuildMs = performance.now() - t0
 
-    // Retire finished cross-dissolves BEFORE the tile loop starts new ones, so a
+    // Retire finished cross-dissolves BEFORE the tile walk starts new ones, so a
     // rock that swaps a band on the same frame its previous fade expires gets
     // its duplicate back rather than being refused for want of one.
     const now = getPropClock()
     this._sweepFades(now)
     this.rim.beginFrame(camX, camY, camZ)
 
+    const gver = this.ground ? this.ground.groundVersion : 0
+    const need = this.rim.need
+    const turn = this.rim.phase
+    // Instances the per-rock ladder walks THIS frame -- the O(instances) part of
+    // the bill, which the resident-tile count alone does not show.
+    this.walked = 0
+    for (let p = 0; p < RIM_PHASES; p++) {
+      const mx = camX - this.bucketX[p]
+      const my = camY - this.bucketY[p]
+      const mz = camZ - this.bucketZ[p]
+      const moved2 = mx * mx + my * my + mz * mz
+      const walk = this.walkAll
+        || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
+        || need > this.bucketNeed[p]
+        || moved2 >= this.nearMargin * this.nearMargin
+      if (!walk) continue
+      this.bucketX[p] = camX
+      this.bucketY[p] = camY
+      this.bucketZ[p] = camZ
+      this.bucketNeed[p] = need
+      this.bucketGver[p] = gver
+      const bucket = this.buckets[p]
+      for (let k = 0; k < bucket.length; k++) this._walkTile(bucket[k], camX, camY, camZ, gver, now)
+    }
+    // Grown, thickened or thinned since the last update: placed hidden until a
+    // sweep looks at them. Already covered when every bucket was walked;
+    // otherwise a tile can still be in a bucket walked above, and the second
+    // walk finds nothing to do.
+    const due = this.due
+    for (let k = 0; k < due.length; k++) {
+      due[k].due = false
+      if (!this.walkAll) this._walkTile(due[k], camX, camY, camZ, gver, now)
+    }
+    due.length = 0
+    this.walkAll = false
+
+    // The duplicates are drawn too; `tileTris` is exact as of each tile's last
+    // walk, so up to RIM_PHASES frames stale.
+    this.tris = this.tileTris + this.fadeTris
+  }
+
+  /**
+   * One tile's share of an update: follow the terrain if it has changed, queue
+   * a level change, give the rim its sweep, and tier its rocks -- the
+   * per-instance ladder if the tile is near, all onto the coarsest mesh if not.
+   * Runs on the tile's bucket turn, or off the due list -- see STILL_M.
+   */
+  _walkTile(t, camX, camY, camZ, gver, now) {
     const tile = this.tile
+    // The chunk under the tile's centre, re-asked only when the terrain's
+    // render set has changed since this tile last asked. A rock follows the
+    // chunk it stands on when that re-splits.
+    if (this.ground && t.gver !== gver) {
+      t.gver = gver
+      const gkey = this.ground.groundKeyAt((t.tx + 0.5) * tile, (t.tz + 0.5) * tile)
+      if (gkey !== t.gkey) {
+        t.gkey = gkey
+        this._reground(t)
+        this.regrounds++
+      }
+    }
+
+    const nx = Math.max(t.tx * tile, Math.min(camX, (t.tx + 1) * tile))
+    const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
+    const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+
+    const tileHidden = this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
+
+    const q = t.q
+    const thicken = near2 < this.loSq[q]
+    const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
+    if (!t.queued && (thicken || thin)) {
+      t.queued = true
+      this.queue.push({ key: t.tx * 0x10000 + t.tz, tx: t.tx, tz: t.tz, q: this._levelFor(near2), d2: near2 })
+    }
+
     const coarse = ROCK_BAND_COUNT - 1
+    const dx = (t.tx + 0.5) * tile - camX
+    const dz = (t.tz + 0.5) * tile - camZ
+    const near = dx * dx + dz * dz < this.nearSq
     let tris = 0
-    const phase = this._sweep
-    this._sweep = (this._sweep + 1) % GROUND_SWEEP
-    const ground = this.ground
-    let ti = 0
-    // Instances the per-rock ladder below walks THIS frame -- the O(instances)
-    // part of the bill, which the resident-tile count alone does not show.
-    let walked = 0
-    for (const t of this.tiles.values()) {
-      if (ground && ti++ % GROUND_SWEEP === phase) {
-        const gkey = ground.groundKeyAt((t.tx + 0.5) * tile, (t.tz + 0.5) * tile)
-        if (gkey !== t.gkey) {
-          t.gkey = gkey
-          this._reground(t)
-          this.regrounds++
-        }
-      }
-
-      const nx = Math.max(t.tx * tile, Math.min(camX, (t.tx + 1) * tile))
-      const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
-
-      const tileHidden = this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
-
-      const q = t.q
-      const thicken = near2 < this.loSq[q]
-      const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
-      if (!t.queued && (thicken || thin)) {
-        t.queued = true
-        this.queue.push({ key: t.tx * 0x10000 + t.tz, tx: t.tx, tz: t.tz, q: this._levelFor(near2), d2: near2 })
-      }
-
-      const dx = (t.tx + 0.5) * tile - camX
-      const dz = (t.tz + 0.5) * tile - camZ
-      const near = dx * dx + dz * dz < this.nearSq
-      if (!near) {
-        if (t.near) this._demote(t, coarse)
-        t.near = false
-        // O(1), AND THE TRIANGLE COUNT IS NOT WORTH MORE THAN THAT. A far tile is
-        // entirely on `coarse` -- there is no per-rock decision left to make out
-        // here -- so the only thing the old per-instance walk produced was this
-        // sum. It cost 69k iterations a frame at survey altitude, 1.2 ms of a
-        // 13.9 ms budget, to fill in a panel cell that is only drawn while the
-        // menu is open. DO NOT REINTRODUCE A PER-INSTANCE LOOP FOR A STATISTIC:
-        // this loop runs over every resident tile of every bed every frame, so
-        // anything inside it that is O(instances) is a frame-rate feature.
-        //
-        // `tileHidden` is the rim's own count for this tile, exact as of that
-        // tile's last sweep and so up to RIM_PHASES frames stale -- a fade that
-        // retired since is still counted as drawn. That is the same staleness the
-        // visibility it describes already has, and it is a readout, not a
-        // decision: nothing branches on `this.tris`.
-        tris += (t.n - tileHidden) * this.tierTris[coarse]
-        continue
-      }
+    if (!near) {
+      // O(1): a far tile is entirely on `coarse`, so there is no per-rock
+      // decision left to make out here. `tileHidden` is the rim's own count for
+      // this tile -- a fade that retired since its last sweep is still counted
+      // as drawn, the same staleness the visibility it describes already has.
+      if (t.near) this._demote(t, coarse)
+      t.near = false
+      tris = (t.n - tileHidden) * this.tierTris[coarse]
+    } else {
       t.near = true
-      walked += t.n
+      this.walked += t.n
       for (let k = 0; k < t.n; k++) {
         const i = t.ids[k]
         if (this.rim.isHidden(i)) continue
@@ -2830,10 +2567,32 @@ class RockBed {
         tris += this.tierTris[tier]
       }
     }
-    // The duplicates are drawn too, and are counted after the loop rather than
-    // inside it so this frame's own swaps are in this frame's number.
-    this.tris = tris + this.fadeTris
-    this.walked = walked
+    this.tileTris += tris - t.tris
+    t.tris = tris
+  }
+
+  /** Walk the tile on the next update whatever its bucket says. */
+  _markDue(tile) {
+    this.rim.markDue(tile)
+    if (tile.due) return
+    tile.due = true
+    this.due.push(tile)
+  }
+
+  /** A tile leaves the resident set: out of every list, and its ids back to the pool. */
+  _evict(key, tile) {
+    this._release(tile)
+    this.tiles.delete(key)
+    const bucket = this.buckets[tile.phase]
+    const last = bucket.pop()
+    if (last !== tile) {
+      bucket[tile.bi] = last
+      last.bi = tile.bi
+    }
+    if (tile.due) {
+      const due = this.due
+      due.splice(due.indexOf(tile), 1)
+    }
   }
 
   /**
@@ -2841,9 +2600,8 @@ class RockBed {
    * carries along the ground; at height `agl` above it, the ground still inside
    * that sphere is a disc of `sqrt(radius^2 - agl^2)`, and past `radius` there is
    * none. So flying up switches the small beds off in the order a rock stops
-   * being worth drawing: at 500 m `underfoot`, `scree` and `bed caps` are gone
-   * outright and the survivors are cut to a third or a half of their footprint,
-   * which is 9352 resident tiles down to 4942 and 41% off the frame.
+   * being worth drawing: at 500 m `scree` and `shore` are gone outright and the
+   * survivors are cut to a third or a half of their footprint.
    *
    * The y term is one multiply-subtract on a test that was already squared, so it
    * is free; the one sqrt is per bed per frame, to size the admission grid.
@@ -2883,8 +2641,7 @@ class RockBed {
       const dx = (t.tx + 0.5) * tile - cx
       const dz = (t.tz + 0.5) * tile - cz
       if (dx * dx + dz * dz > this.evictSq) {
-        this._release(t)
-        this.tiles.delete(key)
+        this._evict(key, t)
         continue
       }
 
@@ -2944,7 +2701,7 @@ class RockBed {
     }
     const uOld = existing ? existing.u : 0
 
-    const rand = mulberry32(tileSeed(tx, tz, this.seed, this.index))
+    const rand = mulberry32(tileSeed(tx, tz, this.seed, this.cfg.field))
     // The landform answers are per tile and indexed within it -- see RELIEF_CELL.
     if (this.probesRelief) this.reliefMemo.fill(0)
     const cfg = this.cfg
@@ -3580,9 +3337,13 @@ class RockBed {
       existing.n = n
       existing.q = q
       existing.u = uNew
-      this.rim.markDue(existing)
+      // Everything this tile just placed is hidden until the rim looks at it,
+      // so a thickened tile that waited for its phase would be a hole.
+      this._markDue(existing)
     } else {
-      this.tiles.set(key, {
+      const phase = tilePhase(tx, tz)
+      const bucket = this.buckets[phase]
+      const fresh = {
         tx,
         tz,
         ids,
@@ -3592,8 +3353,19 @@ class RockBed {
         u: uNew,
         near: false,
         queued: false,
+        due: false,
+        phase,
+        bi: bucket.length,
+        tris: 0,
+        // The terrain chunk covering this tile's CENTRE when its rocks were last
+        // grounded, or null if none was resident, and the ground version it was
+        // read at. The walk re-asks only once the version has moved on.
         gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * tile, (tz + 0.5) * tile) : null,
-      })
+        gver: this.ground ? this.ground.groundVersion : 0,
+      }
+      this.tiles.set(key, fresh)
+      bucket.push(fresh)
+      this._markDue(fresh)
     }
   }
 
@@ -3601,9 +3373,8 @@ class RockBed {
    * A rotation that lays the rock's up axis `amount` of the way toward the
    * ground normal.
    *
-   * Four extra field samples, paid once per PLACED rock and never again -- hence
-   * off for the underfoot bed, where it would be four samples for a four-centimetre
-   * pebble nobody can see the lean of. Off the FIELD rather than the drawn mesh on
+   * Four extra field samples, paid once per PLACED rock and never again. Off the
+   * FIELD rather than the drawn mesh on
    * purpose: the mesh's normal changes every time the chunk under the rock
    * re-splits, and a boulder that rocked back and forth as the terrain LOD moved
    * would be far worse than one leaning a degree off the triangle it stands on.
@@ -3752,7 +3523,8 @@ class RockBed {
     }
     this.placed -= tile.n - w
     tile.n = w
-    this.rim.markDue(tile)
+    // The tile's hidden count is now stale against a shorter id list.
+    this._markDue(tile)
   }
 
   _demote(tile, coarse) {
@@ -3775,6 +3547,8 @@ class RockBed {
       this.free[this.freeCount++] = id
     }
     this.placed -= tile.n
+    this.tileTris -= tile.tris
+    tile.tris = 0
     this.rim.releaseTile(tile)
   }
 
@@ -3871,12 +3645,12 @@ class RockBed {
           const ex = x - this.instX[id]
           const ez = z - this.instZ[id]
           if (ex * ex + ez * ez >= r * r) continue
-          const top = this._surfaceAt(id, ex, ez)
           // Inside the circle and over no stone -- a corner of the box, or the
           // gap beside a rock the query is standing next to rather than on. The
           // prop belongs on the ground there, which is what saying nothing gets
           // it.
-          if (top === -Infinity) continue
+          if (!this._spanAt(id, ex, ez)) continue
+          const top = span[1]
           // Settled here rather than in the public half because this is where the
           // rock's own size and its own ground are: the caller gets a Y to STAND
           // at, not a surface to sit on, and comparing after the settle is
@@ -3900,9 +3674,49 @@ class RockBed {
   }
 
   /**
-   * The world height of the highest stone directly over an instance-relative
-   * (ex, ez), or -Infinity if the vertical line through that point misses the
-   * rock entirely. The one place the shape's actual surface is consulted.
+   * One bed's share of Rocks.columnAt: every rock of this bed the vertical line
+   * through (x, z) passes through, written into `out` as [bottom, top] from
+   * cursor `w`, unsettled. Returns the new cursor. The same walk as _blockAt --
+   * the 3x3 tile block, the size gate, the circle reject -- and the same ray; the
+   * only difference is that both ends of it are kept.
+   */
+  _columnAt(x, z, minSize, out, w, cap) {
+    const tile = this.tile
+    const gx = Math.floor(x / tile)
+    const gz = Math.floor(z / tile)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const t = this.tiles.get((gx + dx) * 0x10000 + (gz + dz))
+        if (!t) continue
+        for (let k = 0; k < t.n; k++) {
+          if (w >= cap) return w
+          const id = t.ids[k]
+          if (this.shapeLod * this.instScale[id] < minSize) continue
+          const r = this.hull.radius * this.instScale[id]
+          const ex = x - this.instX[id]
+          const ez = z - this.instZ[id]
+          if (ex * ex + ez * ez >= r * r) continue
+          if (!this._spanAt(id, ex, ez)) continue
+          out[w * SPAN_STRIDE] = span[0]
+          out[w * SPAN_STRIDE + 1] = span[1]
+          w++
+        }
+      }
+    }
+    return w
+  }
+
+  /**
+   * Where the vertical line through an instance-relative (ex, ez) enters and
+   * leaves the rock: `span[0]` the lowest stone on it, `span[1]` the highest, in
+   * world metres. False, and `span` untouched, if the line misses the rock. The
+   * one place the shape's actual surface is consulted.
+   *
+   * ONE SPAN PER ROCK, the lowest hit to the highest, which is a convexity
+   * assumption: a vertical line crosses a rock in this bank twice, so pairing
+   * hits would only buy exposure to the odd count a ray grazing a shared edge
+   * produces. A shape with a tunnel through it (an arch) needs the pairing, and
+   * this is the place to add it.
    *
    * WHY A RAY AND NOT A BOX. The rolled box's top is a plane, and a plane over a
    * two-metre footprint is a table: props seated on it stand half a metre above a
@@ -3919,14 +3733,14 @@ class RockBed {
    *
    * THE RAY IS A LINE, NOT A HALF-LINE. It starts at the instance origin, which
    * sits at the BOTTOM of the shape's box, so the hits that matter are behind it
-   * and the nearest signed `t` is the topmost surface. The basis columns are
-   * orthogonal and `s` long, so the transpose over s^2 inverts the matrix and the
-   * local direction that falls out is unit -- which puts `t` in the rock's own
-   * metres and the world drop at `t * s`. The quarter turn, the ground lean and
-   * the jitter all ride in those columns, so none of them needs recovering from
-   * the placement arrays.
+   * and the smallest signed `t` is the topmost surface, the largest the bottom.
+   * The basis columns are orthogonal and `s` long, so the transpose over s^2
+   * inverts the matrix and the local direction that falls out is unit -- which
+   * puts `t` in the rock's own metres and the world drop at `t * s`. The quarter
+   * turn, the ground lean and the jitter all ride in those columns, so none of
+   * them needs recovering from the placement arrays.
    */
-  _surfaceAt(id, ex, ez) {
+  _spanAt(id, ex, ez) {
     const e = this.instM
     const o = id * 16
     const s = this.instScale[id]
@@ -3945,7 +3759,7 @@ class RockBed {
     let tLo = -Infinity
     let tHi = Infinity
     if (dx > -1e-12 && dx < 1e-12) {
-      if (ox < -mm.width * 0.5 || ox > mm.width * 0.5) return -Infinity
+      if (ox < -mm.width * 0.5 || ox > mm.width * 0.5) return false
     } else {
       const a = (-mm.width * 0.5 - ox) / dx
       const b = (mm.width * 0.5 - ox) / dx
@@ -3953,7 +3767,7 @@ class RockBed {
       tHi = Math.min(tHi, Math.max(a, b))
     }
     if (dy > -1e-12 && dy < 1e-12) {
-      if (oy < 0 || oy > mm.height) return -Infinity
+      if (oy < 0 || oy > mm.height) return false
     } else {
       const a = (0 - oy) / dy
       const b = (mm.height - oy) / dy
@@ -3961,16 +3775,17 @@ class RockBed {
       tHi = Math.min(tHi, Math.max(a, b))
     }
     if (dz > -1e-12 && dz < 1e-12) {
-      if (oz < -mm.depth * 0.5 || oz > mm.depth * 0.5) return -Infinity
+      if (oz < -mm.depth * 0.5 || oz > mm.depth * 0.5) return false
     } else {
       const a = (-mm.depth * 0.5 - oz) / dz
       const b = (mm.depth * 0.5 - oz) / dz
       tLo = Math.max(tLo, Math.min(a, b))
       tHi = Math.min(tHi, Math.max(a, b))
     }
-    if (tLo > tHi) return -Infinity
+    if (tLo > tHi) return false
     const hull = this.hull.tri
     let near = Infinity
+    let far = -Infinity
     // Moller-Trumbore, two-sided: on a closed shape the nearest hit is a front
     // face anyway, and the cull test would only buy a branch.
     for (let f = 0; f < hull.length; f += 9) {
@@ -3994,8 +3809,12 @@ class RockBed {
       if (v < 0 || u + v > 1) continue
       const t = (e2x * qx + e2y * qy + e2z * qz) * invDet
       if (t < near) near = t
+      if (t > far) far = t
     }
-    return near === Infinity ? -Infinity : e[o + 13] - near * s
+    if (near === Infinity) return false
+    span[0] = e[o + 13] - far * s
+    span[1] = e[o + 13] - near * s
+    return true
   }
 
   /**
@@ -4004,7 +3823,7 @@ class RockBed {
    *
    * A constant pair cannot do this job even with one shape, because `instScale`
    * spreads it fifty-fold across the beds: the same radius/rise is metres of empty
-   * air around an underfoot pebble and a volume stopping well below the top of a
+   * air around a shore stone and a volume stopping well below the top of a
    * 15 m giant -- and a cursor that stops below the top of a rock reads as pointing
    * straight through it.
    *
@@ -4073,13 +3892,8 @@ export class Rocks {
    *                      the same position.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
-   * @param opts.allBeds  Build the `enabled: false` beds too. FOR THE GATE ONLY --
-   *                      a switched-off bed still has a config, a shape and a set
-   *                      of rules that check-rocks holds, and those assertions are
-   *                      the reason it is safe to switch one back on. Nothing that
-   *                      renders passes this; see the `enabled` note above BEDS.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, allBeds = false } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4123,14 +3937,7 @@ export class Rocks {
       instancedFade: true,
     })
 
-    // The index is the position in BEDS and not in the survivors, because it seeds
-    // the bed's scatter field -- see the `enabled` note above BEDS.
-    this.beds = BEDS
-      .map((cfg, i) => ({ cfg, i }))
-      .filter(({ cfg }) => allBeds || cfg.enabled !== false)
-      .map(({ cfg, i }) =>
-        new RockBed(scene, field, water, layers, this.material, bank, cfg, i, { seed, ground }))
-    if (!this.beds.length) throw new Error('Rocks: every bed is disabled')
+    this.beds = BEDS.map(cfg => new RockBed(scene, field, water, layers, this.material, bank, cfg, { seed, ground }))
 
     // Every bed cloned what it draws; the bank's geometries are now a spare copy
     // with no reader. The measurements taken off them -- footRadius, blockHull,
@@ -4218,7 +4025,7 @@ export class Rocks {
    * would drop it and leave a gap that moves as the world does.
    *
    * ONLY THE BEDS FLAGGED `anchor` ANSWER -- the boulders and the giants, not the
-   * pebbles underfoot; the argument is on the flags in BEDS. They fill `out` in bed
+   * scree or the shore; the argument is on the flags in BEDS. They fill `out` in bed
    * order on one cursor, so the buffer is sorted by nothing else.
    *
    * SATURATION IS THE CALLER'S TO NOTICE. Nothing is ever written past `out`: a box
@@ -4314,14 +4121,15 @@ export class Rocks {
    * because what it is paying for is the LOD ladder, which is this file's.
    *
    * IT IS THE STONE'S OWN SURFACE, not a plane over its footprint. A vertical line
-   * is dropped through the finest tier's triangles (RockBed._surfaceAt), so a prop
+   * is dropped through the finest tier's triangles (RockBed._spanAt), so a prop
    * over a boulder's shoulder stands on the shoulder and a prop over the corner of
    * its box -- where the circumscribed circle reaches and the rock does not -- gets
    * -Infinity and stays on the ground. What it is NOT is a containment test: the
    * answer is the highest surface over the point at any height, so a prop under an
    * overhang is raised onto the overhang rather than left beneath it. That is the
    * right answer for the case this exists for (a boulder is wider than it is tall)
-   * and the wrong one for a spire, which is why the spire's bed is not flagged.
+   * and the wrong one for a spire, which is why the spire's bed is not flagged --
+   * and the wrong one for a walker, who asks columnAt instead.
    *
    * ONLY THE BEDS FLAGGED `blocks` ANSWER; the argument is on the flags in BEDS.
    * The query is keyed rather than swept -- see RockBed._blockAt -- so it is nine
@@ -4341,6 +4149,34 @@ export class Rocks {
       if (bed.blocks) top = bed._blockAt(x, z, minSize, top, settle)
     }
     return top
+  }
+
+  /**
+   * Every span of blocking stone on the vertical line through (x, z), written
+   * into `out` at SPAN_STRIDE as [bottom, top] in world metres, unsettled, one
+   * per rock the line passes through. Returns how many were written; zero over
+   * clear ground.
+   *
+   * WHAT THIS IS FOR: blockTopAt answers "what is the highest stone over this
+   * point", which is the right question for a prop being seated and the wrong
+   * one for a walker, who cares whether the stone is under her feet or over her
+   * head. v2/walk.js takes the spans and decides which of them is ground from
+   * where she is standing, and whether the rest leave her room to stand -- so
+   * the same query that seats a fern on a boulder's shoulder lets her walk
+   * under the boulder's overhang, where blockTopAt would have lifted her onto
+   * it. The cost is _blockAt's: the same walk, the same ray, both ends kept.
+   *
+   * SATURATES like anchorsInto -- nothing is written past `out`, and a caller
+   * handed back its own capacity should treat the answer as truncated. Same
+   * `minSize` gate and the same `blocks` flag as blockTopAt.
+   */
+  columnAt(x, z, minSize, out) {
+    const cap = (out.length / SPAN_STRIDE) | 0
+    let w = 0
+    for (const bed of this.beds) {
+      if (bed.blocks) w = bed._columnAt(x, z, minSize, out, w, cap)
+    }
+    return w
   }
 
   /**

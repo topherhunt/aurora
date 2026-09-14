@@ -97,7 +97,7 @@ import { SEED } from './v2/config.js'
 // ===========================================================================
 //
 // DEFAULT_ALGORITHM is `skymap` and the world group is on, so a fresh load is
-// the sky /?quest renders, not a bench default that resembles it. That is the
+// the sky the world renders, not a bench default that resembles it. That is the
 // difference between a rig you tune on and a rig you tune on and then have to
 // re-check in the headset.
 //
@@ -107,7 +107,7 @@ import { SEED } from './v2/config.js'
 // the next change to anything overwrites them, exactly as the world's next frame
 // would. Tuning one of those six for keeps means changing its endpoints in
 // world-drive.js, not the slider. Turn the drive off and you have the old
-// free-for-all bench back, and the page stops claiming to be /?quest.
+// free-for-all bench back, and the page stops claiming to be the world.
 //
 // Two things still cannot match and neither is a shader difference. The FOV
 // slider is a monitor's, not a headset's, so the sky is framed differently even

@@ -163,9 +163,9 @@ export function setCritterAsset(mesh, material, asset, label) {
 // THE LOD LADDER. A creature that moves -- turns, hops, is seen from every
 // side -- is drawn as its mesh at every distance, stepping down the bench's
 // decimated tiers (ship.mjs ships them beside the pick) as it shrinks in her
-// view, and drawn as nothing at all once it is under a degree of arc: a
-// 0.36 m frog twenty metres off is a few pixels, and a few pixels of nothing
-// is not missed. The tier is a function of APPARENT size, body span over
+// view, and drawn as nothing at all once it is under the ladder's last rung,
+// under a degree of arc: a 0.36 m frog thirty metres off is a few pixels, and
+// a few pixels of nothing is not missed. The tier is a function of APPARENT size, body span over
 // distance, so a big frog near and a small frog far take the same step at the
 // same number of pixels; critterTier below picks it, with a little hysteresis
 // so a frog on a threshold does not flicker between two meshes as her head

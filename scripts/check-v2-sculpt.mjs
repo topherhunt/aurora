@@ -445,9 +445,16 @@ function fakeTerrain() {
 // field learns that the import under it moved: with the `erode` relief knob on,
 // the surface the player collides with is DERIVED from the import rather than
 // being the same array, so a stroke that skips this call leaves her walking on
-// terrain that is no longer being drawn.
-function fakeField() {
-  return { rects: [], coarsePatched(rect) { this.rects.push(rect) } }
+// terrain that is no longer being drawn. `layers.terrainChanged` is how the
+// rivers hear about it; `riverRect` is what this fake says they re-baked, null
+// meaning no river read the patched ground.
+function fakeField(riverRect = null) {
+  const f = { rects: [], asked: [], coarsePatched(rect) { f.rects.push(rect) }, layers: {} }
+  f.layers.terrainChanged = (world) => {
+    f.asked.push(world)
+    return riverRect
+  }
+  return f
 }
 
 function sectionSculptor() {
@@ -542,6 +549,26 @@ function sectionSculptor() {
   check(unrestored === 0, 'and over every texel the stroke had told it about', `${unrestored} texels put back without the field hearing`)
   check(s.undo() === false, 'undoing an empty stack reports false rather than throwing')
   check(s.dirty, 'the world is STILL unsaved after an undo', 'the file on disk matches neither state')
+
+  // A stroke under a river re-routes it, and the chunks it moved between have to
+  // be remeshed along with the ones under the brush: the world rect handed to the
+  // terrain is the union, and the water surfaces are told which rivers moved.
+  {
+    const riverRect = { minX: -3000, minZ: -2500, maxX: -2600, maxZ: -1900 }
+    const rf = fakeField(riverRect)
+    const rt = fakeTerrain()
+    const moved = []
+    const rs = new Sculptor({ heightmap: makeField(() => 100), field: rf, terrain: rt, onRiversMoved: (r) => moved.push(r) })
+    rs.radius = 200
+    rs.strength = 10
+    rs.begin()
+    rs.stroke(0, 0, 1 / 10)
+    rs.end()
+    const p = rt.patches[rt.patches.length - 1]
+    check(rf.asked.length > 0 && rf.asked[0].minX < 0 && rf.asked[0].maxX > 0, 'the rivers are told the world rect the stroke changed', rf.asked[0] === undefined ? 'never asked' : `${rf.asked[0].minX.toFixed(0)}..${rf.asked[0].maxX.toFixed(0)} m`)
+    check(p.worldRect.minX <= riverRect.minX && p.worldRect.minZ <= riverRect.minZ && p.worldRect.maxX >= 200 && p.worldRect.maxZ >= 200, 'the terrain remeshes the brush and the re-routed river together', `${p.worldRect.minX.toFixed(0)}..${p.worldRect.maxX.toFixed(0)} m`)
+    check(moved.length === 1 && moved[0] === riverRect, 'and the water surfaces hear which rivers moved', `${moved.length} calls`)
+  }
 
   // A press that moved nothing must not push an entry, or Ctrl-Z starts doing
   // nothing visible several times in a row.

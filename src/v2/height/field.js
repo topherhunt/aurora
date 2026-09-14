@@ -25,8 +25,9 @@ import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './rel
 //               author drew a bridge. Steps 3 to 5 live in Layers.carve, in that
 //               order, so exactly one place can get it wrong.
 //
-// `cell` band-limits step 2 and NOTHING ELSE. Collision, picking and the editor
-// pass cell = 0 and get the exact field. That is why the player never falls
+// `cell` band-limits step 2 and the river bed's relief in step 3 (the detail
+// term again, kept under the water) and NOTHING ELSE. Collision, picking and
+// the editor pass cell = 0 and get the exact field. That is why the player never falls
 // through a coarse chunk: the ground she collides against is the LIMIT of every
 // band-limited version rather than a different function, so the error is bounded
 // by the octaves that were faded and not by a mismatch between two evaluations.
@@ -354,13 +355,15 @@ export class V2Height {
     this._attachTerrain()
   }
 
-  // Rivers route over `ground` and solve their level from preCarveAt, so the
-  // path set is handed both as closures: `ground` is swapped by erosion and by
-  // the crease attach, and a closure follows it where a reference would not.
+  // Rivers route over `ground`, solve their level from preCarveAt and keep the
+  // unsuppressed detail term as their bed's relief, so the path set is handed
+  // all three as closures: `ground` is swapped by erosion and by the crease
+  // attach, and a closure follows it where a reference would not.
   _attachTerrain() {
     this.layers.paths.setTerrain({
       coarse: () => this.ground,
       groundAt: (x, z) => this.preCarveAt(x, z),
+      detailAt: (x, z, cell) => (this._plain ? this.detail.at(x, z, cell, this.ground.slopeAt(x, z), 0) : this._micro(x, z, cell, 0)),
     })
   }
 
@@ -473,7 +476,7 @@ export class V2Height {
     const h = this._plain
       ? hm.sample(x, z) + this.detail.at(x, z, cell, hm.slopeAt(x, z), flatten)
       : hm.sample(x, z) + this._micro(x, z, cell, flatten)
-    return layers.carve(x, z, h)
+    return layers.carve(x, z, h, cell)
   }
 
   /**
@@ -696,7 +699,7 @@ export class V2Height {
     const layers = this.layers
     const flatten = layers.flattenAt(x, z)
     const h = hm.sample(x, z) + (this._plain ? this.detail.at(x, z, cell, s, flatten) : this._micro(x, z, cell, flatten))
-    out.h = layers.carve(x, z, h)
+    out.h = layers.carve(x, z, h, cell)
     return out
   }
 }

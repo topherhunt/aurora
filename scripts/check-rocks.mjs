@@ -53,7 +53,7 @@ import { buildRock, ROCK_TIERS, ROCK_LOD_AT, rockLodSize, ROCK_DEFAULTS, BOX_MAR
 import {
   buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
-import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX } from '../src/v2/render/rocks.js'
+import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, SPAN_STRIDE, BARREN_ABOVE_SNOW } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
@@ -1874,8 +1874,8 @@ console.log('\nscatter')
   // is the field's real gradient rather than a constant, because a stub that
   // told the slope test one thing and the relief probe another would be testing
   // a world that cannot exist. It tops out at 1.10 (48 deg), which the boulders
-  // and giants beds allow and the underfoot bed's 42 deg does not, so the small
-  // stones thin out on the steep flanks exactly as they would on a real ridge.
+  // and giants beds allow and the scree bed's 46 does not, so the small stones
+  // thin out on the steepest flanks exactly as they would on a real ridge.
   const RIDGE_A = 22
   const RIDGE_L = 20
   const ridge = {
@@ -1929,51 +1929,24 @@ console.log('\nscatter')
   // any of these rocks -- which is the case the cue has to be right in anyway.
   const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
 
-  // EVERY BED, INCLUDING THE ONES THAT DO NOT SHIP. Three of the eight carry
-  // `enabled: false` and are not built in the world; their configs, shapes and
-  // rules are all still here, and these assertions are the reason it is safe to
-  // switch one back on. So the gate builds the whole table and the SHIPPED set is
-  // asserted separately, just below.
   const build = (w) => {
-    const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7, allBeds: true })
+    const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7 })
     r.place(0, 0)
     return r
   }
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.length === 9, 'nine beds in the table', forestRocks.beds.map((b) => b.cfg.name).join(', '))
-
-  // AND SIX OF THEM SHIP. The other three are `enabled: false` -- see the note
-  // above BEDS for what each one cost and why it went. Named rather than counted,
-  // because the failure worth catching is a bed switched off by accident, which a
-  // count agrees with.
-  //
-  // AND A BED SWITCHED OFF MOVES NOTHING. `tileSeed` takes a bed's index in the
-  // full table, so the filter has to run AFTER the index is taken or every
-  // surviving bed's scatter field shifts and the whole world's rocks jump. That is
-  // a silent failure -- the world still looks like a world -- so it is asserted
-  // against the full build directly: same bed, same positions, to the metre.
-  {
-    const shipped = new Rocks(new THREE.Scene(), forest.field, forest.water, layers, texArray, { seed: 7 })
-    shipped.place(0, 0)
-    const live = shipped.beds.map((b) => b.cfg.name)
-    check(live.join(' ') === 'boulders scree sunken giants embedded shore',
-      'and six of the nine ship -- the cap beds and the pebbles are switched off', live.join(', '))
-    const xs = (rocks, name) => {
-      const bed = rocks.beds.find((b) => b.cfg.name === name)
-      const out = []
-      for (const t of bed.tiles.values()) {
-        for (let k = 0; k < t.n; k++) out.push(`${bed.instX[t.ids[k]].toFixed(2)},${bed.instZ[t.ids[k]].toFixed(2)}`)
-      }
-      return out.sort().join(' ')
-    }
-    const moved = live.filter((n) => xs(shipped, n) !== xs(forestRocks, n))
-    check(moved.length === 0 && xs(shipped, 'boulders').length > 0,
-      'and switching a bed off does not move the rocks of the beds either side of it',
-      moved.length ? `${moved.join(', ')} moved` : `${live.length} beds land identically with the other three built`)
-    shipped.dispose()
-  }
+  check(forestRocks.beds.map((b) => b.cfg.name).join(' ') === 'boulders scree sunken giants embedded shore',
+    'six beds in the table, named rather than counted', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  // A BED'S `field` IS ITS SEED SLOT AND NEVER MOVES. `tileSeed` mixes it into
+  // every tile of the bed's scatter, so renumbering one -- by deleting a bed and
+  // letting the survivors take its number, say -- shifts every rock of that bed
+  // in the world. A silent failure, the world still looks like a world, so the
+  // numbers are pinned here: 6 and 7 belonged to beds that were deleted, and a
+  // new bed takes the next unused one.
+  check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 5 8',
+    'and every bed keeps the field number it was seeded with', forestRocks.beds.map((b) => b.cfg.field).join(' '))
   check(
     new Set(forestRocks.beds.flatMap((b) => b.batch.meshes.map((m) => m.material))).size === 1,
     'one material across every bed and every tier mesh',
@@ -2006,10 +1979,9 @@ console.log('\nscatter')
     'every bed carries the full four-slot tier table and reads one shared ladder',
     `ROCK_LOD_AT ${ROCK_LOD_AT.join('/')} m per metre of ladder size`
   )
-  // DENSITY, not totals: the giants bed reaches 1250 m and the underfoot bed 55,
-  // so counting the whole disc would say there are more house-sized rocks in the
-  // world than pebbles, which is true and completely beside the point. Count what
-  // stands within 40 m of the camera, which is what the ground looks like.
+  // DENSITY, not totals: the giants bed reaches 1250 m and the boulders bed 600,
+  // so counting the whole disc would overstate the giants. Count what stands
+  // within 40 m of the camera, which is what the ground looks like.
   const within = (rocks, bedName, r) => {
     const bed = rocks.beds.find((b) => b.cfg.name === bedName)
     let n = 0
@@ -2021,25 +1993,9 @@ console.log('\nscatter')
     }
     return n
   }
-  const near = ['underfoot', 'boulders', 'giants'].map((b) => within(forestRocks, b, 40))
-  // A BAND AND NOT A FLOOR, and the ceiling is the half that was missing. The
-  // ladder wants small stones to be commoner than boulders, which the floor
-  // says. But this check read `> 4x` and passed just as quietly at FORTY-ONE to
-  // one, which is what a wood actually held until the underfoot bed's non-river
-  // rates were cut: a stone every 2.4 m against a boulder every 15 m, every one
-  // of those specks costing a full instance, and the whole thing reading as
-  // gravel sprinkled over the ground rather than as stones lying in a wood. A
-  // one-sided bound cannot see that -- it is green at the ratio that is right
-  // and green at the ratio that ruined it. So both ends are named, and the
-  // floor comes down to 2 because the ratio the config now asks for is about 3
-  // inside 40 m (0.0175/m2 against 0.0042, times the two beds' different
-  // thinning) and a floor of 4 sitting a hair under the real value is a gate
-  // that fails on a seed change rather than on a mistake.
-  check(near[0] > near[1] * 2 && near[0] < near[1] * 12,
-    'small stones outnumber boulders underfoot, without carpeting the wood in gravel',
-    `${near[0]} vs ${near[1]} inside 40 m, ${(near[0] / Math.max(1, near[1])).toFixed(1)}x`)
-  check(near[1] > near[2], 'and boulders outnumber giants', `${near[1]} vs ${near[2]}`)
-  check(near[1] > 0 && byBed.giants.placed > 0, 'the wood still gets boulders AND the odd giant',
+  const near = ['boulders', 'giants'].map((b) => within(forestRocks, b, 40))
+  check(near[0] > near[1], 'boulders outnumber giants', `${near[0]} vs ${near[1]}`)
+  check(near[0] > 0 && byBed.giants.placed > 0, 'the wood still gets boulders AND the odd giant',
     `${byBed.boulders.placed} boulders, ${byBed.giants.placed} giants across the whole disc`)
   // A house-sized block every forty metres is a boulder field, not a wood. The
   // forest multiplier in BEDS is what holds this, and it is easy to lose. The
@@ -2134,8 +2090,6 @@ console.log('\nscatter')
 
   check(riverRocks.stats.beds.find((b) => b.name === 'giants').placed === 0,
     'no ten-metre buttress in the middle of a lake')
-  check(riverRocks.stats.beds.find((b) => b.name === 'underfoot').placed > 0,
-    'pebbles are allowed to be underwater')
 
   // --- the sites, on ground that has any ------------------------------------
   //
@@ -2361,105 +2315,15 @@ console.log('\nscatter')
       // that is the whole of what the dart promises: a neighbouring tile is grown
       // independently and in an order the camera decides, so darting across the
       // seam would make the world stop being a pure function of position. Pairs
-      // straddling a seam may interpenetrate and are not counted. `packEarn` is
-      // checked ACROSS the seam as well, because that bed deliberately buys the
-      // route dependence back -- see `_earnedFrac`.
+      // straddling a seam may interpenetrate and are not counted.
       {
-        const undarted = r.beds
-          .filter((b) => !(b.minGap > 0) && !b.packCaps)
-          .map((b) => b.cfg.name)
-        check(undarted.length === 0, 'every bed keeps its rocks out of each other, one way or the other',
-          undarted.length ? `neither minGap nor packEarn on ${undarted.join(', ')}` : `all ${r.beds.length} beds`)
+        const undarted = r.beds.filter((b) => !(b.minGap > 0)).map((b) => b.cfg.name)
+        check(undarted.length === 0, 'every bed keeps its rocks out of each other',
+          undarted.length ? `no minGap on ${undarted.join(', ')}` : `all ${r.beds.length} beds`)
 
-        // AND A PACKING BED KEEPS THE OTHER PROMISE, which is not about spacing at
-        // all: panels may grow through each other as far as they like -- that is
-        // wanted -- but no plate is drawn MOSTLY INSIDE another one, which is
-        // triangles submitted, skinned and never seen.
-        //
-        // THE ORDER-FREE FORM OF THE RULE, which is what makes it checkable here:
-        // the placer only ever accepted a plate that earned `packEarn` of its own
-        // face disc against EVERY plate already down, so the lens it shares with any
-        // one of them is at most `1 - packEarn` of its area. This gate does not know
-        // which of a pair went first, so it takes the smaller of the two ratios --
-        // whichever plate was the later one satisfies the bound, so the min always
-        // must.
-        //
-        // MEASURED THE WAY THE PLACER MEASURES, which is the only way this check is
-        // worth anything: THREE-DIMENSIONAL centre distance against each plate's own
-        // in-plane radius. In plan it would be meaningless -- on an 85 degree wall a
-        // column of plates a hundred metres apart up the face is two metres apart on
-        // the map, so a plan test would report catastrophic overlap on a bed that has
-        // none. Ground height rather than instance origin, so a deeply sunk plate does
-        // not read as further away than it is.
-        //
-        // ONE RING OF TILES IS THE WHOLE REACH: two discs that do not touch share no
-        // lens, so the rule binds only inside 2 * _faceRadius(top), 55 m against a
-        // 220 m tile, and the four forward neighbours below cover every crossing pair
-        // exactly once.
-        const FWD = [[0, 0], [1, 0], [0, 1], [1, 1], [1, -1]]
-        let pPairs = 0
-        let pOver = 0
-        let pWorst = 0
-        let pSeam = 0
-        let pNear = 0
-        for (const b of r.beds) {
-          if (!b.packCaps) continue
-          for (const t of b.tiles.values()) {
-            for (const [di, dj] of FWD) {
-              const o = di === 0 && dj === 0
-                ? t
-                : b.tiles.get((t.tx + di) * 0x10000 + (t.tz + dj))
-              if (!o) continue
-              for (let i = 0; i < t.n; i++) {
-                const a = t.ids[i]
-                for (let j = o === t ? i + 1 : 0; j < o.n; j++) {
-                  const c = o.ids[j]
-                  const dx = b.instX[a] - b.instX[c]
-                  const dy = b.instY[a] + b.instSink[a] - (b.instY[c] + b.instSink[c])
-                  const dz = b.instZ[a] - b.instZ[c]
-                  const ra = b._faceRadius(b.instSpan[a])
-                  const rc = b._faceRadius(b.instSpan[c])
-                  const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
-                  pPairs++
-                  if (o !== t) pNear++
-                  if (d >= ra + rc) continue
-                  const lens = d <= Math.abs(ra - rc)
-                    ? Math.min(ra, rc) ** 2
-                    : (ra * ra * Math.acos((d * d + ra * ra - rc * rc) / (2 * d * ra))
-                      + rc * rc * Math.acos((d * d + rc * rc - ra * ra) / (2 * d * rc))
-                      - 0.5 * Math.sqrt((ra + rc - d) * (d + ra - rc) * (d - ra + rc) * (ra + rc + d))
-                    ) / Math.PI
-                  const f = Math.min(lens / (ra * ra), lens / (rc * rc))
-                  if (f > pWorst) pWorst = f
-                  // A TENTH OF A POINT OF SLACK. The pack sums its neighbours'
-                  // lenses pairwise rather than unioning them, so a plate accepted
-                  // on the bound overstates what it owes and sits just inside it;
-                  // anything tighter than this measures float noise.
-                  if (f > 1 - b.packEarn + 1e-3) {
-                    pOver++
-                    if (o !== t) pSeam++
-                  }
-                }
-              }
-            }
-          }
-        }
-        check(pPairs > 1000 && pNear > 0 && pOver === 0,
-          'and no panel is drawn mostly inside another one',
-          `${pOver} of ${pPairs} pairs past the bound (${pSeam} of them across a tile seam)` +
-            `, worst pair buries ${(pWorst * 100).toFixed(1)}% of the smaller share` +
-            `, ${pNear} pairs straddling a seam were checked`)
-
-        // `t.ids` IS PLACEMENT ORDER, which is what makes a `gapBySize` bed
-        // checkable at all: on those beds a candidate is darted only against
-        // stone at least its own size, so the pairs the dart never promised
-        // anything about are exactly the ones where the EARLIER instance is the
-        // smaller. Excused below, and counted, so the exemption cannot quietly
-        // grow to cover a real dart failure.
         let pairs = 0
         let inside = 0
         let worst = 1
-        let excused = 0
         for (const b of r.beds) {
           if (!(b.minGap > 0)) continue
           for (const t of b.tiles.values()) {
@@ -2467,7 +2331,6 @@ console.log('\nscatter')
               const a = t.ids[i]
               for (let j = i + 1; j < t.n; j++) {
                 const c = t.ids[j]
-                if (b.gapBySize && b.instSpan[a] < b.instSpan[c]) { excused++; continue }
                 const dx = b.instX[a] - b.instX[c]
                 const dz = b.instZ[a] - b.instZ[c]
                 const need = b.minGap * 0.5 * (b.instSpan[a] + b.instSpan[c])
@@ -2480,8 +2343,7 @@ console.log('\nscatter')
         }
         check(pairs > 10000 && inside === 0,
           'and inside a tile not one pair of them is closer than its own dart allows',
-          `${inside} of ${pairs} same-tile pairs${inside ? `, worst at ${(worst * 100).toFixed(0)}% of the gap` : ''}` +
-            `, ${excused} excused as small-behind-big on a gapBySize bed`)
+          `${inside} of ${pairs} same-tile pairs${inside ? `, worst at ${(worst * 100).toFixed(0)}% of the gap` : ''}`)
       }
     }
     r.dispose()
@@ -2521,48 +2383,16 @@ console.log('\nscatter')
     const span = (a) => `${amin(a).toFixed(2)}-${amax(a).toFixed(2)} m over ${a.length}`
     const inside = (a, lo, hi) => a.length > 0 && amin(a) >= lo - 1e-4 && amax(a) <= hi + 1e-4
 
-    // WHAT THE GROUND ITSELF ANSWERS, over a grid of sites on a world, with no
-    // neighbours in the probe and the most generous burial the bed could ever hand
-    // a plate. THIS AND NOT THE PLACED WIDTHS is what `fitFromTop` and `fitSlope`
-    // are claims about: between the ladder's answer and the width that ends up on
-    // the ground sits the pack, which never resizes a plate but does REFUSE the
-    // ones whose face is already covered (see `_earnedFrac`), so the placed widths
-    // are a subset of the ladder's and skewed toward the wide end. Every check below
-    // that means to say something about the LADDER asks it here; the ones that mean
-    // to say something about the plates that stand up read `widths`.
-    const SINK_CAP = 0.92 // rocks.js, not exported
-    const fitAnswers = (rocks, bedName, step = 7, reach = 300) => {
-      const b = rocks.beds.find((q) => q.cfg.name === bedName)
-      if (!b) throw new Error(`check-rocks: no ${bedName} bed`)
-      const m = b.shape.measured
-      const top = b.cfg.sizeByEnv.cliff[1]
-      const o = { h: 0, tan: 0 }
-      const out = []
-      for (let x = -reach; x <= reach; x += step) {
-        for (let z = -reach; z <= reach; z += step) {
-          b.field.scatterAt(x, z, 4, o)
-          if (o.tan < b.minSlopeTan || o.tan > b.maxSlopeTan) continue
-          // Per metre of span and along the plate's normal, as _growTile quotes it.
-          const dropPerSpan =
-            (m.height * SINK_CAP) / m.width / Math.hypot(o.tan, 1) + b.shapeSkirt / m.width
-          const f = b._fitFactor(x, z, 0.4, top, dropPerSpan, [], 0)
-          if (f > 0) out.push(f * top)
-        }
-      }
-      return out
-    }
-
-    // A WALL IS FOR THE TWO BEDS BUILT FOR ONE, AND NOBODY ELSE. On 68 degrees
-    // the underfoot bed (42), the boulders (48), the scree (46), the sunken (40)
-    // and the giants (62) have all bowed out; `embedded` at 72 and `cliff slabs`
-    // at 85 are the only ones with a slope limit past it, and they are the ones
-    // whose subject IS a face -- a block let into the wall, and a panel of the
-    // wall. Asserted as an exclusive: a bed that is not one of those two reaching
-    // a wall is a rock BALANCED on it, and this is the line that notices.
+    // A WALL IS FOR THE ONE BED BUILT FOR ONE, AND NOBODY ELSE. On 68 degrees
+    // the boulders (48), the scree (46), the sunken (40), the shore (42) and the
+    // giants (62) have all bowed out; `embedded` at 72 is the only one with a
+    // slope limit past it, and it is the one whose subject IS a face -- a block
+    // let into the wall. Asserted as an exclusive: any other bed reaching a wall
+    // is a rock BALANCED on it, and this is the line that notices.
     const steepRocks = build(steep)
     const live = steepRocks.stats.beds.filter((b) => b.placed > 0).map((b) => b.name).sort()
-    check(live.join(' ') === 'cliff slabs embedded',
-      'on a 68-degree wall only the two beds built for a face are left standing',
+    check(live.join(' ') === 'embedded',
+      'on a 68-degree wall only the bed built for a face is left standing',
       live.join(' ') || 'nothing placed at all')
 
     // AND IT IS COARSE, 3 to 64 m, with NO SMALL END. A third of a metre of
@@ -2582,219 +2412,7 @@ console.log('\nscatter')
       'and the range is really used, not clustered on one size',
       `median ${[...face].sort((a, b) => a - b)[face.length >> 1].toFixed(2)} m`)
 
-    // --- and the panels laid ALONG the same wall ------------------------------
-    //
-    // The other bed that survived the 68 degrees, and everything below is about
-    // the one thing that makes an open-bottomed shell placeable at all: it has
-    // to lie FLAT on the face. A cap that is not aligned is a bowl with its
-    // mouth showing.
-    //
-    // TWO PROMISES ABOUT THE SIZE. NOTHING SMALL IS PLACED ON A WALL AT ALL: a
-    // carpet bed used to run under this one at 1.5 to 9 m and it is gone, because
-    // what it put on a face was litter no player can resolve, on ground the panels
-    // want. The 8 m floor is `fitFloor` rather than a roll -- a panel whose site
-    // cannot hold nine metres is CUT rather than thrown away, see _fitFactor -- so
-    // the bed legitimately stands up plates a metre under its own `sizeByEnv`
-    // floor, and never further.
-    //
-    // AND ON GROUND WITH NOTHING TO CUT THEM, THE GROUND ANSWERS AT THE TOP. This
-    // world's height stub is constant, so the fit ladder finds no rim standing off
-    // anything and never fires. `fitFromTop` means the bed rolls no size, so what
-    // the ladder returns is the range's ceiling and nothing else -- a spread here
-    // would mean a size roll had crept back in, which is the bug that had the bed
-    // laying five-metre plates on sixty-metre faces. The fold below is where the
-    // ladder is made to fire.
-    const slabs = widths(steepRocks, 'cliff slabs')
-    check(inside(slabs, 8, 70), 'and every panel of the wall itself is between 8 and 70 m across',
-      span(slabs))
-    const asked = fitAnswers(steepRocks, 'cliff slabs')
-    check(asked.length > 1000 && amin(asked) > 69.9,
-      'and where the ground cuts none of them, the ground answers at the 70 m top',
-      span(asked))
-
-    // NOT ONE QUARTER TURN BETWEEN THEM. The turns are what give a boulder
-    // sixteen silhouettes out of one mesh, and they are exactly wrong here:
-    // fifteen of the sixteen point the cap's open underside somewhere other than
-    // at the ground. RockBed throws on the combination, so this is a check on
-    // the CONFIG rather than on the arithmetic -- that neither cap bed quietly
-    // acquires the flag a later hand might think is free variety.
-    const capBeds = steepRocks.beds.filter((b) => b.shape.name === 'cap').map((b) => b.cfg.name)
-    const unrolled = steepRocks.beds.filter((b) => !b.roll).map((b) => b.cfg.name)
-    check(capBeds.join(' ') === 'cliff slabs bed caps' && unrolled.join(' ') === capBeds.join(' '),
-      'the two cap beds are the only beds in the file that decline the quarter turns',
-      `caps ${capBeds.join(' ')}; unrolled ${unrolled.join(' ') || 'none'}`)
     steepRocks.dispose()
-
-    // THE ALIGNMENT ITSELF, ON GROUND THAT REALLY TILTS. Every stub above returns
-    // a CONSTANT height, so `_groundTilt`'s central difference reads zero and the
-    // surface normal comes back as world up whatever `tan` claims -- which would
-    // make an alignment check on those worlds pass on a bed that ignored the
-    // ground entirely. This one is a real inclined plane: h falls 2.5 m per metre
-    // of x, so the normal is a fixed direction 68 degrees off vertical and every
-    // plate's own +Y has to be within TILT_JITTER's 15 degrees of it.
-    const G = 2.5
-    const slabPlane = {
-      field: {
-        scatterAt: (x, z, cell, out) => { out.h = 600 - G * x; out.tan = G; return out },
-        heightAt: (x) => 600 - G * x,
-        snowLineAt: () => 9999,
-        bands: { altLo: 0, altSpan: 900 },
-      },
-      water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
-    }
-    {
-      const slabRocks = build(slabPlane)
-      const bed = slabRocks.beds.find((b) => b.cfg.name === 'cliff slabs')
-      const n = new THREE.Vector3(G, 1, 0).normalize()
-      const m = new THREE.Matrix4()
-      const up = new THREE.Vector3()
-      let worst = 0
-      let count = 0
-      for (const t of bed.tiles.values()) {
-        for (let k = 0; k < t.n; k++) {
-          m.fromArray(bed.instM, t.ids[k] * 16)
-          up.set(m.elements[4], m.elements[5], m.elements[6]).normalize()
-          worst = Math.max(worst, Math.acos(Math.min(1, up.dot(n))))
-          count++
-        }
-      }
-      const deg = (worst * 180) / Math.PI
-      check(count > 200 && deg <= 15.5,
-        'every plate on an inclined plane lies on the face, off its normal by no more than the jitter',
-        `${count} plates, worst ${deg.toFixed(1)} deg off a ${((Math.atan(G) * 180) / Math.PI).toFixed(0)} deg face`)
-
-      // AND THE SKIRT IS UNDER THE STONE. The rim hangs `measured.height` below
-      // the bed plane by construction (see CAP in rock-bank.js), and the burial
-      // floor is a fraction of what the plate STANDS -- so the test that matters
-      // is not "is it buried" but "is it buried deeper than the jitter can lift
-      // it". A 15 degree tilt lifts the far rim by half the span times sin 15.
-      let exposed = 0
-      for (const t of bed.tiles.values()) {
-        for (let k = 0; k < t.n; k++) {
-          const id = t.ids[k]
-          const sc = bed.instScale[id]
-          const skirt = bed.shape.measured.height * sc
-          const lift = bed.instSpan[id] * 0.5 * Math.sin((15 * Math.PI) / 180)
-          if (skirt + bed.instSink[id] <= lift) exposed++
-        }
-      }
-      check(exposed === 0, 'and not one of them can show its open rim, jitter and all',
-        `${exposed} of ${count} plates with the rim above the lift`)
-      slabRocks.dispose()
-    }
-
-    // AND THE SAME PROMISE ON GROUND THAT IS NOT A PLANE, WHICH IS THE ONLY
-    // GROUND WHERE IT CAN BE BROKEN. An inclined plane cannot expose a rim: the
-    // plate's own tangent plane IS the ground, everywhere. A real face is not a
-    // plane, and the failure it produces is a plate that qualified on slope at
-    // its middle and at its rim and still bridged a hollow between them, standing
-    // off the hillside with its open underside pointing at the player. The
-    // fixture is a face folded convexly along z -- h falls as z squared, so the
-    // slope stays inside the bed's window while the ground drops metres out of
-    // the plate's plane -- and the check re-derives what `_fitFactor` promised
-    // for every plate the bed actually stood up.
-    {
-      const G = 1.732 // 60 degrees down +x, the middle of the 45-85 window
-      // The fold: 40 m of fall-away 20 m out. It has to be this sharp because the
-      // shell is DEEP -- a 70 m plate hangs its skirt 11 m below its own plane, and
-      // the plane is steep enough that a vertical drop is worth a fraction of that
-      // perpendicular. A gentler fold is one the plate simply seals, and then the
-      // ladder never fires and the two checks below pass on a probe that never ran.
-      const C = 0.1
-      const h = (x, z) => 600 - G * x - C * z * z
-      const fold = {
-        field: {
-          scatterAt: (x, z, cell, out) => {
-            out.h = h(x, z)
-            out.tan = Math.hypot(G, 2 * C * z)
-            return out
-          },
-          heightAt: h,
-          snowLineAt: () => 9999,
-          bands: { altLo: 0, altSpan: 900 },
-        },
-        water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
-      }
-      const foldRocks = build(fold)
-      // How far a plate's skirt bottom ends up ABOVE the ground at its rim, over
-      // the plate's own span. Budget read back off the instance rather than
-      // recomputed from the rolls, so this is a statement about the rock that is
-      // standing there: `instSink` is how far it was pushed under, and the skirt
-      // is how much further the shell's curtain reaches.
-      //
-      // ALONG THE PLATE'S NORMAL, the frame `_fitFactor` works in. The burial is
-      // applied down world Y so it is the term that gets foreshortened here; the
-      // skirt hangs along the normal already; and the rim's stand-off is a height
-      // difference, so it is divided by the same `nrm`.
-      //
-      // BOUNDED AND NOT ZERO, because `_fitFactor` samples twelve azimuths and
-      // this samples thirty-six: a hollow falling between two of the twelve is
-      // found here and was not found there, and no probe count makes a sampled
-      // test exact. What has to hold is that the miss is small against the plate
-      // -- a couple of per cent of a span is a hairline at one rim, where the
-      // failure this whole test exists to stop is a plate standing metres off the
-      // hill with its whole underside lit.
-      let worst = 0
-      let plates = 0
-      for (const name of ['cliff slabs']) {
-        const b = foldRocks.beds.find((q) => q.cfg.name === name)
-        const e = 1.5
-        for (const t of b.tiles.values()) {
-          for (let k = 0; k < t.n; k++) {
-            const id = t.ids[k]
-            const x = b.instX[id]
-            const z = b.instZ[id]
-            const r = b.instSpan[id] * 0.5
-            const gx = (h(x + e, z) - h(x - e, z)) / (2 * e)
-            const gz = (h(x, z + e) - h(x, z - e)) / (2 * e)
-            const nrm = Math.hypot(gx, gz, 1)
-            const budget = b.instSink[id] / nrm + b.shape.skirt * b.instScale[id]
-            plates++
-            for (let j = 0; j < 36; j++) {
-              const fa = j * (Math.PI / 18)
-              const px = x + Math.cos(fa) * r
-              const pz = z + Math.sin(fa) * r
-              const stood = (h(x, z) + gx * (px - x) + gz * (pz - z) - h(px, pz)) / nrm
-              worst = Math.max(worst, (stood - budget) / b.instSpan[id])
-            }
-          }
-        }
-      }
-      check(plates > 200 && worst < 0.025,
-        'and on a FOLDED face no plate lifts its rim off the hollow it was laid across',
-        `${plates} plates, worst rim ${(worst * 100).toFixed(1)}% of a span proud of its own skirt`)
-
-      // AND THE FOLD IS WHAT DID IT, not a bed that happens to place small plates
-      // everywhere. The same bed on the flat-inclined face above has no hollow to
-      // bridge, so its panels come out materially bigger: if these two agreed the
-      // check above would be passing on a probe that never fires.
-      const slab = build(slabPlane)
-      const folded = fitAnswers(foldRocks, 'cliff slabs')
-      const planar = fitAnswers(slab, 'cliff slabs')
-      const med = (a) => [...a].sort((q, w) => q - w)[a.length >> 1]
-      check(folded.length > 500 && med(folded) < med(planar) * 0.8,
-        'and the fold is what cut them, not a bed that answers small wherever it goes',
-        `median ${med(folded).toFixed(1)} m folded against ${med(planar).toFixed(1)} m on a plane`)
-
-      // AND THE SIZE THE GROUND HANDS BACK IS ALWAYS A RUNG, WHICH IS WHAT
-      // `fitFromTop` MEANS. The bed rolls no size at all: every candidate asks for
-      // the range's top and the fit probe cuts it by FIT_SHRINK a rung at a time,
-      // so what a face answers is a DISCRETE set -- 70, 60.9, 53, ... down to the 8
-      // m floor -- and nothing in between. A rolled size would fill the gaps between
-      // the rungs, which is the failure this catches and the reason the bed used to
-      // lay nine-metre plates on sixty-metre faces.
-      const rung = (w) => {
-        for (let r = 70; r > 7.9; r *= 0.87) if (Math.abs(w - r) < 0.01 * r) return true
-        return Math.abs(w - 8) < 0.08
-      }
-      const offLadder = planar.filter((w) => !rung(w)).length
-      const atTop = planar.filter((w) => w > 69.9).length
-      check(planar.length > 1000 && offLadder === 0 && atTop > planar.length * 0.2,
-        'and every width the ground hands back is a rung of that ladder, because no size is ever rolled',
-        `${offLadder} of ${planar.length} off the ladder, ${atTop} at the 70 m top`)
-      slab.dispose()
-      foldRocks.dispose()
-    }
 
     // THE SAME BED ON A LAKE FLOOR IS A DIFFERENT SIZE, which is the whole
     // reason `sizeByEnv` exists rather than one range per bed. A 20 m block in a
@@ -2809,42 +2427,42 @@ console.log('\nscatter')
       'and a lake floor uses the whole of that band',
       `${amin(bedRock).toFixed(2)}-${amax(bedRock).toFixed(2)} m over ${bedRock.length}`)
 
-    // THE CAP UNDERWATER, AND THE CEILING IT KEEPS. Same shape as the cliff bed
-    // and the same alignment, at a fraction of the size: a plate of bedrock
-    // showing through silt is looked at from a few metres away in poor
-    // visibility, and past six metres it stops being floor and becomes terrain
-    // the terrain does not know about -- which is `embedded`'s job, and it is
-    // already doing it in this same water two checks above.
-    const floorCaps = widths(riverRocks, 'bed caps')
-    check(inside(floorCaps, 0.8, 6), 'the bed caps hold their six-metre ceiling on a lake floor',
-      span(floorCaps))
-    check(amin(floorCaps) < 2 && amax(floorCaps) > 5,
-      'and use the whole of their narrower band too',
-      `median ${[...floorCaps].sort((a, b) => a - b)[floorCaps.length >> 1].toFixed(2)} m`)
-    // EVERY CAP BED ALIGNS THE WHOLE WAY, and this is a config check because the
-    // arithmetic is checked on the inclined plane above. 1.0 is the only value
-    // that works for an open shell: any fraction under it leaves the rock part
-    // of its own bearing, and the part it keeps is what lifts one edge of the
-    // rim off the surface it is supposed to be part of.
-    const tilts = riverRocks.beds.filter((b) => b.shape.name === 'cap').map((b) => b.cfg.tilt)
-    check(tilts.length === 2 && tilts.every((t) => t === 1),
-      'and every cap bed aligns fully to the surface it lies on, where no boulder bed does',
-      `caps ${tilts.join('/')}, boulders ${riverRocks.beds.filter((b) => b.shape.name === 'boulder').map((b) => b.cfg.tilt).join('/')}`)
-
-    // AND THE RIVERBED HAS NO GRAVEL LEFT IN GEOMETRY. The underfoot bed used
-    // to run at full rate underwater, which put a half-metre stone every 2.9 m
-    // across every lake floor in the world -- the densest geometry anywhere and
-    // the least worth drawing, since it is seen through moving water. Its river
-    // rate is now a twelfth of that and its river SIZE is boulders, up to 2 m. If
-    // this range ever slides back down, the gravel is back.
-    const wet = widths(riverRocks, 'underfoot')
-    check(inside(wet, 0.5, 2), 'and the underfoot bed puts 0.5-2 m boulders in a riverbed, not gravel',
-      span(wet))
-    // On dry ground the same bed is the small end of the same floor: ROCK_MIN_SIZE
-    // is what every bed in the world starts at, because one shape in the bank
-    // means a stone smaller than that is a shrunk boulder and reads as the repeat.
-    const dry = widths(forestRocks, 'underfoot')
-    check(inside(dry, 0.5, 1), 'while on dry ground it is still 0.5-1 m stones', span(dry))
+    // THE DOUBLED TOP IS FOR BARREN GROUND ONLY. `cliff` and `peak` are read
+    // off one field sample: a 35-degree pocket in a wood is a cliff site and
+    // the wooded band under the treeline is peak country, and a 30 m tor on
+    // either stands out of the trees. So `barrenTop` is let in only where the
+    // forest has nothing: above the treeline's fade, or on a face still steeper
+    // than CLIFF_SLOPE_DEG all the way across the rock's own width. Everywhere
+    // else the roll lands on `sizeByEnv` as before.
+    {
+      const giantsTop = (rocks) => amax(widths(rocks, 'giants'))
+      check(giantsTop(cliffRocks) > 24, 'a giant on an open 39-degree face reaches the barren top',
+        `${giantsTop(cliffRocks).toFixed(1)} m against a 15 m wooded top and a 30 m barren one`)
+      check(giantsTop(peakRocks) <= 15 + 1e-4, 'but on a wooded peak, 20 m over the snow line, it stops at the wooded top',
+        `${giantsTop(peakRocks).toFixed(1)} m`)
+      const bare = build(world(880 + BARREN_ABOVE_SNOW + 50, 0.5, 880, null))
+      check(giantsTop(bare) > 24, 'and past the treeline\'s fade the same slope is barren and reaches it',
+        `${giantsTop(bare).toFixed(1)} m at ${BARREN_ABOVE_SNOW + 50} m over the snow line`)
+      bare.dispose()
+      // Twelve-metre steep bands through flat woodland: every band site is a
+      // cliff site, and no rock over 15 m can keep its whole footprint in one.
+      const pockets = world(60, 0, 9999, null)
+      pockets.field.scatterAt = (x, z, cell, out) => {
+        out.h = 60
+        out.tan = ((x % 100) + 100) % 100 < 12 ? 0.8 : 0
+        return out
+      }
+      const pocketed = build(pockets)
+      check(giantsTop(pocketed) <= 15 + 1e-4, 'and a steep pocket in a wood is not a cliffside: its giants stop at the wooded top',
+        `${giantsTop(pocketed).toFixed(1)} m over ${widths(pocketed, 'giants').length} giants`)
+      pocketed.dispose()
+      // The fade is trees.js's TREELINE.fade, which rocks.js cannot import
+      // without a cycle; read it off the source instead.
+      const treeFade = readFileSync('src/v2/render/trees.js', 'utf8').match(/TREELINE = \{[^}]*\bfade: (\d+)/)
+      if (!treeFade) throw new Error('trees.js no longer declares TREELINE.fade')
+      check(Number(treeFade[1]) === BARREN_ABOVE_SNOW, 'and "barren" starts where the forest\'s own fade does',
+        `rocks ${BARREN_ABOVE_SNOW} m over the snow line, trees ${treeFade[1]}`)
+    }
   }
 
   // --- the bed that only exists underwater ---------------------------------
@@ -2913,32 +2531,6 @@ console.log('\nscatter')
     check(amax(sunk) > 8 && amin(sunk) < 2,
       'and the band is really used, so a lake floor is not one stone repeated',
       `${amin(sunk).toFixed(2)}-${amax(sunk).toFixed(2)} m over ${sunk.length}`)
-
-    // SPARSE AGAINST THE FLOOR IT STANDS ON, which is the difference between
-    // something you come across and something you wade through. The underfoot
-    // bed is the lake floor's cover and is meant to be everywhere; these are
-    // meant to be events.
-    //
-    // COUNTED OVER A SHARED DISC AND NOT OVER EACH BED'S OWN. The two beds have
-    // wildly different reaches -- 120 m against 600 -- so raw totals say the
-    // sparse bed is the commoner one, which is true of the disc and false of the
-    // floor you are standing on. 100 m is inside both, and past both beds' full
-    // radius, so the same graded thinning applies to each and cancels.
-    const nearN = (bedName) => {
-      const b = shoreRocks.beds.find((x) => x.cfg.name === bedName)
-      let n = 0
-      for (const t of b.tiles.values()) {
-        for (let k = 0; k < t.n; k++) {
-          const id = t.ids[k]
-          if (b.instX[id] ** 2 + b.instZ[id] ** 2 < 100 * 100) n++
-        }
-      }
-      return n
-    }
-    const coverN = nearN('underfoot')
-    const sunkN = nearN('sunken')
-    check(coverN > sunkN * 2, 'and the floor carries several stones underfoot for every one of them',
-      `${sunkN} boulders against ${coverN} underfoot stones inside 100 m, ${(coverN / Math.max(1, sunkN)).toFixed(1)}x`)
 
     // TWICE THE BOULDERS ALONG THE SHORE, wet and dry alike. `shoreGain` multiplies
     // the accept rate within SHORE_REACH of the edge, so a world that is all edge
@@ -3179,8 +2771,7 @@ console.log('\nscatter')
     // obliged to be.
     {
       const seen = []
-      for (const [w, name] of [[forestRocks, 'boulders'], [cliffRocks, 'boulders'],
-        [forestRocks, 'underfoot'], [cliffRocks, 'underfoot']]) {
+      for (const [w, name] of [[forestRocks, 'boulders'], [cliffRocks, 'boulders']]) {
         const a = fracs(w, name)
         for (let i = 0; i < a.length; i++) seen.push([a[i], a.tall[i]])
       }
@@ -3196,35 +2787,6 @@ console.log('\nscatter')
         `${(amin(stood) * 100).toFixed(0)}% at the shallowest, against ${(amin(laid) * 100).toFixed(0)}%`)
     }
 
-    // And the bed WITHOUT `sinkVary` takes no roll: its fraction is a pure
-    // function of the slope and of which way the turn stood it, because a pebble
-    // is too small for a dice to read on. So the population is TWO bands per
-    // slope rather than a spread, and the test is on a band at a time -- inside
-    // one, all that is left is the LEAN, which tips the box about its bed face
-    // and moves both the lowest corner and the extent. A cliff pebble is still
-    // unambiguously deeper than a flat one standing the same way.
-    const byTurn = (rocks) => {
-      const a = fracs(rocks, 'underfoot')
-      return {
-        laid: stat(a.filter((_, i) => !a.tall[i])),
-        stood: stat(a.filter((_, i) => a.tall[i])),
-      }
-    }
-    const under = byTurn(forestRocks)
-    const underSteep = byTurn(cliffRocks)
-    const lean = (s) => s.max - s.min
-    // A fifth of the rock is all the lean can move a band. The rolled bed spreads
-    // more than twice that, so the two populations stay plainly different kinds.
-    const band = 0.2
-    check(lean(under.laid) < band && lean(under.stood) < band &&
-      lean(underSteep.laid) < band && lean(underSteep.stood) < band &&
-      underSteep.laid.min > under.laid.max && underSteep.stood.min > under.stood.max,
-      'the underfoot bed takes no burial roll -- what spread a band has is the lean, not a dice',
-      `flat ${(under.laid.min * 100).toFixed(1)}-${(under.laid.max * 100).toFixed(1)}% laid, ` +
-      `${(under.stood.min * 100).toFixed(1)}-${(under.stood.max * 100).toFixed(1)}% stood; ` +
-      `cliff ${(underSteep.laid.min * 100).toFixed(1)}-${(underSteep.laid.max * 100).toFixed(1)}% / ` +
-      `${(underSteep.stood.min * 100).toFixed(1)}-${(underSteep.stood.max * 100).toFixed(1)}%, ` +
-      `against the rolled bed's ${(flat.min * 100).toFixed(0)}-${(flat.max * 100).toFixed(0)}%`)
 
     const flatBed = forestRocks.beds.find((b) => b.cfg.name === 'boulders')
     check(
@@ -3455,16 +3017,83 @@ console.log('\nscatter')
       check(forestRocks.blockTopAt(9e5, -9e5, 0) === -Infinity,
         'and ground with no rock on it answers nothing, off the resident tiles included')
 
-      // ONLY THE FLAGGED BEDS ANSWER, asserted on the flags rather than on the
-      // query: the underfoot bed is dense enough that walking it per candidate would
-      // dominate the grass scatter, and grass between river stones is the picture.
-      const blocking = forestRocks.beds.filter((b) => b.blocks).map((b) => b.cfg.name)
-      check(!blocking.includes('underfoot') && blocking.length === 6,
-        'and the one bed too dense to walk per candidate is held out of it',
-        blocking.join(' '))
+      // --- the column, which is what the walker asks ------------------------
+      //
+      // `columnAt` is the same ray with both ends kept: every rock the vertical
+      // line passes through, bottom and top, unsettled. Re-derived here the same
+      // way stoneTop is -- triangles pushed out to world, plan barycentric --
+      // but per rock and keeping the lowest crossing as well as the highest, and
+      // every span the query returns has to match one, count included. Over the
+      // same 400 points across the widest boulder, where over half the samples
+      // are air and have to come back empty.
+      const stoneSpans = (x, z, minSize) => {
+        const found = []
+        for (const b of forestRocks.beds) {
+          if (!b.blocks) continue
+          const pos = b.shape.tiers[0].attributes.position.array
+          for (const t of b.tiles.values()) {
+            for (let k = 0; k < t.n; k++) {
+              const id = t.ids[k]
+              if (b.shapeLod * b.instScale[id] < minSize) continue
+              const r = b.hull.radius * b.instScale[id]
+              const ex = x - b.instX[id]
+              const ez = z - b.instZ[id]
+              if (ex * ex + ez * ez >= r * r) continue
+              m.fromArray(b.instM, id * 16)
+              let lo = Infinity
+              let hi = -Infinity
+              for (let f = 0; f < pos.length; f += 9) {
+                const a = v0.set(pos[f], pos[f + 1], pos[f + 2]).applyMatrix4(m)
+                const bb = v1.set(pos[f + 3], pos[f + 4], pos[f + 5]).applyMatrix4(m)
+                const c = v2.set(pos[f + 6], pos[f + 7], pos[f + 8]).applyMatrix4(m)
+                const det = (bb.z - c.z) * (a.x - c.x) + (c.x - bb.x) * (a.z - c.z)
+                if (Math.abs(det) < 1e-12) continue
+                const l1 = ((bb.z - c.z) * (x - c.x) + (c.x - bb.x) * (z - c.z)) / det
+                const l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / det
+                const l3 = 1 - l1 - l2
+                if (l1 < 0 || l2 < 0 || l3 < 0) continue
+                const y = l1 * a.y + l2 * bb.y + l3 * c.y
+                lo = Math.min(lo, y)
+                hi = Math.max(hi, y)
+              }
+              if (hi > -Infinity) found.push([lo, hi])
+            }
+          }
+        }
+        return found.sort((p, q) => p[1] - q[1])
+      }
+      const col = new Float64Array(SPAN_STRIDE * 8)
+      let colBad = 0
+      let colLit = 0
+      let overhung = 0
+      let thickest = 0
+      for (let i = 0; i < 400; i++) {
+        const a = (i * 2.399963) % (Math.PI * 2)
+        const d = Math.sqrt((i + 0.5) / 400) * rad
+        const x = bed.instX[widest.id] + Math.cos(a) * d
+        const z = bed.instZ[widest.id] + Math.sin(a) * d
+        const want = stoneSpans(x, z, 0)
+        const n = forestRocks.columnAt(x, z, 0, col)
+        const got = []
+        for (let s = 0; s < n; s++) got.push([col[s * 2], col[s * 2 + 1]])
+        got.sort((p, q) => p[1] - q[1])
+        if (got.length !== want.length) { colBad++; continue }
+        for (let s = 0; s < n; s++) {
+          if (Math.abs(got[s][0] - want[s][0]) > RAY_EPS || Math.abs(got[s][1] - want[s][1]) > RAY_EPS) colBad++
+          if (got[s][0] > 60 + 0.05) overhung++
+          thickest = Math.max(thickest, got[s][1] - got[s][0])
+        }
+        if (n) colLit++
+      }
+      check(colBad === 0, 'every point across a boulder answers the column with the stone on its line, both ends, or with nothing',
+        `${colBad} of 400 samples disagree with the triangle walk (${colLit} on stone, ${overhung} under an overhang)`)
+      check(thickest > 0.5, 'and a span is the stone\'s thickness rather than a surface',
+        `the thickest column through a ${standing.toFixed(2)} m boulder is ${thickest.toFixed(2)} m`)
+      check(forestRocks.columnAt(9e5, -9e5, 0, col) === 0,
+        'and ground with no rock on it answers no spans, off the resident tiles included')
     }
 
-    // THE ONE ALGEBRAIC CLAIM THE SURFACE QUERY RESTS ON. `_surfaceAt` inverts
+    // THE ONE ALGEBRAIC CLAIM THE SURFACE QUERY RESTS ON. `_spanAt` inverts
     // the mesh matrix's upper 3x3 as `transpose / s2`, which is its inverse
     // ONLY while the scale is uniform. rocks.js writes `_s.set(scale, scale,
     // scale)` for the mesh today, so it is -- and if a bed ever starts
@@ -3504,7 +3133,7 @@ console.log('\nscatter')
         }
       }
       check(n > 0 && worst < 1e-4,
-        'every rock mesh matrix has a uniform scale, so _surfaceAt\'s transpose really is an inverse',
+        'every rock mesh matrix has a uniform scale, so _spanAt\'s transpose really is an inverse',
         `worst departure from identity ${worst.toExponential(1)} over ${n} instances`)
     }
   }
@@ -3765,7 +3394,7 @@ console.log('\nscatter')
     const bed = r.beds.reduce((best, b) => (b.fades.length > best.fades.length ? b : best), r.beds[0])
     const first = snap(bed)
     check(first.length > 0, 'a rock crossing an LOD rung starts a cross-dissolve instead of cutting',
-      `${r.beds.reduce((n, b) => n + b.fades.length, 0)} in flight over eight beds, ` +
+      `${r.beds.reduce((n, b) => n + b.fades.length, 0)} in flight over six beds, ` +
       `worst bed ${bed.cfg.name} with ${first.length}`)
 
     check(first.every((f) => f.out < 0 && f.in < 0),

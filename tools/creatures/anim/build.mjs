@@ -60,9 +60,26 @@ export function rigFile(id) {
   return found
 }
 
+/**
+ * A clip spec, with this creature's own tuning laid over it.
+ *
+ * The library is shared, and a spec's numbers are relative so they mostly carry
+ * across bodies -- but only mostly. `stride` scales by wheelbase, and the snow
+ * hare's is 1.9x the fox's on shorter legs, so the trot that suits a fox reaches
+ * past what a hare can straighten into. Retuning the shared spec would drag
+ * every other creature along with it, so the fix belongs to the animal: the rig
+ * map may carry `clipTweaks: { <clip>: { <key>: value } }`, laid over the top
+ * level of the spec. Shallow on purpose -- a tweak that had to reach inside a
+ * pose's keyframes is a spec of its own, not a tweak.
+ */
+export function tunedSpec(name, map) {
+  const spec = readSpec(name, planOf(map))
+  return { ...spec, ...((map.clipTweaks ?? {})[name] ?? {}) }
+}
+
 export function buildClip(id, name) {
   const map = readRigMap(id)
-  const spec = readSpec(name, planOf(map))
+  const spec = tunedSpec(name, map)
   const source = rigFile(id)
   // A gait spec places feet and solves IK; a pose spec interpolates hand-authored
   // keyframes. Sitting has no footfall cycle, so it cannot come from a gait.

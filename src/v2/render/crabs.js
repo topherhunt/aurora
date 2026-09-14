@@ -18,7 +18,13 @@
 // The rocks arrive over frames after a move, so a tile scanned before its
 // boulders exist would stay empty; every tile is rescanned in turn, one per
 // RESCAN_FRAMES, and a rescan adds the perches it has not seen without
-// disturbing the crabs it has.
+// disturbing the crabs it has. THE STONE MOVES TOO: a rock is seated on the
+// drawn terrain and re-seated when the chunk under it re-splits
+// (Rocks._reground), by tens of centimetres where a far 2 m chunk becomes a
+// near 0.5 m one, and a crab's seat is its own number -- a pausing crab keeps
+// it, and a walking one refuses a step taller than STEP_SPANS, so neither
+// would ever follow the rock. So every crab re-reads its stone once per
+// RESEAT_EVERY frames.
 //
 // The mesh faces +X with its claws and is broad along Z; a crab scuttles
 // sideways, along its own ±Z, and rides the stone's slope (a finite-difference
@@ -70,8 +76,9 @@ const STEP_SPANS = 0.8
 // Drawn STRETCH_Y taller than the mesh (which is squashed flat), and sunk SINK of its height into the stone along the normal, so the legs grip the surface instead of tiptoeing on it.
 export const STRETCH_Y = 1.25
 export const SINK = 0.2
-// Frames between normal re-reads on a moving crab, and tiles rescanned per frame.
+// Frames between normal re-reads on a moving crab, between a crab's re-reads of its stone's height (see the header), and per tile rescan.
 const NORMAL_EVERY = 4
+export const RESEAT_EVERY = 8
 const RESCAN_FRAMES = 4
 // The normal is read from the surface NORMAL_SPAN of the crab's span either side of it; two sides whose rises differ by more than LIP of that are a lip, not a slope (see _slope).
 const NORMAL_SPAN = 0.25
@@ -322,6 +329,8 @@ export class Crabs {
   place(cx, cz) {
     for (const t of this.tiles.values()) this._leave(t)
     this.tiles.clear()
+    // The rescan queue holds tile objects; the ones just left must not be scanned, or their crabs would be seated in a tile nothing draws and never freed.
+    this.rescan = []
     this.overflow = 0
     this.saturated = 0
     this.head.x = cx
@@ -413,6 +422,11 @@ export class Crabs {
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
           if (!under && c.y < p.level) continue
+          // A re-ground is a vertical shift of the whole rock, so the normal holds; a seat whose stone is gone is kept.
+          if ((this.frame + c.id) % RESEAT_EVERY === 0) {
+            const top = this.stoneAt(c.x, c.z)
+            if (top !== -Infinity) c.y = top
+          }
           c.left -= dt
           let amp = 0
           if (c.state === 'go') {

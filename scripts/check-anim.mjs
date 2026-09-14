@@ -144,6 +144,9 @@ const WYVERN_MAP = {
 
 const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP }
 
+/** The handle groups a pose key may name -- and so the ones `scale` may dial. */
+const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'])
+
 /**
  * Write the fixture as a rigged GLB. Every node carries an identity rotation and
  * a translation equal to its offset from its parent, so a joint's world position
@@ -407,6 +410,52 @@ console.log('\na keyframed pose')
     'and is still on the ground once the body has folded down',
     last.feet.map((f) => mm(f.actual[1] - MAP.ground)).join(' '))
 
+  // `ground` is the lowest joint in the whole rig, which need not be a foot: on
+  // a Tripo hare the hind pair are ankles 16cm up. Measuring plantedness against
+  // that one plane reads those legs as permanently airborne, and an airborne leg
+  // is exempt from the slide check -- so the clip skates and the gate says
+  // nothing. Each leg is judged against its OWN rest foot instead.
+  const sunk = poseClip(FIXTURE, { ...MAP, ground: MAP.ground - 0.1 }, SIT)
+  check(sunk.frames[sunk.frames.length - 1].feet.every((f) => f.planted),
+    'a foot above the rig\'s lowest joint is still load-bearing, not airborne')
+
+  // A digging forepaw rakes backwards at its own rest height, so by geometry it
+  // is planted -- but it carries nothing, and scoring it as stance reports the
+  // intended stroke as skating.
+  // One paw strokes back and forth; every other foot holds still. Whether that
+  // is a defect is not something the geometry can answer -- the paw is at its
+  // rest height either way -- so the spec has to say.
+  const stroke = (t) => ({ t, pose: { legs: { frontLeft: { fore: t % 2 ? 0.25 : -0.25 } } } })
+  const raked = { kind: 'pose', samples: 24, unweighted: ['frontLeft'], keys: [stroke(0), stroke(1), stroke(2)] }
+  const mid = poseClip(FIXTURE, MAP, raked).frames[6].feet
+  check(mid.find((f) => f.id === 'frontLeft').planted === false
+    && mid.filter((f) => f.id !== 'frontLeft').every((f) => f.planted),
+    'a foot the spec declares unweighted drops out of stance, and only that foot')
+  const slideOf = (spec) => diagnose(poseClip(FIXTURE, MAP, spec)).stanceSlide
+  check(slideOf(raked) < 1e-9 && slideOf({ ...raked, unweighted: [] }) > 1e-3,
+    'so a rake costs the clip nothing, where the same stroke standing on it reads as a skid',
+    `${mm(slideOf(raked))} raking, ${mm(slideOf({ ...raked, unweighted: [] }))} standing`)
+
+  // A shared spec is relative, so it mostly carries across bodies -- and where
+  // it does not, `scale` dials one group down for one animal.
+  const offset = (spec) => {
+    const feet = poseClip(FIXTURE, MAP, spec).frames.at(-1).feet
+    return feet.find((f) => f.id === 'hindLeft').target[2] - JOINTS['HindFoot.L'][2]
+  }
+  check(Math.abs(offset({ ...SIT, scale: { legs: 0.5 } }) - offset(SIT) * 0.5) < 1e-9,
+    'scaling a group takes exactly that fraction of every handle in it',
+    `${mm(offset(SIT))} -> ${mm(offset({ ...SIT, scale: { legs: 0.5 } }))}`)
+
+  const tailRest = (spec) => {
+    const { tracks } = poseClip(FIXTURE, MAP, spec)
+    return MAP.tail.every((n) => tracks.get(named(n)).every((v, i) => Math.abs(v - (i % 4 === 3 ? 1 : 0)) < 1e-9))
+  }
+  check(tailRest({ ...SIT, scale: { tail: 0 } }) && !tailRest(SIT),
+    'a group scaled to zero stops moving, and only that group',
+    `legs still reach ${mm(offset({ ...SIT, scale: { tail: 0 } }))}`)
+  check(Math.abs(offset({ ...SIT, scale: { tail: 0 } }) - offset(SIT)) < 1e-9,
+    'so dialling the tail back leaves the feet exactly where they were')
+
   // The joint limits a walk runs under are too tight for a sit, so widening them
   // is the spec's job. A spec that narrows them instead must actually bind.
   const tight = diagnose(poseClip(FIXTURE, MAP, { ...SIT, limits: { hipLimit: 0.05, fold: 0.1 } }))
@@ -476,6 +525,10 @@ for (const plan of plans()) {
       for (const k of spec.keys ?? []) {
         for (const id of Object.keys(k.pose?.legs ?? {})) if (!legIds.has(id)) bad.push(`unknown leg ${id}`)
       }
+      // Both of these are looked up by name at solve time, so a misspelling is
+      // silent: the clip builds, the handle simply never moves.
+      for (const id of spec.unweighted ?? []) if (!legIds.has(id)) bad.push(`unweighted names no leg ${id}`)
+      for (const g of Object.keys(spec.scale ?? {})) if (!GROUPS.has(g)) bad.push(`scale names no handle group ${g}`)
     } else {
       if (!(spec.duration > 0)) bad.push('no duration')
       if (!(spec.duty > 0 && spec.duty <= 1)) bad.push(`duty ${spec.duty} is not a stance fraction`)
@@ -515,7 +568,18 @@ console.log('\nrigged creatures on disk')
     console.log('  --   none rigged under tools/creatures/work (gitignored); the fixture checks stand alone')
   }
   for (const id of rigged) {
-    for (const name of clipNames(planOf(readRigMap(id)))) {
+    // A tweak is laid over the shared spec by name, so one aimed at a clip that
+    // does not exist -- or at a handle group that does not -- changes nothing
+    // and says nothing. The animal reads as untuned and the map looks tuned.
+    const map = readRigMap(id)
+    const known = new Set(clipNames(planOf(map)))
+    const stray = Object.entries(map.clipTweaks ?? {}).flatMap(([clip, tweak]) => [
+      ...(known.has(clip) ? [] : [`no clip "${clip}"`]),
+      ...Object.keys(tweak.scale ?? {}).filter((g) => !GROUPS.has(g)).map((g) => `${clip}.scale has no group "${g}"`),
+    ])
+    check(stray.length === 0, `${id} tweaks clips it actually has`, stray.join('; '))
+
+    for (const name of clipNames(planOf(map))) {
       const { spec, stats } = buildClip(id, name)
       // A pose clip may deliberately reposition a foot -- a sit scoots the hind
       // paws forward as the animal folds -- so its feet are allowed to travel.

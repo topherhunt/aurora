@@ -1265,7 +1265,7 @@ trees.place(0, 0)
 
 // --- 9b1. the two ablations --------------------------------------------------
 //
-// The /?quest switches that answer "what do trees actually cost", and both are
+// The menu switches that answer "what do trees actually cost", and both are
 // measurements rather than settings, so what matters is that each removes ONE
 // thing and puts it back exactly. `tree tiers` has to empty the mesh meshes --
 // an emptied InstancedMesh is skipped before its draw call, which is where the

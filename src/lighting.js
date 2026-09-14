@@ -708,7 +708,7 @@ export class WorldLighting {
    * so `material.needsUpdate = true` re-runs onBeforeCompile, three looks the
    * result up under the unchanged key, finds the program it compiled the first
    * time and hands that back. The new source is never compiled and the toggle
-   * silently does nothing -- which is exactly how the /?quest wind switch came
+   * silently does nothing -- which is exactly how the menu's wind switch came
    * to read "no difference" on a headset. variantKey() rides in the same key
    * for the same reason: this file's own two axes are three programs.
    */

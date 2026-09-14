@@ -18,8 +18,8 @@ import THREE from '../../three-instance.js'
 //   tiers holds ONE ARENA PER TIER and moves an instance between them, which is
 //   a draw call per tier -- see render/ferns.js, which does exactly that.
 //
-//   NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the /?quest
-//   panel's cull row does nothing to a layer built on this: the two thirds of
+//   NO PER-INSTANCE FRUSTUM CULLING. There is none to have, so the menu's
+//   cull row does nothing to a layer built on this: the two thirds of
 //   the disc behind the player are submitted every frame.
 //
 //   PACKING IS DENSE AND HIDING IS A SWAP-REMOVE. An InstancedMesh draws a

@@ -1,5 +1,4 @@
 import THREE from '../three-instance.js'
-import { VRButton } from 'three/addons/webxr/VRButton.js'
 
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
@@ -59,10 +58,10 @@ import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, SOUNDS } from './audio/ambience.js'
 
-// Explicit presentation mode, rather than a user-agent guess. This keeps
-// desktop profiling unchanged and also makes Quest mode testable in a desktop
-// browser with `?quest` before entering XR.
-const QUEST_MODE = new URLSearchParams(location.search).has('quest')
+// `/` is the world as it ships, on a desktop and in the headset alike. `?editor`
+// is the same world with the §18 authoring tools over it: the corner panel, the
+// handles and the Tab-armed tools, none of which the plain route constructs.
+const EDITOR_MODE = new URLSearchParams(location.search).has('editor')
 
 // ---------------------------------------------------------------------------
 // The /v2 route (DESIGN.md §18): the imported world, walkable, with the
@@ -195,10 +194,10 @@ const bootFail = (err) => {
 // this by routing crashes onto a world-space panel instead of a flat DOM
 // overlay, since the DOM overlay isn't rendered inside the VR canvas at all
 // -- ported here so a crash AFTER VR entry (this file's bootFail above only
-// helps before/outside VR) is still visible on the headset. Set once quest
-// mode has a camera to attach the error plane to (see the QUEST_MODE branch
+// helps before/outside VR) is still visible on the headset. Set once there is a
+// camera to attach the error plane to (see the block after the renderer boot
 // below); reportRuntimeError still runs bootFail unconditionally, since it
-// also covers the flatscreen desktop-testing case.
+// also covers the flatscreen case.
 let showQuestRuntimeError = null
 
 // The first error to arrive, held forever. Two things read it: tick(), which
@@ -222,10 +221,10 @@ let fatalError = null
  */
 function exitVR() {
   try {
-    // A-Frame's own exit, when A-Frame owns the session: it ends the session AND
-    // does its bookkeeping (the vr-mode state, the enter-VR button, the canvas
-    // resize back to the page). Raw session.end() on the normal path, where
-    // three owns the session outright.
+    // A-Frame's own exit, since A-Frame owns the session: it ends the session
+    // AND does its bookkeeping (the vr-mode state, the enter-VR button, the
+    // canvas resize back to the page). Raw session.end() is the fallback for a
+    // crash that lands before the scene element is usable.
     //
     // `sceneEl.is` is guarded as well as `sceneEl`: the element is created
     // before A-Frame upgrades it, so a crash in that window would find a plain
@@ -256,19 +255,17 @@ window.addEventListener('unhandledrejection', (e) => {
 
 // --- renderer ---------------------------------------------------------------
 //
-// Quest mode hands the renderer/session bootstrap to A-Frame (the proven-
-// reliable VR entry path, per quest.html/quest-main.js) but NOT locomotion --
-// unlike quest.html, there's no movement-controls/look-controls/blink-
-// controls here. Only laser-controls per hand, for panel raycasting. Moving
-// around is entirely Player.update(dt, moveInput) below, identical to normal
-// mode, so walking/flying feel the same in and out of quest mode. Everything
-// below this block only ever touches the `renderer`/`scene`/`camera`/`rig`
-// locals, never the construction details, so it's unmodified by which branch
-// ran.
+// The renderer/session bootstrap is A-Frame's (the proven-reliable VR entry
+// path, per quest.html/quest-main.js) but locomotion is NOT -- unlike
+// quest.html, there's no movement-controls/look-controls/blink-controls here.
+// Only laser-controls per hand, for panel raycasting. Moving around is entirely
+// Player.update(dt, moveInput) below, in and out of XR. Everything below this
+// block only ever touches the `renderer`/`scene`/`camera`/`rig` locals, never
+// the construction details.
 // three-instance.js already resolves to AFRAME.THREE once A-Frame's own
-// <script> tag has run (index.html loads it unconditionally, before this
-// module), so objects built below are native to whichever THREE actually
-// owns the live scene -- no foreign objects, no shim.
+// <script> tag has run (index.html loads it before this module), so objects
+// built below are native to the THREE that owns the live scene -- no foreign
+// objects, no shim.
 
 let renderer, scene, camera, rig, leftGrip, rightGrip
 let sceneEl = null, rigEl = null, leftHandEl = null, rightHandEl = null
@@ -293,231 +290,202 @@ const FOVEATION = 1
 // Everything from here to the end of the file is wrapped in an async IIFE
 // (rather than using a top-level `await`) because Vite's default esbuild
 // build target predates ES2022 top-level await -- and every line below this
-// point depends on renderer/scene/camera/rig, which in quest mode aren't
-// resolved until the injected <a-scene>'s 'loaded' event fires.
+// point depends on renderer/scene/camera/rig, which aren't resolved until the
+// injected <a-scene>'s 'loaded' event fires.
 ;(async () => {
 
-if (QUEST_MODE) {
-  sceneEl = document.createElement('a-scene')
-  // A-Frame's own enter-VR UI is off, and the button below is the only way in.
-  // Its xr-mode-ui offers the session to the headset's toolbar button
-  // (navigator.xr.offerSession) whenever its own button is showing, and a
-  // session entered from the toolbar is no user activation on the page: the
-  // AudioContext then stays suspended until the first trigger pull. A click on
-  // a page button is the activation the audio needs.
-  sceneEl.setAttribute('xr-mode-ui', 'enabled: false')
-  // A-Frame 1.8's renderer defaults already agree with normal mode's plain
-  // `new THREE.WebGLRenderer(...)` below: toneMapping defaults to 'no' and
-  // there is no physicallyCorrectLights property in the schema at all. What
-  // diverged was the LIGHTS, which are dealt with after appendChild below.
-  //
-  // `toneMapping: no` stays stated even though it is the default, because the
-  // value is interpolated straight into a THREE constant name with no
-  // validation: 'no' -> NoToneMapping, and the plausible-looking 'none' ->
-  // undefined, which three reports as unsupported and silently compiles as
-  // Linear.
-  //
-  // `antialias: true` is NOT redundant with A-Frame's default. A-Frame's
-  // renderer schema defaults antialias to `auto`, which it resolves to FALSE on
-  // mobile GPUs -- and the Quest browser is a mobile GPU. Normal mode above
-  // asks for MSAA explicitly and gets it, so the headset was the one target
-  // drawing every distant ridge line with no edge coverage at all. On a
-  // shimmering skyline that reads as the terrain itself flickering.
-  //
-  // `logarithmicDepthBuffer` is opt-in behind `?quest&logdepth` rather than on
-  // by default: it costs a per-fragment gl_FragDepth write (which defeats early
-  // -Z on tiled mobile GPUs, exactly the wrong trade on a Quest 2) and the
-  // near/far fix below should make it unnecessary. It is here so the two can be
-  // A/B'd in the headset without a code change, because depth precision is not
-  // something a desktop can reproduce.
-  const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${FOVEATION}`]
-  if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
-  sceneEl.setAttribute('renderer', questRenderer.join('; '))
-  // No movement-controls/look-controls/blink-controls: locomotion in quest
-  // mode must be identical to normal mode, which is entirely driven by
-  // Player.update(dt, moveInput) + the manual mouse-drag look below. Only
-  // laser-controls stays, for panel-button raycasting.
-  //
-  // look-controls and wasd-controls must be disabled EXPLICITLY, because the
-  // <a-camera> PRIMITIVE attaches both by default (defaultComponents in
-  // A-Frame's primitives/a-camera.js) whether or not they are written here.
-  // Left on, they do not merely duplicate this file's locomotion, they fight
-  // it at a different level of the graph: A-Frame's `camera` component parents
-  // the actual THREE.PerspectiveCamera UNDER the entity's object3D, so
-  // look-controls' yaw/pitch land on the parent while the mouse-drag handler
-  // below writes the child. Two pitch/yaw pairs composed like that produce
-  // roll (the tilted, eventually upside-down horizon), and wasd-controls then
-  // pushes along the PARENT's rotation only -- the entity's `rotation`
-  // attribute -- so its motion diverges from the direction actually being
-  // looked down. Its 65 m/s^2 acceleration with velocity easing rides on top
-  // of Player's 1.45 m/s walk as well, which is the ice-skating glide.
-  //
-  // The explicit `position` is the same class of default: the primitive puts
-  // the ENTITY at y 1.6. In XR A-Frame overwrites the entity's transform with
-  // the headset pose (local-floor, so y is her real eye height), and the THREE
-  // camera child under it must then carry NO offset of its own -- see the
-  // sessionstart handler at the end of the file. Zero the entity here and
-  // set the desktop eyeHeight on the camera itself below, as normal mode does.
-  // near/far ARE NOT COSMETIC HERE, and this is the fix for the distant-ridge
-  // Z-fighting that only shows up in the headset. The <a-camera> primitive
-  // defaults to near 0.005 / far 10000 -- a 2,000,000:1 ratio -- while normal
-  // mode below builds its camera at 0.1 / 20000, a ratio of 200,000. A 24-bit
-  // depth buffer spends its precision logarithmically in that ratio, so at
-  // 0.005 near the quantisation at 2 km is on the order of tens of metres and
-  // at 4 km it is hundreds. Chunk skirts alone are up to 192 m deep on the
-  // coarsest tiers (skirtDepth = max(2, step * 3) in the chunk mesher), so the
-  // skirt and the neighbouring chunk's face land in the SAME depth bucket and
-  // whichever drew last wins. On a monitor that is a static, invisible tie; in
-  // XR the head never stops moving by a millimetre or two, so the tie is
-  // re-broken every frame and the whole skyline crawls. Matching normal mode's
-  // 0.1 buys back a factor of twenty of near-plane precision.
-  //
-  // far 20000 also matters on its own: stars.js puts its sphere at 15000, which
-  // A-Frame's default far of 10000 clips away entirely.
-  sceneEl.innerHTML = `
-    <a-entity id="rig">
-      <a-camera id="camera" look-controls="enabled: false" wasd-controls="enabled: false" position="0 0 0" near="0.1" far="20000"></a-camera>
-      <a-entity id="left-hand" laser-controls="hand: left"></a-entity>
-      <a-entity id="right-hand" laser-controls="hand: right"></a-entity>
-    </a-entity>
-  `
-  document.body.appendChild(sceneEl)
-  await new Promise((resolve) => {
-    if (sceneEl.hasLoaded) resolve()
-    else sceneEl.addEventListener('loaded', resolve, { once: true })
-  })
-  // A-FRAME'S DEFAULT LIGHTS ARE THE WHOLE OF QUEST MODE'S LIGHTING DIVERGENCE.
-  // Its light system hangs two entities off any scene that has not declared a
-  // light of its own, on the 'loaded' event: an ambient #BBB at intensity 1 and
-  // a directional #FFF at 1.884 aimed down -0.5 1 1. This file builds its sun
-  // and hemi as bare THREE objects on scene.object3D, which that system cannot
-  // see, so it fired every time -- and the props and the terrain are
-  // MeshLambertMaterial, so a flat 0.46-linear ambient landed on all of them.
-  // It reads as bright, flat and fake because it is: a constant that noon
-  // merely dilutes and midnight has nothing to hide.
-  //
-  // BOTH CALLS, BECAUSE THE ORDER IS NOT OURS TO KNOW. The system builds the
-  // lights from its own 'loaded' listener, and whether that runs before this
-  // block depends on when A-Frame got round to initSystems -- which is NOT at
-  // appendChild: ANode.connectedCallback defers the whole of it to the
-  // `aframeready` event unless A-Frame is already up, so `sceneEl.systems` is
-  // still empty on the line after the append. So: the flag stops a setup that
-  // has not run, and removeDefaultLights clears one that has. Either way this
-  // is after 'loaded', by which point the system certainly exists.
-  //
-  // THE SYSTEM'S OWN DATA, and not the `light="defaultLightsEnabled: false"`
-  // attribute the docs suggest. `light` is a registered COMPONENT as well as a
-  // system, and A-Frame's entity code does not exempt the scene: the attribute
-  // would ALSO initialise a light component on <a-scene> itself, which warns
-  // about the unknown property, falls back to its own schema, and hangs a white
-  // directional light at intensity 1 on the scene root. That is the bug being
-  // fixed here, arrived at by the cure.
-  if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: its default lights would light the world a second time")
-  sceneEl.systems.light.data.defaultLightsEnabled = false
-  sceneEl.systems.light.removeDefaultLights()
-  renderer = sceneEl.renderer
-  scene = sceneEl.object3D
-  camera = sceneEl.camera
-  // Matches normal mode below. The mouse-drag look handler assigns
-  // rotation.x/y directly (not via quaternion), and three's default Euler
-  // order ('XYZ') couples yaw into roll as pitch grows -- without this she
-  // twists onto her side and eventually upside-down under a plain up/down
-  // drag, and WASD (read off the now-rolled local axes) comes out backwards.
-  // 'YXZ' (yaw first, then pitch) is the standard FPS-camera order and is
-  // what keeps normal mode's own drag-look free of that coupling.
-  camera.rotation.order = 'YXZ'
-  // Desktop only. In XR, A-Frame writes the headset pose to the camera ENTITY
-  // (renderer.xr.setPoseTarget(camera.el.object3D)), not to this child camera,
-  // so this offset would stack under the pose: the session handlers below zero
-  // it on entry and put it back on exit.
-  camera.position.y = LOCOMOTION.eyeHeight
-  rigEl = sceneEl.querySelector('#rig')
-  leftHandEl = sceneEl.querySelector('#left-hand')
-  rightHandEl = sceneEl.querySelector('#right-hand')
-  rig = rigEl.object3D
-  leftGrip = leftHandEl.object3D
-  rightGrip = rightHandEl.object3D
+sceneEl = document.createElement('a-scene')
+// A-Frame's own enter-VR UI is off, and the button below is the only way in.
+// Its xr-mode-ui offers the session to the headset's toolbar button
+// (navigator.xr.offerSession) whenever its own button is showing, and a
+// session entered from the toolbar is no user activation on the page: the
+// AudioContext then stays suspended until the first trigger pull. A click on
+// a page button is the activation the audio needs.
+sceneEl.setAttribute('xr-mode-ui', 'enabled: false')
+// A-Frame 1.8's renderer defaults are a plain `new THREE.WebGLRenderer(...)`:
+// toneMapping defaults to 'no' and there is no physicallyCorrectLights
+// property in the schema at all. What diverges from a bare three renderer is
+// the LIGHTS, which are dealt with after appendChild below.
+//
+// `toneMapping: no` stays stated even though it is the default, because the
+// value is interpolated straight into a THREE constant name with no
+// validation: 'no' -> NoToneMapping, and the plausible-looking 'none' ->
+// undefined, which three reports as unsupported and silently compiles as
+// Linear.
+//
+// `antialias: true` is NOT redundant with A-Frame's default. A-Frame's
+// renderer schema defaults antialias to `auto`, which it resolves to FALSE on
+// mobile GPUs -- and the Quest browser is a mobile GPU. Without it the
+// headset draws every distant ridge line with no edge coverage at all, and on
+// a shimmering skyline that reads as the terrain itself flickering.
+//
+// `logarithmicDepthBuffer` is opt-in behind `?logdepth` rather than on
+// by default: it costs a per-fragment gl_FragDepth write (which defeats early
+// -Z on tiled mobile GPUs, exactly the wrong trade on a Quest 2) and the
+// near/far fix below should make it unnecessary. It is here so the two can be
+// A/B'd in the headset without a code change, because depth precision is not
+// something a desktop can reproduce.
+const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${FOVEATION}`]
+if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
+sceneEl.setAttribute('renderer', questRenderer.join('; '))
+// No movement-controls/look-controls/blink-controls: locomotion is entirely
+// Player.update(dt, moveInput) + the manual mouse-drag look below. Only
+// laser-controls stays, for panel-button raycasting.
+//
+// look-controls and wasd-controls must be disabled EXPLICITLY, because the
+// <a-camera> PRIMITIVE attaches both by default (defaultComponents in
+// A-Frame's primitives/a-camera.js) whether or not they are written here.
+// Left on, they do not merely duplicate this file's locomotion, they fight
+// it at a different level of the graph: A-Frame's `camera` component parents
+// the actual THREE.PerspectiveCamera UNDER the entity's object3D, so
+// look-controls' yaw/pitch land on the parent while the mouse-drag handler
+// below writes the child. Two pitch/yaw pairs composed like that produce
+// roll (the tilted, eventually upside-down horizon), and wasd-controls then
+// pushes along the PARENT's rotation only -- the entity's `rotation`
+// attribute -- so its motion diverges from the direction actually being
+// looked down. Its 65 m/s^2 acceleration with velocity easing rides on top
+// of Player's 1.45 m/s walk as well, which is the ice-skating glide.
+//
+// The explicit `position` is the same class of default: the primitive puts
+// the ENTITY at y 1.6. In XR A-Frame overwrites the entity's transform with
+// the headset pose (local-floor, so y is her real eye height), and the THREE
+// camera child under it must then carry NO offset of its own -- see the
+// sessionstart handler at the end of the file. Zero the entity here and
+// set the desktop eyeHeight on the camera itself below.
+// near/far ARE NOT COSMETIC HERE, and this is the fix for the distant-ridge
+// Z-fighting that only shows up in the headset. The <a-camera> primitive
+// defaults to near 0.005 / far 10000 -- a 2,000,000:1 ratio -- against
+// 0.1 / 20000 here, a ratio of 200,000. A 24-bit
+// depth buffer spends its precision logarithmically in that ratio, so at
+// 0.005 near the quantisation at 2 km is on the order of tens of metres and
+// at 4 km it is hundreds. Chunk skirts alone are up to 192 m deep on the
+// coarsest tiers (skirtDepth = max(2, step * 3) in the chunk mesher), so the
+// skirt and the neighbouring chunk's face land in the SAME depth bucket and
+// whichever drew last wins. On a monitor that is a static, invisible tie; in
+// XR the head never stops moving by a millimetre or two, so the tie is
+// re-broken every frame and the whole skyline crawls. 0.1 buys back a factor
+// of twenty of near-plane precision.
+//
+// far 20000 also matters on its own: stars.js puts its sphere at 15000, which
+// A-Frame's default far of 10000 clips away entirely.
+sceneEl.innerHTML = `
+  <a-entity id="rig">
+    <a-camera id="camera" look-controls="enabled: false" wasd-controls="enabled: false" position="0 0 0" near="0.1" far="20000"></a-camera>
+    <a-entity id="left-hand" laser-controls="hand: left"></a-entity>
+    <a-entity id="right-hand" laser-controls="hand: right"></a-entity>
+  </a-entity>
+`
+document.body.appendChild(sceneEl)
+await new Promise((resolve) => {
+  if (sceneEl.hasLoaded) resolve()
+  else sceneEl.addEventListener('loaded', resolve, { once: true })
+})
+// A-FRAME'S DEFAULT LIGHTS ARE THE WHOLE OF QUEST MODE'S LIGHTING DIVERGENCE.
+// Its light system hangs two entities off any scene that has not declared a
+// light of its own, on the 'loaded' event: an ambient #BBB at intensity 1 and
+// a directional #FFF at 1.884 aimed down -0.5 1 1. This file builds its sun
+// and hemi as bare THREE objects on scene.object3D, which that system cannot
+// see, so it fired every time -- and the props and the terrain are
+// MeshLambertMaterial, so a flat 0.46-linear ambient landed on all of them.
+// It reads as bright, flat and fake because it is: a constant that noon
+// merely dilutes and midnight has nothing to hide.
+//
+// BOTH CALLS, BECAUSE THE ORDER IS NOT OURS TO KNOW. The system builds the
+// lights from its own 'loaded' listener, and whether that runs before this
+// block depends on when A-Frame got round to initSystems -- which is NOT at
+// appendChild: ANode.connectedCallback defers the whole of it to the
+// `aframeready` event unless A-Frame is already up, so `sceneEl.systems` is
+// still empty on the line after the append. So: the flag stops a setup that
+// has not run, and removeDefaultLights clears one that has. Either way this
+// is after 'loaded', by which point the system certainly exists.
+//
+// THE SYSTEM'S OWN DATA, and not the `light="defaultLightsEnabled: false"`
+// attribute the docs suggest. `light` is a registered COMPONENT as well as a
+// system, and A-Frame's entity code does not exempt the scene: the attribute
+// would ALSO initialise a light component on <a-scene> itself, which warns
+// about the unknown property, falls back to its own schema, and hangs a white
+// directional light at intensity 1 on the scene root. That is the bug being
+// fixed here, arrived at by the cure.
+if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: its default lights would light the world a second time")
+sceneEl.systems.light.data.defaultLightsEnabled = false
+sceneEl.systems.light.removeDefaultLights()
+renderer = sceneEl.renderer
+scene = sceneEl.object3D
+camera = sceneEl.camera
+// The mouse-drag look handler assigns rotation.x/y directly (not via
+// quaternion), and three's default Euler order ('XYZ') couples yaw into roll
+// as pitch grows -- without this she twists onto her side and eventually
+// upside-down under a plain up/down drag, and WASD (read off the now-rolled
+// local axes) comes out backwards. 'YXZ' (yaw first, then pitch) is the
+// standard FPS-camera order.
+camera.rotation.order = 'YXZ'
+// Desktop only. In XR, A-Frame writes the headset pose to the camera ENTITY
+// (renderer.xr.setPoseTarget(camera.el.object3D)), not to this child camera,
+// so this offset would stack under the pose: the session handlers below zero
+// it on entry and put it back on exit.
+camera.position.y = LOCOMOTION.eyeHeight
+rigEl = sceneEl.querySelector('#rig')
+leftHandEl = sceneEl.querySelector('#left-hand')
+rightHandEl = sceneEl.querySelector('#right-hand')
+rig = rigEl.object3D
+leftGrip = leftHandEl.object3D
+rightGrip = rightHandEl.object3D
 
-  // The page's one Enter VR button, in the corner three's VRButton uses in
-  // normal mode. sceneEl.enterVR() requests the session inside the click, so
-  // A-Frame keeps owning it (vr-mode state, pose target, enter-vr/exit-vr).
-  const enterVR = document.createElement('button')
-  enterVR.className = 'qa-enter-vr'
-  enterVR.textContent = 'ENTER VR'
-  enterVR.style.cssText = 'position:absolute;bottom:20px;left:calc(50% - 60px);width:120px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,0.5);color:#fff;font:normal 13px sans-serif;text-align:center;opacity:0.5;outline:none;z-index:999;cursor:pointer'
-  enterVR.onmouseenter = () => { enterVR.style.opacity = '1' }
-  enterVR.onmouseleave = () => { enterVR.style.opacity = '0.5' }
-  enterVR.onclick = () => {
-    enterVR.textContent = 'ENTERING ...'
-    sceneEl.enterVR().catch((err) => {
-      console.error('[v2] enter VR', err)
-      enterVR.textContent = `VR FAILED: ${err.message ?? err}`
-    })
-  }
-  sceneEl.addEventListener('enter-vr', () => { enterVR.hidden = true })
-  sceneEl.addEventListener('exit-vr', () => { enterVR.hidden = false; enterVR.textContent = 'ENTER VR' })
-  document.body.appendChild(enterVR)
-} else {
-  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-  renderer.setPixelRatio(1) // never above 1 in XR; the headset controls its own resolution
-  renderer.setSize(innerWidth, innerHeight)
-  renderer.outputColorSpace = THREE.SRGBColorSpace
-  renderer.xr.enabled = true
-  renderer.xr.setFoveation(FOVEATION)
-  document.body.appendChild(renderer.domElement)
-  document.body.appendChild(VRButton.createButton(renderer))
-
-  scene = new THREE.Scene()
-
-  camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 20000)
-  camera.rotation.order = 'YXZ'
-  camera.position.y = LOCOMOTION.eyeHeight // desktop only; XR overwrites this from the pose
-
-  rig = new THREE.Group()
-  rig.add(camera)
-  leftGrip = renderer.xr.getControllerGrip(0)
-  rightGrip = renderer.xr.getControllerGrip(1)
-  rig.add(leftGrip, rightGrip)
-  scene.add(rig)
-}
-
-if (QUEST_MODE) {
-  // A plane fixed to the camera (not the panel or the rig -- both can be
-  // anywhere, or not yet built) so it is guaranteed on-screen the instant an
-  // error fires, in or out of VR. Also catches a lost WebGL context, which
-  // fires no JS exception at all (a GPU/driver crash) and would otherwise
-  // look identical to the reported black-screen-after-VR-entry symptom.
-  const errCanvas = document.createElement('canvas')
-  errCanvas.width = 1024; errCanvas.height = 320
-  const errCtx = errCanvas.getContext('2d')
-  const errTexture = new THREE.CanvasTexture(errCanvas)
-  errTexture.colorSpace = THREE.SRGBColorSpace
-  const errMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.1, 0.34),
-    new THREE.MeshBasicMaterial({ map: errTexture, transparent: true, toneMapped: false, depthTest: false, side: THREE.DoubleSide })
-  )
-  errMesh.position.set(0, 0, -0.9)
-  errMesh.renderOrder = 999
-  errMesh.visible = false
-  camera.add(errMesh)
-
-  showQuestRuntimeError = (err) => {
-    errCtx.fillStyle = '#2a0a0a'
-    errCtx.fillRect(0, 0, errCanvas.width, errCanvas.height)
-    errCtx.fillStyle = '#ff9a7a'
-    errCtx.font = '22px monospace'
-    errCtx.textBaseline = 'top'
-    const lines = ['quest mode: JavaScript error', '', ...String(err?.stack ?? err).split('\n')]
-    lines.slice(0, 11).forEach((line, i) => errCtx.fillText(line.slice(0, 72), 14, 10 + i * 27))
-    errTexture.needsUpdate = true
-    errMesh.visible = true
-  }
-
-  sceneEl.canvas?.addEventListener('webglcontextlost', (e) => {
-    e.preventDefault() // per spec: without this the context never becomes eligible to restore
-    reportRuntimeError(new Error('WebGL context lost (GPU/driver crash, not a JS exception)'))
+// The page's one Enter VR button, where three's VRButton would put it.
+// sceneEl.enterVR() requests the session inside the click, so A-Frame keeps
+// owning it (vr-mode state, pose target, enter-vr/exit-vr).
+const enterVR = document.createElement('button')
+enterVR.className = 'qa-enter-vr'
+enterVR.textContent = 'ENTER VR'
+enterVR.style.cssText = 'position:absolute;bottom:20px;left:calc(50% - 60px);width:120px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,0.5);color:#fff;font:normal 13px sans-serif;text-align:center;opacity:0.5;outline:none;z-index:999;cursor:pointer'
+enterVR.onmouseenter = () => { enterVR.style.opacity = '1' }
+enterVR.onmouseleave = () => { enterVR.style.opacity = '0.5' }
+enterVR.onclick = () => {
+  enterVR.textContent = 'ENTERING ...'
+  sceneEl.enterVR().catch((err) => {
+    console.error('[v2] enter VR', err)
+    enterVR.textContent = `VR FAILED: ${err.message ?? err}`
   })
 }
+sceneEl.addEventListener('enter-vr', () => { enterVR.hidden = true })
+sceneEl.addEventListener('exit-vr', () => { enterVR.hidden = false; enterVR.textContent = 'ENTER VR' })
+document.body.appendChild(enterVR)
+
+// A plane fixed to the camera (not the panel or the rig -- both can be
+// anywhere, or not yet built) so it is guaranteed on-screen the instant an
+// error fires, in or out of VR. Also catches a lost WebGL context, which
+// fires no JS exception at all (a GPU/driver crash) and would otherwise
+// look identical to the reported black-screen-after-VR-entry symptom.
+const errCanvas = document.createElement('canvas')
+errCanvas.width = 1024; errCanvas.height = 320
+const errCtx = errCanvas.getContext('2d')
+const errTexture = new THREE.CanvasTexture(errCanvas)
+errTexture.colorSpace = THREE.SRGBColorSpace
+const errMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(1.1, 0.34),
+  new THREE.MeshBasicMaterial({ map: errTexture, transparent: true, toneMapped: false, depthTest: false, side: THREE.DoubleSide })
+)
+errMesh.position.set(0, 0, -0.9)
+errMesh.renderOrder = 999
+errMesh.visible = false
+camera.add(errMesh)
+
+showQuestRuntimeError = (err) => {
+  errCtx.fillStyle = '#2a0a0a'
+  errCtx.fillRect(0, 0, errCanvas.width, errCanvas.height)
+  errCtx.fillStyle = '#ff9a7a'
+  errCtx.font = '22px monospace'
+  errCtx.textBaseline = 'top'
+  const lines = ['JavaScript error', '', ...String(err?.stack ?? err).split('\n')]
+  lines.slice(0, 11).forEach((line, i) => errCtx.fillText(line.slice(0, 72), 14, 10 + i * 27))
+  errTexture.needsUpdate = true
+  errMesh.visible = true
+}
+
+sceneEl.canvas?.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault() // per spec: without this the context never becomes eligible to restore
+  reportRuntimeError(new Error('WebGL context lost (GPU/driver crash, not a JS exception)'))
+})
 
 scene.background = new THREE.Color(FOG_COLOR)
 scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
@@ -617,12 +585,10 @@ function probeVantage(head, out) {
 }
 
 // ---------------------------------------------------------------------------
-// Quest mode: a world-space toggle panel, ported from quest-main.js's
+// The menu: a world-space toggle panel, ported from quest-main.js's
 // already-proven pattern (same laser-controls raycast, same panel-button
-// canvas-texture approach) rather than reinvented. Locomotion itself is NOT
-// quest-specific -- it's the same Player.update(dt, moveInput) + mouse-drag
-// look that normal mode uses, so flying/walking feel identical in and out
-// of quest mode. Quest mode's only difference is this panel.
+// canvas-texture approach) rather than reinvented. It is the one control
+// surface the headset has, and Escape opens it on a desktop.
 // ---------------------------------------------------------------------------
 
 function labelTexture(text, bg = '#173154', fg = '#ffffff', width = 384) {
@@ -653,12 +619,6 @@ const questControllerHits = new Map()
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
   { key: 'trees', text: 'trees' },
-  // TWO ROWS FOR THE EIGHT ROCK BEDS, split on the shape each bed draws: the
-  // plates that panel a cliff face against everything that is a rounded stone
-  // lying on the ground. They are separate because the cap beds are the ones
-  // under judgement and the rubble beds put hundreds of small rocks in front of
-  // them -- with one row there was no way to look at the cliff panelling alone.
-  { key: 'rockCaps', text: 'rock caps' },
   { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
   { key: 'ferns', text: 'ferns' },
@@ -741,7 +701,7 @@ function applyQuestToggle(key) {
     // REMOVED -- the same polarity as `wind` and `landscape shader`.
     case 'treeTiers': trees.setCardsOnly(!enabled); break
     case 'treeCutout': trees.setCutout(enabled); break
-    case 'rockCaps': case 'boulders': applyRockVisibility(); break
+    case 'boulders': applyRockVisibility(); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
     // beds are a mesh per species. See render/ferns.js on why an InstancedMesh
@@ -868,14 +828,8 @@ function updateProbeCube() {
   probeCube.material.uniforms.uBlend.value = worldProbe.blend
 }
 
-// WHICH BED IS A CAP IS THE BED'S OWN SHAPE, not a name list here. `cap` is the
-// flat plate that panels a cliff face or a river bed; every other bed draws the
-// rounded boulder. A name list would go stale the next time a bed is added, and
-// the two rows would then silently disagree about who owns it.
 function applyRockVisibility() {
-  for (const b of rocks.beds) {
-    b.batch.visible = b.cfg.shape === 'cap' ? questToggles.rockCaps : questToggles.boulders
-  }
+  for (const b of rocks.beds) b.batch.visible = questToggles.boulders
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,7 +1178,7 @@ function buildQuestPanel() {
   }
   ;[leftHandEl, rightHandEl].forEach(wireQuestController)
 
-  // Flatscreen click support for desktop `?quest` testing before entering XR.
+  // Flatscreen click support on a desktop, before entering XR.
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
   window.addEventListener('pointerup', (e) => {
@@ -1542,11 +1496,11 @@ function updateQuestStats() {
     ],
     [
       ...scatterCells('grass ', questToggles.grass, grass.stats),
-      ...scatterCells('rock ', questToggles.rockCaps || questToggles.boulders, rs),
+      ...scatterCells('rock ', questToggles.boulders, rs),
       // Main-thread ms of Rocks.update, and the instances its per-rock LOD
       // ladder walked this frame over the resident tile count. The draw cost
       // is what is left of the rock row's toll once this is subtracted.
-      ...(questToggles.rockCaps || questToggles.boulders
+      ...(questToggles.boulders
         ? [
             ['upd ', '#7f95b4'], [`${rs.updateMs.toFixed(1)}ms`.padEnd(7), rs.updateMs >= 1.5 ? '#ffd27a' : '#cfe3ff'],
             ['walk ', '#7f95b4'], [`${kilo(rs.walked)}/${kilo(rs.tiles)}`.padEnd(11), '#cfe3ff'],
@@ -1640,17 +1594,15 @@ let sound = null
 let ambience = null
 let ready = false
 
-// Quest-mode toggle panel state. The world boots as it ships -- every layer the
+// The menu's toggle state. The world boots as it ships -- every layer the
 // wearer would see is on -- and the rows exist to take one away for a
-// measurement. Non-quest mode never reads this.
+// measurement.
 //
 // `lighting` is in that second group for a stricter reason than composition:
 // off, the sun and hemi lights keep the fixed noon-ish rig they were
-// constructed with and never hear about the hour, so the headset shows a
-// brighter, flatter world than the desktop at every time of day and a wholly
-// fake one at night. Quest mode is supposed to be the same world seen through
-// a headset, so the day/night shading is on and the row is there to take it
-// away for a measurement.
+// constructed with and never hear about the hour, so the world shows brighter
+// and flatter at every time of day and wholly fake at night. The day/night
+// shading is on and the row is there to take it away for a measurement.
 //
 // `instCull` is the one that does NOT default to the three.js default. See the
 // banner on applyBatchCulling: the per-instance frustum sweep runs once per EYE
@@ -1660,28 +1612,24 @@ let ready = false
 // to measure what the sweep actually costs. Terrain does not pay for that
 // choice: TerrainV2.cullDeg culls the same batch by yaw during a sweep it was
 // already running. The scatter layers still submit everything when this is off.
-const questToggles = QUEST_MODE
-  ? {
-      terrain: true, lighting: true,
-      trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true,
-      water: true, reflections: true, aurora: true, sound: true,
-      // Debug furniture, off until asked for. See buildProbeCube.
-      probeCube: false,
-      // The cliff plates are not in the shipped set; the row is there to look
-      // at them on their own (see QUEST_TOGGLE_ROWS).
-      rockCaps: false,
-      instCull: false,
-      wind: true, treeTiers: true, treeCutout: true,
-      terrainWire: false,
-      // Walk, not teleport, is the default: teleport hides exactly the symptom
-      // this panel exists to look at, which is what the world does to the frame
-      // while you are moving continuously through it.
-      teleport: false,
-    }
-  : null
+const questToggles = {
+  terrain: true, lighting: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true,
+  water: true, reflections: true, aurora: true, sound: true,
+  // Debug furniture, off until asked for. See buildProbeCube.
+  probeCube: false,
+  instCull: false,
+  wind: true, treeTiers: true, treeCutout: true,
+  terrainWire: false,
+  // Teleport is the headset's default (§12: comfort over capability); the
+  // row switches to the continuous walk for measuring what the world does to
+  // the frame while she moves through it. Only readInput's XR branch reads
+  // this -- a desktop walks on WASD and lobs the arc off the T key.
+  teleport: true,
+}
 
-/** Whether an animal layer runs this frame: its own row and the `animals` row both on. Always, outside quest mode. */
-const animalOn = (key) => !QUEST_MODE || (questToggles.animals && questToggles[key])
+/** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
+const animalOn = (key) => questToggles.animals && questToggles[key]
 
 /**
  * The frogs' and crabs' batches, off their rows. Not the fish's: theirs is
@@ -1747,10 +1695,10 @@ function loadRelief() {
 // on triangles and losing on FILL; 'blades' is opaque geometry that pays no fill
 // for transparency at all. See THE THREE STRATEGIES in render/grass.js.
 //
-// FILL IS THE BUDGET A QUEST RUNS OUT OF, so `?quest` -- which exists to be worn
-// and measured -- stands the blade bed and the desktop route keeps the cards.
+// FILL IS THE BUDGET A QUEST RUNS OUT OF, so the world stands the blade bed and
+// the cards are there to be cycled to for comparison.
 const GRASS_STYLES = ['tufts', 'strips', 'blades']
-let grassStyle = QUEST_MODE ? 'blades' : 'tufts'
+let grassStyle = 'blades'
 // Whether the prop atlas' PNGs have landed. The tuft's far tier is a photograph
 // of the tuft, so a Grass built after they land has to bake immediately rather
 // than waiting for a promise that has already resolved.
@@ -1784,12 +1732,10 @@ function buildGrass(style, cx, cz, opts = {}) {
   // A rebuilt bed is a NEW mesh, so it arrives with three's defaults rather than
   // whatever the panel's cull switch is currently set to. Without this, swapping
   // grass style silently un-does the toggle.
-  if (QUEST_MODE) {
-    applyBatchCulling()
-    // A rebuilt bed is a new mesh and arrives visible. Without this, changing
-    // the density while the grass row is OFF turns the grass back on.
-    grass.batch.visible = questToggles.grass
-  }
+  applyBatchCulling()
+  // A rebuilt bed is a new mesh and arrives visible. Without this, changing
+  // the density while the grass row is OFF turns the grass back on.
+  grass.batch.visible = questToggles.grass
   if (propLayersReady) grass.bakeCards(renderer)
   const gs = grass.stats
   const gr = gs.rejected
@@ -1930,9 +1876,9 @@ async function bootWorld() {
   // displaces other props: a tree or a fern whose trunk lands inside one is
   // raised to stand ON it, and grass and litter inside one are dropped outright
   // (`rocks.blockAt`). Every one of those tests needs the stone already on the
-  // ground. Quest mode does not weaken it -- the toggle only sets `batch.visible`
-  // and the beds are placed and stepped either way, so what the trees see does
-  // not change when the rocks are switched off.
+  // ground. The menu's rock rows do not weaken it -- the toggle only sets
+  // `batch.visible` and the beds are placed and stepped either way, so what the
+  // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
   rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
@@ -2274,7 +2220,7 @@ async function bootWorld() {
     )
   })
 
-  if (!QUEST_MODE) editor = new Editor({
+  if (EDITOR_MODE) editor = new Editor({
     scene,
     camera,
     renderer,
@@ -2300,72 +2246,67 @@ async function bootWorld() {
   waterSurfaces.setVisibility(isVisible)
   roads.setVisibility(isVisible)
 
-  if (!QUEST_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+  if (EDITOR_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
 
-  if (QUEST_MODE) {
-    // Each layer starts where its toggle says, READ FROM THE TOGGLE rather than
-    // from a literal, so a changed default takes effect instead of leaving the
-    // panel claiming a layer is on while the world shows none.
-    // litter/mushrooms/deadwood share the one `litter` row -- see
-    // QUEST_TOGGLE_ROWS -- and are always constructed either way, because
-    // mushrooms anchors onto placed trees and rocks whether it is drawn or not.
-    //
-    // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
-    // v2 lake and river is a child of it -- WaterSurfaces parents its own group
-    // under this one -- so hiding it and then toggling the CHILD is a lake that
-    // can never be shown, the parent flag still false underneath.
-    terrain.batch.visible = questToggles.terrain
-    trees.batch.visible = questToggles.trees
-    trees.setCardsOnly(!questToggles.treeTiers)
-    trees.setCutout(questToggles.treeCutout)
-    applyRockVisibility()
-    grass.batch.visible = questToggles.grass
-    ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
-    water.group.visible = questToggles.water
-    water.setCubeReflections(questToggles.reflections)
-    aurora.mesh.visible = questToggles.aurora
-    litter.batch.visible = questToggles.litter
-    mushrooms.batch.visible = questToggles.litter
-    deadwood.batch.visible = questToggles.litter
-    applyAnimalVisibility()
-    // THE EDITOR OVERLAY, which had no business being in the headset and was the
-    // single largest thing drawing before any layer is switched on. Markers is
-    // three InstancedMeshes of authoring handles -- 96 triangles a spline point,
-    // 8 a snow point, 168 a lake -- and the shipped document carries 37 river
-    // points, 77 snow points and 2 lakes, so it is ~4.5k triangles and 3 draw
-    // calls per eye of pure editor furniture.
-    //
-    // Worse, it was drawing them WRONG. Markers.update() writes the instance
-    // matrices and its only caller is `editor.update`, which quest mode never
-    // runs because it has no editor -- so every handle sat at the origin at unit
-    // scale, and the material is depthTest:false, so they drew over the world
-    // from wherever the camera was. That is the speck at the horizon.
-    markers.group.visible = false
-    // The quadtree's own header says the XR route wants 4.0 degrees or coarser
-    // and that 3.0 -- the desktop default this route was inheriting -- spends
-    // 91% of terrain's whole triangle share, against 68% at 4.0. Quest mode was
-    // running the desktop budget on a mobile GPU.
-    //
-    // 5.72 rather than 4.0: measured over a 48-camera walking sweep of the real
-    // heightmap, worst-case selection is 262 leaves at 4.0 against 175 at 5.72,
-    // which is 335k triangles against 224k before any culling. The ceiling is
-    // MAX_TRI_DEG = atan(2 / CHUNK_RES) = 7.125 degrees, where the range floor in
-    // the split rule stops the rule from refining at all.
-    LOD.triDeg = Math.min(MAX_TRI_DEG, 5.72)
-    // The yaw cull that replaces per-instance frustum culling on this route. See
-    // the banner on applyBatchCulling for why the GPU-side one is off here, and
-    // TerrainV2.cullDeg for why doing it in the visibility sweep is free -- that
-    // loop was already running this test for a stats readout. Worst case over the
-    // same sweep: 224k submitted becomes 108k.
-    terrain.cullDeg = (70 * Math.PI) / 180
-    // The 8 m chunk floor is NOT set here. It was, briefly, and it is config.js's
-    // MAX_DEPTH now: one world, one cap, desktop and headset alike. See the note
-    // on that constant for why a per-route override was the wrong trade.
-    applyBatchCulling()
-    buildQuestPanel()
-    buildProbeCube()
-    logSceneCensus()
-  }
+  // Each layer starts where its toggle says, READ FROM THE TOGGLE rather than
+  // from a literal, so a changed default takes effect instead of leaving the
+  // panel claiming a layer is on while the world shows none.
+  // litter/mushrooms/deadwood share the one `litter` row -- see
+  // QUEST_TOGGLE_ROWS -- and are always constructed either way, because
+  // mushrooms anchors onto placed trees and rocks whether it is drawn or not.
+  //
+  // `water.group` IS THE NODE THE `water` ROW OWNS, all the way through. Every
+  // v2 lake and river is a child of it -- WaterSurfaces parents its own group
+  // under this one -- so hiding it and then toggling the CHILD is a lake that
+  // can never be shown, the parent flag still false underneath.
+  terrain.batch.visible = questToggles.terrain
+  trees.batch.visible = questToggles.trees
+  trees.setCardsOnly(!questToggles.treeTiers)
+  trees.setCutout(questToggles.treeCutout)
+  applyRockVisibility()
+  grass.batch.visible = questToggles.grass
+  ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
+  water.group.visible = questToggles.water
+  water.setCubeReflections(questToggles.reflections)
+  aurora.mesh.visible = questToggles.aurora
+  litter.batch.visible = questToggles.litter
+  mushrooms.batch.visible = questToggles.litter
+  deadwood.batch.visible = questToggles.litter
+  applyAnimalVisibility()
+  // THE EDITOR OVERLAY, drawn only where there is an editor. Markers is three
+  // InstancedMeshes of authoring handles -- 96 triangles a spline point, 8 a
+  // snow point, 168 a lake -- and the shipped document carries 37 river points,
+  // 77 snow points and 2 lakes, so it is ~4.5k triangles and 3 draw calls per
+  // eye of pure editor furniture.
+  //
+  // Without an editor it would also draw them WRONG. Markers.update() writes
+  // the instance matrices and its only caller is `editor.update` -- so every
+  // handle would sit at the origin at unit scale, and the material is
+  // depthTest:false, so they would draw over the world from wherever the
+  // camera was. That was the speck at the horizon.
+  markers.group.visible = EDITOR_MODE
+  // The quadtree's own header says the XR route wants 4.0 degrees or coarser
+  // and that 3.0 spends 91% of terrain's whole triangle share, against 68% at
+  // 4.0.
+  //
+  // 5.72 rather than 4.0: measured over a 48-camera walking sweep of the real
+  // heightmap, worst-case selection is 262 leaves at 4.0 against 175 at 5.72,
+  // which is 335k triangles against 224k before any culling. The ceiling is
+  // MAX_TRI_DEG = atan(2 / CHUNK_RES) = 7.125 degrees, where the range floor in
+  // the split rule stops the rule from refining at all.
+  LOD.triDeg = Math.min(MAX_TRI_DEG, 5.72)
+  // The yaw cull that replaces per-instance frustum culling. See the banner on
+  // applyBatchCulling for why the GPU-side one is off, and TerrainV2.cullDeg
+  // for why doing it in the visibility sweep is free -- that loop was already
+  // running this test for a stats readout. Worst case over the same sweep:
+  // 224k submitted becomes 108k.
+  terrain.cullDeg = (70 * Math.PI) / 180
+  // The 8 m chunk floor is NOT set here. It is config.js's MAX_DEPTH: one
+  // world, one cap, desktop and headset alike.
+  applyBatchCulling()
+  buildQuestPanel()
+  buildProbeCube()
+  logSceneCensus()
 
   ready = true
   await bootDone()
@@ -2890,6 +2831,7 @@ const HOTKEYS = [
       { keys: 'p', what: 'cycle the aurora pattern' },
       { keys: 'm', what: 'swap the grass bed between scattered strips and card clumps' },
       { keys: 'h', what: 'hide and show this panel' },
+      { keys: 'esc', what: 'open and close the world menu, the same one B / Y opens in the headset' },
     ],
   },
   {
@@ -2910,7 +2852,7 @@ const HOTKEYS = [
       { keys: 'g r s', what: 'gizmo move, rotate, scale -- only with something selected' },
       { keys: 'x y z', what: 'constrain the gizmo to one axis, same key again to release' },
       { keys: 'enter', what: 'finish the river or road being drawn' },
-      { keys: 'esc', what: 'cancel the path being drawn, else deselect; also closes this list' },
+      { keys: 'esc', what: 'cancel the path being drawn, else deselect; with nothing to back out of it is the world menu; also closes this list' },
       { keys: 'delete / backspace', what: 'delete the selected point or object' },
       { keys: 'ctrl/cmd Z', what: 'undo, and shift-Z or Y to redo' },
     ],
@@ -2942,15 +2884,14 @@ const orbitLock = (lock) => {
 const DOUBLE_TAP_MS = 320
 let lastSpaceTap = -Infinity
 
-// The `!isPresenting` guard is LOCOMOTION's comfort rule -- free flight with no
-// ground reference is a nausea generator and §12 puts comfort over capability.
-// Quest mode is exempt, and deliberately so: it is a profiling route, not the
-// game. The whole point of it is to stand somewhere specific and look at one
-// layer's cost, and at 1.45 m/s the far side of an 8 km world is unreachable
-// inside a session. If quest mode ever stops being a lab and becomes something
-// a player is handed, this exemption is the line to delete.
+// Flight is allowed in the headset, against LOCOMOTION's comfort rule (free
+// flight with no ground reference is a nausea generator, and §12 puts comfort
+// over capability): at 1.45 m/s the far side of an 8 km world is unreachable
+// inside a session, and the menu's layer rows are only worth pressing from
+// somewhere specific. `want && !renderer.xr.isPresenting` is the line that
+// takes it away again.
 function setFlying(want) {
-  player.setFlying(want && (QUEST_MODE || !renderer.xr.isPresenting))
+  player.setFlying(want)
 }
 
 function onSpacePress(now) {
@@ -3070,12 +3011,12 @@ function setTreeScatter(patch) {
 addEventListener('keydown', (e) => {
   if (!ready || typing(e)) return
 
-  // Escape opens and closes the quest menu, the keyboard twin of B / Y. On a
-  // desktop there is no controller to press, and `?quest` is regularly driven
-  // from a laptop -- so without this the menu is unreachable. Gated on
-  // QUEST_MODE so Escape keeps whatever it means to the editor in the normal
-  // route, where this menu does not exist.
-  if (QUEST_MODE && e.code === 'Escape') {
+  // Escape opens and closes the menu, the keyboard twin of B / Y. On a desktop
+  // there is no controller to press, so without this the menu is unreachable.
+  // The editor keeps Escape only while it has something to back out of -- a
+  // half-drawn path or a selection -- so the same key does not also drop the
+  // menu on the world the moment a lake is deselected.
+  if (e.code === 'Escape' && !(editor && editor.active && (editor.draft || editor.selection))) {
     toggleQuestPanel()
     return
   }
@@ -3248,12 +3189,12 @@ function setLightingEnabled(enabled) {
 // writes the reflection the water bends, and hemi is set before water.update
 // because it is the ambient the water's silhouettes are matched to.
 function applySky(state, head, elapsedReal) {
-  // Gated in quest mode like every other layer, so the sun/hemi lights and the
+  // Gated by the menu like every other layer, so the sun/hemi lights and the
   // WorldLighting shader patch (the day/night shading terrain, trees, rocks etc.
   // all read) can be isolated from the rest of the atmosphere (fog/background/
   // sky dome, which stay always-on below). setLightingEnabled owns the other
   // half of the row and is where the isolation is actually paid for.
-  if (!QUEST_MODE || questToggles.lighting) {
+  if (questToggles.lighting) {
     sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
     setSRGB(sun.color, state.lightColor)
     sun.intensity = state.lightIntensity
@@ -3281,8 +3222,8 @@ function applySky(state, head, elapsedReal) {
 
   sky.update(head, state)
   stars.update(head, state, clock.elapsed, elapsedReal)
-  if (!QUEST_MODE || questToggles.aurora) aurora.update(head, state, elapsedReal)
-  if (!QUEST_MODE || questToggles.water) water.update(elapsedReal, hemi)
+  if (questToggles.aurora) aurora.update(head, state, elapsedReal)
+  if (questToggles.water) water.update(elapsedReal, hemi)
 
   // LAST, and that is the whole of its plumbing. Everything above writes the
   // world as seen through air, straight from the palette; this overwrites the
@@ -3639,7 +3580,7 @@ let questInputSource = 'none'
  * A SECOND ROUTE TO THE SAME GAMEPADS, not a second input scheme. Input polls
  * `renderer.xr.getSession().inputSources` directly; A-Frame's tracked-controls
  * holds the XRInputSource it matched to each hand entity. Those are normally
- * the same objects -- but quest mode does not own the session (A-Frame does),
+ * the same objects -- but this file does not own the session (A-Frame does),
  * and if the session this file's renderer reference exposes is ever not the one
  * A-Frame entered, the direct poll returns nothing and locomotion silently
  * dies with no error anywhere. The hand entities are visibly tracking in that
@@ -3876,8 +3817,8 @@ function readInput() {
   const st = input.update()
   questInputSource = st.connected > 0 ? 'xr' : 'none'
   // Only when the direct poll came up empty: when it works it is the shorter
-  // path and it is the one normal (non-quest) XR uses too.
-  if (st.connected === 0 && QUEST_MODE) {
+  // path.
+  if (st.connected === 0) {
     readQuestFallback(st)
     if (st.connected > 0) questInputSource = 'aframe'
   }
@@ -3930,10 +3871,7 @@ function readInput() {
       return
     }
 
-    // questToggles is null outside ?quest, so the plain route walks. Reading
-    // it bare here threw on the first frame a controller reported connected,
-    // which the boot handler surfaced as "v2 failed to start".
-    if (!QUEST_MODE || !questToggles.teleport) return
+    if (!questToggles.teleport) return
 
     // Teleport: aim while held, go on release. Fired from readInput rather than
     // from a button event because the whole gesture is a stick threshold. Push
@@ -4030,8 +3968,8 @@ function bindCursorPicks() {
   for (const p of CURSOR_PICKS) {
     const sys = bySys[p.label]
     if (!sys) {
-      // Quest mode deliberately omits some presentation-only scatters. They
-      // have no pick source, so leave them out of the cursor list as well.
+      // Some presentation-only scatters have no pick source, so leave them out
+      // of the cursor list as well.
       continue
     }
     if (p.label === 'rock') {
@@ -4241,10 +4179,7 @@ function tick() {
   avgMs5 = winN > 0 ? winMs / winN : 0
   worstMs5 = winWorst
 
-  if (!ready) {
-    if (!QUEST_MODE) renderer.render(scene, camera)
-    return
-  }
+  if (!ready) return
 
   readInput()
 
@@ -4257,9 +4192,6 @@ function tick() {
   //
   // `submerged` is last frame's answer, because applySubmersion runs later in
   // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
-  //
-  // Identical in quest mode -- quest mode only differs by which layers are
-  // visible (the toggle panel below), never by how she moves.
   swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
   currentDrift(now / 1000, swayStrength, swayWant)
   player.rig.position.x += swayWant.x - swayApplied.x
@@ -4268,8 +4200,8 @@ function tick() {
 
   player.update(dt, moveInput)
 
-  if (QUEST_MODE) updateQuestPanel()
-  if (QUEST_MODE) updateProbeCube()
+  updateQuestPanel()
+  updateProbeCube()
 
   // The clock the prop LOD cross-dissolves run on, and the only per-frame cost
   // any of them has. Set BEFORE the scatters update, so the sweep that retires
@@ -4290,7 +4222,7 @@ function tick() {
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
-  if (!QUEST_MODE || questToggles.terrain) {
+  if (questToggles.terrain) {
     terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
   }
   // Rocks first, and it is the same hard ordering the construction has: the tree,
@@ -4308,19 +4240,16 @@ function tick() {
   // trees may sit where a boulder would have pushed them. That is invisible while
   // the boulder is, and an ablation panel that cannot ablate is worth less than an
   // exact one.
-  // EITHER ROCK ROW KEEPS THE SCATTER STEPPING, because Rocks.update splits one
-  // frame budget across all eight beds and has no per-bed entry point. Only both
-  // rows off is the ablation described above.
-  if (!QUEST_MODE || questToggles.rockCaps || questToggles.boulders) rocks.update(headTmp.x, headTmp.y, headTmp.z)
-  if (!QUEST_MODE || questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
-  if (!QUEST_MODE || questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
-  if (!QUEST_MODE || questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.boulders) rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
   // Three layers on one `litter` row, hidden AND frozen together -- see the row's
   // own note for why they share a button. Cheap per frame standing still, which is
   // what "the cheapest layers in the world" was measured at; all three are tiled
   // ground scatters, so at flight speed they churn their whole footprint like
   // every other one and the row has to be able to take that away.
-  if (!QUEST_MODE || questToggles.litter) {
+  if (questToggles.litter) {
     litter.update(headTmp.x, headTmp.y, headTmp.z)
     // After rocks, and for the same reason the construction and the relief
     // re-place are: a clump follows the anchors, so it wants them stepped first.
@@ -4364,12 +4293,12 @@ function tick() {
   if (now - lastPanelAt >= 250) {
     lastPanelAt = now
     if (panel) panel.setStats(panelStats())
-    // The headset's equivalent of the desktop panel's stats block. Same 4 Hz,
-    // and deliberately NOT panelStats() itself: that one calls cursorPick(),
-    // which raymarches the height field and walks every scatter's instance
-    // arrays -- a mouse-cursor readout, on a device with no mouse, costing
-    // exactly the kind of CPU time this panel exists to hunt down.
-    if (QUEST_MODE) updateQuestStats()
+    // The menu's equivalent of the editor panel's stats block. Same 4 Hz, and
+    // deliberately NOT panelStats() itself: that one calls cursorPick(), which
+    // raymarches the height field and walks every scatter's instance arrays --
+    // a mouse-cursor readout, on a device with no mouse, costing exactly the
+    // kind of CPU time the menu exists to hunt down.
+    updateQuestStats()
     // The editor RECORDS what went wrong (a click that missed the ground, a
     // failed autosave) and the panel DISPLAYS what it is told; nothing joins the
     // two, so the host does. Only on change, so a message this file put up --
@@ -4384,7 +4313,7 @@ function tick() {
   // BEFORE the main render, and that ordering is load-bearing: both probes bind
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
-  if (!QUEST_MODE || questToggles.reflections) probe.update(renderer, scene, headTmp)
+  if (questToggles.reflections) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -4392,24 +4321,19 @@ function tick() {
   // The air hook on every frame: the linear ramp ends are wanted for every
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (!QUEST_MODE || questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  if (questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
 
   // A-Frame renders the scene itself after every registered component's tick()
-  // runs (see the `v2-quest-tick` component below) -- calling renderer.render
-  // here too would be a second render of the same frame.
-  if (!QUEST_MODE) renderer.render(scene, camera)
+  // runs (see the `v2-quest-tick` component below) -- a renderer.render here
+  // would be a second render of the same frame.
 }
 
-if (QUEST_MODE) {
-  // A-Frame drives its own render loop via component tick() methods, not
-  // renderer.setAnimationLoop -- see quest-main.js's header for why calling
-  // setAnimationLoop here would silently stop laser-controls (and any other
-  // A-Frame component) from ticking at all.
-  AFRAME.registerComponent('v2-quest-tick', { tick: () => tick() })
-  sceneEl.setAttribute('v2-quest-tick', '')
-} else {
-  renderer.setAnimationLoop(tick)
-}
+// A-Frame drives its own render loop via component tick() methods, not
+// renderer.setAnimationLoop -- see quest-main.js's header for why calling
+// setAnimationLoop here would silently stop laser-controls (and any other
+// A-Frame component) from ticking at all.
+AFRAME.registerComponent('v2-quest-tick', { tick: () => tick() })
+sceneEl.setAttribute('v2-quest-tick', '')
 
 // §18: editing is a desktop activity and the gizmo has no controller binding.
 // Entering XR with a tool armed would leave a mode running that nothing in the
@@ -4421,27 +4345,24 @@ renderer.xr.addEventListener('sessionstart', () => {
   if (panel) panel.syncSelection()
 })
 
-// In quest mode the headset pose lands on the camera ENTITY, and `camera` is a
-// child under it (A-Frame's setPoseTarget, see the quest boot block). Its
-// desktop offset -- eyeHeight and whatever the drag-look left in its rotation
-// -- composes under the pose, invisibly to the wearer (cameraXR is built from
-// the entity alone) but not to anything that asks `camera` where her head is:
-// the netplay pose put every peer's feet at her eye line, and headPosition /
-// headYaw feed terrain selection. So the child is made identity for the
-// session and handed its desktop offset back on exit. Normal mode's three
-// writes the pose straight onto `camera` and needs none of this.
-if (QUEST_MODE) {
-  const desktopRotation = new THREE.Euler()
-  renderer.xr.addEventListener('sessionstart', () => {
-    desktopRotation.copy(camera.rotation)
-    camera.position.y = 0
-    camera.rotation.set(0, 0, 0)
-  })
-  renderer.xr.addEventListener('sessionend', () => {
-    camera.position.y = LOCOMOTION.eyeHeight
-    camera.rotation.copy(desktopRotation)
-  })
-}
+// The headset pose lands on the camera ENTITY, and `camera` is a child under it
+// (A-Frame's setPoseTarget, see the renderer boot block). Its desktop offset --
+// eyeHeight and whatever the drag-look left in its rotation -- composes under
+// the pose, invisibly to the wearer (cameraXR is built from the entity alone)
+// but not to anything that asks `camera` where her head is: the netplay pose
+// put every peer's feet at her eye line, and headPosition / headYaw feed
+// terrain selection. So the child is made identity for the session and handed
+// its desktop offset back on exit.
+const desktopRotation = new THREE.Euler()
+renderer.xr.addEventListener('sessionstart', () => {
+  desktopRotation.copy(camera.rotation)
+  camera.position.y = 0
+  camera.rotation.set(0, 0, 0)
+})
+renderer.xr.addEventListener('sessionend', () => {
+  camera.position.y = LOCOMOTION.eyeHeight
+  camera.rotation.copy(desktopRotation)
+})
 
 bootWorld().catch(reportRuntimeError)
 

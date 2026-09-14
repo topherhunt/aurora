@@ -2,9 +2,8 @@
 // SoundEngine: the Web Audio half of the ambience. It knows nothing about the
 // world -- Ambience (ambience.js) decides WHAT plays and hands this WHERE and
 // HOW LOUD. Raw Web Audio rather than three's Audio classes, so the same code
-// runs under npm three on the desktop route and A-Frame's bundled three on
-// ?quest, and so the loop crossfade below can be scheduled sample-accurately
-// rather than from the frame loop.
+// runs under A-Frame's bundled three, and so the loop crossfade below can be
+// scheduled sample-accurately rather than from the frame loop.
 //
 // TWO BUSES, `air` and `water`. Every sound above the surface goes through
 // `air`; the underwater loop is the only thing on `water`. Submersion is one

@@ -27,7 +27,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -78,9 +78,11 @@ const BOULDERS = [
 for (const b of BOULDERS) b.y = groundAt(b.x, b.z)
 const WANT = new Set(['floor', 'stone', 'shelf', 'beach'])
 let live = []
+// Every stone shifted by `lift`: a rock re-seated on the drawn terrain.
+let lift = 0
 const surfaceOf = (b, x, z) => {
   const d2 = (x - b.x) ** 2 + (z - b.z) ** 2
-  return d2 < b.r * b.r ? b.y + Math.sqrt(b.r * b.r - d2) : -Infinity
+  return d2 < b.r * b.r ? b.y + lift + Math.sqrt(b.r * b.r - d2) : -Infinity
 }
 const rocks = {
   calls: 0,
@@ -255,6 +257,23 @@ check(tilted > 0, 'crabs ride the stone\'s slope', `${tilted} tilted frames`)
 }
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame, ${(rocks.calls / (SECONDS / DT)).toFixed(1)} surface queries/frame`)
 check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
+
+// --- the stone moving under a seated crab ----------------------------------------
+// A rock re-seated on a re-split chunk drops or rises by more than a crab may step; a crab follows within RESEAT_EVERY frames either way, pausing or walking.
+{
+  const seated = () => alive().filter((c) => Math.abs(c.y - stoneUnder(c)) < 1e-6).length
+  const n = alive().length
+  const [walker, pauser] = alive()
+  walker.state = 'go'; walker.left = 10; walker.speed = SPEED[0]
+  pauser.state = 'pause'; pauser.left = 10
+  for (const shift of [-0.45, 0.45]) {
+    lift += shift
+    check(seated() < n * 0.5, `the stone ${shift < 0 ? 'drops' : 'rises'} ${Math.abs(shift)} m and the crabs are left ${shift < 0 ? 'in the air' : 'in the stone'}`, `${seated()} of ${n} seated`)
+    for (let i = 0; i < RESEAT_EVERY; i++) crabs.update(15, LEVEL + 1.6, 0, DT)
+    check(seated() === n, `every crab is back on the stone within ${RESEAT_EVERY} frames, the walker (whose step is refused as a ledge) and the pauser alike`, `${seated()} of ${n}`)
+  }
+  check(lift === 0 && seated() === n, 'and on it again once the stone is back')
+}
 
 // --- the drawn pose: stretched, and sunk into the stone along its normal --------
 // The stand-in slab is 0.3 tall at span 1, so a crab sinks SINK * 0.3 * size.

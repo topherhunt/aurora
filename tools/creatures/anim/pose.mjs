@@ -20,6 +20,19 @@
  *   wings  spread, sweep      radians, mirrored across the pair
  *   arms   pitch, spread      radians, mirrored across the pair
  *   legs   <legId>: { fore, lat, lift, pitch }  foot target offset, paw tilt
+ *
+ * `unweighted: [legId, ...]` names feet that are not carrying the animal, which
+ * is what a dig needs: the forepaws work at ground level without standing on it.
+ *
+ * `scale: { <group>: <number> }` dials one group of handles down (or up) for one
+ * body, defaulting to 1 so a spec that omits it is unchanged. A shared spec is
+ * relative, so it mostly carries across animals -- but only mostly, and where it
+ * does not the mismatch is confined to a group. Foot offsets go by `wheelbase`,
+ * right for a gait but too far for a fold-down on a long body: a hare does not
+ * stretch its forepaws twice as far ahead as a fox just because its body is
+ * twice as long, it stretches them as far as its legs go. Tail angles are the
+ * same story the other way -- the fox's sit sweeps its tail 2 radians, which a
+ * hare's short thick tail turns inside out at the base.
  */
 
 import { add, loadSkeleton, scale } from './skeleton.mjs'
@@ -74,8 +87,14 @@ export function poseClip(rigFile, map, rawSpec) {
 
   // One getter per handle, so `sample` never has to know the spec's shape and a
   // key that omits a group simply reads zero.
-  const at = (t, group, field) => sample(keys, t, (k) => (k.pose[group] ?? ZERO)[field] ?? 0)
-  const legAt = (t, id, field) => sample(keys, t, (k) => ((k.pose.legs ?? {})[id] ?? ZERO)[field] ?? 0)
+  const scaleOf = spec.scale ?? {}
+  const at = (t, group, field) => sample(keys, t, (k) => (k.pose[group] ?? ZERO)[field] ?? 0) * (scaleOf[group] ?? 1)
+  const legAt = (t, id, field) => sample(keys, t, (k) => ((k.pose.legs ?? {})[id] ?? ZERO)[field] ?? 0) * (scaleOf.legs ?? 1)
+  // Feet this clip declares are not carrying the animal. A digging forepaw rakes
+  // backwards through the dirt at its own rest height, so by geometry it is
+  // planted -- but it bears no weight, and scoring it as stance reports the
+  // intended stroke as skating. The hind feet still have to hold still.
+  const unweighted = new Set(spec.unweighted ?? [])
 
   const n = spec.samples
   const times = []
@@ -123,8 +142,13 @@ export function poseClip(rigFile, map, rawSpec) {
         scale(up, legAt(t, leg.id, 'lift') * map.height))
       solveLimb(pose, leg, target, { ...limits, pitch: legAt(t, leg.id, 'pitch'), pitchAxis: lat })
       // A pose clip has no swing, so every foot is load-bearing unless the spec
-      // deliberately lifted it clear of the ground.
-      feet.push({ id: leg.id, target, planted: target[1] - map.ground < 1e-4, actual: pose.pos(leg.foot) })
+      // deliberately lifted it. Measured against the leg's OWN rest foot, not a
+      // single ground plane: `ground` is the lowest joint in the rig, while a
+      // foot joint sits wherever the rigger put it -- the hare's hind pair are
+      // ankles 16cm up -- so against one plane a leg reads permanently airborne
+      // and drops out of the slide check entirely.
+      const planted = !unweighted.has(leg.id) && target[1] - leg.restFoot[1] < 1e-4
+      feet.push({ id: leg.id, target, planted, actual: pose.pos(leg.foot) })
     }
 
     for (const [j, q] of pose.posed()) {

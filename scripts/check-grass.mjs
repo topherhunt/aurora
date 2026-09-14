@@ -1973,7 +1973,7 @@ console.log('\n-- blades --')
   // THE ARENA SUBMITS WHAT IT DRAWS AND NOTHING ELSE. An InstancedMesh draws a
   // contiguous `count`, so this is the whole of what stops a rim-hidden clump
   // from costing its ten triangles anyway -- and the number renderer.info gives
-  // the /?quest panel is exactly this `count`. Checked after a settle, after a
+  // the menu is exactly this `count`. Checked after a settle, after a
   // walk, and after a CLIMB, because the rim measures 3D distance while tile
   // residency measures XZ: going up hides nearly the whole resident set and is
   // where an unpacked arena bills its worst.

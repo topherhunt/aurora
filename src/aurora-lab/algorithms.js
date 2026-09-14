@@ -527,7 +527,7 @@ export const WORLD_GROUP = {
     {
       key: 'worldDrive',
       label: 'drive from the world',
-      hint: 'On, the two sliders below stand in for clock.js and the six knobs they own -- belt offset, belt width, belt amount, rays, caustic, exposure -- are OUTPUTS: they move when you move these, and turning them by hand does nothing that survives the next change. That is the point, because that is exactly what happens in the world, where every frame overwrites them. Off, you get the six back as free knobs and the page stops claiming to show you /?quest.',
+      hint: 'On, the two sliders below stand in for clock.js and the six knobs they own -- belt offset, belt width, belt amount, rays, caustic, exposure -- are OUTPUTS: they move when you move these, and turning them by hand does nothing that survives the next change. That is the point, because that is exactly what happens in the world, where every frame overwrites them. Off, you get the six back as free knobs and the page stops claiming to show you the world.',
       type: 'bool', value: true, uniform: false,
     },
     {

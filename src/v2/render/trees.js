@@ -154,7 +154,7 @@ import { smoothstep } from '../../sim/mathx.js'
 // of half an arcminute over a 65 mm baseline resolves depth to about d^2 x
 // eta / IPD: 1.3 m at 24 m, 5.6 m at 50 m. A crown is 3 to 6 m deep, so a flat
 // card is detectable AS flat at 24 m and not at 50. The band is set at the near
-// end of that and left as a knob (`setMeshBand`, the /?quest `tree LOD1 band` row)
+// end of that and left as a knob (`setMeshBand`, the menu's `tree LOD1 band` row)
 // because the honest test is a headset, not this arithmetic.
 //
 // THE FAR TIER IS A REAL CAMERA-FACING BILLBOARD, spun about its own trunk in
@@ -213,7 +213,7 @@ import { smoothstep } from '../../sim/mathx.js'
 // NO PER-INSTANCE FRUSTUM CULLING, because an InstancedMesh has none to have:
 // the two thirds of the disc behind the player are submitted every frame. The
 // far tier is one triangle a tree, so that is ~26k wasted vertex invocations;
-// the /?quest panel's cull row does nothing to this layer. And NO per-instance
+// the menu's cull row does nothing to this layer. And NO per-instance
 // dither across a tier swap, for the reason in the band note above.
 //
 // WHAT THE UPLOADS COST, the known lever if this is still slow. Any write
@@ -251,7 +251,7 @@ const FULL_RADIUS = 50
 // Moving the FIRST number is nearly free in both directions, because the two
 // mesh tiers are within 31% of each other -- that is what makes it safe to keep
 // LOD0 as tight as this. Moving the SECOND is the real spend and it is the one
-// the /?quest `tree LOD1 band` row exists to A/B, because it is now the ONLY boundary
+// the menu's `tree LOD1 band` row exists to A/B, because it is now the ONLY boundary
 // between a real tree and a flat picture of one. `setMeshBand` moves it; the
 // tier caps are sized for MESH_BAND_MAX so it can travel outward as well as in.
 //
@@ -317,7 +317,7 @@ const DRAW_RADIUS = 1500
 // IT DOES NOT TOUCH THE TILE COUNT, which is the thing to know before reaching
 // for it: tiles go as the radius SQUARED whatever this is, so a bed that is slow
 // in `update`'s per-tile walk is not helped by any exponent. `setScatter` moves
-// this and the radius together for that reason, and /?quest carries a row for
+// this and the radius together for that reason, and the menu carries a row for
 // each so the two can be told apart on the headset.
 const FALLOFF = 1
 
@@ -615,7 +615,7 @@ export class Trees {
 
     // How many instances each tier is DRAWING, refilled by `update`. The one
     // number that says whether a band is earning its meshes, which is a
-    // question the headset has to answer -- see /?quest's tree row.
+    // question the headset has to answer -- see the menu's tree row.
     this.tierN = new Int32Array(this.tierCount)
 
     this.batch = new PropArena(
@@ -838,7 +838,7 @@ export class Trees {
 
   /**
    * Move the draw radius and the thinning exponent, and regrow the forest on the
-   * new ladder. /?quest's two tree rows are the caller.
+   * new ladder. The menu's two tree rows are the caller.
    *
    * REGROWN AND NOT RECONFIGURED: every tile's keep-fraction and every tree's
    * gone-distance come off these two numbers, so there is nothing to patch in
@@ -873,7 +873,7 @@ export class Trees {
   }
 
   /**
-   * Move the LOD1 band's outer edge. /?quest's `tree mesh` row.
+   * Move the LOD1 band's outer edge. The menu's `tree mesh` row.
    *
    * THE ONE BOUNDARY LEFT BETWEEN A TREE AND A PICTURE OF ONE, and the lever
    * neither `setScatter` row reaches. Outward buys depth on trees that are still
@@ -926,7 +926,7 @@ export class Trees {
   }
 
   /**
-   * Draw the whole forest as billboards. /?quest's `tree tiers` row.
+   * Draw the whole forest as billboards. The menu's `tree tiers` row.
    *
    * A DIAGNOSTIC, NOT A QUALITY SETTING -- every tree you can touch becomes a
    * spun triangle. What it isolates is the two mesh tiers' share of the bill,
@@ -949,7 +949,7 @@ export class Trees {
   }
 
   /**
-   * Turn the leaf CUTOUT off. /?quest's `tree leaf cutout` row.
+   * Turn the leaf CUTOUT off. The menu's `tree leaf cutout` row.
    *
    * A tree is mostly alpha: every foliage card and every billboard is a
    * rectangle whose silhouette exists only in the texture's alpha, rejected per

@@ -1,0 +1,99 @@
+{
+  "kind": "pose",
+  "note": "Scratching a hole: chest dropped, rump up, nose down over the work, and the forepaws alternating a four-beat rake -- reach out, set down, pull back through the dirt, lift clear. Head pitch is POSITIVE here because positive is nose-down; `alert` raises its head with a negative one. This cannot be a gait even though it cycles, because a gait moves every planted foot at one ground speed and here the forepaws rake backwards while the hind feet stand still -- hence `unweighted`, which says the forepaws work at ground level without carrying the animal. Two full strokes per leg, half a cycle apart so one paw is always down, and the last key repeats the first so it loops.",
+  "samples": 48,
+  "unweighted": ["frontLeft", "frontRight"],
+  "limits": { "fold": 2.4 },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.02, "fore": -0.03 },
+      "spine": { "pitch": 0.46 },
+      "head": { "pitch": 0.78 },
+      "tail": { "pitch": 0.62 },
+      "legs": {
+        "frontLeft": { "fore": 0.18, "lift": 0.13 }, "frontRight": { "fore": -0.14, "lift": 0.0 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.1, "pose": {
+      "root": { "lift": -0.04, "fore": -0.03 },
+      "spine": { "pitch": 0.48 },
+      "head": { "pitch": 0.82 },
+      "tail": { "pitch": 0.66 },
+      "legs": {
+        "frontLeft": { "fore": 0.18, "lift": 0.0 }, "frontRight": { "fore": -0.09, "lift": 0.11 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.2, "pose": {
+      "root": { "lift": -0.02, "fore": -0.03 },
+      "spine": { "pitch": 0.46 },
+      "head": { "pitch": 0.78 },
+      "tail": { "pitch": 0.62 },
+      "legs": {
+        "frontLeft": { "fore": -0.14, "lift": 0.0 }, "frontRight": { "fore": 0.18, "lift": 0.13 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.3, "pose": {
+      "root": { "lift": -0.04, "fore": -0.03 },
+      "spine": { "pitch": 0.48 },
+      "head": { "pitch": 0.82 },
+      "tail": { "pitch": 0.66 },
+      "legs": {
+        "frontLeft": { "fore": -0.09, "lift": 0.11 }, "frontRight": { "fore": 0.18, "lift": 0.0 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.4, "pose": {
+      "root": { "lift": -0.02, "fore": -0.03 },
+      "spine": { "pitch": 0.46 },
+      "head": { "pitch": 0.78 },
+      "tail": { "pitch": 0.62 },
+      "legs": {
+        "frontLeft": { "fore": 0.18, "lift": 0.13 }, "frontRight": { "fore": -0.14, "lift": 0.0 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.5, "pose": {
+      "root": { "lift": -0.04, "fore": -0.03 },
+      "spine": { "pitch": 0.48 },
+      "head": { "pitch": 0.82 },
+      "tail": { "pitch": 0.66 },
+      "legs": {
+        "frontLeft": { "fore": 0.18, "lift": 0.0 }, "frontRight": { "fore": -0.09, "lift": 0.11 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.6, "pose": {
+      "root": { "lift": -0.02, "fore": -0.03 },
+      "spine": { "pitch": 0.46 },
+      "head": { "pitch": 0.78 },
+      "tail": { "pitch": 0.62 },
+      "legs": {
+        "frontLeft": { "fore": -0.14, "lift": 0.0 }, "frontRight": { "fore": 0.18, "lift": 0.13 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.7, "pose": {
+      "root": { "lift": -0.04, "fore": -0.03 },
+      "spine": { "pitch": 0.48 },
+      "head": { "pitch": 0.82 },
+      "tail": { "pitch": 0.66 },
+      "legs": {
+        "frontLeft": { "fore": -0.09, "lift": 0.11 }, "frontRight": { "fore": 0.18, "lift": 0.0 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } },
+    { "t": 0.8, "pose": {
+      "root": { "lift": -0.02, "fore": -0.03 },
+      "spine": { "pitch": 0.46 },
+      "head": { "pitch": 0.78 },
+      "tail": { "pitch": 0.62 },
+      "legs": {
+        "frontLeft": { "fore": 0.18, "lift": 0.13 }, "frontRight": { "fore": -0.14, "lift": 0.0 },
+        "hindLeft": { "lat": 0.04 }, "hindRight": { "lat": -0.04 }
+      }
+    } }
+  ]
+}

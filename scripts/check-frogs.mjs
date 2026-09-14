@@ -14,7 +14,7 @@
 // scatter that is not the same twice; a frog standing level on a slope, or
 // still tilted to the slope it left after a hop; a frame that costs more than a
 // scatter is allowed to; a frog drawn as a tier its apparent size does not
-// call for, or drawn at all under a degree of arc, a tier that flickers as her
+// call for, or drawn at all under the last rung, a tier that flickers as her
 // head sways on a threshold, or a tier instance that is not its frog's own
 // matrix, tint and hue.
 // The shipped GLB and its ladder are checked for existence, shape and facing
@@ -310,11 +310,11 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   check(alive().every((f) => Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'and back again when it drops')
 }
 
-// --- the ladder: each frog is the tier its apparent size calls for, none under a degree ----
+// --- the ladder: each frog is the tier its apparent size calls for, none under the last rung ----
 {
   const deg = (span, dist) => Math.atan2(span, dist) * 180 / Math.PI
-  check(LOD_DEG.length === 4 && LOD_DEG.every((d, k) => k === 0 || d < LOD_DEG[k - 1]) && LOD_DEG[LOD_DEG.length - 1] === 1, 'four tiers, each holding down to a smaller angle, the last to one degree', LOD_DEG.join(', '))
-  // critterTier on its own: the pick near, each tier one step down, nothing under the last degree, and hysteresis both ways round a threshold.
+  check(LOD_DEG.length === 4 && LOD_DEG.every((d, k) => k === 0 || d < LOD_DEG[k - 1]) && LOD_DEG[LOD_DEG.length - 1] === 0.75, 'four tiers, each holding down to a smaller angle, the last to three quarters of a degree', LOD_DEG.join(', '))
+  // critterTier on its own: the pick near, each tier one step down, nothing under the last rung, and hysteresis both ways round a threshold.
   const span = (SIZE_M[0] + SIZE_M[1]) / 2
   const ladder = LOD_DEG.map((d) => critterTier(span, span / Math.tan(d * Math.PI / 180) * 0.99, -1, LOD_DEG))
   check(ladder.every((t, k) => t === k) && critterTier(span, 0.5, -1, LOD_DEG) === 0 && critterTier(span, 1000, -1, LOD_DEG) === LOD_DEG.length, 'critterTier steps a frog with no tier yet down the ladder by its apparent size and off its foot', ladder.join(', '))
@@ -324,9 +324,9 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   const stayUp = critterTier(span, edge * (1 + H * 0.5), 1, LOD_DEG), stayDown = critterTier(span, edge * (1 - H * 0.5), 2, LOD_DEG)
   const goUp = critterTier(span, edge * (1 - H * 1.5), 2, LOD_DEG), goDown = critterTier(span, edge * (1 + H * 1.5), 1, LOD_DEG)
   check(stayUp === 1 && stayDown === 2 && goUp === 1 && goDown === 2, 'a frog just over a threshold keeps its tier until it is well over', `stay ${stayUp}/${stayDown}, go ${goUp}/${goDown}`)
-  check(critterTier(span, 1000, LOD_DEG.length - 1, LOD_DEG) === LOD_DEG.length && critterTier(span, span / Math.tan(1.05 * Math.PI / 180), LOD_DEG.length, LOD_DEG) === LOD_DEG.length, 'a frog under a degree is not drawn, and one just over it not yet')
+  check(critterTier(span, 1000, LOD_DEG.length - 1, LOD_DEG) === LOD_DEG.length && critterTier(span, span / Math.tan(LOD_DEG[LOD_DEG.length - 1] * 1.05 * Math.PI / 180), LOD_DEG.length, LOD_DEG) === LOD_DEG.length, 'a frog under the last rung is not drawn, and one just over it not yet')
 
-  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog under a degree is undrawn.
+  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog under the last rung is undrawn.
   frogs.place(0, 0)
   const HEAD = [HALF + 1, GROUND + 1.6, 0]
   frogs.update(...HEAD, DT)
@@ -338,7 +338,7 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   const right = list.filter((d) => d.f && critterTier(d.f.size, d.dist, -1, LOD_DEG) === d.tier).length
   check(right === list.length, 'each is drawn as the tier its apparent size calls for', `${right} of ${list.length}`)
   const hidden = alive().filter((f) => f.lod === LOD_DEG.length)
-  check(hidden.length > 0 && hidden.every((f) => deg(f.size, Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])) < LOD_DEG[LOD_DEG.length - 1] * (1 + H)) && list.every((d) => deg(d.f.size, d.dist) >= LOD_DEG[LOD_DEG.length - 1] * (1 - H)), 'the frogs under a degree of arc are not drawn, and every drawn one is over it', `${hidden.length} hidden of ${alive().length}`)
+  check(hidden.length > 0 && hidden.every((f) => deg(f.size, Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])) < LOD_DEG[LOD_DEG.length - 1] * (1 + H)) && list.every((d) => deg(d.f.size, d.dist) >= LOD_DEG[LOD_DEG.length - 1] * (1 - H)), 'the frogs under the last rung are not drawn, and every drawn one is over it', `${hidden.length} hidden of ${alive().length}`)
   // A tier instance is its frog: same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
   let matched = 0
   for (const d of list) {
