@@ -243,6 +243,15 @@ const CREST_CELL_HI = 6
 // cell would otherwise be 65 x 65 evaluations per vertex.
 const PEAKS_TAPS_MAX = 17
 
+/**
+ * The PEAKS stencil for a cell of `step` metres over a `texel`-metre import: `n` taps a side at `pitch` metres, centred on the vertex, or null where the footprint max is off. Exported because the river's raise (render/river-raise.js) replicates the drawn far ground from this, and a stencil copied there would be the second thing to update when this one changes.
+ */
+export function peaksStencil(step, texel) {
+  if (!(step * 2 > texel)) return null
+  const n = Math.min(PEAKS_TAPS_MAX, Math.ceil(step / texel) + 1)
+  return { n, pitch: step / (n - 1), r: step / 2 }
+}
+
 // Vertex colour. v1's construction -- alt ramp, then rock over it by steepness,
 // then snow over that -- with the dirt blend appended.
 //
@@ -493,9 +502,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   const crestW = field.relief.crest * smoothstep(CREST_CELL_LO, CREST_CELL_HI, step)
   const crestR = step * 0.35
   // Half a cell each way, when the footprint max is on -- see PEAKS_TAPS_MAX.
-  const texel = field.ground.texelSize
-  const peaksOn = field.relief.peaks > 0 && step * 2 > texel
-  const peaksR = peaksOn ? step / 2 : 0
+  const peaks = field.relief.peaks > 0 ? peaksStencil(step, field.ground.texelSize) : null
+  const peaksR = peaks === null ? 0 : peaks.r
 
   // THE PER-CHUNK CULL. One index query decides for all 361 samples.
   //
@@ -554,15 +562,13 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // THE PEAKS SAMPLER SUPERSEDES IT when both are up: a max over the whole
   // footprint contains crest's four diagonal taps, so the bias would add
   // nothing but its own cost.
-  const peaksN = peaksOn ? Math.min(PEAKS_TAPS_MAX, Math.ceil(step / texel) + 1) : 0
-  const peaksPitch = peaksOn ? step / (peaksN - 1) : 0
-  const sampleHeight = peaksOn
+  const sampleHeight = peaks !== null
     ? (x, z) => {
         let h = heightAtCell(x, z)
-        for (let b = 0; b < peaksN; b++) {
-          const zz = z - peaksR + b * peaksPitch
-          for (let a = 0; a < peaksN; a++) {
-            const v = heightAtCell(x - peaksR + a * peaksPitch, zz)
+        for (let b = 0; b < peaks.n; b++) {
+          const zz = z - peaksR + b * peaks.pitch
+          for (let a = 0; a < peaks.n; a++) {
+            const v = heightAtCell(x - peaksR + a * peaks.pitch, zz)
             if (v > h) h = v
           }
         }

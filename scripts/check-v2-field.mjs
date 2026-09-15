@@ -1104,14 +1104,14 @@ export async function run({ heightmap } = {}) {
         if (a !== b) { mismatch++; worst = Math.max(worst, Math.abs(a - b)) }
       }
       check(reliefIsOff(RELIEF_DEFAULTS), 'RELIEF_DEFAULTS is the off state, by its own predicate', `${RELIEF_KNOBS.length} knobs`)
-      // What main.js boots on: the two knobs the world ships with, on a table
+      // What main.js boots on: the one knob the world ships with, on a table
       // that normalizes, and nothing else up -- "disable all other terrain
       // effects" is a property of this object and not of a saved HUD.
       const shipped = normalizeRelief(RELIEF_SHIPPED)
       const shippedUp = RELIEF_KNOBS.filter((k) => shipped[k.key] !== k.off).map((k) => k.key)
       check(
-        shippedUp.length === 2 && shipped.jagged === 1 && shipped.peaks === 1,
-        'RELIEF_SHIPPED is jagged and peaks alone',
+        shippedUp.length === 1 && shipped.jagged === 1,
+        'RELIEF_SHIPPED is jagged alone',
         shippedUp.length ? shippedUp.join(', ') : 'nothing up'
       )
       check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/${N} sites differ, worst ${worst} m`)

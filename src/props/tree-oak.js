@@ -1,6 +1,7 @@
 import THREE from '../three-instance.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { LAYER } from '../textures.js'
+import { trunkProfile } from './tree.js'
 
 // ---------------------------------------------------------------------------
 // TREE OAK -- a broadleaf built from crooked tubes under a litter of scoops.
@@ -323,8 +324,9 @@ export function resolveTreeOak(options = {}) {
 // a point at path[S]. The seam corner is duplicated so u runs the whole way
 // round, and the apex once per face at that face's own u, both as tree.js's
 // addCone. `warp` is one multiplier per corner, the same at every ring, so the
-// lobes run straight up the tube. `v` is arc length in tiles.
-function addTube(out, path, radii, sides, warp, uRepeat, vPerMetre, layer) {
+// lobes run straight up the tube. `v` is arc length in tiles. `rings`, where a
+// caller passes one, collects each ring's frame for tree.js's trunkProfile.
+function addTube(out, path, radii, sides, warp, uRepeat, vPerMetre, layer, rings = null) {
   const S = path.length - 1
   const base = out.positions.length / 3
   const stride = sides + 1
@@ -354,6 +356,7 @@ function addTube(out, path, radii, sides, warp, uRepeat, vPerMetre, layer) {
       e1.normalize()
     }
     e2.crossVectors(tangent, e1).normalize()
+    if (rings !== null) rings.push({ pos: path[r], e1: e1.clone(), e2: e2.clone(), radius: radii[r] })
     for (let k = 0; k <= sides; k++) {
       const a = (k / sides) * TAU
       const radius = radii[r] * (warp === null ? 1 : warp[k % sides])
@@ -785,7 +788,9 @@ export function buildTreeOak(options = {}) {
   // Under `straightWood` a tube is its path's chord at the butt's radius.
   const tube = (path, radii) => (R.straightWood ? [[path[0], path[path.length - 1]], [radii[0]]] : [path, radii])
   let trunkTris = 0
-  if (trunkR > 0) trunkTris = addTube(wood, ...tube(trunkPath, trunkRadii), R.trunkSides, warp, trunkURepeat, vPerMetre, p.barkLayer)
+  const [bolePath, boleRadii] = tube(trunkPath, trunkRadii)
+  const boleRings = []
+  if (trunkR > 0) trunkTris = addTube(wood, bolePath, boleRadii, R.trunkSides, warp, trunkURepeat, vPerMetre, p.barkLayer, boleRings)
 
   // Where along the bole a fraction sits, and the bole's radius there. The
   // path is `trunkSegments` equal steps, so a fraction is an index and a
@@ -953,6 +958,7 @@ export function buildTreeOak(options = {}) {
     belowGround: -Math.min(0, nLeaf > 0 ? fb.min.y : 0, wood.positions.length > 0 ? tb.min.y : 0),
     trunkDiameter: 2 * trunkR * scale,
     boleHeight: trunkPath[R.trunkSegments].y * scale,
+    trunkProfile: trunkProfile(boleRings, bolePath[bolePath.length - 1], R.trunkSides, warp, scale),
     crownWidth,
     crownBase: nLeaf > 0 ? fb.min.y : 0,
     crownTop: nLeaf > 0 ? fb.max.y : 0,

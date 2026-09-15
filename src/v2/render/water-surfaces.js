@@ -1,6 +1,8 @@
 import THREE from '../../three-instance.js'
 import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
-import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, RIVER_WIDEN, RIVER_WIDEN_FRAC, LOD_FINE, LOD_RAISE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, LOD_STATE_RAISED } from './ribbon.js'
+import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, RIVER_WIDEN, RIVER_WIDEN_FRAC, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from './ribbon.js'
+import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH } from './river-raise.js'
+import { unpackKey } from '../terrain/quadtree-v2.js'
 
 /**
  * The visible water of a v2 world: one disc per authored lake, one ribbon per authored river.
@@ -26,6 +28,10 @@ const LEVEL_RUNS = 8
 const runId = new Int32Array(LEVEL_RUNS)
 const runD2 = new Float64Array(LEVEL_RUNS)
 const runY = new Float64Array(LEVEL_RUNS)
+
+// updateLod reads the terrain rung at every coarse sample of a river chunk within this many metres of the eye, and at every LOD_RUNG_STRIDE-th one beyond. Past 400 m the terrain is drawn from 16 m cells up, nodes 256 m wide and wider, so the 40 m stride can pass a node only where the ribbon clips its corner, and there the fill (the neighbours' higher rung) is at most one octave off over under 40 m of river at over 400 m.
+const LOD_RUNG_NEAR = 400
+const LOD_RUNG_STRIDE = 4
 
 export class WaterSurfaces {
   constructor({ water, layers }) {
@@ -56,9 +62,10 @@ export class WaterSurfaces {
     this.triangles = 0
     this.epoch = -1
 
-    // Where the eye was when the river ladders were last read; NaN forces the next updateLod to read them.
+    // Where the eye was, and which terrain render set was up, when the river ladders were last read; NaN forces the next updateLod to read them.
     this.lodX = NaN
     this.lodZ = NaN
+    this.lodVersion = NaN
   }
 
   /** Every lake and every river, from scratch. Called when the epoch moves and nothing narrower is known. */
@@ -165,21 +172,25 @@ export class WaterSurfaces {
   }
 
   /**
-   * One mesh, one draw call, whatever the distance: the vertex buffer is static and holds the fine strip plus a raised copy of every coarse sample (ribbonLod), and the distance ladder is drawn by rewriting the INDEX buffer alone, chunk by chunk, from updateLod. The buffer is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
+   * One mesh, one draw call, whatever the distance. The vertex buffer is static: the fine strip, its flow frame, and per vertex the lift that clears the drawn terrain at each of its rungs (riverRaise). Two things move after build, both from updateLod and neither per frame: the INDEX buffer, which picks fine or coarse quads chunk by chunk, and `aRung`, one byte per vertex naming the terrain rung drawn under it, which selects the lift in the vertex shader. The index is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
    */
   buildRiver(river) {
     const samples = this.samplesOf(river)
     const r = ribbonVertices(samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
     const lod = ribbonLod(r)
-    // The frame the shader drifts the waves in, downstream, with each raised vertex carrying its fine twin's row. Lakes carry no such attribute and get the material's zero default, which is the shared world frame.
-    const fine = flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id))
-    const flow = new Float32Array((r.count + lod.coarse.length) * 8)
-    flow.set(fine)
-    for (let k = 0; k < lod.coarse.length; k++) flow.copyWithin((r.count + k) * 8, lod.coarse[k] * 8, lod.coarse[k] * 8 + 8)
+    // The frame the shader drifts the waves in, downstream. Lakes carry neither this nor the lift and get the material's zero defaults: the shared world frame, on the ground.
+    const flow = flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id))
+    const { ground, peaks } = this.layers.paths.drawnGround()
+    const raise = new THREE.InterleavedBuffer(riverRaise(r, lod, ground, this.layers, peaks), RAISE_RUNGS.length)
 
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(lod.positions, 3))
+    geo.setAttribute('position', new THREE.BufferAttribute(r.positions, 3))
     geo.setAttribute('aFlow', new THREE.BufferAttribute(flow, 4))
+    geo.setAttribute('aRaise', new THREE.InterleavedBufferAttribute(raise, 4, 0))
+    geo.setAttribute('aRaiseFar', new THREE.InterleavedBufferAttribute(raise, 3, 4))
+    const rung = new THREE.BufferAttribute(new Uint8Array(r.count * 2), 1)
+    rung.setUsage(THREE.DynamicDrawUsage)
+    geo.setAttribute('aRung', rung)
     const index = new THREE.BufferAttribute(new Uint32Array(lod.capacity), 1)
     index.setUsage(THREE.DynamicDrawUsage)
     geo.setIndex(index)
@@ -195,54 +206,77 @@ export class WaterSurfaces {
     this.meshes.set(river.id, mesh)
     this.riverSamples.set(river.id, samples)
     this.triangles += r.triangles
-    // Built all-fine; the next updateLod reads the ladder for it.
+    // Built all-fine and on the ground; the next updateLod reads the ladder and the rungs for it.
     this.lodX = NaN
   }
 
   /**
-   * Read every river's distance ladder against the eye at (x, z), and rewrite the index buffer of each river whose chunk states changed. Call it every frame: it returns at once until the eye has moved LOD_STEP from where it last read, so the work -- one AABB distance per chunk, an index rewrite per changed river -- lands once per ten metres walked and never per frame. Returns the number of rivers rewritten.
+   * Read every river against the eye at (x, z) and the terrain as `ground` (TerrainV2) is drawing it: each chunk's place on the distance ladder, and under each coarse sample the rung of the resident terrain chunk. Rewrite a river's index buffer when its chunk states changed and its `aRung` when any rung did. Call it every frame: it returns at once unless the eye has moved LOD_STEP from the last read or the terrain's render set has changed since (`groundVersion`, which ticks at most at the selection rate and only on a real change), so the work -- an AABB distance per chunk, a groundKeyAt per coarse sample, an upload per changed river -- lands per ten metres walked or per re-split, never per frame. Returns the number of rivers rewritten.
    *
-   * A river is also skipped whole while it is entirely past LOD_RAISE and already raised throughout, which is the state most of a large world's rivers are in at any moment.
+   * The rung is read at the coarse samples, ten metres apart, within LOD_RUNG_NEAR and at every LOD_RUNG_STRIDE-th of them beyond, plus each chunk's last so no chunk ends unread. A fine or unread coarse sample between two read ones takes the higher of their rungs: the rung is read at the ribbon's centre line, and a vertex over the seam between two terrain chunks is lifted for the coarser.
    */
-  updateLod(x, z) {
+  updateLod(x, z, ground) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) throw new Error(`WaterSurfaces.updateLod: needs a finite eye position, got (${x}, ${z})`)
+    if (!ground || typeof ground.groundKeyAt !== 'function' || typeof ground.groundVersion !== 'number') throw new Error('WaterSurfaces.updateLod: needs the TerrainV2, for groundKeyAt and groundVersion')
     const dx = x - this.lodX
     const dz = z - this.lodZ
-    if (dx * dx + dz * dz < LOD_STEP * LOD_STEP) return 0
+    if (dx * dx + dz * dz < LOD_STEP * LOD_STEP && ground.groundVersion === this.lodVersion) return 0
     this.lodX = x
     this.lodZ = z
+    this.lodVersion = ground.groundVersion
 
     const fine2 = LOD_FINE * LOD_FINE
-    const raise2 = LOD_RAISE * LOD_RAISE
+    const near2 = LOD_RUNG_NEAR * LOD_RUNG_NEAR
     let rewritten = 0
     for (const mesh of this.meshes.values()) {
       const lod = mesh.userData.lod
       if (!lod) continue
-      const { chunks, states } = lod
-      const s = mesh.geometry.boundingSphere
-      const sx = x - s.center.x
-      const sz = z - s.center.z
-      if (lod.allRaised && Math.sqrt(sx * sx + sz * sz) - s.radius > LOD_RAISE) continue
+      const { chunks, states, coarse } = lod
+      const positions = mesh.geometry.attributes.position.array
+      const rungs = mesh.geometry.attributes.aRung.array
       let changed = false
-      let allRaised = true
+      let moved = false
       for (let c = 0; c < chunks.length; c++) {
         const b = chunks[c]
         const ex = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
         const ez = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
         const d2 = ex * ex + ez * ez
-        const state = d2 < fine2 ? LOD_STATE_FINE : d2 < raise2 ? LOD_STATE_COARSE : LOD_STATE_RAISED
+        const state = d2 < fine2 ? LOD_STATE_FINE : LOD_STATE_COARSE
         if (state !== states[c]) {
           states[c] = state
           changed = true
         }
-        if (state !== LOD_STATE_RAISED) allRaised = false
+        // Rungs at the read coarse samples, then filled: an unread coarse sample and every fine sample take the higher of the read samples either side.
+        const stride = d2 < near2 ? 1 : LOD_RUNG_STRIDE
+        let prev = -1
+        let prevRung = 0
+        for (let k = b.c0; k <= b.c1; k++) {
+          if (k !== b.c1 && (k - b.c0) % stride !== 0) continue
+          const i = coarse[k]
+          const o = i * 6
+          const key = ground.groundKeyAt((positions[o] + positions[o + 3]) * 0.5, (positions[o + 2] + positions[o + 5]) * 0.5)
+          const rung = key === null ? 0 : RUNG_AT_DEPTH[unpackKey(key).depth]
+          const from = prev < 0 ? i : prev
+          const top = rung > prevRung ? rung : prevRung
+          for (let j = from; j <= i; j++) {
+            const v = j === i ? rung : j === prev ? prevRung : top
+            if (rungs[j * 2] !== v) {
+              rungs[j * 2] = v
+              rungs[j * 2 + 1] = v
+              moved = true
+            }
+          }
+          prev = i
+          prevRung = rung
+        }
       }
-      lod.allRaised = allRaised
-      if (!changed) continue
-      const index = mesh.geometry.index
-      mesh.geometry.setDrawRange(0, lodIndices(lod, index.array))
-      index.needsUpdate = true
-      rewritten++
+      if (changed) {
+        const index = mesh.geometry.index
+        mesh.geometry.setDrawRange(0, lodIndices(lod, index.array))
+        index.needsUpdate = true
+      }
+      if (moved) mesh.geometry.attributes.aRung.needsUpdate = true
+      if (changed || moved) rewritten++
     }
     return rewritten
   }

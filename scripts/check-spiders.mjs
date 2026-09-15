@@ -3,20 +3,24 @@
 //   node scripts/check-spiders.mjs
 //
 // The scatter runs against a synthetic wood on flat ground: a stand of trunks
-// of several girths (one a sapling too thin to host), a sphere boulder, a
-// six-metre pillar, a cobble too small to host, a boulder under a pond, and a
-// tree and a rock far off. Everything below is a way a spider can go wrong
-// without anything throwing: a group of none or six; a spider on the terrain,
-// off its surface, under the ground or above the climb; spiders mostly on the
-// tops of things; a spider on a sapling, a cobble or a drowned rock; a scatter
-// that is not the same twice; a spider that never moves, walks off its stone or
-// climbs past three metres; a near spider drawn as a card or a far one as a
-// puppet, a puppet on the wrong tier, one whose clip is not its state, or one
-// that does not rear up when she is close; a card that is two quads, or that
-// does not lie where its spider clings at its tilt; a frame that costs more
-// than a scatter is allowed to. The shipped GLB is checked for shape too --
-// three skinned tiers, no lod3, the skeleton and its six clips -- because the
-// world loads it by name and builds every puppet from it.
+// of several girths (straight cones and crooked, lobed boles, one a sapling too
+// thin to host), a sphere boulder, a six-metre pillar, a cobble too small to
+// host, a boulder under a pond, a flat slab and a buried stone with no wall to
+// climb, a boulder on a puddle's bank, and a tree and a rock far off.
+// Everything below is a way a spider can go wrong without anything throwing: a
+// group of none or six; a spider on the terrain, off its surface, under the
+// ground, in the water or above the climb; spiders mostly on the tops of
+// things; a spider on a sapling, a cobble, a drowned rock, a slab or a buried
+// stone; a scatter that is not the same twice; a spider that never moves,
+// walks off its stone or climbs past three metres; one left spinning in the
+// air when its stone is gone, or left behind when its trunk re-seats; a near
+// spider drawn as a card or a far one as a puppet, a puppet on the wrong tier,
+// one whose clip is not its state, or one that does not rear up when she is
+// close; a card that is two quads, or that does not lie where its spider clings
+// at its tilt; a frame that costs more than a scatter is allowed to. The
+// shipped GLB is checked for shape too -- three skinned tiers, no lod3, the
+// skeleton and its six clips -- because the world loads it by name and builds
+// every puppet from it.
 //
 // What this can NOT check: whether they look like spiders, or how the crawl
 // reads. That needs eyes, in the world.
@@ -24,9 +28,10 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, LOD_DEG, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, HUE,
+  Spiders, LOD_DEG, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, HUE, RESEAT_EVERY, WALL_M,
 } from '../src/v2/render/spiders.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
+import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
 import { CRITTER_GLB, critterTier } from '../src/v2/render/critters.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -41,37 +46,74 @@ const check = (ok, label, detail = '') => {
 const GROUND = 5
 const height = { heightAt: () => GROUND }
 const POND = { x: 30, z: 30, r: 6 }
-const water = { lakeLevelAt: (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : null) }
+// And a puddle a boulder stands in, its level a hand over the ground.
+const PUDDLE = { x: -14, z: 12, r: 3, y: GROUND + 0.3 }
+const levelAt = (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : Math.hypot(x - PUDDLE.x, z - PUDDLE.z) < PUDDLE.r ? PUDDLE.y : null)
+const water = { levelAt, isSubmerged: (x, z, g) => { const l = levelAt(x, z); return l !== null && g < l } }
 
-// Trunks: base radius and height; a cone to the world, as Trees.trunksInto says.
+// Trunks: base radius and height. Each is its own variant of the trees' LOD0 profile, a unit-tall trunk the stub scales by the height and turns by the yaw, as Trees.trunksInto says: the oaks crooked and lobed, the rest straight eight-sided cones; the pine and the thin birch are two-ring cones, a base ring straight to the apex, the shape the shipped pine has. The thin birch's bark thins under TRUNK_MIN_R two metres up, which caps its climb there.
+const TAU = Math.PI * 2
 const TRUNKS = [
-  { name: 'oak', x: 2, z: 0, r0: 0.35, height: 15 },
-  { name: 'pine', x: -3, z: 4, r0: 0.2, height: 12 },
-  { name: 'birch', x: 6, z: -5, r0: 0.12, height: 9 },
-  { name: 'birch2', x: -6, z: -6, r0: 0.1, height: 8 },
-  { name: 'oak2', x: 9, z: 6, r0: 0.4, height: 18 },
-  { name: 'sapling', x: 0, z: 8, r0: 0.03, height: 2 },
-  { name: 'far', x: 80, z: 80, r0: 0.3, height: 12 },
+  { name: 'oak', x: 2, z: 0, r0: 0.35, height: 15, yaw: 0.7 },
+  { name: 'pine', x: -3, z: 4, r0: 0.2, height: 12, yaw: 2.1 },
+  { name: 'birch', x: 6, z: -5, r0: 0.12, height: 9, yaw: 4.0 },
+  { name: 'birch2', x: -6, z: -6, r0: 0.08, height: 8, yaw: 5.5 },
+  { name: 'oak2', x: 9, z: 6, r0: 0.4, height: 18, yaw: 3.3 },
+  { name: 'sapling', x: 0, z: 8, r0: 0.03, height: 2, yaw: 0 },
+  { name: 'far', x: 80, z: 80, r0: 0.3, height: 12, yaw: 1 },
 ]
-// Rocks: a sphere sits with its centre on the ground; a pillar is a vertical cylinder of radius r and height h.
+/** A trunkProfile in tree.js's shape: rings of `sides` corners about their own centres, the apex last. */
+function makeProfile(t) {
+  const ur = t.r0 / t.height
+  const crooked = t.name.startsWith('oak')
+  const rings = crooked
+    ? [{ y: 0, cx: 0, cz: 0, r: ur }, { y: 0.3, cx: 0.03, cz: 0.01, r: ur * 0.8 }, { y: 0.62, cx: 0.05, cz: -0.02, r: ur * 0.55 }, { y: 0.9, cx: 0.06, cz: -0.03, r: 0 }]
+    : t.name === 'pine' || t.name === 'birch2'
+      ? [{ y: 0, cx: 0, cz: 0, r: ur }, { y: 1, cx: 0, cz: 0, r: 0 }]
+      : [{ y: 0, cx: 0, cz: 0, r: ur }, { y: 1 / 3, cx: 0, cz: 0, r: ur * 2 / 3 }, { y: 2 / 3, cx: 0, cz: 0, r: ur / 3 }, { y: 1, cx: 0, cz: 0, r: 0 }]
+  const sides = crooked ? 9 : 8
+  const y = new Float32Array(rings.length)
+  const radius = new Float32Array(rings.length)
+  const centre = new Float32Array(rings.length * 3)
+  const corners = new Float32Array(rings.length * sides * 3)
+  rings.forEach((ring, r) => {
+    y[r] = ring.y
+    radius[r] = ring.r
+    centre[r * 3] = ring.cx; centre[r * 3 + 1] = ring.y; centre[r * 3 + 2] = ring.cz
+    for (let k = 0; k < sides; k++) {
+      const a = (k / sides) * TAU
+      const radius = ring.r * (crooked ? 1 + 0.1 * Math.cos(2 * a + 0.4) : 1)
+      const o = (r * sides + k) * 3
+      corners[o] = ring.cx + Math.cos(a) * radius; corners[o + 1] = ring.y; corners[o + 2] = ring.cz + Math.sin(a) * radius
+    }
+  })
+  return { sides, y, radius, centre, corners }
+}
+// Rocks: a sphere sits with its centre `cy` over the ground (0: on it); a pillar is a vertical cylinder of radius r and height h. The slab is a knee-high disc, the buried stone a sphere showing a hand's height of crown, the wader a sphere on the puddle's bank whose near side dips into the water.
 const ROCKS = [
   { name: 'sphere', kind: 'sphere', x: -8, z: 2, r: 1.5 },
   { name: 'pillar', kind: 'pillar', x: 4, z: 10, r: 0.8, h: 6 },
   { name: 'cobble', kind: 'sphere', x: -2, z: -3, r: 0.2 },
   { name: 'drowned', kind: 'sphere', x: POND.x, z: POND.z, r: 1.5 },
+  { name: 'slab', kind: 'pillar', x: 12, z: -10, r: 1.5, h: 0.25 },
+  { name: 'buried', kind: 'sphere', x: -12, z: -12, r: 1.5, cy: -1.3 },
+  { name: 'wader', kind: 'sphere', x: PUDDLE.x + PUDDLE.r + 0.5, z: PUDDLE.z, r: 1.5 },
   { name: 'far', kind: 'sphere', x: -80, z: 80, r: 2 },
 ]
 const sizeOf = (b) => (b.kind === 'sphere' ? 2 * b.r : Math.max(2 * b.r, b.h))
 const hullOf = (b) => (b.kind === 'sphere' ? b.r * 1.1 : Math.max(b.r, b.h / 2) * 1.1)
 let liveTrunks = []
 let liveRocks = []
+// Where the trunks' origins sit; moved to stand in for a chunk re-seating its trees.
+let trunkY = GROUND - 0.1
 const trees = {
+  trunkProfile: TRUNKS.map(makeProfile),
   trunksInto(x0, z0, x1, z1, out) {
     let w = 0
     for (const t of liveTrunks) {
       if (t.x < x0 || t.x >= x1 || t.z < z0 || t.z >= z1) continue
-      const o = w * 5
-      out[o] = t.x; out[o + 1] = GROUND - 0.1; out[o + 2] = t.z; out[o + 3] = t.r0; out[o + 4] = t.height
+      const o = w * TRUNK_STRIDE
+      out[o] = t.x; out[o + 1] = trunkY; out[o + 2] = t.z; out[o + 3] = t.r0; out[o + 4] = t.height; out[o + 5] = t.yaw; out[o + 6] = TRUNKS.indexOf(t)
       w++
     }
     return w
@@ -83,7 +125,7 @@ function rayRock(b, x, y, z, dx, dy, dz, reach, out) {
   let nx = 0, ny = 0, nz = 0
   const px = x - b.x, pz = z - b.z
   if (b.kind === 'sphere') {
-    const py = y - GROUND
+    const py = y - GROUND - (b.cy ?? 0)
     const bb = px * dx + py * dy + pz * dz
     const cc = px * px + py * py + pz * pz - b.r * b.r
     const disc = bb * bb - cc
@@ -157,8 +199,42 @@ const offRock = (b, c) => {
   const radial = Math.abs(Math.hypot(c.x - b.x, c.z - b.z) - b.r)
   return c.y <= GROUND + b.h + 1e-6 ? radial : Math.abs(c.y - GROUND - b.h)
 }
-const trunkR = (t, h) => t.r0 * (1 - 0.5 * Math.min(1, h / t.height))
-const offTrunk = (t, c) => Math.abs(Math.hypot(c.x - t.x, c.z - t.z) - trunkR(t, c.y - GROUND))
+/** How far a point is off the trunk's own triangles -- the bark as tree.js's addCone winds it from the profile, scaled and yawed as the stub places it. */
+const _tri = new THREE.Triangle()
+const _p = new THREE.Vector3()
+const _q = new THREE.Vector3()
+function offTrunk(t, c) {
+  const prof = trees.trunkProfile[TRUNKS.indexOf(t)]
+  const { sides, y, corners } = prof
+  const cy = Math.cos(t.yaw), sy = Math.sin(t.yaw)
+  const wx = c.x - t.x, wz = c.z - t.z
+  _p.set((wx * cy - wz * sy) / t.height, (c.y - trunkY) / t.height, (wx * sy + wz * cy) / t.height)
+  const P = (r, k) => new THREE.Vector3().fromArray(corners, (r * sides + (k % sides)) * 3)
+  let best = Infinity
+  for (let r = 0; r < y.length - 1; r++) {
+    for (let k = 0; k < sides; k++) {
+      for (const tri of [[P(r, k), P(r, k + 1), P(r + 1, k + 1)], [P(r, k), P(r + 1, k + 1), P(r + 1, k)]]) {
+        _tri.set(...tri).closestPointToPoint(_p, _q)
+        best = Math.min(best, _q.distanceTo(_p))
+      }
+    }
+  }
+  return best * t.height
+}
+/** Whether a normal points away from the trunk's centre line at the spider's height, in the world. */
+function outwardOfTrunk(t, c) {
+  const { y, centre } = trees.trunkProfile[TRUNKS.indexOf(t)]
+  const fy = (c.y - trunkY) / t.height
+  let r = 0
+  while (r < y.length - 2 && y[r + 1] <= fy) r++
+  const f = (fy - y[r]) / (y[r + 1] - y[r])
+  const lx = centre[r * 3] + (centre[(r + 1) * 3] - centre[r * 3]) * f
+  const lz = centre[r * 3 + 2] + (centre[(r + 1) * 3 + 2] - centre[r * 3 + 2]) * f
+  const cy = Math.cos(t.yaw), sy = Math.sin(t.yaw)
+  const ax = t.x + t.height * (lx * cy + lz * sy)
+  const az = t.z + t.height * (lz * cy - lx * sy)
+  return c.nx * (c.x - ax) + c.nz * (c.z - az) > 0
+}
 const hostOf = (c) => (c.host.kind === 'tree' ? TRUNKS : ROCKS).find((h) => h.x === c.host.x && h.z === c.host.z)
 const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : offRock(hostOf(c), c))
 
@@ -276,6 +352,11 @@ spiders.place(0, 0)
   check(groupSizes.every((n) => n >= GROUP[0] && n <= GROUP[1]) && Math.min(...groupSizes) === GROUP[0] && Math.max(...groupSizes) === GROUP[1], `every group is ${GROUP[0]} to ${GROUP[1]}, and both ends are seen`, `${groupSizes.join(' ')}`)
   check(hosted.tree > 0 && hosted.rock > 0, 'groups on trees and on rocks alike', `${hosted.tree} tree groups, ${hosted.rock} rock groups`)
   check(!hostedOf.has('sapling') && !hostedOf.has('cobble') && !hostedOf.has('drowned') && !hostedOf.has('far'), `none on the sapling (under ${TRUNK_MIN_R} m), the cobble (under ${ROCK_MIN_SIZE} m), the drowned rock or anything far off`, [...hostedOf.keys()].join(', '))
+  check(!hostedOf.has('slab') && !hostedOf.has('buried'), `none on the slab or the buried stone: no ${WALL_M} m of wall to climb`, [...hostedOf.keys()].join(', '))
+  const waders = pool.filter((c) => hostOf(c).name === 'wader')
+  const wet = waders.filter((c) => levelAt(c.x, c.z) !== null)
+  check(hostedOf.has('wader') && wet.every((c) => c.y > PUDDLE.y + 0.04), 'the boulder on the puddle\'s bank carries spiders, none of them at the waterline on its wet side', `${waders.length} spiders, ${wet.length} over the water, lowest ${wet.length ? (Math.min(...wet.map((c) => c.y)) - PUDDLE.y).toFixed(2) : '-'} m over it`)
+  check(pool.every((c) => c.ny > -0.3), 'no spider hangs from a ceiling', `lowest ny ${Math.min(...pool.map((c) => c.ny)).toFixed(2)}`)
   check(pool.every((c) => c.size >= SIZE_M[0] - 1e-6 && c.size <= SIZE_M[1] + 1e-6), `every spider is ${SIZE_M[0]} to ${SIZE_M[1]} m`, `${Math.min(...pool.map((c) => c.size)).toFixed(3)} to ${Math.max(...pool.map((c) => c.size)).toFixed(3)} m`)
   const hs = pool.map((c) => c.y - GROUND)
   check(hs.every((h) => h >= 0 && h <= CLIMB_M + 1e-6), `every spider is 0 to ${CLIMB_M} m up`, `${Math.min(...hs).toFixed(2)} to ${Math.max(...hs).toFixed(2)} m`)
@@ -287,7 +368,13 @@ spiders.place(0, 0)
   check(pool.every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-6 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-6), 'unit normal, heading in the tangent plane')
   const flat = pool.filter((c) => c.ny > FLAT_NY).length / pool.length
   check(flat < 0.15, `few sit on top of anything (normal rising past ${FLAT_NY})`, `${(flat * 100).toFixed(0)}% flat`)
-  check(pool.filter((c) => c.host.kind === 'tree').every((c) => Math.abs(c.ny) < 1e-6), 'a tree spider clings to a vertical trunk')
+  const onTrees = pool.filter((c) => c.host.kind === 'tree')
+  check(onTrees.every((c) => Math.abs(c.ny) < 0.2 && outwardOfTrunk(hostOf(c), c)), 'a tree spider clings to the bark, its normal off the trunk\'s centre line and near level, the crooked boles\' lean and all', `ny ${Math.min(...onTrees.map((c) => c.ny)).toFixed(3)} to ${Math.max(...onTrees.map((c) => c.ny)).toFixed(3)}`)
+  check(onTrees.some((c) => hostOf(c).name.startsWith('oak')) && onTrees.some((c) => !hostOf(c).name.startsWith('oak')), 'on the crooked boles and the straight cones alike')
+  const onPine = onTrees.filter((c) => hostOf(c).name === 'pine')
+  check(onPine.length > 0 && onPine.some((c) => c.y - GROUND > 2), 'a two-ring cone, base ring straight to the apex, is climbed to the top of the climb', `${onPine.length} on the pine, highest ${onPine.length ? Math.max(...onPine.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
+  const onThin = onTrees.filter((c) => hostOf(c).name === 'birch2')
+  check(onThin.length > 0 && onThin.every((c) => c.y - GROUND <= 1.9 + 1e-6) && onThin.some((c) => c.y - GROUND > 1.5), `and the thin birch only up to where its bark thins under ${TRUNK_MIN_R} m, two metres up`, `${onThin.length} on it, highest ${onThin.length ? Math.max(...onThin.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
   const hues = new Set(pool.map((c) => c.hue.toFixed(3)))
   check(hues.size > pool.length / 2 && pool.every((c) => Math.abs(c.hue) <= HUE), `spiders wear their own hues within ${HUE}`, `${hues.size} hues in ${pool.length}`)
   // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
@@ -308,6 +395,15 @@ spiders.place(0, 0)
   for (let f = 0; f < 200; f++) late.update(0, GROUND + 1.6, 0, 0)
   check(key(late) === key(spiders), 'hosts that land after place() get their spiders on the rescan, the same ones')
   late.dispose()
+  // A trunk re-seated with its chunk takes its spiders with it, on the next rescan.
+  const treeSpiders = alive().filter((c) => c.host.kind === 'tree')
+  const ys = treeSpiders.map((c) => c.y)
+  trunkY += 0.3
+  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) spiders.update(0, GROUND + 40, 0, 0)
+  check(treeSpiders.every((c, i) => Math.abs(c.y - ys[i] - 0.3) < 1e-5 && offTrunk(hostOf(c), c) < 1e-3), 'a trunk that re-seats 0.3 m up takes its spiders with it, still on the bark')
+  trunkY -= 0.3
+  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) spiders.update(0, GROUND + 40, 0, 0)
+  check(treeSpiders.every((c, i) => Math.abs(c.y - ys[i]) < 1e-5), 'and back down')
 }
 
 // --- the crawl -----------------------------------------------------------------
@@ -356,6 +452,50 @@ spiders.place(0, 0)
   const sink = SINK * spiders.bodyH * k
   check(Math.abs(s.x - k) < 1e-6 && Math.abs(s.y - k) < 1e-6 && p.distanceTo(new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)) < 1e-5, 'the first card is at its spider\'s size, sunk into its surface', `scale ${s.x.toFixed(3)}, sink ${sink.toFixed(4)} m`)
   check(up.distanceTo(new THREE.Vector3(c.nx, c.ny, c.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(c.tx, c.ty, c.tz)) < 1e-5, 'its up is the surface normal and its face is its heading')
+  check(spiders.stats.dropped === 0, 'no stone went from under anybody', `${spiders.stats.dropped} dropped`)
+}
+
+// --- the top of the climb, a stone gone from under a spider ---------------------
+{
+  const FAR = [0, GROUND + 40, 0]
+  // Walking straight up the pillar past CLIMB_M: one turn back, then on down.
+  const p = alive().find((c) => hostOf(c).name === 'pillar')
+  const pillar = hostOf(p)
+  const az = Math.atan2(p.z - pillar.z, p.x - pillar.x)
+  p.x = pillar.x + pillar.r * Math.cos(az); p.y = GROUND + CLIMB_M - 0.05; p.z = pillar.z + pillar.r * Math.sin(az)
+  p.nx = Math.cos(az); p.ny = 0; p.nz = Math.sin(az)
+  spiders._heading(p, 0)
+  p.state = 'go'; p.clip = 'walk'; p.speed = 0.05; p.left = 100
+  let flips = 0
+  let top = -Infinity
+  let was = p.ty
+  for (let f = 0; f < 120; f++) {
+    spiders.update(...FAR, 1 / 60)
+    if (Math.sign(p.ty) !== Math.sign(was)) flips++
+    was = p.ty
+    top = Math.max(top, p.y - GROUND)
+  }
+  check(flips === 1 && p.ty < -0.5 && p.state === 'go' && top <= CLIMB_M + 0.01, `at the top of the climb the spider turns back once and walks down`, `${flips} turns, heading ty ${p.ty.toFixed(2)}, topped at ${top.toFixed(3)} m`)
+  // A spider with no stone under it turns back three times and sits down, then finds its stone again.
+  const s = alive().find((c) => hostOf(c).name === 'sphere')
+  const sphere = hostOf(s)
+  s.x += s.nx; s.y += s.ny; s.z += s.nz
+  const lifted = [s.x, s.y, s.z]
+  s.state = 'go'; s.clip = 'walk'; s.speed = 0.05; s.left = 100
+  let sat = 0
+  for (let f = 0; f < 12 && s.state === 'go'; f++, sat++) spiders.update(...FAR, 1 / 60)
+  check(s.state === 'pause' && s.stuck === 3 && sat <= 9 && Math.hypot(s.x - lifted[0], s.y - lifted[1], s.z - lifted[2]) < 0.01, 'a spider in the air turns back three times and sits down where it is', `${s.state} after ${sat} frames, stuck ${s.stuck}`)
+  for (let f = 0; f < RESEAT_EVERY; f++) spiders.update(...FAR, 0)
+  check(s.host !== null && hostOf(s) === sphere && offRock(sphere, s) < 1e-4 && s.y > GROUND, 'sitting, it re-reads its stone and is back on the sphere', `off ${offRock(sphere, s).toExponential(2)} m`)
+  // The sphere itself gone: every spider on it is taken away, and the slots come back.
+  const onSphere = alive().filter((c) => hostOf(c).name === 'sphere')
+  const freeBefore = spiders.free.length
+  liveRocks = ROCKS.filter((b) => b.name !== 'sphere')
+  for (let f = 0; f < RESEAT_EVERY + 12; f++) spiders.update(...FAR, 0)
+  check(onSphere.length > 0 && onSphere.every((c) => c.host === null && !c.puppet) && spiders.stats.dropped === onSphere.length && spiders.free.length === freeBefore + onSphere.length, 'the sphere gone from under them, its spiders are taken away and their slots freed', `${onSphere.length} dropped`)
+  check(![...spiders.tiles.values()].some((t) => [...t.hosts.values()].some((h) => h.spiders.some((c) => c.host === null))), 'and no host still lists one')
+  check(alive().every((c) => offSurface(c) < 0.02), 'everyone else is where they were')
+  liveRocks = ROCKS
 }
 
 // --- near: puppets, tiers, clips ------------------------------------------------

@@ -2230,7 +2230,17 @@ export const WIND_PRESETS = {
   // and that
   // is the cheaper thing to give up -- on a 12 m pine the eye is on the canopy
   // either way, and pow( wH, stiff ) still carries the motion upward.
-  tree: { amp: 0.012, stiff: 2.6, pin: 1.2, carrier: 1.7, envelope: 0.31, waveK: 0.06, gustK: 0.012, branch: 0.55, jitter: 1.0, gustJitter: 0.3 },
+  // `limb` is what keeps a trunk still while its crown moves: the lean is
+  // scaled by how far the vertex stands from the tree's axis, `floor` inside
+  // band[0] (the bole and every bough's root, so a bough stays joined to the
+  // bark it grows from), the whole of it past band[1], a smoothstep between. A
+  // radius in object metres and not a height, because a bough roots at the
+  // same height it reaches out at; the crown's own spine over the axis takes
+  // the floor too, the price of doing this with no per-vertex attribute. The
+  // spiders (spiders.js) sit on the unswayed trunk, which is why the floor is
+  // as low as it is: at 3 m up a pine the bark moves 5 mm, under a 20 cm
+  // spider. Cards are a photograph of the whole tree and keep the plain lean.
+  tree: { amp: 0.012, stiff: 2.6, pin: 1.2, carrier: 1.7, envelope: 0.31, waveK: 0.06, gustK: 0.012, branch: 0.55, jitter: 1.0, gustJitter: 0.3, limb: { band: [0.4, 1.4], floor: 0.15 } },
   fern: { amp: 0.075, stiff: 1.3, pin: 0.35, carrier: 2.3, envelope: 0.37, waveK: 0.22, gustK: 0.02, branch: 0.8, jitter: 1.0, gustJitter: 0.3 },
   // Grass gets less: a strip already lags clump by clump along its length, and
   // the wave sweeping a meadow is the thing worth seeing there.
@@ -2295,6 +2305,12 @@ function windVertex(w, { strip = false, cards = false } = {}) {
       ? /* glsl */ `float wH = mix( clamp( transformed.y * ${(1 / w.pin).toFixed(6)}, 0.0, 1.0 ),
           1.0 - uvProj.y, propCard );`
       : /* glsl */ `float wH = clamp( transformed.y * ${(1 / w.pin).toFixed(6)}, 0.0, 1.0 );`
+  // The limb weight (see WIND_PRESETS.tree.limb); 1 for every class without one.
+  const limb = w.limb
+    ? /* glsl */ `float wLimb = mix( ${w.limb.floor.toFixed(3)}, 1.0,
+          smoothstep( ${w.limb.band[0].toFixed(3)}, ${w.limb.band[1].toFixed(3)}, length( transformed.xz ) ) );${cards ? `
+    wLimb = mix( wLimb, 1.0, propCard );` : ''}`
+    : /* glsl */ `float wLimb = 1.0;`
   return /* glsl */ `
   {
     mat4 wM = mat4( 1.0 );
@@ -2334,10 +2350,11 @@ ${scaleFix}
       + dot( transformed.xz, vec2( 0.7, 1.3 ) ) * ${w.branch.toFixed(6)} ${along};
 
 ${height}
+${limb}
     // Multiplying by transformed.y is what makes this an angle: the foot is
     // pinned because y is zero there, and the tip leans by amp times its own
     // height whatever the instance was scaled to.
-    float wLean = pow( wH, ${w.stiff.toFixed(3)} ) * transformed.y
+    float wLean = pow( wH, ${w.stiff.toFixed(3)} ) * wLimb * transformed.y
       * ${w.amp.toFixed(6)} * uWindStrength * wReach * wGust * sin( wPhase ) / wAspect;
 
     // The instance's own +X in world XZ, as a unit complex number -- the same

@@ -10,6 +10,7 @@
 
 import { WORLD_HALF, WORLD_SIZE } from '../../src/v2/config.js'
 import { Heightmap } from '../../src/v2/height/heightmap.js'
+import { RELIEF_SHIPPED } from '../../src/v2/height/relief.js'
 
 export function fieldOf(fn) {
   const n = 257
@@ -27,10 +28,10 @@ export function fieldOf(fn) {
   return Heightmap.fromRaw({ width: n, height: n, data, meta: { world: WORLD_SIZE, minY, maxY, encoding: 'raw' } })
 }
 
-// The shape PathSet.setTerrain takes.
-export function terrainOf(fn) {
+// The shape PathSet.setTerrain takes; `peaks` as the shipped relief has it, so a gate's river lift is the shipped one.
+export function terrainOf(fn, peaks = RELIEF_SHIPPED.peaks > 0) {
   const hm = fieldOf(fn)
-  return { coarse: () => hm, groundAt: fn, detailAt: () => 0 }
+  return { coarse: () => hm, peaks: () => peaks, groundAt: fn, detailAt: () => 0 }
 }
 
 export const FLAT_100 = () => 100

@@ -10,9 +10,11 @@
 // lands; a landing on water; a perch the trunk, the stone, the fern and the
 // stump never get; a landed butterfly that does not sit on its perch with its
 // up along the surface, or one whose wings do not raise and slow, or a flier
-// whose wings do not flutter fast; a frame that costs more than a scatter is
-// allowed to; the wing flap not in the vertex shader. The shipped GLB is
-// checked too, because the world loads it by name.
+// whose wings do not flutter fast; one still in the air after sunset, one that
+// takes off in the dark, a meadow rolled at night that arrives flying, or a
+// whole meadow leaving on the one frame the sun comes up; a frame that costs
+// more than a scatter is allowed to; the wing flap not in the vertex shader.
+// The shipped GLB is checked too, because the world loads it by name.
 //
 // What this can NOT check: whether the flight reads as a butterfly's. That
 // needs eyes, in the world.
@@ -20,7 +22,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
+  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
 } from '../src/v2/render/butterflies.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 
@@ -165,6 +167,9 @@ flock.place(0, 0)
   const trail = new Map()
   const chords = []
   let glided = 0, flapped = 0
+  // The frame each approach began, and how long every finished one took: an approach that never seats is a butterfly circling its perch for the tile's life.
+  const approach = new Map()
+  const approaches = []
   // The matrix written for b this frame, or null when it was culled.
   const rowOf = (b) => {
     const m = flock.mesh.instanceMatrix.array
@@ -180,6 +185,8 @@ flock.place(0, 0)
     for (const b of alive()) {
       phaseMax = Math.max(phaseMax, b.phase)
       if (b.state === 'fly' && was.get(b.id) !== 'fly') tookOff.set(b.id, f)
+      if (b.state === 'land' && was.get(b.id) !== 'land') approach.set(b.id, f)
+      if (b.state !== 'land' && approach.has(b.id)) { approaches.push((f - approach.get(b.id)) / 72); approach.delete(b.id) }
       was.set(b.id, b.state)
       if (b.state !== 'rest') {
         // Never straight up: a frame's rise is at most the run times CLIMB_TAN (the seat's snap on landing is a frame of the 'land' state, and is skipped).
@@ -226,6 +233,12 @@ flock.place(0, 0)
   }
   check(low === 0 && high === 0, 'every flier stays inside FLY_M over the ground under it', `${low} low, ${high} high`)
   check(landed.size > 0, `${landed.size} butterflies landed in two minutes`)
+  // A perch is within SEARCH_M and at most FLY_M[1] up, so an approach is seconds; one still open at the end is a butterfly orbiting its perch.
+  const APPROACH_S = 15
+  for (const f0 of approach.values()) approaches.push((72 * 120 - f0) / 72)
+  approaches.sort((a, b) => a - b)
+  const circling = approaches.filter((s) => s > APPROACH_S).length
+  check(approaches.length > 50 && circling === 0, `every landing approach seats within ${APPROACH_S} s`, `${circling} of ${approaches.length} longer, median ${approaches[approaches.length >> 1]?.toFixed(1)} s, max ${approaches[approaches.length - 1]?.toFixed(1)} s`)
   check(seatOff === 0 && upOff === 0 && unwritten === 0, 'a landed butterfly in reach is drawn on its perch with its up along the surface', `${seatOff} off the seat, ${upOff} tilted, ${unwritten} unwritten`)
   check(wingsOff === 0, 'aWing carries each instance\'s phase, amplitude and base')
   check(phaseMax < Math.PI * 2 + 1, 'the phase is kept to a turn, within float32\'s reach', `${phaseMax.toFixed(2)} rad after two minutes`)
@@ -274,6 +287,52 @@ flock.place(0, 0)
     const bodyUp = k !== null && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
     check(bodyUp, 'seated with its head up the trunk', k === null ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
   }
+}
+
+// --- after sunset nothing flies --------------------------------------------------
+{
+  const dt = 1 / 72
+  const night = make(3)
+  night.place(0, 0)
+  const n0 = alive(night).length
+  check(n0 > 0 && alive(night).every((b) => b.state === 'fly'), 'a meadow rolled in daylight starts in the air', `${n0} flying`)
+  // Sundown, then a minute of it. NIGHT_DAY is the sun on the horizon.
+  let settled = -1
+  let flyingAfter = 0
+  for (let f = 0; f < 72 * 60; f++) {
+    night.update(0, 11, 0, dt, NIGHT_DAY - 0.05)
+    const flying = alive(night).filter((b) => b.state !== 'rest').length
+    if (flying === 0 && settled < 0) settled = f
+    if (settled >= 0) flyingAfter += flying
+  }
+  check(settled >= 0 && settled < 72 * 30, 'every butterfly is down within half a minute of sundown', settled < 0 ? `${alive(night).filter((b) => b.state !== 'rest').length} still up after a minute` : `${(settled / 72).toFixed(1)} s`)
+  check(flyingAfter === 0, 'and once down not one of them takes off again in the dark', `${flyingAfter} airborne butterfly-frames after`)
+  check(alive(night).every((b) => Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6 && b.perch !== null), 'each is sat on a perch, not hovering where it gave up', JSON.stringify(night.landings))
+  check(alive(night).every((b) => Math.abs(b.amp - REST_AMP) < 1e-6 && Math.abs(b.base - REST_BASE) < 1e-6), 'with its wings raised and pulsing, as a resting butterfly holds them')
+
+  // A tile that grows in the dark arrives seated: she walks a long way after sunset and the new meadow is not a cloud of fliers.
+  night.update(400, groundAt(400, 0) + 1.6, 0, dt, 0)
+  const fresh = alive(night)
+  check(fresh.length > 0 && fresh.every((b) => b.state === 'rest'), 'a meadow rolled in the dark arrives already landed', `${fresh.filter((b) => b.state === 'rest').length} of ${fresh.length} seated`)
+  check(fresh.every((b) => Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6), 'each on the perch it found, not floating over one')
+  // The seating happens in the tile generator, so it must not have spent the flock's own stream: the same seed, in the dark, lays the same butterflies.
+  const twin = make(3)
+  twin.dayness = 0
+  twin.place(400, 0)
+  const key = (of) => alive(of).map((b) => `${b.homeX.toFixed(4)},${b.homeZ.toFixed(4)},${b.size.toFixed(4)}`).sort().join('|')
+  check(key(twin) === key(night), 'and the night scatter is the same pure function of the seed the day one is')
+  twin.dispose()
+
+  // Dawn: they do not all leave on the frame the sun clears the horizon.
+  const first = new Map()
+  for (let f = 0; f < 72 * 60; f++) {
+    night.update(400, groundAt(400, 0) + 1.6, 0, dt, 1)
+    for (const b of alive(night)) if (b.state !== 'rest' && !first.has(b.id)) first.set(b.id, f / 72)
+  }
+  const offs = [...first.values()].sort((a, b) => a - b)
+  check(offs.length > fresh.length / 2, 'the meadow is up again in the morning', `${offs.length} of ${fresh.length} left their perch in a minute`)
+  check(offs.length > 0 && offs[offs.length - 1] - offs[0] > 3, 'and they go a few at a time, not all on one frame', `first at ${offs[0].toFixed(1)} s, last at ${offs[offs.length - 1].toFixed(1)} s`)
+  night.dispose()
 }
 
 // --- the tiles follow her ------------------------------------------------------

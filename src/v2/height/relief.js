@@ -240,8 +240,9 @@ export const RELIEF_KNOBS = Object.freeze([
     // of a chunk coarser than the texel takes the MAX of the field over the
     // footprint it owns, so no summit falls between samples and a peak never
     // grows as the ground under it re-splits -- it narrows. Ungated: valleys
-    // narrower than a coarse cell fill at distance too. See PEAKS in
-    // chunk-mesh-v2.js.
+    // narrower than a coarse cell fill at distance too, and that fill is why it
+    // is opt-in rather than shipped: the point sample is nearer the ground over
+    // the world as a whole. See PEAKS in chunk-mesh-v2.js.
     key: 'peaks',
     label: 'peak LOD',
     hint: 'a coarse chunk draws the max of the field over each vertex footprint, so a summit never grows as you approach',
@@ -261,7 +262,7 @@ export const RELIEF_DEFAULTS = Object.freeze(Object.fromEntries(RELIEF_KNOBS.map
  * this is the configuration that ships, and main.js starts from it when no
  * saved relief overrides it.
  */
-export const RELIEF_SHIPPED = Object.freeze({ ...RELIEF_DEFAULTS, jagged: 1, peaks: 1 })
+export const RELIEF_SHIPPED = Object.freeze({ ...RELIEF_DEFAULTS, jagged: 1 })
 
 /**
  * Validate and clamp a relief object from anywhere -- the HUD, localStorage, a

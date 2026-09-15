@@ -204,11 +204,13 @@ function weldTree(species, { trunk, foliage, stats }, { near }) {
   geo.computeBoundingSphere()
 
   // The four numbers trees.js reads for the pick silhouette and the card's
-  // frame. `firstBranchHeight` is where the crown starts: the lowest scoop or
-  // bough, since that is what the cursor can hit.
+  // frame, and the trunk's ring profile the spiders cling to. `firstBranchHeight`
+  // is where the crown starts: the lowest scoop or bough, since that is what the
+  // cursor can hit.
   for (const k of ['height', 'crownWidth', 'trunkDiameter', 'crownBase']) {
     if (!(stats[k] > 0)) throw new Error(`weldTree: ${species} publishes no usable ${k} (${stats[k]})`)
   }
+  if (!stats.trunkProfile || !(stats.trunkProfile.sides >= 3)) throw new Error(`weldTree: ${species} publishes no trunkProfile`)
   geo.userData.tree = {
     height: stats.height,
     crownWidth: stats.crownWidth,
@@ -216,6 +218,7 @@ function weldTree(species, { trunk, foliage, stats }, { near }) {
     firstBranchHeight: stats.crownBase,
     belowGround: stats.belowGround,
     triangles: stats.triangles,
+    trunkProfile: stats.trunkProfile,
   }
   return geo
 }

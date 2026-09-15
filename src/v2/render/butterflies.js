@@ -24,6 +24,13 @@
 // and flies to it; LANDED it holds the surface for REST_S with its wings raised
 // and pulsing slowly, then takes off. Over water it never lands.
 //
+// AFTER SUNSET NOTHING FLIES. `dayness` is the world's one day scalar (main.js,
+// the sun's own elevation) and below NIGHT_DAY -- the sun on the horizon -- a
+// flight ends at the next perch it can find and no landed butterfly takes off
+// again; a tile that grows in the dark arrives already seated on one. The rest
+// is re-rolled rather than left expired, so dawn does not launch the whole
+// meadow on a single frame.
+//
 // THE WINGS ARE THE VERTEX SHADER. The cards lie flat in the mesh's XZ with the
 // body along X and the seam at z = 0, and `aWing` per instance is the flap's
 // phase, its amplitude and the angle the wings rest about; each wing is turned
@@ -54,6 +61,10 @@ export const REST_S = [3, 10]
 // How far from its home a butterfly ranges before its heading is turned back, and how far around it a perch is looked for.
 export const TETHER = 8
 export const SEARCH_M = 4
+// The day scalar below which a butterfly is grounded. dayness is (sun elevation + 6) / 10 clamped, so 0.6 is the sun exactly on the horizon.
+export const NIGHT_DAY = 0.6
+// At most this long between a nightfall flier looking for somewhere to land and looking again. A perch search is four spatial queries, so it is not run every frame over a lake.
+const NIGHT_LAND_S = 1.5
 // The wings: flap rate in Hz and half-angle in radians in flight; pulse rate, half-angle and the angle the wings rest raised at, landed; held at GLIDE_BASE in a glide.
 export const FLUTTER_HZ = 11
 export const FLUTTER_AMP = 1.0
@@ -194,6 +205,8 @@ export class Butterflies {
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.frame = 0
+    // The world's day scalar, written by update(). Full day until the clock says otherwise, so a gate that never passes one gets noon.
+    this.dayness = 1
     this.head = { x: 0, z: 0 }
     this.buf = new Float32Array(PERCH_BUF * 4)
     this.span = 1
@@ -267,6 +280,16 @@ export class Butterflies {
       b.speed = b.spd = between(rand, SPEED)
       b.state = 'fly'
       b.left = between(rand, FLY_S)
+      // Grown after dark: already seated, rather than flying to a perch across a tile that has only just appeared. The tile's own generator, so the whole of _enter stays a pure function of its seed.
+      if (this.night) {
+        const kind = this._perch(b, rand)
+        if (kind !== null) {
+          this.landings[kind]++
+          this._rest(b, kind, rand)
+          b.amp = b.ampTo
+          b.base = b.baseTo
+        }
+      }
       t.flock.push(b)
     }
     return t
@@ -290,6 +313,11 @@ export class Butterflies {
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
   }
 
+  /** Whether the sun is down far enough that nothing flies. */
+  get night() {
+    return this.dayness < NIGHT_DAY
+  }
+
   get stats() {
     let resting = 0
     for (const t of this.tiles.values()) for (const b of t.flock) if (b.state === 'rest') resting++
@@ -300,9 +328,10 @@ export class Butterflies {
    * Pick a perch within SEARCH_M of the butterfly into its p/n fields and
    * return its kind, or null when even the ground there is water. The kinds
    * present are drawn from evenly, so a butterfly beside one tree in a field
-   * lands on the tree as often as on the grass.
+   * lands on the tree as often as on the grass. `rand` is the layer's own
+   * generator in flight, and the tile's when a tile is grown after dark.
    */
-  _perch(b) {
+  _perch(b, rand = this.rand) {
     const x0 = b.x - SEARCH_M, z0 = b.z - SEARCH_M, x1 = b.x + SEARCH_M, z1 = b.z + SEARCH_M
     const buf = this.buf
     const kinds = []
@@ -313,25 +342,25 @@ export class Butterflies {
     if (this.ferns && this.ferns.perchesInto(x0, z0, x1, z1, buf) > 0) kinds.push('fern')
     if (this.deadwood && this.deadwood.perchesInto(x0, z0, x1, z1, buf) > 0) kinds.push('deadwood')
     kinds.push('ground')
-    const kind = kinds[Math.floor(this.rand() * kinds.length)]
+    const kind = kinds[Math.floor(rand() * kinds.length)]
     if (kind === 'trunk') {
       n = this.trees.anchorsInto(x0, z0, x1, z1, buf)
-      const o = Math.floor(this.rand() * n) * 4
+      const o = Math.floor(rand() * n) * 4
       // On the bark at a random height, facing out along the radius, head up.
-      const a = this.rand() * Math.PI * 2
+      const a = rand() * Math.PI * 2
       const r = buf[o + 3] + 0.005
       b.px = buf[o] + Math.sin(a) * r
       b.pz = buf[o + 2] + Math.cos(a) * r
-      b.py = this.height.heightAt(buf[o], buf[o + 2]) + between(this.rand, FLY_M)
+      b.py = this.height.heightAt(buf[o], buf[o + 2]) + between(rand, FLY_M)
       b.nx = Math.sin(a); b.ny = 0; b.nz = Math.cos(a)
       return kind
     }
     if (kind === 'rock') {
       n = this.rocks.anchorsInto(x0, z0, x1, z1, buf)
-      const o = Math.floor(this.rand() * n) * 4
+      const o = Math.floor(rand() * n) * 4
       // A random point of the footprint's inner half; the stone's own top there, else the rock is not where its footprint says and the ground serves.
-      const a = this.rand() * Math.PI * 2
-      const r = buf[o + 3] * 0.5 * Math.sqrt(this.rand())
+      const a = rand() * Math.PI * 2
+      const r = buf[o + 3] * 0.5 * Math.sqrt(rand())
       b.px = buf[o] + Math.sin(a) * r
       b.pz = buf[o + 2] + Math.cos(a) * r
       const top = this.rocks.blockTopAt(b.px, b.pz, 0, false)
@@ -350,18 +379,30 @@ export class Butterflies {
     }
     if (kind === 'fern' || kind === 'deadwood') {
       n = (kind === 'fern' ? this.ferns : this.deadwood).perchesInto(x0, z0, x1, z1, buf)
-      const o = Math.floor(this.rand() * n) * 4
-      const a = this.rand() * Math.PI * 2
-      const r = buf[o + 3] * 0.5 * Math.sqrt(this.rand())
+      const o = Math.floor(rand() * n) * 4
+      const a = rand() * Math.PI * 2
+      const r = buf[o + 3] * 0.5 * Math.sqrt(rand())
       b.px = buf[o] + Math.sin(a) * r
       b.pz = buf[o + 2] + Math.cos(a) * r
       b.py = buf[o + 1]
       b.nx = 0; b.ny = 1; b.nz = 0
       return kind
     }
-    const a = this.rand() * Math.PI * 2
-    const r = SEARCH_M * Math.sqrt(this.rand())
+    const a = rand() * Math.PI * 2
+    const r = SEARCH_M * Math.sqrt(rand())
     return this._groundPerch(b, b.x + Math.sin(a) * r, b.z + Math.cos(a) * r)
+  }
+
+  /** Seated on the perch its p/n fields hold: on the surface, wings raised and pulsing, the rest timed. */
+  _rest(b, kind, rand = this.rand) {
+    b.perch = kind
+    b.x = b.px; b.y = b.py; b.z = b.pz
+    b.state = 'rest'
+    b.left = between(rand, REST_S)
+    b.ampTo = REST_AMP
+    b.baseTo = REST_BASE
+    b.turn = 0
+    b.vy = 0
   }
 
   _stoneOr(x, z, fallback) {
@@ -384,8 +425,13 @@ export class Butterflies {
   _step(b, dt) {
     const k = Math.min(1, EASE * dt)
     b.left -= dt
+    // After sunset a flight ends at the next perch rather than when its bout runs out. Clamped rather than zeroed, so a butterfly out over a lake looks again every NIGHT_LAND_S instead of every frame.
+    if (this.night && b.state === 'fly' && b.left > NIGHT_LAND_S) b.left = NIGHT_LAND_S
     if (b.state === 'rest') {
-      if (b.left <= 0) {
+      if (b.left <= 0 && this.night) {
+        // Rolled again rather than left expired: at dawn they leave over a whole REST_S and not all on the frame the sun clears the horizon.
+        b.left = between(this.rand, REST_S)
+      } else if (b.left <= 0) {
         b.state = 'fly'
         b.left = between(this.rand, FLY_S)
         b.alt = between(this.rand, ALT_M)
@@ -441,19 +487,14 @@ export class Butterflies {
       const dx = b.px + b.nx * hover - b.x, dy = b.py + b.ny * hover - b.y, dz = b.pz + b.nz * hover - b.z
       const dist = Math.hypot(dx, dy, dz)
       if (dist < SEAT_M) {
-        b.x = b.px; b.y = b.py; b.z = b.pz
-        b.state = 'rest'
-        b.left = between(this.rand, REST_S)
-        b.ampTo = REST_AMP
-        b.baseTo = REST_BASE
-        b.turn = 0
-        b.vy = 0
+        this._rest(b, b.perch)
       } else {
         // Flown, not slid: the heading eases onto the perch with the weave still in it, and the rise is capped to the climb, so a high perch is circled up to.
+        // The run slackens with the distance over the last metre, and it must: an eased heading chasing a point at full speed has a stable orbit of spd / 2pi around it (a butterfly that misses the seat by a hand swings round into that circle and rides it for the tile's life), and a run that shrinks with the distance shrinks the orbit to nothing.
         const near = Math.min(1, dist)
         b.weave += Math.PI * 2 * WEAVE_HZ * dt
         if (dx * dx + dz * dz > 1e-4) b.yaw += wrap(headingTo(dx, dz) - b.yaw) * Math.min(1, 4 * dt) + Math.sin(b.weave) * 0.8 * near * dt
-        const h = Math.min(dist, b.spd * dt)
+        const h = Math.min(dist, b.spd * near * dt)
         const rise = Math.max(-h * SINK_TAN, Math.min(h * CLIMB_TAN, dy))
         b.x += Math.cos(b.yaw) * h
         b.z -= Math.sin(b.yaw) * h
@@ -499,9 +540,14 @@ export class Butterflies {
     _quat.setFromRotationMatrix(_basis.makeBasis(_x, _n, _z))
   }
 
-  /** One frame: the tiles follow her head, every butterfly in reach is stepped, and the ones within DRAW_SPANS of their size are written. */
-  update(hx, hy, hz, dt) {
+  /**
+   * One frame: the tiles follow her head, every butterfly in reach is stepped,
+   * and the ones within DRAW_SPANS of their size are written. `dayness` is the
+   * world's day scalar, and under NIGHT_DAY it is what grounds them.
+   */
+  update(hx, hy, hz, dt, dayness = 1) {
     dt = Math.min(dt, 0.1)
+    this.dayness = dayness
     this.head.x = hx
     this.head.z = hz
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))

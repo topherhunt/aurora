@@ -9,7 +9,9 @@
 import { pathToFileURL } from 'node:url'
 import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
-import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_RAISE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, RIVER_RAISE, LOD_STATE_FINE, LOD_STATE_COARSE, LOD_STATE_RAISED } from '../src/v2/render/ribbon.js'
+import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
+import { riverRaise, DrawnTerrain, RAISE_RUNGS, RAISE_MARGIN, RAISE_END, RUNG_AT_DEPTH } from '../src/v2/render/river-raise.js'
+import { nodeKey } from '../src/v2/terrain/quadtree-v2.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { SAMPLE_SPACING } from '../src/v2/layers/paths.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
@@ -622,7 +624,6 @@ export async function run() {
       const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
       ws.rebuild()
       const mesh = ws.meshes.get('r')
-      // The vertex buffer is the fine strip followed by the ladder's raised copies (ribbonLod); the frame is read over the fine samples, and section 10 holds the copies to their twins.
       return { layers, ws, mesh, flow: mesh.geometry.getAttribute('aFlow'), n: mesh.userData.lod.count }
     }
     const near = (a, b, tol = 1e-4) => Math.abs(a - b) <= tol
@@ -718,18 +719,18 @@ export async function run() {
     into.ws.dispose()
   }
 
-  // --- 10. the river distance ladder -----------------------------------------
+  // --- 10. the river distance ladder and the lift -----------------------------
   //
-  // A river is drawn at every sample inside LOD_FINE, at one sample per LOD_SPACING between LOD_FINE and LOD_RAISE, and RIVER_RAISE metres up past that (ribbonLod, lodIndices, WaterSurfaces.updateLod). Each rung fails silently in its own way: a coarse quad that skips the samples a bend needed folds into a dark smear; a raised chunk that meets a grounded one at a step leaves a slot of sky through the river; a ladder read per frame is the cost the ladder was built to avoid. The counts are pinned on a straight, the repair and the coverage on a river with real bends, and the update through WaterSurfaces with two rivers, one of them far enough away to be skipped whole.
+  // A river is drawn at every sample inside LOD_FINE and at one sample per LOD_SPACING beyond (ribbonLod, lodIndices), and every vertex is lifted in the vertex stage by the lift built for the terrain rung drawn under it (riverRaise, WaterSurfaces.updateLod). Each piece fails silently in its own way: a coarse quad that skips the samples a bend needed folds into a dark smear; a lift short of the drawn envelope buries the river from a hillside; a lift read from the wrong rung floats it; a ladder read per frame is the cost the ladder was built to avoid. The counts are pinned on a straight, the repair and the coverage on a river with real bends, the lift against the replica on that river and against a flat plane in closed form, and the update through WaterSurfaces against a stub terrain whose drawn rung is a known function of place.
   {
-    check(LOD_FINE === 100 && LOD_RAISE === 200 && LOD_SPACING === 10 && RIVER_RAISE === 3, 'fine inside 100 m, coarse at 10 m to 200 m, raised 3 m past that', `${LOD_FINE} ${LOD_RAISE} ${LOD_SPACING} ${RIVER_RAISE}`)
+    check(LOD_FINE === 100 && LOD_SPACING === 10, 'fine inside 100 m, coarse at 10 m beyond', `${LOD_FINE} ${LOD_SPACING}`)
 
     // The coarse strip's triangles, split three ways: inverted, zero-area on coincident vertices (a collapsed corner, allowed), and zero-area on distinct ones (a folded quad, not allowed).
-    const audit = (lod) => {
+    const audit = (r, lod) => {
       lod.states.fill(LOD_STATE_COARSE)
       const idx = new Uint32Array(lod.capacity)
       const count = lodIndices(lod, idx)
-      const P = lod.positions
+      const P = r.positions
       let inverted = 0
       let badZero = 0
       for (let t = 0; t < count; t += 3) {
@@ -741,8 +742,9 @@ export async function run() {
       }
       return { idx, count, inverted, badZero }
     }
+    const R = RAISE_RUNGS.length
 
-    // A straight at 2 m samples: coarse every fifth sample, chunks every LOD_CHUNK sharing their cut, and every raised copy exactly RIVER_RAISE above its twin.
+    // A straight at 2 m samples: coarse every fifth sample, chunks every LOD_CHUNK sharing their cut, no vertices of its own. Its lift over a flat plane is closed form: nothing where the plane is under the level, the plane's excess plus the rung's margin where it is over, ramped from zero over RAISE_END of arc at each end.
     {
       const N = 251
       const pts = []
@@ -763,37 +765,35 @@ export async function run() {
       }
       check(L === Math.round(r.length / LOD_CHUNK) && lod.chunks[0].c0 === 0 && lod.chunks[L - 1].c1 === m - 1 && shared, `chunks tile the river end to end, each sharing its cut sample with the next`, `${L} chunks`)
       check(span < 1e-6, `and each is ${LOD_CHUNK} m of arc`, `worst ${span.toExponential(1)} m off`)
-      let copyOff = 0
-      for (let k = 0; k < m; k++) {
-        const src = lod.coarse[k] * 6
-        const dst = (r.count + k) * 6
-        for (const v of [0, 3]) {
-          if (lod.positions[dst + v] !== r.positions[src + v] || lod.positions[dst + v + 2] !== r.positions[src + v + 2]) copyOff++
-          if (Math.abs(lod.positions[dst + v + 1] - r.positions[src + v + 1] - RIVER_RAISE) > 1e-5) copyOff++
-        }
-      }
-      check(lod.positions.length === (r.count + m) * 6 && copyOff === 0, `every coarse sample has a copy exactly ${RIVER_RAISE} m above it after the fine strip`, `${copyOff} vertices off`)
-      const a = audit(lod)
+      check(lod.positions === undefined && lod.count === r.count, 'the ladder adds no vertices of its own: it is an index recipe over the fine strip')
+      const a = audit(r, lod)
       check(lod.capacity === (N - 1) * 6 && a.count === (m - 1) * 6 && a.count <= lod.capacity, 'the index buffer holds the all-fine strip and the coarse strip fits inside it', `${a.count} of ${lod.capacity}`)
       check(a.inverted === 0 && a.badZero === 0, 'the coarse strip of a straight is clean', `${a.inverted} inverted, ${a.badZero} folded`)
-      lod.states.fill(LOD_STATE_RAISED)
-      const idx = new Uint32Array(lod.capacity)
-      const count = lodIndices(lod, idx)
-      let endsUp = 0
-      let interiorDown = 0
-      for (let t = 0; t < count; t++) {
-        const id = idx[t]
-        if (id === 0 || id === 1 || id === (N - 1) * 2 || id === (N - 1) * 2 + 1) continue
-        if (id === (r.count + m - 1) * 2 || id === (r.count + m - 1) * 2 + 1 || id === r.count * 2 || id === r.count * 2 + 1) endsUp++
-        if (id < r.count * 2) interiorDown++
+
+      const bare = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], rivers: [], roads: [] })
+      const under = riverRaise(r, lod, terrainOf(() => 12).coarse(), bare, false)
+      const over = riverRaise(r, lod, terrainOf(() => 22).coarse(), bare, true)
+      let underOff = 0
+      let overOff = 0
+      let ramped = 0
+      for (let v = 0; v < r.count * 2; v++) {
+        const ramp = Math.min(1, r.arc[v >> 1] / RAISE_END, (r.arc[r.count - 1] - r.arc[v >> 1]) / RAISE_END)
+        if (ramp < 1) ramped++
+        for (let k = 0; k < R; k++) {
+          if (under[v * R + k] !== 0) underOff++
+          if (Math.abs(over[v * R + k] - (2 + RAISE_MARGIN[k]) * ramp) > 1e-5) overOff++
+        }
       }
-      check(endsUp === 0 && interiorDown === 0, 'raised throughout, the strip stands on its two river ends and floats everywhere between', `${endsUp} end vertices raised, ${interiorDown} interior vertices grounded`)
+      check(under.length === r.count * 2 * R && underOff === 0, `${R} lifts per vertex, all zero over a plane 8 m under the level`, `${underOff} off`)
+      check(overOff === 0 && ramped === 4 * Math.ceil(RAISE_END / SAMPLE_SPACING), `and each the plane's 2 m excess plus its rung's margin over a plane 2 m above it, ramped from nothing over ${RAISE_END} m at either end`, `${overOff} off, ${ramped} ramped`)
+      const ends = [0, (r.count - 1) * 2 * R]
+      check(ends.every((at) => over.subarray(at, at + 2 * R).every((v) => v === 0)) && over[1 * 2 * R] > 0, 'both end samples carry exactly no lift at any rung on either bank, and the next sample already some', `${over[0]} ${over[ends[1]]} ${over[2 * R]}`)
     }
 
     // A river with real bends, solved over terrain the way a shipped one is. The repair is what keeps this strip from folding, so it is measured here where the turn rule alone would fold it; the pick must also have spent extra samples on the bends, and the strip must still cover the channel a metre in from each bank, which is what the chord across a LOD_TURN bend costs at most.
     const ground = (x, z) => 60 - x / 60 + Math.sin(z / 90) * 8
     const bendy = [[-400, -200, 12], [-250, 40], [-100, -60], [40, 120], [220, 90], [380, 260], [560, 300, 12]]
-    const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], roads: [], rivers: [{ id: 'r', depth: 2, pts: bendy }, { id: 'far', depth: 2, pts: [[-400, 3000, 12], [400, 3000, 12]] }] })
+    const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [{ id: 'pond', x: 0, z: -3000, y: 30, rx: 40, rz: 40, rot: 0, shape: 1, carve: 0, depth: 8 }], roads: [], rivers: [{ id: 'r', depth: 2, pts: bendy }, { id: 'far', depth: 2, pts: [[-400, 3000, 12], [400, 3000, 12]] }] })
     layers.paths.setTerrain(terrainOf(ground))
     const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
     ws.rebuild()
@@ -811,10 +811,10 @@ export async function run() {
         if (turned(i, j) >= LOD_TURN && r.arc[j] - r.arc[i] < LOD_SPACING) byTurn++
       }
       check(late === 0 && byTurn > 0, `a coarse sample lands wherever the heading has turned ${((LOD_TURN * 180) / Math.PI).toFixed(0)} degrees or the arc has run ${LOD_SPACING} m, whichever first`, `${late} picked late, ${byTurn} of ${lod.coarse.length - 1} gaps closed by the turn`)
-      const a = audit(lod)
+      const a = audit(r, lod)
       check(a.inverted === 0 && a.badZero === 0, 'the coarse strip through the bends has no inverted or folded triangle', `${a.inverted} inverted, ${a.badZero} folded, ${a.count / 3} triangles`)
       check(a.count < r.triangles * 3 / 4, 'and is a fraction of the fine strip', `${a.count / 3} vs ${r.triangles}`)
-      const P = lod.positions
+      const P = r.positions
       const inTri = (x, z, a, b, c) => {
         const d0 = cross2(P[b] - P[a], P[b + 2] - P[a + 2], x - P[a], z - P[a + 2])
         const d1 = cross2(P[c] - P[b], P[c + 2] - P[b + 2], x - P[b], z - P[b + 2])
@@ -838,75 +838,169 @@ export async function run() {
         }
       }
       check(wet > 2000 && bare === 0, 'the coarse strip covers the channel a metre in from either bank all the way down', `${bare} of ${wet} bare`)
+
+      // The lift on this river, built for both settings of the peaks knob: the replica is the mesher's own recipe (the point sample, or the footprint max over peaksStencil, and the shorter diagonal), checked at one vertex against the taps written out; then at every rung the lifted edge, interpolated bank to bank, clears the replica by the margin at the solved stations across every fine sample, and a coarse sample carries at least what every fine sample it spans does.
+      const { ground: hm, peaks: shippedPeaks } = layers.paths.drawnGround()
+      const carve = (x, z, h) => layers.carve(x, z, h, 64)
+      {
+        const gi = 66, gj = 63
+        const x = -WORLD_HALF + gi * 64, z = -WORLD_HALF + gj * 64
+        let top = -Infinity
+        for (let b = 0; b < 3; b++) for (let c = 0; c < 3; c++) top = Math.max(top, carve(x - 32 + c * 32, z - 32 + b * 32, hm.sample(x - 32 + c * 32, z - 32 + b * 32)))
+        const on = new DrawnTerrain(hm, 64, carve, true), off = new DrawnTerrain(hm, 64, carve, false)
+        check(on.vertex(gi, gj) === top && on.at(x, z) === top && off.vertex(gi, gj) === carve(x, z, hm.sample(x, z)) && off.vertex(gi, gj) < top, 'a 64 m vertex over a 32 m texel is the max of the 3 x 3 taps at 32 m pitch through the carve with peaks up, the carved point sample with it down', `${on.vertex(gi, gj).toFixed(3)} vs ${top.toFixed(3)}, ${off.vertex(gi, gj).toFixed(3)} sampled`)
+      }
+      let threwPeaks = false
+      try { riverRaise(r, lod, hm, layers) } catch { threwPeaks = true }
+      check(threwPeaks, 'riverRaise without the peaks knob throws')
+      for (const peaks of [true, false]) {
+        const raise = riverRaise(r, lod, hm, layers, peaks)
+        // The solve holds the margin at its five taps; between taps the replica's triangles can bow into the margin, which is what the margin is for, so there the edge only has to stay above the replica. Coarse samples are skipped: they carry their span's max, not their own need. So is RAISE_END of arc at each end, where the lift is ramped away on purpose.
+        let short = 0
+        let buried = 0
+        let tested = 0
+        const isCoarse = new Uint8Array(r.count)
+        for (const i of lod.coarse) isCoarse[i] = 1
+        const ramped = (i) => r.arc[i] < RAISE_END || r.length - r.arc[i] < RAISE_END
+        for (let k = 0; k < R; k++) {
+          const step = RAISE_RUNGS[k]
+          const drawn = new DrawnTerrain(hm, step, (x, z, h) => layers.carve(x, z, h, step), peaks)
+          for (let i = 0; i < r.count; i++) {
+            if (isCoarse[i] || ramped(i)) continue
+            const o = i * 6
+            const lr = raise[(i * 2) * R + k], ll = raise[(i * 2 + 1) * R + k]
+            for (let q = 0; q <= 8; q++) {
+              const t = q / 8
+              const x = P[o] + (P[o + 3] - P[o]) * t, z = P[o + 2] + (P[o + 5] - P[o + 2]) * t
+              const gap = drawn.at(x, z) - (P[o + 1] + lr + (ll - lr) * t)
+              tested++
+              if (gap > 1e-4) buried++
+              if (q % 2 === 0 && gap + RAISE_MARGIN[k] > 1e-4) short++
+            }
+          }
+        }
+        check(tested > 50000 && short === 0 && buried === 0, `peaks ${peaks ? 'up' : 'down'}: at every rung the lifted edge holds the margin over the replica at the five solved stations and stays above it between them, across every fine sample`, `${short} short of the margin, ${buried} buried, of ${tested}`)
+        let lifted = 0
+        let coarseShort = 0
+        for (let c = 0; c + 1 < lod.coarse.length; c++) {
+          if (ramped(lod.coarse[c]) || ramped(lod.coarse[c + 1])) continue
+          for (let side = 0; side < 2; side++) {
+            for (let k = 0; k < R; k++) {
+              const a = raise[(lod.coarse[c] * 2 + side) * R + k], b = raise[(lod.coarse[c + 1] * 2 + side) * R + k]
+              if (a > 0) lifted++
+              for (let i = lod.coarse[c] + 1; i < lod.coarse[c + 1]; i++) {
+                const fine = raise[(i * 2 + side) * R + k]
+                if (fine > a || fine > b) coarseShort++
+              }
+            }
+          }
+        }
+        check(lifted > lod.coarse.length && coarseShort === 0, 'both coarse samples either side of a fine sample carry at least its lift, so the coarse strip clears wherever the fine one does', `${coarseShort} short, ${lifted} lifted`)
+        // The ends of a river solved over real ground: exactly nothing at the end samples, at any rung, on either bank, while the samples beside them already lift.
+        const last = r.count - 1
+        let endOff = 0
+        for (let k = 0; k < R; k++) {
+          for (let side = 0; side < 2; side++) {
+            if (raise[side * R + k] !== 0 || raise[(last * 2 + side) * R + k] !== 0) endOff++
+          }
+        }
+        check(endOff === 0 && raise[2 * R] > 0 && raise[(last - 1) * 2 * R] > 0, 'both ends carry no lift at any rung on either bank while the samples beside them do', `${endOff} end lifts, ${raise[2 * R].toFixed(2)} / ${raise[(last - 1) * 2 * R].toFixed(2)} m beside`)
+        if (peaks === shippedPeaks) {
+          const built = ws.meshes.get('r').geometry.getAttribute('aRaise').data.array
+          check(built.length === raise.length && built.every((v, i) => v === raise[i]), 'and the river mesh carries the lift built for the shipped peaks setting')
+        }
+      }
     }
 
-    // updateLod through WaterSurfaces: the ladder is read only once the eye has moved LOD_STEP, the states follow chunk distance, the index buffer is rewritten only for a river whose states changed, and a river already raised throughout and out past LOD_RAISE is not even walked.
+    check(RUNG_AT_DEPTH.length === 11 && RUNG_AT_DEPTH.join() === '7,6,5,4,3,2,1,0,0,0,0', 'a quadtree depth maps to its rung: 512 m at depth 0 is the seventh, 8 m at depth 6 the first, 4 m and finer none', RUNG_AT_DEPTH.join())
+
+    // updateLod through WaterSurfaces against a stub terrain: the ladder and the rungs are read once the eye has moved LOD_STEP or the terrain's render set has changed, the states follow chunk distance, the rung follows the drawn chunk under each vertex with a seam lifted for the coarser side, and nothing is uploaded when nothing changed.
     {
       const mesh = ws.meshes.get('r')
       const far = ws.meshes.get('far')
+      const pond = ws.meshes.get('pond')
       const lod = mesh.userData.lod
-      const flow = mesh.geometry.getAttribute('aFlow').array
-      let flowOff = 0
-      for (let k = 0; k < lod.coarse.length; k++) {
-        for (let d = 0; d < 8; d++) if (flow[(lod.count + k) * 8 + d] !== flow[lod.coarse[k] * 8 + d]) flowOff++
-      }
-      check(flow.length === (lod.count + lod.coarse.length) * 8 && flowOff === 0, 'each raised vertex carries its fine twin\'s aFlow row', `${flowOff} values off`)
-      check(mesh.geometry.index.array.length === lod.capacity && mesh.geometry.drawRange.count === lod.capacity && mesh.geometry.index.usage === THREE.DynamicDrawUsage, 'a river is built all-fine into a dynamic index buffer of exactly that size', `${mesh.geometry.drawRange.count} of ${lod.capacity}`)
+      const geo = mesh.geometry
+      const n = geo.getAttribute('position').count
+      const aRaise = geo.getAttribute('aRaise'), aRaiseFar = geo.getAttribute('aRaiseFar'), aRung = geo.getAttribute('aRung')
+      check(aRaise.isInterleavedBufferAttribute && aRaise.itemSize === 4 && aRaise.offset === 0 && aRaiseFar.itemSize === 3 && aRaiseFar.offset === 4 && aRaise.data === aRaiseFar.data && aRaise.data.stride === R && aRaise.count === n, 'a river\'s seven lifts ride one interleaved buffer as a vec4 and a vec3')
+      check(aRung.itemSize === 1 && aRung.count === n && aRung.array instanceof Uint8Array && aRung.usage === THREE.DynamicDrawUsage && aRung.array.every((v) => v === 0), 'and a dynamic byte per vertex for the rung, built at zero')
+      check(pond !== undefined && pond.geometry.getAttribute('aRaise') === undefined && pond.geometry.getAttribute('aRung') === undefined && pond.geometry.getAttribute('aFlow') === undefined, 'a lake carries none of the river attributes and takes the material\'s zero defaults')
+      check(geo.index.array.length === lod.capacity && geo.drawRange.count === lod.capacity && geo.index.usage === THREE.DynamicDrawUsage, 'a river is built all-fine into a dynamic index buffer of exactly that size', `${geo.drawRange.count} of ${lod.capacity}`)
 
-      const eye = { x: -395, z: -200 }
+      // The stub draws depth 5 (32 m, rung 2) west of `seam`, depth 6 (8 m, rung 1) for 300 m east of it, and depth 7 (4 m, no lift) beyond; from the eye both seams are within 400 m, so the near river reads every coarse sample there. Both rivers run monotone in x, so a vertex between two read samples has the drawn rung of one of them or between, and the fill can only lift it to the coarser neighbour.
+      const stub = { seam: -250, reads: 0, groundVersion: 0, groundKeyAt(x) { this.reads++; return nodeKey(x < this.seam ? 5 : x < this.seam + 300 ? 6 : 7, 0, 0) } }
+      const rungAudit = (m, reach) => {
+        const rungs = m.geometry.getAttribute('aRung').array
+        const Q = m.geometry.getAttribute('position').array
+        let under = 0, seamLift = 0, farLift = 0, pairOff = 0
+        const seen = new Set()
+        for (let i = 0; i < rungs.length / 2; i++) {
+          const x = (Q[i * 6] + Q[i * 6 + 3]) / 2
+          const w = x < stub.seam ? 2 : x < stub.seam + 300 ? 1 : 0
+          const got = rungs[i * 2]
+          seen.add(got)
+          if (rungs[i * 2 + 1] !== got) pairOff++
+          if (got < w) under++
+          else if (got > w) {
+            if (Math.min(Math.abs(x - stub.seam), Math.abs(x - stub.seam - 300)) <= reach) seamLift++
+            else farLift++
+          }
+        }
+        return { under, seamLift, farLift, pairOff, seen }
+      }
+      const eye = { x: -300, z: 0 }
       const stateAt = (c) => {
         const b = lod.chunks[c]
         const ex = eye.x < b.minX ? b.minX - eye.x : eye.x > b.maxX ? eye.x - b.maxX : 0
         const ez = eye.z < b.minZ ? b.minZ - eye.z : eye.z > b.maxZ ? eye.z - b.maxZ : 0
-        const d = Math.hypot(ex, ez)
-        return d < LOD_FINE ? LOD_STATE_FINE : d < LOD_RAISE ? LOD_STATE_COARSE : LOD_STATE_RAISED
+        return Math.hypot(ex, ez) < LOD_FINE ? LOD_STATE_FINE : LOD_STATE_COARSE
       }
       const statesMatch = () => lod.states.every((s, c) => s === stateAt(c))
-      const tally = () => [0, 1, 2].map((s) => lod.states.filter((v) => v === s).length)
-      const drawn = () => mesh.geometry.drawRange.count
-      const first = ws.updateLod(eye.x, eye.z)
+      const tally = () => [0, 1].map((s) => lod.states.filter((v) => v === s).length)
+      const drawn = () => geo.drawRange.count
+      const first = ws.updateLod(eye.x, eye.z, stub)
       const t1 = tally()
-      check(first === 2 && statesMatch() && t1[0] > 0 && t1[1] > 0 && t1[2] > 0, 'the first read from the source rewrites both rivers and grades the near one fine, coarse and raised by chunk distance', `${first} rewritten, states ${t1.join('/')}`)
-      check(far.userData.lod.allRaised === true && far.userData.lod.states.every((s) => s === LOD_STATE_RAISED), 'a river 3 km off is raised throughout')
+      check(first === 2 && statesMatch() && t1[0] > 0 && t1[1] > 0, 'the first read rewrites both rivers and grades the near one fine and coarse by chunk distance', `${first} rewritten, states ${t1.join('/')}`)
       const before = drawn()
       check(before < lod.capacity && before === lodIndices(lod, new Uint32Array(lod.capacity)), 'the draw range is the mixed strip\'s index count', `${before} of ${lod.capacity}`)
-
-      // Where a raised chunk meets a lower one, both draw the shared sample at its fine height; between two raised chunks it is drawn raised; the river's own ends are never raised.
+      const nearReads = stub.reads
+      check(nearReads > 0 && nearReads < lod.coarse.length + far.userData.lod.coarse.length, 'the rung is read at the coarse samples alone, and past 400 m at a stride of them', `${nearReads} reads for ${lod.coarse.length + far.userData.lod.coarse.length} coarse samples`)
       {
-        const idx = mesh.geometry.index.array
-        const n = lod.count
-        const upIds = new Set()
-        const downIds = new Set()
-        for (let t = 0; t < before; t++) (idx[t] >= n * 2 ? upIds : downIds).add(idx[t])
-        let bad = 0
-        for (let c = 0; c < lod.chunks.length; c++) {
-          const { c0, c1 } = lod.chunks[c]
-          for (const [k, other] of [[c0, c - 1], [c1, c + 1]]) {
-            const fine = lod.coarse[k] * 2
-            const up = (n + k) * 2
-            const bothRaised = lod.states[c] === LOD_STATE_RAISED && other >= 0 && other < lod.chunks.length && lod.states[other] === LOD_STATE_RAISED
-            if (bothRaised ? !upIds.has(up) || downIds.has(fine) : upIds.has(up)) bad++
-          }
-        }
-        check(bad === 0 && !upIds.has((n + lod.coarse.length - 1) * 2) && !upIds.has(n * 2), 'a chunk end is raised only between two raised chunks and the river\'s ends never are', `${bad} boundaries wrong`)
+        const near = rungAudit(mesh, LOD_SPACING)
+        check(near.under === 0 && near.farLift === 0 && near.seamLift > 0 && near.pairOff === 0 && near.seen.size === 3, 'within 400 m every vertex has the rung drawn under it, the seam vertices the coarser side\'s, both banks alike, all three rungs present', `${near.under} under, ${near.seamLift} seam-lifted, ${near.farLift} lifted elsewhere, seen ${[...near.seen].sort().join('/')}`)
+        const off = rungAudit(far, LOD_SPACING * 4)
+        check(off.under === 0 && off.farLift === 0 && off.pairOff === 0 && off.seen.size === 3, 'past 400 m the same holds with the seam lifted for up to a stride', `${off.under} under, ${off.seamLift} seam-lifted, ${off.farLift} lifted elsewhere`)
       }
+      const rungVersion = aRung.version
+      check(rungVersion > 0 && geo.index.version > 0, 'the rewritten rungs and index are flagged for upload', `${rungVersion} ${geo.index.version}`)
 
+      stub.reads = 0
       lod.states[0] = 99
-      const nudged = ws.updateLod(eye.x + LOD_STEP * 0.9, eye.z)
-      check(nudged === 0 && lod.states[0] === 99, `a move under ${LOD_STEP} m reads nothing`)
+      const nudged = ws.updateLod(eye.x + LOD_STEP * 0.9, eye.z, stub)
+      check(nudged === 0 && lod.states[0] === 99 && stub.reads === 0, `a move under ${LOD_STEP} m with the terrain unchanged reads nothing`)
       lod.states[0] = stateAt(0)
+      stub.groundVersion++
+      const ticked = ws.updateLod(eye.x + LOD_STEP * 0.9, eye.z, stub)
+      check(ticked === 0 && stub.reads > 0 && aRung.version === rungVersion && drawn() === before, 'a terrain re-split with the eye still re-reads the rungs and uploads nothing when they hold', `${ticked} rewritten, ${stub.reads} reads`)
+      stub.seam = 0
+      stub.groundVersion++
+      const shifted = ws.updateLod(eye.x + LOD_STEP * 0.9, eye.z, stub)
+      const after = rungAudit(mesh, LOD_SPACING * 4)
+      check(shifted === 2 && after.under === 0 && after.farLift === 0 && aRung.version > rungVersion && statesMatch() && drawn() === before, 'a re-split that moves the rungs rewrites them without touching the index', `${shifted} rewritten, ${after.under} under, ${after.farLift} lifted elsewhere`)
       eye.x += LOD_STEP * 1.1
-      const same = ws.updateLod(eye.x, eye.z)
-      check(same === 0 && statesMatch() && drawn() === before, 'a move past the step that changes no chunk rewrites no river', `${same} rewritten`)
+      const same = ws.updateLod(eye.x, eye.z, stub)
+      check(same === 0 && statesMatch() && drawn() === before, 'a move past the step that changes no chunk and no rung rewrites no river', `${same} rewritten`)
       eye.x = 40
       eye.z = 120
-      const moved = ws.updateLod(eye.x, eye.z)
+      const moved = ws.updateLod(eye.x, eye.z, stub)
       const t2 = tally()
-      check(moved === 1 && statesMatch() && drawn() !== before && drawn() === lodIndices(lod, new Uint32Array(lod.capacity)), 'from mid-river only the near river is rewritten, the far one skipped whole as raised and out of range', `${moved} rewritten, states ${t2.join('/')}`)
-      check(mesh.geometry.index.version > 0, 'the rewritten index is flagged for upload', `version ${mesh.geometry.index.version}`)
-      let threw = false
-      try { ws.updateLod(NaN, 0) } catch { threw = true }
-      check(threw, 'a non-finite eye throws')
+      check(moved === 1 && statesMatch() && drawn() !== before && drawn() === lodIndices(lod, new Uint32Array(lod.capacity)), 'from mid-river only the near river is rewritten, the far one out of reach of any change', `${moved} rewritten, states ${t2.join('/')}`)
+      let threw = 0
+      try { ws.updateLod(NaN, 0, stub) } catch { threw++ }
+      try { ws.updateLod(0, 0) } catch { threw++ }
+      try { ws.updateLod(0, 0, { groundVersion: 0 }) } catch { threw++ }
+      check(threw === 3, 'a non-finite eye, a missing terrain and one without groundKeyAt each throw', `${threw} of 3`)
     }
     ws.dispose()
   }

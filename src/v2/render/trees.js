@@ -351,6 +351,9 @@ const FADE_MESH_RESERVE = 8
 // rather than tens of thousands.
 const TILE = 25
 
+// Floats per trunk in `trunksInto`: [x, y, z, base trunk radius, scale, yaw, variant].
+export const TRUNK_STRIDE = 7
+
 // Milliseconds per frame allowed for growing and regrowing tiles; the rest of
 // the queue waits. A tile arriving a frame or two late is a tree fading in at
 // 400 m, which is invisible. A whole-disc rebuild in one frame is not.
@@ -661,6 +664,9 @@ export class Trees {
     this.unitCrownRadius = new Float32Array(this.variantCount)
     this.unitCrownBase = new Float32Array(this.variantCount)
     this.unitHeight = new Float32Array(this.variantCount)
+    // The LOD0 trunk's rings as drawn (tree.js trunkProfile), per variant, for
+    // the spiders to cling to through `trunksInto`.
+    this.trunkProfile = new Array(this.variantCount)
     for (let v = 0; v < this.variantCount; v++) {
       const u = bank.tiers[0].geometries[v].userData.tree
       if (!u || !(u.trunkDiameter > 0)) {
@@ -669,6 +675,14 @@ export class Trees {
       if (!(u.height > 0) || !(u.crownWidth > 0) || !(u.firstBranchHeight > 0)) {
         throw new Error(`Trees: LOD0 variant ${v} publishes no usable height/crownWidth/firstBranchHeight`)
       }
+      const prof = u.trunkProfile
+      if (!prof || !(prof.sides >= 3) || !(prof.y.length >= 2) || prof.radius.length !== prof.y.length || prof.corners.length !== prof.y.length * prof.sides * 3) {
+        throw new Error(`Trees: LOD0 variant ${v} publishes no usable trunkProfile`)
+      }
+      for (let r = 1; r < prof.y.length; r++) {
+        if (!(prof.y[r] > prof.y[r - 1])) throw new Error(`Trees: LOD0 variant ${v} trunkProfile ring ${r} does not rise`)
+      }
+      this.trunkProfile[v] = prof
       this.unitTrunkRadius[v] = u.trunkDiameter / 2
       this.unitCrownRadius[v] = u.crownWidth / 2
       this.unitCrownBase[v] = u.firstBranchHeight
@@ -697,10 +711,12 @@ export class Trees {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
-    // Kept only so _reground can rebuild the sink term without recomposing the
-    // whole matrix; the yaw it would also need stays in the matrix, which is
-    // read back and has its Y translation overwritten in place.
+    // Kept so _reground can rebuild the sink term without recomposing the whole
+    // matrix (the yaw stays in the matrix, which is read back and has its Y
+    // translation overwritten in place) and so `trunksInto` can hand the
+    // spiders the trunk they see: yaw about +Y, radians.
     this.instScale = new Float32Array(this.maxInstances)
+    this.instYaw = new Float32Array(this.maxInstances)
     // How far this tree stands off the ground under it, in metres, signed. For
     // almost every tree that is just `-PLACEMENT.sink * scale`; for one standing
     // on a boulder it is the height of the rock's top over the ground, already
@@ -1415,17 +1431,16 @@ export class Trees {
   }
 
   /**
-   * `anchorsInto` with the trunk's height beside its foot: stride 5 of
-   * [x, y, z, base trunk radius, tree height], all in world metres, under
-   * exactly the contract above (resident tiles, the full-density band, y the
-   * trunk's own sunken origin). For a creature that climbs the trunk rather
-   * than sitting at its foot -- the spiders -- which needs to know how far up
-   * the wood goes and takes the trunk as a cone from that radius at the ground
-   * to half of it at the crown's height, which both generators' taper laws are
-   * within a few centimetres of over the first few metres.
+   * `anchorsInto` with the instance transform beside its foot: TRUNK_STRIDE of
+   * [x, y, z, base trunk radius, instance scale, yaw, variant], under exactly
+   * the contract above (resident tiles, the full-density band, y the trunk's
+   * own sunken origin). For a creature that climbs the trunk rather than
+   * sitting at its foot -- the spiders -- which places itself on the LOD0
+   * bark by `trunkProfile[variant]`, scaled by the scale and turned by the yaw
+   * about +Y, exactly as the batch draws the wood.
    */
   trunksInto(x0, z0, x1, z1, out) {
-    const cap = (out.length / 5) | 0
+    const cap = (out.length / TRUNK_STRIDE) | 0
     let n = 0
     for (const tile of this.tiles.values()) {
       const tx0 = tile.tx * TILE
@@ -1439,14 +1454,16 @@ export class Trees {
         const z = this.instZ[id]
         if (z < z0 || z >= z1) continue
         if (n >= cap) return cap
-        const o = n * 5
+        const o = n * TRUNK_STRIDE
         const v = this.variantAt[id]
         const scale = this.instScale[id]
         out[o] = x
         out[o + 1] = this.instY[id]
         out[o + 2] = z
         out[o + 3] = this.unitTrunkRadius[v] * scale
-        out[o + 4] = this.unitHeight[v] * scale
+        out[o + 4] = scale
+        out[o + 5] = this.instYaw[id]
+        out[o + 6] = v
         n++
       }
     }
@@ -1723,6 +1740,7 @@ export class Trees {
       this.instX[id] = x
       this.instZ[id] = z
       this.instScale[id] = scale
+      this.instYaw[id] = yaw
       // ON TOP OF THE ROCK IF THERE IS ONE UNDER THE TRUNK. Only rocks over
       // ROCK_STAND_MIN answer, so a tree is never perched on a cobble, and the
       // rocks are placed and stepped before the trees in v2/main.js so the stone

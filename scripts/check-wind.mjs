@@ -16,7 +16,7 @@
 import * as THREE from 'three'
 
 import { createPropMaterial, WIND_PRESETS, setWind, getWind, setWindEnabled, getWindEnabled } from '../src/material.js'
-import { treeVariants } from '../src/props/tree-bank.js'
+import { treeVariants, buildTreeBank } from '../src/props/tree-bank.js'
 import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { GRASS_BASE } from '../src/props/grass-bank.js'
 
@@ -166,6 +166,38 @@ for (const [label, opts] of [
 }
 for (const [label, preset] of Object.entries(WIND_PRESETS)) {
   check(preset.branch > 0, `${label}: branch ${preset.branch} is live, not zeroed out`)
+}
+
+console.log('\n=== wind: the trunk stands while the crown moves ===\n')
+
+// The tree lean carries a limb weight off the vertex's radius from the axis
+// (WIND_PRESETS.tree.limb): the floor inside the band, the whole lean past it.
+// That is what lets a spider sit on the bark of a tree that is swaying, and
+// what keeps a bough joined to the trunk it grows from -- so the band is
+// measured against the planted bank's own trunk profile and crown rather than
+// restated. Ferns and grass have no trunk and take the plain lean.
+{
+  const { limb, amp, pin, stiff } = WIND_PRESETS.tree
+  const { src } = vertexSource({ billboardLayers: [0, 1, 2], wind: 'tree' })
+  check(/float wLimb = mix\( [\d.]+, 1\.0,\s*smoothstep\( [\d.]+, [\d.]+, length\( transformed\.xz \) \) \);/s.test(src),
+    'the tree body weights its lean by smoothstep over the radius from the axis')
+  check(/wLimb = mix\( wLimb, 1\.0, propCard \);/.test(src), 'and a card, a photograph of the whole tree, keeps the plain lean')
+  check(/float wLean = pow\([^;]*\* wLimb \*/s.test(src), 'and the weight multiplies the lean')
+  const { src: fern } = vertexSource({ wind: 'fern' })
+  check(/float wLimb = 1\.0;/.test(fern) && !/smoothstep\([^;]*length\( transformed\.xz \)/s.test(fern), 'a fern pays nothing for it')
+  const bank = buildTreeBank({ billboard: false })
+  for (const [i, v] of bank.variants.entries()) {
+    const u = bank.tiers[0].geometries[i].userData.tree
+    const prof = u.trunkProfile
+    let reach = 0
+    for (let k = 0; k < prof.corners.length; k += 3) reach = Math.max(reach, Math.hypot(prof.corners[k], prof.corners[k + 2]))
+    check(reach <= limb.band[0], `${v.species}: the whole trunk profile stands inside the band's floor, ${limb.band[0]} m`, `reaches ${reach.toFixed(2)} m from the axis`)
+    check(limb.band[1] < u.crownWidth / 2, `and the crown reaches past the band, so its tips take the whole lean`, `crown radius ${(u.crownWidth / 2).toFixed(2)} m, band to ${limb.band[1]} m`)
+  }
+  // The lean on the bark at the top of a spider's climb, at the bank's own scale: the shader's arithmetic restated once.
+  const y = 3
+  const bark = Math.pow(Math.min(1, y / pin), stiff) * y * amp * limb.floor
+  check(limb.floor > 0 && limb.floor < 0.25 && bark < 0.01, `the bark at ${y} m leans under a centimetre at full wind, a residual under a spider's foot`, `${(bark * 1000).toFixed(1)} mm against ${(bark / limb.floor * 1000).toFixed(0)} mm for a limb tip there`)
 }
 
 console.log('\n=== wind: one forest is not one metronome ===\n')

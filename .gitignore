@@ -5,6 +5,7 @@ tools/characters/sheets/
 tools/fauna/sheets/
 tools/creatures/work/
 tools/trees/v9/work/
+tools/props/gen/work/
 devops/deploy.env
 .env
 .DS_Store

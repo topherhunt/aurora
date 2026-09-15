@@ -41,13 +41,11 @@ export const RIVER_WIDEN_FRAC = 0.25
 export const FLOW_FADE_HALF_WIDTHS = 4
 export const FLOW_FADE_MIN = 8
 
-// The river's distance ladder, in metres from the eye in plan. Inside LOD_FINE a chunk draws every sample; between LOD_FINE and LOD_RAISE it draws its coarse samples, spaced LOD_SPACING apart on a straight and wherever the heading has turned LOD_TURN since the last one; past LOD_RAISE the coarse strip is drawn RIVER_RAISE metres up, above the terrain's own low LODs, which otherwise bury a river that follows the ground exactly. A chunk is about LOD_CHUNK metres of arc, cut on coarse samples so neighbours share a vertex whatever their states. See ribbonLod.
+// The river's distance ladder, in metres from the eye in plan. Inside LOD_FINE a chunk draws every sample; beyond it, its coarse samples, spaced LOD_SPACING apart on a straight and wherever the heading has turned LOD_TURN since the last one. A chunk is about LOD_CHUNK metres of arc, cut on coarse samples so neighbours share a vertex whatever their states. See ribbonLod. Clearing the terrain's own low LODs is not a rung of this ladder: it is a lift the vertex shader reads off the terrain cell drawn under each sample (river-raise.js).
 export const LOD_FINE = 100
-export const LOD_RAISE = 200
 export const LOD_SPACING = 10
 export const LOD_TURN = (20 * Math.PI) / 180
 export const LOD_CHUNK = 100
-export const RIVER_RAISE = 3
 // The eye moves this far before the ladder is re-read. The ladder therefore lags by at most this, which is the whole of its hysteresis.
 export const LOD_STEP = 10
 
@@ -460,16 +458,16 @@ export function flowFrame(ribbon, forward, reach) {
 }
 
 /**
- * A river ribbon's distance ladder: the coarse sample set, the chunks, and a vertex buffer with a raised copy of every coarse sample after the fine ones, so one static geometry can be drawn at any mix of detail by choosing indices alone. `lodIndices` writes those.
+ * A river ribbon's distance ladder: the coarse sample set and the chunks, so one static geometry can be drawn at any mix of detail by choosing indices alone. `lodIndices` writes those.
  *
  * COARSE SAMPLES are the fine samples LOD_SPACING metres of arc apart, plus one wherever the heading has turned LOD_TURN since the last, plus both ends. That alone can fold: a coarse quad spans several fine ones, and on a bend the collapsed inner vertices it skips over were exactly what kept the fine quads oriented. So every coarse quad is tested with the same predicate ribbonVertices asserts and a failing one is bisected at a fine sample until it passes -- an adjacent pair of fine samples always does, because the ribbon was asserted quad by quad.
  *
- * CHUNKS are cut on coarse samples about LOD_CHUNK metres apart, and the cut sample belongs to both chunks. That is what lets neighbours differ: a fine chunk and a coarse chunk meet at a vertex both of them draw at its fine position. A raised chunk draws its interior coarse samples from the raised copies and its two end samples raised only when the chunk on that side is raised too; against anything else the end stays on the ground, so the strip ramps RIVER_RAISE metres over its last coarse quad rather than leaving a step open. The ends of the river are never raised: there is no chunk beyond them.
+ * CHUNKS are cut on coarse samples about LOD_CHUNK metres apart, and the cut sample belongs to both chunks. That is what lets neighbours differ: a fine chunk and a coarse chunk meet at a vertex both of them draw.
  *
- * `positions` is 2n fine vertices followed by 2m raised ones, in ribbon vertex order (right, left); `coarse[k]` is the fine sample raised vertex pair k copies, which is also how the caller duplicates its aFlow rows. `capacity` is the index count of the all-fine strip, which no mix exceeds since a coarse quad replaces at least one fine one.
+ * `coarse[k]` is the fine sample coarse vertex pair k is; `capacity` is the index count of the all-fine strip, which no mix exceeds since a coarse quad replaces at least one fine one.
  */
 export function ribbonLod(ribbon, opts = {}) {
-  const { spacing = LOD_SPACING, turn = LOD_TURN, chunk = LOD_CHUNK, raise = RIVER_RAISE } = opts
+  const { spacing = LOD_SPACING, turn = LOD_TURN, chunk = LOD_CHUNK } = opts
   const { count: n, positions, arc, tangents } = ribbon
   if (!(n >= 2) || positions.length !== n * 6) throw new Error('ribbonLod: needs ribbonVertices\' result')
 
@@ -534,29 +532,18 @@ export function ribbonLod(ribbon, opts = {}) {
     chunks.push({ c0, c1, minX, maxX, minZ, maxZ })
   }
 
-  const all = new Float32Array((n + m) * 6)
-  all.set(positions)
-  for (let k = 0; k < m; k++) {
-    const src = coarse[k] * 6
-    const dst = (n + k) * 6
-    for (let d = 0; d < 6; d++) all[dst + d] = positions[src + d]
-    all[dst + 1] += raise
-    all[dst + 4] += raise
-  }
-
-  return { count: n, coarse, chunks, positions: all, capacity: (n - 1) * 6, states: new Uint8Array(chunks.length) }
+  return { count: n, coarse, chunks, capacity: (n - 1) * 6, states: new Uint8Array(chunks.length) }
 }
 
 // Chunk states, in order of distance.
 export const LOD_STATE_FINE = 0
 export const LOD_STATE_COARSE = 1
-export const LOD_STATE_RAISED = 2
 
 /**
  * The index list for a ladder at its current `states`, one entry per chunk, written into `out` from 0. Returns the count. Winding is ribbonVertices': (right a, right b, left a), (left a, right b, left b).
  */
 export function lodIndices(lod, out) {
-  const { count: n, coarse, chunks, states } = lod
+  const { coarse, chunks, states } = lod
   let o = 0
   const quad = (ra, la, rb, lb) => {
     out[o++] = ra
@@ -573,16 +560,10 @@ export function lodIndices(lod, out) {
       for (let i = coarse[c0]; i < coarse[c1]; i++) quad(i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 3)
       continue
     }
-    if (s !== LOD_STATE_COARSE && s !== LOD_STATE_RAISED) throw new Error(`lodIndices: chunk ${c} has state ${s}`)
-    const raised = s === LOD_STATE_RAISED
-    // Raised end samples only against a raised neighbour; a missing neighbour is the river's end, which stays down.
-    const vid = (k) => {
-      const up = raised && (k > c0 || states[c - 1] === LOD_STATE_RAISED) && (k < c1 || states[c + 1] === LOD_STATE_RAISED)
-      return up ? (n + k) * 2 : coarse[k] * 2
-    }
+    if (s !== LOD_STATE_COARSE) throw new Error(`lodIndices: chunk ${c} has state ${s}`)
     for (let k = c0; k < c1; k++) {
-      const a = vid(k)
-      const b = vid(k + 1)
+      const a = coarse[k] * 2
+      const b = coarse[k + 1] * 2
       quad(a, a + 1, b, b + 1)
     }
   }

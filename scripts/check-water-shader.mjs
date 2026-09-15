@@ -24,6 +24,7 @@ import { bakeHorizon, AZIMUTHS, decodeHorizon } from '../src/sim/horizon.js'
 import { SAMPLE_GLSL } from '../src/lighting.js'
 import { SKY_GLSL } from '../src/sky-glsl.js'
 import { WAVE_LAYERS, WATER, RIVER_SPREAD } from '../src/water.js'
+import { RAISE_SLOPE } from '../src/v2/render/river-raise.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -561,6 +562,14 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
   check(Array.isArray(dflt) && dflt.length === 4 && dflt.every((v) => v === 0),
     'a sheet without an aFlow buffer defaults to weight 0, the world frame',
     JSON.stringify(dflt))
+  // The river lift is scaled in the vertex stage by the eye's sight-line slope between the two RAISE_SLOPE stops, both baked into the source, and a sheet without the lift buffers lifts nothing.
+  const vs = water.material.vertexShader
+  const stops = vs.match(/lift \*= smoothstep\( ([\d.]+), ([\d.]+), slope \)/)
+  const raiseDflt = [water.material.defaultAttributeValues.aRaise, water.material.defaultAttributeValues.aRaiseFar, water.material.defaultAttributeValues.aRung]
+  check(stops !== null && Number(stops[1]) === RAISE_SLOPE[0] && Number(stops[2]) === RAISE_SLOPE[1] && RAISE_SLOPE[0] >= 0 && RAISE_SLOPE[0] < RAISE_SLOPE[1] && /cameraPosition\.y - worldPos\.y/.test(vs),
+    `the vertex stage scales the river lift by the sight-line slope, none under ${RAISE_SLOPE[0]} and all from ${RAISE_SLOPE[1]}`, stops === null ? 'no smoothstep on slope' : `${stops[1]}..${stops[2]}`)
+  check(raiseDflt.map((d) => d.length).join() === '4,3,1' && raiseDflt.every((d) => d.every((v) => v === 0)),
+    'a sheet without the lift buffers defaults to no lift at rung 0', JSON.stringify(raiseDflt))
   // Downstream and a fan about it: all five in one direction would slide as a
   // slab, and a layer more than 30 degrees off would read as a cross-current.
   const meanHeading = WAVE_LAYERS.reduce((s, L) => s + L.heading, 0) / WAVE_LAYERS.length

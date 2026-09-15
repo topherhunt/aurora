@@ -3,12 +3,21 @@
 // crawling about between the ground and CLIMB_M up, pausing, on the sides of
 // things and hardly ever on top of them. Two hosts, two surfaces:
 //
-//   A TREE is a cone about its trunk's axis (Trees.trunksInto), so a spider on
-//   one is an angle round the trunk and a height up it, and a step is exact.
+//   A TREE is its LOD0 trunk's ring profile (tree.js trunkProfile, handed over
+//   by Trees.trunksInto with the instance's scale and yaw), so a spider on one
+//   is an angle round the trunk and a height up it, seated by bilinear
+//   interpolation between the bark's own corners, and a step is exact.
 //   A ROCK is whatever its hull says it is (Rocks.rayAt): a spider on one is a
 //   point, a normal and a heading in the tangent plane, and every few frames a
-//   step is dropped back onto the stone by a short ray along the normal; a
-//   step that finds no stone, or finds the top, is a turn instead.
+//   step is dropped back onto the stone by a short ray along the normal. A
+//   face counts only where it is stone a spider could stand on: above the
+//   ground and the water under it, within the climb, not a ceiling. A step
+//   that finds none, or finds the top, is a turn back the way it came, and a
+//   spider turned back three times sits down; a sitting spider re-reads its
+//   stone now and then, because the rocks re-seat when a chunk re-splits, and
+//   one whose stone has gone is taken away. A rock seats a group only where a
+//   seat has WALL_M of climbable wall above or below it -- an embedded stone at
+//   the waterline with nothing to cling to seats nobody.
 //
 // Within NEAR_M of her head a spider is a PUPPET: its own skeleton (a clone of
 // the one the shipped GLB carries), an AnimationMixer playing the clip its
@@ -34,6 +43,7 @@ import {
   bakeCritterCard, critterTier, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
+import { TRUNK_STRIDE } from './trees.js'
 
 export const TILE = 16
 // Inside the trees' full-density band (50 m), corners included.
@@ -52,6 +62,16 @@ export const TRUNK_MIN_R = 0.06
 // A seat or a step whose surface normal rises past this is flat ground to a spider; a seat is kept there one time in ten, a step never.
 export const FLAT_NY = 0.6
 export const FLAT_CHANCE = 0.1
+// A face whose normal drops past this is a ceiling: no seat, no step.
+export const HANG_NY = -0.3
+// The wall a rock must offer above or below a seat, at the seat's azimuth, before it carries a group.
+export const WALL_M = 0.4
+// A face this close to the water is wet.
+const WET_M = 0.05
+// A sitting rock spider re-reads its stone every so many frames.
+export const RESEAT_EVERY = 45
+// Steps turned back before a rock spider sits down.
+const STUCK_MAX = 3
 export const MAX = 256
 export const PUPPETS = 32
 export const HUE = 0.35
@@ -73,6 +93,7 @@ const RESCAN_FRAMES = 4
 // A puppet is kept a little past NEAR_M so a spider on the line does not trade its skeleton for a card every step she takes.
 const NEAR_KEEP = 1.15
 
+const TAU = Math.PI * 2
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const IDENTITY = new THREE.Matrix4()
 const _x = new THREE.Vector3()
@@ -195,15 +216,15 @@ class Puppet {
 export class Spiders {
   /**
    * @param height  V2Height: heightAt
-   * @param water   WaterSurfaces: lakeLevelAt -- a host under a lake carries none
-   * @param opts.trees  Trees: trunksInto
+   * @param water   WaterSurfaces: isSubmerged (a host under water carries none) and levelAt (a wet face seats nobody)
+   * @param opts.trees  Trees: trunksInto and trunkProfile
    * @param opts.rocks  Rocks: perchesInto and rayAt
    * @param opts.assets a loaded asset (loadSpiderGlb's shape) for a gate; the world fetches the GLB
    */
   constructor(scene, height, water, { seed = 1, trees, rocks, assets = null } = {}) {
     if (!height || typeof height.heightAt !== 'function') throw new Error('Spiders needs a height field with heightAt')
-    if (!water || typeof water.lakeLevelAt !== 'function') throw new Error('Spiders needs WaterSurfaces, for lakeLevelAt')
-    if (!trees || typeof trees.trunksInto !== 'function') throw new Error('Spiders needs Trees, for trunksInto')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.isSubmerged !== 'function') throw new Error('Spiders needs WaterSurfaces, for levelAt and isSubmerged')
+    if (!trees || typeof trees.trunksInto !== 'function' || !Array.isArray(trees.trunkProfile)) throw new Error('Spiders needs Trees, for trunksInto and trunkProfile')
     if (!rocks || typeof rocks.perchesInto !== 'function' || typeof rocks.rayAt !== 'function') throw new Error('Spiders needs Rocks, for perchesInto and rayAt')
     this.height = height
     this.water = water
@@ -247,11 +268,13 @@ export class Spiders {
       this.slots.push({
         id: i, host: null,
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, tx: 0, ty: 1, tz: 0,
-        // On a tree: the angle round the trunk, the height up it, the heading in the (up, round) plane.
-        ang: 0, h: 0, phi: 0,
+        // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
+        ang: 0, h: 0, phi: 0, r: 1,
         size: 0.2, hue: 0,
         // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds, playing `clip`.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
+        // On a rock: steps turned back since it last walked.
+        stuck: 0,
         lod: -1, puppet: null,
       })
     }
@@ -259,17 +282,18 @@ export class Spiders {
     this.tiles = new Map()
     this.rescan = []
     this.frame = 0
-    this.trunkBuf = new Float32Array(HOST_BUF * 5)
+    this.trunkBuf = new Float32Array(HOST_BUF * TRUNK_STRIDE)
     this.perchBuf = new Float32Array(HOST_BUF * PERCH_STRIDE)
     this.asset = null
     this.bounds = null
     this.span = 1
     this.bodyH = 0
     this.loaded = false
-    // Spiders that found no free slot; spider-frames within NEAR_M with no free puppet, drawn as a card instead; hosts past a tile buffer's end.
+    // Spiders that found no free slot; spider-frames within NEAR_M with no free puppet, drawn as a card instead; hosts past a tile buffer's end; rock spiders whose stone went from under them.
     this.overflow = 0
     this.starved = 0
     this.saturated = 0
+    this.dropped = 0
 
     if (assets) {
       this.setAsset(assets)
@@ -336,10 +360,13 @@ export class Spiders {
     const trunks = this.trees.trunksInto(x0, z0, x0 + TILE, z0 + TILE, this.trunkBuf)
     if (trunks === HOST_BUF) this.saturated++
     for (let i = 0; i < trunks; i++) {
-      const o = i * 5
+      const o = i * TRUNK_STRIDE
       const r0 = this.trunkBuf[o + 3]
       if (r0 < TRUNK_MIN_R) continue
-      this._host(t, 'tree', this.trunkBuf[o], this.trunkBuf[o + 2], { r0, height: this.trunkBuf[o + 4] })
+      const yaw = this.trunkBuf[o + 5]
+      const prof = this.trees.trunkProfile[this.trunkBuf[o + 6]]
+      if (!prof) throw new Error(`Spiders: trunk variant ${this.trunkBuf[o + 6]} has no trunkProfile`)
+      this._host(t, 'tree', this.trunkBuf[o], this.trunkBuf[o + 2], { y: this.trunkBuf[o + 1], r0, scale: this.trunkBuf[o + 4], cy: Math.cos(yaw), sy: Math.sin(yaw), prof, hLo: 0, hHi: 0 })
     }
     const perches = this.rocks.perchesInto(x0, z0, x0 + TILE, z0 + TILE, this.perchBuf)
     if (perches === HOST_BUF) this.saturated++
@@ -351,15 +378,23 @@ export class Spiders {
     }
   }
 
-  /** One host, and its group if it carries one. A tree and a rock at the same quantised origin are two hosts. */
+  /**
+   * One host, and its group if it carries one. A tree and a rock at the same
+   * quantised origin are two hosts. A host seen before only has its origin
+   * refreshed: a tree re-seats with its chunk, and its spiders follow it.
+   */
   _host(t, kind, x, z, shape) {
     const key = hostKey(x, z) + (kind === 'tree' ? 0 : 0.5)
-    if (t.hosts.has(key)) return
+    const had = t.hosts.get(key)
+    if (had) {
+      if (kind === 'tree') { had.y = shape.y; this._treeBand(had) }
+      return
+    }
     const groundY = this.height.heightAt(x, z)
     const host = { kind, x, z, groundY, ...shape, spiders: [] }
     t.hosts.set(key, host)
-    const level = this.water.lakeLevelAt(x, z)
-    if (level !== null && level > groundY) return
+    if (this.water.isSubmerged(x, z, groundY)) return
+    if (kind === 'tree' && !this._treeBand(host)) return
     const rand = mulberry32(hostSeed(x, z, this.seed ^ (kind === 'tree' ? 0x7e3 : 0x0c4)))
     if (rand() >= HOST_CHANCE[kind]) return
     const count = GROUP[0] + Math.floor(rand() * (GROUP[1] - GROUP[0] + 1))
@@ -381,61 +416,170 @@ export class Spiders {
     }
   }
 
-  /** The cone's radius `h` metres up a trunk: the base radius at the ground, half of it at the crown. */
-  _trunkR(host, h) {
-    return host.r0 * (1 - 0.5 * Math.min(1, h / host.height))
+  /**
+   * The climb on a tree as heights over the tree's origin: from just above the
+   * ground (or the origin, where the tree stands on a rock) to CLIMB_M up, and
+   * never past where the bark thins under TRUNK_MIN_R -- the same floor the
+   * base is held to, found between the two rings it thins across. False where
+   * the band is empty: a trunk buried to its rings, or too thin above the ground.
+   */
+  _treeBand(host) {
+    const { y, radius } = host.prof
+    const foot = Math.max(host.groundY, host.y)
+    host.hLo = foot - host.y + 0.02
+    const rMin = TRUNK_MIN_R / host.scale
+    let r = y.length - 1
+    while (r > 0 && radius[r] < rMin) r--
+    let top = y[r]
+    if (r < y.length - 1) top += ((y[r + 1] - y[r]) * (radius[r] - rMin)) / (radius[r] - radius[r + 1])
+    host.hHi = Math.min(foot - host.y + CLIMB_M, top * host.scale)
+    return host.hHi > host.hLo
   }
 
   _seatTree(c, host, rand) {
-    c.ang = rand() * Math.PI * 2
-    c.h = between(rand, [0.05, Math.min(CLIMB_M, host.height * 0.9)])
-    c.phi = rand() * Math.PI * 2
+    c.ang = rand() * TAU
+    c.h = between(rand, [host.hLo, host.hHi])
+    c.phi = rand() * TAU
     this._placeTree(c)
     return true
   }
 
-  /** A tree spider's world seat, normal and heading from its angle, height and heading angle. */
+  /**
+   * A tree spider's world seat, normal and heading from its angle and height:
+   * the point on the bark between the four profile corners round it, in the
+   * instance's frame (scaled, yawed, at its origin). The heading is `phi` from
+   * the bark's up direction toward its round direction, and `r` is the bark's
+   * radius there -- how far a metre round the trunk turns the angle.
+   */
   _placeTree(c) {
     const host = c.host
-    const r = this._trunkR(host, c.h)
-    const ca = Math.cos(c.ang)
-    const sa = Math.sin(c.ang)
-    c.x = host.x + ca * r
-    c.y = host.groundY + c.h
-    c.z = host.z + sa * r
-    c.nx = ca; c.ny = 0; c.nz = sa
-    // The tangent basis: up the trunk, and round it.
+    const { sides, y, centre, corners } = host.prof
+    const fh = c.h / host.scale
+    let r = 0
+    while (r < y.length - 2 && y[r + 1] <= fh) r++
+    const fr = Math.min(1, Math.max(0, (fh - y[r]) / (y[r + 1] - y[r])))
+    const ka = ((((c.ang / TAU) % 1) + 1) % 1) * sides
+    const k0 = Math.floor(ka) % sides
+    const k1 = (k0 + 1) % sides
+    const fk = ka - Math.floor(ka)
+    const a0 = (r * sides + k0) * 3
+    const a1 = (r * sides + k1) * 3
+    const b0 = ((r + 1) * sides + k0) * 3
+    const b1 = ((r + 1) * sides + k1) * 3
+    // Round the ring at either level, then between the levels. `u` is the step between the levels (up the bark) and `v` the step round the ring there, the surface's two tangents.
+    const rax = corners[a1] - corners[a0], ray = corners[a1 + 1] - corners[a0 + 1], raz = corners[a1 + 2] - corners[a0 + 2]
+    const rbx = corners[b1] - corners[b0], rby = corners[b1 + 1] - corners[b0 + 1], rbz = corners[b1 + 2] - corners[b0 + 2]
+    const lx = corners[a0] + rax * fk, ly = corners[a0 + 1] + ray * fk, lz = corners[a0 + 2] + raz * fk
+    let ux = corners[b0] + rbx * fk - lx, uy = corners[b0 + 1] + rby * fk - ly, uz = corners[b0 + 2] + rbz * fk - lz
+    const px = lx + ux * fr, py = ly + uy * fr, pz = lz + uz * fr
+    let vx = rax + (rbx - rax) * fr, vy = ray + (rby - ray) * fr, vz = raz + (rbz - raz) * fr
+    // The normal, pointed away from the ring's centre whichever way the generator wound its corners.
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    const cx = centre[r * 3] + (centre[(r + 1) * 3] - centre[r * 3]) * fr
+    const cz = centre[r * 3 + 2] + (centre[(r + 1) * 3 + 2] - centre[r * 3 + 2]) * fr
+    if (nx * (px - cx) + nz * (pz - cz) < 0) { nx = -nx; ny = -ny; nz = -nz }
+    let len = Math.hypot(nx, ny, nz)
+    if (!(len > 1e-9)) throw new Error('Spiders: a trunk profile ring is degenerate')
+    nx /= len; ny /= len; nz /= len
+    // The bark's up and round directions, orthogonal to the normal and each other.
+    len = Math.hypot(ux, uy, uz)
+    ux /= len; uy /= len; uz /= len
+    const dv = vx * ux + vy * uy + vz * uz
+    vx -= ux * dv; vy -= uy * dv; vz -= uz * dv
+    len = Math.hypot(vx, vy, vz)
+    c.r = ((len * sides) / TAU) * host.scale
+    vx /= len; vy /= len; vz /= len
     const cp = Math.cos(c.phi)
     const sp = Math.sin(c.phi)
-    c.tx = -sa * sp
-    c.ty = cp
-    c.tz = ca * sp
+    const tx = ux * cp + vx * sp, ty = uy * cp + vy * sp, tz = uz * cp + vz * sp
+    // Into the world: scaled, turned by the yaw about +Y, from the origin.
+    const s = host.scale, cy = host.cy, sy = host.sy
+    c.x = host.x + s * (px * cy + pz * sy)
+    c.y = host.y + s * py
+    c.z = host.z + s * (pz * cy - px * sy)
+    c.nx = nx * cy + nz * sy; c.ny = ny; c.nz = nz * cy - nx * sy
+    c.tx = tx * cy + tz * sy; c.ty = ty; c.tz = tz * cy - tx * sy
+  }
+
+  /**
+   * Rocks.rayAt, answering true only for a face a spider could stand on, in
+   * `_hit`: not a ceiling, clear of the ground and the water under it, within
+   * the climb. The ray may land on any rock ROCK_MIN_SIZE and up, the host's
+   * or its neighbour's; the ground and the water are read under the hit.
+   */
+  _rockRay(x, y, z, dx, dy, dz, reach) {
+    if (this.rocks.rayAt(x, y, z, dx, dy, dz, reach, ROCK_MIN_SIZE, _hit) === Infinity) return false
+    if (_hit.ny < HANG_NY) return false
+    const h = _hit.y - this.height.heightAt(_hit.x, _hit.z)
+    if (h < 0.02 || h > CLIMB_M) return false
+    const level = this.water.levelAt(_hit.x, _hit.z)
+    return level === null || _hit.y >= level + WET_M
   }
 
   /**
    * A seat on a rock's side: a horizontal ray from outside the hull's disc in
    * toward the axis at the wanted height, the hit and its outward normal the
    * seat. A hit whose normal rises past FLAT_NY -- the top, or a shelf -- is
-   * kept one time in ten; a ray that finds no stone (the height is above the
-   * rock, or the face is undercut there) tries again lower, up to eight times.
+   * kept one time in ten; a ray that finds no standable stone (the height is
+   * above the rock, the face is undercut, buried or wet there) tries again
+   * lower, up to eight times. The seat holds only where the same ray WALL_M
+   * higher, or failing that WALL_M lower, finds a side face too: a stone with
+   * no wall to climb is no host.
    */
   _seatRock(c, host, rand) {
     let hMax = Math.min(CLIMB_M, host.size)
     for (let a = 0; a < 8; a++) {
-      const ang = rand() * Math.PI * 2
+      const ang = rand() * TAU
       const h = between(rand, [0.05, hMax])
       const ca = Math.cos(ang)
       const sa = Math.sin(ang)
       const reach = host.r * 1.3
-      const d = this.rocks.rayAt(host.x + ca * reach, host.groundY + h, host.z + sa * reach, -ca, 0, -sa, reach, ROCK_MIN_SIZE, _hit)
-      if (d === Infinity) { hMax = Math.max(0.1, h); continue }
+      const ox = host.x + ca * reach
+      const oz = host.z + sa * reach
+      if (!this._rockRay(ox, host.groundY + h, oz, -ca, 0, -sa, reach)) { hMax = Math.max(0.1, h); continue }
       if (_hit.ny > FLAT_NY && rand() >= FLAT_CHANCE) continue
       c.x = _hit.x; c.y = _hit.y; c.z = _hit.z
       c.nx = _hit.nx; c.ny = _hit.ny; c.nz = _hit.nz
-      this._heading(c, rand() * Math.PI * 2)
+      const wall = (this._rockRay(ox, c.y + WALL_M, oz, -ca, 0, -sa, reach) && _hit.ny <= FLAT_NY)
+        || (this._rockRay(ox, c.y - WALL_M, oz, -ca, 0, -sa, reach) && _hit.ny <= FLAT_NY)
+      if (!wall) continue
+      this._heading(c, rand() * TAU)
+      c.stuck = 0
       return true
     }
     return false
+  }
+
+  /**
+   * A sitting rock spider's stone, re-read: a longer probe along the normal,
+   * because the rocks re-seat under it when a chunk re-splits. Back onto the
+   * face it finds; a new seat when it finds none; gone when the rock offers
+   * none. The step keeps the group's own stream out of it, so the seats other
+   * spiders were dealt stay theirs.
+   */
+  _reseatRock(c) {
+    const probe = Math.max(c.size * 0.5, 0.3)
+    if (this._rockRay(c.x + c.nx * probe, c.y + c.ny * probe, c.z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe)) {
+      this._snapRock(c)
+      return true
+    }
+    if (this._seatRock(c, c.host, this.rand)) return true
+    this._releasePuppet(c)
+    c.host = null
+    this.free.push(c)
+    this.dropped++
+    return false
+  }
+
+  /** Onto `_hit`, the heading kept in the new tangent plane. */
+  _snapRock(c) {
+    c.x = _hit.x; c.y = _hit.y; c.z = _hit.z
+    c.nx = _hit.nx; c.ny = _hit.ny; c.nz = _hit.nz
+    const dot = c.tx * c.nx + c.ty * c.ny + c.tz * c.nz
+    c.tx -= c.nx * dot; c.ty -= c.ny * dot; c.tz -= c.nz * dot
+    const len = Math.hypot(c.tx, c.ty, c.tz)
+    if (len < 1e-3) { this._heading(c, c.phi); return }
+    c.tx /= len; c.ty /= len; c.tz /= len
   }
 
   /** A rock spider's heading: the angle `phi` in its tangent plane, measured from the plane's upmost direction (or from world X on a flat face). */
@@ -488,7 +632,7 @@ export class Spiders {
     }
     return {
       alive: MAX - this.free.length, tiles: this.tiles.size, hosts, groups,
-      puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, overflow: this.overflow, saturated: this.saturated,
+      puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped,
     }
   }
 
@@ -504,6 +648,7 @@ export class Spiders {
     c.clip = this.rand() < RUN_CHANCE ? 'run' : 'walk'
     c.speed = (GAIT[c.clip] * c.size) / this.span
     c.left = between(this.rand, GO_S)
+    c.stuck = 0
     if (c.host.kind === 'tree') c.phi += (this.rand() - 0.5) * 1.2
     else this._heading(c, c.phi + (this.rand() - 0.5) * 1.2)
   }
@@ -511,21 +656,20 @@ export class Spiders {
   /** One step of `d` metres up or round the trunk; at either end of the climb the heading reflects. */
   _stepTree(c, d) {
     const host = c.host
-    const hMax = Math.min(CLIMB_M, host.height * 0.9)
     c.h += Math.cos(c.phi) * d
-    if (c.h < 0.02 || c.h > hMax) {
-      c.h = Math.min(hMax, Math.max(0.02, c.h))
+    if (c.h < host.hLo || c.h > host.hHi) {
+      c.h = Math.min(host.hHi, Math.max(host.hLo, c.h))
       c.phi = Math.PI - c.phi
     }
-    c.ang += (Math.sin(c.phi) * d) / this._trunkR(host, c.h)
+    c.ang += (Math.sin(c.phi) * d) / c.r
     this._placeTree(c)
   }
 
   /**
    * One step of `d` metres along the heading, then, every REPROJECT_EVERY
-   * frames, back onto the stone along the normal. No stone under the step,
-   * stone above the climb, or the top of the rock: the step is undone and the
-   * spider turns.
+   * frames, back onto the stone along the normal. No standable stone under
+   * the step, or the top of the rock: the step is not taken and the spider
+   * turns back, roughly the way it came; STUCK_MAX of those and it sits down.
    */
   _stepRock(c, d) {
     const x = c.x + c.tx * d
@@ -533,20 +677,13 @@ export class Spiders {
     const z = c.z + c.tz * d
     if ((this.frame + c.id) % REPROJECT_EVERY !== 0) { c.x = x; c.y = y; c.z = z; return }
     const probe = c.size * 0.5
-    const hit = this.rocks.rayAt(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe, ROCK_MIN_SIZE, _hit)
-    const h = _hit.y - c.host.groundY
-    if (hit === Infinity || _hit.ny > FLAT_NY || h < 0 || h > CLIMB_M) {
-      this._heading(c, c.phi + Math.PI * (0.6 + 0.8 * this.rand()))
+    if (!this._rockRay(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe) || _hit.ny > FLAT_NY) {
+      this._heading(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
+      if (++c.stuck >= STUCK_MAX) this._pause(c)
       return
     }
-    c.x = _hit.x; c.y = _hit.y; c.z = _hit.z
-    c.nx = _hit.nx; c.ny = _hit.ny; c.nz = _hit.nz
-    // The heading, kept in the new tangent plane.
-    const dot = c.tx * c.nx + c.ty * c.ny + c.tz * c.nz
-    c.tx -= c.nx * dot; c.ty -= c.ny * dot; c.tz -= c.nz * dot
-    const len = Math.hypot(c.tx, c.ty, c.tz)
-    if (len < 1e-3) { this._heading(c, c.phi); return }
-    c.tx /= len; c.ty /= len; c.tz /= len
+    c.stuck = 0
+    this._snapRock(c)
   }
 
   _takePuppet(c) {
@@ -593,6 +730,7 @@ export class Spiders {
     let m = 0
     for (const t of this.tiles.values()) {
       for (const host of t.hosts.values()) {
+        let dropped = 0
         for (const c of host.spiders) {
           c.left -= dt
           const dx = c.x - hx
@@ -605,6 +743,9 @@ export class Spiders {
             else this._stepRock(c, d)
             if (c.left <= 0) this._pause(c)
           } else {
+            // A sitting tree spider follows its trunk's origin; a sitting rock spider re-reads its stone.
+            if (host.kind === 'tree') this._placeTree(c)
+            else if ((this.frame + c.id) % RESEAT_EVERY === 0 && !this._reseatRock(c)) { dropped++; continue }
             // Reared up while she is close, back to what it was doing when she leaves.
             if (d2 < ALERT_M * ALERT_M) c.clip = 'alert'
             else if (c.clip === 'alert') this._pause(c)
@@ -635,6 +776,11 @@ export class Spiders {
             chue[m] = c.hue
             m++
           }
+        }
+        if (dropped) {
+          let n = 0
+          for (const c of host.spiders) if (c.host !== null) host.spiders[n++] = c
+          host.spiders.length = n
         }
       }
     }

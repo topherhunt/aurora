@@ -47,6 +47,8 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 24 | `design/24-mushrooms.md` | Mushrooms: the two-knob cap family, parametric normals, colour in the sheets rather than the tint, the planar cap decal; and the anchor-driven scatter, its ordering contract and span-relative ladder |
 | 25 | `design/25-rock-scatter.md` | The rock scatter: why six beds, the four environments and the relief test, per-rock LOD thresholds, `ROCK_FAR_LIFE`, the density derivations, `GROUND_CUE`, `anchorsInto` and its three approximations, the sampler-unit collision behind the blink |
 | 27 | `design/27-creature-pipeline.md` | The creature pipeline: why Tripo over Meshy, why the 128px texture and not the polycount is the gate, the stages and what each costs, quad topology and what its surcharge buys, our own LOD decimator, the spend model, task ids written before the wait |
+| 28 | `design/28-tree-v9.md` | Solid trees, reconstructed then painted: why alpha and not triangles is the cost, ask for a picture of the mesh rather than of a tree, the mesh arrives untextured and its faces are painted with the world's tiling textures |
+| 29 | `design/29-prop-pipeline.md` | Generated props (`/gen-prop`): §27's pipeline stopped at the LOD ladder and card cross, a prompt that asks for a stylised game asset seated on the floor, a roster keyed on size and category rather than rig type, the shipper still to build |
 
 Plus two files with no section number:
 

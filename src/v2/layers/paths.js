@@ -187,14 +187,20 @@ export class PathSet {
    * The ground a river is solved against: `coarse()` returns the heightmap the route reads (the object V2Height builds on, which erosion can swap), `groundAt(x, z)` the composed height BEFORE the carve chain -- what the bank will be once the channel is cut through it. Attaching (or re-attaching) invalidates every river's bake.
    */
   setTerrain(terrain) {
-    if (!terrain || typeof terrain.coarse !== 'function' || typeof terrain.groundAt !== 'function' || typeof terrain.detailAt !== 'function') {
-      throw new Error('PathSet.setTerrain: needs { coarse(): Heightmap, groundAt(x, z): number, detailAt(x, z, cell): number }')
+    if (!terrain || typeof terrain.coarse !== 'function' || typeof terrain.peaks !== 'function' || typeof terrain.groundAt !== 'function' || typeof terrain.detailAt !== 'function') {
+      throw new Error('PathSet.setTerrain: needs { coarse(): Heightmap, peaks(): boolean, groundAt(x, z): number, detailAt(x, z, cell): number }')
     }
     this._terrain = terrain
     for (const rec of this.paths.values()) {
       if (rec.kind === 'river') rec.samples = null
     }
     this._indexDirty = true
+  }
+
+  /** The coarse heightmap the rivers are routed over and whether the mesher draws its footprint max, for a reader that has to see the far ground as it is drawn -- the river surfaces measure their lift from it. */
+  drawnGround() {
+    if (this._terrain === null) throw new Error('PathSet.drawnGround: no terrain attached -- call setTerrain first')
+    return { ground: this._terrain.coarse(), peaks: this._terrain.peaks() }
   }
 
   /**

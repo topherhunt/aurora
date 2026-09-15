@@ -375,10 +375,13 @@ export class V2Height {
   // Rivers route over `ground`, solve their level from preCarveAt and keep the
   // unsuppressed detail term as their bed's relief, so the path set is handed
   // all three as closures: `ground` is swapped by erosion and by the crease
-  // attach, and a closure follows it where a reference would not.
+  // attach, and a closure follows it where a reference would not. `peaks` is
+  // the mesher's footprint-max knob, for the river surfaces' replica of the
+  // drawn far ground.
   _attachTerrain() {
     this.layers.paths.setTerrain({
       coarse: () => this.ground,
+      peaks: () => this.relief.peaks > 0,
       groundAt: (x, z) => this.preCarveAt(x, z),
       detailAt: (x, z, cell) => (this._plain ? this.detail.at(x, z, cell, this.ground.slopeAt(x, z), 0) : this._micro(x, z, cell, 0)),
     })

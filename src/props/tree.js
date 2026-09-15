@@ -1141,6 +1141,45 @@ function addRootSpur(out, top, left, right, tip, tilesPerUnit, uOff, vOff, texLa
  * lobes are there to be seen in the SILHOUETTE and in the bark's stretch,
  * neither of which reads a normal.
  */
+// The trunk's rings AS THE MESH DRAWS THEM, for anything that has to sit on the
+// bark (the spiders): `sides` corners per ring at k/sides of a turn in the ring's
+// own frame, the same warp addCone/addTube apply, base ring first and the apex
+// last as a ring of coincident corners, and each ring's unwarped radius (0 at
+// the apex). Already in the geometry's metres.
+export function trunkProfile(rings, apex, sides, warp, scale) {
+  const n = rings.length + 1
+  const y = new Float32Array(n)
+  const radius = new Float32Array(n)
+  const centre = new Float32Array(n * 3)
+  const corners = new Float32Array(n * sides * 3)
+  const d = new THREE.Vector3()
+  for (let r = 0; r < n; r++) {
+    const pos = r < rings.length ? rings[r].pos : apex
+    y[r] = pos.y * scale
+    radius[r] = r < rings.length ? rings[r].radius * scale : 0
+    centre[r * 3] = pos.x * scale
+    centre[r * 3 + 1] = pos.y * scale
+    centre[r * 3 + 2] = pos.z * scale
+    for (let k = 0; k < sides; k++) {
+      const o = (r * sides + k) * 3
+      if (r === rings.length) {
+        corners[o] = pos.x * scale
+        corners[o + 1] = pos.y * scale
+        corners[o + 2] = pos.z * scale
+        continue
+      }
+      const ring = rings[r]
+      const a = (k / sides) * TAU
+      const radius = ring.radius * (warp === null ? 1 : warp[k])
+      d.copy(ring.e1).multiplyScalar(Math.cos(a)).addScaledVector(ring.e2, Math.sin(a))
+      corners[o] = (pos.x + d.x * radius) * scale
+      corners[o + 1] = (pos.y + d.y * radius) * scale
+      corners[o + 2] = (pos.z + d.z * radius) * scale
+    }
+  }
+  return { sides, y, radius, centre, corners }
+}
+
 function addCone(out, rings, apex, sides, uRepeat, vRepeat, texLayer, warp = null) {
   const base = out.positions.length / 3
   const stride = sides + 1
@@ -1454,19 +1493,19 @@ export function buildTree(options = {}) {
     }
   }
 
+  const trunkList = []
+  for (let r = 0; r < rings; r++) {
+    const f = r / rings // rings at 0 .. (R-1)/R; the apex takes f = 1
+    trunkList.push({ pos: trunkAxis[r], e1: E1, e2: E2, radius: radiusAt(f), v: f * p.barkRepeat })
+  }
+  // One multiplier per corner. The same for every ring, so the lobes run
+  // straight up the trunk and taper with it rather than twisting -- a
+  // swelling that spiralled would need a phase per ring, and at `trunkRings`
+  // 1 there is only one ring to give it to.
+  const trunkWarp = new Float32Array(sides)
+  for (let k = 0; k < sides; k++) trunkWarp[k] = lobeAt((k / sides) * TAU)
   if (p.trunkRadius > 0) {
-    const list = []
-    for (let r = 0; r < rings; r++) {
-      const f = r / rings // rings at 0 .. (R-1)/R; the apex takes f = 1
-      list.push({ pos: trunkAxis[r], e1: E1, e2: E2, radius: radiusAt(f), v: f * p.barkRepeat })
-    }
-    // One multiplier per corner. The same for every ring, so the lobes run
-    // straight up the trunk and taper with it rather than twisting -- a
-    // swelling that spiralled would need a phase per ring, and at `trunkRings`
-    // 1 there is only one ring to give it to.
-    const warp = new Float32Array(sides)
-    for (let k = 0; k < sides; k++) warp[k] = lobeAt((k / sides) * TAU)
-    trunkTris = addCone(out, list, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer, warp)
+    trunkTris = addCone(out, trunkList, trunkAt(1), sides, uRepeat, p.barkRepeat, p.barkLayer, trunkWarp)
   }
 
   // --- the root crown --------------------------------------------------------
@@ -2173,6 +2212,7 @@ export function buildTree(options = {}) {
     // are stated against and not a bound on any of them.
     trunkDiameter: 2 * p.trunkRadius * scale,
     firstBranchHeight: p.firstBranch * scale,
+    trunkProfile: trunkProfile(trunkList, trunkAt(1), sides, trunkWarp, scale),
   }
   return geo
 }

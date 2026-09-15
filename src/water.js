@@ -6,6 +6,7 @@ import { PROBE } from './sky-probe.js'
 import { WORLD_PROBE } from './world-probe.js'
 import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
 import { paletteAt } from './clock.js'
+import { RAISE_SLOPE } from './v2/render/river-raise.js'
 
 /**
  * Lake surfaces (§11), built from Phase A's lake mask.
@@ -846,17 +847,34 @@ export class Water {
         // downstream angle). Every other sheet of water lacks the attribute and
         // gets the material's zero default -- weight 0, the world frame.
         attribute vec4 aFlow;
+        // A river's lift above its level per terrain rung (v2/render/river-raise.js,
+        // seven rungs across the two), and the rung of the terrain chunk drawn
+        // under the vertex right now, 0 for none: a tent at each integer picks
+        // that rung's lift, so a far river stands on the terrain's low LOD
+        // instead of under it. The lift is scaled by the slope of the eye's
+        // sight line down to the vertex, nothing under RAISE_SLOPE[0] and all
+        // of it from RAISE_SLOPE[1]: a river seen from near its own level stays
+        // in its bed behind the near bank instead of floating over the far one.
+        // Lakes lack all three attributes and stay on their plane.
+        attribute vec4 aRaise;
+        attribute vec3 aRaiseFar;
+        attribute float aRung;
         varying vec3 vWorldPos;
         varying vec3 vFlow;
         varying vec2 vFlowDir;
         #include <fog_pars_vertex>
         void main() {
-          vWorldPos = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
+          vec3 worldPos = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
+          float lift = dot( aRaise, max( vec4( 0.0 ), 1.0 - abs( vec4( aRung ) - vec4( 1.0, 2.0, 3.0, 4.0 ) ) ) )
+            + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
+          float slope = ( cameraPosition.y - worldPos.y ) / max( 1.0, length( cameraPosition.xz - worldPos.xz ) );
+          lift *= smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, slope );
+          vWorldPos = worldPos + vec3( 0.0, lift, 0.0 );
           vFlow = aFlow.xyz;
           // Unpacked here so the fragment stage interpolates a vector; an
           // interpolated angle would wrap through the wrong way at +-pi.
           vFlowDir = vec2( cos( aFlow.w ), sin( aFlow.w ) );
-          vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+          vec4 mvPosition = viewMatrix * vec4( vWorldPos, 1.0 );
           gl_Position = projectionMatrix * mvPosition;
           #include <fog_vertex>
         }
@@ -1291,11 +1309,15 @@ export class Water {
         }
       `,
     })
-    // What a geometry without an aFlow buffer is drawn with: three hands a
-    // constant to the attribute (gl.vertexAttrib4fv) for any name listed here,
-    // and disables it otherwise, which reads as zero on some drivers and as
-    // whatever the slot last held on others. Only the rivers carry the buffer.
+    // What a geometry without the river buffers is drawn with: three hands a
+    // constant to the attribute (gl.vertexAttribNfv, N from the length) for any
+    // name listed here, and disables it otherwise, which reads as zero on some
+    // drivers and as whatever the slot last held on others. Only the rivers
+    // carry the buffers; these zeros are the world flow frame and no lift.
     this.material.defaultAttributeValues.aFlow = [0, 0, 0, 0]
+    this.material.defaultAttributeValues.aRaise = [0, 0, 0, 0]
+    this.material.defaultAttributeValues.aRaiseFar = [0, 0, 0]
+    this.material.defaultAttributeValues.aRung = [0]
 
     this.lakes = new THREE.Group()
     this.lakes.name = 'lakes'

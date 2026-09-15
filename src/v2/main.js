@@ -29,6 +29,7 @@ import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Butterflies } from './render/butterflies.js'
 import { Spiders } from './render/spiders.js'
+import { Wildlife } from './render/wildlife.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
@@ -639,6 +640,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'crabs', text: 'crabs' },
   { key: 'butterflies', text: 'butterflies' },
   { key: 'spiders', text: 'spiders' },
+  { key: 'wildlife', text: 'wildlife' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -733,7 +735,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': applyAnimalVisibility(); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -1607,6 +1609,7 @@ let frogs = null
 let crabs = null
 let butterflies = null
 let spiders = null
+let wildlife = null
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -1635,7 +1638,7 @@ let ready = false
 // already running. The scatter layers still submit everything when this is off.
 const questToggles = {
   terrain: true, lighting: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true,
   water: true, reflections: true, aurora: true, sound: true,
   // Debug furniture, off until asked for. See buildProbeCube.
   probeCube: false,
@@ -1662,6 +1665,7 @@ function applyAnimalVisibility() {
   crabs.batch.visible = animalOn('crabs')
   butterflies.batch.visible = animalOn('butterflies')
   spiders.batch.visible = animalOn('spiders')
+  wildlife.batch.visible = animalOn('wildlife')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -1671,6 +1675,7 @@ function placeAnimals(cx, cz) {
   if (crabs && animalOn('crabs')) crabs.place(cx, cz)
   if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
+  if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
 }
 
 // ---------------------------------------------------------------------------
@@ -1690,7 +1695,7 @@ function placeAnimals(cx, cz) {
 // reload-on-save.
 // The suffix moves with RELIEF_SHIPPED: a browser holding a relief saved under
 // the previous shipped configuration boots on the new one instead of the old.
-const RELIEF_KEY = 'v2.relief.2'
+const RELIEF_KEY = 'v2.relief.3'
 let relief = RELIEF_SHIPPED
 
 /**
@@ -1704,7 +1709,7 @@ let relief = RELIEF_SHIPPED
  * shipped configuration.
  */
 function loadRelief() {
-  localStorage.removeItem('v2.relief')
+  for (const stale of ['v2.relief', 'v2.relief.2']) localStorage.removeItem(stale)
   const raw = localStorage.getItem(RELIEF_KEY)
   if (!raw) return RELIEF_SHIPPED
   try {
@@ -2180,6 +2185,19 @@ async function bootWorld() {
   console.log(`[v2] spiders ${spiders.stats.alive} in ${spiders.stats.groups} groups at boot`)
   window.v2spiders = spiders
 
+  // The stag, the fox and the hare wandering the open ground (render/wildlife.js):
+  // they stand on the WalkSurface, so after the rocks and the trees that compose
+  // it. The GLBs land after boot; until they do the layer places nothing, and
+  // the first frame after they land fills the tiles around her.
+  await bootStep('wildlife')
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed: SEED, walk })
+  for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
+  wildlife.ready.then(() => {
+    wildlife.place(player.rig.position.x, player.rig.position.z)
+    console.log(`[v2] wildlife ${JSON.stringify(wildlife.stats.alive)} on ${wildlife.stats.tiles} tiles`)
+  })
+  window.v2wildlife = wildlife
+
   // The ambient sound (audio/). The clips load in the background so a slow
   // fetch never holds the world; until they land, and forever if one fails, the
   // frame loop sees `ambience` null and stays silent -- a world with half its
@@ -2417,11 +2435,13 @@ function onDirty(rect) {
  *      the one that is actually alarming.
  *
  * WHAT IS NOT HERE. No `onDirty`: the document did not change, so there is
- * nothing to autosave, no undo entry, and no layer rebake. Water and roads are
- * untouched for the same reason -- both are authored surfaces at authored
- * elevations, and a lake does not move because the hillside beside it grew a
- * crag. That is deliberate rather than an oversight: relief is gated off flat,
- * concave ground precisely so that it cannot walk a river out of its bed.
+ * nothing to autosave, no undo entry, and no layer rebake. Water levels and
+ * roads are untouched for the same reason -- both are authored surfaces at
+ * authored elevations, and a lake does not move because the hillside beside it
+ * grew a crag. That is deliberate rather than an oversight: relief is gated off
+ * flat, concave ground precisely so that it cannot walk a river out of its bed.
+ * The river meshes alone are rebuilt, because the lift they carry over the far
+ * terrain is measured from the ground as the `peaks` knob draws it.
  */
 function onRelief(next) {
   const want = normalizeRelief(next)
@@ -2438,6 +2458,7 @@ function onRelief(next) {
   height.setRelief(relief)
   const fieldMs = performance.now() - t0
   terrain.setRelief(relief)
+  if (waterSurfaces !== null) waterSurfaces.rebuild()
 
   const bands = height.bands
   const cx = player.rig.position.x
@@ -3214,6 +3235,20 @@ const tmpCol = new THREE.Color()
 const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
 
 /**
+ * How much of a day it is, 0 to 1: the world's one scalar for "is it night",
+ * read by the caustics, the ambience and the animals that settle after dark.
+ *
+ * It is the SUN's own elevation and not `state.lightIntensity`, because that
+ * number swaps bodies at -6 degrees and anything reading it would call
+ * nightfall a brightening as the moon took over. -6 to +4 puts the whole
+ * handover inside civil twilight, where the light is visibly changing anyway,
+ * and 0.6 is the sun exactly on the horizon.
+ */
+const daynessOf = (state) => Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10))
+// Last frame's, for the layers that are stepped before the clock is read. It moves over minutes; a frame of lag is not a thing that can be seen.
+let dayness = 1
+
+/**
  * The `terrain & prop lighting` row, both halves of it.
  *
  * TWO HALVES BECAUSE THERE ARE TWO COSTS, and only one of them is ours to
@@ -3278,8 +3313,8 @@ function applySky(state, head, elapsedReal) {
   stars.update(head, state, clock.elapsed, elapsedReal)
   if (questToggles.aurora) aurora.update(head, state, elapsedReal)
   if (questToggles.water) water.update(elapsedReal, hemi)
-  // Returns at once until the eye has moved LOD_STEP; the rivers' distance ladder is read per ten metres walked, not per frame.
-  if (waterSurfaces !== null) waterSurfaces.updateLod(head.x, head.z)
+  // Returns at once until the eye has moved LOD_STEP or the terrain's render set changed; the rivers' distance ladder and the terrain rung under each are read per ten metres walked or per re-split, not per frame.
+  if (waterSurfaces !== null) waterSurfaces.updateLod(head.x, head.z, terrain)
 
   // LAST, and that is the whole of its plumbing. Everything above writes the
   // world as seen through air, straight from the palette; this overwrites the
@@ -3385,14 +3420,7 @@ function applySubmersion(head, elapsedReal, state) {
   // behind and surfacing cannot strand a net on a dry hillside. `level` and not
   // `head.y`: the shader is asking how much water stands over the GROUND it is
   // shading, which does not change when she swims up.
-  //
-  // DAYNESS is the sun's own elevation on the ramp the moonlight uses in
-  // reverse, and it is the sun's rather than `state.lightIntensity` because
-  // that number swaps bodies at -6 degrees: read it instead and the net would
-  // brighten at nightfall as the moon took over. -6 to +4 puts the whole
-  // handover inside civil twilight, where the light is visibly changing anyway.
-  const dayness = Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10))
-  const causticGain = UNDERWATER.caustic * (UNDERWATER.causticNight + (1 - UNDERWATER.causticNight) * dayness)
+  const causticGain = UNDERWATER.caustic * (UNDERWATER.causticNight + (1 - UNDERWATER.causticNight) * daynessOf(state))
   lighting.setCaustic(
     submerged ? causticGain : 0,
     UNDERWATER.causticScale,
@@ -3429,7 +3457,7 @@ function updateAmbience(dt, state) {
   sound.setListener(headTmp.x, headTmp.y, headTmp.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
   ambience.update(dt, {
     head: headTmp,
-    dayness: Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10)),
+    dayness: daynessOf(state),
     submerged,
     speed: player.speed,
     afoot: !player.flying && !player.travel,
@@ -4329,8 +4357,10 @@ function tick() {
   else if (animalOn('fish')) fish.follow(headTmp.x, headTmp.y, headTmp.z)
   if (animalOn('frogs')) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
   if (animalOn('crabs')) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged)
-  if (animalOn('butterflies')) butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
+  if (animalOn('butterflies')) butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
   if (animalOn('spiders')) spiders.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  if (animalOn('wildlife')) wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.
@@ -4340,6 +4370,7 @@ function tick() {
   // in air even while she is under, and putting the air back for that one face
   // means restating this hour's palette. See airHook.
   const state = clock.state()
+  dayness = daynessOf(state)
   applySky(state, headTmp, now / 1000)
   updateAmbience(dt, state)
 

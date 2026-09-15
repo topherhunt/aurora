@@ -1293,6 +1293,7 @@ export function buildTreeV8(options = {}) {
       rootTris: tree.rootTris,
       roots: tree.roots,
       trunkDiameter: tree.trunkDiameter,
+      trunkProfile: tree.trunkProfile,
       skirtTris: f.triangles,
       skirts: f.skirts,
       boughs: f.boughs,

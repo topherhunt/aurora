@@ -19,6 +19,9 @@ import { applyRigEdit, readGlb, readRigEdit, writeGlb } from './tools/creatures/
 import * as creatures from './tools/creatures/workspace.mjs'
 import { buildTreePrompt, TREE_SPECIES as TREE_V9_SPECIES } from './tools/trees/v9/tree-species.mjs'
 import * as treesV9 from './tools/trees/v9/workspace.mjs'
+import { buildPropPrompt, ASPECT_RATIOS as PROP_ASPECT_RATIOS, DEFAULT_FRAME as PROP_DEFAULT_FRAME } from './tools/props/gen/prop-prompt.mjs'
+import { PROPS, CATEGORIES as PROP_CATEGORIES } from './tools/props/gen/prop-roster.mjs'
+import * as props from './tools/props/gen/workspace.mjs'
 
 // Vite loads .env into import.meta.env for client bundles, but NOT into
 // process.env for its own config/plugin code -- openrouter.mjs reads
@@ -1153,6 +1156,182 @@ function treeGen() {
   }
 }
 
+// --- /gen-prop: scenery props, image -> mesh -> LODs -> card cross (§29) ----
+//
+// The creature bench with the rig and animation stages cut off. Two spending
+// endpoints (image, mesh) and the rest free; the vendor client, the price
+// table and the image generator are the creature pipeline's, so the number on
+// a button here is the same arithmetic /gen-creature quotes.
+function propGen() {
+  const readRaw = (req, maxBytes) => new Promise((resolve, reject) => {
+    const chunks = []
+    let bytes = 0
+    req.on('data', (c) => {
+      bytes += c.length
+      if (bytes > maxBytes) req.destroy(new Error(`body over ${maxBytes} bytes`))
+      chunks.push(c)
+    })
+    req.on('error', reject)
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+  })
+  const readBody = async (req, maxBytes) => (await readRaw(req, maxBytes)).toString('utf8')
+
+  const json = (handler) => (req, res) => {
+    res.setHeader('content-type', 'application/json')
+    Promise.resolve()
+      .then(() => handler(req, res))
+      .then((out) => { if (out !== undefined) res.end(JSON.stringify(out)) })
+      .catch((e) => { res.statusCode = 400; res.end(JSON.stringify({ error: String(e?.message ?? e) })) })
+  }
+
+  const postOnly = (req) => { if (req.method !== 'POST') throw new Error('POST only') }
+  const idOf = (req) => {
+    const id = new URL(req.url, 'http://x').searchParams.get('id') || ''
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error(`invalid prop id "${id}"`)
+    return id
+  }
+
+  // The prompt and frame exactly as /__prop-image sends them, from the same
+  // code, so the bench can show the wrapping without paying for a picture.
+  // The ratio is whitelisted: an unknown one is a silent 400 from OpenRouter
+  // after the request has been queued.
+  const composeImageRequest = ({ description, styleNote, aspectRatio }) => {
+    const ratio = aspectRatio ?? PROP_DEFAULT_FRAME
+    if (!PROP_ASPECT_RATIOS.includes(ratio)) throw new Error(`unknown aspect ratio "${ratio}" -- expected one of ${PROP_ASPECT_RATIOS.join(', ')}`)
+    return { prompt: buildPropPrompt({ description, styleNote }), ratio }
+  }
+
+  return {
+    name: 'aurora:prop-gen',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/__prop-roster', json(() => ({
+        ok: true,
+        props: PROPS,
+        categories: PROP_CATEGORIES,
+        aspectRatios: PROP_ASPECT_RATIOS,
+        defaultFrame: PROP_DEFAULT_FRAME,
+        texPx: { max: TEX_PX_MAX, small: TEX_PX_SMALL },
+        imageModels: IMAGE_MODELS,
+        credits: {
+          meshTextured: tripoCredits({ step: 'mesh', texture: true }),
+          meshBare: tripoCredits({ step: 'mesh', texture: false }),
+        },
+        hasTripoKey: Boolean(process.env.TRIPO_API_KEY),
+      })))
+
+      server.middlewares.use('/__prop-balance', json(async () => ({ ok: true, ...(await tripoBalance()) })))
+
+      server.middlewares.use('/__prop-list', json(() => ({ ok: true, props: props.listAll() })))
+
+      server.middlewares.use('/__prop-save', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const patch = JSON.parse(await readBody(req, 1 << 16))
+        return { ok: true, prop: props.saveMeta(id, patch) }
+      }))
+
+      server.middlewares.use('/__prop-prompt', json(async (req) => {
+        postOnly(req)
+        const { prompt, ratio } = composeImageRequest(JSON.parse(await readBody(req, 1 << 16)))
+        return { ok: true, prompt, aspectRatio: ratio }
+      }))
+
+      // SPENDS (OpenRouter, ~$0.015). Saved to disk in the request that paid
+      // for it: an image that only ever lived in a tab is an image bought twice.
+      server.middlewares.use('/__prop-image', json(async (req) => {
+        postOnly(req)
+        const body = JSON.parse(await readBody(req, 1 << 16))
+        const { id, seed, model } = body
+        if (!/^[a-z0-9-]+$/.test(id || '')) throw new Error(`invalid prop id "${id}"`)
+        // A model id from the browser picks what the account is billed for, so
+        // it is checked against the offered list rather than passed through.
+        const chosen = requireImageModel(model ?? IMAGE_MODELS[0].id)
+        const { prompt, ratio } = composeImageRequest(body)
+        const { buffer, cost } = await generateImage({ prompt, model: chosen.id, aspectRatio: ratio, seed })
+        const file = props.saveCandidate(id, buffer, cost, { prompt, aspectRatio: ratio, model: chosen.id })
+        return { ok: true, file, cost, prompt, model: chosen.id }
+      }))
+
+      server.middlewares.use('/__prop-candidates', json((req) => ({
+        ok: true, candidates: props.listCandidates(idOf(req)),
+      })))
+
+      server.middlewares.use('/__prop-pick', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, path: props.pickCandidate(id, file) }
+      }))
+
+      // The only DESTRUCTIVE endpoint here: it throws away an image that cost
+      // money. Candidate images only -- a mesh cost 50 credits and Tripo has no
+      // task history to re-fetch one from.
+      server.middlewares.use('/__prop-delete-candidate', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...props.deleteCandidate(id, file) }
+      }))
+
+      // SPENDS (Tripo, 40 credits bare / 50 textured). Blocks until the model
+      // is on disk: Tripo's result URLs expire, so a task id whose output was
+      // never fetched is money spent for nothing.
+      server.middlewares.use('/__prop-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const opts = JSON.parse(await readBody(req, 1 << 12) || '{}')
+        return { ok: true, ...(await props.runMesh(id, opts)) }
+      }))
+
+      server.middlewares.use('/__prop-meshes', json((req) => ({
+        ok: true, meshes: props.listMeshes(idOf(req)),
+      })))
+
+      server.middlewares.use('/__prop-pick-mesh', json(async (req) => {
+        postOnly(req)
+        const id = idOf(req)
+        const { file } = JSON.parse(await readBody(req, 1 << 12))
+        return { ok: true, ...props.pickMesh(id, file) }
+      }))
+
+      server.middlewares.use('/__prop-assets', json((req) => ({ ok: true, ...props.assets(idOf(req)) })))
+
+      // Free, local. src/mesh/decimate.js (or the card bake) runs in the page
+      // and posts the GLB it produced. Provenance and stats ride in the query
+      // string because the body is the GLB itself.
+      server.middlewares.use('/__prop-lod', json(async (req) => {
+        postOnly(req)
+        const url = new URL(req.url, 'http://x')
+        const id = idOf(req)
+        const level = Number(url.searchParams.get('level'))
+        const mesh = url.searchParams.get('mesh') || null
+        const stats = {
+          tris: Number(url.searchParams.get('tris')) || undefined,
+          targetTris: Number(url.searchParams.get('targetTris')) || undefined,
+          uvMode: url.searchParams.get('uvMode') || undefined,
+          kind: url.searchParams.get('kind') || undefined,
+        }
+        return { ok: true, ...props.saveLod(id, level, await readRaw(req, 64 << 20), { mesh, stats }) }
+      }))
+
+      // Free, local: the work directory in Finder with the picked mesh
+      // selected. `open` is spawned with an argument array, never a shell
+      // string: the server is LAN-bound and the id reaches the filesystem.
+      server.middlewares.use('/__prop-reveal', json(async (req) => {
+        postOnly(req)
+        if (process.platform !== 'darwin') throw new Error(`reveal-in-Finder is macOS-only, and this server is on ${process.platform}`)
+        const id = idOf(req)
+        const dir = props.workDir(id)
+        if (!existsSync(dir)) throw new Error(`no work directory for "${id}" -- generate an image first`)
+        const { mesh } = props.assets(id)
+        await new Promise((ok, fail) => execFile('open', ['-R', mesh ? join(dir, mesh) : dir], (e) => (e ? fail(e) : ok())))
+        return { ok: true, dir, revealed: mesh ?? null }
+      }))
+    },
+  }
+}
+
 // --- unknown routes get a route list, not the homepage (dev only) -----------
 //
 // Vite's dev server SPA-falls-back any unmatched extensionless request to
@@ -1278,7 +1457,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

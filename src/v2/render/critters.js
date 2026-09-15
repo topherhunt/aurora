@@ -18,6 +18,11 @@ export const CRITTER_GLB = {
   butterfly: 'creatures/meadow-butterfly.glb',
   // One animated file with its own three skinned tiers and clips (tools/creatures/ship-spider.mjs); no -lod ladder beside it.
   spider: 'creatures/birch-spider.glb',
+  // The wandering quadrupeds (tools/creatures/ship-quadruped.mjs): one skinned
+  // tier and the whole clip library each, no ladder. See render/wildlife.js.
+  stag: 'creatures/moor-stag.glb',
+  fox: 'creatures/red-fox.glb',
+  hare: 'creatures/snow-hare.glb',
 }
 export const critterLodUrl = (url, level) => url.replace(/\.glb$/, `-lod${level}.glb`)
 
@@ -215,8 +220,8 @@ export function critterTier(span, dist, prev, deg) {
 // ---------------------------------------------------------------------------
 // THE CROSS CARD. Past CARD_M from her head a creature is drawn as two quads
 // crossed at its body's middle, each the mesh photographed off the loaded GLB
-// from one of the VIEWS below -- the side on the XY plane and the top on the
-// XZ plane, the crab's -- under the SAME instance matrix as the mesh, so a
+// from one of the VIEWS below -- the side on the XY plane, the front on the YZ
+// plane, the top on the XZ plane -- under the SAME instance matrix as the mesh, so a
 // card sits, tilts, turns and swells exactly as the body it stands in for; it
 // is not turned to the camera. Both quads are double-sided, and a quad's back
 // face shows its picture mirrored: the true other side of a bilateral animal
@@ -270,6 +275,8 @@ function cardView(name, { hx, hz, y0, y1 }) {
     case 'side': return { at, from: new THREE.Vector3(0, yMid, 10), up: y, w: hx, top: y1 - yMid, bottom: y0 - yMid }
     // From above, laid flat at the body's middle: +X to the right, -Z up the picture.
     case 'top': return { at, from: new THREE.Vector3(0, yMid + 10, 0), up: new THREE.Vector3(0, 0, -1), w: hx, top: hz, bottom: -hz }
+    // Head on, from +X: -Z to the right. Crossed with 'side' this is the card a standing animal wants, where 'top' would be a plate lying in its back.
+    case 'front': return { at, from: new THREE.Vector3(10, yMid, 0), up: y, w: hz, top: y1 - yMid, bottom: y0 - yMid }
     default: throw new Error(`critter card: no view named ${name}`)
   }
 }

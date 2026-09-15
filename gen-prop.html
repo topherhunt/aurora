@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- prop pipeline</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --spend: #d98a5a; --local: #6f9fbf; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 0; overflow: hidden; background: #05080f; color: var(--ink); font: 12px/1.5 monospace; display: flex; }
+
+      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button, textarea { font: inherit; color: var(--ink); background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0; }
+      textarea { width: 100%; resize: vertical; }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button:disabled { opacity: .4; cursor: default; }
+      button.pick { background: #1d3a5f; border-color: #4a7fbf; }
+      button.picked { background: #234a2c; border-color: var(--good); color: #eaf3ff; }
+      /* Anything that charges a card is orange and says the price on its face. */
+      button.spend { border-color: var(--spend); color: #ffd9be; }
+      button.spend:hover { background: #3a2416; }
+      /* Blue is our own compute: free, local, repeatable, nothing billed. */
+      button.local { border-color: var(--local); color: #d6ecff; }
+      button.local:hover { background: #16324a; }
+
+      #panel { flex: 0 0 330px; display: flex; flex-direction: column; border-right: 1px solid var(--edge); background: var(--panel); }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .field { margin-bottom: 6px; }
+      .field label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 2px; }
+      .field input, .field textarea, .field select { width: 100%; }
+      /* A checkbox sits on its label's line, against .field's stacked default. */
+      .check label { display: flex; align-items: center; gap: 6px; margin: 0; }
+      .check input { width: auto; }
+      .field textarea { height: 110px; }
+      .field textarea.short { height: 56px; }
+      .row { display: flex; gap: 6px; }
+      .row > * { flex: 1 1 auto; }
+      .row > button.narrow { flex: 0 0 auto; }
+      .wide { width: 100%; }
+      .step { color: var(--dim); font-size: 10px; margin: 2px 0 6px; }
+
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; overflow-y: auto; padding: 16px; }
+      #stage h3 { margin: 0 0 8px; color: var(--dim); font-size: 12px; font-weight: normal; }
+      #stage h3:not(:first-child) { margin-top: 18px; border-top: 1px solid #1b2c44; padding-top: 12px; }
+
+      #gallery, .gallery { display: flex; flex-wrap: wrap; gap: 12px; }
+      .candidate { position: relative; display: flex; flex-direction: column; gap: 4px; align-items: center; width: 200px; }
+      .candidate img, .candidate .noshot { width: 200px; height: 200px; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
+      .candidate .noshot { display: flex; align-items: center; justify-content: center; border-style: dashed; color: #3d5a80; font-size: 10px; }
+      .candidate.is-picked img, .candidate.is-picked .noshot { border-color: var(--good); }
+      /* Selection is not the pick: a selected mesh candidate is the one the LOD
+         section operates on, which you often want to be one you have not picked. */
+      .candidate.is-selected img, .candidate.is-selected .noshot { border-color: #4a7fbf; box-shadow: 0 0 0 1px #4a7fbf; }
+      .candidate .cost { color: var(--dim); font-size: 10px; text-align: center; }
+      .candidate button { width: 100%; }
+      .candidate .corner { position: absolute; top: 4px; width: auto; padding: 0 5px; line-height: 18px; opacity: .35; background: #0e1726; }
+      .candidate:hover .corner { opacity: 1; }
+      .candidate .trash { right: 4px; }
+      .candidate .trash:hover { border-color: #bf5a4a; color: #ffd0c8; background: #3a1a16; }
+      .candidate .zoom { right: 32px; }
+      .candidate .zoom:hover { border-color: #4a7fbf; color: #cfe4ff; background: #16233a; }
+      /* A queued generation reserves its slot in the gallery, so clicking twice
+         reads as two images coming rather than as nothing having happened. */
+      .candidate.pending .noshot { border-style: dashed; animation: pulse 1.2s ease-in-out infinite; }
+      .lightbox { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; padding: 24px; background: rgba(6, 10, 18, .93); cursor: zoom-out; }
+      .lightbox[hidden] { display: none; }
+      .lightbox img { max-width: 92vw; max-height: 84vh; object-fit: contain; background: #0e1726; border: 1px solid var(--edge); border-radius: 3px; }
+      @keyframes pulse { 0%, 100% { opacity: .35 } 50% { opacity: .8 } }
+      dialog { max-width: 70ch; max-height: 84vh; overflow-y: auto; color: var(--ink); background: var(--panel); border: 1px solid var(--edge); border-radius: 3px; padding: 12px 14px; }
+      dialog::backdrop { background: rgba(6, 10, 18, .8); }
+      dialog pre { white-space: pre-wrap; margin: 8px 0; }
+
+      #viewRow { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+      /* Deliberately short of the full width, so there is always a strip of page
+         beside the canvas to grab a scroll on -- a wheel over the canvas orbits. */
+      #viewer { display: none; flex-direction: column; gap: 4px; width: 75%; }
+      #viewer.on { display: flex; }
+      #viewCanvas { display: block; width: 100%; height: 100%; border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; cursor: grab; }
+      #viewCanvas:active { cursor: grabbing; }
+      #viewStage { position: relative; width: 100%; height: min(62vh, 640px); }
+      .label { color: var(--dim); font-size: 10px; }
+      .viewControls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+      .viewControls label { display: flex; align-items: center; gap: 4px; color: var(--dim); font-size: 10px; }
+
+      /* The shipping sizes: same texture at the 512 cap and the 128 designation,
+         side by side, pixelated so each is judged on its own terms and not
+         through the browser's smoothing. Click either to wear it on the preview
+         mesh; the outlined one is the one the model is currently wearing. */
+      #texRow { display: none; gap: 14px; align-items: flex-start; }
+      #texRow.on { display: flex; }
+      #texRow figure { margin: 0; display: flex; flex-direction: column; gap: 4px; align-items: center; cursor: pointer; }
+      #texRow canvas { border: 1px solid var(--edge); border-radius: 3px; background: #0e1726; image-rendering: pixelated; width: 200px; height: 200px; }
+      #texRow figure:hover canvas { border-color: #4a7fbf; }
+      #texRow figure.is-active canvas { border-color: var(--good); }
+      #texRow figure.is-active figcaption { color: var(--good); }
+
+      /* The library: every prop, its prompt, and what has been made of it. */
+      #library { display: none; position: absolute; inset: 0; z-index: 5; overflow-y: auto; padding: 16px; background: #070b14; }
+      #library.on { display: block; }
+      #libGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+      .card { border: 1px solid var(--edge); border-radius: 4px; background: #0b1220; padding: 8px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+      .card:hover { border-color: #4a7fbf; background: #10192b; }
+      .card.is-current { border-color: var(--good); }
+      .card .top { display: flex; gap: 8px; align-items: flex-start; }
+      .card img { width: 64px; height: 64px; object-fit: cover; background: #0e1726; border: 1px solid #1b2c44; border-radius: 3px; flex: 0 0 auto; }
+      .card .noimg { width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; border: 1px dashed #1b2c44; border-radius: 3px; color: #3d5a80; font-size: 10px; flex: 0 0 auto; }
+      .card .name { color: #eaf3ff; }
+      .card .prompt { color: var(--dim); font-size: 10px; line-height: 1.45; max-height: 4.4em; overflow: hidden; }
+      .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+      .chip { font-size: 10px; padding: 0 4px; border-radius: 2px; border: 1px solid #1b2c44; color: var(--dim); }
+      .chip.on { border-color: var(--good); color: var(--good); }
+      .chip.cost { border-color: var(--spend); color: var(--spend); }
+
+      #lodWrap { display: none; }
+      #lodWrap.on { display: block; }
+      table.data { border-collapse: collapse; font-size: 11px; }
+      table.data th { text-align: left; color: var(--dim); font-weight: normal; padding: 2px 10px 4px 0; border-bottom: 1px solid #1b2c44; }
+      table.data td { padding: 3px 10px 3px 0; border-bottom: 1px solid #101c2e; }
+      table.data td button { padding: 0 5px; }
+
+      #budget { flex: 0 0 320px; overflow-y: auto; padding: 8px 10px; border-left: 1px solid var(--edge); background: var(--panel); }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .spendtext { color: var(--spend); }
+      #status { margin-top: 6px; }
+      #ledger { font-size: 11px; }
+      #ledger div { display: flex; justify-content: space-between; gap: 8px; }
+      #ledger .total { border-top: 1px solid #1b2c44; margin-top: 4px; padding-top: 4px; color: #eaf3ff; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">PROP PIPELINE</div>
+        <div class="s">image &rarr; mesh &rarr; LOD &rarr; card cross</div>
+        <button id="libToggle" class="wide" style="margin-top:6px">&#9776; library</button>
+      </header>
+      <div id="controls">
+        <h2>1. prop</h2>
+        <div class="field">
+          <label>roster</label>
+          <div class="row">
+            <button id="rosterPrev" class="narrow" title="previous">&lt;</button>
+            <select id="roster"></select>
+            <button id="rosterNext" class="narrow" title="next">&gt;</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>id</label>
+          <input type="text" id="propId" placeholder="id (a-z0-9-)" />
+        </div>
+        <div class="field">
+          <label>label (display name)</label>
+          <input type="text" id="label" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>category (the world layer it is for)</label>
+            <select id="category"></select>
+          </div>
+          <div class="field">
+            <label>size (m, longest)</label>
+            <input type="number" id="sizeM" step="0.01" min="0.01" />
+          </div>
+        </div>
+        <div class="field">
+          <label>texture it ships at</label>
+          <select id="texPx"></select>
+        </div>
+        <div class="field">
+          <label>description (this is the prompt)</label>
+          <textarea id="description"></textarea>
+        </div>
+        <div class="field">
+          <label>style note (optional; appended after the house style)</label>
+          <textarea id="styleNote" class="short" placeholder="e.g. more cartoonish, or: realistic bark texture"></textarea>
+        </div>
+        <div class="row">
+          <button id="saveMeta" class="local">save</button>
+          <button id="newProp">new&hellip;</button>
+          <button id="previewPrompt" title="the full prompt the image model will get, without generating anything">preview prompt</button>
+        </div>
+        <div id="metaOut" class="step"></div>
+
+        <h2>2. candidate image</h2>
+        <div class="step">via OpenRouter. The house style asks for a chunky, hand-painted, slightly asymmetric silhouette -- personality that survives a 128px map and a four-triangle card.</div>
+        <div class="field">
+          <label>model (FLUX is the cheap default; Nano Banana 2 for when it will not listen)</label>
+          <select id="imageModel"></select>
+        </div>
+        <div class="field">
+          <label>frame (the subject fills it)</label>
+          <select id="aspectRatio">
+            <option value="16:9">16:9 wide &mdash; fallen logs, skeletons</option>
+            <option value="4:3">4:3 slightly wide &mdash; the safe default</option>
+            <option value="1:1">1:1 square &mdash; boulders, clusters</option>
+            <option value="3:4">3:4 slightly tall &mdash; snags</option>
+            <option value="9:16">9:16 tall</option>
+          </select>
+        </div>
+        <button id="genImage" class="wide spend">generate candidate (~$0.015)</button>
+        <details id="promptOut"><summary class="label">the prompt actually sent</summary><pre class="label"></pre></details>
+
+        <h2>3. mesh</h2>
+        <div class="step">Tripo image-to-model, from the picked image. Every run is kept as a new mesh candidate; nothing paid for is overwritten.</div>
+        <div class="field">
+          <label>model</label>
+          <select id="meshModel">
+            <option value="p1">P1 Smart Mesh -- native low-poly quads</option>
+            <option value="h3">H3 v3.1 -- high fidelity, decimated</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>face limit <span id="faceLimitVal" class="label"></span></label>
+          <input type="range" id="faceLimit" min="250" max="8000" step="250" value="1500" />
+        </div>
+        <div class="field check">
+          <label><input type="checkbox" id="smartLowPoly" /> smart low-poly (H3 only, +10 credits)</label>
+        </div>
+        <div class="field check">
+          <label><input type="checkbox" id="meshPbr" /> PBR maps (kept in the work dir, never shipped or previewed; no extra credits)</label>
+        </div>
+        <button id="genMesh" class="wide spend" disabled>generate mesh</button>
+
+        <h2>4. LOD &amp; card cross</h2>
+        <div class="step">Our decimator (src/mesh/decimate.js) on the <em>selected</em> mesh candidate &mdash; click one above to switch. Free, local, re-runnable. A tier keeps the UV atlas if it can hit the target that way, and drops it for baked vertex colours if it cannot. The card cross is the far tier: two crossed quads wearing the mesh's own render.</div>
+        <div id="lodSubject" class="step"></div>
+        <div class="field">
+          <label>tier targets, coarsest last</label>
+          <input type="text" id="lodTargets" value="50%, 25%, 10%" />
+        </div>
+        <div class="field">
+          <label>weld tolerance, % of bounding diagonal</label>
+          <input type="text" id="lodWeld" value="" placeholder="default: hair-thin" />
+        </div>
+        <div class="field">
+          <label>size / shape weight &mdash; small triangles first, and regular ones; higher costs silhouette</label>
+          <div class="row">
+            <input type="text" id="lodSize" value="10" title="size: how much every point resists being moved, flat or not (0 = plain quadric)" />
+            <input type="text" id="lodShape" value="1" title="shape: exponent on how much worse a collapse leaves its triangles (0 = ignore shape)" />
+          </div>
+        </div>
+        <button id="genLod" class="wide local" disabled>decimate (free)</button>
+        <button id="genCards" class="wide local" disabled style="margin-top:4px">bake card cross (4 tris, free)</button>
+        <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>
+        <button id="reveal" class="wide" disabled style="margin-top:8px">reveal work dir in Finder</button>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div id="library">
+        <h3>library &mdash; every prop, its prompt, and what exists for it</h3>
+        <div id="libGrid"></div>
+      </div>
+
+      <h3>image candidates &mdash; pick the one Tripo reconstructs</h3>
+      <div id="gallery"></div>
+
+      <h3>mesh candidates &mdash; pick the one that ships and gets LODs</h3>
+      <div id="meshGallery" class="gallery"></div>
+
+      <h3>preview</h3>
+      <div id="viewRow">
+        <div id="viewer">
+          <div id="viewStage">
+            <canvas id="viewCanvas"></canvas>
+          </div>
+          <div class="viewControls">
+            <label><input type="checkbox" id="showWire" /> wireframe</label>
+            <label><input type="checkbox" id="rotateLight" /> rotate light</label>
+            <label>file <select id="fileSelect"></select></label>
+            <button id="refit" title="re-centre the camera on the current model">refit</button>
+            <span class="label">drag orbits the camera, or swings the sun with rotate light on; wheel zooms, right-drag pans.</span>
+          </div>
+          <div id="meshStats" class="label"></div>
+          <div id="meshAnalysis" class="label"></div>
+        </div>
+        <div id="texRow">
+          <figure><canvas id="texMax" width="512" height="512"></canvas><figcaption class="label">512px (the cap)</figcaption></figure>
+          <figure><canvas id="texSmall" width="128" height="128"></canvas><figcaption class="label">128px (small props)</figcaption></figure>
+          <p class="note">Nothing ships or previews wider than 512px; Tripo's 2048 stays in the work dir. Mushrooms are designated 128px in the roster and the mesh wears that by default, everything else wears 512. Click a figure to put the other size on the mesh. The preview is fully matte, colour map only, like the world.</p>
+        </div>
+      </div>
+
+      <div id="lodWrap">
+        <h3 id="lodHead">LOD tiers</h3>
+        <table class="data" id="lodTable"></table>
+        <p class="note">
+          Click a tier to load it into the preview; the camera holds its angle across the swap, so
+          the silhouette is comparable frame to frame. Tiers belong to the mesh candidate they were
+          decimated from -- selecting a different candidate shows that one's ladder.
+        </p>
+        <p class="note">
+          A tier that stops well short of its target is not a bug in the decimator: seam and
+          boundary vertices are pinned, so the reduction ceiling is a direct measurement of how
+          few, how large and how well-closed this mesh's UV islands are -- the same property that
+          decides whether the texture survives 128px.
+        </p>
+      </div>
+    </div>
+
+    <div id="budget">
+      <h2>this bench</h2>
+      <p class="note">
+        Every orange button spends real money and nothing fires on its own. The image step bills
+        OpenRouter (~$0.015); the mesh step bills Tripo credits at $0.01 each. Everything after the
+        mesh -- LOD tiers and the card cross -- is cut here, for free, as many times as you like.
+      </p>
+      <p class="note">
+        Working files land in <em>tools/props/gen/work/&lt;id&gt;/</em> (gitignored). Tripo's result
+        URLs expire, so the mesh step downloads its output to disk before returning; the task ids in
+        <em>state.json</em> are the only handle on work already paid for.
+      </p>
+      <p class="note">
+        <strong>A prop is judged at sixty metres.</strong> Most of a prop's screen life is the card
+        cross and the coarsest tier, so bake the cards early and look at them before spending on a
+        second mesh. The texture panel is the gate on the near tiers, as it is for creatures: P1's
+        native quads give fewer, larger UV islands that survive the 128px downrez.
+      </p>
+      <h2>tripo wallet</h2>
+      <div id="balance" class="note">checking&hellip;</div>
+      <h2>ledger</h2>
+      <div id="ledger"></div>
+      <h2>status</h2>
+      <div id="status" class="note"></div>
+    </div>
+
+    <div id="lightbox" class="lightbox" hidden>
+      <img id="lightboxImg" alt="candidate image at full size" />
+      <div id="lightboxCap" class="label"></div>
+    </div>
+
+    <dialog id="promptDialog">
+      <div class="label">the full prompt, as /__prop-image will send it</div>
+      <pre id="promptDialogText"></pre>
+      <form method="dialog"><button>close</button></form>
+    </dialog>
+
+    <script type="module" src="/src/gen-prop-main.js"></script>
+  </body>
+</html>
