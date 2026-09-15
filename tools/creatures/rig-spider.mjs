@@ -90,7 +90,8 @@ function loadMesh(file) {
   }
   const floor = Math.min(...V.map((p) => p[1]))
   for (const p of V) p[1] -= floor
-  return { json, bin, prim, V, N: Nw, I }
+  // `m` and `floor` are the frame: a tier of the same pick is put in it by the same move.
+  return { json, bin, prim, V, N: Nw, I, m, floor }
 }
 
 /**
@@ -407,7 +408,8 @@ export function rigSpider({ write = true } = {}) {
   const joints = buildJoints(legs)
   const groupByRep = new Map()
   for (const leg of legs) for (const v of leg.verts) groupByRep.set(v, `Leg${leg.n}.${leg.side}`)
-  const skin = skinWeights(mesh.V, joints, (v) => groupByRep.get(rep[v]) ?? 'body')
+  const groupOf = (v) => groupByRep.get(rep[v]) ?? 'body'
+  const skin = skinWeights(mesh.V, joints, groupOf)
 
   const mapFile = path.join(dir, 'rig-map.json')
   const existing = fs.existsSync(mapFile) ? JSON.parse(fs.readFileSync(mapFile, 'utf8')) : null
@@ -416,7 +418,17 @@ export function rigSpider({ write = true } = {}) {
     writeRig(path.join(dir, 'rig-fixed.glb'), mesh, joints, skin)
     fs.writeFileSync(mapFile, JSON.stringify(map, null, 2))
   }
-  return { legs, joints, map, skin, vertices: mesh.V.length }
+  // `mesh` and `skinOther` are for ship-spider.mjs: a decimated tier is skinned by the same
+  // bones, each of its vertices in the group of the nearest pick vertex.
+  const skinOther = (V) => skinWeights(V, joints, (v) => {
+    let best = 0, bestD = Infinity
+    for (let i = 0; i < mesh.V.length; i++) {
+      const d = dist(V[v], mesh.V[i])
+      if (d < bestD) { bestD = d; best = i }
+    }
+    return groupOf(best)
+  })
+  return { legs, joints, map, skin, vertices: mesh.V.length, mesh, skinOther }
 }
 
 function main() {

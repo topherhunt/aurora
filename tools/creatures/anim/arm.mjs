@@ -8,6 +8,8 @@
  * annotate an arm with `shoulder`, `elbow` and `wrist` (joint names inside its
  * `chain`), and an annotated arm is driven by these handles instead:
  *
+ *   shrug        lift the shoulder itself, turning the clavicle joints before
+ *                it about the body's forward axis; positive is up on either arm
  *   raise        swing at the shoulder about the body's lateral axis; positive
  *                brings the arm forward and up, pi points it at the sky
  *   spread       out to the side, positive away from the body on either arm
@@ -31,7 +33,7 @@
 
 import { decompose, norm, qAxisAngle, qConj, qMul, qRotate, sub } from './skeleton.mjs'
 
-export const ARM_HANDLES = ['raise', 'spread', 'twist', 'elbow', 'wristPitch', 'wristSpread', 'curl']
+export const ARM_HANDLES = ['shrug', 'raise', 'spread', 'twist', 'elbow', 'wristPitch', 'wristSpread', 'curl']
 
 /** Whether a rig map's arm entry carries the joints these handles need. */
 export const isJointed = (armMap) => armMap.shoulder !== undefined
@@ -54,6 +56,7 @@ export function armSetup(skel, armMap, byName) {
   return {
     id: armMap.id, side: armMap.side, chain,
     shoulder: chain[s], elbow: chain[e], wrist: chain[w], hand: chain.slice(w + 1),
+    clavicle: chain.slice(0, s),
     restRot,
   }
 }
@@ -61,6 +64,13 @@ export function armSetup(skel, armMap, byName) {
 /** Apply one frame's handles to an arm. `h` may omit any handle. */
 export function poseArm(pose, arm, h, { forward: fwd, lateral: lat }) {
   const carried = (j, axis) => qRotate(qMul(pose.rotation(j), qConj(arm.restRot.get(j))), axis)
+  // Every Tripo humanoid so far has one clavicle joint; an arm hung straight
+  // off the chest has none, and its shrug moves nothing. The shoulder turns
+  // back by the same angle so the arm keeps hanging as the clavicle tips.
+  if (h.shrug) {
+    for (const j of arm.clavicle) pose.rotateWorld(j, qAxisAngle(carried(j, fwd), h.shrug * arm.side / arm.clavicle.length))
+    if (arm.clavicle.length) pose.rotateWorld(arm.shoulder, qAxisAngle(carried(arm.shoulder, fwd), -h.shrug * arm.side))
+  }
   // Shoulder: spread first about the torso's forward axis, then raise about its
   // lateral one, both taken before either turn so they compose like Euler
   // angles rather than each riding on the last.

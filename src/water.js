@@ -831,20 +831,16 @@ export class Water {
       transparent: WATER.clarity > 0,
       depthWrite: true,
       fog: true,
-      // DOUBLE-SIDED, so that the surface exists when you are under it. The
-      // default FrontSide culls back-facing triangles before they are shaded,
-      // and a lake plane seen from below is nothing but back-facing triangles
-      // -- you would swim up and see straight through to the sky, with the
-      // surface simply absent.
-      //
-      // It costs approximately nothing, and it is worth saying why rather than
-      // trusting that it does. Culling only saves work when there is something
-      // to cull, and a flat lake seen from above presents no back faces at all
-      // -- the cull stage was rejecting zero triangles. The bill for turning it
-      // off is therefore zero triangles' worth of fragment shading, plus the
-      // rivers, where a channel dipping steeply away from the eye currently
-      // drops a triangle and leaves a hole. Those come back, which is a fix.
-      side: THREE.DoubleSide,
+      // THE SIDE IS THE SUBMERSION SWITCH -- see setSubmerged. Dry, the
+      // material is FrontSide: the underside of water is never in view unless
+      // her head is in it, so the back faces are culled and cost nothing.
+      // Submerged, it is BackSide: the tops are culled and what survives is
+      // the underside overhead, which is what keeps a lake's plane from
+      // showing through the river she is swimming in at its mouth. The shader
+      // never reads gl_FrontFacing: the side alone decides, and toggling it is
+      // a GL state change with no program behind it, so a dive compiles
+      // nothing.
+      side: THREE.FrontSide,
       vertexShader: /* glsl */ `
         // A river's flow frame, ribbon.js flowFrame: (along, across, weight,
         // downstream angle). Every other sheet of water lacks the attribute and
@@ -1089,15 +1085,16 @@ export class Water {
 
           vec3 N = waveNormal( vWorldPos.xz, vFlow, normalize( vFlowDir ), near, far );
 
-          // SEEN FROM UNDERNEATH. gl_FrontFacing makes this one material rather
-          // than two -- same meshes, same draw calls, same uniforms, with the
-          // side decided per fragment. uSubmerged is in the test too, because a
-          // back face is also what you get looking up at a lake from inside a
-          // cave, where the ordinary answer is still right.
+          // SEEN FROM UNDERNEATH. One material rather than two -- same meshes,
+          // same draw calls, same uniforms. The flag alone decides, because
+          // setSubmerged also sets the side: submerged, the material is
+          // BackSide and every fragment that survives the cull IS the
+          // underside; dry, it is FrontSide and no underside is drawn at all.
+          // Not the facing -- see the material's side.
           //
           // An early return, not an else-branch: the underside shares the wave
           // normal and nothing after it.
-          if ( uSubmerged > 0.5 && ! gl_FrontFacing ) {
+          if ( uSubmerged > 0.5 ) {
             vec3 ceiling = underside( V, N );
 
             // THE SAME MURK FADE THE BED TAKES, from the same expression, so the
@@ -1319,10 +1316,14 @@ export class Water {
   }
 
   /**
-   * Which side of the surface her head is on. Two things change in the shader:
-   * back faces stop being ignored and start being drawn as the underside, and
-   * the distance fade stops aiming at the horizon sky and starts aiming at the
-   * murk.
+   * Which side of the surface her head is on. Three things change: the cull
+   * flips from FrontSide to BackSide, so the tops of every surface vanish and
+   * only undersides are drawn; the shader draws what is left as the underside;
+   * and the distance fade stops aiming at the horizon sky and starts aiming at
+   * the murk. No needsUpdate, on purpose: three then keeps the program and
+   * changes only the cull state, and since nothing in the shader reads the
+   * side (no gl_FrontFacing), that is correct and compiles nothing -- safe to
+   * call every frame.
    *
    * Deliberately NOT worked out here. Whether she is under is a question about
    * where the water bodies are, which is WaterSurfaces' job and not the
@@ -1331,6 +1332,7 @@ export class Water {
    */
   setSubmerged(on) {
     this.uniforms.uSubmerged.value = on ? 1 : 0
+    this.material.side = on ? THREE.BackSide : THREE.FrontSide
   }
 
   /**

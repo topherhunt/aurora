@@ -1,33 +1,50 @@
 {
   "kind": "pose",
-  "note": "Recoil in shock: the body snaps back off the feet, the head jerks up and away, both hands fly up in front of the face, then everything settles back to the stance. The feet stay planted, so the lean-back is the root sliding aft over them.",
-  "samples": 36,
+  "note": "Recoil in shock: the right foot steps back as the body snaps aft over it, the head tilts forward to keep looking straight ahead and turns a little away, both hands fly up in front of the face, then the foot comes back under and everything settles to the stance. The lean-back is the root sliding aft over the feet.",
+  "samples": 40,
   "crouch": 0.045,
   "keys": [
     { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.12, "pose": {
+      "root": { "fore": -0.06, "lift": -0.01 },
+      "spine": { "pitch": -0.15 },
+      "head": { "pitch": 0.15 },
+      "arms": { "both": { "raise": 0.6, "spread": 0.3, "elbow": 0.9, "wristPitch": -0.2 } },
+      "legs": { "legRight": { "fore": -0.18, "lift": 0.08 } }
+    } },
     { "t": 0.25, "pose": {
-      "root": { "fore": -0.12, "lift": -0.02 },
+      "root": { "fore": -0.15, "lift": -0.02 },
       "spine": { "pitch": -0.3 },
-      "head": { "pitch": -0.25 },
-      "arms": { "both": { "raise": 1.2, "spread": 0.6, "elbow": 1.6, "wristPitch": -0.4 } }
+      "head": { "pitch": 0.3 },
+      "arms": { "both": { "raise": 1.2, "spread": 0.6, "elbow": 1.6, "wristPitch": -0.4 } },
+      "legs": { "legRight": { "fore": -0.35 } }
     } },
     { "t": 0.45, "pose": {
-      "root": { "fore": -0.1, "lift": -0.02 },
+      "root": { "fore": -0.13, "lift": -0.02 },
       "spine": { "pitch": -0.26 },
-      "head": { "pitch": -0.2, "yaw": 0.1 },
-      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } }
+      "head": { "pitch": 0.26, "yaw": 0.1 },
+      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } },
+      "legs": { "legRight": { "fore": -0.35 } }
     } },
     { "t": 1.1, "pose": {
-      "root": { "fore": -0.1, "lift": -0.02 },
+      "root": { "fore": -0.13, "lift": -0.02 },
       "spine": { "pitch": -0.26 },
-      "head": { "pitch": -0.2, "yaw": 0.1 },
-      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } }
+      "head": { "pitch": 0.26, "yaw": 0.1 },
+      "arms": { "both": { "raise": 1.15, "spread": 0.65, "elbow": 1.55, "wristPitch": -0.4 } },
+      "legs": { "legRight": { "fore": -0.35 } }
+    } },
+    { "t": 1.5, "pose": {
+      "root": { "fore": -0.06, "lift": -0.01 },
+      "spine": { "pitch": -0.14 },
+      "head": { "pitch": 0.14 },
+      "arms": { "both": { "raise": 0.7, "spread": 0.4, "elbow": 1.0 } },
+      "legs": { "legRight": { "fore": -0.18, "lift": 0.06 } }
     } },
     { "t": 1.8, "pose": {
-      "root": { "fore": -0.03 },
-      "spine": { "pitch": -0.08 },
-      "head": { "pitch": -0.05 },
-      "arms": { "both": { "raise": 0.5, "spread": 0.3, "elbow": 0.8 } }
+      "root": { "fore": -0.02 },
+      "spine": { "pitch": -0.06 },
+      "head": { "pitch": 0.06 },
+      "arms": { "both": { "raise": 0.4, "spread": 0.25, "elbow": 0.7 } }
     } },
     { "t": 2.4, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
   ]

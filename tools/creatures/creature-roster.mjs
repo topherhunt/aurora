@@ -206,7 +206,8 @@ const ANIMALS = [
     id: 'birch-spider',
     label: 'Birch Spider',
     rigType: 'octopod',
-    sizeM: 0.05,
+    sizeM: 0.2,
+    texPx: TEX_PX_SMALL,
     description:
       'an orb-weaving spider with a rounded bulbous abdomen patterned in cream and grey-brown with a pale cross ' +
       'marking, a small dark cephalothorax, eight long banded legs tapering to fine points, short dense bristles ' +

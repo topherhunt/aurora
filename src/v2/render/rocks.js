@@ -3910,6 +3910,117 @@ class RockBed {
   }
 
   /**
+   * One bed's share of Rocks.rayAt: the nearest stone of this bed on the ray
+   * from (x, y, z) along the unit direction (dx, dy, dz), within `reach`
+   * metres, on a rock of at least `minSize`; the hit written into `out` and its
+   * distance returned, or `best` unchanged when nothing of this bed is nearer.
+   *
+   * The same 3x3 tile walk and size gate as _blockAt; the circle reject is
+   * against the ray's own footprint (the nearest point of its XZ segment to
+   * the rock's origin) rather than a point, and the same slab-then-triangles
+   * walk as _spanAt, in the rock's frame, keeping the nearest forward hit and
+   * its face. The normal comes out facing the ray, so a hit on a closed shape
+   * from outside is the outward normal.
+   */
+  _rayAt(x, y, z, dx, dy, dz, reach, minSize, best, out) {
+    const tile = this.tile
+    const gx = Math.floor(x / tile)
+    const gz = Math.floor(z / tile)
+    const mm = this.shape.measured
+    const hull = this.hull.tri
+    const e = this.instM
+    for (let tx = -1; tx <= 1; tx++) {
+      for (let tz = -1; tz <= 1; tz++) {
+        const t = this.tiles.get((gx + tx) * 0x10000 + (gz + tz))
+        if (!t) continue
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const size = this.shapeLod * this.instScale[id]
+          if (size < minSize) continue
+          const s = this.instScale[id]
+          const r = this.hull.radius * s
+          const ex = x - this.instX[id]
+          const ez = z - this.instZ[id]
+          // The ray's XZ segment, clamped at its ends, nearest the origin.
+          const l2 = dx * dx + dz * dz
+          const u = l2 > 1e-12 ? Math.max(0, Math.min(reach, -(ex * dx + ez * dz) / l2)) : 0
+          const cx = ex + dx * u
+          const cz = ez + dz * u
+          if (cx * cx + cz * cz >= r * r) continue
+          const o = id * 16
+          const inv = 1 / (s * s)
+          const ey = y - e[o + 13]
+          const ox = (e[o] * ex + e[o + 1] * ey + e[o + 2] * ez) * inv
+          const oy = (e[o + 4] * ex + e[o + 5] * ey + e[o + 6] * ez) * inv
+          const oz = (e[o + 8] * ex + e[o + 9] * ey + e[o + 10] * ez) * inv
+          const ldx = (e[o] * dx + e[o + 1] * dy + e[o + 2] * dz) / s
+          const ldy = (e[o + 4] * dx + e[o + 5] * dy + e[o + 6] * dz) / s
+          const ldz = (e[o + 8] * dx + e[o + 9] * dy + e[o + 10] * dz) / s
+          const tMax = Math.min(reach / s, best / s)
+          let tLo = 0
+          let tHi = tMax
+          let miss = false
+          for (let a = 0; a < 3 && !miss; a++) {
+            const oc = a === 0 ? ox : a === 1 ? oy : oz
+            const dc = a === 0 ? ldx : a === 1 ? ldy : ldz
+            const lo = a === 0 ? -mm.width * 0.5 : a === 1 ? 0 : -mm.depth * 0.5
+            const hi = a === 0 ? mm.width * 0.5 : a === 1 ? mm.height : mm.depth * 0.5
+            if (dc > -1e-12 && dc < 1e-12) {
+              if (oc < lo || oc > hi) miss = true
+            } else {
+              const p = (lo - oc) / dc
+              const q = (hi - oc) / dc
+              tLo = Math.max(tLo, Math.min(p, q))
+              tHi = Math.min(tHi, Math.max(p, q))
+            }
+          }
+          if (miss || tLo > tHi) continue
+          let near = tMax
+          let face = -1
+          for (let f = 0; f < hull.length; f += 9) {
+            const e1x = hull[f + 3], e1y = hull[f + 4], e1z = hull[f + 5]
+            const e2x = hull[f + 6], e2y = hull[f + 7], e2z = hull[f + 8]
+            const hx = ldy * e2z - ldz * e2y
+            const hy = ldz * e2x - ldx * e2z
+            const hz = ldx * e2y - ldy * e2x
+            const det = e1x * hx + e1y * hy + e1z * hz
+            if (det > -1e-12 && det < 1e-12) continue
+            const invDet = 1 / det
+            const sx = ox - hull[f]
+            const sy = oy - hull[f + 1]
+            const sz = oz - hull[f + 2]
+            const uu = (sx * hx + sy * hy + sz * hz) * invDet
+            if (uu < 0 || uu > 1) continue
+            const qx = sy * e1z - sz * e1y
+            const qy = sz * e1x - sx * e1z
+            const qz = sx * e1y - sy * e1x
+            const vv = (ldx * qx + ldy * qy + ldz * qz) * invDet
+            if (vv < 0 || uu + vv > 1) continue
+            const tt = (e2x * qx + e2y * qy + e2z * qz) * invDet
+            if (tt >= 0 && tt < near) { near = tt; face = f }
+          }
+          if (face < 0) continue
+          best = near * s
+          // The face's normal, the rock's frame to the world's: the columns are s long.
+          let nx = hull[face + 4] * hull[face + 8] - hull[face + 5] * hull[face + 7]
+          let ny = hull[face + 5] * hull[face + 6] - hull[face + 3] * hull[face + 8]
+          let nz = hull[face + 3] * hull[face + 7] - hull[face + 4] * hull[face + 6]
+          let wx = (e[o] * nx + e[o + 4] * ny + e[o + 8] * nz) / s
+          let wy = (e[o + 1] * nx + e[o + 5] * ny + e[o + 9] * nz) / s
+          let wz = (e[o + 2] * nx + e[o + 6] * ny + e[o + 10] * nz) / s
+          const len = Math.hypot(wx, wy, wz)
+          if (wx * dx + wy * dy + wz * dz > 0) { wx = -wx; wy = -wy; wz = -wz }
+          out.x = x + dx * best; out.y = y + dy * best; out.z = z + dz * best
+          out.nx = wx / len; out.ny = wy / len; out.nz = wz / len
+          out.ox = this.instX[id]; out.oz = this.instZ[id]
+          out.size = size
+        }
+      }
+    }
+    return best
+  }
+
+  /**
    * The cursor's pick volume for one instance, in world metres: the boulder's
    * footprint and its height, both at this instance's own scale.
    *
@@ -4274,6 +4385,28 @@ export class Rocks {
       if (bed.blocks) w = bed._columnAt(x, z, minSize, out, w, cap)
     }
     return w
+  }
+
+  /**
+   * The nearest blocking stone on the ray from (x, y, z) along the unit
+   * direction (dx, dy, dz), within `reach` metres, on a rock of at least
+   * `minSize`: the hit point, its outward unit normal, the rock's origin (`ox`,
+   * `oz`, the same figures perchesInto reports) and its size written into
+   * `out`, and the distance returned; Infinity, `out` untouched, when the ray
+   * finds no stone. The one query that answers for a rock's SIDES: blockTopAt
+   * and columnAt drop a vertical line and can only say where its top and
+   * bottom are, and a creature that clings to a face (the spiders) needs the
+   * face itself, wherever it looks. The same finest-tier triangles as
+   * _spanAt, so the answer is the drawn stone up close, and the same 3x3 tile
+   * walk, so it costs what blockTopAt does plus the triangles of the rocks the
+   * ray's footprint crosses.
+   */
+  rayAt(x, y, z, dx, dy, dz, reach, minSize, out) {
+    let best = Infinity
+    for (const bed of this.beds) {
+      if (bed.blocks) best = bed._rayAt(x, y, z, dx, dy, dz, reach, minSize, best, out)
+    }
+    return best
   }
 
   /**

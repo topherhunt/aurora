@@ -27,6 +27,8 @@ import { Deadwood } from './render/deadwood.js'
 import { Fish } from './render/fish.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
+import { Butterflies } from './render/butterflies.js'
+import { Spiders } from './render/spiders.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
@@ -635,6 +637,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'fish', text: 'fish' },
   { key: 'frogs', text: 'frogs' },
   { key: 'crabs', text: 'crabs' },
+  { key: 'butterflies', text: 'butterflies' },
+  { key: 'spiders', text: 'spiders' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -729,7 +733,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': applyAnimalVisibility(); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -1601,6 +1605,8 @@ let deadwood = null
 let fish = null
 let frogs = null
 let crabs = null
+let butterflies = null
+let spiders = null
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -1629,7 +1635,7 @@ let ready = false
 // already running. The scatter layers still submit everything when this is off.
 const questToggles = {
   terrain: true, lighting: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true,
   water: true, reflections: true, aurora: true, sound: true,
   // Debug furniture, off until asked for. See buildProbeCube.
   probeCube: false,
@@ -1647,13 +1653,15 @@ const questToggles = {
 const animalOn = (key) => questToggles.animals && questToggles[key]
 
 /**
- * The frogs' and crabs' batches, off their rows. Not the fish's: theirs is
- * decided every frame in the tick, because it also asks whether her head is
- * under the water.
+ * The frogs', crabs', butterflies' and spiders' batches, off their rows. Not the fish's:
+ * theirs is decided every frame in the tick, because it also asks whether her
+ * head is under the water.
  */
 function applyAnimalVisibility() {
   frogs.batch.visible = animalOn('frogs')
   crabs.batch.visible = animalOn('crabs')
+  butterflies.batch.visible = animalOn('butterflies')
+  spiders.batch.visible = animalOn('spiders')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -1661,6 +1669,8 @@ function placeAnimals(cx, cz) {
   if (fish && animalOn('fish')) fish.place(cx, cz)
   if (frogs && animalOn('frogs')) frogs.place(cx, cz)
   if (crabs && animalOn('crabs')) crabs.place(cx, cz)
+  if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
+  if (spiders && animalOn('spiders')) spiders.place(cx, cz)
 }
 
 // ---------------------------------------------------------------------------
@@ -2148,6 +2158,27 @@ async function bootWorld() {
   crabs.ready.then(() => crabs.bakeCard(renderer))
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
   window.v2crabs = crabs
+
+  // The butterflies over the fields and through the woods (render/butterflies.js):
+  // a scatter that lands on the trees, the rocks, the ferns and the deadwood, so after all of them.
+  await bootStep('butterflies')
+  butterflies = new Butterflies(scene, height, waterSurfaces, { seed: SEED, walk, rocks, trees, ferns, deadwood })
+  lighting.patch(butterflies.material, { mode: 'vertex', cacheKey: 'v2-butterflies' })
+  butterflies.place(spawn.x, spawn.z)
+  console.log(`[v2] butterflies ${butterflies.stats.alive} on ${butterflies.stats.tiles} tiles at boot`)
+  window.v2butterflies = butterflies
+
+  // The spiders on the trunks and the boulders (render/spiders.js): a scatter
+  // that climbs the trees and the rocks, so after both. Each puppet wears its
+  // own material, so every one is patched.
+  await bootStep('spiders')
+  spiders = new Spiders(scene, height, waterSurfaces, { seed: SEED, trees, rocks })
+  for (const m of spiders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-spiders' })
+  lighting.patch(spiders.cardMaterial, { mode: 'vertex', cacheKey: 'v2-spiders-card' })
+  spiders.place(spawn.x, spawn.z)
+  spiders.ready.then(() => spiders.bakeCard(renderer))
+  console.log(`[v2] spiders ${spiders.stats.alive} in ${spiders.stats.groups} groups at boot`)
+  window.v2spiders = spiders
 
   // The ambient sound (audio/). The clips load in the background so a slow
   // fetch never holds the world; until they land, and forever if one fails, the
@@ -3247,6 +3278,8 @@ function applySky(state, head, elapsedReal) {
   stars.update(head, state, clock.elapsed, elapsedReal)
   if (questToggles.aurora) aurora.update(head, state, elapsedReal)
   if (questToggles.water) water.update(elapsedReal, hemi)
+  // Returns at once until the eye has moved LOD_STEP; the rivers' distance ladder is read per ten metres walked, not per frame.
+  if (waterSurfaces !== null) waterSurfaces.updateLod(head.x, head.z)
 
   // LAST, and that is the whole of its plumbing. Everything above writes the
   // world as seen through air, straight from the palette; this overwrites the
@@ -4296,6 +4329,8 @@ function tick() {
   else if (animalOn('fish')) fish.follow(headTmp.x, headTmp.y, headTmp.z)
   if (animalOn('frogs')) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
   if (animalOn('crabs')) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged)
+  if (animalOn('butterflies')) butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  if (animalOn('spiders')) spiders.update(headTmp.x, headTmp.y, headTmp.z, dt)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

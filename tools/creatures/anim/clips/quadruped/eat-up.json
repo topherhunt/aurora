@@ -1,0 +1,24 @@
+{
+  "kind": "pose",
+  "note": "Coming up out of a browse: the head lifts clear of the foliage and the back straightens under it, ending at the idle stand. One-way, so it does NOT loop -- it begins at the browse hold `eat-loop` ends at, stated key-for-key. Shorter than `eat-down` because a browsing animal lowers its head deliberately and raises it to look around, and the tail drops to its carried angle last, after the head is already clear.",
+  "loops": false,
+  "samples": 18,
+  "duration": 0.7,
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.35 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 0.35, "pose": {
+      "root": { "lift": -0.015 },
+      "spine": { "pitch": 0.12 },
+      "head": { "pitch": 0.45 },
+      "tail": { "pitch": 0.14 }
+    } },
+    { "t": 0.7, "pose": {
+      "tail": { "pitch": 0.1 }
+    } }
+  ]
+}

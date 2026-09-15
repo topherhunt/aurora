@@ -24,9 +24,11 @@ import numpy as np
 from mathutils import Vector
 
 VIEWS = {
-    # name: (along-lateral, along-forward) weights for the camera direction
+    # name: (along-lateral, along-forward) weights for where the camera sits;
+    # lateral is the creature's left, so "side" shows its left flank
     "side": (1.0, 0.0),
-    "front": (0.0, -1.0),
+    "right": (-1.0, 0.0),
+    "front": (0.0, 1.0),
     "quarter": (0.82, 0.57),
 }
 

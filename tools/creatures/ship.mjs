@@ -18,10 +18,12 @@
 // decimated LOD tiers (the bench's ladder, meshes/<n>-lod<k>.glb) ship beside
 // it as <id>-lod<k>.glb, packed the same way onto the same WebP and under the
 // pick's node transform, which the bench's export leaves off; a card-cross tier
-// does not ship, the world draws nothing for a critter that small. Re-run this
-// after picking a new mesh or saving a ladder in gen-creature.html, and commit
-// what it writes. A creature without a pick is skipped and named, not shipped
-// stale.
+// does not ship, the world draws nothing for a critter that small. A pick of
+// kind 'wing-cards' (tools/creatures/wing-cards.mjs) is already the shipped
+// shape -- four tris, one embedded 128 px PNG, MASK -- and is copied whole.
+// Re-run this after picking a new mesh or saving a ladder in gen-creature.html,
+// and commit what it writes. A creature without a pick is skipped and named,
+// not shipped stale.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
@@ -34,9 +36,9 @@ import { packTexture, readGlbChunks, tripoColourJpeg, viewOf } from '../tripo-pa
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
 
-// Non-biped creatures the world scatters on its own terms: src/v2/render/frogs.js
-// and crabs.js. A biped is shipped by its rig type; these are shipped by name.
-const CRITTERS = new Set(['marsh-frog', 'shore-crab'])
+// Non-biped creatures the world scatters on its own terms: src/v2/render/frogs.js,
+// crabs.js and butterflies.js. A biped is shipped by its rig type; these are shipped by name.
+const CRITTERS = new Set(['marsh-frog', 'shore-crab', 'meadow-butterfly'])
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 
@@ -68,6 +70,14 @@ function ship(id, meta, pickedMesh) {
   if (path.extname(pickedMesh) !== '.glb') throw new Error(`${id}: picked mesh ${pickedMesh} is not a glb -- the world loads glb only`)
   if (!(meta.sizeM > 0)) throw new Error(`${id}: no sizeM -- the world has no size to draw it at`)
   const src = path.join(workDir(id), 'meshes', pickedMesh)
+  const entry = (readState(id).meshes ?? []).find((m) => m.file === pickedMesh)
+  if (entry?.kind === 'wing-cards') {
+    if (!CRITTERS.has(id)) throw new Error(`${id}: wing cards are a critter's shape, and ${id} is not in CRITTERS`)
+    const out = path.join(OUT, `${id}.glb`)
+    fs.copyFileSync(src, out)
+    console.log(`ship ${id}.glb: ${pickedMesh} copied whole (${(fs.statSync(out).size / 1024).toFixed(0)} KB, wing cards, ${entry.params.tris} tris @ ${entry.params.texPx}px)`)
+    return
+  }
   const { json, bin } = readGlbChunks(src)
   const texture = `${id}.webp`
   const texPx = shipTexPx(meta)
@@ -75,7 +85,6 @@ function ship(id, meta, pickedMesh) {
   const matrix = faced(meshNode(id, json).matrix ?? IDENTITY, meta)
   pack(id, src, `${id}.glb`, texture, matrix, `${meta.sizeM} m, texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
   if (!CRITTERS.has(id)) return
-  const entry = (readState(id).meshes ?? []).find((m) => m.file === pickedMesh)
   for (const lod of entry?.lods ?? []) {
     if (lod.kind !== 'decimated') continue
     const tier = `${pickedMesh.replace(/\.glb$/, '')}-lod${lod.level}.glb`

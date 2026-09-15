@@ -45,7 +45,8 @@
 //   with a colour map wider than TEX_PX_MAX, and a designated-small creature
 //   ships at TEX_PX_SMALL (design/27-creature-pipeline.md). The shippers
 //   enforce it, but a GLB copied into public/creatures by hand would not pass
-//   through them, so every shipped GLB's one image is measured here.
+//   through them, so every shipped GLB's one image is measured here -- the
+//   WebP beside a packed mesh, or the PNG inside a pair of wing cards.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -239,13 +240,24 @@ for (const name of shipped) {
   const entry = CREATURES.find((c) => c.id === id)
   check(!!entry, `${name} is a roster creature${id === name.slice(0, -4) ? '' : "'s ladder tier"}`)
   if (!entry) continue
-  const { json } = readGlbChunks(path.join(SHIPPED, name))
+  const { json, bin } = readGlbChunks(path.join(SHIPPED, name))
   const images = json.images ?? []
+  const want = shipTexPx(entry)
+  // Wing cards (tools/creatures/wing-cards.mjs) ship whole: their one PNG is embedded, and it is the card size.
+  if (entry.rigType === 'none' && images[0]?.mimeType === 'image/png') {
+    const view = json.bufferViews[images[0].bufferView]
+    const png = bin.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength)
+    const width = png.readUInt32BE(16), height = png.readUInt32BE(20)
+    check(images.length === 1 && png.toString('latin1', 1, 4) === 'PNG' && width === want && height === want,
+      `${name} embeds one ${want}px PNG wing map`, `${width}x${height}`)
+    check(json.materials?.length === 1 && json.materials[0].alphaMode === 'MASK' && json.materials[0].doubleSided === true && json.materials[0].extras?.cutout === true,
+      `${name} is a double-sided MASK cutout flagged for tripo-culling`)
+    continue
+  }
   check(images.length === 1 && images[0].uri === `${id}.webp` && images[0].mimeType === 'image/webp',
     `${name} ships one WebP colour map beside it, not an embedded JPEG`, JSON.stringify(images))
   if (images.length !== 1 || !images[0].uri) continue
   const { width, height } = webpSize(fs.readFileSync(path.join(SHIPPED, images[0].uri)))
-  const want = shipTexPx(entry)
   check(width === want && height === want, `${name} colour map is its designated ${want}px square`, `${width}x${height}`)
   check(width <= TEX_PX_MAX && height <= TEX_PX_MAX, `${name} colour map is within the ${TEX_PX_MAX}px cap`)
   const pbr = json.materials?.[0]?.pbrMetallicRoughness

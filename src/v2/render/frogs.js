@@ -14,10 +14,11 @@
 //
 // A frog sits, then moves in a bout: usually a WALK, a string of short hops
 // along one heading with a beat between them, now and then a LEAP or three in
-// any direction. A hop may land in the water, where the frog floats on the
-// surface (WaterSurfaces.levelAt, bobbing on BOB_S) and its bouts become
-// PADDLEs, slow strokes along a heading that wanders more than a walk's; a
-// stroke that reaches dry ground climbs out and the land bouts resume. It is
+// any direction. A hop may land in the water, where the frog floats sunk SINK
+// of its height into the surface (WaterSurfaces.levelAt, bobbing on BOB_S)
+// and DRIFTs without stopping, its heading and pace each wandering as a random
+// walk so the track winds; it probes a body length ahead every frame, and dry
+// ground there is the bank, hopped onto, where the land bouts resume. It is
 // tethered to where it was placed, never landing past TETHER_M from home
 // (aimed home once it is out that far, on the water as on the land), and every
 // hop target passes the tests its placement did but for dryness, so a frog
@@ -69,18 +70,24 @@ export const MORPHS = [
   { name: 'brown', w: 3, hue: [-1.1, -0.75], r: [0.75, 0.95], g: [0.6, 0.78], b: [0.4, 0.55] },
 ]
 const MORPH_W = MORPHS.reduce((sum, m) => sum + m.w, 0)
-// Sit SIT_S, then a bout: on land WALK_P of the time a walk, otherwise a leap; on the water a paddle. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between, and each hop turns from the bout's heading by up to `turn` radians either way: a walk holds its line, a leap's full turn is a fresh direction every hop, a paddle wanders between. A hop with a dry end rises HOP_RISE of its distance; a paddle stays on the surface and stretches only PADDLE_STRETCH of a hop's.
+// Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between, and each hop turns from the bout's heading by up to `turn` radians either way: a walk holds its line, a leap's full turn is a fresh direction every hop. Every hop rises HOP_RISE of its distance.
 const SIT_S = [2, 8]
 const WALK_P = 0.7
 export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1], turn: 0.6 }
 export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5], turn: Math.PI * 2 }
-export const PADDLE = { hops: [2, 6], m: [1, 2.5], dur: [1.2, 2.5], pause: [0.5, 2], turn: 1.4 }
 const HOP_RISE = 0.45
-const PADDLE_STRETCH = 0.3
 export const TETHER_M = 4
-// A floating frog rides the surface up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
-export const BOB_S = 2.1
-export const BOB_AMP = 0.02
+// Afloat, a frog sits SINK of its height under the surface and rides it up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
+export const SINK = 0.5
+export const BOB_S = 0.5
+export const BOB_AMP = 0.04
+// And drifts without stopping, at DRIFT_MPS metres per second for a frog of the middle size (a bigger one proportionally faster), the pace and the heading's turn each wandering as a random walk: the pace jogged by DRIFT_SURGE m/s per second, the turn rate by DRIFT_JOG rad/s per second and held within DRIFT_TURN rad/s. The bank is CLIMB_M body lengths ahead when the probe there is dry.
+export const DRIFT_MPS = [0.04, 0.2]
+const DRIFT_SURGE = 0.15
+export const DRIFT_TURN = 1.2
+const DRIFT_JOG = 2.5
+const CLIMB_M = 1
+const SIZE_MID = (SIZE_M[0] + SIZE_M[1]) / 2
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -149,19 +156,19 @@ export class Frogs {
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_DEG.length,
         // The ground normal the frog sits along, and the normals at a hop's two ends.
         nx: 0, ny: 1, nz: 0, n0x: 0, n0y: 1, n0z: 0, n1x: 0, n1y: 1, n1z: 0,
-        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed. `bout` is WALK, LEAP or PADDLE with `hops` of it to go, `heading` the bout's line.
+        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed, `wet0` and `wet1` saying which ends are on the water; 'drift' floats along `heading` at `speed` m/s, turning at `spin` rad/s. `bout` is WALK or LEAP with `hops` of it to go, `heading` the bout's line.
         state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
-        // Whether the seat, and a hop's two ends, are on the water; a wet y is the surface, not the ground.
-        wet: false, wet0: false, wet1: false,
+        wet0: false, wet1: false, speed: 0, spin: 0,
       })
     }
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.head = { x: 0, z: 0 }
     this.time = 0
-    // The pick's bounds (setCritterAsset) and its unit span; the instance scale is size / span, for every tier.
+    // The pick's bounds (setCritterAsset) and its unit span; the instance scale is size / span, for every tier. `sink` is how far under the surface a floating frog's feet sit, per metre of its size.
     this.bounds = null
     this.span = 1
+    this.sink = SINK
     this.loaded = false
     // Candidates the shore band would have kept that found no free slot.
     this.overflow = 0
@@ -187,6 +194,7 @@ export class Frogs {
     if (!Array.isArray(assets) || assets.length < 1 || assets.length > LOD_DEG.length) throw new Error(`Frogs.setAsset: ${LOD_DEG.length} tiers at most, the pick first`)
     this.bounds = setCritterAsset(this.tiers[0], this.material, assets[0], 'frogs')
     this.span = this.bounds.span
+    this.sink = (SINK * this.bounds.height) / this.span
     for (let k = 1; k < LOD_DEG.length; k++) {
       const asset = assets[Math.min(k, assets.length - 1)]
       // Its own decode of the same WebP: the pick's is the one drawn.
@@ -209,14 +217,14 @@ export class Frogs {
    * re-splitting swaps the leaf's half-metre cells for metre ones 19 m out (11 m
    * in the periphery), and where the new chord rises through a seat it buries
    * the frog until its next hop. A hop in the air has both its ends re-read, so
-   * it lands on the new surface too. A wet seat rides the water, not the ground.
+   * it lands on the new surface too. A frog afloat rides the water, not the ground.
    */
   _reseat() {
     for (const t of this.tiles.values()) {
       for (const f of t.frogs) {
         if (f.state === 'sit') {
-          if (!f.wet) f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
-        } else {
+          f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
+        } else if (f.state === 'hop') {
           if (!f.wet0) f.y0 = this._groundFor(f.x0, f.z0, this.height.heightAt(f.x0, f.z0))
           if (!f.wet1) f.y1 = this._groundFor(f.x1, f.z1, this.height.heightAt(f.x1, f.z1))
         }
@@ -278,7 +286,6 @@ export class Frogs {
       f.x = f.homeX = x
       f.z = f.homeZ = z
       f.y = this._groundFor(x, z, s.h)
-      f.wet = false
       Frogs._normal(f, s)
       f.nx = f.n1x; f.ny = f.n1y; f.nz = f.n1z
       f.size = size
@@ -324,12 +331,33 @@ export class Frogs {
     return { alive: MAX - this.free.length, tiles: this.tiles.size, overflow: this.overflow }
   }
 
+  /** Turn the heading for home, within a quarter turn of it. */
+  _aimHome(f) {
+    f.heading = Math.atan2(-(f.homeZ - f.z), f.homeX - f.x) + (this.rand() - 0.5) * (Math.PI / 2)
+  }
+
+  /** Swing the heading a quarter to three-quarters of a turn, either way. */
+  _turnAway(f) {
+    f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + this.rand() * Math.PI / 2)
+  }
+
+  /** Launch `f` from where it is toward the seat `s1` at (x1, z1), on the bearing `a`, over `dur` seconds. */
+  _launch(f, a, x1, z1, s1, dur) {
+    f.x0 = f.x; f.z0 = f.z; f.y0 = f.y; f.wet0 = f.state === 'drift'
+    f.x1 = x1; f.z1 = z1; f.wet1 = s1.wet
+    f.y1 = s1.wet ? s1.level - f.size * this.sink : this._groundFor(x1, z1, s1.h)
+    f.n0x = f.nx; f.n0y = f.ny; f.n0z = f.nz
+    Frogs._normal(f, s1)
+    f.yaw = a
+    f.rise = Math.hypot(x1 - f.x, z1 - f.z) * HOP_RISE
+    f.dur = dur
+    f.t = 0
+    f.state = 'hop'
+  }
+
   /** Pick the next hop of a sitting frog's bout, or return false to keep sitting. */
   _hop(f) {
-    const dx = f.homeX - f.x
-    const dz = f.homeZ - f.z
-    // Past the tether the bout turns for home, within a quarter turn of it.
-    if (Math.hypot(dx, dz) > TETHER_M) f.heading = Math.atan2(-dz, dx) + (this.rand() - 0.5) * (Math.PI / 2)
+    if (Math.hypot(f.homeX - f.x, f.homeZ - f.z) > TETHER_M) this._aimHome(f)
     const reach = between(this.rand, f.bout.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
       const a = f.heading + (this.rand() - 0.5) * f.bout.turn
@@ -337,24 +365,46 @@ export class Frogs {
       const z1 = f.z - Math.sin(a) * reach
       const s1 = this.seat(x1, z1)
       if (s1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) {
-        // The bout's line is blocked: swing it a quarter to three-quarters of a turn and try that way.
-        f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + this.rand() * Math.PI / 2)
+        // The bout's line is blocked: try another way.
+        this._turnAway(f)
         continue
       }
-      f.x0 = f.x; f.z0 = f.z; f.y0 = f.y; f.wet0 = f.wet
-      f.x1 = x1; f.z1 = z1; f.wet1 = s1.wet
-      f.y1 = s1.wet ? s1.level : this._groundFor(x1, z1, s1.h)
-      f.n0x = f.nx; f.n0y = f.ny; f.n0z = f.nz
-      Frogs._normal(f, s1)
-      f.yaw = a
-      // A stroke on the water stays on it; a hop off or onto the bank rises.
-      f.rise = f.wet0 && f.wet1 ? 0 : reach * HOP_RISE
-      f.dur = between(this.rand, f.bout.dur)
-      f.t = 0
-      f.state = 'hop'
+      this._launch(f, a, x1, z1, s1, between(this.rand, f.bout.dur))
       return true
     }
     return false
+  }
+
+  /**
+   * One frame of a floating frog. The heading's turn and the pace each wander
+   * as a random walk so the track winds; the probe a body length ahead is dry
+   * ground (the bank, hopped onto with a walk's timing), blocked or past the
+   * tether (turned away from), or water (drifted into).
+   */
+  _drift(f, dt) {
+    const k = f.size / SIZE_MID
+    f.spin = Math.max(-DRIFT_TURN, Math.min(DRIFT_TURN, f.spin + (this.rand() - 0.5) * DRIFT_JOG * dt))
+    f.heading += f.spin * dt
+    f.speed = Math.max(DRIFT_MPS[0] * k, Math.min(DRIFT_MPS[1] * k, f.speed + (this.rand() - 0.5) * DRIFT_SURGE * k * dt))
+    const ahead = f.size * CLIMB_M
+    const ax = f.x + Math.cos(f.heading) * ahead
+    const az = f.z - Math.sin(f.heading) * ahead
+    const s = this.seat(ax, az)
+    if (Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
+      this._aimHome(f)
+      f.spin = 0
+    } else if (s === null) {
+      this._turnAway(f)
+      f.spin = 0
+    } else if (!s.wet) {
+      f.hops = 0
+      this._launch(f, f.heading, ax, az, s, between(this.rand, WALK.dur))
+    } else {
+      f.x += Math.cos(f.heading) * f.speed * dt
+      f.z -= Math.sin(f.heading) * f.speed * dt
+      f.y = s.level - f.size * this.sink
+      f.yaw = f.heading
+    }
   }
 
   update(hx, hy, hz, dt) {
@@ -377,20 +427,19 @@ export class Frogs {
         let sy = 1
         let sx = 1
         let sz = 1
-        // The surface's bob, ridden while afloat: sitting on the water, or a stroke across it.
+        // The surface's bob, ridden while afloat.
         let lift = 0
         if (f.state === 'sit') {
           // The breath: a swell that is mostly height, a little girth.
           const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
           sy = 1 + s
           sx = sz = 1 + s * 0.4
-          if (f.wet) lift = BOB_AMP * Math.sin(bob + f.breath)
           f.left -= dt
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
             if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
             if (f.hops <= 0) {
-              f.bout = f.wet ? PADDLE : this.rand() < WALK_P ? WALK : LEAP
+              f.bout = this.rand() < WALK_P ? WALK : LEAP
               f.hops = Math.round(between(this.rand, f.bout.hops))
               f.heading = this.rand() * Math.PI * 2
             }
@@ -401,6 +450,9 @@ export class Frogs {
               f.left = between(this.rand, SIT_S)
             }
           }
+        } else if (f.state === 'drift') {
+          lift = BOB_AMP * Math.sin(bob + f.breath)
+          this._drift(f, dt)
         } else {
           f.t += dt
           const u = Math.min(1, f.t / f.dur)
@@ -411,18 +463,23 @@ export class Frogs {
           const v = Math.min(1, u * 1.5)
           _nrm.set(f.n0x + (f.n1x - f.n0x) * v, f.n0y + (f.n1y - f.n0y) * v, f.n0z + (f.n1z - f.n0z) * v).normalize()
           f.nx = _nrm.x; f.ny = _nrm.y; f.nz = _nrm.z
-          // Stretched along the leap in the air, flattened a little on landing; a stroke on the water only a fraction of that.
-          const s = Math.sin(Math.PI * u) * (f.rise > 0 ? 1 : PADDLE_STRETCH)
+          // Stretched along the leap in the air, flattened a little on landing.
+          const s = Math.sin(Math.PI * u)
           sx = 1 + 0.25 * s
           sy = 1 - 0.15 * s
-          if (f.wet0 && f.wet1) lift = BOB_AMP * Math.sin(bob + f.breath)
           if (u >= 1) {
-            f.state = 'sit'
             f.y = f.y1
-            // Landing in the other medium ends the bout: the next one is picked for where the frog is now.
-            if (f.wet1 !== f.wet0) f.hops = 0
-            f.wet = f.wet1
-            f.left = between(this.rand, f.hops > 0 ? f.bout.pause : SIT_S)
+            if (f.wet1) {
+              // Into the water: the bout is over, and the frog drifts on from the hop's line at an easy pace.
+              f.state = 'drift'
+              f.hops = 0
+              f.heading = f.yaw
+              f.spin = 0
+              f.speed = ((DRIFT_MPS[0] + DRIFT_MPS[1]) / 2) * (f.size / SIZE_MID)
+            } else {
+              f.state = 'sit'
+              f.left = between(this.rand, f.hops > 0 ? f.bout.pause : SIT_S)
+            }
           }
         }
         // The tier its apparent size calls for; past the ladder's foot it is not drawn, but keeps stepping.

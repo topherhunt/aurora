@@ -588,6 +588,8 @@ export class Ferns {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // The uniform scale each fern stands at, kept for `perchesInto`; the draw reads it off the matrix.
+    this.instScale = new Float32Array(this.maxInstances)
     // LOD cross-dissolves in flight: { id, tier, slot, start, tris }, where
     // `tier` is the ring the fern LEFT and is still being drawn on. `fadeAt`
     // maps a fern's id back to its index here so a second band crossing, or a
@@ -677,6 +679,39 @@ export class Ferns {
    */
   _goneFor(u) {
     return Math.min(this.fullRadius * Math.pow(u, -1 / FALLOFF), this.radius)
+  }
+
+  /**
+   * Every resident fern with its origin in the half-open box, written to `out`
+   * at stride 4 as [x, crown y, z, radius]: the crown is the rosette's built
+   * height at the fern's scale over its seat, the radius half the rosette's
+   * 1.22 m width at that scale. Resident tiles only, in the same live-prefix
+   * sense as trees.js's anchorsInto, and capped by `out`'s length. What a
+   * butterfly lands on (v2/render/butterflies.js).
+   */
+  perchesInto(x0, z0, x1, z1, out) {
+    const cap = (out.length / 4) | 0
+    let n = 0
+    for (const tile of this.tiles.values()) {
+      const tx0 = tile.tx * TILE
+      const tz0 = tile.tz * TILE
+      if (tx0 >= x1 || tx0 + TILE <= x0 || tz0 >= z1 || tz0 + TILE <= z0) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = this.instX[id]
+        if (x < x0 || x >= x1) continue
+        const z = this.instZ[id]
+        if (z < z0 || z >= z1) continue
+        if (n >= cap) return cap
+        const o = n * 4
+        out[o] = x
+        out[o + 1] = this.instY[id] + FERN_DEFAULTS.height * this.instScale[id]
+        out[o + 2] = z
+        out[o + 3] = 0.61 * this.instScale[id]
+        n++
+      }
+    }
+    return n
   }
 
   /**
@@ -1015,6 +1050,7 @@ export class Ferns {
       // against the drawn ground.
       this.instY[id] = Math.max(h - PLACEMENT.sink * scale, top)
       this.instZ[id] = z
+      this.instScale[id] = scale
 
       this._p.set(x, this.instY[id], z)
       // A YAW ON A THING THAT BILLBOARDS IS NOT WASTED. Up close it is the only

@@ -1,37 +1,51 @@
 {
   "kind": "pose",
-  "note": "Greeting wave with the right arm: upper arm out to the side and level, forearm up, hand swinging in and out from the elbow with the wrist flapping a beat behind. Starts and ends at the idle stance so it loops and cuts cleanly.",
+  "note": "Greeting wave with the right arm: the whole arm reaches up past the head and swings from the shoulder, the elbow folding as the hand comes in over the head and opening as it goes out, with the wrist flapping a beat behind. The body is not held rigid under it: the weight shifts onto the left foot, the chest turns and rolls a few hundredths with each swing and the head bobs as in idle. Starts and ends at the idle stance so it loops and cuts cleanly.",
   "samples": 40,
   "crouch": 0.045,
   "keys": [
     { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
     { "t": 0.5, "pose": {
-      "head": { "yaw": 0.08 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.5, "wristSpread": -0.3 } }
+      "root": { "lift": 0.004, "lat": 0.02 },
+      "spine": { "roll": 0.03, "yaw": 0.04 },
+      "head": { "yaw": 0.08, "pitch": 0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.6, "spread": 0.45, "twist": 0.5, "elbow": 0.15, "wristSpread": 0.3 } }
     } },
     { "t": 0.8, "pose": {
-      "head": { "yaw": 0.08, "roll": 0.05 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+      "root": { "lift": 0.001, "lat": 0.025 },
+      "spine": { "roll": 0.02, "yaw": 0.02 },
+      "head": { "yaw": 0.08, "roll": 0.05, "pitch": -0.01 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.4, "spread": 0.2, "twist": 0.8, "elbow": 0.7, "wristSpread": -0.3 } }
     } },
     { "t": 1.1, "pose": {
-      "head": { "yaw": 0.08 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.35, "wristSpread": -0.4 } }
+      "root": { "lift": 0.005, "lat": 0.02 },
+      "spine": { "roll": 0.035, "yaw": 0.04 },
+      "head": { "yaw": 0.08, "pitch": 0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.6, "spread": 0.45, "twist": 0.5, "elbow": 0.15, "wristSpread": 0.4 } }
     } },
     { "t": 1.4, "pose": {
-      "head": { "yaw": 0.08, "roll": 0.05 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+      "root": { "lift": 0.001, "lat": 0.025 },
+      "spine": { "roll": 0.02, "yaw": 0.02 },
+      "head": { "yaw": 0.08, "roll": 0.05, "pitch": -0.01 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.4, "spread": 0.2, "twist": 0.8, "elbow": 0.7, "wristSpread": -0.3 } }
     } },
     { "t": 1.7, "pose": {
-      "head": { "yaw": 0.08 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.35, "wristSpread": -0.4 } }
+      "root": { "lift": 0.005, "lat": 0.02 },
+      "spine": { "roll": 0.035, "yaw": 0.04 },
+      "head": { "yaw": 0.08, "pitch": 0.02 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.6, "spread": 0.45, "twist": 0.5, "elbow": 0.15, "wristSpread": 0.4 } }
     } },
     { "t": 2.0, "pose": {
-      "head": { "yaw": 0.08, "roll": 0.05 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 1.2, "spread": 1.15, "elbow": 1.95, "wristSpread": 0.4 } }
+      "root": { "lift": 0.001, "lat": 0.025 },
+      "spine": { "roll": 0.02, "yaw": 0.02 },
+      "head": { "yaw": 0.08, "roll": 0.05, "pitch": -0.01 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 2.4, "spread": 0.2, "twist": 0.8, "elbow": 0.7, "wristSpread": -0.3 } }
     } },
-    { "t": 2.4, "pose": {
-      "head": { "yaw": 0.05 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.3, "spread": 0.8, "elbow": 0.9 } }
+    { "t": 2.5, "pose": {
+      "root": { "lift": 0.002, "lat": 0.01 },
+      "spine": { "roll": 0.01, "yaw": 0.01 },
+      "head": { "yaw": 0.05, "pitch": 0.01 },
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.7, "spread": 0.5, "twist": 0.3, "elbow": 0.6 } }
     } },
     { "t": 3.2, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
   ]

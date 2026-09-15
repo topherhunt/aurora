@@ -41,6 +41,16 @@ export const RIVER_WIDEN_FRAC = 0.25
 export const FLOW_FADE_HALF_WIDTHS = 4
 export const FLOW_FADE_MIN = 8
 
+// The river's distance ladder, in metres from the eye in plan. Inside LOD_FINE a chunk draws every sample; between LOD_FINE and LOD_RAISE it draws its coarse samples, spaced LOD_SPACING apart on a straight and wherever the heading has turned LOD_TURN since the last one; past LOD_RAISE the coarse strip is drawn RIVER_RAISE metres up, above the terrain's own low LODs, which otherwise bury a river that follows the ground exactly. A chunk is about LOD_CHUNK metres of arc, cut on coarse samples so neighbours share a vertex whatever their states. See ribbonLod.
+export const LOD_FINE = 100
+export const LOD_RAISE = 200
+export const LOD_SPACING = 10
+export const LOD_TURN = (20 * Math.PI) / 180
+export const LOD_CHUNK = 100
+export const RIVER_RAISE = 3
+// The eye moves this far before the ladder is re-read. The ladder therefore lags by at most this, which is the whole of its hysteresis.
+export const LOD_STEP = 10
+
 // How much of the way to a neighbour's cross-line the inside edge may reach before the miter limit bites. At 1.0 the inner vertices of a uniform bend all land on its centre of curvature and every quad through it has zero area; short of it by this much they sit on a tiny arc around that centre instead. Only the fallback case (a hairpin whose arms overlap) is drawn with this; a bend with a trimmed inner bank collapses onto it exactly.
 const MITER_SAFETY = 0.98
 
@@ -447,4 +457,134 @@ export function flowFrame(ribbon, forward, reach) {
     flow[o + 7] = angle
   }
   return flow
+}
+
+/**
+ * A river ribbon's distance ladder: the coarse sample set, the chunks, and a vertex buffer with a raised copy of every coarse sample after the fine ones, so one static geometry can be drawn at any mix of detail by choosing indices alone. `lodIndices` writes those.
+ *
+ * COARSE SAMPLES are the fine samples LOD_SPACING metres of arc apart, plus one wherever the heading has turned LOD_TURN since the last, plus both ends. That alone can fold: a coarse quad spans several fine ones, and on a bend the collapsed inner vertices it skips over were exactly what kept the fine quads oriented. So every coarse quad is tested with the same predicate ribbonVertices asserts and a failing one is bisected at a fine sample until it passes -- an adjacent pair of fine samples always does, because the ribbon was asserted quad by quad.
+ *
+ * CHUNKS are cut on coarse samples about LOD_CHUNK metres apart, and the cut sample belongs to both chunks. That is what lets neighbours differ: a fine chunk and a coarse chunk meet at a vertex both of them draw at its fine position. A raised chunk draws its interior coarse samples from the raised copies and its two end samples raised only when the chunk on that side is raised too; against anything else the end stays on the ground, so the strip ramps RIVER_RAISE metres over its last coarse quad rather than leaving a step open. The ends of the river are never raised: there is no chunk beyond them.
+ *
+ * `positions` is 2n fine vertices followed by 2m raised ones, in ribbon vertex order (right, left); `coarse[k]` is the fine sample raised vertex pair k copies, which is also how the caller duplicates its aFlow rows. `capacity` is the index count of the all-fine strip, which no mix exceeds since a coarse quad replaces at least one fine one.
+ */
+export function ribbonLod(ribbon, opts = {}) {
+  const { spacing = LOD_SPACING, turn = LOD_TURN, chunk = LOD_CHUNK, raise = RIVER_RAISE } = opts
+  const { count: n, positions, arc, tangents } = ribbon
+  if (!(n >= 2) || positions.length !== n * 6) throw new Error('ribbonLod: needs ribbonVertices\' result')
+
+  const pick = new Uint8Array(n)
+  pick[0] = 1
+  pick[n - 1] = 1
+  let last = 0
+  for (let i = 1; i < n - 1; i++) {
+    const turned = Math.abs(Math.atan2(cross2(tangents[last * 2], tangents[last * 2 + 1], tangents[i * 2], tangents[i * 2 + 1]), tangents[last * 2] * tangents[i * 2] + tangents[last * 2 + 1] * tangents[i * 2 + 1]))
+    if (arc[i] - arc[last] >= spacing || turned >= turn) {
+      pick[i] = 1
+      last = i
+    }
+  }
+
+  // The repair. Same triangles lodIndices will emit for the pair, same sign rule as ribbonVertices' tri.
+  const quadOk = (i, j) => {
+    const a0x = positions[i * 6], a0z = positions[i * 6 + 2], b0x = positions[i * 6 + 3], b0z = positions[i * 6 + 5]
+    const a1x = positions[j * 6], a1z = positions[j * 6 + 2], b1x = positions[j * 6 + 3], b1z = positions[j * 6 + 5]
+    const t0 = cross2(a1x - a0x, a1z - a0z, b0x - a0x, b0z - a0z)
+    const t1 = cross2(a1x - b0x, a1z - b0z, b1x - b0x, b1z - b0z)
+    return (t0 < 0 || (t0 === 0 && a0x === a1x && a0z === a1z)) && (t1 < 0 || (t1 === 0 && b0x === b1x && b0z === b1z))
+  }
+  const stack = []
+  for (let i = 0, j = 1; j < n; j++) {
+    if (!pick[j]) continue
+    stack.push(i, j)
+    while (stack.length) {
+      const b = stack.pop()
+      const a = stack.pop()
+      if (b - a < 2 || quadOk(a, b)) continue
+      const mid = (a + b) >> 1
+      pick[mid] = 1
+      stack.push(a, mid, mid, b)
+    }
+    i = j
+  }
+
+  let m = 0
+  for (let i = 0; i < n; i++) m += pick[i]
+  const coarse = new Int32Array(m)
+  for (let i = 0, k = 0; i < n; i++) if (pick[i]) coarse[k++] = i
+
+  // Chunks, cut at the first coarse sample at least `chunk` metres past the cut before it. The last cut is the last sample, so the final chunk is whatever remains, never empty.
+  const cuts = [0]
+  for (let k = 1; k < m - 1; k++) if (arc[coarse[k]] - arc[coarse[cuts[cuts.length - 1]]] >= chunk) cuts.push(k)
+  cuts.push(m - 1)
+  const chunks = []
+  for (let c = 0; c + 1 < cuts.length; c++) {
+    const c0 = cuts[c]
+    const c1 = cuts[c + 1]
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+    for (let i = coarse[c0]; i <= coarse[c1]; i++) {
+      for (const o of [i * 6, i * 6 + 3]) {
+        const x = positions[o], z = positions[o + 2]
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (z < minZ) minZ = z
+        if (z > maxZ) maxZ = z
+      }
+    }
+    chunks.push({ c0, c1, minX, maxX, minZ, maxZ })
+  }
+
+  const all = new Float32Array((n + m) * 6)
+  all.set(positions)
+  for (let k = 0; k < m; k++) {
+    const src = coarse[k] * 6
+    const dst = (n + k) * 6
+    for (let d = 0; d < 6; d++) all[dst + d] = positions[src + d]
+    all[dst + 1] += raise
+    all[dst + 4] += raise
+  }
+
+  return { count: n, coarse, chunks, positions: all, capacity: (n - 1) * 6, states: new Uint8Array(chunks.length) }
+}
+
+// Chunk states, in order of distance.
+export const LOD_STATE_FINE = 0
+export const LOD_STATE_COARSE = 1
+export const LOD_STATE_RAISED = 2
+
+/**
+ * The index list for a ladder at its current `states`, one entry per chunk, written into `out` from 0. Returns the count. Winding is ribbonVertices': (right a, right b, left a), (left a, right b, left b).
+ */
+export function lodIndices(lod, out) {
+  const { count: n, coarse, chunks, states } = lod
+  let o = 0
+  const quad = (ra, la, rb, lb) => {
+    out[o++] = ra
+    out[o++] = rb
+    out[o++] = la
+    out[o++] = la
+    out[o++] = rb
+    out[o++] = lb
+  }
+  for (let c = 0; c < chunks.length; c++) {
+    const { c0, c1 } = chunks[c]
+    const s = states[c]
+    if (s === LOD_STATE_FINE) {
+      for (let i = coarse[c0]; i < coarse[c1]; i++) quad(i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 3)
+      continue
+    }
+    if (s !== LOD_STATE_COARSE && s !== LOD_STATE_RAISED) throw new Error(`lodIndices: chunk ${c} has state ${s}`)
+    const raised = s === LOD_STATE_RAISED
+    // Raised end samples only against a raised neighbour; a missing neighbour is the river's end, which stays down.
+    const vid = (k) => {
+      const up = raised && (k > c0 || states[c - 1] === LOD_STATE_RAISED) && (k < c1 || states[c + 1] === LOD_STATE_RAISED)
+      return up ? (n + k) * 2 : coarse[k] * 2
+    }
+    for (let k = c0; k < c1; k++) {
+      const a = vid(k)
+      const b = vid(k + 1)
+      quad(a, a + 1, b, b + 1)
+    }
+  }
+  return o
 }

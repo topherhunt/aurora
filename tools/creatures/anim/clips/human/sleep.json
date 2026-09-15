@@ -9,28 +9,28 @@
       "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
       "spine": { "pitch": 0.1 },
       "head": { "pitch": 0.1 },
-      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "arms": { "both": { "raise": -0.06, "elbow": -0.4, "spread": 0.0, "twist": 0.2 } },
       "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
     } },
     { "t": 1.4, "pose": {
       "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
       "spine": { "pitch": 0.14 },
       "head": { "pitch": 0.08, "yaw": 0.06 },
-      "arms": { "both": { "raise": 0.12, "elbow": 0.92, "spread": 0.1, "twist": 0.5 } },
+      "arms": { "both": { "raise": -0.05, "elbow": -0.38, "spread": 0.0, "twist": 0.2 } },
       "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
     } },
     { "t": 2.8, "pose": {
       "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
       "spine": { "pitch": 0.1 },
       "head": { "pitch": 0.1, "yaw": 0.06 },
-      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "arms": { "both": { "raise": -0.06, "elbow": -0.4, "spread": 0.0, "twist": 0.2 } },
       "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
     } },
     { "t": 4.0, "pose": {
       "root": { "lift": -0.2, "fore": -0.5, "pitch": -1.5 },
       "spine": { "pitch": 0.1 },
       "head": { "pitch": 0.1 },
-      "arms": { "both": { "raise": 0.1, "elbow": 0.9, "spread": 0.1, "twist": 0.5 } },
+      "arms": { "both": { "raise": -0.06, "elbow": -0.4, "spread": 0.0, "twist": 0.2 } },
       "legs": { "legLeft": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 }, "legRight": { "fore": 0.46, "lift": 0.25, "pitch": -1.45 } }
     } }
   ]

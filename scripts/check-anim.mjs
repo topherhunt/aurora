@@ -224,6 +224,27 @@ const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP, spider: SPIDER_MAP, human
 const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'])
 
 /**
+ * Most clips are round trips and must return to their first pose. A clip that
+ * declares `loops: false` is a one-way transition meant to be chained -- a head
+ * coming down into a browse -- and holding it to a loop would defeat the point.
+ * Every other budget still applies to it.
+ */
+const loops = (spec) => spec.loops !== false
+
+/**
+ * A pose written as a stable string, with zero handles and empty groups dropped
+ * at every depth so that an omitted handle and an explicit 0 compare equal --
+ * `sample` reads both as zero, so a gate that told them apart would be reporting
+ * a difference the solver cannot see.
+ */
+function stable(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v)
+  const kept = Object.keys(v).sort().map((k) => [k, stable(v[k])]).filter(([, s]) => s !== '0' && s !== '{}')
+  return `{${kept.map(([k, s]) => `${JSON.stringify(k)}:${s}`).join(',')}}`
+}
+const samePose = (a, b) => stable(a) === stable(b)
+
+/**
  * Write the fixture as a rigged GLB. Every node carries an identity rotation and
  * a translation equal to its offset from its parent, so a joint's world position
  * is exactly the table above -- which is what lets the checks state expected
@@ -658,8 +679,23 @@ for (const plan of plans()) {
     const file = skeletonOf(plan)
     const solved = spec.kind === 'pose' ? poseClip(file, map, spec) : solveClip(file, map, spec)
     const stats = diagnose(solved)
-    check(stats.penetration < 1e-3 && stats.loopGap < 1e-3, `${plan}/${name} solves on a skeleton it was not tuned for`,
+    check(stats.penetration < 1e-3 && (loops(spec) ? stats.loopGap < 1e-3 : true),
+      `${plan}/${name} solves on a skeleton it was not tuned for`,
       `sink ${mm(stats.penetration)}  loop ${deg(stats.loopGap)}`)
+  }
+
+  // A chained clip's whole contract is that it starts where the last one left
+  // off, and nothing else in the gate can see it: each clip alone looks right on
+  // a contact sheet and the pop only exists at the seam between two files.
+  for (const name of names) {
+    const spec = readSpec(name, plan)
+    if (!spec.chainsTo) continue
+    const next = names.includes(spec.chainsTo) ? readSpec(spec.chainsTo, plan) : null
+    check(next !== null, `${plan}/${name} chains to a clip that exists`, spec.chainsTo)
+    if (!next) continue
+    check(samePose(spec.keys.at(-1).pose, next.keys[0].pose),
+      `${plan}/${name} hands off to ${plan}/${spec.chainsTo} at the same pose`,
+      `${stable(spec.keys.at(-1).pose)} then ${stable(next.keys[0].pose)}`)
   }
 }
 
@@ -688,6 +724,17 @@ console.log('\nrigged creatures on disk')
     ])
     check(stray.length === 0, `${id} tweaks clips it actually has`, stray.join('; '))
 
+    // Two chained clips are only seamless if they are tuned alike: the specs
+    // agree on the hand-off pose, but a `scale` or `limits` tweak on one and not
+    // the other moves that pose on this body alone, and the seam pops on the
+    // animal while every shared spec still checks out.
+    const drift = clipNames(planOf(map)).flatMap((name) => {
+      const to = readSpec(name, planOf(map)).chainsTo
+      const mine = (map.clipTweaks ?? {})[name], theirs = (map.clipTweaks ?? {})[to]
+      return !to || samePose(mine, theirs) ? [] : [`${name} ${stable(mine)} but ${to} ${stable(theirs)}`]
+    })
+    check(drift.length === 0, `${id} tunes chained clips alike`, drift.join('; '))
+
     for (const name of clipNames(planOf(map))) {
       const { spec, stats } = buildClip(id, name)
       // A pose clip may deliberately reposition a foot -- a sit scoots the hind
@@ -698,7 +745,7 @@ console.log('\nrigged creatures on disk')
       if (stats.ikStance > 0.003) bad.push(`stance ik ${mm(stats.ikStance)}`)
       if (stats.penetration > 0.002) bad.push(`sink ${mm(stats.penetration)}`)
       if (stats.stanceFloat > 0.006) bad.push(`float ${mm(stats.stanceFloat)}`)
-      if (stats.loopGap > 1e-3) bad.push(`loop ${deg(stats.loopGap)}`)
+      if (loops(spec) && stats.loopGap > 1e-3) bad.push(`loop ${deg(stats.loopGap)}`)
       check(bad.length === 0, `${id} ${name} holds its feet`, bad.join('  '))
     }
   }

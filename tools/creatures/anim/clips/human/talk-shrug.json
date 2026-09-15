@@ -1,6 +1,6 @@
 {
   "kind": "pose",
-  "note": "A shrug: both forearms turn up and out with the elbows in, the shoulders hunch as the head cocks to one side, held a beat, then dropped. See talk-nod for the shared talk-* conventions.",
+  "note": "A shrug: the elbows tuck to the waist and both forearms swing out and up to chest height, palms up, as the shoulders lift on the clavicles and the head cocks to one side, held a beat, then dropped. See talk-nod for the shared talk-* conventions.",
   "samples": 30,
   "crouch": 0.045,
   "keys": [
@@ -9,17 +9,17 @@
       "root": { "lift": 0.006 },
       "spine": { "pitch": -0.04 },
       "head": { "roll": 0.18, "pitch": 0.05 },
-      "arms": { "both": { "raise": 0.3, "spread": 0.35, "elbow": 1.4, "twist": -0.9, "wristSpread": 0.35 } }
+      "arms": { "both": { "shrug": 0.55, "raise": 0.2, "spread": -0.15, "elbow": 1.2, "twist": -0.7, "wristSpread": 0.35 } }
     } },
     { "t": 1.4, "pose": {
       "root": { "lift": 0.006 },
       "spine": { "pitch": -0.04 },
       "head": { "roll": 0.18, "pitch": 0.05 },
-      "arms": { "both": { "raise": 0.3, "spread": 0.35, "elbow": 1.4, "twist": -0.9, "wristSpread": 0.35 } }
+      "arms": { "both": { "shrug": 0.55, "raise": 0.2, "spread": -0.15, "elbow": 1.2, "twist": -0.7, "wristSpread": 0.35 } }
     } },
     { "t": 2.1, "pose": {
       "head": { "roll": 0.04 },
-      "arms": { "both": { "raise": 0.1, "spread": 0.15, "elbow": 0.6, "twist": -0.3 } }
+      "arms": { "both": { "shrug": 0.18, "raise": 0.1, "spread": -0.05, "elbow": 0.55, "twist": -0.25 } }
     } },
     { "t": 2.8, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
   ]

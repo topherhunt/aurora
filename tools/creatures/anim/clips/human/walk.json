@@ -1,5 +1,5 @@
 {
-  "note": "Two-legged walk, feet half a cycle apart, duty above 0.5 for the double-support window that separates a walk from a run. Stride is in leg lengths (the biped wheelbase), so 0.8 is a relaxed pace. The body rises twice per cycle, over each stance leg, and the arms swing against the leg on their own side with the elbow folding a little further as each comes forward.",
+  "note": "Two-legged walk, feet half a cycle apart, duty above 0.5 for the double-support window that separates a walk from a run. Stride is in leg lengths (the biped wheelbase), so 0.8 is a relaxed pace. The body rises twice per cycle, over each stance leg, and the arms hang close at the sides and swing against the leg on their own side, the elbow folding a little further as each comes forward.",
   "duration": 1.0,
   "samples": 26,
   "stride": 0.8,
@@ -19,8 +19,8 @@
   "spinePitch": 0.03,
   "headPitch": -0.03,
   "headBob": 0.02,
-  "armSpread": 0.05,
-  "armElbow": 0.25,
+  "armSpread": -0.2,
+  "armElbow": 0.1,
   "armSwing": 0.35,
   "elbowSwing": 0.15
 }

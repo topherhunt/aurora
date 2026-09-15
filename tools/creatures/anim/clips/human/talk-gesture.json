@@ -1,29 +1,34 @@
 {
   "kind": "pose",
-  "note": "Talking with the hands: the right forearm comes up and opens outward on each phrase, the left joins for the second, the head tilts with the point being made. See talk-nod for the shared talk-* conventions.",
+  "note": "Talking with the hands: the right forearm comes up in front of the chest and opens toward the listener on each phrase, the left joins for the second, the shoulders shrug against each other on every beat and the chest turns a few degrees with them, the head tilting with the point being made. See talk-nod for the shared talk-* conventions.",
   "samples": 36,
   "crouch": 0.045,
   "keys": [
     { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
     { "t": 0.5, "pose": {
+      "spine": { "yaw": 0.04, "roll": 0.02 },
       "head": { "pitch": 0.04, "roll": 0.06 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.5, "spread": 0.2, "elbow": 1.3, "twist": -0.4 } }
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "shrug": 0.15, "raise": 0.6, "spread": 0.1, "elbow": 1.15, "twist": 0.5 }, "left": { "shrug": 0.04 } }
     } },
     { "t": 0.9, "pose": {
+      "spine": { "yaw": -0.04, "roll": -0.02 },
       "head": { "pitch": -0.03, "roll": -0.04 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.6, "spread": 0.55, "elbow": 1.1, "twist": -0.8, "wristSpread": 0.3 } }
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "shrug": 0.05, "raise": 0.8, "spread": 0.15, "elbow": 0.75, "twist": 0.3, "wristPitch": -0.3 }, "left": { "shrug": 0.12 } }
     } },
     { "t": 1.3, "pose": {
+      "spine": { "yaw": 0.04, "roll": 0.02 },
       "head": { "pitch": 0.05, "roll": 0.05 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.5, "spread": 0.25, "elbow": 1.4, "twist": -0.3 } }
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "shrug": 0.15, "raise": 0.5, "spread": 0.05, "elbow": 1.35, "twist": 0.9 }, "left": { "shrug": 0.04 } }
     } },
     { "t": 1.8, "pose": {
+      "spine": { "yaw": -0.05, "roll": -0.02 },
       "head": { "pitch": -0.04, "yaw": 0.06 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.65, "spread": 0.6, "elbow": 1.0, "twist": -0.8, "wristSpread": 0.3 }, "left": { "raise": 0.5, "spread": 0.45, "elbow": 1.1, "twist": -0.6, "wristSpread": 0.2 } }
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "shrug": 0.08, "raise": 0.85, "spread": 0.15, "elbow": 0.75, "twist": 0.3, "wristPitch": -0.3 }, "left": { "shrug": 0.15, "raise": 0.6, "spread": 0.1, "elbow": 1.15, "twist": 0.5 } }
     } },
     { "t": 2.3, "pose": {
+      "spine": { "yaw": 0.03 },
       "head": { "pitch": 0.03 },
-      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "raise": 0.3, "spread": 0.2, "elbow": 0.8, "twist": -0.2 }, "left": { "raise": 0.2, "spread": 0.15, "elbow": 0.6, "twist": -0.2 } }
+      "arms": { "both": { "elbow": 0.15, "spread": 0.05 }, "right": { "shrug": 0.1, "raise": 0.35, "spread": 0.1, "elbow": 0.7, "twist": 0.3 }, "left": { "shrug": 0.05, "raise": 0.25, "spread": 0.1, "elbow": 0.5, "twist": 0.2 } }
     } },
     { "t": 3.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
   ]

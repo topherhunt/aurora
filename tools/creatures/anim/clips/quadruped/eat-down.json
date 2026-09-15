@@ -1,0 +1,25 @@
+{
+  "kind": "pose",
+  "note": "Lowering into a browse: from the idle stand, the head reaches down over foliage in front and the shoulders follow it. One-way, so it does NOT loop -- it ends at the browse hold that `eat-loop` begins at, stated key-for-key, and `chainsTo` gates that they stay equal. The head LEADS the spine: by the mid key the neck has covered 70% of its travel against the back's 36%, because an animal that lowers its whole front end in lockstep reads as a lift collapsing rather than a deer reaching for a leaf.",
+  "loops": false,
+  "chainsTo": "eat-loop",
+  "samples": 20,
+  "duration": 0.85,
+  "keys": [
+    { "t": 0.0, "pose": {
+      "tail": { "pitch": 0.1 }
+    } },
+    { "t": 0.45, "pose": {
+      "root": { "lift": -0.012 },
+      "spine": { "pitch": 0.1 },
+      "head": { "pitch": 0.95 },
+      "tail": { "pitch": 0.12 }
+    } },
+    { "t": 0.85, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.28 },
+      "head": { "pitch": 1.35 },
+      "tail": { "pitch": 0.14 }
+    } }
+  ]
+}

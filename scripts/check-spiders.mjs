@@ -1,0 +1,401 @@
+// Node-side gates for the spiders (src/v2/render/spiders.js).
+//
+//   node scripts/check-spiders.mjs
+//
+// The scatter runs against a synthetic wood on flat ground: a stand of trunks
+// of several girths (one a sapling too thin to host), a sphere boulder, a
+// six-metre pillar, a cobble too small to host, a boulder under a pond, and a
+// tree and a rock far off. Everything below is a way a spider can go wrong
+// without anything throwing: a group of none or six; a spider on the terrain,
+// off its surface, under the ground or above the climb; spiders mostly on the
+// tops of things; a spider on a sapling, a cobble or a drowned rock; a scatter
+// that is not the same twice; a spider that never moves, walks off its stone or
+// climbs past three metres; a near spider drawn as a card or a far one as a
+// puppet, a puppet on the wrong tier, one whose clip is not its state, or one
+// that does not rear up when she is close; a card that is two quads, or that
+// does not lie where its spider clings at its tilt; a frame that costs more
+// than a scatter is allowed to. The shipped GLB is checked for shape too --
+// three skinned tiers, no lod3, the skeleton and its six clips -- because the
+// world loads it by name and builds every puppet from it.
+//
+// What this can NOT check: whether they look like spiders, or how the crawl
+// reads. That needs eyes, in the world.
+
+import * as THREE from 'three'
+import fs from 'node:fs'
+import {
+  Spiders, LOD_DEG, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, HUE,
+} from '../src/v2/render/spiders.js'
+import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
+import { CRITTER_GLB, critterTier } from '../src/v2/render/critters.js'
+import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
+import { webpSize } from '../tools/tripo-pack.mjs'
+
+let failures = 0
+const check = (ok, label, detail = '') => {
+  if (!ok) failures++
+  console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
+}
+
+// --- the synthetic wood ----------------------------------------------------------
+const GROUND = 5
+const height = { heightAt: () => GROUND }
+const POND = { x: 30, z: 30, r: 6 }
+const water = { lakeLevelAt: (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : null) }
+
+// Trunks: base radius and height; a cone to the world, as Trees.trunksInto says.
+const TRUNKS = [
+  { name: 'oak', x: 2, z: 0, r0: 0.35, height: 15 },
+  { name: 'pine', x: -3, z: 4, r0: 0.2, height: 12 },
+  { name: 'birch', x: 6, z: -5, r0: 0.12, height: 9 },
+  { name: 'birch2', x: -6, z: -6, r0: 0.1, height: 8 },
+  { name: 'oak2', x: 9, z: 6, r0: 0.4, height: 18 },
+  { name: 'sapling', x: 0, z: 8, r0: 0.03, height: 2 },
+  { name: 'far', x: 80, z: 80, r0: 0.3, height: 12 },
+]
+// Rocks: a sphere sits with its centre on the ground; a pillar is a vertical cylinder of radius r and height h.
+const ROCKS = [
+  { name: 'sphere', kind: 'sphere', x: -8, z: 2, r: 1.5 },
+  { name: 'pillar', kind: 'pillar', x: 4, z: 10, r: 0.8, h: 6 },
+  { name: 'cobble', kind: 'sphere', x: -2, z: -3, r: 0.2 },
+  { name: 'drowned', kind: 'sphere', x: POND.x, z: POND.z, r: 1.5 },
+  { name: 'far', kind: 'sphere', x: -80, z: 80, r: 2 },
+]
+const sizeOf = (b) => (b.kind === 'sphere' ? 2 * b.r : Math.max(2 * b.r, b.h))
+const hullOf = (b) => (b.kind === 'sphere' ? b.r * 1.1 : Math.max(b.r, b.h / 2) * 1.1)
+let liveTrunks = []
+let liveRocks = []
+const trees = {
+  trunksInto(x0, z0, x1, z1, out) {
+    let w = 0
+    for (const t of liveTrunks) {
+      if (t.x < x0 || t.x >= x1 || t.z < z0 || t.z >= z1) continue
+      const o = w * 5
+      out[o] = t.x; out[o + 1] = GROUND - 0.1; out[o + 2] = t.z; out[o + 3] = t.r0; out[o + 4] = t.height
+      w++
+    }
+    return w
+  },
+}
+/** Nearest hit of one rock on the ray, or Infinity; `out` written like Rocks.rayAt, the normal facing the ray. */
+function rayRock(b, x, y, z, dx, dy, dz, reach, out) {
+  let best = Infinity
+  let nx = 0, ny = 0, nz = 0
+  const px = x - b.x, pz = z - b.z
+  if (b.kind === 'sphere') {
+    const py = y - GROUND
+    const bb = px * dx + py * dy + pz * dz
+    const cc = px * px + py * py + pz * pz - b.r * b.r
+    const disc = bb * bb - cc
+    if (disc < 0) return Infinity
+    const sq = Math.sqrt(disc)
+    for (const t of [-bb - sq, -bb + sq]) {
+      if (t <= 0 || t > reach || t >= best) continue
+      if (y + dy * t < GROUND) continue
+      best = t
+      nx = (px + dx * t) / b.r; ny = (py + dy * t) / b.r; nz = (pz + dz * t) / b.r
+    }
+  } else {
+    const a = dx * dx + dz * dz
+    const bb = px * dx + pz * dz
+    const cc = px * px + pz * pz - b.r * b.r
+    if (a > 1e-12) {
+      const disc = bb * bb - a * cc
+      if (disc >= 0) {
+        const sq = Math.sqrt(disc)
+        for (const t of [(-bb - sq) / a, (-bb + sq) / a]) {
+          if (t <= 0 || t > reach || t >= best) continue
+          const hy = y + dy * t
+          if (hy < GROUND || hy > GROUND + b.h) continue
+          best = t
+          nx = (px + dx * t) / b.r; ny = 0; nz = (pz + dz * t) / b.r
+        }
+      }
+    }
+    if (Math.abs(dy) > 1e-12) {
+      const t = (GROUND + b.h - y) / dy
+      if (t > 0 && t <= reach && t < best) {
+        const hx = px + dx * t, hz = pz + dz * t
+        if (hx * hx + hz * hz <= b.r * b.r) { best = t; nx = 0; ny = 1; nz = 0 }
+      }
+    }
+  }
+  if (best === Infinity) return Infinity
+  if (nx * dx + ny * dy + nz * dz > 0) { nx = -nx; ny = -ny; nz = -nz }
+  out.x = x + dx * best; out.y = y + dy * best; out.z = z + dz * best
+  out.nx = nx; out.ny = ny; out.nz = nz
+  out.ox = b.x; out.oz = b.z; out.size = sizeOf(b)
+  return best
+}
+const rocks = {
+  rays: 0,
+  perchesInto(x0, z0, x1, z1, out) {
+    let w = 0
+    for (const b of liveRocks) {
+      if (b.x < x0 || b.x >= x1 || b.z < z0 || b.z >= z1) continue
+      const o = w * PERCH_STRIDE
+      out[o] = b.x; out[o + 1] = GROUND - 0.3; out[o + 2] = b.z; out[o + 3] = hullOf(b); out[o + 4] = sizeOf(b)
+      w++
+    }
+    return w
+  },
+  rayAt(x, y, z, dx, dy, dz, reach, minSize, out) {
+    this.rays++
+    if (Math.abs(Math.hypot(dx, dy, dz) - 1) > 1e-6) throw new Error('rayAt wants a unit direction')
+    let best = Infinity
+    for (const b of liveRocks) {
+      if (sizeOf(b) < minSize) continue
+      const d = rayRock(b, x, y, z, dx, dy, dz, Math.min(reach, best), out)
+      if (d < best) best = d
+    }
+    return best
+  },
+}
+/** How far a point is off a rock's surface, in metres. */
+const offRock = (b, c) => {
+  if (b.kind === 'sphere') return Math.abs(Math.hypot(c.x - b.x, c.y - GROUND, c.z - b.z) - b.r)
+  const radial = Math.abs(Math.hypot(c.x - b.x, c.z - b.z) - b.r)
+  return c.y <= GROUND + b.h + 1e-6 ? radial : Math.abs(c.y - GROUND - b.h)
+}
+const trunkR = (t, h) => t.r0 * (1 - 0.5 * Math.min(1, h / t.height))
+const offTrunk = (t, c) => Math.abs(Math.hypot(c.x - t.x, c.z - t.z) - trunkR(t, c.y - GROUND))
+const hostOf = (c) => (c.host.kind === 'tree' ? TRUNKS : ROCKS).find((h) => h.x === c.host.x && h.z === c.host.z)
+const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : offRock(hostOf(c), c))
+
+// --- the shipped asset ---------------------------------------------------------
+{
+  const file = new URL(`../public/${CRITTER_GLB.spider}`, import.meta.url)
+  check(fs.existsSync(file), `${CRITTER_GLB.spider} is shipped -- run tools/creatures/ship-spider.mjs`)
+  if (fs.existsSync(file)) {
+    const buf = fs.readFileSync(file)
+    check(buf.toString('latin1', 0, 4) === 'glTF', 'the spider GLB has a glTF header')
+    const jsonLen = buf.readUInt32LE(12)
+    const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
+    const names = (json.meshes ?? []).map((m) => m.name)
+    check(names.length === LOD_DEG.length && names.join(',') === 'birch-spider,birch-spider-lod1,birch-spider-lod2', `${LOD_DEG.length} tiers, the pick then lod1 and lod2, and no lod3`, names.join(','))
+    const tris = (json.meshes ?? []).map((m) => json.accessors[m.primitives[0].indices].count / 3)
+    check(tris.every((t, k) => k === 0 || t < tris[k - 1]) && tris[tris.length - 1] >= 100, 'each tier is coarser than the last and the coarsest still has over 100 tris', tris.join('/'))
+    check((json.meshes ?? []).every((m) => m.primitives.length === 1 && m.primitives[0].attributes.JOINTS_0 !== undefined && m.primitives[0].attributes.WEIGHTS_0 !== undefined && m.primitives[0].material === 0), 'every tier is skinned, one primitive, on the one material')
+    const skin = json.skins?.[0]
+    check(json.skins?.length === 1 && skin.joints.length === 42 && json.nodes[skin.skeleton].name === 'Pedicel', 'one skeleton of 42 joints rooted at the Pedicel', `${skin?.joints.length} joints`)
+    check((json.nodes ?? []).filter((n) => n.skin !== undefined).length === LOD_DEG.length && (json.nodes ?? []).filter((n) => n.skin !== undefined).every((n) => n.skin === 0), 'every tier node wears the one skin')
+    const clips = (json.animations ?? []).map((a) => a.name)
+    check(clips.join(',') === 'walk,run,idle,alert,eat,rest', 'the six clips, walk run idle alert eat rest', clips.join(','))
+    const joints = new Set(skin?.joints ?? [])
+    check((json.animations ?? []).every((a) => a.channels.every((ch) => joints.has(ch.target.node))), 'every clip channel targets a joint of the skeleton')
+    check((json.animations ?? []).every((a) => a.samplers.every((s) => json.accessors[s.input].min !== undefined && json.accessors[s.input].max !== undefined)), 'every sampler input carries min and max')
+    check(!fs.existsSync(new URL('../public/creatures/birch-spider-lod1.glb', import.meta.url)) && !fs.existsSync(new URL('../public/creatures/birch-spider-lod3.glb', import.meta.url)), 'no separate ladder files beside it: the tiers are in the one GLB')
+    const image = json.images?.[0]
+    check(image?.uri === 'birch-spider.webp' && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB', JSON.stringify(json.images))
+    if (image?.uri && fs.existsSync(new URL(image.uri, file))) {
+      const { width, height: h } = webpSize(fs.readFileSync(new URL(image.uri, file)))
+      check(width === TEX_PX_SMALL && h === TEX_PX_SMALL, `the colour map is ${TEX_PX_SMALL}px square`, `${width}x${h}`)
+    } else check(false, 'the WebP is shipped')
+    check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
+    const pbr = json.materials?.[0]?.pbrMetallicRoughness
+    check(json.materials?.length === 1 && pbr?.metallicFactor === 0 && pbr.roughnessFactor === 1 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'one matte material, colour only')
+  }
+}
+
+// --- a stand-in asset: three slabs on a two-bone skeleton, six clips ---------------
+function makeAsset() {
+  const root = new THREE.Bone()
+  root.name = 'Pedicel'
+  const head = new THREE.Bone()
+  head.name = 'Head'
+  head.position.set(0, 0.1, -0.2)
+  root.add(head)
+  root.position.set(0, 0.11, 0)
+  const bones = [root, head]
+  root.updateMatrixWorld(true)
+  const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
+  const tiers = [4, 2, 1].map((seg) => {
+    const geo = new THREE.BoxGeometry(1, 0.25, 1, seg, 1, seg).translate(0, 0.125, 0)
+    const n = geo.getAttribute('position').count
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4), 4))
+    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(new Float32Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
+    return geo
+  })
+  const clips = [['walk', 0.9], ['run', 0.42], ['idle', 3.2], ['alert', 3], ['eat', 1.6], ['rest', 5.2]].map(([name, dur]) =>
+    new THREE.AnimationClip(name, dur, [new THREE.QuaternionKeyframeTrack('Pedicel.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])]))
+  return { root, skeleton, tiers, clips, map: null }
+}
+
+// --- construction and the shader hook -----------------------------------------
+const scene = new THREE.Scene()
+const spiders = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
+check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.materials.length === PUPPETS, `${PUPPETS} puppets built and free, one material each`)
+check(spiders.puppets.every((p) => p.tiers.length === LOD_DEG.length && p.tiers.every((m) => m.isSkinnedMesh && m.skeleton === p.skeleton && !m.visible) && p.skeleton.bones.length === 2 && p.skeleton.bones[0].name === 'Pedicel' && p.skeleton !== spiders.asset.skeleton), 'each puppet: three skinned tiers bound to its own copy of the skeleton, none shown')
+check(spiders.puppets.every((p) => p.actions.size === 6 && p.mixer.getRoot() === p.group), 'each puppet has a mixer over the six clips, rooted at its group')
+check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === 1, 'the card is hidden until baked, and no puppet is in the scene')
+{
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n' }
+  spiders.materials[0].onBeforeCompile(shader)
+  check(shader.uniforms.uHue === spiders.materials[0].userData.uHue && shader.fragmentShader.includes('uniform float uHue;') && shader.fragmentShader.includes('#define vHue uHue') && !shader.vertexShader.includes('aHue') && /cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'a puppet\'s hue is its material\'s uHue uniform, turned after map_fragment')
+  check(spiders.materials.every((m) => m.customProgramCacheKey() === 'spiders'), 'every puppet material compiles to the one program')
+  const cshader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n' }
+  spiders.cardMaterial.onBeforeCompile(cshader)
+  check(cshader.vertexShader.includes('attribute float aHue;') && spiders.card.geometry.getAttribute('aHue') === spiders.cardHue, 'the card\'s hue rides in aHue per instance')
+  const geo = spiders.card.geometry
+  const pos = geo.getAttribute('position')
+  const ys = new Set(Array.from({ length: pos.count }, (_, i) => pos.getY(i).toFixed(6)))
+  check(geo.index.count === 6 && pos.count === 4 && ys.size === 1, 'the card is ONE quad, lying flat at the body\'s middle', `${geo.index.count / 3} tris at y ${[...ys].join(',')}`)
+}
+
+// --- placement -----------------------------------------------------------------
+const alive = (of = spiders) => of.slots.filter((c) => c.host !== null)
+liveTrunks = TRUNKS
+liveRocks = ROCKS
+const SEEDS = 12
+const pool = []
+const groupSizes = []
+const hosted = { tree: 0, rock: 0 }
+const hostedOf = new Map()
+let dropped = 0
+for (let seed = 1; seed <= SEEDS; seed++) {
+  const k = new Spiders(scene, height, water, { seed, trees, rocks, assets: makeAsset() })
+  k.place(0, 0)
+  dropped += k.overflow + k.saturated
+  for (const t of k.tiles.values()) {
+    for (const h of t.hosts.values()) {
+      if (!h.spiders.length) continue
+      groupSizes.push(h.spiders.length)
+      hosted[h.kind]++
+      const name = (h.kind === 'tree' ? TRUNKS : ROCKS).find((x) => x.x === h.x && x.z === h.z).name
+      hostedOf.set(name, (hostedOf.get(name) ?? 0) + 1)
+    }
+  }
+  for (const c of alive(k)) pool.push({ ...c, host: c.host })
+  k.dispose()
+}
+spiders.place(0, 0)
+{
+  check(dropped === 0, 'nothing was dropped for want of room, over every seed')
+  check(pool.length >= 3 * SEEDS, 'the wood carries spiders', `${pool.length} over ${SEEDS} seeds; one seed: ${JSON.stringify(spiders.stats)}`)
+  check(groupSizes.every((n) => n >= GROUP[0] && n <= GROUP[1]) && Math.min(...groupSizes) === GROUP[0] && Math.max(...groupSizes) === GROUP[1], `every group is ${GROUP[0]} to ${GROUP[1]}, and both ends are seen`, `${groupSizes.join(' ')}`)
+  check(hosted.tree > 0 && hosted.rock > 0, 'groups on trees and on rocks alike', `${hosted.tree} tree groups, ${hosted.rock} rock groups`)
+  check(!hostedOf.has('sapling') && !hostedOf.has('cobble') && !hostedOf.has('drowned') && !hostedOf.has('far'), `none on the sapling (under ${TRUNK_MIN_R} m), the cobble (under ${ROCK_MIN_SIZE} m), the drowned rock or anything far off`, [...hostedOf.keys()].join(', '))
+  check(pool.every((c) => c.size >= SIZE_M[0] - 1e-6 && c.size <= SIZE_M[1] + 1e-6), `every spider is ${SIZE_M[0]} to ${SIZE_M[1]} m`, `${Math.min(...pool.map((c) => c.size)).toFixed(3)} to ${Math.max(...pool.map((c) => c.size)).toFixed(3)} m`)
+  const hs = pool.map((c) => c.y - GROUND)
+  check(hs.every((h) => h >= 0 && h <= CLIMB_M + 1e-6), `every spider is 0 to ${CLIMB_M} m up`, `${Math.min(...hs).toFixed(2)} to ${Math.max(...hs).toFixed(2)} m`)
+  check(Math.max(...hs) > 2 && Math.min(...hs) < 0.3, 'and the climb is used, top and bottom')
+  const pillar = pool.filter((c) => hostOf(c).name === 'pillar')
+  check(pillar.length > 0 && pillar.every((c) => c.y - GROUND <= CLIMB_M) && Math.max(...pillar.map((c) => c.y - GROUND)) > 1.5, `the 6 m pillar's spiders stop at ${CLIMB_M} m and some climb past 1.5`, `${pillar.length} spiders, highest ${Math.max(...pillar.map((c) => c.y - GROUND)).toFixed(2)} m`)
+  const off = pool.map(offSurface)
+  check(off.every((d) => d < 1e-4), 'every spider sits on its host\'s own surface', `worst ${Math.max(...off).toExponential(2)} m`)
+  check(pool.every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-6 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-6), 'unit normal, heading in the tangent plane')
+  const flat = pool.filter((c) => c.ny > FLAT_NY).length / pool.length
+  check(flat < 0.15, `few sit on top of anything (normal rising past ${FLAT_NY})`, `${(flat * 100).toFixed(0)}% flat`)
+  check(pool.filter((c) => c.host.kind === 'tree').every((c) => Math.abs(c.ny) < 1e-6), 'a tree spider clings to a vertical trunk')
+  const hues = new Set(pool.map((c) => c.hue.toFixed(3)))
+  check(hues.size > pool.length / 2 && pool.every((c) => Math.abs(c.hue) <= HUE), `spiders wear their own hues within ${HUE}`, `${hues.size} hues in ${pool.length}`)
+  // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
+  const again = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+  again.place(0, 0)
+  const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
+  check(key(again) === key(spiders) && alive(spiders).length > 0, 'the scatter is a pure function of the seed', `${alive(spiders).length} spiders`)
+  again.dispose()
+  // A tile whose hosts land late gets its spiders on the rescan.
+  liveTrunks = []
+  liveRocks = []
+  const late = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+  late.place(0, 0)
+  check(alive(late).length === 0, 'no hosts, no spiders')
+  liveTrunks = TRUNKS
+  liveRocks = ROCKS
+  // dt 0: the frames only rescan, nobody's pause runs out.
+  for (let f = 0; f < 200; f++) late.update(0, GROUND + 1.6, 0, 0)
+  check(key(late) === key(spiders), 'hosts that land after place() get their spiders on the rescan, the same ones')
+  late.dispose()
+}
+
+// --- the crawl -----------------------------------------------------------------
+{
+  // Straight up, so the tiles hold and every spider is past NEAR_M.
+  const FAR = [0, GROUND + 40, 0]
+  const before = alive().map((c) => ({ c, x: c.x, y: c.y, z: c.z }))
+  spiders.setCard(null)
+  check(spiders.card.visible, 'setCard shows the card')
+  let ms = 0
+  const states = new Set()
+  const clipsSeen = new Set()
+  let worstOff = 0
+  let worstH = [Infinity, -Infinity]
+  for (let f = 0; f < 600; f++) {
+    const t0 = performance.now()
+    spiders.update(...FAR, 1 / 60)
+    ms += performance.now() - t0
+    for (const c of alive()) {
+      states.add(c.state)
+      clipsSeen.add(c.clip)
+      worstOff = Math.max(worstOff, offSurface(c))
+      worstH = [Math.min(worstH[0], c.y - GROUND), Math.max(worstH[1], c.y - GROUND)]
+    }
+  }
+  const moved = before.filter(({ c, x, y, z }) => Math.hypot(c.x - x, c.y - y, c.z - z) > 0.02)
+  check(moved.length > before.length / 2, 'most spiders have crawled somewhere in ten seconds', `${moved.length} of ${before.length}`)
+  check(states.has('go') && states.has('pause'), 'they crawl and they pause', [...states].join(', '))
+  check(['walk', 'idle'].every((n) => clipsSeen.has(n)) && !clipsSeen.has('alert'), 'walking and idling, with nobody reared up while she is far', [...clipsSeen].join(', '))
+  check(worstOff < 0.02, 'no spider left its surface', `worst ${worstOff.toFixed(4)} m`)
+  check(worstH[0] >= -1e-6 && worstH[1] <= CLIMB_M + 1e-6, `no spider went under the ground or over ${CLIMB_M} m`, `${worstH[0].toFixed(2)} to ${worstH[1].toFixed(2)} m`)
+  check(alive().every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-4 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-3 && Math.abs(Math.hypot(c.tx, c.ty, c.tz) - 1) < 1e-4), 'unit normal and unit tangent heading still, after the crawl')
+  const rockOnTop = alive().filter((c) => c.host.kind === 'rock' && c.ny > FLAT_NY).length
+  check(rockOnTop <= Math.ceil(alive().filter((c) => c.host.kind === 'rock').length * 0.2), 'the rock crawlers keep to the faces', `${rockOnTop} on top`)
+  check(spiders.card.count === alive().length && spiders.stats.puppets === 0, 'far away, every spider is a card and no puppet is out', `${spiders.card.count} cards, ${alive().length} alive`)
+  const perFrame = ms / 600
+  check(perFrame < 3, `a frame of ${alive().length} spiders costs under 3 ms`, `${perFrame.toFixed(3)} ms, ${rocks.rays} rays`)
+  // The card lies where its spider clings, sunk into the surface, its up along the normal. Instance 0 is the first spider in tile order.
+  const c = [...spiders.tiles.values()].flatMap((t) => [...t.hosts.values()]).flatMap((h) => h.spiders)[0]
+  const m = new THREE.Matrix4().fromArray(spiders.card.instanceMatrix.array, 0)
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
+  m.decompose(p, q, s)
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+  const k = c.size / spiders.span
+  const sink = SINK * spiders.bodyH * k
+  check(Math.abs(s.x - k) < 1e-6 && Math.abs(s.y - k) < 1e-6 && p.distanceTo(new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)) < 1e-5, 'the first card is at its spider\'s size, sunk into its surface', `scale ${s.x.toFixed(3)}, sink ${sink.toFixed(4)} m`)
+  check(up.distanceTo(new THREE.Vector3(c.nx, c.ny, c.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(c.tx, c.ty, c.tz)) < 1e-5, 'its up is the surface normal and its face is its heading')
+}
+
+// --- near: puppets, tiers, clips ------------------------------------------------
+{
+  const target = alive().find((c) => c.host.kind === 'tree')
+  const at = (d) => [target.x + target.nx * d, target.y, target.z + target.nz * d]
+  // Out along the normal, so the distance is exactly d.
+  const tiersAt = (d, frames = 2) => {
+    for (let f = 0; f < frames; f++) spiders.update(...at(d), 1 / 60)
+    return target.puppet ? target.puppet.tiers.findIndex((m) => m.visible) : -1
+  }
+  const t1 = tiersAt(1)
+  check(target.puppet && t1 === 0 && spiders.batch.children.includes(target.puppet.group), 'a metre off, the spider is a puppet on tier 0, in the scene')
+  check(target.puppet.current && target.puppet.current.getClip().name === target.clip && target.puppet.current.isRunning(), 'its clip is its state\'s', `${target.clip}`)
+  check(target.puppet.material.userData.uHue.value === target.hue, 'its material wears its hue')
+  const pos = new THREE.Vector3().setFromMatrixPosition(target.puppet.group.matrix)
+  check(Math.abs(pos.distanceTo(new THREE.Vector3(target.x, target.y, target.z)) - SINK * spiders.bodyH * target.size / spiders.span) < 1e-6 && !target.puppet.group.matrixAutoUpdate, 'the puppet stands where the spider is, sunk its feet into the bark, under a matrix the scatter writes')
+  const dist = (c) => Math.hypot(c.x - at(1)[0], c.y - at(1)[1], c.z - at(1)[2])
+  // A puppet is kept to 1.15 NEAR_M once taken; a step is under 2 cm.
+  check(alive().every((c) => (c.puppet ? dist(c) <= NEAR_M * 1.15 + 0.02 : dist(c) >= NEAR_M - 0.02)) && spiders.stats.puppets + spiders.card.count === alive().length && spiders.stats.puppets >= 1 && spiders.starved === 0, `every spider within ${NEAR_M} m is a puppet and the rest are cards`, `${spiders.stats.puppets} puppets, ${spiders.card.count} cards`)
+  const expect = (d) => critterTier(target.size, d, -1, LOD_DEG)
+  const t5 = tiersAt(5), t95 = tiersAt(9.5)
+  check(t5 === expect(5) && t95 === expect(9.5) && t95 === LOD_DEG.length - 1, `at 5 m tier ${expect(5)}, at 9.5 m the last tier`, `${t5}, ${t95} for a ${target.size.toFixed(2)} m spider`)
+  const t12 = tiersAt(12)
+  check(t12 === -1 && !target.puppet, `at 12 m it is a card again and its puppet is back in the pool`)
+  check(spiders.freePuppets.length === PUPPETS - spiders.stats.puppets, 'the pool balances')
+  // Reared up when she is close and paused; back to its business when she goes.
+  target.state = 'pause'; target.clip = 'idle'; target.left = 100
+  tiersAt(0.5, 3)
+  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head half a metre off is alert')
+  tiersAt(3, 3)
+  check(target.clip !== 'alert', 'and drops it when she steps back', target.clip)
+  // Mixer time runs only while a puppet is out.
+  const time = target.puppet.mixer.time
+  tiersAt(3, 10)
+  check(target.puppet.mixer.time > time, 'its mixer advances with the frames')
+}
+
+spiders.dispose()
+check(spiders.batch.parent === null, 'dispose takes the batch out of the scene')
+
+console.log(`\n${failures === 0 ? 'all spider checks passed' : `${failures} FAILED`}\n`)
+process.exit(failures === 0 ? 0 : 1)

@@ -718,6 +718,43 @@ export class Deadwood {
   }
 
   /**
+   * Every resident piece with its origin in the half-open box, written to `out`
+   * at stride 4 as [x, top y, z, radius]: a snag's top is its built height at
+   * its scale over its seat and its radius its trunk's; a log's top is its
+   * thickness over its seat (the log lies along its own axis, which this does
+   * not report) and its radius half its length. Resident tiles only, live
+   * prefix, capped by `out`'s length -- trees.js's anchorsInto's terms. What a
+   * butterfly lands on (v2/render/butterflies.js).
+   */
+  perchesInto(x0, z0, x1, z1, out) {
+    const cap = (out.length / 4) | 0
+    let n = 0
+    for (const tile of this.tiles.values()) {
+      const tx0 = tile.tx * TILE
+      const tz0 = tile.tz * TILE
+      if (tx0 >= x1 || tx0 + TILE <= x0 || tz0 >= z1 || tz0 + TILE <= z0) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = this.instX[id]
+        if (x < x0 || x >= x1) continue
+        const z = this.instZ[id]
+        if (z < z0 || z >= z1) continue
+        if (n >= cap) return cap
+        const v = this.variantAt[id]
+        const scale = this.instSize[id] / this.vLod[v]
+        const log = this.isLog[v] === 1
+        const o = n * 4
+        out[o] = x
+        out[o + 1] = this.instY[id] + (log ? 2 * this.vRadius[v] : this.vHeight[v]) * scale
+        out[o + 2] = z
+        out[o + 3] = (log ? this.vLong[v] * 0.5 : this.vRadius[v]) * scale
+        n++
+      }
+    }
+    return n
+  }
+
+  /**
    * Grow every tile inside the radius at once, ignoring the frame budget.
    * For BOOT and for a relief edit only.
    */

@@ -1,6 +1,6 @@
 import THREE from '../../three-instance.js'
 import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
-import { ribbonVertices, discVertices, flowFrame, RIVER_WIDEN, RIVER_WIDEN_FRAC } from './ribbon.js'
+import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, RIVER_WIDEN, RIVER_WIDEN_FRAC, LOD_FINE, LOD_RAISE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, LOD_STATE_RAISED } from './ribbon.js'
 
 /**
  * The visible water of a v2 world: one disc per authored lake, one ribbon per authored river.
@@ -55,6 +55,10 @@ export class WaterSurfaces {
 
     this.triangles = 0
     this.epoch = -1
+
+    // Where the eye was when the river ladders were last read; NaN forces the next updateLod to read them.
+    this.lodX = NaN
+    this.lodZ = NaN
   }
 
   /** Every lake and every river, from scratch. Called when the epoch moves and nothing narrower is known. */
@@ -160,25 +164,87 @@ export class WaterSurfaces {
     return path.samples
   }
 
+  /**
+   * One mesh, one draw call, whatever the distance: the vertex buffer is static and holds the fine strip plus a raised copy of every coarse sample (ribbonLod), and the distance ladder is drawn by rewriting the INDEX buffer alone, chunk by chunk, from updateLod. The buffer is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
+   */
   buildRiver(river) {
     const samples = this.samplesOf(river)
     const r = ribbonVertices(samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
+    const lod = ribbonLod(r)
+    // The frame the shader drifts the waves in, downstream, with each raised vertex carrying its fine twin's row. Lakes carry no such attribute and get the material's zero default, which is the shared world frame.
+    const fine = flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id))
+    const flow = new Float32Array((r.count + lod.coarse.length) * 8)
+    flow.set(fine)
+    for (let k = 0; k < lod.coarse.length; k++) flow.copyWithin((r.count + k) * 8, lod.coarse[k] * 8, lod.coarse[k] * 8 + 8)
 
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(r.positions, 3))
-    // The frame the shader drifts the waves in, downstream. Lakes carry no such attribute and get the material's zero default, which is the shared world frame.
-    geo.setAttribute('aFlow', new THREE.BufferAttribute(flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id)), 4))
-    geo.setIndex(new THREE.BufferAttribute(r.indices, 1))
+    geo.setAttribute('position', new THREE.BufferAttribute(lod.positions, 3))
+    geo.setAttribute('aFlow', new THREE.BufferAttribute(flow, 4))
+    const index = new THREE.BufferAttribute(new Uint32Array(lod.capacity), 1)
+    index.setUsage(THREE.DynamicDrawUsage)
+    geo.setIndex(index)
+    geo.setDrawRange(0, lodIndices(lod, index.array))
     geo.computeBoundingSphere()
 
     const mesh = new THREE.Mesh(geo, this.water.material)
     mesh.name = `v2-river-${river.id}`
     mesh.userData.kind = 'river'
     mesh.userData.triangles = r.triangles
+    mesh.userData.lod = lod
     this.group.add(mesh)
     this.meshes.set(river.id, mesh)
     this.riverSamples.set(river.id, samples)
     this.triangles += r.triangles
+    // Built all-fine; the next updateLod reads the ladder for it.
+    this.lodX = NaN
+  }
+
+  /**
+   * Read every river's distance ladder against the eye at (x, z), and rewrite the index buffer of each river whose chunk states changed. Call it every frame: it returns at once until the eye has moved LOD_STEP from where it last read, so the work -- one AABB distance per chunk, an index rewrite per changed river -- lands once per ten metres walked and never per frame. Returns the number of rivers rewritten.
+   *
+   * A river is also skipped whole while it is entirely past LOD_RAISE and already raised throughout, which is the state most of a large world's rivers are in at any moment.
+   */
+  updateLod(x, z) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) throw new Error(`WaterSurfaces.updateLod: needs a finite eye position, got (${x}, ${z})`)
+    const dx = x - this.lodX
+    const dz = z - this.lodZ
+    if (dx * dx + dz * dz < LOD_STEP * LOD_STEP) return 0
+    this.lodX = x
+    this.lodZ = z
+
+    const fine2 = LOD_FINE * LOD_FINE
+    const raise2 = LOD_RAISE * LOD_RAISE
+    let rewritten = 0
+    for (const mesh of this.meshes.values()) {
+      const lod = mesh.userData.lod
+      if (!lod) continue
+      const { chunks, states } = lod
+      const s = mesh.geometry.boundingSphere
+      const sx = x - s.center.x
+      const sz = z - s.center.z
+      if (lod.allRaised && Math.sqrt(sx * sx + sz * sz) - s.radius > LOD_RAISE) continue
+      let changed = false
+      let allRaised = true
+      for (let c = 0; c < chunks.length; c++) {
+        const b = chunks[c]
+        const ex = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
+        const ez = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
+        const d2 = ex * ex + ez * ez
+        const state = d2 < fine2 ? LOD_STATE_FINE : d2 < raise2 ? LOD_STATE_COARSE : LOD_STATE_RAISED
+        if (state !== states[c]) {
+          states[c] = state
+          changed = true
+        }
+        if (state !== LOD_STATE_RAISED) allRaised = false
+      }
+      lod.allRaised = allRaised
+      if (!changed) continue
+      const index = mesh.geometry.index
+      mesh.geometry.setDrawRange(0, lodIndices(lod, index.array))
+      index.needsUpdate = true
+      rewritten++
+    }
+    return rewritten
   }
 
   /**

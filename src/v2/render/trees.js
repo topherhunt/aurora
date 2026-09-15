@@ -1415,6 +1415,45 @@ export class Trees {
   }
 
   /**
+   * `anchorsInto` with the trunk's height beside its foot: stride 5 of
+   * [x, y, z, base trunk radius, tree height], all in world metres, under
+   * exactly the contract above (resident tiles, the full-density band, y the
+   * trunk's own sunken origin). For a creature that climbs the trunk rather
+   * than sitting at its foot -- the spiders -- which needs to know how far up
+   * the wood goes and takes the trunk as a cone from that radius at the ground
+   * to half of it at the crown's height, which both generators' taper laws are
+   * within a few centimetres of over the first few metres.
+   */
+  trunksInto(x0, z0, x1, z1, out) {
+    const cap = (out.length / 5) | 0
+    let n = 0
+    for (const tile of this.tiles.values()) {
+      const tx0 = tile.tx * TILE
+      const tz0 = tile.tz * TILE
+      if (tx0 >= x1 || tx0 + TILE <= x0) continue
+      if (tz0 >= z1 || tz0 + TILE <= z0) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = this.instX[id]
+        if (x < x0 || x >= x1) continue
+        const z = this.instZ[id]
+        if (z < z0 || z >= z1) continue
+        if (n >= cap) return cap
+        const o = n * 5
+        const v = this.variantAt[id]
+        const scale = this.instScale[id]
+        out[o] = x
+        out[o + 1] = this.instY[id]
+        out[o + 2] = z
+        out[o + 3] = this.unitTrunkRadius[v] * scale
+        out[o + 4] = this.unitHeight[v] * scale
+        n++
+      }
+    }
+    return n
+  }
+
+  /**
    * The trunk whose footprint, widened by `pad` metres, covers (x, z): its axis
    * and that padded radius written into `out` as {x, z, r}, or null when the
    * point is clear. The walking and teleport collider -- a trunk is a circle on

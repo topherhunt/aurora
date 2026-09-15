@@ -4,11 +4,12 @@
 // do is pin the four things that fail silently, i.e. that produce a world which
 // still draws, still runs, and is wrong:
 //
-//   1. THE SIDE. The underside of the surface exists only because the material
-//      is DoubleSide. Back on FrontSide every back-facing triangle is culled
-//      before it is shaded, so she swims under a lake and sees straight through
-//      to the sky with no surface at all. Nothing throws, nothing warns, and on
-//      the desktop canvas from above it looks perfect.
+//   1. THE SIDE. Dry, the material is FrontSide; submerged it is BackSide, and
+//      the cull is what makes every drawn fragment the underside. Left on
+//      FrontSide she swims under a lake and sees straight through to the sky;
+//      on DoubleSide three draws each transparent mesh twice with the winding
+//      flipped on one pass. Nothing throws, nothing warns, and on the desktop
+//      canvas from above it looks perfect.
 //   2. THE COLOUR SPACE. The murk goes to the water shader in LINEAR and to
 //      every other material in the world as RAW sRGB, because the two do their
 //      fog mix on opposite sides of colorspace_fragment. Both wrong ways round
@@ -58,16 +59,14 @@ const frag = water.material.fragmentShader
 // --- 1. the side --------------------------------------------------------------
 
 check(
-  water.material.side === THREE.DoubleSide,
-  'the water material is double-sided, so a surface exists when she is under it',
-  `side is ${water.material.side}, DoubleSide is ${THREE.DoubleSide}`
+  water.material.side === THREE.FrontSide,
+  'the water material starts front-sided: dry, no underside is ever in view, so none is drawn',
+  `side is ${water.material.side}, FrontSide is ${THREE.FrontSide}`
 )
-
-// And the underside is the SAME material rather than a second one, which is
-// what keeps this to zero extra draw calls. gl_FrontFacing is the line that
-// makes that possible; without it a double-sided plane shades its back faces
-// exactly like its front, i.e. it reflects the sky at you from underneath.
-check(frag.includes('gl_FrontFacing'), 'and the two sides are one material, split per fragment')
+// A DoubleSide transparent material would be drawn in two passes per mesh with
+// the winding flipped on one, which is where gl_FrontFacing lies. One side at
+// a time, and the side alone decides.
+check(!frag.includes('gl_FrontFacing'), 'and the shader never reads gl_FrontFacing, which the cull state would lie to')
 
 // --- 2. the colour space ------------------------------------------------------
 //
@@ -237,19 +236,35 @@ check(
 
 // The underside must not be reachable while she is dry: a back face is also
 // what a lake looks like from inside a cave, and there the ordinary shading is
-// still the right answer.
+// still the right answer. The flag is the whole test, because the side does
+// the facing: submerged, the tops are culled and nothing else reaches it.
 check(
-  frag.includes('uSubmerged > 0.5 && ! gl_FrontFacing'),
-  'and the underside path needs BOTH the facing and the submerged flag'
+  frag.includes('if ( uSubmerged > 0.5 ) {'),
+  'and the underside path is gated on the submerged flag alone'
 )
 
-// --- 5. the flag ---------------------------------------------------------------
+// --- 5. the flag and the side ---------------------------------------------------
+//
+// The two move together, in one call. A flag raised on a FrontSide material
+// draws the lake's top face as an underside from above, and a BackSide material
+// with the flag down culls the tops and shades what is left as tops.
 
 check(water.uniforms.uSubmerged.value === 0, 'the water starts dry')
+const versionBefore = water.material.version
 water.setSubmerged(true)
-check(water.uniforms.uSubmerged.value === 1, 'setSubmerged(true) raises the flag')
+check(
+  water.uniforms.uSubmerged.value === 1 && water.material.side === THREE.BackSide,
+  'setSubmerged(true) raises the flag and culls the tops',
+  `side ${water.material.side}, BackSide is ${THREE.BackSide}`
+)
 water.setSubmerged(false)
-check(water.uniforms.uSubmerged.value === 0, 'and setSubmerged(false) clears it')
+check(
+  water.uniforms.uSubmerged.value === 0 && water.material.side === THREE.FrontSide,
+  'and setSubmerged(false) clears it and draws the tops again'
+)
+// No needsUpdate on the way: that would swap programs on every dive and
+// surface, and the first of each would be a compile stall at the waterline.
+check(water.material.version === versionBefore, 'and neither direction touches the program', `version ${versionBefore} -> ${water.material.version}`)
 
 // --- 6. the knobs ---------------------------------------------------------------
 //
@@ -325,7 +340,7 @@ check(
 // either. What stops the full fade reading as fog with ripples is tirLit, which
 // lights the near ceiling above the murk it recedes to -- checked below.
 {
-  const under = frag.slice(frag.indexOf('! gl_FrontFacing'), frag.indexOf('vec3 R = reflect'))
+  const under = frag.slice(frag.indexOf('if ( uSubmerged > 0.5 ) {'), frag.indexOf('vec3 R = reflect'))
   check(
     /ceiling = mix\( ceiling, uMurk, waterFogAmt\(\) \)/.test(under),
     'the underside takes the full murk fade toward uMurk, from the shared expression'

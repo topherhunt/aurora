@@ -1,6 +1,10 @@
 {
   "avatars": [
     {
+      "id": "wandering-trader",
+      "heightM": 1.75
+    },
+    {
       "id": "blacksmith",
       "heightM": 1.82
     },
@@ -35,6 +39,10 @@
     {
       "id": "alchemist",
       "heightM": 1.62
+    },
+    {
+      "id": "miner",
+      "heightM": 1.77
     },
     {
       "id": "shieldmaiden",

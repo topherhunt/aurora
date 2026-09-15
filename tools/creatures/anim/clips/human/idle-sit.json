@@ -1,5 +1,6 @@
 {
   "kind": "pose",
+  "chainsTo": "lie",
   "note": "Seated idle at sit's hold pose: breathing, a glance to one side and back. Every key keeps sit's root, leg and limit numbers so the two cut together.",
   "samples": 32,
   "crouch": 0.045,

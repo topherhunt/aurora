@@ -3,7 +3,7 @@
 // GLB into plain geometry arrays, walking a tile grid around the player, the
 // LOD ladder a creature steps down as it shrinks in her view, and the cross
 // card a creature may be drawn as instead -- see the notes at each. The
-// scatters themselves are frogs.js and crabs.js.
+// scatters themselves are frogs.js, crabs.js and butterflies.js.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -15,12 +15,15 @@ import { SUPERSAMPLE, downsample, dilate } from '../../props/impostor.js'
 export const CRITTER_GLB = {
   frog: 'creatures/marsh-frog.glb',
   crab: 'creatures/shore-crab.glb',
+  butterfly: 'creatures/meadow-butterfly.glb',
+  // One animated file with its own three skinned tiers and clips (tools/creatures/ship-spider.mjs); no -lod ladder beside it.
+  spider: 'creatures/birch-spider.glb',
 }
 export const critterLodUrl = (url, level) => url.replace(/\.glb$/, `-lod${level}.glb`)
 
 // three-instance resolves to A-Frame's bundled three on the world page, which
 // hangs its loaders on the namespace; npm three keeps them in addons.
-async function gltfLoader() {
+export async function gltfLoader() {
   if (THREE.GLTFLoader) return new THREE.GLTFLoader()
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
   return new GLTFLoader()
@@ -36,7 +39,7 @@ async function gltfLoader() {
  *
  * Tripo normalises the longest axis to about one unit, so `span` (the longer
  * horizontal extent) is what a caller divides its metres by to scale the
- * creature. Both shipped critters face +X after their node transform, which
+ * creature. Every shipped critter faces +X after its node transform, which
  * ship.mjs turns by the roster's faceTurnDeg to make so.
  */
 export async function loadCritterGlb(url, { origin = null } = {}) {
@@ -109,13 +112,23 @@ export function glint(shader) {
 // card wears it too, so a creature keeps its colour when it goes far.
 // ---------------------------------------------------------------------------
 
-/** Splice the per-instance hue turn into a material's shaders, from its onBeforeCompile. The mesh must carry an `aHue` instanced attribute. */
-export function hueVary(shader) {
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute float aHue;\nvarying float vHue;')
-    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
+/**
+ * Splice the hue turn into a material's shaders, from its onBeforeCompile. By
+ * default the turn is per instance and the mesh must carry an `aHue` instanced
+ * attribute; with `uniform` it is the material's `uHue` uniform, which the
+ * caller must have put in `shader.uniforms` -- for a creature drawn as a
+ * skinned mesh of its own rather than an instance (the spiders).
+ */
+export function hueVary(shader, { uniform = false } = {}) {
+  if (uniform) {
+    if (!shader.uniforms.uHue) throw new Error('hueVary: the material has no uHue uniform')
+  } else {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aHue;\nvarying float vHue;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
+  }
   shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', '#include <common>\nvarying float vHue;')
+    .replace('#include <common>', `#include <common>\n${uniform ? 'uniform float uHue;\n#define vHue uHue' : 'varying float vHue;'}`)
     .replace(
       '#include <map_fragment>',
       '#include <map_fragment>\n' +
@@ -212,6 +225,10 @@ export function critterTier(span, dist, prev, deg) {
 // The card is a cutout (alphaTest). Its normals are all straight up and the
 // double-sided flip is undone, so both planes and both faces of each take the
 // same light and the seam between them is not a step in brightness.
+//
+// A card may also be ONE quad: a creature that is flat against whatever it
+// stands on and is seen from above it -- the spider on its trunk -- wants only
+// the top view, and a side quad would stand out of the bark edge-on.
 // ---------------------------------------------------------------------------
 export const CARD_M = 8
 // The bake: each view is TEX_SIZE px square, side by side in the order the views are listed; the picture frames the body with this margin each side so the alpha edge is not the texel edge.
@@ -266,13 +283,18 @@ function cardCorner(view, u, v, out) {
     .addScaledVector(view.up, view.bottom + (view.top - view.bottom) * v)
 }
 
+/** One or two views make a card; anything else is a mistake, not a bigger card. */
+function checkViews(views) {
+  if (!Array.isArray(views) || views.length < 1 || views.length > 2) throw new Error('critter card: a card is one or two quads')
+}
+
 /**
- * The crossed quads onto a card InstancedMesh's (empty) geometry, sized to
- * `bounds` from setCritterAsset. Each quad reads its view's strip of the
+ * The quads, one per view, onto a card InstancedMesh's (empty) geometry, sized
+ * to `bounds` from setCritterAsset. Each quad reads its view's strip of the
  * picture, 1 / n of its width where n is the count of views.
  */
 export function setCritterCard(mesh, bounds, views) {
-  if (!Array.isArray(views) || views.length !== 2) throw new Error('critter card: a card is two quads')
+  checkViews(views)
   const n = views.length
   const ext = critterCardExtents(bounds)
   const pos = []
@@ -292,20 +314,21 @@ export function setCritterCard(mesh, bounds, views) {
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
   geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
   geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
-  geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
+  geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7].slice(0, 6 * n))
   geo.computeBoundingBox()
 }
 
 /**
- * Photograph the loaded creature for its card: each view the two quads of
- * `views` show, orthographic and unlit (the card is lit where it is drawn, like
- * the mesh), supersampled and dilated like the props' impostors, side by side
- * in one TEX_SIZE-high texture. Needs the renderer, so the world calls it once
- * the GLB has landed.
+ * Photograph the loaded creature for its card: each view the quads of `views`
+ * show, orthographic and unlit (the card is lit where it is drawn, like the
+ * mesh), supersampled and dilated like the props' impostors, side by side in
+ * one TEX_SIZE-high texture. Needs the renderer, so the world calls it once
+ * the GLB has landed. A skinned geometry photographs in its bind pose: the
+ * scene here is a plain Mesh, which reads no joints.
  */
 export function bakeCritterCard(renderer, geometry, map, bounds, views) {
   if (!map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
-  if (!Array.isArray(views) || views.length !== 2) throw new Error('critter card: a card is two quads')
+  checkViews(views)
   const ext = critterCardExtents(bounds)
   const material = new THREE.MeshBasicMaterial({ map, toneMapped: false })
   const scene = new THREE.Scene()
