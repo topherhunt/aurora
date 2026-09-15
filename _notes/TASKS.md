@@ -34,10 +34,11 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [x] Sync times of day across different users
 - [x] Ensure frog, fish, and crab color vary.
 - [x] Troubleshoot tree performance.
-- [ ] Sound effects
+- [x] Sound effects
   - [x] No eagles/hawks at night (crows yes)
   - [x] Wind - soft through trees & grassland, more brittle on barren cliffs & peaks.
   - [x] Troubleshoot: water lapping should play less often (maybe every 2 - 5s) and it should continue anytime you're within 10m of a lake shore (currently sometmies it decides to cut out mysteriously) or less than 10m above a non-terrain-covered lake surface.
+- [ ] Is each animation going to be shipped as a separate 600kb .glb file!? That's a lot of space waste/duplication right?
 - [ ] Add a procedural jaggedness to terrain so the smooth curves aren't so smooth. OR if we already have that, it needs to be amplified by 4x.
 - [ ] Let each player shoot up a flare so they can find each other
 - [ ] Player character animations:

@@ -227,6 +227,22 @@ const cullMargin = (step) => step + CLASS_EPS
 const CREST_CELL_LO = 1
 const CREST_CELL_HI = 6
 
+// PEAKS: the footprint maximum, the `peaks` relief knob. Every vertex of a
+// chunk whose cell is coarser than the texel takes the MAX of the band-limited
+// field over the step x step square it owns, sampled at texel pitch, so no
+// summit in the import can fall between two samples. The drawn far ground is
+// then an upper envelope of the near ground: a peak re-splitting under the eye
+// NARROWS but never rises, which is the growth `crest` only damped. Ungated,
+// unlike `crest` -- a valley narrower than the cell fills at distance, and that
+// is accepted as the skyline's price -- and at full strength at every rung
+// rather than faded in, because the thing being removed is a height change at
+// each swap and a fade would leave a fraction of it at each. OFF at every cell
+// under a texel (the 4 m rung and finer), where the point sample already lands
+// within a texel of every summit and where the leaf identity of CLASS_EPS has
+// to hold. PEAKS_TAPS_MAX bounds the stencil on the two coarsest rungs: a 512 m
+// cell would otherwise be 65 x 65 evaluations per vertex.
+const PEAKS_TAPS_MAX = 17
+
 // Vertex colour. v1's construction -- alt ramp, then rock over it by steepness,
 // then snow over that -- with the dirt blend appended.
 //
@@ -476,6 +492,10 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // stencil is one of the stencils the grown AABB has to cover.
   const crestW = field.relief.crest * smoothstep(CREST_CELL_LO, CREST_CELL_HI, step)
   const crestR = step * 0.35
+  // Half a cell each way, when the footprint max is on -- see PEAKS_TAPS_MAX.
+  const texel = field.ground.texelSize
+  const peaksOn = field.relief.peaks > 0 && step * 2 > texel
+  const peaksR = peaksOn ? step / 2 : 0
 
   // THE PER-CHUNK CULL. One index query decides for all 361 samples.
   //
@@ -491,7 +511,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // would take an UNCARVED maximum from that ground while the neighbour takes a
   // carved one, and the two would disagree about the height of a shared edge
   // vertex -- a crack, at exactly the coarse LOD where the crest term is loudest.
-  const m = cullMargin(step) + (crestW > 0 ? crestR : 0)
+  // The peaks footprint reaches further than either, for the same reason.
+  const m = cullMargin(step) + Math.max(crestW > 0 ? crestR : 0, peaksR)
   const touched = layers.overlaps(ox - m, oz - m, ox + size + m, oz + size + m)
 
   // Selected ONCE per chunk, not per vertex. The culled path never enters
@@ -529,7 +550,25 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // image of the same surface" property field.js's banner states. It is accepted
   // because the split rule puts a cell that coarse 150 m away and she is never
   // standing on one, and it is refused where she IS standing by CREST_CELL_LO.
-  const sampleHeight = crestW > 0
+  //
+  // THE PEAKS SAMPLER SUPERSEDES IT when both are up: a max over the whole
+  // footprint contains crest's four diagonal taps, so the bias would add
+  // nothing but its own cost.
+  const peaksN = peaksOn ? Math.min(PEAKS_TAPS_MAX, Math.ceil(step / texel) + 1) : 0
+  const peaksPitch = peaksOn ? step / (peaksN - 1) : 0
+  const sampleHeight = peaksOn
+    ? (x, z) => {
+        let h = heightAtCell(x, z)
+        for (let b = 0; b < peaksN; b++) {
+          const zz = z - peaksR + b * peaksPitch
+          for (let a = 0; a < peaksN; a++) {
+            const v = heightAtCell(x - peaksR + a * peaksPitch, zz)
+            if (v > h) h = v
+          }
+        }
+        return h
+      }
+    : crestW > 0
     ? (x, z) => {
         const h0 = heightAtCell(x, z)
         // The diagonals rather than the axes, at 0.35 of a cell rather than a
@@ -782,4 +821,4 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
 // this ground vegetated" from the vertex colour alone, so a hand-picked green
 // that is a shade off classifies as something else and the card comes out with
 // the wrong grain.
-export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, cullMargin, shade, C_GRASS }
+export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, PEAKS_TAPS_MAX, cullMargin, shade, C_GRASS }

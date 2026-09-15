@@ -33,11 +33,13 @@ import { saveHeightServer } from './persist.js'
 // enough that a two-worker pool keeps up with a wide brush.
 const FLUSH_MS = 90
 
-// Metres, and the range is the world's rather than a texel's: at 8 m/texel a
-// 16 m brush moves a couple of texels and is the smallest thing that is not a
-// single spike, while 2 km is a quarter of the world -- enough to lift a whole
-// massif in one press, which is the thing the coarse import is bad at.
-const RADIUS = { min: 16, max: 2048, step: 8, def: 160 }
+// Metres of RADIUS, and the range is the world's rather than a texel's: at
+// 8 m/texel an 8 m brush reaches one texel -- the falloff is 0 at the radius,
+// so a stamp centred on a texel moves that texel alone, a single spike -- while
+// 2 km is a quarter of the world, enough to lift a whole massif in one press,
+// which is the thing the coarse import is bad at. `scale` puts halve/double
+// buttons on the panel's field, because that range is not stepped through.
+const RADIUS = { min: 8, max: 2048, step: 8, def: 160, scale: 2 }
 
 // Metres per SECOND, not per stamp, so a 120 Hz machine and a 60 Hz one dig at
 // the same rate. 12 m/s means a second of holding still moves the brush centre

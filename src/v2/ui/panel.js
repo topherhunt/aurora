@@ -19,7 +19,10 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 // POINTER-EVENTS ARE OFF except on the widgets. Mouse-look starts anywhere on
 // the canvas, and a panel that eats a drag beginning over the fps readout feels
 // like the camera has stuck. Only buttons, inputs, rows and the header take the
-// pointer.
+// pointer. The WHEEL is the exception: it is caught on the window and scrolls
+// the body whenever the cursor is over it, because a wheel that only works over
+// a widget and falls through to the canvas over plain text reads as a panel that
+// refuses to scroll.
 //
 // THE RELIEF ZONE IS BUILT BY ITERATING RELIEF_KNOBS, never from a list kept in
 // here. It is an ablation tool -- switch one term on, look at the mountain,
@@ -75,6 +78,13 @@ function escapeHtml(s) {
 
 const num = (v, d = 0) => (Number.isFinite(v) ? v.toFixed(d) : null)
 
+/** A field row's own range, applied to a value the panel is about to hand its setter. Rows without a bound pass through. */
+const clampRow = (row, v) => {
+  if (Number.isFinite(row.min)) v = Math.max(row.min, v)
+  if (Number.isFinite(row.max)) v = Math.min(row.max, v)
+  return v
+}
+
 // A scrubbed relief value is `start + n * step` in binary floating point, and a
 // 0.05 step reaches 0.30000000000000004 after six ticks. That is the true value
 // and the field is right to hold it, but seventeen digits in a 5em box reads as
@@ -125,6 +135,8 @@ const CSS = `
 #v2-panel .p-fields { display: grid; grid-template-columns: 6em 1fr; gap: 2px 6px; align-items: center; }
 #v2-panel .p-scrub { cursor: ew-resize; }
 #v2-panel .p-scrub:hover { color: ${COLORS.head}; }
+#v2-panel .p-scale { display: flex; gap: 3px; align-items: center; }
+#v2-panel .p-scale input { flex: 1; min-width: 0; }
 /* A knob whose parent term is off. Dimmed, NOT disabled: talus is read only
    while erode runs, but setting the repose angle before switching erosion on
    saves a second remesh, and a disabled box would forbid that. */
@@ -456,6 +468,18 @@ export class Panel {
       this.hideMenu()
       this.hideHotkeys()
     })
+
+    // Scroll the body from the window, by cursor position rather than by event
+    // target: the root is pointer-events none, so a wheel over plain text
+    // targets the canvas and never reaches the body on its own. Every wheel over
+    // the body is handled here, widget or not, so the two cases cannot differ.
+    // A shut panel's body is display none and measures 0x0, so it never matches.
+    window.addEventListener('wheel', (ev) => {
+      const r = this._body.getBoundingClientRect()
+      if (ev.clientX < r.left || ev.clientX >= r.right || ev.clientY < r.top || ev.clientY >= r.bottom) return
+      ev.preventDefault()
+      this._body.scrollTop += ev.deltaY
+    }, { passive: false })
   }
 
   // --- the context menu -----------------------------------------------------
@@ -775,7 +799,36 @@ export class Panel {
       k.title = 'drag left/right to scrub'
       this._attachScrub(k, row, input)
 
-      this._fields.append(k, input)
+      // `- v +` around the box, halving and doubling, for a row whose useful
+      // range spans decades: a brush radius runs 8 m to 2 km, and neither a
+      // step nor a scrub crosses that in a wrist movement.
+      let valueEl = input
+      if (row.scale !== undefined) {
+        if (!(row.scale > 1) || !Number.isFinite(row.scale)) throw new Error(`Panel: field '${row.label}' scale must be a finite number > 1, got ${row.scale}`)
+        valueEl = document.createElement('div')
+        valueEl.className = 'p-scale'
+        const scaleBtn = (text, title, apply) => {
+          const b = document.createElement('button')
+          b.className = 'p-btn p-i'
+          b.textContent = text
+          b.title = title
+          b.onclick = () => {
+            const cur = parseFloat(input.value)
+            if (!Number.isFinite(cur)) return
+            const v = clampRow(row, apply(cur))
+            input.value = String(v)
+            row.set(v, true)
+          }
+          return b
+        }
+        valueEl.append(
+          scaleBtn('-', `divide by ${row.scale}`, (v) => v / row.scale),
+          input,
+          scaleBtn('+', `multiply by ${row.scale}`, (v) => v * row.scale),
+        )
+      }
+
+      this._fields.append(k, valueEl)
       this._rows.push({ row, input, valueEl: null })
     }
   }
@@ -802,13 +855,8 @@ export class Panel {
 
       // One step per 4 px: fine enough to land on a value with a wrist movement,
       // coarse enough that a 300 px drag crosses 75 steps of the range.
-      const clamp = (v) => {
-        if (Number.isFinite(row.min)) v = Math.max(row.min, v)
-        if (Number.isFinite(row.max)) v = Math.min(row.max, v)
-        return v
-      }
       const move = (e) => {
-        const v = clamp(startV + Math.round((e.clientX - startX) / 4) * step)
+        const v = clampRow(row, startV + Math.round((e.clientX - startX) / 4) * step)
         input.value = String(v)
         row.set(v, false)
       }
@@ -817,7 +865,7 @@ export class Panel {
         labelEl.removeEventListener('pointerup', up)
         labelEl.releasePointerCapture(ev.pointerId)
         this._scrubbing = false
-        row.set(clamp(startV + Math.round((e.clientX - startX) / 4) * step), true)
+        row.set(clampRow(row, startV + Math.round((e.clientX - startX) / 4) * step), true)
       }
       labelEl.addEventListener('pointermove', move)
       labelEl.addEventListener('pointerup', up)

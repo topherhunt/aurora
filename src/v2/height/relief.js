@@ -20,10 +20,12 @@
 // changed the world would make every one of the other assertions in that gate a
 // measurement of a different terrain than the one that shipped.
 //
-// `talus` is the exception to "zero is off", and it is not a knob in the same
-// sense: it is the repose angle the erosion pass relaxes toward, meaningless
-// when `erode` is 0 and never read then. It carries `needs: 'erode'` so the HUD
-// can grey it out and the gate can skip it in the all-off assertion.
+// `talus` and `jitter` are the exceptions to "zero is off", and neither is a
+// knob in the same sense: one is the repose angle the erosion pass relaxes
+// toward, the other the fraction the jagged stack's lattice may deviate by, and
+// each is meaningless and never read while its parent is 0. Both carry `needs`
+// so the HUD can grey them out and the gate can skip them in the all-off
+// assertion.
 // ---------------------------------------------------------------------------
 
 /**
@@ -58,6 +60,33 @@ export const RELIEF_KNOBS = Object.freeze([
     label: 'bare macro',
     hint: 'fade out the procedural detail term and show the imported macro field alone',
     off: 0, on: 1, min: 0, max: 1, step: 0.05,
+  },
+  {
+    // THE OTHER STACK. Not a term added to the smooth field but a replacement
+    // for it: the macro is read bilinearly instead of through Catmull-Rom, and
+    // the simplex octaves give way to lattice midpoint displacement with a
+    // crease on every lattice line. See jagged.js. Two knobs go dead under it:
+    // `crease`, there being no bicubic dome to undo, and `sharpen`, which is
+    // Detail's own rectifier. `bare`, `exposure` and the added terms wrap the
+    // detail output from outside and act on the jagged stack as they would on
+    // the smooth one. The calibration is unchanged: the sub-metre layers take
+    // the amplitudes the smooth stack was fitted to.
+    key: 'jagged',
+    label: 'jagged',
+    hint: 'replace the smooth stack: bilinear macro plus creased lattice jitter, no curve anywhere',
+    off: 0, on: 1, min: 0, max: 1, step: 1,
+    integer: true,
+  },
+  {
+    // The jagged stack's coarse-layer fraction: each lattice midpoint above 1 m
+    // deviates from its parent by up to this times the macro's rise across the
+    // parent cell. A value, not a switch, like `talus`: 0 is the ablation that
+    // leaves only the bilinear macro and the calibrated sub-metre layers.
+    key: 'jitter',
+    label: 'jitter',
+    hint: 'fraction of the parent cell\'s rise a jagged lattice point may deviate by, for the layers above 1 m',
+    off: 0.2, on: 0.2, min: 0, max: 1, step: 0.05,
+    needs: 'jagged',
   },
   {
     key: 'sharpen',
@@ -206,12 +235,33 @@ export const RELIEF_KNOBS = Object.freeze([
     hint: 'coarse chunks bias toward the local max, so distant ridges keep their edge',
     off: 0, on: 1, min: 0, max: 1, step: 0.05,
   },
+  {
+    // A MESHER TERM, like `crest`, and the one that supersedes it: every vertex
+    // of a chunk coarser than the texel takes the MAX of the field over the
+    // footprint it owns, so no summit falls between samples and a peak never
+    // grows as the ground under it re-splits -- it narrows. Ungated: valleys
+    // narrower than a coarse cell fill at distance too. See PEAKS in
+    // chunk-mesh-v2.js.
+    key: 'peaks',
+    label: 'peak LOD',
+    hint: 'a coarse chunk draws the max of the field over each vertex footprint, so a summit never grows as you approach',
+    off: 0, on: 1, min: 0, max: 1, step: 1,
+    integer: true,
+  },
 ])
 
 const BY_KEY = new Map(RELIEF_KNOBS.map((k) => [k.key, k]))
 
 /** All knobs at their off value. Frozen: this object is shared, never mutated. */
 export const RELIEF_DEFAULTS = Object.freeze(Object.fromEntries(RELIEF_KNOBS.map((k) => [k.key, k.off])))
+
+/**
+ * What the world BOOTS with. Not RELIEF_DEFAULTS: that object is the off state
+ * the gate measures every knob against and stays the smooth, frozen field;
+ * this is the configuration that ships, and main.js starts from it when no
+ * saved relief overrides it.
+ */
+export const RELIEF_SHIPPED = Object.freeze({ ...RELIEF_DEFAULTS, jagged: 1, peaks: 1 })
 
 /**
  * Validate and clamp a relief object from anywhere -- the HUD, localStorage, a

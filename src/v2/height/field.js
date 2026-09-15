@@ -1,4 +1,5 @@
 import { Detail, calibrateRough, KNEE_TEXELS, EXPOSURE_SWING } from './detail.js'
+import { Jagged } from './jagged.js'
 import { Heightmap } from './heightmap.js'
 import { ExposureField } from './exposure.js'
 import { RidgeField } from './ridge.js'
@@ -15,8 +16,10 @@ import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './rel
 //
 // EVALUATION ORDER, and it is an order and not a set:
 //
-//   1. coarse   Heightmap.sample -- bicubic over the imported image
-//   2. detail   + Detail.at -- band-limited fractal, modulated by the coarse slope
+//   1. coarse   Heightmap.sample -- bicubic over the imported image, or
+//               bilinear under the `jagged` knob
+//   2. detail   + Detail.at -- band-limited fractal, modulated by the coarse
+//               slope; or Jagged.at, the creased lattice stack, under `jagged`
 //   3. rivers   carve. Channels cut through whatever is there.
 //   4. lakes    basin carve, for lakes with `carve` set
 //   5. roads    smooth. LAST, and that is the whole point of stating an order: a
@@ -200,25 +203,32 @@ export class V2Height {
       this.calibration = calibrateRough({ heightmap: ground, seed, knee, sharpen: relief.sharpen, exposureGain })
       this.calibration.pinned = false
     }
-    this.detail = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
+    const smooth = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
+    // The jagged stack reads the smooth table for its sub-metre amplitudes, so
+    // the calibration above runs either way and against the bicubic ground --
+    // the bilinear read is attached below, after everything measured here.
+    this.detail = relief.jagged > 0
+      ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, fineTable: smooth.table })
+      : smooth
     this.crag = needs.crag ? new Crag({ seed }) : null
     // Baked against `ground` for the same reason exposure is: the spines this
     // describes have to be the spines of the mountain the world is sampled from,
     // and with `erode` up that is the relaxed copy and not the import.
     this.ridge = needs.ridge ? new RidgeField(ground, { seed }) : null
 
-    // 3. CREASE, and it goes LAST on purpose. It is not a term in `_micro` -- it
-    // replaces the coarse reconstruction itself, inside Heightmap.sample, so it
-    // reaches the mesher, the collision, the scatter and the raycast through the
-    // one call they all already make, and works in the `_plain` path without
-    // appearing in it.
+    // 3. THE RECONSTRUCTION, and it goes LAST on purpose. Neither `crease` nor
+    // `jagged`'s bilinear read is a term in `_micro` -- each replaces the coarse
+    // reconstruction itself, inside Heightmap.sample, so it reaches the mesher,
+    // the collision, the scatter and the raycast through the one call they all
+    // already make, and works in the `_plain` path without appearing in it.
     //
     // ATTACHED AFTER EVERYTHING BAKED FROM `ground` IS BUILT, which is the whole
     // reason it sits at the bottom. calibrateRough fits the detail amplitude to
-    // the ground's own structure function, and a creased surface has more energy
-    // at texel scale, so calibrating against it would pull `rough` down and
-    // change the detail term over the ENTIRE world -- flat valley floors included
-    // -- in response to a knob whose whole claim is that it only touches crests.
+    // the ground's own structure function, and both a creased and a bilinear
+    // surface have more energy at texel scale, so calibrating against either
+    // would pull `rough` down and change the detail term over the ENTIRE world
+    // -- flat valley floors included -- in response to a knob whose claim is
+    // that it only changes the shape between texels.
     //
     // AND IT IS ATTACHED TO A VIEW, NEVER TO THE IMPORT. With `erode` off
     // `ground === this.heightmap`, an object shared by reference with every other
@@ -226,7 +236,7 @@ export class V2Height {
     // constructed decide what all the others stand on. Measured, three fields
     // built in a row all came out creased and a sibling's calibrateRough was
     // fitted to a surface its own knob had switched off.
-    this._attachCrease()
+    this._attachReconstruction()
 
     // Invalidated rather than kept: erosion moves the texels the percentile
     // histogram is built from, so the altitude ramp a stale `bands` describes is
@@ -235,9 +245,10 @@ export class V2Height {
   }
 
   /**
-   * Point the crease operator at whatever `this.ground` currently is, or clear
-   * it when the knob is off. Idempotent, and safe to call on a ground that
-   * already carries one.
+   * Point the reconstruction -- the bilinear read under `jagged`, else the
+   * crease operator under `crease` -- at whatever `this.ground` currently is,
+   * or leave it plain when neither knob is up. Idempotent, and safe to call on
+   * a ground that already carries one.
    *
    * IT IS A METHOD BECAUSE TWO PATHS REPLACE `this.ground` AND BOTH MUST DO
    * THIS: `_rebuild` makes one from the import or the eroded copy, and
@@ -246,14 +257,19 @@ export class V2Height {
    * first brush tick handed the world a Heightmap with no operator on it and the
    * terrain quietly un-creased itself mid-stroke.
    */
-  _attachCrease() {
+  _attachReconstruction() {
     this.crease = null
-    if (this.relief.crease <= 0) return
+    const linear = this.relief.jagged > 0
+    if (!linear && this.relief.crease <= 0) return
     // A VIEW, NEVER THE OBJECT ITSELF. With `erode` off `this.ground` is the
     // import, shared by reference with every other V2Height reading it, and
     // attaching to that lets one field's knob decide what the others stand on.
     // See Heightmap.view.
     this.ground = this.ground.view()
+    if (linear) {
+      this.ground.attachLinear(true)
+      return
+    }
     this.crease = new CreaseField(this.ground, this.seed)
     this.crease.lift = this.relief.crease
     this.ground.attachCrease(this.crease)
@@ -328,11 +344,12 @@ export class V2Height {
     }
     this.ground = Heightmap.fromRaw({ width: w, height: src.height, data, meta: src.meta })
     // The line above hands back a Heightmap with nothing attached to it, so the
-    // operator has to be re-pointed at it or the stroke un-creases the world.
-    // Unlike `bands` and the exposure grid above, this is not a stale-but-safe
-    // omission: those keep describing a slightly older surface, whereas dropping
-    // this changes which surface the player is standing on, mid-drag.
-    this._attachCrease()
+    // reconstruction has to be re-pointed at it or the stroke un-creases (or
+    // re-smooths) the world. Unlike `bands` and the exposure grid above, this
+    // is not a stale-but-safe omission: those keep describing a slightly older
+    // surface, whereas dropping this changes which surface the player is
+    // standing on, mid-drag.
+    this._attachReconstruction()
   }
 
   _syncAuthored() {

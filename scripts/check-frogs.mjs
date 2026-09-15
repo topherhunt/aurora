@@ -8,11 +8,15 @@
 // a way a frog can go wrong without anything throwing: a frog in the water, in
 // the cold, on the boulder or past the shore band; a shore with the wrong
 // number of frogs for the density; frogs all one size or one colour; a frog
-// that hops off the band or into the river, that never hops, that drifts away
-// from where it was placed; a frog that only ever leaps, a walk whose hops are
-// leap-sized or wander off its line, or that has no beat between its hops; a
-// scatter that is not the same twice; a frog standing level on a slope, or
-// still tilted to the slope it left after a hop; a frame that costs more than a
+// that hops off the band, that never hops, that drifts away from where it was
+// placed; a frog that never goes into the river, or that goes in and never
+// comes out, or that sits in it on the bed instead of the surface, or tilted,
+// or does not bob there, or paddles all one way or hops in it as though it were
+// land, or that comes out and never hops again; a frog that only ever leaps, a
+// walk whose hops are leap-sized or wander off its line, or that has no beat
+// between its hops; a scatter that is not the same twice, or that seats a frog
+// in the water; a frog standing level on a slope, or still tilted to the slope
+// it left after a hop; a frame that costs more than a
 // scatter is allowed to; a frog drawn as a tier its apparent size does not
 // call for, or drawn at all under the last rung, a tier that flickers as her
 // head sways on a threshold, or a tier instance that is not its frog's own
@@ -25,7 +29,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_DEG } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, BOB_S, BOB_AMP, WALK, LEAP, PADDLE, WET_ROUGHNESS, MORPHS, LOD_DEG } from '../src/v2/render/frogs.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -39,6 +43,7 @@ const check = (ok, label, detail = '') => {
 // --- the synthetic world -----------------------------------------------------
 const GROUND = 10
 const HALF = 4
+const LEVEL = GROUND + 0.5
 const COLD_Z = 60
 const ROCK = { x: 8, z: 0, r: 1.5, top: 11 }
 const inRock = (x, z) => Math.hypot(x - ROCK.x, z - ROCK.z) < ROCK.r
@@ -49,8 +54,7 @@ const height = {
   snowLineAt: (x, z) => (z > COLD_Z ? GROUND : GROUND + 500),
 }
 const water = {
-  levelAt: (x) => (Math.abs(x) < HALF ? GROUND + 0.5 : null),
-  isSubmerged(x, z, g) { const l = this.levelAt(x, z); return l !== null && g < l },
+  levelAt: (x) => (Math.abs(x) < HALF ? LEVEL : null),
   shoreDistAt(x, z, reach) {
     if (!(reach > 0)) throw new Error('reach')
     const d = Math.abs(x) - HALF
@@ -217,13 +221,16 @@ const DT = 1 / 72
 const SECONDS = 60
 const homes = new Map(alive().map((f) => [f, { x: f.homeX, z: f.homeZ }]))
 let hopped = 0
-let wet = 0
 let offBand = 0
 let onRock = 0
 let strayed = 0
 let maxStray = 0
+// The water: frames sat in the river, of them off the surface or tilted, or sat on the bank flagged wet; the frogs that went in, that came back out, and that hopped on land again after; strokes begun on the water under a land bout or with a rise, and their headings by quadrant.
+let satWet = 0, wetOff = 0, wetTilted = 0, dryFlaggedWet = 0, landBoutAfloat = 0, risenStroke = 0
+const wentIn = new Set(), cameOut = new Set(), hoppedAfter = new Set()
+const strokeQuadrants = new Set()
 // The gait, read off each frog's transitions: a bout starts with a hop from a spent `hops` count.
-const bouts = { walk: 0, leap: 0 }
+const bouts = { walk: 0, leap: 0, paddle: 0 }
 let badReach = 0, badPause = 0, walkPairs = 0, straight = 0
 const last = new Map()
 const turn = (a) => Math.abs(Math.atan2(Math.sin(a), Math.cos(a)))
@@ -235,13 +242,29 @@ for (let i = 0; i < SECONDS / DT; i++) {
     if (p && f.state === 'hop' && p.state !== 'hop') {
       const m = Math.hypot(f.x1 - f.x0, f.z1 - f.z0) / f.size
       if (m < f.bout.m[0] - 1e-6 || m > f.bout.m[1] + 1e-6) badReach++
-      if (p.hops === 0) bouts[f.bout === WALK ? 'walk' : 'leap']++
+      if (p.hops === 0) bouts[f.bout === WALK ? 'walk' : f.bout === LEAP ? 'leap' : 'paddle']++
       else if (f.bout === WALK) { walkPairs++; if (turn(f.yaw - p.yaw) < 0.6 + 1e-9) straight++ }
+      if (f.wet0) {
+        if (f.bout !== PADDLE) landBoutAfloat++
+        if (f.wet1 && f.rise !== 0) risenStroke++
+        strokeQuadrants.add(Math.floor(((f.yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) / (Math.PI / 2)))
+      } else if (f.bout === PADDLE) landBoutAfloat++
+      if (!f.wet0 && cameOut.has(f)) hoppedAfter.add(f)
     }
     if (p && f.state === 'sit' && p.state === 'hop' && f.hops > 0 && (f.left < f.bout.pause[0] - 1e-9 || f.left > f.bout.pause[1] + 1e-9)) badPause++
     last.set(f, { state: f.state, yaw: f.yaw, hops: f.hops })
     if (f.state === 'hop') hopped++
-    if (Math.abs(f.x) < HALF) wet++
+    if (f.state === 'sit') {
+      if (Math.abs(f.x) < HALF) {
+        satWet++
+        wentIn.add(f)
+        if (!f.wet || Math.abs(f.y - LEVEL) > 1e-6) wetOff++
+        if (f.nx !== 0 || f.ny !== 1 || f.nz !== 0) wetTilted++
+      } else {
+        if (f.wet) dryFlaggedWet++
+        if (wentIn.has(f)) cameOut.add(f)
+      }
+    }
     if (Math.abs(f.x) >= HALF + SHORE_M) offBand++
     if (inRock(f.x, f.z) && f.state === 'sit') onRock++
     const home = homes.get(f)
@@ -254,15 +277,22 @@ for (let i = 0; i < SECONDS / DT; i++) {
 }
 const ms = (performance.now() - t0) / (SECONDS / DT)
 check(hopped > 0, 'frogs hop', `${hopped} hop-frames`)
-check(bouts.walk > bouts.leap && bouts.leap > 0, 'most bouts are walks, the rest leaps', `${bouts.walk} walks, ${bouts.leap} leaps`)
-check(badReach === 0, `a walk's hops are ${WALK.m[0]}-${WALK.m[1]} body lengths and a leap's ${LEAP.m[0]}-${LEAP.m[1]}`, `${badReach} off`)
+check(bouts.walk > bouts.leap && bouts.leap > 0, 'most land bouts are walks, the rest leaps', `${bouts.walk} walks, ${bouts.leap} leaps`)
+check(badReach === 0, `a walk's hops are ${WALK.m[0]}-${WALK.m[1]} body lengths, a leap's ${LEAP.m[0]}-${LEAP.m[1]} and a paddle's ${PADDLE.m[0]}-${PADDLE.m[1]}`, `${badReach} off`)
 check(walkPairs > 0 && straight / walkPairs > 0.7, 'a walk\'s hops follow one another along its line', `${straight} of ${walkPairs} pairs within the wobble`)
 check(badPause === 0, 'the beat between a bout\'s hops is the bout\'s own', `${badPause} off`)
-check(wet === 0, 'no frog ever lands in the river', `${wet} wet frames`)
+check(TETHER_M === 4, 'the tether is four metres')
+check(wentIn.size > 3 && satWet > 0, 'frogs hop into the river', `${wentIn.size} went in over ${satWet} sat-wet frames`)
+check(wetOff === 0 && wetTilted === 0, 'a frog in the river floats on the surface, level', `${wetOff} off the surface, ${wetTilted} tilted`)
+check(dryFlaggedWet === 0, 'and one on the bank is dry', `${dryFlaggedWet} frames`)
+check(bouts.paddle > 0 && landBoutAfloat === 0, 'afloat it paddles, and only afloat', `${bouts.paddle} paddle bouts, ${landBoutAfloat} bouts in the wrong medium`)
+check(risenStroke === 0, 'a stroke across the water does not leave it', `${risenStroke} risen`)
+check(strokeQuadrants.size === 4, 'the strokes go every way', `quadrants ${[...strokeQuadrants].sort().join(', ')}`)
+check(cameOut.size > 1 && hoppedAfter.size > 0, 'frogs come back onto the bank and hop on', `${cameOut.size} came out, ${hoppedAfter.size} hopped on land after`)
 check(offBand === 0, 'no frog hops off the shore band', `${offBand} frames`)
 check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)
-check(strayed === 0, `no frog ever lands more than ${TETHER_M} m from home`, `furthest ${maxStray.toFixed(2)} m`)
-check(alive().every((f) => f.state !== 'sit' || Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'a sitting frog is on the ground')
+check(strayed === 0, `no frog ever lands more than ${TETHER_M} m from home, afloat or ashore`, `furthest ${maxStray.toFixed(2)} m`)
+check(alive().every((f) => f.state !== 'sit' || Math.abs(f.y - (f.wet ? LEVEL : GROUND + 0.05)) < 1e-6), 'a sitting frog is on the ground, or on the water')
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame with ${alive().length} frogs`)
 check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && drawnCount() > 0, 'the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
 
@@ -288,25 +318,49 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   check(phases.size > alive().length * 0.8, 'each frog breathes on its own phase', `${phases.size} distinct of ${alive().length}`)
 }
 
+// --- bobbing: one frog set afloat, the rest pinned, and its instance's height watched over one bob ----
+{
+  // The frog nearest her head, moved into the river beside her so it is drawn as the pick.
+  const swimmer = alive().sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z))[0]
+  const was = { x: swimmer.x, z: swimmer.z }
+  swimmer.wet = true; swimmer.x = 1; swimmer.z = 1; swimmer.y = LEVEL
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  const d = drawn([0, GROUND + 1.6, 0]).find((e) => e.f === swimmer)
+  check(d !== undefined, 'the swimmer is drawn', `lod ${swimmer.lod}`)
+  const e = frogs.tiers[d.tier].instanceMatrix.array
+  const ys = []
+  for (let i = 0; i < Math.ceil(BOB_S / DT); i++) {
+    frogs.update(0, GROUND + 1.6, 0, DT)
+    ys.push(e[d.i * 16 + 13])
+  }
+  const span = Math.max(...ys) - Math.min(...ys)
+  check(span > BOB_AMP * 1.9 && span < BOB_AMP * 2.1 && Math.min(...ys) >= LEVEL - BOB_AMP - 1e-6 && Math.max(...ys) <= LEVEL + BOB_AMP + 1e-6, 'a floating frog bobs about the surface', `${(span * 100).toFixed(1)} cm peak to peak about ${LEVEL}`)
+  check(swimmer.y === LEVEL, 'without its seat moving')
+  swimmer.wet = false; swimmer.x = was.x; swimmer.z = was.z; swimmer.y = GROUND + 0.05
+}
+
 // --- the drawn ground changing shape under a seated frog -------------------------
 {
-  for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
-  // One frog caught mid-hop, its arc pinned by a long flight.
-  const flier = alive()[0]
-  flier.state = 'hop'; flier.x0 = flier.x1 = flier.x; flier.z0 = flier.z1 = flier.z; flier.y0 = flier.y1 = GROUND + 0.05; flier.t = 0; flier.dur = 1e9; flier.rise = 0
+  // Every frog ashore and pinned, but one afloat in the river and one caught mid-hop, its arc pinned by a long flight.
+  for (const f of alive()) { f.state = 'sit'; f.left = 1e9; f.wet = false; f.y = GROUND + 0.05 }
+  const [flier, swimmer] = alive()
+  flier.state = 'hop'; flier.x0 = flier.x1 = flier.x; flier.z0 = flier.z1 = flier.z; flier.y0 = flier.y1 = GROUND + 0.05; flier.wet0 = flier.wet1 = false; flier.t = 0; flier.dur = 1e9; flier.rise = 0
+  swimmer.wet = true; swimmer.y = LEVEL
   ground.lift = 0.25
   frogs.update(0, GROUND + 1.6, 0, DT)
-  const sitters = alive().filter((f) => f !== flier)
+  const sitters = alive().filter((f) => f !== flier && f !== swimmer)
   const before = sitters.map((f) => f.y)
   check(sitters.every((f, i) => f.y === before[i]) && Math.abs(flier.y1 - (GROUND + 0.05)) < 1e-6, 'a moved surface with the same version is not re-read', `${sitters.length} sitting`)
   ground.groundVersion++
   frogs.update(0, GROUND + 1.6, 0, DT)
   check(sitters.every((f) => Math.abs(f.y - (GROUND + 0.25)) < 1e-6), 'the version ticking puts every sitting frog on the new surface', `${sitters.length} sitting`)
   check(Math.abs(flier.y0 - (GROUND + 0.25)) < 1e-6 && Math.abs(flier.y1 - (GROUND + 0.25)) < 1e-6, 'and a frog in the air will land on it')
+  check(swimmer.y === LEVEL, 'while a frog afloat stays on the water')
   ground.lift = 0.05
   ground.groundVersion++
   frogs.update(0, GROUND + 1.6, 0, DT)
   flier.state = 'sit'; flier.y = flier.y1
+  swimmer.wet = false; swimmer.y = GROUND + 0.05
   check(alive().every((f) => Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'and back again when it drops')
 }
 

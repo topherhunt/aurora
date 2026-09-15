@@ -88,6 +88,8 @@ export class Heightmap {
     this._max = hi
     // The crease operator, or null. See attachCrease.
     this._crease = null
+    // True when sample() reads bilinearly. See attachLinear.
+    this._linear = false
   }
 
   /**
@@ -126,6 +128,17 @@ export class Heightmap {
    */
   attachCrease(op) {
     this._crease = op ?? null
+  }
+
+  /**
+   * Make sample() read the texels BILINEARLY -- the `jagged` relief knob's
+   * macro, with a slope discontinuity on every texel edge and no dome on any
+   * crest. Same choke-point argument as attachCrease, and attached to a view
+   * for the same reason. Overrides an attached crease: a creased reconstruction
+   * is a fix for the bicubic's dome, and there is no dome here to fix.
+   */
+  attachLinear(on) {
+    this._linear = on === true
   }
 
   /** Metres per texel on X. Square images make this the same on both axes. */
@@ -337,6 +350,7 @@ export class Heightmap {
 
   /** Bicubic (Catmull-Rom). World metres in, metres out. This is the coarse term of V2Height. */
   sample(x, z) {
+    if (this._linear) return this.sampleBilinear(x, z)
     if (this._crease !== null) return this._crease.at(x, z)
     const u = (x + WORLD_HALF) * this._invX
     const v = (z + WORLD_HALF) * this._invZ
@@ -352,10 +366,11 @@ export class Heightmap {
   }
 
   /**
-   * NOT the field. This exists so the gate can show that bilinear's first
-   * derivative jumps at a texel edge and sample()'s does not -- a C1 assertion
+   * The unsmoothed read: C0, with the first derivative jumping at every texel
+   * edge. The shipped field never reaches it; it is what sample() becomes under
+   * attachLinear, and what the gate holds the bicubic against -- a C1 assertion
    * that only ever passes proves nothing, so the check needs something it knows
-   * should fail. Nothing in the runtime path may call this.
+   * should fail.
    */
   sampleBilinear(x, z) {
     const u = (x + WORLD_HALF) * this._invX

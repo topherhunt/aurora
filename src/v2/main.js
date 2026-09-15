@@ -3,7 +3,7 @@ import THREE from '../three-instance.js'
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
-import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from './height/relief.js'
+import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
@@ -657,6 +657,13 @@ const QUEST_TOGGLE_ROWS = [
   // Lime lines over the drawn ground, so the triangle size under a texture
   // seam can be read against the seam. See TerrainV2._drawWireframe.
   { key: 'terrainWire', text: 'landscape wireframe' },
+  // The `jagged` relief knob from the world menu, so the unsmoothed stack can
+  // be tried without `?editor`. Goes through onRelief like the editor's relief
+  // zone does, so the workers, the props and the saved relief all follow.
+  { key: 'ground', text: 'ground', action: () => onRelief({ ...relief, jagged: relief.jagged > 0 ? 0 : 1 }), value: () => (relief.jagged > 0 ? 'jagged >' : 'smooth >') },
+  // The `peaks` mesher knob: far chunks draw the max over each vertex's
+  // footprint, or point-sample. See PEAKS in chunk-mesh-v2.js.
+  { key: 'peaks', text: 'far peaks', action: () => onRelief({ ...relief, peaks: relief.peaks > 0 ? 0 : 1 }), value: () => (relief.peaks > 0 ? 'max >' : 'sampled >') },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   // The world probe's capture, drawn as a cube at the point it was taken from.
@@ -1671,28 +1678,31 @@ function placeAnimals(cx, cz) {
 // with the knobs still where you left them is the whole point of a session
 // spent A/B-ing them, and a query string does not survive the editor's own
 // reload-on-save.
-const RELIEF_KEY = 'v2.relief'
-let relief = RELIEF_DEFAULTS
+// The suffix moves with RELIEF_SHIPPED: a browser holding a relief saved under
+// the previous shipped configuration boots on the new one instead of the old.
+const RELIEF_KEY = 'v2.relief.2'
+let relief = RELIEF_SHIPPED
 
 /**
- * Read the stored relief, falling back to all-off.
+ * Read the stored relief, falling back to RELIEF_SHIPPED.
  *
  * The catch is around normalizeRelief as much as around JSON.parse: a knob
  * renamed or removed since the value was written makes it THROW rather than
  * silently drop the key, which is right for a postMessage and wrong here --
  * being unable to boot because of a stale HUD setting is not a failure mode
- * worth having. Anything unreadable is reported once and replaced with off,
- * which is the state the world ships in anyway.
+ * worth having. Anything unreadable is reported once and replaced with the
+ * shipped configuration.
  */
 function loadRelief() {
+  localStorage.removeItem('v2.relief')
   const raw = localStorage.getItem(RELIEF_KEY)
-  if (!raw) return RELIEF_DEFAULTS
+  if (!raw) return RELIEF_SHIPPED
   try {
     return normalizeRelief(JSON.parse(raw))
   } catch (err) {
     console.warn(`[v2] discarding stored relief: ${err.message}`)
     localStorage.removeItem(RELIEF_KEY)
-    return RELIEF_DEFAULTS
+    return RELIEF_SHIPPED
   }
 }
 
@@ -2387,6 +2397,11 @@ function onRelief(next) {
   if (sameRelief(want, relief)) return
   relief = want
   localStorage.setItem(RELIEF_KEY, JSON.stringify(relief))
+  // Two views of one value: the editor's relief zone and the world menu's
+  // `ground` row. Whichever one was pressed, the other has to follow.
+  if (panel) panel.setRelief(relief)
+  refreshQuestRow('ground')
+  refreshQuestRow('peaks')
 
   const t0 = performance.now()
   height.setRelief(relief)

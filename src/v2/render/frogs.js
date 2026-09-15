@@ -14,15 +14,21 @@
 //
 // A frog sits, then moves in a bout: usually a WALK, a string of short hops
 // along one heading with a beat between them, now and then a LEAP or three in
-// any direction. It is tethered to where it was placed, never landing past
-// TETHER_M from home (aimed home once it is out that far), and every hop
-// target passes the same tests its placement did, so a frog
-// never hops into the water, up a rock or off the band. A frog sits on the
-// DRAWN ground, and is put back on it whenever the terrain's render set changes
-// under it (_reseat), so a chunk re-splitting at distance never buries it; a
-// frog whose seat turns out to be inside a boulder that landed after it leaves. The mesh faces
-// +X; a hop turns it to face where it is going, and it sits with its up along
-// the field's normal there, turning from the one slope to the other in the air.
+// any direction. A hop may land in the water, where the frog floats on the
+// surface (WaterSurfaces.levelAt, bobbing on BOB_S) and its bouts become
+// PADDLEs, slow strokes along a heading that wanders more than a walk's; a
+// stroke that reaches dry ground climbs out and the land bouts resume. It is
+// tethered to where it was placed, never landing past TETHER_M from home
+// (aimed home once it is out that far, on the water as on the land), and every
+// hop target passes the tests its placement did but for dryness, so a frog
+// never hops up a rock, into the cold or off the band, which runs SHORE_M to
+// either side of the waterline. A frog sits on the DRAWN ground, and is put
+// back on it whenever the terrain's render set changes under it (_reseat), so
+// a chunk re-splitting at distance never buries it; a frog whose seat turns
+// out to be inside a boulder that landed after it leaves. The mesh faces +X; a
+// hop turns it to face where it is going, and it sits with its up along the
+// field's normal there (the world's up on the water), turning from the one
+// slope to the other in the air.
 //
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
 // (critters.js critterTier, LOD_DEG below), one InstancedMesh per tier under
@@ -63,14 +69,18 @@ export const MORPHS = [
   { name: 'brown', w: 3, hue: [-1.1, -0.75], r: [0.75, 0.95], g: [0.6, 0.78], b: [0.4, 0.55] },
 ]
 const MORPH_W = MORPHS.reduce((sum, m) => sum + m.w, 0)
-// Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between; a walk holds one heading give or take WOBBLE, a leap picks a fresh direction every hop. Every hop rises HOP_RISE of its distance.
+// Sit SIT_S, then a bout: on land WALK_P of the time a walk, otherwise a leap; on the water a paddle. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between, and each hop turns from the bout's heading by up to `turn` radians either way: a walk holds its line, a leap's full turn is a fresh direction every hop, a paddle wanders between. A hop with a dry end rises HOP_RISE of its distance; a paddle stays on the surface and stretches only PADDLE_STRETCH of a hop's.
 const SIT_S = [2, 8]
 const WALK_P = 0.7
-export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1] }
-export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5] }
-const WOBBLE = 0.6
+export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1], turn: 0.6 }
+export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5], turn: Math.PI * 2 }
+export const PADDLE = { hops: [2, 6], m: [1, 2.5], dur: [1.2, 2.5], pause: [0.5, 2], turn: 1.4 }
 const HOP_RISE = 0.45
-export const TETHER_M = 3
+const PADDLE_STRETCH = 0.3
+export const TETHER_M = 4
+// A floating frog rides the surface up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
+export const BOB_S = 2.1
+export const BOB_AMP = 0.02
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -84,7 +94,7 @@ const _mat = new THREE.Matrix4()
 export class Frogs {
   /**
    * @param height  V2Height: heightAt, heightAndSlopeAt, snowLineAt
-   * @param water   WaterSurfaces: isSubmerged, shoreDistAt
+   * @param water   WaterSurfaces: levelAt, shoreDistAt
    * @param opts.rocks   Rocks, for blockTopAt; a frog never sits on stone
    * @param opts.ground  TerrainV2 or null: the drawn surface to seat on, falling back to the field
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
@@ -93,8 +103,8 @@ export class Frogs {
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Frogs needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
-    if (!water || typeof water.shoreDistAt !== 'function' || typeof water.isSubmerged !== 'function') {
-      throw new Error('Frogs needs WaterSurfaces, for shoreDistAt and isSubmerged')
+    if (!water || typeof water.shoreDistAt !== 'function' || typeof water.levelAt !== 'function') {
+      throw new Error('Frogs needs WaterSurfaces, for shoreDistAt and levelAt')
     }
     if (!rocks || typeof rocks.blockTopAt !== 'function') throw new Error('Frogs needs Rocks, for blockTopAt')
     if (ground && (typeof ground.groundAt !== 'function' || typeof ground.groundVersion !== 'number')) {
@@ -139,8 +149,10 @@ export class Frogs {
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_DEG.length,
         // The ground normal the frog sits along, and the normals at a hop's two ends.
         nx: 0, ny: 1, nz: 0, n0x: 0, n0y: 1, n0z: 0, n1x: 0, n1y: 1, n1z: 0,
-        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed. `bout` is WALK or LEAP with `hops` of it to go, `heading` the walk's line.
+        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed. `bout` is WALK, LEAP or PADDLE with `hops` of it to go, `heading` the bout's line.
         state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
+        // Whether the seat, and a hop's two ends, are on the water; a wet y is the surface, not the ground.
+        wet: false, wet0: false, wet1: false,
       })
     }
     this.free = this.slots.slice()
@@ -197,43 +209,48 @@ export class Frogs {
    * re-splitting swaps the leaf's half-metre cells for metre ones 19 m out (11 m
    * in the periphery), and where the new chord rises through a seat it buries
    * the frog until its next hop. A hop in the air has both its ends re-read, so
-   * it lands on the new surface too.
+   * it lands on the new surface too. A wet seat rides the water, not the ground.
    */
   _reseat() {
     for (const t of this.tiles.values()) {
       for (const f of t.frogs) {
         if (f.state === 'sit') {
-          f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
+          if (!f.wet) f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
         } else {
-          f.y0 = this._groundFor(f.x0, f.z0, this.height.heightAt(f.x0, f.z0))
-          f.y1 = this._groundFor(f.x1, f.z1, this.height.heightAt(f.x1, f.z1))
+          if (!f.wet0) f.y0 = this._groundFor(f.x0, f.z0, this.height.heightAt(f.x0, f.z0))
+          if (!f.wet1) f.y1 = this._groundFor(f.x1, f.z1, this.height.heightAt(f.x1, f.z1))
         }
       }
     }
   }
 
   /**
-   * Whether a frog may sit at (x, z): dry, gentle, warm, clear of stone and
-   * inside the shore band. Returns the field's sample there -- height `h` and
-   * the gradient `gx`, `gz` the frog sits across -- or null.
+   * Whether a frog may sit at (x, z): warm, clear of stone, and either on the
+   * water or on gentle dry ground, within SHORE_M of the waterline either way.
+   * Returns the field's sample there -- height `h` and the gradient `gx`, `gz`
+   * the frog sits across -- with `wet` and, on the water, the surface `level`;
+   * or null.
    */
   seat(x, z) {
     const s = this.height.heightAndSlopeAt(x, z)
     const { h, tan } = s
-    if (tan > MAX_TAN) return null
-    if (this.water.isSubmerged(x, z, h)) return null
     if (h > this.height.snowLineAt(x, z) - SNOW_MARGIN) return null
-    if (!(this.water.shoreDistAt(x, z, SHORE_M, h, tan) < SHORE_M)) return null
     if (this.rocks.blockTopAt(x, z, 0) > -Infinity) return null
+    const level = this.water.levelAt(x, z)
+    s.wet = level !== null && h < level
+    s.level = s.wet ? level : null
+    if (!s.wet && tan > MAX_TAN) return null
+    const shore = this.water.shoreDistAt(x, z, SHORE_M, h, tan)
+    if (!(shore < SHORE_M && shore > -SHORE_M)) return null
     return s
   }
 
-  /** The unit normal of a seat's ground, into the frog's n1 (the slope it lands on). */
-  static _normal(f, { gx, gz }) {
-    const len = Math.hypot(gx, 1, gz)
-    f.n1x = -gx / len
+  /** The unit normal of a seat's ground, into the frog's n1 (the slope it lands on); the world's up on the water. */
+  static _normal(f, { gx, gz, wet }) {
+    const len = wet ? 1 : Math.hypot(gx, 1, gz)
+    f.n1x = wet ? 0 : -gx / len
     f.n1y = 1 / len
-    f.n1z = -gz / len
+    f.n1z = wet ? 0 : -gz / len
   }
 
   _enter(tx, tz) {
@@ -252,14 +269,16 @@ export class Frogs {
       const b = between(rand, morph.b)
       const hue = between(rand, morph.hue)
       const yaw = rand() * Math.PI * 2
+      // Placed on dry ground only; the water is reached by hopping in.
       const s = this.seat(x, z)
-      if (s === null) continue
+      if (s === null || s.wet) continue
       const f = this.free.pop()
       if (!f) { this.overflow++; continue }
       f.tile = t
       f.x = f.homeX = x
       f.z = f.homeZ = z
       f.y = this._groundFor(x, z, s.h)
+      f.wet = false
       Frogs._normal(f, s)
       f.nx = f.n1x; f.ny = f.n1y; f.nz = f.n1z
       f.size = size
@@ -313,21 +332,23 @@ export class Frogs {
     if (Math.hypot(dx, dz) > TETHER_M) f.heading = Math.atan2(-dz, dx) + (this.rand() - 0.5) * (Math.PI / 2)
     const reach = between(this.rand, f.bout.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
-      const a = f.bout === WALK ? f.heading + (this.rand() - 0.5) * WOBBLE : this.rand() * Math.PI * 2
+      const a = f.heading + (this.rand() - 0.5) * f.bout.turn
       const x1 = f.x + Math.cos(a) * reach
       const z1 = f.z - Math.sin(a) * reach
       const s1 = this.seat(x1, z1)
       if (s1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) {
-        // The walk's line is blocked: swing it a quarter to three-quarters of a turn and try that way.
+        // The bout's line is blocked: swing it a quarter to three-quarters of a turn and try that way.
         f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + this.rand() * Math.PI / 2)
         continue
       }
-      f.x0 = f.x; f.z0 = f.z; f.y0 = f.y
-      f.x1 = x1; f.z1 = z1; f.y1 = this._groundFor(x1, z1, s1.h)
+      f.x0 = f.x; f.z0 = f.z; f.y0 = f.y; f.wet0 = f.wet
+      f.x1 = x1; f.z1 = z1; f.wet1 = s1.wet
+      f.y1 = s1.wet ? s1.level : this._groundFor(x1, z1, s1.h)
       f.n0x = f.nx; f.n0y = f.ny; f.n0z = f.nz
       Frogs._normal(f, s1)
       f.yaw = a
-      f.rise = reach * HOP_RISE
+      // A stroke on the water stays on it; a hop off or onto the bank rises.
+      f.rise = f.wet0 && f.wet1 ? 0 : reach * HOP_RISE
       f.dur = between(this.rand, f.bout.dur)
       f.t = 0
       f.state = 'hop'
@@ -347,6 +368,7 @@ export class Frogs {
     }
 
     const breath = (this.time * Math.PI * 2) / BREATH_S
+    const bob = (this.time * Math.PI * 2) / BOB_S
     const counts = LOD_DEG.map(() => 0)
     for (const t of this.tiles.values()) {
       // Backwards, because a frog that finds itself inside a rock leaves the list mid-walk.
@@ -355,17 +377,20 @@ export class Frogs {
         let sy = 1
         let sx = 1
         let sz = 1
+        // The surface's bob, ridden while afloat: sitting on the water, or a stroke across it.
+        let lift = 0
         if (f.state === 'sit') {
           // The breath: a swell that is mostly height, a little girth.
           const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
           sy = 1 + s
           sx = sz = 1 + s * 0.4
+          if (f.wet) lift = BOB_AMP * Math.sin(bob + f.breath)
           f.left -= dt
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
             if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
             if (f.hops <= 0) {
-              f.bout = this.rand() < WALK_P ? WALK : LEAP
+              f.bout = f.wet ? PADDLE : this.rand() < WALK_P ? WALK : LEAP
               f.hops = Math.round(between(this.rand, f.bout.hops))
               f.heading = this.rand() * Math.PI * 2
             }
@@ -386,13 +411,17 @@ export class Frogs {
           const v = Math.min(1, u * 1.5)
           _nrm.set(f.n0x + (f.n1x - f.n0x) * v, f.n0y + (f.n1y - f.n0y) * v, f.n0z + (f.n1z - f.n0z) * v).normalize()
           f.nx = _nrm.x; f.ny = _nrm.y; f.nz = _nrm.z
-          // Stretched along the leap in the air, flattened a little on landing.
-          const s = Math.sin(Math.PI * u)
+          // Stretched along the leap in the air, flattened a little on landing; a stroke on the water only a fraction of that.
+          const s = Math.sin(Math.PI * u) * (f.rise > 0 ? 1 : PADDLE_STRETCH)
           sx = 1 + 0.25 * s
           sy = 1 - 0.15 * s
+          if (f.wet0 && f.wet1) lift = BOB_AMP * Math.sin(bob + f.breath)
           if (u >= 1) {
             f.state = 'sit'
             f.y = f.y1
+            // Landing in the other medium ends the bout: the next one is picked for where the frog is now.
+            if (f.wet1 !== f.wet0) f.hops = 0
+            f.wet = f.wet1
             f.left = between(this.rand, f.hops > 0 ? f.bout.pause : SIT_S)
           }
         }
@@ -400,7 +429,7 @@ export class Frogs {
         f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_DEG)
         if (f.lod === LOD_DEG.length) continue
         const k = f.size / this.span
-        _pos.set(f.x, f.y, f.z)
+        _pos.set(f.x, f.y + lift, f.z)
         // Yaw about the world up, then that up tilted onto the ground's normal.
         _quat.setFromAxisAngle(UP, f.yaw)
         _tilt.setFromUnitVectors(UP, _nrm.set(f.nx, f.ny, f.nz))

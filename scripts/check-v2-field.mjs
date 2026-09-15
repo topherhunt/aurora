@@ -47,7 +47,7 @@ import { pathToFileURL } from 'node:url'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, DETAIL_GAIN, measureSite, measureAngle, roughnessOf } from '../src/v2/height/detail.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
-import { RELIEF_KNOBS, RELIEF_DEFAULTS, reliefIsOff } from '../src/v2/height/relief.js'
+import { RELIEF_KNOBS, RELIEF_DEFAULTS, RELIEF_SHIPPED, normalizeRelief, reliefIsOff } from '../src/v2/height/relief.js'
 import { thermalErode } from '../src/v2/height/erode.js'
 import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
@@ -1104,6 +1104,16 @@ export async function run({ heightmap } = {}) {
         if (a !== b) { mismatch++; worst = Math.max(worst, Math.abs(a - b)) }
       }
       check(reliefIsOff(RELIEF_DEFAULTS), 'RELIEF_DEFAULTS is the off state, by its own predicate', `${RELIEF_KNOBS.length} knobs`)
+      // What main.js boots on: the two knobs the world ships with, on a table
+      // that normalizes, and nothing else up -- "disable all other terrain
+      // effects" is a property of this object and not of a saved HUD.
+      const shipped = normalizeRelief(RELIEF_SHIPPED)
+      const shippedUp = RELIEF_KNOBS.filter((k) => shipped[k.key] !== k.off).map((k) => k.key)
+      check(
+        shippedUp.length === 2 && shipped.jagged === 1 && shipped.peaks === 1,
+        'RELIEF_SHIPPED is jagged and peaks alone',
+        shippedUp.length ? shippedUp.join(', ') : 'nothing up'
+      )
       check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/${N} sites differ, worst ${worst} m`)
       check(explicit.calibration.rough === cal.rough, 'and the same calibration, bit for bit', `ROUGH ${cal.rough}`)
       // The copy is what erosion costs; with the knob off there must not be one.
@@ -1111,18 +1121,18 @@ export async function run({ heightmap } = {}) {
       // default that changes nothing.
       check(field.ground === field.heightmap, 'with relief off the world is built on the import itself, not a copy', 'no eroded duplicate is allocated')
       check(explicit.ground === explicit.heightmap, 'and the same through the explicit all-off relief')
-      // AND NOTHING IS HOOKED INTO Heightmap.sample. `crease` is the one knob
-      // that does not add a term: it replaces the coarse reconstruction from
-      // inside sample() itself, so with it off the assertion is not "the term
-      // evaluates to zero" but "the branch does not exist" -- sample() is
-      // literally the Catmull-Rom expression it has always been, and the
-      // `_crease !== null` test in front of it is the only cost the default
-      // pays. Reached into deliberately: `field.crease === null` alone would
-      // still pass over an import somebody else had left an operator on.
+      // AND NOTHING IS HOOKED INTO Heightmap.sample. `crease` and `jagged` are
+      // the two knobs that do not add a term: each replaces the coarse
+      // reconstruction from inside sample() itself, so with both off the
+      // assertion is not "the term evaluates to zero" but "the branch does not
+      // exist" -- sample() is literally the Catmull-Rom expression it has always
+      // been, and the two flag tests in front of it are the only cost the
+      // default pays. Reached into deliberately: `field.crease === null` alone
+      // would still pass over an import somebody else had left an operator on.
       check(
-        field.crease === null && explicit.crease === null && hm._crease === null,
-        'and no crease operator is attached -- with the knob off sample() IS the plain bicubic, not a branch that returns it',
-        'Heightmap._crease null on the import and on both fields'
+        field.crease === null && explicit.crease === null && hm._crease === null && hm._linear === false,
+        'and no reconstruction is attached -- with the knobs off sample() IS the plain bicubic, not a branch that returns it',
+        'Heightmap._crease null and _linear false on the import and on both fields'
       )
     }
 
@@ -1140,8 +1150,9 @@ export async function run({ heightmap } = {}) {
     //
     //   height    the composed field. Most of them.
     //   snowline  snowJag, which moves a COLOUR boundary and no geometry.
-    //   mesher    crest. See the banner: asserted as a non-effect on the field.
-    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', snowJag: 'snowline', crest: 'mesher' }
+    //   mesher    crest and peaks. See the banner: asserted as a non-effect on
+    //             the field; peaks' own effect on a coarse chunk is probed below.
+    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
       check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
@@ -1156,10 +1167,10 @@ export async function run({ heightmap } = {}) {
 
       for (const knob of RELIEF_KNOBS) {
         const kind = PROBE[knob.key]
-        // `talus` is the one knob whose `on` IS its `off` -- it is a repose
-        // angle, not an amount, and 42 deg is both the default and what the HUD
-        // toggle restores. Its min is the ablation, and it is a value from the
-        // table rather than a number invented here.
+        // `talus` and `jitter` are the knobs whose `on` IS their `off` -- a
+        // repose angle and a fraction, not amounts, each shipping at the value
+        // the HUD toggle restores. Their min is the ablation, and it is a value
+        // from the table rather than a number invented here.
         const value = knob.on !== knob.off ? knob.on : knob.min
         // The two dependent knobs are measured against PARENT-ONLY, not against
         // all-off, or `aniso` would be credited with the crag it is stretching.
@@ -1192,22 +1203,27 @@ export async function run({ heightmap } = {}) {
           // inferred from the import at the top of this file, which would still
           // succeed against a mesher that had dropped the term entirely.
           const meshSrc = await readFile(MESH_PATH, 'utf8')
+          const reads = new RegExp(`relief\\.${knob.key}\\b`).test(meshSrc)
           check(
-            /relief\.crest/.test(meshSrc),
+            reads,
             `${knob.key} is consumed by src/v2/terrain/chunk-mesh-v2.js`,
-            /relief\.crest/.test(meshSrc) ? 'reads field.relief.crest' : 'NO reader -- the knob is wired to nothing and this gate cannot see it move'
+            reads ? `reads field.relief.${knob.key}` : 'NO reader -- the knob is wired to nothing and this gate cannot see it move'
           )
           // And the one condition that keeps a mesher term out of a collision
           // question. Section 4's leaf identity survives the crest bias only
           // because the finest cell sits at or below the low end of the crest
           // ramp, where smoothstep is exactly 0 and a leaf chunk is still raw
           // heightAtCell. Lower CREST_CELL_LO under CLASS_EPS and crest starts
-          // biasing the LOD the player collides against, silently.
-          check(
-            CREST_CELL_LO >= CLASS_EPS,
-            `the crest ramp starts at or above the finest cell, so leaf chunks are never crest-biased`,
-            `CREST_CELL_LO ${CREST_CELL_LO} m vs CLASS_EPS ${CLASS_EPS} m`
-          )
+          // biasing the LOD the player collides against, silently. (peaks has
+          // no ramp: it is off wherever a cell is under two texels, which the
+          // leaf-identity probe below holds it to.)
+          if (knob.key === 'crest') {
+            check(
+              CREST_CELL_LO >= CLASS_EPS,
+              `the crest ramp starts at or above the finest cell, so leaf chunks are never crest-biased`,
+              `CREST_CELL_LO ${CREST_CELL_LO} m vs CLASS_EPS ${CLASS_EPS} m`
+            )
+          }
           continue
         }
         check(
@@ -1326,6 +1342,163 @@ export async function run({ heightmap } = {}) {
           `bare=${bareKnob.on} fades the detail term and not the crag band`,
           `crag=${cragOn} cuts ${bandRms.toFixed(4)} m rms at bare 0 and ${throughRms.toFixed(4)} m rms at bare ${bareKnob.on} (${((throughRms / bandRms - 1) * 100).toFixed(2)}%)`
         )
+      }
+    }
+
+    // `jagged` IS THE UNSMOOTHED STACK, AND "UNSMOOTHED" IS ARITHMETIC.
+    //
+    // The knob replaces the bicubic read with a bilinear one and the simplex
+    // octaves with lattice midpoint displacement (see jagged.js's banner), so
+    // its promises are all exactness claims rather than looks:
+    //
+    //   texels    the surface passes through every texel of the import -- every
+    //             lattice point that is also a texel corner carries exactly 0.
+    //   20%       at a first-layer lattice point every finer layer is 0 too, so
+    //             the departure from the bilinear macro IS one layer's value,
+    //             bounded by jitter x the macro rise across the parent cell.
+    //   lines     between two lattice points of the finest layer the term is a
+    //             straight line; the smooth stack's is not. This is the one that
+    //             says "no curve anywhere", and it is the one a well-meaning
+    //             smoothstep on the lattice weights would break silently.
+    //   band      cell 0 and the finest drawn cell are the same field, and at a
+    //             texel-sized cell every layer is gone and the drawn ground is
+    //             the bilinear macro alone. Same LOD ladder as Detail's.
+    //
+    // Determinism across two instances is asserted because the lattice hash is
+    // integer arithmetic on purpose: a worker and the main thread must agree
+    // bit for bit with no shared table, and a `Math.random` slipped into the
+    // hash would fail here and nowhere else.
+    {
+      const jagKnob = knobOf('jagged')
+      const jitKnob = knobOf('jitter')
+      const jag = mk({ jagged: jagKnob.on })
+      const again = mk({ jagged: jagKnob.on })
+      const texel = hm.texelSize
+      const s0 = jag.detail.table[0].spacing
+      check(jag.detail.constructor.name === 'Jagged' && field.detail.constructor.name === 'Detail', 'jagged swaps the detail stack and the default keeps the smooth one', `${jag.detail.count} layers: ${jag.detail.table.map((t) => `${t.spacing.toFixed(2)} m ${t.rule}`).join(', ')}`)
+      check(jag.ground !== hm && jag.ground._linear === true && hm._linear === false, 'the bilinear read is attached to a view, never to the shared import', `view linear, import not`)
+      check(Math.abs(s0 * 2 - texel) < 1e-9, 'the first layer sits at half the texel', `${s0.toFixed(4)} m under ${texel.toFixed(4)} m texels`)
+      check(jag.detail.table.filter((t) => t.rule === 'calibrated').map((t) => t.spacing.toFixed(2)).join(',') === '1.00,0.50,0.25', 'and the 1, 0.5 and 0.25 m layers take the calibrated amplitudes', jag.detail.table.filter((t) => t.rule === 'calibrated').map((t) => `${t.spacing.toFixed(2)} m ${t.coef.toFixed(4)} m`).join(', '))
+
+      // texels: walk a block of the import and read the field at each corner.
+      let worstTexel = 0
+      for (let j = 200; j < 240; j++) {
+        for (let i = 200; i < 240; i++) {
+          const x = -WORLD_HALF + i * texel
+          const z = -WORLD_HALF + j * texel
+          worstTexel = Math.max(worstTexel, Math.abs(jag.heightAt(x, z) - hm.field[j * hm.width + i]))
+        }
+      }
+      check(worstTexel < 1e-9, 'jagged passes through every texel of the import exactly', `worst ${worstTexel.toExponential(2)} m over 1600 corners`)
+
+      // 20%: first-layer lattice points that are not texel corners.
+      let worstOver = -Infinity
+      let sloped = 0
+      for (let j = 200; j < 240; j++) {
+        for (let i = 200; i < 240; i++) {
+          if ((i & 1) === 0 && (j & 1) === 0) continue
+          const x = -WORLD_HALF + i * s0
+          const z = -WORLD_HALF + j * s0
+          const s01 = jag.ground.slopeAt(x, z)
+          const tan = s01 / (1 - s01)
+          const bound = jitKnob.off * texel * tan
+          const dev = Math.abs(jag.heightAt(x, z) - jag.ground.sample(x, z))
+          worstOver = Math.max(worstOver, dev - bound)
+          if (bound > 0.05 && dev > bound * 0.5) sloped++
+        }
+      }
+      check(worstOver < 1e-9, `at a ${s0.toFixed(2)} m lattice point the departure from the bilinear macro is at most jitter x the parent cell's rise`, `worst over the bound ${worstOver.toExponential(2)} m`)
+      check(sloped > 0, 'and on sloped ground it uses a good part of that allowance', `${sloped} lattice points past half the bound`)
+
+      // lines: three points along x inside one cell of the finest layer.
+      const sFine = jag.detail.table[jag.detail.count - 1].spacing
+      let worstLine = 0
+      let smoothLine = 0
+      for (let i = 0; i < 400; i++) {
+        const p = site(i)
+        const x0 = Math.floor((p.x + WORLD_HALF) / sFine) * sFine - WORLD_HALF + sFine * 0.1
+        const x1 = x0 + sFine * 0.8
+        const xm = (x0 + x1) / 2
+        const slope = 0.4
+        const j = jag.detail
+        worstLine = Math.max(worstLine, Math.abs(j.at(xm, p.z, 0, slope, 0) - (j.at(x0, p.z, 0, slope, 0) + j.at(x1, p.z, 0, slope, 0)) / 2))
+        const d = field.detail
+        smoothLine = Math.max(smoothLine, Math.abs(d.at(xm, p.z, 0, slope, 0) - (d.at(x0, p.z, 0, slope, 0) + d.at(x1, p.z, 0, slope, 0)) / 2))
+      }
+      check(worstLine < 1e-9, 'between two points of the finest lattice the jagged term is a straight line', `worst departure ${worstLine.toExponential(2)} m; the smooth stack departs by ${smoothLine.toExponential(2)} m over the same segments`)
+      check(smoothLine > 1e-6, 'and that assertion bites -- the smooth stack fails it', `${smoothLine.toExponential(2)} m`)
+
+      // band and determinism.
+      let worstFine = 0
+      let worstCoarse = 0
+      let mismatch = 0
+      for (let i = 0; i < 400; i++) {
+        const p = site(i)
+        const exact = jag.heightAt(p.x, p.z)
+        if (exact !== again.heightAt(p.x, p.z)) mismatch++
+        worstFine = Math.max(worstFine, Math.abs(jag.heightAt(p.x, p.z, sFine / 4) - exact))
+        worstCoarse = Math.max(worstCoarse, Math.abs(jag.heightAt(p.x, p.z, texel) - jag.ground.sample(p.x, p.z)))
+      }
+      check(mismatch === 0, 'two jagged fields from one seed agree bit for bit', `${mismatch}/400 sites differ`)
+      check(worstFine === 0, `a ${(sFine / 4).toFixed(4)} m cell carries every layer and is the exact field`, `worst ${worstFine} m`)
+      check(worstCoarse < 1e-9, `a texel-sized cell carries none and is the bilinear macro alone`, `worst ${worstCoarse.toExponential(2)} m`)
+    }
+
+    // `peaks` IS AN UPPER ENVELOPE, AND ONLY WHERE A CELL IS COARSER THAN A TEXEL.
+    //
+    // The knob lives in the mesher (its non-effect on the field is asserted
+    // above); what it promises is per vertex of a coarse chunk: at least the
+    // point sample, at least the field at every texel of the vertex's own
+    // footprint, and exactly the point sample at the 4 m rung and below, where
+    // the leaf identity of section 4 has to survive it.
+    {
+      const texel = hm.texelSize
+      const peaks = mk({ peaks: 1 })
+      const vpr = CHUNK_RES + 1
+      const inner = vpr * vpr
+      const spec = (size) => ({ ox: -size / 2 + 64, oz: -size / 2 - 128, size, res: CHUNK_RES, cam: CAM })
+      for (const depth of [4, 6]) {
+        const size = WORLD_SIZE / (1 << depth)
+        const step = size / CHUNK_RES
+        const sp = spec(size)
+        const off = buildChunkV2(field, layers, sp)
+        const on = buildChunkV2(peaks, layers, sp)
+        let below = 0
+        let rose = 0
+        let underFoot = 0
+        let worstUnder = 0
+        const taps = Math.ceil(step / texel) + 1
+        for (let v = 0; v < inner; v++) {
+          const yOff = off.positions[v * 3 + 1]
+          const yOn = on.positions[v * 3 + 1]
+          if (yOn < yOff) below++
+          if (yOn > yOff) rose++
+          const wx = sp.ox + (v % vpr) * step
+          const wz = sp.oz + Math.floor(v / vpr) * step
+          let hMax = -Infinity
+          for (let b = 0; b < taps; b++) {
+            for (let a = 0; a < taps; a++) {
+              hMax = Math.max(hMax, field.heightAt(wx - step / 2 + (a * step) / (taps - 1), wz - step / 2 + (b * step) / (taps - 1), step))
+            }
+          }
+          // Float32 positions against a float64 field.
+          const under = Math.fround(hMax) - yOn
+          if (under > 1e-3) { underFoot++; worstUnder = Math.max(worstUnder, under) }
+        }
+        check(below === 0, `at a ${step} m cell peaks=1 lowers no vertex under the point sample`, `${below}/${inner} below`)
+        check(rose > inner / 4, `and raises a good part of them`, `${rose}/${inner} rose`)
+        check(underFoot === 0, `and no vertex sits under the field at any texel of its own footprint`, `${underFoot} under, worst ${worstUnder.toFixed(4)} m`)
+      }
+      for (const depth of [7, 9]) {
+        const size = WORLD_SIZE / (1 << depth)
+        const step = size / CHUNK_RES
+        if (step * 2 > texel) throw new Error(`peaks probe: depth ${depth} is a ${step} m cell, coarser than half a texel`)
+        const sp = spec(size)
+        const off = buildChunkV2(field, layers, sp)
+        const on = buildChunkV2(peaks, layers, sp)
+        let differ = 0
+        for (let i = 0; i < off.positions.length; i++) if (off.positions[i] !== on.positions[i]) differ++
+        check(differ === 0, `at a ${step} m cell peaks=1 is the point sample, bit for bit`, `${differ} position components differ`)
       }
     }
 

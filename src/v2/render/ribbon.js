@@ -41,14 +41,11 @@ export const RIVER_WIDEN_FRAC = 0.25
 export const FLOW_FADE_HALF_WIDTHS = 4
 export const FLOW_FADE_MIN = 8
 
-// How much of the corner's own circumradius the offset is allowed to use before the miter limit bites. Below 1.0 the inner offset edge cannot reach the centre of curvature, which is the point at which it inverts. 0.8 leaves headroom for the fact that a flattened spline's corner circumradius is a discrete estimate of a continuous curvature.
-const MITER_SAFETY = 0.8
+// How much of the way to a neighbour's cross-line the inside edge may reach before the miter limit bites. At 1.0 the inner vertices of a uniform bend all land on its centre of curvature and every quad through it has zero area; short of it by this much they sit on a tiny arc around that centre instead. Only the fallback case (a hairpin whose arms overlap) is drawn with this; a bend with a trimmed inner bank collapses onto it exactly.
+const MITER_SAFETY = 0.98
 
 // The narrowest a clamped ribbon may get, in metres. A hairpin degenerates toward a point; this stops it degenerating to an exactly-zero-area triangle, which is a NaN normal and a hole rather than a pinch.
 const MIN_HALF = 0.02
-
-// Halving passes the exact repair loop gets before it gives up. It converges by construction -- at w = 0 every offset edge is the segment itself, whose dot with its own direction is its squared length -- so exhausting this means the polyline has a genuine cusp and the caller gets a throw rather than inverted triangles.
-const REPAIR_PASSES = 24
 
 // Signed area x2 of a triangle projected to XZ. Sign convention: this is the NEGATIVE of the y component of the 3D cross product, so an upward-facing (+Y normal) triangle comes out NEGATIVE here. Every triangle both generators emit must be negative; the gate checks exactly that.
 const cross2 = (ax, az, bx, bz) => ax * bz - az * bx
@@ -138,9 +135,11 @@ export function discVertices(lake, opts = {}) {
  *   lift               metres added to every y. Roads use it; see road-surfaces.js.
  *   minHalf            the miter clamp's floor.
  *
- * Besides the buffers it returns per-sample `arc` (3D metres from sample 0), `halfWidths` (after widening and the clamps below) and `tangents` (unit XZ, in sample order), which is what the river's flow frame is built from.
+ * Besides the buffers it returns per-sample `arc` (3D metres from sample 0), `halfRight` / `halfLeft` (each edge's offset after widening and the clamps below; right is +normal, vertex a) and `tangents` (unit XZ, in sample order), which is what the river's flow frame is built from.
  *
- * THE THING THAT WILL BITE, and it is the reason this function is longer than a strip has any right to be. On a turn tighter than the half-width the inner offset edge crosses itself: the ribbon folds, the folded quad's triangles come out with the opposite winding, and what you get is a black wedge that is lit from underneath and z-fights with the half of the ribbon it is folded over. It is not a rare case -- one control point dragged past its neighbour produces it -- so it is handled twice over: an analytic cap from the corner's circumradius, which narrows the ribbon SMOOTHLY through the turn, and then an exact per-triangle orientation test that halves whatever the analytic cap missed. The exact test is the same predicate the gate asserts, so the generator and the check cannot drift apart.
+ * THE THING THAT WILL BITE, and it is the reason this function is longer than a strip has any right to be. On a turn tighter than the half-width the inner offset edge crosses itself: the ribbon folds, the folded quad's triangles come out with the opposite winding, and what you get is a black wedge that is lit from underneath and z-fights with the half of the ribbon it is folded over. It is not a rare case -- one control point dragged past its neighbour produces it -- so the offset is capped, exactly, by the miter limit below, and the per-triangle orientation test after it is the same predicate the gate asserts, so the generator and the check cannot drift apart.
+ *
+ * The cap acts on the INSIDE edge of a turn only. The outside edge cannot fold, and the channel the carve cuts is the union of every segment's own footprint, so it runs at full width round the outside of a bend; a cap that narrowed both edges together left a wedge of bare bed between the sheet and the outer bank on every bend it fired on -- two metres of it on the shipped rivers, whose tightest bends have a radius about their half-width. And the cap is the fallback, not the answer: on its own it leaves the inside of such a bend both bare (between the centre of curvature and the inner bank) and double-covered (the two arms' full-width quads cross each other there), so the inside vertices of a capped run are collapsed onto the corner of the trimmed inner bank instead -- see the collapse below -- and the cap stands only where no such corner exists.
  */
 export function ribbonVertices(samples, opts = {}) {
   const { widen = 0, widenFrac = 0, lift = 0, minHalf = MIN_HALF } = opts
@@ -152,7 +151,9 @@ export function ribbonVertices(samples, opts = {}) {
   const px = new Float64Array(n)
   const py = new Float64Array(n)
   const pz = new Float64Array(n)
-  const w = new Float64Array(n)
+  // Per EDGE, right (vertex a, +normal) and left, because the clamps below narrow one side of a bend and not the other.
+  const wr = new Float64Array(n)
+  const wl = new Float64Array(n)
   for (let i = 0; i < n; i++) {
     const o = i * 4
     px[i] = samples[o]
@@ -161,13 +162,12 @@ export function ribbonVertices(samples, opts = {}) {
     const hw = samples[o + 3]
     if (!Number.isFinite(px[i]) || !Number.isFinite(py[i]) || !Number.isFinite(pz[i])) throw new Error(`ribbonVertices: sample ${i} is not finite`)
     if (!(hw > 0)) throw new Error(`ribbonVertices: sample ${i} has halfWidth ${hw}, expected > 0`)
-    w[i] = hw + (widen > 0 ? Math.min(widen, hw * widenFrac) : 0)
+    wr[i] = wl[i] = hw + (widen > 0 ? Math.min(widen, hw * widenFrac) : 0)
   }
 
-  // Segment directions and lengths, XZ only -- everything the offset and the fold test care about is a plan-view question.
+  // Segment directions, XZ only -- everything the offset and the fold test care about is a plan-view question.
   const dx = new Float64Array(n - 1)
   const dz = new Float64Array(n - 1)
-  const dl = new Float64Array(n - 1)
   for (let i = 0; i < n - 1; i++) {
     const ex = px[i + 1] - px[i]
     const ez = pz[i + 1] - pz[i]
@@ -175,7 +175,6 @@ export function ribbonVertices(samples, opts = {}) {
     if (!(l > 1e-6)) throw new Error(`ribbonVertices: samples ${i} and ${i + 1} are coincident in XZ (${l.toExponential(2)} m apart); a flattened spline must not repeat a point`)
     dx[i] = ex / l
     dz[i] = ez / l
-    dl[i] = l
   }
 
   // Per-sample normal: the angle bisector, NOT scaled by the miter factor 1/cos(half-angle). The miter scale is what blows up to infinity on a sharp turn; a plain bisector holds the width honest through the corner and lets the clamp below decide how much of it survives.
@@ -208,45 +207,130 @@ export function ribbonVertices(samples, opts = {}) {
     arc[i] = arc[i - 1] + Math.hypot(px[i] - px[i - 1], py[i] - py[i - 1], pz[i] - pz[i - 1])
   }
 
-  // Pass 1, analytic: the corner through samples i-1, i, i+1 has circumradius ds / (2 sin(turn / 2)). An offset longer than that reaches past the centre of curvature and comes out the other side, which IS the fold. Capping at MITER_SAFETY of it narrows the ribbon over the whole turn rather than at the one worst vertex, so a river tapers into a hairpin instead of stepping into it.
+  // The miter limit. A strip folds when an offset vertex crosses a neighbouring sample's CROSS-LINE (the line through that sample along its own normal): every triangle the strip emits has one edge on a cross-line and its third vertex is an offset vertex of the next or previous sample, so "no vertex crosses its neighbours' cross-lines" is exactly "no triangle inverts", and it is a linear cap on the offset. Per sample and per neighbour j: the offset vertex p + w n must stay on p's side of j's cross-line, `w (n . t_j) < (p_j - p) . t_j` for the next sample and the mirror for the previous, which caps one side -- the side the bend turns toward -- and leaves the other free. Exact, so there is no repair loop after it, and per side, so the outside of a bend keeps its full width. The vertices on the inside of a bend tighter than the ribbon is wide converge on its centre of curvature, which leaves the channel between that centre and the inner bank bare; the collapse below is what covers it, and this cap is what it falls back to.
+  const full = Float64Array.from(wr)
+  const capR = new Uint8Array(n)
+  const capL = new Uint8Array(n)
   let clamped = 0
-  for (let i = 1; i < n - 1; i++) {
-    const dot = Math.max(-1, Math.min(1, dx[i - 1] * dx[i] + dz[i - 1] * dz[i]))
-    const turn = Math.acos(dot)
-    if (turn < 1e-4) continue
-    const ds = 0.5 * (dl[i - 1] + dl[i])
-    const cap = (MITER_SAFETY * ds) / (2 * Math.sin(turn / 2))
-    if (w[i] > cap) {
-      w[i] = Math.max(cap, minHalf)
-      clamped++
-    }
-  }
-
-  // Pass 2, exact: the analytic cap is a per-vertex estimate and the failure is a per-QUAD one, so the quads get tested directly. Both triangles of every quad must keep the sign an upward-facing triangle has; anything else means this segment folded, and the two samples it spans get halved until it does not. Converges because w = 0 makes both offset edges the segment itself.
-  let bad = 0
-  for (let pass = 0; pass <= REPAIR_PASSES; pass++) {
-    bad = 0
-    for (let i = 0; i < n - 1; i++) {
-      const a0x = px[i] + w[i] * nx[i]
-      const a0z = pz[i] + w[i] * nz[i]
-      const b0x = px[i] - w[i] * nx[i]
-      const b0z = pz[i] - w[i] * nz[i]
-      const a1x = px[i + 1] + w[i + 1] * nx[i + 1]
-      const a1z = pz[i + 1] + w[i + 1] * nz[i + 1]
-      const b1x = px[i + 1] - w[i + 1] * nx[i + 1]
-      const b1z = pz[i + 1] - w[i + 1] * nz[i + 1]
-      const t0 = cross2(a1x - a0x, a1z - a0z, b0x - a0x, b0z - a0z)
-      const t1 = cross2(a1x - b0x, a1z - b0z, b1x - b0x, b1z - b0z)
-      if (t0 >= 0 || t1 >= 0) {
-        bad++
-        w[i] = Math.max(minHalf, w[i] * 0.5)
-        w[i + 1] = Math.max(minHalf, w[i + 1] * 0.5)
+  for (let i = 0; i < n; i++) {
+    for (const j of [i - 1, i + 1]) {
+      if (j < 0 || j >= n) continue
+      const sign = j > i ? 1 : -1
+      const d = sign * ((px[j] - px[i]) * nz[j] - (pz[j] - pz[i]) * nx[j])
+      const e = sign * (nx[i] * nz[j] - nz[i] * nx[j])
+      if (Math.abs(e) < 1e-9) continue
+      if (!(d > 0)) throw new Error(`ribbonVertices: sample ${j} lies behind sample ${i}'s tangent; the polyline reverses`)
+      const w = e > 0 ? wr : wl
+      const cap = (MITER_SAFETY * d) / Math.abs(e)
+      if (w[i] > cap) {
+        w[i] = Math.max(cap, minHalf)
+        ;(e > 0 ? capR : capL)[i] = 1
         clamped++
       }
     }
-    if (bad === 0) break
   }
-  if (bad !== 0) throw new Error(`ribbonVertices: ${bad} segment(s) still invert at the ${minHalf} m width floor after ${REPAIR_PASSES} halvings; the polyline has a cusp no miter limit can rescue`)
+
+  // Offset VECTORS from here on, one per edge per sample, because the collapse below moves a vertex off its own normal.
+  const arx = new Float64Array(n)
+  const arz = new Float64Array(n)
+  const alx = new Float64Array(n)
+  const alz = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    arx[i] = wr[i] * nx[i]
+    arz[i] = wr[i] * nz[i]
+    alx[i] = -wl[i] * nx[i]
+    alz[i] = -wl[i] * nz[i]
+  }
+
+  // The collapse. The channel the carve cuts is every point within the half-width of the centreline, and on the inside of a bend its bank is not the offset curve -- that curve loops through itself there -- but the offset curve TRIMMED at its self-crossing: the inner bank turns a corner at the point M where the offset lines of the last full-width sample on each side of the bend meet. Every sample whose full-width vertex lies past M has its vertex put AT M, so the strip's quads through the bend fan out from M to the outer edge and cover the channel exactly, the neighbouring quads share their edges with the fan, and the sheet overlaps itself nowhere. The run to collapse starts as a run the cap fired on and grows outward while the bounding sample's own full-width vertex is still past M -- on a corner between two straights the loop reaches a half-width up each straight, where nothing has been capped. A hairpin whose arms run within a width of each other has no M (the two offset lines are parallel or meet behind the arms) and keeps the cap; so does a run the fan would invert on -- the orientation test below is run on the result before it is kept.
+  let collapsed = 0
+  const tri = (i, ax, az, bx, bz) => {
+    const a0x = px[i] + ax[i]
+    const a0z = pz[i] + az[i]
+    const b0x = px[i] + bx[i]
+    const b0z = pz[i] + bz[i]
+    const a1x = px[i + 1] + ax[i + 1]
+    const a1z = pz[i + 1] + az[i + 1]
+    const b1x = px[i + 1] + bx[i + 1]
+    const b1z = pz[i + 1] + bz[i + 1]
+    // A quad whose two vertices on one edge coincide is a single triangle; the other has exactly zero area and is allowed.
+    const t0 = cross2(a1x - a0x, a1z - a0z, b0x - a0x, b0z - a0z)
+    const t1 = cross2(a1x - b0x, a1z - b0z, b1x - b0x, b1z - b0z)
+    return (t0 < 0 || (t0 === 0 && a0x === a1x && a0z === a1z)) && (t1 < 0 || (t1 === 0 && b0x === b1x && b0z === b1z))
+  }
+  const quadsOk = (from, to, ax, az, bx, bz) => {
+    for (let i = Math.max(0, from); i <= Math.min(n - 2, to); i++) if (!tri(i, ax, az, bx, bz)) return false
+    return true
+  }
+  for (const [sign, cap, ox, oz] of [[1, capR, arx, arz], [-1, capL, alx, alz]]) {
+    const done = new Uint8Array(n)
+    let i = 0
+    while (i < n) {
+      if (!cap[i]) { i++; continue }
+      let e = i
+      while (e + 1 < n && cap[e + 1]) e++
+      let k = i - 1
+      let l = e + 1
+      let mx = 0
+      let mz = 0
+      let ok = false
+      for (;;) {
+        if (k < 0 || l >= n || done[k]) break
+        // Full-width vertices and tangents of the bounding samples; tangent = normal turned back a quarter turn (see `tangents`).
+        const akx = px[k] + sign * full[k] * nx[k]
+        const akz = pz[k] + sign * full[k] * nz[k]
+        const blx = px[l] + sign * full[l] * nx[l]
+        const blz = pz[l] + sign * full[l] * nz[l]
+        const tkx = nz[k]
+        const tkz = -nx[k]
+        const tlx = nz[l]
+        const tlz = -nx[l]
+        const denom = cross2(tkx, tkz, tlx, tlz)
+        if (Math.abs(denom) < 1e-9) break
+        const dxk = blx - akx
+        const dzk = blz - akz
+        const alpha = cross2(dxk, dzk, tlx, tlz) / denom
+        const beta = cross2(dxk, dzk, tkx, tkz) / denom
+        if (alpha < 0) { k--; continue }
+        if (beta > 0) { l++; continue }
+        mx = akx + alpha * tkx
+        mz = akz + alpha * tkz
+        ok = true
+        break
+      }
+      if (ok) {
+        const keepX = ox.slice(k, l + 1)
+        const keepZ = oz.slice(k, l + 1)
+        ox[k] = sign * full[k] * nx[k]
+        oz[k] = sign * full[k] * nz[k]
+        ox[l] = sign * full[l] * nx[l]
+        oz[l] = sign * full[l] * nz[l]
+        for (let j = k + 1; j < l; j++) {
+          ox[j] = mx - px[j]
+          oz[j] = mz - pz[j]
+        }
+        if (quadsOk(k - 1, l, arx, arz, alx, alz)) {
+          for (let j = k; j <= l; j++) done[j] = 1
+          collapsed += l - k - 1
+        } else {
+          ox.set(keepX, k)
+          oz.set(keepZ, k)
+          ok = false
+        }
+      }
+      i = ok ? l + 1 : e + 1
+    }
+  }
+
+  // The cap and the collapse's own test are the whole guarantee, so this is an assertion: the only way a triangle still inverts is a cap under the width floor, which is a cusp no miter limit can rescue.
+  for (let i = 0; i < n - 1; i++) {
+    if (!tri(i, arx, arz, alx, alz)) throw new Error(`ribbonVertices: segment ${i} inverts at the ${minHalf} m width floor; the polyline has a cusp no miter limit can rescue`)
+  }
+  // Each edge's offset as a distance, which is what the flow frame reads; a collapsed vertex sits past its bank, so it reads past the half-width there.
+  for (let i = 0; i < n; i++) {
+    wr[i] = Math.hypot(arx[i], arz[i])
+    wl[i] = Math.hypot(alx[i], alz[i])
+  }
 
   const positions = new Float32Array(n * 2 * 3)
   const normals = new Float32Array(n * 2 * 3)
@@ -278,12 +362,12 @@ export function ribbonVertices(samples, opts = {}) {
     mz /= ml
 
     const o = i * 6
-    positions[o] = px[i] + w[i] * nx[i]
+    positions[o] = px[i] + arx[i]
     positions[o + 1] = py[i]
-    positions[o + 2] = pz[i] + w[i] * nz[i]
-    positions[o + 3] = px[i] - w[i] * nx[i]
+    positions[o + 2] = pz[i] + arz[i]
+    positions[o + 3] = px[i] + alx[i]
     positions[o + 4] = py[i]
-    positions[o + 5] = pz[i] - w[i] * nz[i]
+    positions[o + 5] = pz[i] + alz[i]
     normals[o] = mx
     normals[o + 1] = my
     normals[o + 2] = mz
@@ -317,12 +401,14 @@ export function ribbonVertices(samples, opts = {}) {
     normals,
     uvs,
     indices,
-    // Float64 internally so the repair loop's halvings stay exact; handed out as Float32 because nothing downstream needs more and the editor may hold one of these per path.
+    // Handed out as Float32 because nothing downstream needs more and the editor may hold one of these per path.
     arc: Float32Array.from(arc),
-    halfWidths: Float32Array.from(w),
+    halfRight: Float32Array.from(wr),
+    halfLeft: Float32Array.from(wl),
     tangents,
     length: arc[n - 1],
     clamped,
+    collapsed,
     triangles: (n - 1) * 2,
     vertices: n * 2,
   }
@@ -336,13 +422,14 @@ export function ribbonVertices(samples, opts = {}) {
  * `ribbon` is ribbonVertices' result; `forward` is PathSet.flowsForward, which says whether sample order IS downstream.
  */
 export function flowFrame(ribbon, forward, reach) {
-  const { count: n, arc, halfWidths, tangents, length } = ribbon
+  const { count: n, arc, halfRight, halfLeft, tangents, length } = ribbon
   if (typeof forward !== 'boolean') throw new Error(`flowFrame: forward must be a boolean, got ${forward}`)
   if (!reach || !(reach.source >= 0) || !(reach.mouth >= 0)) throw new Error(`flowFrame: reach must be { source >= 0, mouth >= 0 }, got ${JSON.stringify(reach)}`)
   const sign = forward ? 1 : -1
   const flow = new Float32Array(n * 2 * 4)
   for (let i = 0; i < n; i++) {
-    const w = halfWidths[i]
+    // The wider edge: a clamp narrows the inside of a bend, and the fade is about the channel, not the corner.
+    const w = Math.max(halfRight[i], halfLeft[i])
     const u = forward ? arc[i] : length - arc[i]
     const fade = Math.max(FLOW_FADE_HALF_WIDTHS * w, FLOW_FADE_MIN)
     const fromSource = Math.min(1, Math.max(0, (u - reach.source) / fade))
@@ -351,11 +438,11 @@ export function flowFrame(ribbon, forward, reach) {
     const angle = Math.atan2(sign * tangents[i * 2 + 1], sign * tangents[i * 2])
     const o = i * 8
     flow[o] = u
-    flow[o + 1] = sign * w
+    flow[o + 1] = sign * halfRight[i]
     flow[o + 2] = weight
     flow[o + 3] = angle
     flow[o + 4] = u
-    flow[o + 5] = -sign * w
+    flow[o + 5] = -sign * halfLeft[i]
     flow[o + 6] = weight
     flow[o + 7] = angle
   }

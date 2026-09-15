@@ -109,12 +109,103 @@ export async function run() {
     check(r.clamped > 0, 'the miter limit actually fires on the hairpin', `${r.clamped} clamp events`)
     check(r.positions.every(Number.isFinite) && r.normals.every(Number.isFinite), 'no NaN survives the clamp')
 
-    // The clamp must degenerate toward a point, not merely nudge: at the apex the half-width has to come down from 3.75 m to under the 0.6 m turning radius or the ribbon is still folded, whatever the triangle test says about this particular sampling.
+    // The turn is to the +normal side, so the INSIDE edge is halfRight. It must degenerate toward a point, not merely nudge: at the apex the half-width has to come down from 3.75 m to under the 0.6 m turning radius or the ribbon is still folded, whatever the triangle test says about this particular sampling.
+    const full = HALF + Math.min(RIVER_WIDEN, HALF * RIVER_WIDEN_FRAC)
     let narrowest = Infinity
-    for (const w of r.halfWidths) narrowest = Math.min(narrowest, w)
-    check(narrowest < R, 'the ribbon narrows below its own turning radius at the apex', `narrowest ${narrowest.toFixed(3)} m vs R ${R} m`)
+    for (const w of r.halfRight) narrowest = Math.min(narrowest, w)
+    check(narrowest < R, 'the inside edge narrows below its own turning radius at the apex', `narrowest ${narrowest.toFixed(3)} m vs R ${R} m`)
     // ...and the straight approach must be untouched, or a miter limit is just a global narrowing.
-    check(Math.abs(r.halfWidths[0] - (HALF + Math.min(RIVER_WIDEN, HALF * RIVER_WIDEN_FRAC))) < 1e-4, 'the straight approach keeps its full width', `${r.halfWidths[0].toFixed(3)} m`)
+    check(Math.abs(r.halfRight[0] - full) < 1e-4, 'the straight approach keeps its full width', `${r.halfRight[0].toFixed(3)} m`)
+    // The OUTSIDE edge cannot fold and must not be touched, or the bend leaves a wedge of bare bed between the sheet and the outer bank -- the visible gap on every shipped bend before the cap went per-side.
+    let outerMin = Infinity
+    for (const w of r.halfLeft) outerMin = Math.min(outerMin, w)
+    check(Math.abs(outerMin - full) < 1e-4, 'the outside edge keeps its full width through the hairpin', `narrowest outer ${outerMin.toFixed(3)} m vs ${full.toFixed(3)} m`)
+    // And the inside vertices land on a tiny arc around the centre of curvature (0, R), not past it: past it is the fold the clamp exists to prevent.
+    let farthest = 0
+    for (let i = 10; i <= 22; i++) {
+      const o = i * 6
+      farthest = Math.max(farthest, Math.hypot(r.positions[o], r.positions[o + 2] - R))
+    }
+    check(farthest <= R, 'every inside vertex of the arc sits within the turning radius of its centre', `farthest ${farthest.toFixed(3)} m vs R ${R} m`)
+  }
+
+  // --- 2b. a corner tighter than the half-width, between two straights --------
+  //
+  // THE SHIPPED CASE. Every authored river corner is one of these: a 3 m half-width turning through 90 degrees on a 1.5 m radius. The cap alone leaves the channel between the centre of curvature and the inner bank bare, so the inside vertices of the corner must collapse onto the point where the two straights' inner offset lines meet -- (R - full, full) here -- and the sheet must then cover every wet point once: coverage is asserted by sampling, and so is single coverage, because a fan that overlapped its neighbours would double-blend a transparent water surface.
+  {
+    const HALF = 3
+    const R = 1.5
+    const full = HALF + Math.min(RIVER_WIDEN, HALF * RIVER_WIDEN_FRAC)
+    const pts = []
+    for (let x = -20; x < 0; x += 1) pts.push([x, 5, 0, HALF])
+    for (let k = 0; k <= 6; k++) {
+      const th = -Math.PI / 2 + (k * Math.PI) / 12
+      pts.push([R * Math.cos(th), 5, R + R * Math.sin(th), HALF])
+    }
+    for (let z = R + 1; z <= R + 20; z += 1) pts.push([R, 5, z, HALF])
+    const r = ribbonVertices(packed(pts), { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
+    const P = r.positions
+    const areas = triAreas(r)
+    let inverted = 0
+    let badZero = 0
+    for (let t = 0; t < areas.length; t++) {
+      if (areas[t] > 0) inverted++
+      if (areas[t] === 0) {
+        // Zero area is allowed only for the collapsed quad's spare triangle, whose two inside vertices coincide.
+        const [a, b, c] = [0, 1, 2].map((k) => r.indices[t * 3 + k] * 3)
+        const same = (u, v) => P[u] === P[v] && P[u + 2] === P[v + 2]
+        if (!(same(a, b) || same(b, c) || same(a, c))) badZero++
+      }
+    }
+    check(inverted === 0 && badZero === 0, 'a corner tighter than the half-width emits no inverted or accidental zero-area triangles', `${inverted} inverted, ${badZero} zero-area with distinct vertices`)
+    check(r.collapsed > 0, 'the corner collapses its inside vertices', `${r.collapsed} collapsed`)
+    let farFromM = 0
+    for (let i = 0; i < pts.length; i++) {
+      if (r.halfRight[i] > full + 1e-3) {
+        if (Math.hypot(P[i * 6] - (R - full), P[i * 6 + 2] - full) > 1e-3) farFromM++
+      }
+    }
+    check(farFromM === 0, 'every collapsed inside vertex sits on the meeting point of the two straights\' inner offset lines', `${farFromM} elsewhere`)
+    let outerMin = Infinity
+    for (const w of r.halfLeft) outerMin = Math.min(outerMin, w)
+    check(Math.abs(outerMin - full) < 1e-4, 'the outside edge keeps its full width through the corner', `${outerMin.toFixed(3)} m`)
+
+    // Coverage by sampling: every point within HALF of the centreline (a hair inside, so the sample is not on the bank itself) lies under exactly one triangle. The grid is offset by an irrational fraction so no sample lands on a triangle edge, where "inside" is a coin toss.
+    const segDist = (x, z) => {
+      let best = Infinity
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, , az] = pts[i]
+        const [bx, , bz] = pts[i + 1]
+        const ex = bx - ax
+        const ez = bz - az
+        const u = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez)))
+        best = Math.min(best, Math.hypot(x - ax - u * ex, z - az - u * ez))
+      }
+      return best
+    }
+    const inTri = (x, z, a, b, c) => {
+      const d0 = cross2(P[b] - P[a], P[b + 2] - P[a + 2], x - P[a], z - P[a + 2])
+      const d1 = cross2(P[c] - P[b], P[c + 2] - P[b + 2], x - P[b], z - P[b + 2])
+      const d2 = cross2(P[a] - P[c], P[a + 2] - P[c + 2], x - P[c], z - P[c + 2])
+      return (d0 < 0 && d1 < 0 && d2 < 0) || (d0 > 0 && d1 > 0 && d2 > 0)
+    }
+    let wet = 0
+    let uncovered = 0
+    let doubled = 0
+    for (let x = -12 + Math.SQRT2 / 10; x < 6; x += 0.25) {
+      for (let z = -5 + Math.SQRT2 / 10; z < 14; z += 0.25) {
+        if (segDist(x, z) > HALF - 0.05) continue
+        wet++
+        let hits = 0
+        for (let t = 0; t < areas.length; t++) {
+          if (inTri(x, z, r.indices[t * 3] * 3, r.indices[t * 3 + 1] * 3, r.indices[t * 3 + 2] * 3)) hits++
+        }
+        if (hits === 0) uncovered++
+        if (hits > 1) doubled++
+      }
+    }
+    check(wet > 500 && uncovered === 0, 'the sheet covers every wet point of the channel through the corner', `${uncovered} of ${wet} bare`)
+    check(doubled === 0, 'and covers none of them twice', `${doubled} of ${wet} under two triangles`)
   }
 
   // --- 3. lake discs ---------------------------------------------------------
