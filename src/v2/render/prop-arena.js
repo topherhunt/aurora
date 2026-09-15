@@ -65,10 +65,13 @@ export class PropArena extends THREE.Group {
    *                      so the caller must not dispose these.
    * @param caps          per-tier instance capacity of ONE mesh. Exceeding it
    *                      throws rather than silently dropping a prop.
-   * @param material      shared by every mesh, so the bank is one program.
+   * @param material      shared by every mesh, so the bank is one program; or
+   *                      a function `(t, v) => Material` for a bank whose
+   *                      variants wear their own maps (gen-props.js).
    * @param name          the group's name, and the stem of every mesh's.
    */
   constructor(maxInstances, tiers, caps, material, name) {
+    const materialFor = typeof material === 'function' ? material : () => material
     super()
     this.name = name
     this.frustumCulled = false
@@ -99,7 +102,7 @@ export class PropArena extends THREE.Group {
           'aPropFade',
           new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(1), 1)
         )
-        const mesh = new THREE.InstancedMesh(geo, material, cap)
+        const mesh = new THREE.InstancedMesh(geo, materialFor(t, v), cap)
         mesh.name = `${name}-t${t}-v${v}`
         // Nothing is drawn until an instance takes a slot; `count` is the live
         // population from here on.

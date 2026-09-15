@@ -4,9 +4,11 @@
 //
 //   node tools/creatures/ship-quadruped.mjs [id ...]
 //
-// Each file carries Tripo's skinned mesh and its skeleton, the whole clip
-// library (tools/creatures/anim/clips/quadruped) as one animation per clip, and
-// one colour WebP at the roster's texPx. src/v2/render/wildlife.js loads them.
+// Each file carries Tripo's skinned mesh AND ITS LADDER -- the mesh decimated
+// to skin-ladder.mjs's TIER_FRACTIONS, every tier over the same skeleton -- the
+// whole clip library (tools/creatures/anim/clips/quadruped) as one animation per
+// clip, and one colour WebP at the roster's texPx. src/v2/render/wildlife.js
+// loads them and src/v2/render/puppet.js draws whichever tier is called for.
 //
 // THE WORK FILES ARE ALREADY NEARLY THIS. `anim-<clip>.glb` is a copy of the rig
 // with one clip written into it, so the mesh, the skin and the joint nodes are
@@ -25,10 +27,12 @@
 // limb's rotation track -- because premultiplying the root is exactly a change of
 // the space the whole skeleton hangs in.
 //
-// NO LOD LADDER. These three are 474 to 2032 triangles as they stand, and the
-// world draws at most a handful of each within the distance it draws a mesh at,
-// so a decimated tier would save nothing worth the bench trip. Past that
-// distance the world draws a cross card it photographs off this file.
+// THE LADDER IS DECIMATED HERE, not read off the bench. gen-creature.html can
+// save tiers beside a candidate, but a saved tier is a decimation of THAT
+// candidate, and Tripo's rigger may hand back a retopologised mesh instead of
+// the one that was picked -- the fox's rig came back at 474 triangles against a
+// 982-triangle pick, so its saved ladder was of a mesh that never shipped. What
+// ships is decimated from what ships. The bench's tiers stay a preview.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
@@ -38,6 +42,7 @@ import { CREATURES, shipTexPx } from './creature-roster.mjs'
 import { clipNames, planOf, tunedSpec } from './anim/build.mjs'
 import { readRigMap, workDir } from './anim/rig-map.mjs'
 import { readAccessor, readGlb, writeGlb } from './apply-rig-edit.mjs'
+import { ladderLine, skinnedLadder } from './skin-ladder.mjs'
 import { packTexture, tripoColourJpeg } from '../tripo-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -47,7 +52,20 @@ export const QUADRUPEDS = ['moor-stag', 'red-fox', 'snow-hare']
 // The clips that carry the body forward. The rest hold station, and ship with no speed.
 export const GAITS = ['walk', 'trot', 'run']
 
-const FLOAT = 5126
+const FLOAT = 5126, UINT = 5125
+
+/** A flat [x, y, z, ...] run's bounds, the pair glTF wants on a POSITION accessor. */
+function boundsOf(positions) {
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  for (let i = 0; i < positions.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], positions[i + k])
+      max[k] = Math.max(max[k], positions[i + k])
+    }
+  }
+  return { min, max }
+}
 
 /**
  * The rigid transform that carries a rig into the world's frame, as a yaw about
@@ -114,11 +132,11 @@ function readRig(id, clip) {
  * The skeleton as the output's nodes: the joints in the skin's order, each with
  * the rest transform it had, the root's premultiplied by `frame` composed with
  * whatever the Armature above it carried. A joint's node index is its skin index
- * plus one, the mesh taking node 0.
+ * plus `offset`, the ladder's tiers taking the nodes below it.
  */
-function skeletonNodes(file, json, frame) {
+function skeletonNodes(file, json, frame, offset) {
   const joints = json.skins[0].joints
-  const index = new Map(joints.map((n, i) => [n, i + 1]))
+  const index = new Map(joints.map((n, i) => [n, i + offset]))
   const parent = new Map()
   for (const n of joints) for (const c of json.nodes[n].children ?? []) {
     if (!index.has(c)) throw new Error(`${file}: joint ${json.nodes[n].name} has a child that is not a joint`)
@@ -162,7 +180,23 @@ export function shipQuadruped(id) {
   const base = readRig(id, clips[0])
   const prim = base.json.meshes[0].primitives[0]
   const frame = worldFrame(map, readAccessor(base.json, base.bin, prim.attributes.POSITION))
-  const { nodes, index, byName, root, rootName, lifted } = skeletonNodes(base.file, base.json, frame)
+
+  // The ladder, decimated here rather than read off the bench: an NPC will not
+  // have had a bench trip, and a saved tier can silently be a decimation of the
+  // candidate rather than of the mesh Tripo's rigger handed back -- which is
+  // exactly what the fox's was. skin-ladder.mjs carries JOINTS_0 and WEIGHTS_0
+  // through; nothing else about the rig changes.
+  const jointsAttr = readAccessor(base.json, base.bin, prim.attributes.JOINTS_0)
+  const tiers = skinnedLadder({
+    positions: readAccessor(base.json, base.bin, prim.attributes.POSITION),
+    normals: readAccessor(base.json, base.bin, prim.attributes.NORMAL),
+    uvs: readAccessor(base.json, base.bin, prim.attributes.TEXCOORD_0),
+    indices: readAccessor(base.json, base.bin, prim.indices),
+    joints: jointsAttr,
+    weights: readAccessor(base.json, base.bin, prim.attributes.WEIGHTS_0),
+  })
+  // The tiers take the nodes below the joints, so the skeleton starts past them.
+  const { nodes, index, byName, root, rootName, lifted } = skeletonNodes(base.file, base.json, frame, tiers.length)
 
   // The BIN, appended accessor by accessor; everything the output reads is copied
   // across, so the three 2048 px JPEGs and the bytes behind them stay behind.
@@ -189,21 +223,23 @@ export function shipQuadruped(id) {
     return accessor(readAccessor(src.json, src.bin, i), a.componentType, a.type, extra)
   }
 
+  const jointType = base.json.accessors[prim.attributes.JOINTS_0].componentType
   const pos = base.json.accessors[prim.attributes.POSITION]
-  const meshes = [{
-    name: id,
+  const meshes = tiers.map((t, k) => ({
+    name: k ? `${id}-lod${k}` : id,
     primitives: [{
       attributes: {
-        POSITION: copy(base, prim.attributes.POSITION, { min: pos.min, max: pos.max }),
-        NORMAL: copy(base, prim.attributes.NORMAL),
-        TEXCOORD_0: copy(base, prim.attributes.TEXCOORD_0),
-        JOINTS_0: copy(base, prim.attributes.JOINTS_0),
-        WEIGHTS_0: copy(base, prim.attributes.WEIGHTS_0),
+        // The top tier's bounds are the source accessor's, which glTF wants on POSITION; a decimated tier only ever shrinks inside them.
+        POSITION: accessor(Float32Array.from(t.positions), FLOAT, 'VEC3', k ? boundsOf(t.positions) : { min: pos.min, max: pos.max }),
+        NORMAL: accessor(Float32Array.from(t.normals), FLOAT, 'VEC3'),
+        TEXCOORD_0: accessor(Float32Array.from(t.uvs), FLOAT, 'VEC2'),
+        JOINTS_0: accessor(new jointsAttr.constructor(t.joints), jointType, 'VEC4'),
+        WEIGHTS_0: accessor(Float32Array.from(t.weights), FLOAT, 'VEC4'),
       },
-      indices: copy(base, prim.indices),
+      indices: accessor(Uint32Array.from(t.indices), UINT, 'SCALAR'),
       material: 0,
     }],
-  }]
+  }))
   const skins = [{
     name: `${id}-skeleton`,
     joints: base.json.skins[0].joints.map((n) => index.get(n)),
@@ -269,7 +305,7 @@ export function shipQuadruped(id) {
     // transform that turns the bind-pose geometry to match -- which is what the
     // world photographs its far card off.
     scenes: [{
-      nodes: [0, root],
+      nodes: [...tiers.map((_, k) => k), root],
       extras: {
         quadruped: {
           sizeM: meta.sizeM, wheelbase: map.wheelbase, gait,
@@ -278,7 +314,7 @@ export function shipQuadruped(id) {
         },
       },
     }],
-    nodes: [{ name: `${id}-mesh`, mesh: 0, skin: 0 }, ...nodes],
+    nodes: [...meshes.map((m, k) => ({ name: `${m.name}-mesh`, mesh: k, skin: 0 })), ...nodes],
     meshes, skins, animations, accessors, bufferViews,
     buffers: [{ byteLength: at }],
     images: [{ uri: texture, mimeType: 'image/webp' }],
@@ -288,8 +324,8 @@ export function shipQuadruped(id) {
   fs.mkdirSync(OUT, { recursive: true })
   const out = path.join(OUT, `${id}.glb`)
   writeGlb(out, json, Buffer.concat(parts))
-  const tris = base.json.accessors[prim.indices].count / 3
-  console.log(`ship ${id}.glb: ${(fs.statSync(out).size / 1024).toFixed(0)} KB, ${tris} tris, ${skins[0].joints.length} joints,`
+  const tris = tiers.map((t) => t.indices.length / 3)
+  console.log(`ship ${id}.glb: ${(fs.statSync(out).size / 1024).toFixed(0)} KB, tiers ${ladderLine(tiers)} tris, ${skins[0].joints.length} joints,`
     + ` clips ${clips.join(' ')}, texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
   return { out, tris, joints: skins[0].joints.length, clips, gait }
 }

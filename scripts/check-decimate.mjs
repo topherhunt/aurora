@@ -15,6 +15,7 @@
 // So the checks below are mostly about what must NOT have changed.
 
 import { analyzeMesh, buildTopology, countUvIslands, decimate, decimateLadder, estimateQuadFraction } from '../src/mesh/decimate.js'
+import { skinnedLadder } from '../tools/creatures/skin-ladder.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -550,6 +551,106 @@ console.log('\nladder')
   const sets = tiers.map(uvSet)
   // Nested: each tier is decimated from the one above, so its UVs are a subset.
   check([...sets[2]].every((uv) => sets[1].has(uv)), 'each tier\'s vertices are a subset of the tier above it')
+}
+
+// --- sourceVertex -----------------------------------------------------------
+//
+// The map a caller carries its OWN per-vertex attributes through -- skin joints
+// and weights above all (tools/creatures/skin-ladder.mjs). It is only worth
+// anything if it is exact, so the check is that the attributes decimate.js
+// already carries come out the same whether you take its word for them or look
+// them up through the map.
+
+console.log('\nsource vertex map')
+{
+  const g = bumpyGrid(20)
+  const out = decimate(g, 200)
+  const n = out.positions.length / 3
+  check(out.sourceVertex instanceof Int32Array && out.sourceVertex.length === n, 'every output vertex names the input vertex it is', `${out.sourceVertex.length} of ${n}`)
+  check([...out.sourceVertex].every((v) => v >= 0 && v < g.positions.length / 3), 'and names one that exists')
+  // A UV is never interpolated, so it must survive the lookup exactly.
+  let uvOff = 0
+  for (let i = 0; i < n; i++) {
+    const s = out.sourceVertex[i]
+    if (out.uvs[i * 2] !== g.uvs[s * 2] || out.uvs[i * 2 + 1] !== g.uvs[s * 2 + 1]) uvOff++
+  }
+  check(uvOff === 0, 'an output vertex carries its source vertex\'s UV exactly, so any other attribute would ride through too', `${uvOff} disagreed`)
+
+  const tiers = decimateLadder(g, [400, 200, 100])
+  const verts = g.positions.length / 3
+  check(tiers.every((t) => [...t.sourceVertex].every((v) => v >= 0 && v < verts)), 'every rung of a ladder indexes the ORIGINAL mesh, not the rung above it')
+  let ladderOff = 0
+  for (const t of tiers) {
+    for (let i = 0; i < t.sourceVertex.length; i++) {
+      const s = t.sourceVertex[i]
+      if (t.uvs[i * 2] !== g.uvs[s * 2] || t.uvs[i * 2 + 1] !== g.uvs[s * 2 + 1]) ladderOff++
+    }
+  }
+  check(ladderOff === 0, 'and carries the original\'s UV through however far down it is', `${ladderOff} disagreed`)
+}
+
+// --- the skinned ladder -----------------------------------------------------
+//
+// tools/creatures/skin-ladder.mjs is the one caller sourceVertex exists for: it
+// rides JOINTS_0 and WEIGHTS_0 down the ladder so a shipped creature is N tiers
+// over ONE skin. Positions move as a mesh decimates but UVs never do (above), so
+// a vertex's UV is the handle its original skin can be looked up by -- and a
+// carry that had blended or guessed anything would not survive that lookup.
+
+console.log('\nskinned ladder')
+{
+  const rigged = (n) => {
+    const g = bumpyGrid(n)
+    const verts = g.positions.length / 3
+    const joints = new Uint8Array(verts * 4)
+    const weights = new Float32Array(verts * 4)
+    for (let i = 0; i < verts; i++) {
+      const a = (Math.sin(i * 12.9898) * 0.5 + 0.5) * 0.8 + 0.1
+      joints.set([i % 4, (i + 1) % 4, 2, 3], i * 4)
+      weights.set([a, 1 - a, 0, 0], i * 4)
+    }
+    return { ...g, joints, weights }
+  }
+  const skinByUv = (m) => {
+    const by = new Map()
+    for (let i = 0; i < m.positions.length / 3; i++) {
+      by.set(`${m.uvs[i * 2]},${m.uvs[i * 2 + 1]}`, [m.joints.slice(i * 4, i * 4 + 4), m.weights.slice(i * 4, i * 4 + 4)])
+    }
+    return by
+  }
+
+  const mesh = rigged(20)
+  const tiers = skinnedLadder(mesh, [0.5, 0.25])
+  check(tiers.length === 3 && tiers[0].positions === mesh.positions && tiers[0].joints === mesh.joints, 'the input comes back as tier 0, so a shipper never special-cases the top')
+  const tris = tiers.map((t) => t.indices.length / 3)
+  check(tris[0] === 800 && Math.abs(tris[1] - 400) <= 8 && Math.abs(tris[2] - 200) <= 8, 'and the rungs below it land on their fractions', tris.join('/'))
+
+  const by = skinByUv(mesh)
+  let missing = 0, wrong = 0, unsummed = 0, outOfRange = 0
+  for (const t of tiers) {
+    for (let i = 0; i < t.positions.length / 3; i++) {
+      const was = by.get(`${t.uvs[i * 2]},${t.uvs[i * 2 + 1]}`)
+      if (!was) { missing++; continue }
+      for (let k = 0; k < 4; k++) {
+        if (t.joints[i * 4 + k] !== was[0][k] || t.weights[i * 4 + k] !== was[1][k]) wrong++
+        if (t.joints[i * 4 + k] >= 4) outOfRange++
+      }
+      const sum = t.weights[i * 4] + t.weights[i * 4 + 1] + t.weights[i * 4 + 2] + t.weights[i * 4 + 3]
+      if (Math.abs(sum - 1) > 1e-6) unsummed++
+    }
+  }
+  check(missing === 0, 'every vertex on every rung is one of the original\'s, by its UV', `${missing} were not`)
+  check(wrong === 0, 'and wears that original vertex\'s skin bit for bit -- carried, never interpolated', `${wrong} joints or weights disagreed`)
+  check(unsummed === 0, 'so no rung has weights that stopped summing to one', `${unsummed} vertices off`)
+  check(outOfRange === 0, 'and no rung reaches for a joint outside the skeleton every rung shares')
+  check(tiers.every((t) => t.uvs && t.uvs.length === (t.positions.length / 3) * 2), 'every rung ships texture coordinates, a dropped set falling back to the sampled pair')
+
+  const broken = rigged(10)
+  broken.weights[7 * 4 + 1] += 0.5
+  check(throws(() => skinnedLadder(broken)), 'a rig whose weights do not sum to one is refused rather than renormalised into a tier')
+  check(throws(() => skinnedLadder({ ...rigged(10), joints: null })), 'and so is a mesh that was never rigged')
+  check(throws(() => skinnedLadder({ ...rigged(10), weights: new Float32Array(8) })), 'and one whose weights are the wrong length for its vertices')
+  check(throws(() => skinnedLadder(rigged(10), [0.001])), 'a fraction that would decimate a mesh out of existence is refused')
 }
 
 // --- quad detection ---------------------------------------------------------

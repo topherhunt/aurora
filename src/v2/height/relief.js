@@ -236,6 +236,7 @@ export const RELIEF_KNOBS = Object.freeze([
     off: 0, on: 1, min: 0, max: 1, step: 0.05,
   },
   {
+    // DEAD CODE (peaks): off in RELIEF_SHIPPED; see the tag in chunk-mesh-v2.js.
     // A MESHER TERM, like `crest`, and the one that supersedes it: every vertex
     // of a chunk coarser than the texel takes the MAX of the field over the
     // footprint it owns, so no summit falls between samples and a peak never

@@ -418,17 +418,9 @@ export function rigSpider({ write = true } = {}) {
     writeRig(path.join(dir, 'rig-fixed.glb'), mesh, joints, skin)
     fs.writeFileSync(mapFile, JSON.stringify(map, null, 2))
   }
-  // `mesh` and `skinOther` are for ship-spider.mjs: a decimated tier is skinned by the same
-  // bones, each of its vertices in the group of the nearest pick vertex.
-  const skinOther = (V) => skinWeights(V, joints, (v) => {
-    let best = 0, bestD = Infinity
-    for (let i = 0; i < mesh.V.length; i++) {
-      const d = dist(V[v], mesh.V[i])
-      if (d < bestD) { bestD = d; best = i }
-    }
-    return groupOf(best)
-  })
-  return { legs, joints, map, skin, vertices: mesh.V.length, mesh, skinOther }
+  // `mesh` is for ship-spider.mjs, which decimates these very vertices into its
+  // LOD ladder and carries `skin` down it (tools/creatures/skin-ladder.mjs).
+  return { legs, joints, map, skin, vertices: mesh.V.length, mesh }
 }
 
 function main() {

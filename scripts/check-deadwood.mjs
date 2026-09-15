@@ -1,4 +1,7 @@
-// Node-side gates for the procedural dead wood (src/props/deadwood.js).
+// Node-side gates for the dead wood: the procedural generator behind the
+// /gen-deadwood bench (src/props/deadwood.js) and the world's scatter
+// (src/v2/render/deadwood.js), which now places the generated stump and log
+// shipped in public/gen-props/ and is tested against those files.
 //
 //   node scripts/check-deadwood.mjs
 //
@@ -58,13 +61,15 @@ import {
   deadwoodRim, MAX_JAG, JAG_FULL,
 } from '../src/props/deadwood.js'
 import {
-  DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_NAMES, deadwoodLodSize,
+  DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_NAMES,
 } from '../src/props/deadwood.js'
 import {
   DEADWOOD_SEEDS, buildDeadwoodBank, deadwoodImpostorLayers, deadwoodImpostorLayer, cardAzimuth,
 } from '../src/props/deadwood-bank.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
-import { Deadwood, SNAG_HEIGHT, LOG_LENGTH } from '../src/v2/render/deadwood.js'
+import { Deadwood, LOD_AT, SNAG_HEIGHT, LOG_LENGTH, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
+import { GEN_PROP_LODS } from '../src/v2/render/gen-props.js'
+import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import { LAYER, LAYER_COUNT, MOSS_LAYERS, SNOW_WOOD_LAYERS, SNOW_CARD_LAYERS } from '../src/textures.js'
 import { MOSS, SNOW_ROCK } from '../src/material.js'
 import * as THREE from 'three'
@@ -636,28 +641,27 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
       : `undefined: ${[...new Set(missing)].join(', ')}`)
 }
 
-// --- the shipping bank ------------------------------------------------------
+// --- the procedural bank ----------------------------------------------------
 //
-// What buildDeadwoodBank hands the scatter, and the three things about it that
-// the scatter cannot survive being wrong.
+// What buildDeadwoodBank hands the /gen-deadwood bench, in the shape a scatter
+// indexes, and the three things about it that a scatter cannot survive being
+// wrong.
 //
-//   THE TIERS GO OUT OF STEP. The scatter indexes `tierIds[tier][variant]`, so a
+//   THE TIERS GO OUT OF STEP. A scatter indexes `tierIds[tier][variant]`, so a
 //   tier that came back a different length than its neighbours reads off the end
-//   of one array and hands BatchedMesh an undefined geometry id -- or worse,
+//   of one array and hands the arena an undefined geometry id -- or worse,
 //   silently draws variant 12 where variant 30 was asked for.
 //
 //   THE MEASUREMENTS GO MISSING. `long`, `height` and `radius` are hung on the
-//   variant records by buildDeadwoodBank from the geometry it just built, and
-//   render/deadwood.js seats every piece with them. An undefined there is a NaN
-//   in a matrix, which does not throw: the instance simply never appears, and it
-//   is one instance out of a hundred and thirty.
+//   variant records by buildDeadwoodBank from the geometry it just built, and a
+//   scatter seats every piece with them. An undefined there is a NaN in a
+//   matrix, which does not throw: the instance simply never appears.
 //
-//   THE CARD IS SMALLER THAN THE MESH IT REPLACES. The bands are fixed at 10 and
-//   20 m, so the swap happens at a distance the player is looking at. A card
-//   framed tighter than the piece it stands in for makes the log visibly shrink
-//   as they back away from it.
+//   THE CARD IS SMALLER THAN THE MESH IT REPLACES. A card framed tighter than
+//   the piece it stands in for makes the log visibly shrink as the player backs
+//   away from it.
 {
-  console.log('\nthe bank is built for the scatter that indexes it')
+  console.log('\nthe procedural bank is built in the shape a scatter indexes')
 
   const bank = buildDeadwoodBank({ billboard: true })
   const want = DEADWOOD_NAMES.length * DEADWOOD_SEEDS
@@ -788,9 +792,73 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
 
   check(DEADWOOD_LOD_AT.length === DEADWOOD_TIERS.length &&
       DEADWOOD_LOD_AT.every((k, i) => k > 0 && (i === 0 || k > DEADWOOD_LOD_AT[i - 1])),
-    'the LOD thresholds ascend and there is one per mesh tier',
+    'the bench\'s LOD thresholds ascend and there is one per mesh tier',
     `${DEADWOOD_LOD_AT.join(' / ')} m per metre for ${DEADWOOD_TIERS.map((t) => t.name).join('/')} + card`)
   check(DEADWOOD_CULL > 0, 'and the cull is an absolute distance', `${DEADWOOD_CULL} m`)
+}
+
+// --- the shipped bank -------------------------------------------------------
+//
+// What the world's scatter actually draws: the generated stump and log off
+// public/gen-props/, read in node exactly as loadGenProp frames them, through
+// the same deadwoodBankFrom the browser uses. Same three hazards as above, on
+// the files that ship rather than on a generator -- and the ladder is four
+// decimated tiers plus the critters' cross card now, not the bench's three.
+/** The shipped bank, fresh: the scatter takes its geometries by reference and disposes them. */
+const shippedBank = () => deadwoodBankFrom({
+  stump: readShippedLadder('stump-rotting'),
+  log: readShippedLadder('log-fallen', { longAxisZ: true }),
+})
+{
+  console.log('\nthe shipped bank is built for the scatter that indexes it')
+
+  const bank = shippedBank()
+  const lens = bank.tiers.map((t) => t.geometries.length)
+  check(bank.tiers.length === GEN_PROP_LODS + 2, 'the pick, its decimated tiers and the cross card',
+    `${bank.tiers.length} tiers`)
+  check(lens.every((n) => n === 2) && bank.variants.length === 2,
+    'every tier carries one geometry per variant slot', `stump + log, tiers ${lens.join('/')}`)
+  const tris = bank.tiers.map((t) => t.geometries.map((g) => g.index.count / 3))
+  const descending = bank.variants.every((_v, i) =>
+    tris.slice(0, -1).every((t, k) => k === 0 || t[i] < tris[k - 1][i]))
+  check(descending, 'and each mesh tier is coarser than the one before it',
+    bank.variants.map((v, i) => `${v.name} ${tris.slice(0, -1).map((t) => t[i]).join('/')}`).join(', '))
+
+  const unmeasured = bank.variants.filter((v) =>
+    !(v.long > 0 && v.height > 0 && v.radius > 0 && v.lodSize > 0))
+  check(unmeasured.length === 0, 'every variant carries the metres the scatter seats it by',
+    unmeasured.length === 0
+      ? bank.variants.map((v) => `${v.name} ${v.long.toFixed(2)} long, ${v.height.toFixed(2)} high, r ${v.radius.toFixed(2)}`).join('; ')
+      : unmeasured.map((v) => v.name).join(', '))
+  const kinds = bank.variants.map((v) => v.kind)
+  check(kinds.includes('snag') && kinds.includes('log'), 'one stands and one lies', kinds.join(', '))
+  // The log is loaded with its long axis turned onto Z, which is the axis
+  // `_seat` pitches it along; a log measured longer across than along would be
+  // seated on its width and hang its ends over the hill.
+  const log = bank.variants[kinds.indexOf('log')]
+  check(log.long > 2 * log.radius, 'and the log lies along its own Z',
+    `${log.long.toFixed(2)} long against ${(2 * log.radius).toFixed(2)} wide`)
+
+  // The cross card must cover the piece it stands in for at the swap.
+  const tooSmall = []
+  const cardTier = bank.tiers[bank.tiers.length - 1]
+  bank.variants.forEach((v, i) => {
+    const card = cardTier.geometries[i]
+    card.computeBoundingBox()
+    const b = card.boundingBox
+    const pb = bank.bounds[i]
+    const wide = Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
+    if (wide < Math.max(pb.width, pb.long) - 1e-3 || b.max.y - b.min.y < pb.height - 1e-3) {
+      tooSmall.push(`${v.name}: card ${wide.toFixed(2)} x ${(b.max.y - b.min.y).toFixed(2)} for a piece ${Math.max(pb.width, pb.long).toFixed(2)} x ${pb.height.toFixed(2)}`)
+    }
+  })
+  check(tooSmall.length === 0, 'and the cross card is at least as big as the piece it replaces',
+    tooSmall.length === 0 ? 'both cards cover their pick' : tooSmall.join('; '))
+  for (const t of bank.tiers) for (const g of t.geometries) g.dispose()
+
+  check(LOD_AT.length === GEN_PROP_LODS + 1 && LOD_AT.every((k, i) => k > 0 && (i === 0 || k > LOD_AT[i - 1])),
+    'the scatter\'s LOD thresholds ascend and there is one per mesh tier',
+    `${LOD_AT.join(' / ')} m per metre for the pick + ${GEN_PROP_LODS} tiers, then the card`)
   // THE ARTEFACT THE RELATIVE LADDER EXISTS TO CLOSE, stated as an inequality
   // that holds for every size at once. Distance is measured from the instance
   // ORIGIN, which sits at the middle of the piece, so the closest a player can
@@ -799,9 +867,9 @@ const get = (name, tier) => built.get(`${name}/${tier}`)
   // threshold did not, which is how a player touching a 20 m log's end was
   // looking at T1. Per metre, the tip is at 0.5 whatever the size is, so one
   // comparison against the first threshold settles it for the whole bank.
-  check(DEADWOOD_LOD_AT[0] > 0.5,
+  check(LOD_AT[0] > 0.5,
     'and a piece is on its finest mesh when the player is touching its tip',
-    `T0 holds to ${DEADWOOD_LOD_AT[0]}x the ladder size against a tip at 0.5x`)
+    `T0 holds to ${LOD_AT[0]}x the ladder size against a tip at 0.5x`)
 }
 
 // --- the scatter seats a long thing on a hill -------------------------------
@@ -831,10 +899,6 @@ const MOCK_LAYERS = {
   snow: { base: 900, band: 40 },
   flattenAt: () => 0,
 }
-// A stub texture array: the scatter only reads image.depth off it, and building
-// the real atlas here would be a megabyte of canvas work for a number this gate
-// already knows.
-const MOCK_TEX = { image: { depth: LAYER_COUNT } }
 /** A forest of `trunks` [x, z, radius], answering the anchorsInto contract. */
 function mockForest(trunks) {
   return {
@@ -900,8 +964,8 @@ const EMPTY_FOREST = mockForest([])
     }
     // No trees at all, so the keep-out cannot quietly thin the sample this block
     // is trying to take. The forest is the next block's subject.
-    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, MOCK_TEX,
-      EMPTY_FOREST, { seed: 7 })
+    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
+      EMPTY_FOREST, { seed: 7, bank: shippedBank() })
     dw.place(0, 0)
     if (dw.placed === 0) floating.push(`${g.name}: nothing placed at all`)
 
@@ -1019,8 +1083,8 @@ const EMPTY_FOREST = mockForest([])
   for (let gz = -100; gz <= 100; gz += 8) for (let gx = -100; gx <= 100; gx += 8) grid.push([gx, gz, 0.4])
 
   const run = (forest) => {
-    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, MOCK_TEX, forest,
-      { seed: SEED })
+    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, forest,
+      { seed: SEED, bank: shippedBank() })
     dw.place(0, 0)
     return dw
   }
@@ -1038,13 +1102,12 @@ const EMPTY_FOREST = mockForest([])
   const incidental = control.placed / bare.placed
 
   check(bare.placed > 50, 'placed enough pieces to measure a yield', `${bare.placed} with no forest`)
-  // THE FLOOR IS BELOW THE INCIDENTAL COST, NOT AT IT, and the gap between the
-  // two is the thing that moved when LOG_LENGTH doubled: a 35 m log is a long
-  // segment and crosses a sparse trunk by chance far more often than a 17 m one,
-  // so even a perfectly decorrelated stream now loses most of the old headroom
-  // to collisions that have nothing to do with the salt. What the floor still
-  // has to separate is SALTED from UNSALTED, and unsalted lands near 75% -- so
-  // it sits between the two rather than tracking either.
+  // THE FLOOR IS BELOW THE INCIDENTAL COST, NOT AT IT: a 20 m log is a long
+  // segment and crosses a sparse trunk by chance, so even a perfectly
+  // decorrelated stream loses some yield to collisions that have nothing to do
+  // with the salt. What the floor has to separate is SALTED from UNSALTED, and
+  // unsalted lands near 75% -- so it sits between the two rather than tracking
+  // either.
   check(kept > 0.85, 'the scatter does not draw the forest\'s own positions',
     `${onNaive.placed}/${bare.placed} survive a trunk on every tile's first candidate ` +
     `(${(kept * 100).toFixed(1)}%; incidental collisions alone cost ` +
@@ -1122,8 +1185,8 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, MOCK_TEX,
-    EMPTY_FOREST, { seed: 11 })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
+    EMPTY_FOREST, { seed: 11, bank: shippedBank() })
   dw.place(0, 0)
 
   const m = new THREE.Matrix4()
@@ -1197,17 +1260,17 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, MOCK_TEX,
-    EMPTY_FOREST, { seed: 23 })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
+    EMPTY_FOREST, { seed: 23, bank: shippedBank() })
   dw.place(0, 0)
 
   // The bank's own ladder size is what the scatter scales, so the two have to
   // agree before anything measured off the instance means anything.
   const lodMismatch = dw.bank.variants.filter((v, i) =>
-    Math.abs(dw.vLod[i] - deadwoodLodSize({ width: v.long, depth: v.long, height: v.height })) > 1e-4)
+    Math.abs(dw.vLod[i] - Math.max(v.long, 2 * v.radius, v.height)) > 1e-4)
   check(lodMismatch.length === 0,
-    'every variant\'s ladder size is the longest axis of the piece it built',
-    lodMismatch.length === 0 ? `${dw.bank.variants.length} variants agree with deadwoodLodSize`
+    'every variant\'s ladder size is the longest axis of the piece it shipped',
+    lodMismatch.length === 0 ? dw.bank.variants.map((v) => `${v.name} ${v.lodSize.toFixed(2)}`).join(', ')
       : `${lodMismatch.length} disagree: ${lodMismatch.slice(0, 3).map((v) => v.name).join(', ')}`)
 
   // Drive the frame path from a few vantage points and check every near piece's
@@ -1243,9 +1306,9 @@ const EMPTY_FOREST = mockForest([])
         // this -- while one just outside it may legitimately still be finer.
         // So the assertion is one-sided: too coarse for how big the thing looks
         // is the artefact, and too fine is only ever a few triangles.
-        let want = DEADWOOD_LOD_AT.length
-        for (let t = 0; t < DEADWOOD_LOD_AT.length; t++) {
-          if (d < size * DEADWOOD_LOD_AT[t]) { want = t; break }
+        let want = LOD_AT.length
+        for (let t = 0; t < LOD_AT.length; t++) {
+          if (d < size * LOD_AT[t]) { want = t; break }
         }
         if (tier > want) {
           wrong.push(`${dw.bank.variants[dw.variantAt[id]].name} ${size.toFixed(1)} m at ${d.toFixed(1)} m on T${tier}, wants T${want}`)
@@ -1262,7 +1325,7 @@ const EMPTY_FOREST = mockForest([])
   check(sizes > 30, 'walked enough placed pieces to measure a ladder',
     `${sizes} instance-frames, ${unlit} more the rim was not drawing`)
   check(wrong.length === 0, 'no piece is coarser than its own apparent size allows',
-    wrong.length === 0 ? `thresholds ${DEADWOOD_LOD_AT.join('/')} m per metre of ladder size`
+    wrong.length === 0 ? `thresholds ${LOD_AT.join('/')} m per metre of ladder size`
       : `${wrong.length} too coarse: ${wrong.slice(0, 3).join('; ')}`)
   check(bigLogMesh !== null && bigLogMesh.size > 6,
     'and a long log is still a mesh well past where the flat ladder carded it',
@@ -1310,7 +1373,7 @@ const EMPTY_FOREST = mockForest([])
   }
 
   const run = (water, layers) => {
-    const d = new Deadwood(new THREE.Scene(), field, water, layers, MOCK_TEX, EMPTY_FOREST, { seed: 21 })
+    const d = new Deadwood(new THREE.Scene(), field, water, layers, EMPTY_FOREST, { seed: 21, bank: shippedBank() })
     d.place(0, 0)
     return d
   }

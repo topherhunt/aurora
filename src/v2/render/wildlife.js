@@ -38,30 +38,44 @@
 // sun's own elevation) and it weights the roll: at full dark a rest is twice as
 // likely to be the next thing an animal does as it is at noon.
 //
-// DRAWN AS A PUPPET, OR NOT AT ALL. An animal in sight is its own skeleton (a
-// clone of the shipped one) with a mixer on it, drawn as the one skinned tier
-// the file carries -- 474 to 2032 triangles, so there is nothing to step down
-// to -- and under the ladder's last rung it is not drawn. There is no card
-// tier: a photograph of a walking animal slides over the ground like a
-// cut-out, and the band it would cover is the band a hare is only ever seen
-// in. The price is a draw call and a skeleton for each animal in sight -- a
-// dozen in the live world, twenty at the pool's cap, doubled per eye in XR
-// while the skeletons are not; design/27-creature-pipeline.md has the numbers.
+// A SPAWN IS NOT AN ANIMAL. A tile's roll gives SPAWNS -- where a body stands
+// when nothing has moved it, and what size and colour it is -- and a spawn is
+// woken into a live animal (a slot, with a position it has wandered to and an
+// activity queue) only inside its cull range. Past that it is not drawn AND NOT
+// SIMULATED: nothing walks, turns, probes the ground or picks anything. Its
+// wandered position is remembered until she is CULL_KEEP past the cull, and
+// past that the slot goes back in the pool and the next waking places it at
+// home again. So the work is proportional to the animals she can actually see
+// and not to the tiles that happen to be loaded, and an animal she turns her
+// back on for a moment is exactly where she left it.
+//
+// DRAWN AS A PUPPET, OR NOT AT ALL. A woken animal is its own skeleton (a clone
+// of the shipped one) with a mixer on it, drawn as whichever of the file's four
+// skinned tiers the ladder's rungs call for (critters.js critterTier: rungs
+// doubling in distance, as a ratio of the body's own size). There is no card
+// tier: a photograph of a walking animal slides over the ground like a cut-out,
+// and the band it would cover is the band a hare is only ever seen in.
+// Appearing, vanishing and every step of the ladder is a dissolve rather than a
+// pop (render/puppet.js) -- AND SO IS A TILE UNLOAD, so an animal whose tile
+// goes while it is still in sight leaves its puppet behind to dissolve where it
+// stood (`fading`). The exception is `place()`, the terrain rebuild, where the
+// ground an animal was standing on no longer exists and there is nothing to fade
+// on. The price is a draw call and a skeleton for each animal in sight -- a
+// dozen in the live world, twenty at the pool's cap, doubled per eye in XR while
+// the skeletons are not; design/27-creature-pipeline.md has the numbers.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { CRITTER_GLB, critterTier, gltfLoader, hueVary, tileSeed, walkTiles } from './critters.js'
+import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange, forgetRange, tileSeed, walkTiles } from './critters.js'
+import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
 
 export const TILE = 32
-// Tiles whose centre is within this of her are grown. A stag is under the ladder's foot past 127 m, so nothing pops in.
+// Tiles whose centre is within this of her are grown, so the furthest a spawn can be is this plus half a tile's diagonal: 118.6 m.
 export const RADIUS = 96
 // Animals per square metre, of EACH species: the brief's one per 3000.
 export const DENSITY = 1 / 3000
-// Apparent size in degrees of arc the one skinned tier holds down to; under it an animal is not drawn. A 2 m stag is drawn to 127 m, a 1.4 m fox to 89 and a 0.5 m hare to 32.
-export const LOD_DEG = [0.9]
-// Slots a species gets, and puppets. Ten of each are expected in RADIUS and a stag is drawn over the whole of it, so the pool is sized for that crowd clustering hard; a starved animal is not drawn at all.
+// Slots a species gets, and puppets. Ten of each are expected in RADIUS, and a stag's cull range covers nearly all of it, so the pool is sized for that crowd clustering hard; a starved animal is not drawn at all.
 export const MAX = 32
 export const PUPPETS = 20
 
@@ -86,6 +100,7 @@ export const TURN_RATE = 1.6
 // Body lengths ahead the next seat is tested at, and how often: the test is five rock-column queries, so it is staggered across the animals rather than run for all of them every frame.
 const AHEAD = 1.5
 const PROBE_EVERY = 6
+// Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.25
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
@@ -128,7 +143,6 @@ function weighted(rand, pairs) {
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
-const IDENTITY = new THREE.Matrix4()
 const _quat = new THREE.Quaternion()
 const _tilt = new THREE.Quaternion()
 const _nrm = new THREE.Vector3()
@@ -139,107 +153,19 @@ const _trunk = { x: 0, z: 0, r: 0 }
 const _norm = { x: 0, y: 1, z: 0 }
 
 /**
- * A shipped quadruped (tools/creatures/ship-quadruped.mjs) as the parts a
- * puppet is built from: the root bone and Skeleton, the one skinned geometry,
- * the clips and their durations, the colour map, and the scene extras -- the
- * body's length and turned span, and the ground speed of each gait in the
- * file's own units.
+ * A shipped quadruped (tools/creatures/ship-quadruped.mjs): the ladder, the
+ * skeleton, the clips and the colour map as render/puppet.js wants them, plus
+ * the shipper's extras spread on top -- the body's length and turned span, and
+ * the ground speed of each gait in the file's own units.
  *
  * The vertices themselves are still on the rig's diagonal; the frame that
  * squares them up rides on the ROOT JOINT, so anything drawn through the
  * skeleton is already straight and nothing here has to know about it.
  */
 export async function loadQuadrupedGlb(url) {
-  const loader = await gltfLoader()
-  const gltf = await loader.loadAsync(url)
-  cullTripoBackfaces(gltf.scene)
-  const meshes = []
-  gltf.scene.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o) })
-  if (meshes.length !== 1) throw new Error(`${url}: expected one skinned mesh, found ${meshes.length}`)
-  const mesh = meshes[0]
-  for (const name of ['position', 'normal', 'uv', 'skinIndex', 'skinWeight']) {
-    if (!mesh.geometry.getAttribute(name)) throw new Error(`${url}: the mesh has no ${name} attribute`)
-  }
-  const root = mesh.skeleton.bones.find((b) => !b.parent?.isBone)
-  if (!root) throw new Error(`${url}: the skeleton has no root bone`)
-  const quad = gltf.scene.userData.quadruped
-  if (!quad || !(quad.span > 0)) throw new Error(`${url}: no quadruped extras -- run tools/creatures/ship-quadruped.mjs`)
-  for (const name of CLIPS) {
-    if (!gltf.animations.some((c) => c.name === name)) throw new Error(`${url}: no clip named ${name}`)
-  }
-  const map = mesh.material.map
-  if (!map) throw new Error(`${url}: material has no base colour map`)
-  map.colorSpace = THREE.SRGBColorSpace
-  map.anisotropy = 4
-  mesh.material.dispose()
-  return {
-    root, skeleton: mesh.skeleton, geometry: mesh.geometry, clips: gltf.animations, map, gait: quad.gait,
-    sizeM: quad.sizeM, span: quad.span,
-  }
-}
-
-/** A bone tree copied bone by bone, `map` filled with source -> copy. */
-function cloneBones(src, map) {
-  const b = new THREE.Bone()
-  b.name = src.name
-  b.position.copy(src.position)
-  b.quaternion.copy(src.quaternion)
-  b.scale.copy(src.scale)
-  map.set(src, b)
-  for (const c of src.children) if (c.isBone) b.add(cloneBones(c, map))
-  return b
-}
-
-/** One near animal's body: its own bones, the shared geometry bound to them, and a mixer over the shared clips. */
-class Puppet {
-  constructor(asset, material) {
-    this.group = new THREE.Group()
-    this.group.matrixAutoUpdate = false
-    const copies = new Map()
-    this.group.add(cloneBones(asset.root, copies))
-    this.skeleton = new THREE.Skeleton(asset.skeleton.bones.map((b) => copies.get(b)), asset.skeleton.boneInverses.map((m) => m.clone()))
-    this.mesh = new THREE.SkinnedMesh(asset.geometry, material)
-    this.mesh.frustumCulled = false
-    // The bind matrix is the identity: the mesh and the bones sit under the same group at identity, so the group's matrix is the animal's.
-    this.mesh.bind(this.skeleton, IDENTITY)
-    this.group.add(this.mesh)
-    this.material = material
-    this.mixer = new THREE.AnimationMixer(this.group)
-    this.actions = new Map(asset.clips.map((clip) => {
-      const action = this.mixer.clipAction(clip)
-      if (ONE_SHOT.has(clip.name)) {
-        action.setLoop(THREE.LoopOnce, 1)
-        action.clampWhenFinished = true
-      }
-      return [clip.name, action]
-    }))
-    this.current = null
-    // The slot's step counter, so the same clip twice running is re-cued rather than left playing.
-    this.cue = -1
-  }
-
-  /** `name` from `at` seconds in, or faded to from whatever plays. `cue` changing is what says this is a new step and not the same one still running. */
-  play(name, cue, at = -1) {
-    const next = this.actions.get(name)
-    if (!next) throw new Error(`Wildlife puppet: no clip named ${name}`)
-    if (this.current === next && this.cue === cue) return
-    this.cue = cue
-    if (this.current && this.current !== next && at < 0) {
-      next.reset().fadeIn(FADE_S).play()
-      this.current.fadeOut(FADE_S)
-    } else {
-      this.mixer.stopAllAction()
-      next.reset().play()
-      if (at >= 0) next.time = at % next.getClip().duration
-    }
-    this.current = next
-  }
-
-  release() {
-    this.mixer.stopAllAction()
-    this.current = null
-    this.cue = -1
-  }
+  const asset = await loadSkinnedAsset(url, { tiers: LOD_RUNGS, clips: CLIPS, extras: 'quadruped' })
+  if (!(asset.extras.span > 0)) throw new Error(`${url}: no turned span in its extras -- re-ship it`)
+  return { ...asset, ...asset.extras }
 }
 
 export class Wildlife {
@@ -264,7 +190,7 @@ export class Wildlife {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-wildlife'
     scene.add(this.batch)
-    // Every puppet's material, for the world to patch with the lighting; one program each, so the hue is a uniform and not a variant.
+    // Every puppet's materials, for the world to patch with the lighting; two programs a species, the hue and the dissolve's cut being uniforms and not variants.
     this.materials = []
     // The world's day scalar, written by update(). Full day until the clock says otherwise, so a gate that never passes one gets noon.
     this.dayness = 1
@@ -272,26 +198,20 @@ export class Wildlife {
     this.species = SPECIES.map((sp) => {
       const materials = []
       for (let i = 0; i < PUPPETS; i++) {
-        const material = new THREE.MeshLambertMaterial({ color: 0xffffff })
-        const uHue = { value: 0 }
-        material.onBeforeCompile = (shader) => {
-          shader.uniforms.uHue = uHue
-          hueVary(shader, { uniform: true })
-        }
-        material.customProgramCacheKey = () => `wildlife-${sp.key}`
-        material.userData.uHue = uHue
-        materials.push(material)
-        this.materials.push(material)
+        const mats = makePuppetMaterials(`wildlife-${sp.key}`)
+        materials.push(mats)
+        this.materials.push(mats.plain, mats.in, mats.out)
       }
       const slots = []
       for (let i = 0; i < MAX; i++) {
         slots.push({
-          id: i, sp: null, tile: null,
+          id: i, sp: null, spawn: null,
           x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1, hue: 0,
           nx: 0, ny: 1, nz: 0,
           // The activity, the steps it has left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
           act: 'stand', queue: [], clip: 'idle', left: 0, dur: 0, cue: 0, speed: 0,
-          lod: LOD_DEG.length, puppet: null,
+          // The ladder rung it is on, LOD_RUNGS being past the last rung and so neither drawn nor simulated.
+          lod: LOD_RUNGS, puppet: null,
         })
       }
       return { ...sp, materials, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
@@ -303,6 +223,8 @@ export class Wildlife {
     // Candidates whose seat held but that found no free slot; animal-frames in sight with no free puppet, and so not drawn.
     this.overflow = 0
     this.starved = 0
+    // Puppets outliving the animal they were: whatever unloaded with its tile, dissolving on the spot.
+    this.fading = []
 
     if (assets) {
       this.setAssets(assets)
@@ -323,12 +245,17 @@ export class Wildlife {
     for (const sp of this.species) {
       const asset = assets[sp.key]
       if (!asset) throw new Error(`Wildlife.setAssets: nothing for ${sp.key}`)
+      if (!(asset.span > 0) || !(asset.width > 0) || !(asset.height > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no body extents -- re-ship it`)
       sp.asset = asset
+      // The ladder's rungs are a ratio of the body's LARGEST extent (critters.js), and `size` is its length: for a four-legged animal those are the same thing, and `bulk` says so rather than assuming it.
+      sp.bulk = Math.max(asset.span, asset.width, asset.height) / asset.span
       sp.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
-      for (const m of sp.materials) {
-        m.map = asset.map
-        m.needsUpdate = true
-        sp.puppets.push(new Puppet(asset, m))
+      for (const mats of sp.materials) {
+        for (const m of [mats.plain, mats.in, mats.out]) {
+          m.map = asset.map
+          m.needsUpdate = true
+        }
+        sp.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
       }
       sp.freePuppets = sp.puppets.slice()
     }
@@ -350,9 +277,15 @@ export class Wildlife {
     return y
   }
 
+  /**
+   * A tile's spawns: where each animal stands before anything has moved it, and
+   * what it is. Rolling one costs a seat test and nothing else -- no slot, no
+   * puppet, no activity -- because most of a tile's spawns are asleep most of
+   * the time, and a spawn asleep costs a distance.
+   */
   _enter(tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
-    const t = { tx, tz, animals: [] }
+    const t = { tx, tz, spawns: [] }
     for (const sp of this.species) {
       const want = DENSITY * TILE * TILE
       const n = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
@@ -364,41 +297,70 @@ export class Wildlife {
         const heading = rand() * Math.PI * 2
         const y = this.seat(x, z)
         if (y === null) continue
-        const c = sp.free.pop()
-        if (!c) { this.overflow++; continue }
-        c.sp = sp
-        c.tile = t
-        c.x = c.homeX = x
-        c.z = c.homeZ = z
-        c.y = y
-        c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
-        c.size = size
-        c.k = size / sp.asset.span
-        c.hue = hue
-        c.heading = c.aim = heading
-        c.lod = LOD_DEG.length
-        c.puppet = null
-        this._pick(c)
-        // Staggered into its activity, so a tile's animals do not all bow into a graze on the same frame.
-        c.left *= this.rand()
-        t.animals.push(c)
+        const lodSize = size * sp.bulk
+        t.spawns.push({
+          sp, x, y, z, nx: _norm.x, ny: _norm.y, nz: _norm.z, size, hue, heading,
+          cull: cullRange(lodSize), forget: forgetRange(lodSize), lodSize, slot: null,
+        })
       }
     }
     return t
   }
 
-  _leave(t) {
-    for (const c of t.animals) {
-      this._releasePuppet(c)
-      c.tile = null
-      c.sp.free.push(c)
-    }
-    t.animals.length = 0
+  /** A spawn woken into a live animal, standing at home and already busy, or null when the pool is out of slots. */
+  _wake(s) {
+    const c = s.sp.free.pop()
+    if (!c) { this.overflow++; return null }
+    c.sp = s.sp
+    c.spawn = s
+    c.x = c.homeX = s.x
+    c.z = c.homeZ = s.z
+    c.y = s.y
+    c.nx = s.nx; c.ny = s.ny; c.nz = s.nz
+    c.size = s.size
+    c.k = s.size / s.sp.asset.span
+    c.hue = s.hue
+    c.heading = c.aim = s.heading
+    c.lod = LOD_RUNGS
+    c.puppet = null
+    this._pick(c)
+    // Staggered into its activity, so a tile's animals do not all bow into a graze on the same frame.
+    c.left *= this.rand()
+    s.slot = c
+    return c
   }
 
-  /** Rebuild every tile around (cx, cz). Boot, and whenever the ground moves under her. */
+  /**
+   * A live animal back to a spawn: the slot returns to the pool and where it had
+   * wandered to is forgotten, so the next waking puts it at home. `fade` leaves
+   * its puppet behind to dissolve on the spot -- the animal is gone, its body is
+   * not -- and is false only where there is nothing left to fade on.
+   */
+  _sleep(s, fade = true) {
+    const c = s.slot
+    if (!c) return
+    if (fade && c.puppet) {
+      c.puppet.show(-1)
+      this.fading.push({ sp: c.sp, puppet: c.puppet })
+      c.puppet = null
+    } else {
+      this._releasePuppet(c)
+    }
+    c.spawn = null
+    s.slot = null
+    s.sp.free.push(c)
+  }
+
+  _leave(t, fade = true) {
+    for (const s of t.spawns) this._sleep(s, fade)
+    t.spawns.length = 0
+  }
+
+  /** Rebuild every tile around (cx, cz). Boot, and whenever the ground moves under her. Nothing fades: the ground a body was standing on is not there to fade on. */
   place(cx, cz) {
-    for (const t of this.tiles.values()) this._leave(t)
+    for (const t of this.tiles.values()) this._leave(t, false)
+    for (const f of this.fading) this._park(f.puppet, f.sp)
+    this.fading.length = 0
     this.tiles.clear()
     this.overflow = 0
     if (!this.loaded) return
@@ -517,7 +479,7 @@ export class Wildlife {
       const p = sp.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
-      p.material.userData.uHue.value = c.hue
+      p.mats.uHue.value = c.hue
       this.batch.add(p.group)
       // Joined where the step already is, so an animal that walks into range is not caught halfway through bowing into a graze it began a minute ago.
       p.play(c.clip, c.cue, c.dur - c.left)
@@ -525,12 +487,17 @@ export class Wildlife {
     return c.puppet
   }
 
-  _releasePuppet(c) {
-    const p = c.puppet
-    if (!p) return
+  /** A puppet drawing nothing and back in its species' pool. */
+  _park(p, sp) {
     p.release()
     this.batch.remove(p.group)
-    c.sp.freePuppets.push(p)
+    sp.freePuppets.push(p)
+  }
+
+  /** Hand this animal's puppet back at once, without a fade. */
+  _releasePuppet(c) {
+    if (!c.puppet) return
+    this._park(c.puppet, c.sp)
     c.puppet = null
   }
 
@@ -545,10 +512,43 @@ export class Wildlife {
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
     this.frame++
 
+    // The bodies of animals that unloaded, finishing their dissolve where they stood. They do not walk, turn or pick anything: they are a fade.
+    for (let i = this.fading.length - 1; i >= 0; i--) {
+      const f = this.fading[i]
+      f.puppet.step(dt)
+      if (!f.puppet.done) continue
+      this._park(f.puppet, f.sp)
+      this.fading[i] = this.fading[this.fading.length - 1]
+      this.fading.pop()
+    }
+
     for (const t of this.tiles.values()) {
-      for (const c of t.animals) {
-        const dx = c.x - hx
-        const dz = c.z - hz
+      for (const s of t.spawns) {
+        // Asleep, it is measured from home; awake, from wherever it has walked to.
+        const live = s.slot
+        const dx = (live ? live.x : s.x) - hx
+        const dy = (live ? live.y : s.y) - hy
+        const dz = (live ? live.z : s.z) - hz
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        // One rule decides both: the rung it is drawn at, and whether it is alive at all.
+        const tier = critterTier(s.lodSize, dist, live ? live.lod : LOD_RUNGS, LOD_RUNGS)
+
+        if (tier === LOD_RUNGS) {
+          if (!live) continue
+          // Past the cull an animal stops dead: no walking, no turning, no picking. What is left is its body finishing the dissolve out, and then the wait to see whether she comes back before its placement is worth forgetting.
+          live.lod = LOD_RUNGS
+          if (live.puppet) {
+            live.puppet.show(-1)
+            live.puppet.step(dt)
+            if (live.puppet.done) this._releasePuppet(live)
+          } else if (dist > s.forget) {
+            this._sleep(s)
+          }
+          continue
+        }
+
+        const c = live ?? this._wake(s)
+        if (!c) continue
         c.left -= dt
         if (c.left <= 0) this._step(c)
         // A standing animal still finishes a turn it began: one that stopped mid-swing eases round rather than holding a half-turned pose.
@@ -561,10 +561,10 @@ export class Wildlife {
           c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
         }
 
-        const dy = c.y - hy
-        c.lod = critterTier(c.size, Math.sqrt(dx * dx + dy * dy + dz * dz), c.lod, LOD_DEG)
-        const puppet = c.lod === LOD_DEG.length ? null : this._takePuppet(c)
-        if (!puppet) { this._releasePuppet(c); continue }
+        c.lod = tier
+        const puppet = this._takePuppet(c)
+        if (!puppet) continue
+        puppet.show(tier)
         _pos.set(c.x, c.y, c.z)
         // The body faces +X, yawed about the world up to its heading, then that up tilted onto the ground's normal.
         _quat.setFromAxisAngle(UP, c.heading)
@@ -576,7 +576,7 @@ export class Wildlife {
         puppet.play(c.clip, c.cue)
         puppet.group.matrix.copy(_mat)
         puppet.group.matrixWorldNeedsUpdate = true
-        puppet.mixer.update(dt)
+        puppet.step(dt)
       }
     }
   }
@@ -584,9 +584,9 @@ export class Wildlife {
   dispose() {
     this.batch.parent?.remove(this.batch)
     for (const sp of this.species) {
-      for (const m of sp.materials) m.dispose()
+      for (const mats of sp.materials) for (const m of [mats.plain, mats.in, mats.out]) m.dispose()
       sp.asset?.map?.dispose()
-      sp.asset?.geometry?.dispose()
+      for (const geo of sp.asset?.tiers ?? []) geo.dispose()
     }
   }
 }

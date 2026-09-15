@@ -291,7 +291,10 @@ export function assets(id) {
 export function readMeta(id) {
   const seed = PROPS.find((p) => p.id === id)
   const { meta } = readState(id)
-  if (!seed && !meta) throw new Error(`no prop "${id}" -- not in the roster and nothing saved for it`)
+  // A work dir with neither is still a prop: it holds paid-for candidates that
+  // outlived their roster entry (a renamed id), and they stay reachable with no
+  // description until one is saved or they are deleted from the bench.
+  if (!seed && !meta && !fs.existsSync(workDir(id))) throw new Error(`no prop "${id}" -- not in the roster and nothing saved for it`)
   return { id, ...(seed ?? {}), ...(meta ?? {}) }
 }
 

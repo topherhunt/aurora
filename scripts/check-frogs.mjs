@@ -31,8 +31,8 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, DRIFT_MPS, DRIFT_TURN, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_DEG } from '../src/v2/render/frogs.js'
-import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier } from '../src/v2/render/critters.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, DRIFT_MPS, DRIFT_TURN, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -95,7 +95,7 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
     const { ahead, tris } = shape(buf, json)
     check(Math.abs(ahead) < 10, 'the frog faces +X: its eyes lie ahead of its body along +X', `head ${ahead.toFixed(1)} deg from +X`)
     let last = tris
-    for (let k = 1; k < LOD_DEG.length; k++) {
+    for (let k = 1; k < LOD_TIERS; k++) {
       const url = critterLodUrl(CRITTER_GLB.frog, k)
       const tierFile = new URL(`../public/${url}`, import.meta.url)
       check(fs.existsSync(tierFile), `${url} is shipped`)
@@ -138,12 +138,12 @@ const boxAsset = (segments) => {
   const box = new THREE.BoxGeometry(1, 0.5, 0.7, segments, segments, segments).translate(0, 0.25, 0)
   return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
 }
-const asset = LOD_DEG.map((_, k) => boxAsset(LOD_DEG.length - k))
+const asset = Array.from({ length: LOD_TIERS }, (_, k) => boxAsset(LOD_TIERS - k))
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
 const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset })
-check(frogs.loaded && frogs.tiers.length === LOD_DEG.length && frogs.tiers.every((t) => t.visible && t.parent === frogs.batch) && Math.abs(frogs.span - 1) < 1e-6, 'assets set: every tier visible in the batch, span 1', `span ${frogs.span}`)
+check(frogs.loaded && frogs.tiers.length === LOD_TIERS && frogs.tiers.every((t) => t.visible && t.parent === frogs.batch) && Math.abs(frogs.span - 1) < 1e-6, 'assets set: every tier visible in the batch, span 1', `span ${frogs.span}`)
 // The stand-in is half as tall as it is long, so a floating frog's feet sit SINK of that under the surface, per metre of size.
 check(Math.abs(frogs.sink - SINK * 0.5) < 1e-6 && SINK === 0.5, 'a floating frog sinks half its height', `sink ${frogs.sink} per metre of size`)
 const afloatY = (f) => LEVEL - f.size * frogs.sink
@@ -309,7 +309,7 @@ check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)
 check(strayed === 0, `no frog ever lands more than ${TETHER_M} m from home, afloat or ashore`, `furthest ${maxStray.toFixed(2)} m`)
 check(alive().every((f) => (f.state === 'sit' && Math.abs(f.y - (GROUND + 0.05)) < 1e-6) || (f.state === 'drift' && Math.abs(f.y - afloatY(f)) < 1e-6) || f.state === 'hop'), 'a frog at rest is on the ground, or afloat at its level')
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame with ${alive().length} frogs`)
-check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && drawnCount() > 0, 'the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
+check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnCount() > 0, 'the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
 
 // --- breathing: pin every frog sitting and watch instance 0's scale over one breath ----
 {
@@ -382,23 +382,23 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   check(alive().every((f) => Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'and back again when it drops')
 }
 
-// --- the ladder: each frog is the tier its apparent size calls for, none under the last rung ----
+// --- the ladder: each frog is the tier its distance calls for, in its own body lengths ----
 {
-  const deg = (span, dist) => Math.atan2(span, dist) * 180 / Math.PI
-  check(LOD_DEG.length === 4 && LOD_DEG.every((d, k) => k === 0 || d < LOD_DEG[k - 1]) && LOD_DEG[LOD_DEG.length - 1] === 0.75, 'four tiers, each holding down to a smaller angle, the last to three quarters of a degree', LOD_DEG.join(', '))
-  // critterTier on its own: the pick near, each tier one step down, nothing under the last rung, and hysteresis both ways round a threshold.
   const span = (SIZE_M[0] + SIZE_M[1]) / 2
-  const ladder = LOD_DEG.map((d) => critterTier(span, span / Math.tan(d * Math.PI / 180) * 0.99, -1, LOD_DEG))
-  check(ladder.every((t, k) => t === k) && critterTier(span, 0.5, -1, LOD_DEG) === 0 && critterTier(span, 1000, -1, LOD_DEG) === LOD_DEG.length, 'critterTier steps a frog with no tier yet down the ladder by its apparent size and off its foot', ladder.join(', '))
+  const rungs = Array.from({ length: LOD_TIERS }, (_, k) => lodReach(span, k))
+  check(LOD_TIERS === 4 && rungs.every((d, k) => k === 0 || Math.abs(d / rungs[k - 1] - 2) < 1e-12), `four tiers, each reaching twice as far as the one above it`, `${rungs.map((d) => d.toFixed(1)).join(' / ')} m for a ${span.toFixed(2)} m frog`)
+  // critterTier on its own: the pick near, each tier one step down, nothing past the cull, and hysteresis both ways round a threshold.
+  const ladder = rungs.map((d) => critterTier(span, d * 0.99, -1, LOD_TIERS))
+  check(ladder.every((t, k) => t === k) && critterTier(span, 0.1, -1, LOD_TIERS) === 0 && critterTier(span, 1000, -1, LOD_TIERS) === LOD_TIERS, 'critterTier steps a frog with no tier yet down the ladder by its distance and off its foot', ladder.join(', '))
   // Around the tier 1 / tier 2 threshold.
-  const edge = span / Math.tan(LOD_DEG[1] * Math.PI / 180)
+  const edge = rungs[1]
   const H = LOD_HYSTERESIS
-  const stayUp = critterTier(span, edge * (1 + H * 0.5), 1, LOD_DEG), stayDown = critterTier(span, edge * (1 - H * 0.5), 2, LOD_DEG)
-  const goUp = critterTier(span, edge * (1 - H * 1.5), 2, LOD_DEG), goDown = critterTier(span, edge * (1 + H * 1.5), 1, LOD_DEG)
+  const stayUp = critterTier(span, edge * (1 + H * 0.5), 1, LOD_TIERS), stayDown = critterTier(span, edge * (1 - H * 0.5), 2, LOD_TIERS)
+  const goUp = critterTier(span, edge * (1 - H * 1.5), 2, LOD_TIERS), goDown = critterTier(span, edge * (1 + H * 1.5), 1, LOD_TIERS)
   check(stayUp === 1 && stayDown === 2 && goUp === 1 && goDown === 2, 'a frog just over a threshold keeps its tier until it is well over', `stay ${stayUp}/${stayDown}, go ${goUp}/${goDown}`)
-  check(critterTier(span, 1000, LOD_DEG.length - 1, LOD_DEG) === LOD_DEG.length && critterTier(span, span / Math.tan(LOD_DEG[LOD_DEG.length - 1] * 1.05 * Math.PI / 180), LOD_DEG.length, LOD_DEG) === LOD_DEG.length, 'a frog under the last rung is not drawn, and one just over it not yet')
+  check(critterTier(span, 1000, LOD_TIERS - 1, LOD_TIERS) === LOD_TIERS && critterTier(span, cullRange(span) * 1.05, LOD_TIERS, LOD_TIERS) === LOD_TIERS, 'a frog past the cull is not drawn, and one just back inside it not drawn yet either')
 
-  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog under the last rung is undrawn.
+  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog past its cull is undrawn.
   frogs.place(0, 0)
   const HEAD = [HALF + 1, GROUND + 1.6, 0]
   frogs.update(...HEAD, DT)
@@ -407,10 +407,11 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   check(list.length > 0 && list.every((d) => d.f), 'every instance stands on some live frog\'s seat', `${list.length} drawn`)
   const tiersUsed = new Set(list.map((d) => d.tier))
   check(tiersUsed.size >= 3, 'the bank in view spans several tiers', `tiers ${[...tiersUsed].sort().join(', ')}`)
-  const right = list.filter((d) => d.f && critterTier(d.f.size, d.dist, -1, LOD_DEG) === d.tier).length
-  check(right === list.length, 'each is drawn as the tier its apparent size calls for', `${right} of ${list.length}`)
-  const hidden = alive().filter((f) => f.lod === LOD_DEG.length)
-  check(hidden.length > 0 && hidden.every((f) => deg(f.size, Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])) < LOD_DEG[LOD_DEG.length - 1] * (1 + H)) && list.every((d) => deg(d.f.size, d.dist) >= LOD_DEG[LOD_DEG.length - 1] * (1 - H)), 'the frogs under the last rung are not drawn, and every drawn one is over it', `${hidden.length} hidden of ${alive().length}`)
+  const right = list.filter((d) => d.f && critterTier(d.f.size, d.dist, -1, LOD_TIERS) === d.tier).length
+  check(right === list.length, 'each is drawn as the tier its distance calls for', `${right} of ${list.length}`)
+  const away = (f) => Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])
+  const hidden = alive().filter((f) => f.lod === LOD_TIERS)
+  check(hidden.length > 0 && hidden.every((f) => away(f) > cullRange(f.size) * (1 - H)) && list.every((d) => d.dist <= cullRange(d.f.size) * (1 + H)), 'the frogs past their own cull are not drawn, and every drawn one is inside it', `${hidden.length} hidden of ${alive().length}`)
   // A tier instance is its frog: same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
   let matched = 0
   for (const d of list) {
@@ -426,7 +427,7 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_DEG.length).length && d
   for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
   const target = alive().find((f) => f.lod === 1)
   const dist0 = Math.hypot(target.x - HEAD[0], target.y - HEAD[1], target.z - HEAD[2])
-  const edgeD = target.size / Math.tan(LOD_DEG[1] * Math.PI / 180)
+  const edgeD = lodReach(target.size, 1)
   let changes = 0, prev = target.lod
   for (let i = 0; i < 200; i++) {
     // Along the line from her head to the frog, so the distance is exactly the threshold plus a sway of half the hysteresis.

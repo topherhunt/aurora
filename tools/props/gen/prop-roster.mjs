@@ -10,6 +10,11 @@
 // designation are the creature roster's, imported rather than copied, so one
 // number governs every generated asset.
 //
+// Every mushroom is ONE specimen. Clusters and tufts are the placer's job:
+// scattering copies of a single mesh at random sizes and tilts gives a
+// different clump at every site, where a generated cluster is the same three
+// mushrooms in the same arrangement everywhere it stands.
+//
 // Editable in the bench -- this is the starting point for judging whether a
 // concept is worth spending art on, not a fixed list. A prop invented in the
 // bench lives only in its own work/<id>/state.json until it is settled enough
@@ -37,10 +42,11 @@ export const PROPS = [
     sizeM: 0.9,
     aspectRatio: '4:3',
     description:
-      'an old rotting tree stump about knee high, cut off jagged and splintered at the top with one tall shard of ' +
-      'trunk still standing up from the rim, thick fissured grey-brown bark peeling away in slabs to show punky ' +
-      'orange-brown wood beneath, a hollow crumbling core, fat exposed roots flaring out at the base like knuckles, ' +
-      'patches of bright green moss on the shaded side',
+      'an old rotting tree stump about half a metre tall, the top a ragged crown of long torn upward-pointing ' +
+      'splinters with one tall spear of trunk still standing up from the rim, thick deeply fissured grey-brown ' +
+      'bark cracked and lifting in rough scales over punky crumbling orange-brown wood pitted with small dark ' +
+      'bore holes, a hollow rotted-out core, fat gnarled exposed roots flaring out at the base, wet dark staining ' +
+      'and patches of moss and lichen on the shaded side',
   },
   {
     id: 'log-fallen',
@@ -49,10 +55,10 @@ export const PROPS = [
     sizeM: 3.2,
     aspectRatio: '16:9',
     description:
-      'a long fallen rotting log lying on its side, thick and slightly bowed with a fat broken root end and a ' +
-      'splintered narrow end, bark sloughed off in long patches to show weathered silver-grey wood with deep ' +
-      'cracks, one hollow end you could look into, two short broken branch stubs sticking up, moss and small ' +
-      'shelf fungi along the damp underside',
+      'a long fallen rotting log lying on its side, thick and slightly bowed, a fat torn root end and a jagged ' +
+      'splintered narrow end, bark hanging off in long ragged strips over weathered silver-grey wood with deep ' +
+      'cracks and lifted split fibres, one hollow rotted end open to the dark inside, two short snapped branch ' +
+      'stubs jutting up at odd angles, dark damp staining, moss and small shelf fungi along the underside',
   },
   {
     id: 'snag-standing',
@@ -61,46 +67,46 @@ export const PROPS = [
     sizeM: 4.5,
     aspectRatio: '3:4',
     description:
-      'a dead standing tree trunk with no leaves, broken off jagged at the top at about twice a person\'s height, ' +
-      'leaning slightly, bleached silver-grey bare wood with long spiralling cracks, a few short snapped-off branch ' +
-      'stubs, dark woodpecker holes, ragged strips of bark still clinging near the flared base',
+      'a dead standing leafless pine trunk about four metres tall, its top a crown of long jagged upward-pointing ' +
+      'splinters, leaning slightly, fully clad in thick rough dark grey-brown pine bark in deep fissured plates ' +
+      'with a few plates lifting loose, small patches of bleached silver-grey wood showing through at the ' +
+      'splintered top and around the snapped branch stubs, a few short snapped branch stubs, small dark round ' +
+      'bore holes, moss and pale lichen crusting the shaded side of the bark, a flared base',
   },
   {
     id: 'mushroom-agaric',
-    label: 'Fly Agaric Cluster',
+    label: 'Fly Agaric',
     category: 'mushroom',
-    sizeM: 0.3,
+    sizeM: 0.2,
     texPx: TEX_PX_SMALL,
-    aspectRatio: '4:3',
+    aspectRatio: '3:4',
     description:
-      'a cluster of three fly agaric mushrooms growing from one patch of ground, one big and tall with a wide ' +
-      'domed scarlet-red cap flecked with raised creamy-white warts, two smaller ones at its foot with rounder ' +
-      'caps, thick white stems with a ragged skirt ring, the caps tilted at different angles so the cluster is ' +
-      'lopsided and full of character',
+      'a single fly agaric mushroom, a wide domed scarlet-red cap with the colour fading to orange at the ' +
+      'edge, flecked with raised crusty creamy-white warts, the cap slightly tilted and its rim faintly ragged, ' +
+      'a thick white stem with a torn skirt ring and a bulbous scaly base, a little dirt clinging to the foot',
   },
   {
     id: 'mushroom-bolete',
-    label: 'Fat Bolete',
+    label: 'Bolete',
     category: 'mushroom',
-    sizeM: 0.25,
+    sizeM: 0.18,
     texPx: TEX_PX_SMALL,
-    aspectRatio: '4:3',
+    aspectRatio: '3:4',
     description:
-      'a single fat bolete mushroom, a bulging chestnut-brown cap like a bread roll sitting on a swollen barrel ' +
-      'of a stem that is wider than it is tall, pale yellow-cream underside, a small nibble taken out of one edge ' +
-      'of the cap, squat and comically heavy',
+      'a single bolete mushroom, a bulging chestnut-brown cap with a matte, slightly cracked surface and a small ' +
+      'ragged bite missing from one edge, a swollen pale tan stem with a fine netted texture, a spongy ' +
+      'yellow-cream pore underside, soil and leaf litter stuck to the base',
   },
   {
-    id: 'mushroom-tuft',
-    label: 'Honey Fungus Tuft',
+    id: 'mushroom-honey',
+    label: 'Honey Fungus',
     category: 'mushroom',
-    sizeM: 0.3,
+    sizeM: 0.12,
     texPx: TEX_PX_SMALL,
-    aspectRatio: '4:3',
+    aspectRatio: '3:4',
     description:
-      'a dense tuft of a dozen honey-coloured mushrooms of different heights crowding up from one clump, thin ' +
-      'tan stems, small tawny caps with darker centres, the tallest leaning outward like a bouquet, growing out ' +
-      'of a small chunk of dark rotten bark',
+      'a single honey fungus mushroom, a small tawny cap with a darker scaly centre and a thin ragged edge, ' +
+      'a thin fibrous tan stem with a faint pale ring, slightly bent, the surfaces dull and damp',
   },
   {
     id: 'skeleton-deer',
@@ -131,10 +137,10 @@ export const PROPS = [
     sizeM: 5,
     aspectRatio: '4:3',
     description:
-      'a cave entrance as one freestanding chunk of rocky hillside, a dark arched opening about a person and a ' +
-      'half tall framed by heavy layered grey-brown boulders and a slab lintel, the sides sloping back into a ' +
-      'rough mound of rock and packed earth, tufts of moss and a few loose stones at the threshold, the inside ' +
-      'of the opening dark',
+      'a cave entrance as one freestanding chunk of rocky hillside, a dark arched opening about two and a half ' +
+      'metres tall framed by heavy layered grey-brown boulders and a thick stone lintel, the sides sloping back ' +
+      'into a rough mound of rock and packed earth, tufts of moss and a few loose stones at the threshold, the ' +
+      'inside of the opening dark',
   },
 ]
 

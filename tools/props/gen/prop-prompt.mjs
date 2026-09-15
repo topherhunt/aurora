@@ -7,13 +7,13 @@
 // creature-prompt.mjs gives.
 //
 // What differs from a creature is what the picture is FOR. A prop is scenery
-// seen from two metres and then from sixty, so the prompt asks for a stylised
-// game asset with an exaggerated, readable silhouette rather than a specimen
-// photograph: the personality has to survive a 128px colour map and a four-
-// triangle card, and a botanically correct mushroom does not. The subject is
-// told it rests on the floor with its underside on the ground, because the
-// card bake and the world both seat a prop at y = 0 and a prop drawn floating
-// reconstructs with a base that is not flat.
+// seen from two metres and then from sixty, so the prompt asks for a gritty,
+// realistic specimen with a jagged, irregular silhouette: the fine surface
+// grit lives in the colour map and the silhouette is what survives the 128px
+// map and the four-triangle card. The subject is told it rests on the floor
+// with its underside on the ground, because the card bake and the world both
+// seat a prop at y = 0 and a prop drawn floating reconstructs with a base that
+// is not flat.
 // ---------------------------------------------------------------------------
 
 import { ASPECT_RATIOS } from '../../creatures/creature-prompt.mjs'
@@ -25,15 +25,21 @@ export const DEFAULT_FRAME = '4:3'
 
 /**
  * The house style, applied to every prop unless the entry's `styleNote` says
- * otherwise. Personality is the brief: chunky forms, a silhouette that reads at
- * a glance, painterly colour with the shading already in the albedo the way a
- * hand-painted game texture carries it -- but no cast shadow and no directional
- * light, which is the line between "painted shading" and "baked lighting".
+ * otherwise. Gritty and real is the brief: a weathered natural specimen with
+ * fine surface detail and a jagged, irregular outline.
+ *
+ * ONLY NAME WHAT SHOULD BE IN THE PICTURE. The image models are literal: every
+ * noun in the prompt is a thing to paint, and a negation or a contrast
+ * ("snapped rather than sawn", "never cartoonish") plants the very thing it
+ * rules out. So the style and every roster description say what IS there and
+ * nothing about what is not; check-prop-gen.mjs refuses negations, contrasts
+ * and similes in both. The staging paragraph's "no shadow, no text" list is
+ * the one exception, carried over from the creature prompt where it proved out.
  */
 export const HOUSE_STYLE =
-  'Stylised hand-painted low-poly game asset: bold exaggerated proportions, a chunky silhouette that reads at a glance, ' +
-  'a few large readable shapes rather than fine detail, painterly colour with soft form shading in the paint itself, ' +
-  'slightly asymmetric and never perfectly regular.'
+  'Photorealistic, gritty and weathered: a real natural specimen with dense fine surface detail -- grain, fissures, ' +
+  'flaking, staining, dirt and decay -- in true muted natural colour with full surface texture in the albedo, ' +
+  'and a jagged, broken, irregular, asymmetric silhouette.'
 
 /**
  * Builds the image prompt for one prop. `description` is the whole of what the

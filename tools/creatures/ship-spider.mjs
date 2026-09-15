@@ -5,16 +5,15 @@
 //
 // The world draws a spider as a skinned mesh playing its clip library, so the
 // file carries what ship.mjs's static critter files do not: the authored
-// skeleton (rig-spider.mjs), three skinned tiers bound to it -- the pick as
-// LOD0 and the bench's decimated lod1 and lod2 (lod3 is not shipped; at 48 tris
-// it does not read as a spider), each tier skinned by the same bones -- and
-// every clip in anim-*.glb as one animation each, targeting the same joint
-// nodes. The colour map is one 128 px WebP through tools/tripo-pack.mjs, like
-// every other critter. src/v2/render/spiders.js loads it by name.
+// skeleton (rig-spider.mjs), its skinned ladder bound to that one skeleton
+// (skin-ladder.mjs), and every clip in anim-*.glb as one animation each,
+// targeting the same joint nodes. The colour map is one 128 px WebP through
+// tools/tripo-pack.mjs, like every other critter. src/v2/render/spiders.js
+// loads it by name.
 //
-// The tiers share the pick's frame: the pick's node matrix baked in and its
-// feet on y = 0, which is the frame the skeleton was authored in; a tier is a
-// decimation of the same vertices, so the same move puts it in register.
+// Every tier is in the frame the skeleton was authored in -- the pick's node
+// matrix baked in, feet on y = 0 -- because the ladder is decimated from the
+// rig's own vertices rather than fetched from the bench and moved.
 // ---------------------------------------------------------------------------
 
 import fs from 'node:fs'
@@ -22,58 +21,41 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ID, rigSpider } from './rig-spider.mjs'
 import { CREATURES, shipTexPx } from './creature-roster.mjs'
-import { readState, workDir } from './workspace.mjs'
+import { workDir } from './workspace.mjs'
 import { readAccessor, readGlb, writeGlb } from './apply-rig-edit.mjs'
+import { ladderLine, skinnedLadder } from './skin-ladder.mjs'
 import { packTexture, tripoColourJpeg } from '../tripo-pack.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
-// The tiers the world draws, by bench level; the pick is level 0.
-export const TIERS = [0, 1, 2]
 export const CLIPS = ['walk', 'run', 'idle', 'alert', 'eat', 'rest']
 
 const FLOAT = 5126, UBYTE = 5121, UINT = 5125
-
-/** A tier's vertices moved into the pick's frame: the pick's node matrix, then its floor. */
-function tierMesh(file, { m, floor }) {
-  const { json, bin } = readGlb(file)
-  if (json.meshes.length !== 1 || json.meshes[0].primitives.length !== 1) throw new Error(`${file}: expected one mesh with one primitive`)
-  const prim = json.meshes[0].primitives[0]
-  const P = readAccessor(json, bin, prim.attributes.POSITION)
-  const N = readAccessor(json, bin, prim.attributes.NORMAL)
-  const UV = readAccessor(json, bin, prim.attributes.TEXCOORD_0)
-  const I = readAccessor(json, bin, prim.indices)
-  const rot = (v) => [
-    m[0] * v[0] + m[4] * v[1] + m[8] * v[2],
-    m[1] * v[0] + m[5] * v[1] + m[9] * v[2],
-    m[2] * v[0] + m[6] * v[1] + m[10] * v[2],
-  ]
-  const V = [], Nw = []
-  for (let i = 0; i < P.length; i += 3) {
-    const p = rot([P[i], P[i + 1], P[i + 2]])
-    V.push([p[0] + m[12], p[1] + m[13] - floor, p[2] + m[14]])
-    Nw.push(rot([N[i], N[i + 1], N[i + 2]]))
-  }
-  return { V, N: Nw, UV: Array.from(UV), I: Array.from(I) }
-}
 
 export function shipSpider() {
   const meta = CREATURES.find((c) => c.id === ID)
   if (!meta) throw new Error(`${ID} is not in the roster`)
   const dir = workDir(ID)
-  const { pickedMesh } = readState(ID)
-  if (!pickedMesh) throw new Error(`${ID}: no picked mesh`)
   const rig = rigSpider({ write: false })
   const pick = rig.mesh
-  const pickUV = Array.from(readAccessor(pick.json, pick.bin, pick.prim.attributes.TEXCOORD_0))
+  const pickUV = readAccessor(pick.json, pick.bin, pick.prim.attributes.TEXCOORD_0)
 
-  const tiers = TIERS.map((level) => {
-    if (level === 0) return { level, V: pick.V, N: pick.N, UV: pickUV, I: Array.from(pick.I), skin: rig.skin }
-    const file = path.join(dir, 'meshes', `${pickedMesh.replace(/\.glb$/, '')}-lod${level}.glb`)
-    if (!fs.existsSync(file)) throw new Error(`${ID}: no lod${level} tier at ${file} -- save a ladder in gen-creature.html`)
-    const t = tierMesh(file, pick)
-    return { level, ...t, skin: rig.skinOther(t.V) }
+  const ladder = skinnedLadder({
+    positions: Float32Array.from(pick.V.flat()),
+    normals: Float32Array.from(pick.N.flat()),
+    uvs: pickUV,
+    indices: Uint32Array.from(pick.I),
+    joints: rig.skin.J,
+    weights: rig.skin.Wt,
   })
+  const tiers = ladder.map((t, level) => ({
+    level,
+    V: Array.from({ length: t.positions.length / 3 }, (_, i) => [t.positions[i * 3], t.positions[i * 3 + 1], t.positions[i * 3 + 2]]),
+    N: Array.from({ length: t.normals.length / 3 }, (_, i) => [t.normals[i * 3], t.normals[i * 3 + 1], t.normals[i * 3 + 2]]),
+    UV: t.uvs,
+    I: Array.from(t.indices),
+    skin: { J: t.joints, Wt: t.weights },
+  }))
 
   // The BIN chunk, appended view by view.
   const parts = []
@@ -184,9 +166,8 @@ export function shipSpider() {
   fs.mkdirSync(OUT, { recursive: true })
   const out = path.join(OUT, `${ID}.glb`)
   writeGlb(out, json, Buffer.concat(parts))
-  const tris = tiers.map((t) => t.I.length / 3)
-  console.log(`ship ${ID}.glb: ${(fs.statSync(out).size / 1024).toFixed(0)} KB, tiers ${tris.join('/')} tris, ${joints.length} joints, clips ${CLIPS.join(' ')}, texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
-  return { out, tris, joints: joints.length, clips: CLIPS.length }
+  console.log(`ship ${ID}.glb: ${(fs.statSync(out).size / 1024).toFixed(0)} KB, tiers ${ladderLine(ladder)} tris, ${joints.length} joints, clips ${CLIPS.join(' ')}, texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`)
+  return { out, tris: ladder.map((t) => t.indices.length / 3), joints: joints.length, clips: CLIPS.length }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) shipSpider()

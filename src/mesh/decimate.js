@@ -1262,7 +1262,13 @@ export function decimate(mesh, targetTris, opts = {}) {
   const outUvs = keepAtlas && srcUv ? new Float32Array(outVerts * 2) : null
   const outSampleUvs = !keepAtlas && srcUv ? new Float32Array(outVerts * 2) : null
   const outNormals = normals ? new Float32Array(outVerts * 3) : null
+  // The input vertex each output vertex IS. Everything this function knows how to
+  // interpolate it has already written; a caller carrying an attribute this file
+  // has never heard of -- skin joints and weights, a vertex colour -- copies it
+  // through here instead. See tools/creatures/skin-ladder.mjs.
+  const sourceVertex = new Int32Array(outVerts)
   for (const [corner, out] of usedCorner) {
+    sourceVertex[out] = corner
     const p = cornerPoint[out] * 3
     outPositions[out * 3] = pointPos[p]
     outPositions[out * 3 + 1] = pointPos[p + 1]
@@ -1285,6 +1291,7 @@ export function decimate(mesh, targetTris, opts = {}) {
     uvs: outUvs,
     sampleUvs: outSampleUvs,
     normals: outNormals,
+    sourceVertex,
     indices: outVerts > 65535 ? Uint32Array.from(outIndices) : Uint16Array.from(outIndices),
     stats: {
       inputTris: faceCount,
@@ -1319,6 +1326,10 @@ export function decimate(mesh, targetTris, opts = {}) {
  * stops a visible pop when the renderer swaps between them. Every tier is
  * fitted to the original, not to the tier above, so the fit undoes the shave
  * instead of chasing it.
+ *
+ * `sourceVertex` is composed back to the ORIGINAL on the way down, not left
+ * pointing at the tier above: a caller carrying its own attributes wants one
+ * lookup into the mesh it handed in, whatever rung it is reading.
  */
 export function decimateLadder(mesh, targets, opts) {
   const sorted = [...targets].sort((a, b) => b - a)
@@ -1326,6 +1337,10 @@ export function decimateLadder(mesh, targets, opts) {
   let current = mesh
   for (const t of sorted) {
     const out = decimate(current, t, { fitTo: mesh, ...opts })
+    if (current !== mesh) {
+      const via = current.sourceVertex
+      for (let i = 0; i < out.sourceVertex.length; i++) out.sourceVertex[i] = via[out.sourceVertex[i]]
+    }
     tiers.push(out)
     current = out
   }

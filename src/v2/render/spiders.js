@@ -21,10 +21,14 @@
 //
 // Within NEAR_M of her head a spider is a PUPPET: its own skeleton (a clone of
 // the one the shipped GLB carries), an AnimationMixer playing the clip its
-// state calls for, and the three skinned tiers of the same file stepping down
-// by apparent size (critterTier, LOD_DEG). Puppets are pooled, PUPPETS of them:
-// a spider that walks into range takes one and starts its clip at a random
-// phase, and hands it back on leaving. Beyond NEAR_M every spider is one quad
+// state calls for, and the four skinned tiers of the same file stepping down
+// the world ladder (critters.js critterTier, rungs doubling in distance as a
+// ratio of the body), each step a dissolve rather than a pop (render/puppet.js).
+// The last rung is held rather than culled: within NEAR_M a spider is always a
+// mesh, and past it the card takes over. Puppets are pooled, PUPPETS of them: a spider that
+// walks into range takes one and starts its clip at a random phase, and on
+// leaving dissolves away before handing it back, so a spider is a mesh or a
+// card and never both at once. Beyond NEAR_M every spider is one quad
 // of one InstancedMesh, the bind pose photographed from above (critters.js,
 // the 'top' view), lying against its surface under the same matrix the puppet
 // would wear -- edge-on from the side, which at ten metres is a spider-sized
@@ -37,11 +41,11 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { cullTripoBackfaces } from '../../tripo-culling.js'
 import {
-  CRITTER_GLB, gltfLoader, hueVary, makeHueAttribute, createCritterCardMaterial, setCritterCard,
-  bakeCritterCard, critterTier, tileKey, walkTiles,
+  CRITTER_GLB, makeHueAttribute, createCritterCardMaterial, setCritterCard,
+  LOD_RUNGS, bakeCritterCard, critterTier, tileKey, walkTiles,
 } from './critters.js'
+import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 
@@ -49,8 +53,8 @@ export const TILE = 16
 // Inside the trees' full-density band (50 m), corners included.
 export const RADIUS = 38
 export const NEAR_M = 10
-// Apparent size each skinned tier holds down to; the last is open, so within NEAR_M a spider is always a mesh.
-export const LOD_DEG = [4, 2, 0]
+// Skinned tiers, one per rung of the world ladder (critters.js LOD_RUNGS).
+export const LOD_TIERS = LOD_RUNGS
 export const SIZE_M = [0.1, 0.3]
 export const CLIMB_M = 3
 export const GROUP = [1, 5]
@@ -83,6 +87,7 @@ const REST_S = [6, 14]
 // A gait's advance in the unit frame per second: the stride over the duration of tools/creatures/anim/clips/spider/{walk,run}.json. The clips are in place; the seat moves at this rate so the feet hold the bark.
 const GAIT = { walk: 0.11 / 0.9, run: 0.15 / 0.42 }
 const RUN_CHANCE = 0.12
+// Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.2
 // Her head this close makes a paused spider rear up.
 const ALERT_M = 1.2
@@ -95,7 +100,6 @@ const NEAR_KEEP = 1.15
 
 const TAU = Math.PI * 2
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
-const IDENTITY = new THREE.Matrix4()
 const _x = new THREE.Vector3()
 const _y = new THREE.Vector3()
 const _z = new THREE.Vector3()
@@ -116,102 +120,8 @@ function hostSeed(x, z, seed) {
   return (h ^ (h >>> 15)) >>> 0
 }
 
-/**
- * The shipped spider (tools/creatures/ship-spider.mjs) as the parts a puppet is
- * built from: the skeleton's root bone and Skeleton, one geometry per tier in
- * LOD order, the clips, and the colour map. The same shape a gate builds by
- * hand.
- */
-export async function loadSpiderGlb(url) {
-  const loader = await gltfLoader()
-  const gltf = await loader.loadAsync(url)
-  cullTripoBackfaces(gltf.scene)
-  const meshes = []
-  gltf.scene.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o) })
-  if (meshes.length !== LOD_DEG.length) throw new Error(`${url}: expected ${LOD_DEG.length} skinned tiers, found ${meshes.length}`)
-  meshes.sort((a, b) => b.geometry.index.count - a.geometry.index.count)
-  const skeleton = meshes[0].skeleton
-  for (const m of meshes) {
-    if (m.skeleton !== skeleton) throw new Error(`${url}: the tiers do not share one skeleton`)
-    for (const name of ['position', 'normal', 'uv', 'skinIndex', 'skinWeight']) {
-      if (!m.geometry.getAttribute(name)) throw new Error(`${url}: a tier has no ${name} attribute`)
-    }
-  }
-  const root = skeleton.bones.find((b) => !b.parent?.isBone)
-  if (!root) throw new Error(`${url}: the skeleton has no root bone`)
-  if (!gltf.animations.length) throw new Error(`${url}: carries no clips`)
-  const map = meshes[0].material.map
-  if (!map) throw new Error(`${url}: material has no base colour map`)
-  map.colorSpace = THREE.SRGBColorSpace
-  map.anisotropy = 4
-  meshes[0].material.dispose()
-  return { root, skeleton, tiers: meshes.map((m) => m.geometry), clips: gltf.animations, map }
-}
-
-/** A bone tree copied bone by bone, `map` filled with source -> copy. */
-function cloneBones(src, map) {
-  const b = new THREE.Bone()
-  b.name = src.name
-  b.position.copy(src.position)
-  b.quaternion.copy(src.quaternion)
-  b.scale.copy(src.scale)
-  map.set(src, b)
-  for (const c of src.children) if (c.isBone) b.add(cloneBones(c, map))
-  return b
-}
-
-/** One near spider's body: its own bones, the shared tier geometries bound to them, and a mixer over the shared clips. */
-class Puppet {
-  constructor(asset, material) {
-    this.group = new THREE.Group()
-    this.group.matrixAutoUpdate = false
-    const copies = new Map()
-    this.group.add(cloneBones(asset.root, copies))
-    this.skeleton = new THREE.Skeleton(asset.skeleton.bones.map((b) => copies.get(b)), asset.skeleton.boneInverses.map((m) => m.clone()))
-    this.tiers = asset.tiers.map((geo) => {
-      const m = new THREE.SkinnedMesh(geo, material)
-      m.frustumCulled = false
-      m.visible = false
-      // The bind matrix is the identity: the tiers and the bones sit under the same group at identity, so the group's matrix is the spider's.
-      m.bind(this.skeleton, IDENTITY)
-      this.group.add(m)
-      return m
-    })
-    this.material = material
-    this.mixer = new THREE.AnimationMixer(this.group)
-    this.actions = new Map(asset.clips.map((clip) => [clip.name, this.mixer.clipAction(clip)]))
-    this.current = null
-    this.tier = -1
-  }
-
-  /** Cut to `name` at `at` seconds in, or fade to it from whatever plays. */
-  play(name, at = -1) {
-    const next = this.actions.get(name)
-    if (!next) throw new Error(`spider puppet: no clip named ${name}`)
-    if (this.current === next) return
-    if (this.current && at < 0) {
-      next.reset().fadeIn(FADE_S).play()
-      this.current.fadeOut(FADE_S)
-    } else {
-      this.mixer.stopAllAction()
-      next.reset().play()
-      if (at >= 0) next.time = at
-    }
-    this.current = next
-  }
-
-  show(tier) {
-    if (tier === this.tier) return
-    this.tiers.forEach((m, k) => { m.visible = k === tier })
-    this.tier = tier
-  }
-
-  release() {
-    this.mixer.stopAllAction()
-    this.current = null
-    this.show(-1)
-  }
-}
+/** The shipped spider (tools/creatures/ship-spider.mjs) as the parts render/puppet.js builds a puppet from. */
+export const loadSpiderGlb = (url) => loadSkinnedAsset(url, { tiers: LOD_TIERS })
 
 export class Spiders {
   /**
@@ -233,18 +143,13 @@ export class Spiders {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x59d3)
 
-    // One material per puppet, so each can wear its own hue; one program between them.
+    // One set of materials per puppet, so each can wear its own hue; two programs between them all. `materials` is the flat list the world's lighting patches.
+    this.puppetMats = []
     this.materials = []
     for (let i = 0; i < PUPPETS; i++) {
-      const material = new THREE.MeshLambertMaterial({ color: 0xffffff })
-      const uHue = { value: 0 }
-      material.onBeforeCompile = (shader) => {
-        shader.uniforms.uHue = uHue
-        hueVary(shader, { uniform: true })
-      }
-      material.customProgramCacheKey = () => 'spiders'
-      material.userData.uHue = uHue
-      this.materials.push(material)
+      const mats = makePuppetMaterials('spiders')
+      this.puppetMats.push(mats)
+      this.materials.push(mats.plain, mats.in, mats.out)
     }
     this.puppets = []
     this.freePuppets = []
@@ -309,7 +214,7 @@ export class Spiders {
   }
 
   setAsset(asset) {
-    if (asset.tiers.length !== LOD_DEG.length) throw new Error(`Spiders.setAsset: ${LOD_DEG.length} tiers, got ${asset.tiers.length}`)
+    if (asset.tiers.length !== LOD_TIERS) throw new Error(`Spiders.setAsset: ${LOD_TIERS} tiers, got ${asset.tiers.length}`)
     for (const name of ['walk', 'run', 'idle', 'alert', 'eat', 'rest']) {
       if (!asset.clips.some((c) => c.name === name)) throw new Error(`Spiders.setAsset: no clip named ${name}`)
     }
@@ -324,8 +229,8 @@ export class Spiders {
       m.map = asset.map
       m.needsUpdate = true
     }
-    for (const m of this.materials) {
-      const p = new Puppet(asset, m)
+    for (const mats of this.puppetMats) {
+      const p = new Puppet(asset, mats, { clipFade: FADE_S })
       this.puppets.push(p)
       this.freePuppets.push(p)
     }
@@ -691,10 +596,10 @@ export class Spiders {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
-      p.material.userData.uHue.value = c.hue
+      p.mats.uHue.value = c.hue
       this.batch.add(p.group)
       // In at a random phase, so a group that walks into range is not eight legs in lockstep.
-      p.play(c.clip, this.rand() * p.actions.get(c.clip).getClip().duration)
+      p.play(c.clip, 0, this.rand() * p.actions.get(c.clip).getClip().duration)
     }
     return c.puppet
   }
@@ -761,16 +666,18 @@ export class Spiders {
           _quat.setFromRotationMatrix(_mat.makeBasis(_x, _y, _z))
           _scl.set(k, k, k)
           _mat.compose(_pos, _quat, _scl)
-          let puppet = null
-          if (this.loaded && d2 <= (c.puppet ? keep2 : near2)) puppet = this._takePuppet(c)
-          else this._releasePuppet(c)
+          const near = this.loaded && d2 <= (c.puppet ? keep2 : near2)
+          // A spider that has walked out of range keeps its puppet until it has dissolved away, and is not drawn as a card until it has: one of the two, never both at once.
+          const puppet = near || c.puppet ? this._takePuppet(c) : null
           if (puppet) {
-            c.lod = critterTier(c.size, Math.sqrt(d2), c.lod, LOD_DEG)
-            puppet.show(c.lod)
+            // The floor is held, not culled: past the last rung and still within NEAR_M a spider stays a mesh, the card being what takes over out there.
+            if (near) c.lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
+            puppet.show(near ? c.lod : -1)
             puppet.play(c.clip)
             puppet.group.matrix.copy(_mat)
             puppet.group.matrixWorldNeedsUpdate = true
-            puppet.mixer.update(dt)
+            puppet.step(dt)
+            if (puppet.done) this._releasePuppet(c)
           } else if (cards && m < MAX) {
             _mat.toArray(cmat, m * 16)
             chue[m] = c.hue

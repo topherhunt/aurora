@@ -16,13 +16,16 @@ export const CRITTER_GLB = {
   frog: 'creatures/marsh-frog.glb',
   crab: 'creatures/shore-crab.glb',
   butterfly: 'creatures/meadow-butterfly.glb',
-  // One animated file with its own three skinned tiers and clips (tools/creatures/ship-spider.mjs); no -lod ladder beside it.
+  // Three skinned tiers over one skin, with its clips (tools/creatures/ship-spider.mjs); no -lod ladder beside it.
   spider: 'creatures/birch-spider.glb',
-  // The wandering quadrupeds (tools/creatures/ship-quadruped.mjs): one skinned
-  // tier and the whole clip library each, no ladder. See render/wildlife.js.
+  // The wandering quadrupeds (tools/creatures/ship-quadruped.mjs): three skinned
+  // tiers over one skin and the whole clip library each; no -lod ladder beside
+  // them. See render/wildlife.js and render/puppet.js.
   stag: 'creatures/moor-stag.glb',
   fox: 'creatures/red-fox.glb',
   hare: 'creatures/snow-hare.glb',
+  // The biped above the snow line (tools/creatures/ship-biped.mjs): the same shape, with the human clip library. See render/snowmen.js.
+  snowman: 'creatures/abominable-snowman.glb',
 }
 export const critterLodUrl = (url, level) => url.replace(/\.glb$/, `-lod${level}.glb`)
 
@@ -178,17 +181,27 @@ export function setCritterAsset(mesh, material, asset, label) {
 }
 
 // ---------------------------------------------------------------------------
-// THE LOD LADDER. A creature that moves -- turns, hops, is seen from every
-// side -- is drawn as its mesh at every distance, stepping down the bench's
-// decimated tiers (ship.mjs ships them beside the pick) as it shrinks in her
-// view, and drawn as nothing at all once it is under the ladder's last rung,
-// under a degree of arc: a 0.36 m frog thirty metres off is a few pixels, and
-// a few pixels of nothing is not missed. The tier is a function of APPARENT size, body span over
-// distance, so a big frog near and a small frog far take the same step at the
-// same number of pixels; critterTier below picks it, with a little hysteresis
-// so a frog on a threshold does not flicker between two meshes as her head
-// moves. The cost is a low tier that reads as its animal at its size, which
-// is the decimator's job (src/mesh/decimate.js), not a card's.
+// THE LOD LADDER, THE SAME ONE FOR EVERY CREATURE IN THE WORLD. A thing that
+// moves -- turns, hops, is seen from every side -- is drawn as its mesh at
+// every distance, stepping down its decimated tiers as it shrinks in her view,
+// and not drawn at all under the last rung. The rungs are a RATIO OF THE BODY'S
+// OWN SIZE and they DOUBLE: tier 0 holds to LOD_NEAR body sizes, and each tier
+// after it holds to twice as far as the one above. Four rungs, so a body is
+// drawn out to LOD_NEAR * 8 of itself and is culled past that. For a 1.5 m
+// creature that is 10 m, 20 m, 40 m, 80 m; for a 2 m stag 13, 27, 53, 107; for
+// a 0.5 m hare 3.3, 6.7, 13, 27.
+//
+// SIZE IS THE BODY'S LARGEST EXTENT, whichever axis that is -- a stag's length,
+// a snowman's height -- because that is what fills her view. Each layer works
+// out its own creature's and passes it in; nothing here guesses.
+//
+// A rung is left only past its edge by LOD_HYSTERESIS, in either direction, so
+// a creature standing on a threshold does not flicker between two meshes as her
+// head moves. Culling is the same rule with nothing under it, and a culled
+// creature stops being simulated too: past CULL_KEEP of the cull range a layer
+// that remembers where its creatures wandered to may forget, and place the next
+// one from home. The cost of a low rung is a mesh that still reads as its animal
+// at its size, which is the decimator's job (src/mesh/decimate.js), not a card's.
 //
 // THE CROSS CARD, below, is for a creature that is seen in one fixed pose from
 // one side -- the crab, clinging to its rock. It costs two quads and a bake,
@@ -196,25 +209,37 @@ export function setCritterAsset(mesh, material, asset, label) {
 // most creatures want the ladder pared harder at the bottom, not a card.
 // ---------------------------------------------------------------------------
 
-/**
- * The ladder tier a body of `span` metres at `dist` metres is drawn as, given
- * the tier it was last drawn as: `deg` lists the apparent size in degrees of
- * arc each tier holds down to, tier 0 first, so tier k is drawn while the
- * body subtends at least deg[k]; under the last figure it returns deg.length,
- * meaning not drawn. A tier is left only past its edge by HYSTERESIS, in
- * either direction; `prev` of -1 is no tier yet, and takes the edges as they
- * are.
- */
+// Rungs on the ladder, and so skinned tiers a shipped creature carries.
+export const LOD_RUNGS = 4
+// Body sizes tier 0 holds down to. The rest double: 6.7, 13.3, 26.7, 53.3.
+export const LOD_NEAR = 20 / 3
+// How far past a rung a creature must go before it leaves it, and how far short before it comes back.
 export const LOD_HYSTERESIS = 0.1
-export function critterTier(span, dist, prev, deg) {
-  const apparent = (Math.atan2(span, dist) * 180) / Math.PI
-  let tier = deg.length
-  for (let k = 0; k < deg.length; k++) {
-    // The edge, pushed away from the tier it is in so crossing it takes a real move.
-    const edge = k === prev ? deg[k] * (1 - LOD_HYSTERESIS) : k === prev - 1 ? deg[k] * (1 + LOD_HYSTERESIS) : deg[k]
-    if (apparent >= edge) { tier = k; break }
+// How far past the cull a placement is worth remembering, as a fraction of the cull range.
+export const CULL_KEEP = 1.5
+
+/** How far a body of `size` metres is drawn at rung `k`, and at the last rung how far it is drawn at all. */
+export const lodReach = (size, k) => size * LOD_NEAR * 2 ** k
+/** Past this a creature is neither drawn nor simulated. */
+export const cullRange = (size, rungs = LOD_RUNGS) => lodReach(size, rungs - 1)
+/** And past this its layer may forget where it had wandered to. */
+export const forgetRange = (size, rungs = LOD_RUNGS) => cullRange(size, rungs) * CULL_KEEP
+
+/**
+ * The rung a body of `size` metres at `dist` metres is drawn at, given the rung
+ * it was last drawn at. `rungs` is how many the creature has -- a layer with a
+ * shorter ladder than LOD_RUNGS passes its own count -- and the return is
+ * `rungs` for a body past the last of them, meaning not drawn. `prev` of -1 is
+ * no rung yet, and takes the edges as they are.
+ */
+export function critterTier(size, dist, prev, rungs = LOD_RUNGS) {
+  let reach = size * LOD_NEAR
+  for (let k = 0; k < rungs; k++, reach *= 2) {
+    // The edge, pushed away from the rung it is on so crossing it takes a real move.
+    const edge = k === prev ? reach * (1 + LOD_HYSTERESIS) : k === prev - 1 ? reach * (1 - LOD_HYSTERESIS) : reach
+    if (dist <= edge) return k
   }
-  return tier
+  return rungs
 }
 
 // ---------------------------------------------------------------------------

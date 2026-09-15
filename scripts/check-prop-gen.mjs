@@ -13,7 +13,19 @@
 //
 //   THE PROMPT DRIFTS TOWARD A CHARACTER SHEET (chroma key, cast shadow), or
 //   lets the subject float, which Tripo reconstructs with a base that is not
-//   flat and the world then seats crooked at y = 0.
+//   flat and the world then seats crooked at y = 0. Or it drifts toward a
+//   "stylised low-poly game asset", which the first draft asked for and which
+//   comes back smooth, rounded and cartoonish: the brief is gritty and real.
+//
+//   A DESCRIPTION NAMES WHAT IT DOES NOT WANT. The image models are literal:
+//   "snapped off rather than sawn" painted sawn boards, "about a person's
+//   height" is an invitation to paint a person, "beetle galleries" a beetle.
+//   Negations, contrasts, similes and off-subject nouns are refused in the
+//   house style and in every roster description.
+//
+//   A MUSHROOM ENTRY IS A CLUSTER. The placer clusters copies of one specimen
+//   so no two clumps match; a generated cluster is the same three mushrooms in
+//   the same arrangement at every site.
 //
 //   A ROSTER ENTRY IS MALFORMED: an id used twice, a size that is not a size,
 //   a frame the image endpoint will refuse, a texture over the cap, a category
@@ -34,7 +46,7 @@ import { fileURLToPath } from 'node:url'
 import { buildPropPrompt, ASPECT_RATIOS, DEFAULT_FRAME, HOUSE_STYLE } from '../tools/props/gen/prop-prompt.mjs'
 import { PROPS, CATEGORIES, TEX_PX_MAX, TEX_PX_SMALL, shipTexPx, propById } from '../tools/props/gen/prop-roster.mjs'
 import { MODELS, estimateCredits } from '../tools/creatures/tripo.mjs'
-import { workDir, META_KEYS } from '../tools/props/gen/workspace.mjs'
+import { workDir, readMeta, listAll, META_KEYS } from '../tools/props/gen/workspace.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -45,6 +57,12 @@ const check = (ok, label, detail = '') => {
 }
 const throws = (fn) => { try { fn(); return false } catch { return true } }
 
+// Words that put something in the picture that is meant to be kept out of it:
+// negations and contrasts (the model paints the ruled-out thing), similes (it
+// paints the compared thing), and nouns for creatures, people and tools that a
+// description only ever mentions by way of explanation.
+const LITERAL_TRAPS = /\b(not|never|no|none|nothing|without|rather than|instead of|unlike|like an?|as if|resembling|sawn|saw|cut|chopped|axe|chainsaw|person|man|woman|human|people|beetle|bug|insect|slug|snail|woodpecker|bird|animal|bread|cartoon|toy|plastic)\b/i
+
 // --- the id validator ---------------------------------------------------------
 
 console.log('\nprop id validator')
@@ -53,6 +71,26 @@ for (const bad of ['../x', 'a/b', '', 'Stump', 'stump rotting', 'stump.', '..', 
 }
 check(!throws(() => workDir('stump-rotting')), 'accepts a normal id')
 check(workDir('stump-rotting').endsWith(path.join('tools', 'props', 'gen', 'work', 'stump-rotting')), 'and puts it under tools/props/gen/work')
+
+// --- a work dir that outlived its roster entry ---------------------------------
+//
+// Renaming a roster id strands its work dir, and the candidates in it were paid
+// for. The listing must carry it, not throw on it and take every prop down.
+
+console.log('\norphaned work dir')
+{
+  const orphan = 'zz-check-orphan'
+  const dir = workDir(orphan)
+  check(!fs.existsSync(dir), 'the scratch id is free', dir)
+  fs.mkdirSync(dir, { recursive: true })
+  try {
+    check(!throws(() => readMeta(orphan)), 'readMeta answers for a work dir with no roster entry and no saved meta')
+    check(listAll().some((p) => p.id === orphan && p.inRoster === false), 'and listAll carries it, flagged as not in the roster')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+  check(throws(() => readMeta(orphan)), 'while an id with no work dir at all still throws')
+}
 
 // --- the prompt ----------------------------------------------------------------
 
@@ -67,6 +105,10 @@ console.log('\nprompt')
   check(/rests/.test(lower) && /floor/.test(lower), 'seats the object on the floor -- the bake and the world both put it at y = 0')
   check(/watertight/.test(lower), 'asks for a watertight solid')
   check(p.includes(HOUSE_STYLE), 'carries the house style')
+  check(!/low[- ]poly|stylised|stylized|hand-painted|cartoon|chunky|exaggerated|smooth|simplif/.test(lower), 'does not mention a stylised, low-poly or smoothed asset, even to rule it out')
+  check(!LITERAL_TRAPS.test(HOUSE_STYLE), 'the house style has no negation, contrast or simile', HOUSE_STYLE.match(LITERAL_TRAPS)?.[0])
+  check(/photorealistic/.test(lower) && /gritty/.test(lower) && /weathered/.test(lower), 'asks for a photorealistic, gritty, weathered specimen')
+  check(/jagged/.test(lower) && /irregular/.test(lower), 'asks for a jagged, irregular silhouette')
   check(p.trim().endsWith('Object: a rotting stump.'), 'ends with the description as the object line')
   const styled = buildPropPrompt({ description: 'a stump', styleNote: 'Extra gnarly.' })
   check(styled.includes('Extra gnarly.') && styled.indexOf('Extra gnarly.') > styled.indexOf(HOUSE_STYLE), 'a styleNote is appended after the house style')
@@ -88,8 +130,16 @@ console.log('\nroster')
     check(typeof p.description === 'string' && p.description.length > 40, `${p.id}: has a description (it is the prompt)`)
     check(!throws(() => shipTexPx(p)) && shipTexPx(p) <= TEX_PX_MAX, `${p.id}: ships at ${shipTexPx(p)}px, within the ${TEX_PX_MAX}px cap`)
     check(!throws(() => buildPropPrompt(p)), `${p.id}: builds a prompt`)
+    check(!LITERAL_TRAPS.test(p.description), `${p.id}: description names only what belongs in the picture`, p.description.match(LITERAL_TRAPS)?.[0])
   }
-  check(PROPS.filter((p) => p.category === 'mushroom').every((p) => p.texPx === TEX_PX_SMALL), `every mushroom is designated ${TEX_PX_SMALL}px`)
+  const mushrooms = PROPS.filter((p) => p.category === 'mushroom')
+  check(mushrooms.length > 0 && mushrooms.every((p) => p.texPx === TEX_PX_SMALL), `every mushroom is designated ${TEX_PX_SMALL}px`)
+  for (const p of mushrooms) {
+    check(/^a single /.test(p.description) && !/cluster|tuft|dozen|three|pair of|group/.test(p.description), `${p.id}: is one specimen -- the placer makes the clusters`)
+  }
+  for (const p of PROPS.filter((p) => p.category === 'deadwood')) {
+    check(/jagged|splinter/.test(p.description), `${p.id}: deadwood is described jagged or splintered`)
+  }
   check(throws(() => shipTexPx({ id: 'x', texPx: TEX_PX_MAX * 2 })), 'shipTexPx throws on a texture over the cap')
   check(propById(ids[0]) === PROPS[0] && propById('no-such-prop') === null, 'propById finds a seed and answers null for a stranger')
   for (const k of ['label', 'category', 'sizeM', 'texPx', 'description', 'styleNote', 'aspectRatio']) {

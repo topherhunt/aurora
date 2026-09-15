@@ -12,12 +12,13 @@
 // is not eat-down, chews, eat-up, or a sit that loops instead of playing its one
 // round trip; a body that snaps to a new heading in a frame instead of turning
 // to it; an animal that takes any notice of her; an animal in sight drawn as
-// anything but its own animated puppet, or one drawn past the last rung; a herd
-// that does not settle after dark; a frame that costs more than a scatter is
-// allowed to. The three shipped GLBs are checked for shape too -- one skinned
-// mesh, the whole clip library, the quadruped extras, and a bind pose that
-// stands on y = 0 with its long axis on +X -- because the world loads them by
-// name and builds every puppet from them.
+// anything but its own animated puppet, one drawn past the last rung, or one
+// that pops on, off or between rungs instead of dissolving; a herd that does
+// not settle after dark; a frame that costs more than a scatter is allowed to.
+// The three shipped GLBs are checked for shape too -- the halving ladder over
+// the one skeleton, the whole clip library, the quadruped extras, and a bind
+// pose that stands on y = 0 with its long axis on +X -- because the world loads
+// them by name and builds every puppet from them.
 //
 // What this can NOT check: whether a stag reads as a stag, or whether the
 // behaviour looks like grazing. That needs eyes, in the world.
@@ -25,9 +26,10 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Wildlife, SPECIES, CLIPS, ONE_SHOT, TILE, RADIUS, DENSITY, LOD_DEG, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE,
+  Wildlife, SPECIES, CLIPS, ONE_SHOT, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE,
 } from '../src/v2/render/wildlife.js'
-import { CRITTER_GLB, critterTier } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, CULL_KEEP, LOD_HYSTERESIS, LOD_NEAR, LOD_RUNGS, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
+import { LOD_FADE_S } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -103,11 +105,15 @@ for (const sp of SPECIES) {
   const roster = CREATURES.find((c) => c.id === id)
 
   const meshes = json.meshes ?? []
-  check(meshes.length === 1 && meshes[0].primitives.length === 1, `${id}: one mesh of one primitive -- these carry no LOD ladder`, `${meshes.length} meshes`)
+  const names = meshes.map((m) => m.name)
+  check(meshes.length === LOD_RUNGS && names.join(',') === [id, ...Array.from({ length: LOD_RUNGS - 1 }, (_, k) => `${id}-lod${k + 1}`)].join(','), `${id}: one mesh per rung of the ladder, the rig then lod1 up, in the one file`, names.join(','))
   const prim = meshes[0]?.primitives[0]
-  const tris = prim ? json.accessors[prim.indices].count / 3 : 0
-  check(prim?.attributes.JOINTS_0 !== undefined && prim.attributes.WEIGHTS_0 !== undefined && prim.attributes.NORMAL !== undefined && prim.attributes.TEXCOORD_0 !== undefined && prim.material === 0, `${id}: the mesh is skinned, with normals and UVs, on the one material`, `${tris} tris`)
-  check(json.skins?.length === 1 && (json.nodes ?? []).filter((n) => n.skin !== undefined).length === 1, `${id}: one skeleton, worn by the one mesh node`, `${json.skins?.[0]?.joints.length} joints`)
+  const tris = meshes.map((m) => (m.primitives[0] ? json.accessors[m.primitives[0].indices].count / 3 : 0))
+  // Each rung halves: the shipper's TIER_FRACTIONS, rounded.
+  check(tris.every((t, k) => k === 0 || Math.abs(t - tris[k - 1] / 2) <= 1), `${id}: each rung is half the triangles of the one above`, tris.join('/'))
+  check(meshes.every((m) => m.primitives.length === 1 && m.primitives[0].attributes.JOINTS_0 !== undefined && m.primitives[0].attributes.WEIGHTS_0 !== undefined && m.primitives[0].attributes.NORMAL !== undefined && m.primitives[0].attributes.TEXCOORD_0 !== undefined && m.primitives[0].material === 0), `${id}: every rung is skinned, one primitive, on the one material`)
+  const skinned = (json.nodes ?? []).filter((n) => n.skin !== undefined)
+  check(json.skins?.length === 1 && skinned.length === LOD_RUNGS && skinned.every((n) => n.skin === 0), `${id}: ONE skeleton, worn by every rung -- a tier costs its triangles and not its bones`, `${json.skins?.[0]?.joints.length} joints`)
 
   const clips = (json.animations ?? []).map((a) => a.name)
   check(CLIPS.every((n) => clips.includes(n)) && clips.length === CLIPS.length, `${id}: the whole clip library, ${CLIPS.length} clips`, clips.join(' '))
@@ -166,16 +172,20 @@ function makeAsset(key) {
   root.updateMatrixWorld(true)
   const bones = [root, spine]
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
-  const geometry = new THREE.BoxGeometry(quad.span, quad.height, quad.width).translate(0, quad.height / 2, 0)
-  const n = geometry.getAttribute('position').count
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2))
-  geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4), 4))
-  geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(new Float32Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
+  // One slab a rung, coarser down the ladder, so a test can tell which tier is drawn.
+  const tiers = Array.from({ length: LOD_RUNGS }, (_, k) => {
+    const g = new THREE.BoxGeometry(quad.span, quad.height, quad.width, LOD_RUNGS - k, 1, 1).translate(0, quad.height / 2, 0)
+    const n = g.getAttribute('position').count
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2))
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4), 4))
+    g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(new Float32Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
+    return g
+  })
   const clips = json.animations.map((a) => {
     const dur = Math.max(...a.samplers.map((s) => json.accessors[s.input].max[0]))
     return new THREE.AnimationClip(a.name, dur, [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])])
   })
-  return { root, skeleton, geometry, clips, map: null, gait: quad.gait, sizeM: quad.sizeM, span: quad.span }
+  return { root, skeleton, tiers, clips, map: null, gait: quad.gait, sizeM: quad.sizeM, span: quad.span, width: quad.width, height: quad.height }
 }
 const assets = () => Object.fromEntries(SPECIES.map((sp) => [sp.key, makeAsset(sp.key)]))
 
@@ -186,19 +196,39 @@ const make = (seed, world = { walk, water, height }) =>
 const w = make(7)
 check(w.loaded && w.species.length === 3 && w.species.map((s) => s.key).join(',') === 'stag,fox,hare', 'the three of them are loaded')
 check(w.species.every((sp) => sp.puppets.length === PUPPETS && sp.freePuppets.length === PUPPETS && sp.slots.length === MAX && sp.free.length === MAX), `${PUPPETS} puppets and ${MAX} slots a species, all free`)
-check(w.materials.length === 3 * PUPPETS, 'a material per puppet, all offered to the lighting')
-check(w.species.every((sp) => sp.materials.every((m) => m.customProgramCacheKey() === `wildlife-${sp.key}`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 3, 'one program a species, not one a puppet')
+check(w.materials.length === 3 * PUPPETS * 3, 'three materials a puppet -- settled, dissolving in, dissolving out -- all offered to the lighting')
+check(w.species.every((sp) => sp.materials.every((m) => m.plain.customProgramCacheKey() === `wildlife-${sp.key}` && m.in.customProgramCacheKey() === `wildlife-${sp.key}-fade` && m.out.customProgramCacheKey() === `wildlife-${sp.key}-fade`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 6, 'two programs a species and not one a puppet: a settled one with no discard in it at all, and the dissolve both halves of a fade share')
 check(w.batch.children.length === 0, 'nothing is in the batch but the puppets it lends out -- there is no card mesh to draw')
-check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === 2 && p.mesh.skeleton === p.skeleton && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, the shared geometry bound to it, and an action per clip')
+check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === 2 && p.meshes.length === LOD_RUNGS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
 check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([name, a]) => (ONE_SHOT.has(name) ? a.loop === THREE.LoopOnce && a.clampWhenFinished : a.loop === THREE.LoopRepeat)))), `${[...ONE_SHOT].join(', ')} play once and hold, the rest cycle`)
 {
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n' }
-  w.materials[0].onBeforeCompile(shader)
-  check(shader.uniforms.uHue === w.materials[0].userData.uHue && shader.fragmentShader.includes('#define vHue uHue') && !shader.vertexShader.includes('aHue'), "a puppet's hue is its material's uHue uniform")
+  const compile = (m) => {
+    const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n' }
+    m.onBeforeCompile(shader)
+    return shader
+  }
+  const mats = w.species[0].materials[0]
+  const plain = compile(mats.plain)
+  check(plain.uniforms.uHue === mats.uHue && plain.fragmentShader.includes('#define vHue uHue') && !plain.vertexShader.includes('aHue'), "a puppet's hue is its materials' one shared uHue uniform")
+  check(!plain.fragmentShader.includes('discard'), 'a settled puppet draws through a shader with no discard in it, so it does not cost a tiled GPU its early-Z')
+  const [a, b] = [compile(mats.in), compile(mats.out)]
+  check(a.uniforms.uCut === mats.uCut && b.uniforms.uCut === mats.uCut && a.uniforms.uSide.value === -b.uniforms.uSide.value, 'both halves of a fade read the one cut and compare it the opposite way round')
+  check(a.fragmentShader === b.fragmentShader && a.fragmentShader.includes('gl_FragCoord') && !a.fragmentShader.includes('uTime'), 'off the same screen-space hash, with no time in it -- so the masks are complementary and the pattern does not crawl')
+  check(a.fragmentShader.indexOf('discard') < a.fragmentShader.indexOf('#include <map_fragment>'), 'and the test comes before the texture fetch, so a dropped fragment costs nothing but itself')
 }
 
 // --- the scatter's rate ----------------------------------------------------------
-const alive = (of) => of.species.flatMap((sp) => sp.slots.filter((c) => c.tile !== null))
+// A spawn is a placement the tiles hold; a slot is one woken into a live animal.
+const scatter = (of) => [...of.tiles.values()].flatMap((t) => t.spawns)
+const alive = (of) => of.species.flatMap((sp) => sp.slots.filter((c) => c.spawn !== null))
+// Waking is the update's job, not place()'s, so a gate that wants animals runs a frame.
+const wake = (of, hx = 0, hz = 0) => { of.update(hx, GROUND + 1.6, hz, 0); return of }
+// A hare's cull is under thirty metres, so the only way to see one alive is to go and stand by it.
+const beside = (of, key) => {
+  const s = scatter(of).find((c) => c.sp.key === key)
+  of.update(s.x, s.y + 1.6, s.z, 0)
+  return of.species.find((sp) => sp.key === key).slots.find((c) => c.spawn === s)
+}
 const SEEDS = 40
 {
   const counts = Object.fromEntries(SPECIES.map((sp) => [sp.key, 0]))
@@ -207,26 +237,28 @@ const SEEDS = 40
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = make(seed, { walk: plain, water: noWater, height })
     k.place(0, 0)
+    wake(k)
     tiles += k.tiles.size
     overflow += k.overflow
-    for (const sp of k.species) counts[sp.key] += MAX - sp.free.length
+    for (const c of scatter(k)) counts[c.sp.key]++
     k.dispose()
   }
   const area = tiles * TILE * TILE
   const rates = Object.fromEntries(Object.entries(counts).map(([key, n]) => [key, n / area]))
-  check(overflow === 0, 'nothing was dropped for want of a slot, over every seed', `${overflow} over ${SEEDS} seeds`)
+  check(overflow === 0, 'every spawn inside its cull range found a slot to wake into, over every seed', `${overflow} over ${SEEDS} seeds`)
   check(Object.values(rates).every((r) => Math.abs(r / DENSITY - 1) < 0.12), `one of EACH per ${Math.round(1 / DENSITY)} square metres, on open ground`, Object.entries(rates).map(([k2, r]) => `${k2} 1 per ${Math.round(1 / r)}`).join(', ') + ` over ${Math.round(area / 1e3)}k m2`)
   check(Object.values(counts).every((n) => n > 100), 'and enough of each to say so', JSON.stringify(counts))
 }
 
 // --- where they sit --------------------------------------------------------------
 w.place(0, 0)
+wake(w)
 {
   const pool = []
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = make(seed)
     k.place(0, 0)
-    for (const c of alive(k)) pool.push({ key: c.sp.key, x: c.x, y: c.y, z: c.z, size: c.size, k: c.k, hue: c.hue, nx: c.nx, ny: c.ny, nz: c.nz })
+    for (const c of scatter(k)) pool.push({ key: c.sp.key, x: c.x, y: c.y, z: c.z, size: c.size, hue: c.hue, nx: c.nx, ny: c.ny, nz: c.nz })
     k.dispose()
   }
   check(pool.length > 3 * SEEDS, 'the moor carries animals', `${pool.length} over ${SEEDS} seeds; one seed: ${JSON.stringify(w.stats.alive)} on ${w.stats.tiles} tiles`)
@@ -242,6 +274,8 @@ w.place(0, 0)
   check(pool.every((c) => TRUNKS.every((t) => Math.hypot(c.x - t.x, c.z - t.z) > t.r)), 'none stands inside a trunk')
   check(pool.every((c) => Math.abs(c.y - fieldAt(c.x, c.z)) < 1e-9), 'every animal is on the walk surface, not floating over it')
   check(pool.every((c) => Math.hypot(c.nx, c.ny, c.nz) - 1 < 1e-9), 'each carries the unit normal of the ground it stands on')
+  const aside = make(3)
+  aside.place(0, 0)
   for (const sp of SPECIES) {
     const mine = pool.filter((c) => c.key === sp.key)
     const quad = shipped[sp.key].json.scenes[0].extras.quadruped
@@ -250,19 +284,22 @@ w.place(0, 0)
     // The spread has to be seen as well as allowed: a vary that stopped being rolled would still pass a bound.
     const spread = (Math.max(...sizes) - Math.min(...sizes)) / drawM
     check(sizes.every((s) => Math.abs(s / drawM - 1) <= sp.vary + 1e-9) && spread > sp.vary, `a ${sp.key} is ${drawM} m (${quad.sizeM} shipped${sp.scale === 1 ? '' : ` x ${sp.scale}`}) give or take ${Math.round(sp.vary * 100)}%, and the range is walked`, `${Math.min(...sizes).toFixed(2)} to ${Math.max(...sizes).toFixed(2)} m`)
-    check(mine.every((c) => Math.abs(c.k - c.size / quad.span) < 1e-9), `and wears the scale that makes it so`)
+    const one = beside(aside, sp.key)
+    check(one && Math.abs(one.k - one.size / quad.span) < 1e-9, `and wears the scale that makes it so`, `${one.size.toFixed(2)} m at ${one.k.toFixed(3)}`)
     const hues = new Set(mine.map((c) => c.hue.toFixed(4)))
     check(hues.size > mine.length / 2 && mine.every((c) => Math.abs(c.hue) <= sp.hue), `${sp.key}s wear their own hues within ${sp.hue}`, `${hues.size} hues in ${mine.length}`)
   }
+  aside.dispose()
   // Determinism: the same seed lays the same animals twice.
-  const key = (of) => alive(of).map((c) => `${c.sp.key}:${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
+  const key = (of) => scatter(of).map((c) => `${c.sp.key}:${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
   const again = make(7)
   again.place(0, 0)
-  check(key(again) === key(w) && alive(w).length > 0, 'the scatter is a pure function of the seed', `${alive(w).length} animals`)
+  check(key(again) === key(w) && scatter(w).length > 0, 'the scatter is a pure function of the seed', `${scatter(w).length} animals`)
   // And of position: the tiles she keeps hold the same animals when she steps.
-  const kept = alive(again).filter((c) => Math.hypot(c.x, c.z) < 30).map((c) => ({ c, x: c.x, z: c.z }))
+  const kept = scatter(again).filter((c) => Math.hypot(c.x, c.z) < 30).map((c) => ({ c, x: c.x, z: c.z }))
   again.update(TILE, GROUND + 1.6, 0, 0)
-  check(kept.length > 0 && kept.every(({ c, x, z }) => c.tile !== null && c.x === x && c.z === z), 'a step of one tile leaves the animals she keeps exactly where they were', `${kept.length} kept`)
+  const held = new Set(scatter(again))
+  check(kept.length > 0 && kept.every(({ c, x, z }) => held.has(c) && c.x === x && c.z === z), 'a step of one tile leaves the animals she keeps exactly where they were', `${kept.length} kept`)
   again.dispose()
 }
 
@@ -312,6 +349,7 @@ w.place(0, 0)
 
 // --- the walk --------------------------------------------------------------------
 w.place(0, 0)
+wake(w)
 {
   const c = alive(w).filter((a) => Math.hypot(a.x, a.z) > 60)[0]
   c.heading = 0.4
@@ -328,32 +366,37 @@ w.place(0, 0)
   check(Math.abs((c.x - x0) / moved - Math.cos(c.heading)) < 1e-6 && Math.abs((c.z - z0) / moved + Math.sin(c.heading)) < 1e-6, 'and it goes the way it is facing')
 
   // Ten minutes of wandering, her head far off.
-  const far = alive(w).filter((a) => Math.hypot(a.homeX, a.homeZ) > 60)
-  const start = far.map((a) => [a.x, a.z])
+  const swing = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+  const far = new Map() // the spawn -> where its animal stood when the minute began
+  const got = new Map() // -> and where it has got to since
   let strayed = 0
   let ms = 0
+  for (const a of alive(w)) if (Math.hypot(a.homeX, a.homeZ) > 60) far.set(a.spawn, [a.x, a.z])
   // Every heading of every animal, every frame: a tether turn, a turn away from
   // the water and a fresh roam all pass through here, and not one of them may
-  // move a body faster than it can turn.
-  const watched = alive(w)
+  // move a body faster than it can turn. A slot that went to sleep and was woken
+  // again holds a different animal, which is a placement and not a turn.
   let snapped = 0
-  let was = watched.map((a) => a.heading)
+  let watched = 0
+  let was = new Map()
   for (let f = 0; f < 3600; f++) {
     const t0 = performance.now()
     w.update(0, GROUND + 1.6, 0, dt)
     ms += performance.now() - t0
-    for (const a of far) strayed = Math.max(strayed, Math.hypot(a.x - a.homeX, a.z - a.homeZ))
-    for (let i = 0; i < watched.length; i++) {
-      const d = Math.abs(Math.atan2(Math.sin(watched[i].heading - was[i]), Math.cos(watched[i].heading - was[i])))
-      snapped = Math.max(snapped, d)
+    const seen = new Map()
+    for (const a of alive(w)) {
+      const prev = was.get(a)
+      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(a.heading - prev.heading))); watched++ }
+      seen.set(a, { spawn: a.spawn, heading: a.heading })
+      if (far.has(a.spawn)) { strayed = Math.max(strayed, Math.hypot(a.x - a.homeX, a.z - a.homeZ)); got.set(a.spawn, [a.x, a.z]) }
     }
-    was = watched.map((a) => a.heading)
+    was = seen
   }
-  check(snapped <= TURN_RATE * dt + 1e-12, `in ${(watched.length * 3600 / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
-  const wandered = far.filter((a, i) => Math.hypot(a.x - start[i][0], a.z - start[i][1]) > 1)
-  check(wandered.length > far.length / 2, 'most of them have wandered somewhere in a minute', `${wandered.length} of ${far.length}`)
+  check(snapped <= TURN_RATE * dt + 1e-12, `in ${(watched / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
+  const wandered = [...far].filter(([sp, [x, z]]) => got.has(sp) && Math.hypot(got.get(sp)[0] - x, got.get(sp)[1] - z) > 1)
+  check(far.size > 0 && wandered.length > far.size / 2, 'most of them have wandered somewhere in a minute', `${wandered.length} of ${far.size}`)
   // The probe looks a body length and a half ahead, so the animal itself may stand that much past the leash.
-  const slack = 1.5 * Math.max(...far.map((a) => a.size)) + 0.5
+  const slack = 1.5 * Math.max(...[...far.keys()].map((sp) => sp.size)) + 0.5
   check(strayed <= TETHER_M + slack, `and none has left its ${TETHER_M} m tether`, `furthest ${strayed.toFixed(2)} m of ${(TETHER_M + slack).toFixed(2)}`)
   check(alive(w).every((a) => !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= MAX_SLOPE && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'nobody has walked into the water, up the crag or through a trunk')
   check(alive(w).every((a) => Math.abs(a.y - fieldAt(a.x, a.z)) < 1e-9), 'and everybody is still on the ground')
@@ -410,6 +453,7 @@ w.place(0, 0)
 {
   const k = make(5)
   k.place(0, 0)
+  wake(k)
   const dt = 1 / 60
   const c = alive(k).find((a) => a.sp.key === 'stag')
   k._begin(c, 'roam')
@@ -439,10 +483,10 @@ w.place(0, 0)
   // The same world twice: once with her head inside the animal, once with her
   // two hundred metres straight up. Her height moves nothing but the LOD, so any
   // difference in the trace is an animal that noticed her.
-  const trace = (lift) => {
+  const trace = (key, lift) => {
     const k = make(7)
     k.place(0, 0)
-    const c = alive(k).find((a) => a.sp.key === 'hare')
+    const c = beside(k, key)
     const [hx, hz] = [c.x, c.z]
     const log = []
     for (let f = 0; f < 900; f++) {
@@ -453,26 +497,34 @@ w.place(0, 0)
     k.dispose()
     return out
   }
-  const under = trace(1.6)
-  const over = trace(200)
+  const under = trace('stag', 1.6)
+  const over = trace('stag', 60)
   const same = under.log.every((s, i) => s === over.log[i])
-  check(same, 'fifteen seconds with her standing on top of it, and the hare does exactly what it would have done with her two hundred metres up', `${under.log[under.log.length - 1].split('/').slice(0, 2).join('/')}`)
-  check(under.away < 12, 'it has not bolted', `${under.away.toFixed(2)} m from her in 15 s`)
+  check(same, 'fifteen seconds with her standing on top of it, and the stag does exactly what it would have done with her sixty metres up', `${under.log[under.log.length - 1].split('/').slice(0, 2).join('/')}`)
+  const hare = trace('hare', 1.6)
+  check(hare.away < 12, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m from her in 15 s`)
 }
 
 // --- drawn, or not drawn ---------------------------------------------------------
 {
   w.place(0, 0)
+  wake(w)
   const c = alive(w).find((a) => a.sp.key === 'stag')
   // Straight up over it, so the distance is exactly d and the tiles do not move; dt 0, so nothing walks out from under the test.
   const at = (d, frames = 2, dt = 0) => {
     for (let f = 0; f < frames; f++) w.update(c.x, c.y + d, c.z, dt)
     return c.lod
   }
-  const expect = (d) => critterTier(c.size, d, -1, LOD_DEG)
-  const near = at(20)
-  check(near === 0 && expect(20) === 0 && c.puppet && w.batch.children.includes(c.puppet.group), 'twenty metres off, the stag is a puppet in the scene')
-  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning() && c.puppet.material.userData.uHue.value === c.hue, 'playing what it is doing, in its own hue', c.clip)
+  // Enough frames at a real dt for every dissolve to finish: a tier change, an appearance or a vanishing takes LOD_FADE_S, and a puppet is not back in the pool until it has.
+  const settle = (d) => at(d, Math.ceil(LOD_FADE_S * 60) + 2, 1 / 60)
+  // Every distance here is read off the animal's own body, because that is what the ladder is a ratio of. Held aside: past the cull the slot is let go and the spawn with it.
+  const lodSize = c.spawn.lodSize
+  const reach = (k) => lodReach(lodSize, k)
+  const expect = (d) => critterTier(lodSize, d, -1, LOD_RUNGS)
+  const close = reach(0) / 2
+  const near = settle(close)
+  check(near === 0 && expect(close) === 0 && c.puppet && w.batch.children.includes(c.puppet.group), `${close.toFixed(0)} metres off -- half of what the top rung holds -- the stag is a puppet in the scene, on the top rung`)
+  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning() && c.puppet.mats.uHue.value === c.hue, 'playing what it is doing, in its own hue', c.clip)
   {
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
     c.puppet.group.matrix.decompose(p, q, s)
@@ -485,20 +537,160 @@ w.place(0, 0)
     const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(q).applyQuaternion(tilt.invert())
     check(Math.abs(q.dot(want)) > 1 - 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - Math.atan2(Math.sin(c.heading), Math.cos(c.heading))) < 1e-6, 'and its body faces its heading', `${c.heading.toFixed(2)} rad`)
   }
-  // The band the old card tier covered: a stag this far off is still a puppet.
-  const mid = at(80)
-  check(mid === 0 && expect(80) === 0 && c.puppet, 'and eighty metres off it is still its own animated puppet, not a photograph of one')
+  // The band the old card tier covered: a stag this far off is still a puppet, on the bottom rung.
+  const out = reach(LOD_RUNGS - 1) * 0.9
+  const mid = settle(out)
+  check(mid === expect(out) && mid === LOD_RUNGS - 1 && c.puppet, `and ${out.toFixed(0)} metres off, just inside the cull, it is still its own animated puppet on the last rung, not a photograph of one`)
   {
-    const inSight = alive(w).filter((a) => a.lod < LOD_DEG.length)
+    const inSight = alive(w).filter((a) => a.lod < LOD_RUNGS)
     check(inSight.length > 0 && inSight.every((a) => a.puppet) && w.batch.children.length === inSight.length, 'every animal in sight wears a puppet, and the batch draws those and nothing else', `${inSight.length} drawn of ${alive(w).length}, ${w.starved} starved`)
   }
-  const gone = at(400)
-  check(gone === LOD_DEG.length && expect(400) === LOD_DEG.length && !c.puppet, 'four hundred metres off it is not drawn at all')
+  const far = reach(LOD_RUNGS - 1) * 4
+  check(settle(far) === LOD_RUNGS && expect(far) === LOD_RUNGS && !c.puppet, `${far.toFixed(0)} metres off, four times the cull, it is not drawn at all`)
   check(w.species.every((sp) => sp.freePuppets.length + sp.puppets.filter((p) => p.group.parent === w.batch).length === PUPPETS), 'the pools balance')
-  at(20, 4)
+  at(close, 4)
   const t = c.puppet.mixer.time
-  at(20, 10, 1 / 60)
+  at(close, 10, 1 / 60)
   check(c.puppet && Math.abs(c.puppet.mixer.time - t - 10 / 60) < 1e-9, "a puppet's mixer advances with the frames", `${(c.puppet.mixer.time - t).toFixed(4)} s in ten`)
+}
+
+// --- the ladder is a ratio of the body --------------------------------------------
+//
+// FOUR RUNGS, each twice as far off as the one above it, and every distance in
+// it measured in body sizes rather than in metres -- so one ladder serves a hare,
+// a stag and whatever is built next, and a big animal holds its detail further
+// out because that is what she sees.
+{
+  const size = 1.5
+  const rungs = Array.from({ length: LOD_RUNGS }, (_, k) => lodReach(size, k))
+  check(LOD_RUNGS === 4 && rungs.map((d) => d.toFixed(0)).join(',') === '10,20,40,80', 'a 1.5 m creature is drawn to 10, 20, 40 and 80 metres', rungs.map((d) => `${d.toFixed(1)}`).join(' / '))
+  check(rungs.every((d, k) => k === 0 || Math.abs(d / rungs[k - 1] - 2) < 1e-12), 'each rung reaching exactly twice as far as the one above it')
+  check(Math.abs(rungs[0] / size - LOD_NEAR) < 1e-12 && [0.5, 3, 7].every((m) => Math.abs(cullRange(size * m) - cullRange(size) * m) < 1e-9), `the whole ladder scales with the body: tier 0 to ${LOD_NEAR.toFixed(2)} body sizes, the cull to ${(LOD_NEAR * 2 ** (LOD_RUNGS - 1)).toFixed(1)}`)
+  check(cullRange(size) === rungs[LOD_RUNGS - 1] && critterTier(size, cullRange(size) + 1e-6, -1) === LOD_RUNGS, 'past the last rung there is no rung to be on -- that is the cull')
+  check(Math.abs(forgetRange(size) / cullRange(size) - CULL_KEEP) < 1e-12, `and a placement is remembered to ${Math.round((CULL_KEEP - 1) * 100)}% past the cull`, `${cullRange(size).toFixed(0)} m drawn, ${forgetRange(size).toFixed(0)} m remembered`)
+
+  // The edge is pushed away from whichever rung the body is already on, so a body sitting on one does not flicker between two.
+  const e = rungs[0] * (1 + LOD_HYSTERESIS)
+  check(critterTier(size, e - 1e-9, 0) === 0 && critterTier(size, e + 1e-9, 0) === 1, `a rung is held ${Math.round(LOD_HYSTERESIS * 100)}% past its reach before it is given up`, `${rungs[0].toFixed(1)} m held to ${e.toFixed(1)}`)
+  const b = rungs[0] * (1 - LOD_HYSTERESIS)
+  check(critterTier(size, b + 1e-9, 1) === 1 && critterTier(size, b - 1e-9, 1) === 0, `and won back ${Math.round(LOD_HYSTERESIS * 100)}% inside it`, `${rungs[0].toFixed(1)} m won back at ${b.toFixed(1)}`)
+  check(critterTier(size, rungs[1] * 1.01, 0) === 2, 'a jump of two rungs lands on the rung the distance says, not one step down it')
+
+  // Size is the body's LARGEST extent, and this layer says so rather than assuming its animals are longer than they are tall.
+  check(w.species.every((sp) => Math.abs(sp.bulk - Math.max(sp.asset.span, sp.asset.width, sp.asset.height) / sp.asset.span) < 1e-12), 'the ladder is fed the largest extent of the body, whichever way round it is built', w.species.map((sp) => `${sp.key} x${sp.bulk.toFixed(2)}`).join(', '))
+  check(scatter(w).every((s) => Math.abs(s.lodSize - s.size * s.sp.bulk) < 1e-12 && s.cull === cullRange(s.lodSize) && s.forget === forgetRange(s.lodSize)), 'and every spawn carries its own cull and forget, rolled with it')
+  // A cull only bites inside the tile horizon -- RADIUS plus half a tile's diagonal. The big ones are taken by their tile unloading instead.
+  const horizon = RADIUS + (TILE * Math.SQRT2) / 2
+  const culls = scatter(w).map((s) => s.cull)
+  check(Math.min(...culls) < horizon / 3, 'and the small of them are culled by the ladder well inside the world, the big by their tile', `${Math.min(...culls).toFixed(0)} m at the near end of the roll, ${Math.max(...culls).toFixed(0)} at the far, of a ${horizon.toFixed(0)} m horizon`)
+}
+
+// --- past the cull it is not thought about either ----------------------------------
+//
+// The cull is one rule with two consequences: a creature she cannot see is not
+// drawn AND NOT SIMULATED. Nothing walks, turns, probes the ground or picks an
+// activity out there. Where it had got to is remembered while it might matter,
+// and dropped when it cannot.
+{
+  const k = make(7)
+  k.place(0, 0)
+  const c = beside(k, 'hare')
+  const spawn = c.spawn
+  const dt = 1 / 60
+  // Ten seconds of roaming with her walking beside it, to take it somewhere other than home.
+  k._begin(c, 'roam')
+  c.left = 100
+  for (let f = 0; f < 600; f++) k.update(c.x, c.y + 1.6, c.z, dt)
+  const at = { x: c.x, y: c.y, z: c.z, heading: c.heading, left: c.left, clip: c.clip }
+  check(Math.hypot(c.x - c.homeX, c.z - c.homeZ) > 1, 'a hare she has watched for ten seconds is no longer standing at home', `${Math.hypot(c.x - c.homeX, c.z - c.homeZ).toFixed(2)} m off it`)
+
+  // Out past the cull, but not past where the placement is worth keeping.
+  const eye = { x: at.x + (spawn.cull + spawn.forget) / 2, y: at.y + 1.6, z: at.z }
+  for (let f = 0; f < 240; f++) k.update(eye.x, eye.y, eye.z, dt)
+  check(c.spawn === spawn && c.lod === LOD_RUNGS && !c.puppet, `${spawn.cull.toFixed(0)} m off, past the cull, the hare is not drawn but the slot is still hers`)
+  check(c.x === at.x && c.z === at.z && c.y === at.y && c.heading === at.heading && c.left === at.left && c.clip === at.clip, 'and in four seconds of it nothing walked, turned, read the ground or picked an activity -- it stands exactly where it stood')
+  k.update(at.x, at.y + 1.6, at.z, 0)
+  check(c.spawn === spawn && c.x === at.x && c.z === at.z, 'she comes back and it is where she left it')
+
+  // And out past where it is worth keeping.
+  for (let f = 0; f < 240; f++) k.update(at.x + spawn.forget * 1.2, at.y + 1.6, at.z, dt)
+  check(spawn.slot === null && c.spawn === null && k.species.find((sp) => sp.key === 'hare').free.includes(c), `${Math.round((CULL_KEEP - 1) * 100)}% past the cull the slot goes back in the pool`, `${spawn.forget.toFixed(0)} m`)
+  check(scatter(k).includes(spawn), 'but the tile still holds the spawn -- where it stands when nothing has moved it is not a thing that can be forgotten')
+  const home = { x: spawn.x, z: spawn.z }
+  k.update(spawn.x, spawn.y + 1.6, spawn.z, 0)
+  const again = k.species.find((sp) => sp.key === 'hare').slots.find((s) => s.spawn === spawn)
+  check(again && again.x === home.x && again.z === home.z && Math.hypot(home.x - at.x, home.z - at.z) > 1, 'and the next waking stands it at home again, the wandering forgotten', `${Math.hypot(home.x - at.x, home.z - at.z).toFixed(2)} m from where it was`)
+  k.dispose()
+}
+
+// --- nothing pops ----------------------------------------------------------------
+//
+// Every tier change, appearance and vanishing is a dissolve, and it is TIMED
+// and not banded: a teleport crosses a whole distance band in one frame, so a
+// fade driven by the band edge would still pop and this one must not.
+{
+  w.place(0, 0)
+  wake(w)
+  const c = alive(w).find((a) => a.sp.key === 'stag')
+  const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) w.update(c.x, c.y + d, c.z, dt) }
+  const vis = () => (c.puppet ? c.puppet.meshes.map((m, k) => (m.visible ? k : -1)).filter((k) => k >= 0) : [])
+  const close = lodReach(c.spawn.lodSize, 0) / 2
+  const out = lodReach(c.spawn.lodSize, LOD_RUNGS - 1) * 0.9
+  const gone = lodReach(c.spawn.lodSize, LOD_RUNGS - 1) * 4
+
+  run(close, 40)
+  const p = c.puppet
+  check(p && vis().join() === '0' && p.meshes[0].material === p.mats.plain && p.mats.uCut.value === 1, 'settled on a rung, an animal draws that one tier and draws it through the plain material')
+
+  run(out, 1)
+  const both = vis()
+  check(both.length === 2 && both[0] === 0 && both[1] === LOD_RUNGS - 1 && p.meshes[both[0]].material === p.mats.out && p.meshes[both[1]].material === p.mats.in && p.mats.uCut.value > 0 && p.mats.uCut.value < 1,
+    'a step down the ladder draws both rungs at once, the old one masked out and the new one in', `tiers ${both.join(' and ')}, cut ${p.mats.uCut.value.toFixed(2)}`)
+  run(out, Math.ceil(LOD_FADE_S * 60) + 2)
+  check(vis().join() === String(LOD_RUNGS - 1) && p.meshes[LOD_RUNGS - 1].material === p.mats.plain && p.mats.uCut.value === 1, 'and once it is over only the new rung is left, back on the plain material')
+
+  // Straight off the last rung to nothing: the far side of the same one fade.
+  run(gone, 1)
+  check(c.lod === LOD_RUNGS && c.puppet === p && vis().length === 1 && p.meshes[vis()[0]].material === p.mats.out && p.mats.uCut.value < 1,
+    'past the last rung an animal is not switched off but dissolved, and holds its puppet -- walking, turning, animating -- while it goes')
+  let frames = 1
+  while (c.puppet && frames < 120) { run(gone, 1); frames++ }
+  check(!c.puppet && Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60, `a vanishing takes LOD_FADE_S however far the step was -- a teleport dissolves too`, `${(frames / 60).toFixed(3)} s for a ${(gone - out).toFixed(0)} m jump`)
+  check(w.species.every((sp) => sp.freePuppets.length === PUPPETS), 'and every puppet is back in its pool once nothing is in sight')
+}
+
+// A TILE UNLOAD IS THE OTHER WAY AN ANIMAL GOES, and for everything but a hare
+// it is the usual one: the last rung reaches past where a tile can still be
+// loaded, so a stag walked out of range is a stag whose tile unloaded. The
+// puppet has to outlive the animal or that is a pop.
+{
+  w.place(0, 0)
+  wake(w)
+  const c = alive(w).find((a) => a.sp.key === 'stag')
+  for (let f = 0; f < 40; f++) w.update(c.x, c.y + 20, c.z, 1 / 60)
+  const p = c.puppet
+  check(p && p.meshes.filter((m) => m.visible).length === 1, 'a stag close by is drawn')
+
+  // Her head 400 m away: every tile unloads, so the animal is gone from the world entirely.
+  w.update(c.x + 400, c.y, c.z + 400, 1 / 60)
+  check(c.spawn === null && !c.puppet, 'walk far enough and its tile unloads, taking the animal with it')
+  check(w.fading.some((f) => f.puppet === p), 'but its body stays behind, dissolving where it stood', `${w.fading.length} bodies fading`)
+  const vis = p.meshes.filter((m) => m.visible)
+  check(vis.length === 1 && vis[0].material === p.mats.out && p.mats.uCut.value < 1 && p.group.parent, 'drawn through the dissolving-out material, still in the batch, on its way out rather than switched off')
+  const stags = w.fading.filter((f) => f.sp.key === 'stag').length
+  check(stags > 0 && w.species.find((sp) => sp.key === 'stag').freePuppets.length === PUPPETS - stags, 'and is nobody else\'s puppet until it has gone')
+
+  let frames = 1
+  while (w.fading.length && frames < 120) { w.update(c.x + 400, c.y, c.z + 400, 1 / 60); frames++ }
+  check(!w.fading.length && Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60, 'the fade takes LOD_FADE_S like any other', `${(frames / 60).toFixed(3)} s`)
+  check(!p.group.parent && w.species.every((sp) => sp.freePuppets.length === PUPPETS), 'and then it leaves the batch and goes back to the pool')
+
+  // The terrain rebuild is the one case that does not fade: the ground the body was standing on is not there any more.
+  for (let f = 0; f < 40; f++) w.update(0, 20, 0, 1 / 60)
+  const drawn = alive(w).filter((a) => a.puppet)
+  check(drawn.length > 0, 'animals are drawn again around her')
+  w.place(0, 0)
+  check(!w.fading.length && w.species.every((sp) => sp.freePuppets.length === PUPPETS) && drawn.every((a) => !a.puppet), 'a place() takes every puppet back at once, fading ones included -- the ground they stood on has moved')
 }
 
 console.log(failures ? `\n${failures} failing` : '\nall wildlife checks pass')

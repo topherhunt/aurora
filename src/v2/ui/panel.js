@@ -45,7 +45,7 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 //   { fps, ms, tris, calls, resident, drawn, terrainTris, queued,
 //     triDeg, treeCount,
 //     treeTris, grassCount, grassHidden, grassTris, fernCount, fernTris,
-//     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris,
+//     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris, bonesCount, bonesTris,
 //     rockCount, rockTris, litterCount, litterTris,
 //     x, y, z, ground, cell, cursorDist, cursorLabel, cursorVariant,
 //     snowHere, snowBase, mode, eyeToWater }
@@ -620,6 +620,8 @@ export class Panel {
     // and more so -- this is the cheapest scatter in the world at a few hundred
     // triangles, so a toFixed(0) here would print `0k` and never move.
     kv('deadwood', Number.isFinite(s.deadwoodCount) ? `${s.deadwoodCount} ${(s.deadwoodTris / 1000).toFixed(1)}k` : null)
+    // The rare finds: a dozen skeletons and skulls, so the count is the number that moves.
+    kv('bones', Number.isFinite(s.bonesCount) ? `${s.bonesCount} ${(s.bonesTris / 1000).toFixed(1)}k` : null)
     // All three rock beds summed. They reach 55 m, 460 m and 1250 m, so the
     // count moves with the terrain rather than with the player's speed.
     kv('rocks', Number.isFinite(s.rockCount) ? `${s.rockCount} ${(s.rockTris / 1000).toFixed(0)}k` : null)

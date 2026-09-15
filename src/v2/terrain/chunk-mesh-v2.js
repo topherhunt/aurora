@@ -227,6 +227,13 @@ const cullMargin = (step) => step + CLASS_EPS
 const CREST_CELL_LO = 1
 const CREST_CELL_HI = 6
 
+// DEAD CODE (peaks). Not shipped: RELIEF_SHIPPED leaves the knob off, the
+// point sample being the more accurate far ground overall. Everything under
+// this tag -- PEAKS_TAPS_MAX, peaksStencil, the `peaks` branches in
+// buildChunkV2, the knob in relief.js, the world-menu row in main.js, the
+// probe in check-v2-field.mjs and render/river-raise.js's replica -- goes
+// together; grep the tag to remove it.
+//
 // PEAKS: the footprint maximum, the `peaks` relief knob. Every vertex of a
 // chunk whose cell is coarser than the texel takes the MAX of the band-limited
 // field over the step x step square it owns, sampled at texel pitch, so no
@@ -244,7 +251,7 @@ const CREST_CELL_HI = 6
 const PEAKS_TAPS_MAX = 17
 
 /**
- * The PEAKS stencil for a cell of `step` metres over a `texel`-metre import: `n` taps a side at `pitch` metres, centred on the vertex, or null where the footprint max is off. Exported because the river's raise (render/river-raise.js) replicates the drawn far ground from this, and a stencil copied there would be the second thing to update when this one changes.
+ * DEAD CODE (peaks). The PEAKS stencil for a cell of `step` metres over a `texel`-metre import: `n` taps a side at `pitch` metres, centred on the vertex, or null where the footprint max is off. Exported because the river's raise (render/river-raise.js) replicates the drawn far ground from this, and a stencil copied there would be the second thing to update when this one changes.
  */
 export function peaksStencil(step, texel) {
   if (!(step * 2 > texel)) return null
@@ -501,7 +508,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // stencil is one of the stencils the grown AABB has to cover.
   const crestW = field.relief.crest * smoothstep(CREST_CELL_LO, CREST_CELL_HI, step)
   const crestR = step * 0.35
-  // Half a cell each way, when the footprint max is on -- see PEAKS_TAPS_MAX.
+  // DEAD CODE (peaks): half a cell each way, when the footprint max is on.
   const peaks = field.relief.peaks > 0 ? peaksStencil(step, field.ground.texelSize) : null
   const peaksR = peaks === null ? 0 : peaks.r
 
@@ -519,7 +526,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // would take an UNCARVED maximum from that ground while the neighbour takes a
   // carved one, and the two would disagree about the height of a shared edge
   // vertex -- a crack, at exactly the coarse LOD where the crest term is loudest.
-  // The peaks footprint reaches further than either, for the same reason.
+  // The peaks footprint reaches further than either, for the same reason
+  // (DEAD CODE (peaks): the peaksR term).
   const m = cullMargin(step) + Math.max(crestW > 0 ? crestR : 0, peaksR)
   const touched = layers.overlaps(ox - m, oz - m, ox + size + m, oz + size + m)
 
@@ -559,9 +567,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // because the split rule puts a cell that coarse 150 m away and she is never
   // standing on one, and it is refused where she IS standing by CREST_CELL_LO.
   //
-  // THE PEAKS SAMPLER SUPERSEDES IT when both are up: a max over the whole
-  // footprint contains crest's four diagonal taps, so the bias would add
-  // nothing but its own cost.
+  // DEAD CODE (peaks): the peaks sampler supersedes crest when both are up,
+  // a max over the whole footprint containing crest's four diagonal taps.
   const sampleHeight = peaks !== null
     ? (x, z) => {
         let h = heightAtCell(x, z)
@@ -827,4 +834,5 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
 // this ground vegetated" from the vertex colour alone, so a hand-picked green
 // that is a shade off classifies as something else and the card comes out with
 // the wrong grain.
+// PEAKS_TAPS_MAX: DEAD CODE (peaks).
 export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, PEAKS_TAPS_MAX, cullMargin, shade, C_GRASS }

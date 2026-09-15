@@ -23,13 +23,15 @@ import { TerrainTint } from '../terrain/terrain-tint.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../terrain/terrain-material.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
-import { Deadwood } from './render/deadwood.js'
+import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
+import { Bones, loadBonesBank } from './render/bones.js'
 import { Fish } from './render/fish.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Butterflies } from './render/butterflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
+import { Snowmen } from './render/snowmen.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
@@ -641,6 +643,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'butterflies', text: 'butterflies' },
   { key: 'spiders', text: 'spiders' },
   { key: 'wildlife', text: 'wildlife' },
+  { key: 'snowmen', text: 'snowmen' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -667,8 +670,8 @@ const QUEST_TOGGLE_ROWS = [
   // be tried without `?editor`. Goes through onRelief like the editor's relief
   // zone does, so the workers, the props and the saved relief all follow.
   { key: 'ground', text: 'ground', action: () => onRelief({ ...relief, jagged: relief.jagged > 0 ? 0 : 1 }), value: () => (relief.jagged > 0 ? 'jagged >' : 'smooth >') },
-  // The `peaks` mesher knob: far chunks draw the max over each vertex's
-  // footprint, or point-sample. See PEAKS in chunk-mesh-v2.js.
+  // DEAD CODE (peaks): the `peaks` mesher knob, off in RELIEF_SHIPPED. See the
+  // tag in chunk-mesh-v2.js.
   { key: 'peaks', text: 'far peaks', action: () => onRelief({ ...relief, peaks: relief.peaks > 0 ? 0 : 1 }), value: () => (relief.peaks > 0 ? 'max >' : 'sampled >') },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
@@ -726,6 +729,7 @@ function applyQuestToggle(key) {
       litter.batch.visible = enabled
       mushrooms.batch.visible = enabled
       deadwood.batch.visible = enabled
+      bones.batch.visible = enabled
       break
     // Back on, every animal layer is put down fresh at her feet: the ground
     // may have moved under it while it was frozen, and a frozen layer is
@@ -735,7 +739,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': applyAnimalVisibility(); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -894,6 +898,7 @@ function questBatches() {
   if (litter) out.push(litter.batch)
   if (mushrooms) out.push(mushrooms.batch)
   if (deadwood) out.push(deadwood.batch)
+  if (bones) out.push(bones.batch)
   return out
 }
 
@@ -1604,12 +1609,14 @@ let rocks = null
 let litter = null
 let mushrooms = null
 let deadwood = null
+let bones = null
 let fish = null
 let frogs = null
 let crabs = null
 let butterflies = null
 let spiders = null
 let wildlife = null
+let snowmen = null
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -1638,7 +1645,7 @@ let ready = false
 // already running. The scatter layers still submit everything when this is off.
 const questToggles = {
   terrain: true, lighting: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true,
   water: true, reflections: true, aurora: true, sound: true,
   // Debug furniture, off until asked for. See buildProbeCube.
   probeCube: false,
@@ -1666,6 +1673,7 @@ function applyAnimalVisibility() {
   butterflies.batch.visible = animalOn('butterflies')
   spiders.batch.visible = animalOn('spiders')
   wildlife.batch.visible = animalOn('wildlife')
+  snowmen.batch.visible = animalOn('snowmen')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -1676,6 +1684,7 @@ function placeAnimals(cx, cz) {
   if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
   if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
+  if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz)
 }
 
 // ---------------------------------------------------------------------------
@@ -2118,23 +2127,34 @@ async function bootWorld() {
   // the forest's PLACED instances, so this must stay after trees.place above and
   // deadwood.update must stay after trees.update in the frame loop.
   await bootStep('deadwood')
-  deadwood = new Deadwood(scene, height, waterSurfaces, layers, propTextures, trees, { seed: SEED })
-  // A FIFTH cacheKey, for the reason spelled out at the trees: the key is what
-  // the program cache is keyed on, and this material's uBillboardLayers is its
-  // own list, so sharing a neighbour's key would hand one layer the other's
-  // compiled program.
-  lighting.patch(deadwood.material, { mode: 'vertex', cacheKey: 'v2-deadwood-bb' })
-  // So a log and the ground under it cross the snow line together, and so that
-  // nothing lies above the line -- same contract as the trees and ferns.
-  deadwood.syncSnowLine(layers)
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, trees, { seed: SEED, bank: await loadDeadwoodBank() })
+  // One key per material: each generated prop wears its own map and is its own
+  // program (render/gen-props.js), and a shared key would hand one the other's.
+  deadwood.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-deadwood-${i}` }))
   deadwood.place(spawn.x, spawn.z)
+  // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
+  deadwood.bakeCards(renderer)
   const ds = deadwood.stats
   const dr = Object.entries(ds.rejected).map(([why, n]) => `${n} ${why}`).join(', ')
   console.log(
     `[v2] deadwood ${ds.logs} logs + ${ds.snags} stumps over ${ds.tiles} tiles in ` +
-    `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB) (dropped: ${dr})`
+    `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB, cards ${ds.cardBakeMs.toFixed(0)} ms) (dropped: ${dr})`
   )
   window.v2deadwood = deadwood
+
+  // The bones: a rare find on any ground (render/bones.js), on the litter row
+  // with the dead wood.
+  await bootStep('bones')
+  bones = new Bones(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadBonesBank() })
+  bones.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-bones-${i}` }))
+  bones.place(spawn.x, spawn.z)
+  bones.bakeCards(renderer)
+  const bs = bones.stats
+  console.log(
+    `[v2] bones ${bs.skeletons} skeletons + ${bs.skulls} skulls over ${bs.tiles} tiles in ` +
+    `${bs.placeMs.toFixed(0)} ms (pool ${bs.used}/${bs.pool}, bank ${bs.bankKB} KB, cards ${bs.cardBakeMs.toFixed(0)} ms)`
+  )
+  window.v2bones = bones
 
   // The fish: a pool that follows her through whatever water is in reach (see
   // render/fish.js). Its materials are patched here, like every other layer's,
@@ -2198,6 +2218,17 @@ async function bootWorld() {
   })
   window.v2wildlife = wildlife
 
+  // The abominable snowmen above the snow line (render/snowmen.js): the same
+  // ground and the same late-landing GLB as the wildlife.
+  await bootStep('snowmen')
+  snowmen = new Snowmen(scene, height, waterSurfaces, { seed: SEED, walk })
+  for (const m of snowmen.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-snowmen' })
+  snowmen.ready.then(() => {
+    snowmen.place(player.rig.position.x, player.rig.position.z)
+    console.log(`[v2] snowmen ${snowmen.stats.alive} on ${snowmen.stats.tiles} tiles`)
+  })
+  window.v2snowmen = snowmen
+
   // The ambient sound (audio/). The clips load in the background so a slow
   // fetch never holds the world; until they land, and forever if one fails, the
   // frame loop sees `ambience` null and stays silent -- a world with half its
@@ -2250,10 +2281,6 @@ async function bootWorld() {
     if (ferns) ferns.bakeCards(renderer)
     if (grass) grass.bakeCards(renderer)
     mushrooms.bakeCards(renderer)
-    // Dead wood wears the TREES' bark PNGs, so this bake genuinely has to be
-    // inside this promise and not merely conventionally: run before the decode
-    // and it would photograph the procedural fallback bark into the two cards.
-    deadwood.bakeCards(renderer)
     // The rock cards: one photograph per SHAPE in the bank, the boulder and the
     // cap. Unlike the four above this is not a method on the scatter, because
     // there is nothing per-bed about it -- a bed picks a shape and the shape's
@@ -2339,6 +2366,7 @@ async function bootWorld() {
   litter.batch.visible = questToggles.litter
   mushrooms.batch.visible = questToggles.litter
   deadwood.batch.visible = questToggles.litter
+  bones.batch.visible = questToggles.litter
   applyAnimalVisibility()
   // THE EDITOR OVERLAY, drawn only where there is an editor. Markers is three
   // InstancedMeshes of authoring handles -- 96 triangles a spline point, 8 a
@@ -2452,7 +2480,7 @@ function onRelief(next) {
   // `ground` row. Whichever one was pressed, the other has to follow.
   if (panel) panel.setRelief(relief)
   refreshQuestRow('ground')
-  refreshQuestRow('peaks')
+  refreshQuestRow('peaks') // DEAD CODE (peaks)
 
   const t0 = performance.now()
   height.setRelief(relief)
@@ -2512,10 +2540,8 @@ function replacePropsOnMovedGround(cx, cz) {
     mushrooms.syncSnowLine(layers)
     mushrooms.place(cx, cz)
   }
-  if (deadwood) {
-    deadwood.syncSnowLine(layers)
-    deadwood.place(cx, cz)
-  }
+  if (deadwood) deadwood.place(cx, cz)
+  if (bones) bones.place(cx, cz)
   placeAnimals(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
@@ -4023,6 +4049,7 @@ const CURSOR_PICKS = [
   { label: 'mushroom', idKey: 'variantAt', radius: 0.18, rise: 0.3 },
   { label: 'fern', idKey: 'variantAt', radius: 0.6, rise: 1.2 },
   { label: 'deadwood', idKey: 'variantAt', radius: 0.9, rise: 1.5 },
+  { label: 'bones', idKey: 'variantAt', radius: 1.5, rise: 1.0 },
   // No radius/rise: a rock's pick volume is its own measured footprint and
   // height, which `RockBed.pickSizeAt` reads straight off the bank shape and
   // scales per instance. No `idKey` either -- there is one boulder in the world,
@@ -4047,7 +4074,7 @@ let boundPicks = null
 
 /** Filled once the scatters exist; nearest-first, so the cheap sources prune for the dear ones. */
 function bindCursorPicks() {
-  const bySys = { mushroom: mushrooms, fern: ferns, deadwood: deadwood, rock: rocks, tree: trees }
+  const bySys = { mushroom: mushrooms, fern: ferns, deadwood: deadwood, bones: bones, rock: rocks, tree: trees }
   boundPicks = []
   for (const p of CURSOR_PICKS) {
     const sys = bySys[p.label]
@@ -4082,6 +4109,11 @@ function bindCursorPicks() {
       const nameAt = (s, id) => s.nameAt(id)
       boundPicks.push({ ...p, sys, nameAt, sizeAt: (s, id, out) => s.pickTrunkAt(id, out) })
       boundPicks.push({ ...p, sys, nameAt, sizeAt: (s, id, out) => s.pickCrownAt(id, out) })
+      continue
+    }
+    // A generated prop's bank names its variants, so the readout says "stump" rather than "0".
+    if (p.label === 'deadwood' || p.label === 'bones') {
+      boundPicks.push({ ...p, sys, nameAt: (s, id) => s.bank.variants[s.variantAt[id]].name })
       continue
     }
     boundPicks.push({ ...p, sys })
@@ -4173,6 +4205,8 @@ function panelStats() {
     mushroomTris: mushrooms ? mushrooms.stats.tris : 0,
     deadwoodCount: deadwood ? deadwood.stats.placed : 0,
     deadwoodTris: deadwood ? deadwood.stats.tris : 0,
+    bonesCount: bones ? bones.stats.placed : 0,
+    bonesTris: bones ? bones.stats.tris : 0,
     grassCount: grass ? grass.stats.placed : 0,
     grassHidden: grass ? grass.stats.rimHidden : 0,
     grassTris: grass ? grass.stats.tris : 0,
@@ -4339,6 +4373,7 @@ function tick() {
     // re-place are: a clump follows the anchors, so it wants them stepped first.
     mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+    bones.update(headTmp.x, headTmp.y, headTmp.z)
   }
   // The animals are simulations as well as scatters, so they take dt. Each is
   // frozen with its row, and all of them with the `animals` row.
@@ -4361,6 +4396,7 @@ function tick() {
   if (animalOn('butterflies')) butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
   if (animalOn('spiders')) spiders.update(headTmp.x, headTmp.y, headTmp.z, dt)
   if (animalOn('wildlife')) wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
+  if (animalOn('snowmen')) snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

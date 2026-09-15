@@ -1,27 +1,24 @@
 import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
-import {
-  buildDeadwoodBank,
-  bakeDeadwoodImpostors,
-  deadwoodImpostorLayers,
-} from '../../props/deadwood-bank.js'
-import { DEADWOOD_LOD_AT, DEADWOOD_CULL, DEADWOOD_TINT } from '../../props/deadwood.js'
-import { createPropMaterial, setSnowLine } from '../../material.js'
+import { DEADWOOD_CULL } from '../../props/deadwood.js'
+import { GEN_PROP_GLB, GEN_PROP_LODS, createGenPropMaterial, loadGenProp } from './gen-props.js'
+import { bakeCritterCard, setCritterCard } from './critters.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
-// Fallen logs and rotten stumps on the forest floor, /v2 route. The generator,
-// its ladder and its budget are DESIGN.md §21.
+// The rotting stump and the fallen log on the forest floor, /v2 route: two
+// generated props (DESIGN.md §29) shipped as a four-tier ladder each, with the
+// critters' cross card past the last tier. How a piece beds in is DESIGN.md §21.
 //
 // Fifth sibling of render/trees.js, render/ferns.js, render/rocks.js and
-// render/mushrooms.js, and the same machine again: one prop arena, one material,
-// a variant bank, a tier ladder, a tiled camera-following scatter, graded
-// thinning by per-candidate rank, rank-based incremental regrow and the rim
-// dissolve. Read trees.js's header for all of that; it is not re-argued. This is
-// the fern's version -- a plain ground scatter, not the mushroom's anchored one.
+// render/mushrooms.js, and the same machine again: one prop arena, a variant
+// bank, a tier ladder, a tiled camera-following scatter, graded thinning by
+// per-candidate rank, rank-based incremental regrow and the rim dissolve. Read
+// trees.js's header for all of that; it is not re-argued. This is the fern's
+// version -- a plain ground scatter, not the mushroom's anchored one.
 //
 // TWO THINGS ARE DIFFERENT, both the same fact from two sides: THIS PROP LIES
 // DOWN AND IS METRES LONG.
@@ -31,46 +28,29 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //    fern and merely approximate for a boulder. A 3 m log seated on its midpoint
 //    buries one end in the hill and hangs the other in the air, both on screen at
 //    once, so a log samples the ground under each end and PITCHES to the line
-//    between them. See `_seat`. A snag does not, and that is not an oversight: a
-//    tree grows toward the light, so a snag on a slope stands VERTICAL and its
+//    between them. See `_seat`. A stump does not, and that is not an oversight: a
+//    tree grows toward the light, so a stump on a slope stands VERTICAL and its
 //    broken base meets the hill. Both sink by their own half-thickness times the
 //    local slope, which closes the uphill gap.
 //
-// 2. THE BANDS SCALE WITH THE PIECE AND THERE IS NO CROSS TIER (§21). Distance is
-//    measured from the instance ORIGIN, so under a flat ladder a player standing
-//    at a long log's END was looking at T1 from arm's length. §5's parallax rule
-//    puts a flat card's honest range for a 0.45 m-deep log at ~13 m, so the
-//    stump's ~20 m crossover is taken slightly early on the rule's terms and paid
-//    for by the shape: a near-cylinder is the one silhouette a flat card is nearly
-//    RIGHT for, because rotating it about its long axis does not change its
-//    outline.
-//
-//    THE LOG'S CARD IS FIXED AND THE SNAG'S SPINS. Spinning is correct for a
-//    stump -- a solid of revolution looks the same from every side. It is wrong
-//    for a log, which HAS a heading: a spun card holds still against the eye while
-//    the mesh under it points along its yaw, so every LOD swap looks like the log
-//    turning and then turning back. See deadwood-bank.js. The cost has moved
-//    rather than gone: spun, a log seen END-ON showed its full length instead of a
-//    0.4 m disc; fixed, it thins to a sliver. The second is the one asked for,
-//    because the error is momentary and does not read as motion. If it ever reads
-//    badly the fix is trees.js's folded pair, not a wider mesh band.
+// 2. THE BANDS SCALE WITH THE PIECE. Distance is measured from the instance
+//    ORIGIN, so under a flat ladder a player standing at a long log's END was
+//    looking at T1 from arm's length; LOD_AT is metres per metre of the piece.
+//    The far tier is a CROSS CARD in the piece's own frame, not a spun billboard:
+//    a log has a heading, and a card that held still against the eye while the
+//    mesh under it pointed along its yaw made every swap read as the log turning.
 //
 // WHAT IT COSTS. At 0.006 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
-// graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing, of which
-// about 2 are on a mesh tier and a handful more on the coarse one: ~2 x 76 +
-// ~6 x 44 + ~123 x 2 = ~660 triangles for the whole layer. The size-relative
-// ladder moves that around rather than up -- the big pieces holding a mesh
-// further out are the rare tail of LOG_SKEW, and a 20 m log meshed at 60 m is 126
-// triangles for the most conspicuous object in the scene. Cheapest scatter in the
-// world by an order of magnitude, for the obvious reason: dead wood is something
-// you come across, not something you wade through.
+// graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing. The
+// shipped ladders run ~2000/1000/500/200 (stump) and ~1000/500/250/100 (log)
+// triangles and LOD_AT holds a 2 m stump on T3 to 48 m, so the layer is
+// ~13k triangles with a median stump and less with a median log -- a tenth of
+// what the trees around it cost. Dead wood is something you come across, not
+// something you wade through.
 //
-// THE COLOUR. Two multiplies doing different jobs. The MATERIAL carries
-// DEADWOOD_TINT -- the whole family going brown and dark because it is rotting,
-// one constant, applied before moss and snow mix over the top (material.js). The
-// per-INSTANCE colour below is the fern's ground cue plus a value jitter, so two
+// THE COLOUR is per instance: the fern's ground cue plus a value jitter, so two
 // logs side by side are not the same pixel and a log on scrub is drier than one
-// on grass.
+// on grass. The material is white; the rot is painted in the shipped map.
 // ---------------------------------------------------------------------------
 
 // Pieces per square metre at full density. Sparse on purpose and by a long way:
@@ -79,31 +59,32 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // storm's aftermath rather than as an old wood.
 const DENSITY = 0.006
 
-// Metres. Inside this every piece that rolled one is standing. Comfortably past
-// the last mesh band FOR A TYPICAL PIECE -- a chest-high stump cards at ~20 m --
-// so thinning only starts where dead wood is already a single card.
+// Metres. Inside this every piece that rolled one is standing. Past the third
+// mesh band FOR A TYPICAL PIECE -- a chest-high stump is on its 200-triangle
+// tier from 24 m -- so thinning only starts where a piece is already cheap.
 //
-// One exception the size-relative ladder puts under that sentence: a rare 20 m
-// log is still meshed when the graded thinning reaches it, so it can dissolve out
-// while meshed. That is a dithered fade, not a pop (render/rim.js), and ranking
-// pieces by size so the big ones thin last -- rocks.js's `_rankOf` -- would make
-// the scatter's density a function of the size roll.
+// A big piece is still finely meshed when the graded thinning reaches it, so it
+// can dissolve out while meshed. That is a dithered fade, not a pop
+// (render/rim.js), and ranking pieces by size so the big ones thin last --
+// rocks.js's `_rankOf` -- would make the scatter's density a function of the
+// size roll.
 const FULL_RADIUS = 45
 
-// The user's ladder, straight out of the generator so the bench and the world
-// cannot drift apart: mesh, coarse mesh, billboard, cull.
-//
-// DEADWOOD_LOD_AT is in metres of camera distance PER METRE of the piece's own
-// ladder size, so what a frame compares is `d2 < size^2 * k^2` -- the size term
-// is per instance and only the squared coefficient is precomputable. Same shape
-// rocks.js's LOD_SQ has, for the same reason.
-const LOD_SQ = Float32Array.from(DEADWOOD_LOD_AT, (k) => k * k)
-const LOD_LAST = DEADWOOD_LOD_AT[DEADWOOD_LOD_AT.length - 1]
+// The ladder: the pick and its three decimated tiers, then the cross card. In
+// metres of camera distance PER METRE of the piece's own ladder size, so what a
+// frame compares is `d2 < size^2 * k^2` -- the size term is per instance and only
+// the squared coefficient is precomputable. Same shape rocks.js's LOD_SQ has, for
+// the same reason. Tighter than the critters' ladder because a piece of dead wood
+// is bigger than a crab: a 2 m stump at 6 m is already three hundred pixels tall
+// on a thousand-triangle tier. Exported for the gate's tier-relation check.
+export const LOD_AT = [3, 6, 12, 24]
+const LOD_SQ = Float32Array.from(LOD_AT, (k) => k * k)
+const LOD_LAST = LOD_AT[LOD_AT.length - 1]
 const DRAW_RADIUS = DEADWOOD_CULL
 
 // The dead band on a tier boundary. The forest's value for the forest's reasons.
 const LOD_HYSTERESIS = 0.12
-const LOD_SQ_OUT = Float32Array.from(DEADWOOD_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
+const LOD_SQ_OUT = Float32Array.from(LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 
 // Metres per tile. The forest's 25 rather than the fern's 12, because at this
 // density a 12 m tile holds under one candidate and the keep-fraction has
@@ -118,21 +99,21 @@ const BUILD_BUDGET_MS = 1.0
 const NEAR_MARGIN = TILE * 1.5
 
 // Metres between the ground samples a log's belly is seated on, and the ceiling
-// on how many it may take. A 2 m log gets two samples and the 35 m one at the
-// top of LOG_LENGTH gets the full two dozen; see `_seat`. The CEILING is the
-// number that has to follow the band -- it is what stops a long piece from being
-// sampled coarser than SEAT_SPACING promises, which is daylight under a belly.
+// on how many it may take. A 2 m log gets two samples and the 20 m one at the
+// top of LOG_LENGTH gets fourteen; see `_seat`. The CEILING is the number that
+// has to follow the band -- it is what stops a long piece from being sampled
+// coarser than SEAT_SPACING promises, which is daylight under a belly.
 const SEAT_SPACING = 1.5
-const SEAT_MAX_SAMPLES = 24
+const SEAT_MAX_SAMPLES = 16
 
 // How many trunks one tile's keep-out query is allowed to see. A deadwood tile is
-// 25 m and its box is PADDED by the longest half a log can reach (17.4 m on a
-// 35 m piece), so the query covers up to four of the forest's own 25 m tiles on
-// each axis; trees.js grows round(25*25*0.05) = 31 candidates per tile and
-// thinning only removes, so sixteen full tiles is 496. Rounded up, and `crowded`
-// counts the tile that ever hits it -- a truncated read is dead wood placed
-// against a partial forest, which shows as the odd piece through a trunk rather
-// than as an error.
+// 25 m and its box is PADDED by the longest half a log can reach (10 m on a 20 m
+// piece), so the query covers up to three of the forest's own 25 m tiles on each
+// axis; trees.js grows round(25*25*0.05) = 31 candidates per tile and thinning
+// only removes, so nine full tiles is 279. Rounded well up, and `crowded` counts
+// the tile that ever hits it -- a truncated read is dead wood placed against a
+// partial forest, which shows as the odd piece through a trunk rather than as an
+// error.
 const ANCHOR_CAP = 512
 
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
@@ -176,31 +157,30 @@ const PLACEMENT = {
   // cheaper than an empty forest floor.
   treeClearance: 1.0,
   // Metres of the piece buried FLAT AND ALWAYS, on top of the slope-dependent
-  // burial `_seat` works out. Small, because buildDeadwood already beds a log
-  // into its own footprint; this is the last few millimetres that stop a
-  // hairline of daylight showing under a piece on ground the height field and
-  // the drawn mesh disagree about by a centimetre.
+  // burial `_seat` works out: the last few millimetres that stop a hairline of
+  // daylight showing under a piece on ground the height field and the drawn
+  // mesh disagree about by a centimetre.
   sink: 0.02,
+  // And a share of the piece's own radius on top of that, because the shipped
+  // mesh touches y = 0 at its LOWEST point only: a knotted belly clears the
+  // ground elsewhere by a fraction of its thickness, and that gap scales with
+  // the piece, so the burial that closes it must too. A 20 m log is 3 m thick
+  // and beds half a metre; a 2 m one beds a few centimetres.
+  bed: 0.15,
 }
 
 // How big a piece ends up, IN METRES OF THE FINISHED THING; the scale is whatever
-// it takes to get there.
+// it takes to get there. A multiplier cannot be reasoned about -- the shipped
+// mesh is a unit box, and a target in metres is the same number whatever the
+// bench ships next.
 //
-// A MULTIPLIER CANNOT BE REASONED ABOUT, which is why this is a target. The bank
-// ships stumps whose built height runs 0.82 m to 1.95 m, so one 0.7x floor made a
-// 2 m spar a respectable 1.4 m and turned a 1 m stump into a 0.57 m lump. A
-// target in metres is the same number whichever variant it lands on.
+// STUMPS ARE MEASURED BY HEIGHT, the dimension you judge a standing thing by: one
+// metre (a cut stump) to eight (a storm-snapped spar you can stand under).
+// `pow(u, 2.5)` puts the median at 2.2 m, chest high, and the one-in-ten at 6.4 m.
 //
-// SNAGS ARE MEASURED BY HEIGHT, the dimension you judge a standing thing by: one
-// metre (a cut stump) to four (a storm-snapped spar you can stand under).
-//
-// LOGS ARE MEASURED BY LENGTH, and their ceiling is DOUBLE the old 17 m, which did
-// not read as an OBSTACLE -- something to walk round or climb over rather than
-// step past. The cube skew is what makes the doubling work at the sizes actually
-// seen rather than only at the rare top: `pow(u, 3)` takes the median piece from
-// 3.4 m to 5.6 m and the one-in-ten from 13 m to 26 m. Both bands keep a SIZE_SKEW
-// so the top stays rare -- `pow(u, 1.6)` puts the median stump at 2.1 m, chest
-// high, with 4 m ones scarce.
+// LOGS ARE MEASURED BY LENGTH, two metres to twenty. The cube skew keeps the top
+// an OBSTACLE rather than the norm: `pow(u, 3)` puts the median piece at 4.3 m
+// and the one-in-ten at 15 m.
 //
 // The ceiling is not free: it sets `maxHalf`, which pads the keep-out query's box
 // and therefore ANCHOR_CAP, and it sets SEAT_MAX_SAMPLES. Both are sized off this
@@ -208,23 +188,19 @@ const PLACEMENT = {
 // Exported so the gate can measure the placed instances AGAINST the band rather
 // than against itself: the bug these replaced was perfectly self-consistent, and
 // a check that reads the same constant the scatter reads would have passed.
-export const SNAG_HEIGHT = [1.0, 4.0]
-const SNAG_SKEW = 1.6
-export const LOG_LENGTH = [1.4, 34.8]
+export const SNAG_HEIGHT = [1.0, 8.0]
+const SNAG_SKEW = 2.5
+export const LOG_LENGTH = [2.0, 20.0]
 const LOG_SKEW = 3.0
 
 // How far the per-instance tint is pulled toward the terrain colour underfoot,
 // luminance-renormalised so only the HUE survives. See ferns.js for why the
 // renormalisation is load-bearing.
 //
-// HIGHER THAN THE FERN'S 0.35, a reversal worth recording. The old argument was
-// that DEADWOOD_TINT had already taken the family toward the ground's browns so a
-// strong cue would go to mud -- true of the strong tint, which is what made dead
-// wood read as a stain on the floor. With the tint pulled back toward neutral the
-// cue does the work and is the better tool: a constant is one brown everywhere,
-// this follows the terrain from a riverbank to a burn. A fern is a LIVING thing
-// standing IN the ground and borrows a little; a rotting log is half way to being
-// ground already.
+// HIGHER THAN THE FERN'S 0.35: a fern is a LIVING thing standing IN the ground
+// and borrows a little; a rotting log is half way to being ground already, and
+// the cue follows the terrain from a riverbank to a burn where a constant tint
+// would be one brown everywhere.
 const GROUND_CUE = 0.45
 
 // Mixed into the world seed, and not cosmetic -- it is the fix for dead wood
@@ -266,23 +242,91 @@ function triangleCount(geo) {
   return geo.index.count / 3
 }
 
+function geometryBytes(geo) {
+  let bytes = geo.index.array.byteLength
+  for (const attr of Object.values(geo.attributes)) bytes += attr.array.byteLength
+  return bytes
+}
+
+// The bank's two variants, in slot order. `kind` is what `_seat` and the gate
+// read: a 'snag' stands and a 'log' lies along its own Z, which is why the log
+// is loaded with its long axis turned onto Z.
+const VARIANTS = [
+  { name: 'stump', kind: 'snag', url: GEN_PROP_GLB.stump, longAxisZ: false },
+  { name: 'log', kind: 'log', url: GEN_PROP_GLB.log, longAxisZ: true },
+]
+// The far tier: the standing animal's cross, which for a log is its end and its length.
+const CARD_VIEWS = ['side', 'front']
+
+/**
+ * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
+ * VARIANTS' names): tiers pick-first with the cross card last, every tier's
+ * geometries in slot order, and per variant the metres `_seat` works in -- a
+ * stump's radius is its widest half so its rim is sampled where the rim is,
+ * a log's its half-thickness so the slope burial is the belly's. Pure, so the
+ * gate builds it in node from the GLBs on disk.
+ */
+export function deadwoodBankFrom(ladders) {
+  const picks = VARIANTS.map((v) => {
+    const ladder = ladders[v.name]
+    if (!ladder) throw new Error(`Deadwood: no ${v.name} ladder`)
+    if (ladder.geometries.length !== GEN_PROP_LODS + 1) {
+      throw new Error(`Deadwood: the ${v.name} ladder has ${ladder.geometries.length} tiers, expected ${GEN_PROP_LODS + 1}`)
+    }
+    return ladder
+  })
+  const tiers = []
+  for (let t = 0; t <= GEN_PROP_LODS; t++) tiers.push({ geometries: picks.map((l) => l.geometries[t]) })
+  tiers.push({
+    geometries: picks.map((l) => {
+      const shim = { geometry: new THREE.BufferGeometry() }
+      setCritterCard(shim, l.bounds, CARD_VIEWS)
+      return shim.geometry
+    }),
+  })
+  const variants = VARIANTS.map((v, i) => {
+    const b = picks[i].bounds
+    return {
+      name: v.name,
+      kind: v.kind,
+      long: b.long,
+      height: b.height,
+      radius: (v.kind === 'log' ? b.width : Math.max(b.width, b.long)) / 2,
+      lodSize: b.lodSize,
+    }
+  })
+  let bytes = 0
+  for (const tier of tiers) for (const geo of tier.geometries) bytes += geometryBytes(geo)
+  return { tiers, variants, maps: picks.map((l) => l.map), bounds: picks.map((l) => l.bounds), bytes }
+}
+
+/** The bank off the shipped files, for the world. Both ladders or nothing. */
+export async function loadDeadwoodBank() {
+  const ladders = await Promise.all(VARIANTS.map((v) => loadGenProp(v.url, { longAxisZ: v.longAxisZ })))
+  return deadwoodBankFrom(Object.fromEntries(VARIANTS.map((v, i) => [v.name, ladders[i]])))
+}
+
 export class Deadwood {
   /**
-   * @param scene         THREE.Scene to add the arena's Group to.
-   * @param field         V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
-   * @param water         WaterSurfaces. Needs isSubmerged.
-   * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
-   * @param textureArray  The shared prop atlas from buildTextureArray().
+   * @param scene    THREE.Scene to add the arena's Group to.
+   * @param field    V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
+   * @param water    WaterSurfaces. Needs isSubmerged.
+   * @param layers   Layers. Needs `paths`, `snow.band` and flattenAt.
+   * @param trees    Trees. Needs anchorsInto, for the keep-out.
+   * @param bank     deadwoodBankFrom's answer. Required: the ladders are fetched,
+   *                 and a scatter with nothing to draw is a bug, not a state.
    */
   constructor(
     scene,
     field,
     water,
     layers,
-    textureArray,
     trees,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, bank = null } = {}
   ) {
+    if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
+      throw new Error('Deadwood: needs the bank from loadDeadwoodBank (or deadwoodBankFrom)')
+    }
     // The forest, read through the anchor contract trees.js already publishes
     // for mushrooms.js. REQUIRED rather than optional: this layer's whole
     // placement rule is "not on a trunk", and a null forest would silently turn
@@ -316,7 +360,6 @@ export class Deadwood {
     this.trees = trees
     this.layers = layers
     this.paths = layers.paths
-    this.textureArray = textureArray
     // SALTED. See SEED_SALT: unsalted, this layer draws the forest's own
     // positions and every piece is seated on a trunk.
     this.seed = (seed | 0) ^ SEED_SALT
@@ -339,29 +382,23 @@ export class Deadwood {
     this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
-    const bank = buildDeadwoodBank({ billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
 
     // Read off the bank rather than recomputed here: `_seat` needs to know
     // whether a piece lies down, how long it is and how thick, and all three are
-    // facts about the geometry that was actually built.
+    // facts about the geometry that was actually shipped.
     this.isLog = Uint8Array.from(bank.variants, (v) => (v.kind === 'log' ? 1 : 0))
     this.vLong = Float32Array.from(bank.variants, (v) => v.long)
     this.vHeight = Float32Array.from(bank.variants, (v) => v.height)
     this.vRadius = Float32Array.from(bank.variants, (v) => v.radius)
-    // The metre DEADWOOD_LOD_AT counts in, per variant and AS BUILT -- an
-    // instance's own ladder size is this times its uniform scale, which is what
-    // `instSize` holds.
+    // The metre LOD_AT counts in, per variant and AS SHIPPED -- an instance's own
+    // ladder size is this times its uniform scale, which is what `instSize` holds.
     this.vLod = Float32Array.from(bank.variants, (v) => v.lodSize)
 
     // The scale band each variant needs in order to land inside its kind's METRE
-    // band, worked out once here because it is a fact about the built geometry
-    // and not about the instance. Per variant and not shared, which is the whole
-    // correction: the bank's stumps are built at 0.82 m and at 1.95 m, so one of
-    // them needs nearly two and a half times the scale of the other to stand the
-    // same four metres tall, and a single multiplier applied to both is how a
-    // 1 m stump ended up as a half-metre one.
+    // band, worked out once here because it is a fact about the shipped geometry
+    // and not about the instance.
     this.sLo = new Float32Array(this.variantCount)
     this.sHi = new Float32Array(this.variantCount)
     for (let v = 0; v < this.variantCount; v++) {
@@ -387,45 +424,39 @@ export class Deadwood {
     this._anchor = new Float32Array(ANCHOR_CAP * 4)
     this.anchorCount = 0
 
-    // The two impostor layers are what mark the billboard tier AS cards, which
-    // is what makes the wind read `uvProj.y` as a height fraction. It is not
-    // what decides the spin: the shader's other test is the vertex normal, and
-    // only the SNAG's card carries the vertical one. A log's card is fixed and
-    // sits on this list all the same. See CARD_UP_MARK and deadwood-bank.js.
-    // `instancedFade` because the rim dissolve's timer has nowhere else to live
-    // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
-    // alpha beside the tint and the arena carries `aPropFade` instead. See
-    // material.js's FADE_VERTEX.
-    this.material = createPropMaterial(textureArray, {
-      billboardLayers: deadwoodImpostorLayers(),
-      instancedFade: true,
+    // A material per variant, and another per variant's card: each wears its
+    // own shipped map (gen-props.js). The card's map is photographed off the
+    // mesh by `bakeCards`, and a card is not drawn until then -- an unbaked
+    // card is a white quad, not an empty one.
+    this.tierCount = bank.tiers.length
+    this.cardTier = this.tierCount - 1
+    this.meshMaterials = bank.variants.map((v, i) => {
+      const m = createGenPropMaterial(`deadwood-${v.name}`)
+      m.map = bank.maps[i]
+      return m
     })
-    // THE WHOLE FAMILY IS ROTTING, so the whole family is tinted, once, on the
-    // material. This multiplies diffuseColor BEFORE MOSS_APPLY and SNOW_APPLY
-    // mix their own colours over the top, so the wood ages and the moss stays
-    // green and the snow stays white. That ordering is what makes a material
-    // tint the right tool here instead of four more atlas layers of pre-aged
-    // bark. The impostor bake wears the same tint for the same reason.
-    this.material.color.setHex(DEADWOOD_TINT)
+    this.cardMaterials = bank.variants.map((v) => {
+      const m = createGenPropMaterial(`deadwood-${v.name}`, { card: true })
+      m.visible = false
+      return m
+    })
+    this.materials = [...this.meshMaterials, ...this.cardMaterials]
 
     // The bank hands its tiers back finest-first and already expanded per
     // variant, so there is no reverse and no perVariant indirection: a geometry
     // id is just `tier * variantCount + variant`, which is the arena's own
-    // layout. Every slot is its own geometry -- unlike the mushroom bank, whose
-    // species share card geometries -- because a card here is sized to its own
+    // layout. Every slot is its own geometry because a card is sized to its own
     // variant's extents.
-    this.tierCount = bank.tiers.length
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
       this._tierCaps(),
-      this.material,
+      (t, v) => (t === this.cardTier ? this.cardMaterials[v] : this.meshMaterials[v]),
       'v2-deadwood'
     )
     this.tierIds = bank.tiers.map((_t, t) =>
       bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
     this.tierTris = bank.tiers.map((t) => t.geometries.map(triangleCount))
-    this.cardTier = this.tierCount - 1
     // The A/B control: hand the far band the real T0 mesh so the card can be
     // judged against ground truth at the distance the swap happens.
     this.farMeshIds = this.tierIds[0].slice()
@@ -570,8 +601,8 @@ export class Deadwood {
    * in `this._anchor`.
    *
    * A SNAG is a point and a LOG IS A SEGMENT, and the difference matters at the
-   * sizes this scatter now rolls: a 35 m log tested at its midpoint alone would
-   * be free to lie straight through two trunks seventeen metres away either side.
+   * sizes this scatter rolls: a 20 m log tested at its midpoint alone would be
+   * free to lie straight through two trunks ten metres away either side.
    * So the log measures the trunk's distance to the SEGMENT between its ends,
    * which is the same shape `_seat` already works in.
    *
@@ -614,13 +645,13 @@ export class Deadwood {
    * Work out the height and the pitch a piece should be placed at, into
    * `this._seated`.
    *
-   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. buildDeadwood beds a
-   * log so its belly touches y = 0 along its whole length, exact on flat ground and
-   * exactly wrong on a hill -- a 3 m log on a 20 degree slope seated on its
-   * midpoint has one end a HALF METRE in the air. So a LOG pitches to the line
-   * between the ground under its two ends and is then dropped to the lowest height
-   * keeping every point at or under the ground; a SNAG does not pitch at all, and
-   * only its base rim is dealt with by the same rule.
+   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. The shipped log
+   * lies with its lowest point at y = 0, exact on flat ground and exactly wrong
+   * on a hill -- a 3 m log on a 20 degree slope seated on its midpoint has one
+   * end a HALF METRE in the air. So a LOG pitches to the line between the ground
+   * under its two ends and is then dropped to the lowest height keeping every
+   * point at or under the ground; a STUMP does not pitch at all, and only its
+   * base rim is dealt with by the same rule.
    *
    * ONE RULE: a piece sits at the lowest point of its own footprint, and anything
    * the ground does inside that footprint pushes UP through the wood rather than
@@ -628,8 +659,9 @@ export class Deadwood {
    * daylight under a log is the one thing this file must not produce.
    *
    * BOTH then sink by `tan * radius`, burying the UPHILL side of a piece of that
-   * thickness while the downhill side rests on the ground. That is why `radius` is
-   * measured off the built mesh rather than guessed.
+   * thickness while the downhill side rests on the ground, and by `bed` of the
+   * radius for the belly's own bumps. That is why `radius` is measured off the
+   * shipped mesh rather than guessed.
    *
    * @param variant  bank variant id
    * @param x,z      where the piece stands
@@ -640,7 +672,8 @@ export class Deadwood {
   _seat(variant, x, z, h, tan, yaw, scale) {
     const out = this._seated
     const r = this.vRadius[variant] * scale
-    const bury = tan * r + PLACEMENT.sink
+    const bed = PLACEMENT.sink + PLACEMENT.bed * r
+    const bury = tan * r + bed
     if (!this.isLog[variant]) {
       out.pitch = 0
       // TWO ANSWERS, AND THE LOWER ONE WINS. `h - tan * r` is exact on a PLANE
@@ -659,7 +692,7 @@ export class Deadwood {
       if (hz0 < low) low = hz0
       const hz1 = this.field.heightAt(x, z + r)
       if (hz1 < low) low = hz1
-      out.y = low - PLACEMENT.sink
+      out.y = low - bed
       return
     }
     // The piece is built lying along its own +Z, so after the yaw its long axis
@@ -699,7 +732,7 @@ export class Deadwood {
     //
     // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the ground
     // BETWEEN two samples, which depends on their spacing rather than their number:
-    // a fixed five is plenty for a 2 m log and leaves a 35 m one hanging. At
+    // a fixed five is plenty for a 2 m log and leaves a 20 m one hanging. At
     // SEAT_SPACING the worst a smooth rise can bulge between neighbours is a couple
     // of centimetres, under the terrain mesh's own faceting and inside any log's
     // radius.
@@ -809,8 +842,8 @@ export class Deadwood {
       // PER TILE rather than one number for the layer, which is what the
       // size-relative ladder forced. The blanket demote is only sound past the
       // distance at which nothing in the tile can still be a mesh, and that
-      // distance now depends on what is IN the tile: a 35 m log holds a mesh to
-      // 350 m, further than the layer is ever drawn, so a single bound taken
+      // distance now depends on what is IN the tile: a 20 m log holds a mesh to
+      // 480 m, further than the layer is ever drawn, so a single bound taken
       // over the whole bank would be larger than the draw radius and this fast
       // path would never fire again. `tile.maxSize` is the largest ladder size
       // the tile actually placed, kept up to date by `_growTile` and `_thin`.
@@ -1066,8 +1099,7 @@ export class Deadwood {
       const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
       const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
       // A value swing on top, plus a touch of red spread, so two pieces lying
-      // together are not the same pixel. Multiplies with the material's own
-      // DEADWOOD_TINT rather than replacing it.
+      // together are not the same pixel.
       const v = 0.88 + tintV * 0.24
       this._c.setRGB(
         (k0 + gc[0] * k1) * v * (0.95 + tintR * 0.1),
@@ -1080,11 +1112,10 @@ export class Deadwood {
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
 
-      // Must follow setColorAt: the fade rides in the unused alpha of the
-      // batch's colour texture. A piece of rank u survives while the local
-      // keep-fraction fullRadius/d exceeds u, so it goes at fullRadius/u -- or
-      // at the draw radius, whichever comes first. Hidden until the rim's sweep
-      // has looked at it, which the tile below is marked due for.
+      // A piece of rank u survives while the local keep-fraction fullRadius/d
+      // exceeds u, so it goes at fullRadius/u -- or at the draw radius,
+      // whichever comes first. Hidden until the rim's sweep has looked at it,
+      // which the tile below is marked due for.
       this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
     }
 
@@ -1166,10 +1197,9 @@ export class Deadwood {
   }
 
   /**
-   * A/B the far band by eye: `'card'` is the spun billboard, `'mesh'` holds the
-   * real T0 mesh all the way out. The comparison worth making -- billboard
-   * against ground truth, at the distance the swap happens -- and the one that
-   * settles whether the end-on approximation in this file's header is a problem.
+   * A/B the far band by eye: `'card'` is the cross card, `'mesh'` holds the
+   * real T0 mesh all the way out. The comparison worth making -- card against
+   * ground truth, at the distance the swap happens.
    */
   setFarTier(mode) {
     if (mode !== 'card' && mode !== 'mesh') {
@@ -1187,22 +1217,18 @@ export class Deadwood {
   }
 
   /**
-   * Photograph one snag and one log into their impostor layers. Call ONCE,
-   * after loadImageLayers() has resolved -- dead wood wears the trees' bark
-   * PNGs, and a bake that ran first would photograph the procedural fallback.
-   * Until it runs the cards sample an empty layer and alphaTest discards them,
-   * so distant dead wood fades in rather than flashing.
+   * Photograph each variant's pick for its cross card and let the cards draw.
+   * Call ONCE, with the renderer; the bank is already loaded, so it can run at
+   * boot. Until it runs distant dead wood is not drawn at all.
    */
   bakeCards(renderer) {
     const t0 = performance.now()
-    const baked = bakeDeadwoodImpostors(renderer, this.textureArray)
+    this.bank.variants.forEach((_v, i) => {
+      const card = this.cardMaterials[i]
+      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], this.bank.bounds[i], CARD_VIEWS)
+      card.visible = true
+    })
     this.cardBakeMs = performance.now() - t0
-    return baked
-  }
-
-  /** Match the props' snow to the terrain's, so a log and its ground agree. */
-  syncSnowLine(layers) {
-    setSnowLine(layers.snow.base, layers.snow.band)
   }
 
   get stats() {
@@ -1235,6 +1261,9 @@ export class Deadwood {
 
   dispose() {
     this.batch.dispose()
-    this.material.dispose()
+    for (const m of this.materials) {
+      if (m.map) m.map.dispose()
+      m.dispose()
+    }
   }
 }

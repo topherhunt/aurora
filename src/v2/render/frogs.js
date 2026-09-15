@@ -32,24 +32,24 @@
 // slope to the other in the air.
 //
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
-// (critters.js critterTier, LOD_DEG below), one InstancedMesh per tier under
-// one material, and not at all under the last rung; the tiers together hold
-// every live frog she can see.
+// (critters.js critterTier, the rungs a ratio of its own body length), one
+// InstancedMesh per tier under one material, and not at all under the last
+// rung; the tiers together hold every live frog she can see.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CRITTER_GLB, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tileSeed, walkTiles,
+  CRITTER_GLB, LOD_RUNGS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tileSeed, walkTiles,
 } from './critters.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
 export const TILE = 8
-// Tiles whose centre is within this of her are grown; the biggest frog is under the last rung past forty-one metres.
+// Tiles whose centre is within this of her are grown; the biggest frog is under the last rung past twenty-nine metres.
 export const RADIUS = 48
-// The ladder: the apparent size in degrees of arc each tier holds down to, the pick first and then the shipped -lod1..3, under the last of which a frog is not drawn. A 0.36 m frog steps down at 2.6, 5.2 and 10.3 m and is gone past 27.5.
-export const LOD_DEG = [8, 4, 2, 0.75]
+// Tiers on the ladder: the pick and the shipped -lod1..3, one per rung of the world ladder (critters.js LOD_RUNGS). A 0.36 m frog steps down at 2.4, 4.8 and 9.6 m and is gone past 19.2.
+export const LOD_TIERS = LOD_RUNGS
 // How far from the waterline a frog may sit, on the dry side.
 export const SHORE_M = 5
 // The ground a frog will not sit on: steeper than this (a tangent), or within SNOW_MARGIN metres of the snow line, which is the cold the brief excludes.
@@ -129,7 +129,7 @@ export class Frogs {
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
     this.material.onBeforeCompile = (shader) => { glint(shader); hueVary(shader) }
     this.material.customProgramCacheKey = () => 'frogs'
-    this.tiers = LOD_DEG.map((_, k) => {
+    this.tiers = Array.from({ length: LOD_TIERS }, (_, k) => {
       const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
       mesh.name = k ? `v2-frogs-lod${k}` : 'v2-frogs'
       mesh.count = 0
@@ -153,7 +153,7 @@ export class Frogs {
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, tile: null,
-        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_DEG.length,
+        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_TIERS,
         // The ground normal the frog sits along, and the normals at a hop's two ends.
         nx: 0, ny: 1, nz: 0, n0x: 0, n0y: 1, n0z: 0, n1x: 0, n1y: 1, n1z: 0,
         // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed, `wet0` and `wet1` saying which ends are on the water; 'drift' floats along `heading` at `speed` m/s, turning at `spin` rad/s. `bout` is WALK or LEAP with `hops` of it to go, `heading` the bout's line.
@@ -184,18 +184,18 @@ export class Frogs {
   /** The pick and its ladder, the tiers moved as the pick was so they stay in register whatever each one's own box. */
   async load() {
     const pick = await loadCritterGlb(CRITTER_GLB.frog)
-    const tiers = await Promise.all(LOD_DEG.slice(1).map((_, k) => loadCritterGlb(critterLodUrl(CRITTER_GLB.frog, k + 1), { origin: pick.origin })))
+    const tiers = await Promise.all(Array.from({ length: LOD_TIERS - 1 }, (_, k) => loadCritterGlb(critterLodUrl(CRITTER_GLB.frog, k + 1), { origin: pick.origin })))
     this.setAsset([pick, ...tiers])
     return true
   }
 
-  /** One asset per tier of LOD_DEG, the pick first; a gate may pass fewer, and the last given stands in for the rest. */
+  /** One asset per tier, the pick first; a gate may pass fewer, and the last given stands in for the rest. */
   setAsset(assets) {
-    if (!Array.isArray(assets) || assets.length < 1 || assets.length > LOD_DEG.length) throw new Error(`Frogs.setAsset: ${LOD_DEG.length} tiers at most, the pick first`)
+    if (!Array.isArray(assets) || assets.length < 1 || assets.length > LOD_TIERS) throw new Error(`Frogs.setAsset: ${LOD_TIERS} tiers at most, the pick first`)
     this.bounds = setCritterAsset(this.tiers[0], this.material, assets[0], 'frogs')
     this.span = this.bounds.span
     this.sink = (SINK * this.bounds.height) / this.span
-    for (let k = 1; k < LOD_DEG.length; k++) {
+    for (let k = 1; k < LOD_TIERS; k++) {
       const asset = assets[Math.min(k, assets.length - 1)]
       // Its own decode of the same WebP: the pick's is the one drawn.
       if (k < assets.length) asset.map?.dispose()
@@ -293,7 +293,7 @@ export class Frogs {
       f.hue = hue
       f.yaw = yaw
       f.breath = this.rand() * Math.PI * 2
-      f.lod = LOD_DEG.length
+      f.lod = LOD_TIERS
       f.state = 'sit'
       f.left = between(this.rand, SIT_S)
       f.hops = 0
@@ -419,7 +419,7 @@ export class Frogs {
 
     const breath = (this.time * Math.PI * 2) / BREATH_S
     const bob = (this.time * Math.PI * 2) / BOB_S
-    const counts = LOD_DEG.map(() => 0)
+    const counts = this.tiers.map(() => 0)
     for (const t of this.tiles.values()) {
       // Backwards, because a frog that finds itself inside a rock leaves the list mid-walk.
       for (let i = t.frogs.length - 1; i >= 0; i--) {
@@ -483,8 +483,8 @@ export class Frogs {
           }
         }
         // The tier its apparent size calls for; past the ladder's foot it is not drawn, but keeps stepping.
-        f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_DEG)
-        if (f.lod === LOD_DEG.length) continue
+        f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
+        if (f.lod === LOD_TIERS) continue
         const k = f.size / this.span
         _pos.set(f.x, f.y + lift, f.z)
         // Yaw about the world up, then that up tilted onto the ground's normal.

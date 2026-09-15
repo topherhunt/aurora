@@ -1150,8 +1150,9 @@ export async function run({ heightmap } = {}) {
     //
     //   height    the composed field. Most of them.
     //   snowline  snowJag, which moves a COLOUR boundary and no geometry.
-    //   mesher    crest and peaks. See the banner: asserted as a non-effect on
-    //             the field; peaks' own effect on a coarse chunk is probed below.
+    //   mesher    crest and peaks (DEAD CODE (peaks), off in RELIEF_SHIPPED).
+    //             See the banner: asserted as a non-effect on the field; peaks'
+    //             own effect on a coarse chunk is probed below.
     const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
@@ -1444,7 +1445,9 @@ export async function run({ heightmap } = {}) {
       check(worstCoarse < 1e-9, `a texel-sized cell carries none and is the bilinear macro alone`, `worst ${worstCoarse.toExponential(2)} m`)
     }
 
-    // `peaks` IS AN UPPER ENVELOPE, AND ONLY WHERE A CELL IS COARSER THAN A TEXEL.
+    // DEAD CODE (peaks): probes a knob RELIEF_SHIPPED leaves off; see the tag
+    // in chunk-mesh-v2.js. `peaks` IS AN UPPER ENVELOPE, AND ONLY WHERE A CELL
+    // IS COARSER THAN A TEXEL.
     //
     // The knob lives in the mesher (its non-effect on the field is asserted
     // above); what it promises is per vertex of a coarse chunk: at least the

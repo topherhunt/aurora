@@ -237,6 +237,27 @@ const ANIMALS = [
       'leg cloths, soft leather turnshoes, a short greying beard and a fur-lined hood pushed back off the head. ' +
       'No lapels, no buttons, no zips, no sewn pockets, no modern overcoat, no laced shoes',
   },
+  {
+    id: 'abominable-snowman',
+    label: 'Abominable Snowman',
+    rigType: 'biped',
+    sizeM: 2.6,
+    // The wrongness lives in the face, the hands and the shoulders, never in the
+    // limb count or their symmetry: the biped auto-rig wants two arms and two
+    // legs it can tell apart from the torso, and a third arm or one leg twice
+    // the length of the other is a bad skeleton, not a scarier monster.
+    description:
+      'a towering nightmarish humanoid covered head to foot in long matted dirty-white hair hanging in frozen ' +
+      'clumps, its body wrong in every proportion: a hunched barrel torso with one shoulder carried much higher ' +
+      'than the other, arms so long the huge hands hang below the knees, each hand with long crooked fingers of ' +
+      'too many joints ending in black cracked nails, thick short bowed legs and broad flat splayed feet. The face ' +
+      'is bare of hair and the skin there is smooth, waxy and blue-grey like a drowned thing, and it sits too small ' +
+      'and too low on a wide skull so that a blank stretch of forehead runs on far above it. Two eyes set at ' +
+      'different heights, the left large, round and milk-white with no pupil, the right small, sunken and black ' +
+      'and fixed on the viewer; no nose, only two narrow slits in the flat centre of the face; a wide lipless ' +
+      'mouth that runs past where the cheeks should end, hanging slightly open on a double row of small flat ' +
+      'even human teeth, far too many of them',
+  },
 ]
 
 // --- the village -------------------------------------------------------------
