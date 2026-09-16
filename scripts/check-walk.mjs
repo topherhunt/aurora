@@ -188,6 +188,44 @@ console.log('the capsule')
   check(!p.pathClear(25, 0, 35, 0), 'and not under a ledge at head height')
 }
 
+{
+  console.log('\nthe added stone')
+  // A layer registered after construction -- the dead wood -- is stone in the
+  // same terms as the rocks: a step within reach she mantles, a wall over her
+  // crown stops her, and a top under the ground is nothing to her at all. The
+  // same boxes as above, handed to addStone rather than the constructor.
+  let threw = false
+  try { new WalkSurface(field, stone([]), trees).addStone({ columnAt() {} }) } catch { threw = true }
+  check(threw, 'a layer without columnAt and blockTopAt is refused loudly')
+  const over = (boxes, x, z, yaw) => {
+    const p = walker(stone([]), x, z, yaw)
+    p.th.addStone(stone(boxes))
+    return p
+  }
+  const step = [20, 22, -5, 5, GROUND, GROUND + WALK.reach - 0.1]
+  let p = over([step], 18, 0, -Math.PI / 2)
+  let topped = 0
+  for (let f = 0; f < Math.round(4 / DT); f++) {
+    p.update(DT, INPUT)
+    p.rig.updateMatrixWorld(true)
+    if (Math.abs(p.standY - step[5]) < 1e-6) topped++
+  }
+  check(p.rig.position.x > 23 && !p.blocked && topped > 0, 'a low log from an added layer is a step she walks over',
+    `x = ${p.rig.position.x.toFixed(2)}, ${topped} frames on top`)
+  p = over([[20, 22, -5, 5, GROUND, GROUND + 3]], 18, 0, -Math.PI / 2)
+  walk(p, 3)
+  check(p.blocked && p.rig.position.x < 20 && p.standY === GROUND, 'a tall stump from an added layer is a wall',
+    `x = ${p.rig.position.x.toFixed(2)}`)
+  p = over([[20, 22, -5, 5, GROUND - 2, GROUND - 0.2]], 18, 0, -Math.PI / 2)
+  walk(p, 4)
+  check(!p.blocked && p.rig.position.x > 23 && p.standY === GROUND, 'and a log the ground has swallowed is no obstacle',
+    `x = ${p.rig.position.x.toFixed(2)}`)
+  const w = new WalkSurface(field, stone([[0, 1, 0, 1, GROUND, GROUND + 0.5]]), trees)
+  w.addStone(stone([[0, 1, 0, 1, GROUND, GROUND + 0.9]]))
+  check(w.heightAt(0.5, 0.5) === GROUND + 0.9 && w.heightAt(0.5, 0.5, GROUND) === GROUND + 0.9,
+    'the highest top over the point wins across layers, asked with or without her feet')
+}
+
 console.warn = warn
 console.log(failures ? `\n${failures} FAILED\n` : '\nall walk checks passed\n')
 process.exit(failures ? 1 : 0)

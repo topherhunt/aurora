@@ -425,9 +425,11 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnC
   check(matched === list.length, 'each instance carries its frog\'s own matrix, tint and hue', `${matched} of ${list.length}`)
   // Her head swaying on a threshold: a frog there changes tier at most once, not every frame.
   for (const f of alive()) { f.state = 'sit'; f.left = 1e9 }
-  const target = alive().find((f) => f.lod === 1)
+  // Any drawn frog with a rung below it to step onto -- which rung that is depends on where the scatter put one, not on the ladder's numbers.
+  const target = alive().find((f) => f.lod >= 0 && f.lod < LOD_TIERS - 1)
+  if (!target) throw new Error('check-frogs: no drawn frog with a rung below it to sway across')
   const dist0 = Math.hypot(target.x - HEAD[0], target.y - HEAD[1], target.z - HEAD[2])
-  const edgeD = lodReach(target.size, 1)
+  const edgeD = lodReach(target.size, target.lod)
   let changes = 0, prev = target.lod
   for (let i = 0; i < 200; i++) {
     // Along the line from her head to the frog, so the distance is exactly the threshold plus a sway of half the hysteresis.
@@ -440,8 +442,9 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnC
   // Walk her out to the far bank: what was undrawn is the pick.
   frogs.update(-HALF - 2, GROUND + 1.6, 40, DT)
   frogs.update(-HALF - 2, GROUND + 1.6, 40, DT)
-  const near = drawn([-HALF - 2, GROUND + 1.6, 40]).filter((d) => d.tier === 0)
-  check(near.length > 0 && near.every((d) => Math.hypot(d.p[0] - HEAD[0], d.p[2] - HEAD[2]) > 20), 'a frog she walks up to comes back as the pick', `${near.length} in the pick now`)
+  // Tier 0 reaches under two metres for a frog, so what says she has moved is which frogs are drawn at all, not which are on the near rung.
+  const near = drawn([-HALF - 2, GROUND + 1.6, 40])
+  check(near.length > 0 && near.every((d) => Math.hypot(d.p[0] - HEAD[0], d.p[2] - HEAD[2]) > 20), 'the frogs drawn are the ones by the bank she walked to, not the ones she left', `${near.length} drawn, none within 20 m of where she stood`)
 }
 
 // --- a bank that slopes: frogs sit along its normal, and turn to the new slope over a hop ----

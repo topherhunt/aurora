@@ -13,7 +13,8 @@
 // round trip; a body that snaps to a new heading in a frame instead of turning
 // to it; an animal that takes any notice of her; an animal in sight drawn as
 // anything but its own animated puppet, one drawn past the last rung, or one
-// that pops on, off or between rungs instead of dissolving; a herd that does
+// that pops on, off or between rungs instead of dissolving; a debug tint that
+// does not follow the rung, or that will not come off again; a herd that does
 // not settle after dark; a frame that costs more than a scatter is allowed to.
 // The three shipped GLBs are checked for shape too -- the halving ladder over
 // the one skeleton, the whole clip library, the quadruped extras, and a bind
@@ -28,8 +29,8 @@ import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE,
 } from '../src/v2/render/wildlife.js'
-import { CRITTER_GLB, CULL_KEEP, LOD_HYSTERESIS, LOD_NEAR, LOD_RUNGS, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S } from '../src/v2/render/puppet.js'
+import { CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
+import { LOD_FADE_S, setTierTint } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -552,20 +553,42 @@ wake(w)
   const t = c.puppet.mixer.time
   at(close, 10, 1 / 60)
   check(c.puppet && Math.abs(c.puppet.mixer.time - t - 10 / 60) < 1e-9, "a puppet's mixer advances with the frames", `${(c.puppet.mixer.time - t).toFixed(4)} s in ten`)
+  // The tint row, which is how the ladder is confirmed by eye at all: halving
+  // the triangles of a smooth mesh barely moves its silhouette, so a swap is
+  // invisible without a colour on it. One flat colour a rung, and a fade shows
+  // only the tier it is going TO, so what she reads is never a blend of two.
+  {
+    // Settled first: it is mid-dissolve from the walk back in above, and a fading puppet draws two meshes through the fade materials by design.
+    settle(close)
+    const p = c.puppet
+    const shown = () => p.meshes.filter((m) => m.visible)
+    check(shown().length === 1 && shown()[0].material === p.mats.plain, 'with the tint off a settled puppet draws through its own species material')
+    setTierTint(true)
+    at(close, 2, 1 / 60)
+    const top = shown()[0].material
+    check(shown().length === 1 && top.isMeshBasicMaterial === true && top !== p.mats.plain, 'the tint repaints a puppet that was already standing still, with no tier change to prompt it')
+    settle(out)
+    const bottom = shown()[0].material
+    check(p.meshes.indexOf(shown()[0]) === LOD_RUNGS - 1 && bottom.isMeshBasicMaterial === true && bottom !== top, 'and the last rung wears a different colour from the first, which is the whole of what it is for')
+    setTierTint(false)
+    at(out, 2, 1 / 60)
+    check(shown()[0].material === p.mats.plain, 'turning it off puts the species material back')
+  }
 }
 
-// --- the ladder is a ratio of the body --------------------------------------------
+// --- the ladder is an arc, and so a ratio of the body ------------------------------
 //
 // FOUR RUNGS, each twice as far off as the one above it, and every distance in
-// it measured in body sizes rather than in metres -- so one ladder serves a hare,
-// a stag and whatever is built next, and a big animal holds its detail further
-// out because that is what she sees.
+// it set by the ARC the body has shrunk to rather than by metres -- so one
+// ladder serves a hare, a stag and whatever is built next, and a big animal
+// holds its detail further out because that is what she sees.
 {
-  const size = 1.5
+  // The stag, because it is the body the ladder was tuned against: its first swap is meant to land on ten metres.
+  const size = 2.23
   const rungs = Array.from({ length: LOD_RUNGS }, (_, k) => lodReach(size, k))
-  check(LOD_RUNGS === 4 && rungs.map((d) => d.toFixed(0)).join(',') === '10,20,40,80', 'a 1.5 m creature is drawn to 10, 20, 40 and 80 metres', rungs.map((d) => `${d.toFixed(1)}`).join(' / '))
-  check(rungs.every((d, k) => k === 0 || Math.abs(d / rungs[k - 1] - 2) < 1e-12), 'each rung reaching exactly twice as far as the one above it')
-  check(Math.abs(rungs[0] / size - LOD_NEAR) < 1e-12 && [0.5, 3, 7].every((m) => Math.abs(cullRange(size * m) - cullRange(size) * m) < 1e-9), `the whole ladder scales with the body: tier 0 to ${LOD_NEAR.toFixed(2)} body sizes, the cull to ${(LOD_NEAR * 2 ** (LOD_RUNGS - 1)).toFixed(1)}`)
+  check(LOD_RUNGS === 4 && rungs.map((d) => d.toFixed(0)).join(',') === '10,20,40,80', 'a stag steps down at 10, 20 and 40 metres and is culled past 80', rungs.map((d) => `${d.toFixed(1)}`).join(' / '))
+  check(rungs.every((d, k) => k === 0 || Math.abs(d / rungs[k - 1] - LOD_STEP) < 1e-12), `each rung reaching exactly ${LOD_STEP} times as far as the one above it`)
+  check(Math.abs(2 * Math.atan(size / (2 * rungs[0])) * (180 / Math.PI) - LOD_DEG) < 1e-9 && [0.5, 3, 7].every((m) => Math.abs(cullRange(size * m) - cullRange(size) * m) < 1e-9), `a body leaves tier 0 at ${LOD_DEG} degrees of arc whatever its size, so the whole ladder scales with the body`)
   check(cullRange(size) === rungs[LOD_RUNGS - 1] && critterTier(size, cullRange(size) + 1e-6, -1) === LOD_RUNGS, 'past the last rung there is no rung to be on -- that is the cull')
   check(Math.abs(forgetRange(size) / cullRange(size) - CULL_KEEP) < 1e-12, `and a placement is remembered to ${Math.round((CULL_KEEP - 1) * 100)}% past the cull`, `${cullRange(size).toFixed(0)} m drawn, ${forgetRange(size).toFixed(0)} m remembered`)
 

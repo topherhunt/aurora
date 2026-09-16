@@ -184,12 +184,16 @@ export function setCritterAsset(mesh, material, asset, label) {
 // THE LOD LADDER, THE SAME ONE FOR EVERY CREATURE IN THE WORLD. A thing that
 // moves -- turns, hops, is seen from every side -- is drawn as its mesh at
 // every distance, stepping down its decimated tiers as it shrinks in her view,
-// and not drawn at all under the last rung. The rungs are a RATIO OF THE BODY'S
-// OWN SIZE and they DOUBLE: tier 0 holds to LOD_NEAR body sizes, and each tier
-// after it holds to twice as far as the one above. Four rungs, so a body is
-// drawn out to LOD_NEAR * 8 of itself and is culled past that. For a 1.5 m
-// creature that is 10 m, 20 m, 40 m, 80 m; for a 2 m stag 13, 27, 53, 107; for
-// a 0.5 m hare 3.3, 6.7, 13, 27.
+// and not drawn at all under the last rung. The rungs are APPARENT SIZE: tier 0
+// holds until the body subtends less than LOD_DEG of arc, and each rung after
+// it holds until half the arc of the one above, which is twice the distance.
+// Four rungs, so a body is drawn out to an eighth of LOD_DEG and culled past
+// that. For a 2.2 m stag that is 10, 20, 40, 80 m; for a 1.4 m fox 6, 13, 25,
+// 50; for a 0.5 m hare 2.2, 4.5, 9, 18.
+//
+// Arc and body-count are the same ladder -- a body subtends LOD_DEG at a fixed
+// number of its own lengths away -- but degrees are the units the eye works in,
+// so that is the dial.
 //
 // SIZE IS THE BODY'S LARGEST EXTENT, whichever axis that is -- a stag's length,
 // a snowman's height -- because that is what fills her view. Each layer works
@@ -211,15 +215,19 @@ export function setCritterAsset(mesh, material, asset, label) {
 
 // Rungs on the ladder, and so skinned tiers a shipped creature carries.
 export const LOD_RUNGS = 4
-// Body sizes tier 0 holds down to. The rest double: 6.7, 13.3, 26.7, 53.3.
-export const LOD_NEAR = 20 / 3
+// The arc a body has shrunk to when tier 0 gives way. Each rung below it holds
+// to half the arc of the one above, so each reaches LOD_STEP times as far.
+export const LOD_DEG = 12.7
+export const LOD_STEP = 2
 // How far past a rung a creature must go before it leaves it, and how far short before it comes back.
 export const LOD_HYSTERESIS = 0.1
 // How far past the cull a placement is worth remembering, as a fraction of the cull range.
 export const CULL_KEEP = 1.5
 
+/** The distance at which a body of `size` metres subtends `deg` of arc. */
+export const distAt = (size, deg) => size / (2 * Math.tan((deg * Math.PI) / 360))
 /** How far a body of `size` metres is drawn at rung `k`, and at the last rung how far it is drawn at all. */
-export const lodReach = (size, k) => size * LOD_NEAR * 2 ** k
+export const lodReach = (size, k) => distAt(size, LOD_DEG) * LOD_STEP ** k
 /** Past this a creature is neither drawn nor simulated. */
 export const cullRange = (size, rungs = LOD_RUNGS) => lodReach(size, rungs - 1)
 /** And past this its layer may forget where it had wandered to. */
@@ -233,8 +241,8 @@ export const forgetRange = (size, rungs = LOD_RUNGS) => cullRange(size, rungs) *
  * no rung yet, and takes the edges as they are.
  */
 export function critterTier(size, dist, prev, rungs = LOD_RUNGS) {
-  let reach = size * LOD_NEAR
-  for (let k = 0; k < rungs; k++, reach *= 2) {
+  let reach = distAt(size, LOD_DEG)
+  for (let k = 0; k < rungs; k++, reach *= LOD_STEP) {
     // The edge, pushed away from the rung it is on so crossing it takes a real move.
     const edge = k === prev ? reach * (1 + LOD_HYSTERESIS) : k === prev - 1 ? reach * (1 - LOD_HYSTERESIS) : reach
     if (dist <= edge) return k

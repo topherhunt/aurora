@@ -7,6 +7,8 @@ import { bakeCritterCard, setCritterCard } from './critters.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { TREE_TUNING } from './trees.js'
+import { smoothstep } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
 // The rotting stump and the fallen log on the forest floor, /v2 route: two
@@ -40,8 +42,15 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 //    a log has a heading, and a card that held still against the eye while the
 //    mesh under it pointed along its yaw made every swap read as the log turning.
 //
-// WHAT IT COSTS. At 0.006 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
-// graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 38 + 93 = ~131 standing. The
+// 3. THE FOREST IS PLACED AROUND IT, not it around the forest. A piece is a
+//    pure function of position (`_plan`), so trees.js asks `occupiesAt` before
+//    it stands a trunk, on ground this layer has not grown yet, and a tree
+//    that would stand through a log is the one refused. Dead wood comes from
+//    live wood: full DENSITY in forest cover, a quarter of it in the open
+//    (COVER, off the same biome field the trees read).
+//
+// WHAT IT COSTS. At 0.003 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
+// graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 19 + 47 = ~66 standing. The
 // shipped ladders run ~2000/1000/500/200 (stump) and ~1000/500/250/100 (log)
 // triangles and LOD_AT holds a 2 m stump on T3 to 48 m, so the layer is
 // ~13k triangles with a median stump and less with a median log -- a tenth of
@@ -53,11 +62,19 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // on grass. The material is white; the rot is painted in the shipped map.
 // ---------------------------------------------------------------------------
 
-// Pieces per square metre at full density. Sparse on purpose and by a long way:
-// trees.js runs at 0.05 stems/m^2, so this is one piece of dead wood for every
-// eight standing trees. Deadfall you trip over every few paces reads as a
-// storm's aftermath rather than as an old wood.
-const DENSITY = 0.006
+// Pieces per square metre in full forest cover. Sparse on purpose and by a long
+// way: trees.js runs at 0.05 stems/m^2, so this is one piece of dead wood for
+// every sixteen standing trees. Deadfall you trip over every few paces reads as
+// a storm's aftermath rather than as an old wood.
+const DENSITY = 0.003
+
+// How the biome field (layers/biome.js) reads onto the dead wood: DENSITY at
+// full cover, `openKeep` of it in open meadow, graded over the forest's own
+// ramp so a clearing thins its deadfall where it thins its trees. A quarter
+// rather than nothing because the open ground is not bare of it -- a lone
+// snag in a meadow is a landmark -- but a plain that out-littered the wood
+// beside it was the failure this replaces.
+const COVER = { ramp: TREE_TUNING.BIOME.ramp, openKeep: 0.25 }
 
 // Metres. Inside this every piece that rolled one is standing. Past the third
 // mesh band FOR A TYPICAL PIECE -- a chest-high stump is on its 200-triangle
@@ -87,9 +104,16 @@ const LOD_HYSTERESIS = 0.12
 const LOD_SQ_OUT = Float32Array.from(LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 
 // Metres per tile. The forest's 25 rather than the fern's 12, because at this
-// density a 12 m tile holds under one candidate and the keep-fraction has
-// nothing to grade. 25 m gives 3.75, rounded to 4.
+// density a 12 m tile holds under half a candidate and the keep-fraction has
+// nothing to grade. 25 m gives 1.875, rounded to 2.
 const TILE = 25
+
+// The attitude rolls. A log turns any way about its own length -- the shipped
+// mesh has one knotted side, and a scatter that never rolled it laid that side
+// up on every log in the world. A stump leans by up to this many degrees about
+// a random horizontal bearing: a snag is a trunk the wind has been at.
+const STUMP_TILT_DEG = 6
+const STUMP_TILT = (STUMP_TILT_DEG * Math.PI) / 180
 
 // Milliseconds per frame allowed for growing and regrowing tiles. Small: a tile
 // is four candidates, and four candidates cost four height queries.
@@ -106,15 +130,30 @@ const NEAR_MARGIN = TILE * 1.5
 const SEAT_SPACING = 1.5
 const SEAT_MAX_SAMPLES = 16
 
-// How many trunks one tile's keep-out query is allowed to see. A deadwood tile is
-// 25 m and its box is PADDED by the longest half a log can reach (10 m on a 20 m
-// piece), so the query covers up to three of the forest's own 25 m tiles on each
-// axis; trees.js grows round(25*25*0.05) = 31 candidates per tile and thinning
-// only removes, so nine full tiles is 279. Rounded well up, and `crowded` counts
-// the tile that ever hits it -- a truncated read is dead wood placed against a
-// partial forest, which shows as the odd piece through a trunk rather than as an
-// error.
-const ANCHOR_CAP = 512
+// Metres from the camera a tile's plan (`_plan`) is kept once built: past the
+// forest's 1.5 km draw radius, so a tile the trees asked about is never
+// re-planned while their tile still stands. A plan is a few dozen floats, so
+// the ~25,000 this holds are a few megabytes.
+const PLAN_RADIUS = 2000
+
+// One planned piece is P floats: the draws it survived with and the ground it
+// was tested on, so `_growTile` seats it without a second draw or field query.
+const P = 15
+const P_X = 0
+const P_Z = 1
+const P_VARIANT = 2
+const P_YAW = 3
+const P_SCALE = 4
+const P_U = 5
+const P_TINT_V = 6
+const P_TINT_R = 7
+const P_TINT_G = 8
+const P_ROLL = 9
+const P_TILT = 10
+const P_H = 11
+const P_TAN = 12
+const P_SNOW = 13
+const P_FLATTEN = 14
 
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
 // a retry -- see ferns.js on why re-rolling would thicken the litter beside
@@ -145,17 +184,6 @@ const PLACEMENT = {
   // path still needs 30 cm over the water, so nothing half-floats at the
   // waterline.
   submerged: 0.5,
-  // Metres of daylight between a piece and the nearest TRUNK, surface to surface
-  // -- the trunk's radius and the piece's half-thickness are both added before the
-  // test.
-  //
-  // ONE METRE AND NOT A CANOPY RADIUS. The forest runs 0.05 stems/m^2, about 4.5 m
-  // between neighbours, and an oak's crown reaches 3.5 m, so a keep-out drawn
-  // round the CROWNS would tile the whole wood and leave nowhere to put a log.
-  // What was asked is that dead wood not be seated ON a tree; lying under one's
-  // branches is where deadfall belongs, and an occasional clipped branch is
-  // cheaper than an empty forest floor.
-  treeClearance: 1.0,
   // Metres of the piece buried FLAT AND ALWAYS, on top of the slope-dependent
   // burial `_seat` works out: the last few millimetres that stop a hairline of
   // daylight showing under a piece on ground the height field and the drawn
@@ -182,9 +210,8 @@ const PLACEMENT = {
 // an OBSTACLE rather than the norm: `pow(u, 3)` puts the median piece at 4.3 m
 // and the one-in-ten at 15 m.
 //
-// The ceiling is not free: it sets `maxHalf`, which pads the keep-out query's box
-// and therefore ANCHOR_CAP, and it sets SEAT_MAX_SAMPLES. Both are sized off this
-// number by hand and both say so.
+// The ceiling is not free: it sets `maxHalf`, the tile reach every point query
+// pays, and it sets SEAT_MAX_SAMPLES, which is sized off it by hand and says so.
 // Exported so the gate can measure the placed instances AGAINST the band rather
 // than against itself: the bug these replaced was perfectly self-consistent, and
 // a check that reads the same constant the scatter reads would have passed.
@@ -203,18 +230,16 @@ const LOG_SKEW = 3.0
 // would be one brown everywhere.
 const GROUND_CUE = 0.45
 
-// Mixed into the world seed, and not cosmetic -- it is the fix for dead wood
-// growing IN THE TREES. trees.js, ferns.js, grass.js and this file all hash a tile
-// with the same `tileSeed` off the same world SEED, all use 25 m tiles, and all
-// spend their first two draws on `x = (tx + rand()) * TILE` and the same for z.
-// Identical hash plus identical stream plus identical draw order is the SAME
-// SEQUENCE, so candidate k here landed at candidate k's position in the forest --
-// and since this layer draws four candidates per tile against the forest's
-// thirty-one, every single piece of dead wood was seated on a trunk. A salt
-// decorrelates the stream while leaving it a pure function of position, so the
-// world is still the same world every time it is walked. The keep-out below is the
-// belt to this braces: the salt stops the systematic collision, the keep-out
-// catches the incidental one.
+// Mixed into the world seed, and not cosmetic. trees.js, ferns.js, grass.js and
+// this file all hash a tile with the same `tileSeed` off the same world SEED,
+// all use 25 m tiles, and all spend their first two draws on
+// `x = (tx + rand()) * TILE` and the same for z. Identical hash plus identical
+// stream plus identical draw order is the SAME SEQUENCE, so candidate k here
+// landed at candidate k's position in the forest -- and since the forest keeps
+// off the dead wood (`occupiesAt`), that would have refused the first tree of
+// every tile that grew a piece. A salt decorrelates the stream while leaving it
+// a pure function of position, so the world is still the same world every time
+// it is walked.
 const SEED_SALT = 0x5ea51f
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
@@ -258,13 +283,89 @@ const VARIANTS = [
 // The far tier: the standing animal's cross, which for a log is its end and its length.
 const CARD_VIEWS = ['side', 'front']
 
+// The band of a standing piece's height the walker is measured over.
+const TRUNK_BAND = [0.3, 0.8]
+
+/**
+ * How far a standing piece's trunk reaches from its axis: the widest vertex of
+ * the pick between TRUNK_BAND of its height. Not the footprint's half-width,
+ * which on the shipped stump is the root flare -- twice the trunk -- and
+ * stopped the walker a stride short of the wood. Below the band is flare she
+ * steps onto, above it the broken rim's splinters.
+ */
+function trunkRadius(geo, height) {
+  const p = geo.attributes.position.array
+  let r2 = 0
+  for (let i = 0; i < p.length; i += 3) {
+    const y = p[i + 1]
+    if (y < TRUNK_BAND[0] * height || y > TRUNK_BAND[1] * height) continue
+    const d2 = p[i] * p[i] + p[i + 2] * p[i + 2]
+    if (d2 > r2) r2 = d2
+  }
+  if (!(r2 > 0)) throw new Error('Deadwood: no trunk vertices to measure the walker\'s radius off')
+  return Math.sqrt(r2)
+}
+
+// Stations down a lying piece's length its core is measured at, the fewest
+// vertices a station needs to hold a ring, and the share of a ring's vertices
+// the core's radius encloses -- the rest are its stubs.
+const CORE_STATIONS = 20
+const CORE_RING = 10
+const CORE_SHARE = 0.9
+
+function median(a) {
+  const s = Float64Array.from(a).sort()
+  return s[s.length >> 1]
+}
+
+/**
+ * The cylinder a lying piece's cross-sections agree on: at each station along
+ * its Z the median x and y of the vertices there and the radius about that
+ * centre holding CORE_SHARE of them, and the core is the median of each over
+ * the stations that hold a ring. {x, y} is the axis in the pick's own frame,
+ * `r` its radius. NOT the box's centre and half-width: the shipped log's stubs
+ * all stand off one side, so the box's centre sits a twentieth of the length
+ * off the wood, and a log rolled or stopped about it is rolled or stopped
+ * about a line beside itself.
+ */
+function logCore(geo, bounds) {
+  const p = geo.attributes.position.array
+  const stations = []
+  for (let s = 0; s < CORE_STATIONS; s++) stations.push([])
+  for (let i = 0; i < p.length; i += 3) {
+    let s = Math.floor(((p[i + 2] + bounds.long * 0.5) / bounds.long) * CORE_STATIONS)
+    if (s >= CORE_STATIONS) s = CORE_STATIONS - 1
+    stations[s].push(p[i], p[i + 1])
+  }
+  const xs = []
+  const ys = []
+  const rs = []
+  for (const v of stations) {
+    const n = v.length >> 1
+    if (n < CORE_RING) continue
+    const x = median(v.filter((_, k) => k % 2 === 0))
+    const y = median(v.filter((_, k) => k % 2 === 1))
+    const d = new Float64Array(n)
+    for (let k = 0; k < n; k++) d[k] = Math.hypot(v[k * 2] - x, v[k * 2 + 1] - y)
+    d.sort()
+    xs.push(x)
+    ys.push(y)
+    rs.push(d[Math.min(n - 1, Math.floor(n * CORE_SHARE))])
+  }
+  if (xs.length < 3) throw new Error(`Deadwood: only ${xs.length} stations of the log hold a ring to measure its core off`)
+  return { x: median(xs), y: median(ys), r: median(rs) }
+}
+
 /**
  * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
  * VARIANTS' names): tiers pick-first with the cross card last, every tier's
  * geometries in slot order, and per variant the metres `_seat` works in -- a
  * stump's radius is its widest half so its rim is sampled where the rim is,
- * a log's its half-thickness so the slope burial is the belly's. Pure, so the
- * gate builds it in node from the GLBs on disk.
+ * a log's its core's so the slope burial is the belly's -- the radius the
+ * walker meets it at (`solid`: a stump's trunk, see trunkRadius, a log's
+ * core again) and where a log's core axis runs in its pick's frame (`core`,
+ * see logCore; a stump stands on its origin). Pure, so the gate builds it in
+ * node from the GLBs on disk.
  */
 export function deadwoodBankFrom(ladders) {
   const picks = VARIANTS.map((v) => {
@@ -286,12 +387,16 @@ export function deadwoodBankFrom(ladders) {
   })
   const variants = VARIANTS.map((v, i) => {
     const b = picks[i].bounds
+    const log = v.kind === 'log'
+    const core = log ? logCore(picks[i].geometries[0], b) : { x: 0, y: 0, r: 0 }
     return {
       name: v.name,
       kind: v.kind,
       long: b.long,
       height: b.height,
-      radius: (v.kind === 'log' ? b.width : Math.max(b.width, b.long)) / 2,
+      radius: log ? core.r : Math.max(b.width, b.long) / 2,
+      solid: log ? core.r : trunkRadius(picks[i].geometries[0], b.height),
+      core: { x: core.x, y: core.y },
       lodSize: b.lodSize,
     }
   })
@@ -312,27 +417,24 @@ export class Deadwood {
    * @param field    V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
    * @param water    WaterSurfaces. Needs isSubmerged.
    * @param layers   Layers. Needs `paths`, `snow.band` and flattenAt.
-   * @param trees    Trees. Needs anchorsInto, for the keep-out.
    * @param bank     deadwoodBankFrom's answer. Required: the ladders are fetched,
    *                 and a scatter with nothing to draw is a bug, not a state.
+   * @param biome    BiomeField, or anything with coverAt(x, z) -> 0..1. Optional
+   *                 on the forest's terms: without it every place is full cover,
+   *                 which is what the gates measure against.
    */
   constructor(
     scene,
     field,
     water,
     layers,
-    trees,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, bank = null } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, bank = null, biome = null } = {}
   ) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Deadwood: needs the bank from loadDeadwoodBank (or deadwoodBankFrom)')
     }
-    // The forest, read through the anchor contract trees.js already publishes
-    // for mushrooms.js. REQUIRED rather than optional: this layer's whole
-    // placement rule is "not on a trunk", and a null forest would silently turn
-    // that rule off and put the dead wood back in the trees.
-    if (!trees || typeof trees.anchorsInto !== 'function') {
-      throw new Error('Deadwood: needs the Trees scatter (anchorsInto) to keep off trunks')
+    if (biome && typeof biome.coverAt !== 'function') {
+      throw new Error('Deadwood: `biome` was given but has no coverAt -- pass the BiomeField or nothing')
     }
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Deadwood: needs a V2Height with heightAndSlopeAt')
@@ -357,11 +459,11 @@ export class Deadwood {
 
     this.field = field
     this.water = water
-    this.trees = trees
     this.layers = layers
     this.paths = layers.paths
+    this.biome = biome
     // SALTED. See SEED_SALT: unsalted, this layer draws the forest's own
-    // positions and every piece is seated on a trunk.
+    // positions and refuses the first tree of every tile.
     this.seed = (seed | 0) ^ SEED_SALT
     this.density = density
     this.radius = radius
@@ -392,6 +494,9 @@ export class Deadwood {
     this.vLong = Float32Array.from(bank.variants, (v) => v.long)
     this.vHeight = Float32Array.from(bank.variants, (v) => v.height)
     this.vRadius = Float32Array.from(bank.variants, (v) => v.radius)
+    this.vSolid = Float32Array.from(bank.variants, (v) => v.solid)
+    this.vCoreX = Float32Array.from(bank.variants, (v) => v.core.x)
+    this.vCoreY = Float32Array.from(bank.variants, (v) => v.core.y)
     // The metre LOD_AT counts in, per variant and AS SHIPPED -- an instance's own
     // ladder size is this times its uniform scale, which is what `instSize` holds.
     this.vLod = Float32Array.from(bank.variants, (v) => v.lodSize)
@@ -413,16 +518,14 @@ export class Deadwood {
     }
 
     // The furthest a piece's far end can reach from the point it was seeded at,
-    // which is what the keep-out query's box has to be padded by: a log seeded
-    // just inside one edge of a tile can lie right across the next one, and the
-    // trunk it would be lying through is in that tile and not in this one.
+    // which is what `columnAt` and `occupiesAt` pad their tile reach by: a log
+    // seeded just inside one edge of a tile can lie right across the next one,
+    // and a point in that tile is over wood this tile seeded.
     this.maxHalf = 0
     for (let v = 0; v < this.variantCount; v++) {
-      const reach = this.vLong[v] * this.sHi[v] * 0.5
+      const reach = Math.max(this.vLong[v] * 0.5, this.vRadius[v]) * this.sHi[v]
       if (reach > this.maxHalf) this.maxHalf = reach
     }
-    this._anchor = new Float32Array(ANCHOR_CAP * 4)
-    this.anchorCount = 0
 
     // A material per variant, and another per variant's card: each wears its
     // own shipped map (gen-props.js). The card's map is photographed off the
@@ -473,6 +576,8 @@ export class Deadwood {
 
     this.variantAt = new Uint16Array(this.maxInstances)
     this.tierAt = new Int8Array(this.maxInstances).fill(-1)
+    // A stump's origin on its seat; a log's core axis at its midpoint, the
+    // mesh hung off it by its core offset (see `_growTile`).
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
@@ -481,12 +586,24 @@ export class Deadwood {
     // because `update` needs it for every near instance every frame and the
     // scale is not otherwise kept -- it lives in the batch's matrix.
     this.instSize = new Float32Array(this.maxInstances)
+    // The stone each piece is to a walker (`columnAt`): its yaw, its trunk or
+    // core radius at the placed scale, and for a log the half-length of its
+    // axis in plan (0 for a stump, a standing cylinder) and the tangent of its
+    // pitch.
+    this.instYaw = new Float32Array(this.maxInstances)
+    this.instR = new Float32Array(this.maxInstances)
+    this.instHalf = new Float32Array(this.maxInstances)
+    this.instTan = new Float32Array(this.maxInstances)
+    this._spans = new Float64Array(16)
     // The rim dissolve: which pieces are drawn, which are hidden, and the
     // quarter second between. No LOD cross-fade here for it to preempt.
     this.rim = new RimFade(this.batch, this.maxInstances)
 
     // key -> { tx, tz, ids, rank, n, q, u, near, queued }
     this.tiles = new Map()
+    // key -> { tx, tz, n, at }: every piece a tile holds at full density, resident
+    // or not. See `_plan`.
+    this.plans = new Map()
     this.queue = []
     this.camTileX = null
     this.camTileZ = null
@@ -495,8 +612,11 @@ export class Deadwood {
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._qYaw = new THREE.Quaternion()
+    this._qRoll = new THREE.Quaternion()
+    this._fwd = new THREE.Vector3(0, 0, 1)
     this._qPitch = new THREE.Quaternion()
     this._axis = new THREE.Vector3()
+    this._core = new THREE.Vector3()
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
@@ -509,7 +629,8 @@ export class Deadwood {
     this.tris = 0
     this.regrows = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, tree: 0, crowded: 0 }
+    // Counted once per planned tile, `open` being the cover roll's share.
+    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, open: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -546,27 +667,6 @@ export class Deadwood {
   }
 
   /**
-   * Read every trunk that could be under this tile's dead wood into
-   * `this._anchor`, and return how many there are.
-   *
-   * THE BOX IS PADDED by `maxHalf` plus the clearance, because the thing being
-   * tested is not a point: a log seeded at one edge of the tile reaches into the
-   * next one, and the trunk it must not lie through belongs to that tile.
-   *
-   * THE ORDERING CONTRACT, inherited whole from mushrooms.js and repeated here
-   * because it is easy to break from main.js: this reads the forest's PLACED
-   * instances, so `place` must run after trees.place and `update` after
-   * trees.update. Both hold today (see v2/main.js).
-   *
-   * WHAT THE FOREST IS COMPLETE ABOUT: trees.js keeps full density to 80 m and
-   * grades it away past that, while this layer grows tiles out to 100 m, so a
-   * piece seeded in the last 20 m is tested against a forest missing about a fifth
-   * of itself and a trunk thickening back in will occasionally arrive through a
-   * log already lying there. That is the "occasionally intersects" allowed here;
-   * re-testing placed pieces on every forest regrow would mean dead wood that
-   * vanishes as you approach it, which is far worse.
-   */
-  /**
    * The uniform scale for one instance, from its own size roll.
    *
    * `u` is a raw 0-1 draw and is skewed here rather than at the draw site, so the
@@ -582,76 +682,240 @@ export class Deadwood {
     return this.sLo[variant] + (this.sHi[variant] - this.sLo[variant]) * Math.pow(u, skew)
   }
 
-  _readTrees(tx, tz) {
-    const pad = this.maxHalf + PLACEMENT.treeClearance
-    const n = this.trees.anchorsInto(
-      tx * TILE - pad,
-      tz * TILE - pad,
-      (tx + 1) * TILE + pad,
-      (tz + 1) * TILE + pad,
-      this._anchor
-    )
-    if (n >= ANCHOR_CAP) this.rejected.crowded++
-    this.anchorCount = n
-    return n
+  /**
+   * Every piece tile (tx, tz) holds at full density, resident or not: the
+   * candidates that pass the tests of position, with the draws they survived
+   * on and the ground they were tested against (P_* above). A PURE FUNCTION OF
+   * POSITION, cached by tile, which is what lets the forest ask `occupiesAt`
+   * about ground a kilometre past the draw radius: the tree it refuses there is
+   * refused by the log that will lie under it when she arrives. `_growTile`
+   * seats the plan's pieces as their rank comes into range.
+   */
+  _plan(tx, tz) {
+    const key = tx * 0x10000 + tz
+    let plan = this.plans.get(key)
+    if (plan) return plan
+    plan = { tx, tz, n: 0, at: new Float32Array(this.perTile * P) }
+    const at = plan.at
+    const rand = mulberry32(tileSeed(tx, tz, this.seed))
+    const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
+    const rej = this.rejected
+
+    for (let k = 0; k < this.perTile; k++) {
+      // EVERY candidate draws the same randoms whether or not it survives, so a
+      // log's identity cannot depend on which of its neighbours were rejected.
+      // See ferns.js.
+      const x = (tx + rand()) * TILE
+      const z = (tz + rand()) * TILE
+      const variant = (rand() * this.variantCount) | 0
+      const yaw = rand() * Math.PI * 2
+      const size = rand()
+      const tintV = rand()
+      const tintR = rand()
+      const u = rand()
+      // EACH DRAWN LAST IN ITS TURN so that adding it did not move a single
+      // piece of dead wood in the world: every roll above keeps the position it
+      // already had in the stream, and the new one takes the slot after them.
+      // The drowned-site roll, the hue swing, the log's roll about its own axis
+      // (or a stump's lean bearing), the stump's lean, the cover roll.
+      const wet = rand()
+      const tintG = rand()
+      const roll = rand() * Math.PI * 2
+      const tilt = rand() * STUMP_TILT
+      const cover = rand()
+
+      // Cheapest first: elevation and slope come out of one height query, water
+      // is a grid lookup, and the two path queries are the expensive pair.
+      const { h, tan } = this.field.heightAndSlopeAt(x, z)
+      if (h < PLACEMENT.minElev) { rej.elev++; continue }
+      if (tan > maxSlopeTan) { rej.slope++; continue }
+      // DROWNED IS NOT AUTOMATICALLY OUT ANY MORE. A lakebed and a riverbed are
+      // where driftwood ends up, and the shallows reading as swept clean while
+      // the bank beside them is littered was the thing that gave the water away
+      // as a texture rather than a place. So a submerged site is offered to a
+      // LOG at PLACEMENT.submerged and refused to everything else -- see the
+      // knob for why the two kinds are not treated alike.
+      const drowned = this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)
+      if (drowned && !(this.isLog[variant] && wet < PLACEMENT.submerged)) { rej.water++; continue }
+      const snowLine = this.field.snowLineAt(x, z)
+      if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+      // Open ground keeps a quarter (COVER): dead wood belongs where the wood is.
+      if (this.biome) {
+        const c = smoothstep(COVER.ramp[0], COVER.ramp[1], this.biome.coverAt(x, z))
+        if (cover >= COVER.openKeep + (1 - COVER.openKeep) * c) { rej.open++; continue }
+      }
+
+      const road = this.paths.nearest(x, z, 'road')
+      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      // The river clearance is what keeps a log out of a WATERCOURSE, so a piece
+      // that has just been admitted to the water on purpose must not then be
+      // thrown out by it -- a riverbed is the river. The road test stays either
+      // way: a road crossing water is a ford and a log across it is a blockage.
+      const river = drowned ? null : this.paths.nearest(x, z, 'river')
+      if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+
+      const o = plan.n * P
+      at[o + P_X] = x
+      at[o + P_Z] = z
+      at[o + P_VARIANT] = variant
+      at[o + P_YAW] = yaw
+      at[o + P_SCALE] = this._scaleFor(variant, size)
+      at[o + P_U] = u
+      at[o + P_TINT_V] = tintV
+      at[o + P_TINT_R] = tintR
+      at[o + P_TINT_G] = tintG
+      at[o + P_ROLL] = roll
+      at[o + P_TILT] = tilt
+      at[o + P_H] = h
+      at[o + P_TAN] = tan
+      at[o + P_SNOW] = snowLine
+      // `flattenAt` is only asked when a road was found nearby.
+      at[o + P_FLATTEN] = road ? this.layers.flattenAt(x, z) : 0
+      plan.n++
+    }
+    this.plans.set(key, plan)
+    return plan
   }
 
   /**
-   * Is this piece lying on a trunk? Tested against the anchors `_readTrees` left
-   * in `this._anchor`.
-   *
-   * A SNAG is a point and a LOG IS A SEGMENT, and the difference matters at the
-   * sizes this scatter rolls: a 20 m log tested at its midpoint alone would be
-   * free to lie straight through two trunks ten metres away either side.
-   * So the log measures the trunk's distance to the SEGMENT between its ends,
-   * which is the same shape `_seat` already works in.
-   *
-   * @param variant  bank variant id
-   * @param x,z      where the piece is seeded
-   * @param yaw      its yaw, radians
-   * @param scale    its uniform scale
+   * Would a trunk of radius `pad` at (x, z) stand in a piece of dead wood --
+   * any piece the ground there will ever hold, resident or not, since `_plan`
+   * is a pure function of position. The footprint is the piece's plan shape at
+   * its placed scale: a stump its flare, a log its core along its full length,
+   * unpitched, plus the pad. The forest asks this per candidate (trees.js,
+   * DEADWOOD_CLEARANCE) so no tree is ever placed through a log.
    */
-  _onTrunk(variant, x, z, yaw, scale) {
-    const a = this._anchor
-    const n = this.anchorCount
-    const half = this.isLog[variant] ? this.vLong[variant] * scale * 0.5 : 0
-    const dx = Math.sin(yaw) * half
-    const dz = Math.cos(yaw) * half
-    const len2 = half > 0 ? 4 * half * half : 0
-
-    for (let k = 0; k < n; k++) {
-      const px = a[k * 4 + 0] - (x - dx)
-      const pz = a[k * 4 + 2] - (z - dz)
-      let ox
-      let oz
-      if (len2 > 0) {
-        // Clamped projection of the trunk onto the log's own axis: 0 is the -Z
-        // end, 1 the +Z end, and a trunk off either end measures to that end.
-        let t = (px * (2 * dx) + pz * (2 * dz)) / len2
-        t = t < 0 ? 0 : t > 1 ? 1 : t
-        ox = px - t * 2 * dx
-        oz = pz - t * 2 * dz
-      } else {
-        ox = px
-        oz = pz
+  occupiesAt(x, z, pad) {
+    const reach = this.maxHalf + pad
+    const gx0 = Math.floor((x - reach) / TILE)
+    const gx1 = Math.floor((x + reach) / TILE)
+    const gz0 = Math.floor((z - reach) / TILE)
+    const gz1 = Math.floor((z + reach) / TILE)
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const plan = this._plan(gx, gz)
+        const at = plan.at
+        for (let k = 0; k < plan.n; k++) {
+          const o = k * P
+          const v = at[o + P_VARIANT] | 0
+          const scale = at[o + P_SCALE]
+          const r = this.vRadius[v] * scale + pad
+          let dx = x - at[o + P_X]
+          let dz = z - at[o + P_Z]
+          if (this.isLog[v]) {
+            // Clamped projection onto the log's axis in plan, so a point off
+            // either end measures to that end.
+            const half = this.vLong[v] * scale * 0.5
+            const ax = Math.sin(at[o + P_YAW])
+            const az = Math.cos(at[o + P_YAW])
+            let t = dx * ax + dz * az
+            t = t < -half ? -half : t > half ? half : t
+            dx -= ax * t
+            dz -= az * t
+          }
+          if (dx * dx + dz * dz < r * r) return true
+        }
       }
-      const keep = a[k * 4 + 3] + this.vRadius[variant] * scale + PLACEMENT.treeClearance
-      if (ox * ox + oz * oz < keep * keep) return true
     }
     return false
+  }
+
+  /**
+   * The wood on the vertical line through (x, z), the shape Rocks.columnAt
+   * answers: every piece the line passes through written into `out` as
+   * [bottom, top] world metres at stride 2, the count returned, nothing past
+   * `out`'s capacity. Dead wood is STONE to the walker (v2/walk.js): a low
+   * log's top is a step she takes and its side a slope she climbs or cannot, a
+   * tall stump's flank is a wall over her head, a log the ground has swallowed
+   * is under her feet and no obstacle at all -- the one rule stone already
+   * follows. A stump is a standing cylinder of its trunk from its seat to its
+   * height; a log a cylinder of its core round its pitched axis, flat at both
+   * ends. Pieces under `minSize` of ladder size are clutter she walks through.
+   *
+   * Keyed, not swept: the tile a piece was seeded in is the one its id sits
+   * in, and it reaches at most `maxHalf` from its seed, so only the tiles
+   * within that reach of the point can hold an answer. Resident tiles only, so
+   * a point past the draw radius reads as clear.
+   */
+  columnAt(x, z, minSize, out) {
+    const cap = (out.length / 2) | 0
+    let w = 0
+    const gx0 = Math.floor((x - this.maxHalf) / TILE)
+    const gx1 = Math.floor((x + this.maxHalf) / TILE)
+    const gz0 = Math.floor((z - this.maxHalf) / TILE)
+    const gz1 = Math.floor((z + this.maxHalf) / TILE)
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const tile = this.tiles.get(gx * 0x10000 + gz)
+        if (!tile) continue
+        for (let k = 0; k < tile.n; k++) {
+          if (w >= cap) return w
+          const id = tile.ids[k]
+          if (this.instSize[id] < minSize) continue
+          if (this._spanAt(id, x, z, out, w * 2)) w++
+        }
+      }
+    }
+    return w
+  }
+
+  /** The highest top columnAt would write over (x, z), or -Infinity over clear ground. */
+  blockTopAt(x, z, minSize) {
+    const n = this.columnAt(x, z, minSize, this._spans)
+    let top = -Infinity
+    for (let i = 0; i < n; i++) if (this._spans[i * 2 + 1] > top) top = this._spans[i * 2 + 1]
+    return top
+  }
+
+  /**
+   * Piece `id`'s [bottom, top] on the vertical line through (x, z), written
+   * into `out` at `o`; false, nothing written, when the line misses it.
+   */
+  _spanAt(id, x, z, out, o) {
+    const cx = this.instX[id]
+    const cz = this.instZ[id]
+    const r = this.instR[id]
+    const half = this.instHalf[id]
+    if (half === 0) {
+      const dx = x - cx
+      const dz = z - cz
+      if (dx * dx + dz * dz >= r * r) return false
+      out[o] = this.instY[id]
+      out[o + 1] = this.instY[id] + this.vHeight[this.variantAt[id]] * (this.instSize[id] / this.vLod[this.variantAt[id]])
+      return true
+    }
+    // Along the axis in plan and across it: past a flat end or outside the
+    // core's radius is a miss, else the vertical chord of the pitched cylinder
+    // there, about the axis at that station -- a positive pitch drops the +Z
+    // end, see `_seat`.
+    const ax = Math.sin(this.instYaw[id])
+    const az = Math.cos(this.instYaw[id])
+    const t = (x - cx) * ax + (z - cz) * az
+    if (t < -half || t > half) return false
+    const dx = x - cx - ax * t
+    const dz = z - cz - az * t
+    const d2 = dx * dx + dz * dz
+    if (d2 >= r * r) return false
+    const tan = this.instTan[id]
+    const axisY = this.instY[id] - t * tan
+    const c = Math.sqrt((r * r - d2) * (1 + tan * tan))
+    out[o] = axisY - c
+    out[o + 1] = axisY + c
+    return true
   }
 
   /**
    * Work out the height and the pitch a piece should be placed at, into
    * `this._seated`.
    *
-   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. The shipped log
-   * lies with its lowest point at y = 0, exact on flat ground and exactly wrong
-   * on a hill -- a 3 m log on a 20 degree slope seated on its midpoint has one
-   * end a HALF METRE in the air. So a LOG pitches to the line between the ground
+   * THE CENTRE HEIGHT IS NOT ENOUGH for anything metres long. `y` is where the
+   * piece's belly rests -- a log's core axis then sits a core radius over it --
+   * exact on flat ground and exactly wrong on a hill: a 3 m log on a 20 degree
+   * slope seated on its midpoint has one end a HALF METRE in the air. So a LOG pitches to the line between the ground
    * under its two ends and is then dropped to the lowest height keeping every
-   * point at or under the ground; a STUMP does not pitch at all, and only its
-   * base rim is dealt with by the same rule.
+   * point at or under the ground; a STUMP does not pitch to the hill -- its
+   * lean is the roll `tilt`, and it sinks by the rim lift that lean costs on
+   * top of what the rule below asks -- and only its base rim is dealt with.
    *
    * ONE RULE: a piece sits at the lowest point of its own footprint, and anything
    * the ground does inside that footprint pushes UP through the wood rather than
@@ -668,8 +932,9 @@ export class Deadwood {
    * @param h,tan    the centre height and slope already queried by the caller
    * @param yaw      the piece's yaw, radians
    * @param scale    the instance's uniform scale
+   * @param tilt     a stump's lean, radians; ignored for a log
    */
-  _seat(variant, x, z, h, tan, yaw, scale) {
+  _seat(variant, x, z, h, tan, yaw, scale, tilt) {
     const out = this._seated
     const r = this.vRadius[variant] * scale
     const bed = PLACEMENT.sink + PLACEMENT.bed * r
@@ -692,7 +957,7 @@ export class Deadwood {
       if (hz0 < low) low = hz0
       const hz1 = this.field.heightAt(x, z + r)
       if (hz1 < low) low = hz1
-      out.y = low - bed
+      out.y = low - bed - r * Math.sin(tilt)
       return
     }
     // The piece is built lying along its own +Z, so after the yaw its long axis
@@ -753,9 +1018,9 @@ export class Deadwood {
   /**
    * Every resident piece with its origin in the half-open box, written to `out`
    * at stride 4 as [x, top y, z, radius]: a snag's top is its built height at
-   * its scale over its seat and its radius its trunk's; a log's top is its
-   * thickness over its seat (the log lies along its own axis, which this does
-   * not report) and its radius half its length. Resident tiles only, live
+   * its scale over its seat and its radius its trunk's; a log's top is a core
+   * radius over its axis (the log lies along that axis, which this does not
+   * report) and its radius half its length. Resident tiles only, live
    * prefix, capped by `out`'s length -- trees.js's anchorsInto's terms. What a
    * butterfly lands on (v2/render/butterflies.js).
    */
@@ -778,7 +1043,7 @@ export class Deadwood {
         const log = this.isLog[v] === 1
         const o = n * 4
         out[o] = x
-        out[o + 1] = this.instY[id] + (log ? 2 * this.vRadius[v] : this.vHeight[v]) * scale
+        out[o + 1] = this.instY[id] + (log ? this.vRadius[v] : this.vHeight[v]) * scale
         out[o + 2] = z
         out[o + 3] = (log ? this.vLong[v] * 0.5 : this.vRadius[v]) * scale
         n++
@@ -793,6 +1058,9 @@ export class Deadwood {
    */
   place(cx, cz) {
     const t0 = performance.now()
+    // A relief edit re-places from here, and every plan was tested on the old
+    // ground.
+    this.plans.clear()
     this._reseat(cx, cz)
     while (this.queue.length) this._growTile(this.queue.pop())
     this.placeMs = performance.now() - t0
@@ -871,9 +1139,9 @@ export class Deadwood {
         const i = tile.ids[k]
         const ex = this.instX[i] - camX
         // A true sphere, not the squashed cylinder trees.js uses: instY here is
-        // the piece's own seating plane and the thing being looked at is at most
-        // 2 m above it, so eye height cannot push a nearby piece into the wrong
-        // band the way a canopy 8 m up would.
+        // the piece's own seat or a log's core axis and the thing being looked
+        // at is at most 2 m above it, so eye height cannot push a nearby piece
+        // into the wrong band the way a canopy 8 m up would.
         const ey = this.instY[i] - camY
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
@@ -926,6 +1194,11 @@ export class Deadwood {
         this.tiles.delete(key)
       }
     }
+    for (const [key, plan] of this.plans) {
+      const dx = (plan.tx + 0.5) * TILE - cx
+      const dz = (plan.tz + 0.5) * TILE - cz
+      if (dx * dx + dz * dz > PLAN_RADIUS * PLAN_RADIUS) this.plans.delete(key)
+    }
 
     for (const tile of this.tiles.values()) tile.queued = false
     const span = this.tileSpan
@@ -977,12 +1250,8 @@ export class Deadwood {
     }
     const uOld = tile ? tile.u : 0
 
-    const rand = mulberry32(tileSeed(tx, tz, this.seed))
-    // Once per tile, not once per candidate: the query walks the forest's whole
-    // resident tile map, and this layer's four candidates all lie in the same
-    // padded box.
-    this._readTrees(tx, tz)
-    const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
+    const plan = this._plan(tx, tz)
+    const at = plan.at
     const ids = tile ? tile.ids : new Int32Array(this.perTile)
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
     let n = tile ? tile.n : 0
@@ -992,60 +1261,24 @@ export class Deadwood {
     const { altLo, altSpan } = this.field.bands
     const snowBand = this.layers.snow.band
     const gc = this._gc
-    const rej = this.rejected
 
-    for (let k = 0; k < this.perTile; k++) {
-      // EVERY candidate draws the same randoms whether or not it survives, so a
-      // log's identity cannot depend on which of its neighbours were rejected or
-      // on the level the tile was grown at. See ferns.js.
-      const x = (tx + rand()) * TILE
-      const z = (tz + rand()) * TILE
-      const variant = (rand() * this.variantCount) | 0
-      const yaw = rand() * Math.PI * 2
-      const size = rand()
-      const tintV = rand()
-      const tintR = rand()
-      const u = rand()
-      // DRAWN LAST so that adding it did not move a single piece of dead wood in
-      // the world: every roll above keeps the position it already had in the
-      // stream, and this one takes the slot after them. See the note at the top
-      // of the loop on why the draws are unconditional.
-      const wet = rand()
-
+    for (let k = 0; k < plan.n; k++) {
+      const o = k * P
+      const u = at[o + P_U]
       if (u >= uNew || u < uOld) continue
-
-      // Cheapest first: elevation and slope come out of one height query, water
-      // is a grid lookup, and the two path queries are the expensive pair.
-      const { h, tan } = this.field.heightAndSlopeAt(x, z)
-      if (h < PLACEMENT.minElev) { rej.elev++; continue }
-      if (tan > maxSlopeTan) { rej.slope++; continue }
-      // DROWNED IS NOT AUTOMATICALLY OUT ANY MORE. A lakebed and a riverbed are
-      // where driftwood ends up, and the shallows reading as swept clean while
-      // the bank beside them is littered was the thing that gave the water away
-      // as a texture rather than a place. So a submerged site is offered to a
-      // LOG at PLACEMENT.submerged and refused to everything else -- see the
-      // knob for why the two kinds are not treated alike.
-      const drowned = this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)
-      if (drowned && !(this.isLog[variant] && wet < PLACEMENT.submerged)) { rej.water++; continue }
-      const snowLine = this.field.snowLineAt(x, z)
-      if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
-
-      const road = this.paths.nearest(x, z, 'road')
-      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
-      // The river clearance is what keeps a log out of a WATERCOURSE, so a piece
-      // that has just been admitted to the water on purpose must not then be
-      // thrown out by it -- a riverbed is the river. The road test stays either
-      // way: a road crossing water is a ford and a log across it is a blockage.
-      const river = drowned ? null : this.paths.nearest(x, z, 'river')
-      if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
-
-      // Last, because it is the only test that is O(trunks) and the only one
-      // that needs the instance's own scale. NOT a pure function of position --
-      // it reads the forest as it currently stands -- which is why a rejected
-      // candidate is never retried: a piece that appeared the second time a tile
-      // was grown would be a log fading in behind the player.
-      const scale = this._scaleFor(variant, size)
-      if (this._onTrunk(variant, x, z, yaw, scale)) { rej.tree++; continue }
+      const x = at[o + P_X]
+      const z = at[o + P_Z]
+      const variant = at[o + P_VARIANT] | 0
+      const yaw = at[o + P_YAW]
+      const scale = at[o + P_SCALE]
+      const tintV = at[o + P_TINT_V]
+      const tintR = at[o + P_TINT_R]
+      const tintG = at[o + P_TINT_G]
+      const roll = at[o + P_ROLL]
+      const tilt = at[o + P_TILT]
+      const h = at[o + P_H]
+      const tan = at[o + P_TAN]
+      const snowLine = at[o + P_SNOW]
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
@@ -1057,7 +1290,7 @@ export class Deadwood {
         )
       }
 
-      this._seat(variant, x, z, h, tan, yaw, scale)
+      this._seat(variant, x, z, h, tan, yaw, scale, tilt)
 
       const id = this.free[--this.freeCount]
       ids[n] = id
@@ -1066,25 +1299,46 @@ export class Deadwood {
       if (this.isLog[variant]) grewLogs++
       this.variantAt[id] = variant
       this.instX[id] = x
-      this.instY[id] = this._seated.y
       this.instZ[id] = z
       const lodSize = this.vLod[variant] * scale
       this.instSize[id] = lodSize
       if (lodSize > maxSize) maxSize = lodSize
 
-      this._p.set(x, this._seated.y, z)
-      // Yaw first, then pitch about a WORLD axis. Composed in that order --
-      // qPitch * qYaw -- because the pitch axis was derived in world space from
-      // the yaw, so it must be applied outside it. The axis is up x (the yawed
-      // long axis); a positive angle about it tips the +Z end down, which is why
-      // `_seat` hands back a negated atan2.
+      this.instYaw[id] = yaw
+      this.instR[id] = this.vSolid[variant] * scale
       this._qYaw.setFromAxisAngle(this._up, yaw)
-      if (this._seated.pitch !== 0) {
+      if (this.isLog[variant]) {
+        // Roll about the log's own +Z first, inside the yaw, then pitch about
+        // a WORLD axis outside it -- qPitch * qYaw * qRoll -- because the pitch
+        // axis was derived in world space from the yaw. The axis is up x (the
+        // yawed long axis); a positive angle about it tips the +Z end down,
+        // which is why `_seat` hands back a negated atan2.
+        this._qRoll.setFromAxisAngle(this._fwd, roll)
+        this._qYaw.multiply(this._qRoll)
         this._axis.set(Math.cos(yaw), 0, -Math.sin(yaw))
         this._qPitch.setFromAxisAngle(this._axis, this._seated.pitch)
         this._q.multiplyQuaternions(this._qPitch, this._qYaw)
+        // The axis in plan, foreshortened by the pitch.
+        this.instHalf[id] = this.vLong[variant] * scale * 0.5 * Math.cos(this._seated.pitch)
+        this.instTan[id] = Math.tan(this._seated.pitch)
+        // The instance is its core: the origin sits on the core axis a core
+        // radius over the seat, and the mesh hangs off it by its core offset
+        // turned with the whole attitude. So the roll turns the log about its
+        // own core rather than swinging it round the edge of its box, and the
+        // cylinder `columnAt` answers is the wood whichever way it rolled.
+        this.instY[id] = this._seated.y + this.vRadius[variant] * scale
+        this._core.set(this.vCoreX[variant] * scale, this.vCoreY[variant] * scale, 0).applyQuaternion(this._q)
+        this._p.set(x - this._core.x, this.instY[id] - this._core.y, z - this._core.z)
       } else {
-        this._q.copy(this._qYaw)
+        // A stump leans about a world bearing that has nothing to do with its
+        // yaw; `_seat` has already sunk it by the rim lift the lean costs.
+        this._axis.set(Math.cos(roll), 0, Math.sin(roll))
+        this._qPitch.setFromAxisAngle(this._axis, tilt)
+        this._q.multiplyQuaternions(this._qPitch, this._qYaw)
+        this.instHalf[id] = 0
+        this.instTan[id] = 0
+        this.instY[id] = this._seated.y
+        this._p.set(x, this._seated.y, z)
       }
       this._s.set(scale, scale, scale)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
@@ -1092,19 +1346,24 @@ export class Deadwood {
       // The terrain's OWN vertex colour underfoot, renormalised to unit
       // luminance so only the hue survives. See ferns.js: the palette is
       // near-black in magnitude and multiplying by it raw would put the wood
-      // back in shadow. `flattenAt` is only asked when a road was found nearby.
+      // back in shadow.
       const ny = 1 / Math.hypot(tan, 1)
-      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, altLo, altSpan, x, z, gc, 0)
+      shade(h, ny, snowLine, snowBand, at[o + P_FLATTEN], altLo, altSpan, x, z, gc, 0)
       const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
       const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
       const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
-      // A value swing on top, plus a touch of red spread, so two pieces lying
-      // together are not the same pixel.
+      // A value swing on top, then a hue swing pulled two ways: `tintR` runs
+      // the piece from a cool grey (weathered, bleached) to a warm red-brown
+      // (fresh heartwood), `tintG` toward the green a mossed log carries. Each
+      // is a few percent per channel -- enough that two pieces lying together
+      // are not the same pixel, not enough to read as a second species.
       const v = 0.88 + tintV * 0.24
+      const warm = tintR * 2 - 1
+      const moss = tintG * 2 - 1
       this._c.setRGB(
-        (k0 + gc[0] * k1) * v * (0.95 + tintR * 0.1),
-        (k0 + gc[1] * k1) * v,
-        (k0 + gc[2] * k1) * v * 0.97
+        (k0 + gc[0] * k1) * v * (1 + 0.1 * warm - 0.03 * moss),
+        (k0 + gc[1] * k1) * v * (1 + 0.02 * warm + 0.07 * moss),
+        (k0 + gc[2] * k1) * v * (0.97 - 0.1 * warm - 0.03 * moss)
       )
       this.batch.setColorAt(id, this._c)
 

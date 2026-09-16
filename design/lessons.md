@@ -71,6 +71,12 @@ The rock card was too dark three times over, each time with a sound argument for
 
 **Rule:** a stand-in earns its place against the thing it stands in for, rendered, under the same light and the same eye. A check against the model the stand-in was derived from is a tautology.
 
+## An LOD swap is not an observable, and two rounds went into one that was already working
+
+"The stags are at full LOD0 from the moment they pop in" was reported twice, investigated twice, and both times the ladder was correct at every layer -- the tier function, the loader's ordering, the draw path, the shipped triangle counts. What was missing was any way to see which rung a body was on: halving the triangles of a smooth mesh barely moves its silhouette, which is the entire point of an LOD and therefore also the reason the question cannot be settled by looking. The fix was a HUD row per rung and a tint that flat-colours each one, after which the real complaint turned out to be a different one -- the first swap sat at 30 m and was wanted at 10.
+
+**Rule:** a threshold whose effect is *designed* to be invisible needs an instrument before it needs tuning. Ship the readout with the ladder, and treat "I can't tell whether it is working" as a missing instrument rather than a bug report. See §5, *Distance tiering*.
+
 ## Small, cheap, and true
 
 - A GLSL comment inside a JS template literal must not contain a backtick. Five did, and the `SyntaxError` pointed 100 lines away.

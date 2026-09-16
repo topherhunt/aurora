@@ -1970,6 +1970,82 @@ console.log('\n-- rocks under the trunk --')
   bare.dispose()
 }
 
+// --- 13. trees off the dead wood --------------------------------------------
+
+console.log('\n-- the dead wood under the trunk --')
+
+{
+  // The dead wood is placed first and the trees keep off it: every candidate
+  // asks `occupiesAt(x, z, pad)` with its own trunk radius plus
+  // DEADWOOD_CLEARANCE and is refused where the answer is yes. A stub in place
+  // of the real Deadwood, so what is under test is the TREE's half: a log as a
+  // 20 m segment across the scatter and a stump as a disc, both wide enough to
+  // sit in the way of many trunks.
+  const PIECES = [
+    { x: -30, z: 20, ax: Math.SQRT1_2, az: Math.SQRT1_2, half: 10, r: 1 },
+    { x: 45, z: -40, ax: 0, az: 0, half: 0, r: 3 },
+  ]
+  const clearance = (p, x, z) => {
+    let dx = x - p.x
+    let dz = z - p.z
+    let t = dx * p.ax + dz * p.az
+    t = t < -p.half ? -p.half : t > p.half ? p.half : t
+    dx -= p.ax * t
+    dz -= p.az * t
+    return Math.hypot(dx, dz) - p.r
+  }
+  let asked = 0
+  const deadwood = {
+    occupiesAt(x, z, pad) {
+      asked++
+      return PIECES.some((p) => clearance(p, x, z) < pad)
+    },
+  }
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, deadwood })
+  t.place(0, 0)
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  bare.place(0, 0)
+
+  // Every placed trunk, surface to surface off the nearest piece, and the
+  // bare scatter's trunks sorted into the ones that stood in the way and the
+  // ones that did not.
+  const trunks = (trees) => {
+    const out = []
+    for (const tile of trees.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        out.push([trees.instX[id], trees.instZ[id], trees.unitTrunkRadius[trees.variantAt[id]] * trees.instScale[id]])
+      }
+    }
+    return out
+  }
+  const gap = ([x, z, r]) => Math.min(...PIECES.map((p) => clearance(p, x, z))) - r
+  const kept = trunks(t)
+  const inWay = trunks(bare).filter((tr) => gap(tr) < TREE_TUNING.DEADWOOD_CLEARANCE)
+  const clear = trunks(bare).filter((tr) => gap(tr) >= TREE_TUNING.DEADWOOD_CLEARANCE)
+  const through = kept.filter((tr) => gap(tr) < TREE_TUNING.DEADWOOD_CLEARANCE)
+  const key = ([x, z]) => `${x.toFixed(3)},${z.toFixed(3)}`
+  const keptKeys = new Set(kept.map(key))
+  const lost = clear.filter((tr) => !keptKeys.has(key(tr)))
+
+  check(asked > 0 && inWay.length > 5, 'the trees ask the dead wood about every trunk, and some of them stood in its way',
+    `${asked} asked, ${inWay.length} of ${inWay.length + clear.length} bare trunks within a metre of a piece`)
+  check(through.length === 0, 'no trunk stands within a metre of a log or a stump, surface to surface',
+    through.length === 0 ? `${kept.length} trunks all clear` : `${through.length} through the wood`)
+  check(t.placed === bare.placed - inWay.length && lost.length === 0,
+    'and the trees off the wood are exactly the bare scatter\'s',
+    `${t.placed} with the dead wood, ${bare.placed} without, ${inWay.length} refused, ${lost.length} moved`)
+
+  let threw = false
+  try {
+    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, deadwood: {} })
+  } catch { threw = true }
+  check(threw, 'and something passed as `deadwood` that cannot answer throws at construction')
+
+  t.dispose()
+  bare.dispose()
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all tree checks passed' : `${failures} FAILED`}\n`)

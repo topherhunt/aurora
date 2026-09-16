@@ -70,6 +70,7 @@ import { impostorCardExtents } from '../src/props/impostor.js'
 import { Deadwood, LOD_AT, SNAG_HEIGHT, LOG_LENGTH, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
 import { GEN_PROP_LODS } from '../src/v2/render/gen-props.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { WalkSurface, WALK } from '../src/v2/walk.js'
 import { LAYER, LAYER_COUNT, MOSS_LAYERS, SNOW_WOOD_LAYERS, SNOW_CARD_LAYERS } from '../src/textures.js'
 import { MOSS, SNOW_ROCK } from '../src/material.js'
 import * as THREE from 'three'
@@ -891,34 +892,14 @@ const shippedBank = () => deadwoodBankFrom({
 // A log is checked at its two ends and a stump around its base rim, because a
 // stump does not pitch -- it stands vertical and sinks, which is what a tree
 // that grew toward the light and then broke would do.
-// What the scatter needs from the rest of the world, stubbed. Shared by the two
-// blocks below because they differ only in the FOREST they are placed against.
+// What the scatter needs from the rest of the world, stubbed. Shared by the
+// blocks below.
 const MOCK_WATER = { isSubmerged: () => false }
 const MOCK_LAYERS = {
   paths: { nearest: () => null },
   snow: { base: 900, band: 40 },
   flattenAt: () => 0,
 }
-/** A forest of `trunks` [x, z, radius], answering the anchorsInto contract. */
-function mockForest(trunks) {
-  return {
-    anchorsInto(x0, z0, x1, z1, out) {
-      const cap = (out.length / 4) | 0
-      let n = 0
-      for (const [x, z, r] of trunks) {
-        if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
-        if (n >= cap) return cap
-        out[n * 4] = x
-        out[n * 4 + 1] = 0
-        out[n * 4 + 2] = z
-        out[n * 4 + 3] = r
-        n++
-      }
-      return n
-    },
-  }
-}
-const EMPTY_FOREST = mockForest([])
 
 {
   console.log('\nnothing lies with a gap under it')
@@ -962,10 +943,7 @@ const EMPTY_FOREST = mockForest([])
       snowLineAt: () => 900,
       bands: { altLo: 0, altSpan: 100 },
     }
-    // No trees at all, so the keep-out cannot quietly thin the sample this block
-    // is trying to take. The forest is the next block's subject.
-    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
-      EMPTY_FOREST, { seed: 7, bank: shippedBank() })
+    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 7, bank: shippedBank() })
     dw.place(0, 0)
     if (dw.placed === 0) floating.push(`${g.name}: nothing placed at all`)
 
@@ -974,29 +952,31 @@ const EMPTY_FOREST = mockForest([])
         const id = tile.ids[k]
         const vi = dw.variantAt[id]
         dw.batch.getMatrixAt(id, m)
-        // A log at its two ENDS along its own long axis AND at its MIDPOINT; a
-        // stump at four points around its BUTT RIM. All of them local y = 0,
-        // which is where buildDeadwood cuts the piece flat.
+        // A log down its CORE AXIS, its belly a core radius under each point
+        // whichever way it rolled; a stump at eight points around its BUTT
+        // RIM at local y = 0, where buildDeadwood cuts the piece flat.
         //
         // The midpoint is what tests the crest term in `_seat`: the ends alone
         // are satisfied by a chord seat, and a chord seat on convex ground is
         // exactly the arch this gate exists to catch.
         const probes = []
+        let belly = 0
         if (dw.isLog[vi]) {
-          // Nine points down the belly, so five of them are NOT the ones `_seat`
+          // Nine points down the axis, so five of them are NOT the ones `_seat`
           // sampled. A seat checked only where it looked is not a check.
-          for (let s = -1; s <= 1.0001; s += 0.25) probes.push([0, s * dw.vLong[vi] * 0.5])
+          for (let s = -1; s <= 1.0001; s += 0.25) probes.push([dw.vCoreX[vi], dw.vCoreY[vi], s * dw.vLong[vi] * 0.5])
+          belly = dw.vRadius[vi] * (dw.instSize[id] / dw.vLod[vi])
         } else {
-          // Eight points round the rim: the four `_seat` samples and the four
-          // diagonals it did not, for the same reason.
+          // The four `_seat` samples and the four diagonals it did not, for
+          // the same reason.
           const r = dw.vRadius[vi]
           const d = r * Math.SQRT1_2
-          probes.push([r, 0], [-r, 0], [0, r], [0, -r], [d, d], [d, -d], [-d, d], [-d, -d])
+          probes.push([r, 0, 0], [-r, 0, 0], [0, 0, r], [0, 0, -r], [d, 0, d], [d, 0, -d], [-d, 0, d], [-d, 0, -d])
         }
-        for (const [ox, oz] of probes) {
-          v.set(ox, 0, oz).applyMatrix4(m)
+        for (const [ox, oy, oz] of probes) {
+          v.set(ox, oy, oz).applyMatrix4(m)
           sampled++
-          const gap = v.y - groundAt(v.x)
+          const gap = v.y - belly - groundAt(v.x)
           if (gap > GAP_TOL) {
             floating.push(
               `${g.name} ${dw.isLog[vi] ? 'log' : 'stump'} ` +
@@ -1015,31 +995,34 @@ const EMPTY_FOREST = mockForest([])
       : `${floating.length} floating: ${floating.slice(0, 4).join('; ')}`)
 }
 
-// --- and none of it is lying on a tree --------------------------------------
+// --- and the forest keeps off it --------------------------------------------
 //
-// THE BUG THIS BLOCK EXISTS FOR was not subtle: trees.js, ferns.js, grass.js and
-// render/deadwood.js all hash a tile with the same `tileSeed`, all run it off the
-// same world seed, all use 25 m tiles, and all spend their first two draws on the
-// candidate's x and z. The streams were therefore IDENTICAL, and since a deadwood
-// tile draws four candidates against the forest's thirty-one, candidate 0 of
-// every tile was seated on the trunk of tree 0 of that tile -- every piece of
-// dead wood in the world standing in a tree.
+// The dead wood is placed BEFORE the trees, and it is the trees that keep off
+// it: `occupiesAt(x, z, pad)` says whether a trunk of radius `pad` at (x, z)
+// would stand in a piece, and trees.js asks it for every candidate
+// (check-trees.mjs holds the forest's side). Four things to hold, and they fail
+// in different directions:
 //
-// So there are two things to hold, and they fail in different directions:
+//   THE FOOTPRINT. What `occupiesAt` says agrees, point for point, with the
+//   pieces actually placed, measured off the instance arrays -- a log as the
+//   segment it is, a stump as its flare.
 //
-//   THE SALT, which is what stops the collision being systematic. Tested against
-//   a forest planted at exactly the positions the UNSALTED stream produces --
-//   candidate 0 of each tile, which is the one collision that does not depend on
-//   how many randoms either module draws per candidate. Unsalted, the keep-out
-//   would reject that candidate in every tile and the yield would fall by about a
-//   quarter; salted, a lone 0.35 m trunk in a 625 m^2 tile is nearly never in the
-//   way.
+//   NON-RESIDENT GROUND. The forest is placed to 1.5 km and the dead wood drawn
+//   to 100 m, so nearly every tree is placed before the log under it exists.
+//   A piece is a pure function of position (`_plan`), so the answer 600 m out
+//   is the piece that will lie there when she arrives.
 //
-//   THE KEEP-OUT, which catches the incidental collision the salt cannot. Tested
-//   against a dense grid of trunks, by measuring every placed piece against every
-//   trunk near it -- a log as the segment it actually is, not as its midpoint.
+//   THE SALT. trees.js and render/deadwood.js hash a tile with the same
+//   `tileSeed` off the same world seed, both on 25 m tiles, and both spend
+//   their first two draws on x and z. Unsalted, the first tree candidate of
+//   every tile stood in the first piece of dead wood of that tile. Tested
+//   against the positions the unsalted stream produces, next to a control at
+//   positions no stream produces.
+//
+//   THE COVER. Full density under the canopy and a quarter of it in the open,
+//   off the biome field's coverAt, and no biome at all is full cover.
 {
-  console.log('\nand none of it is lying on a tree')
+  console.log('\nand the forest keeps off it')
 
   const field = {
     heightAt: () => 60,
@@ -1047,11 +1030,95 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
+  const SEED = 7
+  const TILE = 25
+  const PAD = 0.5
+  const make = (opts) => new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
+    { seed: SEED, bank: shippedBank(), ...opts })
 
-  // trees.js's own hash and PRNG, copied rather than imported because neither is
-  // exported. If the forest ever changes either one this block stops testing what
-  // it says it tests -- so it also asserts, below, that the collision it is
-  // simulating is one the salt actually has to defeat.
+  // Every placed piece's plan footprint, read back off the batch's own arrays:
+  // the core axis in plan (a stump has half 0) and the core radius at the
+  // instance's scale. Flat ground, so the pitch foreshortens nothing and this
+  // is exactly what `occupiesAt` claims.
+  const footprints = (dw) => {
+    const out = []
+    for (const tile of dw.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const v = dw.variantAt[id]
+        out.push({
+          x: dw.instX[id], z: dw.instZ[id],
+          ax: Math.sin(dw.instYaw[id]), az: Math.cos(dw.instYaw[id]),
+          half: dw.instHalf[id], r: dw.vRadius[v] * (dw.instSize[id] / dw.vLod[v]),
+        })
+      }
+    }
+    return out
+  }
+  const inside = (pieces, x, z, pad) => pieces.some((p) => {
+    let dx = x - p.x
+    let dz = z - p.z
+    let t = dx * p.ax + dz * p.az
+    t = t < -p.half ? -p.half : t > p.half ? p.half : t
+    dx -= p.ax * t
+    dz -= p.az * t
+    const r = p.r + pad
+    return dx * dx + dz * dz < r * r
+  })
+
+  // THE FOOTPRINT. Full density out to 200 m so every tile the probe can reach
+  // holds its whole plan, then a metre grid over the middle 200 m.
+  const full = make({ radius: 200, fullRadius: 200 })
+  full.place(0, 0)
+  const pieces = footprints(full)
+  let probed = 0
+  let occupied = 0
+  let disagree = 0
+  for (let z = -100; z <= 100; z++) {
+    for (let x = -100; x <= 100; x++) {
+      probed++
+      const said = full.occupiesAt(x, z, PAD)
+      if (said) occupied++
+      if (said !== inside(pieces, x, z, PAD)) disagree++
+    }
+  }
+  check(pieces.length > 50 && occupied > 0 && occupied < probed * 0.5,
+    'placed enough pieces to cover some ground and not all of it',
+    `${pieces.length} pieces, ${occupied}/${probed} grid points occupied`)
+  check(disagree === 0, 'occupiesAt agrees with the placed pieces at every grid point',
+    disagree === 0 ? 'a log as its segment, a stump as its flare, padded by the trunk' : `${disagree} disagree`)
+
+  // NON-RESIDENT GROUND. The first scatter is resident around the origin only;
+  // the second is placed at (600, 0) and is what the first's answers there are
+  // held against.
+  const near = make({})
+  near.place(0, 0)
+  const far = make({ radius: 200, fullRadius: 200 })
+  far.place(600, 0)
+  const farPieces = footprints(far)
+  let farProbed = 0
+  let farOccupied = 0
+  let farDisagree = 0
+  for (let z = -100; z <= 100; z += 2) {
+    for (let x = 500; x <= 700; x += 2) {
+      farProbed++
+      const said = near.occupiesAt(x, z, PAD)
+      if (said) farOccupied++
+      if (said !== inside(farPieces, x, z, PAD)) farDisagree++
+    }
+  }
+  let resident = 0
+  for (const tile of near.tiles.values()) if (Math.abs(tile.tx * TILE - 600) < 150) resident++
+  check(resident === 0 && farOccupied > 0 && farDisagree === 0,
+    'and answers for ground it has not grown yet',
+    `${farOccupied}/${farProbed} points 600 m out occupied with ${resident} tiles resident there, ` +
+    `${farDisagree} disagree with a scatter placed there`)
+  far.dispose()
+
+  // THE SALT. trees.js's own hash and PRNG, copied rather than imported
+  // because neither is exported: if the forest ever changes either one this
+  // stops simulating the collision it names, so the control below is what
+  // keeps the number honest.
   const mulberry32 = (a) => () => {
     a |= 0
     a = (a + 0x6d2b79f5) | 0
@@ -1066,102 +1133,55 @@ const EMPTY_FOREST = mockForest([])
     h = Math.imul(h ^ (h >>> 12), 0x297a2d39)
     return (h ^ (h >>> 15)) >>> 0
   }
-
-  const SEED = 7
-  const TILE = 25
-  const REACH = 6 // tiles each way, comfortably past the 100 m draw radius
-
+  const REACH = 20
   const naive = []
   for (let tz = -REACH; tz <= REACH; tz++) {
     for (let tx = -REACH; tx <= REACH; tx++) {
       const rand = mulberry32(tileSeed(tx, tz, SEED))
-      naive.push([(tx + rand()) * TILE, (tz + rand()) * TILE, 0.35])
+      naive.push([(tx + rand()) * TILE, (tz + rand()) * TILE])
     }
   }
+  const TRUNK = 0.35 + 1
+  const hitRate = (at) => at.filter(([x, z]) => near.occupiesAt(x, z, TRUNK)).length / at.length
+  const onNaive = hitRate(naive)
+  const control = hitRate(naive.map(([x, z]) => [x + TILE * 0.5, z + TILE * 0.37]))
+  // Unsalted, every tile's first tree candidate IS its first piece of dead
+  // wood and the rate is near 1; salted it is the incidental rate, a few
+  // percent of the ground under a segment or a flare.
+  check(onNaive < 0.2, 'the scatter does not draw the forest\'s own positions',
+    `${(onNaive * 100).toFixed(1)}% of every tile's first tree candidate refused (unsalted would be near 100%)`)
+  check(Math.abs(onNaive - control) < 0.1,
+    'and refuses no more of a forest on its own grid than of one beside it',
+    `${(onNaive * 100).toFixed(1)}% against the control's ${(control * 100).toFixed(1)}%`)
+  near.dispose()
 
-  const grid = []
-  for (let gz = -100; gz <= 100; gz += 8) for (let gx = -100; gx <= 100; gx += 8) grid.push([gx, gz, 0.4])
+  // THE COVER. Full cover places exactly what no biome places; a world that is
+  // forest on one side of x = 0 and open on the other keeps a quarter in the
+  // open. Full density to 300 m so the count on each side is the plan's.
+  const canopy = make({ radius: 300, fullRadius: 300, biome: { coverAt: () => 1 } })
+  canopy.place(0, 0)
+  const bare = make({ radius: 300, fullRadius: 300 })
+  bare.place(0, 0)
+  check(canopy.placed === bare.placed && canopy.rejected.open === 0,
+    'full cover places exactly what no biome places',
+    `${canopy.placed} under a closed canopy, ${bare.placed} with no biome`)
+  const split = make({ radius: 300, fullRadius: 300, biome: { coverAt: (x) => (x < 0 ? 1 : 0) } })
+  split.place(0, 0)
+  let wood = 0
+  let open = 0
+  for (const p of footprints(split)) if (p.x < 0) wood++; else open++
+  const ratio = open / wood
+  check(wood > 200 && split.rejected.open > 0 && Math.abs(ratio - 0.25) < 0.06,
+    'and the open ground keeps a quarter of the forest\'s density',
+    `${open} pieces in the open against ${wood} under the canopy (${ratio.toFixed(2)}, ${split.rejected.open} refused)`)
+  let threw = false
+  try { make({ biome: {} }) } catch { threw = true }
+  check(threw, 'a biome without coverAt is refused loudly')
 
-  const run = (forest) => {
-    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, forest,
-      { seed: SEED, bank: shippedBank() })
-    dw.place(0, 0)
-    return dw
-  }
-
-  const bare = run(EMPTY_FOREST)
-  const onNaive = run(mockForest(naive))
-  const kept = onNaive.placed / bare.placed
-
-  // The CONTROL, and it is what makes the naive number mean anything: the same
-  // trunk count at positions with no relationship to any stream. If the naive
-  // forest ever costs materially more than this one, the two streams have found
-  // their way back into step. Run FIRST because the absolute floor below is only
-  // legible next to it.
-  const control = run(mockForest(naive.map(([x, z, r]) => [x + TILE * 0.5, z + TILE * 0.37, r])))
-  const incidental = control.placed / bare.placed
-
-  check(bare.placed > 50, 'placed enough pieces to measure a yield', `${bare.placed} with no forest`)
-  // THE FLOOR IS BELOW THE INCIDENTAL COST, NOT AT IT: a 20 m log is a long
-  // segment and crosses a sparse trunk by chance, so even a perfectly
-  // decorrelated stream loses some yield to collisions that have nothing to do
-  // with the salt. What the floor has to separate is SALTED from UNSALTED, and
-  // unsalted lands near 75% -- so it sits between the two rather than tracking
-  // either.
-  check(kept > 0.85, 'the scatter does not draw the forest\'s own positions',
-    `${onNaive.placed}/${bare.placed} survive a trunk on every tile's first candidate ` +
-    `(${(kept * 100).toFixed(1)}%; incidental collisions alone cost ` +
-    `${((1 - incidental) * 100).toFixed(1)}%, unsalted would be about 75%)`)
-  check(kept > incidental - 0.05,
-    'and pays no more for a forest on its own grid than for one beside it',
-    `${onNaive.placed} against the control's ${control.placed}`)
-  control.dispose()
-
-  const dense = run(mockForest(grid))
-  const m = new THREE.Matrix4()
-  const a = new THREE.Vector3()
-  const b = new THREE.Vector3()
-  const hits = []
-  let measured = 0
-  for (const tile of dense.tiles.values()) {
-    for (let k = 0; k < tile.n; k++) {
-      const id = tile.ids[k]
-      const vi = dense.variantAt[id]
-      dense.batch.getMatrixAt(id, m)
-      const half = dense.isLog[vi] ? dense.vLong[vi] * 0.5 : 0
-      a.set(0, 0, -half).applyMatrix4(m)
-      b.set(0, 0, half).applyMatrix4(m)
-      const ex = b.x - a.x
-      const ez = b.z - a.z
-      const len2 = ex * ex + ez * ez
-      for (const [gx, gz, gr] of grid) {
-        const px = gx - a.x
-        const pz = gz - a.z
-        let t = len2 > 0 ? (px * ex + pz * ez) / len2 : 0
-        t = t < 0 ? 0 : t > 1 ? 1 : t
-        const ox = px - t * ex
-        const oz = pz - t * ez
-        const d = Math.hypot(ox, oz)
-        // The scale the instance was placed at, recovered off its own matrix --
-        // the keep-out is stated surface to surface and the piece's half
-        // thickness is part of it.
-        const scale = Math.hypot(m.elements[0], m.elements[1], m.elements[2])
-        const keep = gr + dense.vRadius[vi] * scale
-        measured++
-        if (d < keep) hits.push(`${dense.bank.variants[vi].name} ${(keep - d).toFixed(2)} m into a trunk`)
-      }
-    }
-  }
-
-  check(dense.placed > 0 && measured > 0, 'placed pieces in a dense wood to measure',
-    `${dense.placed} pieces against ${grid.length} trunks (${dense.rejected.tree} rejected for it)`)
-  check(hits.length === 0, 'nothing is seated on a trunk',
-    hits.length === 0 ? 'every piece clears every trunk, surface to surface'
-      : `${hits.length} through a trunk: ${hits.slice(0, 3).join('; ')}`)
-
+  full.dispose()
+  canopy.dispose()
   bare.dispose()
-  onNaive.dispose()
-  dense.dispose()
+  split.dispose()
 }
 
 // --- and it comes out the size it was asked for, in metres ------------------
@@ -1185,8 +1205,7 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
-    EMPTY_FOREST, { seed: 11, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
   dw.place(0, 0)
 
   const m = new THREE.Matrix4()
@@ -1238,6 +1257,244 @@ const EMPTY_FOREST = mockForest([])
   dw.dispose()
 }
 
+// --- and no two pieces lie the same way up -----------------------------------
+//
+// The shipped log has one knotted side, and a scatter that only yawed it laid
+// that side up on every log in the world. So a log rolls any way about its own
+// length, and a stump leans a few degrees about a random bearing. Both are read
+// off the placed matrices: the roll as where the log's local +X ends up, the
+// lean as how far the stump's local +Y is from vertical.
+{
+  console.log('\nno two pieces lie the same way up')
+
+  const field = {
+    heightAt: () => 40,
+    heightAndSlopeAt: () => ({ h: 40, tan: 0 }),
+    snowLineAt: () => 900,
+    bands: { altLo: 0, altSpan: 100 },
+  }
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  dw.place(0, 0)
+
+  const m = new THREE.Matrix4()
+  const ax = new THREE.Vector3()
+  const rolls = []
+  const leans = []
+  const swung = []
+  for (const tile of dw.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const vi = dw.variantAt[id]
+      dw.batch.getMatrixAt(id, m)
+      if (dw.isLog[vi]) {
+        // On flat ground there is no pitch, so local +X's rise is the roll alone.
+        ax.set(1, 0, 0).transformDirection(m)
+        rolls.push(Math.atan2(ax.y, Math.hypot(ax.x, ax.z)))
+        // The roll is about the core, not the box: the mesh's core axis lands
+        // on the instance origin, a core radius over the flat ground, whatever
+        // the roll. Rolled about the box's edge instead, a log a quarter turn
+        // over lay a radius to one side and half buried, and one turned right
+        // over lay under the ground.
+        const s = dw.instSize[id] / dw.vLod[vi]
+        ax.set(dw.vCoreX[vi], dw.vCoreY[vi], 0).applyMatrix4(m)
+        const off = Math.hypot(ax.x - dw.instX[id], ax.y - dw.instY[id], ax.z - dw.instZ[id])
+        const belly = dw.instY[id] - dw.vRadius[vi] * s - 40
+        if (off > 1e-3 || belly > 0.03 || belly < -dw.vRadius[vi] * s) {
+          swung.push(`log at ${dw.instX[id].toFixed(0)},${dw.instZ[id].toFixed(0)}: core ${off.toFixed(3)} m off its origin, belly ${belly.toFixed(3)} m over the ground`)
+        }
+      } else {
+        ax.set(0, 1, 0).transformDirection(m)
+        leans.push(Math.acos(Math.min(1, ax.y)) * 180 / Math.PI)
+      }
+    }
+  }
+  const spread = (a) => Math.max(...a) - Math.min(...a)
+  check(rolls.length > 5 && leans.length > 5, 'placed both kinds to measure',
+    `${rolls.length} logs, ${leans.length} stumps`)
+  check(spread(rolls) > Math.PI / 2, 'the logs roll every way about their own length',
+    `local +X rises between ${(Math.min(...rolls) * 180 / Math.PI).toFixed(0)} and ${(Math.max(...rolls) * 180 / Math.PI).toFixed(0)} degrees`)
+  check(swung.length === 0, 'and each rolls about its own core, which stays on its seat',
+    swung.length === 0 ? `${rolls.length} cores on their origins, bellies on the ground` : `${swung.length} swung: ${swung.slice(0, 3).join('; ')}`)
+  check(Math.max(...leans) <= 6.01 && Math.max(...leans) > 3 && Math.min(...leans) < 2,
+    'the stumps lean a little, by different amounts, and never past six degrees',
+    `leans span ${Math.min(...leans).toFixed(1)}-${Math.max(...leans).toFixed(1)} degrees`)
+  dw.dispose()
+}
+
+// --- and it is stone to her ------------------------------------------------------
+//
+// `columnAt` and `blockTopAt` are the rock's questions (v2/walk.js): the spans
+// of wood on a vertical line, from which the walker decides step, wall or
+// nothing BY HEIGHT, the way she does with a boulder -- a low log is walked
+// over, a tall stump's flank is a wall, a log the ground has swallowed is
+// under her feet. Not a footprint she is held off: that stopped her dead at a
+// log lying entirely under the ground. Checked span by span on the placed
+// scatter, then through the walk surface itself.
+//
+// AND THE STONE IS THE WOOD, NOT THE BOX. The shipped stump's footprint is its
+// root flare, twice the trunk across, and a walker stopped at the flare's
+// radius stood a stride short of the bark; the shipped log's stubs all stand
+// off one side, so a cylinder down its box's centre at its box's half-width
+// let her nearly into the wood on one side and stopped her a metre off it on
+// the other. So the stump's stone is measured off the trunk band of the mesh
+// and the log's off the core its cross-sections agree on.
+{
+  console.log('\nand it is stone to her')
+
+  const GROUND = 40
+  const field = {
+    heightAt: () => GROUND,
+    heightAndSlopeAt: () => ({ h: GROUND, tan: 0 }),
+    snowLineAt: () => 900,
+    bands: { altLo: 0, altSpan: 100 },
+  }
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  dw.place(0, 0)
+
+  const spans = new Float64Array(16)
+  const wrong = []
+  let probed = 0
+  // Two pieces may overlap -- the scatter keeps no clearance between its own
+  // -- so a span is judged this piece's by its top and bottom alone.
+  const mine = (x, z, bottom, top, minSize = 0) => {
+    const n = dw.columnAt(x, z, minSize, spans)
+    for (let i = 0; i < n; i++) {
+      if (Math.abs(spans[i * 2] - bottom) < 1e-3 && Math.abs(spans[i * 2 + 1] - top) < 1e-3) return true
+    }
+    return false
+  }
+  // Whether any span answered is a chord of this piece -- what a miss must
+  // not return: a stump's is its whole span, a log's is centred on its axis
+  // and no taller than its diameter. A neighbour's span there (the scatter
+  // keeps no clearance between its own) is neither.
+  const chord = (x, z, log, y, bottom, top) => {
+    const n = dw.columnAt(x, z, 0, spans)
+    for (let i = 0; i < n; i++) {
+      const b = spans[i * 2]
+      const t = spans[i * 2 + 1]
+      if (log ? Math.abs(b + t - 2 * y) < 1e-3 && t <= top + 1e-3 : Math.abs(b - bottom) < 1e-3 && Math.abs(t - top) < 1e-3) return true
+    }
+    return false
+  }
+  for (const tile of dw.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const vi = dw.variantAt[id]
+      const x = dw.instX[id]
+      const y = dw.instY[id]
+      const z = dw.instZ[id]
+      const r = dw.instR[id]
+      const half = dw.instHalf[id]
+      const s = dw.instSize[id] / dw.vLod[vi]
+      const log = dw.isLog[vi] === 1
+      const name = `${dw.bank.variants[vi].name} at ${x.toFixed(0)},${z.toFixed(0)}`
+      // On flat ground a log has no pitch: its origin is its axis, a core
+      // radius over the seat, and the span there is the core's diameter; a
+      // stump's is its seat to its height.
+      const bottom = log ? y - r : y
+      const top = log ? y + r : y + dw.vHeight[vi] * s
+      probed++
+      if (!mine(x, z, bottom, top)) { wrong.push(`${name}: no span of its own on its origin`); continue }
+      if (Math.abs(dw.blockTopAt(x, z, 0) - top) > 1e-3 && dw.blockTopAt(x, z, 0) < top) wrong.push(`${name}: blockTopAt under its top`)
+      if (mine(x, z, bottom, top, dw.instSize[id] + 1)) wrong.push(`${name}: answers under minSize`)
+      // Half a radius out from the axis, across it: a log's chord shortens,
+      // a stump's does not; a hair past the radius neither is there.
+      const ax = Math.sin(dw.instYaw[id])
+      const az = Math.cos(dw.instYaw[id])
+      const c = Math.sqrt(r * r - r * r * 0.25)
+      if (!mine(x - az * r * 0.5, z + ax * r * 0.5, log ? y - c : bottom, log ? y + c : top)) wrong.push(`${name}: wrong chord beside its axis`)
+      if (chord(x - az * (r + 0.01), z + ax * (r + 0.01), log, y, bottom, top)) wrong.push(`${name}: still stone past its radius`)
+      if (log) {
+        // Flat ends: the axis span just inside the end, nothing just past it.
+        if (!mine(x + ax * (half - 0.01), z + az * (half - 0.01), bottom, top)) wrong.push(`${name}: no span just inside its +Z end`)
+        if (chord(x + ax * (half + 0.01), z + az * (half + 0.01), log, y, bottom, top)) wrong.push(`${name}: still stone past its +Z end`)
+      }
+    }
+  }
+  check(probed > 10, 'found pieces to walk into', `${probed} pieces`)
+  const stump = dw.bank.variants.findIndex((v) => v.kind === 'snag')
+  const log = dw.bank.variants.findIndex((v) => v.kind === 'log')
+  check(dw.vSolid[stump] < dw.vRadius[stump] * 0.6 && dw.vSolid[stump] > dw.vHeight[stump] * 0.1,
+    'a stump is stone at its trunk, not at its root flare',
+    `trunk ${dw.vSolid[stump].toFixed(3)} against a flare of ${dw.vRadius[stump].toFixed(3)} per metre of height`)
+  check(dw.vSolid[log] === dw.vRadius[log], 'and a log at its own thickness',
+    `${dw.vSolid[log].toFixed(3)} per metre of length`)
+  // The cylinder is the mesh's core: most of the pick's vertices sit inside
+  // its radius of the axis and nearly all within half again, and it is thinner
+  // than the box the stubs widen.
+  {
+    const p = dw.bank.tiers[0].geometries[log].attributes.position.array
+    const n = p.length / 3
+    let inside = 0
+    let near = 0
+    for (let i = 0; i < p.length; i += 3) {
+      const d = Math.hypot(p[i] - dw.vCoreX[log], p[i + 1] - dw.vCoreY[log])
+      if (d <= dw.vSolid[log]) inside++
+      if (d <= dw.vSolid[log] * 1.5) near++
+    }
+    check(inside / n >= 0.6 && near / n >= 0.9 && dw.vSolid[log] < dw.bank.bounds[log].width * 0.5 - 1e-3,
+      'and the cylinder runs down the core of the log\'s mesh',
+      `axis ${dw.vCoreX[log].toFixed(3)},${dw.vCoreY[log].toFixed(3)} in the pick, ${(inside / n * 100).toFixed(0)}% of its vertices inside the radius, ${(near / n * 100).toFixed(0)}% within half again, box half-width ${(dw.bank.bounds[log].width * 0.5).toFixed(3)}`)
+  }
+  check(wrong.length === 0, 'every stump is a standing cylinder and every log a lying one on the vertical line',
+    wrong.length === 0 ? 'the span on the axis, the chord beside it, nothing past the radius or the ends, nothing under minSize'
+      : `${wrong.length} wrong: ${wrong.slice(0, 4).join('; ')}`)
+  check(dw.columnAt(1e6, 1e6, 0, spans) === 0 && dw.blockTopAt(1e6, 1e6, 0) === -Infinity,
+    'and ground past the scatter reads as clear', 'no tile, no span')
+
+  // Through the walk surface, on the rock's terms: a log whose top is within
+  // her reach is the ground under her feet, a stump taller than her a wall
+  // she does not fit against, and with the ground raised over every log --
+  // the ground swallowing it, five metres covering the thickest -- none of
+  // them is anything to her.
+  const NO_ROCKS = { columnAt: () => 0, blockTopAt: () => -Infinity }
+  const NO_TREES = { trunkAt: () => null }
+  const walk = new WalkSurface({ heightAt: () => GROUND }, NO_ROCKS, NO_TREES)
+  walk.addStone(dw)
+  const RAISED = GROUND + 5
+  const raised = new WalkSurface({ heightAt: () => RAISED }, NO_ROCKS, NO_TREES)
+  raised.addStone(dw)
+  let steps = 0
+  let walls = 0
+  let swallowed = 0
+  let logs = 0
+  let crossed = 0
+  const misread = []
+  for (const tile of dw.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const vi = dw.variantAt[id]
+      const x = dw.instX[id]
+      const z = dw.instZ[id]
+      const s = dw.instSize[id] / dw.vLod[vi]
+      if (dw.isLog[vi]) {
+        logs++
+        const top = dw.instY[id] + dw.instR[id]
+        // The scatter does not keep off itself, so a log may lie across
+        // another; the step is asked only of a log that is the one piece of
+        // wood on its own centre line.
+        if (dw.columnAt(x, z, 0, spans) > 1) crossed++
+        else if (top - GROUND <= WALK.reach) {
+          steps++
+          if (Math.abs(walk.heightAt(x, z, GROUND) - top) > 1e-6 || !walk.fits(x, z, GROUND, null)) misread.push(`log at ${x.toFixed(0)},${z.toFixed(0)}: a step she is not lifted onto`)
+        }
+        if (top > RAISED) misread.push(`log at ${x.toFixed(0)},${z.toFixed(0)}: tops the raised ground`)
+        else if (raised.heightAt(x, z, RAISED) !== RAISED || raised.heightAt(x, z) !== RAISED || !raised.fits(x, z, RAISED, null)) misread.push(`log at ${x.toFixed(0)},${z.toFixed(0)}: swallowed by the ground yet still in her way`)
+        else swallowed++
+      } else {
+        const top = dw.instY[id] + dw.vHeight[vi] * s
+        if (top < GROUND + WALK.height) continue
+        walls++
+        if (walk.heightAt(x, z, GROUND) !== GROUND || walk.fits(x, z, GROUND, null)) misread.push(`stump at ${x.toFixed(0)},${z.toFixed(0)}: a wall she fits against`)
+      }
+    }
+  }
+  check(steps > 3 && walls > 3, 'placed low logs and tall stumps to walk at', `${steps} logs within reach, ${walls} stumps over her crown`)
+  check(misread.length === 0 && swallowed === logs, 'a low log is a step, a tall stump a wall, and a log under the ground nothing at all',
+    misread.length === 0 ? `${steps} steps, ${walls} walls, ${swallowed} of ${logs} logs swallowed by ground 5 m up, ${crossed} logs under another piece` : `${misread.length} misread: ${misread.slice(0, 4).join('; ')}`)
+  dw.dispose()
+}
+
 // --- and it steps down its ladder at the same APPARENT size, whatever size it is
 //
 // THE BUG THIS BLOCK EXISTS FOR is a player standing at the end of a long log
@@ -1260,8 +1517,7 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
-    EMPTY_FOREST, { seed: 23, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank() })
   dw.place(0, 0)
 
   // The bank's own ladder size is what the scatter scales, so the two have to
@@ -1359,10 +1615,10 @@ const EMPTY_FOREST = mockForest([])
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  // A 60 m disc of lake on the origin, and a 12 m river ribbon lying straight
+  // An 85 m disc of lake on the origin, and a 12 m river ribbon lying straight
   // across it down the x axis. Every other placement test passes on this ground,
   // which is the point: the only thing that can reject a piece here is water.
-  const LAKE = 60
+  const LAKE = 85
   const RIBBON = 6
   const inLake = (x, z) => Math.hypot(x, z) < LAKE
   const inRibbon = (z) => Math.abs(z) < RIBBON
@@ -1373,7 +1629,7 @@ const EMPTY_FOREST = mockForest([])
   }
 
   const run = (water, layers) => {
-    const d = new Deadwood(new THREE.Scene(), field, water, layers, EMPTY_FOREST, { seed: 21, bank: shippedBank() })
+    const d = new Deadwood(new THREE.Scene(), field, water, layers, { seed: 21, bank: shippedBank() })
     d.place(0, 0)
     return d
   }

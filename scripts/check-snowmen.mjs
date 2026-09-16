@@ -12,7 +12,7 @@
 // but cowering, or that cowers on with her in its face; one that notices her
 // from too far, that does not turn to her, that follows her while she comes
 // closer or fails to when she backs off, that walks through her, that will not
-// run, that skates, or that forgets her a metre short of 80; one that snaps to
+// run, that skates, or that holds on to her past its own cull; one that snaps to
 // a heading; one lost with its tile while it was still following her, or laid
 // twice because it was; a frame that costs more than a scatter is allowed to.
 // The shipped GLB is checked for shape too -- the halving ladder over the one
@@ -295,11 +295,21 @@ function lone(seed = 3) {
     if (c.speed !== 0) whole = false
   }
   check([...acts].sort().join() === 'cower,idle,recoil' && whole, 'cowering is cower and recoil in whole cycles with a stand between, and it does not move', [...acts].join(' '))
+  // She comes at it from +x. It notices her only inside NOTICE_M on the side it faces: not from behind, not from beside, not a metre too far.
+  const facing = (rad) => { c.heading = c.aim = rad }
+  facing(Math.PI)
+  at(NOTICE_M - 1, 60, dt)
+  check(c.state === 'cower' && c.heading === Math.PI, `${NOTICE_M - 1} m behind it she is nothing to it`, c.clip)
+  facing(Math.PI / 2 + 0.05)
+  at(NOTICE_M - 1, 60, dt)
+  check(c.state === 'cower', 'nor just past its shoulder')
+  facing(heading)
   at(NOTICE_M + 1, 60, dt)
-  check(c.state === 'cower' && c.heading === heading, `at ${NOTICE_M + 1} m she is nothing to it`, c.clip)
-  // Noticed: it turns to her, and keeps turning to her wherever she goes.
+  check(c.state === 'cower' && c.heading === heading, `nor ${NOTICE_M + 1} m off, whichever way it faces`, c.clip)
+  facing(Math.PI / 2 - 0.05)
   at(NOTICE_M - 1)
-  check(c.state === 'watch', `at ${NOTICE_M - 1} m it notices her`)
+  check(c.state === 'watch', `just inside its shoulder at ${NOTICE_M - 1} m it notices her`)
+  // Noticed: it turns to her, and keeps turning to her wherever she goes.
   at(NOTICE_M - 1, 240, dt)
   check(Math.abs(swing(c.heading, Math.atan2(0, 1))) < 1e-6, 'and four seconds later it is facing her', `${c.heading.toFixed(4)} rad`)
   for (let f = 0; f < 240; f++) k.update(c.x, GROUND + HEAD, c.z + NOTICE_M - 1, dt)
@@ -315,7 +325,7 @@ function lone(seed = 3) {
   check(gestures.has('beckon') && gestures.has('idle') && [...gestures].every((g) => ['beckon', 'talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug', 'idle'].includes(g)) && gestures.size >= 5 && timed, 'watching, it beckons and talks with its hands, each gesture once through, and stares between', [...gestures].join(' '))
   // Approaching does nothing; the first step back does.
   const near = 6
-  for (const dd of [20, 12, near]) at(dd, 5, dt)
+  for (const dd of [NOTICE_M - 1, 8, near]) at(dd, 5, dt)
   check(c.state === 'watch' && Math.abs(c.near - Math.hypot(near, HEAD)) < 1e-9, `she walks up to ${near} m and it only watches`, `near ${c.near.toFixed(2)}`)
   at(near + AWAY_M - 0.5, 5, dt)
   check(c.state === 'watch', `she backs off ${AWAY_M - 0.5} m and it only watches`)
@@ -359,6 +369,7 @@ function lone(seed = 3) {
 // --- it turns, and never snaps ------------------------------------------------------
 {
   const { k, c, at } = lone(5)
+  c.heading = c.aim = 0
   at(NOTICE_M - 1)
   c.heading = Math.PI
   let worst = 0
@@ -388,7 +399,7 @@ function lone(seed = 3) {
 
 // --- it walks round what it cannot cross, and off the snow after her ------------------
 {
-  // The mountain around her, and a snowman whose tile stays loaded while she moves a few metres: moved to where the test wants it.
+  // The mountain around her, and a snowman whose tile stays loaded while she moves a few metres: moved to where the test wants it, facing her.
   const stage = (hx, hz, x, z) => {
     for (let seed = 1; ; seed++) {
       const k = make(seed)
@@ -396,23 +407,25 @@ function lone(seed = 3) {
       const c = alive(k).find((a) => Math.hypot((a.tile.tx + 0.5) * TILE - hx, (a.tile.tz + 0.5) * TILE - hz) < RADIUS - 10)
       if (!c) { k.dispose(); continue }
       c.x = x; c.z = z; c.y = fieldAt(x, z)
+      c.heading = c.aim = Math.atan2(-(hz - z), hx - x)
       return { k, c }
     }
   }
-  // The tarn between it and her.
-  const [hx, hz] = [TARN.x + TARN.r + 2, TARN.z]
-  const { k, c } = stage(hx, hz, TARN.x - TARN.r - 2, TARN.z)
+  // It faces the tarn from the near rim; she is noticed on that rim, then crosses to the far one.
+  const [hx, hz] = [TARN.x - TARN.r - 1, TARN.z]
+  const { k, c } = stage(hx, hz, hx - NOTICE_M + 1, TARN.z)
   k.update(hx, fieldAt(hx, hz) + HEAD, hz, dt)
-  check(c.state === 'watch', 'it sees her across the tarn')
+  check(c.state === 'watch', 'it sees her on the near rim of the tarn')
+  const far = TARN.x + TARN.r + 2
   let wet = 0
   let ms = 0
   for (let f = 0; f < 3600; f++) {
     const t0 = performance.now()
-    k.update(hx + AWAY_M + 1, fieldAt(hx, hz) + HEAD, hz, dt)
+    k.update(far, fieldAt(far, hz) + HEAD, hz, dt)
     ms += performance.now() - t0
     if (water.isSubmerged(c.x, c.z, c.y)) wet++
   }
-  check(c.state === 'follow' && c.speed === 0 && Math.hypot(c.x - hx - AWAY_M - 1, c.z - hz) < STANDOFF_M + RESUME_M + 0.5, 'she steps back and a minute later it stands at her side of it', `${Math.hypot(c.x - hx - AWAY_M - 1, c.z - hz).toFixed(2)} m from her`)
+  check(c.state === 'follow' && c.speed === 0 && Math.hypot(c.x - far, c.z - hz) < STANDOFF_M + RESUME_M + 0.5, 'she crosses to the far rim and a minute later it stands at her side of it', `${Math.hypot(c.x - far, c.z - hz).toFixed(2)} m from her`)
   check(wet === 0, 'having gone round, not through', `${wet} wet frames`)
   check(alive(k).every((a) => Math.abs(a.y - fieldAt(a.x, a.z)) < 1e-9 && !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= MAX_SLOPE + 1e-9 && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'everybody is on the ground, and nobody in the water, up the crag or through a trunk')
   check(ms / 3600 < 1.5, `a frame of ${alive(k).length} snowmen costs under 1.5 ms`, `${(ms / 3600).toFixed(3)} ms`)
@@ -439,6 +452,7 @@ function lone(seed = 3) {
   const key = c.key
   const [homeX, homeZ] = [c.x, c.z]
   const tile = c.tile
+  c.heading = c.aim = 0
   let hx = c.x + NOTICE_M - 1
   k.update(hx, GROUND + HEAD, c.z, dt)
   hx += AWAY_M + 1
@@ -448,7 +462,7 @@ function lone(seed = 3) {
     k.update(hx, GROUND + HEAD, c.z, dt)
   }
   check(!k.tiles.has([...k.tiles.keys()].find((kk) => k.tiles.get(kk) === tile)) && c.tile === null && c.loose && k.loose.includes(c) && c.key === key, 'its tile has unloaded behind it and it is loose', `${k.stats.loose} loose, ${k.stats.states.follow} following`)
-  check(c.state === 'follow' && Math.hypot(c.x - hx, c.z - homeZ) < NOTICE_M && c.puppet && k.batch.children.includes(c.puppet.group), 'still following her, still drawn', `${Math.hypot(c.x - hx, c.z - homeZ).toFixed(1)} m behind her, ${(hx - homeX).toFixed(0)} m from home`)
+  check(c.state === 'follow' && Math.hypot(c.x - hx, c.z - homeZ) < RUN_M + 1 && c.puppet && k.batch.children.includes(c.puppet.group), 'still following her, still drawn', `${Math.hypot(c.x - hx, c.z - homeZ).toFixed(1)} m behind her, ${(hx - homeX).toFixed(0)} m from home`)
   // She goes back for the tile: the snowman it would lay is the one already out, so the tile takes that one back.
   k.update(homeX, GROUND + HEAD, homeZ, dt)
   const home = [...k.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
@@ -483,10 +497,12 @@ function lone(seed = 3) {
     c.size = m
     c.k = m / k.asset.height
     c.lod = LOD_TIERS
-    return Array.from({ length: LOD_TIERS }, (_, i) => lodReach(m, i)).flatMap((d) => [d - 1, d + 1]).map((d) => { for (let f = 0; f < 3; f++) k.update(c.x, c.y + d, c.z, 0); return c.lod })
+    // Just inside each rung and just outside it, as a FRACTION of the rung -- clear of the hysteresis at either size, which a fixed metre is not.
+    const step = LOD_HYSTERESIS * 2
+    return Array.from({ length: LOD_TIERS }, (_, i) => lodReach(m, i)).flatMap((d) => [d * (1 - step), d * (1 + step)]).map((d) => { for (let f = 0; f < 3; f++) k.update(c.x, c.y + d, c.z, 0); return c.lod })
   }
   const [two, four] = [walkOut(SIZE_M[0]), walkOut(SIZE_M[1])]
-  check(two.join() === four.join() && two.join() === '0,0,1,1,2,2,3,3', `a ${SIZE_M[0]} m and a ${SIZE_M[1]} m snowman walk the same ladder, one at twice the other's distances`, `${lodReach(SIZE_M[0], 0).toFixed(0)} m against ${lodReach(SIZE_M[1], 0).toFixed(0)} m for the top rung`)
+  check(two.join() === four.join() && two.join() === '0,1,1,2,2,3,3,4', `a ${SIZE_M[0]} m and a ${SIZE_M[1]} m snowman walk the same ladder, one at twice the other's distances`, `${lodReach(SIZE_M[0], 0).toFixed(0)} m against ${lodReach(SIZE_M[1], 0).toFixed(0)} m for the top rung`)
   k.dispose()
 }
 
@@ -529,8 +545,8 @@ function lone(seed = 3) {
 // --- a tile that unloads under a drawn snowman does not take it with it ------------------
 {
   const { k, c } = lone(3)
-  // The smallest of them, the only one the ladder culls before its tile horizon does.
-  c.size = SIZE_M[0]
+  // The biggest of them, whose last rung reaches well past its tile's horizon: that is the only one that can still be drawn once its tile has gone.
+  c.size = SIZE_M[1]
   c.k = c.size / k.asset.height
   const close = lodReach(c.size, 0) / 2
   const cull = cullRange(c.size)
@@ -547,11 +563,14 @@ function lone(seed = 3) {
   for (let f = 0; f < 3; f++) k.update(c.x, c.y + close, c.z, dt)
   const back = [...k.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
   check(back && c.tile === back && !c.loose && !k.loose.includes(c) && alive(k).filter((a) => a.key === c.key).length === 1 && c.puppet === p, 'she comes back and the tile takes it back, the one puppet on it throughout', `${alive(k).filter((a) => a.key === c.key).length} with its key`)
-  // Out past its cull but not past the tile horizon: it dissolves out and holds its slot.
-  const far = (cull * (1 + LOD_HYSTERESIS) + RADIUS + TILE) / 2
+  // Out past its cull but not past the tile horizon -- which only the SMALLEST can be, a big one's last rung reaching further than any tile of it is loaded. So it shrinks to be the other case.
+  c.size = SIZE_M[0]
+  c.k = c.size / k.asset.height
+  const small = cullRange(c.size)
+  const far = (small * (1 + LOD_HYSTERESIS) + RADIUS + TILE) / 2
   let frames = 0
   while (c.puppet && frames < 120) { k.update(c.x + far, GROUND + HEAD, c.z, dt); frames++ }
-  check(!c.puppet && c.loose && k.loose.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 60, `at ${far.toFixed(0)} m, past its ${cull.toFixed(0)} m cull, it has dissolved out over LOD_FADE_S and is loose, undrawn, its slot kept`, `${(frames * dt).toFixed(2)} s`)
+  check(!c.puppet && c.loose && k.loose.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 60, `at ${far.toFixed(0)} m, past its ${small.toFixed(0)} m cull, it has dissolved out over LOD_FADE_S and is loose, undrawn, its slot kept`, `${(frames * dt).toFixed(2)} s`)
   k.update(c.x + RADIUS + TILE + 1, GROUND + HEAD, c.z, dt)
   check(!c.loose && c.tile === null && k.free.includes(c), `and at ${RADIUS + TILE + 1} m the slot is freed`)
   k.dispose()

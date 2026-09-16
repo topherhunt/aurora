@@ -32,6 +32,7 @@ import { Butterflies } from './render/butterflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
+import { setTierTint } from './render/puppet.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
@@ -655,6 +656,10 @@ const QUEST_TOGGLE_ROWS = [
   // and setCutout for what each number does and does not prove.
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
   { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
+  // Flat-colours every puppet by the rung it is drawing -- green, yellow,
+  // orange, red -- so the ladder in critters.js can be confirmed by walking up
+  // to a stag and watching where it changes. See Puppet.setTierTint.
+  { key: 'critterTint', text: 'critter LOD tint', on: 'by rung', off: 'normal' },
   { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
   { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
@@ -740,6 +745,7 @@ function applyQuestToggle(key) {
       applyAnimalVisibility()
       break
     case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': applyAnimalVisibility(); break
+    case 'critterTint': setTierTint(enabled); break
     case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -1536,6 +1542,16 @@ function updateQuestStats() {
         ? rs.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']])
         : [['hidden'.padEnd(11), '#5c6b7d']]),
     ],
+    // The same row for the wildlife, rung by rung: this is what says a stag
+    // twenty metres off is on rung 1 and not rung 0 (critters.js LOD_DEG).
+    // `wildlife` is null and then unloaded before its GLBs land, and this view
+    // runs from the first frame.
+    [
+      ['critter lod ', '#7f95b4'],
+      ...(animalOn('wildlife') && wildlife && wildlife.loaded
+        ? wildlife.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']])
+        : [['hidden'.padEnd(11), '#5c6b7d']]),
+    ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
       ['L ', '#7f95b4'], [`${la[0].toFixed(2)},${la[1].toFixed(2)}`.padEnd(12), '#cfe3ff'],
@@ -1649,6 +1665,7 @@ const questToggles = {
   water: true, reflections: true, aurora: true, sound: true,
   // Debug furniture, off until asked for. See buildProbeCube.
   probeCube: false,
+  critterTint: false,
   instCull: false,
   wind: true, treeTiers: true, treeCutout: true,
   terrainWire: false,
@@ -1938,6 +1955,29 @@ async function bootWorld() {
   // into a headless traverse. See render/rocks.js.
   window.v2rocks = rocks
 
+  // Fallen logs and rotten stumps. BEFORE THE TREES, on purpose: a piece is
+  // metres long and claims its ground first, and the forest keeps off it
+  // (Trees `deadwood`, Deadwood.occupiesAt) rather than the reverse. Both
+  // are pure functions of position, so nothing here depends on the order the
+  // frame loop steps them in. Full density in forest cover and a quarter of it
+  // in the open, off the same biome field the trees read.
+  await bootStep('deadwood')
+  const biome = new BiomeField({ seed: SEED })
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadDeadwoodBank(), biome })
+  // One key per material: each generated prop wears its own map and is its own
+  // program (render/gen-props.js), and a shared key would hand one the other's.
+  deadwood.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-deadwood-${i}` }))
+  deadwood.place(spawn.x, spawn.z)
+  // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
+  deadwood.bakeCards(renderer)
+  const ds = deadwood.stats
+  const dr = Object.entries(ds.rejected).map(([why, n]) => `${n} ${why}`).join(', ')
+  console.log(
+    `[v2] deadwood ${ds.logs} logs + ${ds.snags} stumps over ${ds.tiles} tiles in ` +
+    `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB, cards ${ds.cardBakeMs.toFixed(0)} ms) (dropped: ${dr})`
+  )
+  window.v2deadwood = deadwood
+
   // Trees. The atlas was built up at the terrain, above, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
@@ -1954,7 +1994,9 @@ async function bootWorld() {
     rocks,
     // Where the wood is dense, sparse or open meadow. Off the world seed, like
     // the scatter itself, so the clearings are the same on every boot.
-    biome: new BiomeField({ seed: SEED }),
+    biome,
+    // Placed above; a trunk that would stand through a piece of it is refused.
+    deadwood,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -1977,6 +2019,8 @@ async function bootWorld() {
   // She stands on the rocks and walks around the trunks, so she is placed only
   // once both are on the ground. See v2/walk.js.
   walk = new WalkSurface(height, rocks, trees)
+  // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
+  walk.addStone(deadwood)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
   // Only now: probeVantage reads the walk surface and the water polygons.
   worldProbe.setVantage(probeVantage)
@@ -2115,32 +2159,6 @@ async function bootWorld() {
   // The console hook lives here rather than beside window.v2ferns, because the
   // layer does not exist until this line has run.
   window.v2mushrooms = mushrooms
-
-  // Fallen logs and rotten stumps on the forest floor. A PLAIN GROUND SCATTER,
-  // unlike the mushrooms directly above -- it asks the height field where the
-  // wood may lie and nothing else -- so it carries none of that block's ordering
-  // dependency and could sit anywhere below `layers`. It is here because this is
-  // where the forest floor is assembled, and it reads in the order the player
-  // sees it: trees, ferns, grass, rocks, litter, mushrooms, deadfall.
-  // `trees` is passed for the keep-out, not for anchoring: dead wood is scattered
-  // on its own grid and then refuses any candidate lying on a trunk. That reads
-  // the forest's PLACED instances, so this must stay after trees.place above and
-  // deadwood.update must stay after trees.update in the frame loop.
-  await bootStep('deadwood')
-  deadwood = new Deadwood(scene, height, waterSurfaces, layers, trees, { seed: SEED, bank: await loadDeadwoodBank() })
-  // One key per material: each generated prop wears its own map and is its own
-  // program (render/gen-props.js), and a shared key would hand one the other's.
-  deadwood.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-deadwood-${i}` }))
-  deadwood.place(spawn.x, spawn.z)
-  // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
-  deadwood.bakeCards(renderer)
-  const ds = deadwood.stats
-  const dr = Object.entries(ds.rejected).map(([why, n]) => `${n} ${why}`).join(', ')
-  console.log(
-    `[v2] deadwood ${ds.logs} logs + ${ds.snags} stumps over ${ds.tiles} tiles in ` +
-    `${ds.placeMs.toFixed(0)} ms (pool ${ds.used}/${ds.pool}, bank ${ds.bankKB} KB, cards ${ds.cardBakeMs.toFixed(0)} ms) (dropped: ${dr})`
-  )
-  window.v2deadwood = deadwood
 
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
@@ -2357,6 +2375,7 @@ async function bootWorld() {
   trees.batch.visible = questToggles.trees
   trees.setCardsOnly(!questToggles.treeTiers)
   trees.setCutout(questToggles.treeCutout)
+  setTierTint(questToggles.critterTint)
   applyRockVisibility()
   grass.batch.visible = questToggles.grass
   ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
@@ -2515,6 +2534,9 @@ function onRelief(next) {
  * available.
  */
 function replacePropsOnMovedGround(cx, cz) {
+  // First: the trees keep off it, and the plans it answers them from were
+  // tested on the old ground.
+  if (deadwood) deadwood.place(cx, cz)
   if (trees) {
     trees.syncSnowLine(layers)
     trees.place(cx, cz)
@@ -2540,7 +2562,6 @@ function replacePropsOnMovedGround(cx, cz) {
     mushrooms.syncSnowLine(layers)
     mushrooms.place(cx, cz)
   }
-  if (deadwood) deadwood.place(cx, cz)
   if (bones) bones.place(cx, cz)
   placeAnimals(cx, cz)
 

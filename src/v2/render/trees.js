@@ -412,6 +412,12 @@ const BIOME = {
   scale: [0.65, 1.2],
 }
 
+// Metres of daylight a trunk keeps from a piece of dead wood, surface to
+// surface: the trunk's radius and the piece's are both added before the test
+// (Deadwood.occupiesAt). One metre and not a crown's reach, because deadfall
+// lies under branches; what it must not do is stand a trunk through a log.
+const DEADWOOD_CLEARANCE = 1.0
+
 // The band limit the EXISTENCE tests run at, in metres, and it is a constant
 // rather than the terrain's cell for a reason -- see V2Height.scatterAt.
 // Whether a tree exists must be a pure function of position: if it followed the
@@ -504,6 +510,9 @@ export class Trees {
    * @param opts.biome    BiomeField, or anything with coverAt(x, z) -> 0..1. Optional
    *                      on the same terms: without it every place is full forest,
    *                      which is what the scatter gates measure against.
+   * @param opts.deadwood Deadwood, or anything with occupiesAt(x, z, pad). Optional
+   *                      on the same terms; with it a trunk that would stand in a
+   *                      piece of dead wood is refused.
    */
   constructor(
     scene,
@@ -519,6 +528,7 @@ export class Trees {
       ground = null,
       rocks = null,
       biome = null,
+      deadwood = null,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -549,12 +559,16 @@ export class Trees {
     if (biome && typeof biome.coverAt !== 'function') {
       throw new Error('Trees: `biome` was given but has no coverAt -- pass the BiomeField or nothing')
     }
+    if (deadwood && typeof deadwood.occupiesAt !== 'function') {
+      throw new Error('Trees: `deadwood` was given but has no occupiesAt -- pass the Deadwood or nothing')
+    }
 
     this.field = field
     this.water = water
     this.ground = ground
     this.rocks = rocks
     this.biome = biome
+    this.deadwood = deadwood
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
@@ -1722,6 +1736,11 @@ export class Trees {
         scale *= BIOME.scale[0] + (BIOME.scale[1] - BIOME.scale[0]) * cover
       }
       if (keepRoll >= keep) continue
+      // OFF THE DEAD WOOD, which is placed first (v2/main.js): a log is metres
+      // long and a trunk through it reads as the scatter's mistake, so the
+      // trunk gives way. Pure functions of position on both sides, so it is
+      // answered here for ground the dead wood has not grown yet.
+      if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) continue
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
       // tile was leaked -- either way it must be loud, because the quiet version
@@ -2135,6 +2154,7 @@ export const TREE_TUNING = {
   PLACEMENT_CELL,
   TREELINE,
   BIOME,
+  DEADWOOD_CLEARANCE,
   FADE_MAX_INFLIGHT,
   SCALE,
   HEM_FRAY,

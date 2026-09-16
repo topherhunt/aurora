@@ -8,8 +8,10 @@
 // rock's side is a step in the height, the slope limiter reads it as a wall
 // too steep to climb, and its top is a surface with a slope like any other. A
 // rock she can scramble onto is one whose top is within WALK.reach, exactly
-// the rule the ground already follows. Tree trunks cannot be climbed and are a
-// separate question -- see obstacleAt.
+// the rule the ground already follows. Dead wood is stone too, once it is
+// placed (addStone): a low log is a step, a tall stump a wall, a buried log
+// nothing. Tree trunks cannot be climbed and are a separate question -- see
+// obstacleAt.
 //
 // SHE IS A CAPSULE, NOT A POINT ON A MAP. Asked from a foot height, heightAt
 // reads the rock as spans of stone on the vertical line (Rocks.columnAt) and
@@ -59,8 +61,22 @@ export class WalkSurface {
   constructor(field, rocks, trees) {
     if (!field || !rocks || !trees) throw new Error('WalkSurface: needs the field, the rocks and the trees')
     this.field = field
-    this.rocks = rocks
     this.trees = trees
+    // Every layer that is stone to her, the rocks first. Each answers
+    // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
+    // Rocks' terms and is read on its own into the one span buffer.
+    this.stone = [rocks]
+  }
+
+  /**
+   * Another layer of stone -- the dead wood -- added after construction
+   * because it is placed on the ground she already has.
+   */
+  addStone(layer) {
+    if (!layer || typeof layer.columnAt !== 'function' || typeof layer.blockTopAt !== 'function') {
+      throw new Error('WalkSurface.addStone: needs a layer with columnAt and blockTopAt')
+    }
+    this.stone.push(layer)
   }
 
   /**
@@ -72,16 +88,21 @@ export class WalkSurface {
    */
   heightAt(x, z, y) {
     const h = this.field.heightAt(x, z)
-    if (y === undefined) {
-      const top = this.rocks.blockTopAt(x, z, ROCK_WALK_MIN)
-      return top > h ? top : h
-    }
-    const n = this.rocks.columnAt(x, z, ROCK_WALK_MIN, spans)
-    const ceiling = y + WALK.reach
     let best = h
-    for (let i = 0; i < n; i++) {
-      const top = spans[i * 2 + 1]
-      if (top > best && top <= ceiling) best = top
+    if (y === undefined) {
+      for (let s = 0; s < this.stone.length; s++) {
+        const top = this.stone[s].blockTopAt(x, z, ROCK_WALK_MIN)
+        if (top > best) best = top
+      }
+      return best
+    }
+    const ceiling = y + WALK.reach
+    for (let s = 0; s < this.stone.length; s++) {
+      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      for (let i = 0; i < n; i++) {
+        const top = spans[i * 2 + 1]
+        if (top > best && top <= ceiling) best = top
+      }
     }
     return best
   }
@@ -127,10 +148,12 @@ export class WalkSurface {
 
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
   _crossed(x, z, lo, hi) {
-    const n = this.rocks.columnAt(x, z, ROCK_WALK_MIN, spans)
-    if (n >= SPAN_CAP) return true
-    for (let i = 0; i < n; i++) {
-      if (spans[i * 2 + 1] > lo && spans[i * 2] < hi) return true
+    for (let s = 0; s < this.stone.length; s++) {
+      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      if (n >= SPAN_CAP) return true
+      for (let i = 0; i < n; i++) {
+        if (spans[i * 2 + 1] > lo && spans[i * 2] < hi) return true
+      }
     }
     return false
   }
@@ -152,8 +175,8 @@ export class WalkSurface {
   }
 
   /**
-   * The solid thing standing on (x, z), or null: a tree trunk's padded footprint
-   * as {x, z, r}. Player slides around it; the teleport arc stops at it.
+   * The tree trunk standing on (x, z) as its padded footprint {x, z, r}, or
+   * null. Player slides around it; the teleport arc stops at it.
    */
   obstacleAt(x, z, out) {
     return this.trees.trunkAt(x, z, TRUNK_PAD, out)

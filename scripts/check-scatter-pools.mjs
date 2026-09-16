@@ -46,10 +46,11 @@ import { Grass } from '../src/v2/render/grass.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { Ferns } from '../src/v2/render/ferns.js'
 import { Litter } from '../src/v2/render/litter.js'
-import { Deadwood } from '../src/v2/render/deadwood.js'
+import { Deadwood, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
 import { Mushrooms } from '../src/v2/render/mushrooms.js'
 import { buildTextureArray, LAYER_COUNT } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
+import { readShippedLadder } from './lib/gen-prop-node.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -70,6 +71,10 @@ const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, 
 const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
 const textures = buildTextureArray()
 const noAnchors = { anchorsInto: () => 0 }
+const deadwoodBank = deadwoodBankFrom({
+  stump: readShippedLadder('stump-rotting'),
+  log: readShippedLadder('log-fallen', { longAxisZ: true }),
+})
 const S = () => new THREE.Scene()
 
 const MAKE = {
@@ -78,7 +83,7 @@ const MAKE = {
   grass: () => new Grass(S(), field, water, layers.paths, textures, { seed: 7, style: 'tufts' }),
   rocks: () => new Rocks(S(), field, water, layers, textures, { seed: 7 }),
   litter: () => new Litter(S(), field, water, layers, textures, { seed: 7 }),
-  deadwood: () => new Deadwood(S(), field, water, layers, { image: { depth: LAYER_COUNT } }, noAnchors, { seed: 7 }),
+  deadwood: () => new Deadwood(S(), field, water, layers, { seed: 7, bank: deadwoodBank }),
   mushrooms: () => new Mushrooms(S(), field, water, layers, textures, [noAnchors], { seed: 7 }),
 }
 

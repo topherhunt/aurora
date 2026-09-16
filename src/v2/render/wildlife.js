@@ -370,11 +370,18 @@ export class Wildlife {
   get stats() {
     const alive = {}
     const puppets = {}
+    // Drawn animals and the triangles they cost, split by rung, so which rung a creature is on is a number to read and not a thing to squint at.
+    const lod = Array.from({ length: LOD_RUNGS }, () => ({ n: 0, tris: 0 }))
     for (const sp of this.species) {
       alive[sp.key] = MAX - sp.free.length
       puppets[sp.key] = sp.puppets.length - sp.freePuppets.length
+      for (const c of sp.slots) {
+        if (c.spawn === null || c.lod >= LOD_RUNGS) continue
+        lod[c.lod].n++
+        lod[c.lod].tris += sp.asset.tiers[c.lod].index.count / 3
+      }
     }
-    return { alive, puppets, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved }
+    return { alive, puppets, lod, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved }
   }
 
   // -------------------------------------------------------------------------

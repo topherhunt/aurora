@@ -17,7 +17,8 @@
 //
 //   cower   What one is found doing: crouched and flinching, over and over, at
 //           nothing you can see. It faces wherever it faced when the tile rolled
-//           it. Within NOTICE_M it notices her and --
+//           it, and it notices her only when she steps inside NOTICE_M of it on
+//           the side it faces -- she can walk up behind it -- and then it --
 //   watch   -- turns to her and keeps turning to her, and beckons, or nods, or
 //           points, or shrugs, or just stands and looks, with a plain stare
 //           between. `near` is the closest she has come since it noticed her;
@@ -63,8 +64,8 @@ export const MAX_SLOPE = (35 * Math.PI) / 180
 // The one white is a narrow band of hues.
 export const HUE = 0.03
 
-// She is noticed within this of a cowering snowman.
-export const NOTICE_M = 25
+// She is noticed only inside a half-disc of this radius AHEAD of a cowering snowman; behind or beside it she can stand at arm's length.
+export const NOTICE_M = 10
 // A watching snowman follows once she is this much further off than the closest she came.
 export const AWAY_M = 3
 // A following snowman stops this short of her, and sets off again once she is RESUME_M past that.
@@ -446,7 +447,7 @@ export class Snowmen {
     }
     switch (c.state) {
       case 'cower':
-        if (dist < NOTICE_M) this._watch(c, dist)
+        if (dist < NOTICE_M && Math.abs(swingTo(c.heading, this._toward(c, hx, hz))) < Math.PI / 2) this._watch(c, dist)
         break
       case 'watch':
         c.near = Math.min(c.near, dist)
@@ -522,8 +523,10 @@ export class Snowmen {
     // A loose snowman is freed only out past where any tile is loaded, so the tile that re-enters lays it again; the ladder has long since dissolved it out there.
     const beyond = loose && Math.hypot(dx, dz) > RADIUS + TILE
     const want = c.lod === LOD_TIERS || beyond ? -1 : c.lod
-    // Past the last rung it is not minded either: no noticing, no following, no reading the ground. It stands exactly where it stood, which is where she finds it when she comes back.
-    if (want !== -1) {
+    // Past the last rung it is not minded: no noticing, no following, no reading the ground. It stands exactly where it stood, which is where she finds it when she comes back -- but it has lost her, because going out of mind IS forgetting her. Its own cull can be nearer than FORGET_M (a 2 m one is culled at 72 m), and a snowman that froze mid-follow would still be chasing her an hour later.
+    if (want === -1) {
+      if (c.state !== 'cower') this._cower(c)
+    } else {
       this._mind(c, hx, hz, dist)
       c.left -= dt
       if (c.left <= 0) this._step(c)

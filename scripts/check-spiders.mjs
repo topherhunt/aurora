@@ -32,7 +32,7 @@ import {
 } from '../src/v2/render/spiders.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
-import { CRITTER_GLB, critterTier } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, critterTier, lodReach } from '../src/v2/render/critters.js'
 import { LOD_FADE_S } from '../src/v2/render/puppet.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -518,8 +518,10 @@ spiders.place(0, 0)
     for (let f = 0; f < frames; f++) spiders.update(...at(d), 1 / 60)
     return target.puppet ? target.puppet.meshes.findIndex((m) => m.visible) : -1
   }
-  const t1 = tiersAt(1)
-  check(target.puppet && t1 === 0 && spiders.batch.children.includes(target.puppet.group), 'a metre off, the spider is a puppet on tier 0, in the scene')
+  // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres.
+  const close = lodReach(target.size, 0) / 2
+  const t1 = tiersAt(close)
+  check(target.puppet && t1 === 0 && spiders.batch.children.includes(target.puppet.group), `${close.toFixed(2)} m off, the spider is a puppet on tier 0, in the scene`)
   check(target.puppet.current && target.puppet.current.getClip().name === target.clip && target.puppet.current.isRunning(), 'its clip is its state\'s', `${target.clip}`)
   check(target.puppet.mats.uHue.value === target.hue, 'its materials wear its hue')
   const pos = new THREE.Vector3().setFromMatrixPosition(target.puppet.group.matrix)
