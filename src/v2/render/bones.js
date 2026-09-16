@@ -1,7 +1,10 @@
 import THREE from '../../three-instance.js'
 
 import { GEN_PROP_GLB, GEN_PROP_LODS, createGenPropMaterial, loadGenProp } from './gen-props.js'
-import { bakeCritterCard, setCritterCard } from './critters.js'
+import {
+  AXIS_VIEWS, SPUN_VIEWS, bakeCritterCard, critterTier, cullRange, setAxisCard, setCritterCard, spunBounds,
+} from './critters.js'
+import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -10,10 +13,16 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // The deer skeleton and the elk skull: two generated props (DESIGN.md §29) as a
 // rare find on any ground, on the deadwood's machine with the parts that exist
 // for a hundred-piece litter left out. One prop arena, a two-variant bank, the
-// shipped four-tier ladder with the critters' cross card past it, a tiled
-// camera-following scatter and the rim dissolve; NO graded thinning and no
-// build queue, because a tile holds at most ONE candidate and the whole draw
-// disc holds a dozen -- there is nothing to grade and nothing to budget.
+// shipped four-tier ladder on the creatures' arc rungs with a card past it to
+// twice the last mesh rung (critters.js), each find culled at its own size's
+// range through the rim, a tiled camera-following scatter reaching as far as
+// the biggest find is drawn, and the rim dissolve; NO graded thinning and no
+// build queue, because a tile holds at most ONE candidate and nearly every
+// one is past its own cull -- there is nothing to grade and nothing to budget.
+// The skull's card is one quad spun to her in the vertex shader; the
+// skeleton's is its length on two quads crossed about its own axis, since a
+// lying thing has a heading and a spun card would show its broadside from
+// every side (deadwood.js, on the log).
 //
 // A SKELETON LIES DOWN AND IS METRES LONG, so it is seated the way the fallen
 // log is (deadwood.js's `_seat`): pitched along its own Z to the ground under
@@ -28,8 +37,8 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // stream is not spent differently.
 // ---------------------------------------------------------------------------
 
-// Finds per square metre. About nine inside the draw radius, before the slope
-// and the roads take theirs: rare enough that one is a thing you walk over to.
+// Finds per square metre. About nine inside 120 m, before the slope and the
+// roads take theirs: rare enough that one is a thing you walk over to.
 const DENSITY = 2e-4
 
 // Metres. One candidate per tile, kept with probability TILE^2 * DENSITY (a
@@ -37,15 +46,15 @@ const DENSITY = 2e-4
 const TILE = 40
 const KEEP = TILE * TILE * DENSITY
 
-// Metres. Every find is placed to the same radius and dissolves at the rim.
-const DRAW_RADIUS = 120
+// The ladder's rungs: the pick, its three decimated tiers, the card, and past
+// the card culled -- critterTier's rungs, so a 3 m skeleton steps at 13, 27,
+// 54 and 108 m and is gone past 216, and the 10 m one holds its card to 719.
+export const RUNGS = GEN_PROP_LODS + 2
 
-// The ladder in metres of camera distance per metre of the piece's own ladder
-// size, deadwood's for deadwood's reasons. Exported for the gate's tier check.
-export const LOD_AT = [3, 6, 12, 24]
-const LOD_SQ = Float32Array.from(LOD_AT, (k) => k * k)
-const LOD_HYSTERESIS = 0.12
-const LOD_SQ_OUT = Float32Array.from(LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
+// Ghosts the pool carries over its one-per-tile bound, each a step's departing
+// tier dissolving out (`_crossFade`, the forest's). Past this many in flight a
+// step pops; a few hundred finds resident, a handful stepping at once.
+const FADE_MAX_INFLIGHT = 64
 
 // Metres between the ground samples a skeleton is seated on, and the ceiling:
 // a 10 m skeleton takes eight.
@@ -121,12 +130,13 @@ const VARIANTS = [
   { name: 'skeleton', kind: 'skeleton', url: GEN_PROP_GLB.skeleton, longAxisZ: true },
   { name: 'skull', kind: 'skull', url: GEN_PROP_GLB.skull, longAxisZ: false },
 ]
-const CARD_VIEWS = ['side', 'front']
+// The far tier: a skeleton's length crossed about its middle, a skull's one spun quad.
+const cardViews = (v) => (v.kind === 'skeleton' ? AXIS_VIEWS : SPUN_VIEWS)
 
 /**
  * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
- * VARIANTS' names): tiers pick-first with the cross card last, and per variant
- * the metres `_seat` works in. Pure, so the gate builds it in node.
+ * VARIANTS' names): tiers pick-first with the card last, and per variant the
+ * metres `_seat` works in. Pure, so the gate builds it in node.
  */
 export function bonesBankFrom(ladders) {
   const picks = VARIANTS.map((v) => {
@@ -140,9 +150,11 @@ export function bonesBankFrom(ladders) {
   const tiers = []
   for (let t = 0; t <= GEN_PROP_LODS; t++) tiers.push({ geometries: picks.map((l) => l.geometries[t]) })
   tiers.push({
-    geometries: picks.map((l) => {
+    geometries: VARIANTS.map((v, i) => {
       const shim = { geometry: new THREE.BufferGeometry() }
-      setCritterCard(shim, l.bounds, CARD_VIEWS)
+      const b = picks[i].bounds
+      if (v.kind === 'skeleton') setAxisCard(shim, b, { x: 0, y: b.height / 2 })
+      else setCritterCard(shim, spunBounds(b), SPUN_VIEWS)
       return shim.geometry
     }),
   })
@@ -170,7 +182,7 @@ export class Bones {
    * @param bank     bonesBankFrom's answer. Required: a scatter with nothing to
    *                 draw is a bug, not a state.
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = DRAW_RADIUS, bank = null } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Bones: needs the bank from loadBonesBank (or bonesBankFrom)')
     }
@@ -191,10 +203,11 @@ export class Bones {
     this.layers = layers
     this.paths = layers.paths
     this.seed = (seed | 0) ^ SEED_SALT
-    this.radius = radius
-    this.radiusSq = radius * radius
-    this.tileSpan = Math.ceil(radius / TILE) + 1
-    this.evictSq = (radius + TILE * 1.5) ** 2
+    // The tile grid: to the biggest find's cull unless told otherwise (the gates measure smaller worlds).
+    this.radius = radius ?? cullRange(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]), RUNGS)
+    this.radiusSq = this.radius * this.radius
+    this.tileSpan = Math.ceil(this.radius / TILE) + 1
+    this.evictSq = (this.radius + TILE * 1.5) ** 2
 
     // One instance per tile the eviction disc can hold, counted on the grid.
     let bound = 0
@@ -206,7 +219,7 @@ export class Bones {
         if (dcx * dcx + dcz * dcz <= this.evictSq) bound++
       }
     }
-    this.maxInstances = bound
+    this.maxInstances = bound + FADE_MAX_INFLIGHT
 
     const t0 = performance.now()
     this.bank = bank
@@ -229,14 +242,14 @@ export class Bones {
     })
     // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
     this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial(`bones-${v.name}`, { card: true })
+      const m = createGenPropMaterial(`bones-${v.name}`, { card: true, billboard: cardViews(v) === SPUN_VIEWS })
       m.visible = false
       return m
     })
     this.materials = [...this.meshMaterials, ...this.cardMaterials]
 
     // Any mesh may hold the whole pool: the variant is rolled per find, so an
-    // even split is only the expectation, and the pool is a hundred.
+    // even split is only the expectation, and the pool is a thousand.
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
@@ -262,7 +275,17 @@ export class Bones {
     this.instZ = new Float32Array(this.maxInstances)
     // The instance's ladder size in world metres: its variant's longest axis times its scale.
     this.instSize = new Float32Array(this.maxInstances)
-    this.rim = new RimFade(this.batch, this.maxInstances)
+    // One fade slot per instance, shared by the rim and the tier
+    // cross-dissolve: the rim retires a swap it writes over and outranks it.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
+    // Cross-dissolves in flight: { orig, dup, start, tris }, `fadeAt` mapping
+    // an instance to its entry. deadwood.js's shape.
+    this.fades = []
+    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
+    this.fadeTris = 0
 
     // key -> { tx, tz, ids, n }; `n` is 0 or 1.
     this.tiles = new Map()
@@ -359,12 +382,15 @@ export class Bones {
   }
 
   /**
-   * Follow the camera, sweep the rim and re-tier every find by its own size.
-   * Every resident instance every frame: the pool is a hundred, so there is no
-   * near/far tile split to keep.
+   * Follow the camera, sweep the rim and re-tier every find by its own size on
+   * the creatures' rungs. Every resident instance every frame: a few hundred,
+   * so there is no near/far tile split to keep. Past the last rung the rim has
+   * hidden a find, or is about to; it stays a card meanwhile.
    */
   update(camX, camY, camZ) {
     this._reseat(camX, camZ)
+    const now = getPropClock()
+    this._sweepFades(now)
     const cardTier = this.cardTier
     let tris = 0
     this.rim.beginFrame(camX, camY, camZ)
@@ -378,24 +404,18 @@ export class Bones {
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
-        const sizeSq = this.instSize[i] * this.instSize[i]
-        let tier = cardTier
-        for (let t = 0; t < LOD_SQ.length; t++) {
-          const sticky = cur >= 0 && cur <= t
-          if (d2 < sizeSq * (sticky ? LOD_SQ_OUT[t] : LOD_SQ[t])) {
-            tier = t
-            break
-          }
-        }
+        const tier = Math.min(cardTier, critterTier(this.instSize[i], Math.sqrt(d2), cur, RUNGS))
         const variant = this.variantAt[i]
         if (tier !== cur) {
           this.tierAt[i] = tier
           this.batch.setGeometryIdAt(i, this.tierIds[tier][variant])
+          // `cur < 0` has never been tiered, so there is nothing to dissolve past.
+          if (cur >= 0) this._crossFade(i, cur, variant, now)
         }
         tris += this.tierTris[tier][variant]
       }
     }
-    this.tris = tris
+    this.tris = tris + this.fadeTris
   }
 
   /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing only. */
@@ -497,11 +517,13 @@ export class Bones {
     this._c.setRGB((k0 + gc[0] * k1) * v, (k0 + gc[1] * k1) * v, (k0 + gc[2] * k1) * v)
     this.batch.setColorAt(id, this._c)
 
-    // Born as a card; `update` promotes it on the next frame. Hidden until the
-    // rim's sweep has looked at it, which the tile is marked due for.
-    this.tierAt[id] = this.cardTier
+    // Born as a card on no rung yet; `update` takes it to its rung on the next
+    // frame. Gone at its own size's cull, or the draw radius if that is nearer.
+    // Hidden until the rim's sweep has looked at it, which the tile is marked
+    // due for.
+    this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
-    this.rim.place(id, this.radius)
+    this.rim.place(id, Math.min(this.radius, cullRange(this.instSize[id], RUNGS)))
     this.rim.markDue(tile)
   }
 
@@ -509,6 +531,7 @@ export class Bones {
   _release(tile) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
+      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
       this.batch.setVisibleAt(id, false)
       this.rim.drop(id)
       this.tierAt[id] = -1
@@ -520,14 +543,69 @@ export class Bones {
   }
 
   /**
-   * Photograph each variant's pick for its cross card and let the cards draw.
-   * Call once, with the renderer, at boot. Until it runs a distant find is not drawn at all.
+   * Start a cross-dissolve: `i` has just taken a new tier, so a ghost off the
+   * pool takes the tier it left and the two dither past each other on the same
+   * start (material.js). deadwood.js's `_crossFade`, with the pool's own ghost
+   * allowance as the one ceiling.
+   */
+  _crossFade(i, oldTier, variant, now) {
+    const running = this.fadeAt[i]
+    if (running >= 0) this._endFade(running)
+    if (this.rim.isBusy(i)) return
+    if (this.fades.length >= FADE_MAX_INFLIGHT) return
+
+    const dup = this.free[--this.freeCount]
+    this.batch.getMatrixAt(i, this._m)
+    this.batch.setMatrixAt(dup, this._m)
+    this.batch.getColorAt(i, this._c)
+    this.batch.setColorAt(dup, this._c)
+    this.batch.setGeometryIdAt(dup, this.tierIds[oldTier][variant])
+    this.batch.setVisibleAt(dup, true)
+    setPropFadeTimerAt(this.batch, dup, now, false)
+    setPropFadeTimerAt(this.batch, i, now, true)
+
+    const tris = this.tierTris[oldTier][variant]
+    this.fadeTris += tris
+    this.fadeAt[i] = this.fades.length
+    this.fades.push({ orig: i, dup, start: now, tris })
+  }
+
+  /** Finish the fade at index `k`: the ghost back to the pool, the original solid. */
+  _endFade(k) {
+    const f = this.fades[k]
+    this.batch.setVisibleAt(f.dup, false)
+    this.free[this.freeCount++] = f.dup
+    this.fadeTris -= f.tris
+    setPropSolidAt(this.batch, f.orig)
+    this.fadeAt[f.orig] = -1
+    const last = this.fades.pop()
+    if (k < this.fades.length) {
+      this.fades[k] = last
+      this.fadeAt[last.orig] = k
+    }
+  }
+
+  /** Retire every cross-dissolve whose window is up, a wrapped clock's included. */
+  _sweepFades(now) {
+    let k = 0
+    while (k < this.fades.length) {
+      const age = now - this.fades[k].start
+      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
+      else k++
+    }
+  }
+
+  /**
+   * Photograph each variant's pick for its card and let the cards draw. Call
+   * once, with the renderer, at boot. Until it runs a distant find is not drawn at all.
    */
   bakeCards(renderer) {
     const t0 = performance.now()
-    this.bank.variants.forEach((_v, i) => {
+    this.bank.variants.forEach((v, i) => {
       const card = this.cardMaterials[i]
-      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], this.bank.bounds[i], CARD_VIEWS)
+      const views = cardViews(v)
+      const bounds = views === SPUN_VIEWS ? spunBounds(this.bank.bounds[i]) : this.bank.bounds[i]
+      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], bounds, views)
       card.visible = true
     })
     this.cardBakeMs = performance.now() - t0
@@ -540,6 +618,7 @@ export class Bones {
       skulls: this.placed - this.skeletons,
       rimHidden: this.rim.hiddenCount,
       rimFading: this.rim.flightN,
+      fading: this.fades.length,
       tris: this.tris,
       tiles: this.tiles.size,
       pool: this.maxInstances,

@@ -47,11 +47,10 @@ export const CLOCK = {
   // What the hotkey is worth.
   skipHours: 6,
 
-  // She spawns in the late afternoon, deliberately. The first thing this system
-  // has to prove is that it can do a sunset, and making her wait 16 real
-  // minutes to find that out is the difference between a feature that gets
-  // looked at and one that does not.
-  startHour: 16.2,
+  // She spawns an hour after sunrise (geometric sunrise at this latitude and
+  // declination is 6.57 h), so she gets nearly the whole 11.2 hour day before
+  // the first sunset rather than a sliver of afternoon.
+  startHour: 7.6,
 }
 
 export const MOON = {
@@ -564,17 +563,25 @@ const KEYS = [
 // that snow reads as snow and rock reads as nearly black, which is what a
 // moonlit photograph looks like.
 //
-// 0.50 -> 1.20, and the night rows of KEYS lost about 40% of their ambient at
-// the same time. The two moves are one move. At 0.50 against a hemisphere of
-// 0.50 plus an additive lift, the DIRECTIONAL share of a night surface was
-// under a third of its brightness, which meant the answer to "which way is
-// this slope facing" barely changed what you saw: the world went flat and
-// even and grey, lit from everywhere at once. Ambient light has no direction,
-// so no amount of tuning it can produce a moonlit side and a shaded side.
-// Only the ratio between the two terms can. Measured on the model in the gate,
-// a full moon overhead now gives lit grass 106 against shaded grass 24 where
-// it used to give 80 against 34 -- a 4.4:1 slope contrast in place of 2.4:1.
-export const MOONLIGHT = { color: hex(0xb4c8ee), intensity: 1.20 }
+// The intensity is set against the night rows of KEYS as a RATIO, not a level:
+// ambient light has no direction, so while it dominated, the answer to "which
+// way is this slope facing" barely changed what you saw and the world went
+// flat and even and grey. Only the directional share can give a moonlit side
+// and a shaded side, and the gate measures that share as slope contrast on a
+// full moon overhead: lit grass 80 against shaded grass 24. The level itself
+// is a look decision -- 0.60 is half of what it was, because a moonlit night
+// at 1.20 washed out white the moment the moon took over.
+//
+// `handoverDeg` is how far below -6 the sun has to be before moonlight is at
+// full strength. The moon rises in daylight here, so by the time the light
+// becomes the moon it is already well up and `moonPow` is already 1; without
+// this ramp the light steps from nothing to full moonlight in one frame, which
+// reads as a ring of light switching on around her. 1.6 degrees is 15 real
+// seconds: the sun crosses civil twilight at about 6.4 degrees per in-world
+// hour at this latitude and season, and one in-world hour is one real minute.
+// The same ramp runs backwards at dawn, so the moon fades out before the sun
+// takes the light back.
+export const MOONLIGHT = { color: hex(0xb4c8ee), intensity: 0.60, handoverDeg: 1.6 }
 
 // ---------------------------------------------------------------------------
 // THE FAR FIELD -- farDirect and farAmbient
@@ -761,6 +768,9 @@ export class WorldClock {
     // centre has geometrically set.
     const moonUp = Math.max(0, Math.min(1, (this.moon.elevDeg + 3) / 11))
     const moonPow = moonUp * moonUp * (3 - 2 * moonUp) * (0.35 + 0.65 * this.moonLit)
+    // And it fades in from zero at the handover itself, for the frame where the
+    // moon is already high when the sun lets go -- see MOONLIGHT.handoverDeg.
+    const handover = smoothstep(Math.max(0, Math.min(1, (-6 - this.sun.elevDeg) / MOONLIGHT.handoverDeg)))
 
     return {
       hour: this.hour,
@@ -777,7 +787,7 @@ export class WorldClock {
       // the vector.
       lightDir: night ? this.moon : this.sun,
       lightColor: night ? MOONLIGHT.color : p.sunLight,
-      lightIntensity: night ? MOONLIGHT.intensity * moonPow : p.sunIntensity,
+      lightIntensity: night ? MOONLIGHT.intensity * moonPow * handover : p.sunIntensity,
       isNight: night,
 
       horizon: p.horizon,

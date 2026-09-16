@@ -16,6 +16,16 @@
 // DIRECTION IS PROXY FOR PLACE. A bird has no position in the world, so it is
 // given one: a random bearing at a plausible range and height, and the panner
 // does the rest. A frog and a shore have real positions and use them.
+//
+// THE ANIMALS ARE READ EVERY FRAME, not through the sense: a footfall is timed
+// to the gait clip a body is playing, and a quarter-second sample would put it
+// a beat off. Each layer lists its living bodies through bodies(), and the
+// ambience keeps a record per body: for a herd (wildlife, snowmen) a phase
+// clock against the FOOTFALLS of its clip library, so a gallop lands as a
+// gallop and a trot as a trot, and for a species with a call (the fox) the
+// seconds to its next one; for the crawlers (spiders, crabs) the moving ones
+// together hold one quiet loop at the nearest. What she hears of each is the
+// body's size at its distance.
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
@@ -35,6 +45,9 @@ export const SOUNDS = {
   songbird5: 'sounds/bird-songbird-5.mp3',
   cricket: 'sounds/cricket.mp3',
   footstep: 'sounds/footstep-1.mp3',
+  footfall: 'sounds/footstep-animal.mp3',
+  foxYip: 'sounds/animal-fox-yip.mp3',
+  crawl: 'sounds/footstep-spider.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   rockslide1: 'sounds/rockslide1.mp3',
@@ -56,6 +69,17 @@ const ROCKSLIDES = ['rockslide1', 'rockslide2']
 export const RATE = [0.9, 1.1]
 
 /**
+ * Where in a gait cycle each foot lands, by clip library and gait, as a
+ * fraction of the clip: the `phases` of tools/creatures/anim/clips/<library>/
+ * <gait>.json, distinct and in order, so two feet that land together (a trot's
+ * diagonal pairs) are one beat. The gate holds these to the clip files.
+ */
+export const FOOTFALLS = {
+  quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58] },
+  human: { walk: [0, 0.5], run: [0, 0.5] },
+}
+
+/**
  * The numbers the rules run on. Intervals and gains are [lo, hi] ranges rolled
  * uniformly; `range` is how far off a placed sound sits, `elev` its angle above
  * the ear in degrees. Exported so the gate asserts against the same values.
@@ -75,8 +99,14 @@ export const RULES = {
   cricketNear: { interval: [6, 20], gain: [0.3, 0.7], range: [2, 8] },
   // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
   footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2] },
+  // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
+  footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
+  foxYip: { reach: 40, near: 4, level: 0.7, every: [40, 120], gain: [0.7, 1.0] },
+  // The crawlers' feet: one quiet loop while any spider or crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1.
+  crawl: { reach: 6, near: 1, level: 0.15, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
-  frog: { every: 8, gain: [0.4, 1.0] },
+  frog: { every: 16, gain: [0.4, 1.0] },
   // A rockslide off in the talus when there are this many loose rocks within the sense box...
   rockslideNear: { interval: [20, 60], gain: [0.2, 0.6], range: [10, 30], rise: [0, 10], minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
@@ -98,13 +128,27 @@ export class Ambience {
   /**
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
+   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, and `calls`, if any, maps a species key (body.sp.key) to the rule of its call.
+   * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed.
    */
-  constructor({ engine, sense, rand = Math.random }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
     if (!sense) throw new Error('Ambience: missing sense')
+    for (const h of herds) {
+      if (!h.layer || typeof h.layer.bodies !== 'function') throw new Error('Ambience: a herd needs a layer with bodies()')
+      if (!FOOTFALLS[h.clips]) throw new Error(`Ambience: no footfalls for a ${h.clips} clip library`)
+      for (const rule of Object.values(h.calls ?? {})) if (!RULES[rule]?.every) throw new Error(`Ambience: no call rule named ${rule}`)
+    }
+    for (const l of crawlers) if (!l || typeof l.bodies !== 'function') throw new Error('Ambience: a crawler layer needs bodies()')
     this.engine = engine
     this.sense = sense
     this.rand = rand
+    this.herds = herds
+    this.crawlers = crawlers
+    // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
+    this.bodies = new Map()
+    this.listed = []
+    this.frame = 0
     this.s = WorldSense.blank()
     this.sensed = false
     this.senseLeft = 0
@@ -121,6 +165,7 @@ export class Ambience {
       lakeBed: engine.loop('lakeBed', { directional: true, gain: RULES.lakeBed.gain }),
       leaves: engine.loop('leaves', { gain: RULES.leaves.gain }),
       wind: engine.loop('wind', { gain: RULES.wind.gain }),
+      crawl: engine.loop('crawl', { directional: true, gain: RULES.crawl.gain }),
     }
     this.leavesOn = false
     this.windOn = false
@@ -207,6 +252,7 @@ export class Ambience {
    */
   update(dt, { head, dayness, submerged, speed, afoot }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
+    this.frame++
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
     this.senseLeft -= dt
     if (!this.sensed || this.senseLeft <= 0) {
@@ -222,6 +268,7 @@ export class Ambience {
     }
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s)
+    this._crawl(head)
     // Nothing above the surface fires while she is under it; the loops already
     // running are silenced by the bus and keep their place for when she surfaces.
     if (submerged) {
@@ -234,6 +281,7 @@ export class Ambience {
     this._birds(dt, head, s, dayness, below)
     this._crickets(dt, head, s, dayness, below)
     this._feet(dt, head, s, speed, afoot)
+    this._herds(dt, head)
     this._frogs(dt, head, s)
     this._rocks(dt, head, s)
     this._lake(dt, head, s)
@@ -302,6 +350,98 @@ export class Ambience {
       at.y = s.groundH
       this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...K.gain), at })
     }
+  }
+
+  /**
+   * The herds. A body walking a gait clip has a clock here that runs in cycles
+   * of that clip and fires the beats of FOOTFALLS as it passes them, each beat
+   * jittered either way, wrapping at the cycle's end. A body first heard
+   * walking, or one that changes gait, starts a fresh cycle, so a walk begins
+   * on a footfall as the clip does; standing, its clock is cleared for the
+   * next. A body with a call keeps the seconds to its next one, counted only
+   * within reach. A body not listed within reach this frame is gone from here.
+   */
+  _herds(dt, head) {
+    const F = RULES.footfall
+    for (const h of this.herds) {
+      const table = FOOTFALLS[h.clips]
+      const listed = this.listed
+      listed.length = 0
+      h.layer.bodies(listed)
+      for (const c of listed) {
+        const call = h.calls ? h.calls[c.sp.key] : undefined
+        const Y = call ? RULES[call] : null
+        const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+        const walking = c.speed > 0 && d <= F.reach
+        const calling = Y !== null && d <= Y.reach
+        if (!walking && !calling) continue
+        let f = this.bodies.get(c)
+        if (!f) {
+          f = { clip: null, phase: 0, beat: 0, at: 0, call: Y ? this.between(...Y.every) : 0, seen: 0 }
+          this.bodies.set(c, f)
+        }
+        f.seen = this.frame
+        if (walking) {
+          const beats = table[c.clip]
+          if (!beats) throw new Error(`Ambience: a ${h.clips} body is walking a ${c.clip}, which has no footfalls`)
+          if (!(c.cycle > 0)) throw new Error(`Ambience: a ${h.clips} ${c.clip} cycle of ${c.cycle} s`)
+          if (f.clip !== c.clip) {
+            f.clip = c.clip
+            f.phase = 0
+            f.beat = 0
+            f.at = this.between(-F.jitter, F.jitter)
+          }
+          f.phase += dt / c.cycle
+          const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d))
+          const rate = Math.pow(F.size / c.size, F.deep)
+          while (f.phase >= f.at) {
+            this.fire('footfall', { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z } })
+            if (++f.beat === beats.length) {
+              f.beat = 0
+              f.phase -= 1
+            }
+            f.at = beats[f.beat] + this.between(-F.jitter, F.jitter)
+          }
+        } else {
+          f.clip = null
+        }
+        if (calling) {
+          f.call -= dt
+          if (f.call <= 0) {
+            f.call += this.between(...Y.every)
+            this.fire(call, { rate: this.rate(), gain: Y.level * (Y.near / Math.max(Y.near, d)) * this.between(...Y.gain), at: { x: c.x, y: c.y, z: c.z } })
+          }
+        }
+      }
+    }
+    for (const [c, f] of this.bodies) if (f.seen !== this.frame) this.bodies.delete(c)
+  }
+
+  /**
+   * The crawlers' feet: one loop for every moving spider and crab within
+   * reach, sat at the nearest, as loud as all of them together up to its level.
+   */
+  _crawl(head) {
+    const C = RULES.crawl
+    let sum = 0
+    let nearest = Infinity
+    let at = null
+    for (const layer of this.crawlers) {
+      const listed = this.listed
+      listed.length = 0
+      layer.bodies(listed)
+      for (const c of listed) {
+        if (!(c.speed > 0)) continue
+        const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+        if (d > C.reach) continue
+        sum += C.near / Math.max(C.near, d)
+        if (d < nearest) {
+          nearest = d
+          at = c
+        }
+      }
+    }
+    this._loop('crawl', at !== null, C.level * Math.min(1, sum), at)
   }
 
   _frogs(dt, head, s) {

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- tree clump probe</title>
+    <style>
+      body { margin: 0; background: #05080f; color: #cfe3ff; font: 12px/1.5 monospace; }
+      canvas { display: block; }
+      #cards { padding: 8px 12px; image-rendering: pixelated; }
+      #out { white-space: pre; padding: 8px 12px; }
+      #legend { padding: 8px 12px 0; color: #7f96b8; }
+      .row { position: relative; }
+      .row span { position: absolute; left: 8px; top: 4px; color: #ffe9b0; text-shadow: 0 0 3px #000; }
+      #view { position: relative; }
+      #labels { position: absolute; left: 0; top: 0; width: 100%; pointer-events: none; }
+      #labels div { position: absolute; left: 8px; color: #ffe9b0; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+    </style>
+  </head>
+  <body>
+    <div id="legend">the 128 px layers, 3x: the shipped pine card, then each clump variant -- below, the same hillside from eye height, three ways</div>
+    <canvas id="cards"></canvas>
+    <div id="view">
+      <canvas id="scene"></canvas>
+      <div id="labels"></div>
+    </div>
+    <div id="out">building...</div>
+    <script type="module" src="/src/tree-clump-probe-main.js"></script>
+  </body>
+</html>

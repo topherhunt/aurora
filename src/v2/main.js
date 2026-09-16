@@ -1503,6 +1503,10 @@ function updateQuestStats() {
       ...(questToggles.trees
         ? [
             ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
+            // Clump cards drawn -- each one six trees -- and trees mid-way out
+            // of a tile that has changed mode. The second should be zero
+            // standing still; a number that holds is a swap that never drains.
+            ['clumps ', '#7f95b4'], [`${kilo(ts.clumps)}/${ts.retiring}`.padEnd(9), '#cfe3ff'],
             // Main-thread ms of Trees.update, and how many tiles have been
             // re-seated on a re-split chunk since boot. Standing still, the
             // second should hold; if it climbs, the head's yaw is re-splitting
@@ -1544,13 +1548,25 @@ function updateQuestStats() {
     ],
     // The same row for the wildlife, rung by rung: this is what says a stag
     // twenty metres off is on rung 1 and not rung 0 (critters.js LOD_DEG).
-    // `wildlife` is null and then unloaded before its GLBs land, and this view
-    // runs from the first frame.
+    // `card` is the rung under those four, where a body is a spun quad and has
+    // no triangle count worth printing. `wildlife` is null and then unloaded
+    // before its GLBs land, and this view runs from the first frame.
     [
       ['critter lod ', '#7f95b4'],
       ...(animalOn('wildlife') && wildlife && wildlife.loaded
-        ? wildlife.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']])
+        ? [
+            ...wildlife.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']]),
+            ['card ', '#7f95b4'], [String(wildlife.stats.cards).padEnd(4), '#8fd48f'],
+          ]
         : [['hidden'.padEnd(11), '#5c6b7d']]),
+    ],
+    // Main-thread ms in each animal layer's own step, and the seven added up.
+    // The `animals` row costs whatever it costs; this says how much of that a
+    // simulation could possibly account for, and the remainder is the draw.
+    [
+      ['animal ms ', '#7f95b4'],
+      ...ANIMAL_LAYERS.flatMap((k) => [[`${k.slice(0, 4)} `, '#7f95b4'], [animalMs[k].toFixed(2).padEnd(5), animalMs[k] >= 0.5 ? '#ffd27a' : '#cfe3ff']]),
+      ['sum ', '#7f95b4'], [animalMsSum().toFixed(2).padEnd(5), animalMsSum() >= 2 ? '#ff6b6b' : '#8fd48f'],
     ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
@@ -1678,6 +1694,25 @@ const questToggles = {
 
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
+
+// Main-thread milliseconds each animal layer's step spent, smoothed, keyed by
+// its toggle row. This is the instrument that says whether the `animals` row's
+// toll is CPU or draw: the row switches SEVEN layers at once, and if the seven
+// numbers here sum to a fraction of the frame time the toggle moves, the rest of
+// it is on the GPU and no amount of bucketing the simulation will find it.
+const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'spiders', 'wildlife', 'snowmen']
+const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
+const animalMsSum = () => ANIMAL_LAYERS.reduce((sum, k) => sum + animalMs[k], 0)
+/** Run `fn` if its layer's rows are on, and keep what it cost. A frozen layer decays to zero rather than holding its last reading. */
+function stepAnimal(key, fn) {
+  if (!animalOn(key)) {
+    animalMs[key] *= 0.9
+    return
+  }
+  const t0 = performance.now()
+  fn()
+  animalMs[key] += (performance.now() - t0 - animalMs[key]) * 0.1
+}
 
 /**
  * The frogs', crabs', butterflies' and spiders' batches, off their rows. Not the fish's:
@@ -2232,6 +2267,8 @@ async function bootWorld() {
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     wildlife.place(player.rig.position.x, player.rig.position.z)
+    // The card rung's picture is photographed off the posed body, so the bake waits on the load.
+    wildlife.bakeCards(renderer)
     console.log(`[v2] wildlife ${JSON.stringify(wildlife.stats.alive)} on ${wildlife.stats.tiles} tiles`)
   })
   window.v2wildlife = wildlife
@@ -2259,6 +2296,9 @@ async function bootWorld() {
       ambience = new Ambience({
         engine: sound,
         sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
+        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip on top; the crawlers together hold one loop.
+        herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip' } }, { layer: snowmen, clips: 'human' }],
+        crawlers: [spiders, crabs],
       })
       window.v2ambience = ambience
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`)
@@ -2311,7 +2351,13 @@ async function bootWorld() {
     // for what these numbers are supposed to be.
     console.log(
       'tree impostors baked:',
-      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+      baked.singles.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+    )
+    // The clump cards, one row per photograph: a coverage well above the
+    // single tree's is the six-in-one overlap doing its job.
+    console.log(
+      'tree clumps baked:',
+      baked.clumps.map((b) => `${b.species}/${b.layer} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
     )
     // Same instrument, same reason. A rock card is a grey blob, which makes
     // coverage the number that matters more than luma here: it says how much of
@@ -4407,17 +4453,23 @@ function tick() {
   // simply pauses on its stone. `submerged` is last frame's answer (see
   // applySubmersion), one frame late on the dive and the surfacing, which the
   // eye cannot tell from the splash.
+  //
+  // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
+  // shows: seven layers behind one switch is exactly the shape where a guess at
+  // which one costs what is worthless.
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
-  if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
-  else if (animalOn('fish')) fish.follow(headTmp.x, headTmp.y, headTmp.z)
-  if (animalOn('frogs')) frogs.update(headTmp.x, headTmp.y, headTmp.z, dt)
-  if (animalOn('crabs')) crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged)
+  stepAnimal('fish', () => {
+    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
+    else fish.follow(headTmp.x, headTmp.y, headTmp.z)
+  })
+  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
   // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
-  if (animalOn('butterflies')) butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
-  if (animalOn('spiders')) spiders.update(headTmp.x, headTmp.y, headTmp.z, dt)
-  if (animalOn('wildlife')) wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness)
-  if (animalOn('snowmen')) snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt))
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

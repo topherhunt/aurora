@@ -103,7 +103,7 @@ import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { ROCK_STAND_MIN } from '../src/v2/render/rocks.js'
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
-import { LAYER_COUNT, IMAGE_LAYERS, buildTextureArray } from '../src/textures.js'
+import { LAYER_COUNT, IMAGE_LAYERS, CLUMP_VARIANTS, buildTextureArray } from '../src/textures.js'
 import { readPng } from '../tools/props/png.mjs'
 
 let failures = 0
@@ -118,7 +118,8 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
-  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME } = TREE_TUNING
+  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME,
+  CLUMP_FROM, CLUMP_FULL, CLUMPS_PER_TILE } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
 
@@ -1018,14 +1019,63 @@ const EYE = 60 + 1.6
 const trees = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
 trees.place(0, 0)
 
+// THE TWO POPULATIONS. Single trees stand in every tile whose level is under
+// clumpQ -- the near corner inside CLUMP_FROM -- thinned as fullRadius / d;
+// past it a tile holds CLUMPS_PER_TILE clump cards, full to CLUMP_FULL and
+// thinned as CLUMP_FULL / d beyond. Every law below is asked of each tile in
+// the mode it is in.
+const CLUMP_DENSITY = CLUMPS_PER_TILE / (TILE * TILE)
+const singlesIdeal = Math.PI * FULL_RADIUS ** 2 * DENSITY
+  + 2 * Math.PI * FULL_RADIUS * DENSITY * (CLUMP_FROM - FULL_RADIUS)
+const clumpsIdeal = Math.PI * (CLUMP_FULL ** 2 - CLUMP_FROM ** 2) * CLUMP_DENSITY
+  + 2 * Math.PI * CLUMP_FULL * CLUMP_DENSITY * (DRAW_RADIUS - CLUMP_FULL)
+const ideal = singlesIdeal + clumpsIdeal
+// The rings each law is measured over, as [r0, r1, clumpy]: each inside one
+// population's tiles, and wide enough that the jitter of a few thousand
+// candidates against the ring's edges stays under the tolerance. The
+// area-weighted mean of 1 / d over an annulus is 1 / its mid-radius exactly.
+const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375, 425, true], [750, 850, true], [1100, 1300, true]]
+
 {
   const s = trees.stats
-  const ideal = Math.PI * FULL_RADIUS ** 2 * DENSITY
-    + 2 * Math.PI * FULL_RADIUS * DENSITY * (DRAW_RADIUS - FULL_RADIUS)
   const disc = Math.PI * DRAW_RADIUS ** 2 * DENSITY
   check(s.placed / ideal > 0.9 && s.placed / ideal < 1.35,
-    'the placed count matches the graded-thinning integral',
-    `${s.placed} placed, ${Math.round(ideal)} ideal, ${(s.placed / ideal).toFixed(3)}x`)
+    'the placed count matches the graded-thinning integral over both populations',
+    `${s.placed} placed, ${Math.round(ideal)} ideal (${Math.round(singlesIdeal)} singles + ${Math.round(clumpsIdeal)} clumps), ${(s.placed / ideal).toFixed(3)}x`)
+  let clumpTiles = 0
+  let wrongMode = 0
+  let modeless = 0
+  // The picture a clump instance draws is its species' quad plus a per-instance
+  // layer shift, which is the only thing that varies between two clumps of one
+  // species; a single tree carries no shift.
+  const shifts = new Map()
+  let shifted = 0
+  for (const tile of trees.tiles.values()) {
+    if (tile.clumpy) clumpTiles++
+    if (tile.clumpy !== (tile.q >= trees.clumpQ)) wrongMode++
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const clumpInstance = trees.tierAt[id] === trees.clumpTier
+      if (clumpInstance !== tile.clumpy) modeless++
+      const shift = trees.batch.layer[id]
+      if (tile.clumpy) shifts.set(shift, (shifts.get(shift) || 0) + 1)
+      else if (shift !== 0) shifted++
+    }
+  }
+  check(clumpTiles > 0 && clumpTiles < s.tiles && wrongMode === 0,
+    'a tile is clumps exactly when its level is at or past clumpQ, and both kinds of tile exist',
+    `${clumpTiles} clump tiles of ${s.tiles}, clumpQ ${trees.clumpQ} (${Math.round(Math.sqrt(trees.loSq[trees.clumpQ]))} m), ${wrongMode} in the wrong mode`)
+  check(modeless === 0, 'every instance in a clump tile wears the clump tier and no single tree does',
+    `${modeless} of ${s.placed} disagree`)
+  const shiftKeys = [...shifts.keys()].sort()
+  check(shifted === 0 && shiftKeys.length === CLUMP_VARIANTS && shiftKeys.every((v, i) => v === i)
+    && Math.min(...shifts.values()) > Math.max(...shifts.values()) * 0.8,
+    'every clump carries a layer shift naming one of the CLUMP_VARIANTS pictures, in even measure, and no single tree carries one',
+    `shifts ${shiftKeys.map((v) => `${v}: ${shifts.get(v)}`).join(', ')}, ${shifted} singles shifted`)
+  const nearestClump = Math.min(...[...trees.tiles.values()].filter((t) => t.clumpy)
+    .map((t) => Math.hypot(t.tx * TILE + (t.tx < 0 ? TILE : 0), t.tz * TILE + (t.tz < 0 ? TILE : 0))))
+  check(nearestClump >= CLUMP_FROM - 1e-6, 'no clump tile reaches inside CLUMP_FROM',
+    `nearest clump tile edge at ${nearestClump.toFixed(1)} m`)
   check(s.placed < disc * 0.15, 'graded thinning costs under a seventh of a hard disc at the same density',
     `${s.placed} against ${Math.round(disc)}`)
   check(s.used <= s.pool, 'the instance pool covers the boot scatter',
@@ -1043,24 +1093,29 @@ trees.place(0, 0)
   let rankAboveKeep = 0
   let minGone = Infinity
   let maxGone = -Infinity
+  let minClumpGone = Infinity
   for (const tile of trees.tiles.values()) {
-    const keep = trees.uAt[tile.q]
+    const keep = tile.clumpy ? trees.clumpUAt[tile.q] : trees.uAt[tile.q]
+    const full = tile.clumpy ? CLUMP_FULL : FULL_RADIUS
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       const gone = trees.rim.gone[id]
-      const want = Math.min(FULL_RADIUS / tile.rank[k], DRAW_RADIUS)
+      const want = Math.min(full / tile.rank[k], DRAW_RADIUS)
       if (Math.abs(gone - want) > 1e-2) mismatched++
-      if (gone < FULL_RADIUS - 1e-3 || gone > DRAW_RADIUS + 1e-3) outOfRange++
+      if (gone < full - 1e-3 || gone > DRAW_RADIUS + 1e-3) outOfRange++
       if (!(tile.rank[k] < keep)) rankAboveKeep++
-      minGone = Math.min(minGone, gone)
-      maxGone = Math.max(maxGone, gone)
+      if (tile.clumpy) minClumpGone = Math.min(minClumpGone, gone)
+      else {
+        minGone = Math.min(minGone, gone)
+        maxGone = Math.max(maxGone, gone)
+      }
     }
   }
-  check(mismatched === 0, 'every tree carries fullRadius / its own rank as its gone-distance',
+  check(mismatched === 0, 'every tree carries fullRadius / its own rank, and every clump CLUMP_FULL / its own rank, as its gone-distance',
     `${trees.placed} instances, ${mismatched} disagree`)
-  check(outOfRange === 0, 'no gone-distance falls inside the full-density radius or past the horizon',
-    `${minGone.toFixed(1)} m to ${maxGone.toFixed(1)} m`)
-  check(rankAboveKeep === 0, 'every standing tree ranks below its own tile keep-fraction',
+  check(outOfRange === 0, 'no gone-distance falls inside its population\'s full-density radius or past the horizon',
+    `singles ${minGone.toFixed(1)} m to ${maxGone.toFixed(1)} m, clumps from ${minClumpGone.toFixed(1)} m`)
+  check(rankAboveKeep === 0, 'every standing instance ranks below its own tile keep-fraction',
     `${rankAboveKeep} of ${trees.placed}`)
 
   // THE TWO POPULATIONS. The tile quantisation deliberately errs dense -- a
@@ -1074,10 +1129,16 @@ trees.place(0, 0)
   // This is the LAW's population and not the drawn one -- the rim takes a tree
   // at RIM_AT of its gone-distance, which is a constant factor under this, and
   // the block after the first update() measures what is actually on screen.
-  const ring = (r0, r1) => {
+  //
+  // Each ring is asked of ONE population, and sited where that population's
+  // tiles cover the whole ring: singles inside CLUMP_FROM less a tile, clumps
+  // past it. The mode boundary itself is a tile-quantised step and is measured
+  // as such above.
+  const ring = (r0, r1, clumpy) => {
     let placed = 0
     let drawn = 0
     for (const tile of trees.tiles.values()) {
+      if (tile.clumpy !== clumpy) continue
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         const d = Math.hypot(trees.instX[id], trees.instZ[id])
@@ -1087,19 +1148,20 @@ trees.place(0, 0)
       }
     }
     const area = Math.PI * (r1 * r1 - r0 * r0)
-    const want = DENSITY * FULL_RADIUS / ((r0 + r1) / 2)
+    const d = (r0 + r1) / 2
+    const want = clumpy ? CLUMP_DENSITY * Math.min(1, CLUMP_FULL / d) : DENSITY * FULL_RADIUS / d
     return { placed: placed / area, drawn: drawn / area, want }
   }
   let lawHolds = true
   let overKept = true
   const rings = []
-  for (const [a, b] of [[190, 210], [390, 410], [790, 810], [1190, 1210]]) {
-    const r = ring(a, b)
+  for (const [a, b, clumpy] of LAW_RINGS) {
+    const r = ring(a, b, clumpy)
     if (Math.abs(r.drawn / r.want - 1) > 0.06) lawHolds = false
     if (r.placed < r.drawn) overKept = false
     rings.push(`${(a + b) / 2} m ${r.drawn.toFixed(4)}/${r.want.toFixed(4)}`)
   }
-  check(lawHolds, 'the population inside its own gone-distance follows fullRadius / d to within 6% at 200, 400, 800 and 1200 m',
+  check(lawHolds, 'inside its own gone-distance the population follows fullRadius / d for singles inside CLUMP_FROM and CLUMP_FULL / d for clumps out to the horizon, to within 6%',
     rings.join('  '))
   check(overKept, 'the tile quantisation errs dense at every range, never sparse')
 
@@ -1110,9 +1172,7 @@ trees.place(0, 0)
       if (Math.hypot(trees.instX[id], trees.instZ[id]) < trees.rim.gone[id]) drawn++
     }
   }
-  const ideal = Math.PI * FULL_RADIUS ** 2 * DENSITY
-    + 2 * Math.PI * FULL_RADIUS * DENSITY * (DRAW_RADIUS - FULL_RADIUS)
-  check(near(drawn / ideal, 1, 0.05), 'the whole forest inside its gone-distances matches the integral to within 5%',
+  check(near(drawn / ideal, 1, 0.05), 'the whole forest inside its gone-distances matches the two-population integral to within 5%',
     `${drawn} of ${trees.placed} placed, ${Math.round(ideal)} ideal`)
 }
 
@@ -1124,8 +1184,8 @@ trees.place(0, 0)
   const s = trees.stats
   const bandSq = LOD_BANDS.map((b) => b * b)
   const nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
-  const counts = new Array(bank.tiers.length).fill(0)
-  const tierBill = new Array(bank.tiers.length).fill(0)
+  const counts = new Array(trees.tierCount).fill(0)
+  const tierBill = new Array(trees.tierCount).fill(0)
   let wrong = 0
   let bill = 0
   // Trees the rim has dissolved away. They are still resident and still hold
@@ -1136,6 +1196,7 @@ trees.place(0, 0)
     const dx = (tile.tx + 0.5) * TILE
     const dz = (tile.tz + 0.5) * TILE
     const isNear = dx * dx + dz * dz < nearSq
+    if (isNear && tile.clumpy) wrong++
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       if (trees.rim.isHidden(id)) {
@@ -1144,9 +1205,9 @@ trees.place(0, 0)
       }
       const tier = trees.tierAt[id]
       counts[tier]++
-      tierBill[tier] += bank.tiers[tier].triangles[trees.variantAt[id]]
-      bill += bank.tiers[tier].triangles[trees.variantAt[id]]
-      let want = trees.cardTier
+      tierBill[tier] += trees.tierTris[tier][trees.variantAt[id]]
+      bill += trees.tierTris[tier][trees.variantAt[id]]
+      let want = tile.clumpy ? trees.clumpTier : trees.cardTier
       if (isNear) {
         const ex = trees.instX[id]
         const ey = (trees.instY[id] - EYE) * Y_SQUASH
@@ -1157,20 +1218,20 @@ trees.place(0, 0)
       if (tier !== want) wrong++
     }
   }
-  check(wrong === 0, 'every instance sits in the tier its own ellipsoidal distance asks for',
+  check(wrong === 0, 'every instance sits in the tier its own ellipsoidal distance asks for, and no clump tile is in the near set',
     `${counts.join(' / ')} across the tiers, ${wrong} wrong`)
   let widens = counts[0] > 0
   for (let t = 1; t < counts.length; t++) if (counts[t] <= counts[t - 1]) widens = false
-  check(widens, 'every tier holds more instances than the tier finer than it',
+  check(widens, 'every tier holds more instances than the tier finer than it, the clump tier most of all',
     counts.join(' / '))
   // The row trees.js's ladder table is copied from.
   note('triangles per tier', tierBill.map((t) => `${(t / 1000).toFixed(1)}k`).join(' / '))
   // Plus the cross-dissolve ghosts, which are drawn and are deliberately not in
   // the ladder walk above: a duplicate is not a tree, it is the tier a tree has
   // just left, still on screen for a quarter second.
-  check(s.tris === bill + trees.fadeTris,
+  check(s.tris === bill + trees.fadeTris + trees.retiringTris,
     'the reported triangle bill is the sum of what each instance actually draws',
-    `${s.tris} reported, ${bill} from the ladder plus ${trees.fadeTris} in flight`)
+    `${s.tris} reported, ${bill} from the ladder plus ${trees.fadeTris} in flight and ${trees.retiringTris} retiring`)
   // WHAT THE RIM ACTUALLY DRAWS, which is the number the player sees and is a
   // constant RIM_AT under the law measured above -- the rim takes a tree at the
   // midpoint of the old dissolve band, so the drawn density is that fraction of
@@ -1180,9 +1241,10 @@ trees.place(0, 0)
   {
     let held = true
     const rows = []
-    for (const [r0, r1] of [[190, 210], [390, 410], [790, 810], [1190, 1210]]) {
+    for (const [r0, r1, clumpy] of LAW_RINGS) {
       let shown = 0
       for (const tile of trees.tiles.values()) {
+        if (tile.clumpy !== clumpy) continue
         for (let k = 0; k < tile.n; k++) {
           const id = tile.ids[k]
           if (trees.rim.isHidden(id)) continue
@@ -1191,11 +1253,16 @@ trees.place(0, 0)
         }
       }
       const have = shown / (Math.PI * (r1 * r1 - r0 * r0))
-      const want = RIM_AT * DENSITY * FULL_RADIUS / ((r0 + r1) / 2)
+      const d = (r0 + r1) / 2
+      // A clump at full density has a gone-distance past CLUMP_FULL, which the
+      // rim never reaches at this range, so the rim takes none of it.
+      const want = clumpy
+        ? CLUMP_DENSITY * Math.min(1, RIM_AT * CLUMP_FULL / d)
+        : RIM_AT * DENSITY * FULL_RADIUS / d
       if (Math.abs(have / want - 1) > 0.06) held = false
-      rows.push(`${(r0 + r1) / 2} m ${have.toFixed(4)}/${want.toFixed(4)}`)
+      rows.push(`${d} m ${have.toFixed(4)}/${want.toFixed(4)}`)
     }
-    check(held, 'the DRAWN density is RIM_AT of fullRadius / d to within 6% at 200, 400, 800 and 1200 m',
+    check(held, 'the DRAWN density is RIM_AT of each population\'s law to within 6%, singles inside CLUMP_FROM and clumps out to the horizon',
       rows.join('  '))
   }
   check(hidden === s.rimHidden, 'and the rim agrees about how many trees it is not drawing',
@@ -1284,11 +1351,12 @@ trees.place(0, 0)
   trees.update(0, EYE, 0)
   let offLadder = 0
   for (const tile of trees.tiles.values()) {
-    for (let k = 0; k < tile.n; k++) if (trees.tierAt[tile.ids[k]] !== trees.cardTier) offLadder++
+    const want = tile.clumpy ? trees.clumpTier : trees.cardTier
+    for (let k = 0; k < tile.n; k++) if (trees.tierAt[tile.ids[k]] !== want) offLadder++
   }
   const meshLive = meshInstances()
   check(offLadder === 0 && meshLive === 0,
-    'cards only takes every tree down to the card tier and leaves the mesh meshes empty, so their draw calls go with them',
+    'cards only takes every tree down to the card tier, leaves the clumps as they are, and empties the mesh meshes so their draw calls go with them',
     `${offLadder} trees off the card tier, ${meshLive} instances still in ${meshTiers} mesh tiers`)
   check(trees.stats.cardsOnly === true, 'and the stats row says so, which is what the readout flags')
 
@@ -1494,11 +1562,68 @@ console.log('\n-- the LOD swap dissolves --')
   const wantGap = stampIn - walk.batch.fade[spare]
   setPropSolidAt(walk.batch, spare)
 
+  // THE MODE SWAP IS A CROSS-DISSOLVE. A tile crossing CLUMP_FROM either way
+  // retires its whole population and grows the other one, and the promise is
+  // that nothing pops: every old tree that was standing goes OUT through the
+  // rim and every new one that shows comes IN, both stamped off the one prop
+  // clock reading, so the two halves dither complementarily. Each frame's
+  // tiles are snapshotted before the update so a swap can be told from a
+  // tile that was simply thinned or thickened.
+  const before = new Map()
+  const stateBefore = new Uint8Array(n)
+  const startBefore = new Float32Array(n)
+  const snapshot = () => {
+    before.clear()
+    for (const [key, tile] of walk.tiles) {
+      before.set(key, { clumpy: tile.clumpy, ids: tile.ids.slice(0, tile.n) })
+    }
+    stateBefore.set(walk.rim.state)
+    startBefore.set(walk.rim.start)
+  }
+  const RIM_SOLID = 1
+  const RIM_OUT = 2
+  const RIM_IN = 4
+  const modeSwaps = { toSingles: 0, toClumps: 0, oldCut: 0, oldOffClock: 0, newSnapped: 0, newOffClock: 0 }
+  const auditSwaps = (now) => {
+    now = Math.fround(now)
+    const retiring = new Set(walk.retiring)
+    for (const [key, tile] of walk.tiles) {
+      const was = before.get(key)
+      if (!was || was.clumpy === tile.clumpy) continue
+      if (tile.clumpy) modeSwaps.toClumps++
+      else modeSwaps.toSingles++
+      for (const id of was.ids) {
+        const state = stateBefore[id]
+        if (state === RIM_SOLID) {
+          // Standing: goes OUT on this frame's reading, and holds its slot.
+          if (!retiring.has(id) || walk.rim.state[id] !== RIM_OUT) modeSwaps.oldCut++
+          else if (walk.rim.start[id] !== now) modeSwaps.oldOffClock++
+        } else if ((state === RIM_OUT || state === RIM_IN) && now - startBefore[id] < PROP_FADE_SECONDS) {
+          // Mid-transition: it runs on unchanged (an IN retires once solid).
+          // One whose window is up this frame has finished as hidden and been
+          // freed -- and possibly handed to the new population already -- or as
+          // solid and been retired, so only the ones still in flight are asked.
+          if (!retiring.has(id) || !walk.rim.isBusy(id)) modeSwaps.oldCut++
+        }
+      }
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (walk.rim.isHidden(id)) continue
+        if (!walk.rim.isBusy(id)) modeSwaps.newSnapped++
+        else if (walk.rim.start[id] !== now) modeSwaps.newOffClock++
+      }
+    }
+  }
+  let retiringPeak = 0
+
   const FRAMES = Math.round(SECONDS * 72)
   for (let f = 1; f <= FRAMES; f++) {
     z -= SPEED / 72
     setPropClock(0.5 + f / 72)
+    snapshot()
     walk.update(0, EYE, z)
+    auditSwaps(getPropClock())
+    retiringPeak = Math.max(retiringPeak, walk.retiring.length)
 
     seen.fill(0)
     for (const tile of walk.tiles.values()) {
@@ -1523,7 +1648,7 @@ console.log('\n-- the LOD swap dissolves --')
     seen = swap
 
     peakFlight = Math.max(peakFlight, walk.fades.length)
-    if (walk.placed + walk.fades.length + walk.freeCount !== walk.maxInstances) leaks++
+    if (walk.placed + walk.fades.length + walk.retiring.length + walk.freeCount !== walk.maxInstances) leaks++
     // fadeAt is the index back, and the swap-remove that keeps `fades` dense
     // rewrites it. An entry it no longer names is a fade nothing can end early:
     // the rim cannot preempt it and a second crossing cannot finish it, so the
@@ -1574,8 +1699,11 @@ console.log('\n-- the LOD swap dissolves --')
     `${walk.fades.length} in flight, stamps ${gap === null ? 'n/a' : gap.toFixed(3)} apart, ${wantGap.toFixed(3)} wanted`)
   check(indexBroken === 0, 'and every fade in flight is the one its original names, so any of them can be ended early',
     `${indexBroken} entries orphaned from fadeAt`)
-  check(leaks === 0, 'the pool closes every frame: placed + in flight + free = pool',
-    `${walk.placed} + ${walk.fades.length} + ${walk.freeCount} = ${walk.maxInstances}`)
+  check(leaks === 0, 'the pool closes every frame: placed + in flight + retiring + free = pool',
+    `${walk.placed} + ${walk.fades.length} + ${walk.retiring.length} + ${walk.freeCount} = ${walk.maxInstances}`)
+  check(modeSwaps.toSingles > 0,
+    'walking carries tiles in across CLUMP_FROM, so this gate covers the clump-to-singles swap',
+    `${modeSwaps.toSingles} tiles swapped to singles`)
 
   // THE RIM OUTRANKS THE SWAP and the callback that enforces it is easy to lose:
   // nothing throws without it, the ghost simply stays lit while its original
@@ -1609,9 +1737,12 @@ console.log('\n-- the LOD swap dissolves --')
   for (let f = 1; f <= 144; f++) {
     z -= FLIGHT_SPEED / 72
     setPropClock(0.5 + (FRAMES + f) / 72)
+    snapshot()
     walk.update(0, EYE, z)
+    auditSwaps(getPropClock())
+    retiringPeak = Math.max(retiringPeak, walk.retiring.length)
     flightPeak = Math.max(flightPeak, walk.fades.length)
-    if (walk.placed + walk.fades.length + walk.freeCount !== walk.maxInstances) flightLeaks++
+    if (walk.placed + walk.fades.length + walk.retiring.length + walk.freeCount !== walk.maxInstances) flightLeaks++
     for (let k = 0; k < walk.fades.length; k++) if (walk.fadeAt[walk.fades[k].orig] !== k) flightOrphans++
   }
   check(flightPeak === TREE_TUNING.FADE_MAX_INFLIGHT,
@@ -1620,6 +1751,18 @@ console.log('\n-- the LOD swap dissolves --')
   check(flightLeaks === 0 && flightOrphans === 0,
     'and the books still close at that speed',
     `${flightLeaks} frames out of balance, ${flightOrphans} orphaned entries`)
+  check(modeSwaps.toClumps > 0,
+    'flying leaves tiles behind across CLUMP_FROM, so this gate covers the singles-to-clump swap too',
+    `${modeSwaps.toClumps} tiles swapped to clumps`)
+  check(modeSwaps.oldCut === 0 && modeSwaps.newSnapped === 0,
+    'a mode swap dithers rather than pops: every standing tree of the old population goes OUT through the rim and every shown tree of the new one comes IN',
+    `${modeSwaps.oldCut} old trees cut, ${modeSwaps.newSnapped} new trees snapped, ${retiringPeak} retiring at the peak`)
+  check(walk.swapCuts === 0,
+    'and the pool carried both populations through every swap, so none was cut short for want of a slot',
+    `${walk.swapCuts} swaps cut, ${walk.maxInstances - walk.freeCount} of ${walk.maxInstances} used at the end of the flight`)
+  check(modeSwaps.oldOffClock === 0 && modeSwaps.newOffClock === 0,
+    'and both halves of every swap are stamped off the same prop clock reading, so they dither complementarily',
+    `${modeSwaps.oldOffClock} old and ${modeSwaps.newOffClock} new off the clock`)
 
   // And everything retires. The clock is advanced past the window with the
   // camera standing still, which is the state a player is in most of the time.
@@ -1639,6 +1782,9 @@ console.log('\n-- the LOD swap dissolves --')
   check(stamped === 0,
     'and every tree is back to the never-fade default, so no id carries a stale clock reading',
     `${stamped} still stamped`)
+  check(walk.retiring.length === 0 && walk.retiringTris === 0,
+    'and every retired population has drained back to the pool, so no swap holds two populations past the window',
+    `${walk.retiring.length} retiring, ${walk.retiringTris} triangles`)
   check(walk.placed + walk.freeCount === walk.maxInstances,
     'and the pool is whole again',
     `${walk.placed} placed, ${walk.freeCount} free, ${walk.maxInstances} pool`)
@@ -1762,9 +1908,16 @@ console.log('\n-- the cursor names a tree --')
   let widest = 0
   let narrowest = Infinity
   let n = 0
+  let clumpVolume = 0
   for (const t of trees.tiles.values()) {
     for (let k = 0; k < t.n; k++) {
       trees.pickTrunkAt(t.ids[k], scratchSize)
+      if (t.clumpy) {
+        if (scratchSize.radius !== 0 || scratchSize.rise !== 0) clumpVolume++
+        trees.pickCrownAt(t.ids[k], scratchSize)
+        if (scratchSize.radius !== 0 || scratchSize.rise !== 0) clumpVolume++
+        continue
+      }
       widest = Math.max(widest, scratchSize.radius)
       narrowest = Math.min(narrowest, scratchSize.radius)
       n++
@@ -1773,6 +1926,8 @@ console.log('\n-- the cursor names a tree --')
   check(widest < 3 && narrowest > 0.01 && widest / narrowest > (SCALE[1] / SCALE[0]) * 0.9,
     'and the volumes track the trees rather than being one number for the forest',
     `${n} trees, trunk pick radius ${narrowest.toFixed(3)} to ${widest.toFixed(3)} m, all under the 3 m the constant used`)
+  check(clumpVolume === 0, 'and a clump card has no pick volume at all, since it names no one tree',
+    `${clumpVolume} clump volumes with size`)
 }
 
 trees.dispose()

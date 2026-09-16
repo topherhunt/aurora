@@ -69,8 +69,11 @@ export class PropArena extends THREE.Group {
    *                      a function `(t, v) => Material` for a bank whose
    *                      variants wear their own maps (gen-props.js).
    * @param name          the group's name, and the stem of every mesh's.
+   * @param layerShift    attach `aLayerShift` to every geometry, for a material
+   *                      compiled with `layerShift: true`: the per-instance
+   *                      offset added to the geometry's `texLayer`, 0 at rest.
    */
-  constructor(maxInstances, tiers, caps, material, name) {
+  constructor(maxInstances, tiers, caps, material, name, { layerShift = false } = {}) {
     const materialFor = typeof material === 'function' ? material : () => material
     super()
     this.name = name
@@ -102,6 +105,9 @@ export class PropArena extends THREE.Group {
           'aPropFade',
           new THREE.InstancedBufferAttribute(new Float32Array(cap).fill(1), 1)
         )
+        if (layerShift) {
+          geo.setAttribute('aLayerShift', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1))
+        }
         const mesh = new THREE.InstancedMesh(geo, materialFor(t, v), cap)
         mesh.name = `${name}-t${t}-v${v}`
         // Nothing is drawn until an instance takes a slot; `count` is the live
@@ -136,6 +142,7 @@ export class PropArena extends THREE.Group {
     this.mat = new Float32Array(maxInstances * 16)
     this.col = new Float32Array(maxInstances * 3).fill(1)
     this.fade = new Float32Array(maxInstances).fill(1)
+    this.layer = layerShift ? new Float32Array(maxInstances) : null
   }
 
   addInstance(geometryId) {
@@ -204,6 +211,17 @@ export class PropArena extends THREE.Group {
     attr.needsUpdate = true
   }
 
+  /** The instance's layer offset; the arena must have been built with `layerShift`. */
+  setLayerShiftAt(instanceId, value) {
+    if (!this.layer) throw new Error(`${this.name}: built without layerShift`)
+    this.layer[instanceId] = value
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const attr = this.meshes[this.geoAt[instanceId]].geometry.getAttribute('aLayerShift')
+    attr.array[s] = value
+    attr.needsUpdate = true
+  }
+
   /**
    * Free slots left in the mesh that draws `geometryId`.
    *
@@ -266,6 +284,11 @@ export class PropArena extends THREE.Group {
     const attr = mesh.geometry.getAttribute('aPropFade')
     attr.array[s] = this.fade[instanceId]
     attr.needsUpdate = true
+    if (this.layer) {
+      const shift = mesh.geometry.getAttribute('aLayerShift')
+      shift.array[s] = this.layer[instanceId]
+      shift.needsUpdate = true
+    }
   }
 
   dispose() {

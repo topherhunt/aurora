@@ -576,5 +576,28 @@ function lone(seed = 3) {
   k.dispose()
 }
 
+// --- the ear hears the snowmen ------------------------------------------------------
+//
+// bodies() is what the ambience reads every frame for the footfall clock: the
+// slots themselves, `speed > 0` on the ones on a gait. A cowerer and a watcher
+// are listed standing; a hidden layer lists nothing.
+{
+  const { k, c, at } = lone()
+  at(NOTICE_M + 5)
+  check(c.state === 'cower' && k.bodies([]).includes(c) && c.speed === 0, 'a cowering snowman is listed, standing')
+  c.heading = c.aim = Math.PI / 2 - 0.05
+  at(NOTICE_M - 1)
+  check(c.state === 'watch' && k.bodies([]).includes(c) && c.speed === 0, 'so is a watcher')
+  at(6, 5, dt)
+  at(6 + AWAY_M + 0.5)
+  check(c.state === 'follow' && c.clip === 'walk' && c.speed > 0 && k.bodies([]).includes(c) && c.cycle === k.durations.walk, 'following her at a walk it moves, carrying the walk clip\'s own length for the footfall clock', `${c.cycle.toFixed(3)} s`)
+  c.heading = 0
+  k.update(c.x + RUN_M + 6, GROUND + HEAD, c.z, dt)
+  check(c.clip === 'run' && c.speed > 0 && c.cycle === k.durations.run, 'chasing her at a run it carries the run clip\'s length', `${c.cycle.toFixed(3)} s`)
+  k.batch.visible = false
+  check(k.bodies([]).length === 0, 'a hidden layer lists nobody')
+  k.dispose()
+}
+
 console.log(failures ? `\n${failures} failing` : '\nall snowmen checks pass')
 process.exit(failures ? 1 : 0)

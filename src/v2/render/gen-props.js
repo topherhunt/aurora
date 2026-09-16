@@ -8,7 +8,7 @@
 // at 512 px (tools/props/gen/ship.mjs), four times the atlas's side, so it
 // cannot be a layer of it and a prop cannot draw through createPropMaterial:
 // each variant is a Lambert with `map`, one program per variant, and the far
-// tier is the critters' cross card photographed off the loaded mesh at runtime
+// tier is a critters.js card photographed off the loaded mesh at runtime
 // rather than a bench-baked impostor layer. What the material keeps of the
 // props' shader is the rim dissolve -- material.js's FADE_VERTEX and
 // FADE_FRAGMENT over the arena's `aPropFade` attribute -- so a generated prop
@@ -17,7 +17,7 @@
 
 import THREE from '../../three-instance.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
-import { critterLodUrl, loadCritterGlb } from './critters.js'
+import { BILLBOARD_VERTEX, critterLodUrl, loadCritterGlb } from './critters.js'
 
 // What tools/props/gen/ship.mjs writes for each prop, relative to the page like the critters' URLs: the pick, and its ladder as critterLodUrl.
 export const GEN_PROP_GLB = {
@@ -91,15 +91,34 @@ export async function loadGenProp(url, { longAxisZ = false } = {}) {
 /** Triangles per tier of a ladder, for a scatter's per-frame count. */
 export const ladderTris = (geometries) => geometries.map((g) => g.index.count / 3)
 
+// The normal a card is lit by, in place of its own. A card is a rounded body
+// photographed in flat albedo, so it is lit as that body reads in the
+// aggregate: the mean normal of the surface she sees, halfway between the
+// world's up and the way to her -- bright with the sun behind her, dim looking
+// into it, like the mesh it stands in for. Taken from the world and not from
+// the instance, whose matrix turns the authored normal with the piece: a log
+// rolled about its axis (deadwood.js) had its card lit from underneath, ground
+// bounce and no sun, and read as a grey slab beside the mesh. Straight down at
+// it the two directions agree and it is lit as a top.
+const CARD_NORMAL = /* glsl */ `
+  {
+    vec3 cnUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+    vec3 cnSum = cnUp + normalize( vViewPosition );
+    float cnLen = length( cnSum );
+    normal = cnLen > 1e-4 ? cnSum / cnLen : cnUp;
+  }`
+
 /**
  * The material one generated prop draws through: Lambert with its own map and
- * the rim dissolve. A `card` is the far cross card -- a cutout, double-sided,
- * with three's double-sided normal flip undone so both faces of both quads
- * take the authored up-normal and the seam between them is not a step in
- * brightness (critters.js). `label` keys the program: two materials differing
- * only in `card` are two programs.
+ * the rim dissolve. A `card` is a far card off critters.js -- a cutout,
+ * double-sided, lit by CARD_NORMAL on both faces of every quad so a cross's
+ * seam is not a step in brightness. A `billboard` card is one quad spun about
+ * the instance's Y to face her in the vertex shader (two triangles; flat in a
+ * headset, which past the parallax range it always is). `label` keys the
+ * program: two materials differing only in these flags are two programs.
  */
-export function createGenPropMaterial(label, { tint = 0xffffff, card = false } = {}) {
+export function createGenPropMaterial(label, { tint = 0xffffff, card = false, billboard = false } = {}) {
+  if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
   const material = new THREE.MeshLambertMaterial({
     color: tint,
     alphaTest: card ? 0.5 : 0,
@@ -117,15 +136,15 @@ export function createGenPropMaterial(label, { tint = 0xffffff, card = false } =
         uniform float uPropClock;
         varying float vPropFade;`
       )
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${FADE_VERTEX}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? BILLBOARD_VERTEX : ''}\n${FADE_VERTEX}`)
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
       .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
     if (card) {
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
+        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
     }
   }
-  material.customProgramCacheKey = () => `gen-prop-${label}${card ? '-card' : ''}`
+  material.customProgramCacheKey = () => `gen-prop-${label}${billboard ? '-billboard' : card ? '-card' : ''}`
   return material
 }

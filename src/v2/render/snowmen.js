@@ -172,8 +172,8 @@ export class Snowmen {
         state: 'cower', near: Infinity,
         // The probe's last answer, seconds left of a turn off a blocked line, the side it turns to, and how long the line has been clear.
         blocked: false, detour: 0, side: 1, clear: Infinity,
-        // The steps left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is. `cue` counts steps.
-        queue: [], clip: 'cower', left: 0, dur: 0, cue: 0, speed: 0,
+        // The steps left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps.
+        queue: [], clip: 'cower', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
         lod: LOD_TIERS, puppet: null,
       })
     }
@@ -316,6 +316,18 @@ export class Snowmen {
     return { alive: MAX - this.free.length, states, loose: this.loose.length, puppets: this.puppets.length - this.freePuppets.length, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved }
   }
 
+  /**
+   * Every snowman minded this frame, for the ear (audio/ambience.js): the slots
+   * themselves, with x, y, z, size, clip, cycle and speed on them, `speed > 0`
+   * meaning it is walking or running. A hidden layer is frozen and lists
+   * nothing; nor does one past its last rung, which is not minded and stands still.
+   */
+  bodies(into) {
+    if (!this.batch.visible) return into
+    for (const c of this.slots) if ((c.tile !== null || c.loose) && c.lod < LOD_TIERS) into.push(c)
+    return into
+  }
+
   // -------------------------------------------------------------------------
   // What a snowman is doing.
   // -------------------------------------------------------------------------
@@ -386,6 +398,7 @@ export class Snowmen {
     c.clip = clip
     c.dur = seconds
     c.left = seconds
+    c.cycle = this.durations[clip]
     c.cue++
     const speed = this.asset.gait[clip]
     c.speed = speed === undefined ? 0 : speed * c.k

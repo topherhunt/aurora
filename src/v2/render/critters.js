@@ -9,6 +9,7 @@
 import THREE from '../../three-instance.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { TEX_SIZE } from '../../textures.js'
+import { FADE_FRAGMENT, IGN_GLSL } from '../../material.js'
 import { SUPERSAMPLE, downsample, dilate } from '../../props/impostor.js'
 
 // What tools/creatures/ship.mjs writes for each critter, relative to the page like avatar.js's URLs: the pick, and its ladder as critterLodUrl.
@@ -183,13 +184,12 @@ export function setCritterAsset(mesh, material, asset, label) {
 // ---------------------------------------------------------------------------
 // THE LOD LADDER, THE SAME ONE FOR EVERY CREATURE IN THE WORLD. A thing that
 // moves -- turns, hops, is seen from every side -- is drawn as its mesh at
-// every distance, stepping down its decimated tiers as it shrinks in her view,
-// and not drawn at all under the last rung. The rungs are APPARENT SIZE: tier 0
-// holds until the body subtends less than LOD_DEG of arc, and each rung after
-// it holds until half the arc of the one above, which is twice the distance.
-// Four rungs, so a body is drawn out to an eighth of LOD_DEG and culled past
-// that. For a 2.2 m stag that is 10, 20, 40, 80 m; for a 1.4 m fox 6, 13, 25,
-// 50; for a 0.5 m hare 2.2, 4.5, 9, 18.
+// every distance, stepping down its decimated tiers as it shrinks in her view.
+// The rungs are APPARENT SIZE: tier 0 holds until the body subtends less than
+// LOD_DEG of arc, and each rung after it holds until half the arc of the one
+// above, which is twice the distance. LOD_RUNGS mesh rungs, so a body is drawn
+// as a mesh out to an eighth of LOD_DEG. For a 2.2 m stag that is 10, 20, 40,
+// 80 m; for a 1.4 m fox 6, 13, 25, 50; for a 0.5 m hare 2.2, 4.5, 9, 18.
 //
 // Arc and body-count are the same ladder -- a body subtends LOD_DEG at a fixed
 // number of its own lengths away -- but degrees are the units the eye works in,
@@ -207,14 +207,26 @@ export function setCritterAsset(mesh, material, asset, label) {
 // one from home. The cost of a low rung is a mesh that still reads as its animal
 // at its size, which is the decimator's job (src/mesh/decimate.js), not a card's.
 //
-// THE CROSS CARD, below, is for a creature that is seen in one fixed pose from
-// one side -- the crab, clinging to its rock. It costs two quads and a bake,
-// and shows its seams from any other angle, which is why the frog has none:
-// most creatures want the ladder pared harder at the bottom, not a card.
+// ONE MORE RUNG, AS A CARD, IS OPTIONAL. A layer that passes CARD_RUNGS instead
+// of LOD_RUNGS hangs a further doubling under the mesh rungs -- twice the mesh
+// cull, 160 m for that stag -- where the creature is drawn as a single spun
+// quad (SPUN_VIEWS below) instead of a mesh with a skeleton on it. At that
+// distance the body is a dozen pixels tall and a photograph of it is
+// indistinguishable from the mesh, so what the rung buys is presence: an animal
+// that was already there as she walked toward it rather than one that appeared
+// out of nothing at the mesh cull. `cullRange` and `forgetRange` take the same
+// count, so a card layer's cull and forget are measured from the card rung and
+// the whole ladder moves together.
+//
+// THE CROSS CARD, further below, is the other kind of card: a creature seen in
+// one fixed pose from one side -- the crab, clinging to its rock -- drawn on two
+// crossed quads under the mesh's own matrix rather than turned to her.
 // ---------------------------------------------------------------------------
 
-// Rungs on the ladder, and so skinned tiers a shipped creature carries.
+// Mesh rungs on the ladder, and so skinned tiers a shipped creature carries.
 export const LOD_RUNGS = 4
+// The ladder with the spun card rung under it, for a layer that draws one.
+export const CARD_RUNGS = LOD_RUNGS + 1
 // The arc a body has shrunk to when tier 0 gives way. Each rung below it holds
 // to half the arc of the one above, so each reaches LOD_STEP times as far.
 export const LOD_DEG = 12.7
@@ -272,15 +284,80 @@ export const CARD_M = 8
 // The bake: each view is TEX_SIZE px square, side by side in the order the views are listed; the picture frames the body with this margin each side so the alpha edge is not the texel edge.
 const CARD_MARGIN = 0.06
 
-export function createCritterCardMaterial(label) {
+// The spun card's vertex work: turn the quad about the instance's own Y to face
+// her, in object space so the instance matrix lands it exactly. Spun about Y and
+// not about the view axis, because a card spun spherically LIES DOWN as she
+// looks along it from above -- a standing animal seen from a ridge would tip its
+// nose at her -- and a body that stands on the ground wants the ground's up.
+export const BILLBOARD_VERTEX = /* glsl */ `
+  {
+    vec4 bbOrigin = instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+    vec4 bbAxis = instanceMatrix * vec4( 1.0, 0.0, 0.0, 0.0 );
+    bbOrigin = modelMatrix * bbOrigin;
+    bbAxis = modelMatrix * bbAxis;
+    vec2 bbA = normalize( vec2( bbAxis.x, bbAxis.z ) );
+    // Degenerate only with her exactly on the axis, where any facing is right.
+    vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
+    float bbLen = length( bbTo );
+    vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+    // Screen-right in world XZ, then the rotation taking the instance's yaw onto it: bbR * conj(bbA).
+    vec2 bbR = vec2( bbF.y, -bbF.x );
+    vec2 bbC = vec2( bbR.x * bbA.x + bbR.y * bbA.y, bbR.y * bbA.x - bbR.x * bbA.y );
+    transformed.xz = vec2( transformed.x * bbC.x - transformed.z * bbC.y, transformed.x * bbC.y + transformed.z * bbC.x );
+    // The yaw the spin threw away picks which way the picture reads: two silhouettes from one bake, stable per instance.
+    if ( bbA.x < 0.0 ) vMapUv.x = 1.0 - vMapUv.x;
+  }`
+
+// The dissolve a `fade` card carries: one signed number an instance, in
+// material.js's FADE_FRAGMENT terms -- POSITIVE keeps the low side of the pixel
+// hash and NEGATIVE the high side, the magnitude being the share kept either
+// way. It is written straight rather than decoded from a clock stamp (the
+// props' FADE_VERTEX) because the thing this card cross-dissolves against is a
+// puppet, whose own cut the layer is already driving frame by frame; the two
+// must read the same number on the same frame or the silhouette thins.
+const CARD_FADE_COMMON = /* glsl */ `
+  attribute float aCardFade;
+  varying float vPropFade;`
+
+/**
+ * The material a creature's card draws through: Lambert over the baked picture,
+ * a cutout (alphaTest), double-sided with three's double-sided normal flip
+ * undone so both faces of every quad take the authored up-normal and a cross's
+ * seam is not a step in brightness, and the per-instance hue turn so a card
+ * keeps the colour its mesh had.
+ *
+ * `billboard` spins the one quad about the instance's Y to face her in the
+ * vertex shader; `fade` gives it the per-instance dissolve above. `label` keys
+ * the program, and the flags key it further: two materials differing only in
+ * these are two programs.
+ */
+export function createCritterCardMaterial(label, { billboard = false, fade = false } = {}) {
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
   material.onBeforeCompile = (shader) => {
     hueVary(shader)
+    if (billboard || fade) {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? BILLBOARD_VERTEX : ''}\n${fade ? 'vPropFade = aCardFade;' : ''}`)
+    }
     // three flips a double-sided normal toward the viewer; twice is the identity, and the authored up-normal lights both faces alike.
     shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
+    if (fade) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
+        .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
+    }
   }
-  material.customProgramCacheKey = () => `${label}-card`
+  material.customProgramCacheKey = () => `${label}-card${billboard ? '-spun' : ''}${fade ? '-fade' : ''}`
   return material
+}
+
+/** The `aCardFade` attribute for `n` instances, set on the mesh's geometry and returned for the caller to write. */
+export function makeCardFadeAttribute(mesh, n) {
+  const fade = new THREE.InstancedBufferAttribute(new Float32Array(n), 1)
+  fade.setUsage(THREE.DynamicDrawUsage)
+  mesh.geometry.setAttribute('aCardFade', fade)
+  return fade
 }
 
 /** The picture's extents in the unit mesh's frame: the body's box grown by CARD_MARGIN, feet a little below y = 0. */
@@ -358,21 +435,69 @@ export function setCritterCard(mesh, bounds, views) {
   geo.computeBoundingBox()
 }
 
+// A card that is one quad turned to her in the vertex shader (createGenPropMaterial's `billboard`): the side view, as wide as the piece's widest side, since it stands in for every side.
+export const SPUN_VIEWS = ['side']
+export const spunBounds = (b) => ({ ...b, halfX: Math.max(b.halfX, b.halfZ) })
+
+// A card for a thing lying along its own Z: its length, seen from beside it.
+export const AXIS_VIEWS = ['front']
+
+/**
+ * The quads for a piece that LIES ALONG ITS OWN Z and is seen from beside,
+ * above and anywhere between, never usefully from an end: AXIS_VIEWS' one
+ * picture on two quads through the piece's own axis (`core`, x and y in the
+ * unit frame), the second the first turned a quarter about that axis. Both
+ * read the whole picture; the bake is bakeCritterCard with AXIS_VIEWS.
+ */
+export function setAxisCard(mesh, bounds, core) {
+  const ext = critterCardExtents(bounds)
+  const view = cardView(AXIS_VIEWS[0], ext)
+  const yMid = (ext.y0 + ext.y1) / 2
+  const pos = []
+  const uv = []
+  const nrm = []
+  const p = new THREE.Vector3()
+  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+    cardCorner(view, u, v, p)
+    pos.push(core.x, p.y, p.z)
+    uv.push(u, v)
+    nrm.push(0, 1, 0)
+  }
+  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+    cardCorner(view, u, v, p)
+    pos.push(core.x + (p.y - yMid), core.y, p.z)
+    uv.push(u, v)
+    nrm.push(0, 1, 0)
+  }
+  const geo = mesh.geometry
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
+  geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
+  geo.computeBoundingBox()
+}
+
 /**
  * Photograph the loaded creature for its card: each view the quads of `views`
  * show, orthographic and unlit (the card is lit where it is drawn, like the
  * mesh), supersampled and dilated like the props' impostors, side by side in
- * one TEX_SIZE-high texture. Needs the renderer, so the world calls it once
- * the GLB has landed. A skinned geometry photographs in its bind pose: the
- * scene here is a plain Mesh, which reads no joints.
+ * one TEX_SIZE-high texture. Needs the renderer, so the world calls it once the
+ * GLB has landed.
+ *
+ * `subject` is either the BufferGeometry to photograph -- wrapped here in an
+ * unlit Mesh over `map` -- or an Object3D ALREADY POSED AND ALREADY WEARING ITS
+ * OWN unlit material. The second form is what a skinned creature needs: its
+ * vertices sit wherever the rig left them and mean nothing until the bones move
+ * them, so a plain Mesh over a skinned geometry photographs a heap.
  */
-export function bakeCritterCard(renderer, geometry, map, bounds, views) {
-  if (!map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
+export function bakeCritterCard(renderer, subject, map, bounds, views) {
+  const geometry = subject.isBufferGeometry ? subject : null
+  if (geometry && !map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
   checkViews(views)
   const ext = critterCardExtents(bounds)
-  const material = new THREE.MeshBasicMaterial({ map, toneMapped: false })
+  const material = geometry ? new THREE.MeshBasicMaterial({ map, toneMapped: false }) : null
   const scene = new THREE.Scene()
-  scene.add(new THREE.Mesh(geometry, material))
+  scene.add(geometry ? new THREE.Mesh(geometry, material) : subject)
   const big = TEX_SIZE * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {
     format: THREE.RGBAFormat,
@@ -414,7 +539,9 @@ export function bakeCritterCard(renderer, geometry, map, bounds, views) {
   renderer.setRenderTarget(prevTarget)
   renderer.setClearColor(prevClear, prevAlpha)
   target.dispose()
-  material.dispose()
+  if (material) material.dispose()
+  // A lent subject goes back out of this throwaway scene, so its parent is not a dead one.
+  else scene.remove(subject)
 
   // GL hands rows back bottom first, which is the row order a DataTexture's v runs in, so a view's bottom is at v = 0 with no flip.
   const n = shots.length

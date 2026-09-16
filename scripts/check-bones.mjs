@@ -13,9 +13,10 @@
 
 import * as THREE from 'three'
 import {
-  Bones, LOD_AT, SKELETON_LENGTH, SKELETON_LENGTH_CAP, SKULL_SIZE, bonesBankFrom,
+  Bones, RUNGS, SKELETON_LENGTH, SKELETON_LENGTH_CAP, SKULL_SIZE, bonesBankFrom,
 } from '../src/v2/render/bones.js'
 import { GEN_PROP_LODS } from '../src/v2/render/gen-props.js'
+import { LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 
 let failures = 0
@@ -68,7 +69,8 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   console.log('\nthe shipped bank is built for the scatter that indexes it')
   const bank = shippedBank()
   const lens = bank.tiers.map((t) => t.geometries.length)
-  check(bank.tiers.length === GEN_PROP_LODS + 2, 'the pick, its decimated tiers and the cross card', `${bank.tiers.length} tiers`)
+  check(bank.tiers.length === GEN_PROP_LODS + 2 && RUNGS === bank.tiers.length,
+    'the pick, its decimated tiers and the card, one rung each', `${bank.tiers.length} tiers, ${RUNGS} rungs`)
   check(lens.every((n) => n === 2) && bank.variants.length === 2,
     'every tier carries one geometry per variant slot', `skeleton + skull, tiers ${lens.join('/')}`)
   const tris = bank.tiers.map((t) => t.geometries.map((g) => g.index.count / 3))
@@ -84,24 +86,40 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   check(skeleton && skeleton.long >= skeleton.width && skeleton.long > skeleton.height,
     'the skeleton lies along its own Z', skeleton ? `${skeleton.long.toFixed(2)} long, ${skeleton.width.toFixed(2)} wide, ${skeleton.height.toFixed(2)} high` : 'no skeleton')
 
+  // The card must cover the find it stands in for at the swap. The skull's is
+  // one quad in its XY plane, spun to her in the shader, so its width has to
+  // cover the skull's widest side; the skeleton's is two quads, its length
+  // upright and laid flat, both through its own Z axis.
   const tooSmall = []
+  const shape = []
   const cardTier = bank.tiers[bank.tiers.length - 1]
   bank.variants.forEach((v, i) => {
     const card = cardTier.geometries[i]
     card.computeBoundingBox()
     const b = card.boundingBox
     const pb = bank.bounds[i]
-    const wide = Math.max(b.max.x - b.min.x, b.max.z - b.min.z)
+    const quads = card.index.count / 6
+    const wide = v.kind === 'skeleton' ? b.max.z - b.min.z : b.max.x - b.min.x
     if (wide < Math.max(pb.width, pb.long) - 1e-3 || b.max.y - b.min.y < pb.height - 1e-3) tooSmall.push(v.name)
+    const flat = Math.abs(b.max.z - b.min.z) < 1e-6
+    const crossed = b.max.x - b.min.x > pb.height - 1e-3 && b.max.z - b.min.z > pb.long - 1e-3
+    if (!(v.kind === 'skeleton' ? quads === 2 && crossed : quads === 1 && flat)) shape.push(`${v.name}: ${quads} quads`)
   })
-  check(tooSmall.length === 0, 'and the cross card is at least as big as the piece it replaces',
+  check(tooSmall.length === 0, 'and the card is at least as big as the find it replaces',
     tooSmall.length === 0 ? 'both cards cover their pick' : tooSmall.join(', '))
+  check(shape.length === 0, 'the skull\'s card is one quad to spin and the skeleton\'s is its length crossed about its axis',
+    shape.length === 0 ? 'one flat quad; two quads spanning the length upright and flat' : shape.join('; '))
   for (const t of bank.tiers) for (const g of t.geometries) g.dispose()
 
-  check(LOD_AT.length === GEN_PROP_LODS + 1 && LOD_AT.every((k, i) => k > 0 && (i === 0 || k > LOD_AT[i - 1])),
-    'the LOD thresholds ascend and there is one per mesh tier', `${LOD_AT.join(' / ')} m per metre`)
-  check(LOD_AT[0] > 0.5, 'and a find is on its finest mesh when the player is touching its end',
-    `T0 holds to ${LOD_AT[0]}x the ladder size against an end at 0.5x`)
+  // Distance is measured from the instance origin at the middle of the find,
+  // so a player touching an end of a find of ladder size L is L/2 out. Per
+  // metre that is 0.5 whatever the size, so one comparison settles the bank.
+  check(lodReach(1, 0) > 0.5, 'and a find is on its finest mesh when the player is touching its end',
+    `T0 holds to ${lodReach(1, 0).toFixed(2)}x the ladder size against an end at 0.5x`)
+  // The card rung reaches twice the last mesh rung, and past it the find is culled.
+  check(Math.abs(lodReach(1, RUNGS - 1) / lodReach(1, RUNGS - 2) - 2) < 1e-9 && cullRange(1, RUNGS) === lodReach(1, RUNGS - 1),
+    'the card holds to twice the last mesh rung and the cull is the card\'s edge',
+    `per metre: ${Array.from({ length: RUNGS }, (_, k) => lodReach(1, k).toFixed(1)).join(' / ')} m`)
 }
 
 // --- the sizes --------------------------------------------------------------
@@ -198,6 +216,20 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
 {
   console.log('\nit steps down its ladder at the same apparent size')
   const b = place(flatField(40), DRY, 23)
+  check(Math.abs(b.radius - cullRange(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]), RUNGS)) < 1e-6 && b.radius > 500,
+    'the grid reaches the biggest find the scatter can place at its cull',
+    `${b.radius.toFixed(0)} m, ${b.tiles.size} tiles`)
+  let culls = 0
+  let cullWrong = 0
+  for (const tile of b.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      culls++
+      if (Math.abs(b.rim.gone[id] - Math.min(b.radius, cullRange(b.instSize[id], RUNGS))) > 1e-3) cullWrong++
+    }
+  }
+  check(culls > 20 && cullWrong === 0, 'every find is culled at its own size\'s range',
+    `${culls} finds, a 3 m skull at ${cullRange(3, RUNGS).toFixed(0)} m and a 10 m skeleton at ${cullRange(10, RUNGS).toFixed(0)}`)
   const wrong = []
   let seen = 0
   let unlit = 0
@@ -212,15 +244,18 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
         const tier = b.tierAt[id]
         const d = Math.hypot(b.instX[id] - cx, b.instY[id] - 1.6, b.instZ[id] - cz)
         seen++
-        let want = LOD_AT.length
-        for (let t = 0; t < LOD_AT.length; t++) if (d < size * LOD_AT[t]) { want = t; break }
+        // The rung its own size wants at this distance with no rung held,
+        // pushed out by the hysteresis a held rung is allowed. One-sided: too
+        // coarse for how big the thing looks is the artefact.
+        const want = Math.min(b.cardTier, critterTier(size, d / (1 - LOD_HYSTERESIS), -1, RUNGS))
         if (tier > want) wrong.push(`${b.bank.variants[b.variantAt[id]].name} ${size.toFixed(1)} m at ${d.toFixed(1)} m on T${tier}, wants T${want}`)
       }
     }
   }
   check(seen >= 8, 'walked enough placed finds to measure a ladder', `${seen} instance-frames, ${unlit} more the rim was not drawing`)
   check(wrong.length === 0, 'no find is coarser than its own apparent size allows',
-    wrong.length === 0 ? `thresholds ${LOD_AT.join('/')} m per metre of ladder size` : `${wrong.length} too coarse: ${wrong.slice(0, 3).join('; ')}`)
+    wrong.length === 0 ? `rungs at ${Array.from({ length: RUNGS - 1 }, (_, k) => lodReach(1, k).toFixed(1)).join('/')} m per metre of ladder size`
+      : `${wrong.length} too coarse: ${wrong.slice(0, 3).join('; ')}`)
   check(b.tris > 0, 'and the frame counts the triangles it draws', `${b.tris} on the last vantage`)
   b.dispose()
 }
@@ -249,9 +284,10 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   const c = place(flatField(40), DRY, 4)
   check(keyOf(a) !== keyOf(c), 'and another seed places others')
 
-  // Walk away and back: what left the disc is released, what came back is the same.
+  // Walk away and back: far enough that every tile leaves the eviction ring,
+  // so what came back was released and regrown, not held.
   const before = keyOf(a)
-  a.update(500, 1.6, 500)
+  a.update(2000, 1.6, 2000)
   check(a.placed <= a.maxInstances && a.stats.used === a.placed, 'walking away returns the evicted finds to the pool', `${a.placed} resident, ${a.stats.used} used of ${a.maxInstances}`)
   a.update(0, 1.6, 0)
   check(keyOf(a) === before, 'and walking back finds them where they were')

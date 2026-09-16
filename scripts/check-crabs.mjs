@@ -275,6 +275,23 @@ check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instan
   check(lift === 0 && seated() === n, 'and on it again once the stone is back')
 }
 
+// --- the ear hears the crabs -----------------------------------------------------
+// bodies() is what the ambience reads for the crawl loop: the slots themselves, `speed > 0` on the ones on the move, a pause at speed 0.
+{
+  const [walker, pauser] = alive()
+  walker.state = 'go'; walker.left = 10; walker.speed = SPEED[0]
+  pauser.state = 'pause'; pauser.left = 10; pauser.speed = 0
+  const listed = crabs.bodies([])
+  check(listed.length === alive().length && listed.includes(walker) && walker.speed > 0, 'every seated crab is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
+  check(listed.includes(pauser) && pauser.speed === 0, 'the pauser listed at speed 0')
+  walker.left = 0
+  crabs.update(15, LEVEL + 1.6, 0, DT)
+  check(walker.state === 'pause' && walker.speed === 0 && crabs.bodies([]).includes(walker), 'its spell over, the walker pauses at speed 0 and stays listed')
+  crabs.batch.visible = false
+  check(crabs.bodies([]).length === 0, 'a hidden layer lists nobody')
+  crabs.batch.visible = true
+}
+
 // --- the drawn pose: stretched, and sunk into the stone along its normal --------
 // The stand-in slab is 0.3 tall at span 1, so a crab sinks SINK * 0.3 * size.
 const sinkOf = (c) => SINK * 0.3 * c.size
@@ -384,9 +401,11 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL + 1.6, 0, DT, false)
   check(written() === dry.length, 'with her head in the air only the dry crabs are written', `${written()} of ${alive(k).length}`)
   check(pose.every(([c, x, y, z, left, phase]) => c.x === x && c.y === y && c.z === z && c.left === left && c.phase === phase), 'and no sunk crab moves or counts the time')
+  check(k.bodies([]).length === dry.length && !k.bodies([]).some((c) => sunk.includes(c)), 'and the ear is offered the dry crabs alone', `${k.bodies([]).length} listed`)
   for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL - 1, 0, DT, true)
   check(written() === alive(k).length, 'under, every crab is written again', `${written()} of ${alive(k).length}`)
   check(pose.some(([c, x, y, z, left]) => c.left !== left), 'and the sunk ones pick up where they paused')
+  check(k.bodies([]).length === alive(k).length, 'and the ear is offered all of them')
   k.dispose()
 }
 

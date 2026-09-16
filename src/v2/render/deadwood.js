@@ -1,9 +1,12 @@
 import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
-import { DEADWOOD_CULL } from '../../props/deadwood.js'
 import { GEN_PROP_GLB, GEN_PROP_LODS, createGenPropMaterial, loadGenProp } from './gen-props.js'
-import { bakeCritterCard, setCritterCard } from './critters.js'
+import {
+  AXIS_VIEWS, LOD_HYSTERESIS, SPUN_VIEWS, bakeCritterCard, critterTier, cullRange, lodReach, setAxisCard,
+  setCritterCard, spunBounds,
+} from './critters.js'
+import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -12,8 +15,8 @@ import { smoothstep } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
 // The rotting stump and the fallen log on the forest floor, /v2 route: two
-// generated props (DESIGN.md §29) shipped as a four-tier ladder each, with the
-// critters' cross card past the last tier. How a piece beds in is DESIGN.md §21.
+// generated props (DESIGN.md §29) shipped as a four-tier ladder each, with a
+// card past the last tier. How a piece beds in is DESIGN.md §21.
 //
 // Fifth sibling of render/trees.js, render/ferns.js, render/rocks.js and
 // render/mushrooms.js, and the same machine again: one prop arena, a variant
@@ -35,12 +38,20 @@ import { smoothstep } from '../../sim/mathx.js'
 //    broken base meets the hill. Both sink by their own half-thickness times the
 //    local slope, which closes the uphill gap.
 //
-// 2. THE BANDS SCALE WITH THE PIECE. Distance is measured from the instance
-//    ORIGIN, so under a flat ladder a player standing at a long log's END was
-//    looking at T1 from arm's length; LOD_AT is metres per metre of the piece.
-//    The far tier is a CROSS CARD in the piece's own frame, not a spun billboard:
-//    a log has a heading, and a card that held still against the eye while the
-//    mesh under it pointed along its yaw made every swap read as the log turning.
+// 2. THE LADDER IS THE CREATURES' (critters.js): a piece steps down its four
+//    mesh tiers as it shrinks in her view, LOD_DEG of arc and halving, and past
+//    them is a CARD to twice the last mesh rung's reach, then culled. Distance
+//    is measured from the instance origin, so a flat ladder had her at a long
+//    log's END looking at T1 from arm's length. Every step, card included, is
+//    the forest's quarter-second cross-dissolve (`_crossFade`), and each piece
+//    is culled at its own size's range through the rim's per-instance
+//    gone-distance (rim.js); the tile grid reaches as far as the biggest piece
+//    in the bank is drawn.
+//    The stump's card is one quad spun to her in the vertex shader; the log's
+//    is its length photographed from beside it on two quads crossed about its
+//    own axis, not spun: a log has a heading, and a card that held still
+//    against the eye while the mesh under it pointed along its yaw made every
+//    swap read as the log turning.
 //
 // 3. THE FOREST IS PLACED AROUND IT, not it around the forest. A piece is a
 //    pure function of position (`_plan`), so trees.js asks `occupiesAt` before
@@ -49,13 +60,17 @@ import { smoothstep } from '../../sim/mathx.js'
 //    live wood: full DENSITY in forest cover, a quarter of it in the open
 //    (COVER, off the same biome field the trees read).
 //
-// WHAT IT COSTS. At 0.003 pieces/m^2, FULL_RADIUS 45 and DRAW_RADIUS 100 the
-// graded law gives pi*F^2*D + 2*pi*F*D*(R-F) = 19 + 47 = ~66 standing. The
-// shipped ladders run ~2000/1000/500/200 (stump) and ~1000/500/250/100 (log)
-// triangles and LOD_AT holds a 2 m stump on T3 to 48 m, so the layer is
-// ~13k triangles with a median stump and less with a median log -- a tenth of
-// what the trees around it cost. Dead wood is something you come across, not
-// something you wade through.
+// WHAT IT COSTS. At 0.003 pieces/m^2 every piece stands to its last mesh rung
+// (FULL_RUNG) and is thinned as 1/d past it in its own arc, so what is resident
+// far out is the big pieces, and past their arc cull they are hidden: ~4900
+// resident of a 7500 pool in full cover on flat ground (the gate's ladder
+// walk), ~1350 of them drawn, and past a few hundred metres the odd long log
+// as a card. The shipped ladders run ~2000/1000/500/200 (stump) and
+// ~1000/500/250/100 (log) triangles and a 2 m stump is on T3 from 36 m and a
+// card from 72, so the layer measures ~108k triangles there, most of it T3
+// meshes between 20 and 40 sizes out, and the per-frame walk over the
+// resident pieces ~0.8 ms in node. Dead wood is something you come across,
+// not something you wade through.
 //
 // THE COLOUR is per instance: the fern's ground cue plus a value jitter, so two
 // logs side by side are not the same pixel and a log on scrub is drier than one
@@ -76,32 +91,35 @@ const DENSITY = 0.003
 // beside it was the failure this replaces.
 const COVER = { ramp: TREE_TUNING.BIOME.ramp, openKeep: 0.25 }
 
-// Metres. Inside this every piece that rolled one is standing. Past the third
-// mesh band FOR A TYPICAL PIECE -- a chest-high stump is on its 200-triangle
-// tier from 24 m -- so thinning only starts where a piece is already cheap.
-//
-// A big piece is still finely meshed when the graded thinning reaches it, so it
-// can dissolve out while meshed. That is a dithered fade, not a pop
-// (render/rim.js), and ranking pieces by size so the big ones thin last --
-// rocks.js's `_rankOf` -- would make the scatter's density a function of the
-// size roll.
-const FULL_RADIUS = 45
+// The rung every piece stands to whatever its rank: its last mesh rung, so the
+// graded thinning only ever takes a piece off its CARD. Past it a piece of rank
+// r stands to that rung's reach / r, so the density still halves as the
+// distance doubles, but in units of each piece's own arc rather than in
+// metres -- a 2 m stump is thinned from 36 m, a 20 m log from 360 -- and half
+// the pieces of every size reach their cull. Thinned in metres from one radius
+// the way the other scatters are, an 8 m stump was usually gone at a hundred
+// metres while its ladder still had 500 m of card to give (rocks floor the
+// rank against the same thing). `_plan` folds the size into the stored rank
+// so the tile ladder reads one scalar; `keepAt` is what a level keeps of it.
+const FULL_RUNG = GEN_PROP_LODS
 
-// The ladder: the pick and its three decimated tiers, then the cross card. In
-// metres of camera distance PER METRE of the piece's own ladder size, so what a
-// frame compares is `d2 < size^2 * k^2` -- the size term is per instance and only
-// the squared coefficient is precomputable. Same shape rocks.js's LOD_SQ has, for
-// the same reason. Tighter than the critters' ladder because a piece of dead wood
-// is bigger than a crab: a 2 m stump at 6 m is already three hundred pixels tall
-// on a thousand-triangle tier. Exported for the gate's tier-relation check.
-export const LOD_AT = [3, 6, 12, 24]
-const LOD_SQ = Float32Array.from(LOD_AT, (k) => k * k)
-const LOD_LAST = LOD_AT[LOD_AT.length - 1]
-const DRAW_RADIUS = DEADWOOD_CULL
+// The size roll's quantiles `keepAt` is sampled at, per variant.
+const KEEP_SAMPLES = 64
 
-// The dead band on a tier boundary. The forest's value for the forest's reasons.
-const LOD_HYSTERESIS = 0.12
-const LOD_SQ_OUT = Float32Array.from(LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
+// The ladder's rungs: the pick, its three decimated tiers, the card, and past
+// the card culled -- critterTier's rungs, so a 2 m stump steps at 9, 18, 36
+// and 72 m and is gone past 144, and a 20 m log holds its card to 1.4 km.
+export const RUNGS = GEN_PROP_LODS + 2
+// How far past the last mesh rung a tile can still hold a mesh, per metre of its biggest piece.
+const MESH_REACH = lodReach(1, RUNGS - 2) * (1 + LOD_HYSTERESIS)
+
+// Ceilings on the LOD cross-dissolve, in instances; past either a step pops.
+// A ghost is a pool id, and the pool is sized 1.5x the seated sum against a
+// walk that peaks at 1.3x (`_poolBound`), so the reserve is what keeps the
+// ghosts out of the tiles' slack. Every mesh's cap is the whole pool
+// (`_tierCaps`), so there is no per-mesh ceiling to ask about.
+const FADE_MAX_INFLIGHT = 256
+const FADE_POOL_RESERVE = 512
 
 // Metres per tile. The forest's 25 rather than the fern's 12, because at this
 // density a 12 m tile holds under half a candidate and the keep-fraction has
@@ -119,8 +137,14 @@ const STUMP_TILT = (STUMP_TILT_DEG * Math.PI) / 180
 // is four candidates, and four candidates cost four height queries.
 const BUILD_BUDGET_MS = 1.0
 
-// Only instances in tiles this close are re-tiered every frame.
+// Only instances in tiles this much closer than their biggest piece's last mesh rung are re-tiered every frame.
 const NEAR_MARGIN = TILE * 1.5
+
+// Metres she moves between scans of the whole grid for tiles to thicken or
+// thin. The grid is ten thousand tiles and the thinning grade is a few
+// metres' travel per level, so a scan every frame would spend a millisecond
+// finding nothing.
+const SCAN_STEP_SQ = (TILE / 4) ** 2
 
 // Metres between the ground samples a log's belly is seated on, and the ceiling
 // on how many it may take. A 2 m log gets two samples and the 20 m one at the
@@ -280,8 +304,8 @@ const VARIANTS = [
   { name: 'stump', kind: 'snag', url: GEN_PROP_GLB.stump, longAxisZ: false },
   { name: 'log', kind: 'log', url: GEN_PROP_GLB.log, longAxisZ: true },
 ]
-// The far tier: the standing animal's cross, which for a log is its end and its length.
-const CARD_VIEWS = ['side', 'front']
+// The far tier: a stump's one spun quad, a log's length crossed about its core.
+const cardViews = (v) => (v.kind === 'log' ? AXIS_VIEWS : SPUN_VIEWS)
 
 // The band of a standing piece's height the walker is measured over.
 const TRUNK_BAND = [0.3, 0.8]
@@ -358,7 +382,7 @@ function logCore(geo, bounds) {
 
 /**
  * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
- * VARIANTS' names): tiers pick-first with the cross card last, every tier's
+ * VARIANTS' names): tiers pick-first with the card last, every tier's
  * geometries in slot order, and per variant the metres `_seat` works in -- a
  * stump's radius is its widest half so its rim is sampled where the rim is,
  * a log's its core's so the slope burial is the belly's -- the radius the
@@ -378,17 +402,19 @@ export function deadwoodBankFrom(ladders) {
   })
   const tiers = []
   for (let t = 0; t <= GEN_PROP_LODS; t++) tiers.push({ geometries: picks.map((l) => l.geometries[t]) })
+  const cores = VARIANTS.map((v, i) => (v.kind === 'log' ? logCore(picks[i].geometries[0], picks[i].bounds) : { x: 0, y: 0, r: 0 }))
   tiers.push({
-    geometries: picks.map((l) => {
+    geometries: VARIANTS.map((v, i) => {
       const shim = { geometry: new THREE.BufferGeometry() }
-      setCritterCard(shim, l.bounds, CARD_VIEWS)
+      if (v.kind === 'log') setAxisCard(shim, picks[i].bounds, cores[i])
+      else setCritterCard(shim, spunBounds(picks[i].bounds), SPUN_VIEWS)
       return shim.geometry
     }),
   })
   const variants = VARIANTS.map((v, i) => {
     const b = picks[i].bounds
     const log = v.kind === 'log'
-    const core = log ? logCore(picks[i].geometries[0], b) : { x: 0, y: 0, r: 0 }
+    const core = cores[i]
     return {
       name: v.name,
       kind: v.kind,
@@ -428,7 +454,7 @@ export class Deadwood {
     field,
     water,
     layers,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, bank = null, biome = null } = {}
+    { seed = 1, density = DENSITY, radius = null, fullRadius = null, bank = null, biome = null } = {}
   ) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Deadwood: needs the bank from loadDeadwoodBank (or deadwoodBankFrom)')
@@ -466,22 +492,6 @@ export class Deadwood {
     // positions and refuses the first tree of every tile.
     this.seed = (seed | 0) ^ SEED_SALT
     this.density = density
-    this.radius = radius
-    this.fullRadius = fullRadius
-    this.fullSq = fullRadius * fullRadius
-
-    this.perTile = Math.max(1, Math.round(TILE * TILE * density))
-    this.tileSpan = Math.ceil(radius / TILE) + 1
-    this.radiusSq = radius * radius
-    this.evictSq = (radius + TILE * 1.5) ** 2
-
-    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
-    this.uAt = new Float32Array(this.maxQ + 1)
-    this.loSq = new Float32Array(this.maxQ + 2)
-    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
-    for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
-
-    this.maxInstances = this._poolBound()
 
     const t0 = performance.now()
     this.bank = bank
@@ -497,7 +507,7 @@ export class Deadwood {
     this.vSolid = Float32Array.from(bank.variants, (v) => v.solid)
     this.vCoreX = Float32Array.from(bank.variants, (v) => v.core.x)
     this.vCoreY = Float32Array.from(bank.variants, (v) => v.core.y)
-    // The metre LOD_AT counts in, per variant and AS SHIPPED -- an instance's own
+    // The metre the ladder counts in, per variant and AS SHIPPED -- an instance's own
     // ladder size is this times its uniform scale, which is what `instSize` holds.
     this.vLod = Float32Array.from(bank.variants, (v) => v.lodSize)
 
@@ -517,15 +527,62 @@ export class Deadwood {
       this.sHi[v] = band[1] / base
     }
 
-    // The furthest a piece's far end can reach from the point it was seeded at,
-    // which is what `columnAt` and `occupiesAt` pad their tile reach by: a log
-    // seeded just inside one edge of a tile can lie right across the next one,
-    // and a point in that tile is over wood this tile seeded.
+    // The furthest any point of a piece can lie from the point it was seeded
+    // at -- a log's half length PLUS its core radius, since the end cap is
+    // round -- which is what `columnAt` and `occupiesAt` pad their tile reach
+    // by: a log seeded just inside one edge of a tile can lie right across the
+    // next one, and a point in that tile is over wood this tile seeded. And
+    // the biggest piece the bank can place, whose cull is how far the tile grid
+    // reaches, and the smallest, whose own full radius is where the tile
+    // ladder starts.
     this.maxHalf = 0
+    let maxLod = 0
+    this.minLod = Infinity
     for (let v = 0; v < this.variantCount; v++) {
-      const reach = Math.max(this.vLong[v] * 0.5, this.vRadius[v]) * this.sHi[v]
+      const reach = ((this.isLog[v] ? this.vLong[v] * 0.5 : 0) + this.vRadius[v]) * this.sHi[v]
       if (reach > this.maxHalf) this.maxHalf = reach
+      if (this.vLod[v] * this.sHi[v] > maxLod) maxLod = this.vLod[v] * this.sHi[v]
+      if (this.vLod[v] * this.sLo[v] < this.minLod) this.minLod = this.vLod[v] * this.sLo[v]
     }
+
+    // The tile grid: to the biggest piece's cull unless told otherwise (the
+    // gates measure smaller worlds). Nearly all of it is empty of anything
+    // drawn -- a piece is culled at its own size's range -- and holds the odd
+    // long log's card.
+    this.radius = radius ?? cullRange(maxLod, RUNGS)
+    this.perTile = Math.max(1, Math.round(TILE * TILE * density))
+    this.tileSpan = Math.ceil(this.radius / TILE) + 1
+    this.radiusSq = this.radius * this.radius
+    this.evictSq = (this.radius + TILE * 1.5) ** 2
+
+    // The tile ladder (tile-pool.js) quantises distance up from the smallest
+    // piece's own FULL_RUNG reach: a level keeps the pieces whose stored rank is
+    // under uAt[q], and `_plan` stores the roll scaled by the smallest size over
+    // the piece's own, so no rank is over 1 and a level's keep is the roll's
+    // times size over the bank's size law, `keepAt`, sampled at the size roll's
+    // quantiles (uniform, so nothing about the skews is assumed). Given
+    // instead only by the gates, which pass the draw radius to hold every tile
+    // at full density.
+    this.fullRadius = fullRadius ?? lodReach(this.minLod, FULL_RUNG)
+    this.fullSq = this.fullRadius * this.fullRadius
+    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / this.fullRadius) * QUANT))
+    this.uAt = new Float32Array(this.maxQ + 1)
+    this.loSq = new Float32Array(this.maxQ + 2)
+    this.keepAt = new Float32Array(this.maxQ + 1)
+    for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
+    for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (this.fullRadius * Math.pow(2, q / QUANT)) ** 2
+    for (let q = 0; q <= this.maxQ; q++) {
+      let keep = 0
+      for (let v = 0; v < this.variantCount; v++) {
+        for (let i = 0; i < KEEP_SAMPLES; i++) {
+          const lod = this.vLod[v] * this._scaleFor(v, (i + 0.5) / KEEP_SAMPLES)
+          keep += Math.min(1, (this.uAt[q] * lod) / this.minLod)
+        }
+      }
+      this.keepAt[q] = keep / (this.variantCount * KEEP_SAMPLES)
+    }
+
+    this.maxInstances = this._poolBound()
 
     // A material per variant, and another per variant's card: each wears its
     // own shipped map (gen-props.js). The card's map is photographed off the
@@ -539,7 +596,7 @@ export class Deadwood {
       return m
     })
     this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial(`deadwood-${v.name}`, { card: true })
+      const m = createGenPropMaterial(`deadwood-${v.name}`, { card: true, billboard: cardViews(v) === SPUN_VIEWS })
       m.visible = false
       return m
     })
@@ -596,8 +653,21 @@ export class Deadwood {
     this.instTan = new Float32Array(this.maxInstances)
     this._spans = new Float64Array(16)
     // The rim dissolve: which pieces are drawn, which are hidden, and the
-    // quarter second between. No LOD cross-fade here for it to preempt.
-    this.rim = new RimFade(this.batch, this.maxInstances)
+    // quarter second between. One fade slot per instance, shared with the tier
+    // cross-dissolve below, so the rim is handed the callback that retires a
+    // swap it is about to write over and `_crossFade` asks `isBusy` first.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
+    // Cross-dissolves in flight: { orig, dup, start, tris }, with `fadeAt`
+    // mapping an instance to its entry. The shape trees.js and rocks.js carry.
+    this.fades = []
+    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
+    this.fadeTris = 0
+    // False while `place` builds the world in one go, true from the first
+    // update: a tile thickening into a standing world dithers its pieces in.
+    this.settled = false
 
     // key -> { tx, tz, ids, rank, n, q, u, near, queued }
     this.tiles = new Map()
@@ -607,6 +677,8 @@ export class Deadwood {
     this.queue = []
     this.camTileX = null
     this.camTileZ = null
+    this.scanX = null
+    this.scanZ = null
 
     this._m = new THREE.Matrix4()
     this._p = new THREE.Vector3()
@@ -639,26 +711,27 @@ export class Deadwood {
     scene.add(this.batch)
   }
 
-  /** How many instances the pool has to hold. Same tile-grid sum its siblings use. */
+  /**
+   * How many instances the pool has to hold. Same tile-grid sum its siblings
+   * use, with more headroom: the grid reaches the longest log's card, 1.4 km,
+   * so ten thousand thinned tiles ring the full disc, and a walk that grows
+   * tiles on one side before the thin catches up on the other peaks at 1.3x
+   * the seated sum (check-scatter-pools measures it).
+   */
   _poolBound() {
-    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
-      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
+    return poolBound(TILE, this.tileSpan, this.evictSq, 1.5,
+      (d2) => this.perTile * this.keepAt[this._levelFor(d2)])
   }
 
   /**
    * Instance capacity of ONE mesh in each tier -- the arena holds a separate
-   * InstancedMesh per (tier, variant) and exceeding a cap throws.
-   *
-   * The whole pool over the variant count, times four, on every tier. Dead wood
-   * rolls its variant uniformly, so an even split is the expectation and four
-   * times it is a long way past any run of luck; and the pool is small enough
-   * (hundreds, not the grass bed's hundreds of thousands) that pricing the mesh
-   * tiers by their own bands would save kilobytes and risk a throw in the middle
-   * of a walk.
+   * InstancedMesh per (tier, variant) and exceeding a cap throws. The whole
+   * pool on every one: a run of luck cannot exceed it, and pricing the mesh
+   * tiers by their own rungs would save a few hundred kilobytes and risk a
+   * throw in the middle of a walk.
    */
   _tierCaps() {
-    const per = Math.ceil((this.maxInstances / this.variantCount) * 4) + 64
-    return new Array(this.tierCount).fill(per)
+    return new Array(this.tierCount).fill(this.maxInstances)
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
@@ -712,7 +785,7 @@ export class Deadwood {
       const size = rand()
       const tintV = rand()
       const tintR = rand()
-      const u = rand()
+      const rank = rand()
       // EACH DRAWN LAST IN ITS TURN so that adding it did not move a single
       // piece of dead wood in the world: every roll above keeps the position it
       // already had in the stream, and the new one takes the slot after them.
@@ -755,12 +828,16 @@ export class Deadwood {
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
 
       const o = plan.n * P
+      const scale = this._scaleFor(variant, size)
       at[o + P_X] = x
       at[o + P_Z] = z
       at[o + P_VARIANT] = variant
       at[o + P_YAW] = yaw
-      at[o + P_SCALE] = this._scaleFor(variant, size)
-      at[o + P_U] = u
+      at[o + P_SCALE] = scale
+      // The rank in the piece's own arc (FULL_RUNG): the tile ladder keeps it
+      // while fullRadius / d exceeds it, which is its own FULL_RUNG reach over
+      // the roll.
+      at[o + P_U] = (rank * this.minLod) / (this.vLod[variant] * scale)
       at[o + P_TINT_V] = tintV
       at[o + P_TINT_R] = tintR
       at[o + P_TINT_G] = tintG
@@ -1081,50 +1158,57 @@ export class Deadwood {
     }
     this.lastBuildMs = performance.now() - t0
 
+    // Retire finished cross-dissolves before the loop starts new ones, so a
+    // piece that steps on the frame its last fade expires gets its ghost back.
+    const now = getPropClock()
+    this._sweepFades(now)
+
     const cardTier = this.cardTier
     const farTris = this.farTier === 'mesh' ? this.farMeshTris : this.tierTris[cardTier]
     let tris = 0
     let nearCount = 0
     this.rim.beginFrame(camX, camY, camZ)
+    const scan = this.scanX === null || (camX - this.scanX) ** 2 + (camZ - this.scanZ) ** 2 >= SCAN_STEP_SQ
+    if (scan) {
+      this.scanX = camX
+      this.scanZ = camZ
+    }
     for (const tile of this.tiles.values()) {
-      const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
-      const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
-
-      const q = tile.q
-      const thicken = near2 < this.loSq[q]
-      const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
-      if (!tile.queued && (thicken || thin)) {
-        tile.queued = true
-        this.queue.push({
-          key: tile.tx * 0x10000 + tile.tz,
-          tx: tile.tx,
-          tz: tile.tz,
-          q: this._levelFor(near2),
-          d2: near2,
-        })
+      if (scan) {
+        const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
+        const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
+        const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+        const q = tile.q
+        const thicken = near2 < this.loSq[q]
+        const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
+        if (!tile.queued && (thicken || thin)) {
+          tile.queued = true
+          this.queue.push({
+            key: tile.tx * 0x10000 + tile.tz,
+            tx: tile.tx,
+            tz: tile.tz,
+            q: this._levelFor(near2),
+            d2: near2,
+          })
+        }
       }
+      // Most of the grid, out where the thinning leaves a tile nothing.
+      if (tile.n === 0) continue
 
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
-      // PER TILE rather than one number for the layer, which is what the
-      // size-relative ladder forced. The blanket demote is only sound past the
-      // distance at which nothing in the tile can still be a mesh, and that
-      // distance now depends on what is IN the tile: a 20 m log holds a mesh to
-      // 480 m, further than the layer is ever drawn, so a single bound taken
-      // over the whole bank would be larger than the draw radius and this fast
-      // path would never fire again. `tile.maxSize` is the largest ladder size
-      // the tile actually placed, kept up to date by `_growTile` and `_thin`.
-      const nearReach = tile.maxSize * LOD_LAST + NEAR_MARGIN
+      // PER TILE, because the size-relative ladder makes the distance past
+      // which nothing in a tile can still be a mesh depend on what is IN it:
+      // `tile.maxSize` is the largest ladder size the tile actually placed,
+      // kept up to date by `_growTile` and `_thin`.
+      const nearReach = tile.maxSize * MESH_REACH + NEAR_MARGIN
       if (dx * dx + dz * dz >= nearReach * nearReach) {
         if (tile.near) this._demote(tile)
         tile.near = false
         this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
-        // Walked rather than multiplied out, because the card tier is NOT
-        // uniform here the way the mushrooms' is: every variant gets its own
-        // quad, and a quad is two triangles today only by happy accident of
-        // `planes: 1`. Cheap either way -- a far tile holds one or two pieces,
-        // and walking is also what lets the rim's hidden ones be left out.
+        // Walked rather than multiplied out, because a card's triangles are
+        // its variant's -- two for the stump's spun quad, four for the log's
+        // cross -- and walking is also what leaves the rim's hidden ones out.
         for (let k = 0; k < tile.n; k++) {
           const id = tile.ids[k]
           if (this.rim.isHidden(id)) continue
@@ -1150,32 +1234,27 @@ export class Deadwood {
         // Nothing to re-tier on a piece the rim is not drawing.
         if (this.rim.isHidden(i)) continue
 
-        // Compared against the piece's OWN size squared: the thresholds are
-        // metres per metre, so both sides of the test scale together and every
-        // piece of dead wood in the world steps at the same apparent size. The
-        // hysteresis band rides on the same product, so a piece straddling a
-        // boundary needs to move 12% of ITS band -- not of a fixed one -- to
-        // step back.
-        const sizeSq = this.instSize[i] * this.instSize[i]
-        let tier = cardTier
-        for (let t = 0; t < LOD_SQ.length; t++) {
-          const sticky = cur >= 0 && cur <= t
-          if (d2 < sizeSq * (sticky ? LOD_SQ_OUT[t] : LOD_SQ[t])) {
-            tier = t
-            break
-          }
-        }
+        // The creatures' rung for the piece's OWN size, so every piece of dead
+        // wood in the world steps at the same apparent size. Past the last rung
+        // the rim has hidden it, or is about to; it stays a card meanwhile.
+        const tier = Math.min(cardTier, critterTier(this.instSize[i], Math.sqrt(d2), cur, RUNGS))
 
         const variant = this.variantAt[i]
         if (tier !== cur) {
           this.tierAt[i] = tier
           this.batch.setGeometryIdAt(i, this._geometryFor(tier, variant))
+          // `cur < 0` has never been tiered -- a piece the rim or a grown tile
+          // just brought in -- so there is no departing mesh to dissolve past.
+          if (cur >= 0) this._crossFade(i, cur, variant, now)
         }
         tris += tier === cardTier ? farTris[variant] : this.tierTris[tier][variant]
       }
     }
-    this.tris = tris
+    // The ghosts are drawn too, counted after the loop so this frame's own
+    // swaps are in this frame's number.
+    this.tris = tris + this.fadeTris
     this.nearTiles = nearCount
+    this.settled = true
   }
 
   /** Queue what has come into range, evict what has fallen out. See ferns.js. */
@@ -1367,15 +1446,18 @@ export class Deadwood {
       )
       this.batch.setColorAt(id, this._c)
 
-      // Born as a card; `update` promotes the near ones on the very next frame.
-      this.tierAt[id] = this.cardTier
+      // Born as a card on no rung yet, so `update` takes the near ones to
+      // their rung on the very next frame with no hysteresis to cross.
+      this.tierAt[id] = -1
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
 
       // A piece of rank u survives while the local keep-fraction fullRadius/d
-      // exceeds u, so it goes at fullRadius/u -- or at the draw radius,
-      // whichever comes first. Hidden until the rim's sweep has looked at it,
-      // which the tile below is marked due for.
-      this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
+      // exceeds u, so it goes at fullRadius/u, its own FULL_RUNG reach over its
+      // roll -- or at its own size's cull, or the draw radius, whichever comes
+      // first. Hidden until the rim's sweep has looked at it, which the tile
+      // below is marked due for; a piece joining a world she is standing in
+      // dithers in rather than snapping.
+      this.rim.place(id, Math.min(this.fullRadius / u, this.radius, cullRange(lodSize, RUNGS)), this.settled)
     }
 
     this.placed += n - (tile ? tile.n : 0)
@@ -1413,10 +1495,7 @@ export class Deadwood {
         if (this.instSize[id] > maxSize) maxSize = this.instSize[id]
         continue
       }
-      this.batch.setVisibleAt(id, false)
-      this.rim.drop(id)
-      this.tierAt[id] = -1
-      this.free[this.freeCount++] = id
+      this._free(id)
     }
     this.placed -= tile.n - w
     this.logs -= tile.logs - logs
@@ -1431,6 +1510,10 @@ export class Deadwood {
     for (let k = 0; k < tile.n; k++) {
       const i = tile.ids[k]
       if (this.tierAt[i] === this.cardTier) continue
+      // A bulk cut past every rung, not a swap anybody can see -- but a fade
+      // left running would hold a ghost in a mesh whose tier the original no
+      // longer wears, so it ends here.
+      if (this.fadeAt[i] >= 0) this._endFade(this.fadeAt[i])
       this.tierAt[i] = this.cardTier
       this.batch.setGeometryIdAt(i, this._geometryFor(this.cardTier, this.variantAt[i]))
     }
@@ -1438,16 +1521,86 @@ export class Deadwood {
 
   /** Hide a tile's instances and return their ids to the pool. */
   _release(tile) {
-    for (let k = 0; k < tile.n; k++) {
-      const id = tile.ids[k]
-      this.batch.setVisibleAt(id, false)
-      this.rim.drop(id)
-      this.tierAt[id] = -1
-      this.free[this.freeCount++] = id
-    }
+    for (let k = 0; k < tile.n; k++) this._free(tile.ids[k])
     this.placed -= tile.n
     this.logs -= tile.logs
     this.rim.releaseTile(tile)
+  }
+
+  /** An id back to the pool: its ghost ended, its rim state cleared, hidden. */
+  _free(id) {
+    if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.tierAt[id] = -1
+    this.free[this.freeCount++] = id
+  }
+
+  /**
+   * Start a cross-dissolve: instance `i` has just taken a new tier, so a ghost
+   * off the pool takes the tier it left -- the geometry id alone puts it in
+   * the departing mesh, card or rung -- and the two dither past each other on
+   * complementary thresholds (material.js). Both halves are stamped with the
+   * same start; their thresholds only sum to full coverage if their clocks
+   * agree. trees.js's `_crossFade`, without its per-mesh ceiling.
+   */
+  _crossFade(i, oldTier, variant, now) {
+    // A second step while the first is still running: finish the first, or
+    // its ghost leaks and its start time is about to be written over.
+    const running = this.fadeAt[i]
+    if (running >= 0) this._endFade(running)
+    // A rim transition owns the slot while it runs and outranks this one.
+    if (this.rim.isBusy(i)) return
+    if (this.fades.length >= FADE_MAX_INFLIGHT) return
+    if (this.freeCount <= FADE_POOL_RESERVE) return
+
+    const dup = this.free[--this.freeCount]
+    this.batch.getMatrixAt(i, this._m)
+    this.batch.setMatrixAt(dup, this._m)
+    // The tint too, or the ghost is a differently-lit piece inside the one it
+    // is dissolving out of. setColorAt writes .rgb only, so the stamp below
+    // is safe after it.
+    this.batch.getColorAt(i, this._c)
+    this.batch.setColorAt(dup, this._c)
+    this.batch.setGeometryIdAt(dup, this._geometryFor(oldTier, variant))
+    this.batch.setVisibleAt(dup, true)
+    setPropFadeTimerAt(this.batch, dup, now, false)
+    setPropFadeTimerAt(this.batch, i, now, true)
+
+    const tris = oldTier === this.cardTier
+      ? (this.farTier === 'mesh' ? this.farMeshTris : this.tierTris[this.cardTier])[variant]
+      : this.tierTris[oldTier][variant]
+    this.fadeTris += tris
+    this.fadeAt[i] = this.fades.length
+    this.fades.push({ orig: i, dup, start: now, tris })
+  }
+
+  /** Finish the fade at index `k`: the ghost back to the pool, the original solid. */
+  _endFade(k) {
+    const f = this.fades[k]
+    this.batch.setVisibleAt(f.dup, false)
+    this.free[this.freeCount++] = f.dup
+    this.fadeTris -= f.tris
+    setPropSolidAt(this.batch, f.orig)
+    this.fadeAt[f.orig] = -1
+    // Swap-remove, so the list stays dense and the sweep is a linear scan.
+    const last = this.fades.pop()
+    if (k < this.fades.length) {
+      this.fades[k] = last
+      this.fadeAt[last.orig] = k
+    }
+  }
+
+  /** Retire every cross-dissolve whose window is up. Once per frame. */
+  _sweepFades(now) {
+    let k = 0
+    while (k < this.fades.length) {
+      const age = now - this.fades[k].start
+      // Outside the window either way: negative is the prop clock wrapped
+      // under this fade, which must end rather than restart from zero.
+      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
+      else k++
+    }
   }
 
   _geometryFor(tier, variant) {
@@ -1456,8 +1609,8 @@ export class Deadwood {
   }
 
   /**
-   * A/B the far band by eye: `'card'` is the cross card, `'mesh'` holds the
-   * real T0 mesh all the way out. The comparison worth making -- card against
+   * A/B the far band by eye: `'card'` is the card, `'mesh'` holds the real T0
+   * mesh all the way out. The comparison worth making -- card against
    * ground truth, at the distance the swap happens.
    */
   setFarTier(mode) {
@@ -1476,15 +1629,17 @@ export class Deadwood {
   }
 
   /**
-   * Photograph each variant's pick for its cross card and let the cards draw.
-   * Call ONCE, with the renderer; the bank is already loaded, so it can run at
+   * Photograph each variant's pick for its card and let the cards draw. Call
+   * ONCE, with the renderer; the bank is already loaded, so it can run at
    * boot. Until it runs distant dead wood is not drawn at all.
    */
   bakeCards(renderer) {
     const t0 = performance.now()
-    this.bank.variants.forEach((_v, i) => {
+    this.bank.variants.forEach((v, i) => {
       const card = this.cardMaterials[i]
-      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], this.bank.bounds[i], CARD_VIEWS)
+      const views = cardViews(v)
+      const bounds = views === SPUN_VIEWS ? spunBounds(this.bank.bounds[i]) : this.bank.bounds[i]
+      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], bounds, views)
       card.visible = true
     })
     this.cardBakeMs = performance.now() - t0
@@ -1497,6 +1652,7 @@ export class Deadwood {
       snags: this.placed - this.logs,
       rimHidden: this.rim.hiddenCount,
       rimFading: this.rim.flightN,
+      fading: this.fades.length,
       tris: this.tris,
       tiles: this.tiles.size,
       nearTiles: this.nearTiles,

@@ -177,7 +177,7 @@ export class Crabs {
       this.slots.push({
         id: i, perch: null,
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, hue: 0, speed: 0,
-        // 'go' scuttles along ±local Z for `left` seconds, 'pause' waits; `phase` drives the legs.
+        // 'go' scuttles along ±local Z for `left` seconds, 'pause' waits at speed 0; `phase` drives the legs.
         state: 'pause', left: 0, phase: 0, normalAt: 0, depth: 0,
       })
     }
@@ -186,6 +186,8 @@ export class Crabs {
     this.rescan = []
     this.frame = 0
     this.head = { x: 0, z: 0 }
+    // Whether the last update stepped the crabs under the water too (she was submerged).
+    this.under = true
     this.perchBuf = new Float32Array(PERCH_BUF * PERCH_STRIDE)
     // The baked mesh's bounds (setCritterAsset), its unit span and its unit height; the instance scale is size / span.
     this.bounds = null
@@ -305,6 +307,7 @@ export class Crabs {
         c.hue = hue
         c.depth = depth
         c.state = 'pause'
+        c.speed = 0
         c.left = between(this.rand, PAUSE_S)
         c.phase = 0
         c.normalAt = 0
@@ -342,6 +345,22 @@ export class Crabs {
     let perches = 0
     for (const t of this.tiles.values()) perches += t.perches.size
     return { alive: MAX - this.free.length, tiles: this.tiles.size, perches, overflow: this.overflow, saturated: this.saturated }
+  }
+
+  /**
+   * Every crab stepped this frame, for the ear (audio/ambience.js): the slots
+   * themselves, with x, y, z, size and speed on them, `speed > 0` meaning it is
+   * scuttling. A hidden layer is frozen and lists nothing, and while she is
+   * above the water the crabs under it are not stepped and not listed.
+   */
+  bodies(into) {
+    if (!this.batch.visible) return into
+    for (const t of this.tiles.values()) {
+      for (const p of t.perches.values()) {
+        for (const c of p.crabs) if (this.under || c.y >= p.level) into.push(c)
+      }
+    }
+    return into
   }
 
   /**
@@ -399,6 +418,7 @@ export class Crabs {
   update(hx, hy, hz, dt, under = true) {
     this.head.x = hx
     this.head.z = hz
+    this.under = under
     if (walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t)) > 0) {
       this.rescan = []
     }
@@ -436,7 +456,7 @@ export class Crabs {
             }
             amp = LEG_AMP
             if ((this.frame + c.id) % NORMAL_EVERY === 0) this._normal(c)
-            if (c.left <= 0) { c.state = 'pause'; c.left = between(this.rand, PAUSE_S) }
+            if (c.left <= 0) { c.state = 'pause'; c.speed = 0; c.left = between(this.rand, PAUSE_S) }
           } else if (c.left <= 0) {
             c.state = 'go'
             c.left = between(this.rand, GO_S)

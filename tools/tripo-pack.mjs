@@ -74,15 +74,16 @@ export function webpSize(buf) {
 
 /**
  * The colour map boxed down to `texPx` a side, written to `out` as an opaque
- * WebP. The JPEG goes through a temp dir because magick reads files, not glb
+ * WebP. The image goes through a temp dir because magick reads files, not glb
  * chunks. Refuses a size over TEX_PX_MAX: this is the one door into public/.
  */
-export function packTexture(jpeg, out, texPx) {
+export function packTexture(image, out, texPx) {
   if (!(texPx > 0 && texPx <= TEX_PX_MAX)) throw new Error(`packTexture: ${texPx}px is not within the ${TEX_PX_MAX}px cap`)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ship-pack-'))
   try {
-    const colour = path.join(dir, 'colour.jpg')
-    fs.writeFileSync(colour, jpeg)
+    // Tripo's JPEG, or the PNG a delight pass (tools/props/gen/delight.mjs) hands back.
+    const colour = path.join(dir, image[0] === 0x89 ? 'colour.png' : 'colour.jpg')
+    fs.writeFileSync(colour, image)
     magick([colour, '-resize', `${texPx}x${texPx}`, '-alpha', 'off', '-quality', '90', out])
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

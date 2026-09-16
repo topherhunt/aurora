@@ -126,16 +126,18 @@ const storm = (make, hop, every, steps = 400) => {
     }
     for (const b of subBeds(bed)) {
       peak = Math.max(peak, (b.maxInstances - b.freeCount) / b.maxInstances)
-      // Every id handed out is either standing in a tile or held as the
-      // duplicate of an LOD cross-dissolve in flight. A path that drops a tile
-      // without releasing it leaks ids past both, and empties the pool over a
-      // long session to throw exactly the same way a stale level does.
+      // Every id handed out is either standing in a tile, held as the
+      // duplicate of an LOD cross-dissolve in flight, or (trees) dissolving out
+      // of a tile that changed mode. A path that drops a tile without releasing
+      // it leaks ids past all three, and empties the pool over a long session
+      // to throw exactly the same way a stale level does.
       let n = 0
       for (const tile of b.tiles.values()) n += tile.n
       let dups = 0
       for (const f of b.fades) if (f.dup !== undefined) dups++
-      if (!leaked && (n !== b.placed || n + dups !== b.maxInstances - b.freeCount)) {
-        leaked = `${bedName(b)} sum(tile.n)=${n} placed=${b.placed} fade dups=${dups} used=${b.maxInstances - b.freeCount}`
+      const retiring = b.retiring ? b.retiring.length : 0
+      if (!leaked && (n !== b.placed || n + dups + retiring !== b.maxInstances - b.freeCount)) {
+        leaked = `${bedName(b)} sum(tile.n)=${n} placed=${b.placed} fade dups=${dups} retiring=${retiring} used=${b.maxInstances - b.freeCount}`
       }
     }
   }
@@ -171,9 +173,10 @@ console.log('\n2. and the beds with no re-levelling thin have the margin to go w
 // camera, keep every surviving tile at the level it was grown at, never thin.
 // It is an upper bound on demand -- the real grow loop is budgeted and the tile
 // loop's thin jobs run in between -- so a bed UNDER its pool here cannot reach
-// the failure at all, whatever the camera does. Litter, deadwood and mushrooms
-// are under it by a quarter of their pool and are deliberately left alone; this
-// is what would catch a density or a falloff being raised past that.
+// the failure at all, whatever the camera does. Litter and mushrooms are under
+// it by a quarter of their pool or more, deadwood -- whose grid reaches the
+// longest log's card at 1.4 km -- by its own headroom's margin; this is what
+// would catch a density, a falloff or a reach being raised past that.
 const ratchet = (bed, perTileAt) => {
   // The tile pitch, recovered exactly: the evict radius is radius + 1.5 tiles.
   const T = (Math.sqrt(bed.evictSq) - Math.sqrt(bed.radiusSq)) / 1.5
@@ -231,6 +234,7 @@ const ratchet = (bed, perTileAt) => {
 const INTEGRAND = {
   litter: (b) => (d2) => (b.perTile + b.perTileWet) * b.uAt[b._levelFor(d2)],
   rock: (b) => (d2) => b.perTile * b._keepFrac(b._levelFor(d2)),
+  deadwood: (b) => (d2) => b.perTile * b.keepAt[b._levelFor(d2)],
   plain: (b) => (d2) => b.perTile * b.uAt[b._levelFor(d2)],
 }
 const rows = []

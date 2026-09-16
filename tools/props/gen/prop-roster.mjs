@@ -5,7 +5,8 @@
 // (which renderer will eventually scatter it), and nothing else keys on it.
 //
 // `texPx` is the side of the colour map a prop SHIPS with and the bench
-// previews it at that size. Absent means TEX_PX_MAX; a mushroom is a few
+// previews it at that size. `delight` ships the map with its baked top-down
+// light flattened against the mesh (delight.mjs; preview it bare first). Absent means TEX_PX_MAX; a mushroom is a few
 // pixels tall in the world and is designated TEX_PX_SMALL. The cap and the
 // designation are the creature roster's, imported rather than copied, so one
 // number governs every generated asset.
@@ -54,6 +55,9 @@ export const PROPS = [
     category: 'deadwood',
     sizeM: 3.2,
     aspectRatio: '16:9',
+    // Tripo painted the underside it never saw five times darker than the top;
+    // the world rolls the log and lights it itself (delight.mjs).
+    delight: true,
     description:
       'a long fallen rotting log lying on its side, thick and slightly bowed, a fat torn root end and a jagged ' +
       'splintered narrow end, bark hanging off in long ragged strips over weathered silver-grey wood with deep ' +

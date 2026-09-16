@@ -28,6 +28,7 @@ import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrai
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
 import { GLINT, createCritterCardMaterial, glint, hueVary } from '../src/v2/render/critters.js'
+import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -424,18 +425,21 @@ const PROP_VARIANTS = [
     { batched: false, instanced: true },
     { vert: [...PROP_MARKS.vert, ...SEASON_MARKS.vert], frag: [...PROP_MARKS.frag, ...SEASON_MARKS.frag] },
   ],
-  // THE FOREST'S OWN PROGRAM, with the hem fray that appears under no other
-  // option: a `hem` attribute carried to the fragment stage and a discard keyed
-  // on it. Instanced, as trees.js draws it, so aPropFade compiles too.
+  // THE FOREST'S OWN PROGRAM, with two things that appear under no other
+  // option: the hem fray -- a `hem` attribute carried to the fragment stage and
+  // a discard keyed on it -- and the layer shift, a per-instance `aLayerShift`
+  // added to the geometry's layer so one clump quad draws every clump picture.
+  // Instanced, as trees.js draws it, so aPropFade compiles too.
   [
-    'trees: wind, cards, hem fray, instanced',
+    'trees: wind, cards, hem fray, layer shift, instanced',
     createPropMaterial(atlas, {
-      billboardLayers: [0, 1, 2], wind: 'tree', vertexColors: true, instancedFade: true,
+      billboardLayers: [0, 1, 2], wind: 'tree', vertexColors: true, instancedFade: true, layerShift: true,
       hemFray: { keep: 0.7, band: 0.6, straws: 24, wisp: 0.12, lumaLo: 0.05, lumaHi: 0.2 },
     }),
     { batched: false, instanced: true },
     {
-      vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade'],
+      vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade',
+        'attribute float aLayerShift;', 'float propLayer = texLayer + aLayerShift;'],
       frag: [...PROP_MARKS.frag, 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
     },
   ],
@@ -875,6 +879,35 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
   if (!frag.includes('normal *= faceDirection;')) MISSING_MARKS.push(`${label} frag: the flip undone`)
   if (frag.includes('gl_FragCoord.x + gl_FragCoord.y')) MISSING_MARKS.push(`${label} frag: a dither the card no longer wears`)
+}
+
+// The generated props' three programs (gen-props.js): the mesh with the rim
+// dissolve over `aPropFade`, the axis card and the spun card. The card's normal
+// is the world's, not the instance's, and both card programs are checked for it.
+for (const [label, opts, defines] of [
+  ['gen-prop mesh        ', {}, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']],
+  ['gen-prop card        ', { card: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
+  ['gen-prop spun card   ', { card: true, billboard: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
+]) {
+  const material = createGenPropMaterial(`check-${label.trim()}`, opts)
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: `check-${label.trim()}` })
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  if (!vert.includes('float fadeSlot = aPropFade')) MISSING_MARKS.push(`${label} vert: the instanced fade slot`)
+  if (!frag.includes('abs( vPropFade ) <= fadeT ) discard')) MISSING_MARKS.push(`${label} frag: the dither`)
+  if (!!opts.card !== frag.includes('vec3 cnUp = normalize( ( viewMatrix')) MISSING_MARKS.push(`${label} frag: the card normal ${opts.card ? 'missing' : 'on a mesh'}`)
+  if (!!opts.billboard !== vert.includes('vec2 bbTo = cameraPosition.xz')) MISSING_MARKS.push(`${label} vert: the spin ${opts.billboard ? 'missing' : 'on a flat card'}`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

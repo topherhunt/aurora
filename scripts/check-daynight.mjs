@@ -219,6 +219,30 @@ console.log('\n--- palette: continuity and shape -----------------------------')
   check(paletteAt(45).sunIntensity > 2, 'daylight is bright')
   check(paletteAt(-6).sunIntensity === 0, 'the sun contributes nothing by the end of civil twilight')
   check(paletteAt(-6.0001).sunIntensity === 0, 'so the sun/moon handover at -6 deg is invisible')
+  // The palette's half of that promise is the sun reaching zero; the clock's
+  // half is the moon STARTING from zero. The moon is usually well up by the
+  // time the sun reaches -6 -- it rises during daylight here -- so without a
+  // ramp of its own the directional light would step from nothing to full
+  // moonlight in one frame, which she sees as a ring of light switching on
+  // around her. Swept at 0.6 real seconds per step over every step where the
+  // light is the moon on at least one side; the sun's own ramps are the
+  // palette's and are bounded above.
+  {
+    const c = new WorldClock({ hour: 0, seed: 20260804 })
+    let worstStep = 0
+    let worstAt = 0
+    let prev = c.state()
+    for (let h = 0.01; h <= 24; h += 0.01) {
+      c.elapsed = h
+      c._recompute()
+      const st = c.state()
+      const d = Math.abs(st.lightIntensity - prev.lightIntensity)
+      if ((st.isNight || prev.isNight) && d > worstStep) { worstStep = d; worstAt = h }
+      prev = st
+    }
+    check(worstStep < 0.03, 'and the moonlight never steps, at either handover or in between',
+      `worst step ${worstStep.toFixed(3)} per 0.6 s at ${worstAt.toFixed(2)} h`)
+  }
   check(paletteAt(20).stars === 0, 'no stars in daylight')
   check(paletteAt(-18).stars === 1, 'full stars by astronomical twilight')
   check(paletteAt(20).auroraMax === 0, 'no aurora in daylight')
@@ -769,7 +793,7 @@ console.log('\n--- the live shaders link --------------------------------------'
   // And the moonlit side has to be bright enough to actually walk by, not
   // merely brighter than the dark side. Snow under a full moon is the one
   // surface in this world that is genuinely easy to see.
-  check(litSnow >= 150 && litSnow < 210, 'and moonlit snow is bright enough to navigate by',
+  check(litSnow >= 120 && litSnow < 180, 'and moonlit snow is bright enough to navigate by',
     `luma ${litSnow}`)
   // The other end of the same promise: with the moon behind the ridge, the
   // far side is nearly out. This is asserted as an UPPER bound, which is the
@@ -808,7 +832,8 @@ console.log('\n--- the live shaders link --------------------------------------'
     if (!st.isNight) continue
     darkHours += 0.05
     const reach = st.lightIntensity * Math.max(st.lightDir.y, 0)
-    if (reach < 0.15) moonlessHours += 0.05
+    // A quarter of a full moon overhead, at MOONLIGHT.intensity.
+    if (reach < 0.075) moonlessHours += 0.05
     for (const s of GROUND) {
       const l = lumaAt(st, s)
       if (s.sun === 1) {
@@ -867,7 +892,7 @@ console.log('\n--- the live shaders link --------------------------------------'
   // because the ambient floor is there on purpose; in the far field the only
   // light is directional, so the ratio is unbounded and the check is that the
   // lit side is still worth looking at.
-  check(farSnow >= 60, 'while distant moonlit snow still carries the ridgelines', `luma ${farSnow}`)
+  check(farSnow >= 40, 'while distant moonlit snow still carries the ridgelines', `luma ${farSnow}`)
 
   // Daylight must be untouched: the envelope is a night mechanism and a
   // 25 m pool of brightness at noon would be grotesque.

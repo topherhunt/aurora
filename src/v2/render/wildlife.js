@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // THE WILDLIFE: the moor stag, the red fox and the snow hare, wandering the
-// open ground. One of each per 3000 square metres, which at RADIUS is about ten
-// animals a species around her at any moment.
+// open ground. One of each per 3000 square metres, out to a RADIUS set by the
+// furthest any of them is drawn from.
 //
 // PLACEMENT IS A PURE FUNCTION OF POSITION, the same contract the frogs keep:
 // each TILE-metre tile rolls its animals from its own seed (critters.js
@@ -41,42 +41,68 @@
 // A SPAWN IS NOT AN ANIMAL. A tile's roll gives SPAWNS -- where a body stands
 // when nothing has moved it, and what size and colour it is -- and a spawn is
 // woken into a live animal (a slot, with a position it has wandered to and an
-// activity queue) only inside its cull range. Past that it is not drawn AND NOT
-// SIMULATED: nothing walks, turns, probes the ground or picks anything. Its
-// wandered position is remembered until she is CULL_KEEP past the cull, and
-// past that the slot goes back in the pool and the next waking places it at
-// home again. So the work is proportional to the animals she can actually see
-// and not to the tiles that happen to be loaded, and an animal she turns her
-// back on for a moment is exactly where she left it.
+// activity queue) only inside its card range, the outermost rung of the ladder.
+// Past that it is not drawn AND NOT SIMULATED: nothing walks, turns, probes the
+// ground or picks anything. Its wandered position is remembered until she is
+// CULL_KEEP past that range, and past that the slot goes back in the pool and
+// the next waking places it at home again. So the work is proportional to the
+// animals she can actually see and not to the tiles that happen to be loaded,
+// and an animal she turns her back on for a moment is exactly where she left it.
 //
-// DRAWN AS A PUPPET, OR NOT AT ALL. A woken animal is its own skeleton (a clone
-// of the shipped one) with a mixer on it, drawn as whichever of the file's four
-// skinned tiers the ladder's rungs call for (critters.js critterTier: rungs
-// doubling in distance, as a ratio of the body's own size). There is no card
-// tier: a photograph of a walking animal slides over the ground like a cut-out,
-// and the band it would cover is the band a hare is only ever seen in.
-// Appearing, vanishing and every step of the ladder is a dissolve rather than a
-// pop (render/puppet.js) -- AND SO IS A TILE UNLOAD, so an animal whose tile
-// goes while it is still in sight leaves its puppet behind to dissolve where it
-// stood (`fading`). The exception is `place()`, the terrain rebuild, where the
-// ground an animal was standing on no longer exists and there is nothing to fade
-// on. The price is a draw call and a skeleton for each animal in sight -- a
+// DRAWN AS A PUPPET, THEN AS A CARD. A woken animal near enough for a mesh is
+// its own skeleton (a clone of the shipped one) with a mixer on it, drawn as
+// whichever of the file's four skinned tiers the ladder's rungs call for
+// (critters.js critterTier). Under those four is one more rung, twice as far,
+// where it is one spun quad in its species' InstancedMesh instead: at 100 m a
+// stag is a dozen pixels tall and a photograph of it is the mesh, and what the
+// rung buys is that she sees the herd she is walking toward rather than watching
+// it appear. The card still walks, turns, grazes and goes home -- it is the same
+// animal, drawn cheaper -- it simply has no skeleton and no mixer, so a distant
+// herd costs a slot and four vertices each and nothing else.
+//
+// NOTHING POPS, at any of those edges. Every step of the ladder is a dissolve
+// (render/puppet.js), and so is the handover between the last mesh rung and the
+// card: the two read the same pixel hash and keep opposite halves of it, the
+// mesh through the puppet's uCut and the card through its `aCardFade`
+// attribute, driven from the same ramp on the same frame. A TILE UNLOAD is a
+// dissolve too, so an animal whose tile goes while it is still in sight leaves
+// its puppet behind to fade where it stood (`fading`); a card's tile cannot go
+// while it is drawn, because RADIUS is set past the furthest card range. The
+// exception is `place()`, the terrain rebuild, where the ground an animal was
+// standing on no longer exists and there is nothing to fade on.
+//
+// THE PRICE is a draw call and a skeleton for each animal in MESH range -- a
 // dozen in the live world, twenty at the pool's cap, doubled per eye in XR while
-// the skeletons are not; design/27-creature-pipeline.md has the numbers.
+// the skeletons are not -- plus one instanced draw call a species for every card
+// behind them; design/27-creature-pipeline.md has the numbers.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange, forgetRange, tileSeed, walkTiles } from './critters.js'
-import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
+import {
+  CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, SPUN_VIEWS, bakeCritterCard, createCritterCardMaterial, critterTier,
+  cullRange, forgetRange, makeCardFadeAttribute, makeHueAttribute, setCritterCard, spunBounds, tileSeed, walkTiles,
+} from './critters.js'
+import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
 
 export const TILE = 32
-// Tiles whose centre is within this of her are grown, so the furthest a spawn can be is this plus half a tile's diagonal: 118.6 m.
-export const RADIUS = 96
+// The tallest body the placement is sized to hold, in metres. Nothing here is
+// near it -- a stag's largest extent is under three -- but a spawn that is not
+// placed is an animal that pops in when the tile arrives rather than when the
+// ladder says so, and the headroom is what lets a bigger creature join this
+// layer without the radius being the thing that quietly clips it.
+export const CARD_BODY_M = 4
+// Tiles whose centre is within this of her are grown, so the furthest a spawn
+// can be is this plus half a tile's diagonal. Set past the card range of the
+// tallest body the layer holds, so a card is never waiting on its tile.
+export const RADIUS = Math.ceil(cullRange(CARD_BODY_M, CARD_RUNGS) + (TILE * Math.SQRT2) / 2)
 // Animals per square metre, of EACH species: the brief's one per 3000.
 export const DENSITY = 1 / 3000
-// Slots a species gets, and puppets. Ten of each are expected in RADIUS, and a stag's cull range covers nearly all of it, so the pool is sized for that crowd clustering hard; a starved animal is not drawn at all.
-export const MAX = 32
+// Slots a species gets, and puppets. A stag's card range covers 200 m, which at
+// DENSITY is some two dozen live stags before the seat test thins them, so the
+// slot pool is sized for that crowd clustering hard. Puppets are the scarcer
+// thing and are sized for the MESH range alone: a starved animal is not drawn.
+export const MAX = 64
 export const PUPPETS = 20
 
 // Ground an animal will not stand on: steeper than this, or this close under the snow line.
@@ -97,9 +123,21 @@ const TURN = 1.4
 export const NIGHT_REST = 2
 // Radians a second a body may swing. A stag needs a second and a half to turn around, which is about what a stag needs.
 export const TURN_RATE = 1.6
-// Body lengths ahead the next seat is tested at, and how often: the test is five rock-column queries, so it is staggered across the animals rather than run for all of them every frame.
+// Body lengths ahead the next seat is tested at.
 const AHEAD = 1.5
-const PROBE_EVERY = 6
+// Frames between an animal's GROUND WORK -- the look-ahead seat test, the height
+// under its feet and the normal it stands on -- by the rung it is drawn at,
+// staggered across the animals by slot id so a herd never probes on one frame.
+// Every one of those is a walk over every stone layer in the world (walk.js
+// heightAt), which is the dominant per-animal cost and the only one worth
+// bucketing: the mixer is 3 microseconds and the walk is what is left.
+//
+// BETWEEN PROBES IT WALKS THE TANGENT PLANE the last probe measured, rather than
+// holding the height it had -- exact on a flat face, a centimetre out on a
+// rolling one, and it is what makes a longer stride cost nothing visible. A
+// creature on the card rung probes once every thirty frames and is a dozen
+// pixels tall while it does.
+export const PROBE_EVERY = [6, 8, 12, 16, 30]
 // Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.25
 
@@ -202,19 +240,28 @@ export class Wildlife {
         materials.push(mats)
         this.materials.push(mats.plain, mats.in, mats.out)
       }
+      // Built here and not with the asset, because the world patches every
+      // material with its lighting the moment the layer exists and the GLBs
+      // land long after. The quad and the picture arrive in setAssets and
+      // bakeCards; until the picture does, the mesh draws nothing.
+      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, fade: true })
+      this.materials.push(cardMaterial)
       const slots = []
       for (let i = 0; i < MAX; i++) {
         slots.push({
           id: i, sp: null, spawn: null,
           x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1, hue: 0,
           nx: 0, ny: 1, nz: 0,
-          // The activity, the steps it has left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
-          act: 'stand', queue: [], clip: 'idle', left: 0, dur: 0, cue: 0, speed: 0,
-          // The ladder rung it is on, LOD_RUNGS being past the last rung and so neither drawn nor simulated.
-          lod: LOD_RUNGS, puppet: null,
+          // The activity, the steps it has left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
+          act: 'stand', queue: [], clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
+          // The ladder rung it is on, CARD_RUNGS being past the last rung and so neither drawn nor simulated.
+          lod: CARD_RUNGS, puppet: null,
+          // Whether the card is the thing this animal should be drawing, and how
+          // far through the dissolve into or out of that it is (1 is settled).
+          cardWant: false, cardP: 1,
         })
       }
-      return { ...sp, materials, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
+      return { ...sp, materials, cardMaterial, cardMesh: null, cardHue: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
     })
 
     this.tiles = new Map()
@@ -258,8 +305,54 @@ export class Wildlife {
         sp.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
       }
       sp.freePuppets = sp.puppets.slice()
+
+      // The card rung's quad, in the same unit frame the puppet's meshes are in
+      // and sized by the shipper's own measurements of the turned body, so one
+      // `k` scales both and the handover is the same animal at the same size.
+      // As wide as the body's longest side (spunBounds), since the one picture
+      // stands in for every side of it.
+      const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), sp.cardMaterial, MAX)
+      mesh.name = `v2-wildlife-${sp.key}-cards`
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      // The instances move every frame and a bounding sphere over them would have to be rebuilt every frame to say anything true.
+      mesh.frustumCulled = false
+      mesh.count = 0
+      // Nothing to draw until bakeCards has photographed the body: an unbaked card is a white quad, which is worse than no card.
+      mesh.visible = false
+      setCritterCard(mesh, spunBounds({ halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height }), SPUN_VIEWS)
+      sp.cardHue = makeHueAttribute(mesh, MAX)
+      sp.cardFade = makeCardFadeAttribute(mesh, MAX)
+      sp.cardMesh = mesh
+      this.batch.add(mesh)
     }
     this.loaded = true
+  }
+
+  /**
+   * Photograph each species for its card rung: the body posed in `idle` through
+   * a throwaway puppet, because a quadruped's vertices sit on the rig's diagonal
+   * and mean nothing until the bones have moved them. Needs the renderer, so the
+   * world calls it once the GLBs have landed.
+   */
+  bakeCards(renderer) {
+    if (!this.loaded) throw new Error('Wildlife.bakeCards: the GLBs have not landed')
+    for (const sp of this.species) {
+      const asset = sp.asset
+      const flat = new THREE.MeshBasicMaterial({ map: asset.map, toneMapped: false })
+      // Puppet wants the three-material shape; unlit for the photograph, the same one for every state it might pick.
+      const p = new Puppet(asset, { plain: flat, in: flat, out: flat, uHue: { value: 0 }, uCut: { value: 1 } }, { clipFade: FADE_S, oneShot: ONE_SHOT })
+      p.show(0)
+      p.play('idle')
+      p.step(0)
+      p.group.updateMatrixWorld(true)
+      const bounds = spunBounds({ halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height })
+      sp.cardMaterial.map = bakeCritterCard(renderer, p.group, asset.map, bounds, SPUN_VIEWS)
+      sp.cardMaterial.needsUpdate = true
+      sp.cardMesh.visible = true
+      p.release()
+      p.skeleton.dispose()
+      flat.dispose()
+    }
   }
 
   /**
@@ -300,7 +393,9 @@ export class Wildlife {
         const lodSize = size * sp.bulk
         t.spawns.push({
           sp, x, y, z, nx: _norm.x, ny: _norm.y, nz: _norm.z, size, hue, heading,
-          cull: cullRange(lodSize), forget: forgetRange(lodSize), lodSize, slot: null,
+          // Where the mesh gives way to the card, where the card gives way to nothing, and where the placement stops being worth remembering.
+          cull: cullRange(lodSize), card: cullRange(lodSize, CARD_RUNGS), forget: forgetRange(lodSize, CARD_RUNGS),
+          lodSize, slot: null,
         })
       }
     }
@@ -321,8 +416,10 @@ export class Wildlife {
     c.k = s.size / s.sp.asset.span
     c.hue = s.hue
     c.heading = c.aim = s.heading
-    c.lod = LOD_RUNGS
+    c.lod = CARD_RUNGS
     c.puppet = null
+    c.cardWant = false
+    c.cardP = 1
     this._pick(c)
     // Staggered into its activity, so a tile's animals do not all bow into a graze on the same frame.
     c.left *= this.rand()
@@ -364,24 +461,43 @@ export class Wildlife {
     this.tiles.clear()
     this.overflow = 0
     if (!this.loaded) return
+    // The cards go with them: the buffers hold last frame's animals, and the next frame refills them from the tiles this line is about to grow.
+    for (const sp of this.species) { sp.cardN = 0; sp.cardMesh.count = 0 }
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
   }
 
   get stats() {
     const alive = {}
     const puppets = {}
-    // Drawn animals and the triangles they cost, split by rung, so which rung a creature is on is a number to read and not a thing to squint at.
+    // Drawn animals and the triangles they cost, split by MESH rung, so which rung a creature is on is a number to read and not a thing to squint at. The card rung has no tier and is counted on its own.
     const lod = Array.from({ length: LOD_RUNGS }, () => ({ n: 0, tris: 0 }))
+    let cards = 0
     for (const sp of this.species) {
       alive[sp.key] = MAX - sp.free.length
       puppets[sp.key] = sp.puppets.length - sp.freePuppets.length
+      cards += sp.cardN
       for (const c of sp.slots) {
         if (c.spawn === null || c.lod >= LOD_RUNGS) continue
         lod[c.lod].n++
         lod[c.lod].tris += sp.asset.tiers[c.lod].index.count / 3
       }
     }
-    return { alive, puppets, lod, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved }
+    return { alive, puppets, lod, cards, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved }
+  }
+
+  /**
+   * Every animal living this frame, for the ear (audio/ambience.js): the slots
+   * themselves, with x, y, z, size, clip, cycle and speed on them, `speed > 0`
+   * meaning it is walking a gait. A hidden layer is frozen and lists nothing;
+   * nor does an animal past its last rung, which stands still whatever clip it
+   * was on.
+   */
+  bodies(into) {
+    if (!this.batch.visible) return into
+    for (const sp of this.species) {
+      for (const c of sp.slots) if (c.spawn !== null && c.lod < CARD_RUNGS) into.push(c)
+    }
+    return into
   }
 
   // -------------------------------------------------------------------------
@@ -435,6 +551,7 @@ export class Wildlife {
     c.clip = step[0]
     c.dur = step[1]
     c.left = step[1]
+    c.cycle = c.sp.durations[c.clip]
     c.cue++
     const speed = c.sp.asset.gait[c.clip]
     c.speed = speed === undefined ? 0 : speed * c.k
@@ -457,15 +574,15 @@ export class Wildlife {
   }
 
   /**
-   * One frame of a moving animal: every PROBE_EVERY frames a look a body length
-   * and a half ahead, then the turn, then a step along the heading. No seat
-   * there, or past the tether, and it aims away -- so an animal never walks into
-   * the water, up a crag or through a trunk, and never leaves the ground she
-   * could reach herself. It is slowest exactly while it is turning hardest,
-   * which is what keeps it inside the ground the probe cleared.
+   * One frame of a moving animal: on a probe frame a look a body length and a
+   * half ahead, then the turn, then a step along the heading. No seat there, or
+   * past the tether, and it aims away -- so an animal never walks into the
+   * water, up a crag or through a trunk, and never leaves the ground she could
+   * reach herself. It is slowest exactly while it is turning hardest, which is
+   * what keeps it inside the ground the probe cleared.
    */
-  _walk(c, dt) {
-    if ((this.frame + c.id) % PROBE_EVERY === 0) {
+  _walk(c, dt, probing) {
+    if (probing) {
       const ahead = c.size * AHEAD
       const ax = c.x + Math.cos(c.heading) * ahead
       const az = c.z - Math.sin(c.heading) * ahead
@@ -509,6 +626,44 @@ export class Wildlife {
   }
 
   /**
+   * Ask for the card, or ask for it to go. A reversal mid-dissolve rewinds the
+   * one already running rather than starting a third -- Puppet.show's rule, and
+   * it has to be the same rule, because the two are halves of one dissolve.
+   */
+  _wantCard(c, on) {
+    if (on === c.cardWant) return
+    c.cardWant = on
+    c.cardP = 1 - c.cardP
+  }
+
+  /**
+   * This animal into its species' card buffer for this frame: where it stands,
+   * which way it faces (the spin keeps the yaw, and reads the picture mirrored
+   * for a body facing away), how big it is and its turn round the colour wheel.
+   *
+   * The ground's normal is NOT in the matrix: the quad is spun about its own Y
+   * every frame, so a tilt would only lean the picture off the vertical.
+   *
+   * `aCardFade` is the dissolve, in material.js's FADE_FRAGMENT terms: positive
+   * keeps the low side of the pixel hash and negative the high side. The card
+   * arrives on the LOW side because the mesh it is replacing leaves through the
+   * puppet's `out`, which keeps the high one, and it leaves on the high side
+   * because the mesh arriving through `in` keeps the low one -- so between them
+   * they cover every pixel exactly once and the silhouette never thins.
+   */
+  _drawCard(c) {
+    const sp = c.sp
+    const i = sp.cardN++
+    _pos.set(c.x, c.y, c.z)
+    _quat.setFromAxisAngle(UP, c.heading)
+    _scl.setScalar(c.k)
+    _mat.compose(_pos, _quat, _scl)
+    sp.cardMesh.setMatrixAt(i, _mat)
+    sp.cardHue.array[i] = c.hue
+    sp.cardFade.array[i] = c.cardWant ? c.cardP : -(1 - c.cardP)
+  }
+
+  /**
    * One frame: every animal stepped, and the ones big enough in her view given a
    * puppet. `dayness` is the world's day scalar, 1 at noon and 0 once the sun is
    * well down, and it is what makes them settle at night.
@@ -518,6 +673,8 @@ export class Wildlife {
     this.dayness = dayness
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
     this.frame++
+    // The card buffers are refilled from nothing every frame: an instance in one is an animal on the card rung THIS frame, and the count is the whole of what is drawn.
+    for (const sp of this.species) sp.cardN = 0
 
     // The bodies of animals that unloaded, finishing their dissolve where they stood. They do not walk, turn or pick anything: they are a fade.
     for (let i = this.fading.length - 1; i >= 0; i--) {
@@ -537,18 +694,23 @@ export class Wildlife {
         const dy = (live ? live.y : s.y) - hy
         const dz = (live ? live.z : s.z) - hz
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
-        // One rule decides both: the rung it is drawn at, and whether it is alive at all.
-        const tier = critterTier(s.lodSize, dist, live ? live.lod : LOD_RUNGS, LOD_RUNGS)
+        // One rule decides all three: the rung it is drawn at, whether that rung is the card, and whether it is alive at all.
+        const tier = critterTier(s.lodSize, dist, live ? live.lod : CARD_RUNGS, CARD_RUNGS)
 
-        if (tier === LOD_RUNGS) {
+        if (tier === CARD_RUNGS) {
           if (!live) continue
-          // Past the cull an animal stops dead: no walking, no turning, no picking. What is left is its body finishing the dissolve out, and then the wait to see whether she comes back before its placement is worth forgetting.
-          live.lod = LOD_RUNGS
+          // Past the last rung an animal stops dead: no walking, no turning, no picking. What is left is its body finishing the dissolve out, and then the wait to see whether she comes back before its placement is worth forgetting.
+          live.lod = CARD_RUNGS
+          this._wantCard(live, false)
+          if (live.cardP < 1) {
+            live.cardP = Math.min(1, live.cardP + dt / LOD_FADE_S)
+            this._drawCard(live)
+          }
           if (live.puppet) {
             live.puppet.show(-1)
             live.puppet.step(dt)
             if (live.puppet.done) this._releasePuppet(live)
-          } else if (dist > s.forget) {
+          } else if (live.cardP >= 1 && dist > s.forget) {
             this._sleep(s)
           }
           continue
@@ -556,19 +718,39 @@ export class Wildlife {
 
         const c = live ?? this._wake(s)
         if (!c) continue
+        c.lod = tier
+        const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0
         c.left -= dt
         if (c.left <= 0) this._step(c)
+        const wasX = c.x
+        const wasZ = c.z
         // A standing animal still finishes a turn it began: one that stopped mid-swing eases round rather than holding a half-turned pose.
-        if (c.speed > 0) this._walk(c, dt)
+        if (c.speed > 0) this._walk(c, dt, probing)
         else this._turn(c, dt)
 
-        c.y = this.walk.heightAt(c.x, c.z)
-        if ((this.frame + c.id) % PROBE_EVERY === 0) {
+        // On a probe frame the real ground; between them the plane that probe
+        // measured, which is what makes a long stride cost nothing visible.
+        if (probing) {
+          c.y = this.walk.heightAt(c.x, c.z)
           this.walk.normalAt(c.x, c.z, undefined, _norm)
           c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
+        } else {
+          c.y -= (c.nx * (c.x - wasX) + c.nz * (c.z - wasZ)) / c.ny
         }
 
-        c.lod = tier
+        // The card rung: one quad in the species' instanced buffer, and whatever
+        // puppet it still has finishing its dissolve out against it.
+        this._wantCard(c, tier === LOD_RUNGS)
+        if (c.cardP < 1) c.cardP = Math.min(1, c.cardP + dt / LOD_FADE_S)
+        if (c.cardWant || c.cardP < 1) this._drawCard(c)
+        if (tier === LOD_RUNGS) {
+          if (!c.puppet) continue
+          c.puppet.show(-1)
+          c.puppet.step(dt)
+          if (c.puppet.done) this._releasePuppet(c)
+          continue
+        }
+
         const puppet = this._takePuppet(c)
         if (!puppet) continue
         puppet.show(tier)
@@ -586,12 +768,23 @@ export class Wildlife {
         puppet.step(dt)
       }
     }
+
+    for (const sp of this.species) {
+      sp.cardMesh.count = sp.cardN
+      if (!sp.cardN) continue
+      sp.cardMesh.instanceMatrix.needsUpdate = true
+      sp.cardHue.needsUpdate = true
+      sp.cardFade.needsUpdate = true
+    }
   }
 
   dispose() {
     this.batch.parent?.remove(this.batch)
     for (const sp of this.species) {
       for (const mats of sp.materials) for (const m of [mats.plain, mats.in, mats.out]) m.dispose()
+      sp.cardMaterial.map?.dispose()
+      sp.cardMaterial.dispose()
+      sp.cardMesh?.geometry.dispose()
       sp.asset?.map?.dispose()
       for (const geo of sp.asset?.tiers ?? []) geo.dispose()
     }

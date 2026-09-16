@@ -176,7 +176,7 @@ export class Spiders {
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
         size: 0.2, hue: 0,
-        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds, playing `clip`.
+        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
         // On a rock: steps turned back since it last walked.
         stuck: 0,
@@ -541,8 +541,22 @@ export class Spiders {
     }
   }
 
+  /**
+   * Every spider living this frame, for the ear (audio/ambience.js): the slots
+   * themselves, with x, y, z, size and speed on them, `speed > 0` meaning it is
+   * crawling. A hidden layer is frozen and lists nothing.
+   */
+  bodies(into) {
+    if (!this.batch.visible) return into
+    for (const t of this.tiles.values()) {
+      for (const host of t.hosts.values()) for (const c of host.spiders) into.push(c)
+    }
+    return into
+  }
+
   _pause(c) {
     c.state = 'pause'
+    c.speed = 0
     const r = this.rand()
     c.clip = r < 0.65 ? 'idle' : r < 0.85 ? 'eat' : 'rest'
     c.left = between(this.rand, c.clip === 'rest' ? REST_S : PAUSE_S)

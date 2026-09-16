@@ -15,7 +15,21 @@
 // head, but the panner's own distance rolloff is switched off (rolloffFactor 0):
 // Ambience fades every sound by its own rule, and two rolloffs stacked would
 // make a frog three metres off inaudible.
+//
+// THE ONE-SHOTS ARE BUDGETED. Every voice is a live resampler on the audio
+// thread until its clip ends, so a shot quieter than VOICE_FLOOR is not started
+// at all (a hare's step at forty metres is a voice for nothing), and no more
+// than MAX_VOICES play at once: a shot past the cap displaces the quietest one
+// playing if it is louder than that, and is dropped if it is not. The gain
+// asked for is the whole loudness, the panner having no rolloff, so it is the
+// right thing to rank on. Loops are not counted: they are the bed itself, a
+// fixed handful, and a footfall should never cut the wind.
 // ---------------------------------------------------------------------------
+
+export const VOICE_FLOOR = 0.01
+export const MAX_VOICES = 24
+// A displaced voice is faded out over this, not cut: a cut is a click.
+const CULL_FADE_S = 0.03
 
 // How far ahead of the clock a loop's next cycle is scheduled. Longer than the
 // worst frame gap (tick clamps at 100 ms) so a hitch never leaves a gap in the
@@ -63,7 +77,14 @@ export class SoundEngine {
     this.water.connect(this.master)
     this.buffers = new Map()
     this.loops = new Set()
-    this.oneShots = 0
+    // The one-shots playing, { src, g, tail, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
+    this.voices = []
+    this.floored = 0
+    this.culled = 0
+  }
+
+  get oneShots() {
+    return this.voices.length
   }
 
   /** Browsers start a context suspended until a user gesture; call from one. Idempotent. */
@@ -166,14 +187,28 @@ export class SoundEngine {
   /**
    * Fire a clip once. `at` is a world position {x, y, z} for a directional
    * sound, or null for one with no bearing (her own footsteps, the cricket bed).
-   * Returns the source, or null while the context is still suspended: its
-   * clock is frozen then, so every shot started would queue on the same
-   * instant and the lot would fire together the moment unlock() lands.
+   * Returns the source, or null when the shot is not started: under the floor,
+   * over the cap, or while the context is still suspended -- its clock is
+   * frozen then, so every shot started would queue on the same instant and the
+   * lot would fire together the moment unlock() lands.
    */
   play(name, { rate = 1, gain = 1, at = null, bus = 'air' } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!this.running) return null
+    if (gain < VOICE_FLOOR) {
+      this.floored++
+      return null
+    }
+    if (this.voices.length >= MAX_VOICES) {
+      let quietest = this.voices[0]
+      for (const v of this.voices) if (v.gain < quietest.gain) quietest = v
+      if (quietest.gain >= gain) {
+        this.culled++
+        return null
+      }
+      this._cull(quietest)
+    }
     const ctx = this.ctx
     const src = ctx.createBufferSource()
     src.buffer = this.buffer(name)
@@ -195,15 +230,29 @@ export class SoundEngine {
       tail = p
     }
     tail.connect(this[bus])
-    this.oneShots++
-    src.onended = () => {
-      this.oneShots--
-      src.disconnect()
-      g.disconnect()
-      if (tail !== g) tail.disconnect()
-    }
+    const voice = { src, g, tail, gain }
+    this.voices.push(voice)
+    src.onended = () => this._release(voice)
     src.start()
     return src
+  }
+
+  /** The voice has ended, on its own or culled: off the graph, and out of the budget if it is still counted. */
+  _release(voice) {
+    const i = this.voices.indexOf(voice)
+    if (i >= 0) this.voices.splice(i, 1)
+    voice.src.disconnect()
+    voice.g.disconnect()
+    if (voice.tail !== voice.g) voice.tail.disconnect()
+  }
+
+  /** Displace a playing voice: out of the budget now, a short fade to silence, then the stop; onended takes it off the graph. */
+  _cull(voice) {
+    this.culled++
+    this.voices.splice(this.voices.indexOf(voice), 1)
+    const now = this.ctx.currentTime
+    setParam(voice.g.gain, 0, now, CULL_FADE_S / 3)
+    voice.src.stop(now + CULL_FADE_S)
   }
 
   /** A self-crossfading loop; see LoopVoice. Idle until start(). */

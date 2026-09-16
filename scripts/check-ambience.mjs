@@ -21,9 +21,9 @@
 // world.
 
 import fs from 'node:fs'
-import { SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP } from '../src/v2/audio/sound-engine.js'
+import { SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES } from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
-import { Ambience, SOUNDS, RULES, RATE } from '../src/v2/audio/ambience.js'
+import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
@@ -175,6 +175,21 @@ console.log('buses')
   check(threw, 'playing an unloaded clip throws')
   const src = engine.play('clip', { rate: 1.05, gain: 0.4, at: { x: 1, y: 2, z: 3 } })
   check(src.playbackRate.value === 1.05 && src.env.gain.value === 0.4, 'play sets rate and gain on the voice')
+
+  // The one-shot budget: a shot under the floor is not started; past the cap a shot displaces the quietest voice if it is louder, and is dropped if not.
+  check(engine.oneShots === 1 && engine.play('clip', { gain: VOICE_FLOOR / 2 }) === null && engine.oneShots === 1 && engine.floored === 1, `a shot under the ${VOICE_FLOOR} floor is never started`)
+  const quiet = []
+  while (engine.oneShots < MAX_VOICES) quiet.push(engine.play('clip', { gain: 0.2 + 0.01 * quiet.length }))
+  check(engine.oneShots === MAX_VOICES && quiet.every((s) => s !== null) && engine.culled === 0, `${MAX_VOICES} voices play at once`)
+  check(engine.play('clip', { gain: 0.15 }) === null && engine.oneShots === MAX_VOICES && engine.culled === 1, 'at the cap a quieter shot is dropped')
+  check(engine.play('clip', { gain: 0.2 }) === null && engine.culled === 2, 'and one no louder than the quietest is dropped too')
+  const loud = engine.play('clip', { gain: 0.9 })
+  const first = quiet[0]
+  check(loud !== null && engine.oneShots === MAX_VOICES && engine.culled === 3 && first.stopAt !== null && first.stopAt > ctx.currentTime && first.env.log.at(-1).v === 0, 'a louder one plays, and the quietest is faded out and stopped for it', `stop at +${(first.stopAt - ctx.currentTime).toFixed(3)} s`)
+  first.onended()
+  check(engine.oneShots === MAX_VOICES, 'the displaced voice ending does not free a second slot')
+  loud.onended()
+  check(engine.oneShots === MAX_VOICES - 1, 'a voice ending on its own frees its slot')
 }
 
 // --- the sense, against a synthetic world -------------------------------------
@@ -473,6 +488,134 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(threw, 'a teleport with no range throws')
 }
 {
+  // The footfall tables are the clip files' own phases: one beat per distinct landing, in order.
+  for (const [lib, gaits] of Object.entries(FOOTFALLS)) {
+    for (const [gait, beats] of Object.entries(gaits)) {
+      const spec = JSON.parse(fs.readFileSync(new URL(`../tools/creatures/anim/clips/${lib}/${gait}.json`, import.meta.url), 'utf8'))
+      const phases = [...new Set(Object.values(spec.phases))].sort((a, b) => a - b)
+      check(beats.join(',') === phases.join(','), `${lib} ${gait} footfalls are the clip's distinct phases in order`, `${beats.join(' ')} vs ${phases.join(' ')}`)
+    }
+  }
+}
+{
+  // The animals' feet: a herd's walking bodies each land a step per beat of their gait, at their size and distance.
+  const F = RULES.footfall
+  const hare = { x: 1, y: GROUND, z: 0, size: 0.5, clip: 'walk', cycle: 1.1, speed: 1 }
+  const stag = { x: 0, y: GROUND, z: 10, size: 2, clip: 'trot', cycle: 0.51, speed: 1 }
+  const far = { x: 0, y: GROUND, z: F.reach + 5, size: 2, clip: 'run', cycle: 0.38, speed: 1 }
+  const herd = { alive: [], bodies(into) { into.push(...this.alive); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(15), herds: [{ layer: herd, clips: 'quadruped' }] })
+  run(amb, 30, {})
+  check(count(engine, 'footfall') === 0, 'an empty herd is silent')
+  herd.alive.push(hare, stag, far)
+  const head = { x: 0, y: GROUND, z: 0 }
+  run(amb, 30, { head })
+  const steps = engine.plays.filter((p) => p.name === 'footfall')
+  const hareSteps = steps.filter((p) => p.at.x === 1), stagSteps = steps.filter((p) => p.at.z === 10), farSteps = steps.filter((p) => p.at.z === far.z)
+  check(Math.abs(hareSteps.length - (30 / 1.1) * 4) <= 4, 'a walking hare lands four footfalls a cycle', `${hareSteps.length} in 30 s of a 1.1 s walk`)
+  check(Math.abs(stagSteps.length - (30 / 0.51) * 2) <= 4, 'a trotting stag lands two: its diagonal pairs together', `${stagSteps.length} in 30 s of a 0.51 s trot`)
+  check(farSteps.length === 0 && amb.bodies.size === 2, `a body past ${F.reach} m is neither heard nor clocked`)
+  check(hareSteps.every((p) => within(p.rate, RATE[0], RATE[1])), 'a hare at arm\'s length steps at rate 1, give or take the pitch band')
+  check(hareSteps.every((p) => within(p.gain, F.level * F.gain[0], F.level * F.gain[1])) && hareSteps.some((p) => p.gain > F.level * 0.95), `and at ${F.level} of full volume`, `${Math.min(...hareSteps.map((p) => p.gain)).toFixed(3)} to ${Math.max(...hareSteps.map((p) => p.gain)).toFixed(3)}`)
+  const stagRate = Math.pow(F.size / 2, F.deep)
+  check(stagSteps.every((p) => within(p.rate, stagRate * RATE[0], stagRate * RATE[1])) && stagRate < 0.6, 'a stag steps slower and deeper', `rate ${stagRate.toFixed(2)}x`)
+  const stagLevel = Math.min(F.max, F.level * (2 / F.size)) * (F.near / 10)
+  check(stagSteps.every((p) => within(p.gain, stagLevel * F.gain[0], stagLevel * F.gain[1])) && Math.abs(stagLevel - 0.1) < 1e-9, 'a stag at 10 m is full volume for its size, over ten for its distance', `${stagLevel.toFixed(3)}`)
+  check(steps.every((p) => p.at && p.at.y === GROUND), 'every footfall comes from where the body is')
+  // The beat is jittered, not a metronome: the gaps between a hare's steps vary, and stay within the jitter of the beat's own spacing.
+  const gaps = []
+  {
+    // Re-run alone at 60 Hz, timing each footfall by frame, so the gaps are readable.
+    const e2 = fakeEngine()
+    const a2 = new Ambience({ engine: e2, sense, rand: mulberry32(16), herds: [{ layer: { bodies: (into) => { into.push(hare); return into } }, clips: 'quadruped' }] })
+    const frames = 60 * 30
+    let last = null
+    for (let i = 0; i < frames; i++) {
+      const before = e2.plays.length
+      a2.update(1 / 60, { head, dayness: DAY, submerged: false, speed: 0, afoot: true })
+      if (e2.plays.length > before) { if (last !== null) gaps.push((i - last) / 60); last = i }
+    }
+  }
+  const beat = 1.1 / 4
+  check(new Set(gaps.map((g) => g.toFixed(3))).size >= 4, 'the gaps between a hare\'s footfalls vary', `${new Set(gaps.map((g) => g.toFixed(3))).size} distinct gaps`)
+  check(gaps.every((g) => g >= beat - 2 * F.jitter * 1.1 - 1 / 60 - 1e-9 && g <= beat + 2 * F.jitter * 1.1 + 1 / 60 + 1e-9), `and every gap is the beat within ${F.jitter} of a cycle either side`, `${Math.min(...gaps).toFixed(3)} to ${Math.max(...gaps).toFixed(3)} s about ${beat.toFixed(3)}`)
+  // A body that stops is dropped from the clock; one that changes gait starts a fresh cycle.
+  hare.speed = 0
+  run(amb, 1, { head })
+  check(amb.bodies.size === 1 && !amb.bodies.has(hare), 'a body that stops walking, and has no call, is forgotten')
+  const before = engine.plays.length
+  stag.clip = 'run'
+  stag.cycle = 0.38
+  run(amb, 1 / 60, { head })
+  check(amb.bodies.get(stag).clip === 'run' && amb.bodies.get(stag).phase < 0.1, 'a change of gait restarts the cycle on that gait')
+  run(amb, 10, { head })
+  check(Math.abs(engine.plays.length - before - (10 / 0.38) * 4) <= 8, 'and a gallop lands four beats a cycle', `${engine.plays.length - before} in 10 s of a 0.38 s run`)
+  // A hidden or frozen layer lists nothing, so nothing is heard; a gait with no footfalls is a bug, not silence.
+  let threw = 0
+  try { new Ambience({ engine, sense, herds: [{ layer: {}, clips: 'quadruped' }] }) } catch { threw++ }
+  try { new Ambience({ engine, sense, herds: [{ layer: herd, clips: 'wyvern' }] }) } catch { threw++ }
+  stag.clip = 'idle'
+  try { run(amb, 1 / 60, { head }) } catch { threw++ }
+  check(threw === 3, 'a herd without bodies(), an unknown clip library, or a body walking a clip with no footfalls throws')
+}
+{
+  // The fox's yip: every so often from each fox within reach, standing or walking, at its distance.
+  const Y = RULES.foxYip
+  const near = { x: 3, y: GROUND + 1.6, z: 0, size: 0.7, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'fox' } }
+  const far = { x: 0, y: GROUND + 1.6, z: 20, size: 0.7, clip: 'walk', cycle: 1.1, speed: 1, sp: { key: 'fox' } }
+  const gone = { x: 0, y: GROUND + 1.6, z: Y.reach + 5, size: 0.7, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'fox' } }
+  const hare = { x: 2, y: GROUND + 1.6, z: 2, size: 0.5, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'hare' } }
+  const herd = { bodies(into) { into.push(near, far, gone, hare); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(21), herds: [{ layer: herd, clips: 'quadruped', calls: { fox: 'foxYip' } }] })
+  run(amb, 600, {})
+  const yips = engine.plays.filter((p) => p.name === 'foxYip')
+  const nearY = yips.filter((p) => p.at.x === 3), farY = yips.filter((p) => p.at.z === 20)
+  const mean = (Y.every[0] + Y.every[1]) / 2
+  check(nearY.length >= 600 / mean / 2 && nearY.length <= (600 / mean) * 2, `a fox standing ${near.x} m off yips every ${Y.every[0]}-${Y.every[1]} s`, `${nearY.length} in 600 s`)
+  check(farY.length >= 600 / mean / 2 && farY.length <= (600 / mean) * 2 && yips.length === nearY.length + farY.length, 'so does a walking one at 20 m, and one past the reach never', `${farY.length}`)
+  check(nearY.every((p) => within(p.gain, Y.level * Y.gain[0], Y.level * Y.gain[1])), `within ${Y.near} m a yip is at its level`, `${Math.min(...nearY.map((p) => p.gain)).toFixed(2)}-${Math.max(...nearY.map((p) => p.gain)).toFixed(2)}`)
+  check(farY.every((p) => within(p.gain, (Y.level * Y.gain[0] * Y.near) / 20, (Y.level * Y.gain[1] * Y.near) / 20)), 'at 20 m it is a fifth as loud', `${Math.max(...farY.map((p) => p.gain)).toFixed(3)}`)
+  check(yips.every((p) => within(p.rate, RATE[0], RATE[1])), 'pitched within the band')
+  check(amb.bodies.has(near) && !amb.bodies.has(gone) && !amb.bodies.has(hare) && count(engine, 'footfall') === engine.plays.filter((p) => p.name === 'footfall' && p.at.z === 20).length, 'a standing fox is kept for its call and lands no footfalls; a hare has no call and is not kept standing')
+  let threw = false
+  try { new Ambience({ engine, sense, herds: [{ layer: herd, clips: 'quadruped', calls: { fox: 'bark' } }] }) } catch { threw = true }
+  check(threw, 'a call with no rule throws')
+}
+{
+  // The crawlers' feet: one quiet loop while any spider or crab within reach is moving, sat at the nearest.
+  const C = RULES.crawl
+  const spider = { x: 2, y: GROUND + 1.6, z: 0, size: 0.2, speed: 0.05 }
+  const crab = { x: 0, y: GROUND + 1.6, z: 1, size: 0.4, speed: 0 }
+  const farCrab = { x: 0, y: GROUND + 1.6, z: C.reach + 1, size: 0.4, speed: 0.5 }
+  const spiders = { bodies(into) { into.push(spider); return into } }
+  const crabs = { bodies(into) { into.push(crab, farCrab); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(23), crawlers: [spiders, crabs] })
+  const loop = engine.loops.crawl
+  run(amb, 1, {})
+  check(loop.opts.directional && loop.active && loop.starts === 1 && Math.abs(loop.level - C.level * (C.near / 2)) < 1e-9 && loop.at.x === 2, `a spider crawling 2 m off holds the crawl loop at half its ${C.level} level, from the spider`, `${loop.level.toFixed(3)}`)
+  crab.speed = 0.3
+  run(amb, 1, {})
+  check(loop.active && loop.starts === 1 && Math.abs(loop.level - C.level * Math.min(1, C.near / 2 + C.near / 1)) < 1e-9 && loop.at.z === 1, 'a crab scuttling 1 m off adds to it, capped at the level, and takes the loop over as the nearer', `${loop.level.toFixed(3)}`)
+  spider.speed = 0
+  crab.speed = 0
+  run(amb, 1, {})
+  check(!loop.active && loop.stops === 1, `both paused, the loop stops; a crab past ${C.reach} m never held it`)
+  crab.speed = 0.3
+  run(amb, 1, {})
+  check(loop.active && loop.starts === 2, 'and starts again when one moves')
+  run(amb, 1, { submerged: true })
+  check(loop.active && loop.starts === 2, 'it is held through a dive like the other loops, the bus silencing it')
+  let threw = false
+  try { new Ambience({ engine, sense, crawlers: [{}] }) } catch { threw = true }
+  check(threw, 'a crawler layer without bodies() throws')
+}
+{
   // Frogs croak within reach, fading with distance, from where they sit.
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
@@ -480,7 +623,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   sense.s.frogs.set([2, GROUND, 0, 0, GROUND, 8])
   run(new Ambience({ engine, sense, rand: mulberry32(9) }), 120, {})
   const croaks = engine.plays.filter((p) => p.name === 'croak1' || p.name === 'croak2')
-  check(croaks.length >= 15 && croaks.length <= 50, 'two frogs croak about every 8 s each', `${croaks.length} in 120 s`)
+  check(RULES.frog.every === 16 && croaks.length >= 7 && croaks.length <= 25, 'two frogs croak about every 16 s each', `${croaks.length} in 120 s`)
   const nearC = croaks.filter((p) => p.at.x === 2), farC = croaks.filter((p) => p.at.z === 8)
   check(nearC.length > 0 && farC.length > 0 && nearC.every((p) => p.at.z === 0), 'each croak comes from its frog')
   const d2 = Math.hypot(2, 1.6), d8 = Math.hypot(8, 1.6)

@@ -507,6 +507,21 @@ spiders.place(0, 0)
   liveRocks = ROCKS
 }
 
+// --- the ear hears the spiders --------------------------------------------------
+// bodies() is what the ambience reads for the crawl loop: the slots themselves, `speed > 0` on the ones on the move, a pause at speed 0.
+{
+  const w = alive().find((c) => c.host.kind === 'tree')
+  w.state = 'go'; w.clip = 'walk'; w.speed = 0.05; w.left = 100
+  const listed = spiders.bodies([])
+  check(listed.length === alive().length && listed.includes(w) && w.speed > 0, 'every seated spider is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
+  w.left = 0
+  spiders.update(0, GROUND + 40, 0, 1 / 60)
+  check(w.state === 'pause' && w.speed === 0 && spiders.bodies([]).includes(w), 'its spell over, the walker pauses at speed 0 and stays listed')
+  spiders.batch.visible = false
+  check(spiders.bodies([]).length === 0, 'a hidden layer lists nobody')
+  spiders.batch.visible = true
+}
+
 // --- near: puppets, tiers, clips ------------------------------------------------
 {
   const target = alive().find((c) => c.host.kind === 'tree')

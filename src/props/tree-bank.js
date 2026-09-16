@@ -87,10 +87,10 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
  * the planted subset, is a variant id.
  */
 export const TREE_BANK_SPECIES = {
-  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, nearMat: LAYER.MAT_PINE_ALPHA, impostorLayer: LAYER.IMPOSTOR_PINE, billboardTri: 'up', planted: true },
-  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, nearMat: null, impostorLayer: LAYER.IMPOSTOR_OAK, billboardTri: 'down', planted: false },
-  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, nearMat: null, impostorLayer: LAYER.IMPOSTOR_BIRCH, billboardTri: 'down', planted: false },
-  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, nearMat: null, impostorLayer: LAYER.IMPOSTOR_ASPEN, billboardTri: 'down', planted: false },
+  pine: { generator: 'v8', matLayer: LAYER.MAT_PINE, nearMat: LAYER.MAT_PINE_ALPHA, impostorLayer: LAYER.IMPOSTOR_PINE, clumpLayer: LAYER.CLUMP_PINE, billboardTri: 'up', planted: true },
+  oak: { generator: 'oak', matLayer: LAYER.MAT_OAK, nearMat: null, impostorLayer: LAYER.IMPOSTOR_OAK, clumpLayer: LAYER.CLUMP_OAK, billboardTri: 'down', planted: false },
+  birch: { generator: 'oak', matLayer: LAYER.MAT_BIRCH, nearMat: null, impostorLayer: LAYER.IMPOSTOR_BIRCH, clumpLayer: LAYER.CLUMP_BIRCH, billboardTri: 'down', planted: false },
+  aspen: { generator: 'oak', matLayer: LAYER.MAT_ASPEN, nearMat: null, impostorLayer: LAYER.IMPOSTOR_ASPEN, clumpLayer: LAYER.CLUMP_ASPEN, billboardTri: 'down', planted: false },
 }
 
 /** The species the world plants, in table order. */
@@ -117,6 +117,7 @@ export function treeVariants() {
       species,
       height: gen.species(species).height,
       impostorLayer: sp.impostorLayer,
+      clumpLayer: sp.clumpLayer,
       matLayer: sp.matLayer,
       billboardTri: sp.billboardTri,
     }

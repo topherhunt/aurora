@@ -1182,7 +1182,7 @@ function propCardMask(layerCount) {
   return /* glsl */ `
     float propCard = 0.0;
     for ( int i = 0; i < ${layerCount}; i++ ) {
-      propCard += step( abs( texLayer - uBillboardLayers[ i ] ), 0.5 );
+      propCard += step( abs( propLayer - uBillboardLayers[ i ] ), 0.5 );
     }
     propCard = min( propCard, 1.0 );
     float propSpun = propCard * step( ${CARD_UP_MARK}, normal.y );`
@@ -2487,6 +2487,7 @@ export function createPropMaterial(
     vertexColors = false, billboardLayers = null, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
     side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
+    layerShift = false,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2579,9 +2580,14 @@ export function createPropMaterial(
       // batchingMatrix), then this, then `defaultnormal_vertex`, then
       // `begin_vertex` -- so a mask computed here is in scope for the fade, the
       // wind and the spin further down, and the layer loop is still run once.
+      // `propLayer` is THE layer every vertex-stage test reads, and the
+      // fragment samples: the geometry's `texLayer` plus, under `layerShift`,
+      // the instance's `aLayerShift` -- one quad drawing several consecutive
+      // photographs from one InstancedMesh, the instance picking which.
       .replace(
         '#include <beginnormal_vertex>',
         `#include <beginnormal_vertex>
+        float propLayer = texLayer${layerShift ? ' + aLayerShift' : ''};
         ${propCardMask(billboards ? billboards.length : 0)}`
       )
       .replace(
@@ -2589,6 +2595,7 @@ export function createPropMaterial(
         `#include <common>
         attribute float texLayer;
         attribute vec2 uvProj;
+        ${layerShift ? 'attribute float aLayerShift;' : ''}
         ${instancedFade ? `
         #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;` : ''}
@@ -2615,7 +2622,7 @@ export function createPropMaterial(
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-        vTexLayer = texLayer;
+        vTexLayer = propLayer;
         vUvProj = uvProj;
         ${hemFray ? HEM_FRAY_GLSL.vertexBegin : ''}
         vec3 propObjPos = transformed;
@@ -2702,6 +2709,7 @@ export function createPropMaterial(
   // `instancedFade`, the sharpest of them -- a program declaring `aPropFade`
   // bound to a mesh without that attribute reads garbage timers and dissolves at
   // random. `hemFray` for both reasons at once: an attribute and six literals.
+  // `layerShift` is an attribute too, and the same garbage-read hazard.
   //
   // The wind and noDiscard suffixes are evaluated per CALL rather than folded
   // into `key`, because setWindEnabled and Trees.setCutout flip them under a
@@ -2721,7 +2729,7 @@ export function createPropMaterial(
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
-  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
   material.customProgramCacheKey = () =>
     `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 
@@ -2825,15 +2833,15 @@ const SEASONS_VERTEX = /* glsl */ `
         // vertex rate, against the matrix-vector product already here.
         float rockV = 0.0;
         for ( int i = 0; i < ${SNOW_HARD_LAYERS.length}; i++ ) {
-          rockV += step( abs( texLayer - uSnowRockLayers[ i ] ), 0.5 );
+          rockV += step( abs( propLayer - uSnowRockLayers[ i ] ), 0.5 );
         }
         float leafV = 0.0;
         for ( int i = 0; i < ${SNOW_LAYERS.length}; i++ ) {
-          leafV += step( abs( texLayer - uSnowLayers[ i ] ), 0.5 );
+          leafV += step( abs( propLayer - uSnowLayers[ i ] ), 0.5 );
         }
         float mossV = 0.0;
         for ( int i = 0; i < ${MOSS_LAYERS.length}; i++ ) {
-          mossV += step( abs( texLayer - uMossLayers[ i ] ), 0.5 );
+          mossV += step( abs( propLayer - uMossLayers[ i ] ), 0.5 );
         }
         // .w is this INSTANCE's snow load: the season ceiling, rolled into
         // [uSnowVary.x, uSnowVary.y] for a hard surface or [uLeafSnowVary.x,
