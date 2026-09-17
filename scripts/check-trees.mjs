@@ -1337,16 +1337,19 @@ if (LAW_RINGS.some(([, r1, clumpy]) => !clumpy && r1 > CLUMP_EDGE) || LAW_RINGS.
     `${trees.batch.meshes.filter((m) => m.count > 0).length} of them non-empty`)
 }
 
-// --- 9b1. the two ablations --------------------------------------------------
+// --- 9b1. the three ablations ------------------------------------------------
 //
-// The menu switches that answer "what do trees actually cost", and both are
-// measurements rather than settings, so what matters is that each removes ONE
-// thing and puts it back exactly. `tree tiers` has to empty the mesh meshes --
-// an emptied InstancedMesh is skipped before its draw call, which is where the
-// saving is, and a tier still holding one instance would keep the call and the
-// number would mean nothing. `tree leaf cutout` has to restore the material's
-// OWN threshold, not a number typed in a switch case, or an A/B leaves the
-// forest running at the wrong alphaTest for the rest of the session.
+// The menu switches that answer "what do trees actually cost", and all three
+// are measurements rather than settings, so what matters is that each removes
+// ONE thing and puts it back exactly. `tree tiers` has to empty the mesh
+// meshes -- an emptied InstancedMesh is skipped before its draw call, which is
+// where the saving is, and a tier still holding one instance would keep the
+// call and the number would mean nothing. `tree leaf cutout` has to restore
+// the material's OWN threshold, not a number typed in a switch case, or an
+// A/B leaves the forest running at the wrong alphaTest for the rest of the
+// session. `tree clumps` has to hide the clump meshes and NOTHING ELSE: a
+// tile that changed mode or a singles ring that moved would price the
+// ablation and not the clumps.
 {
   const meshTiers = bank.tiers.length - 1
   // The arena ids of every MESH tier, asked of the same map update() steers by.
@@ -1405,6 +1408,26 @@ if (LAW_RINGS.some(([, r1, clumpy]) => !clumpy && r1 > CLUMP_EDGE) || LAW_RINGS.
   check(assemble().includes('abs( vPropFade ) <= fadeT ) discard') && trees.material.customProgramCacheKey() !== offKey,
     'and the dissolve discard comes back under a different program key, so the two programs are never conflated',
     `key ${trees.material.customProgramCacheKey()}`)
+
+  const clumpGeo = trees.tierIds[trees.clumpTier]
+  const isClumpMesh = (g) => clumpGeo.includes(g)
+  const before = { tiers: Array.from(trees.tierN), clumpy: 0, drawnSingles: 0 }
+  for (const tile of trees.tiles.values()) if (tile.clumpy) before.clumpy++
+  trees.setClumpsVisible(false)
+  trees.update(0, EYE, 0)
+  let clumpy = 0
+  for (const tile of trees.tiles.values()) if (tile.clumpy) clumpy++
+  const hidden = trees.batch.meshes.filter((m) => !m.visible).map((m) => trees.batch.meshes.indexOf(m))
+  check(hidden.length === clumpGeo.length && hidden.every(isClumpMesh),
+    'no clumps hides exactly the clump meshes, one per species, and no single-tree mesh',
+    `${hidden.length} hidden of ${trees.batch.meshes.length}, clump tier holds ${clumpGeo.length}`)
+  check(clumpy === before.clumpy && Array.from(trees.tierN).join() === before.tiers.join(),
+    'and moves nothing: every tile keeps its mode and every tier still reports the count it would draw, so the row prices the clump fill alone',
+    `${before.clumpy} -> ${clumpy} clump tiles, tiers ${before.tiers.join('/')} -> ${Array.from(trees.tierN).join('/')}`)
+  check(trees.stats.clumpsHidden === true, 'and the stats row says so, which is what the readout flags')
+  trees.setClumpsVisible(true)
+  check(trees.batch.meshes.every((m) => m.visible) && trees.stats.clumpsHidden === false,
+    'and turning it back on shows every mesh again')
 }
 
 // --- 9b2. a dissolve never retracts -----------------------------------------

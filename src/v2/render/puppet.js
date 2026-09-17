@@ -40,7 +40,7 @@
 
 import THREE from '../../three-instance.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { gltfLoader, hueVary } from './critters.js'
+import { gltfLoader } from './critters.js'
 
 // How long a tier change, an appearance or a vanishing takes. Long enough that
 // the eye reads a dissolve rather than a flicker, short enough that a creature
@@ -48,6 +48,55 @@ import { gltfLoader, hueVary } from './critters.js'
 export const LOD_FADE_S = 0.35
 
 const IDENTITY = new THREE.Matrix4()
+
+// ---------------------------------------------------------------------------
+// HOW OFTEN A PUPPET RE-POSES, BY THE RUNG IT DRAWS ON: every frame on the top
+// rung, then every second, fourth and eighth frame. This is the one lever the
+// ladder does NOT give us -- three uploads a skeleton's bone texture once a
+// frame per skeleton drawn, whichever tier that is, so a rung-3 stag costs the
+// same skinning as a rung-0 one. Skipping the pose is what makes a distant
+// animal cheap: no mixer, no bone composed, no bone texture re-uploaded.
+//
+// The mixer's dt is BANKED and spent in one go, so a clip plays at its own
+// speed however coarsely it is sampled -- this is a lower sample rate, not a
+// slower animation.
+//
+// WHAT A HELD FRAME LOOKS LIKE. The bone texture holds WORLD matrices (the
+// bones hang under the creature's own group), and a skinned vertex is
+// bindMatrixInverse * boneMatrix * position with the mesh's model matrix put
+// back on top -- the two cancel. So a body whose bone texture is stale draws
+// frozen where it stood rather than sliding away from its pose, and the animal
+// crosses the ground in hops of its own cadence: 2 cm a hop on rung 1, 16 cm on
+// rung 3 for a stag at a walk, which is a couple of pixels at the distance that
+// rung starts at. The layers therefore leave the group's matrix alone on a held
+// frame too, since writing it would cost the bone tree a full re-multiply and
+// change nothing on screen. Sliding on smoothly while holding the pose would
+// need the rig in local space (a detached bind), which is a bigger change than
+// the hop is worth.
+// ---------------------------------------------------------------------------
+export const POSE_EVERY = [1, 2, 4, 8]
+const poseEvery = (tier) => (tier < 0 ? POSE_EVERY[POSE_EVERY.length - 1] : POSE_EVERY[Math.min(tier, POSE_EVERY.length - 1)])
+// Puppets built one after another start their count on different frames, so a
+// herd re-poses a few bodies a frame instead of all of them on every eighth.
+let posePhase = 0
+
+// How much bigger than its REST bounds a body is allowed to get before the
+// frustum test is wrong about it. A sphere already round the whole creature,
+// half as wide again, covers a rear, a leap or a stretched gallop.
+const POSE_SLACK = 1.6
+
+/** One sphere over every tier's rest bounds, slack enough for any pose the clips reach. */
+function poseSphere(tiers) {
+  const box = new THREE.Box3()
+  for (const geo of tiers) {
+    if (!geo.boundingBox) geo.computeBoundingBox()
+    box.union(geo.boundingBox)
+  }
+  const sphere = new THREE.Sphere()
+  box.getBoundingSphere(sphere)
+  sphere.radius *= POSE_SLACK
+  return sphere
+}
 
 /**
  * A shipped animated GLB as the parts a puppet is built from: the skeleton's
@@ -119,35 +168,50 @@ function dissolve(shader) {
 }
 
 /**
- * The three materials one puppet draws through, over one shared hue and one
- * shared cut: `plain` for a settled tier, `in` and `out` for the two halves of
- * a fade. Two programs between every puppet of a species -- `cacheKey` and
- * `cacheKey`-fade -- because the hue and the cut are uniforms, not defines.
+ * The material a SETTLED puppet draws through, shared by every puppet of a
+ * species. Nothing in it is per-animal, which is the point: see below.
  *
- * The caller patches all three with the world's lighting; lighting.js chains
- * onBeforeCompile, so these splices survive it.
+ * The caller patches it with the world's lighting; lighting.js chains
+ * onBeforeCompile, so a splice here survives it.
  */
-export function makePuppetMaterials(cacheKey) {
-  const uHue = { value: 0 }
+export function makeSettledMaterial(cacheKey) {
+  const m = new THREE.MeshLambertMaterial({ color: 0xffffff })
+  m.customProgramCacheKey = () => cacheKey
+  return m
+}
+
+/**
+ * The two halves of ONE puppet's dissolve -- `in` and `out` -- over its own
+ * cut, handed the species' settled material as `plain`. One program between
+ * every puppet of a species, `cacheKey`-fade, the cut being a uniform and not
+ * a define.
+ *
+ * A PUPPET WEARS NO COLOUR OF ITS OWN, and that is a rendering limit rather
+ * than a taste. An InstancedMesh varies its instances through an attribute
+ * (critters.js `makeHueAttribute`) and the whole scatter stays one material and
+ * one draw. A skinned body has no instances, so the only place a per-animal
+ * value can sit is a uniform, and a uniform belongs to a MATERIAL: twenty hues
+ * meant twenty materials, and three refreshes every uniform of a material it
+ * did not just bind, so each drawn animal cost a full uniform upload -- twice
+ * over, there being no multiview in the WebGL renderer. A settled herd is now
+ * one material change a frame instead of one an animal. The per-animal SIZE
+ * roll stays: a transform is free. See design/27-creature-pipeline.md.
+ */
+export function makePuppetMaterials(cacheKey, plain) {
   const uCut = { value: 1 }
   const make = (side) => {
     const m = new THREE.MeshLambertMaterial({ color: 0xffffff })
     const uSide = { value: side }
     m.onBeforeCompile = (shader) => {
-      shader.uniforms.uHue = uHue
-      hueVary(shader, { uniform: true })
-      if (side) {
-        shader.uniforms.uCut = uCut
-        shader.uniforms.uSide = uSide
-        dissolve(shader)
-      }
+      shader.uniforms.uCut = uCut
+      shader.uniforms.uSide = uSide
+      dissolve(shader)
     }
-    m.customProgramCacheKey = () => (side ? `${cacheKey}-fade` : cacheKey)
-    m.userData.uHue = uHue
+    m.customProgramCacheKey = () => `${cacheKey}-fade`
     m.userData.uCut = uCut
     return m
   }
-  return { plain: make(0), in: make(1), out: make(-1), uHue, uCut }
+  return { plain, in: make(1), out: make(-1), uCut }
 }
 
 // A flat colour a rung -- green, yellow, orange, red -- so which tier a body is
@@ -177,11 +241,27 @@ export class Puppet {
     this.group = new THREE.Group()
     this.group.matrixAutoUpdate = false
     const copies = new Map()
-    this.group.add(cloneBones(asset.root, copies))
+    const root = cloneBones(asset.root, copies)
+    this.group.add(root)
     this.skeleton = new THREE.Skeleton(asset.skeleton.bones.map((b) => copies.get(b)), asset.skeleton.boneInverses.map((m) => m.clone()))
+    // Every bone in the tree, composed BY HAND on the frames this puppet poses.
+    // Object3D.updateMatrixWorld composes a bone whose matrixAutoUpdate is on
+    // and dirties its world matrix EVERY frame whatever the pose is doing, so
+    // turning it off here is what makes a held frame cost a walk of the tree and
+    // nothing else. The meshes hold still under the group at identity, so they
+    // are composed once and never again.
+    this.bones = []
+    root.traverse((b) => { b.matrixAutoUpdate = false; this.bones.push(b) })
+    const sphere = poseSphere(asset.tiers)
     this.meshes = asset.tiers.map((geo) => {
       const m = new THREE.SkinnedMesh(geo, mats.plain)
-      m.frustumCulled = false
+      // FRUSTUM CULLED, ON A SPHERE OF ITS OWN. three's projectObject calls
+      // objects.update INSIDE the frustum branch, so a body behind her loses its
+      // bone-texture upload along with its draw; and an explicit sphere is what
+      // keeps SkinnedMesh.computeBoundingSphere -- which CPU-skins every vertex
+      // -- from ever being reached.
+      m.boundingSphere = sphere
+      m.matrixAutoUpdate = false
       m.visible = false
       // The bind matrix is the identity: the tiers and the bones sit under the same group at identity, so the group's matrix is the creature's.
       m.bind(this.skeleton, IDENTITY)
@@ -201,6 +281,18 @@ export class Puppet {
       return [clip.name, action]
     }))
     this.current = null
+    // True on the frames this puppet re-poses; the layers read it to know
+    // whether writing the group's matrix would show. Frames until the next pose,
+    // and the dt banked for the mixer while it waits.
+    this.posed = true
+    this.poseIn = posePhase++ % POSE_EVERY[POSE_EVERY.length - 1]
+    this.held = 0
+    // THE GATE. three calls skeleton.update() once a frame for every skeleton it
+    // draws (WebGLObjects.update), which multiplies every bone into the bone
+    // texture and flags the upload. On a held frame it does neither and the
+    // texture keeps the pose it has.
+    const update = THREE.Skeleton.prototype.update.bind(this.skeleton)
+    this.skeleton.update = () => { if (this.posed) update() }
     // The slot's step counter, so the same clip twice running is re-cued rather than left playing.
     this.cue = -1
     // The tier being faded out of, the one being faded into, and how far along.
@@ -221,6 +313,9 @@ export class Puppet {
     if (!next) throw new Error(`Puppet: no clip named ${name}`)
     if (this.current === next && this.cue === cue) return
     this.cue = cue
+    // A new clip shows on the next frame whatever rung it is on: a held puppet
+    // playing the pose of the animal before it is the one stale frame that reads.
+    this.poseIn = 0
     if (this.current && this.current !== next && at < 0) {
       next.reset().fadeIn(this.clipFade).play()
       this.current.fadeOut(this.clipFade)
@@ -239,12 +334,22 @@ export class Puppet {
     this.from = this.to
     this.to = tier
     this.fade = reversing ? 1 - this.fade : 0
+    this.poseIn = 0
     this._apply()
   }
 
-  /** One frame: the mixer, then the dissolve. */
+  /** One frame: the mixer at this rung's cadence, then the dissolve. */
   step(dt) {
-    this.mixer.update(dt)
+    this.held += dt
+    this.posed = --this.poseIn <= 0
+    if (this.posed) {
+      // Mid-fade the finer of the two rungs wins, so a body arriving on rung 0
+      // is at full rate the moment it starts arriving rather than a rung later.
+      this.poseIn = this.fade < 1 ? Math.min(poseEvery(this.from), poseEvery(this.to)) : poseEvery(this.to)
+      this.mixer.update(this.held)
+      this.held = 0
+      for (const b of this.bones) b.updateMatrix()
+    }
     // A settled puppet holds its materials, so the tint row flipping is the one
     // thing besides a fade that has to repaint one.
     if (this.fade < 1) {
@@ -280,6 +385,7 @@ export class Puppet {
     this.from = -1
     this.to = -1
     this.fade = 1
+    this.poseIn = 0
     this._apply()
   }
 }

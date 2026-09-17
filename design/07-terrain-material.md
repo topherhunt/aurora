@@ -1,9 +1,15 @@
 ## 7. Terrain material and transparency
 
-> **Covers:** the ground shader -- splat blending, the palette, speckle, snow line, transparency policy.
-> **Read this when:** touching `src/material.js` or terrain colour.
+> **Covers:** the ground shader -- what ships (the stipple rung), the retired ladder, splat blending, the palette, speckle, snow line, transparency policy.
+> **Read this when:** touching `src/material.js`, `src/terrain/terrain-material.js` or terrain colour.
 
-### Splat blending: 4 layers, 4 channels
+### What ships: the stipple rung, and nothing else
+
+**The ground is drawn by ONE material and the world no longer switches it: `createPlainTerrainMaterial(..., { stipple: true })`, put on the mesh by `plainTerrainRung` in `v2/main.js`.** It is the plain vertex-lit chain -- the vertex colour times an interpolated irradiance plus fog, patched in vertex mode for the night lift, the terrain shadow and the aerial ramp -- plus one implicit-LOD fetch of the stipple tile, laid into each triangle face on the per-face frame the mesher baked (`chunk-mesh-v2` STIPPLE FRAME: world-aligned on the face's dominant plane, the tile size stepped by the face's distance at build time, a tilt on the normal). The vertex colour says what the ground IS (grass, rock, snow, dirt, from the biome field) and the stipple says what it is made of, and that is the whole surface. No complex surface shader, no per-pixel classification, no derivatives, no blending between materials, no triplanar: a cliff takes the same one fetch on its own face and looks fine as it is.
+
+**The verdict: it is VASTLY better to look at than every surface shader tried before it, and the performance is what a textured static mesh costs.** The `landscape shader` menu row that cycled the ladder below is gone with the ladder; `terrain-material.js`'s full chain is still compiled by `TerrainV2` at boot (the depth material and `TerrainTint` hold its uniforms) and by the benches and gates, and is never drawn. The wet twin -- the same material with the caustic net compiled in as a second program -- is the one swap left, on the transition under water. The sections that follow are the retired interim ladder and its measurements, then the splat-blend and triplanar design that was never built and, on this evidence, need not be.
+
+### Splat blending: 4 layers, 4 channels (design, not built)
 
 | Layer | Placement rule |
 | --- | --- |
@@ -19,7 +25,7 @@ Weights pack into a single RGBA texture -- four layers, four channels, exactly. 
 
 The terrain uses its own material with small tiling textures. This is a deliberate exception to the one-material rule and costs one draw call family. It is *not* an exception to the one-ATLAS rule: the array is `RepeatWrapping`, so any layer authored to tile can be sampled from the terrain too, and the rock surface already does (below).
 
-### Interim: two baked detail tiles (`src/terrain/terrain-material.js`, `src/terrain/grit-texture.js`)
+### The retired ladder: two baked detail tiles (`src/terrain/terrain-material.js`, `src/terrain/grit-texture.js`)
 
 Until the splat textures exist, the surface gets its grain from a `MeshLambertMaterial` patched through `onBeforeCompile`: a brightness speckle on everything, then dirt and moss mixes gated on `vColor.g > max(vColor.r, vColor.b)` so only vegetated ground gets them. It fades out between 12 m and 95 m, because past that it is per-pixel noise nobody asked for.
 

@@ -232,15 +232,6 @@ export class TerrainV2 {
 
     this._mat = new THREE.Matrix4()
 
-    // Debug overlay, drawn after the batch each frame while `wireframe` is on.
-    // See _drawWireframe for why it is not material.wireframe.
-    this.wireframe = false
-    this._wire = null
-    this._anyChunk = false
-    this.batch.onAfterRender = (renderer, scene, camera, geometry, material, group) => {
-      if (this.wireframe) this._drawWireframe(renderer, scene, camera, group)
-    }
-
     // key (packed integer) -> {node, slot, state, lastUsed, tris, visible, pinned}
     this.cache = new Map()
 
@@ -776,7 +767,6 @@ export class TerrainV2 {
     g.attributes.color.array.set(msg.colors)
     g.attributes.stipple.array.set(msg.stipple)
     g.index.array.set(msg.indices)
-    this._anyChunk = true
 
     // Keep the interior heights. setGeometryAt copies the positions into the
     // batch's arena and there is no way to read them back, so this is the one
@@ -873,77 +863,6 @@ export class TerrainV2 {
     const cam = { x: this._cam.x, y: this._cam.y, z: this._cam.z }
     w.postMessage({ type: 'chunk', key: node.key, epoch: this.epoch, ox: node.x, oz: node.z, size: node.size, res: CHUNK_RES, cam })
     this.inFlight++
-  }
-
-  // Lime lines over the drawn ground: the same slots the batch just drew, as
-  // LINES, through the same batching matrices.
-  //
-  // NOT material.wireframe. three sizes a BatchedMesh's multi-draw ranges off the
-  // triangle index (Uint16, three per face) and a wireframe material swaps in a
-  // Uint32 line index (six per face) under those same byte offsets, so the lines
-  // it draws belong to other slots. It also rebuilds that line index -- 3.9 M
-  // entries through Array.push -- on every chunk arrival.
-  //
-  // So: one static line index over every slot, built once from the chunk index
-  // pattern (identical in every slot, offset by CHUNK_VERTS), on a LineSegments
-  // that shares the batch's position buffer and carries the batch's textures and
-  // multi-draw arrays under the names the renderer reads off a BatchedMesh. The
-  // ranges are the batch's own for this camera, rescaled: x2 elements, x4 bytes.
-  // Vertices are pulled 0.2% toward the eye in view space so the lines win the
-  // depth test against the face they lie on at every range.
-  _drawWireframe(renderer, scene, camera, group) {
-    const b = this.batch
-    if (!this._wire) {
-      // The pattern is whatever chunk last landed in scratch; nothing has
-      // landed, nothing is on screen to overlay.
-      if (!this._anyChunk) return
-      const pattern = this._scratch.index.array
-      const lines = new Uint32Array(SLOT_COUNT * CHUNK_INDICES * 2)
-      for (let s = 0; s < SLOT_COUNT; s++) {
-        const vo = s * CHUNK_VERTS
-        let o = s * CHUNK_INDICES * 2
-        for (let i = 0; i < CHUNK_INDICES; i += 3) {
-          const a = pattern[i] + vo, c = pattern[i + 1] + vo, d = pattern[i + 2] + vo
-          lines[o++] = a; lines[o++] = c
-          lines[o++] = c; lines[o++] = d
-          lines[o++] = d; lines[o++] = a
-        }
-      }
-      const geometry = new THREE.BufferGeometry()
-      geometry.setAttribute('position', b.geometry.attributes.position)
-      geometry.setIndex(new THREE.BufferAttribute(lines, 1))
-      const material = new THREE.LineBasicMaterial({ color: 0x80ff00, fog: false, depthWrite: false, toneMapped: false })
-      material.onBeforeCompile = (shader) => {
-        shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
-          mvPosition.xyz *= 0.998;
-          gl_Position = projectionMatrix * mvPosition;`)
-      }
-      material.customProgramCacheKey = () => 'v2-terrain-wire'
-      const wire = new THREE.LineSegments(geometry, material)
-      Object.assign(wire, {
-        isBatchedMesh: true,
-        _matricesTexture: b._matricesTexture,
-        _indirectTexture: b._indirectTexture,
-        _colorsTexture: null,
-        colorTexture: null,
-        _multiDrawInstances: null,
-        _multiDrawStarts: new Int32Array(b._multiDrawStarts.length),
-        _multiDrawCounts: new Int32Array(b._multiDrawCounts.length),
-        _multiDrawCount: 0,
-      })
-      wire.matrixWorld = b.matrixWorld
-      this._wire = wire
-    }
-    const wire = this._wire
-    const n = b._multiDrawCount
-    for (let i = 0; i < n; i++) {
-      wire._multiDrawStarts[i] = b._multiDrawStarts[i] * 4
-      wire._multiDrawCounts[i] = b._multiDrawCounts[i] * 2
-    }
-    wire._multiDrawCount = n
-    wire.modelViewMatrix.copy(b.modelViewMatrix)
-    wire.normalMatrix.copy(b.normalMatrix)
-    renderer.renderBufferDirect(camera, scene, wire.geometry, wire.material, wire, group)
   }
 
   // Has this key GEOMETRY ON THE GPU right now -- which is what the stand-in walks

@@ -71,6 +71,12 @@ export const RELIEF_KNOBS = Object.freeze([
     // detail output from outside and act on the jagged stack as they would on
     // the smooth one. The calibration is unchanged: the sub-metre layers take
     // the amplitudes the smooth stack was fitted to.
+    //
+    // THE VERDICT IS IN, and it is what RELIEF_SHIPPED says: jagged looks
+    // vastly better than the smooth stack it replaces, and the world boots on
+    // it with no menu row to turn it off. The smooth stack stays only as what
+    // Jagged's sub-metre amplitudes are calibrated against and as the gate's
+    // baseline; see §18 for the case for taking it out altogether.
     key: 'jagged',
     label: 'jagged',
     hint: 'replace the smooth stack: bilinear macro plus creased lattice jitter, no curve anywhere',

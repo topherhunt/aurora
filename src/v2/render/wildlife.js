@@ -39,7 +39,7 @@
 // likely to be the next thing an animal does as it is at noon.
 //
 // A SPAWN IS NOT AN ANIMAL. A tile's roll gives SPAWNS -- where a body stands
-// when nothing has moved it, and what size and colour it is -- and a spawn is
+// when nothing has moved it, and what size it is -- and a spawn is
 // woken into a live animal (a slot, with a position it has wandered to and an
 // activity queue) only inside its card range, the outermost rung of the ladder.
 // Past that it is not drawn AND NOT SIMULATED: nothing walks, turns, probes the
@@ -74,16 +74,20 @@
 // THE PRICE is a draw call and a skeleton for each animal in MESH range -- a
 // dozen in the live world, twenty at the pool's cap, doubled per eye in XR while
 // the skeletons are not -- plus one instanced draw call a species for every card
-// behind them; design/27-creature-pipeline.md has the numbers.
+// behind them. Each of those draws is a bone texture re-uploaded, so the mesh
+// range and not the herd is what the layer costs; the settled ones at least
+// share one material a species, which is why no animal wears a colour of its
+// own (puppet.js makePuppetMaterials). design/27-creature-pipeline.md has the
+// numbers.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, SPUN_VIEWS, bakeCritterCard, createCritterCardMaterial, critterTier,
-  cullRange, forgetRange, makeCardFadeAttribute, makeHueAttribute, setCritterCard, spunBounds, tileSeed, walkTiles,
+  cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileSeed, walkTiles,
 } from './critters.js'
-import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
+import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -149,22 +153,23 @@ export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie'])
  * The three of them. `acts` and `gaits` are (name, weight) pairs rolled when an
  * animal needs something new to do; `rate` is the species' share of DENSITY;
  * the size of a body is its length, the shipped figure times `scale` times a
- * roll of `vary` either way, and no two animals are the same size or quite the
- * same colour.
+ * roll of `vary` either way, and no two animals are the same size. None of them
+ * wears a colour of its own: a skinned body can only take one through a uniform
+ * and a uniform costs a material an animal (puppet.js makePuppetMaterials).
  */
 export const SPECIES = [
   {
-    key: 'stag', glb: CRITTER_GLB.stag, hue: 0.1, vary: 0.25, scale: 1, rate: 0.5,
+    key: 'stag', glb: CRITTER_GLB.stag, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
   },
   {
-    key: 'fox', glb: CRITTER_GLB.fox, hue: 0.12, vary: 0.25, scale: 1, rate: 0.5,
+    key: 'fox', glb: CRITTER_GLB.fox, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
   },
   {
-    key: 'hare', glb: CRITTER_GLB.hare, hue: 0.14, vary: 0.25, scale: 1, rate: 1,
+    key: 'hare', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
     gaits: [['walk', 3], ['trot', 7]],
   },
@@ -228,29 +233,34 @@ export class Wildlife {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-wildlife'
     scene.add(this.batch)
-    // Every puppet's materials, for the world to patch with the lighting; two programs a species, the hue and the dissolve's cut being uniforms and not variants.
+    // Every material the world's lighting patches; two programs a species, the dissolve's cut being a uniform and not a variant.
     this.materials = []
     // The world's day scalar, written by update(). Full day until the clock says otherwise, so a gate that never passes one gets noon.
     this.dayness = 1
 
     this.species = SPECIES.map((sp) => {
+      // ONE settled material for the whole species, and a fade pair per puppet.
+      // A settled animal is the usual case and a fading one lasts FADE_S, so a
+      // frame of a dozen drawn stags is one material change and not a dozen.
+      const plain = makeSettledMaterial(`wildlife-${sp.key}`)
+      this.materials.push(plain)
       const materials = []
       for (let i = 0; i < PUPPETS; i++) {
-        const mats = makePuppetMaterials(`wildlife-${sp.key}`)
+        const mats = makePuppetMaterials(`wildlife-${sp.key}`, plain)
         materials.push(mats)
-        this.materials.push(mats.plain, mats.in, mats.out)
+        this.materials.push(mats.in, mats.out)
       }
       // Built here and not with the asset, because the world patches every
       // material with its lighting the moment the layer exists and the GLBs
       // land long after. The quad and the picture arrive in setAssets and
       // bakeCards; until the picture does, the mesh draws nothing.
-      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, fade: true })
+      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, fade: true, hue: false })
       this.materials.push(cardMaterial)
       const slots = []
       for (let i = 0; i < MAX; i++) {
         slots.push({
           id: i, sp: null, spawn: null,
-          x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1, hue: 0,
+          x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1,
           nx: 0, ny: 1, nz: 0,
           // The activity, the steps it has left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
           act: 'stand', queue: [], clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
@@ -261,7 +271,7 @@ export class Wildlife {
           cardWant: false, cardP: 1,
         })
       }
-      return { ...sp, materials, cardMaterial, cardMesh: null, cardHue: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
+      return { ...sp, plain, materials, cardMaterial, cardMesh: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
     })
 
     this.tiles = new Map()
@@ -297,8 +307,10 @@ export class Wildlife {
       // The ladder's rungs are a ratio of the body's LARGEST extent (critters.js), and `size` is its length: for a four-legged animal those are the same thing, and `bulk` says so rather than assuming it.
       sp.bulk = Math.max(asset.span, asset.width, asset.height) / asset.span
       sp.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
+      sp.plain.map = asset.map
+      sp.plain.needsUpdate = true
       for (const mats of sp.materials) {
-        for (const m of [mats.plain, mats.in, mats.out]) {
+        for (const m of [mats.in, mats.out]) {
           m.map = asset.map
           m.needsUpdate = true
         }
@@ -320,7 +332,6 @@ export class Wildlife {
       // Nothing to draw until bakeCards has photographed the body: an unbaked card is a white quad, which is worse than no card.
       mesh.visible = false
       setCritterCard(mesh, spunBounds({ halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height }), SPUN_VIEWS)
-      sp.cardHue = makeHueAttribute(mesh, MAX)
       sp.cardFade = makeCardFadeAttribute(mesh, MAX)
       sp.cardMesh = mesh
       this.batch.add(mesh)
@@ -340,7 +351,7 @@ export class Wildlife {
       const asset = sp.asset
       const flat = new THREE.MeshBasicMaterial({ map: asset.map, toneMapped: false })
       // Puppet wants the three-material shape; unlit for the photograph, the same one for every state it might pick.
-      const p = new Puppet(asset, { plain: flat, in: flat, out: flat, uHue: { value: 0 }, uCut: { value: 1 } }, { clipFade: FADE_S, oneShot: ONE_SHOT })
+      const p = new Puppet(asset, { plain: flat, in: flat, out: flat, uCut: { value: 1 } }, { clipFade: FADE_S, oneShot: ONE_SHOT })
       p.show(0)
       p.play('idle')
       p.step(0)
@@ -386,13 +397,12 @@ export class Wildlife {
         const x = (tx + rand()) * TILE
         const z = (tz + rand()) * TILE
         const size = sp.asset.sizeM * sp.scale * (1 + (rand() * 2 - 1) * sp.vary)
-        const hue = (rand() * 2 - 1) * sp.hue
         const heading = rand() * Math.PI * 2
         const y = this.seat(x, z)
         if (y === null) continue
         const lodSize = size * sp.bulk
         t.spawns.push({
-          sp, x, y, z, nx: _norm.x, ny: _norm.y, nz: _norm.z, size, hue, heading,
+          sp, x, y, z, nx: _norm.x, ny: _norm.y, nz: _norm.z, size, heading,
           // Where the mesh gives way to the card, where the card gives way to nothing, and where the placement stops being worth remembering.
           cull: cullRange(lodSize), card: cullRange(lodSize, CARD_RUNGS), forget: forgetRange(lodSize, CARD_RUNGS),
           lodSize, slot: null,
@@ -414,7 +424,6 @@ export class Wildlife {
     c.nx = s.nx; c.ny = s.ny; c.nz = s.nz
     c.size = s.size
     c.k = s.size / s.sp.asset.span
-    c.hue = s.hue
     c.heading = c.aim = s.heading
     c.lod = CARD_RUNGS
     c.puppet = null
@@ -603,7 +612,6 @@ export class Wildlife {
       const p = sp.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
-      p.mats.uHue.value = c.hue
       this.batch.add(p.group)
       // Joined where the step already is, so an animal that walks into range is not caught halfway through bowing into a graze it began a minute ago.
       p.play(c.clip, c.cue, c.dur - c.left)
@@ -659,7 +667,6 @@ export class Wildlife {
     _scl.setScalar(c.k)
     _mat.compose(_pos, _quat, _scl)
     sp.cardMesh.setMatrixAt(i, _mat)
-    sp.cardHue.array[i] = c.hue
     sp.cardFade.array[i] = c.cardWant ? c.cardP : -(1 - c.cardP)
   }
 
@@ -763,9 +770,14 @@ export class Wildlife {
         _mat.compose(_pos, _quat, _scl)
 
         puppet.play(c.clip, c.cue)
-        puppet.group.matrix.copy(_mat)
-        puppet.group.matrixWorldNeedsUpdate = true
         puppet.step(dt)
+        // Only where it shows: a held puppet draws the pose already in its bone
+        // texture wherever its group has since moved to (puppet.js POSE_EVERY),
+        // and dirtying the group re-multiplies the whole bone tree for nothing.
+        if (puppet.posed) {
+          puppet.group.matrix.copy(_mat)
+          puppet.group.matrixWorldNeedsUpdate = true
+        }
       }
     }
 
@@ -773,7 +785,6 @@ export class Wildlife {
       sp.cardMesh.count = sp.cardN
       if (!sp.cardN) continue
       sp.cardMesh.instanceMatrix.needsUpdate = true
-      sp.cardHue.needsUpdate = true
       sp.cardFade.needsUpdate = true
     }
   }
@@ -781,7 +792,8 @@ export class Wildlife {
   dispose() {
     this.batch.parent?.remove(this.batch)
     for (const sp of this.species) {
-      for (const mats of sp.materials) for (const m of [mats.plain, mats.in, mats.out]) m.dispose()
+      sp.plain.dispose()
+      for (const mats of sp.materials) for (const m of [mats.in, mats.out]) m.dispose()
       sp.cardMaterial.map?.dispose()
       sp.cardMaterial.dispose()
       sp.cardMesh?.geometry.dispose()

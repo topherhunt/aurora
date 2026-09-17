@@ -429,7 +429,7 @@ const PROP_VARIANTS = [
   // option: the hem fray -- a `hem` attribute carried to the fragment stage and
   // a discard keyed on it -- the layer shift, a per-instance `aLayerShift`
   // added to the geometry's layer so one clump quad draws every clump picture,
-  // and the tilt, a damped pitch toward the eye on the clump layers alone.
+  // and the tilt, a damped pitch away from the eye on the clump layers alone.
   // Instanced, as trees.js draws it, so aPropFade compiles too.
   [
     'trees: wind, cards, hem fray, layer shift, clump tilt, instanced',
@@ -442,7 +442,7 @@ const PROP_VARIANTS = [
     {
       vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade',
         'attribute float aLayerShift;', 'float propLayer = texLayer + aLayerShift;',
-        'float bbTilt = step( 1.0 - 0.5, propLayer ) * step( propLayer, 2.0 + 0.5 );', 'atan( cameraPosition.y - bbOrigin.y, bbLen ) * 0.500 * bbTilt'],
+        'float bbTilt = step( 1.0 - 0.5, propLayer ) * step( propLayer, 2.0 + 0.5 );', 'atan( bbOrigin.y - cameraPosition.y, bbLen ) * 0.500 * bbTilt'],
       frag: [...PROP_MARKS.frag, 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
     },
   ],
@@ -1078,8 +1078,8 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   }
 }
 
-// The PLAIN rung, which is what the headset draws -- see TERRAIN_SHADERS in
-// v2/main.js. It shares nothing with the six above: a stock Lambert whose only
+// The PLAIN rung, the base of the stipple rung the world draws -- see
+// plainTerrainRung in v2/main.js. It shares nothing with the six above: a stock Lambert whose only
 // patch is two exposure stages in the VERTEX shader, so the fragment half here
 // is three's own and the whole risk lives in four lines of GLSL.
 //

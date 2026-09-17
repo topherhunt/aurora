@@ -58,6 +58,9 @@ export const SOUNDS = {
   wave: 'sounds/water-lapping-wave-1.mp3',
   leaves: 'sounds/wind-leaves-rustling-1.mp3',
   wind: 'sounds/wind-blowing-1.mp3',
+  // The menu's, played by main.js; the ambience never fires them.
+  uiOpen: 'sounds/ui-open-backpack.mp3',
+  uiClose: 'sounds/ui-close-backpack.mp3',
 }
 
 const RAPTORS = ['crow', 'eagle', 'hawk']

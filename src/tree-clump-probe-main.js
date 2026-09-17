@@ -93,7 +93,7 @@ async function run() {
 
   // The forest's material as trees.js builds it: the layer shift compiled in,
   // so every geometry it draws has to carry `aLayerShift` (the singles' all
-  // zero), and the clump layers leaning toward the eye by half its elevation.
+  // zero), and the clump layers leaning away from the eye by half its elevation.
   const clumpLayers = treeClumpLayers()
   const material = createPropMaterial(tex, {
     billboardLayers: [LAYER.IMPOSTOR_PINE, ...clumpLayers],

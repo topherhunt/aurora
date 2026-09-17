@@ -42,10 +42,10 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CRITTER_GLB, makeHueAttribute, createCritterCardMaterial, setCritterCard,
+  CRITTER_GLB, createCritterCardMaterial, setCritterCard,
   LOD_RUNGS, bakeCritterCard, critterTier, tileKey, walkTiles,
 } from './critters.js'
-import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
+import { Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 
@@ -78,7 +78,6 @@ export const RESEAT_EVERY = 45
 const STUCK_MAX = 3
 export const MAX = 256
 export const PUPPETS = 32
-export const HUE = 0.35
 const HOST_BUF = 64
 
 const GO_S = [1, 4]
@@ -143,25 +142,28 @@ export class Spiders {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x59d3)
 
-    // One set of materials per puppet, so each can wear its own hue; two programs between them all. `materials` is the flat list the world's lighting patches.
+    // ONE settled material for the lot and a fade pair per puppet, so a frame of
+    // drawn spiders is one material change and not one each; no spider wears a
+    // colour of its own, and puppet.js makePuppetMaterials says why. Two programs
+    // between them all. `materials` is the flat list the world's lighting patches.
+    this.plain = makeSettledMaterial('spiders')
     this.puppetMats = []
-    this.materials = []
+    this.materials = [this.plain]
     for (let i = 0; i < PUPPETS; i++) {
-      const mats = makePuppetMaterials('spiders')
+      const mats = makePuppetMaterials('spiders', this.plain)
       this.puppetMats.push(mats)
-      this.materials.push(mats.plain, mats.in, mats.out)
+      this.materials.push(mats.in, mats.out)
     }
     this.puppets = []
     this.freePuppets = []
     // The far spiders, as cards; hidden until the picture is baked, and until then every spider in range is a puppet and the rest are not drawn.
-    this.cardMaterial = createCritterCardMaterial('spiders')
+    this.cardMaterial = createCritterCardMaterial('spiders', { hue: false })
     this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
     this.card.name = 'v2-spiders-card'
     this.card.count = 0
     this.card.visible = false
     this.card.frustumCulled = false
     this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.cardHue = makeHueAttribute(this.card, MAX)
     // The layer toggle flips the group.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-spiders'
@@ -175,7 +177,7 @@ export class Spiders {
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, tx: 0, ty: 1, tz: 0,
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
-        size: 0.2, hue: 0,
+        size: 0.2,
         // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
         // On a rock: steps turned back since it last walked.
@@ -305,14 +307,12 @@ export class Spiders {
     const count = GROUP[0] + Math.floor(rand() * (GROUP[1] - GROUP[0] + 1))
     for (let k = 0; k < count; k++) {
       const size = between(rand, SIZE_M)
-      const hue = (rand() * 2 - 1) * HUE
       const c = this.free.pop()
       if (!c) { this.overflow++; return }
       c.host = host
       const seated = kind === 'tree' ? this._seatTree(c, host, rand) : this._seatRock(c, host, rand)
       if (!seated) { c.host = null; this.free.push(c); continue }
       c.size = size
-      c.hue = hue
       c.lod = -1
       c.puppet = null
       this._pause(c)
@@ -610,7 +610,6 @@ export class Spiders {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
-      p.mats.uHue.value = c.hue
       this.batch.add(p.group)
       // In at a random phase, so a group that walks into range is not eight legs in lockstep.
       p.play(c.clip, 0, this.rand() * p.actions.get(c.clip).getClip().duration)
@@ -642,7 +641,6 @@ export class Spiders {
     this.frame++
 
     const cmat = this.card.instanceMatrix.array
-    const chue = this.cardHue.array
     const cards = this.card.visible
     const near2 = NEAR_M * NEAR_M
     const keep2 = near2 * NEAR_KEEP * NEAR_KEEP
@@ -688,13 +686,15 @@ export class Spiders {
             if (near) c.lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
             puppet.show(near ? c.lod : -1)
             puppet.play(c.clip)
-            puppet.group.matrix.copy(_mat)
-            puppet.group.matrixWorldNeedsUpdate = true
             puppet.step(dt)
+            // Only where it shows -- puppet.js POSE_EVERY.
+            if (puppet.posed) {
+              puppet.group.matrix.copy(_mat)
+              puppet.group.matrixWorldNeedsUpdate = true
+            }
             if (puppet.done) this._releasePuppet(c)
           } else if (cards && m < MAX) {
             _mat.toArray(cmat, m * 16)
-            chue[m] = c.hue
             m++
           }
         }
@@ -707,7 +707,6 @@ export class Spiders {
     }
     this.card.count = m
     this.card.instanceMatrix.needsUpdate = true
-    this.cardHue.needsUpdate = true
   }
 
   dispose() {

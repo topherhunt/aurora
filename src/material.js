@@ -1271,9 +1271,10 @@ const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
 // correct from eye level and wrong from above -- it cannot pitch, so looking
 // down makes every card lie back toward you at once, reading as the meadow
 // fawning at your feet, and two eyes disagree about the yaw of a card close
-// enough to have parallax. `tilt` gives a range of layers a damped pitch on
-// top of the spin (the tree clumps: far enough that the lean is not read as
-// a lean, and otherwise a hillside seen from the air is rows of edges). A fixed card has neither fault and pays by going
+// enough to have parallax. `tilt` gives a range of layers a damped pitch
+// away from the eye on top of the spin (the tree clumps: far enough that the
+// lean is not read as a lean, and otherwise a hillside seen from the air is
+// rows of edges with the ground showing between). A fixed card has neither fault and pays by going
 // edge-on: at a random yaw a flat quad presents |cos| of its width, averaging
 // 2/pi, so a fixed bed is 64% of a billboarded bed's projected area. That 0.64
 // is also the whole of its GPU saving, and it is a FILL saving rather than a
@@ -1281,14 +1282,15 @@ const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
 // to what a bed of alpha-tested cards costs per pixel.
 function billboardVertex(grow, spin = true, tilt = null) {
   // The pitch half of a spherical billboard, for the layers that ask for it:
-  // the card leans about its base toward the eye by `amount` of the eye's
-  // elevation above it (away, below it). Composed in object space BEFORE the
-  // spin, where the card lies in the xy plane and local +Z is what the spin
-  // will turn toward the eye. A card seen from the air stays a card rather
-  // than closing to the flat line a purely cylindrical one presents.
+  // the card leans about its base AWAY from the eye by `amount` of the eye's
+  // elevation above it (toward it, below it), so from the air its picture
+  // lies over the ground behind it -- the ground its own trees would hide --
+  // rather than over the ground in front, which is already the next card's.
+  // Composed in object space BEFORE the spin, where the card lies in the xy
+  // plane and local +Z is what the spin will turn toward the eye.
   const tiltBody = tilt ? /* glsl */ `
       float bbTilt = step( ${tilt.layers[0].toFixed(1)} - 0.5, propLayer ) * step( propLayer, ${tilt.layers[1].toFixed(1)} + 0.5 );
-      float bbPitch = atan( cameraPosition.y - bbOrigin.y, bbLen ) * ${tilt.amount.toFixed(3)} * bbTilt;
+      float bbPitch = atan( bbOrigin.y - cameraPosition.y, bbLen ) * ${tilt.amount.toFixed(3)} * bbTilt;
       vec2 bbPC = vec2( cos( bbPitch ), sin( bbPitch ) );
       transformed.yz = vec2( transformed.y * bbPC.x - transformed.z * bbPC.y, transformed.y * bbPC.y + transformed.z * bbPC.x );` : ''
   const spinBody = /* glsl */ `

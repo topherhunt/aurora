@@ -81,9 +81,9 @@ export class TerrainTint {
    * @param {Layers} layers  for `flattenAt` and the live snow band.
    * @param {object} bands  V2Height's, for `altLo` and `altSpan`.
    * @param {'plain'|'shader'} [chain]  which rung to replay; see the banner. The
-   *   default is what the headset draws. WRITABLE afterwards, for the menu's
-   *   row -- but a clump is coloured once, when it is placed, so switching this
-   *   re-tints beds only as their tiles recycle under the player.
+   *   default is what the world draws, and nothing switches it now that the
+   *   ground has one rung; a clump is coloured once, when it is placed, so a
+   *   switch would re-tint beds only as their tiles recycle under the player.
    */
   constructor(material, layers, bands, chain = 'plain') {
     const u = material?.userData?.uniforms

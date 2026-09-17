@@ -122,22 +122,19 @@ export function glint(shader) {
 // ---------------------------------------------------------------------------
 
 /**
- * Splice the hue turn into a material's shaders, from its onBeforeCompile. By
- * default the turn is per instance and the mesh must carry an `aHue` instanced
- * attribute; with `uniform` it is the material's `uHue` uniform, which the
- * caller must have put in `shader.uniforms` -- for a creature drawn as a
- * skinned mesh of its own rather than an instance (the spiders).
+ * Splice the hue turn into a material's shaders, from its onBeforeCompile. The
+ * turn is PER INSTANCE and the mesh must carry an `aHue` instanced attribute:
+ * that is what keeps a varied scatter on one material and one draw. A creature
+ * drawn as a skinned mesh of its own gets no hue at all, a uniform being the
+ * only place it could sit and a uniform costing a material an animal --
+ * puppet.js makePuppetMaterials says the rest.
  */
-export function hueVary(shader, { uniform = false } = {}) {
-  if (uniform) {
-    if (!shader.uniforms.uHue) throw new Error('hueVary: the material has no uHue uniform')
-  } else {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aHue;\nvarying float vHue;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
-  }
+export function hueVary(shader) {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute float aHue;\nvarying float vHue;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
   shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>\n${uniform ? 'uniform float uHue;\n#define vHue uHue' : 'varying float vHue;'}`)
+    .replace('#include <common>', '#include <common>\nvarying float vHue;')
     .replace(
       '#include <map_fragment>',
       '#include <map_fragment>\n' +
@@ -327,14 +324,17 @@ const CARD_FADE_COMMON = /* glsl */ `
  * keeps the colour its mesh had.
  *
  * `billboard` spins the one quad about the instance's Y to face her in the
- * vertex shader; `fade` gives it the per-instance dissolve above. `label` keys
- * the program, and the flags key it further: two materials differing only in
- * these are two programs.
+ * vertex shader; `fade` gives it the per-instance dissolve above. `hue: false`
+ * drops the turn, for a layer whose MESH cannot wear one either -- a skinned
+ * body has no instances (puppet.js makePuppetMaterials) -- so the two agree
+ * across the handover instead of the body changing colour as it swaps. `label`
+ * keys the program, and the flags key it further: two materials differing only
+ * in these are two programs.
  */
-export function createCritterCardMaterial(label, { billboard = false, fade = false } = {}) {
+export function createCritterCardMaterial(label, { billboard = false, fade = false, hue = true } = {}) {
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
   material.onBeforeCompile = (shader) => {
-    hueVary(shader)
+    if (hue) hueVary(shader)
     if (billboard || fade) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}`)
@@ -348,7 +348,7 @@ export function createCritterCardMaterial(label, { billboard = false, fade = fal
         .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
     }
   }
-  material.customProgramCacheKey = () => `${label}-card${billboard ? '-spun' : ''}${fade ? '-fade' : ''}`
+  material.customProgramCacheKey = () => `${label}-card${billboard ? '-spun' : ''}${fade ? '-fade' : ''}${hue ? '' : '-flat'}`
   return material
 }
 

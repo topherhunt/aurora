@@ -28,7 +28,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, HUE, RESEAT_EVERY, WALL_M,
+  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M,
 } from '../src/v2/render/spiders.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
@@ -302,7 +302,7 @@ function makeAsset() {
 const scene = new THREE.Scene()
 const spiders = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
-check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.puppetMats.length === PUPPETS && spiders.materials.length === PUPPETS * 3, `${PUPPETS} puppets built and free, three materials each -- settled, dissolving in, dissolving out`)
+check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.puppetMats.length === PUPPETS && spiders.materials.length === PUPPETS * 2 + 1, `${PUPPETS} puppets built and free, ONE settled material between them all and a dissolving pair -- in, out -- each`)
 check(spiders.puppets.every((p) => p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.isSkinnedMesh && m.skeleton === p.skeleton && !m.visible) && p.skeleton.bones.length === 2 && p.skeleton.bones[0].name === 'Pedicel' && p.skeleton !== spiders.asset.skeleton), `each puppet: ${LOD_TIERS} skinned tiers bound to its own copy of the skeleton, none shown`)
 check(spiders.puppets.every((p) => p.actions.size === 6 && p.mixer.getRoot() === p.group), 'each puppet has a mixer over the six clips, rooted at its group')
 check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === 1, 'the card is hidden until baked, and no puppet is in the scene')
@@ -314,14 +314,15 @@ check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.childre
   }
   const mats = spiders.puppetMats[0]
   const shader = compile(mats.plain)
-  check(shader.uniforms.uHue === mats.uHue && shader.fragmentShader.includes('uniform float uHue;') && shader.fragmentShader.includes('#define vHue uHue') && !shader.vertexShader.includes('aHue') && /cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'a puppet\'s hue is its materials\' one shared uHue uniform, turned after map_fragment')
+  check(spiders.puppetMats.every((m) => m.plain === spiders.plain) && spiders.puppetMats.length === PUPPETS, 'every puppet draws its settled tiers through THE ONE material, so a wall of drawn spiders is one material change a frame and not one each')
+  check(!shader.fragmentShader.includes('uHue') && !shader.vertexShader.includes('aHue'), 'and nothing in it is per-spider: a skinned body has nowhere but a uniform to keep a hue, and a uniform costs a material an animal')
   check(!shader.fragmentShader.includes('discard'), 'a settled puppet draws through a shader with no discard in it, so it does not cost a tiled GPU its early-Z')
   const [a, b] = [compile(mats.in), compile(mats.out)]
   check(a.uniforms.uCut === mats.uCut && b.uniforms.uCut === mats.uCut && a.uniforms.uSide.value === -b.uniforms.uSide.value && a.fragmentShader === b.fragmentShader && a.fragmentShader.includes('gl_FragCoord'), 'both halves of a fade read one screen-space hash and compare one shared cut the opposite way round')
-  check(new Set(spiders.materials.map((m) => m.customProgramCacheKey())).size === 2 && spiders.puppetMats.every((m) => m.plain.customProgramCacheKey() === 'spiders' && m.in.customProgramCacheKey() === 'spiders-fade'), 'two programs between every puppet, not one a puppet')
+  check(new Set(spiders.materials.map((m) => m.customProgramCacheKey())).size === 2 && spiders.materials.length === PUPPETS * 2 + 1 && spiders.puppetMats.every((m) => m.plain.customProgramCacheKey() === 'spiders' && m.in.customProgramCacheKey() === 'spiders-fade'), 'two programs between every puppet, not one a puppet')
   const cshader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n' }
   spiders.cardMaterial.onBeforeCompile(cshader)
-  check(cshader.vertexShader.includes('attribute float aHue;') && spiders.card.geometry.getAttribute('aHue') === spiders.cardHue, 'the card\'s hue rides in aHue per instance')
+  check(!cshader.vertexShader.includes('attribute float aHue;') && spiders.cardMaterial.customProgramCacheKey().endsWith('-flat'), 'and the card wears no hue either, there being none on the mesh it takes over from')
   const geo = spiders.card.geometry
   const pos = geo.getAttribute('position')
   const ys = new Set(Array.from({ length: pos.count }, (_, i) => pos.getY(i).toFixed(6)))
@@ -384,8 +385,6 @@ spiders.place(0, 0)
   check(onPine.length > 0 && onPine.some((c) => c.y - GROUND > 2), 'a two-ring cone, base ring straight to the apex, is climbed to the top of the climb', `${onPine.length} on the pine, highest ${onPine.length ? Math.max(...onPine.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
   const onThin = onTrees.filter((c) => hostOf(c).name === 'birch2')
   check(onThin.length > 0 && onThin.every((c) => c.y - GROUND <= 1.9 + 1e-6) && onThin.some((c) => c.y - GROUND > 1.5), `and the thin birch only up to where its bark thins under ${TRUNK_MIN_R} m, two metres up`, `${onThin.length} on it, highest ${onThin.length ? Math.max(...onThin.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
-  const hues = new Set(pool.map((c) => c.hue.toFixed(3)))
-  check(hues.size > pool.length / 2 && pool.every((c) => Math.abs(c.hue) <= HUE), `spiders wear their own hues within ${HUE}`, `${hues.size} hues in ${pool.length}`)
   // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
   const again = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
   again.place(0, 0)
@@ -538,7 +537,6 @@ spiders.place(0, 0)
   const t1 = tiersAt(close)
   check(target.puppet && t1 === 0 && spiders.batch.children.includes(target.puppet.group), `${close.toFixed(2)} m off, the spider is a puppet on tier 0, in the scene`)
   check(target.puppet.current && target.puppet.current.getClip().name === target.clip && target.puppet.current.isRunning(), 'its clip is its state\'s', `${target.clip}`)
-  check(target.puppet.mats.uHue.value === target.hue, 'its materials wear its hue')
   const pos = new THREE.Vector3().setFromMatrixPosition(target.puppet.group.matrix)
   check(Math.abs(pos.distanceTo(new THREE.Vector3(target.x, target.y, target.z)) - SINK * spiders.bodyH * target.size / spiders.span) < 1e-6 && !target.puppet.group.matrixAutoUpdate, 'the puppet stands where the spider is, sunk its feet into the bark, under a matrix the scatter writes')
   const dist = (c) => Math.hypot(c.x - at(1)[0], c.y - at(1)[1], c.z - at(1)[2])
@@ -546,8 +544,12 @@ spiders.place(0, 0)
   check(alive().every((c) => (c.puppet ? dist(c) <= NEAR_M * 1.15 + 0.02 : dist(c) >= NEAR_M - 0.02)) && spiders.stats.puppets + spiders.card.count === alive().length && spiders.stats.puppets >= 1 && spiders.starved === 0, `every spider within ${NEAR_M} m is a puppet and the rest are cards`, `${spiders.stats.puppets} puppets, ${spiders.card.count} cards`)
   // The floor is held rather than culled: a spider inside NEAR_M is always a mesh, the card being what takes over out there.
   const expect = (d) => Math.min(critterTier(target.size, d, -1, LOD_TIERS), LOD_TIERS - 1)
-  const t5 = tiersAt(5), t95 = tiersAt(9.5)
-  check(t5 === expect(5) && t95 === expect(9.5) && t95 === LOD_TIERS - 1, `at 5 m tier ${expect(5)}, at 9.5 m the last tier and not a cull`, `${t5}, ${t95} for a ${target.size.toFixed(2)} m spider`)
+  // The middle rung is probed at its own geometric middle, a rolled size putting
+  // its edges wherever it likes: the hysteresis band is a tenth either way and
+  // cannot reach that far, so what is promised is the ladder and not one spider.
+  const mid = lodReach(target.size, 1) * Math.SQRT2
+  const tMid = tiersAt(mid), t95 = tiersAt(9.5)
+  check(tMid === expect(mid) && t95 === expect(9.5) && t95 === LOD_TIERS - 1, `at ${mid.toFixed(2)} m tier ${expect(mid)}, at 9.5 m the last tier and not a cull`, `${tMid}, ${t95} for a ${target.size.toFixed(2)} m spider`)
   // Stepping out of range: one frame in, the mesh is still there and dissolving, and NOTHING is drawn twice.
   for (let f = 0; f < 1; f++) spiders.update(...at(12), 1 / 60)
   const going = target.puppet

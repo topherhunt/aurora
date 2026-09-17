@@ -40,8 +40,23 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [x] Troubleshoot: water lapping should play less often (maybe every 2 - 5s) and it should continue anytime you're within 10m of a lake shore (currently sometmies it decides to cut out mysteriously) or less than 10m above a non-terrain-covered lake surface.
 - [x] Is each animation going to be shipped as a separate 600kb .glb file!? That's a lot of space waste/duplication right?
 - [x] Add a procedural jaggedness to terrain so the smooth curves aren't so smooth. OR if we already have that, it needs to be amplified by 4x.
-- [ ] Skeleton creatures 
-- [ ] Let each player shoot up a flare so they can find each other
+- [ ] Rig up player to a skeleton with a simple maybe-mostly-lerp-based IK system. Head turning should follow the camera rotation. Head movement should follow VR head location changes, feet should only follow if it exceeds a threshold of say 10m off-center. When teleporting, animate the person walking to that location instead of just jumping them there. Arms follow your actual hand positions.
+- [ ] Rivers: 
+  - Tributaries that fold in, should never be fully coplanar
+  - Keep the height even until it risks breaking above the landscape level, then drop down in an abrupt cascade. Have foam spraying up (white camera-rotated circles, dithering to fade out slowly).
+- Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). Near your location, it can decimate further, to maybe 1 vertex per 1m, so you can have a vertex shader apply a chaotic up-and-down to each lake-edge vertex to simulate waves lapping the shore. When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terrain under them.
+- [ ] Forest: height variety. Scrap the roots, stretch down the trunk, let some trees get taller so space opens up below the canopy. Dense suffocating undergrowth should be a minority.
+- [ ] Teleport should have a fixed cooldown, maybe 1s.
+- [ ] Spiders: don't place them above the snowline. Half as common. Noise should be half volume.
+- Spiders flee from you when you get within 0.5m.
+- [ ] Wild fauna and snowmen: don't tilt to fit the terrain. Also, allow the yeti to walk on steeper terrain so it can successfully chase you. Currently the yeti often gets stuck on a shelf and doesn't chase very effectively.
+- [ ] Dragons fly around, looking for prey, then swoop down to attack and kill a deer, pick it up and carry it back to its nest.
+- [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
+  - Meaning, we need an inventory system.
+- [ ] Skeleton creatures roaming around at night. During the day they're just bone piles.
+- [ ] Procedural villages. A couple big buildings in the center, surrounded by progressively smaller and humbler buildings as you go outward. A market square with stalls of various goods for sale. Various trade workshops with realistic props and people doing their work there. NPCs walk around town doing their business, walking into and out of buildings and talking to each other.
+- [ ] 
+- [ ] Pine tree idea: inner faces of each bough are solid, outer fringe is frayed? So each mesh has multiple materials (on different faces) but there's not a lot of transparency fill?
 - [ ] Player character animations:
   - [ ] move arms/hands to match actual hand position.
 

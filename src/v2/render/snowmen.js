@@ -45,7 +45,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
-import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
+import { Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const TILE = 32
 export const RADIUS = 96
@@ -61,9 +61,6 @@ export const PUPPETS = 16
 export const SIZE_M = [2, 6]
 // Ground one will not stand on: steeper than this, or anywhere under the snow line.
 export const MAX_SLOPE = (35 * Math.PI) / 180
-// The one white is a narrow band of hues.
-export const HUE = 0.03
-
 // She is noticed only inside a half-disc of this radius AHEAD of a cowering snowman; behind or beside it she can stand at arm's length.
 export const NOTICE_M = 10
 // A watching snowman follows once she is this much further off than the closest she came.
@@ -154,19 +151,23 @@ export class Snowmen {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-snowmen'
     scene.add(this.batch)
-    // Every puppet's materials, for the world to patch with the lighting.
-    this.materials = []
+    // ONE settled material for the lot and a fade pair per puppet, so a frame of
+    // drawn snowmen is one material change and not one each; no snowman wears a
+    // colour of its own, and puppet.js makePuppetMaterials says why. `materials`
+    // is the flat list the world's lighting patches.
+    this.plain = makeSettledMaterial('snowmen')
+    this.materials = [this.plain]
     this.puppetMats = []
     for (let i = 0; i < PUPPETS; i++) {
-      const mats = makePuppetMaterials('snowmen')
+      const mats = makePuppetMaterials('snowmen', this.plain)
       this.puppetMats.push(mats)
-      this.materials.push(mats.plain, mats.in, mats.out)
+      this.materials.push(mats.in, mats.out)
     }
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, tile: null, key: '', loose: false,
-        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1, hue: 0,
+        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1,
         nx: 0, ny: 1, nz: 0,
         // cower, watch or follow; `near` is the closest she has come since it noticed her.
         state: 'cower', near: Infinity,
@@ -207,8 +208,10 @@ export class Snowmen {
   setAsset(asset) {
     this.asset = asset
     this.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
+    this.plain.map = asset.map
+    this.plain.needsUpdate = true
     for (const mats of this.puppetMats) {
-      for (const m of [mats.plain, mats.in, mats.out]) {
+      for (const m of [mats.in, mats.out]) {
         m.map = asset.map
         m.needsUpdate = true
       }
@@ -243,7 +246,6 @@ export class Snowmen {
       const x = (tx + rand()) * TILE
       const z = (tz + rand()) * TILE
       const size = between(rand, SIZE_M)
-      const hue = (rand() * 2 - 1) * HUE
       const heading = rand() * Math.PI * 2
       const key = `${tx},${tz},${i}`
       // The snowman this tile let out when it last unloaded is still about: the tile takes it back where it stands.
@@ -269,7 +271,6 @@ export class Snowmen {
       c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
       c.size = size
       c.k = size / this.asset.height
-      c.hue = hue
       c.heading = c.aim = heading
       c.lod = LOD_TIERS
       c.puppet = null
@@ -492,7 +493,6 @@ export class Snowmen {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
-      p.mats.uHue.value = c.hue
       this.batch.add(p.group)
       // Joined where the step already is.
       p.play(c.clip, c.cue, c.dur - c.left)
@@ -564,9 +564,12 @@ export class Snowmen {
     _mat.compose(_pos, _quat, _scl)
 
     puppet.play(c.clip, c.cue)
-    puppet.group.matrix.copy(_mat)
-    puppet.group.matrixWorldNeedsUpdate = true
     puppet.step(dt)
+    // Only where it shows -- puppet.js POSE_EVERY.
+    if (puppet.posed) {
+      puppet.group.matrix.copy(_mat)
+      puppet.group.matrixWorldNeedsUpdate = true
+    }
     if (puppet.done) {
       this._releasePuppet(c)
       return beyond
@@ -576,7 +579,7 @@ export class Snowmen {
 
   dispose() {
     this.batch.parent?.remove(this.batch)
-    for (const mats of this.puppetMats) for (const m of [mats.plain, mats.in, mats.out]) m.dispose()
+    for (const m of this.materials) m.dispose()
     this.asset?.map?.dispose()
     for (const geo of this.asset?.tiers ?? []) geo.dispose()
   }

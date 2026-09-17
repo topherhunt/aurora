@@ -26,7 +26,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Snowmen, CLIPS, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE, HUE,
+  Snowmen, CLIPS, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE,
   NOTICE_M, AWAY_M, STANDOFF_M, RESUME_M, RUN_M, FORGET_M, TURN_RATE,
 } from '../src/v2/render/snowmen.js'
 import { CRITTER_GLB, LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
@@ -190,7 +190,8 @@ const make = (seed, world = { walk, water, height }) =>
 const w = make(7)
 check(w.loaded && w.asset.height === biped.height && w.asset.gait.run === biped.gait.run, 'the snowman is loaded, with its extras spread on the asset')
 check(w.puppets.length === PUPPETS && w.freePuppets.length === PUPPETS && w.slots.length === MAX && w.free.length === MAX, `${PUPPETS} puppets and ${MAX} slots, all free`)
-check(w.materials.length === PUPPETS * 3, 'three materials a puppet -- settled, dissolving in, dissolving out -- all offered to the lighting')
+check(w.materials.length === PUPPETS * 2 + 1, 'ONE settled material between them all and a dissolving pair -- in, out -- a puppet, all offered to the lighting')
+check(w.puppetMats.every((m) => m.plain === w.plain) && w.puppetMats.length === PUPPETS, 'every snowman standing draws through THE ONE material, so a drawn crowd is one material change a frame and not one a snowman')
 check(w.puppetMats.every((m) => m.plain.customProgramCacheKey() === 'snowmen' && m.in.customProgramCacheKey() === 'snowmen-fade' && m.out.customProgramCacheKey() === 'snowmen-fade') && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 2, 'two programs and not one a puppet')
 check(w.batch.name === 'v2-snowmen' && w.batch.children.length === 0, 'nothing is in the batch but the puppets it lends out')
 check(w.puppets.every((p) => p.skeleton !== w.asset.skeleton && p.skeleton.bones.length === 2 && p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === json.animations.length), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
@@ -236,7 +237,7 @@ w.place(0, 0)
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = make(seed)
     k.place(0, 0)
-    for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, k: c.k, hue: c.hue, nx: c.nx, ny: c.ny, nz: c.nz, state: c.state, clip: c.clip })
+    for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, k: c.k, nx: c.nx, ny: c.ny, nz: c.nz, state: c.state, clip: c.clip, slot: c })
     k.dispose()
   }
   check(pool.length >= 50, 'the mountain carries snowmen', `${pool.length} over ${SEEDS} seeds; one seed: ${w.stats.alive} on ${w.stats.tiles} tiles`)
@@ -255,8 +256,7 @@ w.place(0, 0)
   const sizes = pool.map((c) => c.size)
   check(sizes.every((s) => s >= SIZE_M[0] && s <= SIZE_M[1]) && Math.min(...sizes) < SIZE_M[0] + 0.2 && Math.max(...sizes) > SIZE_M[1] - 0.2, `a snowman is ${SIZE_M[0]} to ${SIZE_M[1]} m tall, and the range is walked`, `${Math.min(...sizes).toFixed(2)} to ${Math.max(...sizes).toFixed(2)} m`)
   check(pool.every((c) => Math.abs(c.k - c.size / biped.height) < 1e-9), 'and wears the scale that makes it so')
-  const hues = new Set(pool.map((c) => c.hue.toFixed(4)))
-  check(hues.size > pool.length / 2 && pool.every((c) => Math.abs(c.hue) <= HUE), `each wears its own hue within ${HUE}`, `${hues.size} hues in ${pool.length}`)
+  check(pool.every((c) => !('hue' in c.slot)), 'and no colour of its own: a skinned body can only wear one through a uniform, and a uniform costs a material a snowman (puppet.js makePuppetMaterials)')
   check(pool.every((c) => c.state === 'cower' && ['cower', 'recoil', 'idle'].includes(c.clip)), 'every one is found cowering', [...new Set(pool.map((c) => c.clip))].join(' '))
   // Determinism: the same seed lays the same snowmen twice.
   const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
@@ -517,7 +517,7 @@ function lone(seed = 3) {
   const out = lodReach(c.size, LOD_TIERS - 1) * 0.9
   const near = settle(close)
   check(near === 0 && expect(close) === 0 && c.puppet && k.batch.children.includes(c.puppet.group), `${close.toFixed(0)} metres over it -- half of what the top rung holds -- the snowman is a puppet in the scene, on the top rung`)
-  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning() && c.puppet.mats.uHue.value === c.hue, 'playing what it is doing, in its own hue', c.clip)
+  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning(), 'playing what it is doing', c.clip)
   {
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
     c.puppet.group.matrix.decompose(p, q, s)

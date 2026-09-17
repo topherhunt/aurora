@@ -345,8 +345,8 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
 
   // ---- LO-FI: the same world, with the photographs taken out.
   //
-  // THE MEASURED PROBLEM: on a Quest the `landscape shader` row is worth ~20 fps
-  // between `full` and a stock Lambert. At 7 Mpixel a frame the ground is fill
+  // THE MEASURED PROBLEM: on a Quest this chain is worth ~20 fps against a
+  // stock Lambert, measured by a menu row that cycled the two. At 7 Mpixel a frame the ground is fill
   // bound in this fragment shader, and the fetches are most of it.
   //
   // The budget, per fragment, not counting lighting.js's fragment patch (which
@@ -392,8 +392,9 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
   //
   // MEASURED ON A QUEST 2, trees and grass loaded, under medium load: plain 73
   // fps, lean 60, lo-fi 57, full 46 -- 13.70 ms, 16.67, 17.54, 21.74. Lean costs
-  // 2.97 ms over the control and beats lo-fi on cost AND on looks, which is why
-  // the headset ships it and the middle rungs are gone from main.js's row.
+  // 2.97 ms over the control and beats lo-fi on cost AND on looks. The world
+  // no longer draws any of these: v2/main.js plainTerrainRung puts the stipple
+  // rung (createPlainTerrainMaterial) on the ground and nothing cycles it.
   //
   //                                share of screen   fetch-screens
   //   1 km macro, UNGUARDED             100%             1.00

@@ -510,9 +510,9 @@ const CLUMP_SCALE = [0.8, 1.2]
 // terrain that is not flat across it, and the bake's lifted trunks give it a
 // ragged foot that hides a metre of that either way.
 const CLUMP_SINK = 1.0
-// The fraction of the eye's elevation a clump card leans toward it (material.js
-// billboardTilt). 1 is a full spherical billboard, which lays a hillside flat
-// under a flier; half keeps the lean a hint and the ground line a ground line.
+// The fraction of the eye's elevation a clump card leans away from it
+// (material.js billboardTilt). 1 lays a hillside flat under a flier; half
+// keeps the lean a hint and the ground line a ground line.
 const CLUMP_TILT = 0.5
 
 // How much of the snow slider one CANOPY may take, rolled per tree. See
@@ -633,8 +633,10 @@ export class Trees {
     if (this.perTile < CLUMPS_PER_TILE) {
       throw new Error(`Trees: ${this.perTile} candidates a tile cannot hold ${CLUMPS_PER_TILE} clumps`)
     }
-    // The diagnostic switch behind `setCardsOnly`, read by `_near`.
+    // The diagnostic switches behind `setCardsOnly` (read by `_near`) and
+    // `setClumpsVisible`.
     this.cardsOnly = false
+    this.clumpsHidden = false
 
     this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
     this._ladder(radius, falloff)
@@ -668,10 +670,11 @@ export class Trees {
       // The clump variant rides on the instance, not the mesh (prop-arena.js
       // setLayerShiftAt); every single tree writes 0.
       layerShift: true,
-      // Clump cards also lean toward the eye by half its elevation, so a
-      // far hillside seen from a summit or from the air is a wood and not a
-      // set of horizontal seams. Singles stay cylindrical: a leaning trunk
-      // at 100 m is a leaning trunk.
+      // Clump cards also lean away from the eye by half its elevation, so a
+      // far hillside seen from a summit or from the air is a wood lying over
+      // its own ground and not a set of horizontal seams with the ground
+      // showing between. Singles stay cylindrical: a leaning trunk at 100 m
+      // is a leaning trunk.
       billboardTilt: { amount: CLUMP_TILT, layers: [Math.min(...clumpLayers), Math.max(...clumpLayers)] },
       wind: 'tree',
       // The bank bakes each tree's sky occlusion into `color` (the shade under
@@ -1115,6 +1118,23 @@ export class Trees {
     this.material.alphaTest = on ? this.shippedAlphaTest : 0
     this.material.userData.noDiscard = !on
     this.material.needsUpdate = true
+  }
+
+  /**
+   * Hide the clump tier. The menu's `tree clumps` row.
+   *
+   * A DIAGNOSTIC that prices the far forest on its own: the clump meshes stop
+   * being submitted and nothing else moves -- the tiles keep their mode, the
+   * singles ring stays exactly where it is, and the HUD's clump count keeps
+   * reporting what the tier would draw. Off, the world past the clump edge is
+   * bare ground, which is the picture the clumps replaced. The cost the row
+   * isolates is fill: a clump card is a 28 m quad and the tier holds ~17k of
+   * them, so from a standing eye the ring is about a third of the layer's
+   * projected card area, most of it past 400 m.
+   */
+  setClumpsVisible(on) {
+    this.clumpsHidden = !on
+    for (const g of this.tierIds[this.clumpTier]) this.batch.meshes[g].visible = !!on
   }
 
   /**
@@ -2444,6 +2464,7 @@ export class Trees {
       falloff: this.falloff,
       meshBand: this.lodBands[this.lodBands.length - 1],
       cardsOnly: this.cardsOnly,
+      clumpsHidden: this.clumpsHidden,
       cutout: this.material.alphaTest > 0,
       tiers: Array.from(this.tierN),
       bankKB: Math.round(this.bank.bytes / 1024),

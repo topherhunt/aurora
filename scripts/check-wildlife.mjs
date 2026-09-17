@@ -30,7 +30,7 @@ import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S, setTierTint } from '../src/v2/render/puppet.js'
+import { LOD_FADE_S, POSE_EVERY, setTierTint } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -197,9 +197,9 @@ const make = (seed, world = { walk, water, height }) =>
 const w = make(7)
 check(w.loaded && w.species.length === 3 && w.species.map((s) => s.key).join(',') === 'stag,fox,hare', 'the three of them are loaded')
 check(w.species.every((sp) => sp.puppets.length === PUPPETS && sp.freePuppets.length === PUPPETS && sp.slots.length === MAX && sp.free.length === MAX), `${PUPPETS} puppets and ${MAX} slots a species, all free`)
-check(w.materials.length === 3 * (PUPPETS * 3 + 1), 'three materials a puppet -- settled, dissolving in, dissolving out -- plus the one card material a species, all offered to the lighting')
+check(w.materials.length === 3 * (PUPPETS * 2 + 2), 'ONE settled material a species and a dissolving pair a puppet, plus the one card material a species, all offered to the lighting')
 check(w.species.every((sp) => sp.materials.every((m) => m.plain.customProgramCacheKey() === `wildlife-${sp.key}` && m.in.customProgramCacheKey() === `wildlife-${sp.key}-fade` && m.out.customProgramCacheKey() === `wildlife-${sp.key}-fade`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 9, 'three programs a species and not one a puppet: a settled one with no discard in it at all, the dissolve both halves of a fade share, and the card')
-check(w.species.every((sp) => sp.cardMaterial.customProgramCacheKey() === `wildlife-${sp.key}-card-spun-fade`), 'and the card is its own program: spun to face her, and dithered like everything else that arrives or leaves')
+check(w.species.every((sp) => sp.cardMaterial.customProgramCacheKey() === `wildlife-${sp.key}-card-spun-fade-flat`), 'and the card is its own program: spun to face her, dithered like everything else that arrives or leaves, and flat, wearing no hue its mesh could not wear back')
 check(w.batch.children.length === 3 && w.species.every((sp) => w.batch.children.includes(sp.cardMesh) && sp.cardMesh.count === 0 && !sp.cardMesh.visible), 'the batch holds one card mesh a species -- empty, and not drawn at all until the cards are photographed -- and otherwise only the puppets it lends out')
 check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === 2 && p.meshes.length === LOD_RUNGS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
 check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([name, a]) => (ONE_SHOT.has(name) ? a.loop === THREE.LoopOnce && a.clampWhenFinished : a.loop === THREE.LoopRepeat)))), `${[...ONE_SHOT].join(', ')} play once and hold, the rest cycle`)
@@ -209,9 +209,12 @@ check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([nam
     m.onBeforeCompile(shader)
     return shader
   }
-  const mats = w.species[0].materials[0]
+  const sp0 = w.species[0]
+  const mats = sp0.materials[0]
   const plain = compile(mats.plain)
-  check(plain.uniforms.uHue === mats.uHue && plain.fragmentShader.includes('#define vHue uHue') && !plain.vertexShader.includes('aHue'), "a puppet's hue is its materials' one shared uHue uniform")
+  check(sp0.materials.every((m) => m.plain === sp0.plain) && sp0.materials.length === PUPPETS, 'every puppet of a species draws its settled tiers through THE ONE material, so a drawn herd is one material change a frame and not one an animal')
+  const card = compile(sp0.cardMaterial)
+  check(!plain.fragmentShader.includes('uHue') && !plain.vertexShader.includes('aHue') && !card.vertexShader.includes('aHue') && !card.fragmentShader.includes('vHue'), 'and nothing in it is per-animal: no puppet and no card wears a hue, a skinned body having nowhere but a uniform to keep one and a uniform costing a material an animal')
   check(!plain.fragmentShader.includes('discard'), 'a settled puppet draws through a shader with no discard in it, so it does not cost a tiled GPU its early-Z')
   const [a, b] = [compile(mats.in), compile(mats.out)]
   check(a.uniforms.uCut === mats.uCut && b.uniforms.uCut === mats.uCut && a.uniforms.uSide.value === -b.uniforms.uSide.value, 'both halves of a fade read the one cut and compare it the opposite way round')
@@ -260,7 +263,7 @@ wake(w)
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = make(seed)
     k.place(0, 0)
-    for (const c of scatter(k)) pool.push({ key: c.sp.key, x: c.x, y: c.y, z: c.z, size: c.size, hue: c.hue, nx: c.nx, ny: c.ny, nz: c.nz })
+    for (const c of scatter(k)) pool.push({ key: c.sp.key, x: c.x, y: c.y, z: c.z, size: c.size, nx: c.nx, ny: c.ny, nz: c.nz })
     k.dispose()
   }
   check(pool.length > 3 * SEEDS, 'the moor carries animals', `${pool.length} over ${SEEDS} seeds; one seed: ${JSON.stringify(w.stats.alive)} on ${w.stats.tiles} tiles`)
@@ -288,8 +291,6 @@ wake(w)
     check(sizes.every((s) => Math.abs(s / drawM - 1) <= sp.vary + 1e-9) && spread > sp.vary, `a ${sp.key} is ${drawM} m (${quad.sizeM} shipped${sp.scale === 1 ? '' : ` x ${sp.scale}`}) give or take ${Math.round(sp.vary * 100)}%, and the range is walked`, `${Math.min(...sizes).toFixed(2)} to ${Math.max(...sizes).toFixed(2)} m`)
     const one = beside(aside, sp.key)
     check(one && Math.abs(one.k - one.size / quad.span) < 1e-9, `and wears the scale that makes it so`, `${one.size.toFixed(2)} m at ${one.k.toFixed(3)}`)
-    const hues = new Set(mine.map((c) => c.hue.toFixed(4)))
-    check(hues.size > mine.length / 2 && mine.every((c) => Math.abs(c.hue) <= sp.hue), `${sp.key}s wear their own hues within ${sp.hue}`, `${hues.size} hues in ${mine.length}`)
   }
   aside.dispose()
   // Determinism: the same seed lays the same animals twice.
@@ -567,7 +568,7 @@ wake(w)
   const close = reach(0) / 2
   const near = settle(close)
   check(near === 0 && expect(close) === 0 && c.puppet && w.batch.children.includes(c.puppet.group), `${close.toFixed(0)} metres off -- half of what the top rung holds -- the stag is a puppet in the scene, on the top rung`)
-  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning() && c.puppet.mats.uHue.value === c.hue, 'playing what it is doing, in its own hue', c.clip)
+  check(c.puppet.current.getClip().name === c.clip && c.puppet.current.isRunning(), 'playing what it is doing', c.clip)
   {
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
     c.puppet.group.matrix.decompose(p, q, s)
@@ -602,7 +603,7 @@ wake(w)
     // The instance matrix is a Float32Array, so a world coordinate in the hundreds comes back rounded.
     const i = [...Array(sp.cardN).keys()].find((n) => { sp.cardMesh.getMatrixAt(n, m); m.decompose(p, q, s); return p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-3 })
     check(i !== undefined && sp.cardMesh.count === sp.cardN && sp.cardN > 0, 'and taken an instance in its species card mesh instead, standing where the animal stands', `${sp.cardN} cards drawn`)
-    check(Math.abs(s.x - c.k) < 1e-6 && Math.abs(sp.cardHue.array[i] - c.hue) < 1e-6, 'at its own size and in its own hue, so a herd of cards is as varied as the herd of meshes was')
+    check(Math.abs(s.x - c.k) < 1e-6, 'at its own size, so a herd of cards is as varied as the herd of meshes was')
     check(sp.cardFade.array[i] === 1, 'and settled: the whole card is drawn, with no dither left in it', `fade ${sp.cardFade.array[i]}`)
   }
   const far = reach(LOD_RUNGS) * 4
@@ -612,6 +613,63 @@ wake(w)
   const t = c.puppet.mixer.time
   at(close, 10, 1 / 60)
   check(c.puppet && Math.abs(c.puppet.mixer.time - t - 10 / 60) < 1e-9, "a puppet's mixer advances with the frames", `${(c.puppet.mixer.time - t).toFixed(4)} s in ten`)
+  // THE POSE CADENCE (puppet.js POSE_EVERY), which is the one saving the mesh
+  // ladder does NOT give us: three re-uploads a bone texture once a frame for
+  // every skeleton it draws, whichever rung that skeleton is drawn on, so a
+  // rung-3 stag skinning as dearly as a rung-0 one unless the pose is skipped.
+  {
+    const sampled = (k) => {
+      const d = reach(k) * 0.75
+      settle(d)
+      const p = c.puppet
+      if (!p || p.tier !== k) throw new Error(`check-wildlife: wanted rung ${k} for the cadence, the stag is on ${p ? p.tier : 'a card'}`)
+      // Standing in for the renderer's own bone texture: Skeleton.update raises
+      // that flag, and raising it IS the upload.
+      const tex = { needsUpdate: false }
+      p.skeleton.boneTexture = tex
+      const t0 = p.mixer.time
+      let uploads = 0
+      for (let f = 0; f < 24; f++) {
+        at(d, 1, 1 / 60)
+        p.skeleton.update() // what WebGLObjects.update does once a frame for every skeleton drawn
+        if (tex.needsUpdate) { uploads++; tex.needsUpdate = false }
+      }
+      p.skeleton.boneTexture = null
+      return { uploads, played: p.mixer.time - t0 }
+    }
+    const top = sampled(0)
+    const last = sampled(LOD_RUNGS - 1)
+    check(top.uploads === 24 && last.uploads === 24 / POSE_EVERY[LOD_RUNGS - 1], `the top rung re-poses every frame and the last one every ${POSE_EVERY[LOD_RUNGS - 1]}th, which is a bone texture built and uploaded that many times less`, `${top.uploads} and ${last.uploads} uploads in 24 frames`)
+    check(Math.abs(top.played - 24 / 60) < 1e-9 && Math.abs(last.played - 24 / 60) < 1e-9, 'and the skipped time is banked and spent whole, so a clip sampled every eighth frame still plays at its own speed -- a lower sample rate, not a slower animal', `${last.played.toFixed(4)} s of ${(24 / 60).toFixed(4)}`)
+    const p = c.puppet
+    {
+      const sphere = p.meshes[0].boundingSphere
+      const geo = p.meshes[0].geometry
+      if (!geo.boundingSphere) geo.computeBoundingSphere()
+      const holds = sphere.radius >= sphere.center.distanceTo(geo.boundingSphere.center) + geo.boundingSphere.radius
+      check(p.meshes.every((m) => m.frustumCulled && m.boundingSphere === sphere) && holds,
+        'every rung is frustum-culled on one explicit sphere round the rest bounds: a body behind her drops its bone-texture upload along with its draw, and SkinnedMesh.computeBoundingSphere -- which CPU-skins every vertex -- is never reached', `r ${sphere.radius.toFixed(2)} m over a ${geo.boundingSphere.radius.toFixed(2)} m body`)
+    }
+    // A HELD FRAME LEAVES THE GROUP ALONE. The bone texture holds world matrices
+    // and the model matrix cancels against the bind, so a stale pose draws frozen
+    // where it stood whatever the group says -- writing the group would re-multiply
+    // the whole bone tree and change nothing (wildlife.js writes it `if (puppet.posed)`).
+    {
+      const d = reach(LOD_RUNGS - 1) * 0.75
+      let tested = false, frozen = false
+      for (let f = 0; f < 600 && !tested; f++) {
+        const was = p.group.matrix.elements.slice()
+        const x0 = c.x, z0 = c.z
+        at(d, 1, 1 / 60)
+        // A frame the animal walked through AND held its pose on: the two together are what the promise is about.
+        if (!p.posed && Math.hypot(c.x - x0, c.z - z0) > 1e-6) {
+          tested = true
+          frozen = p.group.matrix.elements.every((v, n) => v === was[n])
+        }
+      }
+      check(tested && frozen, 'and on a held frame the animal walks on while its group matrix stays put, because a stale pose draws where it stood and moving the group would cost the bone tree a full re-multiply to show nothing')
+    }
+  }
   // The tint row, which is how the ladder is confirmed by eye at all: halving
   // the triangles of a smooth mesh barely moves its silhouette, so a swap is
   // invisible without a colour on it. One flat colour a rung, and a fade shows
