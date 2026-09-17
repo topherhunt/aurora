@@ -17,7 +17,7 @@
 
 import THREE from '../../three-instance.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
-import { BILLBOARD_VERTEX, critterLodUrl, loadCritterGlb } from './critters.js'
+import { SPIN_ATTRIBUTE, billboardVertex, critterLodUrl, loadCritterGlb } from './critters.js'
 
 // What tools/props/gen/ship.mjs writes for each prop, relative to the page like the critters' URLs: the pick, and its ladder as critterLodUrl.
 export const GEN_PROP_GLB = {
@@ -114,11 +114,15 @@ const CARD_NORMAL = /* glsl */ `
  * double-sided, lit by CARD_NORMAL on both faces of every quad so a cross's
  * seam is not a step in brightness. A `billboard` card is one quad spun about
  * the instance's Y to face her in the vertex shader (two triangles; flat in a
- * headset, which past the parallax range it always is). `label` keys the
- * program: two materials differing only in these flags are two programs.
+ * headset, which past the parallax range it always is); `billboard: 'mixed'`
+ * spins only the vertices whose `aSpin` is 1 (critters.js setSpunTopCard).
+ * `label` keys the program: two materials differing only in these flags are two
+ * programs.
  */
 export function createGenPropMaterial(label, { tint = 0xffffff, card = false, billboard = false } = {}) {
   if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
+  if (billboard !== false && billboard !== true && billboard !== 'mixed') throw new Error(`createGenPropMaterial: billboard is true, false or 'mixed', not ${billboard}`)
+  const mixed = billboard === 'mixed'
   const material = new THREE.MeshLambertMaterial({
     color: tint,
     alphaTest: card ? 0.5 : 0,
@@ -134,9 +138,10 @@ export function createGenPropMaterial(label, { tint = 0xffffff, card = false, bi
         #define PROP_FADE_ATTRIBUTE
         attribute float aPropFade;
         uniform float uPropClock;
-        varying float vPropFade;`
+        varying float vPropFade;
+        ${mixed ? SPIN_ATTRIBUTE : ''}`
       )
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? BILLBOARD_VERTEX : ''}\n${FADE_VERTEX}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? billboardVertex(mixed) : ''}\n${FADE_VERTEX}`)
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
       .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
@@ -145,6 +150,6 @@ export function createGenPropMaterial(label, { tint = 0xffffff, card = false, bi
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
     }
   }
-  material.customProgramCacheKey = () => `gen-prop-${label}${billboard ? '-billboard' : card ? '-card' : ''}`
+  material.customProgramCacheKey = () => `gen-prop-${label}${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : ''}`
   return material
 }

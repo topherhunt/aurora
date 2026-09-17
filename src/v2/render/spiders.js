@@ -35,11 +35,20 @@
 // would wear -- edge-on from the side, which at ten metres is a spider-sized
 // fleck of bark, and in tree-lined ground the whole far crowd is one draw call.
 //
-// Her head within ALERT_M rears a paused spider up; within FLEE_M it FLEES:
-// off at a run along the heading in its surface that leads furthest from her,
-// until she has been out of FLEE_M for FLEE_S, and the ear (audio/ambience.js)
-// is told once as it sets off, through startled(). A flee costs the frame one
-// comparison per spider; the turn is taken once, as it starts.
+// Her head within ALERT_M rears a paused spider up. Her BODY -- the capsule
+// under her head, feet to crown, WALK.radius wide -- coming within FLEE_M of a
+// spider makes it FLEE: off at FLEE_HASTE times the run toward the point of
+// its host furthest from her -- the far side of the trunk or the stone from
+// where she stands, at whichever end of the climb is further from the nearest
+// point of her -- re-aimed every STEER_EVERY frames as she moves, until it is
+// FLEE_TO_M from her, within ARRIVE_M of that point, or closing on it at under
+// STALL_FRAC of its pace for STALL_S (cornered), when it calms down where it
+// is; calm, it does not run again until she has
+// been out of FLEE_M and come back. A destination rather than a direction
+// because, square to the bark, no direction along it leads away from her to
+// the first order. The ear (audio/ambience.js) is told once as it sets off,
+// through startled(). A spider that is not fleeing pays one distance for it a
+// frame.
 //
 // A group is a pure function of its host's origin and the world seed, so the
 // same trunk carries the same spiders every visit; behaviour draws from one
@@ -55,6 +64,7 @@ import {
 import { Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
+import { WALK } from '../walk.js'
 
 export const TILE = 16
 // Inside the trees' full-density band (50 m), corners included.
@@ -67,8 +77,8 @@ export const CLIMB_M = 3
 export const GROUP = [1, 5]
 // The chance a host carries a group at all.
 export const HOST_CHANCE = { tree: 0.125, rock: 0.3 }
-// A rock worth climbing, and a trunk worth clinging to (base radius).
-export const ROCK_MIN_SIZE = 0.6
+// A rock worth climbing (its longest extent), and a trunk worth clinging to (base radius).
+export const ROCK_MIN_SIZE = 2
 export const TRUNK_MIN_R = 0.06
 // A seat or a step whose surface normal rises past this is flat ground to a spider; a seat is kept there one time in ten, a step never.
 export const FLAT_NY = 0.6
@@ -97,9 +107,15 @@ const RUN_CHANCE = 0.12
 const FADE_S = 0.2
 // Her head this close makes a paused spider rear up...
 const ALERT_M = 1.2
-// ...and this close makes any spider run, for this long after she was last within it.
+// ...and her body this close makes any spider run, at this multiple of the run gait, until it is FLEE_TO_M from her, within ARRIVE_M of where it is making for, or closing on that at under STALL_FRAC of its pace for STALL_S seconds.
 export const FLEE_M = 0.5
-export const FLEE_S = 3
+export const FLEE_TO_M = 3
+export const FLEE_HASTE = 4
+export const STALL_S = 1
+const STALL_FRAC = 0.25
+const ARRIVE_M = 0.1
+// Frames between a fleeing spider's re-aims.
+const STEER_EVERY = 6
 // Feet into the surface, as a fraction of the body's height, so eight feet meet a round trunk.
 export const SINK = 0.15
 const REPROJECT_EVERY = 3
@@ -188,8 +204,10 @@ export class Spiders {
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
         size: 0.2,
-        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, that nothing but the clock ends.
+        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, ended by distance or by stalling and not by `left`.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
+        // Fleeing: the furthest from her body it has got, and the seconds since that grew. `near` is whether her body was within FLEE_M last frame.
+        ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false,
         // On a rock: steps turned back since it last walked.
         stuck: 0,
         lod: -1, puppet: null,
@@ -592,20 +610,36 @@ export class Spiders {
     else this._heading(c, c.phi + (this.rand() - 0.5) * 1.2)
   }
 
-  /** Off at a run, the way in its surface that leads furthest from (x, y, z); the clock is the caller's. */
-  _flee(c, x, y, z) {
+  /** Off at the run, hastened, away from her body: the column at (x, z) from y0 up to y1. */
+  _flee(c, x, y0, y1, z) {
     c.state = 'flee'
     c.clip = 'run'
-    c.speed = (GAIT.run * c.size) / this.span
+    c.speed = (FLEE_HASTE * GAIT.run * c.size) / this.span
     c.stuck = 0
-    // A heading's pull toward her is a cos(phi) + b sin(phi) over the surface's two tangents, so the heading furthest from her is where that is most negative.
-    const tox = x - c.x, toy = y - c.y, toz = z - c.z
-    this._face(c, 0)
-    const a = c.tx * tox + c.ty * toy + c.tz * toz
-    this._face(c, TAU / 4)
-    const b = c.tx * tox + c.ty * toy + c.tz * toz
-    this._face(c, Math.atan2(-b, -a) + (this.rand() - 0.5) * 0.6)
+    c.stall = 0
+    this._aim(c, x, y0, y1, z)
     this.startles.push(c)
+  }
+
+  /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. */
+  _aim(c, x, y0, y1, z) {
+    const host = c.host
+    let ex = host.x - x, ez = host.z - z
+    const len = Math.hypot(ex, ez) || 1
+    const r = host.kind === 'tree' ? c.r : host.r
+    c.ex = host.x + (ex / len) * r
+    c.ez = host.z + (ez / len) * r
+    const top = host.kind === 'tree' ? host.y + host.hHi : host.groundY + Math.min(CLIMB_M, host.size)
+    const bot = host.kind === 'tree' ? host.y + host.hLo : host.groundY
+    c.ey = top - y1 > y0 - bot ? top : bot
+    // The pull toward it is a cos(phi) + b sin(phi) over the surface's two tangents, so the heading straightest at it is where that is largest.
+    const wx = c.ex - c.x, wy = c.ey - c.y, wz = c.ez - c.z
+    c.togo = Math.sqrt(wx * wx + wy * wy + wz * wz)
+    this._face(c, 0)
+    const a = c.tx * wx + c.ty * wy + c.tz * wz
+    this._face(c, TAU / 4)
+    const b = c.tx * wx + c.ty * wy + c.tz * wz
+    this._face(c, Math.atan2(b, a) + (this.rand() - 0.5) * 0.6)
   }
 
   /** Turn to the heading `phi` in the host's surface frame: up the bark toward round it, or a rock face's upmost toward its right. */
@@ -669,8 +703,13 @@ export class Spiders {
     c.lod = -1
   }
 
-  /** One frame: every spider stepped, and written as a puppet or a card by its distance from her head. */
-  update(hx, hy, hz, dt) {
+  /**
+   * One frame: every spider stepped, and written as a puppet or a card by its
+   * distance from her head. `fy` is where her feet are: her body, for the flee,
+   * is the capsule from there up to her head.
+   */
+  update(hx, hy, hz, dt, fy) {
+    if (!(fy <= hy)) throw new Error(`Spiders.update: her feet must be under her head, got feet ${fy} and head ${hy}`)
     if (walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t)) > 0) {
       this.rescan = []
     }
@@ -685,7 +724,6 @@ export class Spiders {
 
     const cmat = this.card.instanceMatrix.array
     const cards = this.card.visible
-    const flee2 = FLEE_M * FLEE_M
     const near2 = NEAR_M * NEAR_M
     const keep2 = near2 * NEAR_KEEP * NEAR_KEEP
     let m = 0
@@ -698,9 +736,19 @@ export class Spiders {
           const dy = c.y - hy
           const dz = c.z - hz
           const d2 = dx * dx + dy * dy + dz * dz
-          if (d2 < flee2) {
-            if (c.state !== 'flee') this._flee(c, hx, hy, hz)
-            c.left = FLEE_S
+          // Her body: the nearest point of the capsule's axis to the spider, and how far outside the capsule it is.
+          const by = c.y < fy ? fy : c.y > hy ? hy : c.y
+          const bdy = c.y - by
+          const bd = Math.sqrt(dx * dx + bdy * bdy + dz * dz) - WALK.radius
+          const close = bd < FLEE_M
+          if (close && !c.near && c.state !== 'flee') this._flee(c, hx, fy, hy, hz)
+          c.near = close
+          if (c.state === 'flee') {
+            const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
+            if (c.togo - togo > STALL_FRAC * c.speed * dt) c.stall = 0; else c.stall += dt
+            c.togo = togo
+            if (bd >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._pause(c)
+            else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, hx, fy, hy, hz)
           }
           if (c.state !== 'pause') {
             const d = c.speed * dt
@@ -734,6 +782,8 @@ export class Spiders {
             if (near) c.lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
             puppet.show(near ? c.lod : -1)
             puppet.play(c.clip)
+            // The run clip at the flee's pace, so the feet keep up with the seat. Written every frame: a puppet comes back from a fleeing spider to the pool as it was.
+            puppet.mixer.timeScale = c.state === 'flee' ? FLEE_HASTE : 1
             puppet.step(dt)
             // Only where it shows -- puppet.js POSE_EVERY.
             if (puppet.posed) {

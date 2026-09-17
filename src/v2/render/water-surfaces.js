@@ -1,6 +1,7 @@
 import THREE from '../../three-instance.js'
 import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
-import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, RIVER_WIDEN, RIVER_WIDEN_FRAC, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from './ribbon.js'
+import { RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../layers/paths.js'
+import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from './ribbon.js'
 import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH } from './river-raise.js'
 import { unpackKey } from '../terrain/quadtree-v2.js'
 
@@ -172,11 +173,11 @@ export class WaterSurfaces {
   }
 
   /**
-   * One mesh, one draw call, whatever the distance. The vertex buffer is static: the fine strip, its flow frame, and per vertex the lift that clears the drawn terrain at each of its rungs (riverRaise). Two things move after build, both from updateLod and neither per frame: the INDEX buffer, which picks fine or coarse quads chunk by chunk, and `aRung`, one byte per vertex naming the terrain rung drawn under it, which selects the lift in the vertex shader. The index is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
+   * One mesh, one draw call, whatever the distance. The vertex buffer is static: the fine strip over the DRAWN samples (PathSet.drawnSamples: the baked samples, cut where a tributary's sheet meets its trunk's), its flow frame, and per vertex the lift that clears the drawn terrain at each of its rungs (riverRaise). The wet index keeps the full samples: past the cut the water is still there, under the trunk's. Two things move after build, both from updateLod and neither per frame: the INDEX buffer, which picks fine or coarse quads chunk by chunk, and `aRung`, one byte per vertex naming the terrain rung drawn under it, which selects the lift in the vertex shader. The index is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
    */
   buildRiver(river) {
     const samples = this.samplesOf(river)
-    const r = ribbonVertices(samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
+    const r = ribbonVertices(this.layers.paths.drawnSamples(river.id), { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
     const lod = ribbonLod(r)
     // The frame the shader drifts the waves in, downstream. Lakes carry neither this nor the lift and get the material's zero defaults: the shared world frame, on the ground.
     const flow = flowFrame(r, this.layers.paths.flowsForward(river.id), this.layers.paths.flowReach(river.id))
@@ -358,7 +359,7 @@ export class WaterSurfaces {
    *
    * TWO ANSWERS, AND THEY ARE DELIBERATELY DIFFERENT. By default this is the AUTHORED footprint: `footprint` feathers to zero at rx/rz, and the metre and a half the disc reaches past that exists to bury a polygon edge, not to make ground wet. That is the right answer for the prop scatter, which is the caller that made this fast, and treating the overhang as wet there would strip a band of props off both sides of every stream.
    *
-   * `drawn = true` asks the other question -- where is the water you can SEE -- by widening each river sample the way `ribbonVertices` widens it, `hw + min(RIVER_WIDEN, hw * RIVER_WIDEN_FRAC)`, from the same two constants so the query and the geometry cannot drift. That is what the submersion test wants: the eye is under the water when it is under the polygon, not when it is under a footprint the polygon disagrees with by a metre. Cost is identical -- same 3x3 block, same scan, one add per sample -- and it is one call a frame rather than one per scatter candidate.
+   * `drawn = true` asks the other question -- where is the water you can SEE -- by widening each river sample the way the ribbon is widened, paths.js drawnHalfWidth, so the query and the geometry cannot drift. That is what the submersion test wants: the eye is under the water when it is under the polygon, not when it is under a footprint the polygon disagrees with by a metre. Cost is identical -- same 3x3 block, same scan, one add per sample -- and it is one call a frame rather than one per scatter candidate.
    *
    * It is an UPPER BOUND on tight turns, not an exact silhouette: `ribbonVertices` also narrows the ribbon through a corner by its circumradius and drops folded quads outright, and reproducing that here would mean rebuilding the geometry to ask a question about it. The residue is a few centimetres on the inside of a hairpin, which is the one place a river is least likely to be over her head.
    */
@@ -392,7 +393,7 @@ export class WaterSurfaces {
           const cz = z0 + t * ez
           const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz)
           let hw = h0 + t * (h1 - h0)
-          if (drawn) hw += Math.min(RIVER_WIDEN, hw * RIVER_WIDEN_FRAC)
+          if (drawn) hw = drawnHalfWidth(hw)
           if (d2 > hw * hw) continue
           const y = y0 + t * (y1 - y0)
           // One answer per river: its nearest segment, which is the quad the ribbon draws over the point.

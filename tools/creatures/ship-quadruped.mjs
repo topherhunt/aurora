@@ -7,7 +7,8 @@
 // The body of the work is ship-skinned.mjs: the ladder decimated from the
 // rigged mesh, the whole `quadruped` clip library, the frame on the root joint.
 // What this file says is which creatures, which clips carry the body forward
-// and ship with a ground speed (`walk`, `trot`, `run`; the rest hold station),
+// and ship with a ground speed (`walk`, `trot`, `run`, and the hare's `hop` and
+// `bound`; the rest hold station),
 // and that the world finds the extras under `quadruped`.
 // ---------------------------------------------------------------------------
 
@@ -17,7 +18,7 @@ import { shipSkinned } from './ship-skinned.mjs'
 export { worldFrame } from './ship-skinned.mjs'
 
 export const QUADRUPEDS = ['moor-stag', 'red-fox', 'snow-hare']
-export const GAITS = ['walk', 'trot', 'run']
+export const GAITS = ['walk', 'trot', 'run', 'hop', 'bound']
 
 export const shipQuadruped = (id) => shipSkinned(id, { plan: 'quadruped', gaits: GAITS, key: 'quadruped', generator: 'tools/creatures/ship-quadruped.mjs' })
 

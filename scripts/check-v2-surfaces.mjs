@@ -9,11 +9,11 @@
 import { pathToFileURL } from 'node:url'
 import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
-import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, RIVER_WIDEN, RIVER_WIDEN_FRAC, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
+import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
 import { riverRaise, DrawnTerrain, RAISE_RUNGS, RAISE_MARGIN, RAISE_END, RUNG_AT_DEPTH } from '../src/v2/render/river-raise.js'
 import { nodeKey } from '../src/v2/terrain/quadtree-v2.js'
 import { Layers } from '../src/v2/layers/layers.js'
-import { SAMPLE_SPACING } from '../src/v2/layers/paths.js'
+import { SAMPLE_SPACING, RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../src/v2/layers/paths.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
@@ -717,6 +717,47 @@ export async function run() {
     fwd.ws.dispose()
     rev.ws.dispose()
     into.ws.dispose()
+  }
+
+  // --- 9b. a tributary's sheet ends on its trunk's ------------------------------
+  //
+  // The water material writes depth, so a tributary drawn on into its trunk's plane is two sheets one depth test apart, sorted per pixel. PathSet dives the tributary's level under the trunk's once its whole drawn width is inside the trunk's drawn width and ends the drawn samples where the sheets cross (drawnSamples); the mesh has to be built from those samples and nothing else, while the wet index -- levelAt, and the carve under it -- keeps the full run, so the water past the cut is still water. Pinned through WaterSurfaces on the same square-on confluence check-v2-layers pins the samples on.
+  {
+    const ground = (x) => 100 - 0.001 * x - 5 * Math.exp(-(((x + 200) / 60) ** 2))
+    const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], roads: [], rivers: [
+      { id: 'trunk', depth: 3, pts: [[-500, 0, 40], [500, 0, 40]] },
+      { id: 'trib', depth: 2, pts: [[0, 400, 10], [0, 0, 10]] },
+    ] })
+    layers.paths.setTerrain(terrainOf(ground))
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+    ws.rebuild()
+    const drawn = layers.paths.drawnSamples('trib')
+    const full = layers.paths.paths.get('trib').samples
+    const mesh = ws.meshes.get('trib')
+    const p = mesh.geometry.getAttribute('position')
+    const n = mesh.userData.lod.count
+    const trunkLevel = layers.paths.riverLevelAt(0, 0)
+    check(drawn.length < full.length && n === drawn.length / 4 && p.count === 2 * n, 'the tributary mesh is built from the drawn samples, which stop short of the mouth', `${n} samples drawn of ${full.length / 4}, ${p.count} vertices`)
+    // Every vertex over the trunk's water is at its surface or above it: none is left under the trunk's sheet for the depth test to sort.
+    const wet = drawnHalfWidth(20)
+    let over = 0
+    let under = 0
+    let lowest = Infinity
+    for (let i = 0; i < p.count; i++) {
+      const z = p.getZ(i)
+      if (Math.abs(z) > wet) continue
+      over++
+      const y = p.getY(i)
+      if (y < lowest) lowest = y
+      if (y < trunkLevel - 1e-3) under++
+    }
+    check(over > 0 && under === 0 && lowest < trunkLevel + 1e-3, "and every tributary vertex over the trunk's drawn width is on its surface or above it", `${over} vertices over the trunk, lowest ${lowest.toFixed(3)} vs ${trunkLevel.toFixed(3)} m, ${under} under`)
+    const lastZ = p.getZ((n - 1) * 2)
+    check(lastZ > 0 && lastZ < wet, 'with the last pair at the crossing, inside the trunk', `z = ${lastZ.toFixed(2)} of ${wet.toFixed(2)}`)
+    const l10 = ws.levelAt(0, 10)
+    const l30 = ws.levelAt(0, 30)
+    check(l10 !== null && Math.abs(l10 - trunkLevel) < 1e-3 && l30 !== null && l30 > trunkLevel + 1, "while the wet index still answers water at the mouth, at the trunk's level, and the tributary's own further up", `${l10} at z = 10, ${l30} at z = 30`)
+    ws.dispose()
   }
 
   // --- 10. the river distance ladder and the lift -----------------------------

@@ -381,7 +381,10 @@ const DEFAULTS = {
   // is not -- a flying animal rises through the DOWNSTROKE, a quarter cycle off
   // where the default puts it.
   bodyBob: 0, bobFreq: 2, bobPhase: 0, bodySway: 0,
-  spineYaw: 0, spineRoll: 0, spineFlex: 0,
+  // `spineFlexPhase` is `bobPhase` for the back: a gallop's flexion peaks at
+  // the gather, a bound's at the hinds' landing, and where that falls in the
+  // cycle is the spec's footfall order, not the solver's.
+  spineYaw: 0, spineRoll: 0, spineFlex: 0, spineFlexPhase: 0,
   tailSway: 0, tailLift: 0, headBob: 0, headYaw: 0, headYawPhase: 0,
   // Wings and forelimbs, on a rig whose map names them. Each is a MIRRORED PAIR
   // taking one amplitude, because an animator thinks "beat the wings", not
@@ -515,7 +518,7 @@ export function solveClip(rigFile, map, rawSpec) {
     wave(spine, spec.spineYaw, up, 1, 0.4)
     wave(spine, spec.spineRoll, fwd, 2, 0.3)
     // Back flexion: negligible at a walk, and the whole engine of a gallop.
-    wave(spine, spec.spineFlex, lat, 1, 0.25)
+    wave(spine, spec.spineFlex, lat, 1, 0.25, spec.spineFlexPhase)
     wave(tail, spec.tailSway, up, 1, 0.8, Math.PI)
     wave(tail, spec.tailLift, lat, 2, 0.6)
     wave(head, spec.headBob, lat, 2, 0.5)

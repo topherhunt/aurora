@@ -41,12 +41,15 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [x] Is each animation going to be shipped as a separate 600kb .glb file!? That's a lot of space waste/duplication right?
 - [x] Add a procedural jaggedness to terrain so the smooth curves aren't so smooth. OR if we already have that, it needs to be amplified by 4x.
 - [ ] Rig up player to a skeleton with a simple maybe-mostly-lerp-based IK system. Head turning should follow the camera rotation. Head movement should follow VR head location changes, feet should only follow if it exceeds a threshold of say 10m off-center. When teleporting, animate the person walking to that location instead of just jumping them there. Arms follow your actual hand positions.
+- [ ] Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). Near your location, it can decimate further, to maybe 1 vertex per 1m, so you can have a vertex shader apply a chaotic up-and-down to each lake-edge vertex to simulate waves lapping the shore. When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terrain under them.
 - [ ] Rivers:
-  - Tributaries that fold in, should never be fully coplanar
+  - [x] Tributaries that fold in, should never be fully coplanar.
   - Keep the height even until it risks breaking above the landscape level, then drop down in an abrupt cascade. Have foam spraying up (white camera-rotated circles, dithering to fade out slowly).
-- Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). Near your location, it can decimate further, to maybe 1 vertex per 1m, so you can have a vertex shader apply a chaotic up-and-down to each lake-edge vertex to simulate waves lapping the shore. When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terrain under them.
 - [ ] Forest: height variety. Scrap the roots, stretch down the trunk, let some trees get taller so space opens up below the canopy. Dense suffocating undergrowth should be a minority.
-- [ ] Teleport should have a fixed cooldown, maybe 1s.
+- [ ] Creatures' states should sync up between different players in the same room. How to do this, performantly?
+  - creature behavior is random but deterministic if given the same inputs
+  - any interaction events caused by one player are broadcast to the other, so the creature state can be replayed based on that....?
+- [x] Teleport should have a fixed cooldown, maybe 1s.
 - [x] Spiders: don't place them above the snowline. Half as common. Noise should be half volume.
 - [x] Spiders flee from you when you get within 0.5m.
 - [x] Wild fauna and snowmen: don't tilt them to fit the terrain. Their vertical should always stay true to the world vertical. Also, allow the yeti to walk on steeper terrain so it can successfully chase you (and path elsewhere, in the future). Currently the yeti often gets stuck on a shelf and doesn't chase very effectively.

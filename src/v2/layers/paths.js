@@ -41,8 +41,20 @@ export const FREEBOARD = 0.3
 // Lateral positions, in half-widths, where the ground is read to set the level: centre, mid-channel, the water's edge and the outer edge of the bank band, both sides.
 const LEVEL_TAPS = [0.5, 1, BANK]
 
-// A mouth pinned to another water body drops to that level over this many half-widths of arc, so a tributary meets its trunk with a short fall rather than a step.
+// A mouth pinned to another water body drops to that body's surface over this many of its own half-widths of arc -- from the mouth for a lake, and for a trunk from the last sample whose whole drawn width is inside the trunk's -- so a tributary meets its trunk with a short fall rather than a step.
 const PIN_RAMP_HALF_WIDTHS = 3
+
+// Once a tributary's whole drawn width is inside its trunk's, its level goes on down below the trunk's surface at this grade per metre of that inset, to at most DIVE_MAX. None of the dive is drawn: drawnSamples ends the sheet where it crosses the trunk's. The dive is what makes that crossing a line the cut can find, instead of two sheets in one plane left to the depth test, and DIVE_MAX bounds the groove the tributary's bed digs into the trunk's past the crossing.
+export const DIVE_GRADE = 0.1
+export const DIVE_MAX = 0.5
+
+// How far a river's drawn sheet reaches past its half-width, and the cap on that as a fraction of the half-width. Absolute metres alone would turn a 3 m stream into a 4.5 m one; a fraction alone would push a 60 m river 15 m into its bank. The carve puts the bed exactly at the water level at halfWidth and the bank climbs from there (BANK), so the ground is already rising at the sheet's edge and a quarter of a half-width is enough to bury it. Here rather than in the renderer because a tributary's level dives where it is under the trunk's DRAWN sheet, and the wet predicate asks the same question of the sheet (WaterSurfaces.levelAt).
+export const RIVER_WIDEN = 0.75
+export const RIVER_WIDEN_FRAC = 0.25
+
+export function drawnHalfWidth(halfWidth) {
+  return halfWidth + Math.min(RIVER_WIDEN, halfWidth * RIVER_WIDEN_FRAC)
+}
 
 // Arc-to-chord ratio above which two samples of one river whose footprints overlap count as a fold-back rather than neighbours along the reach. A semicircle's diameter is pi/2; a bend of radius fifty metres in a ten-metre channel never reaches 1.01.
 const POOL_FOLD = 1.2
@@ -144,6 +156,8 @@ function normalise(rec, where) {
 const HIT_A = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_B = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_C = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
+// _trunkAt's answer. Module-level like the HITs: the pin walk asks it per sample.
+const TRUNK = { inset: 0, level: 0, over: 0 }
 
 // carveRivers' running claims and the terrain detail under the vertex (read once, on the first wet claim), module scope so the per-vertex carve allocates nothing.
 let claimWet = Infinity
@@ -573,17 +587,51 @@ export class PathSet {
     return moved
   }
 
-  // Water another body holds at (x, z), for a river endpoint sitting there: the nearest OTHER river if the point is inside its wet width, else a lake whose footprint covers the point and whose surface is within one channel depth above the ground -- the second test is what keeps a 20 km ocean rectangle from claiming every inland mouth in its footprint. `reach` is how far from the point that body's own carve extends, which is where a river ending in it has to have come down to its level.
+  // Water another body holds at (x, z), for a river endpoint sitting there: the nearest OTHER river if the point is inside its wet width, else a lake whose footprint covers the point and whose surface is within one channel depth above the ground -- the second test is what keeps a 20 km ocean rectangle from claiming every inland mouth in its footprint. `rec` is that river's record, null for a lake.
   _otherWaterAt(x, z, rec) {
-    if (this._nearestInto(x, z, 'river', HIT_C, rec) && HIT_C.dist <= HIT_C.halfWidth) return { level: HIT_C.y, reach: BANK * HIT_C.halfWidth }
+    if (this._nearestInto(x, z, 'river', HIT_C, rec) && HIT_C.dist <= HIT_C.halfWidth) return { level: HIT_C.y, rec: HIT_C.rec }
     if (this.lakes !== null) {
       const lake = this.lakes.levelAt(x, z)
-      if (lake !== null && this._terrain.groundAt(x, z) <= lake + rec.depth) return { level: lake, reach: 0 }
+      if (lake !== null && this._terrain.groundAt(x, z) <= lake + rec.depth) return { level: lake, rec: null }
     }
     return null
   }
 
-  // Source in a lake or on another river: the whole river is capped at that level, so it leaves the water it starts in rather than falling out of the air above it. Mouth in one: the level ramps down to it over the last few half-widths beyond that body's own carve, so a tributary is at its trunk's surface by the time it enters the trunk's banks. Neither ever raises a level, so the downstream monotonicity the solve established survives.
+  // Sample i of `rec` against the drawn sheet of `trunk`, into TRUNK. `inset` is how far the further of the sample's two drawn edges is inside the trunk's drawn width, negative outside it; `level` is the trunk's surface under the sample's centre; `over` is the most the sample's level stands above the trunk's surface at either edge. The edges are drawnHalfWidth along the plan normal of the sample's neighbours, the offset ribbonVertices starts from; its clamps only pull an edge inward, so an edge this puts inside is inside. Where the trunk's index does not reach the centre or an edge, or the nearest other river there is a third one, inset is -Infinity and over is Infinity: not under.
+  _trunkAt(rec, trunk, i) {
+    const s = rec.samples
+    const n = s.length / 4
+    const o = i * 4
+    const x = s[o]
+    const y = s[o + 1]
+    const z = s[o + 2]
+    const a = i > 0 ? o - 4 : o
+    const b = i < n - 1 ? o + 4 : o
+    let nx = s[a + 2] - s[b + 2]
+    let nz = s[b] - s[a]
+    const w = drawnHalfWidth(s[o + 3]) / Math.hypot(nx, nz)
+    nx *= w
+    nz *= w
+    TRUNK.inset = -Infinity
+    TRUNK.level = NaN
+    TRUNK.over = Infinity
+    if (!this._nearestInto(x, z, 'river', HIT_C, rec) || HIT_C.rec !== trunk) return TRUNK
+    TRUNK.level = HIT_C.y
+    let inset = Infinity
+    let over = -Infinity
+    for (let side = -1; side <= 1; side += 2) {
+      if (!this._nearestInto(x + side * nx, z + side * nz, 'river', HIT_C, rec) || HIT_C.rec !== trunk) return TRUNK
+      const e = drawnHalfWidth(HIT_C.halfWidth) - HIT_C.dist
+      if (e < inset) inset = e
+      const v = y - HIT_C.y
+      if (v > over) over = v
+    }
+    TRUNK.inset = inset
+    TRUNK.over = over
+    return TRUNK
+  }
+
+  // Source in a lake or on another river: the whole river is capped at that level, so it leaves the water it starts in rather than falling out of the air above it. Mouth in one: the level ramps down to that body's surface over the last few half-widths of arc -- into a lake, ending at the mouth; into a trunk, ending at the last sample whose whole drawn width is inside the trunk's drawn width, from where it goes on down at DIVE_GRADE (see _trunkAt) so the two sheets cross on a line for drawnSamples to cut at. Neither ever raises a level, and every cap is floored at the level just set downstream of it, so the downstream monotonicity the solve established survives.
   _applyPins(rec) {
     const s = rec.samples
     const n = s.length / 4
@@ -597,18 +645,58 @@ export class PathSet {
     }
 
     const into = this._otherWaterAt(s[mouth * 4], s[mouth * 4 + 2], rec)
-    const mouthLevel = into === null ? null : into.level
-    if (mouthLevel !== null && s[mouth * 4 + 1] > mouthLevel) {
-      const top = s[mouth * 4 + 1]
-      const drop = top - mouthLevel
-      const ramp = Math.max(PIN_RAMP_HALF_WIDTHS * s[mouth * 4 + 3], 2 * SAMPLE_SPACING)
-      let d = 0
-      for (let i = mouth, k = 0; k < n && d < into.reach + ramp; i -= step, k++) {
-        if (k > 0) d += Math.hypot(s[i * 4] - s[(i + step) * 4], s[i * 4 + 2] - s[(i + step) * 4 + 2])
-        const cap = mouthLevel + drop * smoothstep(0, 1, (d - into.reach) / ramp)
-        if (s[i * 4 + 1] > cap) s[i * 4 + 1] = cap
+    if (into === null) return
+    // The level the river arrives with: the solve's lowest, at the mouth. The ramp runs from the other body's surface up to it and is a no-op past that, and a no-op throughout when the river arrives lower.
+    const top = s[mouth * 4 + 1]
+    const ramp = Math.max(PIN_RAMP_HALF_WIDTHS * s[mouth * 4 + 3], 2 * SAMPLE_SPACING)
+    let d = 0
+    let dEdge = 0
+    let edgeLevel = into.level
+    let floor = -Infinity
+    for (let i = mouth, k = 0; k < n; i -= step, k++) {
+      if (k > 0) d += Math.hypot(s[i * 4] - s[(i + step) * 4], s[i * 4 + 2] - s[(i + step) * 4 + 2])
+      const inset = into.rec === null ? -Infinity : this._trunkAt(rec, into.rec, i).inset
+      let cap
+      if (inset > 0) {
+        dEdge = d
+        edgeLevel = TRUNK.level
+        cap = edgeLevel - Math.min(DIVE_GRADE * inset, DIVE_MAX)
+      } else {
+        const f = (d - dEdge) / ramp
+        if (f >= 1) break
+        cap = edgeLevel + Math.max(0, top - edgeLevel) * smoothstep(0, 1, f)
       }
+      if (cap < floor) cap = floor
+      if (s[i * 4 + 1] > cap) s[i * 4 + 1] = cap
+      floor = s[i * 4 + 1]
     }
+  }
+
+  // Where a tributary's drawn sheet ends: walking in from the mouth, the first sample not wholly under the trunk's sheet -- an edge outside the trunk's drawn width, or its level at or above the trunk's surface at an edge -- and the fraction of the step from it toward the mouth at which the sheet is both inside that width and at the trunk's surface, whichever comes later. null for a mouth that is free, in a lake, or not under the trunk to begin with, and for a river under the trunk all the way to its source: none of those is cut.
+  _mouthCut(rec) {
+    const s = rec.samples
+    const n = s.length / 4
+    const mouth = rec.forward ? n - 1 : 0
+    const step = rec.forward ? 1 : -1
+    const into = this._otherWaterAt(s[mouth * 4], s[mouth * 4 + 2], rec)
+    if (into === null || into.rec === null) return null
+    let insetIn = 0
+    let overIn = 0
+    for (let i = mouth, k = 0; k < n; i -= step, k++) {
+      const { inset, over } = this._trunkAt(rec, into.rec, i)
+      if (inset > 0 && over < 0) {
+        insetIn = inset
+        overIn = over
+        continue
+      }
+      if (k === 0) return null
+      // Both infinite together, when the trunk's index stops short of this sample: the cut is then the sample before it.
+      if (inset === -Infinity) return { i, t: 1 }
+      const tInset = inset > 0 ? 0 : Math.min(1, -inset / (insetIn - inset))
+      const tLevel = over < 0 ? 0 : Math.min(1, over / (over - overIn))
+      return { i, t: Math.max(tInset, tLevel) }
+    }
+    return null
   }
 
   // --- distance query -------------------------------------------------------
@@ -861,12 +949,33 @@ export class PathSet {
     return rec.forward
   }
 
-  // How many metres of a river, in from its source and in from its mouth, lie on water another body holds -- the same test _applyPins uses, so a river that starts in a lake or ends in a trunk reports the run inside that body's footprint and a free end reports 0. The water renderer fades the river's own flow frame back to the shared one over exactly this, so the drift inside the lake stays the lake's. Forces the bake.
+  // The samples a river's water sheet is built from: its own, or, when its mouth is under another river's sheet, a copy that ends where the two sheets cross (_mouthCut), so the tributary is drawn angling down onto the trunk and stops on the line they meet at rather than running on in the trunk's plane for the depth test to sort out per pixel. The carve and the wet predicate keep reading the full samples: the water past the cut is still there, under the trunk's. Forces the bake.
+  drawnSamples(id) {
+    const rec = this._get(id, `PathSet.drawnSamples(${id})`)
+    if (rec.kind !== 'river') throw new Error(`PathSet.drawnSamples(${id}): ${id} is a road`)
+    this._ensureIndex()
+    const cut = this._mouthCut(rec)
+    if (cut === null) return rec.samples
+    const s = rec.samples
+    const n = s.length / 4
+    const { i, t } = cut
+    const j = i + (rec.forward ? 1 : -1)
+    const kept = rec.forward ? i + 1 : n - i
+    // The crossing is a sample of its own unless it is within a few centimetres of sample i, where it would only give the ribbon a sliver of a quad.
+    const cross = t * Math.hypot(s[j * 4] - s[i * 4], s[j * 4 + 2] - s[i * 4 + 2]) >= 0.1 ? 1 : 0
+    if (kept + cross < 2) return rec.samples
+    const out = new Float32Array((kept + cross) * 4)
+    const at = rec.forward ? kept * 4 : 0
+    out.set(rec.forward ? s.subarray(0, kept * 4) : s.subarray(i * 4), rec.forward ? 0 : cross * 4)
+    if (cross) for (let c = 0; c < 4; c++) out[at + c] = s[i * 4 + c] + (s[j * 4 + c] - s[i * 4 + c]) * t
+    return out
+  }
+
+  // How many metres of a river's drawn sheet, in from its source and in from its mouth, lie on water another body holds -- the same test _applyPins uses, so a river that starts in a lake reports the run inside the lake's footprint, one that ends on a trunk reports the run from where the trunk's wet width takes its centreline to the cut, and a free end reports 0. The water renderer fades the river's own flow frame back to the shared one over exactly this, so the drift inside the lake stays the lake's. Forces the bake.
   flowReach(id) {
     const rec = this._get(id, `PathSet.flowReach(${id})`)
     if (rec.kind !== 'river') throw new Error(`PathSet.flowReach(${id}): ${id} is a road`)
-    this._ensureIndex()
-    const s = rec.samples
+    const s = this.drawnSamples(id)
     const n = s.length / 4
     const run = (from, step) => {
       let d = 0

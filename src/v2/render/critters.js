@@ -27,6 +27,8 @@ export const CRITTER_GLB = {
   hare: 'creatures/snow-hare.glb',
   // The biped above the snow line (tools/creatures/ship-biped.mjs): the same shape, with the human clip library. See render/snowmen.js.
   snowman: 'creatures/abominable-snowman.glb',
+  // The wyvern (tools/creatures/ship-wyvern.mjs): the same shape, with the wyvern clip library. See render/dragons.js.
+  dragon: 'creatures/fen-dragon.glb',
 }
 export const critterLodUrl = (url, level) => url.replace(/\.glb$/, `-lod${level}.glb`)
 
@@ -286,7 +288,11 @@ const CARD_MARGIN = 0.06
 // not about the view axis, because a card spun spherically LIES DOWN as she
 // looks along it from above -- a standing animal seen from a ridge would tip its
 // nose at her -- and a body that stands on the ground wants the ground's up.
-export const BILLBOARD_VERTEX = /* glsl */ `
+//
+// `mixed` gates the spin per VERTEX on an `aSpin` attribute (1 spun, 0 left
+// where the instance matrix put it), for a card that is one spun quad and one
+// fixed quad in the same geometry (setSpunTopCard).
+export const billboardVertex = (mixed) => /* glsl */ `
   {
     vec4 bbOrigin = instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
     vec4 bbAxis = instanceMatrix * vec4( 1.0, 0.0, 0.0, 0.0 );
@@ -300,10 +306,14 @@ export const BILLBOARD_VERTEX = /* glsl */ `
     // Screen-right in world XZ, then the rotation taking the instance's yaw onto it: bbR * conj(bbA).
     vec2 bbR = vec2( bbF.y, -bbF.x );
     vec2 bbC = vec2( bbR.x * bbA.x + bbR.y * bbA.y, bbR.y * bbA.x - bbR.x * bbA.y );
-    transformed.xz = vec2( transformed.x * bbC.x - transformed.z * bbC.y, transformed.x * bbC.y + transformed.z * bbC.x );
+    vec2 bbSpun = vec2( transformed.x * bbC.x - transformed.z * bbC.y, transformed.x * bbC.y + transformed.z * bbC.x );
+    ${mixed ? 'transformed.xz = mix( transformed.xz, bbSpun, aSpin );' : 'transformed.xz = bbSpun;'}
     // The yaw the spin threw away picks which way the picture reads: two silhouettes from one bake, stable per instance.
-    if ( bbA.x < 0.0 ) vMapUv.x = 1.0 - vMapUv.x;
+    if ( bbA.x < 0.0 ${mixed ? '&& aSpin > 0.5' : ''}) vMapUv.x = 1.0 - vMapUv.x;
   }`
+export const BILLBOARD_VERTEX = billboardVertex(false)
+// What a `mixed` material declares at <common>, ahead of the body at <begin_vertex>.
+export const SPIN_ATTRIBUTE = 'attribute float aSpin;'
 
 // The dissolve a `fade` card carries: one signed number an instance, in
 // material.js's FADE_FRAGMENT terms -- POSITIVE keeps the low side of the pixel
@@ -438,6 +448,23 @@ export function setCritterCard(mesh, bounds, views) {
 // A card that is one quad turned to her in the vertex shader (createGenPropMaterial's `billboard`): the side view, as wide as the piece's widest side, since it stands in for every side.
 export const SPUN_VIEWS = ['side']
 export const spunBounds = (b) => ({ ...b, halfX: Math.max(b.halfX, b.halfZ) })
+
+// A card that is BOTH: the side view spun to her about the instance's Y and the
+// top view lying flat where the instance matrix put it, four triangles. The
+// dragons' roost wears it (roosts.js): a low round mound whose one profile
+// stands in for every side and whose plan is the thing she sees from a wing or
+// a summit, where a spun quad alone would be a plate on edge.
+export const SPUN_TOP_VIEWS = ['side', 'top']
+
+/**
+ * SPUN_TOP_VIEWS' quads onto a card mesh, with the `aSpin` vertex attribute a
+ * `mixed` billboard material (createGenPropMaterial) gates the spin on: 1 on
+ * the side quad, 0 on the top.
+ */
+export function setSpunTopCard(mesh, bounds) {
+  setCritterCard(mesh, spunBounds(bounds), SPUN_TOP_VIEWS)
+  mesh.geometry.setAttribute('aSpin', new THREE.BufferAttribute(new Float32Array([1, 1, 1, 1, 0, 0, 0, 0]), 1))
+}
 
 // A card for a thing lying along its own Z: its length, seen from beside it.
 export const AXIS_VIEWS = ['front']

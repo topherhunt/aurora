@@ -34,7 +34,7 @@ import { WorldProbe, WORLD_PROBE } from '../src/world-probe.js'
 import { WorldLighting } from '../src/lighting.js'
 import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../src/water.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
-import { RIVER_WIDEN, RIVER_WIDEN_FRAC } from '../src/v2/render/ribbon.js'
+import { RIVER_WIDEN, RIVER_WIDEN_FRAC } from '../src/v2/layers/paths.js'
 
 // water-surfaces.js keeps its bucket hash private, so it is restated. Only ever
 // called with (0, 0) below, where every hash of this shape agrees on 0 -- so the

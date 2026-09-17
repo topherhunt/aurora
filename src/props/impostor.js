@@ -101,7 +101,9 @@ const CANOPY_SKIRT_UP = 0.45
 // writes, which is the number to tune these against -- the card is meant to sit
 // at roughly a third of raw leaf albedo, because that is what a real canopy at
 // distance does and looking lighter than the grass underneath was the symptom
-// that got the flat bake replaced.
+// that got the flat bake replaced. A subject whose card is lit less than its
+// mesh at draw time scales both with `exposure` (the trees do: tree-bank.js
+// says how much and why) rather than moving these for everyone.
 const BAKE_KEY = 1.5
 const BAKE_SKY = 1.0
 
@@ -174,7 +176,7 @@ export function bakeImpostor(
   renderer, geometry, texArray, layer,
   {
     width, height, foot = 0, azimuth = 0, tint = null, vertexColors = false, hemFray = null,
-    bounce = BAKE_GROUND, unlit = false,
+    bounce = BAKE_GROUND, unlit = false, exposure = 1,
   }
 ) {
   if (!(width > 0) || !(height > 0)) {
@@ -215,7 +217,7 @@ export function bakeImpostor(
     Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
 
   const pixels = captureLayer(
-    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce, unlit })
+    renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce, unlit, exposure })
   return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
 }
 
@@ -305,8 +307,9 @@ export function bakeImpostorPlate(
  */
 function captureLayer(
   renderer, geometry, texArray, layer, cam, keyPos,
-  { tint, vertexColors, hemFray = null, bounce, unlit = false }
+  { tint, vertexColors, hemFray = null, bounce, unlit = false, exposure = 1 }
 ) {
+  if (!(exposure > 0)) throw new Error(`captureLayer: exposure must be positive, got ${exposure}`)
   if (layer < 0 || layer >= texArray.image.depth) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
@@ -338,11 +341,13 @@ function captureLayer(
   // a canopy that is nearly nothing -- the shadowed interior mass that makes a
   // distant crown read as a third of leaf albedo instead of as a flat green
   // cutout. A subject with no interior passes its own `bounce`; see BAKE_GROUND.
+  // `exposure` scales both together, so a subject whose card is under-lit at
+  // draw time can ask for a brighter picture without moving the gradient.
   if (!unlit) {
-    const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY)
+    const key = new THREE.DirectionalLight(0xffffff, BAKE_KEY * exposure)
     key.position.copy(keyPos)
     scene.add(key)
-    scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY))
+    scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY * exposure))
   }
 
   const big = TEX_SIZE * SUPERSAMPLE

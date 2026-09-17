@@ -26,7 +26,7 @@ import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet, BANK, FREEBOARD, BED_SHOAL } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
 import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
@@ -564,7 +564,7 @@ export async function run() {
 
   console.log('\npaths: a mouth meets the water it ends in')
   {
-    // A trunk along x, falling 1 mm per metre so its flow direction is not a coin toss, crosses a trench at x = -200, so its level downstream of the trench is ~5 m below the ground there; a tributary comes down x = 0 from +z and ends on the trunk's centreline. Its own ground would put its mouth at 99.7 m; the pin ramps it down to the trunk's surface over the last few half-widths, so the two are one body of water.
+    // A trunk along x, falling 1 mm per metre so its flow direction is not a coin toss, crosses a trench at x = -200, so its level downstream of the trench is ~5 m below the ground there; a tributary comes down x = 0 from +z and ends on the trunk's centreline. Its own ground would put its mouth at 99.7 m; the pin ramps it down to the trunk's surface by the time its whole drawn width is inside the trunk's drawn width, and from there it dives under, so the two sheets cross on a line and the drawn tributary ends there.
     const ground = (x) => 100 - 0.001 * x - 5 * Math.exp(-(((x + 200) / 60) ** 2))
     const paths = new PathSet([
       { id: 'trunk', kind: 'river', depth: 3, pts: [[-500, 0, 40], [500, 0, 40]] },
@@ -575,23 +575,72 @@ export async function run() {
     check(Math.abs(trunkLevel - (95.2 - FREEBOARD)) < 0.05, 'the trunk carries the trench level downstream', `${trunkLevel.toFixed(3)} m at x = 0`)
     const mouth = paths.nodeAt('trib', 1)
     const source = paths.nodeAt('trib', 0)
-    check(Math.abs(mouth.y - trunkLevel) < 1e-3, "the tributary's mouth node sits at the trunk's surface", `${mouth.y.toFixed(3)} vs ${trunkLevel.toFixed(3)} m`)
+    check(Math.abs(mouth.y - (trunkLevel - DIVE_MAX)) < 1e-3, "the tributary's mouth node is DIVE_MAX under the trunk's surface", `${mouth.y.toFixed(3)} vs ${trunkLevel.toFixed(3)} m`)
     // The tributary's own level: its lowest ground tap is the outer bank tap on the +x side, BANK half-widths off its centreline.
     const own = ground(BANK * 5) - FREEBOARD
     check(Math.abs(source.y - own) < 1e-3, 'while its source is still at its own level', `${source.y.toFixed(3)} m vs ${own.toFixed(3)} m`)
-    // The trunk's carve reaches BANK half-widths (30 m) from its centreline; the tributary holds the trunk's level that far, then ramps up over 3 of its own half-widths (15 m).
+    // The tributary's drawn edges run at x = +-5.75 and the trunk's drawn width ends at z = 20.75, so the dive begins at the first sample with z under that, and the ramp up to the tributary's own level starts there and runs 3 of its half-widths (15 m). riverLevelAt answers the highest surface over a point, the trunk's inside its wet width, so the tributary's own level there is read off its samples.
+    const edge = drawnHalfWidth(20)
+    const full = paths.paths.get('trib').samples
+    let firstIn = 0
+    while (full[firstIn * 4 + 2] >= edge) firstIn++
+    const zIn = full[firstIn * 4 + 2]
+    const atIn = full[firstIn * 4 + 1]
+    check(Math.abs(atIn - (trunkLevel - DIVE_GRADE * (edge - zIn))) < 2e-3, "it is DIVE_GRADE x the inset under the trunk's surface at the first sample wholly inside the trunk's drawn width", `${atIn.toFixed(3)} m at z = ${zIn.toFixed(2)}, ${(trunkLevel - atIn).toFixed(3)} m under`)
+    const zOut = full[(firstIn - 1) * 4 + 2]
+    const atOut = full[(firstIn - 1) * 4 + 1]
+    check(atOut > trunkLevel && atOut < trunkLevel + 0.1 * (own - trunkLevel), "and just above it at the sample before, on its way down", `${atOut.toFixed(3)} m at z = ${zOut.toFixed(2)}`)
     const inBanks = paths.riverLevelAt(0, 28)
-    check(Math.abs(inBanks - trunkLevel) < 1e-3, "and is at the trunk's surface everywhere inside the trunk's banks", `${inBanks.toFixed(3)} m at z = 28`)
+    check(inBanks > trunkLevel + 0.1 && inBanks < own - 0.1, "and is on the ramp between the two inside the trunk's banks", `${inBanks.toFixed(3)} m at z = 28`)
     const above = paths.riverLevelAt(0, 60)
     check(Math.abs(above - own) < 1e-3, 'and the ramp is local to the mouth: 60 m up the tributary it is at its own level again', `${above.toFixed(3)} m`)
     let rises = 0
     let prev = Infinity
     for (let z = 390; z >= 0; z -= 1) {
       const l = paths.riverLevelAt(0, z)
-      if (z >= 30 && l > prev + 1e-6) rises++
+      if (l > prev + 1e-6) rises++
       prev = l
     }
-    check(rises === 0, 'the ramp never lifts the level on the way down', `${rises} rise(s)`)
+    check(rises === 0, 'the dive and the ramp never lift the level on the way down', `${rises} rise(s)`)
+    // The drawn sheet: every sample the tributary has, down to where it meets the trunk's surface -- between the last sample above it and the first under it -- then nothing. The full samples are untouched.
+    const drawn = paths.drawnSamples('trib')
+    const nd = drawn.length / 4
+    const last = drawn.subarray((nd - 1) * 4, nd * 4)
+    check(drawn !== full && nd === firstIn + 1 && last[2] > zIn && last[2] < zOut, "the drawn tributary ends between the last sample above the trunk's surface and the first under it", `${nd} of ${full.length / 4} samples, ending at z = ${last[2].toFixed(2)}`)
+    check(Math.abs(last[1] - paths.riverLevelAt(0, 0)) < 0.01 && last[2] < edge, "on the trunk's surface and inside the trunk's drawn width", `${last[1].toFixed(3)} vs ${trunkLevel.toFixed(3)} m, z = ${last[2].toFixed(2)} vs ${edge.toFixed(2)}`)
+    let prefix = true
+    for (let i = 0; i < (nd - 1) * 4; i++) if (drawn[i] !== full[i]) prefix = false
+    check(prefix && Math.abs(last[3] - 5) < 1e-6, 'and the drawn samples before the cut are the baked samples verbatim', prefix ? `cut sample half-width ${last[3].toFixed(3)}` : 'a drawn sample differs')
+    // Square on, the cut lands in the trunk's overhang, past its wet width, so no drawn sample is on the trunk's water and the flow frame's fade starts at the cut.
+    const reach = paths.flowReach('trib')
+    check(reach.source === 0 && reach.mouth === 0, 'the flow reach at the mouth is the drawn run on the trunk\'s water: none, square on', JSON.stringify(reach))
+    check(paths.drawnSamples('trunk') === paths.paths.get('trunk').samples, "the trunk's own sheet is not cut", '')
+
+    // Entering at 45 degrees, the leading edge is inside the trunk long before the trailing one. The dive waits for the trailing edge, the cut is where the trailing edge meets the trunk's surface, and the drawn run on the trunk's water is the arc from the trunk's wet width taking the centreline to the cut. The ground rises with z so the tributary's far end is its source: along x alone it would be lower than the trunk.
+    const skew = new PathSet([
+      { id: 'trunk', kind: 'river', depth: 3, pts: [[-500, 0, 40], [500, 0, 40]] },
+      { id: 'trib', kind: 'river', depth: 2, pts: [[300, 300, 10], [0, 0, 10]] },
+    ])
+    skew.setTerrain(terrainOf((x, z) => ground(x) + 0.02 * z))
+    const sd = skew.drawnSamples('trib')
+    const sn = sd.length / 4
+    const sl = sd.subarray((sn - 1) * 4, sn * 4)
+    const tl = skew.riverLevelAt(sl[0], sl[2])
+    // The route is walked over the heightmap, so the mouth's heading is whatever it came out as: read it off the last step, and take the cut sample's edges drawnHalfWidth along its normal.
+    const sp = sd.subarray((sn - 2) * 4, (sn - 1) * 4)
+    const stepLen = Math.hypot(sl[0] - sp[0], sl[2] - sp[2])
+    const hx = (sl[0] - sp[0]) / stepLen
+    const hz = (sl[2] - sp[2]) / stepLen
+    const zTrail = sl[2] + drawnHalfWidth(5) * Math.abs(hx)
+    const zLead = sl[2] - drawnHalfWidth(5) * Math.abs(hx)
+    check(Math.abs(hx) > 0.4 && Math.abs(hx) < 0.7, 'skewed: the tributary arrives well off square', `heading (${hx.toFixed(2)}, ${hz.toFixed(2)})`)
+    check(sn < skew.paths.get('trib').samples.length / 4 && zTrail < edge && zTrail > edge - 2, "the drawn tributary ends with its trailing edge just inside the trunk's drawn width", `trailing edge at z = ${zTrail.toFixed(2)}, drawn edge ${edge.toFixed(2)}`)
+    check(Math.abs(sl[1] - tl) < 0.02, "and at the trunk's surface", `${sl[1].toFixed(3)} vs ${tl.toFixed(3)} m`)
+    check(zLead > 0 && zLead < edge - 5, 'with the leading edge well inside it', `leading edge at z = ${zLead.toFixed(2)}`)
+    // The drawn run on the trunk's water: the arc from where the centreline crosses the trunk's wet edge to the cut, give or take one sample.
+    const sreach = skew.flowReach('trib')
+    const onWater = (20 - sl[2]) / -hz
+    check(sreach.mouth > 2 && Math.abs(sreach.mouth - onWater) < stepLen + 0.02, "and the flow reach at the mouth is the drawn run from the trunk's wet edge to the cut", `${sreach.mouth.toFixed(2)} vs ${onWater.toFixed(2)} m, cut at z = ${sl[2].toFixed(2)}`)
 
     // The same for a lake, both ways round: a mouth in a lake drops to the lake; a source in a lake caps the whole river at the lake, so it leaves the water rather than falling out of the air above it.
     const lakes = new LakeSet([{ id: 'l1', x: 0, z: 0, y: 99, rx: 150, rz: 150, rot: 0, shape: 0, carve: 1, depth: 8 }])

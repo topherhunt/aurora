@@ -4,20 +4,22 @@
 //
 // The scatter runs against a synthetic wood on flat ground: a stand of trunks
 // of several girths (straight cones and crooked, lobed boles, one a sapling too
-// thin to host), a sphere boulder, a six-metre pillar, a cobble too small to
-// host, a boulder under a pond, a flat slab and a buried stone with no wall to
+// thin to host), a sphere boulder, a six-metre pillar, a cobble and a stone
+// just under two metres, both too small to host, a boulder under a pond, a flat slab and a buried stone with no wall to
 // climb, a boulder on a puddle's bank, and a tree and a rock far off.
 // Everything below is a way a spider can go wrong without anything throwing: a
 // group of none or six; a spider on the terrain, off its surface, under the
 // ground, in the water or above the climb; spiders mostly on the tops of
-// things; a spider on a sapling, a cobble, a drowned rock, a slab or a buried
-// stone; a scatter that is not the same twice; a spider that never moves,
+// things; a spider on a sapling, a cobble, a stone under two metres, a drowned
+// rock, a slab or a buried stone; a scatter that is not the same twice; a spider that never moves,
 // walks off its stone or climbs past three metres; one left spinning in the
 // air when its stone is gone, or left behind when its trunk re-seats; a near
 // spider drawn as a card or a far one as a puppet, a puppet on the wrong tier,
 // one whose clip is not its state, or one that does not rear up when she is
-// close; one that does not run from her head at arm's length, runs toward it,
-// is heard setting off twice or stops while she is still there; a host above
+// close; one that does not run from her body at arm's length or only from her
+// head, runs toward her, no faster than its walk, is heard setting off twice,
+// stops short while it is still gaining ground, or runs on once it can gain no
+// more or is three metres off, or bolts again while she stands over it; a host above
 // the snow line with a group on it; a card that is two quads, or that does not
 // lie where its spider clings at its tilt; a frame that costs more than a
 // scatter is allowed to. The
@@ -31,8 +33,9 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_S,
+  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S,
 } from '../src/v2/render/spiders.js'
+import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
 import { CRITTER_GLB, critterTier, lodReach } from '../src/v2/render/critters.js'
@@ -48,6 +51,9 @@ const check = (ok, label, detail = '') => {
 
 // --- the synthetic wood ----------------------------------------------------------
 const GROUND = 5
+// Her eyes over her feet: every update below takes her head and puts her feet this far under it.
+const EYE = 1.65
+const tick = (k, x, y, z, dt) => k.update(x, y, z, dt, y - EYE)
 // The snow line is a hundred metres up, except where a test lowers it.
 let snowLine = GROUND + 100
 const height = { heightAt: () => GROUND, snowLineAt: () => snowLine }
@@ -100,6 +106,7 @@ const ROCKS = [
   { name: 'sphere', kind: 'sphere', x: -8, z: 2, r: 1.5 },
   { name: 'pillar', kind: 'pillar', x: 4, z: 10, r: 0.8, h: 6 },
   { name: 'cobble', kind: 'sphere', x: -2, z: -3, r: 0.2 },
+  { name: 'small', kind: 'sphere', x: 14, z: 2, r: 0.9 },
   { name: 'drowned', kind: 'sphere', x: POND.x, z: POND.z, r: 1.5 },
   { name: 'slab', kind: 'pillar', x: 12, z: -10, r: 1.5, h: 0.25 },
   { name: 'buried', kind: 'sphere', x: -12, z: -12, r: 1.5, cy: -1.3 },
@@ -366,7 +373,7 @@ spiders.place(0, 0)
   check(pool.length >= 3 * SEEDS, 'the wood carries spiders', `${pool.length} over ${SEEDS} seeds; one seed: ${JSON.stringify(spiders.stats)}`)
   check(groupSizes.every((n) => n >= GROUP[0] && n <= GROUP[1]) && Math.min(...groupSizes) === GROUP[0] && Math.max(...groupSizes) === GROUP[1], `every group is ${GROUP[0]} to ${GROUP[1]}, and both ends are seen`, `${groupSizes.join(' ')}`)
   check(hosted.tree > 0 && hosted.rock > 0, 'groups on trees and on rocks alike', `${hosted.tree} tree groups, ${hosted.rock} rock groups`)
-  check(!hostedOf.has('sapling') && !hostedOf.has('cobble') && !hostedOf.has('drowned') && !hostedOf.has('far'), `none on the sapling (under ${TRUNK_MIN_R} m), the cobble (under ${ROCK_MIN_SIZE} m), the drowned rock or anything far off`, [...hostedOf.keys()].join(', '))
+  check(!hostedOf.has('sapling') && !hostedOf.has('cobble') && !hostedOf.has('small') && !hostedOf.has('drowned') && !hostedOf.has('far'), `none on the sapling (under ${TRUNK_MIN_R} m), the cobble or the ${sizeOf(ROCKS.find((b) => b.name === 'small'))} m stone (under ${ROCK_MIN_SIZE} m), the drowned rock or anything far off`, [...hostedOf.keys()].join(', '))
   check(!hostedOf.has('slab') && !hostedOf.has('buried'), `none on the slab or the buried stone: no ${WALL_M} m of wall to climb`, [...hostedOf.keys()].join(', '))
   const waders = pool.filter((c) => hostOf(c).name === 'wader')
   const wet = waders.filter((c) => levelAt(c.x, c.z) !== null)
@@ -405,7 +412,7 @@ spiders.place(0, 0)
   liveTrunks = TRUNKS
   liveRocks = ROCKS
   // dt 0: the frames only rescan, nobody's pause runs out.
-  for (let f = 0; f < 200; f++) late.update(0, GROUND + 1.6, 0, 0)
+  for (let f = 0; f < 200; f++) tick(late, 0, GROUND + 1.6, 0, 0)
   check(key(late) === key(spiders), 'hosts that land after place() get their spiders on the rescan, the same ones')
   late.dispose()
   // Above the snow line, the same hosts carry nobody.
@@ -419,10 +426,10 @@ spiders.place(0, 0)
   const treeSpiders = alive().filter((c) => c.host.kind === 'tree')
   const ys = treeSpiders.map((c) => c.y)
   trunkY += 0.3
-  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) spiders.update(0, GROUND + 40, 0, 0)
+  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) tick(spiders, 0, GROUND + 40, 0, 0)
   check(treeSpiders.every((c, i) => Math.abs(c.y - ys[i] - 0.3) < 1e-5 && offTrunk(hostOf(c), c) < 1e-3), 'a trunk that re-seats 0.3 m up takes its spiders with it, still on the bark')
   trunkY -= 0.3
-  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) spiders.update(0, GROUND + 40, 0, 0)
+  for (let f = 0; f < 4 * spiders.tiles.size + 8; f++) tick(spiders, 0, GROUND + 40, 0, 0)
   check(treeSpiders.every((c, i) => Math.abs(c.y - ys[i]) < 1e-5), 'and back down')
 }
 
@@ -440,7 +447,7 @@ spiders.place(0, 0)
   let worstH = [Infinity, -Infinity]
   for (let f = 0; f < 600; f++) {
     const t0 = performance.now()
-    spiders.update(...FAR, 1 / 60)
+    tick(spiders, ...FAR, 1 / 60)
     ms += performance.now() - t0
     for (const c of alive()) {
       states.add(c.state)
@@ -490,7 +497,7 @@ spiders.place(0, 0)
   let top = -Infinity
   let was = p.ty
   for (let f = 0; f < 120; f++) {
-    spiders.update(...FAR, 1 / 60)
+    tick(spiders, ...FAR, 1 / 60)
     if (Math.sign(p.ty) !== Math.sign(was)) flips++
     was = p.ty
     top = Math.max(top, p.y - GROUND)
@@ -503,15 +510,15 @@ spiders.place(0, 0)
   const lifted = [s.x, s.y, s.z]
   s.state = 'go'; s.clip = 'walk'; s.speed = 0.05; s.left = 100
   let sat = 0
-  for (let f = 0; f < 12 && s.state === 'go'; f++, sat++) spiders.update(...FAR, 1 / 60)
+  for (let f = 0; f < 12 && s.state === 'go'; f++, sat++) tick(spiders, ...FAR, 1 / 60)
   check(s.state === 'pause' && s.stuck === 3 && sat <= 9 && Math.hypot(s.x - lifted[0], s.y - lifted[1], s.z - lifted[2]) < 0.01, 'a spider in the air turns back three times and sits down where it is', `${s.state} after ${sat} frames, stuck ${s.stuck}`)
-  for (let f = 0; f < RESEAT_EVERY; f++) spiders.update(...FAR, 0)
+  for (let f = 0; f < RESEAT_EVERY; f++) tick(spiders, ...FAR, 0)
   check(s.host !== null && hostOf(s) === sphere && offRock(sphere, s) < 1e-4 && s.y > GROUND, 'sitting, it re-reads its stone and is back on the sphere', `off ${offRock(sphere, s).toExponential(2)} m`)
   // The sphere itself gone: every spider on it is taken away, and the slots come back.
   const onSphere = alive().filter((c) => hostOf(c).name === 'sphere')
   const freeBefore = spiders.free.length
   liveRocks = ROCKS.filter((b) => b.name !== 'sphere')
-  for (let f = 0; f < RESEAT_EVERY + 12; f++) spiders.update(...FAR, 0)
+  for (let f = 0; f < RESEAT_EVERY + 12; f++) tick(spiders, ...FAR, 0)
   check(onSphere.length > 0 && onSphere.every((c) => c.host === null && !c.puppet) && spiders.stats.dropped === onSphere.length && spiders.free.length === freeBefore + onSphere.length, 'the sphere gone from under them, its spiders are taken away and their slots freed', `${onSphere.length} dropped`)
   check(![...spiders.tiles.values()].some((t) => [...t.hosts.values()].some((h) => h.spiders.some((c) => c.host === null))), 'and no host still lists one')
   check(alive().every((c) => offSurface(c) < 0.02), 'everyone else is where they were')
@@ -526,7 +533,7 @@ spiders.place(0, 0)
   const listed = spiders.bodies([])
   check(listed.length === alive().length && listed.includes(w) && w.speed > 0, 'every seated spider is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
   w.left = 0
-  spiders.update(0, GROUND + 40, 0, 1 / 60)
+  tick(spiders, 0, GROUND + 40, 0, 1 / 60)
   check(w.state === 'pause' && w.speed === 0 && spiders.bodies([]).includes(w), 'its spell over, the walker pauses at speed 0 and stays listed')
   spiders.batch.visible = false
   check(spiders.bodies([]).length === 0, 'a hidden layer lists nobody')
@@ -541,7 +548,7 @@ spiders.place(0, 0)
   // for the dissolve to finish, a puppet not being back in its pool until it has.
   const SETTLE = Math.ceil(LOD_FADE_S * 60) + 2
   const tiersAt = (d, frames = SETTLE) => {
-    for (let f = 0; f < frames; f++) spiders.update(...at(d), 1 / 60)
+    for (let f = 0; f < frames; f++) tick(spiders, ...at(d), 1 / 60)
     return target.puppet ? target.puppet.meshes.findIndex((m) => m.visible) : -1
   }
   // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres.
@@ -563,7 +570,7 @@ spiders.place(0, 0)
   const tMid = tiersAt(mid), t95 = tiersAt(9.5)
   check(tMid === expect(mid) && t95 === expect(9.5) && t95 === LOD_TIERS - 1, `at ${mid.toFixed(2)} m tier ${expect(mid)}, at 9.5 m the last tier and not a cull`, `${tMid}, ${t95} for a ${target.size.toFixed(2)} m spider`)
   // Stepping out of range: one frame in, the mesh is still there and dissolving, and NOTHING is drawn twice.
-  for (let f = 0; f < 1; f++) spiders.update(...at(12), 1 / 60)
+  for (let f = 0; f < 1; f++) tick(spiders, ...at(12), 1 / 60)
   const going = target.puppet
   check(going && going.tier === -1 && going.meshes.filter((m) => m.visible).length === 1 && going.meshes.find((m) => m.visible).material === going.mats.out && going.mats.uCut.value < 1,
     'a spider that walks out of range dissolves away rather than blinking out')
@@ -573,33 +580,63 @@ spiders.place(0, 0)
   check(spiders.freePuppets.length === PUPPETS - spiders.stats.puppets, 'the pool balances')
   // Reared up when she is close and paused; back to its business when she goes.
   target.state = 'pause'; target.clip = 'idle'; target.left = 100
-  tiersAt(0.8, 3)
-  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head 0.8 m off is alert')
+  tiersAt(1.0, 3)
+  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head a metre off is alert')
   tiersAt(3, 3)
   check(target.clip !== 'alert', 'and drops it when she steps back', target.clip)
-  // Closer than FLEE_M it flees: off at the run the way that leads furthest from her, heard once as it sets off, until she has been out of reach for FLEE_S.
+  // Her BODY closer than FLEE_M -- here her waist, her head a metre off -- and it flees: at FLEE_HASTE times the run, heard once as it sets off, for the far side of the trunk and the top of the climb.
+  const run = (c, her, frames) => { for (let f = 0; f < frames; f++) tick(spiders, ...her, 1 / 60) }
+  const bodyDist = (c, her) => Math.hypot(c.x - her[0], Math.max(0, c.y - her[1], her[1] - EYE - c.y), c.z - her[2]) - WALK.radius
   const flee = (c) => {
-    // Her head a hand off the surface and a little above the spider, so "away" is down.
-    const her = [c.x + c.nx * 0.2, c.y + 0.25, c.z + c.nz * 0.2]
+    // The spider a metre up its host and her coming from afar to stand on the ground a hand off the surface, so the nearest point of her is level with it and her crown is under the top of the climb.
+    if (c.host.kind === 'tree') { c.h = c.host.hLo + 1; spiders._placeTree(c) }
+    const her = [c.x + c.nx * (0.2 + WALK.radius), GROUND + EYE, c.z + c.nz * (0.2 + WALK.radius)]
     c.state = 'pause'; c.clip = 'idle'; c.left = 100
-    spiders.update(...her, 1 / 60)
+    tick(spiders, c.x + c.nx * 5, her[1], c.z + c.nz * 5, 1 / 60)
+    tick(spiders, ...her, 1 / 60)
     const fled = spiders.startled([])
-    const away = c.tx * (her[0] - c.x) + c.ty * (her[1] - c.y) + c.tz * (her[2] - c.z)
-    spiders.update(...her, 1 / 60)
-    return { fled, away, twice: spiders.startled([]).length, still: c.state === 'flee' }
+    // Toward the nearest point of her body, level with the spider.
+    const away = c.tx * (her[0] - c.x) + c.tz * (her[2] - c.z)
+    tick(spiders, ...her, 1 / 60)
+    return { her, fled, away, twice: spiders.startled([]).length, still: c.state === 'flee' }
   }
   const t = flee(target)
-  check(target.state === 'flee' && target.clip === 'run' && target.speed > 0 && target.puppet.current.getClip().name === 'run', `her head ${(Math.hypot(0.2, 0.25)).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
+  // The run gait is 0.15 unit a 0.42 s clip (spiders.js GAIT), at the body's scale.
+  const runSpeed = (0.15 / 0.42) * target.size / spiders.span
+  check(target.state === 'flee' && target.clip === 'run' && target.puppet.current.getClip().name === 'run', `her body 0.2 m off and her head ${Math.hypot(0.2 + WALK.radius, GROUND + EYE - target.y).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
+  check(Math.abs(target.speed - FLEE_HASTE * runSpeed) < 1e-9 && target.puppet.mixer.timeScale === FLEE_HASTE, `${FLEE_HASTE} times as fast as its run, the clip hastened to match`, `${target.speed.toFixed(3)} m/s`)
   check(t.fled.length === 1 && t.fled[0] === target && t.twice === 0 && t.still, 'it is listed as startled the frame it sets off and never again while it runs')
-  check(t.away < 0 && target.ty < -0.8, 'it runs away from her: down the bark, her head being above it', `heading ty ${target.ty.toFixed(2)}, toward her ${t.away.toFixed(2)}`)
+  check(t.away < 0.05 && target.ty > 0.3, 'it makes for the far side of the trunk and the top of the climb, not toward her', `heading ty ${target.ty.toFixed(2)}, toward her ${t.away.toFixed(2)}`)
+  // She stands there: it keeps running up past her, gaining nothing on her body until it clears her crown, and calms where it is once it is there, and does not bolt again while she stays.
+  const h0 = target.h, d1 = bodyDist(target, t.her)
+  run(target, t.her, 60)
+  check(target.state === 'flee' && target.h > h0 + 0.15, 'a second on it is still running, up the trunk past her', `${h0.toFixed(2)} -> ${target.h.toFixed(2)} m up`)
+  run(target, t.her, 12 * 60)
+  const d2 = bodyDist(target, t.her)
+  check(target.state === 'pause' && target.puppet.mixer.timeScale === 1 && d2 < FLEE_TO_M && d2 > d1 + 0.5 && target.h > target.host.hHi - 0.1, `having got as far as the trunk allows -- the top of the climb, the far side -- it calms down there, the clip at its own pace again`, `${target.state} at ${d2.toFixed(2)} m, ${target.h.toFixed(2)} m up of ${target.host.hHi.toFixed(2)}`)
+  run(target, t.her, 60)
+  check(target.state !== 'flee' && spiders.startled([]).length === 0, 'and does not bolt again while she stands under it')
+  // She steps back and returns: it bolts again, once.
+  const back = [t.her[0] + target.nx * 2, t.her[1], t.her[2] + target.nz * 2]
+  run(target, back, 5)
+  const again = flee(target)
+  check(target.state === 'flee' && again.fled.length === 1, 'she steps back and comes again, and it bolts again')
+  // Mid-flight she is suddenly FLEE_TO_M off: it calms at once.
+  const off = [target.x + target.nx * (FLEE_TO_M + WALK.radius + 0.5), GROUND + EYE, target.z + target.nz * (FLEE_TO_M + WALK.radius + 0.5)]
+  run(target, off, 1)
+  check(target.state === 'pause', `and calms the moment she is ${FLEE_TO_M} m off`, target.state)
+  // A rock spider flees the same way, along its face.
   const p = alive().find((c) => hostOf(c).name === 'pillar')
   const r = flee(p)
-  check(p.state === 'flee' && r.fled[0] === p && r.away < 0 && Math.abs(p.tx * p.nx + p.ty * p.ny + p.tz * p.nz) < 1e-6 && Math.abs(Math.hypot(p.tx, p.ty, p.tz) - 1) < 1e-6, 'a rock spider flees too, away from her along its face', `toward her ${r.away.toFixed(2)}`)
-  // She steps back: the run lasts FLEE_S after she left, then it pauses.
-  tiersAt(3, Math.round((FLEE_S - 0.5) * 60))
-  check(target.state === 'flee', `${FLEE_S - 0.5} s after she steps back it is still running`, target.state)
-  tiersAt(3, 60)
-  check(target.state === 'pause' && spiders.startled([]).length === 0, `${FLEE_S + 0.5} s after, it has stopped`, target.state)
+  check(p.state === 'flee' && r.fled[0] === p && r.away < 0.05 && Math.abs(p.tx * p.nx + p.ty * p.ny + p.tz * p.nz) < 1e-6 && Math.abs(Math.hypot(p.tx, p.ty, p.tz) - 1) < 1e-6, 'a rock spider flees too, along its face and not toward her', `toward her ${r.away.toFixed(2)}`)
+  // Her head alone, high over a spider at her feet, is not her body: no flight, only the rear-up.
+  const low = alive().find((c) => c !== target && c !== p && c.host.kind === 'tree') ?? target
+  low.state = 'pause'; low.clip = 'idle'; low.left = 100
+  tick(spiders, low.x + low.nx * (0.2 + WALK.radius), low.y + EYE - 0.1, low.z + low.nz * (0.2 + WALK.radius), 1 / 60)
+  check(low.state === 'flee', 'her feet beside a spider low on the trunk, her head far above it, it flees her feet', low.state)
+  let threw = false
+  try { spiders.update(0, GROUND, 0, 1 / 60, GROUND + 1) } catch { threw = true }
+  check(threw, 'feet over her head throws')
   spiders.batch.visible = false
   flee(target)
   check(spiders.startled([]).length === 0 && target.state === 'flee', 'a hidden layer lists no startled spider')

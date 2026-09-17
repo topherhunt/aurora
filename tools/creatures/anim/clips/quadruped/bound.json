@@ -1,0 +1,36 @@
+{
+  "note": "The same half-bound flat out: hinds together, fores together, duty under a third so the flight after the hind push is a quarter of the cycle and there is a second, gathered flight as the hinds come round while the fores are already off. The stride carries the hinds down past the fores' station, and legHold sets them wide so they land outside the fores rather than through them. The body rises highest just after the push and the back is hollow there, arched at the gather; crouch and the wider fold pay for both.",
+  "duration": 0.4,
+  "samples": 24,
+  "stride": 0.7,
+  "stepHeight": 0.22,
+  "duty": 0.3,
+  "crouch": 0.18,
+  "toeOff": 0.45,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0,
+    "frontLeft": 0.52,
+    "frontRight": 0.52
+  },
+  "bodyBob": 0.06,
+  "bobFreq": 1,
+  "bobPhase": -2.6,
+  "tailPitch": 1.0,
+  "tailLift": 0.3,
+  "headPitch": -0.08,
+  "headBob": 0.06,
+  "spineFlex": 0.35,
+  "spineFlexPhase": 2.8,
+  "limits": {
+    "fold": 2.3
+  },
+  "legHold": {
+    "hindLeft": {
+      "lat": 0.06
+    },
+    "hindRight": {
+      "lat": -0.06
+    }
+  }
+}

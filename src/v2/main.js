@@ -32,6 +32,8 @@ import { Butterflies } from './render/butterflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
+import { Roosts, loadRoostMaps } from './render/roosts.js'
+import { Dragons } from './render/dragons.js'
 import { setTierTint } from './render/puppet.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
@@ -621,9 +623,12 @@ const backpack = new Array(BACKPACK_SLOTS).fill(null)
 
 // --- settings ----------------------------------------------------------------
 
-// The saved game: where she stands, which way she faces, what she carries.
+// The saved game: where she stands, which way she faces, what she carries. In
+// this browser's localStorage and nowhere else -- nothing goes to a server --
+// and a refresh boots straight into it (see the spawn in bootWorld).
 const SAVE_KEY = 'v2.save.1'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
+const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
 
 function saveGame() {
   // The rig only ever turns about Y (snap turns, recenter), so its quaternion
@@ -640,16 +645,21 @@ function saveGame() {
   refreshQuestRow('load')
 }
 
-function loadGame() {
-  const raw = localStorage.getItem(SAVE_KEY)
-  if (raw === null) { console.warn('[v2] load: nothing saved'); return }
-  const doc = JSON.parse(raw)
-  player.teleportTo(doc.x, doc.z)
+// Everything in a save but her position, which boot and the Load button put
+// her at differently.
+function applySave(doc) {
   rig.rotation.set(0, doc.rigYaw, 0)
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
   backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
   paintBackpack()
+}
+
+function loadGame() {
+  const doc = readSave()
+  if (doc === null) { console.warn('[v2] load: nothing saved'); return }
+  player.teleportTo(doc.x, doc.z)
+  applySave(doc)
   // She has moved; the menu follows her rather than closing behind her.
   placeQuestPanel()
   console.log(`[v2] loaded at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
@@ -660,14 +670,14 @@ function loadGame() {
 // `value` readout. Shared by the settings and debug grids; a key is unique
 // across both, since applyQuestToggle and refreshQuestRow find rows by it.
 const QUEST_SETTING_ROWS = [
-  { key: 'save', text: 'save', action: () => saveGame() },
-  { key: 'load', text: 'load', action: () => loadGame(), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
+  { key: 'save', text: 'Save', action: () => saveGame() },
+  { key: 'load', text: 'Load', action: () => loadGame(), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
   // Teleport is the headset's default (§12: comfort over capability); walk is
   // the continuous locomotion, for measuring what the world does to the frame
   // while she moves through it. Only readInput's XR branch reads this -- a
   // desktop walks on WASD and lobs the arc off the T key.
-  { key: 'teleport', text: 'move', on: 'teleport', off: 'walk' },
-  { key: 'sound', text: 'sound' },
+  { key: 'teleport', text: 'Move', on: 'Teleport', off: 'Walk' },
+  { key: 'sound', text: 'Sound', on: 'On', off: 'Off' },
 ]
 
 // --- debug ---------------------------------------------------------------------
@@ -704,6 +714,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'spiders', text: 'spiders' },
   { key: 'wildlife', text: 'wildlife' },
   { key: 'snowmen', text: 'snowmen' },
+  { key: 'dragons', text: 'dragons & roosts' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
   { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
@@ -781,7 +792,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': case 'dragons': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -902,14 +913,14 @@ const QUEST_PANEL_GROUND_GAP = 0.05
 const QUEST_PX_PER_M = 96 / 0.18
 
 // THE MENU'S TWO FACES. Everything she reads as a player -- tabs, settings,
-// backpack, help -- is set in a serif, in small caps and letter-spaced so it
-// reads as carved rather than typed; the debug view stays monospace because
-// its rows are columns of numbers. SYSTEM FONTS ONLY, nothing fetched: the
+// backpack, help -- is set in a serif, letter-spaced a little so it reads as
+// set rather than typed; the debug view stays monospace because its rows are
+// columns of numbers. SYSTEM FONTS ONLY, nothing fetched: the
 // Quest's browser is Chromium on Android, whose one serif is Noto Serif and is
 // what the generic `serif` resolves to there. Georgia is the desktop's answer
 // to the same stack. Neither is a blackletter; a shipped OFL face is the way
 // to that look if it is ever wanted, not a system name that no headset has.
-const QUEST_SERIF = (px) => ({ font: `small-caps bold ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '2px' })
+const QUEST_SERIF = (px) => ({ font: `bold ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '1px' })
 const QUEST_MONO = (px) => ({ font: `bold ${px}px monospace`, tracking: '0px' })
 function setQuestFont(ctx, face) {
   ctx.font = face.font
@@ -1251,7 +1262,7 @@ function buildDebugView() {
 // panel's width. A line that will not fit the plane is a bug in this text and
 // not something to scale away.
 const QUEST_HELP = [
-  'This is a fell country of moor, forest, river and lake, sixteen kilometres to a side, under the northern lights. Night follows day; the animals graze by day and settle at dusk.',
+  'You find yourself in a strange and wild land, full of mysteries to discover. Here be dragons, and treasures. No being is your friend; no being is your enemy.',
   'Headset: either stick walks and turns. Click a stick to recentre. A or X toggles flight, and a stick then throttles and steers where that hand points.',
   'B or Y opens and closes this menu, and so does walking more than five metres from it. Point a controller at a button and pull the trigger.',
   'Settings chooses walking or teleporting: aim the arc with a stick and let go to jump.',
@@ -1334,7 +1345,8 @@ function buildQuestPanel() {
     colW: QUEST_TAB_W, gap: QUEST_PANEL_COL_GAP, rowH: QUEST_TAB_H, btnH: QUEST_TAB_H, top: QUEST_TAB_Y,
     paint: (ctx, i, x, y, w, h) => {
       const active = QUEST_VIEWS[i] === questView
-      paintQuestCell(ctx, x, y, w, h, QUEST_VIEWS[i], QUEST_SERIF(30), active ? '#2f5f95' : '#0f2038', active ? '#ffffff' : '#7f95b4')
+      const label = QUEST_VIEWS[i][0].toUpperCase() + QUEST_VIEWS[i].slice(1)
+      paintQuestCell(ctx, x, y, w, h, label, QUEST_SERIF(30), active ? '#2f5f95' : '#0f2038', active ? '#ffffff' : '#7f95b4')
     },
   })
   questPanelGroup.add(questTabs.mesh)
@@ -1735,7 +1747,19 @@ function updateQuestStats() {
           ]
         : [['hidden'.padEnd(11), '#5c6b7d']]),
     ],
-    // Main-thread ms in each animal layer's own step, and the seven added up.
+    // And for the dragons, with what each of them is doing: the states are the hunt's, and `carrying` how many have a stag.
+    [
+      ['dragon lod ', '#7f95b4'],
+      ...(animalOn('dragons') && dragons && dragons.loaded
+        ? [
+            ...dragons.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']]),
+            ['card ', '#7f95b4'], [String(dragons.stats.cards).padEnd(3), '#8fd48f'],
+            [Object.entries(dragons.stats.states).map(([s, n]) => `${s} ${n}`).join(' ').padEnd(20), '#cfe3ff'],
+            ['carrying ', '#7f95b4'], [String(dragons.stats.carrying).padEnd(2), '#8fd48f'],
+          ]
+        : [['hidden'.padEnd(11), '#5c6b7d']]),
+    ],
+    // Main-thread ms in each animal layer's own step, and the eight added up.
     // The `animals` row costs whatever it costs; this says how much of that a
     // simulation could possibly account for, and the remainder is the draw.
     [
@@ -1824,6 +1848,8 @@ let butterflies = null
 let spiders = null
 let wildlife = null
 let snowmen = null
+let roosts = null
+let dragons = null
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -1837,7 +1863,7 @@ let ready = false
 // measurement.
 const questToggles = {
   terrain: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true, dragons: true,
   water: true, reflections: true, aurora: true, sound: true,
   critterTint: false,
   wind: true, treeTiers: true, treeCutout: true,
@@ -1853,7 +1879,7 @@ const animalOn = (key) => questToggles.animals && questToggles[key]
 // toll is CPU or draw: the row switches SEVEN layers at once, and if the seven
 // numbers here sum to a fraction of the frame time the toggle moves, the rest of
 // it is on the GPU and no amount of bucketing the simulation will find it.
-const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'spiders', 'wildlife', 'snowmen']
+const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'spiders', 'wildlife', 'snowmen', 'dragons']
 const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 const animalMsSum = () => ANIMAL_LAYERS.reduce((sum, k) => sum + animalMs[k], 0)
 /** Run `fn` if its layer's rows are on, and keep what it cost. A frozen layer decays to zero rather than holding its last reading. */
@@ -1879,6 +1905,9 @@ function applyAnimalVisibility() {
   spiders.batch.visible = animalOn('spiders')
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
+  // The roosts go with their dragons: a nest is where a dragon lives, not litter.
+  dragons.batch.visible = animalOn('dragons')
+  roosts.batch.visible = animalOn('dragons')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -1890,6 +1919,8 @@ function placeAnimals(cx, cz) {
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
   if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
   if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz)
+  // After the wildlife: a dragon's kill is a wildlife slot, and place() hands it back.
+  if (dragons && animalOn('dragons')) dragons.place()
 }
 
 // ---------------------------------------------------------------------------
@@ -2098,7 +2129,18 @@ async function bootWorld() {
   markers.sync()
 
   await bootStep('spawn')
-  const spawn = { x: SPAWN.x, z: SPAWN.z, y: height.heightAt(SPAWN.x, SPAWN.z) }
+  // A saved game is where she boots, and it decides where every layer below is
+  // first placed -- so it is read HERE and not applied after the fact, or the
+  // forest would be planted around SPAWN and she would be standing outside it.
+  // A save taken flying over a lake would put her under it on every refresh,
+  // so that one case falls back to SPAWN rather than trapping her.
+  let saved = readSave()
+  if (saved && waterSurfaces.isSubmerged(saved.x, saved.z, height.heightAt(saved.x, saved.z))) {
+    console.warn(`[v2] saved game at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} is underwater; spawning fresh`)
+    saved = null
+  }
+  const at = saved ?? SPAWN
+  const spawn = { x: at.x, z: at.z, y: height.heightAt(at.x, at.z) }
   if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: SPAWN (${spawn.x}, ${spawn.z}) is underwater`)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
@@ -2433,6 +2475,25 @@ async function bootWorld() {
   })
   window.v2snowmen = snowmen
 
+  // The dragons' roosts (render/roosts.js), a scatter like the bones with its
+  // own bark and stone maps, and the dragons that live in them
+  // (render/dragons.js), hunting the wildlife's stags. The roosts stand at once;
+  // the dragons wait for their GLB like the rest.
+  await bootStep('dragons')
+  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed: SEED, maps: await loadRoostMaps() })
+  roosts.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-roosts-${i}` }))
+  roosts.place(spawn.x, spawn.z)
+  roosts.bakeCards(renderer)
+  console.log(`[v2] roosts ${roosts.stats.placed} over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
+  window.v2roosts = roosts
+  dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife })
+  for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
+  dragons.ready.then(() => {
+    dragons.bakeCards(renderer)
+    console.log(`[v2] dragons: fly pose ${(2 * dragons.fly.halfZ * dragons.asset.sizeM / dragons.asset.span).toFixed(1)} m across`)
+  })
+  window.v2dragons = dragons
+
   // The ambient sound (audio/). The clips load in the background so a slow
   // fetch never holds the world; until they land, and forever if one fails, the
   // frame loop sees `ambience` null and stays silent -- a world with half its
@@ -2619,6 +2680,9 @@ async function bootWorld() {
   // world, one cap, desktop and headset alike.
   buildQuestPanel()
   window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
+  // The rest of the save, now that there is a backpack view to paint. Her
+  // position was the spawn above.
+  if (saved) { applySave(saved); console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)}`) }
   logSceneCensus()
 
   ready = true
@@ -2761,6 +2825,7 @@ function replacePropsOnMovedGround(cx, cz) {
     mushrooms.place(cx, cz)
   }
   if (bones) bones.place(cx, cz)
+  if (roosts) roosts.place(cx, cz)
   placeAnimals(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
@@ -3828,15 +3893,26 @@ const QUEST_TELEPORT_FIRE = 0.35
 const TELEPORT_LOB = 6.5
 const TELEPORT_GRAVITY = 9.81
 const TELEPORT_RANGE = 6
+// Seconds after a landing before the next lob is accepted. Without it the
+// gesture repeats as fast as a stick can be flicked -- four or five 6 m jumps
+// a second, 25-30 m/s, twenty times the walk -- and a hike stops being one.
+// The arc still aims through the wait; a landing she could take shows
+// TELEPORT_WAIT until the wait is up, so a release inside it is refused
+// visibly rather than eaten. Caps travel at TELEPORT_RANGE /
+// TELEPORT_COOLDOWN_S: 6 m/s, four times the walk.
+const TELEPORT_COOLDOWN_S = 1
 // Samples along the flight. 0.04 s at 6.5 m/s is a 26 cm segment, and the ground
 // crossing is bisected between samples, so the landing is exact at that
 // spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
 const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
 // A landing is refused where she could not have walked to: a slope past the
-// limiter's, or inside a trunk. The arc turns this colour to say so.
+// limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and
+// TELEPORT_WAIT for a landing that is fine but inside the cooldown -- "not
+// yet" against "not there", so a red arc always means the ground.
 const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
+const TELEPORT_WAIT = 0xffb347
 const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 // How far the ring floats over the drawn ground. Enough that a chunk mesh
 // sitting a little proud of the field does not swallow it, not so much that it
@@ -3845,6 +3921,8 @@ const TELEPORT_RING_LIFT = 0.06
 const TELEPORT_UP = new THREE.Vector3(0, 1, 0)
 let questTeleportArmed = false
 let desktopTeleportArmed = false
+// performance.now() ms at which the next landing is accepted.
+let teleportReadyAt = 0
 const teleportTarget = { x: 0, z: 0, valid: false }
 // The arc and the landing ring, built together on first aim. The arc is a
 // dotted trail -- one instanced bead per sample -- rather than a Line, because
@@ -3899,6 +3977,7 @@ function fireTeleport() {
   if (!teleportTarget.valid) return
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
   player.teleportTo(teleportTarget.x, teleportTarget.z)
+  teleportReadyAt = performance.now() + TELEPORT_COOLDOWN_S * 1000
   if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE)
 }
 
@@ -3961,13 +4040,16 @@ function aimTeleport(origin, dir) {
   // the slope limiter would let her stand on (a cliff face or a boulder's flank
   // is a step in the walk surface, so it fails this), not inside a trunk, and
   // with a walkable straight line from her feet to it -- a lob clears a
-  // boulder or a trunk that her legs would not.
+  // boulder or a trunk that her legs would not. Whether she can go NOW is the
+  // cooldown, kept apart so the colour can tell the two refusals apart.
   const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE
   const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z)
-  teleportTarget.valid = standable
-  arc.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
-  ring.material.color.setHex(standable ? TELEPORT_OK : TELEPORT_NO)
+  const ready = performance.now() >= teleportReadyAt
+  teleportTarget.valid = standable && ready
+  const colour = !standable ? TELEPORT_NO : ready ? TELEPORT_OK : TELEPORT_WAIT
+  arc.material.color.setHex(colour)
+  ring.material.color.setHex(colour)
   if (inRange) {
     teleportTarget.x = hit.x
     teleportTarget.z = hit.z
@@ -4491,9 +4573,15 @@ function tick() {
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
   // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident.
+  stepAnimal('dragons', () => {
+    roosts.update(headTmp.x, headTmp.y, headTmp.z)
+    dragons.update(headTmp.x, headTmp.y, headTmp.z, dt)
+  })
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

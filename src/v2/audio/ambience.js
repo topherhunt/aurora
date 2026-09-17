@@ -79,7 +79,7 @@ export const RATE = [0.9, 1.1]
  * diagonal pairs) are one beat. The gate holds these to the clip files.
  */
 export const FOOTFALLS = {
-  quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58] },
+  quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58], hop: [0, 0.4], bound: [0, 0.52] },
   human: { walk: [0, 0.5], run: [0, 0.5] },
 }
 

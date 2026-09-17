@@ -1,0 +1,28 @@
+{
+  "note": "Half-bound at a saunter, a hare's slow gait: both hind feet push off together, the body sails through one flight and both fore feet catch it together, the hinds landing beside them as the fores leave. A leg with phase p plants at 1 - p, so fores at 0.4 with duty 0.42 land at 0.6, leaving a fifth of the cycle in the air after the hinds go; the crest is mid-flight (bobPhase) and the back hollows at the push and arches at the gather (spineFlexPhase), which crouch and the wider fold pay for.",
+  "duration": 0.6,
+  "samples": 24,
+  "stride": 0.6,
+  "stepHeight": 0.18,
+  "duty": 0.42,
+  "crouch": 0.16,
+  "toeOff": 0.4,
+  "phases": {
+    "hindLeft": 0,
+    "hindRight": 0,
+    "frontLeft": 0.4,
+    "frontRight": 0.4
+  },
+  "bodyBob": 0.06,
+  "bobFreq": 1,
+  "bobPhase": -3.14,
+  "tailPitch": 0.9,
+  "tailLift": 0.2,
+  "headPitch": -0.05,
+  "headBob": 0.05,
+  "spineFlex": 0.4,
+  "spineFlexPhase": 2.2,
+  "limits": {
+    "fold": 2.3
+  }
+}

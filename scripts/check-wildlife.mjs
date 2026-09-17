@@ -125,7 +125,7 @@ for (const sp of SPECIES) {
 
   const quad = json.scenes?.[json.scene ?? 0]?.extras?.quadruped
   check(quad !== undefined && quad.span > 0 && quad.height > 0 && quad.width > 0 && quad.sizeM === roster.sizeM && quad.frame && Number.isFinite(quad.frame.yaw), `${id}: the scene carries the quadruped extras, at the roster's ${roster.sizeM} m`, quad && `span ${quad.span.toFixed(3)} width ${quad.width.toFixed(3)} height ${quad.height.toFixed(3)} yaw ${quad.frame.yaw.toFixed(3)}`)
-  check(quad && ['walk', 'trot', 'run'].every((n) => quad.gait[n] > 0) && quad.gait.walk < quad.gait.trot && quad.gait.trot < quad.gait.run && quad.gait.idle === undefined, `${id}: the gaits carry a ground speed each, walk under trot under run, and nothing else does`, quad && Object.entries(quad.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
+  check(quad && ['walk', 'trot', 'run', 'hop', 'bound'].every((n) => quad.gait[n] > 0) && quad.gait.walk < quad.gait.trot && quad.gait.trot < quad.gait.run && quad.gait.hop < quad.gait.bound && quad.gait.idle === undefined, `${id}: the gaits carry a ground speed each, walk under trot under run and hop under bound, and nothing else does`, quad && Object.entries(quad.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
 
   // The bind pose IS the POSITION accessor (every skin matrix is the identity
   // there), so the frame the root joint carries can be checked by applying it:
@@ -332,6 +332,16 @@ wake(w)
   const gait = c.sp.asset.gait[c.clip]
   check(gait > 0 && Math.abs(c.speed - gait * c.k) < 1e-12, `a roam plays a gait at ${c.clip} speed, scaled to the animal`, `${c.speed.toFixed(3)} m/s for a ${c.size.toFixed(2)} m stag`)
   check(['walk', 'trot'].includes(c.clip), 'and a stag roams at a walk or a trot, never a run', c.clip)
+  // A hare hops: its roams are the half-bound at two paces and never a walk, trot or run, and both paces are seen.
+  // Rolled on a world of its own, so sixty rolls do not shift the stream the blocks below wander on.
+  const k = make(7)
+  const hares = k.species.find((sp) => sp.key === 'hare')
+  const hare = hares.slots[0]
+  hare.sp = hares
+  hare.k = 1
+  const paces = new Set()
+  for (let i = 0; i < 60; i++) { k._begin(hare, 'roam'); paces.add(hare.clip) }
+  check(paces.size === 2 && paces.has('hop') && paces.has('bound') && hare.sp.asset.gait.hop < hare.sp.asset.gait.bound, 'a hare roams at a hop or a bound, never a walk, trot or run, and the bound is the faster', `${[...paces].join(' and ')}: ${hare.sp.asset.gait.hop.toFixed(2)} and ${hare.sp.asset.gait.bound.toFixed(2)} m/s in the file`)
   // Every activity a species rolls is a clip the file carries.
   const seen = { acts: new Set(), clips: new Set() }
   for (const sp of w.species) {
@@ -655,6 +665,10 @@ wake(w)
     // the whole bone tree and change nothing (wildlife.js writes it `if (puppet.posed)`).
     {
       const d = reach(LOD_RUNGS - 1) * 0.75
+      // Put it on a long roam first: left to the roll it can graze through the whole window.
+      w._begin(c, 'roam')
+      c.aim = c.heading
+      c.left = 100
       let tested = false, frozen = false
       for (let f = 0; f < 600 && !tested; f++) {
         const was = p.group.matrix.elements.slice()

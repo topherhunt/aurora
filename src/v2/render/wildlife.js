@@ -23,7 +23,11 @@
 // a gait, and the ground under it then moves at exactly the speed the clip's
 // stride was built for (the shipper's `gait` extras), so the feet do not skate:
 // that is why each species has its own gait weights, a fox's walk being a slow
-// enough clip that a fox which mostly walked would look becalmed.
+// enough clip that a fox which mostly walked would look becalmed. A hare never
+// walks or trots: its two gaits are the half-bound -- both hinds pushing off
+// together, both fores catching -- at a saunter (`hop`) and flat out (`bound`),
+// which are two clips and not one played at two rates because a hop is
+// ballistic and a slowed clip floats.
 //
 // SHE IS FURNITURE. An animal takes no notice of her at any distance -- it
 // grazes with her standing over it. Noticing her is a later job.
@@ -146,7 +150,7 @@ export const PROBE_EVERY = [6, 8, 12, 16, 30]
 const FADE_S = 0.25
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
-export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up']
+export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up']
 export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie'])
 
 /**
@@ -171,7 +175,7 @@ export const SPECIES = [
   {
     key: 'hare', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
-    gaits: [['walk', 3], ['trot', 7]],
+    gaits: [['hop', 6], ['bound', 4]],
   },
 ]
 
@@ -403,7 +407,8 @@ export class Wildlife {
           sp, x, y, z, nx: _norm.x, ny: _norm.y, nz: _norm.z, size, heading,
           // Where the mesh gives way to the card, where the card gives way to nothing, and where the placement stops being worth remembering.
           cull: cullRange(lodSize), card: cullRange(lodSize, CARD_RUNGS), forget: forgetRange(lodSize, CARD_RUNGS),
-          lodSize, slot: null,
+          // Taken by a dragon (`seize`): not woken again while its tile is loaded. The tile re-rolls it on the next visit.
+          lodSize, slot: null, dead: false,
         })
       }
     }
@@ -505,6 +510,101 @@ export class Wildlife {
       for (const c of sp.slots) if (c.spawn !== null && c.lod < CARD_RUNGS) into.push(c)
     }
     return into
+  }
+
+  // -------------------------------------------------------------------------
+  // PREY. The dragons (render/dragons.js) hunt the stags, and what they need
+  // of this layer is four verbs: find one, take it, draw it hanging from the
+  // talons and let it go. A taken stag is a slot with no spawn: it is off every
+  // tile, so nothing here walks it, tiers it or lists it for the ear, and its
+  // spawn is marked dead so the tile does not wake a second stag where the
+  // first stood. The slot and its puppet stay this layer's -- the pool logic
+  // does not leak -- and come back to the pools on `drop`.
+  // -------------------------------------------------------------------------
+
+  /** The nearest live stag within `range` of (x, z), or null. A live stag is one this layer is simulating: on a rung, not asleep on its spawn. */
+  prey(x, z, range) {
+    let best = null
+    let bestD = range * range
+    for (const sp of this.species) {
+      if (sp.key !== 'stag') continue
+      for (const c of sp.slots) {
+        if (c.spawn === null || c.lod >= CARD_RUNGS) continue
+        const d = (c.x - x) ** 2 + (c.z - z) ** 2
+        if (d < bestD) { bestD = d; best = c }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Take a live stag out of the world as cargo: the slot itself, lying dead
+   * (`lie`, which holds its last frame). Its spawn is not woken again while its
+   * tile is loaded; a spawn whose tile is re-rolled on a later visit is a new stag.
+   */
+  seize(c) {
+    if (c.spawn === null) throw new Error('Wildlife.seize: that animal is not in the world')
+    const s = c.spawn
+    s.dead = true
+    s.slot = null
+    c.spawn = null
+    c.lodSize = s.lodSize
+    c.act = 'dead'
+    c.queue.length = 0
+    c.clip = 'lie'
+    c.cue++
+    // Held from the clip's start, so a puppet taking it over mid-carry plays the fold and clamps.
+    c.dur = c.left = c.sp.durations.lie
+    c.cycle = c.dur
+    c.speed = 0
+    this._wantCard(c, false)
+    c.cardP = 1
+    return c
+  }
+
+  /**
+   * One frame of a seized stag drawn at `matrix` -- the carrier's talons, or
+   * the nest floor -- `dist` metres from her head: its own species' rungs, a
+   * puppet while the ladder says mesh, nothing past that. The card rung is not
+   * drawn: a dozen pixels of carcass under a dragon's card is not a picture.
+   * The matrix is written EVERY frame whether or not the puppet re-posed,
+   * because a carried body crosses metres a frame and a held matrix would jump.
+   */
+  carry(c, matrix, dist, dt) {
+    if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.carry: that animal was not seized')
+    const tier = critterTier(c.lodSize, dist, c.lod, LOD_RUNGS)
+    c.lod = tier
+    matrix.decompose(_pos, _quat, _scl)
+    c.x = _pos.x; c.y = _pos.y; c.z = _pos.z
+    if (tier >= LOD_RUNGS) {
+      if (!c.puppet) return
+      c.puppet.show(-1)
+      c.puppet.step(dt)
+      if (c.puppet.done) this._releasePuppet(c)
+      return
+    }
+    const puppet = this._takePuppet(c)
+    if (!puppet) return
+    puppet.show(tier)
+    puppet.play(c.clip, c.cue)
+    puppet.step(dt)
+    puppet.group.matrix.copy(matrix)
+    puppet.group.matrixWorldNeedsUpdate = true
+  }
+
+  /** A seized stag let go: its body dissolves where it is (or vanishes, with `fade` off, when the ground has gone) and the slot goes back to the pool. */
+  drop(c, fade = true) {
+    if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.drop: that animal was not seized')
+    if (fade && c.puppet) {
+      c.puppet.show(-1)
+      this.fading.push({ sp: c.sp, puppet: c.puppet })
+      c.puppet = null
+    } else {
+      this._releasePuppet(c)
+    }
+    c.act = 'stand'
+    c.lod = CARD_RUNGS
+    c.sp.free.push(c)
   }
 
   // -------------------------------------------------------------------------
@@ -691,6 +791,7 @@ export class Wildlife {
 
     for (const t of this.tiles.values()) {
       for (const s of t.spawns) {
+        if (s.dead) continue
         // Asleep, it is measured from home; awake, from wherever it has walked to.
         const live = s.slot
         const dx = (live ? live.x : s.x) - hx

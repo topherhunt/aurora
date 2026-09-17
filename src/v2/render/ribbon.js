@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Vertex generation for the v2 surface layers: the lake disc and the path ribbon.
 //
-// THREE-FREE ON PURPOSE, even though it lives under src/v2/render/ where §18 says three.js starts. Same exemption chunk-mesh-v2.js gets and for the same reason: only the renderer calls it, but the thing that can actually be WRONG here is arithmetic -- a ribbon that folds through itself on a hairpin, a disc whose segment count is a guess -- and arithmetic is checkable in node. scripts/check-v2-surfaces.mjs imports this file and nothing else, so the gate costs no GL context and no stub renderer.
+// THREE-FREE ON PURPOSE, even though it lives under src/v2/render/ where §18 says three.js starts. Same exemption chunk-mesh-v2.js gets and for the same reason: only the renderer calls it, but the thing that can actually be WRONG here is arithmetic -- a ribbon that folds through itself on a hairpin, a disc whose segment count is a guess -- and arithmetic is checkable in node. scripts/check-v2-surfaces.mjs holds it in node, so the gate costs no GL context and no stub renderer.
 //
 // Both generators emit WORLD-space positions. The meshes that wrap them sit at identity under a group at the origin, which is not an accident: src/water.js's fragment shader recovers world position as `modelMatrix * position` and feeds it straight into the wave field, so a river ribbon carrying a local origin would sample the waves from the wrong place and drift against the lake beside it.
 // ---------------------------------------------------------------------------
@@ -32,10 +32,6 @@ if (LAKE_SEGMENTS % 8 !== 0) throw new Error(`ribbon.js: LAKE_SEGMENTS is ${LAKE
 //
 // It lives in this file rather than in road-surfaces.js because it is a number the GATE has to know: check-v2-surfaces.mjs asserts the ribbon clears the flattened terrain by exactly this and no more, and importing road-surfaces.js to learn it would drag three.js into a node script that deliberately has none.
 export const ROAD_LIFT = 0.05
-
-// How far a river ribbon reaches past its own halfWidth, and the cap on that as a fraction of the halfWidth. Absolute metres alone would turn a 3 m stream into a 4.5 m one; a fraction alone would push a 60 m river 15 m into its bank. The river carve puts the bed exactly at the water level at halfWidth and the bank climbs from there (paths.js BANK), so the ground is already rising at the ribbon's edge and a quarter of a half-width is enough to bury it.
-export const RIVER_WIDEN = 0.75
-export const RIVER_WIDEN_FRAC = 0.25
 
 // Over how far, past the run a river spends inside the body it starts or ends in, its own flow frame fades in from the shared world frame: this many of its local half-widths, and never less than the metres. See flowFrame.
 export const FLOW_FADE_HALF_WIDTHS = 4
@@ -139,7 +135,7 @@ export function discVertices(lake, opts = {}) {
  * `samples` is a flattened spline -- a Float32Array of packed (x, y, z, halfWidth) quads, which is what Spline.flatten returns. The offset is XZ-ONLY: a water surface is horizontal across its width whatever the valley wall is doing, and a road that banked with its own tangent would roll the camera on every bend.
  *
  * Options:
- *   widen / widenFrac  extra half-width, min(widen, halfWidth * widenFrac). See RIVER_WIDEN.
+ *   widen / widenFrac  extra half-width, min(widen, halfWidth * widenFrac). A river passes paths.js RIVER_WIDEN and RIVER_WIDEN_FRAC.
  *   lift               metres added to every y. Roads use it; see road-surfaces.js.
  *   minHalf            the miter clamp's floor.
  *

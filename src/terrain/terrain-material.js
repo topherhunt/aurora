@@ -1688,12 +1688,14 @@ ${lean ? '' : `            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRE
 // (chunk-mesh-v2 via layers/forest.js -- the SAME law the trees roll against),
 // and this rung mixes vColor toward uForestTint by that, ramped in from 100 m
 // to 250 m of eye distance so the near ground she walks on stays what shade()
-// wrote and the far ground carries the wood. uForestTint sits at about half
-// the pine card's leaf colour, with g - max(r, b) above the green knee, so the
-// two masks below still read it as vegetated. Water is not asked; a far lake
-// bed under a wood is tinted under its lake.
+// wrote and the far ground carries the wood. The mix is the LAST stage, past
+// both exposure multiplies, so uForestTint is the drawn colour itself: the one
+// whose lit result under the noon palette equals the lit pine card's mean over
+// its covered pixels (both are lit as a straight-up normal, so they track each
+// other through the day). Measured, not derived. Water is not asked; a far
+// lake bed under a wood is tinted under its lake.
 export const PLAIN_GRASS_TONE = 0.5
-export const FOREST_TINT = [0.05, 0.082, 0.012]
+export const FOREST_TINT = [0.0336, 0.0595, 0.0182]
 export const FOREST_TINT_NEAR = 100
 export const FOREST_TINT_FAR = 250
 
@@ -1748,8 +1750,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       // hook where mvPosition is the vertex's real view-space position and its
       // length the eye distance the forest tint ramps on.
       .replace('#include <project_vertex>', `#include <project_vertex>
-        // THE FOREST TINT FIRST, so the two masks below classify the tinted
-        // ground -- uForestTint is chosen to pass the green knee.
+        // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
+        // more than a quarter, so reading the snow knee off an already-toned
+        // vColor would classify toned grass against a moved threshold.
         //
         // SWIZZLED, AND NEVER BARE vColor. The three A-Frame 1.8 ships -- the
         // three every headset page runs, see three-instance.js -- declares vColor
@@ -1758,14 +1761,13 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // and a bare vColor *= float compiles and quietly scales alpha, which
         // that fork's color_fragment then multiplies into diffuseColor whole.
         // Same trap as COLOR_FRAGMENT in material.js. A swizzle is right on both.
-        vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( ${FOREST_TINT_NEAR.toFixed(1)}, ${FOREST_TINT_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );
-        // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
-        // more than a quarter, so reading the snow knee off an already-toned
-        // vColor would classify toned grass against a moved threshold.
         float auroraGreenBase = smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) );
         float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
         vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );
-        vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );`)
+        vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );
+        // THE FOREST TINT LAST, past both exposure stages, so uForestTint IS the
+        // colour the far wood's ground is drawn in and neither mask reads it.
+        vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( ${FOREST_TINT_NEAR.toFixed(1)}, ${FOREST_TINT_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );`)
     if (stipple) {
       shader.vertexShader = shader.vertexShader.replace(
         '#include <project_vertex>',
