@@ -48,7 +48,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
-import { Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const TILE = 32
 export const RADIUS = 96
@@ -102,6 +102,10 @@ const FOLLOW_STEP_S = 2
 
 // Every clip the shipped file must carry; the layer plays these, the file carries the whole human library.
 export const CLIPS = ['idle', 'walk', 'run', 'cower', 'recoil', 'beckon', 'talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
+// The clips whose two feet stay put, so a standing one's feet are put on the
+// ground under each (puppet.js FootIK). Measured off the shipped clips: a
+// recoil steps a foot back, and no gait is planted.
+export const PLANTED = new Set(['idle', 'cower', 'beckon', 'talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug'])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 /** The shortest way round from `a` to `b`, in (-pi, pi]. */
@@ -131,6 +135,7 @@ const _norm = { x: 0, y: 1, z: 0 }
 export async function loadBipedGlb(url) {
   const asset = await loadSkinnedAsset(url, { tiers: LOD_TIERS, clips: CLIPS, extras: 'biped' })
   if (!(asset.extras.height > 0)) throw new Error(`${url}: no turned height in its extras -- re-ship it`)
+  if (asset.extras.legs?.length !== 2) throw new Error(`${url}: no two legs in its extras -- re-ship it`)
   return { ...asset, ...asset.extras }
 }
 
@@ -564,6 +569,7 @@ export class Snowmen {
     _mat.compose(_pos, _quat, _scl)
 
     puppet.play(c.clip, c.cue)
+    groundFeet(puppet, c, this.walk, PLANTED, (this.frame + c.id) % PROBE_EVERY === 0)
     puppet.step(dt)
     // Only where it shows -- puppet.js POSE_EVERY.
     if (puppet.posed) {

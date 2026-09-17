@@ -26,11 +26,11 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Snowmen, CLIPS, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE, FOLLOW_SLOPE,
+  Snowmen, CLIPS, PLANTED, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE, FOLLOW_SLOPE,
   NOTICE_M, AWAY_M, STANDOFF_M, RESUME_M, RUN_M, FORGET_M, TURN_RATE,
 } from '../src/v2/render/snowmen.js'
 import { CRITTER_GLB, LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S } from '../src/v2/render/puppet.js'
+import { LOD_FADE_S, REPLANT } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -125,6 +125,8 @@ let biped = null
   biped = json.scenes?.[json.scene ?? 0]?.extras?.biped
   check(biped !== undefined && biped.span > 0 && biped.height > 0 && biped.width > 0 && biped.sizeM === roster.sizeM && biped.frame && Number.isFinite(biped.frame.yaw), `${id}: the scene carries the biped extras, at the roster's ${roster.sizeM} m`, biped && `span ${biped.span.toFixed(3)} width ${biped.width.toFixed(3)} height ${biped.height.toFixed(3)} yaw ${biped.frame.yaw.toFixed(3)}`)
   check(biped && biped.gait.walk > 0 && biped.gait.run > biped.gait.walk && Object.keys(biped.gait).length === 2, `${id}: walk and run carry a ground speed each, walk under run, and nothing else does`, biped && Object.entries(biped.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
+  const jointNames = new Set([...joints].map((j) => json.nodes[j].name))
+  check(biped?.legs?.length === 2 && biped.legs.every((l) => l.chain.length >= 3 && l.chain.every((n) => jointNames.has(n))), `${id}: two legs named, hip to foot, every joint of every chain one of the skeleton's -- the puppet's foot IK reads its feet off them`, biped?.legs && biped.legs.map((l) => `${l.id} ${l.chain.length}`).join(' '))
 
   // The bind pose IS the POSITION accessor, so the frame the root joint carries can be checked by applying it: the body stands on y = 0, centred over its feet, facing +X.
   if (biped && prim) {
@@ -157,7 +159,10 @@ if (!biped) {
   process.exit(1)
 }
 
-// --- a stand-in asset: a slab on a two-bone skeleton, the shipped numbers ---------
+// --- a stand-in asset: a slab on a skeleton of a spine and two legs, the shipped numbers ---------
+// A leg is hip, knee, foot: the hip under a side of the body, the knee bent forward, the foot a hair over the ground, so the puppet's foot IK has a bend to work.
+const LEG_HIP_Y = 0.55
+const LEG_FOOT_Y = 0.02
 function makeAsset() {
   const root = new THREE.Bone()
   root.name = 'tripo::Root'
@@ -165,8 +170,25 @@ function makeAsset() {
   spine.name = 'Spine'
   spine.position.set(0, 0.5, 0)
   root.add(spine)
-  root.updateMatrixWorld(true)
   const bones = [root, spine]
+  const legs = []
+  for (const [id, sz] of [['L', 1], ['R', -1]]) {
+    const hip = new THREE.Bone()
+    hip.name = `Hip${id}`
+    hip.position.set(0, biped.height * LEG_HIP_Y, sz * biped.width * 0.3)
+    const knee = new THREE.Bone()
+    knee.name = `Knee${id}`
+    knee.position.set(biped.height * 0.1, -biped.height * 0.27, 0)
+    const foot = new THREE.Bone()
+    foot.name = `Foot${id}`
+    foot.position.set(-biped.height * 0.1, -biped.height * (LEG_HIP_Y - 0.27 - LEG_FOOT_Y), 0)
+    root.add(hip)
+    hip.add(knee)
+    knee.add(foot)
+    bones.push(hip, knee, foot)
+    legs.push({ id, chain: [hip.name, knee.name, foot.name] })
+  }
+  root.updateMatrixWorld(true)
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
   const tiers = Array.from({ length: LOD_TIERS }, (_, k) => {
     const g = new THREE.BoxGeometry(biped.span, biped.height, biped.width, LOD_TIERS - k, 1, 1).translate(0, biped.height / 2, 0)
@@ -180,8 +202,9 @@ function makeAsset() {
     const dur = Math.max(...a.samplers.map((s) => json.accessors[s.input].max[0]))
     return new THREE.AnimationClip(a.name, dur, [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])])
   })
-  return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped }
+  return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped, legs }
 }
+const STAND_IN_BONES = 2 + 2 * 3
 
 // --- construction ---------------------------------------------------------------
 const scene = new THREE.Scene()
@@ -194,7 +217,7 @@ check(w.materials.length === PUPPETS * 2 + 1, 'ONE settled material between them
 check(w.puppetMats.every((m) => m.plain === w.plain) && w.puppetMats.length === PUPPETS, 'every snowman standing draws through THE ONE material, so a drawn crowd is one material change a frame and not one a snowman')
 check(w.puppetMats.every((m) => m.plain.customProgramCacheKey() === 'snowmen' && m.in.customProgramCacheKey() === 'snowmen-fade' && m.out.customProgramCacheKey() === 'snowmen-fade') && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 2, 'two programs and not one a puppet')
 check(w.batch.name === 'v2-snowmen' && w.batch.children.length === 0, 'nothing is in the batch but the puppets it lends out')
-check(w.puppets.every((p) => p.skeleton !== w.asset.skeleton && p.skeleton.bones.length === 2 && p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === json.animations.length), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
+check(w.puppets.every((p) => p.skeleton !== w.asset.skeleton && p.skeleton.bones.length === STAND_IN_BONES && p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === json.animations.length), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
 check(w.puppets.every((p) => [...p.actions].every(([, a]) => a.loop === THREE.LoopRepeat)), 'every clip cycles -- the human library is round trips, so a gesture is played whole by its own length instead')
 for (const bad of [[{ snowLineAt: null }, water, walk], [height, {}, walk], [height, water, { heightAt: walk.heightAt }]]) {
   let threw = false
@@ -393,6 +416,67 @@ function lone(seed = 3) {
     was = c.heading
   }
   check(snapped <= TURN_RATE * dt + 1e-12, 'in a minute of being circled and led about, it never turned faster than it may', `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
+  k.dispose()
+}
+
+// --- standing, its feet are on the ground ---------------------------------------------
+//
+// A tilted plain and one snowman on it, side-on to the slope. Cowering, each
+// foot is solved to the ground under it (puppet.js FootIK); recoiling or
+// walking, the clip is left exactly alone; turned to keep her in front as she
+// steps round it, the ground is read again.
+{
+  const TILT = 0.35
+  const tilted = walkOn((x, z) => GROUND + TILT * z)
+  let k
+  for (let seed = 1; ; seed++) {
+    k = make(seed, { walk: tilted, water: noWater, height })
+    k.place(0, 0)
+    if (alive(k).length) break
+    k.dispose()
+  }
+  const c = alive(k)[0]
+  // Facing +x, across the slope: its left foot uphill, its right downhill.
+  c.heading = c.aim = 0
+  // Her head `dx, dz` off it for `s` seconds; a metre past its notice straight ahead, it goes on cowering.
+  const over = (s, dx = NOTICE_M + 1, dz = 0) => { for (let f = 0; f < Math.round(s / dt); f++) k.update(c.x + dx, tilted.heightAt(c.x + dx, c.z + dz) + HEAD, c.z + dz, dt) }
+  // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
+  const feet = () => {
+    c.puppet.group.updateMatrixWorld(true)
+    return c.puppet.ik.legs.map((l) => {
+      A.setFromMatrixPosition(l.A.matrixWorld); B.setFromMatrixPosition(l.B.matrixWorld); C.setFromMatrixPosition(l.C.matrixWorld)
+      return { id: l.id, hover: C.y - tilted.heightAt(C.x, C.z), knee: Math.acos(A.sub(B).normalize().dot(C.sub(B).normalize())) }
+    })
+  }
+  const restKnee = Math.acos(new THREE.Vector3(-0.1, 0.27, 0).normalize().dot(new THREE.Vector3(-0.1, -(LEG_HIP_Y - 0.27 - LEG_FOOT_Y), 0).normalize()))
+  const identity = new THREE.Quaternion()
+  const untouched = () => !c.puppet.planted && !c.puppet.ik.active && !c.puppet.ik.dirty && c.puppet.ik.legs.every((l) => l.A.quaternion.equals(identity) && l.B.quaternion.equals(identity)) && feet().every((f) => Math.abs(f.knee - restKnee) < 1e-9)
+  check([...PLANTED].sort().join() === 'beckon,cower,idle,talk-gesture,talk-nod,talk-point,talk-shrug', 'the clips whose feet stay put are the stand, the cower and every gesture -- a recoil steps a foot back, and no gait plants', [...PLANTED].join(' '))
+  k._play(c, 'cower', 1e9)
+  over(1)
+  const own = LEG_FOOT_Y * biped.height * c.k
+  const rise = 0.6 * biped.width * c.k * TILT
+  const planted = feet()
+  check(c.state === 'cower' && c.clip === 'cower' && c.speed === 0 && c.puppet?.planted && c.puppet.ik.w === 1, `a ${c.size.toFixed(1)} m snowman cowering side-on to a ${((Math.atan(TILT) * 180) / Math.PI).toFixed(0)}-degree slope has its feet planted`)
+  check(planted.every((f) => Math.abs(f.hover - own) < 1e-3), `and a second later each foot stands exactly its clip's own ${(own * 100).toFixed(1)} cm over the ground under it, which rises ${(rise * 100).toFixed(0)} cm from its right foot to its left`, planted.map((f) => `${f.id} ${(f.hover * 100).toFixed(2)}`).join(' '))
+  check(planted.find((f) => f.id === 'L').knee < restKnee - 0.02 && planted.find((f) => f.id === 'R').knee > restKnee + 0.02, 'its uphill knee folded and its downhill knee opened off the clip to get there', planted.map((f) => `${f.id} ${((f.knee * 180) / Math.PI).toFixed(1)}`).join(' ') + ` of ${((restKnee * 180) / Math.PI).toFixed(1)}`)
+  k._play(c, 'recoil', 1e9)
+  over(0.5)
+  check(c.clip === 'recoil' && c.speed === 0 && untouched(), 'recoiling, half a second later its legs are the clip\'s exactly: a still clip that moves a foot is not planted')
+  k._play(c, 'walk', 1e9)
+  over(0.25)
+  check(c.clip === 'walk' && c.speed > 0 && untouched(), 'and walking, so are they, whatever the ground under each foot')
+  // She steps in front and round it: noticed, it turns to keep her in front, gesturing all the while, and past REPLANT of turning reads the ground under where its feet are now.
+  k._play(c, 'cower', 1e9)
+  over(1, NOTICE_M - 1, 0)
+  const first = c.puppet.plantHeading
+  check(c.state === 'watch' && c.puppet.planted && Math.abs(c.heading) < 1e-6, 'she steps in front of it and it watches her, planted, facing +x', `${c.clip} at ${first.toFixed(2)} rad`)
+  over(4, 0, NOTICE_M - 1)
+  const turned = feet()
+  // Between re-plants a foot's ground is the one read up to REPLANT ago: at most that swing, at the foot's radius, down the tilt.
+  const stale = 0.3 * biped.width * c.k * REPLANT * TILT
+  check(Math.abs(swing(c.heading, -Math.PI / 2)) < 1e-6 && c.puppet.planted && c.puppet.plantHeading !== first && Math.abs(swing(c.puppet.plantHeading, c.heading)) <= REPLANT && turned.every((f) => Math.abs(f.hover - own) < stale + 1e-3), `she steps round to its left and it turns a quarter to her: it has read the ground again, and every foot stands on it to within the ${(stale * 100).toFixed(1)} cm a swing short of REPLANT can move the ground under a foot`, `planted at ${first.toFixed(2)}, again at ${c.puppet.plantHeading.toFixed(2)}, facing ${c.heading.toFixed(2)}, ${c.clip}; ${turned.map((f) => `${f.id} ${((f.hover - own) * 100).toFixed(2)}`).join(' ')}`)
   k.dispose()
 }
 

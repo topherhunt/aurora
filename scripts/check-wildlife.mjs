@@ -27,10 +27,10 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Wildlife, SPECIES, CLIPS, ONE_SHOT, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
+  Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S, POSE_EVERY, setTierTint } from '../src/v2/render/puppet.js'
+import { LOD_FADE_S, POSE_EVERY, REPLANT, setTierTint } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -126,6 +126,8 @@ for (const sp of SPECIES) {
   const quad = json.scenes?.[json.scene ?? 0]?.extras?.quadruped
   check(quad !== undefined && quad.span > 0 && quad.height > 0 && quad.width > 0 && quad.sizeM === roster.sizeM && quad.frame && Number.isFinite(quad.frame.yaw), `${id}: the scene carries the quadruped extras, at the roster's ${roster.sizeM} m`, quad && `span ${quad.span.toFixed(3)} width ${quad.width.toFixed(3)} height ${quad.height.toFixed(3)} yaw ${quad.frame.yaw.toFixed(3)}`)
   check(quad && ['walk', 'trot', 'run', 'hop', 'bound'].every((n) => quad.gait[n] > 0) && quad.gait.walk < quad.gait.trot && quad.gait.trot < quad.gait.run && quad.gait.hop < quad.gait.bound && quad.gait.idle === undefined, `${id}: the gaits carry a ground speed each, walk under trot under run and hop under bound, and nothing else does`, quad && Object.entries(quad.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
+  const jointNames = new Set([...joints].map((j) => json.nodes[j].name))
+  check(quad?.legs?.length === 4 && quad.legs.every((l) => l.chain.length >= 3 && l.chain.every((n) => jointNames.has(n))), `${id}: four legs named, hip to foot, every joint of every chain one of the skeleton's -- the puppet's foot IK reads its feet off them`, quad?.legs && quad.legs.map((l) => `${l.id} ${l.chain.length}`).join(' '))
 
   // The bind pose IS the POSITION accessor (every skin matrix is the identity
   // there), so the frame the root joint carries can be checked by applying it:
@@ -160,7 +162,10 @@ if (Object.keys(shipped).length !== SPECIES.length) {
   process.exit(1)
 }
 
-// --- stand-in assets: a slab on a two-bone skeleton, the shipped numbers ---------
+// --- stand-in assets: a slab on a skeleton of a spine and four legs, the shipped numbers ---------
+// A leg is hip, knee, foot: the hip under a corner of the body, the knee bent forward, the foot a hair over the ground, so the puppet's foot IK has a bend to work.
+const LEG_HIP_Y = 0.6
+const LEG_FOOT_Y = 0.02
 function makeAsset(key) {
   const { json } = shipped[key]
   const quad = json.scenes[json.scene ?? 0].extras.quadruped
@@ -170,8 +175,25 @@ function makeAsset(key) {
   spine.name = 'Spine'
   spine.position.set(0.2, 0.1, 0)
   root.add(spine)
-  root.updateMatrixWorld(true)
   const bones = [root, spine]
+  const legs = []
+  for (const [id, sx, sz] of [['FL', 1, 1], ['FR', 1, -1], ['HL', -1, 1], ['HR', -1, -1]]) {
+    const hip = new THREE.Bone()
+    hip.name = `Hip${id}`
+    hip.position.set(sx * quad.span * 0.3, quad.height * LEG_HIP_Y, sz * quad.width * 0.3)
+    const knee = new THREE.Bone()
+    knee.name = `Knee${id}`
+    knee.position.set(quad.height * 0.12, -quad.height * 0.3, 0)
+    const foot = new THREE.Bone()
+    foot.name = `Foot${id}`
+    foot.position.set(-quad.height * 0.12, -quad.height * (LEG_HIP_Y - 0.3 - LEG_FOOT_Y), 0)
+    root.add(hip)
+    hip.add(knee)
+    knee.add(foot)
+    bones.push(hip, knee, foot)
+    legs.push({ id, chain: [hip.name, knee.name, foot.name] })
+  }
+  root.updateMatrixWorld(true)
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
   // One slab a rung, coarser down the ladder, so a test can tell which tier is drawn.
   const tiers = Array.from({ length: LOD_RUNGS }, (_, k) => {
@@ -186,8 +208,9 @@ function makeAsset(key) {
     const dur = Math.max(...a.samplers.map((s) => json.accessors[s.input].max[0]))
     return new THREE.AnimationClip(a.name, dur, [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])])
   })
-  return { root, skeleton, tiers, clips, map: null, gait: quad.gait, sizeM: quad.sizeM, span: quad.span, width: quad.width, height: quad.height }
+  return { root, skeleton, tiers, clips, map: null, legs, gait: quad.gait, sizeM: quad.sizeM, span: quad.span, width: quad.width, height: quad.height }
 }
+const STAND_IN_BONES = 2 + 4 * 3
 const assets = () => Object.fromEntries(SPECIES.map((sp) => [sp.key, makeAsset(sp.key)]))
 
 // --- construction ---------------------------------------------------------------
@@ -201,7 +224,7 @@ check(w.materials.length === 3 * (PUPPETS * 2 + 2), 'ONE settled material a spec
 check(w.species.every((sp) => sp.materials.every((m) => m.plain.customProgramCacheKey() === `wildlife-${sp.key}` && m.in.customProgramCacheKey() === `wildlife-${sp.key}-fade` && m.out.customProgramCacheKey() === `wildlife-${sp.key}-fade`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 9, 'three programs a species and not one a puppet: a settled one with no discard in it at all, the dissolve both halves of a fade share, and the card')
 check(w.species.every((sp) => sp.cardMaterial.customProgramCacheKey() === `wildlife-${sp.key}-card-spun-fade-flat`), 'and the card is its own program: spun to face her, dithered like everything else that arrives or leaves, and flat, wearing no hue its mesh could not wear back')
 check(w.batch.children.length === 3 && w.species.every((sp) => w.batch.children.includes(sp.cardMesh) && sp.cardMesh.count === 0 && !sp.cardMesh.visible), 'the batch holds one card mesh a species -- empty, and not drawn at all until the cards are photographed -- and otherwise only the puppets it lends out')
-check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === 2 && p.meshes.length === LOD_RUNGS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
+check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === STAND_IN_BONES && p.meshes.length === LOD_RUNGS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
 check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([name, a]) => (ONE_SHOT.has(name) ? a.loop === THREE.LoopOnce && a.clampWhenFinished : a.loop === THREE.LoopRepeat)))), `${[...ONE_SHOT].join(', ')} play once and hold, the rest cycle`)
 {
   const compile = (m) => {
@@ -553,6 +576,64 @@ wake(w)
   const hare = trace('hare', 1.6)
   const hareLeash = TETHER_M + 1.5 * hare.lodSize + 0.5
   check(hare.away < hareLeash, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m of ${hareLeash.toFixed(1)} from her in 15 s`)
+}
+
+// --- a standing body puts its feet on the ground -----------------------------------
+//
+// A tilted plain, and one of each species stood on it facing uphill. Idle, each
+// foot is solved to the ground under it (puppet.js FootIK); walking, the clip is
+// left exactly alone; turned on the spot, the ground is read again.
+{
+  const TILT = 0.15
+  const tilted = { heightAt: (x, z) => GROUND + TILT * z, normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { const len = Math.hypot(TILT, 1); out.x = 0; out.y = 1 / len; out.z = -TILT / len; return out }, obstacleAt: () => null }
+  const t = make(11, { walk: tilted, water: noWater, height })
+  t.place(0, 0)
+  wake(t)
+  const swing = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+  const dt = 1 / 60
+  // Her head over it, on the top rung, for `s` seconds.
+  const over = (c, s) => { for (let f = 0; f < Math.round(s / dt); f++) t.update(c.x, c.y + 1.6, c.z, dt) }
+  const still = (c, act) => { t._begin(c, act); c.aim = c.heading; c.left = 1e9 }
+  // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
+  const feet = (c) => {
+    c.puppet.group.updateMatrixWorld(true)
+    return c.puppet.ik.legs.map((l) => {
+      A.setFromMatrixPosition(l.A.matrixWorld); B.setFromMatrixPosition(l.B.matrixWorld); C.setFromMatrixPosition(l.C.matrixWorld)
+      return { id: l.id, hover: C.y - tilted.heightAt(C.x, C.z), knee: Math.acos(A.sub(B).normalize().dot(C.sub(B).normalize())) }
+    })
+  }
+  const restKnee = Math.acos(new THREE.Vector3(-0.12, 0.3, 0).normalize().dot(new THREE.Vector3(-0.12, -(LEG_HIP_Y - 0.3 - LEG_FOOT_Y), 0).normalize()))
+  const identity = new THREE.Quaternion()
+  check([...PLANTED].sort().join() === 'alert,eat-down,eat-loop,eat-up,idle', 'the clips whose feet stay put are idle, alert and the graze -- a dig lifts a forefoot, a sit and a lie fold, and no gait plants', [...PLANTED].join(' '))
+  for (const key of ['stag', 'fox', 'hare']) {
+    const c = beside(t, key)
+    c.heading = -Math.PI / 2
+    still(c, 'stand')
+    over(c, 1)
+    const own = LEG_FOOT_Y * c.sp.asset.height * c.k
+    const rise = 0.6 * c.sp.asset.span * c.k * TILT
+    const up = feet(c)
+    check(c.clip === 'idle' && c.speed === 0 && c.puppet?.planted && c.puppet.ik.w === 1, `a ${key} stood idle facing up a ${((Math.atan(TILT) * 180) / Math.PI).toFixed(0)}-degree slope has its feet planted`)
+    check(up.every((f) => Math.abs(f.hover - own) < 1e-3), `and a second later each of its four feet stands exactly its clip's own ${(own * 100).toFixed(1)} cm over the ground under it, which rises ${(rise * 100).toFixed(0)} cm from its hind feet to its fore`, up.map((f) => `${f.id} ${(f.hover * 100).toFixed(2)}`).join(' '))
+    check(up.filter((f) => f.id[0] === 'F').every((f) => f.knee < restKnee - 0.02) && up.filter((f) => f.id[0] === 'H').every((f) => f.knee > restKnee + 0.02), 'its fore knees folded and its hind knees opened off the clip to get there', up.map((f) => `${f.id} ${((f.knee * 180) / Math.PI).toFixed(1)}`).join(' ') + ` of ${((restKnee * 180) / Math.PI).toFixed(1)}`)
+    // Walking, the solver lets go and the mixer alone owns the leg: the stand-in's clips never touch a leg, so every hip and knee is back at rest.
+    still(c, 'roam')
+    over(c, 0.5)
+    const walking = feet(c)
+    check(c.speed > 0 && !c.puppet.planted && !c.puppet.ik.active && !c.puppet.ik.dirty && c.puppet.ik.legs.every((l) => l.A.quaternion.equals(identity) && l.B.quaternion.equals(identity)) && walking.every((f) => Math.abs(f.knee - restKnee) < 1e-9), `walking off, ${c.clip}, half a second later its legs are the clip's exactly, whatever the ground under each foot`, walking.map((f) => `${f.id} ${(f.hover * 100).toFixed(1)}`).join(' '))
+    // Stood again and turned on the spot, past REPLANT: the ground is read under where the feet are now, and they land on it again.
+    still(c, 'stand')
+    over(c, 1)
+    const first = c.puppet.plantHeading
+    c.aim = c.heading + REPLANT * 3
+    over(c, 3)
+    const turned = feet(c)
+    // Between re-plants a foot's ground is the one read up to REPLANT ago: at most that swing, at the foot's radius, down the tilt.
+    const stale = Math.hypot(0.3 * c.sp.asset.span, 0.3 * c.sp.asset.width) * c.k * REPLANT * TILT
+    check(Math.abs(swing(c.heading - c.aim)) < 1e-6 && c.puppet.plantHeading !== first && Math.abs(swing(c.puppet.plantHeading - c.heading)) <= REPLANT && turned.every((f) => Math.abs(f.hover - own) < stale + 1e-3), `turned ${(REPLANT * 3).toFixed(2)} rad on the spot, it has read the ground again and every foot stands on it, to within the ${(stale * 100).toFixed(1)} cm a swing short of REPLANT can move the ground under a foot`, `planted at ${first.toFixed(2)}, again at ${c.puppet.plantHeading.toFixed(2)}, facing ${c.heading.toFixed(2)}; ${turned.map((f) => `${f.id} ${((f.hover - own) * 100).toFixed(2)}`).join(' ')}`)
+  }
+  t.dispose()
 }
 
 // --- drawn, or not drawn ---------------------------------------------------------

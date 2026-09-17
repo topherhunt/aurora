@@ -91,7 +91,7 @@ import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, SPUN_VIEWS, bakeCritterCard, createCritterCardMaterial, critterTier,
   cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileSeed, walkTiles,
 } from './critters.js'
-import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { LOD_FADE_S, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -152,6 +152,10 @@ const FADE_S = 0.25
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up']
 export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie'])
+// The clips whose four feet stay put, so a standing body's feet are put on the
+// ground under each (puppet.js FootIK). Measured off the shipped clips: a dig
+// lifts a forefoot, a sit and a lie fold the legs, and no gait is planted.
+export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up'])
 
 /**
  * The three of them. `acts` and `gaits` are (name, weight) pairs rolled when an
@@ -210,6 +214,7 @@ const _norm = { x: 0, y: 1, z: 0 }
 export async function loadQuadrupedGlb(url) {
   const asset = await loadSkinnedAsset(url, { tiers: LOD_RUNGS, clips: CLIPS, extras: 'quadruped' })
   if (!(asset.extras.span > 0)) throw new Error(`${url}: no turned span in its extras -- re-ship it`)
+  if (asset.extras.legs?.length !== 4) throw new Error(`${url}: no four legs in its extras -- re-ship it`)
   return { ...asset, ...asset.extras }
 }
 
@@ -587,6 +592,8 @@ export class Wildlife {
     if (!puppet) return
     puppet.show(tier)
     puppet.play(c.clip, c.cue)
+    // Carried, there is no ground under its feet.
+    puppet.unplant()
     puppet.step(dt)
     puppet.group.matrix.copy(matrix)
     puppet.group.matrixWorldNeedsUpdate = true
@@ -867,6 +874,7 @@ export class Wildlife {
         _mat.compose(_pos, _quat, _scl)
 
         puppet.play(c.clip, c.cue)
+        groundFeet(puppet, c, this.walk, PLANTED, probing)
         puppet.step(dt)
         // Only where it shows: a held puppet draws the pose already in its bone
         // texture wherever its group has since moved to (puppet.js POSE_EVERY),

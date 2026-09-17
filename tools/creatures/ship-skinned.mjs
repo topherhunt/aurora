@@ -302,7 +302,9 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
     // and their bounding box says nothing about how the animal stands. `span`,
     // `width` and `height` are the turned body's extents, and `frame` is the
     // transform that turns the bind-pose geometry to match -- which is what the
-    // world photographs its far card off.
+    // world photographs its far card off. `legs` names each leg's joint chain,
+    // hip to foot, for the puppet's foot IK (render/puppet.js FootIK): names
+    // only, since the world reads the geometry off the live pose.
     scenes: [{
       nodes: [...tiers.map((_, k) => k), root],
       extras: {
@@ -310,6 +312,10 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
           sizeM: meta.sizeM, wheelbase: map.wheelbase, gait,
           span: frame.span, width: frame.width, height: frame.height,
           frame: { yaw: Math.atan2(frame.s, frame.c), t: frame.t },
+          legs: map.legs.map((l) => {
+            for (const name of l.chain) if (!byName.has(name)) throw new Error(`${id}: leg ${l.id} names joint ${name}, which the skeleton does not carry`)
+            return { id: l.id, chain: l.chain }
+          }),
         },
       },
     }],

@@ -26,6 +26,15 @@
 // distance band in one frame: a fade driven by distance across the band edge
 // would still pop under a teleport, and this one always takes its LOD_FADE_S.
 //
+// A STANDING BODY PUTS ITS FEET ON THE GROUND (FootIK below). The clips are
+// made on a flat floor and the body stands on the world vertical, so on a
+// hillside a clip's uphill feet are in the hill and its downhill feet in the
+// air. While a layer says the body is planted -- a still clip, stopped -- each
+// foot is offset vertically to the ground under it, by a two-bone bend of the
+// leg it hangs from, and the root sinks so the legs share the reach. It is an
+// OFFSET on the clip's pose, not a target in place of it: the pose's own foot
+// motion (a graze's weight shift) is kept whole, and a gait is never touched.
+//
 // WHAT IT COSTS, honestly. Not fill -- the discarded fragments are the ones the
 // other tier draws, so a fade is very nearly the fill of one creature. The real
 // cost is that `discard` turns off early-Z on tiled mobile GPUs (the Quest's
@@ -228,6 +237,255 @@ export const setTierTint = (on) => {
   tierTint = on
 }
 
+// ---------------------------------------------------------------------------
+// FOOT IK. Each shipped leg is a joint chain, hip to foot (the GLB extras'
+// `legs`, tools/creatures/ship-skinned.mjs), and is solved as a VIRTUAL
+// two-bone leg: the hip A is the chain's first joint, the foot C its last, and
+// the knee B the interior joint furthest from both -- a Tripo leg zig-zags
+// through three or four joints, and the one in the middle is where bending it
+// reads as a knee. Everything between is carried rigidly.
+//
+// Per leg, per posed frame: the foot's target is its posed position plus the
+// leg's vertical offset. The knee angle comes from the law of cosines over the
+// hip-foot distance, the bend axis from the pose itself (the normal of the
+// hip-knee-foot triangle, so a knee always bends the way the clip already has
+// it bent), and the hip is then turned so the straightened-or-folded leg points
+// at the target. Two rotations, no iteration: a few hundred flops a leg.
+//
+// THE ROOT DROPS by the mean of the offsets, and further whenever a downhill
+// leg would otherwise have to reach past its length -- so a body across a
+// slope sits lower and bends its uphill knees rather than hovering a foot. A
+// leg is never folded shorter than FOLD of its posed length: past that the
+// foot goes into the hill, which reads better than a knee folded flat.
+//
+// Every offset and the root drop are eased with the clip's own crossfade and
+// smoothed, so planting, unplanting and a re-plant after a turn on the spot
+// all slide rather than snap. What the solver writes it also UNDOES before the
+// mixer next runs: the mixer only rewrites the properties a clip tracks, and a
+// bend left on an untracked joint would compound frame on frame.
+// ---------------------------------------------------------------------------
+
+// A leg is never folded shorter than this fraction of its posed hip-foot length, nor stretched past this fraction of straight.
+const FOLD = 0.55
+const REACH = 0.995
+// Seconds the offsets and the root drop take to settle after a plant or a re-plant; the on/off ramp is the clip crossfade.
+const SETTLE_S = 0.12
+
+const _a = new THREE.Vector3()
+const _b = new THREE.Vector3()
+const _c = new THREE.Vector3()
+const _t = new THREE.Vector3()
+const _n = new THREE.Vector3()
+const _q = new THREE.Quaternion()
+const _qp = new THREE.Quaternion()
+
+/**
+ * The feet of one puppet, planted or not. `bones` is the puppet's whole tree
+ * in traverse order (parents first), at rest; `legs` the shipped chains.
+ */
+class FootIK {
+  constructor(bones, legs) {
+    if (!legs.length) throw new Error('FootIK: no legs')
+    const byName = new Map(bones.map((b) => [b.name, b]))
+    const index = new Map(bones.map((b, i) => [b, i]))
+    const resolve = (name) => {
+      const b = byName.get(THREE.PropertyBinding.sanitizeNodeName(name))
+      if (!b) throw new Error(`FootIK: no bone named ${name}`)
+      return b
+    }
+    // Rest transforms in creature space, for choosing knees and reading the feet.
+    const rest = bones.map(() => ({ p: new THREE.Vector3(), q: new THREE.Quaternion() }))
+    bones.forEach((b, i) => {
+      if (Math.abs(b.scale.x - 1) > 1e-3 || Math.abs(b.scale.y - 1) > 1e-3 || Math.abs(b.scale.z - 1) > 1e-3) throw new Error(`FootIK: bone ${b.name} is scaled, and the solver composes unscaled`)
+      const par = b.parent?.isBone ? rest[index.get(b.parent)] : null
+      if (par) {
+        rest[i].q.multiplyQuaternions(par.q, b.quaternion)
+        rest[i].p.copy(b.position).applyQuaternion(par.q).add(par.p)
+      } else {
+        rest[i].q.copy(b.quaternion)
+        rest[i].p.copy(b.position)
+      }
+    })
+    this.root = bones[0]
+    this.legs = legs.map((l) => {
+      const chain = l.chain.map(resolve)
+      if (chain.length < 3) throw new Error(`FootIK: leg ${l.id} has ${chain.length} joints, a bend needs three`)
+      const A = chain[0], C = chain[chain.length - 1]
+      let B = null, best = -1
+      for (let k = 1; k < chain.length - 1; k++) {
+        const pk = rest[index.get(chain[k])].p
+        const s = Math.min(pk.distanceTo(rest[index.get(A)].p), pk.distanceTo(rest[index.get(C)].p))
+        if (s > best) { best = s; B = chain[k] }
+      }
+      const foot = rest[index.get(C)].p
+      return {
+        id: l.id, A, B, C, iA: index.get(A), iB: index.get(B), iC: index.get(C), iPA: A.parent?.isBone ? index.get(A.parent) : -1, iPB: index.get(B.parent),
+        foot: { x: foot.x, z: foot.z }, dy: 0, dyTo: 0, savedA: new THREE.Quaternion(), savedB: new THREE.Quaternion(),
+      }
+    })
+    // Every bone a solve has to compose: the ancestors of every hip, knee and foot, in tree order, with each one's parent's slot.
+    const need = new Set()
+    for (const l of this.legs) for (let b = l.C; b?.isBone; b = b.parent) need.add(b)
+    this.path = bones.map((b, i) => (need.has(b) ? i : -1)).filter((i) => i >= 0).map((i) => ({ bone: bones[i], i, par: bones[i].parent?.isBone ? index.get(bones[i].parent) : -1 }))
+    this.pos = bones.map(() => new THREE.Vector3())
+    this.quat = bones.map(() => new THREE.Quaternion())
+    this.savedRoot = new THREE.Vector3()
+    // Rest foot positions in creature space, for the layer to read the ground under.
+    this.feet = this.legs.map((l) => l.foot)
+    this.dirty = false
+    this.w = 0
+    this.wTo = 0
+    this.rootDy = 0
+    this.fresh = false
+    this.heading = 0
+  }
+
+  get planted() { return this.wTo > 0 }
+
+  /** True while a solve has anything to write: on, or still fading off. */
+  get active() { return this.w > 0 || this.wTo > 0 }
+
+  /** Each foot's vertical offset to the ground, in creature units, in leg order; `heading` is whatever the layer wants back from `heading` to decide a re-plant. */
+  plant(dys, heading) {
+    if (dys.length < this.legs.length) throw new Error(`FootIK: ${this.legs.length} legs, ${dys.length} offsets`)
+    // A fresh plant starts at its targets and ramps in through w; only a re-plant slides.
+    const fresh = this.wTo === 0
+    this.fresh = fresh
+    this.wTo = 1
+    this.heading = heading
+    for (let i = 0; i < this.legs.length; i++) {
+      const l = this.legs[i]
+      l.dyTo = dys[i]
+      if (fresh) l.dy = dys[i]
+    }
+  }
+
+  unplant() { this.wTo = 0 }
+
+  /** Off at once, nothing written: for a puppet handed back. */
+  reset() {
+    this.restore()
+    this.w = 0
+    this.wTo = 0
+    this.rootDy = 0
+  }
+
+  /** Put back what the last solve wrote, so the mixer starts from the clip. */
+  restore() {
+    if (!this.dirty) return
+    this.dirty = false
+    this.root.position.copy(this.savedRoot)
+    for (const l of this.legs) {
+      l.A.quaternion.copy(l.savedA)
+      l.B.quaternion.copy(l.savedB)
+    }
+  }
+
+  /** Solve over the pose the mixer just wrote (every bone's local matrix current), `dt` seconds after the last solve. */
+  solve(dt, fadeS) {
+    const step = dt / fadeS
+    this.w = this.wTo > this.w ? Math.min(this.wTo, this.w + step) : Math.max(this.wTo, this.w - step)
+    if (this.w <= 0) return
+    const ease = 1 - Math.exp(-dt / SETTLE_S)
+
+    // The pose in creature space, root down.
+    for (const { bone, i, par } of this.path) {
+      if (par < 0) {
+        this.pos[i].copy(bone.position)
+        this.quat[i].copy(bone.quaternion)
+      } else {
+        this.quat[i].multiplyQuaternions(this.quat[par], bone.quaternion)
+        this.pos[i].copy(bone.position).applyQuaternion(this.quat[par]).add(this.pos[par])
+      }
+    }
+
+    // The root drop: the mean offset, and lower while any leg cannot reach its own.
+    let mean = 0
+    let ceiling = Infinity
+    for (const l of this.legs) {
+      l.dy += (l.dyTo - l.dy) * ease
+      mean += l.dy
+      const a = this.pos[l.iA].distanceTo(this.pos[l.iB])
+      const b = this.pos[l.iB].distanceTo(this.pos[l.iC])
+      const d0 = this.pos[l.iA].distanceTo(this.pos[l.iC])
+      ceiling = Math.min(ceiling, l.dy + REACH * (a + b) - d0)
+    }
+    const rootDy = Math.min(mean / this.legs.length, ceiling)
+    this.rootDy = this.fresh ? rootDy : this.rootDy + (rootDy - this.rootDy) * ease
+    this.fresh = false
+
+    this.savedRoot.copy(this.root.position)
+    for (const l of this.legs) {
+      l.savedA.copy(l.A.quaternion)
+      l.savedB.copy(l.B.quaternion)
+    }
+    this.dirty = true
+
+    for (const l of this.legs) {
+      const delta = this.w * (l.dy - this.rootDy)
+      if (Math.abs(delta) < 1e-5) continue
+      const A = this.pos[l.iA], B = this.pos[l.iB], C = this.pos[l.iC]
+      const a = A.distanceTo(B)
+      const b = B.distanceTo(C)
+      const d0 = A.distanceTo(C)
+      _t.copy(C); _t.y += delta
+      const dMax = REACH * (a + b)
+      const d = Math.min(dMax, Math.max(Math.abs(a - b) + 1e-4, FOLD * d0, _t.distanceTo(A)))
+      // The knee, about the axis the pose already bends it on.
+      _a.subVectors(A, B); _c.subVectors(C, B)
+      _n.crossVectors(_a, _c)
+      if (_n.lengthSq() > 1e-12 * a * a * b * b) {
+        _n.normalize()
+        const cos0 = Math.max(-1, Math.min(1, (a * a + b * b - d0 * d0) / (2 * a * b)))
+        const cos1 = Math.max(-1, Math.min(1, (a * a + b * b - d * d) / (2 * a * b)))
+        _q.setFromAxisAngle(_n, Math.acos(cos1) - Math.acos(cos0))
+        _qp.copy(this.quat[l.iPB]).invert().multiply(_q).multiply(this.quat[l.iPB])
+        l.B.quaternion.premultiply(_qp)
+        // The foot the bend moved it to, still about the unturned hip.
+        _c.applyQuaternion(_q).add(B)
+      } else {
+        _c.copy(C)
+      }
+      // The hip, so the leg points down its target.
+      _a.subVectors(_c, A).normalize()
+      _b.subVectors(_t, A).normalize()
+      _q.setFromUnitVectors(_a, _b)
+      if (l.iPA < 0) _qp.copy(_q)
+      else _qp.copy(this.quat[l.iPA]).invert().multiply(_q).multiply(this.quat[l.iPA])
+      l.A.quaternion.premultiply(_qp)
+      l.A.updateMatrix()
+      l.B.updateMatrix()
+    }
+    this.root.position.y += this.w * this.rootDy
+    this.root.updateMatrix()
+  }
+}
+
+// A planted body that has turned this far on the spot reads the ground under its feet again, on its next probe: a foot half a metre out swings a tenth of a metre, which on a 20-degree hillside is the few centimetres it may hover or sink between readings.
+export const REPLANT = 0.2
+const _dys = [0, 0, 0, 0, 0, 0]
+
+/**
+ * A layer's one call a frame for its puppet's feet: a still body's to the
+ * ground, a moving one's back to its clip. `c` is the layer's creature -- x,
+ * y, z on the ground, heading about the world up, k its scale, speed and clip
+ * -- `planted` the clips whose feet stay put, `walk` the ground. The ground is
+ * read under each rest foot, turned and scaled as the body is, against the
+ * body's own height: once when the body stops, and again on a probe frame once
+ * it has turned REPLANT on the spot. In between the heights are not read at all.
+ */
+export function groundFeet(puppet, c, walk, planted, probing) {
+  if (!(c.speed === 0 && planted.has(c.clip))) { puppet.unplant(); return }
+  if (puppet.planted && !(probing && Math.abs(Math.atan2(Math.sin(c.heading - puppet.plantHeading), Math.cos(c.heading - puppet.plantHeading))) > REPLANT)) return
+  const cs = Math.cos(c.heading), sn = Math.sin(c.heading)
+  const feet = puppet.feet
+  for (let i = 0; i < feet.length; i++) {
+    const fx = feet[i].x * c.k, fz = feet[i].z * c.k
+    _dys[i] = (walk.heightAt(c.x + fx * cs + fz * sn, c.z - fx * sn + fz * cs) - c.y) / c.k
+  }
+  puppet.plant(_dys, c.heading)
+}
+
 /**
  * One near creature's body: its own bones, every shared tier geometry bound to
  * them, and a mixer over the shared clips.
@@ -252,6 +510,8 @@ export class Puppet {
     // are composed once and never again.
     this.bones = []
     root.traverse((b) => { b.matrixAutoUpdate = false; this.bones.push(b) })
+    // Its feet, if the shipper named its legs; a body without them cannot plant.
+    this.ik = asset.legs ? new FootIK(this.bones, asset.legs) : null
     const sphere = poseSphere(asset.tiers)
     this.meshes = asset.tiers.map((geo) => {
       const m = new THREE.SkinnedMesh(geo, mats.plain)
@@ -316,6 +576,8 @@ export class Puppet {
     // A new clip shows on the next frame whatever rung it is on: a held puppet
     // playing the pose of the animal before it is the one stale frame that reads.
     this.poseIn = 0
+    // The mixer snapshots a property it starts driving, so it must not see a solved foot.
+    this.ik?.restore()
     if (this.current && this.current !== next && at < 0) {
       next.reset().fadeIn(this.clipFade).play()
       this.current.fadeOut(this.clipFade)
@@ -338,7 +600,27 @@ export class Puppet {
     this._apply()
   }
 
-  /** One frame: the mixer at this rung's cadence, then the dissolve. */
+  /** The rest position of each foot in creature space, in leg order, to read the ground under. */
+  get feet() {
+    if (!this.ik) throw new Error('Puppet: this body has no legs named -- re-ship it')
+    return this.ik.feet
+  }
+
+  /** True while its feet are asked to the ground; `plantHeading` is what the last plant was handed. */
+  get planted() { return this.ik?.planted ?? false }
+
+  get plantHeading() { return this.ik.heading }
+
+  /** Feet to the ground: `dys` is each foot's vertical offset in creature units, in `feet` order. Eases in over the clip fade. */
+  plant(dys, heading = 0) {
+    if (!this.ik) throw new Error('Puppet: this body has no legs named -- re-ship it')
+    this.ik.plant(dys, heading)
+  }
+
+  /** Feet back to the clip's, eased out over the clip fade. Nothing to undo is fine. */
+  unplant() { this.ik?.unplant() }
+
+  /** One frame: the mixer at this rung's cadence, the feet if planted, then the dissolve. */
   step(dt) {
     this.held += dt
     this.posed = --this.poseIn <= 0
@@ -346,9 +628,12 @@ export class Puppet {
       // Mid-fade the finer of the two rungs wins, so a body arriving on rung 0
       // is at full rate the moment it starts arriving rather than a rung later.
       this.poseIn = this.fade < 1 ? Math.min(poseEvery(this.from), poseEvery(this.to)) : poseEvery(this.to)
+      const solving = this.ik?.active ?? false
+      if (solving) this.ik.restore()
       this.mixer.update(this.held)
-      this.held = 0
       for (const b of this.bones) b.updateMatrix()
+      if (solving) this.ik.solve(this.held, this.clipFade)
+      this.held = 0
     }
     // A settled puppet holds its materials, so the tint row flipping is the one
     // thing besides a fade that has to repaint one.
@@ -379,6 +664,7 @@ export class Puppet {
 
   /** Back to nothing at all, at once and without a fade: its creature has gone, not walked off. */
   release() {
+    this.ik?.reset()
     this.mixer.stopAllAction()
     this.current = null
     this.cue = -1
