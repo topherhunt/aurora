@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
-// THE ABOMINABLE SNOWMEN: one per 10,000 square metres of ground above the snow
-// line, wood or open, two to four metres tall, and not one of them moves until
+// THE ABOMINABLE SNOWMEN: one per 40,000 square metres of ground above the snow
+// line, wood or open, two to six metres tall, and not one of them moves until
 // she does.
 //
 // PLACEMENT IS THE WILDLIFE'S: a pure function of position (critters.js
@@ -38,7 +38,7 @@
 // faces, like the wildlife. It is drawn as the wildlife is: a puppet
 // (render/puppet.js) over the shipped ladder, dissolving between the world's
 // rungs (critters.js critterTier), which are a ratio of its OWN height -- a 2 m
-// one steps down at 13 m where a 4 m one holds to 27. Past the last rung it is
+// one steps down at 9 m where a 6 m one holds to 27. Past the last rung it is
 // neither drawn nor minded, and it stands where it stood until its tile goes.
 // ---------------------------------------------------------------------------
 
@@ -49,16 +49,16 @@ import { Puppet, loadSkinnedAsset, makePuppetMaterials } from './puppet.js'
 
 export const TILE = 32
 export const RADIUS = 96
-// Snowmen per square metre of ground above the snow line: one per 10,000.
-export const DENSITY = 1 / 10000
-// Skinned tiers, one per rung of the world ladder (critters.js LOD_RUNGS). A snowman's size is its height, which is its largest extent, so a 3 m one steps down at 20, 40 and 80 m and is culled past 160 -- further off than a tile of it is ever loaded, so in practice only the smallest are culled by the ladder rather than by their tile.
+// Snowmen per square metre of ground above the snow line: one per 40,000.
+export const DENSITY = 1 / 40000
+// Skinned tiers, one per rung of the world ladder (critters.js LOD_RUNGS). A snowman's size is its height, which is its largest extent, so a 6 m one steps down at 27, 54 and 108 m and is culled past 216 -- further off than a tile of it is ever loaded, so in practice only the smallest are culled by the ladder rather than by their tile.
 export const LOD_TIERS = LOD_RUNGS
-// Three are expected in RADIUS; every one of them is in sight, so there is a puppet a slot.
+// Under one is expected in RADIUS; every one of them is in sight, so there is a puppet a slot.
 export const MAX = 16
 export const PUPPETS = 16
 
 // How tall one is, rolled evenly between the two.
-export const SIZE_M = [2, 4]
+export const SIZE_M = [2, 6]
 // Ground one will not stand on: steeper than this, or anywhere under the snow line.
 export const MAX_SLOPE = (35 * Math.PI) / 180
 // The one white is a narrow band of hues.

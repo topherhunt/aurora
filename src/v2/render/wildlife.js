@@ -96,10 +96,10 @@ export const CARD_BODY_M = 4
 // can be is this plus half a tile's diagonal. Set past the card range of the
 // tallest body the layer holds, so a card is never waiting on its tile.
 export const RADIUS = Math.ceil(cullRange(CARD_BODY_M, CARD_RUNGS) + (TILE * Math.SQRT2) / 2)
-// Animals per square metre, of EACH species: the brief's one per 3000.
+// Animals per square metre of the commonest species, the hare; each species scales it by its `rate`.
 export const DENSITY = 1 / 3000
 // Slots a species gets, and puppets. A stag's card range covers 200 m, which at
-// DENSITY is some two dozen live stags before the seat test thins them, so the
+// its rate is some dozen live stags before the seat test thins them, so the
 // slot pool is sized for that crowd clustering hard. Puppets are the scarcer
 // thing and are sized for the MESH range alone: a starved animal is not drawn.
 export const MAX = 64
@@ -147,24 +147,24 @@ export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie'])
 
 /**
  * The three of them. `acts` and `gaits` are (name, weight) pairs rolled when an
- * animal needs something new to do; the size of a body is its length, the
- * shipped figure times `scale` times a roll of `vary` either way, and no two
- * animals are the same size or quite the same colour.
+ * animal needs something new to do; `rate` is the species' share of DENSITY;
+ * the size of a body is its length, the shipped figure times `scale` times a
+ * roll of `vary` either way, and no two animals are the same size or quite the
+ * same colour.
  */
 export const SPECIES = [
   {
-    key: 'stag', glb: CRITTER_GLB.stag, hue: 0.1, vary: 0.25, scale: 1,
+    key: 'stag', glb: CRITTER_GLB.stag, hue: 0.1, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
   },
   {
-    // A red fox really is 0.7 m long and at that length it reads as a cat across a field, so the world draws it at twice the roster's figure -- and walks it twice as fast, the gait being scaled with the body.
-    key: 'fox', glb: CRITTER_GLB.fox, hue: 0.12, vary: 0.25, scale: 2,
+    key: 'fox', glb: CRITTER_GLB.fox, hue: 0.12, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
   },
   {
-    key: 'hare', glb: CRITTER_GLB.hare, hue: 0.14, vary: 0.25, scale: 1,
+    key: 'hare', glb: CRITTER_GLB.hare, hue: 0.14, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
     gaits: [['walk', 3], ['trot', 7]],
   },
@@ -380,7 +380,7 @@ export class Wildlife {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const t = { tx, tz, spawns: [] }
     for (const sp of this.species) {
-      const want = DENSITY * TILE * TILE
+      const want = DENSITY * sp.rate * TILE * TILE
       const n = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
       for (let i = 0; i < n; i++) {
         const x = (tx + rand()) * TILE

@@ -6,9 +6,9 @@
 // snow line, a tarn in a basin, a crag too steep to stand on, two tree trunks,
 // and a long slope falling out of the snow at the near edge. Everything below
 // is a way a snowman can go wrong without anything throwing: a scatter that is
-// not one per 10,000 square metres of ground above the snow line, that puts one
+// not one per 40,000 square metres of ground above the snow line, that puts one
 // below it, or that is not the same twice; one standing in the tarn, up the
-// crag or inside a trunk; one under 2 m or over 4 m; one found doing anything
+// crag or inside a trunk; one under 2 m or over 6 m; one found doing anything
 // but cowering, or that cowers on with her in its face; one that notices her
 // from too far, that does not turn to her, that follows her while she comes
 // closer or fails to when she backs off, that walks through her, that will not
@@ -203,7 +203,7 @@ for (const bad of [[{ snowLineAt: null }, water, walk], [height, {}, walk], [hei
 
 // --- the scatter's rate ----------------------------------------------------------
 const alive = (of) => of.slots.filter((c) => c.tile !== null || c.loose)
-const SEEDS = 40
+const SEEDS = 160
 {
   let count = 0
   let tiles = 0
@@ -239,7 +239,7 @@ w.place(0, 0)
     for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, k: c.k, hue: c.hue, nx: c.nx, ny: c.ny, nz: c.nz, state: c.state, clip: c.clip })
     k.dispose()
   }
-  check(pool.length > SEEDS, 'the mountain carries snowmen', `${pool.length} over ${SEEDS} seeds; one seed: ${w.stats.alive} on ${w.stats.tiles} tiles`)
+  check(pool.length >= 50, 'the mountain carries snowmen', `${pool.length} over ${SEEDS} seeds; one seed: ${w.stats.alive} on ${w.stats.tiles} tiles`)
   check(pool.every((c) => c.y >= SNOW_LINE), 'every one stands above the snow line', `lowest ${Math.min(...pool.map((c) => c.y)).toFixed(2)} m of ${SNOW_LINE}`)
   // The rolling ground rides 0.6 m either way over the slope, which is 1.7 m of z at this pitch.
   const ripple = 0.6 / SLOPE + 0.05
@@ -491,7 +491,7 @@ function lone(seed = 3) {
   check(critterTier(size, e * (1 + h) - 0.01, 0, LOD_TIERS) === 0 && critterTier(size, e * (1 + h) + 0.01, 0, LOD_TIERS) === 1 && critterTier(size, e * (1 - h) + 0.01, 1, LOD_TIERS) === 1 && critterTier(size, e * (1 - h) - 0.01, 1, LOD_TIERS) === 0, `a rung is left only ${h * 100}% past its edge, going either way`)
   const cull = cullRange(size)
   check(critterTier(size, cull * (1 + h) - 0.01, LOD_TIERS - 1, LOD_TIERS) === LOD_TIERS - 1 && critterTier(size, cull * (1 + h) + 0.01, LOD_TIERS - 1, LOD_TIERS) === LOD_TIERS, 'so one vanishes a little past its cull and comes back a little inside it, never both on the one spot', `culled past ${cull.toFixed(0)} m`)
-  // Size IS in it: twice the snowman, twice every distance on the ladder.
+  // Size IS in it: three times the snowman, three times every distance on the ladder.
   const { k, c } = lone(3)
   const walkOut = (m) => {
     c.size = m
@@ -501,8 +501,8 @@ function lone(seed = 3) {
     const step = LOD_HYSTERESIS * 2
     return Array.from({ length: LOD_TIERS }, (_, i) => lodReach(m, i)).flatMap((d) => [d * (1 - step), d * (1 + step)]).map((d) => { for (let f = 0; f < 3; f++) k.update(c.x, c.y + d, c.z, 0); return c.lod })
   }
-  const [two, four] = [walkOut(SIZE_M[0]), walkOut(SIZE_M[1])]
-  check(two.join() === four.join() && two.join() === '0,1,1,2,2,3,3,4', `a ${SIZE_M[0]} m and a ${SIZE_M[1]} m snowman walk the same ladder, one at twice the other's distances`, `${lodReach(SIZE_M[0], 0).toFixed(0)} m against ${lodReach(SIZE_M[1], 0).toFixed(0)} m for the top rung`)
+  const [small, big] = [walkOut(SIZE_M[0]), walkOut(SIZE_M[1])]
+  check(small.join() === big.join() && small.join() === '0,1,1,2,2,3,3,4', `a ${SIZE_M[0]} m and a ${SIZE_M[1]} m snowman walk the same ladder, one at ${SIZE_M[1] / SIZE_M[0]}x the other's distances`, `${lodReach(SIZE_M[0], 0).toFixed(0)} m against ${lodReach(SIZE_M[1], 0).toFixed(0)} m for the top rung`)
   k.dispose()
 }
 

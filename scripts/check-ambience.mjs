@@ -323,6 +323,26 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(new Set(song.map((p) => p.name)).size >= 3, 'the five songbird clips are all in play', `${new Set(song.map((p) => p.name)).size} distinct`)
 }
 {
+  // Aloft over the meadow and the wood: the perched birds thin across their band and fall silent past its top; the raptors soar on.
+  const sense = scripted()
+  sense.s.aboveSnow = -300
+  sense.s.forest = 0.9
+  const S = RULES.songbird, P = RULES.woodpecker, O = RULES.owl
+  const aloft = (m) => ({ x: 0, y: sense.s.groundH + m, z: 0 })
+  const mid = fakeEngine()
+  run(new Ambience({ engine: mid, sense, rand: mulberry32(11) }), 120, { head: aloft((S.aloft[0] + S.aloft[1]) / 2) })
+  const song = mid.plays.filter((p) => SONGBIRDS.includes(p.name))
+  check(song.length >= 8 && song.every((p) => within(p.gain, S.gain[0] / 2, S.gain[1] / 2)), 'halfway up the songbird band the birds sing on at half their gain', `${song.length}, ${Math.min(...song.map((p) => p.gain)).toFixed(2)}-${Math.max(...song.map((p) => p.gain)).toFixed(2)}`)
+  const high = fakeEngine()
+  const amb = new Ambience({ engine: high, sense, rand: mulberry32(12) })
+  run(amb, 300, { head: aloft(Math.max(S.aloft[1], P.aloft[1], O.aloft[1]) + 5) })
+  run(amb, 300, { head: aloft(Math.max(S.aloft[1], P.aloft[1], O.aloft[1]) + 5), dayness: NIGHT })
+  check(count(high, ...SONGBIRDS, 'woodpecker', 'owl') === 0, 'past the top of the band no songbird, woodpecker or owl is heard, day or night')
+  sense.s.aboveSnow = 30
+  run(amb, 120, { head: aloft(200) })
+  check(count(high, ...RAPTORS) >= 2, 'the raptors still call around her high over the snow', `${count(high, ...RAPTORS)}`)
+}
+{
   // Above the snowline: raptors, no songbirds.
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = 30
@@ -639,7 +659,18 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   run(new Ambience({ engine, sense, rand: mulberry32(10) }), 600, {})
   const slides = count(engine, 'rockslide1', 'rockslide2')
   check(slides >= 8 && slides <= 32, 'a rockslide every 20-60 s in a boulder field', `${slides} in 600 s`)
-  check(engine.plays.filter((p) => p.name.startsWith('rockslide')).every((p) => within(p.gain, ...RULES.rockslideNear.gain) && p.at && Math.hypot(p.at.x, p.at.z) >= RULES.rockslideNear.range[0] - 1e-6), 'a talus slide is quiet and off in the distance')
+  const R = RULES.rockslideNear
+  // The gain a slide was rolled at, its distance fall-off undone.
+  const rolled = (head) => (p) => p.gain / (R.near / Math.max(R.near, Math.hypot(p.at.x - head.x, p.at.y - head.y, p.at.z - head.z)))
+  const talus = engine.plays.filter((p) => p.name.startsWith('rockslide'))
+  check(talus.every((p) => within(rolled(HEAD)(p), ...R.gain) && p.at && Math.hypot(p.at.x, p.at.z) >= R.range[0] - 1e-6), 'a talus slide is quiet and off in the distance')
+  check(talus.some((p) => p.gain < R.gain[0]) && talus.some((p) => p.gain > R.gain[0]), 'and quieter the further off it is', `${Math.min(...talus.map((p) => p.gain)).toFixed(2)}-${Math.max(...talus.map((p) => p.gain)).toFixed(2)}`)
+  // Flying 40 m over the field: the same slides at no more than a quarter of their rolled gain.
+  const up = { x: 0, y: sense.s.groundH + 40, z: 0 }
+  const aloft = fakeEngine()
+  run(new Ambience({ engine: aloft, sense, rand: mulberry32(10) }), 600, { head: up })
+  const high = aloft.plays.filter((p) => p.name.startsWith('rockslide'))
+  check(high.length >= 8 && high.every((p) => within(rolled(up)(p), ...R.gain) && p.gain <= R.gain[1] * R.near / (40 - R.rise[1])), 'high over the field the slides are heard from far below', `${high.length}, loudest ${Math.max(...high.map((p) => p.gain)).toFixed(3)}`)
   const few = fakeEngine()
   sense.s.boulders = 3
   run(new Ambience({ engine: few, sense, rand: mulberry32(10) }), 600, {})

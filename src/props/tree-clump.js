@@ -11,15 +11,16 @@ import { treeVariants } from './tree-bank.js'
 // the far tier of trees.js that draws a patch of canopy as one card instead of
 // a card per tree.
 //
-// WHY. trees.js thins the forest as 1/d past FULL_RADIUS, and a real forest
+// WHY. trees.js thins the forest as 1/d past its clump edge, and a real forest
 // does the opposite with distance -- trees stack up in depth per pixel until
 // the hillside reads solid. A per-tree card can never buy that back at a sane
-// instance count; a card that already has six trees overlapping in it can, at
-// a sixth of the instances.
+// instance count; a card that already has six trees in it can, at a sixth of
+// the instances, and the cards behind it fill the sky between its trees.
 //
 // HOW. `composeTreeClump` plants CLUMP_TREES copies of one species' near tier
-// in a shallow ellipse -- each at its own size, yaw and a little LIFT off the
-// ground line -- and merges them into one geometry. `bakeTreeClumps`
+// in a shallow ellipse -- each at its own size, yaw and a LIFT off the ground
+// line, spaced so they read as trees and not as one mass of canopy -- and
+// merges them into one geometry. `bakeTreeClumps`
 // photographs CLUMP_VARIANTS such clumps per planted species into consecutive
 // layers from the species' `clumpLayer`, framed to the SAME extents, so ONE
 // quad per species draws every variant: the instance picks its variant with a
@@ -34,15 +35,19 @@ import { treeVariants } from './tree-bank.js'
 
 export const CLUMP_TREES = 6
 
-// Metres. The half-extents of the ellipse the trunks are scattered over --
-// wide enough that six crowns overlap rather than stack, shallow enough that
-// the back row still shows between the front.
-const SPREAD_X = 5.5
-const SPREAD_Z = 2.5
-// Size multipliers, the same range trees.js SCALE hands a placed tree.
-const SIZE = [0.6, 1.3]
-// Metres a trunk may stand above the card's ground line.
-const LIFT_MAX = 1.5
+// Metres. The half-extents of the ellipse the trunks are scattered over. The
+// slots are 3 m apart against pine crowns of 3 to 7 m, so neighbours touch
+// or leave a gap of sky by the roll and the picture is six trees, not one
+// mass of canopy; shallow in z so the back row still shows between the front.
+const SPREAD_X = 9
+const SPREAD_Z = 3
+// Size multipliers. Narrower at the top than trees.js SCALE: the tallest tree
+// sets the frame every variant shares, so a 1.3 buys headroom over five
+// smaller trees.
+const SIZE = [0.5, 1.2]
+// Metres a trunk may stand above the card's ground line: a third of a tree's
+// height, so the crowns are staggered up as well as across.
+const LIFT_MAX = 3.5
 // Seeds: variant i of planted species v composes from SEED_BASE + v * CLUMP_VARIANTS + i.
 const SEED_BASE = 1000
 

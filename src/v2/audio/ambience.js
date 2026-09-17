@@ -87,12 +87,13 @@ export const FOOTFALLS = {
 export const RULES = {
   // Crow, eagle and hawk: by day, above the snowline, or high on a hillside with a cliff within earshot.
   raptor: { interval: [15, 45], gain: [0.3, 0.8], range: [25, 40], elev: [20, 60], cliffTan: 1.0, cliffBand: 120, light: 0.4 },
+  // The perched birds sit in the trees: each thins to nothing across its `aloft` band of metres her head is above the ground, and its clock stops past the top.
   // Owl: night, in dense wood, below the snow.
-  owl: { interval: [12, 35], gain: [0.3, 0.7], range: [8, 25], elev: [10, 40], dark: 0.3, forest: 0.75 },
+  owl: { interval: [12, 35], gain: [0.3, 0.7], range: [8, 25], elev: [10, 40], dark: 0.3, forest: 0.75, aloft: [20, 30] },
   // Woodpecker: a single burst, sporadic, anywhere there is wood at any hour and altitude.
-  woodpecker: { interval: [20, 70], gain: [0.3, 0.8], range: [8, 30], elev: [10, 45], forest: 0.5 },
+  woodpecker: { interval: [20, 70], gain: [0.3, 0.8], range: [8, 30], elev: [10, 45], forest: 0.5, aloft: [20, 30] },
   // Songbirds: day, below the snow; the wood is fuller of them than a meadow.
-  songbird: { interval: [3, 12], gain: [0.15, 0.7], range: [5, 25], elev: [10, 50], light: 0.4, forestSpeedup: 0.5 },
+  songbird: { interval: [3, 12], gain: [0.15, 0.7], range: [5, 25], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
   // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk...
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
   // ...and now and then one right beside her.
@@ -107,8 +108,8 @@ export const RULES = {
   crawl: { reach: 6, near: 1, level: 0.15, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
-  // A rockslide off in the talus when there are this many loose rocks within the sense box...
-  rockslideNear: { interval: [20, 60], gain: [0.2, 0.6], range: [10, 30], rise: [0, 10], minBoulders: 6 },
+  // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field...
+  rockslideNear: { interval: [20, 60], gain: [0.2, 0.6], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
   rockslideFoot: { chance: 0.15, gain: [0.3, 0.7] },
   // Lake: a wave every so often while her head is within `height` of the water -- on land within `reach` of the shore, or anywhere out over open water. Full volume up to `near` metres off the shore or above the surface, fading to `far` at the reach or the height.
@@ -297,26 +298,29 @@ export class Ambience {
         at: this.aroundHead(head, this.between(...R.range), this.between(...R.elev)),
       })
     }
+    // The perched birds: how far up she is, and how much of each is left at that height.
+    const up = head.y - s.groundH
+    const perched = (Y) => 1 - smoothstep(Y.aloft[0], Y.aloft[1], up)
     const O = RULES.owl
-    if (this.due('owl', dayness < O.dark && s.forest > O.forest && below, O.interval, dt)) {
+    if (this.due('owl', dayness < O.dark && s.forest > O.forest && below && up < O.aloft[1], O.interval, dt)) {
       this.fire('owl', {
-        rate: this.rate(), gain: this.between(...O.gain),
+        rate: this.rate(), gain: this.between(...O.gain) * perched(O),
         at: this.aroundHead(head, this.between(...O.range), this.between(...O.elev)),
       })
     }
     const P = RULES.woodpecker
-    if (this.due('woodpecker', s.forest > P.forest, P.interval, dt)) {
+    if (this.due('woodpecker', s.forest > P.forest && up < P.aloft[1], P.interval, dt)) {
       this.fire('woodpecker', {
-        rate: this.rate(), gain: this.between(...P.gain),
+        rate: this.rate(), gain: this.between(...P.gain) * perched(P),
         at: this.aroundHead(head, this.between(...P.range), this.between(...P.elev)),
       })
     }
     const S = RULES.songbird
     // The wood is fuller of birds: the clock runs up to `forestSpeedup` faster inside it.
     const stretch = dt * (1 + S.forestSpeedup * s.forest)
-    if (this.due('songbird', dayness > S.light && below, S.interval, stretch)) {
+    if (this.due('songbird', dayness > S.light && below && up < S.aloft[1], S.interval, stretch)) {
       this.fire(this.pick(SONGBIRDS), {
-        rate: this.rate(), gain: this.between(...S.gain),
+        rate: this.rate(), gain: this.between(...S.gain) * perched(S),
         at: this.aroundHead(head, this.between(...S.range), this.between(...S.elev)),
       })
     }
@@ -462,7 +466,8 @@ export class Ambience {
     if (this.due('rockslideNear', s.boulders >= R.minBoulders, R.interval, dt)) {
       const at = this.aroundHead(head, this.between(...R.range), 0)
       at.y = s.groundH + this.between(...R.rise)
-      this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...R.gain), at })
+      const d = Math.hypot(at.x - head.x, at.y - head.y, at.z - head.z)
+      this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...R.gain) * (R.near / Math.max(R.near, d)), at })
     }
   }
 

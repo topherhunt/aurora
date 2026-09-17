@@ -121,8 +121,8 @@ import { smoothstep } from '../../sim/mathx.js'
 //
 //   tier 0   LOD0 mesh      < 8 m           8 instances     2.8k
 //   tier 1   LOD1 mesh      8 - 24 m       77              15.5k
-//   tier 2   billboard      to ~200 m    2,646              2.6k
-//   tier 3   clump card     to 1500 m   16,984             34.0k
+//   tier 2   billboard      to 178 m     5,351              5.4k
+//   tier 3   clump card     to 1500 m   17,112             34.2k
 //
 // The mesh tiers cost 350 and 201 triangles a tree averaged over the bank, so
 // what a spot pays is which species stand near it -- which is why those two
@@ -174,17 +174,18 @@ import { smoothstep } from '../../sim/mathx.js'
 // be spun is authored with a vertical normal and it masks on layer AND normal.
 // See tree-bank.js.
 //
-// PAST CLUMP_FROM A TILE IS CLUMPS, NOT TREES. The 1/d thinning that keeps the
-// far field affordable also makes it read as a thinning wood, where a real
-// hillside stacks trees in depth per pixel until it is solid. So a tile whose
-// level reaches `clumpQ` stops standing its trees and stands CLUMPS_PER_TILE
-// clump cards instead -- each a photograph of six trees of its species
-// (props/tree-clump.js), one per quarter of the tile -- at full density out to
-// CLUMP_FULL and thinned as (CLUMP_FULL / d) beyond, on the same quantised
-// ladder and through the same rim as the singles. The instance count past
-// 200 m is about what the singles cost, each one now six trees deep. The two
-// variants of a species share ONE mesh: the arena's per-instance layer shift
-// picks the picture, and the billboard's yaw-keyed mirror doubles it to four.
+// PAST CLUMP_FROM A TILE IS CLUMPS, NOT TREES. A 1/d thinning of single cards
+// is what keeps a far field affordable, but it reads as a thinning wood, where
+// a real hillside stacks trees in depth per pixel until it is solid. So single
+// trees are never thinned: inside the clump edge every tree stands, and a tile
+// whose level reaches `clumpQ` stops standing its trees and stands
+// CLUMPS_PER_TILE clump cards instead -- each a photograph of six trees of its
+// species (props/tree-clump.js), one per quarter of the tile -- at full
+// density out to CLUMP_FULL and thinned as (CLUMP_FULL / d) beyond, on the
+// same quantised ladder and through the same rim. The 1/d law lives on in the
+// clumps alone, each one six trees deep. The two variants of a species share
+// ONE mesh: the arena's per-instance layer shift picks the picture, and the
+// billboard's yaw-keyed mirror doubles it to four.
 //
 // THE MODE SWAP IS A CROSS-DISSOLVE, never a pop. `_growTile` sees the tile's
 // mode change from the job's level, retires every standing tree through the
@@ -247,15 +248,14 @@ import { smoothstep } from '../../sim/mathx.js'
 // density; see the header for how it decays past FULL_RADIUS.
 const DENSITY = 0.05
 
-// Metres. Inside this every tree stands. Past it the density is scaled by
-// FULL_RADIUS / d. It wants to be past the last mesh band, so the forest you
-// walk through is uniform and the thinning only starts where a tree is already
-// a one-triangle card -- but only just past it, because the card ring's cost is
-// dominated by its NEAR end. Card fill goes as the integral of 1/d^2, so
-// starting the taper at the first distance where it cannot be seen is worth more
-// than any amount of work at the horizon. Twice the 24 m band is the margin the
-// swap wants; further out was buying uniformity nobody could see.
-const FULL_RADIUS = 50
+// Metres. Inside this every tree stands, and the level ladder begins here:
+// level q starts at FULL_RADIUS * 2^(q / QUANT). Single trees are never
+// thinned -- level 0 is every tree, and the first level past it is clumps
+// (CLUMP_FROM), so a wood does not go sparse at 50 m and fill in again at
+// 200 m. Card fill goes as the integral of 1/d^2, so the near end of this
+// disc is what it costs: 150 m is where a 9 m pine is ~6 px tall on the
+// headset, the last distance a gap between trees can still be seen.
+const FULL_RADIUS = 150
 
 // Metres. LOD0 inside 8, LOD1 to 24, billboard out to the draw radius.
 //
@@ -484,34 +484,36 @@ const STILL_M = RIM_SLACK_MIN
 const SCALE = [0.5, 1.5]
 
 // THE CLUMP TIER (see the header). A tile whose nearest point is past
-// CLUMP_FROM stands clump cards instead of trees; the level that begins there
-// is `clumpQ`. Both are metres from the camera.
-//
-// CLUMP_FROM is where a single card has stopped earning its instance: at 200 m
-// a 9 m pine is ~4 px tall on the headset and the 1/d law has already cut the
-// tile to a quarter of its trees, so four six-tree cards stand MORE canopy
-// than the seven single cards they replace, for fewer instances. It has to sit
-// past the widest mesh band plus the near margin, and `_ladder` throws if it
-// does not.
-const CLUMP_FROM = 200
+// CLUMP_FROM stands clump cards instead of trees; `clumpQ` is the first level
+// that begins at or past it, never level 0, so with CLUMP_FROM at FULL_RADIUS
+// the swap sits on the first rung, FULL_RADIUS * 2^(1 / QUANT) = 178 m, and
+// no single tree is ever thinned: the tile goes from every tree to four
+// six-tree cards in one dissolve. It has to sit past the widest mesh band
+// plus the near margin, and `_ladder` throws if it does not.
+const CLUMP_FROM = FULL_RADIUS
 // Clumps stand at full density out to here and thin as (CLUMP_FULL / d)
 // beyond, so the far hillside reads solid to 400 m and a clump at the 1500 m
 // rim is one of four still standing on its tile.
 const CLUMP_FULL = 400
 // One clump per cell of a CLUMP_GRID x CLUMP_GRID split of the tile, jittered
 // over the middle half of its cell so two never stand on each other and a
-// clump never straddles the tile line. Four 16 m cards across a 25 m tile is
-// the overlap in depth the tier exists for.
+// clump never straddles the tile line. Four ~28 m cards across a 25 m tile is
+// the overlap in depth the tier exists for: each card is six trees with sky
+// between them, and the sky is what the card behind fills.
 const CLUMP_GRID = 2
 const CLUMPS_PER_TILE = CLUMP_GRID * CLUMP_GRID
 // Per-instance multiplier on the card's baked size. Narrower than SCALE: the
 // six trees inside already span 0.6 to 1.3, so this is the stand's size, not a
 // tree's.
 const CLUMP_SCALE = [0.8, 1.2]
-// Metres of the card's ground line buried at scale 1. The card is 16 m wide on
+// Metres of the card's ground line buried at scale 1. The card is ~28 m wide on
 // terrain that is not flat across it, and the bake's lifted trunks give it a
 // ragged foot that hides a metre of that either way.
 const CLUMP_SINK = 1.0
+// The fraction of the eye's elevation a clump card leans toward it (material.js
+// billboardTilt). 1 is a full spherical billboard, which lays a hillside flat
+// under a flier; half keeps the lean a hint and the ground line a ground line.
+const CLUMP_TILT = 0.5
 
 // How much of the snow slider one CANOPY may take, rolled per tree. See
 // syncSnowLine for why it is neither 0 nor 1 at either end.
@@ -660,11 +662,17 @@ export class Trees {
     // so all sixteen meshes share ONE material and therefore one program --
     // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
     // whole reason this is a shader trick rather than a second material.
+    const clumpLayers = treeClumpLayers()
     this.material = createPropMaterial(textureArray, {
-      billboardLayers: [...treeImpostorLayers(), ...treeClumpLayers()],
+      billboardLayers: [...treeImpostorLayers(), ...clumpLayers],
       // The clump variant rides on the instance, not the mesh (prop-arena.js
       // setLayerShiftAt); every single tree writes 0.
       layerShift: true,
+      // Clump cards also lean toward the eye by half its elevation, so a
+      // far hillside seen from a summit or from the air is a wood and not a
+      // set of horizontal seams. Singles stay cylindrical: a leaning trunk
+      // at 100 m is a leaning trunk.
+      billboardTilt: { amount: CLUMP_TILT, layers: [Math.min(...clumpLayers), Math.max(...clumpLayers)] },
       wind: 'tree',
       // The bank bakes each tree's sky occlusion into `color` (the shade under
       // the crown, and the crown's own interior); three composes it under the
@@ -925,11 +933,14 @@ export class Trees {
       this.loSq[q] = (this.fullRadius * Math.pow(2, q / QUANT)) ** 2
     }
 
-    // The clump tier's ladder: the level at which a tile turns to clumps, and
-    // the clump keep-fraction per level, `(CLUMP_FULL / d)^falloff` sampled at
-    // the level's own distance and capped at 1. A radius inside CLUMP_FROM has
-    // no clump level at all.
-    this.clumpQ = radius > CLUMP_FROM ? this._levelFor(CLUMP_FROM * CLUMP_FROM) : this.maxQ + 1
+    // The clump tier's ladder: the level at which a tile turns to clumps (the
+    // first that begins at or past CLUMP_FROM, and never level 0), where that
+    // level begins in metres, and the clump keep-fraction per level,
+    // `(CLUMP_FULL / d)^falloff` sampled at the level's own distance and
+    // capped at 1. A radius inside the clump edge has no clump level at all.
+    this.clumpQ = Math.max(1, Math.ceil(Math.log2(CLUMP_FROM / this.fullRadius) * QUANT))
+    if (this.clumpQ > this.maxQ) this.clumpQ = this.maxQ + 1
+    this.clumpFrom = this.clumpQ <= this.maxQ ? Math.sqrt(this.loSq[this.clumpQ]) : radius
     this.clumpUAt = new Float32Array(this.maxQ + 1)
     for (let q = 0; q <= this.maxQ; q++) {
       this.clumpUAt[q] = Math.min(1, Math.pow(CLUMP_FULL / (this.fullRadius * Math.pow(2, q / QUANT)), falloff))
@@ -1980,7 +1991,7 @@ export class Trees {
   /**
    * `_growSingles` for a clump tile: CLUMPS_PER_TILE candidates off a third
    * stream, one per grid cell, held to the same terrain, treeline and biome
-   * tests at the card's foot. No rock top and no dead wood -- a 16 m stand is
+   * tests at the card's foot. No rock top and no dead wood -- a 28 m stand is
    * not perched on a boulder or kept off a log.
    */
   _growClumps(tile, uOld, uNew, fade) {

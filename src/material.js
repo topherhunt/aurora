@@ -1271,19 +1271,33 @@ const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
 // correct from eye level and wrong from above -- it cannot pitch, so looking
 // down makes every card lie back toward you at once, reading as the meadow
 // fawning at your feet, and two eyes disagree about the yaw of a card close
-// enough to have parallax. A fixed card has neither fault and pays by going
+// enough to have parallax. `tilt` gives a range of layers a damped pitch on
+// top of the spin (the tree clumps: far enough that the lean is not read as
+// a lean, and otherwise a hillside seen from the air is rows of edges). A fixed card has neither fault and pays by going
 // edge-on: at a random yaw a flat quad presents |cos| of its width, averaging
 // 2/pi, so a fixed bed is 64% of a billboarded bed's projected area. That 0.64
 // is also the whole of its GPU saving, and it is a FILL saving rather than a
 // vertex one -- the spin is a 2D complex multiply on four vertices, nothing next
 // to what a bed of alpha-tested cards costs per pixel.
-function billboardVertex(grow, spin = true) {
+function billboardVertex(grow, spin = true, tilt = null) {
+  // The pitch half of a spherical billboard, for the layers that ask for it:
+  // the card leans about its base toward the eye by `amount` of the eye's
+  // elevation above it (away, below it). Composed in object space BEFORE the
+  // spin, where the card lies in the xy plane and local +Z is what the spin
+  // will turn toward the eye. A card seen from the air stays a card rather
+  // than closing to the flat line a purely cylindrical one presents.
+  const tiltBody = tilt ? /* glsl */ `
+      float bbTilt = step( ${tilt.layers[0].toFixed(1)} - 0.5, propLayer ) * step( propLayer, ${tilt.layers[1].toFixed(1)} + 0.5 );
+      float bbPitch = atan( cameraPosition.y - bbOrigin.y, bbLen ) * ${tilt.amount.toFixed(3)} * bbTilt;
+      vec2 bbPC = vec2( cos( bbPitch ), sin( bbPitch ) );
+      transformed.yz = vec2( transformed.y * bbPC.x - transformed.z * bbPC.y, transformed.y * bbPC.y + transformed.z * bbPC.x );` : ''
   const spinBody = /* glsl */ `
       // Face: the horizontal direction from the plant to the eye. Degenerate
       // only when the camera is exactly on the axis, where any answer is right.
       vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
       float bbLen = length( bbTo );
       vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+${tiltBody}
       // Screen-right, in world XZ: up x face, which is (f.z, -f.x).
       vec2 bbR = vec2( bbF.y, -bbF.x );
 
@@ -2487,7 +2501,7 @@ export function createPropMaterial(
     vertexColors = false, billboardLayers = null, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
     side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
-    layerShift = false,
+    layerShift = false, billboardTilt = null,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2496,6 +2510,22 @@ export function createPropMaterial(
   // turn off, so a caller passing this alone thinks they changed something.
   if (!billboardSpin && !billboards) {
     throw new Error('createPropMaterial: billboardSpin:false needs billboardLayers to act on')
+  }
+  // `{ amount, layers: [first, last] }`: the pitch is only meaningful on a card
+  // the spin faces, and a layer outside the spun list would be a tilt nothing
+  // ever applies, which is the silent kind of typo.
+  if (billboardTilt) {
+    const { amount, layers } = billboardTilt
+    if (!billboardSpin || !billboards) {
+      throw new Error('createPropMaterial: billboardTilt needs spun billboardLayers to lean')
+    }
+    if (!(amount > 0 && amount <= 1)) {
+      throw new Error(`createPropMaterial: billboardTilt.amount must be in (0, 1], got ${amount}`)
+    }
+    if (!Array.isArray(layers) || layers.length !== 2 || !(layers[0] <= layers[1])
+      || !billboards.includes(layers[0]) || !billboards.includes(layers[1])) {
+      throw new Error(`createPropMaterial: billboardTilt.layers must be [first, last] of the billboard layers, got ${JSON.stringify(layers)}`)
+    }
   }
   if (billboardGrow) {
     if (!billboards) {
@@ -2628,7 +2658,7 @@ export function createPropMaterial(
         vec3 propObjPos = transformed;
         ${FADE_VERTEX}
         ${windSpec && windCompiled ? windVertex(windSpec, { strip: stripTiling, cards: !!billboards }) : ''}
-        ${billboards ? billboardVertex(billboardGrow, billboardSpin) : ''}
+        ${billboards ? billboardVertex(billboardGrow, billboardSpin, billboardTilt) : ''}
         ${stripTiling ? STRIP_VERTEX : ''}`
       )
       .replace(
@@ -2710,6 +2740,8 @@ export function createPropMaterial(
   // bound to a mesh without that attribute reads garbage timers and dissolves at
   // random. `hemFray` for both reasons at once: an attribute and six literals.
   // `layerShift` is an attribute too, and the same garbage-read hazard.
+  // `billboardTilt` is three literals: shared, one bed's cards lean at
+  // another's amount, or not at all.
   //
   // The wind and noDiscard suffixes are evaluated per CALL rather than folded
   // into `key`, because setWindEnabled and Trees.setCutout flip them under a
@@ -2729,7 +2761,8 @@ export function createPropMaterial(
       + `${billboardGrow.sink.toFixed(3)}.${billboardGrow.top.toFixed(3)}`
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
-  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
+  const tiltKey = billboardTilt ? `-tilt${billboardTilt.amount}.${billboardTilt.layers[0]}.${billboardTilt.layers[1]}` : ''
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
   material.customProgramCacheKey = () =>
     `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 

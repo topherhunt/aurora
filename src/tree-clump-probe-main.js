@@ -89,15 +89,17 @@ async function run() {
   const clumps = bakeTreeClumps(renderer, tex, bank).filter((c) => c.species === 'pine')
   tex.needsUpdate = true
 
-  const clumpLayers = clumps.map((c) => c.layer)
-  drawLayers(tex, [LAYER.IMPOSTOR_PINE, ...clumpLayers])
+  drawLayers(tex, [LAYER.IMPOSTOR_PINE, ...clumps.map((c) => c.layer)])
 
-  // The forest's material, with the layer shift compiled in: every geometry it
-  // draws has to carry `aLayerShift`, the singles' all zero.
+  // The forest's material as trees.js builds it: the layer shift compiled in,
+  // so every geometry it draws has to carry `aLayerShift` (the singles' all
+  // zero), and the clump layers leaning toward the eye by half its elevation.
+  const clumpLayers = treeClumpLayers()
   const material = createPropMaterial(tex, {
-    billboardLayers: [LAYER.IMPOSTOR_PINE, ...treeClumpLayers()],
+    billboardLayers: [LAYER.IMPOSTOR_PINE, ...clumpLayers],
     vertexColors: true,
     layerShift: true,
+    billboardTilt: { amount: 0.5, layers: [Math.min(...clumpLayers), Math.max(...clumpLayers)] },
   })
   const withShift = (geometry, n) => {
     const g = geometry.clone()

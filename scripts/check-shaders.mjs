@@ -425,21 +425,24 @@ const PROP_VARIANTS = [
     { batched: false, instanced: true },
     { vert: [...PROP_MARKS.vert, ...SEASON_MARKS.vert], frag: [...PROP_MARKS.frag, ...SEASON_MARKS.frag] },
   ],
-  // THE FOREST'S OWN PROGRAM, with two things that appear under no other
+  // THE FOREST'S OWN PROGRAM, with three things that appear under no other
   // option: the hem fray -- a `hem` attribute carried to the fragment stage and
-  // a discard keyed on it -- and the layer shift, a per-instance `aLayerShift`
-  // added to the geometry's layer so one clump quad draws every clump picture.
+  // a discard keyed on it -- the layer shift, a per-instance `aLayerShift`
+  // added to the geometry's layer so one clump quad draws every clump picture,
+  // and the tilt, a damped pitch toward the eye on the clump layers alone.
   // Instanced, as trees.js draws it, so aPropFade compiles too.
   [
-    'trees: wind, cards, hem fray, layer shift, instanced',
+    'trees: wind, cards, hem fray, layer shift, clump tilt, instanced',
     createPropMaterial(atlas, {
       billboardLayers: [0, 1, 2], wind: 'tree', vertexColors: true, instancedFade: true, layerShift: true,
+      billboardTilt: { amount: 0.5, layers: [1, 2] },
       hemFray: { keep: 0.7, band: 0.6, straws: 24, wisp: 0.12, lumaLo: 0.05, lumaHi: 0.2 },
     }),
     { batched: false, instanced: true },
     {
       vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade',
-        'attribute float aLayerShift;', 'float propLayer = texLayer + aLayerShift;'],
+        'attribute float aLayerShift;', 'float propLayer = texLayer + aLayerShift;',
+        'float bbTilt = step( 1.0 - 0.5, propLayer ) * step( propLayer, 2.0 + 0.5 );', 'atan( cameraPosition.y - bbOrigin.y, bbLen ) * 0.500 * bbTilt'],
       frag: [...PROP_MARKS.frag, 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
     },
   ],

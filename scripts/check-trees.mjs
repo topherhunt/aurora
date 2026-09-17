@@ -1020,21 +1020,28 @@ const trees = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radiu
 trees.place(0, 0)
 
 // THE TWO POPULATIONS. Single trees stand in every tile whose level is under
-// clumpQ -- the near corner inside CLUMP_FROM -- thinned as fullRadius / d;
-// past it a tile holds CLUMPS_PER_TILE clump cards, full to CLUMP_FULL and
-// thinned as CLUMP_FULL / d beyond. Every law below is asked of each tile in
-// the mode it is in.
+// clumpQ -- the near corner inside the clump edge, which is the first ladder
+// rung at or past CLUMP_FROM -- at full density inside FULL_RADIUS and
+// thinned as fullRadius / d beyond it (with CLUMP_FROM at FULL_RADIUS that
+// band is empty: no single is ever thinned); past the edge a tile holds
+// CLUMPS_PER_TILE clump cards, full to CLUMP_FULL and thinned as CLUMP_FULL / d
+// beyond. Every law below is asked of each tile in the mode it is in.
 const CLUMP_DENSITY = CLUMPS_PER_TILE / (TILE * TILE)
+const CLUMP_EDGE = trees.clumpFrom
 const singlesIdeal = Math.PI * FULL_RADIUS ** 2 * DENSITY
-  + 2 * Math.PI * FULL_RADIUS * DENSITY * (CLUMP_FROM - FULL_RADIUS)
-const clumpsIdeal = Math.PI * (CLUMP_FULL ** 2 - CLUMP_FROM ** 2) * CLUMP_DENSITY
+  + 2 * Math.PI * FULL_RADIUS * DENSITY * (CLUMP_EDGE - FULL_RADIUS)
+const clumpsIdeal = Math.PI * (CLUMP_FULL ** 2 - CLUMP_EDGE ** 2) * CLUMP_DENSITY
   + 2 * Math.PI * CLUMP_FULL * CLUMP_DENSITY * (DRAW_RADIUS - CLUMP_FULL)
 const ideal = singlesIdeal + clumpsIdeal
 // The rings each law is measured over, as [r0, r1, clumpy]: each inside one
-// population's tiles, and wide enough that the jitter of a few thousand
-// candidates against the ring's edges stays under the tolerance. The
-// area-weighted mean of 1 / d over an annulus is 1 / its mid-radius exactly.
-const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375, 425, true], [750, 850, true], [1100, 1300, true]]
+// population's tiles (a single tile can reach a tile's diagonal past the
+// edge), and wide enough that the jitter of a few thousand candidates against
+// the ring's edges stays under the tolerance. The area-weighted mean of 1 / d
+// over an annulus is 1 / its mid-radius exactly.
+const LAW_RINGS = [[50, 95, false], [95, 135, false], [250, 350, true], [375, 425, true], [750, 850, true], [1100, 1300, true]]
+if (LAW_RINGS.some(([, r1, clumpy]) => !clumpy && r1 > CLUMP_EDGE) || LAW_RINGS.some(([r0, , clumpy]) => clumpy && r0 < CLUMP_EDGE + TILE * Math.SQRT2)) {
+  throw new Error(`check-trees: a law ring straddles the clump edge at ${CLUMP_EDGE.toFixed(1)} m`)
+}
 
 {
   const s = trees.stats
@@ -1074,8 +1081,8 @@ const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375,
     `shifts ${shiftKeys.map((v) => `${v}: ${shifts.get(v)}`).join(', ')}, ${shifted} singles shifted`)
   const nearestClump = Math.min(...[...trees.tiles.values()].filter((t) => t.clumpy)
     .map((t) => Math.hypot(t.tx * TILE + (t.tx < 0 ? TILE : 0), t.tz * TILE + (t.tz < 0 ? TILE : 0))))
-  check(nearestClump >= CLUMP_FROM - 1e-6, 'no clump tile reaches inside CLUMP_FROM',
-    `nearest clump tile edge at ${nearestClump.toFixed(1)} m`)
+  check(nearestClump >= CLUMP_EDGE - 1e-3 && CLUMP_EDGE >= CLUMP_FROM, 'no clump tile reaches inside the clump edge, which is at or past CLUMP_FROM',
+    `nearest clump tile edge at ${nearestClump.toFixed(1)} m, clump edge ${CLUMP_EDGE.toFixed(1)} m, CLUMP_FROM ${CLUMP_FROM} m`)
   check(s.placed < disc * 0.15, 'graded thinning costs under a seventh of a hard disc at the same density',
     `${s.placed} against ${Math.round(disc)}`)
   check(s.used <= s.pool, 'the instance pool covers the boot scatter',
@@ -1149,7 +1156,7 @@ const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375,
     }
     const area = Math.PI * (r1 * r1 - r0 * r0)
     const d = (r0 + r1) / 2
-    const want = clumpy ? CLUMP_DENSITY * Math.min(1, CLUMP_FULL / d) : DENSITY * FULL_RADIUS / d
+    const want = clumpy ? CLUMP_DENSITY * Math.min(1, CLUMP_FULL / d) : DENSITY * Math.min(1, FULL_RADIUS / d)
     return { placed: placed / area, drawn: drawn / area, want }
   }
   let lawHolds = true
@@ -1161,7 +1168,7 @@ const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375,
     if (r.placed < r.drawn) overKept = false
     rings.push(`${(a + b) / 2} m ${r.drawn.toFixed(4)}/${r.want.toFixed(4)}`)
   }
-  check(lawHolds, 'inside its own gone-distance the population follows fullRadius / d for singles inside CLUMP_FROM and CLUMP_FULL / d for clumps out to the horizon, to within 6%',
+  check(lawHolds, 'inside its own gone-distance the population follows min(1, fullRadius / d) for singles inside the clump edge and min(1, CLUMP_FULL / d) for clumps out to the horizon, to within 6%',
     rings.join('  '))
   check(overKept, 'the tile quantisation errs dense at every range, never sparse')
 
@@ -1254,15 +1261,15 @@ const LAW_RINGS = [[100, 145, false], [145, 190, false], [250, 350, true], [375,
       }
       const have = shown / (Math.PI * (r1 * r1 - r0 * r0))
       const d = (r0 + r1) / 2
-      // A clump at full density has a gone-distance past CLUMP_FULL, which the
-      // rim never reaches at this range, so the rim takes none of it.
+      // A population at full density has a gone-distance past its full
+      // radius, which the rim never reaches at this range, so it takes none.
       const want = clumpy
         ? CLUMP_DENSITY * Math.min(1, RIM_AT * CLUMP_FULL / d)
-        : RIM_AT * DENSITY * FULL_RADIUS / d
+        : DENSITY * Math.min(1, RIM_AT * FULL_RADIUS / d)
       if (Math.abs(have / want - 1) > 0.06) held = false
       rows.push(`${d} m ${have.toFixed(4)}/${want.toFixed(4)}`)
     }
-    check(held, 'the DRAWN density is RIM_AT of each population\'s law to within 6%, singles inside CLUMP_FROM and clumps out to the horizon',
+    check(held, 'the DRAWN density is each population\'s law at RIM_AT of its full radius to within 6%, singles inside the clump edge and clumps out to the horizon',
       rows.join('  '))
   }
   check(hidden === s.rimHidden, 'and the rim agrees about how many trees it is not drawing',
@@ -2064,6 +2071,8 @@ console.log('\n-- rocks under the trunk --')
   let wrongOn = 0
   let wrongOff = 0
   for (const tile of t.tiles.values()) {
+    // A clump card sinks CLUMP_SINK, not a trunk's sink, and stands on no stone.
+    if (tile.clumpy) continue
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       const dx = t.instX[id] - STONE.x

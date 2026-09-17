@@ -5,7 +5,7 @@
 // The scatter runs against a synthetic moor: rolling ground, a pond in a basin,
 // a crag too steep to stand on, two tree trunks, and a long ramp rising into the
 // snow at the far edge. Everything below is a way an animal can go wrong without
-// anything throwing: a scatter that is not one per 3000 square metres of each,
+// anything throwing: a scatter that is not at each species' rate of one per 3000 square metres,
 // or that is not the same twice; an animal standing in the water, up the crag,
 // inside a trunk or in the snow; one that never moves, that skates (ground speed
 // that is not the clip's stride), or that wanders off its tether; a graze that
@@ -248,7 +248,7 @@ const SEEDS = 40
   const area = tiles * TILE * TILE
   const rates = Object.fromEntries(Object.entries(counts).map(([key, n]) => [key, n / area]))
   check(overflow === 0, 'every spawn inside its cull range found a slot to wake into, over every seed', `${overflow} over ${SEEDS} seeds`)
-  check(Object.values(rates).every((r) => Math.abs(r / DENSITY - 1) < 0.12), `one of EACH per ${Math.round(1 / DENSITY)} square metres, on open ground`, Object.entries(rates).map(([k2, r]) => `${k2} 1 per ${Math.round(1 / r)}`).join(', ') + ` over ${Math.round(area / 1e3)}k m2`)
+  check(SPECIES.every((sp) => Math.abs(rates[sp.key] / (DENSITY * sp.rate) - 1) < 0.12), `each species at its rate of one per ${Math.round(1 / DENSITY)} square metres on open ground: ${SPECIES.map((sp) => `${sp.key} x${sp.rate}`).join(', ')}`, Object.entries(rates).map(([k2, r]) => `${k2} 1 per ${Math.round(1 / r)}`).join(', ') + ` over ${Math.round(area / 1e3)}k m2`)
   check(Object.values(counts).every((n) => n > 100), 'and enough of each to say so', JSON.stringify(counts))
 }
 
@@ -540,7 +540,8 @@ wake(w)
     check(t.away < leash && t.rung === k, `on rung ${k}${k === LOD_RUNGS ? ', its card' : ''} it is still on its leash rather than bolting from her`, `${t.away.toFixed(2)} m of ${leash.toFixed(1)} in 15 s from ${(lodReach(under.lodSize, k) * 0.9).toFixed(0)} m up, rung ${t.rung}`)
   }
   const hare = trace('hare', 1.6)
-  check(hare.away < 12, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m from her in 15 s`)
+  const hareLeash = TETHER_M + 1.5 * hare.lodSize + 0.5
+  check(hare.away < hareLeash, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m of ${hareLeash.toFixed(1)} from her in 15 s`)
 }
 
 // --- drawn, or not drawn ---------------------------------------------------------
