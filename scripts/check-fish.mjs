@@ -20,7 +20,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -150,10 +150,24 @@ let arched = 0
 const startles = new Map()
 const armedBy = new Map()
 const wasBolt = new Map()
+// Every fast set-off (a new mood, or a bolt re-armed mid-bolt, at DART_SPEED or more) against what startled() lists that frame: the two must be the same fish, each once, and a glimmerfin's slow fidget is never among them.
+const wasMood = new Map()
+const setOffs = { 'ironscale-bass': 0, 'rime-fangpike': 0, 'glimmerfin': 0 }
+let listedWrong = 0
+let listedSlow = 0
 for (let i = 0; i < SECONDS / DT; i++) {
   fish.update(0, LEVEL + 1.6, 0, DT)
+  const listedNow = new Set(fish.startled([]))
+  if (listedNow.size !== fish.startles.length) listedWrong++
   for (const sp of fish.species) {
     for (const f of sp.slots) {
+      const mood = wasMood.get(f)
+      wasMood.set(f, f.alive ? { mood: f.mood, left: f.moodLeft } : undefined)
+      const fresh = f.alive && mood !== undefined && (f.mood !== mood.mood || f.moodLeft > mood.left)
+      const fast = fresh && f.speed >= DART_SPEED
+      if (fast) setOffs[sp.id]++
+      if (fast !== listedNow.has(f)) listedWrong++
+      if (listedNow.has(f) && f.speed < DART_SPEED) listedSlow++
       const bolt = f.alive && f.mood === 'bolt'
       const onset = bolt && !wasBolt.get(f)
       if (!f.alive) armedBy.delete(f)
@@ -221,6 +235,19 @@ check(pitched > 1000 && arched / pitched > 0.9, 'a pitched fish arcs into its cl
   check(shoals.length >= 20, 'glimmerfin shoals startle over the run', `${shoals.length} startles of 6+ fish`)
   check(onOneFrame === 0 && meanSpread > 0.25, 'a startle ripples through a shoal, never in one frame', `${onOneFrame} startles fired on one frame; onsets spread ${meanSpread.toFixed(2)} s first to last on average`)
   check(bolted > 0.5 && bolted < 0.97, 'a startle misses a few of the shoal', `${(bolted * 100).toFixed(0)}% of a shoal bolts on average`)
+}
+{
+  // startled(): every fast set-off, each once, on its frame, and nothing slower.
+  const n = Object.values(setOffs).reduce((a, b) => a + b, 0)
+  check(n > 100 && Object.values(setOffs).every((k) => k > 10), 'bass dart, pike burst and glimmerfin bolt over the run', JSON.stringify(setOffs))
+  check(listedWrong === 0 && listedSlow === 0, `startled() lists exactly the fish setting off at ${DART_SPEED} m/s or more, each once, on its frame`, `${listedWrong} frames or fish disagree, ${listedSlow} listed slow`)
+  check(fish.startled([]).every((f) => f.size > 0 && f.size === fish.species.find((sp) => sp.slots.includes(f)).lengthM * f.scale), 'a listed fish carries its length in metres')
+  fish.follow(0, LEVEL + 1.6, 0)
+  check(fish.startled([]).length === 0, 'the pool only following her lists nobody')
+  for (let i = 0; i < 500 && !fish.startles.length; i++) fish.update(0, LEVEL + 1.6, 0, DT)
+  fish.batch.visible = false
+  check(fish.startles.length > 0 && fish.startled([]).length === 0, 'a hidden layer lists nobody')
+  fish.batch.visible = true
 }
 for (const sp of fish.species) {
   const mean = speeds[sp.id] / samples

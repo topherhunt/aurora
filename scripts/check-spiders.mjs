@@ -316,7 +316,7 @@ const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, asse
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
 check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.puppetMats.length === PUPPETS && spiders.materials.length === PUPPETS * 2 + 1, `${PUPPETS} puppets built and free, ONE settled material between them all and a dissolving pair -- in, out -- each`)
 check(spiders.puppets.every((p) => p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.isSkinnedMesh && m.skeleton === p.skeleton && !m.visible) && p.skeleton.bones.length === 2 && p.skeleton.bones[0].name === 'Pedicel' && p.skeleton !== spiders.asset.skeleton), `each puppet: ${LOD_TIERS} skinned tiers bound to its own copy of the skeleton, none shown`)
-check(spiders.puppets.every((p) => p.actions.size === 6 && p.mixer.getRoot() === p.group), 'each puppet has a mixer over the six clips, rooted at its group')
+check(spiders.puppets.every((p) => p.actions.size === 6 && p.mixer.getRoot() === p.rig && p.rig.parent === null), 'each puppet has a mixer over the six clips, rooted at its detached rig')
 check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === 1, 'the card is hidden until baked, and no puppet is in the scene')
 {
   const compile = (m) => {

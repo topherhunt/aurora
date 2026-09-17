@@ -89,6 +89,8 @@ const BOLT_MISS = 0.15
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
 export const HUE = 0.35
+// A fish setting off at a target speed of at least this, m/s, is listed in startled() for the ear: a glimmerfin's bolt, a pike's burst, a bass's dart, but not a glimmerfin's fidget or any hang.
+export const DART_SPEED = 1
 
 /**
  * The species table. Speeds in m/s, times in seconds, depths as a fraction of
@@ -170,6 +172,8 @@ export class Fish {
     this.frame = 0
     this.time = 0
     this.head = { x: 0, y: 0, z: 0 }
+    // The fish that set off at DART_SPEED or more this frame, for startled().
+    this.startles = []
     if (assets) {
       for (const sp of this.species) this.setAsset(sp, this.assetFor(assets, sp))
       this.ready = Promise.resolve(true)
@@ -204,7 +208,8 @@ export class Fish {
         x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
         // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be.
         hx: 0, hz: -1, pitch: 0, roll: 0,
-        wander: 0, depthFrac: 0.5, scale: 1, margin: 0, tint: 1, hue: 0, born: 0,
+        // `size` is its length in metres, for the ear.
+        wander: 0, depthFrac: 0.5, scale: 1, size: 0, margin: 0, tint: 1, hue: 0, born: 0,
         phase: 0, amp: 0, curve: 0, lift: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s, plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
@@ -391,7 +396,8 @@ export class Fish {
       f.bed = fBed
       f.level = fLevel
       f.scale = this.sizeAt(cfg, fLevel - fBed)
-      f.margin = 0.2 * sp.lengthM * f.scale
+      f.size = sp.lengthM * f.scale
+      f.margin = 0.2 * f.size
       f.y = this.column(fBed, fLevel, f.depthFrac, f.margin)
       f.born = born
       f.wander = rand() * TAU
@@ -466,6 +472,7 @@ export class Fish {
     this.head.x = x
     this.head.y = y
     this.head.z = z
+    this.startles.length = 0
     for (const sp of this.species) {
       let farthest = null
       let farD2 = 0
@@ -630,6 +637,18 @@ export class Fish {
     return true
   }
 
+  /** The fish has just taken a new target speed: listed for the ear if it is a fast one. */
+  setOff(f) {
+    if (f.speed >= DART_SPEED) this.startles.push(f)
+  }
+
+  /** The fish that set off at DART_SPEED or more this frame, for the ear (audio/ambience.js): the slots themselves, with x, y, z and `size` (its length in metres) on them, each once. A hidden layer lists nobody. */
+  startled(into) {
+    if (!this.batch.visible) return into
+    for (const f of this.startles) into.push(f)
+    return into
+  }
+
   stepFish(sp, f, dt) {
     const cfg = sp.cfg
     const rand = this.rand
@@ -643,6 +662,7 @@ export class Fish {
         f.moodLeft = cfg.boltFor * (0.6 + 0.8 * rand())
         f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
         f.wander = school.fleeAt + (rand() - 0.5) * 1.2
+        this.setOff(f)
       }
     }
     // Moods. Pike cycle glide -> lurk -> burst -> glide; bass and glimmerfin fidget, each fish on its own clock: a dart or a hang, with a kick to the heading either way.
@@ -650,12 +670,12 @@ export class Fish {
     if (cfg.glide) {
       if (f.moodLeft <= 0) {
         if (f.mood === 'glide') { f.mood = 'lurk'; f.moodLeft = between(rand, cfg.lurk); f.speed = cfg.lurkSpeed }
-        else if (f.mood === 'lurk') { f.mood = 'burst'; f.moodLeft = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5 }
+        else if (f.mood === 'lurk') { f.mood = 'burst'; f.moodLeft = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5; this.setOff(f) }
         else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.glide); f.speed = cfg.cruise }
       }
     } else if (cfg.fidgetEvery) {
       if (f.moodLeft <= 0) {
-        if (f.mood === 'glide') { f.mood = 'fidget'; f.moodLeft = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3 }
+        if (f.mood === 'glide') { f.mood = 'fidget'; f.moodLeft = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3; this.setOff(f) }
         else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.fidgetEvery); f.speed = cfg.cruise }
       }
     }

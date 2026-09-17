@@ -13,10 +13,13 @@
 // 160 000 square metres, the same twice, and turned away by a slope, a tarn or
 // a road. Then the dragon itself, on a stand-in slab whose `fly` swings its
 // wings out, over a stand-in roost and a stand-in herd: that it is born on its
-// nest, flies its loop -- patrol, hunt, strike, seize, return, land -- and
-// comes home with the stag hanging from it, drawn every frame it is carried
-// and dropped at the next takeoff; that it never turns, pitches, banks or
-// speeds faster than its rates and never flies into the ground; that a stag
+// nest and, hungry, flies the hunt -- patrol, hunt, strike, seize, return,
+// land -- and comes home with the stag hanging from it, drawn every frame it
+// is carried, laid at one spot on the nest, walked round and eaten; that fed
+// it potters on the nest for minutes and then explores rather than hunts,
+// alighting on ground away from home that is neither steep nor drowned; that
+// it never turns, pitches, banks or speeds faster than its rates, never walks
+// faster than its gait and never flies into the ground; that a stag
 // that leaves the world sends it back on patrol; that it is drawn as a puppet
 // near, as two crossed cards fixed in its body's frame far, and as nothing
 // past that while still being simulated; that it goes with its roost, and that
@@ -30,7 +33,7 @@ import fs from 'node:fs'
 import {
   Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_MAX, DIVE_PITCH, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, HUNT_M,
-  STRIKE_M, LAND_M, REST_S, FLIGHT_S, measureFly,
+  STRIKE_M, LAND_M, REST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, measureFly,
 } from '../src/v2/render/dragons.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, roostBank, roostLadder,
@@ -82,6 +85,8 @@ let wyvern = null
   wyvern = json.scenes?.[json.scene ?? 0]?.extras?.wyvern
   check(wyvern !== undefined && wyvern.span > 0 && wyvern.height > 0 && wyvern.width > 0 && wyvern.sizeM === roster.sizeM && wyvern.frame && Number.isFinite(wyvern.frame.yaw), `${id}: the scene carries the wyvern extras, at the roster's ${roster.sizeM} m`, wyvern && `span ${wyvern.span.toFixed(3)} width ${wyvern.width.toFixed(3)} height ${wyvern.height.toFixed(3)} yaw ${wyvern.frame.yaw.toFixed(3)}`)
   check(wyvern && wyvern.gait.walk > 0 && wyvern.gait.run > wyvern.gait.walk && Object.keys(wyvern.gait).length === 2, `${id}: walk and run carry a ground speed each, walk under run, and nothing else does`, wyvern && Object.entries(wyvern.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
+  const jointNames = new Set([...joints].map((j) => json.nodes[j].name))
+  check(wyvern?.legs?.length === 2 && wyvern.legs.every((l) => l.chain.length >= 3 && l.chain.every((n) => jointNames.has(n))), `${id}: two legs named, hip to foot, every joint of every chain one of the skeleton's -- the talons a kill hangs from are measured off their feet`, wyvern?.legs && wyvern.legs.map((l) => `${l.id} ${l.chain.join('>')}`).join(' '))
 
   // The bind pose IS the POSITION accessor, so the frame the root joint carries can be checked by applying it: the body stands on y = 0, centred, its length along +X.
   if (wyvern && prim) {
@@ -147,6 +152,8 @@ const WET = { isSubmerged: () => true }
 const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, flattenAt: () => 0 }
 const ROADS = { paths: { nearest: () => ({ dist: 0, halfWidth: 3 }) }, snow: LAYERS.snow, flattenAt: () => 0 }
 const flatField = (h, tan = 0) => ({ heightAt: () => h, heightAndSlopeAt: () => ({ h, tan }) })
+// A planar hillside rising gx per metre along +X and gz along +Z.
+const hillField = (h0, gx, gz) => ({ heightAt: (x, z) => h0 + gx * x + gz * z, heightAndSlopeAt: (x, z) => ({ h: h0 + gx * x + gz * z, tan: Math.hypot(gx, gz) }) })
 const GROUND = 12
 const roostsOn = (field, water, layers, seed) => {
   const r = new Roosts(new THREE.Scene(), field, water, layers, { seed })
@@ -181,7 +188,7 @@ const roostsOn = (field, water, layers, seed) => {
   const again = roostsOn(flatField(GROUND), DRY, LAYERS, 5).sites()
   check(sites.length === r.stats.placed && sites.length > 3 && JSON.stringify(sites) === JSON.stringify(again), 'sites() lists every placed roost, and the same seed lays the same roosts twice', `${sites.length} sites`)
   check(sites.every((s) => Number.isFinite(s.key) && s.r >= DIAMETER[0] / 2 && s.r <= DIAMETER[1] / 2), `every site carries its tile key and a rim radius from ${DIAMETER[0] / 2} to ${DIAMETER[1] / 2} m`)
-  check(sites.every((s) => s.y < GROUND && s.y > GROUND - 0.1 * s.r), 'and a floor a little under the turf, the bottom branches bedded in')
+  check(sites.every((s) => s.y < GROUND && s.y > GROUND - 0.1 * s.r && s.gx === 0 && s.gz === 0), 'and a floor a little under the turf, the bottom branches bedded in, lying level on level ground')
   check(new Set(sites.map((s) => s.key)).size === sites.length && sites.every((s) => r.tiles.get(s.key)?.site === s), 'one roost to a tile at most, each keyed by its tile')
 
   r.update(sites[0].x, GROUND + 1.7, sites[0].z)
@@ -197,6 +204,27 @@ const roostsOn = (field, water, layers, seed) => {
   check(r.sites().every((s) => !sites.includes(s)) && r.stats.used === r.stats.placed, 'walked 4 km off, every roost she left is released and the pool holds only what stands')
   r.dispose()
 
+  // A 20-degree hillside: every bowl lies on it, tilted to its plane and seated at the ground under its centre, its rim bedded the same depth all round.
+  const HILL = Math.tan((20 * Math.PI) / 180)
+  const hill = hillField(GROUND, HILL * 0.6, HILL * 0.8)
+  const hillside = roostsOn(hill, DRY, LAYERS, 5)
+  const hillSites = hillside.sites()
+  const m = new THREE.Matrix4()
+  const p = new THREE.Vector3()
+  let rimOff = 0, tiltOff = 0
+  for (const s of hillSites) {
+    hillside.batch.getMatrixAt(hillside.tiles.get(s.key).ids[0], m)
+    for (const [u, v] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      p.set(u, 0, v).applyMatrix4(m)
+      rimOff = Math.max(rimOff, Math.abs(p.y - hill.heightAt(p.x, p.z) + 0.06 * s.r))
+    }
+    p.set(0, 1, 0).transformDirection(m)
+    tiltOff = Math.max(tiltOff, p.distanceTo(new THREE.Vector3(-s.gx, 1, -s.gz).normalize()))
+  }
+  check(hillSites.length === sites.length && hillSites.every((s) => Math.abs(s.gx - HILL * 0.6) < 1e-9 && Math.abs(s.gz - HILL * 0.8) < 1e-9 && Math.abs(s.y - (hill.heightAt(s.x, s.z) - 0.06 * s.r)) < 1e-9), 'on a 20-degree hillside every site carries the hill\'s own slope and a floor 0.06 r under the ground at its centre', `${hillSites.length} sites`)
+  check(rimOff < 1e-4 && tiltOff < 1e-6, 'and every bowl is tilted to the hill, its Y the hill\'s normal and all four rim points bedded exactly 0.06 r into the turf, none buried and none floating', `rim off ${rimOff.toExponential(1)} m, tilt off ${tiltOff.toExponential(1)}`)
+  hillside.dispose()
+
   const steep = roostsOn(flatField(GROUND, Math.tan((30 * Math.PI) / 180)), DRY, LAYERS, 5)
   const wet = roostsOn(flatField(GROUND), WET, LAYERS, 5)
   const road = roostsOn(flatField(GROUND), DRY, ROADS, 5)
@@ -206,19 +234,29 @@ const roostsOn = (field, water, layers, seed) => {
   for (const q of [steep, wet, road]) q.dispose()
 }
 
-// --- a stand-in dragon: a slab on two bones whose fly swings its wings out ------------
+// --- a stand-in dragon: a slab on a spine whose fly swings its wings out, its underside on two feet ------------
 function makeAsset() {
   const root = new THREE.Bone(); root.name = 'Root'
   const spine = new THREE.Bone(); spine.name = 'Spine'; spine.position.set(0.2, 0.1, 0)
-  root.add(spine); root.updateMatrixWorld(true)
-  const bones = [root, spine]
-  const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
   const { span, width, height } = wyvern
+  // Each leg a three-joint chain off the spine, as the foot IK wants: Leg, then Foot at the underside.
+  const legBones = ['Left', 'Right'].map((side, i) => {
+    const leg = new THREE.Bone(); leg.name = `${side}Leg`; leg.position.set(0, -0.05, (i ? -1 : 1) * width / 4)
+    const foot = new THREE.Bone(); foot.name = `${side}Foot`; foot.position.set(0, -0.05, 0)
+    leg.add(foot); spine.add(leg)
+    return [leg, foot]
+  })
+  root.add(spine); root.updateMatrixWorld(true)
+  const bones = [root, spine, legBones[0][1], legBones[1][1], legBones[0][0], legBones[1][0]]
+  const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
   const tiers = Array.from({ length: LOD_RUNGS }, (_, k) => {
     const g = new THREE.BoxGeometry(span, height, width, LOD_RUNGS - k, 1, 1).translate(0, height / 2, 0)
-    const n = g.getAttribute('position').count
+    const pos = g.getAttribute('position')
+    const n = pos.count
+    // Every vertex on the slab's underside belongs to the foot on its side; the rest to the spine.
+    const joint = (v) => (Math.abs(pos.getY(v)) < 1e-6 ? (pos.getZ(v) > 0 ? 2 : 3) : 1)
     g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2))
-    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4).map((_, i) => (i % 4 === 0 ? joint(i >> 2) : 0)), 4))
     g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(new Float32Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
     return g
   })
@@ -231,7 +269,8 @@ function makeAsset() {
       : [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])]
     return new THREE.AnimationClip(name, dur, tracks)
   })
-  return { root, skeleton, tiers, clips, map: null, sizeM: wyvern.sizeM, span, width, height, gait: { ...wyvern.gait } }
+  const legs = [{ id: 'hindLeft', chain: ['Spine', 'LeftLeg', 'LeftFoot'] }, { id: 'hindRight', chain: ['Spine', 'RightLeg', 'RightFoot'] }]
+  return { root, skeleton, tiers, clips, map: null, sizeM: wyvern.sizeM, span, width, height, gait: { ...wyvern.gait }, legs }
 }
 
 /** A stand-in herd: `stags` the slots a dragon may find, seize, carry and drop, every call counted on the slot. */
@@ -239,6 +278,7 @@ function makeHerd(stags) {
   return {
     stags,
     prey(x, z, range) {
+      this.preyCalls++
       let best = null, bestD = range
       for (const s of stags) {
         if (!s.spawn) continue
@@ -247,19 +287,24 @@ function makeHerd(stags) {
       }
       return best
     },
+    preyCalls: 0,
     seize(c) { c.spawn = null; c.act = 'dead'; c.seized++; return c },
-    carry(c, m, dist, dt) {
+    carry(c, m, dist, dt, lain = false) {
       c.carried++
+      c.lain = lain
+      if (lain) c.lainFrames++
       c.at.setFromMatrixPosition(m)
+      c.up.set(0, 1, 0).transformDirection(m)
       c.x = c.at.x; c.y = c.at.y; c.z = c.at.z
       c.carryDist = dist; c.carryDt = dt
     },
     drop(c, fade = true) { c.drops.push(fade) },
   }
 }
-const stag = (x, z, y = GROUND) => ({ spawn: {}, x, y, z, k: 0.5, size: 2, lod: 0, seized: 0, carried: 0, drops: [], at: new THREE.Vector3() })
+const stag = (x, z, y = GROUND) => ({ spawn: {}, x, y, z, k: 0.5, size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
 const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into } })
-const dragonsOn = (field, sites, herd, seed = 3) => new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, asset: makeAsset() })
+const dry = { isSubmerged: () => false }
+const dragonsOn = (field, sites, herd, seed = 3, water = dry) => new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, asset: makeAsset() })
 const DT = 1 / 60
 const HER = { x: 5, y: GROUND + 1.6, z: 5 }
 
@@ -269,11 +314,14 @@ console.log('\ndragons')
   const flat = flatField(GROUND)
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: {}, asset: makeAsset() }); return false } catch (e) { return /prey, seize, carry and drop/.test(e.message) } })(), 'a wildlife without the prey hooks is refused by name')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: {}, wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /sites/.test(e.message) } })(), 'so is a roost layer with no sites()')
+  check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /isSubmerged/.test(e.message) } })(), 'and a world with no water to ask, since a dragon must not alight in a lake')
 
   const d = dragonsOn(flat, [], makeHerd([]))
   const fly = measureFly(makeAsset())
   check(fly.halfX > 0 && fly.halfZ > 0 && fly.maxY > fly.minY && fly.halfZ * 2 > wyvern.width && fly.halfX * 2 > wyvern.span, 'the fly pose is measured on the CPU, and it reaches wider than the standing body every way', `half ${fmt(fly.halfX)} x ${fmt(fly.halfZ)}, y ${fmt(fly.minY)} to ${fmt(fly.maxY)}, widest at ${fmt(fly.spreadAt)} s`)
   check(fly.spreadAt > 0 && fly.spreadAt < 0.9, 'and the photograph is taken at the frame the wings reach widest, not the folded first one')
+  check(Number.isFinite(fly.talons.x + fly.talons.y + fly.talons.z) && Math.abs(fly.talons.y - fly.minY) < 1e-6, 'the talons are the mean of the feet\'s vertices over the fly, here the slab\'s underside', `(${fmt(fly.talons.x)}, ${fmt(fly.talons.y)}, ${fmt(fly.talons.z)})`)
+  check((() => { try { measureFly({ ...makeAsset(), legs: [] }); return false } catch (e) { return /talons/.test(e.message) } })(), 'an asset naming no legs is refused: nothing to hang a kill from')
   check(d.bulk > 1 && Math.abs(d.bulk - Math.max(2 * fly.halfX, 2 * fly.halfZ, fly.maxY - fly.minY) / wyvern.span) < 1e-9, 'the ladder is sized by the flying body\'s largest extent over the shipped span, and so reaches farther than the standing body would', `bulk ${d.bulk.toFixed(3)}`)
   check(d.materials.length === 2 * PUPPETS + 2 && d.materials[0] === d.plain && d.materials[d.materials.length - 1] === d.cardMaterial, 'one settled material, a dissolving pair a puppet, and the card, all offered to the lighting', `${d.materials.length}`)
   check(d.plain.customProgramCacheKey() === 'dragons' && d.puppetMats.every((m) => m.plain === d.plain && m.in.customProgramCacheKey() === 'dragons-fade'), 'every puppet draws its settled tiers through THE ONE material and dissolves through the one fade program')
@@ -292,7 +340,7 @@ console.log('\ndragons')
 // --- the loop: born on the nest, out, the kill, home with it -------------------------
 {
   const flat = flatField(GROUND)
-  const site = { key: 1234, x: 0, y: GROUND, z: 0, r: 4 }
+  const site = { key: 1234, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
   const stags = [stag(120, 60)]
   const herd = makeHerd(stags)
   const d = dragonsOn(flat, [site], herd)
@@ -309,12 +357,16 @@ console.log('\ndragons')
   check(twin.byKey.get(site.key).size === born.size && twin.byKey.get(site.key).heading === born.heading, 'the same nest holds the same dragon every visit: its size and its first heading are the roost\'s seed')
   twin.dispose()
 
+  check(dr.fedAt <= 0 && dr.fedAt > -HUNGER_S, 'born some way into its hunger, so a valley of roosts does not all hunt at once', `fed ${fmt(-dr.fedAt)} s ago`)
+  // Hungry by hand, so this first flight is the hunt.
+  dr.fedAt = -Infinity
+
   // Fly the loop, measuring every frame against the rates.
   const trace = []
   const seen = new Set(['roost'])
   // Every frame measured against the rates, in every state: a landing that snaps level or onto its stand point is a pop on a nest she may be standing beside.
   const worst = { turn: 0, pitch: 0, roll: 0, speed: 0, accel: 0, move: 0, under: Infinity, farFromHome: 0, banked: 0 }
-  const AIRBORNE = new Set(['patrol', 'hunt', 'strike', 'return'])
+  const AIRBORNE = new Set(['patrol', 'explore', 'visit', 'hunt', 'strike', 'return'])
   const prev = { x: dr.x, y: dr.y, z: dr.z, heading: dr.heading, pitch: dr.pitch, roll: dr.roll, speed: dr.speed }
   const measure = () => {
     worst.turn = Math.max(worst.turn, Math.abs(swing(prev.heading, dr.heading)) / DT)
@@ -343,54 +395,182 @@ console.log('\ndragons')
     }
     if (dr.state === 'roost' && seen.has('land')) homeAt = t
   }
-  check(trace.join(' ').replace(/@[\d.]+s/g, '') === 'patrol hunt strike return land', 'it flies the loop in order: patrol, hunt, strike, return, land, and is home again', trace.join(' '))
-  check(homeAt > 0 && homeAt < 300, 'and the whole flight, with a stag 130 m off, takes under five minutes', `${fmt(homeAt)} s`)
-  check(tookOff > 0 && tookOff <= REST_S[1] && dr.clip === 'idle', 'off the nest when its rest ran out, and back to idling on it', `took off at ${fmt(tookOff)} s`)
+  check(trace.join(' ').replace(/@[\d.]+s/g, '') === 'patrol hunt strike return land', 'hungry, it flies the hunt in order: patrol, hunt, strike, return, land, and is home again', trace.join(' '))
+  check(homeAt > 0 && homeAt < 400, 'and the whole flight, with a stag 130 m off, takes under seven minutes', `${fmt(homeAt)} s`)
+  check(tookOff > 0 && tookOff <= REST_S[1] && dr.clip === 'walk' && dr.rest === 'walk', 'off the nest when its rest ran out, and back on it walking a circuit before it eats', `took off at ${fmt(tookOff)} s`)
   check(stags[0].seized === 1 && stags[0].spawn === null && stags[0].act === 'dead' && dr.cargo === stags[0] && d.stats.carrying === 1, 'the stag was seized ONCE -- its spawn dead, its slot the dragon\'s cargo -- and is still the cargo on the nest')
   check(worst.speed <= DIVE_MPS + 1e-6 && worst.speed > HUNT_MPS, 'the dive was the fastest it flew, faster than the hunt and no faster than the dive allows', `${fmt(worst.speed)} m/s`)
   check(worst.under > 0.1 && worst.under < 1.001, 'never once in the air was the body under its nest floor, and it climbed off the nest rather than being lifted to its metre of clearance', `lowest ${fmt(worst.under)} m over the ground`)
   check(worst.farFromHome < PATROL_M + 100, `and never strayed much past ${PATROL_M} m from the nest`, `${fmt(worst.farFromHome)} m at most`)
   check(d.stats.forced === 0, 'the landing was flown, not forced by the clock', `forced ${d.stats.forced}`)
   const landed = { x: dr.x, y: dr.y, z: dr.z, pitch: dr.pitch }
-  for (let i = 0; i < 60 * 3; i++) { d.update(HER.x, HER.y, HER.z, DT); measure(); cargoFrames++ }
-  check(Math.hypot(landed.x - site.x, landed.z - site.z) > 0.01 && Math.abs(dr.x - site.x) < 1e-9 && Math.abs(dr.z - site.z) < 1e-9 && Math.abs(dr.y - (site.y + 0.04 * site.r)) < 1e-9, 'the landing hands over short of the stand point, and three seconds on it is settled exactly on it', `handed over ${fmt(Math.hypot(landed.x - site.x, landed.z - site.z))} m out`)
-  check(Math.abs(dr.roll) < 1e-9 && Math.abs(dr.pitch) < 1e-9 && dr.speed === 0, 'standing level and still')
-  check(worst.turn <= LAND_TURN_RATE + 1e-6 && worst.pitch <= PITCH_RATE + 1e-6 && worst.roll <= ROLL_RATE + 1e-6 && worst.accel <= ACCEL + 1e-6 && worst.move <= DIVE_MPS * 1.001, 'and no frame of it, landing and settling included, turned, pitched, banked, accelerated or moved the body faster than its rates', `turn ${fmt(worst.turn)}/${LAND_TURN_RATE} pitch ${fmt(worst.pitch)}/${PITCH_RATE} roll ${fmt(worst.roll)}/${ROLL_RATE} accel ${fmt(worst.accel)}/${ACCEL} move ${fmt(worst.move)}/${DIVE_MPS}`)
-  check(worst.banked > 0.3 && worst.banked <= BANK + 1e-9, `it banked into its turns, never past ${BANK} rad`, `${fmt(worst.banked)} rad at most`)
-  check(seizedAt > 0 && Math.hypot(stags[0].x - site.x, stags[0].z - site.z) < site.r && Math.hypot(stags[0].x - site.x, stags[0].z - site.z) > 0.5 && Math.abs(stags[0].y - dr.y) < 1e-6, 'carried home: the carcass lies on the nest floor beside the dragon, not under it', `at (${fmt(stags[0].x)}, ${fmt(stags[0].y)}, ${fmt(stags[0].z)}), nest r ${site.r}`)
-  check(stags[0].carried === cargoFrames && cargoFrames > 60 && stags[0].carryDt === DT && Math.abs(stags[0].carryDist - Math.hypot(stags[0].x - HER.x, stags[0].y - HER.y, stags[0].z - HER.z)) < 1e-6, 'wildlife.carry was called on every frame it was cargo, with the frame and the carcass\'s own distance to her', `${cargoFrames} frames`)
-  check(stags[0].drops.length === 0, 'and not dropped yet: the kill lies on the nest through the rest')
+  const kill = { x: stags[0].x, z: stags[0].z }
 
-  // Rest out, and the next takeoff lets the kill go, with a fade.
-  let dropped = -1
-  for (let i = 0; i < 60 * (REST_S[1] + 5) && dropped < 0; i++) {
+  // The meal: a circuit of the nest, round behind the kill, up to it, and the eating; the carcass never moves until it is eaten.
+  const walkMps = wyvern.gait.walk * dr.k
+  const nest = { moved: 0, walkFast: 0, offFloor: 0, killMoved: 0, farthest: 0, headings: 0, eatAt: -1, ateAt: -1, eatFacing: Infinity, eatFrom: Infinity, clips: new Set() }
+  let lastHeading = dr.heading
+  for (let i = 0; i < 60 * 240 && nest.ateAt < 0; i++) {
     d.update(HER.x, HER.y, HER.z, DT)
-    if (stags[0].drops.length) dropped = i
+    nest.moved += Math.hypot(dr.x - prev.x, dr.z - prev.z)
+    measure()
+    if (dr.cargo) cargoFrames++
+    nest.clips.add(dr.clip)
+    // Three seconds in, the landing's speed has bled off and the body is on the floor: from here every frame is a walk or a stand.
+    if (i > 60 * 3) {
+      if (dr.speed > walkMps * 1.001) nest.walkFast++
+      if (Math.abs(dr.y - (site.y + 0.04 * site.r)) > 1e-6) nest.offFloor++
+      if (dr.state !== 'roost') throw new Error(`left the nest mid-meal: ${dr.state}`)
+    }
+    nest.headings += Math.abs(swing(lastHeading, dr.heading)); lastHeading = dr.heading
+    nest.farthest = Math.max(nest.farthest, Math.hypot(dr.x - site.x, dr.z - site.z))
+    if (dr.cargo && (Math.abs(stags[0].x - kill.x) > 1e-9 || Math.abs(stags[0].z - kill.z) > 1e-9)) nest.killMoved++
+    if (dr.rest === 'eat' && nest.eatAt < 0) nest.eatAt = i * DT
+    if (dr.rest === 'eat') {
+      nest.eatFacing = Math.min(nest.eatFacing, Math.abs(swing(dr.heading, Math.atan2(-(kill.z - dr.z), kill.x - dr.x))))
+      nest.eatFrom = Math.hypot(kill.x - dr.x, kill.z - dr.z)
+    }
+    if (!dr.cargo && nest.ateAt < 0) nest.ateAt = i * DT
   }
-  check(dropped >= 0 && stags[0].drops.join() === 'true' && dr.cargo === null && dr.state === 'patrol', 'the next takeoff drops the kill where it lies, with a fade, and the dragon patrols empty')
-  check(herd.prey(dr.x, dr.z, HUNT_M) === null, 'a seized stag is not prey again')
+  check(Math.hypot(landed.x - site.x, landed.z - site.z) > 0.01 && nest.eatAt > 5 && nest.eatAt < 120, 'the landing hands over short of the stand point and the dragon walks a circuit of the nest before it eats', `landed ${fmt(Math.hypot(landed.x - site.x, landed.z - site.z))} m out, eating from ${fmt(nest.eatAt)} s`)
+  check(nest.moved > 2 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than two radii and turned more than a half turn, all of it inside the rim', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
+  check(nest.walkFast === 0 && nest.offFloor === 0, 'and once down, never moved faster than the shipped walk gait at its size nor left the floor plane', `walk ${fmt(walkMps)} m/s; ${nest.walkFast} fast frames, ${nest.offFloor} off the floor`)
+  check(nest.killMoved === 0 && Math.hypot(kill.x - site.x, kill.z - site.z) < site.r && Math.hypot(kill.x - site.x, kill.z - site.z) > 0.5 && Math.abs(stags[0].y - site.y) < 1e-6, 'the kill lay where it was dropped, on the nest floor off centre, through the whole circuit: it does not follow the dragon round', `at (${fmt(kill.x)}, ${fmt(kill.z)}), nest r ${site.r}`)
+  check(nest.eatFacing < 0.1 && Math.abs(nest.eatFrom - EAT_REACH * dr.k) < WAY_M, `eating, it faces the kill with the kill ${fmt(EAT_REACH * dr.k)} m ahead, where the eat clip's snout plunges`, `off by ${fmt(nest.eatFacing)} rad, ${fmt(nest.eatFrom)} m`)
+  check(nest.ateAt > 0 && nest.ateAt - nest.eatAt >= EAT_S[0] - 0.1 && nest.ateAt - nest.eatAt <= EAT_S[1] + 0.1 && stags[0].drops.join() === 'true' && dr.cargo === null && d.stats.carrying === 0, `after ${EAT_S[0]} to ${EAT_S[1]} s of eating the carcass is gone -- dropped to fade -- and the dragon carries nothing`, `ate for ${fmt(nest.ateAt - nest.eatAt)} s`)
+  check(Math.abs(dr.age - dr.fedAt) < 1e-9 && !d._hungry(dr), 'and the meal is when it last ate: it is not hungry now')
+  check(stags[0].carried === cargoFrames && cargoFrames > 60 && stags[0].carryDt === DT, 'wildlife.carry was called on every frame it was cargo, with the frame', `${cargoFrames} frames`)
+  check(stags[0].lain === true && stags[0].lainFrames > 60 * 5 && stags[0].lainFrames < cargoFrames, 'hanging from the talons through the whole flight and laid on its flank from the frame it landed to the frame it was eaten', `lain ${stags[0].lainFrames} of ${cargoFrames} cargo frames`)
+  check(worst.turn <= LAND_TURN_RATE + 1e-6 && worst.pitch <= PITCH_RATE + 1e-6 && worst.roll <= ROLL_RATE + 1e-6 && worst.accel <= ACCEL + 1e-6 && worst.move <= DIVE_MPS * 1.001, 'and no frame of it, landing, walking and eating included, turned, pitched, banked, accelerated or moved the body faster than its rates', `turn ${fmt(worst.turn)}/${LAND_TURN_RATE} pitch ${fmt(worst.pitch)}/${PITCH_RATE} roll ${fmt(worst.roll)}/${ROLL_RATE} accel ${fmt(worst.accel)}/${ACCEL} move ${fmt(worst.move)}/${DIVE_MPS}`)
+  check(worst.banked > 0.3 && worst.banked <= BANK + 1e-9, `it banked into its turns, never past ${BANK} rad`, `${fmt(worst.banked)} rad at most`)
+  check(seizedAt > 0 && Math.abs(dr.roll) < 1e-9 && Math.abs(dr.pitch) < 1e-9, 'standing level')
 
-  // Empty patrol: the flight clock sends it home, and it lands without a stag to chase.
-  let home = -1, patrolLow = Infinity, patrolHigh = 0
+  // Fed, it potters for the rest: several kinds of step, walks among them, and no takeoff before the rest's least.
+  const potter = { clips: new Set(), walked: 0, tookOff: -1 }
+  for (let i = 0; i < 60 * (REST_S[1] + 5) && potter.tookOff < 0; i++) {
+    d.update(HER.x, HER.y, HER.z, DT)
+    if (dr.state === 'roost') { potter.clips.add(dr.clip); if (dr.rest === 'walk') potter.walked += DT }
+    else potter.tookOff = i * DT
+  }
+  check(potter.tookOff >= REST_S[0] - 1 && potter.tookOff <= REST_S[1] + 1, `fed, it stays on the nest for the rest, ${REST_S[0]} to ${REST_S[1]} s`, `${fmt(potter.tookOff)} s`)
+  check(potter.clips.size >= 3 && potter.walked > 5 && !potter.clips.has('eat') && !potter.clips.has('fly'), 'and does not just stand there: three kinds of step at least, walking among them, and no eating with nothing to eat', [...potter.clips].join(' ') + `, walked ${fmt(potter.walked)} s`)
+  check(dr.state === 'explore' && dr.cargo === null && herd.preyCalls > 0, `fed within ${HUNGER_S} s, its next flight is to explore, not to hunt`)
+  check(herd.prey(dr.x, dr.z, HUNT_M) === null, 'a seized stag is not prey again')
+  const preyCallsBefore = herd.preyCalls
+
+  // The explore: no stag is looked for, the cruise meanders, and hunger in the air turns it to a patrol.
+  let pitchFlips = 0, rollFlips = 0, swung = 0, netted = 0, patrolLow = Infinity, patrolHigh = 0
+  let lastPitch = 0, lastRoll = 0
+  lastHeading = dr.heading
+  for (let i = 0; i < 60 * 40; i++) {
+    d.update(HER.x, HER.y, HER.z, DT)
+    if (dr.state === 'explore' && i > 60 * 20) {
+      patrolLow = Math.min(patrolLow, dr.y - GROUND); patrolHigh = Math.max(patrolHigh, dr.y - GROUND)
+      if (dr.pitch * lastPitch < 0) pitchFlips++
+      if (dr.roll * lastRoll < 0) rollFlips++
+      swung += Math.abs(swing(lastHeading, dr.heading)); netted += swing(lastHeading, dr.heading)
+    }
+    lastPitch = dr.pitch; lastRoll = dr.roll; lastHeading = dr.heading
+  }
+  check(herd.preyCalls === preyCallsBefore && ['explore', 'visit', 'land', 'perch'].includes(dr.state), 'forty seconds of exploring asked the wildlife for no stag at all', dr.state)
+  check(patrolLow >= MIN_AGL - 5 && patrolHigh > MIN_AGL, `once up, the cruise kept about ${MIN_AGL} m over the ground or higher`, `${fmt(patrolLow)} to ${fmt(patrolHigh)} m`)
+  check(pitchFlips >= 2 && rollFlips >= 2 && swung > 2 * Math.abs(netted) + 1, 'and it swooped and careened the whole way: pitch and roll crossed level again and again and the heading swung far more than it netted', `pitch flips ${pitchFlips}, roll flips ${rollFlips}, swung ${fmt(swung)} rad for ${fmt(netted)} net`)
+  if (dr.state !== 'explore') { dr.state = 'explore'; dr.dest = site }
+  dr.fedAt = -Infinity
+  d.update(HER.x, HER.y, HER.z, DT)
+  check(dr.state === 'patrol', 'an explorer that goes hungry in the air turns to patrolling where it is')
+  // Empty patrol: with the only stag eaten, the flight clock sends it home.
+  let home = -1
   for (let i = 0; i < 60 * (FLIGHT_S[1] + 200) && home < 0; i++) {
     d.update(HER.x, HER.y, HER.z, DT)
-    if (dr.state === 'patrol' && i > 60 * 20) { patrolLow = Math.min(patrolLow, dr.y - GROUND); patrolHigh = Math.max(patrolHigh, dr.y - GROUND) }
     if (dr.state === 'roost') home = i * DT
   }
-  check(home > 0 && home < FLIGHT_S[1] + 150 && !dr.cargo, `with nothing to hunt the patrol turns for home when its clock runs out and lands within ${FLIGHT_S[1]} s and the flight back`, `${fmt(home)} s`)
-  check(patrolLow >= MIN_AGL - 5 && patrolHigh > MIN_AGL, `once up, the cruise kept about ${MIN_AGL} m over the ground or higher`, `${fmt(patrolLow)} to ${fmt(patrolHigh)} m`)
+  check(home > 0 && home < FLIGHT_S[1] + 150 && !dr.cargo && herd.preyCalls > preyCallsBefore, `with nothing to hunt the patrol turns for home when its clock runs out and lands within ${FLIGHT_S[1]} s and the flight back`, `${fmt(home)} s`)
+  d.dispose()
+}
+
+// --- exploring: a sated dragon visits a spot away from the nest, perches and potters there, and flies on; steep or drowned ground it does not ---
+{
+  const flat = flatField(GROUND)
+  const site = { key: 4321, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
+  const herd = makeHerd([stag(150, 0)])
+  const d = dragonsOn(flat, [site], herd, 8)
+  d.update(HER.x, HER.y, HER.z, DT)
+  const dr = d.byKey.get(site.key)
+  dr.fedAt = dr.age
+  dr.timer = 0.5
+  const visit = { at: -1, flights: 0, state: '' }
+  let was = dr.state
+  for (let i = 0; i < 60 * 3 * (FLIGHT_S[1] + REST_S[1] + 400) && visit.at < 0; i++) {
+    d.update(HER.x, HER.y, HER.z, DT)
+    dr.fedAt = dr.age
+    if (dr.state === 'explore' && was === 'roost') visit.flights++
+    if (dr.state === 'perch') visit.at = i * DT
+    was = dr.state
+  }
+  check(visit.at > 0 && visit.flights <= 3 && herd.preyCalls === 0, 'kept fed, within three flights it alights on a spot away from the nest, and never once looked for a stag', `perched at ${fmt(visit.at)} s on flight ${visit.flights}`)
+  const spot = dr.dest
+  check(spot !== site && spot.turf === true && Math.hypot(spot.x - site.x, spot.z - site.z) >= SPOT_AWAY * site.r && Math.hypot(spot.x - site.x, spot.z - site.z) <= PATROL_M + 20, `the spot is turf ${SPOT_AWAY} nest radii or more from home and within the patrol's range`, `${fmt(Math.hypot(spot.x - site.x, spot.z - site.z))} m from the nest`)
+  const perch = { clips: new Set(), walked: 0, offGround: 0, off: 0, y: 0 }
+  for (let i = 0; i < 60 * (PERCH_S[1] + 5) && dr.state === 'perch'; i++) {
+    d.update(HER.x, HER.y, HER.z, DT)
+    dr.fedAt = dr.age
+    if (dr.state === 'perch') perch.clips.add(dr.clip)
+    if (dr.rest === 'walk') perch.walked += DT
+    if (i > 60 * 3 && Math.abs(dr.y - GROUND) > 1e-6) perch.offGround++
+    perch.off = Math.max(perch.off, Math.hypot(dr.x - spot.x, dr.z - spot.z))
+  }
+  check(perch.clips.size >= 2 && perch.walked > 2 && perch.offGround === 0 && perch.off < site.r, 'perched, it potters as at home -- walking about, standing on the ground itself -- and stays about the spot', `${[...perch.clips].join(' ')}, walked ${fmt(perch.walked)} s, ${fmt(perch.off)} m out at most`)
+  check(['explore', 'return'].includes(dr.state) && dr.clip === 'fly' && dr.dest === site, `and after ${PERCH_S[0]} to ${PERCH_S[1]} s it flies on, or home if the flight's clock ran out perched`, dr.state)
+  d.dispose()
+
+  const never = (label, field, water = dry) => {
+    const dd = dragonsOn(field, [site], makeHerd([]), 8, water)
+    dd.update(HER.x, HER.y, HER.z, DT)
+    const b = dd.byKey.get(site.key)
+    b.timer = 0.5
+    let perched = false
+    for (let i = 0; i < 60 * 3 * (FLIGHT_S[1] + REST_S[1] + 400) && !perched; i++) { dd.update(HER.x, HER.y, HER.z, DT); b.fedAt = b.age; if (b.state === 'perch' || b.state === 'visit') perched = true }
+    check(!perched, label)
+    dd.dispose()
+  }
+  never('with every spot under water, three flights alight nowhere but the nest', flat, { isSubmerged: () => true })
+  never(`nor on ground steeper than ${SPOT_SLOPE_DEG} degrees`, flatField(GROUND, Math.tan((SPOT_SLOPE_DEG + 5) * Math.PI / 180)))
+}
+
+// --- a nest on a hillside: the dragon stands on its floor and the kill lies on its plane ----
+{
+  const gx = 0.25, gz = -0.15
+  const hill = hillField(GROUND, gx, gz)
+  const site = { key: 31, x: 40, y: hill.heightAt(40, -20) - 0.06 * 4, z: -20, r: 4, gx, gz }
+  const stags = [stag(500, 500)]
+  const d = dragonsOn(hill, [site], makeHerd(stags))
+  d.update(HER.x, HER.y, HER.z, DT)
+  const dr = d.byKey.get(site.key)
+  check(Math.abs(dr.y - (site.y + 0.04 * site.r)) < 1e-9 && dr.y > hill.heightAt(site.x, site.z) - 0.1, 'born standing a hand over the floor at the bowl\'s centre, which is at the turf, not under the uphill half of the hill')
+  // The kill laid on this nest, by hand: landed with it.
+  dr.cargo = stags[0]
+  d._perch(dr)
+  d.update(HER.x, HER.y, HER.z, DT)
+  const c = stags[0]
+  const u = c.x - site.x, v = c.z - site.z
+  const normal = new THREE.Vector3(-gx, 1, -gz).normalize()
+  check(c.lain === true && Math.hypot(u, v) > 0.5 && Math.hypot(u, v) < site.r && Math.abs(c.y - (site.y + gx * u + gz * v)) < 1e-9, 'a kill on this nest lies beside the dragon ON the tilted floor plane, at that plane\'s own height there, not at the centre\'s', `at (${fmt(u)}, ${fmt(v)}) off centre, y ${fmt(c.y)} for a floor of ${fmt(site.y + gx * u + gz * v)}`)
+  check(c.up.distanceTo(normal) < 1e-9, 'and lies tilted with the floor, its up the nest plane\'s normal', `up (${fmt(c.up.x)}, ${fmt(c.up.y)}, ${fmt(c.up.z)})`)
+  check((() => { try { dragonsOn(hill, [{ key: 32, x: 0, y: GROUND, z: 0, r: 4 }], makeHerd([])).update(0, 0, 0, DT); return false } catch (e) { return /floor plane/.test(e.message) } })(), 'a site with no floor plane is refused by name, not stood on at NaN')
   d.dispose()
 }
 
 // --- a stag that leaves the world mid-hunt, and a relief edit under a carrying dragon --
 {
   const flat = flatField(GROUND)
-  const site = { key: 77, x: 0, y: GROUND, z: 0, r: 4 }
+  const site = { key: 77, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
   const stags = [stag(150, 0)]
   const herd = makeHerd(stags)
   const d = dragonsOn(flat, [site], herd, 11)
   d.update(HER.x, HER.y, HER.z, DT)
   const dr = d.byKey.get(site.key)
+  dr.fedAt = -Infinity
   const until = (state, frames) => { for (let i = 0; i < frames; i++) { d.update(HER.x, HER.y, HER.z, DT); if (dr.state === state) return true } return false }
   check(until('hunt', 60 * 200), 'a dragon on patrol finds a stag inside its range and hunts it')
   stags[0].spawn = null
@@ -408,7 +588,7 @@ console.log('\ndragons')
 // --- the rungs: puppet near, two fixed cards far, nothing past that, simulated throughout --
 {
   const flat = flatField(GROUND)
-  const site = { key: 9, x: 0, y: GROUND, z: 0, r: 4 }
+  const site = { key: 9, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
   const d = dragonsOn(flat, [site], makeHerd([]), 5)
   d.update(HER.x, HER.y, HER.z, DT)
   const dr = d.byKey.get(site.key)
@@ -437,9 +617,9 @@ console.log('\ndragons')
 // --- a roost that goes, too many roosts, and too many in mesh range -------------------
 {
   const flat = flatField(GROUND)
-  const sites = [{ key: 1, x: 0, y: GROUND, z: 0, r: 4 }]
+  const sites = [{ key: 1, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
   const roosts = roostOf(sites)
-  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), asset: makeAsset() })
+  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, asset: makeAsset() })
   d.update(HER.x, HER.y, HER.z, DT)
   const dr = d.byKey.get(1)
   check(dr && dr.puppet, 'a dragon with her beside its nest wears a puppet')
@@ -449,7 +629,7 @@ console.log('\ndragons')
   for (let i = 0; i < 60 * 3; i++) d.update(HER.x, HER.y, HER.z, DT)
   check(d.fading.length === 0 && d.freePuppets.length === PUPPETS, 'and the puppet is back in the pool once the dissolve is done')
 
-  for (let k = 0; k < MAX + 1; k++) sites.push({ key: 100 + k, x: k * 8, y: GROUND, z: 0, r: 4 })
+  for (let k = 0; k < MAX + 1; k++) sites.push({ key: 100 + k, x: k * 8, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
   d.update(HER.x, HER.y, HER.z, DT)
   check(d.byKey.size === MAX && d.stats.overflow === 1 && d.free.length === 0, `${MAX + 1} roosts in range is one more dragon than there are slots: ${MAX} fly and the overflow is counted`)
   check(d.stats.puppets === PUPPETS && d.stats.starved > 0 && Array.from(d.byKey.values()).filter((x) => x.puppet).length === PUPPETS, `all of them at her feet, ${PUPPETS} wear puppets and the rest are counted starved rather than drawn wrong`, `starved ${d.stats.starved}`)

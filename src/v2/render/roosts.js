@@ -30,9 +30,12 @@ import { RimFade } from './rim.js'
 //
 // PLACEMENT IS A PURE FUNCTION OF POSITION (bones.js): one candidate a tile,
 // kept with probability KEEP, on gentle dry ground clear of the roads and the
-// rivers. Rare, because each is a dragon. dragons.js reads `sites()` for where
-// its dragons live; the roost is scenery and the dragon is the layer that
-// knows about her.
+// rivers. Rare, because each is a dragon. THE BOWL LIES ON THE HILLSIDE: it is
+// tilted to the plane through four rim samples and seated at the ground under
+// its centre, so a nest on a slope sits on the slope rather than sinking its
+// uphill half into it. dragons.js reads `sites()` for where its dragons live
+// and the plane they stand and lay a kill on; the roost is scenery and the
+// dragon is the layer that knows about her.
 // ---------------------------------------------------------------------------
 
 // Roosts per square metre: one in a 400 m square, about ten inside the card range.
@@ -53,7 +56,7 @@ const FADE_MAX_INFLIGHT = 16
 const PLACEMENT = {
   maxSlopeDeg: 25,
   pathClearance: 3,
-  // Units of the bowl's radius the whole thing is sunk by, so the lowest branches bed into the turf.
+  // Units of the bowl's radius the floor is sunk under the ground at its centre, so the bottom branches bed into the turf.
   sink: 0.06,
 }
 
@@ -360,6 +363,8 @@ export class Roosts {
     this._m = new THREE.Matrix4()
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
+    this._tilt = new THREE.Quaternion()
+    this._n = new THREE.Vector3()
     this._s = new THREE.Vector3()
     this._up = new THREE.Vector3(0, 1, 0)
 
@@ -382,8 +387,10 @@ export class Roosts {
   }
 
   /**
-   * Every roost resident, for dragons.js: `{ key, x, y, z, r }`, `y` the nest
-   * floor a dragon stands on and `r` the rim's radius in metres. Resident is
+   * Every roost resident, for dragons.js: `{ key, x, y, z, r, gx, gz }`, `y`
+   * the nest floor under the bowl's centre, `r` the rim's radius in metres and
+   * (gx, gz) the floor plane's slope, metres of rise per metre along +X and
+   * +Z, so the floor at (x + u, z + v) is `y + gx * u + gz * v`. Resident is
    * not drawn: a roost past its cull is still a site, and the dragon decides
    * for itself how far out it lives.
    */
@@ -470,25 +477,24 @@ export class Roosts {
     }
     if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`)
 
-    // Seated on the lowest of four rim samples, like the skull (bones.js), and sunk so the bottom branches bed in.
-    let low = h - tan * r
-    for (const [dx, dz] of [[-r, 0], [r, 0], [0, -r], [0, r]]) {
-      const hs = this.field.heightAt(x + dx, z + dz)
-      if (hs < low) low = hs
-    }
-    const y = low - PLACEMENT.sink * r
+    // Laid on the plane through four rim samples and sunk so the bottom branches bed in.
+    const gx = (this.field.heightAt(x + r, z) - this.field.heightAt(x - r, z)) / (2 * r)
+    const gz = (this.field.heightAt(x, z + r) - this.field.heightAt(x, z - r)) / (2 * r)
+    const y = h - PLACEMENT.sink * r
 
     const id = this.free[--this.freeCount]
     tile.ids[0] = id
     tile.n = 1
-    tile.site = { key, x, y, z, r }
+    tile.site = { key, x, y, z, r, gx, gz }
     this.placed++
     this.instX[id] = x
     this.instY[id] = y
     this.instZ[id] = z
     this.instR[id] = r
     this._p.set(x, y, z)
+    // Yawed about its own Y, then tilted so that Y is the plane's normal.
     this._q.setFromAxisAngle(this._up, yaw)
+    this._q.premultiply(this._tilt.setFromUnitVectors(this._up, this._n.set(-gx, 1, -gz).normalize()))
     this._s.setScalar(r)
     this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
     // Born as a card on no rung yet; `update` takes it to its rung on the next frame.

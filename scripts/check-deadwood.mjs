@@ -1273,15 +1273,15 @@ const MOCK_LAYERS = {
   dw.dispose()
 }
 
-// --- and no two pieces lie the same way up -----------------------------------
+// --- every log lies the same side up, and every stump leans its own way -------
 //
-// The shipped log has one knotted side, and a scatter that only yawed it laid
-// that side up on every log in the world. So a log rolls any way about its own
-// length, and a stump leans a few degrees about a random bearing. Both are read
+// A log is not rolled about its length: the shipped mesh's map is shadowed on
+// its underside and its stubs stand off one side, and a rolled log showed both
+// to the sun. A stump leans a few degrees about a random bearing. Both are read
 // off the placed matrices: the roll as where the log's local +X ends up, the
 // lean as how far the stump's local +Y is from vertical.
 {
-  console.log('\nno two pieces lie the same way up')
+  console.log('\nevery log lies the same side up, and every stump leans its own way')
 
   const field = {
     heightAt: () => 40,
@@ -1306,11 +1306,10 @@ const MOCK_LAYERS = {
         // On flat ground there is no pitch, so local +X's rise is the roll alone.
         ax.set(1, 0, 0).transformDirection(m)
         rolls.push(Math.atan2(ax.y, Math.hypot(ax.x, ax.z)))
-        // The roll is about the core, not the box: the mesh's core axis lands
-        // on the instance origin, a core radius over the flat ground, whatever
-        // the roll. Rolled about the box's edge instead, a log a quarter turn
-        // over lay a radius to one side and half buried, and one turned right
-        // over lay under the ground.
+        // The instance is the core, not the box: the mesh's core axis lands on
+        // the instance origin, a core radius over the flat ground. Seated by
+        // the box's centre instead, a log lay a twentieth of its length to one
+        // side of where the walker was told it was.
         const s = dw.instSize[id] / dw.vLod[vi]
         ax.set(dw.vCoreX[vi], dw.vCoreY[vi], 0).applyMatrix4(m)
         const off = Math.hypot(ax.x - dw.instX[id], ax.y - dw.instY[id], ax.z - dw.instZ[id])
@@ -1327,9 +1326,9 @@ const MOCK_LAYERS = {
   const spread = (a) => Math.max(...a) - Math.min(...a)
   check(rolls.length > 5 && leans.length > 5, 'placed both kinds to measure',
     `${rolls.length} logs, ${leans.length} stumps`)
-  check(spread(rolls) > Math.PI / 2, 'the logs roll every way about their own length',
-    `local +X rises between ${(Math.min(...rolls) * 180 / Math.PI).toFixed(0)} and ${(Math.max(...rolls) * 180 / Math.PI).toFixed(0)} degrees`)
-  check(swung.length === 0, 'and each rolls about its own core, which stays on its seat',
+  check(spread(rolls) < 1e-6 && Math.abs(rolls[0]) < 1e-6, 'no log is rolled about its own length: the shipped side stays up',
+    `local +X rises between ${(Math.min(...rolls) * 180 / Math.PI).toFixed(2)} and ${(Math.max(...rolls) * 180 / Math.PI).toFixed(2)} degrees`)
+  check(swung.length === 0, 'and each sits by its own core, which stays on its seat',
     swung.length === 0 ? `${rolls.length} cores on their origins, bellies on the ground` : `${swung.length} swung: ${swung.slice(0, 3).join('; ')}`)
   check(Math.max(...leans) <= 6.01 && Math.max(...leans) > 3 && Math.min(...leans) < 2,
     'the stumps lean a little, by different amounts, and never past six degrees',

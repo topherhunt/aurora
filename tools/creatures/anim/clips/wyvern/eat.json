@@ -1,0 +1,83 @@
+{
+  "kind": "pose",
+  "note": "Feeding on a kill on the ground in front: the head plunges down and forward, bites, wrenches up and sideways with the whole neck, swallows, and plunges again. Two lunges a loop, the second from a little further round, so a run of loops reads as worrying a carcass rather than pecking one spot. The body leans into each plunge and the wings half-lift on the wrench, the way a bird of prey mantles over food; the feet stay planted throughout. Loops: the first and last keys are the same crouched, head-raised pause between mouthfuls.",
+  "samples": 48,
+  "limits": {
+    "hipLimit": 1.4,
+    "fold": 2.2
+  },
+  "keys": [
+    { "t": 0.0, "pose": {
+      "root": { "lift": -0.05 },
+      "spine": { "pitch": 0.2 },
+      "head": { "pitch": 0.5 },
+      "tail": { "pitch": 0.5 },
+      "wings": { "spread": -0.1, "sweep": 0.12 },
+      "arms": { "pitch": -0.16 }
+    } },
+    { "t": 0.35, "pose": {
+      "root": { "lift": -0.12, "fore": 0.03 },
+      "spine": { "pitch": 0.45 },
+      "head": { "pitch": 1.35, "yaw": 0.1 },
+      "tail": { "pitch": 0.6 },
+      "wings": { "spread": -0.16, "sweep": 0.16 },
+      "arms": { "pitch": -0.3 }
+    } },
+    { "t": 0.55, "pose": {
+      "root": { "lift": -0.12, "fore": 0.03 },
+      "spine": { "pitch": 0.45 },
+      "head": { "pitch": 1.4, "yaw": -0.15, "roll": 0.25 },
+      "tail": { "pitch": 0.6 },
+      "wings": { "spread": -0.16, "sweep": 0.16 },
+      "arms": { "pitch": -0.3 }
+    } },
+    { "t": 0.85, "pose": {
+      "root": { "lift": -0.04 },
+      "spine": { "pitch": 0.1, "yaw": -0.12 },
+      "head": { "pitch": 0.15, "yaw": -0.55, "roll": -0.3 },
+      "tail": { "pitch": 0.35, "yaw": 0.2 },
+      "wings": { "spread": 0.3, "sweep": -0.1 },
+      "arms": { "pitch": -0.1 }
+    } },
+    { "t": 1.15, "pose": {
+      "root": { "lift": -0.05 },
+      "spine": { "pitch": 0.2 },
+      "head": { "pitch": 0.4, "yaw": -0.2 },
+      "tail": { "pitch": 0.5 },
+      "wings": { "spread": -0.06, "sweep": 0.1 },
+      "arms": { "pitch": -0.16 }
+    } },
+    { "t": 1.5, "pose": {
+      "root": { "lift": -0.13, "fore": 0.04 },
+      "spine": { "pitch": 0.48, "yaw": 0.15 },
+      "head": { "pitch": 1.35, "yaw": 0.4 },
+      "tail": { "pitch": 0.6, "yaw": -0.15 },
+      "wings": { "spread": -0.16, "sweep": 0.16 },
+      "arms": { "pitch": -0.3 }
+    } },
+    { "t": 1.7, "pose": {
+      "root": { "lift": -0.13, "fore": 0.04 },
+      "spine": { "pitch": 0.48, "yaw": 0.15 },
+      "head": { "pitch": 1.42, "yaw": 0.55, "roll": -0.25 },
+      "tail": { "pitch": 0.6, "yaw": -0.15 },
+      "wings": { "spread": -0.16, "sweep": 0.16 },
+      "arms": { "pitch": -0.3 }
+    } },
+    { "t": 2.0, "pose": {
+      "root": { "lift": -0.03 },
+      "spine": { "pitch": 0.08, "yaw": 0.1 },
+      "head": { "pitch": 0.1, "yaw": 0.5, "roll": 0.3 },
+      "tail": { "pitch": 0.35, "yaw": -0.2 },
+      "wings": { "spread": 0.3, "sweep": -0.1 },
+      "arms": { "pitch": -0.1 }
+    } },
+    { "t": 2.4, "pose": {
+      "root": { "lift": -0.05 },
+      "spine": { "pitch": 0.2 },
+      "head": { "pitch": 0.5 },
+      "tail": { "pitch": 0.5 },
+      "wings": { "spread": -0.1, "sweep": 0.12 },
+      "arms": { "pitch": -0.16 }
+    } }
+  ]
+}

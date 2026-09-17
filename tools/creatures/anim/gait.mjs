@@ -409,12 +409,13 @@ const DEFAULTS = {
   // it a flying creature's feet hang in space while its body bobs past them.
   airborne: false,
   // Per-leg offsets on the stance station, in the same units as a pose clip's
-  // leg handles: `{ hindLeft: { fore, lat, lift } }`. This is what tucks the
-  // legs up under a flying animal.
+  // leg handles: `{ hindLeft: { fore, lat, lift, pitch } }`, `pitch` tilting
+  // the foot toes-down about the lateral axis once the leg is placed. This is
+  // what hangs the legs under a flying animal with its claws pointed down.
   legHold: {},
 }
 
-const NO_HOLD = { fore: 0, lat: 0, lift: 0 }
+const NO_HOLD = { fore: 0, lat: 0, lift: 0, pitch: 0 }
 
 /**
  * The mirrored FK chains -- wings, forelimbs -- a rig map may name, resolved to
@@ -561,7 +562,7 @@ export function solveClip(rigFile, map, rawSpec) {
         scale(fwd, f.fore + (hold.fore ?? 0) * map.wheelbase)),
         scale(lat, (hold.lat ?? 0) * map.wheelbase)),
         scale(up, f.lift + (hold.lift ?? 0) * map.height)), f.pitch, lat)
-      solveLimb(pose, leg, target, { ...spec.limits, pitch: f.pitch, pitchAxis: lat })
+      solveLimb(pose, leg, target, { ...spec.limits, pitch: f.pitch + (hold.pitch ?? 0), pitchAxis: lat })
       feet.push({ id: leg.id, target, planted: f.planted && !spec.airborne, actual: pose.pos(leg.foot), contact: contactOf(pose, leg) })
     }
 

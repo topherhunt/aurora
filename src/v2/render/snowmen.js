@@ -571,11 +571,8 @@ export class Snowmen {
     puppet.play(c.clip, c.cue)
     groundFeet(puppet, c, this.walk, PLANTED, (this.frame + c.id) % PROBE_EVERY === 0)
     puppet.step(dt)
-    // Only where it shows -- puppet.js POSE_EVERY.
-    if (puppet.posed) {
-      puppet.group.matrix.copy(_mat)
-      puppet.group.matrixWorldNeedsUpdate = true
-    }
+    puppet.group.matrix.copy(_mat)
+    puppet.group.matrixWorldNeedsUpdate = true
     if (puppet.done) {
       this._releasePuppet(c)
       return beyond

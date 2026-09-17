@@ -230,6 +230,8 @@ const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'
  * Every other budget still applies to it.
  */
 const loops = (spec) => spec.loops !== false
+/** A clip that declares `floor: false` has no ground under it at all -- a carcass hanging from talons -- so its feet may drop below the plant height; it must then bear weight on none of them. */
+const floored = (spec) => spec.floor !== false
 
 /**
  * A pose written as a stable string, with zero handles and empty groups dropped
@@ -657,6 +659,7 @@ for (const plan of plans()) {
       // Both of these are looked up by name at solve time, so a misspelling is
       // silent: the clip builds, the handle simply never moves.
       for (const id of spec.unweighted ?? []) if (!legIds.has(id)) bad.push(`unweighted names no leg ${id}`)
+      if (!floored(spec) && [...legIds].some((id) => !(spec.unweighted ?? []).includes(id))) bad.push('has no floor but a leg still bears weight')
       for (const g of Object.keys(spec.scale ?? {})) if (!GROUPS.has(g)) bad.push(`scale names no handle group ${g}`)
     } else {
       if (!(spec.duration > 0)) bad.push('no duration')
@@ -679,7 +682,7 @@ for (const plan of plans()) {
     const file = skeletonOf(plan)
     const solved = spec.kind === 'pose' ? poseClip(file, map, spec) : solveClip(file, map, spec)
     const stats = diagnose(solved)
-    check(stats.penetration < 1e-3 && (loops(spec) ? stats.loopGap < 1e-3 : true),
+    check((floored(spec) ? stats.penetration < 1e-3 : true) && (loops(spec) ? stats.loopGap < 1e-3 : true),
       `${plan}/${name} solves on a skeleton it was not tuned for`,
       `sink ${mm(stats.penetration)}  loop ${deg(stats.loopGap)}`)
   }
@@ -743,7 +746,7 @@ console.log('\nrigged creatures on disk')
       const bad = []
       if (stats.stanceSlide > (spec.kind === 'pose' ? 0.015 : 0.003)) bad.push(`slide ${mm(stats.stanceSlide)}`)
       if (stats.ikStance > 0.003) bad.push(`stance ik ${mm(stats.ikStance)}`)
-      if (stats.penetration > 0.002) bad.push(`sink ${mm(stats.penetration)}`)
+      if (floored(spec) && stats.penetration > 0.002) bad.push(`sink ${mm(stats.penetration)}`)
       if (stats.stanceFloat > 0.006) bad.push(`float ${mm(stats.stanceFloat)}`)
       if (loops(spec) && stats.loopGap > 1e-3) bad.push(`loop ${deg(stats.loopGap)}`)
       check(bad.length === 0, `${id} ${name} holds its feet`, bad.join('  '))

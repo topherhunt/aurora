@@ -60,7 +60,11 @@ const IDENTITY = new THREE.Matrix4()
 
 // ---------------------------------------------------------------------------
 // HOW OFTEN A PUPPET RE-POSES, BY THE RUNG IT DRAWS ON: every frame on the top
-// rung, then every second, fourth and eighth frame. This is the one lever the
+// two rungs, then every second and fourth frame. A pose is ~4 us of CPU for a
+// 31-bone stag on a desktop core plus its bone texture's upload, so at a crowd
+// of twenty this whole lever is under a millisecond either way; it stays
+// because the held frames are visible in a headset and the rungs it skips on
+// are the ones where they are not. This is the one lever the
 // ladder does NOT give us -- three uploads a skeleton's bone texture once a
 // frame per skeleton drawn, whichever tier that is, so a rung-3 stag costs the
 // same skinning as a rung-0 one. Skipping the pose is what makes a distant
@@ -70,23 +74,20 @@ const IDENTITY = new THREE.Matrix4()
 // speed however coarsely it is sampled -- this is a lower sample rate, not a
 // slower animation.
 //
-// WHAT A HELD FRAME LOOKS LIKE. The bone texture holds WORLD matrices (the
-// bones hang under the creature's own group), and a skinned vertex is
-// bindMatrixInverse * boneMatrix * position with the mesh's model matrix put
-// back on top -- the two cancel. So a body whose bone texture is stale draws
-// frozen where it stood rather than sliding away from its pose, and the animal
-// crosses the ground in hops of its own cadence: 2 cm a hop on rung 1, 16 cm on
-// rung 3 for a stag at a walk, which is a couple of pixels at the distance that
-// rung starts at. The layers therefore leave the group's matrix alone on a held
-// frame too, since writing it would cost the bone tree a full re-multiply and
-// change nothing on screen. Sliding on smoothly while holding the pose would
-// need the rig in local space (a detached bind), which is a bigger change than
-// the hop is worth.
+// WHAT A HELD FRAME LOOKS LIKE: the body slides on smoothly in the pose it
+// last took. The rig is DETACHED -- the bones hang under no scene node, so
+// their world matrices are creature-space, the bone texture holds the pose
+// alone, and the group's matrix is what places it. A layer writes the group
+// every frame, which costs the group and its tier meshes a multiply each and
+// never touches the bones; had the rig hung under the group (an attached
+// bind), the bone texture would hold world matrices, a stale one would draw
+// the body frozen where it stood, and the animal would cross the ground in
+// hops of its own cadence.
 // ---------------------------------------------------------------------------
-export const POSE_EVERY = [1, 2, 4, 8]
+export const POSE_EVERY = [1, 1, 2, 4]
 const poseEvery = (tier) => (tier < 0 ? POSE_EVERY[POSE_EVERY.length - 1] : POSE_EVERY[Math.min(tier, POSE_EVERY.length - 1)])
 // Puppets built one after another start their count on different frames, so a
-// herd re-poses a few bodies a frame instead of all of them on every eighth.
+// herd re-poses a few bodies a frame instead of all of them on every fourth.
 let posePhase = 0
 
 // How much bigger than its REST bounds a body is allowed to get before the
@@ -499,17 +500,15 @@ export class Puppet {
     this.group = new THREE.Group()
     this.group.matrixAutoUpdate = false
     const copies = new Map()
-    const root = cloneBones(asset.root, copies)
-    this.group.add(root)
+    // The rig hangs under NOTHING: its world matrices are creature-space, so
+    // the bone texture holds the pose alone and the group's matrix places it --
+    // see POSE_EVERY. The tree is composed by hand on the frames this puppet
+    // poses and walked by `step` then and only then; a held frame never touches
+    // it, and a group written every frame re-multiplies the meshes, not the bones.
+    this.rig = cloneBones(asset.root, copies)
     this.skeleton = new THREE.Skeleton(asset.skeleton.bones.map((b) => copies.get(b)), asset.skeleton.boneInverses.map((m) => m.clone()))
-    // Every bone in the tree, composed BY HAND on the frames this puppet poses.
-    // Object3D.updateMatrixWorld composes a bone whose matrixAutoUpdate is on
-    // and dirties its world matrix EVERY frame whatever the pose is doing, so
-    // turning it off here is what makes a held frame cost a walk of the tree and
-    // nothing else. The meshes hold still under the group at identity, so they
-    // are composed once and never again.
     this.bones = []
-    root.traverse((b) => { b.matrixAutoUpdate = false; this.bones.push(b) })
+    this.rig.traverse((b) => { b.matrixAutoUpdate = false; this.bones.push(b) })
     // Its feet, if the shipper named its legs; a body without them cannot plant.
     this.ik = asset.legs ? new FootIK(this.bones, asset.legs) : null
     const sphere = poseSphere(asset.tiers)
@@ -523,7 +522,11 @@ export class Puppet {
       m.boundingSphere = sphere
       m.matrixAutoUpdate = false
       m.visible = false
-      // The bind matrix is the identity: the tiers and the bones sit under the same group at identity, so the group's matrix is the creature's.
+      // DETACHED, on the identity: a vertex is modelMatrix * boneMatrix * position
+      // with nothing cancelling, so the bones pose it and the group places it.
+      // An attached bind would put the mesh's own world matrix in the bind
+      // inverse and want the bones in world space with it.
+      m.bindMode = THREE.DetachedBindMode
       m.bind(this.skeleton, IDENTITY)
       this.group.add(m)
       return m
@@ -531,7 +534,7 @@ export class Puppet {
     this.mats = mats
     this.tinted = false
     this.clipFade = clipFade
-    this.mixer = new THREE.AnimationMixer(this.group)
+    this.mixer = new THREE.AnimationMixer(this.rig)
     this.actions = new Map(asset.clips.map((clip) => {
       const action = this.mixer.clipAction(clip)
       if (oneShot?.has(clip.name)) {
@@ -541,18 +544,27 @@ export class Puppet {
       return [clip.name, action]
     }))
     this.current = null
-    // True on the frames this puppet re-poses; the layers read it to know
-    // whether writing the group's matrix would show. Frames until the next pose,
-    // and the dt banked for the mixer while it waits.
+    // True on the frames this puppet re-poses, which is what opens the gate
+    // below. Frames until the next pose, and the dt banked for the mixer while
+    // it waits.
     this.posed = true
     this.poseIn = posePhase++ % POSE_EVERY[POSE_EVERY.length - 1]
     this.held = 0
     // THE GATE. three calls skeleton.update() once a frame for every skeleton it
     // draws (WebGLObjects.update), which multiplies every bone into the bone
     // texture and flags the upload. On a held frame it does neither and the
-    // texture keeps the pose it has.
+    // texture keeps the pose it has -- unless it has never been built since the
+    // clip or tier changed (`stale`): the renderer calls this only for a body
+    // that passed the frustum test, so a pose frame spent behind her fills
+    // nothing, and the texture would otherwise show the animal before this one
+    // (or, fresh from the pool, all zeros) until the next pose frame.
+    this.stale = true
     const update = THREE.Skeleton.prototype.update.bind(this.skeleton)
-    this.skeleton.update = () => { if (this.posed) update() }
+    this.skeleton.update = () => {
+      if (!this.posed && !this.stale) return
+      this.stale = false
+      update()
+    }
     // The slot's step counter, so the same clip twice running is re-cued rather than left playing.
     this.cue = -1
     // The tier being faded out of, the one being faded into, and how far along.
@@ -573,9 +585,10 @@ export class Puppet {
     if (!next) throw new Error(`Puppet: no clip named ${name}`)
     if (this.current === next && this.cue === cue) return
     this.cue = cue
-    // A new clip shows on the next frame whatever rung it is on: a held puppet
-    // playing the pose of the animal before it is the one stale frame that reads.
+    // A new clip shows on the next frame whatever rung it is on, and on the first
+    // frame the renderer sees it if that one is spent out of view.
     this.poseIn = 0
+    this.stale = true
     // The mixer snapshots a property it starts driving, so it must not see a solved foot.
     this.ik?.restore()
     if (this.current && this.current !== next && at < 0) {
@@ -597,6 +610,7 @@ export class Puppet {
     this.to = tier
     this.fade = reversing ? 1 - this.fade : 0
     this.poseIn = 0
+    this.stale = true
     this._apply()
   }
 
@@ -633,6 +647,7 @@ export class Puppet {
       this.mixer.update(this.held)
       for (const b of this.bones) b.updateMatrix()
       if (solving) this.ik.solve(this.held, this.clipFade)
+      this.rig.updateMatrixWorld(true)
       this.held = 0
     }
     // A settled puppet holds its materials, so the tint row flipping is the one

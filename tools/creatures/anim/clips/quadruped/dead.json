@@ -1,0 +1,114 @@
+{
+  "kind": "pose",
+  "note": "Goes limp and stays so: the body of a kill hanging from talons that hold it by the back, so both ends sag off the grip -- the hips tilt down and the spine curls forward and down from them, the neck hangs straight under the chest with the head lolled to one side, the tail hangs, and every leg dangles bent from its hip, none of them bearing weight. One-way, held at the end. The same shape rolled onto its side is a carcass lying on the ground, which is how the roost draws it (render/wildlife.js carry, `lain`).",
+  "loops": false,
+  "floor": false,
+  "samples": 24,
+  "duration": 0.8,
+  "limits": {
+    "hipLimit": 1.6,
+    "fold": 2.4
+  },
+  "unweighted": [
+    "frontLeft",
+    "frontRight",
+    "hindLeft",
+    "hindRight"
+  ],
+  "keys": [
+    {
+      "t": 0.0,
+      "pose": {
+        "tail": {
+          "pitch": 0.3
+        }
+      }
+    },
+    {
+      "t": 0.55,
+      "pose": {
+        "root": {
+          "pitch": -0.5,
+          "roll": 0.12
+        },
+        "spine": {
+          "pitch": 1.1
+        },
+        "head": {
+          "pitch": 1.6,
+          "roll": 0.55,
+          "yaw": 0.3
+        },
+        "tail": {
+          "pitch": -0.6,
+          "yaw": 0.2
+        },
+        "legs": {
+          "frontLeft": {
+            "fore": -0.02,
+            "lift": -0.22,
+            "lat": 0.04
+          },
+          "frontRight": {
+            "fore": 0.06,
+            "lift": -0.16,
+            "lat": -0.04
+          },
+          "hindLeft": {
+            "fore": -0.04,
+            "lift": -0.14,
+            "lat": 0.05
+          },
+          "hindRight": {
+            "fore": 0.02,
+            "lift": -0.1,
+            "lat": -0.05
+          }
+        }
+      }
+    },
+    {
+      "t": 0.8,
+      "pose": {
+        "root": {
+          "pitch": -0.5,
+          "roll": 0.12
+        },
+        "spine": {
+          "pitch": 1.1
+        },
+        "head": {
+          "pitch": 1.6,
+          "roll": 0.55,
+          "yaw": 0.3
+        },
+        "tail": {
+          "pitch": -0.6,
+          "yaw": 0.2
+        },
+        "legs": {
+          "frontLeft": {
+            "fore": -0.02,
+            "lift": -0.22,
+            "lat": 0.04
+          },
+          "frontRight": {
+            "fore": 0.06,
+            "lift": -0.16,
+            "lat": -0.04
+          },
+          "hindLeft": {
+            "fore": -0.04,
+            "lift": -0.14,
+            "lat": 0.05
+          },
+          "hindRight": {
+            "fore": 0.02,
+            "lift": -0.1,
+            "lat": -0.05
+          }
+        }
+      }
+    }
+  ]
+}

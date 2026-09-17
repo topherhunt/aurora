@@ -6,7 +6,10 @@
 // fake AudioContext that records every cycle it schedules, so the crossfade
 // range, the 0.9x-1.1x rate band, the 5%-per-cycle walk of rate and gain, and
 // the seamless join of one cycle into the next are all asserted on the numbers
-// the real context would receive. The SENSE (sense.js) runs against a synthetic
+// the real context would receive; the same fake carries the FAR treatment's
+// graph -- the synthesized reverb impulse, the echo taps, and a far shot's
+// filter, sends and late start -- as nodes that record their connections. The
+// SENSE (sense.js) runs against a synthetic
 // world -- flat ground, a straight river, a lake, a snowy end, a boulder, a
 // forest patch, a few frogs -- to see it name each of them and point the right
 // way at the shores. The RULES (ambience.js) run against a fake engine and a
@@ -14,14 +17,18 @@
 // in the spec is a count: raptors only above the snow or by a cliff, an owl only
 // at night in dense wood, crickets on their 1.5-3 s beat, footsteps on theirs
 // and after a teleport, the brook loop on only by the river, the wind only over
-// the snow or high off the ground, and nothing at all above the surface while
-// she is under it.
+// the snow or high off the ground, a dragon's wingbeats on its clip's cycle
+// and its roars and growls on theirs, and nothing at all above the surface
+// while she is under it.
 //
 // What this can NOT check: what any of it sounds like. That needs ears, in the
 // world.
 
 import fs from 'node:fs'
-import { SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES } from '../src/v2/audio/sound-engine.js'
+import {
+  SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES,
+  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS,
+} from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -52,24 +59,50 @@ function fakeParam(name, log) {
   }
 }
 function fakeCtx() {
+  // Every node records what it is connected to, so a graph can be walked.
+  const node = (extra) => { const n = { outs: [], connect(to) { n.outs.push(to) }, disconnect() { n.outs.length = 0 }, ...extra }; return n }
   const ctx = {
     currentTime: 0,
+    sampleRate: 48000,
     state: 'suspended',
-    destination: { connect() {}, disconnect() {} },
+    destination: node({}),
     listener: {},
     sources: [],
+    convolvers: [],
+    delays: [],
     resume() { ctx.state = 'running' },
     createGain() {
       const log = []
-      return { log, gain: fakeParam('gain', log), connect() {}, disconnect() {} }
+      return node({ log, gain: fakeParam('gain', log) })
     },
     createPanner() {
-      return { positionX: fakeParam('x', []), positionY: fakeParam('y', []), positionZ: fakeParam('z', []), connect() {}, disconnect() {} }
+      return node({ positionX: fakeParam('x', []), positionY: fakeParam('y', []), positionZ: fakeParam('z', []) })
+    },
+    createBiquadFilter() {
+      return node({ type: null, frequency: fakeParam('frequency', []), Q: fakeParam('Q', []) })
+    },
+    createConvolver() {
+      const c = node({ buffer: null, normalize: true })
+      ctx.convolvers.push(c)
+      return c
+    },
+    createDelay(max) {
+      const d = node({ max, delayTime: fakeParam('delayTime', []) })
+      ctx.delays.push(d)
+      return d
+    },
+    createBuffer(channels, length, sampleRate) {
+      const data = Array.from({ length: channels }, () => new Float32Array(length))
+      return { numberOfChannels: channels, length, sampleRate, duration: length / sampleRate, getChannelData: (ch) => data[ch] }
     },
     createBufferSource() {
-      const s = { buffer: null, playbackRate: { value: 1 }, startAt: null, stopAt: null, onended: null, env: null,
-        connect(node) { if (node.gain) s.env = node }, disconnect() {},
-        start(t = ctx.currentTime) { s.startAt = t }, stop(t) { s.stopAt = t } }
+      // `env` is the voice's gain, found through a filter if one sits between.
+      const s = node({ buffer: null, playbackRate: { value: 1 }, startAt: null, stopAt: null, onended: null,
+        start(t = ctx.currentTime) { s.startAt = t }, stop(t) { s.stopAt = t } })
+      Object.defineProperties(s, {
+        env: { get() { const first = s.outs[0]; return first?.gain ? first : first?.outs[0] ?? null } },
+        lp: { get() { return s.outs[0]?.frequency ? s.outs[0] : null } },
+      })
       ctx.sources.push(s)
       return s
     },
@@ -192,6 +225,59 @@ console.log('buses')
   check(engine.oneShots === MAX_VOICES - 1, 'a voice ending on its own frees its slot')
 }
 
+// --- the far treatment -------------------------------------------------------
+console.log('far')
+{
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  engine.unlock()
+  engine.buffers.set('clip', { duration: 1 })
+  // The buses: one convolver carrying a synthesized impulse, its return on air; two echo taps, each a delay looped through a low-pass, their return on air and into the reverb.
+  check(ctx.convolvers.length === 1 && engine.reverb === ctx.convolvers[0], 'one convolver for the whole scene')
+  const ir = engine.reverb.buffer
+  check(ir && ir.numberOfChannels === 2 && Math.abs(ir.duration - REVERB_S) < 1e-3, `its impulse is ${REVERB_S} s, stereo`)
+  const pre = Math.floor(REVERB_PRE_S * ctx.sampleRate)
+  const L = ir.getChannelData(0), R = ir.getChannelData(1)
+  const rms = (data, from, to) => { let a = 0; for (let i = from; i < to; i++) a += data[i] * data[i]; return Math.sqrt(a / (to - from)) }
+  check(L.slice(0, pre).every((v) => v === 0) && L[pre + 5] !== 0, `silent for the ${REVERB_PRE_S} s pre-delay, then noise`)
+  const early = rms(L, pre, pre + 4800), late = rms(L, pre + Math.floor(REVERB_RT60 * ctx.sampleRate) - 4800, pre + Math.floor(REVERB_RT60 * ctx.sampleRate))
+  check(early > 0 && late / early < 0.01 && late / early > 0.0001, `it decays by about 60 dB over RT60 ${REVERB_RT60} s`, `${(20 * Math.log10(late / early)).toFixed(0)} dB`)
+  check(L.slice(pre, pre + 1000).some((v, i) => v !== R[pre + i]), 'the two channels are different noise')
+  check(engine.reverb.outs.length === 1 && engine.reverb.outs[0].outs.includes(engine.air), 'the reverb returns onto air')
+  check(ctx.delays.length === ECHO_TAPS.length && ctx.delays.every((d, i) => d.delayTime.value === ECHO_TAPS[i][0] && d.max >= ECHO_TAPS[i][0]), `${ECHO_TAPS.length} echo taps at ${ECHO_TAPS.map((t) => t[0]).join(' and ')} s`)
+  check(ctx.delays.every((d) => engine.echo.outs.includes(d)), 'the echo send feeds every tap')
+  const loops = ctx.delays.map((d) => { const dull = d.outs[0]; const back = dull.outs.find((n) => n.gain && n.outs.includes(d)); return { dull, back } })
+  check(loops.every((l, i) => l.dull.type === 'lowpass' && l.back && l.back.gain.value === ECHO_TAPS[i][1]), 'each tap loops back through a low-pass at its feedback')
+  const echoOut = loops[0].dull.outs.find((n) => n.gain && !n.outs.includes(ctx.delays[0]))
+  check(echoOut && echoOut.outs.includes(engine.air) && echoOut.outs.includes(engine.reverb), 'the returns go onto air and into the reverb')
+
+  // A shot with no distance is the plain chain; one with a distance is low-passed, sent to the reverb, and started late by the speed of sound.
+  const plain = engine.play('clip', { gain: 0.5, at: { x: 1, y: 0, z: 0 } })
+  check(plain.lp === null && plain.startAt === ctx.currentTime && plain.env.outs.length === 1, 'without a distance a shot is dry, undelayed and unfiltered')
+  const sends = (src) => src.env.outs.filter((n) => n.gain && n !== engine.air)
+  const near = engine.play('clip', { gain: 0.5, at: { x: 3, y: 0, z: 0 }, distance: 3 })
+  const far = engine.play('clip', { gain: 0.5, at: { x: 250, y: 0, z: 0 }, distance: 250 })
+  check(near.lp && far.lp && near.lp.type === 'lowpass' && far.lp.frequency.value < near.lp.frequency.value && near.lp.frequency.value < LP_MAX, 'a far shot is low-passed lower than a near one', `${near.lp.frequency.value.toFixed(0)} Hz at 3 m, ${far.lp.frequency.value.toFixed(0)} Hz at 250 m`)
+  check(Math.abs(far.lp.frequency.value - Math.max(LP_MIN, (LP_MAX * AIR_M) / (AIR_M + 250))) < 1e-6, 'the cutoff is LP_MAX * AIR_M / (AIR_M + d), floored')
+  check(engine.play('clip', { gain: 0.5, distance: 1e6 }).lp.frequency.value === LP_MIN, `and never below ${LP_MIN} Hz`)
+  const nearSend = sends(near)[0], farSend = sends(far)[0]
+  check(nearSend && farSend && nearSend.outs.includes(engine.reverb) && farSend.gain.value > nearSend.gain.value && farSend.gain.value <= WET_MAX, 'a far shot sends more of itself to the reverb than a near one', `${nearSend.gain.value.toFixed(2)} at 3 m, ${farSend.gain.value.toFixed(2)} at 250 m`)
+  check(Math.abs(farSend.gain.value - (WET_MAX * 250) / (250 + WET_M)) < 1e-6, 'the send is WET_MAX * d / (d + WET_M)')
+  check(Math.abs(far.startAt - ctx.currentTime - 250 / SPEED_OF_SOUND) < 1e-9 && far.startAt > near.startAt, `a shot 250 m off starts ${(250 / SPEED_OF_SOUND).toFixed(2)} s late`)
+  check(!sends(far).some((n) => n.outs.includes(engine.echo)), 'no echo unless asked')
+  const roar = engine.play('clip', { gain: 0.5, distance: 100, echo: 0.8 })
+  const echoSend = sends(roar).find((n) => n.outs.includes(engine.echo))
+  check(echoSend && echoSend.gain.value === 0.8 && sends(roar).some((n) => n.outs.includes(engine.reverb)), 'asked for, the echo send is the amount given, beside the reverb send')
+  check(engine.play('clip', { gain: 0.5, echo: 0.5 }).lp === null, 'an echo alone does not filter')
+  const nodes = [roar, roar.lp, roar.env, ...sends(roar)]
+  roar.onended()
+  check(nodes.every((n) => n.outs.length === 0), 'a far voice ending takes its filter and sends off the graph')
+  let threw = 0
+  try { engine.play('clip', { distance: -1 }) } catch { threw++ }
+  try { engine.play('clip', { echo: 2 }) } catch { threw++ }
+  check(threw === 2, 'a negative distance or an echo past 1 throws')
+}
+
 // --- the sense, against a synthetic world -------------------------------------
 console.log('sense')
 const GROUND = 10
@@ -279,6 +365,7 @@ function fakeEngine() {
       return v
     },
     setSubmerged(w) { this.wet = w },
+    duration(name) { return { growl: 3.84 }[name] ?? 1 },
     update() {},
   }
 }
@@ -310,15 +397,20 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   sense.s.aboveSnow = -300
   const amb = new Ambience({ engine, sense, rand: mulberry32(2) })
   run(amb, 120, {})
-  const birds = count(engine, ...SONGBIRDS)
-  check(birds >= 8 && birds <= 40, 'songbirds every 3-12 s in a daytime meadow', `${birds} in 120 s`)
+  const song = engine.plays.filter((p) => SONGBIRDS.includes(p.name))
+  const far = song.filter((p) => p.distance > 0), near = song.filter((p) => !(p.distance > 0))
+  const F = RULES.songbirdFar, N = RULES.songbirdNear
+  check(far.length >= 30 && far.length <= 120, 'the far songbird bed chatters every 1-4 s in a daytime meadow', `${far.length} in 120 s`)
+  check(near.length >= 2 && near.length <= 10, 'a songbird beside her every 12-40 s', `${near.length} in 120 s`)
   check(count(engine, ...RAPTORS) === 0, 'no raptor below the snow with no cliff')
   check(count(engine, 'owl', 'woodpecker', 'cricket', 'footstep', 'croak1', 'croak2', 'rockslide1', 'rockslide2', 'wave') === 0, 'nothing else fires standing still in a daytime meadow')
   check(!engine.loops.brook.active && !engine.loops.leaves.active && !engine.loops.lakeBed.active && !engine.loops.wind.active && !engine.loops.underwater.active, 'no loop runs in a dry meadow')
-  const song = engine.plays.filter((p) => SONGBIRDS.includes(p.name))
   check(song.every((p) => within(p.rate, RATE[0], RATE[1])), `every songbird is pitched ${RATE[0]}-${RATE[1]}x`)
-  check(song.every((p) => within(p.gain, ...RULES.songbird.gain)), 'every songbird is within its gain range')
-  check(new Set(song.map((p) => p.gain.toFixed(2))).size > song.length / 2, 'songbird volume varies widely')
+  check(far.every((p) => within(p.gain, ...F.gain)) && near.every((p) => within(p.gain, ...N.gain)), 'the far bed is quiet and the near bird loud, each within its gain range')
+  check(F.gain[1] < N.gain[0], 'the loudest far bird is quieter than the softest near one')
+  check(far.every((p) => within(p.distance, ...F.range) && Math.abs(Math.hypot(p.at.x - HEAD.x, p.at.y - HEAD.y, p.at.z - HEAD.z) - p.distance) < 1e-6), 'every far bird is placed across the valley and given that as its distance for the far treatment')
+  check(near.every((p) => p.distance === undefined && Math.hypot(p.at.x - HEAD.x, p.at.y - HEAD.y, p.at.z - HEAD.z) <= N.range[1] + 1e-6), 'every near bird is within reach and dry')
+  check(new Set(far.map((p) => p.gain.toFixed(3))).size > far.length / 2 && new Set(near.map((p) => p.gain.toFixed(2))).size > near.length / 2, 'songbird volume varies widely in both pools')
   check(song.every((p) => p.at && p.at.y > HEAD.y), 'every songbird is placed somewhere above her')
   check(new Set(song.map((p) => p.name)).size >= 3, 'the five songbird clips are all in play', `${new Set(song.map((p) => p.name)).size} distinct`)
 }
@@ -327,12 +419,14 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const sense = scripted()
   sense.s.aboveSnow = -300
   sense.s.forest = 0.9
-  const S = RULES.songbird, P = RULES.woodpecker, O = RULES.owl
+  const S = RULES.songbirdFar, N = RULES.songbirdNear, P = RULES.woodpecker, O = RULES.owl
+  if (S.aloft[0] !== N.aloft[0] || S.aloft[1] !== N.aloft[1]) throw new Error('the far and near songbird rules share one aloft band')
   const aloft = (m) => ({ x: 0, y: sense.s.groundH + m, z: 0 })
   const mid = fakeEngine()
   run(new Ambience({ engine: mid, sense, rand: mulberry32(11) }), 120, { head: aloft((S.aloft[0] + S.aloft[1]) / 2) })
   const song = mid.plays.filter((p) => SONGBIRDS.includes(p.name))
-  check(song.length >= 8 && song.every((p) => within(p.gain, S.gain[0] / 2, S.gain[1] / 2)), 'halfway up the songbird band the birds sing on at half their gain', `${song.length}, ${Math.min(...song.map((p) => p.gain)).toFixed(2)}-${Math.max(...song.map((p) => p.gain)).toFixed(2)}`)
+  const halved = (p) => within(p.gain, ...(p.distance > 0 ? S : N).gain.map((g) => g / 2))
+  check(song.length >= 30 && song.every(halved), 'halfway up the songbird band the birds sing on at half their gain', `${song.length}, ${Math.min(...song.map((p) => p.gain)).toFixed(2)}-${Math.max(...song.map((p) => p.gain)).toFixed(2)}`)
   const high = fakeEngine()
   const amb = new Ambience({ engine: high, sense, rand: mulberry32(12) })
   run(amb, 300, { head: aloft(Math.max(S.aloft[1], P.aloft[1], O.aloft[1]) + 5) })
@@ -552,10 +646,11 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
     const a2 = new Ambience({ engine: e2, sense, rand: mulberry32(16), herds: [{ layer: { bodies: (into) => { into.push(hare); return into } }, clips: 'quadruped' }] })
     const frames = 60 * 30
     let last = null
+    const steps = () => e2.plays.filter((p) => p.name === 'footfall').length
     for (let i = 0; i < frames; i++) {
-      const before = e2.plays.length
+      const before = steps()
       a2.update(1 / 60, { head, dayness: DAY, submerged: false, speed: 0, afoot: true })
-      if (e2.plays.length > before) { if (last !== null) gaps.push((i - last) / 60); last = i }
+      if (steps() > before) { if (last !== null) gaps.push((i - last) / 60); last = i }
     }
   }
   const beat = 1.1 / 4
@@ -643,6 +738,89 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   let threw = false
   try { new Ambience({ engine, sense, crawlers: [{}] }) } catch { threw = true }
   check(threw, 'a crawler layer without bodies() throws')
+}
+{
+  // The fish: a swoosh on the water bus from each that sets off fast within reach, as loud and as deep as it is long, and only on the frame it is listed.
+  const S = RULES.swoosh
+  const pike = { x: HEAD.x + 1, y: HEAD.y, z: HEAD.z, size: 2 }
+  const fry = { x: HEAD.x, y: HEAD.y, z: HEAD.z + 4, size: 0.1 }
+  const far = { x: HEAD.x + S.reach + 1, y: HEAD.y, z: HEAD.z, size: 2 }
+  const listed = []
+  const fish = { startled(into) { into.push(...listed); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(24), fish })
+  run(amb, 1, { submerged: true })
+  check(count(engine, 'swoosh') === 0, 'no fish setting off, no swoosh')
+  listed.push(pike, fry, far)
+  run(amb, 1 / 60, { submerged: true })
+  listed.length = 0
+  const shots = engine.plays.filter((p) => p.name === 'swoosh')
+  check(shots.length === 2 && shots.every((p) => p.bus === 'water'), `a fish setting off within ${S.reach} m swooshes once, on the water bus, and one past the reach not at all`, `${shots.length} shots`)
+  const big = shots.find((p) => p.at.x === pike.x), small = shots.find((p) => p.at.z === fry.z)
+  const deep = (size) => Math.pow(S.size / size, S.deep)
+  check(big && within(big.gain, S.max * S.gain[0], S.max * S.gain[1]) && within(big.rate, RATE[0] * deep(pike.size), RATE[1] * deep(pike.size)), 'a 2 m pike setting off at arm\'s length is the full level, slow and deep', `gain ${big?.gain.toFixed(3)} rate ${big?.rate.toFixed(3)}`)
+  const fryLevel = S.level * (fry.size / S.size) * (S.near / 4)
+  check(small && within(small.gain, fryLevel * S.gain[0], fryLevel * S.gain[1]) && within(small.rate, RATE[0] * deep(fry.size), RATE[1] * deep(fry.size)), 'a 10 cm glimmerfin 4 m off is a faint high flick', `gain ${small?.gain.toFixed(4)} rate ${small?.rate.toFixed(3)}`)
+  run(amb, 1, { submerged: true })
+  check(count(engine, 'swoosh') === 2, 'and no more once they are no longer listed')
+  let threw = false
+  try { new Ambience({ engine, sense, fish: {} }) } catch { threw = true }
+  check(threw, 'a fish layer without startled() throws')
+}
+{
+  // The dragons: wingbeats on the fly clip's cycle near, roars across the valley with the far treatment and the echo, growls with pauses from a nest.
+  const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl
+  const FLY = 0.9
+  // The flights at her ears' height, so a body's distance is its x.
+  const nearFly = { x: 10, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const midFly = { x: 100, y: HEAD.y, z: 0, state: 'hunt', clip: 'fly', cycle: FLY, speed: 16 }
+  const farFly = { x: 200, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const goneFly = { x: R.reach + 20, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const nest = { x: 0, y: GROUND + 1.6, z: 5, state: 'roost', clip: 'idle', cycle: 4, speed: 0 }
+  const farNest = { x: 0, y: GROUND + 1.6, z: G.reach + 5, state: 'roost', clip: 'alert', cycle: 2, speed: 0 }
+  const dragons = { bodies(into) { into.push(nearFly, midFly, farFly, goneFly, nest, farNest); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(27), dragons })
+  run(amb, 600, {})
+  const beats = engine.plays.filter((p) => p.name === 'wingbeat')
+  check(beats.length > 0 && beats.every((p) => p.at.x === 10), `only the dragon flying within ${W.reach} m beats its wings`, `${beats.length} beats`)
+  check(Math.abs(beats.length - 600 / FLY) <= 3, `one beat a cycle of the ${FLY} s fly clip`, `${beats.length} in 600 s`)
+  check(beats.every((p) => within(p.gain, W.level * (W.near / 10) * W.gain[0], W.level * (W.near / 10) * W.gain[1]) && p.distance === 10 && within(p.rate, W.rate[0], W.rate[1])), `at its level for 10 m, at its distance, slowed to ${W.rate[0]}-${W.rate[1]}x`)
+  const roars = engine.plays.filter((p) => p.name === 'roar')
+  const roarsAt = (x) => roars.filter((p) => p.at.x === x)
+  const mean = (R.every[0] + R.every[1]) / 2
+  check(roarsAt(10).length + roarsAt(100).length + roarsAt(200).length === roars.length && roarsAt(R.reach + 20).length === 0, `only dragons flying within ${R.reach} m roar`, `${roars.length} roars`)
+  check([10, 100, 200].every((x) => roarsAt(x).length >= 600 / mean / 2 && roarsAt(x).length <= (600 / mean) * 2), `each roars every ${R.every[0]}-${R.every[1]} s`, `${[10, 100, 200].map((x) => roarsAt(x).length).join(' ')}`)
+  const level = (d) => R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * Math.min(1, (R.reach - d) / R.edge)
+  check([10, 100, 200].every((x) => roarsAt(x).every((p) => within(p.gain, level(x) * R.gain[0], level(x) * R.gain[1]))), 'a roar falls off as (near/distance)^roll, fading over the last metres of the reach', `${[10, 100, 200].map((x) => level(x).toFixed(2)).join(' ')}`)
+  check(roars.every((p) => p.distance === p.at.x && p.echo === R.echo), 'every roar carries its distance for the far treatment and its echo send')
+  check(engine.plays.filter((p) => p.name === 'growl' && p.at.z === G.reach + 5).length === 0 && !amb.wings.has(farNest) && !amb.wings.has(goneFly), `a nest past ${G.reach} m and a flight past ${R.reach} m are neither heard nor kept`)
+  check(engine.plays.filter((p) => p.name === 'growl').every((p) => p.at.z === 5 && p.distance === Math.hypot(5, 0) && within(p.rate, G.rate[0], G.rate[1]) && within(p.gain, G.level * (G.near / 5) * G.gain[0], G.level * (G.near / 5) * G.gain[1])), 'a dragon on its nest 5 m off growls at its level, at its distance, at a rate rolled in the growl band')
+
+  // The growls' spacing, timed by frame: each starts after the previous has ended plus a pause, and the first waits a pause too.
+  const e2 = fakeEngine()
+  const a2 = new Ambience({ engine: e2, sense, rand: mulberry32(28), dragons: { bodies(into) { into.push(nest); return into } } })
+  const at = []
+  for (let i = 0; i < 60 * 120; i++) {
+    const n = e2.plays.length
+    a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    for (const p of e2.plays.slice(n)) if (p.name === 'growl') at.push({ t: i / 60, rate: p.rate })
+  }
+  const gaps = at.slice(1).map((g, i) => g.t - at[i].t - e2.duration('growl') / at[i].rate)
+  check(at.length >= 10 && at[0].t >= G.pause[0] - 1 / 60 && at[0].t <= G.pause[1] + 1 / 60, `the first growl waits a ${G.pause[0]}-${G.pause[1]} s pause`, `${at[0]?.t.toFixed(2)} s`)
+  check(gaps.every((g) => g >= G.pause[0] - 1 / 30 && g <= G.pause[1] + 1 / 30), 'each next growl starts after the last has ended, plus a pause in the band', `${Math.min(...gaps).toFixed(2)}-${Math.max(...gaps).toFixed(2)} s`)
+  check(new Set(gaps.map((g) => g.toFixed(2))).size >= 5 && new Set(at.map((a) => a.rate.toFixed(3))).size >= 5, 'the pauses and the rates vary growl to growl')
+  // She walks in on a resting dragon, and it takes off: the growls stop; landing again, the pause is rolled fresh.
+  nest.state = 'patrol'; nest.clip = 'fly'; nest.cycle = FLY
+  const n = e2.plays.length
+  for (let i = 0; i < 60; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  check(e2.plays.slice(n).every((p) => p.name !== 'growl') && e2.plays.slice(n).some((p) => p.name === 'wingbeat'), 'taken off, a dragon stops growling and starts beating')
+  nest.state = 'roost'; nest.clip = 'idle'
+  let threw = 0
+  try { new Ambience({ engine, sense, dragons: {} }) } catch { threw++ }
+  try { new Ambience({ engine, sense, dragons: { bodies(into) { into.push({ ...nearFly, cycle: 0 }); return into } } }).update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true }) } catch { threw++ }
+  check(threw === 2, 'a dragon layer without bodies(), or a flight with no cycle, throws')
 }
 {
   // Frogs croak within reach, fading with distance, from where they sit.

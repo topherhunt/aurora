@@ -150,8 +150,16 @@ export const PROBE_EVERY = [6, 8, 12, 16, 30]
 const FADE_S = 0.25
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
-export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up']
-export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie'])
+export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
+export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie', 'dead'])
+// A seized body is drawn about the point the talons hold -- the top of its
+// back, this fraction of its STANDING height up, which is where the `dead`
+// pose's sagging spine tops out (the stag's back, hips tilted down and neck
+// hanging, measures 0.50 of the idle height) -- and a body laid on the nest is
+// rolled onto its flank and lifted this fraction of its width so the flank and
+// not the spine rests on the floor.
+export const GRIP = 0.5
+export const LAIN = 0.35
 // The clips whose four feet stay put, so a standing body's feet are put on the
 // ground under each (puppet.js FootIK). Measured off the shipped clips: a dig
 // lifts a forefoot, a sit and a lie fold the legs, and no gait is planted.
@@ -198,6 +206,8 @@ const _quat = new THREE.Quaternion()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+// A quarter roll about the body's own forward axis: a standing body laid on its flank.
+const _lay = new THREE.Matrix4().makeRotationX(Math.PI / 2)
 const _trunk = { x: 0, z: 0, r: 0 }
 const _norm = { x: 0, y: 1, z: 0 }
 
@@ -543,8 +553,8 @@ export class Wildlife {
   }
 
   /**
-   * Take a live stag out of the world as cargo: the slot itself, lying dead
-   * (`lie`, which holds its last frame). Its spawn is not woken again while its
+   * Take a live stag out of the world as cargo: the slot itself, gone limp
+   * (`dead`, which holds its last frame). Its spawn is not woken again while its
    * tile is loaded; a spawn whose tile is re-rolled on a later visit is a new stag.
    */
   seize(c) {
@@ -556,10 +566,10 @@ export class Wildlife {
     c.lodSize = s.lodSize
     c.act = 'dead'
     c.queue.length = 0
-    c.clip = 'lie'
+    c.clip = 'dead'
     c.cue++
-    // Held from the clip's start, so a puppet taking it over mid-carry plays the fold and clamps.
-    c.dur = c.left = c.sp.durations.lie
+    // Held from the clip's start, so a puppet taking it over mid-carry plays the slump and clamps.
+    c.dur = c.left = c.sp.durations.dead
     c.cycle = c.dur
     c.speed = 0
     this._wantCard(c, false)
@@ -568,14 +578,14 @@ export class Wildlife {
   }
 
   /**
-   * One frame of a seized stag drawn at `matrix` -- the carrier's talons, or
-   * the nest floor -- `dist` metres from her head: its own species' rungs, a
-   * puppet while the ladder says mesh, nothing past that. The card rung is not
-   * drawn: a dozen pixels of carcass under a dragon's card is not a picture.
-   * The matrix is written EVERY frame whether or not the puppet re-posed,
-   * because a carried body crosses metres a frame and a held matrix would jump.
+   * One frame of a seized stag drawn from `matrix` -- the carrier's talons, or
+   * a point on the nest floor -- `dist` metres from her head: its own species'
+   * rungs, a puppet while the ladder says mesh, nothing past that. The card rung
+   * is not drawn: a dozen pixels of carcass under a dragon's card is not a
+   * picture. Hanging, the body's back is at the matrix and the rest of it sags
+   * below; `lain`, it is rolled onto its flank with the flank on the matrix.
    */
-  carry(c, matrix, dist, dt) {
+  carry(c, matrix, dist, dt, lain = false) {
     if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.carry: that animal was not seized')
     const tier = critterTier(c.lodSize, dist, c.lod, LOD_RUNGS)
     c.lod = tier
@@ -595,7 +605,12 @@ export class Wildlife {
     // Carried, there is no ground under its feet.
     puppet.unplant()
     puppet.step(dt)
-    puppet.group.matrix.copy(matrix)
+    const { width, height } = c.sp.asset
+    // Body-local offsets, so the matrix's own scale and yaw carry them.
+    const body = lain
+      ? _mat.makeTranslation(0, LAIN * width, 0).multiply(_lay)
+      : _mat.makeTranslation(0, -GRIP * height, 0)
+    puppet.group.matrix.multiplyMatrices(matrix, body)
     puppet.group.matrixWorldNeedsUpdate = true
   }
 
@@ -876,13 +891,9 @@ export class Wildlife {
         puppet.play(c.clip, c.cue)
         groundFeet(puppet, c, this.walk, PLANTED, probing)
         puppet.step(dt)
-        // Only where it shows: a held puppet draws the pose already in its bone
-        // texture wherever its group has since moved to (puppet.js POSE_EVERY),
-        // and dirtying the group re-multiplies the whole bone tree for nothing.
-        if (puppet.posed) {
-          puppet.group.matrix.copy(_mat)
-          puppet.group.matrixWorldNeedsUpdate = true
-        }
+        // Every frame, whether or not it re-posed: a held puppet slides on in the pose its bone texture holds (puppet.js POSE_EVERY).
+        puppet.group.matrix.copy(_mat)
+        puppet.group.matrixWorldNeedsUpdate = true
       }
     }
 

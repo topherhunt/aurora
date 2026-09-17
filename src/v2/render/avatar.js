@@ -21,7 +21,9 @@ function mesh(geometry, color) {
   return new THREE.Mesh(geometry, material(color))
 }
 
-function lowPolyHand() {
+// A peer's hand, and her own while the menu is closed: the same mesh, hung
+// from the same grip pose, so what she sees on her wrist is what they see.
+export function lowPolyHand() {
   const group = new THREE.Group()
   const palm = mesh(new THREE.SphereGeometry(1, 6, 5), SKIN)
   palm.scale.set(0.055, 0.07, 0.035)
@@ -90,6 +92,7 @@ export class PeerAvatars {
     this.ready = loadRoster().then((roster) => { this.roster = roster; return roster })
     this.loader = null
     this.templates = new Map()
+    this.double = null
   }
 
   /** The loaded, unscaled glb scene for one avatar id, fetched once per session. */
@@ -143,16 +146,28 @@ export class PeerAvatars {
     return roster.find((a) => a.id === avatarId) ?? roster[hash(peerId) % roster.length]
   }
 
-  get(id) {
-    let peer = this.peers.get(id)
-    if (peer) return peer
+  /** An undressed peer under this.group: two hands and no body yet. */
+  makePeer(id) {
     const group = new THREE.Group()
     const hands = [lowPolyHand(), lowPolyHand()]
     group.add(...hands)
     this.group.add(group)
-    peer = { id, group, hands, body: null, wants: undefined, yaw: 0 }
+    return { id, group, hands, body: null, wants: undefined, yaw: 0 }
+  }
+
+  get(id) {
+    let peer = this.peers.get(id)
+    if (peer) return peer
+    peer = this.makePeer(id)
     this.peers.set(id, peer)
     return peer
+  }
+
+  /** Take a peer out of the scene and free what was its own. */
+  drop(peer) {
+    this.undress(peer)
+    this.group.remove(peer.group)
+    peer.group.traverse((obj) => { obj.geometry?.dispose(); obj.material?.dispose() })
   }
 
   /**
@@ -165,11 +180,14 @@ export class PeerAvatars {
     const roster = await this.ready
     const entry = this.entryFor(peer.id, avatarId)
     const template = await this.template(entry.id)
-    if (peer.wants !== avatarId || !this.peers.has(peer.id)) return
+    if (peer.wants !== avatarId || !this.live(peer)) return
     this.undress(peer)
     peer.body = this.makeBody(template, entry)
     peer.group.add(peer.body)
   }
+
+  /** Still in the scene: on the wire under its id, or her double. */
+  live(peer) { return peer === this.double || this.peers.get(peer.id) === peer }
 
   undress(peer) {
     if (!peer.body) return
@@ -179,45 +197,62 @@ export class PeerAvatars {
     peer.body = null
   }
 
+  /**
+   * Her body double, for the debug panel's `body double` row: a peer that is
+   * not on the wire, posed every frame from her own pose turned to stand in
+   * front of her, so she can see what the others see. `state` null takes it away.
+   */
+  mirror(state) {
+    if (!state) {
+      if (this.double) this.drop(this.double)
+      this.double = null
+      return
+    }
+    this.double ??= this.makePeer('double')
+    this.pose(this.double, state)
+  }
+
+  /** One peer's body and hands from one state; a pose of the wrong length is skipped, not thrown, since it came off the wire. */
+  pose(peer, state) {
+    const { pose, hands, alpha = 1 } = state
+    if (!pose || pose.length !== 21) return
+    const avatar = state.avatar ?? null
+    if (peer.wants !== avatar) this.dress(peer, avatar)
+
+    if (peer.body) {
+      const body = peer.body
+      body.position.set(pose[0], pose[1] - body.userData.eyeHeight, pose[2])
+      // Yaw only: the body stands under the head and turns with it, and looking
+      // straight up or down leaves no horizontal gaze to turn towards.
+      headQuat.set(pose[3], pose[4], pose[5], pose[6])
+      forward.set(0, 0, -1).applyQuaternion(headQuat)
+      if (Math.hypot(forward.x, forward.z) > 0.25) peer.yaw = Math.atan2(-forward.x, -forward.z)
+      body.rotation.y = peer.yaw
+      body.visible = alpha > 0
+      body.traverse((o) => {
+        if (!o.isMesh) return
+        o.material.transparent = alpha < 1
+        o.material.opacity = alpha
+      })
+    }
+    for (let i = 0; i < 2; i++) {
+      const start = 7 + i * 7
+      const hand = peer.hands[i]
+      hand.position.set(pose[start], pose[start + 1], pose[start + 2])
+      hand.quaternion.set(pose[start + 3], pose[start + 4], pose[start + 5], pose[start + 6])
+      opacity(hand, alpha * (hands?.[i] ? 1 : 0))
+    }
+  }
+
   apply(list) {
     const active = new Set()
     for (const state of list) {
-      const peer = this.get(state.id)
       active.add(state.id)
-      const { pose, hands, alpha = 1 } = state
-      if (!pose || pose.length !== 21) continue
-      const avatar = state.avatar ?? null
-      if (peer.wants !== avatar) this.dress(peer, avatar)
-
-      if (peer.body) {
-        const body = peer.body
-        body.position.set(pose[0], pose[1] - body.userData.eyeHeight, pose[2])
-        // Yaw only: the body stands under the head and turns with it, and looking
-        // straight up or down leaves no horizontal gaze to turn towards.
-        headQuat.set(pose[3], pose[4], pose[5], pose[6])
-        forward.set(0, 0, -1).applyQuaternion(headQuat)
-        if (Math.hypot(forward.x, forward.z) > 0.25) peer.yaw = Math.atan2(-forward.x, -forward.z)
-        body.rotation.y = peer.yaw
-        body.visible = alpha > 0
-        body.traverse((o) => {
-          if (!o.isMesh) return
-          o.material.transparent = alpha < 1
-          o.material.opacity = alpha
-        })
-      }
-      for (let i = 0; i < 2; i++) {
-        const start = 7 + i * 7
-        const hand = peer.hands[i]
-        hand.position.set(pose[start], pose[start + 1], pose[start + 2])
-        hand.quaternion.set(pose[start + 3], pose[start + 4], pose[start + 5], pose[start + 6])
-        opacity(hand, alpha * (hands?.[i] ? 1 : 0))
-      }
+      this.pose(this.get(state.id), state)
     }
     for (const [id, peer] of this.peers) {
       if (!active.has(id)) {
-        this.undress(peer)
-        this.group.remove(peer.group)
-        peer.group.traverse((obj) => { obj.geometry?.dispose(); obj.material?.dispose() })
+        this.drop(peer)
         this.peers.delete(id)
       }
     }

@@ -1,5 +1,5 @@
 {
-  "note": "Level flapping flight. `airborne` is what makes this not a gait: no foot is load-bearing, so the legs ride with the body instead of staying pinned to a world point, and legHold tucks them up under the belly. The wings beat once per cycle about the body's forward axis; the twist that pitches the leading edge leads the beat by a quarter cycle, which is where a real wing's thrust comes from, and bobPhase puts the body's rise on the downstroke rather than on the default footfall beat. Crouch is negative, which is how an in-place clip gets off the ground: it is the one term that moves the body without a footfall behind it.",
+  "note": "Level flapping flight. `airborne` is what makes this not a gait: no foot is load-bearing, so the legs ride with the body instead of staying pinned to a world point, and legHold lets them hang under the belly, a little bent and trailing, with the feet pitched so the claws point down -- which is also the shape of a foot holding something, and the kill hangs from them (render/dragons.js talons). The wings beat once per cycle about the body's forward axis; the twist that pitches the leading edge leads the beat by a quarter cycle, which is where a real wing's thrust comes from, and bobPhase puts the body's rise on the downstroke rather than on the default footfall beat. Crouch is negative, which is how an in-place clip gets off the ground: it is the one term that moves the body without a footfall behind it.",
   "duration": 0.9,
   "samples": 30,
   "airborne": true,
@@ -13,8 +13,8 @@
     "hindRight": 0
   },
   "legHold": {
-    "hindLeft": { "fore": -0.26, "lift": 0.3 },
-    "hindRight": { "fore": -0.26, "lift": 0.3 }
+    "hindLeft": { "fore": -0.12, "lift": 0.08, "pitch": 1.1 },
+    "hindRight": { "fore": -0.12, "lift": 0.08, "pitch": 1.1 }
   },
   "limits": {
     "fold": 2.8

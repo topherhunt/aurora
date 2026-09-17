@@ -6,10 +6,9 @@
 // Tripo paints the side of a thing the concept image never showed, and it
 // paints it in shadow: the fallen log's map is five times darker where the
 // mesh faces down than where it faces up, a gradient the world's own light
-// then adds to again, and which rolls with the log (deadwood.js rolls every
-// log about its core) so a log rolled over shows its dark side to the sun.
-// The map should be albedo -- flat -- and the sun and the ground do the
-// shading at runtime.
+// then adds to again, and which is what the far card photographs on its
+// flanks. The map should be albedo -- flat -- and the sun and the ground do
+// the shading at runtime.
 //
 // The fit is the map's luminance against the mesh's own normal, rasterised
 // into UV space: L ~ a + b * normal.y, least squares over every texel the mesh

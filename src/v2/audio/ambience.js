@@ -26,7 +26,15 @@
 // seconds to its next one; for the crawlers (spiders, crabs) the moving ones
 // together hold one quiet loop at the nearest, and one that takes fright plays
 // the same clip once, louder. What she hears of each is the body's size at its
-// distance.
+// distance. The dragons are read the same way, and are given the engine's FAR
+// treatment (sound-engine.js `distance`): a wingbeat a cycle of the fly clip
+// while one flies near, a roar every minute or so from one in the air anywhere
+// in the valley, dulled, washed, late and echoed off the hills by its metres,
+// and a growl over and over, each at its own pitch with its own pause, from
+// one resting on its nest. The songbird bed is the only other thing given it:
+// its birds are placed across the valley and sound like it. The fish are the
+// one thing heard on the water bus: a swoosh from each that sets off fast
+// (the layer's startled()) near her head, its loudness and pitch by its length.
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
@@ -54,11 +62,15 @@ export const SOUNDS = {
   rockslide1: 'sounds/rockslide1.mp3',
   rockslide2: 'sounds/rockslide2.mp3',
   underwater: 'sounds/underwater-1.mp3',
+  swoosh: 'sounds/underwater-swoosh.mp3',
   brook: 'sounds/water-babbling-brook-1.mp3',
   lakeBed: 'sounds/water-lapping-quiet-1.mp3',
   wave: 'sounds/water-lapping-wave-1.mp3',
   leaves: 'sounds/wind-leaves-rustling-1.mp3',
   wind: 'sounds/wind-blowing-1.mp3',
+  wingbeat: 'sounds/dragon-wings-flapping.mp3',
+  roar: 'sounds/dragon-roar.mp3',
+  growl: 'sounds/dragon-growl.mp3',
   // The menu's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
@@ -96,8 +108,10 @@ export const RULES = {
   owl: { interval: [12, 35], gain: [0.3, 0.7], range: [8, 25], elev: [10, 40], dark: 0.3, forest: 0.75, aloft: [20, 30] },
   // Woodpecker: a single burst, sporadic, anywhere there is wood at any hour and altitude.
   woodpecker: { interval: [20, 70], gain: [0.3, 0.8], range: [8, 30], elev: [10, 45], forest: 0.5, aloft: [20, 30] },
-  // Songbirds: day, below the snow; the wood is fuller of them than a meadow.
-  songbird: { interval: [3, 12], gain: [0.15, 0.7], range: [5, 25], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
+  // Songbirds, by day below the snow: a constant far chatter all around her, each bird placed `range` metres out and given that as its `distance` through the engine's far treatment (sound-engine.js), so it is dull and washed the way a bird across the valley is...
+  songbirdFar: { interval: [1, 4], gain: [0.03, 0.1], range: [60, 150], elev: [5, 30], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
+  // ...and now and then one in the tree beside her, dry and crisp. The wood is fuller of both: each clock runs up to `forestSpeedup` faster inside it.
+  songbirdNear: { interval: [12, 40], gain: [0.4, 0.8], range: [4, 15], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
   // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk...
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
   // ...and now and then one right beside her.
@@ -112,8 +126,14 @@ export const RULES = {
   crawl: { reach: 6, near: 1, level: 0.075, startle: 2, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
+  // The dragons, every sound at its body's distance through the engine's far treatment. Its wings, while it flies within `reach`: one beat a cycle of its fly clip, within `jitter` of a cycle of the beat, at `level` up to `near` metres off and falling as near/distance past it, the clip slowed to `rate` so a beat is deep, not a pigeon's.
+  wingbeat: { reach: 50, near: 5, level: 0.5, jitter: 0.05, rate: [0.5, 0.6], gain: [0.7, 1.0] },
+  // A flying dragon roars every `every` seconds, heard within `reach`: `level` up to `near` off, falling as (near/distance)^roll past it, and fading out over the last `edge` metres of the reach; `echo` is its send into the valley echo. The clip is mastered 24 dB hotter than the yip, which is why the level is low.
+  roar: { reach: 250, near: 20, roll: 1.0, edge: 50, level: 0.4, every: [30, 90], echo: 0.8, gain: [0.7, 1.0] },
+  // A dragon resting on its nest growls over and over within `reach`: each growl at a rate rolled in `rate`, then a pause of `pause` seconds; `level` up to `near` off, falling as near/distance.
+  growl: { reach: 25, near: 3, level: 0.5, rate: [0.8, 1.05], pause: [0.5, 3], gain: [0.6, 1.0] },
   // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field...
-  rockslideNear: { interval: [20, 60], gain: [0.2, 0.6], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
+  rockslideNear: { interval: [20, 60], gain: [0.1, 0.3], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
   rockslideFoot: { chance: 0.15, gain: [0.3, 0.7] },
   // Lake: a wave every so often while her head is within `height` of the water -- on land within `reach` of the shore, or anywhere out over open water. Full volume up to `near` metres off the shore or above the surface, fading to `far` at the reach or the height.
@@ -125,6 +145,8 @@ export const RULES = {
   // Wind: a quiet loop that rises across the `snow` band of metres about the snowline, or the `height` band of metres her head is above the ground, whichever is stronger.
   wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
+  // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
+  swoosh: { reach: 8, near: 1, size: 0.5, level: 0.5, max: 1, deep: 0.5, gain: [0.7, 1.0] },
 }
 
 const DEG = Math.PI / 180
@@ -135,10 +157,14 @@ export class Ambience {
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
    * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, and `calls`, if any, maps a species key (body.sp.key) to the rule of its call.
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
+   * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
+   * @param fish      the fish layer, if any: startled(into) lists the fish that set off fast this frame, x, y, z and size (length in metres) on each.
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [] }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], dragons = null, fish = null }) {
     if (!engine) throw new Error('Ambience: missing engine')
     if (!sense) throw new Error('Ambience: missing sense')
+    if (dragons && typeof dragons.bodies !== 'function') throw new Error('Ambience: the dragon layer needs bodies()')
+    if (fish && typeof fish.startled !== 'function') throw new Error('Ambience: the fish layer needs startled()')
     for (const h of herds) {
       if (!h.layer || typeof h.layer.bodies !== 'function') throw new Error('Ambience: a herd needs a layer with bodies()')
       if (!FOOTFALLS[h.clips]) throw new Error(`Ambience: no footfalls for a ${h.clips} clip library`)
@@ -150,8 +176,12 @@ export class Ambience {
     this.rand = rand
     this.herds = herds
     this.crawlers = crawlers
+    this.dragons = dragons
+    this.fish = fish
     // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
     this.bodies = new Map()
+    // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, growling, growl, seen }. See _dragons.
+    this.wings = new Map()
     this.listed = []
     this.frame = 0
     this.s = WorldSense.blank()
@@ -161,7 +191,7 @@ export class Ambience {
     this.teleportCredit = 0
     // One-shot timers by rule name: { armed, left }.
     this.timers = {}
-    for (const k of ['raptor', 'owl', 'woodpecker', 'songbird', 'cricketBed', 'cricketNear', 'footstep', 'rockslideNear', 'wave']) {
+    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'cricketNear', 'footstep', 'rockslideNear', 'wave']) {
       this.timers[k] = { armed: false, left: 0 }
     }
     this.loops = {
@@ -274,6 +304,7 @@ export class Ambience {
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s)
     this._crawl(head)
+    this._fish(head)
     // Nothing above the surface fires while she is under it; the loops already
     // running are silenced by the bus and keep their place for when she surfaces.
     if (submerged) {
@@ -287,6 +318,7 @@ export class Ambience {
     this._crickets(dt, head, s, dayness, below)
     this._feet(dt, head, s, speed, afoot)
     this._herds(dt, head)
+    this._dragons(dt, head)
     this._frogs(dt, head, s)
     this._rocks(dt, head, s)
     this._lake(dt, head, s)
@@ -319,13 +351,19 @@ export class Ambience {
         at: this.aroundHead(head, this.between(...P.range), this.between(...P.elev)),
       })
     }
-    const S = RULES.songbird
-    // The wood is fuller of birds: the clock runs up to `forestSpeedup` faster inside it.
-    const stretch = dt * (1 + S.forestSpeedup * s.forest)
-    if (this.due('songbird', dayness > S.light && below && up < S.aloft[1], S.interval, stretch)) {
+    const F = RULES.songbirdFar
+    if (this.due('songbirdFar', dayness > F.light && below && up < F.aloft[1], F.interval, dt * (1 + F.forestSpeedup * s.forest))) {
+      const dist = this.between(...F.range)
       this.fire(this.pick(SONGBIRDS), {
-        rate: this.rate(), gain: this.between(...S.gain) * perched(S),
-        at: this.aroundHead(head, this.between(...S.range), this.between(...S.elev)),
+        rate: this.rate(), gain: this.between(...F.gain) * perched(F),
+        at: this.aroundHead(head, dist, this.between(...F.elev)), distance: dist,
+      })
+    }
+    const N = RULES.songbirdNear
+    if (this.due('songbirdNear', dayness > N.light && below && up < N.aloft[1], N.interval, dt * (1 + N.forestSpeedup * s.forest))) {
+      this.fire(this.pick(SONGBIRDS), {
+        rate: this.rate(), gain: this.between(...N.gain) * perched(N),
+        at: this.aroundHead(head, this.between(...N.range), this.between(...N.elev)),
       })
     }
   }
@@ -426,6 +464,80 @@ export class Ambience {
   }
 
   /**
+   * The dragons. Flying within the wingbeat's reach, a body has a clock here
+   * in cycles of its fly clip, one beat a cycle, jittered, started fresh the
+   * frame the beating begins, as the footfall clock is. Flying within the
+   * roar's reach it keeps the seconds to its next roar, counted only while it
+   * flies within reach. Resting within the growl's reach it growls, each one
+   * at its own rate, and the next only after this one has ended and a pause
+   * rolled with it; the first waits one pause too, so a nest she walks up on
+   * is not a growl on the step. A body heard by none of these this frame is
+   * gone from here.
+   */
+  _dragons(dt, head) {
+    if (!this.dragons) return
+    const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl
+    const listed = this.listed
+    listed.length = 0
+    this.dragons.bodies(listed)
+    for (const c of listed) {
+      const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+      const flying = c.clip === 'fly'
+      const beating = flying && d <= W.reach
+      const roaring = flying && d <= R.reach
+      const growling = c.state === 'roost' && d <= G.reach
+      if (!beating && !roaring && !growling) continue
+      let f = this.wings.get(c)
+      if (!f) {
+        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.every), growling: false, growl: 0, seen: 0 }
+        this.wings.set(c, f)
+      }
+      f.seen = this.frame
+      const at = { x: c.x, y: c.y, z: c.z }
+      if (beating) {
+        if (!(c.cycle > 0)) throw new Error(`Ambience: a dragon flying a cycle of ${c.cycle} s`)
+        if (!f.beating) {
+          f.beating = true
+          f.phase = 0
+          f.at = this.between(-W.jitter, W.jitter)
+        }
+        f.phase += dt / c.cycle
+        const level = W.level * (W.near / Math.max(W.near, d))
+        while (f.phase >= f.at) {
+          this.fire('wingbeat', { rate: this.between(...W.rate), gain: level * this.between(...W.gain), at, distance: d })
+          f.phase -= 1
+          f.at = this.between(-W.jitter, W.jitter)
+        }
+      } else {
+        f.beating = false
+      }
+      if (roaring) {
+        f.roar -= dt
+        if (f.roar <= 0) {
+          f.roar += this.between(...R.every)
+          const level = R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * clamp((R.reach - d) / R.edge, 0, 1)
+          this.fire('roar', { rate: this.rate(), gain: level * this.between(...R.gain), at, distance: d, echo: R.echo })
+        }
+      }
+      if (growling) {
+        if (!f.growling) {
+          f.growling = true
+          f.growl = this.between(...G.pause)
+        }
+        f.growl -= dt
+        if (f.growl <= 0) {
+          const rate = this.between(...G.rate)
+          f.growl += this.engine.duration('growl') / rate + this.between(...G.pause)
+          this.fire('growl', { rate, gain: G.level * (G.near / Math.max(G.near, d)) * this.between(...G.gain), at, distance: d })
+        }
+      } else {
+        f.growling = false
+      }
+    }
+    for (const [c, f] of this.wings) if (f.seen !== this.frame) this.wings.delete(c)
+  }
+
+  /**
    * The crawlers' feet: one loop for every moving spider and crab within
    * reach, sat at the nearest, as loud as all of them together up to its level;
    * and the clip once, louder, from each one that took fright this frame.
@@ -455,6 +567,23 @@ export class Ambience {
       for (const c of listed) this.fire('crawl', { rate: this.rate(), gain: C.startle * C.level * this.between(...C.gain), at: c })
     }
     this._loop('crawl', at !== null, C.level * Math.min(1, sum), at)
+  }
+
+  /** The fish: a swoosh on the water bus from each that set off fast this frame within reach, as loud and as deep as it is long. */
+  _fish(head) {
+    if (!this.fish) return
+    const S = RULES.swoosh
+    const listed = this.listed
+    listed.length = 0
+    this.fish.startled(listed)
+    for (const c of listed) {
+      if (!(c.size > 0)) throw new Error(`Ambience: a fish set off with a size of ${c.size}`)
+      const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+      if (d > S.reach) continue
+      const level = Math.min(S.max, S.level * (c.size / S.size)) * (S.near / Math.max(S.near, d))
+      const rate = Math.pow(S.size / c.size, S.deep)
+      this.fire('swoosh', { rate: rate * this.rate(), gain: level * this.between(...S.gain), at: { x: c.x, y: c.y, z: c.z }, bus: 'water' })
+    }
   }
 
   _frogs(dt, head, s) {

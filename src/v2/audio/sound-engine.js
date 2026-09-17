@@ -24,7 +24,23 @@
 // asked for is the whole loudness, the panner having no rolloff, so it is the
 // right thing to rank on. Loops are not counted: they are the bed itself, a
 // fixed handful, and a footfall should never cut the wind.
+//
+// FAR IS A TREATMENT, NOT JUST A LEVEL. A shot given its `distance` in metres
+// is dulled, wetted and late by it, the three things besides loudness that say
+// how far off a sound is: a low-pass whose cutoff falls with the metres (air
+// soaks up the highs first), a send into one shared VALLEY REVERB that grows
+// with them (the direct sound shrinks with distance, the reflected field
+// hardly does, so a far sound is mostly wash), and a start delayed by the
+// speed of sound, so a roar seen at 250 m lands three-quarters of a second
+// after the mouth opens. A shot may also ask for `echo`: a send into one
+// shared pair of feedback delays, each return duller than the last, which is
+// what a roar does off two hillsides. The reverb's impulse is synthesized at
+// boot -- decaying low-passed noise -- and both buses hang off `air`, so the
+// surface silences them with everything else. The convolver is the one dear
+// node here, which is why there is one of it and not one per voice.
 // ---------------------------------------------------------------------------
+
+import { mulberry32 } from '../../sim/mathx.js'
 
 export const VOICE_FLOOR = 0.01
 export const MAX_VOICES = 24
@@ -35,6 +51,32 @@ const CULL_FADE_S = 0.03
 // worst frame gap (tick clamps at 100 ms) so a hitch never leaves a gap in the
 // brook; short enough that a stop() has little already-queued sound to cut.
 const LOOP_LOOKAHEAD_S = 0.4
+
+// The far treatment, by a shot's `distance` in metres. The low-pass cutoff is
+// LP_MAX * AIR_M / (AIR_M + d), floored at LP_MIN: 18 kHz beside her, 9 kHz at
+// 40 m, 2.5 kHz at 250 m. The reverb send is WET_MAX * d / (d + WET_M) of the
+// voice's own gain: a tenth at 3 m, half at 30 m, nine tenths at 250 m.
+export const SPEED_OF_SOUND = 343
+export const LP_MAX = 18000
+export const LP_MIN = 800
+export const AIR_M = 40
+export const WET_M = 30
+export const WET_MAX = 0.8
+// The valley reverb's impulse: seconds long, its -60 dB point, the pre-delay
+// before the first reflection, and the one-pole cutoff on the noise, so the
+// tail is the dull wash of hillsides and not a bathroom. REVERB_LEVEL is its
+// return into `air`.
+export const REVERB_S = 2.4
+export const REVERB_RT60 = 1.8
+export const REVERB_PRE_S = 0.03
+export const REVERB_LP = 2500
+export const REVERB_LEVEL = 0.6
+// The echo: two taps, [delay s, feedback], each looped through a low-pass at
+// ECHO_LP so every return is duller; ECHO_LEVEL is their return into `air`,
+// and they feed the reverb too, so a return is as washed as a far sound.
+export const ECHO_TAPS = [[0.47, 0.32], [1.05, 0.25]]
+export const ECHO_LP = 1500
+export const ECHO_LEVEL = 0.7
 
 // Equal-power fade curve, sampled once; scaled per cycle by the cycle's gain.
 const FADE_STEPS = 32
@@ -59,6 +101,25 @@ function setParam(param, value, now, tau) {
   if (param && typeof param.setTargetAtTime === 'function') param.setTargetAtTime(value, now, tau)
 }
 
+/** The valley's impulse response: REVERB_S of low-passed noise decaying to -60 dB at REVERB_RT60, silent for the pre-delay; a fresh noise per channel so the tail has width. Seeded, so two boots sound the same. */
+function valleyImpulse(ctx) {
+  const sr = ctx.sampleRate
+  const n = Math.ceil(REVERB_S * sr)
+  const buffer = ctx.createBuffer(2, n, sr)
+  const rand = mulberry32(0x5eed)
+  const k = 1 - Math.exp((-2 * Math.PI * REVERB_LP) / sr)
+  const pre = Math.floor(REVERB_PRE_S * sr)
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buffer.getChannelData(ch)
+    let lp = 0
+    for (let i = pre; i < n; i++) {
+      lp += k * (rand() * 2 - 1 - lp)
+      data[i] = lp * Math.pow(10, (-3 * (i - pre)) / sr / REVERB_RT60)
+    }
+  }
+  return buffer
+}
+
 export class SoundEngine {
   /** @param ctx  an AudioContext; built here when not given, suspended until unlock(). */
   constructor({ ctx = null } = {}) {
@@ -75,9 +136,35 @@ export class SoundEngine {
     this.water = ctx.createGain()
     this.water.gain.value = 0
     this.water.connect(this.master)
+    // The valley reverb and the echo, both on air: `reverb` and `echo` are what a voice sends into.
+    this.reverb = ctx.createConvolver()
+    this.reverb.buffer = valleyImpulse(ctx)
+    const reverbOut = ctx.createGain()
+    reverbOut.gain.value = REVERB_LEVEL
+    this.reverb.connect(reverbOut)
+    reverbOut.connect(this.air)
+    this.echo = ctx.createGain()
+    const echoOut = ctx.createGain()
+    echoOut.gain.value = ECHO_LEVEL
+    echoOut.connect(this.air)
+    echoOut.connect(this.reverb)
+    for (const [seconds, feedback] of ECHO_TAPS) {
+      const delay = ctx.createDelay(seconds)
+      delay.delayTime.value = seconds
+      const dull = ctx.createBiquadFilter()
+      dull.type = 'lowpass'
+      dull.frequency.value = ECHO_LP
+      const back = ctx.createGain()
+      back.gain.value = feedback
+      this.echo.connect(delay)
+      delay.connect(dull)
+      dull.connect(back)
+      back.connect(delay)
+      dull.connect(echoOut)
+    }
     this.buffers = new Map()
     this.loops = new Set()
-    // The one-shots playing, { src, g, tail, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
+    // The one-shots playing, { src, g, nodes, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
     this.voices = []
     this.floored = 0
     this.culled = 0
@@ -187,14 +274,18 @@ export class SoundEngine {
   /**
    * Fire a clip once. `at` is a world position {x, y, z} for a directional
    * sound, or null for one with no bearing (her own footsteps, the cricket bed).
-   * Returns the source, or null when the shot is not started: under the floor,
-   * over the cap, or while the context is still suspended -- its clock is
-   * frozen then, so every shot started would queue on the same instant and the
-   * lot would fire together the moment unlock() lands.
+   * `distance` in metres gives the shot the far treatment (dulled, wetted,
+   * late; see the top), and `echo` is its send, 0-1 of its gain, into the
+   * valley echo. Returns the source, or null when the shot is not started:
+   * under the floor, over the cap, or while the context is still suspended --
+   * its clock is frozen then, so every shot started would queue on the same
+   * instant and the lot would fire together the moment unlock() lands.
    */
-  play(name, { rate = 1, gain = 1, at = null, bus = 'air' } = {}) {
+  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0 } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
+    if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
+    if (!(echo >= 0 && echo <= 1)) throw new Error(`SoundEngine.play(${name}): echo must be 0-1, got ${echo}`)
     if (!this.running) return null
     if (gain < VOICE_FLOOR) {
       this.floored++
@@ -215,7 +306,17 @@ export class SoundEngine {
     src.playbackRate.value = rate
     const g = ctx.createGain()
     g.gain.value = gain
-    src.connect(g)
+    const nodes = [src, g]
+    let head = src
+    if (distance > 0) {
+      const lp = ctx.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.value = Math.max(LP_MIN, (LP_MAX * AIR_M) / (AIR_M + distance))
+      src.connect(lp)
+      head = lp
+      nodes.push(lp)
+    }
+    head.connect(g)
     let tail = g
     if (at) {
       const p = this._panner()
@@ -228,12 +329,28 @@ export class SoundEngine {
       }
       g.connect(p)
       tail = p
+      nodes.push(p)
     }
     tail.connect(this[bus])
-    const voice = { src, g, tail, gain }
+    // The sends leave before the panner: a wash and a hillside's return have no one bearing.
+    if (distance > 0) {
+      const send = ctx.createGain()
+      send.gain.value = (WET_MAX * distance) / (distance + WET_M)
+      g.connect(send)
+      send.connect(this.reverb)
+      nodes.push(send)
+    }
+    if (echo > 0) {
+      const send = ctx.createGain()
+      send.gain.value = echo
+      g.connect(send)
+      send.connect(this.echo)
+      nodes.push(send)
+    }
+    const voice = { src, g, nodes, gain }
     this.voices.push(voice)
     src.onended = () => this._release(voice)
-    src.start()
+    src.start(ctx.currentTime + distance / SPEED_OF_SOUND)
     return src
   }
 
@@ -241,9 +358,7 @@ export class SoundEngine {
   _release(voice) {
     const i = this.voices.indexOf(voice)
     if (i >= 0) this.voices.splice(i, 1)
-    voice.src.disconnect()
-    voice.g.disconnect()
-    if (voice.tail !== voice.g) voice.tail.disconnect()
+    for (const n of voice.nodes) n.disconnect()
   }
 
   /** Displace a playing voice: out of the budget now, a short fade to silence, then the stop; onended takes it off the graph. */

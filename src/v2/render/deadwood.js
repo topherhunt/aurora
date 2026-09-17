@@ -126,10 +126,10 @@ const FADE_POOL_RESERVE = 512
 // nothing to grade. 25 m gives 1.875, rounded to 2.
 const TILE = 25
 
-// The attitude rolls. A log turns any way about its own length -- the shipped
-// mesh has one knotted side, and a scatter that never rolled it laid that side
-// up on every log in the world. A stump leans by up to this many degrees about
-// a random horizontal bearing: a snag is a trunk the wind has been at.
+// The attitude roll. A stump leans by up to this many degrees about a random
+// horizontal bearing: a snag is a trunk the wind has been at. A log lies as it
+// shipped, the same side up everywhere: rolled about its length, the map's
+// baked underside shadow and the stubs' one side turned with it and read badly.
 const STUMP_TILT_DEG = 6
 const STUMP_TILT = (STUMP_TILT_DEG * Math.PI) / 180
 
@@ -172,7 +172,7 @@ const P_U = 5
 const P_TINT_V = 6
 const P_TINT_R = 7
 const P_TINT_G = 8
-const P_ROLL = 9
+const P_BEARING = 9
 const P_TILT = 10
 const P_H = 11
 const P_TAN = 12
@@ -349,8 +349,8 @@ function median(a) {
  * the stations that hold a ring. {x, y} is the axis in the pick's own frame,
  * `r` its radius. NOT the box's centre and half-width: the shipped log's stubs
  * all stand off one side, so the box's centre sits a twentieth of the length
- * off the wood, and a log rolled or stopped about it is rolled or stopped
- * about a line beside itself.
+ * off the wood, and a log seated or stopped by it is seated or stopped
+ * on a line beside itself.
  */
 function logCore(geo, bounds) {
   const p = geo.attributes.position.array
@@ -684,8 +684,6 @@ export class Deadwood {
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._qYaw = new THREE.Quaternion()
-    this._qRoll = new THREE.Quaternion()
-    this._fwd = new THREE.Vector3(0, 0, 1)
     this._qPitch = new THREE.Quaternion()
     this._axis = new THREE.Vector3()
     this._core = new THREE.Vector3()
@@ -789,11 +787,12 @@ export class Deadwood {
       // EACH DRAWN LAST IN ITS TURN so that adding it did not move a single
       // piece of dead wood in the world: every roll above keeps the position it
       // already had in the stream, and the new one takes the slot after them.
-      // The drowned-site roll, the hue swing, the log's roll about its own axis
-      // (or a stump's lean bearing), the stump's lean, the cover roll.
+      // The drowned-site roll, the hue swing, the stump's lean bearing (drawn
+      // for a log too, and unused, so the stream stays put), the stump's lean,
+      // the cover roll.
       const wet = rand()
       const tintG = rand()
-      const roll = rand() * Math.PI * 2
+      const bearing = rand() * Math.PI * 2
       const tilt = rand() * STUMP_TILT
       const cover = rand()
 
@@ -841,7 +840,7 @@ export class Deadwood {
       at[o + P_TINT_V] = tintV
       at[o + P_TINT_R] = tintR
       at[o + P_TINT_G] = tintG
-      at[o + P_ROLL] = roll
+      at[o + P_BEARING] = bearing
       at[o + P_TILT] = tilt
       at[o + P_H] = h
       at[o + P_TAN] = tan
@@ -1353,7 +1352,7 @@ export class Deadwood {
       const tintV = at[o + P_TINT_V]
       const tintR = at[o + P_TINT_R]
       const tintG = at[o + P_TINT_G]
-      const roll = at[o + P_ROLL]
+      const bearing = at[o + P_BEARING]
       const tilt = at[o + P_TILT]
       const h = at[o + P_H]
       const tan = at[o + P_TAN]
@@ -1387,13 +1386,10 @@ export class Deadwood {
       this.instR[id] = this.vSolid[variant] * scale
       this._qYaw.setFromAxisAngle(this._up, yaw)
       if (this.isLog[variant]) {
-        // Roll about the log's own +Z first, inside the yaw, then pitch about
-        // a WORLD axis outside it -- qPitch * qYaw * qRoll -- because the pitch
-        // axis was derived in world space from the yaw. The axis is up x (the
-        // yawed long axis); a positive angle about it tips the +Z end down,
-        // which is why `_seat` hands back a negated atan2.
-        this._qRoll.setFromAxisAngle(this._fwd, roll)
-        this._qYaw.multiply(this._qRoll)
+        // Yaw, then pitch about a WORLD axis outside it -- qPitch * qYaw --
+        // because the pitch axis was derived in world space from the yaw. The
+        // axis is up x (the yawed long axis); a positive angle about it tips
+        // the +Z end down, which is why `_seat` hands back a negated atan2.
         this._axis.set(Math.cos(yaw), 0, -Math.sin(yaw))
         this._qPitch.setFromAxisAngle(this._axis, this._seated.pitch)
         this._q.multiplyQuaternions(this._qPitch, this._qYaw)
@@ -1402,16 +1398,15 @@ export class Deadwood {
         this.instTan[id] = Math.tan(this._seated.pitch)
         // The instance is its core: the origin sits on the core axis a core
         // radius over the seat, and the mesh hangs off it by its core offset
-        // turned with the whole attitude. So the roll turns the log about its
-        // own core rather than swinging it round the edge of its box, and the
-        // cylinder `columnAt` answers is the wood whichever way it rolled.
+        // turned with the whole attitude, so the cylinder `columnAt` answers
+        // is the wood and not the box's centre beside it.
         this.instY[id] = this._seated.y + this.vRadius[variant] * scale
         this._core.set(this.vCoreX[variant] * scale, this.vCoreY[variant] * scale, 0).applyQuaternion(this._q)
         this._p.set(x - this._core.x, this.instY[id] - this._core.y, z - this._core.z)
       } else {
         // A stump leans about a world bearing that has nothing to do with its
         // yaw; `_seat` has already sunk it by the rim lift the lean costs.
-        this._axis.set(Math.cos(roll), 0, Math.sin(roll))
+        this._axis.set(Math.cos(bearing), 0, Math.sin(bearing))
         this._qPitch.setFromAxisAngle(this._axis, tilt)
         this._q.multiplyQuaternions(this._qPitch, this._qYaw)
         this.instHalf[id] = 0

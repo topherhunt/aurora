@@ -61,7 +61,7 @@ import { SKY_GLSL } from '../sky-glsl.js'
 import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
-import { PeerAvatars } from './render/avatar.js'
+import { PeerAvatars, lowPolyHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
@@ -266,7 +266,7 @@ window.addEventListener('unhandledrejection', (e) => {
 // The renderer/session bootstrap is A-Frame's (the proven-reliable VR entry
 // path, per quest.html/quest-main.js) but locomotion is NOT -- unlike
 // quest.html, there's no movement-controls/look-controls/blink-controls here.
-// Only laser-controls per hand, for panel raycasting. Moving around is entirely
+// Only laser-controls per hand, for the controller pose. Moving around is entirely
 // Player.update(dt, moveInput) below, in and out of XR. Everything below this
 // block only ever touches the `renderer`/`scene`/`camera`/`rig` locals, never
 // the construction details.
@@ -438,6 +438,21 @@ rightHandEl = sceneEl.querySelector('#right-hand')
 rig = rigEl.object3D
 leftGrip = leftHandEl.object3D
 rightGrip = rightHandEl.object3D
+// LASER-CONTROLS' OWN RAYCASTER AND LINE ARE SWITCHED OFF THE MOMENT IT PUTS
+// THEM ON. Its raycaster lists no objects, so it intersects every entity in the
+// scene -- the other hand's line and controller model included -- and three
+// raycasts a Line with a one-metre threshold, so with both controllers up each
+// beam ended where it first passed within a metre of the other one: a length
+// that wandered with the hands and never reached the menu. The menu draws its
+// own pointer (updateQuestPointer) off the component's origin and direction,
+// which laser-controls still fills in from the controller model, and the
+// teleport aims along the same. Registered here, after the scene has loaded
+// and so after laser-controls' own listeners, and before a session can start.
+for (const el of [leftHandEl, rightHandEl]) {
+  for (const ev of ['controllerconnected', 'controllermodelready']) {
+    el.addEventListener(ev, () => el.setAttribute('raycaster', { enabled: false, showLine: false }))
+  }
+}
 
 // The page's one Enter VR button, where three's VRButton would put it.
 // sceneEl.enterVR() requests the session inside the click, so A-Frame keeps
@@ -592,15 +607,27 @@ function probeVantage(head, out) {
 
 // ---------------------------------------------------------------------------
 // The menu: a world-space panel, ported from quest-main.js's already-proven
-// pattern (same laser-controls raycast, same canvas-texture buttons) rather
-// than reinvented. It is the one control surface the headset has, and Escape
+// pattern (a raycast down the hand, canvas-texture buttons) rather than
+// reinvented. It is the one control surface the headset has, and Escape
 // opens it on a desktop. Four views under one tab bar -- backpack, settings,
 // debug, help -- and the view she last chose is kept for the session only: a
 // refresh opens on the backpack.
 // ---------------------------------------------------------------------------
 
 let questPanelGroup = null
-const questControllerHits = new Map()
+// The pointer: one line and one dot, on ONE hand -- the hand whose button was
+// pressed most recently, so the B or Y that opened the menu, then whichever
+// trigger is pulled -- and only while the menu is open. Closed, the pointer
+// and the controller models go away and she sees her hands instead.
+let questPointerHand = null
+let questPointer = null
+// Her own hand under each grip, the mesh a peer sees.
+const questHands = new Map()
+const QUEST_POINTER_COLOR = 0x19d2ff
+// The line's reach when it lands on nothing: the horizon.
+const QUEST_POINTER_FAR = 1000
+const questPointerDir = new THREE.Vector3()
+const Z_AXIS = new THREE.Vector3(0, 0, 1)
 
 const QUEST_VIEWS = ['backpack', 'settings', 'debug', 'help']
 let questView = 'backpack'
@@ -730,6 +757,8 @@ const QUEST_TOGGLE_ROWS = [
   // orange, red -- so the ladder in critters.js can be confirmed by walking up
   // to a stag and watching where it changes. See Puppet.setTierTint.
   { key: 'critterTint', text: 'critter LOD tint', on: 'by rung', off: 'normal' },
+  // Her own body as a peer sees it, stood 2 m ahead and facing her: see placeMirror.
+  { key: 'mirror', text: 'body double', on: 'shown', off: 'hidden' },
   { key: 'wind', text: 'wind' },
   // DEAD CODE (peaks): the `peaks` mesher knob, off in RELIEF_SHIPPED. See the
   // tag in chunk-mesh-v2.js.
@@ -739,6 +768,11 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'aurora', text: 'aurora' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  // The headset's ONLY way into flight -- there is no controller binding, see
+  // the VR LOCOMOTION banner. Reads the player rather than questToggles
+  // because the same state is flipped from the keyboard and cleared on XR
+  // entry; setFlying repaints this row for those.
+  { key: 'fly', text: 'fly', action: () => setFlying(!player.flying), value: () => (player.flying ? 'on' : 'off') },
 ]
 
 function questRowByKey(key) {
@@ -794,6 +828,7 @@ function applyQuestToggle(key) {
       break
     case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': case 'dragons': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); break
+    case 'mirror': if (enabled) placeMirror(); else peerAvatars.mirror(null); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
     // its price in milliseconds. Strength 0 would stop the motion and leave every
@@ -1263,7 +1298,7 @@ function buildDebugView() {
 // not something to scale away.
 const QUEST_HELP = [
   'You find yourself in a strange and wild land, full of mysteries to discover. Here be dragons, and treasures. No being is your friend; no being is your enemy.',
-  'Headset: either stick walks and turns. Click a stick to recentre. A or X toggles flight, and a stick then throttles and steers where that hand points.',
+  'Headset: either stick walks and turns. Click a stick to recentre.',
   'B or Y opens and closes this menu, and so does walking more than five metres from it. Point a controller at a button and pull the trigger.',
   'Settings chooses walking or teleporting: aim the arc with a stick and let go to jump.',
   'Desktop: WASD or the arrows walk and turn, drag the mouse to look. Space takes off, Shift descends, and a second tap of Space lands. T lobs a teleport, N skips five hours, Escape is this menu.',
@@ -1355,20 +1390,37 @@ function buildQuestPanel() {
   for (const group of Object.values(questViewGroups)) questPanelGroup.add(group)
   setQuestView(questView)
 
-  const dotGeometry = new THREE.SphereGeometry(0.012, 12, 8)
-  const dotMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
-  function wireQuestController(el) {
-    const dot = new THREE.Mesh(dotGeometry, dotMaterial)
-    dot.visible = false
-    scene.add(dot)
-    worldProbe.exclude(dot)
-    questControllerHits.set(el, { hit: null, dot })
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
+  )
+  dot.visible = false
+  scene.add(dot)
+  // A unit line up +Z under the pointing hand's grip: updateQuestPointer turns
+  // it down the hand's ray, and scales it to the hit or the horizon.
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]),
+    new THREE.LineBasicMaterial({ color: QUEST_POINTER_COLOR, toneMapped: false })
+  )
+  line.visible = false
+  worldProbe.exclude(dot, line)
+  questPointer = { line, dot, hit: null }
+
+  for (const el of [leftHandEl, rightHandEl]) {
+    const hand = lowPolyHand()
+    hand.visible = false
+    el.object3D.add(hand)
+    questHands.set(el, hand)
+    // The hand that pulls the trigger takes the pointer, and the press lands on
+    // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
+    // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
-      const act = questActionAt(questControllerHits.get(el)?.hit)
+      questPointerHand = el
+      updateQuestPointer()
+      const act = questActionAt(questPointer.hit)
       if (act) act()
     })
   }
-  ;[leftHandEl, rightHandEl].forEach(wireQuestController)
 
   // Flatscreen click support on a desktop, before entering XR.
   const raycaster = new THREE.Raycaster()
@@ -1404,15 +1456,51 @@ function questActionAt(hit) {
   return null
 }
 
-function updateQuestControllerHover() {
+// A hand entity with a controller matched to it. The entity's own object3D is
+// auto-hidden without one, but not before a controller component has claimed
+// it at all, and on a desktop that is never: the grips then sit at the rig's
+// origin, at her feet.
+function questHandConnected(el) {
+  return !!el.components['tracked-controls']?.controller
+}
+
+// The hand the pointer comes off: the last one pressed, or failing a controller
+// on it the other one, the right first when nothing has been pressed yet.
+function questPointerEl() {
+  const order = questPointerHand === leftHandEl ? [leftHandEl, rightHandEl] : [rightHandEl, leftHandEl]
+  for (const el of order) if (questHandConnected(el) && el.components.raycaster) return el
+  return null
+}
+
+function updateQuestPointer() {
   const open = questPanelGroup.visible
-  for (const [el, entry] of questControllerHits) {
-    const raycasterComp = open ? el.components.raycaster : null
-    const hit = raycasterComp ? (raycasterComp.raycaster.intersectObjects(questHitMeshes)[0] || null) : null
-    entry.hit = hit
-    entry.dot.visible = !!hit
-    if (hit) entry.dot.position.copy(hit.point)
+  for (const el of [leftHandEl, rightHandEl]) {
+    const model = el.getObject3D('mesh')
+    if (model) model.visible = open
+    questHands.get(el).visible = !open && questHandConnected(el)
   }
+  const p = questPointer
+  const el = open ? questPointerEl() : null
+  if (!el) {
+    p.hit = null
+    p.line.visible = false
+    p.dot.visible = false
+    return
+  }
+  // The component's ray is the controller model's pointing pose in the grip's
+  // frame, which is what laser-controls put there; the component itself is
+  // disabled and casts nothing.
+  const rc = el.components.raycaster
+  rc.updateOriginDirection()
+  const hit = rc.raycaster.intersectObjects(questHitMeshes)[0] || null
+  p.hit = hit
+  if (p.line.parent !== el.object3D) el.object3D.add(p.line)
+  p.line.visible = true
+  p.line.position.copy(rc.data.origin)
+  p.line.quaternion.setFromUnitVectors(Z_AXIS, questPointerDir.copy(rc.data.direction).normalize())
+  p.line.scale.z = hit ? hit.distance : QUEST_POINTER_FAR
+  p.dot.visible = !!hit
+  if (hit) p.dot.position.copy(hit.point)
 }
 
 const questPanelFwd = new THREE.Vector3()
@@ -1512,18 +1600,11 @@ function toggleQuestPanel() {
   // stands for the clips having loaded; before the context is unlocked play()
   // is a no-op.
   if (ambience) sound.play(open ? 'uiOpen' : 'uiClose', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
-  if (open) {
-    updateQuestStats()
-  } else {
-    // Drop the laser dots with it. They are separate scene children, so nothing
-    // about the group's visibility reaches them, and a red dot hanging in mid
-    // air pointing at a menu that is no longer there is exactly the kind of
-    // stranded artefact that reads as a bug.
-    for (const entry of questControllerHits.values()) {
-      entry.hit = null
-      entry.dot.visible = false
-    }
-  }
+  if (open) updateQuestStats()
+  // Either way the pointer, the dot, the controller models and her hands
+  // follow the menu's state this frame rather than next: a red dot hanging in
+  // mid air pointing at a menu that is no longer there reads as a bug.
+  updateQuestPointer()
 }
 
 function updateQuestPanel() {
@@ -1532,7 +1613,7 @@ function updateQuestPanel() {
     const dz = rig.position.z - questPanelGroup.position.z
     if (dx * dx + dz * dz > QUEST_PANEL_LEAVE_M * QUEST_PANEL_LEAVE_M) toggleQuestPanel()
   }
-  updateQuestControllerHover()
+  updateQuestPointer()
 }
 
 // WHETHER BatchedMesh IS ONE DRAW CALL OR N OF THEM, which is a property of the
@@ -1822,6 +1903,58 @@ function currentPose() {
   return [netPose.slice(), [Boolean(input.state.left.source), Boolean(input.state.right.source)]]
 }
 
+// THE BODY DOUBLE: her own pose, played back on a peer body that stands 2 m
+// ahead of where she was when she pressed the row and faces her, so she can
+// walk round it and watch her own hands and head from the outside. It is
+// posed in the RIG's frame, not the world's: walking, teleporting and a snap
+// turn move the rig and leave a rig-local pose alone, so the double stays on
+// its spot however she moves through the world, while stepping or turning in
+// the room -- which moves the headset and the grips within the rig -- shows on
+// it just as it would on the wire. `mirrorFrame` is the rig's world matrix at
+// the press, turned half round about the vertical through her head and
+// carried 2 m along her gaze; each frame the live pose is taken back into the
+// rig's frame and placed through it.
+const MIRROR_AHEAD_M = 2
+const mirrorFrame = new THREE.Matrix4()
+const mirrorM = new THREE.Matrix4()
+const mirrorTmpM = new THREE.Matrix4()
+const mirrorQ = new THREE.Quaternion()
+const mirrorPos = new THREE.Vector3()
+const mirrorFwd = new THREE.Vector3()
+const mirrorPose = new Array(21).fill(0)
+
+function placeMirror() {
+  camera.getWorldPosition(mirrorPos)
+  camera.getWorldQuaternion(mirrorQ)
+  mirrorFwd.set(0, 0, -1).applyQuaternion(mirrorQ)
+  mirrorFwd.y = 0
+  // Looking straight up or down leaves no gaze to stand it along; the rig's -Z then.
+  if (mirrorFwd.lengthSq() < 1e-4) mirrorFwd.set(0, 0, -1).applyQuaternion(rig.quaternion)
+  mirrorFwd.normalize()
+  mirrorFrame.makeTranslation(mirrorPos.x + MIRROR_AHEAD_M * mirrorFwd.x, 0, mirrorPos.z + MIRROR_AHEAD_M * mirrorFwd.z)
+    .multiply(mirrorTmpM.makeRotationY(Math.PI))
+    .multiply(mirrorTmpM.makeTranslation(-mirrorPos.x, 0, -mirrorPos.z))
+    .multiply(rig.matrixWorld)
+}
+
+/** `pose` (world, as sent on the wire) placed through the mirror frame; the rig's matrixWorld is current, currentPose just read through it. */
+function mirroredPose(pose) {
+  mirrorM.copy(rig.matrixWorld).invert().premultiply(mirrorFrame)
+  mirrorQ.setFromRotationMatrix(mirrorM)
+  for (let start = 0; start < 21; start += 7) {
+    mirrorPos.set(pose[start], pose[start + 1], pose[start + 2]).applyMatrix4(mirrorM)
+    poseQuat.set(pose[start + 3], pose[start + 4], pose[start + 5], pose[start + 6]).premultiply(mirrorQ)
+    mirrorPose[start] = mirrorPos.x
+    mirrorPose[start + 1] = mirrorPos.y
+    mirrorPose[start + 2] = mirrorPos.z
+    mirrorPose[start + 3] = poseQuat.x
+    mirrorPose[start + 4] = poseQuat.y
+    mirrorPose[start + 5] = poseQuat.z
+    mirrorPose[start + 6] = poseQuat.w
+  }
+  return mirrorPose
+}
+
 // Filled in by boot(); the frame loop refuses to run until they exist.
 let height = null
 let layers = null
@@ -1865,7 +1998,7 @@ const questToggles = {
   terrain: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true, dragons: true,
   water: true, reflections: true, aurora: true, sound: true,
-  critterTint: false,
+  critterTint: false, mirror: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
   teleport: true,
@@ -2486,7 +2619,7 @@ async function bootWorld() {
   roosts.bakeCards(renderer)
   console.log(`[v2] roosts ${roosts.stats.placed} over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
   window.v2roosts = roosts
-  dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife })
+  dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife, water: waterSurfaces })
   for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
   dragons.ready.then(() => {
     dragons.bakeCards(renderer)
@@ -2506,9 +2639,11 @@ async function bootWorld() {
       ambience = new Ambience({
         engine: sound,
         sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
-        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip on top; the crawlers together hold one loop.
+        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip on top; the crawlers together hold one loop; the dragons beat, roar and growl; the fish swoosh as they set off.
         herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip' } }, { layer: snowmen, clips: 'human' }],
         crawlers: [spiders, crabs],
+        dragons,
+        fish,
       })
       window.v2ambience = ambience
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`)
@@ -2847,9 +2982,9 @@ function replacePropsOnMovedGround(cx, cz) {
 // object out of view still costs its slot in this inventory the moment you turn
 // towards it, and hiding it here would make the census disagree with the panel
 // depending on which way the wearer happened to be facing. And it counts three's
-// side of the graph only: A-Frame's own entities (the laser-controls lines, and
-// the controller models once a controller connects) live in the same scene and
-// are counted like anything else, which is the point -- they are draw calls too.
+// side of the graph only: A-Frame's own entities (the controller models once a
+// controller connects) live in the same scene and are counted like anything
+// else, which is the point -- they are draw calls too.
 //
 // One line per drawable, coarsest first, and a total that should match the
 // panel's CALLS on the flatscreen. In XR the panel's number is the TWO-EYE sum
@@ -3180,9 +3315,11 @@ let lastSpaceTap = -Infinity
 // over capability): at 1.45 m/s the far side of an 8 km world is unreachable
 // inside a session, and the menu's layer rows are only worth pressing from
 // somewhere specific. `want && !renderer.xr.isPresenting` is the line that
-// takes it away again.
+// takes it away again. Every path into flight goes through here so the menu's
+// `fly` row is never showing the wrong state.
 function setFlying(want) {
   player.setFlying(want)
+  refreshQuestRow('fly')
 }
 
 function onSpacePress(now) {
@@ -3811,15 +3948,22 @@ const headTmp = new THREE.Vector3()
 //                     panel's `move` row says teleport. While flying, throttle.
 //   either stick  X   snap turn
 //   either stick  click   recentre
-//   A / X             toggle fly. Flying steers off whichever HAND is pushing
-//                     its stick, wherever that hand points.
 //   B / Y             recall the toggle panel to where you are standing
+//   A / X             NOTHING. See below.
 //   grips             NOTHING. See below.
 //
 // GRIPS DO NOTHING, ON PURPOSE. They used to carry +5 hours and panel-recall,
 // and a grip is the button a hand presses by accident just holding a controller
 // -- so the sky would lurch five hours forward while you were reaching for
 // something. A binding you fire without meaning to is worse than no binding.
+//
+// A / X DO NOTHING EITHER, ON PURPOSE. They toggled fly, and a one-press fly
+// is the wrong shape for a world meant to be walked: it makes the far side of
+// the map a snap of the fingers and the walk a formality. Flight in the
+// headset lives on the debug view's `fly` row, the same toggle, reached by
+// opening the menu on purpose. Flying still steers off whichever HAND is
+// pushing its stick, wherever that hand points. A desktop keeps space / shift
+// for previewing.
 //
 // AXIS DOMINANCE, not a per-hand split, is what stops a walk from turning you.
 // Each stick contributes to move only while |y| > |x| and to turn only while
@@ -4065,12 +4209,12 @@ function aimTeleport(origin, dir) {
 }
 
 /**
- * The pointer of the hand pushing the stick, taken from the SAME ray A-Frame
- * draws the laser along. The hand entity itself sits at the XR gripSpace, whose
- * -Z is pitched well above where a Touch controller points; the laser is the
- * model's pointing pose, and the arc has to leave from the line the wearer can
- * see. Aimed off the pushing hand rather than the gaze so that looking around
- * while holding the stick does not move the destination.
+ * The pointer of the hand pushing the stick, taken from the SAME ray the menu's
+ * pointer is drawn along. The hand entity itself sits at the XR gripSpace, whose
+ * -Z is pitched well above where a Touch controller points; the ray is the
+ * model's pointing pose, and the arc has to leave from where the wearer would
+ * see the pointer. Aimed off the pushing hand rather than the gaze so that
+ * looking around while holding the stick does not move the destination.
  */
 function questTeleportAim(handEl) {
   const rc = handEl.components.raycaster
@@ -4138,13 +4282,18 @@ function readInput() {
     moveInput.instant = false
     moveInput.flyDirection = null
 
-    // Mirrored, and NOTHING on the grips. +5h and aurora-cycle moved to the
-    // panel, where they cannot go off in your hand.
+    // Any button takes the menu's pointer for its hand, BEFORE the B / Y below
+    // opens the menu, so it opens with the pointer on the hand that pressed.
+    for (const [hand, el] of [['left', leftHandEl], ['right', rightHandEl]]) {
+      if (Object.values(st[hand].buttons).some((b) => b.justPressed)) questPointerHand = el
+    }
+
+    // Mirrored, and NOTHING on the grips or on A / X. +5h and aurora-cycle
+    // moved to the panel, where they cannot go off in your hand; fly moved to
+    // the debug view's `fly` row, where it takes deliberate menu presses to
+    // reach -- see the banner.
     if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) toggleQuestPanel()
     if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
-    if (st.left.buttons.PRIMARY?.justPressed || st.right.buttons.PRIMARY?.justPressed) {
-      setFlying(!player.flying)
-    }
 
     if (player.flying) {
       moveHand.getWorldQuaternion(questTempQuat)
@@ -4510,6 +4659,7 @@ function tick() {
   player.headPosition(headTmp)
   const [pose, hands] = currentPose()
   netplay.sendPose(pose, hands, now)
+  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands, avatar: netplay.avatar })
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
@@ -4650,7 +4800,7 @@ sceneEl.setAttribute('v2-quest-tick', '')
 // headset can see, exit or undo.
 renderer.xr.addEventListener('sessionstart', () => {
   if (!ready) return
-  player.setFlying(false)
+  setFlying(false)
   if (editor) editor.setActive(false)
   if (panel) panel.syncSelection()
 })

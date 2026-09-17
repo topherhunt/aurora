@@ -443,9 +443,10 @@ function lone(seed = 3) {
   // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
   const feet = () => {
-    c.puppet.group.updateMatrixWorld(true)
+    // A bone's world matrix is creature-space (the rig is detached); the group puts it in the world.
+    const g = c.puppet.group.matrix
     return c.puppet.ik.legs.map((l) => {
-      A.setFromMatrixPosition(l.A.matrixWorld); B.setFromMatrixPosition(l.B.matrixWorld); C.setFromMatrixPosition(l.C.matrixWorld)
+      A.setFromMatrixPosition(l.A.matrixWorld).applyMatrix4(g); B.setFromMatrixPosition(l.B.matrixWorld).applyMatrix4(g); C.setFromMatrixPosition(l.C.matrixWorld).applyMatrix4(g)
       return { id: l.id, hover: C.y - tilted.heightAt(C.x, C.z), knee: Math.acos(A.sub(B).normalize().dot(C.sub(B).normalize())) }
     })
   }

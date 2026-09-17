@@ -27,7 +27,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
+  Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT, setTierTint } from '../src/v2/render/puppet.js'
@@ -597,9 +597,10 @@ wake(w)
   // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
   const feet = (c) => {
-    c.puppet.group.updateMatrixWorld(true)
+    // A bone's world matrix is creature-space (the rig is detached); the group puts it in the world.
+    const g = c.puppet.group.matrix
     return c.puppet.ik.legs.map((l) => {
-      A.setFromMatrixPosition(l.A.matrixWorld); B.setFromMatrixPosition(l.B.matrixWorld); C.setFromMatrixPosition(l.C.matrixWorld)
+      A.setFromMatrixPosition(l.A.matrixWorld).applyMatrix4(g); B.setFromMatrixPosition(l.B.matrixWorld).applyMatrix4(g); C.setFromMatrixPosition(l.C.matrixWorld).applyMatrix4(g)
       return { id: l.id, hover: C.y - tilted.heightAt(C.x, C.z), knee: Math.acos(A.sub(B).normalize().dot(C.sub(B).normalize())) }
     })
   }
@@ -717,6 +718,9 @@ wake(w)
       // that flag, and raising it IS the upload.
       const tex = { needsUpdate: false }
       p.skeleton.boneTexture = tex
+      // Nothing drew it while it settled, so the first draw fills the texture whatever the cadence; that one is the next block's, not this count's.
+      p.skeleton.update()
+      tex.needsUpdate = false
       const t0 = p.mixer.time
       let uploads = 0
       for (let f = 0; f < 24; f++) {
@@ -730,8 +734,26 @@ wake(w)
     const top = sampled(0)
     const last = sampled(LOD_RUNGS - 1)
     check(top.uploads === 24 && last.uploads === 24 / POSE_EVERY[LOD_RUNGS - 1], `the top rung re-poses every frame and the last one every ${POSE_EVERY[LOD_RUNGS - 1]}th, which is a bone texture built and uploaded that many times less`, `${top.uploads} and ${last.uploads} uploads in 24 frames`)
-    check(Math.abs(top.played - 24 / 60) < 1e-9 && Math.abs(last.played - 24 / 60) < 1e-9, 'and the skipped time is banked and spent whole, so a clip sampled every eighth frame still plays at its own speed -- a lower sample rate, not a slower animal', `${last.played.toFixed(4)} s of ${(24 / 60).toFixed(4)}`)
+    check(Math.abs(top.played - 24 / 60) < 1e-9 && Math.abs(last.played - 24 / 60) < 1e-9, 'and the skipped time is banked and spent whole, so a clip sampled every fourth frame still plays at its own speed -- a lower sample rate, not a slower animal', `${last.played.toFixed(4)} s of ${(24 / 60).toFixed(4)}`)
     const p = c.puppet
+    // A POSE FRAME SPENT OUT OF VIEW STILL REACHES THE TEXTURE. The renderer
+    // runs skeleton.update only for a body that passed the frustum test, so a
+    // new clip whose pose frame lands behind her would otherwise draw the clip
+    // before it (or, fresh from the pool, nothing) until the next pose frame.
+    {
+      const tex = { needsUpdate: false }
+      p.skeleton.boneTexture = tex
+      const drawn = () => { p.skeleton.update(); const up = tex.needsUpdate; tex.needsUpdate = false; return up }
+      p.play(c.clip, p.cue + 1000) // a fresh cue re-cues the same clip
+      p.step(1 / 60) // the pose frame, culled: the renderer never calls update
+      const wasPosed = p.posed
+      p.step(1 / 60)
+      const onHeld = !p.posed && drawn()
+      p.step(1 / 60)
+      const again = !p.posed && drawn()
+      p.skeleton.boneTexture = null
+      check(wasPosed && onHeld && !again, 'a clip change whose pose frame the renderer culled fills the bone texture on the first frame it does draw, held or not, and only that once', `posed ${wasPosed}, first held frame uploaded ${onHeld}, next ${again}`)
+    }
     {
       const sphere = p.meshes[0].boundingSphere
       const geo = p.meshes[0].geometry
@@ -740,28 +762,33 @@ wake(w)
       check(p.meshes.every((m) => m.frustumCulled && m.boundingSphere === sphere) && holds,
         'every rung is frustum-culled on one explicit sphere round the rest bounds: a body behind her drops its bone-texture upload along with its draw, and SkinnedMesh.computeBoundingSphere -- which CPU-skins every vertex -- is never reached', `r ${sphere.radius.toFixed(2)} m over a ${geo.boundingSphere.radius.toFixed(2)} m body`)
     }
-    // A HELD FRAME LEAVES THE GROUP ALONE. The bone texture holds world matrices
-    // and the model matrix cancels against the bind, so a stale pose draws frozen
-    // where it stood whatever the group says -- writing the group would re-multiply
-    // the whole bone tree and change nothing (wildlife.js writes it `if (puppet.posed)`).
+    // A HELD FRAME SLIDES THE POSE ON. The rig hangs under nothing, so its
+    // world matrices are creature-space and the bone texture holds the pose
+    // alone; the group's matrix places it and is written every frame, held or
+    // not. A body that hopped along at its pose cadence was what the headset
+    // could not live with.
     {
+      check(p.rig.parent === null && p.bones[0] === p.rig && p.meshes.every((m) => m.bindMode === THREE.DetachedBindMode && m.bindMatrix.equals(new THREE.Matrix4()) && m.bindMatrixInverse.equals(new THREE.Matrix4())),
+        'the rig is detached -- under no node, on an identity bind -- so a bone matrix is the pose and the group matrix is the place')
       const d = reach(LOD_RUNGS - 1) * 0.75
       // Put it on a long roam first: left to the roll it can graze through the whole window.
       w._begin(c, 'roam')
       c.aim = c.heading
       c.left = 100
-      let tested = false, frozen = false
+      let tested = false, moved = false, held = false
       for (let f = 0; f < 600 && !tested; f++) {
         const was = p.group.matrix.elements.slice()
+        const bones = p.bones.map((b) => b.matrixWorld.elements.slice())
         const x0 = c.x, z0 = c.z
         at(d, 1, 1 / 60)
         // A frame the animal walked through AND held its pose on: the two together are what the promise is about.
         if (!p.posed && Math.hypot(c.x - x0, c.z - z0) > 1e-6) {
           tested = true
-          frozen = p.group.matrix.elements.every((v, n) => v === was[n])
+          moved = Math.abs(p.group.matrix.elements[12] - c.x) < 1e-9 && Math.abs(p.group.matrix.elements[14] - c.z) < 1e-9 && !p.group.matrix.elements.every((v, n) => v === was[n])
+          held = p.bones.every((b, i) => b.matrixWorld.elements.every((v, n) => v === bones[i][n]))
         }
       }
-      check(tested && frozen, 'and on a held frame the animal walks on while its group matrix stays put, because a stale pose draws where it stood and moving the group would cost the bone tree a full re-multiply to show nothing')
+      check(tested && moved && held, 'and on a held frame the group matrix follows the animal while every bone matrix stays exactly put: the body slides on in the pose it last took, and the bone tree is not walked')
     }
   }
   // The tint row, which is how the ladder is confirmed by eye at all: halving
@@ -1033,6 +1060,100 @@ wake(w)
   check(drawn.length > 0, 'animals are drawn again around her')
   w.place(0, 0)
   check(!w.fading.length && w.species.every((sp) => sp.freePuppets.length === PUPPETS) && drawn.every((a) => !a.puppet), 'a place() takes every puppet back at once, fading ones included -- the ground they stood on has moved')
+}
+
+// --- the dragon's four verbs: prey, seize, carry, drop -----------------------------
+//
+// A seized stag is a slot with no spawn, off every tile and every list, drawn
+// only where its carrier puts it: hanging by the back from the talons, or
+// rolled onto its flank on the nest floor.
+{
+  const k = make(7)
+  k.place(0, 0)
+  const dt = 1 / 60
+  const c = beside(k, 'stag')
+  const liveStags = alive(k).filter((a) => a.sp.key === 'stag' && a.lod < CARD_RUNGS)
+  const nearest = (x, z) => liveStags.reduce((b, a) => (Math.hypot(a.x - x, a.z - z) < Math.hypot(b.x - x, b.z - z) ? a : b))
+  const probes = [[c.x, c.z], [c.x + 40, c.z - 25], [c.x - 60, c.z + 70]]
+  check(liveStags.length >= 2 && probes.every(([x, z]) => k.prey(x, z, 1e4) === nearest(x, z)), 'prey() is the nearest live stag to the point asked', `${liveStags.length} live stags`)
+  const others = alive(k).filter((a) => a.sp.key !== 'stag')
+  check(others.length > 0 && others.every((a) => { const p = k.prey(a.x, a.z, 1e4); return p !== a && p.sp.key === 'stag' }), 'and never a fox or a hare, asked from right on top of one', `${others.length} asked`)
+  check(k.prey(c.x, c.z, 1e4) === c && k.prey(c.x, c.z, 0) === null && k.prey(c.x + 1000, c.z, 100) === null, 'and null when no stag is within range')
+  const asleep = scatter(k).find((s) => s.sp.key === 'stag' && s.slot === null && !s.dead)
+  check(asleep !== undefined && k.prey(asleep.x, asleep.z, 0.01) === null, 'a stag asleep on its spawn, past its cull, is not prey -- nothing that is not simulated can be hunted')
+  let threw = ''
+  try { k.seize(k.species[0].free[0]) } catch (e) { threw = e.message }
+  check(threw.includes('not in the world'), 'seizing a slot with nothing in it throws', threw)
+
+  const spawn = c.spawn
+  const { height, width } = c.sp.asset
+  const before = k.bodies([]).length
+  const got = k.seize(c)
+  check(got === c && c.spawn === null && spawn.dead && spawn.slot === null && c.act === 'dead', 'seize() hands back the slot, off its spawn, and the spawn is marked dead with no slot')
+  check(c.clip === 'dead' && c.dur === c.sp.durations.dead && c.left === c.dur && c.queue.length === 0 && c.speed === 0, 'the slot is on the dead clip from its start, held its whole length, nothing queued behind it', `${c.dur.toFixed(2)} s`)
+  check(!k.bodies([]).includes(c) && k.bodies([]).length === before - 1, 'and it is off the list the ear reads')
+  check(!k.species[0].free.includes(c), 'but not back in the pool: it is cargo now')
+  for (let f = 0; f < 120; f++) k.update(spawn.x, spawn.y + 1.6, spawn.z, dt)
+  check(spawn.slot === null && !alive(k).some((a) => a.spawn === spawn), 'two seconds of her standing on the dead spawn wake no second stag there')
+  check(k.prey(spawn.x, spawn.z, 0.01) === null, 'and it is not prey either')
+
+  // Hanging: a yawed, scaled carrier matrix, the body's own frame under it.
+  const M = new THREE.Matrix4().compose(new THREE.Vector3(12, 30, -7), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.8), new THREE.Vector3(c.k, c.k, c.k))
+  k.carry(c, M, 10, dt)
+  const p = c.puppet
+  check(p !== null && c.lod < LOD_RUNGS && c.x === 12 && c.y === 30 && c.z === -7 && p.to === c.lod, 'carried ten metres off, the kill takes a puppet on a mesh rung and the slot sits at the matrix', p && `tier ${p.to}`)
+  const gripLocal = new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(p.group.matrix)
+  check(gripLocal.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-9, `hanging, the point ${GRIP} of its height up its body -- the back the talons hold -- is exactly at the matrix, and the rest sags below`, `grip lands ${gripLocal.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
+  const upHung = new THREE.Vector3(0, 1, 0).transformDirection(p.group.matrix)
+  check(Math.abs(upHung.y - 1) < 1e-9, 'its up is the world up: it hangs, it does not roll')
+  check(p.actions.get('dead').isRunning() && p.ik !== null && p.ik.wTo === 0 && p.group.matrix.elements[0] !== 1, 'the puppet plays the dead clip with its feet unplanted -- there is no ground to plant on -- and wears the matrix\'s yaw and scale', `weight to ${p.ik?.wTo}`)
+  const feetFrames = Math.ceil(c.dur * 60) + 5
+  for (let f = 0; f < feetFrames; f++) k.carry(c, M, 10, dt)
+  const a = p.actions.get('dead')
+  check(a.paused && a.time >= c.dur - 1e-6, 'past its length the slump holds its last frame', `time ${a.time.toFixed(3)} of ${c.dur.toFixed(3)}`)
+
+  // Lain: the same matrix on the nest floor, the body on its flank.
+  k.carry(c, M, 10, dt, true)
+  const upLain = new THREE.Vector3(0, 1, 0).transformDirection(p.group.matrix)
+  check(Math.abs(upLain.y) < 1e-9, 'lain, the body\'s up is horizontal: it is on its side', `up.y ${upLain.y.toExponential(1)}`)
+  const flank = [new THREE.Vector3(0.3, 0.5 * height, LAIN * width), new THREE.Vector3(-0.3, 0.1 * height, LAIN * width)].map((v) => v.applyMatrix4(p.group.matrix))
+  check(flank.every((f) => Math.abs(f.y - 30) < 1e-9), `and the flank ${LAIN} of its width out is on the matrix's floor along the whole body`, flank.map((f) => (f.y - 30).toExponential(1)).join(' '))
+  const spine = new THREE.Vector3(0, 0.5 * height, 0).applyMatrix4(p.group.matrix)
+  check(spine.y > 30 + 1e-6 && Math.abs(spine.y - 30 - LAIN * width * c.k) < 1e-9, 'so the spine is above the floor by that much of the width, at the body\'s scale', `${(spine.y - 30).toFixed(3)} m`)
+  const fwd = new THREE.Vector3(1, 0, 0).transformDirection(p.group.matrix)
+  check(Math.abs(fwd.y) < 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - 0.8) < 1e-9, 'and it lies along the matrix\'s heading', `${Math.atan2(-fwd.z, fwd.x).toFixed(3)} rad`)
+
+  // Far: past the mesh rungs the puppet dissolves and goes back to the pool, the slot stays cargo.
+  k.carry(c, M, 1e4, dt)
+  check(c.lod === LOD_RUNGS && p.to === -1, 'carried out past the last mesh rung, its puppet is sent out', `lod ${c.lod}`)
+  for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) k.carry(c, M, 1e4, dt)
+  check(c.puppet === null && k.species[0].freePuppets.includes(p) && c.act === 'dead' && c.spawn === null, 'and once it has dissolved the puppet is back in the pool while the slot is still the dragon\'s')
+  k.carry(c, M, 10, dt)
+  check(c.puppet !== null && c.puppet.actions.get('dead').isRunning(), 'brought back within reach it takes a puppet again, on the dead clip')
+
+  // Drop, fading: the puppet dissolves where it hangs; the slot goes home.
+  const fadingBefore = k.fading.length
+  const drop = c.puppet
+  k.drop(c)
+  check(c.puppet === null && k.fading.length === fadingBefore + 1 && k.fading[k.fading.length - 1].puppet === drop && drop.to === -1, 'drop() leaves the body dissolving where it was let go')
+  check(k.species[0].free.includes(c) && c.act === 'stand' && c.lod === CARD_RUNGS && c.spawn === null, 'and the slot is back in the pool, empty')
+  threw = ''
+  try { k.carry(c, M, 10, dt) } catch (e) { threw = e.message }
+  check(threw.includes('not seized'), 'carrying a dropped slot throws', threw)
+  threw = ''
+  try { k.drop(c) } catch (e) { threw = e.message }
+  check(threw.includes('not seized'), 'and so does dropping it twice', threw)
+
+  // Drop with no fade: the ground under it has gone, the puppet goes straight back.
+  k.place(0, 0)
+  const c2 = beside(k, 'stag')
+  k.seize(c2)
+  k.carry(c2, M, 10, dt)
+  const p2 = c2.puppet
+  const fading2 = k.fading.length
+  k.drop(c2, false)
+  check(p2 !== null && c2.puppet === null && k.fading.length === fading2 && k.species[0].freePuppets.includes(p2) && k.species[0].free.includes(c2), 'drop(c, false) vanishes the body and returns the puppet at once')
+  k.dispose()
 }
 
 // --- the ear hears the herd ------------------------------------------------------

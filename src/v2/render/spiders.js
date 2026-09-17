@@ -785,11 +785,8 @@ export class Spiders {
             // The run clip at the flee's pace, so the feet keep up with the seat. Written every frame: a puppet comes back from a fleeing spider to the pool as it was.
             puppet.mixer.timeScale = c.state === 'flee' ? FLEE_HASTE : 1
             puppet.step(dt)
-            // Only where it shows -- puppet.js POSE_EVERY.
-            if (puppet.posed) {
-              puppet.group.matrix.copy(_mat)
-              puppet.group.matrixWorldNeedsUpdate = true
-            }
+            puppet.group.matrix.copy(_mat)
+            puppet.group.matrixWorldNeedsUpdate = true
             if (puppet.done) this._releasePuppet(c)
           } else if (cards && m < MAX) {
             _mat.toArray(cmat, m * 16)
