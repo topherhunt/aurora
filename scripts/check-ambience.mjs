@@ -631,6 +631,15 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(loop.active && loop.starts === 2, 'and starts again when one moves')
   run(amb, 1, { submerged: true })
   check(loop.active && loop.starts === 2, 'it is held through a dive like the other loops, the bus silencing it')
+  // A spider that takes fright plays the clip once, from where it is, at `startle` times the level; a layer without startled() (the crabs) is only ever the loop.
+  spiders.startled = (into) => { into.push(spider); return into }
+  const before = engine.plays.length
+  run(amb, 1 / 60, {})
+  const shot = engine.plays.slice(before).filter((p) => p.name === 'crawl')
+  check(shot.length === 1 && shot[0].at === spider && shot[0].gain >= C.startle * C.level * C.gain[0] - 1e-9 && shot[0].gain <= C.startle * C.level * C.gain[1] + 1e-9, `a startled spider plays the crawl once, from itself, at ${C.startle}x the level`, `${shot.length} shots, gain ${shot[0]?.gain.toFixed(3)}`)
+  delete spiders.startled
+  run(amb, 1, {})
+  check(engine.plays.filter((p) => p.name === 'crawl').length === 1, 'and no more once it is no longer listed')
   let threw = false
   try { new Ambience({ engine, sense, crawlers: [{}] }) } catch { threw = true }
   check(threw, 'a crawler layer without bodies() throws')

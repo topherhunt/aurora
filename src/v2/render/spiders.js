@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // THE BIRCH SPIDERS. Groups of one to five on the trunks and the boulders,
 // crawling about between the ground and CLIMB_M up, pausing, on the sides of
-// things and hardly ever on top of them. Two hosts, two surfaces:
+// things and hardly ever on top of them, and nowhere above the snow line. Two
+// hosts, two surfaces:
 //
 //   A TREE is its LOD0 trunk's ring profile (tree.js trunkProfile, handed over
 //   by Trees.trunksInto with the instance's scale and yaw), so a spider on one
@@ -34,6 +35,12 @@
 // would wear -- edge-on from the side, which at ten metres is a spider-sized
 // fleck of bark, and in tree-lined ground the whole far crowd is one draw call.
 //
+// Her head within ALERT_M rears a paused spider up; within FLEE_M it FLEES:
+// off at a run along the heading in its surface that leads furthest from her,
+// until she has been out of FLEE_M for FLEE_S, and the ear (audio/ambience.js)
+// is told once as it sets off, through startled(). A flee costs the frame one
+// comparison per spider; the turn is taken once, as it starts.
+//
 // A group is a pure function of its host's origin and the world seed, so the
 // same trunk carries the same spiders every visit; behaviour draws from one
 // stream and is not.
@@ -59,7 +66,7 @@ export const SIZE_M = [0.1, 0.3]
 export const CLIMB_M = 3
 export const GROUP = [1, 5]
 // The chance a host carries a group at all.
-export const HOST_CHANCE = { tree: 0.25, rock: 0.6 }
+export const HOST_CHANCE = { tree: 0.125, rock: 0.3 }
 // A rock worth climbing, and a trunk worth clinging to (base radius).
 export const ROCK_MIN_SIZE = 0.6
 export const TRUNK_MIN_R = 0.06
@@ -88,8 +95,11 @@ const GAIT = { walk: 0.11 / 0.9, run: 0.15 / 0.42 }
 const RUN_CHANCE = 0.12
 // Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.2
-// Her head this close makes a paused spider rear up.
+// Her head this close makes a paused spider rear up...
 const ALERT_M = 1.2
+// ...and this close makes any spider run, for this long after she was last within it.
+export const FLEE_M = 0.5
+export const FLEE_S = 3
 // Feet into the surface, as a fraction of the body's height, so eight feet meet a round trunk.
 export const SINK = 0.15
 const REPROJECT_EVERY = 3
@@ -124,14 +134,14 @@ export const loadSpiderGlb = (url) => loadSkinnedAsset(url, { tiers: LOD_TIERS }
 
 export class Spiders {
   /**
-   * @param height  V2Height: heightAt
+   * @param height  V2Height: heightAt and snowLineAt (a host above the snow line carries none)
    * @param water   WaterSurfaces: isSubmerged (a host under water carries none) and levelAt (a wet face seats nobody)
    * @param opts.trees  Trees: trunksInto and trunkProfile
    * @param opts.rocks  Rocks: perchesInto and rayAt
    * @param opts.assets a loaded asset (loadSpiderGlb's shape) for a gate; the world fetches the GLB
    */
   constructor(scene, height, water, { seed = 1, trees, rocks, assets = null } = {}) {
-    if (!height || typeof height.heightAt !== 'function') throw new Error('Spiders needs a height field with heightAt')
+    if (!height || typeof height.heightAt !== 'function' || typeof height.snowLineAt !== 'function') throw new Error('Spiders needs a height field with heightAt and snowLineAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.isSubmerged !== 'function') throw new Error('Spiders needs WaterSurfaces, for levelAt and isSubmerged')
     if (!trees || typeof trees.trunksInto !== 'function' || !Array.isArray(trees.trunkProfile)) throw new Error('Spiders needs Trees, for trunksInto and trunkProfile')
     if (!rocks || typeof rocks.perchesInto !== 'function' || typeof rocks.rayAt !== 'function') throw new Error('Spiders needs Rocks, for perchesInto and rayAt')
@@ -178,7 +188,7 @@ export class Spiders {
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
         size: 0.2,
-        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`.
+        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, that nothing but the clock ends.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
         // On a rock: steps turned back since it last walked.
         stuck: 0,
@@ -186,6 +196,8 @@ export class Spiders {
       })
     }
     this.free = this.slots.slice()
+    // The spiders that set off fleeing this frame, for startled().
+    this.startles = []
     this.tiles = new Map()
     this.rescan = []
     this.frame = 0
@@ -301,6 +313,7 @@ export class Spiders {
     const host = { kind, x, z, groundY, ...shape, spiders: [] }
     t.hosts.set(key, host)
     if (this.water.isSubmerged(x, z, groundY)) return
+    if (groundY > this.height.snowLineAt(x, z)) return
     if (kind === 'tree' && !this._treeBand(host)) return
     const rand = mulberry32(hostSeed(x, z, this.seed ^ (kind === 'tree' ? 0x7e3 : 0x0c4)))
     if (rand() >= HOST_CHANCE[kind]) return
@@ -554,6 +567,13 @@ export class Spiders {
     return into
   }
 
+  /** The spiders that took fright this frame, for the ear: the same slots as bodies(), each once, as it sets off. A hidden layer lists nobody. */
+  startled(into) {
+    if (!this.batch.visible) return into
+    for (const c of this.startles) into.push(c)
+    return into
+  }
+
   _pause(c) {
     c.state = 'pause'
     c.speed = 0
@@ -572,6 +592,27 @@ export class Spiders {
     else this._heading(c, c.phi + (this.rand() - 0.5) * 1.2)
   }
 
+  /** Off at a run, the way in its surface that leads furthest from (x, y, z); the clock is the caller's. */
+  _flee(c, x, y, z) {
+    c.state = 'flee'
+    c.clip = 'run'
+    c.speed = (GAIT.run * c.size) / this.span
+    c.stuck = 0
+    // A heading's pull toward her is a cos(phi) + b sin(phi) over the surface's two tangents, so the heading furthest from her is where that is most negative.
+    const tox = x - c.x, toy = y - c.y, toz = z - c.z
+    this._face(c, 0)
+    const a = c.tx * tox + c.ty * toy + c.tz * toz
+    this._face(c, TAU / 4)
+    const b = c.tx * tox + c.ty * toy + c.tz * toz
+    this._face(c, Math.atan2(-b, -a) + (this.rand() - 0.5) * 0.6)
+    this.startles.push(c)
+  }
+
+  /** Turn to the heading `phi` in the host's surface frame: up the bark toward round it, or a rock face's upmost toward its right. */
+  _face(c, phi) {
+    if (c.host.kind === 'tree') { c.phi = phi; this._placeTree(c) } else this._heading(c, phi)
+  }
+
   /** One step of `d` metres up or round the trunk; at either end of the climb the heading reflects. */
   _stepTree(c, d) {
     const host = c.host
@@ -588,7 +629,8 @@ export class Spiders {
    * One step of `d` metres along the heading, then, every REPROJECT_EVERY
    * frames, back onto the stone along the normal. No standable stone under
    * the step, or the top of the rock: the step is not taken and the spider
-   * turns back, roughly the way it came; STUCK_MAX of those and it sits down.
+   * turns back, roughly the way it came; STUCK_MAX of those and it sits down,
+   * unless it is fleeing, when it keeps turning until its clock runs out.
    */
   _stepRock(c, d) {
     const x = c.x + c.tx * d
@@ -598,7 +640,7 @@ export class Spiders {
     const probe = c.size * 0.5
     if (!this._rockRay(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe) || _hit.ny > FLAT_NY) {
       this._heading(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
-      if (++c.stuck >= STUCK_MAX) this._pause(c)
+      if (++c.stuck >= STUCK_MAX && c.state === 'go') this._pause(c)
       return
     }
     c.stuck = 0
@@ -639,9 +681,11 @@ export class Spiders {
       if (t && this.tiles.has(tileKey(t.tx, t.tz))) this._scan(t)
     }
     this.frame++
+    this.startles.length = 0
 
     const cmat = this.card.instanceMatrix.array
     const cards = this.card.visible
+    const flee2 = FLEE_M * FLEE_M
     const near2 = NEAR_M * NEAR_M
     const keep2 = near2 * NEAR_KEEP * NEAR_KEEP
     let m = 0
@@ -654,7 +698,11 @@ export class Spiders {
           const dy = c.y - hy
           const dz = c.z - hz
           const d2 = dx * dx + dy * dy + dz * dz
-          if (c.state === 'go') {
+          if (d2 < flee2) {
+            if (c.state !== 'flee') this._flee(c, hx, hy, hz)
+            c.left = FLEE_S
+          }
+          if (c.state !== 'pause') {
             const d = c.speed * dt
             if (host.kind === 'tree') this._stepTree(c, d)
             else this._stepRock(c, d)

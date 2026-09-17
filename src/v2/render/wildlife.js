@@ -187,8 +187,6 @@ function weighted(rand, pairs) {
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _quat = new THREE.Quaternion()
-const _tilt = new THREE.Quaternion()
-const _nrm = new THREE.Vector3()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
@@ -648,9 +646,7 @@ export class Wildlife {
    * This animal into its species' card buffer for this frame: where it stands,
    * which way it faces (the spin keeps the yaw, and reads the picture mirrored
    * for a body facing away), how big it is and its turn round the colour wheel.
-   *
-   * The ground's normal is NOT in the matrix: the quad is spun about its own Y
-   * every frame, so a tilt would only lean the picture off the vertical.
+   * On the world vertical, as the mesh it stands in for is.
    *
    * `aCardFade` is the dissolve, in material.js's FADE_FRAGMENT terms: positive
    * keeps the low side of the pixel hash and negative the high side. The card
@@ -762,10 +758,10 @@ export class Wildlife {
         if (!puppet) continue
         puppet.show(tier)
         _pos.set(c.x, c.y, c.z)
-        // The body faces +X, yawed about the world up to its heading, then that up tilted onto the ground's normal.
+        // The body faces +X, yawed about the world up to its heading. It stands
+        // on that up, never on the ground's normal, which is only the plane its
+        // feet walk between probes: an animal on a hillside is vertical.
         _quat.setFromAxisAngle(UP, c.heading)
-        _tilt.setFromUnitVectors(UP, _nrm.set(c.nx, c.ny, c.nz))
-        _quat.premultiply(_tilt)
         _scl.setScalar(c.k)
         _mat.compose(_pos, _quat, _scl)
 

@@ -16,8 +16,11 @@
 // air when its stone is gone, or left behind when its trunk re-seats; a near
 // spider drawn as a card or a far one as a puppet, a puppet on the wrong tier,
 // one whose clip is not its state, or one that does not rear up when she is
-// close; a card that is two quads, or that does not lie where its spider clings
-// at its tilt; a frame that costs more than a scatter is allowed to. The
+// close; one that does not run from her head at arm's length, runs toward it,
+// is heard setting off twice or stops while she is still there; a host above
+// the snow line with a group on it; a card that is two quads, or that does not
+// lie where its spider clings at its tilt; a frame that costs more than a
+// scatter is allowed to. The
 // shipped GLB is checked for shape too -- a skinned tier per rung of the ladder, the
 // skeleton and its six clips -- because the world loads it by name and builds
 // every puppet from it.
@@ -28,7 +31,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M,
+  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_S,
 } from '../src/v2/render/spiders.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
@@ -45,7 +48,9 @@ const check = (ok, label, detail = '') => {
 
 // --- the synthetic wood ----------------------------------------------------------
 const GROUND = 5
-const height = { heightAt: () => GROUND }
+// The snow line is a hundred metres up, except where a test lowers it.
+let snowLine = GROUND + 100
+const height = { heightAt: () => GROUND, snowLineAt: () => snowLine }
 const POND = { x: 30, z: 30, r: 6 }
 // And a puddle a boulder stands in, its level a hand over the ground.
 const PUDDLE = { x: -14, z: 12, r: 3, y: GROUND + 0.3 }
@@ -300,7 +305,7 @@ function makeAsset() {
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const spiders = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
 check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.puppetMats.length === PUPPETS && spiders.materials.length === PUPPETS * 2 + 1, `${PUPPETS} puppets built and free, ONE settled material between them all and a dissolving pair -- in, out -- each`)
 check(spiders.puppets.every((p) => p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.isSkinnedMesh && m.skeleton === p.skeleton && !m.visible) && p.skeleton.bones.length === 2 && p.skeleton.bones[0].name === 'Pedicel' && p.skeleton !== spiders.asset.skeleton), `each puppet: ${LOD_TIERS} skinned tiers bound to its own copy of the skeleton, none shown`)
@@ -333,7 +338,7 @@ check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.childre
 const alive = (of = spiders) => of.slots.filter((c) => c.host !== null)
 liveTrunks = TRUNKS
 liveRocks = ROCKS
-const SEEDS = 12
+const SEEDS = 40
 const pool = []
 const groupSizes = []
 const hosted = { tree: 0, rock: 0 }
@@ -386,7 +391,7 @@ spiders.place(0, 0)
   const onThin = onTrees.filter((c) => hostOf(c).name === 'birch2')
   check(onThin.length > 0 && onThin.every((c) => c.y - GROUND <= 1.9 + 1e-6) && onThin.some((c) => c.y - GROUND > 1.5), `and the thin birch only up to where its bark thins under ${TRUNK_MIN_R} m, two metres up`, `${onThin.length} on it, highest ${onThin.length ? Math.max(...onThin.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
   // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
-  const again = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
   again.place(0, 0)
   const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
   check(key(again) === key(spiders) && alive(spiders).length > 0, 'the scatter is a pure function of the seed', `${alive(spiders).length} spiders`)
@@ -394,7 +399,7 @@ spiders.place(0, 0)
   // A tile whose hosts land late gets its spiders on the rescan.
   liveTrunks = []
   liveRocks = []
-  const late = new Spiders(scene, height, water, { seed: 11, trees, rocks, assets: makeAsset() })
+  const late = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
   late.place(0, 0)
   check(alive(late).length === 0, 'no hosts, no spiders')
   liveTrunks = TRUNKS
@@ -403,6 +408,13 @@ spiders.place(0, 0)
   for (let f = 0; f < 200; f++) late.update(0, GROUND + 1.6, 0, 0)
   check(key(late) === key(spiders), 'hosts that land after place() get their spiders on the rescan, the same ones')
   late.dispose()
+  // Above the snow line, the same hosts carry nobody.
+  snowLine = GROUND - 1
+  const snowed = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  snowed.place(0, 0)
+  check(snowed.stats.hosts === spiders.stats.hosts && alive(snowed).length === 0, 'a host above the snow line carries no group', `${snowed.stats.hosts} hosts, ${alive(snowed).length} spiders`)
+  snowed.dispose()
+  snowLine = GROUND + 100
   // A trunk re-seated with its chunk takes its spiders with it, on the next rescan.
   const treeSpiders = alive().filter((c) => c.host.kind === 'tree')
   const ys = treeSpiders.map((c) => c.y)
@@ -561,10 +573,37 @@ spiders.place(0, 0)
   check(spiders.freePuppets.length === PUPPETS - spiders.stats.puppets, 'the pool balances')
   // Reared up when she is close and paused; back to its business when she goes.
   target.state = 'pause'; target.clip = 'idle'; target.left = 100
-  tiersAt(0.5, 3)
-  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head half a metre off is alert')
+  tiersAt(0.8, 3)
+  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head 0.8 m off is alert')
   tiersAt(3, 3)
   check(target.clip !== 'alert', 'and drops it when she steps back', target.clip)
+  // Closer than FLEE_M it flees: off at the run the way that leads furthest from her, heard once as it sets off, until she has been out of reach for FLEE_S.
+  const flee = (c) => {
+    // Her head a hand off the surface and a little above the spider, so "away" is down.
+    const her = [c.x + c.nx * 0.2, c.y + 0.25, c.z + c.nz * 0.2]
+    c.state = 'pause'; c.clip = 'idle'; c.left = 100
+    spiders.update(...her, 1 / 60)
+    const fled = spiders.startled([])
+    const away = c.tx * (her[0] - c.x) + c.ty * (her[1] - c.y) + c.tz * (her[2] - c.z)
+    spiders.update(...her, 1 / 60)
+    return { fled, away, twice: spiders.startled([]).length, still: c.state === 'flee' }
+  }
+  const t = flee(target)
+  check(target.state === 'flee' && target.clip === 'run' && target.speed > 0 && target.puppet.current.getClip().name === 'run', `her head ${(Math.hypot(0.2, 0.25)).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
+  check(t.fled.length === 1 && t.fled[0] === target && t.twice === 0 && t.still, 'it is listed as startled the frame it sets off and never again while it runs')
+  check(t.away < 0 && target.ty < -0.8, 'it runs away from her: down the bark, her head being above it', `heading ty ${target.ty.toFixed(2)}, toward her ${t.away.toFixed(2)}`)
+  const p = alive().find((c) => hostOf(c).name === 'pillar')
+  const r = flee(p)
+  check(p.state === 'flee' && r.fled[0] === p && r.away < 0 && Math.abs(p.tx * p.nx + p.ty * p.ny + p.tz * p.nz) < 1e-6 && Math.abs(Math.hypot(p.tx, p.ty, p.tz) - 1) < 1e-6, 'a rock spider flees too, away from her along its face', `toward her ${r.away.toFixed(2)}`)
+  // She steps back: the run lasts FLEE_S after she left, then it pauses.
+  tiersAt(3, Math.round((FLEE_S - 0.5) * 60))
+  check(target.state === 'flee', `${FLEE_S - 0.5} s after she steps back it is still running`, target.state)
+  tiersAt(3, 60)
+  check(target.state === 'pause' && spiders.startled([]).length === 0, `${FLEE_S + 0.5} s after, it has stopped`, target.state)
+  spiders.batch.visible = false
+  flee(target)
+  check(spiders.startled([]).length === 0 && target.state === 'flee', 'a hidden layer lists no startled spider')
+  spiders.batch.visible = true
   // Mixer time runs only while a puppet is out.
   const time = target.puppet.mixer.time
   tiersAt(3, 10)

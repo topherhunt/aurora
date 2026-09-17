@@ -26,7 +26,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Snowmen, CLIPS, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE,
+  Snowmen, CLIPS, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE, FOLLOW_SLOPE,
   NOTICE_M, AWAY_M, STANDOFF_M, RESUME_M, RUN_M, FORGET_M, TURN_RATE,
 } from '../src/v2/render/snowmen.js'
 import { CRITTER_GLB, LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
@@ -252,7 +252,6 @@ w.place(0, 0)
   check(Math.max(...slopes) <= MAX_SLOPE + 1e-9, 'every one stands on ground it could stand on', `steepest ${((Math.max(...slopes) * 180) / Math.PI).toFixed(1)} deg`)
   check(pool.every((c) => TRUNKS.every((t) => Math.hypot(c.x - t.x, c.z - t.z) > t.r)), 'none stands inside a trunk')
   check(pool.every((c) => Math.abs(c.y - fieldAt(c.x, c.z)) < 1e-9), 'every one is on the walk surface, not floating over it')
-  check(pool.every((c) => Math.hypot(c.nx, c.ny, c.nz) - 1 < 1e-9), 'each carries the unit normal of the ground it stands on')
   const sizes = pool.map((c) => c.size)
   check(sizes.every((s) => s >= SIZE_M[0] && s <= SIZE_M[1]) && Math.min(...sizes) < SIZE_M[0] + 0.2 && Math.max(...sizes) > SIZE_M[1] - 0.2, `a snowman is ${SIZE_M[0]} to ${SIZE_M[1]} m tall, and the range is walked`, `${Math.min(...sizes).toFixed(2)} to ${Math.max(...sizes).toFixed(2)} m`)
   check(pool.every((c) => Math.abs(c.k - c.size / biped.height) < 1e-9), 'and wears the scale that makes it so')
@@ -427,7 +426,7 @@ function lone(seed = 3) {
   }
   check(c.state === 'follow' && c.speed === 0 && Math.hypot(c.x - far, c.z - hz) < STANDOFF_M + RESUME_M + 0.5, 'she crosses to the far rim and a minute later it stands at her side of it', `${Math.hypot(c.x - far, c.z - hz).toFixed(2)} m from her`)
   check(wet === 0, 'having gone round, not through', `${wet} wet frames`)
-  check(alive(k).every((a) => Math.abs(a.y - fieldAt(a.x, a.z)) < 1e-9 && !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= MAX_SLOPE + 1e-9 && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'everybody is on the ground, and nobody in the water, up the crag or through a trunk')
+  check(alive(k).every((a) => Math.abs(a.y - fieldAt(a.x, a.z)) < 1e-9 && !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= FOLLOW_SLOPE + 1e-9 && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'everybody is on the ground, and nobody in the water, up a face it could not climb or through a trunk')
   check(ms / 3600 < 1.5, `a frame of ${alive(k).length} snowmen costs under 1.5 ms`, `${(ms / 3600).toFixed(3)} ms`)
   k.dispose()
   // Led down the slope: it follows her under the snow line, where none is ever placed, and out of its tile.
@@ -439,7 +438,44 @@ function lone(seed = 3) {
     led.k.update(lx, fieldAt(lx, lz) + HEAD, lz, dt)
   }
   check(led.c.state === 'follow' && led.c.y < SNOW_LINE - 5 && Math.hypot(led.c.x - lx, led.c.z - lz) < RUN_M, 'led down the slope for a minute, it follows her well below the snow line', `at ${led.c.y.toFixed(1)} m, ${Math.hypot(led.c.x - lx, led.c.z - lz).toFixed(1)} m behind her`)
+  {
+    // On that slope its puppet stands on the world vertical, not on the ground's normal: a biped on a hillside is upright.
+    const q = new THREE.Quaternion()
+    led.c.puppet.group.matrix.decompose(new THREE.Vector3(), q, new THREE.Vector3())
+    const lean = Math.acos(walk.normalAt(led.c.x, led.c.z).y)
+    check(led.c.puppet && lean > (15 * Math.PI) / 180 && new THREE.Vector3(0, 1, 0).applyQuaternion(q).distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-9, 'and stands upright on the world vertical while the ground leans under it', `ground leans ${((lean * 180) / Math.PI).toFixed(1)} deg`)
+  }
   led.k.dispose()
+
+  // A shelf across her way: a 45-degree face two metres high, steeper than one is ever laid on and gentler than she can climb (player.js LOCOMOTION.maxSlopeDeg). She walks straight over it, so a follower has to as well.
+  const SHELF = { z: 0, w: 2, rise: 2 }
+  const shelfAt = (x, z) => GROUND + Math.min(1, Math.max(0, (z - SHELF.z) / SHELF.w)) * SHELF.rise
+  const shelfWalk = walkOn(shelfAt)
+  const face = Math.acos(shelfWalk.normalAt(0, SHELF.z + SHELF.w / 2, 0.75).y)
+  check(face > MAX_SLOPE && face < FOLLOW_SLOPE, `the shelf's face reads ${((face * 180) / Math.PI).toFixed(0)} degrees over the walk surface's own 1.5 m span: past ${Math.round((MAX_SLOPE * 180) / Math.PI)} where one is laid, inside ${Math.round((FOLLOW_SLOPE * 180) / Math.PI)} where one follows`)
+  {
+    let sx = 0, sz = -3
+    let k, c
+    for (let seed = 1; !c; seed++) {
+      k = make(seed, { walk: shelfWalk, water: noWater, height })
+      k.place(sx, sz)
+      c = alive(k).find((a) => Math.hypot((a.tile.tx + 0.5) * TILE - sx, (a.tile.tz + 0.5) * TILE - sz) < RADIUS - 10)
+      if (!c) k.dispose()
+    }
+    c.x = 0; c.z = -12; c.y = shelfAt(c.x, c.z)
+    c.heading = c.aim = Math.atan2(-(sz - c.z), sx - c.x)
+    k.update(sx, shelfAt(sx, sz) + HEAD, sz, dt)
+    check(c.state === 'watch', 'it sees her from the foot of the shelf')
+    sz = SHELF.z + SHELF.w + 20
+    let steepest = 0
+    for (let f = 0; f < 3600; f++) {
+      k.update(sx, shelfAt(sx, sz) + HEAD, sz, dt)
+      steepest = Math.max(steepest, Math.acos(shelfWalk.normalAt(c.x, c.z).y))
+    }
+    check(c.state === 'follow' && c.speed === 0 && c.z > SHELF.z + SHELF.w && Math.hypot(c.x - sx, c.z - sz) < STANDOFF_M + RESUME_M + 0.5, 'she crosses the shelf and a minute later it stands at her side of it', `${Math.hypot(c.x - sx, c.z - sz).toFixed(2)} m from her, ${c.z.toFixed(1)} m past its foot`)
+    check(steepest > MAX_SLOPE, 'having climbed the face itself, ground it would never have been laid on', `steepest ground under it ${((steepest * 180) / Math.PI).toFixed(1)} deg`)
+    k.dispose()
+  }
 }
 
 // --- it outlives its tile, and is laid only once --------------------------------------
@@ -521,9 +557,8 @@ function lone(seed = 3) {
   {
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
     c.puppet.group.matrix.decompose(p, q, s)
-    const tilt = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(c.nx, c.ny, c.nz))
-    const want = tilt.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.heading))
-    check(p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-6 && Math.abs(s.x - c.k) < 1e-9 && Math.abs(q.dot(want)) > 1 - 1e-9, 'standing where it is, at its own size, facing its heading on the ground it stands on', `scale ${s.x.toFixed(3)}`)
+    const want = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.heading)
+    check(p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-6 && Math.abs(s.x - c.k) < 1e-9 && Math.abs(q.dot(want)) > 1 - 1e-9, 'standing where it is, at its own size, facing its heading about the world vertical', `scale ${s.x.toFixed(3)}`)
   }
   const gone = settle(400)
   check(gone === LOD_TIERS && expect(400) === LOD_TIERS && !c.puppet && k.freePuppets.length === PUPPETS, 'four hundred metres off it is not drawn at all, and the pool is whole')

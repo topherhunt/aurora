@@ -542,10 +542,11 @@ console.log('\n--- shader patches actually land ------------------------------')
   //   constant, and emitting it anyway is two sampler declarations and two dead
   //   fetches per terrain fragment and per prop vertex, in every material.
   //
-  //   OFF is the headset panel's `terrain & prop lighting` row. It has to emit
-  //   NOTHING: the row's whole job is an A/B for what this system costs, and a
-  //   row that leaves the instructions running measures zero and reads as a
-  //   switch that does not work. It did exactly that until it grew this axis.
+  //   OFF is setEnabled(false), the A/B for what this system costs. The world
+  //   no longer has a menu row for it -- the lighting has never shown a
+  //   performance problem and ships on -- but the axis stays compiled and
+  //   checked so the number can be taken again. It has to emit NOTHING: an off
+  //   that leaves the instructions running measures zero.
   {
     const flat = new WorldLighting()
     const ft = flat.patch(createTerrainMaterial(), { mode: 'fragment', cacheKey: 'gate-flat-t', worldPosVarying: 'vWorldPos' })

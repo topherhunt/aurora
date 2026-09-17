@@ -496,10 +496,8 @@ sceneEl.canvas?.addEventListener('webglcontextlost', (e) => {
 scene.background = new THREE.Color(FOG_COLOR)
 scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
 
-// The fixed noon-ish rig, held rather than inlined into the two constructors
-// because applySky overwrites all six values from the palette every frame. The
-// `terrain & prop lighting` row turning off is the host ceasing to write them,
-// so "off" has to be able to RESTATE them -- see setLightingEnabled.
+// The noon-ish rig the two lights are constructed with; applySky overwrites all
+// six values from the palette every frame once the world is up.
 const FIXED_RIG = {
   sunDir: new THREE.Vector3(-0.45, 0.62, 0.3).normalize(),
   sunColor: SUN_COLOR,
@@ -594,25 +592,15 @@ function probeVantage(head, out) {
 // The menu: a world-space panel, ported from quest-main.js's already-proven
 // pattern (same laser-controls raycast, same canvas-texture buttons) rather
 // than reinvented. It is the one control surface the headset has, and Escape
-// opens it on a desktop. Three views under one tab bar -- backpack, settings,
-// debug -- and the view she last chose is kept for the session only: a refresh
-// opens on the backpack.
+// opens it on a desktop. Four views under one tab bar -- backpack, settings,
+// debug, help -- and the view she last chose is kept for the session only: a
+// refresh opens on the backpack.
 // ---------------------------------------------------------------------------
-
-function labelTexture(text, bg = '#173154', fg = '#ffffff', width = 384) {
-  const c = document.createElement('canvas'); c.width = width; c.height = 96
-  const ctx = c.getContext('2d')
-  if (bg !== null) { ctx.fillStyle = bg; ctx.fillRect(0, 0, c.width, c.height) }
-  ctx.fillStyle = fg; ctx.font = 'bold 26px monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = bg === null ? 'left' : 'center'
-  ctx.fillText(text, bg === null ? 18 : c.width / 2, 48)
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
-  return t
-}
 
 let questPanelGroup = null
 const questControllerHits = new Map()
 
-const QUEST_VIEWS = ['backpack', 'settings', 'debug']
+const QUEST_VIEWS = ['backpack', 'settings', 'debug', 'help']
 let questView = 'backpack'
 // The tab bar, the two button grids (buildQuestGrid) and the view groups, shown
 // one at a time by setQuestView. The meshes the lasers may land on are listed
@@ -727,17 +715,11 @@ const QUEST_TOGGLE_ROWS = [
   // and setCutout for what each number does and does not prove.
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
   { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
-  // The third: the far forest's clump cards alone, so their fill can be priced
-  // against the singles ring without the singles moving. See
-  // Trees.setClumpsVisible.
-  { key: 'treeClumps', text: 'tree clumps', on: 'drawn', off: 'hidden' },
   // Flat-colours every puppet by the rung it is drawing -- green, yellow,
   // orange, red -- so the ladder in critters.js can be confirmed by walking up
   // to a stag and watching where it changes. See Puppet.setTierTint.
   { key: 'critterTint', text: 'critter LOD tint', on: 'by rung', off: 'normal' },
-  { key: 'instCull', text: 'per-instance cull' },
   { key: 'wind', text: 'wind' },
-  { key: 'lighting', text: 'terrain & prop lighting' },
   // DEAD CODE (peaks): the `peaks` mesher knob, off in RELIEF_SHIPPED. See the
   // tag in chunk-mesh-v2.js.
   { key: 'peaks', text: 'far peaks', action: () => onRelief({ ...relief, peaks: relief.peaks > 0 ? 0 : 1 }), value: () => (relief.peaks > 0 ? 'max >' : 'sampled >') },
@@ -772,20 +754,11 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
-    // A REAL OFF SWITCH, and it has to be one. This row used to gate only the
-    // sun/hemi/lighting.update block in applySky(), which turned nothing off:
-    // every one of those is a LATER WRITER with no restore, so "off" froze the
-    // rig and the uniforms at the hour it was pressed and left every
-    // instruction the patch compiles into every lit material still running.
-    // The row read as permanently on because it WAS. Expect a one-off compile
-    // hitch on the frame you press it, as with wind and reflections.
-    case 'lighting': setLightingEnabled(enabled); break
     case 'trees': trees.batch.visible = enabled; break
     // Both rows read "the world as it ships" as ON, so the toggle is what gets
     // REMOVED -- the same polarity as `wind`.
     case 'treeTiers': trees.setCardsOnly(!enabled); break
     case 'treeCutout': trees.setCutout(enabled); break
-    case 'treeClumps': trees.setClumpsVisible(enabled); break
     case 'boulders': applyRockVisibility(); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
@@ -810,7 +783,6 @@ function applyQuestToggle(key) {
       break
     case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); break
-    case 'instCull': applyBatchCulling(); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
     // its price in milliseconds. Strength 0 would stop the motion and leave every
@@ -840,76 +812,6 @@ function applyQuestToggle(key) {
 
 function applyRockVisibility() {
   for (const b of rocks.beds) b.batch.visible = questToggles.boulders
-}
-
-// ---------------------------------------------------------------------------
-// THE PER-INSTANCE CULL SWITCH, and why it is the first thing to try when a
-// layer "blinks" in the headset rather than merely running slow.
-//
-// A THREE.BatchedMesh with `perObjectFrustumCulled` on does a CPU sweep in
-// onBeforeRender: for every instance it reads the 4x4 out of the matrix
-// texture, transforms that instance's bounding sphere by it, and frustum-tests
-// the result, then rebuilds the multi-draw list. The early-out at the top of
-// that method only fires when NOTHING is on -- `!_visibilityChanged &&
-// !perObjectFrustumCulled && !sortObjects`.
-//
-// IN XR THAT SWEEP RUNS TWICE PER FRAME. WebGLRenderer's XR path loops
-// `for (const camera2 of camera.cameras) renderScene(...)`, once per eye, and
-// onBeforeRender is called inside renderScene. That is CPU work on a mobile
-// core, and CPU work is exactly what the headset has least of. It also explains
-// the shape of the symptom: stalls long enough to miss the compositor's
-// deadline make the runtime reproject a stale frame, which is the "furious
-// blinking" -- not a shader crash, and not the GPU, which the same headset
-// happily feeds a million alpha-masked triangles.
-//
-// WHAT IT STILL REACHES IS TERRAIN, and nothing else. Every scatter is on an
-// InstancedMesh arena now -- trees, ferns, grass, litter, mushrooms, dead wood
-// and the rock beds -- and those carry the two flags only so applyBatchCulling
-// records a default rather than `undefined` (see the notes in trees.js /
-// grass.js / instanced-arena.js / prop-arena.js); writing them changes no
-// rendering, and there is no per-instance cull on an InstancedMesh to have.
-// That leaves terrain.batch, which sorts its 1024 chunks as well as culling
-// them. It is on three's defaults, so "on" is what the world ships.
-//
-// THE ROCKS WERE THE LAST LAYER OFF THIS PATH and are the measurement that
-// settles the argument: eight beds, 323k pooled instances between them, swept
-// twice per frame for two eyes, took the headset from 90 fps to about 20 the
-// moment the layer was switched on. They are on PropArena now.
-//
-// Turning it OFF trades draw-time (every instance is submitted) for frame-time
-// (no sweep). The user's own /quest measurements say this world is nowhere near
-// GPU-bound, so that is the right side of the trade here -- but it is a toggle
-// and not a constant precisely because it is a trade, and the panel is where it
-// gets judged.
-function questBatches() {
-  const out = []
-  if (terrain) out.push(terrain.batch)
-  if (trees) out.push(trees.batch)
-  if (ferns) ferns.meshes.forEach((m) => out.push(m))
-  if (grass) out.push(grass.batch)
-  if (rocks) rocks.beds.forEach((b) => out.push(b.batch))
-  if (litter) out.push(litter.batch)
-  if (mushrooms) out.push(mushrooms.batch)
-  if (deadwood) out.push(deadwood.batch)
-  if (bones) out.push(bones.batch)
-  return out
-}
-
-// The "on" state restores each batch's OWN defaults rather than setting both
-// flags true, because they differ per layer by design -- terrain sorts and the
-// scatters do not -- and a toggle that forgot that would be comparing the
-// off state against a world nobody ships.
-const questCullDefaults = new WeakMap()
-function applyBatchCulling() {
-  const on = questToggles.instCull
-  for (const batch of questBatches()) {
-    if (!questCullDefaults.has(batch)) {
-      questCullDefaults.set(batch, { cull: batch.perObjectFrustumCulled, sort: batch.sortObjects })
-    }
-    const def = questCullDefaults.get(batch)
-    batch.perObjectFrustumCulled = on ? def.cull : false
-    batch.sortObjects = on ? def.sort : false
-  }
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -942,16 +844,26 @@ const QUEST_PANEL_COL_W = 0.86
 const QUEST_PANEL_COL_GAP = 0.06
 const PANEL_W = QUEST_PANEL_COLS * QUEST_PANEL_COL_W + (QUEST_PANEL_COLS - 1) * QUEST_PANEL_COL_GAP
 const QUEST_PANEL_TOP = 1.20
-// The tab bar, one cell per view on the column grid, and the hint line under it.
+// The tab bar: one cell per view, the four sharing the panel's width.
 const QUEST_TAB_Y = 1.08
 const QUEST_TAB_H = 0.18
-const QUEST_HINT_Y = 0.92
+const QUEST_TAB_W = (PANEL_W - (QUEST_VIEWS.length - 1) * QUEST_PANEL_COL_GAP) / QUEST_VIEWS.length
+// Where a view's content starts, just under the tabs.
+const QUEST_VIEW_TOP = 0.96
 // The debug view: the stats plane, then the toggle grid, which grows DOWNWARD
-// with QUEST_TOGGLE_ROWS at QUEST_ROW_H a row.
-const QUEST_STATS_Y = 0.58
+// with QUEST_TOGGLE_ROWS at QUEST_ROW_H a row. The stats canvas is 1536 wide
+// for the panel's 2.7 m, 569 px/m, so the largest of QUEST_STATS_SIZES is a
+// 6 cm glyph at the panel's 2.8 m -- readable in a headset, which the 16 px
+// the old 288-tall canvas squeezed nine rows into was not. 640 tall holds ten
+// rows at that size, every row updateQuestStats draws in the headset; on a
+// desktop the cursor row wraps and the type steps down one size.
+const QUEST_STATS_W = 1536
+const QUEST_STATS_H = 640
+const QUEST_STATS_M = PANEL_W * QUEST_STATS_H / QUEST_STATS_W
+const QUEST_STATS_Y = QUEST_VIEW_TOP - QUEST_STATS_M / 2
 const QUEST_ROW_H = 0.20
 const QUEST_BTN_H = 0.18
-const QUEST_ROW_TOP = 0.18
+const QUEST_ROW_TOP = QUEST_VIEW_TOP - QUEST_STATS_M - 0.06 - QUEST_BTN_H / 2
 const questRowsPerCol = () => Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
 // The settings view: a 2 x 2 of wider buttons.
 const QUEST_SETTING_COLS = 2
@@ -959,22 +871,25 @@ const QUEST_SETTING_W = 1.20
 const QUEST_SETTING_GAP = 0.10
 const QUEST_SETTING_ROW_H = 0.34
 const QUEST_SETTING_BTN_H = 0.26
-const QUEST_SETTING_TOP = 0.62
+const QUEST_SETTING_TOP = 0.78
 // The backpack view: the slots in two rows on one canvas plane, its top edge at
 // QUEST_SLOTS_TOP and half a gap of margin inside each edge.
 const QUEST_SLOT = 0.50
 const QUEST_SLOT_GAP = 0.10
 const QUEST_SLOTS_TOP = 0.85
 const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
+// The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
+const QUEST_HELP_H = 1.70
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
 const QUEST_SETTINGS_BOTTOM = questGridBottom(QUEST_SETTING_TOP, Math.ceil(QUEST_SETTING_ROWS.length / QUEST_SETTING_COLS), QUEST_SETTING_ROW_H, QUEST_SETTING_BTN_H)
 const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H - 0.05
+const QUEST_HELP_BOTTOM = QUEST_VIEW_TOP - QUEST_HELP_H - 0.05
 // The panel's LOWEST EDGE over every view -- the debug grid's, by a metre --
 // which is what questPanelDesiredPosition keeps out of the ground, so that
 // switching tabs never seats a view in the hillside.
-const questPanelBottom = () => Math.min(questDebugBottom(), QUEST_SETTINGS_BOTTOM, QUEST_BACKPACK_BOTTOM)
+const questPanelBottom = () => Math.min(questDebugBottom(), QUEST_SETTINGS_BOTTOM, QUEST_BACKPACK_BOTTOM, QUEST_HELP_BOTTOM)
 
 // How far the plate's bottom edge stands clear of the terrain when the ground is
 // what decides its height. Small enough to read as resting on the ground rather
@@ -985,6 +900,31 @@ const QUEST_PANEL_GROUND_GAP = 0.05
 // Canvas pixels per metre of panel, so every button's type is the same size
 // whatever its shape: 96 px for the 18 cm button the debug rows were tuned on.
 const QUEST_PX_PER_M = 96 / 0.18
+
+// THE MENU'S TWO FACES. Everything she reads as a player -- tabs, settings,
+// backpack, help -- is set in a serif, in small caps and letter-spaced so it
+// reads as carved rather than typed; the debug view stays monospace because
+// its rows are columns of numbers. SYSTEM FONTS ONLY, nothing fetched: the
+// Quest's browser is Chromium on Android, whose one serif is Noto Serif and is
+// what the generic `serif` resolves to there. Georgia is the desktop's answer
+// to the same stack. Neither is a blackletter; a shipped OFL face is the way
+// to that look if it is ever wanted, not a system name that no headset has.
+const QUEST_SERIF = (px) => ({ font: `small-caps bold ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '2px' })
+const QUEST_MONO = (px) => ({ font: `bold ${px}px monospace`, tracking: '0px' })
+function setQuestFont(ctx, face) {
+  ctx.font = face.font
+  ctx.letterSpacing = face.tracking
+}
+
+function paintQuestCell(ctx, x, y, w, h, text, face = QUEST_SERIF(28), bg = '#173154', fg = '#ffffff') {
+  ctx.fillStyle = bg
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = fg
+  setQuestFont(ctx, face)
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'center'
+  ctx.fillText(text, x + w / 2, y + h / 2)
+}
 
 // UPLOAD THE CANVAS NOW, BETWEEN FRAMES, instead of leaving needsUpdate set for
 // three to honour at the first draw that samples it. That deferred upload is the
@@ -1035,16 +975,6 @@ function questCanvasTexture(width, height) {
 // material twice -- see buildQuestGrid.
 function questCanvasMaterial(texture) {
   return new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true, toneMapped: false, forceSinglePass: true })
-}
-
-function paintQuestCell(ctx, x, y, w, h, text, bg = '#173154', fg = '#ffffff') {
-  ctx.fillStyle = bg
-  ctx.fillRect(x, y, w, h)
-  ctx.fillStyle = fg
-  ctx.font = 'bold 26px monospace'
-  ctx.textBaseline = 'middle'
-  ctx.textAlign = 'center'
-  ctx.fillText(text, x + w / 2, y + h / 2)
 }
 
 /**
@@ -1122,19 +1052,14 @@ function buildQuestGrid({ count, cols, colW, gap, rowH, btnH, top, paint }) {
 // --- the stats readout of the debug view -------------------------------------
 //
 // ONE canvas and ONE CanvasTexture for the life of the panel, redrawn in place
-// at 4 Hz. The obvious shape -- build a fresh labelTexture per update, the way
-// the toggle rows do on click -- would allocate and upload a texture four times
+// at 4 Hz. The obvious shape -- build a fresh texture per update, the way the
+// toggle rows do on click -- would allocate and upload a texture four times
 // a second forever, which is a leak of GPU memory on a device that has 6 GB for
 // everything. Rows get away with it because a click is a human-rate event.
 
-// Sized to the FPS row, the widest: 84 columns of bold monospace when the
-// cursor's three coordinates run to `-1234` each. The panel is world-locked at
-// 2.8 m, so a wider canvas is a smaller typeface in the headset; 1536 is the
-// narrowest that holds that row at the largest of QUEST_STATS_SIZES. Rows past
+// Sized in the panel geometry block: QUEST_STATS_W x QUEST_STATS_H. Rows past
 // what the canvas holds do not run off it: drawQuestStats shrinks the type to
 // fit and wraps what is still too wide.
-const QUEST_STATS_W = 1536
-const QUEST_STATS_H = 288
 let questStatsCanvas = null
 let questStatsCtx = null
 let questStatsTexture = null
@@ -1144,7 +1069,7 @@ const QUEST_STATS_PAD = 16
 // at a fixed size in world space, so shrinking the type is the only room there
 // is: a row that has grown past the canvas is a row the wearer cannot read at
 // all, and a stat nobody can see may as well not be measured.
-const QUEST_STATS_SIZES = [28, 26, 24, 22, 20, 18, 16, 14]
+const QUEST_STATS_SIZES = [36, 32, 28, 24, 20, 16]
 const statsLineH = (px) => Math.round(px * 1.64)
 const statsTop = (px) => Math.round(px * 0.93)
 // Held between frames so a settled panel measures itself once and not eight times.
@@ -1265,7 +1190,7 @@ function buildBackpackView() {
       ctx.stroke()
       if (backpack[i] !== null) {
         ctx.fillStyle = '#ffffff'
-        ctx.font = 'bold 26px monospace'
+        setQuestFont(ctx, QUEST_SERIF(28))
         ctx.textBaseline = 'middle'
         ctx.textAlign = 'center'
         ctx.fillText(backpack[i], x + QUEST_SLOT * px / 2, y + QUEST_SLOT * px / 2)
@@ -1286,7 +1211,7 @@ function buildSettingsView() {
   questSettingsGrid = buildQuestGrid({
     count: QUEST_SETTING_ROWS.length, cols: QUEST_SETTING_COLS,
     colW: QUEST_SETTING_W, gap: QUEST_SETTING_GAP, rowH: QUEST_SETTING_ROW_H, btnH: QUEST_SETTING_BTN_H, top: QUEST_SETTING_TOP,
-    paint: (ctx, i, x, y, w, h) => paintQuestCell(ctx, x, y, w, h, questRowLabel(QUEST_SETTING_ROWS[i])),
+    paint: (ctx, i, x, y, w, h) => paintQuestCell(ctx, x, y, w, h, questRowLabel(QUEST_SETTING_ROWS[i]), QUEST_SERIF(36)),
   })
   group.add(questSettingsGrid.mesh)
   return group
@@ -1306,7 +1231,7 @@ function buildDebugView() {
   questStatsCtx = statsCanvas.ctx
   questStatsTexture = statsCanvas.texture
   const stats = new THREE.Mesh(
-    new THREE.PlaneGeometry(PANEL_W, PANEL_W * QUEST_STATS_H / QUEST_STATS_W),
+    new THREE.PlaneGeometry(PANEL_W, QUEST_STATS_M),
     new THREE.MeshBasicMaterial({ map: questStatsTexture, toneMapped: false, side: THREE.DoubleSide })
   )
   stats.position.set(0, QUEST_STATS_Y, 0.02)
@@ -1316,9 +1241,61 @@ function buildDebugView() {
   questDebugGrid = buildQuestGrid({
     count: QUEST_TOGGLE_ROWS.length, cols: QUEST_PANEL_COLS,
     colW: QUEST_PANEL_COL_W, gap: QUEST_PANEL_COL_GAP, rowH: QUEST_ROW_H, btnH: QUEST_BTN_H, top: QUEST_ROW_TOP,
-    paint: (ctx, i, x, y, w, h) => paintQuestCell(ctx, x, y, w, h, questRowLabel(QUEST_TOGGLE_ROWS[i])),
+    paint: (ctx, i, x, y, w, h) => paintQuestCell(ctx, x, y, w, h, questRowLabel(QUEST_TOGGLE_ROWS[i]), QUEST_MONO(26)),
   })
   group.add(questDebugGrid.mesh)
+  return group
+}
+
+// What she needs to know, as bullets on one canvas plane, wrapped to the
+// panel's width. A line that will not fit the plane is a bug in this text and
+// not something to scale away.
+const QUEST_HELP = [
+  'This is a fell country of moor, forest, river and lake, sixteen kilometres to a side, under the northern lights. Night follows day; the animals graze by day and settle at dusk.',
+  'Headset: either stick walks and turns. Click a stick to recentre. A or X toggles flight, and a stick then throttles and steers where that hand points.',
+  'B or Y opens and closes this menu, and so does walking more than five metres from it. Point a controller at a button and pull the trigger.',
+  'Settings chooses walking or teleporting: aim the arc with a stick and let go to jump.',
+  'Desktop: WASD or the arrows walk and turn, drag the mouse to look. Space takes off, Shift descends, and a second tap of Space lands. T lobs a teleport, N skips five hours, Escape is this menu.',
+  'Save in Settings keeps your place and your backpack on this device; Load returns you to it.',
+  'The backpack has eight slots. Soon there will be things in the world worth picking up.',
+]
+
+function buildHelpView() {
+  const group = new THREE.Group()
+  group.add(buildQuestPlate(QUEST_HELP_BOTTOM))
+  const w = Math.round(PANEL_W * QUEST_PX_PER_M)
+  const h = Math.round(QUEST_HELP_H * QUEST_PX_PER_M)
+  const { ctx, texture } = questCanvasTexture(w, h)
+  const px = 30
+  const lineH = Math.round(px * 1.45)
+  const pad = 40
+  const indent = 36
+  setQuestFont(ctx, QUEST_SERIF(px))
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
+  ctx.fillStyle = '#e8dcc0'
+  let y = pad + px / 2
+  for (const item of QUEST_HELP) {
+    ctx.fillText('\u2022', pad, y)
+    let line = ''
+    for (const word of item.split(' ')) {
+      const next = line === '' ? word : `${line} ${word}`
+      if (ctx.measureText(next).width > w - pad * 2 - indent && line !== '') {
+        ctx.fillText(line, pad + indent, y)
+        y += lineH
+        line = word
+      } else {
+        line = next
+      }
+    }
+    ctx.fillText(line, pad + indent, y)
+    y += Math.round(lineH * 1.4)
+  }
+  if (y - lineH * 0.4 + px / 2 > h) throw new Error(`the help text runs ${y - h}px past its ${h}px plane`)
+  uploadQuestTexture(texture)
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, QUEST_HELP_H), questCanvasMaterial(texture))
+  plane.position.set(0, QUEST_VIEW_TOP - QUEST_HELP_H / 2, 0.02)
+  group.add(plane)
   return group
 }
 
@@ -1354,22 +1331,15 @@ function buildQuestPanel() {
 
   questTabs = buildQuestGrid({
     count: QUEST_VIEWS.length, cols: QUEST_VIEWS.length,
-    colW: QUEST_PANEL_COL_W, gap: QUEST_PANEL_COL_GAP, rowH: QUEST_TAB_H, btnH: QUEST_TAB_H, top: QUEST_TAB_Y,
+    colW: QUEST_TAB_W, gap: QUEST_PANEL_COL_GAP, rowH: QUEST_TAB_H, btnH: QUEST_TAB_H, top: QUEST_TAB_Y,
     paint: (ctx, i, x, y, w, h) => {
       const active = QUEST_VIEWS[i] === questView
-      paintQuestCell(ctx, x, y, w, h, QUEST_VIEWS[i], active ? '#2f5f95' : '#0f2038', active ? '#ffffff' : '#7f95b4')
+      paintQuestCell(ctx, x, y, w, h, QUEST_VIEWS[i], QUEST_SERIF(30), active ? '#2f5f95' : '#0f2038', active ? '#ffffff' : '#7f95b4')
     },
   })
   questPanelGroup.add(questTabs.mesh)
 
-  const hint = new THREE.Mesh(
-    new THREE.PlaneGeometry(PANEL_W, 0.13),
-    questCanvasMaterial(labelTexture('sticks move & turn -- A/X fly -- B/Y or esc closes this menu -- stick click recenters', null, '#8fd48f', 1560))
-  )
-  hint.position.set(0, QUEST_HINT_Y, 0.02)
-  questPanelGroup.add(hint)
-
-  questViewGroups = { backpack: buildBackpackView(), settings: buildSettingsView(), debug: buildDebugView() }
+  questViewGroups = { backpack: buildBackpackView(), settings: buildSettingsView(), debug: buildDebugView(), help: buildHelpView() }
   for (const group of Object.values(questViewGroups)) questPanelGroup.add(group)
   setQuestView(questView)
 
@@ -1698,7 +1668,6 @@ function updateQuestStats() {
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
       ['TEX ', '#7f95b4'], [String(info.memory.textures).padEnd(6), '#b39ddb'],
       ['PROG ', '#7f95b4'], [String(renderer.info.programs?.length ?? 0).padEnd(5), '#b39ddb'],
-      ['CULL ', '#7f95b4'], [(questToggles.instCull ? 'on' : 'off').padEnd(5), questToggles.instCull ? '#ffd27a' : '#8fd48f'],
       ['MDRAW ', '#7f95b4'], [hasMultiDraw() ? 'yes' : 'NO', hasMultiDraw() ? '#8fd48f' : '#ff6b6b'],
     ],
     [
@@ -1713,10 +1682,6 @@ function updateQuestStats() {
       ...(questToggles.trees
         ? [
             ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
-            // Clump cards drawn -- each one six trees -- and trees mid-way out
-            // of a tile that has changed mode. The second should be zero
-            // standing still; a number that holds is a swap that never drains.
-            ['clumps ', '#7f95b4'], [`${kilo(ts.clumps)}/${ts.retiring}`.padEnd(9), '#cfe3ff'],
             // Main-thread ms of Trees.update, and how many tiles have been
             // re-seated on a re-split chunk since boot. Standing still, the
             // second should hold; if it climbs, the head's yaw is re-splitting
@@ -1728,7 +1693,6 @@ function updateQuestStats() {
             // forest unless it says otherwise, and a flag that is always there stops
             // being read -- so nothing is spent on the case that needs no warning.
             ...(ts.cardsOnly ? [['CARDS ONLY ', '#ffd27a']] : []),
-            ...(ts.clumpsHidden ? [['NO CLUMPS ', '#ffd27a']] : []),
             ...(ts.cutout ? [] : [['NO CUTOUT', '#ffd27a']]),
           ]
         : []),
@@ -1871,28 +1835,12 @@ let ready = false
 // The menu's toggle state. The world boots as it ships -- every layer the
 // wearer would see is on -- and the rows exist to take one away for a
 // measurement.
-//
-// `lighting` is in that second group for a stricter reason than composition:
-// off, the sun and hemi lights keep the fixed noon-ish rig they were
-// constructed with and never hear about the hour, so the world shows brighter
-// and flatter at every time of day and wholly fake at night. The day/night
-// shading is on and the row is there to take it away for a measurement.
-//
-// `instCull` is the one that does NOT default to the three.js default. See the
-// banner on applyBatchCulling: the per-instance frustum sweep runs once per EYE
-// in XR, which is CPU work the Quest 2 has least of, and turning it off is the
-// first thing to try when a layer stutters rather than merely renders slowly.
-// It starts off so the headset boots into the cheap configuration; flip it on
-// to measure what the sweep actually costs. Terrain does not pay for that
-// choice: TerrainV2.cullDeg culls the same batch by yaw during a sweep it was
-// already running. The scatter layers still submit everything when this is off.
 const questToggles = {
-  terrain: true, lighting: true,
+  terrain: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true,
   water: true, reflections: true, aurora: true, sound: true,
   critterTint: false,
-  instCull: false,
-  wind: true, treeTiers: true, treeCutout: true, treeClumps: true,
+  wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
   teleport: true,
 }
@@ -2028,10 +1976,6 @@ function buildGrass(style, cx, cz, opts = {}) {
   lighting.patch(grass.material, { mode: 'vertex', cacheKey: `v2-grass-${style}` })
   grass.syncSnowLine(layers)
   grass.place(cx, cz)
-  // A rebuilt bed is a NEW mesh, so it arrives with three's defaults rather than
-  // whatever the panel's cull switch is currently set to. Without this, swapping
-  // grass style silently un-does the toggle.
-  applyBatchCulling()
   // A rebuilt bed is a new mesh and arrives visible. Without this, changing
   // the density while the grass row is OFF turns the grass back on.
   grass.batch.visible = questToggles.grass
@@ -2556,13 +2500,7 @@ async function bootWorld() {
     // for what these numbers are supposed to be.
     console.log(
       'tree impostors baked:',
-      baked.singles.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
-    )
-    // The clump cards, one row per photograph: a coverage well above the
-    // single tree's is the six-in-one overlap doing its job.
-    console.log(
-      'tree clumps baked:',
-      baked.clumps.map((b) => `${b.species}/${b.layer} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
     )
     // Same instrument, same reason. A rock card is a grey blob, which makes
     // coverage the number that matters more than luma here: it says how much of
@@ -2626,7 +2564,6 @@ async function bootWorld() {
   trees.batch.visible = questToggles.trees
   trees.setCardsOnly(!questToggles.treeTiers)
   trees.setCutout(questToggles.treeCutout)
-  trees.setClumpsVisible(questToggles.treeClumps)
   setTierTint(questToggles.critterTint)
   applyRockVisibility()
   grass.batch.visible = questToggles.grass
@@ -2661,16 +2598,27 @@ async function bootWorld() {
   // MAX_TRI_DEG = atan(2 / CHUNK_RES) = 7.125 degrees, where the range floor in
   // the split rule stops the rule from refining at all.
   LOD.triDeg = Math.min(MAX_TRI_DEG, 5.72)
-  // The yaw cull that replaces per-instance frustum culling. See the banner on
-  // applyBatchCulling for why the GPU-side one is off, and TerrainV2.cullDeg
-  // for why doing it in the visibility sweep is free -- that loop was already
-  // running this test for a stats readout. Worst case over the same sweep:
-  // 224k submitted becomes 108k.
+  // NO PER-INSTANCE FRUSTUM CULL AND NO SORT ON THE TERRAIN BATCH. Both run a
+  // CPU sweep over every chunk in BatchedMesh.onBeforeRender -- read the 4x4
+  // out of the matrix texture, transform the bounding sphere, test it, rebuild
+  // the multi-draw list -- and in XR onBeforeRender is called once per EYE.
+  // That sweep is what made a layer "blink" in the headset: stalls past the
+  // compositor's deadline reproject a stale frame. The rock beds, 323k pooled
+  // instances swept twice a frame, took it from 90 fps to about 20 before they
+  // moved to InstancedMesh arenas, which have no per-instance cull to run.
+  // Submitting every chunk to the GPU is the cheaper side of that trade on a
+  // world that is nowhere near GPU-bound, and the yaw cull below gets most of
+  // it back for free: TerrainV2.cullDeg reuses the cone test _syncVisibility
+  // was already running for a stats readout. Worst case over the same sweep:
+  // 224k submitted becomes 108k. A menu row used to A/B this; it measured the
+  // same answer every time and is gone.
+  terrain.batch.perObjectFrustumCulled = false
+  terrain.batch.sortObjects = false
   terrain.cullDeg = (70 * Math.PI) / 180
   // The 8 m chunk floor is NOT set here. It is config.js's MAX_DEPTH: one
   // world, one cap, desktop and headset alike.
-  applyBatchCulling()
   buildQuestPanel()
+  window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
   logSceneCensus()
 
   ready = true
@@ -3215,10 +3163,10 @@ function stepCycle(list, now) {
 // together, and these rows exist to pull them apart on the headset:
 //
 //   REACH moves BOTH. Resident tiles go as the radius SQUARED -- 1500 m is
-//   ~11,300 of them, and `update` walks every one every frame whether or not
-//   anything about it has changed -- while INSTANCES go as the radius linearly,
-//   because of the graded thinning. Halving the reach quarters the tile walk and
-//   halves the billboards.
+//   ~11,300 of them, walked in eight phase buckets and only once the camera has
+//   moved since the bucket's last walk (trees.js, STILL_M) -- while INSTANCES
+//   go as the radius linearly, because of the graded thinning. Halving the
+//   reach quarters the tile walk and halves the billboards.
 //
 //   FALLOFF moves only the instances. The tile set is identical at every
 //   exponent; what changes is how many trees each far tile keeps. ^3 cuts the
@@ -3451,52 +3399,21 @@ const daynessOf = (state) => Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 1
 // Last frame's, for the layers that are stepped before the clock is read. It moves over minutes; a frame of lag is not a thing that can be seen.
 let dayness = 1
 
-/**
- * The `terrain & prop lighting` row, both halves of it.
- *
- * TWO HALVES BECAUSE THERE ARE TWO COSTS, and only one of them is ours to
- * compile out. lighting.setEnabled rebuilds every lit material in the world
- * with the shadow lookup, the night lift, the near-field envelope, the aerial
- * ramp and the caustics ABSENT, so the A/B against on is this system's price in
- * milliseconds and nothing else. The rig is the other half: applySky's writes
- * of sun and hemi stop, so this restates the fixed noon-ish one the two lights
- * were constructed with. Without that restore, "off" leaves the palette's last
- * answer standing in both lights and the row reads as having done nothing --
- * which is what it did for its whole life before this.
- */
-function setLightingEnabled(enabled) {
-  lighting.setEnabled(enabled)
-  if (enabled) return
-  sun.position.copy(FIXED_RIG.sunDir)
-  sun.color.setHex(FIXED_RIG.sunColor)
-  sun.intensity = FIXED_RIG.sunIntensity
-  hemi.color.setHex(FIXED_RIG.hemiSky)
-  hemi.groundColor.setHex(FIXED_RIG.hemiGround)
-  hemi.intensity = FIXED_RIG.hemiIntensity
-}
-
 // Unchanged from v1, ordering included. The comments there explain each step;
 // what matters when reading this file is that the order is a dependency chain
 // and not a list: lighting writes the night terms the water reads, sky.update
 // writes the reflection the water bends, and hemi is set before water.update
 // because it is the ambient the water's silhouettes are matched to.
 function applySky(state, head, elapsedReal) {
-  // Gated by the menu like every other layer, so the sun/hemi lights and the
-  // WorldLighting shader patch (the day/night shading terrain, trees, rocks etc.
-  // all read) can be isolated from the rest of the atmosphere (fog/background/
-  // sky dome, which stay always-on below). setLightingEnabled owns the other
-  // half of the row and is where the isolation is actually paid for.
-  if (questToggles.lighting) {
-    sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
-    setSRGB(sun.color, state.lightColor)
-    sun.intensity = state.lightIntensity
+  sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
+  setSRGB(sun.color, state.lightColor)
+  sun.intensity = state.lightIntensity
 
-    setSRGB(hemi.color, state.hemiSky)
-    setSRGB(hemi.groundColor, state.hemiGround)
-    hemi.intensity = state.hemiIntensity
+  setSRGB(hemi.color, state.hemiSky)
+  setSRGB(hemi.groundColor, state.hemiGround)
+  hemi.intensity = state.hemiIntensity
 
-    lighting.update(state)
-  }
+  lighting.update(state)
 
   setSRGB(scene.fog.color, state.fog)
   // hazeDensity, NOT fogDensity, and that is what makes v2's distance read as

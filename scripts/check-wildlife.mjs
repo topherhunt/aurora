@@ -574,12 +574,11 @@ wake(w)
     c.puppet.group.matrix.decompose(p, q, s)
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
     check(p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-6 && Math.abs(s.x - c.k) < 1e-9, 'standing where the animal is, at its own size', `scale ${s.x.toFixed(3)}`)
-    check(up.distanceTo(new THREE.Vector3(c.nx, c.ny, c.nz)) < 1e-6, 'its feet tilted onto the ground it stands on')
-    // Turned to its heading about the world up, and THAT tilted onto the ground: the body's own forward is never dragged off its course by the slope.
-    const tilt = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(c.nx, c.ny, c.nz))
-    const want = tilt.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.heading))
-    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(q).applyQuaternion(tilt.invert())
-    check(Math.abs(q.dot(want)) > 1 - 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - Math.atan2(Math.sin(c.heading), Math.cos(c.heading))) < 1e-6, 'and its body faces its heading', `${c.heading.toFixed(2)} rad`)
+    // The moor rolls under it -- its probed normal leans -- and the body stands on the world vertical regardless.
+    const lean = Math.acos(Math.min(1, c.ny))
+    check(lean > 1e-6 && up.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-9, 'upright on the world vertical, on ground that leans under it', `ground leans ${((lean * 180) / Math.PI).toFixed(2)} deg`)
+    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(q)
+    check(Math.abs(fwd.y) < 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - Math.atan2(Math.sin(c.heading), Math.cos(c.heading))) < 1e-6, 'and its body faces its heading, level', `${c.heading.toFixed(2)} rad`)
   }
   // A stag this far off is still a walking puppet, on the bottom mesh rung -- the card is a rung PAST this, not a substitute for it.
   const out = reach(LOD_RUNGS - 1) * 0.9

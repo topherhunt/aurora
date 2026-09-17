@@ -3,6 +3,8 @@ import { V2Height } from '../height/field.js'
 import { Layers } from '../layers/layers.js'
 import { rectToWorld } from '../height/sculpt.js'
 import { buildChunkV2 } from './chunk-mesh-v2.js'
+import { BiomeField } from '../layers/biome.js'
+import { SEED } from '../config.js'
 
 // ---------------------------------------------------------------------------
 // The v2 terrain worker. Message plumbing only -- every line that computes
@@ -49,6 +51,11 @@ import { buildChunkV2 } from './chunk-mesh-v2.js'
 
 let field = null
 let layers = null
+// The forest tint's biome, seeded from the same module constant main.js seeds
+// the trees' from, for the reason V2Height's seed is: a seed in the message
+// could drift from the scatter's and the ground would go green where no wood
+// stands.
+const biome = new BiomeField({ seed: SEED })
 
 function onInit(msg) {
   // fromRaw, not a second decode. The main thread has already parsed the PNG to
@@ -189,8 +196,8 @@ self.onmessage = (e) => {
   if (msg.type === 'chunk') {
     if (!field) throw new Error('v2 terrain worker got a chunk request before init')
     const t0 = performance.now()
-    const r = buildChunkV2(field, layers, msg)
-    // Transfer rather than copy: these five buffers are the bulk of the per-chunk
+    const r = buildChunkV2(field, layers, msg, biome)
+    // Transfer rather than copy: these six buffers are the bulk of the per-chunk
     // cost and structured-cloning them would put that cost back on the main
     // thread, which is the one thing this worker exists to avoid.
     self.postMessage(
@@ -202,13 +209,14 @@ self.onmessage = (e) => {
         normals: r.normals,
         colors: r.colors,
         stipple: r.stipple,
+        forest: r.forest,
         indices: r.indices,
         minY: r.minY,
         maxY: r.maxY,
         skirtDepth: r.skirtDepth,
         ms: performance.now() - t0,
       },
-      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.indices.buffer]
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.forest.buffer, r.indices.buffer]
     )
     return
   }

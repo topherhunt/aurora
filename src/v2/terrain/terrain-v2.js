@@ -196,8 +196,8 @@ export class TerrainV2 {
     this.batch = new THREE.BatchedMesh(SLOT_COUNT, SLOT_COUNT * CHUNK_VERTS, SLOT_COUNT * CHUNK_INDICES, this.material)
     this.batch.name = 'terrain-v2'
     // The batch spans the whole 8 km world, so culling it as one object is
-    // meaningless. Per-instance culling is what does the work and it is on by
-    // default.
+    // meaningless. Per-instance culling and sorting are three's defaults here;
+    // the world turns both off at boot in favour of cullDeg (see main.js).
     this.batch.frustumCulled = false
     this.batch.sortObjects = true
     scene.add(this.batch)
@@ -212,6 +212,9 @@ export class TerrainV2 {
     // Per-face stipple frame (tiles/m, offset u, offset v, plane); see
     // chunk-mesh-v2 STIPPLE FRAME.
     this._scratch.setAttribute('stipple', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 4), 4))
+    // Per-vertex forest keep-probability, the far ground's canopy tint; see
+    // chunk-mesh-v2 and terrain-material's forest tint.
+    this._scratch.setAttribute('forest', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS), 1))
     this._scratch.setIndex(new THREE.BufferAttribute(new Uint16Array(CHUNK_INDICES), 1))
     this._scratch.boundingSphere = new THREE.Sphere()
 
@@ -744,6 +747,10 @@ export class TerrainV2 {
       const { depth, ix, iz } = unpackKey(msg.key)
       throw new Error(`v2 chunk ${depth}/${ix}/${iz} stipple has ${msg.stipple.length} floats, slots hold ${CHUNK_VERTS * 4}`)
     }
+    if (msg.forest.length !== CHUNK_VERTS) {
+      const { depth, ix, iz } = unpackKey(msg.key)
+      throw new Error(`v2 chunk ${depth}/${ix}/${iz} forest has ${msg.forest.length} floats, slots hold ${CHUNK_VERTS}`)
+    }
 
     // An entry that already holds a slot is an invalidated chunk that kept its old
     // geometry on screen (_invalidateRect); it is REPLACED IN PLACE, which is the
@@ -766,6 +773,7 @@ export class TerrainV2 {
     g.attributes.normal.array.set(msg.normals)
     g.attributes.color.array.set(msg.colors)
     g.attributes.stipple.array.set(msg.stipple)
+    g.attributes.forest.array.set(msg.forest)
     g.index.array.set(msg.indices)
 
     // Keep the interior heights. setGeometryAt copies the positions into the

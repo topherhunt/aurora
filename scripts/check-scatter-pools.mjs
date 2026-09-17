@@ -126,18 +126,16 @@ const storm = (make, hop, every, steps = 400) => {
     }
     for (const b of subBeds(bed)) {
       peak = Math.max(peak, (b.maxInstances - b.freeCount) / b.maxInstances)
-      // Every id handed out is either standing in a tile, held as the
-      // duplicate of an LOD cross-dissolve in flight, or (trees) dissolving out
-      // of a tile that changed mode. A path that drops a tile without releasing
-      // it leaks ids past all three, and empties the pool over a long session
-      // to throw exactly the same way a stale level does.
+      // Every id handed out is either standing in a tile or held as the
+      // duplicate of an LOD cross-dissolve in flight. A path that drops a tile
+      // without releasing it leaks ids past both, and empties the pool over a
+      // long session to throw exactly the same way a stale level does.
       let n = 0
       for (const tile of b.tiles.values()) n += tile.n
       let dups = 0
       for (const f of b.fades) if (f.dup !== undefined) dups++
-      const retiring = b.retiring ? b.retiring.length : 0
-      if (!leaked && (n !== b.placed || n + dups + retiring !== b.maxInstances - b.freeCount)) {
-        leaked = `${bedName(b)} sum(tile.n)=${n} placed=${b.placed} fade dups=${dups} retiring=${retiring} used=${b.maxInstances - b.freeCount}`
+      if (!leaked && (n !== b.placed || n + dups !== b.maxInstances - b.freeCount)) {
+        leaked = `${bedName(b)} sum(tile.n)=${n} placed=${b.placed} fade dups=${dups} used=${b.maxInstances - b.freeCount}`
       }
     }
   }

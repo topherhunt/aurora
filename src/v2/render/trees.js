@@ -2,8 +2,6 @@ import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
-import { buildTreeClumpTier, bakeTreeClumps, treeClumpLayers } from '../../props/tree-clump.js'
-import { CLUMP_VARIANTS } from '../../textures.js'
 import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
   createPropMaterial, setSnowLine, setLeafSnowVary,
@@ -12,7 +10,7 @@ import {
 import { RimFade, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { PropArena } from './prop-arena.js'
-import { smoothstep } from '../../sim/mathx.js'
+import { PLACEMENT, TREELINE, BIOME, forestKeepAt, forestScaleAt } from '../layers/forest.js'
 
 // ---------------------------------------------------------------------------
 // The forest on the /v2 route: a tiled, camera-following scatter whose density
@@ -116,17 +114,18 @@ import { smoothstep } from '../../sim/mathx.js'
 // elevation floor or the slope limit would appear and vanish as chunks re-split
 // under it, and the walk-away-and-come-back property would go.
 //
-// THE LADDER. Four tiers: three of ONE tree each, then one of six. Measured on
-// a flat headless world at standing eye height (check-trees's ladder row):
+// THE LADDER. Three tiers, and the far one carries almost every instance.
+// Measured on a flat headless world at standing eye height,
+// 25,997 trees placed inside 1500 m of which the rim dissolves 6,247 away:
 //
-//   tier 0   LOD0 mesh      < 8 m           8 instances     2.8k
-//   tier 1   LOD1 mesh      8 - 24 m       77              15.5k
-//   tier 2   billboard      to 178 m     5,351              5.4k
-//   tier 3   clump card     to 1500 m   17,112             34.2k
+//   tier 0   LOD0 mesh    < 8 m             8 instances     4.4k
+//   tier 1   LOD1 mesh    8 - 24 m         77              13.7k
+//   tier 2   billboard    to 1500 m     19,665              19.7k
 //
-// The mesh tiers cost 350 and 201 triangles a tree averaged over the bank, so
-// what a spot pays is which species stand near it -- which is why those two
-// rows wander by a third and the card rows do not.
+// 37.8k against §5's 350k ceiling with terrain taking 45k. The mesh tiers cost
+// 507 and 179 triangles a tree averaged over the bank, so what a spot pays is
+// which species stand near it -- which is why those two rows wander by a third
+// and the card row does not.
 //
 // TRIANGLES WERE NEVER THE PROBLEM ON THE HEADSET, FILL WAS, and that is what
 // sets the rung count. The A/B on the device: raising the thinning exponent to 3
@@ -174,45 +173,33 @@ import { smoothstep } from '../../sim/mathx.js'
 // be spun is authored with a vertical normal and it masks on layer AND normal.
 // See tree-bank.js.
 //
-// PAST CLUMP_FROM A TILE IS CLUMPS, NOT TREES. A 1/d thinning of single cards
-// is what keeps a far field affordable, but it reads as a thinning wood, where
-// a real hillside stacks trees in depth per pixel until it is solid. So single
-// trees are never thinned: inside the clump edge every tree stands, and a tile
-// whose level reaches `clumpQ` stops standing its trees and stands
-// CLUMPS_PER_TILE clump cards instead -- each a photograph of six trees of its
-// species (props/tree-clump.js), one per quarter of the tile -- at full
-// density out to CLUMP_FULL and thinned as (CLUMP_FULL / d) beyond, on the
-// same quantised ladder and through the same rim. The 1/d law lives on in the
-// clumps alone, each one six trees deep. The two variants of a species share
-// ONE mesh: the arena's per-instance layer shift picks the picture, and the
-// billboard's yaw-keyed mirror doubles it to four.
-//
-// THE MODE SWAP IS A CROSS-DISSOLVE, never a pop. `_growTile` sees the tile's
-// mode change from the job's level, retires every standing tree through the
-// rim (OUT, off the frame's prop clock) into `retiring`, and grows the clumps
-// FRESH_FADE so the same update's sweep stamps them IN off the same clock --
-// complementary dither thresholds, both halves on screen for a quarter
-// second. The thicken/thin dead band around `clumpQ` is the swap's
-// hysteresis, and the near set never admits a clump tile: `_ladder` asserts
-// the clump boundary lies past the widest mesh band.
+// THE FAR GROUND CARRIES THE WOOD, NOT A CLUMP TIER. Clump cards -- six trees
+// photographed per card past the singles ring -- were built (props/tree-clump.js
+// still bakes them for the probe page) and taken out: a 28 m card of trees is
+// mostly alpha, so the far ring cost more fill than the singles it replaced,
+// and grouping trees into stands broke the scatter the eye was reading. What
+// makes the horizon read as forest instead is the terrain itself: every vertex
+// carries the same keep-probability this file rolls against (layers/forest.js)
+// and the plain terrain material tints it the canopy's colour from 100 m to
+// 250 m out (terrain-material.js). The thinned cards ride on green ground.
 //
 // ---------------------------------------------------------------------------
-// THE ARENA: SIXTEEN InstancedMeshes, four tiers by four species, and NOT a
+// THE ARENA: TWELVE InstancedMeshes, three tiers by four species, and NOT a
 // BatchedMesh -- which on a Quest 2 ran the same instances at 5 fps against
 // 50-60. DESIGN.md §5 carries that measurement and why it holds; everything
 // below is downstream of it.
 //
-// SIXTEEN DRAW CALLS -- THIRTY-TWO IN THE HEADSET, because three.js renders XR
+// TWELVE DRAW CALLS -- TWENTY-FOUR IN THE HEADSET, because three.js renders XR
 // by looping `camera.cameras` and calling renderScene once per eye, so every
 // count `info.render` reports is doubled. Against §5's rule of one per prop
 // layer, and worth it because the alternative is the layer being unshippable.
-// All 16 share ONE MATERIAL and one program: tier and species are which mesh an
+// All 12 share ONE MATERIAL and one program: tier and species are which mesh an
 // instance sits in, not a uniform, so nothing is rebound between calls but a
 // vertex buffer. A mesh holding zero instances costs no call at all --
 // WebGLBufferRenderer.renderInstances returns before the draw when `primcount`
 // is 0 -- which is what makes an emptied tier really free.
 //
-// IT IS 16 AND NOT 68, which is what the bank collapse next door bought. The old
+// IT IS 12 AND NOT 64, which is what the bank collapse next door bought. The old
 // bank was species x a four-rung SIZE ladder, and all 64 combinations would have
 // needed a mesh -- 64 thin draws, most holding a handful of instances.
 // tree-bank.js ships one variant per species and the size lives on the instance
@@ -248,14 +235,15 @@ import { smoothstep } from '../../sim/mathx.js'
 // density; see the header for how it decays past FULL_RADIUS.
 const DENSITY = 0.05
 
-// Metres. Inside this every tree stands, and the level ladder begins here:
-// level q starts at FULL_RADIUS * 2^(q / QUANT). Single trees are never
-// thinned -- level 0 is every tree, and the first level past it is clumps
-// (CLUMP_FROM), so a wood does not go sparse at 50 m and fill in again at
-// 200 m. Card fill goes as the integral of 1/d^2, so the near end of this
-// disc is what it costs: 150 m is where a 9 m pine is ~6 px tall on the
-// headset, the last distance a gap between trees can still be seen.
-const FULL_RADIUS = 150
+// Metres. Inside this every tree stands. Past it the density is scaled by
+// FULL_RADIUS / d. It wants to be past the last mesh band, so the forest you
+// walk through is uniform and the thinning only starts where a tree is already
+// a one-triangle card -- but only just past it, because the card ring's cost is
+// dominated by its NEAR end. Card fill goes as the integral of 1/d^2, so
+// starting the taper at the first distance where it cannot be seen is worth more
+// than any amount of work at the horizon. Twice the 24 m band is the margin the
+// swap wants; further out was buying uniformity nobody could see.
+const FULL_RADIUS = 50
 
 // Metres. LOD0 inside 8, LOD1 to 24, billboard out to the draw radius.
 //
@@ -393,42 +381,6 @@ const TRUNK_PICK_SLACK = 1.5
 // inside the remaining margin.
 const TRUNK_REACH = 2
 
-// Placement rules, lifted from v1's `tree` kind so the two routes agree about
-// where a tree can stand. The treeline is not here: it is a gradient, below.
-const PLACEMENT = {
-  minElev: 25,
-  maxSlopeDeg: 32,
-  sink: 0.15, // metres of trunk buried, so a tree on a slope does not float
-}
-
-// The treeline, as a gradient rather than a contour. All metres are ABOVE the
-// local snow line -- a real treeline sits well above where the snow starts.
-// Below the snow line nothing here applies. Over the first `fade` metres above
-// it a candidate's keep-probability eases from 1 down to `floor` and its height
-// multiplier from 1 down to `stunt`, so the wood thins into scattered, stunted
-// trees rather than stopping at a line; from `fade` to `top` the floor itself
-// eases to nothing, and past `top` a summit is bare. 70 m is about where the
-// old hard cut stood (67 m), so the forest reaches the same height it did and
-// then keeps going, thinner.
-const TREELINE = {
-  fade: 70,
-  floor: 0.1,
-  stunt: 0.5,
-  top: 220,
-}
-
-// How the biome field (layers/biome.js) reads onto the forest. `ramp` is the
-// band of cover over which a place goes from open meadow to full forest; below
-// it the keep-probability is `meadowKeep` (a lone tree in a clearing, not
-// none) and the height multiplier is scale[0], above it the wood is untouched at
-// full density and scale[1]. The field is flat over 0..1, so 15% of the ground
-// is meadow, 15% is towering, and the rest is the gradient between.
-const BIOME = {
-  ramp: [0.15, 0.85],
-  meadowKeep: 0.04,
-  scale: [0.65, 1.2],
-}
-
 // Metres of daylight a trunk keeps from a piece of dead wood, surface to
 // surface: the trunk's radius and the piece's are both added before the test
 // (Deadwood.occupiesAt). One metre and not a crown's reach, because deadfall
@@ -482,38 +434,6 @@ const STILL_M = RIM_SLACK_MIN
 // billboard is a photograph of the tree at its default height and only stays
 // honest if it is stretched evenly.
 const SCALE = [0.5, 1.5]
-
-// THE CLUMP TIER (see the header). A tile whose nearest point is past
-// CLUMP_FROM stands clump cards instead of trees; `clumpQ` is the first level
-// that begins at or past it, never level 0, so with CLUMP_FROM at FULL_RADIUS
-// the swap sits on the first rung, FULL_RADIUS * 2^(1 / QUANT) = 178 m, and
-// no single tree is ever thinned: the tile goes from every tree to four
-// six-tree cards in one dissolve. It has to sit past the widest mesh band
-// plus the near margin, and `_ladder` throws if it does not.
-const CLUMP_FROM = FULL_RADIUS
-// Clumps stand at full density out to here and thin as (CLUMP_FULL / d)
-// beyond, so the far hillside reads solid to 400 m and a clump at the 1500 m
-// rim is one of four still standing on its tile.
-const CLUMP_FULL = 400
-// One clump per cell of a CLUMP_GRID x CLUMP_GRID split of the tile, jittered
-// over the middle half of its cell so two never stand on each other and a
-// clump never straddles the tile line. Four ~28 m cards across a 25 m tile is
-// the overlap in depth the tier exists for: each card is six trees with sky
-// between them, and the sky is what the card behind fills.
-const CLUMP_GRID = 2
-const CLUMPS_PER_TILE = CLUMP_GRID * CLUMP_GRID
-// Per-instance multiplier on the card's baked size. Narrower than SCALE: the
-// six trees inside already span 0.6 to 1.3, so this is the stand's size, not a
-// tree's.
-const CLUMP_SCALE = [0.8, 1.2]
-// Metres of the card's ground line buried at scale 1. The card is ~28 m wide on
-// terrain that is not flat across it, and the bake's lifted trunks give it a
-// ragged foot that hides a metre of that either way.
-const CLUMP_SINK = 1.0
-// The fraction of the eye's elevation a clump card leans away from it
-// (material.js billboardTilt). 1 lays a hillside flat under a flier; half
-// keeps the lean a hint and the ground line a ground line.
-const CLUMP_TILT = 0.5
 
 // How much of the snow slider one CANOPY may take, rolled per tree. See
 // syncSnowLine for why it is neither 0 nor 1 at either end.
@@ -627,22 +547,16 @@ export class Trees {
     this.lodBands = LOD_BANDS.slice()
 
     // Candidates per tile at FULL density. Far tiles walk the same candidate
-    // list and cut most of it on rank before paying for a field sample. A clump
-    // tile reuses the same id arrays, so it must fit inside them.
+    // list and cut most of it on rank before paying for a field sample.
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
-    if (this.perTile < CLUMPS_PER_TILE) {
-      throw new Error(`Trees: ${this.perTile} candidates a tile cannot hold ${CLUMPS_PER_TILE} clumps`)
-    }
-    // The diagnostic switches behind `setCardsOnly` (read by `_near`) and
-    // `setClumpsVisible`.
+    // The diagnostic switch behind `setCardsOnly`, read by `_near`.
     this.cardsOnly = false
-    this.clumpsHidden = false
 
     this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
     this._ladder(radius, falloff)
 
     // Sized ONCE, from the ladder this was booted on. `setScatter` may only move
-    // to a ladder that fits inside this: the arena's sixteen meshes are
+    // to a ladder that fits inside this: the arena's twelve meshes are
     // allocated against it and cannot grow afterwards.
     this.maxInstances = this._poolBound()
 
@@ -650,32 +564,16 @@ export class Trees {
     const bank = buildTreeBank({ billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
-    // The arena's ladder is the bank's three tiers and then the clump tier: one
-    // spun quad per species whose picture is one of CLUMP_VARIANTS layers,
-    // chosen per instance by the arena's layer shift.
-    const clumps = buildTreeClumpTier(bank)
-    const arenaTiers = [...bank.tiers, { geometries: clumps.geometries, triangles: clumps.triangles }]
-    this.tierCount = arenaTiers.length
-    this.cardTier = bank.tiers.length - 1
-    this.clumpTier = this.tierCount - 1
+    this.tierCount = bank.tiers.length
+    this.cardTier = this.tierCount - 1
 
     // The billboard list is what ties the material to the impostor layers. Every
     // other geometry in this arena wears a bark or leaf layer and is left alone,
-    // so all sixteen meshes share ONE material and therefore one program --
+    // so all twelve meshes share ONE material and therefore one program --
     // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
     // whole reason this is a shader trick rather than a second material.
-    const clumpLayers = treeClumpLayers()
     this.material = createPropMaterial(textureArray, {
-      billboardLayers: [...treeImpostorLayers(), ...clumpLayers],
-      // The clump variant rides on the instance, not the mesh (prop-arena.js
-      // setLayerShiftAt); every single tree writes 0.
-      layerShift: true,
-      // Clump cards also lean away from the eye by half its elevation, so a
-      // far hillside seen from a summit or from the air is a wood lying over
-      // its own ground and not a set of horizontal seams with the ground
-      // showing between. Singles stay cylindrical: a leaning trunk at 100 m
-      // is a leaning trunk.
-      billboardTilt: { amount: CLUMP_TILT, layers: [Math.min(...clumpLayers), Math.max(...clumpLayers)] },
+      billboardLayers: treeImpostorLayers(),
       wind: 'tree',
       // The bank bakes each tree's sky occlusion into `color` (the shade under
       // the crown, and the crown's own interior); three composes it under the
@@ -697,8 +595,8 @@ export class Trees {
     this.tierIds = []
     this.tierTris = []
     for (let t = 0; t < this.tierCount; t++) {
-      this.tierIds.push(arenaTiers[t].geometries.map((_, v) => t * this.variantCount + v))
-      this.tierTris.push(arenaTiers[t].triangles.slice())
+      this.tierIds.push(bank.tiers[t].geometries.map((_, v) => t * this.variantCount + v))
+      this.tierTris.push(bank.tiers[t].triangles.slice())
     }
 
     // How many instances each tier is DRAWING, refilled by `update`. The one
@@ -708,11 +606,10 @@ export class Trees {
 
     this.batch = new PropArena(
       this.maxInstances,
-      arenaTiers,
+      bank.tiers,
       this._tierCaps(),
       this.material,
-      'v2-trees',
-      { layerShift: true }
+      'v2-trees'
     )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
@@ -839,7 +736,7 @@ export class Trees {
     this.bandSq = Float32Array.from(this.lodBands, (b) => b * b)
     this.bandSqOut = Float32Array.from(this.lodBands, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
 
-    // key -> tile; the shape is the literal in _growTile.
+    // key -> tile; the shape is the literal at the foot of _growTile.
     this.tiles = new Map()
     this.queue = []
     this.camTileX = null
@@ -863,23 +760,12 @@ export class Trees {
     // Set by anything that moves the near boundary under every tile at once, so
     // the next update walks all of them rather than waiting out the phases.
     this.walkAll = true
-    // Cards and clumps drawn by the far tiles, kept as running totals because
-    // the far tiles are not walked every frame; `tile.counted` is each one's
-    // share of whichever its mode is.
+    // Cards drawn by the far tiles, kept as a running total because the far
+    // tiles are not walked every frame; `tile.counted` is each one's share.
     this.farCards = 0
-    this.farClumps = 0
-    // Trees a mode swap has taken off their tile and handed to the rim to
-    // dissolve out; they belong to no tile until `_sweepRetiring` finds them
-    // hidden and frees them. Their triangles are still drawn meanwhile.
-    this.retiring = []
-    this.retiringTris = 0
-    // Times `_take` found the pool empty and cut the retiring trees short to
-    // make room: a swap that popped. The walk/flight gate holds this at zero.
-    this.swapCuts = 0
 
     this._m = new THREE.Matrix4()
     this._scatter = { h: 0, tan: 0 }
-    this._maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
     this.regrounds = 0
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
@@ -935,27 +821,6 @@ export class Trees {
     for (let q = 0; q <= this.maxQ + 1; q++) {
       this.loSq[q] = (this.fullRadius * Math.pow(2, q / QUANT)) ** 2
     }
-
-    // The clump tier's ladder: the level at which a tile turns to clumps (the
-    // first that begins at or past CLUMP_FROM, and never level 0), where that
-    // level begins in metres, and the clump keep-fraction per level,
-    // `(CLUMP_FULL / d)^falloff` sampled at the level's own distance and
-    // capped at 1. A radius inside the clump edge has no clump level at all.
-    this.clumpQ = Math.max(1, Math.ceil(Math.log2(CLUMP_FROM / this.fullRadius) * QUANT))
-    if (this.clumpQ > this.maxQ) this.clumpQ = this.maxQ + 1
-    this.clumpFrom = this.clumpQ <= this.maxQ ? Math.sqrt(this.loSq[this.clumpQ]) : radius
-    this.clumpUAt = new Float32Array(this.maxQ + 1)
-    for (let q = 0; q <= this.maxQ; q++) {
-      this.clumpUAt[q] = Math.min(1, Math.pow(CLUMP_FULL / (this.fullRadius * Math.pow(2, q / QUANT)), falloff))
-    }
-    // A clump tile must never reach the near set, whose re-tier walk would hand
-    // its instances a mesh tier. The set is bounded by the widest mesh band
-    // plus the margin, measured to the tile CENTRE; the clump level begins at
-    // a tile's NEAREST point, which is nearer still.
-    const nearMax = (MESH_BAND_MAX + NEAR_MARGIN) ** 2
-    if (this.clumpQ <= this.maxQ && this.loSq[this.clumpQ] <= nearMax) {
-      throw new Error(`Trees: CLUMP_FROM ${CLUMP_FROM} m starts clumps inside the ${Math.sqrt(nearMax).toFixed(0)} m near set`)
-    }
   }
 
   /**
@@ -967,12 +832,6 @@ export class Trees {
     const d = this.falloff === 1
       ? this.fullRadius / u
       : this.fullRadius * Math.pow(u, -1 / this.falloff)
-    return d < this.radius ? d : this.radius
-  }
-
-  /** `_goneFor` on the clump ladder, whose full-density radius is CLUMP_FULL. */
-  _clumpGoneFor(u) {
-    const d = CLUMP_FULL * Math.pow(u, -1 / this.falloff)
     return d < this.radius ? d : this.radius
   }
 
@@ -1002,13 +861,11 @@ export class Trees {
       )
     }
     for (const tile of this.tiles.values()) this._release(tile)
-    this._flushRetiring()
     this.tiles.clear()
     for (const bucket of this.buckets) bucket.length = 0
     this.nearList.length = 0
     this.due.length = 0
     this.farCards = 0
-    this.farClumps = 0
     this.camTileX = null
     this.camTileZ = null
     this.place(camX, camZ)
@@ -1121,23 +978,6 @@ export class Trees {
   }
 
   /**
-   * Hide the clump tier. The menu's `tree clumps` row.
-   *
-   * A DIAGNOSTIC that prices the far forest on its own: the clump meshes stop
-   * being submitted and nothing else moves -- the tiles keep their mode, the
-   * singles ring stays exactly where it is, and the HUD's clump count keeps
-   * reporting what the tier would draw. Off, the world past the clump edge is
-   * bare ground, which is the picture the clumps replaced. The cost the row
-   * isolates is fill: a clump card is a 28 m quad and the tier holds ~17k of
-   * them, so from a standing eye the ring is about a third of the layer's
-   * projected card area, most of it past 400 m.
-   */
-  setClumpsVisible(on) {
-    this.clumpsHidden = !on
-    for (const g of this.tierIds[this.clumpTier]) this.batch.meshes[g].visible = !!on
-  }
-
-  /**
    * How many instances the pool has to hold.
    *
    * Summed over the ACTUAL tile grid rather than from the continuous integral,
@@ -1146,41 +986,22 @@ export class Trees {
    * the real count sits above pi*F^2*D + 2*pi*F*D*(R-F). The camera also moves
    * within its own tile, which shifts which tiles are near, hence the margin.
    * Running dry throws (see _growTile), so this bound has to be honest.
-   *
-   * A tile holds ONE population: its trees inside the clump boundary, its
-   * clumps past it. The thin dead band lets a tile stay single one level past
-   * `clumpQ`, so both laws are summed there and the larger taken. A swap holds
-   * both for a quarter second, paid out of the headroom -- at a 60 m/s flight
-   * that is ~30 tiles' worth, and `_growTile` flushes the retiring trees
-   * before it would run dry rather than throwing on a dissolve.
    */
   _poolBound() {
-    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35, (d2) => {
-      const q = this._levelFor(d2)
-      const single = q <= this.clumpQ + 1 ? this.perTile * this.uAt[q] : 0
-      const clump = q >= this.clumpQ ? CLUMPS_PER_TILE * this.clumpUAt[q] : 0
-      return Math.max(single, clump)
-    })
-  }
-
-  /** The clump tier's share of `_poolBound`: every tile past the boundary at its level. */
-  _clumpBound() {
-    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35, (d2) => {
-      const q = this._levelFor(d2)
-      return q >= this.clumpQ ? CLUMPS_PER_TILE * this.clumpUAt[q] : 0
-    })
+    return poolBound(TILE, this.tileSpan, this.evictSq, 1.35,
+      (d2) => this.perTile * this.uAt[this._levelFor(d2)])
   }
 
   /**
-   * How many instances ONE mesh of each tier has to hold. Sixteen meshes, so
-   * over-sizing costs sixteen times what it looks like it costs.
+   * How many instances ONE mesh of each tier has to hold. Twelve meshes, so
+   * over-sizing costs twelve times what it looks like it costs.
    *
    * THE CARD TIER IS THE POOL, split four ways plus slack: every resident tree
    * that is not in a mesh band is a billboard, so in the limit -- the camera in
    * open ground with no near tiles -- one mesh holds a quarter of the pool.
    * Species is drawn uniformly per tree, so the split is binomial with a
    * standard deviation of ~90 at this pool size and 1024 of slack is over ten
-   * sigma. The clump tier is its own bound split the same way.
+   * sigma.
    *
    * THE FINER TIERS ARE SIZED FROM THEIR OWN DISC at the furthest out
    * `setMeshBand` may push them, at FULL density, pushed out by the hysteresis
@@ -1196,10 +1017,6 @@ export class Trees {
     for (let t = 0; t < this.tierCount; t++) {
       if (t === this.cardTier) {
         caps.push(Math.ceil(this.maxInstances / this.variantCount) + 1024)
-        continue
-      }
-      if (t === this.clumpTier) {
-        caps.push(Math.ceil(this._clumpBound() / this.variantCount) + 1024)
         continue
       }
       // Only the LAST mesh band moves, so only it is sized for the ceiling.
@@ -1219,16 +1036,12 @@ export class Trees {
   /**
    * Grow every tile inside the radius at once, ignoring the frame budget.
    *
-   * For boot, where the player is standing in the world the moment it appears
-   * and a forest that oozes in over three seconds reads as broken, and for the
-   * ground moving under the forest. Every other tile arrives through the queue
-   * in `update`. Trees mid-dissolve are cut first: on moved ground they stand
-   * at the old height, and the pool was never sized to carry a jump's worth of
-   * them beside the new population.
+   * For BOOT only: the player is standing in the world the moment it appears,
+   * and a forest that oozes in over three seconds reads as broken. Every later
+   * tile arrives through the queue in `update`.
    */
   place(cx, cz) {
     const t0 = performance.now()
-    this._flushRetiring()
     this._reseat(cx, cz)
     while (this.queue.length) this._growTile(this.queue.pop())
     this.placeMs = performance.now() - t0
@@ -1242,6 +1055,13 @@ export class Trees {
    */
   update(camX, camY, camZ) {
     const tStart = performance.now()
+    this._reseat(camX, camZ)
+
+    const t0 = performance.now()
+    while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
+      this._growTile(this.queue.pop())
+    }
+    this.lastBuildMs = performance.now() - t0
 
     // Retire finished cross-dissolves BEFORE the tile loop starts new ones, so a
     // tree that swaps a band on the same frame its previous fade expires gets
@@ -1251,25 +1071,12 @@ export class Trees {
 
     // Retires expired rim transitions and re-measures the camera speed the
     // sweep's slack is sized from. Before the tile loop, which is where the
-    // per-tile sweeps that read that slack run -- and before any tile can
-    // change mode, because a rim fade the retire pass sees on the frame it was
-    // stamped reads as a clock wrap (the stamp is float32, the clock is not)
-    // and is cut instead of run.
+    // per-tile sweeps that read that slack run.
     this.rim.beginFrame(camX, camY, camZ)
-
-    this._reseat(camX, camZ)
-    const t0 = performance.now()
-    while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
-      this._growTile(this.queue.pop())
-    }
-    this.lastBuildMs = performance.now() - t0
 
     const cardTier = this.cardTier
     const tierN = this.tierN
     tierN.fill(0)
-    // After beginFrame, whose retire pass is what turns a retiring tree hidden,
-    // and after the grow loop, so this frame's swaps are in this frame's bill.
-    this._sweepRetiring(now)
     let tris = 0
     const ground = this.ground
     const gver = ground ? ground.groundVersion : 0
@@ -1361,14 +1168,9 @@ export class Trees {
       }
     }
     tierN[cardTier] += this.farCards
-    tierN[this.clumpTier] += this.farClumps
-    // The duplicates and the retiring trees are drawn too, and are counted
-    // after the loop rather than inside it so this frame's own swaps are in
-    // this frame's number.
-    this.tris = tris
-      + this.farCards * this.tierTris[cardTier][0]
-      + this.farClumps * this.tierTris[this.clumpTier][0]
-      + this.fadeTris + this.retiringTris
+    // The duplicates are drawn too, and are counted after the loop rather than
+    // inside it so this frame's own swaps are in this frame's number.
+    this.tris = tris + this.farCards * this.tierTris[cardTier][0] + this.fadeTris
     this.nearTiles = nearList.length
     // The whole of this call, smoothed over ~20 frames: the layer's main-thread
     // bill, which the headset cannot otherwise separate from its draw cost.
@@ -1426,20 +1228,16 @@ export class Trees {
     // leave out -- they are submitted to nothing.
     const gone = this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
-    // A clump tile is by construction past the near set (_ladder); the guard
-    // covers the frames between a teleport landing beside one and the thicken
-    // job that turns it back into trees.
     const dx = (tile.tx + 0.5) * TILE - camX
     const dz = (tile.tz + 0.5) * TILE - camZ
-    if (!tile.clumpy && dx * dx + dz * dz < this.nearSq) {
+    if (dx * dx + dz * dz < this.nearSq) {
       if (!tile.near) this._enterNear(tile)
       return
     }
     if (tile.near) this._leaveNear(tile)
-    const shown = tile.n - gone
-    if (tile.clumpy) this.farClumps += shown - tile.counted
-    else this.farCards += shown - tile.counted
-    tile.counted = shown
+    const cards = tile.n - gone
+    this.farCards += cards - tile.counted
+    tile.counted = cards
   }
 
   /** Into the per-frame re-tier list; its cards leave the far total. */
@@ -1494,8 +1292,6 @@ export class Trees {
         list[tile.ni] = lastNear
         lastNear.ni = tile.ni
       }
-    } else if (tile.clumpy) {
-      this.farClumps -= tile.counted
     } else {
       this.farCards -= tile.counted
     }
@@ -1593,8 +1389,6 @@ export class Trees {
       const tz0 = tile.tz * TILE
       if (tx0 >= x1 || tx0 + TILE <= x0) continue
       if (tz0 >= z1 || tz0 + TILE <= z0) continue
-      // A clump tile has no trunks; its instances are stands of six.
-      if (tile.clumpy) continue
 
       // Per tile and not over the pool, because a freed id keeps its old
       // coordinates until something else takes it -- walking the pool would
@@ -1636,7 +1430,6 @@ export class Trees {
       const tz0 = tile.tz * TILE
       if (tx0 >= x1 || tx0 + TILE <= x0) continue
       if (tz0 >= z1 || tz0 + TILE <= z0) continue
-      if (tile.clumpy) continue
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         const x = this.instX[id]
@@ -1682,7 +1475,7 @@ export class Trees {
     for (let gx = gx0; gx <= gx1; gx++) {
       for (let gz = gz0; gz <= gz1; gz++) {
         const tile = this.tiles.get(gx * 0x10000 + gz)
-        if (!tile || tile.clumpy) continue
+        if (!tile) continue
         for (let k = 0; k < tile.n; k++) {
           const id = tile.ids[k]
           const dx = x - this.instX[id]
@@ -1738,14 +1531,6 @@ export class Trees {
   pickTrunkAt(id, out) {
     const v = this.variantAt[id]
     const scale = this.instScale[id]
-    // A clump is a picture of a stand 200 m off and has no trunk to point at:
-    // a volume of nothing, which the cylinder solve never enters.
-    if (this.tierAt[id] === this.clumpTier) {
-      out.radius = 0
-      out.base = 0
-      out.rise = 0
-      return out
-    }
     out.radius = this.unitTrunkRadius[v] * TRUNK_PICK_SLACK * scale
     out.base = 0
     out.rise = this.unitCrownBase[v] * scale
@@ -1754,7 +1539,6 @@ export class Trees {
 
   /** The crown half of `pickTrunkAt`: first branch to tip, at crown width. */
   pickCrownAt(id, out) {
-    if (this.tierAt[id] === this.clumpTier) return this.pickTrunkAt(id, out)
     const v = this.variantAt[id]
     const scale = this.instScale[id]
     const base = this.unitCrownBase[v]
@@ -1850,90 +1634,33 @@ export class Trees {
    */
   _growTile(job) {
     const { key, tx, tz, q } = job
-    let tile = this.tiles.get(key)
-    const clumpy = q >= this.clumpQ
-    const uNew = clumpy ? this.clumpUAt[q] : this.uAt[q]
-    // Only a mode swap dissolves its arrivals in: a fresh tile at the horizon
-    // enters hidden and the rim brings it in, a thickened one is filling a
-    // hole that wants filling now, and both are what `place` builds the world
-    // out of.
-    let fade = false
+    const tile = this.tiles.get(key)
+    const uNew = this.uAt[q]
 
     if (tile) {
       tile.queued = false
       if (tile.q === q) return
       this.regrows++
-      if (tile.clumpy !== clumpy) {
-        this._retireTile(tile)
-        tile.clumpy = clumpy
-        fade = true
-      } else if (uNew < tile.u) {
+      if (uNew < tile.u) {
         this._thin(tile, uNew)
         tile.q = q
         tile.u = uNew
         return
       }
-    } else {
-      const phase = tilePhase(tx, tz)
-      const bucket = this.buckets[phase]
-      tile = {
-        tx,
-        tz,
-        ids: new Int32Array(this.perTile),
-        rank: new Float32Array(this.perTile),
-        n: 0,
-        q,
-        u: 0,
-        clumpy,
-        near: false,
-        queued: false,
-        due: false,
-        phase,
-        bi: bucket.length,
-        ni: -1,
-        counted: 0,
-        // The terrain chunk covering this tile's CENTRE when its trees were last
-        // grounded, or null if none was resident, and the ground version it was
-        // read at. The walk re-asks only once the version has moved on and
-        // re-seats the tile if the answer differs; see _reground for why the
-        // centre is enough.
-        gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * TILE, (tz + 0.5) * TILE) : null,
-        gver: this.ground ? this.ground.groundVersion : 0,
-      }
-      this.tiles.set(key, tile)
-      bucket.push(tile)
     }
-
     // Candidates below uOld were already considered on an earlier pass -- either
     // they are standing or the terrain rejected them, and replaying the terrain
     // test would give the same answer for the same cost. Only the new band pays.
-    const uOld = tile.u
-    const n = clumpy
-      ? this._growClumps(tile, uOld, uNew, fade)
-      : this._growSingles(tile, uOld, uNew, fade)
-    this.placed += n - tile.n
-    tile.n = n
-    tile.q = q
-    tile.u = uNew
-    // Everything this tile just placed is hidden until the rim looks at it, so
-    // a tile that waited for its phase would be a hole in the forest for up to
-    // eight frames -- and a swap's arrivals must be stamped THIS frame, off the
-    // clock its departures were.
-    this._markDue(tile)
-  }
+    const uOld = tile ? tile.u : 0
 
-  /**
-   * Replay the tile's candidate stream over the rank band (uOld, uNew] and
-   * stand every tree that survives the terrain. Returns the tile's new count.
-   */
-  _growSingles(tile, uOld, uNew, fade) {
-    const { tx, tz, ids, rank } = tile
-    let n = tile.n
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     // A SECOND STREAM for the keep roll, one draw per candidate, so the first
     // stream is byte-for-byte what it always was and the wood stands exactly
     // where it did wherever the keep-probability is 1.
     const keepRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x5bd1e995))
+    const ids = tile ? tile.ids : new Int32Array(this.perTile)
+    const rank = tile ? tile.rank : new Float32Array(this.perTile)
+    let n = tile ? tile.n : 0
 
     for (let k = 0; k < this.perTile; k++) {
       // EVERY candidate draws the same randoms whether or not it survives, so a
@@ -1955,15 +1682,35 @@ export class Trees {
 
       if (u >= uNew || u < uOld) continue
 
-      scale = this._standAt(x, z, scale, keepRoll)
-      if (scale === 0) continue
+      this.samples++
+      // ONE field evaluation, at a fixed band limit, and it answers only
+      // "should a tree be here". Where the trunk MEETS THE GROUND is a
+      // different question with a different answer -- see _groundFor.
+      const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
+      const above = h - this.field.snowLineAt(x, z)
+      // The forest law (layers/forest.js) is shared with the terrain's vertex
+      // tint, so the ground is green exactly where the roll below can win.
+      // Water is this side's alone.
+      const keep = forestKeepAt(h, tan, above, this.biome, x, z)
+      if (keep === 0 || keepRoll >= keep) continue
+      if (this.water.isSubmerged(x, z, h)) continue
+      scale *= forestScaleAt(above, this.biome, x, z)
       // OFF THE DEAD WOOD, which is placed first (v2/main.js): a log is metres
       // long and a trunk through it reads as the scatter's mistake, so the
       // trunk gives way. Pure functions of position on both sides, so it is
       // answered here for ground the dead wood has not grown yet.
       if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) continue
+      // The pool is sized for every tile inside the eviction radius holding its
+      // full graded complement, so running dry means _poolBound is wrong or a
+      // tile was leaked -- either way it must be loud, because the quiet version
+      // is trees that stop appearing in one direction only.
+      if (this.freeCount === 0) {
+        throw new Error(
+          `Trees: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
+        )
+      }
 
-      const id = this._take()
+      const id = this.free[--this.freeCount]
       ids[n] = id
       rank[n] = u
       n++
@@ -1987,15 +1734,35 @@ export class Trees {
       this._q.setFromAxisAngle(this._up, yaw)
       this._s.set(scale, scale, scale)
       this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
-      this._tint(id, tintG, tintR)
+
+      // Per-instance tint, so a stand does not look cloned.
+      //
+      // WIDER AND SLIGHTLY DARKER than v1's 0.86..1.14, and both halves of that
+      // are about the far field rather than about the tree you are standing
+      // under. At LOD0 the range barely shows -- a tree is a thousand triangles
+      // of its own shading and a 6% tint is a rounding error on it. At 300 m a
+      // tree is FOUR PIXELS, tint is the only thing distinguishing it from its
+      // neighbour, and a range that reads as pleasant variety up close averages
+      // out to one flat wash at that size. 0.74..1.14 is 43% of the mean wide
+      // where 0.86..1.14 was 28%, which is enough that a hillside of cards has
+      // visible mottling instead of a single green.
+      //
+      // The 6% darker mean is a nudge, not the fix for "the billboards are too
+      // light" -- that was the flat unlit bake, and createImpostorBakeMaterial
+      // is where it got fixed. It has to be a nudge, because this channel is
+      // per INSTANCE and every tier of a tree reads the same one: there is no
+      // way to darken the card without darkening the trunk you can touch. If
+      // the far field still wants darkening after the lit bake, the honest knob
+      // is the bake rig, not this.
+      const g = 0.74 + tintG * 0.40
+      this._c.setRGB(clamp01(g * (0.88 + tintR * 0.22)), clamp01(g), clamp01(g * 0.96))
+      this.batch.setColorAt(id, this._c)
 
       // Born as a card. `update` promotes the near ones on the very next frame,
       // and being briefly a billboard at 8 m is invisible next to the
       // alternative, which is a frame where the tier is undefined.
       this.tierAt[id] = this.cardTier
       this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
-      // The id may last have been a clump wearing the other picture.
-      this.batch.setLayerShiftAt(id, 0)
 
       // The distance at which this particular tree stops existing -- see
       // _goneFor. The rim dissolves it over the last 15% of that distance, so
@@ -2003,216 +1770,48 @@ export class Trees {
       // after the geometry and the tint, because it also takes the tree's
       // VISIBILITY: a tree is placed hidden and the sweep below turns it on, so
       // there is one piece of code deciding what is drawn out there.
-      this.rim.place(id, this._goneFor(u), fade)
+      this.rim.place(id, this._goneFor(u))
     }
-    return n
-  }
 
-  /**
-   * `_growSingles` for a clump tile: CLUMPS_PER_TILE candidates off a third
-   * stream, one per grid cell, held to the same terrain, treeline and biome
-   * tests at the card's foot. No rock top and no dead wood -- a 28 m stand is
-   * not perched on a boulder or kept off a log.
-   */
-  _growClumps(tile, uOld, uNew, fade) {
-    const { tx, tz, ids, rank } = tile
-    let n = tile.n
-    const rand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x9e3779b9))
-    const keepRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x7f4a7c15))
-    const cell = TILE / CLUMP_GRID
-
-    for (let k = 0; k < CLUMPS_PER_TILE; k++) {
-      const x = tx * TILE + ((k % CLUMP_GRID) + 0.25 + rand() * 0.5) * cell
-      const z = tz * TILE + (((k / CLUMP_GRID) | 0) + 0.25 + rand() * 0.5) * cell
-      const variant = (rand() * this.variantCount) | 0
-      const shift = (rand() * CLUMP_VARIANTS) | 0
-      const yaw = rand() * Math.PI * 2
-      let scale = CLUMP_SCALE[0] + rand() * (CLUMP_SCALE[1] - CLUMP_SCALE[0])
-      const tintG = rand()
-      const tintR = rand()
-      const u = rand()
-      const keepRoll = keepRand()
-
-      if (u >= uNew || u < uOld) continue
-
-      scale = this._standAt(x, z, scale, keepRoll)
-      if (scale === 0) continue
-
-      const id = this._take()
-      ids[n] = id
-      rank[n] = u
-      n++
-      this.variantAt[id] = variant
-      this.instX[id] = x
-      this.instZ[id] = z
-      this.instScale[id] = scale
-      this.instYaw[id] = yaw
-      this.instLift[id] = -CLUMP_SINK * scale
-      this.instY[id] = this._groundFor(x, z) + this.instLift[id]
-
-      this._p.set(x, this.instY[id], z)
-      this._q.setFromAxisAngle(this._up, yaw)
-      this._s.set(scale, scale, scale)
-      this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
-      this._tint(id, tintG, tintR)
-
-      this.tierAt[id] = this.clumpTier
-      this.batch.setGeometryIdAt(id, this.tierIds[this.clumpTier][variant])
-      this.batch.setLayerShiftAt(id, shift)
-      this.rim.place(id, this._clumpGoneFor(u), fade)
-    }
-    return n
-  }
-
-  /**
-   * The terrain's answer for a candidate at (x, z): its height multiplier
-   * after the treeline and the biome have had their say, or 0 where nothing
-   * stands. ONE field evaluation, at a fixed band limit, and it answers only
-   * "should a tree be here". Where the trunk MEETS THE GROUND is a different
-   * question with a different answer -- see _groundFor.
-   */
-  _standAt(x, z, scale, keepRoll) {
-    this.samples++
-    const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
-    if (h < PLACEMENT.minElev) return 0
-    if (tan > this._maxSlopeTan) return 0
-    if (this.water.isSubmerged(x, z, h)) return 0
-    const above = h - this.field.snowLineAt(x, z)
-    if (above > TREELINE.top) return 0
-    // Both gradients fold into one probability and one height factor before
-    // the single roll, so a stunted tree in a high meadow is rarer than either
-    // alone and no smaller than the two say together. See TREELINE and BIOME.
-    const snowT = smoothstep(0, TREELINE.fade, above)
-    let keep = (1 + (TREELINE.floor - 1) * snowT) * (1 - smoothstep(TREELINE.fade, TREELINE.top, above))
-    scale *= 1 + (TREELINE.stunt - 1) * snowT
-    if (this.biome) {
-      const cover = smoothstep(BIOME.ramp[0], BIOME.ramp[1], this.biome.coverAt(x, z))
-      keep *= BIOME.meadowKeep + (1 - BIOME.meadowKeep) * cover
-      scale *= BIOME.scale[0] + (BIOME.scale[1] - BIOME.scale[0]) * cover
-    }
-    return keepRoll < keep ? scale : 0
-  }
-
-  /**
-   * An id off the pool. The pool is sized for every tile inside the eviction
-   * radius holding its full graded complement, so running dry means
-   * _poolBound is wrong or a tile was leaked -- either way it must be loud,
-   * because the quiet version is trees that stop appearing in one direction
-   * only. The one thing tried first is finishing the mode swaps in flight,
-   * which hold a second population for a quarter second on purpose.
-   */
-  _take() {
-    if (this.freeCount === 0 && this.retiring.length) {
-      this.swapCuts++
-      this._flushRetiring()
-    }
-    if (this.freeCount === 0) {
-      throw new Error(
-        `Trees: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
-      )
-    }
-    return this.free[--this.freeCount]
-  }
-
-  /**
-   * Per-instance tint, so a stand does not look cloned.
-   *
-   * WIDER AND SLIGHTLY DARKER than v1's 0.86..1.14, and both halves of that
-   * are about the far field rather than about the tree you are standing
-   * under. At LOD0 the range barely shows -- a tree is a thousand triangles
-   * of its own shading and a 6% tint is a rounding error on it. At 300 m a
-   * tree is FOUR PIXELS, tint is the only thing distinguishing it from its
-   * neighbour, and a range that reads as pleasant variety up close averages
-   * out to one flat wash at that size. 0.74..1.14 is 43% of the mean wide
-   * where 0.86..1.14 was 28%, which is enough that a hillside of cards has
-   * visible mottling instead of a single green.
-   *
-   * The 6% darker mean is a nudge, not the fix for "the billboards are too
-   * light" -- that was the flat unlit bake, and createImpostorBakeMaterial
-   * is where it got fixed. It has to be a nudge, because this channel is
-   * per INSTANCE and every tier of a tree reads the same one: there is no
-   * way to darken the card without darkening the trunk you can touch. If
-   * the far field still wants darkening after the lit bake, the honest knob
-   * is the bake rig, not this.
-   */
-  _tint(id, tintG, tintR) {
-    const g = 0.74 + tintG * 0.40
-    this._c.setRGB(clamp01(g * (0.88 + tintR * 0.22)), clamp01(g), clamp01(g * 0.96))
-    this.batch.setColorAt(id, this._c)
-  }
-
-  /**
-   * A tile is changing mode: every tree it stands leaves it for the rim to
-   * dissolve out, so the population that replaces them can be grown into the
-   * same tile and dissolve in against them. Trees the rim is not drawing go
-   * straight back to the pool. The tile is left empty, still resident, with
-   * its far count and its rim count both zero.
-   */
-  _retireTile(tile) {
-    // Out of the near set first, which puts any mesh tier back to a card and
-    // ends its cross-dissolve, so what dissolves out is the card.
-    if (tile.near) this._leaveNear(tile)
-    const now = getPropClock()
-    for (let k = 0; k < tile.n; k++) {
-      const id = tile.ids[k]
-      if (this.rim.isHidden(id)) {
-        this._free(id)
-        continue
+    this.placed += n - (tile ? tile.n : 0)
+    if (tile) {
+      tile.n = n
+      tile.q = q
+      tile.u = uNew
+      // Everything this tile just placed is hidden until the rim looks at it, so
+      // a thickened tile that waited for its phase would be a hole in the forest
+      // for up to eight frames.
+      this._markDue(tile)
+    } else {
+      const phase = tilePhase(tx, tz)
+      const bucket = this.buckets[phase]
+      const fresh = {
+        tx,
+        tz,
+        ids,
+        rank,
+        n,
+        q,
+        u: uNew,
+        near: false,
+        queued: false,
+        due: false,
+        phase,
+        bi: bucket.length,
+        ni: -1,
+        counted: 0,
+        // The terrain chunk covering this tile's CENTRE when its trees were last
+        // grounded, or null if none was resident, and the ground version it was
+        // read at. The walk re-asks only once the version has moved on and
+        // re-seats the tile if the answer differs; see _reground for why the
+        // centre is enough.
+        gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * TILE, (tz + 0.5) * TILE) : null,
+        gver: this.ground ? this.ground.groundVersion : 0,
       }
-      this.retiring.push(id)
-      this.retiringTris += this.tierTris[this.tierAt[id]][this.variantAt[id]]
-      this.rim.retire(id, now)
+      this.tiles.set(key, fresh)
+      bucket.push(fresh)
+      this._markDue(fresh)
     }
-    this.rim.releaseTile(tile)
-    if (tile.clumpy) this.farClumps -= tile.counted
-    else this.farCards -= tile.counted
-    tile.counted = 0
-    this.placed -= tile.n
-    tile.n = 0
-    tile.u = 0
-  }
-
-  /**
-   * Free every retiring tree the rim has finished hiding, ask it again for
-   * any it could not start on (one arriving through the rim at the moment of
-   * the swap finishes arriving first), and count what is still drawn. Once per
-   * frame, after the rim's own retire pass.
-   */
-  _sweepRetiring(now) {
-    const list = this.retiring
-    let tris = 0
-    let k = 0
-    while (k < list.length) {
-      const id = list[k]
-      if (this.rim.isHidden(id)) {
-        this._free(id)
-        list[k] = list[list.length - 1]
-        list.pop()
-        continue
-      }
-      this.rim.retire(id, now)
-      const tier = this.tierAt[id]
-      tris += this.tierTris[tier][this.variantAt[id]]
-      this.tierN[tier]++
-      k++
-    }
-    this.retiringTris = tris
-  }
-
-  /** Finish every retiring tree now: the dissolve becomes a cut. */
-  _flushRetiring() {
-    for (const id of this.retiring) this._free(id)
-    this.retiring.length = 0
-    this.retiringTris = 0
-  }
-
-  /** An id back to the pool: its ghost ended, its rim state cleared, hidden. */
-  _free(id) {
-    if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
-    this.rim.drop(id)
-    this.batch.setVisibleAt(id, false)
-    this.tierAt[id] = -1
-    this.free[this.freeCount++] = id
   }
 
   /**
@@ -2265,6 +1864,7 @@ export class Trees {
     }
   }
 
+  /** Cut every tree in the tile whose rank has fallen above the keep-fraction. */
   /**
    * Start a cross-dissolve: instance `i` has just taken a new tier, so a
    * duplicate takes the tier it left and the two dither past each other on
@@ -2311,7 +1911,6 @@ export class Trees {
     // below is safe to stamp after it.
     this.batch.getColorAt(i, this._c)
     this.batch.setColorAt(dup, this._c)
-    this.batch.setLayerShiftAt(dup, this.batch.layer[i])
     this.batch.setGeometryIdAt(dup, geo)
     this.batch.setVisibleAt(dup, true)
     setPropFadeTimerAt(this.batch, dup, now, false)
@@ -2356,7 +1955,6 @@ export class Trees {
     }
   }
 
-  /** Cut every tree in the tile whose rank has fallen above the keep-fraction. */
   _thin(tile, uNew) {
     let w = 0
     for (let k = 0; k < tile.n; k++) {
@@ -2367,7 +1965,12 @@ export class Trees {
         w++
         continue
       }
-      this._free(id)
+      // A tree thinned out mid-fade would strand its ghost visible forever.
+      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+      this.rim.drop(id)
+      this.batch.setVisibleAt(id, false)
+      this.tierAt[id] = -1
+      this.free[this.freeCount++] = id
     }
     this.placed -= tile.n - w
     tile.n = w
@@ -2377,7 +1980,6 @@ export class Trees {
 
   /** Put a whole tile back to the card tier in one pass. */
   _demote(tile, cardTier) {
-    if (tile.clumpy) throw new Error(`Trees: clump tile ${tile.tx},${tile.tz} reached the near set`)
     for (let k = 0; k < tile.n; k++) {
       const i = tile.ids[k]
       if (this.tierAt[i] === cardTier) continue
@@ -2392,23 +1994,29 @@ export class Trees {
 
   /** Hide a tile's instances and return their ids to the pool. */
   _release(tile) {
-    for (let k = 0; k < tile.n; k++) this._free(tile.ids[k])
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      // Same as _thin: an evicted tree has to take its ghost with it.
+      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+      this.rim.drop(id)
+      this.batch.setVisibleAt(id, false)
+      this.tierAt[id] = -1
+      this.free[this.freeCount++] = id
+    }
     this.rim.releaseTile(tile)
     this.placed -= tile.n
   }
 
   /**
-   * Photograph the trees into their impostor layers, and the clumps into
-   * theirs. Call ONCE, after
+   * Photograph the trees into their impostor layers. Call ONCE, after
    * `loadImageLayers()` has resolved -- see bakeTreeImpostors for why this is a
    * deliberate one-off stall at load and not an offline asset.
    */
   bakeCards(renderer) {
     const t0 = performance.now()
-    const singles = bakeTreeImpostors(renderer, this.textureArray)
-    const clumps = bakeTreeClumps(renderer, this.textureArray, this.bank)
+    const baked = bakeTreeImpostors(renderer, this.textureArray)
     this.cardBakeMs = performance.now() - t0
-    return { singles, clumps }
+    return baked
   }
 
   /**
@@ -2451,9 +2059,6 @@ export class Trees {
       rimHidden: this.rim.hiddenCount,
       rimFading: this.rim.flightN,
       fading: this.fades.length,
-      clumps: this.tierN[this.clumpTier],
-      retiring: this.retiring.length,
-      swapCuts: this.swapCuts,
       regrows: this.regrows,
       regrounds: this.regrounds,
       pool: this.maxInstances,
@@ -2464,7 +2069,6 @@ export class Trees {
       falloff: this.falloff,
       meshBand: this.lodBands[this.lodBands.length - 1],
       cardsOnly: this.cardsOnly,
-      clumpsHidden: this.clumpsHidden,
       cutout: this.material.alphaTest > 0,
       tiers: Array.from(this.tierN),
       bankKB: Math.round(this.bank.bytes / 1024),
@@ -2512,10 +2116,5 @@ export const TREE_TUNING = {
   DEADWOOD_CLEARANCE,
   FADE_MAX_INFLIGHT,
   SCALE,
-  CLUMP_FROM,
-  CLUMP_FULL,
-  CLUMPS_PER_TILE,
-  CLUMP_SCALE,
-  CLUMP_SINK,
   HEM_FRAY,
 }

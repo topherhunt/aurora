@@ -1680,7 +1680,22 @@ ${lean ? '' : `            // ---- THE GRIT TILE, FINE SAMPLE: ${GRIT_FINE_METRE
 // mesher already writes. The masks are the same functions of vColor the fragment
 // stage computes at auroraGreenBase and auroraVertexSnow, so this rung classifies
 // the surface identically to the ones it is measured against.
+//
+// AND ONE STAGE OF ITS OWN, THE FOREST TINT. Past 100 m the trees thin as 1/d
+// (trees.js FULL_RADIUS), so a wood that is solid underfoot is a scatter of
+// cards by 250 m and the ground between them shows through meadow-green. The
+// mesher bakes the forest law's keep-probability into a `forest` attribute
+// (chunk-mesh-v2 via layers/forest.js -- the SAME law the trees roll against),
+// and this rung mixes vColor toward uForestTint by that, ramped in from 100 m
+// to 250 m of eye distance so the near ground she walks on stays what shade()
+// wrote and the far ground carries the wood. uForestTint sits at about half
+// the pine card's leaf colour, with g - max(r, b) above the green knee, so the
+// two masks below still read it as vegetated. Water is not asked; a far lake
+// bed under a wood is tinted under its lake.
 export const PLAIN_GRASS_TONE = 0.5
+export const FOREST_TINT = [0.05, 0.082, 0.012]
+export const FOREST_TINT_NEAR = 100
+export const FOREST_TINT_FAR = 250
 
 /**
  * @param {THREE.Material} source  the material createTerrainMaterial built, for
@@ -1698,7 +1713,11 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
   }
 
   const material = new THREE.MeshLambertMaterial({ vertexColors: true })
-  material.userData.uniforms = { uGrassTone: src.uGrassTone, uSnowAlbedo: src.uSnowAlbedo }
+  material.userData.uniforms = {
+    uGrassTone: src.uGrassTone,
+    uSnowAlbedo: src.uSnowAlbedo,
+    uForestTint: { value: new THREE.Color(...FOREST_TINT) },
+  }
   if (stipple) {
     Object.assign(material.userData.uniforms, {
       // ONE tile for every surface (grit-texture.js STIPPLE TILE): the vertex
@@ -1718,14 +1737,19 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         uniform vec3 uGrassTone;
-        uniform float uSnowAlbedo;${stipple ? `
+        uniform float uSnowAlbedo;
+        uniform vec3 uForestTint;
+        attribute float forest;${stipple ? `
         attribute vec4 stipple;
         flat varying vec4 vStipFrame;
         varying vec3 vStipPos;` : ''}`)
-      .replace('#include <color_vertex>', `#include <color_vertex>
-        // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
-        // more than a quarter, so reading the snow knee off an already-toned
-        // vColor would classify toned grass against a moved threshold.
+      // AFTER project_vertex, NOT at color_vertex: three applies the BatchedMesh
+      // per-chunk matrix (batching_vertex) between the two, so this is the first
+      // hook where mvPosition is the vertex's real view-space position and its
+      // length the eye distance the forest tint ramps on.
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        // THE FOREST TINT FIRST, so the two masks below classify the tinted
+        // ground -- uForestTint is chosen to pass the green knee.
         //
         // SWIZZLED, AND NEVER BARE vColor. The three A-Frame 1.8 ships -- the
         // three every headset page runs, see three-instance.js -- declares vColor
@@ -1734,6 +1758,10 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // and a bare vColor *= float compiles and quietly scales alpha, which
         // that fork's color_fragment then multiplies into diffuseColor whole.
         // Same trap as COLOR_FRAGMENT in material.js. A swizzle is right on both.
+        vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( ${FOREST_TINT_NEAR.toFixed(1)}, ${FOREST_TINT_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );
+        // BOTH MASKS BEFORE EITHER MULTIPLY. The grass tone takes blue down by
+        // more than a quarter, so reading the snow knee off an already-toned
+        // vColor would classify toned grass against a moved threshold.
         float auroraGreenBase = smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) );
         float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
         vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );

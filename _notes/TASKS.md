@@ -13,7 +13,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - https://developers.tripo3d.ai/en/docs/quick-start
   - https://developers.tripo3d.ai/en/docs/animations-retarget
   - https://www.mixamo.com/#/?page=1&type=Motion%2CMotionPack
-  - [Claude - AI animation tools](https://claude.ai/chat/801dd461-e625-4511-8b37-8e283541e6fe) 
+  - [Claude - AI animation tools](https://claude.ai/chat/801dd461-e625-4511-8b37-8e283541e6fe)
   - [Skyrim trees](https://duckduckgo.com/?q=skyrim+tree&iar=images&iai=https%3A%2F%2Fimg.goodfon.com%2Fwallpaper%2Fnbig%2F0%2F5d%2Fskyrim-tes-5-elder-scrolls-fir-tree-stone-grass-mountain-fog.jpg) pics
 - Internal tools
   - https://192.168.178.75:5173/gen-tree
@@ -41,27 +41,30 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [x] Is each animation going to be shipped as a separate 600kb .glb file!? That's a lot of space waste/duplication right?
 - [x] Add a procedural jaggedness to terrain so the smooth curves aren't so smooth. OR if we already have that, it needs to be amplified by 4x.
 - [ ] Rig up player to a skeleton with a simple maybe-mostly-lerp-based IK system. Head turning should follow the camera rotation. Head movement should follow VR head location changes, feet should only follow if it exceeds a threshold of say 10m off-center. When teleporting, animate the person walking to that location instead of just jumping them there. Arms follow your actual hand positions.
-- [ ] Rivers: 
+- [ ] Rivers:
   - Tributaries that fold in, should never be fully coplanar
   - Keep the height even until it risks breaking above the landscape level, then drop down in an abrupt cascade. Have foam spraying up (white camera-rotated circles, dithering to fade out slowly).
 - Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). Near your location, it can decimate further, to maybe 1 vertex per 1m, so you can have a vertex shader apply a chaotic up-and-down to each lake-edge vertex to simulate waves lapping the shore. When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terrain under them.
 - [ ] Forest: height variety. Scrap the roots, stretch down the trunk, let some trees get taller so space opens up below the canopy. Dense suffocating undergrowth should be a minority.
 - [ ] Teleport should have a fixed cooldown, maybe 1s.
-- [ ] Spiders: don't place them above the snowline. Half as common. Noise should be half volume.
-- Spiders flee from you when you get within 0.5m.
-- [ ] Wild fauna and snowmen: don't tilt to fit the terrain. Also, allow the yeti to walk on steeper terrain so it can successfully chase you. Currently the yeti often gets stuck on a shelf and doesn't chase very effectively.
-- [ ] Dragons fly around, looking for prey, then swoop down to attack and kill a deer, pick it up and carry it back to its nest.
+- [x] Spiders: don't place them above the snowline. Half as common. Noise should be half volume.
+- [x] Spiders flee from you when you get within 0.5m.
+- [x] Wild fauna and snowmen: don't tilt them to fit the terrain. Their vertical should always stay true to the world vertical. Also, allow the yeti to walk on steeper terrain so it can successfully chase you (and path elsewhere, in the future). Currently the yeti often gets stuck on a shelf and doesn't chase very effectively.
+- [x] Time to place DRAGONS in the world. Dragons fly around from their nests, looking for prey, then swoop down to attack and kill a deer, pick it up and carry it back to its roost. Create a temporary "dragon roost" prop which is, for now, a nest-shaped hollow made by a bowl of tangled branches (use the tiling bark textures) and rocks (use low-poly icosahedra). The roost should have LOD0-LOD3 and then a card view which is BOTH a cylindrically-rotated sideview billboard AND a top-down view card, 4 tris total.
+- [ ] When fish startle or move fast near you, play underwater-swoosh sfx.
+- Songbird sfx: include bird-songbird-6 in the pool of randomly selected sounds. Also, bias the pool 50% towards playing a sound that was played in the past 15 seconds, so there's a sense of continuity in what birds you hear, rather than it being completely random which one you hear. As if they're coming and going.
 - [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
   - Meaning, we need an inventory system.
+- [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Skeleton creatures roaming around at night. During the day they're just bone piles.
 - [ ] Procedural villages. A couple big buildings in the center, surrounded by progressively smaller and humbler buildings as you go outward. A market square with stalls of various goods for sale. Various trade workshops with realistic props and people doing their work there. NPCs walk around town doing their business, walking into and out of buildings and talking to each other.
-- [ ] 
+- \[ \]
 - [ ] Pine tree idea: inner faces of each bough are solid, outer fringe is frayed? So each mesh has multiple materials (on different faces) but there's not a lot of transparency fill?
 - [ ] Player character animations:
   - [ ] move arms/hands to match actual hand position.
 
 - Get VR looking passable
-  - [ ] 
+  - \[ \]
   - [ ] Oak trees
     - Let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
   - [ ] Rocks
@@ -128,6 +131,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Cave-wall meshes that can open up to different sizes and have regions with different tints, darknesses, biome foliage, etc. Very dark by default, some local procedurally placed lights or glowing foliage (lighting baked for performance)
 
 - [ ] Wild creatures roaming around, walking or running or flying (songbirds, eagles, deer, mythic creatures). They pause and turn to look at you when you get close
+
+- [ ] Creatures' poses fitted to the slope naturally. Bodies stand on the world vertical now, so on a hillside a stag's uphill feet sink into the ground and its downhill feet float. The real fix is foot IK (runtime inverse kinematics): a ground probe under each foot, a two-bone solve per leg to plant it, and the pelvis dropped to the lowest reach -- a body-height row of the same walk.js probe the creature already pays once, times four, plus a bone solve per drawn creature per frame. Cheaper stand-ins that get most of the look: a baked uphill and downhill variant of each gait clip blended by the slope under the body, or just pitching the body a few degrees toward the slope, capped well short of the ground's normal. Far down the roadmap, and worth a measurement on the Quest 2 before committing to the IK version; the blend-pose version costs nothing at runtime.
 
 - \[ \]
 

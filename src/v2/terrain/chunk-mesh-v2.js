@@ -1,6 +1,7 @@
 import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
+import { forestKeepAt } from '../layers/forest.js'
 
 // ---- THE STIPPLE FRAME, one per vertex, read per FACE.
 //
@@ -483,9 +484,12 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out
  * @param {{ox:number, oz:number, size:number, res:number, cam:{x:number,y:number,z:number}}} spec
  *   `cam` is where the camera stood when this build was asked for -- see the
  *   STIPPLE FRAME block for what it fixes and how stale it is allowed to be.
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @param biome BiomeField, or null for a world without one, on the same terms
+ *   as Trees: null is full forest everywhere the treeline allows, which is what
+ *   the gates measure against. The shipped worker passes the real field.
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, forest:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
-export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
+export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
     throw new Error(`buildChunkV2: spec.cam must be a finite {x, y, z}, got ${JSON.stringify(cam)}`)
   }
@@ -617,6 +621,13 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   const normals = new Float32Array(total * 3)
   const colors = new Float32Array(total * 3)
   const stipple = new Float32Array(total * 4)
+  // The forest tint's weight, one float per vertex: the keep-probability
+  // trees.js rolls against at this spot (layers/forest.js), from the same
+  // fixed-band slope the colour classes on, so the ground reads as wood
+  // exactly where trees can stand and never repaints as a chunk coarsens.
+  // terrain-material.js fades it in with distance. Water is not asked: a lake
+  // bed's tint is under the lake.
+  const forest = new Float32Array(total)
 
   let minY = Infinity
   let maxY = -Infinity
@@ -713,6 +724,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
       }
 
       shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, wx, wz, colors, o)
+      forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal
       // (-dx, 1, -dz) most faces -- not the bumped shading normal above, whose
@@ -772,6 +784,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
       colors[o + 1] = colors[vi * 3 + 1]
       colors[o + 2] = colors[vi * 3 + 2]
       for (let c = 0; c < 4; c++) stipple[sv * 4 + c] = stipple[vi * 4 + c]
+      forest[sv] = forest[vi]
       row.push(sv)
       sv++
     }
@@ -826,7 +839,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }) {
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, stipple, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, forest, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the

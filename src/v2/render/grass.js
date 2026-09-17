@@ -817,11 +817,6 @@ class InstancedArena extends THREE.InstancedMesh {
       new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3).fill(1), 3)
     this.instanceColor.setUsage(THREE.DynamicDrawUsage)
     this.frustumCulled = false
-    // Not real on an InstancedMesh, but main.js's applyBatchCulling reads both
-    // off every batch it is handed and would otherwise record `undefined` as
-    // this layer's default.
-    this.perObjectFrustumCulled = false
-    this.sortObjects = false
   }
 
   /**

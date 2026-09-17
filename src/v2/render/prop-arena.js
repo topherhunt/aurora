@@ -78,11 +78,6 @@ export class PropArena extends THREE.Group {
     super()
     this.name = name
     this.frustumCulled = false
-    // Neither is real on an InstancedMesh, but main.js's applyBatchCulling reads
-    // both off every batch it is handed and would otherwise record `undefined`
-    // as this layer's default.
-    this.perObjectFrustumCulled = false
-    this.sortObjects = false
 
     const variantCount = tiers[0].geometries.length
     this.variantCount = variantCount

@@ -25,9 +25,11 @@
 //           the moment she is AWAY_M further off than that, it --
 //   follow  -- comes after her: walking when she is close, running when she is
 //           not, stopping STANDOFF_M short to watch again and starting again
-//           the moment she opens the gap. Ground it cannot cross (the same
-//           probe the wildlife walks by) turns it aside for a DETOUR_S, then it
-//           aims at her again; the snow line does not stop it. Past FORGET_M
+//           the moment she opens the gap. Ground it cannot cross -- water, a
+//           trunk, a face past FOLLOW_SLOPE, which is steeper than she can
+//           climb, so no ground she crossed stops it -- turns it aside for a
+//           DETOUR_S, then it aims at her again; the snow line does not stop
+//           it. Past FORGET_M
 //           in any state it forgets her: back to cowering, right there, and
 //           home is where it stands.
 //
@@ -36,7 +38,8 @@
 // other with a FADE_S crossfade and a gesture is always played in whole cycles.
 // It turns at TURN_RATE and never snaps, and it makes ground only the way it
 // faces, like the wildlife. It is drawn as the wildlife is: a puppet
-// (render/puppet.js) over the shipped ladder, dissolving between the world's
+// (render/puppet.js) standing on the world vertical whatever the ground under
+// it does, over the shipped ladder, dissolving between the world's
 // rungs (critters.js critterTier), which are a ratio of its OWN height -- a 2 m
 // one steps down at 9 m where a 6 m one holds to 27. Past the last rung it is
 // neither drawn nor minded, and it stands where it stood until its tile goes.
@@ -59,8 +62,12 @@ export const PUPPETS = 16
 
 // How tall one is, rolled evenly between the two.
 export const SIZE_M = [2, 6]
-// Ground one will not stand on: steeper than this, or anywhere under the snow line.
+// Ground one is not placed on: steeper than this, or anywhere under the snow line.
 export const MAX_SLOPE = (35 * Math.PI) / 180
+// Ground a following one will not step onto. Past her own limit (player.js
+// LOCOMOTION.maxSlopeDeg, 50), read over the same 1.5 m the walk surface's
+// normalAt spans, so a shelf she walked over never stands between them.
+export const FOLLOW_SLOPE = (55 * Math.PI) / 180
 // She is noticed only inside a half-disc of this radius AHEAD of a cowering snowman; behind or beside it she can stand at arm's length.
 export const NOTICE_M = 10
 // A watching snowman follows once she is this much further off than the closest she came.
@@ -108,8 +115,6 @@ function weighted(rand, pairs) {
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _quat = new THREE.Quaternion()
-const _tilt = new THREE.Quaternion()
-const _nrm = new THREE.Vector3()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
@@ -168,7 +173,6 @@ export class Snowmen {
       this.slots.push({
         id: i, tile: null, key: '', loose: false,
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, heading: 0, aim: 0, size: 1, k: 1,
-        nx: 0, ny: 1, nz: 0,
         // cower, watch or follow; `near` is the closest she has come since it noticed her.
         state: 'cower', near: Infinity,
         // The probe's last answer, seconds left of a turn off a blocked line, the side it turns to, and how long the line has been clear.
@@ -223,8 +227,10 @@ export class Snowmen {
 
   /**
    * The ground at (x, z) a snowman may stand on, or null: the walk surface,
-   * gentle, dry, clear of a trunk -- and, when `placing`, above the snow line.
-   * A following snowman is not held to the snow. The normal goes into `_norm`.
+   * dry, clear of a trunk, and no steeper than MAX_SLOPE when `placing` -- when
+   * it must be above the snow line too -- or FOLLOW_SLOPE when a follower is
+   * looking ahead. A following snowman is held to neither the snow nor the
+   * gentle ground it was laid on.
    */
   seat(x, z, placing = false) {
     const y = this.walk.heightAt(x, z)
@@ -232,7 +238,7 @@ export class Snowmen {
     if (placing && y < this.height.snowLineAt(x, z)) return null
     if (this.walk.obstacleAt(x, z, _trunk)) return null
     this.walk.normalAt(x, z, undefined, _norm)
-    if (Math.acos(Math.min(1, _norm.y)) > MAX_SLOPE) return null
+    if (Math.acos(Math.min(1, _norm.y)) > (placing ? MAX_SLOPE : FOLLOW_SLOPE)) return null
     return y
   }
 
@@ -268,7 +274,6 @@ export class Snowmen {
       c.x = c.homeX = x
       c.z = c.homeZ = z
       c.y = y
-      c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
       c.size = size
       c.k = size / this.asset.height
       c.heading = c.aim = heading
@@ -547,19 +552,14 @@ export class Snowmen {
       else this._turn(c, dt)
 
       c.y = this.walk.heightAt(c.x, c.z)
-      if ((this.frame + c.id) % PROBE_EVERY === 0) {
-        this.walk.normalAt(c.x, c.z, undefined, _norm)
-        c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
-      }
     }
     const puppet = want === -1 && !c.puppet ? null : this._takePuppet(c)
     if (!puppet) return beyond
     puppet.show(want)
     _pos.set(c.x, c.y, c.z)
-    // The body faces +X, yawed about the world up to its heading, then that up tilted onto the ground's normal.
+    // The body faces +X, yawed about the world up to its heading. It stands on
+    // that up, never on the ground's normal: a biped on a hillside is vertical.
     _quat.setFromAxisAngle(UP, c.heading)
-    _tilt.setFromUnitVectors(UP, _nrm.set(c.nx, c.ny, c.nz))
-    _quat.premultiply(_tilt)
     _scl.setScalar(c.k)
     _mat.compose(_pos, _quat, _scl)
 

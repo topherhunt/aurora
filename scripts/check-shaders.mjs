@@ -579,10 +579,9 @@ for (const [label, material, opts, marks] of PROP_VARIANTS) {
 // AND BOTH MODES ACROSS ALL THREE VARIANTS, which is nine programs and is the
 // point. The patch has two compile-time axes now (see the header of
 // lighting.js): `maps`, which the whole /v2 route currently runs on the unready
-// side of, and `enabled`, which the headset's `terrain & prop lighting` row
-// flips at runtime. A variant nothing compiles here is a variant first compiled
-// by a headset the moment someone presses that button -- and the unready one is
-// what every material in the world actually ships as today.
+// side of, and `enabled`, the cost A/B (setEnabled), which no menu row flips
+// any more and which stays compiled here so it still can be. The unready one
+// is what every material in the world actually ships as today.
 //
 // The vertex mode is here in its own right rather than only under the blade bed
 // below, because its builds declare DIFFERENT VARYINGS -- vec3 vWlShade with
@@ -1080,10 +1079,10 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
 
 // The PLAIN rung, the base of the stipple rung the world draws -- see
 // plainTerrainRung in v2/main.js. It shares nothing with the six above: a stock Lambert whose only
-// patch is two exposure stages in the VERTEX shader, so the fragment half here
-// is three's own and the whole risk lives in four lines of GLSL.
+// patch is the forest tint and two exposure stages in the VERTEX shader, so the
+// fragment half here is three's own and the whole risk lives in five lines of GLSL.
 //
-// Compiled because those four lines touch vColor, which is the one name in this
+// Compiled because those five lines touch vColor, which is the one name in this
 // file whose TYPE differs between npm's three and the headset's. Under the
 // TERRAIN_DEFINES pair it is the vec4 the device declares, so a bare assignment
 // fails here instead of on a Quest.
@@ -1107,21 +1106,31 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   CROSS_STAGE.push([label, vert, frag])
 
   // JUST THE INJECTED BLOCK, which is what the patch owns: three's own
-  // color_vertex writes `vColor *= color` a few lines above and is not ours to
-  // judge. The patch lands between its include and the next one.
-  const from = shader.vertexShader.indexOf('#include <color_vertex>')
-  const block = shader.vertexShader.slice(from, shader.vertexShader.indexOf('#include', from + 24))
+  // color_vertex writes `vColor *= color` further up and is not ours to judge.
+  // The patch lands after project_vertex -- the first hook past the batching
+  // matrix, so mvPosition is the real view-space position -- and before the
+  // next include.
+  const from = shader.vertexShader.indexOf('#include <project_vertex>')
+  const block = shader.vertexShader.slice(from, shader.vertexShader.indexOf('#include', from + 26))
 
-  // The two multiplies are the whole material -- lose either and the ground ships
-  // at the wrong level, green ground grey or a snowfield clipped to a flat sheet.
-  for (const mark of ['vColor.rgb *= mix( vec3( 1.0 ), uGrassTone', 'vColor.rgb *= mix( 1.0, uSnowAlbedo']) {
+  // The tint and the two multiplies are the whole material -- lose the tint and
+  // the far wood is a scatter of cards on meadow, lose either multiply and the
+  // ground ships at the wrong level, green ground grey or a snowfield clipped
+  // to a flat sheet. The tint must ramp on mvPosition, which is the batched
+  // position; a modelMatrix * position here is the chunk-local one.
+  for (const mark of [
+    'vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( 100.0, 250.0, length( mvPosition.xyz ) ) )',
+    'vColor.rgb *= mix( vec3( 1.0 ), uGrassTone',
+    'vColor.rgb *= mix( 1.0, uSnowAlbedo',
+  ]) {
     if (!block.includes(mark)) MISSING_MARKS.push(`${label} vert: ${mark}`)
   }
-  // Neither may be written bare, for the vec4 reason above. The vec3 form fails
+  if (!vert.includes('attribute float forest;')) MISSING_MARKS.push(`${label} vert: attribute float forest`)
+  // None may be written bare, for the vec4 reason above. The vec3 form fails
   // to compile on the device, which the row above now catches; the FLOAT form
   // compiles there and silently scales alpha, which nothing else would catch.
-  const code = block.replace(/\/\/[^\n]*/g, '').replace(/vColor\.rgb\s*\*=/g, '')
-  if (/vColor\s*\*=/.test(code)) {
+  const code = block.replace(/\/\/[^\n]*/g, '').replace(/vColor\.rgb\s*\*?=/g, '')
+  if (/vColor\s*\*?=/.test(code)) {
     MISSING_MARKS.push(`${label} vert: assigns to bare vColor, which is a vec4 on the headset`)
   }
   // Nothing of the fragment ladder may follow it here. This rung exists to not

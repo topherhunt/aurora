@@ -24,8 +24,9 @@
 // clock against the FOOTFALLS of its clip library, so a gallop lands as a
 // gallop and a trot as a trot, and for a species with a call (the fox) the
 // seconds to its next one; for the crawlers (spiders, crabs) the moving ones
-// together hold one quiet loop at the nearest. What she hears of each is the
-// body's size at its distance.
+// together hold one quiet loop at the nearest, and one that takes fright plays
+// the same clip once, louder. What she hears of each is the body's size at its
+// distance.
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
@@ -107,8 +108,8 @@ export const RULES = {
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
   foxYip: { reach: 40, near: 4, level: 0.7, every: [40, 120], gain: [0.7, 1.0] },
-  // The crawlers' feet: one quiet loop while any spider or crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1.
-  crawl: { reach: 6, near: 1, level: 0.15, gain: [0.6, 1.0] },
+  // The crawlers' feet: one quiet loop while any spider or crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
+  crawl: { reach: 6, near: 1, level: 0.075, startle: 2, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field...
@@ -133,7 +134,7 @@ export class Ambience {
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
    * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, and `calls`, if any, maps a species key (body.sp.key) to the rule of its call.
-   * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed.
+   * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    */
   constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
@@ -426,15 +427,16 @@ export class Ambience {
 
   /**
    * The crawlers' feet: one loop for every moving spider and crab within
-   * reach, sat at the nearest, as loud as all of them together up to its level.
+   * reach, sat at the nearest, as loud as all of them together up to its level;
+   * and the clip once, louder, from each one that took fright this frame.
    */
   _crawl(head) {
     const C = RULES.crawl
     let sum = 0
     let nearest = Infinity
     let at = null
+    const listed = this.listed
     for (const layer of this.crawlers) {
-      const listed = this.listed
       listed.length = 0
       layer.bodies(listed)
       for (const c of listed) {
@@ -447,6 +449,10 @@ export class Ambience {
           at = c
         }
       }
+      if (!layer.startled) continue
+      listed.length = 0
+      layer.startled(listed)
+      for (const c of listed) this.fire('crawl', { rate: this.rate(), gain: C.startle * C.level * this.between(...C.gain), at: c })
     }
     this._loop('crawl', at !== null, C.level * Math.min(1, sum), at)
   }
