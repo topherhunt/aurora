@@ -31,7 +31,8 @@ import fs from 'node:fs'
 import {
   CROUCH_S, CROUCH_SQUASH, DENSITY, FALL_G, Grasshoppers, GRAVITY, HOP_M, LAND_S, LAND_SQUASH, LAUNCH_DEG, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TILE, TINT_BROWN, TINT_GREEN,
 } from '../src/v2/render/grasshoppers.js'
-import { CRITTER_GLB } from '../src/v2/render/critters.js'
+import { taken } from '../src/v2/taken.js'
+import { CRITTER_GLB, tileKey } from '../src/v2/render/critters.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -332,6 +333,50 @@ flock.place(0, 0)
   check(held.x !== was.x || held.z !== was.z, 'and it hops once she is near')
   far.update(200, 21, 0, dt)
   check(alive(far).every((g) => Math.hypot(g.homeX - 200, g.homeZ) < RADIUS + TILE), 'a move frees the tiles left behind and rolls the new ones')
+}
+
+// --- her hands -------------------------------------------------------------------
+{
+  const dt = 1 / 72
+  const grow = () => { const f = make(11); f.place(0, 0); f.update(0, groundAt(0, 0) + 1.6, 0, dt); return f }
+  const f = grow()
+  check(f.shown.length > 0, 'grasshoppers are shown around her')
+  const g = f.shown[0]
+  const hit = f.pickAt(g.x, g.y + g.len * 0.5, g.z, 0.3)
+  check(hit !== null && hit.g === g && hit.dist === 0 && Math.abs(hit.size - g.len) < 1e-9, 'pickAt at a shown grasshopper hits it, its size its length', JSON.stringify(hit && { dist: hit.dist, size: hit.size }))
+  check(f.pickAt(g.x, g.y + 5, g.z, 0.3) === null, 'and nothing 5 m above it')
+  const far = alive(f).find((h) => Math.hypot(h.x, h.z) > SHOW_M + 1)
+  check(far && f.pickAt(far.x, far.y, far.z, 0.3) === null, 'one past SHOW_M is not offered: it is not stepped')
+  const were = alive(f).length
+  const home = { x: g.homeX, z: g.homeZ }
+  const tile = g.tile
+  const rec = f.take(hit)
+  check(rec.kind === 'grasshopper' && rec.name === 'grasshopper' && rec.size === g.len && rec.geometry === f.mesh.geometry && rec.material === f.material && rec.stowable === true, 'take: a stowable grasshopper on the shared geometry and material')
+  check(Math.abs(rec.scale[0] - g.len / f.length) < 1e-9 && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && rec.color.length === 3, 'scaled by its length over the asset, tinted', JSON.stringify(rec.scale))
+  check(g.tile === null && !tile.flock.includes(g) && f.free.includes(g) && !f.shown.includes(g) && alive(f).length === were - 1, 'its slot is back in the pool, out of its flock and off the shown list')
+  check(taken.has('grasshopper', home.x, home.z), 'its home is recorded taken')
+  check(f.pickAt(g.x, g.y + g.len * 0.5, g.z, 0.3)?.g !== g, 'and it cannot be taken twice')
+  const d = f.dress({ kind: 'grasshopper' })
+  check(d.geometry === f.mesh.geometry && d.material === f.material, 'dress: the shared geometry and material')
+  let threw = false
+  try { f.dress({ kind: 'crab' }) } catch { threw = true }
+  check(threw, 'dress throws on another kind')
+  const bare = new Grasshoppers(scene, height, water, { seed: 11, walk })
+  check(bare.dress({ kind: 'grasshopper' }) === null && bare.pickAt(0, 0, 0, 100) === null, 'unloaded: dress is null and pickAt offers nothing')
+  // Regrown, the tile has one fewer, and once the registry is cleared it comes back.
+  const again = grow()
+  check(alive(again).length === were - 1 && !alive(again).some((h) => Math.hypot(h.homeX - home.x, h.homeZ - home.z) < 0.05), 'the tile regrows without the taken one')
+  taken.clear()
+  check(alive(grow()).length === were, 'and with the registry cleared it is back')
+  // Let go on the meadow: seated there in the resident tile, home there, and off in a hop.
+  const rel = f.release(rec, 3, groundAt(3, 5), 5)
+  const seated = alive(f).find((h) => h.homeX === 3 && h.homeZ === 5)
+  check(rel === true && seated && seated.x === 3 && seated.z === 5 && seated.y === walk.heightAt(3, 5) && seated.len === rec.size && seated.tile === f.tiles.get(tileKey(Math.floor(3 / TILE), Math.floor(5 / TILE))), 'release seats it on the ground at the drop, in the tile under it')
+  check(seated && seated.r === rec.color[0] && seated.g === rec.color[1] && seated.b === rec.color[2] && seated.left === 0, 'in its own tint, its rest over')
+  for (let i = 0; i < 72 * 3; i++) f.update(0, groundAt(0, 0) + 1.6, 0, dt)
+  check(seated.x !== 3 || seated.z !== 5, 'and it hops off')
+  check(f.release(rec, POND.x, groundAt(POND.x, POND.z), POND.z) === false, 'release into the pond is refused')
+  check(f.release(rec, 500, groundAt(500, 0), 0) === false, 'and where no tile is resident')
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall grasshopper checks passed')

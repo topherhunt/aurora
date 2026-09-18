@@ -8,6 +8,7 @@ import { InstancedArena } from './instanced-arena.js'
 import { RimFade } from './rim.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { taken } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // STREWN LITTER on the /v2 route: the small stones underfoot, each one a
@@ -346,6 +347,8 @@ export class Litter {
     this.pebble = buildPebble()
     this.pebbleTris = this.pebble.index.count / 3
     this.pebbleHeight = this.pebble.userData.rock.measured.height
+    // The unit pebble's extents, which a hand's ball and a held one's size come from through the instance's scale.
+    this.pebbleExt = this.pebble.userData.rock.measured
     this.maxInstances = this._poolBound()
 
     this.batch = new InstancedArena(this.maxInstances, this.material)
@@ -669,6 +672,8 @@ export class Litter {
       this.rejectedRock++
       return -1
     }
+    // A pebble she picked up does not lie there again.
+    if (taken.has('pebble', x, z)) return -1
 
     // Running dry THROWS rather than quietly placing less. A scatter that
     // silently stopped scattering on the densest ground in the world would be
@@ -945,6 +950,81 @@ export class Litter {
         gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * tile, (tz + 0.5) * tile) : null,
       })
     }
+  }
+
+  /**
+   * The drawn pebble nearest a hand at (x, y, z) whose stone -- a ball of its
+   * own span -- is within `reach` metres: `{ dist, id, tile, k, size }` for
+   * take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach) {
+    let best = null
+    let bestD = reach
+    const far = reach + this.tile
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * this.tile - x) > far || Math.abs((tile.tz + 0.5) * this.tile - z) > far) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (this.rim.isHidden(id)) continue
+        const span = this._spanOf(id)
+        const d = Math.hypot(this.instX[id] - x, this.instY[id] + span * 0.5 - y, this.instZ[id] - z) - span * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), id, tile, k, size: span }
+        }
+      }
+    }
+    return best
+  }
+
+  /** The pebble's largest extent in metres, off the scale its matrix carries. */
+  _spanOf(id) {
+    this.batch.getMatrixAt(id, this._m)
+    this._s.setFromMatrixScale(this._m)
+    const e = this.pebbleExt
+    return Math.max(this._s.x * e.width, this._s.y * e.height, this._s.z * e.depth)
+  }
+
+  /**
+   * Pick the pebble of a pickAt() hit up off the ground: its id goes back to
+   * the pool, its spot is recorded so the tile never lays it again, and what
+   * the hand holds is returned as a record for hands.js -- the one pebble
+   * shape, the shared material, the instance's tint and its three scales.
+   */
+  take(hit) {
+    const { tile, k, id } = hit
+    if (tile.ids[k] !== id || !this.batch.getVisibleAt(id)) throw new Error(`Litter.take: instance ${id} is not lying in its tile`)
+    const size = this._spanOf(id)
+    const scale = [this._s.x, this._s.y, this._s.z]
+    this.batch.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add('pebble', this.instX[id], this.instZ[id])
+    // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive.
+    for (let j = k; j < tile.n - 1; j++) {
+      tile.ids[j] = tile.ids[j + 1]
+      tile.rank[j] = tile.rank[j + 1]
+    }
+    tile.n--
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.free[this.freeCount++] = id
+    this.placed--
+    return {
+      kind: 'pebble',
+      name: 'pebble',
+      size,
+      geometry: this.batch.geometry,
+      material: this.material,
+      color,
+      scale,
+      stowable: true,
+    }
+  }
+
+  /** The geometry and material a packed pebble record is drawn with. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'pebble') throw new Error(`Litter.dress: not a pebble, ${slot.kind}`)
+    return { geometry: this.batch.geometry, material: this.material }
   }
 
   _reground(tile) {

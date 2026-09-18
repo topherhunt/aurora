@@ -382,7 +382,7 @@ function run(amb, seconds, ctx) {
 }
 const count = (engine, ...names) => engine.plays.filter((p) => names.includes(p.name)).length
 const RAPTORS = ['crow', 'eagle', 'hawk']
-const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5']
+const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5', 'songbird6']
 
 {
   // Sense cadence.
@@ -401,7 +401,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const far = song.filter((p) => p.distance > 0), near = song.filter((p) => !(p.distance > 0))
   const F = RULES.songbirdFar, N = RULES.songbirdNear
   check(far.length >= 30 && far.length <= 120, 'the far songbird bed chatters every 1-4 s in a daytime meadow', `${far.length} in 120 s`)
-  check(near.length >= 2 && near.length <= 10, 'a songbird beside her every 12-40 s', `${near.length} in 120 s`)
+  check(near.length >= 1 && near.length <= 12, 'a songbird beside her a few times in two minutes', `${near.length} in 120 s`)
   check(count(engine, ...RAPTORS) === 0, 'no raptor below the snow with no cliff')
   check(count(engine, 'owl', 'woodpecker', 'cricket', 'footstep', 'croak1', 'croak2', 'rockslide1', 'rockslide2', 'wave') === 0, 'nothing else fires standing still in a daytime meadow')
   check(!engine.loops.brook.active && !engine.loops.leaves.active && !engine.loops.lakeBed.active && !engine.loops.wind.active && !engine.loops.underwater.active, 'no loop runs in a dry meadow')
@@ -412,7 +412,52 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(near.every((p) => p.distance === undefined && Math.hypot(p.at.x - HEAD.x, p.at.y - HEAD.y, p.at.z - HEAD.z) <= N.range[1] + 1e-6), 'every near bird is within reach and dry')
   check(new Set(far.map((p) => p.gain.toFixed(3))).size > far.length / 2 && new Set(near.map((p) => p.gain.toFixed(2))).size > near.length / 2, 'songbird volume varies widely in both pools')
   check(song.every((p) => p.at && p.at.y > HEAD.y), 'every songbird is placed somewhere above her')
-  check(new Set(song.map((p) => p.name)).size >= 3, 'the five songbird clips are all in play', `${new Set(song.map((p) => p.name)).size} distinct`)
+  check(new Set(song.map((p) => p.name)).size >= 4, 'the six songbird clips are all in play', `${new Set(song.map((p) => p.name)).size} distinct`)
+}
+{
+  // Which songbird sings: half the time one heard in the last 15 s, otherwise any of the six.
+  const V = RULES.songbirdVoice
+  const rolls = []
+  const amb = new Ambience({ engine: fakeEngine(), sense: scripted(), rand: () => rolls.shift() })
+  rolls.push(0.5)
+  const first = amb.songbird()
+  check(first === 'songbird4' && rolls.length === 0, 'with nothing heard lately the pick is straight from the six, no bias roll spent', first)
+  amb.clock += V.recent - 1
+  rolls.push(V.bias - 0.01, 0.99)
+  check(amb.songbird() === first && rolls.length === 0, 'under the bias the pick is from the recent voices, here the one heard 14 s ago')
+  amb.clock += V.recent
+  rolls.push(0.99)
+  check(amb.songbird() === 'songbird6' && rolls.length === 0, 'once its last song is older than the window a voice is no longer recent, so no bias roll is spent')
+  rolls.push(V.bias + 0.01, 0)
+  check(amb.songbird() === 'songbird1' && rolls.length === 0, 'past the bias the pick is from all six, recent or not')
+  const meadow = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  const bed = new Ambience({ engine: meadow, sense, rand: mulberry32(2) })
+  run(bed, 120, {})
+  const names = meadow.plays.filter((p) => SONGBIRDS.includes(p.name)).map((p) => p.name)
+  const repeats = names.filter((n, i) => names.slice(Math.max(0, i - 4), i).includes(n)).length
+  check(repeats / names.length > 0.6, 'in the bed a song is usually one heard in the last four', `${repeats}/${names.length}`)
+}
+{
+  // The near bird's cadence: an hour in the meadow, its gaps mostly short with a tail of long silences, never a beat.
+  const N = RULES.songbirdNear
+  const meadow = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  const amb = new Ambience({ engine: meadow, sense, rand: mulberry32(5) })
+  let t = 0
+  const at = []
+  for (let i = 0; i < 3600 * 60; i++) {
+    const before = meadow.plays.length
+    amb.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    t += 1 / 60
+    for (const p of meadow.plays.slice(before)) if (SONGBIRDS.includes(p.name) && !(p.distance > 0)) at.push(t)
+  }
+  const gaps = at.slice(1).map((x, i) => x - at[i]).sort((a, b) => a - b)
+  const q = (f) => gaps[Math.floor(f * (gaps.length - 1))]
+  check(gaps.length >= 60, 'a near bird sings dozens of times an hour', `${gaps.length + 1}`)
+  check(gaps.every((g) => g >= N.interval[0] - 0.02 && g <= N.interval[1] + 0.02), `every gap is within ${N.interval[0]}-${N.interval[1]} s`, `${q(0).toFixed(1)}-${q(1).toFixed(1)}`)
+  check(q(0.5) < (N.interval[0] + N.interval[1]) / 2 - 10, 'the median gap is well short of the midpoint', `${q(0.5).toFixed(1)} s`)
+  check(q(0.1) < 12 && q(0.9) > 60, 'a tenth of the gaps are under 12 s and a tenth are over a minute', `${q(0.1).toFixed(1)} / ${q(0.9).toFixed(1)}`)
 }
 {
   // Aloft over the meadow and the wood: the perched birds thin across their band and fall silent past its top; the raptors soar on.
@@ -883,6 +928,24 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   for (let i = 0; i < 60; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
   check(e2.plays.slice(n).every((p) => p.name !== 'growl') && e2.plays.slice(n).some((p) => p.name === 'wingbeat'), 'taken off, a dragon stops growling and starts beating')
   nest.state = 'roost'; nest.clip = 'idle'
+  // The fish in her hand: the frame it comes after her it roars, and every R.menace seconds after; put away, the roaring stops with the growls back.
+  for (let i = 0; i < 60; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  nest.state = 'menace'; nest.clip = 'walk'; nest.cycle = WALK; nest.speed = 1.1
+  const setOut = e2.plays.length
+  const roared = []
+  for (let i = 0; i < 60 * 60; i++) {
+    const n = e2.plays.length
+    a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    for (const p of e2.plays.slice(n)) if (p.name === 'roar') roared.push(i / 60)
+  }
+  const spacing = roared.slice(1).map((t, i) => t - roared[i])
+  check(roared.length > 0 && roared[0] === 0, 'after the fish in her hand, a dragon roars the frame it sets out', `first at ${roared[0]?.toFixed(2)} s`)
+  check(spacing.length >= 3 && spacing.every((g) => g >= R.menace[0] - 1 / 30 && g <= R.menace[1] + 1 / 30) && new Set(spacing.map((g) => g.toFixed(2))).size >= 3, `and every ${R.menace[0]}-${R.menace[1]} s after, on the ground`, `${roared.length} roars in 60 s, ${Math.min(...spacing).toFixed(2)}-${Math.max(...spacing).toFixed(2)} s apart`)
+  check(e2.plays.slice(setOut).every((p) => p.name !== 'growl') && e2.plays.slice(setOut).some((p) => p.name === 'tread') && a2.wings.get(nest).menacing, 'off the nest after her it growls no more, and its steps are heard')
+  nest.state = 'roost'; nest.clip = 'idle'; nest.cycle = 4; nest.speed = 0
+  const back = e2.plays.length
+  for (let i = 0; i < 60 * 40; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  check(e2.plays.slice(back).every((p) => p.name !== 'roar') && e2.plays.slice(back).some((p) => p.name === 'growl'), 'the fish put away and the dragon home, it roars no more and growls again')
   let threw = 0
   try { new Ambience({ engine, sense, dragons: {} }) } catch { threw++ }
   try { new Ambience({ engine, sense, dragons: { bodies(into) { into.push({ ...nearFly, cycle: 0 }); return into } } }).update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true }) } catch { threw++ }

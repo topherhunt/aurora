@@ -1,7 +1,7 @@
 import THREE from '../../three-instance.js'
 import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
 import { RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../layers/paths.js'
-import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from './ribbon.js'
+import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from './ribbon.js'
 import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH } from './river-raise.js'
 import { unpackKey } from '../terrain/quadtree-v2.js'
 
@@ -24,11 +24,13 @@ const MIN_TAN = 0.01
 // Bucket key. A 32-bit hash of the cell pair rather than a template string: levelAt is on the prop scatter's inner loop and a string key per query allocates one string per bucket per candidate.
 const bucketKey = (i, j) => i * 100003 + j
 
-// levelAt's per-river scratch: the nearest segment's squared distance and level for each river reaching the point, indexed by slot. Module-level for the same reason the key is a hash -- the scatter calls levelAt per candidate -- and the slot count is a throw rather than a growth path, because more rivers than this through one point is not a world anyone has authored.
+// levelAt's per-river scratch: the nearest segment's squared distance, level, index and foot for each river reaching the point, indexed by slot. Module-level for the same reason the key is a hash -- the scatter calls levelAt per candidate -- and the slot count is a throw rather than a growth path, because more rivers than this through one point is not a world anyone has authored.
 const LEVEL_RUNS = 8
 const runId = new Int32Array(LEVEL_RUNS)
 const runD2 = new Float64Array(LEVEL_RUNS)
 const runY = new Float64Array(LEVEL_RUNS)
+const runSeg = new Int32Array(LEVEL_RUNS)
+const runT = new Float64Array(LEVEL_RUNS)
 
 // updateLod reads the terrain rung at every coarse sample of a river chunk within this many metres of the eye, and at every LOD_RUNG_STRIDE-th one beyond. Past 400 m the terrain is drawn from 16 m cells up, nodes 256 m wide and wider, so the 40 m stride can pass a node only where the ribbon clips its corner, and there the fill (the neighbours' higher rung) is at most one octave off over under 40 m of river at over 400 m.
 const LOD_RUNG_NEAR = 400
@@ -295,17 +297,27 @@ export class WaterSurfaces {
     for (const s of this.riverSamples.values()) total += s.length / 4
     this.idxPts = new Float32Array(total * 4)
     this.idxTail = new Uint8Array(total)
-    // Which river a sample belongs to, so levelAt can keep one nearest segment per river.
+    // Which river a sample belongs to, so levelAt can keep one nearest segment per river, and its metres of arc from the run's first sample, for flowAt's fade.
     this.idxRun = new Int32Array(total)
+    this.idxArc = new Float32Array(total)
+    // Per run, what flowFrame gives the shader: the flow's sign along the stored order, the run's arc length and how far into other water its two ends reach.
+    const runs = this.riverSamples.size
+    this.runSign = new Int8Array(runs)
+    this.runLength = new Float32Array(runs)
+    this.runSource = new Float32Array(runs)
+    this.runMouth = new Float32Array(runs)
 
     let g = 0
     let run = 0
-    for (const s of this.riverSamples.values()) {
+    for (const [id, s] of this.riverSamples) {
       const n = s.length / 4
+      let arc = 0
       for (let i = 0; i < n; i++) {
         const o = i * 4
         const d = (g + i) * 4
+        if (i > 0) arc += Math.hypot(s[o] - s[o - 4], s[o + 2] - s[o - 2])
         this.idxRun[g + i] = run
+        this.idxArc[g + i] = arc
         this.idxPts[d] = s[o]
         this.idxPts[d + 1] = s[o + 1]
         this.idxPts[d + 2] = s[o + 2]
@@ -315,6 +327,11 @@ export class WaterSurfaces {
       }
       // The last sample of a run starts no segment, or the index would join the end of one river to the start of the next with a segment straight across the map.
       this.idxTail[g + n - 1] = 1
+      const reach = this.layers.paths.flowReach(id)
+      this.runSign[run] = this.layers.paths.flowsForward(id) ? 1 : -1
+      this.runLength[run] = arc
+      this.runSource[run] = reach.source
+      this.runMouth[run] = reach.mouth
       g += n
       run++
     }
@@ -365,8 +382,44 @@ export class WaterSurfaces {
    */
   levelAt(x, z, drawn = false) {
     let best = this.lakeLevelAt(x, z)
-    let runs = 0
+    const runs = this._nearestRuns(x, z, drawn)
+    for (let k = 0; k < runs; k++) if (best === null || runY[k] > best) best = runY[k]
+    return best
+  }
 
+  /**
+   * The river current at (x, z): the unit downstream direction of the river whose surface the point floats on, into `out.x, out.z`, and the weight to apply it at -- 1 in the run of the river, fading to 0 over the same reach flowFrame fades the shader's drift at either end (a mouth in a lake, a source on a trunk), and 0 where no river reaches the point or a lake's still level stands over the river's. The direction is the nearest segment's, so a boat on a bend drifts along the bank rather than into it. One bucket scan, the same as levelAt's.
+   */
+  flowAt(x, z, out) {
+    const runs = this._nearestRuns(x, z, false)
+    if (runs === 0) return 0
+    let k = 0
+    for (let i = 1; i < runs; i++) if (runY[i] > runY[k]) k = i
+    const lake = this.lakeLevelAt(x, z)
+    if (lake !== null && lake > runY[k] + 1e-3) return 0
+    const seg = runSeg[k]
+    const o = seg * 4
+    const ex = this.idxPts[o + 4] - this.idxPts[o]
+    const ez = this.idxPts[o + 6] - this.idxPts[o + 2]
+    const len = Math.hypot(ex, ez)
+    const run = this.idxRun[seg]
+    const sign = this.runSign[run]
+    out.x = (sign * ex) / len
+    out.z = (sign * ez) / len
+    const t = runT[k]
+    const along = this.idxArc[seg] + t * (this.idxArc[seg + 1] - this.idxArc[seg])
+    const length = this.runLength[run]
+    const u = sign > 0 ? along : length - along
+    const hw = this.idxPts[o + 3] + t * (this.idxPts[o + 7] - this.idxPts[o + 3])
+    const fade = Math.max(FLOW_FADE_HALF_WIDTHS * hw, FLOW_FADE_MIN)
+    const fromSource = Math.min(1, Math.max(0, (u - this.runSource[run]) / fade))
+    const fromMouth = Math.min(1, Math.max(0, (length - u - this.runMouth[run]) / fade))
+    return Math.min(fromSource, fromMouth)
+  }
+
+  /** The bucket scan under levelAt and flowAt: for each river reaching (x, z), its nearest segment into the run scratch (runY the level there, runSeg the segment's first sample, runT the foot along it). Returns the count. */
+  _nearestRuns(x, z, drawn) {
+    let runs = 0
     const bi = Math.floor(x / BUCKET)
     const bj = Math.floor(z / BUCKET)
     for (let dj = -1; dj <= 1; dj++) {
@@ -408,13 +461,13 @@ export class WaterSurfaces {
           if (d2 < runD2[k]) {
             runD2[k] = d2
             runY[k] = y
+            runSeg[k] = i
+            runT[k] = t
           }
         }
       }
     }
-
-    for (let k = 0; k < runs; k++) if (best === null || runY[k] > best) best = runY[k]
-    return best
+    return runs
   }
 
   /**

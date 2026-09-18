@@ -26,17 +26,14 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] Boats:
-  - [ ] Bug: once you step in, you're trapped and can't get out.
-- [ ] Songbird sfx: include bird-songbird-6 in the pool of randomly selected sounds. Also, bias the pool 50% towards playing a sound that was played in the past 15 seconds, so there's a sense of continuity in what birds you hear, rather than it being completely random which one you hear. As if they're coming and going.
 - [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
-  - Meaning, we need an inventory system.
+  - [x] Meaning, we need an inventory system.
+  - [ ] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Need less gray area between lush and snowline. Maybe 5m height difference. And trees need to extend further up into snowline, ie the treeline needs to be blurrier.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
-- [ ] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
 - [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
-- [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you whick knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
+- [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
 - [ ] Human villages. If you do a favor for the potionmaker, he'll thank you by giving you a flare gun. Flare guns shoot out permanent flares which hover and shimmer in the air forever -- but you only have 10 charges. If you run out, you'll need to do another potionmaker another favor. and other human NPCs have similar such quest lines.
 - [ ] another human villager quest is that there's a person who says that they've always dreamed of having a pet deer. And if you figure out a way to lead a wild deer into their fenced yard and close the gate, then they will be over the moon about it and will give you something cool as a reward. Same with pet foxes and pet rabbits and pet frogs (maybe multiple in the latter case). Deer and rabbits can be led by holding a carrot. Foxes can be led by holding a chicken egg. (Oh yeah!! Villages are full of chickens!) Frogs and fish can be led by holding a butterfly or a spider. Again, this sort of information can be gleaned by talking to human NPCs who bring it up in a natural way, like mentioning that they did a certain thing, but sometimes it can be hard to distinguish between truth and tall tales.
 - [ ] 
@@ -55,36 +52,16 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Procedural villages. A couple big buildings in the center, surrounded by progressively smaller and humbler buildings as you go outward. A market square with stalls of various goods for sale. Various trade workshops with realistic props and people doing their work there. NPCs walk around town doing their business, walking into and out of buildings and talking to each other.
 - \[ \]
 - [ ] Pine tree idea: inner faces of each bough are solid, outer fringe is frayed? So each mesh has multiple materials (on different faces) but there's not a lot of transparency fill?
-- [ ] Player character animations:
-  - [ ] move arms/hands to match actual hand position.
-
 - Get VR looking passable
-  - \[ \]
-  - [ ] Oak trees
+  - [ ] Aspen trees (yellow)
     - Let's have the oak foliage be ONE giant sealed mesh, with lots of lobes and bumps that span multiple vertices so it feels lumpy but not jagged-pointy.
-  - [ ] Rocks
-    - [x] Get rid of all these rock caps. Boulders should be placed and rendered at a distance relative to their size, maxing out at 1.1km. (Ensure trees max out at 1km. Trees must place AFTER boulders, and thus must have a closer viewing distance.)
-    - [x] Rock caps: positioned impostor card rather than billboard.
-    - [ ] Fix boulder billboard colors & positions
-      - Currently billboard color is substantially misaligned from the color / light level of the rock itself.
-      - Also, billboard POSITION is off-center, and often size too, it needs to match the center-position and size of the rock mesh it's replacing. (I may have previously specified that billboards should never embed in the ground; that was wrong and I'm sorry.
-      - Billboards apparently have a "size on screen" based fadeout trigger, so their fade distance is size-dependent. That's good. But it needs to be 2x the size it currently is. Currently we have lots of tiny pebbles busying up the screen.
-    - [ ] Fix rock-cap far-distance cards
-      - Rock caps' impostor photo should be top-down. Instead of a cylindrically-rotated billboard, the rock card will just be positioned along whatever surface the cap was on, tangent to the top surface of where the mesh reached (so it's out a bit from the cliff wall or whatever), at the same rotation and scale.
-  - [ ] Pebbles
-    - 1 mesh, reuse the boulder LOD1 + LOD2 + billboard. Lower tri count, irregular, sunk into ground.
-    - Billboard is positioned 50% of the rock height UP so it doesn't clip into the ground.
-  - Ensure the various prop scatterers are only calculating placement within their local rim of visibility & not beyond that.
-  - [ ] Generate deadwood meshes - more convincing than my random ones.
   - [ ] Characters
-    - \[ \]
     - [ ] A snake, slithering through the grass.
-    - [ ] A small wood-and-twig creature, like a fey.
-    - [ ] Figure out how distant cards should work.
+    - [ ] A boar -- don't startle it or it will charge you and knock you back, giving you temporary star-spangle.
+    - [ ] Songbirds, flitting through the trees. InstancedMesh, one for sitting and one with wings open, color tintable to denote different species. LOD0 + LOD1, no card needed.
+    - [ ] Hawks wheeling around cliffs.
 - ...
-  - [ ] greeting dialog on 1st load on pc (point to vr).
   - [ ] simple shadows.
-  - [ ] animals. Wrapped uv from ai gen character sheet, low poly. Dragon, horse, fox, songbird, hawk, boar, deer, fish (3 kinds), snake, butterfly.
   - [ ] Gnome doorways into giant boulders. You can go inside, and you're transported into an interior of the same rock but 2x the size.
   - [ ] procedural towns, grown around a seed central location. Procedural roads between them. Each has a stable w horses you can take.
   - [ ] procedural house interiors. Hearth and chimney, table, food, dishware, beds, storage barrels, shelves, chairs, divider walls, stairs down to cellar, candles (cast light), torches, windows.

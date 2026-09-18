@@ -19,8 +19,9 @@ import THREE from '../three-instance.js'
 // something that will fit. Anywhere else the source is offered it first: a
 // creature let go of runs, swims or flies off in its own layer, and the source
 // says so. A thing no source takes back -- flora, a fish out of water -- is
-// simulated here for a moment: a fall to the ground, a roll downhill that
-// slows to a stop, or a fish flapping itself still, and then it is frozen
+// simulated here for a moment: a fall to the ground, a roll off in a random
+// direction leaning downhill that slows to a stop, or a fish flapping itself
+// still, and then it is frozen
 // where it lies; anything but a fish or a crab let go over or under water
 // comes to its surface and bobs there, turning and drifting. No physics
 // beyond that.
@@ -36,6 +37,8 @@ import THREE from '../three-instance.js'
 // ---------------------------------------------------------------------------
 
 // Metres from the hand's point to a thing's surface within which it is grabbed. A controller is a hand; the desktop's point stands off the camera and reaches further (main.js).
+// A click's ray is probed a ball of this radius at a time, so nothing thinner than it is stepped over.
+export const RAY_STEP = 0.15
 export const REACH_M = 0.25
 // Metres a thing may be along its longest side and still be lifted, and still be stowed.
 export const GRAB_MAX_M = 2
@@ -57,6 +60,9 @@ const GRAVITY = 9.8
 const ROLL_PULL = 0.5
 const ROLL_FRICTION = 0.8
 const ROLL_STILL = 0.04
+// The kick a landing gives the roll, in m/s -- on the flat, ROLL_FRICTION brings the slow end of it to rest half a metre on -- and how far the kick's heading leans downhill per unit of the ground's tilt (the horizontal part of its normal), so a steep slope all but decides it.
+export const ROLL_KICK = [0.95, 1.3]
+const ROLL_LEAN = 6
 // A thing on the ground is a ball of this fraction of its size, for the contact and the roll.
 const BALL = 0.4
 // A beached fish: the tail's beats a second and its swing as a fraction of the length at full strength; a jerk of the body every so often, a turn of up to this and a hop of this speed.
@@ -165,12 +171,31 @@ export class Hands {
   addHand(key, node, { reach = REACH_M } = {}) {
     if (this.hands.has(key)) throw new Error(`Hands.addHand: ${key} twice`)
     if (!node || !node.isObject3D) throw new Error(`Hands.addHand: ${key} needs an Object3D`)
-    this.hands.set(key, { key, node, reach, held: null, inZone: false })
+    this.hands.set(key, { key, node, reach, held: null, inZone: false, lure: { kind: null, x: 0, y: 0, z: 0 } })
   }
 
   /** The record the hand holds, or null. */
   holding(key) {
     return this._hand(key).held?.rec ?? null
+  }
+
+  /**
+   * Every held thing as a LURE, for the creatures that take an interest in one
+   * (render/wildlife.js, frogs.js, fish.js, dragons.js): its `kind` and where
+   * its centre is this frame, appended to `into`. Read fresh off the hand node
+   * rather than off the item, which is where the last update() left it.
+   */
+  lures(into) {
+    for (const hand of this.hands.values()) {
+      if (!hand.held) continue
+      hand.node.updateWorldMatrix(true, false)
+      _p.copy(HOLD_OFFSET).applyMatrix4(hand.node.matrixWorld)
+      const lure = hand.lure
+      lure.kind = hand.held.rec.kind
+      lure.x = _p.x; lure.y = _p.y; lure.z = _p.z
+      into.push(lure)
+    }
+    return into
   }
 
   _hand(key) {
@@ -201,8 +226,34 @@ export class Hands {
       this.dropped++
       return 'drop'
     }
-    const best = this._nearest(hand)
+    const p = this._point(hand)
+    const best = this._nearestAt(p.x, p.y, p.z, hand.reach)
     if (!best) return null
+    this._take(hand, best)
+    return 'pick'
+  }
+
+  /**
+   * The desktop's click: a full hand lets go as press does; an empty one
+   * takes the first thing along the ray from `origin` (a Vector3) down `dir`
+   * (a unit Vector3) within `maxDist` metres, probed a RAY_STEP at a time.
+   * Returns 'pick', 'drop' or null.
+   */
+  pressRay(key, origin, dir, maxDist, head) {
+    const hand = this._hand(key)
+    if (hand.held) return this.press(key, head)
+    if (!(maxDist > 0)) throw new Error(`Hands.pressRay: maxDist must be positive, got ${maxDist}`)
+    for (let t = 0; t <= maxDist; t += RAY_STEP) {
+      const best = this._nearestAt(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t, RAY_STEP)
+      if (!best) continue
+      this._take(hand, best)
+      return 'pick'
+    }
+    return null
+  }
+
+  /** A found thing into the hand: a loose one lifted, a source's taken from it. */
+  _take(hand, best) {
     if (best.loose) {
       this.loose.splice(this.loose.indexOf(best.loose), 1)
       hand.held = best.loose
@@ -215,7 +266,6 @@ export class Hands {
     }
     hand.inZone = false
     this.taken++
-    return 'pick'
   }
 
   // -- the backpack ------------------------------------------------------------
@@ -269,12 +319,18 @@ export class Hands {
     const prevXR = renderer.xr.enabled
     renderer.getClearColor(_col)
     const prevAlpha = renderer.getClearAlpha()
+    // THE RECT GOES ON THE TARGET, NOT THROUGH renderer.setViewport/setScissor.
+    // Those set the CANVAS's, which three scales by the pixel ratio (the rect
+    // lands at 2x on a retina screen) and copies back onto the canvas at
+    // setRenderTarget(null), shrinking the desktop view into this cell of the
+    // atlas at the next frame. A target's own are in its pixels and applied by
+    // setRenderTarget, which is why it comes after them.
+    target.viewport.set(x, y, w, h)
+    target.scissor.set(x, y, w, h)
+    target.scissorTest = true
     // XR off for the capture, or a presenting renderer photographs the headset's view.
     renderer.xr.enabled = false
     renderer.setRenderTarget(target)
-    renderer.setViewport(x, y, w, h)
-    renderer.setScissor(x, y, w, h)
-    renderer.setScissorTest(true)
     renderer.setClearColor(0x000000, 0)
     renderer.clear(true, true, false)
     if (rec) {
@@ -309,7 +365,6 @@ export class Hands {
       renderer.render(studio.scene, cam)
       studio.scene.remove(subject.mesh)
     }
-    renderer.setScissorTest(false)
     renderer.setRenderTarget(prevTarget)
     renderer.setClearColor(_col, prevAlpha)
     renderer.xr.enabled = prevXR
@@ -377,17 +432,16 @@ export class Hands {
     return _p.setFromMatrixPosition(hand.node.matrixWorld)
   }
 
-  /** The nearest thing in the hand's reach: a source's hit, or a loose thing lying where it was dropped, `{ loose }`. */
-  _nearest(hand) {
-    const p = this._point(hand)
+  /** The nearest thing within `reach` of a point: a source's hit, or a loose thing lying where it was dropped, `{ loose }`. */
+  _nearestAt(x, y, z, reach) {
     let best = null
     for (const src of this.sources) {
-      const hit = src.pickAt(p.x, p.y, p.z, hand.reach, GRAB_MAX_M)
+      const hit = src.pickAt(x, y, z, reach, GRAB_MAX_M)
       if (hit && (!best || hit.dist < best.hit.dist)) best = { src, hit }
     }
     for (const item of this.loose) {
-      const d = Math.max(0, Math.hypot(item.x - p.x, item.y - p.y, item.z - p.z) - item.rec.size / 2)
-      if (d < hand.reach && (!best || d < best.hit.dist)) best = { loose: item, hit: { dist: d } }
+      const d = Math.max(0, Math.hypot(item.x - x, item.y - y, item.z - z) - item.rec.size / 2)
+      if (d < reach && (!best || d < best.hit.dist)) best = { loose: item, hit: { dist: d } }
     }
     return best
   }
@@ -586,8 +640,16 @@ export class Hands {
         item.vy = 0
         return true
       }
+      // Off in a random direction, leaning downhill with the ground's tilt.
       item.state = 'roll'
-      item.vx = item.vz = 0
+      const n = this.walk.normalAt(item.x, item.z, SLOPE_EPS, _n)
+      const a = this.rand() * Math.PI * 2
+      let dx = Math.cos(a) + n.x * ROLL_LEAN, dz = Math.sin(a) + n.z * ROLL_LEAN
+      const l = Math.hypot(dx, dz)
+      dx /= l; dz /= l
+      const kick = between(this.rand, ROLL_KICK)
+      item.vx = dx * kick
+      item.vz = dz * kick
       return true
     }
     if (item.state === 'roll') {

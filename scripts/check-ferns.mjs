@@ -37,6 +37,7 @@ import { buildShipFernTiers } from '../src/props/fern-bank.js'
 import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { buildTextureArray } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -294,6 +295,63 @@ console.log('\n5. what a butterfly lands on\n')
   check(unit === SAMPLES, 'of unit length', `${unit}/${SAMPLES}`)
   check(aboveSeat === SAMPLES, 'between the seat and the rosette\'s height', `${aboveSeat}/${SAMPLES}`)
   check(spread > SAMPLES * 0.8, 'and out on the fronds, not stacked over the crown', `${spread}/${SAMPLES} past 5 cm of the axis`)
+}
+
+// --- her hands: a fern pulled up, and not grown back ----------------------------
+{
+  // Placed and then swept once by the rim, which is what shows a fresh fern.
+  const grow = () => { const f = build(); f.place(0, 0); f.update(0, GROUND + 1.6, 0); return f }
+  const standing = (f) => {
+    const rows = []
+    for (const tile of f.tiles.values()) for (let k = 0; k < tile.n; k++) { const id = tile.ids[k]; rows.push(`${f.instX[id].toFixed(3)},${f.instZ[id].toFixed(3)},${f.instScale[id].toFixed(4)}`) }
+    return rows.sort().join('|')
+  }
+  taken.clear()
+  const f = grow()
+  const before = f.placed
+  check(before > 0 && f.unitSpan > 0.1 && f.unitSpan < 3, 'a bed grows ferns, each a span at unit scale', `${before} ferns, ${f.unitSpan.toFixed(2)} m`)
+  let tile0 = null, id0 = -1
+  for (const tile of f.tiles.values()) {
+    for (let k = 0; k < tile.n && id0 < 0; k++) if (!f.rim.isHidden(tile.ids[k])) { tile0 = tile; id0 = tile.ids[k] }
+    if (id0 >= 0) break
+  }
+  const x = f.instX[id0], y = f.instY[id0], z = f.instZ[id0]
+  const size = f.unitSpan * f.instScale[id0]
+  const hit = f.pickAt(x, y + size * 0.5, z, 0.1, 10)
+  check(hit !== null && hit.id === id0 && hit.tile === tile0 && hit.size === size && hit.dist === 0, 'pickAt finds the fern around the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(f.pickAt(x, y + size + 5, z, 0.1, 10) === null, 'and nothing five metres above it')
+  check(f.pickAt(x, y + size * 0.5, z, 0.1, size)?.id !== id0, 'and not one at or over maxSize across: the big ones stay rooted')
+  const rec = f.take(hit, size + 0.01)
+  check(rec.kind === 'fern' && rec.name === 'fern' && rec.size === size && rec.geometry === f.rings[0].mesh.geometry && rec.geometry.getAttribute('aPropFade')?.isInstancedBufferAttribute && rec.material === f.material && rec.color.length === 3 && rec.scale[0] === f.instScale[id0] && rec.scale[1] === rec.scale[0] && rec.stowable === true,
+    'take hands back the record: the LOD0 rosette, the shared material, its tint and scale, stowable under stowMax', JSON.stringify({ size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
+  const dress = f.dress({ kind: 'fern' })
+  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on the rosette and the shared material')
+  let wrong = false
+  try { f.dress({ kind: 'carrot' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
+  let stillListed = false
+  for (let k = 0; k < tile0.n; k++) if (tile0.ids[k] === id0) stillListed = true
+  check(f.placed === before - 1 && f.tierAt[id0] === -1 && f.slotAt[id0] === -1 && !f.cards.getVisibleAt(id0) && !stillListed && taken.has('fern', x, z), 'and the fern is out of the ground, its ring slot given back, and on the registry', `${f.placed} of ${before}`)
+  const again = grow()
+  check(again.placed === before - 1 && standing(again) === standing(f), 'a bed grown again from the seed comes up without it, nothing else moved', `${again.placed} ferns`)
+  let twice = false
+  try { f.take(hit) } catch { twice = true }
+  check(twice, 'taking it twice throws')
+  {
+    // A second fern taken with stowMax under its span is not stowable.
+    let t2 = null, i2 = -1
+    for (const tile of f.tiles.values()) {
+      for (let k = 0; k < tile.n && i2 < 0; k++) if (!f.rim.isHidden(tile.ids[k]) && tile.ids[k] !== id0) { t2 = tile; i2 = tile.ids[k] }
+      if (i2 >= 0) break
+    }
+    const s2 = f.unitSpan * f.instScale[i2]
+    const h2 = f.pickAt(f.instX[i2], f.instY[i2] + s2 * 0.5, f.instZ[i2], 0.1, 10)
+    check(h2 && h2.id === i2 && f.take(h2, s2).stowable === false, 'one at or over stowMax comes up in the hand but will not go in the backpack', `${s2.toFixed(2)} m`)
+  }
+  taken.clear()
+  const whole = grow()
+  check(whole.placed === before && standing(whole) !== standing(f), 'and with the registry cleared it grows back', `${whole.placed} ferns`)
+  again.dispose(); whole.dispose(); f.dispose()
 }
 
 // ---------------------------------------------------------------------------

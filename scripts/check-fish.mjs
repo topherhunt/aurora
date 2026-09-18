@@ -20,7 +20,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED, FOLLOW_EVERY, STUN_S } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED, FOLLOW_EVERY, STUN_S, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -446,6 +446,67 @@ for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
   let frames = 0
   while (loose.alive && frames++ < 60 * 72) fish.update(head.x, head.y, head.z, DT)
   check(!loose.alive && !loose.loose, `and is forgotten past RETIRE_RADIUS ${RETIRE_RADIUS}`, `${(frames / 72).toFixed(1)} s`)
+}
+
+// --- a lure: a spider in her hand has a fish swimming through it --------------
+{
+  const head = { x: 0, y: LEVEL - 1, z: 0 }
+  const run = (s, lures, seen) => { for (let i = 0; i < s * 72; i++) { fish.update(head.x, head.y, head.z, DT, lures); if (seen) seen(i) } }
+  run(1, [])
+  const bass = fish.species.find((sp) => sp.id === 'ironscale-bass')
+  // A bass out in deep water, well off the bar and the bank, its schoolmates with it.
+  const f = bass.slots.find((g) => g.alive && !g.loose && Math.hypot(g.x, g.z) < 14 && g.x < BAR.x0 - 8)
+  head.x = f.x
+  head.z = f.z
+  const gap = (l) => Math.hypot(l.x - f.x, l.y - f.y, l.z - f.z)
+  const at = (dx, dy, dz) => ({ kind: 'spider', x: f.x + dx, y: f.y + dy, z: f.z + dz })
+  // Out of reach: a spider a metre past LURE_M, and a carrot inside it.
+  run(2, [at(LURE_M + 1, 0, 0)])
+  check(f.lure === null && f.speed !== bass.cfg.cruise * LURE_HASTE, `a spider ${LURE_M + 1} m off is not noticed`)
+  run(2, [{ ...at(1.5, 0, 0), kind: 'carrot' }])
+  check(f.lure === null, 'nor is a carrot in reach', LURES.join(', '))
+  // Under a butterfly two metres off: it is on it at once, at LURE_HASTE times its cruise, and the ear hears the dart.
+  const lure = { ...at(2, 0, 0), kind: 'butterfly' }
+  fish.update(head.x, head.y, head.z, DT, [lure])
+  const heard = fish.startled([]).includes(f)
+  check(f.lure === lure && f.speed === bass.cfg.cruise * LURE_HASTE && heard, `a butterfly ${2} m off is taken up at ${LURE_HASTE}x cruise, and startled() lists the dart`, `lure ${f.lure ? f.lure.kind : 'none'}, speed ${f.speed.toFixed(2)}, heard ${heard}`)
+  // The chase: through the hand, round on its turning circle, and through it again, over and over, near its top speed; and its schoolmates are on the hand with it.
+  let near = Infinity
+  let passes = 0
+  let out = true
+  let top = 0
+  let swarm = 0
+  run(12, [lure], () => {
+    const d = gap(lure)
+    near = Math.min(near, d)
+    if (d < 0.25) { if (out) { passes++; out = false } }
+    else if (d > 0.4) out = true
+    top = Math.max(top, Math.hypot(f.vx, f.vz))
+    swarm = Math.max(swarm, bass.slots.filter((g) => g.alive && g.lure === lure).length)
+  })
+  const want = bass.cfg.cruise * LURE_HASTE * f.pace
+  check(near < 0.1 && passes >= 4, 'it runs through the hand and comes round to run through it again', `nearest ${near.toFixed(2)} m, ${passes} passes in 12 s`)
+  check(top > want * 0.9 && top <= want * 1.01, `near ${LURE_HASTE}x its cruise the while`, `${top.toFixed(2)} of ${want.toFixed(2)} m/s`)
+  check(swarm >= 4, 'and its school swarms the hand with it', `${swarm} bass on it`)
+  // Lifted half a metre: the fish rises to the hand's height.
+  const high = at(0.8, 0.5, 0)
+  high.y = Math.min(high.y, LEVEL - 0.6)
+  const y0 = f.y
+  run(6, [high])
+  check(high.y - y0 > 0.3 && Math.abs(f.y - high.y) < 0.15, 'lifted, it rises to the hand', `${y0.toFixed(2)} -> ${f.y.toFixed(2)} m, hand at ${high.y.toFixed(2)}`)
+  // Carried off: kept to LURE_FORGET_M, then given up at a cruise.
+  const kept = at(LURE_FORGET_M - 0.5, 0, 0)
+  fish.update(head.x, head.y, head.z, DT, [kept])
+  check(f.lure === kept, `a lure carried to ${LURE_FORGET_M - 0.5} m is still chased`)
+  const gone = at(LURE_FORGET_M + 1, 0, 0)
+  fish.update(head.x, head.y, head.z, DT, [gone])
+  check(f.lure === null && f.speed === bass.cfg.cruise, `and one at ${LURE_FORGET_M + 1} m is given up, at a cruise again`, `speed ${f.speed.toFixed(2)}`)
+  run(1, [lure])
+  check(f.lure === lure, 'brought back within reach it is noticed again')
+  fish.update(head.x, head.y, head.z, DT, [])
+  check(f.lure === null && f.speed === bass.cfg.cruise, 'put away, it is forgotten')
+  run(3, [])
+  check(f.lure === null && f.speed !== bass.cfg.cruise * LURE_HASTE, 'and stays forgotten')
 }
 
 fish.dispose()

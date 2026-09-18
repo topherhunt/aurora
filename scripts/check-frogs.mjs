@@ -31,7 +31,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, DRIFT_MPS, DRIFT_TURN, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, DRIFT_MPS, DRIFT_TURN, WALK, LEAP, WET_ROUGHNESS, MORPHS, LOD_TIERS, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M } from '../src/v2/render/frogs.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, critterLodUrl, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -494,6 +494,63 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnC
   }
   check(crossed >= 3 && landed === crossed, 'a frog hopping across the seam lands along the slope it lands on', `${landed} of ${crossed}`)
   check(between > 0, 'and turns toward it in the air', `${between} mid-hop frames between the two`)
+}
+
+// --- a lure: a spider in her hand has a frog chasing it ------------------------------
+{
+  frogs.place(0, 0)
+  frogs.update(0, GROUND + 1.6, 0, DT)
+  for (const f of alive()) { f.state = 'sit'; f.left = 1e9; f.hops = 0 }
+  // A frog sat on the east bank with a clear run north along it, her head over it so it is stepped every frame.
+  const f = alive().filter((g) => g.x > HALF + 0.5 && g.x < HALF + 2 && !inRock(g.x, g.z) && Math.abs(g.z) < 20).sort((a, b) => Math.abs(a.z) - Math.abs(b.z))[0]
+  check(f !== undefined, 'a frog sits on the east bank to be lured')
+  const spider = { kind: 'spider', x: f.x, y: GROUND + 1, z: f.z }
+  const head = () => [spider.x, GROUND + 1.6, spider.z]
+  const gap = () => Math.hypot(spider.x - f.x, spider.z - f.z)
+  const run = (s, lures, seen = new Set()) => { for (let i = 0; i < s / DT; i++) { frogs.update(...head(), DT, lures); seen.add(f.state) } return seen }
+  const [x0, z0] = [f.x, f.z]
+  spider.z = z0 + LURE_M + 1
+  run(2, [spider])
+  check(!f.lured && f.state === 'sit' && f.x === x0 && f.z === z0, `a spider ${LURE_M + 1} m off is nothing to a sitting frog`)
+  run(2, [{ kind: 'carrot', x: f.x, y: GROUND + 1, z: f.z + 1 }])
+  check(!f.lured && f.state === 'sit', 'nor is a carrot a metre off: a frog wants a spider or a butterfly', LURES.join(' '))
+  spider.z = z0 + LURE_M - 0.5
+  frogs.update(...head(), DT, [spider])
+  check(f.lured && f.lure === spider && f.left <= 0.3, `a spider inside ${LURE_M} m has it, and its sit is cut short`, `left ${f.left.toFixed(2)} s`)
+  const headings = new Set()
+  let hops = 0
+  let was = f.state
+  for (let i = 0; i < 10 / DT; i++) {
+    frogs.update(...head(), DT, [spider])
+    if (f.state === 'hop' && was !== 'hop') { hops++; headings.add(Math.round(f.yaw * 10)) }
+    was = f.state
+  }
+  check(hops >= 8 && gap() < ORBIT_M + CHASE.m[1] * f.size && Math.hypot(f.x - x0, f.z - z0) > 1.5, `in ten seconds it hops up to the spider and about it`, `${hops} hops, ${gap().toFixed(2)} m off, ${Math.hypot(f.x - x0, f.z - z0).toFixed(2)} m from where it sat`)
+  check(headings.size >= 5, 'on headings all over, since it hops across the spider as often as at it', `${headings.size} headings in ${hops} hops`)
+  // Carried along the bank past the tether: the frog leaves its patch after it.
+  spider.z = f.homeZ + TETHER_M + 2.5
+  run(12, [spider])
+  const stray = Math.hypot(f.x - f.homeX, f.z - f.homeZ)
+  check(f.lured && stray > TETHER_M && gap() < 1.5, `carried ${TETHER_M + 2.5} m from its home, it follows off its ${TETHER_M} m tether`, `${stray.toFixed(2)} m from home, ${gap().toFixed(2)} m off the spider`)
+  // The spider put away: it forgets, and the tether has it home again.
+  run(1, [])
+  check(!f.lured && f.lure === null, 'the spider put away, it forgets it')
+  run(90, [])
+  check(Math.hypot(f.x - f.homeX, f.z - f.homeZ) <= TETHER_M + CHASE.m[1] * f.size, 'and a minute and a half later it is back inside its tether', `${Math.hypot(f.x - f.homeX, f.z - f.homeZ).toFixed(2)} m from home`)
+  // Carried further than LURE_FORGET_M in one bound, it is given up.
+  spider.x = f.x; spider.z = f.z + 1
+  run(1, [spider])
+  check(f.lured, 'a spider a metre off has it again')
+  spider.z = f.z + LURE_FORGET_M + 1
+  run(1, [spider])
+  check(!f.lured, `and ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
+  // A floating frog with a spider on the bank hops out of the river after it.
+  for (const g of alive()) { g.state = 'sit'; g.left = 1e9; g.hops = 0 }
+  f.state = 'drift'; f.x = f.homeX = HALF - 1.5; f.z = f.homeZ = 1; f.y = afloatY(f); f.speed = DRIFT_MPS[0]; f.spin = 0; f.heading = Math.PI / 2
+  spider.x = HALF + 0.8; spider.z = 1
+  const states = run(15, [spider])
+  check(states.has('hop') && f.state !== 'drift' && f.x > HALF && gap() < 1, 'a frog afloat with a spider held on the bank hops out of the river and up to it', `${[...states].join(' ')}; at x ${f.x.toFixed(2)}, ${gap().toFixed(2)} m off`)
+  for (const g of alive()) { g.state = 'sit'; g.left = 1e9; g.hops = 0; g.lured = false; g.lure = null }
 }
 
 // Dry land far from any water: nothing.

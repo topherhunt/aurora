@@ -9,15 +9,16 @@
 //
 // What can go wrong without throwing: a held thing drawn somewhere other than
 // the hand; a drop that never lands, or lands and never stops, or rolls with
-// its top turning against its travel, or at one even speed, or lands without
-// a sound; a dropped thing she cannot pick up again; a mushroom sinking to the
+// its top turning against its travel, or at one even speed, or lands and does
+// not roll, or lands without a sound; a dropped thing she cannot pick up
+// again; a click down a ray that takes what is past its reach; a mushroom sinking to the
 // lake bed, or one afloat that drifts up the beach; a buzz with an empty hand,
 // or none as a full one crosses the shoulder; a stow that loses the thing when
 // the backpack is full; a slot that comes back out as something else; a pool
 // that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -187,14 +188,19 @@ const build = () => {
   const times = []
   const sample = (s) => { for (let t = 0; t < s && item.state === 'roll'; t += 1 / 60) { w.hands.update(1 / 60, w.head); speeds.push(Math.hypot(item.vx, item.vz)); times.push(item.t) } }
   const x1 = item.x, z1 = item.z
+  const kick = Math.hypot(item.vx, item.vz)
+  check(kick >= ROLL_KICK[0] && kick <= ROLL_KICK[1], `the landing kicks it off at ROLL_KICK ${ROLL_KICK} m/s`, `${kick.toFixed(3)} m/s`)
   sample(0.5)
-  check(item.x > x1 + 0.05 && item.z === z1, 'it rolls downhill, +x on this slope', `${(item.x - x1).toFixed(3)} m in 0.5 s`)
+  check(item.x > x1 + 0.05, 'it rolls downhill, +x on this slope', `${(item.x - x1).toFixed(3)} m in 0.5 s`)
   const q0 = item.q.clone()
-  sample(0.2)
-  check(item.q.angleTo(q0) > 0.1, 'and turns as it rolls', `${item.q.angleTo(q0).toFixed(2)} rad in 0.2 s`)
-  // The turn's sense: the point that was on top has moved the way the ball went.
+  const dir = new THREE.Vector3(item.vx, 0, item.vz).normalize()
+  const across = new THREE.Vector3(dir.z, 0, -dir.x)
+  // A few frames only: the pull bends the heading, and a long sample's turns no longer share an axis.
+  sample(0.05)
+  check(item.q.angleTo(q0) > 0.1, 'and turns as it rolls', `${item.q.angleTo(q0).toFixed(2)} rad in 0.05 s`)
+  // The turn's sense: the point that was on top has moved the way the ball went, not across it.
   const top = new THREE.Vector3(0, 1, 0).applyQuaternion(q0.clone().invert()).applyQuaternion(item.q)
-  check(top.x > 0.05 && Math.abs(top.z) < 1e-6, 'its top rolls forward, the way it travels', `top now ${top.x.toFixed(2)} ${top.y.toFixed(2)} ${top.z.toFixed(2)}`)
+  check(top.dot(dir) > 0.05 && Math.abs(top.dot(across)) < top.dot(dir) / 4, 'its top rolls forward, the way it travels', `along ${top.dot(dir).toFixed(2)} across ${top.dot(across).toFixed(2)}`)
   // The speed: up while the slope pulls, then down to a stop well short of ROLL_MAX_S, the resistance taking it.
   sample(ROLL_MAX_S)
   const peak = speeds.indexOf(Math.max(...speeds))
@@ -211,15 +217,47 @@ const build = () => {
   w.hands.update(1 / 60, w.head)
   check(w.hands.pools.get(geo).mesh.count === 1 && item.state === 'held', 'and drawn once, at the hand')
   check(w.hands.press('right', w.head) === 'drop' && w.hands.loose.length === 1 && w.hands.loose[0] === item && item.state === 'fall', 'and dropped again')
-  // Flat ground: the roll stops early.
-  const f = build()
-  f.at(0, 0.3, 0)
-  f.hands.press('right', f.head)
-  f.at(-5, 1, 0)
-  f.hands.update(1 / 60, f.head)
-  f.hands.press('right', f.head)
-  f.run(1.5)
-  check(f.hands.loose[0].state === 'still' && Math.abs(f.hands.loose[0].x + 5) < 1e-6, 'on the flat it lands and does not roll', `state ${f.hands.loose[0].state} x ${f.hands.loose[0].x.toFixed(3)}`)
+  const slopeRun = Math.hypot(item.x - x1, item.z - z1)
+  // Flat ground: the kick alone, half a metre at least, and the roll stops early. Several drops, since the heading and the kick are rolled.
+  const runs = []
+  for (let i = 0; i < 6; i++) {
+    const f = build()
+    f.hands.rand = mulberry32(100 + i)
+    f.at(0, 0.3, 0)
+    f.hands.press('right', f.head)
+    f.at(-5, 1, 0)
+    f.hands.update(1 / 60, f.head)
+    f.hands.press('right', f.head)
+    f.run(3)
+    const it = f.hands.loose[0]
+    runs.push({ state: it.state, d: Math.hypot(it.x + 5, it.z), a: Math.atan2(it.z, it.x + 5) })
+  }
+  check(runs.every((r) => r.state === 'still' && r.d >= 0.5 && r.d < 1.2), 'on the flat it lands, rolls at least half a metre and stops', runs.map((r) => `${r.d.toFixed(2)} m`).join(' '))
+  const spread = Math.max(...runs.map((r) => r.a)) - Math.min(...runs.map((r) => r.a))
+  check(spread > Math.PI / 2, 'in a direction rolled each time', `${runs.map((r) => (r.a * 180 / Math.PI).toFixed(0)).join(' ')} deg`)
+  check(slopeRun > Math.max(...runs.map((r) => r.d)), 'and farther down the slope than on the flat', `slope ${slopeRun.toFixed(2)} m`)
+}
+
+// --- a press down a ray: what a desktop click takes ---------------------------------
+{
+  const w = build()
+  w.src.things.length = 0
+  w.src.things.push(thing('mushroom', 1.5, 1.6, 0.1, 0.2), thing('mushroom', 1, 1.6, 0.6, 0.2), thing('mushroom', 3, 1.6, 0, 0.2))
+  const origin = { x: 0, y: 1.6, z: 0 }
+  const dir = { x: 1, y: 0, z: 0 }
+  let bad = false
+  try { w.hands.pressRay('right', origin, dir, 0, w.head) } catch { bad = true }
+  check(bad, 'a ray without a reach throws')
+  check(w.hands.pressRay('right', origin, dir, 1.2, w.head) === null && w.src.taken.length === 0, 'nothing within reach along the ray: nothing taken', `${w.src.taken.length}`)
+  check(w.hands.pressRay('right', origin, dir, 2, w.head) === 'pick' && w.src.taken[0].x === 1.5, `the first thing whose surface is within RAY_STEP ${RAY_STEP} of the ray is taken, not one beside it`, `took x ${w.src.taken[0]?.x} z ${w.src.taken[0]?.z}`)
+  check(w.hands.pressRay('right', origin, dir, 2, w.head) === 'drop' && w.hands.loose.length === 1, 'a full hand drops what it holds instead')
+  w.run(2)
+  check(w.hands.pressRay('right', origin, dir, 4, w.head) === 'pick' && w.src.taken.length === 2 && w.src.taken[1].x === 3, 'and the reach goes as far as it is told', `took x ${w.src.taken[1]?.x}`)
+  w.hands.press('right', w.head)
+  w.run(3)
+  const loose = w.hands.loose.find((it) => it.state === 'still')
+  const asked = w.src.taken.length
+  check(loose !== undefined && w.hands.pressRay('right', { x: loose.x - 1, y: loose.y, z: loose.z }, dir, 2, w.head) === 'pick' && w.hands.loose.length === 1 && w.hands.holding('right') !== null && w.src.taken.length === asked, 'a loose thing on the ground is taken down a ray too, the bed not asked')
 }
 
 // --- a creature the source takes back leaves the hands ----------------------------
@@ -458,7 +496,7 @@ const build = () => {
   w.hands.press('right', w.head)
   const slot = w.hands.pack(w.hands.holding('right'))
   const log = []
-  const target = { isWebGLRenderTarget: true }
+  const target = new THREE.WebGLRenderTarget(768, 384)
   const clear = new THREE.Color(0x203040)
   const renderer = {
     xr: { enabled: true },
@@ -468,9 +506,13 @@ const build = () => {
     getClearColor(c) { return c.copy(clear) },
     getClearAlpha() { return 1 },
     setClearColor(c, a) { clear.set(c); log.push(['clear', clear.getHex(), a]) },
-    setViewport(x, y, w, h) { log.push(['viewport', x, y, w, h]) },
-    setScissor(x, y, w, h) { log.push(['scissor', x, y, w, h]) },
-    setScissorTest(on) { log.push(['scissorTest', on]) },
+    // The canvas's own viewport and scissor, as three keeps them: setRenderTarget(null) puts the canvas back to whatever these last were, scaled by the pixel ratio.
+    viewport: new THREE.Vector4(0, 0, 1280, 720),
+    scissor: new THREE.Vector4(0, 0, 1280, 720),
+    scissorTest: false,
+    setViewport(x, y, w, h) { if (x.isVector4) this.viewport.copy(x); else this.viewport.set(x, y, w, h); log.push(['viewport', ...this.viewport.toArray()]) },
+    setScissor(x, y, w, h) { if (x.isVector4) this.scissor.copy(x); else this.scissor.set(x, y, w, h); log.push(['scissor', ...this.scissor.toArray()]) },
+    setScissorTest(on) { this.scissorTest = on; log.push(['scissorTest', on]) },
     clear(c, d, s) { log.push(['cleared', this.xr.enabled, this.target === target]) },
     render(scene, cam) { log.push(['render', scene, cam, this.xr.enabled, this.target === target]) },
   }
@@ -479,8 +521,11 @@ const build = () => {
   const render = log.find((e) => e[0] === 'render')
   const cleared = log.find((e) => e[0] === 'cleared')
   check(render && render[3] === false && render[4] === true && cleared[1] === false && cleared[2] === true, 'cleared and rendered into the target with XR off')
-  check(log.some((e) => e[0] === 'viewport' && e[1] === 192 && e[3] === 192) && log.some((e) => e[0] === 'scissor' && e[2] === 0 && e[4] === 192) && log.some((e) => e[0] === 'scissorTest' && e[1] === true), 'within the rect')
-  check(renderer.target === null && renderer.xr.enabled === true && clear.getHex() === 0x203040 && log[log.length - 1][0] === 'clear' && log[log.length - 1][2] === 1 && log.some((e) => e[0] === 'scissorTest' && e[1] === false), 'and the target, XR, the scissor and the clear colour put back')
+  // The rect on the target itself, in its pixels, which setRenderTarget applies: three scales renderer.setViewport/setScissor by the pixel ratio and copies them back onto the canvas at setRenderTarget(null), which shrank the desktop view into a cell of the atlas.
+  const targetSet = log.findIndex((e) => e[0] === 'target' && e[1] === target)
+  check(targetSet >= 0 && target.viewport.equals(new THREE.Vector4(192, 0, 192, 192)) && target.scissor.equals(target.viewport) && target.scissorTest === true, "within the rect, set as the target's own")
+  check(!log.some((e) => e[0] === 'viewport' || e[0] === 'scissor' || e[0] === 'scissorTest') && renderer.viewport.equals(new THREE.Vector4(0, 0, 1280, 720)) && renderer.scissor.equals(new THREE.Vector4(0, 0, 1280, 720)) && renderer.scissorTest === false, "and never through the renderer's, the canvas's own untouched", `viewport ${renderer.viewport.toArray()} scissor ${renderer.scissor.toArray()}`)
+  check(renderer.target === null && renderer.xr.enabled === true && clear.getHex() === 0x203040 && log.some((e) => e[0] === 'clear' && e[2] === 1), 'and the target, XR and the clear colour put back')
   const scene = render[1]
   const cam = render[2]
   const lights = scene.children.filter((o) => o.isLight)

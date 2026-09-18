@@ -578,6 +578,16 @@ export async function run() {
     }
     check(disagree === 0 && wetSeen > 0, 'negative exactly where levelAt is wet, on every body', `${disagree} of ${samples} disagree, ${wetSeen} wet`)
 
+    // The current the boats drift on (flowAt): the river's downstream direction at full weight in its run, fading over the same reach the shader's frame does at either end, and nothing off the river or on a lake. Level ground puts the source at the first authored point, so the flow runs +x.
+    const f = { x: 0, z: 0 }
+    const flowAt = (x, z) => ws.flowAt(x, z, f)
+    check(flowAt(0, -300) === 1 && near(f.x, 1) && near(f.z, 0), 'on the river the current runs downstream at full weight', `${flowAt(0, -300)} along (${f.x.toFixed(3)}, ${f.z.toFixed(3)})`)
+    check(flowAt(0, -295) === 1 && near(f.x, 1) && near(f.z, 0) && flowAt(0, -291) === 0, 'across its authored width, and not past it', `${flowAt(0, -295)} at 5 m, ${flowAt(0, -291)} at 9 m`)
+    check(flowAt(0, 0) === 0 && flowAt(150, 150) === 0, 'and none on a lake or on dry ground')
+    const fadeM = Math.max(FLOW_FADE_HALF_WIDTHS * HW, FLOW_FADE_MIN)
+    check(near(flowAt(-200 + fadeM / 2, -300), 0.5) && near(flowAt(200 - fadeM / 2, -300), 0.5) && flowAt(-200 + fadeM + 1, -300) === 1,
+      'fading in from the source and out to the mouth over the frame\'s reach', `${flowAt(-200 + fadeM / 2, -300).toFixed(3)} and ${flowAt(200 - fadeM / 2, -300).toFixed(3)} at half of ${fadeM} m`)
+
     const threw = (fn) => {
       try {
         fn()

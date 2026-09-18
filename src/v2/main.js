@@ -683,6 +683,11 @@ function saveGame() {
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
+    held: {},
+  }
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec !== null) doc.held[key] = hands.pack(rec)
   }
   localStorage.setItem(SAVE_KEY, JSON.stringify(doc))
   console.log(`[v2] saved at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
@@ -696,6 +701,18 @@ function applySave(doc) {
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
   backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
+  // What each hand held goes back into that hand, or, while its source has
+  // not landed the asset it is dressed with, into a free backpack slot. A
+  // save from before the hands were written has no `held`.
+  const held = doc.held ?? {}
+  for (const key of HAND_KEYS) {
+    if (!(key in held)) continue
+    const slot = held[key]
+    if (hands.dressed(slot) !== null) { hands.give(key, slot, handsHead()); continue }
+    const free = backpack.indexOf(null)
+    if (free >= 0) { backpack[free] = slot; console.warn(`[v2] load: the ${slot.kind} in the ${key} hand is not dressed yet, put in slot ${free}`) }
+    else console.warn(`[v2] load: the ${slot.kind} in the ${key} hand is not dressed yet and the backpack is full; lost`)
+  }
   paintBackpack()
 }
 
@@ -1391,12 +1408,9 @@ function buildDebugView() {
 // What she needs to know, as bullets on one canvas plane, wrapped to the
 // panel's width. Text past the plane's foot is clipped with a console warning;
 // the fix is shorter copy or a taller QUEST_HELP_H, never smaller type.
+// Intentionally vague. Previously this help panel had much more detailed information, but it was nearly all spoilers or self-evident things that offend the reader's intelligence.
 const QUEST_HELP = [
-  'You find yourself in a strange and wild land, full of mysteries to discover. Here be dragons, and treasures. No being is your friend; no being is your enemy.',
-  'Headset: either stick walks and turns; click a stick to recentre. B or Y opens and closes this menu, and so does walking away from it. Point a controller at a button and pull the trigger.',
-  'Desktop: WASD or the arrows walk and turn, drag the mouse to look, Escape is this menu. There are more keys than these.',
-  'Settings chooses walking or teleporting, and keeps your place on this device between visits.',
-  'The rest is yours to find out. Reach for what interests you: some of what this land holds may be of use, and what you do here leaves its mark.',
+  'You find yourself in a strange and wild land, full of secrets to explore and dragons to meet.',
 ]
 
 function buildHelpView() {
@@ -1522,24 +1536,37 @@ function buildQuestPanel() {
     })
   }
 
-  // Flatscreen click support on a desktop, before entering XR.
+  // Flatscreen click support on a desktop, before entering XR. With the menu
+  // open a click presses what is under the cursor; with it closed a click on
+  // the world reaches the desk hand down the camera ray, to DESK_CLICK_M, for
+  // the first thing it can take (or drops what the hand holds). A click is a
+  // press that moved under DESK_CLICK_PX, so a drag-look never picks.
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
+  let downX = 0
+  let downY = 0
+  renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
   window.addEventListener('pointerup', (e) => {
     if (sceneEl.is('vr-mode')) return
     const cam = sceneEl.camera
     if (!cam) return
+    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
+    raycaster.setFromCamera(pointer, cam)
     // THE VISIBILITY CHECK IS NOT BELT AND BRACES. Raycaster does not consult
     // `visible` -- it tests layers and then calls raycast() -- so a closed menu
     // is still fully clickable unless the caller says otherwise, and a stray
     // click on empty ground would toggle whatever button happened to be behind
     // it. Same reason the hover loop below bails, and why questHitMeshes lists
     // only the open view's grid.
-    if (!questPanelGroup.visible) return
-    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
-    raycaster.setFromCamera(pointer, cam)
-    const act = questActionAt(raycaster.intersectObjects(questHitMeshes)[0])
-    if (act) act()
+    if (questPanelGroup.visible) {
+      const act = questActionAt(raycaster.intersectObjects(questHitMeshes)[0])
+      if (act) act()
+      return
+    }
+    if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
+    if (editor && editor.active) return
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
+    hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M, handsHead())
   })
 }
 
@@ -1843,8 +1870,8 @@ function updateQuestStats() {
       // this sits twenty below it is a stutter, not a stable frame.
       ['LOW ', '#7f95b4'], [low5.toFixed(0).padEnd(4), rate(low5)],
       ['MS ', '#7f95b4'], [avgMs.toFixed(1).padEnd(6), fpsColor],
-      ['TRIS ', '#7f95b4'], [kilo(info.render.triangles).padEnd(7), '#7fd7ff'],
-      ['CALLS ', '#7f95b4'], [String(info.render.calls).padEnd(5), '#ff9a7a'],
+      ['TRIS ', '#7f95b4'], [kilo(mainRender.triangles).padEnd(7), '#7fd7ff'],
+      ['CALLS ', '#7f95b4'], [String(mainRender.calls).padEnd(5), '#ff9a7a'],
       // Metres to the ground under the cursor, the only ruler this view has,
       // and the world point it lands on. `-` is the ray reaching the horizon,
       // not a failure. QUEST_STATS_W is sized to this row.
@@ -2089,6 +2116,15 @@ let spiders = null
 let wildlife = null
 let snowmen = null
 let hands = null
+const HAND_KEYS = ['left', 'right', 'desk']
+// The desk hand: a node under the camera, empty at DESK_HAND_REST, and with a
+// thing in it moved out to the bottom-right corner of the view so the thing
+// shows partly off screen, as if carried near her face by a hand out of frame.
+let deskHand = null
+const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
+// A desktop click within this many px of its press picks along the camera ray this far.
+const DESK_CLICK_PX = 5
+const DESK_CLICK_M = 2
 let roosts = null
 let rowboats = null
 let boats = null
@@ -2783,9 +2819,9 @@ async function bootWorld() {
   })
   window.v2snowmen = snowmen
 
-  // Her hands (hands.js): what a controller takes from the beds and the
-  // creature layers, holds, drops and stows, so after every layer it picks
-  // from. The desktop's hand is a point a little under and ahead of the camera
+  // Her hands (hands.js): what a controller takes from the beds, the ground
+  // and the creature layers, holds, drops and stows, so after every layer it
+  // picks from; the roosts come later and register their eggs themselves. The desktop's hand is a point a little under and ahead of the camera
   // with a longer reach, so G takes what the cursor is looking at up close.
   await bootStep('hands')
   hands = new Hands(scene, {
@@ -2809,10 +2845,15 @@ async function bootWorld() {
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
   hands.addSource(crabs, 'crab')
+  hands.addSource(ferns, 'fern')
+  hands.addSource(litter, 'pebble')
+  hands.addSource(grasshoppers, 'grasshopper')
+  hands.addSource(bones, bones.kinds)
+  hands.addSource(rocks, 'rock')
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
-  const deskHand = new THREE.Group()
-  deskHand.position.set(0.15, -0.15, -0.45)
+  deskHand = new THREE.Group()
+  deskHand.position.set(DESK_HAND_REST.x, DESK_HAND_REST.y, DESK_HAND_REST.z)
   camera.add(deskHand)
   hands.addHand('desk', deskHand, { reach: 4 * REACH_M })
   window.v2hands = hands
@@ -2829,6 +2870,7 @@ async function bootWorld() {
   roosts.bakeCards(renderer)
   console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
   window.v2roosts = roosts
+  hands.addSource(roosts, 'egg')
   dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife, water: waterSurfaces })
   for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
   dragons.ready.then(() => {
@@ -3469,7 +3511,8 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest mushroom, carrot, spider, butterfly, fish or crab within reach of a hand under the camera, and let go of what it holds; the trigger in the headset' },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds; the trigger in the headset' },
+      { keys: 'click', what: `take the thing under the cursor within ${DESK_CLICK_M} m, and let go of what the hand holds; with the backpack open, press a slot to stow, take or swap` },
       { keys: 'v', what: 'put what the hand holds in the backpack, when it is under a metre; over the shoulder in the headset' },
     ],
   },
@@ -4156,8 +4199,16 @@ let avgMs5 = 0
 let worstMs5 = 0
 let lastPanelAt = 0
 let shownError = ''
+// The main render's counts, copied out in tock() the moment it finishes.
+// renderer.info resets at the START of every renderer.render(), and the skymap
+// (at night) and both probes each render before the frame's real pass -- so
+// read live from tick(), info holds whichever pass ran last: the aurora's one
+// quad, 2 tris and 1 call. Both stats panels read this copy instead.
+const mainRender = { triangles: 0, calls: 0 }
 const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
 const headTmp = new THREE.Vector3()
+// The things in her hands this frame, as the creature layers read them (hands.js lures).
+const lures = []
 
 // ---------------------------------------------------------------------------
 // VR LOCOMOTION. The binding, in one place, because a control scheme spread
@@ -4250,6 +4301,21 @@ function readQuestFallback(st) {
 // Her head for the hands: where it is and the bearing it faces, the frame the
 // backpack zone is judged in. One object, rewritten each call.
 const handsHeadTmp = { x: 0, y: 0, z: 0, yaw: 0 }
+// The desk hand's node under the camera: at rest while empty, and with a thing
+// of size s in it at the bottom-right corner of the view, far enough out that
+// the thing fits the frustum's height and set 0.35 s inside each edge so about
+// a third of it hangs off screen. Nothing in XR, where the grips are the hands.
+function placeDeskHand() {
+  if (sceneEl.is('vr-mode')) return
+  const held = hands.holding('desk')
+  if (held === null) { deskHand.position.set(DESK_HAND_REST.x, DESK_HAND_REST.y, DESK_HAND_REST.z); return }
+  const s = held.size
+  const d = Math.max(0.45, 1.6 * s)
+  const halfH = d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+  const halfW = halfH * camera.aspect
+  deskHand.position.set(halfW - 0.35 * s, -(halfH - 0.35 * s), -d)
+}
+
 function handsHead() {
   player.headPosition(headTmp)
   handsHeadTmp.x = headTmp.x
@@ -4749,15 +4815,14 @@ function cursorPick() {
 }
 
 function panelStats() {
-  const info = renderer.info
   const st = terrain.stats
   const h = height.heightAt(headTmp.x, headTmp.z)
   const cursor = cursorPick()
   return {
     fps: avgMs > 0 ? 1000 / avgMs : null,
     ms: avgMs,
-    tris: info.render.triangles,
-    calls: info.render.calls,
+    tris: mainRender.triangles,
+    calls: mainRender.calls,
     // "resident" is chunks holding a geometry slot; "drawn" is the subset the
     // selection actually renders this frame. The gap between them IS the
     // streaming margin, so showing one without the other hides the thing worth
@@ -4978,28 +5043,36 @@ function tick() {
   // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
   // shows: nine layers behind one switch is exactly the shape where a guess at
   // which one costs what is worthless.
+  //
+  // WHAT SHE HOLDS IS A LURE to the fish, the frogs, the wildlife and the
+  // dragons, each layer choosing what it wants from the list (hands.js lures):
+  // where the hand nodes are this frame, ahead of hands.update, which only
+  // moves the items to them.
+  lures.length = 0
+  hands.lures(lures)
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
   stepAnimal('fish', () => {
-    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt)
+    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt, lures)
     else fish.follow(headTmp.x, headTmp.y, headTmp.z)
   })
-  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, dt, lures))
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
   // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
-  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness, lures))
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt))
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident.
   stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
-    dragons.update(headTmp.x, headTmp.y, headTmp.z, dt)
+    dragons.update(headTmp.x, headTmp.y, headTmp.z, dt, lures)
   })
   bankAnimalMs(dt)
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
+  placeDeskHand()
   hands.update(dt, handsHead())
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
@@ -5061,7 +5134,15 @@ function tick() {
 // renderer.setAnimationLoop -- see quest-main.js's header for why calling
 // setAnimationLoop here would silently stop laser-controls (and any other
 // A-Frame component) from ticking at all.
-AFRAME.registerComponent('v2-quest-tick', { tick: () => tick() })
+AFRAME.registerComponent('v2-quest-tick', {
+  tick: () => tick(),
+  // After A-Frame's renderer.render, so this is the main pass and not the last
+  // offscreen one -- see mainRender.
+  tock: () => {
+    mainRender.triangles = renderer.info.render.triangles
+    mainRender.calls = renderer.info.render.calls
+  },
+})
 sceneEl.setAttribute('v2-quest-tick', '')
 
 // §18: editing is a desktop activity and the gizmo has no controller binding.

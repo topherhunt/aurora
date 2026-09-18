@@ -99,6 +99,15 @@ export const STUN_S = [1, 2]
 export const LOOSE_HASTE = 3
 const LOOSE_JINK = 1.2
 
+// A LURE. A spider or butterfly in her hand (hands.js lures) within LURE_M of a fish has it swimming at the hand at LURE_HASTE times its cruise and LURE_AGILITY times its agility, kept to LURE_FORGET_M, its station forgotten. The walk swings onto the hand's bearing at LURE_TURN radians a second and no faster, with its jitter still on it, so the fish runs through the hand and comes round on a circle of its speed over LURE_TURN to run through it again.
+export const LURES = ['spider', 'butterfly']
+export const LURE_M = 3
+export const LURE_FORGET_M = 6
+export const LURE_HASTE = 3
+const LURE_AGILITY = 2
+export const LURE_TURN = 3
+const NO_LURES = []
+
 /**
  * The species table. Speeds in m/s, times in seconds, depths as a fraction of
  * the water column measured up from the bed. `minDepth` is the column a
@@ -183,6 +192,7 @@ export class Fish {
     this.head = { x: 0, y: 0, z: 0 }
     // The fish that set off at DART_SPEED or more this frame, for startled().
     this.startles = []
+    this.lures = NO_LURES
     if (assets) {
       for (const sp of this.species) this.setAsset(sp, this.assetFor(assets, sp))
       this.ready = Promise.resolve(true)
@@ -229,6 +239,8 @@ export class Fish {
         mood: 'glide', moodLeft: 0, speed: cfg.cruise,
         // Let go of by her hand: no school, stunned for `stun` seconds, then darting from her head (stepLoose).
         loose: false, stun: 0,
+        // The hands.js lure it is swimming at, or null.
+        lure: null,
       })
     }
     const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), material, cfg.count)
@@ -436,6 +448,7 @@ export class Fish {
       f.phase = rand() * TAU
       f.homing = 0
       f.boltIn = 0
+      f.lure = null
       f.mood = 'glide'
       f.moodLeft = cfg.glide ? between(rand, cfg.glide) : cfg.fidgetEvery ? between(rand, cfg.fidgetEvery) : Infinity
       f.speed = cfg.cruise
@@ -576,6 +589,7 @@ export class Fish {
     f.amp = 0
     f.homing = 0
     f.boltIn = 0
+    f.lure = null
     f.mood = 'glide'
     f.moodLeft = Infinity
     f.speed = 0
@@ -699,10 +713,12 @@ export class Fish {
    * One frame with her head under: the pool follows her, then every school
    * and every fish is stepped and the instance buffers written.
    */
-  update(x, y, z, dt) {
+  /** `lures`: hands.js lures() this frame, the spiders and butterflies among them swum at. */
+  update(x, y, z, dt, lures = NO_LURES) {
     this._follow(x, y, z, 0)
     this.frame++
     this.time += dt
+    this.lures = lures
 
     for (const sp of this.species) {
       const cfg = sp.cfg
@@ -853,10 +869,28 @@ export class Fish {
     return into
   }
 
+  /** The lure this fish is on this frame: the nearest of this.lures it wants, noticed within LURE_M of the hand and kept to LURE_FORGET_M; null when there is none. */
+  _lure(f) {
+    let lure = null
+    let best = Infinity
+    for (const l of this.lures) {
+      if (!LURES.includes(l.kind)) continue
+      const d = Math.hypot(l.x - f.x, l.y - f.y, l.z - f.z)
+      if (d < best) { best = d; lure = l }
+    }
+    return lure !== null && best <= (f.lure ? LURE_FORGET_M : LURE_M) ? lure : null
+  }
+
   stepFish(sp, f, dt) {
     const cfg = sp.cfg
     const rand = this.rand
     const school = f.school
+
+    // The lure: taken up at a dart the ear hears, and let go of at a cruise.
+    const lure = this._lure(f)
+    if (lure !== null && f.lure === null) { f.speed = cfg.cruise * LURE_HASTE; this.setOff(f) }
+    else if (lure === null && f.lure !== null) f.speed = cfg.cruise
+    f.lure = lure
 
     // The startle wave reaching this fish: it bolts at its own speed, a little off the shoal's line, and the wander is re-aimed so it stays on that line when the bolt ends.
     if (f.boltIn > 0) {
@@ -918,7 +952,14 @@ export class Fish {
         f.wander = Math.atan2(hz, hx)
       }
     }
-    const stray = ad / cfg.schoolRadius
+    if (f.lure) {
+      const off = Math.atan2(f.lure.z - f.z, f.lure.x - f.x) - f.wander
+      const swing = Math.atan2(Math.sin(off), Math.cos(off))
+      f.wander += Math.max(-LURE_TURN * dt, Math.min(LURE_TURN * dt, swing))
+      dx = Math.cos(f.wander)
+      dz = Math.sin(f.wander)
+    }
+    const stray = f.lure ? 0 : ad / cfg.schoolRadius
     if (stray > 0.6) {
       const pull = f.mood === 'bolt' ? 3 : Math.min(2.5, (stray - 0.6) * 1.5)
       dx += (ax / ad) * pull
@@ -943,24 +984,24 @@ export class Fish {
     }
     const dl = Math.hypot(dx, dz) || 1
     // A fish left behind swims harder to rejoin: without this a shoal that cruises slower than its anchor drifts never catches it.
-    const speed = f.speed * f.pace * Math.max(1, Math.min(2.5, stray))
+    const speed = (f.lure ? cfg.cruise * LURE_HASTE : f.speed) * f.pace * Math.max(1, Math.min(2.5, stray))
     const wantX = (dx / dl) * speed
     const wantZ = (dz / dl) * speed
-    const k = Math.min(1, cfg.agility * dt)
+    const k = Math.min(1, cfg.agility * (f.lure ? LURE_AGILITY : 1) * dt)
     f.vx += (wantX - f.vx) * k
     f.vz += (wantZ - f.vz) * k
 
-    // Depth: chase the fish's own place in the column, bobbing slowly about it; the school's anchor y draws it too so a shoal rises and sinks together.
+    // Depth: chase the fish's own place in the column, bobbing slowly about it; the school's anchor y draws it too so a shoal rises and sinks together. A lured fish chases the hand's height, within the column.
+    const lo = f.bed + BED_MARGIN + f.margin
+    const hi = f.level - SURFACE_MARGIN - f.margin
     const bob = 0.06 * Math.sin(this.time * TAU * f.bobHz + f.bobAt)
-    const target = 0.5 * (this.column(f.bed, f.level, f.depthFrac + bob, f.margin) + school.y)
+    const target = f.lure ? Math.max(lo, Math.min(hi, f.lure.y)) : 0.5 * (this.column(f.bed, f.level, f.depthFrac + bob, f.margin) + school.y)
     const wantY = Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) * Math.max(0.3, speed / cfg.cruise)
     f.vy += (wantY - f.vy) * Math.min(1, 2 * dt)
 
     f.x += f.vx * dt
     f.y += f.vy * dt
     f.z += f.vz * dt
-    const lo = f.bed + BED_MARGIN + f.margin
-    const hi = f.level - SURFACE_MARGIN - f.margin
     if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
     if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
   }

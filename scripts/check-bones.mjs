@@ -18,6 +18,7 @@ import {
 import { GEN_PROP_LODS, PROP_MESH_TIERS, PROP_STEPS, propCull, propReach } from '../src/v2/render/gen-props.js'
 import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from '../src/v2/render/critters.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -304,6 +305,64 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   a.update(0, 1.6, 0)
   check(keyOf(a) === before, 'and walking back finds them where they were')
   a.dispose(); b.dispose(); c.dispose()
+}
+
+// --- her hands --------------------------------------------------------------
+{
+  console.log('\nher hands')
+  taken.clear()
+  const keyOf = (s) => [...s.tiles.values()].flatMap((t) => Array.from(t.ids.subarray(0, t.n), (id) =>
+    `${s.variantAt[id]}@${s.instX[id].toFixed(3)},${s.instZ[id].toFixed(3)}`)).sort().join('|')
+  // Placed and swept from over the first skull, or from (x, z), so it is shown.
+  const skullOf = (b) => [...b.tiles.values()].find((t) => t.n && !b.isSkeleton[b.variantAt[t.ids[0]]])
+  const grow = (x = null, z = null) => {
+    const b = place(flatField(40), DRY, 3)
+    const t = skullOf(b)
+    b.update(x ?? b.instX[t.ids[0]], 41.6, z ?? b.instZ[t.ids[0]])
+    return b
+  }
+  const b = grow()
+  check(b.kinds.length === 2 && b.kinds.includes('skull') && b.kinds.includes('skeleton'), 'the kinds a hand takes are the variants', b.kinds.join(' '))
+  const tile = skullOf(b)
+  const id = tile.ids[0]
+  const v = b.variantAt[id]
+  const span = b.instSize[id]
+  const x = b.instX[id], z = b.instZ[id]
+  const mid = b.instY[id] + (b.vHeight[v] * span / b.vLod[v]) * 0.5
+  check(!b.rim.isHidden(id) && span < 2, 'a skull under two metres is shown', `${span.toFixed(2)} m`)
+  const hit = b.pickAt(x, mid, z, 0.1, 2)
+  check(hit !== null && hit.tile === tile && hit.id === id && hit.dist === 0 && hit.size === span, 'pickAt at its middle hits it, its size its longest axis')
+  check(b.pickAt(x, mid + 5, z, 0.1, 2) === null, 'and nothing five metres above it')
+  check(b.pickAt(x, mid, z, 0.1, span) === null, 'nor one at or over maxSize')
+  const skel = [...b.tiles.values()].find((t) => t.n && b.isSkeleton[b.variantAt[t.ids[0]]])
+  const sid = skel.ids[0]
+  check(b.instSize[sid] >= 2 && b.pickAt(b.instX[sid], b.instY[sid], b.instZ[sid], 100, 2) === null, 'a skeleton is metres long and never offered under the two-metre cap', `${b.instSize[sid].toFixed(2)} m`)
+  const placedWere = b.placed, usedWere = b.stats.used
+  const c = b.batch.getColorAt(id, new THREE.Color()).getHex()
+  const rec = b.take(hit, 1)
+  check(rec.kind === 'skull' && rec.name === 'elk skull' && rec.size === span && rec.geometry === b.bank.tiers[0].geometries[v] && rec.material === b.meshMaterials[v] && rec.stowable === (span < 1), 'take: the skull on its pick and its material, stowable under a metre')
+  check(Math.abs(rec.scale[0] - span / b.vLod[v]) < 1e-6 && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && new THREE.Color().setRGB(...rec.color).getHex() === c, 'scaled by its size over the pick, in the ground\'s tint', JSON.stringify(rec.scale))
+  check(tile.n === 0 && b.placed === placedWere - 1 && b.stats.used === usedWere - 1 && !b.batch.getVisibleAt(id) && b.tierAt[id] === -1, 'the tile is empty and the instance back in the pool')
+  check(taken.has('skull', x, z), 'its spot is recorded')
+  check(b.pickAt(x, mid, z, 0.1, 2)?.id !== id, 'and it cannot be taken twice')
+  let threw = false
+  try { b.take(hit, 1) } catch { threw = true }
+  check(threw, 'taking it twice throws')
+  const d = b.dress({ kind: 'skull' })
+  check(d.geometry === rec.geometry && d.material === rec.material, 'dress: the skull\'s pick and material')
+  const ds = b.dress({ kind: 'skeleton' })
+  check(ds.geometry === b.bank.tiers[0].geometries[1 - v] && ds.material === b.meshMaterials[1 - v], 'and the skeleton\'s for a skeleton')
+  threw = false
+  try { b.dress({ kind: 'fern' }) } catch { threw = true }
+  check(threw, 'dress throws on another kind')
+  b.update(x, 41.6, z)
+  check(b.placed === placedWere - 1 && b.stats.used === placedWere - 1, 'a frame later the empty tile is swept without harm')
+  const again = grow(x, z)
+  check(again.placed === placedWere - 1 && keyOf(again) === keyOf(b), 'placed again the tile lies empty and nothing else moved', `${again.placed} finds`)
+  taken.clear()
+  const whole = grow(x, z)
+  check(whole.placed === placedWere && keyOf(whole) !== keyOf(b), 'and with the registry cleared the skull is back')
+  b.dispose(); again.dispose(); whole.dispose()
 }
 
 console.log(failures ? `\n${failures} bones check(s) FAILED` : '\nall bones checks passed')

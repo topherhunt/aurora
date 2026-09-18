@@ -34,6 +34,7 @@ import {
   Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, CARD_EVERY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_MAX, DIVE_PITCH, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, HUNT_M,
   STRIKE_M, LAND_M, REST_S, FIRST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly,
+  LURES, LURE_M, LURE_FORGET_M, MENACE_RUN_M, MENACE_M,
 } from '../src/v2/render/dragons.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
@@ -44,6 +45,7 @@ import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, cullRange, lodReach } from '
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -360,6 +362,69 @@ console.log('\nroost egg')
   }
   check(hillEggs === eggCount && alongOff < 1e-3, 'on a 20-degree hillside every egg is lifted from its bowl\'s centre along the hill\'s normal', `${hillEggs} eggs, off the normal by ${alongOff.toExponential(1)} m`)
   check(hillLieLo >= EGG_LIE[0] - 1e-6 && hillLieHi <= EGG_LIE[1] + 1e-6 && hillRestOff < 0.01, 'laid over from that normal within EGG_LIE, and resting on the tilted floor', `lie ${fmt(hillLieLo)}..${fmt(hillLieHi)}, rest off ${hillRestOff.toExponential(1)} m`)
+}
+
+// --- the egg in her hand ------------------------------------------------------------------
+console.log('\nroost egg taken')
+{
+  const pickOf = (w, h, d) => {
+    const g = new THREE.SphereGeometry(0.5, 48, 32).scale(w, h, d).translate(0, h / 2, 0)
+    return { pos: g.getAttribute('position').array, nrm: g.getAttribute('normal').array, uv: g.getAttribute('uv').array, idx: Array.from(g.index.array), map: null }
+  }
+  const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
+  taken.clear()
+  // Grown and swept from over one nest with an egg -- the first, or the one at (x, z) -- so the eggs in sight are shown.
+  const grow = (x = null, z = null) => {
+    const r = new Roosts(new THREE.Scene(), flatField(GROUND), DRY, LAYERS, { seed: 5, egg })
+    r.place(0, 0)
+    const t = x === null ? [...r.tiles.values()].find((t) => t.n === 2).site : { x, z }
+    r.update(t.x, GROUND + 1.7, t.z)
+    return r
+  }
+  const r = grow()
+  const tile = [...r.tiles.values()].find((t) => t.n === 2 && !r.rim.isHidden(t.ids[1]))
+  const first = [...r.tiles.values()].find((t) => t.n === 2).site
+  const at = { x: first.x, z: first.z }
+  const id = tile.ids[1]
+  const eggsWere = r.stats.eggs, placedWere = r.stats.placed, usedWere = r.stats.used
+  const hit = r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, 2)
+  check(hit !== null && hit.tile === tile && hit.id === id && hit.dist === 0 && hit.size === r.instR[id], 'pickAt at an egg\'s centre hits it, its size its height', hit ? `${fmt(hit.size)} m` : 'null')
+  check(r.pickAt(r.instX[id], r.instY[id] + 5, r.instZ[id], 0.1, 2) === null, 'and nothing five metres above it')
+  check(r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, r.instR[id]) === null, 'nor one at or over maxSize')
+  check(r.pickAt(tile.site.x, tile.site.y, tile.site.z, 0.1, 100)?.id !== tile.ids[0], 'the roost itself is never offered')
+  const c = r.batch.getColorAt(id, new THREE.Color()).getHex()
+  const rec = r.take(hit, 1)
+  check(rec.kind === 'egg' && rec.name === 'dragon egg' && rec.size === hit.size && rec.geometry === egg.geometry && rec.material === r.eggMaterial && rec.stowable === true, 'take: a stowable dragon egg on the pick\'s geometry and the shell\'s material')
+  check(Math.abs(rec.scale[0] - rec.size / egg.bounds.height) < 1e-6 && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && new THREE.Color().setRGB(...rec.color).getHex() === c, 'scaled by its height over the pick, in its clutch tint', JSON.stringify(rec.scale))
+  check(tile.n === 1 && r.stats.eggs === eggsWere - 1 && r.stats.placed === placedWere && r.stats.used === usedWere - 1 && !r.batch.getVisibleAt(id) && r.tierAt[id] === -1, 'the nest stands with no egg, the instance back in the pool', `${r.stats.eggs} eggs, ${r.stats.used} used`)
+  check(taken.has('egg', tile.site.x, tile.site.z), 'the nest is recorded')
+  check(r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, 2)?.id !== id, 'and the egg cannot be taken twice')
+  const d = r.dress({ kind: 'egg' })
+  check(d.geometry === egg.geometry && d.material === r.eggMaterial, 'dress: the pick\'s geometry and the shell\'s material')
+  let threw = false
+  try { r.dress({ kind: 'fern' }) } catch { threw = true }
+  check(threw, 'dress throws on another kind')
+  const bare = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
+  check(bare.dress({ kind: 'egg' }) === null && bare.pickAt(0, GROUND, 0, 1000, 2) === null, 'a world with no eggs dresses none and offers none')
+  bare.dispose()
+  const again = grow(at.x, at.z)
+  const same = [...again.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
+  check(same.n === 1 && again.stats.eggs === eggsWere - 1 && again.stats.placed === placedWere, 'grown again the nest lays no other egg and the rest are as they were', `${again.stats.eggs} eggs`)
+  again.dispose()
+  taken.clear()
+  const whole = grow(at.x, at.z)
+  check(whole.stats.eggs === eggsWere, 'and with the registry cleared the egg is back')
+  whole.dispose()
+  r.update(tile.site.x + 4000, GROUND + 1.7, tile.site.z)
+  check(r.stats.used === r.stats.placed + r.stats.eggs, 'walked off, the nest releases cleanly without its egg')
+  r.dispose()
+  // A second world: an egg taken with stowMax at its height comes up in the hand but will not go in the backpack.
+  const w = grow()
+  const t2 = [...w.tiles.values()].find((t) => t.n === 2 && !w.rim.isHidden(t.ids[1]))
+  const h2 = w.pickAt(w.instX[t2.ids[1]], w.instY[t2.ids[1]], w.instZ[t2.ids[1]], 0.1, 2)
+  check(h2 && w.take(h2, h2.size).stowable === false, 'one at or over stowMax is not stowable')
+  w.dispose()
+  taken.clear()
 }
 
 // --- a stand-in dragon: a slab on a spine whose fly swings its wings out, its underside on two feet ------------
@@ -697,6 +762,87 @@ console.log('\ndragons')
   check(c.lain === true && Math.hypot(u, v) > 0.5 && Math.hypot(u, v) < site.r && Math.abs(c.y - (site.y + gx * u + gz * v)) < 1e-9, 'a kill on this nest lies beside the dragon ON the tilted floor plane, at that plane\'s own height there, not at the centre\'s', `at (${fmt(u)}, ${fmt(v)}) off centre, y ${fmt(c.y)} for a floor of ${fmt(site.y + gx * u + gz * v)}`)
   check(c.up.distanceTo(normal) < 1e-9, 'and lies tilted with the floor, its up the nest plane\'s normal', `up (${fmt(c.up.x)}, ${fmt(c.up.y)}, ${fmt(c.up.z)})`)
   check((() => { try { dragonsOn(hill, [{ key: 32, x: 0, y: GROUND, z: 0, r: 4 }], makeHerd([])).update(0, 0, 0, DT); return false } catch (e) { return /floor plane/.test(e.message) } })(), 'a site with no floor plane is refused by name, not stood on at NaN')
+  d.dispose()
+}
+
+// --- a fish in her hand: a roosting dragon drops its kill and comes off the nest at her ----
+{
+  const flat = flatField(GROUND)
+  const site = { key: 78, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
+  const stags = [stag(500, 500)]
+  const d = dragonsOn(flat, [site], makeHerd(stags), 5)
+  // She stands east of the nest, the hand a metre up, and never moves her feet: the hand is what the dragon reads.
+  const her = { x: 12, y: GROUND + 1.6, z: 0 }
+  const hand = (kind, x, z = 0) => ({ kind, x, y: GROUND + 1, z })
+  let turned = 0
+  const run = (s, lures, seen) => { for (let i = 0; i < s * 60; i++) { const h0 = dr.heading; d.update(her.x, her.y, her.z, DT, lures); turned = Math.max(turned, Math.abs(swing(h0, dr.heading)) / DT); if (seen) seen() } }
+  d.update(her.x, her.y, her.z, DT)
+  const dr = d.byKey.get(site.key)
+  dr.timer = Infinity
+  const reach = EAT_REACH * dr.k + MENACE_M
+  const gap = (l) => Math.hypot(l.x - dr.x, l.z - dr.z)
+  // Out of reach, or the wrong thing: the dragon rests on.
+  run(2, [hand('fish', LURE_M + 1)])
+  check(dr.state === 'roost' && dr.lure === null, `a fish ${LURE_M + 1} m off is not noticed`)
+  run(2, [hand('carrot', 2)])
+  check(dr.state === 'roost' && dr.lure === null, 'nor is a carrot in reach', LURES.join(', '))
+  // Eating its kill on the nest when the fish comes within reach: the kill is let go, and the dragon is up and alert.
+  dr.cargo = stags[0]
+  d._perch(dr)
+  run(1, [])
+  check(dr.state === 'roost' && dr.cargo === stags[0] && dr.queue.length > 0, 'settled on the nest with its kill, working through its circuit')
+  const fish = hand('fish', LURE_M - 0.5)
+  d.update(her.x, her.y, her.z, DT, [fish])
+  check(dr.state === 'menace' && dr.lure === fish && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0 && dr.timer === Infinity, `a fish ${LURE_M - 0.5} m off has it drop the kill to fade and go to menace, alert`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
+  // The stomp: at the walk gait inside MENACE_RUN_M, toward the hand, and stopped with its head at her, eating at her.
+  turned = 0
+  let walked = false
+  let top = 0
+  const x0 = dr.x
+  run(6, [fish], () => { if (dr.clip === 'walk') walked = true; top = Math.max(top, dr.speed) })
+  check(walked && top > wyvern.gait.walk * dr.k * 0.9 && top <= wyvern.gait.walk * dr.k + 1e-9 && dr.x > x0 + 0.5, 'it walks at the hand at the walk gait', `top ${fmt(top)} of ${fmt(wyvern.gait.walk * dr.k)} m/s, ${fmt(dr.x - x0)} m east`)
+  // The stop is a deceleration at ACCEL from the walk, so the stance is that stopping distance short of reach.
+  const stops = (l) => gap(l) < reach + 0.05 && gap(l) > reach - (wyvern.gait.walk * dr.k) ** 2 / (2 * ACCEL) - 0.05
+  const facing = (l) => Math.abs(swing(dr.heading, Math.atan2(-(l.z - dr.z), l.x - dr.x))) < 0.05
+  check(dr.clip === 'eat' && dr.speed < 0.05 && stops(fish) && facing(fish), `and stops eating at her, its head EAT_REACH + MENACE_M ${fmt(reach)} m short of the hand, facing it`, `clip ${dr.clip}, ${fmt(gap(fish))} m off, heading ${fmt(dr.heading)}`)
+  check(turned <= WALK_TURN_RATE + 1e-6, `never turning faster than WALK_TURN_RATE ${WALK_TURN_RATE}`, `${fmt(turned)} rad/s`)
+  check(dr.y >= GROUND && dr.y < GROUND + 0.05 * site.r && Math.abs(dr.pitch) < 1e-6 && Math.abs(dr.roll) < 1e-6, 'level, standing over the nest floor still', `y ${fmt(dr.y)}`)
+  // A step back holds it; MENACE_M back has it after her again; and off past MENACE_RUN_M it runs.
+  run(2, [hand('fish', fish.x + MENACE_M * 0.5)])
+  check(dr.clip === 'eat', `a half step back and it eats on`)
+  const back = hand('fish', fish.x + MENACE_M + 0.3)
+  run(0.2, [back])
+  check(dr.clip === 'walk', `MENACE_M back and it is walking after her again`, dr.clip)
+  run(3, [back])
+  check(dr.clip === 'eat' && stops(back), 'to stop at her again', `${fmt(gap(back))} m off`)
+  const far = hand('fish', dr.x + reach + MENACE_RUN_M + 2)
+  let ran = false
+  top = 0
+  run(8, [far], () => { if (dr.clip === 'run') { ran = true; top = Math.max(top, dr.speed) } })
+  check(ran && top > wyvern.gait.run * dr.k * 0.9 && dr.state === 'menace', `the hand ${MENACE_RUN_M + 2} m past its head, it runs at the run gait`, `top ${fmt(top)} of ${fmt(wyvern.gait.run * dr.k)} m/s`)
+  check(dr.clip === 'eat' && stops(far) && Math.abs(dr.y - GROUND) < 1e-6, 'and is at her again, on the ground off the nest', `${fmt(gap(far))} m off, y ${fmt(dr.y)}`)
+  // Carried off at her 1.45 m/s walk, faster than its own: it stomps after her in rushes, run and stop, never far off.
+  const walk = hand('fish', far.x, 0)
+  let worst = 0
+  let rushes = 0
+  let running = false
+  run(20, [walk], () => { walk.z -= 1.45 * DT; worst = Math.max(worst, gap(walk)); if (dr.clip === 'run') { if (!running) rushes++; running = true } else running = false })
+  check(worst < reach + MENACE_RUN_M + 1 && rushes >= 2 && rushes <= 5 && gap(walk) < reach + MENACE_RUN_M + 1, 'carried off at her walk it stomps after her in rushes, run and stop, never far off', `never more than ${fmt(worst)} m off, ${rushes} rushes in 20 s, ${fmt(gap(walk))} m at the end`)
+  // Kept to LURE_FORGET_M, given up past it: home to the nest and the rest clock started over.
+  d.update(her.x, her.y, her.z, DT, [hand('fish', dr.x + LURE_FORGET_M - 0.5, dr.z)])
+  check(dr.state === 'menace', `a fish ${LURE_FORGET_M - 0.5} m off is still menaced`)
+  d.update(her.x, her.y, her.z, DT, [hand('fish', dr.x + LURE_FORGET_M + 1, dr.z)])
+  check(dr.state === 'return' && dr.lure === null && dr.clip === 'fly' && dr.dest === site, `and one ${LURE_FORGET_M + 1} m off is given up: it flies home`, `state ${dr.state}`)
+  let frames = 0
+  while (dr.state !== 'roost' && frames++ < 60 * 120) d.update(her.x, her.y, her.z, DT)
+  check(dr.state === 'roost' && Math.hypot(dr.x - site.x, dr.z - site.z) < site.r && dr.timer >= REST_S[0] && dr.timer <= REST_S[1] && dr.cargo === null, 'and is on its nest again, resting', `${(frames / 60).toFixed(1)} s, rest ${fmt(dr.timer)} s`)
+  // Put away in its face: given up at once, from the ground.
+  dr.timer = Infinity
+  const near = hand('fish', dr.x + reach, dr.z)
+  run(3, [near])
+  check(dr.state === 'menace' && dr.clip === 'eat', 'a fish put at its face on the nest is eaten at')
+  d.update(her.x, her.y, her.z, DT, [])
+  check(dr.state === 'return' && dr.lure === null, 'and put away, it is given up the same frame')
   d.dispose()
 }
 

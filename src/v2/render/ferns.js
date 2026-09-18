@@ -11,6 +11,7 @@ import { InstancedArena } from './instanced-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { taken } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // The fern undercarpet on the /v2 route.
@@ -567,6 +568,11 @@ export class Ferns {
     })
 
     this.meshes = [...this.rings.map((r) => r.mesh), this.cards]
+    // The rosette's span at unit scale, the ball a hand reaches for and the size a held one is. Off the LOD0 ring's own geometry, since the bank's copy is disposed below.
+    const lod0Geo = this.rings[0].mesh.geometry
+    lod0Geo.computeBoundingBox()
+    const ext = lod0Geo.boundingBox.getSize(new THREE.Vector3())
+    this.unitSpan = Math.max(ext.x, ext.y, ext.z)
 
     // The LOD0 rosette's own triangles, kept on the CPU as what a butterfly lands
     // on -- see `landOn`. The arrays outlive the dispose below, which only frees
@@ -1061,6 +1067,8 @@ export class Ferns {
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       const river = this.paths.nearest(x, z, 'river')
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      // Last, on the survivors only: a fern she pulled up does not grow back.
+      if (taken.has('fern', x, z)) continue
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
@@ -1167,6 +1175,74 @@ export class Ferns {
     } else {
       this.tiles.set(key, { tx, tz, ids, rank, n, q, u: uNew, near: false, queued: false })
     }
+  }
+
+  /**
+   * The drawn fern nearest a hand at (x, y, z) whose rosette -- a ball of its
+   * own span -- is within `reach` metres and under `maxSize` across, so the
+   * big ones stay rooted: `{ dist, id, tile, k, size }` for take(), or null.
+   * For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    let best = null
+    let bestD = reach
+    const far = reach + TILE
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * TILE - x) > far || Math.abs((tile.tz + 0.5) * TILE - z) > far) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (this.rim.isHidden(id)) continue
+        const span = this.unitSpan * this.instScale[id]
+        if (span >= maxSize) continue
+        const d = Math.hypot(this.instX[id] - x, this.instY[id] + span * 0.5 - y, this.instZ[id] - z) - span * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), id, tile, k, size: span }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Pull the fern of a pickAt() hit out of the ground: its id goes back to the
+   * pool with whatever ring slot it borrowed, its spot is recorded so the tile
+   * never regrows it, and what the hand holds is returned as a record for
+   * hands.js -- the LOD0 rosette, the shared material, the instance's tint and
+   * scale; one under `stowMax` metres may go in the backpack.
+   */
+  take(hit, stowMax) {
+    const { tile, k, id } = hit
+    if (tile.ids[k] !== id || this.tierAt[id] < 0) throw new Error(`Ferns.take: instance ${id} is not standing in its tile`)
+    const scale = this.instScale[id]
+    this.cards.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add('fern', this.instX[id], this.instZ[id])
+    // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive.
+    for (let j = k; j < tile.n - 1; j++) {
+      tile.ids[j] = tile.ids[j + 1]
+      tile.rank[j] = tile.rank[j + 1]
+    }
+    tile.n--
+    this._retire(id)
+    this.free[this.freeCount++] = id
+    this.placed--
+    return {
+      kind: 'fern',
+      name: 'fern',
+      size: this.unitSpan * scale,
+      geometry: this.rings[0].mesh.geometry,
+      material: this.material,
+      color,
+      scale: [scale, scale, scale],
+      stowable: this.unitSpan * scale < stowMax,
+    }
+  }
+
+  /** The geometry and material a packed fern record is drawn with. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'fern') throw new Error(`Ferns.dress: not a fern, ${slot.kind}`)
+    return { geometry: this.rings[0].mesh.geometry, material: this.material }
   }
 
   /** Cut every fern in the tile whose rank has fallen above the keep-fraction. */

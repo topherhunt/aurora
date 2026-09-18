@@ -28,6 +28,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT, setTierTint } from '../src/v2/render/puppet.js'
@@ -585,6 +586,92 @@ wake(w)
   const hare = trace('hare', 1.6)
   const hareLeash = TETHER_M + 1.5 * hare.lodSize + 0.5
   check(hare.away < hareLeash, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m of ${hareLeash.toFixed(1)} from her in 15 s`)
+}
+
+// --- unless she holds a lure ------------------------------------------------------
+{
+  const dt = 1 / 60
+  // On the flat plain, so twenty metres of following crosses no pond and no crag.
+  // The carrot is a hands.js lure: a kind and where the hand is. Held a metre over the stag's feet.
+  const carrot = { kind: 'carrot', x: 0, y: 0, z: 0 }
+  const k = make(7, { walk: plain, water: noWater, height })
+  k.place(0, 0)
+  const c = beside(k, 'stag')
+  const sp = c.sp
+  const hold = (x, z) => { carrot.x = x; carrot.y = c.y + 1; carrot.z = z }
+  const run = (s, lures, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { k.update(carrot.x, c.y + 1.6, carrot.z, dt, 1, lures); seen.add(`${c.act}/${c.clip}`) } return seen }
+  const gap = () => Math.hypot(carrot.x - c.x, carrot.z - c.z)
+  const facing = () => Math.abs(Math.atan2(Math.sin(Math.atan2(-(carrot.z - c.z), carrot.x - c.x) - c.heading), Math.cos(Math.atan2(-(carrot.z - c.z), carrot.x - c.x) - c.heading)))
+  k._begin(c, 'graze')
+  c.left = 100
+  const [x0, z0] = [c.x, c.z]
+  hold(x0 + LURE_M + 1, z0)
+  run(2, [carrot])
+  check(!c.lured && c.act === 'graze' && c.x === x0 && c.z === z0, `a carrot ${LURE_M + 1} m off is nothing to a grazing stag`, `${c.act}/${c.clip}`)
+  run(2, [{ kind: 'fish', x: x0 + 1, y: c.y + 1, z: z0 }])
+  check(!c.lured && c.act === 'graze', 'nor is a fish a metre off: a stag wants a carrot, not a fish')
+  hold(x0 + LURE_M - 0.1, z0)
+  k.update(carrot.x, c.y + 1.6, carrot.z, dt, 1, [carrot])
+  check(c.lured && c.lure === carrot && c.act === 'notice' && c.clip === 'alert', `a carrot inside ${LURE_M} m has it look up from its graze`, `${c.act}/${c.clip}`)
+  let seen = run(8, [carrot])
+  check(seen.has('follow/walk') && gap() <= sp.standoff + 0.1 && c.speed === 0 && (c.act === 'gaze' || c.act === 'beg'), `it walks up to the carrot and stops ${sp.standoff} m short of it, standing there and looking or begging`, `${gap().toFixed(2)} m off, ${c.act}/${c.clip}`)
+  check(seen.has('beg/eat-loop') && c.act === 'beg', 'the carrot at its standoff is at its nose, so it begs: the eat clip at the carrot, over and over, the carrot never eaten', [...seen].join(' '))
+  check(facing() < 0.15, 'and it faces the carrot', `${facing().toFixed(3)} rad off`)
+  // She walks eight metres away with it: the stag trots after her and stops at its standoff again, off its tether.
+  const [x1, z1] = [c.x, c.z]
+  hold(carrot.x + 8, z0)
+  seen = run(8, [carrot])
+  check(seen.has('follow/trot') && gap() <= sp.standoff + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 6, `carried ${8} m off, it trots after it and stops at its standoff again`, `${[...seen].join(' ')}; ${gap().toFixed(2)} m off, moved ${Math.hypot(c.x - x1, c.z - z1).toFixed(1)} m`)
+  hold(carrot.x + 18, z0)
+  seen = run(12, [carrot])
+  check(seen.has('follow/run') && gap() <= sp.standoff + 0.1, `carried ${18} m off, it runs`, `${[...seen].join(' ')}; ${gap().toFixed(2)} m off`)
+  check(Math.hypot(c.x - c.homeX, c.z - c.homeZ) > TETHER_M, `and is now past its ${TETHER_M} m tether, which a lure takes it off`, `${Math.hypot(c.x - c.homeX, c.z - c.homeZ).toFixed(1)} m from home`)
+  // The carrot lifted three metres over its head: not at its face, so the beg ends with the head coming up, and it gazes instead.
+  carrot.y = c.y + 3
+  seen = run(1, [carrot])
+  check(seen.has('beg/eat-up') && c.act === 'gaze' && c.clip === 'idle', 'lifted out of its reach, it raises its head and gazes', [...seen].join(' '))
+  seen = run(6, [carrot])
+  check(!seen.has('beg/eat-down'), 'and does not beg again while it is up there', [...seen].join(' '))
+  // The carrot put away: it goes about its own business, and the tether has it again.
+  seen = run(4, [])
+  check(!c.lured && c.lure === null && !['notice', 'follow', 'gaze', 'beg', 'frolic'].includes(c.act), 'the carrot put away, it forgets it and picks something of its own', `${c.act}/${c.clip}`)
+  // Held on and carried past LURE_FORGET_M, it gives up.
+  hold(c.x + 2, c.z)
+  run(1, [carrot])
+  check(c.lured, 'a carrot two metres off has it again')
+  hold(c.x + LURE_FORGET_M + 1, c.z)
+  run(1, [carrot])
+  check(!c.lured, `and carried ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
+  k.dispose()
+
+  // A hare with a carrot frolics at her feet; a fox wants a fish or a crab and comes to its own standoff.
+  const h = make(7, { walk: plain, water: noWater, height })
+  h.place(0, 0)
+  const r = beside(h, 'hare')
+  const rc = { kind: 'carrot', x: r.x + 1, y: r.y + 1, z: r.z }
+  const hops = new Set()
+  let moved = 0
+  let lx = r.x, lz = r.z
+  for (let f = 0; f < 8 * 60; f++) {
+    h.update(rc.x, r.y + 1.6, rc.z, dt, 1, [rc])
+    hops.add(`${r.act}/${r.clip}`)
+    moved += Math.hypot(r.x - lx, r.z - lz); lx = r.x; lz = r.z
+  }
+  const near = Math.hypot(rc.x - r.x, rc.z - r.z)
+  check(r.lured && hops.has('frolic/bound') && !hops.has('beg/eat-down') && near < 2.5 && moved > 4, 'a hare with a carrot a metre up and a metre off bounds about at her feet for eight seconds, never far, and cannot reach it to beg', `${[...hops].join(' ')}; ${near.toFixed(2)} m off, ${moved.toFixed(1)} m hopped`)
+  rc.y = r.y + 0.2
+  const begs = new Set()
+  for (let f = 0; f < 6 * 60; f++) { h.update(rc.x, r.y + 1.6, rc.z, dt, 1, [rc]); begs.add(`${r.act}/${r.clip}`) }
+  check(begs.has('beg/eat-loop'), 'lowered to its shins, it begs when a bound brings its nose to it', [...begs].join(' '))
+  const x = beside(h, 'fox')
+  const fish = { kind: 'fish', x: x.x + LURE_M - 0.2, y: x.y + 1, z: x.z }
+  h._begin(x, 'rest')
+  x.left = 100
+  const trots = new Set()
+  for (let f = 0; f < 8 * 60; f++) { h.update(fish.x, x.y + 1.6, fish.z, dt, 1, [fish]); trots.add(`${x.act}/${x.clip}`) }
+  const off = Math.hypot(fish.x - x.x, fish.z - x.z)
+  check(x.lured && trots.has('follow/trot') && off <= x.sp.standoff + 0.1 && x.speed === 0, `a fox at rest comes to a fish at a trot and stops ${x.sp.standoff} m short`, `${[...trots].join(' ')}; ${off.toFixed(2)} m off`)
+  h.dispose()
 }
 
 // --- a standing body puts its feet on the ground -----------------------------------

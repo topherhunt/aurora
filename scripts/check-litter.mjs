@@ -15,6 +15,7 @@ import { setPropClock } from '../src/material.js'
 import { buildTextureArray } from '../src/textures.js'
 import { Litter, buildPebble, PEBBLE_TIER } from '../src/v2/render/litter.js'
 import { shade } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -707,6 +708,56 @@ console.log('\nrocks')
 }
 
 for (const l of Object.values(worlds)) l.dispose()
+
+// --- her hands: a pebble picked up, and not laid again ---------------------------
+{
+  console.log('\n7. her hands\n')
+  // Placed and then swept once by the rim, which is what shows a fresh pebble.
+  const grow = () => { const l = build(world(60, 0, 9999, null)); l.update(0, 61.6, 0); return l }
+  const lying = (l) => {
+    const rows = []
+    for (const tile of l.tiles.values()) for (let k = 0; k < tile.n; k++) { const id = tile.ids[k]; rows.push(`${l.instX[id].toFixed(3)},${l.instZ[id].toFixed(3)},${l.instSink[id].toFixed(4)}`) }
+    return rows.sort().join('|')
+  }
+  taken.clear()
+  const l = grow()
+  const before = l.placed
+  let tile0 = null, id0 = -1
+  for (const tile of l.tiles.values()) {
+    for (let k = 0; k < tile.n && id0 < 0; k++) if (!l.rim.isHidden(tile.ids[k])) { tile0 = tile; id0 = tile.ids[k] }
+    if (id0 >= 0) break
+  }
+  check(before > 0 && id0 >= 0, 'a wood is strewn with pebbles', `${before} pebbles`)
+  const x = l.instX[id0], y = l.instY[id0], z = l.instZ[id0]
+  const size = l._spanOf(id0)
+  const M = new THREE.Matrix4()
+  l.batch.getMatrixAt(id0, M)
+  const S = new THREE.Vector3().setFromMatrixScale(M)
+  check(size >= 0.06 * 0.75 && size <= 0.30 * 1.25 + 1e-6 && Math.abs(size - Math.max(S.x, S.z)) < 1e-6, 'a pebble\'s span is its longest scaled extent, within SIZE and STRETCH', `${size.toFixed(3)} m`)
+  const hit = l.pickAt(x, y + size * 0.5, z, 0.1)
+  check(hit !== null && hit.id === id0 && hit.tile === tile0 && hit.size === size && hit.dist === 0, 'pickAt finds the pebble around the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(l.pickAt(x, y + size + 5, z, 0.1) === null, 'and nothing five metres above it')
+  const rec = l.take(hit)
+  check(rec.kind === 'pebble' && rec.name === 'pebble' && rec.size === size && rec.geometry === l.batch.geometry && rec.geometry.getAttribute('aPropFade')?.isInstancedBufferAttribute && rec.material === l.material && rec.color.length === 3 && Math.abs(rec.scale[0] - S.x) < 1e-6 && Math.abs(rec.scale[1] - S.y) < 1e-6 && Math.abs(rec.scale[2] - S.z) < 1e-6 && rec.stowable === true,
+    'take hands back the record: the pebble shape, the shared material, its tint and its three scales', JSON.stringify({ size: rec.size.toFixed(3), scale: rec.scale.map((v) => v.toFixed(3)) }))
+  const dress = l.dress({ kind: 'pebble' })
+  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on the shape and the shared material')
+  let wrong = false
+  try { l.dress({ kind: 'fern' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
+  let stillListed = false
+  for (let k = 0; k < tile0.n; k++) if (tile0.ids[k] === id0) stillListed = true
+  check(l.placed === before - 1 && !l.batch.getVisibleAt(id0) && !stillListed && taken.has('pebble', x, z), 'and the pebble is off the ground and on the registry', `${l.placed} of ${before}`)
+  const again = grow()
+  check(again.placed === before - 1 && lying(again) === lying(l), 'a wood strewn again from the seed comes up without it, nothing else moved', `${again.placed} pebbles`)
+  let twice = false
+  try { l.take(hit) } catch { twice = true }
+  check(twice, 'taking it twice throws')
+  taken.clear()
+  const whole = grow()
+  check(whole.placed === before && lying(whole) !== lying(l), 'and with the registry cleared it is laid again', `${whole.placed} pebbles`)
+  again.dispose(); whole.dispose(); l.dispose()
+}
 
 console.log(`\n${failures === 0 ? 'all litter checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -64,7 +64,8 @@ export class WalkSurface {
     this.trees = trees
     // Every layer that is stone to her, the rocks first. Each answers
     // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
-    // Rocks' terms and is read on its own into the one span buffer.
+    // Rocks' terms and is read on its own into the one span buffer; one with
+    // a `deckAt(x, z)` says where its top is a floor she stands level on.
     this.stone = [rocks]
   }
 
@@ -161,8 +162,15 @@ export class WalkSurface {
     return false
   }
 
-  /** Unit normal by central difference over `eps`, off the composed walk surface. */
+  /**
+   * Unit normal by central difference over `eps`, off the composed walk
+   * surface -- or straight up on a stone's deck (a boat's sole), whose slope
+   * is its own and not the lake bed's a stride either side of it.
+   */
   normalAt(x, z, eps = SLOPE_EPS, out = { x: 0, y: 1, z: 0 }) {
+    for (let s = 0; s < this.stone.length; s++) {
+      if (this.stone[s].deckAt && this.stone[s].deckAt(x, z)) { out.x = out.z = 0; out.y = 1; return out }
+    }
     const dx = (this.heightAt(x + eps, z) - this.heightAt(x - eps, z)) / (2 * eps)
     const dz = (this.heightAt(x, z + eps) - this.heightAt(x, z - eps)) / (2 * eps)
     const len = Math.hypot(dx, 1, dz)

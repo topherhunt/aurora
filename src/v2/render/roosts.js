@@ -8,6 +8,7 @@ import {
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
+import { taken } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // THE DRAGON ROOST: a nest the size of a room, one per dragon (dragons.js), a
@@ -580,7 +581,8 @@ export class Roosts {
     this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.cardTier)
     this.rim.place(id, Math.min(this.radius, cullRange(r * 2, RUNGS)))
-    if (this.egg && eggKeep < EGG_ODDS) this._layEgg(tile, x, y, z, r, eggTint, eggHeight, eggYaw, eggLie, eggBearing)
+    // A nest whose egg was taken from it (hands.js) lays no other.
+    if (this.egg && eggKeep < EGG_ODDS && !taken.has('egg', x, z)) this._layEgg(tile, x, y, z, r, eggTint, eggHeight, eggYaw, eggLie, eggBearing)
     this.rim.markDue(tile)
   }
 
@@ -616,6 +618,70 @@ export class Roosts {
     this.tierAt[id] = this.eggTier
     this.batch.setGeometryIdAt(id, this.eggTier)
     this.rim.place(id, Math.min(this.radius, propCull(height)))
+  }
+
+  /**
+   * The drawn egg nearest a hand at (x, y, z) -- a ball of its own height
+   * about its centre -- within `reach` metres and under `maxSize` across:
+   * `{ dist, tile, id, size }` for take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    let best = null
+    let bestD = reach
+    for (const tile of this.tiles.values()) {
+      if (tile.n < 2) continue
+      const id = tile.ids[1]
+      if (this.rim.isHidden(id)) continue
+      const height = this.instR[id]
+      if (height >= maxSize) continue
+      const d = Math.hypot(this.instX[id] - x, this.instY[id] - y, this.instZ[id] - z) - height * 0.5
+      if (d < bestD) {
+        bestD = d
+        best = { dist: Math.max(0, d), tile, id, size: height }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Lift the egg of a pickAt() hit out of its nest: its instance goes back to
+   * the pool, the nest is recorded so it lays no other, and what the hand
+   * holds is returned as a record for hands.js -- the pick's geometry, the
+   * shell's material, its tint and the scale of its height; one under
+   * `stowMax` metres may go in the backpack.
+   */
+  take(hit, stowMax) {
+    const { tile, id } = hit
+    if (tile.n < 2 || tile.ids[1] !== id) throw new Error(`Roosts.take: instance ${id} is not the egg of its nest`)
+    const height = this.instR[id]
+    const scale = height / this.egg.bounds.height
+    this.batch.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add('egg', tile.site.x, tile.site.z)
+    if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.tierAt[id] = -1
+    this.free[this.freeCount++] = id
+    this.eggs--
+    tile.n = 1
+    return {
+      kind: 'egg',
+      name: 'dragon egg',
+      size: height,
+      geometry: this.egg.geometry,
+      material: this.eggMaterial,
+      color,
+      scale: [scale, scale, scale],
+      stowable: height < stowMax,
+    }
+  }
+
+  /** The geometry and material a packed egg record is drawn with, or null in a world with no eggs. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'egg') throw new Error(`Roosts.dress: not an egg, ${slot.kind}`)
+    if (!this.egg) return null
+    return { geometry: this.egg.geometry, material: this.eggMaterial }
   }
 
   _release(tile) {

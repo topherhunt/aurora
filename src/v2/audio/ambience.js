@@ -57,6 +57,7 @@ export const SOUNDS = {
   songbird3: 'sounds/bird-songbird-3.mp3',
   songbird4: 'sounds/bird-songbird-4.mp3',
   songbird5: 'sounds/bird-songbird-5.mp3',
+  songbird6: 'sounds/bird-songbird-6.mp3',
   cricket: 'sounds/cricket.mp3',
   footstep: 'sounds/footstep-1.mp3',
   footfall: 'sounds/footstep-animal.mp3',
@@ -84,7 +85,7 @@ export const SOUNDS = {
 }
 
 const RAPTORS = ['crow', 'eagle', 'hawk']
-const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5']
+const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5', 'songbird6']
 const CROAKS = ['croak1', 'croak2']
 const ROCKSLIDES = ['rockslide1', 'rockslide2']
 
@@ -119,7 +120,10 @@ export const RULES = {
   // Songbirds, by day below the snow: a constant far chatter all around her, each bird placed `range` metres out and given that as its `distance` through the engine's far treatment (sound-engine.js), so it is dull and washed the way a bird across the valley is...
   songbirdFar: { interval: [1, 4], gain: [0.03, 0.1], range: [60, 150], elev: [5, 30], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
   // ...and now and then one in the tree beside her, dry and crisp. The wood is fuller of both: each clock runs up to `forestSpeedup` faster inside it.
-  songbirdNear: { interval: [12, 40], gain: [0.4, 0.8], range: [4, 15], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
+  // The near bird's gap is rolled with `skew` (rand^skew across `interval`): most gaps are short, a few are the better part of two minutes, so it never settles into a beat.
+  songbirdNear: { interval: [8, 100], skew: 2, gain: [0.4, 0.8], range: [4, 15], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
+  // Which songbird sings, far or near: `bias` of the time one heard in the last `recent` seconds, so the same few voices come and go rather than all six chiming in at random; the rest of the time any of the six.
+  songbirdVoice: { recent: 15, bias: 0.5 },
   // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk. The ones beside her are the grasshoppers (chirp).
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
   // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
@@ -138,8 +142,8 @@ export const RULES = {
   chirp: { reach: 8, near: 1, level: 0.5, every: 60, gain: [0.5, 1.0] },
   // The dragons, every sound at its body's distance through the engine's far treatment. Its wings, while it flies within `reach`: one beat a cycle of its fly clip, within `jitter` of a cycle of the beat, at `level` up to `near` metres off and falling as near/distance past it, the clip slowed to `rate` so a beat is deep, not a pigeon's.
   wingbeat: { reach: 50, near: 5, level: 0.5, jitter: 0.05, rate: [0.5, 0.6], gain: [0.7, 1.0] },
-  // A flying dragon roars every `every` seconds, heard within `reach`: `level` up to `near` off, falling as (near/distance)^roll past it, and fading out over the last `edge` metres of the reach; `echo` is its send into the valley echo. The clip is mastered 24 dB hotter than the yip, which is why the level is low.
-  roar: { reach: 250, near: 20, roll: 1.0, edge: 50, level: 0.4, every: [30, 90], echo: 0.8, gain: [0.7, 1.0] },
+  // A flying dragon roars every `every` seconds, heard within `reach`: `level` up to `near` off, falling as (near/distance)^roll past it, and fading out over the last `edge` metres of the reach; `echo` is its send into the valley echo. The clip is mastered 24 dB hotter than the yip, which is why the level is low. A dragon after the fish in her hand (dragons.js `menace`) roars as it takes notice and every `menace` seconds after.
+  roar: { reach: 250, near: 20, roll: 1.0, edge: 50, level: 0.4, every: [30, 90], menace: [6, 15], echo: 0.8, gain: [0.7, 1.0] },
   // A dragon resting on its nest growls over and over within `reach`: each growl at a rate rolled in `rate`, then a pause of `pause` seconds; `level` up to `near` off, falling as near/distance.
   growl: { reach: 25, near: 3, level: 0.5, rate: [0.8, 1.05], pause: [0.5, 3], gain: [0.6, 1.0] },
   // A dragon walking on the ground within `reach` lands a tread on each beat of its gait (FOOTFALLS.wyvern), within `jitter` of a cycle of the beat: `level` up to `near` off, falling as near/distance.
@@ -207,6 +211,9 @@ export class Ambience {
     this.senseLeft = 0
     this.wet = false
     this.teleportCredit = 0
+    // Seconds of ambience run, and the clock each songbird clip last sang at (RULES.songbirdVoice).
+    this.clock = 0
+    this.sang = {}
     // One-shot timers by rule name: { armed, left }.
     this.timers = {}
     for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'rockslideNear', 'wave']) {
@@ -238,6 +245,15 @@ export class Ambience {
     return this.between(RATE[0], RATE[1])
   }
 
+  /** The next songbird clip: by RULES.songbirdVoice, one heard lately or any. Rolls the bias only when one is recent. */
+  songbird() {
+    const V = RULES.songbirdVoice
+    const recent = SONGBIRDS.filter((n) => n in this.sang && this.clock - this.sang[n] < V.recent)
+    const name = this.pick(recent.length > 0 && this.rand() < V.bias ? recent : SONGBIRDS)
+    this.sang[name] = this.clock
+    return name
+  }
+
   /** A point `dist` from the head at a random bearing, `elevDeg` above the horizon. */
   aroundHead(head, dist, elevDeg) {
     const a = this.rand() * Math.PI * 2
@@ -252,21 +268,22 @@ export class Ambience {
   /**
    * A one-shot's timer: counts down only while `on`, re-rolled from `interval`
    * when the rule first turns on and again after each firing. True on the
-   * frame it fires.
+   * frame it fires. `skew` > 1 crowds the roll toward the short end.
    */
-  due(name, on, interval, dt) {
+  due(name, on, interval, dt, skew = 1) {
     const t = this.timers[name]
     if (!on) {
       t.armed = false
       return false
     }
+    const gap = () => interval[0] + (interval[1] - interval[0]) * this.rand() ** skew
     if (!t.armed) {
       t.armed = true
-      t.left = this.between(interval[0], interval[1])
+      t.left = gap()
     }
     t.left -= dt
     if (t.left > 0) return false
-    t.left += this.between(interval[0], interval[1])
+    t.left += gap()
     return true
   }
 
@@ -345,6 +362,7 @@ export class Ambience {
   }
 
   _birds(dt, head, s, dayness, below) {
+    this.clock += dt
     const R = RULES.raptor
     const highCliff = s.aboveSnow > -R.cliffBand && s.cliff > R.cliffTan
     if (this.due('raptor', dayness > R.light && (s.aboveSnow > 0 || highCliff), R.interval, dt)) {
@@ -373,14 +391,14 @@ export class Ambience {
     const F = RULES.songbirdFar
     if (this.due('songbirdFar', dayness > F.light && below && up < F.aloft[1], F.interval, dt * (1 + F.forestSpeedup * s.forest))) {
       const dist = this.between(...F.range)
-      this.fire(this.pick(SONGBIRDS), {
+      this.fire(this.songbird(), {
         rate: this.rate(), gain: this.between(...F.gain) * perched(F),
         at: this.aroundHead(head, dist, this.between(...F.elev)), distance: dist,
       })
     }
     const N = RULES.songbirdNear
-    if (this.due('songbirdNear', dayness > N.light && below && up < N.aloft[1], N.interval, dt * (1 + N.forestSpeedup * s.forest))) {
-      this.fire(this.pick(SONGBIRDS), {
+    if (this.due('songbirdNear', dayness > N.light && below && up < N.aloft[1], N.interval, dt * (1 + N.forestSpeedup * s.forest), N.skew)) {
+      this.fire(this.songbird(), {
         rate: this.rate(), gain: this.between(...N.gain) * perched(N),
         at: this.aroundHead(head, this.between(...N.range), this.between(...N.elev)),
       })
@@ -482,7 +500,8 @@ export class Ambience {
    * in cycles of its fly clip, one beat a cycle, jittered, started fresh the
    * frame the beating begins, as the footfall clock is. Flying within the
    * roar's reach it keeps the seconds to its next roar, counted only while it
-   * flies within reach. Resting within the growl's reach it growls, each one
+   * flies within reach; after her on the ground it roars the frame it sets
+   * out and on the menace's shorter clock from there. Resting within the growl's reach it growls, each one
    * at its own rate, and the next only after this one has ended and a pause
    * rolled with it; the first waits one pause too, so a nest she walks up on
    * is not a growl on the step. Walking a gait clip on the ground within the
@@ -501,14 +520,15 @@ export class Ambience {
       const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
       const flying = c.clip === 'fly'
       const beating = flying && d <= W.reach
-      const roaring = flying && d <= R.reach
+      const menacing = c.state === 'menace'
+      const roaring = (flying || menacing) && d <= R.reach
       const growling = c.state === 'roost' && d <= G.reach
       const beats = FOOTFALLS.wyvern[c.clip]
       const treading = beats !== undefined && c.speed > 0 && d <= T.reach
       if (!beating && !roaring && !growling && !treading) continue
       let f = this.wings.get(c)
       if (!f) {
-        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.every), growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0 }
+        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.every), menacing: false, growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0 }
         this.wings.set(c, f)
       }
       f.seen = this.frame
@@ -551,10 +571,14 @@ export class Ambience {
       } else {
         f.beating = false
       }
+      if (menacing !== f.menacing) {
+        f.menacing = menacing
+        f.roar = menacing ? 0 : this.between(...R.every)
+      }
       if (roaring) {
         f.roar -= dt
         if (f.roar <= 0) {
-          f.roar += this.between(...R.every)
+          f.roar += this.between(...(menacing ? R.menace : R.every))
           const level = R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * clamp((R.reach - d) / R.edge, 0, 1)
           this.fire('roar', { rate: this.rate(), gain: level * this.between(...R.gain), at, distance: d, echo: R.echo })
         }

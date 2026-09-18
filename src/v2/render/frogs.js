@@ -31,6 +31,14 @@
 // field's normal there (the world's up on the water), turning from the one
 // slope to the other in the air.
 //
+// A LURE HAS IT. A spider or a butterfly in her hand (hands.js lures) within
+// LURE_M of a frog takes it off its tether: it CHASEs, one hop at a time, each
+// aimed at her and swung by up to CHASE.turn either way so the track is a
+// scribble, and within ORBIT_M of her feet aimed across her instead, so it
+// dances about them; afloat, it hops for her off the water. It forgets the
+// lure once the hand is empty or the lure is LURE_FORGET_M off, and sits;
+// left outside its tether, its bouts take it home, no hop going further out.
+//
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
 // (critters.js critterTier, the rungs a ratio of its own body length), one
 // InstancedMesh per tier under one material, and not at all under the last
@@ -77,6 +85,14 @@ export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.
 export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5], turn: Math.PI * 2 }
 const HOP_RISE = 0.45
 export const TETHER_M = 4
+// The lure: what in her hand a frog wants, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of her feet a hop goes across her rather than at her, and how soon a sitting frog reacts.
+export const LURES = ['spider', 'butterfly']
+export const LURE_M = 3
+export const LURE_FORGET_M = 8
+export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1, 0.45], turn: 1.6 }
+export const ORBIT_M = 0.7
+const NOTICE_S = 0.3
+const NO_LURES = []
 // Afloat, a frog sits SINK of its height under the surface and rides it up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
 export const SINK = 0.5
 export const BOB_S = 0.5
@@ -165,6 +181,8 @@ export class Frogs {
         // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed, `wet0` and `wet1` saying which ends are on the water; 'drift' floats along `heading` at `speed` m/s, turning at `spin` rad/s. `bout` is WALK or LEAP with `hops` of it to go, `heading` the bout's line.
         state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
         wet0: false, wet1: false, speed: 0, spin: 0,
+        // The lure it is chasing (hands.js lures: kind, x, y, z), if any.
+        lured: false, lure: null,
         // Seconds banked while a far frog waits for its frame (FAR_EVERY), and the seconds the last update stepped it by, 0 on a frame that held it.
         held: 0, stepped: 0,
       })
@@ -310,6 +328,8 @@ export class Frogs {
       f.left = between(this.rand, SIT_S)
       f.hops = 0
       f.held = 0
+      f.lured = false
+      f.lure = null
       t.frogs.push(f)
     }
     return t
@@ -370,16 +390,55 @@ export class Frogs {
     f.state = 'hop'
   }
 
-  /** Pick the next hop of a sitting frog's bout, or return false to keep sitting. */
+  /**
+   * The lure this frog is on this frame: the nearest of `lures` (hands.js
+   * lures) it wants, noticed within LURE_M across the ground and kept to
+   * LURE_FORGET_M. Noticing one cuts a sit short; losing one ends the chase.
+   */
+  _notice(f, lures) {
+    let lure = null
+    let best = Infinity
+    for (const l of lures) {
+      if (!LURES.includes(l.kind)) continue
+      const d = Math.hypot(l.x - f.x, l.z - f.z)
+      if (d < best) { best = d; lure = l }
+    }
+    if (lure !== null && best <= (f.lured ? LURE_FORGET_M : LURE_M)) {
+      f.lure = lure
+      if (!f.lured) {
+        f.lured = true
+        f.hops = 0
+        if (f.state === 'sit') f.left = Math.min(f.left, NOTICE_S)
+      }
+      return
+    }
+    if (!f.lured) return
+    f.lured = false
+    f.lure = null
+    f.hops = 0
+  }
+
+  /** The chase's next hop lined up: the bout is CHASE and the heading is at the lure, or across it -- a quarter turn off, either way -- within ORBIT_M of it. */
+  _chase(f) {
+    const l = f.lure
+    f.bout = CHASE
+    f.hops = 1
+    f.heading = Math.atan2(-(l.z - f.z), l.x - f.x)
+    if (Math.hypot(l.x - f.x, l.z - f.z) < ORBIT_M) f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
+  }
+
+  /** Pick the next hop of a sitting frog's bout, or return false to keep sitting. A chasing frog is off its tether; one a chase left outside it may hop no further out, and heads home. */
   _hop(f) {
-    if (Math.hypot(f.homeX - f.x, f.homeZ - f.z) > TETHER_M) this._aimHome(f)
+    const stray = Math.hypot(f.homeX - f.x, f.homeZ - f.z)
+    if (!f.lured && stray > TETHER_M) this._aimHome(f)
+    const leash = Math.max(TETHER_M, stray)
     const reach = between(this.rand, f.bout.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
       const a = f.heading + (this.rand() - 0.5) * f.bout.turn
       const x1 = f.x + Math.cos(a) * reach
       const z1 = f.z - Math.sin(a) * reach
       const s1 = this.seat(x1, z1)
-      if (s1 === null || Math.hypot(x1 - f.homeX, z1 - f.homeZ) > TETHER_M) {
+      if (s1 === null || (!f.lured && Math.hypot(x1 - f.homeX, z1 - f.homeZ) > leash)) {
         // The bout's line is blocked: try another way.
         this._turnAway(f)
         continue
@@ -404,11 +463,16 @@ export class Frogs {
     f.heading += f.spin * dt
     f.speed = Math.max(DRIFT_MPS[0] * k, Math.min(DRIFT_MPS[1] * k, f.speed + (this.rand() - 0.5) * DRIFT_SURGE * k * dt))
     if (probing) {
+      // A lured frog is off the water at the lure's bearing the first hop that lands.
+      if (f.lured) {
+        this._chase(f)
+        if (this._hop(f)) return
+      }
       const ahead = f.size * CLIMB_M
       const ax = f.x + Math.cos(f.heading) * ahead
       const az = f.z - Math.sin(f.heading) * ahead
       const s = this.seat(ax, az)
-      if (Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
+      if (!f.lured && Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
         this._aimHome(f)
         f.spin = 0
         return
@@ -430,7 +494,8 @@ export class Frogs {
     f.yaw = f.heading
   }
 
-  update(hx, hy, hz, dt) {
+  /** `lures`: hands.js lures() this frame, the spiders and butterflies among them chased. */
+  update(hx, hy, hz, dt, lures = NO_LURES) {
     this.head.x = hx
     this.head.z = hz
     this.time += dt
@@ -461,6 +526,7 @@ export class Frogs {
         }
         f.held = 0
         f.stepped = step
+        this._notice(f, lures)
         let sy = 1
         let sx = 1
         let sz = 1
@@ -475,7 +541,9 @@ export class Frogs {
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
             if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
-            if (f.hops <= 0) {
+            if (f.lured) {
+              this._chase(f)
+            } else if (f.hops <= 0) {
               f.bout = this.rand() < WALK_P ? WALK : LEAP
               f.hops = Math.round(between(this.rand, f.bout.hops))
               f.heading = this.rand() * Math.PI * 2
@@ -484,7 +552,7 @@ export class Frogs {
               f.hops--
             } else {
               f.hops = 0
-              f.left = between(this.rand, SIT_S)
+              f.left = between(this.rand, f.lured ? CHASE.pause : SIT_S)
             }
           }
         } else if (f.state === 'drift') {
@@ -515,7 +583,7 @@ export class Frogs {
               f.speed = ((DRIFT_MPS[0] + DRIFT_MPS[1]) / 2) * (f.size / SIZE_MID)
             } else {
               f.state = 'sit'
-              f.left = between(this.rand, f.hops > 0 ? f.bout.pause : SIT_S)
+              f.left = between(this.rand, f.hops > 0 || f.lured ? f.bout.pause : SIT_S)
             }
           }
         }

@@ -68,6 +68,7 @@ import {
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { readPng } from '../tools/props/png.mjs'
+import { taken } from '../src/v2/taken.js'
 
 const SEEDS = Number(process.argv[2] ?? 200)
 
@@ -3900,7 +3901,7 @@ console.log('\nscatter')
     // because those two are the part that carries the meaning: together they say
     // which list a gate consults and how much of it it is willing to look at.
     const loopLen = (name, array) => {
-      const m = vs.match(new RegExp(`i < (\\d+); i\\+\\+ \\) \\{\\s*${name} \\+= step\\( abs\\( texLayer - ${array}`))
+      const m = vs.match(new RegExp(`i < (\\d+); i\\+\\+ \\) \\{\\s*${name} \\+= step\\( abs\\( propLayer - ${array}`))
       if (!m) throw new Error(`the prop vertex shader no longer builds ${name} from ${array}`)
       return Number(m[1])
     }
@@ -4127,6 +4128,78 @@ console.log('\nscatter')
       unsizedThrew = true
     }
     check(unsizedThrew, 'and a pick source with neither a sizeAt nor a radius throws instead of naming nothing')
+  }
+
+  // --- her hands: a stone under two metres comes up, a boulder does not ---
+  console.log('\nher hands')
+  {
+    taken.clear()
+    // Grown on the cliff apron, where the scree bed lays stones from half a
+    // metre, and swept a few frames from the origin so what is near is shown.
+    const grow = () => {
+      const r = build(cliff)
+      for (let i = 0; i < 8; i++) r.update(0, 61.6, 0)
+      return r
+    }
+    const r = grow()
+    const unit = Math.max(r.beds[0].shape.measured.width, r.beds[0].shape.measured.depth, r.beds[0].shape.measured.height)
+    // Every shown rock under two metres near the origin, nearest first.
+    const small = []
+    for (const bed of r.beds) {
+      for (const t of bed.tiles.values()) {
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const span = unit * bed.instScale[id]
+          if (span < 2 && !bed.rim.isHidden(id)) small.push({ bed, tile: t, k, id, span, d: Math.hypot(bed.instX[id], bed.instZ[id]) })
+        }
+      }
+    }
+    small.sort((a, b) => a.d - b.d)
+    check(small.length > 0, 'the apron has shown stones under two metres', `${small.length}, nearest ${small[0]?.d.toFixed(1)} m off`)
+    const { bed, tile, k, id, span } = small[0]
+    const x = bed.instX[id], z = bed.instZ[id]
+    const mid = bed.instY[id] + bed.shape.measured.height * bed.instScale[id] * 0.5
+    const hit = r.pickAt(x, mid, z, 0.1, 2)
+    check(hit !== null && hit.bed === bed && hit.tile === tile && hit.k === k && hit.id === id && hit.dist === 0 && Math.abs(hit.size - span) < 1e-6, 'pickAt at a small stone\'s middle hits it, its size the shape\'s longest axis at its scale', hit ? `${hit.bed.cfg.name} ${hit.size.toFixed(2)} m` : 'null')
+    check(r.pickAt(x, mid + 5, z, 0.1, 2) === null, 'and nothing five metres above it')
+    check(r.pickAt(x, mid, z, 0.1, span)?.id !== id, 'nor one at or over maxSize')
+    // A rock of two metres and up is never offered, whatever the reach.
+    let big = null
+    for (const b of r.beds) for (const t of b.tiles.values()) for (let j = 0; j < t.n && !big; j++) if (!b.rim.isHidden(t.ids[j]) && unit * b.instScale[t.ids[j]] >= 2) big = { bed: b, id: t.ids[j] }
+    check(big !== null && r.pickAt(big.bed.instX[big.id], big.bed.instY[big.id] + big.bed.shape.measured.height * big.bed.instScale[big.id] * 0.5, big.bed.instZ[big.id], 0.5, 2)?.id !== big.id, 'a rock of two metres and up never comes up', big ? `${big.bed.cfg.name} ${(unit * big.bed.instScale[big.id]).toFixed(2)} m` : 'none shown')
+    const placedWere = bed.placed, usedWere = bed.stats.used, nWere = tile.n
+    const c = bed.batch.getColorAt(id, new THREE.Color()).getHex()
+    const rec = r.take(hit, 1)
+    check(rec.kind === 'rock' && rec.name === 'rock' && rec.size === hit.size && rec.geometry === r.beds[0].shape.tiers[0] && rec.material === r.material && rec.stowable === (span < 1), 'take: the boulder at LOD0 on the stone material, stowable under a metre')
+    check(rec.scale[0] === bed.instScale[id] && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && new THREE.Color().setRGB(...rec.color).getHex() === c, 'at its scale, in its tint', JSON.stringify(rec.scale))
+    let listed = false
+    for (let j = 0; j < tile.n; j++) if (tile.ids[j] === id) listed = true
+    check(tile.n === nWere - 1 && !listed && bed.placed === placedWere - 1 && bed.stats.used === usedWere - 1 && !bed.batch.getVisibleAt(id) && bed.tierAt[id] === -1, 'the stone is out of its tile and its instance back in the pool')
+    check(taken.has('rock', x, z), 'its spot is recorded')
+    check(r.pickAt(x, mid, z, 0.1, 2)?.id !== id, 'and it cannot be taken twice')
+    let threw = false
+    try { r.take(hit, 1) } catch { threw = true }
+    check(threw, 'taking it twice throws')
+    const d = r.dress({ kind: 'rock' })
+    check(d.geometry === rec.geometry && d.material === rec.material, 'dress: the boulder at LOD0 on the stone material')
+    threw = false
+    try { r.dress({ kind: 'pebble' }) } catch { threw = true }
+    check(threw, 'dress throws on another kind')
+    for (let i = 0; i < 4; i++) r.update(0, 61.6, 0)
+    check(bed.placed === placedWere - 1 && bed.stats.used === bed.placed + bed.stats.fading, 'a few frames on, the tile is walked without harm and the pool holds what stands', `${bed.stats.used} used, ${bed.placed} placed, ${bed.stats.fading} fading`)
+    // The walk surface has lost it: the column over its spot no longer reaches its top.
+    const again = grow()
+    const bedAgain = again.beds.find((b) => b.cfg.name === bed.cfg.name)
+    let back = false
+    for (const t of bedAgain.tiles.values()) for (let j = 0; j < t.n; j++) if (Math.hypot(bedAgain.instX[t.ids[j]] - x, bedAgain.instZ[t.ids[j]] - z) < 0.05) back = true
+    check(!back && bedAgain.placed === placedWere - 1, 'grown again the bed lays no stone there and the count is one short', `${bedAgain.placed} of ${placedWere}`)
+    taken.clear()
+    const whole = grow()
+    const bedWhole = whole.beds.find((b) => b.cfg.name === bed.cfg.name)
+    back = false
+    for (const t of bedWhole.tiles.values()) for (let j = 0; j < t.n; j++) if (Math.hypot(bedWhole.instX[t.ids[j]] - x, bedWhole.instZ[t.ids[j]] - z) < 0.05) back = true
+    check(back && bedWhole.placed === placedWere, 'and with the registry cleared the stone is back')
+    r.dispose(); again.dispose(); whole.dispose()
   }
 
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()

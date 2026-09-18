@@ -6,20 +6,33 @@
 //
 // THE DRIVE IS THE RIDERS' WEIGHT. Nobody rows: the mean position of everyone
 // aboard, in the hull's frame, is the tiller and the oars both. Weight forward
-// of the hull's centre eases the boat ahead, weight aft eases it astern at a
+// of the hull's centre eases the boat ahead, to V_MAX a third of a length
+// forward and on to V_TIP right at the bow; weight aft eases it astern at a
 // third of the pace, and weight to one side swings the bow that way. Speed
 // and yaw rate relax toward what the weight asks over TAU_DRAG and TAU_YAW,
 // so a step to the bow is a slow gathering of way and a step back to the
 // centre is a long glide to a stop; no weight aboard is the same glide.
 //
+// A RIVER CARRIES THE BOAT. The current under the hull (WaterSurfaces.flowAt,
+// the direction the shader drifts the water in) moves every live boat
+// downstream at CURRENT_MPS on top of its way, rider or no rider, and a boat
+// moves from a lake onto a river and back because its float and its grounding
+// read the one surface under it (levelAt, Rowboats.depthAt). A boat adrift is
+// kept live while it is within DRIFT_LIVE_M of her -- the scatter's cull, near
+// enough -- and moored where it lies beyond that, since a moored boat is a
+// record at rest; the river takes it up again when she comes back to it.
+//
 // ONE CLIENT MOVES A BOAT AND THE REST FOLLOW. The authority is the rider
 // with the lowest client id (a peer aboard announces itself with its pose),
-// and its pose message carries the boat's position, heading, speed and yaw
-// rate. Every other client runs the same integration from the last sample it
-// has, so between samples the boat travels exactly as it will turn out to
-// have travelled, and a sample lands as a residual between where the boat
-// was drawn and where the sample puts it that decays over CORRECT_S rather
-// than as a step. The relay keeps the last sample per boat for a joiner.
+// or, once everyone is off, the last rider to have been it for as long as it
+// stays live here, so a boat left adrift keeps reporting where the river
+// took it. Its pose message carries the boat's position, heading, speed and
+// yaw rate. Every other client runs the same integration from the last
+// sample it has, the current included, so between samples the boat travels
+// exactly as it will turn out to have travelled, and a sample lands as a
+// residual between where the boat was drawn and where the sample puts it
+// that decays over CORRECT_S rather than as a step. The relay keeps the last
+// sample per boat for a joiner.
 //
 // A RIDER IS CARRIED, not simulated: her feet's place in the hull's frame is
 // read after she moves and written back before the next move, so the boat
@@ -30,7 +43,9 @@
 //
 // THE HULL IS STONE TO THE WALKER (WalkSurface.addStone): the bank's sole
 // grid is the ground inside the pad -- the boards, a thwart, and the gunwale
-// out to the pad's edge, a step from the shallows and a step back out.
+// out to the pad's edge, a step from the shallows and a step back out -- and
+// a deck to the slope rule, level to a teleport however deep the lake is a
+// stride past the bow.
 //
 // THE ROCKING IS THREE SUMS OF SINES on the CPU, composed into the instance
 // matrix with the position and heading: a heave, a roll and a pitch, each
@@ -52,17 +67,31 @@ const MOOR_SLACK_M = 10
 const LIVE_EVERY_S = 0.25
 // Boats drawn live at once: everyone within LIVE_M plus whatever peers are aboard.
 export const MAX_LIVE = 6
+// A boat the current is moving stays live out to this far from her.
+const DRIFT_LIVE_M = 250
+
+// The river's pull, metres a second at full flow weight: a brisk walk, so a
+// rider amidships holds against it and one at the bow beats it upstream.
+export const CURRENT_MPS = 1.0
+// A stale sample is carried downstream in steps this long, since the current
+// bends with the river.
+const DRIFT_STEP_S = 1
 
 // The drive. Speed relaxes toward the weight's ask over TAU_DRAG; the yaw
-// rate over TAU_YAW. V_MAX is a rowed pace, a little over walking.
+// rate over TAU_YAW. V_MAX is a rowed pace, a little over walking, and the
+// weight right in the bow's tip doubles it.
 const V_MAX = 2.4
+const V_TIP = 4.8
 const V_BACK = 0.8
 const TAU_DRAG = 4
 const W_MAX = 0.35
 const TAU_YAW = 2
 // The lever arms: weight this far ahead of the centre (a share of the length)
-// or this far to one side is full ask.
+// or this far to one side is full ask; ahead of LEVER_FWD the ask climbs on
+// to V_TIP at TIP_SHARE of the way to the stem, the last of the pad wide
+// enough to stand in.
 const LEVER_FWD = 0.3
+const TIP_SHARE = 0.85
 const LEVER_TURN = 0.12
 // What the keel wants under it under way, less than the scatter asks to seat
 // a boat so she can nose nearer the shore than one was moored.
@@ -96,13 +125,13 @@ export class Boats {
   /**
    * @param scene    THREE.Scene.
    * @param rowboats Rowboats: the bank, the seated boats and the mooring.
-   * @param water    WaterSurfaces: lakeLevelAt.
+   * @param water    WaterSurfaces: levelAt, flowAt.
    * @param player   Player: rig for the carry, originPosition, headPosition.
    * @param netplay  Netplay: id, peers, boats samples; null for no net.
    */
   constructor(scene, rowboats, water, player, netplay) {
     if (!rowboats || !rowboats.bank || !rowboats.bank.hull) throw new Error('Boats: needs Rowboats built from a bank with a hull section')
-    if (!water || typeof water.lakeLevelAt !== 'function') throw new Error('Boats: needs WaterSurfaces with lakeLevelAt')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.flowAt !== 'function') throw new Error('Boats: needs WaterSurfaces with levelAt and flowAt')
     if (!player || !player.rig) throw new Error('Boats: needs the Player')
     this.rowboats = rowboats
     this.water = water
@@ -149,7 +178,8 @@ export class Boats {
     this.rideZ = 0
     this.headU = 0
     this.headV = 0
-    // The boat she is authority of, or null.
+    // The boat she is authority of, or null: the one she rides, or the one
+    // she last rode while it is live and nobody else is aboard.
     this.authorityOf = null
 
     this._m = new THREE.Matrix4()
@@ -159,6 +189,7 @@ export class Boats {
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
     this._o = new THREE.Vector3()
+    this._f = { x: 0, z: 0 }
     this._localX = 0
     this._localZ = 0
     this._sample = [0, 0, 0, 0, 0, 0]
@@ -212,7 +243,11 @@ export class Boats {
       if (this._inHull(b, origin.x, origin.z, this.hull.pad) && Math.abs(origin.y - this._soleAt(b)) <= ABOARD_BAND_M) { ride = b; break }
     }
     this.ride = ride
-    if (!ride) { this.authorityOf = null; return }
+    if (!ride) {
+      const a = this.authorityOf
+      if (a !== null && (!a.live || this._anyPeerAboard(a))) this.authorityOf = null
+      return
+    }
     const c = Math.cos(ride.ryaw)
     const s = Math.sin(ride.ryaw)
     let dx = origin.x - ride.rx
@@ -293,6 +328,12 @@ export class Boats {
     return top
   }
 
+  /** The sole is level ground to the slope rule, however deep the lake under it. */
+  deckAt(x, z) {
+    for (const b of this.live) if (this._inHull(b, x, z, this.hull.pad)) return true
+    return false
+  }
+
   // --- inside ----------------------------------------------------------------
 
   /** (x, z) into the boat's drawn frame in the pick's units; false when clearly outside the hull. */
@@ -355,7 +396,8 @@ export class Boats {
       if (Math.abs(b.v) > 0.02 || Math.abs(b.w) > 0.01) continue
       const dx = b.rx - px
       const dz = b.rz - pz
-      if (dx * dx + dz * dz < far) continue
+      const d2 = dx * dx + dz * dz
+      if (d2 < far || (b.flow > 0 && d2 < DRIFT_LIVE_M * DRIFT_LIVE_M)) continue
       this._moor(i)
     }
   }
@@ -372,6 +414,7 @@ export class Boats {
     b.ry = b.y
     b.rz = b.z
     b.ryaw = b.yaw
+    b.flow = 0
     // The scatter's phase-free rock: a phase of the boat's own from its origin.
     b.phase = (((b.origin * 2654435761) >>> 0) / 4294967296) * TWO_PI
     const slot = this.live.length
@@ -383,6 +426,7 @@ export class Boats {
 
   _moor(i) {
     const b = this.live[i]
+    if (b === this.authorityOf) this.authorityOf = null
     this.rowboats.moor(b, b.x, b.y, b.z, b.yaw)
     const last = this.live.length - 1
     if (i !== last) {
@@ -428,6 +472,17 @@ export class Boats {
         sv *= 1 - kd
         sw *= 1 - ky
       }
+      // And the current for as long as the sample is old, refused where it would ground.
+      for (let left = t; left > 0; left -= DRIFT_STEP_S) {
+        const h = Math.min(left, DRIFT_STEP_S)
+        const w = this.water.flowAt(sx, sz, this._f)
+        if (w === 0) break
+        const nx = sx + this._f.x * CURRENT_MPS * w * h
+        const nz = sz + this._f.z * CURRENT_MPS * w * h
+        if (this.rowboats.depthAt(nx, nz, syaw, b.length / 2) < DRAFT * b.length + KEEL_CLEAR_M) break
+        sx = nx
+        sz = nz
+      }
       // The residual keeps the drawn boat where it was this frame; it decays in _step.
       b.ex = b.x + b.ex - sx
       b.ez = b.z + b.ez - sz
@@ -464,9 +519,11 @@ export class Boats {
       if (n > 0) {
         u = u / n - hull.cx * s
         v = (v / n - hull.cz * s) * bow
-        const fwd = THREE.MathUtils.clamp(v / (LEVER_FWD * b.length), -1, 1)
+        const lever = LEVER_FWD * b.length
+        const fwd = THREE.MathUtils.clamp(v / lever, -1, 1)
         const turn = THREE.MathUtils.clamp(u / (LEVER_TURN * b.length), -1, 1)
         vTarget = fwd > 0 ? fwd * V_MAX : fwd * V_BACK
+        if (v > lever) vTarget += THREE.MathUtils.clamp((v - lever) / (TIP_SHARE * hull.tip * s - lever), 0, 1) * (V_TIP - V_MAX)
         wTarget = turn * W_MAX * bow
       }
       b.v += (vTarget - b.v) * (1 - Math.exp(-dt / TAU_DRAG))
@@ -485,8 +542,15 @@ export class Boats {
       if (aground) b.v = 0
       else { b.x = nx; b.z = nz }
     }
+    // The current, refused the same way; the boat pins on a bank it is set onto.
+    b.flow = this.water.flowAt(b.x, b.z, this._f)
+    if (b.flow > 0) {
+      const nx = b.x + this._f.x * CURRENT_MPS * b.flow * dt
+      const nz = b.z + this._f.z * CURRENT_MPS * b.flow * dt
+      if (this.rowboats.depthAt(nx, nz, b.yaw, b.length / 2) >= DRAFT * b.length + KEEL_CLEAR_M) { b.x = nx; b.z = nz }
+    }
     b.yaw = wrapAngle(b.yaw + b.w * dt)
-    const level = this.water.lakeLevelAt(b.x, b.z)
+    const level = this.water.levelAt(b.x, b.z)
     if (level !== null) b.y = level - DRAFT * b.length
 
     const decay = Math.exp(-dt / CORRECT_S)
@@ -501,7 +565,7 @@ export class Boats {
     const heave = HEAVE_M * (Math.sin(TWO_PI * HEAVE_HZ[0] * t + p) + Math.sin(TWO_PI * HEAVE_HZ[1] * t + 1.7 * p))
     const roll = ROLL_RAD * (Math.sin(TWO_PI * ROLL_HZ[0] * t + 2 * p) + 0.6 * Math.sin(TWO_PI * ROLL_HZ[1] * t + p))
     const pitch = PITCH_RAD * (Math.sin(TWO_PI * PITCH_HZ[0] * t + 3 * p) + 0.7 * Math.sin(TWO_PI * PITCH_HZ[1] * t + 0.5 * p))
-      - TRIM_RAD * (b.v / V_MAX) * bow
+      - TRIM_RAD * (b.v / V_TIP) * bow
     b.ry = b.y + heave
 
     this._p.set(b.rx, b.ry, b.rz)
@@ -521,6 +585,7 @@ export class Boats {
       speed: b ? b.v : 0,
       yawRate: b ? b.w : 0,
       aground: this.aground,
+      flow: b ? b.flow : 0,
       simMs: this.simMs,
     }
   }

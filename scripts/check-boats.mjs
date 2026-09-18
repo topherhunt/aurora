@@ -8,7 +8,8 @@
 // stern, so weight forward rows her backwards; a boat that keeps its seat in
 // the scatter while it is live, so two are drawn; a mooring lost to a tile
 // eviction; a hull that is not stone; a rider not carried; a sample that
-// lands as a step; and a drive that never stops.
+// lands as a step; a drive that never stops; a river that does not carry the
+// boat, or carries it through the bank; and a lake's edge that stops it.
 
 import * as THREE from 'three'
 import { DRAFT, Rowboats, inLoop, loopArea, rowboatsBankFrom, sliceLoops, soleAt } from '../src/v2/render/rowboats.js'
@@ -31,7 +32,9 @@ const coast = (level, tan) => ({
     heightAndSlopeAt: (x) => ({ h: level - x * tan, tan }),
   },
   water: {
+    levelAt: () => level,
     lakeLevelAt: () => level,
+    flowAt: () => 0,
     lakeShoreDistAt: (x, z, reach, g, t) => {
       const d = (g - level) / Math.max(t, 0.01)
       return d < -reach ? -reach : d > reach ? reach : d
@@ -40,6 +43,18 @@ const coast = (level, tan) => ({
 })
 const LEVEL = 40
 const world = coast(LEVEL, 1.0)
+/** The coast with a river down it: the lake's footprint ends at z = 50 and the level runs on as a river's, and a current of `dir` at full weight wherever `where(x, z)`. */
+const riverCoast = (level, tan, where, dir) => {
+  const w = coast(level, tan)
+  w.water.lakeLevelAt = (x, z) => (z > 50 ? null : level)
+  w.water.flowAt = (x, z, out) => {
+    if (!where(x, z)) return 0
+    out.x = dir[0]
+    out.z = dir[1]
+    return 1
+  }
+  return w
+}
 
 const fakePlayer = () => {
   const rig = new THREE.Object3D()
@@ -50,6 +65,13 @@ const fakePlayer = () => {
   }
 }
 const fakeNet = (id) => ({ id, peers: new Map(), boats: null, boatsSerial: 0 })
+
+/** The walk loop's edge abeam of the centre: the furthest x on the centre's row still inside it. */
+const railAt = (walk, cx, cz) => {
+  let x = cx
+  while (inLoop(walk, x + 0.002, cz)) x += 0.002
+  return x
+}
 
 const firstBoat = (r) => {
   for (const tile of r.tiles.values()) if (tile.n) return tile.boats[0]
@@ -121,8 +143,7 @@ const firstBoat = (r) => {
   let bowZ = h.cz
   for (const [, z] of h.walk) if ((z - h.cz) * h.bow > (bowZ - h.cz) * h.bow) bowZ = z
   const bowSole = soleAt(h.sole, h.cx, h.cz + (bowZ - h.cz) * 0.85)
-  let railX = h.cx
-  for (const [x, z] of h.walk) if (Math.abs(z - h.cz) < 0.03 && x > railX) railX = x
+  const railX = railAt(h.walk, h.cx, h.cz)
   const overRail = soleAt(h.sole, h.cx + (railX - h.cx) * 1.04, h.cz)
   check(Math.abs(mid - h.floorY) < 0.01 && bowSole > mid + 0.03 && Math.abs(overRail - h.gunwaleY) < 0.01,
     'the sole is the floor amidships, climbs to the bow and is the gunwale over the rail',
@@ -247,6 +268,17 @@ const firstBoat = (r) => {
   tick(1200)
   check(Math.abs(b.v) < 0.02, 'weight amidships again, twenty seconds later it has all but stopped', `${b.v.toFixed(3)} m/s`)
 
+  // Right in the bow's tip: level ground to the slope rule, and twice the pace.
+  check(hull.tip > 0.3 * r.long && inLoop(hull.pad, hull.cx, hull.cz + hull.tip * 0.85 * hull.bow), 'the pad reaches a tip well ahead of the full-ask lever', `${hull.tip.toFixed(3)} of ${r.long.toFixed(3)}`)
+  at(0, hull.tip * 0.85)
+  tick(1)
+  check(boats.aboard && boats.deckAt(feet.x, feet.z) && !boats.deckAt(feet.x + Math.sin(b.ryaw) * hull.bow * 0.5, feet.z + Math.cos(b.ryaw) * hull.bow * 0.5),
+    'standing in the tip she is aboard on the deck, and half a metre ahead is not deck')
+  tick(1200)
+  check(b.v > 4.6 && b.v <= 4.8 + 1e-6, 'weight in the tip gathers twice V_MAX', `${b.v.toFixed(2)} m/s`)
+  at(0, 0)
+  tick(1500)
+
   // To one side: the bow swings that way.
   at(0.12 * r.long, 0)
   const yaw1 = b.yaw
@@ -266,8 +298,7 @@ const firstBoat = (r) => {
   const p = player.rig.position
   let n = boats.columnAt(p.x, p.z, 0, out)
   check(n === 1 && Math.abs(out[1] - (b.ry + (soleAt(hull.sole, hull.cx, hull.cz) - hull.keelY) * s)) < 1e-6 && out[0] === b.ry, 'her feet stand on the boards', `${n} span, top ${(out[1] - out[0]).toFixed(3)} m over the keel`)
-  let railX = hull.cx
-  for (const [x, z] of hull.walk) if (Math.abs(z - hull.cz) < 0.03 && x > railX) railX = x
+  const railX = railAt(hull.walk, hull.cx, hull.cz)
   at((railX - hull.cx) * 1.04, 0)
   tick(1)
   n = boats.columnAt(p.x, p.z, 0, out)
@@ -309,6 +340,92 @@ const firstBoat = (r) => {
   check(boats.lids.count === 1 && boats.hulls.count === 1, 'one hull, one lid drawn')
   boats.dispose()
   r.dispose()
+}
+
+// --- the river --------------------------------------------------------------
+{
+  console.log('\nthe current carries the boat downstream, rider or none, off the lake and onto the river')
+  const w = riverCoast(LEVEL, 1.0, (x) => x >= 5 && x <= 15, [0, 1])
+  const r = new Rowboats(new THREE.Scene(), w.field, w.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  r.place(0, 0)
+  const player = fakePlayer()
+  const net = fakeNet('a')
+  const boats = new Boats(new THREE.Scene(), r, w.water, player, net)
+  const b = firstBoat(r)
+  const hull = r.bank.hull
+  const s = b.length / r.long
+  // Into the channel at z = 40, headed downstream, her feet amidships.
+  b.x = 10
+  b.z = 40
+  b.yaw = hull.bow < 0 ? Math.PI : 0
+  const feetAt = (u, v) => {
+    const c = Math.cos(b.yaw)
+    const sn = Math.sin(b.yaw)
+    const lx = (hull.cx + u) * s
+    const lz = (hull.cz + v * hull.bow) * s
+    player.rig.position.set(b.x + lx * c + lz * sn, b.y + (hull.floorY - hull.keelY) * s, b.z - lx * sn + lz * c)
+  }
+  let now = 0
+  const tick = (n, dt = 1 / 60) => {
+    for (let i = 0; i < n; i++) {
+      now += dt * 1000
+      boats.update(dt, now)
+      boats.settle()
+    }
+  }
+  feetAt(0, 0)
+  tick(1)
+  check(boats.live[0] === b && boats.aboard && boats.authorityOf === b, 'aboard in the channel, its authority')
+  tick(600)
+  const feet = player.rig.position
+  check(Math.abs(b.z - 50) < 0.3 && Math.abs(b.x - 10) < 0.05 && Math.abs(b.v) < 0.05, 'ten seconds later the current has carried it ten metres downstream, no way on', `at (${b.x.toFixed(2)}, ${b.z.toFixed(2)}), ${b.v.toFixed(3)} m/s`)
+  const c = Math.cos(b.ryaw)
+  const sn = Math.sin(b.ryaw)
+  const lu = ((feet.x - b.rx) * c - (feet.z - b.rz) * sn) / s - hull.cx
+  const lv = (((feet.x - b.rx) * sn + (feet.z - b.rz) * c) / s - hull.cz) * hull.bow
+  check(boats.aboard && Math.abs(lu) < 0.02 && Math.abs(lv) < 0.02, 'and she is carried with it, still amidships', `at (${lu.toFixed(3)}, ${lv.toFixed(3)})`)
+  tick(600)
+  check(b.z > 59 && b.live && Math.abs(b.y - (LEVEL - DRAFT * b.length)) < 1e-6, 'past the lake\'s footprint it floats on at the river\'s level', `z ${b.z.toFixed(1)}, y ${b.y.toFixed(3)}`)
+  // She steps ashore: the boat drifts on, live and hers to report.
+  player.rig.position.set(-5, LEVEL + 5, b.z)
+  tick(600)
+  check(!boats.aboard && b.z > 69 && boats.authorityOf === b && boats.netState().boat !== null && boats.netState().aboard === null,
+    'ashore, it drifts on and she still reports it', `z ${b.z.toFixed(1)}, ${boats.authorityOf === b ? 'authority' : 'not authority'}`)
+  // Far off, it moors where the river has taken it.
+  player.rig.position.set(-5, LEVEL + 5, b.z + 400)
+  const zMoor = b.z
+  tick(30)
+  check(!b.live && boats.live.length === 0 && boats.authorityOf === null && b.z >= zMoor && b.z < zMoor + 1, 'beyond reach it moors where it lies', `z ${b.z.toFixed(1)}`)
+  // A relay sample of it from ten seconds ago, nobody aboard: reckoned ten metres down the river.
+  player.rig.position.set(-5, LEVEL + 5, 110)
+  net.boats = [[b.origin, 10, 100, b.yaw, 0, 0, 10_000]]
+  net.boatsSerial++
+  tick(20)
+  check(b.live && Math.abs(b.x - 10) < 0.05 && Math.abs(b.z - 110) < 0.5, 'a stale sample is carried downstream for its age', `at (${b.x.toFixed(2)}, ${b.z.toFixed(2)})`)
+  boats.dispose()
+  r.dispose()
+
+  // Set onto the beach broadside, nobody aboard, the current pins it where the keel would touch.
+  const w2 = riverCoast(LEVEL, 1.0, (x) => x <= 15, [-1, 0])
+  const r2 = new Rowboats(new THREE.Scene(), w2.field, w2.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  r2.place(0, 0)
+  const boats2 = new Boats(new THREE.Scene(), r2, w2.water, player, fakeNet('a'))
+  const b2 = firstBoat(r2)
+  b2.x = 10
+  b2.z = 0
+  b2.yaw = 0
+  player.rig.position.set(-5, LEVEL + 5, 0)
+  let n2 = 0
+  const tick2 = (n, dt = 1 / 60) => {
+    for (let i = 0; i < n; i++) { n2 += dt * 1000; boats2.update(dt, n2); boats2.settle() }
+  }
+  tick2(1200)
+  const xPin = b2.x
+  tick2(300)
+  const keel = DRAFT * b2.length + 0.15
+  check(b2.live && xPin > keel && xPin < keel + 0.1 && b2.x === xPin && b2.flow === 1, 'a current onto the beach grounds the boat where the keel would touch and holds it', `x ${xPin.toFixed(2)} for a keel at ${keel.toFixed(2)}`)
+  boats2.dispose()
+  r2.dispose()
 }
 
 // --- the net ----------------------------------------------------------------

@@ -15,9 +15,10 @@ import { RimFade } from './rim.js'
 // with its keel a draft under it, never on the ground, and it is kept where the
 // lake is at least a keel's clearance deep under both ends and the middle, so
 // a beach that shelves slowly pushes its boats out and a steep bank keeps them
-// close. Rivers do not count (WaterSurfaces.lakeLevelAt, lakeShoreDistAt): a
+// close. Rivers seat none (WaterSurfaces.lakeLevelAt, lakeShoreDistAt): a
 // boat on a stream is a wreck, and the ocean is a lake, so the coast takes
-// boats like a tarn does.
+// boats like a tarn does -- but a boat sailed onto a river floats there too
+// (depthAt reads levelAt, lakes and rivers alike).
 //
 // THE PICK IS SHIPPED WITHOUT A LADDER, so the tiers are the pick and its card:
 // the mesh holds to the props' second rung and the card past it to the props'
@@ -50,10 +51,13 @@ export const SHORE_M = 12
 const TILE = 40
 const KEEP = (TILE * TILE * ROWBOATS_PER_M) / SHORE_M
 
-// Metres bow to stern, figurehead included, and the draft as a share of it: a
-// quarter of a metre under the waterline on a 3.5 m boat.
+// Metres bow to stern, figurehead included, and the draft as a share of it:
+// 34 cm under the waterline on a 3.5 m boat, the boards 12 cm under it (the
+// lid keeps the lake out) and 18 cm of freeboard at the rim amidships, which
+// is 52 cm over the keel -- a deeper draft has no closed rim to slice for the
+// lid and the rock would put the rim under.
 export const LENGTH = [3.2, 3.8]
-export const DRAFT = 0.07
+export const DRAFT = 0.098
 // Metres of water the keel must have under it at the bow, the stern and
 // midships, on top of the draft.
 export const KEEL_CLEAR = 0.3
@@ -404,6 +408,9 @@ export function rowboatsBankFrom(pick) {
   let bow = 0
   for (let i = 0; i < pos.length; i += 3) if (pos[i + 1] > topY) { topY = pos[i + 1]; bow = Math.sign(pos[i + 2] - cz) }
   if (bow === 0) throw new Error('Rowboats: the highest point of the hull is amidships; no bow')
+  // How far ahead of the centre the pad reaches at the bow: the furthest forward she can stand.
+  let tip = 0
+  for (const [, z] of pad) tip = Math.max(tip, (z - cz) * bow)
 
   let bytes = geometryBytes(lid) + sole.h.byteLength
   for (const tier of tiers) for (const g of tier.geometries) bytes += geometryBytes(g)
@@ -412,8 +419,8 @@ export function rowboatsBankFrom(pick) {
     // The hull's own frame, all in the pick's units: its centre in plan, which
     // sign of z the bow lies on, the keel's bottom and the section heights;
     // the lid; and the sole she walks, bounded by `walk` inside `pad`, its
-    // heights in `sole`.
-    hull: { cx, cz, bow, keelY: b.min.y, waterline, floorY, gunwaleY, lid, walk, pad, sole },
+    // heights in `sole`, reaching `tip` ahead of the centre at the bow.
+    hull: { cx, cz, bow, tip, keelY: b.min.y, waterline, floorY, gunwaleY, lid, walk, pad, sole },
   }
 }
 
@@ -426,7 +433,7 @@ export class Rowboats {
   /**
    * @param scene    THREE.Scene to add the arena's Group to.
    * @param field    V2Height. Needs heightAt, heightAndSlopeAt.
-   * @param water    WaterSurfaces. Needs lakeLevelAt, lakeShoreDistAt.
+   * @param water    WaterSurfaces. Needs levelAt, lakeLevelAt, lakeShoreDistAt.
    * @param bank     rowboatsBankFrom's answer. Required.
    */
   constructor(scene, field, water, { seed = 1, radius = null, bank = null } = {}) {
@@ -434,8 +441,8 @@ export class Rowboats {
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
       throw new Error('Rowboats: needs a V2Height with heightAt and heightAndSlopeAt')
     }
-    if (!water || typeof water.lakeLevelAt !== 'function' || typeof water.lakeShoreDistAt !== 'function') {
-      throw new Error('Rowboats: needs WaterSurfaces with lakeLevelAt and lakeShoreDistAt')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.lakeLevelAt !== 'function' || typeof water.lakeShoreDistAt !== 'function') {
+      throw new Error('Rowboats: needs WaterSurfaces with levelAt, lakeLevelAt and lakeShoreDistAt')
     }
 
     this.field = field
@@ -607,12 +614,12 @@ export class Rowboats {
   }
 
   /**
-   * The lake's depth under a boat of `half` metres to each end headed `yaw`
-   * at (x, z): the least of the water over the ground at the bow, the stern
-   * and midships, or -Infinity where no lake stands over one of them.
+   * The water's depth under a boat of `half` metres to each end headed `yaw`
+   * at (x, z): the least of the surface, lake or river, over the ground at
+   * the bow, the stern and midships, or -Infinity where no water stands.
    */
   depthAt(x, z, yaw, half) {
-    const level = this.water.lakeLevelAt(x, z)
+    const level = this.water.levelAt(x, z)
     if (level === null) return -Infinity
     const dx = Math.sin(yaw) * half
     const dz = Math.cos(yaw) * half

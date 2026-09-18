@@ -40,6 +40,7 @@ const coast = (level, tan) => ({
     heightAndSlopeAt: (x) => ({ h: level - x * tan, tan }),
   },
   water: {
+    levelAt: () => level,
     lakeLevelAt: () => level,
     lakeShoreDistAt: (x, z, reach, g, t) => {
       const d = (g - level) / Math.max(t, 0.01)
@@ -49,7 +50,7 @@ const coast = (level, tan) => ({
 })
 const DRY = {
   field: { heightAt: () => 40, heightAndSlopeAt: () => ({ h: 40, tan: 0 }) },
-  water: { lakeLevelAt: () => null, lakeShoreDistAt: (x, z, reach) => reach },
+  water: { levelAt: () => null, lakeLevelAt: () => null, lakeShoreDistAt: (x, z, reach) => reach },
 }
 const place = (world, { seed = 5, radius = null } = {}) => {
   const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed, radius, bank: shippedBank() })

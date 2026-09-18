@@ -234,6 +234,15 @@ console.log('the capsule')
   check(s.heightAt(0.5, 0.5) === GROUND + 1 && s.heightAt(0.5, 0.5) === s.heightAt(0.5, 0.5, GROUND),
     'a teleport or a spawn lands on the stone itself, not the seat a prop is settled to',
     `without feet ${s.heightAt(0.5, 0.5)}, with ${s.heightAt(0.5, 0.5, GROUND)}`)
+  // A deck's slope is its own: a boat's sole four metres over the lake bed is
+  // level ground at its tip, where the field a stride ahead is far below.
+  const boxes = [[0, 1, 0, 1, GROUND + 3.5, GROUND + 4]]
+  const deck = stone(boxes)
+  const plain = new WalkSurface(field, deck, trees)
+  check(plain.slopeAt(0.9, 0.5) > Math.PI / 4, 'a high stone top is a cliff to the slope rule at its edge', `${(plain.slopeAt(0.9, 0.5) * 180 / Math.PI).toFixed(0)} deg`)
+  deck.deckAt = (x, z) => deck.blockTopAt(x, z) > -Infinity
+  check(plain.slopeAt(0.9, 0.5) === 0 && plain.slopeAt(1.5, 0.5) > Math.PI / 4,
+    'but a deck is level at its edge, and the ground beside it is still the ground', `${(plain.slopeAt(0.9, 0.5) * 180 / Math.PI).toFixed(0)} deg on, ${(plain.slopeAt(1.5, 0.5) * 180 / Math.PI).toFixed(0)} deg off`)
 }
 
 console.warn = warn

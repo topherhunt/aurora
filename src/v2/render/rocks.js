@@ -12,6 +12,7 @@ import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
+import { taken } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: boulders through the wood and across the
@@ -2981,6 +2982,8 @@ class RockBed {
       const cached = phase === 1 && this.packCaps
       if (cached && c.fit[k] === 0) continue
       if (phase === 0) c.fit[k] = 0
+      // A rock she carried off (hands.js) is not laid here again. Position-only, so it consumes no randoms.
+      if (taken.has('rock', x, z)) continue
 
       // THE PILE FIELD, TAKEN BEFORE ANY FIELD QUERY. `_clump` is four hashes of
       // position against a `scatterAt` at ~960 ns, so what it rejects here it
@@ -3709,6 +3712,65 @@ class RockBed {
     tile.n = w
     // The tile's hidden count is now stale against a shorter id list.
     this._markDue(tile)
+  }
+
+  /**
+   * The drawn rock in this bed nearest a hand at (x, y, z) -- a ball of the
+   * shape's longest axis at the rock's scale, about the rock's middle -- within
+   * `reach` metres and under `maxSize` across: `{ dist, bed, tile, k, id, size }`
+   * for take(), or null. Over the resident tiles' own ids, never the pool, for
+   * the reason at _anchorsInto. For Rocks.pickAt.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    const tile = this.cfg.tile
+    const far = reach + tile
+    const m = this.shape.measured
+    const unit = Math.max(m.width, m.depth, m.height)
+    let best = null
+    let bestD = reach
+    for (const t of this.tiles.values()) {
+      if (Math.abs((t.tx + 0.5) * tile - x) > far || Math.abs((t.tz + 0.5) * tile - z) > far) continue
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        if (this.rim.isHidden(id)) continue
+        const scale = this.instScale[id]
+        const span = unit * scale
+        if (span >= maxSize) continue
+        const d = Math.hypot(this.instX[id] - x, this.instY[id] + m.height * scale * 0.5 - y, this.instZ[id] - z) - span * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), bed: this, tile: t, k, id, size: span }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Lift the rock of a pickAt() hit out of the bed: _thin's retirement for the
+   * one id, its spot on the registry so the tile never lays it again, and its
+   * tint and scale back for the hand's record. The walk surface loses it with
+   * the tile's ids; what perched on it (a fern, a pebble, a crab) stays where it was.
+   */
+  take(hit) {
+    const { tile, k, id } = hit
+    if (k >= tile.n || tile.ids[k] !== id) throw new Error(`RockBed ${this.cfg.name}.take: instance ${id} is not standing in its tile`)
+    taken.add('rock', this.instX[id], this.instZ[id])
+    this.batch.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.tierAt[id] = -1
+    this.free[this.freeCount++] = id
+    for (let j = k; j < tile.n - 1; j++) {
+      tile.ids[j] = tile.ids[j + 1]
+      tile.rank[j] = tile.rank[j + 1]
+    }
+    tile.n--
+    this.placed--
+    this._markDue(tile)
+    return { color, scale: this.instScale[id] }
   }
 
   _demote(tile, coarse) {
@@ -4521,6 +4583,47 @@ export class Rocks {
    * walk, so it costs what blockTopAt does plus the triangles of the rocks the
    * ray's footprint crosses.
    */
+  /**
+   * The drawn rock of any bed nearest a hand at (x, y, z) within `reach` metres
+   * and under `maxSize` across, which is what she can lift: never a boulder or
+   * a giant at their sizes, the small end of the scree and the shore stones.
+   * `{ dist, bed, tile, k, id, size }` for take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    let best = null
+    for (const bed of this.beds) {
+      const hit = bed.pickAt(x, y, z, best ? best.dist : reach, maxSize)
+      if (hit && (!best || hit.dist < best.dist)) best = hit
+    }
+    return best
+  }
+
+  /**
+   * Lift the rock of a pickAt() hit out of its bed and return what the hand
+   * holds as a record for hands.js: the boulder at LOD0 on the one stone
+   * material -- the shape every bed takes, and the one `dress` puts back --
+   * the rock's tint and scale; one under `stowMax` metres may go in the backpack.
+   */
+  take(hit, stowMax) {
+    const { color, scale } = hit.bed.take(hit)
+    return {
+      kind: 'rock',
+      name: 'rock',
+      size: hit.size,
+      geometry: this.beds[0].shape.tiers[0],
+      material: this.material,
+      color,
+      scale: [scale, scale, scale],
+      stowable: hit.size < stowMax,
+    }
+  }
+
+  /** The geometry and material a packed rock record is drawn with: the boulder at LOD0 on the stone material. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'rock') throw new Error(`Rocks.dress: not a rock, ${slot.kind}`)
+    return { geometry: this.beds[0].shape.tiers[0], material: this.material }
+  }
+
   rayAt(x, y, z, dx, dy, dz, reach, minSize, out) {
     let best = Infinity
     for (const bed of this.beds) {

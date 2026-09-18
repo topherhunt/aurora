@@ -44,6 +44,18 @@
 // and REST_S of pottering follow before the next flight. A body walking on the
 // nest rides the roost's floor plane; on turf it rides the height field.
 //
+// A FISH IN HER HAND IS ITS. A grounded dragon with a `fish` lure (hands.js
+// lures) within LURE_M drops whatever it has and goes to `menace`: off the
+// nest onto the height field after the hand, turning at WALK_TURN_RATE, and
+// stopped with its head at her -- EAT_REACH ahead of the body, plus MENACE_M
+// -- where it plays the eat clip at her, and after her again once she is
+// MENACE_M further off, at the walk gait, or the run once the hand is
+// MENACE_RUN_M past its head and until it is a run's braking distance off her,
+// since her walk outpaces its own: it stomps after her in rushes. It does her no harm;
+// the ear (audio/ambience.js) roars it. The
+// fish put away or LURE_FORGET_M off, it flies home (`return`) and the rest
+// clock starts over on the nest.
+//
 // IT TURNS, PITCHES AND BANKS, none of them faster than a rate: heading closes
 // on the bearing at TURN_RATE, pitch on the climb angle at PITCH_RATE, and roll
 // leans into the turn by BANK of the swing. A CRUISE MEANDERS: the bearing and
@@ -165,6 +177,13 @@ const NEST_STAND = 0.04
 const NEST_ASIDE = 0.35
 // How far ahead of the body's origin, in body units, the eat clip's snout plunges: measured on the shipped fen dragon at the bite, the snout's vertices lie 1.84 to 2.45 forward with the ground under them, so a kill this far ahead is what the head goes into.
 export const EAT_REACH = 2.1
+
+export const LURES = ['fish']
+export const LURE_M = 5
+export const LURE_FORGET_M = 12
+export const MENACE_M = 1
+export const MENACE_RUN_M = 3
+const NO_LURES = []
 
 const swingTo = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a))
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
@@ -310,6 +329,8 @@ export class Dragons {
         // The ground it is on or flying to land on -- its nest site, or a visited spot -- the rest steps queued on it, the step under way and where that step walks to and faces; the kill's fixed place on the nest floor, off its centre.
         dest: null, queue: [], rest: 'idle', wayU: 0, wayV: 0, face: null, cargoU: 0, cargoV: 0, cargoYaw: 0,
         prey: null, cargo: null,
+        // The hands.js lure it is stomping after.
+        lure: null,
         // The clip playing, how long the rest step holds it, and the clip's own length, for the ear's wingbeat clock; `cue` counts steps, as the wildlife's does.
         clip: 'idle', cue: 0, left: 0, cycle: 0,
         size: 1, k: 1, lodSize: 1,
@@ -324,6 +345,7 @@ export class Dragons {
     this.puppets = []
     this.freePuppets = []
     this.fading = []
+    this.lures = NO_LURES
     this.cardMesh = null
     this.cardFade = null
     this.cardN = 0
@@ -423,7 +445,7 @@ export class Dragons {
     // Some way into its hunger, so a valley of roosts does not all hunt at once, nor all explore.
     d.fedAt = -rand() * HUNGER_S
     d.flight = 0
-    d.prey = d.cargo = null
+    d.prey = d.cargo = d.lure = null
     d.queue.length = 0
     d.lod = CARD_RUNGS
     d.puppet = null
@@ -530,6 +552,67 @@ export class Dragons {
     d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
     d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
     return dist
+  }
+
+  /** The lure this dragon is after this frame: the nearest of this.lures it wants, noticed within LURE_M across the ground and kept to LURE_FORGET_M; null when there is none. */
+  _lure(d) {
+    let lure = null
+    let best = Infinity
+    for (const l of this.lures) {
+      if (!LURES.includes(l.kind)) continue
+      const dist = Math.hypot(l.x - d.x, l.z - d.z)
+      if (dist < best) { best = dist; lure = l }
+    }
+    return lure !== null && best <= (d.lure ? LURE_FORGET_M : LURE_M) ? lure : null
+  }
+
+  /** Off the rest and after the lure: the kill, if any, let go where it lies. */
+  _menace(d, lure) {
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.state = 'menace'
+    d.lure = lure
+    d.queue.length = 0
+    d.rest = 'idle'
+    d.face = null
+    d.timer = Infinity
+    this._play(d, 'alert', Infinity)
+  }
+
+  /**
+   * One frame after the lure: the heading closing on its bearing at
+   * WALK_TURN_RATE and the body along where it points at the walk gait, or the
+   * run from the hand MENACE_RUN_M past its head until it is a run's braking
+   * distance at ACCEL off her (a third of either through a wide swing, as
+   * _stand), until the head is at the
+   * hand, where it stands and eats at her; the floor under it is the ground, or
+   * the nest's plane while over the nest.
+   */
+  _stomp(d, dt) {
+    const l = d.lure
+    const dx = l.x - d.x
+    const dz = l.z - d.z
+    const dist = Math.hypot(dx, dz)
+    const reach = EAT_REACH * d.k + MENACE_M
+    const swing = swingTo(d.heading, Math.atan2(-dz, dx))
+    d.heading += clamp(swing, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
+    let want = 0
+    if (dist > (d.clip === 'eat' ? reach + MENACE_M : reach)) {
+      const run = this.asset.gait.run * d.k
+      const gait = dist > reach + MENACE_RUN_M || (d.clip === 'run' && dist > reach + (run * run) / (2 * ACCEL)) ? 'run' : 'walk'
+      if (d.clip !== gait) this._play(d, gait, Infinity)
+      want = this.asset.gait[gait] * d.k * (Math.abs(swing) > 1 ? 0.3 : 1)
+    } else if (d.clip !== 'eat') {
+      this._play(d, 'eat', Infinity)
+    }
+    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
+    d.x += Math.cos(d.heading) * d.speed * dt
+    d.z -= Math.sin(d.heading) * d.speed * dt
+    const dest = d.dest
+    let floor = this.field.heightAt(d.x, d.z)
+    if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest))
+    d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
+    d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
+    d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
   }
 
   /** A dragon whose roost is gone: its cargo let go and its body left to dissolve where it is. */
@@ -739,6 +822,8 @@ export class Dragons {
     switch (d.state) {
       case 'roost':
       case 'perch': {
+        const lure = this._lure(d)
+        if (lure !== null) { this._menace(d, lure); return }
         const dist = this._stand(d, dt)
         d.left -= dt
         if (d.rest === 'walk' && dist < WAY_M) d.left = 0
@@ -803,6 +888,19 @@ export class Dragons {
           // A miss: back up into the hunt, whose aim is above the stag, and come round again.
           d.state = 'hunt'
         }
+        return
+      }
+      case 'menace': {
+        const lure = this._lure(d)
+        if (lure === null) {
+          d.lure = null
+          d.dest = d.site
+          d.state = 'return'
+          this._play(d, 'fly', Infinity)
+          return
+        }
+        d.lure = lure
+        this._stomp(d, dt)
         return
       }
       case 'return': {
@@ -919,10 +1017,12 @@ export class Dragons {
   }
 
   /** One frame: a dragon for every resident roost, stepped and drawn; the dragons of roosts that went, retired. Runs AFTER wildlife.update, which places the stags it hunts. */
-  update(hx, hy, hz, dt) {
+  /** `lures`: hands.js lures() this frame, a fish among them menaced. */
+  update(hx, hy, hz, dt, lures = NO_LURES) {
     if (!this.loaded) return
     this.frame++
     this.cardN = 0
+    this.lures = lures
 
     for (let i = this.fading.length - 1; i >= 0; i--) {
       const p = this.fading[i]
@@ -967,7 +1067,7 @@ export class Dragons {
     }
   }
 
-  /** Every dragon in the air or on its nest, for the ear: x, y, z, size, state, clip, cycle and speed on each. A hidden layer lists nothing. */
+  /** Every dragon in the air, on its nest or after her, for the ear: x, y, z, size, state, clip, cycle and speed on each. A hidden layer lists nothing. */
   bodies(into) {
     if (!this.batch.visible) return into
     for (const d of this.byKey.values()) into.push(d)

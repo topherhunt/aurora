@@ -53,7 +53,8 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
+import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
+import { taken } from '../taken.js'
 
 export const TILE = 8
 // Within this of her head a grasshopper is stepped and drawn.
@@ -244,6 +245,8 @@ export class Grasshoppers {
       const mix = rand()
       const shade = between(rand, SHADE)
       if (this.qualify(x, z) === null) continue
+      // One she caught is not rolled again; its home is the key.
+      if (taken.has('grasshopper', x, z)) continue
       const g = this.free.pop()
       if (!g) { this.overflow++; continue }
       g.tile = t
@@ -279,6 +282,90 @@ export class Grasshoppers {
     this.head.x = cx
     this.head.z = cz
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+  }
+
+  /**
+   * The shown grasshopper nearest a hand at (x, y, z) whose body -- a ball of
+   * its own length -- is within `reach` metres: `{ dist, g, size }` for
+   * take(), or null. Only the shown ones, since past SHOW_M a body is not
+   * stepped and holds wherever it was. For hands.js.
+   */
+  pickAt(x, y, z, reach) {
+    if (!this.loaded) return null
+    let best = null
+    let bestD = reach
+    for (const g of this.shown) {
+      const d = Math.hypot(g.x - x, g.y + g.len * 0.5 - y, g.z - z) - g.len * 0.5
+      if (d < bestD) {
+        bestD = d
+        best = { dist: Math.max(0, d), g, size: g.len }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Catch the grasshopper of a pickAt() hit: its slot goes back to the pool,
+   * its home is recorded so the tile never rolls it again, and what the hand
+   * holds is returned as a record for hands.js -- the shared geometry and
+   * material, its tint and its scale.
+   */
+  take(hit) {
+    const g = hit.g
+    const t = g.tile
+    if (!t) throw new Error(`Grasshoppers.take: slot ${g.id} is on no tile`)
+    const i = t.flock.indexOf(g)
+    if (i < 0) throw new Error(`Grasshoppers.take: slot ${g.id} is not in its tile's flock`)
+    taken.add('grasshopper', g.homeX, g.homeZ)
+    t.flock.splice(i, 1)
+    g.tile = null
+    const j = this.shown.indexOf(g)
+    if (j >= 0) this.shown.splice(j, 1)
+    this.free.push(g)
+    const k = g.len / this.length
+    return {
+      kind: 'grasshopper',
+      name: 'grasshopper',
+      size: g.len,
+      geometry: this.mesh.geometry,
+      material: this.material,
+      color: [g.r, g.g, g.b],
+      scale: [k, k, k],
+      stowable: true,
+    }
+  }
+
+  /** The geometry and material a packed grasshopper record is drawn with, or null until the asset lands. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'grasshopper') throw new Error(`Grasshoppers.dress: not a grasshopper, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.mesh.geometry, material: this.material }
+  }
+
+  /**
+   * Let a caught grasshopper go at (x, _, z): seated on the ground there, at
+   * home there, in the resident tile under it, and off in a hop at once.
+   * False where no tile is resident or a grasshopper could not sit -- water,
+   * a crag, the cold -- and hands.js drops it as a thing.
+   */
+  release(rec, x, y, z) {
+    if (rec.kind !== 'grasshopper') throw new Error(`Grasshoppers.release: not a grasshopper, ${rec.kind}`)
+    const t = this.tiles.get(tileKey(Math.floor(x / TILE), Math.floor(z / TILE)))
+    if (!t || this.qualify(x, z) === null) return false
+    const g = this.free.pop()
+    if (!g) { this.overflow++; return false }
+    g.tile = t
+    g.homeX = x
+    g.homeZ = z
+    g.len = rec.size
+    g.yaw = this.rand() * Math.PI * 2
+    g.left = 0
+    g.r = rec.color[0]; g.g = rec.color[1]; g.b = rec.color[2]
+    g.t = 0
+    g.stale = true
+    this._seatAt(g, x, z)
+    t.flock.push(g)
+    return true
   }
 
   /** Whether the sun is down far enough that none hops. */

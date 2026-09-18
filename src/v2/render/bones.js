@@ -9,6 +9,7 @@ import {
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
+import { taken } from '../taken.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -465,6 +466,8 @@ export class Bones {
     const size = rand()
     const tintV = rand()
     if (keep >= KEEP) return
+    // A find she carried off (hands.js) is not lying here again.
+    if (taken.has(this.bank.variants[variant].kind, x, z)) return
 
     const { h, tan } = this.field.heightAndSlopeAt(x, z)
     if (tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { this.rejected.slope++; return }
@@ -525,6 +528,75 @@ export class Bones {
     this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
     this.rim.place(id, Math.min(this.radius, propCull(this.instSize[id])))
     this.rim.markDue(tile)
+  }
+
+  /** The kinds a hand can take from here: each variant's, so a source registers them all. For hands.js. */
+  get kinds() {
+    return this.bank.variants.map((v) => v.kind)
+  }
+
+  /**
+   * The drawn find nearest a hand at (x, y, z) -- a ball of its longest axis
+   * about its middle -- within `reach` metres and under `maxSize` across, which
+   * is the skulls and never a skeleton at its lengths: `{ dist, tile, id, size }`
+   * for take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    let best = null
+    let bestD = reach
+    for (const tile of this.tiles.values()) {
+      if (!tile.n) continue
+      const id = tile.ids[0]
+      if (this.rim.isHidden(id)) continue
+      const span = this.instSize[id]
+      if (span >= maxSize) continue
+      const v = this.variantAt[id]
+      const mid = this.instY[id] + (this.vHeight[v] * span) / this.vLod[v] * 0.5
+      const d = Math.hypot(this.instX[id] - x, mid - y, this.instZ[id] - z) - span * 0.5
+      if (d < bestD) {
+        bestD = d
+        best = { dist: Math.max(0, d), tile, id, size: span }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Carry off the find of a pickAt() hit: its instance goes back to the pool,
+   * its spot is recorded so the tile never rolls it again, and what the hand
+   * holds is returned as a record for hands.js -- the variant's pick, its
+   * material, the instance's tint and scale; one under `stowMax` metres may go
+   * in the backpack.
+   */
+  take(hit, stowMax) {
+    const { tile, id } = hit
+    if (!tile.n || tile.ids[0] !== id) throw new Error(`Bones.take: instance ${id} is not lying in its tile`)
+    const v = this.variantAt[id]
+    const kind = this.bank.variants[v].kind
+    const span = this.instSize[id]
+    const scale = span / this.vLod[v]
+    this.batch.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add(kind, this.instX[id], this.instZ[id])
+    this._release(tile)
+    tile.n = 0
+    return {
+      kind,
+      name: kind === 'skull' ? 'elk skull' : 'deer skeleton',
+      size: span,
+      geometry: this.bank.tiers[0].geometries[v],
+      material: this.meshMaterials[v],
+      color,
+      scale: [scale, scale, scale],
+      stowable: span < stowMax,
+    }
+  }
+
+  /** The geometry and material a packed find record is drawn with: its variant's pick. For hands.js. */
+  dress(slot) {
+    const v = this.bank.variants.findIndex((x) => x.kind === slot.kind)
+    if (v < 0) throw new Error(`Bones.dress: not a find, ${slot.kind}`)
+    return { geometry: this.bank.tiers[0].geometries[v], material: this.meshMaterials[v] }
   }
 
   /** Hide a tile's find and return its id to the pool. */

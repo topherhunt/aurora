@@ -29,8 +29,18 @@
 // which are two clips and not one played at two rates because a hop is
 // ballistic and a slowed clip floats.
 //
-// SHE IS FURNITURE. An animal takes no notice of her at any distance -- it
-// grazes with her standing over it. Noticing her is a later job.
+// SHE IS FURNITURE, UNLESS SHE HOLDS A LURE. An animal takes no notice of her
+// at any distance -- it grazes with her standing over it -- until a thing in
+// her hand (hands.js) is one its species wants (LURES: a carrot for a stag or a
+// hare, a fish or a crab for a fox) and within LURE_M of it. Then it looks up
+// (`notice`) and courts the lure: it `follow`s it, re-aimed every frame and its
+// gait picked by how far behind it is, off its tether and detouring round
+// blocked ground, stops STANDOFF_M short and there does what its species does
+// (`court`: a stag looks at her or begs, a fox looks, a hare frolics about her
+// feet), sets off again once she is RESUME_M further, and with the lure held
+// to its face `beg`s -- the graze clips at the thing, over and over, and
+// nothing is ever eaten. It forgets the lure past LURE_FORGET_M or the moment
+// the hand is empty, and picks its next activity as if nothing had happened.
 //
 // IT TURNS, IT DOES NOT SNAP. `heading` is where a body faces and `aim` is
 // where it wants to face; the gap closes at TURN_RATE and never faster, so
@@ -157,6 +167,24 @@ const WALK_M = 4
 // Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.25
 
+// LURES. An animal notices a thing its species wants within LURE_M of it and forgets it past LURE_FORGET_M.
+export const LURE_M = 3
+export const LURE_FORGET_M = 30
+// Following, it stops STANDOFF_M (SPECIES.standoff) from the lure and sets off again past that plus RESUME_M; a follow step is re-picked every FOLLOW_STEP_S and re-aimed every frame, except for DETOUR_S after the ground ahead blocked it.
+export const RESUME_M = 0.8
+export const FOLLOW_STEP_S = 1
+const DETOUR_S = 1
+// A lure within FACE_M body lengths of the nose, and no more than FACE_DY body lengths above or below the feet, is begged at: a stag reaches a carrot held at her waist, a hare one held at her shins.
+export const FACE_M = 0.7
+export const FACE_DY = 0.8
+// At its standoff an animal holds a look at her for GAZE_S, or a hare bounds FROLIC_S across the lure, a quarter turn off its bearing.
+const GAZE_S = [1.5, 4]
+const FROLIC_S = [0.4, 0.8]
+const FROLIC_SWING = 1.2
+// The activities that only a lure begins: an animal that forgets its lure mid-one picks afresh.
+const LURE_ACTS = new Set(['notice', 'follow', 'gaze', 'beg', 'frolic'])
+const NO_LURES = []
+
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
 export const ONE_SHOT = new Set(['eat-down', 'eat-up', 'sit', 'lie', 'dead'])
@@ -180,22 +208,29 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * roll of `vary` either way, and no two animals are the same size. None of them
  * wears a colour of its own: a skinned body can only take one through a uniform
  * and a uniform costs a material an animal (puppet.js makePuppetMaterials).
+ * `lures` are the kinds of thing in her hand it courts, `standoff` how near it
+ * follows one to, `follow` the gait it follows at by how many metres behind it
+ * is (the first whose figure it is under), and `court` what it does once it is
+ * there and the lure is not at its face.
  */
 export const SPECIES = [
   {
     key: 'stag', glb: CRITTER_GLB.stag, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
+    lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
   },
   {
     key: 'fox', glb: CRITTER_GLB.fox, vary: 0.25, scale: 1.5, rate: 0.5,
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
+    lures: ['fish', 'crab'], standoff: 1.2, follow: [['trot', 8], ['run', Infinity]], court: 'gaze',
   },
   {
     key: 'hare', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
     gaits: [['hop', 6], ['bound', 4]],
+    lures: ['carrot'], standoff: 0.6, follow: [['bound', Infinity]], court: 'frolic',
   },
 ]
 
@@ -290,6 +325,8 @@ export class Wildlife {
           nx: 0, ny: 1, nz: 0,
           // The activity, the steps it has left, the clip playing and how long it holds; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
           act: 'stand', queue: [], clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
+          // The lure it is courting (hands.js lures: kind, x, y, z), valid for the frame it was set on, and the seconds of detour left before it is re-aimed at it.
+          lured: false, lure: null, detour: 0,
           // The ladder rung it is on, CARD_RUNGS being past the last rung and so neither drawn nor simulated.
           lod: CARD_RUNGS, puppet: null,
           // Whether the card is the thing this animal should be drawing, and how
@@ -468,6 +505,9 @@ export class Wildlife {
     c.cardWant = false
     c.cardP = 1
     c.held = 0
+    c.lured = false
+    c.lure = null
+    c.detour = 0
     this._pick(c)
     // Staggered into its activity, so a tile's animals do not all bow into a graze on the same frame.
     c.left *= this.rand()
@@ -589,6 +629,8 @@ export class Wildlife {
     c.spawn = null
     c.lodSize = s.lodSize
     c.act = 'dead'
+    c.lured = false
+    c.lure = null
     c.queue.length = 0
     c.clip = 'dead'
     c.cue++
@@ -708,6 +750,32 @@ export class Wildlife {
         c.aim = c.heading + (this.rand() - 0.5) * TURN
         q.push([weighted(this.rand, c.sp.gaits), between(this.rand, ROAM_S)])
         break
+      // The lure's activities (see _court). Every one of them but the frolic is aimed at the lure by _heed each frame.
+      case 'notice':
+        q.push(['alert', d.alert])
+        break
+      case 'follow': {
+        const behind = Math.hypot(c.lure.x - c.x, c.lure.z - c.z)
+        q.push([c.sp.follow.find(([, m]) => behind < m)[0], FOLLOW_STEP_S])
+        break
+      }
+      case 'gaze':
+        q.push(['idle', between(this.rand, GAZE_S)])
+        break
+      case 'beg': {
+        const chews = Math.round(between(this.rand, GRAZE_LOOPS))
+        q.push(['eat-down', d['eat-down']], ['eat-loop', chews * d['eat-loop']], ['eat-up', d['eat-up']])
+        break
+      }
+      case 'frolic': {
+        // Across the lure, a quarter turn off its bearing on whichever side is the lesser turn, and no more than FROLIC_SWING of a turn at that, so the bound is a bound and not a pivot, and the bounds ring her feet.
+        const at = Math.atan2(-(c.lure.z - c.z), c.lure.x - c.x)
+        const off = Math.PI / 2 + (this.rand() - 0.5)
+        const swing = Math.abs(swingTo(c.heading, at + off)) < Math.abs(swingTo(c.heading, at - off)) ? swingTo(c.heading, at + off) : swingTo(c.heading, at - off)
+        c.aim = c.heading + Math.max(-FROLIC_SWING, Math.min(FROLIC_SWING, swing))
+        q.push(['bound', between(this.rand, FROLIC_S)])
+        break
+      }
       default:
         throw new Error(`Wildlife: no activity named ${act}`)
     }
@@ -715,10 +783,10 @@ export class Wildlife {
     this._step(c)
   }
 
-  /** The queue's next step, or a fresh activity when it has run out. */
+  /** The queue's next step, or a fresh activity when it has run out -- the lure's next, on an animal courting one. */
   _step(c) {
     const step = c.queue.shift()
-    if (!step) { this._pick(c); return }
+    if (!step) { if (c.lured) this._court(c); else this._pick(c); return }
     c.clip = step[0]
     c.dur = step[1]
     c.left = step[1]
@@ -744,6 +812,84 @@ export class Wildlife {
     return Math.max(0, Math.cos(swing))
   }
 
+  // -------------------------------------------------------------------------
+  // LURES: a thing in her hand its species wants.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The lure this animal is on this frame: the nearest of `lures` (hands.js
+   * lures) of a kind its species wants, noticed within LURE_M and kept to
+   * LURE_FORGET_M. Noticing one begins the look up; losing one -- gone from
+   * the hand, or too far -- ends whatever the lure had it doing.
+   */
+  _notice(c, lures) {
+    let lure = null
+    let best = Infinity
+    for (const l of lures) {
+      if (!c.sp.lures.includes(l.kind)) continue
+      const d = Math.hypot(l.x - c.x, l.z - c.z)
+      if (d < best) { best = d; lure = l }
+    }
+    if (lure !== null && best <= (c.lured ? LURE_FORGET_M : LURE_M)) {
+      c.lure = lure
+      if (!c.lured) {
+        c.lured = true
+        c.detour = 0
+        this._begin(c, 'notice')
+      }
+      return
+    }
+    if (!c.lured) return
+    c.lured = false
+    c.lure = null
+    if (LURE_ACTS.has(c.act)) this._pick(c)
+  }
+
+  /**
+   * One frame courting the lure. A follower that has closed to its standoff
+   * stops there and then; a gazer whose lure has gone further than the
+   * standoff and RESUME_M sets off after it, and a beggar whose lure has left
+   * its face lifts its head. Whatever it is doing but a frolic, it faces the
+   * lure -- a follower once its detour is over.
+   */
+  _heed(c, dt) {
+    const l = c.lure
+    const dist = Math.hypot(l.x - c.x, l.z - c.z)
+    if (c.act === 'follow' && dist <= c.sp.standoff) {
+      c.queue.length = 0
+      c.left = 0
+    } else if ((c.act === 'gaze' && dist > c.sp.standoff + RESUME_M) || (c.act === 'beg' && !this._atFace(c))) {
+      c.queue.length = 0
+      if (c.clip === 'eat-down' || c.clip === 'eat-loop') c.queue.push(['eat-up', c.sp.durations['eat-up']])
+      c.left = 0
+    }
+    if (c.act === 'frolic' || c.act === 'notice') return
+    if (c.detour > 0) { c.detour -= dt; return }
+    c.aim = Math.atan2(-(l.z - c.z), l.x - c.x)
+  }
+
+  /** The lure is at its face: within FACE_M body lengths of its nose, half a length ahead, and no more than FACE_DY lengths above or below its feet. */
+  _atFace(c) {
+    const l = c.lure
+    const nose = c.size * 0.5
+    const nx = c.x + Math.cos(c.heading) * nose
+    const nz = c.z - Math.sin(c.heading) * nose
+    return Math.hypot(l.x - nx, l.z - nz) <= FACE_M * c.size && Math.abs(l.y - c.y) <= FACE_DY * c.size
+  }
+
+  /**
+   * The lure's next activity, when the last has run out: begging with the
+   * lure at its face, following past its standoff (or, once following, until
+   * it is at it), and otherwise its species' court.
+   */
+  _court(c) {
+    const l = c.lure
+    if (this._atFace(c)) { this._begin(c, 'beg'); return }
+    const dist = Math.hypot(l.x - c.x, l.z - c.z)
+    if (dist > c.sp.standoff + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow'); return }
+    this._begin(c, c.sp.court)
+  }
+
   /**
    * One frame of a moving animal: on a probe frame a look a body length and a
    * half ahead, then the turn, then a step along the heading. No seat there, or
@@ -757,10 +903,12 @@ export class Wildlife {
       const ahead = c.size * AHEAD
       const ax = c.x + Math.cos(c.heading) * ahead
       const az = c.z - Math.sin(c.heading) * ahead
-      if (Math.hypot(ax - c.homeX, az - c.homeZ) > TETHER_M) {
+      // A lure takes it off the tether: it goes where she goes.
+      if (!c.lured && Math.hypot(ax - c.homeX, az - c.homeZ) > TETHER_M) {
         c.aim = Math.atan2(-(c.homeZ - c.z), c.homeX - c.x) + (this.rand() - 0.5) * (Math.PI / 2)
       } else if (this.seat(ax, az) === null) {
         this._turnAway(c)
+        c.detour = DETOUR_S
       }
     }
     const d = c.speed * dt * this._turn(c, dt)
@@ -849,9 +997,11 @@ export class Wildlife {
   /**
    * One frame: every animal stepped, and the ones big enough in her view given a
    * puppet. `dayness` is the world's day scalar, 1 at noon and 0 once the sun is
-   * well down, and it is what makes them settle at night.
+   * well down, and it is what makes them settle at night. `lures` is what her
+   * hands hold (hands.js lures), the kinds the species want being what they
+   * take an interest in.
    */
-  update(hx, hy, hz, dt, dayness = 1) {
+  update(hx, hy, hz, dt, dayness = 1, lures = NO_LURES) {
     if (!this.loaded) return
     this.dayness = dayness
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
@@ -921,6 +1071,8 @@ export class Wildlife {
           step = c.held
         }
         c.held = 0
+        this._notice(c, lures)
+        if (c.lured) this._heed(c, step)
         const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0
         c.left -= step
         if (c.left <= 0) this._step(c)
