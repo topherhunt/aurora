@@ -194,7 +194,10 @@ import { PLACEMENT, TREELINE, BIOME, forestKeepAt, forestScaleAt } from '../laye
 //
 // WHICH survivors is decided by rank, like everything else here: the clumps
 // are the LOWEST ranks, `rank < clumpTop[q]`, the trees that will stand
-// longest. Not the highest, though those are the ones the thinning is about
+// longest -- and only those standing in a wood (`_farFor`, CLUMP_MIN_KEEP):
+// the law conserves the COUNT of trees pictured per tile, not where they
+// stood, and a card 11 m wide can only stand in for neighbours that were
+// that close. Not the highest, though those are the ones the thinning is about
 // to take: the rim dissolves the top 7.5% of ranks at every distance
 // (rim.js RIM_AT), and a band at the top would lose most of its clumps to it
 // -- six pictured trees for each one hidden. At the bottom the rim never
@@ -496,6 +499,17 @@ const CLUMP_SCALE = [0.8, 1.2]
 // clump band is cut at that level.
 const CLUMP_LEVEL_HYST = 0.05
 
+// The keep-probability (layers/forest.js forestKeepAt: treeline times biome
+// cover) a tree's spot needs before it may draw as a clump -- half-density
+// wood, the middle of the biome ramp. Below it the trees the thinning takes
+// stood too far apart for one card's picture to stand where they did.
+const CLUMP_MIN_KEEP = 0.5
+
+// How far a card pitches toward an eye above it, as a fraction of the eye's
+// elevation (material.js billboardTilt): 1 is a spherical billboard, 0 a
+// cylindrical one.
+const CARD_TILT = 0.5
+
 // How much of the snow slider one CANOPY may take, rolled per tree. See
 // syncSnowLine for why it is neither 0 nor 1 at either end.
 const LEAF_SNOW_CAP = [0.25, 0.6]
@@ -638,8 +652,13 @@ export class Trees {
     // so all the meshes share ONE material and therefore one program --
     // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
     // whole reason this is a shader trick rather than a second material.
+    const cardLayers = [...treeImpostorLayers(), ...treeClumpLayers()]
     this.material = createPropMaterial(textureArray, {
-      billboardLayers: [...treeImpostorLayers(), ...treeClumpLayers()],
+      billboardLayers: cardLayers,
+      // Every card, single and clump, pitches CARD_TILT of the way to face an
+      // eye above it, so a hillside from a summit is a wood and not a stack
+      // of edges. The mesh tiers are not cards and never pitch.
+      billboardTilt: { amount: CARD_TILT, layers: [Math.min(...cardLayers), Math.max(...cardLayers)] },
       // Which of a species' clump pictures an instance wears, as a per-instance
       // shift off the clump card's layer; every other tier's shift is 0.
       layerShift: true,
@@ -767,6 +786,8 @@ export class Trees {
     this.farTierAt = new Int8Array(this.maxInstances)
     // Which of the species' CLUMP_VARIANTS pictures the tree wears as a clump.
     this.instPicture = new Uint8Array(this.maxInstances)
+    // 1 where the tree's spot keeps at least CLUMP_MIN_KEEP, so it may clump.
+    this.instInWood = new Uint8Array(this.maxInstances)
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
@@ -1864,13 +1885,14 @@ export class Trees {
       this.instY[id] = ground + this.instLift[id]
 
       // Born as its far card -- the clump card if its rank is in this level's
-      // clump band, the single otherwise. `update` promotes the near ones on
-      // the very next frame, and being briefly a billboard at 8 m is invisible
-      // next to the alternative, which is a frame where the tier is undefined.
-      // Which clump picture this tree wears, off the tint roll so no draw is
-      // added to the stream above.
+      // clump band and it stands in a wood, the single otherwise. `update`
+      // promotes the near ones on the very next frame, and being briefly a
+      // billboard at 8 m is invisible next to the alternative, which is a
+      // frame where the tier is undefined. Which clump picture this tree
+      // wears, off the tint roll so no draw is added to the stream above.
       this.instPicture[id] = ((tintG * 4096) | 0) % CLUMP_VARIANTS
-      const far = u < clumpTop ? this.clumpTier : this.cardTier
+      this.instInWood[id] = keep >= CLUMP_MIN_KEEP ? 1 : 0
+      const far = this._farFor(id, u, clumpTop)
       this.farTierAt[id] = far
       this._wear(id, far)
       if (far === this.clumpTier) clumps++
@@ -2038,6 +2060,18 @@ export class Trees {
   }
 
   /**
+   * The far card a tree of rank `u` draws as under a clump band cut at
+   * `top`: the clump if it is in the band AND stands in a wood. A clump
+   * stands in for the neighbours the thinning took, which in a wood stood
+   * within its 11 m of picture; a meadow's lone tree had none nearer than
+   * the next clearing, and six trees where one landmark stood is a copse
+   * that was never there.
+   */
+  _farFor(id, u, top) {
+    return u < top && this.instInWood[id] === 1 ? this.clumpTier : this.cardTier
+  }
+
+  /**
    * Cut a tile's clump band at level `qc`: every tree whose far tier changes
    * takes it, cross-dissolved if it was drawn on the old one, and
    * `tile.clumps` is recounted. The near loop reads `farTierAt` for a tree
@@ -2050,7 +2084,7 @@ export class Trees {
     tile.qc = qc
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      const far = tile.rank[k] < top ? this.clumpTier : this.cardTier
+      const far = this._farFor(id, tile.rank[k], top)
       if (far === this.clumpTier) clumps++
       const was = this.farTierAt[id]
       if (far === was) continue
@@ -2339,5 +2373,7 @@ export const TREE_TUNING = {
   CLUMP_FULL_TO,
   CLUMP_TREES,
   CLUMP_SCALE,
+  CLUMP_MIN_KEEP,
+  CARD_TILT,
   HEM_FRAY,
 }

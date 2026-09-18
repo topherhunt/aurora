@@ -30,7 +30,9 @@
 // bent home past TETHER, a distance and a height each rolled in HOP_M, the
 // landing point qualified as the roll was (dry, below the snow) and its
 // height read off the walk surface. A landing that finds water or snow is
-// rolled again a few times, then the rest is extended.
+// rolled again a few times, then the rest is extended. AFTER SUNSET NONE
+// HOPS: a rest that runs out under NIGHT_DAY is rolled again, so dawn does not
+// launch the meadow on one frame, and one caught in the air finishes its hop.
 //
 // THE HOP IS NOT A PARABOLA. Gravity's arc is symmetric -- the launch and the
 // landing are its two fastest moments, at the same speed -- and at under a
@@ -53,7 +55,8 @@
 // RADIUS so the ground within SHOW_M is always rolled. At 6--10 cm a
 // grasshopper at 8 m is a few pixels, so there is no pop to see.
 //
-// bodies() lists the shown ones for the ambience, which chirps them.
+// bodies() lists the shown ones for the ambience, which chirps them: by day
+// now and then, and at night these ARE the near crickets, over the far bed.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -66,8 +69,10 @@ export const TILE = 8
 export const SHOW_M = 8
 // Tiles whose centre lies within this are resident: SHOW_M plus a tile's half diagonal, so every point she can see one at is on a rolled tile.
 export const RADIUS = SHOW_M + (TILE * Math.SQRT2) / 2
-// Grasshoppers per square metre: one per 8 m2, so a tile rolls seven or eight and she sees two dozen.
-export const DENSITY = 0.125
+// Grasshoppers per square metre: one per 16 m2, so a tile rolls four and she sees a dozen.
+export const DENSITY = 0.0625
+// Below this dayness -- the sun on the horizon, the butterflies' line -- none hops; one in the air lands and sits.
+export const NIGHT_DAY = 0.6
 export const MAX = 256
 // Ground within this of the snow line is too cold to roll on, and ground steeper than this is neither grass nor forest floor.
 export const SNOW_MARGIN = 20
@@ -213,6 +218,7 @@ export class Grasshoppers {
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.head = { x: 0, y: 0, z: 0 }
+    this.dayness = 1
     this.overflow = 0
     this.hops = 0
     this.loaded = false
@@ -316,6 +322,11 @@ export class Grasshoppers {
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
   }
 
+  /** Whether the sun is down far enough that none hops. */
+  get night() {
+    return this.dayness < NIGHT_DAY
+  }
+
   get stats() {
     let hopping = 0
     for (const g of this.shown) if (g.state === 'hop') hopping++
@@ -357,7 +368,8 @@ export class Grasshoppers {
     if (g.state === 'sit') {
       g.left -= dt
       if (g.left > 0) return
-      if (!this._hop(g)) g.left = between(this.rand, REST_S)
+      // In the dark the rest is rolled again rather than left expired, so at dawn they go over a whole REST_S and not all at once.
+      if (this.night || !this._hop(g)) g.left = between(this.rand, REST_S)
       return
     }
     g.t += dt
@@ -407,9 +419,10 @@ export class Grasshoppers {
     _quat.setFromRotationMatrix(_basis.makeBasis(_x, _n, _z))
   }
 
-  /** One frame: the tiles follow her head, and every grasshopper within SHOW_M is stepped and written. */
-  update(hx, hy, hz, dt) {
+  /** One frame: the tiles follow her head, and every grasshopper within SHOW_M is stepped and written. `dayness` is the world's day scalar, and under NIGHT_DAY it is what stills them. */
+  update(hx, hy, hz, dt, dayness = 1) {
     dt = Math.min(dt, 0.1)
+    this.dayness = dayness
     this.head.x = hx
     this.head.y = hy
     this.head.z = hz

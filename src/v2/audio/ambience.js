@@ -37,7 +37,9 @@
 // one thing heard on the water bus: a swoosh from each that sets off fast
 // (the layer's startled()) near her head, its loudness and pitch by its length.
 // The grasshoppers (bodies() lists the ones the layer shows) each chirp the
-// cricket clip now and then from where they sit, by day as well as by night.
+// cricket clip now and then from where they sit, by day as well as by night:
+// at night they are the near crickets, real bodies on the ground under the
+// unplaced far bed, so a snowfield or a lake has the bed and nothing beside her.
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
@@ -118,10 +120,8 @@ export const RULES = {
   songbirdFar: { interval: [1, 4], gain: [0.03, 0.1], range: [60, 150], elev: [5, 30], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
   // ...and now and then one in the tree beside her, dry and crisp. The wood is fuller of both: each clock runs up to `forestSpeedup` faster inside it.
   songbirdNear: { interval: [12, 40], gain: [0.4, 0.8], range: [4, 15], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
-  // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk...
+  // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk. The ones beside her are the grasshoppers (chirp).
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
-  // ...and now and then one right beside her.
-  cricketNear: { interval: [6, 20], gain: [0.3, 0.7], range: [2, 8] },
   // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
   footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2] },
   // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
@@ -134,8 +134,8 @@ export const RULES = {
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
-  // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds: `level` up to `near` metres off, falling as near/distance past it.
-  chirp: { reach: 5, near: 1, level: 0.5, every: 30, gain: [0.5, 1.0] },
+  // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
+  chirp: { reach: 8, near: 1, level: 0.5, every: 60, gain: [0.5, 1.0] },
   // The dragons, every sound at its body's distance through the engine's far treatment. Its wings, while it flies within `reach`: one beat a cycle of its fly clip, within `jitter` of a cycle of the beat, at `level` up to `near` metres off and falling as near/distance past it, the clip slowed to `rate` so a beat is deep, not a pigeon's.
   wingbeat: { reach: 50, near: 5, level: 0.5, jitter: 0.05, rate: [0.5, 0.6], gain: [0.7, 1.0] },
   // A flying dragon roars every `every` seconds, heard within `reach`: `level` up to `near` off, falling as (near/distance)^roll past it, and fading out over the last `edge` metres of the reach; `echo` is its send into the valley echo. The clip is mastered 24 dB hotter than the yip, which is why the level is low.
@@ -209,7 +209,7 @@ export class Ambience {
     this.teleportCredit = 0
     // One-shot timers by rule name: { armed, left }.
     this.timers = {}
-    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'cricketNear', 'footstep', 'rockslideNear', 'wave']) {
+    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'rockslideNear', 'wave']) {
       this.timers[k] = { armed: false, left: 0 }
     }
     this.loops = {
@@ -333,7 +333,7 @@ export class Ambience {
 
     const below = s.aboveSnow < 0
     this._birds(dt, head, s, dayness, below)
-    this._crickets(dt, head, s, dayness, below)
+    this._crickets(dt, dayness, below)
     this._feet(dt, head, s, speed, afoot)
     this._herds(dt, head)
     this._dragons(dt, head)
@@ -387,17 +387,12 @@ export class Ambience {
     }
   }
 
-  _crickets(dt, head, s, dayness, below) {
+  /** The far cricket bed, unplaced: the near ones are _grasshoppers. */
+  _crickets(dt, dayness, below) {
     const B = RULES.cricketBed
     const night = dayness < B.dusk && below
     if (this.due('cricketBed', night, B.interval, dt)) {
       this.fire('cricket', { rate: this.rate(), gain: this.between(...B.gain) })
-    }
-    const N = RULES.cricketNear
-    if (this.due('cricketNear', night, N.interval, dt)) {
-      const at = this.aroundHead(head, this.between(...N.range), 0)
-      at.y = s.groundH + 0.2
-      this.fire('cricket', { rate: this.rate(), gain: this.between(...N.gain), at })
     }
   }
 
@@ -649,7 +644,7 @@ export class Ambience {
     }
   }
 
-  /** The grasshoppers: each shown one within reach chirps the cricket clip, on average once per `every` seconds, from where it is. */
+  /** The grasshoppers: each shown one within reach chirps the cricket clip, on average once per `every` seconds, from where it is -- day or night, and at night these are the only crickets with a place. */
   _grasshoppers(dt, head) {
     if (!this.grasshoppers) return
     const C = RULES.chirp

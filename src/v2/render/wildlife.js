@@ -208,6 +208,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 // A quarter roll about the body's own forward axis: a standing body laid on its flank.
 const _lay = new THREE.Matrix4().makeRotationX(Math.PI / 2)
+const _hang = new THREE.Matrix4()
 const _trunk = { x: 0, z: 0, r: 0 }
 const _norm = { x: 0, y: 1, z: 0 }
 
@@ -286,6 +287,8 @@ export class Wildlife {
           // Whether the card is the thing this animal should be drawing, and how
           // far through the dissolve into or out of that it is (1 is settled).
           cardWant: false, cardP: 1,
+          // Where a seized slot's card was last drawn, for the dissolve on drop.
+          cardMat: new THREE.Matrix4(),
         })
       }
       return { ...sp, plain, materials, cardMaterial, cardMesh: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
@@ -299,6 +302,7 @@ export class Wildlife {
     this.starved = 0
     // Puppets outliving the animal they were: whatever unloaded with its tile, dissolving on the spot.
     this.fading = []
+    this.fadingCards = []
 
     if (assets) {
       this.setAssets(assets)
@@ -485,6 +489,7 @@ export class Wildlife {
     for (const t of this.tiles.values()) this._leave(t, false)
     for (const f of this.fading) this._park(f.puppet, f.sp)
     this.fading.length = 0
+    this.fadingCards.length = 0
     this.tiles.clear()
     this.overflow = 0
     if (!this.loaded) return
@@ -572,25 +577,37 @@ export class Wildlife {
     c.dur = c.left = c.sp.durations.dead
     c.cycle = c.dur
     c.speed = 0
-    this._wantCard(c, false)
-    c.cardP = 1
     return c
   }
 
   /**
    * One frame of a seized stag drawn from `matrix` -- the carrier's talons, or
    * a point on the nest floor -- `dist` metres from her head: its own species'
-   * rungs, a puppet while the ladder says mesh, nothing past that. The card rung
-   * is not drawn: a dozen pixels of carcass under a dragon's card is not a
-   * picture. Hanging, the body's back is at the matrix and the rest of it sags
-   * below; `lain`, it is rolled onto its flank with the flank on the matrix.
+   * mesh rungs while the ladder says mesh, and past them its card, standing
+   * upright under the talons (or on the nest spot) for as long as the carrier
+   * is drawn (`shown`) -- the kill's own card reach does not apply, because a
+   * dragon she can see carrying nothing is the wrong picture at any range.
+   * Hanging, the body's back is at the matrix and the rest of it sags below;
+   * `lain`, the mesh is rolled onto its flank with the flank on the matrix.
+   * Called after update() has filled the card buffers, so it appends to them.
    */
-  carry(c, matrix, dist, dt, lain = false) {
+  carry(c, matrix, dist, dt, lain = false, shown = true) {
     if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.carry: that animal was not seized')
     const tier = critterTier(c.lodSize, dist, c.lod, LOD_RUNGS)
     c.lod = tier
     matrix.decompose(_pos, _quat, _scl)
     c.x = _pos.x; c.y = _pos.y; c.z = _pos.z
+    const { width, height } = c.sp.asset
+    // Only while the layer is stepped: with it hidden update() has not emptied the buffer this frame, and a card appended every frame would fill it.
+    if (this.batch.visible) {
+      this._wantCard(c, tier === LOD_RUNGS && shown)
+      if (c.cardP < 1) c.cardP = Math.min(1, c.cardP + dt / LOD_FADE_S)
+      if (c.cardWant || c.cardP < 1) {
+        // Upright on the nest spot, or its feet GRIP of its height under the talons, where the mesh's would be.
+        this._cardAt(c, lain ? c.cardMat.copy(matrix) : c.cardMat.multiplyMatrices(matrix, _hang.makeTranslation(0, -GRIP * height, 0)))
+        this._commitCards(c.sp)
+      }
+    }
     if (tier >= LOD_RUNGS) {
       if (!c.puppet) return
       c.puppet.show(-1)
@@ -605,7 +622,6 @@ export class Wildlife {
     // Carried, there is no ground under its feet.
     puppet.unplant()
     puppet.step(dt)
-    const { width, height } = c.sp.asset
     // Body-local offsets, so the matrix's own scale and yaw carry them.
     const body = lain
       ? _mat.makeTranslation(0, LAIN * width, 0).multiply(_lay)
@@ -614,7 +630,7 @@ export class Wildlife {
     puppet.group.matrixWorldNeedsUpdate = true
   }
 
-  /** A seized stag let go: its body dissolves where it is (or vanishes, with `fade` off, when the ground has gone) and the slot goes back to the pool. */
+  /** A seized stag let go: its body -- puppet or card -- dissolves where it is (or vanishes, with `fade` off, when the ground has gone) and the slot goes back to the pool. */
   drop(c, fade = true) {
     if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.drop: that animal was not seized')
     if (fade && c.puppet) {
@@ -624,6 +640,13 @@ export class Wildlife {
     } else {
       this._releasePuppet(c)
     }
+    if (fade && (c.cardWant || c.cardP < 1)) {
+      // Where carry() last drew it; a card still arriving is sent out from as far as it got.
+      this._wantCard(c, false)
+      this.fadingCards.push({ sp: c.sp, mat: c.cardMat.clone(), p: c.cardP })
+    }
+    c.cardWant = false
+    c.cardP = 1
     c.act = 'stand'
     c.lod = CARD_RUNGS
     c.sp.free.push(c)
@@ -778,14 +801,30 @@ export class Wildlife {
    * they cover every pixel exactly once and the silhouette never thins.
    */
   _drawCard(c) {
-    const sp = c.sp
-    const i = sp.cardN++
     _pos.set(c.x, c.y, c.z)
     _quat.setFromAxisAngle(UP, c.heading)
     _scl.setScalar(c.k)
-    _mat.compose(_pos, _quat, _scl)
-    sp.cardMesh.setMatrixAt(i, _mat)
-    sp.cardFade.array[i] = c.cardWant ? c.cardP : -(1 - c.cardP)
+    this._cardAt(c, _mat.compose(_pos, _quat, _scl))
+  }
+
+  /** The card on `mat` -- a carried kill's is the carrier's matrix, not the slot's place and heading -- with the slot's dissolve. */
+  _cardAt(c, mat) {
+    this._pushCard(c.sp, mat, c.cardWant ? c.cardP : -(1 - c.cardP))
+  }
+
+  _pushCard(sp, mat, fade) {
+    const i = sp.cardN++
+    if (i >= MAX) throw new Error(`Wildlife: ${sp.key} has more cards this frame than the ${MAX} its buffer holds`)
+    sp.cardMesh.setMatrixAt(i, mat)
+    sp.cardFade.array[i] = fade
+  }
+
+  /** The card buffer's count and upload flags set to what has been pushed this frame. */
+  _commitCards(sp) {
+    sp.cardMesh.count = sp.cardN
+    if (!sp.cardN) return
+    sp.cardMesh.instanceMatrix.needsUpdate = true
+    sp.cardFade.needsUpdate = true
   }
 
   /**
@@ -897,12 +936,16 @@ export class Wildlife {
       }
     }
 
-    for (const sp of this.species) {
-      sp.cardMesh.count = sp.cardN
-      if (!sp.cardN) continue
-      sp.cardMesh.instanceMatrix.needsUpdate = true
-      sp.cardFade.needsUpdate = true
+    // The cards of dropped kills finishing their dissolve where they were let go.
+    for (let i = this.fadingCards.length - 1; i >= 0; i--) {
+      const f = this.fadingCards[i]
+      f.p = Math.min(1, f.p + dt / LOD_FADE_S)
+      if (f.p < 1) { this._pushCard(f.sp, f.mat, -(1 - f.p)); continue }
+      this.fadingCards[i] = this.fadingCards[this.fadingCards.length - 1]
+      this.fadingCards.pop()
     }
+
+    for (const sp of this.species) this._commitCards(sp)
   }
 
   dispose() {

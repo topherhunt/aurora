@@ -4744,7 +4744,7 @@ function tick() {
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
   // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))

@@ -1123,12 +1123,42 @@ wake(w)
   const fwd = new THREE.Vector3(1, 0, 0).transformDirection(p.group.matrix)
   check(Math.abs(fwd.y) < 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - 0.8) < 1e-9, 'and it lies along the matrix\'s heading', `${Math.atan2(-fwd.z, fwd.x).toFixed(3)} rad`)
 
-  // Far: past the mesh rungs the puppet dissolves and goes back to the pool, the slot stays cargo.
-  k.carry(c, M, 1e4, dt)
+  // Far: past the mesh rungs the puppet dissolves and goes back to the pool, the slot stays cargo -- and its CARD takes over, under the talons, held as far as the carrier is drawn, which is past the stag's own card reach.
+  const sp = k.species[0]
+  const cards = () => sp.cardN
+  // Each carry is a frame after an update() that has emptied and refilled the card buffer; here the refill is nothing.
+  const carry = (...args) => { sp.cardN = 0; sp.cardMesh.count = 0; k.carry(c, ...args) }
+  const uploads = sp.cardMesh.instanceMatrix.version
+  carry(M, 1e4, dt)
   check(c.lod === LOD_RUNGS && p.to === -1, 'carried out past the last mesh rung, its puppet is sent out', `lod ${c.lod}`)
-  for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) k.carry(c, M, 1e4, dt)
-  check(c.puppet === null && k.species[0].freePuppets.includes(p) && c.act === 'dead' && c.spawn === null, 'and once it has dissolved the puppet is back in the pool while the slot is still the dragon\'s')
-  k.carry(c, M, 10, dt)
+  check(c.cardWant && c.cardP < 1 && cards() === 1 && sp.cardMesh.count === 1 && sp.cardMesh.instanceMatrix.version === uploads + 1 && Math.abs(sp.cardFade.array[0] - c.cardP) < 1e-6, 'and its card comes in on the same dissolve, appended to the species\' buffer with the count and the upload flags set, since update() has already run this frame', `fade ${sp.cardFade.array[0].toFixed(3)}`)
+  const cm = new THREE.Matrix4()
+  sp.cardMesh.getMatrixAt(cards() - 1, cm)
+  const cardGrip = new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(cm)
+  const cardUp = new THREE.Vector3(0, 1, 0).transformDirection(cm)
+  const cardScl = new THREE.Vector3().setFromMatrixScale(cm)
+  check(cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(cardUp.y - 1) < 1e-9 && Math.abs(cardScl.x - c.k) < 1e-6, `the card stands upright at the body's size with the point ${GRIP} of its height up at the matrix, exactly where the mesh hung`, `grip ${cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
+  for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) carry(M, 1e4, dt)
+  check(c.puppet === null && sp.freePuppets.includes(p) && c.act === 'dead' && c.spawn === null, 'and once it has dissolved the puppet is back in the pool while the slot is still the dragon\'s')
+  check(c.cardP === 1 && c.cardWant && cards() === 1 && sp.cardFade.array[0] === 1 && 1e4 > cullRange(c.lodSize, CARD_RUNGS), `while the card is settled and whole, ${(1e4 / cullRange(c.lodSize, CARD_RUNGS)).toFixed(0)} times the stag's own card reach out: a kill in sight under a dragon is never dropped from the picture`)
+  sp.cardMesh.getMatrixAt(0, cm)
+  check(new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'still under the talons')
+  carry(M, 1e4, dt, true)
+  sp.cardMesh.getMatrixAt(0, cm)
+  check(new THREE.Vector3().setFromMatrixPosition(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(new THREE.Vector3(0, 1, 0).transformDirection(cm).y - 1) < 1e-9, 'lain, the card stands upright on the matrix -- a spun quad has no flank to roll onto')
+  // The carrier out of sight: the card goes with it, on the dissolve.
+  carry(M, 1e4, dt, false, false)
+  check(!c.cardWant && c.cardP < 1 && cards() === 1 && sp.cardFade.array[0] < 0, 'told its carrier is not drawn, the card is sent out through the dissolve rather than dropped', `fade ${sp.cardFade.array[0].toFixed(3)}`)
+  for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) carry(M, 1e4, dt, false, false)
+  check(!c.cardWant && c.cardP === 1 && cards() === 0 && sp.cardMesh.count === 0, 'and once out it is not in the buffer at all')
+  carry(M, 1e4, dt, false, true)
+  check(c.cardWant && c.cardP < 1 && cards() === 1, 'the carrier back in sight, the card comes back in')
+  const hidden = k.batch.visible
+  k.batch.visible = false
+  k.carry(c, M, 1e4, dt)
+  check(cards() === 1 && c.cardWant, 'a hidden layer, which update() is not stepping, has nothing appended to its buffer', `${cards()} cards`)
+  k.batch.visible = hidden
+  carry(M, 10, dt)
   check(c.puppet !== null && c.puppet.actions.get('dead').isRunning(), 'brought back within reach it takes a puppet again, on the dead clip')
 
   // Drop, fading: the puppet dissolves where it hangs; the slot goes home.
@@ -1136,7 +1166,27 @@ wake(w)
   const drop = c.puppet
   k.drop(c)
   check(c.puppet === null && k.fading.length === fadingBefore + 1 && k.fading[k.fading.length - 1].puppet === drop && drop.to === -1, 'drop() leaves the body dissolving where it was let go')
-  check(k.species[0].free.includes(c) && c.act === 'stand' && c.lod === CARD_RUNGS && c.spawn === null, 'and the slot is back in the pool, empty')
+  check(k.species[0].free.includes(c) && c.act === 'stand' && c.lod === CARD_RUNGS && c.spawn === null && !c.cardWant && c.cardP === 1, 'and the slot is back in the pool, empty, its card state cleared')
+
+  // Drop at card range: the card dissolves where it was let go, on the buffer for LOD_FADE_S, without the slot.
+  {
+    k.place(0, 0)
+    const c3 = beside(k, 'stag')
+    k.seize(c3)
+    for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) { sp.cardN = 0; k.carry(c3, M, 1e4, dt) }
+    check(c3.cardWant && c3.cardP === 1 && !c3.puppet, 'a kill carried at card range is a settled card')
+    k.drop(c3)
+    check(k.fadingCards.length === 1 && k.fadingCards[0].sp === sp && k.fadingCards[0].p === 0 && !c3.cardWant && c3.cardP === 1, 'dropped there, its card is left dissolving where it hung, from the start of the ramp, and the slot\'s own card state is cleared')
+    check(new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(k.fadingCards[0].mat).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'under the talons that let it go')
+    let frames = 0
+    let seen = 0
+    while (k.fadingCards.length && frames < 100) {
+      k.update(1e5, 0, 1e5, dt)
+      frames++
+      if (sp.cardN === 1 && sp.cardFade.array[0] < 0 && sp.cardMesh.count === 1) seen++
+    }
+    check(Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60 && seen === frames - 1 && sp.cardN === 0 && sp.cardMesh.count === 0, 'the card fades out over LOD_FADE_S on the high side of the hash, drawn every frame of it with the count set, and is gone from the buffer the frame the ramp ends', `${frames} frames, ${seen} drawn leaving`)
+  }
   threw = ''
   try { k.carry(c, M, 10, dt) } catch (e) { threw = e.message }
   check(threw.includes('not seized'), 'carrying a dropped slot throws', threw)

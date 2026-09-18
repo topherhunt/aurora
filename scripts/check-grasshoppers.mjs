@@ -18,7 +18,8 @@
 // take-off; a landing that does not settle; a rest outside REST_S; a body
 // that does not pitch up on the way up and down on the way down; one past
 // SHOW_M that is drawn, listed or stepped; a frame that costs more than a
-// scatter is allowed.
+// scatter is allowed; a hop in the dark, or a dawn that launches them all
+// on one frame.
 //
 // What this can NOT check: whether a hop reads as a grasshopper's. That needs
 // eyes, in the world.
@@ -27,7 +28,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import zlib from 'node:zlib'
 import {
-  AXIS_FRAC, CARD_ASPECT, CROUCH_S, CROUCH_SQUASH, DENSITY, Grasshoppers, HOP_M, LAND_S, LAND_SQUASH, LENGTH_M, MAX, MAX_SLOPE_DEG, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TEXTURE_URL, TILE, TINT_BROWN, TINT_GREEN, setGrasshopperCard,
+  AXIS_FRAC, CARD_ASPECT, CROUCH_S, CROUCH_SQUASH, DENSITY, Grasshoppers, HOP_M, LAND_S, LAND_SQUASH, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TEXTURE_URL, TILE, TINT_BROWN, TINT_GREEN, setGrasshopperCard,
 } from '../src/v2/render/grasshoppers.js'
 import { MARGIN } from '../tools/creatures/key-card.mjs'
 
@@ -289,6 +290,30 @@ flock.place(0, 0)
   check(offTether === 0, `no landing past TETHER + a hop from home`, `${offTether} off`)
   check(pitchWrong === 0, 'nose up on the way up, down on the way down', `${pitchWrong} frames wrong`)
   check(maxMs < 2, 'a frame of the layer costs under 2 ms, once warm', `${maxMs.toFixed(3)} ms worst`)
+}
+
+// --- night ---------------------------------------------------------------------
+{
+  const dt = 1 / 72
+  const dark = make(9)
+  dark.place(0, 0)
+  check(Math.abs(DENSITY - 1 / 16) < 1e-12, 'DENSITY is one per 16 m2')
+  // Day until one is in the air, then the sun goes down under it.
+  let frames = 0
+  while (!dark.shown.some((g) => g.state === 'hop') && frames++ < 72 * 30) dark.update(0, 11, 0, dt, 1)
+  const aloft = dark.shown.filter((g) => g.state === 'hop')
+  check(aloft.length > 0, 'one is in the air when the sun goes down', `${aloft.length} aloft`)
+  const hopsAtDusk = dark.hops
+  for (let f = 0; f < 72 * 60; f++) dark.update(0, 11, 0, dt, NIGHT_DAY - 0.01)
+  check(aloft.every((g) => g.state === 'sit' && Math.abs(g.y - walk.heightAt(g.x, g.z)) < 1e-9), 'it finishes its hop and sits')
+  check(dark.hops === hopsAtDusk && dark.shown.every((g) => g.state === 'sit' && g.left > 0 && g.left <= REST_S[1]), 'no grasshopper hops in the dark for a minute, each seated on a rest still running', `${dark.hops - hopsAtDusk} hops`)
+  check(dark.bodies([]).length === dark.shown.length && dark.shown.length > 0, 'the seated ones are still listed for the ambience to chirp', `${dark.shown.length}`)
+  // Dawn: the rests re-rolled in the dark are still running down, so the launches are spread over REST_S -- a minority in the first second, most within the longest rest.
+  const shown = dark.shown.slice()
+  for (let f = 0; f < 72; f++) dark.update(0, 11, 0, dt, 1)
+  check(dark.hops - hopsAtDusk < shown.length * 0.6, 'at dawn only a minority hop in the first second', `${dark.hops - hopsAtDusk} of ${shown.length}`)
+  for (let f = 0; f < 72 * REST_S[1]; f++) dark.update(0, 11, 0, dt, 1)
+  check(dark.hops - hopsAtDusk >= shown.length * 0.8, `and most have hopped within REST_S[1] of it`, `${dark.hops - hopsAtDusk} hops from ${shown.length}`)
 }
 
 // --- only within SHOW_M ----------------------------------------------------------

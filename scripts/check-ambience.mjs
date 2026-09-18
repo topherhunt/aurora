@@ -484,9 +484,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const bed = crickets.filter((p) => !p.at), near = crickets.filter((p) => p.at)
   check(bed.length >= 180 / 3 - 2 && bed.length <= 180 / 1.5 + 2, 'the cricket bed chirps every 1.5-3 s', `${bed.length} in 180 s`)
   check(bed.every((p) => within(p.gain, ...RULES.cricketBed.gain)), 'the bed is low and varies', `${Math.min(...bed.map((p) => p.gain)).toFixed(2)}-${Math.max(...bed.map((p) => p.gain)).toFixed(2)}`)
-  check(near.length >= 6 && near.length <= 32, 'a cricket beside her every 6-20 s', `${near.length}`)
-  check(near.every((p) => within(p.gain, ...RULES.cricketNear.gain) && Math.hypot(p.at.x - HEAD.x, p.at.z - HEAD.z) <= RULES.cricketNear.range[1] + 1e-6), 'the near cricket is louder and placed within reach')
-  check(new Set(near.map((p) => Math.atan2(p.at.z - HEAD.z, p.at.x - HEAD.x).toFixed(1))).size > 3, 'the near cricket comes from different directions')
+  check(near.length === 0, 'no cricket is placed beside her without a grasshopper to place it at', `${near.length}`)
   check(engine.loops.leaves.active && engine.loops.leaves.level > 0.5, 'the leaves rustle in the wood', `level ${engine.loops.leaves.level?.toFixed(2)}`)
   const pecks = engine.plays.filter((p) => p.name === 'woodpecker')
   check(pecks.length >= 2 && pecks.length <= 9, 'a woodpecker every 20-70 s in the wood, night or day', `${pecks.length} in 180 s`)
@@ -802,8 +800,18 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const level = (b) => C.level * (C.near / Math.max(C.near, Math.hypot(b.x - HEAD.x, b.y - HEAD.y, b.z - HEAD.z)))
   check(from(near).every((p) => within(p.gain, level(near) * C.gain[0], level(near) * C.gain[1]) && within(p.rate, RATE[0], RATE[1])), 'at her feet it is the level over its distance from her head, in the pitch band')
   check(from(mid).every((p) => within(p.gain, level(mid) * C.gain[0], level(mid) * C.gain[1])) && level(mid) < level(near), '4 m off it falls as 1 / distance')
+  // At night, below the snow: the bed goes on unplaced, and the only placed crickets are still the grasshoppers.
+  sense.s.aboveSnow = -200
+  const dayChirps = chirps.length
+  run(amb, SECONDS, { dayness: NIGHT })
+  const night = engine.plays.filter((p) => p.name === 'cricket').slice(dayChirps)
+  const bed = night.filter((p) => !p.at), placed = night.filter((p) => p.at)
+  check(bed.length >= SECONDS / 3 - 2 && bed.length <= SECONDS / 1.5 + 2, 'the far bed chirps every 1.5-3 s at night', `${bed.length} in ${SECONDS} s`)
+  check(placed.length > 0 && placed.every((p) => listed.some((b) => p.at.x === b.x && p.at.y === b.y && p.at.z === b.z)), 'every placed night cricket is a grasshopper', `${placed.length} placed`)
+  const nightFrom = (b) => placed.filter((p) => p.at.x === b.x && p.at.z === b.z).length
+  check(within(nightFrom(near), expect * 0.5, expect * 1.6) && nightFrom(far) === 0, 'at the same rate as by day, and none past the reach', `${nightFrom(near)} near, ${nightFrom(far)} far`)
   listed.length = 0
-  const before = chirps.length
+  const before = count(engine, 'cricket')
   run(amb, 60, { dayness: DAY })
   check(count(engine, 'cricket') === before, 'and none once nothing is listed')
   let threw = false

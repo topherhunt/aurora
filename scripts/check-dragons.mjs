@@ -289,9 +289,11 @@ function makeHerd(stags) {
     },
     preyCalls: 0,
     seize(c) { c.spawn = null; c.act = 'dead'; c.seized++; return c },
-    carry(c, m, dist, dt, lain = false) {
+    carry(c, m, dist, dt, lain = false, shown) {
       c.carried++
       c.lain = lain
+      c.shown = shown
+      if (shown) c.shownFrames++
       if (lain) c.lainFrames++
       c.at.setFromMatrixPosition(m)
       c.up.set(0, 1, 0).transformDirection(m)
@@ -301,7 +303,7 @@ function makeHerd(stags) {
     drop(c, fade = true) { c.drops.push(fade) },
   }
 }
-const stag = (x, z, y = GROUND) => ({ spawn: {}, x, y, z, k: 0.5, size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
+const stag = (x, z, y = GROUND) => ({ spawn: {}, x, y, z, k: 0.5, size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, shown: null, shownFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
 const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into } })
 const dry = { isSubmerged: () => false }
 const dragonsOn = (field, sites, herd, seed = 3, water = dry) => new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, asset: makeAsset() })
@@ -440,6 +442,7 @@ console.log('\ndragons')
   check(nest.ateAt > 0 && nest.ateAt - nest.eatAt >= EAT_S[0] - 0.1 && nest.ateAt - nest.eatAt <= EAT_S[1] + 0.1 && stags[0].drops.join() === 'true' && dr.cargo === null && d.stats.carrying === 0, `after ${EAT_S[0]} to ${EAT_S[1]} s of eating the carcass is gone -- dropped to fade -- and the dragon carries nothing`, `ate for ${fmt(nest.ateAt - nest.eatAt)} s`)
   check(Math.abs(dr.age - dr.fedAt) < 1e-9 && !d._hungry(dr), 'and the meal is when it last ate: it is not hungry now')
   check(stags[0].carried === cargoFrames && cargoFrames > 60 && stags[0].carryDt === DT, 'wildlife.carry was called on every frame it was cargo, with the frame', `${cargoFrames} frames`)
+  check(stags[0].shownFrames === cargoFrames, 'and told the dragon was drawn on every one of them: she stood beside the nest the whole hunt', `${stags[0].shownFrames} of ${cargoFrames}`)
   check(stags[0].lain === true && stags[0].lainFrames > 60 * 5 && stags[0].lainFrames < cargoFrames, 'hanging from the talons through the whole flight and laid on its flank from the frame it landed to the frame it was eaten', `lain ${stags[0].lainFrames} of ${cargoFrames} cargo frames`)
   check(worst.turn <= LAND_TURN_RATE + 1e-6 && worst.pitch <= PITCH_RATE + 1e-6 && worst.roll <= ROLL_RATE + 1e-6 && worst.accel <= ACCEL + 1e-6 && worst.move <= DIVE_MPS * 1.001, 'and no frame of it, landing, walking and eating included, turned, pitched, banked, accelerated or moved the body faster than its rates', `turn ${fmt(worst.turn)}/${LAND_TURN_RATE} pitch ${fmt(worst.pitch)}/${PITCH_RATE} roll ${fmt(worst.roll)}/${ROLL_RATE} accel ${fmt(worst.accel)}/${ACCEL} move ${fmt(worst.move)}/${DIVE_MPS}`)
   check(worst.banked > 0.3 && worst.banked <= BANK + 1e-9, `it banked into its turns, never past ${BANK} rad`, `${fmt(worst.banked)} rad at most`)
@@ -599,7 +602,11 @@ console.log('\ndragons')
   dr.puppet.group.matrix.decompose(p, q, s)
   check(Math.abs(p.x - dr.x) < 1e-9 && Math.abs(p.y - dr.y) < 1e-9 && Math.abs(p.z - dr.z) < 1e-9 && Math.abs(s.x - dr.k) < 1e-9 && d.batch.children.includes(dr.puppet.group), 'the puppet\'s matrix is the dragon\'s: where it is, at its size, and in the batch')
   check(at(reach(LOD_RUNGS - 1) * 0.9) === LOD_RUNGS - 1 && dr.puppet && dr.puppet.tier === LOD_RUNGS - 1, `at ${(reach(LOD_RUNGS - 1) * 0.9).toFixed(0)} m it is on the bottom mesh tier, still a puppet`)
+  // A kill in its talons for the rest of the walk out, to see what it is told about the dragon's own rung.
+  const kill = stag(0, 0)
+  dr.cargo = kill
   check(at(reach(LOD_RUNGS) * 0.9) === LOD_RUNGS && !dr.puppet && d.cardN === 1 && d.cardMesh.count === 1 && d.freePuppets.length === PUPPETS, `at ${(reach(LOD_RUNGS) * 0.9).toFixed(0)} m the puppet is given back and the two cards drawn instead`)
+  check(kill.carried > 0 && kill.shown === true, 'and the kill it carries is told the dragon is drawn, so its card holds under the dragon\'s')
   d.cardMesh.getMatrixAt(0, m)
   m.decompose(p, q, s)
   const e = new THREE.Euler().setFromQuaternion(q, 'YZX')
@@ -608,6 +615,8 @@ console.log('\ndragons')
   check(d.cardFade.array[0] === 1, 'settled: the whole card is drawn, no dither left', `fade ${d.cardFade.array[0]}`)
   const before = { x: dr.x, z: dr.z, state: dr.state }
   check(at(reach(LOD_RUNGS) * 4) === CARD_RUNGS && d.cardN === 0 && d.cardMesh.count === 0 && !dr.puppet && d.byKey.size === 1, `four times the card's reach, it is drawn as nothing at all -- and is still alive`)
+  check(kill.shown === false, 'and the kill is told so, and goes with it')
+  dr.cargo = null
   for (let i = 0; i < 60 * 120; i++) d.update(site.x + reach(LOD_RUNGS) * 4, HER.y, site.z, DT)
   check(dr.state !== 'roost' || before.state !== dr.state || dr.x !== before.x || dr.z !== before.z || d.stats.states.roost === 1, 'and still simulated out of sight: two minutes on, it has been about its loop', `now ${dr.state} at (${fmt(dr.x)}, ${fmt(dr.z)})`)
   check(d.stats.alive === 1 && d.stats.lod.length === LOD_RUNGS && d.stats.cards === 0 && typeof d.stats.states === 'object' && d.stats.starved === 0 && d.stats.overflow === 0, 'the stats read alive, a row a mesh rung, the cards, the states and the counters', JSON.stringify(d.stats))

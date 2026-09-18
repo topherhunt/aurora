@@ -24,7 +24,8 @@
 // then `strike`: the dive proper, at DIVE_MPS and a pitch no cruise allows, and
 // within STRIKE_M of the stag the stag is SEIZED (wildlife.seize): its spawn is
 // dead, its slot is the dragon's cargo, and it hangs from the talons, drawn by
-// wildlife.carry on its own species' ladder wherever the dragon puts it.
+// wildlife.carry wherever the dragon puts it -- on its own species' mesh rungs,
+// then as its card for as long as the dragon itself is drawn.
 // `return` is the flight home with it and `land` the last LAND_M at LAND_MPS
 // onto the nest floor. A strike that misses climbs back into the hunt; a stag
 // that left the world mid-dive (its tile unloaded) sends the dragon back on
@@ -845,8 +846,8 @@ export class Dragons {
     this.cardFade.array[i] = d.cardWant ? d.cardP : -(1 - d.cardP)
   }
 
-  /** The kill drawn where the dragon has it: hanging by its back from the talons in the air, lying on its flank at its fixed spot on the nest floor, tilted with the floor. _pose(d) must have run. */
-  _carry(d, hx, hy, hz, dt) {
+  /** The kill drawn where the dragon has it: hanging by its back from the talons in the air, lying on its flank at its fixed spot on the nest floor, tilted with the floor; `shown` is whether this dragon is on a drawn rung, which is how long the kill's card holds. _pose(d) must have run. */
+  _carry(d, hx, hy, hz, dt, shown) {
     const lain = d.state === 'roost'
     if (lain) {
       const site = d.site
@@ -861,7 +862,7 @@ export class Dragons {
     _scl.setScalar(d.cargo.k)
     _cargoMat.compose(_cargoPos, _cargoQuat, _scl)
     const dist = Math.sqrt((_cargoPos.x - hx) ** 2 + (_cargoPos.y - hy) ** 2 + (_cargoPos.z - hz) ** 2)
-    this.wildlife.carry(d.cargo, _cargoMat, dist, dt, lain)
+    this.wildlife.carry(d.cargo, _cargoMat, dist, dt, lain, shown)
   }
 
   /** One dragon: behaved, then drawn on whichever rung its flying body's size puts it at. */
@@ -871,7 +872,7 @@ export class Dragons {
     const tier = critterTier(d.lodSize, dist, d.lod, CARD_RUNGS)
     d.lod = tier
     this._pose(d)
-    if (d.cargo) this._carry(d, hx, hy, hz, dt)
+    if (d.cargo) this._carry(d, hx, hy, hz, dt, tier < CARD_RUNGS)
 
     this._wantCard(d, tier === LOD_RUNGS)
     if (d.cardP < 1) d.cardP = Math.min(1, d.cardP + dt / LOD_FADE_S)

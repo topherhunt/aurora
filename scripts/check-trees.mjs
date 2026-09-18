@@ -119,7 +119,7 @@ const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
   TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME,
-  CLUMP_FULL_TO, CLUMP_TREES } = TREE_TUNING
+  CLUMP_FULL_TO, CLUMP_TREES, CLUMP_MIN_KEEP, CARD_TILT } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
 
@@ -1387,6 +1387,15 @@ trees.place(0, 0)
   check(assemble().includes('abs( vPropFade ) <= fadeT ) discard') && trees.material.customProgramCacheKey() !== offKey,
     'and the dissolve discard comes back under a different program key, so the two programs are never conflated',
     `key ${trees.material.customProgramCacheKey()}`)
+  // The pitch is compiled over one range of layers; the single card's layer
+  // and every clump layer have to fall inside it or one kind of card stands
+  // straight while the other leans.
+  const cardLayers = [...trees.tierIds[trees.cardTier], ...trees.tierIds[trees.clumpTier]]
+    .map((g) => trees.batch.meshes[g].geometry.attributes.texLayer.array[0])
+  const tilt = trees.material.customProgramCacheKey().match(/-tilt([\d.]+)\.(\d+)\.(\d+)/)
+  check(tilt && Number(tilt[1]) === CARD_TILT && cardLayers.every((l) => l >= Number(tilt[2]) && l <= Number(tilt[3])),
+    `every card, single and clump, pitches ${CARD_TILT} of the way to face an eye above it`,
+    `key ${trees.material.customProgramCacheKey()}, card layers ${cardLayers.join(' ')}`)
 }
 
 // --- 9b2. a dissolve never retracts -----------------------------------------
@@ -1876,10 +1885,14 @@ console.log('\n-- placement --')
     t.place(0, 0)
     // The tree's own scale, not its matrix's: a clump draws at CLUMP_SCALE.
     let sum = 0
+    let clumps = 0
     for (const tile of t.tiles.values()) {
-      for (let k = 0; k < tile.n; k++) sum += t.instScale[tile.ids[k]]
+      for (let k = 0; k < tile.n; k++) {
+        sum += t.instScale[tile.ids[k]]
+        if (t.farTierAt[tile.ids[k]] === t.clumpTier) clumps++
+      }
     }
-    const out = { n: t.placed, scale: sum / Math.max(1, t.placed) }
+    const out = { n: t.placed, scale: sum / Math.max(1, t.placed), clumps }
     t.dispose()
     return out
   }
@@ -1912,6 +1925,11 @@ console.log('\n-- placement --')
   check(Math.abs(meadow.scale / ref.scale - BIOME.scale[0]) < 0.03 && Math.abs(wood.scale / ref.scale - BIOME.scale[1]) < 0.03,
     `and the trees run ${BIOME.scale[0]}x tall in a meadow to ${BIOME.scale[1]}x in the wood`,
     `${meadow.scale.toFixed(2)} / ${wood.scale.toFixed(2)} vs ${ref.scale.toFixed(2)}`)
+  // A clump stands in for neighbours that stood within its picture; a lone
+  // tree in a meadow, or a stunted one above the fade, had none.
+  check(wood.clumps > wood.n * 0.1 && meadow.clumps === 0 && high.clumps === 0,
+    `a far tree draws as a clump only where its spot keeps ${CLUMP_MIN_KEEP} or more: never in a meadow, never at the top of the treeline fade`,
+    `wood ${wood.clumps} of ${wood.n}, meadow ${meadow.clumps} of ${meadow.n}, treeline ${high.clumps} of ${high.n}`)
   {
     let threw = false
     try { new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, biome: {} }) } catch { threw = true }
