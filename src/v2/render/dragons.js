@@ -93,6 +93,8 @@ export const MAX = 16
 export const PUPPETS = 6
 // How far either side of the shipped size a dragon rolls.
 export const SIZE_VARY = 0.15
+// The scales' roughness: a rough gleam at half the sun's lobe (puppet.js gloss), broader and duller than the egg's shell.
+export const SCALE_ROUGHNESS = 0.5
 
 // Flight, in metres and seconds.
 export const PATROL_MPS = 12
@@ -281,12 +283,12 @@ export class Dragons {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-dragons'
     scene.add(this.batch)
-    // Every material the world's lighting patches: one settled, a fade pair a puppet, and the card's.
-    this.plain = makeSettledMaterial('dragons')
+    // Every material the world's lighting patches: one settled, a fade pair a puppet, and the card's. The body gleams (puppet.js gloss); the card, a photograph of it, does not.
+    this.plain = makeSettledMaterial('dragons', { gloss: SCALE_ROUGHNESS })
     this.materials = [this.plain]
     this.puppetMats = []
     for (let i = 0; i < PUPPETS; i++) {
-      const mats = makePuppetMaterials('dragons', this.plain)
+      const mats = makePuppetMaterials('dragons', this.plain, { gloss: SCALE_ROUGHNESS })
       this.puppetMats.push(mats)
       this.materials.push(mats.in, mats.out)
     }

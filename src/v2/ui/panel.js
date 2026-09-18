@@ -46,7 +46,7 @@ import { RELIEF_KNOBS, RELIEF_DEFAULTS, normalizeRelief } from '../height/relief
 //     triDeg, treeCount,
 //     treeTris, grassCount, grassHidden, grassTris, fernCount, fernTris,
 //     mushroomCount, mushroomTris, deadwoodCount, deadwoodTris, bonesCount, bonesTris, carrotCount, carrotTris,
-//     rowboatCount, rowboatTris,
+//     rowboatCount, rowboatTris, boatsLive, boatSpeed,
 //     rockCount, rockTris, litterCount, litterTris,
 //     x, y, z, ground, cell, cursorDist, cursorLabel, cursorVariant,
 //     snowHere, snowBase, mode, eyeToWater }
@@ -626,6 +626,8 @@ export class Panel {
     kv('carrots', Number.isFinite(s.carrotCount) ? `${s.carrotCount} ${(s.carrotTris / 1000).toFixed(1)}k` : null)
     // Moored boats within the card reach: a handful, so the count is the number that moves.
     kv('rowboats', Number.isFinite(s.rowboatCount) ? `${s.rowboatCount} ${(s.rowboatTris / 1000).toFixed(1)}k` : null)
+    // Boats live off the scatter, and the speed of the one she is aboard.
+    kv('boats', Number.isFinite(s.boatsLive) ? `${s.boatsLive} ${s.boatSpeed.toFixed(2)} m/s` : null)
     // All three rock beds summed. They reach 55 m, 460 m and 1250 m, so the
     // count moves with the terrain rather than with the player's speed.
     kv('rocks', Number.isFinite(s.rockCount) ? `${s.rockCount} ${(s.rockTris / 1000).toFixed(0)}k` : null)

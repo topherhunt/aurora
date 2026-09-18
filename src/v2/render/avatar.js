@@ -1,10 +1,8 @@
 import THREE from '../../three-instance.js'
-import { LOD_RUNGS, critterTier } from './critters.js'
+import { LOD_RUNGS, critterTier, loadCritterGlb } from './critters.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { VrBody } from './avatar-rig.js'
-
-const SKIN = 0xd99b78
 
 // public/creatures/, written by tools/creatures/ship-biped.mjs: the villagers a
 // peer can be dressed as, each a skinned Tripo body with its ladder and the
@@ -15,36 +13,77 @@ const MODEL_URL = (id) => `creatures/${id}.glb`
 // Seconds a body takes to cross from idle to walking and back.
 const FADE_S = 0.25
 
-function material(color) {
-  return new THREE.MeshBasicMaterial({ color, transparent: true, depthTest: false, depthWrite: false })
-}
-
-function mesh(geometry, color) {
-  return new THREE.Mesh(geometry, material(color))
-}
-
+// ---------------------------------------------------------------------------
 // Her own hand while the menu is closed, hung from the grip pose. A peer's
 // hands are the villager's own, posed to the same grip by avatar-rig.js.
-export function lowPolyHand() {
-  const group = new THREE.Group()
-  const palm = mesh(new THREE.SphereGeometry(1, 6, 5), SKIN)
-  palm.scale.set(0.055, 0.07, 0.035)
-  group.add(palm)
+//
+// The mesh is the roster's `hand` (tools/props/gen/prop-roster.mjs), shipped by
+// ship.mjs as ONE right hand in Tripo's unit box: fingers along +Z, thumb +Y,
+// palm facing +X, the forearm stub ending at -Z. The left is its mirror.
+//
+// The node it hangs from is WebXR's grip space (A-Frame's tracked-controls puts
+// the gripSpace pose on the hand entity): origin at the centroid of the curled
+// fingers, -Z toward the thumb, +Y up the forearm toward the elbow, +X out the
+// back of the RIGHT hand and into the back of the left. So mesh +Z (fingers)
+// goes to grip -Y, mesh +Y (thumb) to grip -Z and mesh -X (back) to grip +X: a
+// half turn about (0, 1, -1), baked into the geometry with the scale and the
+// grip point, so each hand is one mesh under the identity and the left is the
+// same mesh under scale.x = -1 (three flips the winding for a negative
+// determinant). The grip point is at the origin when the rotation lands, so a
+// re-seating pitch turns the hand about the palm, which is where a controller
+// is held. To re-seat the hand against a real one, turn these four.
+// ---------------------------------------------------------------------------
 
-  // Four short, faceted fingers fan out from the palm. The grip origin is at the wrist.
-  for (let i = 0; i < 4; i++) {
-    const finger = mesh(new THREE.CylinderGeometry(0.011, 0.013, 0.07, 5), SKIN)
-    finger.position.set((i - 1.5) * 0.022, 0.065, -0.002)
-    finger.rotation.z = (i - 1.5) * 0.08
-    group.add(finger)
-  }
+export const HAND_GLB = 'gen-props/hand.glb'
+// Metres per mesh unit. The box is 1.0 from the fingertips to the forearm's end with the wrist crease near -0.12, so 0.62 of it is hand, worn at 0.19 m.
+export const HAND_SCALE_M = 0.3
+// Where the grip origin sits in the mesh, mesh units: inside the curl of the fingers, on the palm side of the palm's middle.
+export const HAND_GRIP = new THREE.Vector3(0.12, -0.05, 0.2)
+// Pitch about the palm, degrees, after the frame change: positive drops the
+// wrist toward the little-finger side of the grip (world down with the hand
+// held out flat, thumb up). Worn straight, the mesh's forearm stood 30 up.
+export const HAND_PITCH_DEG = 30
+// Mesh frame to grip frame (see above), then the pitch, about the grip's X.
+export const HAND_QUAT = new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(HAND_PITCH_DEG))
+  .multiply(new THREE.Quaternion(0, Math.SQRT1_2, -Math.SQRT1_2, 0))
 
-  const thumb = mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.06, 5), SKIN)
-  thumb.position.set(-0.06, 0.005, -0.01)
-  thumb.rotation.z = -0.85
-  thumb.rotation.x = -0.2
-  group.add(thumb)
-  return group
+/**
+ * The shipped hand, once: its geometry in the grip frame at metres, and its
+ * material lit by the world through `patch`. Both hands share both.
+ */
+export async function loadOwnHand({ patch }) {
+  if (typeof patch !== 'function') throw new Error('loadOwnHand needs patch(material), the world lighting')
+  const a = await loadCritterGlb(HAND_GLB, { origin: [0, 0, 0] })
+  const geometry = handGeometry(a)
+  const material = new THREE.MeshLambertMaterial({ map: a.map })
+  material.customProgramCacheKey = () => 'v2-own-hand'
+  patch(material)
+  return { geometry, material }
+}
+
+/** The mesh's geometry re-based to the grip: the grip point at the origin, metres, in the grip frame. */
+export function handGeometry({ pos, nrm, uv, idx }) {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
+  geometry.setIndex(idx)
+  geometry.translate(-HAND_GRIP.x, -HAND_GRIP.y, -HAND_GRIP.z)
+  geometry.scale(HAND_SCALE_M, HAND_SCALE_M, HAND_SCALE_M)
+  geometry.applyQuaternion(HAND_QUAT)
+  geometry.computeBoundingBox()
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/** One hand for the grip node of `side`, off loadOwnHand's answer. */
+export function ownHand({ geometry, material }, side) {
+  if (side !== 'left' && side !== 'right') throw new Error(`ownHand: side is left or right, not ${side}`)
+  const hand = new THREE.Mesh(geometry, material)
+  hand.name = `v2-own-hand-${side}`
+  if (side === 'left') hand.scale.x = -1
+  return hand
 }
 
 // FNV-1a. A peer that arrives without an avatar (a relay older than the field)

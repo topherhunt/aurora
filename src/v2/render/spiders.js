@@ -556,6 +556,13 @@ export class Spiders {
     }
   }
 
+  /** The geometry and material a packed spider record is drawn with, or null until the asset lands. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'spider') throw new Error(`Spiders.dress: not a spider, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.asset.tiers[MESH_TIER], material: this.material }
+  }
+
   /**
    * Let a taken spider go at (x, _, z): it lands on the ground there, on a
    * host of its own in the tile under it, and runs from her the way a ground

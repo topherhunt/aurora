@@ -49,7 +49,7 @@
 
 import THREE from '../../three-instance.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { gltfLoader } from './critters.js'
+import { glint, gltfLoader } from './critters.js'
 
 // How long a tier change, an appearance or a vanishing takes. Long enough that
 // the eye reads a dissolve rather than a flicker, short enough that a creature
@@ -182,13 +182,25 @@ function dissolve(shader) {
  * The material a SETTLED puppet draws through, shared by every puppet of a
  * species. Nothing in it is per-animal, which is the point: see below.
  *
+ * Lambert, unless `gloss` is a roughness: then a Standard at it, metalness 0,
+ * wearing the wet creatures' glint (critters.js) -- the sun's lobe at half --
+ * for a hide that gleams, like a dragon's scales. The fade pair follows suit
+ * (makePuppetMaterials), so a puppet is the same surface dissolving or settled.
+ *
  * The caller patches it with the world's lighting; lighting.js chains
  * onBeforeCompile, so a splice here survives it.
  */
-export function makeSettledMaterial(cacheKey) {
-  const m = new THREE.MeshLambertMaterial({ color: 0xffffff })
+export function makeSettledMaterial(cacheKey, { gloss = false } = {}) {
+  const m = puppetMaterial(gloss)
+  if (gloss !== false) m.onBeforeCompile = glint
   m.customProgramCacheKey = () => cacheKey
   return m
+}
+
+function puppetMaterial(gloss) {
+  if (gloss === false) return new THREE.MeshLambertMaterial({ color: 0xffffff })
+  if (!(gloss > 0 && gloss < 1)) throw new Error(`puppet: gloss is a roughness in (0, 1), not ${gloss}`)
+  return new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: gloss, metalness: 0 })
 }
 
 /**
@@ -208,15 +220,17 @@ export function makeSettledMaterial(cacheKey) {
  * one material change a frame instead of one an animal. The per-animal SIZE
  * roll stays: a transform is free. See design/27-creature-pipeline.md.
  */
-export function makePuppetMaterials(cacheKey, plain) {
+export function makePuppetMaterials(cacheKey, plain, { gloss = false } = {}) {
+  if ((gloss !== false) !== !!plain.isMeshStandardMaterial) throw new Error(`makePuppetMaterials(${cacheKey}): the fade pair must wear the settled material's gloss`)
   const uCut = { value: 1 }
   const make = (side) => {
-    const m = new THREE.MeshLambertMaterial({ color: 0xffffff })
+    const m = puppetMaterial(gloss)
     const uSide = { value: side }
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uCut = uCut
       shader.uniforms.uSide = uSide
       dissolve(shader)
+      if (gloss !== false) glint(shader)
     }
     m.customProgramCacheKey = () => `${cacheKey}-fade`
     m.userData.uCut = uCut

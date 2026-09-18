@@ -18,7 +18,9 @@ let serverTick = 0
 function roomFor(name) {
   let room = rooms.get(name)
   if (!room) {
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0 }
+    // `boats`: origin key -> the last state any client sent for a rowboat it
+    // was moving, so a joiner finds the boats where they were left.
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map() }
     rooms.set(name, room)
   }
   return room
@@ -36,6 +38,17 @@ function validPose(message) {
     message.hands.every((v) => typeof v === 'boolean') &&
     (message.avatar === undefined || (typeof message.avatar === 'string' && /^[a-z0-9-]{1,32}$/.test(message.avatar)))
 }
+
+// A pose may say where aboard a rowboat the client is (`aboard`: origin key
+// and its head's place in the hull) and, as the boat's authority, where the
+// boat is (`boat`: origin, x, z, yaw, speed, yaw rate). Numbers only; the
+// origin is the boat's tile key on every client.
+const finiteList = (v, n) => Array.isArray(v) && v.length === n && v.every((x) => Number.isFinite(x)) && Number.isInteger(v[0])
+function validBoats(message) {
+  return (message.aboard === undefined || finiteList(message.aboard, 3)) &&
+    (message.boat === undefined || finiteList(message.boat, 6))
+}
+const ROOM_BOATS_CAP = 32
 
 // Bounded so a bad client cannot fling the room's sun across years.
 function validSkip(message) {
@@ -78,7 +91,7 @@ wss.on('connection', (ws, request) => {
     return
   }
 
-  const client = { id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null }
+  const client = { id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, aboard: null }
   room.clients.set(client.id, client)
   ws.isAlive = true
   ws.on('pong', () => { ws.isAlive = true; client.lastSeen = Date.now() })
@@ -91,11 +104,15 @@ wss.on('connection', (ws, request) => {
       client.lastSeen = now
       return
     }
-    if (!validPose(message)) return
+    if (!validPose(message) || !validBoats(message)) return
     if (now - client.lastPoseAt < 20) return
     client.pose = message.pose
     client.hands = message.hands
     client.avatar = message.avatar ?? null
+    client.aboard = message.aboard ?? null
+    if (message.boat && (room.boats.size < ROOM_BOATS_CAP || room.boats.has(message.boat[0]))) {
+      room.boats.set(message.boat[0], { state: message.boat, at: now })
+    }
     client.lastPoseAt = now
     client.lastSeen = now
   })
@@ -108,6 +125,8 @@ setInterval(() => {
   const now = Date.now()
   serverTick++
   for (const room of rooms.values()) {
+    const boats = []
+    for (const [origin, b] of room.boats) boats.push([origin, ...b.state.slice(1), now - b.at])
     for (const client of room.clients.values()) {
       if (now - client.lastSeen > SILENCE_MS) {
         client.ws.terminate()
@@ -116,11 +135,14 @@ setInterval(() => {
       const peers = []
       for (const peer of room.clients.values()) {
         if (peer === client || !peer.pose) continue
-        peers.push({ id: peer.id, pose: peer.pose, hands: peer.hands, avatar: peer.avatar })
+        const p = { id: peer.id, pose: peer.pose, hands: peer.hands, avatar: peer.avatar }
+        if (peer.aboard) p.aboard = peer.aboard
+        peers.push(p)
       }
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
-      send(client, { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers })
+      // So do the boats, each with its sample's age for the client to dead-reckon by.
+      send(client, { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats })
     }
   }
 }, TICK_MS)

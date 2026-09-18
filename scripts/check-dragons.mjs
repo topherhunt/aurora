@@ -33,14 +33,14 @@ import fs from 'node:fs'
 import {
   Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, CARD_EVERY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_MAX, DIVE_PITCH, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, HUNT_M,
-  STRIKE_M, LAND_M, REST_S, FIRST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, measureFly,
+  STRIKE_M, LAND_M, REST_S, FIRST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly,
 } from '../src/v2/render/dragons.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
-  EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, eggBankFrom,
+  EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { propCull } from '../src/v2/render/gen-props.js'
-import { CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, cullRange, lodReach } from '../src/v2/render/critters.js'
+import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -261,7 +261,16 @@ console.log('\nroost egg')
   }
   const r = eggRoostsOn(flatField(GROUND), DRY, LAYERS, 5)
   const bare = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  check(r.materials.length === 4 && r.materials[3].customProgramCacheKey() === 'gen-prop' && r.batch.meshes.length === RUNGS + 1 && r.eggTier === RUNGS, 'with a bank the arena grows a tier past the card, the egg on its own gen-prop material', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  check(r.materials.length === 4 && r.materials[3].customProgramCacheKey() === 'gen-prop-gloss' && r.batch.meshes.length === RUNGS + 1 && r.eggTier === RUNGS, 'with a bank the arena grows a tier past the card, the egg on its own gloss gen-prop material', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  // The shine: a Standard at EGG_ROUGHNESS with no metalness, the whole lobe left on it, and the rim fade still spliced in.
+  check(r.eggMaterial.isMeshStandardMaterial && r.eggMaterial.roughness === EGG_ROUGHNESS && EGG_ROUGHNESS > 0 && EGG_ROUGHNESS <= 0.3 && r.eggMaterial.metalness === 0, 'the egg is a Standard material at EGG_ROUGHNESS, no rougher than the wet creatures, with no metalness', `${r.eggMaterial.type} roughness ${r.eggMaterial.roughness}`)
+  check(r.materials.slice(0, 3).every((m) => m.isMeshLambertMaterial), 'the roost itself stays Lambert')
+  {
+    const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n#include <lights_fragment_end>\n' }
+    r.eggMaterial.onBeforeCompile(shader)
+    check(shader.vertexShader.includes('attribute float aPropFade;') && shader.fragmentShader.includes('vPropFade'), 'and dithers out at the rim like every prop')
+    check(!shader.fragmentShader.includes('reflectedLight.directSpecular *='), 'with the sun\'s whole lobe on the shell, not the creatures\' halved glint')
+  }
   check(JSON.stringify(r.sites()) === JSON.stringify(bare.sites()) && r.stats.placed === bare.stats.placed, 'the eggs move no roost: the same seed lays the same sites with them or without', `${r.stats.placed} sites`)
   check(r.stats.pool === r.batch._max && r.stats.pool > 2 * r.stats.tiles && bare.stats.pool < r.stats.pool, 'and the pool holds a roost and an egg for every resident tile, plus the fades', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
   bare.dispose()
@@ -446,6 +455,14 @@ console.log('\ndragons')
   check(d.bulk > 1 && Math.abs(d.bulk - Math.max(2 * fly.halfX, 2 * fly.halfZ, fly.maxY - fly.minY) / wyvern.span) < 1e-9, 'the ladder is sized by the flying body\'s largest extent over the shipped span, and so reaches farther than the standing body would', `bulk ${d.bulk.toFixed(3)}`)
   check(d.materials.length === 2 * PUPPETS + 2 && d.materials[0] === d.plain && d.materials[d.materials.length - 1] === d.cardMaterial, 'one settled material, a dissolving pair a puppet, and the card, all offered to the lighting', `${d.materials.length}`)
   check(d.plain.customProgramCacheKey() === 'dragons' && d.puppetMats.every((m) => m.plain === d.plain && m.in.customProgramCacheKey() === 'dragons-fade'), 'every puppet draws its settled tiers through THE ONE material and dissolves through the one fade program')
+  // The gleam: settled and fading alike a Standard at SCALE_ROUGHNESS, no metalness, the lobe scaled by GLINT; the card stays a photograph.
+  const body = [d.plain, ...d.puppetMats.flatMap((m) => [m.in, m.out])]
+  check(body.every((m) => m.isMeshStandardMaterial && m.roughness === SCALE_ROUGHNESS && m.metalness === 0) && SCALE_ROUGHNESS > 0 && SCALE_ROUGHNESS < 1 && !d.cardMaterial.isMeshStandardMaterial, 'the body is a Standard material at SCALE_ROUGHNESS, settled or dissolving, and the card is not', `${d.plain.type} roughness ${d.plain.roughness}`)
+  {
+    const compile = (m) => { const sh = { uniforms: {}, vertexShader: '#include <common>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <lights_fragment_end>\n' }; m.onBeforeCompile(sh); return sh.fragmentShader }
+    const settled = compile(d.plain), fading = compile(d.puppetMats[0].in)
+    check(settled.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && fading.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && fading.includes('uCut') && !settled.includes('uCut'), 'the glint is spliced into the settled program and the fade program, which keeps its cut')
+  }
   check(d.cardMaterial.customProgramCacheKey() === 'dragons-card-fade-flat', 'the card is its own program: NOT spun to her, dithered, and flat', d.cardMaterial.customProgramCacheKey())
   check(d.puppets.length === PUPPETS && d.freePuppets.length === PUPPETS && d.slots.length === MAX && d.free.length === MAX, `${PUPPETS} puppets and ${MAX} slots, all free`)
   const geo = d.cardMesh.geometry

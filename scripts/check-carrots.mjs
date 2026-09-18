@@ -13,6 +13,7 @@ import * as THREE from 'three'
 import path from 'node:path'
 import { CARROT_TUNING, Carrots, carrotsBankFrom } from '../src/v2/render/carrots.js'
 import { propCull } from '../src/v2/render/gen-props.js'
+import { taken } from '../src/v2/taken.js'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 
 const T = CARROT_TUNING
@@ -146,6 +147,38 @@ console.log('carrots: the neighbours')
   const d = place(slab)
   const onStone = plantsOf(d).filter((p) => p.x > 0)
   check(onStone.length === 0 && d.rejected.rock > 0, 'no carrot grows out of a rock', `${d.rejected.rock} rejected`)
+}
+
+console.log('carrots: her hand')
+{
+  // A carrot pulled: out of the bed, on the registry, the record for the hand, the bed grown again without it.
+  taken.clear()
+  const c = place()
+  c.update(0, 101.6, 0)
+  const plants = plantsOf(c)
+  const pl = plants.find((p) => !c.rim.isHidden(p.id))
+  const size = c.size * pl.scale
+  const hit = c.pickAt(pl.x, pl.y + size * 0.5, pl.z, 0.1)
+  check(hit !== null && hit.id === pl.id && hit.tile === pl.tile && hit.size === size && hit.dist === 0, 'pickAt finds the carrot about the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(c.pickAt(pl.x, pl.y + size + 5, pl.z, 0.1) === null, 'and nothing five metres above it')
+  const before = c.placed
+  const rec = c.take(hit)
+  check(rec.kind === 'carrot' && rec.name === 'carrot' && Number.isInteger(rec.variant) && rec.size === size && rec.geometry === c.bank.tiers[0].geometries[rec.variant] && rec.material === c.materials[rec.variant] && rec.color.length === 3 && rec.scale[0] === pl.scale && rec.scale[1] === pl.scale && rec.stowable === true,
+    'take hands back the record: the finest tier, the variant\'s material, its tint and scale', JSON.stringify({ variant: rec.variant, size: rec.size.toFixed(3) }))
+  check(c.placed === before - 1 && !pl.tile.ids.subarray(0, pl.tile.n).includes(pl.id) && taken.has('carrot', pl.x, pl.z), 'and the carrot is out of the ground and on the registry', `${c.placed} of ${before}`)
+  const again = plantsOf(place())
+  check(again.length === plants.length - 1 && !again.some((p) => Math.abs(p.x - pl.x) < 1e-6 && Math.abs(p.z - pl.z) < 1e-6), 'a bed grown again from the seed comes up without it', `${again.length} of ${plants.length}`)
+  let twice = false
+  try { c.take(hit) } catch { twice = true }
+  check(twice, 'taking it twice throws')
+  const dress = c.dress({ kind: 'carrot', variant: rec.variant })
+  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on its variant\'s geometry and material')
+  let wrong = 0
+  try { c.dress({ kind: 'mushroom', variant: rec.variant }) } catch { wrong++ }
+  try { c.dress({ kind: 'carrot', variant: 999 }) } catch { wrong++ }
+  check(wrong === 2, 'and throws for another kind or an unknown variant', `${wrong} of 2`)
+  taken.clear()
+  check(plantsOf(place()).length === plants.length, 'the registry cleared, it grows back')
 }
 
 if (failures) {

@@ -523,6 +523,15 @@ export class Fish {
     return rec
   }
 
+  /** The geometry and material a packed fish record is drawn with, by the species its name is, or null until that species' asset lands. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'fish') throw new Error(`Fish.dress: not a fish, ${slot.kind}`)
+    const sp = this.species.find((s) => s.id === slot.name)
+    if (!sp) throw new Error(`Fish.dress: no species ${slot.name}`)
+    if (!sp.loaded) return null
+    return { geometry: sp.mesh.geometry, material: sp.material }
+  }
+
   /**
    * Let a taken fish go at (x, y, z). In water it hangs stunned for STUN_S,
    * then wakes and darts from her head until it is RETIRE_RADIUS out, where

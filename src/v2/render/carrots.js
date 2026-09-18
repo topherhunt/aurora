@@ -518,6 +518,7 @@ export class Carrots {
     return {
       kind: 'carrot',
       name: 'carrot',
+      variant,
       size: this.size * scale,
       geometry: this.bank.tiers[0].geometries[variant],
       material: this.materials[variant],
@@ -525,6 +526,14 @@ export class Carrots {
       scale: [scale, scale, scale],
       stowable: true,
     }
+  }
+
+  /** The geometry and material a packed carrot record is drawn with, by its variant. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'carrot') throw new Error(`Carrots.dress: not a carrot, ${slot.kind}`)
+    const geometry = this.bank.tiers[0].geometries[slot.variant]
+    if (!geometry) throw new Error(`Carrots.dress: no variant ${slot.variant}`)
+    return { geometry, material: this.materials[slot.variant] }
   }
 
   /** Hide a tile's carrots and return their ids to the pool. */

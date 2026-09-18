@@ -445,6 +445,14 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   check(!sunk || k.pickAt(sunk.x, sunk.y, sunk.z, 0.3, 2) === null, 'a sunk crab is not picked from the air')
   const rec = k.take(hit, 1)
   check(rec.kind === 'crab' && rec.size === c.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aLegs[1] === 0 && rec.attrs.aHue[0] === c.hue && rec.color === null && Math.abs(rec.scale[1] / rec.scale[0] - STRETCH_Y) < 1e-6 && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale }))
+  const { geometry: _g, material: _m, ...slot } = rec
+  check(k.dress(slot).geometry === rec.geometry && k.dress(slot).material === rec.material, 'dress puts the packed record back on the mesh geometry and material')
+  k.loaded = false
+  check(k.dress(slot) === null, 'and is null before the asset lands')
+  k.loaded = true
+  let wrong = false
+  try { k.dress({ ...slot, kind: 'spider' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
   check(c.perch === null && !perch.crabs.includes(c) && alive(k).length === before - 1, 'and the crab is off its stone')
   // The same world again: every crab but that one.
   const again = new Crabs(scene, height, water, { seed, rocks, assets: asset })

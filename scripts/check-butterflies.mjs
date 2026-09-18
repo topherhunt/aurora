@@ -435,6 +435,14 @@ flock.place(0, 0)
   check(k.pickAt(b.x + 5, b.y, b.z, 0.3) === null || k.pickAt(b.x + 5, b.y, b.z, 0.3).b !== b, 'and not one out of reach')
   const rec = k.take(hit)
   check(rec.kind === 'butterfly' && rec.size === b.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aWing[1] === REST_AMP && rec.attrs.aWing[2] === REST_BASE && rec.color[0] === b.r && rec.scale[0] === rec.scale[2] && rec.stowable === true, 'take hands back the record, wings at rest', JSON.stringify({ size: rec.size, scale: rec.scale[0] }))
+  const { geometry: _g, material: _m, ...slot } = rec
+  check(k.dress(slot).geometry === rec.geometry && k.dress(slot).material === rec.material, 'dress puts the packed record back on the flock\'s geometry and material')
+  k.loaded = false
+  check(k.dress(slot) === null, 'and is null before the asset lands')
+  k.loaded = true
+  let wrong = false
+  try { k.dress({ ...slot, kind: 'moth' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
   check(b.tile === null && !tile.flock.includes(b) && alive(k).length === before - 1, 'and the butterfly is out of its flock')
   const again = make(9)
   again.place(0, 0)

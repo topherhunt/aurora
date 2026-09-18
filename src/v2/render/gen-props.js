@@ -143,6 +143,11 @@ const CARD_NORMAL = /* glsl */ `
  * BOTH faces -- the same undo of three's double-sided flip that
  * createPropMaterial does (material.js), without which the underside of every
  * leaf is lit by a normal pointing at the ground and goes black.
+ * A `gloss` mesh is a Standard material at that roughness in place of the
+ * Lambert, metalness 0, the sun's whole GGX lobe on it (the dragon egg's
+ * shell): the one prop that shines, on a program of its own. There is no
+ * environment map, so the shine is the sun's alone and lighting.js gates it
+ * with the diffuse's shadow, as it does the wet creatures' glint (critters.js).
  * THE PROGRAM IS KEYED ON THESE FLAGS AND NOTHING ELSE, so every mesh variant of
  * every prop scatter compiles to one program and its calls differ by material
  * only -- a map bind, not a useProgram with the lights and camera re-uploaded
@@ -150,16 +155,21 @@ const CARD_NORMAL = /* glsl */ `
  * map is set) needs no help here. The lighting patch (lighting.js) composes
  * its key onto this one, so its callers must share theirs too.
  */
-export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false, foliage = false } = {}) {
+export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false, foliage = false, gloss = false } = {}) {
   if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
   if (billboard !== false && billboard !== true && billboard !== 'mixed') throw new Error(`createGenPropMaterial: billboard is true, false or 'mixed', not ${billboard}`)
   if (foliage && card) throw new Error('createGenPropMaterial: foliage is a mesh, not a card')
+  if (gloss !== false && !(gloss > 0 && gloss < 1)) throw new Error(`createGenPropMaterial: gloss is a roughness in (0, 1), not ${gloss}`)
+  if (gloss !== false && (card || foliage)) throw new Error('createGenPropMaterial: gloss is a solid mesh, not a cutout')
   const mixed = billboard === 'mixed'
-  const material = new THREE.MeshLambertMaterial({
+  const params = {
     color: tint,
     alphaTest: card || foliage ? 0.5 : 0,
     side: card || foliage ? THREE.DoubleSide : THREE.FrontSide,
-  })
+  }
+  const material = gloss !== false
+    ? new THREE.MeshStandardMaterial({ ...params, roughness: gloss, metalness: 0 })
+    : new THREE.MeshLambertMaterial(params)
   material.onBeforeCompile = (shader) => {
     // By reference, so the one clock drives every program.
     shader.uniforms.uPropClock = propClockUniform()
@@ -185,6 +195,6 @@ export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard
         .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
     }
   }
-  material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : foliage ? '-foliage' : ''}`
+  material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : foliage ? '-foliage' : gloss !== false ? '-gloss' : ''}`
   return material
 }

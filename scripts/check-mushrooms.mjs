@@ -1798,6 +1798,12 @@ for (const s of SUBJECTS) s.geo.dispose()
   const rec = m.take(hit)
   check(rec.kind === 'mushroom' && m.bank.variants.some((v) => v.species === rec.name) && rec.size === size && rec.geometry instanceof THREE.BufferGeometry && rec.material === m.material && rec.color.length === 3 && rec.scale[0] > 0 && rec.scale[0] === rec.scale[1] && rec.scale[1] === rec.scale[2] && rec.stowable === true,
     'take hands back the record: the finest tier, the shared material, its tint and scale', JSON.stringify({ name: rec.name, size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
+  const dress = m.dress({ kind: 'mushroom', variant: rec.variant })
+  check(Number.isInteger(rec.variant) && dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on its variant\'s geometry and the shared material', `variant ${rec.variant}`)
+  let wrong = 0
+  try { m.dress({ kind: 'carrot', variant: rec.variant }) } catch { wrong++ }
+  try { m.dress({ kind: 'mushroom', variant: 999 }) } catch { wrong++ }
+  check(wrong === 2, 'and throws for another kind or an unknown variant', `${wrong} of 2`)
   let stillListed = false
   for (let k = 0; k < tile0.n; k++) if (tile0.ids[k] === id0) stillListed = true
   check(m.placed === before - 1 && m.tierAt[id0] === -1 && !stillListed && taken.has('mushroom', x, z), 'and the cap is out of the ground and on the registry', `${m.placed} of ${before}`)

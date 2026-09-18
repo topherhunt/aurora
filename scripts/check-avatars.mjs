@@ -31,6 +31,7 @@ import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/rend
 import {
   VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
 } from '../src/v2/render/avatar-rig.js'
+import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, handGeometry, ownHand } from '../src/v2/render/avatar.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -353,6 +354,47 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   run(b, poseOf(rest.head, rest.headQuat, grips), [true, true], 1)
   puppet.release()
   check(body.hold === 0 && body.arms.every((a) => a.w === 0) && puppet.bones.every((bn) => qOff(bn.quaternion, fisher.byName.get(bn.name).quaternion) < 1e-6 && bn.position.distanceTo(fisher.byName.get(bn.name).position) < 1e-9), 'a puppet released is back on its rest, with the body holding nothing')
+}
+
+// --- her own hand: the shipped mesh seated in the grip frame --------------------------
+//
+// What can go wrong without throwing: the mesh turned so the thumb is not on
+// the grip's -Z or the fingers do not run down its -Y, a left hand that is the
+// right one again, or the grip point off the palm.
+
+console.log('\nown hand')
+{
+  const glb = new URL(`../public/${HAND_GLB}`, import.meta.url)
+  check(fs.existsSync(glb) && fs.existsSync(new URL(`../public/${HAND_GLB.replace(/\.glb$/, '.webp')}`, import.meta.url)), `${HAND_GLB} and its map are shipped (tools/props/gen/ship.mjs hand)`)
+  const { json } = readGlb(glb)
+  const pos = json.accessors[json.meshes[0].primitives[0].attributes.POSITION]
+  const span = [0, 1, 2].map((k) => pos.max[k] - pos.min[k])
+  check(Math.abs(span[2] - 1) < 0.01 && span[2] > span[0] && span[2] > span[1], 'the shipped hand is Tripo\'s unit box with its length along Z, which HAND_SCALE_M and HAND_GRIP measure in', span.map((v) => v.toFixed(3)).join(' '))
+  check(HAND_GRIP.x > 0 && HAND_GRIP.x < pos.max[0] && HAND_GRIP.z > 0 && HAND_GRIP.z < pos.max[2] && Math.abs(HAND_GRIP.y) < 0.1, 'the grip point is inside the box, on the palm side (+X) of the fingers\' half')
+  check(Math.abs(HAND_QUAT.length() - 1) < 1e-9, 'HAND_QUAT is unit')
+  const turned = (v) => new THREE.Vector3(...v).applyQuaternion(HAND_QUAT)
+  const pitch = THREE.MathUtils.degToRad(HAND_PITCH_DEG), cos = Math.cos(pitch), sin = Math.sin(pitch)
+  check(turned([-1, 0, 0]).distanceTo(new THREE.Vector3(1, 0, 0)) < 1e-9, 'the back of the hand (mesh -X) faces the grip\'s +X, the right hand\'s, which the pitch turns about')
+  const fingers = turned([0, 0, 1]), forearm = turned([0, 0, -1]), thumb = turned([0, 1, 0])
+  check(fingers.distanceTo(new THREE.Vector3(0, -cos, -sin)) < 1e-9, `the fingers (mesh +Z) run down the grip's -Y, pitched ${HAND_PITCH_DEG} about the palm`)
+  check(forearm.z > 0 && forearm.y > 0 && Math.abs(forearm.y - cos) < 1e-9, 'so the forearm (mesh -Z) leans from the grip\'s +Y toward +Z: down, with the hand held out thumb up')
+  check(thumb.distanceTo(new THREE.Vector3(0, sin, -cos)) < 1e-9, 'and the thumb (mesh +Y) points down the grip\'s -Z, pitched with it')
+  // A three-vertex asset: the grip point, one unit along the fingers, one along the thumb.
+  const g = HAND_GRIP
+  const geometry = handGeometry({
+    pos: [g.x, g.y, g.z, g.x, g.y, g.z + 1, g.x, g.y + 1, g.z],
+    nrm: [0, 0, 1, 0, 0, 1, 0, 0, 1], uv: [0, 0, 1, 0, 0, 1], idx: [0, 1, 2],
+  })
+  const at = (i) => new THREE.Vector3().fromBufferAttribute(geometry.getAttribute('position'), i)
+  check(at(0).length() < 1e-6, 'handGeometry puts the grip point at the origin')
+  check(at(1).distanceTo(fingers.clone().multiplyScalar(HAND_SCALE_M)) < 1e-6 && at(2).distanceTo(thumb.clone().multiplyScalar(HAND_SCALE_M)) < 1e-6, `and a mesh unit is ${HAND_SCALE_M} m, along the turned axes`)
+  const bank = { geometry, material: new THREE.MeshLambertMaterial() }
+  const right = ownHand(bank, 'right'), left = ownHand(bank, 'left')
+  check(right.geometry === geometry && left.geometry === geometry && right.material === left.material, 'both hands share the one geometry and material')
+  check(right.scale.x === 1 && left.scale.x === -1 && left.scale.y === 1 && left.scale.z === 1, 'the right hand is the mesh as shipped and the left is its mirror across the palm')
+  let threw = false
+  try { ownHand(bank, 'both') } catch { threw = true }
+  check(threw, 'a side that is not left or right throws')
 }
 
 console.log(failures ? `\n${failures} failing` : '\nall passing')

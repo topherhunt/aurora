@@ -451,6 +451,13 @@ export class Crabs {
     }
   }
 
+  /** The geometry and material a packed crab record is drawn with, or null until the asset lands. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'crab') throw new Error(`Crabs.dress: not a crab, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.mesh.geometry, material: this.material }
+  }
+
   /**
    * Let a taken crab go at (x, _, z): it lands on whatever is under it there,
    * stone or ground, and scuttles from her head until it is RADIUS out. False

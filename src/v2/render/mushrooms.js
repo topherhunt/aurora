@@ -1082,6 +1082,7 @@ export class Mushrooms {
     return {
       kind: 'mushroom',
       name: this.bank.variants[variant].species,
+      variant,
       size: span,
       geometry: this.bank.tiers[0].geometries[variant],
       material: this.material,
@@ -1089,6 +1090,14 @@ export class Mushrooms {
       scale: [scale, scale, scale],
       stowable: true,
     }
+  }
+
+  /** The geometry and material a packed mushroom record is drawn with, by its variant. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'mushroom') throw new Error(`Mushrooms.dress: not a mushroom, ${slot.kind}`)
+    const geometry = this.bank.tiers[0].geometries[slot.variant]
+    if (!geometry) throw new Error(`Mushrooms.dress: no variant ${slot.variant}`)
+    return { geometry, material: this.material }
   }
 
   /** Hide a tile's instances and return their ids to the pool. */

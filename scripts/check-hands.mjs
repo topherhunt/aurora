@@ -1,19 +1,23 @@
 // Node-side gates for her hands (src/v2/hands.js) and the taken registry
 // (src/v2/taken.js): the grab, the hold, the drop and its short simulation, the
-// backpack zone and its buzz, the stow. Run against a stub source so every
-// branch is reached without a bed; the beds' own take/release are gated in
-// their own scripts.
+// backpack zone and its buzz, the stow, the packed slot and its way back into a
+// hand, the photograph. Run against a stub source and a stub renderer so every
+// branch is reached without a bed or a GPU; the beds' own take/release/dress
+// are gated in their own scripts.
 //
 //   node scripts/check-hands.mjs
 //
 // What can go wrong without throwing: a held thing drawn somewhere other than
-// the hand; a drop that never lands, or lands and never stops; a buzz with an
-// empty hand, or none as a full one crosses the shoulder; a stow that loses the
-// thing when the backpack is full; a pool that keeps growing; a bed that
-// regrows what she took.
+// the hand; a drop that never lands, or lands and never stops, or rolls with
+// its top turning against its travel, or at one even speed, or lands without
+// a sound; a dropped thing she cannot pick up again; a mushroom sinking to the
+// lake bed, or one afloat that drifts up the beach; a buzz with an empty hand,
+// or none as a full one crosses the shoulder; a stow that loses the thing when
+// the backpack is full; a slot that comes back out as something else; a pool
+// that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_MAX_S, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -49,7 +53,8 @@ geo.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Arra
 geo.setAttribute('aSwim', new THREE.InstancedBufferAttribute(new Float32Array(16), 4))
 const material = new THREE.MeshBasicMaterial()
 class Source {
-  constructor(things) { this.things = things; this.taken = []; this.releases = []; this.takeBack = null }
+  constructor(things) { this.things = things; this.taken = []; this.releases = []; this.takeBack = null; this.landed = true }
+  dress(slot) { return this.landed ? { geometry: geo, material } : null }
   pickAt(x, y, z, reach, maxSize) {
     let best = null
     for (const t of this.things) {
@@ -76,32 +81,47 @@ const build = () => {
   const scene = new THREE.Scene()
   const pulses = []
   const pack = []
+  const thuds = []
   let room = 8
-  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, rand: mulberry32(3) })
+  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), rand: mulberry32(3) })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), thing('crab', 4, 0, 0, 1.5), thing('crab', 6, 0, 0, 2.5)])
-  hands.addSource(src)
+  hands.addSource(src, ['mushroom', 'fish', 'crab'])
   const node = new THREE.Group()
   scene.add(node)
   hands.addHand('right', node)
   const head = { x: 0, y: 1.6, z: 0, yaw: 0 }
   const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
   const run = (s, dt = 1 / 60) => { for (let t = 0; t < s; t += dt) hands.update(dt, head) }
-  return { scene, hands, src, node, head, at, run, pulses, pack, setRoom: (n) => { room = n } }
+  return { scene, hands, src, node, head, at, run, pulses, pack, thuds, setRoom: (n) => { room = n } }
 }
 
 // --- the constructor refuses a missing world ---------------------------------
 {
   let threw = 0
-  for (const bad of [{ water, haptic() {}, stow() {} }, { walk, haptic() {}, stow() {} }, { walk, water, stow() {} }, { walk, water, haptic() {} }]) {
+  for (const bad of [{ water, haptic() {}, stow() {}, thud() {} }, { walk, haptic() {}, stow() {}, thud() {} }, { walk, water, stow() {}, thud() {} }, { walk, water, haptic() {}, thud() {} }, { walk, water, haptic() {}, stow() {} }]) {
     try { new Hands(new THREE.Scene(), bad) } catch { threw++ }
   }
-  check(threw === 4, 'the constructor throws without the walk surface, the water, the buzz or the backpack', `${threw} of 4`)
-  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {} })
+  check(threw === 5, 'the constructor throws without the walk surface, the water, the buzz, the backpack or the thud', `${threw} of 5`)
+  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {} })
   let bad = 0
   try { h.addSource({}) } catch { bad++ }
+  try { h.addSource({ pickAt() {}, take() {} }, 'x') } catch { bad++ }
+  try { h.addSource(new Source([])) } catch { bad++ }
+  try { h.addSource(new Source([]), []) } catch { bad++ }
   try { h.addHand('x', {}) } catch { bad++ }
   try { h.press('nowhere', { x: 0, y: 0, z: 0, yaw: 0 }) } catch { bad++ }
-  check(bad === 3, 'a source without pickAt/take, a hand without a node and an unknown hand throw', `${bad} of 3`)
+  check(bad === 6, 'a source without pickAt/take/dress or without its kinds, a hand without a node and an unknown hand throw', `${bad} of 6`)
+  h.addSource(new Source([]), 'mushroom')
+  let twice = false
+  try { h.addSource(new Source([]), ['fish', 'mushroom']) } catch { twice = true }
+  check(twice, 'two sources handing out one kind throw')
+  const liar = new Source([thing('fish', 0, 0, 0, 0.2)])
+  h.addSource(liar, 'fish')
+  liar.take = () => ({ kind: 'crab', name: 'crab', size: 0.2, geometry: geo, material, attrs: {}, color: null, scale: [1, 1, 1], stowable: true })
+  h.addHand('right', new THREE.Group())
+  let lied = false
+  try { h.press('right', { x: 0, y: 0, z: 0, yaw: 0 }) } catch (e) { lied = /crab/.test(e.message) }
+  check(lied, 'a source handing out a kind that is not its own throws, naming it')
 }
 
 // --- the grab ------------------------------------------------------------------
@@ -161,18 +181,36 @@ const build = () => {
   // 4.5 m to the ground: under a second.
   w.run(1)
   check(item.state === 'roll' && Math.abs(item.y - (groundAt(item.x) + item.r)) < 1e-6, 'it lands on the ground and rolls', `state ${item.state}`)
+  check(w.thuds.length === 1 && Math.abs(w.thuds[0].x - 10) < 1e-6 && Math.abs(w.thuds[0].y - groundAt(10)) < 1e-6, 'and is heard meeting the ground, there', JSON.stringify(w.thuds))
   check(w.src.releases.length === 2 && Math.abs(w.src.releases[1].y - groundAt(10)) < 1e-6, 'the source was offered it again at the ground')
+  const speeds = []
+  const times = []
+  const sample = (s) => { for (let t = 0; t < s && item.state === 'roll'; t += 1 / 60) { w.hands.update(1 / 60, w.head); speeds.push(Math.hypot(item.vx, item.vz)); times.push(item.t) } }
   const x1 = item.x, z1 = item.z
-  w.run(0.5)
+  sample(0.5)
   check(item.x > x1 + 0.05 && item.z === z1, 'it rolls downhill, +x on this slope', `${(item.x - x1).toFixed(3)} m in 0.5 s`)
   const q0 = item.q.clone()
-  w.run(0.2)
+  sample(0.2)
   check(item.q.angleTo(q0) > 0.1, 'and turns as it rolls', `${item.q.angleTo(q0).toFixed(2)} rad in 0.2 s`)
-  w.run(ROLL_MAX_S)
-  check(item.state === 'still', `it is still within ROLL_MAX_S ${ROLL_MAX_S} s`)
+  // The turn's sense: the point that was on top has moved the way the ball went.
+  const top = new THREE.Vector3(0, 1, 0).applyQuaternion(q0.clone().invert()).applyQuaternion(item.q)
+  check(top.x > 0.05 && Math.abs(top.z) < 1e-6, 'its top rolls forward, the way it travels', `top now ${top.x.toFixed(2)} ${top.y.toFixed(2)} ${top.z.toFixed(2)}`)
+  // The speed: up while the slope pulls, then down to a stop well short of ROLL_MAX_S, the resistance taking it.
+  sample(ROLL_MAX_S)
+  const peak = speeds.indexOf(Math.max(...speeds))
+  const eased = speeds.slice(peak).every((v, i, a) => i === 0 || v <= a[i - 1])
+  check(item.state === 'still' && times[times.length - 1] < ROLL_MAX_S - 1, `it stops on its own before ROLL_MAX_S ${ROLL_MAX_S} s`, `still at ${times[times.length - 1]?.toFixed(2)} s`)
+  check(peak > 0 && times[peak] < ROLL_S && eased && speeds[speeds.length - 1] < speeds[peak] / 4, `its speed rises under the slope's fading pull (ROLL_S ${ROLL_S}) and then only falls`, `peak ${speeds[peak]?.toFixed(3)} m/s at ${times[peak]?.toFixed(2)} s, last ${speeds[speeds.length - 1]?.toFixed(3)}`)
   const xs = item.x
   w.run(2)
   check(item.x === xs && w.hands.loose.length === 1 && w.hands.pools.get(geo).mesh.count === 1, 'and stays where it stopped, still drawn')
+  // Lying there it is hers again: the hand at it takes it back without asking the bed.
+  w.at(item.x, item.y, item.z)
+  const asked = w.src.taken.length
+  check(w.hands.press('right', w.head) === 'pick' && w.hands.holding('right') === item.rec && w.hands.loose.length === 0 && w.src.taken.length === asked && w.hands.stats.taken === 2, 'a dropped thing is picked up again, the bed not asked')
+  w.hands.update(1 / 60, w.head)
+  check(w.hands.pools.get(geo).mesh.count === 1 && item.state === 'held', 'and drawn once, at the hand')
+  check(w.hands.press('right', w.head) === 'drop' && w.hands.loose.length === 1 && w.hands.loose[0] === item && item.state === 'fall', 'and dropped again')
   // Flat ground: the roll stops early.
   const f = build()
   f.at(0, 0.3, 0)
@@ -192,6 +230,7 @@ const build = () => {
   w.hands.press('right', w.head)
   w.hands.press('right', w.head)
   check(w.hands.loose.length === 0 && w.hands.pools.get(geo).items.length === 0, 'a crab let go of is the layer\'s again, not loose here')
+  check(w.thuds.length === 0, 'taken at the hand, it never met the ground: no thud', `${w.thuds.length}`)
   w.hands.update(1 / 60, w.head)
   check(w.hands.pools.get(geo).mesh.count === 0, 'and its pool draws nothing')
 }
@@ -230,6 +269,65 @@ const build = () => {
   check(fish.state === 'flap' && swim()[1] < full * 0.8, `weaker after FLAP_S ${FLAP_S} s`, `${swim()[1].toFixed(3)} of ${full.toFixed(3)}`)
   b.run(FLAP_FADE_S)
   check(fish.state === 'still' && swim()[1] === 0 && Math.abs(fish.x + 3) < 0.6, `and still after FLAP_FADE_S ${FLAP_FADE_S} more, near where it fell`, `x ${fish.x.toFixed(2)}`)
+}
+
+// --- afloat: anything but a fish or a crab let go over water ----------------------------
+{
+  const w = build()
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  w.at(40, LEVEL + 1.5, 0)
+  w.hands.update(1 / 60, w.head)
+  w.hands.press('right', w.head)
+  const m = w.hands.loose[0]
+  w.run(0.8)
+  check(m.state === 'float' && w.src.releases.length === 2 && w.src.releases[1].y <= LEVEL, 'over the lake a mushroom is offered back at the surface and, refused, floats', `state ${m.state}`)
+  w.run(2)
+  const line = LEVEL + m.r * 0.2
+  check(Math.abs(m.y - line) < 0.03 && m.y > LEVEL, 'settled on the line, its centre a little over the water', `y ${m.y.toFixed(3)} line ${line.toFixed(3)}`)
+  check(w.thuds.length === 0, 'without a thud')
+  const ys = []
+  for (let t = 0; t < 4; t += 1 / 60) { w.hands.update(1 / 60, w.head); ys.push(m.y) }
+  check(Math.max(...ys) - Math.min(...ys) > 0.02 && Math.max(...ys) - Math.min(...ys) < 0.06 && ys.every((y) => Math.abs(y - line) < 0.03), 'and bobbing on it', `swing ${(Math.max(...ys) - Math.min(...ys)).toFixed(3)} m`)
+  const heading = new THREE.Vector3(1, 0, 0).applyQuaternion(m.q)
+  const q0 = m.q.clone()
+  w.run(2)
+  const turned = new THREE.Vector3(1, 0, 0).applyQuaternion(m.q)
+  const rate = m.q.angleTo(q0) / 2
+  check(Math.abs(turned.y) < 1e-6 && rate > 0.1 && rate < 0.5 && heading.angleTo(turned) > 0.2, 'turning slowly about the vertical', `${rate.toFixed(2)} rad/s`)
+  const x0 = m.x, z0 = m.z
+  w.run(10)
+  const moved = Math.hypot(m.x - x0, m.z - z0)
+  check(moved > 0.05 && moved < 1 && m.state === 'float' && w.hands.loose.length === 1, 'drifting slowly, still afloat and still here', `${moved.toFixed(2)} m in 10 s`)
+  // It is hers again from the water.
+  w.at(m.x, m.y, m.z)
+  check(w.hands.press('right', w.head) === 'pick' && w.hands.holding('right') === m.rec && w.hands.loose.length === 0, 'and picked out of the water')
+  // Let go under the water: it rises to the line, slowly.
+  w.at(40, LEVEL - 1.5, 0)
+  w.hands.update(1 / 60, w.head)
+  w.hands.press('right', w.head)
+  w.run(0.5)
+  const deep = m.y
+  check(m.state === 'float' && deep < LEVEL - 1 && deep > LEVEL - 1.5, 'let go under the water it floats up', `y ${deep.toFixed(2)} after 0.5 s`)
+  w.run(2)
+  check(m.y > deep + 0.4 && m.y < line - 0.2, 'slowly', `y ${m.y.toFixed(2)} after 2.5 s`)
+  w.run(4)
+  check(Math.abs(m.y - line) < 0.03, 'to the line', `y ${m.y.toFixed(3)}`)
+  // The bank: a heading for the shore turns back at it.
+  m.x = 30.2; m.z = 0
+  m.ax = -0.06; m.az = 0; m.vx = -0.06; m.vz = 0; m.tack = 30
+  w.run(10)
+  check(m.x > 30 && m.state === 'float' && water.levelAt(m.x, m.z) !== null, 'it never drifts up the beach', `x ${m.x.toFixed(2)}`)
+  // A crab refused at the surface goes on down to the bed as before.
+  const c = build()
+  c.at(4, 0.7, 0)
+  c.hands.press('right', c.head)
+  c.at(35, LEVEL + 1, 0)
+  c.hands.update(1 / 60, c.head)
+  c.hands.press('right', c.head)
+  c.run(3)
+  const crab = c.hands.loose[0]
+  check(crab.state !== 'float' && Math.abs(crab.y - (groundAt(crab.x) + crab.r)) < 1e-6 && c.thuds.length === 1 && c.thuds[0].y < LEVEL, 'a crab refused at the surface sinks to the bed, and is heard there', `state ${crab.state} y ${crab.y.toFixed(2)} thuds ${c.thuds.length}`)
 }
 
 // --- the backpack zone and the buzz ------------------------------------------------
@@ -303,6 +401,111 @@ const build = () => {
   check(w.hands.press('right', w.head) === 'drop' && w.pack.length === 2 && w.hands.loose.length === 1, 'and the trigger there drops it')
 }
 
+// --- the packed slot, and its way back into a hand ----------------------------------
+{
+  const w = build()
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  const rec = w.hands.holding('right')
+  const slot = w.hands.pack(rec)
+  check(!('geometry' in slot) && !('material' in slot) && slot.kind === 'mushroom' && slot.size === 0.2 && slot.stowable === true, 'a packed slot is the record without its geometry and material')
+  check(slot.attrs.aSwim !== rec.attrs.aSwim && slot.color !== rec.color && slot.scale !== rec.scale && JSON.stringify(JSON.parse(JSON.stringify(slot))) === JSON.stringify(slot), 'its arrays its own copies, and it survives the save as JSON')
+  let shape = false
+  try { w.hands.pack({ kind: 'x' }) } catch { shape = true }
+  check(shape, 'packing a bad record throws')
+  const saved = JSON.parse(JSON.stringify(slot))
+  const back = w.hands.dressed(saved)
+  check(back.geometry === geo && back.material === material && back.kind === 'mushroom' && back.attrs.aSwim[3] === 4, 'dressed, a slot is a record again on its source\'s geometry and material')
+  w.src.landed = false
+  check(w.hands.dressed(saved) === null, 'or null while the source has not landed its asset')
+  let unknown = false
+  try { w.hands.dressed({ ...saved, kind: 'dragon' }) } catch (e) { unknown = /dragon/.test(e.message) }
+  check(unknown, 'a slot of a kind no source hands out throws, naming it')
+  let early = false
+  try { w.hands.give('right', saved, w.head) } catch { early = true }
+  check(early && w.hands.holding('right') === rec && w.hands.loose.length === 0, 'given before the asset lands it throws, the hand unchanged')
+  w.src.landed = true
+  // Into a full hand: what it held is let go first.
+  w.at(3, 1.4, 0)
+  w.hands.give('right', saved, w.head)
+  const held = w.hands.holding('right')
+  check(held !== rec && held.kind === 'mushroom' && held.geometry === geo && w.hands.loose.length === 1 && w.hands.loose[0].rec === rec && w.hands.loose[0].state === 'fall' && w.hands.stats.dropped === 1, 'given to a full hand, the slot is held and what was held falls at the hand')
+  w.hands.update(1 / 60, w.head)
+  check(w.hands.pools.get(geo).mesh.count === 2, 'both drawn')
+  // Into an empty hand: nothing falls.
+  w.hands.stowPress('right')
+  w.hands.give('right', saved, w.head)
+  check(w.hands.holding('right')?.kind === 'mushroom' && w.hands.loose.length === 1 && w.hands.stats.dropped === 1, 'given to an empty hand, nothing falls')
+  // In the zone the given thing stows like any other.
+  w.at(0, 1.7, -0.3)
+  w.hands.update(1 / 60, w.head)
+  check(w.hands.press('right', w.head) === 'stow' && w.pack.length === 2, 'and it stows again')
+  // put: the held thing packed for a slot of the menu's choosing, the hand emptied.
+  check(w.hands.put('right') === null, 'put is null with nothing held')
+  w.hands.give('right', saved, w.head)
+  const stowed = w.hands.stats.stowed
+  const put = w.hands.put('right')
+  check(put !== null && put.kind === 'mushroom' && !('geometry' in put) && w.hands.holding('right') === null && w.hands.stats.stowed === stowed + 1 && w.pack.length === 2 && w.hands.pools.get(geo).items.length === 1, 'put hands back the held thing packed, the hand empty, the backpack callback not asked')
+  w.at(4, 0.7, 0)
+  w.hands.press('right', w.head)
+  check(w.hands.put('right') === null && w.hands.holding('right')?.kind === 'crab', 'and null for a thing too big to stow, still held')
+}
+
+// --- the photograph -------------------------------------------------------------------
+{
+  const w = build()
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  const slot = w.hands.pack(w.hands.holding('right'))
+  const log = []
+  const target = { isWebGLRenderTarget: true }
+  const clear = new THREE.Color(0x203040)
+  const renderer = {
+    xr: { enabled: true },
+    target: null,
+    getRenderTarget() { return this.target },
+    setRenderTarget(t) { this.target = t; log.push(['target', t]) },
+    getClearColor(c) { return c.copy(clear) },
+    getClearAlpha() { return 1 },
+    setClearColor(c, a) { clear.set(c); log.push(['clear', clear.getHex(), a]) },
+    setViewport(x, y, w, h) { log.push(['viewport', x, y, w, h]) },
+    setScissor(x, y, w, h) { log.push(['scissor', x, y, w, h]) },
+    setScissorTest(on) { log.push(['scissorTest', on]) },
+    clear(c, d, s) { log.push(['cleared', this.xr.enabled, this.target === target]) },
+    render(scene, cam) { log.push(['render', scene, cam, this.xr.enabled, this.target === target]) },
+  }
+  const rect = { x: 192, y: 0, w: 192, h: 192 }
+  check(w.hands.photograph(renderer, slot, target, rect) === true, 'a landed slot is photographed')
+  const render = log.find((e) => e[0] === 'render')
+  const cleared = log.find((e) => e[0] === 'cleared')
+  check(render && render[3] === false && render[4] === true && cleared[1] === false && cleared[2] === true, 'cleared and rendered into the target with XR off')
+  check(log.some((e) => e[0] === 'viewport' && e[1] === 192 && e[3] === 192) && log.some((e) => e[0] === 'scissor' && e[2] === 0 && e[4] === 192) && log.some((e) => e[0] === 'scissorTest' && e[1] === true), 'within the rect')
+  check(renderer.target === null && renderer.xr.enabled === true && clear.getHex() === 0x203040 && log[log.length - 1][0] === 'clear' && log[log.length - 1][2] === 1 && log.some((e) => e[0] === 'scissorTest' && e[1] === false), 'and the target, XR, the scissor and the clear colour put back')
+  const scene = render[1]
+  const cam = render[2]
+  const lights = scene.children.filter((o) => o.isLight)
+  check(lights.length === 2 && lights.some((l) => l.isDirectionalLight) && lights.some((l) => l.isHemisphereLight) && scene.fog?.isFogExp2 && scene.fog.density === 0, 'the studio has one sun, one sky and a fog of no density, the world\'s program')
+  const subject = w.hands.studio.subjects.get(geo)
+  check(subject && subject.mesh.material === material && subject.mesh.count === 1 && scene.children.includes(subject.mesh) === false, 'the subject is one instance on the source\'s material, in the studio only for the shot')
+  const m = new THREE.Matrix4().fromArray(subject.mesh.instanceMatrix.array, 0)
+  const centre = subject.geo.boundingBox.getCenter(new THREE.Vector3()).multiplyScalar(0.2)
+  const p = new THREE.Vector3().setFromMatrixPosition(m)
+  check(p.clone().add(centre).length() < 1e-6 && Math.abs(new THREE.Vector3().setFromMatrixScale(m).x - 0.2) < 1e-6, 'its scaled box centred on the origin', `${p.x.toFixed(3)} ${p.y.toFixed(3)} ${p.z.toFixed(3)}`)
+  const r = subject.geo.boundingBox.getSize(new THREE.Vector3()).multiplyScalar(0.2).length() / 2
+  check(cam.isOrthographicCamera && cam.right > r && cam.right < r * 1.2 && cam.position.y > 0 && cam.position.z > 0 && cam.position.length() > r, 'framed orthographically a little wider than its diagonal, from the front and above', `half ${cam.right.toFixed(3)} for ${r.toFixed(3)}`)
+  check(subject.mesh.instanceColor.array[0] === 0.5 && subject.geo.getAttribute('aSwim').array[3] === 4, 'in its own tint and attributes')
+  // The same geometry again: the same subject.
+  w.hands.photograph(renderer, slot, target, rect)
+  check(w.hands.studio.subjects.size === 1, 'one subject a geometry')
+  // A null slot clears the rect and draws nothing.
+  log.length = 0
+  check(w.hands.photograph(renderer, null, target, rect) === false && log.some((e) => e[0] === 'cleared') && !log.some((e) => e[0] === 'render'), 'a null slot clears its rect without a render')
+  // Not landed: cleared, false.
+  log.length = 0
+  w.src.landed = false
+  check(w.hands.photograph(renderer, slot, target, rect) === false && log.some((e) => e[0] === 'cleared') && !log.some((e) => e[0] === 'render') && renderer.target === null, 'a slot whose asset has not landed is cleared and false')
+}
+
 // --- the loose cap ----------------------------------------------------------------
 {
   const w = build()
@@ -323,7 +526,7 @@ const build = () => {
 // --- a record with a bad shape throws --------------------------------------------
 {
   const w = build()
-  w.src.take = () => ({ kind: 'thing', name: 'thing', size: 0.2, geometry: geo, material, attrs: { aSwim: [1, 2] }, color: null, scale: [1, 1, 1], stowable: true })
+  w.src.take = () => ({ kind: 'mushroom', name: 'mushroom', size: 0.2, geometry: geo, material, attrs: { aSwim: [1, 2] }, color: null, scale: [1, 1, 1], stowable: true })
   w.at(0, 0.3, 0)
   let threw = false
   try { w.hands.press('right', w.head) } catch (e) { threw = /aSwim/.test(e.message) }

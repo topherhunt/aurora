@@ -861,6 +861,14 @@ spiders.place(0, 0)
   check(hit !== null && hit.c === c && hit.size === c.size, 'a drawn one is, from a hand just off the bark', hit ? `${hit.dist.toFixed(3)} m` : 'null')
   const rec = k.take(hit)
   check(rec.kind === 'spider' && rec.size === c.size && rec.geometry === k.asset.tiers[MESH_TIER] && rec.material === k.material && rec.attrs.aGait[1] === 0 && rec.color[0] === c.tr && rec.scale[0] === rec.scale[1] && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale[0] }))
+  const { geometry: _g, material: _m, ...slot } = rec
+  check(k.dress(slot).geometry === rec.geometry && k.dress(slot).material === rec.material, 'dress puts the packed record back on the mesh tier and material')
+  k.loaded = false
+  check(k.dress(slot) === null, 'and is null before the asset lands')
+  k.loaded = true
+  let wrong = false
+  try { k.dress({ ...slot, kind: 'crab' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
   check(c.host === null && !host.spiders.includes(c) && alive(k).length === before - 1, 'and the spider is off its trunk')
   const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
   again.place(0, 0)

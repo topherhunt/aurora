@@ -61,8 +61,8 @@ export const MAX = 200
 // A sitting frog breathes: its body swells by BREATH_AMP (more in height than in length) once every BREATH_S seconds, each frog on its own phase.
 export const BREATH_S = 1.3
 export const BREATH_AMP = 0.05
-// Wet skin: the one roughness the whole frog glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
-export const WET_ROUGHNESS = 0.3
+// Wet skin: the one roughness the whole frog glints at (critters.js's glint), set by eye -- a tighter lobe read as cling film, not skin.
+export const WET_ROUGHNESS = 0.6
 // A frog's colour morph, rolled by weight `w`: its hue, a turn of that many radians round the colour wheel (critters.js hueVary; negative turns the map's green toward orange), and its tint, a per-channel multiplier on the texture. Green frogs turn a little either way from the map, olive ones sit dark on it, and brown ones turn a quarter of the wheel and go dark and warm, which lands the map's green on a tawny brown.
 export const MORPHS = [
   { name: 'green', w: 5, hue: [-0.5, 0.5], r: [0.7, 1.15], g: [0.8, 1.2], b: [0.6, 1.1] },

@@ -28,6 +28,7 @@ import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
+import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
@@ -66,7 +67,7 @@ import { SKY_GLSL } from '../sky-glsl.js'
 import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
-import { PeerAvatars, lowPolyHand } from './render/avatar.js'
+import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
@@ -631,8 +632,9 @@ let questPanelGroup = null
 // and the controller models go away and she sees her hands instead.
 let questPointerHand = null
 let questPointer = null
-// Her own hand under each grip, the mesh a peer sees.
+// Her own hand under each grip: the shipped hand mesh (avatar.js), loaded before the panel is built.
 const questHands = new Map()
+let ownHandBank = null
 const QUEST_POINTER_COLOR = 0x19d2ff
 // The line's reach when it lands on nothing: the horizon.
 const QUEST_POINTER_FAR = 1000
@@ -650,20 +652,25 @@ let questDebugGrid = null
 let questViewGroups = null
 let questHitMeshes = []
 let paintBackpack = null
+// The backpack view's photographs, one quad a slot; a press on one is the thing back in her hand.
+let questBackpackSlots = null
 
 // --- backpack ----------------------------------------------------------------
 
-// Eight slots, each null or what her hand put there: `{ name, kind, size }`
-// (see hands.js). Saved and loaded with her position; see saveGame.
+// Eight slots, each null or what her hand put there, packed (hands.pack): the
+// record without its geometry and material, which its source dresses it in
+// again on the way out. Saved and loaded with her position; see saveGame.
 const BACKPACK_SLOTS = 8
 const backpack = new Array(BACKPACK_SLOTS).fill(null)
+// The photograph of each slot, in pixels a side, in one render target of two rows.
+const BACKPACK_PHOTO_PX = 192
 
 // --- settings ----------------------------------------------------------------
 
 // The saved game: where she stands, which way she faces, what she carries. In
 // this browser's localStorage and nowhere else -- nothing goes to a server --
 // and a refresh boots straight into it (see the spawn in bootWorld).
-const SAVE_KEY = 'v2.save.1'
+const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
 
@@ -943,7 +950,7 @@ const QUEST_SLOT_GAP = 0.10
 const QUEST_SLOTS_TOP = 0.85
 const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
 // The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
-const QUEST_HELP_H = 1.90
+const QUEST_HELP_H = 2.00
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
@@ -973,7 +980,7 @@ const QUEST_PX_PER_M = 96 / 0.18
 // what the generic `serif` resolves to there. Georgia is the desktop's answer
 // to the same stack. Neither is a blackletter; a shipped OFL face is the way
 // to that look if it is ever wanted, not a system name that no headset has.
-const QUEST_SERIF = (px) => ({ font: `bold ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '1px' })
+const QUEST_SERIF = (px, weight = 'bold') => ({ font: `${weight} ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '1px' })
 const QUEST_MONO = (px) => ({ font: `bold ${px}px monospace`, tracking: '0px' })
 function setQuestFont(ctx, face) {
   ctx.font = face.font
@@ -1231,13 +1238,27 @@ function buildQuestPlate(bottom) {
 }
 
 // The slots are rounded squares, so they are drawn on one canvas plane rather
-// than built as quads. Nothing on this view is a button yet.
+// than built as quads. Over each sits a quad of the thing in it, photographed
+// by hands.js into one render target of two rows -- the quads are one mesh on
+// that one texture, as buildQuestGrid's are on its atlas -- and a press on a
+// quad is the thing back in her hand.
 function buildBackpackView() {
+  if (!hands) throw new Error('buildBackpackView: the hands are not built, and the slots are their photographs')
   const group = new THREE.Group()
   group.add(buildQuestPlate(QUEST_BACKPACK_BOTTOM))
   const { canvas, ctx, texture } = questCanvasTexture(Math.round(PANEL_W * QUEST_PX_PER_M), Math.round(QUEST_SLOTS_H * QUEST_PX_PER_M))
   const cols = BACKPACK_SLOTS / 2
+  const rows = BACKPACK_SLOTS / cols
   const px = QUEST_PX_PER_M
+  const PX = BACKPACK_PHOTO_PX
+  const photos = new THREE.WebGLRenderTarget(cols * PX, rows * PX, {
+    format: THREE.RGBAFormat, type: THREE.UnsignedByteType, colorSpace: THREE.SRGBColorSpace,
+    generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true,
+  })
+  // Row 0 is the top row, and the target's rows run upward from its bottom.
+  const rectOf = (i) => ({ x: (i % cols) * PX, y: (rows - 1 - Math.floor(i / cols)) * PX, w: PX, h: PX })
+  // The packed slot each cell is a photograph of, so a repaint photographs only what changed -- and a slot whose source has not landed its asset stays unshot until the next paint.
+  const shot = new Array(BACKPACK_SLOTS).fill(null)
   paintBackpack = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     for (let i = 0; i < BACKPACK_SLOTS; i++) {
@@ -1252,12 +1273,9 @@ function buildBackpackView() {
       ctx.lineWidth = 4
       ctx.strokeStyle = '#2f5f95'
       ctx.stroke()
-      if (backpack[i] !== null) {
-        ctx.fillStyle = '#ffffff'
-        setQuestFont(ctx, QUEST_SERIF(28))
-        ctx.textBaseline = 'middle'
-        ctx.textAlign = 'center'
-        ctx.fillText(backpack[i].name, x + QUEST_SLOT * px / 2, y + QUEST_SLOT * px / 2)
+      if (shot[i] !== backpack[i]) {
+        const taken = hands.photograph(renderer, backpack[i], photos, rectOf(i))
+        shot[i] = taken || backpack[i] === null ? backpack[i] : null
       }
     }
     uploadQuestTexture(texture)
@@ -1266,7 +1284,66 @@ function buildBackpackView() {
   const slots = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, QUEST_SLOTS_H), questCanvasMaterial(texture))
   slots.position.set(0, QUEST_SLOTS_TOP - QUEST_SLOTS_H / 2, 0.02)
   group.add(slots)
+
+  // The photograph quads: one loose quad a slot, inset from the frame, over the target as an atlas.
+  const inset = 0.04
+  const positions = new Float32Array(BACKPACK_SLOTS * 4 * 3)
+  const uvs = new Float32Array(BACKPACK_SLOTS * 4 * 2)
+  const indices = new Uint16Array(BACKPACK_SLOTS * 6)
+  for (let i = 0; i < BACKPACK_SLOTS; i++) {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    const cx = (col - (cols - 1) / 2) * (QUEST_SLOT + QUEST_SLOT_GAP)
+    const cy = QUEST_SLOTS_TOP - QUEST_SLOT_GAP / 2 - row * (QUEST_SLOT + QUEST_SLOT_GAP) - QUEST_SLOT / 2
+    const half = QUEST_SLOT / 2 - inset
+    const x0 = cx - half, x1 = cx + half, y0 = cy - half, y1 = cy + half
+    const u0 = col / cols, u1 = (col + 1) / cols
+    const v1 = 1 - row / rows, v0 = 1 - (row + 1) / rows
+    positions.set([x0, y0, 0.03, x1, y0, 0.03, x1, y1, 0.03, x0, y1, 0.03], i * 12)
+    uvs.set([u0, v0, u1, v0, u1, v1, u0, v1], i * 8)
+    const v = i * 4
+    indices.set([v, v + 1, v + 2, v + 2, v + 3, v], i * 6)
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1))
+  const mesh = new THREE.Mesh(geometry, questCanvasMaterial(photos.texture))
+  group.add(mesh)
+  questBackpackSlots = {
+    mesh,
+    indexAt(hit) {
+      if (!hit || hit.object !== mesh || hit.faceIndex === undefined || hit.faceIndex === null) return -1
+      return Math.floor(hit.faceIndex / 2)
+    },
+  }
   return group
+}
+
+// A press on a slot by the hand that pressed -- the pointing controller in
+// the headset, the desk's hand otherwise. An empty hand takes what is in the
+// slot; a full hand puts what it holds there, with the bag's closing voice,
+// and takes what the slot held, if anything, in exchange.
+function pressBackpackSlot(i) {
+  const was = backpack[i]
+  const key = sceneEl.is('vr-mode') ? (questPointerHand === leftHandEl ? 'left' : 'right') : 'desk'
+  if (was !== null && hands.dressed(was) === null) { console.warn(`[v2] backpack: the ${was.kind} has not landed its asset yet`); return }
+  if (hands.holding(key)) {
+    const slot = hands.put(key)
+    if (slot === null) { console.warn('[v2] backpack: what the hand holds is too big for a slot'); return }
+    backpack[i] = slot
+    playStow()
+  } else {
+    if (was === null) return
+    backpack[i] = null
+  }
+  if (was !== null) hands.give(key, was, handsHead())
+  paintBackpack()
+}
+
+/** The bag's closing voice, for a thing put in it: the same one-shot as the menu closing. */
+function playStow() {
+  if (ambience) sound.play('uiClose', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
 function buildSettingsView() {
@@ -1312,17 +1389,14 @@ function buildDebugView() {
 }
 
 // What she needs to know, as bullets on one canvas plane, wrapped to the
-// panel's width. A line that will not fit the plane is a bug in this text and
-// not something to scale away.
+// panel's width. Text past the plane's foot is clipped with a console warning;
+// the fix is shorter copy or a taller QUEST_HELP_H, never smaller type.
 const QUEST_HELP = [
   'You find yourself in a strange and wild land, full of mysteries to discover. Here be dragons, and treasures. No being is your friend; no being is your enemy.',
-  'Headset: either stick walks and turns. Click a stick to recentre.',
-  'B or Y opens and closes this menu, and so does walking more than five metres from it. Point a controller at a button and pull the trigger.',
-  'Settings chooses walking or teleporting: aim the arc with a stick and let go to jump.',
-  'Desktop: WASD or the arrows walk and turn, drag the mouse to look. Space takes off, Shift descends, and a second tap of Space lands. T lobs a teleport, N skips five hours, Escape is this menu.',
-  'Save in Settings keeps your place and your backpack on this device; Load returns you to it.',
-  'Reach a controller to a mushroom, a carrot, a spider, a butterfly, a fish or a crab and pull the trigger to take it; pull again to let it go, or reach over your shoulder -- the controller buzzes -- and pull to put it in the backpack. Only something under a metre fits. On a desktop G takes and drops, V stows.',
-  'The backpack has eight slots.',
+  'Headset: either stick walks and turns; click a stick to recentre. B or Y opens and closes this menu, and so does walking away from it. Point a controller at a button and pull the trigger.',
+  'Desktop: WASD or the arrows walk and turn, drag the mouse to look, Escape is this menu. There are more keys than these.',
+  'Settings chooses walking or teleporting, and keeps your place on this device between visits.',
+  'The rest is yours to find out. Reach for what interests you: some of what this land holds may be of use, and what you do here leaves its mark.',
 ]
 
 function buildHelpView() {
@@ -1335,7 +1409,7 @@ function buildHelpView() {
   const lineH = Math.round(px * 1.45)
   const pad = 40
   const indent = 36
-  setQuestFont(ctx, QUEST_SERIF(px))
+  setQuestFont(ctx, QUEST_SERIF(px, 'normal'))
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'left'
   ctx.fillStyle = '#e8dcc0'
@@ -1356,7 +1430,7 @@ function buildHelpView() {
     ctx.fillText(line, pad + indent, y)
     y += Math.round(lineH * 1.4)
   }
-  if (y - lineH * 0.4 + px / 2 > h) throw new Error(`the help text runs ${y - h}px past its ${h}px plane`)
+  if (y - lineH * 0.4 + px / 2 > h) console.warn(`the help text runs ${y - h}px past its ${h}px plane; the tail is clipped`)
   uploadQuestTexture(texture)
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(PANEL_W, QUEST_HELP_H), questCanvasMaterial(texture))
   plane.position.set(0, QUEST_VIEW_TOP - QUEST_HELP_H / 2, 0.02)
@@ -1372,6 +1446,7 @@ function setQuestView(view) {
   for (const [name, group] of Object.entries(questViewGroups)) group.visible = name === view
   for (let i = 0; i < QUEST_VIEWS.length; i++) questTabs.repaint(i)
   questHitMeshes = [questTabs.mesh]
+  if (view === 'backpack') questHitMeshes.push(questBackpackSlots.mesh)
   if (view === 'settings') questHitMeshes.push(questSettingsGrid.mesh)
   if (view === 'debug') questHitMeshes.push(questDebugGrid.mesh)
   // The stats are drawn only while the debug view is up, so catch them up now
@@ -1425,8 +1500,9 @@ function buildQuestPanel() {
   worldProbe.exclude(dot, line)
   questPointer = { line, dot, hit: null }
 
+  if (!ownHandBank) throw new Error('buildQuestPanel: the hand mesh is not loaded')
   for (const el of [leftHandEl, rightHandEl]) {
-    const hand = lowPolyHand()
+    const hand = ownHand(ownHandBank, el === leftHandEl ? 'left' : 'right')
     hand.visible = false
     el.object3D.add(hand)
     questHands.set(el, hand)
@@ -1473,6 +1549,8 @@ function questActionAt(hit) {
   if (!hit) return null
   const t = questTabs.indexAt(hit)
   if (t >= 0) return () => setQuestView(QUEST_VIEWS[t])
+  const b = questBackpackSlots.indexAt(hit)
+  if (b >= 0) return () => pressBackpackSlot(b)
   const s = questSettingsGrid.indexAt(hit)
   if (s >= 0) return () => activateQuestButton(QUEST_SETTING_ROWS[s].key)
   const d = questDebugGrid.indexAt(hit)
@@ -1623,8 +1701,10 @@ function toggleQuestPanel() {
   // the valley -- on the same random pitch as every other one-shot. `ambience`
   // stands for the clips having loaded; before the context is unlocked play()
   // is a no-op.
-  if (ambience) sound.play(open ? 'uiOpen' : 'uiClose', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
-  if (open) updateQuestStats()
+  if (open) { if (ambience) sound.play('uiOpen', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 }) } else playStow()
+  // The stats are drawn only while the debug view is up, and a slot whose
+  // source had not landed its asset when it was filled is photographed now.
+  if (open) { updateQuestStats(); paintBackpack() }
   // Either way the pointer, the dot, the controller models and her hands
   // follow the menu's state this frame rather than next: a red dot hanging in
   // mid air pointing at a menu that is no longer there reads as a bug.
@@ -1895,7 +1975,8 @@ const room = new URLSearchParams(location.search).get('room') || 'default'
 const netplay = new Netplay({
   room,
   url: import.meta.env.VITE_WS_URL || undefined,
-  onState: (peers) => peerAvatars.apply(peers),
+  // A peer aboard a live boat is drawn where in the hull it says it stands, not where its late pose puts it.
+  onState: (peers) => peerAvatars.apply(boats ? boats.anchorPeers(peers) : peers),
 })
 // A villager drawn at random on every load; the pick rides with each pose so
 // everyone in the room sees the same one.
@@ -2010,6 +2091,7 @@ let snowmen = null
 let hands = null
 let roosts = null
 let rowboats = null
+let boats = null
 let dragons = null
 let editor = null
 let panel = null
@@ -2610,6 +2692,11 @@ async function bootWorld() {
     `(pool ${rbs.used}/${rbs.pool}, bank ${rbs.bankKB} KB, cards ${rbs.cardBakeMs.toFixed(0)} ms, rejected ${Object.entries(rbs.rejected).map(([why, n]) => `${n} ${why}`).join(', ')})`
   )
   window.v2rowboats = rowboats
+  // And the boats she can board: near ones come off the scatter and move,
+  // rock and carry her (boats.js); the hull is stone to the walker.
+  boats = new Boats(scene, rowboats, waterSurfaces, player, netplay)
+  walk.addStone(boats)
+  window.v2boats = boats // console: `v2boats.stats`, `v2boats.live`
 
   // The fish: a pool that follows her through whatever water is in reach (see
   // render/fish.js). Its materials are patched here, like every other layer's,
@@ -2708,12 +2795,20 @@ async function bootWorld() {
     stow: (rec) => {
       const slot = backpack.indexOf(null)
       if (slot < 0) return false
-      backpack[slot] = { name: rec.name, kind: rec.kind, size: rec.size }
+      backpack[slot] = hands.pack(rec)
       paintBackpack()
+      playStow()
       return true
     },
+    // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
+    thud: (x, y, z) => { if (ambience) sound.play('footfall', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
   })
-  for (const src of [mushrooms, carrots, spiders, butterflies, fish, crabs]) hands.addSource(src)
+  hands.addSource(mushrooms, 'mushroom')
+  hands.addSource(carrots, 'carrot')
+  hands.addSource(spiders, 'spider')
+  hands.addSource(butterflies, 'butterfly')
+  hands.addSource(fish, 'fish')
+  hands.addSource(crabs, 'crab')
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   const deskHand = new THREE.Group()
@@ -2932,6 +3027,7 @@ async function bootWorld() {
   terrain.cullDeg = (70 * Math.PI) / 180
   // The 8 m chunk floor is NOT set here. It is config.js's MAX_DEPTH: one
   // world, one cap, desktop and headset alike.
+  ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
   buildQuestPanel()
   window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
   // The rest of the save, now that there is a backpack view to paint. Her
@@ -3840,7 +3936,8 @@ function applySubmersion(head, elapsedReal, state) {
   // either way -- the cost that made levelAt careful was one call per scatter
   // candidate, and this is one call a frame.
   const level = waterSurfaces === null ? null : waterSurfaces.levelAt(head.x, head.z, true)
-  submerged = level !== null && head.y < level
+  // Aboard, her eye is over the lid whatever the level says, and the bilge is dry.
+  submerged = level !== null && head.y < level && !(boats && boats.aboard)
   // Kept for the panel, which is the only way to see the two numbers this rule
   // compares from inside a headset. The surfaces are drawn flat at exactly the
   // y this returns -- there is no vertex displacement in the water shader -- so
@@ -4686,6 +4783,8 @@ function panelStats() {
     carrotTris: carrots ? carrots.stats.tris : 0,
     rowboatCount: rowboats ? rowboats.stats.placed : 0,
     rowboatTris: rowboats ? rowboats.stats.tris : 0,
+    boatsLive: boats ? boats.stats.live : 0,
+    boatSpeed: boats ? boats.stats.speed : 0,
     grassCount: grass ? grass.stats.placed : 0,
     grassHidden: grass ? grass.stats.rimHidden : 0,
     grassTris: grass ? grass.stats.tris : 0,
@@ -4795,7 +4894,11 @@ function tick() {
   player.rig.position.z += swayWant.z - swayApplied.z
   swayApplied.copy(swayWant)
 
+  // The boats move before she does, so the one under her carries her and the
+  // mover's step is then hers alone; where her feet came to rest in it is read after.
+  if (boats) boats.update(dt, now)
   player.update(dt, moveInput)
+  if (boats) boats.settle()
 
   updateQuestPanel()
 
@@ -4814,7 +4917,7 @@ function tick() {
 
   player.headPosition(headTmp)
   const [pose, poseHands] = currentPose()
-  netplay.sendPose(pose, poseHands, now)
+  netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null)
   if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar })
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and

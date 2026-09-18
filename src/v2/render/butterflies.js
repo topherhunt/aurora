@@ -389,6 +389,13 @@ export class Butterflies {
     }
   }
 
+  /** The geometry and material a packed butterfly record is drawn with, or null until the wings land. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'butterfly') throw new Error(`Butterflies.dress: not a butterfly, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.mesh.geometry, material: this.material }
+  }
+
   /**
    * Let a taken butterfly go at (x, y, z): it joins the flock of the tile
    * under it, on the wing, headed away from her head, with the drop point as

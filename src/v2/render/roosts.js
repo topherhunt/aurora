@@ -41,7 +41,9 @@ import { RimFade } from './rim.js'
 // §29) lying at an angle in the bowl's centre, tinted from EGG_TINTS through
 // the arena's instance colour. The pick's shell is painted near-white with its
 // scales in grey tone for exactly this: the tint is a multiply, so a pale map
-// takes any of the five and a pigmented one would only ever darken. The egg is
+// takes any of the five and a pigmented one would only ever darken. The shell
+// SHINES: a gloss material (gen-props.js) at EGG_ROUGHNESS, the sun's whole
+// lobe, the one prop in the world with a polish on it. The egg is
 // the roost tile's second instance, on the same arena as its own tier past the
 // card and drawn to the props' cull for its half metre (gen-props.js propCull,
 // ~36 m) with no rung of its own; the rim takes it out with the roost's sweep.
@@ -85,6 +87,8 @@ export const EGG_TINTS = [
   ['dark-gray', 0x4a4a50],
   ['purple', 0x7a3fa8],
 ]
+// The shell's roughness: the frogs' wet 0.3, but with the sun's whole lobe on it rather than their halved glint, so the highlight is broad and bright.
+export const EGG_ROUGHNESS = 0.3
 // Radians the egg lies off the floor's normal, about a random bearing, and how far it is bedded into the floor as a fraction of its width.
 export const EGG_LIE = [0.9, 1.4]
 export const EGG_SINK = 0.12
@@ -377,7 +381,7 @@ export class Roosts {
     // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
     this.card = createGenPropMaterial({ card: true, billboard: 'mixed' })
     this.card.visible = false
-    this.eggMaterial = egg ? createGenPropMaterial() : null
+    this.eggMaterial = egg ? createGenPropMaterial({ gloss: EGG_ROUGHNESS }) : null
     if (egg) this.eggMaterial.map = egg.map
     this.materials = [this.bark, this.stone, this.card]
     if (egg) this.materials.push(this.eggMaterial)

@@ -420,6 +420,15 @@ for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
   fish.batch.visible = true
   const rec = fish.take(hit, 1)
   check(rec.kind === 'fish' && rec.name === sp.id && rec.size === f.size && rec.geometry === sp.mesh.geometry && rec.material === sp.material && rec.attrs.aSwim.length === 4 && rec.attrs.aHue.length === 1 && rec.color.length === 3 && rec.scale[0] === f.scale && rec.stowable === (f.size < 1), 'take hands back the record for the hand', JSON.stringify({ kind: rec.kind, name: rec.name, size: rec.size, stowable: rec.stowable }))
+  const { geometry: _g, material: _m, ...slot } = rec
+  check(fish.dress(slot).geometry === rec.geometry && fish.dress(slot).material === rec.material, 'dress puts the packed record back on its species\' geometry and material')
+  sp.loaded = false
+  check(fish.dress(slot) === null, 'and is null before that species\' asset lands')
+  sp.loaded = true
+  let wrong = 0
+  try { fish.dress({ ...slot, kind: 'crab' }) } catch { wrong++ }
+  try { fish.dress({ ...slot, name: 'coelacanth' }) } catch { wrong++ }
+  check(wrong === 2, 'and throws for another kind or an unknown species', `${wrong} of 2`)
   check(!f.alive && alive().length === before - 1, 'and the fish is out of the water')
   // Let go over the bank: refused.
   check(fish.release(rec, BAR.x0 + 1, LEVEL + 2, 0, head) === false, 'release on dry ground is refused')

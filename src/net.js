@@ -48,6 +48,15 @@ export class Netplay {
     // The room's world clock as the relay last stated it, `{ anchorMs,
     // skipHours }` for WorldClock.sync, or null until the first snapshot.
     this.time = null
+    // This client's id as the relay named it on welcome; what a boat's
+    // authority is decided by (v2/boats.js). Null until then.
+    this.id = null
+    // The relay's latest state of every boat anyone has moved, `[origin, x, z,
+    // yaw, v, w, ageMs]` each, and a serial that steps once per snapshot so
+    // boats.js applies each list once. Not interpolated: a sample is
+    // dead-reckoned from its age.
+    this.boats = null
+    this.boatsSerial = 0
     this.connect()
   }
 
@@ -61,8 +70,13 @@ export class Netplay {
     socket.addEventListener('message', (event) => {
       let message
       try { message = JSON.parse(event.data) } catch { return }
+      if (message.version === 1 && message.type === 'welcome' && typeof message.id === 'string') { this.id = message.id; return }
       if (message.version !== 1 || message.type !== 'snapshot' || !Array.isArray(message.peers)) return
       const receivedAt = performance.now()
+      if (Array.isArray(message.boats)) {
+        this.boats = message.boats.filter((b) => Array.isArray(b) && b.length === 7 && b.every((n) => Number.isFinite(n)))
+        this.boatsSerial++
+      }
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours }
       }
@@ -78,11 +92,19 @@ export class Netplay {
     })
   }
 
-  sendPose(pose, hands, now = performance.now()) {
+  /**
+   * `boats`, when given, is `{ aboard, boat }` from Boats.netState: her place
+   * aboard a boat and, as its authority, the boat's state; each null when not.
+   */
+  sendPose(pose, hands, now = performance.now(), boats = null) {
     if (now - this.lastSend < SEND_MS || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
     this.lastSend = now
     const { avatar } = this
-    this.socket.send(JSON.stringify({ version: 1, type: 'pose', pose, hands, ...(avatar ? { avatar } : {}) }))
+    const message = { version: 1, type: 'pose', pose, hands }
+    if (avatar) message.avatar = avatar
+    if (boats && boats.aboard) message.aboard = boats.aboard
+    if (boats && boats.boat) message.boat = boats.boat
+    this.socket.send(JSON.stringify(message))
   }
 
   // Ask the relay to move the room's clock. False when there is no relay to
