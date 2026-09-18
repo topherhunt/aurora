@@ -110,7 +110,13 @@ wss.on('connection', (ws, request) => {
     client.hands = message.hands
     client.avatar = message.avatar ?? null
     client.aboard = message.aboard ?? null
-    if (message.boat && (room.boats.size < ROOM_BOATS_CAP || room.boats.has(message.boat[0]))) {
+    if (message.boat) {
+      if (room.boats.size >= ROOM_BOATS_CAP && !room.boats.has(message.boat[0])) {
+        // Full: the boat left alone longest makes room.
+        let oldest = null
+        for (const [origin, b] of room.boats) if (oldest === null || b.at < room.boats.get(oldest).at) oldest = origin
+        room.boats.delete(oldest)
+      }
       room.boats.set(message.boat[0], { state: message.boat, at: now })
     }
     client.lastPoseAt = now

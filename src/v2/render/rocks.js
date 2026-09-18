@@ -7,7 +7,7 @@ import {
   createPropMaterial, setSnowLine, setMossLine, setSnowVary, setMossVary, setPropSolidAt,
   setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
 } from '../../material.js'
-import { PropArena } from './prop-arena.js'
+import { PropArena, PropMeshes } from './prop-arena.js'
 import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { smoothstep } from '../../sim/mathx.js'
@@ -51,11 +51,15 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // to 90% under, where every other bed's burial roll tops out at 80% of the way
 // there, and a rock cannot be sunk that far and also stand on the ground in the
 // same bed; giants owe a 1.25 km LOD reach at a density the boulders bed could
-// not afford over that disc, and `radius` and `density` are per bed. Six beds
-// are six PropArenas of four meshes each, which does not break §5's one-material
-// rule -- that rule forbids splitting a BATCH by material. They share ONE
-// material object, unlike trees, ferns and grass, because every bed here draws
-// the same one layer and one program serves them all.
+// not afford over that disc, and `radius` and `density` are per bed.
+//
+// SIX BEDS, FOUR DRAW CALLS. A bed is a scatter, not a mesh: every bed places
+// the same four tier geometries, so `Rocks` builds ONE PropMeshes -- one
+// InstancedMesh per tier, capped at the sum of the beds' own tier bounds -- and
+// each bed holds a PropArena VIEW over it with its own pool of ids. Six views
+// share the four meshes as six batches would have shared one material, and
+// §5's one-material rule holds as it did: one material object, one program,
+// one atlas, whatever the bed.
 //
 // WHERE A ROCK GOES IS DECIDED BY WHERE IT IS, not by a roll. A candidate is
 // classified into one of four ENVIRONMENTS -- river, peak, cliff, forest -- from
@@ -1265,9 +1269,8 @@ function sectionRadius(geo, y, what) {
  * box slab is what tightens it back up before the triangles are walked.
  *
  * CACHED ON THE SHAPE, because five beds block and they displace props with the
- * same stone -- and built from a CONSTRUCTOR, because Rocks disposes the bank's
- * geometries the moment the beds are built and this is the last point the
- * attribute is readable. Same reason `footRadius` is measured where it is.
+ * same stone -- and built from a CONSTRUCTOR, as `footRadius` is measured there,
+ * so a bed's queries have their tables before its first tile grows.
  *
  * THE FINEST TIER IS THE SUBJECT even though a distant rock is drawn coarser. It
  * is the mesh a player close enough to read a prop's foot is looking at, and its
@@ -1307,11 +1310,14 @@ function blockHull(shape) {
 /**
  * One size band's scatter: its own tile grid, its own pool, its own PropArena.
  *
- * Not exported. `Rocks` owns one per BEDS entry, plus the bank and material they
- * share; nothing outside this file has any reason to hold one.
+ * Not exported. `Rocks` owns one per BEDS entry, plus the bank, the material and
+ * the mesh set they share; nothing outside this file has any reason to hold one.
+ * Built in two steps: the constructor sizes the pool and bounds each tier, and
+ * `attach` gives the bed its view once `Rocks` has summed those bounds into the
+ * shared meshes.
  */
 class RockBed {
-  constructor(scene, field, water, layers, material, bank, cfg, { seed, ground }) {
+  constructor(field, water, layers, bank, cfg, { seed, ground }) {
     this.field = field
     this.water = water
     this.layers = layers
@@ -1797,46 +1803,25 @@ class RockBed {
     }
 
     this.maxInstances = this._poolBound()
+    // What this bed asks of each tier's shared mesh; `Rocks` sums them.
+    this.tierCaps = this._tierCaps()
 
-    // FOUR GEOMETRIES IN THE ARENA, whatever the bed: the four tiers, ONE
-    // VARIANT EACH -- so a PropArena geometry id is just the tier index, and the
-    // bed costs four draw calls.
-    //
-    // CLONED out of the bank, because PropArena draws the object it is handed
-    // and hangs a cap-sized `aPropFade` attribute on it. Eight beds sharing the
-    // bank's four geometries would each overwrite the last one's fade buffer.
+    // THE TIER TABLE, one triangle count per band; the arena ids come with
+    // `attach`. The last slot is the 6-triangle T6 hull and NO BED DECLINES IT.
     const geos = this.shape.tiers
-    this.batch = new PropArena(
-      this.maxInstances,
-      geos.map((g) => ({ geometries: [g.clone()] })),
-      this._tierCaps(),
-      material,
-      `v2-rocks-${cfg.name}`
-    )
-
-    // THE TIER TABLE, one arena id and one triangle count per band. The last slot
-    // is the 6-triangle T6 hull and NO BED DECLINES IT.
-    this.tierIds = new Int32Array(ROCK_BAND_COUNT)
     this.tierTris = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) {
-      this.tierIds[t] = t
       // Throw rather than count 0: a silent 0 here would show up as a triangle
       // budget that quietly stops counting.
       const meta = geos[t].userData.rock
       if (!meta) throw new Error(`RockBed ${cfg.name}: tier ${t} is not a rock mesh`)
       this.tierTris[t] = meta.triangles
     }
-
-    // BORN ON T6, matching what `_growTile` writes: a pool id that somehow
-    // reached the arena visible before it was placed would otherwise land in the
-    // tier-0 mesh, whose cap is sized for the handful of rocks inside four ladder
-    // sizes rather than for the pool.
-    this.free = new Int32Array(this.maxInstances)
-    this.freeCount = this.maxInstances
-    for (let i = 0; i < this.maxInstances; i++) {
-      const id = this.batch.addInstance(this.tierIds[ROCK_BAND_COUNT - 1])
-      this.free[this.maxInstances - 1 - i] = id
-    }
+    this.batch = null
+    this.tierIds = null
+    this.free = null
+    this.freeCount = 0
+    this.rim = null
 
     this.tierAt = new Int8Array(this.maxInstances).fill(-1)
     this.instX = new Float32Array(this.maxInstances)
@@ -1858,16 +1843,6 @@ class RockBed {
     // cross-dissolve ghost and a re-ground can be written from it (`_placeTier`)
     // and `_spanAt` can read it without going through the arena.
     this.instM = new Float32Array(this.maxInstances * 16)
-    // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
-    // second between. It holds each rock's gone-distance as `rim.gone`, and it
-    // shares ONE float per instance with the cross-dissolve below -- so it is
-    // handed the callback that retires a swap it is about to write over, and
-    // `_crossFade` asks `isBusy` before starting one the rim would clobber.
-    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
-      const running = this.fadeAt[id]
-      if (running >= 0) this._endFade(running)
-    })
-
     // Cross-dissolves in flight: { orig, dup, start, tris, tier }. `fadeAt` maps
     // an instance to its entry so a second band crossing can finish the first,
     // and so an instance being thinned or evicted can take its ghost with it;
@@ -1963,8 +1938,38 @@ class RockBed {
     this.poolDry = false
     this.placeMs = 0
     this.lastBuildMs = 0
+  }
 
-    scene.add(this.batch)
+  /**
+   * Take a view over the shared mesh set, in which this bed's shape is variant
+   * `variant` of every tier.
+   */
+  attach(shared, variant) {
+    this.batch = PropArena.over(shared, this.maxInstances, `v2-rocks-${this.cfg.name}`)
+    this.tierIds = new Int32Array(ROCK_BAND_COUNT)
+    for (let t = 0; t < ROCK_BAND_COUNT; t++) this.tierIds[t] = t * shared.variantCount + variant
+
+    // BORN ON T6, matching what `_growTile` writes: a pool id that somehow
+    // reached the arena visible before it was placed would otherwise land in the
+    // tier-0 mesh, whose cap is sized for the handful of rocks inside four ladder
+    // sizes rather than for the pool.
+    this.free = new Int32Array(this.maxInstances)
+    this.freeCount = this.maxInstances
+    for (let i = 0; i < this.maxInstances; i++) {
+      const id = this.batch.addInstance(this.tierIds[ROCK_BAND_COUNT - 1])
+      this.free[this.maxInstances - 1 - i] = id
+    }
+
+    // The rim dissolve: which rocks are drawn, which are hidden, and the quarter
+    // second between. It holds each rock's gone-distance as `rim.gone`, and it
+    // shares ONE float per instance with the cross-dissolve in `_crossFade` --
+    // so it is handed the callback that retires a swap it is about to write
+    // over, and `_crossFade` asks `isBusy` before starting one the rim would
+    // clobber.
+    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
+      const running = this.fadeAt[id]
+      if (running >= 0) this._endFade(running)
+    })
   }
 
   /** See Trees._poolBound: summed over the real tile grid, because the law is not exact. */
@@ -4172,9 +4177,6 @@ class RockBed {
     }
   }
 
-  dispose() {
-    this.batch.dispose()
-  }
 }
 
 // The beds looseCountIn counts, and its saturation; the scratch is written and never read.
@@ -4191,7 +4193,7 @@ const looseScratch = new Float32Array(LOOSE_COUNT_CAP * 4)
  */
 export class Rocks {
   /**
-   * @param scene         THREE.Scene. Gets one PropArena per bed.
+   * @param scene         THREE.Scene. Gets `batch`, the one group of tier meshes.
    * @param field         V2Height. Needs scatterAt, heightAt, snowLineAt, bands.
    * @param water         WaterSurfaces. Needs levelAt, isSubmerged and shoreDistAt.
    * @param layers        Layers. Needs `snow.band` and flattenAt, for the ground
@@ -4221,7 +4223,7 @@ export class Rocks {
 
     // ONE material for every bed: every tier of every bed is a rock mesh on the
     // one stone layer, so there is one program here whatever the bed -- four
-    // draw calls per bed, one program, one atlas.
+    // draw calls for the layer, one program, one atlas.
     //
     // FRONT FACES ONLY, alone among the prop materials. Every other one draws
     // cutout foliage, where both sides of a leaf are the same leaf; a rock is a
@@ -4244,12 +4246,31 @@ export class Rocks {
       instancedFade: true,
     })
 
-    this.beds = BEDS.map(cfg => new RockBed(scene, field, water, layers, this.material, bank, cfg, { seed, ground }))
+    this.beds = BEDS.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground }))
 
-    // Every bed cloned what it draws; the bank's geometries are now a spare copy
-    // with no reader. The measurements taken off them -- footRadius, blockHull,
-    // the tier triangle counts -- are all constructor work and already done.
-    for (const g of bank.geometries) g.dispose()
+    // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
+    // bounded for that tier (`_tierCaps`): each bed's cap already holds its own
+    // population and its ghosts' room, so the sum holds the union. A bed's shape
+    // is a variant column of the set, and today every bed takes the boulder, so
+    // the set is four meshes and the cap's geometries go undrawn and disposed.
+    const shapes = []
+    for (const bed of this.beds) if (!shapes.includes(bed.shape)) shapes.push(bed.shape)
+    const caps = new Array(ROCK_BAND_COUNT).fill(0)
+    for (const bed of this.beds) for (let t = 0; t < ROCK_BAND_COUNT; t++) caps[t] += bed.tierCaps[t]
+    this.meshes = new PropMeshes(
+      Array.from({ length: ROCK_BAND_COUNT }, (_, t) => ({ geometries: shapes.map((sh) => sh.tiers[t]) })),
+      caps,
+      this.material,
+      'v2-rocks'
+    )
+    this.batch = new THREE.Group()
+    this.batch.name = 'v2-rocks'
+    this.batch.frustumCulled = false
+    for (const mesh of this.meshes.meshes) this.batch.add(mesh)
+    for (const bed of this.beds) bed.attach(this.meshes, shapes.indexOf(bed.shape))
+    scene.add(this.batch)
+    const drawn = new Set(shapes.flatMap((sh) => sh.tiers))
+    for (const g of bank.geometries) if (!drawn.has(g)) g.dispose()
 
     this.buildMs = performance.now() - t0
     this.placeMs = 0
@@ -4588,10 +4609,10 @@ export class Rocks {
    *   prop can blink while a tree beside it does not, and the terrain's own
    *   selection is gaze-dependent (quadtree-v2.js inCone) where this file is not.
    *
-   * `n` is a bed's live instance count summed over its four tier meshes, read at
-   * submission rather than off the arena, so that a bed dropped from the render
-   * list entirely reads as -1 instead of as its population. `passes` is how many
-   * times each bed was submitted that frame: three when both probes fire, one when
+   * `n` is a tier mesh's live instance count over every bed, read at submission
+   * rather than off the arena, so that a tier dropped from the render list
+   * entirely reads as -1 instead of as its population. `passes` is how many times
+   * the layer was submitted that frame: three when both probes fire, one when
    * neither does. The MAIN render is always last -- main.js runs both probes first
    * -- so `n` is the last pass's count, the one the screen got.
    */
@@ -4602,24 +4623,24 @@ export class Rocks {
     if (this._watching) throw new Error('Rocks.watch is already running')
     this._watching = true
 
-    // Hooked on the MESHES and not on the arena: a PropArena is a Group, and a
-    // Group is walked by projectObject rather than rendered, so it never gets an
-    // onBeforeRender of its own.
+    // Hooked on the MESHES and not on the group: a Group is walked by
+    // projectObject rather than rendered, so it never gets an onBeforeRender of
+    // its own.
     const beds = this.beds
-    const saved = beds.map((b) => b.batch.meshes.map((m) => m.onBeforeRender))
+    const meshes = this.meshes.meshes
+    const tierNames = meshes.map((_, t) => (t === meshes.length - 1 ? 'far' : `mesh${t}`))
+    const saved = meshes.map((m) => m.onBeforeRender)
     const passes = []
     let lastCam = null
     let lastRenderer = null
     const install = () => {
-      beds.forEach((bed, i) => {
-        bed.batch.meshes.forEach((mesh, j) => {
-          mesh.onBeforeRender = function watched(renderer, scene, camera, geometry, material) {
-            saved[i][j].call(this, renderer, scene, camera, geometry, material)
-            passes.push({ bed: i, n: this.count })
-            lastCam = camera
-            lastRenderer = renderer
-          }
-        })
+      meshes.forEach((mesh, j) => {
+        mesh.onBeforeRender = function watched(renderer, scene, camera, geometry, material) {
+          saved[j].call(this, renderer, scene, camera, geometry, material)
+          passes.push({ tier: j, n: this.count })
+          lastCam = camera
+          lastRenderer = renderer
+        }
       })
     }
 
@@ -4659,18 +4680,12 @@ export class Rocks {
 
     const sample = () => {
       const row = { ms: +(performance.now() - t0).toFixed(0) }
-      for (let i = 0; i < beds.length; i++) {
-        // One entry per MESH per pass, so the last `meshes.length` of them are
-        // the last pass and their sum is what that pass submitted.
-        const per = beds[i].batch.meshes.length
-        const mine = passes.filter((p) => p.bed === i)
-        let n = -1
-        if (mine.length) {
-          n = 0
-          for (const p of mine.slice(-per)) n += p.n
-        }
-        row[beds[i].cfg.name] = n
-        if (i === 0) row.passes = mine.length / per
+      for (let j = 0; j < meshes.length; j++) {
+        // One entry per mesh per pass, so the last of them is the last pass,
+        // which is what that pass submitted.
+        const mine = passes.filter((p) => p.tier === j)
+        row[tierNames[j]] = mine.length ? mine[mine.length - 1].n : -1
+        if (j === 0) row.passes = mine.length
       }
       passes.length = 0
 
@@ -4731,9 +4746,7 @@ export class Rocks {
         return
       }
 
-      beds.forEach((bed, i) => {
-        bed.batch.meshes.forEach((mesh, j) => { mesh.onBeforeRender = saved[i][j] })
-      })
+      meshes.forEach((mesh, j) => { mesh.onBeforeRender = saved[j] })
       this._watching = false
 
       // The verdict, so that reading it does not depend on reading the table.
@@ -4745,12 +4758,12 @@ export class Rocks {
         return `${Math.min(...v)}..${Math.max(...v)}`
       }
       if (!tracked) throw new Error('Rocks.watch: no frame ever reached a rock batch, so there is nothing to report')
-      const names = beds.map((b) => b.cfg.name)
+      const names = tierNames
       const out = [`[rocks.watch] ${rows.length} frames over ${seconds}s, camera ${span('cx')} x ${span('cz')}, yaw ${span('yaw')} deg`]
       if (steps('yaw', 1) === 0) {
         out.push('  THE CAMERA NEVER TURNED. Nothing here can say anything about the blink -- re-run and turn during the sample.')
       }
-      for (const bed of beds) out.push(`  ${bed.cfg.name} drawn ${span(bed.cfg.name)}, changed on ${steps(bed.cfg.name, 2)}/${rows.length} frames`)
+      for (const name of names) out.push(`  ${name} drawn ${span(name)}, changed on ${steps(name, 2)}/${rows.length} frames`)
       out.push(`  tracked ${tracked.bed.cfg.name}#${tracked.id} at ${span('d')} m: y ${span('y')} (moved on ${steps('y', 1e-3)}), ` +
         `ground ${span('ground')} (moved on ${steps('ground', 1e-3)}), tier ${span('tier')}, visible on ${rows.filter((r) => r.vis).length}/${rows.length}`)
 
@@ -4839,7 +4852,7 @@ export class Rocks {
   }
 
   dispose() {
-    for (const bed of this.beds) bed.dispose()
+    this.meshes.dispose()
     this.material.dispose()
   }
 }

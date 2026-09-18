@@ -140,10 +140,13 @@ export class Boats {
     this.liveAt = -Infinity
     this.appliedSerial = 0
 
-    // Her ride: the record she is aboard, her feet's place in its frame, and her head's.
+    // Her ride: the record she is aboard, her feet's place in its frame and
+    // in the world as settle last read them, and her head's place in the hull.
     this.ride = null
     this.rideU = 0
     this.rideV = 0
+    this.rideX = 0
+    this.rideZ = 0
     this.headU = 0
     this.headV = 0
     // The boat she is authority of, or null.
@@ -182,12 +185,14 @@ export class Boats {
     const t = now / 1000
     for (let i = 0; i < this.live.length; i++) this._step(this.live[i], dt, t, i)
     if (this.ride) {
+      // Carried by the boat's travel since settle, not put back where she was:
+      // a teleport lands between frames, and it must keep what it moved her by.
       const b = this.ride
       const rig = this.player.rig.position
       const c = Math.cos(b.ryaw)
       const s = Math.sin(b.ryaw)
-      rig.x = b.rx + this.rideU * c + this.rideV * s
-      rig.z = b.rz - this.rideU * s + this.rideV * c
+      rig.x += b.rx + this.rideU * c + this.rideV * s - this.rideX
+      rig.z += b.rz - this.rideU * s + this.rideV * c - this.rideZ
     }
     this.hulls.count = this.live.length
     this.lids.count = this.live.length
@@ -214,6 +219,8 @@ export class Boats {
     let dz = origin.z - ride.rz
     this.rideU = dx * c - dz * s
     this.rideV = dx * s + dz * c
+    this.rideX = this.player.rig.position.x
+    this.rideZ = this.player.rig.position.z
     dx = head.x - ride.rx
     dz = head.z - ride.rz
     this.headU = dx * c - dz * s

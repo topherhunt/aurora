@@ -882,7 +882,7 @@ function applyQuestToggle(key) {
 }
 
 function applyRockVisibility() {
-  for (const b of rocks.beds) b.batch.visible = questToggles.boulders
+  rocks.batch.visible = questToggles.boulders
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -950,7 +950,7 @@ const QUEST_SLOT_GAP = 0.10
 const QUEST_SLOTS_TOP = 0.85
 const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
 // The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
-const QUEST_HELP_H = 2.00
+const QUEST_HELP_H = 1.40
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
@@ -2406,11 +2406,11 @@ async function bootWorld() {
   if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: SPAWN (${spawn.x}, ${spawn.z}) is underwater`)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
-  // Stone, in seven size beds at once: pebbles underfoot, boulders through the
-  // wood and across the cliffsides, giants on the crags and the summits, and
-  // blocks let into the faces and the lake floors. Seven more BatchedMeshes and
-  // seven more draw calls, but ONE material for all of them -- every rock bed
-  // billboards the same single card layer, so unlike the trees, the ferns and
+  // Stone, in six size beds at once: boulders through the wood and across the
+  // cliffsides, scree at the foot of a face, giants on the crags and the
+  // summits, blocks let into the faces and the lake floors, stones along the
+  // shore. Four draw calls for all of them -- one InstancedMesh per LOD tier
+  // shared by every bed -- and ONE material, so unlike the trees, the ferns and
   // the grass there is no per-bed shader source. See render/rocks.js.
   //
   // Which shapes stand where is decided by the ground, not by a roll: each site

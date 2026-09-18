@@ -62,12 +62,13 @@ const firstBoat = (r) => {
   const bank = shippedBank()
   const h = bank.hull
   const geo = bank.tiers[0].geometries[0]
-  const loops = sliceLoops(geo, h.waterline)
-  check(loops.length >= 2, 'the waterline cuts the hull into an outside and an inside', `${loops.length} loops`)
-  check(Math.abs(loopArea(h.deck)) < Math.abs(loopArea(h.rail)) && Math.abs(loopArea(h.deck)) > 0.25 * Math.abs(loopArea(h.rail)),
-    'the inner skin lies inside the outer and is most of its area', `${Math.abs(loopArea(h.deck)).toFixed(3)} in ${Math.abs(loopArea(h.rail)).toFixed(3)}`)
+  const loops = sliceLoops(geo, h.waterline).filter((l) => inLoop(l, h.cx, h.cz))
+  check(loops.length >= 2, 'the waterline cuts the hull into an outside and an inside round its centre', `${loops.length} loops`)
+  const [rail, deck] = loops
+  check(Math.abs(loopArea(deck)) < Math.abs(loopArea(rail)) && Math.abs(loopArea(deck)) > 0.25 * Math.abs(loopArea(rail)),
+    'the inner skin lies inside the outer and is most of its area', `${Math.abs(loopArea(deck)).toFixed(3)} in ${Math.abs(loopArea(rail)).toFixed(3)}`)
   let deckInRail = true
-  for (const [x, z] of h.deck) if (!inLoop(h.rail, x, z)) deckInRail = false
+  for (const [x, z] of deck) if (!inLoop(rail, x, z)) deckInRail = false
   check(deckInRail, 'every point of the inner skin is inside the outer')
   check(h.floorY > h.keelY && h.floorY < h.waterline && h.gunwaleY > h.waterline,
     'the floor is between keel and waterline, the gunwale over it',
@@ -100,12 +101,22 @@ const firstBoat = (r) => {
   let hi = -Infinity
   for (let i = 1; i < lp.length; i += 3) { lo = Math.min(lo, lp[i]); hi = Math.max(hi, lp[i]) }
   check(lo < h.waterline && hi > h.waterline && hi < h.gunwaleY, 'the lid straddles the waterline under the gunwale', `${lo.toFixed(3)}..${hi.toFixed(3)}`)
+  // Its plan reaches past the bilge's flat to where the floor climbs clear of its top.
+  let lidZ0 = Infinity
+  let lidZ1 = -Infinity
+  let deckZ0 = Infinity
+  let deckZ1 = -Infinity
+  for (let i = 0; i < lp.length; i += 3) { lidZ0 = Math.min(lidZ0, lp[i + 2]); lidZ1 = Math.max(lidZ1, lp[i + 2]) }
+  for (const [, z] of deck) { deckZ0 = Math.min(deckZ0, z); deckZ1 = Math.max(deckZ1, z) }
+  const soleAtLidEnd = Math.min(soleAt(h.sole, h.cx, lidZ0), soleAt(h.sole, h.cx, lidZ1))
+  check(lidZ0 < deckZ0 && lidZ1 > deckZ1 && soleAtLidEnd > hi - 0.01, 'and its plan reaches past the bilge to where the floor is over its top',
+    `lid ${lidZ0.toFixed(3)}..${lidZ1.toFixed(3)}, bilge ${deckZ0.toFixed(3)}..${deckZ1.toFixed(3)}, floor at the ends ${soleAtLidEnd.toFixed(3)} against ${hi.toFixed(3)}`)
 
   // The sole: the boards amidships, higher toward the bow, the gunwale past the walk loop.
   let walkInPad = true
   for (const [x, z] of h.walk) if (!inLoop(h.pad, x, z)) walkInPad = false
-  check(walkInPad && Math.abs(loopArea(h.walk)) > Math.abs(loopArea(h.deck)), 'the walk loop is wider than the bilge and inside the pad',
-    `walk ${Math.abs(loopArea(h.walk)).toFixed(3)}, bilge ${Math.abs(loopArea(h.deck)).toFixed(3)}, pad ${Math.abs(loopArea(h.pad)).toFixed(3)}`)
+  check(walkInPad && Math.abs(loopArea(h.walk)) > Math.abs(loopArea(deck)), 'the walk loop is wider than the bilge and inside the pad',
+    `walk ${Math.abs(loopArea(h.walk)).toFixed(3)}, bilge ${Math.abs(loopArea(deck)).toFixed(3)}, pad ${Math.abs(loopArea(h.pad)).toFixed(3)}`)
   const mid = soleAt(h.sole, h.cx, h.cz)
   let bowZ = h.cz
   for (const [, z] of h.walk) if ((z - h.cz) * h.bow > (bowZ - h.cz) * h.bow) bowZ = z
@@ -213,8 +224,26 @@ const firstBoat = (r) => {
   check(st.aboard && st.aboard[0] === b.origin && st.boat && st.boat[0] === b.origin && st.boat.length === 6 && st.boat[4] === Math.round(b.v * 1000) / 1000,
     'her pose carries her place aboard and the boat\'s state', JSON.stringify(st.boat))
 
+  // A teleport lands BETWEEN frames, before the carry: it keeps its landing,
+  // whether that is amidships or off the boat, plus the frame's travel.
+  const place = (u, v) => { at(u, v); step(); step = null }
+  place(0, 0)
+  tick(1)
+  const mu = ((feet.x - b.rx) * c - (feet.z - b.rz) * sn) / s - hull.cx
+  const mv = (((feet.x - b.rx) * sn + (feet.z - b.rz) * c) / s - hull.cz) * hull.bow
+  check(boats.aboard && Math.abs(mu) < 0.02 && Math.abs(mv) < 0.02, 'a teleport to amidships before the carry lands her there, still aboard', `at (${mu.toFixed(3)}, ${mv.toFixed(3)})`)
+  place(0, 0.3 * r.long)
+  tick(1)
+  place(3 * r.long, 0)
+  const landX = feet.x
+  const landZ = feet.z
+  tick(1)
+  check(!boats.aboard && Math.hypot(feet.x - landX, feet.z - landZ) < b.v / 30, 'a teleport off the boat before the carry leaves her ashore', `${Math.hypot(feet.x - landX, feet.z - landZ).toFixed(3)} m from the landing`)
+  place(0, 0)
+  tick(1)
+  check(boats.aboard, 'and back aboard from a teleport in')
+
   // Back to the centre: the way dies over a few TAU_DRAG.
-  at(0, 0)
   tick(1200)
   check(Math.abs(b.v) < 0.02, 'weight amidships again, twenty seconds later it has all but stopped', `${b.v.toFixed(3)} m/s`)
 

@@ -1949,10 +1949,80 @@ console.log('\nscatter')
   check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 5 8',
     'and every bed keeps the field number it was seeded with', forestRocks.beds.map((b) => b.cfg.field).join(' '))
   check(
-    new Set(forestRocks.beds.flatMap((b) => b.batch.meshes.map((m) => m.material))).size === 1,
+    new Set(forestRocks.meshes.meshes.map((m) => m.material)).size === 1,
     'one material across every bed and every tier mesh',
     'one program serves them all'
   )
+  // SIX BEDS, FOUR DRAW CALLS: one InstancedMesh per tier, shared by every bed
+  // through a view of its own, and the bed's tier ids index those meshes. Named
+  // by count so a bed that quietly grew meshes of its own would fail here.
+  check(
+    forestRocks.meshes.meshes.length === ROCK_TIERS.length &&
+      forestRocks.batch.children.length === ROCK_TIERS.length &&
+      forestRocks.beds.every((b) => b.batch.meshes === forestRocks.meshes.meshes &&
+        Array.from(b.tierIds).every((g, t) => g === t)),
+    'the layer is one mesh per tier whatever the bed count, so six beds cost four draw calls',
+    `${forestRocks.meshes.meshes.length} meshes for ${forestRocks.beds.length} beds`
+  )
+  // AND EACH TIER'S CAP IS THE SUM OF WHAT THE BEDS BOUNDED FOR IT, so the
+  // refusal argument (`_tierCaps`) survives the sharing: every bed's population
+  // and ghost room fit inside its own summand.
+  check(
+    forestRocks.meshes.capAt.every((cap, t) => cap === forestRocks.beds.reduce((n, b) => n + b.tierCaps[t], 0)),
+    'and each shared tier mesh is capped at the sum of the beds\' own tier bounds',
+    forestRocks.meshes.capAt.join(' ')
+  )
+  // AND A HIDE IN ONE BED MOVES ANOTHER BED'S ROCK CORRECTLY. Swap-remove
+  // fills the freed slot with the mesh's last instance, and in a shared mesh
+  // that instance can belong to a different bed: the mover must be rewritten
+  // from ITS OWN bed's shadow, and its own bed's `slot[]` must follow it.
+  // Found by search, since which bed owns a mesh's last slot is placement luck.
+  // A world of its own, since `place` only seats the rocks and it takes an
+  // `update` to show them, and the checks below want forestRocks untouched.
+  {
+    const shareRocks = build(forest)
+    shareRocks.update(0, 61.6, 0, 50)
+    const shared = shareRocks.meshes
+    let found = null
+    for (let g = 0; g < shared.meshes.length && !found; g++) {
+      const last = shared.meshes[g].count - 1
+      if (last < 1) continue
+      const lastView = shared.ownerView[g][last]
+      for (let s = 0; s < last && !found; s++) {
+        if (shared.ownerView[g][s] !== lastView) found = { g, s, last }
+      }
+    }
+    check(found !== null, 'some shared tier mesh holds rocks of two beds', found ? `mesh ${found.g}` : 'none')
+    if (found) {
+      const { g, s, last } = found
+      const mesh = shared.meshes[g]
+      const hider = shared.ownerView[g][s]
+      const hid = shared.owner[g][s]
+      const mover = shared.ownerView[g][last]
+      const moved = shared.owner[g][last]
+      const wantMat = Array.from(mover.mat.subarray(moved * 16, moved * 16 + 16))
+      const wantCol = Array.from(mover.col.subarray(moved * 3, moved * 3 + 3))
+      const wantFade = mover.fade[moved]
+      hider.setVisibleAt(hid, false)
+      const gotMat = Array.from(mesh.instanceMatrix.array.subarray(s * 16, s * 16 + 16))
+      const gotCol = Array.from(mesh.instanceColor.array.subarray(s * 3, s * 3 + 3))
+      const gotFade = mesh.geometry.getAttribute('aPropFade').array[s]
+      check(
+        mesh.count === last && mover.slot[moved] === s && hider.slot[hid] === -1 &&
+          shared.owner[g][s] === moved && shared.ownerView[g][s] === mover,
+        'hiding one bed\'s rock swap-removes another bed\'s rock into the freed slot with that bed\'s slot map following',
+        `mesh ${g}: slot ${s} now instance ${moved} of ${mover.name}, was ${hid} of ${hider.name}`
+      )
+      check(
+        gotMat.every((v, i) => v === wantMat[i]) && gotCol.every((v, i) => v === wantCol[i]) && gotFade === wantFade,
+        'and the moved rock\'s matrix, colour and fade were rewritten from its own bed\'s shadow',
+        `fade ${gotFade} vs ${wantFade}`
+      )
+      hider.setVisibleAt(hid, true)
+      check(mesh.count === last + 1 && hider.slot[hid] === last,
+        'and showing it again restores the count', `count ${mesh.count}`)
+    }
+  }
 
   // THE FAR TIER REACHES AN INSTANCE. `tierTris` is the table `update` indexes
   // to pick geometry, so a coarsest slot reading 6 triangles is a bed that will
@@ -3306,8 +3376,8 @@ console.log('\nscatter')
           }
         }
       }
-      const fullest = Math.max(...Object.values(worlds).flatMap((r) => r.beds.flatMap((bed) =>
-        bed.batch.meshes.slice(0, -1).map((m, t) => m.count / bed.batch.capAt[t]))))
+      const fullest = Math.max(...Object.values(worlds).flatMap((r) =>
+        r.meshes.meshes.slice(0, -1).map((m, t) => m.count / r.meshes.capAt[t])))
       check(over.length === 0, 'ghosts never fill a mesh tier past its headroom, so an arrival is never refused',
         over.length ? over.join('; ') : `fullest mesh tier ${(fullest * 100).toFixed(0)}% of its cap`)
     }
@@ -3402,7 +3472,7 @@ console.log('\nscatter')
       // and the flag is the only way in. `-ifade` is what createPropMaterial puts
       // in the program key for it.
       const progKey = worlds.cliff.material.customProgramCacheKey()
-      check(worlds.cliff.beds[0].batch.meshes[0].isInstancedMesh && progKey.includes('-ifade'),
+      check(worlds.cliff.meshes.meshes[0].isInstancedMesh && progKey.includes('-ifade'),
         'and the bed material declares the attribute the shader reads it from',
         progKey)
     }
@@ -3883,20 +3953,17 @@ console.log('\nscatter')
   // `instanceColor` at all. A mesh that acquired one lazily -- three's own path,
   // inside the first `setColorAt` -- would join the party after the program was
   // built and lose its per-instance tint until something else forced a rebuild,
-  // and on a bed that places nothing in a given world nothing ever would.
-  // PropArena's constructor makes them all up front for exactly this reason; the
+  // and on a world where nothing reaches a tier nothing ever would.
+  // PropMeshes' constructor makes them all up front for exactly this reason; the
   // placed counts are reported so it is visible that this run exercised an empty
   // bed and not only full ones.
   {
     const missing = []
     const counts = []
     for (const [name, r] of [['forest', forestRocks], ['cliff', cliffRocks], ['peak', peakRocks], ['river', riverRocks]]) {
-      for (const bed of r.beds) {
-        const live = bed.placed
-        counts.push(`${name}/${bed.cfg.name} ${live}`)
-        for (const m of bed.batch.meshes) {
-          if (!m.instanceColor) missing.push(`${name}/${bed.cfg.name}/${m.name} (${live} live)`)
-        }
+      for (const bed of r.beds) counts.push(`${name}/${bed.cfg.name} ${bed.placed}`)
+      for (const m of r.meshes.meshes) {
+        if (!m.instanceColor) missing.push(`${name}/${m.name}`)
       }
     }
     check(missing.length === 0,

@@ -74,8 +74,8 @@ const KEEL_BAND = 0.2
 // The lid, in the pick's units (a unit of length is LENGTH metres): its top
 // this far over the waterline and its skirt this far under, so the lake's
 // plane cuts the skirt however the boat heaves and rolls (boats.js ROCK) and
-// never clears the top. The prism is closed above the plane, so any eye above
-// it sees the plane inside the hull only through the lid.
+// never clears the top. Its plan is the inner skin at the top's height, so it
+// reaches to where the floor climbs clear of the plane fore and aft.
 const LID_TOP = 0.03
 const LID_SKIRT = 0.015
 // A loop the slice finds must enclose at least this share of the largest
@@ -393,7 +393,8 @@ export function rowboatsBankFrom(pick) {
     }
   }
   if (!(gunwaleY > waterline && floorY < gunwaleY)) throw new Error(`Rowboats: floor ${floorY.toFixed(3)}, waterline ${waterline.toFixed(3)}, gunwale ${gunwaleY.toFixed(3)} are not a hull`)
-  const lid = lidGeometry(deck, waterline - LID_SKIRT, waterline + LID_TOP)
+  const [, lidLoop] = skinsAt(waterline + LID_TOP, 'the lid')
+  const lid = lidGeometry(lidLoop, waterline - LID_SKIRT, waterline + LID_TOP)
   const [shell, walk] = skinsAt(waterline + SOLE_SHARE * (gunwaleY - waterline), 'the sole')
   const pad = grownLoop(shell, cx, cz, PAD_SHARE)
   const sole = soleGrid(geo, walk, pad, gunwaleY, floorY)
@@ -410,9 +411,9 @@ export function rowboatsBankFrom(pick) {
     tiers, map: pick.map, bounds, bytes,
     // The hull's own frame, all in the pick's units: its centre in plan, which
     // sign of z the bow lies on, the keel's bottom and the section heights;
-    // the waterline's skins (deck inside rail) and the lid on the deck; and
-    // the sole she walks, bounded by `walk` inside `pad`, its heights in `sole`.
-    hull: { cx, cz, bow, keelY: b.min.y, waterline, floorY, gunwaleY, deck, rail, lid, walk, pad, sole },
+    // the lid; and the sole she walks, bounded by `walk` inside `pad`, its
+    // heights in `sole`.
+    hull: { cx, cz, bow, keelY: b.min.y, waterline, floorY, gunwaleY, lid, walk, pad, sole },
   }
 }
 

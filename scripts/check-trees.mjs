@@ -1298,7 +1298,7 @@ trees.place(0, 0)
     let brokenOwner = 0
     for (let g = 0; g < arena.meshes.length; g++) {
       for (let sIdx = 0; sIdx < arena.meshes[g].count; sIdx++) {
-        const id = arena.owner[g][sIdx]
+        const id = arena.shared.owner[g][sIdx]
         if (arena.slot[id] !== sIdx || arena.geoAt[id] !== g) brokenOwner++
       }
     }
