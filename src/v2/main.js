@@ -2580,8 +2580,8 @@ async function bootWorld() {
   window.v2butterflies = butterflies
 
   // The grasshoppers on the grass and the forest floor (render/grasshoppers.js):
-  // two triangles each, seated on the walk surface, so after the rocks. The map
-  // lands after boot; until it does the mesh stays hidden.
+  // one instanced low-poly mesh, seated on the walk surface, so after the rocks.
+  // The GLB lands after boot; until it does the mesh stays hidden.
   await bootStep('grasshoppers')
   grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed: SEED, walk })
   lighting.patch(grasshoppers.material, { mode: 'vertex', cacheKey: 'v2-grasshoppers' })
@@ -4726,8 +4726,8 @@ function tick() {
   // opaque from above (WATER.clarity), so with her head in the air every fish
   // and every sunk crab is triangles and a step spent on something nobody can
   // see. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
-  // no fish stepped -- so the lake is stocked the moment she dives; a sunk crab
-  // simply pauses on its stone. `submerged` is last frame's answer (see
+  // no fish stepped, one frame in fish.js FOLLOW_EVERY -- so the lake is stocked
+  // the moment she dives; a sunk crab simply pauses on its stone. `submerged` is last frame's answer (see
   // applySubmersion), one frame late on the dive and the surfacing, which the
   // eye cannot tell from the splash.
   //

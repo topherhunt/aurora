@@ -20,7 +20,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED, FOLLOW_EVERY } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -44,8 +44,10 @@ const height = {
     return LEVEL - DEEP * Math.max(0, 1 - r * r)
   },
 }
+let levelAtCalls = 0
 const water = {
   levelAt(x, z) {
+    levelAtCalls++
     if (onBar(x)) return null
     return Math.hypot(x, z) < LAKE_R ? LEVEL : null
   },
@@ -374,6 +376,12 @@ for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
   for (let i = 0; i < 72; i++) fish.follow(0, LEVEL + 1.6, 0)
   check(pose.every(([f, x, y, z, ph, hx, hz]) => f.x === x && f.y === y && f.z === z && f.phase === ph && f.hx === hx && f.hz === hz), 'a second of follow() moves no fish and beats no tail')
   check(fish.frame === frame, 'and counts no frame')
+  // In a forest 200 m from water: the pass runs one call in FOLLOW_EVERY and the other calls do not touch the water at all.
+  for (let i = 0; i < 3 * 72; i++) fish.update(200, LEVEL, 0, DT)
+  levelAtCalls = 0
+  for (let i = 0; i < 72; i++) fish.follow(200, LEVEL + 1.6, 0)
+  check(levelAtCalls > 0 && levelAtCalls <= Math.ceil(72 / FOLLOW_EVERY) * 12, 'a second of follow() on dry land samples the water on one call in FOLLOW_EVERY', `${levelAtCalls} levelAt calls in 72 frames`)
+  for (let i = 0; i < 3 * 72; i++) fish.follow(0, LEVEL + 1.6, 0)
   const before = new Set(fish.species.flatMap((sp) => sp.schools))
   for (let i = 0; i < 20 * 72; i++) fish.follow(0, LEVEL + 1.6, -2 * i * DT)
   const after = fish.species.flatMap((sp) => sp.schools)

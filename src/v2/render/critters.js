@@ -17,6 +17,7 @@ export const CRITTER_GLB = {
   frog: 'creatures/marsh-frog.glb',
   crab: 'creatures/shore-crab.glb',
   butterfly: 'creatures/meadow-butterfly.glb',
+  grasshopper: 'creatures/meadow-grasshopper.glb',
   // Three skinned tiers over one skin, with its clips (tools/creatures/ship-spider.mjs); no -lod ladder beside it.
   spider: 'creatures/birch-spider.glb',
   // The wandering quadrupeds (tools/creatures/ship-quadruped.mjs): three skinned

@@ -884,14 +884,14 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (frag.includes('gl_FragCoord.x + gl_FragCoord.y')) MISSING_MARKS.push(`${label} frag: a dither the card no longer wears`)
 }
 
-// The grasshopper card (grasshoppers.js): a Lambert cutout under a per-instance
-// tint whose triangle overhangs its quad, so the fragment stage cuts
-// everything past 0..1 UV before the map is read, then the double-sided flip
-// undone as the critter card does. Compiled here because the cut reads vMapUv, which only USE_MAP
-// declares, and it lands before the slot the lighting patch splices around.
+// The grasshoppers (grasshoppers.js): a plain Lambert under a per-instance
+// tint, compiled here so the lighting patch is proven on a material that
+// brings no onBeforeCompile of its own.
 {
   const stub = { heightAt: () => 0, heightAndSlopeAt: () => ({ h: 0, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 100 }
-  const material = new Grasshoppers(new THREE.Scene(), stub, { levelAt: () => null }, { walk: stub, map: new THREE.Texture() }).material
+  const box = new THREE.BoxGeometry(1, 0.5, 0.7).translate(0, 0.25, 0)
+  const asset = { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
+  const material = new Grasshoppers(new THREE.Scene(), stub, { levelAt: () => null }, { walk: stub, assets: asset }).material
   new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-grasshopper' })
   const lib = THREE.ShaderLib.lambert
   const shader = {
@@ -901,16 +901,13 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     defines: {},
   }
   material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
-  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']
-  const label = 'grasshopper card     '
+  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']
+  const label = 'grasshopper mesh     '
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
   SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
   CROSS_STAGE.push([label, vert, frag])
-  const cut = frag.indexOf('vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) discard;')
-  if (cut < 0 || cut > frag.indexOf('texture2D( map, vMapUv )')) MISSING_MARKS.push(`${label} frag: the overhang cut before the map read`)
-  if (!frag.includes('normal *= faceDirection;')) MISSING_MARKS.push(`${label} frag: the flip undone`)
 }
 
 // The generated props' three programs (gen-props.js): the mesh with the rim

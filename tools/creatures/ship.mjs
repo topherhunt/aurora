@@ -35,8 +35,8 @@ import { packTexture, readGlbChunks, tripoColourJpeg, viewOf } from '../tripo-pa
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
 
-// The creatures the world scatters on its own terms: src/v2/render/frogs.js, crabs.js and butterflies.js.
-const CRITTERS = new Set(['marsh-frog', 'shore-crab', 'meadow-butterfly'])
+// The creatures the world scatters on its own terms: src/v2/render/frogs.js, crabs.js, butterflies.js and grasshoppers.js.
+const CRITTERS = new Set(['marsh-frog', 'shore-crab', 'meadow-butterfly', 'meadow-grasshopper'])
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 

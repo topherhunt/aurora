@@ -111,7 +111,7 @@ export const SINK_MPS = 0.5
 export const PITCH_K = 0.7
 // Each downstroke's lift: the drawn bounce's half-height, metres, on the wing phase.
 export const STROKE_M = 0.012
-// Frames between a flying butterfly's ground reads.
+// Frames between a flying butterfly's ground reads within NEAR_M; a butterfly stepped every `every` frames reads it every HEIGHT_EVERY * every, since past 20 m a hand's dip over a slope is not seen.
 const HEIGHT_EVERY = 4
 // How fast the height chase, speed, pitch and roll ease per second, and the wings.
 const EASE = 3
@@ -471,8 +471,8 @@ export class Butterflies {
     return 'ground'
   }
 
-  /** One frame of one butterfly. */
-  _step(b, dt) {
+  /** One frame of one butterfly, stepped every `every` frames. */
+  _step(b, dt, every) {
     const k = Math.min(1, EASE * dt)
     b.left -= dt
     // After sunset a flight ends at the next perch rather than when its bout runs out. Clamped rather than zeroed, so a butterfly out over a lake looks again every NIGHT_LAND_S instead of every frame.
@@ -519,7 +519,7 @@ export class Butterflies {
       let rate = b.turn + Math.sin(b.weave) * 1.2
       if (hx * hx + hz * hz > TETHER * TETHER) rate += wrap(headingTo(hx, hz) - b.yaw) * 2
       b.yaw += rate * dt
-      if ((this.frame + b.id) % HEIGHT_EVERY === 0) b.ground = this.walk.heightAt(b.x, b.z)
+      if ((this.frame + b.id) % (HEIGHT_EVERY * every) === 0) b.ground = this.walk.heightAt(b.x, b.z)
       if (this.rand() < 0.3 * dt) b.alt = between(this.rand, ALT_M)
       // The height is chased by a vertical velocity, lifted while flapping and sinking on a glide, and capped by the climb the forward speed allows.
       const want = (b.ground + b.alt - b.y) * EASE + (b.glide ? -SINK_MPS : LIFT_MPS)
@@ -616,9 +616,11 @@ export class Butterflies {
         // The bank is capped where a frame's dt is, so a hitch does not land four times over on a far butterfly.
         b.held = Math.min(b.held + dt, 0.1)
         if (every === 1 || (this.frame + b.id) % every === 0) {
-          this._step(b, b.held)
+          const rested = b.state === 'rest'
+          this._step(b, b.held, every)
           b.held = 0
-          b.stale = true
+          // A butterfly that sat through the step has the matrix it had.
+          if (!(rested && b.state === 'rest')) b.stale = true
         }
         const draw = b.size * DRAW_SPANS
         if (d2 > draw * draw) continue

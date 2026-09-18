@@ -68,9 +68,9 @@ export const WET_ROUGHNESS = 0.7
 export const HUE = 0.6
 // A perch buffer this size covers a 16 m tile of the densest shore.
 const PERCH_BUF = 64
-// Scuttle for a spell, then pause. Each spell draws its own pace from `SPEED` body spans per second, the draw squared so most spells are a slow, leisurely crawl and a few a dash. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
+// A crab sits still most of the time: PAUSE_S seconds at rest, then a scuttle of GO_S seconds. Each spell draws its own pace from `SPEED` body spans per second, the draw squared so most spells are a slow, leisurely crawl and a few a dash. A step may climb or drop at most STEP_SPANS of the crab's span; more is a ledge, and it turns.
 const GO_S = [0.5, 2]
-const PAUSE_S = [1, 4]
+export const PAUSE_S = [6, 30]
 export const SPEED = [0.08, 1.2]
 const STEP_SPANS = 0.8
 // Drawn STRETCH_Y taller than the mesh (which is squashed flat), and sunk SINK of its height into the stone along the normal, so the legs grip the surface instead of tiptoeing on it.
@@ -179,6 +179,8 @@ export class Crabs {
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, hue: 0, speed: 0,
         // 'go' scuttles along ±local Z for `left` seconds, 'pause' waits at speed 0; `phase` drives the legs.
         state: 'pause', left: 0, phase: 0, normalAt: 0, depth: 0,
+        // The composed instance matrix, rebuilt only when `posed` is cleared by a move, a re-seat, a normal or a yaw; a sitting crab copies it.
+        m: new Float32Array(16), posed: false,
       })
     }
     this.free = this.slots.slice()
@@ -250,7 +252,8 @@ export class Crabs {
   }
 
   _enter(tx, tz) {
-    const t = { tx, tz, perches: new Map() }
+    // `live` counts the crabs seated in the tile, so a tile of bare perches is skipped whole each frame.
+    const t = { tx, tz, perches: new Map(), live: 0 }
     this._scan(t)
     return t
   }
@@ -313,6 +316,7 @@ export class Crabs {
         c.normalAt = 0
         this._normal(c)
         perch.crabs.push(c)
+        t.live++
       }
     }
   }
@@ -326,6 +330,7 @@ export class Crabs {
       p.crabs.length = 0
     }
     t.perches.clear()
+    t.live = 0
   }
 
   /** Rebuild every tile around (cx, cz). Boot, and whenever the ground moves under her. */
@@ -377,6 +382,7 @@ export class Crabs {
     const sz = this._slope(this.stoneAt(c.x, c.z - e), c.y, this.stoneAt(c.x, c.z + e), e)
     _n.set(-sx, 1, -sz).normalize()
     c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
+    c.posed = false
   }
 
   /** The surface's rise per metre along one axis from the samples `a` and `b` a distance `e` either side of the seat height `y`; -Infinity is no stone. */
@@ -404,6 +410,7 @@ export class Crabs {
     const top = this.stoneAt(nx, nz)
     if (top === -Infinity || Math.abs(top - c.y) > STEP_SPANS * c.size) return false
     c.x = nx; c.z = nz; c.y = top
+    c.posed = false
     c.phase += (Math.PI * 2 * LEG_CYCLES * d) / c.size
     return true
   }
@@ -439,13 +446,14 @@ export class Crabs {
     let n = 0
     let m = 0
     for (const t of this.tiles.values()) {
+      if (t.live === 0) continue
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
           if (!under && c.y < p.level) continue
           // A re-ground is a vertical shift of the whole rock, so the normal holds; a seat whose stone is gone is kept.
           if ((this.frame + c.id) % RESEAT_EVERY === 0) {
             const top = this.stoneAt(c.x, c.z)
-            if (top !== -Infinity) c.y = top
+            if (top !== -Infinity && top !== c.y) { c.y = top; c.posed = false }
           }
           c.left -= dt
           let amp = 0
@@ -463,23 +471,27 @@ export class Crabs {
             c.speed = SPEED[0] + (SPEED[1] - SPEED[0]) * this.rand() ** 2
             if (this.rand() < 0.3) c.side = -c.side
             c.yaw += (this.rand() - 0.5) * 0.8
+            c.posed = false
           }
-          const k = c.size / this.span
-          const sink = SINK * this.bodyH * k
-          _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
-          _n.set(c.nx, c.ny, c.nz)
-          _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
-          _scl.set(k, k * STRETCH_Y, k)
-          _mat.compose(_pos, _quat, _scl)
+          if (!c.posed) {
+            const k = c.size / this.span
+            const sink = SINK * this.bodyH * k
+            _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
+            _n.set(c.nx, c.ny, c.nz)
+            _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
+            _scl.set(k, k * STRETCH_Y, k)
+            _mat.compose(_pos, _quat, _scl).toArray(c.m)
+            c.posed = true
+          }
           const dx = c.x - hx
           const dy = c.y - hy
           const dz = c.z - hz
           if (dx * dx + dy * dy + dz * dz > card2) {
-            _mat.toArray(cmat, m * 16)
+            cmat.set(c.m, m * 16)
             chue[m] = c.hue
             m++
           } else {
-            _mat.toArray(mat, n * 16)
+            mat.set(c.m, n * 16)
             legs[n * 2] = c.phase
             legs[n * 2 + 1] = amp
             hue[n] = c.hue
@@ -488,13 +500,18 @@ export class Crabs {
         }
       }
     }
+    // A buffer that held nothing and holds nothing is not re-uploaded.
+    if (n > 0 || this.mesh.count > 0) {
+      this.mesh.instanceMatrix.needsUpdate = true
+      this.legs.needsUpdate = true
+      this.hue.needsUpdate = true
+    }
     this.mesh.count = n
-    this.mesh.instanceMatrix.needsUpdate = true
-    this.legs.needsUpdate = true
-    this.hue.needsUpdate = true
+    if (m > 0 || this.card.count > 0) {
+      this.card.instanceMatrix.needsUpdate = true
+      this.cardHue.needsUpdate = true
+    }
     this.card.count = m
-    this.card.instanceMatrix.needsUpdate = true
-    this.cardHue.needsUpdate = true
   }
 
   dispose() {

@@ -203,6 +203,29 @@ const ANIMALS = [
       'a slender furred body and long thin antennae',
   },
   {
+    id: 'meadow-grasshopper',
+    label: 'Meadow Grasshopper',
+    // Static, like the frog: the world hops it as one body
+    // (src/v2/render/grasshoppers.js), so there is nothing for a hexapod rig
+    // to move. Wide side-on silhouette, hence the 16:9 the `none` default
+    // would not give it.
+    rigType: 'none',
+    aspectRatio: '16:9',
+    sizeM: 0.08,
+    texPx: TEX_PX_SMALL,
+    faceTurnDeg: 50,
+    // Meant for a mesh of a couple of hundred triangles, where anything thin
+    // is the first thing lost: the legs are asked for thick and set apart,
+    // and the antennae short and stout rather than hair-fine.
+    description:
+      'a meadow grasshopper standing on all six legs on bare ground, seen from the side, every leg thick, ' +
+      'sturdy and clearly separated from the body and from each other, the two hind legs very large and ' +
+      'folded high in a sharp inverted V above the back with heavy muscular thighs, the four front legs short ' +
+      'and stout, a long narrow body in olive-green and warm tan with a pale straw-coloured belly, hard ' +
+      'saddle-shaped pronotum behind the head, wings folded flat along the back in a long tapering line, a ' +
+      'large blunt head with big oval compound eyes, short thick antennae',
+  },
+  {
     id: 'birch-spider',
     label: 'Birch Spider',
     rigType: 'octopod',

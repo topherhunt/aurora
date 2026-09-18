@@ -2287,16 +2287,22 @@ console.log('\nscatter')
       // A DECILE RATIO AND NOT THE EXTREMES: min and max are one roll each and a
       // 9:1 range reaches both ends eventually whatever the weighting does to the
       // body of the distribution. p90/p10 is the shape.
+      //
+      // ON FULL-DETAIL TILES ONLY. Past `fullRadius` a tile keeps just the
+      // rocks big enough to be seen from there (`_rankOf`), so the disc as a
+      // whole is the bed's spread with its small end cut off -- a 4x decile
+      // ratio on a bed that places 6.7x inside 40 m.
       {
         const scree = []
         const bed = r.beds.find((b) => b.cfg.name === 'scree')
         for (const t of bed.tiles.values()) {
+          if (t.q !== 0) continue
           for (let k = 0; k < t.n; k++) scree.push(bed.shape.measured.width * bed.instScale[t.ids[k]])
         }
         scree.sort((a, b) => a - b)
         const at = (p) => scree[Math.min(scree.length - 1, Math.floor(p * scree.length))]
         const spread = at(0.9) / at(0.1)
-        check(scree.length > 500 && spread > 5,
+        check(scree.length > 150 && spread > 5,
           'and the scree itself is chips, cobbles and blocks rather than one size repeated',
           `${scree.length} rocks, p10/p50/p90 ${at(0.1).toFixed(2)}/${at(0.5).toFixed(2)}/` +
           `${at(0.9).toFixed(2)} m, a ${spread.toFixed(1)}x decile spread`)
@@ -2341,7 +2347,7 @@ console.log('\nscatter')
             }
           }
         }
-        check(pairs > 10000 && inside === 0,
+        check(pairs > 3000 && inside === 0,
           'and inside a tile not one pair of them is closer than its own dart allows',
           `${inside} of ${pairs} same-tile pairs${inside ? `, worst at ${(worst * 100).toFixed(0)}% of the gap` : ''}`)
       }
@@ -2456,10 +2462,10 @@ console.log('\nscatter')
       check(giantsTop(pocketed) <= 15 + 1e-4, 'and a steep pocket in a wood is not a cliffside: its giants stop at the wooded top',
         `${giantsTop(pocketed).toFixed(1)} m over ${widths(pocketed, 'giants').length} giants`)
       pocketed.dispose()
-      // The fade is trees.js's TREELINE.fade, which rocks.js cannot import
-      // without a cycle; read it off the source instead.
-      const treeFade = readFileSync('src/v2/render/trees.js', 'utf8').match(/TREELINE = \{[^}]*\bfade: (\d+)/)
-      if (!treeFade) throw new Error('trees.js no longer declares TREELINE.fade')
+      // The fade is the forest layer's TREELINE.fade, which rocks.js cannot
+      // import without a cycle; read it off the source instead.
+      const treeFade = readFileSync('src/v2/layers/forest.js', 'utf8').match(/TREELINE = \{[^}]*\bfade: (\d+)/)
+      if (!treeFade) throw new Error('layers/forest.js no longer declares TREELINE.fade')
       check(Number(treeFade[1]) === BARREN_ABOVE_SNOW, 'and "barren" starts where the forest\'s own fade does',
         `rocks ${BARREN_ABOVE_SNOW} m over the snow line, trees ${treeFade[1]}`)
     }
@@ -3139,9 +3145,9 @@ console.log('\nscatter')
   }
 
   // The pool bound is the only thing between the densest ground in the world and
-  // a thrown scatter, and it throws rather than degrading. Walk the camera so
-  // tiles are grown at every quantised level, on the ground that places the MOST
-  // rocks.
+  // a scatter with holes in it: a dry pool drops the rock and warns once. Walk
+  // the camera so tiles are grown at every quantised level, on the ground that
+  // places the MOST rocks.
   //
   // THREE WORLDS, BECAUSE NO SINGLE ONE LOADS EVERY BED. The endless cliff is
   // where the ordinary beds run flat out at envDensity 1.0 -- but it is a
@@ -3176,7 +3182,21 @@ console.log('\nscatter')
       // rather than the subject. `place` drains the queue outright, so the
       // counts below describe what the beds PLACE; `update` still runs after it
       // for the LOD and eviction work the assertion sits downstream of.
+      //
+      // AND THE PAIR AGAIN AFTER THE WALK. A tile enters the radius at its
+      // coarsest level, where a bed keeps only the rocks big enough to be seen
+      // from there -- on a sparse bed that is none at all -- and it is the
+      // walk in `update` that queues the thickening as the camera closes. In
+      // the game that queue drains on the next frame; here the next frame is a
+      // 98 m jump, so without the second `place` the tiles under the camera at
+      // every step are still at the level the previous step gave them, and a
+      // bed that places nothing at that level reads `used 0` however dense it
+      // is. The second `update` then tiers what the second `place` grew, so
+      // the readout checks below see every rock on the rung its distance
+      // gives it rather than on the one it was placed hidden with.
       for (let i = 1; i <= 12; i++) {
+        r.place(i * 37, i * 91)
+        r.update(i * 37, 61.6, i * 91)
         r.place(i * 37, i * 91)
         r.update(i * 37, 61.6, i * 91)
       }
@@ -3189,9 +3209,13 @@ console.log('\nscatter')
       }
     }
     const beds = [...peak.values()]
-    check(beds.every((b) => b.used <= b.pool), 'the pool bound holds after a traverse of all four worlds',
-      beds.map((b) => `${b.name} ${b.used}/${b.pool} (${b.world})`).join('  '))
-    check(beds.every((b) => b.used / b.pool < 0.95), 'and holds with headroom',
+    // `used` cannot pass `pool` any more -- a dry pool drops the rock and
+    // counts it -- so the bound is asserted on the count, not the fill.
+    const dry = Object.values(worlds).flatMap((r) => r.stats.beds.filter((b) => b.rejected.pool > 0))
+    check(dry.length === 0, 'no pool ran dry over a traverse of all four worlds',
+      dry.length ? dry.map((b) => `${b.name} dropped ${b.rejected.pool}`).join('  ')
+        : beds.map((b) => `${b.name} ${b.used}/${b.pool} (${b.world})`).join('  '))
+    check(beds.every((b) => b.used / b.pool < 0.95), 'and every pool has headroom',
       `worst ${(Math.max(...beds.map((b) => b.used / b.pool)) * 100).toFixed(0)}% full`)
     check(beds.every((b) => b.used > 0), 'and every bed was actually exercised by one of them',
       beds.map((b) => `${b.name} ${b.used}`).join('  '))
@@ -3201,9 +3225,8 @@ console.log('\nscatter')
     // metres of teleport is still in flight, and a ghost sits in the mesh of
     // the tier its rock LEFT. A tier's cap is its population bound times
     // poolBound's headroom, and only the headroom is the ghosts' to take: a
-    // ghost that took a population slot would leave the next real arrival to
-    // throw in PropArena._alloc, which is the crash that walking the giants bed
-    // with thinning off produced.
+    // ghost that took a population slot would leave the next real arrival
+    // refused by PropArena._alloc and its rock stuck on the tier it is on.
     {
       const over = []
       for (const [name, r] of Object.entries(worlds)) {
@@ -3215,7 +3238,7 @@ console.log('\nscatter')
       }
       const fullest = Math.max(...Object.values(worlds).flatMap((r) => r.beds.flatMap((bed) =>
         bed.batch.meshes.slice(0, -1).map((m, t) => m.count / bed.batch.capAt[t]))))
-      check(over.length === 0, 'ghosts never fill a mesh tier past its headroom, so an arrival never throws',
+      check(over.length === 0, 'ghosts never fill a mesh tier past its headroom, so an arrival is never refused',
         over.length ? over.join('; ') : `fullest mesh tier ${(fullest * 100).toFixed(0)}% of its cap`)
     }
 

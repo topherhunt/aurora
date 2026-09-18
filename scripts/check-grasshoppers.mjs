@@ -4,14 +4,14 @@
 //
 // A synthetic meadow: a gentle slope with a snow line at 60 m, a pond, a
 // boulder and a cliff near the origin. Everything below is a way a
-// grasshopper can go wrong without anything throwing: a card that is not two
-// triangles, or whose triangles do not cover their quads with the picture
-// mapped onto them, or whose overhang is not cut; a map that is not 128 x 64
-// or whose edge is not clear; rolled on snow, on water or on a cliff; a
+// grasshopper can go wrong without anything throwing: a shipped GLB that is
+// not packed onto a 128 px WebP, over its triangle budget, or facing off +X;
+// rolled on snow, on water or on a cliff; a
 // scatter that is not the same twice, or far off its density; a length off
 // 8 cm by more than a fifth, or a tint that is not a mix of the two ends, or a
 // meadow all one colour; one seated off the walk surface or not up along the
-// slope; a hop shorter or longer than HOP_M, lower or higher over its chord,
+// slope, or drawn at a scale other than its length over the mesh's; a hop
+// shorter or longer than HOP_M, lower or higher over its chord,
 // or landing off the walk surface, on the pond or past the tether; a hop not
 // wound up by a crouch, or one whose apex is not at RISE_FRAC, whose launch
 // speed does not bleed away, or whose drop in is not steeper than its
@@ -26,11 +26,12 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import zlib from 'node:zlib'
 import {
-  AXIS_FRAC, CARD_ASPECT, CROUCH_S, CROUCH_SQUASH, DENSITY, Grasshoppers, HOP_M, LAND_S, LAND_SQUASH, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TEXTURE_URL, TILE, TINT_BROWN, TINT_GREEN, setGrasshopperCard,
+  CROUCH_S, CROUCH_SQUASH, DENSITY, Grasshoppers, HOP_M, LAND_S, LAND_SQUASH, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TILE, TINT_BROWN, TINT_GREEN,
 } from '../src/v2/render/grasshoppers.js'
-import { MARGIN } from '../tools/creatures/key-card.mjs'
+import { CRITTER_GLB } from '../src/v2/render/critters.js'
+import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
+import { webpSize } from '../tools/tripo-pack.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -63,81 +64,66 @@ const stoneAt = (x, z) => {
 const walk = { heightAt: (x, z) => Math.max(groundAt(x, z), stoneAt(x, z)) }
 const within = (v, [lo, hi], eps = 1e-6) => v >= lo - eps && v <= hi + eps
 
-// --- the shipped map ------------------------------------------------------------
+// --- the shipped asset -------------------------------------------------------
 {
-  const file = new URL(`../public/${TEXTURE_URL}`, import.meta.url)
-  check(fs.existsSync(file), `${TEXTURE_URL} is shipped -- run tools/creatures/key-card.mjs`)
+  const file = new URL(`../public/${CRITTER_GLB.grasshopper}`, import.meta.url)
+  check(fs.existsSync(file), `${CRITTER_GLB.grasshopper} is shipped -- run tools/creatures/ship.mjs`)
   if (fs.existsSync(file)) {
     const buf = fs.readFileSync(file)
-    const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20)
-    check(w === 128 && h === 64 && buf[24] === 8 && buf[25] === 6, 'the map is 128 x 64 RGBA', `${w}x${h} depth ${buf[24]} type ${buf[25]}`)
-    check(w / h === CARD_ASPECT, `and CARD_ASPECT is its aspect`, `${w / h} vs ${CARD_ASPECT}`)
-    // The IDAT chunks, inflated: key-card.mjs writes every row with filter 0.
-    const idat = []
-    for (let o = 8; o < buf.length;) {
-      const len = buf.readUInt32BE(o), type = buf.toString('ascii', o + 4, o + 8)
-      if (type === 'IDAT') idat.push(buf.subarray(o + 8, o + 8 + len))
-      o += 12 + len
+    check(buf.toString('latin1', 0, 4) === 'glTF', 'the grasshopper GLB has a glTF header')
+    const jsonLen = buf.readUInt32LE(12)
+    const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
+    check(json.meshes?.length === 1 && json.meshes[0].primitives.length === 1, 'one mesh, one primitive', `${json.meshes?.length} meshes`)
+    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB at the roster's small size, and Tripo's own JPEGs -- colour, ORM, normal -- are gone.
+    const image = json.images?.[0]
+    check(image?.uri?.endsWith('.webp') && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB, not an embedded JPEG', JSON.stringify(json.images))
+    check(image?.uri && fs.existsSync(new URL(image.uri, file)), 'and it is shipped')
+    if (image?.uri && fs.existsSync(new URL(image.uri, file))) {
+      const { width, height } = webpSize(fs.readFileSync(new URL(image.uri, file)))
+      check(width === TEX_PX_SMALL && height === TEX_PX_SMALL, `the colour map is ${TEX_PX_SMALL}px square`, `${width}x${height}`)
     }
-    const raw = zlib.inflateSync(Buffer.concat(idat))
-    const stride = w * 4 + 1
-    let filtered = 0, edge = 0, opaque = 0, clear = 0
-    for (let y = 0; y < h; y++) {
-      if (raw[y * stride] !== 0) filtered++
-      for (let x = 0; x < w; x++) {
-        const a = raw[y * stride + 1 + x * 4 + 3]
-        if (a === 255) opaque++
-        if (a === 0) clear++
-        if ((x < MARGIN || x >= w - MARGIN || y < MARGIN || y >= h - MARGIN) && a !== 0) edge++
-      }
+    check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
+    const pbr = json.materials?.[0]?.pbrMetallicRoughness
+    check(pbr?.metallicFactor === 0 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'no metalness, and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
+    const node = json.nodes.find((n) => n.mesh !== undefined)
+    check(!node.rotation && !node.translation && !node.scale, 'the mesh node carries its transform as one matrix')
+    // The mesh after the node's matrix -- ship.mjs turns the pick there by the roster's faceTurnDeg.
+    const m = node.matrix ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    const prim = json.meshes[0].primitives[0]
+    const acc = json.accessors[prim.attributes.POSITION]
+    const view = json.bufferViews[acc.bufferView]
+    const at = 20 + jsonLen + 8 + (view.byteOffset ?? 0) + (acc.byteOffset ?? 0)
+    const pos = new Float32Array(buf.buffer.slice(buf.byteOffset + at, buf.byteOffset + at + acc.count * 12))
+    const pts = []
+    for (let i = 0; i < acc.count; i++) {
+      const x = pos[3 * i], y = pos[3 * i + 1], z = pos[3 * i + 2]
+      pts.push([m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13]])
     }
-    check(filtered === 0, 'every row is unfiltered, as key-card.mjs writes them')
-    check(edge === 0, `the ${MARGIN}-texel margin is clear on every side`, `${edge} written texels in it`)
-    check(opaque > w * h * 0.2 && clear > w * h * 0.2, 'the cutout is a body on a clear ground', `${opaque} opaque, ${clear} clear of ${w * h}`)
+    const tris = json.accessors[prim.indices].count / 3
+    check(tris <= 300, 'a low-fidelity body: 300 triangles or fewer', `${tris} tris`)
+    const xMin = Math.min(...pts.map((p) => p[0])), xMax = Math.max(...pts.map((p) => p[0]))
+    const yMin = Math.min(...pts.map((p) => p[1])), yMax = Math.max(...pts.map((p) => p[1]))
+    // Facing: the antennae lead, so the foremost tenth along +X hangs wholly in the air, and the rearmost tenth -- the hind feet and the tail -- reaches the ground.
+    const lowest = (from, to) => Math.min(...pts.filter((p) => p[0] >= from && p[0] < to).map((p) => p[1]))
+    const front = lowest(xMax - (xMax - xMin) * 0.1, Infinity), back = lowest(-Infinity, xMin + (xMax - xMin) * 0.1)
+    check(front > yMin + (yMax - yMin) * 0.4 && back < yMin + (yMax - yMin) * 0.1, 'the grasshopper faces +X: its antennae lead in the air, its hind feet trail on the ground', `front tenth's lowest ${((front - yMin) / (yMax - yMin)).toFixed(2)} of the height, back tenth's ${((back - yMin) / (yMax - yMin)).toFixed(2)}`)
   }
 }
 
-// --- the card: two triangles that cover their quads, the picture mapped on ------------
-{
-  const geo = new THREE.BufferGeometry()
-  setGrasshopperCard(geo)
-  const pos = geo.getAttribute('position').array, uv = geo.getAttribute('uv').array
-  check(pos.length === 18 && geo.index.count === 6, 'two triangles, six vertices', `${pos.length / 3} vertices, ${geo.index.count} indices`)
-  const h = 1 / CARD_ASPECT
-  // Whether (px, py) lies in the triangle of the three 2D points.
-  const inside = (tri, px, py) => {
-    const s = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    const d1 = s(tri[0], tri[1], [px, py]), d2 = s(tri[1], tri[2], [px, py]), d3 = s(tri[2], tri[0], [px, py])
-    return !((d1 < -1e-9 || d2 < -1e-9 || d3 < -1e-9) && (d1 > 1e-9 || d2 > 1e-9 || d3 > 1e-9))
-  }
-  const side = [0, 1, 2].map((i) => [pos[i * 3], pos[i * 3 + 1]])
-  const top = [3, 4, 5].map((i) => [pos[i * 3], pos[i * 3 + 2]])
-  check([0, 1, 2].every((i) => pos[i * 3 + 2] === 0), 'the side card stands in the XY plane through the axis')
-  check([3, 4, 5].every((i) => Math.abs(pos[i * 3 + 1] - h * AXIS_FRAC) < 1e-9), `the top card lies in XZ at ${AXIS_FRAC} of the height, through the axis`)
-  const sideCorners = [[-0.5, 0], [0.5, 0], [0.5, h], [-0.5, h]]
-  const topCorners = [[-0.5, -h / 2], [0.5, -h / 2], [0.5, h / 2], [-0.5, h / 2]]
-  check(sideCorners.every((c) => inside(side, ...c)) && topCorners.every((c) => inside(top, ...c)), 'each triangle covers its 1 x 1/aspect quad')
-  // The picture: u runs from the head at +X (u = 0) to the tail, v up the side card and toward -z across the top; affine, so three vertices fix it.
-  const uvOk = (i, u, v) => Math.abs(uv[i * 2] - u) < 1e-9 && Math.abs(uv[i * 2 + 1] - v) < 1e-9
-  check([0, 1, 2].every((i) => uvOk(i, 0.5 - pos[i * 3], pos[i * 3 + 1] / h)), 'the side card reads u = 0.5 - x, v = y / height: head at +X')
-  check([3, 4, 5].every((i) => uvOk(i, 0.5 - pos[i * 3], (h / 2 - pos[i * 3 + 2]) / h)), 'the top card reads the same picture, its bottom toward +z')
-  check([...geo.getAttribute('normal').array].every((v, i) => v === (i % 3 === 1 ? 1 : 0)), 'every normal is straight up')
+// --- a stand-in asset: a unit box, feet at y = 0 --------------------------------
+const boxAsset = () => {
+  const box = new THREE.BoxGeometry(1, 0.5, 0.7, 2, 2, 2).translate(0, 0.25, 0)
+  return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
 }
 
-// --- construction and the shader hook -----------------------------------------
+// --- construction ----------------------------------------------------------------
 const scene = new THREE.Scene()
-const make = (seed = 7) => new Grasshoppers(scene, height, water, { seed, walk, map: new THREE.Texture() })
+const make = (seed = 7) => new Grasshoppers(scene, height, water, { seed, walk, assets: boxAsset() })
 const flock = make()
-check(flock.loaded && flock.mesh.visible && flock.material.map?.colorSpace === THREE.SRGBColorSpace, 'map set: visible, sRGB')
-{
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <normal_fragment_begin>\n#include <map_fragment>\n' }
-  flock.material.onBeforeCompile(shader)
-  const cut = shader.fragmentShader.indexOf('discard'), map = shader.fragmentShader.indexOf('#include <map_fragment>')
-  check(cut >= 0 && cut < map && shader.fragmentShader.includes('vMapUv.x > 1.0') && shader.fragmentShader.includes('vMapUv.y > 1.0'), 'the overhang past 0..1 UV is cut before the map is read')
-  check(shader.fragmentShader.includes('normal *= faceDirection;'), 'both faces take the authored normal\'s light')
-  check(flock.material.alphaTest === 0.5 && flock.material.side === THREE.DoubleSide, 'a double-sided cutout material')
-  check(!flock.mesh.frustumCulled && flock.mesh.instanceMatrix.usage === THREE.DynamicDrawUsage, 'never frustum culled, matrices dynamic')
-}
+check(flock.loaded && flock.mesh.visible && flock.mesh.parent === flock.batch && Math.abs(flock.length - 1) < 1e-6, 'asset set: visible in the batch, length 1', `length ${flock.length}`)
+check(flock.mesh.isInstancedMesh && flock.mesh.instanceMatrix.count === MAX && flock.batch.children.length === 1, 'one InstancedMesh of MAX slots: every shown grasshopper is one draw call')
+check(flock.material.isMeshLambertMaterial && flock.material.alphaTest === 0 && flock.material.side === THREE.FrontSide && !flock.material.transparent, 'a plain single-sided Lambert: no cutout, no glint')
+check(!flock.mesh.frustumCulled && flock.mesh.instanceMatrix.usage === THREE.DynamicDrawUsage, 'never frustum culled, matrices dynamic')
 
 // --- placement -----------------------------------------------------------------
 const alive = (of = flock) => of.slots.filter((g) => g.tile !== null)
@@ -163,13 +149,16 @@ flock.place(0, 0)
   // Seated up along the slope: the field rises 0.05 in x, so the normal leans -x.
   flock.update(0, 11, 0, 1 / 72)
   const m = flock.mesh.instanceMatrix.array
-  let leaning = 0
+  let leaning = 0, scaled = 0
   for (let k = 0; k < flock.mesh.count; k++) {
     const up = [m[k * 16 + 4], m[k * 16 + 5], m[k * 16 + 6]]
     const len = Math.hypot(...up)
     if (Math.abs(up[0] / len + SLOPE / Math.hypot(1, SLOPE)) < 1e-5 && Math.abs(up[1] / len - 1 / Math.hypot(1, SLOPE)) < 1e-5) leaning++
+    // The instances are written in shown order; a seated body's X column is its length over the mesh's.
+    if (Math.abs(Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) - flock.shown[k].len / flock.length) < 1e-6) scaled++
   }
   check(flock.mesh.count > 0 && leaning === flock.mesh.count, 'every written instance stands up along the slope', `${leaning} of ${flock.mesh.count}`)
+  check(scaled === flock.mesh.count, 'and is drawn at its length over the mesh\'s X extent', `${scaled} of ${flock.mesh.count}`)
   // The tint: each written instance's colour is a mix of the two ends by a shade, and the meadow holds greener and browner ones.
   const tint = flock.mesh.instanceColor.array
   let inGamut = 0, greener = 0, browner = 0

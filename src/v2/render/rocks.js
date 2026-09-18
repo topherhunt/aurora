@@ -18,11 +18,13 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // §25; this is the contract. Stone under half a metre is render/litter.js's.
 //
 // THE SCATTER IS render/trees.js's, deliberately -- tiled, camera-following,
-// graded thinning at FULL_RADIUS / d so the instance count grows linearly in the
-// draw radius rather than quadratically. Everything that header argues about
-// tiles, ranks, quantised keep-fractions, incremental regrow, standing props on
-// the DRAWN ground and dissolving at each instance's own cull distance holds here
-// and is not repeated.
+// thinned by rank over quantised levels. Everything that header argues about
+// tiles, ranks, incremental regrow, standing props on the DRAWN ground and
+// dissolving at each instance's own cull distance holds here and is not
+// repeated. What differs is THE RANK: a tree's is a random draw, so the wood
+// thins at FULL_RADIUS / d; a rock's is its SIZE (`_rankOf`), so past
+// `fullRadius` a tile holds exactly the rocks big enough to still be drawn at its
+// distance and the pool is sized for those alone.
 //
 // ONE SHAPE, SIX BEDS. Every bed places the bank's one boulder mesh
 // (props/rock-bank.js -- its open cap has no bed left to lay it) and everything
@@ -111,13 +113,10 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // ROCK_LOD_GONE_MAX. Only the embedded bed's biggest blocks meet the first.
 //
 // AND NOTHING IS CULLED BEFORE IT HAS REACHED T6 -- AND STAYED WHOLE THERE FOR A
-// WHILE. Thinning is keyed on a rank that knows nothing about how big a rock is,
-// so it used to reach up and dissolve rocks that were still on a finer tier:
-// rocks went at 37 m. `_rankOf` floors that rank at the rock's own far distance
-// and `ROCK_FAR_LIFE` holds T6 whole for a band past it. A ROCK DISAPPEARING IS
-// STILL NOT ITS LADDER RUNNING OUT -- the ladder is a function of SIZE and picks
-// the mesh, the graded thinning is a function of the instance's random RANK and
-// decides whether the rock is there at all.
+// WHILE. A rock's thinning rank IS its far distance (`_rankOf`), and
+// `ROCK_FAR_LIFE` holds T6 whole for a band past it. A ROCK DISAPPEARING IS
+// STILL NOT ITS LADDER RUNNING OUT -- the ladder picks the mesh at each rung of
+// the size, the rank decides where past the last rung the rock is dropped.
 //
 // EVERY TIER IS A MESH IN THE ONE PLACEMENT MATRIX, T6 included: it is the
 // rock's measured box on five vertices (rock.js), so the far swap moves nothing
@@ -193,8 +192,7 @@ const BEDS = [
     // is a talus foot.
     density: 0.0055,
     // At the effective 0.0022 a forest boulder is one per 455 m2, roughly every
-    // 21 m, and closer in practice because graded thinning packs the near field.
-    // The ratios between the four are untouched; only the scale moved.
+    // 21 m. The ratios between the four are untouched; only the scale moved.
     envDensity: { river: 0.28, forest: 0.4, cliff: 0.4, peak: 0.32 },
     fullRadius: 95,
     // 600, UP FROM 460, AND SET BY `sizeByEnv` BELOW RATHER THAN BY TASTE. A 10 m
@@ -300,10 +298,10 @@ const BEDS = [
     // `sizeBias`; the two numbers are one decision and moving either alone undoes
     // it. At 2.0 the foot of a cliff was a rock every metre, all about the same
     // modest size: a gravel path rather than a talus cone. Now it is one rock every
-    // 1.8 m inside the full radius, median 2.25 m across, and the gate reads one
-    // every 2.1 m over the whole 140 m reach where thinning has begun grading it
-    // away. Scree does essentially all of that alone -- the other beds contribute a
-    // flat ~230 rocks at the foot whatever this number is.
+    // 1.8 m inside the full radius, median 2.25 m across, and past it only the
+    // blocks big enough to still be drawn. Scree does essentially all of that
+    // alone -- the other beds contribute a flat ~230 rocks at the foot whatever
+    // this number is.
     //
     // WHAT "PILED" MEANS HERE CHANGED WITH THE DART. `minGap` forbids the
     // short-range clustering that used to be the evidence of a pile, so nearest
@@ -316,21 +314,17 @@ const BEDS = [
     // 0.96-0.98 m across floors 0.42 to 0.65, so the floor is a purely spatial
     // mask and raising it to buy "bunching" only trades away coverage.
     //
-    // WHAT IT COSTS: 17 ms of one-time `place()` and an instance pool of 177,343,
-    // half what density 2.0 asked for. The pool is the uglier number -- a
-    // traverse peaks at 785 instances in it -- but `_poolBound` is position blind
-    // by necessity and running dry THROWS, so it cannot be tightened by guessing at
-    // an average. Most of the placement time is `_relief`, not the terrain sample;
-    // see the note at the clump test in _growTile for the memo that would take it
+    // WHAT IT COSTS: 17 ms of one-time `place()`, and the pool `siteFrac` sets
+    // below. Most of the placement time is `_relief`, not the terrain sample; see
+    // the note at the clump test in _growTile for the memo that would take it
     // down and why it is not free. §25 has the measurements.
     density: 1.0,
     envDensity: { river: 0, forest: 0, cliff: 1, peak: 1 },
     fullRadius: 40,
     // 280 AND NOT LESS, and the short end was tried. `radius` does not change
     // near-field spacing at all -- inside `fullRadius` it measured the same at
-    // 140, 110 and 90, because thinning already grades everything past the full
-    // radius away -- so pulling it in to 110 looked like a free quarter off both
-    // the placement time and the pool. It is not: it sets REACH, and a scree
+    // 140, 110 and 90 -- so pulling it in to 110 looked like a free quarter off
+    // both the placement time and the pool. It is not: it sets REACH, and a scree
     // slope is a landscape feature you see across a valley before walking to it.
     // At 110 the check-rocks traverse places zero scree where 140 places 97,
     // because the feet it passes sit in the 110-140 m band -- cutting this does
@@ -1060,7 +1054,7 @@ const FIT_SHRINK = 0.87
 // camera 9 m between updates and the underfoot bed saturates at 1024, because the
 // ladder is measured in ROCK SIZES -- 4, 7.5 and 25 of them -- so a 9 m jump
 // carries every pebble on a rung across it at once. The ceilings stop that
-// becoming a pool exhaustion (which THROWS, in `_growTile`) or a frame spent
+// becoming a pool exhaustion (a rock dropped, in `_growTile`) or a frame spent
 // animating a jump cut nobody would see. Past either limit a swap simply pops,
 // which is what every swap did before this existed: a loss of polish, never a
 // loss of rocks.
@@ -1103,13 +1097,6 @@ const FAR_IN_SQ = (ROCK_LOD_FAR_MAX / (1 + LOD_HYSTERESIS)) ** 2
 // it shrinks both; raising it grows both. Re-run scripts/check-rocks.mjs after
 // either, which bounds them.
 const ROCK_FAR_LIFE = 1.0
-
-// THE HALVING LAW IS SWITCHED OFF while the far tier's hand-over and its cull are
-// being told apart in the headset: every rock lives to its bed's `radius`,
-// whatever rank it drew, and the pool is sized for all of them. `_rankOf` and
-// `_keepFrac` read it, and check-rocks.mjs holds the thinning law only while it
-// is on.
-export const ROCK_THIN = false
 
 /**
  * The gone-distance a rock of ladder size `size` metres must be given, in metres,
@@ -1435,14 +1422,15 @@ class RockBed {
     // WHAT FRACTION OF A TILE'S CANDIDATES CAN EVER BE PLACED. Both instance
     // bounds in this file -- `_poolBound` and `_tierCaps` -- count RANK survivors
     // and know nothing about slope, water or the environment gate, so a bed that
-    // only ever stands on a wall is bounded as if the whole map were one. The cap
-    // bed measures 5.7% full at the steepest spot on the real heightmap and
-    // allocates for a hundred, which is 40 MB of instance data for 2 MB of rock.
+    // only ever stands on a wall is bounded as if the whole map were one.
     //
-    // A NUMBER THE BED PROMISES AND THE POOL ENFORCES. Set it too low and the bed
-    // does not degrade, it THROWS on the tile that overruns -- which is the right
-    // failure and the reason this is a declaration rather than an estimate. Leave
-    // it out and nothing changes.
+    // A MEASUREMENT, NOT A DECLARATION: each bed's value is its peak live count
+    // over scripts/probe-rock-pools.mjs's flight of the real map, with room over
+    // it, as a fraction of the bound -- the bound is what the constants say and
+    // the fraction is what the map does, so a change to either re-runs the probe.
+    // A pool that runs dry DROPS the rock and warns (see `_growTile`), which is
+    // what makes a measured size safe to ship. Leave it out and the pool is the
+    // whole bound.
     this.siteFrac = cfg.siteFrac ?? 1
     if (!(this.siteFrac > 0 && this.siteFrac <= 1)) {
       throw new Error(`RockBed ${cfg.name}: siteFrac ${this.siteFrac} is a fraction of the candidates`)
@@ -1922,7 +1910,8 @@ class RockBed {
     this.regrows = 0
     this.regrounds = 0
     this.sited = { foot: 0, brow: 0 }
-    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, gap: 0, fit: 0 }
+    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, gap: 0, fit: 0, pool: 0 }
+    this.poolDry = false
     this.placeMs = 0
     this.lastBuildMs = 0
 
@@ -1937,9 +1926,10 @@ class RockBed {
 
   /**
    * How many instances ONE tier's mesh has to hold. PropArena gives every tier
-   * an InstancedMesh of its own and a mesh that fills THROWS, so these are
-   * bounds and not estimates -- and they are also what the layer costs in
-   * memory, since a cap is allocated whether it ever fills or not.
+   * an InstancedMesh of its own and a mesh that fills REFUSES the next arrival
+   * (a rock held one rung too coarse), so these are bounds and not estimates --
+   * and they are also what the layer costs in memory, since a cap is allocated
+   * whether it ever fills or not.
    *
    * THE FAR TIER IS THE POOL, exactly. Every rock is born on T6 (_growTile)
    * and `_demote` puts every tile outside `nearSq` wholly back on it, so a bad
@@ -1967,10 +1957,9 @@ class RockBed {
    * share: a cross-dissolve ghost sits in the mesh of the tier its rock LEFT,
    * and `_crossFade` starts one only while that tier's ghosts are under
    * `ghostRoom`, the cap less the population's share. A ghost that took a
-   * population slot would leave the next real arrival to throw in
-   * PropArena._alloc, so overrunning the room costs a pop rather than a throw.
-   * The far tier's cap is the pool, and every ghost is a pool id, so it has no
-   * room to keep.
+   * population slot would have the next real arrival refused its tier, so
+   * overrunning the room costs a pop rather than a coarse rock. The far tier's
+   * cap is the pool, and every ghost is a pool id, so it has no room to keep.
    */
   _tierCaps() {
     const perRoll = farGoneAt(1)
@@ -1991,20 +1980,14 @@ class RockBed {
   }
 
   /**
-   * The fraction of a tile's candidates that survive at ladder level `level`.
-   *
-   * NOT `uAt[level]`, and the pool would be undersized if it were: `_rankOf`
-   * floors the rank, so the survivors are the UNION of the rocks that drew a low
-   * enough `u` and the rocks whose far band is further out than this level's distance.
-   * The two events are independent -- `u` and the size roll are separate draws --
-   * so the union is `u + (1 - u) * P(fadeFloor > d)`. Pool exhaustion is a hard
-   * throw, so getting this wrong in the low direction crashes the bed; `_fadeFloor`
-   * over-states, which makes this an upper bound and over-allocates instead.
+   * The fraction of a tile's candidates that survive at ladder level `level`:
+   * everything inside `fullRadius`, and past it the size rolls whose own far
+   * band reaches the level's distance (`_rankOf`). `_fadeFloor` over-states, so
+   * this is an upper bound and the pool over-allocates rather than runs dry.
    */
   _keepFrac(level) {
-    if (!ROCK_THIN) return 1
-    const u = this.uAt[level]
-    return u + (1 - u) * this._exemptFrac(this.fullRadius / u)
+    if (level === 0) return 1
+    return this._exemptFrac(this.fullRadius / this.uAt[level])
   }
 
   /**
@@ -2053,32 +2036,31 @@ class RockBed {
   }
 
   /**
-   * THE RANK A ROCK IS ACTUALLY THINNED BY, and it is not the one it drew.
+   * THE RANK A ROCK IS THINNED BY, AND IT IS ITS SIZE. A tile at level q keeps
+   * exactly `{rank <= uAt[q]}` and `uAt[q] = fullRadius / d_q`, so a rock is
+   * placed only inside the greater of `fullRadius` and its own gone-distance --
+   * the distance the rim would have finished dissolving it at anyway. Inside
+   * `fullRadius` every size stands; past it the pile thins from the small end
+   * up, the 4.5 m block outliving the cobbles by a hundred metres, and a tile
+   * beyond the bed's biggest gone-distance holds nothing at all.
    *
-   * `u` is the thinning rank, uniform on 0..1: a tile at level q keeps exactly
-   * `{u < uAt[q]}`, and since `uAt[q] = fullRadius / d_q` the surviving fraction at
-   * distance d is exactly `fullRadius / d` -- the halving law this bed is built on,
-   * unchanged here.
+   * That is what sizes the pool: a tile's survivors at a distance are the size
+   * rolls whose far band reaches it (`_keepFrac`), not a random slice of the
+   * lot, so a scree bed reserves for its blocks over 130 m and its cobbles over
+   * 40 rather than for 196 rocks a tile over 280.
    *
-   * What changes is the FLOOR. The rank alone knows nothing about how big a rock
-   * is, so a bed whose `fullRadius` is shorter than its own ladder would dissolve
-   * rocks still sampled: the shore bed's is 25 m and its biggest rock does not
-   * reach T6 until 62, so a high-ranked one would vanish at 20-odd metres having
-   * never got there. Capping the rank at `fullRadius / reach` -- the rank whose
-   * tile drops it exactly at its own far distance -- means every rock lives
-   * until it is on T6, after which the drawn rank takes over and the halving
-   * resumes. Rocks small enough to reach T6 inside `fullRadius`, most of them, are
-   * untouched: there the cap is above 1 and `u` is already smaller.
+   * A rock lives until it is on T6 by construction: the gone-distance is
+   * `_fadeFloor`, which is past the far rung, and nothing dissolves earlier.
    *
    * ONE NUMBER FOR ALL THREE CONSUMERS: the tile ladder (`_thin`), the pool bound
    * and the shader's dissolve distance all read this and nothing else, so the
    * CPU's decision to drop a rock and the shader's decision to have finished
    * fading it cannot drift apart -- which is what keeps the thinning a dither
-   * rather than a pop.
+   * rather than a pop. The `<=` matters: a rock the ladder cannot reach past
+   * `fullRadius` ranks exactly 1, which is level zero's own `uAt`.
    */
-  _rankOf(u, sizeRoll) {
-    if (!ROCK_THIN) return this.fullRadius / this.radius
-    return Math.min(u, this.fullRadius / this._fadeFloor(sizeRoll))
+  _rankOf(sizeRoll) {
+    return this.fullRadius / Math.max(this.fullRadius, this._fadeFloor(sizeRoll))
   }
 
   /**
@@ -2637,12 +2619,15 @@ class RockBed {
           }
         }
 
-        if (tier !== cur) {
+        // A tier whose mesh is full refuses the move (PropArena) and the rock
+        // keeps the rung it has: one mesh coarser than it should be, not gone.
+        if (tier !== cur && this.batch.setGeometryIdAt(i, this.tierIds[tier])) {
           this.tierAt[i] = tier
-          this.batch.setGeometryIdAt(i, this.tierIds[tier])
           // `cur < 0` is an instance that has never been tiered -- there is no
           // departing mesh to hold, so there is nothing to dissolve past.
           if (cur >= 0) this._crossFade(i, cur, now)
+        } else {
+          tier = cur
         }
         cnt[tier]++
       }
@@ -2856,17 +2841,18 @@ class RockBed {
       const rollRoll = rand()
       const leanDir = rand()
       const leanMag = rand()
-      const u = rand()
+      // The rank draw the halving law keyed on. Burned, not read: dropping it
+      // would move every rock in the world one draw along.
+      rand()
 
-      // The rank the tile ladder actually keys on -- `u`, floored so no rock is
-      // thinned away while it is still a mesh. See `_rankOf`. Computed HERE, before
-      // the survivor test and before the sort, because all three have to agree on
-      // one order: the stability argument above only holds if a candidate is darted
-      // against exactly the set already standing at every coarser level, and with
-      // the floor in play that set is ordered by this, not by the raw draw.
-      const rankU = this._rankOf(u, this._sizeRoll(scaleRoll))
+      // The rank the tile ladder keys on -- the rock's own size, see `_rankOf`.
+      // Computed HERE, before the survivor test and before the sort, because all
+      // three have to agree on one order: the stability argument above only holds
+      // if a candidate is darted against exactly the set already standing at
+      // every coarser level.
+      const rankU = this._rankOf(this._sizeRoll(scaleRoll))
 
-      if (rankU >= uNew || rankU < uOld) continue
+      if (rankU > uNew || rankU <= uOld) continue
 
       c.x[m] = x
       c.z[m] = z
@@ -2907,7 +2893,7 @@ class RockBed {
     // and reads back the field samples phase zero already paid for.
     //
     // IT IS STILL STABLE UNDER TILE GROWTH, for a reason that is worth stating
-    // rather than assuming: `_rankOf` floors every candidate of a `fitFromTop` bed
+    // rather than assuming: `_rankOf` ranks every candidate of a `fitFromTop` bed
     // at `fullRadius / farGoneAt(top)`, one value for all of them, so this bed's
     // rank ladder is flat and a tile is grown once at full detail. There is no
     // coarser level for the pack to disagree with.
@@ -3293,10 +3279,21 @@ class RockBed {
         continue
       }
 
+      // A DRY POOL DROPS THE ROCK, IT DOES NOT THROW. The pool is sized to a
+      // measured peak (`siteFrac`), not to the position-blind bound, so a talus
+      // richer than any the measurement flew is a rock or two missing at the far
+      // edge -- pass two runs largest first, so what goes is the small end of the
+      // tile that overran -- and a warning, once, on the console the log endpoint
+      // ships to the dev server.
       if (this.freeCount === 0) {
-        throw new Error(
-          `RockBed ${cfg.name}: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
-        )
+        this.rejected.pool++
+        if (!this.poolDry) {
+          this.poolDry = true
+          console.warn(
+            `RockBed ${cfg.name}: instance pool of ${this.maxInstances} ran dry with ${this.tiles.size} tiles resident; raise siteFrac`
+          )
+        }
+        continue
       }
 
       const id = this.free[--this.freeCount]
@@ -3397,17 +3394,16 @@ class RockBed {
 
       // WHERE THIS ROCK DISSOLVES, AND WHY IT CANNOT BE BEFORE ITS LADDER ENDS.
       //
-      // `rankU` is the effective rank from `_rankOf`. The tile ladder keeps exactly
-      // `{rankU < uAt[q]}` and `uAt[q] = fullRadius / d_q`, so handing the same
+      // `rankU` is the size rank from `_rankOf`. The tile ladder keeps exactly
+      // `{rankU <= uAt[q]}` and `uAt[q] = fullRadius / d_q`, so handing the same
       // number to the material makes the CPU's decision and the shader's agree -- a
       // rock the tile is about to drop has already faded out.
       //
-      // Because `rankU = min(u, fullRadius / fadeFloor)`, the dissolve distance
-      // `fullRadius / rankU` is exactly `max(fullRadius / u, fadeFloor)`. The floor
-      // is therefore not an approximation of the guarantee, it IS the guarantee: no
-      // rock starts dissolving before it has reached T6, so thinning takes the
-      // tail of rocks that are already six triangles apiece rather than reaching
-      // up and taking finer meshes -- which read as rocks culling without degrading.
+      // The dissolve distance `fullRadius / rankU` is exactly `max(fullRadius,
+      // fadeFloor)`, and the floor is past the far rung, so no rock starts
+      // dissolving before it has reached T6: thinning takes rocks that are already
+      // six triangles apiece rather than reaching up and taking finer meshes --
+      // which read as rocks culling without degrading.
       //
       // The `radius` clamp is the bed's outer reach, past which its tiles are not
       // resident at all, so the dissolve finishes before the tile evicts. It cannot
@@ -3539,8 +3535,8 @@ class RockBed {
     if (this.freeCount <= FADE_POOL_RESERVE) return
     // And a third, which is PropArena's rather than the pool's: the ghost goes in
     // the DEPARTING tier's mesh, and only that tier's headroom is the ghosts' to
-    // fill. A full mesh throws in _alloc, and the rock that throws is the next
-    // REAL arrival, not the ghost -- see `_tierCaps`.
+    // fill; a ghost in the population's share would have the next REAL arrival
+    // refused instead -- see `_tierCaps`.
     if (this.ghostsAt[oldTier] >= this.ghostRoom[oldTier]) return
 
     const dup = this.free[--this.freeCount]
@@ -3551,7 +3547,11 @@ class RockBed {
     this.batch.getColorAt(i, this._c)
     this.batch.setColorAt(dup, this._c)
     this.batch.setGeometryIdAt(dup, this.tierIds[oldTier])
-    this.batch.setVisibleAt(dup, true)
+    // The mesh is full past even its headroom: no ghost, the swap pops.
+    if (!this.batch.setVisibleAt(dup, true)) {
+      this.free[this.freeCount++] = dup
+      return
+    }
     setPropFadeTimerAt(this.batch, dup, now, false)
     setPropFadeTimerAt(this.batch, i, now, true)
 
@@ -3600,7 +3600,7 @@ class RockBed {
     let w = 0
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      if (tile.rank[k] < uNew) {
+      if (tile.rank[k] <= uNew) {
         tile.ids[w] = id
         tile.rank[w] = tile.rank[k]
         w++

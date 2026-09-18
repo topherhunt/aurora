@@ -334,12 +334,21 @@ flock.place(0, 0)
     // Seat it and read the matrix's x column: the body must point up the bark.
     b.perch = 'trunk'; b.state = 'rest'; b.left = 100
     b.x = b.px; b.y = b.py; b.z = b.pz
+    // Seated by hand, so the frame is told: a sitter's matrix is otherwise kept.
+    b.stale = true
     flock.update(0, 11, 0, 0)
     const m = flock.mesh.instanceMatrix.array
     let k = null
     for (let i = 0; i < flock.mesh.count; i++) if (Math.abs(m[i * 16 + 12] - b.x) < 1e-6 && Math.abs(m[i * 16 + 14] - b.z) < 1e-6) k = i
     const bodyUp = k !== null && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
     check(bodyUp, 'seated with its head up the trunk', k === null ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
+    // A sitter is copied, not recomposed: _seat is not called for it again while it rests.
+    const seat = flock._seat
+    let seated = 0
+    flock._seat = function (c) { if (c === b) seated++; return seat.call(this, c) }
+    for (let i = 0; i < 72; i++) flock.update(0, 11, 0, 1 / 72)
+    flock._seat = seat
+    check(b.state === 'rest' && seated === 0, 'and a second of sitting recomposes its matrix on no frame', `${seated} seats`)
   }
 }
 

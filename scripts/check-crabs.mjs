@@ -216,6 +216,14 @@ crabs.place(15, 0)
 const snapA = alive().map((c) => [c.x, c.z, c.size]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
 crabs.place(200, 200)
 check(alive().length === 0, 'nothing away from the lake')
+{
+  // The first frame empties the buffers; after that a frame with no crab uploads nothing.
+  for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, 1 / 72)
+  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.card.instanceMatrix.version, crabs.cardHue.version].join(',')
+  const v0 = versions()
+  for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, 1 / 72)
+  check(versions() === v0 && crabs.mesh.count === 0, 'and a second of frames there re-uploads no buffer', `versions ${v0}`)
+}
 crabs.place(15, 0)
 const snapB = alive().map((c) => [c.x, c.z, c.size]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
 check(JSON.stringify(snapA) === JSON.stringify(snapB), 'placement is a pure function of the rocks', `${snapA.length} crabs`)
@@ -230,6 +238,7 @@ let offPerch = 0
 let tilted = 0
 let moved = 0
 const paces = []
+const lastPace = new Map()
 rocks.calls = 0
 const t0 = performance.now()
 for (let i = 0; i < SECONDS / DT; i++) {
@@ -240,7 +249,8 @@ for (let i = 0; i < SECONDS / DT; i++) {
     else if (Math.abs(c.y - top) > 1e-6) floating++
     if (Math.hypot(c.x - c.perch.x, c.z - c.perch.z) > c.perch.r + 1e-6) offPerch++
     if (c.ny < 0.999) tilted++
-    if (c.state === 'go' && c.left > 0 && (i % 36) === 0) paces.push(c.speed)
+    // One sample per spell: a spell is a new pace on a crab.
+    if (c.state === 'go' && c.speed !== lastPace.get(c)) { paces.push(c.speed); lastPace.set(c, c.speed) }
   }
 }
 const ms = (performance.now() - t0) / (SECONDS / DT)

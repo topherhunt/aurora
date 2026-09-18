@@ -78,8 +78,10 @@ const RECYCLE_TRAVEL = 3
 export const BORN_FOR = 1.5
 // Water this deep, under a fish's own spot, hands out the species' full size ceiling; 0.5 m hands out the shore's.
 const DEEP_M = 12
-// Seed attempts per frame across all species. A lake shore is roughly half water, so a dozen tries a frame refills an emptied pool in well under a second.
+// Seed attempts per pass across all species. A lake shore is roughly half water, so a dozen tries a pass refills an emptied pool in well under a second under water.
 const SEEDS_PER_FRAME = 12
+// With her head out of the water the pass runs on every FOLLOW_EVERY-th call: the retire ring is 8 m past the seed disc and she walks under 1 m in these frames, so nothing is lost, and the seeds -- each a levelAt and a heightAt, and each failing on dry ground -- are what a dry frame would otherwise spend.
+export const FOLLOW_EVERY = 8
 const PROBE_EVERY = 4
 // A startle crosses a shoal at BOLT_WAVE m/s, each fish reacting up to BOLT_JITTER s late on top, and BOLT_MISS of the shoal never bolts at all: a fright is a ripple through the shoal, never one frame's broadcast.
 const BOLT_WAVE = 4
@@ -171,6 +173,8 @@ export class Fish {
 
     this.frame = 0
     this.time = 0
+    // Counts follow() calls, so the dry pass runs one call in FOLLOW_EVERY.
+    this.dryTick = 0
     this.head = { x: 0, y: 0, z: 0 }
     // The fish that set off at DART_SPEED or more this frame, for startled().
     this.startles = []
@@ -461,9 +465,12 @@ export class Fish {
    * the moment she goes under the water around her is already stocked.
    * Whatever seeds here is born full-grown: nobody watched it arrive, and a
    * shoal swelling from nothing on the dive is the pop-in the pool exists to
-   * hide. (x, y, z) is her head.
+   * hide. (x, y, z) is her head. Only every FOLLOW_EVERY-th call does the
+   * work; the rest return at once, so a forest far from any water pays
+   * nothing for the fish.
    */
   follow(x, y, z) {
+    if (this.dryTick++ % FOLLOW_EVERY !== 0) return
     this._follow(x, y, z, BORN_FOR)
   }
 

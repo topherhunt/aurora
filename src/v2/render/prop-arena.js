@@ -46,7 +46,7 @@ import THREE from '../../three-instance.js'
 // stands. The piece most worth lifting out next is the cross-dissolve, which is
 // the same sixty lines of pool-and-clock bookkeeping in every bed and holds the
 // only invariant that is expensive to get wrong (a ghost that outlives its
-// window is a leaked slot, and a pool running dry throws) -- the shape it would
+// window is a leaked slot) -- the shape it would
 // take, and what each bed does differently, is worked out in
 // design/attic/lod-cross-fade-extraction.md. The placement and ladder halves are
 // NOT the same and should not be forced together -- see the class header in
@@ -63,8 +63,8 @@ export class PropArena extends THREE.Group {
    * @param tiers         bank.tiers -- `tiers[t].geometries[v]`. TAKEN, not
    *                      copied: an InstancedMesh draws the object it is given,
    *                      so the caller must not dispose these.
-   * @param caps          per-tier instance capacity of ONE mesh. Exceeding it
-   *                      throws rather than silently dropping a prop.
+   * @param caps          per-tier instance capacity of ONE mesh. A mesh that is
+   *                      full REFUSES: see `setVisibleAt` and `setGeometryIdAt`.
    * @param material      shared by every mesh, so the bank is one program; or
    *                      a function `(t, v) => Material` for a bank whose
    *                      variants wear their own maps (gen-props.js).
@@ -138,6 +138,9 @@ export class PropArena extends THREE.Group {
     this.col = new Float32Array(maxInstances * 3).fill(1)
     this.fade = new Float32Array(maxInstances).fill(1)
     this.layer = layerShift ? new Float32Array(maxInstances) : null
+    /** Shows and tier moves a full mesh turned away, for the readouts. */
+    this.refused = 0
+    this._warned = new Uint8Array(this.meshes.length)
   }
 
   addInstance(geometryId) {
@@ -147,22 +150,37 @@ export class PropArena extends THREE.Group {
     return id
   }
 
+  /**
+   * Move the instance to another mesh. A visible instance whose new mesh is
+   * FULL stays where it is and this returns false: the caller keeps the tier it
+   * had, which is a rock a rung too coarse rather than a rock missing. The cap
+   * is a bound on the tier's population (see rocks.js `_tierCaps`), so this
+   * fires only when the world outruns the numbers the cap was set from, and it
+   * says so once per mesh.
+   */
   setGeometryIdAt(instanceId, geometryId) {
-    if (this.geoAt[instanceId] === geometryId) return
+    if (this.geoAt[instanceId] === geometryId) return true
+    if (this.vis[instanceId] && !this._room(geometryId)) return false
     if (this.slot[instanceId] >= 0) this._free(instanceId)
     this.geoAt[instanceId] = geometryId
     if (this.vis[instanceId]) this._alloc(instanceId)
+    return true
   }
 
+  /** Show or hide. A show into a full mesh leaves the instance hidden and returns false. */
   setVisibleAt(instanceId, visible) {
     const want = visible ? 1 : 0
-    if (this.vis[instanceId] === want) return
-    this.vis[instanceId] = want
+    if (this.vis[instanceId] === want) return true
     if (want) {
-      if (this.geoAt[instanceId] >= 0) this._alloc(instanceId)
-    } else if (this.slot[instanceId] >= 0) {
-      this._free(instanceId)
+      const g = this.geoAt[instanceId]
+      if (g >= 0 && !this._room(g)) return false
+      this.vis[instanceId] = 1
+      if (g >= 0) this._alloc(instanceId)
+    } else {
+      this.vis[instanceId] = 0
+      if (this.slot[instanceId] >= 0) this._free(instanceId)
     }
+    return true
   }
 
   getVisibleAt(instanceId) {
@@ -222,22 +240,29 @@ export class PropArena extends THREE.Group {
    *
    * For a caller about to put a SECOND instance somewhere on purpose -- the
    * duplicate an LOD cross-dissolve holds in the departing tier's mesh, which
-   * the tier's own cap was never sized for. A mesh that fills THROWS in _alloc,
-   * so a duplicate has to ask before it takes; refusing one costs a pop and
-   * nothing else.
+   * the tier's own cap was never sized for. A duplicate asks before it takes so
+   * the refusal lands on the ghost, a pop, and not on the next real arrival.
    */
   roomAt(geometryId) {
     return this.capAt[geometryId] - this.meshes[geometryId].count
   }
 
-  /** Take the next free slot in this instance's mesh and fill it from shadow. */
+  /** Whether the mesh can take one more; counts and warns the first refusal per mesh. */
+  _room(geometryId) {
+    if (this.meshes[geometryId].count < this.capAt[geometryId]) return true
+    this.refused++
+    if (!this._warned[geometryId]) {
+      this._warned[geometryId] = 1
+      console.warn(`PropArena: mesh ${this.meshes[geometryId].name} is full at ${this.capAt[geometryId]} instances; showing nothing more in it`)
+    }
+    return false
+  }
+
+  /** Take the next free slot in this instance's mesh and fill it from shadow. The caller has asked `_room`. */
   _alloc(instanceId) {
     const g = this.geoAt[instanceId]
     const mesh = this.meshes[g]
     const s = mesh.count
-    if (s >= this.capAt[g]) {
-      throw new Error(`PropArena: mesh ${mesh.name} is full at ${this.capAt[g]} instances`)
-    }
     mesh.count = s + 1
     this.owner[g][s] = instanceId
     this.slot[instanceId] = s

@@ -1,29 +1,18 @@
 // ---------------------------------------------------------------------------
-// Grasshoppers: a photograph keyed to a cutout (tools/creatures/key-card.mjs,
-// public/creatures/grasshopper.png) on the grass and the forest floor below the
-// snow line. Each TILE-metre tile around her rolls its own from its seed
-// (critters.js tileSeed) at DENSITY, and a grasshopper is a slot in one
-// InstancedMesh: TWO TRIANGLES, one 128 x 64 cutout, drawn from both sides.
+// Grasshoppers: the shipped Tripo pick (public/creatures/meadow-grasshopper.glb,
+// tools/creatures/ship.mjs; 281 triangles on a 128 px map) on the grass and
+// the forest floor below the snow line. Each TILE-metre tile around her rolls
+// its own from its seed (critters.js tileSeed) at DENSITY, and a grasshopper
+// is a slot in ONE InstancedMesh: every shown one is one draw call, whatever
+// their number. No LOD ladder: past SHOW_M nothing is drawn, and within it a
+// 300-triangle body at a few dozen instances is cheaper than a second program.
+// The head is +X, like every shipped critter (the roster's faceTurnDeg), and
+// the loader puts the feet on y = 0 (critters.js loadCritterGlb).
 //
-// THE CARD IS TWO TRIANGLES, NOT TWO QUADS. One triangle per view, each twice
-// the size of the quad it stands in for -- the quad's corner, and the far
-// corners of a quad four times the area -- with UVs running past 1, and the
-// fragment stage cuts every texel outside 0..1 before the alpha test does the
-// rest. It is the one-triangle-full-screen trick at a centimetre: half the
-// vertices and half the index of two quads, and the overhang it rasterises
-// for nothing is a grasshopper's worth of pixels at 8 m. The two views are
-// the ONE side picture: a vertical card in the body's XY and the same card
-// laid flat in XZ at AXIS_FRAC of the height, so the two cross along the
-// head-to-tail axis and the cutout reads from above as well as from beside.
-// Normals are all straight up and three's double-sided flip undone, as the
-// critter cards do, so the four faces take one light and the crossing is not
-// a seam in brightness. The head is +X, like every shipped critter, which
-// puts the picture's left at u = 0 there.
-//
-// THE COLOUR IS A TINT. The map is one tan grasshopper; each rolls a mix of
-// TINT_GREEN and TINT_BROWN and a SHADE, a per-channel multiplier on the map
-// in linear RGB carried in instanceColor, so a meadow holds olive-green ones
-// beside rust-brown ones in one draw.
+// THE COLOUR IS A TINT. The map is one olive-and-tan grasshopper; each rolls a
+// mix of TINT_GREEN and TINT_BROWN and a SHADE, a per-channel multiplier on
+// the map in linear RGB carried in instanceColor, so a meadow holds greener
+// ones beside browner ones in one draw.
 //
 // A grasshopper SITS on the ground -- the walk surface, the field or the stone
 // on it -- its up along the field's slope, for REST_S, then HOPS: a heading
@@ -61,9 +50,8 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { tileSeed, walkTiles } from './critters.js'
+import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
 
-export const TEXTURE_URL = 'creatures/grasshopper.png'
 export const TILE = 8
 // Within this of her head a grasshopper is stepped and drawn.
 export const SHOW_M = 8
@@ -77,11 +65,9 @@ export const MAX = 256
 // Ground within this of the snow line is too cold to roll on, and ground steeper than this is neither grass nor forest floor.
 export const SNOW_MARGIN = 20
 export const MAX_SLOPE_DEG = 38
-// The body's length in metres, 8 cm give or take a fifth; the card is CARD_ASPECT times as long as tall (the map is 128 x 64), and the head-to-tail axis sits at AXIS_FRAC of the height.
+// The length in metres, antennae tips to tail, 8 cm give or take a fifth: the mesh's X extent is scaled to it.
 export const LENGTH_M = [0.064, 0.096]
-export const CARD_ASPECT = 2
-export const AXIS_FRAC = 0.5
-// The tint's two ends, per-channel multipliers on the tan map in linear RGB, mixed by a roll; and the brightness roll on top.
+// The tint's two ends, per-channel multipliers on the map in linear RGB, mixed by a roll; and the brightness roll on top.
 export const TINT_GREEN = [0.65, 1.2, 0.5]
 export const TINT_BROWN = [1.15, 0.9, 0.7]
 export const SHADE = [0.85, 1.15]
@@ -131,38 +117,14 @@ export const flightLift = (s) => {
 /** d flightLift / ds. */
 const flightLiftRate = (s) => (s < RISE_FRAC ? (2 * (RISE_FRAC - s)) / (RISE_FRAC * RISE_FRAC) : (-2 * (s - RISE_FRAC)) / ((1 - RISE_FRAC) * (1 - RISE_FRAC)))
 
-/**
- * The two triangles onto an (empty) geometry, for a body one unit long: the
- * side view standing in XY on y = 0 and the top view lying in XZ at the axis,
- * each a triangle twice its quad with UVs to match, the head at +X and u = 0.
- */
-export function setGrasshopperCard(geo) {
-  const h = 1 / CARD_ASPECT
-  const y = h * AXIS_FRAC
-  const pos = [
-    // Side: the quad's (-0.5, 0) corner, then twice its width along x and twice its height along y.
-    -0.5, 0, 0, 1.5, 0, 0, -0.5, 2 * h, 0,
-    // Top: the quad's (-0.5, +h/2) corner, twice its width along x and twice its depth toward -z.
-    -0.5, y, h / 2, 1.5, y, h / 2, -0.5, y, -1.5 * h,
-  ]
-  // u = 0.5 - x runs the picture's left to the head; v runs the picture's bottom up the side card and toward -z across the top one.
-  const uv = [1, 0, -1, 0, 1, 2, 1, 0, -1, 0, 1, 2]
-  const nrm = [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
-  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
-  geo.setIndex([0, 1, 2, 3, 4, 5])
-  geo.computeBoundingBox()
-}
-
 export class Grasshoppers {
   /**
    * @param height  V2Height: heightAt, heightAndSlopeAt, snowLineAt
    * @param water   WaterSurfaces: levelAt
-   * @param opts.walk  WalkSurface: heightAt(x, z) -- the field or the stone on it
-   * @param opts.map   a THREE.Texture for a gate; the world fetches TEXTURE_URL
+   * @param opts.walk    WalkSurface: heightAt(x, z) -- the field or the stone on it
+   * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
    */
-  constructor(scene, height, water, { seed = 1, walk, map = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, assets = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Grasshoppers needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
@@ -174,27 +136,20 @@ export class Grasshoppers {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x6a55)
 
-    this.material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
-    this.material.onBeforeCompile = (shader) => {
-      shader.fragmentShader = shader.fragmentShader
-        // The triangle overhangs its quad: everything past the picture's edge is cut before the map is read.
-        .replace('#include <map_fragment>', 'if ( vMapUv.x < 0.0 || vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) discard;\n#include <map_fragment>')
-        // three flips a double-sided normal toward the viewer; twice is the identity, so every face takes the authored up-normal's light.
-        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
-    }
+    // Dry chitin: Lambert, no glint. The tint rides three's own instanceColor.
+    this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
     this.material.customProgramCacheKey = () => 'grasshoppers'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
-    setGrasshopperCard(this.mesh.geometry)
     this.mesh.name = 'v2-grasshoppers'
     this.mesh.count = 0
-    // Hidden until the map lands: a cutout material with no map draws its triangles white.
+    // Hidden, not merely empty, until the asset lands: the boot's scene census throws on a visible mesh with no geometry.
     this.mesh.visible = false
     this.mesh.frustumCulled = false
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     // The tint, through three's own vColor; made here so the program is keyed with it from the first draw.
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
     this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
-    // The layer toggle flips the group, so it cannot unhide the mesh before its map lands.
+    // The layer toggle flips the group, so it cannot unhide the mesh before its asset lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-grasshoppers'
     this.batch.add(this.mesh)
@@ -222,11 +177,13 @@ export class Grasshoppers {
     this.overflow = 0
     this.hops = 0
     this.loaded = false
+    // The asset's X extent (setCritterAsset); the instance scale is len / length.
+    this.length = 1
     // The shown ones, for bodies(): rebuilt by update().
     this.shown = []
 
-    if (map) {
-      this.setMap(map)
+    if (assets) {
+      this.setAsset(assets)
       this.ready = Promise.resolve(true)
     } else {
       this.ready = this.load()
@@ -234,17 +191,13 @@ export class Grasshoppers {
   }
 
   async load() {
-    const tex = await new THREE.TextureLoader().loadAsync(TEXTURE_URL)
-    this.setMap(tex)
+    this.setAsset(await loadCritterGlb(CRITTER_GLB.grasshopper))
     return true
   }
 
-  setMap(tex) {
-    tex.colorSpace = THREE.SRGBColorSpace
-    tex.anisotropy = 4
-    this.material.map = tex
-    this.material.needsUpdate = true
-    this.mesh.visible = true
+  setAsset(asset) {
+    const bounds = setCritterAsset(this.mesh, this.material, asset, 'grasshoppers')
+    this.length = bounds.halfX * 2
     this.loaded = true
   }
 
@@ -405,7 +358,7 @@ export class Grasshoppers {
     g.pitch = Math.atan2(vy, vh) * PITCH_K
   }
 
-  /** Into _quat: on the ground, the card's up along the ground's normal with the body along its heading laid onto the surface; in the air, the heading and the pitch. */
+  /** Into _quat: on the ground, the body's up along the ground's normal with the body along its heading laid onto the surface; in the air, the heading and the pitch. */
   _orient(g) {
     if (g.state === 'hop') {
       // Pitch about the body's Z, then the heading: 'YZX' applies X (none) first.
@@ -443,7 +396,8 @@ export class Grasshoppers {
         if (g.stale || g.state !== 'sit') {
           _pos.set(g.x, g.y, g.z)
           this._orient(g)
-          _scl.set(g.len, g.len * g.squash, g.len)
+          const k = g.len / this.length
+          _scl.set(k, k * g.squash, k)
           _mat.compose(_pos, _quat, _scl).toArray(g.m)
           g.stale = g.state !== 'sit'
         }

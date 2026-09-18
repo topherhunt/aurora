@@ -27,7 +27,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY,
+  Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT, setTierTint } from '../src/v2/render/puppet.js'
@@ -396,10 +396,18 @@ wake(w)
   const dt = 1 / 60
   const [x0, z0] = [c.x, c.z]
   const FRAMES = 30
-  for (let f = 0; f < FRAMES; f++) w.update(0, GROUND + 1.6, 0, dt)
+  // Her head a few metres off, so it is on a mesh rung and stepped every frame.
+  for (let f = 0; f < FRAMES; f++) w.update(c.x + 5, GROUND + 1.6, c.z, dt)
   const moved = Math.hypot(c.x - x0, c.z - z0)
-  check(Math.abs(moved - c.speed * dt * FRAMES) < 1e-6, 'a moving animal covers exactly the ground its clip was built for -- it does not skate', `${moved.toFixed(4)} m in ${(FRAMES * dt).toFixed(2)} s at ${c.speed.toFixed(3)} m/s`)
+  check(c.lod < LOD_RUNGS && Math.abs(moved - c.speed * dt * FRAMES) < 1e-6, 'a moving animal covers exactly the ground its clip was built for -- it does not skate', `${moved.toFixed(4)} m in ${(FRAMES * dt).toFixed(2)} s at ${c.speed.toFixed(3)} m/s, rung ${c.lod}`)
   check(Math.abs((c.x - x0) / moved - Math.cos(c.heading)) < 1e-6 && Math.abs((c.z - z0) / moved + Math.sin(c.heading)) < 1e-6, 'and it goes the way it is facing')
+  // On the card rung, once its puppet has dissolved out, it is stepped every CARD_EVERY frames on the dt banked between, and covers the same ground less what is still banked.
+  for (let f = 0; f < 100 && (c.lod !== LOD_RUNGS || c.puppet); f++) w.update(0, GROUND + 1.6, 0, dt)
+  const [x1, z1] = [c.x, c.z]
+  const steps = new Set([c.x])
+  for (let f = 0; f < 2 * CARD_EVERY * CARD_EVERY; f++) { w.update(0, GROUND + 1.6, 0, dt); steps.add(c.x) }
+  const movedFar = Math.hypot(c.x - x1, c.z - z1)
+  check(c.lod === LOD_RUNGS && steps.size === 2 * CARD_EVERY + 1 && Math.abs(movedFar - c.speed * (2 * CARD_EVERY * CARD_EVERY * dt - c.held)) < 1e-6, `on the card rung it moves on one frame in ${CARD_EVERY} and covers the same ground`, `${steps.size - 1} moves in ${2 * CARD_EVERY * CARD_EVERY} frames, ${movedFar.toFixed(4)} m of ${(c.speed * (2 * CARD_EVERY * CARD_EVERY * dt - c.held)).toFixed(4)} with ${(c.held / dt).toFixed(0)} frames banked, rung ${c.lod}`)
 
   // Ten minutes of wandering, her head far off.
   const swing = (a) => Math.atan2(Math.sin(a), Math.cos(a))
@@ -410,7 +418,8 @@ wake(w)
   for (const a of alive(w)) if (Math.hypot(a.homeX, a.homeZ) > 60) far.set(a.spawn, [a.x, a.z])
   // Every heading of every animal, every frame: a tether turn, a turn away from
   // the water and a fresh roam all pass through here, and not one of them may
-  // move a body faster than it can turn. A slot that went to sleep and was woken
+  // move a body faster than it can turn -- a card animal over the CARD_EVERY
+  // frames it banks, the rest over one. A slot that went to sleep and was woken
   // again holds a different animal, which is a placement and not a turn.
   let snapped = 0
   let watched = 0
@@ -432,7 +441,7 @@ wake(w)
     const seen = new Map()
     for (const a of alive(w)) {
       const prev = was.get(a)
-      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(a.heading - prev.heading))); watched++ }
+      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(a.heading - prev.heading)) / (a.lod === LOD_RUNGS ? CARD_EVERY : 1)); watched++ }
       seen.set(a, { spawn: a.spawn, heading: a.heading })
       const drift = Math.abs(a.y - fieldAt(a.x, a.z))
       floated = Math.max(floated, drift)
@@ -443,7 +452,7 @@ wake(w)
     }
     was = seen
   }
-  check(snapped <= TURN_RATE * dt + 1e-12, `in ${(watched / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
+  check(snapped <= TURN_RATE * dt + 1e-12, `in ${(watched / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}, a card animal's swing over its ${CARD_EVERY} banked frames`)
   const wandered = [...far].filter(([sp, [x, z]]) => got.has(sp) && Math.hypot(got.get(sp)[0] - x, got.get(sp)[1] - z) > 1)
   check(far.size > 0 && wandered.length > far.size / 2, 'most of them have wandered somewhere in a minute', `${wandered.length} of ${far.size}`)
   // The probe looks a body length and a half ahead, so the animal itself may stand that much past the leash.
@@ -515,10 +524,10 @@ wake(w)
   let worst = 0
   let frames = 0
   let prev = c.heading
-  // The hardest turn there is: a body asked to go back the way it came.
+  // The hardest turn there is: a body asked to go back the way it came. Her head beside it, so it is on a mesh rung.
   while (Math.abs(Math.atan2(Math.sin(c.aim - c.heading), Math.cos(c.aim - c.heading))) > 1e-9 && frames < 600) {
     const aim = c.aim
-    k.update(0, GROUND + 1.6, 0, dt)
+    k.update(c.x + 5, GROUND + 1.6, c.z, dt)
     if (c.aim !== aim) break
     worst = Math.max(worst, Math.abs(c.heading - prev))
     prev = c.heading
