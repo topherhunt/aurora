@@ -68,8 +68,8 @@ import {
 } from '../src/props/deadwood-bank.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { Deadwood, RUNGS, SNAG_HEIGHT, LOG_LENGTH, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
-import { GEN_PROP_LODS } from '../src/v2/render/gen-props.js'
-import { LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
+import { GEN_PROP_LODS, PROP_MESH_TIERS, PROP_STEPS, propCull, propReach } from '../src/v2/render/gen-props.js'
+import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from '../src/v2/render/critters.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import { WalkSurface, WALK } from '../src/v2/walk.js'
 import { LAYER, LAYER_COUNT, MOSS_LAYERS, SNOW_WOOD_LAYERS, SNOW_CARD_LAYERS } from '../src/textures.js'
@@ -817,8 +817,9 @@ const shippedBank = () => deadwoodBankFrom({
 
   const bank = shippedBank()
   const lens = bank.tiers.map((t) => t.geometries.length)
-  check(bank.tiers.length === GEN_PROP_LODS + 2 && RUNGS === bank.tiers.length,
-    'the pick, its decimated tiers and the card, one rung each', `${bank.tiers.length} tiers, ${RUNGS} rungs`)
+  check(bank.tiers.length === PROP_MESH_TIERS.length + 1 && RUNGS === bank.tiers.length && PROP_MESH_TIERS[0] === 0,
+    'the pick, the drawn decimated tier and the card, one rung each',
+    `shipped tiers ${PROP_MESH_TIERS.join('/')} of ${GEN_PROP_LODS + 1} and the card: ${bank.tiers.length} tiers, ${RUNGS} rungs`)
   check(lens.every((n) => n === 2) && bank.variants.length === 2,
     'every tier carries one geometry per variant slot', `stump + log, tiers ${lens.join('/')}`)
   const tris = bank.tiers.map((t) => t.geometries.map((g) => g.index.count / 3))
@@ -877,13 +878,16 @@ const shippedBank = () => deadwoodBankFrom({
   // threshold did not, which is how a player touching a 20 m log's end was
   // looking at T1. Per metre, the tip is at 0.5 whatever the size is, so one
   // comparison against the first rung settles it for the whole bank.
-  check(lodReach(1, 0) > 0.5,
+  check(propReach(1, 0) > 0.5,
     'and a piece is on its finest mesh when the player is touching its tip',
-    `T0 holds to ${lodReach(1, 0).toFixed(2)}x the ladder size against a tip at 0.5x`)
-  // The card rung reaches twice the last mesh rung, and past it the piece is culled.
-  check(Math.abs(lodReach(1, RUNGS - 1) / lodReach(1, RUNGS - 2) - 2) < 1e-9 && cullRange(1, RUNGS) === lodReach(1, RUNGS - 1),
-    'the card holds to twice the last mesh rung and the cull is the card\'s edge',
-    `per metre: ${Array.from({ length: RUNGS }, (_, k) => lodReach(1, k).toFixed(1)).join(' / ')} m`)
+    `T0 holds to ${propReach(1, 0).toFixed(2)}x the ladder size against a tip at 0.5x`)
+  // The mesh gives way to the card at half the first rung's arc, where a piece
+  // is about as tall on a headset as the card has texels, and the cull is the
+  // card's edge at the animals' card reach (critters.js: LOD_DEG halved four times).
+  const cardArc = 2 * Math.atan(1 / (2 * propReach(1, RUNGS - 2))) * 180 / Math.PI
+  check(Math.abs(cardArc - LOD_DEG / 2) < 0.05 && PROP_STEPS[RUNGS - 1] === 16 && propCull(1) === propReach(1, RUNGS - 1),
+    'the mesh holds to half the first rung\'s arc, the card to the animals\' card reach, and the cull is the card\'s edge',
+    `per metre: ${Array.from({ length: RUNGS }, (_, k) => propReach(1, k).toFixed(1)).join(' / ')} m; the card takes over at ${cardArc.toFixed(2)} deg`)
 }
 
 // --- the scatter seats a long thing on a hill -------------------------------
@@ -1550,9 +1554,12 @@ const MOCK_LAYERS = {
   }
   const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank() })
   dw.place(0, 0)
+  // Her eye, over the mock field's ground: a walk at 1.6 over ground at 40 is
+  // 38 m under it, and no piece is ever within its mesh band of that.
+  const EYE = 41.6
 
   const biggest = Math.max(...dw.bank.variants.map((v, i) => v.lodSize * dw.sHi[i]))
-  check(Math.abs(dw.radius - cullRange(biggest, RUNGS)) < 1e-6 && Math.abs(biggest - LOG_LENGTH[1]) < 1e-6,
+  check(Math.abs(dw.radius - propCull(biggest)) < 1e-6 && Math.abs(biggest - LOG_LENGTH[1]) < 1e-6,
     'the grid reaches the biggest piece the bank can place at its cull',
     `${dw.radius.toFixed(0)} m for a ${biggest.toFixed(1)} m piece, ${dw.tiles.size} tiles, a pool of ${dw.maxInstances}`)
   let culls = 0
@@ -1563,19 +1570,19 @@ const MOCK_LAYERS = {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       culls++
-      const own = cullRange(dw.instSize[id], RUNGS)
+      const own = propCull(dw.instSize[id])
       const gone = dw.rim.gone[id]
       // Its own cull, unless the graded thinning or the draw radius takes it sooner.
       if (!(Math.abs(gone - own) < 1e-3 || (gone < own && gone <= Math.min(dw.fullRadius / tile.rank[k], dw.radius) + 1e-3))) cullWrong++
       // And the thinning only ever takes a piece off its CARD: never inside its
       // last mesh rung, whatever its size. A 12 m log used to go at 250 m of
       // its 850 with a rank drawn in metres.
-      if (gone < lodReach(dw.instSize[id], GEN_PROP_LODS) - 1e-3) thinnedEarly++
+      if (gone < propReach(dw.instSize[id], RUNGS - 2) - 1e-3) thinnedEarly++
       else if (gone < own - 1e-3) thinnedOnCard++
     }
   }
   check(culls > 200 && cullWrong === 0, 'every piece is culled at its own size\'s range',
-    `${culls} pieces, a 2 m stump at ${cullRange(2, RUNGS).toFixed(0)} m and a ${LOG_LENGTH[1]} m log at ${cullRange(LOG_LENGTH[1], RUNGS).toFixed(0)}`)
+    `${culls} pieces, a 2 m stump at ${propCull(2).toFixed(0)} m and a ${LOG_LENGTH[1]} m log at ${propCull(LOG_LENGTH[1]).toFixed(0)}`)
   check(thinnedEarly === 0 && thinnedOnCard > 0,
     'and the graded thinning takes a piece off its card, never off a mesh rung',
     `${thinnedOnCard} of ${culls} resident pieces thinned inside their card rung, ${thinnedEarly} inside a mesh rung`)
@@ -1595,13 +1602,15 @@ const MOCK_LAYERS = {
   const wrong = []
   let sizes = 0
   let unlit = 0
-  let bigLogMesh = null
-  for (const [cx, cz] of [[0, 0], [30, 12], [-45, 60]]) {
+  let farMesh = null
+  // Six vantages: the mesh band is nine sizes, and at this density one vantage
+  // can stand in a void the width of it.
+  for (const [cx, cz] of [[0, 0], [30, 12], [-45, 60], [200, 200], [-300, 100], [500, -400]]) {
     // Twice: the first pass promotes off the card, and hysteresis only ever
     // makes a piece STICKIER at its current tier, so a second pass at the same
     // place is the settled answer.
-    dw.update(cx, 1.6, cz)
-    dw.update(cx, 1.6, cz)
+    dw.update(cx, EYE, cz)
+    dw.update(cx, EYE, cz)
     for (const tile of dw.tiles.values()) {
       if (!tile.near) continue
       for (let k = 0; k < tile.n; k++) {
@@ -1613,7 +1622,7 @@ const MOCK_LAYERS = {
         if (dw.rim.isHidden(id)) { unlit++; continue }
         const size = dw.instSize[id]
         const tier = dw.tierAt[id]
-        const d = Math.hypot(dw.instX[id] - cx, dw.instY[id] - 1.6, dw.instZ[id] - cz)
+        const d = Math.hypot(dw.instX[id] - cx, dw.instY[id] - EYE, dw.instZ[id] - cz)
         sizes++
         // The rung the piece's own size wants at this distance, with no rung
         // held. Hysteresis holds a piece on the rung it is on until it is
@@ -1621,15 +1630,14 @@ const MOCK_LAYERS = {
         // be is the strict rung at the distance pushed out by that. One-sided:
         // too coarse for how big the thing looks is the artefact, and too fine
         // is only ever a few triangles.
-        const want = Math.min(dw.cardTier, critterTier(size, d / (1 - LOD_HYSTERESIS), -1, RUNGS))
+        const want = Math.min(dw.cardTier, ladderTier(distAt(size, LOD_DEG), PROP_STEPS, RUNGS, d / (1 - LOD_HYSTERESIS), -1))
         if (tier > want) {
           wrong.push(`${dw.bank.variants[dw.variantAt[id]].name} ${size.toFixed(1)} m at ${d.toFixed(1)} m on T${tier}, wants T${want}`)
         }
-        // The user's own case, kept as evidence rather than as a threshold: the
-        // longest piece in view and how far out it is still a real mesh.
-        if (tier < dw.cardTier && (!bigLogMesh || size > bigLogMesh.size)) {
-          bigLogMesh = { size, d, tier }
-        }
+        // The relative ladder's promise, the other way round: the farthest
+        // piece still drawn as a mesh, which is a big one out where a small
+        // one would long since be a card.
+        if (tier < dw.cardTier && (!farMesh || d > farMesh.d)) farMesh = { size, d, tier }
       }
     }
   }
@@ -1637,11 +1645,12 @@ const MOCK_LAYERS = {
   check(sizes > 30, 'walked enough placed pieces to measure a ladder',
     `${sizes} instance-frames, ${unlit} more the rim was not drawing`)
   check(wrong.length === 0, 'no piece is coarser than its own apparent size allows',
-    wrong.length === 0 ? `rungs at ${Array.from({ length: RUNGS - 1 }, (_, k) => lodReach(1, k).toFixed(1)).join('/')} m per metre of ladder size`
+    wrong.length === 0 ? `rungs at ${Array.from({ length: RUNGS - 1 }, (_, k) => propReach(1, k).toFixed(1)).join('/')} m per metre of ladder size`
       : `${wrong.length} too coarse: ${wrong.slice(0, 3).join('; ')}`)
-  check(bigLogMesh !== null && bigLogMesh.size > 6,
-    'and a long log is still a mesh well past where the flat ladder carded it',
-    bigLogMesh ? `${bigLogMesh.size.toFixed(1)} m piece on T${bigLogMesh.tier} at ${bigLogMesh.d.toFixed(1)} m` : 'none seen')
+  const smallMeshReach = propReach(dw.minLod, RUNGS - 2)
+  check(farMesh !== null && farMesh.d > smallMeshReach * 2,
+    'and a long log is still a mesh well past where the smallest piece is carded',
+    farMesh ? `${farMesh.size.toFixed(1)} m piece on T${farMesh.tier} at ${farMesh.d.toFixed(1)} m; a ${dw.minLod.toFixed(1)} m piece is a card past ${smallMeshReach.toFixed(1)}` : 'none seen')
   dw.dispose()
 }
 
@@ -1665,6 +1674,8 @@ const MOCK_LAYERS = {
   }
   const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank() })
   dw.place(0, 0)
+  // Her eye over the mock field's ground, as above.
+  const EYE = 41.6
   const prevTier = Int8Array.from(dw.tierAt)
   const closes = () => dw.placed + dw.fades.length + dw.freeCount === dw.maxInstances
   let steps = 0
@@ -1685,7 +1696,7 @@ const MOCK_LAYERS = {
   for (let f = 1; f <= 60 * 72; f++) {
     z -= 6 / 72
     setPropClock(0.5 + f / 72)
-    dw.update(0, 1.6, z)
+    dw.update(0, EYE, z)
     for (const tile of dw.tiles.values()) {
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
@@ -1710,7 +1721,7 @@ const MOCK_LAYERS = {
       if (Math.abs(gap - wantGap) > 1e-3) gapWrong++
     }
   }
-  check(steps > 50 && cardSteps > 0, 'walking steps drawn pieces along the ladder, the card step among them',
+  check(steps > 20 && cardSteps > 0 && steps > cardSteps, 'walking steps drawn pieces along the ladder, the card step and the mesh step among them',
     `${steps} steps, ${cardSteps} on or off the card, ${peak} dissolving at the peak`)
   check(cut === 0, 'and every one of them dissolved rather than cut',
     `${cut} steps with no ghost and no rim fade to stand in for one`)
@@ -1721,7 +1732,7 @@ const MOCK_LAYERS = {
     `${dw.placed} + ${dw.fades.length} + ${dw.freeCount} = ${dw.maxInstances}`)
   const t = getPropClock()
   setPropClock(t + PROP_FADE_SECONDS + 1 / 72)
-  dw.update(0, 1.6, z)
+  dw.update(0, EYE, z)
   check(dw.fades.length === 0 && dw.fadeTris === 0 && closes(),
     'standing still a quarter second later, every ghost is back in the pool and no triangle is counted for it',
     `${dw.fades.length} in flight, ${dw.fadeTris} triangles, ${dw.stats.used} used of ${dw.maxInstances}`)

@@ -20,20 +20,28 @@
 //   seat has WALL_M of climbable wall above or below it -- an embedded stone at
 //   the waterline with nothing to cling to seats nobody.
 //
-// Within NEAR_M of her head a spider is a PUPPET: its own skeleton (a clone of
-// the one the shipped GLB carries), an AnimationMixer playing the clip its
-// state calls for, and the four skinned tiers of the same file stepping down
-// the world ladder (critters.js critterTier, rungs doubling in distance as a
-// ratio of the body), each step a dissolve rather than a pop (render/puppet.js).
-// The last rung is held rather than culled: within NEAR_M a spider is always a
-// mesh, and past it the card takes over. Puppets are pooled, PUPPETS of them: a spider that
-// walks into range takes one and starts its clip at a random phase, and on
-// leaving dissolves away before handing it back, so a spider is a mesh or a
-// card and never both at once. Beyond NEAR_M every spider is one quad
-// of one InstancedMesh, the bind pose photographed from above (critters.js,
-// the 'top' view), lying against its surface under the same matrix the puppet
-// would wear -- edge-on from the side, which at ten metres is a spider-sized
-// fleck of bark, and in tree-lined ground the whole far crowd is one draw call.
+// NO SPIDER HAS A SKELETON. Every spider is an instance of one of three
+// InstancedMeshes, three draw calls for the lot: within NEAR_M of her head the
+// shipped GLB's first two skinned tiers as plain instanced geometry -- tier 0
+// on the world ladder's first rung (critters.js critterTier), tier 1 held out
+// to NEAR_M -- and past NEAR_M one quad, the bind pose photographed from above
+// (critters.js, the 'top' view), lying against its surface under the same
+// matrix the mesh would wear: edge-on from the side, which at ten metres is a
+// spider-sized fleck of bark. THE LEGS ARE THE VERTEX SHADER: at setAsset each
+// tier's vertices are read against the skeleton's JOINTS_0/WEIGHTS_0 and the
+// ones a Leg bone owns are given `aLeg` -- the leg's half of the alternating
+// tetrapod (legs 1 and 3 on one side step with 2 and 4 on the other) and how
+// far down the leg the vertex sits, 0 at the hip and 1 at the furthest tip --
+// and per instance `aGait` carries a phase and an amplitude, so a moving
+// spider's legs swing fore and aft about the body by amplitude * depth *
+// sin(phase + half) and lift on the forward swing. The phase runs one cycle
+// per stride of the gait the seat moves at, so the feet hold the bark; the
+// amplitude eases to nothing when it pauses. Her head close by rears a paused
+// spider up: the instance pitched nose-up about its seat.
+//
+// A spider's world matrix is kept on its slot and rebuilt only when it has
+// moved, turned, been re-seated or is rearing; a paused tree spider is not
+// re-placed on its bark unless its trunk's origin moved with a re-seated chunk.
 //
 // Her head within ALERT_M rears a paused spider up. Her BODY -- the capsule
 // under her head, feet to crown, WALK.radius wide -- coming within FLEE_M of a
@@ -47,8 +55,8 @@
 // been out of FLEE_M and come back. A destination rather than a direction
 // because, square to the bark, no direction along it leads away from her to
 // the first order. The ear (audio/ambience.js) is told once as it sets off,
-// through startled(). A spider that is not fleeing pays one distance for it a
-// frame.
+// through startled(). A spider that is not fleeing pays one squared distance
+// to her body a frame; the root is taken only while it flees.
 //
 // A group is a pure function of its host's origin and the world seed, so the
 // same trunk carries the same spiders every visit; behaviour draws from one
@@ -61,7 +69,7 @@ import {
   CRITTER_GLB, createCritterCardMaterial, setCritterCard,
   LOD_RUNGS, bakeCritterCard, critterTier, tileKey, walkTiles,
 } from './critters.js'
-import { Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { loadSkinnedAsset } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
@@ -69,9 +77,11 @@ import { WALK } from '../walk.js'
 export const TILE = 16
 // Inside the trees' full-density band (50 m), corners included.
 export const RADIUS = 38
+// Within this of her head a spider is a mesh; past it, the card.
 export const NEAR_M = 10
-// Skinned tiers, one per rung of the world ladder (critters.js LOD_RUNGS).
-export const LOD_TIERS = LOD_RUNGS
+// The skinned tiers the shipped GLB carries, one per rung of the world ladder, and how many of them are drawn: the first two, the coarser pair being smears.
+export const SHIPPED_TIERS = LOD_RUNGS
+export const LOD_TIERS = 2
 export const SIZE_M = [0.1, 0.3]
 export const CLIMB_M = 3
 export const GROUP = [1, 5]
@@ -94,17 +104,21 @@ export const RESEAT_EVERY = 45
 // Steps turned back before a rock spider sits down.
 const STUCK_MAX = 3
 export const MAX = 256
-export const PUPPETS = 32
 const HOST_BUF = 64
 
 const GO_S = [1, 4]
 const PAUSE_S = [1.5, 6]
 const REST_S = [6, 14]
-// A gait's advance in the unit frame per second: the stride over the duration of tools/creatures/anim/clips/spider/{walk,run}.json. The clips are in place; the seat moves at this rate so the feet hold the bark.
-const GAIT = { walk: 0.11 / 0.9, run: 0.15 / 0.42 }
+// A gait's stride in the unit frame and its cycle in seconds, from tools/creatures/anim/clips/spider/{walk,run}.json; the seat moves at stride/cycle and the legs swing one cycle a stride, so the feet hold the bark.
+export const STRIDE = { walk: 0.11, run: 0.15 }
+const CYCLE_S = { walk: 0.9, run: 0.42 }
+const GAIT = { walk: STRIDE.walk / CYCLE_S.walk, run: STRIDE.run / CYCLE_S.run }
 const RUN_CHANCE = 0.12
-// Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
-const FADE_S = 0.2
+// How fast the legs' swing amplitude eases in and out per second, and a rear-up eases up and down.
+const GAIT_EASE = 12
+const REAR_EASE = 6
+// A reared spider's pitch, nose up about its seat.
+export const REAR_RAD = 0.6
 // Her head this close makes a paused spider rear up...
 const ALERT_M = 1.2
 // ...and her body this close makes any spider run, at this multiple of the run gait, until it is FLEE_TO_M from her, within ARRIVE_M of where it is making for, or closing on that at under STALL_FRAC of its pace for STALL_S seconds.
@@ -120,8 +134,11 @@ const STEER_EVERY = 6
 export const SINK = 0.15
 const REPROJECT_EVERY = 3
 const RESCAN_FRAMES = 4
-// A puppet is kept a little past NEAR_M so a spider on the line does not trade its skeleton for a card every step she takes.
+// A mesh is kept a little past NEAR_M so a spider on the line does not trade its legs for a card every step she takes.
 const NEAR_KEEP = 1.15
+// The bones whose vertices swing: the leg's number, its joint and its side.
+const LEG_BONE = /^Leg(\d)(Hip|Knee|Ankle|Foot)\.(L|R)$/
+const LEGS = 8
 
 const TAU = Math.PI * 2
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
@@ -145,8 +162,63 @@ function hostSeed(x, z, seed) {
   return (h ^ (h >>> 15)) >>> 0
 }
 
-/** The shipped spider (tools/creatures/ship-spider.mjs) as the parts render/puppet.js builds a puppet from. */
-export const loadSpiderGlb = (url) => loadSkinnedAsset(url, { tiers: LOD_TIERS })
+/** The shipped spider (tools/creatures/ship-spider.mjs): its tiers, skeleton and map, in render/puppet.js's shape. */
+export const loadSpiderGlb = (url) => loadSkinnedAsset(url, { tiers: SHIPPED_TIERS })
+
+/**
+ * `aLeg` onto a skinned tier: for each vertex, the swing half of the leg whose
+ * bone weighs most on it (0 or PI, the alternating tetrapod) and how far down
+ * that leg it sits, 0 at the hip's bind position to 1 at the leg's furthest
+ * vertex. A vertex the body owns gets 0 and 0 and never moves. Returns how many
+ * vertices swing.
+ */
+export function bakeLegs(geo, skeleton) {
+  const idx = geo.getAttribute('skinIndex')
+  const wgt = geo.getAttribute('skinWeight')
+  const pos = geo.getAttribute('position')
+  const n = pos.count
+  const legOf = new Int8Array(skeleton.bones.length).fill(-1)
+  const hips = new Float32Array(LEGS * 3)
+  skeleton.bones.forEach((b, i) => {
+    const m = LEG_BONE.exec(b.name)
+    if (!m) return
+    const leg = (m[1] - 1) * 2 + (m[3] === 'L' ? 0 : 1)
+    if (leg < 0 || leg >= LEGS) throw new Error(`bakeLegs: bone ${b.name} is not a leg 1 to ${LEGS / 2}`)
+    legOf[i] = leg
+    if (m[2] === 'Hip') {
+      _mat.copy(skeleton.boneInverses[i]).invert()
+      hips[leg * 3] = _mat.elements[12]; hips[leg * 3 + 1] = _mat.elements[13]; hips[leg * 3 + 2] = _mat.elements[14]
+    }
+  })
+  const leg = new Int8Array(n)
+  const dist = new Float32Array(n)
+  const reach = new Float32Array(LEGS)
+  let swing = 0
+  for (let v = 0; v < n; v++) {
+    let best = -1
+    let bw = 0
+    for (let k = 0; k < 4; k++) {
+      const w = wgt.getComponent(v, k)
+      if (w > bw) { bw = w; best = idx.getComponent(v, k) }
+    }
+    const l = best < 0 ? -1 : legOf[best]
+    leg[v] = l
+    if (l < 0) continue
+    swing++
+    dist[v] = Math.hypot(pos.getX(v) - hips[l * 3], pos.getY(v) - hips[l * 3 + 1], pos.getZ(v) - hips[l * 3 + 2])
+    reach[l] = Math.max(reach[l], dist[v])
+  }
+  const out = new Float32Array(n * 2)
+  for (let v = 0; v < n; v++) {
+    const l = leg[v]
+    if (l < 0) continue
+    // Legs 1 and 3 of the left with 2 and 4 of the right; the other four half a cycle behind.
+    out[v * 2] = ((l >> 1) + (l & 1)) % 2 === 0 ? 0 : Math.PI
+    out[v * 2 + 1] = dist[v] / reach[l]
+  }
+  geo.setAttribute('aLeg', new THREE.Float32BufferAttribute(out, 2))
+  return swing
+}
 
 export class Spiders {
   /**
@@ -168,21 +240,39 @@ export class Spiders {
     this.seed = seed
     this.rand = mulberry32(seed ^ 0x59d3)
 
-    // ONE settled material for the lot and a fade pair per puppet, so a frame of
-    // drawn spiders is one material change and not one each; no spider wears a
-    // colour of its own, and puppet.js makePuppetMaterials says why. Two programs
-    // between them all. `materials` is the flat list the world's lighting patches.
-    this.plain = makeSettledMaterial('spiders')
-    this.puppetMats = []
-    this.materials = [this.plain]
-    for (let i = 0; i < PUPPETS; i++) {
-      const mats = makePuppetMaterials('spiders', this.plain)
-      this.puppetMats.push(mats)
-      this.materials.push(mats.in, mats.out)
+    // ONE material for every mesh spider, its legs in the vertex shader (the
+    // header). The world's lighting patches it; its own splice runs first.
+    this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
+    this.material.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec2 aLeg;\nattribute vec2 aGait;')
+        .replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n' +
+            // Forward is -Z: a positive swing carries the leg ahead of the body, and it lifts while it is swinging forward.
+            'float legAt = aGait.x + aLeg.x;\n' +
+            'float legSwing = aLeg.y * aGait.y;\n' +
+            'transformed.z -= legSwing * sin( legAt );\n' +
+            'transformed.y += 0.5 * legSwing * max( 0.0, cos( legAt ) );'
+        )
     }
-    this.puppets = []
-    this.freePuppets = []
-    // The far spiders, as cards; hidden until the picture is baked, and until then every spider in range is a puppet and the rest are not drawn.
+    this.material.customProgramCacheKey = () => 'spiders-legs'
+    // The near spiders: one InstancedMesh a drawn tier, each carrying every instance's gait.
+    this.meshes = []
+    this.gaits = []
+    for (let k = 0; k < LOD_TIERS; k++) {
+      const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
+      mesh.name = `v2-spiders-lod${k}`
+      mesh.count = 0
+      mesh.frustumCulled = false
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      this.meshes.push(mesh)
+      const gait = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2)
+      gait.setUsage(THREE.DynamicDrawUsage)
+      this.gaits.push(gait)
+    }
+    this.counts = new Uint16Array(LOD_TIERS)
+    // The far spiders, as cards; hidden until the picture is baked, and until then every spider in range is a mesh and the rest are not drawn.
     this.cardMaterial = createCritterCardMaterial('spiders', { hue: false })
     this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
     this.card.name = 'v2-spiders-card'
@@ -193,6 +283,7 @@ export class Spiders {
     // The layer toggle flips the group.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-spiders'
+    for (const mesh of this.meshes) this.batch.add(mesh)
     this.batch.add(this.card)
     scene.add(this.batch)
 
@@ -210,7 +301,8 @@ export class Spiders {
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false,
         // On a rock: steps turned back since it last walked.
         stuck: 0,
-        lod: -1, puppet: null,
+        // The mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase and swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
+        lod: LOD_TIERS, gait: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
       })
     }
     this.free = this.slots.slice()
@@ -226,9 +318,8 @@ export class Spiders {
     this.span = 1
     this.bodyH = 0
     this.loaded = false
-    // Spiders that found no free slot; spider-frames within NEAR_M with no free puppet, drawn as a card instead; hosts past a tile buffer's end; rock spiders whose stone went from under them.
+    // Spiders that found no free slot; hosts past a tile buffer's end; rock spiders whose stone went from under them.
     this.overflow = 0
-    this.starved = 0
     this.saturated = 0
     this.dropped = 0
 
@@ -245,11 +336,9 @@ export class Spiders {
     return true
   }
 
+  /** The tiers with their legs baked (bakeLegs) onto the meshes, the map onto the material, the body's bounds onto the card. A skeleton naming no legs is a shipping bug. */
   setAsset(asset) {
-    if (asset.tiers.length !== LOD_TIERS) throw new Error(`Spiders.setAsset: ${LOD_TIERS} tiers, got ${asset.tiers.length}`)
-    for (const name of ['walk', 'run', 'idle', 'alert', 'eat', 'rest']) {
-      if (!asset.clips.some((c) => c.name === name)) throw new Error(`Spiders.setAsset: no clip named ${name}`)
-    }
+    if (asset.tiers.length < LOD_TIERS) throw new Error(`Spiders.setAsset: at least ${LOD_TIERS} tiers, got ${asset.tiers.length}`)
     this.asset = asset
     const geo = asset.tiers[0]
     geo.computeBoundingBox()
@@ -257,15 +346,16 @@ export class Spiders {
     this.bounds = { span: Math.max(b.max.x - b.min.x, b.max.z - b.min.z), height: b.max.y - b.min.y, halfX: (b.max.x - b.min.x) / 2, halfZ: (b.max.z - b.min.z) / 2 }
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
-    for (const m of this.materials) {
-      m.map = asset.map
-      m.needsUpdate = true
+    this.material.map = asset.map
+    this.material.needsUpdate = true
+    for (let k = 0; k < LOD_TIERS; k++) {
+      const tier = asset.tiers[k]
+      if (bakeLegs(tier, asset.skeleton) === 0) throw new Error(`Spiders.setAsset: tier ${k} has no vertex on a Leg bone -- the skeleton must name its legs Leg{1..4}{Hip,Knee,Ankle,Foot}.{L,R}`)
+      tier.setAttribute('aGait', this.gaits[k])
+      this.meshes[k].geometry = tier
     }
-    for (const mats of this.puppetMats) {
-      const p = new Puppet(asset, mats, { clipFade: FADE_S })
-      this.puppets.push(p)
-      this.freePuppets.push(p)
-    }
+    // Every kept matrix was scaled by the old span.
+    for (const c of this.slots) c.dirty = true
     setCritterCard(this.card, this.bounds, ['top'])
     this.loaded = true
   }
@@ -324,11 +414,12 @@ export class Spiders {
     const key = hostKey(x, z) + (kind === 'tree' ? 0 : 0.5)
     const had = t.hosts.get(key)
     if (had) {
-      if (kind === 'tree') { had.y = shape.y; this._treeBand(had) }
+      // A trunk re-seated with its chunk: its band is re-read and its sitting spiders are re-placed on it this frame.
+      if (kind === 'tree' && had.y !== shape.y) { had.y = shape.y; this._treeBand(had); had.moved = true }
       return
     }
     const groundY = this.height.heightAt(x, z)
-    const host = { kind, x, z, groundY, ...shape, spiders: [] }
+    const host = { kind, x, z, groundY, ...shape, spiders: [], moved: false }
     t.hosts.set(key, host)
     if (this.water.isSubmerged(x, z, groundY)) return
     if (groundY > this.height.snowLineAt(x, z)) return
@@ -344,8 +435,11 @@ export class Spiders {
       const seated = kind === 'tree' ? this._seatTree(c, host, rand) : this._seatRock(c, host, rand)
       if (!seated) { c.host = null; this.free.push(c); continue }
       c.size = size
-      c.lod = -1
-      c.puppet = null
+      c.lod = LOD_TIERS
+      c.gait = rand() * TAU
+      c.amp = 0
+      c.rear = 0
+      c.dirty = true
       this._pause(c)
       c.left = between(rand, PAUSE_S)
       host.spiders.push(c)
@@ -435,6 +529,7 @@ export class Spiders {
     c.z = host.z + s * (pz * cy - px * sy)
     c.nx = nx * cy + nz * sy; c.ny = ny; c.nz = nz * cy - nx * sy
     c.tx = tx * cy + tz * sy; c.ty = ty; c.tz = tz * cy - tx * sy
+    c.dirty = true
   }
 
   /**
@@ -481,6 +576,7 @@ export class Spiders {
       if (!wall) continue
       this._heading(c, rand() * TAU)
       c.stuck = 0
+      c.dirty = true
       return true
     }
     return false
@@ -500,7 +596,6 @@ export class Spiders {
       return true
     }
     if (this._seatRock(c, c.host, this.rand)) return true
-    this._releasePuppet(c)
     c.host = null
     this.free.push(c)
     this.dropped++
@@ -511,6 +606,7 @@ export class Spiders {
   _snapRock(c) {
     c.x = _hit.x; c.y = _hit.y; c.z = _hit.z
     c.nx = _hit.nx; c.ny = _hit.ny; c.nz = _hit.nz
+    c.dirty = true
     const dot = c.tx * c.nx + c.ty * c.ny + c.tz * c.nz
     c.tx -= c.nx * dot; c.ty -= c.ny * dot; c.tz -= c.nz * dot
     const len = Math.hypot(c.tx, c.ty, c.tz)
@@ -535,12 +631,12 @@ export class Spiders {
     c.ty = uy * cp + ry * sp
     c.tz = uz * cp + rz * sp
     c.phi = phi
+    c.dirty = true
   }
 
   _leave(t) {
     for (const host of t.hosts.values()) {
       for (const c of host.spiders) {
-        this._releasePuppet(c)
         c.host = null
         this.free.push(c)
       }
@@ -568,7 +664,7 @@ export class Spiders {
     }
     return {
       alive: MAX - this.free.length, tiles: this.tiles.size, hosts, groups,
-      puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped,
+      meshes: this.meshes.map((m) => m.count), cards: this.card.count, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped,
     }
   }
 
@@ -670,7 +766,7 @@ export class Spiders {
     const x = c.x + c.tx * d
     const y = c.y + c.ty * d
     const z = c.z + c.tz * d
-    if ((this.frame + c.id) % REPROJECT_EVERY !== 0) { c.x = x; c.y = y; c.z = z; return }
+    if ((this.frame + c.id) % REPROJECT_EVERY !== 0) { c.x = x; c.y = y; c.z = z; c.dirty = true; return }
     const probe = c.size * 0.5
     if (!this._rockRay(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe) || _hit.ny > FLAT_NY) {
       this._heading(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
@@ -681,32 +777,10 @@ export class Spiders {
     this._snapRock(c)
   }
 
-  _takePuppet(c) {
-    if (!c.puppet) {
-      const p = this.freePuppets.pop()
-      if (!p) { this.starved++; return null }
-      c.puppet = p
-      this.batch.add(p.group)
-      // In at a random phase, so a group that walks into range is not eight legs in lockstep.
-      p.play(c.clip, 0, this.rand() * p.actions.get(c.clip).getClip().duration)
-    }
-    return c.puppet
-  }
-
-  _releasePuppet(c) {
-    const p = c.puppet
-    if (!p) return
-    p.release()
-    this.batch.remove(p.group)
-    this.freePuppets.push(p)
-    c.puppet = null
-    c.lod = -1
-  }
-
   /**
-   * One frame: every spider stepped, and written as a puppet or a card by its
-   * distance from her head. `fy` is where her feet are: her body, for the flee,
-   * is the capsule from there up to her head.
+   * One frame: every spider stepped, and written to a mesh tier or the card by
+   * its distance from her head. `fy` is where her feet are: her body, for the
+   * flee, is the capsule from there up to her head.
    */
   update(hx, hy, hz, dt, fy) {
     if (!(fy <= hy)) throw new Error(`Spiders.update: her feet must be under her head, got feet ${fy} and head ${hy}`)
@@ -724,8 +798,12 @@ export class Spiders {
 
     const cmat = this.card.instanceMatrix.array
     const cards = this.card.visible
+    const meshes = this.loaded
     const near2 = NEAR_M * NEAR_M
     const keep2 = near2 * NEAR_KEEP * NEAR_KEEP
+    const flee2 = (FLEE_M + WALK.radius) * (FLEE_M + WALK.radius)
+    const counts = this.counts
+    counts.fill(0)
     let m = 0
     for (const t of this.tiles.values()) {
       for (const host of t.hosts.values()) {
@@ -736,63 +814,89 @@ export class Spiders {
           const dy = c.y - hy
           const dz = c.z - hz
           const d2 = dx * dx + dy * dy + dz * dz
-          // Her body: the nearest point of the capsule's axis to the spider, and how far outside the capsule it is.
+          // Her body: the nearest point of the capsule's axis to the spider, and whether the spider is within FLEE_M of its surface. Squared, so the root is only taken by a spider already fleeing.
           const by = c.y < fy ? fy : c.y > hy ? hy : c.y
           const bdy = c.y - by
-          const bd = Math.sqrt(dx * dx + bdy * bdy + dz * dz) - WALK.radius
-          const close = bd < FLEE_M
+          const bd2 = dx * dx + bdy * bdy + dz * dz
+          const close = bd2 < flee2
           if (close && !c.near && c.state !== 'flee') this._flee(c, hx, fy, hy, hz)
           c.near = close
           if (c.state === 'flee') {
             const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
             if (c.togo - togo > STALL_FRAC * c.speed * dt) c.stall = 0; else c.stall += dt
             c.togo = togo
-            if (bd >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._pause(c)
+            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._pause(c)
             else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, hx, fy, hy, hz)
           }
           if (c.state !== 'pause') {
             const d = c.speed * dt
+            // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run. Before the step, which may sit a stuck rock spider down and change its clip.
+            c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE[c.clip])) % TAU
             if (host.kind === 'tree') this._stepTree(c, d)
             else this._stepRock(c, d)
             if (c.left <= 0) this._pause(c)
           } else {
-            // A sitting tree spider follows its trunk's origin; a sitting rock spider re-reads its stone.
-            if (host.kind === 'tree') this._placeTree(c)
+            // A sitting tree spider follows its trunk's origin when that has moved; a sitting rock spider re-reads its stone.
+            if (host.kind === 'tree') { if (host.moved) this._placeTree(c) }
             else if ((this.frame + c.id) % RESEAT_EVERY === 0 && !this._reseatRock(c)) { dropped++; continue }
             // Reared up while she is close, back to what it was doing when she leaves.
             if (d2 < ALERT_M * ALERT_M) c.clip = 'alert'
             else if (c.clip === 'alert') this._pause(c)
             if (c.left <= 0) this._go(c)
           }
-          const k = c.size / this.span
-          const sink = SINK * this.bodyH * k
-          _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
-          // Local +Y along the normal, local -Z along the heading.
-          _y.set(c.nx, c.ny, c.nz)
-          _z.set(-c.tx, -c.ty, -c.tz)
-          _x.crossVectors(_y, _z)
-          _quat.setFromRotationMatrix(_mat.makeBasis(_x, _y, _z))
-          _scl.set(k, k, k)
-          _mat.compose(_pos, _quat, _scl)
-          const near = this.loaded && d2 <= (c.puppet ? keep2 : near2)
-          // A spider that has walked out of range keeps its puppet until it has dissolved away, and is not drawn as a card until it has: one of the two, never both at once.
-          const puppet = near || c.puppet ? this._takePuppet(c) : null
-          if (puppet) {
-            // The floor is held, not culled: past the last rung and still within NEAR_M a spider stays a mesh, the card being what takes over out there.
-            if (near) c.lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
-            puppet.show(near ? c.lod : -1)
-            puppet.play(c.clip)
-            // The run clip at the flee's pace, so the feet keep up with the seat. Written every frame: a puppet comes back from a fleeing spider to the pool as it was.
-            puppet.mixer.timeScale = c.state === 'flee' ? FLEE_HASTE : 1
-            puppet.step(dt)
-            puppet.group.matrix.copy(_mat)
-            puppet.group.matrixWorldNeedsUpdate = true
-            if (puppet.done) this._releasePuppet(c)
+          // The swing eases in and out of a stride so the legs do not snap between still and full stride; the rear-up eases the same way.
+          const ampTo = c.state === 'pause' ? 0 : STRIDE[c.clip] / 2
+          if (c.amp !== ampTo) {
+            c.amp += (ampTo - c.amp) * Math.min(1, GAIT_EASE * dt)
+            if (Math.abs(c.amp - ampTo) < 1e-4) c.amp = ampTo
+          }
+          const rearTo = c.clip === 'alert' ? 1 : 0
+          if (c.rear !== rearTo) {
+            c.rear += (rearTo - c.rear) * Math.min(1, REAR_EASE * dt)
+            if (Math.abs(c.rear - rearTo) < 1e-3) c.rear = rearTo
+            c.dirty = true
+          }
+          // Within NEAR_M a spider is a mesh at the tier its size and distance earn, with the floor held rather than culled: past the last rung and still within NEAR_M it stays a mesh, the card being what takes over out there. A mesh spider keeps its tier out to NEAR_KEEP times NEAR_M so the seam does not flicker.
+          let lod = LOD_TIERS
+          if (meshes && d2 <= (c.lod < LOD_TIERS ? keep2 : near2)) {
+            lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
+          }
+          c.lod = lod
+          if (c.dirty) {
+            const k = c.size / this.span
+            const sink = SINK * this.bodyH * k
+            _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
+            // Local +Y along the normal, local -Z along the heading; a reared spider pitches both back about its local X by REAR_RAD.
+            _y.set(c.nx, c.ny, c.nz)
+            _z.set(-c.tx, -c.ty, -c.tz)
+            _x.crossVectors(_y, _z)
+            if (c.rear > 0) {
+              const a = REAR_RAD * c.rear
+              const ca = Math.cos(a), sa = Math.sin(a)
+              const zx = _z.x * ca - _y.x * sa, zy = _z.y * ca - _y.y * sa, zz = _z.z * ca - _y.z * sa
+              _y.set(_y.x * ca + _z.x * sa, _y.y * ca + _z.y * sa, _y.z * ca + _z.z * sa)
+              _z.set(zx, zy, zz)
+            }
+            _quat.setFromRotationMatrix(_mat.makeBasis(_x, _y, _z))
+            _scl.set(k, k, k)
+            _mat.compose(_pos, _quat, _scl).toArray(c.m)
+            c.dirty = false
+          }
+          if (lod < LOD_TIERS) {
+            const n = counts[lod]
+            if (n < MAX) {
+              this.meshes[lod].instanceMatrix.array.set(c.m, n * 16)
+              const g = this.gaits[lod].array
+              g[n * 2] = c.gait
+              g[n * 2 + 1] = c.amp
+              counts[lod] = n + 1
+            }
           } else if (cards && m < MAX) {
-            _mat.toArray(cmat, m * 16)
+            cmat.set(c.m, m * 16)
             m++
           }
         }
+        if (host.kind === 'tree') host.moved = false
         if (dropped) {
           let n = 0
           for (const c of host.spiders) if (c.host !== null) host.spiders[n++] = c
@@ -800,13 +904,19 @@ export class Spiders {
         }
       }
     }
+    for (let k = 0; k < LOD_TIERS; k++) {
+      const mesh = this.meshes[k]
+      mesh.count = counts[k]
+      mesh.instanceMatrix.needsUpdate = true
+      this.gaits[k].needsUpdate = true
+    }
     this.card.count = m
     this.card.instanceMatrix.needsUpdate = true
   }
 
   dispose() {
     this.batch.parent?.remove(this.batch)
-    for (const m of this.materials) m.dispose()
+    this.material.dispose()
     this.asset?.map?.dispose()
     for (const g of this.asset?.tiers ?? []) g.dispose()
     this.card.geometry.dispose()

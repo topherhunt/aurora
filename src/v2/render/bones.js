@@ -1,8 +1,10 @@
 import THREE from '../../three-instance.js'
 
-import { GEN_PROP_GLB, GEN_PROP_LODS, createGenPropMaterial, loadGenProp } from './gen-props.js'
 import {
-  AXIS_VIEWS, SPUN_VIEWS, bakeCritterCard, critterTier, cullRange, setAxisCard, setCritterCard, spunBounds,
+  GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
+} from './gen-props.js'
+import {
+  AXIS_VIEWS, LOD_DEG, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard, setCritterCard, spunBounds,
 } from './critters.js'
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
@@ -13,8 +15,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // The deer skeleton and the elk skull: two generated props (DESIGN.md §29) as a
 // rare find on any ground, on the deadwood's machine with the parts that exist
 // for a hundred-piece litter left out. One prop arena, a two-variant bank, the
-// shipped four-tier ladder on the creatures' arc rungs with a card past it to
-// twice the last mesh rung (critters.js), each find culled at its own size's
+// props' ladder (gen-props.js: two mesh rungs and a card), each find culled at its own size's
 // range through the rim, a tiled camera-following scatter reaching as far as
 // the biggest find is drawn, and the rim dissolve; NO graded thinning and no
 // build queue, because a tile holds at most ONE candidate and nearly every
@@ -46,10 +47,10 @@ const DENSITY = 2e-4
 const TILE = 40
 const KEEP = TILE * TILE * DENSITY
 
-// The ladder's rungs: the pick, its three decimated tiers, the card, and past
-// the card culled -- critterTier's rungs, so a 3 m skeleton steps at 13, 27,
-// 54 and 108 m and is gone past 216, and the 10 m one holds its card to 719.
-export const RUNGS = GEN_PROP_LODS + 2
+// The ladder's rungs (gen-props.js): two mesh rungs, the card, and past the
+// card culled, so a 3 m skeleton steps at 13 and 27 m and is gone past 216,
+// and the 10 m one holds its card to 719.
+export const RUNGS = PROP_RUNGS
 
 // Ghosts the pool carries over its one-per-tile bound, each a step's departing
 // tier dissolving out (`_crossFade`, the forest's). Past this many in flight a
@@ -147,8 +148,7 @@ export function bonesBankFrom(ladders) {
     }
     return ladder
   })
-  const tiers = []
-  for (let t = 0; t <= GEN_PROP_LODS; t++) tiers.push({ geometries: picks.map((l) => l.geometries[t]) })
+  const tiers = propMeshTiers(picks)
   tiers.push({
     geometries: VARIANTS.map((v, i) => {
       const shim = { geometry: new THREE.BufferGeometry() }
@@ -204,7 +204,7 @@ export class Bones {
     this.paths = layers.paths
     this.seed = (seed | 0) ^ SEED_SALT
     // The tile grid: to the biggest find's cull unless told otherwise (the gates measure smaller worlds).
-    this.radius = radius ?? cullRange(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]), RUNGS)
+    this.radius = radius ?? propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]))
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
@@ -383,7 +383,7 @@ export class Bones {
 
   /**
    * Follow the camera, sweep the rim and re-tier every find by its own size on
-   * the creatures' rungs. Every resident instance every frame: a few hundred,
+   * the props' rungs. Every resident instance every frame: a few hundred,
    * so there is no near/far tile split to keep. Past the last rung the rim has
    * hidden a find, or is about to; it stays a card meanwhile.
    */
@@ -404,7 +404,7 @@ export class Bones {
         const ez = this.instZ[i] - camZ
         const d2 = ex * ex + ey * ey + ez * ez
         const cur = this.tierAt[i]
-        const tier = Math.min(cardTier, critterTier(this.instSize[i], Math.sqrt(d2), cur, RUNGS))
+        const tier = Math.min(cardTier, ladderTier(distAt(this.instSize[i], LOD_DEG), PROP_STEPS, RUNGS, Math.sqrt(d2), cur))
         const variant = this.variantAt[i]
         if (tier !== cur) {
           this.tierAt[i] = tier
@@ -523,7 +523,7 @@ export class Bones {
     // due for.
     this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
-    this.rim.place(id, Math.min(this.radius, cullRange(this.instSize[id], RUNGS)))
+    this.rim.place(id, Math.min(this.radius, propCull(this.instSize[id])))
     this.rim.markDue(tile)
   }
 

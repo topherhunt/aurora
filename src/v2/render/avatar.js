@@ -88,6 +88,13 @@ export class PeerAvatars {
     this.ready = loadRoster().then((roster) => { this.roster = roster; return roster })
     this.assets = new Map()
     this.double = null
+    this.walk = null
+  }
+
+  /** The ground the bodies stand on (v2/walk.js WalkSurface), once it is built; until then no body is dressed. */
+  ground(walk) {
+    if (typeof walk?.heightAt !== 'function') throw new Error('PeerAvatars.ground needs a walk surface')
+    this.walk = walk
   }
 
   /** One villager's shipped body, fetched once per session, with the one settled material every body of it draws through. */
@@ -176,7 +183,7 @@ export class PeerAvatars {
     if (peer.wants !== avatarId || !this.live(peer)) return
     this.undress(peer)
     peer.puppet = this.makePuppet(entry.id, loaded)
-    peer.body = new VrBody(peer.puppet, loaded.asset, entry.heightM / loaded.asset.height)
+    peer.body = new VrBody(peer.puppet, loaded.asset, entry.heightM / loaded.asset.height, this.walk)
     peer.heightM = entry.heightM
     peer.tier = -1
     this.group.add(peer.puppet.group)
@@ -210,7 +217,7 @@ export class PeerAvatars {
   /** One peer's body from one state; a pose of the wrong length is skipped, not thrown, since it came off the wire. */
   pose(peer, state) {
     const { pose, hands, alpha = 1 } = state
-    if (!pose || pose.length !== 21) return
+    if (!pose || pose.length !== 21 || !this.walk) return
     const avatar = state.avatar ?? null
     if (peer.wants !== avatar) this.dress(peer, avatar)
     const now = performance.now()

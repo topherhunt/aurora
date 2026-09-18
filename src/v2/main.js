@@ -2380,6 +2380,8 @@ async function bootWorld() {
   walk = new WalkSurface(height, rocks, trees)
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
+  // And so are the other players, and her double: their bodies stand on it, feet planted.
+  peerAvatars.ground(walk)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
   // Only now: probeVantage reads the walk surface and the water polygons.
   worldProbe.setVantage(probeVantage)
@@ -2571,11 +2573,11 @@ async function bootWorld() {
   window.v2butterflies = butterflies
 
   // The spiders on the trunks and the boulders (render/spiders.js): a scatter
-  // that climbs the trees and the rocks, so after both. Each puppet wears its
-  // own material, so every one is patched.
+  // that climbs the trees and the rocks, so after both. One material for every
+  // mesh tier, its legs in the vertex shader, and one for the card.
   await bootStep('spiders')
   spiders = new Spiders(scene, height, waterSurfaces, { seed: SEED, trees, rocks })
-  for (const m of spiders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-spiders' })
+  lighting.patch(spiders.material, { mode: 'vertex', cacheKey: 'v2-spiders' })
   lighting.patch(spiders.cardMaterial, { mode: 'vertex', cacheKey: 'v2-spiders-card' })
   spiders.place(spawn.x, spawn.z)
   spiders.ready.then(() => spiders.bakeCard(renderer))

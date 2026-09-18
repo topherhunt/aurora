@@ -17,7 +17,7 @@
 
 import THREE from '../../three-instance.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
-import { SPIN_ATTRIBUTE, billboardVertex, critterLodUrl, loadCritterGlb } from './critters.js'
+import { LOD_DEG, SPIN_ATTRIBUTE, billboardVertex, critterLodUrl, distAt, loadCritterGlb } from './critters.js'
 
 // What tools/props/gen/ship.mjs writes for each prop, relative to the page like the critters' URLs: the pick, and its ladder as critterLodUrl.
 export const GEN_PROP_GLB = {
@@ -28,6 +28,28 @@ export const GEN_PROP_GLB = {
 }
 // Decimated tiers beside every pick, lod1 the finest. The bench cuts three.
 export const GEN_PROP_LODS = 3
+
+// THE LADDER A PROP SCATTER DRAWS: two of the shipped tiers as meshes and a
+// card past them, on the creatures' rule (critters.js ladderTier) with its own
+// spacing. On an instanced prop every rung is a draw call per variant, so the
+// shipped T1 and T3 are not drawn: the first rung is the animals' (LOD_DEG,
+// 4.5 sizes), the mesh gives way to the card at half that arc, 9 sizes --
+// where a piece is ~128 px tall on a headset, the card's own texel count --
+// and the card holds to 72 sizes, the animals' card reach, so a 2 m piece
+// steps at 9 and 18 m and is gone past 144, and a 10 m one holds its card to
+// 720 m.
+export const PROP_MESH_TIERS = [0, 2]
+export const PROP_STEPS = [1, 2, 16]
+export const PROP_RUNGS = PROP_STEPS.length
+/** How far a prop of `size` metres is drawn at rung `k`. */
+export const propReach = (size, k) => distAt(size, LOD_DEG) * PROP_STEPS[k]
+/** Past this a prop of `size` metres is not drawn at all. */
+export const propCull = (size) => propReach(size, PROP_RUNGS - 1)
+
+/** The shipped tiers a scatter's bank draws as meshes, in rung order, from a ladder's geometries. */
+export function propMeshTiers(picks) {
+  return PROP_MESH_TIERS.map((t) => ({ geometries: picks.map((l) => l.geometries[t]) }))
+}
 
 /**
  * A ladder's geometries from its loaded assets, pick first, every tier already

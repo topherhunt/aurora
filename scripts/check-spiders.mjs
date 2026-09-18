@@ -14,18 +14,19 @@
 // rock, a slab or a buried stone; a scatter that is not the same twice; a spider that never moves,
 // walks off its stone or climbs past three metres; one left spinning in the
 // air when its stone is gone, or left behind when its trunk re-seats; a near
-// spider drawn as a card or a far one as a puppet, a puppet on the wrong tier,
-// one whose clip is not its state, or one that does not rear up when she is
-// close; one that does not run from her body at arm's length or only from her
-// head, runs toward her, no faster than its walk, is heard setting off twice,
-// stops short while it is still gaining ground, or runs on once it can gain no
-// more or is three metres off, or bolts again while she stands over it; a host above
-// the snow line with a group on it; a card that is two quads, or that does not
-// lie where its spider clings at its tilt; a frame that costs more than a
-// scatter is allowed to. The
-// shipped GLB is checked for shape too -- a skinned tier per rung of the ladder, the
-// skeleton and its six clips -- because the world loads it by name and builds
-// every puppet from it.
+// spider drawn as a card or a far one as a mesh, a mesh on the wrong tier, a
+// spider drawn twice or not at all, legs that swing while it sits or hold still
+// while it walks, a leg baked onto the body or a body vertex onto a leg, or one
+// that does not rear up when she is close; one that does not run from her body
+// at arm's length or only from her head, runs toward her, no faster than its
+// walk, is heard setting off twice, stops short while it is still gaining
+// ground, or runs on once it can gain no more or is three metres off, or bolts
+// again while she stands over it; a host above the snow line with a group on
+// it; a card that is two quads, or that does not lie where its spider clings at
+// its tilt; a frame that costs more than a scatter is allowed to. The shipped
+// GLB is checked for shape too -- a skinned tier per rung of the ladder, the
+// skeleton naming its legs and its six clips -- because the world loads it by
+// name and bakes the legs off its skeleton.
 //
 // What this can NOT check: whether they look like spiders, or how the crawl
 // reads. That needs eyes, in the world.
@@ -33,13 +34,12 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, PUPPETS, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S,
+  Spiders, SHIPPED_TIERS, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, REAR_RAD,
 } from '../src/v2/render/spiders.js'
 import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
 import { CRITTER_GLB, critterTier, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S } from '../src/v2/render/puppet.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -261,13 +261,15 @@ const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : off
     const jsonLen = buf.readUInt32LE(12)
     const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
     const names = (json.meshes ?? []).map((m) => m.name)
-    check(names.length === LOD_TIERS && names.join(',') === ['birch-spider', ...Array.from({ length: LOD_TIERS - 1 }, (_, k) => `birch-spider-lod${k + 1}`)].join(','), `${LOD_TIERS} tiers, the pick then lod1 up, one for each rung of the ladder`, names.join(','))
+    check(names.length === SHIPPED_TIERS && names.join(',') === ['birch-spider', ...Array.from({ length: SHIPPED_TIERS - 1 }, (_, k) => `birch-spider-lod${k + 1}`)].join(','), `${SHIPPED_TIERS} tiers, the pick then lod1 up, one for each rung of the ladder`, names.join(','))
     const tris = (json.meshes ?? []).map((m) => json.accessors[m.primitives[0].indices].count / 3)
     check(tris.every((t, k) => k === 0 || t < tris[k - 1]) && tris[tris.length - 1] >= 50, 'each tier is coarser than the last and the coarsest is still a spider and not a smear', tris.join('/'))
     check((json.meshes ?? []).every((m) => m.primitives.length === 1 && m.primitives[0].attributes.JOINTS_0 !== undefined && m.primitives[0].attributes.WEIGHTS_0 !== undefined && m.primitives[0].material === 0), 'every tier is skinned, one primitive, on the one material')
     const skin = json.skins?.[0]
     check(json.skins?.length === 1 && skin.joints.length === 42 && json.nodes[skin.skeleton].name === 'Pedicel', 'one skeleton of 42 joints rooted at the Pedicel', `${skin?.joints.length} joints`)
-    check((json.nodes ?? []).filter((n) => n.skin !== undefined).length === LOD_TIERS && (json.nodes ?? []).filter((n) => n.skin !== undefined).every((n) => n.skin === 0), 'every tier node wears the one skin')
+    const legBones = (skin?.joints ?? []).map((j) => json.nodes[j].name).filter((n) => /^Leg[1-4](Hip|Knee|Ankle|Foot)\.(L|R)$/.test(n))
+    check(legBones.length === 32, 'the skeleton names its eight legs, Leg1 to Leg4 by side, hip to foot -- the legs are baked off these names', `${legBones.length} leg bones`)
+    check((json.nodes ?? []).filter((n) => n.skin !== undefined).length === SHIPPED_TIERS && (json.nodes ?? []).filter((n) => n.skin !== undefined).every((n) => n.skin === 0), 'every tier node wears the one skin')
     const clips = (json.animations ?? []).map((a) => a.name)
     check(clips.join(',') === 'walk,run,idle,alert,eat,rest', 'the six clips, walk run idle alert eat rest', clips.join(','))
     const joints = new Set(skin?.joints ?? [])
@@ -286,23 +288,44 @@ const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : off
   }
 }
 
-// --- a stand-in asset: three slabs on a two-bone skeleton, six clips ---------------
-function makeAsset() {
+// --- a stand-in asset: two slabs on a skeleton of a body, a head and eight hips, six clips ---------------
+// A slab a metre square and 0.25 high; its two side faces (x = +-0.5) are the legs, four a side by z, each vertex there weighted to its hip, and everything between is the body on the Pedicel.
+const LEG_Z = [-0.375, -0.125, 0.125, 0.375]
+const legOfVertex = (x, z) => (Math.abs(x) < 0.5 - 1e-6 ? -1 : Math.min(3, Math.floor((z + 0.5) / 0.25)) * 2 + (x > 0 ? 1 : 0))
+function makeAsset({ legs = true } = {}) {
   const root = new THREE.Bone()
   root.name = 'Pedicel'
   const head = new THREE.Bone()
   head.name = 'Head'
-  head.position.set(0, 0.1, -0.2)
+  head.position.set(0, 0.1, -0.6)
   root.add(head)
-  root.position.set(0, 0.11, 0)
   const bones = [root, head]
+  if (legs) {
+    for (let n = 0; n < 4; n++) {
+      for (const side of ['L', 'R']) {
+        const hip = new THREE.Bone()
+        hip.name = `Leg${n + 1}Hip.${side}`
+        hip.position.set(side === 'L' ? -0.5 : 0.5, 0.125, LEG_Z[n])
+        root.add(hip)
+        bones.push(hip)
+      }
+    }
+  }
   root.updateMatrixWorld(true)
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
-  const tiers = Array.from({ length: LOD_TIERS }, (_, k) => 2 ** (LOD_TIERS - 1 - k)).map((seg) => {
+  const tiers = [4, 2].map((seg) => {
     const geo = new THREE.BoxGeometry(1, 0.25, 1, seg, 1, seg).translate(0, 0.125, 0)
-    const n = geo.getAttribute('position').count
-    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Uint16Array(n * 4), 4))
-    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(new Float32Array(n * 4).map((_, i) => (i % 4 === 0 ? 1 : 0)), 4))
+    const pos = geo.getAttribute('position')
+    const n = pos.count
+    const idx = new Uint16Array(n * 4)
+    const wgt = new Float32Array(n * 4)
+    for (let v = 0; v < n; v++) {
+      const leg = legs ? legOfVertex(pos.getX(v), pos.getZ(v)) : -1
+      idx[v * 4] = leg < 0 ? 0 : 2 + leg
+      wgt[v * 4] = 1
+    }
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(idx, 4))
+    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(wgt, 4))
     return geo
   })
   const clips = [['walk', 0.9], ['run', 0.42], ['idle', 3.2], ['alert', 3], ['eat', 1.6], ['rest', 5.2]].map(([name, dur]) =>
@@ -314,24 +337,37 @@ function makeAsset() {
 const scene = new THREE.Scene()
 const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
-check(spiders.puppets.length === PUPPETS && spiders.freePuppets.length === PUPPETS && spiders.puppetMats.length === PUPPETS && spiders.materials.length === PUPPETS * 2 + 1, `${PUPPETS} puppets built and free, ONE settled material between them all and a dissolving pair -- in, out -- each`)
-check(spiders.puppets.every((p) => p.meshes.length === LOD_TIERS && p.meshes.every((m) => m.isSkinnedMesh && m.skeleton === p.skeleton && !m.visible) && p.skeleton.bones.length === 2 && p.skeleton.bones[0].name === 'Pedicel' && p.skeleton !== spiders.asset.skeleton), `each puppet: ${LOD_TIERS} skinned tiers bound to its own copy of the skeleton, none shown`)
-check(spiders.puppets.every((p) => p.actions.size === 6 && p.mixer.getRoot() === p.rig && p.rig.parent === null), 'each puppet has a mixer over the six clips, rooted at its detached rig')
-check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === 1, 'the card is hidden until baked, and no puppet is in the scene')
+check(spiders.material.isMeshLambertMaterial && spiders.materials === undefined, 'ONE material for every mesh spider, and nothing else to patch')
+check(spiders.meshes.length === LOD_TIERS && spiders.meshes.every((m, k) => m.isInstancedMesh && !m.isSkinnedMesh && m.material === spiders.material && m.count === 0 && m.instanceMatrix.count === MAX && m.geometry === spiders.asset.tiers[k] && m.geometry.getAttribute('aGait') === spiders.gaits[k] && m.geometry.getAttribute('aLeg')?.itemSize === 2), `${LOD_TIERS} InstancedMeshes, no skeleton on any, each the asset's tier with its legs baked on and its gaits per instance, none drawn yet`)
+check(spiders.gaits.every((g) => g.isInstancedBufferAttribute && g.itemSize === 2 && g.count === MAX), 'a gait -- phase and amplitude -- per instance per tier')
+check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === LOD_TIERS + 1 && spiders.meshes.every((m) => spiders.batch.children.includes(m)), 'the card is hidden until baked, and the tiers and the card are the whole batch')
 {
-  const compile = (m) => {
-    const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n' }
-    m.onBeforeCompile(shader)
-    return shader
+  // The legs as baked onto tier 0: a side-face vertex swings with its leg, a body vertex never does.
+  const geo = spiders.asset.tiers[0]
+  const pos = geo.getAttribute('position')
+  const leg = geo.getAttribute('aLeg')
+  let bodyStill = true, legMoves = true, halves = new Set(), reachOne = new Map()
+  for (let v = 0; v < pos.count; v++) {
+    const l = legOfVertex(pos.getX(v), pos.getZ(v))
+    if (l < 0) { if (leg.getX(v) !== 0 || leg.getY(v) !== 0) bodyStill = false; continue }
+    if (!(leg.getY(v) > 0 && leg.getY(v) <= 1 + 1e-6)) legMoves = false
+    halves.add(`${l}:${leg.getX(v)}`)
+    reachOne.set(l, Math.max(reachOne.get(l) ?? 0, leg.getY(v)))
   }
-  const mats = spiders.puppetMats[0]
-  const shader = compile(mats.plain)
-  check(spiders.puppetMats.every((m) => m.plain === spiders.plain) && spiders.puppetMats.length === PUPPETS, 'every puppet draws its settled tiers through THE ONE material, so a wall of drawn spiders is one material change a frame and not one each')
-  check(!shader.fragmentShader.includes('uHue') && !shader.vertexShader.includes('aHue'), 'and nothing in it is per-spider: a skinned body has nowhere but a uniform to keep a hue, and a uniform costs a material an animal')
-  check(!shader.fragmentShader.includes('discard'), 'a settled puppet draws through a shader with no discard in it, so it does not cost a tiled GPU its early-Z')
-  const [a, b] = [compile(mats.in), compile(mats.out)]
-  check(a.uniforms.uCut === mats.uCut && b.uniforms.uCut === mats.uCut && a.uniforms.uSide.value === -b.uniforms.uSide.value && a.fragmentShader === b.fragmentShader && a.fragmentShader.includes('gl_FragCoord'), 'both halves of a fade read one screen-space hash and compare one shared cut the opposite way round')
-  check(new Set(spiders.materials.map((m) => m.customProgramCacheKey())).size === 2 && spiders.materials.length === PUPPETS * 2 + 1 && spiders.puppetMats.every((m) => m.plain.customProgramCacheKey() === 'spiders' && m.in.customProgramCacheKey() === 'spiders-fade'), 'two programs between every puppet, not one a puppet')
+  check(bodyStill && legMoves, 'a body vertex is baked 0,0 and every leg vertex a depth in (0, 1]')
+  check(reachOne.size === 8 && [...reachOne.values()].every((r) => Math.abs(r - 1) < 1e-6), 'every one of the eight legs reaches 1 at its furthest vertex', `${reachOne.size} legs`)
+  const half = (l) => [...halves].filter((h) => h.startsWith(`${l}:`)).map((h) => +h.split(':')[1])
+  check([0, 3, 4, 7].every((l) => half(l).length === 1 && half(l)[0] === 0) && [1, 2, 5, 6].every((l) => half(l).length === 1 && Math.abs(half(l)[0] - Math.PI) < 1e-6), 'the alternating tetrapod: L1 R2 L3 R4 step together, R1 L2 R3 L4 half a cycle behind')
+  let threw = false
+  try { new Spiders(scene, height, water, { seed: 1, trees, rocks, assets: makeAsset({ legs: false }) }) } catch { threw = true }
+  check(threw, 'a skeleton naming no legs is refused at setAsset')
+}
+{
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n' }
+  spiders.material.onBeforeCompile(shader)
+  check(shader.vertexShader.includes('attribute vec2 aLeg;') && shader.vertexShader.includes('attribute vec2 aGait;') && /transformed\.z -= legSwing \* sin\( legAt \)/.test(shader.vertexShader) && shader.vertexShader.indexOf('#include <begin_vertex>') < shader.vertexShader.indexOf('legSwing'), 'the legs are the vertex shader: the swing is added to `transformed` after begin_vertex, phased by the instance\'s gait and the vertex\'s leg')
+  check(!shader.fragmentShader.includes('uHue') && !shader.vertexShader.includes('aHue') && !shader.fragmentShader.includes('discard'), 'nothing per-spider in the fragment and no discard in it, so it does not cost a tiled GPU its early-Z')
+  check(spiders.material.customProgramCacheKey() === 'spiders-legs', 'one program for every tier')
   const cshader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n' }
   spiders.cardMaterial.onBeforeCompile(cshader)
   check(!cshader.vertexShader.includes('attribute float aHue;') && spiders.cardMaterial.customProgramCacheKey().endsWith('-flat'), 'and the card wears no hue either, there being none on the mesh it takes over from')
@@ -445,11 +481,23 @@ spiders.place(0, 0)
   const clipsSeen = new Set()
   let worstOff = 0
   let worstH = [Infinity, -Infinity]
+  // The legs, every frame: a spider a second into its walk swings them half a stride and its phase runs; a second into its pause they are still and its phase holds. `since` is frames in the state.
+  const since = new Map()
+  const wasState = new Map()
+  const gaitWas = new Map()
+  const legs = { walking: 0, sitting: 0, wrong: 0, phase: 0, over: 0 }
   for (let f = 0; f < 600; f++) {
+    for (const c of alive()) gaitWas.set(c, c.gait)
     const t0 = performance.now()
     tick(spiders, ...FAR, 1 / 60)
     ms += performance.now() - t0
     for (const c of alive()) {
+      if (wasState.get(c) !== c.state) { wasState.set(c, c.state); since.set(c, 0) } else since.set(c, since.get(c) + 1)
+      if (!(c.amp >= 0 && c.amp <= STRIDE.run / 2 + 1e-9)) legs.over++
+      if (since.get(c) >= 60) {
+        if (c.state === 'go') { legs.walking++; if (c.amp !== STRIDE[c.clip] / 2) legs.wrong++; if (c.gait === gaitWas.get(c)) legs.phase++ }
+        if (c.state === 'pause') { legs.sitting++; if (c.amp !== 0) legs.wrong++; if (c.gait !== gaitWas.get(c)) legs.phase++ }
+      }
       states.add(c.state)
       clipsSeen.add(c.clip)
       worstOff = Math.max(worstOff, offSurface(c))
@@ -465,7 +513,9 @@ spiders.place(0, 0)
   check(alive().every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-4 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-3 && Math.abs(Math.hypot(c.tx, c.ty, c.tz) - 1) < 1e-4), 'unit normal and unit tangent heading still, after the crawl')
   const rockOnTop = alive().filter((c) => c.host.kind === 'rock' && c.ny > FLAT_NY).length
   check(rockOnTop <= Math.ceil(alive().filter((c) => c.host.kind === 'rock').length * 0.2), 'the rock crawlers keep to the faces', `${rockOnTop} on top`)
-  check(spiders.card.count === alive().length && spiders.stats.puppets === 0, 'far away, every spider is a card and no puppet is out', `${spiders.card.count} cards, ${alive().length} alive`)
+  check(spiders.card.count === alive().length && spiders.stats.meshes.every((n) => n === 0) && alive().every((c) => c.lod === LOD_TIERS), 'far away, every spider is a card and no tier draws anybody', `${spiders.card.count} cards, ${alive().length} alive, tiers ${spiders.stats.meshes.join('/')}`)
+  check(legs.walking > 0 && legs.sitting > 0 && legs.wrong === 0 && legs.over === 0, 'a spider a second into its walk swings its legs half a stride, a second into its pause not at all, and never more than half the run', `${legs.walking} walking and ${legs.sitting} sitting spider-frames, ${legs.wrong} wrong`)
+  check(legs.phase === 0, 'the phase runs while it walks and holds while it sits', `${legs.phase} wrong`)
   const perFrame = ms / 600
   check(perFrame < 3, `a frame of ${alive().length} spiders costs under 3 ms`, `${perFrame.toFixed(3)} ms, ${rocks.rays} rays`)
   // The card lies where its spider clings, sunk into the surface, its up along the normal. Instance 0 is the first spider in tile order.
@@ -519,7 +569,7 @@ spiders.place(0, 0)
   const freeBefore = spiders.free.length
   liveRocks = ROCKS.filter((b) => b.name !== 'sphere')
   for (let f = 0; f < RESEAT_EVERY + 12; f++) tick(spiders, ...FAR, 0)
-  check(onSphere.length > 0 && onSphere.every((c) => c.host === null && !c.puppet) && spiders.stats.dropped === onSphere.length && spiders.free.length === freeBefore + onSphere.length, 'the sphere gone from under them, its spiders are taken away and their slots freed', `${onSphere.length} dropped`)
+  check(onSphere.length > 0 && onSphere.every((c) => c.host === null) && spiders.stats.dropped === onSphere.length && spiders.free.length === freeBefore + onSphere.length, 'the sphere gone from under them, its spiders are taken away and their slots freed', `${onSphere.length} dropped`)
   check(![...spiders.tiles.values()].some((t) => [...t.hosts.values()].some((h) => h.spiders.some((c) => c.host === null))), 'and no host still lists one')
   check(alive().every((c) => offSurface(c) < 0.02), 'everyone else is where they were')
   liveRocks = ROCKS
@@ -540,50 +590,85 @@ spiders.place(0, 0)
   spiders.batch.visible = true
 }
 
-// --- near: puppets, tiers, clips ------------------------------------------------
+// --- near: the tiers, the legs, the rear-up ------------------------------------------------
 {
   const target = alive().find((c) => c.host.kind === 'tree')
   const at = (d) => [target.x + target.nx * d, target.y, target.z + target.nz * d]
-  // Out along the normal, so the distance is exactly d. Long enough by default
-  // for the dissolve to finish, a puppet not being back in its pool until it has.
-  const SETTLE = Math.ceil(LOD_FADE_S * 60) + 2
-  const tiersAt = (d, frames = SETTLE) => {
-    for (let f = 0; f < frames; f++) tick(spiders, ...at(d), 1 / 60)
-    return target.puppet ? target.puppet.meshes.findIndex((m) => m.visible) : -1
+  // Out along the normal, so the distance is exactly d.
+  let her = at(0)
+  const tiersAt = (d, frames = 2) => {
+    for (let f = 0; f < frames; f++) { her = at(d); tick(spiders, ...her, 1 / 60) }
+    return target.lod
   }
-  // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres.
+  const drawn = () => spiders.stats.meshes.reduce((a, b) => a + b, 0) + spiders.card.count
+  const seat = (c) => { const sink = SINK * spiders.bodyH * c.size / spiders.span; return new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink) }
+  /** The instance of tier k standing where the spider is, or -1. */
+  const instanceOf = (k, c) => {
+    const a = spiders.meshes[k].instanceMatrix.array
+    const p = seat(c)
+    for (let i = 0; i < spiders.meshes[k].count; i++) if (Math.abs(a[i * 16 + 12] - p.x) < 1e-5 && Math.abs(a[i * 16 + 13] - p.y) < 1e-5 && Math.abs(a[i * 16 + 14] - p.z) < 1e-5) return i
+    return -1
+  }
+  // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres. Walking, so it is not reared up for the matrix check.
+  target.state = 'go'; target.clip = 'walk'; target.speed = 0.05; target.left = 100
   const close = lodReach(target.size, 0) / 2
   const t1 = tiersAt(close)
-  check(target.puppet && t1 === 0 && spiders.batch.children.includes(target.puppet.group), `${close.toFixed(2)} m off, the spider is a puppet on tier 0, in the scene`)
-  check(target.puppet.current && target.puppet.current.getClip().name === target.clip && target.puppet.current.isRunning(), 'its clip is its state\'s', `${target.clip}`)
-  const pos = new THREE.Vector3().setFromMatrixPosition(target.puppet.group.matrix)
-  check(Math.abs(pos.distanceTo(new THREE.Vector3(target.x, target.y, target.z)) - SINK * spiders.bodyH * target.size / spiders.span) < 1e-6 && !target.puppet.group.matrixAutoUpdate, 'the puppet stands where the spider is, sunk its feet into the bark, under a matrix the scatter writes')
-  const dist = (c) => Math.hypot(c.x - at(1)[0], c.y - at(1)[1], c.z - at(1)[2])
-  // A puppet is kept to 1.15 NEAR_M once taken; a step is under 2 cm.
-  check(alive().every((c) => (c.puppet ? dist(c) <= NEAR_M * 1.15 + 0.02 : dist(c) >= NEAR_M - 0.02)) && spiders.stats.puppets + spiders.card.count === alive().length && spiders.stats.puppets >= 1 && spiders.starved === 0, `every spider within ${NEAR_M} m is a puppet and the rest are cards`, `${spiders.stats.puppets} puppets, ${spiders.card.count} cards`)
+  const i1 = instanceOf(0, target)
+  check(t1 === 0 && i1 >= 0 && spiders.meshes[0].count >= 1, `${close.toFixed(2)} m off, the spider is an instance of tier 0`, `tier ${t1}, instance ${i1}`)
+  {
+    const m = new THREE.Matrix4().fromArray(spiders.meshes[0].instanceMatrix.array, i1 * 16)
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
+    m.decompose(p, q, s)
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+    const k = target.size / spiders.span
+    check(Math.abs(s.x - k) < 1e-6 && up.distanceTo(new THREE.Vector3(target.nx, target.ny, target.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(target.tx, target.ty, target.tz)) < 1e-5, 'the instance stands where the spider is at its size, its up the bark\'s normal and its nose along its heading')
+    const g = spiders.gaits[0].array
+    check(Math.abs(g[i1 * 2] - target.gait) < 1e-6 && Math.abs(g[i1 * 2 + 1] - target.amp) < 1e-9 && target.amp > 0, 'and carries its gait: the phase and a swing', `phase ${target.gait.toFixed(3)} amp ${target.amp.toFixed(4)}`)
+  }
+  // The phase runs one cycle a stride of the seat. Her body that close set it fleeing; put back on its walk with her 2 m off, out of FLEE_M of it.
+  {
+    target.state = 'go'; target.clip = 'walk'; target.speed = 0.05; target.left = 100
+    tiersAt(2, 1)
+    const was = target.gait
+    tiersAt(2, 1)
+    const turned = (target.gait - was + 2 * Math.PI) % (2 * Math.PI)
+    check(target.state === 'go' && Math.abs(turned - (2 * Math.PI * 0.05 * (1 / 60) * spiders.span) / (target.size * STRIDE.walk)) < 1e-9, 'a frame\'s walk turns the phase by that step over the stride', `${turned.toFixed(4)} rad`)
+  }
+  const dist = (c) => Math.hypot(c.x - her[0], c.y - her[1], c.z - her[2])
+  // A mesh is kept to 1.15 NEAR_M once it is one; a step is under 2 cm.
+  check(alive().every((c) => (c.lod < LOD_TIERS ? dist(c) <= NEAR_M * 1.15 + 0.02 : dist(c) >= NEAR_M - 0.02)) && drawn() === alive().length && spiders.stats.meshes[target.lod] >= 1, `every spider within ${NEAR_M} m is a mesh and the rest are cards, each drawn once`, `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards`)
   // The floor is held rather than culled: a spider inside NEAR_M is always a mesh, the card being what takes over out there.
-  const expect = (d) => Math.min(critterTier(target.size, d, -1, LOD_TIERS), LOD_TIERS - 1)
+  const expect = (d) => Math.min(critterTier(target.size, d, LOD_TIERS, LOD_TIERS), LOD_TIERS - 1)
   // The middle rung is probed at its own geometric middle, a rolled size putting
   // its edges wherever it likes: the hysteresis band is a tenth either way and
   // cannot reach that far, so what is promised is the ladder and not one spider.
   const mid = lodReach(target.size, 1) * Math.SQRT2
   const tMid = tiersAt(mid), t95 = tiersAt(9.5)
-  check(tMid === expect(mid) && t95 === expect(9.5) && t95 === LOD_TIERS - 1, `at ${mid.toFixed(2)} m tier ${expect(mid)}, at 9.5 m the last tier and not a cull`, `${tMid}, ${t95} for a ${target.size.toFixed(2)} m spider`)
-  // Stepping out of range: one frame in, the mesh is still there and dissolving, and NOTHING is drawn twice.
-  for (let f = 0; f < 1; f++) tick(spiders, ...at(12), 1 / 60)
-  const going = target.puppet
-  check(going && going.tier === -1 && going.meshes.filter((m) => m.visible).length === 1 && going.meshes.find((m) => m.visible).material === going.mats.out && going.mats.uCut.value < 1,
-    'a spider that walks out of range dissolves away rather than blinking out')
-  check(spiders.stats.puppets + spiders.card.count === alive().length, 'and is a mesh or a card in that moment, never both at once', `${spiders.stats.puppets} puppets, ${spiders.card.count} cards, ${alive().length} alive`)
-  const t12 = tiersAt(12)
-  check(t12 === -1 && !target.puppet, `at 12 m it is a card again and its puppet is back in the pool`)
-  check(spiders.freePuppets.length === PUPPETS - spiders.stats.puppets, 'the pool balances')
-  // Reared up when she is close and paused; back to its business when she goes.
+  check(tMid === expect(mid) && t95 === expect(9.5) && t95 === LOD_TIERS - 1 && instanceOf(LOD_TIERS - 1, target) >= 0, `at ${mid.toFixed(2)} m tier ${expect(mid)}, at 9.5 m the last tier and not a cull`, `${tMid}, ${t95} for a ${target.size.toFixed(2)} m spider`)
+  // Stepping out of range: the next frame it is a card, and NOTHING is drawn twice.
+  const t12 = tiersAt(12, 1)
+  check(t12 === LOD_TIERS && instanceOf(LOD_TIERS - 1, target) < 0 && drawn() === alive().length, 'at 12 m it is a card the next frame, a mesh or a card and never both', `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${alive().length} alive`)
+  // Reared up when she is close and paused, the instance pitched nose-up about its seat; back to its business, and flat, when she goes.
   target.state = 'pause'; target.clip = 'idle'; target.left = 100
   tiersAt(1.0, 3)
-  check(target.clip === 'alert' && target.puppet.current.getClip().name === 'alert', 'a paused spider with her head a metre off is alert')
+  check(target.clip === 'alert' && target.rear > 0 && target.rear < 1, 'a paused spider with her head a metre off is alert and rearing', `rear ${target.rear.toFixed(3)}`)
+  tiersAt(1.0, 120)
+  {
+    const i = instanceOf(target.lod, target)
+    const m = new THREE.Matrix4().fromArray(spiders.meshes[target.lod].instanceMatrix.array, i * 16)
+    const q = new THREE.Quaternion()
+    m.decompose(new THREE.Vector3(), q, new THREE.Vector3())
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+    const n = new THREE.Vector3(target.nx, target.ny, target.nz), t = new THREE.Vector3(target.tx, target.ty, target.tz)
+    check(target.rear === 1 && i >= 0 && Math.abs(up.angleTo(n) - REAR_RAD) < 1e-5 && Math.abs(fwd.angleTo(t) - REAR_RAD) < 1e-5 && fwd.dot(n) > 0 && Math.abs(up.dot(new THREE.Vector3().crossVectors(n, t.clone().negate()))) < 1e-6, `two seconds on it is fully reared: the instance pitched ${REAR_RAD} rad nose-up off the bark about its seat`, `rear ${target.rear}, up off normal ${up.angleTo(n).toFixed(3)} rad`)
+    check(target.amp === 0, 'and its legs hold still while it rears', `amp ${target.amp}`)
+  }
   tiersAt(3, 3)
-  check(target.clip !== 'alert', 'and drops it when she steps back', target.clip)
+  check(target.clip !== 'alert' && target.rear < 1, 'and drops it when she steps back, easing down', `${target.clip} rear ${target.rear.toFixed(3)}`)
+  tiersAt(3, 120)
+  check(target.rear === 0, 'flat again two seconds on')
   // Her BODY closer than FLEE_M -- here her waist, her head a metre off -- and it flees: at FLEE_HASTE times the run, heard once as it sets off, for the far side of the trunk and the top of the climb.
   const run = (c, her, frames) => { for (let f = 0; f < frames; f++) tick(spiders, ...her, 1 / 60) }
   const bodyDist = (c, her) => Math.hypot(c.x - her[0], Math.max(0, c.y - her[1], her[1] - EYE - c.y), c.z - her[2]) - WALK.radius
@@ -601,10 +686,15 @@ spiders.place(0, 0)
     return { her, fled, away, twice: spiders.startled([]).length, still: c.state === 'flee' }
   }
   const t = flee(target)
-  // The run gait is 0.15 unit a 0.42 s clip (spiders.js GAIT), at the body's scale.
-  const runSpeed = (0.15 / 0.42) * target.size / spiders.span
-  check(target.state === 'flee' && target.clip === 'run' && target.puppet.current.getClip().name === 'run', `her body 0.2 m off and her head ${Math.hypot(0.2 + WALK.radius, GROUND + EYE - target.y).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
-  check(Math.abs(target.speed - FLEE_HASTE * runSpeed) < 1e-9 && target.puppet.mixer.timeScale === FLEE_HASTE, `${FLEE_HASTE} times as fast as its run, the clip hastened to match`, `${target.speed.toFixed(3)} m/s`)
+  // The run gait is STRIDE.run a 0.42 s cycle (spiders.js GAIT), at the body's scale.
+  const runSpeed = (STRIDE.run / 0.42) * target.size / spiders.span
+  check(target.state === 'flee' && target.clip === 'run', `her body 0.2 m off and her head ${Math.hypot(0.2 + WALK.radius, GROUND + EYE - target.y).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
+  {
+    const was = target.gait
+    run(target, t.her, 1)
+    const turned = (target.gait - was + 2 * Math.PI) % (2 * Math.PI)
+    check(Math.abs(target.speed - FLEE_HASTE * runSpeed) < 1e-9 && Math.abs(turned - (2 * Math.PI * target.speed * (1 / 60) * spiders.span) / (target.size * STRIDE.run)) < 1e-9, `${FLEE_HASTE} times as fast as its run, the legs cycling ${FLEE_HASTE} times as fast to match`, `${target.speed.toFixed(3)} m/s, ${(turned * 60 / (2 * Math.PI)).toFixed(2)} cycles a second`)
+  }
   check(t.fled.length === 1 && t.fled[0] === target && t.twice === 0 && t.still, 'it is listed as startled the frame it sets off and never again while it runs')
   check(t.away < 0.05 && target.ty > 0.3, 'it makes for the far side of the trunk and the top of the climb, not toward her', `heading ty ${target.ty.toFixed(2)}, toward her ${t.away.toFixed(2)}`)
   // She stands there: it keeps running up past her, gaining nothing on her body until it clears her crown, and calms where it is once it is there, and does not bolt again while she stays.
@@ -613,7 +703,7 @@ spiders.place(0, 0)
   check(target.state === 'flee' && target.h > h0 + 0.15, 'a second on it is still running, up the trunk past her', `${h0.toFixed(2)} -> ${target.h.toFixed(2)} m up`)
   run(target, t.her, 12 * 60)
   const d2 = bodyDist(target, t.her)
-  check(target.state === 'pause' && target.puppet.mixer.timeScale === 1 && d2 < FLEE_TO_M && d2 > d1 + 0.5 && target.h > target.host.hHi - 0.1, `having got as far as the trunk allows -- the top of the climb, the far side -- it calms down there, the clip at its own pace again`, `${target.state} at ${d2.toFixed(2)} m, ${target.h.toFixed(2)} m up of ${target.host.hHi.toFixed(2)}`)
+  check(target.state === 'pause' && target.amp === 0 && d2 < FLEE_TO_M && d2 > d1 + 0.5 && target.h > target.host.hHi - 0.1, `having got as far as the trunk allows -- the top of the climb, the far side -- it calms down there, its legs still`, `${target.state} at ${d2.toFixed(2)} m, ${target.h.toFixed(2)} m up of ${target.host.hHi.toFixed(2)}`)
   run(target, t.her, 60)
   check(target.state !== 'flee' && spiders.startled([]).length === 0, 'and does not bolt again while she stands under it')
   // She steps back and returns: it bolts again, once.
@@ -641,10 +731,17 @@ spiders.place(0, 0)
   flee(target)
   check(spiders.startled([]).length === 0 && target.state === 'flee', 'a hidden layer lists no startled spider')
   spiders.batch.visible = true
-  // Mixer time runs only while a puppet is out.
-  const time = target.puppet.mixer.time
-  tiersAt(3, 10)
-  check(target.puppet.mixer.time > time, 'its mixer advances with the frames')
+  // A spider's matrix is rebuilt only when it has moved or turned: a paused rock spider between re-seats writes nothing new.
+  const still = alive().find((c) => c.host.kind === 'rock' && c.state === 'pause' && c !== p)
+  still.left = 100; still.clip = 'idle'; still.rear = 0
+  // Up to and through its re-seat frame, so the frames counted are the ones between re-seats.
+  do tick(spiders, 0, GROUND + 40, 0, 1 / 60); while ((spiders.frame + still.id) % RESEAT_EVERY !== 0)
+  let writes = 0
+  const kept = still.m.slice()
+  // Every index write to its matrix counted; reads go to the array itself, whose getters want it and not the proxy as their receiver.
+  still.m = new Proxy(still.m, { set(m, k, v) { writes++; m[k] = v; return true }, get(m, k) { const v = m[k]; return typeof v === 'function' ? v.bind(m) : v } })
+  for (let f = 0; f < RESEAT_EVERY - 1; f++) tick(spiders, 0, GROUND + 40, 0, 1 / 60)
+  check(writes === 0 && !still.dirty && kept.every((v, i) => v === still.m[i]), 'a sitting spider keeps its matrix from frame to frame rather than composing it again', `${writes} writes over ${RESEAT_EVERY - 1} frames`)
 }
 
 spiders.dispose()

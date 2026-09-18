@@ -1,9 +1,12 @@
 import THREE from '../../three-instance.js'
 import { QUANT, levelFor, poolBound } from './tile-pool.js'
 
-import { GEN_PROP_GLB, GEN_PROP_LODS, createGenPropMaterial, loadGenProp } from './gen-props.js'
 import {
-  AXIS_VIEWS, LOD_HYSTERESIS, SPUN_VIEWS, bakeCritterCard, critterTier, cullRange, lodReach, setAxisCard,
+  GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
+  propReach,
+} from './gen-props.js'
+import {
+  AXIS_VIEWS, LOD_DEG, LOD_HYSTERESIS, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard,
   setCritterCard, spunBounds,
 } from './critters.js'
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
@@ -38,11 +41,11 @@ import { smoothstep } from '../../sim/mathx.js'
 //    broken base meets the hill. Both sink by their own half-thickness times the
 //    local slope, which closes the uphill gap.
 //
-// 2. THE LADDER IS THE CREATURES' (critters.js): a piece steps down its four
-//    mesh tiers as it shrinks in her view, LOD_DEG of arc and halving, and past
-//    them is a CARD to twice the last mesh rung's reach, then culled. Distance
-//    is measured from the instance origin, so a flat ladder had her at a long
-//    log's END looking at T1 from arm's length. Every step, card included, is
+// 2. THE LADDER IS THE PROPS' (gen-props.js PROP_STEPS): the pick, the shipped
+//    T2 at half its arc, and past it a CARD out to where the animals' card
+//    ends, then culled. Distance is measured from the instance origin, so a
+//    flat ladder had her at a long log's END looking at T1 from arm's length.
+//    Every step, card included, is
 //    the forest's quarter-second cross-dissolve (`_crossFade`), and each piece
 //    is culled at its own size's range through the rim's per-instance
 //    gone-distance (rim.js); the tile grid reaches as far as the biggest piece
@@ -60,21 +63,21 @@ import { smoothstep } from '../../sim/mathx.js'
 //    live wood: full DENSITY in forest cover, a quarter of it in the open
 //    (COVER, off the same biome field the trees read).
 //
-// WHAT IT COSTS. Every piece stands to its last mesh rung (FULL_RUNG) and is
-// thinned as 1/d past it in its own arc, so what is resident far out is the
-// big pieces, and past their arc cull they are hidden: ~430 resident of a
-// 730 pool in full cover on flat ground, ~115 of them drawn, half as cards.
-// The shipped ladders run ~2000/1000/500/200 (stump) and ~1000/500/250/100
-// (log) triangles, so the layer measures ~8k triangles per eye there (10k at
-// the worst of eight vantages; tmp/probe-deadwood.mjs), a third of it the one
-// or two T0/T1 pieces within 20 m and the rest T3 logs 100-250 m out. THE TWO
-// NUMBERS THAT SET THIS ARE DENSITY AND THE SIZE CEILINGS, not the ladder: a
-// piece is a mesh to 36 times its size and the drawn count goes with the
-// ceiling squared, so at 0.003/m^2 with 20 m logs the same ground was ~4900
-// resident, ~1350 drawn and 108k triangles, three quarters of it 13 m logs
-// drawn as 100-250 triangle meshes at a mean 380 m -- a triangle every pixel
-// or two on a headset, which is what a tile-based GPU is worst at. Dead wood
-// is something you come across, not something you wade through.
+// WHAT IT COSTS. Every piece stands to half its card's reach (FULL_STEP) and
+// is thinned as 1/d past it in its own arc, so what is resident far out is
+// the big pieces, and past their arc cull they are hidden: ~430 resident of a
+// 730 pool in full cover on flat ground, ~115 of them drawn, nearly all as
+// cards. The drawn rungs run ~2000/500 (stump) and ~1000/250 (log) triangles,
+// so the layer measures ~1.7k triangles per eye there (3.7k at the worst of
+// eight vantages; tmp/probe-deadwood.mjs), nearly all of it the handful of
+// meshes within 9 sizes, and 3-5 of its 6 draw calls carry anything. THE TWO
+// NUMBERS THAT SET THIS ARE DENSITY AND THE SIZE CEILINGS: the drawn count
+// goes with the ceiling squared, so at 0.003/m^2 with 20 m logs and a mesh
+// held to 36 sizes the same ground was ~4900 resident, ~1350 drawn and 108k
+// triangles, three quarters of it 13 m logs drawn as 100-250 triangle meshes
+// at a mean 380 m -- a triangle every pixel or two on a headset, which is what
+// a tile-based GPU is worst at. Dead wood is something you come across, not
+// something you wade through.
 //
 // THE COLOUR is per instance: the fern's ground cue plus a value jitter, so two
 // logs side by side are not the same pixel and a log on scrub is drier than one
@@ -96,27 +99,28 @@ const DENSITY = 0.00075
 // beside it was the failure this replaces.
 const COVER = { ramp: TREE_TUNING.BIOME.ramp, openKeep: 0.25 }
 
-// The rung every piece stands to whatever its rank: its last mesh rung, so the
-// graded thinning only ever takes a piece off its CARD. Past it a piece of rank
-// r stands to that rung's reach / r, so the density still halves as the
-// distance doubles, but in units of each piece's own arc rather than in
-// metres -- a 2 m stump is thinned from 72 m, a 10 m log from 360 -- and half
-// the pieces of every size reach their cull. Thinned in metres from one radius
-// the way the other scatters are, a 4 m stump was usually gone at a hundred
-// metres while its ladder still had 150 m of card to give (rocks floor the
-// rank against the same thing). `_plan` folds the size into the stored rank
-// so the tile ladder reads one scalar; `keepAt` is what a level keeps of it.
-const FULL_RUNG = GEN_PROP_LODS
+// The reach every piece stands to whatever its rank, over its first rung's:
+// half the card's, so the graded thinning only ever takes a piece off its
+// CARD. Past it a piece of rank r stands to that reach / r, so the density
+// still halves as the distance doubles, but in units of each piece's own arc
+// rather than in metres -- a 2 m stump is thinned from 72 m, a 10 m log from
+// 360 -- and half the pieces of every size reach their cull. Thinned in metres
+// from one radius the way the other scatters are, a 4 m stump was usually gone
+// at a hundred metres while its ladder still had 150 m of card to give (rocks
+// floor the rank against the same thing). `_plan` folds the size into the
+// stored rank so the tile ladder reads one scalar; `keepAt` is what a level
+// keeps of it.
+const FULL_STEP = 8
 
 // The size roll's quantiles `keepAt` is sampled at, per variant.
 const KEEP_SAMPLES = 64
 
-// The ladder's rungs: the pick, its three decimated tiers, the card, and past
-// the card culled -- critterTier's rungs, so a 2 m stump steps at 9, 18, 36
-// and 72 m and is gone past 144, and a 10 m log holds its card to 720 m.
-export const RUNGS = GEN_PROP_LODS + 2
+// The ladder's rungs (gen-props.js): two mesh rungs, the card, and past the
+// card culled, so a 2 m stump steps at 9 and 18 m and is gone past 144, and a
+// 10 m log holds its card to 720 m.
+export const RUNGS = PROP_RUNGS
 // How far past the last mesh rung a tile can still hold a mesh, per metre of its biggest piece.
-const MESH_REACH = lodReach(1, RUNGS - 2) * (1 + LOD_HYSTERESIS)
+const MESH_REACH = propReach(1, RUNGS - 2) * (1 + LOD_HYSTERESIS)
 
 // Ghosts the pool carries over its tile bound, each a step's departing tier
 // dissolving out (`_crossFade`); past this many in flight a step pops. On top
@@ -408,8 +412,7 @@ export function deadwoodBankFrom(ladders) {
     }
     return ladder
   })
-  const tiers = []
-  for (let t = 0; t <= GEN_PROP_LODS; t++) tiers.push({ geometries: picks.map((l) => l.geometries[t]) })
+  const tiers = propMeshTiers(picks)
   const cores = VARIANTS.map((v, i) => (v.kind === 'log' ? logCore(picks[i].geometries[0], picks[i].bounds) : { x: 0, y: 0, r: 0 }))
   tiers.push({
     geometries: VARIANTS.map((v, i) => {
@@ -557,21 +560,21 @@ export class Deadwood {
     // gates measure smaller worlds). Nearly all of it is empty of anything
     // drawn -- a piece is culled at its own size's range -- and holds the odd
     // long log's card.
-    this.radius = radius ?? cullRange(maxLod, RUNGS)
+    this.radius = radius ?? propCull(maxLod)
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.radiusSq = this.radius * this.radius
     this.evictSq = (this.radius + TILE * 1.5) ** 2
 
     // The tile ladder (tile-pool.js) quantises distance up from the smallest
-    // piece's own FULL_RUNG reach: a level keeps the pieces whose stored rank is
+    // piece's own FULL_STEP reach: a level keeps the pieces whose stored rank is
     // under uAt[q], and `_plan` stores the roll scaled by the smallest size over
     // the piece's own, so no rank is over 1 and a level's keep is the roll's
     // times size over the bank's size law, `keepAt`, sampled at the size roll's
     // quantiles (uniform, so nothing about the skews is assumed). Given
     // instead only by the gates, which pass the draw radius to hold every tile
     // at full density.
-    this.fullRadius = fullRadius ?? lodReach(this.minLod, FULL_RUNG)
+    this.fullRadius = fullRadius ?? distAt(this.minLod, LOD_DEG) * FULL_STEP
     this.fullSq = this.fullRadius * this.fullRadius
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / this.fullRadius) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
@@ -841,8 +844,8 @@ export class Deadwood {
       at[o + P_VARIANT] = variant
       at[o + P_YAW] = yaw
       at[o + P_SCALE] = scale
-      // The rank in the piece's own arc (FULL_RUNG): the tile ladder keeps it
-      // while fullRadius / d exceeds it, which is its own FULL_RUNG reach over
+      // The rank in the piece's own arc (FULL_STEP): the tile ladder keeps it
+      // while fullRadius / d exceeds it, which is its own FULL_STEP reach over
       // the roll.
       at[o + P_U] = (rank * this.minLod) / (this.vLod[variant] * scale)
       at[o + P_TINT_V] = tintV
@@ -1244,7 +1247,7 @@ export class Deadwood {
         // The creatures' rung for the piece's OWN size, so every piece of dead
         // wood in the world steps at the same apparent size. Past the last rung
         // the rim has hidden it, or is about to; it stays a card meanwhile.
-        const tier = Math.min(cardTier, critterTier(this.instSize[i], Math.sqrt(d2), cur, RUNGS))
+        const tier = Math.min(cardTier, ladderTier(distAt(this.instSize[i], LOD_DEG), PROP_STEPS, RUNGS, Math.sqrt(d2), cur))
 
         const variant = this.variantAt[i]
         if (tier !== cur) {
@@ -1455,12 +1458,12 @@ export class Deadwood {
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
 
       // A piece of rank u survives while the local keep-fraction fullRadius/d
-      // exceeds u, so it goes at fullRadius/u, its own FULL_RUNG reach over its
+      // exceeds u, so it goes at fullRadius/u, its own FULL_STEP reach over its
       // roll -- or at its own size's cull, or the draw radius, whichever comes
       // first. Hidden until the rim's sweep has looked at it, which the tile
       // below is marked due for; a piece joining a world she is standing in
       // dithers in rather than snapping.
-      this.rim.place(id, Math.min(this.fullRadius / u, this.radius, cullRange(lodSize, RUNGS)), this.settled)
+      this.rim.place(id, Math.min(this.fullRadius / u, this.radius, propCull(lodSize)), this.settled)
     }
 
     this.placed += n - (tile ? tile.n : 0)

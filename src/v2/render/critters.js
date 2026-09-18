@@ -232,6 +232,8 @@ export const LOD_DEG = 12.7
 export const LOD_STEP = 2
 // How far past a rung a creature must go before it leaves it, and how far short before it comes back.
 export const LOD_HYSTERESIS = 0.1
+// Rung k's reach over rung 0's, for critterTier; more rungs than any ladder has.
+const POW2 = Float64Array.from({ length: 8 }, (_, k) => LOD_STEP ** k)
 // How far past the cull a placement is worth remembering, as a fraction of the cull range.
 export const CULL_KEEP = 1.5
 
@@ -252,8 +254,20 @@ export const forgetRange = (size, rungs = LOD_RUNGS) => cullRange(size, rungs) *
  * no rung yet, and takes the edges as they are.
  */
 export function critterTier(size, dist, prev, rungs = LOD_RUNGS) {
-  let reach = distAt(size, LOD_DEG)
-  for (let k = 0; k < rungs; k++, reach *= LOD_STEP) {
+  if (rungs > POW2.length) throw new Error(`critterTier: ${rungs} rungs is more than the ${POW2.length} the step table holds`)
+  return ladderTier(distAt(size, LOD_DEG), POW2, rungs, dist, prev)
+}
+
+/**
+ * The same, for a ladder whose rungs are not evenly spaced: rung k holds to
+ * `base * steps[k]` metres. The static props draw two mesh tiers and a card
+ * (deadwood.js, bones.js) and want the card's reach where the animals' is,
+ * so their steps run 1, 2, 16 rather than doubling. The hysteresis rule is
+ * the one rule, here, for every ladder in the world.
+ */
+export function ladderTier(base, steps, rungs, dist, prev) {
+  for (let k = 0; k < rungs; k++) {
+    const reach = base * steps[k]
     // The edge, pushed away from the rung it is on so crossing it takes a real move.
     const edge = k === prev ? reach * (1 + LOD_HYSTERESIS) : k === prev - 1 ? reach * (1 - LOD_HYSTERESIS) : reach
     if (dist <= edge) return k

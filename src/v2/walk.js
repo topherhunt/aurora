@@ -91,7 +91,10 @@ export class WalkSurface {
     let best = h
     if (y === undefined) {
       for (let s = 0; s < this.stone.length; s++) {
-        const top = this.stone[s].blockTopAt(x, z, ROCK_WALK_MIN)
+        // The stone's own surface, not the prop seat Rocks settles into it: a
+        // teleport landed on the seat stands inside the boulder and rides up to
+        // the top the walker's columnAt read gives on the next frame.
+        const top = this.stone[s].blockTopAt(x, z, ROCK_WALK_MIN, false)
         if (top > best) best = top
       }
       return best

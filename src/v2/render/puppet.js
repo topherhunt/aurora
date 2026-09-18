@@ -257,7 +257,9 @@ export const setTierTint = (on) => {
 // leg would otherwise have to reach past its length -- so a body across a
 // slope sits lower and bends its uphill knees rather than hovering a foot. A
 // leg is never folded shorter than FOLD of its posed length: past that the
-// foot goes into the hill, which reads better than a knee folded flat.
+// foot goes into the hill, which reads better than a knee folded flat. A
+// plant may also ask the root down by a `sink` of its own, a crouch: the knees
+// fold as far as that asks, and the feet stay on the ground.
 //
 // Every offset and the root drop are eased with the clip's own crossfade and
 // smoothed, so planting, unplanting and a re-plant after a turn on the spot
@@ -324,6 +326,8 @@ class FootIK {
         foot: { x: foot.x, z: foot.z }, dy: 0, dyTo: 0, savedA: new THREE.Quaternion(), savedB: new THREE.Quaternion(),
       }
     })
+    // The shortest rest hip-to-foot line: what a crouch may fold a leg from.
+    this.legRest = Math.min(...this.legs.map((l) => rest[l.iA].p.distanceTo(rest[l.iC].p)))
     // Every bone a solve has to compose: the ancestors of every hip, knee and foot, in tree order, with each one's parent's slot.
     const need = new Set()
     for (const l of this.legs) for (let b = l.C; b?.isBone; b = b.parent) need.add(b)
@@ -337,6 +341,8 @@ class FootIK {
     this.w = 0
     this.wTo = 0
     this.rootDy = 0
+    this.sink = 0
+    this.sinkTo = 0
     this.fresh = false
     this.heading = 0
   }
@@ -346,14 +352,21 @@ class FootIK {
   /** True while a solve has anything to write: on, or still fading off. */
   get active() { return this.w > 0 || this.wTo > 0 }
 
-  /** Each foot's vertical offset to the ground, in creature units, in leg order; `heading` is whatever the layer wants back from `heading` to decide a re-plant. */
-  plant(dys, heading) {
+  /**
+   * Each foot's vertical offset to the ground, in creature units, in leg order;
+   * `heading` is whatever the layer wants back from `heading` to decide a
+   * re-plant; `sink` how far below that the root is asked, a crouch.
+   */
+  plant(dys, heading, sink = 0) {
     if (dys.length < this.legs.length) throw new Error(`FootIK: ${this.legs.length} legs, ${dys.length} offsets`)
+    if (!(sink >= 0)) throw new Error(`FootIK: sink ${sink}`)
     // A fresh plant starts at its targets and ramps in through w; only a re-plant slides.
     const fresh = this.wTo === 0
     this.fresh = fresh
     this.wTo = 1
     this.heading = heading
+    this.sinkTo = sink
+    if (fresh) this.sink = sink
     for (let i = 0; i < this.legs.length; i++) {
       const l = this.legs[i]
       l.dyTo = dys[i]
@@ -369,6 +382,8 @@ class FootIK {
     this.w = 0
     this.wTo = 0
     this.rootDy = 0
+    this.sink = 0
+    this.sinkTo = 0
   }
 
   /** Put back what the last solve wrote, so the mixer starts from the clip. */
@@ -411,7 +426,8 @@ class FootIK {
       const d0 = this.pos[l.iA].distanceTo(this.pos[l.iC])
       ceiling = Math.min(ceiling, l.dy + REACH * (a + b) - d0)
     }
-    const rootDy = Math.min(mean / this.legs.length, ceiling)
+    this.sink += (this.sinkTo - this.sink) * ease
+    const rootDy = Math.min(mean / this.legs.length, ceiling) - this.sink
     this.rootDy = this.fresh ? rootDy : this.rootDy + (rootDy - this.rootDy) * ease
     this.fresh = false
 
@@ -431,7 +447,8 @@ class FootIK {
       const d0 = A.distanceTo(C)
       _t.copy(C); _t.y += delta
       const dMax = REACH * (a + b)
-      const d = Math.min(dMax, Math.max(Math.abs(a - b) + 1e-4, FOLD * d0, _t.distanceTo(A)))
+      // The fold floor gives way to a crouch, which is asking for exactly that.
+      const d = Math.min(dMax, Math.max(Math.abs(a - b) + 1e-4, Math.min(FOLD * d0, d0 - this.w * this.sink), _t.distanceTo(A)))
       // The knee, about the axis the pose already bends it on.
       _a.subVectors(A, B); _c.subVectors(C, B)
       _n.crossVectors(_a, _c)
@@ -630,10 +647,10 @@ export class Puppet {
 
   get plantHeading() { return this.ik.heading }
 
-  /** Feet to the ground: `dys` is each foot's vertical offset in creature units, in `feet` order. Eases in over the clip fade. */
-  plant(dys, heading = 0) {
+  /** Feet to the ground: `dys` is each foot's vertical offset in creature units, in `feet` order, `sink` a crouch below that. Eases in over the clip fade. */
+  plant(dys, heading = 0, sink = 0) {
     if (!this.ik) throw new Error('Puppet: this body has no legs named -- re-ship it')
-    this.ik.plant(dys, heading)
+    this.ik.plant(dys, heading, sink)
   }
 
   /** Feet back to the clip's, eased out over the clip fade. Nothing to undo is fine. */

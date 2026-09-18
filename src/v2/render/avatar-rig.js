@@ -9,14 +9,27 @@
 // reads as nervous and one that contorts to reach a head half a metre off its
 // neck reads as broken:
 //
-//   THE HEAD turns exactly as the headset does, the turn split up the head
-//   chain, and its joint slides to the headset sideways by up to HEAD_SLACK_M
-//   -- a wiggle, a lean. Past that the FEET FOLLOW: the body glides to put its
-//   neck back under the head, playing `walk` at the clip's own ground speed,
-//   then settles back to `idle`. A teleport is the same thing further off: the
-//   body walks, or runs, over to where she went, and the arms and head let go
-//   of their targets while it is more than IK_OFF_M from them, since a body a
-//   room away cannot reach them.
+//   THE HEAD turns exactly as the headset does, the whole turn at the neck --
+//   Tripo weights the skull to whichever head joint it likes, and a turn split
+//   up the chain showed as a third of itself on a skull hung from the lower
+//   one -- and the neck slides to put the eyes at the headset by up to
+//   HEAD_SLACK_M -- a wiggle, a stretch. Past that sideways the FEET FOLLOW:
+//   the body glides to put its neck back under the head, playing `walk` at the
+//   clip's own ground speed, then settles back to `idle`. A teleport is the
+//   same thing further off: the body walks, or runs, over to where she went,
+//   and the arms and head let go of their targets while it is more than
+//   IK_OFF_M from them, since a body a room away cannot reach them.
+//
+//   THE FEET STAND ON THE GROUND, not under the head: the body is placed on
+//   the walk surface where it stands, and while it stands its feet are planted
+//   to the hillside through the puppet's own FootIK. A head lower than the
+//   standing body's eyes by more than the slack is a CROUCH: the waist bends
+//   forward, up to LEAN_MAX, and the hips sink, the knees folding under them,
+//   by whatever brings the eyes down to the headset, until the legs are folded
+//   to CROUCH_FOLD of their length -- a deep squat bent double, which is what
+//   she looks like to the others when she kneels to a mushroom. The neck the
+//   lean carries forward is where the body stands its feet from, so a head
+//   that goes forward as she bends is read as the bend, not as a step.
 //
 //   THE BODY'S YAW follows the head's with a deadzone: the neck twists up to
 //   YAW_SLACK before the body turns under it, and once turning it turns until
@@ -26,8 +39,10 @@
 //   (tools/creatures/ship-skinned.mjs `arms`): the elbow bends by the law of
 //   cosines about the axis the clip already bends it, the shoulder aims the
 //   arm at the grip and rolls the elbow toward a pole under and behind the
-//   shoulder, and the wrist takes the controller's orientation through a rest
-//   offset. A controller not held leaves that arm to the clip.
+//   shoulder. The wrist is the clip's: a controller's orientation is not
+//   read, since the hands Tripo rigs bend at the wrong joints when it is, and
+//   a hand hanging off its forearm reads right from any distance a peer is
+//   seen at. A controller not held leaves that arm to the clip.
 //
 // The solve runs inside the puppet's pose step, on its cadence, over the pose
 // the mixer just wrote, and what it writes it UNDOES before the mixer next
@@ -38,10 +53,13 @@
 import THREE from '../../three-instance.js'
 
 // How far the head slides off its neck before the feet come after it and the
-// whole body walks. EYE_LINE is the eye height as a fraction of stature: the
-// body hangs from the head pose so the mesh's eyes sit where the headset is.
+// whole body walks. EYE_LINE is the eye height as a fraction of stature: a
+// standing body's eyes, which the crouch measures the headset against.
 export const HEAD_SLACK_M = 0.1
 export const EYE_LINE = 0.93
+// A crouch folds a leg to no shorter than this fraction of its rest length, and bends the waist forward no further than LEAN_MAX.
+export const CROUCH_FOLD = 0.35
+export const LEAN_MAX = (40 * Math.PI) / 180
 // The neck's twist that starts the body turning, the twist it turns down to, and how fast it turns.
 export const YAW_SLACK = (40 * Math.PI) / 180
 export const YAW_SETTLE = (8 * Math.PI) / 180
@@ -63,13 +81,12 @@ const REACH = 0.995
 // Where an elbow goes, in body space, for a body facing +X: down, back, and out on its own side.
 const POLE = new THREE.Vector3(-0.5, -0.7, 0)
 const POLE_OUT = 0.5
-// The share of a head turn the top joint takes; the neck joints under it split the rest.
-const HEAD_SHARE = 0.65
 
 // A headset facing +X in body space: its own -Z along the body's forward.
 const FACING_X = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2)
 const UNFACING_X = FACING_X.clone().invert()
 const UP = new THREE.Vector3(0, 1, 0)
+const SIDE = new THREE.Vector3(0, 0, 1)
 const IDENTITY_Q = new THREE.Quaternion()
 
 const _a = new THREE.Vector3()
@@ -81,7 +98,6 @@ const _u = new THREE.Vector3()
 const _v = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
-const _qp = new THREE.Quaternion()
 const _qt = new THREE.Quaternion()
 const _pos = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
@@ -101,17 +117,22 @@ function turnInBody(bone, parentQuat, q) {
 /**
  * One body. `puppet` is a render/puppet.js Puppet over an asset shipped by
  * ship-biped.mjs, `asset` that asset with its extras spread on (snowmen.js
- * loadBipedGlb), `k` the scale it is drawn at. `drive` it once a frame: it
- * plays the clips, steps the puppet and writes the puppet group's matrix.
+ * loadBipedGlb), `k` the scale it is drawn at, `walk` the ground it stands on
+ * (v2/walk.js WalkSurface: heightAt). `drive` it once a frame: it plays the
+ * clips, steps the puppet and writes the puppet group's matrix.
  */
 export class VrBody {
-  constructor(puppet, asset, k) {
+  constructor(puppet, asset, k, walk) {
     if (!(asset.height > 0)) throw new Error('VrBody: the asset has no height')
     if (!(asset.gait?.walk > 0) || !(asset.gait?.run > 0)) throw new Error('VrBody: the asset has no walk and run speeds')
     if (!asset.head?.length) throw new Error('VrBody: the asset names no head chain -- re-ship it')
+    if (!asset.spine?.length) throw new Error('VrBody: the asset names no spine -- re-ship it')
+    if (!puppet.ik) throw new Error('VrBody: the asset names no legs -- re-ship it')
+    if (typeof walk?.heightAt !== 'function') throw new Error('VrBody needs the walk surface, for the ground under its feet')
     if (asset.arms?.length !== 2 || !asset.arms.some((a) => a.side === 1) || !asset.arms.some((a) => a.side === -1)) throw new Error('VrBody: the asset does not name a left and a right arm -- re-ship it')
     this.puppet = puppet
     this.k = k
+    this.walk = walk
     this.gait = asset.gait
     this.height = asset.height
     const bones = puppet.bones
@@ -128,7 +149,7 @@ export class VrBody {
       for (let i = 1; i < chain.length; i++) if (chain[i].parent !== chain[i - 1]) throw new Error(`VrBody: ${what} joint ${chain[i].name} does not hang from ${chain[i - 1].name}`)
       return chain
     }
-    // The rest pose in body space: the neck's neutral, the head's rest turn, each hand's rest frame.
+    // The rest pose in body space: the neck's neutral and the head's rest turn.
     const rest = bones.map(() => ({ p: new THREE.Vector3(), q: new THREE.Quaternion() }))
     bones.forEach((b, i) => {
       const par = b.parent?.isBone ? rest[index.get(b.parent)] : null
@@ -144,15 +165,21 @@ export class VrBody {
 
     const headChain = chainOf('head', asset.head)
     this.head = headChain.map(slot)
-    const under = headChain.length - 1
-    this.headShare = headChain.map((_, i) => (i === under ? (under ? HEAD_SHARE : 1) : (1 - HEAD_SHARE) / under))
     // The top joint's rest turn is what the headset's turn is measured from; the
-    // bottom joint is the neck, which slides and takes the rest of the head with it.
-    this.top = this.head[under]
+    // bottom joint is the neck, which turns and slides, and takes the rest of the head with it.
+    this.top = this.head[headChain.length - 1]
     this.topRestQuat = rest[this.top.i].q.clone()
     this.neck = this.head[0]
     this.neckRest = rest[this.neck.i].p.clone()
     this.neckSavedPos = new THREE.Vector3()
+    // The eyes, above the neck at rest: what the neck slides to put at the headset.
+    this.eyeOffset = new THREE.Vector3(0, EYE_LINE * asset.height - this.neckRest.y, 0)
+    // The waist -- the first spine joint, which a crouch bends forward with the torso above it -- and how far the legs may fold under one.
+    this.waist = slot(resolve(asset.spine[0]))
+    for (const l of puppet.ik.legs) for (let b = l.A; b?.isBone; b = b.parent) if (b === this.waist.bone) throw new Error(`VrBody: the spine's first joint ${b.name} carries leg ${l.id} -- a crouch would bend it`)
+    this.torso = this.neckRest.clone().sub(rest[this.waist.i].p)
+    this.crouchMax = (1 - CROUCH_FOLD) * puppet.ik.legRest
+    this.dys = puppet.feet.map(() => 0)
 
     // Left arm first, right second: the order the grips come in the pose.
     this.arms = [1, -1].map((side) => {
@@ -161,29 +188,12 @@ export class VrBody {
       const S = resolve(a.shoulder), E = resolve(a.elbow), W = resolve(a.wrist)
       const iS = chain.indexOf(S), iE = chain.indexOf(E), iW = chain.indexOf(W)
       if (!(iS >= 0 && iE > iS && iW > iE)) throw new Error(`VrBody: arm ${a.id} does not run shoulder, elbow, wrist down its chain`)
-      const tip = iW + 1 < chain.length ? chain[iW + 1] : null
-      // The hand's rest frame as a grip pose would spell it -- +Y down the
-      // fingers, +Z out the back of the hand -- assuming what every Tripo human
-      // rest pose has shown: arms hanging, palms to the thighs, backs out.
-      const fingers = (tip ? rest[index.get(tip)].p.clone().sub(rest[index.get(W)].p) : rest[index.get(W)].p.clone().sub(rest[index.get(E)].p)).normalize()
-      const back = new THREE.Vector3(0, 0, -side).addScaledVector(fingers, -fingers.z * -side)
-      if (back.lengthSq() < 1e-6) back.set(-1, 0, 0).addScaledVector(fingers, fingers.x)
-      back.normalize()
-      const x = new THREE.Vector3().crossVectors(fingers, back)
-      const gripRest = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, fingers, back))
       const pole = new THREE.Vector3(POLE.x, POLE.y, -side * POLE_OUT).normalize()
-      return {
-        id: a.id, S: slot(S), E: slot(E), W: slot(W), pole,
-        // The shoulder's parent down to the wrist's, for recomposing the wrist's frame after the solve turns them.
-        toWrist: chain.slice(iS, iW),
-        // The wrist's rest orientation in the rest grip's frame: what a live grip is multiplied by.
-        offset: gripRest.invert().multiply(rest[index.get(W)].q),
-        w: 0, on: false, target: new THREE.Vector3(), quat: new THREE.Quaternion(),
-      }
+      return { id: a.id, S: slot(S), E: slot(E), W: slot(W), pole, w: 0, on: false, target: new THREE.Vector3() }
     })
-    // Every bone a solve composes: the ancestors of both wrists and the head, in tree order.
+    // Every bone a solve composes: the ancestors of both wrists, the head and the waist, in tree order.
     const need = new Set()
-    for (const b of [...this.arms.map((a) => a.W.bone), this.top.bone]) for (let x = b; x?.isBone; x = x.parent) need.add(x)
+    for (const b of [...this.arms.map((a) => a.W.bone), this.top.bone, this.waist.bone]) for (let x = b; x?.isBone; x = x.parent) need.add(x)
     this.path = bones.map((b, i) => (need.has(b) ? i : -1)).filter((i) => i >= 0).map((i) => ({ bone: bones[i], i, par: bones[i].parent?.isBone ? index.get(bones[i].parent) : -1 }))
     this.pos = bones.map(() => new THREE.Vector3())
     this.quat = bones.map(() => new THREE.Quaternion())
@@ -198,10 +208,12 @@ export class VrBody {
     this.pace = 0
     this.turning = false
     this.clip = 'idle'
-    // For the solve: the head's turn off its rest and the neck's slide, in body space, and how far the targets are held.
+    // For the solve: the headset and the head's turn off its rest, in body space, how far the targets are held, and the crouch -- metres the hips sink, radians the waist bends.
+    this.headAt = new THREE.Vector3()
     this.headTurn = new THREE.Quaternion()
-    this.neckSlide = new THREE.Vector3()
     this.hold = 0
+    this.crouch = 0
+    this.lean = 0
     this.body = new THREE.Matrix4()
     this.bodyInv = new THREE.Matrix4()
     puppet.solver = this
@@ -223,11 +235,17 @@ export class VrBody {
     // Looking straight up or down leaves no gaze to face; the last heading holds.
     if (Math.hypot(_a.x, _a.z) > 0.25) this.headYaw = yawTo(_a.x, _a.z)
     const headYaw = this.headYaw
-    this.y = hy - EYE_LINE * this.height * this.k
+    const eye = EYE_LINE * this.height * this.k
 
-    // Where the body would stand with its neck under the head; a body not yet placed stands there at once, facing as she does.
-    if (!this.placed) this.yaw = headYaw
-    const nx = this.neckRest.x * this.k, nz = this.neckRest.z * this.k
+    // Where the body would stand with its neck under the head -- the neck as the crouch's lean carries it forward,
+    // since a head that goes forward as she bends is the lean, not a step. A body not yet placed stands there at once, facing as she does.
+    if (!this.placed) { this.yaw = headYaw; this.y = hy - eye }
+    // The crouch, off the ground it last stood on: the headset below the standing eyes by more than the neck's slack
+    // bends the waist, further the deeper it goes, and the hips take up exactly what the bend has not, as far as the legs fold.
+    const deficit = Math.max(0, this.y + eye - hy - HEAD_SLACK_M) * this.hold
+    this.lean = LEAN_MAX * Math.min(1, deficit / (this.crouchMax * this.k + this.leanDrop(LEAN_MAX)))
+    this.crouch = Math.min(this.crouchMax * this.k, Math.max(0, deficit - this.leanDrop(this.lean)))
+    const nx = (this.neckRest.x + this.leanReach(this.lean)) * this.k, nz = this.neckRest.z * this.k
     const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)
     const underX = hx - (nx * cs + nz * sn), underZ = hz - (nz * cs - nx * sn)
     if (!this.placed) {
@@ -265,6 +283,8 @@ export class VrBody {
     if (facingTravel || Math.abs(twist) > YAW_SLACK) this.turning = true
     else if (Math.abs(twist) < YAW_SETTLE) this.turning = false
     if (this.turning) this.yaw = wrap(this.yaw + twist * (1 - Math.exp(-dt / TURN_TAU_S)))
+    // The ground where it stands, read from where it last stood so that stone over its head is not ground.
+    this.y = this.walk.heightAt(this.x, this.z, this.y)
 
     // The head and arms hold their targets while the body is near enough to reach them.
     const holdTo = dist > IK_OFF_M ? 0 : 1
@@ -282,23 +302,27 @@ export class VrBody {
     _scl.setScalar(this.k)
     this.body.compose(_pos, _q, _scl)
     this.bodyInv.copy(this.body).invert()
-    // The neck's slide: the head's offset from the neck's rest, sideways only, clamped to the slack.
-    this.neckSlide.set(hx, hy, hz).applyMatrix4(this.bodyInv).sub(this.neckRest)
-    this.neckSlide.y = 0
-    const slack = HEAD_SLACK_M / this.k
-    if (this.neckSlide.lengthSq() > slack * slack) this.neckSlide.setLength(slack)
+    this.headAt.set(hx, hy, hz).applyMatrix4(this.bodyInv)
     // The head's turn off its rest, in body space: the headset's yaw against the body's, clamped to what a neck does, then its tilt.
     const neckYaw = Math.max(-NECK_MAX, Math.min(NECK_MAX, wrap(headYaw - this.yaw)))
     this.headTurn.setFromAxisAngle(UP, neckYaw)
       .multiply(_q2.setFromAxisAngle(UP, -headYaw).multiply(_quat))
       .multiply(UNFACING_X)
-    _q.invert()
     for (let i = 0; i < 2; i++) {
-      const arm = this.arms[i]
       const at = 7 + i * 7
-      arm.target.set(pose[at], pose[at + 1], pose[at + 2]).applyMatrix4(this.bodyInv)
-      _q2.set(pose[at + 3], pose[at + 4], pose[at + 5], pose[at + 6])
-      arm.quat.copy(_q).multiply(_q2).multiply(arm.offset)
+      this.arms[i].target.set(pose[at], pose[at + 1], pose[at + 2]).applyMatrix4(this.bodyInv)
+    }
+
+    // Standing, the feet are planted to the ground under each and the hips sunk by the crouch; walking, they are the clip's.
+    if (this.gliding) this.puppet.unplant()
+    else {
+      const feet = this.puppet.feet
+      const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)
+      for (let i = 0; i < feet.length; i++) {
+        const fx = feet[i].x * this.k, fz = feet[i].z * this.k
+        this.dys[i] = (this.walk.heightAt(this.x + fx * cs + fz * sn, this.z - fx * sn + fz * cs, this.y) - this.y) / this.k
+      }
+      this.puppet.plant(this.dys, this.yaw, this.crouch / this.k)
     }
 
     if (!this.gliding) this.puppet.play('idle')
@@ -307,25 +331,36 @@ export class VrBody {
     this.puppet.group.matrixWorldNeedsUpdate = true
   }
 
+  /** Metres the neck comes down when the waist bends forward by `lean`, the torso turning about it, and creature units it goes forward. */
+  leanDrop(lean) {
+    return (this.torso.y * (1 - Math.cos(lean)) + this.torso.x * Math.sin(lean)) * this.k
+  }
+
+  leanReach(lean) {
+    return this.torso.x * (Math.cos(lean) - 1) + this.torso.y * Math.sin(lean)
+  }
+
   /** Put back what the last solve wrote, so the mixer starts from the clip. */
   restore() {
     if (!this.dirty) return
     this.dirty = false
     for (const h of this.head) h.bone.quaternion.copy(h.saved)
     this.neck.bone.position.copy(this.neckSavedPos)
-    for (const arm of this.arms) for (const j of [arm.S, arm.E, arm.W]) j.bone.quaternion.copy(j.saved)
+    this.waist.bone.quaternion.copy(this.waist.saved)
+    for (const arm of this.arms) for (const j of [arm.S, arm.E]) j.bone.quaternion.copy(j.saved)
   }
 
   /** Off at once, nothing written: for a puppet handed back. */
   reset() {
     this.restore()
     this.hold = 0
+    this.lean = 0
+    this.crouch = 0
     for (const arm of this.arms) arm.w = 0
   }
 
-  /** Over the pose the mixer just wrote: the head to the headset, each held arm to its grip. */
-  solve() {
-    if (this.hold <= 0 && this.arms.every((a) => a.w <= 0)) return
+  /** The pose as the bones now stand, in body space, down every path a solve writes on. */
+  compose() {
     for (const { bone, i, par } of this.path) {
       if (par < 0) {
         this.pos[i].copy(bone.position)
@@ -335,31 +370,43 @@ export class VrBody {
         this.pos[i].copy(bone.position).applyQuaternion(this.quat[par]).add(this.pos[par])
       }
     }
+  }
+
+  /** Over the pose the mixer just wrote, and the feet: the waist bent to the crouch, the head to the headset, each held arm's wrist to its grip. */
+  solve() {
+    if (this.hold <= 0 && this.lean <= 0 && this.arms.every((a) => a.w <= 0)) return
+    this.compose()
     for (const h of this.head) h.saved.copy(h.bone.quaternion)
     this.neckSavedPos.copy(this.neck.bone.position)
-    for (const arm of this.arms) for (const j of [arm.S, arm.E, arm.W]) j.saved.copy(j.bone.quaternion)
+    this.waist.saved.copy(this.waist.bone.quaternion)
+    for (const arm of this.arms) for (const j of [arm.S, arm.E]) j.saved.copy(j.bone.quaternion)
     this.dirty = true
 
+    if (this.lean > 0) {
+      // The waist bends forward, and the torso, arms and head above it go with it: the rest is solved over that.
+      _q.setFromAxisAngle(SIDE, -this.lean)
+      turnInBody(this.waist.bone, this.waist.par >= 0 ? this.quat[this.waist.par] : null, _q)
+      this.waist.bone.updateMatrix()
+      this.compose()
+    }
     if (this.hold > 0) this._solveHead()
     for (const arm of this.arms) if (arm.w > 0) this._solveArm(arm)
   }
 
   _solveHead() {
     const w = this.hold
-    // From the head the clip posed to the headset's turn of the rest head, in body space, split up the chain.
+    // From the head the clip posed to the headset's turn of the rest head, in body space, all of it at the neck.
     _q2.copy(this.headTurn).multiply(this.topRestQuat).multiply(_q.copy(this.quat[this.top.i]).invert())
     if (w < 1) _q2.slerp(IDENTITY_Q, 1 - w)
-    for (let s = 0; s < this.head.length; s++) {
-      const h = this.head[s]
-      _qp.copy(IDENTITY_Q).slerp(_q2, this.headShare[s])
-      turnInBody(h.bone, h.par >= 0 ? this.quat[h.par] : null, _qp)
-      h.bone.updateMatrix()
-      // Every joint from here down the chain turned with it.
-      for (let t = s; t < this.head.length; t++) this.quat[this.head[t].i].premultiply(_qp)
-    }
-    // The neck slides to the head, in its parent's frame.
     const neck = this.neck
-    _t.copy(this.neckSlide).multiplyScalar(w)
+    turnInBody(neck.bone, neck.par >= 0 ? this.quat[neck.par] : null, _q2)
+    for (const h of this.head) this.quat[h.i].premultiply(_q2)
+    // And slides to put the eyes, turned with the head, at the headset, as far as the slack lets it, in its parent's frame.
+    _t.copy(this.eyeOffset).applyQuaternion(this.headTurn).add(this.pos[neck.i])
+    _t.subVectors(this.headAt, _t)
+    const slack = HEAD_SLACK_M / this.k
+    if (_t.lengthSq() > slack * slack) _t.setLength(slack)
+    _t.multiplyScalar(w)
     if (neck.par >= 0) _t.applyQuaternion(_q.copy(this.quat[neck.par]).invert())
     neck.bone.position.add(_t)
     neck.bone.updateMatrix()
@@ -406,12 +453,5 @@ export class VrBody {
     turnInBody(arm.S.bone, arm.S.par >= 0 ? this.quat[arm.S.par] : null, _q2)
     arm.S.bone.updateMatrix()
     arm.E.bone.updateMatrix()
-    // The wrist takes the grip's orientation outright, in its parent's frame as the bones now stand.
-    _qp.copy(arm.S.par >= 0 ? this.quat[arm.S.par] : IDENTITY_Q)
-    for (const bone of arm.toWrist) _qp.multiply(bone.quaternion)
-    _q.copy(_qp).invert().multiply(arm.quat)
-    if (w < 1) arm.W.bone.quaternion.slerp(_q, w)
-    else arm.W.bone.quaternion.copy(_q)
-    arm.W.bone.updateMatrix()
   }
 }

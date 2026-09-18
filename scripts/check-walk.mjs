@@ -224,6 +224,16 @@ console.log('the capsule')
   w.addStone(stone([[0, 1, 0, 1, GROUND, GROUND + 0.9]]))
   check(w.heightAt(0.5, 0.5) === GROUND + 0.9 && w.heightAt(0.5, 0.5, GROUND) === GROUND + 0.9,
     'the highest top over the point wins across layers, asked with or without her feet')
+  // Rocks.blockTopAt settles a prop into the stone unless told not to; a teleport
+  // landed on that seat stands inside the boulder and rides up to the top the
+  // walker reads. The surface asked without her feet must be the walker's.
+  const seat = stone([[0, 1, 0, 1, GROUND, GROUND + 1]])
+  const seatTop = seat.blockTopAt
+  seat.blockTopAt = (x, z, minSize, settle = true) => seatTop(x, z) - (settle ? 0.35 : 0)
+  const s = new WalkSurface(field, seat, trees)
+  check(s.heightAt(0.5, 0.5) === GROUND + 1 && s.heightAt(0.5, 0.5) === s.heightAt(0.5, 0.5, GROUND),
+    'a teleport or a spawn lands on the stone itself, not the seat a prop is settled to',
+    `without feet ${s.heightAt(0.5, 0.5)}, with ${s.heightAt(0.5, 0.5, GROUND)}`)
 }
 
 console.warn = warn

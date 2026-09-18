@@ -14,7 +14,9 @@
 // stops, or that leaves the feet sliding; a teleport that arrives late, or
 // whose arms keep reaching for hands a room away; a neck twist that turns the
 // body too soon, or a body that never comes round; a solve that stacks on its
-// own last frame instead of the clip's.
+// own last frame instead of the clip's; a body hung from the head instead of
+// stood on the ground, or a headset lowered that sinks it into the ground
+// with its knees straight.
 //
 // What this can NOT check: whether it reads as her. That needs the body double.
 
@@ -26,7 +28,7 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M,
+  VrBody, HEAD_SLACK_M, EYE_LINE, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
 } from '../src/v2/render/avatar-rig.js'
 
 let failures = 0
@@ -116,12 +118,13 @@ function makeAsset(s) {
 
 const DT = 1 / 60
 const UP = new THREE.Vector3(0, 1, 0)
-function makeBody(s, stature) {
+// The ground: flat at `level` unless a stub is given.
+function makeBody(s, stature, walk = { heightAt: () => 0 }) {
   const asset = makeAsset(s)
   const plain = makeSettledMaterial(`check-${s.id}`)
   const puppet = new Puppet(asset, makePuppetMaterials(`check-${s.id}`, plain))
   const k = stature / asset.height
-  const body = new VrBody(puppet, asset, k)
+  const body = new VrBody(puppet, asset, k, walk)
   puppet.show(0)
   const bone = (name) => puppet.bones.find((b) => b.name === name)
   // A joint's world position and orientation, through the body's frame.
@@ -130,7 +133,8 @@ function makeBody(s, stature) {
   return { s, asset, puppet, body, k, bone, at, turn }
 }
 
-// The rest of `s` in the body's own frame, at scale k: the eye point, and each arm's wrist and rest grip frame.
+// The rest of `s` in the body's own frame, at scale k: the eye point, and each arm's wrist. A grip's
+// orientation is never read, so each carries a twist no hand could take.
 function restOf(b, x, z, yaw) {
   const { s, body, k } = b
   const M = new THREE.Matrix4().compose(new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw), new THREE.Vector3(k, k, k))
@@ -140,13 +144,10 @@ function restOf(b, x, z, yaw) {
   const head = new THREE.Vector3(neck.x, EYE_LINE * s.biped.height * k, neck.z)
   // The headset faces the body's +X: its -Z along it.
   const headQuat = R.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2))
-  const grips = body.arms.map((arm) => {
-    const wrist = s.byName.get(arm.W.bone.name)
-    const restQ = wrist.getWorldQuaternion(new THREE.Quaternion())
-    return { pos: world(wrist.name), quat: R.clone().multiply(restQ.multiply(arm.offset.clone().invert())) }
-  })
+  const grips = body.arms.map((arm) => ({ pos: world(arm.W.bone.name), quat: WILD_GRIP }))
   return { head, headQuat, grips, neck }
 }
+const WILD_GRIP = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 2, 3).normalize(), 2.5)
 const poseOf = (head, headQuat, grips) => [
   head.x, head.y, head.z, headQuat.x, headQuat.y, headQuat.z, headQuat.w,
   ...grips.flatMap((g) => [g.pos.x, g.pos.y, g.pos.z, g.quat.x, g.quat.y, g.quat.z, g.quat.w]),
@@ -193,6 +194,7 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(grips[i].pos))
   check(off.every((d) => d < 5e-3), 'a grip held out in front, in reach, takes the wrist to within 5 mm of it', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
   check(body.arms.every((arm, i) => b.at(arm.E.bone.name).y < grips[i].pos.y), 'and the elbow hangs below the line to it')
+  check(body.arms.every((arm) => qOff(arm.W.bone.quaternion, fisher.byName.get(arm.W.bone.name).quaternion) < 1e-9), 'the wrist keeps the clip\'s own bend whatever the grip is twisted to -- the hand hangs off the forearm')
   // Out of reach: the arm straightens toward it and stops short.
   const far = grips.map((g) => ({ pos: g.pos.clone().add(new THREE.Vector3(2, 0, 0)), quat: g.quat }))
   run(b, poseOf(rest.head, rest.headQuat, far), [true, true], 1)
@@ -200,7 +202,7 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   // A controller put down leaves that arm to the clip.
   run(b, poseOf(rest.head, rest.headQuat, grips), [true, false], 1)
   const right = body.arms[1]
-  check(right.w === 0 && b.at(right.W.bone.name).distanceTo(rest.grips[1].pos) < 1e-3 && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
+  check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
 }
 
 // --- the head: a wiggle slides the neck, a step walks the body ------------------------
@@ -239,6 +241,9 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const delta = b.turn(topName).multiply(restTop.clone().invert())
   const axis = new THREE.Vector3(delta.x, delta.y, delta.z).normalize()
   check(Math.abs(delta.angleTo(new THREE.Quaternion()) - 0.4) < 1e-3 && Math.abs(axis.z) > 0.99, 'a nod of the headset nods the head the same, about the body\'s sideways', `${delta.angleTo(new THREE.Quaternion()).toFixed(3)} rad about ${f3(axis)}`)
+  // All of it at the neck: a skull Tripo hung from the lower head joint nods as far as one hung from the top.
+  const neckDelta = b.turn(neckName).multiply(fisher.byName.get(neckName).getWorldQuaternion(new THREE.Quaternion()).invert())
+  check(Math.abs(neckDelta.angleTo(new THREE.Quaternion()) - 0.4) < 1e-3, 'the whole nod is the neck joint\'s, whichever joint the skull is skinned to', `${neckDelta.angleTo(new THREE.Quaternion()).toFixed(3)} rad`)
 }
 
 // --- the yaw: a twist within the slack turns the neck, past it the body ---------------
@@ -285,6 +290,51 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const back = restOf(b, -5, 4, 2)
   body.drive(poseOf(back.head, back.headQuat, back.grips), [true, true], DT)
   check(!body.gliding && Math.abs(body.x + 5) < 1e-6 && Math.abs(body.z - 4) < 1e-6 && Math.abs(body.yaw - 2) < 1e-6, 'un-placed, it stands where the head is at once, facing as it does')
+}
+
+// --- the ground: the body stands on it, and a headset lowered crouches it ---------------
+{
+  const b = makeBody(fisher, stature, { heightAt: (x, z) => (x > 5 ? 2 : 0) })
+  const { body, puppet } = b
+  const rest = restOf(b, 0, 0, 0)
+  run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
+  check(puppet.planted && body.y === 0 && body.crouch === 0 && body.lean === 0, 'standing, its feet are planted to the ground and, with the headset at the eye line, it neither crouches nor leans')
+  // Where the clip holds each foot: a plant keeps it there, whatever the hips do.
+  const footRest = puppet.ik.legs.map((l) => fisher.byName.get(l.C.name).getWorldPosition(new THREE.Vector3()).y * b.k)
+  const footOff = () => puppet.ik.legs.map((l, i) => b.at(l.C.name).y - footRest[i])
+  const mm = (ds) => ds.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' ')
+  check(footOff().every((d) => Math.abs(d) < 5e-3), 'both feet where the clip stands them', mm(footOff()))
+  const hip = puppet.ik.legs.map((l) => b.at(l.A.name).y)
+  // The headset 40 cm below the eye line: the knees fold, the hips sink, the waist bends, the eyes come down to it.
+  const low = rest.head.clone().setY(rest.head.y - 0.4)
+  run(b, poseOf(low, rest.headQuat, rest.grips), [true, true], 2)
+  check(body.crouch > 0.05 && body.lean > 0 && Math.abs(body.crouch + body.leanDrop(body.lean) + HEAD_SLACK_M - 0.4) < 1e-6, `a headset 40 cm down crouches it by the 40 cm less the ${(HEAD_SLACK_M * 100).toFixed(0)} cm of neck slack, between the hips and the waist`, `hips ${(body.crouch * 100).toFixed(1)} cm, waist ${((body.lean * 180) / Math.PI).toFixed(1)} deg for ${(body.leanDrop(body.lean) * 100).toFixed(1)} cm`)
+  const hipNow = puppet.ik.legs.map((l) => b.at(l.A.name).y)
+  check(hipNow.every((y, i) => Math.abs(hip[i] - y - body.crouch) < 5e-3), 'the hips sunk by that, the knees folding under them', hipNow.map((y, i) => `${((hip[i] - y) * 100).toFixed(1)} cm`).join(' '))
+  check(footOff().every((d) => Math.abs(d) < 5e-3) && body.y === 0, 'the feet still on the ground, the body still stood on it', mm(footOff()))
+  const neckY = b.at(sane(fisher.biped.head[0])).y
+  check(Math.abs(neckY + (EYE_LINE * fisher.biped.height - rest.neck.y / b.k) * b.k - low.y) < 0.03, 'the eyes within 3 cm of the headset', `neck at ${neckY.toFixed(3)}, eyes wanted at ${low.y.toFixed(3)}`)
+  // A deep squat: the legs fold no further than CROUCH_FOLD of their length, the waist bends no further than LEAN_MAX.
+  const floor = rest.head.clone().setY(0.5)
+  run(b, poseOf(floor, rest.headQuat, rest.grips), [true, true], 2)
+  check(Math.abs(body.lean - LEAN_MAX) < 1e-9 && Math.abs(body.crouch - (1 - CROUCH_FOLD) * puppet.ik.legRest * b.k) < 1e-9, `a headset at 50 cm bends it double: the waist to ${((LEAN_MAX * 180) / Math.PI).toFixed(0)} deg, the legs folded to ${CROUCH_FOLD} of their length`, `hips ${(body.crouch * 100).toFixed(1)} cm`)
+  check(footOff().every((d) => Math.abs(d) < 5e-3), 'the feet still on the ground', mm(footOff()))
+  // Up again, and the body stands as it did.
+  run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 2)
+  check(body.crouch === 0 && body.lean === 0 && puppet.ik.legs.every((l, i) => Math.abs(b.at(l.A.name).y - hip[i]) < 5e-3), 'and stands again when the headset comes back up')
+  // As she bends her head goes forward as well as down; the lean is that, not a step, so the feet stay where they are.
+  const stood = { x: body.x, z: body.z }
+  const bent = rest.head.clone().add(new THREE.Vector3(body.leanReach(LEAN_MAX) * b.k, 0.5 - rest.head.y, 0))
+  let stepped = false
+  for (let t = 0; t < 2; t += DT) { body.drive(poseOf(bent, rest.headQuat, rest.grips), [true, true], DT); stepped ||= body.gliding }
+  check(!stepped && body.x === stood.x && body.z === stood.z && Math.abs(body.lean - LEAN_MAX) < 1e-9, 'a head that goes down and forward by the lean\'s reach bends the body double where it stands, without a step', `reach ${(body.leanReach(LEAN_MAX) * b.k * 100).toFixed(0)} cm`)
+  // A shelf 2 m up: the body stands on it, not hung from the head, and a walk there unplants the feet.
+  const up = restOf(b, 8, 0, 0)
+  const shelf = poseOf(up.head.clone().setY(up.head.y + 2), up.headQuat, up.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y + 2), quat: g.quat })))
+  body.drive(shelf, [true, true], DT)
+  check(body.gliding && !puppet.planted, 'walking off to a head that has moved, its feet are the clip\'s, not planted')
+  run(b, shelf, [true, true], MAX_TRAVEL_S + 3)
+  check(!body.gliding && body.y === 2 && puppet.planted, 'arrived on a shelf 2 m up, it stands on the shelf', `y ${body.y}`)
 }
 
 // --- release --------------------------------------------------------------------------
