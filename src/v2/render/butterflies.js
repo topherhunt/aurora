@@ -52,8 +52,9 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
+import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
 import { FERN_PERCH_STRIDE } from './ferns.js'
+import { taken } from '../taken.js'
 
 export const TILE = 16
 export const RADIUS = 30
@@ -331,9 +332,106 @@ export class Butterflies {
           b.base = b.baseTo
         }
       }
+      // After every roll, so one she caught leaves the rest of the tile as it grew.
+      if (taken.has('butterfly', x, z)) { b.tile = null; this.free.push(b); continue }
       t.flock.push(b)
     }
     return t
+  }
+
+  /**
+   * The drawn butterfly nearest a hand at (x, y, z) whose body -- a ball of
+   * its own size -- is within `reach` metres: `{ dist, b, size }` for take(),
+   * or null. For hands.js.
+   */
+  pickAt(x, y, z, reach) {
+    let best = null
+    let bestD = reach
+    for (const t of this.tiles.values()) {
+      for (const b of t.flock) {
+        const d = Math.hypot(b.x - x, b.y - y, b.z - z) - b.size * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), b, size: b.size }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Catch the butterfly of a pickAt() hit: its slot goes back to the pool, its
+   * home is recorded so the tile never regrows it, and what the hand holds is
+   * returned as a record for hands.js -- the card geometry, the shared
+   * material, the wings at rest, the morph's tint and the size's scale.
+   */
+  take(hit) {
+    const b = hit.b
+    const t = b.tile
+    if (!t) throw new Error(`Butterflies.take: slot ${b.id} is not in a tile`)
+    const k = t.flock.indexOf(b)
+    if (k < 0) throw new Error(`Butterflies.take: slot ${b.id} is not in its tile's flock`)
+    taken.add('butterfly', b.homeX, b.homeZ)
+    t.flock.splice(k, 1)
+    b.tile = null
+    this.free.push(b)
+    const s = b.size / this.span
+    return {
+      kind: 'butterfly',
+      name: 'butterfly',
+      size: b.size,
+      geometry: this.mesh.geometry,
+      material: this.material,
+      attrs: { aWing: [b.phase, REST_AMP, REST_BASE] },
+      color: [b.r, b.g, b.b],
+      scale: [s, s, s],
+      stowable: true,
+    }
+  }
+
+  /**
+   * Let a taken butterfly go at (x, y, z): it joins the flock of the tile
+   * under it, on the wing, headed away from her head, with the drop point as
+   * its new home. False when no tile is resident there or the pool is empty,
+   * and hands.js drops it as a thing.
+   */
+  release(rec, x, y, z, head) {
+    if (rec.kind !== 'butterfly') throw new Error(`Butterflies.release: not a butterfly, ${rec.kind}`)
+    const t = this.tiles.get(tileKey(Math.floor(x / TILE), Math.floor(z / TILE)))
+    if (!t) return false
+    const b = this.free.pop()
+    if (!b) { this.overflow++; return false }
+    const rand = this.rand
+    b.tile = t
+    b.homeX = b.x = x
+    b.homeZ = b.z = z
+    b.y = y
+    b.ground = this.walk.heightAt(x, z)
+    b.size = rec.size
+    b.r = rec.color[0]; b.g = rec.color[1]; b.b = rec.color[2]
+    b.yaw = headingTo(x - head.x, z - head.z) + (rand() - 0.5) * 0.6
+    b.turn = 0
+    b.roll = 0
+    b.pitch = 0
+    b.vy = 0
+    b.alt = between(rand, ALT_M)
+    b.weave = rand() * Math.PI * 2
+    b.jerk = between(rand, JERK_S)
+    b.beat = between(rand, FLAP_S)
+    b.glide = false
+    b.phase = rec.attrs.aWing[0]
+    b.amp = REST_AMP
+    b.base = REST_BASE
+    b.ampTo = FLUTTER_AMP
+    b.baseTo = 0
+    b.speed = between(rand, SPEED)
+    b.spd = b.speed * 0.3
+    b.state = 'fly'
+    b.left = between(rand, FLY_S)
+    b.held = 0
+    b.stale = true
+    t.flock.push(b)
+    return true
   }
 
   _leave(t) {

@@ -319,6 +319,11 @@ const PLACEMENT = {
   // surface. Half the fern's, so grass grows closer to the edge than ferns do
   // and the two make a graded margin rather than one line.
   freeboard: 0.15,
+  // NOT ON SAND. Layers.shoreAt at or past this and the candidate is dropped:
+  // the mesher's beach is bare. Under the half so the tufts give out where the
+  // ground has only started to go sandy, rather than standing on ground that
+  // is already more sand than turf.
+  sandMax: 0.35,
   // NOT ON PATHS, but only just. Metres of verge beyond the path's own
   // half-width; a road wants grass right up against it, not a metre and a half
   // of bare ground on each side. Well inside what PathSet.nearest can answer
@@ -1028,6 +1033,8 @@ export class Grass {
    * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
    * @param paths         PathSet. Needs nearest.
    * @param textureArray  The shared prop atlas from buildTextureArray().
+   * @param layers        Layers. Needs shoreAt: the sandy stretches of bank the
+   *                      mesher paints, which grass keeps off.
    * @param style         'tufts' for the clump-then-billboard ladder, 'strips'
    *                      to carpet a REGION with tiled ribbons, 'blades' for the
    *                      opaque geometry bed. See THE TWO STRATEGIES in the
@@ -1050,7 +1057,7 @@ export class Grass {
     {
       seed = 1, style = 'tufts', density = null, height = null,
       radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
-      tint = null, rocks = null, bladeCount = null, ground = null,
+      tint = null, rocks = null, bladeCount = null, ground = null, layers = null,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
@@ -1092,8 +1099,12 @@ export class Grass {
     if (!paths || typeof paths.nearest !== 'function') {
       throw new Error('Grass: needs a PathSet with nearest')
     }
+    if (!layers || typeof layers.shoreAt !== 'function') {
+      throw new Error('Grass: needs a Layers with shoreAt, to keep off the sand')
+    }
 
     this.field = field
+    this.layers = layers
     this.rocks = rocks
     this.ground = ground
     this.water = water
@@ -1414,7 +1425,7 @@ export class Grass {
     // chunk set -- see update.
     this._sweep = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, path: 0, rock: 0, sparse: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, sand: 0, path: 0, rock: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -2006,6 +2017,10 @@ export class Grass {
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
       if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+      // NOT ON SAND. Cheap inland: a height test against whatever lake plane
+      // covers the point and a river index lookup that misses; the sand noise is
+      // only asked once a band is found.
+      if (this.layers.shoreAt(x, z, h) >= PLACEMENT.sandMax) { rej.sand++; continue }
       // THE SHORE CUT, before the path pair: a candidate past plainCount stands
       // only in a lush cell within SHORE.reach of water, and on plain ground that
       // is every one of them. Cell hash first, because it is cheaper than the

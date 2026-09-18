@@ -80,7 +80,7 @@ const S = () => new THREE.Scene()
 const MAKE = {
   ferns: () => new Ferns(S(), field, water, layers, textures, { seed: 7 }),
   trees: () => new Trees(S(), field, water, textures, { seed: 7 }),
-  grass: () => new Grass(S(), field, water, layers.paths, textures, { seed: 7, style: 'tufts' }),
+  grass: () => new Grass(S(), field, water, layers.paths, textures, { seed: 7, style: 'tufts', layers }),
   rocks: () => new Rocks(S(), field, water, layers, textures, { seed: 7 }),
   litter: () => new Litter(S(), field, water, layers, textures, { seed: 7 }),
   deadwood: () => new Deadwood(S(), field, water, layers, { seed: 7, bank: deadwoodBank }),

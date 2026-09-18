@@ -188,7 +188,7 @@ export const SPECIES = [
     gaits: [['walk', 7], ['trot', 3]],
   },
   {
-    key: 'fox', glb: CRITTER_GLB.fox, vary: 0.25, scale: 1, rate: 0.5,
+    key: 'fox', glb: CRITTER_GLB.fox, vary: 0.25, scale: 1.5, rate: 0.5,
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
   },

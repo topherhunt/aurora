@@ -12,6 +12,7 @@ import { createPropMaterial, setSnowLine } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { taken } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // Mushroom clumps on the /v2 route. The argument is DESIGN.md §24.
@@ -888,6 +889,12 @@ export class Mushrooms {
         const variant = memberPool[(rand() * memberPool.length) | 0]
         const scale = SIZE_JITTER[0] + rand() * (SIZE_JITTER[1] - SIZE_JITTER[0])
         const spin = rand() * Math.PI * 2
+        // A small per-instance value swing on top of the ground cue, so two
+        // caps of one species side by side are not the same pixel colour.
+        const v = 0.9 + rand() * 0.2
+        // Every roll is spent before the check, so a cap she picked leaves the
+        // rest of its clump exactly as it grew.
+        if (taken.has('mushroom', mx, mz)) continue
 
         const id = this.free[--this.freeCount]
         ids[n] = id
@@ -929,9 +936,6 @@ export class Mushrooms {
         const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
         const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
         const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
-        // A small per-instance value swing on top of the ground cue, so two
-        // caps of one species side by side are not the same pixel colour.
-        const v = 0.9 + rand() * 0.2
         this._c.setRGB(
           (k0 + gc[0] * k1) * v,
           (k0 + gc[1] * k1) * v,
@@ -1014,6 +1018,76 @@ export class Mushrooms {
       if (this.tierAt[i] === this.cardTier) continue
       this.tierAt[i] = this.cardTier
       this.batch.setGeometryIdAt(i, this._geometryFor(this.cardTier, this.variantAt[i]))
+    }
+  }
+
+  /**
+   * The drawn cap nearest a hand at (x, y, z) whose surface -- a ball of its
+   * own span -- is within `reach` metres: `{ dist, id, tile, k, size }` for
+   * take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach) {
+    let best = null
+    let bestD = reach
+    const far = reach + TILE
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * TILE - x) > far || Math.abs((tile.tz + 0.5) * TILE - z) > far) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (this.rim.isHidden(id)) continue
+        const span = Math.sqrt(this.instSpan2[id])
+        const d = Math.hypot(this.instX[id] - x, this.instY[id] + span * 0.5 - y, this.instZ[id] - z) - span * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), id, tile, k, size: span }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Pull the cap of a pickAt() hit out of the ground: its instance goes back to
+   * the pool, its spot is recorded so the tile never regrows it, and what the
+   * hand holds is returned as a record for hands.js -- the finest tier's
+   * geometry, the shared material, the instance's tint and scale.
+   */
+  take(hit) {
+    const { tile, k, id } = hit
+    if (tile.ids[k] !== id || this.tierAt[id] < 0) throw new Error(`Mushrooms.take: instance ${id} is not standing in its tile`)
+    const variant = this.variantAt[id]
+    const span = Math.sqrt(this.instSpan2[id])
+    const scale = span / this.variantSpan[variant]
+    this.batch.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add('mushroom', this.instX[id], this.instZ[id])
+    // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive; the clump is gone with its last member.
+    const rank = tile.rank[k]
+    for (let j = k; j < tile.n - 1; j++) {
+      tile.ids[j] = tile.ids[j + 1]
+      tile.rank[j] = tile.rank[j + 1]
+    }
+    tile.n--
+    let clumpLeft = false
+    for (let j = 0; j < tile.n && !clumpLeft; j++) if (tile.rank[j] === rank) clumpLeft = true
+    if (!clumpLeft) {
+      tile.clumps--
+      this.clumps--
+    }
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.tierAt[id] = -1
+    this.free[this.freeCount++] = id
+    this.placed--
+    return {
+      kind: 'mushroom',
+      name: this.bank.variants[variant].species,
+      size: span,
+      geometry: this.bank.tiers[0].geometries[variant],
+      material: this.material,
+      color,
+      scale: [scale, scale, scale],
+      stowable: true,
     }
   }
 

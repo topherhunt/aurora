@@ -94,6 +94,11 @@ export const HUE = 0.35
 // A fish setting off at a target speed of at least this, m/s, is listed in startled() for the ear: a glimmerfin's bolt, a pike's burst, a bass's dart, but not a glimmerfin's fidget or any hang.
 export const DART_SPEED = 1
 
+// A fish she let go of in the water: seconds it hangs stunned before it wakes, the speed it then darts from her at (a multiple of its cruise), and how often its line is jinked.
+export const STUN_S = [1, 2]
+export const LOOSE_HASTE = 3
+const LOOSE_JINK = 1.2
+
 /**
  * The species table. Speeds in m/s, times in seconds, depths as a fraction of
  * the water column measured up from the bed. `minDepth` is the column a
@@ -222,6 +227,8 @@ export class Fish {
         homing: 0, boltIn: 0,
         // Mood: pike glide/lurk/burst, bass and glimmerfin fidget. `speed` is the mood's target speed.
         mood: 'glide', moodLeft: 0, speed: cfg.cruise,
+        // Let go of by her hand: no school, stunned for `stun` seconds, then darting from her head (stepLoose).
+        loose: false, stun: 0,
       })
     }
     const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), material, cfg.count)
@@ -284,6 +291,7 @@ export class Fish {
   place(cx, cz) {
     for (const sp of this.species) {
       for (const school of sp.schools.slice()) this.retire(sp, school)
+      for (const f of sp.slots) if (f.loose) this.unslot(sp, f)
     }
     this.head.x = cx
     this.head.z = cz
@@ -452,10 +460,184 @@ export class Fish {
   drop(sp, f) {
     const school = f.school
     school.members.splice(school.members.indexOf(f), 1)
+    this.unslot(sp, f)
+    if (!school.members.length) this.retire(sp, school)
+  }
+
+  /** A fish with no school -- one she let go of -- back to the free list. */
+  unslot(sp, f) {
     f.alive = false
+    f.loose = false
+    f.stun = 0
     f.school = null
     sp.free.push(f)
-    if (!school.members.length) this.retire(sp, school)
+  }
+
+  /**
+   * The drawn fish nearest a hand at (x, y, z) whose body -- a ball of its own
+   * length -- is within `reach` metres, and shorter than `maxSize`: `{ dist,
+   * sp, f, size }` for take(), or null. Nothing while the fish are not drawn,
+   * which is whenever her head is out of the water. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    if (!this.batch.visible) return null
+    let best = null
+    let bestD = reach
+    for (const sp of this.species) {
+      if (!sp.mesh.visible) continue
+      for (const f of sp.slots) {
+        if (!f.alive || f.size >= maxSize) continue
+        const d = Math.hypot(f.x - x, f.y - y, f.z - z) - f.size * 0.5
+        if (d < bestD) {
+          bestD = d
+          best = { dist: Math.max(0, d), sp, f, size: f.size }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Grab the fish of a pickAt() hit: its slot goes back to the pool (a fish
+   * the pool re-seeds elsewhere, so nothing is recorded), and what the hand
+   * holds is returned as a record for hands.js -- the species' geometry and
+   * material, its tail's phase and beat, its tint and hue, its scale. Only a
+   * fish under a metre may go in the backpack; `stowMax` says where that is.
+   */
+  take(hit, stowMax) {
+    const { sp, f } = hit
+    if (!f.alive) throw new Error(`Fish.take: a dead ${sp.id}`)
+    const rec = {
+      kind: 'fish',
+      name: sp.id,
+      size: f.size,
+      geometry: sp.mesh.geometry,
+      material: sp.material,
+      attrs: { aSwim: [f.phase, f.amp, 0, 0], aHue: [f.hue] },
+      color: [f.tint, f.tint, f.tint],
+      scale: [f.scale, f.scale, f.scale],
+      stowable: f.size < stowMax,
+    }
+    if (f.loose) this.unslot(sp, f)
+    else this.drop(sp, f)
+    return rec
+  }
+
+  /**
+   * Let a taken fish go at (x, y, z). In water it hangs stunned for STUN_S,
+   * then wakes and darts from her head until it is RETIRE_RADIUS out, where
+   * the pool forgets it. Out of water it is false, and hands.js beaches it.
+   */
+  release(rec, x, y, z, head) {
+    if (rec.kind !== 'fish') throw new Error(`Fish.release: not a fish, ${rec.kind}`)
+    const level = this.water.levelAt(x, z)
+    if (level === null) return false
+    const bed = this.height.heightAt(x, z)
+    if (y > level || level - bed < BED_MARGIN + SURFACE_MARGIN) return false
+    const sp = this.species.find((s) => s.id === rec.name)
+    if (!sp) throw new Error(`Fish.release: no species ${rec.name}`)
+    const f = sp.free.pop()
+    if (!f) return false
+    const rand = this.rand
+    f.alive = true
+    f.loose = true
+    f.school = null
+    f.x = x; f.y = y; f.z = z
+    f.vx = f.vy = f.vz = 0
+    f.scale = rec.scale[0]
+    f.size = rec.size
+    f.margin = 0.2 * f.size
+    f.bed = bed
+    f.level = level
+    f.born = BORN_FOR
+    // Facing away from her, lying as it was dropped.
+    f.wander = Math.atan2(z - head.z, x - head.x)
+    f.hx = Math.cos(f.wander)
+    f.hz = Math.sin(f.wander)
+    f.pitch = 0
+    f.roll = 0
+    f.curve = 0
+    f.lift = 0
+    f.pace = (0.8 + 0.4 * rand()) * Math.sqrt(f.scale)
+    f.beat = (0.85 + 0.3 * rand()) / Math.sqrt(f.scale)
+    f.verve = 1
+    f.tint = rec.color[0]
+    f.hue = rec.attrs.aHue[0]
+    f.phase = rec.attrs.aSwim[0]
+    f.amp = 0
+    f.homing = 0
+    f.boltIn = 0
+    f.mood = 'glide'
+    f.moodLeft = Infinity
+    f.speed = 0
+    f.stun = between(rand, STUN_S)
+    return true
+  }
+
+  /**
+   * One frame of a loose fish: stunned, it sinks a little and drifts to a
+   * stop; awake, it runs from her head at LOOSE_HASTE times its cruise with a
+   * jink every LOOSE_JINK seconds, turning along the shore where the water
+   * ahead is shallow, and is forgotten RETIRE_RADIUS out. A fish that has
+   * beached anyway goes the same way a schooled one does.
+   */
+  stepLoose(sp, f, dt) {
+    const cfg = sp.cfg
+    const rand = this.rand
+    const head = this.head
+    const dx0 = f.x - head.x, dz0 = f.z - head.z
+    if (dx0 * dx0 + dz0 * dz0 > RETIRE_RADIUS * RETIRE_RADIUS) return this.unslot(sp, f)
+    if ((this.frame + f.probeAt) % PROBE_EVERY === 0) {
+      const level = this.water.levelAt(f.x, f.z)
+      if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) return this.unslot(sp, f)
+      f.level = level
+      f.bed = this.height.heightAt(f.x, f.z)
+    }
+    if (f.stun > 0) {
+      f.stun -= dt
+      f.vx *= Math.max(0, 1 - 2 * dt)
+      f.vz *= Math.max(0, 1 - 2 * dt)
+      f.vy += (-0.05 - f.vy) * Math.min(1, 2 * dt)
+      if (f.stun <= 0) {
+        f.speed = cfg.cruise * LOOSE_HASTE
+        f.moodLeft = 0
+        this.setOff(f)
+      }
+    } else {
+      f.moodLeft -= dt
+      if (f.moodLeft <= 0) {
+        f.moodLeft = LOOSE_JINK * (0.5 + rand())
+        // Away from her, jinked up to a quarter turn either side.
+        f.wander = Math.atan2(dz0, dx0) + (rand() - 0.5) * (Math.PI / 2)
+      }
+      let ax = f.x + f.hx * cfg.lookahead
+      let az = f.z + f.hz * cfg.lookahead
+      if ((this.frame + f.probeAt) % PROBE_EVERY === 0) {
+        const aheadLevel = this.water.levelAt(ax, az)
+        if (aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)) {
+          // Shore ahead: a quarter turn, to whichever side leads further from her.
+          const left = f.wander + Math.PI / 2
+          const right = f.wander - Math.PI / 2
+          const lx = f.x + Math.cos(left) - head.x, lz = f.z + Math.sin(left) - head.z
+          const rx = f.x + Math.cos(right) - head.x, rz = f.z + Math.sin(right) - head.z
+          f.wander = lx * lx + lz * lz > rx * rx + rz * rz ? left : right
+          f.moodLeft = LOOSE_JINK
+        }
+      }
+      const speed = f.speed * f.pace
+      const k = Math.min(1, cfg.agility * 2 * dt)
+      f.vx += (Math.cos(f.wander) * speed - f.vx) * k
+      f.vz += (Math.sin(f.wander) * speed - f.vz) * k
+      const target = this.column(f.bed, f.level, 0.5, f.margin)
+      f.vy += (Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) - f.vy) * Math.min(1, 2 * dt)
+    }
+    f.x += f.vx * dt
+    f.y += f.vy * dt
+    f.z += f.vz * dt
+    const lo = f.bed + BED_MARGIN + f.margin
+    const hi = f.level - SURFACE_MARGIN - f.margin
+    if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
+    if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
   }
 
   /**
@@ -491,6 +673,9 @@ export class Fish {
         if (d2 > RETIRE_RADIUS * RETIRE_RADIUS) this.retire(sp, s)
         else if (d2 > farD2) { farthest = s; farD2 = d2 }
       }
+      for (const f of sp.slots) {
+        if (f.loose && (f.x - x) ** 2 + (f.z - z) ** 2 > RETIRE_RADIUS * RETIRE_RADIUS) this.unslot(sp, f)
+      }
       // The turnover: a full pool spends her travel on recycling its farthest out-of-sight school. The budget caps at a few recycles so a teleport does not empty the pool in one frame.
       sp.travel = Math.min(sp.travel + moved, RECYCLE_TRAVEL * 3)
       if (sp.free.length < sp.cfg.school[0] && sp.travel >= RECYCLE_TRAVEL && farthest && farD2 > RECYCLE_RADIUS * RECYCLE_RADIUS) {
@@ -521,7 +706,8 @@ export class Fish {
       let n = 0
       for (const f of sp.slots) {
         if (!f.alive) continue
-        this.stepFish(sp, f, dt)
+        if (f.loose) this.stepLoose(sp, f, dt)
+        else this.stepFish(sp, f, dt)
         if (!f.alive) continue
 
         // Facing chases velocity; the pitch is read straight off it and the roll leans into the turn.
@@ -555,6 +741,8 @@ export class Fish {
         const rel = Math.hypot(f.vx, f.vy, f.vz) / (cfg.cruise * f.pace)
         f.phase = (f.phase + dt * TAU * cfg.tailHz * f.beat * (0.4 + 0.6 * rel)) % TAU
         f.amp = cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
+        // A stunned fish does not scull.
+        if (f.stun > 0) f.amp = 0
 
         // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
         _euler.set(f.pitch, Math.atan2(-f.hx, -f.hz), f.roll)

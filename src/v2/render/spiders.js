@@ -88,6 +88,7 @@ import { loadSkinnedAsset } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
+import { taken } from '../taken.js'
 
 export const TILE = 16
 // The skinned tiers the shipped GLB carries, one per rung of the world ladder; the one drawn as a mesh, tier 1 (tier 0 is the card's photograph, the coarser pair are smears); and how many mesh tiers there are, which is also a slot's `lod` for the card.
@@ -117,6 +118,8 @@ export const TINT_BROWN = { g: 0.3, b: 0.6 }
 export const HOST_CHANCE = { tree: 0.125, rock: 0.3, ground: 0.25 }
 // A host's key is its quantised origin plus its kind's share, so a tree, a rock and the ground's point at one origin are three hosts.
 const KIND_KEY = { tree: 0, rock: 0.5, ground: 0.25 }
+// The host a spider she let go of runs on: the ground where it landed, its own key so it never collides with the tile's rolled point.
+const LOOSE_KEY = 0.75
 // A rock worth climbing (its longest extent), and a trunk worth clinging to (base radius).
 export const ROCK_MIN_SIZE = 2
 export const TRUNK_MIN_R = 0.06
@@ -327,6 +330,8 @@ export class Spiders {
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
         id: i, host: null,
+        // Which of its host's rolled group it is, for the taken registry.
+        member: 0,
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, tx: 0, ty: 1, tz: 0,
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
@@ -490,8 +495,102 @@ export class Spiders {
       // A ground spider is on the move from its first frame, its heading off the group's stream so the scatter stays a function of the seed; the rest sit a while first.
       if (kind === 'ground') this._go(c, rand)
       else { this._pause(c); c.left = between(rand, PAUSE_S) }
+      c.member = k
+      // After every roll, so one she picked off leaves the rest of its group as it grew.
+      if (taken.has(`spider:${kind}${k}`, host.x, host.z)) { c.host = null; this.free.push(c); continue }
       host.spiders.push(c)
     }
+  }
+
+  /**
+   * The drawn spider nearest a hand at (x, y, z) whose body -- a ball of its
+   * own size -- is within `reach` metres: `{ dist, c, size }` for take(), or
+   * null. For hands.js.
+   */
+  pickAt(x, y, z, reach) {
+    let best = null
+    let bestD = reach
+    for (const t of this.tiles.values()) {
+      for (const host of t.hosts.values()) {
+        for (const c of host.spiders) {
+          if (c.rung < 0 || c.rung >= CARD_RUNGS) continue
+          const d = Math.hypot(c.x - x, c.y - y, c.z - z) - c.size * 0.5
+          if (d < bestD) {
+            bestD = d
+            best = { dist: Math.max(0, d), c, size: c.size }
+          }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Pick the spider of a pickAt() hit off its host: its slot goes back to the
+   * pool, its place in its host's group is recorded so the host never regrows
+   * it, and what the hand holds is returned as a record for hands.js -- the
+   * drawn tier's geometry, the shared material, the legs at rest, its tint
+   * and its size's scale.
+   */
+  take(hit) {
+    const c = hit.c
+    const host = c.host
+    if (!host) throw new Error(`Spiders.take: slot ${c.id} has no host`)
+    const k = host.spiders.indexOf(c)
+    if (k < 0) throw new Error(`Spiders.take: slot ${c.id} is not in its host's group`)
+    taken.add(`spider:${host.kind}${c.member}`, host.x, host.z)
+    host.spiders.splice(k, 1)
+    c.host = null
+    this.free.push(c)
+    const s = c.size / this.span
+    return {
+      kind: 'spider',
+      name: 'spider',
+      size: c.size,
+      geometry: this.asset.tiers[MESH_TIER],
+      material: this.material,
+      attrs: { aGait: [c.gait, 0] },
+      color: [c.tr, c.tg, c.tb],
+      scale: [s, s, s],
+      stowable: true,
+    }
+  }
+
+  /**
+   * Let a taken spider go at (x, _, z): it lands on the ground there, on a
+   * host of its own in the tile under it, and runs from her the way a ground
+   * spider does. False when no tile is resident there, the ground is under
+   * water or snow, or the pool is empty, and hands.js drops it as a thing.
+   */
+  release(rec, x, y, z, head) {
+    if (rec.kind !== 'spider') throw new Error(`Spiders.release: not a spider, ${rec.kind}`)
+    const t = this.tiles.get(tileKey(Math.floor(x / TILE), Math.floor(z / TILE)))
+    if (!t) return false
+    const groundY = this.height.heightAt(x, z)
+    if (this.water.isSubmerged(x, z, groundY) || groundY > this.height.snowLineAt(x, z)) return false
+    const key = hostKey(x, z) + LOOSE_KEY
+    let host = t.hosts.get(key)
+    if (!host) {
+      host = { kind: 'ground', x, z, groundY, spiders: [], moved: false }
+      t.hosts.set(key, host)
+    }
+    const c = this.free.pop()
+    if (!c) { this.overflow++; return false }
+    c.host = host
+    c.member = -1
+    c.size = rec.size
+    c.tr = rec.color[0]; c.tg = rec.color[1]; c.tb = rec.color[2]
+    c.rung = -1
+    c.lod = LOD_TIERS
+    c.gait = rec.attrs.aGait[0]
+    c.amp = 0
+    c.rear = 0
+    c.near = false
+    c.phi = 0
+    this._placeGround(c, x, z)
+    this._flee(c, head.x, head.y, head.y, head.z)
+    host.spiders.push(c)
+    return true
   }
 
   /**

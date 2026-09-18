@@ -847,6 +847,42 @@ spiders.place(0, 0)
   check(writes === 0 && !still.dirty && kept.every((v, i) => v === still.m[i]), 'a sitting spider keeps its matrix from frame to frame rather than composing it again', `${writes} writes over ${RESEAT_EVERY - 1} frames`)
 }
 
+// --- her hand: a spider picked off its host, the host never regrowing it, one let go of fleeing on the ground --
+{
+  const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  k.place(0, 0)
+  const c = alive(k).find((g) => g.host.kind === 'tree')
+  const host = c.host
+  check(k.pickAt(c.x, c.y, c.z, 0.3) === null, 'a spider not yet on the ladder is not picked')
+  // Her head over it: the tiles about it fill, so the count is taken after.
+  tick(k, ...nearTo(c), 1 / 60)
+  const before = alive(k).length
+  const hit = k.pickAt(c.x + c.nx * 0.1, c.y + c.ny * 0.1, c.z + c.nz * 0.1, 0.3)
+  check(hit !== null && hit.c === c && hit.size === c.size, 'a drawn one is, from a hand just off the bark', hit ? `${hit.dist.toFixed(3)} m` : 'null')
+  const rec = k.take(hit)
+  check(rec.kind === 'spider' && rec.size === c.size && rec.geometry === k.asset.tiers[MESH_TIER] && rec.material === k.material && rec.attrs.aGait[1] === 0 && rec.color[0] === c.tr && rec.scale[0] === rec.scale[1] && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale[0] }))
+  check(c.host === null && !host.spiders.includes(c) && alive(k).length === before - 1, 'and the spider is off its trunk')
+  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  again.place(0, 0)
+  tick(again, ...nearTo(c), 1 / 60)
+  // By host and place in its group, which a flee does not change.
+  const key = (of) => alive(of).map((g) => `${g.host.kind},${g.host.x},${g.host.z},${g.member},${g.size.toFixed(4)}`).sort().join('|')
+  check(key(again) === key(k) && alive(again).length === before - 1, 'the trunk regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  again.dispose()
+  // Let go on open ground: it runs from her.
+  const head = { x: 20, y: GROUND + EYE, z: 20, yaw: 0 }
+  const ok = k.release(rec, 20.2, GROUND + 1, 20, head)
+  const loose = alive(k).find((g) => g.member === -1)
+  check(ok && loose && loose.host.kind === 'ground' && loose.size === rec.size && loose.state === 'flee', 'release puts it on the ground under the hand, fleeing', loose ? loose.state : 'none')
+  check(Math.abs(loose.y - GROUND) < 0.1 && Math.abs(loose.x - 20.2) < 0.01, 'where the hand was', `${loose.x.toFixed(2)}, ${loose.y.toFixed(2)}`)
+  const d0 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  for (let i = 0; i < 5 * 60; i++) tick(k, head.x, head.y, head.z, 1 / 60)
+  const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  check(d1 > d0 + 0.5, 'it runs from her feet', `${d0.toFixed(2)} to ${d1.toFixed(2)} m in 5 s`)
+  check(k.release({ ...rec, kind: 'spider' }, POND.x, GROUND, POND.z, head) === false, 'and is refused over the water')
+  k.dispose()
+}
+
 spiders.dispose()
 check(spiders.batch.parent === null, 'dispose takes the batch out of the scene')
 

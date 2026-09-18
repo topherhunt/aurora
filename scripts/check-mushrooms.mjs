@@ -78,6 +78,7 @@
 //   which move with the seed, but by asserting the CLAIMS the numbers were
 //   quoted to support.
 
+import * as THREE from 'three'
 import { MUSHROOM_DEFAULTS, buildMushroom, mushroomTriangles } from '../src/props/mushroom.js'
 import {
   mushroomCapSheet, mushroomCaveSheet, mushroomFleshSheet, MUSHROOM_CELL_PX,
@@ -91,7 +92,9 @@ import {
   buildMushroomBank, mushroomBankTriangles,
 } from '../src/props/mushroom-bank.js'
 import { CARD_UP_MARK } from '../src/material.js'
-import { LAYER, LAYER_COUNT } from '../src/textures.js'
+import { LAYER, LAYER_COUNT, buildTextureArray } from '../src/textures.js'
+import { Mushrooms } from '../src/v2/render/mushrooms.js'
+import { taken } from '../src/v2/taken.js'
 import { readFileSync } from 'node:fs'
 
 let failures = 0
@@ -1725,6 +1728,91 @@ const PARALLAX = 28.6
 for (const s of SUBJECTS) s.geo.dispose()
 
 // ---------------------------------------------------------------------------
+// Her hand. A cap near the hand is found, pulled out and handed over as the
+// finest tier's geometry with its own tint and scale, and a bed grown again
+// from the same seed comes up without it and with nothing else moved, because
+// every roll is spent before the registry is asked.
+{
+  const GROUND = 60
+  const field = {
+    scatterAt: (x, z, cell, out) => { out.h = GROUND; out.tan = 0; return out },
+    heightAndSlopeAt: () => ({ h: GROUND, tan: 0, gx: 0, gz: 0 }),
+    heightAt: () => GROUND,
+    snowLineAt: () => 9999,
+    bands: { altLo: 0, altSpan: 900 },
+  }
+  const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, z, reach) => reach }
+  const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
+  const textures = buildTextureArray()
+  // A tree every 3 m, honouring the half-open box.
+  const grove = {
+    anchorsInto: (x0, z0, x1, z1, out) => {
+      let n = 0
+      for (let x = Math.ceil(x0 / 3) * 3; x < x1; x += 3) {
+        for (let z = Math.ceil(z0 / 3) * 3; z < z1; z += 3) {
+          if ((n + 1) * 4 > out.length) return n
+          out[n * 4] = x
+          out[n * 4 + 1] = GROUND
+          out[n * 4 + 2] = z
+          out[n * 4 + 3] = 0.3
+          n++
+        }
+      }
+      return n
+    },
+  }
+  const grow = () => {
+    const m = new Mushrooms(new THREE.Scene(), field, water, layers, textures, [grove], { seed: 7 })
+    m.place(0, 0)
+    // One sweep turns the fresh placements solid; until then the rim hides them from a hand.
+    m.update(0, GROUND + 1.6, 0)
+    return m
+  }
+  const standing = (m) => {
+    const rows = []
+    for (const tile of m.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        rows.push(`${m.instX[id].toFixed(3)},${m.instZ[id].toFixed(3)},${Math.sqrt(m.instSpan2[id]).toFixed(4)},${m.variantAt[id]}`)
+      }
+    }
+    return rows.sort().join('|')
+  }
+  taken.clear()
+  const m = grow()
+  const before = m.placed
+  check(before > 0, 'a grove grows mushrooms', `${before} caps`)
+  let tile0 = null
+  let id0 = -1
+  for (const tile of m.tiles.values()) {
+    for (let k = 0; k < tile.n && id0 < 0; k++) if (!m.rim.isHidden(tile.ids[k])) { tile0 = tile; id0 = tile.ids[k] }
+    if (id0 >= 0) break
+  }
+  const x = m.instX[id0]
+  const y = m.instY[id0]
+  const z = m.instZ[id0]
+  const size = Math.sqrt(m.instSpan2[id0])
+  const hit = m.pickAt(x, y + size * 0.5, z, 0.1)
+  check(hit !== null && hit.id === id0 && hit.tile === tile0 && hit.size === size && hit.dist === 0, 'pickAt finds the cap around the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(m.pickAt(x, y + size + 5, z, 0.1) === null, 'and nothing five metres above it')
+  const rec = m.take(hit)
+  check(rec.kind === 'mushroom' && m.bank.variants.some((v) => v.species === rec.name) && rec.size === size && rec.geometry instanceof THREE.BufferGeometry && rec.material === m.material && rec.color.length === 3 && rec.scale[0] > 0 && rec.scale[0] === rec.scale[1] && rec.scale[1] === rec.scale[2] && rec.stowable === true,
+    'take hands back the record: the finest tier, the shared material, its tint and scale', JSON.stringify({ name: rec.name, size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
+  let stillListed = false
+  for (let k = 0; k < tile0.n; k++) if (tile0.ids[k] === id0) stillListed = true
+  check(m.placed === before - 1 && m.tierAt[id0] === -1 && !stillListed && taken.has('mushroom', x, z), 'and the cap is out of the ground and on the registry', `${m.placed} of ${before}`)
+  const again = grow()
+  check(again.placed === before - 1 && standing(again) === standing(m), 'a bed grown again from the seed comes up without it, nothing else moved', `${again.placed} caps`)
+  let twice = false
+  try { m.take(hit) } catch { twice = true }
+  check(twice, 'taking it twice throws')
+  taken.clear()
+  const whole = grow()
+  check(whole.placed === before && standing(whole) !== standing(m), 'and with the registry cleared it grows back', `${whole.placed} caps`)
+  again.dispose()
+  whole.dispose()
+  m.dispose()
+}
 
 console.log(`\n${failures === 0 ? 'all mushroom checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

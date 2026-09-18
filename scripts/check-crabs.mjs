@@ -27,7 +27,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -416,6 +416,60 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   check(written() === alive(k).length, 'under, every crab is written again', `${written()} of ${alive(k).length}`)
   check(pose.some(([c, x, y, z, left]) => c.left !== left), 'and the sunk ones pick up where they paused')
   check(k.bodies([]).length === alive(k).length, 'and the ear is offered all of them')
+  k.dispose()
+}
+
+// --- her hand: a crab taken, the perch never regrowing it, one let go of scuttling off --
+{
+  live = BOULDERS
+  // The first seed with a crab on the beach.
+  let k = null
+  let seed = 0
+  while (!k && ++seed <= 16) {
+    const t = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+    t.place(15, 0)
+    if (alive(t).some((c) => c.y >= LEVEL)) k = t
+    else t.dispose()
+  }
+  check(k !== null, 'some seed seats a crab on the beach', `seed ${seed}`)
+  const head = { x: 15, y: LEVEL + 1.6, z: 0, yaw: 0 }
+  k.update(head.x, head.y, head.z, DT, false)
+  const dry = alive(k).filter((c) => c.y >= LEVEL)
+  const c = dry[0]
+  const perch = c.perch
+  const before = alive(k).length
+  const hit = k.pickAt(c.x, c.y + 0.1, c.z, 0.3, 2)
+  check(hit !== null && hit.c === c && hit.size === c.size, 'pickAt finds the crab under the hand', hit ? `${hit.dist.toFixed(3)} m` : 'null')
+  check(k.pickAt(c.x, c.y + 0.1, c.z, 0.3, c.size) === null || k.pickAt(c.x, c.y + 0.1, c.z, 0.3, c.size).c !== c, 'and passes over one at the size cap')
+  const sunk = alive(k).find((g) => g.y < LEVEL)
+  check(!sunk || k.pickAt(sunk.x, sunk.y, sunk.z, 0.3, 2) === null, 'a sunk crab is not picked from the air')
+  const rec = k.take(hit, 1)
+  check(rec.kind === 'crab' && rec.size === c.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aLegs[1] === 0 && rec.attrs.aHue[0] === c.hue && rec.color === null && Math.abs(rec.scale[1] / rec.scale[0] - STRETCH_Y) < 1e-6 && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale }))
+  check(c.perch === null && !perch.crabs.includes(c) && alive(k).length === before - 1, 'and the crab is off its stone')
+  // The same world again: every crab but that one.
+  const again = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+  again.place(15, 0)
+  const key = (of) => alive(of).map((g) => `${g.x.toFixed(3)},${g.z.toFixed(3)},${g.size.toFixed(3)}`).sort()
+  check(JSON.stringify(key(again)) === JSON.stringify(key(k)) && alive(again).length === before - 1, 'the perch regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  again.dispose()
+  // Let go on the bank: it scuttles from her until it is RADIUS out.
+  const ok = k.release(rec, 16, LEVEL + 0.4, 0, head)
+  const loose = k.loose[0]
+  check(ok && loose && loose.loose && loose.size === c.size && loose.state === 'go', 'release puts it down loose and going', loose ? loose.state : 'none')
+  check(Math.abs(loose.y - groundAt(16, 0)) < 0.3, 'on the ground under the hand', `y ${loose.y.toFixed(2)} ground ${groundAt(16, 0).toFixed(2)}`)
+  const d0 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  let yawTurns = 0
+  let yaw = loose.yaw
+  for (let i = 0; i < 5 * 72; i++) {
+    k.update(head.x, head.y, head.z, DT, false)
+    if (loose.yaw !== yaw) { yawTurns++; yaw = loose.yaw }
+  }
+  const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  check(d1 > d0 + 2 && yawTurns >= 2, 'it scuttles away, jinking as it goes', `${(d1 - d0).toFixed(1)} m further off in 5 s, ${yawTurns} turns`)
+  check(k.bodies([]).includes(loose), 'and the ear is offered it')
+  let frames = 0
+  while (k.loose.length > 0 && frames++ < 120 * 72) k.update(head.x, head.y, head.z, DT, false)
+  check(k.loose.length === 0 && !loose.loose, `and it is forgotten past RADIUS ${RADIUS}`, `${(frames / 72).toFixed(1)} s`)
   k.dispose()
 }
 

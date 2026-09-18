@@ -298,7 +298,7 @@ export function readMeta(id) {
   return { id, ...(seed ?? {}), ...(meta ?? {}) }
 }
 
-export const META_KEYS = ['label', 'category', 'sizeM', 'texPx', 'description', 'styleNote', 'aspectRatio']
+export const META_KEYS = ['label', 'category', 'sizeM', 'texPx', 'description', 'style', 'styleNote', 'aspectRatio']
 
 export function saveMeta(id, patch) {
   const meta = {}

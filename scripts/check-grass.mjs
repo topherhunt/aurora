@@ -451,6 +451,8 @@ const flat = {
 }
 const dry = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const clear = { nearest: () => null }
+// No sandy shore anywhere: Layers.shoreAt as the dry world answers it.
+const noSand = { shoreAt: () => 0 }
 
 // The camera has to stand ON the flat world, not at y = 1.6 in absolute terms:
 // the tier test is a 3D distance, so an eye 60 m under the ground puts every
@@ -460,7 +462,7 @@ const EYE = 60 + 1.6
 
 const scene = new THREE.Scene()
 const texArray = buildTextureArray()
-const grass = new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+const grass = new Grass(scene, flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
 grass.place(0, 0)
 // One update settles the near tiles and one phase of the far ones; RIM_PHASES
 // of them settles every tile. The camera does not move between them, so this is
@@ -795,7 +797,7 @@ console.log('\n-- rim --')
     'a jittering camera': (f) => (((f * 2654435761) >>> 0) % 20) / 60,
   }
   for (const [name, step] of Object.entries(PROFILES)) {
-    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+    const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
     g.place(0, 0)
     let x = 0
     for (let f = 0; f < RIM_PHASES; f++) g.update(x, EYE, 0)
@@ -838,7 +840,7 @@ console.log('\n-- rim --')
 // Driven at the rim rather than walked into, because reaching the wrap by
 // updating is seventeen minutes of frames.
 {
-  const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
   g.place(0, 0)
   for (let f = 0; f < RIM_PHASES; f++) g.update(0, EYE, 0)
   const id = [...g.tiles.values()].flatMap((t) => [...t.ids.slice(0, t.n)])
@@ -1000,7 +1002,7 @@ console.log('\n-- placement --')
   const sunk = { heightAt: () => 1, heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
 
   const one = (field, water, paths) => {
-    const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { seed: 7, style: 'tufts' })
+    const g = new Grass(new THREE.Scene(), field, water, paths, texArray, { layers: noSand, seed: 7, style: 'tufts' })
     g.place(0, 0)
     const s = g.stats
     g.dispose()
@@ -1026,9 +1028,9 @@ console.log('\n-- placement --')
   // (x, z) in both beds, so they are matched by position and compared exactly;
   // only the extras' count is statistical, which is why z runs the whole bed.
   const shoreWater = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => Math.min(reach, Math.max(-reach, x)) }
-  const shore = new Grass(new THREE.Scene(), flat, shoreWater, clear, texArray, { seed: 7, style: 'tufts' })
+  const shore = new Grass(new THREE.Scene(), flat, shoreWater, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
   shore.place(0, 0)
-  const plain = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  const plain = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
   plain.place(0, 0)
   // Every tuft in an x band, keyed by position, with its scale-y read back off
   // the instance matrix.
@@ -1096,6 +1098,36 @@ console.log('\n-- placement --')
   }
   shore.dispose()
   plain.dispose()
+}
+
+// NOT ON SAND. Layers.shoreAt is the mesher's sand weight; at or past
+// PLACEMENT.sandMax the candidate is dropped. A beach of full sand across
+// 0 <= x < 3 on the dry flat is bare of grass with the carpet intact either
+// side of it; a beach that ramps from 0 at x = 0 to 1 at x = 6 loses its grass
+// exactly where the ramp reaches sandMax, and not before.
+{
+  const posOf = (g) => {
+    const out = []
+    for (const tile of g.tiles.values()) for (let k = 0; k < tile.n; k++) out.push(g.instX[tile.ids[k]])
+    return out
+  }
+  const beach = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 3 ? 1 : 0) }, seed: 7, style: 'tufts' })
+  beach.place(0, 0)
+  const xs = posOf(beach)
+  const on = xs.filter((x) => x >= 0 && x < 3).length
+  const west = xs.filter((x) => x >= -3 && x < 0).length
+  const east = xs.filter((x) => x >= 3 && x < 6).length
+  check(on === 0 && west > 100 && east > 100, 'a sandy beach is bare of grass, with the carpet on either side of it', `${on} tufts on the sand, ${west} west of it, ${east} east`)
+  check(beach.stats.rejected.sand > 100, 'and the drops are counted as sand', `${beach.stats.rejected.sand}`)
+  const ramp = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 6 ? x / 6 : 0) }, seed: 7, style: 'tufts' })
+  ramp.place(0, 0)
+  const rx = posOf(ramp)
+  const edge = 6 * PLACEMENT.sandMax
+  const past = rx.filter((x) => x >= edge && x < 6).length
+  const before = rx.filter((x) => x >= 0 && x < edge).length
+  check(past === 0 && before > 50, `grass gives out where the sand weight reaches ${PLACEMENT.sandMax}`, `${past} tufts past x = ${edge.toFixed(2)}, ${before} before it`)
+  beach.dispose()
+  ramp.dispose()
 }
 
 // --- 8. the bake ------------------------------------------------------------
@@ -1191,7 +1223,7 @@ stripBank.tiers[0].geometry.dispose()
 // quietly undo the other half of the decision is somebody reading a bed with no
 // default caller as dead code and deleting it.
 {
-  const dflt = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7 })
+  const dflt = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7 })
   check(dflt.style === 'tufts', 'a region asked for grass without saying which gets clumps',
     `default style ${dflt.style}`)
   dflt.dispose()
@@ -1203,7 +1235,7 @@ stripBank.tiers[0].geometry.dispose()
   for (const t of clump.tiers) t.geometry.dispose()
 }
 
-const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'strips' })
+const strips = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'strips' })
 strips.place(0, 0)
 for (let i = 0; i < RIM_PHASES; i++) strips.update(0, EYE, 0)
 const ss = strips.stats
@@ -1725,7 +1757,7 @@ const ramp = {
   heightAndSlopeAt: (x) => ({ h: 60 + x * RISE, tan: RISE, gx: RISE, gz: 0 }),
   snowLineAt: () => 9999,
 }
-const tilted = new Grass(new THREE.Scene(), ramp, dry, clear, texArray, { seed: 7, style: 'strips' })
+const tilted = new Grass(new THREE.Scene(), ramp, dry, clear, texArray, { layers: noSand, seed: 7, style: 'strips' })
 tilted.place(0, 0)
 {
   const m = new THREE.Matrix4()
@@ -1820,7 +1852,7 @@ console.log('\n-- arena --')
       return m.userData.shader.vertexShader
     }
     const fixed = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
-      { seed: 7, style: 'tufts', spin: false })
+      { layers: noSand, seed: 7, style: 'tufts', spin: false })
     const spunSrc = compile(grass.material)
     const fixedSrc = compile(fixed.material)
     const ROTATE = 'transformed.x * bbC.x'
@@ -1876,7 +1908,7 @@ console.log('\n-- arena --')
   // re-shows an id the rim had hidden -- which is exactly where the shadow
   // matrix is load-bearing. Nothing below counts instances, so the wall-clock
   // regrow budget does not reach it.
-  const walk = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'tufts' })
+  const walk = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
   walk.place(0, 0)
   for (let f = 0; f <= RIM_PHASES; f++) {
     setPropClock(f * PROP_FADE_SECONDS)
@@ -1946,7 +1978,7 @@ console.log('\n-- blades --')
   }
   const bladeBed = (opts = {}) => {
     const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
-      { seed: 7, style: 'blades', tint, ...opts })
+      { layers: noSand, seed: 7, style: 'blades', tint, ...opts })
     g.place(0, 0)
     for (let i = 0; i < RIM_PHASES; i++) g.update(0, EYE, 0)
     return g
@@ -1957,7 +1989,7 @@ console.log('\n-- blades --')
   // has to say so at construction rather than 20 m into a walk.
   let threw = false
   try {
-    new Grass(new THREE.Scene(), flat, dry, clear, texArray, { seed: 7, style: 'blades' })
+    new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'blades' })
   } catch { threw = true }
   check(threw, 'blades without a terrain tint throw rather than rendering grey')
 
@@ -2103,7 +2135,7 @@ console.log('\n-- blades --')
   // fade in.
   {
     const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
-      { seed: 7, style: 'blades', tint })
+      { layers: noSand, seed: 7, style: 'blades', tint })
     g.place(0, 0)
     for (let i = 0; i < RIM_PHASES; i++) g.update(0, EYE, 0)
     check(g.rim.stats().fading === 0 && g.batch.count > 0,
@@ -2127,7 +2159,7 @@ console.log('\n-- blades --')
     const want = new THREE.Vector3(-G, 1, 0).normalize()
     const sample = (field) => {
       const g = new Grass(new THREE.Scene(), field, dry, clear, texArray,
-        { seed: 7, style: 'blades', tint })
+        { layers: noSand, seed: 7, style: 'blades', tint })
       g.place(0, 0)
       const m = new THREE.Matrix4()
       const p = new THREE.Vector3()
@@ -2177,7 +2209,7 @@ console.log('\n-- blades --')
     let threw = false
     try {
       new Grass(new THREE.Scene(), { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0 }), snowLineAt: () => 9999 },
-        dry, clear, texArray, { seed: 7, style: 'blades', tint })
+        dry, clear, texArray, { layers: noSand, seed: 7, style: 'blades', tint })
     } catch { threw = true }
     check(threw, 'blades on a field with no gradient throw rather than drawing nothing')
   }
@@ -2189,7 +2221,7 @@ console.log('\n-- blades --')
     let worst = 0
     for (const p of [0.5, 1, 2, 3]) {
       const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray,
-        { seed: 7, style: 'blades', tint, falloff: p })
+        { layers: noSand, seed: 7, style: 'blades', tint, falloff: p })
       for (let d = 0.25; d <= g.radius; d += 0.25) {
         const want = Math.pow(Math.min(1, g.fullRadius / d), p)
         worst = Math.max(worst, Math.abs(g._keepAt(d) - want))
@@ -2323,7 +2355,7 @@ console.log('\n-- rocks in the bed --')
       return dx * dx + dz * dz < STONE.r * STONE.r ? 61 : -Infinity
     },
   }
-  const g = new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts', rocks: stone })
+  const g = new Grass(scene, flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts', rocks: stone })
   g.place(0, 0)
 
   let inside = 0
@@ -2345,7 +2377,7 @@ console.log('\n-- rocks in the bed --')
 
   let threw = false
   try {
-    new Grass(scene, flat, dry, clear, texArray, { seed: 7, style: 'tufts', rocks: {} })
+    new Grass(scene, flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts', rocks: {} })
   } catch { threw = true }
   check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
 

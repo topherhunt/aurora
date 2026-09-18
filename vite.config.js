@@ -1288,10 +1288,10 @@ function propGen() {
   // code, so the bench can show the wrapping without paying for a picture.
   // The ratio is whitelisted: an unknown one is a silent 400 from OpenRouter
   // after the request has been queued.
-  const composeImageRequest = ({ description, styleNote, aspectRatio }) => {
+  const composeImageRequest = ({ description, style, styleNote, aspectRatio }) => {
     const ratio = aspectRatio ?? PROP_DEFAULT_FRAME
     if (!PROP_ASPECT_RATIOS.includes(ratio)) throw new Error(`unknown aspect ratio "${ratio}" -- expected one of ${PROP_ASPECT_RATIOS.join(', ')}`)
-    return { prompt: buildPropPrompt({ description, styleNote }), ratio }
+    return { prompt: buildPropPrompt({ description, style, styleNote }), ratio }
   }
 
   return {

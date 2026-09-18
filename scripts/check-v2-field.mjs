@@ -55,7 +55,7 @@ import { RidgeField, SHATTER_VERTEX_CELLS } from '../src/v2/height/ridge.js'
 import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { BED_SHOAL, BANK } from '../src/v2/layers/paths.js'
-import { SHORE_DRY, SHORE_DRY_END, SHORE_WET, SHORE_WET_END } from '../src/v2/layers/water-bodies.js'
+import { SHORE_DRY, SHORE_DRY_END, SHORE_WET, SHORE_WET_END, sandPatchAt } from '../src/v2/layers/water-bodies.js'
 import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
@@ -469,24 +469,24 @@ export async function run({ heightmap } = {}) {
     const wildDetail = Math.abs(cf.heightAt(120, 900) - cf.heightAt(122, 900))
     check(roadDetail < wildDetail, 'flattening suppresses the fractal on the carriageway', `road ${roadDetail.toFixed(4)} m vs open ground ${wildDetail.toFixed(4)} m over 2 m`)
 
-    // THE SHORE, BY HEIGHT (Layers.shoreAt). Across the river's section 200 m up
-    // the channel, scanned out from the centreline: the water's edge, where the
-    // bed rises to meet the level, is wholly shore and sits at the half-width;
-    // the centre is the authored depth under the surface and is not; past the
-    // bank band the river is not consulted at all, whatever the ground there is
-    // doing. And the lake: its centre is 9 m down, and ground at its own level
-    // over its footprint is shore.
+    // THE SHORE, BY HEIGHT (LakeSet.shoreAt, PathSet.riverShoreAt). Across the
+    // river's section 200 m up the channel, scanned out from the centreline: the
+    // water's edge, where the bed rises to meet the level, is wholly shore and
+    // sits at the half-width; the centre is the authored depth under the surface
+    // and is not; past the bank band the river is not consulted at all, whatever
+    // the ground there is doing. And the lake: its centre is 9 m down, and ground
+    // at its own level over its footprint is shore.
     let edge = 0
     let edgeU = 0
     for (let x = 0; x <= 12; x += 0.05) {
-      const w = doc.shoreAt(x, 200, cf.heightAt(x, 200))
+      const w = doc.paths.riverShoreAt(x, 200, cf.heightAt(x, 200))
       if (w > edge) {
         edge = w
         const n = doc.paths.nearest(x, 200, 'river')
         edgeU = n.dist / n.halfWidth
       }
     }
-    const mid = doc.shoreAt(0, 200, cf.heightAt(0, 200))
+    const mid = doc.paths.riverShoreAt(0, 200, cf.heightAt(0, 200))
     // The first scan step past the bank band, whose ground is set to the level
     // itself so only the lateral reach can say no.
     let pastX = 0
@@ -496,23 +496,65 @@ export async function run({ heightmap } = {}) {
       const n = doc.paths.nearest(pastX, 200, 'river')
       pastU = n.dist / n.halfWidth
     }
-    const past = doc.shoreAt(pastX, 200, levelY)
+    const past = doc.paths.riverShoreAt(pastX, 200, levelY)
     check(edge > 0.99 && Math.abs(edgeU - 1) < 0.1, 'the water\'s edge of a river is wholly shore, at its half-width', `peak ${edge.toFixed(3)} at ${edgeU.toFixed(3)} half-widths`)
     check(mid === 0, 'and the channel bottom is not', `${mid.toFixed(3)} at the centre, ${(levelY - cf.heightAt(0, 200)).toFixed(2)} m down`)
     check(past === 0, 'and past the bank band the river has no shore, even at its own level', `${past.toFixed(3)} at ${pastU.toFixed(3)} half-widths`)
-    check(doc.shoreAt(1000, 1000, bed) === 0 && doc.shoreAt(1000, 1000, lakeY) === 1, 'a lake\'s deep bed is not shore and ground at its level over it is', `bed ${doc.shoreAt(1000, 1000, bed).toFixed(3)}, level ${doc.shoreAt(1000, 1000, lakeY).toFixed(3)}`)
-    const bandAt = (dy) => doc.shoreAt(1000, 1000, lakeY + dy)
+    check(doc.lakes.shoreAt(1000, 1000, bed) === 0 && doc.lakes.shoreAt(1000, 1000, lakeY) === 1, 'a lake\'s deep bed is not shore and ground at its level over it is', `bed ${doc.lakes.shoreAt(1000, 1000, bed).toFixed(3)}, level ${doc.lakes.shoreAt(1000, 1000, lakeY).toFixed(3)}`)
+    const bandAt = (dy) => doc.lakes.shoreAt(1000, 1000, lakeY + dy)
     check(bandAt(SHORE_DRY) > 0.999 && bandAt(SHORE_DRY_END) < 1e-6 && bandAt(-SHORE_WET) > 0.999 && bandAt(-SHORE_WET_END) < 1e-6,
       `and the band runs ${SHORE_DRY}..${SHORE_DRY_END} m up the bank and ${SHORE_WET}..${SHORE_WET_END} m under the water`,
       `${bandAt(SHORE_DRY).toFixed(3)} ${bandAt(SHORE_DRY_END).toFixed(3)} ${bandAt(-SHORE_WET).toFixed(3)} ${bandAt(-SHORE_WET_END).toFixed(3)}`)
     check(doc.shoreAt(3000, 3000, hm.sample(3000, 3000)) === 0, 'and dry ground under no water body has none')
 
-    // AND THE MESHER PAINTS IT SAND. A plane rising along x at 20 degrees with an
-    // uncarved lake at y = 0 over it: the waterline is the line x = 0, and the
-    // three leaf chunks across it carry a strip of vertices with r above g --
-    // what terrain-material.js reads as unvegetated -- between grass up the
-    // slope and the untouched bed colour down under the water. The grass side
-    // allows the bare-earth patches shade() paints into any meadow.
+    // THE SAND COMES AND GOES (Layers.shoreAt = band x sandPatchAt). Walked
+    // along 40 km of wandering shoreline at a quarter-metre step: about half of
+    // it is beach, the stretches of beach and of grass are metres long, not
+    // alternating by the metre, and only the few places a bank grazes a patch
+    // edge run under five. The lake's level line is the band at full strength,
+    // so there Layers.shoreAt is the patch itself.
+    {
+      const runs = { sand: [], grass: [] }
+      let cover = 0
+      let n = 0
+      for (let line = 0; line < 20; line++) {
+        const z0 = -3000 + line * 300
+        const ang = line * 0.37
+        let cur = null
+        let len = 0
+        for (let s = 0; s < 2000; s += 0.25) {
+          const x = -2000 + s * Math.cos(ang) + 15 * Math.sin(s / 40)
+          const z = z0 + s * Math.sin(ang) + 15 * Math.cos(s / 55)
+          const sand = sandPatchAt(x, z) > 0.5
+          cover += sand ? 1 : 0
+          n++
+          if (cur === null) { cur = sand; len = 0.25; continue }
+          if (sand === cur) { len += 0.25; continue }
+          runs[cur ? 'sand' : 'grass'].push(len)
+          cur = sand
+          len = 0.25
+        }
+      }
+      const median = (a) => a.slice().sort((p, q) => p - q)[a.length >> 1]
+      const short = (a) => a.filter((v) => v < 5).length / a.length
+      check(cover / n > 0.4 && cover / n < 0.6, 'about half the shoreline is sand', `${(100 * cover / n).toFixed(1)}% over ${n} steps`)
+      check(median(runs.sand) >= 8 && median(runs.grass) >= 8, 'a stretch of either runs metres, not one', `median sand ${median(runs.sand).toFixed(1)} m, grass ${median(runs.grass).toFixed(1)} m`)
+      check(short(runs.sand) < 0.1 && short(runs.grass) < 0.1, 'and few stretches are under 5 m', `${(100 * short(runs.sand)).toFixed(0)}% of sand runs, ${(100 * short(runs.grass)).toFixed(0)}% of grass`)
+      let gated = true
+      for (let x = 900; x <= 1100; x += 7) {
+        if (Math.abs(doc.shoreAt(x, 1000, lakeY) - sandPatchAt(x, 1000)) > 1e-9) gated = false
+      }
+      check(gated, 'and Layers.shoreAt is the band gated by the patch')
+    }
+
+    // AND THE MESHER PAINTS IT SAND WHERE THE PATCH SAYS SO. A plane rising
+    // along x at 20 degrees with an uncarved lake at y = 0 over it: the
+    // waterline is the line x = 0, and along it the leaf chunks carry vertices
+    // with r above g -- what terrain-material.js reads as unvegetated -- where
+    // the sand patch is on, and green-dominant where it is off, with grass up
+    // the slope and the untouched bed colour down under the water either way.
+    // The grass side allows the bare-earth patches shade() paints into any
+    // meadow.
     {
       const planeLayers = new Layers()
       planeLayers.addLake({ x: 0, z: 0, y: 0, rx: 400, rz: 400, carve: 0, depth: 1 })
@@ -521,22 +563,29 @@ export async function run({ heightmap } = {}) {
       const vpr = CHUNK_RES + 1
       let sand = 0
       let sandOff = 0
+      let bare = 0
+      let bareOff = 0
       let grass = 0
       let grassOff = 0
       let deep = 0
       let deepOff = 0
-      for (const ox of [-1.5 * size, -0.5 * size, 0.5 * size]) {
-        const c = buildChunkV2(pf, planeLayers, { ox, oz: -size / 2, size, res: CHUNK_RES, cam: CAM })
+      for (let oz = -10 * size; oz <= 8 * size; oz += 2 * size) for (const ox of [-1.5 * size, -0.5 * size, 0.5 * size]) {
+        const c = buildChunkV2(pf, planeLayers, { ox, oz, size, res: CHUNK_RES, cam: CAM })
         for (let v = 0; v < vpr * vpr; v++) {
           const h = c.positions[v * 3 + 1]
           const r = c.colors[v * 3]
           const g = c.colors[v * 3 + 1]
-          if (Math.abs(h) <= Math.min(SHORE_DRY, SHORE_WET)) { sand++; if (!(r > g)) sandOff++ }
+          if (Math.abs(h) <= Math.min(SHORE_DRY, SHORE_WET)) {
+            const patch = sandPatchAt(ox + c.positions[v * 3], oz + c.positions[v * 3 + 2])
+            if (patch > 0.9) { sand++; if (!(r > g)) sandOff++ }
+            else if (patch < 0.1) { bare++; if (!(g > r)) bareOff++ }
+          }
           else if (h >= SHORE_DRY_END) { grass++; if (!(g > r)) grassOff++ }
           else if (h <= -SHORE_WET_END) { deep++; if (!(g > r)) deepOff++ }
         }
       }
-      check(sand > 30 && sandOff === 0, 'the mesher paints the waterline sand, r over g', `${sand} vertices within the band, ${sandOff} not sand`)
+      check(sand > 30 && sandOff === 0, 'the mesher paints the waterline sand, r over g, where the patch is on', `${sand} vertices within the band, ${sandOff} not sand`)
+      check(bare > 30 && bareOff < bare * 0.1, 'and leaves it green where the patch is off', `${bare} vertices within the band, ${bareOff} not green-dominant`)
       check(grass > 100 && grassOff < grass * 0.1, 'the bank above the band is still grass', `${grass} vertices, ${grassOff} not green-dominant`)
       check(deep > 100 && deepOff < deep * 0.1, 'and the bed under it keeps its colour', `${deep} vertices, ${deepOff} not green-dominant`)
     }

@@ -210,6 +210,7 @@ async function loadProp(id) {
   $('sizeM').value = p.sizeM ?? ''
   $('texPx').value = String(p.texPx ?? texPx.max)
   $('description').value = p.description ?? ''
+  $('style').value = p.style ?? ''
   $('styleNote').value = p.styleNote ?? ''
   $('aspectRatio').value = p.aspectRatio ?? defaultFrame
   candidates = []
@@ -238,6 +239,7 @@ const metaFromForm = () => ({
   sizeM: Number($('sizeM').value) || undefined,
   texPx: Number($('texPx').value),
   description: $('description').value.trim(),
+  style: $('style').value.trim() || undefined,
   styleNote: $('styleNote').value.trim() || undefined,
   aspectRatio: $('aspectRatio').value,
 })
@@ -273,6 +275,7 @@ $('newProp').addEventListener('click', () => withButton($('newProp'), 'creating'
 $('previewPrompt').addEventListener('click', () => withButton($('previewPrompt'), 'composing', async () => {
   const j = await post('/__prop-prompt', {
     description: $('description').value.trim(),
+    style: $('style').value.trim() || undefined,
     styleNote: $('styleNote').value.trim() || undefined,
     aspectRatio: $('aspectRatio').value,
   })
@@ -520,6 +523,7 @@ async function queueImage() {
   const body = {
     id: currentId(),
     description: $('description').value.trim(),
+    style: $('style').value.trim() || undefined,
     styleNote: $('styleNote').value.trim() || undefined,
     aspectRatio: $('aspectRatio').value,
     model: $('imageModel').value,

@@ -20,7 +20,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED, FOLLOW_EVERY } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, POOL_RADIUS, RETIRE_RADIUS, BORN_FOR, HUE, DART_SPEED, FOLLOW_EVERY, STUN_S } from '../src/v2/render/fish.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -401,6 +401,42 @@ for (let i = 0; i < 3 * 72; i++) fish.update(0, LEVEL, 0, DT)
   const ms = (performance.now() - t0) / FRAMES
   // Node, single-threaded, on whatever this machine is: a loose bound, there to catch a neighbour search that went quadratic, not to measure.
   check(ms < 1.5, 'a frame of the pool stays cheap', `${ms.toFixed(3)} ms for ${alive().length} fish`)
+}
+
+// --- her hand: a fish taken, and one let go of in the water ----------------------
+{
+  const head = { x: 0, y: LEVEL - 1, z: 0, yaw: 0 }
+  fish.update(head.x, head.y, head.z, DT)
+  const small = alive().filter((f) => f.size < 2)
+  const f = small[0]
+  const sp = fish.species.find((s) => s.slots.includes(f))
+  const before = alive().length
+  // From a hand a little short of its nose.
+  const hit = fish.pickAt(f.x + 0.1, f.y, f.z, 0.5, 2)
+  check(hit !== null && hit.f === f && hit.size === f.size && hit.dist < 0.5, 'pickAt finds the fish at the hand', hit ? `${hit.dist.toFixed(3)} m` : 'null')
+  check(fish.pickAt(f.x, f.y, f.z, 0.5, f.size) === null || fish.pickAt(f.x, f.y, f.z, 0.5, f.size).f !== f, 'and passes over one at or past the size cap')
+  fish.batch.visible = false
+  check(fish.pickAt(f.x, f.y, f.z, 0.5, 2) === null, 'nothing is picked while the layer is hidden')
+  fish.batch.visible = true
+  const rec = fish.take(hit, 1)
+  check(rec.kind === 'fish' && rec.name === sp.id && rec.size === f.size && rec.geometry === sp.mesh.geometry && rec.material === sp.material && rec.attrs.aSwim.length === 4 && rec.attrs.aHue.length === 1 && rec.color.length === 3 && rec.scale[0] === f.scale && rec.stowable === (f.size < 1), 'take hands back the record for the hand', JSON.stringify({ kind: rec.kind, name: rec.name, size: rec.size, stowable: rec.stowable }))
+  check(!f.alive && alive().length === before - 1, 'and the fish is out of the water')
+  // Let go over the bank: refused.
+  check(fish.release(rec, BAR.x0 + 1, LEVEL + 2, 0, head) === false, 'release on dry ground is refused')
+  check(fish.release(rec, 5, LEVEL + 1, 0, head) === false, 'and in the air over the lake')
+  // Let go in the lake: stunned, then away from her.
+  const ok = fish.release(rec, 5, LEVEL - 0.5, 0, head)
+  const loose = sp.slots.find((g) => g.loose)
+  check(ok && loose && loose.alive && loose.stun > 0 && loose.amp === 0 && loose.size === rec.size, 'in the lake it is back in the layer, loose and stunned', loose ? `stun ${loose.stun.toFixed(2)} s` : 'none')
+  const x0 = loose.x
+  fish.update(head.x, head.y, head.z, DT)
+  check(Math.abs(loose.x - x0) < 0.01 && loose.amp === 0, 'stunned, it drifts with its tail still')
+  for (let i = 0; i < 4 * 72; i++) fish.update(head.x, head.y, head.z, DT)
+  const out = Math.hypot(loose.x - head.x, loose.z - head.z) - Math.hypot(x0 - head.x, 0)
+  check(loose.stun <= 0 && loose.amp > 0 && out > 1, 'awake, it darts away from her', `${out.toFixed(2)} m further from her in 4 s, up to ${STUN_S[1]} s of it stunned`)
+  let frames = 0
+  while (loose.alive && frames++ < 60 * 72) fish.update(head.x, head.y, head.z, DT)
+  check(!loose.alive && !loose.loose, `and is forgotten past RETIRE_RADIUS ${RETIRE_RADIUS}`, `${(frames / 72).toFixed(1)} s`)
 }
 
 fish.dispose()

@@ -12,7 +12,7 @@
 
 import { defaultDoc, validate, serialize, IdAllocator } from './doc.js'
 import { SnowField, TEXEL } from './snowline.js'
-import { LakeSet } from './water-bodies.js'
+import { LakeSet, sandPatchAt } from './water-bodies.js'
 import { PathSet } from './paths.js'
 import { clamp01 } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
@@ -104,11 +104,12 @@ export class Layers {
     return river > lake ? river : lake
   }
 
-  // 0..1: how much the ground at height `h` over (x, z) is a WATER'S EDGE -- within a fraction of a metre of a lake plane or a river's level, on either side of the line (water-bodies.js shoreBand). The mesher paints it sand. Lakes and rivers each answer and the stronger wins, so a river's mouth is one continuous shore with the lake it enters.
+  // 0..1: how much the ground at height `h` over (x, z) is a SANDY WATER'S EDGE -- within a fraction of a metre of a lake plane or a river's level, on either side of the line (water-bodies.js shoreBand), on a stretch of bank the sand noise makes beach rather than grass (sandPatchAt). The mesher paints it sand and the grass keeps off it. Lakes and rivers each answer and the stronger wins, so a river's mouth is one continuous shore with the lake it enters. The noise is only asked once a band is found, so the dry world never pays for it.
   shoreAt(x, z, h) {
     const lake = this.lakes.shoreAt(x, z, h)
     const river = this.paths.riverShoreAt(x, z, h)
-    return lake > river ? lake : river
+    const band = lake > river ? lake : river
+    return band > 0 ? band * sandPatchAt(x, z) : 0
   }
 
   // --- dirty tracking -------------------------------------------------------

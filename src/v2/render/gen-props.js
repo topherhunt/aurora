@@ -138,6 +138,11 @@ const CARD_NORMAL = /* glsl */ `
  * the instance's Y to face her in the vertex shader (two triangles; flat in a
  * headset, which past the parallax range it always is); `billboard: 'mixed'`
  * spins only the vertices whose `aSpin` is 1 (critters.js setSpunTopCard).
+ * A `foliage` mesh is a cutout of one-cell-thick leaves (the carrots' greens):
+ * double-sided, alpha-tested, and lit by the normal the geometry authored on
+ * BOTH faces -- the same undo of three's double-sided flip that
+ * createPropMaterial does (material.js), without which the underside of every
+ * leaf is lit by a normal pointing at the ground and goes black.
  * THE PROGRAM IS KEYED ON THESE FLAGS AND NOTHING ELSE, so every mesh variant of
  * every prop scatter compiles to one program and its calls differ by material
  * only -- a map bind, not a useProgram with the lights and camera re-uploaded
@@ -145,14 +150,15 @@ const CARD_NORMAL = /* glsl */ `
  * map is set) needs no help here. The lighting patch (lighting.js) composes
  * its key onto this one, so its callers must share theirs too.
  */
-export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false } = {}) {
+export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false, foliage = false } = {}) {
   if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
   if (billboard !== false && billboard !== true && billboard !== 'mixed') throw new Error(`createGenPropMaterial: billboard is true, false or 'mixed', not ${billboard}`)
+  if (foliage && card) throw new Error('createGenPropMaterial: foliage is a mesh, not a card')
   const mixed = billboard === 'mixed'
   const material = new THREE.MeshLambertMaterial({
     color: tint,
-    alphaTest: card ? 0.5 : 0,
-    side: card ? THREE.DoubleSide : THREE.FrontSide,
+    alphaTest: card || foliage ? 0.5 : 0,
+    side: card || foliage ? THREE.DoubleSide : THREE.FrontSide,
   })
   material.onBeforeCompile = (shader) => {
     // By reference, so the one clock drives every program.
@@ -174,8 +180,11 @@ export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard
     if (card) {
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
+    } else if (foliage) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
     }
   }
-  material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : ''}`
+  material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : foliage ? '-foliage' : ''}`
   return material
 }

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { clamp01, smoothstep } from '../../sim/mathx.js'
+import { Noise } from '../../sim/noise.js'
 import { UniformGrid } from './grid.js'
 
 export const SHAPE_ELLIPSE = 0
@@ -29,6 +30,16 @@ export const SHORE_WET_END = 1.5
 /** 0..1: how much ground `d` metres above (positive) or below a water surface is that water's shore. */
 export function shoreBand(d) {
   return d >= 0 ? smoothstep(SHORE_DRY_END, SHORE_DRY, d) : smoothstep(SHORE_WET_END, SHORE_WET, -d)
+}
+
+// THE SAND COMES AND GOES. One octave of simplex over the world at SAND_WAVELENGTH metres, thresholded at its median so about half the bank is beach and the rest runs grass to the water, with a SAND_FEATHER-wide (in noise units, about a metre on the ground) soft edge between the two. A run of beach along a bank is roughly half a wavelength, so the wavelength is what sets the shortest stretch of sand that shows up; check-v2-field.mjs measures the runs. Fixed seed, not the world's: the same patches have to come out of the worker's Layers and the main thread's, and nothing authored feeds them.
+const SAND_NOISE = new Noise(0x5a4d)
+export const SAND_WAVELENGTH = 24
+const SAND_FEATHER = 0.08
+
+/** 0..1: whether the shore at (x, z), if there is one, is a sandy stretch rather than a grassy one. */
+export function sandPatchAt(x, z) {
+  return smoothstep(-SAND_FEATHER, SAND_FEATHER, SAND_NOISE.simplex2(x / SAND_WAVELENGTH, z / SAND_WAVELENGTH))
 }
 
 function unionRect(a, b) {

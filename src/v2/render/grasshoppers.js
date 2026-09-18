@@ -23,20 +23,23 @@
 // HOPS: a rest that runs out under NIGHT_DAY is rolled again, so dawn does not
 // launch the meadow on one frame, and one caught in the air finishes its hop.
 //
-// THE HOP IS NOT A PARABOLA. Gravity's arc is symmetric -- the launch and the
-// landing are its two fastest moments, at the same speed -- and at under a
-// second a hop that shape reads as a dash. What reads as an insect's hop is
-// its ASYMMETRY and its ENDS. It CROUCHES first, the body squashed toward the
-// ground over CROUCH_S, the wind-up before the kick. The kick is instant. In
-// the air the horizontal speed bleeds away (flightProgress: an exponential
-// ease-out at DRAG_K, so the second half of the flight covers less ground
-// than the first) and the height over the chord rises to its apex at
-// RISE_FRAC of the flight and takes the rest to come down (flightLift), so
-// the take-off is steep and quick, the top hangs, and the descent is the
-// slow steep drop onto the grass a real one makes. Then it LANDS: the body
-// snaps level and squashes and recovers over LAND_S, the legs taking the
-// fall. The flight time is gravity's for the apex, so a low hop is a flick
-// and a high one hangs. The body pitches with the path's angle by PITCH_K.
+// THE HOP IS A KICK, GRAVITY'S RISE AND A HARD DROP. What reads as weight is
+// the arc's ENDS and its FALL. It CROUCHES first, the body squashed toward
+// the ground over CROUCH_S, the wind-up before the kick. The kick is instant,
+// at a launch angle rolled in LAUNCH_DEG, and the apex is what that angle
+// gives the rolled distance (dist * tan / 4), so a short hop is a low flick
+// and a long one is lofted -- never a short hop under a tall arc, which hangs
+// in the air like a balloon. In the air the horizontal speed bleeds away
+// (flightProgress: an exponential ease-out at DRAG_K, so the second half of
+// the flight covers less ground than the first) and the height over the
+// chord is a parabola up under GRAVITY to its apex and a parabola down under
+// FALL_G gravities (flightLift), which puts the apex at RISE_FRAC of the
+// flight: the take-off is steep, the top does not hang, and the drop onto the
+// grass comes down harder and steeper than it went up. A true parabola's fall
+// is as slow as its rise, and at this size that reads as floating; the extra
+// pull on the way down is the snap of a body with weight. Then it LANDS: the
+// body snaps level and squashes and recovers over LAND_S, the legs taking the
+// fall. The body pitches with the path's angle by PITCH_K.
 //
 // SHE ONLY SEES THEM WITHIN SHOW_M. A slot is stepped and written only while
 // it is that close to her head; past it a grasshopper holds where it was --
@@ -71,22 +74,25 @@ export const LENGTH_M = [0.064, 0.096]
 export const TINT_GREEN = [0.65, 1.2, 0.5]
 export const TINT_BROWN = [1.15, 0.9, 0.7]
 export const SHADE = [0.85, 1.15]
-// Seated between hops, seconds; a hop's distance and its height over the chord, metres, each rolled on its own.
+// Seated between hops, seconds; a hop's distance, metres; and the kick's angle off the ground, degrees, which with the distance sets the apex.
 export const REST_S = [1, 6]
 export const HOP_M = [0.2, 1.5]
+export const LAUNCH_DEG = [45, 65]
 // The crouch before the kick and the settle after the landing: each this long, the body squashed to this fraction of its height at the deepest.
 export const CROUCH_S = 0.12
 export const CROUCH_SQUASH = 0.65
 export const LAND_S = 0.18
 export const LAND_SQUASH = 0.7
-// The flight's shape: the horizontal ease-out's rate (the landing speed is exp(-DRAG_K) of the launch's), and the fraction of the flight spent rising.
+// The flight's shape: the horizontal ease-out's rate (the landing speed is exp(-DRAG_K) of the launch's), and the gravities the body falls under past its apex -- 1 is a true parabola, and the extra is the snap.
 export const DRAG_K = 1.2
-export const RISE_FRAC = 0.42
+export const FALL_G = 1.5
+export const GRAVITY = 9.81
+// The fraction of the flight spent rising: the rise takes gravity's time for the apex and the fall takes that over sqrt(FALL_G).
+export const RISE_FRAC = 1 / (1 + 1 / Math.sqrt(FALL_G))
 // How far from home a grasshopper ranges before its hops are bent back.
 export const TETHER = 4
 // The body pitches this much of the path's angle in the air.
 export const PITCH_K = 0.6
-export const GRAVITY = 9.81
 // How many landing points a hop tries before the rest is extended by REST_S instead.
 const HOP_TRIES = 4
 
@@ -109,7 +115,7 @@ const DRAG_NORM = 1 - Math.exp(-DRAG_K)
 export const flightProgress = (s) => (1 - Math.exp(-DRAG_K * s)) / DRAG_NORM
 /** d flightProgress / ds. */
 const flightProgressRate = (s) => (DRAG_K * Math.exp(-DRAG_K * s)) / DRAG_NORM
-/** The height over the chord at fraction `s` of the flight, as a fraction of the apex: a half-parabola up over RISE_FRAC of the flight, a half-parabola down over the rest. */
+/** The height over the chord at fraction `s` of the flight, as a fraction of the apex: a half-parabola up over RISE_FRAC of the flight, a steeper half-parabola down over the rest. */
 export const flightLift = (s) => {
   const u = s < RISE_FRAC ? (RISE_FRAC - s) / RISE_FRAC : (s - RISE_FRAC) / (1 - RISE_FRAC)
   return 1 - u * u
@@ -304,9 +310,9 @@ export class Grasshoppers {
       g.x0 = g.x; g.y0 = g.y; g.z0 = g.z
       g.x1 = x1; g.z1 = z1
       g.y1 = this.walk.heightAt(x1, z1)
-      g.apex = between(this.rand, HOP_M)
-      // Up to the apex and down again under gravity: the time a fall from that height takes, twice.
-      g.T = 2 * Math.sqrt((2 * g.apex) / GRAVITY)
+      // The apex a drag-free kick at the rolled angle reaches over that distance; the rise takes gravity's time for it and the fall RISE_FRAC's share less.
+      g.apex = (dist * Math.tan((between(this.rand, LAUNCH_DEG) * Math.PI) / 180)) / 4
+      g.T = Math.sqrt((2 * g.apex) / GRAVITY) / RISE_FRAC
       g.t = 0
       g.yaw = yaw
       g.state = 'crouch'

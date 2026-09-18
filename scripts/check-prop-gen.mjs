@@ -112,6 +112,11 @@ console.log('\nprompt')
   check(p.trim().endsWith('Object: a rotting stump.'), 'ends with the description as the object line')
   const styled = buildPropPrompt({ description: 'a stump', styleNote: 'Extra gnarly.' })
   check(styled.includes('Extra gnarly.') && styled.indexOf('Extra gnarly.') > styled.indexOf(HOUSE_STYLE), 'a styleNote is appended after the house style')
+  // A note cannot take the grit back out of the prompt; a style replaces it.
+  const own = buildPropPrompt({ description: 'a hand', style: 'Soft living skin.', styleNote: 'Warm.' })
+  check(own.includes('Soft living skin.') && !own.includes(HOUSE_STYLE), 'a style REPLACES the house style')
+  check(own.indexOf('Warm.') > own.indexOf('Soft living skin.'), 'and the styleNote follows it')
+  check(throws(() => buildPropPrompt({ description: 'a hand', style: '' })), 'an empty style throws rather than silently falling back to the house style')
   check(ASPECT_RATIOS.includes(DEFAULT_FRAME), `the default frame ${DEFAULT_FRAME} is one the image endpoint accepts`)
 }
 
@@ -131,6 +136,9 @@ console.log('\nroster')
     check(!throws(() => shipTexPx(p)) && shipTexPx(p) <= TEX_PX_MAX, `${p.id}: ships at ${shipTexPx(p)}px, within the ${TEX_PX_MAX}px cap`)
     check(!throws(() => buildPropPrompt(p)), `${p.id}: builds a prompt`)
     check(!LITERAL_TRAPS.test(p.description), `${p.id}: description names only what belongs in the picture`, p.description.match(LITERAL_TRAPS)?.[0])
+    for (const k of ['style', 'styleNote']) if (p[k] !== undefined) {
+      check(!LITERAL_TRAPS.test(p[k]), `${p.id}: ${k} names only what belongs in the picture`, p[k].match(LITERAL_TRAPS)?.[0])
+    }
   }
   const mushrooms = PROPS.filter((p) => p.category === 'mushroom')
   check(mushrooms.length > 0 && mushrooms.every((p) => p.texPx === TEX_PX_SMALL), `every mushroom is designated ${TEX_PX_SMALL}px`)
@@ -142,7 +150,7 @@ console.log('\nroster')
   }
   check(throws(() => shipTexPx({ id: 'x', texPx: TEX_PX_MAX * 2 })), 'shipTexPx throws on a texture over the cap')
   check(propById(ids[0]) === PROPS[0] && propById('no-such-prop') === null, 'propById finds a seed and answers null for a stranger')
-  for (const k of ['label', 'category', 'sizeM', 'texPx', 'description', 'styleNote', 'aspectRatio']) {
+  for (const k of ['label', 'category', 'sizeM', 'texPx', 'description', 'style', 'styleNote', 'aspectRatio']) {
     check(META_KEYS.includes(k), `the bench can save "${k}"`)
   }
 }
@@ -167,10 +175,13 @@ console.log('\nbench page')
   }
   const html = fs.readFileSync(path.join(ROOT, 'gen-prop.html'), 'utf8')
   check(/src="\/src\/gen-prop-main\.js"/.test(html), 'gen-prop.html loads the prop bench script')
-  for (const id of ['genImage', 'genMesh', 'genLod', 'genCards', 'saveLod', 'fileSelect', 'texMax', 'texSmall']) {
+  for (const id of ['genImage', 'genMesh', 'genLod', 'genCards', 'saveLod', 'fileSelect', 'texMax', 'texSmall', 'style', 'styleNote']) {
     check(html.includes(`id="${id}"`) && main.includes(`'${id}'`), `#${id} exists in the page and is wired in the script`)
   }
+  // The style reaches the server on every path that composes a prompt: save, preview, generate.
+  check((main.match(/style: \$\('style'\)\.value\.trim\(\) \|\| undefined/g) ?? []).length === 3, 'the bench sends the style with the saved meta, the prompt preview and the image request')
   const vite = fs.readFileSync(path.join(ROOT, 'vite.config.js'), 'utf8')
+  check(/buildPropPrompt\(\{ description, style, styleNote \}\)/.test(vite), 'and vite.config.js passes it to the prompt builder')
   check(/propGen\(\)/.test(vite) && /'\/__prop-roster'/.test(vite) && /'\/__prop-lod'/.test(vite), 'vite.config.js mounts the propGen() endpoints')
 }
 

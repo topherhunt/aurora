@@ -26,6 +26,8 @@ import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
 import { Bones, loadBonesBank } from './render/bones.js'
+import { Carrots, loadCarrotsBank } from './render/carrots.js'
+import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Fish } from './render/fish.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
@@ -34,7 +36,7 @@ import { Grasshoppers } from './render/grasshoppers.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
-import { Roosts, loadRoostMaps } from './render/roosts.js'
+import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { setTierTint } from './render/puppet.js'
 import { Litter } from './render/litter.js'
@@ -49,6 +51,7 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWind
 // the build if it ever does.
 import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
+import { Hands, REACH_M } from './hands.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
 // See the header of render/aurora.js: the field is integrated as a convolution
@@ -650,8 +653,8 @@ let paintBackpack = null
 
 // --- backpack ----------------------------------------------------------------
 
-// Eight slots, empty until something can be picked up. Saved and loaded with
-// her position; see saveGame.
+// Eight slots, each null or what her hand put there: `{ name, kind, size }`
+// (see hands.js). Saved and loaded with her position; see saveGame.
 const BACKPACK_SLOTS = 8
 const backpack = new Array(BACKPACK_SLOTS).fill(null)
 
@@ -730,7 +733,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'trees', text: 'trees' },
   { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
-  { key: 'ferns', text: 'ferns' },
+  { key: 'ferns', text: 'bushes' },
   // ONE ROW FOR THREE LAYERS, because they are one thing to the wearer: the
   // small stuff lying on the forest floor. They also share a cost profile --
   // all three are ground scatters that only exist inside ~100 m -- so a
@@ -817,7 +820,11 @@ function applyQuestToggle(key) {
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
     // beds are a mesh per species. See render/ferns.js on why an InstancedMesh
     // cannot hold the ladder in one object.
-    case 'ferns': ferns.meshes.forEach((m) => { m.visible = enabled }); break
+    // The carrots ride on this row: bushes, to the wearer, is the greenery underfoot.
+    case 'ferns':
+      ferns.meshes.forEach((m) => { m.visible = enabled })
+      carrots.batch.visible = enabled
+      break
     // Three layers on one row. Each is a prop arena -- a Group of
     // InstancedMeshes -- so `visible` on the group is the whole layer.
     case 'litter':
@@ -847,7 +854,10 @@ function applyQuestToggle(key) {
       questTeleportArmed = false
       hideTeleport()
       break
-    case 'water': water.group.visible = enabled; break
+    case 'water':
+      water.group.visible = enabled
+      rowboats.batch.visible = enabled
+      break
     // Two halves of one thing, and they have to move together: the row gates
     // the two cube CAPTURES in tick(), and it compiles the water's fetches of
     // them in or out. Off, the lake reflects the sky function alone and nobody
@@ -933,7 +943,7 @@ const QUEST_SLOT_GAP = 0.10
 const QUEST_SLOTS_TOP = 0.85
 const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
 // The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
-const QUEST_HELP_H = 1.70
+const QUEST_HELP_H = 1.90
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
@@ -1247,7 +1257,7 @@ function buildBackpackView() {
         setQuestFont(ctx, QUEST_SERIF(28))
         ctx.textBaseline = 'middle'
         ctx.textAlign = 'center'
-        ctx.fillText(backpack[i], x + QUEST_SLOT * px / 2, y + QUEST_SLOT * px / 2)
+        ctx.fillText(backpack[i].name, x + QUEST_SLOT * px / 2, y + QUEST_SLOT * px / 2)
       }
     }
     uploadQuestTexture(texture)
@@ -1311,7 +1321,8 @@ const QUEST_HELP = [
   'Settings chooses walking or teleporting: aim the arc with a stick and let go to jump.',
   'Desktop: WASD or the arrows walk and turn, drag the mouse to look. Space takes off, Shift descends, and a second tap of Space lands. T lobs a teleport, N skips five hours, Escape is this menu.',
   'Save in Settings keeps your place and your backpack on this device; Load returns you to it.',
-  'The backpack has eight slots. Soon there will be things in the world worth picking up.',
+  'Reach a controller to a mushroom, a carrot, a spider, a butterfly, a fish or a crab and pull the trigger to take it; pull again to let it go, or reach over your shoulder -- the controller buzzes -- and pull to put it in the backpack. Only something under a metre fits. On a desktop G takes and drops, V stows.',
+  'The backpack has eight slots.',
 ]
 
 function buildHelpView() {
@@ -1423,6 +1434,11 @@ function buildQuestPanel() {
     // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
     // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
+      // With the menu closed the trigger is her hand: it takes, drops and stows (see hands.js).
+      if (!questPanelGroup.visible) {
+        if (hands) hands.press(el === leftHandEl ? 'left' : 'right', handsHead())
+        return
+      }
       questPointerHand = el
       updateQuestPointer()
       const act = questActionAt(questPointer.hit)
@@ -1982,6 +1998,7 @@ let litter = null
 let mushrooms = null
 let deadwood = null
 let bones = null
+let carrots = null
 let fish = null
 let frogs = null
 let crabs = null
@@ -1990,7 +2007,9 @@ let grasshoppers = null
 let spiders = null
 let wildlife = null
 let snowmen = null
+let hands = null
 let roosts = null
+let rowboats = null
 let dragons = null
 let editor = null
 let panel = null
@@ -2160,7 +2179,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   }
   grassStyle = style
   grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
-    seed: SEED, style, tint: terrainTint, rocks, ground: terrain, ...opts,
+    seed: SEED, style, tint: terrainTint, rocks, ground: terrain, layers, ...opts,
   })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
@@ -2178,7 +2197,7 @@ function buildGrass(style, cx, cz, opts = {}) {
     `[v2] grass (${gs.style}) ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
     `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning ^${gs.falloff} to ` +
     `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
-    `${gr.water} water, ${gr.snow} snow, ${gr.path} path)`
+    `${gr.water} water, ${gr.snow} snow, ${gr.sand} sand, ${gr.path} path)`
   )
 }
 
@@ -2565,6 +2584,33 @@ async function bootWorld() {
   )
   window.v2bones = bones
 
+  // The carrots: bunches on open ground (render/carrots.js), placed against the
+  // trees and rocks already standing, like the mushrooms.
+  await bootStep('carrots')
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed: SEED, bank: await loadCarrotsBank() })
+  for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  carrots.place(spawn.x, spawn.z)
+  const cs = carrots.stats
+  console.log(
+    `[v2] carrots ${cs.placed} in ${cs.clumps} clumps over ${cs.tiles} tiles in ${cs.placeMs.toFixed(0)} ms ` +
+    `(pool ${cs.used}/${cs.pool}, bank ${cs.bankKB} KB, rejected ${Object.entries(cs.rejected).map(([why, n]) => `${n} ${why}`).join(', ')})`
+  )
+  window.v2carrots = carrots
+
+  // The rowboats: the viking rowboat afloat in the shallows of every lake, one
+  // every 300 m or so of shoreline (render/rowboats.js), on the water row.
+  await bootStep('rowboats')
+  rowboats = new Rowboats(scene, height, waterSurfaces, { seed: SEED, bank: await loadRowboatsBank() })
+  for (const m of rowboats.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  rowboats.place(spawn.x, spawn.z)
+  rowboats.bakeCards(renderer)
+  const rbs = rowboats.stats
+  console.log(
+    `[v2] rowboats ${rbs.placed} over ${rbs.tiles} tiles in ${rbs.placeMs.toFixed(0)} ms ` +
+    `(pool ${rbs.used}/${rbs.pool}, bank ${rbs.bankKB} KB, cards ${rbs.cardBakeMs.toFixed(0)} ms, rejected ${Object.entries(rbs.rejected).map(([why, n]) => `${n} ${why}`).join(', ')})`
+  )
+  window.v2rowboats = rowboats
+
   // The fish: a pool that follows her through whatever water is in reach (see
   // render/fish.js). Its materials are patched here, like every other layer's,
   // before the mesh and cutouts arrive -- the pool stays empty until they do.
@@ -2650,16 +2696,43 @@ async function bootWorld() {
   })
   window.v2snowmen = snowmen
 
+  // Her hands (hands.js): what a controller takes from the beds and the
+  // creature layers, holds, drops and stows, so after every layer it picks
+  // from. The desktop's hand is a point a little under and ahead of the camera
+  // with a longer reach, so G takes what the cursor is looking at up close.
+  await bootStep('hands')
+  hands = new Hands(scene, {
+    walk,
+    water: waterSurfaces,
+    haptic: questPulse,
+    stow: (rec) => {
+      const slot = backpack.indexOf(null)
+      if (slot < 0) return false
+      backpack[slot] = { name: rec.name, kind: rec.kind, size: rec.size }
+      paintBackpack()
+      return true
+    },
+  })
+  for (const src of [mushrooms, carrots, spiders, butterflies, fish, crabs]) hands.addSource(src)
+  hands.addHand('left', leftGrip)
+  hands.addHand('right', rightGrip)
+  const deskHand = new THREE.Group()
+  deskHand.position.set(0.15, -0.15, -0.45)
+  camera.add(deskHand)
+  hands.addHand('desk', deskHand, { reach: 4 * REACH_M })
+  window.v2hands = hands
+
   // The dragons' roosts (render/roosts.js), a scatter like the bones with its
-  // own bark and stone maps, and the dragons that live in them
-  // (render/dragons.js), hunting the wildlife's stags. The roosts stand at once;
-  // the dragons wait for their GLB like the rest.
+  // own bark and stone maps and the shipped egg in half of them, and the
+  // dragons that live in them (render/dragons.js), hunting the wildlife's
+  // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
   await bootStep('dragons')
-  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed: SEED, maps: await loadRoostMaps() })
+  const [roostMaps, eggBank] = await Promise.all([loadRoostMaps(), loadEggBank()])
+  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed: SEED, maps: roostMaps, egg: eggBank })
   for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   roosts.place(spawn.x, spawn.z)
   roosts.bakeCards(renderer)
-  console.log(`[v2] roosts ${roosts.stats.placed} over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
+  console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
   window.v2roosts = roosts
   dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife, water: waterSurfaces })
   for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
@@ -2808,7 +2881,9 @@ async function bootWorld() {
   applyRockVisibility()
   grass.batch.visible = questToggles.grass
   ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
+  carrots.batch.visible = questToggles.ferns
   water.group.visible = questToggles.water
+  rowboats.batch.visible = questToggles.water
   water.setCubeReflections(questToggles.reflections)
   aurora.mesh.visible = questToggles.aurora
   litter.batch.visible = questToggles.litter
@@ -3004,6 +3079,8 @@ function replacePropsOnMovedGround(cx, cz) {
     mushrooms.place(cx, cz)
   }
   if (bones) bones.place(cx, cz)
+  if (carrots) carrots.place(cx, cz)
+  if (rowboats) rowboats.place(cx, cz)
   if (roosts) roosts.place(cx, cz)
   placeAnimals(cx, cz)
 
@@ -3234,6 +3311,8 @@ const KEY_ACTIONS = {
   Shift: 'flyDown',
   t: 'teleport',
   u: 'unstick',
+  g: 'grab',
+  v: 'stow',
   n: 'timeSkip',
   p: 'auroraPattern',
   m: 'grassStyle',
@@ -3254,6 +3333,8 @@ const CODE_ACTIONS = {
   ShiftLeft: 'flyDown',
   ShiftRight: 'flyDown',
   KeyT: 'teleport',
+  KeyG: 'grab',
+  KeyV: 'stow',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
   KeyM: 'grassStyle',
@@ -3292,6 +3373,8 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
+      { keys: 'g', what: 'take the nearest mushroom, carrot, spider, butterfly, fish or crab within reach of a hand under the camera, and let go of what it holds; the trigger in the headset' },
+      { keys: 'v', what: 'put what the hand holds in the backpack, when it is under a metre; over the shoulder in the headset' },
     ],
   },
   {
@@ -3528,6 +3611,8 @@ addEventListener('keydown', (e) => {
   for (const a of actions) held.add(a)
 
   if (fresh.includes('timeSkip')) skipTime()
+  if (fresh.includes('grab') && hands) hands.press('desk', handsHead())
+  if (fresh.includes('stow') && hands) hands.stowPress('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
   // M cycles the three grass beds in place, under the player's feet, so they can
   // be judged against the same hillside in the same light. Rebuilding a bed is
@@ -4065,6 +4150,29 @@ function readQuestFallback(st) {
   st.connected = found
 }
 
+// Her head for the hands: where it is and the bearing it faces, the frame the
+// backpack zone is judged in. One object, rewritten each call.
+const handsHeadTmp = { x: 0, y: 0, z: 0, yaw: 0 }
+function handsHead() {
+  player.headPosition(headTmp)
+  handsHeadTmp.x = headTmp.x
+  handsHeadTmp.y = headTmp.y
+  handsHeadTmp.z = headTmp.z
+  handsHeadTmp.yaw = player.headYaw()
+  return handsHeadTmp
+}
+
+// A buzz on one controller, read from the same place the fallback reads the
+// gamepad. A hand with no actuator -- the desktop's, or a Quest tracked without
+// haptics -- is silent, which is not an error.
+function questPulse(key, intensity, ms) {
+  const el = key === 'left' ? leftHandEl : key === 'right' ? rightHandEl : null
+  if (!el) return
+  const tracked = el.components?.['tracked-controls-webxr'] ?? el.components?.['tracked-controls']
+  const actuator = tracked?.controller?.gamepad?.hapticActuators?.[0]
+  if (actuator) actuator.pulse(intensity, ms)
+}
+
 // Teleport. In the headset, armed by pushing a stick forward and fired on
 // release -- the Quest system convention. On the desktop, hold T and release.
 //
@@ -4574,6 +4682,10 @@ function panelStats() {
     deadwoodTris: deadwood ? deadwood.stats.tris : 0,
     bonesCount: bones ? bones.stats.placed : 0,
     bonesTris: bones ? bones.stats.tris : 0,
+    carrotCount: carrots ? carrots.stats.placed : 0,
+    carrotTris: carrots ? carrots.stats.tris : 0,
+    rowboatCount: rowboats ? rowboats.stats.placed : 0,
+    rowboatTris: rowboats ? rowboats.stats.tris : 0,
     grassCount: grass ? grass.stats.placed : 0,
     grassHidden: grass ? grass.stats.rimHidden : 0,
     grassTris: grass ? grass.stats.tris : 0,
@@ -4701,9 +4813,9 @@ function tick() {
   if (grass && grass.style === 'blades') grass.material.userData.uniforms.uTime.value = now / 1000
 
   player.headPosition(headTmp)
-  const [pose, hands] = currentPose()
-  netplay.sendPose(pose, hands, now)
-  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands, avatar: netplay.avatar })
+  const [pose, poseHands] = currentPose()
+  netplay.sendPose(pose, poseHands, now)
+  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar })
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
@@ -4727,7 +4839,10 @@ function tick() {
   // exact one.
   if (questToggles.boulders) rocks.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
-  if (questToggles.ferns) ferns.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.ferns) {
+    ferns.update(headTmp.x, headTmp.y, headTmp.z)
+    carrots.update(headTmp.x, headTmp.y, headTmp.z)
+  }
   if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
   // Three layers on one `litter` row, hidden AND frozen together -- see the row's
   // own note for why they share a button. Cheap per frame standing still, which is
@@ -4742,6 +4857,9 @@ function tick() {
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
     bones.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  // The rowboats sit on the water row: moored where they were placed, so this
+  // is the rim sweep and the mesh-to-card step alone.
+  if (questToggles.water) rowboats.update(headTmp.x, headTmp.y, headTmp.z)
   // The animals are simulations as well as scatters, so they take dt. Each is
   // frozen with its row, and all of them with the `animals` row.
   //
@@ -4778,6 +4896,8 @@ function tick() {
     dragons.update(headTmp.x, headTmp.y, headTmp.z, dt)
   })
   bankAnimalMs(dt)
+  // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
+  hands.update(dt, handsHead())
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

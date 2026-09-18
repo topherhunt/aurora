@@ -11,11 +11,13 @@
 // 8 cm by more than a fifth, or a tint that is not a mix of the two ends, or a
 // meadow all one colour; one seated off the walk surface or not up along the
 // slope, or drawn at a scale other than its length over the mesh's; a hop
-// shorter or longer than HOP_M, lower or higher over its chord,
-// or landing off the walk surface, on the pond or past the tether; a hop not
-// wound up by a crouch, or one whose apex is not at RISE_FRAC, whose launch
-// speed does not bleed away, or whose drop in is not steeper than its
-// take-off; a landing that does not settle; a rest outside REST_S; a body
+// shorter or longer than HOP_M, lower or higher over its chord than a kick
+// in LAUNCH_DEG gives its distance, or in the air longer than gravity's rise
+// and a FALL_G fall take, or landing off the walk surface, on the pond or
+// past the tether; a hop not wound up by a crouch, or one whose apex is not
+// at RISE_FRAC, whose launch speed does not bleed away, or whose drop in is
+// not steeper than its take-off; a landing that does not settle; a rest
+// outside REST_S; a body
 // that does not pitch up on the way up and down on the way down; one past
 // SHOW_M that is drawn, listed or stepped; a frame that costs more than a
 // scatter is allowed; a hop in the dark, or a dawn that launches them all
@@ -27,7 +29,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  CROUCH_S, CROUCH_SQUASH, DENSITY, Grasshoppers, HOP_M, LAND_S, LAND_SQUASH, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TILE, TINT_BROWN, TINT_GREEN,
+  CROUCH_S, CROUCH_SQUASH, DENSITY, FALL_G, Grasshoppers, GRAVITY, HOP_M, LAND_S, LAND_SQUASH, LAUNCH_DEG, LENGTH_M, MAX, MAX_SLOPE_DEG, NIGHT_DAY, RADIUS, REST_S, RISE_FRAC, SHADE, SHOW_M, SNOW_MARGIN, TETHER, TILE, TINT_BROWN, TINT_GREEN,
 } from '../src/v2/render/grasshoppers.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -200,7 +202,7 @@ flock.place(0, 0)
   const flights = new Map()
   const crouched = new Map()
   const landings = new Map()
-  let bad = 0, rests = 0, badRest = 0, badLanding = 0, offTether = 0, pitchWrong = 0, badCrouch = 0, badLand = 0, unCrouched = 0, settled = 0
+  let bad = 0, badTime = 0, rests = 0, badRest = 0, badLanding = 0, offTether = 0, pitchWrong = 0, badCrouch = 0, badLand = 0, unCrouched = 0, settled = 0
   let apexAt = 0, halfWay = 0, steeper = 0, flown = 0
   let maxMs = 0
   for (let f = 0; f < 72 * 90; f++) {
@@ -222,7 +224,11 @@ flock.place(0, 0)
           crouched.delete(g)
           r = { dist: Math.hypot(g.x1 - g.x0, g.z1 - g.z0), apex: g.apex, y1: g.y1, x1: g.x1, z1: g.z1, high: -Infinity, low: Infinity, yWas: g.y0, rose: 0, pitchWas: 0, sAtHigh: 0, half: null, pitch0: Math.abs(g.pitch), pitchEnd: 0 }
           flights.set(g, r)
-          if (!within(r.dist, HOP_M) || !within(r.apex, HOP_M)) bad++
+          // The apex is the rolled distance's under a kick in LAUNCH_DEG, and the flight lasts gravity's rise to it plus a fall under FALL_G gravities.
+          const apexOf = (deg) => (r.dist * Math.tan((deg * Math.PI) / 180)) / 4
+          if (!within(r.dist, HOP_M) || !within(r.apex, [apexOf(LAUNCH_DEG[0]), apexOf(LAUNCH_DEG[1])])) bad++
+          const rise = Math.sqrt((2 * r.apex) / GRAVITY)
+          if (Math.abs(g.T - (rise + rise / Math.sqrt(FALL_G))) > 1e-9) badTime++
           if (Math.abs(g.y1 - walk.heightAt(g.x1, g.z1)) > 1e-9 || water.levelAt(g.x1, g.z1) !== null) badLanding++
           if (Math.hypot(g.x1 - g.homeX, g.z1 - g.homeZ) > TETHER + HOP_M[1] + 1e-9) offTether++
         }
@@ -269,7 +275,8 @@ flock.place(0, 0)
   }
   check(hop.hops > 20 && rests > 20, `grasshoppers hop: ${hop.hops} hops, ${rests} landings in 90 s`)
   check(unCrouched === 0 && badCrouch === 0, `every hop is wound up by a crouch of CROUCH_S, sinking to CROUCH_SQUASH without moving`, `${unCrouched} unwound, ${badCrouch} bad frames`)
-  check(bad === 0, 'every hop is HOP_M long and HOP_M high over its chord, reaches its apex, is never under the chord, and flies unsquashed', `${bad} bad`)
+  check(bad === 0, 'every hop is HOP_M long and as high over its chord as a kick in LAUNCH_DEG gives it, reaches its apex, is never under the chord, and flies unsquashed', `${bad} bad`)
+  check(badTime === 0 && RISE_FRAC > 0.5, 'every flight lasts gravity\'s rise to its apex plus a fall under FALL_G gravities, the fall the shorter', `${badTime} bad, RISE_FRAC ${RISE_FRAC.toFixed(3)}`)
   check(flown > 20 && apexAt === flown, `the apex comes at RISE_FRAC of the flight`, `${apexAt} of ${flown}`)
   check(halfWay === flown, 'more than 60% of the ground is covered by half the flight: the launch speed bleeds away', `${halfWay} of ${flown}`)
   check(steeper === flown, 'the drop in is steeper than the take-off', `${steeper} of ${flown}`)

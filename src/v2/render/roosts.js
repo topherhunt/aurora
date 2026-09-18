@@ -1,9 +1,9 @@
 import THREE from '../../three-instance.js'
 
-import { createGenPropMaterial } from './gen-props.js'
+import { createGenPropMaterial, ladderBounds, ladderGeometries, propCull } from './gen-props.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  SPUN_TOP_VIEWS, bakeCritterCard, critterTier, cullRange, setSpunTopCard, spunBounds, tileKey, tileSeed,
+  SPUN_TOP_VIEWS, bakeCritterCard, critterTier, cullRange, loadCritterGlb, setSpunTopCard, spunBounds, tileKey, tileSeed,
 } from './critters.js'
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
@@ -36,6 +36,15 @@ import { RimFade } from './rim.js'
 // uphill half into it. dragons.js reads `sites()` for where its dragons live
 // and the plane they stand and lay a kill on; the roost is scenery and the
 // dragon is the layer that knows about her.
+//
+// THE EGG: half the nests hold one, the shipped Tripo pick (gen-props/egg-dragon.glb,
+// §29) lying at an angle in the bowl's centre, tinted from EGG_TINTS through
+// the arena's instance colour. The pick's shell is painted near-white with its
+// scales in grey tone for exactly this: the tint is a multiply, so a pale map
+// takes any of the five and a pigmented one would only ever darken. The egg is
+// the roost tile's second instance, on the same arena as its own tier past the
+// card and drawn to the props' cull for its half metre (gen-props.js propCull,
+// ~36 m) with no rung of its own; the rim takes it out with the roost's sweep.
 // ---------------------------------------------------------------------------
 
 // Roosts per square metre: one in a 400 m square, about ten inside the card range.
@@ -63,6 +72,24 @@ const PLACEMENT = {
 }
 
 const SEED_SALT = 0xd7a6
+
+// The egg: what ships, the chance a nest holds one, and its metres tall.
+export const EGG_GLB = 'gen-props/egg-dragon.glb'
+export const EGG_ODDS = 0.5
+export const EGG_HEIGHT = [0.45, 0.6]
+// The clutch's colours, one rolled per egg, multiplied over the pale shell. Never white: a white egg is the unpainted pick.
+export const EGG_TINTS = [
+  ['blue', 0x3d6fd6],
+  ['green', 0x3f9a4a],
+  ['gold', 0xd9a520],
+  ['dark-gray', 0x4a4a50],
+  ['purple', 0x7a3fa8],
+]
+// Radians the egg lies off the floor's normal, about a random bearing, and how far it is bedded into the floor as a fraction of its width.
+export const EGG_LIE = [0.9, 1.4]
+export const EGG_SINK = 0.12
+// Units of the rim's radius the egg's underside rests above the floor: on the floor branches, where a dragon stands (dragons.js NEST_STAND).
+const EGG_BED = 0.04
 
 // ---------------------------------------------------------------------------
 // The bowl, in a unit frame: rim radius 1, floor at y = 0, the mound of the
@@ -275,14 +302,37 @@ export async function loadRoostMaps() {
   return out
 }
 
+/**
+ * The egg's bank from a loaded pick (critters.js loadCritterGlb's shape): its
+ * geometry centred over its foot, the metres of its box, and its map. Pure, so
+ * a gate builds one from a shape of its own. The pick stands on its broad end,
+ * so its height is its long axis; a pick lying down is refused, since the lie
+ * is rolled here off the standing frame.
+ */
+export function eggBankFrom(asset) {
+  const [geometry] = ladderGeometries([asset])
+  const bounds = ladderBounds(geometry)
+  if (bounds.height <= Math.max(bounds.width, bounds.long)) throw new Error(`Roosts: the egg pick lies on its side (${bounds.height.toFixed(2)} tall over ${bounds.width.toFixed(2)} x ${bounds.long.toFixed(2)}) -- re-ship one standing on its end`)
+  // The origin at the box's centre, not the foot: the lie turns the egg about its middle and the rest is measured from there.
+  geometry.translate(0, -bounds.height / 2, 0)
+  geometry.computeBoundingBox()
+  return { geometry, bounds, map: asset.map ?? null, tris: geometry.index.count / 3 }
+}
+
+/** The egg off the shipped pick, for the world. */
+export async function loadEggBank() {
+  return eggBankFrom(await loadCritterGlb(EGG_GLB))
+}
+
 export class Roosts {
   /**
    * @param field   V2Height: heightAt, heightAndSlopeAt, snowLineAt
    * @param water   WaterSurfaces: isSubmerged
    * @param layers  Layers: paths
    * @param opts.maps  { bark, stone } textures from loadRoostMaps, or null for a gate
+   * @param opts.egg   the bank from loadEggBank, or null for a world with no eggs in its nests
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, maps = null } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, maps = null, egg = null } = {}) {
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
       throw new Error('Roosts: needs a V2Height with heightAt and heightAndSlopeAt')
     }
@@ -307,12 +357,16 @@ export class Roosts {
         if (dcx * dcx + dcz * dcz <= this.evictSq) bound++
       }
     }
-    this.maxInstances = bound + FADE_MAX_INFLIGHT
+    // A roost and its egg per tile the eviction disc can hold, and the ghosts.
+    this.egg = egg
+    this.maxInstances = bound * (egg ? 2 : 1) + FADE_MAX_INFLIGHT
 
     const t0 = performance.now()
     this.bank = roostBank(this.seed)
     this.tierCount = this.bank.tiers.length
     this.cardTier = this.tierCount - 1
+    // The egg's tier sits past the card, off the ladder: an egg is born on it and stays.
+    this.eggTier = egg ? this.tierCount : -1
     // The mesh tiers wear the two tiles as a material ARRAY over the geometry's two groups.
     this.bark = createGenPropMaterial()
     this.stone = createGenPropMaterial()
@@ -323,14 +377,18 @@ export class Roosts {
     // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
     this.card = createGenPropMaterial({ card: true, billboard: 'mixed' })
     this.card.visible = false
+    this.eggMaterial = egg ? createGenPropMaterial() : null
+    if (egg) this.eggMaterial.map = egg.map
     this.materials = [this.bark, this.stone, this.card]
+    if (egg) this.materials.push(this.eggMaterial)
     this.meshMaterials = [this.bark, this.stone]
 
+    const tiers = egg ? [...this.bank.tiers, { geometries: [egg.geometry] }] : this.bank.tiers
     this.batch = new PropArena(
       this.maxInstances,
-      this.bank.tiers,
-      new Array(this.tierCount).fill(this.maxInstances),
-      (t) => (t === this.cardTier ? this.card : this.meshMaterials),
+      tiers,
+      new Array(tiers.length).fill(this.maxInstances),
+      (t) => (t === this.eggTier ? this.eggMaterial : t === this.cardTier ? this.card : this.meshMaterials),
       'v2-roosts'
     )
     this.tierTris = this.bank.tiers.map((t) => t.geometries[0].index.count / 3)
@@ -357,7 +415,7 @@ export class Roosts {
     this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
     this.fadeTris = 0
 
-    // key -> { tx, tz, ids, n, site }; `n` is 0 or 1, and `site` is what dragons.js reads.
+    // key -> { tx, tz, ids, n, site }; ids[0] is the roost and ids[1] its egg, `n` how many of the two stand, and `site` is what dragons.js reads.
     this.tiles = new Map()
     this.camTileX = null
     this.camTileZ = null
@@ -366,11 +424,15 @@ export class Roosts {
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._tilt = new THREE.Quaternion()
+    this._lie = new THREE.Quaternion()
     this._n = new THREE.Vector3()
+    this._axis = new THREE.Vector3()
     this._s = new THREE.Vector3()
+    this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
 
     this.placed = 0
+    this.eggs = 0
     this.tris = 0
     this.rejected = { slope: 0, water: 0, path: 0 }
     this.buildMs = performance.now() - t0
@@ -415,6 +477,8 @@ export class Roosts {
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
         if (this.rim.isHidden(i)) continue
+        // The egg has no rungs: drawn whole until the rim takes it.
+        if (k === 1) { tris += this.egg.tris; continue }
         const ex = this.instX[i] - camX
         const ey = this.instY[i] - camY
         const ez = this.instZ[i] - camZ
@@ -460,9 +524,9 @@ export class Roosts {
     }
   }
 
-  /** Roll the tile's one candidate and seat it if it passes. Every draw is taken whether or not it survives. */
+  /** Roll the tile's one candidate and seat it if it passes, with its egg or none. Every draw is taken whether or not it survives. */
   _growTile(key, tx, tz) {
-    const tile = { tx, tz, ids: new Int32Array(1), n: 0, site: null }
+    const tile = { tx, tz, ids: new Int32Array(2), n: 0, site: null }
     this.tiles.set(key, tile)
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const keep = rand()
@@ -470,6 +534,13 @@ export class Roosts {
     const z = (tz + rand()) * TILE
     const yaw = rand() * Math.PI * 2
     const r = between(rand, DIAMETER) / 2
+    // The egg's whole description, drawn after the roost's so a world without eggs lays the same roosts.
+    const eggKeep = rand()
+    const eggTint = EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1]
+    const eggHeight = between(rand, EGG_HEIGHT)
+    const eggYaw = rand() * Math.PI * 2
+    const eggLie = between(rand, EGG_LIE)
+    const eggBearing = rand() * Math.PI * 2
     if (keep >= KEEP) return
 
     const { h, tan } = this.field.heightAndSlopeAt(x, z)
@@ -505,7 +576,42 @@ export class Roosts {
     this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.cardTier)
     this.rim.place(id, Math.min(this.radius, cullRange(r * 2, RUNGS)))
+    if (this.egg && eggKeep < EGG_ODDS) this._layEgg(tile, x, y, z, r, eggTint, eggHeight, eggYaw, eggLie, eggBearing)
     this.rim.markDue(tile)
+  }
+
+  /**
+   * The egg at the bowl's centre: `height` metres tall, spun about its own
+   * axis, laid over by `lie` about `bearing` in the floor's plane, and rested
+   * on the floor branches with EGG_SINK of its width bedded in. Reads the
+   * floor's normal and tilt (`_n`, `_tilt`) as the roost just seated left them.
+   */
+  _layEgg(tile, x, y, z, r, tint, height, yaw, lie, bearing) {
+    if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} laying an egg (${this.tiles.size} tiles resident)`)
+    const id = this.free[--this.freeCount]
+    tile.ids[1] = id
+    tile.n = 2
+    this.eggs++
+    const b = this.egg.bounds
+    const scale = height / b.height
+    const width = Math.max(b.width, b.long) * scale
+    // How far the laid-over egg reaches below its centre: an ellipsoid's, on half its height and half its width.
+    const under = Math.hypot((height / 2) * Math.cos(lie), (width / 2) * Math.sin(lie))
+    this._p.set(x, y, z).addScaledVector(this._n, EGG_BED * r + under - EGG_SINK * width)
+    this.instX[id] = this._p.x
+    this.instY[id] = this._p.y
+    this.instZ[id] = this._p.z
+    this.instR[id] = height
+    this._q.setFromAxisAngle(this._up, yaw)
+    this._axis.set(Math.cos(bearing), 0, Math.sin(bearing))
+    this._q.premultiply(this._lie.setFromAxisAngle(this._axis, lie))
+    this._q.premultiply(this._tilt)
+    this._s.setScalar(scale)
+    this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
+    this.batch.setColorAt(id, this._c.setHex(tint))
+    this.tierAt[id] = this.eggTier
+    this.batch.setGeometryIdAt(id, this.eggTier)
+    this.rim.place(id, Math.min(this.radius, propCull(height)))
   }
 
   _release(tile) {
@@ -516,7 +622,8 @@ export class Roosts {
       this.rim.drop(id)
       this.tierAt[id] = -1
       this.free[this.freeCount++] = id
-      this.placed--
+      if (k === 0) this.placed--
+      else this.eggs--
     }
     tile.n = 0
     tile.site = null
@@ -582,6 +689,7 @@ export class Roosts {
   get stats() {
     return {
       placed: this.placed,
+      eggs: this.eggs,
       rimHidden: this.rim.hiddenCount,
       fading: this.fades.length,
       tris: this.tris,
@@ -604,5 +712,6 @@ export class Roosts {
       m.dispose()
     }
     for (const t of this.bank.tiers) for (const g of t.geometries) g.dispose()
+    if (this.egg) this.egg.geometry.dispose()
   }
 }

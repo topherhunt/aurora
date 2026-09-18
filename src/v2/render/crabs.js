@@ -46,6 +46,7 @@ import {
   setCritterAsset, setCritterCard, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
+import { taken } from '../taken.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -86,6 +87,11 @@ const LIP = 2
 // The leg wiggle: amplitude in unit-mesh metres, and the wave's cadence in cycles per span travelled.
 const LEG_AMP = 0.04
 const LEG_CYCLES = 1.5
+
+// A crab she let go of: it scuttles from her head over the ground at LOOSE_SPEED sizes a second, its line re-jinked every LOOSE_JINK_S seconds by up to LOOSE_WOBBLE radians, until it is RADIUS out and forgotten.
+export const LOOSE_SPEED = 1.5
+const LOOSE_JINK_S = [0.6, 1.6]
+const LOOSE_WOBBLE = 1.2
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -181,9 +187,12 @@ export class Crabs {
         state: 'pause', left: 0, phase: 0, normalAt: 0, depth: 0,
         // The composed instance matrix, rebuilt only when `posed` is cleared by a move, a re-seat, a normal or a yaw; a sitting crab copies it.
         m: new Float32Array(16), posed: false,
+        // Which of its perch's rolled crabs it is, for the taken registry; and whether it was let go of by her hand: off any perch, running from her head (_stepLoose).
+        member: 0, loose: false,
       })
     }
     this.free = this.slots.slice()
+    this.loose = []
     this.tiles = new Map()
     this.rescan = []
     this.frame = 0
@@ -306,6 +315,10 @@ export class Crabs {
         c.x = x; c.y = y; c.z = z
         c.yaw = yaw
         c.side = rand() < 0.5 ? -1 : 1
+        // After every roll of the perch's stream, so one she took leaves the rest of the perch as it grew.
+        if (taken.has(`crab${k}`, px, pz)) { c.perch = null; this.free.push(c); continue }
+        c.member = k
+        c.loose = false
         c.size = size
         c.hue = hue
         c.depth = depth
@@ -337,6 +350,8 @@ export class Crabs {
   place(cx, cz) {
     for (const t of this.tiles.values()) this._leave(t)
     this.tiles.clear()
+    for (const c of this.loose) { c.loose = false; this.free.push(c) }
+    this.loose.length = 0
     // The rescan queue holds tile objects; the ones just left must not be scanned, or their crabs would be seated in a tile nothing draws and never freed.
     this.rescan = []
     this.overflow = 0
@@ -365,7 +380,132 @@ export class Crabs {
         for (const c of p.crabs) if (this.under || c.y >= p.level) into.push(c)
       }
     }
+    for (const c of this.loose) into.push(c)
     return into
+  }
+
+  /**
+   * The drawn crab nearest a hand at (x, y, z) whose body -- a ball of its own
+   * size -- is within `reach` metres, and smaller than `maxSize`: `{ dist, c,
+   * size }` for take(), or null. A crab under its lake is not drawn while her
+   * head is out of the water, and is not offered. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    if (!this.batch.visible) return null
+    let best = null
+    let bestD = reach
+    const consider = (c) => {
+      if (c.size >= maxSize) return
+      const d = Math.hypot(c.x - x, c.y - y, c.z - z) - c.size * 0.5
+      if (d < bestD) {
+        bestD = d
+        best = { dist: Math.max(0, d), c, size: c.size }
+      }
+    }
+    for (const t of this.tiles.values()) {
+      if (t.live === 0) continue
+      for (const p of t.perches.values()) {
+        for (const c of p.crabs) if (this.under || c.y >= p.level) consider(c)
+      }
+    }
+    for (const c of this.loose) consider(c)
+    return best
+  }
+
+  /**
+   * Take the crab of a pickAt() hit off its stone: its slot goes back to the
+   * pool, its place on its perch is recorded so the perch never regrows it,
+   * and what the hand holds is returned as a record for hands.js -- the
+   * shared geometry and material, the legs at rest, its hue, its scale. Only
+   * a crab under `stowMax` metres may go in the backpack.
+   */
+  take(hit, stowMax) {
+    const c = hit.c
+    if (c.loose) {
+      const i = this.loose.indexOf(c)
+      if (i < 0) throw new Error(`Crabs.take: loose slot ${c.id} is not in the loose list`)
+      this.loose.splice(i, 1)
+      c.loose = false
+    } else {
+      const perch = c.perch
+      if (!perch) throw new Error(`Crabs.take: slot ${c.id} has no perch`)
+      const i = perch.crabs.indexOf(c)
+      if (i < 0) throw new Error(`Crabs.take: slot ${c.id} is not on its perch`)
+      taken.add(`crab${c.member}`, perch.x, perch.z)
+      perch.crabs.splice(i, 1)
+      c.perch = null
+      for (const t of this.tiles.values()) if (t.perches.get(perchKey(perch.x, perch.z)) === perch) { t.live--; break }
+    }
+    this.free.push(c)
+    const k = c.size / this.span
+    return {
+      kind: 'crab',
+      name: 'crab',
+      size: c.size,
+      geometry: this.mesh.geometry,
+      material: this.material,
+      attrs: { aLegs: [c.phase, 0], aHue: [c.hue] },
+      color: null,
+      scale: [k, k * STRETCH_Y, k],
+      stowable: c.size < stowMax,
+    }
+  }
+
+  /**
+   * Let a taken crab go at (x, _, z): it lands on whatever is under it there,
+   * stone or ground, and scuttles from her head until it is RADIUS out. False
+   * only when the pool is empty, and hands.js drops it as a thing.
+   */
+  release(rec, x, y, z, head) {
+    if (rec.kind !== 'crab') throw new Error(`Crabs.release: not a crab, ${rec.kind}`)
+    const c = this.free.pop()
+    if (!c) { this.overflow++; return false }
+    c.perch = null
+    c.loose = true
+    c.member = -1
+    c.size = rec.size
+    c.hue = rec.attrs.aHue[0]
+    c.phase = rec.attrs.aLegs[0]
+    c.side = 1
+    c.depth = 0
+    c.state = 'go'
+    c.speed = LOOSE_SPEED
+    c.left = between(this.rand, LOOSE_JINK_S)
+    c.yaw = Math.atan2(x - head.x, z - head.z)
+    this._placeLoose(c, x, z)
+    this.loose.push(c)
+    return true
+  }
+
+  /** A loose crab's seat at (x, z): stone where a rock stands proud, else the ground, with the field's normal there. */
+  _placeLoose(c, x, z) {
+    const { h, gx, gz } = this.height.heightAndSlopeAt(x, z)
+    const top = this.stoneAt(x, z)
+    c.x = x; c.z = z
+    if (top > h) {
+      c.y = top
+      this._normal(c)
+    } else {
+      c.y = h
+      _n.set(-gx, 1, -gz).normalize()
+      c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
+    }
+    c.posed = false
+  }
+
+  /** One frame of a loose crab: a jink of its line every so often, then the step; true while it is still within RADIUS of her head. */
+  _stepLoose(c, dt, hx, hz) {
+    const dx = c.x - hx, dz = c.z - hz
+    if (dx * dx + dz * dz > RADIUS * RADIUS) return false
+    c.left -= dt
+    if (c.left <= 0) {
+      c.left = between(this.rand, LOOSE_JINK_S)
+      c.yaw = Math.atan2(dx, dz) + (this.rand() - 0.5) * LOOSE_WOBBLE
+    }
+    const d = c.speed * c.size * dt
+    this._placeLoose(c, c.x + Math.sin(c.yaw) * d, c.z + Math.cos(c.yaw) * d)
+    c.phase += (Math.PI * 2 * LEG_CYCLES * d) / c.size
+    return true
   }
 
   /**
@@ -445,6 +585,46 @@ export class Crabs {
     const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
     let n = 0
     let m = 0
+    // A crab's matrix, rebuilt if it moved, into the mesh or the card by its distance.
+    const write = (c, amp) => {
+      if (!c.posed) {
+        const k = c.size / this.span
+        const sink = SINK * this.bodyH * k
+        _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
+        _n.set(c.nx, c.ny, c.nz)
+        _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
+        _scl.set(k, k * STRETCH_Y, k)
+        _mat.compose(_pos, _quat, _scl).toArray(c.m)
+        c.posed = true
+      }
+      const dx = c.x - hx
+      const dy = c.y - hy
+      const dz = c.z - hz
+      if (dx * dx + dy * dy + dz * dz > card2) {
+        cmat.set(c.m, m * 16)
+        chue[m] = c.hue
+        m++
+      } else {
+        mat.set(c.m, n * 16)
+        legs[n * 2] = c.phase
+        legs[n * 2 + 1] = amp
+        hue[n] = c.hue
+        n++
+      }
+    }
+    // The loose crabs, running from her; one past RADIUS is forgotten.
+    let kept = 0
+    for (const c of this.loose) {
+      if (this._stepLoose(c, dt, hx, hz)) {
+        this.loose[kept++] = c
+        const level = this.water.lakeLevelAt(c.x, c.z)
+        if (under || level === null || c.y >= level) write(c, LEG_AMP)
+      } else {
+        c.loose = false
+        this.free.push(c)
+      }
+    }
+    this.loose.length = kept
     for (const t of this.tiles.values()) {
       if (t.live === 0) continue
       for (const p of t.perches.values()) {
@@ -473,30 +653,7 @@ export class Crabs {
             c.yaw += (this.rand() - 0.5) * 0.8
             c.posed = false
           }
-          if (!c.posed) {
-            const k = c.size / this.span
-            const sink = SINK * this.bodyH * k
-            _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
-            _n.set(c.nx, c.ny, c.nz)
-            _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.yaw))
-            _scl.set(k, k * STRETCH_Y, k)
-            _mat.compose(_pos, _quat, _scl).toArray(c.m)
-            c.posed = true
-          }
-          const dx = c.x - hx
-          const dy = c.y - hy
-          const dz = c.z - hz
-          if (dx * dx + dy * dy + dz * dz > card2) {
-            cmat.set(c.m, m * 16)
-            chue[m] = c.hue
-            m++
-          } else {
-            mat.set(c.m, n * 16)
-            legs[n * 2] = c.phase
-            legs[n * 2 + 1] = amp
-            hue[n] = c.hue
-            n++
-          }
+          write(c, amp)
         }
       }
     }

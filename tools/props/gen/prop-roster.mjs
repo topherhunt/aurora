@@ -129,6 +129,81 @@ export const PROPS = [
       'one short stub of leaf stalk',
   },
   {
+    id: 'egg-dragon',
+    label: 'Dragon Egg',
+    category: 'other',
+    sizeM: 0.5,
+    aspectRatio: '3:4',
+    // One egg for every clutch colour: the world tints each instance through
+    // instanceColor, and a tint is a MULTIPLY, so the shell is painted bright
+    // and near-white with the scales' edges and shading in grey tone (the
+    // rule rock.js grades its tile by). A pigmented shell would only ever
+    // darken, and a red tint over a green egg is mud.
+    description:
+      'a single large dragon egg standing upright on its broad end, a tall oval about half a metre high with a ' +
+      'rounded blunt base and a narrower domed top, the whole shell made of small overlapping dragon scales, ' +
+      'each scale a smooth glossy teardrop lapped over the row beneath it in neat diagonal rows that wrap the ' +
+      'egg from foot to crown, every scale a bright pale pearl-white with its edge and the shadow under its lap ' +
+      'in soft light grey, the scales glinting with sharp small highlights, a little dark damp soil dusted ' +
+      'around the foot',
+    // The house style asks for a jagged, broken, gritty specimen; an egg is
+    // the one prop whose silhouette must stay whole and whose surface is
+    // glossy, and the note lands after the style so it has the last word.
+    styleNote:
+      'The shell is bright, pale and near-white, a glossy armour of small overlapping scales with only their ' +
+      'edges and lap shadows in light grey, and the outline is one even, rounded, unbroken oval.',
+  },
+  {
+    id: 'rowboat-viking',
+    label: 'Viking Rowboat',
+    category: 'other',
+    sizeM: 3.5,
+    aspectRatio: '16:9',
+    description:
+      'a small open wooden rowboat of medieval viking make, about three and a half metres long, clinker-built ' +
+      'from overlapping lapstrake planks of weathered oak riveted along every strake, a sharp raised stem and ' +
+      'stern sweeping up high at both ends, the bow post carved into a snarling dragon head with an open jaw, ' +
+      'bared teeth, curled horns and a crest of scales running down its neck as the figurehead, two plank ' +
+      'thwarts seating two rowers with a pair of oars shipped and lying along them, rope oar loops on wooden ' +
+      'tholepins at the gunwales, the planks silver-grey and sun-bleached with dark tarred seams and rusted ' +
+      'iron rivet heads, a shallow keel, the hull resting level with its keel and bottom flat on the ground',
+    // The house style asks for a broken, asymmetric silhouette; a boat whose
+    // hull is anything but whole and symmetric reads as a wreck, so the
+    // weathering is confined to the surface and the note lands after the
+    // style to have the last word.
+    styleNote:
+      'The hull is whole and sound, one even symmetric clinker shell with a clean sheer line sweeping from stem ' +
+      'to stern, its weathering in the surface grain, the staining and the worn edges of the planks.',
+  },
+  {
+    id: 'hand',
+    label: 'Hand',
+    category: 'other',
+    // Her own hand under each Quest grip, replacing avatar.js's lowPolyHand().
+    // ONE hand, the right; the left is its mirror (scale.x = -1) so the world
+    // ships one mesh and one map. Wrist to middle fingertip, the pose's own
+    // length. It is the one prop seen from thirty centimetres, so it ships at
+    // the full map size.
+    sizeM: 0.19,
+    aspectRatio: '4:3',
+    description:
+      'a single living right hand, adult, androgynous and of medium size, with smooth warm living skin in a ' +
+      'light warm tan, standing upright on the flat end of its wrist with the fingertips pointing up and the ' +
+      'thumb towards the camera, held in a loose relaxed half-open pose ready to close around something, the ' +
+      'four fingers gently curled in one soft even curve with a small gap between each, the thumb lifted a ' +
+      'little out from the palm and curved slightly inward, the palm softly cupped, short clean trimmed nails ' +
+      'with pale crescents, soft knuckle creases and faint blue veins under the skin on the back of the hand, ' +
+      'fine palm lines, the forearm ending a few centimetres past the wrist in a flat smooth end of the same ' +
+      'warm skin',
+    // The house style's grit -- fissures, flaking, dirt, decay, a broken
+    // silhouette -- gets painted whatever a note says after it, and on a hand
+    // it paints a cracked stone cast. So the hand brings its own style.
+    style:
+      'Photorealistic: a living hand of real warm skin, soft and supple, with fine pores, soft creases and a ' +
+      'faint natural sheen, in true natural skin colour with full surface detail in the albedo, and one clean, ' +
+      'rounded, unbroken outline.',
+  },
+  {
     id: 'skeleton-deer',
     label: 'Deer Skeleton',
     category: 'bones',

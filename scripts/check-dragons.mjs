@@ -37,7 +37,9 @@ import {
 } from '../src/v2/render/dragons.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
+  EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, eggBankFrom,
 } from '../src/v2/render/roosts.js'
+import { propCull } from '../src/v2/render/gen-props.js'
 import { CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
@@ -232,6 +234,123 @@ const roostsOn = (field, water, layers, seed) => {
   check(wet.stats.placed === 0 && wet.stats.rejected.water === sites.length, 'so does water', JSON.stringify(wet.stats.rejected))
   check(road.stats.placed === 0 && road.stats.rejected.path === sites.length, 'so does a road through every candidate', JSON.stringify(road.stats.rejected))
   for (const q of [steep, wet, road]) q.dispose()
+}
+
+// --- the egg in the nest ----------------------------------------------------------------
+console.log('\nroost egg')
+{
+  const throws = (fn) => { try { fn(); return false } catch { return true } }
+  // A stand-in pick the shape of the shipped egg: an ellipsoid on its broad end with its foot on y = 0, as loadCritterGlb frames a pick.
+  const pickOf = (w, h, d) => {
+    const g = new THREE.SphereGeometry(0.5, 48, 32).scale(w, h, d).translate(0, h / 2, 0)
+    return { pos: g.getAttribute('position').array, nrm: g.getAttribute('normal').array, uv: g.getAttribute('uv').array, idx: Array.from(g.index.array), map: null }
+  }
+  check(fs.existsSync(new URL(`../public/${EGG_GLB}`, import.meta.url)) && fs.existsSync(new URL(`../public/${EGG_GLB.replace(/\.glb$/, '.webp')}`, import.meta.url)), `${EGG_GLB} and its map are shipped -- run tools/props/gen/ship.mjs egg-dragon`)
+  check(throws(() => eggBankFrom(pickOf(1, 0.6, 0.6))), 'eggBankFrom refuses a pick lying on its side')
+  const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
+  const bb = egg.geometry.boundingBox
+  check(Math.abs(egg.bounds.height - 1) < 1e-6 && Math.abs(egg.bounds.width - 0.6) < 1e-6 && Math.abs(bb.min.y + 0.5) < 1e-6 && Math.abs(bb.max.y - 0.5) < 1e-6 && egg.tris > 0, 'and takes a standing one, its origin moved from the foot to the middle it is turned about', `${fmt(egg.bounds.width)} x ${fmt(egg.bounds.height)}, y ${fmt(bb.min.y)}..${fmt(bb.max.y)}, ${egg.tris} tris`)
+  const c = new THREE.Color()
+  check(EGG_TINTS.length === 5 && EGG_TINTS.every(([name, hex]) => typeof name === 'string' && !(c.setHex(hex).r > 0.8 && c.g > 0.8 && c.b > 0.8)), 'five clutch colours, none of them white -- a white tint is the unpainted pick', EGG_TINTS.map(([n]) => n).join(' '))
+  check(EGG_ODDS > 0 && EGG_ODDS < 1 && EGG_LIE[0] > 0 && EGG_LIE[1] < Math.PI / 2 && EGG_HEIGHT[0] > 0 && EGG_HEIGHT[1] < 1, 'an egg is a chance, lies over short of flat, and is under a metre tall')
+
+  const eggRoostsOn = (field, water, layers, seed) => {
+    const r = new Roosts(new THREE.Scene(), field, water, layers, { seed, egg })
+    r.place(0, 0)
+    return r
+  }
+  const r = eggRoostsOn(flatField(GROUND), DRY, LAYERS, 5)
+  const bare = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
+  check(r.materials.length === 4 && r.materials[3].customProgramCacheKey() === 'gen-prop' && r.batch.meshes.length === RUNGS + 1 && r.eggTier === RUNGS, 'with a bank the arena grows a tier past the card, the egg on its own gen-prop material', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  check(JSON.stringify(r.sites()) === JSON.stringify(bare.sites()) && r.stats.placed === bare.stats.placed, 'the eggs move no roost: the same seed lays the same sites with them or without', `${r.stats.placed} sites`)
+  check(r.stats.pool === r.batch._max && r.stats.pool > 2 * r.stats.tiles && bare.stats.pool < r.stats.pool, 'and the pool holds a roost and an egg for every resident tile, plus the fades', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
+  bare.dispose()
+
+  let placed = 0, eggs = 0
+  for (let seed = 1; seed <= 40; seed++) {
+    const q = eggRoostsOn(flatField(GROUND), DRY, LAYERS, seed)
+    placed += q.stats.placed
+    eggs += q.stats.eggs
+    q.dispose()
+  }
+  check(eggs > 0 && eggs < placed && Math.abs(eggs - placed * EGG_ODDS) < 3.5 * Math.sqrt(placed * EGG_ODDS * (1 - EGG_ODDS)), `over forty seeds ${EGG_ODDS} of the roosts hold an egg and the rest are empty`, `${eggs} eggs in ${placed} roosts`)
+
+  // Every egg over ten seeds: at its bowl's centre, tinted from the clutch, laid over within EGG_LIE, EGG_HEIGHT tall, and its lowest vertex resting on the floor branches with EGG_SINK of its width bedded in. The matrices come back as float32, so the tolerances are metres of that.
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(), v = new THREE.Vector3()
+  const pos = egg.geometry.getAttribute('position')
+  const lowest = (matrix) => {
+    let low = Infinity
+    for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(matrix).y)
+    return low
+  }
+  const tints = new Set()
+  let eggCount = 0, centreOff = 0, restOff = 0, lieLo = Infinity, lieHi = -Infinity, hLo = Infinity, hHi = -Infinity, badScale = 0, badTier = 0, badCull = 0
+  for (let seed = 1; seed <= 10; seed++) {
+    const w = seed === 5 ? r : eggRoostsOn(flatField(GROUND), DRY, LAYERS, seed)
+    for (const t of w.tiles.values()) {
+      if (t.n !== 2) continue
+      eggCount++
+      const id = t.ids[1]
+      w.batch.getMatrixAt(id, m)
+      m.decompose(p, q, s)
+      centreOff = Math.max(centreOff, Math.hypot(p.x - t.site.x, p.z - t.site.z))
+      const height = s.y * egg.bounds.height
+      const width = s.x * egg.bounds.width
+      hLo = Math.min(hLo, height); hHi = Math.max(hHi, height)
+      if (Math.abs(s.x - s.y) > 1e-6 || Math.abs(s.z - s.y) > 1e-6 || Math.abs(w.instR[id] - height) > 1e-6) badScale++
+      const lie = Math.acos(up.set(0, 1, 0).applyQuaternion(q).y)
+      lieLo = Math.min(lieLo, lie); lieHi = Math.max(lieHi, lie)
+      restOff = Math.max(restOff, Math.abs(lowest(m) - (t.site.y + 0.04 * t.site.r - EGG_SINK * width)))
+      tints.add(w.batch.getColorAt(id, c).getHex())
+      if (w.tierAt[id] !== w.eggTier) badTier++
+      if (Math.abs(w.rim.gone[id] - Math.min(w.radius, propCull(height))) > 1e-3) badCull++
+    }
+    if (w !== r) w.dispose()
+  }
+  check(eggCount > 10 && centreOff < 1e-3, 'every egg lies at its bowl\'s centre', `${eggCount} eggs over ten seeds, centre off ${centreOff.toExponential(1)} m`)
+  check(lieLo >= EGG_LIE[0] - 1e-6 && lieHi <= EGG_LIE[1] + 1e-6 && lieHi - lieLo > 0.2, `laid over ${EGG_LIE[0]}..${EGG_LIE[1]} rad off the floor's normal, no two alike`, `lie ${fmt(lieLo)}..${fmt(lieHi)}`)
+  check(hLo >= EGG_HEIGHT[0] - 1e-6 && hHi <= EGG_HEIGHT[1] + 1e-6 && hHi - hLo > 0.05 && badScale === 0, `${EGG_HEIGHT[0]}..${EGG_HEIGHT[1]} m tall, scaled evenly, its height its rim size`, `${fmt(hLo)}..${fmt(hHi)} m, ${badScale} scaled unevenly`)
+  check(restOff < 0.01, `its lowest point ${EGG_SINK} of its width into the floor branches, on a stand-in ellipsoid's own vertices`, `rest off ${restOff.toExponential(1)} m`)
+  check([...tints].every((hex) => EGG_TINTS.some(([, h]) => h === hex)) && tints.size === EGG_TINTS.length, 'every egg tinted one of the clutch colours and every colour showing, so none white', [...tints].map((h) => EGG_TINTS.find(([, x]) => x === h)?.[0]).join(' '))
+  check(badTier === 0 && badCull === 0, 'each on the egg tier for good, culled where a prop of its height is', `${badTier} off tier, ${badCull} off cull`)
+
+  const eggTiles = [...r.tiles.values()].filter((t) => t.n === 2)
+  r.update(eggTiles[0].site.x, GROUND + 1.7, eggTiles[0].site.z)
+  const bareAgain = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
+  bareAgain.update(eggTiles[0].site.x, GROUND + 1.7, eggTiles[0].site.z)
+  const shown = eggTiles.filter((t) => !r.rim.isHidden(t.ids[1])).length
+  check(shown > 0 && r.stats.tris === bareAgain.stats.tris + shown * egg.tris, 'a frame later the eggs in sight are counted whole, over the roosts\' own count', `${shown} eggs shown, ${r.stats.tris} tris against ${bareAgain.stats.tris}`)
+  bareAgain.dispose()
+  r.update(eggTiles[0].site.x + 4000, GROUND + 1.7, eggTiles[0].site.z)
+  check(r.stats.used === r.stats.placed + r.stats.eggs && r.stats.eggs > 0 && [...r.tiles.values()].every((t) => t.n === 0 || t.n === 1 || t.n === 2), 'walked 4 km off, every egg she left is released with its roost and the pool holds what stands', `${r.stats.eggs} eggs in ${r.stats.placed} roosts, ${r.stats.used} used`)
+  r.dispose()
+
+  // On the hillside the egg is lifted along the bowl's own normal and laid over from it, its rest measured on the tilted floor.
+  const HILL = Math.tan((20 * Math.PI) / 180)
+  const hill = hillField(GROUND, HILL * 0.6, HILL * 0.8)
+  const n = new THREE.Vector3(), lift = new THREE.Vector3()
+  let hillEggs = 0, alongOff = 0, hillLieLo = Infinity, hillLieHi = -Infinity, hillRestOff = 0
+  for (let seed = 1; seed <= 10; seed++) {
+    const hillside = eggRoostsOn(hill, DRY, LAYERS, seed)
+    for (const t of hillside.tiles.values()) {
+      if (t.n !== 2) continue
+      hillEggs++
+      hillside.batch.getMatrixAt(t.ids[1], m)
+      m.decompose(p, q, s)
+      n.set(-t.site.gx, 1, -t.site.gz).normalize()
+      lift.set(p.x - t.site.x, p.y - t.site.y, p.z - t.site.z)
+      alongOff = Math.max(alongOff, lift.clone().cross(n).length())
+      const lie = Math.acos(up.set(0, 1, 0).applyQuaternion(q).dot(n))
+      hillLieLo = Math.min(hillLieLo, lie); hillLieHi = Math.max(hillLieHi, lie)
+      // The lowest point over the tilted floor: every vertex's height along the normal, against the floor's.
+      let low = Infinity
+      for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(m).sub(p).dot(n))
+      hillRestOff = Math.max(hillRestOff, Math.abs(lift.dot(n) + low - (0.04 * t.site.r - EGG_SINK * s.x * egg.bounds.width)))
+    }
+    hillside.dispose()
+  }
+  check(hillEggs === eggCount && alongOff < 1e-3, 'on a 20-degree hillside every egg is lifted from its bowl\'s centre along the hill\'s normal', `${hillEggs} eggs, off the normal by ${alongOff.toExponential(1)} m`)
+  check(hillLieLo >= EGG_LIE[0] - 1e-6 && hillLieHi <= EGG_LIE[1] + 1e-6 && hillRestOff < 0.01, 'laid over from that normal within EGG_LIE, and resting on the tilted floor', `lie ${fmt(hillLieLo)}..${fmt(hillLieHi)}, rest off ${hillRestOff.toExponential(1)} m`)
 }
 
 // --- a stand-in dragon: a slab on a spine whose fly swings its wings out, its underside on two feet ------------

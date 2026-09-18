@@ -423,5 +423,36 @@ flock.place(0, 0)
   check(alive().every((b) => Math.hypot(b.homeX - 200, b.homeZ) < RADIUS + TILE), 'a move frees the tiles left behind and rolls the new ones')
 }
 
+// --- her hand: a butterfly caught, its tile never regrowing it, one let go of flying off --
+{
+  const k = make(9)
+  k.place(0, 0)
+  const b = alive(k)[0]
+  const tile = b.tile
+  const before = alive(k).length
+  const hit = k.pickAt(b.x, b.y + 0.05, b.z, 0.3)
+  check(hit !== null && hit.b === b && hit.size === b.size, 'pickAt finds the butterfly at the hand', hit ? `${hit.dist.toFixed(3)} m` : 'null')
+  check(k.pickAt(b.x + 5, b.y, b.z, 0.3) === null || k.pickAt(b.x + 5, b.y, b.z, 0.3).b !== b, 'and not one out of reach')
+  const rec = k.take(hit)
+  check(rec.kind === 'butterfly' && rec.size === b.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aWing[1] === REST_AMP && rec.attrs.aWing[2] === REST_BASE && rec.color[0] === b.r && rec.scale[0] === rec.scale[2] && rec.stowable === true, 'take hands back the record, wings at rest', JSON.stringify({ size: rec.size, scale: rec.scale[0] }))
+  check(b.tile === null && !tile.flock.includes(b) && alive(k).length === before - 1, 'and the butterfly is out of its flock')
+  const again = make(9)
+  again.place(0, 0)
+  const key = (of) => alive(of).map((g) => `${g.homeX.toFixed(3)},${g.homeZ.toFixed(3)},${g.size.toFixed(3)}`).sort().join('|')
+  check(key(again) === key(k) && alive(again).length === before - 1, 'the tile regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  again.dispose()
+  // Let go: it flies from her.
+  const head = { x: 10, y: groundAt(10, 0) + 1.6, z: 0, yaw: 0 }
+  const ok = k.release(rec, 10.5, head.y - 0.3, 0.2, head)
+  const loose = alive(k).find((g) => g.homeX === 10.5)
+  check(ok && loose && loose.state === 'fly' && loose.size === rec.size && loose.tile !== null, 'release puts it on the wing in the tile under the hand', loose ? loose.state : 'none')
+  const d0 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  for (let i = 0; i < 3 * 72; i++) k.update(head.x, head.y, head.z, 1 / 72, 1)
+  const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
+  check(d1 > d0 + 1 && loose.amp > REST_AMP, 'it flutters away from her', `${d0.toFixed(2)} to ${d1.toFixed(2)} m in 3 s, amp ${loose.amp.toFixed(3)}`)
+  check(k.release(rec, 5000, 0, 5000, head) === false, 'and is refused where no tile is resident')
+  k.dispose()
+}
+
 console.log(failures ? `\n${failures} failure(s)` : '\nall butterfly checks passed')
 process.exit(failures ? 1 : 0)
