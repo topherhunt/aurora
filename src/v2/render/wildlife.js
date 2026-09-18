@@ -299,6 +299,8 @@ export class Wildlife {
           cardMat: new THREE.Matrix4(),
           // The dt banked on the card rung between steps.
           held: 0,
+          // Where the ground under it was last read: a probe frame re-reads it only once the body has moved off that spot.
+          px: NaN, pz: NaN,
         })
       }
       return { ...sp, plain, materials, cardMaterial, cardMesh: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
@@ -457,6 +459,7 @@ export class Wildlife {
     c.z = c.homeZ = s.z
     c.y = s.y
     c.nx = s.nx; c.ny = s.ny; c.nz = s.nz
+    c.px = c.pz = NaN
     c.size = s.size
     c.k = s.size / s.sp.asset.span
     c.heading = c.aim = s.heading
@@ -927,12 +930,15 @@ export class Wildlife {
         if (c.speed > 0) this._walk(c, step, probing)
         else this._turn(c, step)
 
-        // On a probe frame the real ground; between them the plane that probe
-        // measured, which is what makes a long stride cost nothing visible.
-        if (probing) {
+        // On a probe frame the real ground, where the body has moved since it
+        // was last read; otherwise the plane the last probe measured, which is
+        // what makes a long stride cost nothing visible and a standing animal
+        // cost no ground at all.
+        if (probing && (c.x !== c.px || c.z !== c.pz)) {
           c.y = this.walk.heightAt(c.x, c.z)
           this.walk.normalAt(c.x, c.z, undefined, _norm)
           c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
+          c.px = c.x; c.pz = c.z
         } else {
           c.y -= (c.nx * (c.x - wasX) + c.nz * (c.z - wasZ)) / c.ny
         }

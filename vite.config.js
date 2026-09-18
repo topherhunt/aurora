@@ -1,5 +1,5 @@
 import { dirname, join, relative, resolve } from 'node:path'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { defineConfig, loadEnv } from 'vite'
 import { decodePng } from './src/v2/height/png.js'
@@ -202,6 +202,99 @@ function worldDoc() {
           } catch (e) {
             res.statusCode = 400
             res.end(JSON.stringify({ error: String(e?.stack ?? e) }))
+          }
+        })
+      })
+    },
+  }
+}
+
+// --- the client's console, on the dev server's disk (dev only) --------------
+//
+// A headset has no devtools. A warning fired on the Quest -- a rock bed's pool
+// running dry, a pool refused a tier, a frame that threw -- is gone the moment
+// the session ends, and the fix has to be guessed at from what was remembered
+// of it. So src/v2/log-ship.js POSTs every console.warn, console.error,
+// uncaught error and unhandled rejection here, and this appends them to
+// tmp/client-log.txt (git-ignored) as one plain line each, the way a server
+// log is: `time  peer  level  message`, a stack indented under it. Then
+//
+//   curl -sk https://localhost:5173/__log?tail=50      the last 50 lines
+//   curl -sk -X DELETE https://localhost:5173/__log    start a fresh file
+//
+// reads it back from any shell, which is what makes a warning seen once in
+// the headset reviewable from the desk afterwards.
+//
+// Fixed path, `apply: 'serve'`, and a body cap, on /__world's argument: the
+// server is on the LAN. The file is capped too -- a warning firing every frame
+// is exactly the case this exists for, and it must not fill the disk while it
+// is being caught: past LOG_CAP bytes the older half is dropped, and the
+// client side rate-limits itself as well (see log-ship.js).
+const LOG_CAP = 2 << 20
+function clientLog() {
+  return {
+    name: 'aurora:client-log',
+    apply: 'serve',
+    configureServer(server) {
+      const file = resolve(server.config.root, 'tmp/client-log.txt')
+      const readAll = () => (existsSync(file) ? readFileSync(file, 'utf8') : '')
+      server.middlewares.use('/__log', (req, res) => {
+        if (req.method === 'GET') {
+          const n = Number(new URL(req.url, 'http://x').searchParams.get('tail') ?? 100)
+          const lines = readAll().split('\n')
+          if (lines[lines.length - 1] === '') lines.pop()
+          res.setHeader('content-type', 'text/plain; charset=utf-8')
+          res.end(lines.slice(-Math.max(1, n | 0)).join('\n') + (lines.length ? '\n' : ''))
+          return
+        }
+        if (req.method === 'DELETE') {
+          mkdirSync(dirname(file), { recursive: true })
+          writeFileSync(file, '')
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end(JSON.stringify({ error: 'GET ?tail=N, POST entries, or DELETE' }))
+          return
+        }
+        const chunks = []
+        let bytes = 0
+        req.on('data', (c) => {
+          bytes += c.length
+          if (bytes > 256 << 10) req.destroy(new Error('log batch over 256 KB'))
+          chunks.push(c)
+        })
+        req.on('error', (e) => {
+          res.statusCode = 413
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+        })
+        req.on('end', () => {
+          try {
+            const entries = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+            if (!Array.isArray(entries)) throw new Error('body must be an array of entries')
+            const peer = req.socket.remoteAddress ?? '?'
+            let text = ''
+            for (const e of entries) {
+              const at = typeof e.at === 'string' ? e.at : new Date().toISOString()
+              const level = String(e.level ?? 'log').padEnd(5)
+              text += `${at}  ${peer}  ${level}  ${String(e.message ?? '').replace(/\n/g, '\n    ')}\n`
+              if (e.stack) text += '    ' + String(e.stack).replace(/\n/g, '\n    ') + '\n'
+            }
+            mkdirSync(dirname(file), { recursive: true })
+            appendFileSync(file, text)
+            if (statSync(file).size > LOG_CAP) {
+              const all = readAll()
+              const cut = all.indexOf('\n', all.length - (LOG_CAP >> 1))
+              writeFileSync(file,
+                `${new Date().toISOString()}  -  log    older half of the log dropped at ${LOG_CAP} bytes\n` + all.slice(cut + 1))
+            }
+            res.end(JSON.stringify({ ok: true, lines: entries.length }))
+          } catch (e) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: String(e?.message ?? e) }))
           }
         })
       })
@@ -1457,7 +1550,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), clientLog(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

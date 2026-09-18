@@ -17,8 +17,8 @@
 // any direction. A hop may land in the water, where the frog floats sunk SINK
 // of its height into the surface (WaterSurfaces.levelAt, bobbing on BOB_S)
 // and DRIFTs without stopping, its heading and pace each wandering as a random
-// walk so the track winds; it probes a body length ahead every frame, and dry
-// ground there is the bank, hopped onto, where the land bouts resume. It is
+// walk so the track winds; it probes a body length ahead (DRIFT_PROBE_EVERY),
+// and dry ground there is the bank, hopped onto, where the land bouts resume. It is
 // tethered to where it was placed, never landing past TETHER_M from home
 // (aimed home once it is out that far, on the water as on the land), and every
 // hop target passes the tests its placement did but for dryness, so a frog
@@ -88,6 +88,12 @@ export const DRIFT_TURN = 1.2
 const DRIFT_JOG = 2.5
 const CLIMB_M = 1
 const SIZE_MID = (SIZE_M[0] + SIZE_M[1]) / 2
+// A drifting frog reads the water a body length ahead on one frame in DRIFT_PROBE_EVERY -- five ground and water queries a read, over a track of a few centimetres a second -- and rides on between reads.
+export const DRIFT_PROBE_EVERY = 8
+// A frog past the ladder's foot is stepped on one frame in FAR_EVERY, on the time banked since: nothing of it is drawn, and its sits, hops and drift need only add up. Its distance is still read every frame, so it steps and is drawn the frame it comes inside.
+export const FAR_EVERY = 8
+// The tiles are re-walked once her head has moved this far from where they were last walked: RADIUS is generous by more than this, and a walk is a Map of a hundred tiles read and as many looked up.
+const WALK_M = 4
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -159,12 +165,18 @@ export class Frogs {
         // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed, `wet0` and `wet1` saying which ends are on the water; 'drift' floats along `heading` at `speed` m/s, turning at `spin` rad/s. `bout` is WALK or LEAP with `hops` of it to go, `heading` the bout's line.
         state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
         wet0: false, wet1: false, speed: 0, spin: 0,
+        // Seconds banked while a far frog waits for its frame (FAR_EVERY), and the seconds the last update stepped it by, 0 on a frame that held it.
+        held: 0, stepped: 0,
       })
     }
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.head = { x: 0, z: 0 }
     this.time = 0
+    this.frame = 0
+    // Where the tiles were last walked from.
+    this.walkedX = Infinity
+    this.walkedZ = Infinity
     // The pick's bounds (setCritterAsset) and its unit span; the instance scale is size / span, for every tier. `sink` is how far under the surface a floating frog's feet sit, per metre of its size.
     this.bounds = null
     this.span = 1
@@ -297,6 +309,7 @@ export class Frogs {
       f.state = 'sit'
       f.left = between(this.rand, SIT_S)
       f.hops = 0
+      f.held = 0
       t.frogs.push(f)
     }
     return t
@@ -325,6 +338,8 @@ export class Frogs {
     this.head.x = cx
     this.head.z = cz
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+    this.walkedX = cx
+    this.walkedZ = cz
   }
 
   get stats() {
@@ -377,41 +392,54 @@ export class Frogs {
 
   /**
    * One frame of a floating frog. The heading's turn and the pace each wander
-   * as a random walk so the track winds; the probe a body length ahead is dry
-   * ground (the bank, hopped onto with a walk's timing), blocked or past the
-   * tether (turned away from), or water (drifted into).
+   * as a random walk so the track winds; on a probe frame the water a body
+   * length ahead is read, and is dry ground (the bank, hopped onto with a
+   * walk's timing), blocked or past the tether (turned away from, and the frog
+   * holds this frame), or water (drifted into, at its level). Between probes it
+   * drifts on at the level it has.
    */
-  _drift(f, dt) {
+  _drift(f, dt, probing) {
     const k = f.size / SIZE_MID
     f.spin = Math.max(-DRIFT_TURN, Math.min(DRIFT_TURN, f.spin + (this.rand() - 0.5) * DRIFT_JOG * dt))
     f.heading += f.spin * dt
     f.speed = Math.max(DRIFT_MPS[0] * k, Math.min(DRIFT_MPS[1] * k, f.speed + (this.rand() - 0.5) * DRIFT_SURGE * k * dt))
-    const ahead = f.size * CLIMB_M
-    const ax = f.x + Math.cos(f.heading) * ahead
-    const az = f.z - Math.sin(f.heading) * ahead
-    const s = this.seat(ax, az)
-    if (Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
-      this._aimHome(f)
-      f.spin = 0
-    } else if (s === null) {
-      this._turnAway(f)
-      f.spin = 0
-    } else if (!s.wet) {
-      f.hops = 0
-      this._launch(f, f.heading, ax, az, s, between(this.rand, WALK.dur))
-    } else {
-      f.x += Math.cos(f.heading) * f.speed * dt
-      f.z -= Math.sin(f.heading) * f.speed * dt
+    if (probing) {
+      const ahead = f.size * CLIMB_M
+      const ax = f.x + Math.cos(f.heading) * ahead
+      const az = f.z - Math.sin(f.heading) * ahead
+      const s = this.seat(ax, az)
+      if (Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
+        this._aimHome(f)
+        f.spin = 0
+        return
+      }
+      if (s === null) {
+        this._turnAway(f)
+        f.spin = 0
+        return
+      }
+      if (!s.wet) {
+        f.hops = 0
+        this._launch(f, f.heading, ax, az, s, between(this.rand, WALK.dur))
+        return
+      }
       f.y = s.level - f.size * this.sink
-      f.yaw = f.heading
     }
+    f.x += Math.cos(f.heading) * f.speed * dt
+    f.z -= Math.sin(f.heading) * f.speed * dt
+    f.yaw = f.heading
   }
 
   update(hx, hy, hz, dt) {
     this.head.x = hx
     this.head.z = hz
     this.time += dt
-    walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+    this.frame++
+    if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
+      walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+      this.walkedX = hx
+      this.walkedZ = hz
+    }
     if (this.ground && this.ground.groundVersion !== this.gver) {
       this.gver = this.ground.groundVersion
       this._reseat()
@@ -424,6 +452,15 @@ export class Frogs {
       // Backwards, because a frog that finds itself inside a rock leaves the list mid-walk.
       for (let i = t.frogs.length - 1; i >= 0; i--) {
         const f = t.frogs[i]
+        let step = dt
+        if (f.lod === LOD_TIERS) {
+          // Held until its frame, unless it has come inside the ladder's foot, which is read every frame so it is drawn the frame it is in view.
+          f.held += dt
+          if ((this.frame + f.id) % FAR_EVERY !== 0 && critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS) === LOD_TIERS) { f.stepped = 0; continue }
+          step = f.held
+        }
+        f.held = 0
+        f.stepped = step
         let sy = 1
         let sx = 1
         let sz = 1
@@ -434,7 +471,7 @@ export class Frogs {
           const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
           sy = 1 + s
           sx = sz = 1 + s * 0.4
-          f.left -= dt
+          f.left -= step
           if (f.left <= 0) {
             // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
             if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
@@ -452,9 +489,9 @@ export class Frogs {
           }
         } else if (f.state === 'drift') {
           lift = BOB_AMP * Math.sin(bob + f.breath)
-          this._drift(f, dt)
+          this._drift(f, step, (this.frame + f.id) % DRIFT_PROBE_EVERY === 0)
         } else {
-          f.t += dt
+          f.t += step
           const u = Math.min(1, f.t / f.dur)
           f.x = f.x0 + (f.x1 - f.x0) * u
           f.z = f.z0 + (f.z1 - f.z0) * u
@@ -482,7 +519,7 @@ export class Frogs {
             }
           }
         }
-        // The tier its apparent size calls for; past the ladder's foot it is not drawn, but keeps stepping.
+        // The tier its apparent size calls for; past the ladder's foot it is not drawn, and steps on its FAR_EVERY frames.
         f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
         if (f.lod === LOD_TIERS) continue
         const k = f.size / this.span
@@ -501,11 +538,14 @@ export class Frogs {
         this.hues[f.lod].array[w] = f.hue
       }
     }
+    // A tier that held nothing and holds nothing is not re-uploaded.
     this.tiers.forEach((tier, k) => {
+      if (counts[k] > 0 || tier.count > 0) {
+        tier.instanceMatrix.needsUpdate = true
+        tier.instanceColor.needsUpdate = true
+        this.hues[k].needsUpdate = true
+      }
       tier.count = counts[k]
-      tier.instanceMatrix.needsUpdate = true
-      tier.instanceColor.needsUpdate = true
-      this.hues[k].needsUpdate = true
     })
   }
 

@@ -230,7 +230,7 @@ let offBand = 0
 let onRock = 0
 let strayed = 0
 let maxStray = 0
-// The water: frames afloat in the river, of them off the sunk level or tilted, held still, moving off the pace or snapping the heading (which only the tether or a blocked probe may); frames sat in the river; the frogs that went in, that came back out, and that hopped on land again after; climb-outs that did not rise; and the drift's headings by quadrant.
+// The water: frames afloat in the river, of them off the sunk level or tilted, and of the stepped ones held still, moving off the pace or snapping the heading (which only the tether or a blocked probe may); frames sat in the river; the frogs that went in, that came back out, and that hopped on land again after; climb-outs that did not rise; and the drift's headings by quadrant.
 let afloat = 0, afloatOff = 0, afloatTilted = 0, afloatStill = 0, offPace = 0, snapped = 0, satWet = 0, flatClimb = 0, climbs = 0
 const wentIn = new Set(), cameOut = new Set(), hoppedAfter = new Set()
 const driftQuadrants = new Set()
@@ -264,12 +264,13 @@ for (let i = 0; i < SECONDS / DT; i++) {
       wentIn.add(f)
       if (Math.abs(f.y - afloatY(f)) > 1e-6) afloatOff++
       if (f.nx !== 0 || f.ny !== 1 || f.nz !== 0) afloatTilted++
-      if (p && p.state === 'drift') {
+      // A far frog is held between its frames (FAR_EVERY) and then stepped by the time it banked, so its pace and turn are read over `stepped`.
+      if (p && p.state === 'drift' && f.stepped > 0) {
         const step = Math.hypot(f.x - p.x, f.z - p.z)
         const k = f.size / ((SIZE_M[0] + SIZE_M[1]) / 2)
         if (step === 0) afloatStill++
-        else if (step / DT < DRIFT_MPS[0] * k - 1e-9 || step / DT > DRIFT_MPS[1] * k + 1e-9) offPace++
-        if (turn(f.heading - p.heading) > DRIFT_TURN * DT + 1e-9) snapped++
+        else if (step / f.stepped < DRIFT_MPS[0] * k - 1e-9 || step / f.stepped > DRIFT_MPS[1] * k + 1e-9) offPace++
+        if (turn(f.heading - p.heading) > DRIFT_TURN * f.stepped + 1e-9) snapped++
         driftQuadrants.add(Math.floor((((f.heading % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 2)))
       }
     }

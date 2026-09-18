@@ -407,6 +407,8 @@ export class Roosts {
     let tris = 0
     this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
+      // A tile is one roost or none for as long as it is resident, and most are none.
+      if (!tile.n) continue
       this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]

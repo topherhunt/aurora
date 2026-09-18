@@ -104,8 +104,9 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 // to understand about this file if you are here about LOD at all. The boulder
 // ships T320/T80/T20 and the six-triangle T6 hull, and every instance steps
 // between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size
-// (`rockLodSize` times its scale): 4 to T80, 7.5 to T20, 25 to T6, so a 2 m rock
-// holds sampled geometry out to 50 m, a cobble to 8.5, a 12 m landmark to 300. A
+// (`instLod`: its footprint or what it shows above ground, the longer): 4 to T80,
+// 7.5 to T20, 25 to T6, so a 2 m rock holds sampled geometry out to 50 m, a
+// cobble to 8.5, a 12 m landmark to 300, a deep-bedded slab by the slab. A
 // table of metres per bed was wrong in both directions at once, because a bed is
 // not one size of rock -- which is the whole reason one mesh can serve the world.
 // Two ceilings sit over the ladder, in metres rather than sizes (props/rock.js):
@@ -203,6 +204,8 @@ const BEDS = [
     // real price of the 10 m top end.
     radius: 600,
     tile: 28,
+    // Peak 271 of 712 over the probe flight.
+    siteFrac: 0.6,
     minElev: 0,
     maxSlopeDeg: 48,
     allowSubmerged: true,
@@ -334,6 +337,8 @@ const BEDS = [
     // refuses anything under 265 m and a top size over 4.76 m throws outright.
     radius: 280,
     tile: 14,
+    // Peak 643 of 34522 over the probe flight.
+    siteFrac: 0.03,
     minElev: 0,
     maxSlopeDeg: 46,
     allowSubmerged: false,
@@ -453,6 +458,8 @@ const BEDS = [
     // paid for entirely by the LOD ladder and never by the eye.
     radius: 600,
     tile: 24,
+    // Peak 1838 of 3941 over the probe flight.
+    siteFrac: 0.7,
     minElev: 0,
     // A LAKE FLOOR, NOT A DROWNED HILLSIDE. Past about forty degrees the ground
     // under water is the bank going down rather than the bed, and a rounded
@@ -508,6 +515,8 @@ const BEDS = [
     fullRadius: 270,
     radius: 1250,
     tile: 70,
+    // Peak 504 of 740 over the probe flight: the bound itself, since 1.5x that peak is past it.
+    siteFrac: 1,
     // THIS IS THE BED THE FAR TIER WAS BUILT FOR. A 7 m landmark holds T80 to 53 m
     // and T20 to 175, then is T6 for the remaining 1075 m -- a ~4.8 km2 annulus
     // where twenty triangles become six. Gains least from tightening the ladder:
@@ -553,16 +562,17 @@ const BEDS = [
     minGap: 0.7,
   },
   {
-    // THE EMBEDDED LAYER: rock that is mostly UNDERGROUND, and the only bed whose
-    // subject is the part you cannot see.
+    // THE EMBEDDED LAYER: rock that reads as mostly UNDERGROUND, and the only bed
+    // whose subject is the part you cannot see.
     //
     // Every other bed places an object standing on a surface. This one places the
-    // top of something much larger -- seven to nine tenths of it buried, so what
-    // shows is a knuckle of a block whose real size you infer from how far apart
-    // its exposed corners are. That is what makes a cliff read as ROCK WITH SOIL ON
-    // IT rather than as a heightfield with props on it: a 20 m block showing its
-    // last three metres is a piece of the mountain the mountain does not know
-    // about, which no rock STANDING on the surface can be.
+    // top of something much larger: it rolls seven to nine tenths of burial and,
+    // past SQUASH_AT, is placed as the slab that burial would have SHOWN -- a
+    // knuckle of a block whose real size you infer from how far apart its exposed
+    // corners are. That is what makes a cliff read as ROCK WITH SOIL ON IT rather
+    // than as a heightfield with props on it: a 20 m block showing its last three
+    // metres is a piece of the mountain the mountain does not know about, which
+    // no rock STANDING on the surface can be.
     //
     // AND IT IS THE ONLY BOULDER A FACE CAN HAVE. Every other rounded bed refuses
     // ground past 40 to 62 degrees, and the refusal is geometry rather than taste:
@@ -579,9 +589,10 @@ const BEDS = [
     // slope limit and the size range are per-bed for the same reason.
     //
     // BURIAL IS WHAT MAKES ONE MESH WORK HERE rather than a problem it has to
-    // survive: at 70 to 90% under, what shows is a knuckle and a couple of corners,
-    // and the quarter turn decides WHICH corners. The same boulder buried this far
-    // is less recognisable as itself than at any other depth in the file.
+    // survive: at a 70 to 90% roll what shows is a knuckle and a couple of
+    // corners, and the quarter turn decides WHICH corners -- and which face the
+    // squash flattens. The same boulder this far in is less recognisable as
+    // itself than at any other depth in the file.
     name: 'embedded',
     field: 5,
     density: 0.01,
@@ -596,11 +607,13 @@ const BEDS = [
     // is the far ceiling that puts it on T6 at 1,000 m, and it owes the dissolve
     // band past that, so `minReach` refuses anything under 1,177 m. Burial does
     // not buy any of it back -- sinking a rock takes away its HEIGHT and the
-    // ladder is its longest axis, which here is the width still lying across
-    // the face. This is why the density is a fifth of what "litter" sounds like:
+    // ladder reads what shows, which here is the width still lying across the
+    // face. This is why the density is a fifth of what "litter" sounds like:
     // reach is quadratic and this bed has the longest.
     radius: 1250,
     tile: 60,
+    // Peak 6412 of 22432 over the probe flight.
+    siteFrac: 0.45,
     minElev: 0,
     // THE STEEPEST GROUND ANY BED ACCEPTS, and 72 rather than higher because past
     // about seventy the world-Y sink stops reaching into the face at all whatever
@@ -634,11 +647,10 @@ const BEDS = [
     // is one feature among many. `forest` is absent because the bed's forest rate
     // is 0 and an entry there would be unreachable.
     //
-    // 32 ON A WALL AND 64 ON A BARREN ONE, AND THIS IS WHAT BREAKS THE PANELLING
-    // UP. `cliff slabs` clothes a face in flat plates that all lie IN it; a block
-    // this size, seven to nine tenths buried, shows a dozen metres of curved mass
-    // ACROSS sixty of width, and that is the one thing on a face that is not a
-    // plate. It stays rare on purpose -- the bed's cliff rate is a quarter, and
+    // 32 ON A WALL AND 64 ON A BARREN ONE, AND THIS IS WHAT BREAKS A FACE UP: a
+    // block this size, bedded as its burial roll shows it, is a dozen metres of
+    // curved mass ACROSS sixty of width, the one thing on a face that is not the
+    // face. It stays rare on purpose -- the bed's cliff rate is a quarter, and
     // `sizeBias` puts only the top decile up here.
     sizeByEnv: {
       river: [2.0, 10.0],
@@ -682,6 +694,8 @@ const BEDS = [
     // the far band past it, which asks 73.5 m of this.
     radius: 80,
     tile: 12,
+    // Peak 217 of 1838 over the probe flight.
+    siteFrac: 0.2,
     minElev: 0,
     maxSlopeDeg: 42,
     // Both sides of the line -- the shallows take stones as the bank does, and
@@ -772,10 +786,11 @@ const MOSS_CAP = [0, 0.5]
 // the belly and what shows is stone coming OUT of the ground.
 //
 // IT COSTS TRIANGLES AND THE COST IS REAL: the buried part is still built and
-// still submitted (see SINK_DEEP), so raising the floor from a tenth to two
-// fifths spends geometry on rock nobody sees. It buys the one thing the scatter
-// could not fake -- see the ground-line argument above -- which is why the answer
-// to the cost is ROCK_MIN_SIZE and not a shallower bed.
+// still submitted, so raising the floor from a tenth to two fifths spends
+// geometry on rock nobody sees. It buys the one thing the scatter could not
+// fake -- see the ground-line argument above -- which is why the answer to the
+// cost is ROCK_MIN_SIZE and not a shallower bed. Past SQUASH_AT the rock is
+// squashed instead of sunk further, which caps what any one instance can hide.
 const SINK_MIN = 0.4
 const SINK_SLOPE = 0.28
 
@@ -808,9 +823,9 @@ const TALL_AT = 1
 // ON the terrain rather than as stone coming OUT of it, and the giveaway is that
 // they all meet the ground at the same relative height.
 //
-// It wastes triangles -- the buried part is still built, skinned and submitted --
-// which is why `embedded` is the only bed that goes near the top of the range and
-// why it is sparse.
+// Past SQUASH_AT the roll no longer buries, it flattens: the top of this range is
+// a slab a quarter as tall as the boulder it was rolled from, sunk exactly
+// SQUASH_AT of what it now stands.
 const SINK_DEEP = 0.8
 
 // HOW MUCH BIGGER MEANS DEEPER. The burial roll is bent by the rock's own size
@@ -835,6 +850,24 @@ const SINK_NORMAL_MAX = 3
 // sits just above `embedded`'s 0.9, so it changes nothing a bed asked for and
 // only catches the sum running away.
 const SINK_CAP = 0.92
+
+// PAST THIS MUCH BURIAL A ROCK IS SQUASHED, NOT SUNK. A boulder bedded nine
+// tenths is an iceberg: nine tenths of its triangles built, skinned and
+// submitted under the hill, and the tenth that shows sits inside a LOD ladder
+// measuring the whole rock, so a 20 m giant with 2 m of crest held its finest
+// mesh at fifty metres. Instead, a roll past this is applied as a flattening
+// along the axis the rock stands on -- the one protruding from the ground --
+// with the burial pinned here: a 0.9 roll becomes a slab a quarter as tall,
+// bedded six tenths, showing exactly the height the 0.9 burial would have and
+// none of the depth. The squash is on the ROLLED box, so the sixteen quarter
+// turns flatten a different face each and the one mesh reads as slabs, plates
+// and wedges rather than as one boulder at sixteen depths.
+//
+// It is one scale in the instance matrix and costs the renderer nothing; the
+// consumers that read the matrix back (`_spanAt`, `_rayAt`) invert it by
+// column length rather than by one uniform scale, which is three dot products a
+// hit candidate. A rock buried at or under this is placed as it always was.
+const SQUASH_AT = 0.6
 
 // --- how a rock is turned ----------------------------------------------------
 //
@@ -1599,10 +1632,11 @@ class RockBed {
       this.barrenTop[env] = top
     }
 
-    // THE BOULDER'S LADDER SIZE AT SCALE 1. A rock's live size is this times its
-    // own uniform scale, which is one multiply in the per-frame loop and saves
-    // carrying a second per-instance array beside `instScale`. See rockLodSize for
-    // why it is neither the width nor the height.
+    // THE BOULDER'S LONGEST AXIS AT SCALE 1. Times an instance's scale it is the
+    // size a consumer's `minSize` gate reads and the ceiling the size roll is
+    // clamped to; the LOD ladder itself reads `instLod`, which is what the
+    // instance SHOWS once bedded and squashed. See rockLodSize for why it is
+    // neither the width nor the height.
     this.shapeLod = rockLodSize(this.shape.measured)
 
     // THE BIGGEST ROCK THIS BED CAN PLACE, and through it the distance past which
@@ -1805,6 +1839,7 @@ class RockBed {
     // same reason it is the wrong one for the ladder: what must not collide is
     // the ground each rock covers, not how big it looks.
     this.instSpan = new Float32Array(this.maxInstances)
+    this.instLod = new Float32Array(this.maxInstances)
     // THE PLACEMENT MATRIX, per instance, which every tier takes. Kept here so a
     // cross-dissolve ghost and a re-ground can be written from it (`_placeTier`)
     // and `_spanAt` can read it without going through the arena.
@@ -1861,8 +1896,9 @@ class RockBed {
     this.camAglQ = null
 
     this._m = new THREE.Matrix4()
+    // The rolled, squashed, scaled box `_m` is composed over; see `_growTile`.
+    this._rm = new THREE.Matrix4()
     this._scatter = { h: 0, tan: 0 }
-    this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._yawQ = new THREE.Quaternion()
     this._tiltQ = new THREE.Quaternion()
@@ -1872,7 +1908,6 @@ class RockBed {
     this._leanAxis = new THREE.Vector3()
     this._xAxis = new THREE.Vector3(1, 0, 0)
     this._zAxis = new THREE.Vector3(0, 0, 1)
-    this._s = new THREE.Vector3()
     this._c = new THREE.Color()
     this._n = new THREE.Vector3()
     this._up = new THREE.Vector3(0, 1, 0)
@@ -2600,9 +2635,11 @@ class RockBed {
         // The thresholds are per rock, not per bed: a 12 m tor and a 0.4 m
         // cobble read the same ladder, and the tor holds its finest mesh out to
         // 48 m where the cobble is already on T6 at 5. All that separates
-        // them is the size they are measured in -- `shapeLod` at scale 1, times
-        // the scale this instance was placed at.
-        const size = this.shapeLod * this.instScale[i]
+        // them is the size they are measured in -- `instLod`, what this instance
+        // shows above the ground, so a rock stood on end and bedded deep is
+        // judged by its crest and its footprint and not by the length under
+        // the hill.
+        const size = this.instLod[i]
         const sizeSq = size * size
 
         // The far ceiling first: a rock past it is T6 whatever its size, and
@@ -3133,7 +3170,7 @@ class RockBed {
       const bw = s.measured.width * scale
       const bh = s.measured.height * scale
       const bd = s.measured.depth * scale
-      const yMax = Math.abs(m10) * bw * 0.5 + Math.max(0, m11) * bh + Math.abs(m12) * bd * 0.5
+      let yMax = Math.abs(m10) * bw * 0.5 + Math.max(0, m11) * bh + Math.abs(m12) * bd * 0.5
       let yMin = -Math.abs(m10) * bw * 0.5 + Math.min(0, m11) * bh - Math.abs(m12) * bd * 0.5
       let stand = yMax - yMin
       // How much GROUND this rock covers, which is what the dart and every caller
@@ -3175,6 +3212,20 @@ class RockBed {
       let sinkFrac = cfg.sinkVary
         ? sinkFloor + deepRoll * Math.max(0, this.sinkHi - sinkFloor)
         : Math.min(sinkFloor, this.sinkHi)
+      // PAST SQUASH_AT THE ROLL FLATTENS THE ROCK INSTEAD, along the rolled box's
+      // own up, and the burial stops there: what shows above ground is the same
+      // height the deeper burial would have shown. Decided on the fraction the
+      // bed ASKED for, ahead of the normal correction below, which is a
+      // steep-face multiplier on how far down the rock must go to be bedded that
+      // fraction into the face and not a deeper burial in its own right.
+      let squash = 1
+      if (sinkFrac > SQUASH_AT) {
+        squash = (1 - sinkFrac) / (1 - SQUASH_AT)
+        sinkFrac = SQUASH_AT
+        yMax *= squash
+        yMin *= squash
+        stand *= squash
+      }
       // INTO THE FACE, NOT DOWN THE FACE. See SINK_NORMAL_MAX: the fraction is
       // along the surface normal and `instY` can only move a rock along world Y, so
       // a bed that means to bury something in a cliff has to pay the 1/cos(slope)
@@ -3312,13 +3363,19 @@ class RockBed {
       this.instScale[id] = scale
       this.instSpan[id] = span
       this.instY[id] = groundY - this.instSink[id]
+      // What the eye can measure this rock by: its footprint or the height it
+      // shows above the ground, whichever is longer. `stand` is already squashed,
+      // so a flattened slab is judged as the slab.
+      this.instLod[id] = Math.max(span, stand * (1 - sinkFrac))
 
       this._yawQ.setFromAxisAngle(this._up, yaw)
-      // Roll first in the rock's own frame, then yaw about the vertical, then the
-      // ground lean, then the random lean on top of it -- so a tilted rock spins
-      // about the ground's normal rather than about world Y and the jitter is a
-      // departure from the hill rather than a second alignment to it.
-      this._yawQ.multiply(this._rollQ)
+      // Roll first in the rock's own frame, then the squash along the rolled
+      // box's up, then yaw about the vertical, then the ground lean, then the
+      // random lean on top of it -- so a tilted rock spins about the ground's
+      // normal rather than about world Y and the jitter is a departure from the
+      // hill rather than a second alignment to it. The roll and the squash are a
+      // matrix rather than part of the quaternion because a squash is a scale and
+      // a quaternion cannot carry one; see the compose below.
       if (cfg.tilt > 0) this._q.copy(this._groundTilt(x, z, cfg.tilt)).multiply(this._yawQ)
       else this._q.copy(this._yawQ)
       // PRE-multiplied, so the axis is horizontal IN THE WORLD. Composed the other
@@ -3331,9 +3388,20 @@ class RockBed {
       this._q.premultiply(
         this._leanQ.setFromAxisAngle(this._leanAxis, leanMag * TILT_JITTER * this.tiltJitter)
       )
-      this._p.set(x, this.instY[id], z)
-      this._s.set(scale, scale, scale)
-      const e = this._m.compose(this._p, this._q, this._s).elements
+      // `q * diag(1, squash, 1) * roll * scale`, the quaternion's rotation over
+      // the rolled and squashed box. The roll is quarter turns, so the columns of
+      // the product stay orthogonal, each `scale` or `scale * squash` long, which
+      // is what lets `_spanAt` and `_rayAt` invert it by the transpose over the
+      // column lengths.
+      this._rm.set(
+        m00 * scale, m01 * scale, m02 * scale, 0,
+        m10 * scale * squash, m11 * scale * squash, m12 * scale * squash, 0,
+        m20 * scale, m21 * scale, m22 * scale, 0,
+        0, 0, 0, 1
+      )
+      this._m.makeRotationFromQuaternion(this._q).multiply(this._rm)
+      this._m.setPosition(x, this.instY[id], z)
+      const e = this._m.elements
       this.instM.set(e, id * 16)
 
       // A TINT PER INSTANCE, ROLLED FROM THE ENVIRONMENT'S PALETTE. With one mesh
@@ -3827,23 +3895,26 @@ class RockBed {
    * THE RAY IS A LINE, NOT A HALF-LINE. It starts at the instance origin, which
    * sits at the BOTTOM of the shape's box, so the hits that matter are behind it
    * and the smallest signed `t` is the topmost surface, the largest the bottom.
-   * The basis columns are orthogonal and `s` long, so the transpose over s^2
-   * inverts the matrix and the local direction that falls out is unit -- which
-   * puts `t` in the rock's own metres and the world drop at `t * s`. The quarter
-   * turn, the ground lean and the jitter all ride in those columns, so none of
-   * them needs recovering from the placement arrays.
+   * The basis columns are orthogonal -- `scale` long, or `scale * squash` on
+   * the one the rock stands on -- so the transpose over each column's squared
+   * length inverts the matrix. The local direction is left at the length that
+   * gives it, which puts `t` in WORLD metres whatever the squash did to the
+   * rock's own. The quarter turn, the squash, the ground lean and the jitter all
+   * ride in those columns, so none of them needs recovering from the placement
+   * arrays.
    */
   _spanAt(id, ex, ez) {
     const e = this.instM
     const o = id * 16
-    const s = this.instScale[id]
-    const inv = 1 / (s * s)
-    const ox = (e[o] * ex + e[o + 2] * ez) * inv
-    const oy = (e[o + 4] * ex + e[o + 6] * ez) * inv
-    const oz = (e[o + 8] * ex + e[o + 10] * ez) * inv
-    const dx = -e[o + 1] / s
-    const dy = -e[o + 5] / s
-    const dz = -e[o + 9] / s
+    const c0 = 1 / (e[o] * e[o] + e[o + 1] * e[o + 1] + e[o + 2] * e[o + 2])
+    const c1 = 1 / (e[o + 4] * e[o + 4] + e[o + 5] * e[o + 5] + e[o + 6] * e[o + 6])
+    const c2 = 1 / (e[o + 8] * e[o + 8] + e[o + 9] * e[o + 9] + e[o + 10] * e[o + 10])
+    const ox = (e[o] * ex + e[o + 2] * ez) * c0
+    const oy = (e[o + 4] * ex + e[o + 6] * ez) * c1
+    const oz = (e[o + 8] * ex + e[o + 10] * ez) * c2
+    const dx = -e[o + 1] * c0
+    const dy = -e[o + 5] * c1
+    const dz = -e[o + 9] * c2
     // The shape's own box, first, because the cylinder in front of this is a loose
     // reject and walking 320 triangles is an expensive way to answer a question six
     // planes settle. Slabs in the rock's frame, where the box is axis-aligned:
@@ -3905,8 +3976,8 @@ class RockBed {
       if (t > far) far = t
     }
     if (near === Infinity) return false
-    span[0] = e[o + 13] - far * s
-    span[1] = e[o + 13] - near * s
+    span[0] = e[o + 13] - far
+    span[1] = e[o + 13] - near
     return true
   }
 
@@ -3949,15 +4020,20 @@ class RockBed {
           const cz = ez + dz * u
           if (cx * cx + cz * cz >= r * r) continue
           const o = id * 16
-          const inv = 1 / (s * s)
+          // Per column, not one `1 / (s * s)`: the column the rock stands on is
+          // `scale * squash` long. Unnormalised local direction, so `t` is in
+          // world metres -- see _spanAt.
+          const c0 = 1 / (e[o] * e[o] + e[o + 1] * e[o + 1] + e[o + 2] * e[o + 2])
+          const c1 = 1 / (e[o + 4] * e[o + 4] + e[o + 5] * e[o + 5] + e[o + 6] * e[o + 6])
+          const c2 = 1 / (e[o + 8] * e[o + 8] + e[o + 9] * e[o + 9] + e[o + 10] * e[o + 10])
           const ey = y - e[o + 13]
-          const ox = (e[o] * ex + e[o + 1] * ey + e[o + 2] * ez) * inv
-          const oy = (e[o + 4] * ex + e[o + 5] * ey + e[o + 6] * ez) * inv
-          const oz = (e[o + 8] * ex + e[o + 9] * ey + e[o + 10] * ez) * inv
-          const ldx = (e[o] * dx + e[o + 1] * dy + e[o + 2] * dz) / s
-          const ldy = (e[o + 4] * dx + e[o + 5] * dy + e[o + 6] * dz) / s
-          const ldz = (e[o + 8] * dx + e[o + 9] * dy + e[o + 10] * dz) / s
-          const tMax = Math.min(reach / s, best / s)
+          const ox = (e[o] * ex + e[o + 1] * ey + e[o + 2] * ez) * c0
+          const oy = (e[o + 4] * ex + e[o + 5] * ey + e[o + 6] * ez) * c1
+          const oz = (e[o + 8] * ex + e[o + 9] * ey + e[o + 10] * ez) * c2
+          const ldx = (e[o] * dx + e[o + 1] * dy + e[o + 2] * dz) * c0
+          const ldy = (e[o + 4] * dx + e[o + 5] * dy + e[o + 6] * dz) * c1
+          const ldz = (e[o + 8] * dx + e[o + 9] * dy + e[o + 10] * dz) * c2
+          const tMax = Math.min(reach, best)
           let tLo = 0
           let tHi = tMax
           let miss = false
@@ -4001,14 +4077,17 @@ class RockBed {
             if (tt >= 0 && tt < near) { near = tt; face = f }
           }
           if (face < 0) continue
-          best = near * s
-          // The face's normal, the rock's frame to the world's: the columns are s long.
-          let nx = hull[face + 4] * hull[face + 8] - hull[face + 5] * hull[face + 7]
-          let ny = hull[face + 5] * hull[face + 6] - hull[face + 3] * hull[face + 8]
-          let nz = hull[face + 3] * hull[face + 7] - hull[face + 4] * hull[face + 6]
-          let wx = (e[o] * nx + e[o + 4] * ny + e[o + 8] * nz) / s
-          let wy = (e[o + 1] * nx + e[o + 5] * ny + e[o + 9] * nz) / s
-          let wz = (e[o + 2] * nx + e[o + 6] * ny + e[o + 10] * nz) / s
+          best = near
+          // The face's normal, the rock's frame to the world's, by the INVERSE
+          // TRANSPOSE: with orthogonal columns that is each column over its own
+          // squared length, so a squashed slab's top normal still stands off its
+          // top and not off the boulder's.
+          const nx = hull[face + 4] * hull[face + 8] - hull[face + 5] * hull[face + 7]
+          const ny = hull[face + 5] * hull[face + 6] - hull[face + 3] * hull[face + 8]
+          const nz = hull[face + 3] * hull[face + 7] - hull[face + 4] * hull[face + 6]
+          let wx = e[o] * nx * c0 + e[o + 4] * ny * c1 + e[o + 8] * nz * c2
+          let wy = e[o + 1] * nx * c0 + e[o + 5] * ny * c1 + e[o + 9] * nz * c2
+          let wz = e[o + 2] * nx * c0 + e[o + 6] * ny * c1 + e[o + 10] * nz * c2
           const len = Math.hypot(wx, wy, wz)
           if (wx * dx + wy * dy + wz * dz > 0) { wx = -wx; wy = -wy; wz = -wz }
           out.x = x + dx * best; out.y = y + dy * best; out.z = z + dz * best
@@ -4443,7 +4522,7 @@ export class Rocks {
           const dz = bed.instZ[id] - camZ
           const d = Math.hypot(dx, dy, dz)
           if (d > radius) continue
-          const size = bed.shapeLod * bed.instScale[id]
+          const size = bed.instLod[id]
           const tier = bed.tierAt[id]
           const gone = bed.rim.gone[id]
           rows.push({

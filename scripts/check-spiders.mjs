@@ -71,16 +71,16 @@ let POOL = null
 const levelAt = (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : Math.hypot(x - PUDDLE.x, z - PUDDLE.z) < PUDDLE.r ? PUDDLE.y : POOL !== null && Math.hypot(x - POOL.x, z - POOL.z) < POOL.r ? GROUND + 1 : null)
 const water = { levelAt, isSubmerged: (x, z, g) => { const l = levelAt(x, z); return l !== null && g < l } }
 
-// Trunks: base radius and height. Each is its own variant of the trees' LOD0 profile, a unit-tall trunk the stub scales by the height and turns by the yaw, as Trees.trunksInto says: the oaks crooked and lobed, the rest straight eight-sided cones; the pine and the thin birch are two-ring cones, a base ring straight to the apex, the shape the shipped pine has. The thin birch's bark thins under TRUNK_MIN_R two metres up, which caps its climb there.
+// Trunks: base radius, height and stretch. Each is its own variant of the trees' LOD0 profile, a unit-tall trunk the stub scales by the height, its Y by the stretch on top, and turns by the yaw, as Trees.trunksInto says: the oaks crooked and lobed, the rest straight eight-sided cones; the pine and the thin birch are two-ring cones, a base ring straight to the apex, the shape the shipped pine has. The thin birch's bark thins under TRUNK_MIN_R two metres up, which caps its climb there. The pine and the first oak are stretched either way, so a seat that ignored the stretch would sit off their bark by millimetres.
 const TAU = Math.PI * 2
 const TRUNKS = [
-  { name: 'oak', x: 2, z: 0, r0: 0.35, height: 15, yaw: 0.7 },
-  { name: 'pine', x: -3, z: 4, r0: 0.2, height: 12, yaw: 2.1 },
-  { name: 'birch', x: 6, z: -5, r0: 0.12, height: 9, yaw: 4.0 },
-  { name: 'birch2', x: -6, z: -6, r0: 0.08, height: 8, yaw: 5.5 },
-  { name: 'oak2', x: 9, z: 6, r0: 0.4, height: 18, yaw: 3.3 },
-  { name: 'sapling', x: 0, z: 8, r0: 0.03, height: 2, yaw: 0 },
-  { name: 'far', x: 80, z: 80, r0: 0.3, height: 12, yaw: 1 },
+  { name: 'oak', x: 2, z: 0, r0: 0.35, height: 15, stretch: 0.8, yaw: 0.7 },
+  { name: 'pine', x: -3, z: 4, r0: 0.2, height: 12, stretch: 1.25, yaw: 2.1 },
+  { name: 'birch', x: 6, z: -5, r0: 0.12, height: 9, stretch: 1, yaw: 4.0 },
+  { name: 'birch2', x: -6, z: -6, r0: 0.08, height: 8, stretch: 1, yaw: 5.5 },
+  { name: 'oak2', x: 9, z: 6, r0: 0.4, height: 18, stretch: 1, yaw: 3.3 },
+  { name: 'sapling', x: 0, z: 8, r0: 0.03, height: 2, stretch: 1, yaw: 0 },
+  { name: 'far', x: 80, z: 80, r0: 0.3, height: 12, stretch: 1, yaw: 1 },
 ]
 /** A trunkProfile in tree.js's shape: rings of `sides` corners about their own centres, the apex last. */
 function makeProfile(t) {
@@ -134,7 +134,7 @@ const trees = {
     for (const t of liveTrunks) {
       if (t.x < x0 || t.x >= x1 || t.z < z0 || t.z >= z1) continue
       const o = w * TRUNK_STRIDE
-      out[o] = t.x; out[o + 1] = trunkY; out[o + 2] = t.z; out[o + 3] = t.r0; out[o + 4] = t.height; out[o + 5] = t.yaw; out[o + 6] = TRUNKS.indexOf(t)
+      out[o] = t.x; out[o + 1] = trunkY; out[o + 2] = t.z; out[o + 3] = t.r0; out[o + 4] = t.height; out[o + 5] = t.yaw; out[o + 6] = TRUNKS.indexOf(t); out[o + 7] = t.stretch
       w++
     }
     return w
@@ -220,7 +220,7 @@ const offRock = (b, c) => {
   const radial = Math.abs(Math.hypot(c.x - b.x, c.z - b.z) - b.r)
   return c.y <= GROUND + b.h + 1e-6 ? radial : Math.abs(c.y - GROUND - b.h)
 }
-/** How far a point is off the trunk's own triangles -- the bark as tree.js's addCone winds it from the profile, scaled and yawed as the stub places it. */
+/** How far a point is off the trunk's own triangles -- the bark as tree.js's addCone winds it from the profile, scaled, stretched and yawed as the stub places it. */
 const _tri = new THREE.Triangle()
 const _p = new THREE.Vector3()
 const _q = new THREE.Vector3()
@@ -229,7 +229,7 @@ function offTrunk(t, c) {
   const { sides, y, corners } = prof
   const cy = Math.cos(t.yaw), sy = Math.sin(t.yaw)
   const wx = c.x - t.x, wz = c.z - t.z
-  _p.set((wx * cy - wz * sy) / t.height, (c.y - trunkY) / t.height, (wx * sy + wz * cy) / t.height)
+  _p.set((wx * cy - wz * sy) / t.height, (c.y - trunkY) / (t.height * t.stretch), (wx * sy + wz * cy) / t.height)
   const P = (r, k) => new THREE.Vector3().fromArray(corners, (r * sides + (k % sides)) * 3)
   let best = Infinity
   for (let r = 0; r < y.length - 1; r++) {
@@ -245,7 +245,7 @@ function offTrunk(t, c) {
 /** Whether a normal points away from the trunk's centre line at the spider's height, in the world. */
 function outwardOfTrunk(t, c) {
   const { y, centre } = trees.trunkProfile[TRUNKS.indexOf(t)]
-  const fy = (c.y - trunkY) / t.height
+  const fy = (c.y - trunkY) / (t.height * t.stretch)
   let r = 0
   while (r < y.length - 2 && y[r + 1] <= fy) r++
   const f = (fy - y[r]) / (y[r + 1] - y[r])

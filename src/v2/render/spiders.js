@@ -6,7 +6,7 @@
 // three surfaces:
 //
 //   A TREE is its LOD0 trunk's ring profile (tree.js trunkProfile, handed over
-//   by Trees.trunksInto with the instance's scale and yaw), so a spider on one
+//   by Trees.trunksInto with the instance's scale, stretch and yaw), so a spider on one
 //   is an angle round the trunk and a height up it, seated by bilinear
 //   interpolation between the bark's own corners, and a step is exact.
 //   A ROCK is whatever its hull says it is (Rocks.rayAt): a spider on one is a
@@ -431,7 +431,7 @@ export class Spiders {
       const yaw = this.trunkBuf[o + 5]
       const prof = this.trees.trunkProfile[this.trunkBuf[o + 6]]
       if (!prof) throw new Error(`Spiders: trunk variant ${this.trunkBuf[o + 6]} has no trunkProfile`)
-      this._host(t, 'tree', this.trunkBuf[o], this.trunkBuf[o + 2], { y: this.trunkBuf[o + 1], r0, scale: this.trunkBuf[o + 4], cy: Math.cos(yaw), sy: Math.sin(yaw), prof, hLo: 0, hHi: 0 })
+      this._host(t, 'tree', this.trunkBuf[o], this.trunkBuf[o + 2], { y: this.trunkBuf[o + 1], r0, scale: this.trunkBuf[o + 4], stretch: this.trunkBuf[o + 7], cy: Math.cos(yaw), sy: Math.sin(yaw), prof, hLo: 0, hHi: 0 })
     }
     const perches = this.rocks.perchesInto(x0, z0, x0 + TILE, z0 + TILE, this.perchBuf)
     if (perches === HOST_BUF) this.saturated++
@@ -510,7 +510,7 @@ export class Spiders {
     while (r > 0 && radius[r] < rMin) r--
     let top = y[r]
     if (r < y.length - 1) top += ((y[r + 1] - y[r]) * (radius[r] - rMin)) / (radius[r] - radius[r + 1])
-    host.hHi = Math.min(foot - host.y + CLIMB_M, top * host.scale)
+    host.hHi = Math.min(foot - host.y + CLIMB_M, top * host.scale * host.stretch)
     return host.hHi > host.hLo
   }
 
@@ -525,14 +525,18 @@ export class Spiders {
   /**
    * A tree spider's world seat, normal and heading from its angle and height:
    * the point on the bark between the four profile corners round it, in the
-   * instance's frame (scaled, yawed, at its origin). The heading is `phi` from
-   * the bark's up direction toward its round direction, and `r` is the bark's
-   * radius there -- how far a metre round the trunk turns the angle.
+   * instance's frame (scaled, its Y stretched on top, yawed, at its origin).
+   * The heading is `phi` from the bark's up direction toward its round
+   * direction, and `r` is the bark's radius there -- how far a metre round the
+   * trunk turns the angle.
    */
   _placeTree(c) {
     const host = c.host
     const { sides, y, centre, corners } = host.prof
-    const fh = c.h / host.scale
+    // The profile's rings are at unit height; the stretch is applied to every
+    // corner Y below, so the seat, its tangents and its normal are the drawn bark's.
+    const st = host.stretch
+    const fh = c.h / (host.scale * st)
     let r = 0
     while (r < y.length - 2 && y[r + 1] <= fh) r++
     const fr = Math.min(1, Math.max(0, (fh - y[r]) / (y[r + 1] - y[r])))
@@ -545,10 +549,10 @@ export class Spiders {
     const b0 = ((r + 1) * sides + k0) * 3
     const b1 = ((r + 1) * sides + k1) * 3
     // Round the ring at either level, then between the levels. `u` is the step between the levels (up the bark) and `v` the step round the ring there, the surface's two tangents.
-    const rax = corners[a1] - corners[a0], ray = corners[a1 + 1] - corners[a0 + 1], raz = corners[a1 + 2] - corners[a0 + 2]
-    const rbx = corners[b1] - corners[b0], rby = corners[b1 + 1] - corners[b0 + 1], rbz = corners[b1 + 2] - corners[b0 + 2]
-    const lx = corners[a0] + rax * fk, ly = corners[a0 + 1] + ray * fk, lz = corners[a0 + 2] + raz * fk
-    let ux = corners[b0] + rbx * fk - lx, uy = corners[b0 + 1] + rby * fk - ly, uz = corners[b0 + 2] + rbz * fk - lz
+    const rax = corners[a1] - corners[a0], ray = (corners[a1 + 1] - corners[a0 + 1]) * st, raz = corners[a1 + 2] - corners[a0 + 2]
+    const rbx = corners[b1] - corners[b0], rby = (corners[b1 + 1] - corners[b0 + 1]) * st, rbz = corners[b1 + 2] - corners[b0 + 2]
+    const lx = corners[a0] + rax * fk, ly = corners[a0 + 1] * st + ray * fk, lz = corners[a0 + 2] + raz * fk
+    let ux = corners[b0] + rbx * fk - lx, uy = corners[b0 + 1] * st + rby * fk - ly, uz = corners[b0 + 2] + rbz * fk - lz
     const px = lx + ux * fr, py = ly + uy * fr, pz = lz + uz * fr
     let vx = rax + (rbx - rax) * fr, vy = ray + (rby - ray) * fr, vz = raz + (rbz - raz) * fr
     // The normal, pointed away from the ring's centre whichever way the generator wound its corners.

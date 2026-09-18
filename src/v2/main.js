@@ -16,6 +16,7 @@ import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
 import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
+import { installLogShip } from './log-ship.js'
 import { Trees } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
@@ -66,6 +67,11 @@ import { PeerAvatars, lowPolyHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
+
+// First, before anything below can warn: a copy of every warning and error goes
+// to the dev server's tmp/client-log.txt, for the headset, which shows none of
+// them to anyone at a desk. See log-ship.js.
+installLogShip()
 
 // `/` is the world as it ships, on a desktop and in the headset alike. `?editor`
 // is the same world with the §18 authoring tools over it: the corner panel, the
@@ -1842,7 +1848,7 @@ function updateQuestStats() {
           ]
         : [['hidden'.padEnd(11), '#5c6b7d']]),
     ],
-    // Main-thread ms in each animal layer's own step, and the eight added up.
+    // Main-thread ms in each animal layer's own step, a 5 s mean, and the nine added up.
     // The `animals` row costs whatever it costs; this says how much of that a
     // simulation could possibly account for, and the remainder is the draw.
     [
@@ -2010,23 +2016,40 @@ const questToggles = {
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
 
-// Main-thread milliseconds each animal layer's step spent, smoothed, keyed by
-// its toggle row. This is the instrument that says whether the `animals` row's
-// toll is CPU or draw: the row switches NINE layers at once, and if the nine
-// numbers here sum to a fraction of the frame time the toggle moves, the rest of
-// it is on the GPU and no amount of bucketing the simulation will find it.
+// Main-thread milliseconds each animal layer's step spent per frame, the mean
+// over the last ANIMAL_MS_WINDOW_S seconds, keyed by its toggle row. This is
+// the instrument that says whether the `animals` row's toll is CPU or draw: the
+// row switches NINE layers at once, and if the nine numbers here sum to a
+// fraction of the frame time the toggle moves, the rest of it is on the GPU and
+// no amount of bucketing the simulation will find it. A window, not a running
+// blend: performance.now() is coarsened to 100 us on this page, so a single
+// frame reads 0 or 0.1, and a step that bursts once a second (a tile row of
+// seats, a puppet pool refill) is only visible as its share of a long mean.
+const ANIMAL_MS_WINDOW_S = 5
 const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'spiders', 'wildlife', 'snowmen', 'dragons']
 const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
+const animalMsAcc = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
+let animalMsFrames = 0
+let animalMsSince = 0
 const animalMsSum = () => ANIMAL_LAYERS.reduce((sum, k) => sum + animalMs[k], 0)
-/** Run `fn` if its layer's rows are on, and keep what it cost. A frozen layer decays to zero rather than holding its last reading. */
+/** Run `fn` if its layer's rows are on, and bank what it cost. A frozen layer banks nothing, so its next reading is zero. */
 function stepAnimal(key, fn) {
-  if (!animalOn(key)) {
-    animalMs[key] *= 0.9
-    return
-  }
+  if (!animalOn(key)) return
   const t0 = performance.now()
   fn()
-  animalMs[key] += (performance.now() - t0 - animalMs[key]) * 0.1
+  animalMsAcc[key] += performance.now() - t0
+}
+/** Once a frame after every layer has stepped: close the window when it is full and publish each layer's mean. */
+function bankAnimalMs(dt) {
+  animalMsFrames++
+  animalMsSince += dt
+  if (animalMsSince < ANIMAL_MS_WINDOW_S) return
+  for (const k of ANIMAL_LAYERS) {
+    animalMs[k] = animalMsAcc[k] / animalMsFrames
+    animalMsAcc[k] = 0
+  }
+  animalMsFrames = 0
+  animalMsSince = 0
 }
 
 /**
@@ -4754,6 +4777,7 @@ function tick() {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
     dragons.update(headTmp.x, headTmp.y, headTmp.z, dt)
   })
+  bankAnimalMs(dt)
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

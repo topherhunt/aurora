@@ -884,6 +884,8 @@ wake(w)
     // Straight up over it, so it stays on the one rung and nothing else about the world moves.
     const d = lodReach(c.spawn.lodSize, rung) * 0.9
     for (let f = 0; f < 60; f++) k.update(c.x, c.y + d, c.z, dt)
+    // Kept walking: a standing body reads no ground.
+    k._begin(c, 'roam'); c.clip = 'walk'; c.speed = c.sp.asset.gait.walk * c.k; c.aim = c.heading; c.left = 1e9
     let probes = 0
     const frames = 600
     for (let f = 0; f < frames; f++) {
@@ -892,7 +894,17 @@ wake(w)
       // The ground under the feet is read at the animal's own position; the seat test reads a body length ahead of it.
       if (asked.includes(`${c.x},${c.z}`)) probes++
     }
-    check(c.lod === rung && Math.abs(probes - frames / PROBE_EVERY[rung]) <= 1, `on rung ${rung}${rung === LOD_RUNGS ? ', its card' : ''} a stag reads the ground once every ${PROBE_EVERY[rung]} frames`, `${probes} probes in ${frames} frames, wanted ${Math.round(frames / PROBE_EVERY[rung])}`)
+    check(c.lod === rung && Math.abs(probes - frames / PROBE_EVERY[rung]) <= 1, `on rung ${rung}${rung === LOD_RUNGS ? ', its card' : ''} a walking stag reads the ground once every ${PROBE_EVERY[rung]} frames`, `${probes} probes in ${frames} frames, wanted ${Math.round(frames / PROBE_EVERY[rung])}`)
+    // Stood still, facing where it faces: one probe seats it where it stopped, and the probe frames after that read nothing.
+    k._begin(c, 'graze'); c.aim = c.heading; c.left = 1e9
+    for (let f = 0; f < PROBE_EVERY[rung] * CARD_EVERY; f++) k.update(c.x, c.y + d, c.z, dt)
+    probes = 0
+    for (let f = 0; f < frames; f++) {
+      asked = []
+      k.update(c.x, c.y + d, c.z, dt)
+      if (asked.includes(`${c.x},${c.z}`)) probes++
+    }
+    check(c.speed === 0 && probes === 0, `and a stag standing there reads it on none of them`, `${probes} probes in ${frames} frames`)
     k.dispose()
   }
 }

@@ -118,7 +118,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
-  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME,
+  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, STRETCH, SINK_M, SHORE_SINK, TREELINE, BIOME,
   CLUMP_FULL_TO, CLUMP_TREES, CLUMP_MIN_KEEP, CARD_TILT } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
@@ -1817,12 +1817,16 @@ console.log('\n-- the cursor names a tree --')
   const trunk = trees.pickTrunkAt(id, { radius: 0, base: 0, rise: 0 })
   const crown = trees.pickCrownAt(id, { radius: 0, base: 0, rise: 0 })
   const scale = trees.instScale[id]
+  const tall = scale * trees.instStretch[id]
   check(near(trunk.base, 0, 1e-9) && near(trunk.rise, crown.base, 1e-6),
     'the trunk volume runs from the ground to exactly where the crown starts',
     `trunk 0 to ${trunk.rise.toFixed(2)} m, crown from ${crown.base.toFixed(2)} m`)
-  check(near(crown.base + crown.rise, trees.unitHeight[v] * scale, 1e-5),
-    'and the crown stops at the tip rather than somewhere above it',
-    `${(crown.base + crown.rise).toFixed(2)} m against a ${(trees.unitHeight[v] * scale).toFixed(2)} m tree`)
+  check(near(crown.base + crown.rise, trees.unitHeight[v] * tall, 1e-5),
+    'and the crown stops at the tip rather than somewhere above it, the stretch included',
+    `${(crown.base + crown.rise).toFixed(2)} m against a ${(trees.unitHeight[v] * tall).toFixed(2)} m tree`)
+  check(near(trunk.rise, trees.unitCrownBase[v] * tall, 1e-6) && near(crown.radius, trees.unitCrownRadius[v] * scale, 1e-6),
+    'and the stretch lifts the crown without widening it',
+    `crown from ${trunk.rise.toFixed(2)} m at ${crown.radius.toFixed(2)} m radius, stretch ${trees.instStretch[id].toFixed(3)}`)
   check(trunk.radius > 0 && trunk.radius < crown.radius / 3,
     'the trunk is picked at trunk width and not at crown width -- the whole bug',
     `trunk r ${trunk.radius.toFixed(2)} m, crown r ${crown.radius.toFixed(2)} m`)
@@ -1848,6 +1852,123 @@ console.log('\n-- the cursor names a tree --')
   check(widest < 3 && narrowest > 0.01 && widest / narrowest > (SCALE[1] / SCALE[0]) * 0.9,
     'and the volumes track the trees rather than being one number for the forest',
     `${n} trees, trunk pick radius ${narrowest.toFixed(3)} to ${widest.toFixed(3)} m, all under the 3 m the constant used`)
+}
+
+// --- 10b. every tree its own height and clearance -----------------------------
+
+console.log('\n-- stretch and sink --')
+
+{
+  // The stretch and the sink are drawn per tree from their own stream, so the
+  // first stream -- position, species, yaw, size -- stands exactly where it
+  // did, and they show in the matrix and the pick volume rather than only in
+  // the arrays.
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  t.place(0, 0)
+  const m = new THREE.Matrix4()
+  const p = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const sc = new THREE.Vector3()
+  let n = 0
+  let stLo = Infinity, stHi = -Infinity
+  let skLo = Infinity, skHi = -Infinity, skSum = 0, deep = 0
+  let wrongMatrix = 0
+  let buried = 0
+  let lowest = Infinity
+  for (const tile of t.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const st = t.instStretch[id]
+      const sk = t.instSink[id]
+      stLo = Math.min(stLo, st); stHi = Math.max(stHi, st)
+      skLo = Math.min(skLo, sk); skHi = Math.max(skHi, sk); skSum += sk
+      if (sk > 1) deep++
+      n++
+      t.batch.getMatrixAt(id, m)
+      m.decompose(p, q, sc)
+      const scale = t.instScale[id]
+      // The card tiers are what is worn at 200 m; the clump wears its own scale
+      // and the same stretch on it.
+      const worn = t.tierAt[id] === t.clumpTier ? sc.x : scale
+      if (!near(sc.x, worn, 1e-5) || !near(sc.z, worn, 1e-5) || !near(sc.y, worn * st, 1e-5)) wrongMatrix++
+      if (!near(p.y, 60 - PLACEMENT.sink * scale - sk, 1e-4)) wrongMatrix++
+      // The lowest hem -- unitCrownBase is the bottom of the hanging cloak,
+      // not the whorl's butt -- clears the ground on every unsunk tree, and a
+      // sunk tree dips it by at most its own sink: a squat pine's boughs
+      // sweep the grass and nothing more of the crown goes under.
+      const hem = t.unitCrownBase[t.variantAt[id]] * scale * st - PLACEMENT.sink * scale
+      lowest = Math.min(lowest, hem - sk)
+      if (hem <= 0.3 || hem - sk < -SINK_M) buried++
+    }
+  }
+  check(STRETCH[0] < 1 && STRETCH[1] > 1 && SINK_M > 0 && SINK_M < 2,
+    'the stretch straddles 1 and the sink is under two metres',
+    `stretch ${STRETCH[0]}-${STRETCH[1]}, sink to ${SINK_M} m`)
+  check(stLo >= STRETCH[0] && stHi <= STRETCH[1] && stLo < STRETCH[0] + 0.02 && stHi > STRETCH[1] - 0.02,
+    'every tree is stretched within STRETCH and the range is used end to end',
+    `${n} trees, ${stLo.toFixed(3)} to ${stHi.toFixed(3)}`)
+  check(skLo >= 0 && skHi <= SINK_M && skHi > SINK_M * 0.9 && skSum / n < SINK_M * 0.3 && deep / n > 0.05 && deep / n < 0.2,
+    'the sink runs to SINK_M and the deep ones are the occasional ones -- a mean under 30% of it, 5-20% past a metre',
+    `${skLo.toFixed(3)} to ${skHi.toFixed(3)} m, mean ${(skSum / n).toFixed(3)} m, ${pct(deep / n)} past 1 m`)
+  check(wrongMatrix === 0, 'the matrix carries the stretch on Y alone and the sink in the translation',
+    `${wrongMatrix} of ${n} wrong`)
+  check(buried === 0 && lowest > -SINK_M,
+    'and the lowest hem clears the ground on every unsunk tree, and dips by no more than the sink on a sunk one',
+    `lowest hem ${lowest.toFixed(2)} m over the ground`)
+
+  // Determinism: the same seed lays the same stretch and sink, so the forest
+  // you walk away from is the one you come back to.
+  const again = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  again.place(0, 0)
+  let differ = 0
+  for (const tile of t.tiles.values()) {
+    const other = again.tiles.get(tile.tx * 0x10000 + tile.tz)
+    for (let k = 0; k < tile.n; k++) {
+      const a = tile.ids[k], b = other.ids[k]
+      if (t.instStretch[a] !== again.instStretch[b] || t.instSink[a] !== again.instSink[b] || t.instX[a] !== again.instX[b]) differ++
+    }
+  }
+  check(differ === 0, 'and both are a pure function of position', `${differ} of ${n} differ between two boots`)
+
+  // A shore along x = 0, water on the negative side: the bank's trees are
+  // rolled deeper and nothing else about the forest moves.
+  const { reach, power } = SHORE_SINK
+  check(power < 3 && power > 0 && reach > 0, 'the shore bends the sink roll toward the deep end within a bounded reach', `power ${power}, reach ${reach} m`)
+  const shore = { isSubmerged: () => false, shoreDistAt: (x, z, r, h, tan) => Math.min(r, Math.max(-r, x)) }
+  const bank = new Trees(new THREE.Scene(), flat, shore, texArray, { seed: 7, radius: 200 })
+  bank.place(0, 0)
+  let moved = 0, inlandDiffer = 0, deeper = 0, shallower = 0, capped = 0
+  let bankN = 0, bankSum = 0, bankDeep = 0, inN = 0, inSum = 0
+  for (const tile of t.tiles.values()) {
+    const other = bank.tiles.get(tile.tx * 0x10000 + tile.tz)
+    if (!other || other.n !== tile.n) { moved++; continue }
+    for (let k = 0; k < tile.n; k++) {
+      const a = tile.ids[k], b = other.ids[k]
+      if (t.instX[a] !== bank.instX[b] || t.instZ[a] !== bank.instZ[b] || t.instScale[a] !== bank.instScale[b]
+        || t.instStretch[a] !== bank.instStretch[b] || t.instYaw[a] !== bank.instYaw[b] || t.variantAt[a] !== bank.variantAt[b]) moved++
+      const x = bank.instX[b]
+      const sk = bank.instSink[b]
+      if (sk > SINK_M + 1e-6) capped++
+      if (x >= reach) {
+        inN++; inSum += sk
+        if (sk !== t.instSink[a]) inlandDiffer++
+      } else {
+        bankN++; bankSum += sk; if (sk > 1) bankDeep++
+        if (sk > t.instSink[a] + 1e-9) deeper++
+        else if (sk < t.instSink[a] - 1e-9) shallower++
+      }
+    }
+  }
+  check(moved === 0 && inlandDiffer === 0, 'a shore moves no tree and leaves every inland sink as it was', `${moved} moved, ${inlandDiffer} inland sinks changed`)
+  check(bankN > 100 && shallower === 0 && deeper > bankN * 0.95, 'and within reach of it every tree sinks at least as deep, nearly all deeper',
+    `${bankN} on the bank, ${deeper} deeper, ${shallower} shallower`)
+  check(bankN > 0 && bankSum / bankN > 2 * (inSum / inN) && bankDeep / bankN > 0.3,
+    'so the bank\'s boughs hang low: its mean sink is over twice the inland one and a third of its trees are past a metre',
+    `bank mean ${(bankSum / bankN).toFixed(2)} m (${(100 * bankDeep / bankN).toFixed(0)}% past 1 m) vs inland ${(inSum / inN).toFixed(2)} m`)
+  check(capped === 0, 'and SINK_M still caps it', `${capped} over`)
+  bank.dispose()
+  t.dispose()
+  again.dispose()
 }
 
 trees.dispose()
@@ -1990,13 +2111,14 @@ console.log('\n-- rocks under the trunk --')
       const id = tile.ids[k]
       const dx = t.instX[id] - STONE.x
       const dz = t.instZ[id] - STONE.z
-      const sunk = 60 - PLACEMENT.sink * t.instScale[id]
+      const sink = t.instSink[id]
+      const sunk = 60 - PLACEMENT.sink * t.instScale[id] - sink
       if (dx * dx + dz * dz < STONE.r * STONE.r) {
         on++
         // Settled the sink into the STONE's top rather than the ground's, and the
         // stored lift is what `_reground` will re-add on the next chunk swap.
-        if (Math.abs(t.instY[id] - STONE.top) > 1e-4) wrongOn++
-        if (Math.abs(t.instLift[id] - (STONE.top - 60)) > 1e-4) wrongOn++
+        if (Math.abs(t.instY[id] - (STONE.top - sink)) > 1e-4) wrongOn++
+        if (Math.abs(t.instLift[id] - (STONE.top - 60 - sink)) > 1e-4) wrongOn++
       } else {
         off++
         if (Math.abs(t.instY[id] - sunk) > 1e-4) wrongOff++

@@ -113,6 +113,22 @@ export const PROPS = [
       'a thin fibrous tan stem with a faint pale ring, slightly bent, the surfaces dull and damp',
   },
   {
+    id: 'carrot',
+    label: 'Carrot',
+    category: 'other',
+    sizeM: 0.45,
+    // The root alone: the greens are src/props/carrot.js's leaves sprouting
+    // from the crown, each wearing gen-props/carrot-leaf.png, so the root's
+    // map is a hand's width of orange and ships at the mushrooms' size.
+    texPx: TEX_PX_SMALL,
+    aspectRatio: '3:4',
+    description:
+      'a single whole carrot standing upright, balanced vertically on its narrow pointed tip with the long tapered ' +
+      'orange root pointing straight down, the root skin slightly knobbly with fine horizontal ridges and small ' +
+      'pale root hairs, dusted and streaked with damp dark clinging soil, a green-tinged shoulder at the top with ' +
+      'one short stub of leaf stalk',
+  },
+  {
     id: 'skeleton-deer',
     label: 'Deer Skeleton',
     category: 'bones',

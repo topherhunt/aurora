@@ -407,8 +407,8 @@ const FADE_MESH_RESERVE = 8
 // rather than tens of thousands.
 const TILE = 25
 
-// Floats per trunk in `trunksInto`: [x, y, z, base trunk radius, scale, yaw, variant].
-export const TRUNK_STRIDE = 7
+// Floats per trunk in `trunksInto`: [x, y, z, base trunk radius, scale, yaw, variant, stretch].
+export const TRUNK_STRIDE = 8
 
 // Milliseconds per frame allowed for growing and regrowing tiles; the rest of
 // the queue waits. A tile arriving a frame or two late is a tree fading in at
@@ -475,16 +475,40 @@ const PLACEMENT_CELL = 4.0
 // `due` list, and the near tiles are re-tiered every frame off their own list.
 const STILL_M = RIM_SLACK_MIN
 
-// Per-instance height multiplier on the variant's own default -- so a 9 m pine
-// stands anywhere from 4.5 to 13.5 m. THIS IS THE WHOLE SIZE LADDER NOW: the
+// Per-instance size multiplier on the variant's own default -- so an 11 m pine
+// stands anywhere from 5.5 to 16.5 m. THIS IS THE WHOLE SIZE LADDER NOW: the
 // bank used to carry four rungs per species and REGENERATE each one, and it
 // carries one (see tree-bank.js for why, and for what a matrix scale costs
 // against a rebuild -- a half-size tree has half-size leaves).
 //
-// It is applied UNIFORMLY on all three axes, which the card tiers depend on: a
-// billboard is a photograph of the tree at its default height and only stays
-// honest if it is stretched evenly.
+// It is applied on all three axes, and STRETCH then multiplies the vertical
+// one alone, so two trees of one girth stand at different heights with their
+// boughs at different clearances. A card takes the same non-uniform matrix as
+// the meshes: the spin turns the card's local XZ toward the eye and the
+// matrix stretches its Y afterwards, so the photograph is taller by exactly
+// what the tree it stands in for is.
 const SCALE = [0.5, 1.5]
+const STRETCH = [0.8, 1.25]
+
+// Metres a tree may be sunk into the ground beyond PLACEMENT.sink, rolled per
+// tree as SINK_M times the CUBE of a uniform draw so the deep sinks are the
+// occasional ones: half the trees are under 0.19 m, one in eight past a
+// metre. A full sink on the smallest pine puts its lowest whorl's butt at
+// knee height (5.06 m of bare trunk at the small end of SCALE times STRETCH
+// is 2.0 m) with the cloak hanging off it sweeping the grass -- a squat tree
+// in a stand of tall ones -- and only that hem ever goes under. Absolute
+// metres, not a fraction of the tree: the point is that a small tree sinks
+// as far as a big one.
+const SINK_M = 1.5
+// At a shore the roll is bent toward the deep end: the cube's exponent runs
+// from 3 at `reach` metres off the water down to `power` at the waterline,
+// where the sink is SINK_M times the draw to the 0.75 -- most of the trees
+// on the bank sunk past 0.9 m with their boughs near the ground, against one
+// in eight inland. The bend is smooth so no stand shows a seam at `reach`,
+// and SINK_M still caps it, so the hem gate holds on the bank too. `reach`
+// is the dry side only; a wet trunk is already refused. The WaterSurfaces
+// bucket bounds it, like the ferns' shoreReach.
+const SHORE_SINK = { reach: 10, power: 0.75 }
 
 // Metres. The clump share grows out from FULL_RADIUS until the trees pictured
 // per tile are full-density here (header, THE CLUMP TIER), and holds there.
@@ -546,7 +570,10 @@ export class Trees {
   /**
    * @param scene         THREE.Scene to add the tree arena to.
    * @param field         V2Height. Needs scatterAt, heightAt and snowLineAt.
-   * @param water         WaterSurfaces. Needs isSubmerged.
+   * @param water         WaterSurfaces. Needs isSubmerged; with shoreDistAt the
+   *                      trees on a bank are rolled deeper into the ground
+   *                      (SHORE_SINK), without it every tree stands inland,
+   *                      which is what the scatter gates measure against.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or anything with groundAt/groundKeyAt. Optional
    *                      only so the probes can run headless; without it every tree
@@ -609,6 +636,7 @@ export class Trees {
 
     this.field = field
     this.water = water
+    this.shoreSink = typeof water.shoreDistAt === 'function'
     this.ground = ground
     this.rocks = rocks
     this.biome = biome
@@ -796,11 +824,18 @@ export class Trees {
     // translation overwritten in place) and so `trunksInto` can hand the
     // spiders the trunk they see: yaw about +Y, radians.
     this.instScale = new Float32Array(this.maxInstances)
+    // The vertical multiplier on top of the scale (STRETCH), and the metres
+    // this tree is sunk beyond PLACEMENT.sink (SINK_M). Both are already in
+    // the matrix and the lift; they are kept for the pick volumes, the
+    // spiders' trunk and the gates.
+    this.instStretch = new Float32Array(this.maxInstances)
+    this.instSink = new Float32Array(this.maxInstances)
     this.instYaw = new Float32Array(this.maxInstances)
     // How far this tree stands off the ground under it, in metres, signed. For
-    // almost every tree that is just `-PLACEMENT.sink * scale`; for one standing
-    // on a boulder it is the height of the rock's top over the ground, already
-    // settled into the stone (Rocks.blockTopAt).
+    // almost every tree that is `-PLACEMENT.sink * scale - instSink`; for one
+    // standing on a boulder it is the height of the rock's top over the
+    // ground, already settled into the stone (Rocks.blockTopAt), less the
+    // same sink.
     //
     // AN OFFSET AND NOT AN ABSOLUTE Y, which is what makes _reground work
     // unchanged. The rock's own Y is `ground - instSink` off the same chunk mesh
@@ -1514,10 +1549,11 @@ export class Trees {
    *   under you. Stay inside the full-density band.
    *
    *   THE y IS THE TRUNK'S OWN ORIGIN AND NOT THE SURFACE. instY is
-   *   `_groundFor(x, z) - PLACEMENT.sink * scale`, so it sits 7 to 23 cm
-   *   BELOW the drawn ground, by however much this instance's own 0.5-1.5
-   *   scale sinks it. A prop written flush at this y is underground -- for a
-   *   13 cm mushroom, entirely underground. A caller placing something at an
+   *   `_groundFor(x, z) - PLACEMENT.sink * scale - instSink`, so it sits 7 cm
+   *   to 1.7 m BELOW the drawn ground, by however much this instance's own
+   *   0.5-1.5 scale and its SINK_M roll sink it. A prop written flush at this
+   *   y is underground -- for a 13 cm mushroom, entirely underground. A
+   *   caller placing something at an
    *   anchor should take the ground height at its own x, z, exactly as
    *   rocks.js says of the same field. It also moves when `_reground` re-seats
    *   the tile on a re-split chunk, so an anchor read once is a snapshot rather
@@ -1561,12 +1597,12 @@ export class Trees {
 
   /**
    * `anchorsInto` with the instance transform beside its foot: TRUNK_STRIDE of
-   * [x, y, z, base trunk radius, instance scale, yaw, variant], under exactly
-   * the contract above (resident tiles, the full-density band, y the trunk's
-   * own sunken origin). For a creature that climbs the trunk rather than
-   * sitting at its foot -- the spiders -- which places itself on the LOD0
-   * bark by `trunkProfile[variant]`, scaled by the scale and turned by the yaw
-   * about +Y, exactly as the batch draws the wood.
+   * [x, y, z, base trunk radius, instance scale, yaw, variant, stretch], under
+   * exactly the contract above (resident tiles, the full-density band, y the
+   * trunk's own sunken origin). For a creature that climbs the trunk rather
+   * than sitting at its foot -- the spiders -- which places itself on the LOD0
+   * bark by `trunkProfile[variant]`, scaled by the scale, its Y by the stretch
+   * on top, and turned by the yaw about +Y, exactly as the batch draws the wood.
    */
   trunksInto(x0, z0, x1, z1, out) {
     const cap = (out.length / TRUNK_STRIDE) | 0
@@ -1593,6 +1629,7 @@ export class Trees {
           out[o + 4] = scale
           out[o + 5] = this.instYaw[id]
           out[o + 6] = v
+          out[o + 7] = this.instStretch[id]
           n++
         }
       }
@@ -1680,7 +1717,7 @@ export class Trees {
     const scale = this.instScale[id]
     out.radius = this.unitTrunkRadius[v] * TRUNK_PICK_SLACK * scale
     out.base = 0
-    out.rise = this.unitCrownBase[v] * scale
+    out.rise = this.unitCrownBase[v] * scale * this.instStretch[id]
     return out
   }
 
@@ -1688,10 +1725,11 @@ export class Trees {
   pickCrownAt(id, out) {
     const v = this.variantAt[id]
     const scale = this.instScale[id]
+    const tall = scale * this.instStretch[id]
     const base = this.unitCrownBase[v]
     out.radius = this.unitCrownRadius[v] * scale
-    out.base = base * scale
-    out.rise = (this.unitHeight[v] - base) * scale
+    out.base = base * tall
+    out.rise = (this.unitHeight[v] - base) * tall
     if (!(out.rise > 0)) throw new Error(`Trees: variant ${v} branches at ${base} m, at or above its own height ${this.unitHeight[v]} m`)
     return out
   }
@@ -1806,6 +1844,9 @@ export class Trees {
     // stream is byte-for-byte what it always was and the wood stands exactly
     // where it did wherever the keep-probability is 1.
     const keepRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x5bd1e995))
+    // A THIRD for the stretch and the sink, two draws per candidate, on the
+    // same terms.
+    const formRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x7f4a7c15))
     const ids = tile ? tile.ids : new Int32Array(this.perTile)
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
     let n = tile ? tile.n : 0
@@ -1833,6 +1874,8 @@ export class Trees {
       // One roll against the keep-probability the treeline and the biome
       // multiply into.
       const keepRoll = keepRand()
+      const stretch = STRETCH[0] + formRand() * (STRETCH[1] - STRETCH[0])
+      const sinkRoll = formRand()
 
       if (u >= uNew || u < uOld) continue
 
@@ -1872,6 +1915,18 @@ export class Trees {
       this.instX[id] = x
       this.instZ[id] = z
       this.instScale[id] = scale
+      this.instStretch[id] = stretch
+      // Inland the cube of the draw; on a bank the exponent slides toward
+      // SHORE_SINK.power with the shore's nearness.
+      let sinkPow = 3
+      if (this.shoreSink) {
+        const shore = this.water.shoreDistAt(x, z, SHORE_SINK.reach, h, tan)
+        if (shore < SHORE_SINK.reach) {
+          const near = 1 - Math.max(shore, 0) / SHORE_SINK.reach
+          sinkPow = 3 + (SHORE_SINK.power - 3) * near
+        }
+      }
+      this.instSink[id] = SINK_M * Math.pow(sinkRoll, sinkPow)
       this.instYaw[id] = yaw
       // ON TOP OF THE ROCK IF THERE IS ONE UNDER THE TRUNK. Only rocks over
       // ROCK_STAND_MIN answer, so a tree is never perched on a cobble, and the
@@ -1879,9 +1934,10 @@ export class Trees {
       // is always already there. `max` rather than a branch because a rock the
       // scatter has bedded almost entirely can have its top BELOW the ground at
       // the trunk, and a tree must not be dropped into a hill to reach it.
+      // The tree's own sink comes off whichever it stands on.
       const ground = this._groundFor(x, z)
       const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
-      this.instLift[id] = Math.max(-PLACEMENT.sink * scale, top - ground)
+      this.instLift[id] = Math.max(-PLACEMENT.sink * scale, top - ground) - this.instSink[id]
       this.instY[id] = ground + this.instLift[id]
 
       // Born as its far card -- the clump card if its rank is in this level's
@@ -2030,9 +2086,10 @@ export class Trees {
   /**
    * Instance `id`'s matrix as drawn on `tier`: the tree's own scale on every
    * tier but the clump, which is a picture of a stand and scales as one
-   * (CLUMP_SCALE). A pure function of the instance and the tier, so a tier
-   * change and a ghost both compose rather than copy. Returns the scratch
-   * matrix; write it before composing again.
+   * (CLUMP_SCALE), and its own stretch on every tier including the clump, so
+   * the tree is one height at every distance. A pure function of the
+   * instance and the tier, so a tier change and a ghost both compose rather
+   * than copy. Returns the scratch matrix; write it before composing again.
    */
   _composeAt(id, tier) {
     let scale = this.instScale[id]
@@ -2041,7 +2098,7 @@ export class Trees {
     }
     this._p.set(this.instX[id], this.instY[id], this.instZ[id])
     this._q.setFromAxisAngle(this._up, this.instYaw[id])
-    this._s.set(scale, scale, scale)
+    this._s.set(scale, scale * this.instStretch[id], scale)
     return this._m.compose(this._p, this._q, this._s)
   }
 
@@ -2370,6 +2427,9 @@ export const TREE_TUNING = {
   DEADWOOD_CLEARANCE,
   FADE_MAX_INFLIGHT,
   SCALE,
+  STRETCH,
+  SINK_M,
+  SHORE_SINK,
   CLUMP_FULL_TO,
   CLUMP_TREES,
   CLUMP_SCALE,

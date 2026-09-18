@@ -2570,6 +2570,15 @@ console.log('\nscatter')
     check(nearEdge(boulders(oneEdge), -1) > nearEdge(boulders(noEdge), -1) && nearEdge(boulders(oneEdge), 1) > nearEdge(boulders(noEdge), 1),
       'and inside it there are more on both the wet side and the dry',
       `wet ${nearEdge(boulders(oneEdge), -1)} vs ${nearEdge(boulders(noEdge), -1)}, dry ${nearEdge(boulders(oneEdge), 1)} vs ${nearEdge(boulders(noEdge), 1)}`)
+    // A WORLD THAT IS ALL WATERLINE is also the one place in this file a pool
+    // runs dry: the shore bed's pool is sized to the real map's peak
+    // (`siteFrac`) and here every tile is shore, so what runs is the
+    // drop-and-warn path a measured pool is safe because of -- the warning
+    // above is it, and the world is placed with holes rather than not at all.
+    const dryShore = allEdge.beds.find((x) => x.cfg.name === 'shore')
+    check(dryShore.rejected.pool > 0 && dryShore.poolDry && dryShore.freeCount === 0,
+      'a pool that runs dry drops the rock and warns instead of throwing',
+      `shore dropped ${dryShore.rejected.pool} past its full pool of ${dryShore.maxInstances}`)
     allEdge.dispose()
     oneEdge.dispose()
     shoreRocks.dispose()
@@ -2679,6 +2688,14 @@ console.log('\nscatter')
   // lowest corner lands against the ground the scatter used, and divide by the
   // extent it actually stands. That also folds in the ground lean and the
   // jitter, which the old arithmetic could not see at all.
+  //
+  // AND WHAT THE ROLL ASKED FOR IS RECOVERED FROM THE SQUASH. Past SQUASH_AT a
+  // rock is flattened rather than sunk (rocks.js), so the geometry of one that
+  // rolled nine tenths stands six tenths under; the squash is the short column
+  // of the matrix over `instScale`, and `1 - (1 - f) * squash` is the fraction
+  // of the UNSQUASHED boulder that would have been under. That is the number
+  // every claim about the roll below is made on; the raw `f` is what the
+  // squash pins, and is asserted separately.
   {
     const mat = new THREE.Matrix4()
     const v = new THREE.Vector3()
@@ -2686,6 +2703,8 @@ console.log('\nscatter')
       const bed = rocks.beds.find((b) => b.cfg.name === bedName)
       const out = []
       out.tall = []
+      out.raw = []
+      out.squash = []
       for (const t of bed.tiles.values()) {
         for (let k = 0; k < t.n; k++) {
           const id = t.ids[k]
@@ -2704,13 +2723,18 @@ console.log('\nscatter')
           // `_reground` writes instY = ground - instSink, so the ground the
           // scatter seated this rock against comes straight back out.
           const f = (bed.instY[id] + bed.instSink[id] - lo) / (hi - lo)
-          out.push(f)
+          const e = mat.elements
+          const squash = Math.min(
+            Math.hypot(e[0], e[1], e[2]), Math.hypot(e[4], e[5], e[6]), Math.hypot(e[8], e[9], e[10])
+          ) / bed.instScale[id]
+          out.raw.push(f)
+          out.squash.push(squash)
+          out.push(1 - (1 - f) * squash)
           // WHICH WAY THE QUARTER TURN STOOD IT, taken off the matrix column
           // whose y component dominates rather than off the leaned box: a lean
           // of up to 40 degrees swells the box enough to make a rock on its
           // longest side measure "tall" by extent, and it is the TURN the deeper
           // floor keys off. See SINK_TALL.
-          const e = mat.elements
           const ay = [Math.abs(e[1]), Math.abs(e[5]), Math.abs(e[9])]
           const up = ay[0] > ay[1] && ay[0] > ay[2] ? 0 : ay[1] > ay[2] ? 1 : 2
           const ext = [s.measured.width, s.measured.height, s.measured.depth]
@@ -2723,18 +2747,42 @@ console.log('\nscatter')
     const stat = (a) => ({
       min: amin(a), max: amax(a), mean: a.reduce((x, y) => x + y, 0) / a.length, n: a.length,
     })
-    const flat = stat(fracs(forestRocks, 'boulders'))
+    const flatFracs = fracs(forestRocks, 'boulders')
+    const flat = stat(flatFracs)
     const steep = stat(fracs(cliffRocks, 'boulders'))
 
     check(flat.mean > 0.02, 'a rock on the flat is bedded into the ground',
       `${(flat.mean * 100).toFixed(0)}% of its height on average, over ${flat.n}`)
+    // THE SQUASH, ON THE GEOMETRY. No rock in the wood stands more than
+    // SQUASH_AT under -- with the lean's slack on top, since tipping a slab drops
+    // a corner below where it was seated -- and the ones that rolled deeper are
+    // the ones that are shorter than their scale says, pinned at SQUASH_AT. Both
+    // ends of the squash should turn up: a roll at SINK_DEEP is a slab half as
+    // tall, and one just past the threshold is barely touched.
+    {
+      const raw = flatFracs.raw
+      const sq = flatFracs.squash
+      const flattened = sq.filter((q) => q < 0.99)
+      check(amax(raw) < 0.72, 'no rock in the wood is more than six tenths under: past that it is squashed, not sunk',
+        `deepest ${(amax(raw) * 100).toFixed(0)}% of what it stands, over ${raw.length}`)
+      check(flattened.length > raw.length * 0.2 && flattened.length < raw.length * 0.95,
+        'and most of them, not all, are squashed',
+        `${flattened.length} of ${raw.length} are shorter than their scale`)
+      check(amin(sq) < 0.6 && amax(flattened) > 0.9,
+        'from a slab half as tall to one barely touched',
+        `squash ${amin(sq).toFixed(2)} .. ${amax(flattened).toFixed(2)}`)
+      const pinned = raw.filter((f, i) => sq[i] < 0.99)
+      check(amin(pinned) > 0.45 && amax(pinned) < 0.72,
+        'and every squashed slab stands the six tenths under the squash pinned it at',
+        `${(amin(pinned) * 100).toFixed(0)}% .. ${(amax(pinned) * 100).toFixed(0)}% over ${pinned.length}`)
+    }
     // 1.1x, and the shrinking margin is the roll eating it. The floor is what
     // the slope moves -- 40% flat, 68% at the limit -- but the roll runs from
     // the floor to 80% either way, so on flat ground the mean already sits near
     // 60% and the cliff has only the top of the range left to pull it into. The
     // FLOOR below is the exact half of this promise; the mean is the half that
     // says the floor is actually reaching the population.
-    check(steep.mean > flat.mean * 1.1, 'and averaged over a hillside, a rock on a cliff is bedded deeper',
+    check(steep.mean > flat.mean * 1.1, 'and averaged over a hillside, a rock on a cliff is bedded deeper, or squashed for it',
       `${(steep.mean * 100).toFixed(0)}% vs ${(flat.mean * 100).toFixed(0)}%`)
     // The floor, which is the half of the promise that is still exact. Nothing
     // on the cliff may be as shallow as the shallowest thing on the flat -- that
@@ -3099,34 +3147,43 @@ console.log('\nscatter')
         'and ground with no rock on it answers no spans, off the resident tiles included')
     }
 
-    // THE ONE ALGEBRAIC CLAIM THE SURFACE QUERY RESTS ON. `_spanAt` inverts
-    // the mesh matrix's upper 3x3 as `transpose / s2`, which is its inverse
-    // ONLY while the scale is uniform. rocks.js writes `_s.set(scale, scale,
-    // scale)` for the mesh today, so it is -- and if a bed ever starts
-    // stretching one axis (an `elongate` applied at placement rather than in
-    // the mesh, say) the identity fails, the ray is bent, and every prop on a
-    // rock in that bed stands in the wrong place. Nothing about that throws and
-    // nothing about it is visible from a node gate except this.
+    // THE ONE ALGEBRAIC CLAIM THE SURFACE QUERY RESTS ON. `_spanAt` and `_rayAt`
+    // invert the mesh matrix's upper 3x3 as its transpose with each column
+    // divided by its own squared length, which is the inverse ONLY while the
+    // columns are orthogonal. rocks.js composes a rotation over the quarter-turn
+    // roll and a squash along the rolled box's up, and a quarter turn keeps the
+    // squashed axes orthogonal -- but a free roll angle, or a second squash axis
+    // applied after a lean, would not, and then the ray is bent and every prop
+    // on a rock in that bed stands in the wrong place. Nothing about that throws
+    // and nothing about it is visible from a node gate except this.
     //
     // Measured on the CLIFF, because that is where the leans are: the tilting
     // beds compose a ground tilt on top of the yaw, and a rotation
     // is exactly where a transpose stops being an inverse if a scale is hiding
     // in it. The identity is checked as a matrix product rather than by reading
-    // the scale back out, which is the same inverse the query takes.
+    // the columns back out, which is the same inverse the query takes; and that
+    // the squash is actually in the matrices, since a placement that dropped it
+    // would pass the identity with every rock an iceberg again.
     {
       const m = new THREE.Matrix4()
       const M = new THREE.Matrix3()
       const T = new THREE.Matrix3()
       let worst = 0
       let n = 0
+      let squashed = 0
       for (const bed of cliffRocks.beds) {
         for (const t of bed.tiles.values()) {
           for (let k = 0; k < t.n; k++) {
             m.fromArray(bed.instM, t.ids[k] * 16)
             M.setFromMatrix4(m)
             const e = M.elements
-            const s2 = e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
-            T.copy(M).transpose().multiplyScalar(1 / s2)
+            const len = [0, 3, 6].map((o) => Math.hypot(e[o], e[o + 1], e[o + 2]))
+            if (Math.min(...len) < Math.max(...len) * 0.99) squashed++
+            T.copy(M).transpose()
+            const te = T.elements
+            for (let r = 0; r < 3; r++) {
+              for (let c = 0; c < 3; c++) te[c * 3 + r] /= len[r] * len[r]
+            }
             T.multiply(M)
             const I = T.elements
             for (let r = 0; r < 3; r++) {
@@ -3139,8 +3196,11 @@ console.log('\nscatter')
         }
       }
       check(n > 0 && worst < 1e-4,
-        'every rock mesh matrix has a uniform scale, so _spanAt\'s transpose really is an inverse',
+        'every rock mesh matrix has orthogonal columns, so _spanAt\'s transpose over the column lengths really is an inverse',
         `worst departure from identity ${worst.toExponential(1)} over ${n} instances`)
+      check(squashed > 0 && squashed < n,
+        'and some of them, not all, are squashed slabs',
+        `${squashed} of ${n} instances have one column shorter than the others`)
     }
   }
 

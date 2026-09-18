@@ -326,11 +326,36 @@ export const TREE_V8_DEFAULTS = {
 // Every one is at its own natural size, and every one fits its LOD0 in the 550
 // of design/05-rendering.md's tree row.
 // ---------------------------------------------------------------------------
+// The planted pine stands PINE_TRUNK_MORE metres of bare trunk taller than the
+// defaults: the crown, the foot and the whorl spacing are the defaults' to the
+// metre, so every fraction-of-height knob that shapes them is scaled by the
+// old height over the new and the lowest whorl is lifted by exactly the extra
+// trunk. That much clearance under the hem is what lets a walker see through a
+// stand at eye height; trees.js then stretches and sinks each instance to vary it.
+const PINE_TRUNK_MORE = 2
+const PINE_H = TREE_V8_DEFAULTS.height + PINE_TRUNK_MORE
+const PINE_K = TREE_V8_DEFAULTS.height / PINE_H
+
 export const TREE_V8_SPECIES = {
   // The tree the generator was written for: a spire, whorled, with the widest
   // ring at the very bottom (`crownPeak` 0) and boughs that hang more than they
   // reach.
-  pine: { label: 'pine', mat: V8_MATS.pine, nearMat: V8_NEAR_MATS.pine, params: {} },
+  pine: {
+    label: 'pine',
+    mat: V8_MATS.pine,
+    nearMat: V8_NEAR_MATS.pine,
+    params: {
+      height: PINE_H,
+      skirtBottom: (TREE_V8_DEFAULTS.skirtBottom * TREE_V8_DEFAULTS.height + PINE_TRUNK_MORE) / PINE_H,
+      crownRadius: TREE_V8_DEFAULTS.crownRadius * PINE_K,
+      trunkRadius: TREE_V8_DEFAULTS.trunkRadius * PINE_K,
+      trunkBend: TREE_V8_DEFAULTS.trunkBend * PINE_K,
+      rootRise: TREE_V8_DEFAULTS.rootRise * PINE_K,
+      rootLength: TREE_V8_DEFAULTS.rootLength * PINE_K,
+      // Bark tiles are metres, so the taller trunk gets more of them.
+      barkRepeat: Math.round(TREE_V8_DEFAULTS.barkRepeat / PINE_K),
+    },
+  },
 
   // OAK, and the ONE ASCENDING crown in the bank -- everything the header says
   // about the second form is here or nowhere. A short thick bole under a crown

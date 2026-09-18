@@ -60,11 +60,12 @@ const IDENTITY = new THREE.Matrix4()
 
 // ---------------------------------------------------------------------------
 // HOW OFTEN A PUPPET RE-POSES, BY THE RUNG IT DRAWS ON: every frame on the top
-// two rungs, then every second and fourth frame. A pose is ~4 us of CPU for a
-// 31-bone stag on a desktop core plus its bone texture's upload, so at a crowd
-// of twenty this whole lever is under a millisecond either way; it stays
-// because the held frames are visible in a headset and the rungs it skips on
-// are the ones where they are not. This is the one lever the
+// rung, then every second, third and sixth frame -- 72, 36, 24 and 12 Hz in a
+// headset. A pose is the mixer, every bone's matrix, the leg IK and the rig's
+// world pass, then the bone texture's upload, and a crowd's posing is most of
+// what the wildlife costs a frame; the top rung is the one where a held frame
+// is visible, and the rungs below it hold the animal at a size where it is
+// not. This is the one lever the
 // ladder does NOT give us -- three uploads a skeleton's bone texture once a
 // frame per skeleton drawn, whichever tier that is, so a rung-3 stag costs the
 // same skinning as a rung-0 one. Skipping the pose is what makes a distant
@@ -84,7 +85,7 @@ const IDENTITY = new THREE.Matrix4()
 // the body frozen where it stood, and the animal would cross the ground in
 // hops of its own cadence.
 // ---------------------------------------------------------------------------
-export const POSE_EVERY = [1, 1, 2, 4]
+export const POSE_EVERY = [1, 2, 3, 6]
 const poseEvery = (tier) => (tier < 0 ? POSE_EVERY[POSE_EVERY.length - 1] : POSE_EVERY[Math.min(tier, POSE_EVERY.length - 1)])
 // Puppets built one after another start their count on different frames, so a
 // herd re-poses a few bodies a frame instead of all of them on every fourth.

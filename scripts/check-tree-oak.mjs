@@ -55,9 +55,9 @@ const check = (ok, label, detail = '') => {
 // dialed; the gate does not decide whether it was wanted, it only makes sure
 // nobody finds out on the stage.
 const V8_PINS = {
-  'pine:0': 'trunk=1ef594f423802cac foliage=aa8164ef65564095 tris=352',
-  'pine:1': 'trunk=b83848a437413be2 foliage=e362a69c90e746f8 tris=201',
-  'pine:2': 'trunk=b83848a437413be2 foliage=5a898bf7a2562e24 tris=129',
+  'pine:0': 'trunk=f4ea73f6a9d4e204 foliage=a73b436b7638beba tris=352',
+  'pine:1': 'trunk=ecc7a39a295f50d1 foliage=c9ffcf578a1b0e16 tris=201',
+  'pine:2': 'trunk=ecc7a39a295f50d1 foliage=0dc6c856151ccb96 tris=129',
   'oak:0': 'trunk=be27625b78491d16 foliage=c68dbb520ea6c27f tris=432',
   'oak:1': 'trunk=0fd6881c2ed9fee0 foliage=94cf8605ccf099fb tris=219',
   'oak:2': 'trunk=0fd6881c2ed9fee0 foliage=b6de989ba4754c80 tris=75',
