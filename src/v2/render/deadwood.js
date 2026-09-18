@@ -60,17 +60,21 @@ import { smoothstep } from '../../sim/mathx.js'
 //    live wood: full DENSITY in forest cover, a quarter of it in the open
 //    (COVER, off the same biome field the trees read).
 //
-// WHAT IT COSTS. At 0.003 pieces/m^2 every piece stands to its last mesh rung
-// (FULL_RUNG) and is thinned as 1/d past it in its own arc, so what is resident
-// far out is the big pieces, and past their arc cull they are hidden: ~4900
-// resident of a 7500 pool in full cover on flat ground (the gate's ladder
-// walk), ~1350 of them drawn, and past a few hundred metres the odd long log
-// as a card. The shipped ladders run ~2000/1000/500/200 (stump) and
-// ~1000/500/250/100 (log) triangles and a 2 m stump is on T3 from 36 m and a
-// card from 72, so the layer measures ~108k triangles there, most of it T3
-// meshes between 20 and 40 sizes out, and the per-frame walk over the
-// resident pieces ~0.8 ms in node. Dead wood is something you come across,
-// not something you wade through.
+// WHAT IT COSTS. Every piece stands to its last mesh rung (FULL_RUNG) and is
+// thinned as 1/d past it in its own arc, so what is resident far out is the
+// big pieces, and past their arc cull they are hidden: ~430 resident of a
+// 730 pool in full cover on flat ground, ~115 of them drawn, half as cards.
+// The shipped ladders run ~2000/1000/500/200 (stump) and ~1000/500/250/100
+// (log) triangles, so the layer measures ~8k triangles per eye there (10k at
+// the worst of eight vantages; tmp/probe-deadwood.mjs), a third of it the one
+// or two T0/T1 pieces within 20 m and the rest T3 logs 100-250 m out. THE TWO
+// NUMBERS THAT SET THIS ARE DENSITY AND THE SIZE CEILINGS, not the ladder: a
+// piece is a mesh to 36 times its size and the drawn count goes with the
+// ceiling squared, so at 0.003/m^2 with 20 m logs the same ground was ~4900
+// resident, ~1350 drawn and 108k triangles, three quarters of it 13 m logs
+// drawn as 100-250 triangle meshes at a mean 380 m -- a triangle every pixel
+// or two on a headset, which is what a tile-based GPU is worst at. Dead wood
+// is something you come across, not something you wade through.
 //
 // THE COLOUR is per instance: the fern's ground cue plus a value jitter, so two
 // logs side by side are not the same pixel and a log on scrub is drier than one
@@ -79,9 +83,10 @@ import { smoothstep } from '../../sim/mathx.js'
 
 // Pieces per square metre in full forest cover. Sparse on purpose and by a long
 // way: trees.js runs at 0.05 stems/m^2, so this is one piece of dead wood for
-// every sixteen standing trees. Deadfall you trip over every few paces reads as
-// a storm's aftermath rather than as an old wood.
-const DENSITY = 0.003
+// every sixty-odd standing trees. Deadfall you trip over every few paces reads
+// as a storm's aftermath rather than as an old wood, and at four times this a
+// forest floor was a lumber yard.
+const DENSITY = 0.00075
 
 // How the biome field (layers/biome.js) reads onto the dead wood: DENSITY at
 // full cover, `openKeep` of it in open meadow, graded over the forest's own
@@ -95,10 +100,10 @@ const COVER = { ramp: TREE_TUNING.BIOME.ramp, openKeep: 0.25 }
 // graded thinning only ever takes a piece off its CARD. Past it a piece of rank
 // r stands to that rung's reach / r, so the density still halves as the
 // distance doubles, but in units of each piece's own arc rather than in
-// metres -- a 2 m stump is thinned from 36 m, a 20 m log from 360 -- and half
+// metres -- a 2 m stump is thinned from 72 m, a 10 m log from 360 -- and half
 // the pieces of every size reach their cull. Thinned in metres from one radius
-// the way the other scatters are, an 8 m stump was usually gone at a hundred
-// metres while its ladder still had 500 m of card to give (rocks floor the
+// the way the other scatters are, a 4 m stump was usually gone at a hundred
+// metres while its ladder still had 150 m of card to give (rocks floor the
 // rank against the same thing). `_plan` folds the size into the stored rank
 // so the tile ladder reads one scalar; `keepAt` is what a level keeps of it.
 const FULL_RUNG = GEN_PROP_LODS
@@ -108,23 +113,23 @@ const KEEP_SAMPLES = 64
 
 // The ladder's rungs: the pick, its three decimated tiers, the card, and past
 // the card culled -- critterTier's rungs, so a 2 m stump steps at 9, 18, 36
-// and 72 m and is gone past 144, and a 20 m log holds its card to 1.4 km.
+// and 72 m and is gone past 144, and a 10 m log holds its card to 720 m.
 export const RUNGS = GEN_PROP_LODS + 2
 // How far past the last mesh rung a tile can still hold a mesh, per metre of its biggest piece.
 const MESH_REACH = lodReach(1, RUNGS - 2) * (1 + LOD_HYSTERESIS)
 
-// Ceilings on the LOD cross-dissolve, in instances; past either a step pops.
-// A ghost is a pool id, and the pool is sized 1.5x the seated sum against a
-// walk that peaks at 1.3x (`_poolBound`), so the reserve is what keeps the
-// ghosts out of the tiles' slack. Every mesh's cap is the whole pool
-// (`_tierCaps`), so there is no per-mesh ceiling to ask about.
-const FADE_MAX_INFLIGHT = 256
-const FADE_POOL_RESERVE = 512
+// Ghosts the pool carries over its tile bound, each a step's departing tier
+// dissolving out (`_crossFade`); past this many in flight a step pops. On top
+// of the bound rather than a reserve inside it, so a ghost never takes a slot
+// a growing tile is about to ask for: a few hundred pieces resident, a handful
+// stepping at once. Every mesh's cap is the whole pool (`_tierCaps`), so there
+// is no per-mesh ceiling to ask about.
+const FADE_MAX_INFLIGHT = 64
 
-// Metres per tile. The forest's 25 rather than the fern's 12, because at this
-// density a 12 m tile holds under half a candidate and the keep-fraction has
-// nothing to grade. 25 m gives 1.875, rounded to 2.
-const TILE = 25
+// Metres per tile. Twice the forest's 25, because at this density a 25 m tile
+// holds under half a candidate, which `perTile` would round up to one and
+// double the density behind the knob's back; 50 m gives 1.875, rounded to 2.
+const TILE = 50
 
 // The attitude roll. A stump leans by up to this many degrees about a random
 // horizontal bearing: a snag is a trunk the wind has been at. A log lies as it
@@ -147,12 +152,12 @@ const NEAR_MARGIN = TILE * 1.5
 const SCAN_STEP_SQ = (TILE / 4) ** 2
 
 // Metres between the ground samples a log's belly is seated on, and the ceiling
-// on how many it may take. A 2 m log gets two samples and the 20 m one at the
-// top of LOG_LENGTH gets fourteen; see `_seat`. The CEILING is the number that
+// on how many it may take. A 2 m log gets two samples and the 10 m one at the
+// top of LOG_LENGTH gets seven; see `_seat`. The CEILING is the number that
 // has to follow the band -- it is what stops a long piece from being sampled
 // coarser than SEAT_SPACING promises, which is daylight under a belly.
 const SEAT_SPACING = 1.5
-const SEAT_MAX_SAMPLES = 16
+const SEAT_MAX_SAMPLES = 8
 
 // Metres from the camera a tile's plan (`_plan`) is kept once built: past the
 // forest's 1.5 km draw radius, so a tile the trees asked about is never
@@ -216,8 +221,8 @@ const PLACEMENT = {
   // And a share of the piece's own radius on top of that, because the shipped
   // mesh touches y = 0 at its LOWEST point only: a knotted belly clears the
   // ground elsewhere by a fraction of its thickness, and that gap scales with
-  // the piece, so the burial that closes it must too. A 20 m log is 3 m thick
-  // and beds half a metre; a 2 m one beds a few centimetres.
+  // the piece, so the burial that closes it must too. A 10 m log is 1.5 m thick
+  // and beds a decimetre; a 2 m one beds a couple of centimetres.
   bed: 0.15,
 }
 
@@ -227,21 +232,24 @@ const PLACEMENT = {
 // bench ships next.
 //
 // STUMPS ARE MEASURED BY HEIGHT, the dimension you judge a standing thing by: one
-// metre (a cut stump) to eight (a storm-snapped spar you can stand under).
-// `pow(u, 2.5)` puts the median at 2.2 m, chest high, and the one-in-ten at 6.4 m.
+// metre (a cut stump) to four (a storm-snapped spar taller than she is).
+// `pow(u, 2.5)` puts the median at 1.5 m, waist high, and the one-in-ten at 3.3 m.
 //
-// LOGS ARE MEASURED BY LENGTH, two metres to twenty. The cube skew keeps the top
-// an OBSTACLE rather than the norm: `pow(u, 3)` puts the median piece at 4.3 m
-// and the one-in-ten at 15 m.
+// LOGS ARE MEASURED BY LENGTH, two metres to ten. The cube skew keeps the top an
+// OBSTACLE rather than the norm: `pow(u, 3)` puts the median piece at 3 m and
+// the one-in-ten at 7.8 m.
 //
-// The ceiling is not free: it sets `maxHalf`, the tile reach every point query
-// pays, and it sets SEAT_MAX_SAMPLES, which is sized off it by hand and says so.
+// The ceiling is not free, and THE CEILING IS WHAT THE LAYER COSTS: the ladder
+// draws a piece as a mesh to 36 times its size, so the drawn meshes are the
+// biggest pieces, hundreds of metres out, and the count of them goes with the
+// ceiling squared. It also sets `maxHalf`, the tile reach every point query
+// pays, and SEAT_MAX_SAMPLES, which is sized off it by hand and says so.
 // Exported so the gate can measure the placed instances AGAINST the band rather
 // than against itself: the bug these replaced was perfectly self-consistent, and
 // a check that reads the same constant the scatter reads would have passed.
-export const SNAG_HEIGHT = [1.0, 8.0]
+export const SNAG_HEIGHT = [1.0, 4.0]
 const SNAG_SKEW = 2.5
-export const LOG_LENGTH = [2.0, 20.0]
+export const LOG_LENGTH = [2.0, 10.0]
 const LOG_SKEW = 3.0
 
 // How far the per-instance tint is pulled toward the terrain colour underfoot,
@@ -255,15 +263,15 @@ const LOG_SKEW = 3.0
 const GROUND_CUE = 0.45
 
 // Mixed into the world seed, and not cosmetic. trees.js, ferns.js, grass.js and
-// this file all hash a tile with the same `tileSeed` off the same world SEED,
-// all use 25 m tiles, and all spend their first two draws on
-// `x = (tx + rand()) * TILE` and the same for z. Identical hash plus identical
-// stream plus identical draw order is the SAME SEQUENCE, so candidate k here
-// landed at candidate k's position in the forest -- and since the forest keeps
-// off the dead wood (`occupiesAt`), that would have refused the first tree of
-// every tile that grew a piece. A salt decorrelates the stream while leaving it
-// a pure function of position, so the world is still the same world every time
-// it is walked.
+// this file all hash a tile with the same `tileSeed` off the same world SEED
+// and all spend their first two draws on `x = (tx + rand()) * TILE` and the
+// same for z. Identical hash plus identical stream plus identical draw order is
+// the SAME SEQUENCE: on a shared grid candidate k here lands at candidate k's
+// position in the forest, and since the forest keeps off the dead wood
+// (`occupiesAt`), that refuses the first tree of every tile that grew a piece.
+// A salt decorrelates the stream while leaving it a pure function of position,
+// so the world is still the same world every time it is walked; the grids
+// being different sizes is not relied on for it.
 const SEED_SALT = 0x5ea51f
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
@@ -582,7 +590,7 @@ export class Deadwood {
       this.keepAt[q] = keep / (this.variantCount * KEEP_SAMPLES)
     }
 
-    this.maxInstances = this._poolBound()
+    this.maxInstances = this._poolBound() + FADE_MAX_INFLIGHT
 
     // A material per variant, and another per variant's card: each wears its
     // own shipped map (gen-props.js). The card's map is photographed off the
@@ -710,11 +718,11 @@ export class Deadwood {
   }
 
   /**
-   * How many instances the pool has to hold. Same tile-grid sum its siblings
-   * use, with more headroom: the grid reaches the longest log's card, 1.4 km,
-   * so ten thousand thinned tiles ring the full disc, and a walk that grows
-   * tiles on one side before the thin catches up on the other peaks at 1.3x
-   * the seated sum (check-scatter-pools measures it).
+   * How many instances the tiles can hold, before the ghosts. Same tile-grid
+   * sum its siblings use, with more headroom: the grid reaches the longest
+   * log's card, 720 m, so hundreds of thinned tiles ring the full disc, and a
+   * walk that grows tiles on one side before the thin catches up on the other
+   * peaks at 1.3x the seated sum (check-scatter-pools measures it).
    */
   _poolBound() {
     return poolBound(TILE, this.tileSpan, this.evictSq, 1.5,
@@ -1073,7 +1081,7 @@ export class Deadwood {
     //
     // SAMPLED BY LENGTH AND NOT BY COUNT, because what leaks daylight is the ground
     // BETWEEN two samples, which depends on their spacing rather than their number:
-    // a fixed five is plenty for a 2 m log and leaves a 20 m one hanging. At
+    // a fixed five is plenty for a 2 m log and leaves a 10 m one hanging. At
     // SEAT_SPACING the worst a smooth rise can bulge between neighbours is a couple
     // of centimetres, under the terrain mesh's own faceting and inside any log's
     // radius.
@@ -1547,7 +1555,6 @@ export class Deadwood {
     // A rim transition owns the slot while it runs and outranks this one.
     if (this.rim.isBusy(i)) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
-    if (this.freeCount <= FADE_POOL_RESERVE) return
 
     const dup = this.free[--this.freeCount]
     this.batch.getMatrixAt(i, this._m)

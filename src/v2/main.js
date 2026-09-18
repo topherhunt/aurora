@@ -1866,7 +1866,7 @@ function updateQuestStats() {
 }
 
 const input = new Input(renderer)
-const peerAvatars = new PeerAvatars(scene)
+const peerAvatars = new PeerAvatars(scene, { camera, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-avatars' }) })
 const room = new URLSearchParams(location.search).get('room') || 'default'
 const netplay = new Netplay({
   room,
@@ -2639,9 +2639,10 @@ async function bootWorld() {
       ambience = new Ambience({
         engine: sound,
         sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
-        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip on top; the crawlers together hold one loop; the dragons beat, roar and growl; the fish swoosh as they set off.
-        herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip' } }, { layer: snowmen, clips: 'human' }],
-        crawlers: [spiders, crabs],
+        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
+        herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }],
+        crawlers: [crabs],
+        startlers: [spiders],
         dragons,
         fish,
       })

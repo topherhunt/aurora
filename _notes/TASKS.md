@@ -112,6 +112,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Wishlist
 
+- [ ] Ruins (in caves?) full of statues that move when you aren't looking, like Weeping Angels. A whole class of monster/creature that you can never actually see move, or hear or talk with, and yet it can pose dangers and opportunities and provide hints to you, ask for help and offer points of help in return.
+- [ ] Idea for a creepy rare wilderness encounter: on misty days, ghosts that pull you into an alternate dimension, where you start hearing creepy sounds and see hints of something sinister following you, and no matter where you go, the world is empty, there's no creatures or NPCs anywhere.
 - [ ] Cheap API-fed TTS so NPCs can actually speak to you with realistic voices.
 
 - [ ] Props should cast shadows on the terrain and on other props. See \_notes/local-shadows.md.

@@ -511,6 +511,10 @@ export class Puppet {
     this.rig.traverse((b) => { b.matrixAutoUpdate = false; this.bones.push(b) })
     // Its feet, if the shipper named its legs; a body without them cannot plant.
     this.ik = asset.legs ? new FootIK(this.bones, asset.legs) : null
+    // A second solver over the pose, on the same contract -- restore before the
+    // mixer, solve after the feet, reset on release -- for a body posed off a
+    // headset (avatar-rig.js VrBody).
+    this.solver = null
     const sphere = poseSphere(asset.tiers)
     this.meshes = asset.tiers.map((geo) => {
       const m = new THREE.SkinnedMesh(geo, mats.plain)
@@ -591,6 +595,7 @@ export class Puppet {
     this.stale = true
     // The mixer snapshots a property it starts driving, so it must not see a solved foot.
     this.ik?.restore()
+    this.solver?.restore()
     if (this.current && this.current !== next && at < 0) {
       next.reset().fadeIn(this.clipFade).play()
       this.current.fadeOut(this.clipFade)
@@ -644,9 +649,11 @@ export class Puppet {
       this.poseIn = this.fade < 1 ? Math.min(poseEvery(this.from), poseEvery(this.to)) : poseEvery(this.to)
       const solving = this.ik?.active ?? false
       if (solving) this.ik.restore()
+      this.solver?.restore()
       this.mixer.update(this.held)
       for (const b of this.bones) b.updateMatrix()
       if (solving) this.ik.solve(this.held, this.clipFade)
+      this.solver?.solve()
       this.rig.updateMatrixWorld(true)
       this.held = 0
     }
@@ -680,6 +687,7 @@ export class Puppet {
   /** Back to nothing at all, at once and without a fade: its creature has gone, not walked off. */
   release() {
     this.ik?.reset()
+    this.solver?.reset()
     this.mixer.stopAllAction()
     this.current = null
     this.cue = -1

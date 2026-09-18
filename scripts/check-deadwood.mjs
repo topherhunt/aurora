@@ -1173,15 +1173,17 @@ const MOCK_LAYERS = {
 
   // THE COVER. Full cover places exactly what no biome places; a world that is
   // forest on one side of x = 0 and open on the other keeps a quarter in the
-  // open. Full density to 300 m so the count on each side is the plan's.
-  const canopy = make({ radius: 300, fullRadius: 300, biome: { coverAt: () => 1 } })
+  // open. Full density to 600 m so the count on each side is the plan's, and
+  // 600 rather than 300 because at 0.00075/m^2 a 300 m disc holds too few
+  // pieces for the ratio to settle inside the tolerance.
+  const canopy = make({ radius: 600, fullRadius: 600, biome: { coverAt: () => 1 } })
   canopy.place(0, 0)
-  const bare = make({ radius: 300, fullRadius: 300 })
+  const bare = make({ radius: 600, fullRadius: 600 })
   bare.place(0, 0)
   check(canopy.placed === bare.placed && canopy.rejected.open === 0,
     'full cover places exactly what no biome places',
     `${canopy.placed} under a closed canopy, ${bare.placed} with no biome`)
-  const split = make({ radius: 300, fullRadius: 300, biome: { coverAt: (x) => (x < 0 ? 1 : 0) } })
+  const split = make({ radius: 600, fullRadius: 600, biome: { coverAt: (x) => (x < 0 ? 1 : 0) } })
   split.place(0, 0)
   let wood = 0
   let open = 0
@@ -1550,7 +1552,7 @@ const MOCK_LAYERS = {
   dw.place(0, 0)
 
   const biggest = Math.max(...dw.bank.variants.map((v, i) => v.lodSize * dw.sHi[i]))
-  check(Math.abs(dw.radius - cullRange(biggest, RUNGS)) < 1e-6 && dw.radius > 1000,
+  check(Math.abs(dw.radius - cullRange(biggest, RUNGS)) < 1e-6 && Math.abs(biggest - LOG_LENGTH[1]) < 1e-6,
     'the grid reaches the biggest piece the bank can place at its cull',
     `${dw.radius.toFixed(0)} m for a ${biggest.toFixed(1)} m piece, ${dw.tiles.size} tiles, a pool of ${dw.maxInstances}`)
   let culls = 0
@@ -1572,8 +1574,8 @@ const MOCK_LAYERS = {
       else if (gone < own - 1e-3) thinnedOnCard++
     }
   }
-  check(culls > 500 && cullWrong === 0, 'every piece is culled at its own size\'s range',
-    `${culls} pieces, a 2 m stump at ${cullRange(2, RUNGS).toFixed(0)} m and a 20 m log at ${cullRange(20, RUNGS).toFixed(0)}`)
+  check(culls > 200 && cullWrong === 0, 'every piece is culled at its own size\'s range',
+    `${culls} pieces, a 2 m stump at ${cullRange(2, RUNGS).toFixed(0)} m and a ${LOG_LENGTH[1]} m log at ${cullRange(LOG_LENGTH[1], RUNGS).toFixed(0)}`)
   check(thinnedEarly === 0 && thinnedOnCard > 0,
     'and the graded thinning takes a piece off its card, never off a mesh rung',
     `${thinnedOnCard} of ${culls} resident pieces thinned inside their card rung, ${thinnedEarly} inside a mesh rung`)
@@ -1679,8 +1681,8 @@ const MOCK_LAYERS = {
   // opposite directions is a fixed difference of biases.
   const wantGap = -(4096 - 1)
   let z = 0
-  // A brisk 6 m/s for 12 s: the scatter is sparse, and a stroll steps too few.
-  for (let f = 1; f <= 12 * 72; f++) {
+  // A brisk 6 m/s for a minute: the scatter is sparse, and a stroll steps too few.
+  for (let f = 1; f <= 60 * 72; f++) {
     z -= 6 / 72
     setPropClock(0.5 + f / 72)
     dw.update(0, 1.6, z)
@@ -1752,10 +1754,12 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  // An 85 m disc of lake on the origin, and a 12 m river ribbon lying straight
+  // A 170 m disc of lake on the origin, and a 12 m river ribbon lying straight
   // across it down the x axis. Every other placement test passes on this ground,
   // which is the point: the only thing that can reject a piece here is water.
-  const LAKE = 85
+  // Full density across the whole disc, so the share below is measured on a
+  // few dozen sites rather than a thinned dozen.
+  const LAKE = 170
   const RIBBON = 6
   const inLake = (x, z) => Math.hypot(x, z) < LAKE
   const inRibbon = (z) => Math.abs(z) < RIBBON
@@ -1766,7 +1770,7 @@ const MOCK_LAYERS = {
   }
 
   const run = (water, layers) => {
-    const d = new Deadwood(new THREE.Scene(), field, water, layers, { seed: 21, bank: shippedBank() })
+    const d = new Deadwood(new THREE.Scene(), field, water, layers, { seed: 21, bank: shippedBank(), fullRadius: LAKE + 30 })
     d.place(0, 0)
     return d
   }

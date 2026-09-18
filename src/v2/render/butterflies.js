@@ -38,6 +38,10 @@
 // the phase runs at FLUTTER_HZ over a wide amplitude about the flat; at rest at
 // REST_HZ over a narrow one about REST_BASE, wings up. Both faces take the
 // authored normal's light, as the critter card does.
+//
+// A butterfly past NEAR_M of her head is stepped every other frame, past
+// 2 * NEAR_M every fourth, with the frames it sat out banked into the step;
+// its matrix is kept on the slot and copied on the frames between.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -45,7 +49,9 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
 
 export const TILE = 16
-export const RADIUS = 40
+export const RADIUS = 30
+// Within this of her head a butterfly is stepped every frame; to twice it every other frame; beyond, every fourth.
+export const NEAR_M = 10
 // Butterflies per square metre: one per 100 m2, so a tile rolls two or three.
 export const DENSITY = 0.01
 export const MAX = 96
@@ -200,6 +206,8 @@ export class Butterflies {
         perch: null, px: 0, py: 0, pz: 0, nx: 0, ny: 1, nz: 0,
         // The wings: phase, and the amplitude / base angle with the figures they ease toward.
         phase: 0, amp: FLUTTER_AMP, base: 0, ampTo: FLUTTER_AMP, baseTo: 0,
+        // The seconds banked since the slot was last stepped, its matrix, and whether the matrix trails the step.
+        held: 0, m: new Float32Array(16), stale: true,
       })
     }
     this.free = this.slots.slice()
@@ -231,6 +239,8 @@ export class Butterflies {
 
   setAsset(asset) {
     this.span = setCritterAsset(this.mesh, this.material, asset, 'butterflies').span
+    // Every kept matrix was scaled by the old span.
+    for (const b of this.slots) b.stale = true
     this.loaded = true
   }
 
@@ -280,6 +290,8 @@ export class Butterflies {
       b.speed = b.spd = between(rand, SPEED)
       b.state = 'fly'
       b.left = between(rand, FLY_S)
+      b.held = 0
+      b.stale = true
       // Grown after dark: already seated, rather than flying to a perch across a tile that has only just appeared. The tile's own generator, so the whole of _enter stays a pure function of its seed.
       if (this.night) {
         const kind = this._perch(b, rand)
@@ -541,9 +553,10 @@ export class Butterflies {
   }
 
   /**
-   * One frame: the tiles follow her head, every butterfly in reach is stepped,
-   * and the ones within DRAW_SPANS of their size are written. `dayness` is the
-   * world's day scalar, and under NIGHT_DAY it is what grounds them.
+   * One frame: the tiles follow her head, every butterfly in reach is stepped
+   * at its distance's cadence, and the ones within DRAW_SPANS of their size
+   * are written. `dayness` is the world's day scalar, and under NIGHT_DAY it
+   * is what grounds them.
    */
   update(hx, hy, hz, dt, dayness = 1) {
     dt = Math.min(dt, 0.1)
@@ -554,25 +567,38 @@ export class Butterflies {
     this.frame++
     const mat = this.mesh.instanceMatrix.array
     const wing = this.wing.array
+    const near2 = NEAR_M * NEAR_M
     let n = 0
     for (const t of this.tiles.values()) {
       for (const b of t.flock) {
-        this._step(b, dt)
         const dx = b.x - hx, dy = b.y - hy, dz = b.z - hz
-        const draw = b.size * DRAW_SPANS
-        if (dx * dx + dy * dy + dz * dz > draw * draw) continue
-        const s = b.size / this.span
-        if (b.state === 'rest') {
-          _pos.set(b.x, b.y, b.z)
-          this._seat(b)
-        } else {
-          // Each downstroke's lift, as a bounce on the wing phase, scaled by how hard the wings are beating.
-          _pos.set(b.x, b.y + STROKE_M * Math.sin(b.phase) * (b.amp / FLUTTER_AMP), b.z)
-          // Roll about the body, then pitch, then the heading: 'YZX' applies X first.
-          _quat.setFromEuler(_euler.set(b.roll, b.yaw, b.pitch, 'YZX'))
+        const d2 = dx * dx + dy * dy + dz * dz
+        const every = d2 < near2 ? 1 : d2 < near2 * 4 ? 2 : 4
+        // The bank is capped where a frame's dt is, so a hitch does not land four times over on a far butterfly.
+        b.held = Math.min(b.held + dt, 0.1)
+        if (every === 1 || (this.frame + b.id) % every === 0) {
+          this._step(b, b.held)
+          b.held = 0
+          b.stale = true
         }
-        _scl.set(s, s, s)
-        _mat.compose(_pos, _quat, _scl).toArray(mat, n * 16)
+        const draw = b.size * DRAW_SPANS
+        if (d2 > draw * draw) continue
+        if (b.stale) {
+          const s = b.size / this.span
+          if (b.state === 'rest') {
+            _pos.set(b.x, b.y, b.z)
+            this._seat(b)
+          } else {
+            // Each downstroke's lift, as a bounce on the wing phase, scaled by how hard the wings are beating.
+            _pos.set(b.x, b.y + STROKE_M * Math.sin(b.phase) * (b.amp / FLUTTER_AMP), b.z)
+            // Roll about the body, then pitch, then the heading: 'YZX' applies X first.
+            _quat.setFromEuler(_euler.set(b.roll, b.yaw, b.pitch, 'YZX'))
+          }
+          _scl.set(s, s, s)
+          _mat.compose(_pos, _quat, _scl).toArray(b.m)
+          b.stale = false
+        }
+        mat.set(b.m, n * 16)
         wing[n * 3] = b.phase
         wing[n * 3 + 1] = b.amp
         wing[n * 3 + 2] = b.base

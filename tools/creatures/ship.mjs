@@ -4,13 +4,12 @@
 //
 //   node tools/creatures/ship.mjs
 //
-// Writes public/creatures/<id>.glb for every biped with a picked mesh candidate
-// and public/creatures/avatars.json listing them with their heights. The world
-// (src/v2/render/avatar.js) dresses each netplay peer in one of these, so the
-// index is the roster of possible avatars. The critters in CRITTERS ship
-// without an index entry -- the world module that scatters each one names its
-// file directly. Every GLB ships PACKED: Tripo's geometry with its one material
-// pointing at public/creatures/<id>.webp, the colour map boxed to the roster's
+// Writes public/creatures/<id>.glb for each critter in CRITTERS -- the static
+// meshes the world scatters as instances, each named directly by the module
+// that scatters it. A biped ships skinned, with its clips, through
+// ship-biped.mjs, and that is what writes avatars.json. Every GLB here ships
+// PACKED: Tripo's geometry with its one material pointing at
+// public/creatures/<id>.webp, the colour map boxed to the roster's
 // `texPx` (tools/tripo-pack.mjs), as an external EXT_texture_webp image. Tripo's
 // three embedded 2048 JPEGs are gone from it -- the roughness and normal maps
 // stay in the work dir, unused -- so the world never decodes them -- and its
@@ -36,8 +35,7 @@ import { packTexture, readGlbChunks, tripoColourJpeg, viewOf } from '../tripo-pa
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
 
-// Non-biped creatures the world scatters on its own terms: src/v2/render/frogs.js,
-// crabs.js and butterflies.js. A biped is shipped by its rig type; these are shipped by name.
+// The creatures the world scatters on its own terms: src/v2/render/frogs.js, crabs.js and butterflies.js.
 const CRITTERS = new Set(['marsh-frog', 'shore-crab', 'meadow-butterfly'])
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
@@ -138,19 +136,13 @@ function pack(id, src, outName, texture, matrix, note) {
 }
 
 fs.mkdirSync(OUT, { recursive: true })
-const avatars = []
 for (const { id } of CREATURES) {
+  if (!CRITTERS.has(id)) continue
   const meta = readMeta(id)
-  const biped = meta.rigType === 'biped'
-  if (!biped && !CRITTERS.has(id)) continue
   const { pickedMesh } = readState(id)
   if (!pickedMesh) {
     console.log(`skip ${id}: no picked mesh`)
     continue
   }
   ship(id, meta, pickedMesh)
-  if (biped) avatars.push({ id, heightM: meta.sizeM })
 }
-if (!avatars.length) throw new Error('nothing to ship -- no biped has a picked mesh')
-fs.writeFileSync(path.join(OUT, 'avatars.json'), JSON.stringify({ avatars }, null, 2) + '\n')
-console.log(`wrote public/creatures/avatars.json with ${avatars.length} avatars`)

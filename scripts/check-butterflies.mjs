@@ -22,7 +22,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
+  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, NEAR_M, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
 } from '../src/v2/render/butterflies.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 
@@ -248,12 +248,19 @@ flock.place(0, 0)
   check(chords.length > 100 && median < 0.85 && chords[Math.floor(chords.length * 0.9)] < 0.97, 'a 3 s stretch of flight is not a straight line', `chord / path: median ${median.toFixed(2)}, 90th ${chords[Math.floor(chords.length * 0.9)].toFixed(2)} over ${chords.length} stretches`)
   check(glided > 0 && flapped > glided * 1.5, 'the wings beat in bursts with short glides between, held at GLIDE_BASE', `${flapped} flapping frames, ${glided} gliding`)
   check(alive().every((b) => b.size >= SIZE_M[0] && b.size <= SIZE_M[1]) && SIZE_M[0] === 0.05 && SIZE_M[1] === 0.2, 'wingspans run 5 to 20 cm', `${Math.min(...alive().map((b) => b.size)).toFixed(3)}..${Math.max(...alive().map((b) => b.size)).toFixed(3)} m`)
+  // Each perch kind is one roll among the kinds in reach when a bout ends near it, so a rarer one may want a few minutes more.
   const L = flock.landings
-  check(L.trunk > 0 && L.rock > 0 && L.fern > 0 && L.deadwood > 0 && L.ground > 0, 'the trunk, the stone, the fern, the stump and the ground each got a landing', JSON.stringify(L))
+  const allKinds = () => L.trunk > 0 && L.rock > 0 && L.fern > 0 && L.deadwood > 0 && L.ground > 0
+  let more = 0
+  for (; more < 72 * 240 && !allKinds(); more++) flock.update(0, 11, 0, dt)
+  check(allKinds(), 'the trunk, the stone, the fern, the stump and the ground each got a landing', `${JSON.stringify(L)} after ${(more / 72).toFixed(0)} s more`)
   // The longest-settled of each state: its wings have had seconds to ease.
   const longest = (state) => alive().filter((b) => b.state === state).sort((a, b) => a.left - b.left)[0]
   const rest = longest('rest')
-  const flier = alive().filter((b) => b.state === 'fly' && !b.glide && b.beat < 0.25).sort((a, b) => a.beat - b.beat)[0]
+  // A flier on the last frames of a flap burst (0.38 s of flapping at least, so the wings have eased from a glide's 0.08) within NEAR_M of her head, where it is stepped every frame; frames until one turns up.
+  const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && b.beat < 0.02 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M).sort((a, b) => a.beat - b.beat)[0]
+  let flier = nearFlier()
+  for (let f = 0; f < 72 * 30 && !flier; f++) { flock.update(0, 11, 0, dt); flier = nearFlier() }
   check(!!rest && Math.abs(rest.amp - REST_AMP) < 0.05 && Math.abs(rest.base - REST_BASE) < 0.05, 'a resting butterfly holds its wings raised, pulsing narrowly', rest ? `amp ${rest.amp.toFixed(2)} base ${rest.base.toFixed(2)}` : 'none resting')
   check(!!flier && Math.abs(flier.amp - FLUTTER_AMP) < 0.05 && Math.abs(flier.base) < 0.05, 'a flapping butterfly flutters wide about the flat', flier ? `amp ${flier.amp.toFixed(2)} base ${flier.base.toFixed(2)}` : 'none flying')
   check(REST_HZ < 1 && FLUTTER_HZ >= 8, 'the pulse is slow and the flutter fast', `${REST_HZ} Hz / ${FLUTTER_HZ} Hz`)

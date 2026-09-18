@@ -39,7 +39,9 @@
 //   its fins are closed slabs a tenth of a millimetre thick, so a loader that
 //   forgets to cull shows z-fighting the shipped game never would, or ships
 //   it. Every src file that loads from a Tripo work directory or from
-//   public/creatures has to import src/tripo-culling.js.
+//   public/creatures has to import src/tripo-culling.js, or load only through
+//   a loader that does (critters.js loadCritterGlb, puppet.js loadSkinnedAsset,
+//   snowmen.js loadBipedGlb) and never GLTFLoader itself.
 //
 //   A CREATURE SHIPS OVER THE TEXTURE CAP. Nothing generated enters the world
 //   with a colour map wider than TEX_PX_MAX, and a designated-small creature
@@ -223,9 +225,11 @@ const srcFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((
   e.isDirectory() ? srcFiles(path.join(dir, e.name)) : e.name.endsWith('.js') ? [path.join(dir, e.name)] : [])
 const loaders = srcFiles(path.join(ROOT, 'src')).filter((f) => TRIPO_PATH.test(fs.readFileSync(f, 'utf8')))
 check(loaders.length >= 5, `found the Tripo loaders (${loaders.length}; the bench, the rig editor, the tree bench, avatar.js, critters.js)`)
+const CULLING_LOADERS = /\b(loadCritterGlb|loadSkinnedAsset|loadBipedGlb)\b/
 for (const f of loaders) {
-  check(/from '[./]*\/tripo-culling\.js'/.test(fs.readFileSync(f, 'utf8')),
-    `${path.relative(ROOT, f)} imports tripo-culling.js -- a Tripo loader that does not cull z-fights its fins`)
+  const text = fs.readFileSync(f, 'utf8')
+  const culls = /from '[./]*\/tripo-culling\.js'/.test(text) || (CULLING_LOADERS.test(text) && !/GLTFLoader|loadAsync/.test(text))
+  check(culls, `${path.relative(ROOT, f)} imports tripo-culling.js or loads only through a loader that does -- a Tripo loader that does not cull z-fights its fins`)
 }
 
 // --- every shipped creature is under the texture cap -------------------------

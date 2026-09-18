@@ -17,8 +17,8 @@
 // in the spec is a count: raptors only above the snow or by a cliff, an owl only
 // at night in dense wood, crickets on their 1.5-3 s beat, footsteps on theirs
 // and after a teleport, the brook loop on only by the river, the wind only over
-// the snow or high off the ground, a dragon's wingbeats on its clip's cycle
-// and its roars and growls on theirs, and nothing at all above the surface
+// the snow or high off the ground, a dragon's wingbeats and treads on their
+// clips' cycles and its roars and growls on theirs, and nothing at all above the surface
 // while she is under it.
 //
 // What this can NOT check: what any of it sounds like. That needs ears, in the
@@ -670,7 +670,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   // A hidden or frozen layer lists nothing, so nothing is heard; a gait with no footfalls is a bug, not silence.
   let threw = 0
   try { new Ambience({ engine, sense, herds: [{ layer: {}, clips: 'quadruped' }] }) } catch { threw++ }
-  try { new Ambience({ engine, sense, herds: [{ layer: herd, clips: 'wyvern' }] }) } catch { threw++ }
+  try { new Ambience({ engine, sense, herds: [{ layer: herd, clips: 'insect' }] }) } catch { threw++ }
   stag.clip = 'idle'
   try { run(amb, 1 / 60, { head }) } catch { threw++ }
   check(threw === 3, 'a herd without bodies(), an unknown clip library, or a body walking a clip with no footfalls throws')
@@ -682,11 +682,19 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const far = { x: 0, y: GROUND + 1.6, z: 20, size: 0.7, clip: 'walk', cycle: 1.1, speed: 1, sp: { key: 'fox' } }
   const gone = { x: 0, y: GROUND + 1.6, z: Y.reach + 5, size: 0.7, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'fox' } }
   const hare = { x: 2, y: GROUND + 1.6, z: 2, size: 0.5, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'hare' } }
-  const herd = { bodies(into) { into.push(near, far, gone, hare); return into } }
+  // And the stag's grunt, the same machinery on its own rule: one 3 m off, one past its reach.
+  const D = RULES.deerGrunt
+  const stag = { x: -3, y: GROUND + 1.6, z: 0, size: 1.6, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'stag' } }
+  const farStag = { x: 0, y: GROUND + 1.6, z: -(D.reach + 5), size: 1.6, clip: 'idle', cycle: 0, speed: 0, sp: { key: 'stag' } }
+  const herd = { bodies(into) { into.push(near, far, gone, hare, stag, farStag); return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
-  const amb = new Ambience({ engine, sense, rand: mulberry32(21), herds: [{ layer: herd, clips: 'quadruped', calls: { fox: 'foxYip' } }] })
+  const amb = new Ambience({ engine, sense, rand: mulberry32(21), herds: [{ layer: herd, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }] })
   run(amb, 600, {})
+  const grunts = engine.plays.filter((p) => p.name === 'deerGrunt')
+  const meanD = (D.every[0] + D.every[1]) / 2
+  check(grunts.length >= 600 / meanD / 2 && grunts.length <= (600 / meanD) * 2 && grunts.every((p) => p.at.x === -3), `a stag standing ${-stag.x} m off grunts every ${D.every[0]}-${D.every[1]} s, and one past ${D.reach} m never`, `${grunts.length} in 600 s`)
+  check(grunts.every((p) => within(p.gain, D.level * D.gain[0], D.level * D.gain[1]) && within(p.rate, RATE[0], RATE[1])), `within ${D.near} m a grunt is at its ${D.level} level, pitched within the band`, `${Math.min(...grunts.map((p) => p.gain)).toFixed(2)}-${Math.max(...grunts.map((p) => p.gain)).toFixed(2)}`)
   const yips = engine.plays.filter((p) => p.name === 'foxYip')
   const nearY = yips.filter((p) => p.at.x === 3), farY = yips.filter((p) => p.at.z === 20)
   const mean = (Y.every[0] + Y.every[1]) / 2
@@ -701,26 +709,27 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(threw, 'a call with no rule throws')
 }
 {
-  // The crawlers' feet: one quiet loop while any spider or crab within reach is moving, sat at the nearest.
+  // The crawlers' feet: one quiet loop while any crab within reach is moving, sat at the nearest. A spider is a startler: silent on its feet, heard once when it takes fright.
   const C = RULES.crawl
   const spider = { x: 2, y: GROUND + 1.6, z: 0, size: 0.2, speed: 0.05 }
   const crab = { x: 0, y: GROUND + 1.6, z: 1, size: 0.4, speed: 0 }
+  const nearCrab = { x: 2, y: GROUND + 1.6, z: 0, size: 0.4, speed: 0.3 }
   const farCrab = { x: 0, y: GROUND + 1.6, z: C.reach + 1, size: 0.4, speed: 0.5 }
-  const spiders = { bodies(into) { into.push(spider); return into } }
-  const crabs = { bodies(into) { into.push(crab, farCrab); return into } }
+  const spiders = { bodies(into) { into.push(spider); return into }, startled(into) { return into } }
+  const crabs = { bodies(into) { into.push(crab, nearCrab, farCrab); return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
-  const amb = new Ambience({ engine, sense, rand: mulberry32(23), crawlers: [spiders, crabs] })
+  const amb = new Ambience({ engine, sense, rand: mulberry32(23), crawlers: [crabs], startlers: [spiders] })
   const loop = engine.loops.crawl
   run(amb, 1, {})
-  check(loop.opts.directional && loop.active && loop.starts === 1 && Math.abs(loop.level - C.level * (C.near / 2)) < 1e-9 && loop.at.x === 2, `a spider crawling 2 m off holds the crawl loop at half its ${C.level} level, from the spider`, `${loop.level.toFixed(3)}`)
+  check(loop.opts.directional && loop.active && loop.starts === 1 && Math.abs(loop.level - C.level * (C.near / 2)) < 1e-9 && loop.at.x === 2, `a crab scuttling 2 m off holds the crawl loop at half its ${C.level} level, from the crab`, `${loop.level.toFixed(3)}`)
   crab.speed = 0.3
   run(amb, 1, {})
   check(loop.active && loop.starts === 1 && Math.abs(loop.level - C.level * Math.min(1, C.near / 2 + C.near / 1)) < 1e-9 && loop.at.z === 1, 'a crab scuttling 1 m off adds to it, capped at the level, and takes the loop over as the nearer', `${loop.level.toFixed(3)}`)
-  spider.speed = 0
+  nearCrab.speed = 0
   crab.speed = 0
   run(amb, 1, {})
-  check(!loop.active && loop.stops === 1, `both paused, the loop stops; a crab past ${C.reach} m never held it`)
+  check(!loop.active && loop.stops === 1, `both paused, the loop stops; a crab past ${C.reach} m never held it, and the crawling spider 2 m off never did`)
   crab.speed = 0.3
   run(amb, 1, {})
   check(loop.active && loop.starts === 2, 'and starts again when one moves')
@@ -732,12 +741,16 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   run(amb, 1 / 60, {})
   const shot = engine.plays.slice(before).filter((p) => p.name === 'crawl')
   check(shot.length === 1 && shot[0].at === spider && shot[0].gain >= C.startle * C.level * C.gain[0] - 1e-9 && shot[0].gain <= C.startle * C.level * C.gain[1] + 1e-9, `a startled spider plays the crawl once, from itself, at ${C.startle}x the level`, `${shot.length} shots, gain ${shot[0]?.gain.toFixed(3)}`)
-  delete spiders.startled
+  check(C.startle === 1, 'the startle is no louder than the loop')
+  spiders.startled = (into) => into
   run(amb, 1, {})
   check(engine.plays.filter((p) => p.name === 'crawl').length === 1, 'and no more once it is no longer listed')
   let threw = false
   try { new Ambience({ engine, sense, crawlers: [{}] }) } catch { threw = true }
   check(threw, 'a crawler layer without bodies() throws')
+  threw = false
+  try { new Ambience({ engine, sense, startlers: [{}] }) } catch { threw = true }
+  check(threw, 'a startler layer without startled() throws')
 }
 {
   // The fish: a swoosh on the water bus from each that sets off fast within reach, as loud and as deep as it is long, and only on the frame it is listed.
@@ -768,7 +781,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(threw, 'a fish layer without startled() throws')
 }
 {
-  // The dragons: wingbeats on the fly clip's cycle near, roars across the valley with the far treatment and the echo, growls with pauses from a nest.
+  // The dragons: wingbeats on the fly clip's cycle near, roars across the valley with the far treatment and the echo, growls with pauses from a nest, treads on the walk clip's beats from one pottering.
   const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl
   const FLY = 0.9
   // The flights at her ears' height, so a body's distance is its x.
@@ -778,11 +791,21 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const goneFly = { x: R.reach + 20, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
   const nest = { x: 0, y: GROUND + 1.6, z: 5, state: 'roost', clip: 'idle', cycle: 4, speed: 0 }
   const farNest = { x: 0, y: GROUND + 1.6, z: G.reach + 5, state: 'roost', clip: 'alert', cycle: 2, speed: 0 }
-  const dragons = { bodies(into) { into.push(nearFly, midFly, farFly, goneFly, nest, farNest); return into } }
+  // One potters on a perch 20 m off at the shipped walk's cycle, one past the tread's reach, and one's speed is still dying under the idle its walk ended on.
+  const T = RULES.tread, WALK = 1.24
+  const walker = { x: 20, y: HEAD.y, z: 0, state: 'perch', clip: 'walk', cycle: WALK, speed: 1.2 }
+  const farWalker = { x: T.reach + 10, y: HEAD.y, z: 0, state: 'roost', clip: 'walk', cycle: WALK, speed: 1.2 }
+  const slowing = { x: 0, y: HEAD.y, z: -8, state: 'perch', clip: 'idle', cycle: 4, speed: 0.3 }
+  const dragons = { bodies(into) { into.push(nearFly, midFly, farFly, goneFly, nest, farNest, walker, farWalker, slowing); return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
   const amb = new Ambience({ engine, sense, rand: mulberry32(27), dragons })
   run(amb, 600, {})
+  const treads = engine.plays.filter((p) => p.name === 'tread')
+  check(treads.length > 0 && treads.every((p) => p.at.x === 20), `only the dragon walking within ${T.reach} m is heard treading; one slowing to a stand on its idle lands none`, `${treads.length} treads`)
+  check(Math.abs(treads.length - (600 / WALK) * FOOTFALLS.wyvern.walk.length) <= 3, `a tread per foot, two a cycle of the ${WALK} s walk clip`, `${treads.length} in 600 s`)
+  check(treads.every((p) => within(p.gain, T.level * (T.near / 20) * T.gain[0], T.level * (T.near / 20) * T.gain[1]) && p.distance === 20 && within(p.rate, RATE[0], RATE[1])), 'a tread plays at its level for 20 m, at its distance, in the one-shot rate band')
+  check(!amb.wings.has(slowing) && !amb.wings.has(farWalker), 'a dragon slowing on its idle, or walking past the reach, is not kept')
   const beats = engine.plays.filter((p) => p.name === 'wingbeat')
   check(beats.length > 0 && beats.every((p) => p.at.x === 10), `only the dragon flying within ${W.reach} m beats its wings`, `${beats.length} beats`)
   check(Math.abs(beats.length - 600 / FLY) <= 3, `one beat a cycle of the ${FLY} s fly clip`, `${beats.length} in 600 s`)
@@ -797,6 +820,11 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(roars.every((p) => p.distance === p.at.x && p.echo === R.echo), 'every roar carries its distance for the far treatment and its echo send')
   check(engine.plays.filter((p) => p.name === 'growl' && p.at.z === G.reach + 5).length === 0 && !amb.wings.has(farNest) && !amb.wings.has(goneFly), `a nest past ${G.reach} m and a flight past ${R.reach} m are neither heard nor kept`)
   check(engine.plays.filter((p) => p.name === 'growl').every((p) => p.at.z === 5 && p.distance === Math.hypot(5, 0) && within(p.rate, G.rate[0], G.rate[1]) && within(p.gain, G.level * (G.near / 5) * G.gain[0], G.level * (G.near / 5) * G.gain[1])), 'a dragon on its nest 5 m off growls at its level, at its distance, at a rate rolled in the growl band')
+  walker.speed = 0
+  const stood = engine.plays.length
+  run(amb, 10, {})
+  check(engine.plays.slice(stood).every((p) => p.name !== 'tread') && !amb.wings.has(walker), 'stood still, a dragon lands no tread and is let go')
+  walker.speed = 1.2
 
   // The growls' spacing, timed by frame: each starts after the previous has ended plus a pause, and the first waits a pause too.
   const e2 = fakeEngine()

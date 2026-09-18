@@ -1,17 +1,19 @@
 import THREE from '../../three-instance.js'
-import { cullTripoBackfaces } from '../../tripo-culling.js'
+import { LOD_RUNGS, critterTier } from './critters.js'
+import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { loadBipedGlb } from './snowmen.js'
+import { VrBody } from './avatar-rig.js'
 
 const SKIN = 0xd99b78
 
-// public/creatures/, written by tools/creatures/ship.mjs: the villagers a peer
-// can be dressed as, each a Tripo mesh one metre tall, centred on the origin
-// and facing +X (checked on all nine by rendering them from +X, and by the
-// toes leading the shins along +X in every file).
+// public/creatures/, written by tools/creatures/ship-biped.mjs: the villagers a
+// peer can be dressed as, each a skinned Tripo body with its ladder and the
+// human clip library, facing +X with its feet on the origin, and the roster
+// naming each with its stature.
 const ROSTER_URL = 'creatures/avatars.json'
 const MODEL_URL = (id) => `creatures/${id}.glb`
-// Eye line as a fraction of stature: the body hangs from the head pose so the
-// mesh's eyes sit where the headset is, and the feet land wherever that puts them.
-const EYE_LINE = 0.93
+// Seconds a body takes to cross from idle to walking and back.
+const FADE_S = 0.25
 
 function material(color) {
   return new THREE.MeshBasicMaterial({ color, transparent: true, depthTest: false, depthWrite: false })
@@ -21,8 +23,8 @@ function mesh(geometry, color) {
   return new THREE.Mesh(geometry, material(color))
 }
 
-// A peer's hand, and her own while the menu is closed: the same mesh, hung
-// from the same grip pose, so what she sees on her wrist is what they see.
+// Her own hand while the menu is closed, hung from the grip pose. A peer's
+// hands are the villager's own, posed to the same grip by avatar-rig.js.
 export function lowPolyHand() {
   const group = new THREE.Group()
   const palm = mesh(new THREE.SphereGeometry(1, 6, 5), SKIN)
@@ -45,12 +47,6 @@ export function lowPolyHand() {
   return group
 }
 
-function opacity(object, value) {
-  object.traverse((child) => {
-    if (child.material) child.material.opacity = value
-  })
-}
-
 // FNV-1a. A peer that arrives without an avatar (a relay older than the field)
 // still gets one, and the same one on every client, because its id is the seed.
 function hash(text) {
@@ -59,86 +55,94 @@ function hash(text) {
   return h >>> 0
 }
 
-// three-instance resolves to A-Frame's bundled three on the world page, which
-// hangs its loaders on the namespace; npm three keeps them in addons. Mixing the
-// two would hand the renderer objects from a foreign class tree.
-async function gltfLoader() {
-  if (THREE.GLTFLoader) return new THREE.GLTFLoader()
-  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
-  return new GLTFLoader()
-}
-
 async function loadRoster() {
   const res = await fetch(ROSTER_URL)
   if (!res.ok) throw new Error(`avatars: ${ROSTER_URL} answered ${res.status}`)
   const { avatars } = await res.json()
-  if (!Array.isArray(avatars) || !avatars.length) throw new Error(`avatars: ${ROSTER_URL} lists no avatars -- run tools/creatures/ship.mjs`)
+  if (!Array.isArray(avatars) || !avatars.length) throw new Error(`avatars: ${ROSTER_URL} lists no avatars -- run tools/creatures/ship-biped.mjs`)
   for (const a of avatars) if (typeof a.id !== 'string' || !(a.heightM > 0)) throw new Error(`avatars: bad entry ${JSON.stringify(a)}`)
   return avatars
 }
 
-const forward = new THREE.Vector3()
-const headQuat = new THREE.Quaternion()
+const _eye = new THREE.Vector3()
 
+/**
+ * Every other player in the room as a villager body (avatar-rig.js VrBody over
+ * a render/puppet.js Puppet), and her own double when the debug panel asks.
+ *
+ * @param camera  hers, for each body's distance and so its rung
+ * @param patch   (material) => void: the world's lighting onto a body's material, before it first draws
+ */
 export class PeerAvatars {
-  constructor(scene) {
+  constructor(scene, { camera, patch }) {
+    if (!camera) throw new Error('PeerAvatars needs the camera, for the ladder')
+    if (typeof patch !== 'function') throw new Error('PeerAvatars needs patch, to light the bodies')
     this.group = new THREE.Group()
     this.group.name = 'netplay-peers'
-    this.group.renderOrder = 900
     scene.add(this.group)
     this.scene = scene
+    this.camera = camera
+    this.patch = patch
     this.peers = new Map()
     this.roster = null
     this.ready = loadRoster().then((roster) => { this.roster = roster; return roster })
-    this.loader = null
-    this.templates = new Map()
+    this.assets = new Map()
     this.double = null
   }
 
-  /** The loaded, unscaled glb scene for one avatar id, fetched once per session. */
-  template(id) {
-    let promise = this.templates.get(id)
+  /** One villager's shipped body, fetched once per session, with the one settled material every body of it draws through. */
+  asset(id) {
+    let promise = this.assets.get(id)
     if (!promise) {
-      promise = (async () => {
-        this.loader ??= await gltfLoader()
-        return (await this.loader.loadAsync(MODEL_URL(id))).scene
-      })()
-      this.templates.set(id, promise)
+      promise = loadBipedGlb(MODEL_URL(id)).then((asset) => {
+        const plain = makeSettledMaterial(`avatar-${id}`)
+        plain.map = asset.map
+        plain.needsUpdate = true
+        this.patch(plain)
+        return { asset, plain }
+      })
+      this.assets.set(id, promise)
     }
     return promise
   }
 
+  /** A puppet in `id`'s body: its own dissolve pair over the settled material, lit as the world is. */
+  makePuppet(id, { asset, plain }) {
+    const mats = makePuppetMaterials(`avatar-${id}`, plain)
+    for (const m of [mats.in, mats.out]) {
+      m.map = asset.map
+      m.needsUpdate = true
+      this.patch(m)
+    }
+    return new Puppet(asset, mats, { clipFade: FADE_S })
+  }
+
   /**
-   * Compiles the body's shader before anyone joins. On Quest that compile is
-   * several dropped frames, and without this it lands the moment a friend walks
-   * up. One body is enough: every avatar shares one material shape, so they all
-   * hit the same cached program.
+   * Compiles a body's programs -- settled and dissolving -- before anyone
+   * joins. On Quest that compile is several dropped frames, and without this it
+   * lands the moment a friend walks up. One body is enough: every villager
+   * shares the two program shapes, so they all hit the same cache.
    */
   async warm(renderer, camera) {
     const roster = await this.ready
-    const body = this.makeBody(await this.template(roster[0].id), roster[0])
+    const loaded = await this.asset(roster[0].id)
+    const puppet = this.makePuppet(roster[0].id, loaded)
     const stage = new THREE.Scene()
-    stage.add(body)
+    stage.add(puppet.group)
+    puppet.show(0)
     renderer.compile(stage, camera, this.scene)
-    body.traverse((o) => { if (o.isMesh) o.material.dispose() })
+    puppet.step(1)
+    renderer.compile(stage, camera, this.scene)
+    this.dropPuppet(puppet)
   }
 
-  /** A fresh body: the template's meshes with their own materials, scaled to stature, feet on the origin, facing -Z. */
-  makeBody(template, entry) {
-    const model = template.clone()
-    model.traverse((o) => {
-      if (!o.isMesh) return
-      o.material = o.material.clone()
-    })
-    // World placement of a Tripo mesh culls by default -- see tripo-culling.js.
-    cullTripoBackfaces(model)
-    model.rotation.y = Math.PI / 2
-    model.scale.setScalar(entry.heightM)
-    model.position.y = entry.heightM / 2
-    const body = new THREE.Group()
-    body.add(model)
-    body.userData.eyeHeight = entry.heightM * EYE_LINE
-    return body
+  dropPuppet(puppet) {
+    puppet.release()
+    puppet.group.removeFromParent()
+    // The geometries and the map belong to the cached asset; the skeleton's bone texture and the dissolve pair are this puppet's.
+    puppet.skeleton.dispose()
+    puppet.mats.in.dispose()
+    puppet.mats.out.dispose()
   }
 
   entryFor(peerId, avatarId) {
@@ -146,13 +150,9 @@ export class PeerAvatars {
     return roster.find((a) => a.id === avatarId) ?? roster[hash(peerId) % roster.length]
   }
 
-  /** An undressed peer under this.group: two hands and no body yet. */
+  /** An undressed peer: no body yet. `tier` is the rung it was last drawn on, `at` when it was last posed. */
   makePeer(id) {
-    const group = new THREE.Group()
-    const hands = [lowPolyHand(), lowPolyHand()]
-    group.add(...hands)
-    this.group.add(group)
-    return { id, group, hands, body: null, wants: undefined, yaw: 0 }
+    return { id, puppet: null, body: null, heightM: 0, tier: -1, wants: undefined, at: performance.now() }
   }
 
   get(id) {
@@ -161,13 +161,6 @@ export class PeerAvatars {
     peer = this.makePeer(id)
     this.peers.set(id, peer)
     return peer
-  }
-
-  /** Take a peer out of the scene and free what was its own. */
-  drop(peer) {
-    this.undress(peer)
-    this.group.remove(peer.group)
-    peer.group.traverse((obj) => { obj.geometry?.dispose(); obj.material?.dispose() })
   }
 
   /**
@@ -179,21 +172,23 @@ export class PeerAvatars {
     peer.wants = avatarId
     const roster = await this.ready
     const entry = this.entryFor(peer.id, avatarId)
-    const template = await this.template(entry.id)
+    const loaded = await this.asset(entry.id)
     if (peer.wants !== avatarId || !this.live(peer)) return
     this.undress(peer)
-    peer.body = this.makeBody(template, entry)
-    peer.group.add(peer.body)
+    peer.puppet = this.makePuppet(entry.id, loaded)
+    peer.body = new VrBody(peer.puppet, loaded.asset, entry.heightM / loaded.asset.height)
+    peer.heightM = entry.heightM
+    peer.tier = -1
+    this.group.add(peer.puppet.group)
   }
 
   /** Still in the scene: on the wire under its id, or her double. */
   live(peer) { return peer === this.double || this.peers.get(peer.id) === peer }
 
   undress(peer) {
-    if (!peer.body) return
-    peer.group.remove(peer.body)
-    // The geometry and texture belong to the cached template; only the materials are this peer's.
-    peer.body.traverse((o) => { if (o.isMesh) o.material.dispose() })
+    if (!peer.puppet) return
+    this.dropPuppet(peer.puppet)
+    peer.puppet = null
     peer.body = null
   }
 
@@ -204,7 +199,7 @@ export class PeerAvatars {
    */
   mirror(state) {
     if (!state) {
-      if (this.double) this.drop(this.double)
+      if (this.double) this.undress(this.double)
       this.double = null
       return
     }
@@ -212,36 +207,28 @@ export class PeerAvatars {
     this.pose(this.double, state)
   }
 
-  /** One peer's body and hands from one state; a pose of the wrong length is skipped, not thrown, since it came off the wire. */
+  /** One peer's body from one state; a pose of the wrong length is skipped, not thrown, since it came off the wire. */
   pose(peer, state) {
     const { pose, hands, alpha = 1 } = state
     if (!pose || pose.length !== 21) return
     const avatar = state.avatar ?? null
     if (peer.wants !== avatar) this.dress(peer, avatar)
-
-    if (peer.body) {
-      const body = peer.body
-      body.position.set(pose[0], pose[1] - body.userData.eyeHeight, pose[2])
-      // Yaw only: the body stands under the head and turns with it, and looking
-      // straight up or down leaves no horizontal gaze to turn towards.
-      headQuat.set(pose[3], pose[4], pose[5], pose[6])
-      forward.set(0, 0, -1).applyQuaternion(headQuat)
-      if (Math.hypot(forward.x, forward.z) > 0.25) peer.yaw = Math.atan2(-forward.x, -forward.z)
-      body.rotation.y = peer.yaw
-      body.visible = alpha > 0
-      body.traverse((o) => {
-        if (!o.isMesh) return
-        o.material.transparent = alpha < 1
-        o.material.opacity = alpha
-      })
+    const now = performance.now()
+    const dt = Math.min(0.1, Math.max(0, (now - peer.at) / 1000))
+    peer.at = now
+    if (!peer.body) return
+    // Its rung by its head's distance from her, as the wildlife's; gone once the relay has lost it.
+    this.camera.getWorldPosition(_eye)
+    const dist = Math.hypot(pose[0] - _eye.x, pose[1] - _eye.y, pose[2] - _eye.z)
+    const rung = alpha > 0 ? critterTier(peer.heightM, dist, peer.tier) : LOD_RUNGS
+    peer.tier = rung
+    peer.puppet.show(rung === LOD_RUNGS ? -1 : rung)
+    // Out of sight and faded, nothing is stepped; it stands afresh where its head is when it comes back.
+    if (peer.puppet.done) {
+      peer.body.placed = false
+      return
     }
-    for (let i = 0; i < 2; i++) {
-      const start = 7 + i * 7
-      const hand = peer.hands[i]
-      hand.position.set(pose[start], pose[start + 1], pose[start + 2])
-      hand.quaternion.set(pose[start + 3], pose[start + 4], pose[start + 5], pose[start + 6])
-      opacity(hand, alpha * (hands?.[i] ? 1 : 0))
-    }
+    peer.body.drive(pose, hands, dt)
   }
 
   apply(list) {
@@ -252,7 +239,7 @@ export class PeerAvatars {
     }
     for (const [id, peer] of this.peers) {
       if (!active.has(id)) {
-        this.drop(peer)
+        this.undress(peer)
         this.peers.delete(id)
       }
     }
