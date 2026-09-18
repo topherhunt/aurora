@@ -1924,10 +1924,11 @@ console.log('\nscatter')
   }
 
   // One Layers stub for every world here. Rocks needs it for two things and both
-  // are the terrain's: `snow.band` and `flattenAt` feed the ground cue, and
-  // syncBands reads the snow line off it. flattenAt returns 0 -- no road under
-  // any of these rocks -- which is the case the cue has to be right in anyway.
-  const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
+  // are the terrain's: `snow.band`, `flattenAt` and `shoreAt` feed the ground
+  // cue, and syncBands reads the snow line off it. flattenAt and shoreAt return
+  // 0 -- no road and no waterline under any of these rocks -- which is the case
+  // the cue has to be right in anyway.
+  const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 
   const build = (w) => {
     const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7 })
@@ -2615,6 +2616,15 @@ console.log('\nscatter')
     check(xs.every((x) => Math.abs(x) < reach),
       `and not one of them stands past ${reach} m of the line`,
       `${xs.filter((x) => Math.abs(x) >= reach).length} of ${xs.length} out, furthest ${amax(xs.map(Math.abs)).toFixed(1)} m`)
+    // CROWDED AT THE LINE: the rate is full inside `shoreCore` and eases to 0 at
+    // the edge, so the core holds more than its share of the strip's width. A
+    // flat strip would put 37.5% of the stones in the inner 1.5 m of 4; the
+    // fall-off integrates to about 55%.
+    const core = bed.cfg.shoreCore
+    const inCore = xs.filter((x) => Math.abs(x) < core).length / xs.length
+    check(core < reach && inCore > 0.45,
+      `and they crowd the line -- more than their share within ${core} m of it`,
+      `${(inCore * 100).toFixed(0)}% of ${xs.length} inside ${core} m, against ${((core / reach) * 100).toFixed(0)}% for a flat strip`)
     // FREQUENT: a stone every few metres of bank, counted along the line inside
     // the bed's full radius, where thinning has not begun.
     const R = bed.cfg.fullRadius

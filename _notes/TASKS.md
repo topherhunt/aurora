@@ -27,6 +27,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [ ] Boats, lying abandoned along lakes. You can get into one and row it. Boat position & trajectory are synced, ideally by syncing upstream "inputs" rather than re-syncing position minute-by-minute, so its state can be deterministically simulated by both people.
+- [ ] Adjust the terrain to be more jagged:
+  - Peaks need more jaggedness. 
+  - sheer cliffs: lips at tops & bottoms of many cliffs, rather than rounding (ie steep angles tend steeper)
 - [ ] Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terraiSo each player in VR is randomly assigned an NPC mesh for their body, like a different human mesh for their body. But currently the body isn't rigged to anything. It's just kind of statically standing there in the T-pose. we want to bind that body to an actual skeleton so that you can look around in the VR headset and the character's head actually looks around and like the like the neck stretches and the the head rotates to match your actual look angle and n under them.
 - [ ] Rivers:
   - [x] Tributaries that fold in, should never be fully coplanar.

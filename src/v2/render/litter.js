@@ -293,8 +293,8 @@ export class Litter {
   constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Litter: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Litter: needs WaterSurfaces with levelAt')
-    if (!layers || typeof layers.flattenAt !== 'function' || !layers.snow) {
-      throw new Error('Litter: needs Layers with flattenAt and a snow field')
+    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
+      throw new Error('Litter: needs Layers with flattenAt, shoreAt and a snow field')
     }
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Litter: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
@@ -723,7 +723,7 @@ export class Litter {
     const pal = PEBBLE_TINTS[env]
     const gain = TINT_GAIN[pal[Math.min(pal.length - 1, (r.tint * pal.length) | 0)]]
     shade(h, this._n.y, snowLine, this._snowBand, this.layers.flattenAt(x, z),
-      this._altLo, this._altSpan, x, z, gc, 0)
+      this.layers.shoreAt(x, z, h), this._altLo, this._altSpan, x, z, gc, 0)
     const k1 = GROUND_CUE[env]
     const k0 = 1 - k1
     const v = TONE[0] + r.tone * (TONE[1] - TONE[0])

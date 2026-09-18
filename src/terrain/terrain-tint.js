@@ -93,8 +93,8 @@ export class TerrainTint {
         throw new Error(`TerrainTint: the terrain material has no ${key}; this module is out of date with terrain-material.js`)
       }
     }
-    if (!layers || typeof layers.flattenAt !== 'function') {
-      throw new Error('TerrainTint: needs a Layers with flattenAt')
+    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function') {
+      throw new Error('TerrainTint: needs a Layers with flattenAt and shoreAt')
     }
     if (!bands || typeof bands.altLo !== 'number' || typeof bands.altSpan !== 'number') {
       throw new Error('TerrainTint: needs V2Height.bands, for altLo and altSpan')
@@ -118,7 +118,7 @@ export class TerrainTint {
    */
   groundAt(rgb, x, z, h, ny, snowLine) {
     shade(h, ny, snowLine, this.layers.snow.band, this.layers.flattenAt(x, z),
-      this.bands.altLo, this.bands.altSpan, x, z, rgb, 0)
+      this.layers.shoreAt(x, z, h), this.bands.altLo, this.bands.altSpan, x, z, rgb, 0)
     return this.apply(rgb, x, z)
   }
 

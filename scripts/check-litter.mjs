@@ -92,7 +92,7 @@ console.log('pebble')
 // 2. Stones on the ground you walk on, counted per square metre.
 // ---------------------------------------------------------------------------
 //
-// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with flattenAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the sink assertions in section 7 exact.
+// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with flattenAt, shoreAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the sink assertions in section 7 exact.
 
 console.log('\ndensity')
 
@@ -132,7 +132,7 @@ const ridge = {
   water: { levelAt: () => null, isSubmerged: () => false },
 }
 
-const scatterLayers = { flattenAt: () => 0, snow: { base: 780, band: 90 } }
+const scatterLayers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 const SEED = 7
@@ -549,7 +549,7 @@ console.log('\ncolour')
   const lumas = { ground: [], tint: [] }
   for (const id of liveIds(l)) {
     l.batch.getColorAt(id, c)
-    shade(60, 1, 9999, scatterLayers.snow.band, 0, 0, 900, l.instX[id], l.instZ[id], gc, 0)
+    shade(60, 1, 9999, scatterLayers.snow.band, 0, 0, 0, 900, l.instX[id], l.instZ[id], gc, 0)
     const cs = c.r + c.g + c.b
     const gs = gc[0] + gc[1] + gc[2]
     const half = l.instGround[id] ? 'ground' : 'tint'

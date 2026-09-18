@@ -31,12 +31,12 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
+  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, CARD_EVERY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_MAX, DIVE_PITCH, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, HUNT_M,
-  STRIKE_M, LAND_M, REST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, measureFly,
+  STRIKE_M, LAND_M, REST_S, FIRST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, measureFly,
 } from '../src/v2/render/dragons.js'
 import {
-  Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, roostBank, roostLadder,
+  Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
 } from '../src/v2/render/roosts.js'
 import { CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
@@ -170,7 +170,7 @@ const roostsOn = (field, water, layers, seed) => {
   check(r.materials.length === 3 && r.materials[0].customProgramCacheKey() === 'gen-prop' && r.materials[1].customProgramCacheKey() === 'gen-prop' && r.materials[2].customProgramCacheKey() === 'gen-prop-billboard-mixed', 'three materials offered to the lighting: bark and stone on the one gen-prop program, and the mixed card', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
   const cardShader = compile(r.card)
   check(cardShader.vertexShader.includes('attribute float aSpin') && !r.card.visible && r.card.map === null, 'the card program reads aSpin to spin one quad and leave the other, and is not drawn until it is photographed')
-  check(r.radius === cullRange(DIAMETER[1], RUNGS) && r.radius > 500, `the scatter reaches the card cull of the widest bowl, ${r.radius.toFixed(0)} m, so nothing of it pops in at the edge`)
+  check(r.radius === RADIUS_M && r.radius === 400 && lodReach(DIAMETER[1], LODS - 1) < r.radius && r.radius < cullRange(DIAMETER[1], RUNGS), `the scatter reaches ${r.radius} m, past the widest bowl's last mesh rung and short of its card cull, so what comes in at the edge is a card`, `mesh to ${lodReach(DIAMETER[1], LODS - 1).toFixed(0)} m, card to ${cullRange(DIAMETER[1], RUNGS).toFixed(0)} m`)
   check(r.batch.name === 'v2-roosts' && r.batch._max === r.stats.pool && r.batch.meshes.length === RUNGS && r.stats.pool > r.stats.tiles, 'the arena is one batch, a mesh a rung, sized to a roost a resident tile plus the fades in flight', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
 
   // The rate over forty seeds against the tiles' own area: one to DENSITY, with a binomial's slack.
@@ -193,9 +193,9 @@ const roostsOn = (field, water, layers, seed) => {
 
   r.update(sites[0].x, GROUND + 1.7, sites[0].z)
   const near = r.tierAt[r.tiles.get(sites[0].key).ids[0]]
-  // The farthest roost still inside its OWN cull: past that the rim hides it and it has no tier.
+  // The farthest roost still inside its OWN cull and the scatter's radius: past either the rim hides it and it has no tier.
   const off = (s) => Math.hypot(s.x - sites[0].x, s.z - sites[0].z)
-  const farSite = r.sites().filter((s) => off(s) < cullRange(s.r * 2, RUNGS) * 0.9).reduce((a, b) => (off(b) > off(a) ? b : a))
+  const farSite = r.sites().filter((s) => off(s) < Math.min(r.radius, cullRange(s.r * 2, RUNGS)) * 0.9).reduce((a, b) => (off(b) > off(a) ? b : a))
   const far = r.tierAt[r.tiles.get(farSite.key).ids[0]]
   check(near === 0 && far > near && r.stats.tris > 0, 'a frame later the roost at her feet is on the top tier and the farthest in sight on a lower one, and the triangles are counted', `near tier ${near}, far tier ${far} at ${off(farSite).toFixed(0)} m`)
   const resident = r.sites().length
@@ -352,7 +352,7 @@ console.log('\ndragons')
   check(dr && d.byKey.size === 1 && d.free.length === MAX - 1 && dr.site === site, 'the frame a site is listed a dragon is born to it, keyed by the roost\'s tile')
   check(dr.state === 'roost' && Math.abs(dr.x - site.x) < 1e-9 && Math.abs(dr.z - site.z) < 1e-9 && dr.y > site.y && dr.y < site.y + 0.1 * site.r && dr.clip === 'idle', 'born on its nest, standing a hand over the floor, idling', `y ${fmt(dr.y)} over ${fmt(site.y)}`)
   check(Math.abs(dr.size / wyvern.sizeM - 1) <= SIZE_VARY && Math.abs(dr.k - dr.size / wyvern.span) < 1e-12 && Math.abs(dr.lodSize - dr.size * d.bulk) < 1e-12, `sized within ${SIZE_VARY * 100}% of the roster, the ladder sized by the flying bulk`, `${fmt(dr.size)} m, lod size ${fmt(dr.lodSize)}`)
-  check(dr.timer > 0 && dr.timer < REST_S[1] && dr.lod === 0 && dr.puppet, 'part way through its first rest, and wearing a puppet with her beside the nest', `rest left ${fmt(dr.timer)} s`)
+  check(dr.timer >= FIRST_S[0] && dr.timer <= FIRST_S[1] && dr.lod === 0 && dr.puppet, `born rested, off within ${FIRST_S[0]} to ${FIRST_S[1]} s, and wearing a puppet with her beside the nest`, `rest left ${fmt(dr.timer)} s`)
   const born = { size: dr.size, heading: dr.heading }
   const twin = dragonsOn(flat, [site], makeHerd([]), 3)
   twin.update(HER.x, HER.y, HER.z, DT)
@@ -399,7 +399,7 @@ console.log('\ndragons')
   }
   check(trace.join(' ').replace(/@[\d.]+s/g, '') === 'patrol hunt strike return land', 'hungry, it flies the hunt in order: patrol, hunt, strike, return, land, and is home again', trace.join(' '))
   check(homeAt > 0 && homeAt < 400, 'and the whole flight, with a stag 130 m off, takes under seven minutes', `${fmt(homeAt)} s`)
-  check(tookOff > 0 && tookOff <= REST_S[1] && dr.clip === 'walk' && dr.rest === 'walk', 'off the nest when its rest ran out, and back on it walking a circuit before it eats', `took off at ${fmt(tookOff)} s`)
+  check(tookOff > 0 && tookOff <= FIRST_S[1] && dr.clip === 'walk' && dr.rest === 'walk', 'off the nest when its first rest ran out, and back on it walking a circuit before it eats', `took off at ${fmt(tookOff)} s`)
   check(stags[0].seized === 1 && stags[0].spawn === null && stags[0].act === 'dead' && dr.cargo === stags[0] && d.stats.carrying === 1, 'the stag was seized ONCE -- its spawn dead, its slot the dragon\'s cargo -- and is still the cargo on the nest')
   check(worst.speed <= DIVE_MPS + 1e-6 && worst.speed > HUNT_MPS, 'the dive was the fastest it flew, faster than the hunt and no faster than the dive allows', `${fmt(worst.speed)} m/s`)
   check(worst.under > 0.1 && worst.under < 1.001, 'never once in the air was the body under its nest floor, and it climbed off the nest rather than being lifted to its metre of clearance', `lowest ${fmt(worst.under)} m over the ground`)
@@ -613,6 +613,25 @@ console.log('\ndragons')
   check(Math.abs(p.x - dr.x) < 1e-3 && Math.abs(p.y - dr.y) < 1e-3 && Math.abs(p.z - dr.z) < 1e-3 && Math.abs(s.x - dr.k) < 1e-6, 'the card instance stands where the dragon is, at its size')
   check(Math.abs(swing(e.y, dr.heading)) < 1e-6 && Math.abs(e.z - dr.pitch) < 1e-6 && Math.abs(e.x - dr.roll) < 1e-6, 'and carries its whole orientation -- heading, pitch AND roll -- since a fixed pair of quads is turned by its matrix and by nothing else', `yaw ${fmt(e.y)} pitch ${fmt(e.z)} roll ${fmt(e.x)}`)
   check(d.cardFade.array[0] === 1, 'settled: the whole card is drawn, no dither left', `fade ${d.cardFade.array[0]}`)
+  // The card cadence: with the kill put down, the dragon is behaved on one frame in CARD_EVERY, by the time banked, and its card is drawn on every one where it last was.
+  {
+    const held = { cargo: dr.cargo, ages: [], cards: 0, slid: 0 }
+    dr.cargo = null
+    const eye = { x: site.x + reach(LOD_RUNGS) * 0.9, y: HER.y, z: site.z }
+    const last = new THREE.Matrix4()
+    for (let i = 0; i < CARD_EVERY; i++) d.update(eye.x, eye.y, eye.z, DT)
+    for (let i = 0; i < CARD_EVERY * 12; i++) {
+      const age = dr.age
+      d.cardMesh.getMatrixAt(0, last)
+      d.update(eye.x, eye.y, eye.z, DT)
+      d.cardMesh.getMatrixAt(0, m)
+      if (dr.age !== age) held.ages.push(dr.age - age)
+      else if (!m.equals(last)) held.slid++
+      if (d.cardN === 1) held.cards++
+    }
+    check(dr.lod === LOD_RUNGS && held.ages.length === 12 && held.ages.every((a) => Math.abs(a - CARD_EVERY * DT) < 1e-9) && held.cards === CARD_EVERY * 12 && held.slid === 0, `on the card rung it is stepped once in ${CARD_EVERY} frames by ${CARD_EVERY} frames' time, and its card is drawn on all of them, where it last was on the held ones`, `${held.ages.length} steps of ${held.ages.map((a) => fmt(a / DT)).join('/')} frames, ${held.cards} card frames, ${held.slid} held frames with the card moved`)
+    dr.cargo = held.cargo
+  }
   const before = { x: dr.x, z: dr.z, state: dr.state }
   check(at(reach(LOD_RUNGS) * 4) === CARD_RUNGS && d.cardN === 0 && d.cardMesh.count === 0 && !dr.puppet && d.byKey.size === 1, `four times the card's reach, it is drawn as nothing at all -- and is still alive`)
   check(kill.shown === false, 'and the kill is told so, and goes with it')

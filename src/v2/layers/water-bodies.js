@@ -20,6 +20,17 @@ const LAKE_CELL = 64
 // The outer 15% of the radius is feather. Inside 0.85 the footprint is a flat 1, so the basin floor is level and the water plane meets a flat bed rather than a dome.
 const FEATHER_START = 0.85
 
+// THE SHORE, BY HEIGHT. Ground is the water's edge by how far above or below the surface it sits, not by how far it is from a footprint rim: every lake in the shipped world is an uncarved plane and one of them is the ocean, whose rim is nowhere near any coast (WaterSurfaces.shoreDistAt makes the same argument). Full within SHORE_DRY above and SHORE_WET below the surface, gone by the two END figures. Measured in height, the strip is wide on a flat beach and narrow on a steep bank, which is how a real one runs. The wet side reaches deeper than the dry side reaches up so the shallows read as the beach going on under the water, and the deep bed past it keeps its own colour.
+export const SHORE_DRY = 0.3
+export const SHORE_DRY_END = 0.9
+export const SHORE_WET = 0.3
+export const SHORE_WET_END = 1.5
+
+/** 0..1: how much ground `d` metres above (positive) or below a water surface is that water's shore. */
+export function shoreBand(d) {
+  return d >= 0 ? smoothstep(SHORE_DRY_END, SHORE_DRY, d) : smoothstep(SHORE_WET_END, SHORE_WET, -d)
+}
+
 function unionRect(a, b) {
   if (a === null) return b
   if (b === null) return a
@@ -198,6 +209,12 @@ export class LakeSet {
       }
     }
     return level
+  }
+
+  // 0..1: how much the ground at height `h` over (x, z) is a lake's shore -- shoreBand against the surface levelAt answers, 0 where no footprint covers the point.
+  shoreAt(x, z, h) {
+    const level = this.levelAt(x, z)
+    return level === null ? 0 : shoreBand(h - level)
   }
 
   overlaps(minX, minZ, maxX, maxZ) {

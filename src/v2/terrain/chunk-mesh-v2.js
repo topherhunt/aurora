@@ -122,6 +122,14 @@ const C_DIRT = [0.070, 0.058, 0.041]
 // visibly paler than the same road in a valley.
 const DIRT_MAX = 0.85
 
+// New in v2. Sand, for the strip either side of a waterline (Layers.shoreAt):
+// pale and warm, about twice the rock's level, because a beach is the one bare
+// surface in the world lighter than the grass beside it. r above g by 0.022, so
+// terrain-material.js classifies it unvegetated and lays its rock grit rather
+// than moss over it. Painted LAST, over the dirt a river's bank is flattened
+// to, and never over snow.
+const C_SAND = [0.170, 0.148, 0.105]
+
 // THE ALTITUDE RAMP IS NOT IN THIS FILE, and that is the point.
 //
 // v1 hardcodes clamp01((h - 107) / 100), tuned against v1's own relief, and its
@@ -261,7 +269,7 @@ export function peaksStencil(step, texel) {
 }
 
 // Vertex colour. v1's construction -- alt ramp, then rock over it by steepness,
-// then snow over that -- with the dirt blend appended.
+// then snow over that -- with the dirt blend appended, and the sand after it.
 //
 // `ny` is the Y component of the CLASSIFICATION normal, not the mesh normal.
 // Feeding the mesh normal in here was the bug in the CLASS_EPS banner above.
@@ -390,7 +398,7 @@ const BUMP_ROCK = 0.48 // slope added on rock, as dy/dx
 const BUMP_GRASS = 0.15
 const BUMP_SNOW = 0.12
 
-function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out, o) {
+function shade(h, ny, snowLine, snowBand, flatten01, shore01, altLo, altSpan, wx, wz, out, o) {
   const steep = smoothstep(0.86, 0.62, ny)
   const alt = clamp01((h - altLo) / altSpan)
 
@@ -471,6 +479,17 @@ function shade(h, ny, snowLine, snowBand, flatten01, altLo, altSpan, wx, wz, out
     r = lerp(r, C_DIRT[0], t)
     g = lerp(g, C_DIRT[1], t)
     b = lerp(b, C_DIRT[2], t)
+  }
+
+  // The waterline, over the dirt: a river's whole bank band is flattened and
+  // the water's edge is sand before it is packed earth. Not over snow -- the
+  // shore of a tarn above the line is a frozen one. It keeps the level swing
+  // `v` so a beach is as variegated as the ground it replaces.
+  if (shore01 > 0) {
+    const t = shore01 * (1 - snow)
+    r = lerp(r, C_SAND[0] * v, t)
+    g = lerp(g, C_SAND[1] * v, t)
+    b = lerp(b, C_SAND[2] * v, t)
   }
 
   out[o] = r
@@ -723,7 +742,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
         nyClass = 1 / Math.hypot(gx, 1, gz)
       }
 
-      shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, altLo, altSpan, wx, wz, colors, o)
+      shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal

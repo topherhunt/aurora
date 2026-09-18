@@ -509,7 +509,7 @@ export class Bones {
     // the hue survives (ferns.js), and a value swing so two finds differ.
     const { altLo, altSpan } = this.field.bands
     const gc = this._gc
-    shade(h, 1 / Math.hypot(tan, 1), snowLine, this.layers.snow.band, road ? this.layers.flattenAt(x, z) : 0, altLo, altSpan, x, z, gc, 0)
+    shade(h, 1 / Math.hypot(tan, 1), snowLine, this.layers.snow.band, road ? this.layers.flattenAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
     const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
     const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
     const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

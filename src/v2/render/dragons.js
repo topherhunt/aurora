@@ -129,10 +129,11 @@ export const LAND_M = 30
 export const RETURN_AGL = 30
 export const LAND_SNAP_M = 3
 export const LAND_S = 30
-// How long after a meal a dragon flies to explore rather than to hunt; how long it rests on the nest once fed (a hungry dragon's rest, too, since it is a rest and not a wait); how long a flight lasts before it turns for home, not counting time perched; how long a visited spot holds it; how long it eats.
+// How long after a meal a dragon flies to explore rather than to hunt; how long it rests on the nest once fed (a hungry dragon's rest, too, since it is a rest and not a wait); how long a dragon born to a roost coming resident sits before its first flight; how long a flight lasts before it turns for home, not counting time perched; how long a visited spot holds it; how long it eats. A dragon lives in the air: the flights are long and the rests between them short, so one seen on its nest is soon seen off it.
 export const HUNGER_S = 300
-export const REST_S = [90, 240]
-export const FLIGHT_S = [60, 180]
+export const REST_S = [20, 60]
+export const FIRST_S = [5, 30]
+export const FLIGHT_S = [120, 300]
 export const PERCH_S = [20, 60]
 export const EAT_S = [15, 30]
 // The rest steps: how long an idle, a sit or a lie is held, how long a walk may run before it gives up on its point, and how likely a step is each kind, in the order idle, alert, walk, sit, lie.
@@ -153,6 +154,8 @@ export const SPOT_AWAY = 3
 // Frames between prey scans on patrol, and between ground probes in the air.
 export const LOOK_EVERY = 15
 export const PROBE_EVERY = 6
+// A dragon on its card rung or past it, with no kill in its talons and no puppet dissolving against it, is stepped every CARD_EVERY frames on the dt banked between (behaved, tiered, posed), and on the others its card is pushed where it last was: at a quarter of a kilometre a stride four frames long is under a pixel. Its probe and look frames fall where their own cadence and this one coincide.
+export const CARD_EVERY = 4
 // Clip cross-fade.
 const FADE_S = 0.35
 // Where a dragon stands on its nest, above the floor as a fraction of the rim's radius, and how far to the side of it the kill lies.
@@ -309,6 +312,8 @@ export class Dragons {
         clip: 'idle', cue: 0, left: 0, cycle: 0,
         size: 1, k: 1, lodSize: 1,
         lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1,
+        // The dt banked on the card rung between steps, and where its card was last drawn, pushed again on the frames it is not stepped.
+        held: 0, cardMat: new THREE.Matrix4(),
       })
     }
     this.free = this.slots.slice()
@@ -422,14 +427,15 @@ export class Dragons {
     d.puppet = null
     d.cardWant = false
     d.cardP = 1
+    d.held = 0
     d.ground = d.ahead = site.y
     d.dest = site
     d.x = site.x
     d.y = this._standY(site)
     d.z = site.z
     this._perch(d)
-    // Part way through its rest, so a valley of roosts does not lift off together.
-    d.timer *= rand()
+    // Off within FIRST_S, rolled so a valley of roosts does not lift off together.
+    d.timer = roll(rand, FIRST_S)
     this.byKey.set(site.key, d)
     return d
   }
@@ -839,10 +845,15 @@ export class Dragons {
     d.cardP = 1 - d.cardP
   }
 
-  /** This dragon's two quads into the card buffer, on the body's whole matrix, with the dissolve's side as wildlife.js sets it. */
+  /** This dragon's two quads into the card buffer, on the body's whole matrix (kept as its cardMat), with the dissolve's side as wildlife.js sets it. */
   _drawCard(d) {
+    d.cardMat.copy(_mat)
+    this._drawCardAt(d)
+  }
+
+  _drawCardAt(d) {
     const i = this.cardN++
-    this.cardMesh.setMatrixAt(i, _mat)
+    this.cardMesh.setMatrixAt(i, d.cardMat)
     this.cardFade.array[i] = d.cardWant ? d.cardP : -(1 - d.cardP)
   }
 
@@ -865,8 +876,19 @@ export class Dragons {
     this.wildlife.carry(d.cargo, _cargoMat, dist, dt, lain, shown)
   }
 
-  /** One dragon: behaved, then drawn on whichever rung its flying body's size puts it at. */
+  /** One dragon: behaved, then drawn on whichever rung its flying body's size puts it at; on the card rung, stepped every CARD_EVERY frames. */
   _tick(d, hx, hy, hz, dt) {
+    if (d.lod >= LOD_RUNGS && !d.puppet && !d.cargo) {
+      // Held until its frame, unless it has come onto a mesh rung, which is read every frame so a body is worn the frame it is near.
+      d.held += dt
+      const near = critterTier(d.lodSize, Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2), d.lod, CARD_RUNGS) < LOD_RUNGS
+      if ((this.frame + d.id) % CARD_EVERY !== 0 && !near) {
+        if (d.cardWant || d.cardP < 1) this._drawCardAt(d)
+        return
+      }
+      dt = d.held
+    }
+    d.held = 0
     this._behave(d, dt)
     const dist = Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2)
     const tier = critterTier(d.lodSize, dist, d.lod, CARD_RUNGS)

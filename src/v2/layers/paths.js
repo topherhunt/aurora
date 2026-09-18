@@ -12,6 +12,7 @@
 
 import { clamp01, smoothstep } from '../../sim/mathx.js'
 import { UniformGrid } from './grid.js'
+import { shoreBand } from './water-bodies.js'
 import { Spline } from './spline.js'
 import { routeLeg, invalidateRoutes } from './route.js'
 
@@ -864,6 +865,23 @@ export class PathSet {
     if (HIT_A.dist <= HIT_A.halfWidth) level = HIT_A.y
     if (k === 2 && HIT_B.dist <= HIT_B.halfWidth && (level === null || HIT_B.y > level)) level = HIT_B.y
     return level
+  }
+
+  // 0..1: how much the ground at height `h` over (x, z) is a river's shore. shoreBand against the nearest river's level, on the water's edge and across the bank band both, and faded out over the outer half of the band: the band is as far as the index promises to find the river, and past it the natural ground can sit low enough to be in the band by height alone, which would cut the sand off along a line. Two rivers reaching the point and the higher answer wins, as riverLevelAt's surface does.
+  riverShoreAt(x, z, h) {
+    const k = this._rivers(x, z)
+    if (k === 0) return 0
+    let best = PathSet.shoreProfile(HIT_A.dist / HIT_A.halfWidth) * shoreBand(h - HIT_A.y)
+    if (k === 2) {
+      const other = PathSet.shoreProfile(HIT_B.dist / HIT_B.halfWidth) * shoreBand(h - HIT_B.y)
+      if (other > best) best = other
+    }
+    return best
+  }
+
+  // The lateral reach of riverShoreAt, in half-widths: 1 across the water and the inner half of the bank band, easing to 0 at BANK.
+  static shoreProfile(u) {
+    return smoothstep(BANK, 1 + (BANK - 1) / 2, u)
   }
 
   // How hard to suppress fractal detail here: the road surface and the river bed are authored, and fbm sprinkled on top of either is gravel in the water and potholes in the road.

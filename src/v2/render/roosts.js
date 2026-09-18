@@ -45,6 +45,8 @@ const KEEP = TILE * TILE * DENSITY
 
 // Metres across the bowl's rim, the instance scale being half of it.
 export const DIAMETER = [7, 10]
+// How far out a roost tile is resident, and so its dragon alive (dragons.js): short of the widest bowl's card cull, so a far bowl comes in as its card, and short of a dragon's, which is a speck at this range.
+export const RADIUS_M = 400
 
 // Mesh tiers, and the ladder with the card under them.
 export const LODS = 4
@@ -291,7 +293,7 @@ export class Roosts {
     this.water = water
     this.paths = layers.paths
     this.seed = (seed | 0) ^ SEED_SALT
-    this.radius = radius ?? cullRange(DIAMETER[1], RUNGS)
+    this.radius = radius ?? RADIUS_M
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
@@ -390,9 +392,9 @@ export class Roosts {
    * Every roost resident, for dragons.js: `{ key, x, y, z, r, gx, gz }`, `y`
    * the nest floor under the bowl's centre, `r` the rim's radius in metres and
    * (gx, gz) the floor plane's slope, metres of rise per metre along +X and
-   * +Z, so the floor at (x + u, z + v) is `y + gx * u + gz * v`. Resident is
-   * not drawn: a roost past its cull is still a site, and the dragon decides
-   * for itself how far out it lives.
+   * +Z, so the floor at (x + u, z + v) is `y + gx * u + gz * v`. Resident
+   * (RADIUS_M) is not drawn: a roost past its cull is still a site, and the
+   * dragon decides for itself how far out it is drawn.
    */
   sites(into = []) {
     for (const tile of this.tiles.values()) if (tile.n) into.push(tile.site)

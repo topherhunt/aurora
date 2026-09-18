@@ -500,15 +500,20 @@ const STRETCH = [0.8, 1.25]
 // metres, not a fraction of the tree: the point is that a small tree sinks
 // as far as a big one.
 const SINK_M = 1.5
-// At a shore the roll is bent toward the deep end: the cube's exponent runs
-// from 3 at `reach` metres off the water down to `power` at the waterline,
-// where the sink is SINK_M times the draw to the 0.75 -- most of the trees
-// on the bank sunk past 0.9 m with their boughs near the ground, against one
-// in eight inland. The bend is smooth so no stand shows a seam at `reach`,
-// and SINK_M still caps it, so the hem gate holds on the bank too. `reach`
-// is the dry side only; a wet trunk is already refused. The WaterSurfaces
-// bucket bounds it, like the ferns' shoreReach.
-const SHORE_SINK = { reach: 10, power: 0.75 }
+// At a shore the roll is bent toward the deep end and its cap is the tree's
+// own: over the last `reach` metres of dry bank the exponent runs from 3 down
+// to `power` and the cap from SINK_M up to whatever brings THIS tree's hem
+// down to `hemMin` over the ground (never under SINK_M, so a bank tree is
+// never shallower than an inland one). A full draw at the waterline stands
+// any pine, however big, with its cloak sweeping the grass; with the draw to
+// the 0.4, two thirds of the waterline's trees hang their hem within a metre
+// of the ground and a quarter sweep it, and the nearness is the CUBE ROOT of
+// the distance fraction so the first 6 m of bank are still at half -- the
+// wood closes into a wall as she nears a lake. Both bends are smooth so no
+// stand shows a seam at `reach`. `reach` is the dry side only; a wet trunk
+// is already refused. The WaterSurfaces bucket bounds it, like the ferns'
+// shoreReach.
+const SHORE_SINK = { reach: 10, power: 0.4, hemMin: 0.5 }
 
 // Metres. The clump share grows out from FULL_RADIUS until the trees pictured
 // per tile are full-density here (header, THE CLUMP TIER), and holds there.
@@ -1916,17 +1921,20 @@ export class Trees {
       this.instZ[id] = z
       this.instScale[id] = scale
       this.instStretch[id] = stretch
-      // Inland the cube of the draw; on a bank the exponent slides toward
-      // SHORE_SINK.power with the shore's nearness.
+      // Inland SINK_M times the cube of the draw; on a bank the exponent and
+      // the cap slide toward SHORE_SINK's with the shore's nearness.
       let sinkPow = 3
+      let sinkMax = SINK_M
       if (this.shoreSink) {
         const shore = this.water.shoreDistAt(x, z, SHORE_SINK.reach, h, tan)
         if (shore < SHORE_SINK.reach) {
-          const near = 1 - Math.max(shore, 0) / SHORE_SINK.reach
+          const near = Math.cbrt(1 - Math.max(shore, 0) / SHORE_SINK.reach)
           sinkPow = 3 + (SHORE_SINK.power - 3) * near
+          const hem = this.unitCrownBase[variant] * scale * stretch - PLACEMENT.sink * scale
+          sinkMax += (Math.max(SINK_M, hem - SHORE_SINK.hemMin) - SINK_M) * near
         }
       }
-      this.instSink[id] = SINK_M * Math.pow(sinkRoll, sinkPow)
+      this.instSink[id] = sinkMax * Math.pow(sinkRoll, sinkPow)
       this.instYaw[id] = yaw
       // ON TOP OF THE ROCK IF THERE IS ONE UNDER THE TRUNK. Only rocks over
       // ROCK_STAND_MIN answer, so a tree is never perched on a cobble, and the

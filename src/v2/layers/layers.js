@@ -93,7 +93,7 @@ export class Layers {
     )
   }
 
-  // Water surface elevation at (x, z), or null for dry land. The player, the prop scatter and the water renderer read this; the terrain does not.
+  // Water surface elevation at (x, z), or null for dry land. The player, the prop scatter and the water renderer read this; the terrain reads shoreAt instead.
   //
   // Rivers count. This used to be lakes-only, which meant "is this point underwater" answered null in every riverbed in the world -- so the scatter that keeps trees out of lakes would have planted them mid-channel. Where a river runs into a lake the HIGHER surface wins: the two are contiguous water, and taking the lower would sink the river's last few metres into the lake it is joining.
   waterLevelAt(x, z) {
@@ -102,6 +102,13 @@ export class Layers {
     if (river === null) return lake
     if (lake === null) return river
     return river > lake ? river : lake
+  }
+
+  // 0..1: how much the ground at height `h` over (x, z) is a WATER'S EDGE -- within a fraction of a metre of a lake plane or a river's level, on either side of the line (water-bodies.js shoreBand). The mesher paints it sand. Lakes and rivers each answer and the stronger wins, so a river's mouth is one continuous shore with the lake it enters.
+  shoreAt(x, z, h) {
+    const lake = this.lakes.shoreAt(x, z, h)
+    const river = this.paths.riverShoreAt(x, z, h)
+    return lake > river ? lake : river
   }
 
   // --- dirty tracking -------------------------------------------------------

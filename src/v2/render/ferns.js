@@ -1120,7 +1120,7 @@ export class Ferns {
       // a road the only other contributor is a lake, whose flattened apron is
       // already water-rejected above.
       const ny = 1 / Math.hypot(tan, 1)
-      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, altLo, altSpan, x, z, gc, 0)
+      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
       // Renormalised to unit luminance, so what survives is HUE. See the header:
       // the terrain palette's magnitude is near-black and multiplying by it raw
       // would undo the whole de-light.

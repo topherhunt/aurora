@@ -10,6 +10,7 @@ import {
 import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
 
 // ---------------------------------------------------------------------------
@@ -671,30 +672,33 @@ const BEDS = [
   {
     // THE STONES ALONG THE WATER'S EDGE: a frequent scatter of small and medium
     // boulders in a strip `shoreOnly` metres either side of every lake shore and
-    // river bank, and nowhere else. Its own bed on the scree bed's reasoning --
-    // the boulders bed's `shoreGain` can at most double a rate that lays one rock
-    // every 21 m, and a bank wants one every few strides, which is made of
-    // candidates and candidates are per-bed. What that buys, as with scree, is a
-    // bed that is dense and SHORT-SIGHTED at once: it reaches 80 m, so the stones
-    // are populated only as she comes near the water and the disc is a fiftieth
-    // of the boulders bed's.
+    // river bank, and nowhere else, thickest ON the line and thinning out to
+    // the strip's edge. Its own bed on the scree bed's reasoning -- the boulders
+    // bed's `shoreGain` can at most double a rate that lays one rock every 21 m,
+    // and a bank wants one every few strides, which is made of candidates and
+    // candidates are per-bed. What that buys, as with scree, is a bed that is
+    // dense and SHORT-SIGHTED at once: it reaches 80 m, so the stones are
+    // populated only as she comes near the water and the disc is a fiftieth of
+    // the boulders bed's.
     name: 'shore',
     field: 8,
     // Candidates per m2 over the whole disc, of which only the strip survives
-    // `shoreOnly`. 0.15 x 0.6 in the strip is one rock per 11 m2: over a strip
-    // 3 m each side of the line that is a stone every 1.9 m of bank.
-    density: 0.15,
+    // `shoreOnly`. 0.2 x 0.75 at the line is one rock per 6.7 m2, and the strip
+    // integrates to 5.5 m of full rate across `shoreCore` and the fall-off, so
+    // that is a stone every 1.2 m of bank -- the waterline reads as a stony
+    // margin rather than as a colour change with the odd rock on it.
+    density: 0.2,
     // Ground within SHORE_RISE of the water is `river` (see _envAt), which is
     // most of the strip; a bank rising steeper than that is forest or cliff and
     // takes a little less. Nothing on a summit, where the water is a tarn on
     // bare rock the giants and embedded beds already furnish.
-    envDensity: { river: 0.6, forest: 0.4, cliff: 0.4, peak: 0 },
+    envDensity: { river: 0.75, forest: 0.5, cliff: 0.5, peak: 0 },
     fullRadius: 25,
     // Set by `minReach`, not taste: a 2.5 m stone reaches T6 at 62.5 m and owes
     // the far band past it, which asks 73.5 m of this.
     radius: 80,
     tile: 12,
-    // Peak 217 of 1838 over the probe flight.
+    // Peak 213 of 2425 over the probe flight.
     siteFrac: 0.2,
     minElev: 0,
     maxSlopeDeg: 42,
@@ -703,7 +707,11 @@ const BEDS = [
     allowSubmerged: true,
     // Metres either side of a shore a candidate may stand. Tighter than the
     // boulders bed's SHORE_REACH: that gain is a fringe, this is the waterline.
-    shoreOnly: 3,
+    shoreOnly: 4,
+    // And within this much of the line the rate is the full one; from here to
+    // `shoreOnly` it eases to nothing, so the strip has no hard outer edge and
+    // the stones crowd where the water meets the ground.
+    shoreCore: 1.5,
     tilt: 0.5,
     sinkVary: true,
     // Not an anchor: a metre stone on a beach has no damp shaded base worth a
@@ -1483,6 +1491,12 @@ class RockBed {
     // `footOnly` for the waterline. 0 is "anywhere". See the shore bed.
     this.shoreOnly = cfg.shoreOnly ?? 0
     if (!(this.shoreOnly >= 0)) throw new Error(`RockBed ${cfg.name}: shoreOnly must be metres >= 0, got ${cfg.shoreOnly}`)
+    // Inside this the strip runs at the full rate; out to `shoreOnly` it eases
+    // to 0. Equal to shoreOnly is a flat strip with a hard edge.
+    this.shoreCore = cfg.shoreCore ?? this.shoreOnly
+    if (!(this.shoreCore >= 0 && this.shoreCore <= this.shoreOnly)) {
+      throw new Error(`RockBed ${cfg.name}: shoreCore must be metres within shoreOnly ${this.shoreOnly}, got ${cfg.shoreCore}`)
+    }
     this.probesRelief = this.footOnly || this.footDense
     // One cell per RELIEF_CELL of tile, plus one so the last partial cell has a
     // slot. 0 is "not asked yet"; see `_reliefAt`.
@@ -3069,12 +3083,17 @@ class RockBed {
         dens *= this.shoreGain
       }
       // AND A BED THAT ONLY EXISTS AT THE WATERLINE refuses everything past it,
-      // wet or dry alike. After the field sample because the lake half of the
-      // distance needs the ground height and slope; before the rate so a refused
-      // candidate costs one lookup and nothing else.
-      if (this.shoreOnly > 0 && Math.abs(this.water.shoreDistAt(x, z, this.shoreOnly, h, tan)) >= this.shoreOnly) {
-        this.rejected.shore++
-        continue
+      // wet or dry alike, and thins from `shoreCore` out to the edge. After the
+      // field sample because the lake half of the distance needs the ground
+      // height and slope; before the rate so a refused candidate costs one
+      // lookup and nothing else.
+      if (this.shoreOnly > 0) {
+        const d = Math.abs(this.water.shoreDistAt(x, z, this.shoreOnly, h, tan))
+        if (d >= this.shoreOnly) {
+          this.rejected.shore++
+          continue
+        }
+        if (d > this.shoreCore) dens *= smoothstep(this.shoreOnly, this.shoreCore, d)
       }
       if (envRoll >= dens) {
         this.rejected.env++
@@ -3430,7 +3449,7 @@ class RockBed {
       // this file has no path index to gate on, and one lookup sits next to the
       // four _groundTilt is about to take anyway.
       shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, this.layers.flattenAt(x, z),
-        altLo, altSpan, x, z, gc, 0)
+        this.layers.shoreAt(x, z, h), altLo, altSpan, x, z, gc, 0)
       // Taken at FULL MAGNITUDE, so the cue carries lightness and not just hue --
       // see GROUND_CUE for why the old renormalisation went and what the change
       // costs in brightness.
@@ -4186,8 +4205,8 @@ export class Rocks {
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
     }
-    if (!layers || typeof layers.flattenAt !== 'function' || !layers.snow) {
-      throw new Error('Rocks: needs Layers with flattenAt and a snow field')
+    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
+      throw new Error('Rocks: needs Layers with flattenAt, shoreAt and a snow field')
     }
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Rocks: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')

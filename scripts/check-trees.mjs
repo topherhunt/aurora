@@ -1932,13 +1932,13 @@ console.log('\n-- stretch and sink --')
 
   // A shore along x = 0, water on the negative side: the bank's trees are
   // rolled deeper and nothing else about the forest moves.
-  const { reach, power } = SHORE_SINK
-  check(power < 3 && power > 0 && reach > 0, 'the shore bends the sink roll toward the deep end within a bounded reach', `power ${power}, reach ${reach} m`)
+  const { reach, power, hemMin } = SHORE_SINK
+  check(power < 3 && power > 0 && reach > 0 && hemMin > 0, 'the shore bends the sink roll toward the deep end within a bounded reach, and stops the hem short of the ground', `power ${power}, reach ${reach} m, hem ${hemMin} m`)
   const shore = { isSubmerged: () => false, shoreDistAt: (x, z, r, h, tan) => Math.min(r, Math.max(-r, x)) }
   const bank = new Trees(new THREE.Scene(), flat, shore, texArray, { seed: 7, radius: 200 })
   bank.place(0, 0)
-  let moved = 0, inlandDiffer = 0, deeper = 0, shallower = 0, capped = 0
-  let bankN = 0, bankSum = 0, bankDeep = 0, inN = 0, inSum = 0
+  let moved = 0, inlandDiffer = 0, deeper = 0, shallower = 0, capped = 0, underHem = 0
+  let bankN = 0, bankSum = 0, bankDeep = 0, inN = 0, inSum = 0, lineN = 0, lineLow = 0, lineSweep = 0
   for (const tile of t.tiles.values()) {
     const other = bank.tiles.get(tile.tx * 0x10000 + tile.tz)
     if (!other || other.n !== tile.n) { moved++; continue }
@@ -1948,7 +1948,13 @@ console.log('\n-- stretch and sink --')
         || t.instStretch[a] !== bank.instStretch[b] || t.instYaw[a] !== bank.instYaw[b] || t.variantAt[a] !== bank.variantAt[b]) moved++
       const x = bank.instX[b]
       const sk = bank.instSink[b]
-      if (sk > SINK_M + 1e-6) capped++
+      // The bank's cap is the tree's own hem less hemMin, never under SINK_M.
+      const scale = bank.instScale[b]
+      const hem0 = bank.unitCrownBase[bank.variantAt[b]] * scale * bank.instStretch[b] - PLACEMENT.sink * scale
+      const cap = x >= reach ? SINK_M : Math.max(SINK_M, hem0 - hemMin)
+      if (sk > cap + 1e-6) capped++
+      if (cap > SINK_M && hem0 - sk < hemMin - 1e-6) underHem++
+      if (x <= 0) { lineN++; if (hem0 - sk <= 1) lineLow++; if (hem0 - sk <= hemMin + 0.05) lineSweep++ }
       if (x >= reach) {
         inN++; inSum += sk
         if (sk !== t.instSink[a]) inlandDiffer++
@@ -1965,7 +1971,10 @@ console.log('\n-- stretch and sink --')
   check(bankN > 0 && bankSum / bankN > 2 * (inSum / inN) && bankDeep / bankN > 0.3,
     'so the bank\'s boughs hang low: its mean sink is over twice the inland one and a third of its trees are past a metre',
     `bank mean ${(bankSum / bankN).toFixed(2)} m (${(100 * bankDeep / bankN).toFixed(0)}% past 1 m) vs inland ${(inSum / inN).toFixed(2)} m`)
-  check(capped === 0, 'and SINK_M still caps it', `${capped} over`)
+  check(capped === 0 && underHem === 0, 'and the cap is each tree\'s own hem less hemMin, never under SINK_M, so a tall bank tree sinks deep and no hem goes under', `${capped} over their cap, ${underHem} hems under hemMin`)
+  check(lineN > 100 && lineLow / lineN > 0.6 && lineSweep / lineN > 0.2,
+    'at the waterline two thirds of the trees hang a bough within a metre of the ground and a fifth sweep it -- the wood closes into a wall at a lake',
+    `${lineN} at the line, ${(100 * lineLow / lineN).toFixed(0)}% within a metre, ${(100 * lineSweep / lineN).toFixed(0)}% sweeping`)
   bank.dispose()
   t.dispose()
   again.dispose()
