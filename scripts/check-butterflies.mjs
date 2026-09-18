@@ -13,7 +13,10 @@
 // whose wings do not flutter fast; one still in the air after sunset, one that
 // takes off in the dark, a meadow rolled at night that arrives flying, or a
 // whole meadow leaving on the one frame the sun comes up; a frame that costs
-// more than a scatter is allowed to; the wing flap not in the vertex shader.
+// more than a scatter is allowed to; the wing flap not in the vertex shader;
+// a meadow all one colour, a butterfly whose tint is no morph of MORPHS, a
+// blue that is not blue or an orange not orange, or an instance not carrying
+// its butterfly's own tint.
 // The shipped GLB is checked too, because the world loads it by name.
 //
 // What this can NOT check: whether the flight reads as a butterfly's. That
@@ -22,7 +25,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, NEAR_M, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
+  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NEAR_M, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
 } from '../src/v2/render/butterflies.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 
@@ -41,12 +44,12 @@ const height = {
   heightAndSlopeAt: (x, z) => ({ h: groundAt(x, z), tan: SLOPE, gx: SLOPE, gz: 0 }),
   snowLineAt: () => SNOW,
 }
-// A pond 6 m across at (30, 30), its surface a hand above the ground there.
+// A pond 6 m across at (30, 30), its surface a hand above the ground at its uphill edge, so the whole disc is under water.
 const POND = { x: 30, z: 30, r: 6 }
-const water = { levelAt: (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? groundAt(POND.x, POND.z) + 0.1 : null) }
+const water = { levelAt: (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? groundAt(POND.x + POND.r, POND.z) + 0.1 : null) }
 const TREE = { x: 3, z: 0, r: 0.25 }
 const ROCK = { x: -3, z: 0, r: 1.2 }
-const FERN = { x: 0, z: 3, top: groundAt(0, 3) + 0.6, r: 0.5 }
+const FERN = { x: 0, z: 3, r: 0.5 }
 const STUMP = { x: 0, z: -3, top: groundAt(0, -3) + 1.2, r: 0.3 }
 const into = (list, x0, z0, x1, z1, out, fields) => {
   let n = 0
@@ -68,7 +71,19 @@ const rocks = {
   blockTopAt: (x, z, minSize, settle) => (settle === false ? stoneAt(x, z) : Math.max(stoneAt(x, z), -Infinity)),
 }
 const trees = { anchorsInto: (x0, z0, x1, z1, out) => into([TREE], x0, z0, x1, z1, out, (p) => ({ y: groundAt(p.x, p.z) - 0.1 })) }
-const ferns = { perchesInto: (x0, z0, x1, z1, out) => into([FERN], x0, z0, x1, z1, out, (p) => ({ y: p.top })) }
+// The fern answers at FERN_PERCH_STRIDE with its id, and `landOn` hands back one point of a tilted frond with its normal, as Ferns.landOn does off the rosette's triangles.
+const FERN_HIT = { x: FERN.x + 0.3, y: groundAt(FERN.x, FERN.z) + 0.35, z: FERN.z + 0.1, nx: 0.6, ny: 0.8, nz: 0 }
+const ferns = {
+  perchesInto: (x0, z0, x1, z1, out) => {
+    if (FERN.x < x0 || FERN.x >= x1 || FERN.z < z0 || FERN.z >= z1) return 0
+    out[0] = FERN.x; out[1] = groundAt(FERN.x, FERN.z); out[2] = FERN.z; out[3] = FERN.r; out[4] = 17
+    return 1
+  },
+  landOn: (id, rand, out) => {
+    if (id !== 17) throw new Error(`landOn asked for fern ${id}, not the one perchesInto reported`)
+    Object.assign(out, FERN_HIT)
+  },
+}
 const deadwood = { perchesInto: (x0, z0, x1, z1, out) => into([STUMP], x0, z0, x1, z1, out, (p) => ({ y: p.top })) }
 const walk = { heightAt: (x, z) => Math.max(groundAt(x, z), stoneAt(x, z)) }
 
@@ -149,6 +164,30 @@ flock.place(0, 0)
     }
   }
   check(landed > 0 && wetLanding === 0, 'no landing on the pond', `${wetLanding} wet of ${landed} resting frames`)
+}
+
+// --- the colour: one morph a butterfly, carried in instanceColor ----------------
+{
+  check(flock.mesh.instanceColor?.isInstancedBufferAttribute && flock.mesh.instanceColor.count === MAX, 'the tint rides in instanceColor')
+  const within = (v, [lo, hi]) => v >= lo - 1e-9 && v <= hi + 1e-9
+  const morphOf = (b) => MORPHS.find((m) => within(b.r, m.r) && within(b.g, m.g) && within(b.b, m.b))
+  const worn = new Map(MORPHS.map((m) => [m.name, 0]))
+  for (const b of alive()) { const m = morphOf(b); if (m) worn.set(m.name, worn.get(m.name) + 1) }
+  check(alive().every((b) => morphOf(b)) && [...worn.values()].every((n) => n > 0), 'each butterfly wears one morph whole and every morph is on the meadow', [...worn].map(([k, v]) => `${k} ${v}`).join(', '))
+  const mid = ([lo, hi]) => (lo + hi) / 2
+  const meadow = MORPHS.find((m) => m.name === 'meadow'), blue = MORPHS.find((m) => m.name === 'blue'), orange = MORPHS.find((m) => m.name === 'orange')
+  check(meadow && meadow.r[0] >= 0.9 && meadow.g[0] >= 0.9 && meadow.b[0] >= 0.8, 'the meadow morph is the map as shipped')
+  check(blue && mid(blue.b) >= 0.9 && mid(blue.g) < 0.35 && mid(blue.r) < 0.05, 'the blue morph is an electric blue: full blue, little green, no red')
+  check(orange && mid(orange.r) >= 0.95 && mid(orange.g) < 0.35 && mid(orange.g) > 0.1 && mid(orange.b) < 0.05, 'the orange morph is a flame orange: full red, some green, no blue')
+  // One frame at the origin, then every written instance carries its butterfly's own tint.
+  flock.update(0, 11, 0, 1 / 72)
+  const c = flock.mesh.instanceColor.array, m = flock.mesh.instanceMatrix.array
+  let matched = 0
+  for (let k = 0; k < flock.mesh.count; k++) {
+    const b = alive().find((b) => Math.abs(m[k * 16 + 12] - b.x) < 1e-4 && Math.abs(m[k * 16 + 14] - b.z) < 1e-4)
+    if (b && Math.abs(c[k * 3] - b.r) < 1e-6 && Math.abs(c[k * 3 + 1] - b.g) < 1e-6 && Math.abs(c[k * 3 + 2] - b.b) < 1e-6) matched++
+  }
+  check(flock.mesh.count > 0 && matched === flock.mesh.count, 'each written instance carries its butterfly\'s tint', `${matched} of ${flock.mesh.count}`)
 }
 
 // --- flight and landing --------------------------------------------------------
@@ -254,9 +293,17 @@ flock.place(0, 0)
   let more = 0
   for (; more < 72 * 240 && !allKinds(); more++) flock.update(0, 11, 0, dt)
   check(allKinds(), 'the trunk, the stone, the fern, the stump and the ground each got a landing', `${JSON.stringify(L)} after ${(more / 72).toFixed(0)} s more`)
-  // The longest-settled of each state: its wings have had seconds to ease.
-  const longest = (state) => alive().filter((b) => b.state === state).sort((a, b) => a.left - b.left)[0]
-  const rest = longest('rest')
+  // A butterfly that has rested a second: its wings have had time to ease. `left` cannot say (a fresh landing may roll a short rest), so the frames are counted.
+  const rested = new Map()
+  let rest = null
+  for (let f = 0; f < 72 * 30 && !rest; f++) {
+    flock.update(0, 11, 0, dt)
+    for (const b of alive()) {
+      const n = b.state === 'rest' ? (rested.get(b.id) ?? 0) + 1 : 0
+      rested.set(b.id, n)
+      if (n >= 72) rest = b
+    }
+  }
   // A flier on the last frames of a flap burst (0.38 s of flapping at least, so the wings have eased from a glide's 0.08) within NEAR_M of her head, where it is stepped every frame; frames until one turns up.
   const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && b.beat < 0.02 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M).sort((a, b) => a.beat - b.beat)[0]
   let flier = nearFlier()
@@ -293,6 +340,25 @@ flock.place(0, 0)
     for (let i = 0; i < flock.mesh.count; i++) if (Math.abs(m[i * 16 + 12] - b.x) < 1e-6 && Math.abs(m[i * 16 + 14] - b.z) < 1e-6) k = i
     const bodyUp = k !== null && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
     check(bodyUp, 'seated with its head up the trunk', k === null ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
+  }
+}
+
+// --- the fern perch: on a frond, lifted for the sway ------------------------------
+{
+  const b = alive()[0]
+  b.x = FERN.x + 1; b.z = FERN.z + 1; b.y = groundAt(b.x, b.z) + 1
+  let kind = null
+  for (let i = 0; i < 64 && kind !== 'fern'; i++) kind = flock._perch(b)
+  check(kind === 'fern', 'a fern in reach is picked')
+  if (kind === 'fern') {
+    const off = Math.hypot(b.px - FERN_HIT.x - FERN_HIT.nx * FERN_LIFT_M, b.py - FERN_HIT.y - FERN_HIT.ny * FERN_LIFT_M, b.pz - FERN_HIT.z - FERN_HIT.nz * FERN_LIFT_M)
+    check(off < 1e-6 && FERN_LIFT_M >= 0.02 && FERN_LIFT_M <= 0.03, 'the perch is the frond\'s point, 2 to 3 cm off it along its normal', `${off.toExponential(1)} m off, lift ${FERN_LIFT_M}`)
+    check(b.nx === FERN_HIT.nx && b.ny === FERN_HIT.ny && b.nz === FERN_HIT.nz, 'with the frond\'s normal, not straight up')
+    // Flown in and seated: it rests exactly where the perch was set.
+    b.state = 'land'; b.perch = 'fern'
+    let f = 0
+    for (; f < 72 * 30 && b.state === 'land'; f++) flock.update(0, 11, 0, 1 / 72)
+    check(b.state === 'rest' && Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6, 'and it settles onto that point', `${(f / 72).toFixed(1)} s in`)
   }
 }
 

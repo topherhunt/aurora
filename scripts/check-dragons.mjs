@@ -167,7 +167,7 @@ const roostsOn = (field, water, layers, seed) => {
     m.onBeforeCompile(shader)
     return shader
   }
-  check(r.materials.length === 3 && r.materials[0].customProgramCacheKey() === 'gen-prop-roost-bark' && r.materials[1].customProgramCacheKey() === 'gen-prop-roost-stone' && r.materials[2].customProgramCacheKey() === 'gen-prop-roost-billboard-mixed', 'three materials offered to the lighting: bark, stone, and the mixed card', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  check(r.materials.length === 3 && r.materials[0].customProgramCacheKey() === 'gen-prop' && r.materials[1].customProgramCacheKey() === 'gen-prop' && r.materials[2].customProgramCacheKey() === 'gen-prop-billboard-mixed', 'three materials offered to the lighting: bark and stone on the one gen-prop program, and the mixed card', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
   const cardShader = compile(r.card)
   check(cardShader.vertexShader.includes('attribute float aSpin') && !r.card.visible && r.card.map === null, 'the card program reads aSpin to spin one quad and leave the other, and is not drawn until it is photographed')
   check(r.radius === cullRange(DIAMETER[1], RUNGS) && r.radius > 500, `the scatter reaches the card cull of the widest bowl, ${r.radius.toFixed(0)} m, so nothing of it pops in at the edge`)

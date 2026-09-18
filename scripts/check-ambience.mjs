@@ -781,6 +781,36 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(threw, 'a fish layer without startled() throws')
 }
 {
+  // The grasshoppers: each shown one within reach chirps the cricket clip from where it sits, on average once per `every` seconds, by day; none past the reach.
+  const C = RULES.chirp
+  const near = { x: HEAD.x + 1, y: GROUND, z: HEAD.z }
+  const mid = { x: HEAD.x, y: GROUND, z: HEAD.z + 4 }
+  const far = { x: HEAD.x + C.reach + 1, y: GROUND, z: HEAD.z }
+  const listed = [near, mid, far]
+  const grasshoppers = { bodies(into) { into.push(...listed); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(25), grasshoppers })
+  const SECONDS = 600
+  run(amb, SECONDS, { dayness: DAY })
+  const chirps = engine.plays.filter((p) => p.name === 'cricket')
+  check(chirps.length > 0 && chirps.every((p) => p.at && listed.some((b) => p.at.x === b.x && p.at.y === b.y && p.at.z === b.z)), 'by day every cricket is a grasshopper\'s, from where it sits', `${chirps.length} chirps`)
+  const from = (b) => chirps.filter((p) => p.at.x === b.x && p.at.z === b.z)
+  const expect = SECONDS / C.every
+  check(within(from(near).length, expect * 0.5, expect * 1.6) && within(from(mid).length, expect * 0.5, expect * 1.6), `each one within ${C.reach} m chirps about once per ${C.every} s`, `${from(near).length} and ${from(mid).length} in ${SECONDS} s, ${expect} expected`)
+  check(from(far).length === 0, 'one past the reach never does')
+  // The distance is from her head, 1.6 m over the ground it sits on.
+  const level = (b) => C.level * (C.near / Math.max(C.near, Math.hypot(b.x - HEAD.x, b.y - HEAD.y, b.z - HEAD.z)))
+  check(from(near).every((p) => within(p.gain, level(near) * C.gain[0], level(near) * C.gain[1]) && within(p.rate, RATE[0], RATE[1])), 'at her feet it is the level over its distance from her head, in the pitch band')
+  check(from(mid).every((p) => within(p.gain, level(mid) * C.gain[0], level(mid) * C.gain[1])) && level(mid) < level(near), '4 m off it falls as 1 / distance')
+  listed.length = 0
+  const before = chirps.length
+  run(amb, 60, { dayness: DAY })
+  check(count(engine, 'cricket') === before, 'and none once nothing is listed')
+  let threw = false
+  try { new Ambience({ engine, sense, grasshoppers: {} }) } catch { threw = true }
+  check(threw, 'a grasshopper layer without bodies() throws')
+}
+{
   // The dragons: wingbeats on the fly clip's cycle near, roars across the valley with the far treatment and the echo, growls with pauses from a nest, treads on the walk clip's beats from one pottering.
   const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl
   const FLY = 0.9

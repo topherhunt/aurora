@@ -36,6 +36,8 @@
 // its birds are placed across the valley and sound like it. The fish are the
 // one thing heard on the water bus: a swoosh from each that sets off fast
 // (the layer's startled()) near her head, its loudness and pitch by its length.
+// The grasshoppers (bodies() lists the ones the layer shows) each chirp the
+// cricket clip now and then from where they sit, by day as well as by night.
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
@@ -132,6 +134,8 @@ export const RULES = {
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
+  // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds: `level` up to `near` metres off, falling as near/distance past it.
+  chirp: { reach: 5, near: 1, level: 0.5, every: 30, gain: [0.5, 1.0] },
   // The dragons, every sound at its body's distance through the engine's far treatment. Its wings, while it flies within `reach`: one beat a cycle of its fly clip, within `jitter` of a cycle of the beat, at `level` up to `near` metres off and falling as near/distance past it, the clip slowed to `rate` so a beat is deep, not a pigeon's.
   wingbeat: { reach: 50, near: 5, level: 0.5, jitter: 0.05, rate: [0.5, 0.6], gain: [0.7, 1.0] },
   // A flying dragon roars every `every` seconds, heard within `reach`: `level` up to `near` off, falling as (near/distance)^roll past it, and fading out over the last `edge` metres of the reach; `echo` is its send into the valley echo. The clip is mastered 24 dB hotter than the yip, which is why the level is low.
@@ -168,12 +172,14 @@ export class Ambience {
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
    * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
    * @param fish      the fish layer, if any: startled(into) lists the fish that set off fast this frame, x, y, z and size (length in metres) on each.
+   * @param grasshoppers  the grasshopper layer, if any: bodies(into) lists the ones it is showing, x, y, z on each.
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null }) {
     if (!engine) throw new Error('Ambience: missing engine')
     if (!sense) throw new Error('Ambience: missing sense')
     if (dragons && typeof dragons.bodies !== 'function') throw new Error('Ambience: the dragon layer needs bodies()')
     if (fish && typeof fish.startled !== 'function') throw new Error('Ambience: the fish layer needs startled()')
+    if (grasshoppers && typeof grasshoppers.bodies !== 'function') throw new Error('Ambience: the grasshopper layer needs bodies()')
     for (const h of herds) {
       if (!h.layer || typeof h.layer.bodies !== 'function') throw new Error('Ambience: a herd needs a layer with bodies()')
       if (!FOOTFALLS[h.clips]) throw new Error(`Ambience: no footfalls for a ${h.clips} clip library`)
@@ -189,6 +195,7 @@ export class Ambience {
     this.startlers = startlers
     this.dragons = dragons
     this.fish = fish
+    this.grasshoppers = grasshoppers
     // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
     this.bodies = new Map()
     // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, growling, growl, gait, step, beat, land, seen }. See _dragons.
@@ -331,6 +338,7 @@ export class Ambience {
     this._herds(dt, head)
     this._dragons(dt, head)
     this._frogs(dt, head, s)
+    this._grasshoppers(dt, head)
     this._rocks(dt, head, s)
     this._lake(dt, head, s)
     this.engine.update()
@@ -638,6 +646,22 @@ export class Ambience {
       const fade = clamp(1 - d / FROG_REACH, 0, 1)
       if (fade <= 0) continue
       this.fire(this.pick(CROAKS), { rate: this.rate(), gain: this.between(...G.gain) * fade, at: { x, y, z } })
+    }
+  }
+
+  /** The grasshoppers: each shown one within reach chirps the cricket clip, on average once per `every` seconds, from where it is. */
+  _grasshoppers(dt, head) {
+    if (!this.grasshoppers) return
+    const C = RULES.chirp
+    const p = dt / C.every
+    const listed = this.listed
+    listed.length = 0
+    this.grasshoppers.bodies(listed)
+    for (const c of listed) {
+      if (this.rand() >= p) continue
+      const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+      if (d > C.reach) continue
+      this.fire('cricket', { rate: this.rate(), gain: C.level * (C.near / Math.max(C.near, d)) * this.between(...C.gain), at: { x: c.x, y: c.y, z: c.z } })
     }
   }
 

@@ -589,6 +589,33 @@ console.log('\ncost')
   check(s.tris === (s.placed - s.rimHidden) * l.pebbleTris && l.pebbleTris === ROCK_TIERS[PEBBLE_TIER].faces && s.tris > 0 && s.rimFading === 0,
     'the triangle count the panel shows is drawn pebbles times twenty, so the row is the layer\'s real cost',
     `${s.tris} tris = (${s.placed} placed - ${s.rimHidden} hidden) x ${l.pebbleTris}, ${s.rimFading} still fading`)
+
+  // Each stone's rim radius is capped at REACH_SIZES times its own width, read back off its matrix (sx * sz is size squared, the stretch cancelling), so the small stones are the ones the rim hides and the biggest still reach within a stride of RADIUS. The cap has to bite on most of the layer: the size roll is skewed small, so most stones are cut well inside the thinning's 28 m.
+  const REACH_SIZES = srcNum('REACH_SIZES')
+  const RADIUS = srcNum('RADIUS')
+  const m = new THREE.Matrix4()
+  const sv = new THREE.Vector3()
+  let over = 0
+  let capped = 0
+  let live = 0
+  for (const t of l.tiles.values()) {
+    for (let k = 0; k < t.n; k++) {
+      const id = t.ids[k]
+      l.batch.getMatrixAt(id, m)
+      sv.setFromMatrixScale(m)
+      const size = Math.sqrt(sv.x * sv.z)
+      const gone = l.rim.gone[id]
+      live++
+      if (gone > REACH_SIZES * size + 1e-4) over++
+      if (Math.abs(gone - REACH_SIZES * size) < 1e-4) capped++
+    }
+  }
+  check(over === 0 && capped > live / 2 && REACH_SIZES * SIZE[1] >= RADIUS - 1.5 && REACH_SIZES * SIZE[1] <= RADIUS,
+    'every stone is culled by its own size, the cap binds on most of them, and the biggest still reaches the radius',
+    `${over} past their size's reach, ${capped} of ${live} on the cap, a ${SIZE[1]} m stone to ${REACH_SIZES * SIZE[1]} m of ${RADIUS}`)
+  check(s.placed - s.rimHidden < s.placed * 0.4,
+    'so under four in ten resident stones are drawn standing still',
+    `${s.placed - s.rimHidden} of ${s.placed}`)
   l.dispose()
 }
 

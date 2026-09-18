@@ -29,6 +29,7 @@ import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
 import { GLINT, createCritterCardMaterial, glint, hueVary } from '../src/v2/render/critters.js'
 import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
+import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -883,6 +884,35 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (frag.includes('gl_FragCoord.x + gl_FragCoord.y')) MISSING_MARKS.push(`${label} frag: a dither the card no longer wears`)
 }
 
+// The grasshopper card (grasshoppers.js): a Lambert cutout under a per-instance
+// tint whose triangle overhangs its quad, so the fragment stage cuts
+// everything past 0..1 UV before the map is read, then the double-sided flip
+// undone as the critter card does. Compiled here because the cut reads vMapUv, which only USE_MAP
+// declares, and it lands before the slot the lighting patch splices around.
+{
+  const stub = { heightAt: () => 0, heightAndSlopeAt: () => ({ h: 0, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 100 }
+  const material = new Grasshoppers(new THREE.Scene(), stub, { levelAt: () => null }, { walk: stub, map: new THREE.Texture() }).material
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-grasshopper' })
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']
+  const label = 'grasshopper card     '
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  const cut = frag.indexOf('vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) discard;')
+  if (cut < 0 || cut > frag.indexOf('texture2D( map, vMapUv )')) MISSING_MARKS.push(`${label} frag: the overhang cut before the map read`)
+  if (!frag.includes('normal *= faceDirection;')) MISSING_MARKS.push(`${label} frag: the flip undone`)
+}
+
 // The generated props' three programs (gen-props.js): the mesh with the rim
 // dissolve over `aPropFade`, the axis card and the spun card. The card's normal
 // is the world's, not the instance's, and both card programs are checked for it.
@@ -891,7 +921,7 @@ for (const [label, opts, defines] of [
   ['gen-prop card        ', { card: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
   ['gen-prop spun card   ', { card: true, billboard: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
 ]) {
-  const material = createGenPropMaterial(`check-${label.trim()}`, opts)
+  const material = createGenPropMaterial(opts)
   new WorldLighting().patch(material, { mode: 'vertex', cacheKey: `check-${label.trim()}` })
   const lib = THREE.ShaderLib.lambert
   const shader = {

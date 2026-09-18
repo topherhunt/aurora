@@ -602,12 +602,12 @@ export class Deadwood {
     this.tierCount = bank.tiers.length
     this.cardTier = this.tierCount - 1
     this.meshMaterials = bank.variants.map((v, i) => {
-      const m = createGenPropMaterial(`deadwood-${v.name}`)
+      const m = createGenPropMaterial()
       m.map = bank.maps[i]
       return m
     })
     this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial(`deadwood-${v.name}`, { card: true, billboard: cardViews(v) === SPUN_VIEWS })
+      const m = createGenPropMaterial({ card: true, billboard: cardViews(v) === SPUN_VIEWS })
       m.visible = false
       return m
     })
@@ -1114,26 +1114,28 @@ export class Deadwood {
   perchesInto(x0, z0, x1, z1, out) {
     const cap = (out.length / 4) | 0
     let n = 0
-    for (const tile of this.tiles.values()) {
-      const tx0 = tile.tx * TILE
-      const tz0 = tile.tz * TILE
-      if (tx0 >= x1 || tx0 + TILE <= x0 || tz0 >= z1 || tz0 + TILE <= z0) continue
-      for (let k = 0; k < tile.n; k++) {
-        const id = tile.ids[k]
-        const x = this.instX[id]
-        if (x < x0 || x >= x1) continue
-        const z = this.instZ[id]
-        if (z < z0 || z >= z1) continue
-        if (n >= cap) return cap
-        const v = this.variantAt[id]
-        const scale = this.instSize[id] / this.vLod[v]
-        const log = this.isLog[v] === 1
-        const o = n * 4
-        out[o] = x
-        out[o + 1] = this.instY[id] + (log ? this.vRadius[v] : this.vHeight[v]) * scale
-        out[o + 2] = z
-        out[o + 3] = (log ? this.vLong[v] * 0.5 : this.vRadius[v]) * scale
-        n++
+    const gx1 = Math.ceil(x1 / TILE) - 1, gz1 = Math.ceil(z1 / TILE) - 1
+    for (let gx = Math.floor(x0 / TILE); gx <= gx1; gx++) {
+      for (let gz = Math.floor(z0 / TILE); gz <= gz1; gz++) {
+        const tile = this.tiles.get(gx * 0x10000 + gz)
+        if (!tile) continue
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          const x = this.instX[id]
+          if (x < x0 || x >= x1) continue
+          const z = this.instZ[id]
+          if (z < z0 || z >= z1) continue
+          if (n >= cap) return cap
+          const v = this.variantAt[id]
+          const scale = this.instSize[id] / this.vLod[v]
+          const log = this.isLog[v] === 1
+          const o = n * 4
+          out[o] = x
+          out[o + 1] = this.instY[id] + (log ? this.vRadius[v] : this.vHeight[v]) * scale
+          out[o + 2] = z
+          out[o + 3] = (log ? this.vLong[v] * 0.5 : this.vRadius[v]) * scale
+          n++
+        }
       }
     }
     return n

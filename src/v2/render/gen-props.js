@@ -7,8 +7,8 @@
 // A GENERATED PROP WEARS ITS OWN MAP, not the 128 px atlas. Its colour map ships
 // at 512 px (tools/props/gen/ship.mjs), four times the atlas's side, so it
 // cannot be a layer of it and a prop cannot draw through createPropMaterial:
-// each variant is a Lambert with `map`, one program per variant, and the far
-// tier is a critters.js card photographed off the loaded mesh at runtime
+// each variant is a Lambert with its own `map` on one shared program, and the
+// far tier is a critters.js card photographed off the loaded mesh at runtime
 // rather than a bench-baked impostor layer. What the material keeps of the
 // props' shader is the rim dissolve -- material.js's FADE_VERTEX and
 // FADE_FRAGMENT over the arena's `aPropFade` attribute -- so a generated prop
@@ -138,10 +138,14 @@ const CARD_NORMAL = /* glsl */ `
  * the instance's Y to face her in the vertex shader (two triangles; flat in a
  * headset, which past the parallax range it always is); `billboard: 'mixed'`
  * spins only the vertices whose `aSpin` is 1 (critters.js setSpunTopCard).
- * `label` keys the program: two materials differing only in these flags are two
- * programs.
+ * THE PROGRAM IS KEYED ON THESE FLAGS AND NOTHING ELSE, so every mesh variant of
+ * every prop scatter compiles to one program and its calls differ by material
+ * only -- a map bind, not a useProgram with the lights and camera re-uploaded
+ * behind it. What three keys on its own (alphaTest, the double side, whether a
+ * map is set) needs no help here. The lighting patch (lighting.js) composes
+ * its key onto this one, so its callers must share theirs too.
  */
-export function createGenPropMaterial(label, { tint = 0xffffff, card = false, billboard = false } = {}) {
+export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false } = {}) {
   if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
   if (billboard !== false && billboard !== true && billboard !== 'mixed') throw new Error(`createGenPropMaterial: billboard is true, false or 'mixed', not ${billboard}`)
   const mixed = billboard === 'mixed'
@@ -172,6 +176,6 @@ export function createGenPropMaterial(label, { tint = 0xffffff, card = false, bi
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
     }
   }
-  material.customProgramCacheKey = () => `gen-prop-${label}${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : ''}`
+  material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : ''}`
   return material
 }

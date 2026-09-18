@@ -3658,12 +3658,12 @@ class RockBed {
    * sweep of the pool would hand a caller anchors for rocks evicted a kilometre
    * back, at positions now inside a hill.
    *
-   * THE TILE REJECT IS THE WHOLE COST STORY. A bed's resident set is its entire
-   * draw radius, 1250 m of tiles for the giants, while a caller's box is a few tens
-   * of metres; four compares throw out all but a handful. Both extents are
-   * half-open in the same sense as the box, which is the literal truth about a tile
-   * since _growTile draws a rock's x from [tx * tile, (tx + 1) * tile) and never
-   * the far edge.
+   * KEYED, NOT SWEPT, like _blockAt: a bed's resident set is its entire draw
+   * radius, 1250 m of tiles for the giants, while a caller's box is a few tens of
+   * metres, so the tiles the box overlaps are looked up by key and the rest are
+   * never touched. Tile extents are half-open in the same sense as the box, which
+   * is the literal truth about a tile since _growTile draws a rock's x from
+   * [tx * tile, (tx + 1) * tile) and never the far edge.
    */
   _anchorsInto(x0, z0, x1, z1, out, w, cap) {
     return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.footRadius, 4)
@@ -3677,26 +3677,27 @@ class RockBed {
   /** The walk both of the above share; `radius` is per unit of instance scale, and a stride past 4 gets the size. */
   _rocksInto(x0, z0, x1, z1, out, w, cap, radius, stride) {
     const tile = this.tile
-    for (const t of this.tiles.values()) {
-      if (w >= cap) return w
-      const tx0 = t.tx * tile
-      const tz0 = t.tz * tile
-      if (tx0 >= x1 || tx0 + tile <= x0 || tz0 >= z1 || tz0 + tile <= z0) continue
-      for (let k = 0; k < t.n; k++) {
-        const id = t.ids[k]
-        const x = this.instX[id]
-        const z = this.instZ[id]
-        // HALF-OPEN, `>= x0 && < x1`, and the caller's tiling depends on it --
-        // see Rocks.anchorsInto.
-        if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
-        if (w >= cap) return w
-        const o = w * stride
-        out[o] = x
-        out[o + 1] = this.instY[id]
-        out[o + 2] = z
-        out[o + 3] = radius * this.instScale[id]
-        if (stride > 4) out[o + 4] = this.shapeLod * this.instScale[id]
-        w++
+    const gx1 = Math.ceil(x1 / tile) - 1, gz1 = Math.ceil(z1 / tile) - 1
+    for (let gx = Math.floor(x0 / tile); gx <= gx1; gx++) {
+      for (let gz = Math.floor(z0 / tile); gz <= gz1; gz++) {
+        const t = this.tiles.get(gx * 0x10000 + gz)
+        if (!t) continue
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const x = this.instX[id]
+          const z = this.instZ[id]
+          // HALF-OPEN, `>= x0 && < x1`, and the caller's tiling depends on it --
+          // see Rocks.anchorsInto.
+          if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
+          if (w >= cap) return w
+          const o = w * stride
+          out[o] = x
+          out[o + 1] = this.instY[id]
+          out[o + 2] = z
+          out[o + 3] = radius * this.instScale[id]
+          if (stride > 4) out[o + 4] = this.shapeLod * this.instScale[id]
+          w++
+        }
       }
     }
     return w

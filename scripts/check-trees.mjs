@@ -118,7 +118,8 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const pct = (v) => `${(v * 100).toFixed(2)}%`
 
 const { DENSITY, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, LOD_HYSTERESIS, Y_SQUASH,
-  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME } = TREE_TUNING
+  TILE, QUANT, NEAR_MARGIN, PLACEMENT, PLACEMENT_CELL, SCALE, TREELINE, BIOME,
+  CLUMP_FULL_TO, CLUMP_TREES } = TREE_TUNING
 
 const species = Object.keys(TREE_SPECIES)
 
@@ -1124,8 +1125,8 @@ trees.place(0, 0)
   const s = trees.stats
   const bandSq = LOD_BANDS.map((b) => b * b)
   const nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
-  const counts = new Array(bank.tiers.length).fill(0)
-  const tierBill = new Array(bank.tiers.length).fill(0)
+  const counts = new Array(trees.tierCount).fill(0)
+  const tierBill = new Array(trees.tierCount).fill(0)
   let wrong = 0
   let bill = 0
   // Trees the rim has dissolved away. They are still resident and still hold
@@ -1144,9 +1145,10 @@ trees.place(0, 0)
       }
       const tier = trees.tierAt[id]
       counts[tier]++
-      tierBill[tier] += bank.tiers[tier].triangles[trees.variantAt[id]]
-      bill += bank.tiers[tier].triangles[trees.variantAt[id]]
-      let want = trees.cardTier
+      tierBill[tier] += trees.tierTris[tier][trees.variantAt[id]]
+      bill += trees.tierTris[tier][trees.variantAt[id]]
+      // Out of every band a tree is its far card, single or clump by rank.
+      let want = trees.farTierAt[id]
       if (isNear) {
         const ex = trees.instX[id]
         const ey = (trees.instY[id] - EYE) * Y_SQUASH
@@ -1160,8 +1162,8 @@ trees.place(0, 0)
   check(wrong === 0, 'every instance sits in the tier its own ellipsoidal distance asks for',
     `${counts.join(' / ')} across the tiers, ${wrong} wrong`)
   let widens = counts[0] > 0
-  for (let t = 1; t < counts.length; t++) if (counts[t] <= counts[t - 1]) widens = false
-  check(widens, 'every tier holds more instances than the tier finer than it',
+  for (let t = 1; t <= trees.cardTier; t++) if (counts[t] <= counts[t - 1]) widens = false
+  check(widens, 'every bank tier holds more instances than the tier finer than it',
     counts.join(' / '))
   // The row trees.js's ladder table is copied from.
   note('triangles per tier', tierBill.map((t) => `${(t / 1000).toFixed(1)}k`).join(' / '))
@@ -1171,6 +1173,61 @@ trees.place(0, 0)
   check(s.tris === bill + trees.fadeTris,
     'the reported triangle bill is the sum of what each instance actually draws',
     `${s.tris} reported, ${bill} from the ladder plus ${trees.fadeTris} in flight`)
+
+  // THE CLUMP TIER, against the law in trees.js's header: nothing inside the
+  // full ring and nothing on a mesh tier wears one; each tile's share is its
+  // band; and the trees PICTURED -- a clump counting CLUMP_TREES -- come back
+  // to full density out to CLUMP_FULL_TO, less the rim's 7.5% and the level
+  // quantisation, and thin beyond it. All on the same instances: the count
+  // check above this block is unchanged by the tier.
+  {
+    let inside = 0
+    let onMesh = 0
+    let farClumps = 0
+    let clumps = 0
+    let wantClumps = 0
+    const nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
+    for (const tile of trees.tiles.values()) {
+      wantClumps += tile.n * trees.clumpTop[tile.qc] / tile.u
+      clumps += tile.clumps
+      const dx = (tile.tx + 0.5) * TILE
+      const dz = (tile.tz + 0.5) * TILE
+      const far = dx * dx + dz * dz >= nearSq
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (trees.farTierAt[id] !== trees.clumpTier) continue
+        if (Math.hypot(trees.instX[id], trees.instZ[id]) < FULL_RADIUS) inside++
+        if (trees.tierAt[id] < trees.cardTier) onMesh++
+        if (far && !trees.rim.isHidden(id)) farClumps++
+      }
+    }
+    check(inside === 0 && onMesh === 0, 'no tree inside the full ring, and none on a mesh tier, wears the clump card',
+      `${inside} inside ${FULL_RADIUS} m, ${onMesh} on a mesh tier, ${clumps} clumps in all`)
+    check(near(clumps / wantClumps, 1, 0.05), 'the clumps are the band each tile is cut at: (1 - u) / (CLUMP_TREES - 1) of its candidates, capped at the CLUMP_FULL_TO share',
+      `${clumps} against ${Math.round(wantClumps)} from the tiles' own levels, cap ${trees.clumpMax.toFixed(3)}`)
+    check(farClumps === trees.farClumps, 'and the running far-clump total agrees with a walk of the far tiles',
+      `${farClumps} walked, ${trees.farClumps} kept`)
+    let lush = true
+    const rows = []
+    for (const [r0, r1] of [[60, 80], [80, 100], [100, 120], [120, 140], [190, 210]]) {
+      let pictured = 0
+      for (const tile of trees.tiles.values()) {
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          if (trees.rim.isHidden(id)) continue
+          const d = Math.hypot(trees.instX[id], trees.instZ[id])
+          if (d < r0 || d >= r1) continue
+          pictured += trees.tierAt[id] === trees.clumpTier ? CLUMP_TREES : 1
+        }
+      }
+      const have = pictured / (Math.PI * (r1 * r1 - r0 * r0)) / DENSITY
+      const full = r1 <= CLUMP_FULL_TO
+      if (full ? (have < 0.85 || have > 1.03) : have > 0.85) lush = false
+      rows.push(`${(r0 + r1) / 2} m ${have.toFixed(3)}`)
+    }
+    check(lush, `the trees pictured are 0.85-1.0 of full density out to ${CLUMP_FULL_TO} m and thin beyond it`,
+      rows.join('  '))
+  }
   // WHAT THE RIM ACTUALLY DRAWS, which is the number the player sees and is a
   // constant RIM_AT under the law measured above -- the rim takes a tree at the
   // midpoint of the old dissolve band, so the drawn density is that fraction of
@@ -1284,12 +1341,12 @@ trees.place(0, 0)
   trees.update(0, EYE, 0)
   let offLadder = 0
   for (const tile of trees.tiles.values()) {
-    for (let k = 0; k < tile.n; k++) if (trees.tierAt[tile.ids[k]] !== trees.cardTier) offLadder++
+    for (let k = 0; k < tile.n; k++) if (trees.tierAt[tile.ids[k]] !== trees.farTierAt[tile.ids[k]]) offLadder++
   }
   const meshLive = meshInstances()
   check(offLadder === 0 && meshLive === 0,
-    'cards only takes every tree down to the card tier and leaves the mesh meshes empty, so their draw calls go with them',
-    `${offLadder} trees off the card tier, ${meshLive} instances still in ${meshTiers} mesh tiers`)
+    'cards only takes every tree down to its far card and leaves the mesh meshes empty, so their draw calls go with them',
+    `${offLadder} trees off their far card, ${meshLive} instances still in ${meshTiers} mesh tiers`)
   check(trees.stats.cardsOnly === true, 'and the stats row says so, which is what the readout flags')
 
   trees.setCardsOnly(false)
@@ -1510,10 +1567,12 @@ console.log('\n-- the LOD swap dissolves --')
         if (prevSeen[i] && prevTier[i] >= 0 && tier >= 0) {
           swaps++
           pairs.add(`${prevTier[i]}>${tier}`)
-          // The rim outranks the swap and owns the slot while it runs; every
-          // other refusal is a ceiling, and the walk is slow enough not to reach
-          // one (asserted separately through peakFlight).
-          if (walk.fadeAt[i] < 0 && !walk.rim.isBusy(i)) missed++
+          // The rim outranks the swap and owns the slot while it runs, and a
+          // tree it is hiding draws nothing on either tier, so a clump flip
+          // there has nothing to dissolve; every other refusal is a ceiling,
+          // and the walk is slow enough not to reach one (asserted separately
+          // through peakFlight).
+          if (walk.fadeAt[i] < 0 && !walk.rim.isBusy(i) && !walk.rim.isHidden(i)) missed++
         }
         prevTier[i] = tier
       }
@@ -1532,19 +1591,25 @@ console.log('\n-- the LOD swap dissolves --')
     for (let k = 0; k < walk.fades.length; k++) if (walk.fadeAt[walk.fades[k].orig] !== k) indexBroken++
 
     // The ghosts, while they are up: same species, a tier the original is not
-    // wearing, the original's own matrix, and a pair of stamps that differ by
-    // one fixed bias -- which is what "the same start, opposite directions"
-    // reduces to once material.js has packed them.
+    // wearing, the original's matrix AS COMPOSED FOR THAT TIER (a clump card
+    // stands at its own scale), the clump picture exactly when that tier is
+    // the clump, and a pair of stamps that differ by one fixed bias -- which
+    // is what "the same start, opposite directions" reduces to once
+    // material.js has packed them.
     for (const fade of walk.fades) {
       const g = walk.batch.geoAt[fade.dup]
       const vc = walk.variantCount
-      if (g % vc !== walk.variantAt[fade.orig] || Math.floor(g / vc) === walk.tierAt[fade.orig]) {
+      const ghostTier = Math.floor(g / vc)
+      if (g % vc !== walk.variantAt[fade.orig] || ghostTier === walk.tierAt[fade.orig]) {
         wrongGhost++
         continue
       }
-      walk.batch.getMatrixAt(fade.orig, mOrig)
+      mOrig.copy(walk._composeAt(fade.orig, ghostTier))
       walk.batch.getMatrixAt(fade.dup, mDup)
-      for (let e = 0; e < 16; e++) if (mOrig.elements[e] !== mDup.elements[e]) wrongGhost++
+      // The arena keeps its matrices in float32; the composed one is float64.
+      for (let e = 0; e < 16; e++) if (Math.fround(mOrig.elements[e]) !== mDup.elements[e]) wrongGhost++
+      const wantShift = ghostTier === walk.clumpTier ? walk.instPicture[fade.orig] : 0
+      if (walk.batch.layer[fade.dup] !== wantShift) wrongGhost++
       gap = walk.batch.fade[fade.orig] - walk.batch.fade[fade.dup]
       // A millisecond of slack: the fade-in half is packed against a bias of
       // 4096 and a float32 resolves half a millisecond there, so the two halves'
@@ -1553,12 +1618,13 @@ console.log('\n-- the LOD swap dissolves --')
     }
   }
 
-  // Every band, crossed both ways: two pairs per boundary, and a boundary per
-  // entry in lodBands. Derived so the gate keeps covering the WHOLE ladder when
-  // a rung is added or retired rather than silently covering less of it.
-  const wantPairs = walk.lodBands.length * 2
+  // Every band, crossed both ways: two pairs per boundary, a boundary per
+  // entry in lodBands, and the single-to-clump flip both ways past the full
+  // ring. Derived so the gate keeps covering the WHOLE ladder when a rung is
+  // added or retired rather than silently covering less of it.
+  const wantPairs = walk.lodBands.length * 2 + 2
   check(swaps > 50 && pairs.size === wantPairs,
-    'walking crosses every band in both directions, so this gate covers the whole ladder',
+    'walking crosses every band in both directions, and the clump band both ways, so this gate covers the whole ladder',
     `${swaps} swaps: ${[...pairs].sort().join(' ')}, ${wantPairs} pairs wanted`)
   check(missed === 0,
     'and every one of them dissolved rather than cut -- including the 8 m wood swap',
@@ -1808,17 +1874,10 @@ console.log('\n-- placement --')
   const at = (above, opts = {}) => {
     const t = new Trees(new THREE.Scene(), { ...flat, snowLineAt: () => 60 - above }, dry, texArray, { seed: 7, radius: 200, ...opts })
     t.place(0, 0)
-    const m = new THREE.Matrix4()
-    const p = new THREE.Vector3()
-    const q = new THREE.Quaternion()
-    const sc = new THREE.Vector3()
+    // The tree's own scale, not its matrix's: a clump draws at CLUMP_SCALE.
     let sum = 0
     for (const tile of t.tiles.values()) {
-      for (let k = 0; k < tile.n; k++) {
-        t.batch.getMatrixAt(tile.ids[k], m)
-        m.decompose(p, q, sc)
-        sum += sc.y
-      }
+      for (let k = 0; k < tile.n; k++) sum += t.instScale[tile.ids[k]]
     }
     const out = { n: t.placed, scale: sum / Math.max(1, t.placed) }
     t.dispose()

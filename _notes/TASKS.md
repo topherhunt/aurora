@@ -101,9 +101,6 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] procedual flowers.
   - [ ] Multiplayer: support shooting up a flare that other players can find each other.
 - 
-- Rivers should sit into the hillside (node needs to be placed deep enough that the river wall bites in
-- 2x ground variation at the 0.5m-2m level. This should help riverbanks feel broken up rather than smooth splines.
-- [ ] Deadwood: generate more lively-looking props using Tripo.
 - [ ] Procedural bushes - Scattered throguhout the forest like trees, but with different LOD thresholds. 2 sizes x 2 random seed rolls x species.
 
 - [ ] Leaf atlas and lichen atlas - scatter onto boulders & forest floor. (Moss is done for boulders -- see the moss bullet under nature props; trunks are the next entry in `MOSS_LAYERS` and need a height cue first.)

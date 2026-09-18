@@ -117,8 +117,18 @@ const WET_DENSITY = 2.0
 // corner, so with the tile and the full radius both 8 m the whole 3x3 block
 // about the camera is at full density -- a 24 m square, nine discs' worth, and
 // most of what is resident.
+//
+// ON TOP OF THE THINNING, EACH STONE IS CULLED BY ITS OWN SIZE: the rim hides
+// it past `REACH_SIZES` times its width: a 30 cm stone still reaches 27 m and
+// a 6 cm one is hidden past 5.4 m, both at the 0.64 degrees a dozen headset
+// pixels make. The thinning is by rank and blind to size, so without this the
+// 6 cm stone was drawn at 28 m as a two-pixel dot for twenty triangles; with
+// it the wood draws 564 stones standing still instead of 1807. It costs one
+// min at placement: the rim already holds a radius per stone, and a hidden
+// stone leaves the instanced mesh's live range.
 const FULL_RADIUS = 8
 const RADIUS = 28
+const REACH_SIZES = 90
 
 // The steepest ground a pebble will lie on, in degrees, and it is the terrain's
 // own stone line: shade() starts painting a hillside as bare rock at ny 0.86
@@ -733,7 +743,7 @@ export class Litter {
 
     // Hidden and FRESH until the rim has looked at it -- see rim.js. The caller
     // marks the tile due, because a pebble is laid before its tile exists.
-    this.rim.place(id, Math.min(this.fullRadius / r.u, this.radius))
+    this.rim.place(id, Math.min(this.fullRadius / r.u, this.radius, REACH_SIZES * size))
     return id
   }
 

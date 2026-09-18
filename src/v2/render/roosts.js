@@ -312,14 +312,14 @@ export class Roosts {
     this.tierCount = this.bank.tiers.length
     this.cardTier = this.tierCount - 1
     // The mesh tiers wear the two tiles as a material ARRAY over the geometry's two groups.
-    this.bark = createGenPropMaterial('roost-bark')
-    this.stone = createGenPropMaterial('roost-stone')
+    this.bark = createGenPropMaterial()
+    this.stone = createGenPropMaterial()
     if (maps) {
       this.bark.map = maps.bark
       this.stone.map = maps.stone
     }
     // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
-    this.card = createGenPropMaterial('roost', { card: true, billboard: 'mixed' })
+    this.card = createGenPropMaterial({ card: true, billboard: 'mixed' })
     this.card.visible = false
     this.materials = [this.bark, this.stone, this.card]
     this.meshMaterials = [this.bark, this.stone]

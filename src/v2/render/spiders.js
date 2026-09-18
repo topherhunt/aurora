@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
-// THE BIRCH SPIDERS. Groups of one to five on the trunks and the boulders,
-// crawling about between the ground and CLIMB_M up, pausing, on the sides of
-// things and hardly ever on top of them, and nowhere above the snow line. Two
-// hosts, two surfaces:
+// THE BIRCH SPIDERS. One or two on a trunk or a boulder, crawling
+// about between the ground and CLIMB_M up, pausing, on the sides of things and
+// hardly ever on top of them, and nowhere above the snow line; and now and
+// then a small one alone on the ground, always on the move. Three hosts,
+// three surfaces:
 //
 //   A TREE is its LOD0 trunk's ring profile (tree.js trunkProfile, handed over
 //   by Trees.trunksInto with the instance's scale and yaw), so a spider on one
@@ -19,15 +20,23 @@
 //   one whose stone has gone is taken away. A rock seats a group only where a
 //   seat has WALL_M of climbable wall above or below it -- an embedded stone at
 //   the waterline with nothing to cling to seats nobody.
+//   THE GROUND is the height field: one tile in four (HOST_CHANCE.ground)
+//   seeds a point and a single spider at GROUND_SCALE of the others' size,
+//   heading anywhere, its normal read off the field's slopes, that walks or
+//   runs and hardly ever stops (a GROUND_REST_CHANCE at the end of each spell,
+//   for GROUND_PAUSE_S), turning back from water and the snow line and,
+//   GROUND_ROAM_M from its point, back toward it.
 //
-// NO SPIDER HAS A SKELETON. Every spider is an instance of one of three
-// InstancedMeshes, three draw calls for the lot: within NEAR_M of her head the
-// shipped GLB's first two skinned tiers as plain instanced geometry -- tier 0
-// on the world ladder's first rung (critters.js critterTier), tier 1 held out
-// to NEAR_M -- and past NEAR_M one quad, the bind pose photographed from above
+// NO SPIDER HAS A SKELETON. Every spider is an instance of one of two
+// InstancedMeshes, two draw calls for the lot, on the world's arc ladder
+// (critters.js critterTier, CARD_RUNGS) by its own size: over the four mesh
+// rungs the shipped GLB's tier MESH_TIER as plain instanced geometry -- the
+// one mesh tier, the pick (tier 0) being photographed for the card and never
+// drawn -- on the card rung one quad, the bind pose photographed from above
 // (critters.js, the 'top' view), lying against its surface under the same
-// matrix the mesh would wear: edge-on from the side, which at ten metres is a
-// spider-sized fleck of bark. THE LEGS ARE THE VERTEX SHADER: at setAsset each
+// matrix the mesh would wear, and past that neither drawn nor simulated. A
+// 0.3 m spider is the mesh to 10.8 m and the card to 21.6; a 0.1 m one to
+// 3.6 and 7.2. THE LEGS ARE THE VERTEX SHADER: at setAsset the
 // tier's vertices are read against the skeleton's JOINTS_0/WEIGHTS_0 and the
 // ones a Leg bone owns are given `aLeg` -- the leg's half of the alternating
 // tetrapod (legs 1 and 3 on one side step with 2 and 4 on the other) and how
@@ -38,6 +47,12 @@
 // per stride of the gait the seat moves at, so the feet hold the bark; the
 // amplitude eases to nothing when it pauses. Her head close by rears a paused
 // spider up: the instance pitched nose-up about its seat.
+//
+// THE COLOUR IS A TINT. Each spider rolls a shade and a warmth with its group
+// (TINT_DARK, TINT_BROWN) and carries the multiplier in instanceColor on every
+// tier and on the card, so a group is a run from the map's own colour down
+// through darker and browner, and a spider keeps its colour across the
+// handover to the card.
 //
 // A spider's world matrix is kept on its slot and rebuilt only when it has
 // moved, turned, been re-seated or is rearing; a paused tree spider is not
@@ -67,7 +82,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
   CRITTER_GLB, createCritterCardMaterial, setCritterCard,
-  LOD_RUNGS, bakeCritterCard, critterTier, tileKey, walkTiles,
+  LOD_RUNGS, CARD_RUNGS, critterTier, cullRange, bakeCritterCard, tileKey, walkTiles,
 } from './critters.js'
 import { loadSkinnedAsset } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
@@ -75,18 +90,33 @@ import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
 
 export const TILE = 16
-// Inside the trees' full-density band (50 m), corners included.
-export const RADIUS = 38
-// Within this of her head a spider is a mesh; past it, the card.
-export const NEAR_M = 10
-// The skinned tiers the shipped GLB carries, one per rung of the world ladder, and how many of them are drawn: the first two, the coarser pair being smears.
+// The skinned tiers the shipped GLB carries, one per rung of the world ladder; the one drawn as a mesh, tier 1 (tier 0 is the card's photograph, the coarser pair are smears); and how many mesh tiers there are, which is also a slot's `lod` for the card.
 export const SHIPPED_TIERS = LOD_RUNGS
-export const LOD_TIERS = 2
+export const MESH_TIER = 1
+export const LOD_TIERS = 1
+// A spider's largest extent, which is what its rungs are measured by.
 export const SIZE_M = [0.1, 0.3]
+// A ground spider's size over SIZE_M.
+export const GROUND_SCALE = 0.5
+// The tiles walked: the biggest spider's cull, plus a tile's half-diagonal so every spider inside it has a tile. Inside the trees' full-density band (50 m).
+export const RADIUS = cullRange(SIZE_M[1], CARD_RUNGS) + TILE * Math.SQRT1_2
 export const CLIMB_M = 3
-export const GROUP = [1, 5]
-// The chance a host carries a group at all.
-export const HOST_CHANCE = { tree: 0.125, rock: 0.3 }
+export const GROUP = { tree: [1, 2], rock: [1, 2], ground: [1, 1] }
+// A ground spider's tether to its tile's point, the chance it sits down at the end of a spell, and for how long when it does.
+export const GROUND_ROAM_M = 6
+export const GROUND_REST_CHANCE = 0.05
+export const GROUND_PAUSE_S = [0.3, 1.5]
+// How far off her a fleeing ground spider makes for, with nowhere to hide.
+export const GROUND_FLEE_M = 1
+// The ground's normal is read across this much of it either way.
+const GROUND_EPS = 0.25
+// A spider's tint, rolled with its group and carried in instanceColor on the mesh tiers and the card alike: a shade from TINT_DARK up to 1 (the map as shipped is the lightest), and a warmth from 0 to 1 that pulls green and blue down by these shares of it at full, so the range runs from the map through darker and browner to dark brown.
+export const TINT_DARK = 0.3
+export const TINT_BROWN = { g: 0.3, b: 0.6 }
+// The chance a host carries a group at all; the ground's is per tile.
+export const HOST_CHANCE = { tree: 0.125, rock: 0.3, ground: 0.25 }
+// A host's key is its quantised origin plus its kind's share, so a tree, a rock and the ground's point at one origin are three hosts.
+const KIND_KEY = { tree: 0, rock: 0.5, ground: 0.25 }
 // A rock worth climbing (its longest extent), and a trunk worth clinging to (base radius).
 export const ROCK_MIN_SIZE = 2
 export const TRUNK_MIN_R = 0.06
@@ -134,10 +164,8 @@ const STEER_EVERY = 6
 export const SINK = 0.15
 const REPROJECT_EVERY = 3
 const RESCAN_FRAMES = 4
-// A mesh is kept a little past NEAR_M so a spider on the line does not trade its legs for a card every step she takes.
-const NEAR_KEEP = 1.15
-// The bones whose vertices swing: the leg's number, its joint and its side.
-const LEG_BONE = /^Leg(\d)(Hip|Knee|Ankle|Foot)\.(L|R)$/
+// The bones whose vertices swing: the leg's number, its joint and its side. The GLB names them `Leg1Hip.L`; GLTFLoader runs every node name through PropertyBinding.sanitizeNodeName, which drops the dot, so this matches the loaded `Leg1HipL`.
+const LEG_BONE = /^Leg(\d)(Hip|Knee|Ankle|Foot)(L|R)$/
 const LEGS = 8
 
 const TAU = Math.PI * 2
@@ -257,15 +285,22 @@ export class Spiders {
         )
     }
     this.material.customProgramCacheKey = () => 'spiders-legs'
-    // The near spiders: one InstancedMesh a drawn tier, each carrying every instance's gait.
+    // The tint (TINT_DARK, TINT_BROWN) through three's own vColor; made here so each program is keyed with it from the first draw.
+    const makeTint = () => {
+      const tint = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
+      tint.setUsage(THREE.DynamicDrawUsage)
+      return tint
+    }
+    // The near spiders: one InstancedMesh a drawn tier (there is one), each carrying every instance's gait and tint.
     this.meshes = []
     this.gaits = []
     for (let k = 0; k < LOD_TIERS; k++) {
       const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
-      mesh.name = `v2-spiders-lod${k}`
+      mesh.name = `v2-spiders-lod${MESH_TIER + k}`
       mesh.count = 0
       mesh.frustumCulled = false
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      mesh.instanceColor = makeTint()
       this.meshes.push(mesh)
       const gait = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2)
       gait.setUsage(THREE.DynamicDrawUsage)
@@ -280,6 +315,7 @@ export class Spiders {
     this.card.visible = false
     this.card.frustumCulled = false
     this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.card.instanceColor = makeTint()
     // The layer toggle flips the group.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-spiders'
@@ -295,14 +331,16 @@ export class Spiders {
         // On a tree: the angle round the trunk, the height over the tree's origin, the heading in the (up, round) plane, the bark's local radius there.
         ang: 0, h: 0, phi: 0, r: 1,
         size: 0.2,
+        // The tint, linear RGB (`r` is the bark radius above).
+        tr: 1, tg: 1, tb: 1,
         // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, ended by distance or by stalling and not by `left`.
         state: 'pause', clip: 'idle', left: 0, speed: 0,
         // Fleeing: the furthest from her body it has got, and the seconds since that grew. `near` is whether her body was within FLEE_M last frame.
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false,
         // On a rock: steps turned back since it last walked.
         stuck: 0,
-        // The mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase and swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
-        lod: LOD_TIERS, gait: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
+        // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase and swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
+        rung: -1, lod: LOD_TIERS, gait: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
       })
     }
     this.free = this.slots.slice()
@@ -336,9 +374,9 @@ export class Spiders {
     return true
   }
 
-  /** The tiers with their legs baked (bakeLegs) onto the meshes, the map onto the material, the body's bounds onto the card. A skeleton naming no legs is a shipping bug. */
+  /** The drawn tier with its legs baked (bakeLegs) onto the mesh, the map onto the material, the pick's bounds onto the card. A skeleton naming no legs is a shipping bug. */
   setAsset(asset) {
-    if (asset.tiers.length < LOD_TIERS) throw new Error(`Spiders.setAsset: at least ${LOD_TIERS} tiers, got ${asset.tiers.length}`)
+    if (asset.tiers.length <= MESH_TIER) throw new Error(`Spiders.setAsset: at least ${MESH_TIER + 1} tiers, got ${asset.tiers.length}`)
     this.asset = asset
     const geo = asset.tiers[0]
     geo.computeBoundingBox()
@@ -349,8 +387,8 @@ export class Spiders {
     this.material.map = asset.map
     this.material.needsUpdate = true
     for (let k = 0; k < LOD_TIERS; k++) {
-      const tier = asset.tiers[k]
-      if (bakeLegs(tier, asset.skeleton) === 0) throw new Error(`Spiders.setAsset: tier ${k} has no vertex on a Leg bone -- the skeleton must name its legs Leg{1..4}{Hip,Knee,Ankle,Foot}.{L,R}`)
+      const tier = asset.tiers[MESH_TIER + k]
+      if (bakeLegs(tier, asset.skeleton) === 0) throw new Error(`Spiders.setAsset: tier ${MESH_TIER + k} has no vertex on a Leg bone -- the skeleton must name its legs Leg{1..4}{Hip,Knee,Ankle,Foot}.{L,R} (loaded as Leg1HipL: GLTFLoader strips the dot)`)
       tier.setAttribute('aGait', this.gaits[k])
       this.meshes[k].geometry = tier
     }
@@ -403,15 +441,19 @@ export class Spiders {
       if (size < ROCK_MIN_SIZE) continue
       this._host(t, 'rock', this.perchBuf[o], this.perchBuf[o + 2], { r: this.perchBuf[o + 3], size })
     }
+    // The ground's one point a tile, seeded off the tile's corner.
+    const g = mulberry32(hostSeed(x0, z0, this.seed ^ 0x6a1))
+    this._host(t, 'ground', x0 + g() * TILE, z0 + g() * TILE, {})
   }
 
   /**
-   * One host, and its group if it carries one. A tree and a rock at the same
-   * quantised origin are two hosts. A host seen before only has its origin
-   * refreshed: a tree re-seats with its chunk, and its spiders follow it.
+   * One host, and its group if it carries one. A tree, a rock and the ground's
+   * point at the same quantised origin are three hosts. A host seen before only
+   * has its origin refreshed: a tree re-seats with its chunk, and its spiders
+   * follow it.
    */
   _host(t, kind, x, z, shape) {
-    const key = hostKey(x, z) + (kind === 'tree' ? 0 : 0.5)
+    const key = hostKey(x, z) + KIND_KEY[kind]
     const had = t.hosts.get(key)
     if (had) {
       // A trunk re-seated with its chunk: its band is re-read and its sitting spiders are re-placed on it this frame.
@@ -424,24 +466,30 @@ export class Spiders {
     if (this.water.isSubmerged(x, z, groundY)) return
     if (groundY > this.height.snowLineAt(x, z)) return
     if (kind === 'tree' && !this._treeBand(host)) return
-    const rand = mulberry32(hostSeed(x, z, this.seed ^ (kind === 'tree' ? 0x7e3 : 0x0c4)))
+    const rand = mulberry32(hostSeed(x, z, this.seed ^ (kind === 'tree' ? 0x7e3 : kind === 'rock' ? 0x0c4 : 0x3b9)))
     if (rand() >= HOST_CHANCE[kind]) return
-    const count = GROUP[0] + Math.floor(rand() * (GROUP[1] - GROUP[0] + 1))
+    const [lo, hi] = GROUP[kind]
+    const count = lo + Math.floor(rand() * (hi - lo + 1))
     for (let k = 0; k < count; k++) {
-      const size = between(rand, SIZE_M)
+      const size = between(rand, SIZE_M) * (kind === 'ground' ? GROUND_SCALE : 1)
+      const shade = 1 - (1 - TINT_DARK) * rand()
+      const warm = rand()
       const c = this.free.pop()
       if (!c) { this.overflow++; return }
       c.host = host
-      const seated = kind === 'tree' ? this._seatTree(c, host, rand) : this._seatRock(c, host, rand)
+      const seated = kind === 'tree' ? this._seatTree(c, host, rand) : kind === 'rock' ? this._seatRock(c, host, rand) : this._seatGround(c, host, rand)
       if (!seated) { c.host = null; this.free.push(c); continue }
       c.size = size
+      c.tr = shade; c.tg = shade * (1 - TINT_BROWN.g * warm); c.tb = shade * (1 - TINT_BROWN.b * warm)
+      c.rung = -1
       c.lod = LOD_TIERS
       c.gait = rand() * TAU
       c.amp = 0
       c.rear = 0
       c.dirty = true
-      this._pause(c)
-      c.left = between(rand, PAUSE_S)
+      // A ground spider is on the move from its first frame, its heading off the group's stream so the scatter stays a function of the seed; the rest sit a while first.
+      if (kind === 'ground') this._go(c, rand)
+      else { this._pause(c); c.left = between(rand, PAUSE_S) }
       host.spiders.push(c)
     }
   }
@@ -634,6 +682,37 @@ export class Spiders {
     c.dirty = true
   }
 
+  /** A seat on the ground at the tile's point, heading anywhere. */
+  _seatGround(c, host, rand) {
+    this._placeGround(c, host.x, host.z)
+    this._headGround(c, rand() * TAU)
+    return true
+  }
+
+  /** A ground spider's seat at (x, z): the height there, and the field's normal from its slopes GROUND_EPS either way. The heading is re-laid on the new plane. */
+  _placeGround(c, x, z) {
+    const h = this.height
+    c.x = x; c.y = h.heightAt(x, z); c.z = z
+    let nx = h.heightAt(x - GROUND_EPS, z) - h.heightAt(x + GROUND_EPS, z)
+    let nz = h.heightAt(x, z - GROUND_EPS) - h.heightAt(x, z + GROUND_EPS)
+    let ny = 2 * GROUND_EPS
+    const len = Math.hypot(nx, ny, nz)
+    c.nx = nx / len; c.ny = ny / len; c.nz = nz / len
+    this._headGround(c, c.phi)
+  }
+
+  /** A ground spider's heading: the azimuth `phi` -- +Z at 0, +X at a quarter turn -- laid into the ground's plane. */
+  _headGround(c, phi) {
+    let tx = Math.sin(phi), ty = 0, tz = Math.cos(phi)
+    const dot = tx * c.nx + tz * c.nz
+    tx -= c.nx * dot; ty -= c.ny * dot; tz -= c.nz * dot
+    const len = Math.hypot(tx, ty, tz)
+    if (len < 1e-3) throw new Error('Spiders: the ground is a wall under a spider')
+    c.tx = tx / len; c.ty = ty / len; c.tz = tz / len
+    c.phi = phi
+    c.dirty = true
+  }
+
   _leave(t) {
     for (const host of t.hosts.values()) {
       for (const c of host.spiders) {
@@ -688,22 +767,33 @@ export class Spiders {
     return into
   }
 
+  /** Sit down; a ground spider only idles, and briefly. */
   _pause(c) {
     c.state = 'pause'
     c.speed = 0
+    if (c.host.kind === 'ground') { c.clip = 'idle'; c.left = between(this.rand, GROUND_PAUSE_S); return }
     const r = this.rand()
     c.clip = r < 0.65 ? 'idle' : r < 0.85 ? 'eat' : 'rest'
     c.left = between(this.rand, c.clip === 'rest' ? REST_S : PAUSE_S)
   }
 
-  _go(c) {
+  /** A spell or a flight over: sit down, unless it is a ground spider, which mostly sets straight off on another spell. */
+  _calm(c) {
+    if (c.host.kind === 'ground' && this.rand() >= GROUND_REST_CHANCE) this._go(c)
+    else this._pause(c)
+  }
+
+  /** Off on a spell of walking or running, turned a little; `rand` is the stream the turn and the spell draw from. */
+  _go(c, rand = this.rand) {
     c.state = 'go'
-    c.clip = this.rand() < RUN_CHANCE ? 'run' : 'walk'
+    c.clip = rand() < RUN_CHANCE ? 'run' : 'walk'
     c.speed = (GAIT[c.clip] * c.size) / this.span
-    c.left = between(this.rand, GO_S)
+    c.left = between(rand, GO_S)
     c.stuck = 0
-    if (c.host.kind === 'tree') c.phi += (this.rand() - 0.5) * 1.2
-    else this._heading(c, c.phi + (this.rand() - 0.5) * 1.2)
+    const turn = (rand() - 0.5) * 1.2
+    if (c.host.kind === 'tree') c.phi += turn
+    else if (c.host.kind === 'rock') this._heading(c, c.phi + turn)
+    else this._headGround(c, c.phi + turn)
   }
 
   /** Off at the run, hastened, away from her body: the column at (x, z) from y0 up to y1. */
@@ -717,9 +807,20 @@ export class Spiders {
     this.startles.push(c)
   }
 
-  /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. */
+  /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. On the ground, the point GROUND_FLEE_M off her surface straight away from the column -- a fixed point while she stands, so it arrives; a 10 cm spider at the hastened run would take twenty seconds over FLEE_TO_M. */
   _aim(c, x, y0, y1, z) {
     const host = c.host
+    if (host.kind === 'ground') {
+      const ax = c.x - x, az = c.z - z
+      const len = Math.hypot(ax, az) || 1
+      const off = Math.max(len, WALK.radius + GROUND_FLEE_M)
+      c.ex = x + (ax / len) * off
+      c.ez = z + (az / len) * off
+      c.ey = this.height.heightAt(c.ex, c.ez)
+      c.togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
+      this._headGround(c, Math.atan2(ax, az) + (this.rand() - 0.5) * 0.6)
+      return
+    }
     let ex = host.x - x, ez = host.z - z
     const len = Math.hypot(ex, ez) || 1
     const r = host.kind === 'tree' ? c.r : host.r
@@ -778,6 +879,29 @@ export class Spiders {
   }
 
   /**
+   * One step of `d` metres along the heading over the ground. Water or the
+   * snow line ahead: the step is not taken and the spider turns back, roughly
+   * the way it came. Past GROUND_ROAM_M from its point and still heading away
+   * (a flee is not tethered): it turns for home instead.
+   */
+  _stepGround(c, d) {
+    const host = c.host
+    const x = c.x + c.tx * d
+    const z = c.z + c.tz * d
+    const y = this.height.heightAt(x, z)
+    if (this.water.isSubmerged(x, z, y) || y > this.height.snowLineAt(x, z)) {
+      this._headGround(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
+      return
+    }
+    const hx = host.x - x, hz = host.z - z
+    if (c.state === 'go' && hx * hx + hz * hz > GROUND_ROAM_M * GROUND_ROAM_M && c.tx * hx + c.tz * hz < 0) {
+      this._headGround(c, Math.atan2(hx, hz) + (this.rand() - 0.5) * 0.8)
+      return
+    }
+    this._placeGround(c, x, z)
+  }
+
+  /**
    * One frame: every spider stepped, and written to a mesh tier or the card by
    * its distance from her head. `fy` is where her feet are: her body, for the
    * flee, is the capsule from there up to her head.
@@ -797,10 +921,9 @@ export class Spiders {
     this.startles.length = 0
 
     const cmat = this.card.instanceMatrix.array
+    const ctint = this.card.instanceColor.array
     const cards = this.card.visible
     const meshes = this.loaded
-    const near2 = NEAR_M * NEAR_M
-    const keep2 = near2 * NEAR_KEEP * NEAR_KEEP
     const flee2 = (FLEE_M + WALK.radius) * (FLEE_M + WALK.radius)
     const counts = this.counts
     counts.fill(0)
@@ -809,11 +932,17 @@ export class Spiders {
       for (const host of t.hosts.values()) {
         let dropped = 0
         for (const c of host.spiders) {
-          c.left -= dt
           const dx = c.x - hx
           const dy = c.y - hy
           const dz = c.z - hz
           const d2 = dx * dx + dy * dy + dz * dz
+          // Its rung on the arc ladder by its own size, the card rung included; past the last it is neither drawn nor simulated, only kept where it is (a sitting tree spider still following its trunk).
+          c.rung = critterTier(c.size, Math.sqrt(d2), c.rung, CARD_RUNGS)
+          if (c.rung >= CARD_RUNGS) {
+            if (host.kind === 'tree' && host.moved) this._placeTree(c)
+            continue
+          }
+          c.left -= dt
           // Her body: the nearest point of the capsule's axis to the spider, and whether the spider is within FLEE_M of its surface. Squared, so the root is only taken by a spider already fleeing.
           const by = c.y < fy ? fy : c.y > hy ? hy : c.y
           const bdy = c.y - by
@@ -825,7 +954,7 @@ export class Spiders {
             const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
             if (c.togo - togo > STALL_FRAC * c.speed * dt) c.stall = 0; else c.stall += dt
             c.togo = togo
-            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._pause(c)
+            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._calm(c)
             else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, hx, fy, hy, hz)
           }
           if (c.state !== 'pause') {
@@ -833,12 +962,13 @@ export class Spiders {
             // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run. Before the step, which may sit a stuck rock spider down and change its clip.
             c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE[c.clip])) % TAU
             if (host.kind === 'tree') this._stepTree(c, d)
-            else this._stepRock(c, d)
-            if (c.left <= 0) this._pause(c)
+            else if (host.kind === 'rock') this._stepRock(c, d)
+            else this._stepGround(c, d)
+            if (c.left <= 0) this._calm(c)
           } else {
             // A sitting tree spider follows its trunk's origin when that has moved; a sitting rock spider re-reads its stone.
             if (host.kind === 'tree') { if (host.moved) this._placeTree(c) }
-            else if ((this.frame + c.id) % RESEAT_EVERY === 0 && !this._reseatRock(c)) { dropped++; continue }
+            else if (host.kind === 'rock' && (this.frame + c.id) % RESEAT_EVERY === 0 && !this._reseatRock(c)) { dropped++; continue }
             // Reared up while she is close, back to what it was doing when she leaves.
             if (d2 < ALERT_M * ALERT_M) c.clip = 'alert'
             else if (c.clip === 'alert') this._pause(c)
@@ -856,11 +986,8 @@ export class Spiders {
             if (Math.abs(c.rear - rearTo) < 1e-3) c.rear = rearTo
             c.dirty = true
           }
-          // Within NEAR_M a spider is a mesh at the tier its size and distance earn, with the floor held rather than culled: past the last rung and still within NEAR_M it stays a mesh, the card being what takes over out there. A mesh spider keeps its tier out to NEAR_KEEP times NEAR_M so the seam does not flicker.
-          let lod = LOD_TIERS
-          if (meshes && d2 <= (c.lod < LOD_TIERS ? keep2 : near2)) {
-            lod = Math.min(critterTier(c.size, Math.sqrt(d2), c.lod, LOD_TIERS), LOD_TIERS - 1)
-          }
+          // On the four mesh rungs a spider is the one mesh; on the card rung, the card.
+          const lod = meshes && c.rung < LOD_RUNGS ? 0 : LOD_TIERS
           c.lod = lod
           if (c.dirty) {
             const k = c.size / this.span
@@ -889,10 +1016,13 @@ export class Spiders {
               const g = this.gaits[lod].array
               g[n * 2] = c.gait
               g[n * 2 + 1] = c.amp
+              const t = this.meshes[lod].instanceColor.array
+              t[n * 3] = c.tr; t[n * 3 + 1] = c.tg; t[n * 3 + 2] = c.tb
               counts[lod] = n + 1
             }
           } else if (cards && m < MAX) {
             cmat.set(c.m, m * 16)
+            ctint[m * 3] = c.tr; ctint[m * 3 + 1] = c.tg; ctint[m * 3 + 2] = c.tb
             m++
           }
         }
@@ -908,10 +1038,12 @@ export class Spiders {
       const mesh = this.meshes[k]
       mesh.count = counts[k]
       mesh.instanceMatrix.needsUpdate = true
+      mesh.instanceColor.needsUpdate = true
       this.gaits[k].needsUpdate = true
     }
     this.card.count = m
     this.card.instanceMatrix.needsUpdate = true
+    this.card.instanceColor.needsUpdate = true
   }
 
   dispose() {

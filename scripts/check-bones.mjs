@@ -219,6 +219,12 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
 {
   console.log('\nit steps down its ladder at the same apparent size')
   const b = place(flatField(40), DRY, 23)
+  // One program across the mesh variants (gen-props.js keys it on the card
+  // flags alone), so the arena's calls switch material, not program.
+  const meshKeys = new Set(b.meshMaterials.map((m) => m.customProgramCacheKey()))
+  const cardKeys = new Set(b.cardMaterials.map((m) => m.customProgramCacheKey()))
+  check(meshKeys.size === 1 && cardKeys.size === 2 && ![...cardKeys].some((k) => meshKeys.has(k)),
+    'its mesh variants share one program and its two cards are two', `${[...meshKeys].join(', ')}; ${[...cardKeys].join(', ')}`)
   check(Math.abs(b.radius - propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]))) < 1e-6 && b.radius > 500,
     'the grid reaches the biggest find the scatter can place at its cull',
     `${b.radius.toFixed(0)} m, ${b.tiles.size} tiles`)

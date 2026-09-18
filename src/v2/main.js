@@ -29,6 +29,7 @@ import { Fish } from './render/fish.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Butterflies } from './render/butterflies.js'
+import { Grasshoppers } from './render/grasshoppers.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
@@ -738,6 +739,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'frogs', text: 'frogs' },
   { key: 'crabs', text: 'crabs' },
   { key: 'butterflies', text: 'butterflies' },
+  { key: 'grasshoppers', text: 'grasshoppers' },
   { key: 'spiders', text: 'spiders' },
   { key: 'wildlife', text: 'wildlife' },
   { key: 'snowmen', text: 'snowmen' },
@@ -826,7 +828,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'spiders': case 'wildlife': case 'snowmen': case 'dragons': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'spiders': case 'wildlife': case 'snowmen': case 'dragons': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); break
     case 'mirror': if (enabled) placeMirror(); else peerAvatars.mirror(null); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
@@ -1978,6 +1980,7 @@ let fish = null
 let frogs = null
 let crabs = null
 let butterflies = null
+let grasshoppers = null
 let spiders = null
 let wildlife = null
 let snowmen = null
@@ -1996,7 +1999,7 @@ let ready = false
 // measurement.
 const questToggles = {
   terrain: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, spiders: true, wildlife: true, snowmen: true, dragons: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, spiders: true, wildlife: true, snowmen: true, dragons: true,
   water: true, reflections: true, aurora: true, sound: true,
   critterTint: false, mirror: false,
   wind: true, treeTiers: true, treeCutout: true,
@@ -2009,10 +2012,10 @@ const animalOn = (key) => questToggles.animals && questToggles[key]
 
 // Main-thread milliseconds each animal layer's step spent, smoothed, keyed by
 // its toggle row. This is the instrument that says whether the `animals` row's
-// toll is CPU or draw: the row switches SEVEN layers at once, and if the seven
+// toll is CPU or draw: the row switches NINE layers at once, and if the nine
 // numbers here sum to a fraction of the frame time the toggle moves, the rest of
 // it is on the GPU and no amount of bucketing the simulation will find it.
-const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'spiders', 'wildlife', 'snowmen', 'dragons']
+const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'spiders', 'wildlife', 'snowmen', 'dragons']
 const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 const animalMsSum = () => ANIMAL_LAYERS.reduce((sum, k) => sum + animalMs[k], 0)
 /** Run `fn` if its layer's rows are on, and keep what it cost. A frozen layer decays to zero rather than holding its last reading. */
@@ -2027,7 +2030,7 @@ function stepAnimal(key, fn) {
 }
 
 /**
- * The frogs', crabs', butterflies' and spiders' batches, off their rows. Not the fish's:
+ * The frogs', crabs', butterflies', grasshoppers' and spiders' batches, off their rows. Not the fish's:
  * theirs is decided every frame in the tick, because it also asks whether her
  * head is under the water.
  */
@@ -2035,6 +2038,7 @@ function applyAnimalVisibility() {
   frogs.batch.visible = animalOn('frogs')
   crabs.batch.visible = animalOn('crabs')
   butterflies.batch.visible = animalOn('butterflies')
+  grasshoppers.batch.visible = animalOn('grasshoppers')
   spiders.batch.visible = animalOn('spiders')
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
@@ -2049,6 +2053,7 @@ function placeAnimals(cx, cz) {
   if (frogs && animalOn('frogs')) frogs.place(cx, cz)
   if (crabs && animalOn('crabs')) crabs.place(cx, cz)
   if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
+  if (grasshoppers && animalOn('grasshoppers')) grasshoppers.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
   if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
   if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz)
@@ -2323,9 +2328,11 @@ async function bootWorld() {
   await bootStep('deadwood')
   const biome = new BiomeField({ seed: SEED })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadDeadwoodBank(), biome })
-  // One key per material: each generated prop wears its own map and is its own
-  // program (render/gen-props.js), and a shared key would hand one the other's.
-  deadwood.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-deadwood-${i}` }))
+  // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
+  // materials differ by map alone (render/gen-props.js keys the program on its
+  // card flags), so one program serves every mesh variant and each call is a
+  // material switch, not a program switch.
+  for (const m of deadwood.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   deadwood.place(spawn.x, spawn.z)
   // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
   deadwood.bakeCards(renderer)
@@ -2525,7 +2532,7 @@ async function bootWorld() {
   // with the dead wood.
   await bootStep('bones')
   bones = new Bones(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadBonesBank() })
-  bones.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-bones-${i}` }))
+  for (const m of bones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   bones.place(spawn.x, spawn.z)
   bones.bakeCards(renderer)
   const bs = bones.stats
@@ -2572,9 +2579,19 @@ async function bootWorld() {
   console.log(`[v2] butterflies ${butterflies.stats.alive} on ${butterflies.stats.tiles} tiles at boot`)
   window.v2butterflies = butterflies
 
-  // The spiders on the trunks and the boulders (render/spiders.js): a scatter
-  // that climbs the trees and the rocks, so after both. One material for every
-  // mesh tier, its legs in the vertex shader, and one for the card.
+  // The grasshoppers on the grass and the forest floor (render/grasshoppers.js):
+  // two triangles each, seated on the walk surface, so after the rocks. The map
+  // lands after boot; until it does the mesh stays hidden.
+  await bootStep('grasshoppers')
+  grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed: SEED, walk })
+  lighting.patch(grasshoppers.material, { mode: 'vertex', cacheKey: 'v2-grasshoppers' })
+  grasshoppers.place(spawn.x, spawn.z)
+  console.log(`[v2] grasshoppers ${grasshoppers.stats.alive} on ${grasshoppers.stats.tiles} tiles at boot`)
+  window.v2grasshoppers = grasshoppers
+
+  // The spiders on the trunks, the boulders and the ground (render/spiders.js):
+  // a scatter that climbs the trees and the rocks, so after both. One material
+  // for the mesh, its legs in the vertex shader, and one for the card.
   await bootStep('spiders')
   spiders = new Spiders(scene, height, waterSurfaces, { seed: SEED, trees, rocks })
   lighting.patch(spiders.material, { mode: 'vertex', cacheKey: 'v2-spiders' })
@@ -2616,7 +2633,7 @@ async function bootWorld() {
   // the dragons wait for their GLB like the rest.
   await bootStep('dragons')
   roosts = new Roosts(scene, height, waterSurfaces, layers, { seed: SEED, maps: await loadRoostMaps() })
-  roosts.materials.forEach((m, i) => lighting.patch(m, { mode: 'vertex', cacheKey: `v2-roosts-${i}` }))
+  for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   roosts.place(spawn.x, spawn.z)
   roosts.bakeCards(renderer)
   console.log(`[v2] roosts ${roosts.stats.placed} over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
@@ -2647,6 +2664,7 @@ async function bootWorld() {
         startlers: [spiders],
         dragons,
         fish,
+        grasshoppers,
       })
       window.v2ambience = ambience
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`)
@@ -4714,7 +4732,7 @@ function tick() {
   // eye cannot tell from the splash.
   //
   // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
-  // shows: seven layers behind one switch is exactly the shape where a guess at
+  // shows: nine layers behind one switch is exactly the shape where a guess at
   // which one costs what is worthless.
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
@@ -4726,6 +4744,7 @@ function tick() {
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
   // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt))
   // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))

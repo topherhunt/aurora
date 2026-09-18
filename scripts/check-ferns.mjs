@@ -32,7 +32,9 @@
 
 import * as THREE from 'three'
 
-import { Ferns, FERN_TUNING } from '../src/v2/render/ferns.js'
+import { Ferns, FERN_TUNING, FERN_PERCH_STRIDE } from '../src/v2/render/ferns.js'
+import { buildShipFernTiers } from '../src/props/fern-bank.js'
+import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { buildTextureArray } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
 
@@ -224,6 +226,74 @@ plain.place(0, 0)
   check(near === nearLush && near > 0, `the carpet is full within ${LUSH.rockReach} m of a boulder's foot`, `${near} vs ${nearLush}`)
   check(countIn(stony, -R, R, -R, R) - near === countIn(plain, -R, R, -R, R) - ring(plain, LUSH.rockReach),
     'and plain beyond it')
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n5. what a butterfly lands on\n')
+{
+  // The keyed box query against a brute sweep of every resident fern, on boxes
+  // that cross tile edges and one that starts exactly on one.
+  const ferns = build()
+  ferns.place(0, 0)
+  const brute = (x0, z0, x1, z1) => {
+    const ids = []
+    for (const tile of ferns.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = ferns.instX[id], z = ferns.instZ[id]
+        if (x >= x0 && x < x1 && z >= z0 && z < z1) ids.push(id)
+      }
+    }
+    return ids.sort((a, b) => a - b)
+  }
+  const buf = new Float32Array(4096 * FERN_PERCH_STRIDE)
+  let agree = true
+  for (const [x0, z0, x1, z1] of [[-3, -3, 3, 3], [12, -7, 19, 5], [-30.5, 2.2, -14, 40], [0, 0, 12, 12], [-12, -24, 0, -12]]) {
+    const n = ferns.perchesInto(x0, z0, x1, z1, buf)
+    const got = []
+    for (let i = 0; i < n; i++) got.push(buf[i * FERN_PERCH_STRIDE + 4])
+    got.sort((a, b) => a - b)
+    const want = brute(x0, z0, x1, z1)
+    if (want.length === 0 || got.length !== want.length || got.some((id, i) => id !== want[i])) { agree = false; console.log(`    box ${x0},${z0}..${x1},${z1}: keyed ${got.length} vs swept ${want.length}`) }
+  }
+  check(agree, 'perchesInto keyed by tile reports exactly the ferns a sweep does')
+
+  // Every landing is a point of one of the LOD0 rosette's own triangles, carried
+  // by the fern's drawn matrix, with the blade's upper normal.
+  // Rebuilt at the bed's seed, so the reference is the rosette the bed drew rather than its own copy.
+  const lod0 = buildShipFernTiers({ seed: 7 }).tiers.find((t) => t.name === 'LOD0').geometry
+  const tri = new THREE.Triangle(), P = new THREE.Vector3(), Q = new THREE.Vector3(), N = new THREE.Vector3(), M = new THREE.Matrix4(), inv = new THREE.Matrix4()
+  const pos = lod0.attributes.position.array, idx = lod0.index.array
+  const n = ferns.perchesInto(-6, -6, 6, 6, buf)
+  const rand = (() => { let s = 5; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 } })()
+  const hit = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 }
+  let onMesh = 0, upper = 0, unit = 0, aboveSeat = 0, spread = 0, worst = 0
+  const SAMPLES = 200
+  for (let s = 0; s < SAMPLES; s++) {
+    const o = Math.floor(rand() * n) * FERN_PERCH_STRIDE
+    const id = buf[o + 4]
+    ferns.landOn(id, rand, hit)
+    ferns.cards.getMatrixAt(id, M)
+    inv.copy(M).invert()
+    P.set(hit.x, hit.y, hit.z).applyMatrix4(inv)
+    let best = Infinity, bestNy = 0
+    for (let t = 0; t < idx.length; t += 3) {
+      tri.a.fromArray(pos, idx[t] * 3); tri.b.fromArray(pos, idx[t + 1] * 3); tri.c.fromArray(pos, idx[t + 2] * 3)
+      const d = tri.closestPointToPoint(P, Q).distanceTo(P)
+      if (d < best) { best = d; tri.getNormal(N); N.transformDirection(M); bestNy = N.y }
+    }
+    worst = Math.max(worst, best)
+    if (best < 1e-5) onMesh++
+    if (hit.ny >= 0 && Math.abs(Math.abs(hit.nx * N.x + hit.ny * N.y + hit.nz * N.z) - 1) < 1e-4) upper++
+    if (Math.abs(Math.hypot(hit.nx, hit.ny, hit.nz) - 1) < 1e-6) unit++
+    if (hit.y >= buf[o + 1] - 1e-6 && hit.y <= buf[o + 1] + FERN_DEFAULTS.height * 2.4) aboveSeat++
+    if (Math.hypot(hit.x - buf[o], hit.z - buf[o + 2]) > 0.05) spread++
+  }
+  check(n > 0 && onMesh === SAMPLES, 'every landing lies on a triangle of the LOD0 rosette under the fern\'s drawn matrix', `${onMesh}/${SAMPLES}, worst ${worst.toExponential(2)} m off`)
+  check(upper === SAMPLES, 'with that triangle\'s upper normal', `${upper}/${SAMPLES}`)
+  check(unit === SAMPLES, 'of unit length', `${unit}/${SAMPLES}`)
+  check(aboveSeat === SAMPLES, 'between the seat and the rosette\'s height', `${aboveSeat}/${SAMPLES}`)
+  check(spread > SAMPLES * 0.8, 'and out on the fronds, not stacked over the crown', `${spread}/${SAMPLES} past 5 cm of the axis`)
 }
 
 // ---------------------------------------------------------------------------

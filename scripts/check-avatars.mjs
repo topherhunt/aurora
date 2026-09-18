@@ -10,7 +10,8 @@
 // throwing: a roster naming a villager that is not shipped, or shipped without
 // the arms and head the body needs; a body that puts its hands off the grips
 // it was given, or its wrists where they were not asked; a head 5 cm off its
-// neck that walks the body, or 30 cm off that does not; a walk that never
+// neck that stretches the neck sideways instead of moving the feet; a teleport
+// that walks the body when it should stand, or that never
 // stops, or that leaves the feet sliding; a teleport that arrives late, or
 // whose arms keep reaching for hands a room away; a neck twist that turns the
 // body too soon, or a body that never comes round; a solve that stacks on its
@@ -28,7 +29,7 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
+  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
 } from '../src/v2/render/avatar-rig.js'
 
 let failures = 0
@@ -205,7 +206,7 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
 }
 
-// --- the head: a wiggle slides the neck, a step walks the body ------------------------
+// --- the head: the feet follow it at once, the neck stretches only up and down, a teleport walks the body ---
 {
   const b = makeBody(fisher, stature)
   const { body, puppet } = b
@@ -214,25 +215,31 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const neckName = sane(fisher.biped.head[0])
   const neck0 = b.at(neckName)
   const near = rest.head.clone().add(new THREE.Vector3(0.05, 0, 0.02))
-  run(b, poseOf(near, rest.headQuat, rest.grips), [true, true], 1)
+  body.drive(poseOf(near, rest.headQuat, rest.grips), [true, true], DT)
   const slid = b.at(neckName).sub(neck0)
-  check(!body.gliding && Math.abs(body.x) < 1e-6 && Math.abs(body.z) < 1e-6 && puppet.current === puppet.actions.get('idle'), 'a head 5 cm off its neck leaves the feet where they are')
-  check(Math.abs(slid.x - 0.05) < 1e-3 && Math.abs(slid.z - 0.02) < 1e-3 && Math.abs(slid.y) < 1e-3, 'and the neck slides the 5 cm to it', f3(slid))
+  check(!body.gliding && Math.abs(body.x - 0.05) < 1e-6 && Math.abs(body.z - 0.02) < 1e-6 && puppet.current === puppet.actions.get('idle') && puppet.planted, 'a head 5 cm off its neck moves the feet with it at once, planted, without a walk', `at (${body.x.toFixed(3)}, ${body.z.toFixed(3)})`)
+  check(Math.abs(slid.x - 0.05) < 1e-3 && Math.abs(slid.z - 0.02) < 1e-3 && Math.abs(slid.y) < 1e-3, 'the neck over the feet, not slid to it', f3(slid))
+  const up = near.clone().add(new THREE.Vector3(0, 0.05, 0))
+  run(b, poseOf(up, rest.headQuat, rest.grips), [true, true], 1)
+  const stretched = b.at(neckName).sub(neck0)
+  check(Math.abs(stretched.y - 0.05) < 1e-3 && Math.abs(stretched.x - 0.05) < 1e-3 && body.crouch === 0, 'a head 5 cm up stretches the neck 5 cm up', f3(stretched))
+  run(b, poseOf(near, rest.headQuat, rest.grips), [true, true], 1)
   const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.grips[i].pos))
   check(off.every((d) => d < 2e-3), 'with the hands still on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
-  // A step away: the body walks after it, at the walk's ground speed, and settles.
-  const step = rest.head.clone().add(new THREE.Vector3(0.3, 0, 0))
+  run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
+  // A jump: the body walks after it, at the walk's ground speed, and settles.
+  const step = rest.head.clone().add(new THREE.Vector3(TELEPORT_M + 0.3, 0, 0))
   const pose = poseOf(step, rest.headQuat, rest.grips)
   body.drive(pose, [true, true], DT)
-  check(body.gliding && puppet.current === puppet.actions.get('walk'), `a head ${HEAD_SLACK_M * 100} cm or more off its neck sets the body walking`)
+  check(body.gliding && puppet.current === puppet.actions.get('walk') && !puppet.planted, `a head jumped more than ${TELEPORT_M} m in a frame sets the body walking, its feet the clip's`)
   run(b, pose, [true, true], 0.1)
   const moved = body.x
   check(Math.abs(moved - body.walkSpeed * (0.1 + DT)) < body.walkSpeed * DT * 1.5, 'at the walk clip\'s own ground speed', `${moved.toFixed(3)} m in ${(0.1 + DT).toFixed(3)} s at ${body.walkSpeed.toFixed(3)} m/s`)
   check(Math.abs(puppet.actions.get('walk').timeScale - 1) < 1e-6 && Math.abs(body.yaw) < 1e-9, 'the clip at its own rate, and the body still facing the head, this short of a trip')
-  run(b, pose, [true, true], 2)
-  check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.abs(body.x - 0.3) <= GLIDE_STOP_M && body.hold === 1, `and settles to idle within ${GLIDE_STOP_M * 100} cm of under the head, holding on`, `at ${body.x.toFixed(4)}`)
+  run(b, pose, [true, true], 3)
+  check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.abs(body.x - (TELEPORT_M + 0.3)) < 1e-6 && body.hold === 1, `and settles to idle under the head, holding on`, `at ${body.x.toFixed(4)}`)
   const slid2 = b.at(neckName).sub(neck0)
-  check(Math.abs(slid2.x - 0.3) < 1e-3, 'the neck taking up what is left, so the head is where the headset is', `neck ${slid2.x.toFixed(4)} of which the feet ${body.x.toFixed(4)}`)
+  check(Math.abs(slid2.x - (TELEPORT_M + 0.3)) < 1e-3, 'the head where the headset is', `neck ${slid2.x.toFixed(4)} of which the feet ${body.x.toFixed(4)}`)
   // The head tilts and turns with the headset, within the slack.
   const nod = rest.headQuat.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.4))
   run(b, poseOf(step, nod, rest.grips), [true, true], 1)
@@ -327,7 +334,7 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const bent = rest.head.clone().add(new THREE.Vector3(body.leanReach(LEAN_MAX) * b.k, 0.5 - rest.head.y, 0))
   let stepped = false
   for (let t = 0; t < 2; t += DT) { body.drive(poseOf(bent, rest.headQuat, rest.grips), [true, true], DT); stepped ||= body.gliding }
-  check(!stepped && body.x === stood.x && body.z === stood.z && Math.abs(body.lean - LEAN_MAX) < 1e-9, 'a head that goes down and forward by the lean\'s reach bends the body double where it stands, without a step', `reach ${(body.leanReach(LEAN_MAX) * b.k * 100).toFixed(0)} cm`)
+  check(!stepped && Math.abs(body.x - stood.x) < 1e-6 && Math.abs(body.z - stood.z) < 1e-6 && Math.abs(body.lean - LEAN_MAX) < 1e-9, 'a head that goes down and forward by the lean\'s reach bends the body double where it stands, without a step', `reach ${(body.leanReach(LEAN_MAX) * b.k * 100).toFixed(0)} cm, feet moved ${(Math.hypot(body.x - stood.x, body.z - stood.z) * 100).toFixed(2)} cm`)
   // A shelf 2 m up: the body stands on it, not hung from the head, and a walk there unplants the feet.
   const up = restOf(b, 8, 0, 0)
   const shelf = poseOf(up.head.clone().setY(up.head.y + 2), up.headQuat, up.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y + 2), quat: g.quat })))

@@ -19,8 +19,10 @@
 // as a STROKE_M bounce on the wing phase.
 // When a flight bout is up it looks for a PERCH within SEARCH_M: a tree trunk
 // (Trees.anchorsInto, landing on the bark at a height in FLY_M), a boulder
-// (Rocks.anchorsInto, then blockTopAt for the stone's top), a fern's crown or a
-// stump's or log's top (their perchesInto), or failing those the ground itself,
+// (Rocks.anchorsInto, then blockTopAt for the stone's top), a fern's frond
+// (Ferns.perchesInto, then landOn for a point of the drawn rosette's own
+// triangles, held FERN_LIFT_M off it for the wind's sway), a stump's or log's
+// top (Deadwood.perchesInto), or failing those the ground itself,
 // and flies to it; LANDED it holds the surface for REST_S with its wings raised
 // and pulsing slowly, then takes off. Over water it never lands.
 //
@@ -39,6 +41,10 @@
 // REST_HZ over a narrow one about REST_BASE, wings up. Both faces take the
 // authored normal's light, as the critter card does.
 //
+// THE COLOUR IS A TINT. Each butterfly rolls one of MORPHS from its tile's seed
+// and carries the morph's per-channel multiplier in instanceColor, so a blue,
+// an orange and a meadow butterfly are three instances of the one draw.
+//
 // A butterfly past NEAR_M of her head is stepped every other frame, past
 // 2 * NEAR_M every fourth, with the frames it sat out banked into the step;
 // its matrix is kept on the slot and copied on the frames between.
@@ -47,6 +53,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileSeed, walkTiles } from './critters.js'
+import { FERN_PERCH_STRIDE } from './ferns.js'
 
 export const TILE = 16
 export const RADIUS = 30
@@ -80,6 +87,14 @@ export const REST_BASE = 1.15
 export const GLIDE_BASE = 0.35
 // Drawn within this many wingspans of her head: past it a butterfly is under a pixel and is not written.
 export const DRAW_SPANS = 500
+// A butterfly's colour morph, rolled by weight `w` from its tile's seed: a per-channel multiplier on the map in linear RGB, carried in instanceColor, so every morph is the same material and draw. The map is white with orange and dark-brown markings, so the tint is what the white becomes and the pattern stays -- the orange goes dark under a tint that has no red, the brown is dark already. 'meadow' is the map as shipped, 'blue' an electric blue with the markings near black, 'orange' a flame orange with the patches deep red, 'violet' a purple with them wine-dark.
+export const MORPHS = [
+  { name: 'meadow', w: 4, r: [0.9, 1], g: [0.9, 1], b: [0.8, 1] },
+  { name: 'blue', w: 3, r: [0, 0.04], g: [0.12, 0.3], b: [0.9, 1] },
+  { name: 'orange', w: 3, r: [0.95, 1], g: [0.15, 0.3], b: [0, 0.02] },
+  { name: 'violet', w: 2, r: [0.25, 0.4], g: [0, 0.04], b: [0.8, 1] },
+]
+const MORPH_W = MORPHS.reduce((sum, m) => sum + m.w, 0)
 // The erratic flight: a sharp turn every JERK_S of TURN_RAD, spent over TURN_TAU; the weave between at WEAVE_HZ; a burst of flapping for FLAP_S, then a glide for GLIDE_S with chance GLIDE_P.
 export const JERK_S = [0.3, 1.1]
 export const TURN_RAD = [0.5, 2.0]
@@ -106,6 +121,8 @@ const ALT_PAD = 0.2
 // A landing's approach: held this far off the perch along its normal on the way in, and seated within SEAT_M of it.
 const HOVER_M = 0.15
 const SEAT_M = 0.03
+// A fern landing sits this far off the frond along its normal: the shader sways the blade and the perch does not follow it.
+export const FERN_LIFT_M = 0.025
 // Perch buffers: how many of a kind a 2 * SEARCH_M box may hold.
 const PERCH_BUF = 32
 
@@ -123,6 +140,7 @@ const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _basis = new THREE.Matrix4()
+const _hit = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 }
 
 export class Butterflies {
   /**
@@ -131,7 +149,7 @@ export class Butterflies {
    * @param opts.walk      WalkSurface: heightAt(x, z) -- the field or the stone on it
    * @param opts.rocks     Rocks: anchorsInto, blockTopAt
    * @param opts.trees     Trees: anchorsInto
-   * @param opts.ferns     Ferns: perchesInto, or null
+   * @param opts.ferns     Ferns: perchesInto and landOn, or null
    * @param opts.deadwood  Deadwood: perchesInto, or null
    * @param opts.assets    a parsed asset (critters.js shape) for a gate; the world fetches the GLB
    */
@@ -143,7 +161,7 @@ export class Butterflies {
     if (!walk || typeof walk.heightAt !== 'function') throw new Error('Butterflies needs the WalkSurface, for heightAt')
     if (!rocks || typeof rocks.anchorsInto !== 'function' || typeof rocks.blockTopAt !== 'function') throw new Error('Butterflies needs Rocks, for anchorsInto and blockTopAt')
     if (!trees || typeof trees.anchorsInto !== 'function') throw new Error('Butterflies needs Trees, for anchorsInto')
-    if (ferns && typeof ferns.perchesInto !== 'function') throw new Error('Butterflies: `ferns` was given but has no perchesInto')
+    if (ferns && (typeof ferns.perchesInto !== 'function' || typeof ferns.landOn !== 'function')) throw new Error('Butterflies: `ferns` was given but has no perchesInto and landOn')
     if (deadwood && typeof deadwood.perchesInto !== 'function') throw new Error('Butterflies: `deadwood` was given but has no perchesInto')
     this.height = height
     this.water = water
@@ -187,6 +205,9 @@ export class Butterflies {
     this.wing = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3)
     this.wing.setUsage(THREE.DynamicDrawUsage)
     this.mesh.geometry.setAttribute('aWing', this.wing)
+    // The morph's tint, through three's own vColor; made here so the program is keyed with it from the first draw.
+    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
+    this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-butterflies'
@@ -198,6 +219,8 @@ export class Butterflies {
       this.slots.push({
         id: i, tile: null,
         homeX: 0, homeZ: 0, x: 0, y: 0, z: 0, size: 0.06,
+        // The morph's tint (MORPHS), linear RGB.
+        r: 1, g: 1, b: 1,
         // 'fly' wanders, 'land' flies at the perch, 'rest' sits on it. `left` counts the state down.
         state: 'fly', left: 0, yaw: 0, turn: 0, weave: 0, jerk: 0, alt: 1, ground: 0, roll: 0, pitch: 0,
         // The speed the bout is flown at, the speed now, the vertical velocity; the flap/glide cycle's timer and which half it is in.
@@ -216,7 +239,7 @@ export class Butterflies {
     // The world's day scalar, written by update(). Full day until the clock says otherwise, so a gate that never passes one gets noon.
     this.dayness = 1
     this.head = { x: 0, z: 0 }
-    this.buf = new Float32Array(PERCH_BUF * 4)
+    this.buf = new Float32Array(PERCH_BUF * Math.max(4, FERN_PERCH_STRIDE))
     this.span = 1
     this.loaded = false
     this.overflow = 0
@@ -264,6 +287,11 @@ export class Butterflies {
       const size = between(rand, SIZE_M)
       const yaw = rand() * Math.PI * 2
       const alt = between(rand, ALT_M)
+      let roll = rand() * MORPH_W
+      const morph = MORPHS.find((m) => (roll -= m.w) < 0) ?? MORPHS[MORPHS.length - 1]
+      const r = between(rand, morph.r)
+      const g = between(rand, morph.g)
+      const bl = between(rand, morph.b)
       const h = this.qualify(x, z)
       if (h === null) continue
       const b = this.free.pop()
@@ -274,6 +302,7 @@ export class Butterflies {
       b.ground = h
       b.y = h + alt
       b.size = size
+      b.r = r; b.g = g; b.b = bl
       b.yaw = yaw
       b.turn = 0
       b.roll = 0
@@ -389,8 +418,17 @@ export class Butterflies {
       }
       return this._groundPerch(b, b.px, b.pz)
     }
-    if (kind === 'fern' || kind === 'deadwood') {
-      n = (kind === 'fern' ? this.ferns : this.deadwood).perchesInto(x0, z0, x1, z1, buf)
+    if (kind === 'fern') {
+      n = this.ferns.perchesInto(x0, z0, x1, z1, buf)
+      this.ferns.landOn(buf[Math.floor(rand() * n) * FERN_PERCH_STRIDE + 4], rand, _hit)
+      b.px = _hit.x + _hit.nx * FERN_LIFT_M
+      b.py = _hit.y + _hit.ny * FERN_LIFT_M
+      b.pz = _hit.z + _hit.nz * FERN_LIFT_M
+      b.nx = _hit.nx; b.ny = _hit.ny; b.nz = _hit.nz
+      return kind
+    }
+    if (kind === 'deadwood') {
+      n = this.deadwood.perchesInto(x0, z0, x1, z1, buf)
       const o = Math.floor(rand() * n) * 4
       const a = rand() * Math.PI * 2
       const r = buf[o + 3] * 0.5 * Math.sqrt(rand())
@@ -567,6 +605,7 @@ export class Butterflies {
     this.frame++
     const mat = this.mesh.instanceMatrix.array
     const wing = this.wing.array
+    const tint = this.mesh.instanceColor.array
     const near2 = NEAR_M * NEAR_M
     let n = 0
     for (const t of this.tiles.values()) {
@@ -602,12 +641,14 @@ export class Butterflies {
         wing[n * 3] = b.phase
         wing[n * 3 + 1] = b.amp
         wing[n * 3 + 2] = b.base
+        tint[n * 3] = b.r; tint[n * 3 + 1] = b.g; tint[n * 3 + 2] = b.b
         n++
       }
     }
     this.mesh.count = n
     this.mesh.instanceMatrix.needsUpdate = true
     this.wing.needsUpdate = true
+    this.mesh.instanceColor.needsUpdate = true
   }
 
   dispose() {

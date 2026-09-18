@@ -23,7 +23,9 @@
 // ground, or runs on once it can gain no more or is three metres off, or bolts
 // again while she stands over it; a host above the snow line with a group on
 // it; a card that is two quads, or that does not lie where its spider clings at
-// its tilt; a frame that costs more than a scatter is allowed to. The shipped
+// its tilt; a scatter all one colour, a spider lighter than the map or darker
+// than TINT_DARK, one tinted blue rather than brown, or an instance or a card
+// not carrying its spider's own tint; a frame that costs more than a scatter is allowed to. The shipped
 // GLB is checked for shape too -- a skinned tier per rung of the ladder, the
 // skeleton naming its legs and its six clips -- because the world loads it by
 // name and bakes the legs off its skeleton.
@@ -34,12 +36,12 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, SHIPPED_TIERS, LOD_TIERS, NEAR_M, SIZE_M, CLIMB_M, GROUP, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, REAR_RAD,
+  Spiders, SHIPPED_TIERS, MESH_TIER, LOD_TIERS, SIZE_M, GROUND_SCALE, CLIMB_M, GROUP, GROUND_ROAM_M, GROUND_FLEE_M, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, REAR_RAD, TINT_DARK, TINT_BROWN,
 } from '../src/v2/render/spiders.js'
 import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
-import { CRITTER_GLB, critterTier, lodReach } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, LOD_RUNGS, CARD_RUNGS, lodReach } from '../src/v2/render/critters.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -54,13 +56,19 @@ const GROUND = 5
 // Her eyes over her feet: every update below takes her head and puts her feet this far under it.
 const EYE = 1.65
 const tick = (k, x, y, z, dt) => k.update(x, y, z, dt, y - EYE)
+// Her head straight over a spider, inside its card rung by more than the ladder's hysteresis: simulated and drawn, too far to alarm it (ALERT_M is 1.2 m; the smallest spider's card rung starts at 1.8 m), and over its own tile, so the tiles walked from under her hold while it is watched.
+const nearTo = (c) => [c.x, c.y + lodReach(c.size, LOD_RUNGS) * 0.8, c.z]
+// Back over the middle of the wood, high enough that nobody is simulated: the tiles her last stand walked from under the wood come back, with their spiders placed afresh.
+const home = () => tick(spiders, 0, GROUND + 40, 0, 0)
 // The snow line is a hundred metres up, except where a test lowers it.
 let snowLine = GROUND + 100
 const height = { heightAt: () => GROUND, snowLineAt: () => snowLine }
 const POND = { x: 30, z: 30, r: 6 }
 // And a puddle a boulder stands in, its level a hand over the ground.
 const PUDDLE = { x: -14, z: 12, r: 3, y: GROUND + 0.3 }
-const levelAt = (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : Math.hypot(x - PUDDLE.x, z - PUDDLE.z) < PUDDLE.r ? PUDDLE.y : null)
+// And a pool a test lays down wherever it needs one, a metre deep.
+let POOL = null
+const levelAt = (x, z) => (Math.hypot(x - POND.x, z - POND.z) < POND.r ? GROUND + 1 : Math.hypot(x - PUDDLE.x, z - PUDDLE.z) < PUDDLE.r ? PUDDLE.y : POOL !== null && Math.hypot(x - POOL.x, z - POOL.z) < POOL.r ? GROUND + 1 : null)
 const water = { levelAt, isSubmerged: (x, z, g) => { const l = levelAt(x, z); return l !== null && g < l } }
 
 // Trunks: base radius and height. Each is its own variant of the trees' LOD0 profile, a unit-tall trunk the stub scales by the height and turns by the yaw, as Trees.trunksInto says: the oaks crooked and lobed, the rest straight eight-sided cones; the pine and the thin birch are two-ring cones, a base ring straight to the apex, the shape the shipped pine has. The thin birch's bark thins under TRUNK_MIN_R two metres up, which caps its climb there.
@@ -248,8 +256,9 @@ function outwardOfTrunk(t, c) {
   const az = t.z + t.height * (lz * cy - lx * sy)
   return c.nx * (c.x - ax) + c.nz * (c.z - az) > 0
 }
-const hostOf = (c) => (c.host.kind === 'tree' ? TRUNKS : ROCKS).find((h) => h.x === c.host.x && h.z === c.host.z)
-const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : offRock(hostOf(c), c))
+const GROUND_HOST = { name: 'ground' }
+const hostOf = (c) => (c.host.kind === 'ground' ? GROUND_HOST : (c.host.kind === 'tree' ? TRUNKS : ROCKS).find((h) => h.x === c.host.x && h.z === c.host.z))
+const offSurface = (c) => (c.host.kind === 'tree' ? offTrunk(hostOf(c), c) : c.host.kind === 'rock' ? offRock(hostOf(c), c) : Math.abs(c.y - GROUND))
 
 // --- the shipped asset ---------------------------------------------------------
 {
@@ -304,7 +313,8 @@ function makeAsset({ legs = true } = {}) {
     for (let n = 0; n < 4; n++) {
       for (const side of ['L', 'R']) {
         const hip = new THREE.Bone()
-        hip.name = `Leg${n + 1}Hip.${side}`
+        // Named as the GLB names it, then sanitised as GLTFLoader sanitises every node name (the dot goes), so the bake sees what the world sees.
+        hip.name = THREE.PropertyBinding.sanitizeNodeName(`Leg${n + 1}Hip.${side}`)
         hip.position.set(side === 'L' ? -0.5 : 0.5, 0.125, LEG_Z[n])
         root.add(hip)
         bones.push(hip)
@@ -313,7 +323,8 @@ function makeAsset({ legs = true } = {}) {
   }
   root.updateMatrixWorld(true)
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
-  const tiers = [4, 2].map((seg) => {
+  // Both slabs carry the four hips a side: the drawn tier (MESH_TIER) must name every leg.
+  const tiers = [4, 4].map((seg) => {
     const geo = new THREE.BoxGeometry(1, 0.25, 1, seg, 1, seg).translate(0, 0.125, 0)
     const pos = geo.getAttribute('position')
     const n = pos.count
@@ -338,12 +349,12 @@ const scene = new THREE.Scene()
 const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
 check(spiders.material.isMeshLambertMaterial && spiders.materials === undefined, 'ONE material for every mesh spider, and nothing else to patch')
-check(spiders.meshes.length === LOD_TIERS && spiders.meshes.every((m, k) => m.isInstancedMesh && !m.isSkinnedMesh && m.material === spiders.material && m.count === 0 && m.instanceMatrix.count === MAX && m.geometry === spiders.asset.tiers[k] && m.geometry.getAttribute('aGait') === spiders.gaits[k] && m.geometry.getAttribute('aLeg')?.itemSize === 2), `${LOD_TIERS} InstancedMeshes, no skeleton on any, each the asset's tier with its legs baked on and its gaits per instance, none drawn yet`)
+check(spiders.meshes.length === LOD_TIERS && spiders.meshes.every((m, k) => m.isInstancedMesh && !m.isSkinnedMesh && m.material === spiders.material && m.count === 0 && m.instanceMatrix.count === MAX && m.geometry === spiders.asset.tiers[MESH_TIER + k] && m.geometry.getAttribute('aGait') === spiders.gaits[k] && m.geometry.getAttribute('aLeg')?.itemSize === 2) && spiders.asset.tiers[0].getAttribute('aLeg') === undefined, `${LOD_TIERS} InstancedMesh, no skeleton on it, the asset's tier ${MESH_TIER} with its legs baked on and its gaits per instance, none drawn yet; the pick untouched, for the card`)
 check(spiders.gaits.every((g) => g.isInstancedBufferAttribute && g.itemSize === 2 && g.count === MAX), 'a gait -- phase and amplitude -- per instance per tier')
 check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === LOD_TIERS + 1 && spiders.meshes.every((m) => spiders.batch.children.includes(m)), 'the card is hidden until baked, and the tiers and the card are the whole batch')
 {
-  // The legs as baked onto tier 0: a side-face vertex swings with its leg, a body vertex never does.
-  const geo = spiders.asset.tiers[0]
+  // The legs as baked onto the drawn tier: a side-face vertex swings with its leg, a body vertex never does.
+  const geo = spiders.asset.tiers[MESH_TIER]
   const pos = geo.getAttribute('position')
   const leg = geo.getAttribute('aLeg')
   let bodyStill = true, legMoves = true, halves = new Set(), reachOne = new Map()
@@ -383,8 +394,8 @@ liveTrunks = TRUNKS
 liveRocks = ROCKS
 const SEEDS = 40
 const pool = []
-const groupSizes = []
-const hosted = { tree: 0, rock: 0 }
+const groupSizes = { tree: [], rock: [], ground: [] }
+const hosted = { tree: 0, rock: 0, ground: 0 }
 const hostedOf = new Map()
 let dropped = 0
 for (let seed = 1; seed <= SEEDS; seed++) {
@@ -394,9 +405,9 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   for (const t of k.tiles.values()) {
     for (const h of t.hosts.values()) {
       if (!h.spiders.length) continue
-      groupSizes.push(h.spiders.length)
+      groupSizes[h.kind].push(h.spiders.length)
       hosted[h.kind]++
-      const name = (h.kind === 'tree' ? TRUNKS : ROCKS).find((x) => x.x === h.x && x.z === h.z).name
+      const name = hostOf(h.spiders[0]).name
       hostedOf.set(name, (hostedOf.get(name) ?? 0) + 1)
     }
   }
@@ -407,15 +418,25 @@ spiders.place(0, 0)
 {
   check(dropped === 0, 'nothing was dropped for want of room, over every seed')
   check(pool.length >= 3 * SEEDS, 'the wood carries spiders', `${pool.length} over ${SEEDS} seeds; one seed: ${JSON.stringify(spiders.stats)}`)
-  check(groupSizes.every((n) => n >= GROUP[0] && n <= GROUP[1]) && Math.min(...groupSizes) === GROUP[0] && Math.max(...groupSizes) === GROUP[1], `every group is ${GROUP[0]} to ${GROUP[1]}, and both ends are seen`, `${groupSizes.join(' ')}`)
-  check(hosted.tree > 0 && hosted.rock > 0, 'groups on trees and on rocks alike', `${hosted.tree} tree groups, ${hosted.rock} rock groups`)
+  for (const kind of ['tree', 'rock', 'ground']) {
+    const [lo, hi] = GROUP[kind]
+    const sizes = groupSizes[kind]
+    check(sizes.length > 0 && sizes.every((n) => n >= lo && n <= hi) && Math.min(...sizes) === lo && Math.max(...sizes) === hi, `every ${kind} group is ${lo} to ${hi}, and both ends are seen`, `${sizes.join(' ')}`)
+  }
+  check(hosted.tree > 0 && hosted.rock > 0 && hosted.ground > 0, 'groups on trees, on rocks and on the ground alike', `${hosted.tree} tree groups, ${hosted.rock} rock groups, ${hosted.ground} on the ground`)
   check(!hostedOf.has('sapling') && !hostedOf.has('cobble') && !hostedOf.has('small') && !hostedOf.has('drowned') && !hostedOf.has('far'), `none on the sapling (under ${TRUNK_MIN_R} m), the cobble or the ${sizeOf(ROCKS.find((b) => b.name === 'small'))} m stone (under ${ROCK_MIN_SIZE} m), the drowned rock or anything far off`, [...hostedOf.keys()].join(', '))
   check(!hostedOf.has('slab') && !hostedOf.has('buried'), `none on the slab or the buried stone: no ${WALL_M} m of wall to climb`, [...hostedOf.keys()].join(', '))
   const waders = pool.filter((c) => hostOf(c).name === 'wader')
   const wet = waders.filter((c) => levelAt(c.x, c.z) !== null)
   check(hostedOf.has('wader') && wet.every((c) => c.y > PUDDLE.y + 0.04), 'the boulder on the puddle\'s bank carries spiders, none of them at the waterline on its wet side', `${waders.length} spiders, ${wet.length} over the water, lowest ${wet.length ? (Math.min(...wet.map((c) => c.y)) - PUDDLE.y).toFixed(2) : '-'} m over it`)
   check(pool.every((c) => c.ny > -0.3), 'no spider hangs from a ceiling', `lowest ny ${Math.min(...pool.map((c) => c.ny)).toFixed(2)}`)
-  check(pool.every((c) => c.size >= SIZE_M[0] - 1e-6 && c.size <= SIZE_M[1] + 1e-6), `every spider is ${SIZE_M[0]} to ${SIZE_M[1]} m`, `${Math.min(...pool.map((c) => c.size)).toFixed(3)} to ${Math.max(...pool.map((c) => c.size)).toFixed(3)} m`)
+  const climbers = pool.filter((c) => c.host.kind !== 'ground')
+  const grounders = pool.filter((c) => c.host.kind === 'ground')
+  check(climbers.every((c) => c.size >= SIZE_M[0] - 1e-6 && c.size <= SIZE_M[1] + 1e-6), `every climbing spider is ${SIZE_M[0]} to ${SIZE_M[1]} m`, `${Math.min(...climbers.map((c) => c.size)).toFixed(3)} to ${Math.max(...climbers.map((c) => c.size)).toFixed(3)} m`)
+  check(grounders.length > 0 && grounders.every((c) => c.size >= SIZE_M[0] * GROUND_SCALE - 1e-6 && c.size <= SIZE_M[1] * GROUND_SCALE + 1e-6) && Math.max(...grounders.map((c) => c.size)) > SIZE_M[1] * GROUND_SCALE * 0.8, `every ground spider is ${SIZE_M[0] * GROUND_SCALE} to ${SIZE_M[1] * GROUND_SCALE} m, half the climbers`, `${grounders.length} of them, ${Math.min(...grounders.map((c) => c.size)).toFixed(3)} to ${Math.max(...grounders.map((c) => c.size)).toFixed(3)} m`)
+  check(grounders.every((c) => Math.abs(c.y - GROUND) < 1e-9 && Math.abs(c.ny - 1) < 1e-9 && Math.abs(c.ty) < 1e-9 && Math.abs(Math.hypot(c.tx, c.tz) - 1) < 1e-9 && levelAt(c.x, c.z) === null && c.state === 'go' && c.speed > 0), 'a ground spider stands on the flat ground, its normal up and its heading level, out of the water, and is on the move from its first frame')
+  const oneTiles = alive().filter((c) => c.host.kind === 'ground').map((c) => `${Math.floor(c.x / 16)},${Math.floor(c.z / 16)}`)
+  check(grounders.every((c) => Math.hypot(c.x - c.host.x, c.z - c.host.z) < 1e-9) && oneTiles.length > 0 && new Set(oneTiles).size === oneTiles.length && oneTiles.length < spiders.tiles.size, 'a ground spider stands at its tile\'s own point, one a tile at most and not in every tile', `${oneTiles.length} in ${spiders.tiles.size} tiles`)
   const hs = pool.map((c) => c.y - GROUND)
   check(hs.every((h) => h >= 0 && h <= CLIMB_M + 1e-6), `every spider is 0 to ${CLIMB_M} m up`, `${Math.min(...hs).toFixed(2)} to ${Math.max(...hs).toFixed(2)} m`)
   check(Math.max(...hs) > 2 && Math.min(...hs) < 0.3, 'and the climb is used, top and bottom')
@@ -424,7 +445,7 @@ spiders.place(0, 0)
   const off = pool.map(offSurface)
   check(off.every((d) => d < 1e-4), 'every spider sits on its host\'s own surface', `worst ${Math.max(...off).toExponential(2)} m`)
   check(pool.every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-6 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-6), 'unit normal, heading in the tangent plane')
-  const flat = pool.filter((c) => c.ny > FLAT_NY).length / pool.length
+  const flat = climbers.filter((c) => c.ny > FLAT_NY).length / climbers.length
   check(flat < 0.15, `few sit on top of anything (normal rising past ${FLAT_NY})`, `${(flat * 100).toFixed(0)}% flat`)
   const onTrees = pool.filter((c) => c.host.kind === 'tree')
   check(onTrees.every((c) => Math.abs(c.ny) < 0.2 && outwardOfTrunk(hostOf(c), c)), 'a tree spider clings to the bark, its normal off the trunk\'s centre line and near level, the crooked boles\' lean and all', `ny ${Math.min(...onTrees.map((c) => c.ny)).toFixed(3)} to ${Math.max(...onTrees.map((c) => c.ny)).toFixed(3)}`)
@@ -436,15 +457,23 @@ spiders.place(0, 0)
   // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
   const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
   again.place(0, 0)
-  const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
-  check(key(again) === key(spiders) && alive(spiders).length > 0, 'the scatter is a pure function of the seed', `${alive(spiders).length} spiders`)
+  const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)},${c.tr.toFixed(4)},${c.tg.toFixed(4)},${c.tb.toFixed(4)}`).sort().join('|')
+  check(key(again) === key(spiders) && alive(spiders).length > 0, 'the scatter, tints and all, is a pure function of the seed', `${alive(spiders).length} spiders`)
   again.dispose()
+  // The tint: a run from the map's own colour (1, 1, 1) down through darker and browner -- never lighter than the map, never below TINT_DARK, green and blue never over red and blue never over green -- and spread well across it.
+  {
+    const all = alive()
+    const inRange = all.every((c) => c.tr <= 1 + 1e-9 && c.tr >= TINT_DARK - 1e-9 && c.tg <= c.tr + 1e-9 && c.tb <= c.tg + 1e-9 && c.tg >= c.tr * (1 - TINT_BROWN.g) - 1e-9 && c.tb >= c.tr * (1 - TINT_BROWN.b) - 1e-9)
+    const shades = all.map((c) => c.tr), warmths = all.map((c) => 1 - c.tb / c.tr)
+    check(inRange && Math.max(...shades) - Math.min(...shades) > 0.3 && Math.max(...warmths) - Math.min(...warmths) > 0.3, 'every spider is tinted between the map and dark brown, and the scatter is spread across the range', `shade ${Math.min(...shades).toFixed(2)}..${Math.max(...shades).toFixed(2)}, warmth ${Math.min(...warmths).toFixed(2)}..${Math.max(...warmths).toFixed(2)}`)
+    check(spiders.meshes.every((m) => m.instanceColor?.isInstancedBufferAttribute && m.instanceColor.count === MAX) && spiders.card.instanceColor?.isInstancedBufferAttribute && spiders.card.instanceColor.count === MAX, 'the tint rides in instanceColor on every tier and on the card')
+  }
   // A tile whose hosts land late gets its spiders on the rescan.
   liveTrunks = []
   liveRocks = []
   const late = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
   late.place(0, 0)
-  check(alive(late).length === 0, 'no hosts, no spiders')
+  check(alive(late).length > 0 && alive(late).every((c) => c.host.kind === 'ground'), 'no trunks and no rocks, only the ground\'s spiders', `${alive(late).length} on the ground`)
   liveTrunks = TRUNKS
   liveRocks = ROCKS
   // dt 0: the frames only rescan, nobody's pause runs out.
@@ -471,9 +500,9 @@ spiders.place(0, 0)
 
 // --- the crawl -----------------------------------------------------------------
 {
-  // Straight up, so the tiles hold and every spider is past NEAR_M.
-  const FAR = [0, GROUND + 40, 0]
-  const before = alive().map((c) => ({ c, x: c.x, y: c.y, z: c.z }))
+  // Standing in the middle of the wood: every spider is on its own rung by its size, and the ones past their cull are neither drawn nor simulated.
+  const HER = [0, GROUND + EYE, 0]
+  const before = alive().map((c) => ({ c, x: c.x, y: c.y, z: c.z, left: c.left }))
   spiders.setCard(null)
   check(spiders.card.visible, 'setCard shows the card')
   let ms = 0
@@ -489,10 +518,12 @@ spiders.place(0, 0)
   for (let f = 0; f < 600; f++) {
     for (const c of alive()) gaitWas.set(c, c.gait)
     const t0 = performance.now()
-    tick(spiders, ...FAR, 1 / 60)
+    tick(spiders, ...HER, 1 / 60)
     ms += performance.now() - t0
     for (const c of alive()) {
-      if (wasState.get(c) !== c.state) { wasState.set(c, c.state); since.set(c, 0) } else since.set(c, since.get(c) + 1)
+      if (c.rung >= CARD_RUNGS) continue
+      // A ground spider goes from one spell straight into the next, so the clip counts as a change too.
+      if (wasState.get(c) !== c.state + c.clip) { wasState.set(c, c.state + c.clip); since.set(c, 0) } else since.set(c, since.get(c) + 1)
       if (!(c.amp >= 0 && c.amp <= STRIDE.run / 2 + 1e-9)) legs.over++
       if (since.get(c) >= 60) {
         if (c.state === 'go') { legs.walking++; if (c.amp !== STRIDE[c.clip] / 2) legs.wrong++; if (c.gait === gaitWas.get(c)) legs.phase++ }
@@ -504,8 +535,11 @@ spiders.place(0, 0)
       worstH = [Math.min(worstH[0], c.y - GROUND), Math.max(worstH[1], c.y - GROUND)]
     }
   }
-  const moved = before.filter(({ c, x, y, z }) => Math.hypot(c.x - x, c.y - y, c.z - z) > 0.02)
-  check(moved.length > before.length / 2, 'most spiders have crawled somewhere in ten seconds', `${moved.length} of ${before.length}`)
+  const sim = before.filter(({ c }) => c.rung < CARD_RUNGS)
+  const moved = sim.filter(({ c, x, y, z }) => Math.hypot(c.x - x, c.y - y, c.z - z) > 0.02)
+  check(sim.length >= 3 && moved.length > sim.length / 2, 'most of the spiders within their cull have crawled somewhere in ten seconds', `${moved.length} of ${sim.length}, ${before.length} alive`)
+  const frozen = before.filter(({ c }) => c.rung >= CARD_RUNGS)
+  check(frozen.length > 0 && frozen.every(({ c, x, y, z, left }) => c.x === x && c.y === y && c.z === z && c.left === left), 'and the ones past it have not moved, being frozen where they were placed', `${frozen.length} frozen`)
   check(states.has('go') && states.has('pause'), 'they crawl and they pause', [...states].join(', '))
   check(['walk', 'idle'].every((n) => clipsSeen.has(n)) && !clipsSeen.has('alert'), 'walking and idling, with nobody reared up while she is far', [...clipsSeen].join(', '))
   check(worstOff < 0.02, 'no spider left its surface', `worst ${worstOff.toFixed(4)} m`)
@@ -513,13 +547,18 @@ spiders.place(0, 0)
   check(alive().every((c) => Math.abs(Math.hypot(c.nx, c.ny, c.nz) - 1) < 1e-4 && Math.abs(c.tx * c.nx + c.ty * c.ny + c.tz * c.nz) < 1e-3 && Math.abs(Math.hypot(c.tx, c.ty, c.tz) - 1) < 1e-4), 'unit normal and unit tangent heading still, after the crawl')
   const rockOnTop = alive().filter((c) => c.host.kind === 'rock' && c.ny > FLAT_NY).length
   check(rockOnTop <= Math.ceil(alive().filter((c) => c.host.kind === 'rock').length * 0.2), 'the rock crawlers keep to the faces', `${rockOnTop} on top`)
-  check(spiders.card.count === alive().length && spiders.stats.meshes.every((n) => n === 0) && alive().every((c) => c.lod === LOD_TIERS), 'far away, every spider is a card and no tier draws anybody', `${spiders.card.count} cards, ${alive().length} alive, tiers ${spiders.stats.meshes.join('/')}`)
+  // The ladder, by each spider's own size: the mesh to lodReach(size, 3), the card to lodReach(size, 4), nothing past; a rung is left a tenth past its edge.
+  const dist = (c) => Math.hypot(c.x - HER[0], c.y - HER[1], c.z - HER[2])
+  const onRung = (c) => (c.rung === 0 || dist(c) >= lodReach(c.size, c.rung - 1) * 0.9 - 1e-9) && (c.rung === CARD_RUNGS || dist(c) <= lodReach(c.size, c.rung) * 1.1 + 1e-9)
+  const meshed = alive().filter((c) => c.rung < LOD_RUNGS), carded = alive().filter((c) => c.rung === LOD_RUNGS), culled = alive().filter((c) => c.rung === CARD_RUNGS)
+  check(alive().every(onRung) && meshed.every((c) => c.lod === 0) && carded.every((c) => c.lod === LOD_TIERS), 'every spider is on the rung its size and distance earn: the mesh to 36 sizes, the card to 72, nothing past', alive().filter((c) => !onRung(c)).map((c) => `${c.size.toFixed(2)} m at ${dist(c).toFixed(1)} m on rung ${c.rung}`).join(', '))
+  check(meshed.length > 0 && carded.length > 0 && culled.length > 0 && spiders.stats.meshes[0] === meshed.length && spiders.card.count === carded.length, 'from the middle of the wood some are meshes, some cards and some culled, each drawn once or not at all', `${meshed.length} meshes, ${carded.length} cards, ${culled.length} culled of ${alive().length}`)
   check(legs.walking > 0 && legs.sitting > 0 && legs.wrong === 0 && legs.over === 0, 'a spider a second into its walk swings its legs half a stride, a second into its pause not at all, and never more than half the run', `${legs.walking} walking and ${legs.sitting} sitting spider-frames, ${legs.wrong} wrong`)
   check(legs.phase === 0, 'the phase runs while it walks and holds while it sits', `${legs.phase} wrong`)
   const perFrame = ms / 600
   check(perFrame < 3, `a frame of ${alive().length} spiders costs under 3 ms`, `${perFrame.toFixed(3)} ms, ${rocks.rays} rays`)
-  // The card lies where its spider clings, sunk into the surface, its up along the normal. Instance 0 is the first spider in tile order.
-  const c = [...spiders.tiles.values()].flatMap((t) => [...t.hosts.values()]).flatMap((h) => h.spiders)[0]
+  // The card lies where its spider clings, sunk into the surface, its up along the normal. Instance 0 is the first card in tile order.
+  const c = [...spiders.tiles.values()].flatMap((t) => [...t.hosts.values()]).flatMap((h) => h.spiders).find((c) => c.rung === LOD_RUNGS)
   const m = new THREE.Matrix4().fromArray(spiders.card.instanceMatrix.array, 0)
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
   m.decompose(p, q, s)
@@ -528,13 +567,14 @@ spiders.place(0, 0)
   const k = c.size / spiders.span
   const sink = SINK * spiders.bodyH * k
   check(Math.abs(s.x - k) < 1e-6 && Math.abs(s.y - k) < 1e-6 && p.distanceTo(new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)) < 1e-5, 'the first card is at its spider\'s size, sunk into its surface', `scale ${s.x.toFixed(3)}, sink ${sink.toFixed(4)} m`)
+  const ct = spiders.card.instanceColor.array
+  check(Math.abs(ct[0] - c.tr) < 1e-6 && Math.abs(ct[1] - c.tg) < 1e-6 && Math.abs(ct[2] - c.tb) < 1e-6, 'and carries its spider\'s tint', `${c.tr.toFixed(3)} ${c.tg.toFixed(3)} ${c.tb.toFixed(3)}`)
   check(up.distanceTo(new THREE.Vector3(c.nx, c.ny, c.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(c.tx, c.ty, c.tz)) < 1e-5, 'its up is the surface normal and its face is its heading')
   check(spiders.stats.dropped === 0, 'no stone went from under anybody', `${spiders.stats.dropped} dropped`)
 }
 
 // --- the top of the climb, a stone gone from under a spider ---------------------
 {
-  const FAR = [0, GROUND + 40, 0]
   // Walking straight up the pillar past CLIMB_M: one turn back, then on down.
   const p = alive().find((c) => hostOf(c).name === 'pillar')
   const pillar = hostOf(p)
@@ -547,7 +587,7 @@ spiders.place(0, 0)
   let top = -Infinity
   let was = p.ty
   for (let f = 0; f < 120; f++) {
-    tick(spiders, ...FAR, 1 / 60)
+    tick(spiders, ...nearTo(p), 1 / 60)
     if (Math.sign(p.ty) !== Math.sign(was)) flips++
     was = p.ty
     top = Math.max(top, p.y - GROUND)
@@ -560,30 +600,85 @@ spiders.place(0, 0)
   const lifted = [s.x, s.y, s.z]
   s.state = 'go'; s.clip = 'walk'; s.speed = 0.05; s.left = 100
   let sat = 0
-  for (let f = 0; f < 12 && s.state === 'go'; f++, sat++) tick(spiders, ...FAR, 1 / 60)
+  for (let f = 0; f < 12 && s.state === 'go'; f++, sat++) tick(spiders, ...nearTo(s), 1 / 60)
   check(s.state === 'pause' && s.stuck === 3 && sat <= 9 && Math.hypot(s.x - lifted[0], s.y - lifted[1], s.z - lifted[2]) < 0.01, 'a spider in the air turns back three times and sits down where it is', `${s.state} after ${sat} frames, stuck ${s.stuck}`)
-  for (let f = 0; f < RESEAT_EVERY; f++) tick(spiders, ...FAR, 0)
+  for (let f = 0; f < RESEAT_EVERY; f++) tick(spiders, ...nearTo(s), 0)
   check(s.host !== null && hostOf(s) === sphere && offRock(sphere, s) < 1e-4 && s.y > GROUND, 'sitting, it re-reads its stone and is back on the sphere', `off ${offRock(sphere, s).toExponential(2)} m`)
   // The sphere itself gone: every spider on it is taken away, and the slots come back.
   const onSphere = alive().filter((c) => hostOf(c).name === 'sphere')
   const freeBefore = spiders.free.length
   liveRocks = ROCKS.filter((b) => b.name !== 'sphere')
-  for (let f = 0; f < RESEAT_EVERY + 12; f++) tick(spiders, ...FAR, 0)
+  // Each in turn within her cull, since only a simulated spider re-reads its stone.
+  for (const c of onSphere) for (let f = 0; f < RESEAT_EVERY + 12; f++) tick(spiders, ...nearTo(c), 0)
   check(onSphere.length > 0 && onSphere.every((c) => c.host === null) && spiders.stats.dropped === onSphere.length && spiders.free.length === freeBefore + onSphere.length, 'the sphere gone from under them, its spiders are taken away and their slots freed', `${onSphere.length} dropped`)
   check(![...spiders.tiles.values()].some((t) => [...t.hosts.values()].some((h) => h.spiders.some((c) => c.host === null))), 'and no host still lists one')
   check(alive().every((c) => offSurface(c) < 0.02), 'everyone else is where they were')
   liveRocks = ROCKS
 }
 
+// --- the ground spider: turned by water and its tether, and its flight ---------------------
+{
+  const g = alive().find((c) => c.host.kind === 'ground')
+  const head = (c, phi) => { c.state = 'go'; c.clip = 'walk'; c.speed = 0.5; c.left = 100; spiders._headGround(c, phi) }
+  // A pool two metres east of its point, and the spider on the pool's west bank heading east, straight at it: a quarter turn is +X.
+  POOL = { x: g.host.x + 2, z: g.host.z, r: 1 }
+  spiders._placeGround(g, POOL.x - POOL.r - 0.02, POOL.z)
+  head(g, Math.PI / 2)
+  check(g.tx > 0.999, 'a ground spider on a pool\'s bank headed east, at the water')
+  for (let f = 0; f < 30; f++) tick(spiders, ...nearTo(g), 1 / 60)
+  check(levelAt(g.x, g.z) === null && g.tx < 0 && g.state === 'go', 'half a second on it has turned back from the water and is still walking, dry', `x ${g.x.toFixed(2)} heading tx ${g.tx.toFixed(2)}`)
+  POOL = null
+  // Past its tether heading away: the next step turns it for home.
+  spiders._placeGround(g, g.host.x + GROUND_ROAM_M + 0.5, g.host.z)
+  head(g, Math.PI / 2)
+  tick(spiders, ...nearTo(g), 1 / 60)
+  check(g.state === 'go' && g.tx < 0 && Math.abs(Math.atan2(g.tx, g.tz) - (-Math.PI / 2)) < 0.5, `${GROUND_ROAM_M} m out and heading away, it turns for its point`, `heading ${Math.atan2(g.tx, g.tz).toFixed(2)} rad`)
+  // Her body a hand off: it bolts straight away from her, is heard, and calms once FLEE_TO_M off.
+  spiders._placeGround(g, g.host.x, g.host.z)
+  head(g, 0)
+  tick(spiders, ...nearTo(g), 1 / 60)
+  const her = [g.x - (0.2 + WALK.radius), GROUND + EYE, g.z]
+  tick(spiders, ...her, 1 / 60)
+  check(g.state === 'flee' && g.clip === 'run' && spiders.startled([])[0] === g && g.tx > 0.9 && Math.abs(g.ey - GROUND) < 1e-9, 'her feet a hand off, a ground spider bolts straight away from her at the run, heard as it sets off', `${g.state} heading tx ${g.tx.toFixed(2)}`)
+  let frames = 0
+  while (g.state === 'flee' && frames++ < 600) tick(spiders, ...her, 1 / 60)
+  check(g.state !== 'flee' && Math.hypot(g.x - her[0], g.z - her[2]) - WALK.radius >= GROUND_FLEE_M - 0.15 && Math.abs(g.y - GROUND) < 1e-9, `and calms ${GROUND_FLEE_M} m off, still on the ground`, `${g.state} after ${frames} frames, ${(Math.hypot(g.x - her[0], g.z - her[2]) - WALK.radius).toFixed(2)} m off`)
+  // Left alone it walks on rather than sitting: over ten seconds with her off at its card rung, a pause is the rare exception.
+  let paused = 0
+  for (let f = 0; f < 600; f++) { tick(spiders, ...nearTo(g), 1 / 60); if (g.state === 'pause') paused++ }
+  check(paused < 60 && g.state !== 'flee', 'and, left alone, walks on with hardly a pause', `${paused} of 600 frames paused`)
+  // Three of them from where they were placed, ten seconds each with her at its card rung: hardly a pause, a hand's breadth (a 10 cm spider walks a centimetre a second) or more crawled, never past the tether, off the ground or into the water.
+  const ground = { frames: 0, paused: 0, strayed: 0, moved: 0, n: 0 }
+  // Picked one at a time: her move to the next one's column can walk the tiles from under the ones not yet watched.
+  const watched = new Set([g])
+  for (let i = 0; i < 3; i++) {
+    const c = alive().find((c) => c.host.kind === 'ground' && !watched.has(c))
+    if (!c) break
+    watched.add(c)
+    const x0 = c.x, z0 = c.z
+    ground.n++
+    for (let f = 0; f < 600; f++) {
+      tick(spiders, ...nearTo(c), 1 / 60)
+      ground.frames++
+      if (c.state === 'pause') ground.paused++
+      if (Math.hypot(c.x - c.host.x, c.z - c.host.z) > GROUND_ROAM_M + 0.05 || Math.abs(c.y - GROUND) > 1e-9 || levelAt(c.x, c.z) !== null) ground.strayed++
+    }
+    if (Math.hypot(c.x - x0, c.z - z0) > 0.05) ground.moved++
+  }
+  check(ground.n === 3 && ground.paused < ground.frames * 0.1 && ground.moved === ground.n, 'three more ground spiders hardly ever stop, and every one crawls a hand\'s breadth or more in ten seconds', `${ground.paused} of ${ground.frames} frames paused, ${ground.moved} of ${ground.n} moved`)
+  check(ground.strayed === 0, `none strayed past ${GROUND_ROAM_M} m from its point, left the ground or walked into the water`, `${ground.strayed} strayed frames`)
+}
+
 // --- the ear hears the spiders --------------------------------------------------
 // bodies() is what the ambience reads for the crawl loop: the slots themselves, `speed > 0` on the ones on the move, a pause at speed 0.
 {
+  home()
   const w = alive().find((c) => c.host.kind === 'tree')
   w.state = 'go'; w.clip = 'walk'; w.speed = 0.05; w.left = 100
   const listed = spiders.bodies([])
   check(listed.length === alive().length && listed.includes(w) && w.speed > 0, 'every seated spider is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
   w.left = 0
-  tick(spiders, 0, GROUND + 40, 0, 1 / 60)
+  tick(spiders, ...nearTo(w), 1 / 60)
   check(w.state === 'pause' && w.speed === 0 && spiders.bodies([]).includes(w), 'its spell over, the walker pauses at speed 0 and stays listed')
   spiders.batch.visible = false
   check(spiders.bodies([]).length === 0, 'a hidden layer lists nobody')
@@ -592,6 +687,7 @@ spiders.place(0, 0)
 
 // --- near: the tiers, the legs, the rear-up ------------------------------------------------
 {
+  home()
   const target = alive().find((c) => c.host.kind === 'tree')
   const at = (d) => [target.x + target.nx * d, target.y, target.z + target.nz * d]
   // Out along the normal, so the distance is exactly d.
@@ -614,7 +710,7 @@ spiders.place(0, 0)
   const close = lodReach(target.size, 0) / 2
   const t1 = tiersAt(close)
   const i1 = instanceOf(0, target)
-  check(t1 === 0 && i1 >= 0 && spiders.meshes[0].count >= 1, `${close.toFixed(2)} m off, the spider is an instance of tier 0`, `tier ${t1}, instance ${i1}`)
+  check(t1 === 0 && i1 >= 0 && spiders.meshes[0].count >= 1, `${close.toFixed(2)} m off, the spider is an instance of the mesh`, `tier ${t1}, instance ${i1}`)
   {
     const m = new THREE.Matrix4().fromArray(spiders.meshes[0].instanceMatrix.array, i1 * 16)
     const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
@@ -624,7 +720,9 @@ spiders.place(0, 0)
     const k = target.size / spiders.span
     check(Math.abs(s.x - k) < 1e-6 && up.distanceTo(new THREE.Vector3(target.nx, target.ny, target.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(target.tx, target.ty, target.tz)) < 1e-5, 'the instance stands where the spider is at its size, its up the bark\'s normal and its nose along its heading')
     const g = spiders.gaits[0].array
-    check(Math.abs(g[i1 * 2] - target.gait) < 1e-6 && Math.abs(g[i1 * 2 + 1] - target.amp) < 1e-9 && target.amp > 0, 'and carries its gait: the phase and a swing', `phase ${target.gait.toFixed(3)} amp ${target.amp.toFixed(4)}`)
+    check(Math.abs(g[i1 * 2] - target.gait) < 1e-6 && Math.abs(g[i1 * 2 + 1] - target.amp) < 1e-6 && target.amp > 0, 'and carries its gait: the phase and a swing', `phase ${target.gait.toFixed(3)} amp ${target.amp.toFixed(4)}`)
+    const t = spiders.meshes[0].instanceColor.array
+    check(Math.abs(t[i1 * 3] - target.tr) < 1e-6 && Math.abs(t[i1 * 3 + 1] - target.tg) < 1e-6 && Math.abs(t[i1 * 3 + 2] - target.tb) < 1e-6, 'and its tint', `${target.tr.toFixed(3)} ${target.tg.toFixed(3)} ${target.tb.toFixed(3)}`)
   }
   // The phase runs one cycle a stride of the seat. Her body that close set it fleeing; put back on its walk with her 2 m off, out of FLEE_M of it.
   {
@@ -635,20 +733,22 @@ spiders.place(0, 0)
     const turned = (target.gait - was + 2 * Math.PI) % (2 * Math.PI)
     check(target.state === 'go' && Math.abs(turned - (2 * Math.PI * 0.05 * (1 / 60) * spiders.span) / (target.size * STRIDE.walk)) < 1e-9, 'a frame\'s walk turns the phase by that step over the stride', `${turned.toFixed(4)} rad`)
   }
-  const dist = (c) => Math.hypot(c.x - her[0], c.y - her[1], c.z - her[2])
-  // A mesh is kept to 1.15 NEAR_M once it is one; a step is under 2 cm.
-  check(alive().every((c) => (c.lod < LOD_TIERS ? dist(c) <= NEAR_M * 1.15 + 0.02 : dist(c) >= NEAR_M - 0.02)) && drawn() === alive().length && spiders.stats.meshes[target.lod] >= 1, `every spider within ${NEAR_M} m is a mesh and the rest are cards, each drawn once`, `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards`)
-  // The floor is held rather than culled: a spider inside NEAR_M is always a mesh, the card being what takes over out there.
-  const expect = (d) => Math.min(critterTier(target.size, d, LOD_TIERS, LOD_TIERS), LOD_TIERS - 1)
-  // The middle rung is probed at its own geometric middle, a rolled size putting
-  // its edges wherever it likes: the hysteresis band is a tenth either way and
-  // cannot reach that far, so what is promised is the ladder and not one spider.
-  const mid = lodReach(target.size, 1) * Math.SQRT2
-  const tMid = tiersAt(mid), t95 = tiersAt(9.5)
-  check(tMid === expect(mid) && t95 === expect(9.5) && t95 === LOD_TIERS - 1 && instanceOf(LOD_TIERS - 1, target) >= 0, `at ${mid.toFixed(2)} m tier ${expect(mid)}, at 9.5 m the last tier and not a cull`, `${tMid}, ${t95} for a ${target.size.toFixed(2)} m spider`)
-  // Stepping out of range: the next frame it is a card, and NOTHING is drawn twice.
-  const t12 = tiersAt(12, 1)
-  check(t12 === LOD_TIERS && instanceOf(LOD_TIERS - 1, target) < 0 && drawn() === alive().length, 'at 12 m it is a card the next frame, a mesh or a card and never both', `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${alive().length} alive`)
+  const simulated = () => alive().filter((c) => c.rung < CARD_RUNGS).length
+  check(alive().every((c) => (c.rung < LOD_RUNGS) === (c.lod === 0)) && drawn() === simulated() && spiders.stats.meshes[target.lod] >= 1, 'every spider on a mesh rung is a mesh and every one on the card rung a card, each drawn once, and the culled not at all', `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${simulated()} of ${alive().length} simulated`)
+  // The four mesh rungs are all the one mesh: on the second and at the end of the fourth alike.
+  const mid = lodReach(target.size, 1) * Math.SQRT2, last = lodReach(target.size, LOD_RUNGS - 1) * 0.95
+  const tMid = tiersAt(mid), rMid = target.rung, iMid = instanceOf(0, target)
+  check(tMid === 0 && rMid === 2 && iMid >= 0, `at ${mid.toFixed(2)} m, on the second rung, it is the one mesh`, `tier ${tMid}, rung ${rMid} for a ${target.size.toFixed(2)} m spider`)
+  const tLast = tiersAt(last)
+  check(tLast === 0 && target.rung === LOD_RUNGS - 1 && instanceOf(0, target) >= 0, `and at ${last.toFixed(2)} m, on the fourth, still`, `tier ${tLast}, rung ${target.rung}`)
+  // Stepping past the mesh rungs: the next frame it is a card, and NOTHING is drawn twice. Past the card rung it is gone, and frozen.
+  const cardAt = lodReach(target.size, LOD_RUNGS - 1) * 1.15
+  const tCard = tiersAt(cardAt, 1)
+  check(tCard === LOD_TIERS && target.rung === LOD_RUNGS && instanceOf(0, target) < 0 && drawn() === simulated(), `at ${cardAt.toFixed(2)} m, past the fourth rung by more than its hysteresis, it is a card the next frame, a mesh or a card and never both`, `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${simulated()} simulated`)
+  const cullAt = lodReach(target.size, LOD_RUNGS) * 1.15
+  const wasLeft = target.left
+  for (let f = 0; f < 2; f++) tick(spiders, target.x, target.y + cullAt, target.z, 1 / 60)
+  check(target.rung === CARD_RUNGS && target.left === wasLeft && drawn() === simulated() && instanceOf(0, target) < 0, `at ${cullAt.toFixed(2)} m, past the card rung, it is neither drawn nor simulated`, `rung ${target.rung}, ${drawn()} drawn of ${alive().length}`)
   // Reared up when she is close and paused, the instance pitched nose-up about its seat; back to its business, and flat, when she goes.
   target.state = 'pause'; target.clip = 'idle'; target.left = 100
   tiersAt(1.0, 3)
@@ -701,9 +801,12 @@ spiders.place(0, 0)
   const h0 = target.h, d1 = bodyDist(target, t.her)
   run(target, t.her, 60)
   check(target.state === 'flee' && target.h > h0 + 0.15, 'a second on it is still running, up the trunk past her', `${h0.toFixed(2)} -> ${target.h.toFixed(2)} m up`)
-  run(target, t.her, 12 * 60)
+  // Through to the frame the flight ends, then the swing's ease-out.
+  let fleeing = 0
+  while (target.state === 'flee' && fleeing++ < 20 * 60) run(target, t.her, 1)
+  run(target, t.her, 30)
   const d2 = bodyDist(target, t.her)
-  check(target.state === 'pause' && target.amp === 0 && d2 < FLEE_TO_M && d2 > d1 + 0.5 && target.h > target.host.hHi - 0.1, `having got as far as the trunk allows -- the top of the climb, the far side -- it calms down there, its legs still`, `${target.state} at ${d2.toFixed(2)} m, ${target.h.toFixed(2)} m up of ${target.host.hHi.toFixed(2)}`)
+  check(fleeing < 20 * 60 && target.state === 'pause' && target.amp === 0 && d2 < FLEE_TO_M && d2 > d1 + 0.5 && target.h > target.host.hHi - 0.1, `having got as far as the trunk allows -- the top of the climb, the far side -- it calms down there, its legs still`, `${target.state} at ${d2.toFixed(2)} m, ${target.h.toFixed(2)} m up of ${target.host.hHi.toFixed(2)}`)
   run(target, t.her, 60)
   check(target.state !== 'flee' && spiders.startled([]).length === 0, 'and does not bolt again while she stands under it')
   // She steps back and returns: it bolts again, once.
@@ -732,15 +835,15 @@ spiders.place(0, 0)
   check(spiders.startled([]).length === 0 && target.state === 'flee', 'a hidden layer lists no startled spider')
   spiders.batch.visible = true
   // A spider's matrix is rebuilt only when it has moved or turned: a paused rock spider between re-seats writes nothing new.
-  const still = alive().find((c) => c.host.kind === 'rock' && c.state === 'pause' && c !== p)
-  still.left = 100; still.clip = 'idle'; still.rear = 0
+  const still = alive().find((c) => c.host.kind === 'rock' && c !== p)
+  still.state = 'pause'; still.speed = 0; still.left = 100; still.clip = 'idle'; still.rear = 0
   // Up to and through its re-seat frame, so the frames counted are the ones between re-seats.
-  do tick(spiders, 0, GROUND + 40, 0, 1 / 60); while ((spiders.frame + still.id) % RESEAT_EVERY !== 0)
+  do tick(spiders, ...nearTo(still), 1 / 60); while ((spiders.frame + still.id) % RESEAT_EVERY !== 0)
   let writes = 0
   const kept = still.m.slice()
   // Every index write to its matrix counted; reads go to the array itself, whose getters want it and not the proxy as their receiver.
   still.m = new Proxy(still.m, { set(m, k, v) { writes++; m[k] = v; return true }, get(m, k) { const v = m[k]; return typeof v === 'function' ? v.bind(m) : v } })
-  for (let f = 0; f < RESEAT_EVERY - 1; f++) tick(spiders, 0, GROUND + 40, 0, 1 / 60)
+  for (let f = 0; f < RESEAT_EVERY - 1; f++) tick(spiders, ...nearTo(still), 1 / 60)
   check(writes === 0 && !still.dirty && kept.every((v, i) => v === still.m[i]), 'a sitting spider keeps its matrix from frame to frame rather than composing it again', `${writes} writes over ${RESEAT_EVERY - 1} frames`)
 }
 

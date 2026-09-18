@@ -3,21 +3,23 @@ import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
-// The fern variant bank: every fern mesh in the world, baked once at load.
+// The fern bank, baked once at load. THE WORLD SHIPS ONE VARIANT of it --
+// FERN_SHIP below, through `buildShipFernTiers` -- because v2/render/ferns.js
+// draws through instanced arenas that hold one geometry each; a fern differs
+// from the next by its matrix (yaw, uniform scale, lean), never by its mesh.
+// The sixteen-way cross product that follows is the previewer's gallery and the
+// record of how FERN_SHIP was chosen; nothing in the world draws it.
 //
 // THERE IS NO OFFLINE BAKE STEP AND THERE SHOULD NOT BE. This runs in the
-// constructor of whatever owns the batch, hands its geometries to
-// BatchedMesh.addGeometry(), and then disposes them -- the GPU arena keeps the
-// only copy. Cost is about a millisecond at startup and 121 KB resident, so an
-// asset file on disk would buy nothing and cost a build step, a cache to
-// invalidate and a way for the mesh to disagree with the generator. Change a
-// number here, reload, see it.
+// constructor of whatever owns the bed, hands its geometries to the arena, and
+// then disposes them -- the GPU keeps the drawn copy, and the bed keeps LOD0's
+// triangles on the CPU as what a butterfly lands on. Cost is about a
+// millisecond at startup, so an asset file on disk would buy nothing and cost a
+// build step, a cache to invalidate and a way for the mesh to disagree with the
+// generator. Change a number here, reload, see it.
 //
-// The bank is a CROSS PRODUCT, and that is the whole reason it stays small.
-// 16 meshes per tier, three tiers, 48 geometries; each fern instance then picks
-// a variant, a uniform scale and a yaw. The combinations a player sees are far more
-// numerous than the meshes we store, which is the trade every procedural asset
-// in this project should make: spend the frame, not the pool.
+// The bank is a CROSS PRODUCT: 16 meshes per tier, three tiers, 48 geometries.
+// That is what `probe-fern-bank.mjs` prices and `gen-fern.html` walks.
 //
 // The CARD is a fourth tier and it deliberately breaks that pattern: two baked
 // geometries for all sixteen variants, because past 26 m the cross product has

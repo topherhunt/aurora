@@ -236,13 +236,13 @@ export class Bones {
     this.tierCount = bank.tiers.length
     this.cardTier = this.tierCount - 1
     this.meshMaterials = bank.variants.map((v, i) => {
-      const m = createGenPropMaterial(`bones-${v.name}`)
+      const m = createGenPropMaterial()
       m.map = bank.maps[i]
       return m
     })
     // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
     this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial(`bones-${v.name}`, { card: true, billboard: cardViews(v) === SPUN_VIEWS })
+      const m = createGenPropMaterial({ card: true, billboard: cardViews(v) === SPUN_VIEWS })
       m.visible = false
       return m
     })

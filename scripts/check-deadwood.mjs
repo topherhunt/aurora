@@ -1281,6 +1281,19 @@ const MOCK_LAYERS = {
 
 // --- every log lies the same side up, and every stump leans its own way -------
 //
+// Every mesh variant compiles to ONE program (gen-props.js keys it on the card
+// flags alone), so the arena's calls switch material, not program. The two
+// cards are two programs only because one is spun and the other crossed.
+{
+  console.log('\nits variants draw through one program')
+  const dw = new Deadwood(new THREE.Scene(), { heightAt: () => 40, heightAndSlopeAt: () => ({ h: 40, tan: 0 }), snowLineAt: () => 900, bands: { altLo: 0, altSpan: 100 } },
+    MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  const meshKeys = new Set(dw.meshMaterials.map((m) => m.customProgramCacheKey()))
+  const cardKeys = new Set(dw.cardMaterials.map((m) => m.customProgramCacheKey()))
+  check(meshKeys.size === 1 && dw.meshMaterials.length === 2, 'one program key across the mesh variants', [...meshKeys].join(', '))
+  check(cardKeys.size === 2 && ![...cardKeys].some((k) => meshKeys.has(k)), 'the spun card and the crossed card are their own two', [...cardKeys].join(', '))
+}
+
 // A log is not rolled about its length: the shipped mesh's map is shadowed on
 // its underside and its stubs stand off one side, and a rolled log showed both
 // to the sun. A stump leans a few degrees about a random bearing. Both are read

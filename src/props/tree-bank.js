@@ -355,16 +355,18 @@ export function buildTreeBank({ billboard = true } = {}) {
  * size is a uniform scale on its matrix, so the photograph is stretched evenly
  * with the card and stays exact at every size in the range.
  */
+// WHY THE CARDS BAKE BRIGHTER THAN THE RIG'S DEFAULT. A card is a billboard
+// with a straight-up normal (impostor.js, UP), so under the 21-degree sun this
+// latitude never climbs past it collects about a third of the direct light,
+// every hour and from every side. The mesh it stands in for is a crown of
+// leaves that face the sun, and at the swap it is brighter than the card by
+// this much averaged over the sun's compass -- front-lit more, back-lit about
+// even. Measured, not derived: a pine at LOD0 against its card under the noon
+// palette, mean linear luma over covered pixels. The clump cards
+// (tree-clump.js) are the same picture six times over and bake at the same.
+export const CARD_EXPOSURE = 1.6
+
 export function bakeTreeImpostors(renderer, texArray) {
-  // WHY THE CARD BAKES BRIGHTER THAN THE RIG'S DEFAULT. The card is a billboard
-  // with a straight-up normal (impostor.js, UP), so under the 21-degree sun
-  // this latitude never climbs past it collects about a third of the direct
-  // light, every hour and from every side. The mesh it stands in for is a
-  // crown of leaves that face the sun, and at the swap it is brighter than the
-  // card by this much averaged over the sun's compass -- front-lit more,
-  // back-lit about even. Measured, not derived: a pine at LOD0 against its
-  // card under the noon palette, mean linear luma over covered pixels.
-  const exposure = 1.6
   const done = []
   for (const v of treeVariants()) {
     // The near tier, frayed hems and holed mat: the card is the picture of the
@@ -382,7 +384,7 @@ export function bakeTreeImpostors(renderer, texArray) {
       // The baked occlusion is in the mesh's `color`, and the photograph has to
       // show the same shaded crown the mesh does or the swap is a colour step.
       vertexColors: true,
-      exposure,
+      exposure: CARD_EXPOSURE,
     })
     geo.dispose()
     done.push({ species: v.species, layer: v.impostorLayer, ...ext })

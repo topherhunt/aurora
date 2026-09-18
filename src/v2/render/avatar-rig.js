@@ -12,13 +12,15 @@
 //   THE HEAD turns exactly as the headset does, the whole turn at the neck --
 //   Tripo weights the skull to whichever head joint it likes, and a turn split
 //   up the chain showed as a third of itself on a skull hung from the lower
-//   one -- and the neck slides to put the eyes at the headset by up to
-//   HEAD_SLACK_M -- a wiggle, a stretch. Past that sideways the FEET FOLLOW:
-//   the body glides to put its neck back under the head, playing `walk` at the
-//   clip's own ground speed, then settles back to `idle`. A teleport is the
-//   same thing further off: the body walks, or runs, over to where she went,
-//   and the arms and head let go of their targets while it is more than
-//   IK_OFF_M from them, since a body a room away cannot reach them.
+//   one -- and the neck stretches straight up or down to put the eyes at the
+//   headset, by up to HEAD_SLACK_M. It never slides sideways: a neck slid off
+//   its shoulders to a wiggling headset read as rubber, so THE FEET FOLLOW at
+//   once, the body standing under its head every frame, feet planted. A
+//   TELEPORT -- the head TELEPORT_M or more from where it was a frame ago --
+//   is the one trip it walks: the body glides after her playing `walk` at the
+//   clip's own ground speed, or `run` from further, and the arms and head let
+//   go of their targets while it is more than IK_OFF_M from them, since a
+//   body a room away cannot reach them.
 //
 //   THE FEET STAND ON THE GROUND, not under the head: the body is placed on
 //   the walk surface where it stands, and while it stands its feet are planted
@@ -52,11 +54,14 @@
 
 import THREE from '../../three-instance.js'
 
-// How far the head slides off its neck before the feet come after it and the
-// whole body walks. EYE_LINE is the eye height as a fraction of stature: a
-// standing body's eyes, which the crouch measures the headset against.
+// How far the neck stretches up or down for the headset before the crouch
+// takes over. EYE_LINE is the eye height as a fraction of stature: a standing
+// body's eyes, which the crouch measures the headset against. A head further
+// than TELEPORT_M from where it was last frame has teleported, and the body
+// walks there rather than following.
 export const HEAD_SLACK_M = 0.1
 export const EYE_LINE = 0.93
+export const TELEPORT_M = 1
 // A crouch folds a leg to no shorter than this fraction of its rest length, and bends the waist forward no further than LEAN_MAX.
 export const CROUCH_FOLD = 0.35
 export const LEAN_MAX = (40 * Math.PI) / 180
@@ -254,7 +259,7 @@ export class VrBody {
     }
     let dx = underX - this.x, dz = underZ - this.z
     let dist = Math.hypot(dx, dz)
-    if (!this.gliding && dist > HEAD_SLACK_M) { this.gliding = true; this.running = false; this.pace = 0 }
+    if (!this.gliding && dist > TELEPORT_M) { this.gliding = true; this.running = false; this.pace = 0 }
     let faceYaw = headYaw
     let facingTravel = false
     if (this.gliding && dist <= GLIDE_STOP_M) {
@@ -278,6 +283,8 @@ export class VrBody {
       dx = underX - this.x; dz = underZ - this.z
       dist = Math.hypot(dx, dz)
     }
+    // Not on a trip, it stands under its head.
+    if (!this.gliding) { this.x = underX; this.z = underZ; dx = dz = dist = 0 }
     // The body turns under a twisted neck, and to face a long walk.
     const twist = wrap(faceYaw - this.yaw)
     if (facingTravel || Math.abs(twist) > YAW_SLACK) this.turning = true
@@ -401,12 +408,11 @@ export class VrBody {
     const neck = this.neck
     turnInBody(neck.bone, neck.par >= 0 ? this.quat[neck.par] : null, _q2)
     for (const h of this.head) this.quat[h.i].premultiply(_q2)
-    // And slides to put the eyes, turned with the head, at the headset, as far as the slack lets it, in its parent's frame.
+    // And stretches, straight up or down, to put the eyes, turned with the head, at the headset, as far as the slack lets it, in its parent's frame.
     _t.copy(this.eyeOffset).applyQuaternion(this.headTurn).add(this.pos[neck.i])
     _t.subVectors(this.headAt, _t)
     const slack = HEAD_SLACK_M / this.k
-    if (_t.lengthSq() > slack * slack) _t.setLength(slack)
-    _t.multiplyScalar(w)
+    _t.set(0, Math.max(-slack, Math.min(slack, _t.y)) * w, 0)
     if (neck.par >= 0) _t.applyQuaternion(_q.copy(this.quat[neck.par]).invert())
     neck.bone.position.add(_t)
     neck.bone.updateMatrix()

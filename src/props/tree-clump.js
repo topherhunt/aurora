@@ -4,30 +4,31 @@ import { mulberry32 } from '../sim/mathx.js'
 import { CLUMP_VARIANTS } from '../textures.js'
 import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
 import { HEM_FRAY } from './tree-v8.js'
-import { treeVariants } from './tree-bank.js'
+import { treeVariants, CARD_EXPOSURE } from './tree-bank.js'
 
 // ---------------------------------------------------------------------------
 // Forest clump cards: one photograph of SEVERAL trees standing together, for
-// the far tier of trees.js that draws a patch of canopy as one card instead of
-// a card per tree.
+// the clump tier of trees.js -- the card a thinned-out tree draws as so the
+// trees the thinning cut around it are still in the picture.
 //
-// WHY. trees.js thins the forest as 1/d past its clump edge, and a real forest
-// does the opposite with distance -- trees stack up in depth per pixel until
-// the hillside reads solid. A per-tree card can never buy that back at a sane
-// instance count; a card that already has six trees in it can, at a sixth of
-// the instances, and the cards behind it fill the sky between its trees.
+// WHY. trees.js thins the forest as 1/d past its full-density ring, and a real
+// forest does the opposite with distance: trees stack up in depth per pixel
+// until the hillside reads solid. A card per tree cannot buy that back without
+// the instances the thinning saved; a card that already has six trees in it
+// can, and trees.js hands it to the same instance the single card was on.
 //
 // HOW. `composeTreeClump` plants CLUMP_TREES copies of one species' near tier
-// in a shallow ellipse -- each at its own size, yaw and a LIFT off the ground
-// line, spaced so they read as trees and not as one mass of canopy -- and
-// merges them into one geometry. `bakeTreeClumps`
-// photographs CLUMP_VARIANTS such clumps per planted species into consecutive
-// layers from the species' `clumpLayer`, framed to the SAME extents, so ONE
-// quad per species draws every variant: the instance picks its variant with a
-// per-instance layer shift (material.js `layerShift`), which is what keeps
-// the far forest one InstancedMesh per species rather than one per picture.
-// The lift makes the card's bottom edge ragged instead of a ruler line, which
-// hides the card standing on ground that rises or falls across its footprint.
+// in a shallow ellipse -- each at its own size, yaw and a little LIFT off the
+// ground line -- PACKED, so the crowns overlap and the card is mostly tree
+// rather than mostly the sky between trees, which is what makes its fill worth
+// paying. `bakeTreeClumps` photographs CLUMP_VARIANTS such clumps per planted
+// species into consecutive layers from the species' `clumpLayer`, framed to
+// the SAME extents, so ONE quad per species draws every variant: the instance
+// picks its variant with a per-instance layer shift (material.js `layerShift`),
+// which keeps the clump tier one InstancedMesh per species rather than one per
+// picture. The lift makes the card's bottom edge ragged instead of a ruler
+// line, which hides the card standing on ground that rises or falls across
+// its footprint.
 //
 // A CLUMP IS A QUAD, NOT A TRIANGLE: six pines at six heights have a jagged
 // top and a full-width base, and a triangle would clip the outer crowns.
@@ -35,19 +36,16 @@ import { treeVariants } from './tree-bank.js'
 
 export const CLUMP_TREES = 6
 
-// Metres. The half-extents of the ellipse the trunks are scattered over. The
-// slots are 3 m apart against pine crowns of 3 to 7 m, so neighbours touch
-// or leave a gap of sky by the roll and the picture is six trees, not one
-// mass of canopy; shallow in z so the back row still shows between the front.
-const SPREAD_X = 9
-const SPREAD_Z = 3
-// Size multipliers. Narrower at the top than trees.js SCALE: the tallest tree
-// sets the frame every variant shares, so a 1.3 buys headroom over five
-// smaller trees.
-const SIZE = [0.5, 1.2]
-// Metres a trunk may stand above the card's ground line: a third of a tree's
-// height, so the crowns are staggered up as well as across.
-const LIFT_MAX = 3.5
+// Metres. The half-extents of the ellipse the trunks are scattered over --
+// six slots 1.8 m apart against crowns 2 to 5 m wide, so the crowns overlap
+// rather than stack, and shallow enough that the back row still shows between
+// the front.
+const SPREAD_X = 5.5
+const SPREAD_Z = 2.5
+// Size multipliers, the same range trees.js SCALE hands a placed tree.
+const SIZE = [0.6, 1.3]
+// Metres a trunk may stand above the card's ground line.
+const LIFT_MAX = 1.5
 // Seeds: variant i of planted species v composes from SEED_BASE + v * CLUMP_VARIANTS + i.
 const SEED_BASE = 1000
 
@@ -146,8 +144,9 @@ export function buildTreeClumpTier(bank) {
 /**
  * Photograph CLUMP_VARIANTS clumps per planted species into the layers
  * `buildTreeClumpTier`'s cards point at, each framed to the species' shared
- * extents. Call once, after `loadImageLayers()` has resolved, beside
- * bakeTreeImpostors. Returns one record per photograph:
+ * extents and lit at the single card's CARD_EXPOSURE, since it stands in the
+ * same forest beside those cards. Call once, after `loadImageLayers()` has
+ * resolved, beside bakeTreeImpostors. Returns one record per photograph:
  * `{ species, layer, seed, width, height, coverage, meanLuma, trees }`.
  */
 export function bakeTreeClumps(renderer, texArray, bank, { count = CLUMP_TREES } = {}) {
@@ -166,6 +165,7 @@ export function bakeTreeClumps(renderer, texArray, bank, { count = CLUMP_TREES }
         ...subject,
         hemFray: HEM_FRAY,
         vertexColors: true,
+        exposure: CARD_EXPOSURE,
       })
       clump.geometry.dispose()
       out.push({

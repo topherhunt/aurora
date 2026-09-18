@@ -286,6 +286,11 @@ export const FERN_LOD = {
 /** The placement tuning scripts/check-ferns.mjs gates, so it reads these numbers rather than a copy. */
 export const FERN_TUNING = { DENSITY, FULL_RADIUS, DRAW_RADIUS, LUSH }
 
+// Floats per fern in a perchesInto buffer: x, seat y, z, radius, id.
+export const FERN_PERCH_STRIDE = 5
+
+const _edge = new THREE.Vector3()
+
 // Metres per tile. Half the forest's, and sized against FULL_RADIUS rather than
 // against density: the keep-fraction is evaluated once per tile from its nearest
 // corner, so a tile wide relative to the full-density radius over-keeps its whole
@@ -563,6 +568,13 @@ export class Ferns {
 
     this.meshes = [...this.rings.map((r) => r.mesh), this.cards]
 
+    // The LOD0 rosette's own triangles, kept on the CPU as what a butterfly lands
+    // on -- see `landOn`. The arrays outlive the dispose below, which only frees
+    // the GPU copies.
+    const lod0 = bank.tiers.find((x) => x.name === 'LOD0').geometry
+    if (!lod0.index) throw new Error('Ferns: the LOD0 rosette is not indexed')
+    this.lod0 = { pos: lod0.attributes.position.array, idx: lod0.index.array, tris: lod0.index.count / 3 }
+
     // Each arena CLONED the geometry it was handed; the originals are now a
     // second copy with no reader.
     for (const t of bank.tiers) t.geometry.dispose()
@@ -683,35 +695,67 @@ export class Ferns {
 
   /**
    * Every resident fern with its origin in the half-open box, written to `out`
-   * at stride 4 as [x, crown y, z, radius]: the crown is the rosette's built
-   * height at the fern's scale over its seat, the radius half the rosette's
-   * 1.22 m width at that scale. Resident tiles only, in the same live-prefix
-   * sense as trees.js's anchorsInto, and capped by `out`'s length. What a
-   * butterfly lands on (v2/render/butterflies.js).
+   * at FERN_PERCH_STRIDE as [x, seat y, z, radius, id]: the radius is half the
+   * rosette's 1.22 m width at the fern's scale, and the id is what `landOn`
+   * takes. Keyed by tile, resident tiles only, in the same live-prefix sense as
+   * trees.js's anchorsInto, and capped by `out`'s length. What a butterfly
+   * lands on (v2/render/butterflies.js).
    */
   perchesInto(x0, z0, x1, z1, out) {
-    const cap = (out.length / 4) | 0
+    const cap = (out.length / FERN_PERCH_STRIDE) | 0
     let n = 0
-    for (const tile of this.tiles.values()) {
-      const tx0 = tile.tx * TILE
-      const tz0 = tile.tz * TILE
-      if (tx0 >= x1 || tx0 + TILE <= x0 || tz0 >= z1 || tz0 + TILE <= z0) continue
-      for (let k = 0; k < tile.n; k++) {
-        const id = tile.ids[k]
-        const x = this.instX[id]
-        if (x < x0 || x >= x1) continue
-        const z = this.instZ[id]
-        if (z < z0 || z >= z1) continue
-        if (n >= cap) return cap
-        const o = n * 4
-        out[o] = x
-        out[o + 1] = this.instY[id] + FERN_DEFAULTS.height * this.instScale[id]
-        out[o + 2] = z
-        out[o + 3] = 0.61 * this.instScale[id]
-        n++
+    const gx1 = Math.ceil(x1 / TILE) - 1, gz1 = Math.ceil(z1 / TILE) - 1
+    for (let gx = Math.floor(x0 / TILE); gx <= gx1; gx++) {
+      for (let gz = Math.floor(z0 / TILE); gz <= gz1; gz++) {
+        const tile = this.tiles.get(gx * 0x10000 + gz)
+        if (!tile) continue
+        for (let k = 0; k < tile.n; k++) {
+          const id = tile.ids[k]
+          const x = this.instX[id]
+          if (x < x0 || x >= x1) continue
+          const z = this.instZ[id]
+          if (z < z0 || z >= z1) continue
+          if (n >= cap) return cap
+          const o = n * FERN_PERCH_STRIDE
+          out[o] = x
+          out[o + 1] = this.instY[id]
+          out[o + 2] = z
+          out[o + 3] = 0.61 * this.instScale[id]
+          out[o + 4] = id
+          n++
+        }
       }
     }
     return n
+  }
+
+  /**
+   * A point on the drawn fern `id` and the blade's upper normal there, into
+   * `out` as {x, y, z, nx, ny, nz}: a uniform point of one of the LOD0
+   * rosette's own triangles, taken through the instance matrix the rings draw
+   * it with. The mesh is the lookup -- there is no other surface to be on. The
+   * triangle is drawn uniformly, not by area, so the short tip quads take more
+   * landings than their area; the wind's sway is not followed, which is the
+   * caller's lift to allow for.
+   */
+  landOn(id, rand, out) {
+    const { pos, idx, tris } = this.lod0
+    const t = Math.floor(rand() * tris) * 3
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
+    // Uniform over the triangle: the root on the first draw squares the density toward the far edge.
+    const u = Math.sqrt(rand()), v = rand()
+    const wa = 1 - u, wb = u * (1 - v), wc = u * v
+    this._p.set(pos[a] * wa + pos[b] * wb + pos[c] * wc, pos[a + 1] * wa + pos[b + 1] * wb + pos[c + 1] * wc, pos[a + 2] * wa + pos[b + 2] * wb + pos[c + 2] * wc)
+    this._axis.set(pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2])
+    _edge.set(pos[c] - pos[a], pos[c + 1] - pos[a + 1], pos[c + 2] - pos[a + 2])
+    this._axis.cross(_edge)
+    this.cards.getMatrixAt(id, this._m)
+    this._p.applyMatrix4(this._m)
+    // The scale is uniform, so the rotation alone carries the normal.
+    this._axis.transformDirection(this._m)
+    if (this._axis.y < 0) this._axis.negate()
+    out.x = this._p.x; out.y = this._p.y; out.z = this._p.z
+    out.nx = this._axis.x; out.ny = this._axis.y; out.nz = this._axis.z
   }
 
   /**

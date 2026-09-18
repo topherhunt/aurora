@@ -686,9 +686,11 @@ export class WorldLighting {
    * varying reuse it instead of declaring a second one; terrain-material.js
    * has had `vWorldPos` since the surface grain was written.
    *
-   * `cacheKey` must be distinct per material, because three keys its program
-   * cache on it and two differently-patched Lamberts would otherwise share a
-   * compiled program.
+   * `cacheKey` must be distinct per compiled source, because three keys its
+   * program cache on it and two differently-patched Lamberts would otherwise
+   * share a compiled program. Materials whose source is identical (the same
+   * patch over the same base, differing by a map) SHOULD share one, so their
+   * calls switch material and not program.
    *
    * `caustics` is whether the net on a lake bed is compiled in at all, and it
    * defaults to the fragment path because that path already has a world
