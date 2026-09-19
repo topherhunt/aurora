@@ -18,7 +18,7 @@
 // that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, UNPLACED_Y } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -566,6 +566,143 @@ const build = () => {
   check(w.hands.loose.length === LOOSE_MAX && pool.items.length === LOOSE_MAX && pool.mesh.count === LOOSE_MAX, `at most LOOSE_MAX ${LOOSE_MAX} loose things`, `${w.hands.loose.length}`)
   check(Math.abs(w.hands.loose[0].x + 15) < 1e-6, 'the oldest were forgotten first', `oldest at x ${w.hands.loose[0].x}`)
   check(w.hands.stats.taken === LOOSE_MAX + 5 && w.hands.stats.dropped === LOOSE_MAX + 5, 'the counts kept every take and drop')
+}
+
+// --- the room hears of her hands ---------------------------------------------------
+{
+  const w = build()
+  const events = []
+  w.hands.sync = (e) => events.push(e)
+  w.hands.tag = '0123abcd'
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  check(events.length === 1 && events[0].type === 'hold' && events[0].hand === 'right' && events[0].slot?.kind === 'mushroom' && !('geometry' in events[0].slot), 'a take is one hold event with the packed slot')
+  events.length = 0
+  w.hands.press('right', w.head)
+  check(events.length === 2 && events[0].type === 'hold' && events[0].slot === null && events[1].type === 'loose' && events[1].id === '0123abcd-0' && events[1].state === 2 && events[1].pose.length === 7, 'a drop is a hold of nothing and one loose thing in motion, under the tag and a count', JSON.stringify(events.map((e) => e.type)))
+  events.length = 0
+  w.run(0.5)
+  check(events.length === 0, 'nothing is sent while it falls and rolls')
+  w.run(ROLL_MAX_S + 1)
+  const item = w.hands.loose[0]
+  check(events.length === 1 && events[0].type === 'loose' && events[0].id === '0123abcd-0' && events[0].state === 0 && Math.abs(events[0].pose[0] - item.x) < 1e-9 && Math.abs(events[0].pose[1] - item.y) < 1e-9, 'at rest it is sent once more, still, where it lies', JSON.stringify(events))
+  check(item.mine === false, 'and it is hers to settle no longer')
+  const all = w.hands.looseEvents()
+  check(all.length === 1 && all[0].id === '0123abcd-0' && all[0].state === 0, 'looseEvents lists it for a relay that has just named her')
+  // Picked up again: a lift, and its next drop is a new id.
+  events.length = 0
+  w.at(item.x, item.y, item.z)
+  w.hands.press('right', w.head)
+  check(events.length === 2 && events[0].type === 'lift' && events[0].id === '0123abcd-0' && events[1].type === 'hold', 'taking it back is a lift then a hold', JSON.stringify(events.map((e) => e.type)))
+  events.length = 0
+  w.hands.press('right', w.head)
+  check(events[1]?.type === 'loose' && events[1].id === '0123abcd-1', 'dropped again it is a new thing to the room', events[1]?.id)
+  // Stowed from the hand: a hold of nothing; given from the backpack: a hold.
+  w.run(ROLL_MAX_S + 1)
+  w.at(w.hands.loose[0].x, w.hands.loose[0].y, w.hands.loose[0].z)
+  w.hands.press('right', w.head)
+  events.length = 0
+  w.at(0, 1.7, -0.3)
+  w.hands.update(1 / 60, w.head)
+  w.hands.press('right', w.head)
+  check(w.pack.length === 1 && events.length === 1 && events[0].type === 'hold' && events[0].slot === null, 'stowing is a hold of nothing', JSON.stringify(events))
+  events.length = 0
+  w.hands.give('right', w.pack.pop(), w.head)
+  check(events.length === 1 && events[0].type === 'hold' && events[0].slot?.kind === 'mushroom', 'taking from the backpack is a hold')
+  // Without a tag no loose thing has an id and nothing is said of it; looseEvents names it once there is one.
+  const h2 = build()
+  const e2 = []
+  h2.hands.sync = (e) => e2.push(e)
+  h2.at(0, 0.3, 0)
+  h2.hands.press('right', h2.head)
+  h2.hands.press('right', h2.head)
+  h2.run(ROLL_MAX_S + 1)
+  check(e2.every((e) => e.type === 'hold') && h2.hands.loose[0].netId === null, 'before the relay names her a drop is a hold alone')
+  let noTag = false
+  try { h2.hands.looseEvents() } catch { noTag = true }
+  h2.hands.tag = 'deadbeef'
+  const named = h2.hands.looseEvents()
+  check(noTag && named.length === 1 && named[0].id === 'deadbeef-0' && h2.hands.loose[0].netId === 'deadbeef-0', 'looseEvents throws without a tag and names the thing once there is one')
+}
+
+// --- the room's things here ------------------------------------------------------------
+{
+  const w = build()
+  const events = []
+  w.hands.sync = (e) => events.push(e)
+  w.hands.tag = '0123abcd'
+  const slot = { kind: 'mushroom', name: 'mushroom', size: 0.2, attrs: { aSwim: [1, 2, 3, 4] }, color: [0.5, 0.6, 0.7], scale: [0.2, 0.2, 0.2], stowable: true }
+  const pool = () => w.hands.pools.get(geo)
+  // A peer's thing in motion falls and rolls here on its own; its rest is the peer's word, eased onto.
+  check(w.hands.netLoose('ffff0000-1', slot, [-5, 1, 0, 0, 0, 0, 1], 2) === true && w.hands.loose.length === 1 && w.hands.loose[0].state === 'fall' && w.hands.loose[0].mine === false, 'a peer loose thing in motion appears here falling')
+  w.run(ROLL_MAX_S + 1)
+  const peerItem = w.hands.loose[0]
+  check(peerItem.state === 'still' && events.length === 0, 'it comes to rest here and nothing is said of it', `${peerItem.state} ${events.length}`)
+  w.hands.netLoose('ffff0000-1', slot, [-5.5, groundAt(-5.5) + 0.1, 0.3, 0, 0, 0, 1], 0)
+  check(peerItem.state === 'ease' && peerItem.eState === 'still', 'the peer\'s rest pose is eased onto')
+  w.run(EASE_S / 2)
+  check(peerItem.state === 'ease' && Math.abs(peerItem.x + 5.5) > 1e-3, 'half way there half way through')
+  w.run(EASE_S)
+  check(peerItem.state === 'still' && Math.abs(peerItem.x + 5.5) < 1e-6 && Math.abs(peerItem.z - 0.3) < 1e-6, `and there, still, after EASE_S ${EASE_S}`, `${peerItem.x.toFixed(3)} ${peerItem.z.toFixed(3)}`)
+  // Afloat: on the lake, drifting.
+  w.hands.netLoose('ffff0000-2', slot, [40, LEVEL, 0, 0, 0, 0, 1], 1)
+  check(w.hands.loose.length === 2 && w.hands.loose[1].state === 'float', 'a peer thing afloat appears here afloat')
+  // Not dressed: false, nothing made.
+  w.src.landed = false
+  check(w.hands.netLoose('ffff0000-3', slot, [-6, 1, 0, 0, 0, 0, 1], 0) === false && w.hands.loose.length === 2, 'a thing whose source has not landed is refused, to be asked again')
+  w.src.landed = true
+  // Hers is hers: a peer's word on one of her own things is ignored while it is hers to settle.
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  w.hands.press('right', w.head)
+  const mine = w.hands.loose[2]
+  check(mine.mine && w.hands.netLoose(mine.netId, slot, [9, 9, 9, 0, 0, 0, 1], 0) === true && mine.state === 'fall', 'a peer cannot move what she has just let go')
+  // Lifted by a peer: gone from here; an unknown id is nothing.
+  w.hands.netLift('ffff0000-2')
+  w.hands.netLift('nobody-1')
+  check(w.hands.loose.length === 2 && !w.hands.loose.some((i) => i.netId === 'ffff0000-2') && pool().items.length === 2, 'a lift takes the thing out of the world and the pool')
+  // Her own thing picked up by a peer while it still rolls: gone, and she says nothing of its rest.
+  events.length = 0
+  w.hands.netLift(mine.netId)
+  w.run(ROLL_MAX_S + 1)
+  check(w.hands.loose.length === 1 && events.length === 0, 'her own thing lifted by a peer mid-roll is gone and never reported at rest', `${events.length}`)
+  // A peer's hands: a copy each, out of sight until placed, then where the peer's hand is.
+  w.hands.netHold('peer-a', 0, slot)
+  w.hands.netHold('peer-a', 2, { ...slot, kind: 'crab', name: 'crab', size: 1.5, stowable: false })
+  const held = w.hands.peerHeld.get('peer-a')
+  check(held.length === 3 && held[0].item?.state === 'peer' && held[0].item.y === UNPLACED_Y && held[1] === null && held[2].item?.rec.kind === 'crab', 'a peer hold makes a copy in the pools, out of sight', `${held[0].item?.y}`)
+  check(w.hands.stats.peers === 2, 'the stats count the peers\' copies')
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 1)
+  w.hands.placePeer('peer-a', 0, 3, 1.2, 4, q)
+  w.hands.update(1 / 60, w.head)
+  const m = new THREE.Matrix4().fromArray(pool().mesh.instanceMatrix.array, pool().items.indexOf(held[0].item) * 16)
+  const pos = new THREE.Vector3().setFromMatrixPosition(m)
+  check(Math.abs(pos.x - 3 + held[0].item.off.x) < 1e-6 && Math.abs(pos.z - 4 + held[0].item.off.z) < 1e-6, 'placed, the copy is drawn at the peer\'s hand', `${pos.x.toFixed(3)} ${pos.z.toFixed(3)}`)
+  check(held[0].item.q.equals(q), 'in its rotation')
+  // Replaced, emptied, gone.
+  w.hands.netHold('peer-a', 0, { ...slot, name: 'other' })
+  check(held[0].item.rec.name === 'other' && pool().items.length === 3, 'a new slot in the same hand replaces the copy')
+  w.hands.netHold('peer-a', 0, null)
+  check(held[0] === null && pool().items.length === 2, 'a hold of nothing drops the copy')
+  w.hands.placePeer('peer-a', 0, 0, 0, 0, q)
+  w.hands.netPeerGone('peer-a')
+  w.hands.netPeerGone('peer-b')
+  check(!w.hands.peerHeld.has('peer-a') && pool().items.length === 1 && w.hands.stats.peers === 0, 'a peer gone takes its copies with it')
+  // Not yet dressed: the copy waits for a later frame.
+  w.src.landed = false
+  w.hands.netHold('peer-c', 1, slot)
+  check(w.hands.peerHeld.get('peer-c')[1].item === null, 'a copy whose source has not landed waits')
+  w.src.landed = true
+  w.hands.update(1 / 60, w.head)
+  check(w.hands.peerHeld.get('peer-c')[1].item?.state === 'peer', 'and is dressed on a later frame')
+  let bad = 0
+  try { w.hands.netHold('peer-c', 3, slot) } catch { bad++ }
+  try { w.hands.netLoose('x', slot, [0, 0, 0], 0) } catch { bad++ }
+  try { w.hands.netLoose('x', slot, [0, 0, 0, 0, 0, 0, 1], 5) } catch { bad++ }
+  check(bad === 3, 'a fourth hand, a short pose and an unknown state throw', `${bad} of 3`)
+  check(POOL_CAP === LOOSE_MAX + 3 + 7 * 3, 'a pool holds the loose things, her hands and seven peers\' hands', `${POOL_CAP}`)
+  w.hands.dispose()
+  check(w.hands.peerHeld.size === 0, 'dispose forgets the peers')
 }
 
 // --- a record with a bad shape throws --------------------------------------------

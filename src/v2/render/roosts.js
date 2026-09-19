@@ -8,7 +8,7 @@ import {
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // THE DRAGON ROOST: a nest the size of a room, one per dragon (dragons.js), a
@@ -675,6 +675,21 @@ export class Roosts {
       scale: [scale, scale, scale],
       stowable: height < stowMax,
     }
+  }
+
+  /**
+   * A peer lifted the egg of the nest at (x, z): lift it here too, hidden by
+   * the rim or not, and record the nest. True when a resident nest is there
+   * with its egg. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'egg') return false
+    for (const tile of this.tiles.values()) {
+      if (tile.n < 2 || Math.abs(tile.site.x - x) >= TOLERANCE_M || Math.abs(tile.site.z - z) >= TOLERANCE_M) continue
+      this.take({ dist: 0, tile, id: tile.ids[1], size: this.instR[tile.ids[1]] }, Infinity)
+      return true
+    }
+    return false
   }
 
   /** The geometry and material a packed egg record is drawn with, or null in a world with no eggs. For hands.js. */

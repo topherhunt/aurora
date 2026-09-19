@@ -28,6 +28,7 @@ import {
   Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NEAR_M, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
 } from '../src/v2/render/butterflies.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -448,6 +449,14 @@ flock.place(0, 0)
   again.place(0, 0)
   const key = (of) => alive(of).map((g) => `${g.homeX.toFixed(3)},${g.homeZ.toFixed(3)},${g.size.toFixed(3)}`).sort().join('|')
   check(key(again) === key(k) && alive(again).length === before - 1, 'the tile regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  {
+    // A peer's catch: evicted by home within the registry's tolerance; a foreign key, an empty spot and a home once emptied are false.
+    const e = alive(again)[0]
+    const n0 = alive(again).length
+    check(again.evict('moth', e.homeX, e.homeZ) === false && again.evict('butterfly', e.homeX + 5, e.homeZ) === false && alive(again).length === n0, 'evict is false for a foreign key or an empty spot')
+    check(again.evict('butterfly', e.homeX + 0.03, e.homeZ - 0.03) === true && e.tile === null && alive(again).length === n0 - 1 && taken.has('butterfly', e.homeX, e.homeZ), 'evict takes the butterfly a peer caught out of its flock and records its home')
+    check(again.evict('butterfly', e.homeX, e.homeZ) === false, 'and is false for the home once emptied')
+  }
   again.dispose()
   // Let go: it flies from her.
   const head = { x: 10, y: groundAt(10, 0) + 1.6, z: 0, yaw: 0 }

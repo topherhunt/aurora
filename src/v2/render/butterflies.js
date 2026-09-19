@@ -54,7 +54,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
 import { FERN_PERCH_STRIDE } from './ferns.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 export const TILE = 16
 export const RADIUS = 30
@@ -387,6 +387,23 @@ export class Butterflies {
       scale: [s, s, s],
       stowable: true,
     }
+  }
+
+  /**
+   * A peer caught the butterfly whose home is (x, z): take it out of its
+   * flock here too and record the home. True when a resident tile has it.
+   * For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'butterfly') return false
+    for (const t of this.tiles.values()) {
+      for (const b of t.flock) {
+        if (Math.abs(b.homeX - x) >= TOLERANCE_M || Math.abs(b.homeZ - z) >= TOLERANCE_M) continue
+        this.take({ dist: 0, b, size: b.size })
+        return true
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed butterfly record is drawn with, or null until the wings land. For hands.js. */

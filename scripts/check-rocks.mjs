@@ -53,7 +53,7 @@ import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_FAR_MAX, rockLodSize, ROCK
 import {
   buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
-import { Rocks, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, SPAN_STRIDE, BARREN_ABOVE_SNOW } from '../src/v2/render/rocks.js'
+import { Rocks, LIFT_BEDS, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, SPAN_STRIDE, BARREN_ABOVE_SNOW } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
@@ -4130,32 +4130,35 @@ console.log('\nscatter')
     check(unsizedThrew, 'and a pick source with neither a sizeAt nor a radius throws instead of naming nothing')
   }
 
-  // --- her hands: a stone under two metres comes up, a boulder does not ---
+  // --- her hands: a shore stone under two metres comes up, a boulder does not ---
   console.log('\nher hands')
   {
     taken.clear()
-    // Grown on the cliff apron, where the scree bed lays stones from half a
-    // metre, and swept a few frames from the origin so what is near is shown.
+    // Grown on the bank, where the shore bed lays its stones along the
+    // waterline through the origin and the boulders bed lays on the dry half,
+    // and swept a few frames from the origin so what is near is shown.
     const grow = () => {
-      const r = build(cliff)
+      const r = build(bank)
       for (let i = 0; i < 8; i++) r.update(0, 61.6, 0)
       return r
     }
     const r = grow()
     const unit = Math.max(r.beds[0].shape.measured.width, r.beds[0].shape.measured.depth, r.beds[0].shape.measured.height)
-    // Every shown rock under two metres near the origin, nearest first.
+    // Every shown rock under two metres near the origin, nearest first, by whether its bed lets a hand at it.
     const small = []
+    const heavy = []
     for (const bed of r.beds) {
       for (const t of bed.tiles.values()) {
         for (let k = 0; k < t.n; k++) {
           const id = t.ids[k]
           const span = unit * bed.instScale[id]
-          if (span < 2 && !bed.rim.isHidden(id)) small.push({ bed, tile: t, k, id, span, d: Math.hypot(bed.instX[id], bed.instZ[id]) })
+          if (span < 2 && !bed.rim.isHidden(id)) (LIFT_BEDS.has(bed.cfg.name) ? small : heavy).push({ bed, tile: t, k, id, span, d: Math.hypot(bed.instX[id], bed.instZ[id]) })
         }
       }
     }
     small.sort((a, b) => a.d - b.d)
-    check(small.length > 0, 'the apron has shown stones under two metres', `${small.length}, nearest ${small[0]?.d.toFixed(1)} m off`)
+    check(small.length > 0, 'the bank has shown shore stones under two metres', `${small.length}, nearest ${small[0]?.d.toFixed(1)} m off`)
+    check(heavy.length > 0 && heavy.every((h) => r.pickAt(h.bed.instX[h.id], h.bed.instY[h.id] + h.bed.shape.measured.height * h.bed.instScale[h.id] * 0.5, h.bed.instZ[h.id], 0.5, 2)?.id !== h.id), 'a boulder under two metres is never offered: too heavy at any size', `${heavy.length} shown, ${[...new Set(heavy.map((h) => h.bed.cfg.name))].join(' ')}`)
     const { bed, tile, k, id, span } = small[0]
     const x = bed.instX[id], z = bed.instZ[id]
     const mid = bed.instY[id] + bed.shape.measured.height * bed.instScale[id] * 0.5
@@ -4199,6 +4202,16 @@ console.log('\nscatter')
     back = false
     for (const t of bedWhole.tiles.values()) for (let j = 0; j < t.n; j++) if (Math.hypot(bedWhole.instX[t.ids[j]] - x, bedWhole.instZ[t.ids[j]] - z) < 0.05) back = true
     check(back && bedWhole.placed === placedWere, 'and with the registry cleared the stone is back')
+    // A peer's take: evicted by spot from a LIFT_BEDS bed, hidden or shown; a boulder's spot, a foreign key, an empty spot and a spot once emptied are false.
+    const hv = heavy[0]
+    const bedHeavy = whole.beds.find((b) => b.cfg.name === hv.bed.cfg.name)
+    const hx = hv.bed.instX[hv.id], hz = hv.bed.instZ[hv.id]
+    let heavyThere = false
+    for (const t of bedHeavy.tiles.values()) for (let j = 0; j < t.n; j++) if (Math.hypot(bedHeavy.instX[t.ids[j]] - hx, bedHeavy.instZ[t.ids[j]] - hz) < 0.05) heavyThere = true
+    check(heavyThere && whole.evict('rock', hx, hz) === false && bedHeavy.placed === hv.bed.placed, 'evict leaves a boulder standing: no peer could have lifted it', hv.bed.cfg.name)
+    check(whole.evict('pebble', x, z) === false && whole.evict('rock', x + 5, z + 5) === false && bedWhole.placed === placedWere, 'and is false for a foreign key or an empty spot')
+    check(whole.evict('rock', x + 0.03, z - 0.03) === true && bedWhole.placed === placedWere - 1 && taken.has('rock', x, z), 'evict pulls the stone a peer lifted and records its spot')
+    check(whole.evict('rock', x, z) === false, 'and is false for the spot once emptied')
     r.dispose(); again.dispose(); whole.dispose()
   }
 

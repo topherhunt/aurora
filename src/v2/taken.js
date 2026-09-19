@@ -7,15 +7,19 @@
 // back. Each bed asks here, by kind and by the position it is about to grow
 // at, before it spends an instance. Positions are matched to TOLERANCE_M
 // because a bed stores float32 and recomputes in float64. Session memory only:
-// the save does not carry it, so a reload regrows everything.
+// the save does not carry it, so a reload regrows everything. A room shares
+// it: every entry is told to `onAdd` for the relay (hands-net.js), and a
+// peer's entries come in through the same add.
 // ---------------------------------------------------------------------------
 
-const TOLERANCE_M = 0.05
+export const TOLERANCE_M = 0.05
 
 export class Taken {
   constructor() {
     // kind -> flat [x0, z0, x1, z1, ...]
     this.byKind = new Map()
+    // Called with (kind, x, z) for every entry added, or null.
+    this.onAdd = null
   }
 
   add(kind, x, z) {
@@ -23,6 +27,7 @@ export class Taken {
     let list = this.byKind.get(kind)
     if (!list) this.byKind.set(kind, (list = []))
     list.push(x, z)
+    if (this.onAdd) this.onAdd(kind, x, z)
   }
 
   has(kind, x, z) {

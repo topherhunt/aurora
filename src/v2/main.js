@@ -53,6 +53,8 @@ import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWind
 import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
+import { HandsNet } from './hands-net.js'
+import { taken } from './taken.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
 // See the header of render/aurora.js: the field is integrated as a convolution
@@ -960,19 +962,21 @@ const QUEST_SETTING_GAP = 0.10
 const QUEST_SETTING_ROW_H = 0.34
 const QUEST_SETTING_BTN_H = 0.26
 const QUEST_SETTING_TOP = 0.78
-// The backpack view: the slots in two rows on one canvas plane, its top edge at
-// QUEST_SLOTS_TOP and half a gap of margin inside each edge.
+// The backpack view: the slots in two rows on one canvas plane, half a gap of
+// margin inside each edge, set half their own height under the tabs with as
+// much plate again below them, so the rows sit where a look down at the ground
+// finds them while the tabs stay up where the debug view needs them.
 const QUEST_SLOT = 0.50
 const QUEST_SLOT_GAP = 0.10
-const QUEST_SLOTS_TOP = 0.85
 const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
+const QUEST_SLOTS_TOP = QUEST_VIEW_TOP - QUEST_SLOTS_H / 2
 // The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
 const QUEST_HELP_H = 1.40
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
 const QUEST_SETTINGS_BOTTOM = questGridBottom(QUEST_SETTING_TOP, Math.ceil(QUEST_SETTING_ROWS.length / QUEST_SETTING_COLS), QUEST_SETTING_ROW_H, QUEST_SETTING_BTN_H)
-const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H - 0.05
+const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H * 1.5
 const QUEST_HELP_BOTTOM = QUEST_VIEW_TOP - QUEST_HELP_H - 0.05
 // The panel's LOWEST EDGE over every view -- the debug grid's, by a metre --
 // which is what questPanelDesiredPosition keeps out of the ground, so that
@@ -2116,6 +2120,7 @@ let spiders = null
 let wildlife = null
 let snowmen = null
 let hands = null
+let handsNet = null
 const HAND_KEYS = ['left', 'right', 'desk']
 // The desk hand: a node under the camera, empty at DESK_HAND_REST, and with a
 // thing in it moved out to the bottom-right corner of the view so the thing
@@ -2857,6 +2862,9 @@ async function bootWorld() {
   camera.add(deskHand)
   hands.addHand('desk', deskHand, { reach: 4 * REACH_M })
   window.v2hands = hands
+  // The room's things (hands-net.js): what her hands hold and let go, to the relay; every peer's, and the beds a peer has picked from, back.
+  handsNet = new HandsNet(hands, netplay, peerAvatars, taken)
+  window.v2handsNet = handsNet
 
   // The dragons' roosts (render/roosts.js), a scatter like the bones with its
   // own bark and stone maps and the shipped egg in half of them, and the
@@ -5074,6 +5082,8 @@ function tick() {
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
+  // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
+  handsNet.update()
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.

@@ -99,8 +99,8 @@ export const STUN_S = [1, 2]
 export const LOOSE_HASTE = 3
 const LOOSE_JINK = 1.2
 
-// A LURE. A spider or butterfly in her hand (hands.js lures) within LURE_M of a fish has it swimming at the hand at LURE_HASTE times its cruise and LURE_AGILITY times its agility, kept to LURE_FORGET_M, its station forgotten. The walk swings onto the hand's bearing at LURE_TURN radians a second and no faster, with its jitter still on it, so the fish runs through the hand and comes round on a circle of its speed over LURE_TURN to run through it again.
-export const LURES = ['spider', 'butterfly']
+// A LURE. A spider, butterfly or grasshopper in her hand (hands.js lures) within LURE_M of a fish has it swimming at the hand at LURE_HASTE times its cruise and LURE_AGILITY times its agility, kept to LURE_FORGET_M, its station forgotten. The walk swings onto the hand's bearing at LURE_TURN radians a second and no faster, with its jitter still on it, so the fish runs through the hand and comes round on a circle of its speed over LURE_TURN to run through it again.
+export const LURES = ['spider', 'butterfly', 'grasshopper']
 export const LURE_M = 3
 export const LURE_FORGET_M = 6
 export const LURE_HASTE = 3

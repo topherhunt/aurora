@@ -104,6 +104,7 @@ async function loadRoster() {
 }
 
 const _eye = new THREE.Vector3()
+const _bs = new THREE.Vector3()
 
 /**
  * Every other player in the room as a villager body (avatar-rig.js VrBody over
@@ -275,6 +276,18 @@ export class PeerAvatars {
       return
     }
     peer.body.drive(pose, hands, dt)
+  }
+
+  /**
+   * Where a peer's hand is: the wrist of its body's left (0) or right (1)
+   * arm as last drawn, into `pos` and `quat`, for the thing hands.js draws in
+   * it. False, nothing written, while the peer has no body standing.
+   */
+  handAt(id, side, pos, quat) {
+    const peer = this.peers.get(id)
+    if (!peer?.body?.placed) return false
+    peer.body.arms[side].W.bone.matrixWorld.decompose(pos, quat, _bs)
+    return true
   }
 
   apply(list) {

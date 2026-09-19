@@ -30,6 +30,7 @@ import fs from 'node:fs'
 import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
+import { taken } from '../src/v2/taken.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -459,6 +460,15 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   again.place(15, 0)
   const key = (of) => alive(of).map((g) => `${g.x.toFixed(3)},${g.z.toFixed(3)},${g.size.toFixed(3)}`).sort()
   check(JSON.stringify(key(again)) === JSON.stringify(key(k)) && alive(again).length === before - 1, 'the perch regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  {
+    // A peer's take: evicted by perch and member within the registry's tolerance; another member's key, a foreign key, an empty spot and a perch once emptied are false.
+    const e = alive(again)[0]
+    const ep = e.perch
+    const n0 = alive(again).length
+    check(again.evict(`crab${e.member + 100}`, ep.x, ep.z) === false && again.evict('spider:rock0', ep.x, ep.z) === false && again.evict(`crab${e.member}`, ep.x + 5, ep.z) === false && alive(again).length === n0, 'evict is false for another member, a foreign key or an empty spot')
+    check(again.evict(`crab${e.member}`, ep.x + 0.03, ep.z - 0.03) === true && e.perch === null && !ep.crabs.includes(e) && alive(again).length === n0 - 1 && taken.has(`crab${e.member}`, ep.x, ep.z), 'evict takes the crab a peer took off its stone and records the place')
+    check(again.evict(`crab${e.member}`, ep.x, ep.z) === false, 'and is false for the perch once emptied')
+  }
   again.dispose()
   // Let go on the bank: it scuttles from her until it is RADIUS out.
   const ok = k.release(rec, 16, LEVEL + 0.4, 0, head)

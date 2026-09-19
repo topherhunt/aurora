@@ -367,6 +367,17 @@ flock.place(0, 0)
   const again = grow()
   check(alive(again).length === were - 1 && !alive(again).some((h) => Math.hypot(h.homeX - home.x, h.homeZ - home.z) < 0.05), 'the tile regrows without the taken one')
   taken.clear()
+  {
+    // A peer's catch: evicted by home within the registry's tolerance, shown or not; a foreign key, an empty spot and a home once emptied are false.
+    const ge = grow()
+    const e = alive(ge).find((h) => Math.hypot(h.x, h.z) > SHOW_M + 1)
+    const n0 = alive(ge).length
+    check(ge.evict('cricket', e.homeX, e.homeZ) === false && ge.evict('grasshopper', e.homeX + 5, e.homeZ) === false && alive(ge).length === n0, 'evict is false for a foreign key or an empty spot')
+    check(ge.evict('grasshopper', e.homeX + 0.03, e.homeZ - 0.03) === true && e.tile === null && alive(ge).length === n0 - 1 && taken.has('grasshopper', e.homeX, e.homeZ), 'evict takes the grasshopper a peer caught out of its flock, unshown past SHOW_M, and records its home')
+    check(ge.evict('grasshopper', e.homeX, e.homeZ) === false, 'and is false for the home once emptied')
+    ge.dispose()
+    taken.clear()
+  }
   check(alive(grow()).length === were, 'and with the registry cleared it is back')
   // Let go on the meadow: seated there in the resident tile, home there, and off in a hop.
   const rel = f.release(rec, 3, groundAt(3, 5), 5)

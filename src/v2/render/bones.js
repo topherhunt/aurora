@@ -9,7 +9,7 @@ import {
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -590,6 +590,24 @@ export class Bones {
       scale: [scale, scale, scale],
       stowable: span < stowMax,
     }
+  }
+
+  /**
+   * A peer carried off the find at (x, z): carry it off here too, hidden by
+   * the rim or not, and record its spot. True when a resident tile has it
+   * under that kind. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'skull' && key !== 'skeleton') return false
+    for (const tile of this.tiles.values()) {
+      if (!tile.n) continue
+      const id = tile.ids[0]
+      if (this.bank.variants[this.variantAt[id]].kind !== key) continue
+      if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
+      this.take({ dist: 0, tile, id, size: this.instSize[id] }, Infinity)
+      return true
+    }
+    return false
   }
 
   /** The geometry and material a packed find record is drawn with: its variant's pick. For hands.js. */

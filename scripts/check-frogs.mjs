@@ -513,7 +513,7 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnC
   run(2, [spider])
   check(!f.lured && f.state === 'sit' && f.x === x0 && f.z === z0, `a spider ${LURE_M + 1} m off is nothing to a sitting frog`)
   run(2, [{ kind: 'carrot', x: f.x, y: GROUND + 1, z: f.z + 1 }])
-  check(!f.lured && f.state === 'sit', 'nor is a carrot a metre off: a frog wants a spider or a butterfly', LURES.join(' '))
+  check(!f.lured && f.state === 'sit', 'nor is a carrot a metre off: a frog wants a spider, a butterfly or a grasshopper', LURES.join(' '))
   spider.z = z0 + LURE_M - 0.5
   frogs.update(...head(), DT, [spider])
   check(f.lured && f.lure === spider && f.left <= 0.3, `a spider inside ${LURE_M} m has it, and its sit is cut short`, `left ${f.left.toFixed(2)} s`)
@@ -538,9 +538,9 @@ check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnC
   run(90, [])
   check(Math.hypot(f.x - f.homeX, f.z - f.homeZ) <= TETHER_M + CHASE.m[1] * f.size, 'and a minute and a half later it is back inside its tether', `${Math.hypot(f.x - f.homeX, f.z - f.homeZ).toFixed(2)} m from home`)
   // Carried further than LURE_FORGET_M in one bound, it is given up.
-  spider.x = f.x; spider.z = f.z + 1
+  spider.x = f.x; spider.z = f.z + 1; spider.kind = 'grasshopper'
   run(1, [spider])
-  check(f.lured, 'a spider a metre off has it again')
+  check(f.lured && f.lure === spider, 'a grasshopper a metre off has it again')
   spider.z = f.z + LURE_FORGET_M + 1
   run(1, [spider])
   check(!f.lured, `and ${LURE_FORGET_M + 1} m off in a bound, it is given up`)

@@ -8,7 +8,7 @@ import { InstancedArena } from './instanced-arena.js'
 import { RimFade } from './rim.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // STREWN LITTER on the /v2 route: the small stones underfoot, each one a
@@ -993,7 +993,7 @@ export class Litter {
    */
   take(hit) {
     const { tile, k, id } = hit
-    if (tile.ids[k] !== id || !this.batch.getVisibleAt(id)) throw new Error(`Litter.take: instance ${id} is not lying in its tile`)
+    if (tile.ids[k] !== id) throw new Error(`Litter.take: instance ${id} is not lying in its tile`)
     const size = this._spanOf(id)
     const scale = [this._s.x, this._s.y, this._s.z]
     this.batch.getColorAt(id, this._c)
@@ -1019,6 +1019,24 @@ export class Litter {
       scale,
       stowable: true,
     }
+  }
+
+  /**
+   * A peer took the pebble at (x, z): pull it here too, hidden by the rim or
+   * not, and record its spot. True when a tile has it. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'pebble') return false
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * this.tile - x) > this.tile || Math.abs((tile.tz + 0.5) * this.tile - z) > this.tile) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
+        this.take({ dist: 0, id, tile, k, size: this._spanOf(id) })
+        return true
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed pebble record is drawn with. For hands.js. */

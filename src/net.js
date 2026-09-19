@@ -57,6 +57,12 @@ export class Netplay {
     // dead-reckoned from its age.
     this.boats = null
     this.boatsSerial = 0
+    // The relay's changes to the things in hands and on the ground since the
+    // last snapshot that carried any (v2/hands-net.js drains it), and how many
+    // welcomes have come: a new one is a new client id on the relay, which
+    // knows nothing of what this client holds.
+    this.things = []
+    this.welcomes = 0
     this.connect()
   }
 
@@ -70,13 +76,14 @@ export class Netplay {
     socket.addEventListener('message', (event) => {
       let message
       try { message = JSON.parse(event.data) } catch { return }
-      if (message.version === 1 && message.type === 'welcome' && typeof message.id === 'string') { this.id = message.id; return }
+      if (message.version === 1 && message.type === 'welcome' && typeof message.id === 'string') { this.id = message.id; this.welcomes++; return }
       if (message.version !== 1 || message.type !== 'snapshot' || !Array.isArray(message.peers)) return
       const receivedAt = performance.now()
       if (Array.isArray(message.boats)) {
         this.boats = message.boats.filter((b) => Array.isArray(b) && b.length === 7 && b.every((n) => Number.isFinite(n)))
         this.boatsSerial++
       }
+      if (message.things && typeof message.things === 'object') this.things.push(message.things)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours }
       }
@@ -105,6 +112,14 @@ export class Netplay {
     if (boats && boats.aboard) message.aboard = boats.aboard
     if (boats && boats.boat) message.boat = boats.boat
     this.socket.send(JSON.stringify(message))
+  }
+
+  // A change to what this client holds or has let go of or taken (v2/hands-net.js
+  // shapes it). False when there is no relay to tell, so the caller keeps it.
+  sendThing(message) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, ...message }))
+    return true
   }
 
   // Ask the relay to move the room's clock. False when there is no relay to

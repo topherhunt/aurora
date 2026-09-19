@@ -34,6 +34,18 @@ import THREE from '../three-instance.js'
 // back into a record on the way out, by the kind and variant the slot names.
 // The backpack's picture of a slot is a photograph of that record, taken here
 // in a studio of its own: the thing as it is held, under fixed lights.
+//
+// THE ROOM SEES IT. Every change to what a hand holds and to what lies loose
+// goes out through `sync` as an event, once, and nothing goes out between
+// changes (hands-net.js carries them to the relay and brings the peers' back):
+// a `hold` as a hand takes, stows, is given or lets go; a `loose` as a thing
+// is let go, in motion, and again as it comes to rest, so a peer that rolled
+// its own copy from the same drop eases it onto the same spot; a `lift` as a
+// loose thing is picked up, or as its source takes it back off the ground. A
+// peer's copies are drawn from the same pools: what a peer holds (PEER HELD,
+// posed each frame by hands-net.js at that peer's hand) and what anyone let
+// go of (in `loose` with the rest, under its room id). What a peer pulled out
+// of a bed is the bed's business, through the taken registry.
 // ---------------------------------------------------------------------------
 
 // Metres from the hand's point to a thing's surface within which it is grabbed. A controller is a hand; the desktop's point stands off the camera and reaches further (main.js).
@@ -43,8 +55,10 @@ export const REACH_M = 0.25
 // Metres a thing may be along its longest side and still be lifted, and still be stowed.
 export const GRAB_MAX_M = 2
 export const STOW_MAX_M = 1
-// Loose things kept in the world; past this the oldest is forgotten.
+// Loose things kept in the world; past this the oldest is forgotten. The relay keeps the same (server/src/main.js ROOM_LOOSE_CAP), so a room's list and this one forget the same thing.
 export const LOOSE_MAX = 24
+// Seconds a peer's copy takes to ease onto the spot its owner says it came to rest at.
+export const EASE_S = 0.4
 // A drop's roll: the slope's pull on it fades out over ROLL_S, as if it settled into the grass, and it is frozen where it is at ROLL_MAX_S whatever it is doing; a beached fish flaps at full strength for FLAP_S and fades over FLAP_FADE_S.
 export const ROLL_S = 2.5
 export const ROLL_MAX_S = 5
@@ -86,9 +100,11 @@ const DRIFT_EASE_S = 1.5
 // Two spots on one lake read the same level to this, in metres; a river's runs down its course.
 const LEVEL_EPS = 0.05
 // Where a held thing's centre sits in the hand's frame: a little under and ahead of the grip.
-const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
-// Instances a pool holds: every loose thing and a hand each, with room.
-const POOL_CAP = LOOSE_MAX + 8
+export const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
+// Instances a pool holds: every loose thing, her three hands and three for each of a full room's seven peers, all of one kind at worst.
+export const POOL_CAP = LOOSE_MAX + 3 + 7 * 3
+// A peer's copy waits here until its peer's hand is placed, out of sight.
+export const UNPLACED_Y = -1e4
 // What a source's instanced attribute holds when the record does not say: the arena's fade slot is "never fade", the rest rest.
 const ATTR_DEFAULT = { aPropFade: 1 }
 // The studio: where the camera looks from (a unit direction, front and a little above), the sky, ground and sun of its lights, and how much room the frame leaves round the thing.
@@ -149,6 +165,18 @@ export class Hands {
     this.taken = 0
     this.stowed = 0
     this.dropped = 0
+    // The room: `sync(event)` is told every change (see the header), or null;
+    // `tag` prefixes the ids of the things she lets go of, the relay's short
+    // name for this client, and null before the relay has said one; the
+    // peers' held copies, peer id -> three of `{ slot, item }` or null.
+    this.sync = null
+    this.tag = null
+    this.looseN = 0
+    this.peerHeld = new Map()
+  }
+
+  _emit(event) {
+    if (this.sync) this.sync(event)
   }
 
   /**
@@ -258,6 +286,10 @@ export class Hands {
       this.loose.splice(this.loose.indexOf(best.loose), 1)
       hand.held = best.loose
       hand.held.state = 'held'
+      // Its next drop is a new thing to the room.
+      if (hand.held.netId !== null) this._emit({ type: 'lift', id: hand.held.netId })
+      hand.held.netId = null
+      hand.held.mine = false
     } else {
       const rec = best.src.take(best.hit, STOW_MAX_M)
       this._checkRecord(rec)
@@ -266,6 +298,7 @@ export class Hands {
     }
     hand.inZone = false
     this.taken++
+    this._emit({ type: 'hold', hand: hand.key, slot: this.pack(hand.held.rec) })
   }
 
   // -- the backpack ------------------------------------------------------------
@@ -304,6 +337,7 @@ export class Hands {
     }
     hand.held = this._item(rec, this.byKind.get(slot.kind))
     hand.inZone = false
+    this._emit({ type: 'hold', hand: key, slot: this.pack(rec) })
   }
 
   /**
@@ -523,6 +557,10 @@ export class Hands {
       state: 'held', vx: 0, vy: 0, vz: 0, t: 0, tried: false, jerk: 0,
       // Afloat: the bob's phase, the turn, the drift it is easing toward and how long that heading has left.
       phase: 0, spin: 0, ax: 0, az: 0, tack: 0,
+      // The room's id for it once loose, and whether it is hers to settle: she let it go and has not yet said where it came to rest.
+      netId: null, mine: false,
+      // Easing (a peer's copy): where it is going, what it is once there, and how far along it is.
+      ex: 0, ey: 0, ez: 0, eq: null, eState: null, e: 0,
     }
     pool.items.push(item)
     return item
@@ -538,6 +576,17 @@ export class Hands {
     this._forget(hand.held)
     hand.held = null
     hand.inZone = false
+    this._emit({ type: 'hold', hand: hand.key, slot: null })
+  }
+
+  /** A room id for a loose thing: the relay's tag for this client and a count; null before the relay has said one. */
+  _looseId() {
+    return this.tag === null ? null : `${this.tag}-${(this.looseN++).toString(36)}`
+  }
+
+  /** A loose thing as the room hears of it. */
+  _looseEvent(item) {
+    return { type: 'loose', id: item.netId, slot: this.pack(item.rec), pose: [item.x, item.y, item.z, item.q.x, item.q.y, item.q.z, item.q.w], state: item.state === 'still' ? 0 : item.state === 'float' ? 1 : 2 }
   }
 
   // -- letting go --------------------------------------------------------------
@@ -549,6 +598,7 @@ export class Hands {
     const cx = p.x + HOLD_OFFSET.x, cy = p.y + HOLD_OFFSET.y, cz = p.z + HOLD_OFFSET.z
     hand.held = null
     hand.inZone = false
+    this._emit({ type: 'hold', hand: hand.key, slot: null })
     if (this._giveBack(item, cx, cy, cz, head)) return
     item.x = cx; item.y = cy; item.z = cz
     // Held level; let go level.
@@ -558,8 +608,19 @@ export class Hands {
     item.t = 0
     item.tried = false
     item.head = { x: head.x, y: head.y, z: head.z }
+    item.mine = true
+    item.netId = this._looseId()
     this.loose.push(item)
     while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
+    if (item.netId !== null) this._emit(this._looseEvent(item))
+  }
+
+  /** Where a thing of hers came to rest, or where her source took it back off the ground: the room told once, and it is hers no longer. */
+  _settled(item, gone = false) {
+    if (!item.mine) return
+    item.mine = false
+    if (item.netId === null) return
+    this._emit(gone ? { type: 'lift', id: item.netId } : this._looseEvent(item))
   }
 
   /** Offers the thing back to the layer it came from; true when the layer took it. A source without a release never takes anything back. */
@@ -597,6 +658,7 @@ export class Hands {
       if (this._stepLoose(item, dt)) this.loose[kept++] = item
     }
     this.loose.length = kept
+    for (const held of this.peerHeld.values()) for (const entry of held) if (entry && !entry.item) this._dressPeer(entry)
     for (const pool of this.pools.values()) this._write(pool)
   }
 
@@ -609,18 +671,15 @@ export class Hands {
       item.y += item.vy * dt
       const bottom = item.y - item.r
       // The lake's surface on the way down: a fish given back there swims off stunned; a swimmer refused goes on to the bed; anything else floats.
+      // A peer's copy is never offered to a source: its owner's was, and what that source does is its own layer's.
       if (!item.tried) {
         const level = this.water.levelAt(item.x, item.z)
         if (level !== null && bottom <= level) {
           item.tried = true
-          if (this._giveBack(item, item.x, Math.min(item.y, level), item.z, item.head)) return false
+          if (item.mine && this._giveBack(item, item.x, Math.min(item.y, level), item.z, item.head)) { this._settled(item, true); return false }
           if (!SWIMMERS.has(item.rec.kind)) {
-            item.state = 'float'
-            item.t = 0
-            item.vx = item.vz = item.vy = 0
-            item.phase = this.rand() * Math.PI * 2
-            item.spin = between(this.rand, SPIN_RAD) * (this.rand() < 0.5 ? -1 : 1)
-            item.tack = 0
+            this._float(item)
+            this._settled(item)
             return true
           }
         }
@@ -629,7 +688,7 @@ export class Hands {
       if (bottom > ground) return true
       item.y = ground + item.r
       this.thud(item.x, ground, item.z)
-      if (this._giveBack(item, item.x, ground, item.z, item.head)) return false
+      if (item.mine && this._giveBack(item, item.x, ground, item.z, item.head)) { this._settled(item, true); return false }
       item.t = 0
       if (item.rec.kind === 'fish') {
         // On its side, its nose along its heading, a hand's breadth of body on the ground.
@@ -667,6 +726,7 @@ export class Hands {
       }
       if ((speed < ROLL_STILL && item.t > 0.25) || item.t >= ROLL_MAX_S) {
         item.state = 'still'
+        this._settled(item)
         return true
       }
       item.x += item.vx * dt
@@ -716,6 +776,7 @@ export class Hands {
       if (e <= 0) {
         item.state = 'still'
         item.attrs.aSwim[1] = 0
+        this._settled(item)
         return true
       }
       const swim = item.attrs.aSwim
@@ -734,7 +795,135 @@ export class Hands {
       if (item.y < lie) { item.y = lie; item.vy = 0 }
       return true
     }
+    if (item.state === 'ease') {
+      item.e = Math.min(1, item.e + dt / EASE_S)
+      const k = item.e
+      item.x += (item.ex - item.x) * k
+      item.y += (item.ey - item.y) * k
+      item.z += (item.ez - item.z) * k
+      item.q.slerp(item.eq, k)
+      if (k < 1) return true
+      item.x = item.ex; item.y = item.ey; item.z = item.ez
+      item.q.copy(item.eq)
+      if (item.eState === 'float') this._float(item)
+      else item.state = item.eState
+      return true
+    }
     throw new Error(`Hands: a ${item.rec.kind} in state ${item.state}`)
+  }
+
+  /** Afloat from here: still in the water, a bob of its own phase, a turn of its own. */
+  _float(item) {
+    item.state = 'float'
+    item.t = 0
+    item.vx = item.vz = item.vy = 0
+    item.phase = this.rand() * Math.PI * 2
+    item.spin = between(this.rand, SPIN_RAD) * (this.rand() < 0.5 ? -1 : 1)
+    item.tack = 0
+  }
+
+  // -- the room ----------------------------------------------------------------
+
+  /**
+   * Every loose thing as the room hears of it, for a relay that has just
+   * named this client: `tag` set first, so a thing let go of before the relay
+   * answered gets its id now.
+   */
+  looseEvents() {
+    if (this.tag === null) throw new Error('Hands.looseEvents: no tag yet')
+    const out = []
+    for (const item of this.loose) {
+      if (item.netId === null) item.netId = this._looseId()
+      out.push(this._looseEvent(item))
+    }
+    return out
+  }
+
+  /**
+   * A loose thing as a peer has it: `pose` [x, y, z, qx, qy, qz, qw] and
+   * `state` 0 still, 1 afloat, 2 in motion. Unknown here, it appears there --
+   * in motion, it falls and rolls from there on its own; known and not hers
+   * to settle, it eases onto the pose and becomes what the peer says. Returns
+   * false, nothing done, while the slot's source has not landed its asset.
+   */
+  netLoose(id, slot, pose, state) {
+    if (typeof id !== 'string' || !Array.isArray(pose) || pose.length !== 7 || ![0, 1, 2].includes(state)) throw new Error(`Hands.netLoose: bad ${id} ${JSON.stringify(pose)} ${state}`)
+    const stateName = ['still', 'float', 'fall'][state]
+    let item = this.loose.find((i) => i.netId === id)
+    if (item && item.mine) return true
+    if (!item) {
+      const rec = this.dressed(slot)
+      if (rec === null) return false
+      item = this._item(rec, this.byKind.get(slot.kind))
+      item.netId = id
+      item.x = pose[0]; item.y = pose[1]; item.z = pose[2]
+      item.q.set(pose[3], pose[4], pose[5], pose[6])
+      item.head = { x: pose[0], y: pose[1], z: pose[2] }
+      this.loose.push(item)
+      while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
+      if (stateName === 'float') this._float(item)
+      else { item.state = stateName; item.t = 0; item.tried = false; item.vx = item.vy = item.vz = 0 }
+      return true
+    }
+    if (stateName === 'fall') {
+      item.x = pose[0]; item.y = pose[1]; item.z = pose[2]
+      item.q.set(pose[3], pose[4], pose[5], pose[6])
+      item.state = 'fall'; item.t = 0; item.tried = false; item.vx = item.vy = item.vz = 0
+      return true
+    }
+    item.state = 'ease'
+    item.e = 0
+    item.ex = pose[0]; item.ey = pose[1]; item.ez = pose[2]
+    item.eq ??= new THREE.Quaternion()
+    item.eq.set(pose[3], pose[4], pose[5], pose[6])
+    item.eState = stateName
+    return true
+  }
+
+  /** A loose thing the room has lost: picked up by a peer, or forgotten. Nothing here under that id is nothing to do. */
+  netLift(id) {
+    const i = this.loose.findIndex((item) => item.netId === id)
+    if (i < 0) return
+    this._forget(this.loose[i])
+    this.loose.splice(i, 1)
+  }
+
+  /**
+   * What a peer's hand holds: a packed slot, or null for nothing. `hand` is
+   * 0, 1 or 2. Its copy waits out of sight until placePeer puts it somewhere,
+   * and while its source has not landed its asset it is dressed on a later frame.
+   */
+  netHold(peerId, hand, slot) {
+    if (!Number.isInteger(hand) || hand < 0 || hand > 2) throw new Error(`Hands.netHold: hand ${hand}`)
+    let held = this.peerHeld.get(peerId)
+    if (!held) this.peerHeld.set(peerId, (held = [null, null, null]))
+    if (held[hand]?.item) this._forget(held[hand].item)
+    held[hand] = slot === null ? null : { slot, item: null }
+    if (slot !== null) this._dressPeer(held[hand])
+  }
+
+  _dressPeer(entry) {
+    const rec = this.dressed(entry.slot)
+    if (rec === null) return
+    entry.item = this._item(rec, this.byKind.get(entry.slot.kind))
+    entry.item.state = 'peer'
+    entry.item.y = UNPLACED_Y
+  }
+
+  /** A peer gone from the room takes its copies with it. */
+  netPeerGone(peerId) {
+    const held = this.peerHeld.get(peerId)
+    if (!held) return
+    for (const entry of held) if (entry?.item) this._forget(entry.item)
+    this.peerHeld.delete(peerId)
+  }
+
+  /** Where a peer's hand is this frame: its copy's centre and rotation; nothing while the peer holds nothing in that hand. */
+  placePeer(peerId, hand, x, y, z, q) {
+    const item = this.peerHeld.get(peerId)?.[hand]?.item
+    if (!item) return
+    item.x = x; item.y = y; item.z = z
+    item.q.copy(q)
   }
 
   _write(pool) {
@@ -770,11 +959,14 @@ export class Hands {
   get stats() {
     let held = 0
     for (const hand of this.hands.values()) if (hand.held) held++
-    return { held, loose: this.loose.length, pools: this.pools.size, taken: this.taken, stowed: this.stowed, dropped: this.dropped }
+    let peers = 0
+    for (const list of this.peerHeld.values()) for (const entry of list) if (entry?.item) peers++
+    return { held, loose: this.loose.length, peers, pools: this.pools.size, taken: this.taken, stowed: this.stowed, dropped: this.dropped }
   }
 
   dispose() {
     this.batch.parent?.remove(this.batch)
+    this.peerHeld.clear()
     for (const pool of this.pools.values()) {
       // The vertex buffers are the source's; only the pool's own instanced attributes go.
       for (const { attr } of pool.instanced) attr.array = null

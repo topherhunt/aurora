@@ -286,22 +286,19 @@ const ANIMALS = [
     label: 'Leafkin',
     rigType: 'biped',
     sizeM: 1.0,
-    // The menace lives in the teeth, the eyes and the grin, never in the stance:
-    // the pose clause owns the stance, and a "hunched" or "crouching" gremlin
-    // argues with the A-pose it is asked for. The tail is kept thin and short
-    // because the biped preset never weights it -- it rides along as
-    // unweighted geometry, and a long one sticks out stiff from the hips.
+    // The body is named as MATERIAL, not as a costume over a body: a gremlin
+    // "dressed in" leaves and twigs came back a pale-skinned elf wearing them,
+    // so the prompt says what the being is made of, and the one garment is
+    // a leaf. The insect head, pincers and proboscis are what this landed on
+    // in the bench; the pose clause owns the stance, so no "crouching" or
+    // "hunched".
     description:
-      'a small scrappy forest gremlin, a one-metre-tall upright humanoid with the face and coat of a wild rodent: ' +
-      'a big round head on a skinny neck, a long twitching snout with a pink nose and a mess of stiff whiskers, two ' +
-      'large ragged round ears notched and torn at the edges, small bright black eyes glinting with mischief under ' +
-      'a scowling brow, and a wide sly grin of small yellow teeth with two long front incisors, playful and impish ' +
-      'but with something feral in it. A lean wiry body with a narrow chest and a slight pot belly, two thin arms ' +
-      'ending in long clever grasping fingers with dirty claws, two thin bowed legs on wide flat splayed feet with ' +
-      'long toes, and a short thin rat tail. Coarse patchy fur in mud-brown and ash-grey, matted and sticking up in ' +
-      'frayed tufts and cowlicks, greasy and grubby with dried mud, burrs and bits of dead leaf and twig caught in ' +
-      'it, worn thin at the elbows and knees. Dressed in scavenged rags: a torn scrap of moss-green sacking knotted ' +
-      'over one shoulder as a tunic, a twist of twine for a belt hung with an acorn cap and a dead beetle, no shoes',
+      'a small woodland fey, a one-metre-tall upright humanoid whose entire body is made of animated warped wood ' +
+      'littered with acorns, oak leaves, damp moss, and other forest scraps, clothed in a green leaf tunic. Each ' +
+      'hand is an insectoid two-pronged pincer, and the feet end in wide knotted roots that stand flat. The head ' +
+      'is an insect\'s head of gnarled bark with glowing bright-green eye-holes and a short insect-like proboscis. ' +
+      'Playful and mischievous, with something wild and faintly sinister in the carved wooden expression and the ' +
+      'hollow eyes',
   },
 ]
 

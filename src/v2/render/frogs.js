@@ -31,8 +31,8 @@
 // field's normal there (the world's up on the water), turning from the one
 // slope to the other in the air.
 //
-// A LURE HAS IT. A spider or a butterfly in her hand (hands.js lures) within
-// LURE_M of a frog takes it off its tether: it CHASEs, one hop at a time, each
+// A LURE HAS IT. A spider, a butterfly or a grasshopper in her hand (hands.js
+// lures) within LURE_M of a frog takes it off its tether: it CHASEs, one hop at a time, each
 // aimed at her and swung by up to CHASE.turn either way so the track is a
 // scribble, and within ORBIT_M of her feet aimed across her instead, so it
 // dances about them; afloat, it hops for her off the water. It forgets the
@@ -86,7 +86,7 @@ export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0
 const HOP_RISE = 0.45
 export const TETHER_M = 4
 // The lure: what in her hand a frog wants, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of her feet a hop goes across her rather than at her, and how soon a sitting frog reacts.
-export const LURES = ['spider', 'butterfly']
+export const LURES = ['spider', 'butterfly', 'grasshopper']
 export const LURE_M = 3
 export const LURE_FORGET_M = 8
 export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1, 0.45], turn: 1.6 }

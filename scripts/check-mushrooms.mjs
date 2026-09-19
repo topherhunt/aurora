@@ -1815,6 +1815,21 @@ for (const s of SUBJECTS) s.geo.dispose()
   taken.clear()
   const whole = grow()
   check(whole.placed === before && standing(whole) !== standing(m), 'and with the registry cleared it grows back', `${whole.placed} caps`)
+  {
+    // A peer's take: evicted by key and spot within the registry's tolerance, a rim-hidden one as readily as a shown one; a foreign key, an empty spot and a spot already emptied are false.
+    let te = null, ie = -1
+    for (const tile of whole.tiles.values()) {
+      for (let k = 0; k < tile.n && ie < 0; k++) if (whole.rim.isHidden(tile.ids[k])) { te = tile; ie = tile.ids[k] }
+      if (ie >= 0) break
+    }
+    const hiddenOne = ie >= 0
+    if (ie < 0) for (const tile of whole.tiles.values()) { if (tile.n) { te = tile; ie = tile.ids[0]; break } }
+    const ex = whole.instX[ie], ez = whole.instZ[ie]
+    const n0 = whole.placed
+    check(whole.evict('carrot', ex, ez) === false && whole.evict('mushroom', ex + 5, ez) === false && whole.placed === n0, 'evict is false for a foreign key or an empty spot')
+    check(whole.evict('mushroom', ex + 0.03, ez - 0.03) === true && whole.placed === n0 - 1 && !te.ids.subarray(0, te.n).includes(ie) && taken.has('mushroom', ex, ez), `evict pulls the cap a peer took, ${hiddenOne ? 'rim-hidden' : 'shown'}, and records its spot`)
+    check(whole.evict('mushroom', ex, ez) === false, 'and is false for the spot once emptied')
+  }
   again.dispose()
   whole.dispose()
   m.dispose()

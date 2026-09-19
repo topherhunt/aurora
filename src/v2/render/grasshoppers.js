@@ -54,7 +54,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 export const TILE = 8
 // Within this of her head a grasshopper is stepped and drawn.
@@ -333,6 +333,23 @@ export class Grasshoppers {
       scale: [k, k, k],
       stowable: true,
     }
+  }
+
+  /**
+   * A peer caught the grasshopper whose home is (x, z): take it out of its
+   * flock here too, shown or not, and record the home. True when a resident
+   * tile has it. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'grasshopper') return false
+    for (const t of this.tiles.values()) {
+      for (const g of t.flock) {
+        if (Math.abs(g.homeX - x) >= TOLERANCE_M || Math.abs(g.homeZ - z) >= TOLERANCE_M) continue
+        this.take({ dist: 0, g, size: g.len })
+        return true
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed grasshopper record is drawn with, or null until the asset lands. For hands.js. */

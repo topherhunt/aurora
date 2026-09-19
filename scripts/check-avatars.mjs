@@ -31,7 +31,7 @@ import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/rend
 import {
   VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
 } from '../src/v2/render/avatar-rig.js'
-import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, handGeometry, ownHand } from '../src/v2/render/avatar.js'
+import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PeerAvatars, handGeometry, ownHand } from '../src/v2/render/avatar.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -205,6 +205,16 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   run(b, poseOf(rest.head, rest.headQuat, grips), [true, false], 1)
   const right = body.arms[1]
   check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
+  // Where a peer's hand is, for the thing drawn in it (hands-net.js): each wrist as last drawn, and nothing while no body stands.
+  const peers = { peers: new Map([['p', { body }]]) }
+  const pos = new THREE.Vector3(), quat = new THREE.Quaternion()
+  // The puppet's group stands outside a scene here, so its frame is applied by hand as `at` does.
+  const wrists = body.arms.map((arm, i) => PeerAvatars.prototype.handAt.call(peers, 'p', i, pos, quat) && pos.applyMatrix4(b.puppet.group.matrix).distanceTo(b.at(arm.W.bone.name)) < 1e-9)
+  check(wrists.every(Boolean), 'handAt gives each wrist where the body last drew it, the left as side 0')
+  const was = body.placed
+  body.placed = false
+  check(PeerAvatars.prototype.handAt.call(peers, 'p', 1, pos, quat) === false && PeerAvatars.prototype.handAt.call(peers, 'q', 1, pos, quat) === false, 'and is false for a body not standing or a peer unknown')
+  body.placed = was
 }
 
 // --- the head: the feet follow it at once, the neck stretches only up and down, a teleport walks the body ---

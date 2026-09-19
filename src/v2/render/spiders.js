@@ -88,7 +88,7 @@ import { loadSkinnedAsset } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 export const TILE = 16
 // The skinned tiers the shipped GLB carries, one per rung of the world ladder; the one drawn as a mesh, tier 1 (tier 0 is the card's photograph, the coarser pair are smears); and how many mesh tiers there are, which is also a slot's `lod` for the card.
@@ -554,6 +554,26 @@ export class Spiders {
       scale: [s, s, s],
       stowable: true,
     }
+  }
+
+  /**
+   * A peer picked the spider named by `spider:<host kind><member>` off the
+   * host at (x, z): pick it off here too, drawn or not, and record the place.
+   * True when a resident tile has that host with that member. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (!key.startsWith('spider:')) return false
+    for (const t of this.tiles.values()) {
+      for (const host of t.hosts.values()) {
+        if (Math.abs(host.x - x) >= TOLERANCE_M || Math.abs(host.z - z) >= TOLERANCE_M) continue
+        for (const c of host.spiders) {
+          if (`spider:${host.kind}${c.member}` !== key) continue
+          this.take({ dist: 0, c, size: c.size })
+          return true
+        }
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed spider record is drawn with, or null until the asset lands. For hands.js. */

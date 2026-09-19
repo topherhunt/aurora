@@ -46,7 +46,7 @@ import {
   setCritterAsset, setCritterCard, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -449,6 +449,27 @@ export class Crabs {
       scale: [k, k * STRETCH_Y, k],
       stowable: c.size < stowMax,
     }
+  }
+
+  /**
+   * A peer took the crab named by `crab<member>` off the perch at (x, z): take
+   * it here too, drawn or not, and record the place. True when a resident
+   * tile has that perch with that member; a loose crab is nobody's to evict.
+   * For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (!key.startsWith('crab')) return false
+    for (const t of this.tiles.values()) {
+      for (const p of t.perches.values()) {
+        if (Math.abs(p.x - x) >= TOLERANCE_M || Math.abs(p.z - z) >= TOLERANCE_M) continue
+        for (const c of p.crabs) {
+          if (`crab${c.member}` !== key) continue
+          this.take({ dist: 0, c, size: c.size }, Infinity)
+          return true
+        }
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed crab record is drawn with, or null until the asset lands. For hands.js. */

@@ -362,6 +362,13 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   taken.clear()
   const whole = grow(x, z)
   check(whole.placed === placedWere && keyOf(whole) !== keyOf(b), 'and with the registry cleared the skull is back')
+  // A peer's take: the find evicted by its kind and spot, hidden or shown; the other kind at that spot, a foreign key and an empty spot are false.
+  const te = [...whole.tiles.values()].find((t) => t.n && whole.rim.isHidden(t.ids[0])) ?? [...whole.tiles.values()].find((t) => t.n)
+  const ke = whole.bank.variants[whole.variantAt[te.ids[0]]].kind
+  const ex = whole.instX[te.ids[0]], ez = whole.instZ[te.ids[0]]
+  check(whole.evict(ke === 'skull' ? 'skeleton' : 'skull', ex, ez) === false && whole.evict('egg', ex, ez) === false && whole.evict(ke, ex + 5, ez) === false && whole.placed === placedWere, 'evict is false for the other kind at the spot, a foreign key or an empty spot')
+  check(whole.evict(ke, ex + 0.03, ez - 0.03) === true && te.n === 0 && whole.placed === placedWere - 1 && taken.has(ke, ex, ez), `evict carries off the ${ke} a peer took, ${whole.rim.isHidden(te.ids[0]) ? 'rim-hidden' : 'shown'}, and records its spot`)
+  check(whole.evict(ke, ex, ez) === false, 'and is false for the spot once emptied')
   b.dispose(); again.dispose(); whole.dispose()
 }
 

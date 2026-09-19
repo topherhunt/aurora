@@ -12,7 +12,7 @@ import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: boulders through the wood and across the
@@ -3747,6 +3747,24 @@ class RockBed {
   }
 
   /**
+   * The rock this bed has standing at (x, z), hidden by the rim or not, as a
+   * take() hit, or null. For Rocks.evict.
+   */
+  standingAt(x, z) {
+    const tile = this.cfg.tile
+    for (const t of this.tiles.values()) {
+      if (Math.abs((t.tx + 0.5) * tile - x) > tile || Math.abs((t.tz + 0.5) * tile - z) > tile) continue
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
+        const m = this.shape.measured
+        return { dist: 0, bed: this, tile: t, k, id, size: Math.max(m.width, m.depth, m.height) * this.instScale[id] }
+      }
+    }
+    return null
+  }
+
+  /**
    * Lift the rock of a pickAt() hit out of the bed: _thin's retirement for the
    * one id, its spot on the registry so the tile never lays it again, and its
    * tint and scale back for the hand's record. The walk surface loses it with
@@ -4243,6 +4261,8 @@ class RockBed {
 
 // The beds looseCountIn counts, and its saturation; the scratch is written and never read.
 const LOOSE_BEDS = new Set(['boulders', 'scree', 'giants'])
+// The beds a hand can lift from: the scree and the shore stones, whose small end is a stone. A boulder is a boulder at any size it comes in, and the sunken, the embedded and the giants are the hill's.
+export const LIFT_BEDS = new Set(['scree', 'shore'])
 const LOOSE_COUNT_CAP = 256
 const looseScratch = new Float32Array(LOOSE_COUNT_CAP * 4)
 
@@ -4584,14 +4604,15 @@ export class Rocks {
    * ray's footprint crosses.
    */
   /**
-   * The drawn rock of any bed nearest a hand at (x, y, z) within `reach` metres
-   * and under `maxSize` across, which is what she can lift: never a boulder or
-   * a giant at their sizes, the small end of the scree and the shore stones.
+   * The drawn stone of a LIFT_BEDS bed nearest a hand at (x, y, z) within
+   * `reach` metres and under `maxSize` across, which is what she can lift: the
+   * small end of the scree and the shore stones, never a boulder however small.
    * `{ dist, bed, tile, k, id, size }` for take(), or null. For hands.js.
    */
   pickAt(x, y, z, reach, maxSize) {
     let best = null
     for (const bed of this.beds) {
+      if (!LIFT_BEDS.has(bed.cfg.name)) continue
       const hit = bed.pickAt(x, y, z, best ? best.dist : reach, maxSize)
       if (hit && (!best || hit.dist < best.dist)) best = hit
     }
@@ -4616,6 +4637,22 @@ export class Rocks {
       scale: [scale, scale, scale],
       stowable: hit.size < stowMax,
     }
+  }
+
+  /**
+   * A peer lifted the stone at (x, z): lift it out of its bed here too and
+   * record its spot. True when a LIFT_BEDS bed has it. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'rock') return false
+    for (const bed of this.beds) {
+      if (!LIFT_BEDS.has(bed.cfg.name)) continue
+      const hit = bed.standingAt(x, z)
+      if (!hit) continue
+      bed.take(hit)
+      return true
+    }
+    return false
   }
 
   /** The geometry and material a packed rock record is drawn with: the boulder at LOD0 on the stone material. For hands.js. */

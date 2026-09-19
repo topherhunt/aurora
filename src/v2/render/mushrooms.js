@@ -12,7 +12,7 @@ import { createPropMaterial, setSnowLine } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
-import { taken } from '../taken.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // Mushroom clumps on the /v2 route. The argument is DESIGN.md §24.
@@ -1090,6 +1090,24 @@ export class Mushrooms {
       scale: [scale, scale, scale],
       stowable: true,
     }
+  }
+
+  /**
+   * A peer took the mushroom at (x, z): pull it here too, hidden by the rim or
+   * not, and record its spot. True when a tile has it. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'mushroom') return false
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * TILE - x) > TILE || Math.abs((tile.tz + 0.5) * TILE - z) > TILE) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
+        this.take({ dist: 0, id, tile, k, size: Math.sqrt(this.instSpan2[id]) })
+        return true
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed mushroom record is drawn with, by its variant. For hands.js. */

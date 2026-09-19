@@ -42,6 +42,7 @@ import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
 import { CRITTER_GLB, LOD_RUNGS, CARD_RUNGS, lodReach } from '../src/v2/render/critters.js'
+import { taken } from '../src/v2/taken.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -876,6 +877,15 @@ spiders.place(0, 0)
   // By host and place in its group, which a flee does not change.
   const key = (of) => alive(of).map((g) => `${g.host.kind},${g.host.x},${g.host.z},${g.member},${g.size.toFixed(4)}`).sort().join('|')
   check(key(again) === key(k) && alive(again).length === before - 1, 'the trunk regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
+  {
+    // A peer's pick: evicted by host and member within the registry's tolerance; another member's key, a foreign key, an empty spot and a place once emptied are false.
+    const e = alive(again)[0]
+    const eh = e.host
+    const n0 = alive(again).length
+    check(again.evict(`spider:${eh.kind}${e.member + 100}`, eh.x, eh.z) === false && again.evict('butterfly', eh.x, eh.z) === false && again.evict(`spider:${eh.kind}${e.member}`, eh.x + 5, eh.z) === false && alive(again).length === n0, 'evict is false for another member, a foreign key or an empty spot')
+    check(again.evict(`spider:${eh.kind}${e.member}`, eh.x + 0.03, eh.z - 0.03) === true && e.host === null && !eh.spiders.includes(e) && alive(again).length === n0 - 1 && taken.has(`spider:${eh.kind}${e.member}`, eh.x, eh.z), 'evict picks the spider a peer took off its host and records the place')
+    check(again.evict(`spider:${eh.kind}${e.member}`, eh.x, eh.z) === false, 'and is false for the place once emptied')
+  }
   again.dispose()
   // Let go on open ground: it runs from her.
   const head = { x: 20, y: GROUND + EYE, z: 20, yaw: 0 }

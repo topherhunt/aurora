@@ -179,6 +179,14 @@ console.log('carrots: her hand')
   check(wrong === 2, 'and throws for another kind or an unknown variant', `${wrong} of 2`)
   taken.clear()
   check(plantsOf(place()).length === plants.length, 'the registry cleared, it grows back')
+  {
+    // A peer's take: evicted by key and spot within the registry's tolerance; a foreign key, an empty spot and a spot already emptied are false.
+    const pe = plantsOf(c).find((p) => p.id !== pl.id)
+    const n0 = c.placed
+    check(c.evict('mushroom', pe.x, pe.z) === false && c.evict('carrot', pe.x + 5, pe.z) === false && c.placed === n0, 'evict is false for a foreign key or an empty spot')
+    check(c.evict('carrot', pe.x + 0.03, pe.z - 0.03) === true && c.placed === n0 - 1 && !pe.tile.ids.subarray(0, pe.tile.n).includes(pe.id) && taken.has('carrot', pe.x, pe.z), 'evict pulls the carrot a peer took and records its spot')
+    check(c.evict('carrot', pe.x, pe.z) === false, 'and is false for the spot once emptied')
+  }
 }
 
 if (failures) {
