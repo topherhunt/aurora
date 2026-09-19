@@ -1,7 +1,7 @@
 import THREE from './three-instance.js'
 import { WORLD_HALF } from './sim/terrain-height.js'
 import { SKY_GLSL } from './sky-glsl.js'
-import { SAMPLE_GLSL } from './lighting.js'
+import { SAMPLE_GLSL, AIR_FALL } from './lighting.js'
 import { PROBE } from './sky-probe.js'
 import { WORLD_PROBE } from './world-probe.js'
 import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
@@ -738,6 +738,10 @@ export class Water {
       uHorizonMap: lighting.uniforms.uHorizonMap,
       uSkyView: lighting.uniforms.uSkyView,
       uSunSky: lighting.uniforms.uSunSky,
+      // The land's aerial ramp, by reference, so a far lake ends in the air the
+      // ridge beside it ends in. RAW sRGB COMPONENTS -- see the fog block.
+      uAirNear: lighting.uniforms.uAirNear,
+      uAirFar: lighting.uniforms.uAirFar,
       uTime: { value: 0 },
       uChop: { value: WATER.chop },
       uFlow: { value: WATER.flow },
@@ -901,6 +905,8 @@ export class Water {
         #endif
         uniform float uSubmerged;
         uniform vec3 uMurk;
+        uniform vec3 uAirNear;
+        uniform vec3 uAirFar;
         uniform vec3 uUnder;
         uniform vec2 uWindow;
         uniform vec2 uTir;
@@ -1237,37 +1243,21 @@ export class Water {
 
           vec3 color = mix( body, refl, mirror );
 
-          // FOG, AND THE WATER IS EXEMPT FROM THE NIGHT RULE.
+          // FOG. The water fades, at the land's density, to the land's own
+          // aerial ramp at its own distance (lighting.js AERIAL_GLSL, §10), so
+          // a far lake is not a pale patch in a hazed valley: at full
+          // extinction it is the air the ridge beside it is. That ramp is mixed
+          // in OUTPUT space on every other material, after colorspace_fragment,
+          // and its two ends are raw sRGB components; this shader fogs in
+          // LINEAR, before it, so the ramp is mixed in sRGB exactly as the land
+          // mixes it and linearised once. Mixing the ends linearised instead
+          // gives a lake a shade off the land at every distance.
           //
-          // Everything else fades toward scene.fog, whose colour is pulled well
-          // below the sky's after dark to hide the far terrain the moon cannot
-          // light. Water must not obey that: a distant lake is seen at a grazing
-          // angle where Fresnel is essentially 1, so it is a near-perfect mirror
-          // of the sky just above the horizon -- which is why a lake at night
-          // reads BRIGHTER than the land, not darker.
-          //
-          // So the distance term stays, air still softening contrast over
-          // kilometres, but it fades toward the sky along the HORIZONTAL part of
-          // the view ray. At full distance a water pixel becomes exactly
-          // skyRadiance at the horizon, which is what the dome behind it draws,
-          // so the two meet with no seam -- for one more call to a function this
-          // shader already has.
-          //
-          // Done in LINEAR, before output space, which is the opposite of
-          // three's order (three fogs afterwards because fogColor is authored in
-          // output space). The sky value here is linear and the dome does the
-          // same thing in the same order.
-          //
-          // THE EXEMPTION IS ITSELF EXEMPT WHEN SHE IS UNDER: all of the above
-          // holds only while the air between her and the lake is air. A second
-          // lake seen across twenty metres of lake water is not brighter than
-          // the water in front of it, it is gone. Left fading to horizon sky, a
-          // top face across the lake reads as a lit hole in the murk.
+          // Under her the air is murk: a second lake seen across twenty metres
+          // of lake water is not a lit hole in it, it is gone.
           #ifdef USE_FOG
-            vec2 flatV = V.xz;
-            float flatLen = max( length( flatV ), 1e-4 );
-            vec3 horizonDir = vec3( flatV.x / flatLen, 0.0, flatV.y / flatLen );
-            vec3 fogTarget = mix( skyRadiance( horizonDir, 0.0 ) * uReflTint, uMurk, uSubmerged );
+            vec3 airOut = mix( uAirNear, uAirFar, 1.0 - exp( - vFogDepth * ${AIR_FALL.toExponential()} ) );
+            vec3 fogTarget = mix( sRGBTransferEOTF( vec4( airOut, 1.0 ) ).rgb, uMurk, uSubmerged );
             color = mix( color, fogTarget, waterFogAmt() );
           #endif
 

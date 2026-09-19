@@ -30,10 +30,17 @@
 // The forty taps are paid on 32k texels once per frame instead of on every
 // fragment of the sky, and a screen pixel costs one bilinear fetch.
 //
-// So the per-frame cost here is four small offscreen passes and a dome of 198
-// triangles, and it is nearly independent of how much of the sky is in view.
-// That is what makes a full dome affordable where the raymarching algorithms in
-// the lab could only afford a northern sector.
+// So a rebuild of the map is four small offscreen passes, nearly independent of
+// how much of the sky is in view, and the dome is 198 triangles at two bilinear
+// fetches a pixel. That is what makes a full dome affordable where the
+// raymarching algorithms in the lab could only afford a northern sector.
+//
+// The world does not rebuild the map every frame. Measured on a forested
+// lakeshore at night the four passes cost 12 fps (50 against 62), so the map is
+// rebuilt once per MAP_INTERVALS[0] seconds, one pass per frame, and the dome
+// blends the three newest maps, each fading in and out over three intervals --
+// see THE SCHEDULE in skymap/skymap.js. cycleInterval walks the other entries
+// for the debug menu.
 //
 // ===========================================================================
 // WHERE THE TUNING LIVES, AND WHY IT IS NOT IN THIS FILE
@@ -57,6 +64,9 @@ import {
 
 // ---------------------------------------------------------------------------
 
+// Seconds between rebuilds of the sky map, in the order the debug row cycles them. The first is what the world ships at.
+export const MAP_INTERVALS = [ 1, 2, 4, 0.5 ]
+
 export class SkyAurora {
   // `renderer` is REQUIRED and there is no fallback, because the four prepasses
   // are renders and a missing renderer would otherwise show up as a sky that is
@@ -66,6 +76,7 @@ export class SkyAurora {
 
     this.screen = new AuroraScreen( scene, { algorithm: WORLD_ALGORITHM } )
     this.skymap = new SkyMapAurora( renderer )
+    this.skymap.interval = MAP_INTERVALS[ 0 ]
 
     // The lab's field-seed knob. The fold lives in world-drive.js so that
     // /test-aurora can apply the same one to the same SEED and be looking at
@@ -117,6 +128,17 @@ export class SkyAurora {
     return nearestPattern( this._activity )
   }
 
+  get interval() {
+    return this.skymap.interval
+  }
+
+  cycleInterval() {
+    const i = MAP_INTERVALS.indexOf( this.skymap.interval )
+    if ( i < 0 ) throw new Error( `aurora map interval ${this.skymap.interval} is not in MAP_INTERVALS` )
+    this.skymap.interval = MAP_INTERVALS[ ( i + 1 ) % MAP_INTERVALS.length ]
+    return this.skymap.interval
+  }
+
   // -------------------------------------------------------------------------
 
   // `head` is her world position, `state` the clock state, `elapsedReal` real
@@ -159,6 +181,7 @@ export class SkyAurora {
     // including SkyProbe, which captures this mesh into the cubemap the water
     // reflects.
     this.skymap.render( WORLD_ALGORITHM, this.screen.values, elapsedReal )
+    this.screen.setSkyWeights( this.skymap.weights )
     this.screen.update( head, elapsedReal )
   }
 

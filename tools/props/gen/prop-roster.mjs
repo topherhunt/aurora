@@ -237,6 +237,39 @@ export const PROPS = [
       'into a rough mound of rock and packed earth, tufts of moss and a few loose stones at the threshold, the ' +
       'inside of the opening dark',
   },
+  {
+    id: 'house-leafkin',
+    label: 'Leafkin House',
+    category: 'other',
+    // A home for the one-metre leafkin (creature-roster.mjs): the door and
+    // windows are sized for it, so the stump is a giant. The uncanny decor is
+    // spelled out as husks, cocoons, webbing and honeycomb because the gate
+    // refuses "insect" and its kin -- an image model paints the noun -- and
+    // the same rule keeps the cosy influence to what is on the stump (round
+    // door, warm windows, chimney) with the source unnamed. The top is told
+    // it is closed: a stump described by its splintered crown reconstructs
+    // hollow, and the world seats one solid.
+    sizeM: 4.5,
+    aspectRatio: '4:3',
+    description:
+      'a giant old tree stump about three metres tall and four wide with a home carved into the trunk, the bark ' +
+      'thick, deeply fissured and lifting in rough scales over fat gnarled roots flaring out at the base. The top ' +
+      'of the stump is closed over by a domed roof of overlapping dead oak leaves layered as shingles, sagging ' +
+      'and cobbled together, bound down with vine and weighted with flat stones, and two tall jagged splinters ' +
+      'of the trunk stand up through the shingles as spires, the taller spire with one small round window set ' +
+      'in its side. A small round wooden door set deep into the front of the trunk between two roots, made of ' +
+      'warped planks bound with vine and hung on hinges of bent twig, a door knocker of two curved chitin ' +
+      'mandibles, a worn stone step. Two small round windows of many tiny wax honeycomb cells glowing warm ' +
+      'amber from inside. A crooked ramshackle chimney of stacked flat stones and packed mud jutting out ' +
+      'sideways from the flank of the stump, bound with vine and leaning. A huge single dead oak leaf stretched ' +
+      'over the entrance as a tarp awning, held up on two thick crooked branch poles lashed with twine, its ' +
+      'edges curling and torn. The outside built up and decorated with forest debris: acorn caps, pine cones, ' +
+      'bark shingles and bundled straw patched onto the walls, drifts of damp moss and dead leaves on every ' +
+      'ledge, strings of empty pale moulted chitin husks hung along the eaves, papery grey cocoons and silk ' +
+      'webbing bunched in the crooks of the roots, a cluster of pale waxy eggs tucked in a papery nest beside ' +
+      'the door, a few shed translucent wings pinned over the doorway, wet dark staining and lichen on the ' +
+      'shaded side',
+  },
 ]
 
 export const propById = (id) => PROPS.find((p) => p.id === id) ?? null

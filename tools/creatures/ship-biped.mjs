@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Ships the animated bipeds -- the abominable snowman and every villager with a
+// Ships the animated bipeds -- the abominable snowman, the leafkin and every villager with a
 // rig map and its clips built -- one GLB each into public/creatures/, and
 // public/creatures/avatars.json listing the villagers with their heights: the
 // roster src/v2/render/avatar.js dresses a netplay peer from.
@@ -25,7 +25,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
 
 export const VILLAGERS = ['alchemist', 'blacksmith', 'farmer', 'fisherman', 'hunter', 'innkeeper', 'miner', 'shepherd', 'woodcutter']
-export const BIPEDS = ['abominable-snowman', ...VILLAGERS]
+export const BIPEDS = ['abominable-snowman', 'leafkin', ...VILLAGERS]
 export const GAITS = ['walk', 'run']
 
 export const shipBiped = (id) => shipSkinned(id, { plan: 'human', gaits: GAITS, key: 'biped', generator: 'tools/creatures/ship-biped.mjs' })

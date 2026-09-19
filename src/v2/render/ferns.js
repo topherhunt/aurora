@@ -152,7 +152,7 @@ import { taken, TOLERANCE_M } from '../taken.js'
 // ground.
 //
 // THE CARPET IS FULL ONLY WHERE THE GROUND IS DAMP OR SHADED. DENSITY is the
-// density at a lake or river bank and against a boulder; everywhere else only the
+// density at a lake or river bank, against a boulder and along a road's verge; everywhere else only the
 // first 1/LUSH.gain of a tile's candidates may stand, so the open wood averages a
 // quarter of it and a shoreline reads as the lush strip it is. The split is by
 // candidate INDEX rather than by a fresh roll, so the sparse carpet is exactly the
@@ -190,6 +190,8 @@ const LUSH = {
   shoreReach: 10,
   // Metres from a boulder's footprint edge. A fern ON the rock always counts.
   rockReach: 2.5,
+  // Metres from a road's edge: the verge is lush. Must stay inside the paths index's padding past the edge (a road's feather, 8 m by default), where nearest finds nothing.
+  roadReach: 5,
   // Metres the anchor query box is padded past rockReach, so a boulder centred
   // outside the tile whose foot reaches into it is still seen: the widest foot
   // the boulders bed lays is ~5 m in radius.
@@ -284,9 +286,6 @@ export const FERN_LOD = {
   drawRadius: DRAW_RADIUS,
 }
 
-/** The placement tuning scripts/check-ferns.mjs gates, so it reads these numbers rather than a copy. */
-export const FERN_TUNING = { DENSITY, FULL_RADIUS, DRAW_RADIUS, LUSH }
-
 // Floats per fern in a perchesInto buffer: x, seat y, z, radius, id.
 export const FERN_PERCH_STRIDE = 5
 
@@ -340,6 +339,9 @@ const PLACEMENT = {
   // Metres of the rosette's base buried, so a fern on a slope does not float.
   sink: 0.03,
 }
+
+/** The placement tuning scripts/check-ferns.mjs gates, so it reads these numbers rather than a copy. */
+export const FERN_TUNING = { DENSITY, FULL_RADIUS, DRAW_RADIUS, LUSH, PLACEMENT }
 
 // Uniform scale applied to the shipping fern, rolled flat over this range. The
 // geometry is built once at FERN_DEFAULTS.height (0.55 m), so the bed runs
@@ -530,11 +532,21 @@ export class Ferns {
     // through: the rim's, and the LOD cross-fade below. It is a program cache
     // key, so it has to be on for every arena wearing this material -- and every
     // arena is an InstancedArena, which makes the attribute in addGeometry.
+    // `leafThrough`: a fern can be carried, dropped and rolled, and a frond
+    // turned toward the ground would otherwise light black -- see material.js's
+    // leafThroughApply.
     this.material = createPropMaterial(textureArray, {
       billboardLayers: [card.layer],
       instancedFade: true,
       wind: 'fern',
+      leafThrough: 0.6,
     })
+    // What hands.js draws a carried or rolling fern with: the LOD0 rosette, so
+    // no card to spin, and NO WIND. The wind's per-plant phase is a hash of the
+    // root's world position, so a root that moves every frame sways at a new
+    // random phase every frame -- a fern in a turning view or tumbling downhill
+    // shivers in place.
+    this.heldMaterial = createPropMaterial(textureArray, { leafThrough: 0.6 })
 
     this.ringCount = RING_TIERS.length
     // The card ring is the one past the last mesh ring, in tierAt and in the
@@ -1048,14 +1060,16 @@ export class Ferns {
 
       // See ROCK_STAND_MIN and the placement below for what `top` is.
       const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
-      // THE SPARSE CUT. A candidate past plainCount stands only on lush ground:
-      // on a boulder, within rockReach of one's foot, or within shoreReach of
-      // water on the dry side (the candidate is already dry, so the signed
-      // distance is what it is without an abs; strict `<`, because `reach` is
-      // the nothing-near answer). Before the path pair because three quarters
-      // of the carpet leave here.
+      // Off the road, then THE SPARSE CUT. A candidate past plainCount stands only on lush ground:
+      // on a boulder, within rockReach of one's foot, within roadReach of a
+      // road's edge, or within shoreReach of water on the dry side (the
+      // candidate is already dry, so the signed distance is what it is without
+      // an abs; strict `<`, because `reach` is the nothing-near answer). Before
+      // the river test because three quarters of the carpet leave here.
+      const road = this.paths.nearest(x, z, 'road')
+      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       if (k >= this.plainCount) {
-        let lush = top > -Infinity || this.water.shoreDistAt(x, z, LUSH.shoreReach, h, tan) < LUSH.shoreReach
+        let lush = top > -Infinity || (road !== null && road.dist - road.halfWidth < LUSH.roadReach) || this.water.shoreDistAt(x, z, LUSH.shoreReach, h, tan) < LUSH.shoreReach
         for (let a = 0; !lush && a < nAnchors; a++) {
           const o = a * 4
           lush = Math.hypot(x - anchors[o], z - anchors[o + 2]) - anchors[o + 3] <= LUSH.rockReach
@@ -1063,8 +1077,6 @@ export class Ferns {
         if (!lush) { rej.sparse++; continue }
       }
 
-      const road = this.paths.nearest(x, z, 'road')
-      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       const river = this.paths.nearest(x, z, 'river')
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       // Last, on the survivors only: a fern she pulled up does not grow back.
@@ -1208,7 +1220,7 @@ export class Ferns {
    * Pull the fern of a pickAt() hit out of the ground: its id goes back to the
    * pool with whatever ring slot it borrowed, its spot is recorded so the tile
    * never regrows it, and what the hand holds is returned as a record for
-   * hands.js -- the LOD0 rosette, the shared material, the instance's tint and
+   * hands.js -- the LOD0 rosette, the windless material, the instance's tint and
    * scale; one under `stowMax` metres may go in the backpack.
    */
   take(hit, stowMax) {
@@ -1232,7 +1244,7 @@ export class Ferns {
       name: 'fern',
       size: this.unitSpan * scale,
       geometry: this.rings[0].mesh.geometry,
-      material: this.material,
+      material: this.heldMaterial,
       color,
       scale: [scale, scale, scale],
       stowable: this.unitSpan * scale < stowMax,
@@ -1260,7 +1272,7 @@ export class Ferns {
   /** The geometry and material a packed fern record is drawn with. For hands.js. */
   dress(slot) {
     if (slot.kind !== 'fern') throw new Error(`Ferns.dress: not a fern, ${slot.kind}`)
-    return { geometry: this.rings[0].mesh.geometry, material: this.material }
+    return { geometry: this.rings[0].mesh.geometry, material: this.heldMaterial }
   }
 
   /** Cut every fern in the tile whose rank has fallen above the keep-fraction. */
@@ -1542,5 +1554,6 @@ export class Ferns {
   dispose() {
     for (const mesh of this.meshes) mesh.dispose()
     this.material.dispose()
+    this.heldMaterial.dispose()
   }
 }

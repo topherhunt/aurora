@@ -2254,6 +2254,73 @@ console.log('\n-- the dead wood under the trunk --')
   bare.dispose()
 }
 
+// --- 14. trees off the road, thick along its verge --------------------------
+
+console.log('\n-- the road --')
+
+{
+  // A straight road along x at z = 0, half-width 3 m, feather 8 m; the stub answers only within the feather, as PathSet.nearest does.
+  const HW = 3
+  const FEATHER = 8
+  const { ROAD } = TREE_TUNING
+  const paths = { nearest: (x, z, kind) => (kind === 'road' && Math.abs(z) <= HW + FEATHER ? { dist: Math.abs(z), halfWidth: HW } : null) }
+  const trunks = (trees) => {
+    const out = []
+    for (const tile of trees.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        out.push([trees.instX[id], trees.instZ[id]])
+      }
+    }
+    return out
+  }
+  const key = ([x, z]) => `${x.toFixed(3)},${z.toFixed(3)}`
+
+  // Full forest: the road is cleared and nothing else moves, since a keep of 1 has no room to rise.
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, paths })
+  t.place(0, 0)
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  bare.place(0, 0)
+  const on = trunks(t).filter(([, z]) => Math.abs(z) < HW + ROAD.clearance)
+  const bareOn = trunks(bare).filter(([, z]) => Math.abs(z) < HW + ROAD.clearance)
+  const keptKeys = new Set(trunks(t).map(key))
+  const lost = trunks(bare).filter((tr) => Math.abs(tr[1]) >= HW + ROAD.clearance && !keptKeys.has(key(tr)))
+  check(bareOn.length > 20 && on.length === 0, 'no trunk stands on the road or within ROAD.clearance of its edge',
+    `${on.length} on the road, against ${bareOn.length} in the bare scatter`)
+  check(t.placed === bare.placed - bareOn.length && lost.length === 0, 'and in a full wood the trees off the road are exactly the bare scatter\'s',
+    `${t.placed} with the road, ${bare.placed} without, ${bareOn.length} refused, ${lost.length} moved`)
+
+  // Open meadow: the verge is where the keep has room to rise, and it rises by 1 + gain / 2 on average across the band.
+  // A meadow keeps one tree in 25, so the count is summed over several seeds.
+  const meadow = { coverAt: () => 0 }
+  const R = 150
+  let verge = 0
+  let open = 0
+  for (let seed = 1; seed <= 8; seed++) {
+    const m = new Trees(new THREE.Scene(), flat, dry, texArray, { seed, radius: 200, paths, biome: meadow })
+    m.place(0, 0)
+    const inDisc = trunks(m).filter(([x, z]) => x * x + z * z < R * R)
+    verge += inDisc.filter(([, z]) => Math.abs(z) >= HW + ROAD.clearance && Math.abs(z) < HW + ROAD.reach).length
+    open += inDisc.filter(([, z]) => Math.abs(z) >= HW + FEATHER).length
+    m.dispose()
+  }
+  const vergeArea = 2 * 2 * R * (ROAD.reach - ROAD.clearance)
+  const openArea = Math.PI * R * R - 2 * 2 * R * (HW + FEATHER)
+  const ratio = verge / vergeArea / (open / openArea)
+  const want = 1 + ROAD.gain * (1 - (ROAD.clearance + ROAD.reach) / (2 * ROAD.reach))
+  check(open > 300 && ratio > want * 0.7 && ratio < want * 1.3, 'on a meadow the verge carries several times the trees the open ground does',
+    `${verge} on ${vergeArea.toFixed(0)} m² of verge, ${open} on ${openArea.toFixed(0)} m² of meadow over 8 seeds: ${ratio.toFixed(2)}x against ${want.toFixed(2)} expected`)
+
+  let threw = false
+  try {
+    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, paths: {} })
+  } catch { threw = true }
+  check(threw, 'and something passed as `paths` that cannot answer throws at construction')
+
+  t.dispose()
+  bare.dispose()
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all tree checks passed' : `${failures} FAILED`}\n`)

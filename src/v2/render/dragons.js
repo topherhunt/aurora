@@ -1,97 +1,115 @@
 // ---------------------------------------------------------------------------
 // THE DRAGONS: one fen dragon to every roost (render/roosts.js), flying out
-// from its nest to hunt the stags (render/wildlife.js) and carrying the kill
-// home.
+// from its nest and carrying a kill home.
 //
 // A DRAGON IS ITS ROOST'S. roosts.sites() lists the nests resident round her,
 // and this layer keeps exactly one dragon per site, born the frame the site
 // appears and retired (its body dissolving where it flies) the frame the site
-// goes. Nothing here is a tile roll of its own: where a dragon lives is where
-// its roost was placed, and the roost is the pure function of position.
+// goes. Where a dragon lives is where its roost was placed, and the roost is
+// the pure function of position; what it is doing is a pure function of the
+// room's clock, so every client in a room sees the same dragon at the same
+// place doing the same thing (_notes/creature-sync.md).
 //
-// IT IS HUNGRY OR IT IS NOT, and that decides what a flight is for. A dragon
-// that ate within HUNGER_S leaves the nest to `explore`: a cruise CRUISE_AGL
-// above the ground toward one wandering aim after another within PATROL_M of
-// home, and at an aim, VISIT_P of the time, it picks the ground under it as a
-// spot to `visit` if that ground is under SPOT_SLOPE_DEG, dry and well clear of
-// the nest -- flies there, lands and `perch`es on it for PERCH_S, pottering as
-// it would at home, then flies on until its flight clock (FLIGHT_S, which does
-// not run while it perches) sends it home. A dragon that has not eaten in
-// HUNGER_S flies to `patrol` instead -- the same cruise, every LOOK_EVERY
-// frames asking the wildlife for the nearest live stag within HUNT_M -- and an
-// explorer that goes hungry in the air turns to patrolling where it is.
-// Finding a stag is `hunt` -- a run at a point above it -- until STOOP_M out,
-// then `strike`: the dive proper, at DIVE_MPS and a pitch no cruise allows, and
-// within STRIKE_M of the stag the stag is SEIZED (wildlife.seize): its spawn is
-// dead, its slot is the dragon's cargo, and it hangs from the talons, drawn by
-// wildlife.carry wherever the dragon puts it -- on its own species' mesh rungs,
-// then as its card for as long as the dragon itself is drawn.
-// `return` is the flight home with it and `land` the last LAND_M at LAND_MPS
-// onto the nest floor. A strike that misses climbs back into the hunt; a stag
-// that left the world mid-dive (its tile unloaded) sends the dragon back on
-// patrol.
+// ITS LIFE IS A SCORE (sim/score.js). Time is the world clock in seconds, cut
+// into CHAPTER_S chapters offset by the roost key's hash; each chapter is a
+// chain of phrases rolled from hash(key, chapter, index), every one with a
+// closed-form duration and end pose, and the chapter's last phrase ends at the
+// home pose on the nest. `rest` on the nest (`roost`) or on a visited spot
+// (`perch`) potters through rest steps -- idle, alert, walk round a ring
+// WALK_RING of the floor, sit, lie -- and walks back to the centre for the
+// end; a `fly` leg cruises CRUISE_AGL over the ground from one point to the
+// next at PATROL_MPS, meandering (CAREEN, SWOOP), keeping MIN_AGL over the
+// ground under or LOOK_AHEAD_M ahead, hanging slowly about the point within
+// LOITER_M of it if early, ending there at LOITER_PACE of the cruise, and
+// eased onto it, heading and all, over the leg's last EASE_S; `land`
+// glides the last LAND_M at LAND_MPS onto the floor and walks the last step. A flight is legs for FLIGHT_S of air time -- to
+// `explore` when the plan rolls the dragon fed, to `patrol` when hungry --
+// and, exploring, VISIT_P of the aims that are dry, under SPOT_SLOPE_DEG and
+// SPOT_AWAY nest radii from home become a landing and a PERCH_S perch; then
+// the leg home and the landing on the nest. Inside a phrase the body is
+// integrated at TICK_HZ on absolute ticks of world time, its noise from the
+// phrase's own PRNG, and the frame draws between the last two ticks. A dragon
+// born mid-phrase is placed at the phrase's start pose and replays, at most
+// CATCH_UP_TICKS a frame.
 //
-// ON THE GROUND IT POTTERS. `roost` (the nest) and `perch` (a visited spot) run
-// one rest step after another off a queue: `idle` held IDLE_S, one `alert`
-// look about, `sit` or `lie` held SIT_S, or a `walk` at the shipped walk gait
-// to the next point round a ring WALK_RING of the floor's radius, so a run of
-// walks traces a circle. Landing with a kill fills the queue instead: the kill
-// is laid at a FIXED spot on the nest floor (NEST_ASIDE off centre on the side
-// it landed facing away from), the dragon walks a circuit, then round to the
-// far side of the kill and up to it, and `eat`s -- the eat clip plunging the
-// head EAT_REACH ahead of the body, which is where the kill lies -- for EAT_S,
-// at the end of which the carcass is dropped to fade (eaten), `fedAt` is now,
-// and REST_S of pottering follow before the next flight. A body walking on the
-// nest rides the roost's floor plane; on turf it rides the height field.
+// A HUNGRY FLIGHT HUNTS. The plan rolls one stag from the wildlife's roster
+// within HUNT_M of the nest (Wildlife.roster, pure), patrols while the hunt
+// and the way home still fit the budget, then flies a `hunt` leg at HUNT_MPS
+// to STOOP_AGL over where the stag's own free plan has it at the leg's end
+// (Wildlife.poseAt, closed form, the leg resized to the moved stag thrice),
+// and a `stoop` dives at DIVE_MPS onto the stag's pose at the stoop's end,
+// STRIKE_AGL over it; the `return` leg home carries the kill and the rest on
+// the nest is the meal. The stoop's end is THE STRIKE: the wildlife plans the
+// stag's chapter by asking every dragon within reach (strikeOn) and cuts the
+// stag's plan there, dead to its chapter's end, so a stag and the dragon that
+// takes it are one closed-form fact on every client, and the kill in the
+// talons is that stag's own slot (Wildlife.kill) while its chapter runs.
 //
-// A FISH IN HER HAND IS ITS. A grounded dragon with a `fish` lure (hands.js
-// lures) within LURE_M drops whatever it has and goes to `menace`: off the
-// nest onto the height field after the hand, turning at WALK_TURN_RATE, and
-// stopped with its head at her -- EAT_REACH ahead of the body, plus MENACE_M
-// -- where it plays the eat clip at her, and after her again once she is
-// MENACE_M further off, at the walk gait, or the run once the hand is
-// MENACE_RUN_M past its head and until it is a run's braking distance off her,
-// since her walk outpaces its own: it stomps after her in rushes. It does her no harm;
-// the ear (audio/ambience.js) roars it. The
-// fish put away or LURE_FORGET_M off, it flies home (`return`) and the rest
-// clock starts over on the nest.
+// A KILL ON THE NEST IS A MEAL. Landing with cargo, the kill is laid at a
+// FIXED spot on the nest floor (NEST_ASIDE off centre), the dragon walks a
+// circuit, then round to the far side of the kill and up to it, and `eat`s --
+// the eat clip plunging the head EAT_REACH ahead of the body, which is where
+// the kill lies -- for EAT_S, at the end of which the carcass is dropped to
+// fade.
+//
+// A FISH IN HER HAND IS ITS: the one thing that takes a dragon off its score.
+// A grounded dragon with a `fish` lure within LURE_M drops whatever it has and
+// goes LIVE to `menace`: off the nest onto the height field after the hand,
+// turning at WALK_TURN_RATE, stopped with its head at her -- EAT_REACH ahead
+// of the body, plus MENACE_M -- where it plays the eat clip at her, and after
+// her again once she is MENACE_M further off, at the walk gait, or the run
+// once the hand is MENACE_RUN_M past its head: it stomps after her in rushes.
+// It does her no harm; the ear (audio/ambience.js) roars it. Every client runs
+// the same rule against the same relayed hands; the lurer's client is the
+// authority and publishes an anchor (pending()) every ANCHOR_S, applied
+// elsewhere as a nudge over CORRECT_S. The fish put away or LURE_FORGET_M
+// off, the lure ends: the authority publishes a `rejoin` anchor, and from its
+// pose and time every client builds the same REJOIN -- a leg home, a landing,
+// and a rest until the next planned rest on the nest -- after which the dragon
+// is on its score again with nothing more sent. A client that meets a peer's
+// live anchor before it sees the hand stands alert at the anchor until one or
+// the other arrives; an anchor older than ANCHOR_STALE_S with no hand in sight
+// ends the lure here.
 //
 // IT TURNS, PITCHES AND BANKS, none of them faster than a rate: heading closes
 // on the bearing at TURN_RATE, pitch on the climb angle at PITCH_RATE, and roll
-// leans into the turn by BANK of the swing. A CRUISE MEANDERS: the bearing and
-// the climb the body closes on are each swung by a slow sine of the dragon's
-// own clock and phase (CAREEN, SWOOP), so a flight between two points swoops up
-// and down and yaws side to side, banking into every swing like a boat that is
-// hard to steer; only a dive and a landing fly true. The body's frame is the
-// wildlife's -- +X forward, yawed about the world up -- with pitch about the body's Z and
-// roll about its X composed after, so a dragon on a card and a dragon on a
-// mesh are the same matrix.
+// leans into the turn by BANK of the swing. A cruise meanders: the bearing and
+// the climb the body closes on are each swung by a slow sine of world time
+// and the dragon's phase, so a leg swoops and yaws, banking into every swing;
+// only a landing flies true. The body's frame is the wildlife's -- +X forward,
+// yawed about the world up -- with pitch about the body's Z and roll about its
+// X composed after, so a dragon on a card and a dragon on a mesh are the same
+// matrix.
 //
-// EVERY RESIDENT DRAGON IS SIMULATED, in or out of sight: a dozen bodies of
-// arithmetic and a ground probe every PROBE_EVERY frames, and the alternative
-// -- a dragon frozen mid-air when she looked away, hanging there when she came
-// round the hill -- is not a saving worth having. What is gated by the ladder
+// EVERY RESIDENT DRAGON IS STEPPED, in or out of sight. What the ladder gates
 // is the DRAWING, on the creatures' rungs (critters.js critterTier) sized by
 // the FLYING body's largest extent: four skinned tiers through a puppet
 // (render/puppet.js), then the card rung, then nothing.
 //
 // THE CARD IS TWO QUADS FIXED IN THE BODY'S FRAME, not one quad spun to her: a
 // side view and a top view, crossed, carrying the full instance matrix -- yaw,
-// pitch, roll. A spun quad stands in for a body whose every side reads alike;
-// a dragon seen from below is a wingspan and from beside it a neck and a tail,
-// and which of those she sees is exactly what a spun card cannot say. The two
-// pictures are photographed from the FLY pose (bakeCards), and the quads
-// bounded by that same pose measured on the CPU, so the card and the mesh it
-// dissolves against are the same wingspan.
+// pitch, roll. A dragon seen from below is a wingspan and from beside it a
+// neck and a tail, and which of those she sees is exactly what a spun card
+// cannot say. The two pictures are photographed from the FLY pose (bakeCards),
+// and the quads bounded by that same pose measured on the CPU, so the card and
+// the mesh it dissolves against are the same wingspan.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
-import { mulberry32 } from '../../sim/mathx.js'
+import { clamp, lerp, mulberry32 } from '../../sim/mathx.js'
+import {
+  CHAPTER_S, EASE_S, TICK_S, Score, chapterOf, easeWeight, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
+} from '../../sim/score.js'
 import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, bakeCritterCard, createCritterCardMaterial, critterTier, makeCardFadeAttribute,
   setCritterCard, tileSeed,
 } from './critters.js'
 import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { TILE as ROOST_TILE } from './roosts.js'
+
+/** The room's key for the dragon of a roost: its tile, which is where the roost is a pure function of (creature-net.js routes the `dr` prefix here). */
+export const keyOf = (site) => `dr:${site.tx},${site.tz}`
+const KEY_RE = /^dr:(-?\d+),(-?\d+)$/
 
 export const CLIPS = ['idle', 'alert', 'walk', 'run', 'sit', 'lie', 'fly', 'eat']
 const ONE_SHOT = new Set(['sit', 'lie'])
@@ -127,26 +145,39 @@ export const CAREEN_S = 5
 export const SWOOP = 0.3
 export const SWOOP_S = 8
 export const SWOOP_ROOM = 10
-// How far from home a patrol aim may be, how high above the ground under the aim it is set, and the least clearance over the ground under or ahead of the body on a cruise.
+// How far from home a leg's aim may be, how high above the ground under the aim it is set, and the least clearance over the ground under or ahead of the body on a cruise.
 export const PATROL_M = 300
 export const CRUISE_AGL = [40, 80]
 export const MIN_AGL = 15
 export const LOOK_AHEAD_M = 40
-// How near a stag must be to be hunted, how far out the hunt becomes the dive, how near the talons must pass to take it, and how long a dive may run before it is a miss.
+// How far from the nest a stag may be to be hunted; how far short of the stag and how high over it the hunt leg ends and the stoop begins, so the stoop is a dive and not a drop; how high over it the stoop ends (the talons at its back); and the seconds the stoop is given past its dive.
 export const HUNT_M = 250
 export const STOOP_M = 40
 export const STOOP_AGL = 25
-export const STRIKE_M = 5
-export const STRIKE_S = 10
-// The last leg home, how near the stand point the landing hands over to the settle, and how long a landing may run before it is handed over from wherever it is.
+export const STRIKE_AGL = 2
+export const STOOP_PAD_S = 1
+// A landing: the leg before it ends this far short of the floor's centre and this high over it, the glide hands over to the settle this near its touchdown, and the touchdown itself is this fraction of that short of the centre so the rest walks the last of it.
 export const LAND_M = 30
 export const RETURN_AGL = 30
 export const LAND_SNAP_M = 3
-export const LAND_S = 30
-// How long after a meal a dragon flies to explore rather than to hunt; how long it rests on the nest once fed (a hungry dragon's rest, too, since it is a rest and not a wait); how long a dragon born to a roost coming resident sits before its first flight; how long a flight lasts before it turns for home, not counting time perched; how long a visited spot holds it; how long it eats. A dragon lives in the air: the flights are long and the rests between them short, so one seen on its nest is soon seen off it.
-export const HUNGER_S = 300
+export const TOUCHDOWN = 0.8
+// How a leg's clock is sized from its distance: the flown path over the straight line (the meander), plus seconds for the turn onto it and the climb off the ground; a landing's likewise; how near a leg's end a body that is early slows to hang about it, and to what fraction of the cruise at least; how long before a rest's end the body starts walking back to its centre; the fastest the ease may pull the body and its heading onto a phrase's end, over what the flight itself does, and how far past a leg's end the flight steers as the ease takes over.
+export const FLIGHT_SLACK = 1.15
+export const LEG_PAD_S = 5
+export const LAND_PAD_S = 4
+export const LOITER_M = 15
+export const LOITER_PACE = 0.3
+export const HOMING_PAD_S = 4
+export const EASE_MPS = 8
+export const EASE_TURN = 1
+export const EASE_AHEAD_M = 60
+// The least a flight is given, in seconds of air time: a chapter with less left rests it out.
+export const FLIGHT_MIN_S = 60
+// How likely a chapter's flight is a hungry one (a patrol) rather than a fed one (an explore); how long a dragon rests on the nest between flights; how long a flight lasts in the air, not counting time perched; how long a visited spot holds it; how long it eats. A dragon lives in the air: the flights are long and the rests between them short, so one seen on its nest is soon seen off it.
+export const HUNGRY_P = 0.5
 export const REST_S = [20, 60]
-export const FIRST_S = [5, 30]
+// The least a rest with a kill on the nest is given: the circuit, the approach and EAT_S of eating fit in it, since a meal is never cut short and a dragon may not take off with the kill uneaten.
+export const MEAL_S = 90
 export const FLIGHT_S = [120, 300]
 export const PERCH_S = [20, 60]
 export const EAT_S = [15, 30]
@@ -161,15 +192,12 @@ export const WAY_M = 0.6
 export const WALK_RING = 0.3
 export const WALK_STEP = 1.3
 export const APPROACH_M = 1.5
-// How often an aim reached on an explore becomes a visit, the steepest ground a dragon will alight on, and how many nest radii from home a spot must be to count as away.
+// How often an aim on an explore becomes a visit, the steepest ground a dragon will alight on, and how many nest radii from home a spot must be to count as away.
 export const VISIT_P = 0.5
 export const SPOT_SLOPE_DEG = 30
 export const SPOT_AWAY = 3
-// Frames between prey scans on patrol, and between ground probes in the air.
-export const LOOK_EVERY = 15
-export const PROBE_EVERY = 6
-// A dragon on its card rung or past it, with no kill in its talons and no puppet dissolving against it, is stepped every CARD_EVERY frames on the dt banked between (behaved, tiered, posed), and on the others its card is pushed where it last was: at a quarter of a kilometre a stride four frames long is under a pixel. Its probe and look frames fall where their own cadence and this one coincide.
-export const CARD_EVERY = 4
+// Ticks between ground probes in the air.
+export const PROBE_EVERY = 2
 // Clip cross-fade.
 const FADE_S = 0.35
 // Where a dragon stands on its nest, above the floor as a fraction of the rim's radius, and how far to the side of it the kill lies.
@@ -183,12 +211,18 @@ export const LURE_M = 5
 export const LURE_FORGET_M = 12
 export const MENACE_M = 1
 export const MENACE_RUN_M = 3
+// Seconds between a live dragon's anchors from its authority; how long a peer's anchor speaks for a dragon whose hand this client cannot see; how long a peer's anchor takes to pull the body here onto it.
+export const ANCHOR_S = 1
+export const ANCHOR_STALE_S = 3
+export const CORRECT_S = 1
 const NO_LURES = []
 
-const swingTo = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a))
-const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
-const lerp = (a, b, t) => a + (b - a) * t
 const roll = (rand, [lo, hi]) => lerp(lo, hi, rand())
+// The heading that carries the body from a to b: +X forward, a positive heading toward -Z.
+const bearing = (a, b) => Math.atan2(-(b.z - a.z), b.x - a.x)
+const gap3 = (a, b) => Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
+// `cur` pulled toward `want` by the fraction `w`, no further than `cap` in one go.
+const pull = (cur, want, w, cap) => cur + clamp((want - cur) * w, -cap, cap)
 
 const _quat = new THREE.Quaternion()
 const _euler = new THREE.Euler()
@@ -282,14 +316,14 @@ export function measureFly(asset) {
 export class Dragons {
   /**
    * @param field     V2Height: heightAt, the ground the flight keeps clear of
-   * @param roosts    Roosts: sites()
-   * @param wildlife  Wildlife: prey, seize, carry, drop
+   * @param roosts    Roosts: sites(), siteAt(tx, tz)
+   * @param wildlife  Wildlife: roster, spawnAt, poseAt, kill, carry, drop; its `hunter` is set here (strikeOn)
    */
   constructor(scene, field, { seed = 1, roosts, wildlife, water, asset = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') throw new Error('Dragons needs a height field with heightAt and heightAndSlopeAt')
-    if (!roosts || typeof roosts.sites !== 'function') throw new Error('Dragons needs the Roosts, for sites')
-    if (!wildlife || ['prey', 'seize', 'carry', 'drop'].some((f) => typeof wildlife[f] !== 'function')) {
-      throw new Error('Dragons needs the Wildlife, for prey, seize, carry and drop')
+    if (!roosts || typeof roosts.sites !== 'function' || typeof roosts.siteAt !== 'function') throw new Error('Dragons needs the Roosts, for sites and siteAt')
+    if (!wildlife || ['roster', 'spawnAt', 'poseAt', 'kill', 'carry', 'drop'].some((f) => typeof wildlife[f] !== 'function')) {
+      throw new Error('Dragons needs the Wildlife, for roster, spawnAt, poseAt, kill, carry and drop')
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Dragons needs the WaterSurfaces, for isSubmerged, so no dragon alights in a lake')
     this.field = field
@@ -297,7 +331,14 @@ export class Dragons {
     this.wildlife = wildlife
     this.water = water
     this.seed = seed
-    this.rand = mulberry32(seed ^ 0x7a3d)
+    // The score: `plan` is a field so a gate can put a chapter of its own under a dragon. Three chapters kept a key: a stag's window (strikeOn) can straddle two of a dragon's, and the one playing must not churn.
+    this.plan = (key, chapter, rand) => this._plan(key, chapter, rand)
+    this.score = new Score((key, chapter, rand) => this.plan(key, chapter, rand), { keep: 3 })
+    wildlife.hunter = (key, t0, t1) => this.strikeOn(key, t0, t1)
+    // key -> the latest anchor heard for it, live or rejoin (apply); read when its dragon is born.
+    this.anchored = new Map()
+    // Anchors this client owes the room (pending).
+    this.outbox = []
 
     this.batch = new THREE.Group()
     this.batch.name = 'v2-dragons'
@@ -318,25 +359,26 @@ export class Dragons {
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
-        id: i, site: null, seen: 0,
+        id: i, site: null, key: null, seen: 0,
+        // The pose at the last tick, and at the tick before it, which the frame draws between.
         x: 0, y: 0, z: 0, heading: 0, pitch: 0, roll: 0, speed: 0,
-        // The meander's clock and this dragon's phase in it, so no two swing together.
-        age: 0, phase: 0,
+        px: 0, py: 0, pz: 0, pheading: 0, ppitch: 0, proll: 0,
+        rec: { tick: 0, alpha: 1 },
+        // The home pose the chapters turn at, and this dragon's phase in the meander, so no two swing together.
+        home: null, phase: 0,
         // The ground under the body and under the point LOOK_AHEAD_M ahead of it, as last probed.
         ground: 0, ahead: 0,
-        // The state's clock, the flight clock (runs only in the air), the age it last ate, and the aim of the cruise.
-        state: 'roost', timer: 0, flight: 0, fedAt: 0, aimX: 0, aimY: 0, aimZ: 0,
-        // The ground it is on or flying to land on -- its nest site, or a visited spot -- the rest steps queued on it, the step under way and where that step walks to and faces; the kill's fixed place on the nest floor, off its centre.
-        dest: null, queue: [], rest: 'idle', wayU: 0, wayV: 0, face: null, cargoU: 0, cargoV: 0, cargoYaw: 0,
-        prey: null, cargo: null,
+        // The phrase playing, its start in world seconds and the tick the next is entered on, its index and chapter, and its PRNG; the rejoin chain when one is under way; the live record while a lure has it.
+        state: 'roost', phrase: null, phraseStart: 0, phraseEnd: 0, phraseEndTick: 0, phraseIndex: 0, chapter: 0, rand: null, rejoin: null, live: null,
+        // The ground it is on or landing on -- its nest site, or a visited spot -- the rest steps queued on it, the step under way, where that step walks to and faces, whether the rest is walking back to its centre for the end, whether a landing has handed over to the settle; the kill's fixed place on the nest floor, off its centre.
+        dest: null, queue: [], rest: 'idle', wayU: 0, wayV: 0, face: null, homing: false, down: false, cargoU: 0, cargoV: 0, cargoYaw: 0,
+        cargo: null,
         // The hands.js lure it is stomping after.
         lure: null,
         // The clip playing, how long the rest step holds it, and the clip's own length, for the ear's wingbeat clock; `cue` counts steps, as the wildlife's does.
         clip: 'idle', cue: 0, left: 0, cycle: 0,
         size: 1, k: 1, lodSize: 1,
         lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1,
-        // The dt banked on the card rung between steps, and where its card was last drawn, pushed again on the frames it is not stepped.
-        held: 0, cardMat: new THREE.Matrix4(),
       })
     }
     this.free = this.slots.slice()
@@ -350,11 +392,13 @@ export class Dragons {
     this.cardFade = null
     this.cardN = 0
     this.frame = 0
+    this.last = null
     this.loaded = false
-    // Sites with no free slot; dragon-frames in mesh range with no free puppet; landings the clock finished for the dragon.
+    // Sites with no free slot; dragon-frames in mesh range with no free puppet; ticks replayed this frame; dragons still catching up after it.
     this.overflow = 0
     this.starved = 0
-    this.forced = 0
+    this.replayed = 0
+    this.behind = 0
 
     if (asset) {
       this.setAsset(asset)
@@ -428,40 +472,69 @@ export class Dragons {
   // Slots.
   // -------------------------------------------------------------------------
 
-  /** A dragon born on its nest, sized by the roost's own seed so the same nest holds the same dragon every visit. */
-  _spawn(site) {
+  /** The dragon of a roost, from the roost's own seed so the same nest holds the same dragon every visit and on every client: its site, its size, the home pose its chapters turn at and its phase in the meander. */
+  _born(site) {
+    if (!Number.isFinite(site.gx + site.gz)) throw new Error(`Dragons: roost ${keyOf(site)} carries no floor plane (gx, gz)`)
+    const rand = mulberry32(tileSeed(site.key, 0x5d, this.seed))
+    const size = this.asset.sizeM * (1 + SIZE_VARY * (2 * rand() - 1))
+    const home = { x: site.x, y: this._standY(site), z: site.z, heading: rand() * Math.PI * 2, speed: 0 }
+    return { site, size, home, phase: rand() * Math.PI * 2 }
+  }
+
+  /** The site and home of the dragon keyed `key`, born or not: the live dragon's, else the roost's tile asked of the Roosts, which answers past the resident radius. */
+  _whoOf(key) {
+    const d = this.byKey.get(key)
+    if (d) return { site: d.site, home: d.home }
+    const m = KEY_RE.exec(key)
+    if (!m) throw new Error(`Dragons: no dragon is keyed ${key}`)
+    const site = this.roosts.siteAt(Number(m[1]), Number(m[2]))
+    if (!site) throw new Error(`Dragons: no roost on tile ${m[1]},${m[2]} for ${key}`)
+    const { home } = this._born(site)
+    return { site, home }
+  }
+
+  /** A dragon born to its roost at world time `now`, placed where its score (or the room's anchor for it) has it. */
+  _spawn(site, now) {
     const d = this.free.pop()
     if (!d) { this.overflow++; return null }
-    const rand = mulberry32(tileSeed(site.key, 0x5d, this.seed))
-    if (!Number.isFinite(site.gx + site.gz)) throw new Error(`Dragons: roost ${site.key} carries no floor plane (gx, gz)`)
+    const born = this._born(site)
     d.site = site
-    d.size = this.asset.sizeM * (1 + SIZE_VARY * (2 * rand() - 1))
+    d.key = keyOf(site)
+    d.size = born.size
     d.k = d.size / this.asset.span
     d.lodSize = d.size * this.bulk
-    d.heading = rand() * Math.PI * 2
-    d.pitch = d.roll = d.speed = 0
-    d.age = 0
-    d.phase = rand() * Math.PI * 2
-    // Some way into its hunger, so a valley of roosts does not all hunt at once, nor all explore.
-    d.fedAt = -rand() * HUNGER_S
-    d.flight = 0
-    d.prey = d.cargo = d.lure = null
+    d.home = born.home
+    d.phase = born.phase
+    d.cargo = d.lure = d.live = d.rejoin = null
     d.queue.length = 0
     d.lod = CARD_RUNGS
     d.puppet = null
     d.cardWant = false
     d.cardP = 1
-    d.held = 0
-    d.ground = d.ahead = site.y
     d.dest = site
-    d.x = site.x
-    d.y = this._standY(site)
-    d.z = site.z
-    this._perch(d)
-    // Off within FIRST_S, rolled so a valley of roosts does not lift off together.
-    d.timer = roll(rand, FIRST_S)
-    this.byKey.set(site.key, d)
+    this.byKey.set(d.key, d)
+    const anchor = this.anchored.get(d.key)
+    if (anchor && anchor[1] >= chapterOf(now, d.key).start) {
+      this._fromAnchor(d, anchor, now)
+    } else {
+      // At the phrase's start pose, stepping from the tick before the one the phrase is entered on, as a dragon that played the phrase before did.
+      const at = this._phraseAt(d, now)
+      this._place(d, at.phrase.from)
+      d.rec.tick = tickAfter(at.start) - 1
+      this._enter(d, at, now)
+    }
     return d
+  }
+
+  /** The body put at a pose -- level, at the pose's speed -- the tick before it the same. */
+  _place(d, pose) {
+    if (!Number.isFinite(pose.speed)) throw new Error('Dragons: a pose with no speed')
+    d.x = d.px = pose.x
+    d.y = d.py = pose.y
+    d.z = d.pz = pose.z
+    d.heading = d.pheading = pose.heading
+    d.speed = pose.speed
+    d.pitch = d.roll = d.ppitch = d.proll = 0
   }
 
   /** How far over its floor a dragon stands: a hand over a nest's branches, nothing over turf. */
@@ -479,142 +552,6 @@ export class Dragons {
     return dest.turf ? this.field.heightAt(dest.x + u, dest.z + v) : dest.y + dest.gx * u + dest.gz * v
   }
 
-  /** Not eaten within HUNGER_S. */
-  _hungry(d) {
-    return d.age - d.fedAt > HUNGER_S
-  }
-
-  /**
-   * The dragon down on `dest`, resting. On its nest with a kill, the kill is
-   * laid at a fixed spot and the queue is the meal: a circuit of the floor,
-   * round behind the kill and up to it, then the eating; the rest clock starts
-   * when the meal ends. Otherwise the rest clock starts now and the first step
-   * is an idle, the body walking onto the centre first if the landing left it
-   * short. Where the body is, `_stand` takes it, at its rates.
-   */
-  _perch(d) {
-    const dest = d.dest
-    const home = dest === d.site
-    d.state = home ? 'roost' : 'perch'
-    d.queue.length = 0
-    if (d.cargo) {
-      if (!home) throw new Error('Dragons: a kill carried to a spot that is not the nest')
-      d.cargoU = -Math.sin(d.heading) * NEST_ASIDE * dest.r
-      d.cargoV = -Math.cos(d.heading) * NEST_ASIDE * dest.r
-      d.cargoYaw = d.heading + 0.6
-      const ring = WALK_RING * dest.r
-      let a = Math.atan2(d.z - dest.z, d.x - dest.x)
-      for (let i = 0; i < 3; i++) { a += WALK_STEP; d.queue.push({ kind: 'walk', u: Math.cos(a) * ring, v: Math.sin(a) * ring }) }
-      // The stance: EAT_REACH short of the kill along the line from the nest's centre out through it, reached from APPROACH_M further back so the body arrives facing the kill.
-      const len = Math.hypot(d.cargoU, d.cargoV)
-      const ux = d.cargoU / len, uz = d.cargoV / len
-      const stance = EAT_REACH * d.k
-      d.queue.push({ kind: 'walk', u: d.cargoU - (stance + APPROACH_M) * ux, v: d.cargoV - (stance + APPROACH_M) * uz })
-      d.queue.push({ kind: 'walk', u: d.cargoU - stance * ux, v: d.cargoV - stance * uz })
-      d.queue.push({ kind: 'eat' })
-      d.timer = Infinity
-    } else {
-      d.timer = roll(this.rand, home ? REST_S : PERCH_S)
-      if (Math.hypot(d.x - dest.x, d.z - dest.z) > WAY_M) d.queue.push({ kind: 'walk', u: 0, v: 0 })
-      d.queue.push({ kind: 'idle' })
-    }
-    this._restStep(d)
-  }
-
-  /**
-   * One frame on the ground: the body levelling, and coming down onto the floor
-   * under it, at the landing's rates; walking, its heading closes on the
-   * bearing to its point at WALK_TURN_RATE and its speed on the walk gait --
-   * a third of it while the swing is wide, so it turns tight rather than
-   * orbiting a point inside its turning circle -- and it moves along where it
-   * points; standing, it eases to a stop. Returns the distance to the point, or
-   * 0 standing.
-   */
-  _stand(d, dt) {
-    const dest = d.dest
-    let dist = 0
-    let want = 0
-    if (d.rest === 'walk') {
-      const dx = dest.x + d.wayU - d.x
-      const dz = dest.z + d.wayV - d.z
-      dist = Math.hypot(dx, dz)
-      const swing = swingTo(d.heading, Math.atan2(-dz, dx))
-      d.heading += clamp(swing, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
-      want = this.asset.gait.walk * d.k * (Math.abs(swing) > 1 ? 0.3 : 1)
-    } else if (d.face !== null) {
-      d.heading += clamp(swingTo(d.heading, d.face), -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
-    }
-    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
-    d.x += Math.cos(d.heading) * d.speed * dt
-    d.z -= Math.sin(d.heading) * d.speed * dt
-    const floor = this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest)
-    d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
-    d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
-    d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
-    return dist
-  }
-
-  /** The lure this dragon is after this frame: the nearest of this.lures it wants, noticed within LURE_M across the ground and kept to LURE_FORGET_M; null when there is none. */
-  _lure(d) {
-    let lure = null
-    let best = Infinity
-    for (const l of this.lures) {
-      if (!LURES.includes(l.kind)) continue
-      const dist = Math.hypot(l.x - d.x, l.z - d.z)
-      if (dist < best) { best = dist; lure = l }
-    }
-    return lure !== null && best <= (d.lure ? LURE_FORGET_M : LURE_M) ? lure : null
-  }
-
-  /** Off the rest and after the lure: the kill, if any, let go where it lies. */
-  _menace(d, lure) {
-    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
-    d.state = 'menace'
-    d.lure = lure
-    d.queue.length = 0
-    d.rest = 'idle'
-    d.face = null
-    d.timer = Infinity
-    this._play(d, 'alert', Infinity)
-  }
-
-  /**
-   * One frame after the lure: the heading closing on its bearing at
-   * WALK_TURN_RATE and the body along where it points at the walk gait, or the
-   * run from the hand MENACE_RUN_M past its head until it is a run's braking
-   * distance at ACCEL off her (a third of either through a wide swing, as
-   * _stand), until the head is at the
-   * hand, where it stands and eats at her; the floor under it is the ground, or
-   * the nest's plane while over the nest.
-   */
-  _stomp(d, dt) {
-    const l = d.lure
-    const dx = l.x - d.x
-    const dz = l.z - d.z
-    const dist = Math.hypot(dx, dz)
-    const reach = EAT_REACH * d.k + MENACE_M
-    const swing = swingTo(d.heading, Math.atan2(-dz, dx))
-    d.heading += clamp(swing, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
-    let want = 0
-    if (dist > (d.clip === 'eat' ? reach + MENACE_M : reach)) {
-      const run = this.asset.gait.run * d.k
-      const gait = dist > reach + MENACE_RUN_M || (d.clip === 'run' && dist > reach + (run * run) / (2 * ACCEL)) ? 'run' : 'walk'
-      if (d.clip !== gait) this._play(d, gait, Infinity)
-      want = this.asset.gait[gait] * d.k * (Math.abs(swing) > 1 ? 0.3 : 1)
-    } else if (d.clip !== 'eat') {
-      this._play(d, 'eat', Infinity)
-    }
-    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
-    d.x += Math.cos(d.heading) * d.speed * dt
-    d.z -= Math.sin(d.heading) * d.speed * dt
-    const dest = d.dest
-    let floor = this.field.heightAt(d.x, d.z)
-    if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest))
-    d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
-    d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
-    d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
-  }
-
   /** A dragon whose roost is gone: its cargo let go and its body left to dissolve where it is. */
   _retire(d) {
     if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
@@ -623,19 +560,21 @@ export class Dragons {
       this.fading.push(d.puppet)
       d.puppet = null
     }
-    this.byKey.delete(d.site.key)
+    this.byKey.delete(d.key)
+    this.score.forget(d.key)
     d.site = null
-    d.prey = null
+    d.live = d.rejoin = null
     this.free.push(d)
   }
 
-  /** Every dragon gone at once, nothing fading: the ground has been rebuilt under them. Boot, and a relief edit. */
+  /** Every dragon gone at once, nothing fading: the ground has been rebuilt under them. Boot, and a relief edit. The room's anchors are kept: a dragon born again is born where they say. */
   place() {
     for (const d of this.byKey.values()) {
       if (d.cargo) { this.wildlife.drop(d.cargo, false); d.cargo = null }
       this._releasePuppet(d)
+      this.score.forget(d.key)
       d.site = null
-      d.prey = null
+      d.live = d.rejoin = null
       this.free.push(d)
     }
     this.byKey.clear()
@@ -669,8 +608,357 @@ export class Dragons {
   }
 
   // -------------------------------------------------------------------------
-  // Behaviour.
+  // The plan: a chapter of phrases, every duration and end pose closed-form.
   // -------------------------------------------------------------------------
+
+  /** The ground at (x, z) as a spot to alight on, or null: under SPOT_SLOPE_DEG, dry, and SPOT_AWAY nest radii from home. */
+  _spotAt(site, x, z) {
+    const { h, tan } = this.field.heightAndSlopeAt(x, z)
+    if (tan > Math.tan((SPOT_SLOPE_DEG * Math.PI) / 180)) return null
+    if (this.water.isSubmerged(x, z, h)) return null
+    if (Math.hypot(x - site.x, z - site.z) < SPOT_AWAY * site.r) return null
+    return { x, y: h, z, r: site.r, gx: 0, gz: 0, turf: true }
+  }
+
+  /** Seconds a leg from pose `a` to pose `b` at `mps` is given: the line at the cruise's slack, the climb at the steepest cruise, and the turn onto it. */
+  _legTime(a, b, mps) {
+    return (Math.hypot(b.x - a.x, b.z - a.z) / mps) * FLIGHT_SLACK + Math.max(0, b.y - a.y) / (mps * Math.sin(PITCH_MAX)) + LEG_PAD_S
+  }
+
+  /** Where a leg that lands on `dest` ends: LAND_M short of its centre along the approach heading `h`, RETURN_AGL over it, at `mps`. */
+  _approach(dest, h, mps) {
+    return { x: dest.x - Math.cos(h) * LAND_M, y: dest.y + RETURN_AGL, z: dest.z + Math.sin(h) * LAND_M, heading: h, speed: mps * LOITER_PACE }
+  }
+
+  /** The landing on `dest` from the approach pose `from`: the glide to a touchdown short of the centre along the approach, on the floor there, stopped. */
+  _landPhrase(dest, from) {
+    const s = TOUCHDOWN * LAND_SNAP_M
+    const u = -Math.cos(from.heading) * s, v = Math.sin(from.heading) * s
+    const to = { x: dest.x + u, y: this._floorAt(dest, u, v) + this._standOver(dest), z: dest.z + v, heading: from.heading, speed: 0 }
+    return { kind: 'land', dur: gap3(from, to) / (LAND_MPS * Math.sin(DIVE_PITCH)) + LAND_PAD_S, from, to, dest }
+  }
+
+  /** A rest on `at` from pose `from` for `dur`, ending at the floor's centre facing a rolled way; with a `kill` (`{ prey, struck }`, the stag and the world time it was taken) it is the meal. */
+  _restPhrase(at, from, dur, rand, kill = null) {
+    return { kind: 'rest', dur, from, to: { x: at.x, y: this._standY(at), z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
+  }
+
+  /** A leg from `from` to `to` at `mps` in `mode`, its clock sized by the distance; `dest` is the floor it lands on, if it does. A leg ends hanging at its point at LOITER_PACE of its cruise, the pace the loiter holds, so the ease has no speed to make up there. */
+  _legPhrase(from, to, mps, mode, dest = null) {
+    if (to.speed !== mps * LOITER_PACE) throw new Error('Dragons: a leg whose end is not at its loiter pace')
+    return { kind: 'fly', dur: this._legTime(from, to, mps), from, to, mps, mode, dest }
+  }
+
+  /** The two phrases that bring a dragon at `from` down on `dest`: the leg to the approach and the landing. */
+  _homeward(from, dest, mode) {
+    const leg = this._legPhrase(from, this._approach(dest, bearing(from, dest), PATROL_MPS), PATROL_MPS, mode, dest)
+    return [leg, this._landPhrase(dest, leg.to)]
+  }
+
+  /** Seconds a stoop from `a` onto `b` is given: the dive at the mean of the pace it starts at and DIVE_MPS, at the cruise's slack, and STOOP_PAD_S. */
+  _stoopTime(a, b) {
+    return (gap3(a, b) / (0.5 * (a.speed + DIVE_MPS))) * FLIGHT_SLACK + STOOP_PAD_S
+  }
+
+  /**
+   * The hunt of stag `prey` from pose `from` at world time `t`: the leg to
+   * STOOP_M short of and STOOP_AGL over where the stag's free plan has it
+   * when the leg ends, along the bearing from the leg's start, the leg
+   * resized to the moved stag thrice; and the stoop onto its pose at the
+   * stoop's end, STRIKE_AGL over it, ending at the hunt's cruise. The stoop
+   * carries the stag's key, and its end is the strike.
+   */
+  _hunt(from, prey, t) {
+    const over = { x: from.x, y: from.y, z: from.z, heading: from.heading, speed: HUNT_MPS * LOITER_PACE }
+    let T = t
+    for (let i = 0; i < 3; i++) {
+      T = t + this._legTime(from, over, HUNT_MPS)
+      const p = this.wildlife.poseAt(prey, T)
+      const b = bearing(from, p)
+      over.x = p.x - Math.cos(b) * STOOP_M; over.y = p.y + STOOP_AGL; over.z = p.z + Math.sin(b) * STOOP_M
+    }
+    const strike = { x: over.x, y: over.y, z: over.z, heading: 0, speed: HUNT_MPS }
+    let dur = 0
+    for (let i = 0; i < 2; i++) {
+      dur = this._stoopTime(over, strike)
+      const p = this.wildlife.poseAt(prey, T + dur)
+      strike.x = p.x; strike.y = p.y + STRIKE_AGL; strike.z = p.z
+    }
+    over.heading = strike.heading = bearing(over, strike)
+    const leg = this._legPhrase(from, over, HUNT_MPS, 'hunt')
+    return [leg, { kind: 'stoop', dur, from: over, to: strike, prey }]
+  }
+
+  /**
+   * One flight from pose `from` on the nest at world time `t0`: legs to aims
+   * within PATROL_M while `budget` seconds (the way home always counted)
+   * allow, each aim CRUISE_AGL over its ground -- or, exploring, VISIT_P of
+   * the time and where the ground allows, a landing and a perch there -- then
+   * the leg home and the landing on the nest. Hungry, with a stag in the
+   * roster and the hunt in the budget, the way home is the hunt (_hunt) and
+   * the return with the kill, which the leg, the landing and the meal carry.
+   */
+  _planFlight(site, from, rand, hungry, budget, t0) {
+    const mode = hungry ? 'patrol' : 'explore'
+    const out = []
+    let flown = 0
+    let pos = from
+    let prey = null
+    if (hungry) {
+      const herd = this.wildlife.roster(site.x, site.z, HUNT_M)
+      if (herd.length) prey = herd[(rand() * herd.length) | 0].key
+    }
+    // The phrases from `at` at world time `T` that end the flight: the hunt and the return with the kill, or the leg home and the landing.
+    const way = (at, T) => {
+      if (prey === null) return this._homeward(at, site, 'return')
+      const hunt = this._hunt(at, prey, T)
+      const kill = { prey, struck: T + hunt[0].dur + hunt[1].dur }
+      const home = this._homeward(hunt[1].to, site, 'return')
+      for (const ph of home) ph.kill = kill
+      return [...hunt, ...home]
+    }
+    const cost = (phs) => phs.reduce((s, p) => s + p.dur, 0)
+    if (prey !== null && cost(way(from, t0)) > budget) prey = null
+    for (let n = 0; n < 64; n++) {
+      const a = rand() * Math.PI * 2
+      const r = Math.sqrt(rand()) * PATROL_M
+      const ax = site.x + Math.cos(a) * r, az = site.z + Math.sin(a) * r
+      const agl = roll(rand, CRUISE_AGL)
+      const spot = !hungry && rand() < VISIT_P ? this._spotAt(site, ax, az) : null
+      const tail = []
+      let leg
+      if (spot) {
+        leg = this._legPhrase(pos, this._approach(spot, bearing(pos, spot), PATROL_MPS), PATROL_MPS, mode, spot)
+        const land = this._landPhrase(spot, leg.to)
+        tail.push(land, this._restPhrase(spot, land.to, roll(rand, PERCH_S), rand))
+      } else {
+        const aim = { x: ax, y: this.field.heightAt(ax, az) + agl, z: az, heading: 0, speed: PATROL_MPS * LOITER_PACE }
+        aim.heading = bearing(pos, aim)
+        leg = this._legPhrase(pos, aim, PATROL_MPS, mode)
+      }
+      const end = tail.length ? tail[tail.length - 1].to : leg.to
+      const spent = leg.dur + cost(tail)
+      if (flown + spent + cost(way(end, t0 + flown + spent)) > budget) break
+      out.push(leg, ...tail)
+      flown += spent
+      pos = end
+    }
+    out.push(...way(pos, t0 + flown))
+    return out
+  }
+
+  /** The chapter `chapter` of dragon `key`: a rest on the nest, then flights and rests while the chapter has FLIGHT_MIN_S and a rest left, the last flight cut to what is left and the last rest ending at the home pose. A pure function of the key and the chapter: the dragon need not be born. */
+  _plan(key, chapter, rand) {
+    const { site, home } = this._whoOf(key)
+    const chapterS = this.score.chapterS
+    const start = chapter * chapterS + (keyHash(key) % chapterS)
+    const phrases = [this._restPhrase(site, home, roll(rand, REST_S), rand)]
+    let t = phrases[0].dur
+    for (;;) {
+      const hungry = rand() < HUNGRY_P
+      const restS = Math.max(roll(rand, REST_S), hungry ? MEAL_S : 0)
+      const budget = Math.min(roll(rand, FLIGHT_S), chapterS - t - restS)
+      if (budget < FLIGHT_MIN_S) break
+      const flight = this._planFlight(site, phrases[phrases.length - 1].to, rand, hungry, budget, start + t)
+      const rest = this._restPhrase(site, flight[flight.length - 1].to, restS, rand, flight[flight.length - 1].kill ?? null)
+      phrases.push(...flight, rest)
+      t += flight.reduce((s, p) => s + p.dur, 0) + rest.dur
+    }
+    phrases[phrases.length - 1].to = home
+    return phrases
+  }
+
+  /**
+   * When the dragons take the stag `key` in the window [t0, t1) of world
+   * time, or null: the earliest strike on it in the chapters of every dragon
+   * whose roost is within HUNT_M of the stag's home (the roster's own reach,
+   * from the other end). What the wildlife cuts the stag's chapter at, so it
+   * is the strike the plan stamped on the kill, never re-summed from the
+   * phrases: an ulp off and the kill would land a hair before its own dead
+   * phrase.
+   */
+  strikeOn(key, t0, t1) {
+    const home = this.wildlife.spawnAt(key)
+    const chapterS = this.score.chapterS
+    let strike = null
+    for (let tx = Math.floor((home.x - HUNT_M) / ROOST_TILE); tx <= Math.floor((home.x + HUNT_M) / ROOST_TILE); tx++) {
+      for (let tz = Math.floor((home.z - HUNT_M) / ROOST_TILE); tz <= Math.floor((home.z + HUNT_M) / ROOST_TILE); tz++) {
+        const site = this.roosts.siteAt(tx, tz)
+        if (!site || (home.x - site.x) ** 2 + (home.z - site.z) ** 2 > HUNT_M * HUNT_M) continue
+        const dkey = keyOf(site)
+        for (let t = t0; t < t1;) {
+          const ch = this.score.chapter(dkey, t)
+          for (let i = 0; i < ch.phrases.length; i++) {
+            const ph = ch.phrases[i]
+            if (ph.kind !== 'stoop' || ph.prey !== key) continue
+            const { struck } = ch.phrases[i + 1].kill
+            if (struck >= t0 && struck < t1 && (strike === null || struck < strike)) strike = struck
+          }
+          t = ch.start + chapterS
+        }
+      }
+    }
+    return strike
+  }
+
+  /** The phrase playing at world time `t`: the rejoin's while one runs, else the score's. `{ phrase, start, end, index, chapter, rejoin }`. */
+  _phraseAt(d, t) {
+    const rj = d.rejoin
+    if (rj) {
+      if (t < rj.end - 1e-9) {
+        let i = rj.phrases.length - 1
+        while (i > 0 && rj.start + rj.starts[i] > t + 1e-9) i--
+        const end = i + 1 < rj.phrases.length ? rj.start + rj.starts[i + 1] : rj.end
+        return { phrase: rj.phrases[i], start: rj.start + rj.starts[i], end, index: i, chapter: tickOf(rj.start), rejoin: true }
+      }
+      d.rejoin = null
+    }
+    // A phrase's end is the next phrase's start by the same sum, so the two agree to the bit and the boundary tick is one tick.
+    const at = this.score.at(d.key, t)
+    const ch = this.score.chapter(d.key, t)
+    const end = at.index + 1 < ch.phrases.length ? ch.start + ch.starts[at.index + 1] : ch.start + this.score.chapterS
+    return { phrase: at.phrase, start: at.start, end, index: at.index, chapter: at.chapter, rejoin: false }
+  }
+
+  /** The next planned rest on the nest starting at or after world time `ready`: its start and its start pose. The chapter turn is one, so within two chapters there is always one. */
+  _nextHomeRest(d, ready) {
+    let ch = this.score.chapter(d.key, ready)
+    for (let n = 0; n < 2; n++) {
+      for (let i = 0; i < ch.phrases.length; i++) {
+        const p = ch.phrases[i]
+        const start = ch.start + ch.starts[i]
+        if (start >= ready - 1e-9 && p.kind === 'rest' && !p.at.turf) return { start, to: p.from }
+      }
+      ch = this.score.chapter(d.key, ch.start + this.score.chapterS)
+    }
+    throw new Error(`Dragons: no rest on the nest within two chapters of ${ready}`)
+  }
+
+  // -------------------------------------------------------------------------
+  // Behaviour: one tick at a time, from the phrase and its own dice.
+  // -------------------------------------------------------------------------
+
+  /** The dragon into phrase `at` at its start pose (the body is already there, snapped by the tick before) at world time `now`: its state, its dice, the ground under it read, its rest or flight set up, and the kill a phrase carries in its talons -- the stag's own slot, while the stag's chapter of the strike still runs; after it the stag is on its feet again and the dragon flies home with nothing. */
+  _enter(d, at, now) {
+    const ph = at.phrase
+    d.phrase = ph
+    d.phraseStart = at.start
+    d.phraseEnd = at.end
+    d.phraseEndTick = tickAfter(at.end)
+    d.phraseIndex = at.index
+    d.chapter = at.chapter
+    d.rand = at.rejoin ? mulberry32(hash32(keyHash(d.key), at.chapter, at.index)) : phraseRand(d.key, at.chapter, at.index)
+    d.ground = d.ahead = this.field.heightAt(d.x, d.z)
+    if (ph.kill && !d.cargo && now < chapterOf(ph.kill.struck, ph.kill.prey).start + CHAPTER_S) d.cargo = this.wildlife.kill(ph.kill.prey, ph.kill.struck)
+    switch (ph.kind) {
+      case 'rest': this._settle(d, ph); break
+      case 'fly':
+        if (d.cargo && ph.mode !== 'return' && ph.mode !== 'rejoin') throw new Error('Dragons: taking off with the kill uneaten')
+        d.state = ph.mode
+        d.dest = ph.dest ?? d.site
+        this._play(d, 'fly', Infinity)
+        break
+      case 'stoop':
+        if (d.cargo) throw new Error('Dragons: stooping with a kill in the talons')
+        d.state = 'stoop'
+        d.dest = d.site
+        if (d.clip !== 'fly') this._play(d, 'fly', Infinity)
+        break
+      case 'land':
+        d.state = 'land'
+        d.dest = ph.dest
+        d.down = false
+        if (d.clip !== 'fly') this._play(d, 'fly', Infinity)
+        break
+      default: throw new Error(`Dragons: no phrase kind ${ph.kind}`)
+    }
+  }
+
+  /** The body exactly at a phrase's end pose: level, at its speed. */
+  _snap(d, to) {
+    d.x = to.x
+    d.y = to.y
+    d.z = to.z
+    d.heading = to.heading
+    d.speed = to.speed
+    d.pitch = d.roll = 0
+  }
+
+  /**
+   * The dragon down on the rest's floor. With a kill on the nest the rest is
+   * the meal (_meal); otherwise the first step is an idle, the body walking
+   * onto the centre first if the landing left it short.
+   */
+  _settle(d, ph) {
+    const dest = ph.at
+    d.dest = dest
+    d.state = dest.turf ? 'perch' : 'roost'
+    d.homing = false
+    d.queue.length = 0
+    if (d.cargo && ph.meal) {
+      this._meal(d)
+    } else {
+      if (Math.hypot(d.x - dest.x, d.z - dest.z) > WAY_M) d.queue.push({ kind: 'walk', u: 0, v: 0 })
+      d.queue.push({ kind: 'idle' })
+      this._restStep(d)
+    }
+  }
+
+  /** The kill laid at its fixed spot on the nest floor, and the meal begun: a circuit of the floor, round behind the kill and up to it, then the eating. */
+  _meal(d) {
+    const dest = d.site
+    if (!d.cargo) throw new Error('Dragons: a meal with no kill')
+    if (d.dest.turf) throw new Error('Dragons: a kill carried to a spot that is not the nest')
+    d.cargoU = -Math.sin(d.heading) * NEST_ASIDE * dest.r
+    d.cargoV = -Math.cos(d.heading) * NEST_ASIDE * dest.r
+    d.cargoYaw = d.heading + 0.6
+    d.queue.length = 0
+    const ring = WALK_RING * dest.r
+    let a = Math.atan2(d.z - dest.z, d.x - dest.x)
+    for (let i = 0; i < 3; i++) { a += WALK_STEP; d.queue.push({ kind: 'walk', u: Math.cos(a) * ring, v: Math.sin(a) * ring }) }
+    // The stance: EAT_REACH short of the kill along the line from the nest's centre out through it, reached from APPROACH_M further back so the body arrives facing the kill.
+    const len = Math.hypot(d.cargoU, d.cargoV)
+    const ux = d.cargoU / len, uz = d.cargoV / len
+    const stance = EAT_REACH * d.k
+    d.queue.push({ kind: 'walk', u: d.cargoU - (stance + APPROACH_M) * ux, v: d.cargoV - (stance + APPROACH_M) * uz })
+    d.queue.push({ kind: 'walk', u: d.cargoU - stance * ux, v: d.cargoV - stance * uz })
+    d.queue.push({ kind: 'eat' })
+    d.homing = false
+    this._restStep(d)
+  }
+
+  /**
+   * One tick on the ground: the body levelling, and coming down onto the floor
+   * under it, at the landing's rates; walking, its heading closes on the
+   * bearing to its point at WALK_TURN_RATE and its speed on the walk gait --
+   * a third of it while the swing is wide, so it turns tight rather than
+   * orbiting a point inside its turning circle -- and it moves along where it
+   * points; standing, it eases to a stop. Returns the distance to the point, or
+   * 0 standing.
+   */
+  _stand(d, dt) {
+    const dest = d.dest
+    let dist = 0
+    let want = 0
+    if (d.rest === 'walk') {
+      const dx = dest.x + d.wayU - d.x
+      const dz = dest.z + d.wayV - d.z
+      dist = Math.hypot(dx, dz)
+      const sw = swing(d.heading, Math.atan2(-dz, dx))
+      d.heading += clamp(sw, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
+      want = this.asset.gait.walk * d.k * (Math.abs(sw) > 1 ? 0.3 : 1)
+    } else if (d.face !== null) {
+      d.heading += clamp(swing(d.heading, d.face), -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
+    }
+    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
+    d.x += Math.cos(d.heading) * d.speed * dt
+    d.z -= Math.sin(d.heading) * d.speed * dt
+    const floor = this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest)
+    d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
+    d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
+    d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
+    return dist
+  }
 
   /** A new clip on the dragon, from its start. */
   _play(d, clip, hold) {
@@ -680,112 +968,98 @@ export class Dragons {
     d.cycle = this.durations[clip]
   }
 
-  /** A rest step rolled by REST_ODDS. A walk is two or three points round the ring from the body's own bearing about the centre, the first returned and the rest queued, so it goes some way round rather than shuffling one step. */
+  /** A rest step rolled by REST_ODDS from the phrase's dice; homing, only idles. A walk is two or three points round the ring from the body's own bearing about the centre, the first returned and the rest queued, so it goes some way round rather than shuffling one step. */
   _rollStep(d) {
-    let pick = this.rand()
+    if (d.homing) return { kind: 'idle' }
+    let pick = d.rand()
     let i = 0
     while (i < REST_ODDS.length - 1 && pick >= REST_ODDS[i]) pick -= REST_ODDS[i++]
     const kind = ['idle', 'alert', 'walk', 'sit', 'lie'][i]
     if (kind !== 'walk') return { kind }
     const ring = WALK_RING * d.dest.r
     let a = Math.atan2(d.z - d.dest.z, d.x - d.dest.x)
-    const points = 2 + Math.floor(this.rand() * 2)
+    const points = 2 + Math.floor(d.rand() * 2)
     for (let n = 0; n < points; n++) { a += WALK_STEP; d.queue.push({ kind, u: Math.cos(a) * ring, v: Math.sin(a) * ring }) }
     return d.queue.shift()
   }
 
-  /** The next thing a grounded dragon does: the queue's head, or a step rolled by the odds. A walk holds its clip until the point is reached (or WALK_S runs out); eating faces the kill. */
+  /** The next thing a grounded dragon does: the queue's head, or a step rolled by the odds. A walk holds its clip until the point is reached (or WALK_S runs out); eating faces the kill; homing, a stand faces the rest's end heading. */
   _restStep(d) {
     const step = d.queue.length ? d.queue.shift() : this._rollStep(d)
     d.rest = step.kind
-    d.face = null
+    d.face = d.homing ? d.phrase.to.heading : null
     switch (step.kind) {
-      case 'idle': this._play(d, 'idle', roll(this.rand, IDLE_S)); break
+      case 'idle': this._play(d, 'idle', roll(d.rand, IDLE_S)); break
       case 'alert': this._play(d, 'alert', this.durations.alert); break
-      case 'sit': case 'lie': this._play(d, step.kind, roll(this.rand, SIT_S)); break
+      case 'sit': case 'lie': this._play(d, step.kind, roll(d.rand, SIT_S)); break
       case 'walk': d.wayU = step.u; d.wayV = step.v; this._play(d, 'walk', WALK_S); break
       case 'eat': {
         if (!d.cargo) throw new Error('Dragons: eating with no kill on the nest')
         d.face = Math.atan2(-(d.site.z + d.cargoV - d.z), d.site.x + d.cargoU - d.x)
-        this._play(d, 'eat', roll(this.rand, EAT_S))
+        this._play(d, 'eat', roll(d.rand, EAT_S))
         break
       }
       default: throw new Error(`Dragons: no rest step named ${step.kind}`)
     }
   }
 
-  /** A rest step over: a meal eaten drops the carcass to fade and starts the rest clock; anything else, the next step. */
+  /** A rest step over: a meal eaten drops the carcass to fade; anything else, the next step. */
   _restDone(d) {
     if (d.rest === 'eat') {
       this.wildlife.drop(d.cargo)
       d.cargo = null
-      d.fedAt = d.age
-      d.timer = roll(this.rand, REST_S)
     }
     this._restStep(d)
   }
 
-  /** A fresh cruise aim: a point within PATROL_M of the nest, CRUISE_AGL above the ground there. */
-  _aim(d) {
-    const a = this.rand() * Math.PI * 2
-    const r = Math.sqrt(this.rand()) * PATROL_M
-    d.aimX = d.site.x + Math.cos(a) * r
-    d.aimZ = d.site.z + Math.sin(a) * r
-    d.aimY = this.field.heightAt(d.aimX, d.aimZ) + roll(this.rand, CRUISE_AGL)
-  }
-
-  /** The ground at (x, z) as a spot to alight on, or null: under SPOT_SLOPE_DEG, dry, and SPOT_AWAY nest radii from home. */
-  _spotAt(d, x, z) {
-    const { h, tan } = this.field.heightAndSlopeAt(x, z)
-    if (tan > Math.tan((SPOT_SLOPE_DEG * Math.PI) / 180)) return null
-    if (this.water.isSubmerged(x, z, h)) return null
-    if (Math.hypot(x - d.site.x, z - d.site.z) < SPOT_AWAY * d.site.r) return null
-    return { x, y: h, z, r: d.site.r, gx: 0, gz: 0, turf: true }
-  }
-
-  /** Into the air: from the nest, the flight clock started and the flight chosen by hunger; from a spot, the flight goes on, or home if its clock ran out while perched. */
-  _takeoff(d) {
-    if (d.cargo) throw new Error('Dragons: taking off with the kill uneaten')
-    if (d.state === 'roost') {
-      d.flight = roll(this.rand, FLIGHT_S)
-      d.state = this._hungry(d) ? 'patrol' : 'explore'
-    } else {
-      d.state = d.flight > 0 ? (this._hungry(d) ? 'patrol' : 'explore') : 'return'
+  /** One tick of a rest: with time enough left only for the walk to the centre, the queue is dropped for that walk and idles facing the end heading; a step that ends hands over to the next. A meal is never cut short. */
+  _stepRest(d, elapsed) {
+    const ph = d.phrase
+    if (!d.homing && !d.cargo) {
+      const dist = Math.hypot(ph.to.x - d.x, ph.to.z - d.z)
+      if (ph.dur - elapsed <= dist / (this.asset.gait.walk * d.k) + HOMING_PAD_S) {
+        d.homing = true
+        d.queue.length = 0
+        d.queue.push(dist > WAY_M ? { kind: 'walk', u: ph.to.x - d.dest.x, v: ph.to.z - d.dest.z } : { kind: 'idle' })
+        this._restStep(d)
+      }
     }
-    d.dest = d.site
-    this._aim(d)
-    this._play(d, 'fly', Infinity)
+    const dist = this._stand(d, TICK_S)
+    d.left -= TICK_S
+    if (d.rest === 'walk' && dist < WAY_M) d.left = 0
+    if (d.left <= 0) this._restDone(d)
   }
 
   /**
-   * One frame of flight toward (tx, ty, tz) at `mps`: heading, pitch and roll
+   * One tick of flight toward (tx, ty, tz) at `mps`: heading, pitch and roll
    * closing on the bearing at their rates, speed on `mps` at ACCEL, and the
    * body moved along where it actually points. Given a cruise `floor`, the
-   * bearing and the climb angle it closes on are swung by the meander's sines,
-   * so the body careens and swoops about the line instead of flying it and the
-   * bank follows the swung bearing; the swoop's downward half fades out over
-   * the last SWOOP_ROOM metres above the floor so no swoop carries the body
-   * under it. Returns the distance to the target BEFORE the move.
+   * bearing and the climb angle it closes on are swung by the meander's sines
+   * of world time `now`, so the body careens and swoops about the line instead
+   * of flying it and the bank follows the swung bearing; the swoop's downward
+   * half fades out over the last SWOOP_ROOM metres above the floor so no swoop
+   * carries the body under it. Returns the distance to the target BEFORE the
+   * move.
    */
-  _fly(d, dt, tx, ty, tz, mps, pitchMax, turnRate, floor = null) {
+  _fly(d, dt, tx, ty, tz, mps, pitchMax, turnRate, floor = null, now = 0) {
     const dx = tx - d.x
     const dy = ty - d.y
     const dz = tz - d.z
     const horiz = Math.hypot(dx, dz)
-    let swing = swingTo(d.heading, Math.atan2(-dz, dx))
+    let sw = swing(d.heading, Math.atan2(-dz, dx))
     let wantPitch = Math.atan2(dy, Math.max(horiz, 1))
     if (floor !== null) {
-      const w = 2 * Math.PI * d.age
-      swing += CAREEN * Math.sin(w / CAREEN_S + d.phase)
+      const w = 2 * Math.PI * now
+      sw += CAREEN * Math.sin(w / CAREEN_S + d.phase)
       let swoop = SWOOP * Math.sin(w / SWOOP_S + 1.7 * d.phase)
       if (swoop < 0) swoop *= clamp((d.y - floor) / SWOOP_ROOM, 0, 1)
       wantPitch += swoop
     }
-    d.heading += clamp(swing, -turnRate * dt, turnRate * dt)
+    d.heading += clamp(sw, -turnRate * dt, turnRate * dt)
     wantPitch = clamp(wantPitch, -pitchMax, pitchMax)
     d.pitch += clamp(wantPitch - d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
     // Banked into the turn: a left turn (heading increasing, toward -Z) dips the left wing, which is a negative roll about +X.
-    const wantRoll = -clamp(swing, -1, 1) * BANK
+    const wantRoll = -clamp(sw, -1, 1) * BANK
     d.roll += clamp(wantRoll - d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
     d.speed += clamp(mps - d.speed, -ACCEL * dt, ACCEL * dt)
     const step = d.speed * dt
@@ -796,13 +1070,13 @@ export class Dragons {
     return Math.sqrt(dx * dx + dy * dy + dz * dz)
   }
 
-  /** The ground under the body and ahead of it, on a probe frame, and the body kept a metre out of it whatever the flight asked -- lifted no faster than it could climb, since a body teleported out of a slope is a pop. */
-  _probe(d, dt) {
-    if ((this.frame + d.id) % PROBE_EVERY === 0) {
+  /** The ground under the body and ahead of it, on a probe tick, and the body kept a metre out of it whatever the flight asked -- lifted no faster than it could climb, since a body teleported out of a slope is a pop. */
+  _probe(d, k) {
+    if (k % PROBE_EVERY === 0) {
       d.ground = this.field.heightAt(d.x, d.z)
       d.ahead = this.field.heightAt(d.x + Math.cos(d.heading) * LOOK_AHEAD_M, d.z - Math.sin(d.heading) * LOOK_AHEAD_M)
     }
-    if (d.y < d.ground + 1) d.y = Math.min(d.ground + 1, d.y + DIVE_MPS * dt)
+    if (d.y < d.ground + 1) d.y = Math.min(d.ground + 1, d.y + DIVE_MPS * TICK_S)
   }
 
   /** The least height a cruise may fly at here: MIN_AGL over the ground under or ahead. */
@@ -810,119 +1084,253 @@ export class Dragons {
     return Math.max(d.ground, d.ahead) + MIN_AGL
   }
 
-  /** The stag this dragon is after, still in the world; or null, and the hunt is off. */
-  _preyStanding(d) {
-    return d.prey && d.prey.spawn !== null ? d.prey : null
+  /** One tick of a leg: the cruise toward its end, no lower than the floor; within LOITER_M of it early, at the pace that would arrive on time, LOITER_PACE of the cruise at least, so it wheels slowly about the point until the ease takes it in -- and as the ease weighs in, steering past the point along the end heading, so the wheel and the ease pull the heading the same way. */
+  _stepFly(d, k, now, elapsed) {
+    this._probe(d, k)
+    const ph = d.phrase
+    const to = ph.to
+    const floor = this._floor(d)
+    const dist = Math.hypot(to.x - d.x, to.z - d.z)
+    const left = ph.dur - elapsed
+    const pace = dist < LOITER_M && left > 0 ? clamp(dist / (left * ph.mps), LOITER_PACE, 1) : 1
+    const ahead = easeWeight(elapsed, ph.dur) * EASE_AHEAD_M
+    this._fly(d, TICK_S, to.x + Math.cos(to.heading) * ahead, Math.max(to.y, floor), to.z - Math.sin(to.heading) * ahead, ph.mps * pace, PITCH_MAX, TURN_RATE, floor, now)
   }
 
-  /** One frame of what a dragon is doing. */
-  _behave(d, dt) {
-    d.timer -= dt
-    d.age += dt
-    switch (d.state) {
-      case 'roost':
-      case 'perch': {
+  /** One tick of a stoop: the dive onto the strike at DIVE_MPS, flown true, the ease finishing it. */
+  _stepStoop(d) {
+    const to = d.phrase.to
+    this._fly(d, TICK_S, to.x, to.y, to.z, DIVE_MPS, DIVE_PITCH, LAND_TURN_RATE)
+  }
+
+  /** One tick of a landing: the glide onto the touchdown at LAND_MPS, flown true, and within LAND_SNAP_M of it the settle -- level, onto the floor, the last step walked and the body stood facing the phrase's end. */
+  _stepLand(d) {
+    const to = d.phrase.to
+    if (!d.down) {
+      if (this._fly(d, TICK_S, to.x, to.y, to.z, LAND_MPS, DIVE_PITCH, LAND_TURN_RATE) < LAND_SNAP_M) {
+        d.down = true
+        d.rest = 'walk'
+        d.wayU = to.x - d.dest.x
+        d.wayV = to.z - d.dest.z
+        d.face = null
+        this._play(d, 'walk', Infinity)
+      }
+    } else if (this._stand(d, TICK_S) < WAY_M && d.rest === 'walk') {
+      d.rest = 'idle'
+      d.face = to.heading
+      this._play(d, 'idle', Infinity)
+    }
+  }
+
+  /** The lure this dragon is after this tick: the nearest of this.lures it wants, noticed within LURE_M across the ground and kept to LURE_FORGET_M; null when there is none. */
+  _lure(d) {
+    let lure = null
+    let best = Infinity
+    for (const l of this.lures) {
+      if (!LURES.includes(l.kind)) continue
+      const dist = Math.hypot(l.x - d.x, l.z - d.z)
+      if (dist < best) { best = dist; lure = l }
+    }
+    return lure !== null && best <= (d.lure ? LURE_FORGET_M : LURE_M) ? lure : null
+  }
+
+  /** Off the score and after the lure, live: the kill, if any, let go where it lies. `by` is the lurer's client id, null for this client, which then owes the room the anchors. */
+  _menace(d, lure, by, now) {
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.state = 'menace'
+    d.live = { mode: 'menace', by, anchor: null, sendAt: now }
+    d.rejoin = null
+    d.lure = lure
+    d.queue.length = 0
+    d.rest = 'idle'
+    d.face = null
+    this._play(d, 'alert', Infinity)
+  }
+
+  /**
+   * One tick after the lure: the heading closing on its bearing at
+   * WALK_TURN_RATE and the body along where it points at the walk gait, or the
+   * run from the hand MENACE_RUN_M past its head until it is a run's braking
+   * distance at ACCEL off her (a third of either through a wide swing, as
+   * _stand), until the head is at the hand, where it stands and eats at her;
+   * the floor under it is the ground, or the nest's plane while over the nest.
+   */
+  _stomp(d, dt) {
+    const l = d.lure
+    const dx = l.x - d.x
+    const dz = l.z - d.z
+    const dist = Math.hypot(dx, dz)
+    const reach = EAT_REACH * d.k + MENACE_M
+    const sw = swing(d.heading, Math.atan2(-dz, dx))
+    d.heading += clamp(sw, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
+    let want = 0
+    if (dist > (d.clip === 'eat' ? reach + MENACE_M : reach)) {
+      const run = this.asset.gait.run * d.k
+      const gait = dist > reach + MENACE_RUN_M || (d.clip === 'run' && dist > reach + (run * run) / (2 * ACCEL)) ? 'run' : 'walk'
+      if (d.clip !== gait) this._play(d, gait, Infinity)
+      want = this.asset.gait[gait] * d.k * (Math.abs(sw) > 1 ? 0.3 : 1)
+    } else if (d.clip !== 'eat') {
+      this._play(d, 'eat', Infinity)
+    }
+    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
+    d.x += Math.cos(d.heading) * d.speed * dt
+    d.z -= Math.sin(d.heading) * d.speed * dt
+    const dest = d.dest
+    let floor = this.field.heightAt(d.x, d.z)
+    if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest))
+    d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
+    d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
+    d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
+  }
+
+  /** One tick live: after the hand while there is one, standing alert at a peer's fresh anchor while there is not, nudged onto that anchor; the authority's anchor owed every ANCHOR_S. No hand and no fresh anchor ends the lure. */
+  _stepLive(d, now) {
+    const live = d.live
+    const lure = this._lure(d)
+    const fresh = live.anchor !== null && now - live.anchor[1] < ANCHOR_STALE_S
+    if (lure === null && !fresh) { this._unlive(d, now); return }
+    if (lure !== null) {
+      d.lure = lure
+      live.by = lure.by ?? null
+      this._stomp(d, TICK_S)
+    } else {
+      d.rest = 'idle'
+      d.face = null
+      if (d.clip !== 'alert') this._play(d, 'alert', Infinity)
+      this._stand(d, TICK_S)
+    }
+    if (live.anchor !== null && live.by !== null) {
+      const [, , ax, ay, az, ah] = live.anchor
+      const f = Math.min(1, TICK_S / CORRECT_S)
+      d.x += (ax - d.x) * f
+      d.y += (ay - d.y) * f
+      d.z += (az - d.z) * f
+      d.heading += swing(d.heading, ah) * f
+    }
+    if (live.by === null && now >= live.sendAt) {
+      this.outbox.push(this._anchor(d, now, 'menace'))
+      live.sendAt = now + ANCHOR_S
+    }
+  }
+
+  /** This dragon's anchor at `now`: what any client needs to resume it. */
+  _anchor(d, now, mode) {
+    return [d.key, now, d.x, d.y, d.z, d.heading, -1, mode, null, d.speed]
+  }
+
+  /** The body put at an anchor's pose: level, at the anchor's speed. */
+  _placeAnchor(d, anchor) {
+    this._place(d, { x: anchor[2], y: anchor[3], z: anchor[4], heading: anchor[5], speed: anchor[9] })
+  }
+
+  /** The lure over at `now`: the body levelled (a rejoin starts from a pose an anchor can carry), the rejoin built from here, owed to the room if this client was the authority. */
+  _unlive(d, now) {
+    const mine = d.live.by === null
+    d.live = null
+    d.lure = null
+    d.pitch = d.roll = 0
+    if (mine) this.outbox.push(this._anchor(d, now, 'rejoin'))
+    this._startRejoin(d, now)
+  }
+
+  /** The rejoin from the body's pose at world time `t`: the leg home, the landing, and a rest until the next planned rest on the nest, whose start pose the rest ends at; then the score again. */
+  _startRejoin(d, t) {
+    const from = { x: d.x, y: d.y, z: d.z, heading: d.heading, speed: d.speed }
+    const [leg, land] = this._homeward(from, d.site, 'rejoin')
+    const ready = t + leg.dur + land.dur
+    const next = this._nextHomeRest(d, ready)
+    const rest = { kind: 'rest', dur: next.start - ready, from: land.to, to: next.to, at: d.site, meal: false }
+    d.rejoin = { start: t, phrases: [leg, land, rest], starts: [0, leg.dur, leg.dur + land.dur], end: next.start }
+    this._enter(d, this._phraseAt(d, t), t)
+  }
+
+  /** The dragon put where the room's anchor has it: live at a peer's hand, or on its rejoin from the anchor's time, the ticks since then replayed. */
+  _fromAnchor(d, anchor, now) {
+    const [, T, , , , , , mode, by] = anchor
+    this._placeAnchor(d, anchor)
+    if (mode === 'menace') {
+      d.rec.tick = tickOf(now)
+      this._menace(d, null, by, now)
+      d.live.anchor = anchor
+    } else if (mode === 'rejoin') {
+      d.rec.tick = tickOf(T)
+      this._startRejoin(d, T)
+    } else {
+      throw new Error(`Dragons: no anchor mode ${mode}`)
+    }
+  }
+
+  /**
+   * An anchor heard from the room, `[key, T, x, y, z, heading, phraseIndex,
+   * mode, by, speed]`, `by` the client it came from (null for this client's own, which
+   * is ignored). Kept for a dragon not yet born; on one that is, a live anchor
+   * puts it live or nudges it, a rejoin anchor puts it on that rejoin from the
+   * anchor's time.
+   */
+  apply(anchor, now) {
+    const [key, T, , , , , , mode, by] = anchor
+    if (!Number.isFinite(T)) throw new Error(`Dragons: an anchor with no time: ${JSON.stringify(anchor)}`)
+    if (by === null) return
+    this.anchored.set(key, anchor)
+    const d = this.byKey.get(key)
+    if (!d) return
+    if (mode === 'menace') {
+      if (!d.live) this._menace(d, null, by, now)
+      d.live.anchor = anchor
+      d.live.by = by
+    } else if (mode === 'rejoin') {
+      d.live = null
+      d.lure = null
+      this._placeAnchor(d, anchor)
+      d.rec.tick = tickOf(T)
+      this._startRejoin(d, T)
+    } else {
+      throw new Error(`Dragons: no anchor mode ${mode}`)
+    }
+  }
+
+  /** The anchors this client owes the room since the last call, moved into `into`. */
+  pending(into = []) {
+    for (const a of this.outbox) into.push(a)
+    this.outbox.length = 0
+    return into
+  }
+
+  /** One tick of a dragon at absolute tick `k`: the tick before kept for the frame to draw from, a phrase boundary snapped and crossed, the phrase's own step, and the ease onto its end. */
+  _step(d, k) {
+    const now = k * TICK_S
+    d.px = d.x; d.py = d.y; d.pz = d.z; d.pheading = d.heading; d.ppitch = d.pitch; d.proll = d.roll
+    if (d.live) { this._stepLive(d, now); return }
+    if (k >= d.phraseEndTick) {
+      this._snap(d, d.phrase.to)
+      // The boundary tick may fall an ulp short of the end: the next phrase is looked up at the end itself.
+      this._enter(d, this._phraseAt(d, Math.max(now, d.phraseEnd)), now)
+    }
+    const ph = d.phrase
+    const elapsed = now - d.phraseStart
+    switch (ph.kind) {
+      case 'rest': {
         const lure = this._lure(d)
-        if (lure !== null) { this._menace(d, lure); return }
-        const dist = this._stand(d, dt)
-        d.left -= dt
-        if (d.rest === 'walk' && dist < WAY_M) d.left = 0
-        if (d.left <= 0) this._restDone(d)
-        if (d.timer <= 0) this._takeoff(d)
-        return
+        if (lure !== null) { this._menace(d, lure, lure.by ?? null, now); return }
+        this._stepRest(d, elapsed)
+        break
       }
-      case 'patrol': {
-        this._probe(d, dt)
-        d.flight -= dt
-        if ((this.frame + d.id) % LOOK_EVERY === 0) {
-          const prey = this.wildlife.prey(d.x, d.z, HUNT_M)
-          if (prey) { d.prey = prey; d.state = 'hunt'; return }
-        }
-        if (d.flight <= 0) { d.state = 'return'; return }
-        const floor = this._floor(d)
-        const reach = this._fly(d, dt, d.aimX, Math.max(d.aimY, floor), d.aimZ, PATROL_MPS, PITCH_MAX, TURN_RATE, floor)
-        if (reach < 20) this._aim(d)
-        return
-      }
-      case 'explore': {
-        this._probe(d, dt)
-        d.flight -= dt
-        if (this._hungry(d)) { d.state = 'patrol'; return }
-        if (d.flight <= 0) { d.state = 'return'; return }
-        const floor = this._floor(d)
-        const reach = this._fly(d, dt, d.aimX, Math.max(d.aimY, floor), d.aimZ, PATROL_MPS, PITCH_MAX, TURN_RATE, floor)
-        if (reach < 20) {
-          const spot = this.rand() < VISIT_P ? this._spotAt(d, d.aimX, d.aimZ) : null
-          if (spot) { d.dest = spot; d.state = 'visit'; return }
-          this._aim(d)
-        }
-        return
-      }
-      case 'visit': {
-        this._probe(d, dt)
-        const spot = d.dest
-        const floor = this._floor(d)
-        this._fly(d, dt, spot.x, Math.max(spot.y + RETURN_AGL, floor), spot.z, PATROL_MPS, PITCH_MAX, TURN_RATE, floor)
-        if (Math.hypot(spot.x - d.x, spot.z - d.z) < LAND_M) { d.state = 'land'; d.timer = LAND_S }
-        return
-      }
-      case 'hunt': {
-        const prey = this._preyStanding(d)
-        if (!prey) { d.prey = null; d.state = 'patrol'; return }
-        this._probe(d, dt)
-        const floor = this._floor(d)
-        this._fly(d, dt, prey.x, Math.max(prey.y + STOOP_AGL, floor), prey.z, HUNT_MPS, PITCH_MAX, TURN_RATE, floor)
-        if (Math.hypot(prey.x - d.x, prey.z - d.z) < STOOP_M) { d.state = 'strike'; d.timer = STRIKE_S }
-        return
-      }
-      case 'strike': {
-        const prey = this._preyStanding(d)
-        if (!prey) { d.prey = null; d.state = 'patrol'; return }
-        this._probe(d, dt)
-        const reach = this._fly(d, dt, prey.x, prey.y + 1, prey.z, DIVE_MPS, DIVE_PITCH, LAND_TURN_RATE)
-        if (reach < STRIKE_M) {
-          d.cargo = this.wildlife.seize(prey)
-          d.prey = null
-          d.state = 'return'
-        } else if (d.timer <= 0) {
-          // A miss: back up into the hunt, whose aim is above the stag, and come round again.
-          d.state = 'hunt'
-        }
-        return
-      }
-      case 'menace': {
-        const lure = this._lure(d)
-        if (lure === null) {
-          d.lure = null
-          d.dest = d.site
-          d.state = 'return'
-          this._play(d, 'fly', Infinity)
-          return
-        }
-        d.lure = lure
-        this._stomp(d, dt)
-        return
-      }
-      case 'return': {
-        this._probe(d, dt)
-        const site = d.site
-        d.dest = site
-        const floor = this._floor(d)
-        this._fly(d, dt, site.x, Math.max(site.y + RETURN_AGL, floor), site.z, PATROL_MPS, PITCH_MAX, TURN_RATE, floor)
-        if (Math.hypot(site.x - d.x, site.z - d.z) < LAND_M) { d.state = 'land'; d.timer = LAND_S }
-        return
-      }
-      case 'land': {
-        const dest = d.dest
-        const reach = this._fly(d, dt, dest.x, this._standY(dest), dest.z, LAND_MPS, DIVE_PITCH, LAND_TURN_RATE)
-        if (reach < LAND_SNAP_M || d.timer <= 0) {
-          if (d.timer <= 0) this.forced++
-          this._perch(d)
-        }
-        return
-      }
-      default:
-        throw new Error(`Dragons: no state named ${d.state}`)
+      case 'fly': this._stepFly(d, k, now, elapsed); break
+      case 'stoop': this._stepStoop(d); break
+      case 'land': this._stepLand(d); break
+      default: throw new Error(`Dragons: no phrase kind ${ph.kind}`)
+    }
+    // The ease is a rate-capped pull, not a plain lerp: a lerp at half weight would close a 15 m gap in one tick, which the eye reads as a yank; a pull the body could have flown is the snap's job to finish.
+    const w = easeWeight(elapsed + TICK_S, ph.dur)
+    if (w > 0) {
+      const to = ph.to
+      d.x = pull(d.x, to.x, w, EASE_MPS * TICK_S)
+      d.y = pull(d.y, to.y, w, EASE_MPS * TICK_S)
+      d.z = pull(d.z, to.z, w, EASE_MPS * TICK_S)
+      d.heading += clamp(swing(d.heading, to.heading) * w, -EASE_TURN * TICK_S, EASE_TURN * TICK_S)
+      d.pitch = pull(d.pitch, 0, w, PITCH_RATE * TICK_S)
+      d.roll = pull(d.roll, 0, w, ROLL_RATE * TICK_S)
+      d.speed = pull(d.speed, to.speed, w, ACCEL * TICK_S)
     }
   }
 
@@ -930,10 +1338,11 @@ export class Dragons {
   // Drawing.
   // -------------------------------------------------------------------------
 
-  /** The body's matrix into _mat (and _pos, _quat): +X forward yawed to the heading, pitched about its Z and rolled about its X, scaled by k. */
+  /** The body's matrix into _mat (and _pos, _quat) between its last two ticks by rec.alpha: +X forward yawed to the heading, pitched about its Z and rolled about its X, scaled by k. */
   _pose(d) {
-    _pos.set(d.x, d.y, d.z)
-    _quat.setFromEuler(_euler.set(d.roll, d.heading, d.pitch, 'YZX'))
+    const a = d.rec.alpha
+    _pos.set(lerp(d.px, d.x, a), lerp(d.py, d.y, a), lerp(d.pz, d.z, a))
+    _quat.setFromEuler(_euler.set(lerp(d.proll, d.roll, a), d.pheading + swing(d.pheading, d.heading) * a, lerp(d.ppitch, d.pitch, a), 'YZX'))
     _scl.setScalar(d.k)
     _mat.compose(_pos, _quat, _scl)
   }
@@ -945,15 +1354,10 @@ export class Dragons {
     d.cardP = 1 - d.cardP
   }
 
-  /** This dragon's two quads into the card buffer, on the body's whole matrix (kept as its cardMat), with the dissolve's side as wildlife.js sets it. */
+  /** This dragon's two quads into the card buffer, on the body's whole matrix, with the dissolve's side as wildlife.js sets it. */
   _drawCard(d) {
-    d.cardMat.copy(_mat)
-    this._drawCardAt(d)
-  }
-
-  _drawCardAt(d) {
     const i = this.cardN++
-    this.cardMesh.setMatrixAt(i, d.cardMat)
+    this.cardMesh.setMatrixAt(i, _mat)
     this.cardFade.array[i] = d.cardWant ? d.cardP : -(1 - d.cardP)
   }
 
@@ -976,20 +1380,10 @@ export class Dragons {
     this.wildlife.carry(d.cargo, _cargoMat, dist, dt, lain, shown)
   }
 
-  /** One dragon: behaved, then drawn on whichever rung its flying body's size puts it at; on the card rung, stepped every CARD_EVERY frames. */
-  _tick(d, hx, hy, hz, dt) {
-    if (d.lod >= LOD_RUNGS && !d.puppet && !d.cargo) {
-      // Held until its frame, unless it has come onto a mesh rung, which is read every frame so a body is worn the frame it is near.
-      d.held += dt
-      const near = critterTier(d.lodSize, Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2), d.lod, CARD_RUNGS) < LOD_RUNGS
-      if ((this.frame + d.id) % CARD_EVERY !== 0 && !near) {
-        if (d.cardWant || d.cardP < 1) this._drawCardAt(d)
-        return
-      }
-      dt = d.held
-    }
-    d.held = 0
-    this._behave(d, dt)
+  /** One dragon: stepped to `now`, then drawn on whichever rung its flying body's size puts it at. */
+  _tick(d, hx, hy, hz, now, dt) {
+    this.replayed += stepTo(d.rec, now, (k) => this._step(d, k))
+    if (d.rec.tick < tickOf(now)) this.behind++
     const dist = Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2)
     const tier = critterTier(d.lodSize, dist, d.lod, CARD_RUNGS)
     d.lod = tier
@@ -1016,12 +1410,21 @@ export class Dragons {
     puppet.group.matrixWorldNeedsUpdate = true
   }
 
-  /** One frame: a dragon for every resident roost, stepped and drawn; the dragons of roosts that went, retired. Runs AFTER wildlife.update, which places the stags it hunts. */
-  /** `lures`: hands.js lures() this frame, a fish among them menaced. */
-  update(hx, hy, hz, dt, lures = NO_LURES) {
+  /**
+   * One frame at world time `now` (clock.js WorldClock.seconds): a dragon for
+   * every resident roost, stepped to now and drawn; the dragons of roosts that
+   * went, retired. `lures`: hands.js lures() this frame, each `{ kind, x, y,
+   * z, by }`, a fish among them menaced.
+   */
+  update(hx, hy, hz, now, lures = NO_LURES) {
     if (!this.loaded) return
+    if (!Number.isFinite(now)) throw new Error(`Dragons.update: world time ${now}`)
+    const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
+    this.last = now
     this.frame++
     this.cardN = 0
+    this.replayed = 0
+    this.behind = 0
     this.lures = lures
 
     for (let i = this.fading.length - 1; i >= 0; i--) {
@@ -1037,10 +1440,10 @@ export class Dragons {
     sites.length = 0
     this.roosts.sites(sites)
     for (const site of sites) {
-      const d = this.byKey.get(site.key) ?? this._spawn(site)
+      const d = this.byKey.get(keyOf(site)) ?? this._spawn(site, now)
       if (!d) continue
       d.seen = this.frame
-      this._tick(d, hx, hy, hz, dt)
+      this._tick(d, hx, hy, hz, now, dt)
     }
     for (const d of this.byKey.values()) if (d.seen !== this.frame) this._retire(d)
 
@@ -1063,7 +1466,8 @@ export class Dragons {
     return {
       alive: this.byKey.size, puppets: this.puppets.length - this.freePuppets.length, lod, cards: this.cardN, states,
       carrying: Array.from(this.byKey.values()).filter((d) => d.cargo).length,
-      overflow: this.overflow, starved: this.starved, forced: this.forced,
+      live: Array.from(this.byKey.values()).filter((d) => d.live).length,
+      overflow: this.overflow, starved: this.starved, replayed: this.replayed, behind: this.behind,
     }
   }
 

@@ -95,6 +95,18 @@ export const RELIEF_KNOBS = Object.freeze([
     needs: 'jagged',
   },
   {
+    // The jagged stack's slope-free term: the peak height of the hillocks and
+    // pits scattered over the ground (hillocks.js), 0.4 to 2 m across. Without
+    // it the jitter rule leaves a level forest floor as the bilinear macro plus
+    // the 2-3 cm the sub-metre calibration allows -- the leaf triangles drew
+    // nothing finer than a 2 m plane.
+    key: 'bump',
+    label: 'bump',
+    hint: 'metres of scattered hillocks and pits, pyramids to mesas, 0.4 to 2 m across -- the relief level ground gets that the slope rule cannot give',
+    off: 0, on: 0.25, min: 0, max: 1, step: 0.05,
+    needs: 'jagged',
+  },
+  {
     key: 'sharpen',
     label: 'sharpen',
     hint: 'rectify the detail octaves into creased ribs instead of gaussian lumps',
@@ -269,7 +281,7 @@ export const RELIEF_DEFAULTS = Object.freeze(Object.fromEntries(RELIEF_KNOBS.map
  * this is the configuration that ships, and main.js starts from it when no
  * saved relief overrides it.
  */
-export const RELIEF_SHIPPED = Object.freeze({ ...RELIEF_DEFAULTS, jagged: 1 })
+export const RELIEF_SHIPPED = Object.freeze({ ...RELIEF_DEFAULTS, jagged: 1, bump: 0.25 })
 
 /**
  * Validate and clamp a relief object from anywhere -- the HUD, localStorage, a

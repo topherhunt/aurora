@@ -17,7 +17,7 @@
 // in the spec is a count: raptors only above the snow or by a cliff, an owl only
 // at night in dense wood, crickets on their 1.5-3 s beat, footsteps on theirs
 // and after a teleport, the brook loop on only by the river, the wind only over
-// the snow or high off the ground, a dragon's wingbeats and treads on their
+// the snow, high off the ground or under an overcast, the rain loop by precip, a dragon's wingbeats and treads on their
 // clips' cycles and its roars and growls on theirs, and nothing at all above the surface
 // while she is under it.
 //
@@ -31,6 +31,7 @@ import {
 } from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
+import { SLEET_BAND_M } from '../src/v2/render/precip.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
@@ -283,7 +284,7 @@ console.log('sense')
 const GROUND = 10
 const RIVER_X = 0, RIVER_HALF = 3
 // A basin `r` wide sunk under a plane whose footprint runs `plane` wide: the shore is where the ground crosses the water, not where the footprint ends.
-const LAKE = { x: 100, z: 0, r: 20, plane: 30, y: GROUND - 1, bed: GROUND - 3 }
+const LAKE = { x: 100, z: 0, r: 30, plane: 40, y: GROUND - 1, bed: GROUND - 3 }
 const inLake = (x, z) => Math.hypot(x - LAKE.x, z - LAKE.z) < LAKE.r
 const COLD_Z = 200
 const ROCK = { x: 30, z: 30, r: 1.5, top: 11.2 }
@@ -338,15 +339,17 @@ const biome = { coverAt: (x) => (x > FOREST.x0 && x < FOREST.x1 ? 1 : 0) }
   frogs.batch.visible = true
   sense.sample(RIVER_X + 40, GROUND + 1.6, 0, s)
   check(s.riverShore === SHORE_REACH && s.riverDirX === 0, 'far from the river the shore reads the reach, no bearing')
-  check(s.lakeShore === SHORE_REACH && !s.overLake && s.lakeLevel === -Infinity, 'far from the lake the shore reads the reach, no level')
+  check(s.lakeShore === SHORE_REACH && s.lakeLevel === -Infinity, 'far from the lake the shore reads the reach, no level')
   sense.sample(LAKE.x, GROUND + 1.6, LAKE.z - LAKE.r - 6, s)
   check(Math.abs(s.lakeShore - 6) < 1.5 && s.lakeDirZ > 0.99, '6 m off the lake, bearing at the water', `${s.lakeShore.toFixed(2)} dir ${s.lakeDirX.toFixed(2)},${s.lakeDirZ.toFixed(2)}`)
-  check(!s.overLake && s.lakeLevel === LAKE.y, 'on the bank over the buried plane she is dry, and knows the water level at the shore')
+  check(s.lakeLevel === LAKE.y, 'on the bank over the buried plane she knows the water level at the shore')
+  sense.sample(LAKE.x, GROUND + 1.6, LAKE.z - LAKE.r - 18, s)
+  check(Math.abs(s.lakeShore - 18) < 1.5 && s.lakeDirZ > 0.99, '18 m off the lake the shore is still found', `${s.lakeShore.toFixed(2)} dir ${s.lakeDirZ.toFixed(2)}`)
   sense.sample(LAKE.x, GROUND + 1.6, LAKE.z - LAKE.r + 4, s)
   check(Math.abs(s.lakeShore + 4) < 1.5 && s.lakeDirZ > 0.99, 'wading 4 m out, the distance is negative and the bearing still points into the lake', `${s.lakeShore.toFixed(2)} dir ${s.lakeDirZ.toFixed(2)}`)
-  check(s.overLake && s.lakeLevel === LAKE.y, 'wading, she is over the lake')
+  check(s.lakeLevel === LAKE.y, 'wading, she knows the level under her')
   sense.sample(LAKE.x, GROUND + 1.6, LAKE.z, s)
-  check(s.lakeShore === -SHORE_REACH && s.overLake && s.lakeDirX === 0 && s.lakeDirZ === 0, 'mid-lake, no shore in reach but still over the water')
+  check(s.lakeShore === -SHORE_REACH && s.lakeLevel === LAKE.y && s.lakeDirX === 0 && s.lakeDirZ === 0, 'mid-lake, no shore in reach but the level is the water under her')
 }
 
 // --- the rules, against a fake engine and a scripted sense --------------------
@@ -614,6 +617,44 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   sense.s.groundH = GROUND + W.height[1]
   run(amb, 1, { head: { x: 0, y: GROUND + W.height[1] + 1.6, z: 0 } })
   check(!wind.active, 'on top of a tall boulder the ground is the boulder')
+  // The weather (§10): a closing sky raises the wind on the ground, and rain is its own loop.
+  sense.s.groundH = GROUND
+  run(amb, 1, { cover: 1 })
+  check(wind.active && Math.abs(wind.level - W.level * W.cover) < 1e-9, 'full overcast is wind on the ground, at its cover share', `level ${wind.level?.toFixed(3)}`)
+  sense.s.aboveSnow = W.snow[1] + 20
+  run(amb, 1, { cover: 1 })
+  check(Math.abs(wind.level - W.level) < 1e-9, 'and over the snow the cover adds nothing past full')
+  sense.s.aboveSnow = W.snow[0] - 50
+  run(amb, 1, { cover: 0 })
+  check(!wind.active, 'a clear sky on the ground is no wind')
+  const R = RULES.rain
+  const rain = engine.loops.rain
+  check(rain.opts.directional !== true && rain.opts.gain === R.gain && !rain.active, 'the rain loop has no bearing and is silent in dry weather')
+  run(amb, 1, { precip: 1 })
+  check(rain.active && Math.abs(rain.level - R.level) < 1e-9, 'a downpour below the snow is rain at full level', `level ${rain.level?.toFixed(3)}`)
+  run(amb, 1, { precip: 0.5 })
+  check(rain.active && Math.abs(rain.level - R.level * 0.5) < 1e-9, 'half the precip is half the level')
+  check(R.sleet[0] === -SLEET_BAND_M && R.sleet[1] === SLEET_BAND_M, 'the sleet band is the precip draw\'s, so the sound of rain thins as the drops turn to flakes', `${R.sleet}`)
+  sense.s.aboveSnow = 0
+  run(amb, 1, { precip: 1 })
+  check(rain.active && Math.abs(rain.level - R.level * 0.5) < 1e-9, 'on the snow line half the fall is rain, and so is half the sound', `level ${rain.level?.toFixed(3)}`)
+  sense.s.aboveSnow = R.sleet[1] + 20
+  run(amb, 1, { precip: 1 })
+  check(!rain.active && rain.stops === 1, 'over the sleet band the same fall is snow, and snow makes no sound')
+  sense.s.aboveSnow = R.sleet[0] - 50
+  run(amb, 1, { precip: 1 })
+  run(amb, 1, { precip: R.off / 2 })
+  check(!rain.active && rain.stops === 2, 'and it stops once the precip is under the off threshold')
+  // Aloft: the patter is on the ground, so it thins as she climbs off it and is gone at the top of the band.
+  const rainAt = (m) => ({ x: 0, y: GROUND + m, z: 0 })
+  run(amb, 1, { precip: 1, head: rainAt(R.aloft[0] - 0.5) })
+  check(rain.active && Math.abs(rain.level - R.level) < 1e-9, 'a downpour is at full level with her head at standing height', `level ${rain.level?.toFixed(3)}`)
+  run(amb, 1, { precip: 1, head: rainAt((R.aloft[0] + R.aloft[1]) / 2) })
+  check(rain.active && Math.abs(rain.level - R.level * 0.5) < 1e-9, 'half way up the aloft band it is half the level', `level ${rain.level?.toFixed(3)}`)
+  run(amb, 1, { precip: 1, head: rainAt(R.aloft[1] + 1) })
+  check(!rain.active && rain.stops === 3 && R.aloft[1] === 20, 'and above 20 m in the same downpour the loop is off', `${R.aloft}`)
+  run(amb, 1, { precip: 1, head: rainAt(R.aloft[0] - 0.5) })
+  check(rain.active && Math.abs(rain.level - R.level) < 1e-9, 'and it is back at full level once she lands')
 }
 {
   // Footsteps: only while walking, and after a teleport.
@@ -794,6 +835,42 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   threw = false
   try { new Ambience({ engine, sense, startlers: [{}] }) } catch { threw = true }
   check(threw, 'a startler layer without startled() throws')
+}
+{
+  // A voiced layer: each one-shot it says is fired once, from where it was said, at the voice rule's level for its distance and not at all past its reach; the panting loop runs at the nearest panting body within its reach and stops with none.
+  const V = RULES.voice, P = RULES.panting
+  const said = []
+  const alive = []
+  const leafkin = { voices(into) { into.push(...said); said.length = 0; return into }, bodies(into) { into.push(...alive); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(31), voiced: [leafkin] })
+  run(amb, 1, {})
+  check(count(engine, 'leafkinScream', 'leafkinSqueal', 'leafkinWhimper', 'leafkinChatter1') === 0 && !engine.loops.panting.active, 'a silent layer fires nothing and no loop runs')
+  said.push({ sound: 'leafkinScream', x: HEAD.x + 4, y: HEAD.y, z: HEAD.z }, { sound: 'leafkinChatter2', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach + 1 })
+  run(amb, 1, {})
+  const screams = engine.plays.filter((p) => p.name === 'leafkinScream')
+  check(screams.length === 1 && screams[0].at.x === HEAD.x + 4, 'a scream said 4 m off is fired once, from there', `${screams.length}`)
+  check(screams.every((p) => within(p.gain, V.level * (V.near / 4) * V.gain[0], V.level * (V.near / 4) * V.gain[1])), 'at the voice level over its distance')
+  check(count(engine, 'leafkinChatter2') === 0 && said.length === 0, `chatter past ${V.reach} m is not heard, and the layer is drained either way`)
+  const near = { x: HEAD.x + 2, y: HEAD.y, z: HEAD.z, size: 1, clip: 'run-carry', cycle: 0.7, speed: 1, pant: true }
+  const far = { x: HEAD.x, y: HEAD.y, z: HEAD.z + 5, size: 1, clip: 'idle', cycle: 3.2, speed: 0, pant: true }
+  const quiet = { x: HEAD.x + 1, y: HEAD.y, z: HEAD.z, size: 1, clip: 'recoil', cycle: 2.4, speed: 0, pant: false }
+  alive.push(far, quiet)
+  run(amb, 1, {})
+  check(engine.loops.panting.active && engine.loops.panting.at.z === far.z && Math.abs(engine.loops.panting.level - P.level * (P.near / 5)) < 1e-9, 'the panting loop runs at the one panting body, 5 m off, at near/distance of its level', `${engine.loops.panting.level}`)
+  alive.push(near)
+  run(amb, 1, {})
+  check(engine.loops.panting.at.x === near.x && Math.abs(engine.loops.panting.level - P.level * (P.near / 2)) < 1e-9, 'and moves to the nearer one', `${engine.loops.panting.level}`)
+  alive.length = 0
+  alive.push(quiet, { ...far, z: HEAD.z + P.reach + 1 })
+  run(amb, 1, {})
+  check(!engine.loops.panting.active, 'a startled body does not pant and one past the reach is not heard: the loop stops')
+  let threw = 0
+  try { new Ambience({ engine, sense, voiced: [{ bodies() {} }] }) } catch { threw++ }
+  said.push({ sound: 'leafkinChanting', x: HEAD.x, y: HEAD.y, z: HEAD.z })
+  try { run(amb, 1, {}) } catch { threw++ }
+  check(threw === 2, 'a voiced layer without voices(), and a sound the table does not list, throw')
 }
 {
   // The fish: a swoosh on the water bus from each that sets off fast within reach, as loud and as deep as it is long, and only on the frame it is listed.
@@ -1002,7 +1079,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(count(stillFoot, 'rockslide1', 'rockslide2') === 0, 'standing still on a boulder scatters nothing')
 }
 {
-  // Lake shore: a wave every 2-5 s within 10 m, fading out to the reach, from the shore's bearing; the lapping bed loops.
+  // Lake shore: a wave every 2-5 s from the shore's bearing while one is within `reach`, fading to nothing at the reach and given its metres as the far treatment; the lapping bed loops and fades with it.
   const W = RULES.wave
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
@@ -1013,45 +1090,48 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   run(amb, 60, {})
   const waves = engine.plays.filter((p) => p.name === 'wave')
   check(waves.length >= 60 / W.interval[1] - 2 && waves.length <= 60 / W.interval[0] + 2, `a wave every ${W.interval[0]}-${W.interval[1]} s at the water`, `${waves.length} in 60 s`)
-  check(waves.every((p) => within(p.gain, ...RULES.wave.gain) && p.at.x > HEAD.x), 'waves at full volume from the water side')
+  check(waves.every((p) => within(p.gain, ...W.gain) && p.at.x > HEAD.x && p.distance === 2), 'waves at full volume from the water side, 2 m off')
   check(engine.loops.lakeBed.active && engine.loops.lakeBed.at.x > HEAD.x, 'the lapping bed loops from the water side')
   const bedLevel = engine.loops.lakeBed.level
-  sense.s.lakeShore = 9
+  sense.s.lakeShore = 12
   run(amb, 60, {})
-  const farWaves = engine.plays.filter((p) => p.name === 'wave').slice(waves.length)
-  check(farWaves.length > 10 && farWaves.every((p) => p.gain <= RULES.wave.gain[1] * 0.4), 'at 9 m the waves are faded well down', `max ${Math.max(...farWaves.map((p) => p.gain)).toFixed(2)}`)
-  check(engine.loops.lakeBed.level < bedLevel * 0.5, 'the bed fades with distance too')
-  sense.s.lakeShore = SHORE_REACH
+  const midWaves = engine.plays.filter((p) => p.name === 'wave').slice(waves.length)
+  check(midWaves.length > 10 && midWaves.every((p) => p.gain <= W.gain[1] * 0.5 && p.distance === 12), 'at 12 m the waves are faded well down and given their metres', `max ${Math.max(...midWaves.map((p) => p.gain)).toFixed(2)}`)
+  check(engine.loops.lakeBed.level < bedLevel * 0.6, 'the bed fades with distance too')
+  sense.s.lakeShore = 18
+  run(amb, 60, {})
+  const farWaves = engine.plays.filter((p) => p.name === 'wave').slice(waves.length + midWaves.length)
+  check(farWaves.length > 10 && farWaves.every((p) => p.gain > 0 && p.gain < W.gain[1] * 0.1 && p.distance === 18), 'at 18 m the waves still come, quiet and far', `max ${Math.max(...farWaves.map((p) => p.gain)).toFixed(3)}`)
+  check(engine.loops.lakeBed.active && engine.loops.lakeBed.level < bedLevel * 0.1, 'the bed is nearly gone at 18 m', engine.loops.lakeBed.level.toFixed(3))
+  sense.s.lakeShore = W.reach
   run(amb, 2, {})
-  check(!engine.loops.lakeBed.active && engine.plays.filter((p) => p.name === 'wave').length === waves.length + farWaves.length, 'past 10 m the lake goes quiet')
+  const heard = waves.length + midWaves.length + farWaves.length
+  check(!engine.loops.lakeBed.active && engine.plays.filter((p) => p.name === 'wave').length === heard, `at ${W.reach} m the lake goes quiet`)
   // Wading: the sound comes from behind, toward the shore.
   const wade = fakeEngine()
   sense.s.lakeShore = -3
-  sense.s.overLake = true
   run(new Ambience({ engine: wade, sense, rand: mulberry32(12) }), 20, {})
   const wading = wade.plays.filter((p) => p.name === 'wave')
-  check(wading.length > 2 && wading.every((p) => p.at.x < HEAD.x), 'wading out, the lapping comes from the shore behind her')
-  // Out over open water with no shore in reach the lake goes on, from the water under her, until she is `height` above it.
+  check(wading.length > 2 && wading.every((p) => p.at.x < HEAD.x && p.distance === 3), 'wading out, the lapping comes from the shore behind her')
+  // Out over open water with no shore in reach there is nothing to lap on: silence.
   const open = fakeEngine()
   sense.s.lakeShore = -SHORE_REACH
   sense.s.lakeDirX = 0
   const aloft = new Ambience({ engine: open, sense, rand: mulberry32(12) })
   run(aloft, 30, {})
-  const mid = open.plays.filter((p) => p.name === 'wave')
-  check(mid.length >= 30 / W.interval[1] - 2 && mid.every((p) => within(p.gain, ...W.gain) && p.at.x === HEAD.x && p.at.z === HEAD.z && p.at.y === GROUND), 'mid-lake the waves keep coming at full volume from the water below', `${mid.length} in 30 s`)
-  check(open.loops.lakeBed.active && open.loops.lakeBed.at.y === GROUND, 'the lapping bed runs mid-lake too')
-  const bedFull = open.loops.lakeBed.level
-  run(aloft, 30, { head: { x: 0, y: GROUND + (W.near + W.height) / 2, z: 0 } })
-  const risen = open.plays.filter((p) => p.name === 'wave').slice(mid.length)
-  check(risen.length > 3 && risen.every((p) => p.gain < W.gain[1] * 0.7) && open.loops.lakeBed.level < bedFull * 0.7, 'half way up to the height cap the lake is faded', `max ${Math.max(...risen.map((p) => p.gain)).toFixed(2)} bed ${open.loops.lakeBed.level.toFixed(2)}`)
-  run(aloft, 5, { head: { x: 0, y: GROUND + W.height + 1, z: 0 } })
-  check(!open.loops.lakeBed.active && open.plays.filter((p) => p.name === 'wave').length === mid.length + risen.length, `${W.height} m above the open water the lake goes quiet`)
-  // The same cap from the land side: a shore in reach but far below her is not heard.
+  check(count(open, 'wave') === 0 && !open.loops.lakeBed.active, 'mid-lake, with no shore in reach, the water is silent')
+  // The height cap: a shore in reach is faded as she rises above the water and gone past `height`.
   sense.s.lakeShore = 4
   sense.s.lakeDirX = 1
-  sense.s.overLake = false
+  run(aloft, 30, {})
+  const bank = count(open, 'wave')
+  const bedFull = open.loops.lakeBed.level
+  check(bank >= 30 / W.interval[1] - 2 && open.loops.lakeBed.active, 'on the bank the lake is heard', `${bank} in 30 s`)
+  run(aloft, 30, { head: { x: 0, y: GROUND + (W.near + W.height) / 2, z: 0 } })
+  const risen = open.plays.filter((p) => p.name === 'wave').slice(bank)
+  check(risen.length > 3 && risen.every((p) => p.gain < W.gain[1] * 0.7) && open.loops.lakeBed.level < bedFull * 0.7, 'half way up to the height cap the lake is faded', `max ${Math.max(...risen.map((p) => p.gain)).toFixed(2)} bed ${open.loops.lakeBed.level.toFixed(2)}`)
   run(aloft, 5, { head: { x: 0, y: GROUND + W.height + 1, z: 0 } })
-  check(!open.loops.lakeBed.active && open.plays.filter((p) => p.name === 'wave').length === mid.length + risen.length, 'nor from high over a shore')
+  check(!open.loops.lakeBed.active && count(open, 'wave') === bank + risen.length, `${W.height} m above the shore the lake goes quiet`)
   run(aloft, 5, {})
   check(open.loops.lakeBed.active, 'and back on the bank it returns')
 }

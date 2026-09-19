@@ -105,6 +105,24 @@ export const AURORA_ACTIVITY = {
   storm: 1.0,
 }
 
+// The weather channel (§10). Two octaves of the same noise as the aurora's
+// mood: a regime that decides whether today is a grey day and a squall that
+// moves cloud through it. `gain` stretches the sum about 0.5 so the ends of the
+// range are reachable at all -- the raw sum of two value noises rarely leaves
+// 0.25..0.75. Rain is a smoothstep of cover between rainLo and rainHi. Tuned by
+// check-weather.mjs's episode histogram: median rain spell 2.5 h, two in three
+// between 1 and 5 h, rain about one hour in five.
+export const WEATHER = {
+  regimeHours: 36,
+  squallHours: 2.5,
+  regimeWeight: 0.5,
+  gain: 1.6,
+  rainLo: 0.70,
+  rainHi: 0.85,
+  // The debug row's fixed covers, by name.
+  presets: { clear: 0, scattered: 0.4, overcast: 0.7, rain: 1 },
+}
+
 // --- solar geometry ---------------------------------------------------------
 
 // Hour angle in degrees: 0 at local solar noon, +15 per hour after.
@@ -661,8 +679,18 @@ function paletteAt(sunElevDeg) {
   }
 }
 
+/**
+ * The world's one day scalar from the sun's elevation: 1 at noon, 0 once the
+ * sun is well down. The sun's own elevation and not the light's intensity,
+ * because that swaps bodies at -6 degrees and would call nightfall a
+ * brightening as the moon took over; -6 to +4 puts the whole handover inside
+ * civil twilight, where the light is visibly changing anyway, and 0.6 is the
+ * sun exactly on the horizon.
+ */
+export const daynessOfElev = (elevDeg) => Math.max(0, Math.min(1, (elevDeg + 6) / 10))
+
 export class WorldClock {
-  constructor({ hour = CLOCK.startHour, seed = 1, anchorMs = Date.now() } = {}) {
+  constructor({ hour = CLOCK.startHour, seed = 1, anchorMs = Date.now(), weather = null } = {}) {
     // Total in-world hours since the world began, monotonic and never wrapped.
     // The hotkey adds to THIS, not to the wrapped hour of day, which is what
     // makes skipping forward advance the aurora's slow noise by the same six
@@ -670,6 +698,10 @@ export class WorldClock {
     // standing still every time you skipped a whole day.
     this.elapsed = hour
     this.seed = seed
+    // A fixed cover 0..1, or null for the live channel. The gates hold the
+    // clock clear so the day-night table is measured on its own; the debug row
+    // holds a look still long enough to tune it.
+    this.weather = weather
     this.skips = 0
     // The wall-clock anchor for tick(): the Date.now() at which elapsed was
     // `hour`, plus every skip since. A relay hands every client in a room the
@@ -677,6 +709,9 @@ export class WorldClock {
     this.startHour = hour
     this.anchorMs = anchorMs
     this.skipHours = 0
+    // Creature time (sim/score.js): real seconds since the anchor plus a minute
+    // for every skipped hour, the same number on every client in a room.
+    this.seconds = 0
     this._recompute()
   }
 
@@ -684,6 +719,7 @@ export class WorldClock {
   // accumulating pace; a client whose sky must match its peers uses tick().
   advance(dt) {
     this.elapsed += (dt / 60) * (24 / CLOCK.dayMinutes)
+    this.seconds += dt
     this._recompute()
   }
 
@@ -693,6 +729,7 @@ export class WorldClock {
   // to well under a second, and one real second is one in-world minute.
   tick(now = Date.now()) {
     this.elapsed = this.startHour + ((now - this.anchorMs) / 60000) * (24 / CLOCK.dayMinutes) + this.skipHours
+    this.seconds = (now - this.anchorMs) / 1000 + this.skipHours * 60
     this._recompute()
   }
 
@@ -706,6 +743,7 @@ export class WorldClock {
   skip(hours = CLOCK.skipHours) {
     this.elapsed += hours
     this.skipHours += hours
+    this.seconds += hours * 60
     this.skips++
     this._recompute()
     return this.hour
@@ -713,6 +751,44 @@ export class WorldClock {
 
   get hour() {
     return ((this.elapsed % 24) + 24) % 24
+  }
+
+  // The hour of day at creature time `seconds` (tick's own arithmetic, for any
+  // time): the real seconds since the anchor paced to hours, plus the skips.
+  hourAt(seconds) {
+    const real = seconds - this.skipHours * 60
+    const elapsed = this.startHour + (real / 60) * (24 / CLOCK.dayMinutes) + this.skipHours
+    return ((elapsed % 24) + 24) % 24
+  }
+
+  // The day scalar at creature time `seconds`, a pure function of the room's
+  // clock: what a creature's plan reads for a moment minutes ahead, so every
+  // client plans the same night.
+  daynessAt(seconds) {
+    return daynessOfElev(celestial(this.hourAt(seconds), CLOCK.latitude, CLOCK.declination).elevDeg)
+  }
+
+  // Cloud cover 0..1 at in-world hour `elapsed`, a pure function of the room:
+  // the room's anchor is the weather's seed, so every peer sits under the same
+  // sky, a new room (or a new solo boot) gets a new fortnight, and day three
+  // never repeats day one because `elapsed` is never wrapped. The world SEED is
+  // deliberately not used: it names the terrain, which is the same in every
+  // game, and every game's first day would rain at the same minute.
+  coverAt(elapsed) {
+    if (this.weather !== null) return this.weather
+    const w = WEATHER
+    const s = hash1(Math.floor(this.anchorMs / 1000)) * 8192
+    const n =
+      noise1(elapsed / w.regimeHours + s) * w.regimeWeight +
+      noise1(elapsed / w.squallHours + s * 3.1) * (1 - w.regimeWeight)
+    return Math.max(0, Math.min(1, (n - 0.5) * w.gain + 0.5))
+  }
+
+  // The room's wind, a unit xz heading the clouds drift and the rain leans
+  // along; from the anchor for the same reason the weather is.
+  get wind() {
+    const a = hash1(Math.floor(this.anchorMs / 1000) + 7) * Math.PI * 2
+    return [Math.cos(a), Math.sin(a)]
   }
 
   // "14:37", for the HUD.
@@ -741,7 +817,8 @@ export class WorldClock {
   // already allocating a Vector3 per chunk update, and the alternative is a
   // mutable singleton that the gate cannot sample twice to compare.
   state() {
-    const p = paletteAt(this.sun.elevDeg)
+    const p = overcast(paletteAt(this.sun.elevDeg), this.coverAt(this.elapsed))
+    const { cover, precip } = p
 
     // Substorm envelope. Two octaves an octave apart, so the aurora has both a
     // slow overall mood and a faster flutter inside it, and neither one is
@@ -838,7 +915,52 @@ export class WorldClock {
       aurora,
       auroraMax: p.auroraMax,
       activity,
+
+      cover,
+      precip,
+      wind: this.wind,
     }
+  }
+}
+
+// The overcast multipliers of §10, applied to the interpolated palette. Every
+// term is a mix or a scale by `cover`, never a branch, so cover 0 returns the
+// palette unchanged and check-weather asserts it bit for bit. The grey is the
+// palette's own horizon luminance, so overcast at dusk is a dim warm grey and
+// overcast at noon a bright one. The night lift (skyGlow, skyFloor, the far
+// field) is left alone: it is the dark-adapted eye, not the sky.
+function overcast(p, cover) {
+  const precip = smoothstep(Math.max(0, Math.min(1, (cover - WEATHER.rainLo) / (WEATHER.rainHi - WEATHER.rainLo))))
+  if (cover === 0) return { ...p, cover, precip }
+  const luma = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
+  const hl = luma(p.horizon) * 0.92
+  const grey = [hl * 0.96, hl * 0.98, hl]
+  const dim = (1 - cover) * (1 - cover)
+  const sl = luma(p.sunLight)
+  const fog = lerp3(p.fog, grey, cover * 0.7)
+  return {
+    ...p,
+    cover,
+    precip,
+    sunLight: lerp3(p.sunLight, [sl, sl, sl], cover),
+    sunIntensity: p.sunIntensity * (1 - 0.85 * cover * cover),
+    hemiSky: lerp3(p.hemiSky, grey, cover * 0.8),
+    hemiIntensity: p.hemiIntensity * (1 + 0.15 * cover),
+    horizon: lerp3(p.horizon, grey, cover),
+    zenith: lerp3(p.zenith, grey, cover),
+    glowAmt: p.glowAmt * (1 - 0.8 * cover),
+    // Toward the overcast fog, not the palette's: under a ceiling the near air
+    // and the far air are one grey, and the sky's haze ends on `fog` (§10).
+    haze: lerp3(p.haze, fog, cover),
+    // The visibility. Day 0.00113 puts 1/e at 885 m; full rain lands near
+    // 0.0042, about 240 m. The night rows start at 0.00021, so even rain at
+    // night stays above a kilometre -- the arm's-length night the NIGHT block
+    // warns of is not reachable from here.
+    hazeDensity: p.hazeDensity * (1 + cover + 1.7 * precip),
+    fog,
+    stars: p.stars * dim,
+    moonBright: p.moonBright * dim,
+    auroraMax: p.auroraMax * dim,
   }
 }
 

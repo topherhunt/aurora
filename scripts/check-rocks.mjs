@@ -1939,15 +1939,15 @@ console.log('\nscatter')
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.map((b) => b.cfg.name).join(' ') === 'boulders scree sunken giants embedded shore',
-    'six beds in the table, named rather than counted', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  check(forestRocks.beds.map((b) => b.cfg.name).join(' ') === 'boulders scree sunken giants hollow embedded shore',
+    'seven beds in the table, named rather than counted', forestRocks.beds.map((b) => b.cfg.name).join(', '))
   // A BED'S `field` IS ITS SEED SLOT AND NEVER MOVES. `tileSeed` mixes it into
   // every tile of the bed's scatter, so renumbering one -- by deleting a bed and
   // letting the survivors take its number, say -- shifts every rock of that bed
   // in the world. A silent failure, the world still looks like a world, so the
   // numbers are pinned here: 6 and 7 belonged to beds that were deleted, and a
   // new bed takes the next unused one.
-  check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 5 8',
+  check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 9 5 8',
     'and every bed keeps the field number it was seeded with', forestRocks.beds.map((b) => b.cfg.field).join(' '))
   check(
     new Set(forestRocks.meshes.meshes.map((m) => m.material)).size === 1,
@@ -2132,9 +2132,11 @@ console.log('\nscatter')
         // positive form of that one.
         // `shoreOnly` is `footOnly` for the waterline, and none of these four
         // worlds has one -- the `bank` world below is where that bed has to
-        // actually place.
+        // actually place. And a `cover` bed asks the biome field, which these
+        // uniform worlds do not author -- the hollow bed's own block below is
+        // where it has to actually place.
         const tooFlat = bed.minSlopeTan > worlds[env].beds[0].field.scatterAt(0, 0, 4, { h: 0, tan: 0 }).tan
-        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
+        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || bed.cfg.cover > 0 || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
         if (!declined && claims !== placed > 0) wrong.push(`${bed.cfg.name}/${env}`)
         census.push(`${bed.cfg.name[0]}/${env} ${claims ? placed : '-'}`)
       }
@@ -2162,6 +2164,106 @@ console.log('\nscatter')
 
   check(riverRocks.stats.beds.find((b) => b.name === 'giants').placed === 0,
     'no ten-metre buttress in the middle of a lake')
+
+  // --- the hollow bed: the entrance boulders (DESIGN.md §30) --------------
+  //
+  // One standing stone per 460 m tile of deep wood, so what is promised is
+  // the SPACING (400 m by construction, `tile - 2 * centre`), the STANCE (the
+  // boulder's longest axis upright, so the mouth's face is a wall and not a
+  // roof) and a pinned burial (never squashed, so the face is the hull's own).
+  // The forest disc is uniform ground, so what thins it here is the biome
+  // field alone, and the `cover` counter is what says that gate ran.
+  {
+    const bed = forestRocks.beds.find((b) => b.cfg.name === 'hollow')
+    const rows = []
+    for (const t of bed.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        rows.push({ id, x: bed.instX[id], y: bed.instY[id], z: bed.instZ[id], scale: bed.instScale[id] })
+      }
+    }
+    check(rows.length >= 2, 'the wood grows hollows, one per deep-forest tile',
+      `${rows.length} in the disc, ${bed.rejected.cover} refused by the cover field`)
+    check(bed.rejected.cover > 0, 'and the cover field refused some', `${bed.rejected.cover} refused`)
+    let closest = Infinity
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) closest = Math.min(closest, Math.hypot(rows[i].x - rows[j].x, rows[i].z - rows[j].z))
+    }
+    check(closest >= 400, 'no two hollows within 400 m of each other', `closest pair ${closest.toFixed(0)} m`)
+    // The matrix's first column is the boulder's own width axis in the world;
+    // stood up, it points along Y.
+    const e = bed.instM
+    const upright = rows.every((r) => {
+      const o = r.id * 16
+      return Math.abs(e[o + 1]) / Math.hypot(e[o], e[o + 1], e[o + 2]) > 0.95
+    })
+    check(upright, 'every hollow stands its longest axis upright', `${rows.length} checked`)
+    const sizes = rows.map((r) => bed.shapeLod * r.scale)
+    check(sizes.every((s) => s >= 8 - 1e-6 && s <= 12 + 1e-6), 'and stands 8 to 12 m tall',
+      sizes.map((s) => s.toFixed(1)).join(' '))
+    const buf = new Float32Array(rows.length * 5 + 5)
+    const n = forestRocks.hollowsInto(-1e4, -1e4, 1e4, 1e4, buf)
+    check(n === rows.length && Array.from({ length: n }, (_, i) => buf[i * 5 + 4]).every((s) => s >= 8 && s <= 12),
+      'hollowsInto lists every resident hollow with its size in slot 4', `${n} listed`)
+    // Slots 0..2 are the box's centre, not the origin: stood up, the boulder's
+    // footprint is half its height off the origin, so a ray aimed at the origin
+    // can pass beside it. From 20 m out, three quarters of a metre up, aimed at
+    // the centre, every bearing meets the hull short of it with a normal facing back.
+    const out = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0, ox: 0, oz: 0, size: 0 }
+    const faces = []
+    for (let i = 0; i < n; i++) {
+      const cx = buf[i * 5], cz = buf[i * 5 + 2]
+      for (let b = 0; b < 8; b++) {
+        const a = (b / 8) * Math.PI * 2 + 0.3
+        const sx = cx + Math.cos(a) * 20, sz = cz + Math.sin(a) * 20
+        const dx = -Math.cos(a), dz = -Math.sin(a)
+        const t = forestRocks.hollowRayAt(sx, 60 + 0.75, sz, dx, 0, dz, 40, out)
+        faces.push({ t, dot: out.nx * dx + out.nz * dz, size: out.size })
+      }
+    }
+    check(faces.every((f) => f.t > 10 && f.t < 20 && f.dot < 0 && f.size >= 8),
+      'hollowRayAt meets each boulder\'s face from every bearing with the normal facing back',
+      `${faces.length} rays, ${faces.filter((f) => f.t === Infinity).length} missed, nearest ${Math.min(...faces.map((f) => f.t)).toFixed(1)} m`)
+  }
+
+  // --- off the road, footprint and all ------------------------------------------
+  //
+  // A straight road along x at z = 0, half-width 3 m and feather 8 m, the stub answering only within the feather as PathSet.nearest does. No stone of any bed has its footprint (instSpan, which the fit ladder only ever shrinks) reaching within ROAD_CLEARANCE of the kerb, every bed that placed anything in the band counts what it refused, and the wood beyond the feather is as full as it was.
+  {
+    const HW = 3
+    const FEATHER = 8
+    const ROAD_CLEARANCE = Number(readFileSync(new URL('../src/v2/render/rocks.js', import.meta.url), 'utf8').match(/const ROAD_CLEARANCE = ([\d.]+)/)[1])
+    const paths = { nearest: (x, z, kind) => (kind === 'road' && Math.abs(z) <= HW + FEATHER ? { dist: Math.abs(z), halfWidth: HW } : null) }
+    const roaded = new Rocks(new THREE.Scene(), forest.field, forest.water, { ...layers, paths }, texArray, { seed: 7 })
+    roaded.place(0, 0)
+    let stones = 0
+    let over = 0
+    let worst = Infinity
+    let refused = 0
+    let beyond = 0
+    let beyondBare = 0
+    const count = (rocks, onRow) => {
+      for (const bed of rocks.beds) {
+        for (const t of bed.tiles.values()) {
+          for (let k = 0; k < t.n; k++) onRow(bed, t.ids[k])
+        }
+      }
+    }
+    count(roaded, (bed, id) => {
+      stones++
+      const gap = Math.abs(bed.instZ[id]) - bed.instSpan[id] * 0.5 - HW
+      worst = Math.min(worst, gap)
+      if (gap < ROAD_CLEARANCE - 1e-6) over++
+      if (Math.abs(bed.instZ[id]) > HW + FEATHER + 10) beyond++
+    })
+    count(forestRocks, (bed, id) => { if (Math.abs(bed.instZ[id]) > HW + FEATHER + 10) beyondBare++ })
+    for (const bed of roaded.beds) refused += bed.rejected.road
+    check(stones > 100 && over === 0, 'no stone of any bed stands on the road or leans over its kerb',
+      `${stones} stones, ${over} over, nearest footprint ${worst.toFixed(2)} m past the kerb against ${ROAD_CLEARANCE}`)
+    check(refused > 0, 'and the beds count what the road refused', `${refused} refused`)
+    check(beyond > beyondBare * 0.9 && beyond > 50, 'and beyond the feather the wood is as stony as it was', `${beyond} vs ${beyondBare}`)
+    roaded.dispose()
+  }
 
   // --- the sites, on ground that has any ------------------------------------
   //
@@ -3301,7 +3403,8 @@ console.log('\nscatter')
   // it is the only one that loads the scree bed at all. The river is the third,
   // and it is here for the same reason one step further: `sunken` is
   // `submergedOnly`, so it is dead ground on every world with dry feet, and the
-  // two above are both dry.
+  // two above are both dry. The forest is the fourth, for the hollow bed, which
+  // refuses every slope, shore and summit the other four are made of.
   //
   // AND EVERY BED HAS TO PLACE SOMETHING ACROSS THE SET, which is the assertion
   // that keeps this honest as beds are added. Without it a new bed that never
@@ -3310,7 +3413,7 @@ console.log('\nscatter')
   // world has no water -- sails through with used = 0, because zero is less
   // than every bound there is.
   {
-    const worlds = { cliff: build(cliff), ridge: build(ridge), river: build(river), bank: build(bank) }
+    const worlds = { forest: build(forest), cliff: build(cliff), ridge: build(ridge), river: build(river), bank: build(bank) }
     for (const r of Object.values(worlds)) {
       // `place` AND THEN `update`, and the `place` is not belt-and-braces.
       // `update` drains the build queue against a WALL-CLOCK budget split

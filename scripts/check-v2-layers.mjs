@@ -26,7 +26,7 @@ import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth, SAMPLE_SPACING, STRAIGHT_MAX, WEND } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
 import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
@@ -666,16 +666,21 @@ export async function run() {
     // Sloping ground, so "returns the spline y" is a real claim and not a coincidence of a flat fixture.
     const ground = (x, z) => 100 + 0.35 * z + 0.02 * x
 
+    // The centreline wends (WEND), so the carriageway is wherever nearest() says it is, not a band about z = 0.
     let worstOn = 0
+    let onCount = 0
     for (let s = 0; s <= 200; s++) {
       const x = -400 + (s / 200) * 800
-      for (let n = -6; n <= 6; n++) {
-        const z = (n / 6) * HW
+      for (let n = -10; n <= 10; n++) {
+        const z = (n / 10) * (HW + WEND.amp)
+        const road = paths.nearest(x, z, 'road')
+        if (road === null || road.dist > HW) continue
+        onCount++
         worstOn = Math.max(worstOn, Math.abs(paths.smoothRoads(x, z, ground(x, z)) - 100))
       }
     }
-    console.log(`        carriageway half-width ${HW} m over ground sloping 0.35 m/m: worst deviation from the spline y ${worstOn.toExponential(2)} m`)
-    check(worstOn < 0.01, 'the road surface is within 1 cm of the spline y everywhere inside the half-width', `worst ${worstOn.toExponential(2)} m`)
+    console.log(`        carriageway half-width ${HW} m over ground sloping 0.35 m/m: worst deviation from the spline y ${worstOn.toExponential(2)} m over ${onCount} points`)
+    check(onCount > 1500 && worstOn < 0.01, 'the road surface is within 1 cm of the spline y everywhere inside the half-width', `worst ${worstOn.toExponential(2)} m over ${onCount} points`)
 
     const at = (d) => paths.smoothRoads(0, d, ground(0, d))
     const jumpInner = Math.abs(at(HW - 1e-5) - at(HW + 1e-5))
@@ -689,6 +694,48 @@ export async function run() {
     const toe = shoulderSlope(HW + FEATHER - 1e-3)
     const outside = shoulderSlope(HW + FEATHER + 1e-3)
     check(Math.abs(toe - outside) < 0.05, 'the shoulder meets the terrain tangentially (smoothstep, not a linear ramp)', `slope ${toe.toFixed(4)} vs ${outside.toFixed(4)}`)
+  }
+
+  console.log('\npaths: a road abhors a straight')
+  {
+    // Longest run of samples whose heading turns under a degree per sample, in metres.
+    const longestStraight = (s) => {
+      let best = 0
+      let run = 0
+      let prev = null
+      for (let i = 4; i < s.length; i += 4) {
+        const a = Math.atan2(s[i + 2] - s[i - 2], s[i] - s[i - 4])
+        if (prev !== null && Math.abs(Math.atan2(Math.sin(a - prev), Math.cos(a - prev))) < (1 * Math.PI) / 180) run += SAMPLE_SPACING
+        else run = 0
+        prev = a
+        best = Math.max(best, run)
+      }
+      return best
+    }
+    const long = new PathSet([{ id: 'd1', kind: 'road', feather: 8, pts: [[-300, 100, 0, 6], [300, 100, 0, 6]] }])
+    long.nearest(0, 0)
+    const rec = long.paths.get('d1')
+    let worstOff = 0
+    for (let i = 0; i < rec.samples.length; i += 4) worstOff = Math.max(worstOff, Math.abs(rec.samples[i + 2]))
+    const straight = longestStraight(rec.samples)
+    console.log(`        a 600 m leg: longest straight ${straight.toFixed(0)} m, widest wend ${worstOff.toFixed(2)} m`)
+    check(straight < STRAIGHT_MAX, 'a leg over STRAIGHT_MAX is splined through wends, so no straight reaches the limit', `${straight.toFixed(0)} m of ${STRAIGHT_MAX}`)
+    check(worstOff > 1 && worstOff <= WEND.amp * 1.5, 'and the wend is metres wide, not a wobble and not a detour', `${worstOff.toFixed(2)} m against amp ${WEND.amp}`)
+    check(Math.abs(rec.samples[2]) < 1e-9 && Math.abs(rec.samples[rec.samples.length - 2]) < 1e-9, 'the endpoints never move', `${rec.samples[2]} and ${rec.samples[rec.samples.length - 2]}`)
+
+    const again = new PathSet([{ id: 'd1', kind: 'road', feather: 8, pts: [[-300, 100, 0, 6], [300, 100, 0, 6]] }])
+    again.nearest(0, 0)
+    let same = true
+    const s2 = again.paths.get('d1').samples
+    for (let i = 0; i < rec.samples.length && same; i++) same = rec.samples[i] === s2[i]
+    check(same && s2.length === rec.samples.length, 'the wend is deterministic in the leg')
+
+    const short = new PathSet([{ id: 'y', kind: 'road', feather: 10, pts: [[0, 100, 0, 8], [STRAIGHT_MAX - 0.5, 100, 0, 8]] }])
+    short.nearest(0, 0)
+    const ss = short.paths.get('y').samples
+    let shortOff = 0
+    for (let i = 0; i < ss.length; i += 4) shortOff = Math.max(shortOff, Math.abs(ss[i + 2]))
+    check(shortOff < 1e-9, 'a leg under STRAIGHT_MAX (a hut\'s yard) is left straight', `${shortOff} m`)
   }
 
   console.log('\npaths: distance is to the segment, not the sample')

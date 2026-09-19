@@ -68,6 +68,12 @@ try {
   const skipped = await nextClock(second, (m) => m.skipHours !== 0)
   if (skipped.skipHours !== 6) throw new Error(`only the bounded integer skip should land, got ${skipped.skipHours}`)
   if (skipped.anchorMs !== clock.anchorMs) throw new Error('a skip must not move the anchor')
+  // A saved game's hour sets the skip count outright, but only from a room of
+  // one: with company it is dropped, so the next skip lands on 6, not 9.5.
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 9.5 }))
+  first.send(JSON.stringify({ version: 1, type: 'skip', hours: 1 }))
+  const kept = await nextClock(second, (m) => m.skipHours !== 6)
+  if (kept.skipHours !== 7) throw new Error(`a clock from a client with company should be dropped, got ${kept.skipHours}`)
   // The things in hands and on the ground: a hold, a loose thing, a lift and a
   // take each reach the other client once, as a `things` block on the next
   // snapshot, and a snapshot between changes carries no block at all.
@@ -144,7 +150,75 @@ try {
   }
   if (forgotten !== 'deadbeef-c0') throw new Error(`the oldest loose thing should be forgotten at the cap, got ${forgotten}`)
   if (ids.size !== 24 || ids.has('deadbeef-c0')) throw new Error(`24 loose things should remain, got ${ids.size}`)
-  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped; room clock anchor and skip relayed; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest)')
+  // The creatures someone is interacting with: an anchor reaches the other
+  // client once with its sender's id on it, a second for the same key replaces
+  // the first, a malformed one is dropped, a lured set rides the same block, a
+  // newcomer hears the whole map, and the cap forgets the oldest.
+  const nextCreatures = (ws, accept, ms = 1000) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('creatures timeout')), ms)
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (message.type === 'snapshot' && message.creatures && accept(message.creatures)) {
+        clearTimeout(timer)
+        ws.removeEventListener('message', onMessage)
+        resolve(message.creatures)
+      }
+    }
+    ws.addEventListener('message', onMessage)
+  })
+  const roomT = () => (Date.now() - clock.anchorMs) / 1000 + 7 * 60
+  const anchorOf = (key, T, extra = []) => ({ version: 1, type: 'anchor', anchor: [key, T, 1.5, 2.25, -3, 0.75, 4, 'lure', null, ...extra] })
+  const T1 = roomT()
+  // Each of these is dropped with its message: a key outside the alphabet, a mode that is not a word, a by that is not null, a T from another chapter or another clock, a field past the cap.
+  first.send(JSON.stringify(anchorOf('ST:0,0:1', T1)))
+  first.send(JSON.stringify({ ...anchorOf('st:0,0:1', T1), anchor: ['st:0,0:1', T1, 1.5, 2.25, -3, 0.75, 4, 'Lure!', null] }))
+  first.send(JSON.stringify({ ...anchorOf('st:0,0:1', T1), anchor: ['st:0,0:1', T1, 1.5, 2.25, -3, 0.75, 4, 'lure', 'someone'] }))
+  first.send(JSON.stringify(anchorOf('st:0,0:1', T1 - 700)))
+  first.send(JSON.stringify(anchorOf('st:0,0:1', T1 + 120)))
+  first.send(JSON.stringify(anchorOf('st:0,0:1', T1, Array.from({ length: 16 }, () => 1))))
+  first.send(JSON.stringify(anchorOf('st:0,0:1', T1, [null, 0.5])))
+  const heard = await nextCreatures(second, (c) => c.anchors)
+  if (heard.anchors.length !== 1 || heard.lured) throw new Error(`one good anchor should arrive alone: ${JSON.stringify(heard)}`)
+  const a1 = heard.anchors[0]
+  if (a1[0] !== 'st:0,0:1' || a1[1] !== T1 || a1[2] !== 1.5 || a1[7] !== 'lure' || a1[8] !== firstId || a1.length !== 11 || a1[9] !== null || a1[10] !== 0.5) throw new Error(`anchor round-trip mismatch: ${JSON.stringify(a1)}`)
+  await wait(120)
+  const quiet = await nextClock(second, () => true)
+  if ('creatures' in quiet) throw new Error(`an idle room should send no creatures, got ${JSON.stringify(quiet.creatures)}`)
+  await wait(120)
+  const own = await nextClock(first, () => true)
+  if ('creatures' in own) throw new Error(`the sender should not hear her own anchor back, got ${JSON.stringify(own.creatures)}`)
+  // The next anchor for the key replaces it: the peer hears one, the newer.
+  const T2 = roomT()
+  first.send(JSON.stringify({ version: 1, type: 'anchor', anchor: ['st:0,0:1', T2, 9, 9, 9, 0, 5, 'rejoin', null] }))
+  const replaced = await nextCreatures(second, (c) => c.anchors)
+  if (replaced.anchors.length !== 1 || replaced.anchors[0][1] !== T2 || replaced.anchors[0][7] !== 'rejoin') throw new Error(`a second anchor should replace the first: ${JSON.stringify(replaced.anchors)}`)
+  // A lured set, by stamped the same way; one with a bad index is dropped.
+  first.send(JSON.stringify({ version: 1, type: 'lured', set: ['3,-2', 'fish', null, [1, -1]] }))
+  first.send(JSON.stringify({ version: 1, type: 'lured', set: ['3,-2', 'fish', null, [1, 4, 7]] }))
+  const lured = await nextCreatures(second, (c) => c.lured)
+  if (lured.anchors || lured.lured.length !== 1 || !same(lured.lured[0], ['3,-2', 'fish', firstId, [1, 4, 7]])) throw new Error(`lured round-trip mismatch: ${JSON.stringify(lured)}`)
+  // A newcomer hears the whole map in one block.
+  const fourth = await open()
+  const all = await nextCreatures(fourth, () => true)
+  if (all.anchors?.length !== 1 || all.anchors[0][1] !== T2 || all.lured?.length !== 1 || all.lured[0][3][2] !== 7) throw new Error(`newcomer should hear the whole creature map: ${JSON.stringify(all)}`)
+  fourth.close()
+  // The room holds 256 anchors; the 257th key forgets the one written longest ago.
+  const T3 = roomT()
+  for (let i = 0; i < 256; i++) first.send(JSON.stringify(anchorOf(`fx:${i},0:0`, T3)))
+  await wait(300)
+  const fifth = await open()
+  const capped = await nextCreatures(fifth, () => true)
+  const keys = new Set(capped.anchors.map((a) => a[0]))
+  if (keys.size !== 256 || keys.has('st:0,0:1') || !keys.has('fx:0,0:0') || !keys.has('fx:255,0:0')) throw new Error(`the cap should forget the oldest anchor: ${keys.size} kept, stag ${keys.has('st:0,0:1') ? 'kept' : 'gone'}`)
+  fifth.close()
+  // Alone, the clock lands to the minute, and one past the bound is dropped.
+  second.close()
+  await wait(120)
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 100 }))
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
+  const alone = await nextClock(first, (m) => m.skipHours !== 7)
+  if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
+  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
   first.close()
   second.close()
 } finally {

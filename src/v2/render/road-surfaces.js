@@ -125,6 +125,8 @@ export class RoadSurfaces {
     // u is METRES along the road, not 0..1. A normalised u over a 3 km road means a texture repeat of 3000 to tile at 1 m, and every one of those repeats has to be re-authored the moment a control point moves and the length changes. Metres are invariant to editing: add a point and only the vertices past it get new numbers.
     geo.setAttribute('uv', new THREE.BufferAttribute(r.uvs, 2))
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    // The strip is INDEXED. Without this three reads the 2n vertices as a soup of consecutive triples, and a ribbon drawn that way is one sliver every three vertices with nothing between -- a row of flat triangles every 3 m along the road and the terrain showing through the rest.
+    geo.setIndex(new THREE.BufferAttribute(r.indices, 1))
     geo.computeBoundingSphere()
 
     const mesh = new THREE.Mesh(geo, this.material)

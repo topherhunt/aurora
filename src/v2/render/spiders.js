@@ -82,7 +82,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
   CRITTER_GLB, createCritterCardMaterial, setCritterCard,
-  LOD_RUNGS, CARD_RUNGS, critterTier, cullRange, bakeCritterCard, tileKey, walkTiles,
+  LOD_RUNGS, CARD_RUNGS, critterTier, cullRange, bakeCritterCard, tierTintSplice, tileKey, walkTiles,
 } from './critters.js'
 import { loadSkinnedAsset } from './puppet.js'
 import { PERCH_STRIDE } from './rocks.js'
@@ -286,6 +286,7 @@ export class Spiders {
             'transformed.z -= legSwing * sin( legAt );\n' +
             'transformed.y += 0.5 * legSwing * max( 0.0, cos( legAt ) );'
         )
+      tierTintSplice(shader, MESH_TIER)
     }
     this.material.customProgramCacheKey = () => 'spiders-legs'
     // The tint (TINT_DARK, TINT_BROWN) through three's own vColor; made here so each program is keyed with it from the first draw.

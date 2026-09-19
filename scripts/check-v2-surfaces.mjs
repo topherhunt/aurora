@@ -15,6 +15,7 @@ import { nodeKey } from '../src/v2/terrain/quadtree-v2.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { SAMPLE_SPACING, RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../src/v2/layers/paths.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
+import { RoadSurfaces } from '../src/v2/render/road-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { WORLD_HALF } from '../src/v2/config.js'
@@ -425,6 +426,36 @@ export async function run() {
     }
     check(worstGap < 1e-3, `the road surface clears the flattened terrain by exactly ${ROAD_LIFT} m`, `worst error ${worstGap.toExponential(1)} m`)
     check(ROAD_LIFT > 0, 'the road lift is a positive gap, so the depth test never has to break a tie', `${ROAD_LIFT} m`)
+
+    // The mesh RoadSurfaces builds is the indexed strip, not the vertex soup: without the index three reads the 2n vertices as consecutive triples, which draws one sliver every three vertices and leaves the ground showing between -- a row of flat triangles every 3 m that renders without a warning. Every centreline midpoint has to fall inside one of the mesh's own triangles.
+    {
+      const scene = new THREE.Scene()
+      const rs = new RoadSurfaces({ scene, layers })
+      rs.rebuild()
+      const geo = rs.meshes.get('d').geometry
+      const idx = geo.getIndex()
+      const pos = geo.getAttribute('position').array
+      const s = road.samples
+      let bare = 0
+      let mids = 0
+      for (let i = 0; i + 1 < s.length / 4; i++) {
+        const px = (s[i * 4] + s[(i + 1) * 4]) / 2
+        const pz = (s[i * 4 + 2] + s[(i + 1) * 4 + 2]) / 2
+        let inside = false
+        for (let t = 0; idx !== null && t < idx.count / 3 && !inside; t++) {
+          const a = idx.array[t * 3], b = idx.array[t * 3 + 1], c = idx.array[t * 3 + 2]
+          const d1 = cross2(pos[b * 3] - pos[a * 3], pos[b * 3 + 2] - pos[a * 3 + 2], px - pos[a * 3], pz - pos[a * 3 + 2])
+          const d2 = cross2(pos[c * 3] - pos[b * 3], pos[c * 3 + 2] - pos[b * 3 + 2], px - pos[b * 3], pz - pos[b * 3 + 2])
+          const d3 = cross2(pos[a * 3] - pos[c * 3], pos[a * 3 + 2] - pos[c * 3 + 2], px - pos[c * 3], pz - pos[c * 3 + 2])
+          inside = (d1 <= 0 && d2 <= 0 && d3 <= 0) || (d1 >= 0 && d2 >= 0 && d3 >= 0)
+        }
+        mids++
+        if (!inside) bare++
+      }
+      check(idx !== null && idx.count === dr.indices.length, 'the drawn road is the indexed strip ribbonVertices emitted', idx === null ? 'no index' : `${idx.count} indices`)
+      check(bare === 0, 'and every span between two samples is under one of its triangles', `${bare} of ${mids} midpoints bare`)
+      rs.dispose()
+    }
 
     // levelAt is the submersion test, and it has to answer the surface DRAWN over the point, which on a grade is the nearest quad's level and not the highest level of every segment whose half-width reaches the point: a segment's reach runs a half-width past its own ends, so the highest is up to that far upstream, and on this 1:5 rapid that is 1.4 m of water over her head while she stands on the bank. Measured at every sample and across the wet width, where the nearest segment's y is the sample's own.
     {

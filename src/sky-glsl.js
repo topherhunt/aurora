@@ -1,5 +1,6 @@
 import THREE from './three-instance.js'
 import { MOON } from './clock.js'
+import { AIR_FALL, airCeiling } from './lighting.js'
 
 // ---------------------------------------------------------------------------
 // The sky, as a function of direction -- shared by the dome that draws it and
@@ -59,11 +60,59 @@ export function makeSkyUniforms() {
     // constant across the whole disc.
     uMoonU: { value: new THREE.Vector3(1, 0, 0) },
     uMoonV: { value: new THREE.Vector3(0, 1, 0) },
+    // The cloud layer (§10). The texture is public/world/clouds.png, handed in
+    // by Sky.setClouds; until then, and while the debug row has clouds off,
+    // uCloud.w is 0 and the dome skips the fetches. x = cover, y/z = the
+    // coverage remap's lo/hi, w = on.
+    uClouds: { value: null },
+    uCloud: { value: new THREE.Vector4(0, 1, 1.3, 0) },
+    uCloudDrift: { value: new THREE.Vector2(0, 0) },
+    uCloudLit: { value: new THREE.Color(1, 1, 1) },
+    uCloudShade: { value: new THREE.Color(0.4, 0.45, 0.5) },
+    // The haze the sky is seen through (§10): x = hazeDensity, the terrain's
+    // extinction coefficient, y = SKY_HAZE_M, and the two ends of the sky's
+    // aerial ramp, in LINEAR space here because skyRadiance runs before the
+    // caller's colorspace_fragment.
+    uSkyHaze: { value: new THREE.Vector2(0, SKY_HAZE_M) },
+    uSkyAirNear: { value: new THREE.Color(0, 0, 0) },
+    uSkyAirFar: { value: new THREE.Color(0, 0, 0) },
   }
 }
 
+// The haze's depth, as the sky sees it. A view ray at elevation e crosses
+// SKY_HAZE_M / sin(e) metres of the air the terrain is fogged by, and the sky
+// at that elevation is treated as a ridge at that distance: the same
+// extinction, the same in-scatter ramp, so under rain the horizon goes the way
+// the land in front of it went, long before the zenith does. 30 m: on a clear
+// day (density 0.00113) that is 35% fog at 3 deg, 10% at 6 deg and 1% at 20
+// deg, so a far range still stands dark against the sky over it; under rain
+// (0.0042) 100% at 3 deg, 76% at 6 deg, 41% at 10 deg and 2% overhead, so the
+// clouds stay readable straight up while the land loses its horizon. Under a
+// ceiling the whole sky is near the fog's grey anyway, so the number is
+// really the width of a clear day's horizon band. The ramp's near end
+// is the fog, not lighting.js's near haze: that haze is the shadow blue a
+// near ridge takes on a clear day, and a clear sky is brightest at the
+// horizon, not darkest. Under cover the palette takes the haze to the fog
+// anyway, which is what lets the two meet in the rain.
+export const SKY_HAZE_M = 30
+
+// The remap that turns one texture into every sky from a few puffs to a
+// ceiling: density = smoothstep(lo, hi, tex). At cover 0 nothing in the texture
+// clears lo; at cover 1 nearly all of it does.
+export function cloudRemap(cover) {
+  const lo = 1.0 - 0.9 * cover
+  return [lo, lo + 0.3]
+}
+
+// Texture tiles per in-world hour along the wind. 0.08 of a 6 km tile is about
+// 480 m per real minute, a slow visible drift overhead; the wreaths take the
+// same metres so the two clouds agree about the wind.
+const CLOUD_DRIFT = 0.08
+export const CLOUD_DRIFT_M = CLOUD_DRIFT * 6000
+
 const SUN_TMP = new THREE.Vector3()
 const MOON_TMP = new THREE.Vector3()
+const CEIL_TMP = new THREE.Color()
 
 function smoothstep(a, b, x) {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)))
@@ -108,6 +157,26 @@ export function writeSkyUniforms(u, state) {
   s.normalize()
   u.uMoonU.value.copy(s)
   u.uMoonV.value.crossVectors(moonDir, s).normalize()
+
+  // Clouds. Driven by in-world time and the room's wind, so every peer's sky
+  // drifts in step. The colours come off the palette so the layer is right at
+  // every hour with no table of its own: lit faces a quarter above the horizon
+  // colour (near white by day, peach at sunset, near black at night), bellies
+  // a dimmed mean of horizon and zenith, which is what keeps a sunset belly
+  // grey-mauve rather than brown.
+  const [lo, hi] = cloudRemap(state.cover)
+  u.uCloud.value.set(state.cover, lo, hi, u.uCloud.value.w)
+  u.uCloudDrift.value.set(state.wind[0] * state.elapsed * CLOUD_DRIFT, state.wind[1] * state.elapsed * CLOUD_DRIFT)
+  const h = state.horizon, z = state.zenith
+  u.uCloudLit.value.setRGB(Math.min(1, h[0] * 1.25), Math.min(1, h[1] * 1.25), Math.min(1, h[2] * 1.25), THREE.SRGBColorSpace)
+  u.uCloudShade.value.setRGB((h[0] + z[0]) * 0.35, (h[1] + z[1]) * 0.35, (h[2] + z[2]) * 0.35, THREE.SRGBColorSpace)
+
+  // The haze: from the fog to the fog under lighting.js's ceiling, which is
+  // where its ramp ends for the land, so a fully fogged ridge and the sky
+  // above it land on one colour.
+  u.uSkyHaze.value.x = state.hazeDensity
+  u.uSkyAirNear.value.setRGB(state.fog[0], state.fog[1], state.fog[2], THREE.SRGBColorSpace)
+  u.uSkyAirFar.value.copy(u.uSkyAirNear.value).multiply(airCeiling(state.cover, CEIL_TMP))
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +209,19 @@ export const SKY_GLSL = /* glsl */ `
   uniform vec3 uMoon;
   uniform vec3 uMoonU;
   uniform vec3 uMoonV;
+  uniform sampler2D uClouds;
+  uniform vec4 uCloud;
+  uniform vec2 uCloudDrift;
+  uniform vec3 uCloudLit;
+  uniform vec3 uCloudShade;
+  uniform vec2 uSkyHaze;
+  uniform vec3 uSkyAirNear;
+  uniform vec3 uSkyAirFar;
 
-  vec3 skyRadiance( vec3 dir, float coreGain ) {
+  // The sky with no air in front of it. The water's distance term wants this
+  // one: it fades a far lake to the horizon sky under the reflection's dim, and
+  // a horizon already fogged would put that lake under the land it mirrors.
+  vec3 skyClear( vec3 dir, float coreGain ) {
     // Height above the horizon, 0..1.
     //
     // THIS WAS pow(dir.y, 0.21) AND THE EXPONENT WAS THE BUG. Every pow(x, p)
@@ -206,8 +286,12 @@ export const SKY_GLSL = /* glsl */ `
     float halo = pow( max( sun, 0.0 ), 1400.0 ) * 0.55
                + pow( max( sun, 0.0 ), 60.0 ) * 0.10;
     vec3 sunTint = mix( vec3( 1.0, 0.55, 0.28 ), vec3( 1.0, 0.96, 0.80 ), uSunFade );
-    col += sunTint * halo * uSunFade;
-    col = mix( col, sunTint * 4.0, core * uSunFade * coreGain );
+    // Through cloud (§10): the layer below hides the disc on the dome, but the
+    // water never draws the layer, so its highlight would still burn under an
+    // overcast without this.
+    float through = uSunFade * ( 1.0 - uCloud.x * uCloud.x );
+    col += sunTint * halo * through;
+    col = mix( col, sunTint * 4.0, core * through * coreGain );
 
     // ---- Moon.
     //
@@ -264,6 +348,42 @@ export const SKY_GLSL = /* glsl */ `
     // lake read as moonlit.
     col += vec3( 0.62, 0.70, 0.90 ) * ( pow( max( md, 0.0 ), 900.0 ) * 0.30 * uMoon.y );
 
+    // ---- Clouds (§10). A plane 1500 m up, above every summit, the view ray
+    // projected onto it and one seamless fBm sampled at two scales that drift
+    // with the wind. Composited over everything above, so a thick cloud hides
+    // the sun and the moon and a thin one dims them, with no switch. Behind
+    // the coreGain branch so the water, which calls this three times a pixel,
+    // pays none of the fetches; under an overcast it goes grey anyway through
+    // uHorizon and uZenith. The horizon fade hands the plane's far stretch to
+    // the fog, which is eating the terrain there.
+    if ( coreGain > 0.5 && uCloud.w > 0.5 && dir.y > 0.02 ) {
+      vec2 p = dir.xz * ( 1500.0 / dir.y );
+      float a = texture2D( uClouds, p / 6000.0 + uCloudDrift ).r;
+      float b = texture2D( uClouds, p / 2600.0 * vec2( 0.8, 1.1 ) + uCloudDrift * 1.7 + 0.37 ).r;
+      float tex = a * 0.65 + b * 0.35;
+      float density = smoothstep( uCloud.y, uCloud.z, tex );
+      float fade = smoothstep( 0.02, 0.15, dir.y );
+      // Bellies darken with thickness past the remap's edge, so a solid ceiling
+      // still shows its texture instead of one flat grey; and the layer takes
+      // the horizon colour as it recedes, the aerial perspective the terrain
+      // gets from lighting.js, so a ceiling meets the fog instead of ending
+      // on it.
+      vec3 cloud = mix( uCloudLit, uCloudShade, smoothstep( uCloud.y, uCloud.z + 0.35, tex ) );
+      cloud = mix( cloud, uHorizon, ( 1.0 - smoothstep( 0.03, 0.45, dir.y ) ) * 0.85 );
+      col = mix( col, cloud, density * fade );
+    }
+
     return col;
+  }
+
+  // ---- The haze (§10, SKY_HAZE_M). lighting.js's aerial ramp with the
+  // ray's path through the haze layer for its depth, so the sun, the clouds
+  // and the horizon all go the way a ridge at that depth goes. Below the
+  // horizon the depth is fifteen kilometres: the fog the land there became.
+  vec3 skyRadiance( vec3 dir, float coreGain ) {
+    float hazeL = uSkyHaze.y / max( dir.y, 0.004 );
+    float hazeTau = hazeL * uSkyHaze.x;
+    vec3 air = mix( uSkyAirNear, uSkyAirFar, 1.0 - exp( - hazeL * ${AIR_FALL.toExponential()} ) );
+    return mix( skyClear( dir, coreGain ), air, 1.0 - exp( - hazeTau * hazeTau ) );
   }
 `

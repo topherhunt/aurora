@@ -1,0 +1,10 @@
+{
+  "world": 8192,
+  "size": 1025,
+  "minY": 0,
+  "maxY": 300,
+  "exaggeration": 3,
+  "encoding": "rg16",
+  "room": "leafkin",
+  "seed": 30
+}

@@ -21,7 +21,8 @@ function roomFor(name) {
     // `boats`: origin key -> the last state any client sent for a rowboat it
     // was moving, so a joiner finds the boats where they were left.
     // `loose`, `gone`, `taken` and `rev`: the things in the room, see applyThing.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0 }
+    // `anchors`, `lured` and `crev`: the creatures someone is interacting with, see applyCreature.
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -162,9 +163,106 @@ function thingsFor(room, client) {
   return out
 }
 
+// THE CREATURES SOMEONE IS INTERACTING WITH (_notes/creature-sync.md). Every
+// creature lives on a plan each client derives alike from the room's clock,
+// so the room keeps only the latest ANCHOR of each creature a player has
+// drawn off its plan and, for the swarms, the latest LURED set of each bed:
+// replaced on every write, never appended, delivered to a client once past
+// the `crev` it last heard, the whole of it to a newcomer.
+//
+// An ANCHOR is [key, T, x, y, z, heading, phraseIndex, mode, by, ...layer
+// fields], T in the room's world seconds (WorldClock.seconds: real seconds
+// since anchorMs plus a minute a skipped hour); `by` is stamped here with
+// the sender's id, and a sender never hears its own back. A LURED set is
+// [bedKey, layer, by, indices]. Both fall out of the room once a chapter
+// old: a client rejects anything before the creature's own chapter start
+// (score.js chapterOf) exactly, so the relay need only bound its memory,
+// and the caps forget what was written longest ago.
+const CHAPTER_S = 600 // src/sim/score.js CHAPTER_S
+const ROOM_ANCHORS_CAP = 256
+const ROOM_LURED_CAP = 64
+const ANCHOR_MAX_JSON = 256
+const ANCHOR_FIELDS = 9
+const ANCHOR_MAX_FIELDS = 24
+const LURED_MAX_INDICES = 64
+// A minute of clock slop between a client and the room; past it an anchor is from a clock this room does not keep.
+const ANCHOR_AHEAD_S = 60
+const validCreatureKey = (k) => typeof k === 'string' && /^[a-z0-9:,-]{1,32}$/.test(k)
+const validWord = (w) => typeof w === 'string' && /^[a-z]{1,12}$/.test(w)
+const roomSeconds = (room, now) => (now - room.anchorMs) / 1000 + room.skipHours * 60
+
+function validAnchor(a, seconds) {
+  if (!Array.isArray(a) || a.length < ANCHOR_FIELDS || a.length > ANCHOR_MAX_FIELDS) return false
+  if (!validCreatureKey(a[0]) || !Number.isFinite(a[1]) || a[1] > seconds + ANCHOR_AHEAD_S || a[1] < seconds - CHAPTER_S) return false
+  for (let i = 2; i < 6; i++) if (!Number.isFinite(a[i])) return false
+  if (!Number.isInteger(a[6]) || !validWord(a[7]) || a[8] !== null) return false
+  for (let i = ANCHOR_FIELDS; i < a.length; i++) if (a[i] !== null && !Number.isFinite(a[i])) return false
+  return JSON.stringify(a).length <= ANCHOR_MAX_JSON
+}
+
+function validLured(s) {
+  return Array.isArray(s) && s.length === 4 && validCreatureKey(s[0]) && validWord(s[1]) && s[2] === null &&
+    Array.isArray(s[3]) && s[3].length <= LURED_MAX_INDICES && s[3].every((i) => Number.isInteger(i) && i >= 0)
+}
+
+/** True when the message was a well-formed anchor or lured set and is now the room's. */
+function applyCreature(room, client, message, now) {
+  const seconds = roomSeconds(room, now)
+  if (message.type === 'anchor') {
+    if (!validAnchor(message.anchor, seconds)) return false
+    const anchor = message.anchor.slice()
+    anchor[8] = client.id
+    replaceCreature(room.anchors, anchor[0], { data: anchor, t: seconds, rev: ++room.crev }, ROOM_ANCHORS_CAP)
+    return true
+  }
+  if (!validLured(message.set)) return false
+  const set = message.set.slice()
+  set[2] = client.id
+  replaceCreature(room.lured, `${set[1]}/${set[0]}`, { data: set, t: seconds, rev: ++room.crev }, ROOM_LURED_CAP)
+  return true
+}
+
+/** Sets `key` in `map`, a full map first forgetting the entry written longest ago. */
+function replaceCreature(map, key, entry, cap) {
+  if (map.size >= cap && !map.has(key)) {
+    let oldest = null
+    for (const [k, e] of map) if (oldest === null || e.t < map.get(oldest).t) oldest = k
+    map.delete(oldest)
+  }
+  map.set(key, entry)
+}
+
+/** A chapter on, an anchor or a lured set is one every client rejects on its own; the room forgets it. */
+function expireCreatures(room, now) {
+  const before = roomSeconds(room, now) - CHAPTER_S
+  for (const [k, e] of room.anchors) if (e.t < before) room.anchors.delete(k)
+  for (const [k, e] of room.lured) if (e.t < before) room.lured.delete(k)
+}
+
+/** The anchors and lured sets written since this client last heard, none of them its own, or null when there are none. */
+function creaturesFor(room, client) {
+  const seen = client.seenCrev
+  let out = null
+  const anchors = []
+  for (const e of room.anchors.values()) if (e.rev > seen && e.data[8] !== client.id) anchors.push(e.data)
+  if (anchors.length) (out ??= {}).anchors = anchors
+  const lured = []
+  for (const e of room.lured.values()) if (e.rev > seen && e.data[2] !== client.id) lured.push(e.data)
+  if (lured.length) (out ??= {}).lured = lured
+  client.seenCrev = room.crev
+  return out
+}
+
 // Bounded so a bad client cannot fling the room's sun across years.
 function validSkip(message) {
   return message && message.type === 'skip' && Number.isInteger(message.hours) && Math.abs(message.hours) <= 24
+}
+
+// A saved game's hour: the skip count outright, to the minute, bounded like a
+// skip. Only a client alone in its room may set it (the room's hour is then
+// nobody else's); with company the message is dropped and the room's clock stands.
+function validClock(message, room) {
+  return message && message.type === 'clock' && Number.isFinite(message.skipHours) && Math.abs(message.skipHours - room.skipHours) <= 24
 }
 
 function leave(client) {
@@ -207,6 +305,8 @@ wss.on('connection', (ws, request) => {
     id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, aboard: null,
     // What its hands hold, the rev that last changed, and how far through the room's things it has been told.
     held: new Array(HANDS).fill(null), heldRev: 0, seenRev: 0, takenSent: 0,
+    // How far through the room's creatures it has been told.
+    seenCrev: 0,
   }
   room.clients.set(client.id, client)
   ws.isAlive = true
@@ -220,11 +320,20 @@ wss.on('connection', (ws, request) => {
       client.lastSeen = now
       return
     }
+    if (validClock(message, room)) {
+      if (room.clients.size === 1) room.skipHours = message.skipHours
+      client.lastSeen = now
+      return
+    }
     if (message && ['hold', 'loose', 'lift', 'take'].includes(message.type)) {
       if (validThing(message)) {
         applyThing(room, client, message, now)
         client.lastSeen = now
       }
+      return
+    }
+    if (message && (message.type === 'anchor' || message.type === 'lured')) {
+      if (applyCreature(room, client, message, now)) client.lastSeen = now
       return
     }
     if (!validPose(message) || !validBoats(message)) return
@@ -254,6 +363,7 @@ setInterval(() => {
   const now = Date.now()
   serverTick++
   for (const room of rooms.values()) {
+    expireCreatures(room, now)
     const boats = []
     for (const [origin, b] of room.boats) boats.push([origin, ...b.state.slice(1), now - b.at])
     for (const client of room.clients.values()) {
@@ -271,10 +381,12 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things ride only when something changed since this client last heard.
+      // The things and the creatures ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
+      const creatures = creaturesFor(room, client)
+      if (creatures) snapshot.creatures = creatures
       send(client, snapshot)
     }
   }

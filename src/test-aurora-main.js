@@ -724,6 +724,7 @@ function main() {
     timer.begin('skymap')
     skymap.render(algorithmId, values, shaderTime)
     timer.end('skymap')
+    screen.setSkyWeights(skymap.weights)
 
     // Pass 1: the expensive shader into the small target, in a scene that contains nothing else. A no-op at a divisor of 1, where the real mesh in the main scene below is doing the drawing instead.
     // Bracketed only when it is going to do something. Timing the early return would push a stream of near-zero samples into the same median as the real ones and halve the reported cost of the aurora at a divisor of 1, which is the flavour of quietly wrong number this whole file is trying to stop.

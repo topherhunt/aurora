@@ -702,6 +702,71 @@ console.log('\nrocks')
   l.dispose()
 }
 
+// --- 6b. the road: cobbled ------------------------------------------------------
+{
+  console.log('\n6b. the road\n')
+  const ROAD_DENSITY = srcNum('ROAD_DENSITY')
+  const ROAD_SPREAD = srcNum('ROAD_SPREAD')
+  // A straight road along x at z = 0, in the wood: half-width 3 m, feather 8 m, the index stub answering only within the feather the way PathSet.nearest does.
+  const HW = 3
+  const FEATHER = 8
+  const w = world(60, 0, 9999, null)
+  const paths = {
+    nearest: (x, z, kind) => (kind === 'road' && Math.abs(z) <= HW + FEATHER ? { dist: Math.abs(z), halfWidth: HW } : null),
+    overlaps: (minX, minZ, maxX, maxZ) => !(minZ > HW + FEATHER || maxZ < -(HW + FEATHER)),
+  }
+  const l = new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths }, texArray, { seed: SEED })
+  l.place(0, 0)
+  const wood = worlds.forest
+  const m = new THREE.Matrix4()
+  const sc = new THREE.Vector3()
+  const scaleOf = (lit, id) => { lit.batch.getMatrixAt(id, m); return sc.setFromMatrixScale(m).clone() }
+  // A 12 m by 6 m rectangle of carriageway, wholly inside the full-density disc.
+  const X = 6
+  const onRoad = liveIds(l).filter((id) => Math.abs(l.instX[id]) <= X && Math.abs(l.instZ[id]) <= HW)
+  const area = 2 * X * 2 * HW
+  const expected = (DENSITY + ROAD_DENSITY) * area
+  console.log(`       ${onRoad.length} stones on ${area} m² of road, ${(onRoad.length / area).toFixed(2)} per m² against ${perM2(wood).toFixed(2)} in the wood; samplesRoad ${l.stats.samplesRoad}, rejectedRoad ${JSON.stringify(l.stats.rejectedRoad)}`)
+  check(Math.abs(onRoad.length - expected) < expected * 0.08,
+    'on the road every dry-pass and road-pass candidate stands: DENSITY + ROAD_DENSITY per m², no drift floor and no environment rate',
+    `${onRoad.length} against ${expected.toFixed(0)} expected`)
+  check(onRoad.length / area > 4 * perM2(wood), 'which is many times the wood', `${(onRoad.length / area).toFixed(2)} vs ${perM2(wood).toFixed(2)} per m²`)
+  check(l.stats.samplesRoad > 0 && l.stats.rejectedRoad.off > 0 && wood.stats.samplesRoad === 0,
+    'the road pass ran here and refused what fell beside the road, and never ran in the wood',
+    `road: ${l.stats.samplesRoad} sampled, ${l.stats.rejectedRoad.off} off; wood: ${wood.stats.samplesRoad}`)
+
+  // The matrix scale is (size * stretch * spread, size * flat, size / stretch * spread), so sqrt(sx * sz) is size * spread and sy / size is the flatness roll.
+  const ROAD_SIZE = srcPair('ROAD_SIZE')
+  const woodIds = liveIds(wood).filter((id) => wood.instX[id] ** 2 + wood.instZ[id] ** 2 < wood.fullSq)
+  const planOf = (lit, id) => { const v = scaleOf(lit, id); return Math.sqrt(v.x * v.z) }
+  const flatOf = (lit, id, spread) => { const v = scaleOf(lit, id); return v.y / (planOf(lit, id) / spread) }
+  const roadSizes = onRoad.map((id) => planOf(l, id) / ROAD_SPREAD)
+  const woodSizes = woodIds.map((id) => planOf(wood, id))
+  const lo = Math.min(...roadSizes), hi = Math.max(...roadSizes)
+  const meanRoad = roadSizes.reduce((a, b) => a + b, 0) / roadSizes.length
+  const meanWood = woodSizes.reduce((a, b) => a + b, 0) / woodSizes.length
+  check(lo >= ROAD_SIZE[0] - 1e-3 && hi <= ROAD_SIZE[1] + 1e-3 && lo < ROAD_SIZE[0] + 0.02 && hi > ROAD_SIZE[1] - 0.02,
+    'every stone on the road is a big one: its size is drawn from ROAD_SIZE and spans it', `${lo.toFixed(3)}..${hi.toFixed(3)} against ${ROAD_SIZE[0]}..${ROAD_SIZE[1]}`)
+  check(Math.abs(meanRoad - (ROAD_SIZE[0] + ROAD_SIZE[1]) / 2) < 0.01, 'drawn evenly across it, with no small-end skew', `mean ${meanRoad.toFixed(3)}`)
+  check(meanRoad > 1.6 * meanWood, 'so the road\'s stones are well above the wood\'s average', `${meanRoad.toFixed(3)} vs ${meanWood.toFixed(3)} m`)
+  const sx = onRoad.map((id) => scaleOf(l, id).x)
+  const stretchRoad = sx.reduce((a, b) => a + b, 0) / sx.length / (meanRoad * ROAD_SPREAD)
+  check(Math.abs(stretchRoad - 1) < 0.1, 'and each is ROAD_SPREAD times wider in x and z than its size', `x scale / (size * ROAD_SPREAD) ${stretchRoad.toFixed(2)}`)
+  const flatRoad = onRoad.reduce((a, id) => a + flatOf(l, id, ROAD_SPREAD), 0) / onRoad.length
+  const flatWood = woodIds.reduce((a, id) => a + flatOf(wood, id, 1), 0) / woodIds.length
+  check(Math.abs(flatRoad / flatWood - 1) < 0.1, 'but no flatter or taller for its size than a stone in the wood', `height / size ${flatRoad.toFixed(3)} vs ${flatWood.toFixed(3)}`)
+
+  // Off the road the dry pass is untouched: the stones past the kerb are the wood's, stone for stone.
+  const key = (lit, id) => `${lit.instX[id].toFixed(3)},${lit.instZ[id].toFixed(3)}`
+  const off = (lit) => liveIds(lit).filter((id) => Math.abs(lit.instZ[id]) > HW + 0.01).map((id) => key(lit, id)).sort().join('|')
+  check(off(l) === off(wood) && off(l).length > 0, 'and beside the road the litter is the wood\'s, stone for stone')
+
+  let threw = false
+  try { new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths: { nearest: () => null } }, texArray, { seed: SEED }) } catch { threw = true }
+  check(threw, 'a `layers.paths` that cannot answer overlaps throws at construction')
+  l.dispose()
+}
+
 {
   const s = worlds.forest.stats
   console.log(`\n       wood: ${s.placed} pebbles, ${s.tiles} tiles resident, pool ${s.pool}, build ${s.buildMs.toFixed(1)} ms, place ${s.placeMs.toFixed(0)} ms`)

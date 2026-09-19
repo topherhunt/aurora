@@ -438,6 +438,9 @@ const TRUNK_REACH = 2
 // lies under branches; what it must not do is stand a trunk through a log.
 const DEADWOOD_CLEARANCE = 1.0
 
+// The road law. No trunk stands within `clearance` metres of a road's edge, and from the edge out to `reach` the keep-probability is multiplied by up to 1 + gain, easing back to 1 at `reach`: a verge that the forest crowds. `reach` must stay inside the paths index's padding past the road edge (a road's feather, 8 m by default), because PathSet.nearest finds nothing beyond it and the verge would end in a hard line.
+const ROAD = { clearance: 1.0, reach: 6, gain: 4 }
+
 // The band limit the EXISTENCE tests run at, in metres, and it is a constant
 // rather than the terrain's cell for a reason -- see V2Height.scatterAt.
 // Whether a tree exists must be a pure function of position: if it followed the
@@ -589,6 +592,9 @@ export class Trees {
    * @param opts.deadwood Deadwood, or anything with occupiesAt(x, z, pad). Optional
    *                      on the same terms; with it a trunk that would stand in a
    *                      piece of dead wood is refused.
+   * @param opts.paths    PathSet, or anything with nearest(x, z, 'road'). Optional
+   *                      on the same terms; with it no trunk stands on a road and
+   *                      the forest crowds the verge (ROAD).
    */
   constructor(
     scene,
@@ -605,6 +611,7 @@ export class Trees {
       rocks = null,
       biome = null,
       deadwood = null,
+      paths = null,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -638,6 +645,9 @@ export class Trees {
     if (deadwood && typeof deadwood.occupiesAt !== 'function') {
       throw new Error('Trees: `deadwood` was given but has no occupiesAt -- pass the Deadwood or nothing')
     }
+    if (paths && typeof paths.nearest !== 'function') {
+      throw new Error('Trees: `paths` was given but has no nearest -- pass the PathSet or nothing')
+    }
 
     this.field = field
     this.water = water
@@ -646,6 +656,7 @@ export class Trees {
     this.rocks = rocks
     this.biome = biome
     this.deadwood = deadwood
+    this.paths = paths
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
@@ -1893,8 +1904,18 @@ export class Trees {
       // The forest law (layers/forest.js) is shared with the terrain's vertex
       // tint, so the ground is green exactly where the roll below can win.
       // Water is this side's alone.
-      const keep = forestKeepAt(h, tan, above, this.biome, x, z)
-      if (keep === 0 || keepRoll >= keep) continue
+      let keep = forestKeepAt(h, tan, above, this.biome, x, z)
+      if (keep === 0) continue
+      // Off the road, and thick along its verge (ROAD). The verge is this side's alone: the vertex tint says where a tree CAN stand, and the verge only raises the odds where it already can.
+      if (this.paths !== null) {
+        const road = this.paths.nearest(x, z, 'road')
+        if (road !== null) {
+          const past = road.dist - road.halfWidth
+          if (past < ROAD.clearance) continue
+          if (past < ROAD.reach) keep = Math.min(1, keep * (1 + ROAD.gain * (1 - past / ROAD.reach)))
+        }
+      }
+      if (keepRoll >= keep) continue
       if (this.water.isSubmerged(x, z, h)) continue
       scale *= forestScaleAt(above, this.biome, x, z)
       // OFF THE DEAD WOOD, which is placed first (v2/main.js): a log is metres
@@ -2433,6 +2454,7 @@ export const TREE_TUNING = {
   TREELINE,
   BIOME,
   DEADWOOD_CLEARANCE,
+  ROAD,
   FADE_MAX_INFLIGHT,
   SCALE,
   STRETCH,

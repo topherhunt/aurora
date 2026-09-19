@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// The sky map's four render targets, as module singletons.
+// The sky map's six render targets, as module singletons.
 //
 // Same ownership argument as planmap/target.js, which should be read first: screen.js binds a chunk's samplers at MATERIAL BUILD TIME out of CHUNK_SAMPLERS, _buildMaterial runs again on every algorithm switch, and a texture owned by an instance the page constructs or reconstructs on its own schedule would leave a material pointing at a freed GL object. So these are owned here, borrowed by SkyMapAurora and by screen.js, and outlived by neither. setSize is used for every resize rather than a fresh target, because three's WebGLRenderTarget.setSize reallocates the GL storage and leaves the Texture OBJECT alone, so a uniform slot already holding it goes on holding the right one.
 //
 // ===========================================================================
-// FOUR TARGETS, AND WHAT EACH ONE IS
+// SIX TARGETS, AND WHAT EACH ONE IS
 // ===========================================================================
 //
 //   KERNEL. u_smTaps by 1. The part of the ray integral that is the same everywhere in the sky: quadrature weight times deposition times the physical colour ramp, premultiplied. NearestFilter, because the convolution reads it at exact texel centres and any interpolation there would be interpolating between two different taps.
@@ -13,17 +13,17 @@
 //
 //   HUE. The neon palette's colour at the same texels, in xyz. Same size as LANES and always resized with it. It is a separate target rather than a second half of the first one because six channels do not fit in one RGBA and this lab's GLSL is ESSL 1.00 throughout, so MRT would mean a version switch across every shared chunk -- see the header of skymap/glsl.js.
 //
-//   MAP. The convolved answer: the sky's radiance, already through the saturation matrix and already multiplied by the weather gain, on a lattice about ten times coarser than the screen along both axes. This is the only one the screen shader actually reads.
+//   MAP, THREE TIMES. The convolved answer: the sky's radiance, already through the saturation matrix and already multiplied by the weather gain, on a lattice about ten times coarser than the screen along both axes. These three are the only ones the screen shader reads, and it reads all of them: SkyMapAurora rebuilds the map every `interval` seconds into whichever of the ring has faded out, and the reader sums them by uSkyWeights. They are fixed slots, not a ring that rotates, so a material bound to them at build time stays bound.
 //
 // ===========================================================================
 // FORMAT, AND WHY HALF FLOAT IS COMFORTABLE HERE
 // ===========================================================================
 //
-// RGBA16F on all four, filterable in core WebGL2 with no extension consulted. On LANES, HUE and MAP the bilinear tap IS the reconstruction rather than a nicety: the taps land at arbitrary sub-texel positions along x, and the screen reads MAP at arbitrary positions along both.
+// RGBA16F on all five, filterable in core WebGL2 with no extension consulted. On LANES, HUE and MAP the bilinear tap IS the reconstruction rather than a nicety: the taps land at arbitrary sub-texel positions along x, and the screen reads MAP at arbitrary positions along both.
 //
 // Everything stored is bounded by a slider and of order one -- an emission profile in 0..3, a palette colour in 0..1, a premultiplied kernel weight of order a hundredth, a radiance of order one. None of them is a plan coordinate, so the eleven bits of mantissa sit where they are worth the most. That is a consequence of storing the SHADED quantity rather than the field, which is the opposite of planmap's choice and is correct for the opposite reason: there, the nonlinearities had to stay downstream of the filter, and here the filter is applied to a quantity that has already been through all of them and is smooth.
 //
-// Size at the defaults: LANES and HUE are 165 by 512 at eight bytes, so 676 KB each, and MAP is 64 by 512, or 262 KB. All three together are smaller than planmap's single 3.1 MB table, which is the point -- the convolution's forty taps per texel are only affordable because the thing being convolved fits in cache.
+// Size at the defaults: LANES and HUE are 165 by 512 at eight bytes, so 676 KB each, and each MAP is 64 by 512, or 262 KB. All of them together are smaller than planmap's single 3.1 MB table, which is the point -- the convolution's forty taps per texel are only affordable because the thing being convolved fits in cache.
 //
 // x is the log-radius axis on all three of the two-dimensional targets and y is azimuth, so a convolution's forty consecutive taps walk one contiguous row. Azimuth wraps and log radius clamps, for the reasons planmap/target.js gives: a clamped azimuth draws a hard line down the sky at due south, and a wrapped radius folds the far horizon onto the zenith. Both ends of the log-radius axis clamp correctly here -- below u_horizonCut nothing is drawn at all, and above u_smTopDeg the sector's mesh has already ended.
 //
@@ -71,7 +71,7 @@ const INDEXED = Object.assign( {}, COMMON, {
 
 let _lanes = null
 let _hue = null
-let _map = null
+const _maps = [ null, null, null ]
 let _kernel = null
 
 function make( w, h, options, name ) {
@@ -90,9 +90,11 @@ export function skyHueTarget() {
   return _hue
 }
 
-export function skyMapTarget() {
-  if ( _map === null ) _map = make( DEFAULT_ROWS, DEFAULT_AZIMUTH, FILTERED, 'aurora-lab sky map' )
-  return _map
+// `i` is 0, 1 or 2. Anything else is a scheduling bug in SkyMapAurora, so it throws rather than making a fourth map.
+export function skyMapTarget( i ) {
+  if ( i !== 0 && i !== 1 && i !== 2 ) throw new Error( 'skymap: map index must be 0, 1 or 2, got ' + i )
+  if ( _maps[ i ] === null ) _maps[ i ] = make( DEFAULT_ROWS, DEFAULT_AZIMUTH, FILTERED, 'aurora-lab sky map ' + i )
+  return _maps[ i ]
 }
 
 export function skyKernelTarget() {
@@ -103,7 +105,9 @@ export function skyKernelTarget() {
 // The accessors screen.js's CHUNK_SAMPLERS calls. Same shape as noiseLutTexture and planMapTexture, and they must stay plain zero-argument functions for that reason.
 export function skyLanesTexture() { return skyLanesTarget().texture }
 export function skyHueTexture() { return skyHueTarget().texture }
-export function skyMapTexture() { return skyMapTarget().texture }
+export function skyMapTexture() { return skyMapTarget( 0 ).texture }
+export function skyMapTextureB() { return skyMapTarget( 1 ).texture }
+export function skyMapTextureC() { return skyMapTarget( 2 ).texture }
 export function skyKernelTexture() { return skyKernelTarget().texture }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +138,7 @@ export function setSkyLaneSize( laneRows, azimuthTexels ) {
 export function setSkyMapSize( rows, azimuthTexels ) {
   checkTexels( 'output row', rows )
   checkTexels( 'azimuth', azimuthTexels )
-  resize( skyMapTarget(), Math.round( rows ), Math.round( azimuthTexels ) )
+  for ( let i = 0; i < _maps.length; i++ ) resize( skyMapTarget( i ), Math.round( rows ), Math.round( azimuthTexels ) )
 }
 
 // One texel per tap, exactly. The convolution reads texel i at ( i + 0.5 ) / u_smTaps with nearest filtering, so a target one texel wide of the tap count is not a resolution choice at all -- a mismatch reads the wrong tap's weight and dims or brightens the whole sky.
@@ -145,13 +149,13 @@ export function setSkyKernelSize( taps ) {
 
 // ---------------------------------------------------------------------------
 
-// Only correct at page teardown. Any AuroraScreen material built on the `sky map` algorithm is holding all four of these textures, and three does not dispose textures when a material is disposed, so freeing them while such a material can still be drawn is the freed-GL-object failure the header describes. The lab never tears down; this exists so that a page which does can.
+// Only correct at page teardown. Any AuroraScreen material built on the `sky map` algorithm is holding all of these textures, and three does not dispose textures when a material is disposed, so freeing them while such a material can still be drawn is the freed-GL-object failure the header describes. The lab never tears down; this exists so that a page which does can.
 export function disposeSkyMap() {
-  for ( const t of [ _lanes, _hue, _map, _kernel ] ) {
+  for ( const t of [ _lanes, _hue, ..._maps, _kernel ] ) {
     if ( t !== null ) t.dispose()
   }
   _lanes = null
   _hue = null
-  _map = null
+  _maps.fill( null )
   _kernel = null
 }

@@ -49,7 +49,7 @@
 
 import THREE from '../../three-instance.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { glint, gltfLoader } from './critters.js'
+import { TIER_TINTS, glint, gltfLoader, tierTintOn } from './critters.js'
 
 // How long a tier change, an appearance or a vanishing takes. Long enough that
 // the eye reads a dissolve rather than a flicker, short enough that a creature
@@ -237,20 +237,6 @@ export function makePuppetMaterials(cacheKey, plain, { gloss = false } = {}) {
     return m
   }
   return { plain, in: make(1), out: make(-1), uCut }
-}
-
-// A flat colour a rung -- green, yellow, orange, red -- so which tier a body is
-// drawing on is a thing she can see from across the meadow rather than guess at.
-// Halving triangles on a smooth mesh barely moves the silhouette, which is the
-// whole point of an LOD and also why a swap is unverifiable by eye without this.
-// While it is on, a fade draws only the tier it is fading TO, so the two colours
-// never overlap and the frame she reads is unambiguous.
-const TIER_TINTS = [0x4caf50, 0xffd54f, 0xff9800, 0xe53935].map((color) => new THREE.MeshBasicMaterial({ color }))
-let tierTint = false
-
-/** Flat-colour every puppet by the tier it is drawing, for confirming the ladder by walking it. */
-export const setTierTint = (on) => {
-  tierTint = on
 }
 
 // ---------------------------------------------------------------------------
@@ -694,21 +680,25 @@ export class Puppet {
     if (this.fade < 1) {
       this.fade = Math.min(1, this.fade + dt / LOD_FADE_S)
       this._apply()
-    } else if (this.tinted !== tierTint) this._apply()
+    } else if (this.tinted !== tierTintOn()) this._apply()
   }
 
-  /** Which tiers are visible, through which material, at what cut. */
+  /**
+   * Which tiers are visible, through which material, at what cut. Under the
+   * tint row (critters.js TIER_TINTS) a fade draws only the tier it is fading
+   * TO, so two colours never overlap and the frame she reads is unambiguous.
+   */
   _apply() {
     const settled = this.fade >= 1
-    this.tinted = tierTint
+    const tint = (this.tinted = tierTintOn())
     this.mats.uCut.value = settled ? 1 : this.fade
     for (let k = 0; k < this.meshes.length; k++) {
       const m = this.meshes[k]
       if (k === this.to) {
         m.visible = true
-        m.material = tierTint ? TIER_TINTS[k % TIER_TINTS.length] : settled ? this.mats.plain : this.mats.in
+        m.material = tint ? TIER_TINTS[k] : settled ? this.mats.plain : this.mats.in
       } else if (k === this.from && !settled) {
-        m.visible = !tierTint
+        m.visible = !tint
         m.material = this.mats.out
       } else {
         m.visible = false

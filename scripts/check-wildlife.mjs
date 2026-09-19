@@ -3,19 +3,26 @@
 //   node scripts/check-wildlife.mjs
 //
 // The scatter runs against a synthetic moor: rolling ground, a pond in a basin,
-// a crag too steep to stand on, two tree trunks, and a long ramp rising into the
-// snow at the far edge. Everything below is a way an animal can go wrong without
+// a crag too steep to stand on, and a long ramp rising into the snow at the far
+// edge; the walk surface is the same field, since the plan reads the field and
+// only the feet read the walk. Everything below is a way an animal can go wrong without
 // anything throwing: a scatter that is not at each species' rate of one per 3000 square metres,
-// or that is not the same twice; an animal standing in the water, up the crag,
-// inside a trunk or in the snow; one that never moves, that skates (ground speed
-// that is not the clip's stride), or that wanders off its tether; a graze that
-// is not eat-down, chews, eat-up, or a sit that loops instead of playing its one
-// round trip; a body that snaps to a new heading in a frame instead of turning
-// to it; an animal that takes any notice of her; an animal in sight drawn as
-// anything but its own animated puppet, one drawn past the last rung, or one
-// that pops on, off or between rungs instead of dissolving; a debug tint that
-// does not follow the rung, or that will not come off again; a herd that does
-// not settle after dark; a frame that costs more than a scatter is allowed to.
+// or that is not the same twice; an animal standing in the water, up the crag
+// or in the snow; a chapter of its score that does not sum to the
+// chapter, start and end at home, or plan the same twice; a planned walk that
+// leaves the tether or crosses ground it cannot stand on; one that skates
+// (ground speed that is not the clip's stride); a graze that is not eat-down,
+// chews, eat-up, or a sit that loops instead of playing its one round trip; a
+// body that snaps to a new heading in a frame instead of turning to it; two
+// clients stepping on different frame rates, or one joining mid-chapter, that
+// do not agree on every animal's pose to the bit; an animal that takes any
+// notice of her without a lure in her hand, or that does not follow one; a
+// lure whose anchors do not put a peer's copy where the lurer's is, or a rejoin
+// two clients derive differently; an animal in sight drawn as anything but its
+// own animated puppet, one drawn past the last rung, or one that pops on, off or
+// between rungs instead of dissolving; a debug tint that does not follow the
+// rung, or that will not come off again; a herd that does not settle after
+// dark; a frame that costs more than a scatter is allowed to.
 // The three shipped GLBs are checked for shape too -- the halving ladder over
 // the one skeleton, the whole clip library, the quadruped extras, and a bind
 // pose that stands on y = 0 with its long axis on +X -- because the world loads
@@ -28,10 +35,11 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S,
 } from '../src/v2/render/wildlife.js'
-import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach } from '../src/v2/render/critters.js'
-import { LOD_FADE_S, POSE_EVERY, REPLANT, setTierTint } from '../src/v2/render/puppet.js'
+import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
+import { LOD_FADE_S, POSE_EVERY, REPLANT } from '../src/v2/render/puppet.js'
+import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, swing, tickAfter, tickOf } from '../src/sim/score.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -53,7 +61,6 @@ const SNOW_Z = RAMP_Z + (SNOW_LINE - SNOW_MARGIN - GROUND) / RAMP
 const CRAG = { x: -36, z: 18, r: 7, h: 9 }
 // A basin two metres deep, its water a hand over the rim's foot.
 const POND = { x: 40, z: -24, r: 9, depth: 2, level: GROUND + 0.3 }
-const TRUNKS = [{ x: 6, z: 6, r: 0.9 }, { x: -14, z: -30, r: 1.4 }]
 
 const conical = (c, x, z) => Math.max(0, 1 - Math.hypot(x - c.x, z - c.z) / c.r)
 function fieldAt(x, z) {
@@ -72,23 +79,16 @@ const walk = {
     out.x = -dx / len; out.y = 1 / len; out.z = -dz / len
     return out
   },
-  obstacleAt(x, z, out) {
-    for (const t of TRUNKS) {
-      if (Math.hypot(x - t.x, z - t.z) > t.r) continue
-      out.x = t.x; out.z = t.z; out.r = t.r
-      return out
-    }
-    return null
-  },
 }
-const height = { snowLineAt: () => SNOW_LINE }
+// The field the plan is made on: the walk surface itself, here, under the one snow line.
+const fieldOf = (of) => ({ snowLineAt: () => SNOW_LINE, heightAt: of.heightAt, normalAt: of.normalAt })
+const height = fieldOf(walk)
 const water = { isSubmerged: (x, z, y) => Math.hypot(x - POND.x, z - POND.z) < POND.r && y < POND.level }
 
 // The same moor with nothing on it, for counting the scatter's rate against its own area.
 const plain = {
   heightAt: () => GROUND,
   normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { out.x = 0; out.y = 1; out.z = 0; return out },
-  obstacleAt: () => null,
 }
 const noWater = { isSubmerged: () => false }
 
@@ -216,8 +216,8 @@ const assets = () => Object.fromEntries(SPECIES.map((sp) => [sp.key, makeAsset(s
 
 // --- construction ---------------------------------------------------------------
 const scene = new THREE.Scene()
-const make = (seed, world = { walk, water, height }) =>
-  new Wildlife(scene, world.height, world.water, { seed, walk: world.walk, assets: assets() })
+const make = (seed, world = { walk, water, height }, dayness = null) =>
+  new Wildlife(scene, world.height ?? fieldOf(world.walk), world.water, { seed, walk: world.walk, dayness, assets: assets() })
 const w = make(7)
 check(w.loaded && w.species.length === 3 && w.species.map((s) => s.key).join(',') === 'stag,fox,hare', 'the three of them are loaded')
 check(w.species.every((sp) => sp.puppets.length === PUPPETS && sp.freePuppets.length === PUPPETS && sp.slots.length === MAX && sp.free.length === MAX), `${PUPPETS} puppets and ${MAX} slots a species, all free`)
@@ -250,21 +250,47 @@ check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([nam
 // A spawn is a placement the tiles hold; a slot is one woken into a live animal.
 const scatter = (of) => [...of.tiles.values()].flatMap((t) => t.spawns)
 const alive = (of) => of.species.flatMap((sp) => sp.slots.filter((c) => c.spawn !== null))
+// Each instance is fed the room clock by hand: an update carries the world second, never a dt.
+const clocks = new WeakMap()
+const timeOf = (of) => clocks.get(of) ?? 0
+const step = (of, hx, hy, hz, dt = 0, lures) => {
+  const t = timeOf(of) + dt
+  clocks.set(of, t)
+  of.update(hx, hy, hz, t, lures)
+  return t
+}
+const jump = (of, t) => clocks.set(of, t)
 // Waking is the update's job, not place()'s, so a gate that wants animals runs a frame.
-const wake = (of, hx = 0, hz = 0) => { of.update(hx, GROUND + 1.6, hz, 0); return of }
+const wake = (of, hx = 0, hz = 0) => { step(of, hx, GROUND + 1.6, hz, 0); return of }
 // A hare's cull is under thirty metres, so the only way to see one alive is to go and stand by it.
 const beside = (of, key) => {
   const s = scatter(of).find((c) => c.sp.key === key)
-  of.update(s.x, s.y + 1.6, s.z, 0)
+  step(of, s.x, s.y + 1.6, s.z, 0)
   return of.species.find((sp) => sp.key === key).slots.find((c) => c.spawn === s)
 }
+// Put an animal into a phrase of the gate's choosing at the instance's clock: the score is the
+// only thing that normally enters a phrase, so a gate that wants a known walk or a known stand
+// hands one in and is on its own past the phrase's end.
+const pose = (c) => ({ x: c.sx, z: c.sz, heading: c.sh })
+const force = (of, c, ph, t = timeOf(of)) => {
+  c.live = c.rejoin = c.lure = null
+  c.detour = 0
+  of._place(c, ph.from)
+  of._enter(c, { phrase: ph, start: t, end: t + ph.dur, index: 0, chapter: c.chapter, rejoin: false })
+  c.rec.tick = tickAfter(t) - 1
+  c.rec.alpha = 1
+  of._pose(c)
+  return c
+}
+const still = (of, c, kind, clip, heading = c.sh) => force(of, c, of._still(kind, pose(c), [[clip, 1e6]], heading))
+const walkOn = (of, c, aim, gait = c.sp.gaits[0][0], ticks = 2000) => force(of, c, of._walkPhrase('roam', pose(c), aim, gait, c.sp.asset.gait[gait] * c.k, ticks))
 const SEEDS = 40
 {
   const counts = Object.fromEntries(SPECIES.map((sp) => [sp.key, 0]))
   let tiles = 0
   let overflow = 0
   for (let seed = 1; seed <= SEEDS; seed++) {
-    const k = make(seed, { walk: plain, water: noWater, height })
+    const k = make(seed, { walk: plain, water: noWater })
     k.place(0, 0)
     wake(k)
     tiles += k.tiles.size
@@ -300,7 +326,6 @@ wake(w)
   check(onCrag.length === 0, `none on the crag's 52-degree faces (the limit is ${Math.round((MAX_SLOPE * 180) / Math.PI)})`, `${onCrag.length} on it`)
   const slopes = pool.map((c) => Math.acos(Math.min(1, walk.normalAt(c.x, c.z).y)))
   check(Math.max(...slopes) <= MAX_SLOPE + 1e-9, 'every animal stands on ground it could stand on', `steepest ${((Math.max(...slopes) * 180) / Math.PI).toFixed(1)} deg`)
-  check(pool.every((c) => TRUNKS.every((t) => Math.hypot(c.x - t.x, c.z - t.z) > t.r)), 'none stands inside a trunk')
   check(pool.every((c) => Math.abs(c.y - fieldAt(c.x, c.z)) < 1e-9), 'every animal is on the walk surface, not floating over it')
   check(pool.every((c) => Math.hypot(c.nx, c.ny, c.nz) - 1 < 1e-9), 'each carries the unit normal of the ground it stands on')
   const aside = make(3)
@@ -324,104 +349,150 @@ wake(w)
   check(key(again) === key(w) && scatter(w).length > 0, 'the scatter is a pure function of the seed', `${scatter(w).length} animals`)
   // And of position: the tiles she keeps hold the same animals when she steps.
   const kept = scatter(again).filter((c) => Math.hypot(c.x, c.z) < 30).map((c) => ({ c, x: c.x, z: c.z }))
-  again.update(TILE, GROUND + 1.6, 0, 0)
+  step(again, TILE, GROUND + 1.6, 0)
   const held = new Set(scatter(again))
   check(kept.length > 0 && kept.every(({ c, x, z }) => held.has(c) && c.x === x && c.z === z), 'a step of one tile leaves the animals she keeps exactly where they were', `${kept.length} kept`)
   again.dispose()
 }
 
-// --- what they do ----------------------------------------------------------------
+// --- the score --------------------------------------------------------------------
+// A chapter is what every client derives for an animal from its key and the clock, so every
+// phrase's shape is checked here in the closed form the plan wrote, not by stepping it.
+const turnTicks = (sw) => Math.max(0, Math.ceil(Math.abs(sw) / (TURN_RATE * TICK_S) - 1e-9) - 1)
+const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
 {
-  const c = alive(w).find((a) => a.sp.key === 'stag')
-  const d = c.sp.durations
-  // A graze: head down, a whole number of chews, head up.
-  w._begin(c, 'graze')
-  const graze = [[c.clip, c.left]]
-  while (c.queue.length) { w._step(c); graze.push([c.clip, c.left]) }
-  const chews = graze[1][1] / d['eat-loop']
-  check(graze.map(([n]) => n).join(',') === 'eat-down,eat-loop,eat-up', 'a graze is eat-down, then chewing, then eat-up', graze.map(([n, t]) => `${n} ${t.toFixed(2)}s`).join(' -> '))
-  check(Math.abs(graze[0][1] - d['eat-down']) < 1e-9 && Math.abs(graze[2][1] - d['eat-up']) < 1e-9, 'the head going down and coming up are timed by their own clips, played whole')
-  check(Math.abs(chews - Math.round(chews)) < 1e-9 && chews >= 2, 'and the chewing between them is a whole number of eat-loops', `${Math.round(chews)} chews`)
-  // A rest is one round trip, timed by itself, and both are used.
-  const rests = new Set()
-  let onceOnly = true
-  for (let i = 0; i < 60; i++) {
-    w._begin(c, 'rest')
-    rests.add(c.clip)
-    if (c.queue.length !== 0 || Math.abs(c.left - d[c.clip]) > 1e-9 || !ONE_SHOT.has(c.clip)) onceOnly = false
-  }
-  check(rests.size === 2 && rests.has('sit') && rests.has('lie') && onceOnly, 'a rest is sit or lie, played once and timed by its own length, and both are seen', `${[...rests].join(' and ')}, ${d.sit.toFixed(2)}s and ${d.lie.toFixed(2)}s`)
-  // A gait moves the ground under it at the speed its stride was built for.
-  w._begin(c, 'roam')
-  const gait = c.sp.asset.gait[c.clip]
-  check(gait > 0 && Math.abs(c.speed - gait * c.k) < 1e-12, `a roam plays a gait at ${c.clip} speed, scaled to the animal`, `${c.speed.toFixed(3)} m/s for a ${c.size.toFixed(2)} m stag`)
-  check(['walk', 'trot'].includes(c.clip), 'and a stag roams at a walk or a trot, never a run', c.clip)
-  // A hare hops: its roams are the half-bound at two paces and never a walk, trot or run, and both paces are seen.
-  // Rolled on a world of its own, so sixty rolls do not shift the stream the blocks below wander on.
-  const k = make(7)
-  const hares = k.species.find((sp) => sp.key === 'hare')
-  const hare = hares.slots[0]
-  hare.sp = hares
-  hare.k = 1
-  const paces = new Set()
-  for (let i = 0; i < 60; i++) { k._begin(hare, 'roam'); paces.add(hare.clip) }
-  check(paces.size === 2 && paces.has('hop') && paces.has('bound') && hare.sp.asset.gait.hop < hare.sp.asset.gait.bound, 'a hare roams at a hop or a bound, never a walk, trot or run, and the bound is the faster', `${[...paces].join(' and ')}: ${hare.sp.asset.gait.hop.toFixed(2)} and ${hare.sp.asset.gait.bound.toFixed(2)} m/s in the file`)
-  // Every activity a species rolls is a clip the file carries.
-  const seen = { acts: new Set(), clips: new Set() }
-  for (const sp of w.species) {
-    const probe = sp.slots[0]
-    probe.sp = sp
-    probe.k = 1
-    for (let i = 0; i < 2000; i++) {
-      w._pick(probe)
-      seen.acts.add(probe.act)
-      seen.clips.add(probe.clip)
-      while (probe.queue.length) { w._step(probe); seen.clips.add(probe.clip) }
+  const now = timeOf(w)
+  const herd = alive(w)
+  const acts = Object.fromEntries(SPECIES.map((sp) => [sp.key, new Set()]))
+  const gaits = Object.fromEntries(SPECIES.map((sp) => [sp.key, new Set()]))
+  let sums = 0, chained = 0, ends = 0, grid = 0, walks = 0, walkShape = 0, walkGround = 0, grazes = 0, grazeShape = 0, rests = 0, restShape = 0, clips = 0, phrases = 0, chapters = 0
+  const chews = new Set()
+  for (const c of herd) {
+    // Thirty chapters an animal: enough to see every act of every species rolled.
+    for (let n = 0; n < 30; n++) {
+      const ch = w.score.chapter(c.key, now + n * CHAPTER_S)
+      chapters++
+      const ps = ch.phrases
+      if (Math.abs(ps.reduce((s, p) => s + p.dur, 0) - CHAPTER_S) < 1e-6) sums++
+      if (ps.every((p, i) => i === 0 || p.from === ps[i - 1].to)) chained++
+      const last = ps[ps.length - 1]
+      if (ps[0].from === c.home && last.kind === 'stand' && last.to.x === c.home.x && last.to.z === c.home.z && last.to.heading === c.home.heading) ends++
+      if (ps.every((p) => onTicks(p.dur) && p.steps.every((st) => onTicks(st[1])))) grid++
+      for (const p of ps) {
+        phrases++
+        acts[c.sp.key].add(p.kind)
+        if (p.steps.every((st) => CLIPS.includes(st[0]))) clips++
+        if (p.mps !== undefined) {
+          walks++
+          gaits[c.sp.key].add(p.gait)
+          const dist = Math.hypot(p.to.x - p.from.x, p.to.z - p.from.z)
+          const ticks = Math.round(p.dur * TICK_HZ) - p.turn
+          const straight = ticks * p.mps * TICK_S
+          // The end is where the ticks put it, or, for the walk home, the home it was sent to, which the ticks reach and the snap finishes.
+          const shaped = p.turn === turnTicks(swing(p.from.heading, p.aim)) && Math.abs(p.to.heading - p.aim) < 1e-9 && p.mps === c.sp.asset.gait[p.gait] * c.k && (Math.abs(dist - straight) < 1e-6 || (dist < straight + 1e-6 && dist > straight - p.mps * TICK_S - 1e-6)) && p.steps.length === 1 && p.steps[0][0] === p.gait && p.steps[0][1] === p.dur
+          if (shaped && c.sp.gaits.some(([g]) => g === p.gait)) walkShape++
+          // The plan's own sample points, in the plan's own arithmetic: a roam is sampled along its aim, the walk home along the chord to home.
+          const home = p.to.x === c.home.x && p.to.z === c.home.z
+          let ground = true
+          for (let s = SAMPLE_M; s <= dist + 1e-9 && ground; s += SAMPLE_M) {
+            const at = Math.min(s, dist)
+            const u = at / dist
+            ground = home
+              ? w._walkable(p.from.x + (p.to.x - p.from.x) * u, p.from.z + (p.to.z - p.from.z) * u, c.home)
+              : w._walkable(p.from.x + Math.cos(p.aim) * at, p.from.z - Math.sin(p.aim) * at, c.home)
+          }
+          if (ground) walkGround++
+        }
+        if (p.kind === 'graze') {
+          grazes++
+          const d = c.sp.durations
+          const n = p.steps[1]?.[1] / d['eat-loop']
+          if (p.steps.length === 3 && p.steps[0][0] === 'eat-down' && p.steps[1][0] === 'eat-loop' && p.steps[2][0] === 'eat-up' && Math.abs(p.steps[0][1] - d['eat-down']) < TICK_S && Math.abs(p.steps[2][1] - d['eat-up']) < TICK_S && Math.abs(n - Math.round(n)) < 0.02 && n >= 2) { grazeShape++; chews.add(Math.round(n)) }
+        }
+        if (p.kind === 'rest') {
+          rests++
+          if (p.steps.length === 1 && (p.steps[0][0] === 'sit' || p.steps[0][0] === 'lie') && Math.abs(p.steps[0][1] - c.sp.durations[p.steps[0][0]]) < TICK_S) restShape++
+        }
+      }
     }
   }
-  const acts = new Set(SPECIES.flatMap((sp) => sp.acts.map(([n]) => n)))
-  check([...seen.acts].every((a) => acts.has(a)) && [...acts].every((a) => seen.acts.has(a)), 'every activity the species weight is rolled, and no other', [...seen.acts].sort().join(' '))
-  check([...seen.clips].every((n) => CLIPS.includes(n)), 'and every clip it asks for is one the file carries', [...seen.clips].sort().join(' '))
+  const keys = scatter(w).map((s) => s.key)
+  check(new Set(keys).size === keys.length && keys.every((k) => /^(st|fx|hr):-?\d+,-?\d+:\d+$/.test(k)), 'every spawn has its own key, the tile and its index in the roll -- not the tile seed, which mirror tiles share', `${keys.length} keys, e.g. ${keys[0]}`)
+  check(herd.length > 3 && sums === chapters, `every chapter's phrases sum to the ${CHAPTER_S} s chapter`, `${sums} of ${chapters} chapters, ${herd.length} animals`)
+  check(chained === chapters, 'each phrase starts from the pose the last one ended at, the same object')
+  check(ends === chapters, 'a chapter starts from home and ends standing at home, turned to its home heading, so the chapter turn is from nothing')
+  check(grid === chapters, 'every phrase and every step of it is a whole number of ticks long, so its boundary is one tick on every client')
+  check(clips === phrases, 'every step plays a clip of the library')
+  check(walks > 0 && walkShape === walks, 'a walk pivots to its aim at TURN_RATE and goes straight at its gait\'s stride, ending exactly where its ticks put it', `${walkShape} of ${walks}`)
+  check(walkGround === walks, `every metre of every walk is on ground the animal could stand on, inside the ${TETHER_M} m tether`, `${walkGround} of ${walks}`)
+  check(grazes > 0 && grazeShape === grazes && chews.size > 2, 'a graze is eat-down, whole chews (two or more), eat-up', `${grazes} grazes, chews of ${[...chews].sort((a, b) => a - b).join('/')}`)
+  check(rests > 0 && restShape === rests, 'a rest is one sit or one lie, timed by its own length', `${rests} rests`)
+  check(SPECIES.every((sp) => sp.acts.every(([a]) => acts[sp.key].has(a) || (a === 'roam' && acts[sp.key].has('stand')))), 'every act of every species is rolled', SPECIES.map((sp) => `${sp.key} ${[...acts[sp.key]].join('/')}`).join(', '))
+  check(SPECIES.every((sp) => sp.gaits.every(([g]) => gaits[sp.key].has(g)) && [...gaits[sp.key]].every((g) => sp.gaits.some(([h]) => h === g))), 'and every gait of each, and no other: a hare hops and bounds and never walks', SPECIES.map((sp) => `${sp.key} ${[...gaits[sp.key]].join('/')}`).join(', '))
+  // Determinism: a second instance plans the same chapter, and planning a later chapter first changes nothing about an earlier one.
+  const shape = (ch) => ch.phrases.map((p) => `${p.kind}/${p.dur}/${p.to.x}/${p.to.z}/${p.to.heading}/${p.steps.map((s) => s.join(':')).join(',')}`).join('|')
+  const twin = make(7)
+  twin.place(0, 0)
+  wake(twin)
+  const c = herd[0]
+  const one = shape(w.score.chapter(c.key, now))
+  check(shape(twin.score.chapter(c.key, now + 3 * CHAPTER_S)) === shape(w.score.chapter(c.key, now + 3 * CHAPTER_S)) && shape(twin.score.chapter(c.key, now)) === one, 'a chapter is a pure function of the key and the chapter: a second instance plans it alike, whichever chapter it planned first', `${one.slice(0, 60)}...`)
+  twin.dispose()
 }
 
 // --- the walk --------------------------------------------------------------------
-w.place(0, 0)
-wake(w)
 {
-  const c = alive(w).filter((a) => Math.hypot(a.x, a.z) > 60)[0]
-  c.heading = 0.4
-  w._begin(c, 'roam')
-  // Facing where it is going, so this is the ground speed alone and not a curve.
-  c.aim = c.heading
-  c.left = 100
+  const k = make(7)
+  k.place(0, 0)
+  wake(k)
+  const c = alive(k).filter((a) => Math.hypot(a.x, a.z) > 60)[0]
+  // Facing where it is going, so this is the ground speed alone and not a pivot; four seconds of it, so the score has it back before the wander below.
+  walkOn(k, c, c.sh, c.sp.gaits[0][0], 80)
   const dt = 1 / 60
-  const [x0, z0] = [c.x, c.z]
+  const from = c.phrase.from
   const FRAMES = 30
   // Her head a few metres off, so it is on a mesh rung and stepped every frame.
-  for (let f = 0; f < FRAMES; f++) w.update(c.x + 5, GROUND + 1.6, c.z, dt)
-  const moved = Math.hypot(c.x - x0, c.z - z0)
-  check(c.lod < LOD_RUNGS && Math.abs(moved - c.speed * dt * FRAMES) < 1e-6, 'a moving animal covers exactly the ground its clip was built for -- it does not skate', `${moved.toFixed(4)} m in ${(FRAMES * dt).toFixed(2)} s at ${c.speed.toFixed(3)} m/s, rung ${c.lod}`)
-  check(Math.abs((c.x - x0) / moved - Math.cos(c.heading)) < 1e-6 && Math.abs((c.z - z0) / moved + Math.sin(c.heading)) < 1e-6, 'and it goes the way it is facing')
-  // On the card rung, once its puppet has dissolved out, it is stepped every CARD_EVERY frames on the dt banked between, and covers the same ground less what is still banked.
-  for (let f = 0; f < 100 && (c.lod !== LOD_RUNGS || c.puppet); f++) w.update(0, GROUND + 1.6, 0, dt)
-  const [x1, z1] = [c.x, c.z]
+  for (let f = 0; f < FRAMES; f++) step(k, c.x + 5, GROUND + 1.6, c.z, dt)
+  const moved = Math.hypot(c.x - from.x, c.z - from.z)
+  const owed = c.speed * (timeOf(k) - c.phraseTick0 * TICK_S)
+  check(c.lod < LOD_RUNGS && Math.abs(moved - owed) < 1e-6, 'a moving animal covers exactly the ground its clip was built for, closed-form from the phrase\'s first tick -- it does not skate', `${moved.toFixed(4)} m in ${(FRAMES * dt).toFixed(2)} s at ${c.speed.toFixed(3)} m/s, rung ${c.lod}`)
+  check(Math.abs((c.x - from.x) / moved - Math.cos(c.heading)) < 1e-6 && Math.abs((c.z - from.z) / moved + Math.sin(c.heading)) < 1e-6, 'and it goes the way it is facing')
+  // On the card rung, once its puppet has dissolved out, it is stepped every CARD_EVERY frames, and where it is drawn is still the closed form at the frame it was last stepped.
+  for (let f = 0; f < 100 && (c.lod !== LOD_RUNGS || c.puppet); f++) step(k, 0, GROUND + 1.6, 0, dt)
   const steps = new Set([c.x])
-  for (let f = 0; f < 2 * CARD_EVERY * CARD_EVERY; f++) { w.update(0, GROUND + 1.6, 0, dt); steps.add(c.x) }
-  const movedFar = Math.hypot(c.x - x1, c.z - z1)
-  check(c.lod === LOD_RUNGS && steps.size === 2 * CARD_EVERY + 1 && Math.abs(movedFar - c.speed * (2 * CARD_EVERY * CARD_EVERY * dt - c.held)) < 1e-6, `on the card rung it moves on one frame in ${CARD_EVERY} and covers the same ground`, `${steps.size - 1} moves in ${2 * CARD_EVERY * CARD_EVERY} frames, ${movedFar.toFixed(4)} m of ${(c.speed * (2 * CARD_EVERY * CARD_EVERY * dt - c.held)).toFixed(4)} with ${(c.held / dt).toFixed(0)} frames banked, rung ${c.lod}`)
+  let at = timeOf(k)
+  for (let f = 0; f < 2 * CARD_EVERY * CARD_EVERY; f++) {
+    const t = step(k, 0, GROUND + 1.6, 0, dt)
+    if (!steps.has(c.x)) at = t
+    steps.add(c.x)
+  }
+  const movedFar = Math.hypot(c.x - from.x, c.z - from.z)
+  const owedFar = c.speed * (at - c.phraseTick0 * TICK_S)
+  check(c.lod === LOD_RUNGS && steps.size === 2 * CARD_EVERY + 1 && Math.abs(movedFar - owedFar) < 1e-6, `on the card rung it moves on one frame in ${CARD_EVERY}, and is exactly where the score has it on each`, `${steps.size - 1} moves in ${2 * CARD_EVERY * CARD_EVERY} frames, ${movedFar.toFixed(4)} m of ${owedFar.toFixed(4)}, rung ${c.lod}`)
+  k.dispose()
+}
 
-  // Ten minutes of wandering, her head far off.
-  const swing = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+// Ten minutes of wandering, her head far off.
+// The body is where the score says between samples a metre apart, so it may stand
+// half a stride into what a sample would have refused: the softest edge of any of it.
+const seatNear = (of, x, z, r = SAMPLE_M / 2 + 0.01) => {
+  if (of.seat(x, z) !== null) return true
+  for (let i = 0; i < 8; i++) if (of.seat(x + Math.cos((i * Math.PI) / 4) * r, z + Math.sin((i * Math.PI) / 4) * r) !== null) return true
+  return false
+}
+{
+  const dt = 1 / 60
   const far = new Map() // the spawn -> where its animal stood when the minute began
   const got = new Map() // -> and where it has got to since
   let strayed = 0
   let ms = 0
-  for (const a of alive(w)) if (Math.hypot(a.homeX, a.homeZ) > 60) far.set(a.spawn, [a.x, a.z])
-  // Every heading of every animal, every frame: a tether turn, a turn away from
-  // the water and a fresh roam all pass through here, and not one of them may
-  // move a body faster than it can turn -- a card animal over the CARD_EVERY
-  // frames it banks, the rest over one. A slot that went to sleep and was woken
-  // again holds a different animal, which is a placement and not a turn.
+  for (const a of alive(w)) if (Math.hypot(a.home.x, a.home.z) > 60) far.set(a.spawn, [a.x, a.z])
+  // Every heading of every animal, every frame: a pivot to a roam's aim, the
+  // turn home and the chapter's turn to its home heading all pass through here,
+  // and not one of them may move a body faster than it can turn -- a card
+  // animal over the CARD_EVERY frames it is stepped across, the rest over one. A
+  // slot that went to sleep and was woken again holds a different animal, which
+  // is a placement and not a turn.
   let snapped = 0
   let watched = 0
   let was = new Map()
@@ -435,31 +506,32 @@ wake(w)
   let arc = 0
   let seated = 0
   let lived = 0
+  let off = 0
+  let offAt = ''
   for (let f = 0; f < 3600; f++) {
     const t0 = performance.now()
-    w.update(0, GROUND + 1.6, 0, dt)
+    step(w, 0, GROUND + 1.6, 0, dt)
     ms += performance.now() - t0
     const seen = new Map()
     for (const a of alive(w)) {
       const prev = was.get(a)
-      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(a.heading - prev.heading)) / (a.lod === LOD_RUNGS ? CARD_EVERY : 1)); watched++ }
-      seen.set(a, { spawn: a.spawn, heading: a.heading })
+      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(prev.heading, a.heading)) / (a.lod === LOD_RUNGS || prev.lod === LOD_RUNGS ? CARD_EVERY : 1)); watched++ }
+      seen.set(a, { spawn: a.spawn, heading: a.heading, lod: a.lod })
       const drift = Math.abs(a.y - fieldAt(a.x, a.z))
       floated = Math.max(floated, drift)
       arc = Math.max(arc, drift / Math.hypot(a.x, a.y - GROUND - 1.6, a.z))
       lived++
       if (drift < 1e-9) seated++
-      if (far.has(a.spawn)) { strayed = Math.max(strayed, Math.hypot(a.x - a.homeX, a.z - a.homeZ)); got.set(a.spawn, [a.x, a.z]) }
+      if (!seatNear(w, a.x, a.z)) { off++; offAt = `${a.sp.key} at ${a.x.toFixed(2)},${a.z.toFixed(2)}` }
+      if (far.has(a.spawn)) { strayed = Math.max(strayed, Math.hypot(a.x - a.home.x, a.z - a.home.z)); got.set(a.spawn, [a.x, a.z]) }
     }
     was = seen
   }
-  check(snapped <= TURN_RATE * dt + 1e-12, `in ${(watched / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}, a card animal's swing over its ${CARD_EVERY} banked frames`)
+  check(snapped <= TURN_RATE * dt + 1e-9, `in ${(watched / 1000).toFixed(0)}k animal-frames of wandering, no body ever turned faster than it may`, `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}, a card animal's swing over the ${CARD_EVERY} frames between its steps`)
   const wandered = [...far].filter(([sp, [x, z]]) => got.has(sp) && Math.hypot(got.get(sp)[0] - x, got.get(sp)[1] - z) > 1)
   check(far.size > 0 && wandered.length > far.size / 2, 'most of them have wandered somewhere in a minute', `${wandered.length} of ${far.size}`)
-  // The probe looks a body length and a half ahead, so the animal itself may stand that much past the leash.
-  const slack = 1.5 * Math.max(...[...far.keys()].map((sp) => sp.size)) + 0.5
-  check(strayed <= TETHER_M + slack, `and none has left its ${TETHER_M} m tether`, `furthest ${strayed.toFixed(2)} m of ${(TETHER_M + slack).toFixed(2)}`)
-  check(alive(w).every((a) => !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= MAX_SLOPE && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'nobody has walked into the water, up the crag or through a trunk')
+  check(strayed <= TETHER_M + 0.01, `and none has left its ${TETHER_M} m tether`, `furthest ${strayed.toFixed(2)} m`)
+  check(off === 0, `nobody has walked into the water or up the crag, to within half the ${SAMPLE_M} m the plan samples a walk at`, off ? `${off} animal-frames off, last ${offAt}` : '')
   check(arc * (180 / Math.PI) < 0.25, 'and no animal has floated off the ground by a quarter of a degree of her view, which is what a probe stride of tangent-plane walking is worth', `worst ${(arc * (180 / Math.PI)).toFixed(3)} deg, ${floated.toFixed(3)} m`)
   check(seated > lived / 20, 'because every probe seats its animal back onto the ground exactly, so the float never accumulates', `${((seated / lived) * 100).toFixed(1)}% of ${(lived / 1000).toFixed(0)}k animal-frames dead on it`)
   check(w.starved === 0, `and in a minute of it no animal in sight ever went undrawn for want of one of the ${PUPPETS} puppets`, `${w.starved} starved`)
@@ -467,48 +539,129 @@ wake(w)
   check(perFrame < 1.5, `a frame of ${alive(w).length} animals costs under 1.5 ms`, `${perFrame.toFixed(3)} ms`)
 }
 
+// --- every client agrees ------------------------------------------------------------
+// What a frame draws is a pure function of the key and the clock: two instances on
+// different frame rates, and one that joins mid-way, hold every animal alike to the bit.
+// Four still frames at the end put every card animal on its stepped frame, so the
+// drawn pose is compared and not the cadence it was drawn on. An animal past its
+// card range is not drawn and not stepped (its slot waits to see whether she
+// comes back), so it is nothing to compare.
+const settle = (of, t) => { jump(of, t); for (let i = 0; i < CARD_EVERY; i++) step(of, 0, GROUND + 1.6, 0, 0) }
+const snapshot = (of) => new Map(alive(of).filter((c) => c.lod !== CARD_RUNGS).map((c) => [c.key, [c.x, c.z, c.heading, c.sx, c.sz, c.sh, c.rec.tick, c.phraseIndex, c.chapter, c.act, c.clip, c.stepStart, c.rejoin ? 'rejoin' : 'plan', c.live ? 'live' : ''].join('/')]))
+const differ = (p, q) => {
+  if (p.size !== q.size) return `${p.size} vs ${q.size} animals`
+  for (const [k, v] of p) if (q.get(k) !== v) return `${k}: ${v} vs ${q.get(k)}`
+  return null
+}
+{
+  const T1 = 37.3
+  const T = 61
+  const a = make(7)
+  a.place(0, 0)
+  const b = make(7)
+  b.place(0, 0)
+  // Woken together at the clock's zero and stepped apart: a at sixty a second, b on a ragged frame.
+  wake(a)
+  wake(b)
+  const dts = [1 / 30, 1 / 90, 1 / 45]
+  for (let f = 0; timeOf(a) + 1 / 60 <= T1; f++) step(a, 0, GROUND + 1.6, 0, 1 / 60)
+  for (let f = 0; timeOf(b) + dts[f % 3] <= T1; f++) step(b, 0, GROUND + 1.6, 0, dts[f % 3])
+  settle(a, T1)
+  settle(b, T1)
+  const atT1 = snapshot(a)
+  let d = differ(atT1, snapshot(b))
+  check(d === null && atT1.size > 3 && [...atT1.values()].some((v) => v.split('/')[9] === 'roam'), 'two clients on different frame rates draw every animal at the same place, facing the same way, in the same step of the same phrase', d ?? `${atT1.size} animals alike at ${T1} s`)
+  // A joiner arrives at T1 with nothing to replay: it is placed closed-form where the others already have it.
+  const c = make(7)
+  c.place(0, 0)
+  jump(c, T1)
+  step(c, 0, GROUND + 1.6, 0, 0)
+  check(c.stats.behind === 0 && c.stats.replayed === 0, 'a client joining mid-chapter places every animal in one frame, replaying nothing', `${c.stats.replayed} ticks replayed, ${c.stats.behind} behind`)
+  settle(c, T1)
+  d = differ(atT1, snapshot(c))
+  check(d === null, 'and has every one of them exactly where the clients that stepped the whole way do', d ?? '')
+  // And on from there together.
+  for (let f = 0; timeOf(a) + 1 / 60 <= T; f++) step(a, 0, GROUND + 1.6, 0, 1 / 60)
+  for (let f = 0; timeOf(b) + dts[f % 3] <= T; f++) step(b, 0, GROUND + 1.6, 0, dts[f % 3])
+  for (let f = 0; timeOf(c) + 1 / 60 <= T; f++) step(c, 0, GROUND + 1.6, 0, 1 / 60)
+  settle(a, T)
+  settle(b, T)
+  settle(c, T)
+  const atT = snapshot(a)
+  d = differ(atT, snapshot(b)) ?? differ(atT, snapshot(c))
+  check(d === null, `and ${(T - T1).toFixed(1)} s on all three still agree`, d ?? '')
+  // A tab that slept: ten seconds is replayed tick by tick, thirty is past the replay budget and placed afresh, and either way it is where a fresh client has it.
+  const fresh = (t) => { const k = make(7); k.place(0, 0); settle(k, t); const s = snapshot(k); k.dispose(); return s }
+  jump(a, T + 10)
+  step(a, 0, GROUND + 1.6, 0, 0)
+  const replayedA = a.stats.replayed
+  settle(a, T + 10)
+  check(replayedA >= 10 * TICK_HZ && a.stats.behind === 0 && differ(fresh(T + 10), snapshot(a)) === null, 'a client that froze for ten seconds replays them and agrees with a fresh one', `${replayedA} ticks replayed on the first frame`)
+  jump(b, T + 30)
+  step(b, 0, GROUND + 1.6, 0, 0)
+  const replayedB = b.stats.replayed
+  settle(b, T + 30)
+  check(replayedB === 0 && b.stats.behind === 0 && differ(fresh(T + 30), snapshot(b)) === null, `one that froze for thirty (past the ${CATCH_UP_TICKS / TICK_HZ} s replay budget) is placed afresh, and agrees too`, `${replayedB} ticks replayed`)
+  a.dispose(); b.dispose(); c.dispose()
+}
+
 // --- night puts them down ---------------------------------------------------------
 {
-  const k = make(11)
-  k.place(0, 0)
-  // One animal of each, rolled many times over at noon and again at full dark. The
-  // roll is the species' own weights, so the share is read against itself and not
-  // against a number written here.
+  // The plan's own rolls, over many chapters of every animal she wakes from a grid
+  // of nine stands (a hare's card range is short), under a noon sky, a dark one and
+  // dusk. The last stand and the walk home before it are not rolled, so they are left out.
   const share = (dayness) => {
-    k.dayness = dayness
+    const k = make(11, { walk: plain, water: noWater }, dayness)
+    k.place(0, 0)
     const out = {}
-    for (const sp of k.species) {
-      const probe = sp.slots[0]
-      probe.sp = sp
-      probe.k = 1
-      let rests = 0
-      const N = 20000
-      for (let i = 0; i < N; i++) {
-        k._pick(probe)
-        if (probe.act === 'rest') rests++
+    const rolls = Object.fromEntries(k.species.map((sp) => [sp.key, { rests: 0, rolled: 0 }]))
+    const seen = new Set()
+    for (let gx = -1; gx <= 1; gx++) for (let gz = -1; gz <= 1; gz++) {
+      step(k, gx * 60, GROUND + 1.6, gz * 60, 0)
+      for (const c of alive(k)) {
+        if (seen.has(c.key)) continue
+        seen.add(c.key)
+        const r = rolls[c.sp.key]
+        for (let n = 0; n < 30; n++) {
+          const ps = k.score.chapter(c.key, n * CHAPTER_S + chapterOf(0, c.key).offset + 1).phrases.slice(0, -1)
+          const back = ps[ps.length - 1]
+          if (back && back.mps !== undefined && back.to.x === c.home.x && back.to.z === c.home.z) ps.pop()
+          for (const p of ps) { r.rolled++; if (p.kind === 'rest') r.rests++ }
+        }
       }
-      out[sp.key] = rests / N
     }
+    for (const sp of k.species) {
+      out[sp.key] = rolls[sp.key].rests / rolls[sp.key].rolled
+      out[`${sp.key}N`] = rolls[sp.key].rolled
+    }
+    k.dispose()
     return out
   }
-  const day = share(1)
-  const night = share(0)
+  const day = share(() => 1)
+  const night = share(() => 0)
   // A rest's weight doubles while the others keep theirs, so its share rises by less than NIGHT_REST: w*2/(w*2 + rest-of-the-weights).
   const want = Object.fromEntries(SPECIES.map((sp) => {
     const total = sp.acts.reduce((t, [, x]) => t + x, 0)
     const r = sp.acts.find(([n]) => n === 'rest')[1]
     return [sp.key, (r * NIGHT_REST) / (total + r * (NIGHT_REST - 1))]
   }))
-  check(SPECIES.every((sp) => Math.abs(night[sp.key] / want[sp.key] - 1) < 0.05), `at full dark a rest is ${NIGHT_REST}x the weight it carries at noon`, SPECIES.map((sp) => `${sp.key} ${(day[sp.key] * 100).toFixed(1)}% -> ${(night[sp.key] * 100).toFixed(1)}% (want ${(want[sp.key] * 100).toFixed(1)})`).join(', '))
+  check(SPECIES.every((sp) => day[`${sp.key}N`] > 10000 && Math.abs(night[sp.key] / want[sp.key] - 1) < 0.08), `at full dark a rest is ${NIGHT_REST}x the weight it carries at noon`, SPECIES.map((sp) => `${sp.key} ${(day[sp.key] * 100).toFixed(1)}% -> ${(night[sp.key] * 100).toFixed(1)}% (want ${(want[sp.key] * 100).toFixed(1)}) of ${night[`${sp.key}N`]}`).join(', '))
   check(SPECIES.every((sp) => night[sp.key] > day[sp.key] * 1.3), 'and a lot more of them are lying down than at noon', SPECIES.map((sp) => `${sp.key} x${(night[sp.key] / day[sp.key]).toFixed(2)}`).join(', '))
-  const dusk = share(0.5)
+  const dusk = share(() => 0.5)
   check(SPECIES.every((sp) => dusk[sp.key] > day[sp.key] && dusk[sp.key] < night[sp.key]), 'the settling is a ramp through the evening, not a switch at nightfall', SPECIES.map((sp) => `${sp.key} ${(dusk[sp.key] * 100).toFixed(1)}%`).join(', '))
-  // The scalar arrives through update(), which is the only way the world sets it.
-  k.update(0, GROUND + 1.6, 0, 1 / 60, 0.25)
-  check(k.dayness === 0.25, 'and the world hands it down through update()')
-  k.update(0, GROUND + 1.6, 0, 1 / 60)
-  check(k.dayness === 1, 'which defaults to broad daylight when nobody passes one')
-  k.dispose()
+  // The sky is read at the world second each phrase begins, so a chapter planned at noon for the coming night is a night's chapter.
+  const asked = []
+  const spy = make(11, { walk: plain, water: noWater }, (t) => { asked.push(t); return 1 })
+  spy.place(0, 0)
+  wake(spy)
+  const c = alive(spy)[0]
+  asked.length = 0
+  const ch = spy.score.chapter(c.key, 5 * CHAPTER_S + chapterOf(0, c.key).offset + 1)
+  check(asked.length > 10 && asked.every((t) => t >= ch.start && t <= ch.start + CHAPTER_S) && Math.min(...asked) === ch.start, 'and it is asked at the world second each phrase of the chapter begins, not at the second it is planned', `${asked.length} asks over ${ch.start} to ${ch.start + CHAPTER_S}`)
+  spy.dispose()
+  let threw = null
+  try { make(11, undefined, 0.25) } catch (e) { threw = e.message }
+  check(threw !== null && /dayness/.test(threw), 'a scalar in place of the clock\'s dayness function is refused', threw)
 }
 
 // --- a turn is a turn ------------------------------------------------------------
@@ -518,24 +671,23 @@ wake(w)
   wake(k)
   const dt = 1 / 60
   const c = alive(k).find((a) => a.sp.key === 'stag')
-  k._begin(c, 'roam')
-  c.left = 100
-  c.heading = 0
-  c.aim = Math.PI
+  // The hardest turn there is: a body asked to go back the way it came. Her head beside it, so it is on a mesh rung.
+  walkOn(k, c, c.sh + Math.PI, 'walk', 200)
+  const from = c.phrase.from
   let worst = 0
   let frames = 0
   let prev = c.heading
-  // The hardest turn there is: a body asked to go back the way it came. Her head beside it, so it is on a mesh rung.
-  while (Math.abs(Math.atan2(Math.sin(c.aim - c.heading), Math.cos(c.aim - c.heading))) > 1e-9 && frames < 600) {
-    const aim = c.aim
-    k.update(c.x + 5, GROUND + 1.6, c.z, dt)
-    if (c.aim !== aim) break
-    worst = Math.max(worst, Math.abs(c.heading - prev))
+  let crept = 0
+  while (Math.abs(swing(c.heading, c.aim)) > 1e-9 && frames < 600) {
+    step(k, from.x + 5, GROUND + 1.6, from.z, dt)
+    worst = Math.max(worst, Math.abs(swing(prev, c.heading)))
     prev = c.heading
     frames++
+    if (Math.abs(swing(c.heading, c.aim)) > 1e-9) crept = Math.max(crept, Math.hypot(c.x - from.x, c.z - from.z))
   }
-  check(frames >= Math.PI / TURN_RATE / dt && worst <= TURN_RATE * dt + 1e-12, 'an about-face is turned through, not snapped to', `${(frames * dt).toFixed(2)} s at up to ${(worst / dt).toFixed(2)} rad/s`)
-  check(Math.abs(Math.atan2(Math.sin(c.aim - c.heading), Math.cos(c.aim - c.heading))) < 1e-9, 'and it arrives facing where it aimed', `${c.heading.toFixed(4)} of ${c.aim.toFixed(4)} rad`)
+  check(frames >= Math.PI / TURN_RATE / dt && worst <= TURN_RATE * dt + 1e-9, 'an about-face is turned through, not snapped to', `${(frames * dt).toFixed(2)} s at up to ${(worst / dt).toFixed(2)} rad/s`)
+  check(Math.abs(swing(c.heading, c.aim)) < 1e-9, 'and it arrives facing where it aimed', `${c.heading.toFixed(4)} of ${c.aim.toFixed(4)} rad`)
+  check(crept <= c.speed * TICK_S + 1e-9, 'and makes no ground until it does: it pivots, it does not curve', `${crept.toFixed(4)} m before it faced its aim, a tick's stride being ${(c.speed * TICK_S).toFixed(4)}`)
   k.dispose()
 }
 
@@ -545,26 +697,25 @@ wake(w)
   // Her head straight up over the animal, so her horizontal position is the
   // animal's own and no tile shifts between runs: height is the only thing that
   // changes. Height is nothing to an animal but the rung it is drawn on and, out
-  // past the near rungs, how often it thinks -- so two lifts on the SAME rung
-  // must trace identically, frame for frame, and further out it must still
-  // wander rather than bolt.
+  // past the near rungs, how often it is stepped -- so two lifts on the SAME rung
+  // must trace identically, frame for frame, and on any rung every tick it is
+  // stepped to must be the score's.
   const trace = (key, lift) => {
     const k = make(7)
     k.place(0, 0)
     const c = beside(k, key)
-    // Set walking, because an animal that sits out the fifteen seconds proves nothing about whether it would have run.
-    k._begin(c, 'roam')
-    c.left = 100
     const [hx, hz] = [c.x, c.z]
     const log = []
+    const ticks = new Map()
     const lodSize = c.spawn.lodSize
     let rung = -1
     for (let f = 0; f < 900; f++) {
-      k.update(hx, c.y + lift, hz, dt)
+      step(k, hx, c.y + lift, hz, dt)
       if (f === 0) rung = c.lod
       log.push(`${c.act}/${c.clip}/${c.x.toFixed(6)}/${c.z.toFixed(6)}/${c.heading.toFixed(6)}`)
+      ticks.set(c.rec.tick, `${c.act}/${c.clip}/${c.sx}/${c.sz}/${c.sh}`)
     }
-    const out = { log, lodSize, rung, away: Math.hypot(c.x - hx, c.z - hz) }
+    const out = { log, ticks, lodSize, rung, away: Math.hypot(c.x - c.home.x, c.z - c.home.z), moved: Math.hypot(c.x - hx, c.z - hz) }
     k.dispose()
     return out
   }
@@ -572,80 +723,97 @@ wake(w)
   const eye = lodReach(under.lodSize, 0) * 0.85
   const over = trace('stag', eye)
   const at = under.log.findIndex((s, i) => s !== over.log[i])
-  check(at < 0 && under.rung === over.rung, `fifteen seconds with her standing on top of it, and the stag does exactly what it would have done with her ${eye.toFixed(0)} metres up -- the same rung, so the same thinking, and she is nothing to it either way`, at < 0 ? under.log[899].split('/').slice(0, 2).join('/') : `parted at frame ${at}: ${under.log[at]} vs ${over.log[at]}`)
-  // And out along the whole ladder, where she IS far enough to change how often
-  // it thinks: a coarser animal wanders where it stood. It does not run.
-  // The leash is the bound, because a coarse rung tests it less often and so
-  // strays further inside it -- but an animal that had noticed her would be over
-  // the horizon in fifteen seconds, not still on its own patch.
-  const leash = TETHER_M + 1.5 * under.lodSize + 0.5
+  check(at < 0 && under.rung === over.rung, `fifteen seconds with her standing on top of it, and the stag does exactly what it would have done with her ${eye.toFixed(0)} metres up -- the same rung, and she is nothing to it either way`, at < 0 ? under.log[899].split('/').slice(0, 2).join('/') : `parted at frame ${at}: ${under.log[at]} vs ${over.log[at]}`)
+  // And out along the whole ladder, where she IS far enough to change how often it is stepped: every tick it reaches is the same tick.
   for (let k = 0; k <= LOD_RUNGS; k++) {
     const t = trace('stag', lodReach(under.lodSize, k) * 0.9)
-    check(t.away < leash && t.rung === k, `on rung ${k}${k === LOD_RUNGS ? ', its card' : ''} it is still on its leash rather than bolting from her`, `${t.away.toFixed(2)} m of ${leash.toFixed(1)} in 15 s from ${(lodReach(under.lodSize, k) * 0.9).toFixed(0)} m up, rung ${t.rung}`)
+    const shared = [...t.ticks].filter(([tick]) => under.ticks.has(tick))
+    const parted = shared.find(([tick, v]) => under.ticks.get(tick) !== v)
+    check(t.rung === k && shared.length > 100 && !parted && t.away <= TETHER_M + 0.01, `on rung ${k}${k === LOD_RUNGS ? ', its card' : ''} every tick is the score's tick, and it is on its tether`, parted ? `parted at tick ${parted[0]}: ${parted[1]} vs ${under.ticks.get(parted[0])}` : `${shared.length} ticks alike, ${t.away.toFixed(2)} m from home, rung ${t.rung}`)
   }
   const hare = trace('hare', 1.6)
-  const hareLeash = TETHER_M + 1.5 * hare.lodSize + 0.5
-  check(hare.away < hareLeash, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m of ${hareLeash.toFixed(1)} from her in 15 s`)
+  check(hare.away <= TETHER_M + 0.01, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m from home in 15 s`)
 }
 
 // --- unless she holds a lure ------------------------------------------------------
 {
   const dt = 1 / 60
-  // On the flat plain, so twenty metres of following crosses no pond and no crag.
+  // On the flat plain, so thirty metres of following crosses no pond and no crag.
   // The carrot is a hands.js lure: a kind and where the hand is. Held a metre over the stag's feet.
   const carrot = { kind: 'carrot', x: 0, y: 0, z: 0 }
-  const k = make(7, { walk: plain, water: noWater, height })
+  const k = make(7, { walk: plain, water: noWater })
   k.place(0, 0)
   const c = beside(k, 'stag')
   const sp = c.sp
   const hold = (x, z) => { carrot.x = x; carrot.y = c.y + 1; carrot.z = z }
-  const run = (s, lures, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { k.update(carrot.x, c.y + 1.6, carrot.z, dt, 1, lures); seen.add(`${c.act}/${c.clip}`) } return seen }
+  const run = (s, lures, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { step(k, carrot.x, c.y + 1.6, carrot.z, dt, lures); seen.add(`${c.act}/${c.clip}`) } return seen }
   const gap = () => Math.hypot(carrot.x - c.x, carrot.z - c.z)
-  const facing = () => Math.abs(Math.atan2(Math.sin(Math.atan2(-(carrot.z - c.z), carrot.x - c.x) - c.heading), Math.cos(Math.atan2(-(carrot.z - c.z), carrot.x - c.x) - c.heading)))
-  k._begin(c, 'graze')
-  c.left = 100
+  const facing = () => Math.abs(swing(c.heading, Math.atan2(-(carrot.z - c.z), carrot.x - c.x)))
+  still(k, c, 'graze', 'eat-loop')
   const [x0, z0] = [c.x, c.z]
   hold(x0 + LURE_M + 1, z0)
   run(2, [carrot])
-  check(!c.lured && c.act === 'graze' && c.x === x0 && c.z === z0, `a carrot ${LURE_M + 1} m off is nothing to a grazing stag`, `${c.act}/${c.clip}`)
+  check(!c.live && c.act === 'graze' && c.x === x0 && c.z === z0, `a carrot ${LURE_M + 1} m off is nothing to a grazing stag`, `${c.act}/${c.clip}`)
   run(2, [{ kind: 'fish', x: x0 + 1, y: c.y + 1, z: z0 }])
-  check(!c.lured && c.act === 'graze', 'nor is a fish a metre off: a stag wants a carrot, not a fish')
+  check(!c.live && c.act === 'graze', 'nor is a fish a metre off: a stag wants a carrot, not a fish')
+  check(k.pending().length === 0, 'and nothing on its score owes the room a word')
   hold(x0 + LURE_M - 0.1, z0)
-  k.update(carrot.x, c.y + 1.6, carrot.z, dt, 1, [carrot])
-  check(c.lured && c.lure === carrot && c.act === 'notice' && c.clip === 'alert', `a carrot inside ${LURE_M} m has it look up from its graze`, `${c.act}/${c.clip}`)
+  run(3 / 60, [carrot])
+  const wentLive = timeOf(k)
+  check(c.live && c.lure === carrot && c.live.by === null && c.act === 'notice' && c.clip === 'alert', `a carrot inside ${LURE_M} m has it look up from its graze, live at her own hand`, `${c.act}/${c.clip}`)
   let seen = run(8, [carrot])
   check(seen.has('follow/walk') && gap() <= sp.standoff + 0.1 && c.speed === 0 && (c.act === 'gaze' || c.act === 'beg'), `it walks up to the carrot and stops ${sp.standoff} m short of it, standing there and looking or begging`, `${gap().toFixed(2)} m off, ${c.act}/${c.clip}`)
   check(seen.has('beg/eat-loop') && c.act === 'beg', 'the carrot at its standoff is at its nose, so it begs: the eat clip at the carrot, over and over, the carrot never eaten', [...seen].join(' '))
   check(facing() < 0.15, 'and it faces the carrot', `${facing().toFixed(3)} rad off`)
-  // She walks eight metres away with it: the stag trots after her and stops at its standoff again, off its tether.
+  // What it owes the room meanwhile: an anchor a second on the tick grid from the tick after it went live, each the body's tick pose in lure mode from this client.
+  const owed = k.pending()
+  const ticks = owed.map((a) => tickOf(a[1]))
+  const every = Math.round(ANCHOR_S * TICK_HZ)
+  check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9, `and it has owed the room an anchor every ${ANCHOR_S} s since it went live, on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
+  check(owed.every((a) => a.length === 9 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && [1, 2, 3, 4, 5].every((i) => Number.isFinite(a[i])) && onTicks(a[1])), 'each [key, T, x, y, z, heading, -1, "lure", null], T on the grid', JSON.stringify(owed[owed.length - 1].map((v) => (typeof v === 'number' ? +v.toFixed(3) : v))))
+  check(k.anchored.get(c.key) === owed[owed.length - 1], 'and keeps its latest as the room\'s, so put to sleep and woken again it resumes as its peers have it')
+  // She walks six metres away with it: the stag trots after her and stops at its standoff again.
   const [x1, z1] = [c.x, c.z]
-  hold(carrot.x + 8, z0)
+  hold(carrot.x + 6, z0)
   seen = run(8, [carrot])
-  check(seen.has('follow/trot') && gap() <= sp.standoff + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 6, `carried ${8} m off, it trots after it and stops at its standoff again`, `${[...seen].join(' ')}; ${gap().toFixed(2)} m off, moved ${Math.hypot(c.x - x1, c.z - z1).toFixed(1)} m`)
-  hold(carrot.x + 18, z0)
+  check(seen.has('follow/trot') && gap() <= sp.standoff + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 5, 'carried six metres off, it trots after it and stops at its standoff again', `${[...seen].join(' ')}; ${gap().toFixed(2)} m off, moved ${Math.hypot(c.x - x1, c.z - z1).toFixed(1)} m`)
+  hold(carrot.x + 20, z0)
   seen = run(12, [carrot])
-  check(seen.has('follow/run') && gap() <= sp.standoff + 0.1, `carried ${18} m off, it runs`, `${[...seen].join(' ')}; ${gap().toFixed(2)} m off`)
-  check(Math.hypot(c.x - c.homeX, c.z - c.homeZ) > TETHER_M, `and is now past its ${TETHER_M} m tether, which a lure takes it off`, `${Math.hypot(c.x - c.homeX, c.z - c.homeZ).toFixed(1)} m from home`)
+  check(seen.has('follow/run') && gap() <= sp.standoff + 0.1, 'carried twenty metres off, it runs', `${[...seen].join(' ')}; ${gap().toFixed(2)} m off`)
+  check(Math.hypot(c.x - x0, c.z - z0) > TETHER_M, `and is now further from where it grazed than its ${TETHER_M} m tether, which a lure takes it off`, `${Math.hypot(c.x - x0, c.z - z0).toFixed(1)} m`)
   // The carrot lifted three metres over its head: not at its face, so the beg ends with the head coming up, and it gazes instead.
   carrot.y = c.y + 3
   seen = run(1, [carrot])
   check(seen.has('beg/eat-up') && c.act === 'gaze' && c.clip === 'idle', 'lifted out of its reach, it raises its head and gazes', [...seen].join(' '))
   seen = run(6, [carrot])
   check(!seen.has('beg/eat-down'), 'and does not beg again while it is up there', [...seen].join(' '))
-  // The carrot put away: it goes about its own business, and the tether has it again.
+  // The carrot put away: the lure is over, it owes the room where that left it, and the rejoin walks it to the score.
+  k.pending()
+  const [x2, z2] = [c.sx, c.sz]
+  const t2 = timeOf(k)
   seen = run(4, [])
-  check(!c.lured && c.lure === null && !['notice', 'follow', 'gaze', 'beg', 'frolic'].includes(c.act), 'the carrot put away, it forgets it and picks something of its own', `${c.act}/${c.clip}`)
+  const last = k.pending()
+  check(!c.live && c.lure === null && c.rejoin !== null && !['notice', 'follow', 'gaze', 'beg', 'frolic'].includes(c.act), 'the carrot put away, it forgets it and takes the rejoin', `${c.act}/${c.clip}`)
+  check(last.length === 1 && last[0][7] === 'rejoin' && last[0][8] === null && last[0][2] === x2 && last[0][4] === z2 && last[0][1] > t2 && last[0][1] <= t2 + TICK_S + 1e-9, 'owing the room one rejoin anchor from where the lure left it, and nothing more', JSON.stringify(last.map((a) => a.map((v) => (typeof v === 'number' ? +v.toFixed(3) : v)))))
+  const rj = c.rejoin
+  const ch = k.score.chapter(c.key, rj.end)
+  const join = ch.phrases[ch.starts.findIndex((s) => Math.abs(ch.start + s - rj.end) < 1e-9)]
+  const stand = rj.phrases[rj.phrases.length - 1]
+  check(join !== undefined && rj.start === last[0][1] && stand.kind === 'stand' && stand.to.x === join.from.x && stand.to.z === join.from.z && stand.to.heading === join.from.heading && (rj.phrases.length === 1 || (rj.phrases.length === 2 && rj.phrases[0].mps !== undefined && rj.phrases[0].to === stand.from)), 'the rejoin is a walk to the start pose of a phrase of the score, and a stand there, turned to its heading, until it starts', `${rj.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')} to phrase ${ch.phrases.indexOf(join)}`)
+  const before = Math.hypot(x2 - stand.to.x, z2 - stand.to.z)
+  const after = Math.hypot(c.x - stand.to.x, c.z - stand.to.z)
+  check(after < 1e-6 || after <= before - 1, 'and four seconds on it is nearer that pose', `${after.toFixed(1)} m off, from ${before.toFixed(1)}`)
   // Held on and carried past LURE_FORGET_M, it gives up.
   hold(c.x + 2, c.z)
   run(1, [carrot])
-  check(c.lured, 'a carrot two metres off has it again')
+  check(c.live !== null, 'a carrot two metres off has it again')
   hold(c.x + LURE_FORGET_M + 1, c.z)
   run(1, [carrot])
-  check(!c.lured, `and carried ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
+  check(!c.live, `and carried ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
   k.dispose()
 
   // A hare with a carrot frolics at her feet; a fox wants a fish or a crab and comes to its own standoff.
-  const h = make(7, { walk: plain, water: noWater, height })
+  const h = make(7, { walk: plain, water: noWater })
   h.place(0, 0)
   const r = beside(h, 'hare')
   const rc = { kind: 'carrot', x: r.x + 1, y: r.y + 1, z: r.z }
@@ -653,25 +821,111 @@ wake(w)
   let moved = 0
   let lx = r.x, lz = r.z
   for (let f = 0; f < 8 * 60; f++) {
-    h.update(rc.x, r.y + 1.6, rc.z, dt, 1, [rc])
+    step(h, rc.x, r.y + 1.6, rc.z, dt, [rc])
     hops.add(`${r.act}/${r.clip}`)
     moved += Math.hypot(r.x - lx, r.z - lz); lx = r.x; lz = r.z
   }
   const near = Math.hypot(rc.x - r.x, rc.z - r.z)
-  check(r.lured && hops.has('frolic/bound') && !hops.has('beg/eat-down') && near < 2.5 && moved > 4, 'a hare with a carrot a metre up and a metre off bounds about at her feet for eight seconds, never far, and cannot reach it to beg', `${[...hops].join(' ')}; ${near.toFixed(2)} m off, ${moved.toFixed(1)} m hopped`)
+  check(r.live && hops.has('frolic/bound') && !hops.has('beg/eat-down') && near < 2.5 && moved > 4, 'a hare with a carrot a metre up and a metre off bounds about at her feet for eight seconds, never far, and cannot reach it to beg', `${[...hops].join(' ')}; ${near.toFixed(2)} m off, ${moved.toFixed(1)} m hopped`)
   rc.y = r.y + 0.2
   const begs = new Set()
-  for (let f = 0; f < 6 * 60; f++) { h.update(rc.x, r.y + 1.6, rc.z, dt, 1, [rc]); begs.add(`${r.act}/${r.clip}`) }
+  for (let f = 0; f < 6 * 60; f++) { step(h, rc.x, r.y + 1.6, rc.z, dt, [rc]); begs.add(`${r.act}/${r.clip}`) }
   check(begs.has('beg/eat-loop'), 'lowered to its shins, it begs when a bound brings its nose to it', [...begs].join(' '))
   const x = beside(h, 'fox')
   const fish = { kind: 'fish', x: x.x + LURE_M - 0.2, y: x.y + 1, z: x.z }
-  h._begin(x, 'rest')
-  x.left = 100
+  still(h, x, 'rest', 'lie')
   const trots = new Set()
-  for (let f = 0; f < 8 * 60; f++) { h.update(fish.x, x.y + 1.6, fish.z, dt, 1, [fish]); trots.add(`${x.act}/${x.clip}`) }
+  for (let f = 0; f < 8 * 60; f++) { step(h, fish.x, x.y + 1.6, fish.z, dt, [fish]); trots.add(`${x.act}/${x.clip}`) }
   const off = Math.hypot(fish.x - x.x, fish.z - x.z)
-  check(x.lured && trots.has('follow/trot') && off <= x.sp.standoff + 0.1 && x.speed === 0, `a fox at rest comes to a fish at a trot and stops ${x.sp.standoff} m short`, `${[...trots].join(' ')}; ${off.toFixed(2)} m off`)
+  check(x.live && trots.has('follow/trot') && off <= x.sp.standoff + 0.1 && x.speed === 0, `a fox at rest comes to a fish at a trot and stops ${x.sp.standoff} m short`, `${[...trots].join(' ')}; ${off.toFixed(2)} m off`)
   h.dispose()
+}
+
+// --- and the room sees it -----------------------------------------------------------
+// Two clients on the one clock: a's hand holds the carrot, b hears a's anchors as
+// client 7's, and b's copy of the stag has to be a's copy of the stag.
+{
+  const dt = 1 / 60
+  const a = make(7, { walk: plain, water: noWater })
+  const b = make(7, { walk: plain, water: noWater })
+  a.place(0, 0)
+  b.place(0, 0)
+  const ca = beside(a, 'stag')
+  const cb = beside(b, 'stag')
+  check(ca.key === cb.key && ca.home.x === cb.home.x && cb.live === null, 'both clients wake the same stag, by key, at the same home')
+  const carrot = { kind: 'carrot', x: ca.x + LURE_M - 0.1, y: ca.y + 1, z: ca.z }
+  const relay = (to, from, by = 7) => { let n = 0; for (const anchor of from.pending()) { to.apply([...anchor.slice(0, 8), by], timeOf(to)); n++ } return n }
+  // Both step together; every anchor a owes is applied to b the frame it is owed.
+  const together = (s, lures, onFrame) => {
+    for (let f = 0; f < s * 60; f++) {
+      step(a, carrot.x, ca.y + 1.6, carrot.z, dt, lures)
+      step(b, carrot.x, cb.y + 1.6, carrot.z, dt)
+      if (onFrame) onFrame()
+    }
+  }
+  together(1, [carrot], () => relay(b, a))
+  check(ca.live && ca.live.by === null && cb.live && cb.live.by === 7 && cb.live.anchor !== null && cb.lure === null, 'a\'s stag is live at her hand; a second on, b\'s is live at client 7\'s, on the anchor, with no lure of its own to follow', `b: ${cb.act}/${cb.clip} by ${cb.live?.by}`)
+  check(cb.act === 'notice' && cb.clip === 'alert' && b.pending().length === 0, 'and stands alert there, owing the room nothing: the lurer is the authority', `${cb.act}/${cb.clip}`)
+  // She walks it eight metres: a's stag follows the hand, b's follows the anchors.
+  carrot.x += 8
+  let apart = 0
+  together(12, [carrot], () => { relay(b, a); apart = Math.max(apart, Math.hypot(ca.x - cb.x, ca.z - cb.z)) })
+  const gapAB = Math.hypot(ca.x - cb.x, ca.z - cb.z)
+  check(Math.hypot(ca.x - carrot.x, ca.z - carrot.z) < ca.sp.standoff + 0.1 && gapAB < 0.5 && apart < 8, 'carried eight metres, b\'s copy has kept within eight metres of a\'s on the way and is within half a metre once a\'s has stopped a while', `${apart.toFixed(2)} m apart at most, ${gapAB.toFixed(2)} m now`)
+  check(Math.abs(swing(ca.heading, cb.heading)) < 0.2, 'facing the way a\'s faces', `${Math.abs(swing(ca.heading, cb.heading)).toFixed(3)} rad apart`)
+  // The relay goes quiet: b's copy holds the last anchor for ANCHOR_STALE_S, then gives the lure up on its own and rejoins, owing nothing.
+  const T = cb.live.anchor[1]
+  while (timeOf(b) + dt < T + ANCHOR_STALE_S - 0.05) together(1 / 60, [carrot])
+  check(cb.live !== null && cb.act === 'notice', `b's copy holds its alert through ${ANCHOR_STALE_S} s of silence`, `${cb.act}/${cb.clip} at ${(timeOf(b) - T).toFixed(2)} s`)
+  together(0.3, [carrot])
+  check(cb.live === null && cb.rejoin !== null && b.pending().length === 0, `and past ${ANCHOR_STALE_S} s gives the lure up for the rejoin, owing the room nothing`, `${cb.act}/${cb.clip}`)
+  // a puts the carrot away: its rejoin anchor puts b's copy on the very same rejoin, and the two agree to the bit from there.
+  a.pending()
+  let last = []
+  for (let f = 0; f < 5 && last.length === 0; f++) { together(1 / 60, []); last = a.pending() }
+  check(last.length === 1 && last[0][7] === 'rejoin', 'a\'s stag owes one rejoin anchor when the carrot is put away')
+  b.apply([...last[0].slice(0, 8), 7], timeOf(b))
+  check(cb.rejoin !== null && cb.rejoin.start === ca.rejoin.start && cb.rejoin.end === ca.rejoin.end && cb.rejoin.phrases.length === ca.rejoin.phrases.length && cb.rejoin.phrases.every((p, i) => p.dur === ca.rejoin.phrases[i].dur && p.to.x === ca.rejoin.phrases[i].to.x), 'applied on b, the anchor derives the same rejoin: the same walk, the same wait, the same phrase to join', `${cb.rejoin?.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')}`)
+  const same = () => [ca, cb].map((c) => [c.x, c.z, c.heading, c.sx, c.sz, c.sh, c.rec.tick, c.act, c.clip, c.stepStart, c.rejoin !== null].join('/'))
+  together(5, [])
+  let [pa, pb] = same()
+  check(pa === pb && ca.rejoin !== null, 'five seconds on both draw the stag at the same place in the same step of its rejoin', pa === pb ? pa.split('/').slice(6).join('/') : `${pa} vs ${pb}`)
+  jump(a, ca.rejoin.end + 20)
+  jump(b, cb.rejoin.end + 20)
+  together(1, [])
+  ;[pa, pb] = same()
+  check(pa === pb && ca.rejoin === null && cb.rejoin === null, 'and twenty seconds past the rejoin both have it back on the score, alike', pa === pb ? pa.split('/').slice(6).join('/') : `${pa} vs ${pb}`)
+  // What the room's map does for a client that was not there: kept while the animal sleeps and used the frame it wakes.
+  if (chapterOf(timeOf(b) + 15, ca.key).start !== chapterOf(timeOf(b), ca.key).start) jump(b, timeOf(b) + 20)
+  // Her head ten kilometres up, so the tiles stay and every animal on them is past its forget range; sleep waits on each body's dissolve, so a few seconds of it.
+  const asleep = (of) => { for (let f = 0; f < 900 && of.byKey.size > 0; f++) step(of, ca.home.x, 1e4, ca.home.z, dt); return of.byKey.size === 0 }
+  check(asleep(b) && cb.spawn === null, 'her head ten kilometres up, b\'s stag is put back to sleep')
+  const T0 = timeOf(b)
+  const lureAnchor = [ca.key, T0, ca.home.x + 5, ca.y, ca.home.z + 5, 1.2, -1, 'lure', 7]
+  b.apply(lureAnchor, timeOf(b))
+  check(b.anchored.get(ca.key) === lureAnchor, 'an anchor for a sleeping animal is kept')
+  step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
+  const woke = b.byKey.get(ca.key)
+  check(woke !== undefined && woke.live !== null && woke.live.by === 7 && woke.live.anchor === lureAnchor && woke.sx === lureAnchor[2] && woke.sz === lureAnchor[4] && woke.sh === lureAnchor[5], `and woken within ${ANCHOR_STALE_S} s of a lure anchor, the animal is live at the anchor's pose, at client 7's hand`, `${woke?.act}/${woke?.clip} at ${woke?.sx.toFixed(2)},${woke?.sz.toFixed(2)}`)
+  asleep(b)
+  jump(b, T0 + ANCHOR_STALE_S + 0.5)
+  step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
+  const stale = b.byKey.get(ca.key)
+  check(stale !== undefined && stale.live === null && stale.rejoin !== null && stale.rejoin.start === T0 + ANCHOR_STALE_S, `woken after one has gone stale, it is on the rejoin from ${ANCHOR_STALE_S} s past the anchor -- when every client gave the lure up`, `rejoin from ${stale?.rejoin?.start} of anchor ${T0}`)
+  asleep(b)
+  const old = [ca.key, chapterOf(timeOf(b), ca.key).start - 1, 0, 0, 0, 0, -1, 'rejoin', 7]
+  b.apply(old, timeOf(b))
+  step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
+  const planned = b.byKey.get(ca.key)
+  check(planned !== undefined && planned.live === null && planned.rejoin === null, 'an anchor from before the chapter began is nothing: the chapter turn put the animal home, and it is on its score', `${planned?.act}/${planned?.clip}`)
+  // What it will not take.
+  const size = b.anchored.size
+  b.apply([ca.key, timeOf(b), 1, 2, 3, 4, -1, 'lure', null], timeOf(b))
+  check(b.anchored.size === size && b.anchored.get(ca.key) === old && planned.live === null, 'its own anchors echoed back (by null) are ignored')
+  const refused = (anchor) => { try { b.apply(anchor, timeOf(b)); return '' } catch (e) { return e.message } }
+  check(/mode/.test(refused([ca.key, timeOf(b), 0, 0, 0, 0, -1, 'flee', 7])) && /time/.test(refused([ca.key, NaN, 0, 0, 0, 0, -1, 'lure', 7])), 'a mode it does not know, or an anchor with no time, is refused out loud')
+  a.dispose()
+  b.dispose()
 }
 
 // --- a standing body puts its feet on the ground -----------------------------------
@@ -681,15 +935,13 @@ wake(w)
 // left exactly alone; turned on the spot, the ground is read again.
 {
   const TILT = 0.15
-  const tilted = { heightAt: (x, z) => GROUND + TILT * z, normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { const len = Math.hypot(TILT, 1); out.x = 0; out.y = 1 / len; out.z = -TILT / len; return out }, obstacleAt: () => null }
-  const t = make(11, { walk: tilted, water: noWater, height })
+  const tilted = { heightAt: (x, z) => GROUND + TILT * z, normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { const len = Math.hypot(TILT, 1); out.x = 0; out.y = 1 / len; out.z = -TILT / len; return out } }
+  const t = make(11, { walk: tilted, water: noWater })
   t.place(0, 0)
   wake(t)
-  const swing = (a) => Math.atan2(Math.sin(a), Math.cos(a))
   const dt = 1 / 60
   // Her head over it, on the top rung, for `s` seconds.
-  const over = (c, s) => { for (let f = 0; f < Math.round(s / dt); f++) t.update(c.x, c.y + 1.6, c.z, dt) }
-  const still = (c, act) => { t._begin(c, act); c.aim = c.heading; c.left = 1e9 }
+  const over = (c, s) => { for (let f = 0; f < Math.round(s / dt); f++) step(t, c.x, c.y + 1.6, c.z, dt) }
   // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
   const feet = (c) => {
@@ -705,8 +957,8 @@ wake(w)
   check([...PLANTED].sort().join() === 'alert,eat-down,eat-loop,eat-up,idle', 'the clips whose feet stay put are idle, alert and the graze -- a dig lifts a forefoot, a sit and a lie fold, and no gait plants', [...PLANTED].join(' '))
   for (const key of ['stag', 'fox', 'hare']) {
     const c = beside(t, key)
-    c.heading = -Math.PI / 2
-    still(c, 'stand')
+    c.sh = -Math.PI / 2
+    still(t, c, 'stand', 'idle')
     over(c, 1)
     const own = LEG_FOOT_Y * c.sp.asset.height * c.k
     const rise = 0.6 * c.sp.asset.span * c.k * TILT
@@ -715,20 +967,20 @@ wake(w)
     check(up.every((f) => Math.abs(f.hover - own) < 1e-3), `and a second later each of its four feet stands exactly its clip's own ${(own * 100).toFixed(1)} cm over the ground under it, which rises ${(rise * 100).toFixed(0)} cm from its hind feet to its fore`, up.map((f) => `${f.id} ${(f.hover * 100).toFixed(2)}`).join(' '))
     check(up.filter((f) => f.id[0] === 'F').every((f) => f.knee < restKnee - 0.02) && up.filter((f) => f.id[0] === 'H').every((f) => f.knee > restKnee + 0.02), 'its fore knees folded and its hind knees opened off the clip to get there', up.map((f) => `${f.id} ${((f.knee * 180) / Math.PI).toFixed(1)}`).join(' ') + ` of ${((restKnee * 180) / Math.PI).toFixed(1)}`)
     // Walking, the solver lets go and the mixer alone owns the leg: the stand-in's clips never touch a leg, so every hip and knee is back at rest.
-    still(c, 'roam')
+    walkOn(t, c, c.sh)
     over(c, 0.5)
     const walking = feet(c)
     check(c.speed > 0 && !c.puppet.planted && !c.puppet.ik.active && !c.puppet.ik.dirty && c.puppet.ik.legs.every((l) => l.A.quaternion.equals(identity) && l.B.quaternion.equals(identity)) && walking.every((f) => Math.abs(f.knee - restKnee) < 1e-9), `walking off, ${c.clip}, half a second later its legs are the clip's exactly, whatever the ground under each foot`, walking.map((f) => `${f.id} ${(f.hover * 100).toFixed(1)}`).join(' '))
     // Stood again and turned on the spot, past REPLANT: the ground is read under where the feet are now, and they land on it again.
-    still(c, 'stand')
+    still(t, c, 'stand', 'idle')
     over(c, 1)
     const first = c.puppet.plantHeading
-    c.aim = c.heading + REPLANT * 3
+    still(t, c, 'stand', 'idle', c.sh + REPLANT * 3)
     over(c, 3)
     const turned = feet(c)
     // Between re-plants a foot's ground is the one read up to REPLANT ago: at most that swing, at the foot's radius, down the tilt.
     const stale = Math.hypot(0.3 * c.sp.asset.span, 0.3 * c.sp.asset.width) * c.k * REPLANT * TILT
-    check(Math.abs(swing(c.heading - c.aim)) < 1e-6 && c.puppet.plantHeading !== first && Math.abs(swing(c.puppet.plantHeading - c.heading)) <= REPLANT && turned.every((f) => Math.abs(f.hover - own) < stale + 1e-3), `turned ${(REPLANT * 3).toFixed(2)} rad on the spot, it has read the ground again and every foot stands on it, to within the ${(stale * 100).toFixed(1)} cm a swing short of REPLANT can move the ground under a foot`, `planted at ${first.toFixed(2)}, again at ${c.puppet.plantHeading.toFixed(2)}, facing ${c.heading.toFixed(2)}; ${turned.map((f) => `${f.id} ${((f.hover - own) * 100).toFixed(2)}`).join(' ')}`)
+    check(Math.abs(swing(c.heading, c.aim)) < 1e-6 && c.puppet.plantHeading !== first && Math.abs(swing(c.puppet.plantHeading, c.heading)) <= REPLANT && turned.every((f) => Math.abs(f.hover - own) < stale + 1e-3), `turned ${(REPLANT * 3).toFixed(2)} rad on the spot, it has read the ground again and every foot stands on it, to within the ${(stale * 100).toFixed(1)} cm a swing short of REPLANT can move the ground under a foot`, `planted at ${first.toFixed(2)}, again at ${c.puppet.plantHeading.toFixed(2)}, facing ${c.heading.toFixed(2)}; ${turned.map((f) => `${f.id} ${((f.hover - own) * 100).toFixed(2)}`).join(' ')}`)
   }
   t.dispose()
 }
@@ -740,7 +992,7 @@ wake(w)
   const c = alive(w).find((a) => a.sp.key === 'stag')
   // Straight up over it, so the distance is exactly d and the tiles do not move; dt 0, so nothing walks out from under the test.
   const at = (d, frames = 2, dt = 0) => {
-    for (let f = 0; f < frames; f++) w.update(c.x, c.y + d, c.z, dt)
+    for (let f = 0; f < frames; f++) step(w, c.x, c.y + d, c.z, dt)
     return c.lod
   }
   // Enough frames at a real dt for every dissolve to finish: a tier change, an appearance or a vanishing takes LOD_FADE_S, and a puppet is not back in the pool until it has.
@@ -868,9 +1120,7 @@ wake(w)
         'the rig is detached -- under no node, on an identity bind -- so a bone matrix is the pose and the group matrix is the place')
       const d = reach(LOD_RUNGS - 1) * 0.75
       // Put it on a long roam first: left to the roll it can graze through the whole window.
-      w._begin(c, 'roam')
-      c.aim = c.heading
-      c.left = 100
+      walkOn(w, c, c.sh)
       let tested = false, moved = false, held = false
       for (let f = 0; f < 600 && !tested; f++) {
         const was = p.group.matrix.elements.slice()
@@ -914,7 +1164,6 @@ wake(w)
     check(shown()[0].material === p.mats.plain, 'turning it off puts the species material back')
   }
 }
-
 // --- the ladder is an arc, and so a ratio of the body ------------------------------
 //
 // FOUR RUNGS, each twice as far off as the one above it, and every distance in
@@ -950,7 +1199,6 @@ wake(w)
   check(cullRange(CARD_BODY_M, CARD_RUNGS) <= horizon, `the world is placed far enough out to hold the card of a ${CARD_BODY_M} m body`, `${cullRange(CARD_BODY_M, CARD_RUNGS).toFixed(0)} m of card inside a ${horizon.toFixed(0)} m horizon`)
   check(Math.max(...cards) < horizon, 'so every animal in it fades in on its card, inside the world, rather than arriving with its tile', `furthest card ${Math.max(...cards).toFixed(0)} m, nearest ${Math.min(...cards).toFixed(0)}`)
 }
-
 // --- and a far animal thinks less often --------------------------------------------
 //
 // An animal's frame is its ground work: the look-ahead seat test, the height
@@ -970,25 +1218,26 @@ wake(w)
     const c = beside(k, 'stag')
     // Straight up over it, so it stays on the one rung and nothing else about the world moves.
     const d = lodReach(c.spawn.lodSize, rung) * 0.9
-    for (let f = 0; f < 60; f++) k.update(c.x, c.y + d, c.z, dt)
-    // Kept walking: a standing body reads no ground.
-    k._begin(c, 'roam'); c.clip = 'walk'; c.speed = c.sp.asset.gait.walk * c.k; c.aim = c.heading; c.left = 1e9
+    for (let f = 0; f < 60; f++) step(k, c.x, c.y + d, c.z, dt)
+    // Kept walking: a standing body reads no ground. The placement's own frame probes whatever the cadence says, so it is spent before the count.
+    walkOn(k, c, c.sh, 'walk', 100000)
+    step(k, c.x, c.y + d, c.z, dt)
     let probes = 0
     const frames = 600
     for (let f = 0; f < frames; f++) {
       asked = []
-      k.update(c.x, c.y + d, c.z, dt)
+      step(k, c.x, c.y + d, c.z, dt)
       // The ground under the feet is read at the animal's own position; the seat test reads a body length ahead of it.
       if (asked.includes(`${c.x},${c.z}`)) probes++
     }
     check(c.lod === rung && Math.abs(probes - frames / PROBE_EVERY[rung]) <= 1, `on rung ${rung}${rung === LOD_RUNGS ? ', its card' : ''} a walking stag reads the ground once every ${PROBE_EVERY[rung]} frames`, `${probes} probes in ${frames} frames, wanted ${Math.round(frames / PROBE_EVERY[rung])}`)
     // Stood still, facing where it faces: one probe seats it where it stopped, and the probe frames after that read nothing.
-    k._begin(c, 'graze'); c.aim = c.heading; c.left = 1e9
-    for (let f = 0; f < PROBE_EVERY[rung] * CARD_EVERY; f++) k.update(c.x, c.y + d, c.z, dt)
+    still(k, c, 'graze', 'eat-loop')
+    for (let f = 0; f < PROBE_EVERY[rung] * CARD_EVERY; f++) step(k, c.x, c.y + d, c.z, dt)
     probes = 0
     for (let f = 0; f < frames; f++) {
       asked = []
-      k.update(c.x, c.y + d, c.z, dt)
+      step(k, c.x, c.y + d, c.z, dt)
       if (asked.includes(`${c.x},${c.z}`)) probes++
     }
     check(c.speed === 0 && probes === 0, `and a stag standing there reads it on none of them`, `${probes} probes in ${frames} frames`)
@@ -1011,37 +1260,45 @@ wake(w)
   const spawn = c.spawn
   const dt = 1 / 60
   // Ten seconds of roaming with her walking beside it, to take it somewhere other than home.
-  k._begin(c, 'roam')
-  c.left = 100
-  for (let f = 0; f < 600; f++) k.update(c.x, c.y + 1.6, c.z, dt)
-  const at = { x: c.x, y: c.y, z: c.z, heading: c.heading, left: c.left, clip: c.clip }
-  check(Math.hypot(c.x - c.homeX, c.z - c.homeZ) > 1, 'a hare she has watched for ten seconds is no longer standing at home', `${Math.hypot(c.x - c.homeX, c.z - c.homeZ).toFixed(2)} m off it`)
+  walkOn(k, c, c.sh, c.sp.gaits[0][0], 400)
+  for (let f = 0; f < 600; f++) step(k, c.x, c.y + 1.6, c.z, dt)
+  const at = { x: c.x, y: c.y, z: c.z, heading: c.heading, tick: c.rec.tick, clip: c.clip }
+  check(Math.hypot(c.x - c.home.x, c.z - c.home.z) > 1, 'a hare she has watched for ten seconds is no longer standing at home', `${Math.hypot(c.x - c.home.x, c.z - c.home.z).toFixed(2)} m off it`)
 
   // Out past the meshes but inside the card: a live hare still, and still walking.
   const onCard = { x: at.x + spawn.cull * 1.3, y: at.y + 1.6, z: at.z }
-  for (let f = 0; f < 120; f++) k.update(onCard.x, onCard.y, onCard.z, dt)
+  for (let f = 0; f < 120; f++) step(k, onCard.x, onCard.y, onCard.z, dt)
   const sp = k.species.find((s) => s.key === 'hare')
   check(c.spawn === spawn && c.lod === LOD_RUNGS && !c.puppet && c.cardWant && c.cardP === 1 && sp.cardN > 0, `${(spawn.cull * 1.3).toFixed(0)} m off, past the last mesh rung, the hare has given its puppet back and is a card`)
   check(Math.hypot(c.x - at.x, c.z - at.z) > 0.1 || c.act !== 'roam', 'and it is a card that is still living its life out there, not a photograph parked where it was last seen', `${Math.hypot(c.x - at.x, c.z - at.z).toFixed(2)} m on, doing ${c.act}`)
 
   // Out past the card too, but not past where the placement is worth keeping.
   const eye = { x: c.x + (spawn.card + spawn.forget) / 2, y: c.y + 1.6, z: c.z }
-  for (let f = 0; f < 240; f++) k.update(eye.x, eye.y, eye.z, dt)
-  Object.assign(at, { x: c.x, y: c.y, z: c.z, heading: c.heading, left: c.left, clip: c.clip })
-  for (let f = 0; f < 240; f++) k.update(eye.x, eye.y, eye.z, dt)
+  for (let f = 0; f < 240; f++) step(k, eye.x, eye.y, eye.z, dt)
+  Object.assign(at, { x: c.x, y: c.y, z: c.z, heading: c.heading, tick: c.rec.tick, clip: c.clip })
+  for (let f = 0; f < 240; f++) step(k, eye.x, eye.y, eye.z, dt)
   check(c.spawn === spawn && c.lod === CARD_RUNGS && !c.puppet && !c.cardWant && c.cardP === 1, `${spawn.card.toFixed(0)} m off, past the card as well, the hare is not drawn at all but the slot is still hers`)
-  check(c.x === at.x && c.z === at.z && c.y === at.y && c.heading === at.heading && c.left === at.left && c.clip === at.clip, 'and in four seconds of it nothing walked, turned, read the ground or picked an activity -- it stands exactly where it stood')
-  k.update(at.x, at.y + 1.6, at.z, 0)
-  check(c.spawn === spawn && c.x === at.x && c.z === at.z, 'she comes back and it is where she left it')
+  check(c.x === at.x && c.z === at.z && c.y === at.y && c.heading === at.heading && c.rec.tick === at.tick && c.clip === at.clip, 'and in four seconds of it nothing walked, turned, read the ground or picked an activity -- it stands exactly where it stood')
+  // Back in sight, the ticks it was not stepped through are replayed in the one frame, so it is where the score has it now: it lived while she was away, it just was not looked at.
+  const r0 = k.replayed
+  step(k, at.x, at.y + 1.6, at.z, 0)
+  const owed = tickOf(timeOf(k)) - at.tick
+  check(c.spawn === spawn && owed > 100 && c.rec.tick === at.tick + owed && k.replayed - r0 >= owed, 'she comes back and it is where the score has it, the ticks she was away for replayed in that frame', `${owed} ticks, ${k.replayed - r0} replayed across the herd`)
 
   // And out past where it is worth keeping.
-  for (let f = 0; f < 240; f++) k.update(at.x + spawn.forget * 1.2, at.y + 1.6, at.z, dt)
+  for (let f = 0; f < 240; f++) step(k, at.x + spawn.forget * 1.2, at.y + 1.6, at.z, dt)
   check(spawn.slot === null && c.spawn === null && k.species.find((sp) => sp.key === 'hare').free.includes(c), `${Math.round((CULL_KEEP - 1) * 100)}% past the card's reach the slot goes back in the pool`, `${spawn.forget.toFixed(0)} m`)
   check(scatter(k).includes(spawn), 'but the tile still holds the spawn -- where it stands when nothing has moved it is not a thing that can be forgotten')
-  const home = { x: spawn.x, z: spawn.z }
-  k.update(spawn.x, spawn.y + 1.6, spawn.z, 0)
+  // The next waking is not a reset to home: it stands the hare where the score has it, which is where any other client waking it at that moment stands it.
+  step(k, spawn.x, spawn.y + 1.6, spawn.z, 0)
   const again = k.species.find((sp) => sp.key === 'hare').slots.find((s) => s.spawn === spawn)
-  check(again && again.x === home.x && again.z === home.z && Math.hypot(home.x - at.x, home.z - at.z) > 1, 'and the next waking stands it at home again, the wandering forgotten', `${Math.hypot(home.x - at.x, home.z - at.z).toFixed(2)} m from where it was`)
+  const twin = make(7)
+  jump(twin, timeOf(k))
+  step(twin, spawn.x, spawn.y + 1.6, spawn.z, 0)
+  const other = twin.byKey.get(spawn.key)
+  const alike = (a, b) => a.sx === b.sx && a.sz === b.sz && a.sh === b.sh && a.act === b.act && a.clip === b.clip && a.rec.tick === b.rec.tick
+  check(again && other && again !== other && again.key === spawn.key && alike(again, other), 'and the next waking stands it where the score has it, as a second client waking it then would', again && other ? `${again.act} on ${again.clip}, tick ${again.rec.tick}` : 'no slot')
+  twin.dispose()
   k.dispose()
 }
 
@@ -1054,7 +1311,7 @@ wake(w)
   w.place(0, 0)
   wake(w)
   const c = alive(w).find((a) => a.sp.key === 'stag')
-  const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) w.update(c.x, c.y + d, c.z, dt) }
+  const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) step(w, c.x, c.y + d, c.z, dt) }
   const vis = () => (c.puppet ? c.puppet.meshes.map((m, k) => (m.visible ? k : -1)).filter((k) => k >= 0) : [])
   const close = lodReach(c.spawn.lodSize, 0) / 2
   const out = lodReach(c.spawn.lodSize, LOD_RUNGS - 1) * 0.9
@@ -1080,7 +1337,6 @@ wake(w)
   check(!c.puppet && Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60, `a vanishing takes LOD_FADE_S however far the step was -- a teleport dissolves too`, `${(frames / 60).toFixed(3)} s for a ${(gone - out).toFixed(0)} m jump`)
   check(w.species.every((sp) => sp.freePuppets.length === PUPPETS), 'and every puppet is back in its pool once nothing is in sight')
 }
-
 // AND THE CARD DITHERS WITH THE MESH, not after it. The mesh's cut and the
 // card's coverage are the same number against the same screen-space hash, so
 // what she loses off one she gains on the other: the pixels are partitioned
@@ -1090,7 +1346,7 @@ wake(w)
   wake(w)
   const c = alive(w).find((a) => a.sp.key === 'stag')
   const sp = w.species.find((s) => s.key === 'stag')
-  const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) w.update(c.x, c.y + d, c.z, dt) }
+  const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) step(w, c.x, c.y + d, c.z, dt) }
   // Which instance of the card mesh is this animal's, by where it stands.
   const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3()
   // The attribute is a Float32Array, so nothing read back out of it compares exact against a double.
@@ -1144,12 +1400,12 @@ wake(w)
   w.place(0, 0)
   wake(w)
   const c = alive(w).find((a) => a.sp.key === 'stag')
-  for (let f = 0; f < 40; f++) w.update(c.x, c.y + 20, c.z, 1 / 60)
+  for (let f = 0; f < 40; f++) step(w, c.x, c.y + 20, c.z, 1 / 60)
   const p = c.puppet
   check(p && p.meshes.filter((m) => m.visible).length === 1, 'a stag close by is drawn')
 
   // Her head 400 m away: every tile unloads, so the animal is gone from the world entirely.
-  w.update(c.x + 400, c.y, c.z + 400, 1 / 60)
+  step(w, c.x + 400, c.y, c.z + 400, 1 / 60)
   check(c.spawn === null && !c.puppet, 'walk far enough and its tile unloads, taking the animal with it')
   check(w.fading.some((f) => f.puppet === p), 'but its body stays behind, dissolving where it stood', `${w.fading.length} bodies fading`)
   const vis = p.meshes.filter((m) => m.visible)
@@ -1158,59 +1414,86 @@ wake(w)
   check(stags > 0 && w.species.find((sp) => sp.key === 'stag').freePuppets.length === PUPPETS - stags, 'and is nobody else\'s puppet until it has gone')
 
   let frames = 1
-  while (w.fading.length && frames < 120) { w.update(c.x + 400, c.y, c.z + 400, 1 / 60); frames++ }
+  while (w.fading.length && frames < 120) { step(w, c.x + 400, c.y, c.z + 400, 1 / 60); frames++ }
   check(!w.fading.length && Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60, 'the fade takes LOD_FADE_S like any other', `${(frames / 60).toFixed(3)} s`)
   check(!p.group.parent && w.species.every((sp) => sp.freePuppets.length === PUPPETS), 'and then it leaves the batch and goes back to the pool')
 
   // The terrain rebuild is the one case that does not fade: the ground the body was standing on is not there any more.
-  for (let f = 0; f < 40; f++) w.update(0, 20, 0, 1 / 60)
+  for (let f = 0; f < 40; f++) step(w, 0, 20, 0, 1 / 60)
   const drawn = alive(w).filter((a) => a.puppet)
   check(drawn.length > 0, 'animals are drawn again around her')
   w.place(0, 0)
   check(!w.fading.length && w.species.every((sp) => sp.freePuppets.length === PUPPETS) && drawn.every((a) => !a.puppet), 'a place() takes every puppet back at once, fading ones included -- the ground they stood on has moved')
 }
-
-// --- the dragon's four verbs: prey, seize, carry, drop -----------------------------
+// --- the dragon's verbs: roster, spawnAt, poseAt, kill, carry, drop ----------------
 //
-// A seized stag is a slot with no spawn, off every tile and every list, drawn
+// A killed stag is a slot with no spawn, off every tile and every list, drawn
 // only where its carrier puts it: hanging by the back from the talons, or
-// rolled onto its flank on the nest floor.
+// rolled onto its flank on the nest floor. Its spawn sleeps to its chapter's turn.
 {
   const k = make(7)
   k.place(0, 0)
   const dt = 1 / 60
   const c = beside(k, 'stag')
-  const liveStags = alive(k).filter((a) => a.sp.key === 'stag' && a.lod < CARD_RUNGS)
-  const nearest = (x, z) => liveStags.reduce((b, a) => (Math.hypot(a.x - x, a.z - z) < Math.hypot(b.x - x, b.z - z) ? a : b))
-  const probes = [[c.x, c.z], [c.x + 40, c.z - 25], [c.x - 60, c.z + 70]]
-  check(liveStags.length >= 2 && probes.every(([x, z]) => k.prey(x, z, 1e4) === nearest(x, z)), 'prey() is the nearest live stag to the point asked', `${liveStags.length} live stags`)
-  const others = alive(k).filter((a) => a.sp.key !== 'stag')
-  check(others.length > 0 && others.every((a) => { const p = k.prey(a.x, a.z, 1e4); return p !== a && p.sp.key === 'stag' }), 'and never a fox or a hare, asked from right on top of one', `${others.length} asked`)
-  check(k.prey(c.x, c.z, 1e4) === c && k.prey(c.x, c.z, 0) === null && k.prey(c.x + 1000, c.z, 100) === null, 'and null when no stag is within range')
-  const asleep = scatter(k).find((s) => s.sp.key === 'stag' && s.slot === null && !s.dead)
-  check(asleep !== undefined && k.prey(asleep.x, asleep.z, 0.01) === null, 'a stag asleep on its spawn, past its cull, is not prey -- nothing that is not simulated can be hunted')
+  const t0 = timeOf(k)
+  const stags = scatter(k).filter((s) => s.sp.key === 'stag')
+  const resident = k.tiles.size
+  const near = k.roster(c.spawn.x, c.spawn.z, 60)
+  const expect = stags.filter((s) => Math.hypot(s.x - c.spawn.x, s.z - c.spawn.z) <= 60).map((s) => s.key).sort()
+  check(near.length >= 2 && near.map((r) => r.key).join() === expect.join() && near.every((r) => { const s = stags.find((o) => o.key === r.key); return r.x === s.x && r.z === s.z }), 'roster() lists every stag spawn within range, in key order, each at its spawn point', `${near.length} of ${stags.length} resident stags within 60 m`)
+  const one = k.roster(c.spawn.x, c.spawn.z, 0.01)
+  check(one.length === 1 && one[0].key === c.key, 'asked from on top of one, that one alone')
+  const wide = k.roster(RADIUS + 300, 0, 100)
+  check(wide.length > 0 && wide.every((r) => r.key.startsWith('st:') && !stags.some((s) => s.key === r.key)) && k.tiles.size === resident && k.rolled.size > 0, 'asked past the resident tiles it rolls those without making them resident, from a bounded cache, and lists only stags', `${wide.length} stags over ${k.rolled.size} rolled tiles`)
+  const far = wide[0]
+  check(k.spawnAt(c.key).x === c.spawn.x && k.spawnAt(c.key).z === c.spawn.z && k.spawnAt(far.key).x === far.x, 'spawnAt() is the spawn point, resident or rolled')
   let threw = ''
-  try { k.seize(k.species[0].free[0]) } catch (e) { threw = e.message }
-  check(threw.includes('not in the world'), 'seizing a slot with nothing in it throws', threw)
+  try { k.spawnAt('st:0,0:99') } catch (e) { threw = e.message }
+  check(threw.includes('no animal keyed'), 'and a key no tile rolled throws', threw)
 
+  // poseAt: the free plan, closed form, is where the stepped body is.
+  for (let f = 0; f < 90; f++) step(k, c.spawn.x, c.spawn.y + 1.6, c.spawn.z, dt)
+  const at = k.poseAt(c.key, timeOf(k))
+  check(Math.abs(at.x - c.sx) < 1e-9 && Math.abs(at.z - c.sz) < 1e-9 && Math.abs(at.heading - c.sh) < 1e-9 && at.y === height.heightAt(at.x, at.z), 'poseAt() at the clock is the tick pose the stepped body holds, on the height field', `${Math.hypot(at.x - c.sx, at.z - c.sz).toExponential(1)} m off`)
+  const farPose = k.poseAt(far.key, 12345.6)
+  check(Math.hypot(farPose.x - far.x, farPose.z - far.z) <= TETHER_M + 1e-6 && k.tiles.size === resident && !alive(k).some((a) => a.key === far.key), 'a stag on no resident tile has a pose too, inside its tether, without waking or a tile', `${Math.hypot(farPose.x - far.x, farPose.z - far.z).toFixed(1)} m from home`)
+
+  // kill: the live slot where the stag is awake.
+  threw = ''
+  try { k.kill('st:0,0:99', timeOf(k)) } catch (e) { threw = e.message }
+  check(threw.includes('no animal keyed'), 'killing a key no tile rolled throws', threw)
   const spawn = c.spawn
-  const { height, width } = c.sp.asset
+  const { height: bodyH, width } = c.sp.asset
   const before = k.bodies([]).length
-  const got = k.seize(c)
-  check(got === c && c.spawn === null && spawn.dead && spawn.slot === null && c.act === 'dead', 'seize() hands back the slot, off its spawn, and the spawn is marked dead with no slot')
-  check(c.clip === 'dead' && c.dur === c.sp.durations.dead && c.left === c.dur && c.queue.length === 0 && c.speed === 0, 'the slot is on the dead clip from its start, held its whole length, nothing queued behind it', `${c.dur.toFixed(2)} s`)
+  const tk = timeOf(k)
+  const got = k.kill(c.key, tk)
+  check(got === c && c.spawn === null && spawn.slot === null && c.act === 'dead', 'kill() hands back the live slot, off its spawn, and the spawn has no slot')
+  check(spawn.deadUntil === chapterOf(tk, c.key, CHAPTER_S).start + CHAPTER_S && !k.score.cache.has(c.key), 'struck off its plan, the spawn sleeps to its chapter\'s end and its plan is forgotten', `${(spawn.deadUntil - tk).toFixed(1)} s`)
+  check(c.clip === 'dead' && c.dur === c.sp.durations.dead && Number.isNaN(c.stepStart) && c.queue.length === 0 && c.speed === 0, 'the slot is on the dead clip from its start, held its whole length, nothing queued behind it', `${c.dur.toFixed(2)} s`)
   check(!k.bodies([]).includes(c) && k.bodies([]).length === before - 1, 'and it is off the list the ear reads')
   check(!k.species[0].free.includes(c), 'but not back in the pool: it is cargo now')
-  for (let f = 0; f < 120; f++) k.update(spawn.x, spawn.y + 1.6, spawn.z, dt)
-  check(spawn.slot === null && !alive(k).some((a) => a.spawn === spawn), 'two seconds of her standing on the dead spawn wake no second stag there')
-  check(k.prey(spawn.x, spawn.z, 0.01) === null, 'and it is not prey either')
+  for (let f = 0; f < 120; f++) step(k, spawn.x, spawn.y + 1.6, spawn.z, dt)
+  check(spawn.slot === null && !alive(k).some((a) => a.spawn === spawn) && k.roster(spawn.x, spawn.z, 0.01).length === 1, 'two seconds of her standing on the dead spawn wake no second stag there, though the roster still names it -- the dragons plan over spawns, not bodies')
+  jump(k, spawn.deadUntil + 0.05)
+  step(k, spawn.x, spawn.y + 1.6, spawn.z, 0)
+  check(spawn.slot !== null && spawn.slot !== c && k.score.at(spawn.key, timeOf(k)).phrases[0].from === spawn.home, 'its chapter turned, a stag wakes there again on a new slot, planned from home')
+  k._sleep(spawn)
+
+  // kill: a stag asleep past its cull is dressed from its spawn.
+  const asleep = stags.find((s) => s.slot === null && s !== spawn && s.deadUntil <= timeOf(k))
+  const t4 = timeOf(k)
+  const c4 = k.kill(asleep.key, t4)
+  check(c4 !== null && c4.spawn === null && c4.key === asleep.key && c4.act === 'dead' && c4.clip === 'dead' && c4.k === asleep.size / asleep.sp.asset.span && c4.lodSize === asleep.lodSize, 'a stag asleep on its spawn is killed too: a pool slot dressed from the spawn, limp')
+  check(asleep.deadUntil === chapterOf(t4, asleep.key, CHAPTER_S).start + CHAPTER_S && !k.species[0].free.includes(c4) && !k.bodies([]).includes(c4), 'its spawn asleep to the chapter\'s end, the slot cargo and off the ear\'s list')
+  k.drop(c4, false)
+  check(k.species[0].free.includes(c4), 'dropped, the slot is back in the pool')
 
   // Hanging: a yawed, scaled carrier matrix, the body's own frame under it.
   const M = new THREE.Matrix4().compose(new THREE.Vector3(12, 30, -7), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.8), new THREE.Vector3(c.k, c.k, c.k))
   k.carry(c, M, 10, dt)
   const p = c.puppet
   check(p !== null && c.lod < LOD_RUNGS && c.x === 12 && c.y === 30 && c.z === -7 && p.to === c.lod, 'carried ten metres off, the kill takes a puppet on a mesh rung and the slot sits at the matrix', p && `tier ${p.to}`)
-  const gripLocal = new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(p.group.matrix)
+  const gripLocal = new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(p.group.matrix)
   check(gripLocal.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-9, `hanging, the point ${GRIP} of its height up its body -- the back the talons hold -- is exactly at the matrix, and the rest sags below`, `grip lands ${gripLocal.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
   const upHung = new THREE.Vector3(0, 1, 0).transformDirection(p.group.matrix)
   check(Math.abs(upHung.y - 1) < 1e-9, 'its up is the world up: it hangs, it does not roll')
@@ -1224,9 +1507,9 @@ wake(w)
   k.carry(c, M, 10, dt, true)
   const upLain = new THREE.Vector3(0, 1, 0).transformDirection(p.group.matrix)
   check(Math.abs(upLain.y) < 1e-9, 'lain, the body\'s up is horizontal: it is on its side', `up.y ${upLain.y.toExponential(1)}`)
-  const flank = [new THREE.Vector3(0.3, 0.5 * height, LAIN * width), new THREE.Vector3(-0.3, 0.1 * height, LAIN * width)].map((v) => v.applyMatrix4(p.group.matrix))
+  const flank = [new THREE.Vector3(0.3, 0.5 * bodyH, LAIN * width), new THREE.Vector3(-0.3, 0.1 * bodyH, LAIN * width)].map((v) => v.applyMatrix4(p.group.matrix))
   check(flank.every((f) => Math.abs(f.y - 30) < 1e-9), `and the flank ${LAIN} of its width out is on the matrix's floor along the whole body`, flank.map((f) => (f.y - 30).toExponential(1)).join(' '))
-  const spine = new THREE.Vector3(0, 0.5 * height, 0).applyMatrix4(p.group.matrix)
+  const spine = new THREE.Vector3(0, 0.5 * bodyH, 0).applyMatrix4(p.group.matrix)
   check(spine.y > 30 + 1e-6 && Math.abs(spine.y - 30 - LAIN * width * c.k) < 1e-9, 'so the spine is above the floor by that much of the width, at the body\'s scale', `${(spine.y - 30).toFixed(3)} m`)
   const fwd = new THREE.Vector3(1, 0, 0).transformDirection(p.group.matrix)
   check(Math.abs(fwd.y) < 1e-9 && Math.abs(Math.atan2(-fwd.z, fwd.x) - 0.8) < 1e-9, 'and it lies along the matrix\'s heading', `${Math.atan2(-fwd.z, fwd.x).toFixed(3)} rad`)
@@ -1242,7 +1525,7 @@ wake(w)
   check(c.cardWant && c.cardP < 1 && cards() === 1 && sp.cardMesh.count === 1 && sp.cardMesh.instanceMatrix.version === uploads + 1 && Math.abs(sp.cardFade.array[0] - c.cardP) < 1e-6, 'and its card comes in on the same dissolve, appended to the species\' buffer with the count and the upload flags set, since update() has already run this frame', `fade ${sp.cardFade.array[0].toFixed(3)}`)
   const cm = new THREE.Matrix4()
   sp.cardMesh.getMatrixAt(cards() - 1, cm)
-  const cardGrip = new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(cm)
+  const cardGrip = new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(cm)
   const cardUp = new THREE.Vector3(0, 1, 0).transformDirection(cm)
   const cardScl = new THREE.Vector3().setFromMatrixScale(cm)
   check(cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(cardUp.y - 1) < 1e-9 && Math.abs(cardScl.x - c.k) < 1e-6, `the card stands upright at the body's size with the point ${GRIP} of its height up at the matrix, exactly where the mesh hung`, `grip ${cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
@@ -1250,7 +1533,7 @@ wake(w)
   check(c.puppet === null && sp.freePuppets.includes(p) && c.act === 'dead' && c.spawn === null, 'and once it has dissolved the puppet is back in the pool while the slot is still the dragon\'s')
   check(c.cardP === 1 && c.cardWant && cards() === 1 && sp.cardFade.array[0] === 1 && 1e4 > cullRange(c.lodSize, CARD_RUNGS), `while the card is settled and whole, ${(1e4 / cullRange(c.lodSize, CARD_RUNGS)).toFixed(0)} times the stag's own card reach out: a kill in sight under a dragon is never dropped from the picture`)
   sp.cardMesh.getMatrixAt(0, cm)
-  check(new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'still under the talons')
+  check(new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'still under the talons')
   carry(M, 1e4, dt, true)
   sp.cardMesh.getMatrixAt(0, cm)
   check(new THREE.Vector3().setFromMatrixPosition(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(new THREE.Vector3(0, 1, 0).transformDirection(cm).y - 1) < 1e-9, 'lain, the card stands upright on the matrix -- a spun quad has no flank to roll onto')
@@ -1280,16 +1563,16 @@ wake(w)
   {
     k.place(0, 0)
     const c3 = beside(k, 'stag')
-    k.seize(c3)
+    k.kill(c3.key, timeOf(k))
     for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) { sp.cardN = 0; k.carry(c3, M, 1e4, dt) }
     check(c3.cardWant && c3.cardP === 1 && !c3.puppet, 'a kill carried at card range is a settled card')
     k.drop(c3)
     check(k.fadingCards.length === 1 && k.fadingCards[0].sp === sp && k.fadingCards[0].p === 0 && !c3.cardWant && c3.cardP === 1, 'dropped there, its card is left dissolving where it hung, from the start of the ramp, and the slot\'s own card state is cleared')
-    check(new THREE.Vector3(0, GRIP * height, 0).applyMatrix4(k.fadingCards[0].mat).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'under the talons that let it go')
+    check(new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(k.fadingCards[0].mat).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'under the talons that let it go')
     let frames = 0
     let seen = 0
     while (k.fadingCards.length && frames < 100) {
-      k.update(1e5, 0, 1e5, dt)
+      step(k, 1e5, 0, 1e5, dt)
       frames++
       if (sp.cardN === 1 && sp.cardFade.array[0] < 0 && sp.cardMesh.count === 1) seen++
     }
@@ -1305,13 +1588,94 @@ wake(w)
   // Drop with no fade: the ground under it has gone, the puppet goes straight back.
   k.place(0, 0)
   const c2 = beside(k, 'stag')
-  k.seize(c2)
+  k.kill(c2.key, timeOf(k))
   k.carry(c2, M, 10, dt)
   const p2 = c2.puppet
   const fading2 = k.fading.length
   k.drop(c2, false)
   check(p2 !== null && c2.puppet === null && k.fading.length === fading2 && k.species[0].freePuppets.includes(p2) && k.species[0].free.includes(c2), 'drop(c, false) vanishes the body and returns the puppet at once')
   k.dispose()
+}
+
+// --- a dragon's strike is in the score --------------------------------------------
+//
+// The dragons ask the free plan where a stag will be and tell this layer, through
+// `hunter`, when they take it; the stag's own plan is the free plan cut there, the
+// body where the free plan had it the tick before, then `dead` to the chapter's
+// end. Every client derives the same cut, and one arriving after the strike never
+// wakes the stag at all.
+{
+  const walkReads = { n: 0 }
+  const spy = { ...walk, heightAt: (...a) => { walkReads.n++; return walk.heightAt(...a) }, normalAt: (...a) => { walkReads.n++; return walk.normalAt(...a) } }
+  const k = make(7, { walk: spy, water, height })
+  k.place(0, 0)
+  const s = scatter(k).find((o) => o.sp.key === 'stag')
+  const ch = chapterOf(1000, s.key, CHAPTER_S)
+  const T0 = ch.start + 10
+  const strike = T0 + 200
+  const asked = []
+  k.hunter = (key, a, b) => { asked.push([key, a, b]); return key === s.key && a <= strike && strike < b ? strike : null }
+  jump(k, T0)
+  walkReads.n = 0
+  const free = k.freeScore.at(s.key, T0)
+  check(walkReads.n === 0 && free.phrases.length > 1, 'a plan is made from the height field and the water alone: not one read of the walker\'s ground, which the room does not share', `${walkReads.n} walk reads`)
+  step(k, s.x, s.y + 1.6, s.z, 0)
+  const c = s.slot
+  check(c !== null && asked.length >= 1 && asked.every(([key, a, b]) => b - a === CHAPTER_S && (key !== s.key || a === ch.start)), 'waking a stag asks the hunter over the chapter it is planned for, start to start', `${asked.length} asked`)
+  const ps = k.score.at(s.key, T0).phrases
+  const last = ps[ps.length - 1]
+  const total = ps.reduce((t, ph) => t + ph.dur, 0)
+  check(last.kind === 'dead' && last.steps.length === 1 && last.steps[0][0] === 'dead' && Math.abs(last.dur - (ch.start + CHAPTER_S - strike)) < 1e-9 && Math.abs(total - CHAPTER_S) < 1e-9, 'the chapter is cut at the strike: a dead phrase from there to its end, the whole still a chapter long', `dead ${last.dur.toFixed(1)} s of ${total.toFixed(1)}`)
+  const cutAt = ps.slice(0, -1).reduce((t, ph) => t + ph.dur, 0)
+  const wasFree = k.freeScore.at(s.key, strike).phrase
+  const cutPh = ps[ps.length - 2]
+  check(Math.abs(ch.start + cutAt - strike) < 1e-9 && cutPh.kind === wasFree.kind && cutPh.dur < wasFree.dur && cutPh.steps.reduce((t, st) => t + st[1], 0) <= cutPh.dur + 1e-9, 'the phrase the strike falls in ends there, its steps trimmed to fit', `${cutPh.kind} ${cutPh.dur.toFixed(2)} of ${wasFree.dur.toFixed(2)} s`)
+  const before = k.poseAt(s.key, strike - TICK_S)
+  check(last.from === last.to && Math.abs(last.from.x - before.x) < 1e-9 && Math.abs(last.from.z - before.z) < 1e-9 && Math.abs(last.from.heading - before.heading) < 1e-9 && cutPh.to === last.from, 'and it dies where the free plan had it the tick before, standing still from there', `${Math.hypot(last.from.x - before.x, last.from.z - before.z).toExponential(1)} m off`)
+  check(ps.slice(0, -2).every((ph, i) => ph.kind === free.phrases[i].kind && ph.dur === free.phrases[i].dur && ph.to.x === free.phrases[i].to.x && ph.to.z === free.phrases[i].to.z), 'the phrases before it are the free plan\'s own')
+
+  // Two clients, one cut.
+  const k2 = make(7)
+  k2.place(0, 0)
+  k2.hunter = k.hunter
+  jump(k2, T0 + 37.3)
+  const ps2 = k2.score.at(s.key, T0 + 37.3).phrases
+  check(ps2.length === ps.length && ps2.every((ph, i) => ph.kind === ps[i].kind && ph.dur === ps[i].dur && ph.to.x === ps[i].to.x && ph.to.z === ps[i].to.z), 'a second client asked at another moment derives the same cut chapter')
+
+  // Walked into the strike, the woken stag is the dragon's: it sleeps until the chapter turns.
+  const free0 = k.species[0].free.length
+  jump(k, strike + 0.5)
+  step(k, s.x, s.y + 1.6, s.z, 0)
+  check(s.slot === null && k.species[0].free.length === free0 + 1 && k.species[0].free.includes(c) && s.deadUntil === ch.start + CHAPTER_S, 'stepped past the strike, the stag sleeps with its slot pooled, dead until its chapter turns', `${(s.deadUntil - strike).toFixed(1)} s`)
+  step(k, s.x, s.y + 1.6, s.z, 1)
+  check(s.slot === null, 'and a frame on it wakes nothing')
+  jump(k, ch.start + CHAPTER_S + 0.05)
+  step(k, s.x, s.y + 1.6, s.z, 0)
+  check(s.slot !== null && k.score.at(s.key, timeOf(k)).phrases[0].from === s.home && k.score.at(s.key, timeOf(k)).phrases.every((ph) => ph.kind !== 'dead'), 'its chapter turned, it wakes at home on a chapter with no strike in it')
+
+  // A joiner arriving after the strike.
+  const k3 = make(7)
+  k3.place(0, 0)
+  k3.hunter = k.hunter
+  const s3 = scatter(k3).find((o) => o.key === s.key)
+  jump(k3, strike + 90)
+  step(k3, s3.x, s3.y + 1.6, s3.z, 0)
+  check(s3.slot === null && s3.deadUntil === ch.start + CHAPTER_S && !k3.score.cache.has(s.key), 'a client joining after the strike never wakes the stag: its spawn is measured once, found dead, and its plan is not kept')
+  step(k3, s3.x, s3.y + 1.6, s3.z, 1)
+  check(s3.slot === null && alive(k3).length > 0, 'and it stays asleep while the others wake around her', `${alive(k3).length} awake`)
+  const t3 = timeOf(k3)
+  const cargo = k3.kill(s.key, t3)
+  check(cargo !== null && cargo.act === 'dead' && cargo.spawn === null && s3.deadUntil === ch.start + CHAPTER_S, 'killed there by the dragon that struck it, a carcass is dressed from the spawn and the spawn sleeps to the same turn')
+  k3.drop(cargo, false)
+
+  // A strike outside the chapter it is asked for is a bug in the dragons, said so.
+  const k4 = make(7)
+  k4.place(0, 0)
+  k4.hunter = () => ch.start - 1
+  let threw = ''
+  try { k4.score.at(s.key, T0) } catch (e) { threw = e.message }
+  check(threw.includes('outside its chapter'), 'a hunter naming a strike outside the chapter throws', threw)
+  k.dispose(); k2.dispose(); k3.dispose(); k4.dispose()
 }
 
 // --- the ear hears the herd ------------------------------------------------------
@@ -1325,25 +1689,23 @@ wake(w)
   k.place(0, 0)
   const c = beside(k, 'stag')
   const dt = 1 / 60
-  k._begin(c, 'roam')
-  c.left = 100
-  k.update(c.x, c.y + 1.6, c.z, dt)
+  walkOn(k, c, c.sh)
+  step(k, c.x, c.y + 1.6, c.z, dt)
   const listed = k.bodies([])
   check(c.speed > 0 && listed.includes(c) && listed.every((a) => a.spawn !== null && a.lod < CARD_RUNGS && a.sp.key), 'a roaming stag is listed among the live animals, each with its species and nothing frozen', `${listed.length} listed, ${listed.filter((a) => a.speed > 0).length} moving`)
   check(c.cycle === c.sp.durations[c.clip] && c.cycle > 0 && ['walk', 'trot', 'run'].includes(c.clip), 'and carries its gait clip and that clip\'s own length for the footfall clock', `${c.clip} ${c.cycle.toFixed(3)} s`)
-  k._begin(c, 'graze')
-  k.update(c.x, c.y + 1.6, c.z, dt)
+  still(k, c, 'graze', 'eat-loop')
+  step(k, c.x, c.y + 1.6, c.z, dt)
   check(c.speed === 0 && k.bodies([]).includes(c), 'a grazing one is listed standing, at speed 0')
   k.batch.visible = false
   check(k.bodies([]).length === 0, 'a hidden layer lists nobody')
   k.batch.visible = true
   const spawn = c.spawn
-  k._begin(c, 'roam')
-  c.left = 100
-  for (let f = 0; f < 240; f++) k.update(c.x + (spawn.card + spawn.forget) / 2, c.y + 1.6, c.z, dt)
+  walkOn(k, c, c.sh)
+  for (let f = 0; f < 240; f++) step(k, c.x + (spawn.card + spawn.forget) / 2, c.y + 1.6, c.z, dt)
   check(c.spawn === spawn && c.lod === CARD_RUNGS && c.speed > 0 && !k.bodies([]).includes(c), 'past the last rung a stag still on its walk clip is frozen, and not listed')
   k.dispose()
 }
 
-console.log(failures ? `\n${failures} failing` : '\nall wildlife checks pass')
+console.log(failures ? `\n${failures} failing` : `\nall wildlife checks pass`)
 process.exit(failures ? 1 : 0)

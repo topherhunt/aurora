@@ -208,7 +208,7 @@ export class V2Height {
     // the calibration above runs either way and against the bicubic ground --
     // the bilinear read is attached below, after everything measured here.
     this.detail = relief.jagged > 0
-      ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, fineTable: smooth.table })
+      ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, bump: relief.bump, fineTable: smooth.table })
       : smooth
     this.crag = needs.crag ? new Crag({ seed }) : null
     // Baked against `ground` for the same reason exposure is: the spines this

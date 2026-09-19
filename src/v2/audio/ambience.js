@@ -9,7 +9,7 @@
 // rule holds and is re-rolled when the rule first becomes true, so crossing a
 // snowline never lands a raptor on the exact step; every one-shot is pitched
 // 0.9x-1.1x and given its own volume so the same clip twice is not a machine
-// gun. LOOPS (brook, leaves, lake bed, wind, underwater) are held by _loop():
+// gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater) are held by _loop():
 // started when their rule turns on, stopped when it turns off, level and
 // bearing refreshed every update.
 //
@@ -65,6 +65,15 @@ export const SOUNDS = {
   foxYip: 'sounds/animal-fox-yip.mp3',
   deerGrunt: 'sounds/animal-deer-grunt.mp3',
   crawl: 'sounds/footstep-spider.mp3',
+  // The leafkin (render/leafkin.js): its one-shots by the names its voices() says, and the loop of it breathing.
+  leafkinChatter1: 'sounds/npc-leafkin-chatter-1.mp3',
+  leafkinChatter2: 'sounds/npc-leafkin-chatter-2.mp3',
+  leafkinChatter3: 'sounds/npc-leafkin-chatter-3.mp3',
+  leafkinChatter4: 'sounds/npc-leafkin-chatter-4.mp3',
+  leafkinSqueal: 'sounds/npc-leafkin-squeal-delight.mp3',
+  leafkinScream: 'sounds/npc-leafkin-scream.mp3',
+  leafkinWhimper: 'sounds/npc-leafkin-whimper.mp3',
+  panting: 'sounds/npc-leafkin-panting.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   rockslide1: 'sounds/rockslide1.mp3',
@@ -76,12 +85,14 @@ export const SOUNDS = {
   wave: 'sounds/water-lapping-wave-1.mp3',
   leaves: 'sounds/wind-leaves-rustling-1.mp3',
   wind: 'sounds/wind-blowing-1.mp3',
+  rain: 'sounds/weather-rain-1.mp3',
   wingbeat: 'sounds/dragon-wings-flapping.mp3',
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
-  // The menu's, played by main.js; the ambience never fires them.
+  // The menu's and the hand's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
+  uiPop: 'sounds/ui-pop.mp3',
 }
 
 const RAPTORS = ['crow', 'eagle', 'hawk']
@@ -100,7 +111,7 @@ export const RATE = [0.9, 1.1]
  */
 export const FOOTFALLS = {
   quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58], hop: [0, 0.4], bound: [0, 0.52] },
-  human: { walk: [0, 0.5], run: [0, 0.5] },
+  human: { walk: [0, 0.5], run: [0, 0.5], 'run-carry': [0, 0.5] },
   wyvern: { walk: [0, 0.5], run: [0, 0.5] },
 }
 
@@ -136,6 +147,10 @@ export const RULES = {
   deerGrunt: { reach: 25, near: 4, level: 0.25, every: [20, 60], gain: [0.7, 1.0] },
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
+  // A voiced layer's one-shots (a leafkin's chatter, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance.
+  voice: { reach: 40, near: 2, level: 0.6, gain: [0.8, 1.0] },
+  // One breathing loop at the nearest body of a voiced layer that reports `pant` within `reach`, its level near/distance.
+  panting: { reach: 12, near: 1, level: 0.3, gain: [0.7, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
@@ -152,14 +167,16 @@ export const RULES = {
   rockslideNear: { interval: [20, 60], gain: [0.1, 0.3], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
   rockslideFoot: { chance: 0.15, gain: [0.3, 0.7] },
-  // Lake: a wave every so often while her head is within `height` of the water -- on land within `reach` of the shore, or anywhere out over open water. Full volume up to `near` metres off the shore or above the surface, fading to `far` at the reach or the height.
-  wave: { interval: [2, 5], gain: [0.3, 0.8], reach: 10, near: 3, far: 0.25, height: 10 },
+  // Lake: a wave every so often from the shore while one is within `reach` of her, on land or wading, and her head within `height` of the water; open water with no shore in reach is silent, since waves lap on a shore. Full volume up to `near` metres off the shore or above the surface, fading to nothing at the reach or the height, and the shot is given its metres as the engine's far treatment, so a distant shore is dull and washed rather than quiet at her ear.
+  wave: { interval: [2, 5], gain: [0.3, 0.8], reach: 20, near: 3, height: 20 },
   lakeBed: { level: 0.5, gain: [0.6, 1.0] },
   brook: { reach: 10, near: 2, far: 0.2, level: 0.9, gain: [0.7, 1.0] },
   // Leaves: the wood's canopy, heard from the ground; it thins to nothing across the `aloft` band of metres her head is above the ground.
   leaves: { on: 0.5, off: 0.4, full: 0.8, level: 0.7, gain: [0.6, 1.0], aloft: [12, 20] },
-  // Wind: a quiet loop that rises across the `snow` band of metres about the snowline, or the `height` band of metres her head is above the ground, whichever is stronger.
-  wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0] },
+  // Wind: a quiet loop that rises across the `snow` band of metres about the snowline, or the `height` band of metres her head is above the ground, whichever is stronger; the weather's cover raises the floor of that by `cover` at full overcast (§10).
+  wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0], cover: 0.6 },
+  // Rain: a loop at `level` times the share of the fall that is rain, precip times how far she is under the snow line's `sleet` band (the precip draw's band, check-ambience pins them equal); snow is silent, so on a summit the loop is off (§10). The patter is the drops on the ground and the leaves, so it thins to nothing across the `aloft` band of metres her head is above the ground and is off above it.
+  rain: { on: 0.02, off: 0.01, level: 0.35, sleet: [-60, 60], aloft: [2, 20], gain: [0.7, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
   // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
   swoosh: { reach: 8, near: 1, size: 0.5, level: 0.5, max: 1, deep: 0.5, gain: [0.7, 1.0] },
@@ -178,8 +195,9 @@ export class Ambience {
    * @param fish      the fish layer, if any: startled(into) lists the fish that set off fast this frame, x, y, z and size (length in metres) on each.
    * @param grasshoppers  the grasshopper layer, if any: bodies(into) lists the ones it is showing, x, y, z on each.
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
+    for (const l of voiced) if (!l || typeof l.voices !== 'function' || typeof l.bodies !== 'function') throw new Error('Ambience: a voiced layer needs voices() and bodies()')
     if (!sense) throw new Error('Ambience: missing sense')
     if (dragons && typeof dragons.bodies !== 'function') throw new Error('Ambience: the dragon layer needs bodies()')
     if (fish && typeof fish.startled !== 'function') throw new Error('Ambience: the fish layer needs startled()')
@@ -200,6 +218,7 @@ export class Ambience {
     this.dragons = dragons
     this.fish = fish
     this.grasshoppers = grasshoppers
+    this.voiced = voiced
     // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
     this.bodies = new Map()
     // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, growling, growl, gait, step, beat, land, seen }. See _dragons.
@@ -225,12 +244,21 @@ export class Ambience {
       lakeBed: engine.loop('lakeBed', { directional: true, gain: RULES.lakeBed.gain }),
       leaves: engine.loop('leaves', { gain: RULES.leaves.gain }),
       wind: engine.loop('wind', { gain: RULES.wind.gain }),
+      rain: engine.loop('rain', { gain: RULES.rain.gain }),
       crawl: engine.loop('crawl', { directional: true, gain: RULES.crawl.gain }),
+      panting: engine.loop('panting', { directional: true, gain: RULES.panting.gain }),
     }
     this.leavesOn = false
     this.windOn = false
+    this.rainOn = false
     // How many times each clip has fired; window.v2ambience.fired at the console.
     this.fired = {}
+  }
+
+  /** The room is gone: every loop stopped and given back to the engine. The one-shots already playing run out on their own. */
+  dispose() {
+    for (const v of Object.values(this.loops)) this.engine.unloop(v)
+    this.loops = {}
   }
 
   between(lo, hi) {
@@ -320,7 +348,7 @@ export class Ambience {
    * @param speed     rig speed in m/s
    * @param afoot     she is walking, not flying or in a travel arc
    */
-  update(dt, { head, dayness, submerged, speed, afoot }) {
+  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0 }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
     this.frame++
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
@@ -337,7 +365,7 @@ export class Ambience {
       this.engine.setSubmerged(submerged)
     }
     this._loop('underwater', submerged, RULES.underwater.level)
-    this._loops(head, s)
+    this._loops(head, s, cover, precip)
     this._crawl(head)
     this._fish(head)
     // Nothing above the surface fires while she is under it; the loops already
@@ -356,6 +384,7 @@ export class Ambience {
     this._dragons(dt, head)
     this._frogs(dt, head, s)
     this._grasshoppers(dt, head)
+    this._voices(head)
     this._rocks(dt, head, s)
     this._lake(dt, head, s)
     this.engine.update()
@@ -631,6 +660,34 @@ export class Ambience {
     this._loop('crawl', at !== null, C.level * Math.min(1, sum), at)
   }
 
+  /** The voiced layers: every one-shot since the last frame from where it was said, within reach, and the panting loop at the nearest panting body. */
+  _voices(head) {
+    const V = RULES.voice, P = RULES.panting
+    let at = null
+    let nearest = Infinity
+    const listed = this.listed
+    for (const layer of this.voiced) {
+      listed.length = 0
+      layer.voices(listed)
+      for (const v of listed) {
+        if (!SOUNDS[v.sound]) throw new Error(`Ambience: a voiced layer said ${v.sound}, which is no sound`)
+        const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
+        if (d > V.reach) continue
+        this.fire(v.sound, { rate: this.rate(), gain: V.level * (V.near / Math.max(V.near, d)) * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z } })
+      }
+      listed.length = 0
+      layer.bodies(listed)
+      for (const c of listed) {
+        if (!c.pant) continue
+        const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
+        if (d > P.reach || d >= nearest) continue
+        nearest = d
+        at = c
+      }
+    }
+    this._loop('panting', at !== null, at === null ? 0 : P.level * (P.near / Math.max(P.near, nearest)), at)
+  }
+
   _startle(layer, C) {
     const listed = this.listed
     listed.length = 0
@@ -702,21 +759,20 @@ export class Ambience {
   }
 
   /**
-   * Whether the lake is heard, how faded, and from where: the shore when one is
-   * within reach, else the open water straight below her. `lakeLevel` is
-   * -Infinity with no lake about, which puts her infinitely above it and off.
+   * Whether the lake is heard, how faded, from where, and how far off that is:
+   * the nearest shore, when one is within reach. `lakeLevel` is -Infinity with
+   * no lake about, which puts her infinitely above it and off.
    */
   lakeEar(head, s) {
     const W = RULES.wave
     const above = head.y - s.lakeLevel
     const d = Math.abs(s.lakeShore)
-    const inReach = d < W.reach
-    if (!(above < W.height) || !(inReach || s.overLake)) return { on: false, fade: 0, at: null }
-    const t = Math.max(inReach ? smoothstep(W.near, W.reach, d) : 0, smoothstep(W.near, W.height, above))
+    if (!(above < W.height) || !(d < W.reach)) return { on: false, fade: 0, at: null, dist: 0 }
     return {
       on: true,
-      fade: 1 - t * (1 - W.far),
-      at: inReach ? this.shoreAt(head, s, s.lakeShore, s.lakeDirX, s.lakeDirZ) : { x: head.x, y: s.lakeLevel, z: head.z },
+      fade: 1 - Math.max(smoothstep(W.near, W.reach, d), smoothstep(W.near, W.height, above)),
+      at: this.shoreAt(head, s, s.lakeShore, s.lakeDirX, s.lakeDirZ),
+      dist: d,
     }
   }
 
@@ -724,11 +780,11 @@ export class Ambience {
     const W = RULES.wave
     const ear = this.lakeEar(head, s)
     if (this.due('wave', ear.on, W.interval, dt)) {
-      this.fire('wave', { rate: this.rate(), gain: this.between(...W.gain) * ear.fade, at: ear.at })
+      this.fire('wave', { rate: this.rate(), gain: this.between(...W.gain) * ear.fade, at: ear.at, distance: ear.dist })
     }
   }
 
-  _loops(head, s) {
+  _loops(head, s, cover, precip) {
     const L = RULES.lakeBed
     const ear = this.lakeEar(head, s)
     this._loop('lakeBed', ear.on, L.level * ear.fade, ear.at)
@@ -745,10 +801,15 @@ export class Ambience {
     this._loop('leaves', this.leavesOn, V.level * smoothstep(V.off, V.full, canopy))
 
     const D = RULES.wind
-    // Two ways up into the wind: over the snowline on foot, or aloft over anything.
-    const wind = Math.max(smoothstep(D.snow[0], D.snow[1], s.aboveSnow), smoothstep(D.height[0], D.height[1], head.y - s.groundH))
+    // Three ways up into the wind: over the snowline on foot, aloft over anything, or a sky closing in.
+    const wind = Math.max(smoothstep(D.snow[0], D.snow[1], s.aboveSnow), smoothstep(D.height[0], D.height[1], head.y - s.groundH), D.cover * cover)
     if (this.windOn ? wind < D.off : wind > D.on) this.windOn = !this.windOn
     this._loop('wind', this.windOn, D.level * wind)
+
+    const R = RULES.rain
+    const rain = precip * (1 - smoothstep(R.sleet[0], R.sleet[1], s.aboveSnow)) * (1 - smoothstep(R.aloft[0], R.aloft[1], head.y - s.groundH))
+    if (this.rainOn ? rain < R.off : rain > R.on) this.rainOn = !this.rainOn
+    this._loop('rain', this.rainOn, R.level * rain)
   }
 }
 

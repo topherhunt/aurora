@@ -12,32 +12,44 @@
 // fraction of the candidates, which is the point of rolling everything and
 // rejecting rather than sampling the band -- the band has no closed form.
 //
-// A frog sits, then moves in a bout: usually a WALK, a string of short hops
-// along one heading with a beat between them, now and then a LEAP or three in
-// any direction. A hop may land in the water, where the frog floats sunk SINK
-// of its height into the surface (WaterSurfaces.levelAt, bobbing on BOB_S)
-// and DRIFTs without stopping, its heading and pace each wandering as a random
-// walk so the track winds; it probes a body length ahead (DRIFT_PROBE_EVERY),
-// and dry ground there is the bank, hopped onto, where the land bouts resume. It is
-// tethered to where it was placed, never landing past TETHER_M from home
-// (aimed home once it is out that far, on the water as on the land), and every
-// hop target passes the tests its placement did but for dryness, so a frog
-// never hops up a rock, into the cold or off the band, which runs SHORE_M to
-// either side of the waterline. A frog sits on the DRAWN ground, and is put
-// back on it whenever the terrain's render set changes under it (_reseat), so
-// a chunk re-splitting at distance never buries it; a frog whose seat turns
-// out to be inside a boulder that landed after it leaves. The mesh faces +X; a
-// hop turns it to face where it is going, and it sits with its up along the
-// field's normal there (the world's up on the water), turning from the one
-// slope to the other in the air.
+// AND SO IS EVERYTHING A FROG DOES (_notes/creature-sync.md). A frog's life
+// runs on the room's clock, cut into segments of GRID_S seconds on its own
+// grid (sim/score.js), and every segment runs from one POST to the next: a
+// seat within TETHER_M of home rolled from the frog's key and the segment's
+// index, so any client, meeting the bed at any moment, plans the same segment
+// and draws the frog in the same place. Between two posts the frog sits, then
+// moves in a bout laid at plan time: usually a WALK, a string of short hops
+// along the line between the posts with a beat between them, else a LEAP or
+// a few, each landing swung off the line and every landing passing the tests
+// its placement did but for dryness -- so a frog never hops up a rock, into
+// the cold or off the band, which runs SHORE_M to either side of the
+// waterline. A landing in the water floats there, sunk SINK of its height
+// into the surface (WaterSurfaces.levelAt, bobbing on BOB_S) for a longer
+// beat, and hops on; a post may be in the water too, within WADE_M of the
+// bank, and the frog floats out its sits there. A bout no jitter can lay past a stone sits the segment
+// out. A hop is a parabola between its two landings, so a frog's pose at any
+// second is arithmetic on the plan: nothing is integrated, nothing depends on
+// the frame, and a frog out of view costs one plan a segment. A frog sits on
+// the DRAWN ground, and is put back on it whenever the terrain's render set
+// changes under it (_reseat), so a chunk re-splitting at distance never
+// buries it; a frog whose home turns out to be inside a boulder that landed
+// after it leaves. The mesh faces +X; a hop turns it to face where it is
+// going, and it sits with its up along the field's normal there (the world's
+// up on the water), turning from the one slope to the other in the air.
 //
-// A LURE HAS IT. A spider, a butterfly or a grasshopper in her hand (hands.js
-// lures) within LURE_M of a frog takes it off its tether: it CHASEs, one hop at a time, each
-// aimed at her and swung by up to CHASE.turn either way so the track is a
-// scribble, and within ORBIT_M of her feet aimed across her instead, so it
-// dances about them; afloat, it hops for her off the water. It forgets the
-// lure once the hand is empty or the lure is LURE_FORGET_M off, and sits;
-// left outside its tether, its bouts take it home, no hop going further out.
+// A LURE HAS IT. A spider, a butterfly or a grasshopper in a hand (hands.js
+// lures, hers and the peers') within LURE_M of a frog takes it off its plan:
+// it CHASEs, one hop at a time, each aimed at the lure and swung by up to
+// CHASE.turn either way so the track is a scribble, and within ORBIT_M of it
+// aimed across instead, so it dances about her feet; afloat, it hops for the
+// lure off the water. It forgets the lure once the hand is empty or the lure
+// is LURE_FORGET_M off, and REJOINS: a bout laid from where it is to the post
+// of the next segment turn at least REJOIN_MIN_S off, and the plan has it
+// again from that turn. The chase runs on every client off the relayed hand,
+// so a peer's frog chases here too; the one thing sent is the bed's LURED
+// SET (creature-net.js), which frogs of a bed her hand has, so a client
+// hearing it keeps a frog the lure is between LURE_M and LURE_FORGET_M from,
+// as she does.
 //
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
 // (critters.js critterTier, the rungs a ratio of its own body length), one
@@ -47,8 +59,9 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
+import { GRID_S, hash32, keyHash, phraseRand } from '../../sim/score.js'
 import {
-  CRITTER_GLB, LOD_RUNGS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tileSeed, walkTiles,
+  CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
@@ -78,40 +91,45 @@ export const MORPHS = [
   { name: 'brown', w: 3, hue: [-1.1, -0.75], r: [0.75, 0.95], g: [0.6, 0.78], b: [0.4, 0.55] },
 ]
 const MORPH_W = MORPHS.reduce((sum, m) => sum + m.w, 0)
-// Sit SIT_S, then a bout: WALK_P of the time a walk, otherwise a leap. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between, and each hop turns from the bout's heading by up to `turn` radians either way: a walk holds its line, a leap's full turn is a fresh direction every hop. Every hop rises HOP_RISE of its distance.
-const SIT_S = [2, 8]
+// A segment: sit SIT_S at its first post, then the bout to its next, then sit out the rest. A bout is `hops` hops of `m` body lengths, each `dur` seconds long with a `pause` sit between, WALK_P of the time a walk when the posts are within HOPS_MAX walking hops of each other, else a leap; each landing but the last is swung off the line between the posts by the sine of up to `turn` radians of the hop's reach, so a walk holds its line and a leap scribbles. Every hop rises HOP_RISE of its distance. A bout longer than a segment is hurried to fit; one no jitter can lay is not made, and the frog sits the segment out (LAY_TRIES jitters, HOPS_MAX hops).
+export const SIT_S = [1, 5]
 const WALK_P = 0.7
-export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1], turn: 0.6 }
-export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5], turn: Math.PI * 2 }
+export const WALK = { hops: [3, 8], m: [0.6, 1.2], dur: [0.18, 0.28], pause: [0.3, 1], turn: 0.3 }
+export const LEAP = { hops: [1, 3], m: [3, 6], dur: [0.3, 0.45], pause: [0.15, 0.5], turn: Math.PI / 4 }
 const HOP_RISE = 0.45
+const LAY_TRIES = 3
+export const HOPS_MAX = 12
+// A post is rolled within TETHER_M of home, as often near it as far, POST_TRIES seats tried before it is home itself; one in the water within WADE_M of the bank will do, and the frog floats there.
 export const TETHER_M = 4
-// The lure: what in her hand a frog wants, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of her feet a hop goes across her rather than at her, and how soon a sitting frog reacts.
+const POST_TRIES = 4
+export const WADE_M = 1.5
+// A landing in the water floats there this long before the next hop.
+export const WET_PAUSE_S = [1.5, 4]
+// The lure: what in a hand a frog wants, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of the lure a hop goes across it rather than at it, how soon a sitting frog reacts, and the least a rejoin is given to reach its post.
 export const LURES = ['spider', 'butterfly', 'grasshopper']
 export const LURE_M = 3
 export const LURE_FORGET_M = 8
 export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1, 0.45], turn: 1.6 }
 export const ORBIT_M = 0.7
-const NOTICE_S = 0.3
+export const NOTICE_S = 0.3
+export const REJOIN_MIN_S = 2
 const NO_LURES = []
+// A bed's lured set goes to the room when the frogs her hand has change, at most once in LURED_EVERY_S.
+export const LURED_EVERY_S = 1
 // Afloat, a frog sits SINK of its height under the surface and rides it up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
 export const SINK = 0.5
 export const BOB_S = 0.5
 export const BOB_AMP = 0.04
-// And drifts without stopping, at DRIFT_MPS metres per second for a frog of the middle size (a bigger one proportionally faster), the pace and the heading's turn each wandering as a random walk: the pace jogged by DRIFT_SURGE m/s per second, the turn rate by DRIFT_JOG rad/s per second and held within DRIFT_TURN rad/s. The bank is CLIMB_M body lengths ahead when the probe there is dry.
-export const DRIFT_MPS = [0.04, 0.2]
-const DRIFT_SURGE = 0.15
-export const DRIFT_TURN = 1.2
-const DRIFT_JOG = 2.5
-const CLIMB_M = 1
-const SIZE_MID = (SIZE_M[0] + SIZE_M[1]) / 2
-// A drifting frog reads the water a body length ahead on one frame in DRIFT_PROBE_EVERY -- five ground and water queries a read, over a track of a few centimetres a second -- and rides on between reads.
-export const DRIFT_PROBE_EVERY = 8
-// A frog past the ladder's foot is stepped on one frame in FAR_EVERY, on the time banked since: nothing of it is drawn, and its sits, hops and drift need only add up. Its distance is still read every frame, so it steps and is drawn the frame it comes inside.
-export const FAR_EVERY = 8
 // The tiles are re-walked once her head has moved this far from where they were last walked: RADIUS is generous by more than this, and a walk is a Map of a hundred tiles read and as many looked up.
 const WALK_M = 4
 
+/** The room's key for a bed of frogs, its tile; a frog's is the bed's and its candidate index (creature-net.js routes the `fg` prefix here). */
+export const bedKey = (tx, tz) => `fg:${tx},${tz}`
+export const keyOf = (tx, tz, i) => `${bedKey(tx, tz)}:${i}`
+
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+/** The heading from `a` to `b`: a hop along it is x += cos, z -= sin. */
+const bearing = (a, b) => Math.atan2(-(b.z - a.z), b.x - a.x)
 const UP = new THREE.Vector3(0, 1, 0)
 const _quat = new THREE.Quaternion()
 const _tilt = new THREE.Quaternion()
@@ -145,12 +163,12 @@ export class Frogs {
     this.ground = ground
     this.gver = ground ? ground.groundVersion : 0
     this.seed = seed
-    this.rand = mulberry32(seed ^ 0x5f0a)
 
     // Wet skin glints: critters.js's glint. One material for every tier; the tiers share the pick's colour map.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
     this.material.onBeforeCompile = (shader) => { glint(shader); hueVary(shader) }
     this.material.customProgramCacheKey = () => 'frogs'
+    this.tinted = false
     this.tiers = Array.from({ length: LOD_TIERS }, (_, k) => {
       const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
       mesh.name = k ? `v2-frogs-lod${k}` : 'v2-frogs'
@@ -174,24 +192,22 @@ export class Frogs {
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
-        id: i, tile: null,
+        id: i, tile: null, key: '', index: 0, offset: 0,
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_TIERS,
-        // The ground normal the frog sits along, and the normals at a hop's two ends.
-        nx: 0, ny: 1, nz: 0, n0x: 0, n0y: 1, n0z: 0, n1x: 0, n1y: 1, n1z: 0,
-        // 'sit' counts `left` down then hops; 'hop' flies from (x0, y0, z0) to (x1, y1, z1) over `dur` seconds, `t` elapsed, `wet0` and `wet1` saying which ends are on the water; 'drift' floats along `heading` at `speed` m/s, turning at `spin` rad/s. `bout` is WALK or LEAP with `hops` of it to go, `heading` the bout's line.
-        state: 'sit', left: 0, bout: LEAP, hops: 0, heading: 0, t: 0, dur: 0, x0: 0, y0: 0, z0: 0, x1: 0, y1: 0, z1: 0, rise: 0,
-        wet0: false, wet1: false, speed: 0, spin: 0,
-        // The lure it is chasing (hands.js lures: kind, x, y, z), if any.
-        lured: false, lure: null,
-        // Seconds banked while a far frog waits for its frame (FAR_EVERY), and the seconds the last update stepped it by, 0 on a frame that held it.
-        held: 0, stepped: 0,
+        // The ground normal the frog sits along.
+        nx: 0, ny: 1, nz: 0,
+        // The phrase playing -- a 'sit' at a spot or a 'hop' between two -- `t` seconds into it, `wet` when the frog is afloat; `u` the hop's fraction flown.
+        state: 'sit', ph: null, t: 0, u: 0, wet: false,
+        // The planned segment (see _segment), and off the plan -- chasing a lure, or rejoining it -- the live phrase and when it began, its queue of laid phrases (a rejoin) and the turn the plan is back at.
+        seg: null, live: null,
+        // Its own noise for the chase, and the lure it is chasing (hands.js lures: kind, x, y, z, by), if any.
+        rand: null, lured: false, lure: null,
       })
     }
     this.free = this.slots.slice()
     this.tiles = new Map()
     this.head = { x: 0, z: 0 }
-    this.time = 0
-    this.frame = 0
+    this.now = 0
     // Where the tiles were last walked from.
     this.walkedX = Infinity
     this.walkedZ = Infinity
@@ -202,6 +218,10 @@ export class Frogs {
     this.loaded = false
     // Candidates the shore band would have kept that found no free slot.
     this.overflow = 0
+    // Lured sets owed to the room (pendingLured), and the peers' by bed key (applyLured): { by, has }.
+    this.owed = []
+    this.luredIn = new Map()
+    this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
 
     if (assets) {
       this.setAsset(assets)
@@ -243,21 +263,19 @@ export class Frogs {
   }
 
   /**
-   * Every frog put back on the drawn ground, which just changed shape: a chunk
-   * re-splitting swaps the leaf's half-metre cells for metre ones 19 m out (11 m
-   * in the periphery), and where the new chord rises through a seat it buries
-   * the frog until its next hop. A hop in the air has both its ends re-read, so
-   * it lands on the new surface too. A frog afloat rides the water, not the ground.
+   * Every landing put back on the drawn ground, which just changed shape: a
+   * chunk re-splitting swaps the leaf's half-metre cells for metre ones 19 m
+   * out (11 m in the periphery), and where the new chord rises through a seat
+   * it buries the frog until its next hop. A frog afloat rides the water, not
+   * the ground.
    */
   _reseat() {
+    const spot = (s) => { if (s && !s.wet) s.y = this._groundFor(s.x, s.z, s.h) }
+    const phrase = (ph) => { if (ph.kind === 'sit') spot(ph.at); else { spot(ph.from); spot(ph.to) } }
     for (const t of this.tiles.values()) {
       for (const f of t.frogs) {
-        if (f.state === 'sit') {
-          f.y = this._groundFor(f.x, f.z, this.height.heightAt(f.x, f.z))
-        } else if (f.state === 'hop') {
-          if (!f.wet0) f.y0 = this._groundFor(f.x0, f.z0, this.height.heightAt(f.x0, f.z0))
-          if (!f.wet1) f.y1 = this._groundFor(f.x1, f.z1, this.height.heightAt(f.x1, f.z1))
-        }
+        if (f.seg) for (const ph of f.seg.phrases) phrase(ph)
+        if (f.live) { phrase(f.live.ph); if (f.live.queue) for (const ph of f.live.queue) phrase(ph) }
       }
     }
   }
@@ -266,8 +284,8 @@ export class Frogs {
    * Whether a frog may sit at (x, z): warm, clear of stone, and either on the
    * water or on gentle dry ground, within SHORE_M of the waterline either way.
    * Returns the field's sample there -- height `h` and the gradient `gx`, `gz`
-   * the frog sits across -- with `wet` and, on the water, the surface `level`;
-   * or null.
+   * the frog sits across -- with `wet`, on the water the surface `level`, and
+   * `shore`, how far from the waterline it is, negative on the water; or null.
    */
   seat(x, z) {
     const s = this.height.heightAndSlopeAt(x, z)
@@ -280,20 +298,24 @@ export class Frogs {
     if (!s.wet && tan > MAX_TAN) return null
     const shore = this.water.shoreDistAt(x, z, SHORE_M, h, tan)
     if (!(shore < SHORE_M && shore > -SHORE_M)) return null
+    s.shore = shore
     return s
   }
 
-  /** The unit normal of a seat's ground, into the frog's n1 (the slope it lands on); the world's up on the water. */
-  static _normal(f, { gx, gz, wet }) {
-    const len = wet ? 1 : Math.hypot(gx, 1, gz)
-    f.n1x = wet ? 0 : -gx / len
-    f.n1y = 1 / len
-    f.n1z = wet ? 0 : -gz / len
+  /** A spot frog `f` can sit at: the seat `s` at (x, z) as a landing, on the drawn ground or sunk into the water, with the normal it sits along (the world's up on the water) and the way it faces. */
+  _spot(f, x, z, s, yaw = 0) {
+    const len = s.wet ? 1 : Math.hypot(s.gx, 1, s.gz)
+    return {
+      x, z, h: s.h, wet: s.wet, level: s.level,
+      y: s.wet ? s.level - f.size * this.sink : this._groundFor(x, z, s.h),
+      nx: s.wet ? 0 : -s.gx / len, ny: 1 / len, nz: s.wet ? 0 : -s.gz / len,
+      yaw,
+    }
   }
 
   _enter(tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
-    const t = { tx, tz, frogs: [] }
+    const t = { tx, tz, key: bedKey(tx, tz), frogs: [], luredSent: '', luredAt: -Infinity }
     const want = DENSITY * TILE * TILE
     const n = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
     for (let i = 0; i < n; i++) {
@@ -306,28 +328,33 @@ export class Frogs {
       const g = between(rand, morph.g)
       const b = between(rand, morph.b)
       const hue = between(rand, morph.hue)
-      const yaw = rand() * Math.PI * 2
+      const breath = rand() * Math.PI * 2
       // Placed on dry ground only; the water is reached by hopping in.
       const s = this.seat(x, z)
       if (s === null || s.wet) continue
       const f = this.free.pop()
       if (!f) { this.overflow++; continue }
       f.tile = t
+      f.key = keyOf(tx, tz, i)
+      f.index = i
+      f.offset = keyHash(f.key) % GRID_S
       f.x = f.homeX = x
       f.z = f.homeZ = z
-      f.y = this._groundFor(x, z, s.h)
-      Frogs._normal(f, s)
-      f.nx = f.n1x; f.ny = f.n1y; f.nz = f.n1z
       f.size = size
+      f.y = this._groundFor(x, z, s.h)
+      const home = this._spot(f, x, z, s)
+      f.nx = home.nx; f.ny = home.ny; f.nz = home.nz
       f.r = r; f.g = g; f.b = b
       f.hue = hue
-      f.yaw = yaw
-      f.breath = this.rand() * Math.PI * 2
+      f.yaw = 0
+      f.breath = breath
       f.lod = LOD_TIERS
       f.state = 'sit'
-      f.left = between(this.rand, SIT_S)
-      f.hops = 0
-      f.held = 0
+      f.ph = null
+      f.wet = false
+      f.seg = null
+      f.live = null
+      f.rand = mulberry32(hash32(keyHash(f.key), 0x1e))
       f.lured = false
       f.lure = null
       t.frogs.push(f)
@@ -336,6 +363,9 @@ export class Frogs {
   }
 
   _leave(t) {
+    // A bed her hand had frogs of: the room hears they are let go.
+    if (t.luredSent !== '') this.owed.push([t.key, 'fg', null, []])
+    this.luredIn.delete(t.key)
     for (const f of t.frogs) {
       f.tile = null
       this.free.push(f)
@@ -362,40 +392,157 @@ export class Frogs {
     this.walkedZ = cz
   }
 
-  get stats() {
-    return { alive: MAX - this.free.length, tiles: this.tiles.size, overflow: this.overflow }
+  // --- the plan ---------------------------------------------------------------
+
+  /**
+   * Where frog `f` sits at the turn of its segment `g`: a seat within TETHER_M
+   * of home rolled from its key and `g`, its distance uniform so the posts
+   * crowd home, dry or afloat within WADE_M of the bank, home itself when
+   * POST_TRIES find none; null once home is stone. A pure function, so every
+   * client has it.
+   */
+  _post(f, g) {
+    const rand = phraseRand(f.key, g, 0)
+    for (let k = 0; k < POST_TRIES; k++) {
+      const a = rand() * Math.PI * 2
+      const r = rand() * TETHER_M
+      const x = f.homeX + Math.cos(a) * r
+      const z = f.homeZ - Math.sin(a) * r
+      const s = this.seat(x, z)
+      if (s !== null && (!s.wet || s.shore > -WADE_M)) return this._spot(f, x, z, s)
+    }
+    const s = this.seat(f.homeX, f.homeZ)
+    return s === null || s.wet ? null : this._spot(f, f.homeX, f.homeZ, s)
   }
 
-  /** Turn the heading for home, within a quarter turn of it. */
-  _aimHome(f) {
-    f.heading = Math.atan2(-(f.homeZ - f.z), f.homeX - f.x) + (this.rand() - 0.5) * (Math.PI / 2)
+  /** `spot` turned to face the way in from `prev`, and returned. */
+  static _facing(prev, spot) {
+    if (spot !== null && prev !== null) spot.yaw = Math.hypot(spot.x - prev.x, spot.z - prev.z) < 1e-9 ? prev.yaw : bearing(prev, spot)
+    return spot
   }
 
-  /** Swing the heading a quarter to three-quarters of a turn, either way. */
-  _turnAway(f) {
-    f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + this.rand() * Math.PI / 2)
+  /**
+   * The hops of a bout from spot `a` to spot `b` for frog `f`, with the beat
+   * after each but the last, as `[hop, sit, hop, sit, ..., hop]` phrases; the
+   * bout hurried to fit `budget` seconds. Null when no jitter lays every
+   * landing on a seat, or nothing when the spots are one. `rand` is the
+   * plan's or the frog's own.
+   */
+  _lay(f, rand, a, b, budget) {
+    const D = Math.hypot(b.x - a.x, b.z - a.z)
+    if (D < 1e-9) return []
+    const bout = D <= WALK.m[1] * HOPS_MAX * f.size && rand() < WALK_P ? WALK : LEAP
+    const n = Math.min(HOPS_MAX, Math.max(bout.hops[0], Math.ceil(D / (between(rand, bout.m) * f.size))))
+    const reach = D / n
+    const ax = (b.x - a.x) / D, az = (b.z - a.z) / D
+    for (let attempt = 0; attempt < LAY_TRIES; attempt++) {
+      const out = []
+      let prev = a
+      let laid = true
+      for (let k = 1; k <= n; k++) {
+        let spot = b
+        if (k < n) {
+          const side = Math.sin((rand() * 2 - 1) * bout.turn) * reach
+          const x = a.x + ax * reach * k - az * side
+          const z = a.z + az * reach * k + ax * side
+          const s = this.seat(x, z)
+          if (s === null) { laid = false; break }
+          spot = this._spot(f, x, z, s)
+          spot.yaw = bearing(prev, spot)
+        }
+        out.push({ kind: 'hop', dur: between(rand, bout.dur), from: prev, to: spot, rise: Math.hypot(spot.x - prev.x, spot.z - prev.z) * HOP_RISE, bout })
+        if (k < n) out.push({ kind: 'sit', dur: between(rand, spot.wet ? WET_PAUSE_S : bout.pause), at: spot })
+        prev = spot
+      }
+      if (!laid) continue
+      const total = out.reduce((sum, ph) => sum + ph.dur, 0)
+      if (total > budget) for (const ph of out) ph.dur *= budget / total
+      return out
+    }
+    return null
   }
 
-  /** Launch `f` from where it is toward the seat `s1` at (x1, z1), on the bearing `a`, over `dur` seconds. */
-  _launch(f, a, x1, z1, s1, dur) {
-    f.x0 = f.x; f.z0 = f.z; f.y0 = f.y; f.wet0 = f.state === 'drift'
-    f.x1 = x1; f.z1 = z1; f.wet1 = s1.wet
-    f.y1 = s1.wet ? s1.level - f.size * this.sink : this._groundFor(x1, z1, s1.h)
-    f.n0x = f.nx; f.n0y = f.ny; f.n0z = f.nz
-    Frogs._normal(f, s1)
-    f.yaw = a
-    f.rise = Math.hypot(x1 - f.x, z1 - f.z) * HOP_RISE
-    f.dur = dur
-    f.t = 0
+  /** The phrases' start offsets, and the list returned. */
+  static _starts(phrases) {
+    let t = 0
+    for (const ph of phrases) { ph.start = t; t += ph.dur }
+    return phrases
+  }
+
+  /**
+   * Segment `g` of frog `f`: from its post at the turn to its post at the
+   * next, `{ g, start, a, b, phrases }`, the phrases a sit of SIT_S at `a`,
+   * the bout laid between (_lay) and the sit that fills the segment at `b`,
+   * each stamped with its start offset; a bout that cannot be laid is a sit
+   * of the whole segment at `a`, and the turn puts the frog at `b`. Null once
+   * home is stone. Rolled from the key and `g` alone, so the same on every
+   * client.
+   */
+  _segment(f, g) {
+    const a = f.seg !== null && f.seg.g === g - 1 ? f.seg.b : Frogs._facing(this._post(f, g - 1), this._post(f, g))
+    const b = Frogs._facing(a, this._post(f, g + 1))
+    if (a === null || b === null) return null
+    const rand = phraseRand(f.key, g, 1)
+    const hops = this._lay(f, rand, a, b, GRID_S - SIT_S[0])
+    let phrases
+    if (hops === null) {
+      phrases = [{ kind: 'sit', dur: GRID_S, at: a }]
+    } else {
+      const bout = hops.reduce((sum, ph) => sum + ph.dur, 0)
+      const sit = Math.min(between(rand, SIT_S), GRID_S - bout)
+      phrases = [{ kind: 'sit', dur: sit, at: a }, ...hops, { kind: 'sit', dur: GRID_S - sit - bout, at: b }]
+    }
+    this.stats.segments++
+    return { g, start: g * GRID_S + f.offset, a, b, phrases: Frogs._starts(phrases) }
+  }
+
+  /** The phrase of `phrases` playing `e` seconds in, the last one past the end. */
+  static _phraseAt(phrases, e) {
+    let i = phrases.length - 1
+    while (i > 0 && phrases[i].start > e) i--
+    return phrases[i]
+  }
+
+  /** Frog `f` posed `e` seconds into phrase `ph`: sitting at its spot, or on the parabola between a hop's two, turning from the one slope and heading to the other in the air. */
+  _pose(f, ph, e) {
+    f.ph = ph
+    f.t = e
+    if (ph.kind === 'sit') {
+      const s = ph.at
+      f.state = 'sit'
+      f.x = s.x; f.y = s.y; f.z = s.z
+      f.yaw = s.yaw
+      f.nx = s.nx; f.ny = s.ny; f.nz = s.nz
+      f.wet = s.wet
+      f.u = 0
+      return
+    }
+    const { from, to } = ph
+    const u = Math.min(1, e / ph.dur)
     f.state = 'hop'
+    f.u = u
+    f.wet = false
+    f.x = from.x + (to.x - from.x) * u
+    f.z = from.z + (to.z - from.z) * u
+    f.y = from.y + (to.y - from.y) * u + 4 * ph.rise * u * (1 - u)
+    // Turning from the slope it left to the one it lands on, ready before touchdown; and from the hop's bearing to the way it lands facing.
+    const v = Math.min(1, u * 1.5)
+    _nrm.set(from.nx + (to.nx - from.nx) * v, from.ny + (to.ny - from.ny) * v, from.nz + (to.nz - from.nz) * v).normalize()
+    f.nx = _nrm.x; f.ny = _nrm.y; f.nz = _nrm.z
+    const head = Math.hypot(to.x - from.x, to.z - from.z) < 1e-9 ? to.yaw : bearing(from, to)
+    f.yaw = head + Math.atan2(Math.sin(to.yaw - head), Math.cos(to.yaw - head)) * v
   }
+
+  // --- the lure ---------------------------------------------------------------
 
   /**
    * The lure this frog is on this frame: the nearest of `lures` (hands.js
    * lures) it wants, noticed within LURE_M across the ground and kept to
-   * LURE_FORGET_M. Noticing one cuts a sit short; losing one ends the chase.
+   * LURE_FORGET_M -- or, for a peer's lure whose bed's lured set names this
+   * frog, kept from LURE_M on. Noticing one takes the frog off its plan;
+   * losing one starts its rejoin.
    */
-  _notice(f, lures) {
+  _notice(f, lures, now) {
     let lure = null
     let best = Infinity
     for (const l of lures) {
@@ -403,103 +550,128 @@ export class Frogs {
       const d = Math.hypot(l.x - f.x, l.z - f.z)
       if (d < best) { best = d; lure = l }
     }
-    if (lure !== null && best <= (f.lured ? LURE_FORGET_M : LURE_M)) {
-      f.lure = lure
-      if (!f.lured) {
-        f.lured = true
-        f.hops = 0
-        if (f.state === 'sit') f.left = Math.min(f.left, NOTICE_S)
+    if (lure !== null) {
+      const set = lure.by !== null ? this.luredIn.get(f.tile.key) : undefined
+      const kept = f.lured || (set !== undefined && set.by === lure.by && set.has.has(f.index))
+      if (best <= (kept ? LURE_FORGET_M : LURE_M)) {
+        f.lure = lure
+        if (!f.lured) { f.lured = true; this._startChase(f, now) }
+        return
       }
-      return
     }
     if (!f.lured) return
     f.lured = false
     f.lure = null
-    f.hops = 0
+    this._startRejoin(f, now)
   }
 
-  /** The chase's next hop lined up: the bout is CHASE and the heading is at the lure, or across it -- a quarter turn off, either way -- within ORBIT_M of it. */
-  _chase(f) {
+  /** Off the plan: the phrase playing goes on as the first live one, a sit cut to NOTICE_S at most, and the chase follows it. */
+  _startChase(f, now) {
+    if (f.live !== null) { f.live.queue = null; f.live.until = Infinity; return }
+    const ph = f.ph
+    const at = now - f.t
+    const live = ph.kind === 'sit' ? { kind: 'sit', dur: Math.min(ph.dur, f.t + NOTICE_S), at: ph.at } : ph
+    f.live = { ph: live, at, queue: null, until: Infinity }
+  }
+
+  /** The chase's next phrase after `prev`: after a hop the beat, after a sit a hop at the lure -- or across it, a quarter turn off either way, within ORBIT_M of it -- swung by up to CHASE.turn and landing on a seat, dry or wet; none of three found, the beat again. */
+  _chaseNext(f, prev) {
+    const spot = prev.kind === 'sit' ? prev.at : prev.to
+    if (prev.kind === 'hop') return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
     const l = f.lure
-    f.bout = CHASE
-    f.hops = 1
-    f.heading = Math.atan2(-(l.z - f.z), l.x - f.x)
-    if (Math.hypot(l.x - f.x, l.z - f.z) < ORBIT_M) f.heading += (this.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
-  }
-
-  /** Pick the next hop of a sitting frog's bout, or return false to keep sitting. A chasing frog is off its tether; one a chase left outside it may hop no further out, and heads home. */
-  _hop(f) {
-    const stray = Math.hypot(f.homeX - f.x, f.homeZ - f.z)
-    if (!f.lured && stray > TETHER_M) this._aimHome(f)
-    const leash = Math.max(TETHER_M, stray)
-    const reach = between(this.rand, f.bout.m) * f.size
+    let heading = bearing(spot, l)
+    if (Math.hypot(l.x - spot.x, l.z - spot.z) < ORBIT_M) heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
+    const reach = between(f.rand, CHASE.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
-      const a = f.heading + (this.rand() - 0.5) * f.bout.turn
-      const x1 = f.x + Math.cos(a) * reach
-      const z1 = f.z - Math.sin(a) * reach
-      const s1 = this.seat(x1, z1)
-      if (s1 === null || (!f.lured && Math.hypot(x1 - f.homeX, z1 - f.homeZ) > leash)) {
-        // The bout's line is blocked: try another way.
-        this._turnAway(f)
+      const a = heading + (f.rand() - 0.5) * CHASE.turn
+      const x = spot.x + Math.cos(a) * reach
+      const z = spot.z - Math.sin(a) * reach
+      const s = this.seat(x, z)
+      if (s === null) {
+        // Blocked that way: swing a quarter to three-quarters of a turn and try again.
+        heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + f.rand() * Math.PI / 2)
         continue
       }
-      this._launch(f, a, x1, z1, s1, between(this.rand, f.bout.dur))
-      return true
+      const to = this._spot(f, x, z, s, a)
+      return { kind: 'hop', dur: between(f.rand, CHASE.dur), from: spot, to, rise: reach * HOP_RISE, bout: CHASE }
     }
-    return false
+    return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
   }
 
   /**
-   * One frame of a floating frog. The heading's turn and the pace each wander
-   * as a random walk so the track winds; on a probe frame the water a body
-   * length ahead is read, and is dry ground (the bank, hopped onto with a
-   * walk's timing), blocked or past the tether (turned away from, and the frog
-   * holds this frame), or water (drifted into, at its level). Between probes it
-   * drifts on at the level it has.
+   * The lure lost: the phrase playing finishes (a sit ends now), and from
+   * where it ends a bout is laid to the post of the first segment turn at
+   * least REJOIN_MIN_S past that, the frog sitting there until the turn puts
+   * it on its plan. No bout to be laid, it sits where it is until the turn.
    */
-  _drift(f, dt, probing) {
-    const k = f.size / SIZE_MID
-    f.spin = Math.max(-DRIFT_TURN, Math.min(DRIFT_TURN, f.spin + (this.rand() - 0.5) * DRIFT_JOG * dt))
-    f.heading += f.spin * dt
-    f.speed = Math.max(DRIFT_MPS[0] * k, Math.min(DRIFT_MPS[1] * k, f.speed + (this.rand() - 0.5) * DRIFT_SURGE * k * dt))
-    if (probing) {
-      // A lured frog is off the water at the lure's bearing the first hop that lands.
-      if (f.lured) {
-        this._chase(f)
-        if (this._hop(f)) return
-      }
-      const ahead = f.size * CLIMB_M
-      const ax = f.x + Math.cos(f.heading) * ahead
-      const az = f.z - Math.sin(f.heading) * ahead
-      const s = this.seat(ax, az)
-      if (!f.lured && Math.hypot(ax - f.homeX, az - f.homeZ) > TETHER_M) {
-        this._aimHome(f)
-        f.spin = 0
-        return
-      }
-      if (s === null) {
-        this._turnAway(f)
-        f.spin = 0
-        return
-      }
-      if (!s.wet) {
-        f.hops = 0
-        this._launch(f, f.heading, ax, az, s, between(this.rand, WALK.dur))
-        return
-      }
-      f.y = s.level - f.size * this.sink
+  _startRejoin(f, now) {
+    const L = f.live
+    if (L.ph.kind === 'sit') L.ph = { kind: 'sit', dur: now - L.at, at: L.ph.at }
+    const end = L.at + L.ph.dur
+    const from = L.ph.kind === 'sit' ? L.ph.at : L.ph.to
+    let g = Math.floor((end + REJOIN_MIN_S - f.offset) / GRID_S) + 1
+    const turn = g * GRID_S + f.offset
+    const post = Frogs._facing(this._post(f, g - 1), this._post(f, g))
+    const hops = post === null ? null : this._lay(f, f.rand, from, post, turn - end)
+    if (hops === null) {
+      L.queue = [{ kind: 'sit', dur: turn - end, at: from }]
+    } else {
+      const bout = hops.reduce((sum, ph) => sum + ph.dur, 0)
+      L.queue = [...hops, { kind: 'sit', dur: turn - end - bout, at: post }]
     }
-    f.x += Math.cos(f.heading) * f.speed * dt
-    f.z -= Math.sin(f.heading) * f.speed * dt
-    f.yaw = f.heading
+    L.until = turn
   }
 
-  /** `lures`: hands.js lures() this frame, the spiders and butterflies among them chased. */
-  update(hx, hy, hz, dt, lures = NO_LURES) {
+  /** One frame off the plan: the live phrase advanced to `now`, the chase choosing each next phrase as the last ends and a rejoin playing its queue out; false once the queue is spent, the plan's again. */
+  _live(f, now) {
+    const L = f.live
+    while (now >= L.at + L.ph.dur) {
+      if (L.queue !== null) {
+        if (L.queue.length === 0 || now >= L.until) { f.live = null; return false }
+        L.at += L.ph.dur
+        L.ph = L.queue.shift()
+      } else {
+        L.at += L.ph.dur
+        L.ph = this._chaseNext(f, L.ph)
+      }
+    }
+    this._pose(f, L.ph, now - L.at)
+    return true
+  }
+
+  // --- the room ---------------------------------------------------------------
+
+  /** The lured sets owed since the last call, pushed onto `into` (creature-net.js): `[bedKey, 'fg', null, indices]`, one a bed. */
+  pendingLured(into = []) {
+    for (const set of this.owed) into.push(set)
+    this.owed.length = 0
+    return into
+  }
+
+  /** A peer's lured set for one of the beds: the frogs its hand has, kept from LURE_M on while that hand's lure is near them. */
+  applyLured(set) {
+    if (!Array.isArray(set) || set.length !== 4 || typeof set[0] !== 'string' || !Array.isArray(set[3])) throw new Error(`Frogs.applyLured: bad set ${JSON.stringify(set)}`)
+    if (set[3].length === 0) this.luredIn.delete(set[0])
+    else this.luredIn.set(set[0], { by: set[2], has: new Set(set[3]) })
+  }
+
+  /** Bed `t`'s lured set owed when the frogs her own hand has changed since the last sent and LURED_EVERY_S has passed, or when they are none now and were not. */
+  _owe(t, now) {
+    let mine = ''
+    for (const f of t.frogs) if (f.lured && f.lure.by === null) mine += `${f.index},`
+    if (mine === t.luredSent) return
+    if (mine !== '' && now - t.luredAt < LURED_EVERY_S) return
+    t.luredSent = mine
+    t.luredAt = now
+    this.owed.push([t.key, 'fg', null, mine === '' ? [] : mine.slice(0, -1).split(',').map(Number)])
+  }
+
+  /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame, the spiders, butterflies and grasshoppers among them chased. */
+  update(hx, hy, hz, now, lures = NO_LURES) {
+    if (!Number.isFinite(now)) throw new Error(`Frogs.update: bad time ${now}`)
     this.head.x = hx
     this.head.z = hz
-    this.time += dt
-    this.frame++
+    this.now = now
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
       this.walkedX = hx
@@ -510,84 +682,51 @@ export class Frogs {
       this._reseat()
     }
 
-    const breath = (this.time * Math.PI * 2) / BREATH_S
-    const bob = (this.time * Math.PI * 2) / BOB_S
+    // The tint row (critters.js): each tier's mesh onto its flat colour, or all of them back onto the one shared material.
+    if (this.tinted !== tierTintOn()) {
+      this.tinted = tierTintOn()
+      this.tiers.forEach((m, k) => { m.material = this.tinted ? TIER_TINTS[k] : this.material })
+    }
+
+    const breath = (now * Math.PI * 2) / BREATH_S
+    const bob = (now * Math.PI * 2) / BOB_S
     const counts = this.tiers.map(() => 0)
     for (const t of this.tiles.values()) {
-      // Backwards, because a frog that finds itself inside a rock leaves the list mid-walk.
+      // Backwards, because a frog whose home has turned to stone leaves the list mid-walk.
       for (let i = t.frogs.length - 1; i >= 0; i--) {
         const f = t.frogs[i]
-        let step = dt
-        if (f.lod === LOD_TIERS) {
-          // Held until its frame, unless it has come inside the ladder's foot, which is read every frame so it is drawn the frame it is in view.
-          f.held += dt
-          if ((this.frame + f.id) % FAR_EVERY !== 0 && critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS) === LOD_TIERS) { f.stepped = 0; continue }
-          step = f.held
+        if (f.seg === null || now < f.seg.start || now >= f.seg.start + GRID_S) {
+          const seg = this._segment(f, Math.floor((now - f.offset) / GRID_S))
+          if (seg === null) { this._drop(f); continue }
+          f.seg = seg
         }
-        f.held = 0
-        f.stepped = step
-        this._notice(f, lures)
+        // Posed first, so a lure is measured from where the frog is, on its plan or off it; a lure noticed or lost this frame changes what plays from the next.
+        if (f.live === null || !this._live(f, now)) {
+          const ph = Frogs._phraseAt(f.seg.phrases, now - f.seg.start)
+          this._pose(f, ph, now - f.seg.start - ph.start)
+        }
+        this._notice(f, lures, now)
         let sy = 1
         let sx = 1
         let sz = 1
         // The surface's bob, ridden while afloat.
         let lift = 0
         if (f.state === 'sit') {
-          // The breath: a swell that is mostly height, a little girth.
-          const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
-          sy = 1 + s
-          sx = sz = 1 + s * 0.4
-          f.left -= step
-          if (f.left <= 0) {
-            // A boulder placed after the frog sat here: the seat is stone now, and the frog goes.
-            if (this.rocks.blockTopAt(f.x, f.z, 0) > -Infinity) { this._drop(f); continue }
-            if (f.lured) {
-              this._chase(f)
-            } else if (f.hops <= 0) {
-              f.bout = this.rand() < WALK_P ? WALK : LEAP
-              f.hops = Math.round(between(this.rand, f.bout.hops))
-              f.heading = this.rand() * Math.PI * 2
-            }
-            if (this._hop(f)) {
-              f.hops--
-            } else {
-              f.hops = 0
-              f.left = between(this.rand, f.lured ? CHASE.pause : SIT_S)
-            }
+          if (f.wet) {
+            lift = BOB_AMP * Math.sin(bob + f.breath)
+          } else {
+            // The breath: a swell that is mostly height, a little girth.
+            const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
+            sy = 1 + s
+            sx = sz = 1 + s * 0.4
           }
-        } else if (f.state === 'drift') {
-          lift = BOB_AMP * Math.sin(bob + f.breath)
-          this._drift(f, step, (this.frame + f.id) % DRIFT_PROBE_EVERY === 0)
         } else {
-          f.t += step
-          const u = Math.min(1, f.t / f.dur)
-          f.x = f.x0 + (f.x1 - f.x0) * u
-          f.z = f.z0 + (f.z1 - f.z0) * u
-          f.y = f.y0 + (f.y1 - f.y0) * u + 4 * f.rise * u * (1 - u)
-          // Turning from the slope it left to the one it lands on, ready before touchdown.
-          const v = Math.min(1, u * 1.5)
-          _nrm.set(f.n0x + (f.n1x - f.n0x) * v, f.n0y + (f.n1y - f.n0y) * v, f.n0z + (f.n1z - f.n0z) * v).normalize()
-          f.nx = _nrm.x; f.ny = _nrm.y; f.nz = _nrm.z
           // Stretched along the leap in the air, flattened a little on landing.
-          const s = Math.sin(Math.PI * u)
+          const s = Math.sin(Math.PI * f.u)
           sx = 1 + 0.25 * s
           sy = 1 - 0.15 * s
-          if (u >= 1) {
-            f.y = f.y1
-            if (f.wet1) {
-              // Into the water: the bout is over, and the frog drifts on from the hop's line at an easy pace.
-              f.state = 'drift'
-              f.hops = 0
-              f.heading = f.yaw
-              f.spin = 0
-              f.speed = ((DRIFT_MPS[0] + DRIFT_MPS[1]) / 2) * (f.size / SIZE_MID)
-            } else {
-              f.state = 'sit'
-              f.left = between(this.rand, f.hops > 0 || f.lured ? f.bout.pause : SIT_S)
-            }
-          }
         }
-        // The tier its apparent size calls for; past the ladder's foot it is not drawn, and steps on its FAR_EVERY frames.
+        // The tier its apparent size calls for; past the ladder's foot it is not drawn.
         f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
         if (f.lod === LOD_TIERS) continue
         const k = f.size / this.span
@@ -605,6 +744,7 @@ export class Frogs {
         c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
         this.hues[f.lod].array[w] = f.hue
       }
+      this._owe(t, now)
     }
     // A tier that held nothing and holds nothing is not re-uploaded.
     this.tiers.forEach((tier, k) => {
@@ -615,6 +755,9 @@ export class Frogs {
       }
       tier.count = counts[k]
     })
+    this.stats.alive = MAX - this.free.length
+    this.stats.tiles = this.tiles.size
+    this.stats.overflow = this.overflow
   }
 
   dispose() {

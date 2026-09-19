@@ -47,6 +47,8 @@ import { pathToFileURL } from 'node:url'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { KNEE_TEXELS, LAMBDA0, LAMBDA_MIN, DETAIL_GAIN, measureSite, measureAngle, roughnessOf } from '../src/v2/height/detail.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
+import { Jagged } from '../src/v2/height/jagged.js'
+import { HILLOCK_R_MAX } from '../src/v2/height/hillocks.js'
 import { RELIEF_KNOBS, RELIEF_DEFAULTS, RELIEF_SHIPPED, normalizeRelief, reliefIsOff } from '../src/v2/height/relief.js'
 import { thermalErode } from '../src/v2/height/erode.js'
 import { brushRect, stamp } from '../src/v2/height/sculpt.js'
@@ -1226,14 +1228,14 @@ export async function run({ heightmap } = {}) {
         if (a !== b) { mismatch++; worst = Math.max(worst, Math.abs(a - b)) }
       }
       check(reliefIsOff(RELIEF_DEFAULTS), 'RELIEF_DEFAULTS is the off state, by its own predicate', `${RELIEF_KNOBS.length} knobs`)
-      // What main.js boots on: the one knob the world ships with, on a table
-      // that normalizes, and nothing else up -- "disable all other terrain
-      // effects" is a property of this object and not of a saved HUD.
+      // What main.js boots on: the jagged stack and its flat-ground floor, on a
+      // table that normalizes, and nothing else up -- "disable all other
+      // terrain effects" is a property of this object and not of a saved HUD.
       const shipped = normalizeRelief(RELIEF_SHIPPED)
       const shippedUp = RELIEF_KNOBS.filter((k) => shipped[k.key] !== k.off).map((k) => k.key)
       check(
-        shippedUp.length === 1 && shipped.jagged === 1,
-        'RELIEF_SHIPPED is jagged alone',
+        shippedUp.join(',') === 'jagged,bump' && shipped.jagged === 1 && shipped.bump === knobOf('bump').on,
+        'RELIEF_SHIPPED is jagged plus its hillocks, at the bump knob\'s ON value',
         shippedUp.length ? shippedUp.join(', ') : 'nothing up'
       )
       check(mismatch === 0, 'no relief argument and RELIEF_DEFAULTS are the same field, bit for bit', `${mismatch}/${N} sites differ, worst ${worst} m`)
@@ -1275,7 +1277,7 @@ export async function run({ heightmap } = {}) {
     //   mesher    crest and peaks (DEAD CODE (peaks), off in RELIEF_SHIPPED).
     //             See the banner: asserted as a non-effect on the field; peaks'
     //             own effect on a coarse chunk is probed below.
-    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
+    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', bump: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
       check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
@@ -1485,7 +1487,13 @@ export async function run({ heightmap } = {}) {
     //             smoothstep on the lattice weights would break silently.
     //   band      cell 0 and the finest drawn cell are the same field, and at a
     //             texel-sized cell every layer is gone and the drawn ground is
-    //             the bilinear macro alone. Same LOD ladder as Detail's.
+    //             the bilinear macro alone. One octave looser than Detail's
+    //             ladder: a layer is drawn in full at half its spacing, so the
+    //             0.5 m leaf carries the 1 m layer.
+    //   bump      the hillock scatter: where the macro is level, jagged alone
+    //             leaves centimetres and `bump` puts back relief that is
+    //             irregular (some ground untouched), piecewise planar, and
+    //             gone from a cell of two radii.
     //
     // Determinism across two instances is asserted because the lattice hash is
     // integer arithmetic on purpose: a worker and the main thread must agree
@@ -1565,6 +1573,36 @@ export async function run({ heightmap } = {}) {
       check(mismatch === 0, 'two jagged fields from one seed agree bit for bit', `${mismatch}/400 sites differ`)
       check(worstFine === 0, `a ${(sFine / 4).toFixed(4)} m cell carries every layer and is the exact field`, `worst ${worstFine} m`)
       check(worstCoarse < 1e-9, `a texel-sized cell carries none and is the bilinear macro alone`, `worst ${worstCoarse.toExponential(2)} m`)
+
+      // band, the loose end: a stack whose sub-metre layers are muted, so the
+      // leaf cell and cell 0 differ only if the ~1 m layer is faded at the leaf.
+      // And bump, on a stack with nothing else: slope 0 is exactly 0 without
+      // it, relief with it, a cell of HILLOCK_R_MAX * 2 carries none, and the
+      // scatter is irregular -- a share of level ground lies under no hillock
+      // at all, which a lattice layer never leaves.
+      const leafCell = WORLD_SIZE / (1 << MAX_DEPTH) / CHUNK_RES
+      const mute = field.detail.table.map((t) => (t.lambda < 1 ? { ...t, amp: 0 } : t))
+      const metre = new Jagged({ seed: WORLD_SEED, texel, jitter: jitKnob.off, fineTable: mute })
+      const flat = new Jagged({ seed: WORLD_SEED, texel, jitter: 0, bump: knobOf('bump').on, fineTable: mute.map((t) => ({ ...t, amp: 0 })) })
+      const flatOff = new Jagged({ seed: WORLD_SEED, texel, jitter: 0, fineTable: mute.map((t) => ({ ...t, amp: 0 })) })
+      let leafLoss = 0
+      let bumpS2 = 0
+      let bumpOff = 0
+      let bumpCoarse = 0
+      let bumpBare = 0
+      for (let i = 0; i < 400; i++) {
+        const p = site(i)
+        leafLoss = Math.max(leafLoss, Math.abs(metre.at(p.x, p.z, leafCell, 0.4, 0) - metre.at(p.x, p.z, 0, 0.4, 0)))
+        const b = flat.at(p.x, p.z, 0, 0, 0)
+        bumpS2 += b * b
+        if (b === 0) bumpBare++
+        bumpOff = Math.max(bumpOff, Math.abs(flatOff.at(p.x, p.z, 0, 0, 0)))
+        bumpCoarse = Math.max(bumpCoarse, Math.abs(flat.at(p.x, p.z, HILLOCK_R_MAX * 2, 0, 0)))
+      }
+      check(leafLoss === 0, `the ${leafCell} m leaf cell draws the ~1 m layer in full`, `worst loss ${leafLoss} m`)
+      check(bumpOff === 0 && Math.sqrt(bumpS2 / 400) > knobOf('bump').on * 0.2, 'level ground is exactly flat under jagged alone and bumped with `bump`', `rms ${Math.sqrt(bumpS2 / 400).toFixed(3)} m at bump ${knobOf('bump').on}`)
+      check(bumpBare > 20 && bumpBare < 200, 'and the hillocks are a scatter, not a lattice: a share of level ground lies under none', `${bumpBare}/400 sites untouched`)
+      check(bumpCoarse === 0, `a ${HILLOCK_R_MAX * 2} m cell carries no hillock`, `${bumpCoarse} m`)
     }
 
     // DEAD CODE (peaks): probes a knob RELIEF_SHIPPED leaves off; see the tag

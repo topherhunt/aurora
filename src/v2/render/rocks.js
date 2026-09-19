@@ -13,6 +13,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { BiomeField } from '../layers/biome.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: boulders through the wood and across the
@@ -568,6 +569,39 @@ const BEDS = [
     minGap: 0.7,
   },
   {
+    // THE ENTRANCE BOULDERS (DESIGN.md §30): one standing stone per 460 m tile
+    // of deep wood, its longest axis upright and the burial pinned so the mouth
+    // entrances.js cuts into its face is always at the same height. `centre`
+    // jitters the one candidate within 30 m of the tile's middle, which is what
+    // puts every pair at least 400 m apart; `cover` refuses ground the biome
+    // field calls less than 0.6 forest, so a hollow is always something she
+    // has to find.
+    name: 'hollow',
+    hollow: true,
+    field: 9,
+    density: 1 / (460 * 460),
+    centre: 30,
+    cover: 0.6,
+    stand: true,
+    envDensity: { river: 0, forest: 1, cliff: 0, peak: 0 },
+    fullRadius: 270,
+    radius: 1250,
+    tile: 460,
+    minElev: 0,
+    maxSlopeDeg: 20,
+    allowSubmerged: false,
+    tilt: 0.2,
+    tiltJitter: 0,
+    sinkVary: false,
+    // Pinned just above SINK_MIN and under SQUASH_AT: never squashed, so the
+    // face the mouth sits in is the hull's own.
+    sinkRange: [0.4, 0.41],
+    anchor: true,
+    blocks: true,
+    sizeByEnv: { forest: [8.0, 12.0] },
+    minGap: 0.7,
+  },
+  {
     // THE EMBEDDED LAYER: rock that reads as mostly UNDERGROUND, and the only bed
     // whose subject is the part you cannot see.
     //
@@ -753,6 +787,9 @@ const SHORE_RISE = 1.6
 // Metres either side of a SHORE (WaterSurfaces.shoreDistAt) inside which a
 // bed's `shoreGain` multiplies its accept rate.
 const SHORE_REACH = 10
+
+// Metres of daylight every bed keeps between a rock's footprint and a road's edge, so no stone stands on a road or leans over it. The test is centre distance against half-width + half the plan span + this, and PathSet.nearest sees only within a road's feather (8 m by default) of its edge: a rock whose centre is further out than that is never asked, so the widest stone can in the worst case reach to within feather - span / 2 of the edge -- still clear of the surface for anything under 16 m across.
+const ROAD_CLEARANCE = 0.5
 
 // Metres BELOW the local snow line at which a site counts as peak country. Well
 // below, because the jagged stuff has to start before the white does: bare rock
@@ -1318,7 +1355,7 @@ function blockHull(shape) {
  * shared meshes.
  */
 class RockBed {
-  constructor(field, water, layers, bank, cfg, { seed, ground }) {
+  constructor(field, water, layers, bank, cfg, { seed, ground, biome = null }) {
     this.field = field
     this.water = water
     this.layers = layers
@@ -1327,6 +1364,23 @@ class RockBed {
     this.ground = ground
 
     const tile = cfg.tile
+    // A `cover` bed refuses ground the biome field calls less wooded than this,
+    // and a road; a bed without one never asks. See the hollow bed.
+    this.cover = cfg.cover ?? 0
+    if (this.cover > 0 && (!biome || typeof biome.coverAt !== 'function')) {
+      throw new Error(`RockBed ${cfg.name}: \`cover\` needs a BiomeField with coverAt`)
+    }
+    this.biome = biome
+    // A `centre` bed draws its one candidate within this many metres of the
+    // tile's middle rather than anywhere in it, so neighbours are at least
+    // `tile - 2 * centre` apart. Only a one-candidate tile can mean it.
+    this.centre = cfg.centre ?? 0
+    if (this.centre > 0 && (Math.round(tile * tile * cfg.density) !== 1 || cfg.lattice || this.centre >= tile / 2)) {
+      throw new Error(`RockBed ${cfg.name}: \`centre\` ${this.centre} m needs one candidate per tile and under half of ${tile} m`)
+    }
+    // A `stand` bed takes the quarter turn that puts the shape's longest
+    // measured axis upright, mirrored by the roll draw, instead of a rolled one.
+    this.stand = cfg.stand ?? false
     this.tile = tile
     this.density = cfg.density
     this.radius = cfg.radius
@@ -1556,6 +1610,14 @@ class RockBed {
         `RockBed ${cfg.name}: an open-bottomed shape may not take the quarter turns -- ` +
           `set \`roll: false\` or the bed will show the inside of its own rocks`
       )
+    }
+    // The two mirrored turns of ROLL_STEPS that stand the longest axis up: a Z
+    // quarter turn (ri 4, 12) lifts the width, an X one (ri 1, 3) the depth.
+    if (this.stand) {
+      if (!this.roll) throw new Error(`RockBed ${cfg.name}: \`stand\` is a quarter turn, which \`roll: false\` declines`)
+      const mm = this.shape.measured
+      this.standRi = mm.width >= mm.depth && mm.width >= mm.height ? [4, 12]
+        : mm.depth >= mm.height ? [1, 3] : [0, 0]
     }
 
     // HOW FAR THE SHELL'S CURTAIN HANGS below its own bed plane, per metre of the
@@ -1935,7 +1997,7 @@ class RockBed {
     this.regrows = 0
     this.regrounds = 0
     this.sited = { foot: 0, brow: 0 }
-    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, gap: 0, fit: 0, pool: 0 }
+    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, cover: 0, gap: 0, road: 0, fit: 0, pool: 0 }
     this.poolDry = false
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -2873,8 +2935,11 @@ class RockBed {
       // candidate sits anywhere inside its own square of the tile's grid, which
       // keeps the positions irregular while bounding the gap between them at one
       // cell. See `lattice` for why a wall wants that and a hillside does not.
-      const x = this.lattice ? tx * tile + ((k % gN) + rand()) * cell : (tx + rand()) * tile
-      const z = this.lattice ? tz * tile + (((k / gN) | 0) + rand()) * cell : (tz + rand()) * tile
+      // A `centre` bed's one candidate is jittered about the tile's middle instead.
+      const x = this.lattice ? tx * tile + ((k % gN) + rand()) * cell
+        : this.centre > 0 ? (tx + 0.5) * tile + (rand() * 2 - 1) * this.centre : (tx + rand()) * tile
+      const z = this.lattice ? tz * tile + (((k / gN) | 0) + rand()) * cell
+        : this.centre > 0 ? (tz + 0.5) * tile + (rand() * 2 - 1) * this.centre : (tz + rand()) * tile
       const envRoll = rand()
       const yaw = rand() * Math.PI * 2
       // Drawn here and RESOLVED against the environment in pass two, which keeps
@@ -2984,6 +3049,11 @@ class RockBed {
       if (phase === 0) c.fit[k] = 0
       // A rock she carried off (hands.js) is not laid here again. Position-only, so it consumes no randoms.
       if (taken.has('rock', x, z)) continue
+      // Position-only like `taken`, so it consumes no randoms.
+      if (this.cover > 0 && (this.biome.coverAt(x, z) < this.cover || this.layers.flattenAt(x, z) > 0)) {
+        this.rejected.cover++
+        continue
+      }
 
       // THE PILE FIELD, TAKEN BEFORE ANY FIELD QUERY. `_clump` is four hashes of
       // position against a `scatterAt` at ~960 ns, so what it rejects here it
@@ -3173,7 +3243,8 @@ class RockBed {
       // not shift the random stream and every other bed places where it did.
       const q = this._rollQ.identity()
       if (this.roll) {
-        const ri = Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
+        const ri = this.stand ? this.standRi[rollRoll < 0.5 ? 0 : 1]
+          : Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
         q.setFromAxisAngle(this._zAxis, ((ri / ROLL_STEPS) | 0) * (Math.PI / 2))
         q.multiply(this._rollXQ.setFromAxisAngle(this._xAxis, (ri % ROLL_STEPS) * (Math.PI / 2)))
       }
@@ -3207,6 +3278,15 @@ class RockBed {
       let planX = Math.abs(m00) * bw + Math.abs(m01) * bh + Math.abs(m02) * bd
       let planZ = Math.abs(m20) * bw + Math.abs(m21) * bh + Math.abs(m22) * bd
       let span = Math.max(planX, planZ)
+
+      // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it.
+      if (this.layers.paths !== undefined) {
+        const road = this.layers.paths.nearest(x, z, 'road')
+        if (road !== null && road.dist < road.halfWidth + span * 0.5 + ROAD_CLEARANCE) {
+          this.rejected.road++
+          continue
+        }
+      }
 
       // HOW DEEP THIS ONE IS BEDDED, as a fraction of what it stands. Held here,
       // ahead of the fit ladder, because the burial is most of the tolerance that
@@ -3846,6 +3926,42 @@ class RockBed {
     return this._rocksInto(x0, z0, x1, z1, out, w, cap, this.hull.radius, PERCH_STRIDE)
   }
 
+  /**
+   * One bed's share of Rocks.hollowsInto: the same half-open walk on the origin,
+   * but slots 0..2 are the BOX'S CENTRE -- the origin sits on the bed face, so a
+   * stood-up boulder's footprint is half its height off it -- with the boulder
+   * at its field seating (see _rayAt's `seated`), slot 3 the hull's radius
+   * about that centre and slot 4 the size.
+   */
+  _hollowsInto(x0, z0, x1, z1, out, w, cap) {
+    const tile = this.tile
+    const e = this.instM
+    const half = this.shape.measured.height * 0.5
+    const gx1 = Math.ceil(x1 / tile) - 1, gz1 = Math.ceil(z1 / tile) - 1
+    for (let gx = Math.floor(x0 / tile); gx <= gx1; gx++) {
+      for (let gz = Math.floor(z0 / tile); gz <= gz1; gz++) {
+        const t = this.tiles.get(gx * 0x10000 + gz)
+        if (!t) continue
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          const x = this.instX[id]
+          const z = this.instZ[id]
+          if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
+          if (w >= cap) return w
+          const o = w * PERCH_STRIDE
+          const m = id * 16
+          out[o] = e[m + 12] + e[m + 4] * half
+          out[o + 1] = this.field.heightAt(x, z) - this.instSink[id] + e[m + 5] * half
+          out[o + 2] = e[m + 14] + e[m + 6] * half
+          out[o + 3] = this.hull.radius * this.instScale[id]
+          out[o + 4] = this.shapeLod * this.instScale[id]
+          w++
+        }
+      }
+    }
+    return w
+  }
+
   /** The walk both of the above share; `radius` is per unit of instance scale, and a stride past 4 gets the size. */
   _rocksInto(x0, z0, x1, z1, out, w, cap, radius, stride) {
     const tile = this.tile
@@ -4096,9 +4212,12 @@ class RockBed {
    * the rock's origin) rather than a point, and the same slab-then-triangles
    * walk as _spanAt, in the rock's frame, keeping the nearest forward hit and
    * its face. The normal comes out facing the ray, so a hit on a closed shape
-   * from outside is the outward normal.
+   * from outside is the outward normal. `seated` tests each rock at its FIELD
+   * height rather than where it is drawn: a rock follows the chunk under it
+   * (_reground), which is metres off the field under a coarse chunk, and a
+   * probe that must agree across clients and boots cannot see that.
    */
-  _rayAt(x, y, z, dx, dy, dz, reach, minSize, best, out) {
+  _rayAt(x, y, z, dx, dy, dz, reach, minSize, best, out, seated = false) {
     const tile = this.tile
     const gx = Math.floor(x / tile)
     const gz = Math.floor(z / tile)
@@ -4130,7 +4249,7 @@ class RockBed {
           const c0 = 1 / (e[o] * e[o] + e[o + 1] * e[o + 1] + e[o + 2] * e[o + 2])
           const c1 = 1 / (e[o + 4] * e[o + 4] + e[o + 5] * e[o + 5] + e[o + 6] * e[o + 6])
           const c2 = 1 / (e[o + 8] * e[o + 8] + e[o + 9] * e[o + 9] + e[o + 10] * e[o + 10])
-          const ey = y - e[o + 13]
+          const ey = y - (seated ? this.field.heightAt(this.instX[id], this.instZ[id]) - this.instSink[id] : e[o + 13])
           const ox = (e[o] * ex + e[o + 1] * ey + e[o + 2] * ez) * c0
           const oy = (e[o + 4] * ex + e[o + 5] * ey + e[o + 6] * ez) * c1
           const oz = (e[o + 8] * ex + e[o + 9] * ey + e[o + 10] * ez) * c2
@@ -4284,7 +4403,7 @@ export class Rocks {
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4328,7 +4447,11 @@ export class Rocks {
       instancedFade: true,
     })
 
-    this.beds = BEDS.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground }))
+    // A room (DESIGN.md §30) has no hollow bed: no village inside a village.
+    const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
+    // The world's own biome field, for the beds that gate on cover (the hollow bed).
+    const biome = beds.some((cfg) => cfg.cover > 0) ? new BiomeField({ seed }) : null
+    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome }))
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
     // bounded for that tier (`_tierCaps`): each bed's cap already holds its own
@@ -4665,6 +4788,32 @@ export class Rocks {
     let best = Infinity
     for (const bed of this.beds) {
       if (bed.blocks) best = bed._rayAt(x, y, z, dx, dy, dz, reach, minSize, best, out)
+    }
+    return best
+  }
+
+  /**
+   * Every resident entrance boulder (the `hollow` bed, DESIGN.md §30) with its
+   * origin in the half-open box, on perchesInto's terms (saturation, half-open,
+   * stride 5) except that slots 0..2 are the boulder's centre rather than its
+   * origin; slot 3 is the hull's radius about it and slot 4 the size. For
+   * entrances.js.
+   */
+  hollowsInto(x0, z0, x1, z1, out) {
+    const cap = (out.length / PERCH_STRIDE) | 0
+    let w = 0
+    for (const bed of this.beds) {
+      if (!bed.cfg.hollow) continue
+      w = bed._hollowsInto(x0, z0, x1, z1, out, w, cap)
+    }
+    return w
+  }
+
+  /** rayAt against the hollow beds alone, any size, each boulder at its field seating: where a ray meets an entrance boulder's own hull, the same on every client. */
+  hollowRayAt(x, y, z, dx, dy, dz, reach, out) {
+    let best = Infinity
+    for (const bed of this.beds) {
+      if (bed.cfg.hollow) best = bed._rayAt(x, y, z, dx, dy, dz, reach, 0, best, out, true)
     }
     return best
   }

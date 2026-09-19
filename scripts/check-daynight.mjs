@@ -15,7 +15,7 @@
 
 import { readFileSync } from 'node:fs'
 import * as THREE from 'three'
-import { WorldClock, CLOCK, MOON, MOONLIGHT, paletteAt, celestial } from '../src/clock.js'
+import { WorldClock as LiveClock, CLOCK, MOON, MOONLIGHT, paletteAt, celestial } from '../src/clock.js'
 import { bakeHorizon, decodeHorizon, AZIMUTHS, HORIZON_SOFT } from '../src/sim/horizon.js'
 import { WorldLighting } from '../src/lighting.js'
 import { createPropMaterial, setWindEnabled } from '../src/material.js'
@@ -32,6 +32,14 @@ const check = (ok, label, detail = '') => {
 }
 
 const DEG = Math.PI / 180
+
+// Every clock here is held clear. Live weather (§10) greys the palette by an
+// amount that depends on the hour under test, and the table is what this file
+// measures; check-weather.mjs gates the weather.
+class WorldClock extends LiveClock {
+  constructor(opts = {}) { super({ weather: 0, ...opts }) }
+}
+
 // ===========================================================================
 console.log('\n--- clock: the pace -------------------------------------------')
 // ===========================================================================
@@ -619,8 +627,10 @@ console.log('\n--- sky and stars: geometry and shader hygiene -----------------'
   check(stars.points.visible, 'and they are up at 01:00')
 
   // The sky dome must never write depth or be culled: the camera lives inside
-  // it, and it is drawn before everything else.
-  check(sky.material.depthWrite === false && sky.mesh.renderOrder < 0, 'the sky dome draws first and writes no depth')
+  // it. It draws last among the opaques with the depth test on, so the terrain
+  // rejects the sky behind it (§10) -- and before the overlays at 998+.
+  check(sky.material.depthWrite === false && sky.material.depthTest === true && !sky.material.transparent, 'the sky dome tests depth, writes none, and is opaque')
+  check(sky.mesh.renderOrder > 900 && sky.mesh.renderOrder < 998, 'and draws after the world and before the overlays', `renderOrder ${sky.mesh.renderOrder}`)
   check(sky.mesh.frustumCulled === false, 'and is never frustum culled')
 }
 

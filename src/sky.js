@@ -22,7 +22,7 @@ import { SKY_GLSL, makeSkyUniforms, writeSkyUniforms } from './sky-glsl.js'
 //   - No texture, so nothing to author, load, or spend a KTX2 round trip on.
 //   - A gradient sampled per-fragment from the view ray has no banding to speak
 //     of, where an 8-bit cubemap of a smooth gradient bands badly on a headset.
-//   - It costs one draw of 80 triangles with no depth write.
+//   - It costs one draw of 80 triangles, shaded only where sky is visible.
 //
 // The dome follows the camera each frame (see update). It has to: at a 9000 m
 // radius inside a 16 km world, walking a kilometre would visibly slide the sun
@@ -105,10 +105,16 @@ export class Sky {
     // stay outside everything the world draws, and holding that clearance is
     // worth 60 triangles.
     this.mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(RADIUS, 1), this.material)
-    // Drawn first, and never culled -- the camera is always inside it, which
-    // frustum culling against its bounding sphere handles correctly, but the
-    // flag costs nothing and removes a class of surprise.
-    this.mesh.renderOrder = -1000
+    // Drawn LAST among the opaques, depth-tested against everything they wrote,
+    // so early-Z rejects every dome fragment behind a ridge and the sky is
+    // shaded only where sky shows -- a fifth to a half of an eye rather than
+    // all of it (§10). 950 is past the boats' depth-only lids (900), which
+    // must land before anything they occlude, and short of the overlays and
+    // the menu (998+), which draw over the sky. Never culled: the camera is
+    // always inside it, which frustum culling against its bounding sphere
+    // handles correctly, but the flag costs nothing and removes a class of
+    // surprise.
+    this.mesh.renderOrder = 950
     this.mesh.frustumCulled = false
     scene.add(this.mesh)
   }
@@ -128,6 +134,19 @@ export class Sky {
     this.mesh.position.copy(head)
     writeSkyUniforms(this.uniforms, state)
   }
+
+  // The cloud texture (public/world/clouds.png, scripts/make-clouds.mjs),
+  // handed in by the host rather than loaded here so the gates can build a Sky
+  // in node. Clouds draw once it has arrived and while `clouds` is on.
+  setClouds(texture) {
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping
+    texture.colorSpace = THREE.NoColorSpace
+    this.uniforms.uClouds.value = texture
+    this.clouds = true
+  }
+
+  get clouds() { return this.uniforms.uCloud.value.w > 0.5 }
+  set clouds(on) { this.uniforms.uCloud.value.w = on && this.uniforms.uClouds.value !== null ? 1 : 0 }
 
   dispose() {
     this.mesh.geometry.dispose()

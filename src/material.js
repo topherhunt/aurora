@@ -1252,6 +1252,21 @@ function billboardGrowVertex({ from, to, scale, sink, top }) {
 const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
           smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) )`
 
+// `leafThrough`: a leaf whose authored normal faces the ground is lit as if it
+// faced the sky, its world-up component mirrored and scaled by `through`. A
+// prop that can be turned over -- a fern carried, dropped and rolled -- would
+// otherwise hand the lighting a downward normal: dotNL 0 from the sun and the
+// hemisphere's near-black ground colour, so the leaves go black in the hand.
+// `through` < 1 mirrors to a flatter angle, so a seen-through leaf still reads
+// dimmer than an upturned one. The horizontal component is kept, so the leaves
+// keep their spread against the sun. World up in VIEW space, since `normal` is:
+// viewMatrix's second column, unit-length already because the view is rigid.
+const leafThroughApply = (through) => /* glsl */ `
+        {
+          vec3 upV = viewMatrix[ 1 ].xyz;
+          normal = normalize( normal - min( dot( normal, upV ), 0.0 ) * ${(1 + through).toFixed(3)} * upV );
+        }`
+
 // Appended to `begin_vertex`, after `batching_vertex` and `beginnormal_vertex`
 // (chunk order in ShaderLib/meshlambert.glsl.js), so `batchingMatrix` is in
 // scope and the normal is already transformed.
@@ -2505,11 +2520,14 @@ export function createPropMaterial(
     vertexColors = false, billboardLayers = null, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
     side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
-    layerShift = false, billboardTilt = null,
+    layerShift = false, billboardTilt = null, leafThrough = 0,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
   if (hemFray) checkHemFray(hemFray, 'createPropMaterial')
+  if (!(leafThrough >= 0 && leafThrough <= 1)) {
+    throw new Error(`createPropMaterial: leafThrough must be in [0, 1], got ${leafThrough}`)
+  }
   // The layer list is what SELECTS the block; without it there is nothing to
   // turn off, so a caller passing this alone thinks they changed something.
   if (!billboardSpin && !billboards) {
@@ -2718,7 +2736,8 @@ export function createPropMaterial(
         ${bump ? PROP_BUMP_APPLY : ''}
         ${seasons ? MOSS_APPLY : ''}
         ${seasons ? SNOW_APPLY : ''}
-        diffuseColor.rgb *= ${RIM_DARKEN};`
+        diffuseColor.rgb *= ${RIM_DARKEN};
+        ${leafThrough ? leafThroughApply(leafThrough) : ''}`
       )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
@@ -2766,7 +2785,7 @@ export function createPropMaterial(
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
   const tiltKey = billboardTilt ? `-tilt${billboardTilt.amount}.${billboardTilt.layers[0]}.${billboardTilt.layers[1]}` : ''
-  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}`
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}${leafThrough ? `-leaf${leafThrough}` : ''}`
   material.customProgramCacheKey = () =>
     `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 

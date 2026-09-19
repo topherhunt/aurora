@@ -216,13 +216,13 @@ check(
 
 // --- 4. the fog target --------------------------------------------------------
 //
-// Read out of the string that compiles, not restated. §11's exemption sends a
-// distant water pixel to the horizon sky; the submerged branch has to send it
-// to the murk instead, and the two must be one expression rather than two
-// copies of the fade.
+// Read out of the string that compiles, not restated. §11 sends a distant
+// water pixel to the air the dome and the far land end in; the submerged
+// branch has to send it to the murk instead, and the two must be one
+// expression rather than two copies of the fade.
 check(
-  frag.includes('mix( skyRadiance( horizonDir, 0.0 ) * uReflTint, uMurk, uSubmerged )'),
-  "water's fog exemption is itself switched off underwater"
+  frag.includes('mix( sRGBTransferEOTF( vec4( airOut, 1.0 ) ).rgb, uMurk, uSubmerged )'),
+  "water's fade to the air is switched to the murk underwater"
 )
 // Exactly three mentions: the definition, one call on the top face, one on the
 // underside. Both faces fade from the one expression, so they cannot recede at

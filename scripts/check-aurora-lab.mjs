@@ -218,7 +218,7 @@ const GLSL_TYPE = { float: 'float', color: 'vec3', bool: 'float', enum: 'int' }
 const CHUNK_SAMPLERS = {
   lut: ['u_noiseLut'],
   planmap: ['u_planMap'],
-  skymap: ['u_skyMap', 'u_skyLanes', 'u_skyHue', 'u_skyKernel'],
+  skymap: ['u_skyMap', 'u_skyMapB', 'u_skyMapC', 'u_skyLanes', 'u_skyHue', 'u_skyKernel'],
 }
 
 // Mirrors screen.js's FRAMES. Hardcoding MARCH_GLSL here would leave an
@@ -228,7 +228,7 @@ const CHUNK_SAMPLERS = {
 const FRAMES = { slab: SLAB_MARCH_GLSL, skymap: SKYMAP_FRAME_GLSL }
 
 function declarationsFor(params, chunks) {
-  const lines = ['uniform float uTime;', 'uniform float uDitherScale;']
+  const lines = ['uniform float uTime;', 'uniform float uDitherScale;', 'uniform vec3 uSkyWeights;']
   for (const name of chunks) {
     if (!CHUNK_SAMPLERS[name]) continue
     for (const uniform of CHUNK_SAMPLERS[name]) lines.push(`uniform sampler2D ${uniform};`)

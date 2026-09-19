@@ -53,7 +53,7 @@
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
+import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tierTintSplice, tileKey, tileSeed, walkTiles } from './critters.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 
 export const TILE = 8
@@ -145,6 +145,7 @@ export class Grasshoppers {
 
     // Dry chitin: Lambert, no glint. The tint rides three's own instanceColor.
     this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
+    this.material.onBeforeCompile = (shader) => tierTintSplice(shader, 0)
     this.material.customProgramCacheKey = () => 'grasshoppers'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-grasshoppers'

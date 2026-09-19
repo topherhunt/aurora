@@ -29,7 +29,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
-import { CARD_M, CRITTER_GLB, GLINT } from '../src/v2/render/critters.js'
+import { CARD_M, CRITTER_GLB, GLINT, setTierTint } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -152,8 +152,18 @@ const scene = new THREE.Scene()
 const crabs = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset })
 check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${crabs.span}`)
 {
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
   crabs.material.onBeforeCompile(shader)
+  // The tint row (critters.js tierTintSplice): the one mesh wears tier 0, painted over the encoded output after dithering; the card below binds its own colour.
+  check(shader.fragmentShader.includes('uniform vec4 uTierTint;') && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader), 'the tint row paints over the output after dithering')
+  const cardShader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n#include <dithering_fragment>\n' }
+  crabs.cardMaterial.onBeforeCompile(cardShader)
+  setTierTint(true)
+  const mt = shader.uniforms.uTierTint.value
+  const ct = cardShader.uniforms.uTierTint.value
+  check(mt.w === 1 && ct.w === 1 && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(cardShader.fragmentShader) && (mt.x !== ct.x || mt.y !== ct.y || mt.z !== ct.z), 'the row switches both on, and the card wears a colour of its own', `mesh ${mt.x.toFixed(2)},${mt.y.toFixed(2)},${mt.z.toFixed(2)} card ${ct.x.toFixed(2)},${ct.y.toFixed(2)},${ct.z.toFixed(2)}`)
+  setTierTint(false)
+  check(mt.w === 0 && ct.w === 0, 'and off again')
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
   // The hue turn: read per instance on the mesh and the card, carried across, and applied to the sampled map before it is lit.
@@ -353,7 +363,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
     check(topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the other quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
     check([4, 5, 6, 7].every((i) => uv.getX(i) >= 0.5) && [0, 1, 2, 3].every((i) => uv.getX(i) <= 0.5), 'the side reads the left half of the picture, the top the right')
   }
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <normal_fragment_begin>' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <normal_fragment_begin>' }
   crabs.cardMaterial.onBeforeCompile(shader)
   check(!/discard/.test(shader.fragmentShader) && crabs.cardMaterial.alphaTest === 0.5, 'the card is a cutout drawn whole, not dithered')
   check(crabs.cardMaterial.customProgramCacheKey() !== crabs.material.customProgramCacheKey(), 'the card compiles its own program')

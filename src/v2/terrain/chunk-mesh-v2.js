@@ -398,6 +398,21 @@ const BUMP_ROCK = 0.48 // slope added on rock, as dy/dx
 const BUMP_GRASS = 0.15
 const BUMP_SNOW = 0.12
 
+// How wide the snow's soft edge is HERE. The document's `snow.band` is the
+// width at the centre of the swing: this is band * 2^n for a simplex n in
+// [-1, 1], so a 10 m band runs 5..20 m along the line and spends most of its
+// length near 10. A constant width reads as a contour however narrow it is; one
+// that tightens and loosens every few tens of metres reads as drift. The LINE
+// does not move -- the half-cover contour stays exactly where the author put it
+// (snowJag is what moves that, off exposure). The props keep the flat document
+// band: their load and the ground's still cross the line together, and a few
+// metres' disagreement in the fade either side of it is under the mottle.
+const SNOW_BAND_WANDER = 45 // m, the wavelength of the swing
+function snowBandAt(band, wx, wz) {
+  const n = MOTTLE.simplex2(wx / SNOW_BAND_WANDER + 402.3, wz / SNOW_BAND_WANDER - 157.6)
+  return band * 2 ** Math.max(-1, Math.min(1, n))
+}
+
 function shade(h, ny, snowLine, snowBand, flatten01, shore01, altLo, altSpan, wx, wz, out, o) {
   const steep = smoothstep(0.86, 0.62, ny)
   const alt = clamp01((h - altLo) / altSpan)
@@ -419,7 +434,8 @@ function shade(h, ny, snowLine, snowBand, flatten01, shore01, altLo, altSpan, wx
   // afterwards, every time, because the click sets the elevation and the eye
   // judges the result by where the white starts. Centred, `snow.base + delta` IS
   // the half-cover contour, so the place you click is the place the snow appears.
-  const snow = clamp01(smoothstep(snowLine - snowBand / 2, snowLine + snowBand / 2, h) * (1 - steep * 0.85))
+  const half = snowBandAt(snowBand, wx, wz) / 2
+  const snow = clamp01(smoothstep(snowLine - half, snowLine + half, h) * (1 - steep * 0.85))
   r = lerp(r, C_ROCK[0], steep)
   g = lerp(g, C_ROCK[1], steep)
   b = lerp(b, C_ROCK[2], steep)
@@ -712,7 +728,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       // how the surface catches light, which is a question about the surface that
       // was actually built.
       const snowLine = field.snowLineAt(wx, wz)
-      const snowHere = smoothstep(snowLine - snowBand / 2, snowLine + snowBand / 2, h)
+      const snowHalf = snowBandAt(snowBand, wx, wz) / 2
+      const snowHere = smoothstep(snowLine - snowHalf, snowLine + snowHalf, h)
       const bumpGround = BUMP_GRASS + (BUMP_ROCK - BUMP_GRASS) * smoothstep(0.86, 0.62, ny)
       const bumpK = lerp(bumpGround, BUMP_SNOW, snowHere)
       const bx = (1 - BUMP_FINE_MIX) * MOTTLE.simplex2(wx / BUMP_SCALE + 7.13, wz / BUMP_SCALE - 2.61)

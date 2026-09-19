@@ -377,6 +377,12 @@ export class SoundEngine {
     return voice
   }
 
+  /** A loop given up: stopped and no longer ticked. */
+  unloop(voice) {
+    if (!this.loops.delete(voice)) throw new Error('SoundEngine.unloop: not one of this engine\'s loops')
+    voice.stop()
+  }
+
   /** Once a frame: lets every running loop queue its next cycle. */
   update() {
     for (const v of this.loops) v._tick()

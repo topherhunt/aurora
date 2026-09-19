@@ -94,7 +94,7 @@
 
 // The parameterisation and the reader. This half is emitted as a CHUNK, which means it lands above PALETTE_GLSL and above the algorithm's auroraField, so nothing here may call either -- that is why the generator and the convolution are in the frame chunk below instead of here, and it is a constraint of the assembly order in screen.js rather than a design choice.
 //
-// Depends on UTIL (TAU) and on a `uniform sampler2D u_skyMap` that screen.js declares through CHUNK_SAMPLERS.
+// Depends on UTIL (TAU) and on the `u_skyMap` / `u_skyMapB` / `u_skyMapC` samplers and the `uSkyWeights` vec3 that screen.js declares.
 export const SKYMAP_GLSL = `
   #ifndef AURLAB_SKYMAP
   #define AURLAB_SKYMAP
@@ -162,8 +162,11 @@ export const SKYMAP_GLSL = `
   // The extinction is the one per-ray term left on the screen side. It is a function of rd.y, so it could be folded into the convolution like the gain was -- but that would need s inverted back to an elevation, which has no closed form, where evaluating it here is a smoothstep and a mix. The gain could not be left here for the same reason in reverse: it is a function of the weather fbm, and recomputing that per pixel would put four value-noise lookups back into the shader this file exists to empty.
   //
   // Takes s rather than recomputing it, because the zenith dissolve below needs the same number and smLogScale is a sqrt, a divide and a log.
+  //
+  // Three fetches, not one: the map is rebuilt every interval into whichever of the ring has faded out, and uSkyWeights, which sum to 1, hold where each map's fade stands. At interval 0 the weights sit at ( 1, 0, 0 ) and this is one live fetch plus two of maps nothing writes.
   vec3 smRead( vec3 rd, float s ) {
-    return texture2D( u_skyMap, smOutUv( s, smAz( rd.xz ) ) ).rgb;
+    vec2 uv = smOutUv( s, smAz( rd.xz ) );
+    return texture2D( u_skyMap, uv ).rgb * uSkyWeights.x + texture2D( u_skyMapB, uv ).rgb * uSkyWeights.y + texture2D( u_skyMapC, uv ).rgb * uSkyWeights.z;
   }
 
   #endif
@@ -389,7 +392,7 @@ export const SKYMAP_FRAME_GLSL = `
 
   // ---- The frame. What a pixel of sky costs, in full.
   //
-  // ro, uv and t are unused and stay in the signature because the frame's contract is one signature for every integrator. There is no ro to use: the map is built about the plan origin, which is where MAIN_GLSL marches from unconditionally. There is no t to use either -- the time is already in the map, which was rebuilt from the live field at this frame's t a fraction of a millisecond ago.
+  // ro, uv and t are unused and stay in the signature because the frame's contract is one signature for every integrator. There is no ro to use: the map is built about the plan origin, which is where MAIN_GLSL marches from unconditionally. There is no t to use either -- the time is already in the maps, each built from the live field at the instant it is fully on screen, and the crossfade between them is the only motion this side draws.
   vec3 auroraRadiance( vec3 ro, vec3 rd, vec2 uv, float t ) {
     // ---- The skirt: where this frame stops and glsl/frame.js does not.
     //

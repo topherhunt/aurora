@@ -30,6 +30,8 @@ import { Fish } from '../src/v2/render/fish.js'
 import { GLINT, createCritterCardMaterial, glint, hueVary } from '../src/v2/render/critters.js'
 import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
+import { Wreaths } from '../src/v2/render/wreaths.js'
+import { Precip } from '../src/v2/render/precip.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -409,6 +411,14 @@ const PROP_VARIANTS = [
     createPropMaterial(atlas, { wind: 'fern' }),
     { batched: true },
     { vert: [...PROP_MARKS.vert, 'uWindDir', 'uWindStrength'], frag: PROP_MARKS.frag },
+  ],
+  // WHAT THE FERN BED DRAWS: leafThrough splices a fragment block that appears
+  // under no other option.
+  [
+    'ferns: wind, cards, instancedFade, leafThrough',
+    createPropMaterial(atlas, { billboardLayers: [2], instancedFade: true, wind: 'fern', leafThrough: 0.6 }),
+    { batched: false, instanced: true },
+    { vert: [...PROP_MARKS.vert, 'uWindDir'], frag: [...PROP_MARKS.frag, 'vec3 upV'] },
   ],
   // THE PRESERVED SEASON CODE, compiled both ways SEASONS_VERTEX can go: batched
   // with cards (the card snow path and USE_BATCHING) and instanced with bump
@@ -908,6 +918,51 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
   SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
   CROSS_STAGE.push([label, vert, frag])
+}
+
+// The summit wreaths (wreaths.js): a Lambert billboard with the dithered edge
+// under the vertex-mode lighting patch, over the shipped summits.json. The
+// discard, the cull, the billboard's own vertex and its own fog slot, taken
+// ahead of the patch's aerial mix, are what a silent replace miss would drop,
+// and each is checked for.
+{
+  const summits = JSON.parse(readFileSync(new URL('../public/world/summits.json', import.meta.url), 'utf8'))
+  const clouds = new THREE.DataTexture(new Uint8Array(4), 1, 1)
+  const material = new Wreaths(new THREE.Scene(), summits, clouds, { patch: (m) => new WorldLighting().patch(m, { mode: 'vertex', cacheKey: 'check-wreaths' }) }).material
+  const lib = THREE.ShaderLib.lambert
+  const shader = {
+    uniforms: THREE.UniformsUtils.clone(lib.uniforms),
+    vertexShader: lib.vertexShader,
+    fragmentShader: lib.fragmentShader,
+    defines: {},
+  }
+  material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+  const defines = ['#define USE_FOG', '#define FOG_EXP2']
+  const label = 'summit wreaths       '
+  const vert = finish(shader.vertexShader)
+  const frag = finish(shader.fragmentShader)
+  SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+  SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+  CROSS_STAGE.push([label, vert, frag])
+  if (!frag.includes('if ( coverage <= 0.0 ) discard;')) MISSING_MARKS.push(`${label} frag: the dithered discard`)
+  if (!vert.includes('gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 )')) MISSING_MARKS.push(`${label} vert: the near cull`)
+  if (!vert.includes('vec3 transformed = aCenter + bbRight')) MISSING_MARKS.push(`${label} vert: the billboard`)
+  if (!frag.includes('mix( gl_FragColor.rgb, uAir,') || frag.includes('mix( uAirNear, uAirFar,')) MISSING_MARKS.push(`${label} frag: the fade to the horizon in place of the aerial mix`)
+}
+
+// The precipitation (precip.js): a GLSL1 ShaderMaterial with no position
+// attribute, every quad placed in the vertex stage about uHead. The wrap and
+// the intensity cull are the two lines a silent edit would lose.
+{
+  const material = new Precip(new THREE.Scene()).material
+  const GLSL1_OUT = 'out highp vec4 pc_fragColor;\n#define gl_FragColor pc_fragColor\n'
+  const vert = finish(material.vertexShader)
+  const frag = finish(material.fragmentShader)
+  SHADERS.push(['precip.js      VERT', 'vert', V_PRE, vert])
+  SHADERS.push(['precip.js      FRAG', 'frag', F_PRE + GLSL1_OUT + COLOR_FNS + '\n', frag])
+  CROSS_STAGE.push(['precip.js', vert, frag])
+  if (!vert.includes('mod( aSeed * box')) MISSING_MARKS.push('precip.js vert: the box wrap')
+  if (!vert.includes('if ( aPick.y > uIntensity ) gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );')) MISSING_MARKS.push('precip.js vert: the intensity cull')
 }
 
 // The generated props' three programs (gen-props.js): the mesh with the rim

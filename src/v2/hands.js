@@ -11,7 +11,12 @@ import THREE from '../three-instance.js'
 // hands back a RECORD: the geometry and material it was drawn with, the
 // instance's own attributes, tint and scale, so the thing in her hand is the
 // thing she reached for, pixel for pixel. Held and loose things are drawn here,
-// one InstancedMesh per geometry (a POOL), rewritten every frame.
+// one InstancedMesh per geometry (a POOL), rewritten every frame. What HER
+// hands hold is drawn from a second mesh per pool under `over`, a group that
+// is not in the scene: main.js renders it in a pass of its own over the
+// finished frame, so a thing in her hand is never behind the menu or a wall.
+// A hand may draw what it holds smaller than it is (`draw`), for the desktop
+// corner; the thing itself, its size and its lure, are unchanged.
 //
 // A press with a full hand lets go. Over the shoulder -- the BACKPACK ZONE,
 // behind and above her head -- the thing goes in the backpack instead, and the
@@ -52,9 +57,9 @@ import THREE from '../three-instance.js'
 // A click's ray is probed a ball of this radius at a time, so nothing thinner than it is stepped over.
 export const RAY_STEP = 0.15
 export const REACH_M = 0.25
-// Metres a thing may be along its longest side and still be lifted, and still be stowed.
+// Metres a thing may be along its longest side and still be lifted, and still be stowed: one cap, so whatever a hand lifts fits the backpack (a fern spans 1.3 m at unit scale).
 export const GRAB_MAX_M = 2
-export const STOW_MAX_M = 1
+export const STOW_MAX_M = GRAB_MAX_M
 // Loose things kept in the world; past this the oldest is forgotten. The relay keeps the same (server/src/main.js ROOM_LOOSE_CAP), so a room's list and this one forget the same thing.
 export const LOOSE_MAX = 24
 // Seconds a peer's copy takes to ease onto the spot its owner says it came to rest at.
@@ -101,8 +106,14 @@ const DRIFT_EASE_S = 1.5
 const LEVEL_EPS = 0.05
 // Where a held thing's centre sits in the hand's frame: a little under and ahead of the grip.
 export const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
-// Instances a pool holds: every loose thing, her three hands and three for each of a full room's seven peers, all of one kind at worst.
-export const POOL_CAP = LOOSE_MAX + 3 + 7 * 3
+// What a carrier (carry(), the leafkin's arms) holds at most, and how many carriers can be about at once: two leafkin villages 400 m apart can both be resident.
+export const CARRY_MAX = 5
+export const CARRIERS = 2
+// Where a carried thing sits, per slot: metres ahead of the feet, to the left, above the chest line, and its tilt about the body's side axis -- a fan in the hollow of the arms.
+const CARRY_FAN = [[0.2, 0, 0, 0.3], [0.22, 0.08, 0.02, 0.5], [0.22, -0.08, 0.02, 0.1], [0.18, 0.04, 0.09, 0.7], [0.18, -0.04, 0.09, -0.1]]
+// Instances a pool holds: every loose thing, three for each of a full room's seven peers and every carrier's armful, all of one kind at worst; its over mesh holds her three hands'.
+export const POOL_CAP = LOOSE_MAX + 7 * 3 + CARRY_MAX * CARRIERS
+export const OVER_CAP = 3
 // A peer's copy waits here until its peer's hand is placed, out of sight.
 export const UNPLACED_Y = -1e4
 // What a source's instanced attribute holds when the record does not say: the arena's fade slot is "never fade", the rest rest.
@@ -151,6 +162,8 @@ export class Hands {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-hands'
     scene.add(this.batch)
+    this.over = new THREE.Group()
+    this.over.name = 'v2-hands-over'
     this.sources = []
     // kind -> the source that hands it out and dresses it.
     this.byKind = new Map()
@@ -159,12 +172,16 @@ export class Hands {
     this.loose = []
     // One pool per source geometry.
     this.pools = new Map()
+    // Scratch for _write: her held items and their hands' draw scale.
+    this._mine = new Map()
     // The photographs' scene, lights and camera, and a subject per source geometry; built at the first photograph.
     this.studio = null
     // For the panel: things taken, stowed, dropped.
     this.taken = 0
     this.stowed = 0
     this.dropped = 0
+    // Carriers out (carry()), held to CARRIERS so the pools stay within POOL_CAP.
+    this.carriers = 0
     // The room: `sync(event)` is told every change (see the header), or null;
     // `tag` prefixes the ids of the things she lets go of, the relay's short
     // name for this client, and null before the relay has said one; the
@@ -199,7 +216,7 @@ export class Hands {
   addHand(key, node, { reach = REACH_M } = {}) {
     if (this.hands.has(key)) throw new Error(`Hands.addHand: ${key} twice`)
     if (!node || !node.isObject3D) throw new Error(`Hands.addHand: ${key} needs an Object3D`)
-    this.hands.set(key, { key, node, reach, held: null, inZone: false, lure: { kind: null, x: 0, y: 0, z: 0 } })
+    this.hands.set(key, { key, node, reach, held: null, inZone: false, draw: 1, lure: { kind: null, x: 0, y: 0, z: 0, by: null } })
   }
 
   /** The record the hand holds, or null. */
@@ -207,11 +224,20 @@ export class Hands {
     return this._hand(key).held?.rec ?? null
   }
 
+  /** How much smaller than it is the hand draws what it holds: 1 is life size. */
+  draw(key, k) {
+    if (!(k > 0 && k <= 1)) throw new Error(`Hands.draw: ${key} draws at ${k}, not in (0, 1]`)
+    this._hand(key).draw = k
+  }
+
   /**
    * Every held thing as a LURE, for the creatures that take an interest in one
-   * (render/wildlife.js, frogs.js, fish.js, dragons.js): its `kind` and where
-   * its centre is this frame, appended to `into`. Read fresh off the hand node
-   * rather than off the item, which is where the last update() left it.
+   * (render/wildlife.js, frogs.js, fish.js, dragons.js): its `kind`, where
+   * its centre is this frame and `by`, the client holding it -- null for her
+   * own hands, so a creature after one of hers is this client's to tell the
+   * room about; a peer's id for a placed copy of theirs. Hers are read fresh
+   * off the hand node rather than off the item, which is where the last
+   * update() left it; a peer's off its copy, where placePeer put it.
    */
   lures(into) {
     for (const hand of this.hands.values()) {
@@ -221,7 +247,17 @@ export class Hands {
       const lure = hand.lure
       lure.kind = hand.held.rec.kind
       lure.x = _p.x; lure.y = _p.y; lure.z = _p.z
+      lure.by = null
       into.push(lure)
+    }
+    for (const [peerId, held] of this.peerHeld) {
+      for (const entry of held) {
+        if (!entry?.item || entry.item.y === UNPLACED_Y) continue
+        const lure = entry.lure ?? (entry.lure = { kind: null, x: 0, y: 0, z: 0, by: peerId })
+        lure.kind = entry.item.rec.kind
+        lure.x = entry.item.x; lure.y = entry.item.y; lure.z = entry.item.z
+        into.push(lure)
+      }
     }
     return into
   }
@@ -259,6 +295,80 @@ export class Hands {
     if (!best) return null
     this._take(hand, best)
     return 'pick'
+  }
+
+  /** A full hand lets go where it is, wherever it is -- press would stow in the backpack zone. Returns 'drop', or null with nothing held. */
+  drop(key, head) {
+    const hand = this._hand(key)
+    if (!hand.held) return null
+    this._drop(hand, head)
+    this.dropped++
+    return 'drop'
+  }
+
+  /**
+   * A carrier for a creature (render/leafkin.js): things it holds in its arms,
+   * drawn from the pools as hers are, posed by its layer each frame and let go
+   * all at once when it is startled. Nothing carried reaches the room; a
+   * scattered thing is loose here only, and hers to pick up like any drop.
+   */
+  carry(owner) {
+    if (typeof owner !== 'string' || owner === '') throw new Error(`Hands.carry: needs an owner name, got ${owner}`)
+    if (this.carriers >= CARRIERS) throw new Error(`Hands.carry: ${CARRIERS} carriers are already out`)
+    this.carriers++
+    const items = []
+    const hands = this
+    return {
+      owner,
+      count() { return items.length },
+      /** A record into the arms, from the source `src` it was taken off. Refused full. */
+      add(rec, src) {
+        if (items.length >= CARRY_MAX) throw new Error(`Hands.carry: ${owner} already carries ${CARRY_MAX}`)
+        if (!src) throw new Error(`Hands.carry: ${owner} needs the source a ${rec?.kind} came from`)
+        hands._checkRecord(rec)
+        const item = hands._item(rec, src)
+        item.state = 'carried'
+        items.push(item)
+        return item
+      },
+      /** The arms this frame: feet at (x, y, z), the body facing `yaw` (a +X body yawed about the world up), the chest `chest` metres up the body. */
+      place(x, y, z, yaw, chest) {
+        const c = Math.cos(yaw), s = Math.sin(yaw)
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          const [fwd, side, up, tilt] = CARRY_FAN[i]
+          item.x = x + c * fwd + s * side
+          item.y = y + chest + up
+          item.z = z - s * fwd + c * side
+          item.q.setFromAxisAngle(UP, yaw).multiply(_dq.setFromAxisAngle(_axis.set(0, 0, 1), tilt))
+        }
+      },
+      /** Every carried thing let fall where it is: loose, falling, to thud and roll as a drop of hers does. */
+      scatter() {
+        for (const item of items) {
+          item.q.identity()
+          item.vx = item.vy = item.vz = 0
+          item.state = 'fall'
+          item.t = 0
+          item.tried = false
+          item.mine = false
+          item.netId = null
+          hands.loose.push(item)
+        }
+        items.length = 0
+        while (hands.loose.length > LOOSE_MAX) hands._forget(hands.loose.shift())
+      },
+      /** Everything carried gone with the carrier, off into the village. */
+      clear() {
+        for (const item of items) hands._forget(item)
+        items.length = 0
+      },
+      /** The carrier handed back: its slots free for another. */
+      release() {
+        this.clear()
+        hands.carriers--
+      },
+    }
   }
 
   /**
@@ -495,18 +605,23 @@ export class Hands {
     let pool = this.pools.get(rec.geometry)
     if (pool) return pool
     const src = rec.geometry
-    const { geo, instanced } = this._solo(src, POOL_CAP)
-    const mesh = new THREE.InstancedMesh(geo, rec.material, POOL_CAP)
-    mesh.name = `v2-hands-${rec.kind}`
-    mesh.count = 0
-    mesh.frustumCulled = false
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    if (rec.color) {
-      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(POOL_CAP * 3).fill(1), 3)
-      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+    const layer = (cap) => {
+      const { geo, instanced } = this._solo(src, cap)
+      const mesh = new THREE.InstancedMesh(geo, rec.material, cap)
+      mesh.name = `v2-hands-${rec.kind}`
+      mesh.count = 0
+      mesh.frustumCulled = false
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      if (rec.color) {
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3).fill(1), 3)
+        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+      }
+      return { mesh, geo, instanced, cap }
     }
-    this.batch.add(mesh)
-    pool = { mesh, geo, instanced, centre: geo.boundingBox.getCenter(new THREE.Vector3()), items: [] }
+    pool = { ...layer(POOL_CAP), over: layer(OVER_CAP), items: [] }
+    pool.centre = pool.geo.boundingBox.getCenter(new THREE.Vector3())
+    this.batch.add(pool.mesh)
+    this.over.add(pool.over.mesh)
     this.pools.set(src, pool)
     return pool
   }
@@ -926,19 +1041,30 @@ export class Hands {
     item.q.copy(q)
   }
 
+  /** Her hands' held things go to the pool's over mesh at their hand's draw scale, everything else to its mesh. */
   _write(pool) {
-    const mesh = pool.mesh
+    const mine = this._mine
+    mine.clear()
+    for (const hand of this.hands.values()) if (hand.held) mine.set(hand.held, hand.draw)
+    this._fill(pool, pool.over, (item) => mine.get(item))
+    this._fill(pool, pool, (item) => (mine.has(item) ? undefined : 1))
+  }
+
+  /** Writes the pool's items for which `scaleOf(item)` is a number into a layer's mesh, at that draw scale. */
+  _fill(pool, { mesh, instanced, cap }, scaleOf) {
     const mat = mesh.instanceMatrix.array
     const col = mesh.instanceColor?.array
     let n = 0
     for (const item of pool.items) {
-      if (n === POOL_CAP) throw new Error(`Hands: the ${item.rec.kind} pool is full at ${POOL_CAP}`)
+      const k = scaleOf(item)
+      if (k === undefined) continue
+      if (n === cap) throw new Error(`Hands: the ${item.rec.kind} ${mesh === pool.mesh ? 'pool' : 'over mesh'} is full at ${cap}`)
       // The origin is the centre less the (rotated, scaled) offset to it.
-      _c.copy(item.off).applyQuaternion(item.q)
+      _c.copy(item.off).multiplyScalar(k).applyQuaternion(item.q)
       _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
-      _s.fromArray(item.rec.scale)
+      _s.fromArray(item.rec.scale).multiplyScalar(k)
       _m.compose(_p, item.q, _s).toArray(mat, n * 16)
-      for (const { name, attr, size } of pool.instanced) {
+      for (const { name, attr, size } of instanced) {
         const values = item.attrs[name]
         for (let i = 0; i < size; i++) attr.array[n * size + i] = values[i]
       }
@@ -950,7 +1076,7 @@ export class Hands {
     }
     if (n > 0 || mesh.count > 0) {
       mesh.instanceMatrix.needsUpdate = true
-      for (const { attr } of pool.instanced) attr.needsUpdate = true
+      for (const { attr } of instanced) attr.needsUpdate = true
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
     }
     mesh.count = n
@@ -970,6 +1096,7 @@ export class Hands {
     for (const pool of this.pools.values()) {
       // The vertex buffers are the source's; only the pool's own instanced attributes go.
       for (const { attr } of pool.instanced) attr.array = null
+      for (const { attr } of pool.over.instanced) attr.array = null
     }
     this.pools.clear()
     if (this.studio) {

@@ -59,6 +59,8 @@ const KEEP = TILE * TILE * DENSITY
 export const DIAMETER = [7, 10]
 // How far out a roost tile is resident, and so its dragon alive (dragons.js): short of the widest bowl's card cull, so a far bowl comes in as its card, and short of a dragon's, which is a speck at this range.
 export const RADIUS_M = 400
+// Rolls kept for tiles that are not resident (siteAt): the oldest asked forgotten past this.
+const ROLLED_CAP = 256
 
 // Mesh tiers, and the ladder with the card under them.
 export const LODS = 4
@@ -422,6 +424,8 @@ export class Roosts {
 
     // key -> { tx, tz, ids, n, site }; ids[0] is the roost and ids[1] its egg, `n` how many of the two stand, and `site` is what dragons.js reads.
     this.tiles = new Map()
+    // tileKey -> a tile's roll, for the sites asked for past the resident radius (siteAt).
+    this.rolled = new Map()
     this.camTileX = null
     this.camTileZ = null
 
@@ -450,6 +454,7 @@ export class Roosts {
   /** Grow every tile inside the radius. For boot and for a relief edit. */
   place(cx, cz) {
     const t0 = performance.now()
+    this.rolled.clear()
     this._reseat(cx, cz)
     this.placeMs = performance.now() - t0
     return this.placed
@@ -529,10 +534,27 @@ export class Roosts {
     }
   }
 
-  /** Roll the tile's one candidate and seat it if it passes, with its egg or none. Every draw is taken whether or not it survives. */
-  _growTile(key, tx, tz) {
-    const tile = { tx, tz, ids: new Int32Array(2), n: 0, site: null }
-    this.tiles.set(key, tile)
+  /**
+   * The roost tile (tx, tz) rolls, resident or not: the site, with its egg's
+   * whole description drawn after it, or null where the roll or the ground
+   * refuses it. A pure function of the tile, which is what lets dragons.js
+   * plan a dragon whose nest is past the resident radius (a hunt on a stag
+   * near her from a roost 300 m off), so a resident tile answers from itself
+   * and the rest from a bounded cache emptied whenever the ground moves.
+   */
+  siteAt(tx, tz) {
+    const key = tileKey(tx, tz)
+    const tile = this.tiles.get(key)
+    if (tile) return tile.site
+    if (this.rolled.has(key)) return this.rolled.get(key).site
+    const roll = this._roll(key, tx, tz)
+    if (this.rolled.size >= ROLLED_CAP) this.rolled.delete(this.rolled.keys().next().value)
+    this.rolled.set(key, roll)
+    return roll.site
+  }
+
+  /** The tile's candidate: every draw taken whether or not it survives, so the egg's description does not depend on the roost's tests; the site null where the roll or the ground refuses it. */
+  _roll(key, tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const keep = rand()
     const x = (tx + rand()) * TILE
@@ -540,32 +562,42 @@ export class Roosts {
     const yaw = rand() * Math.PI * 2
     const r = between(rand, DIAMETER) / 2
     // The egg's whole description, drawn after the roost's so a world without eggs lays the same roosts.
-    const eggKeep = rand()
-    const eggTint = EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1]
-    const eggHeight = between(rand, EGG_HEIGHT)
-    const eggYaw = rand() * Math.PI * 2
-    const eggLie = between(rand, EGG_LIE)
-    const eggBearing = rand() * Math.PI * 2
-    if (keep >= KEEP) return
+    const egg = { keep: rand(), tint: EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1], height: between(rand, EGG_HEIGHT), yaw: rand() * Math.PI * 2, lie: between(rand, EGG_LIE), bearing: rand() * Math.PI * 2 }
+    const out = { site: null, yaw, egg, rejected: null }
+    if (keep >= KEEP) return out
 
     const { h, tan } = this.field.heightAndSlopeAt(x, z)
-    if (tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { this.rejected.slope++; return }
-    if (this.water.isSubmerged(x, z, h)) { this.rejected.water++; return }
+    if (tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { out.rejected = 'slope'; return out }
+    if (this.water.isSubmerged(x, z, h)) { out.rejected = 'water'; return out }
     for (const kind of ['road', 'river']) {
       const near = this.paths.nearest(x, z, kind)
-      if (near && near.dist < near.halfWidth + r + PLACEMENT.pathClearance) { this.rejected.path++; return }
+      if (near && near.dist < near.halfWidth + r + PLACEMENT.pathClearance) { out.rejected = 'path'; return out }
     }
-    if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`)
-
     // Laid on the plane through four rim samples and sunk so the bottom branches bed in.
     const gx = (this.field.heightAt(x + r, z) - this.field.heightAt(x - r, z)) / (2 * r)
     const gz = (this.field.heightAt(x, z + r) - this.field.heightAt(x, z - r)) / (2 * r)
     const y = h - PLACEMENT.sink * r
+    out.site = { key, tx, tz, x, y, z, r, gx, gz }
+    return out
+  }
+
+  /** Grow the tile: its roll seated as an instance if it passes, with its egg or none. */
+  _growTile(key, tx, tz) {
+    const tile = { tx, tz, ids: new Int32Array(2), n: 0, site: null }
+    this.tiles.set(key, tile)
+    const roll = this.rolled.get(key) ?? this._roll(key, tx, tz)
+    this.rolled.delete(key)
+    if (roll.rejected) this.rejected[roll.rejected]++
+    const site = roll.site
+    if (!site) return
+    if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`)
+    const { x, y, z, r, gx, gz } = site
+    const { yaw, egg } = roll
 
     const id = this.free[--this.freeCount]
     tile.ids[0] = id
     tile.n = 1
-    tile.site = { key, x, y, z, r, gx, gz }
+    tile.site = site
     this.placed++
     this.instX[id] = x
     this.instY[id] = y
@@ -582,7 +614,7 @@ export class Roosts {
     this.batch.setGeometryIdAt(id, this.cardTier)
     this.rim.place(id, Math.min(this.radius, cullRange(r * 2, RUNGS)))
     // A nest whose egg was taken from it (hands.js) lays no other.
-    if (this.egg && eggKeep < EGG_ODDS && !taken.has('egg', x, z)) this._layEgg(tile, x, y, z, r, eggTint, eggHeight, eggYaw, eggLie, eggBearing)
+    if (this.egg && egg.keep < EGG_ODDS && !taken.has('egg', x, z)) this._layEgg(tile, x, y, z, r, egg.tint, egg.height, egg.yaw, egg.lie, egg.bearing)
     this.rim.markDue(tile)
   }
 

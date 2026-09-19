@@ -279,7 +279,7 @@ const NEAR_GLSL = (worldPos) =>
 // 1/4000 m puts the in-scatter at 22% of the way from the near haze to the far
 // one at 1 km, 39% at 2 km, 71% at 5 km and 92% at 10 km -- three distinguishable
 // depth planes inside the range anything is actually drawn at.
-const AIR_FALL = 1 / 4000
+export const AIR_FALL = 1 / 4000
 
 // THE FAR END OF THE RAMP IS THE WATER, NOT THE SKY.
 //
@@ -305,8 +305,18 @@ const AIR_FALL = 1 / 4000
 // is a bad trade; check-water-shader.mjs asserts the copy still agrees.
 export const AIR_CEILING = new THREE.Color(0xc2d4ee).multiplyScalar(0.8)
 
+// The ceiling lifts with cloud cover (§10): it exists for a sunny far range
+// against a lake, and under an overcast, where nothing shows past a kilometre,
+// it would only darken the fog itself with distance and cut a dark band
+// between the near fog and the sky's. The sky dome ends its own haze here too.
+export function airCeiling(cover, out) {
+  return out.copy(AIR_CEILING).lerp(WHITE, cover)
+}
+const WHITE = new THREE.Color(1, 1, 1)
+
 // Scratch for the once-a-frame trip fogColor -> linear -> ceiling -> sRGB.
 const _airLin = new THREE.Color()
+const _ceil = new THREE.Color()
 const _airOut = { r: 0, g: 0, b: 0 }
 // The output-space ramp ends, held while a capture has the linear ones in.
 const _airSavedNear = new THREE.Vector3()
@@ -598,7 +608,7 @@ export class WorldLighting {
     // back out -- the same round trip water.js's uReflTint gets, so the two land
     // on the same colour rather than on two versions of it.
     _airLin.setRGB(state.fog[0], state.fog[1], state.fog[2], THREE.SRGBColorSpace)
-    _airLin.multiply(AIR_CEILING)
+    _airLin.multiply(airCeiling(state.cover, _ceil))
     _airLin.getRGB(_airOut, THREE.SRGBColorSpace)
     this.uniforms.uAirFar.value.set(_airOut.r, _airOut.g, _airOut.b)
   }

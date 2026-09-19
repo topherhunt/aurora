@@ -28,6 +28,8 @@ export const CRITTER_GLB = {
   hare: 'creatures/snow-hare.glb',
   // The biped above the snow line (tools/creatures/ship-biped.mjs): the same shape, with the human clip library. See render/snowmen.js.
   snowman: 'creatures/abominable-snowman.glb',
+  // The village biped (ship-biped.mjs too): the human library. See render/leafkin.js.
+  leafkin: 'creatures/leafkin.glb',
   // The wyvern (tools/creatures/ship-wyvern.mjs): the same shape, with the wyvern clip library. See render/dragons.js.
   dragon: 'creatures/fen-dragon.glb',
 }
@@ -277,6 +279,52 @@ export function ladderTier(base, steps, rungs, dist, prev) {
 }
 
 // ---------------------------------------------------------------------------
+// THE TINT ROW (`critter LOD tint`): a flat colour a tier -- green, yellow,
+// orange, red for the four mesh tiers, blue for a card -- so which tier a body
+// is drawing on is a thing she can see from across the meadow rather than
+// guess at. Halving triangles on a smooth mesh barely moves the silhouette,
+// which is the whole point of an LOD and also why a swap is unverifiable by
+// eye without this. A creature shipped as one mesh (a fish, a grasshopper, the
+// spiders' single tier) wears the colour of the tier it ships.
+//
+// Two ways in, by what the material is. Meshes that share ONE material across
+// their tiers -- a puppet's skinned tiers, the frogs' instanced tiers -- are
+// swapped onto TIER_TINTS[k], unlit and flat, instance colour ignored. A
+// material whose vertex work IS the silhouette -- a card's spin and cutout, a
+// spider's legs, a fish's swim -- keeps its program and paints over its final
+// colour through tierTintSplice(), a uniform per tier switched by the row.
+// Painted after dithering, so like TIER_TINTS it takes no haze or night.
+// ---------------------------------------------------------------------------
+const TIER_TINT_HEX = [0x4caf50, 0xffd54f, 0xff9800, 0xe53935, 0x42a5f5]
+/** The tier index a card wears: the one under the mesh rungs. */
+export const CARD_TIER = LOD_RUNGS
+export const TIER_TINTS = TIER_TINT_HEX.map((color) => {
+  const m = new THREE.MeshBasicMaterial({ color })
+  m.onBeforeCompile = (shader) => { shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '') }
+  m.customProgramCacheKey = () => 'tier-tint'
+  return m
+})
+// sRGB components and the switch: painted onto the encoded output, so no colour management applies.
+const TIER_TINT_UNIFORMS = TIER_TINT_HEX.map((hex) => ({ value: new THREE.Vector4(((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255, 0) }))
+let tierTint = false
+
+/** Flat-colour every creature by the tier it is drawing, for confirming the ladder by walking it. */
+export function setTierTint(on) {
+  tierTint = on
+  for (const u of TIER_TINT_UNIFORMS) u.value.w = on ? 1 : 0
+}
+export const tierTintOn = () => tierTint
+
+/** Splice the tint of tier `k` over a material's output, from its onBeforeCompile. */
+export function tierTintSplice(shader, k) {
+  if (!(k >= 0 && k < TIER_TINT_UNIFORMS.length)) throw new Error(`tierTintSplice: no tint for tier ${k}`)
+  shader.uniforms.uTierTint = TIER_TINT_UNIFORMS[k]
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform vec4 uTierTint;')
+    .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif ( uTierTint.w > 0.5 ) gl_FragColor.rgb = uTierTint.xyz;')
+}
+
+// ---------------------------------------------------------------------------
 // THE CROSS CARD. Past CARD_M from her head a creature is drawn as two quads
 // crossed at its body's middle, each the mesh photographed off the loaded GLB
 // from one of the VIEWS below -- the side on the XY plane, the front on the YZ
@@ -372,6 +420,7 @@ export function createCritterCardMaterial(label, { billboard = false, fade = fal
         .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
         .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
     }
+    tierTintSplice(shader, CARD_TIER)
   }
   material.customProgramCacheKey = () => `${label}-card${billboard ? '-spun' : ''}${fade ? '-fade' : ''}${hue ? '' : '-flat'}`
   return material

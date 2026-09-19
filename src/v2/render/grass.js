@@ -173,6 +173,9 @@ const DENSITY = 6
 // all three place through the one loop.
 const SHORE = { reach: 2, gain: 2, size: 2, clump: 1.5, clumpFrac: 0.5 }
 
+// The road's verge: a tuft's height roll is scaled by `size` at the road's edge, easing to 1 at `reach` metres past it. No extra candidates, so the pool bound is untouched; on a shore the two scales multiply. `reach` must stay inside the paths index's padding past the edge (a road's feather, 8 m by default), where nearest finds nothing.
+const VERGE = { reach: 4, size: 1.8 }
+
 // Metres. Inside this every tuft stands; past it density scales by
 // FULL_RADIUS / d, so every doubling of distance halves it. The strip bed keeps
 // the law and cuts further on top of it -- STRIP_FULL_RADIUS and STRIP_THIN.
@@ -2067,7 +2070,8 @@ export class Grass {
         onShore = shoreClumpAt(x, z, this.seed)
           && this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
       }
-      const sy = (onShore ? height * SHORE.size : height) / this.baseHeight
+      let sy = (onShore ? height * SHORE.size : height) / this.baseHeight
+      if (road !== null && road.dist - road.halfWidth < VERGE.reach) sy *= 1 + (VERGE.size - 1) * (1 - (road.dist - road.halfWidth) / VERGE.reach)
       // WHERE IT STANDS IS THE DRAWN SURFACE, NOT `h`. `h` is the exact field,
       // which decided whether this tuft exists; the mesh under it is that field
       // band-limited to the chunk's cell and chorded between vertices, and the
@@ -2397,6 +2401,7 @@ export class Grass {
 export const GRASS_TUNING = {
   DENSITY,
   SHORE,
+  VERGE,
   FULL_RADIUS,
   DRAW_RADIUS,
   LOD_BANDS,

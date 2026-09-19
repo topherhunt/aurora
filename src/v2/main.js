@@ -8,6 +8,7 @@ import { Layers } from './layers/layers.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
+import { TerrainWire } from './terrain/wire.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
@@ -37,9 +38,13 @@ import { Grasshoppers } from './render/grasshoppers.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
+import { Leafkin } from './render/leafkin.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
-import { setTierTint } from './render/puppet.js'
+import { Entrances, loadMouthBank } from './render/entrances.js'
+import { RoomProps, loadHouseBank } from './render/room-props.js'
+import { Shell } from './render/shell.js'
+import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor } from '../props/rock-bank.js'
@@ -54,6 +59,7 @@ import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
+import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
 import { Sky } from '../sky.js'
 import { Stars } from '../stars.js'
@@ -62,10 +68,12 @@ import { Stars } from '../stars.js'
 // full sky dome. The band mesh it replaced is parked in archive/aurora-mesh/.
 import { SkyAurora } from './render/aurora.js'
 import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
-import { WorldClock, CLOCK } from '../clock.js'
+import { WorldClock, CLOCK, WEATHER, daynessOfElev } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { SkyProbe, PROBE } from '../sky-probe.js'
 import { SKY_GLSL } from '../sky-glsl.js'
+import { Wreaths } from './render/wreaths.js'
+import { Precip } from './render/precip.js'
 import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
@@ -548,6 +556,27 @@ const clock = new WorldClock({ seed: SEED })
 
 const lighting = new WorldLighting()
 const sky = new Sky(scene)
+const precip = new Precip(scene)
+window.v2precip = precip
+// The cloud layer's texture and the summit wreaths' card atlas (§10). Failing
+// loudly rather than drawing a clear sky forever: a missing PNG is a build
+// problem, not a weather.
+let wreaths = null
+const loader = new THREE.TextureLoader()
+Promise.all([
+  loader.loadAsync('world/clouds.png'),
+  loader.loadAsync('world/cloud-cards.png'),
+  fetch('world/summits.json').then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() }),
+]).then(
+  ([tex, cards, summits]) => {
+    sky.setClouds(tex)
+    sky.clouds = questToggles.clouds
+    wreaths = new Wreaths(scene, summits, cards, { patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wreaths' }), seed: SEED })
+    wreaths.visible = questToggles.wreaths
+    window.v2wreaths = wreaths
+  },
+  (err) => { throw new Error(`world/clouds.png, world/cloud-cards.png or world/summits.json did not load: ${err?.message ?? err}`) }
+)
 const probe = new SkyProbe()
 // AFTER those three, by reference: the water reflects the dome by calling its
 // shading function, asks the (here always-empty) horizon map where the mountains
@@ -621,7 +650,7 @@ function probeVantage(head, out) {
 // ---------------------------------------------------------------------------
 // The menu: a world-space panel, ported from quest-main.js's already-proven
 // pattern (a raycast down the hand, canvas-texture buttons) rather than
-// reinvented. It is the one control surface the headset has, and Escape
+// reinvented. It is the one control surface the headset has, and Tab
 // opens it on a desktop. Four views under one tab bar -- backpack, settings,
 // debug, help -- and the view she last chose is kept for the session only: a
 // refresh opens on the backpack.
@@ -640,6 +669,9 @@ let ownHandBank = null
 const QUEST_POINTER_COLOR = 0x19d2ff
 // The line's reach when it lands on nothing: the horizon.
 const QUEST_POINTER_FAR = 1000
+// The menu's render order, past the error plane's 999; its pointer draws over the menu in turn.
+const QUEST_PANEL_ORDER = 1000
+const QUEST_POINTER_ORDER = 1010
 const questPointerDir = new THREE.Vector3()
 const Z_AXIS = new THREE.Vector3(0, 0, 1)
 
@@ -669,9 +701,10 @@ const BACKPACK_PHOTO_PX = 192
 
 // --- settings ----------------------------------------------------------------
 
-// The saved game: where she stands, which way she faces, what she carries. In
-// this browser's localStorage and nowhere else -- nothing goes to a server --
-// and a refresh boots straight into it (see the spawn in bootWorld).
+// The saved game: where she stands, which way she faces, what she carries and
+// the hour of day. In this browser's localStorage and nowhere else -- nothing
+// goes to a server -- and a refresh boots straight into it (see the spawn in
+// bootWorld).
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
@@ -686,14 +719,18 @@ function saveGame() {
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
     held: {},
+    hour: clock.hour,
+    room: currentRoom.id,
   }
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
     if (rec !== null) doc.held[key] = hands.pack(rec)
   }
   localStorage.setItem(SAVE_KEY, JSON.stringify(doc))
-  console.log(`[v2] saved at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
+  console.log(`[v2] saved at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}, ${clock.clockText}`)
   refreshQuestRow('load')
+  // The menu closes on the save, with the bag's closing voice: the press was seen.
+  if (questPanelGroup.visible) toggleQuestPanel()
 }
 
 // Everything in a save but her position, which boot and the Load button put
@@ -703,19 +740,32 @@ function applySave(doc) {
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
   backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
-  // What each hand held goes back into that hand, or, while its source has
-  // not landed the asset it is dressed with, into a free backpack slot. A
-  // save from before the hands were written has no `held`.
-  const held = doc.held ?? {}
-  for (const key of HAND_KEYS) {
-    if (!(key in held)) continue
-    const slot = held[key]
-    if (hands.dressed(slot) !== null) { hands.give(key, slot, handsHead()); continue }
-    const free = backpack.indexOf(null)
-    if (free >= 0) { backpack[free] = slot; console.warn(`[v2] load: the ${slot.kind} in the ${key} hand is not dressed yet, put in slot ${free}`) }
-    else console.warn(`[v2] load: the ${slot.kind} in the ${key} hand is not dressed yet and the backpack is full; lost`)
-  }
-  paintBackpack()
+  // A save from before the hands were written has no `held`.
+  restoreHeld(doc.held ?? {})
+  // A save from before the hour was written has no `hour`.
+  if (doc.hour !== undefined) restoreHour(doc.hour)
+}
+
+// The hour of day a load or a new game asks for, until the room has been asked.
+let pendingHour = null
+const hourDelta = (hour) => (((hour - clock.hour) % 24) + 24) % 24
+
+// Reached by skipping forward, so elapsed stays monotonic (see WorldClock).
+// The room's clock is the relay's, resynced every frame, so the ask goes there
+// (askRoomHour) once its clock is known, and the relay grants it only to a
+// client alone in the room: with company, the room's hour stands. With no
+// relay the skip lands here.
+function restoreHour(hour) {
+  pendingHour = hour
+  if (netplay.time === null) { clock.tick(); clock.skip(hourDelta(hour)) }
+}
+
+// Each frame, after the clock has synced, until the relay has been asked.
+function askRoomHour() {
+  if (pendingHour === null || netplay.time === null) return
+  if (!netplay.sendClock(netplay.time.skipHours + hourDelta(pendingHour))) return
+  console.log(`[clock] asked room "${room}" for ${pendingHour.toFixed(2)} h (granted only to a room of one)`)
+  pendingHour = null
 }
 
 function loadGame() {
@@ -728,6 +778,21 @@ function loadGame() {
   console.log(`[v2] loaded at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
 }
 
+// The start as a first boot has it: SPAWN at CLOCK.startHour, facing the way
+// the world opens, hands and backpack empty -- what she held is let go where
+// she stood. The saved game is kept; Load still returns her to it.
+function newGame() {
+  restoreHour(CLOCK.startHour)
+  for (const key of HAND_KEYS) hands.drop(key, handsHead())
+  backpack.fill(null)
+  paintBackpack()
+  player.teleportTo(SPAWN.x, SPAWN.z)
+  rig.rotation.set(0, 0, 0)
+  if (!sceneEl.is('vr-mode')) camera.rotation.set(0, 0, 0)
+  placeQuestPanel()
+  console.log(`[v2] new game at ${SPAWN.x}, ${SPAWN.z}`)
+}
+
 // A row is `{ key, text }` and one of three shapes: a toggle on questToggles
 // (with optional `on`/`off` state names), an action, or an action with a
 // `value` readout. Shared by the settings and debug grids; a key is unique
@@ -735,6 +800,7 @@ function loadGame() {
 const QUEST_SETTING_ROWS = [
   { key: 'save', text: 'Save', action: () => saveGame() },
   { key: 'load', text: 'Load', action: () => loadGame(), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
+  { key: 'new', text: 'New game', action: () => newGame() },
   // Teleport is the headset's default (§12: comfort over capability); walk is
   // the continuous locomotion, for measuring what the world does to the frame
   // while she moves through it. Only readInput's XR branch reads this -- a
@@ -756,6 +822,8 @@ const QUEST_SETTING_ROWS = [
 // reach when the panel is behind you.
 const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
+  // The drawn triangulation, green at 8 m cells and coarser, blue finer. Independent of the row above: the mesh keeps streaming while either is on. See terrain/wire.js.
+  { key: 'terrainWire', text: 'terrain wireframe' },
   { key: 'trees', text: 'trees' },
   { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
@@ -778,6 +846,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'spiders', text: 'spiders' },
   { key: 'wildlife', text: 'wildlife' },
   { key: 'snowmen', text: 'snowmen' },
+  { key: 'leafkin', text: 'leafkin' },
   { key: 'dragons', text: 'dragons & roosts' },
   { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
   { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
@@ -790,10 +859,11 @@ const QUEST_TOGGLE_ROWS = [
   // and setCutout for what each number does and does not prove.
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
   { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
-  // Flat-colours every puppet by the rung it is drawing -- green, yellow,
-  // orange, red -- so the ladder in critters.js can be confirmed by walking up
-  // to a stag and watching where it changes. See Puppet.setTierTint.
-  { key: 'critterTint', text: 'critter LOD tint', on: 'by rung', off: 'normal' },
+  // Flat-colours every creature but the butterflies by the tier it is drawing
+  // -- green, yellow, orange, red, and blue for a card -- so the ladder in
+  // critters.js can be confirmed by walking up to a stag and watching where it
+  // changes. See THE TINT ROW in critters.js.
+  { key: 'critterTint', text: 'critter LOD tint', on: 'by tier', off: 'normal' },
   // Her own body as a peer sees it, stood 2 m ahead and facing her: see placeMirror.
   { key: 'mirror', text: 'body double', on: 'shown', off: 'hidden' },
   { key: 'wind', text: 'wind' },
@@ -803,8 +873,17 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
+  // The sky's cloud layer (§10); off is the A/B against the frame-time readout.
+  { key: 'clouds', text: 'sky clouds' },
+  { key: 'wreaths', text: 'summit clouds' },
+  { key: 'precip', text: 'rain and snow' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
+  // How often the sky map is rebuilt; the dome blends the three newest. See MAP_INTERVALS in render/aurora.js.
+  { key: 'auroraRate', text: 'aurora map >', action: () => cycleAuroraInterval(), value: () => `${aurora.interval}s` },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  // Holds the weather channel (§10) at one of WEATHER.presets, this client
+  // only; peers stay under the room's live sky. See cycleWeather.
+  { key: 'weather', text: 'weather >', action: () => cycleWeather(), value: () => weatherLabel() },
   // The headset's ONLY way into flight -- there is no controller binding, see
   // the VR LOCOMOTION banner. Reads the player rather than questToggles
   // because the same state is flipped from the keyboard and cleared on XR
@@ -836,6 +915,7 @@ function applyQuestToggle(key) {
   const enabled = (questToggles[key] = !questToggles[key])
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
+    case 'terrainWire': terrainWire.visible = enabled; break
     case 'trees': trees.batch.visible = enabled; break
     // Both rows read "the world as it ships" as ON, so the toggle is what gets
     // REMOVED -- the same polarity as `wind`.
@@ -867,7 +947,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'spiders': case 'wildlife': case 'snowmen': case 'dragons': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'spiders': case 'wildlife': case 'snowmen': case 'leafkin': case 'dragons': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); break
     case 'mirror': if (enabled) placeMirror(); else peerAvatars.mirror(null); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
@@ -894,6 +974,9 @@ function applyQuestToggle(key) {
     // world. Expect a one-off compile hitch on the frame you press it.
     case 'reflections': water.setCubeReflections(enabled); break
     case 'aurora': aurora.mesh.visible = enabled; break
+    case 'clouds': sky.clouds = enabled; break
+    case 'wreaths': if (wreaths) wreaths.visible = enabled; break
+    case 'precip': precip.enabled = enabled; break
     // The master fader, not the rules: the ambience keeps sensing and firing so
     // it is where it should be the moment the row goes back on.
     case 'sound': if (sound) sound.setMuted(!enabled); break
@@ -902,6 +985,8 @@ function applyQuestToggle(key) {
 
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
+  // The village mouths are on their boulders' faces, so they go with the row.
+  if (entrances) entrances.batch.visible = entrances.holes.visible = questToggles.boulders
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -929,10 +1014,13 @@ function activateQuestButton(key) {
 // no layout engine in a Three.js scene to make them. The group's origin sits up
 // among the buttons rather than at the bottom of the plate, so bottoms are
 // negative.
-const QUEST_PANEL_COLS = 3
-const QUEST_PANEL_COL_W = 0.86
+// 2.7 m at 2.8 m subtends about 52 degrees, as wide as the outer columns can
+// go before a Quest 2's lenses soften them; the debug grid splits that width
+// four ways so its rows stay up where a level look reads them.
+const PANEL_W = 2.70
+const QUEST_PANEL_COLS = 4
 const QUEST_PANEL_COL_GAP = 0.06
-const PANEL_W = QUEST_PANEL_COLS * QUEST_PANEL_COL_W + (QUEST_PANEL_COLS - 1) * QUEST_PANEL_COL_GAP
+const QUEST_PANEL_COL_W = (PANEL_W - (QUEST_PANEL_COLS - 1) * QUEST_PANEL_COL_GAP) / QUEST_PANEL_COLS
 const QUEST_PANEL_TOP = 1.20
 // The tab bar: one cell per view, the four sharing the panel's width.
 const QUEST_TAB_Y = 1.08
@@ -955,7 +1043,7 @@ const QUEST_ROW_H = 0.20
 const QUEST_BTN_H = 0.18
 const QUEST_ROW_TOP = QUEST_VIEW_TOP - QUEST_STATS_M - 0.06 - QUEST_BTN_H / 2
 const questRowsPerCol = () => Math.ceil(QUEST_TOGGLE_ROWS.length / QUEST_PANEL_COLS)
-// The settings view: a 2 x 2 of wider buttons.
+// The settings view: two columns of wider buttons.
 const QUEST_SETTING_COLS = 2
 const QUEST_SETTING_W = 1.20
 const QUEST_SETTING_GAP = 0.10
@@ -978,17 +1066,6 @@ const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(),
 const QUEST_SETTINGS_BOTTOM = questGridBottom(QUEST_SETTING_TOP, Math.ceil(QUEST_SETTING_ROWS.length / QUEST_SETTING_COLS), QUEST_SETTING_ROW_H, QUEST_SETTING_BTN_H)
 const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H * 1.5
 const QUEST_HELP_BOTTOM = QUEST_VIEW_TOP - QUEST_HELP_H - 0.05
-// The panel's LOWEST EDGE over every view -- the debug grid's, by a metre --
-// which is what questPanelDesiredPosition keeps out of the ground, so that
-// switching tabs never seats a view in the hillside.
-const questPanelBottom = () => Math.min(questDebugBottom(), QUEST_SETTINGS_BOTTOM, QUEST_BACKPACK_BOTTOM, QUEST_HELP_BOTTOM)
-
-// How far the plate's bottom edge stands clear of the terrain when the ground is
-// what decides its height. Small enough to read as resting on the ground rather
-// than hovering, big enough that grass and the ground's own shading do not saw
-// through the edge as she moves her head.
-const QUEST_PANEL_GROUND_GAP = 0.05
-
 // Canvas pixels per metre of panel, so every button's type is the same size
 // whatever its shape: 96 px for the 18 cm button the debug rows were tuned on.
 const QUEST_PX_PER_M = 96 / 0.18
@@ -1001,13 +1078,16 @@ const QUEST_PX_PER_M = 96 / 0.18
 // what the generic `serif` resolves to there. Georgia is the desktop's answer
 // to the same stack. Neither is a blackletter; a shipped OFL face is the way
 // to that look if it is ever wanted, not a system name that no headset has.
-const QUEST_SERIF = (px, weight = 'bold') => ({ font: `${weight} ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '1px' })
-const QUEST_MONO = (px) => ({ font: `bold ${px}px monospace`, tracking: '0px' })
+const QUEST_SERIF = (px, weight = 'bold') => ({ px, font: `${weight} ${px}px "Noto Serif", Georgia, "Times New Roman", serif`, tracking: '1px' })
+const QUEST_MONO = (px) => ({ px, font: `bold ${px}px monospace`, tracking: '0px' })
 function setQuestFont(ctx, face) {
   ctx.font = face.font
   ctx.letterSpacing = face.tracking
 }
 
+// A label wider than its cell breaks at a space onto a second line; past two
+// lines the rest runs on, since the type is the size it is to be read at 2.8 m.
+const QUEST_CELL_PAD = 8
 function paintQuestCell(ctx, x, y, w, h, text, face = QUEST_SERIF(28), bg = '#173154', fg = '#ffffff') {
   ctx.fillStyle = bg
   ctx.fillRect(x, y, w, h)
@@ -1015,7 +1095,21 @@ function paintQuestCell(ctx, x, y, w, h, text, face = QUEST_SERIF(28), bg = '#17
   setQuestFont(ctx, face)
   ctx.textBaseline = 'middle'
   ctx.textAlign = 'center'
-  ctx.fillText(text, x + w / 2, y + h / 2)
+  const limit = w - 2 * QUEST_CELL_PAD
+  let lines = [text]
+  if (ctx.measureText(text).width > limit) {
+    const words = text.split(' ')
+    let first = ''
+    for (let i = 0; i < words.length - 1; i++) {
+      const next = first ? `${first} ${words[i]}` : words[i]
+      if (ctx.measureText(next).width > limit) break
+      first = next
+    }
+    if (first) lines = [first, text.slice(first.length + 1)]
+  }
+  const lineH = face.px * 1.15
+  const y0 = y + h / 2 - (lines.length - 1) * lineH / 2
+  lines.forEach((line, i) => ctx.fillText(line, x + w / 2, y0 + i * lineH))
 }
 
 // UPLOAD THE CANVAS NOW, BETWEEN FRAMES, instead of leaving needsUpdate set for
@@ -1358,13 +1452,18 @@ function pressBackpackSlot(i) {
     if (was === null) return
     backpack[i] = null
   }
-  if (was !== null) hands.give(key, was, handsHead())
+  if (was !== null) { hands.give(key, was, handsHead()); playPick() }
   paintBackpack()
 }
 
 /** The bag's closing voice, for a thing put in it: the same one-shot as the menu closing. */
 function playStow() {
   if (ambience) sound.play('uiClose', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
+}
+
+/** The pop of a thing coming into a hand, from the ground or a backpack slot: one voice for every kind until each has its own. */
+function playPick() {
+  if (ambience) sound.play('uiPop', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
 function buildSettingsView() {
@@ -1474,6 +1573,7 @@ function setQuestView(view) {
 
 function buildQuestPanel() {
   questPanelGroup = new THREE.Group()
+  questPanelGroup.name = 'v2-quest-panel'
   scene.add(questPanelGroup)
 
   // BUILT HIDDEN, AND HIDDEN IS THE RESTING STATE. A dozen meshes and the
@@ -1500,6 +1600,25 @@ function buildQuestPanel() {
 
   questViewGroups = { backpack: buildBackpackView(), settings: buildSettingsView(), debug: buildDebugView(), help: buildHelpView() }
   for (const group of Object.values(questViewGroups)) questPanelGroup.add(group)
+  // THE MENU DRAWS OVER THE WORLD, never through it: opened in a cave or
+  // against a hillside it would otherwise be cut by the terrain, and in the
+  // headset a menu half inside a rock is unreadable. No depth test and a
+  // render order past everything else -- so the panel's own layering, which
+  // the depth buffer did along z, comes from the order instead: each mesh
+  // after the one it sits in front of, by where its quads lie in the view
+  // group (a grid's quads carry their z in the geometry, a plane in its
+  // position). Every mesh is made transparent, since three draws the whole
+  // opaque list before the transparent one whatever the order: an opaque
+  // stats plane went under the plate and read through its 94%.
+  questPanelGroup.traverse((o) => {
+    if (!o.isMesh) return
+    o.material.depthTest = false
+    o.material.depthWrite = false
+    o.material.transparent = true
+    o.material.forceSinglePass = true
+    o.geometry.computeBoundingBox()
+    o.renderOrder = QUEST_PANEL_ORDER + Math.round((o.position.z + o.geometry.boundingBox.min.z) * 100)
+  })
   setQuestView(questView)
 
   const dot = new THREE.Mesh(
@@ -1507,14 +1626,18 @@ function buildQuestPanel() {
     new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
   )
   dot.visible = false
+  dot.renderOrder = QUEST_POINTER_ORDER
   scene.add(dot)
   // A unit line up +Z under the pointing hand's grip: updateQuestPointer turns
-  // it down the hand's ray, and scales it to the hit or the horizon.
+  // it down the hand's ray, and scales it to the hit or the horizon. Drawn
+  // over the world and the menu like the dot, so the beam reaches a menu that
+  // stands through a wall.
   const line = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]),
-    new THREE.LineBasicMaterial({ color: QUEST_POINTER_COLOR, toneMapped: false })
+    new THREE.LineBasicMaterial({ color: QUEST_POINTER_COLOR, toneMapped: false, depthTest: false })
   )
   line.visible = false
+  line.renderOrder = QUEST_POINTER_ORDER
   worldProbe.exclude(dot, line)
   questPointer = { line, dot, hit: null }
 
@@ -1528,23 +1651,25 @@ function buildQuestPanel() {
     // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
     // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
-      // With the menu closed the trigger is her hand: it takes, drops and stows (see hands.js).
-      if (!questPanelGroup.visible) {
-        if (hands) hands.press(el === leftHandEl ? 'left' : 'right', handsHead())
-        return
+      // With the menu open the trigger presses what the pointer is on; off the menu, and with it closed, the trigger is her hand: it takes, drops and stows (see hands.js).
+      if (questPanelGroup.visible) {
+        questPointerHand = el
+        updateQuestPointer()
+        const act = questActionAt(questPointer.hit)
+        if (act) { act(); return }
+        if (el.components.raycaster && questPanelBlocks(el.components.raycaster.raycaster)) return
       }
-      questPointerHand = el
-      updateQuestPointer()
-      const act = questActionAt(questPointer.hit)
-      if (act) act()
+      if (hands && hands.press(el === leftHandEl ? 'left' : 'right', handsHead()) === 'pick') playPick()
     })
   }
 
   // Flatscreen click support on a desktop, before entering XR. With the menu
-  // open a click presses what is under the cursor; with it closed a click on
-  // the world reaches the desk hand down the camera ray, to DESK_CLICK_M, for
-  // the first thing it can take (or drops what the hand holds). A click is a
-  // press that moved under DESK_CLICK_PX, so a drag-look never picks.
+  // open a click presses what is under the cursor, and one past the menu goes
+  // on to the world: a click on the world reaches the desk hand down the
+  // camera ray, to DESK_CLICK_M, for the first thing it can take (or drops
+  // what the hand holds). With the mouse captured the ray is the view's
+  // centre, since the cursor is not moving. A click is a press that moved
+  // under DESK_CLICK_PX, so a drag-look never picks.
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
   let downX = 0
@@ -1554,7 +1679,8 @@ function buildQuestPanel() {
     if (sceneEl.is('vr-mode')) return
     const cam = sceneEl.camera
     if (!cam) return
-    pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
+    if (mouseCaptured()) pointer.set(0, 0)
+    else pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
     raycaster.setFromCamera(pointer, cam)
     // THE VISIBILITY CHECK IS NOT BELT AND BRACES. Raycaster does not consult
     // `visible` -- it tests layers and then calls raycast() -- so a closed menu
@@ -1565,13 +1691,21 @@ function buildQuestPanel() {
     if (questPanelGroup.visible) {
       const act = questActionAt(raycaster.intersectObjects(questHitMeshes)[0])
       if (act) act()
-      return
+      if (act || questPanelBlocks(raycaster)) return
     }
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
-    hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M, handsHead())
+    if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M, handsHead()) === 'pick') playPick()
   })
+}
+
+// Whether a ray lands anywhere on the open menu -- a button or the plate
+// between them -- so a press there ends at the menu and only one past it
+// reaches the world. The hidden views' plates are skipped by hand, since
+// Raycaster does not consult `visible`.
+function questPanelBlocks(raycaster) {
+  return raycaster.intersectObjects(questPanelGroup.children.filter((c) => c.visible), true).length > 0
 }
 
 // What pressing on a raycast hit does, or null for a hit on nothing pressable.
@@ -1637,6 +1771,7 @@ function updateQuestPointer() {
 }
 
 const questPanelFwd = new THREE.Vector3()
+const questPanelEye = new THREE.Vector3()
 const questTempQuat = new THREE.Quaternion()
 function questPanelDesiredPosition(out) {
   camera.getWorldQuaternion(questTempQuat)
@@ -1644,40 +1779,19 @@ function questPanelDesiredPosition(out) {
   questPanelFwd.y = 0
   if (questPanelFwd.lengthSq() < 1e-6) questPanelFwd.set(0, 0, -1)
   questPanelFwd.normalize()
-  // Backed off with the third column: at 2.2 m a 2.7 m-wide panel subtends
-  // about 64 degrees, so the outer columns sit out where a Quest 2's lenses go
-  // soft and you have to turn your head to read them.
+  // At 2.2 m the 2.7 m panel subtends about 64 degrees, so the outer columns
+  // sit out where a Quest 2's lenses go soft and you have to turn your head to
+  // read them.
   const dist = 2.8
   out.x = rig.position.x + questPanelFwd.x * dist
   out.z = rig.position.z + questPanelFwd.z * dist
 
-  // HER FLOOR, NOT THE GROUND UNDER THE PANEL. `rig.position.y` is the damped
-  // terrain height while she is walking and her actual altitude while she is
-  // flying, so one expression seats the panel at reading height in both --
-  // whereas sampling the terrain 2.8 m ahead leaves the menu lying on the
-  // hillside while she is a hundred metres above it. 1.3 is unchanged and is
-  // the offset from her floor to the group's origin.
-  out.y = rig.position.y + 1.3
-
-  // AND THEN FLOORED, because her elevation and the ground in front of her are
-  // not the same number. Walking uphill, 2.8 m ahead is above her own footing,
-  // and the plate's lower corner goes into the slope; on the flat it went in
-  // anyway, by 14 cm, because the grid has grown taller than the 1.3 allows for.
-  //
-  // Three samples along the bottom EDGE, not one under the centre, because that
-  // edge is 2.8 m wide and a corner is what digs in first on a side slope. Three
-  // is enough rather than a compromise: the heightmap is 8.0 m per texel, so the
-  // whole edge fits inside one bilinear cell and the surface under it has no
-  // curvature for a fourth sample to find.
-  const halfW = (PANEL_W + 0.1) / 2
-  const rightX = questPanelFwd.z * halfW
-  const rightZ = -questPanelFwd.x * halfW
-  const ground = Math.max(
-    height.heightAt(out.x, out.z),
-    height.heightAt(out.x + rightX, out.z + rightZ),
-    height.heightAt(out.x - rightX, out.z - rightZ)
-  )
-  out.y = Math.max(out.y, ground + QUEST_PANEL_GROUND_GAP - questPanelBottom())
+  // HER EYE, NOT THE GROUND. The panel draws over the terrain (buildQuestPanel
+  // turns its depth test off), so the hillside under it is no concern: it sits
+  // at the same height in view wherever she opens it, walking or flying. The
+  // origin a hand above the eye puts the tab bar about 20 degrees up and the
+  // debug grid's rows across the eye line.
+  out.y = camera.getWorldPosition(questPanelEye).y + 0.1
   return out
 }
 
@@ -1708,7 +1822,7 @@ function placeQuestPanel() {
 const QUEST_PANEL_LEAVE_M = 5
 
 /**
- * B / Y, or Escape: open the menu here, or close it.
+ * B / Y, or Tab: open the menu here, or close it.
  *
  * This used to be "recall", which only ever moved the panel -- so the menu was
  * always in the world and the button just decided where. It is a MENU SCREEN
@@ -2095,6 +2209,7 @@ function mirroredPose(pose) {
 let height = null
 let layers = null
 let terrain = null
+let terrainWire = null
 let terrainTint = null
 let player = null
 let walk = null
@@ -2119,14 +2234,18 @@ let grasshoppers = null
 let spiders = null
 let wildlife = null
 let snowmen = null
+let leafkin = null
 let hands = null
 let handsNet = null
+let creatureNet = null
 const HAND_KEYS = ['left', 'right', 'desk']
 // The desk hand: a node under the camera, empty at DESK_HAND_REST, and with a
 // thing in it moved out to the bottom-right corner of the view so the thing
 // shows partly off screen, as if carried near her face by a hand out of frame.
 let deskHand = null
 const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
+// Metres a thing in the desk hand is drawn at, at most (placeDeskHand): a fern is shown a third its size, like a thing carried near the face.
+const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far.
 const DESK_CLICK_PX = 5
 const DESK_CLICK_M = 2
@@ -2134,6 +2253,20 @@ let roosts = null
 let rowboats = null
 let boats = null
 let dragons = null
+let entrances = null
+// A village's own (DESIGN.md §30): its huts, the boulder's inside, and the air in it; all null in the overworld.
+let roomProps = null
+let shell = null
+let cave = null
+// The mouth she came in by, to put her back at when she leaves.
+let cameInBy = null
+// The village doors (DESIGN.md §30): a mouth within `reach` takes her when the step just taken ends her feet within `walk` of its point heading into the face (the cosine at least `into`), or a teleport lands them within `blink`. The limiter has already refused the face, so both land on the point.
+const PORTAL = { reach: 20, walk: 0.9, blink: 1.2, into: 0.5 }
+const portalFrom = new THREE.Vector3()
+const portalSites = []
+let portalBlink = false
+// The door she stands in, so a mouth takes her once a visit.
+let portalIn = null
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -2147,9 +2280,9 @@ let ready = false
 // measurement.
 const questToggles = {
   terrain: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, spiders: true, wildlife: true, snowmen: true, dragons: true,
-  water: true, reflections: true, aurora: true, sound: true,
-  critterTint: false, mirror: false,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
+  water: true, reflections: true, aurora: true, clouds: true, wreaths: true, precip: true, sound: true,
+  critterTint: false, mirror: false, terrainWire: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
   teleport: true,
@@ -2168,7 +2301,7 @@ const animalOn = (key) => questToggles.animals && questToggles[key]
 // frame reads 0 or 0.1, and a step that bursts once a second (a tile row of
 // seats, a puppet pool refill) is only visible as its share of a long mean.
 const ANIMAL_MS_WINDOW_S = 5
-const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'spiders', 'wildlife', 'snowmen', 'dragons']
+const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons']
 const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 const animalMsAcc = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 let animalMsFrames = 0
@@ -2207,6 +2340,7 @@ function applyAnimalVisibility() {
   spiders.batch.visible = animalOn('spiders')
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
+  if (leafkin) leafkin.batch.visible = animalOn('leafkin')
   // The roosts go with their dragons: a nest is where a dragon lives, not litter.
   dragons.batch.visible = animalOn('dragons')
   roosts.batch.visible = animalOn('dragons')
@@ -2243,7 +2377,7 @@ function placeAnimals(cx, cz) {
 // reload-on-save.
 // The suffix moves with RELIEF_SHIPPED: a browser holding a relief saved under
 // the previous shipped configuration boots on the new one instead of the old.
-const RELIEF_KEY = 'v2.relief.3'
+const RELIEF_KEY = 'v2.relief.4'
 let relief = RELIEF_SHIPPED
 
 /**
@@ -2257,7 +2391,7 @@ let relief = RELIEF_SHIPPED
  * shipped configuration.
  */
 function loadRelief() {
-  for (const stale of ['v2.relief', 'v2.relief.2']) localStorage.removeItem(stale)
+  for (const stale of ['v2.relief', 'v2.relief.2', 'v2.relief.3']) localStorage.removeItem(stale)
   const raw = localStorage.getItem(RELIEF_KEY)
   if (!raw) return RELIEF_SHIPPED
   try {
@@ -2326,30 +2460,269 @@ function buildGrass(style, cx, cz, opts = {}) {
 
 // --- boot -------------------------------------------------------------------
 
-/**
- * Where an unedited world puts its snow line, measured off the loaded image.
- *
- * NOT a constant, for the same reason nothing else vertical in v2 is one: the
- * heightmap is the thing the author replaces, and a literal fitted to one bake
- * is silently wrong under the next. doc.js carries provisional numbers so that
- * a document can be constructed without a heightmap at all (the node gates do
- * exactly that); this is the browser's answer and it wins here.
- *
- * p75 as the base: three quarters of the world's texels are below the line, so
- * the snow reads as caps on the high ground rather than as a white world. The
- * band is half the p50..p90 spread, which is the elevation over which the
- * middle of the terrain actually climbs -- a fixed band is either a hard line on
- * a gentle world or a hundred-metre smear on a steep one.
- */
-// Where the world starts. A fixed point rather than a search, so every boot
+// Where the overworld starts. A fixed point rather than a search, so every boot
 // and every headset opens on the same view. Chosen by hand; the boot throws if
 // the water ever rises over it, since nothing else here checks the ground.
 const SPAWN = { x: -320, z: 1367 }
 
+// The rooms she can be in (DESIGN.md §30): the overworld, and the village
+// inside a hollow boulder. Each is a set of world files under `dir`; a village
+// also has a `room.json` with its seed, its exit mouth, its shell and its huts.
+const ROOMS = {
+  overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false },
+  leafkin: { id: 'leafkin', dir: 'rooms/leafkin', height: 'rooms/leafkin/height.png', meta: 'rooms/leafkin/height.json', hollows: false, leafkin: false, village: true },
+}
+let currentRoom = ROOMS.overworld
+// The room's own file, when it has one.
+let roomFile = null
+let roomHeightmap = null
+// Counts the builds, so a bake or the sound landing after the room it was for has gone does nothing.
+let roomBuild = 0
+// Resolves true once the clips are in, false if one failed -- and then the frame loop stays silent for good; see the sound step.
+let soundReady = null
+// How far out from a mouth she arrives, and the way she faces: along the mouth's normal, off the face.
+const ARRIVE_M = 2
+// Black over the whole view while a room is swapped: on the camera, so it holds in XR where the DOM overlay is not drawn.
+let blackout = null
+
 async function bootWorld() {
-  bootSay(`loading <b>${HEIGHTMAP_URL}</b> ...`)
+  // The atlas is built once, ahead of every room: createTerrainMaterial decides
+  // at compile time whether to declare a sampler at all, so it has to have the
+  // array in hand before the material exists. It is built empty and its image
+  // layers land asynchronously (loadImageLayers, below); the bank and the
+  // batches do not wait on them, so the world has trees and stone from the
+  // first frame wearing whatever the procedural layers already hold.
+  propTextures = buildTextureArray()
+
+  // The ambient sound's clips (audio/) load in the background so a slow fetch
+  // never holds the world; until they land, and forever if one fails, the
+  // frame loop sees `ambience` null and stays silent -- a world with half its
+  // sounds is worse than one with none. The context itself stays suspended
+  // until the first gesture; see unlockSound.
+  sound = new SoundEngine()
+  soundReady = sound.load(SOUNDS).then(
+    () => { console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
+    (err) => { console.error('[v2] sound disabled:', err); return false },
+  )
+
+  // A saved game is where she boots, and it decides where every layer is first
+  // placed -- so it is read HERE and not applied after the fact, or the forest
+  // would be planted around the room's spawn and she would be standing outside it.
+  let saved = readSave()
+  const room = ROOMS[saved?.room ?? 'overworld']
+  if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
+  const { fresh } = await buildRoom(room, saved)
+  if (fresh) saved = null
+
+  // The weather, which until now nothing in v2 ever turned on: the props have
+  // carried a snow shader and a moss shader since they were written, and both
+  // have been sitting at zero. Setting them here is what makes a rock on a
+  // summit white and the same rock in a damp wood green -- and it also puts snow
+  // on the TREES above the line for the first time, because it is one uniform
+  // for the whole world by design (see material.js).
+  //
+  // Both are CEILINGS. What a given prop wears is this scaled by where it stands
+  // against its line, which is what rocks.syncBands set from the terrain's own
+  // snow band. How unevenly each is spread from one rock to the next is NOT set
+  // here: both ranges are stone-only knobs and Rocks.syncBands owns them.
+  setSnow(1)
+  setMoss(0.85)
+
+  // ONE loadImageLayers for every bake, whatever room she is in. Separate calls
+  // would be separate decodes of the same PNGs into the same atlas.
+  loadImageLayers(propTextures).then(() => {
+    propLayersReady = true
+    bakeImpostors()
+  })
+
+  if (EDITOR_MODE) editor = new Editor({
+    scene,
+    camera,
+    renderer,
+    layers,
+    height,
+    markers,
+    terrain,
+    onDirty,
+    onRiversMoved: () => waterSurfaces.rebuild(),
+    onView,
+    orbitLock,
+    // The heightmap's DECODED extremes, not meta.minY/maxY: the encoding's range
+    // is what the bake could have expressed, and the sliders should offer what
+    // the image actually contains. See heightmap.js's `min`/`max`.
+    elevation: { min: roomHeightmap.min, max: roomHeightmap.max },
+  })
+  // The hide set lives in the editor and every renderer that draws from the
+  // document has to read it. Wired AFTER the editor exists rather than in each
+  // constructor, because `markers.setVisibility` re-syncs immediately and the
+  // predicate it is handed is the editor's.
+  const isVisible = editor ? (kind, id, index) => editor.isVisible(kind, id, index) : () => true
+  markers.setVisibility(isVisible)
+  waterSurfaces.setVisibility(isVisible)
+  roads.setVisibility(isVisible)
+
+  if (EDITOR_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+
+  // The 8 m chunk floor is NOT set here. It is config.js's MAX_DEPTH: one
+  // world, one cap, desktop and headset alike.
+  ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
+  buildQuestPanel()
+  window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
+  // The rest of the save, now that there is a backpack view to paint. Her
+  // position was the spawn above.
+  if (saved) { applySave(saved); console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}`) }
+  logSceneCensus()
+
+  ready = true
+  await bootDone()
+}
+
+/** The far cards, once the atlas' images are in: every bake that reads the images, for the room standing now. */
+function bakeImpostors() {
+  // The images can land mid-swap, with no room standing; the next room bakes at its own end.
+  if (!trees) return
+  const baked = trees.bakeCards(renderer)
+  ferns.bakeCards(renderer)
+  grass.bakeCards(renderer)
+  mushrooms.bakeCards(renderer)
+  // The rock cards: one photograph per SHAPE in the bank, the boulder and the
+  // cap. Unlike the four above this is not a method on the scatter, because
+  // there is nothing per-bed about it -- a bed picks a shape and the shape's
+  // picture serves every bed that picked it, so it lives on the bank. See
+  // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
+  const rockCards = bakeRockImpostor(renderer, propTextures)
+  // The one measurement that says whether the impostor bake rig is aimed
+  // right, and there is nowhere else it can be taken: the bake needs a live
+  // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
+  // for what these numbers are supposed to be.
+  console.log(
+    'tree impostors baked:',
+    baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+  )
+  // Same instrument, same reason. A rock card is a grey blob, which makes
+  // coverage the number that matters more than luma here: it says how much of
+  // the quad is stone rather than hole, and a card whose coverage collapses is
+  // a distant boulder that has become a rectangle of sky.
+  //
+  // THE KIND IS PRINTED because the two rows are not the same measurement. The
+  // boulder is shot side-on and the cap from straight above (see THE CARD in
+  // rock-bank.js), and a plate seen down its own axis fills far more of its
+  // slice than anything seen broadside -- which is the whole reason it is shot
+  // that way, and would read as an anomaly next to an unlabelled boulder.
+  console.log(
+    'rock impostors baked:',
+    rockCards
+      .map((b) => `${b.name} (${b.card}) luma ${b.meanLuma.toFixed(3)} `
+        + `cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
+      .join(', ')
+  )
+}
+
+/**
+ * Every layer of the room she is leaving, torn down: disposed and off the
+ * scene, the terrain's workers ended, the loops silenced. The banks the layers
+ * share stay loaded (the atlas, the GLBs, the sound clips); three re-uploads a
+ * disposed geometry the next time it is drawn. What her hands hold is the
+ * caller's to carry over -- see bootRoom.
+ */
+function disposeRoom() {
+  const gone = (layer) => {
+    if (!layer) return
+    layer.dispose()
+    for (const node of [layer.batch, layer.group, layer.mesh, layer.hulls, layer.lids, layer.holes]) node?.removeFromParent()
+    if (Array.isArray(layer.meshes)) for (const m of layer.meshes) m.removeFromParent()
+  }
+  if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
+  for (const layer of [
+    leafkin, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, grasshoppers, butterflies, crabs, frogs, fish,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, shell, markers, roads, waterSurfaces, terrainWire, terrain,
+  ]) gone(layer)
+  leafkin = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = grasshoppers = butterflies = crabs = frogs = fish = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = shell = markers = roads = waterSurfaces = terrainWire = terrain = null
+  terrainTint = player = walk = height = layers = roomFile = roomHeightmap = cave = null
+  camera.remove(deskHand)
+  deskHand = null
+  portalIn = null
+}
+
+/**
+ * The world she is leaving for another (DESIGN.md §30): black over the view,
+ * every layer down, the room's files up and its stack built against them, her
+ * feet ARRIVE_M out from `site` facing along its normal -- a village's own
+ * exit when `site` is null, since only its file knows where that is. The
+ * clock, the backpack, the net and what her hands hold come with her; a
+ * creature in a hand does not, since its layer is gone -- it goes in the
+ * backpack if there is room.
+ */
+async function bootRoom(room, site) {
+  if (EDITOR_MODE) throw new Error('v2: no room swap in the editor')
+  if (!blackout) {
+    blackout = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0, side: THREE.BackSide, depthTest: false, depthWrite: false, fog: false }),
+    )
+    blackout.renderOrder = 1e6
+    blackout.frustumCulled = false
+    camera.add(blackout)
+  }
+  blackout.visible = true
+  ready = false
+  const held = {}
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec !== null) held[key] = hands.pack(rec)
+  }
+  disposeRoom()
+  const at = site === null ? null : { x: site.x + site.nx * ARRIVE_M, z: site.z + site.nz * ARRIVE_M }
+  const { spawn } = await buildRoom(room, at)
+  const face = site ?? roomFile.exit
+  faceAlong(face.nx, face.nz)
+  restoreHeld(held)
+  logSceneCensus()
+  blackout.visible = false
+  ready = true
+  console.log(`[v2] room: ${room.id} at ${spawn.x.toFixed(1)}, ${spawn.z.toFixed(1)}`)
+}
+
+/** The rig turned so her gaze runs along (fx, fz), wherever her head is turned within it. */
+function faceAlong(fx, fz) {
+  const q = rig.quaternion
+  const rigYaw = 2 * Math.atan2(q.y, q.w)
+  // headYaw is atan2(fwd.x, fwd.z), which is the rig's Y rotation plus the head's own plus pi.
+  const headLocal = player.headYaw() - Math.PI - rigYaw
+  rig.rotation.set(0, Math.atan2(-fx, -fz) - headLocal, 0)
+}
+
+/**
+ * The room's stack, built against its files: heightmap, layers, terrain, the
+ * water and the roads, then every scatter and creature layer around `at` (or
+ * the room's own spawn when `at` is null or under water), her walk surface,
+ * her hands, the mouths and, in the overworld, the leafkin. Returns `{ spawn,
+ * fresh }`, `fresh` when `at` was refused.
+ */
+async function buildRoom(room, at) {
+  const build = ++roomBuild
+  currentRoom = room
+  bootSteps.length = 0
+  bootSay(`loading <b>${room.height}</b> ...`)
   await bootStep('heightmap')
-  const heightmap = await Heightmap.load({ url: HEIGHTMAP_URL, metaUrl: HEIGHTMAP_META_URL })
+  const heightmap = await Heightmap.load({ url: room.height, metaUrl: room.meta })
+  roomHeightmap = heightmap
+  if (room.village) {
+    const res = await fetch(`${room.dir}/room.json`)
+    if (!res.ok) throw new Error(`${room.dir}/room.json: ${res.status}`)
+    roomFile = await res.json()
+    for (const k of ['seed', 'spawn', 'exit', 'shell', 'props', 'clearing', 'fog']) if (roomFile[k] === undefined) throw new Error(`${room.dir}/room.json has no ${k}`)
+    // The air inside, in the terms sinkCave writes it: the colour as three uploads a fog colour, and as the aerial ramp's raw sRGB ends.
+    const linear = new THREE.Color(roomFile.fog.color)
+    const c = { r: 0, g: 0, b: 0 }
+    linear.getRGB(c, THREE.SRGBColorSpace)
+    cave = { linear, air: new THREE.Vector3(c.r, c.g, c.b), density: roomFile.fog.density }
+  } else {
+    roomFile = null
+    cave = null
+  }
+  const seed = room.village ? roomFile.seed : SEED
 
   // BEFORE the scratch V2Height, because the relief changes what `bands` says
   // and the snow defaults are derived from bands. Booting with the knobs off and
@@ -2360,38 +2733,37 @@ async function bootWorld() {
 
   // The scratch document. See the header: `bands` needs a V2Height and the snow
   // defaults need `bands`, so something has to be constructed first.
-  height = new V2Height({ heightmap, layers: new Layers(), seed: SEED, relief })
+  height = new V2Height({ heightmap, layers: new Layers(), seed, relief })
   const bands = height.bands
 
-  bootSay('loading <b>world/layers.json</b> ...')
+  bootSay(`loading <b>${room.dir}/layers.json</b> ...`)
   await bootStep('layers')
   const snow = snowDefaults(bands)
-  const { doc, from } = await persist.loadInitial(snow)
+  let doc, from
+  if (room.village) {
+    // A village's document is what its generator wrote (tools/rooms/make-village.mjs): never the editor's.
+    const res = await fetch(`${room.dir}/layers.json`)
+    if (!res.ok) throw new Error(`${room.dir}/layers.json: ${res.status}`)
+    doc = await res.json()
+    from = 'the room file'
+  } else {
+    ({ doc, from } = await persist.loadInitial(snow))
+  }
   layers = Layers.deserialize(doc)
   height.setLayers(layers)
   console.log(
-    `[v2] world ${heightmap.width}x${heightmap.height} texels, ${heightmap.texelSize.toFixed(2)} m/texel, ` +
-      `relief ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, snow line ${snow.base.toFixed(0)} m +/- ${snow.band.toFixed(0)} m, ` +
+    `[v2] ${room.id} ${heightmap.width}x${heightmap.height} texels, ${heightmap.texelSize.toFixed(2)} m/texel, ` +
+      `relief ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, snow line ${layers.snow.base.toFixed(0)} m +/- ${layers.snow.band.toFixed(0)} m, ` +
       `document from ${from}`
   )
 
   bootSay('building the world ...')
   await bootStep('terrain')
-  // The atlas is built HERE, ahead of the terrain, and not down with the trees
-  // where it used to live: createTerrainMaterial decides at compile time whether
-  // to declare a sampler at all, so it has to have the array in hand before the
-  // material exists. `axis` then declines it -- that variant wears no photographic
-  // tile -- but the argument stays so the /gen-* benches and this call are the
-  // same shape.
-  //
-  // Building it early costs nothing. It is built empty and its image layers land
-  // asynchronously (loadImageLayers, below); the bank and the batches do not wait
-  // on them, so the world has trees and stone from the first frame wearing
-  // whatever the procedural layers already hold.
-  propTextures = buildTextureArray()
   terrain = new TerrainV2(scene, {
     heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, axis: true,
   })
+  terrainWire = new TerrainWire(scene, terrain)
+  window.v2terrainWire = terrainWire // console: `v2terrainWire.visible = true`
 
   lighting.patch(terrain.material, {
     mode: 'fragment',
@@ -2432,19 +2804,17 @@ async function bootWorld() {
   markers.sync()
 
   await bootStep('spawn')
-  // A saved game is where she boots, and it decides where every layer below is
-  // first placed -- so it is read HERE and not applied after the fact, or the
-  // forest would be planted around SPAWN and she would be standing outside it.
   // A save taken flying over a lake would put her under it on every refresh,
-  // so that one case falls back to SPAWN rather than trapping her.
-  let saved = readSave()
-  if (saved && waterSurfaces.isSubmerged(saved.x, saved.z, height.heightAt(saved.x, saved.z))) {
-    console.warn(`[v2] saved game at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} is underwater; spawning fresh`)
-    saved = null
+  // so that one case falls back to the room's spawn rather than trapping her.
+  let fresh = at === null
+  if (!fresh && waterSurfaces.isSubmerged(at.x, at.z, height.heightAt(at.x, at.z))) {
+    console.warn(`[v2] ${at.x.toFixed(0)}, ${at.z.toFixed(0)} is underwater; spawning fresh`)
+    fresh = true
   }
-  const at = saved ?? SPAWN
-  const spawn = { x: at.x, z: at.z, y: height.heightAt(at.x, at.z) }
-  if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: SPAWN (${spawn.x}, ${spawn.z}) is underwater`)
+  const home = room.village ? roomFile.spawn : room.spawn
+  const start = fresh ? home : at
+  const spawn = { x: start.x, z: start.z, y: height.heightAt(start.x, start.z) }
+  if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: ${room.id}'s spawn (${spawn.x}, ${spawn.z}) is underwater`)
   console.log(`[v2] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m`)
 
   // Stone, in six size beds at once: boulders through the wood and across the
@@ -2468,7 +2838,7 @@ async function bootWorld() {
   // `batch.visible` and the beds are placed and stepped either way, so what the
   // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain })
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
@@ -2483,6 +2853,11 @@ async function bootWorld() {
   // misbehaves in the browser is actually doing, since a blink does not survive
   // into a headless traverse. See render/rocks.js.
   window.v2rocks = rocks
+  // The shell: the inside of the boulder a village is in (render/shell.js), the bank's boulder turned inside out.
+  if (room.village) {
+    shell = new Shell(scene, rocks.bank, propTextures, roomFile.shell)
+    lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
+  }
 
   // Fallen logs and rotten stumps. BEFORE THE TREES, on purpose: a piece is
   // metres long and claims its ground first, and the forest keeps off it
@@ -2491,8 +2866,9 @@ async function bootWorld() {
   // frame loop steps them in. Full density in forest cover and a quarter of it
   // in the open, off the same biome field the trees read.
   await bootStep('deadwood')
-  const biome = new BiomeField({ seed: SEED })
-  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadDeadwoodBank(), biome })
+  // A village is wood to its walls: full cover everywhere but the clearing.
+  const biome = room.village ? villageBiome(seed, roomFile.clearing) : new BiomeField({ seed })
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await loadDeadwoodBank(), biome })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
   // card flags), so one program serves every mesh variant and each call is a
@@ -2509,7 +2885,18 @@ async function bootWorld() {
   )
   window.v2deadwood = deadwood
 
-  // Trees. The atlas was built up at the terrain, above, because the terrain
+  // The village's huts (render/room-props.js), where its file puts them, and
+  // stone to her. Before the trees, which keep off the clearing and the huts
+  // the way they keep off the dead wood.
+  if (room.village) {
+    await bootStep('huts')
+    roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomFile.props, clearing: roomFile.clearing })
+    for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+    console.log(`[v2] huts ${roomProps.stats.placed}`)
+  }
+  window.v2huts = roomProps
+
+  // Trees. The atlas was built up ahead of the terrain, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
   // be a photograph of nothing -- see Trees.bakeCards.
@@ -2518,7 +2905,7 @@ async function bootWorld() {
   // chunk's triangles are chording across. See Trees._groundFor.
   await bootStep('trees')
   trees = new Trees(scene, height, waterSurfaces, propTextures, {
-    seed: SEED,
+    seed,
     ground: terrain,
     // Constructed above, and it has to be: a trunk that lands inside a boulder
     // stands on the boulder. See Rocks.blockTopAt.
@@ -2526,8 +2913,11 @@ async function bootWorld() {
     // Where the wood is dense, sparse or open meadow. Off the world seed, like
     // the scatter itself, so the clearings are the same on every boot.
     biome,
-    // Placed above; a trunk that would stand through a piece of it is refused.
-    deadwood,
+    // Placed above; a trunk that would stand through a piece of it is refused,
+    // and in a village one in the clearing or through a hut.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) } : deadwood,
+    // No trunk on a road, and the wood crowds the verge.
+    paths: layers.paths,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -2552,6 +2942,7 @@ async function bootWorld() {
   walk = new WalkSurface(height, rocks, trees)
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
+  if (roomProps) walk.addStone(roomProps)
   // And so are the other players, and her double: their bodies stand on it, feet planted.
   peerAvatars.ground(walk)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
@@ -2578,7 +2969,7 @@ async function bootWorld() {
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
   await bootStep('ferns')
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, rocks })
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -2643,7 +3034,7 @@ async function bootWorld() {
   // it is constructed AFTER them so it can refuse to bed a pebble inside one.
   // See render/litter.js.
   await bootStep('litter')
-  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed: SEED, ground: terrain, rocks })
+  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, rocks })
   lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
   litter.place(spawn.x, spawn.z)
   // Reachable from the console so the layer's cost can be measured on its own:
@@ -2669,7 +3060,7 @@ async function bootWorld() {
   // The array order is load-bearing too: [trees, rocks] is the order the
   // constructor documents, and the layer weights its anchor kinds by it.
   await bootStep('mushrooms')
-  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed: SEED })
+  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed })
   // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
   // three keys its program cache on this string, and this material's
   // uBillboardLayers is its own length, so reusing the ferns' 'v2-prop-bb'
@@ -2696,7 +3087,7 @@ async function bootWorld() {
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
   await bootStep('bones')
-  bones = new Bones(scene, height, waterSurfaces, layers, { seed: SEED, bank: await loadBonesBank() })
+  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await loadBonesBank() })
   for (const m of bones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   bones.place(spawn.x, spawn.z)
   bones.bakeCards(renderer)
@@ -2710,7 +3101,7 @@ async function bootWorld() {
   // The carrots: bunches on open ground (render/carrots.js), placed against the
   // trees and rocks already standing, like the mushrooms.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed: SEED, bank: await loadCarrotsBank() })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await loadCarrotsBank() })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   carrots.place(spawn.x, spawn.z)
   const cs = carrots.stats
@@ -2723,7 +3114,7 @@ async function bootWorld() {
   // The rowboats: the viking rowboat afloat in the shallows of every lake, one
   // every 300 m or so of shoreline (render/rowboats.js), on the water row.
   await bootStep('rowboats')
-  rowboats = new Rowboats(scene, height, waterSurfaces, { seed: SEED, bank: await loadRowboatsBank() })
+  rowboats = new Rowboats(scene, height, waterSurfaces, { seed, bank: await loadRowboatsBank() })
   for (const m of rowboats.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   rowboats.place(spawn.x, spawn.z)
   rowboats.bakeCards(renderer)
@@ -2743,34 +3134,34 @@ async function bootWorld() {
   // render/fish.js). Its materials are patched here, like every other layer's,
   // before the mesh and cutouts arrive -- the pool stays empty until they do.
   await bootStep('fish')
-  fish = new Fish(scene, height, waterSurfaces, { seed: SEED })
+  fish = new Fish(scene, height, waterSurfaces, { seed })
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
-  fish.ready.then(() => fish.place(fish.head.x, fish.head.z))
+  fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
   window.v2fish = fish
 
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
-  frogs = new Frogs(scene, height, waterSurfaces, { seed: SEED, rocks, ground: terrain })
+  frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain })
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
   frogs.place(spawn.x, spawn.z)
   console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
   window.v2frogs = frogs
   await bootStep('crabs')
   // The crab's cross card is photographed off its GLB, so the bake waits on the load.
-  crabs = new Crabs(scene, height, waterSurfaces, { seed: SEED, rocks })
+  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })
   crabs.place(spawn.x, spawn.z)
-  crabs.ready.then(() => crabs.bakeCard(renderer))
+  crabs.ready.then(() => { if (build === roomBuild) crabs.bakeCard(renderer) })
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
   window.v2crabs = crabs
 
   // The butterflies over the fields and through the woods (render/butterflies.js):
   // a scatter that lands on the trees, the rocks, the ferns and the deadwood, so after all of them.
   await bootStep('butterflies')
-  butterflies = new Butterflies(scene, height, waterSurfaces, { seed: SEED, walk, rocks, trees, ferns, deadwood })
+  butterflies = new Butterflies(scene, height, waterSurfaces, { seed, walk, rocks, trees, ferns, deadwood })
   lighting.patch(butterflies.material, { mode: 'vertex', cacheKey: 'v2-butterflies' })
   butterflies.place(spawn.x, spawn.z)
   console.log(`[v2] butterflies ${butterflies.stats.alive} on ${butterflies.stats.tiles} tiles at boot`)
@@ -2780,7 +3171,7 @@ async function bootWorld() {
   // one instanced low-poly mesh, seated on the walk surface, so after the rocks.
   // The GLB lands after boot; until it does the mesh stays hidden.
   await bootStep('grasshoppers')
-  grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed: SEED, walk })
+  grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed, walk })
   lighting.patch(grasshoppers.material, { mode: 'vertex', cacheKey: 'v2-grasshoppers' })
   grasshoppers.place(spawn.x, spawn.z)
   console.log(`[v2] grasshoppers ${grasshoppers.stats.alive} on ${grasshoppers.stats.tiles} tiles at boot`)
@@ -2790,11 +3181,11 @@ async function bootWorld() {
   // a scatter that climbs the trees and the rocks, so after both. One material
   // for the mesh, its legs in the vertex shader, and one for the card.
   await bootStep('spiders')
-  spiders = new Spiders(scene, height, waterSurfaces, { seed: SEED, trees, rocks })
+  spiders = new Spiders(scene, height, waterSurfaces, { seed, trees, rocks })
   lighting.patch(spiders.material, { mode: 'vertex', cacheKey: 'v2-spiders' })
   lighting.patch(spiders.cardMaterial, { mode: 'vertex', cacheKey: 'v2-spiders-card' })
   spiders.place(spawn.x, spawn.z)
-  spiders.ready.then(() => spiders.bakeCard(renderer))
+  spiders.ready.then(() => { if (build === roomBuild) spiders.bakeCard(renderer) })
   console.log(`[v2] spiders ${spiders.stats.alive} in ${spiders.stats.groups} groups at boot`)
   window.v2spiders = spiders
 
@@ -2803,22 +3194,30 @@ async function bootWorld() {
   // it. The GLBs land after boot; until they do the layer places nothing, and
   // the first frame after they land fills the tiles around her.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed: SEED, walk })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s) })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
+    if (build !== roomBuild) return
     wildlife.place(player.rig.position.x, player.rig.position.z)
     // The card rung's picture is photographed off the posed body, so the bake waits on the load.
     wildlife.bakeCards(renderer)
     console.log(`[v2] wildlife ${JSON.stringify(wildlife.stats.alive)} on ${wildlife.stats.tiles} tiles`)
   })
   window.v2wildlife = wildlife
+  // The room's creatures over the relay (creature-net.js): a lured animal's
+  // anchors out, everyone else's in, routed to its layer by the key's first word.
+  creatureNet = new CreatureNet(netplay, clock, [{ layer: wildlife, prefixes: ['st', 'fx', 'hr'] }])
+  creatureNet.add(frogs, ['fg'])
+  creatureNet.add(fish, ['fs'])
+  window.v2creatureNet = creatureNet
 
   // The abominable snowmen above the snow line (render/snowmen.js): the same
   // ground and the same late-landing GLB as the wildlife.
   await bootStep('snowmen')
-  snowmen = new Snowmen(scene, height, waterSurfaces, { seed: SEED, walk })
+  snowmen = new Snowmen(scene, height, waterSurfaces, { seed, walk })
   for (const m of snowmen.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-snowmen' })
   snowmen.ready.then(() => {
+    if (build !== roomBuild) return
     snowmen.place(player.rig.position.x, player.rig.position.z)
     console.log(`[v2] snowmen ${snowmen.stats.alive} on ${snowmen.stats.tiles} tiles`)
   })
@@ -2872,140 +3271,68 @@ async function bootWorld() {
   // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
   await bootStep('dragons')
   const [roostMaps, eggBank] = await Promise.all([loadRoostMaps(), loadEggBank()])
-  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed: SEED, maps: roostMaps, egg: eggBank })
+  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, maps: roostMaps, egg: eggBank })
   for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   roosts.place(spawn.x, spawn.z)
   roosts.bakeCards(renderer)
   console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
   window.v2roosts = roosts
   hands.addSource(roosts, 'egg')
-  dragons = new Dragons(scene, height, { seed: SEED, roosts, wildlife, water: waterSurfaces })
+  dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces })
   for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
   dragons.ready.then(() => {
+    if (build !== roomBuild) return
     dragons.bakeCards(renderer)
     console.log(`[v2] dragons: fly pose ${(2 * dragons.fly.halfZ * dragons.asset.sizeM / dragons.asset.span).toFixed(1)} m across`)
   })
   window.v2dragons = dragons
+  creatureNet.add(dragons, ['dr'])
 
-  // The ambient sound (audio/). The clips load in the background so a slow
-  // fetch never holds the world; until they land, and forever if one fails, the
-  // frame loop sees `ambience` null and stays silent -- a world with half its
-  // sounds is worse than one with none. The context itself stays suspended
-  // until the first gesture; see unlockSound.
+  // The leafkin village entrances (render/entrances.js, DESIGN.md §30): a
+  // mouth on the face of every hollow boulder the rocks hold resident, or in a
+  // village the one mouth out, where its file says.
+  await bootStep('entrances')
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await loadMouthBank(), fixed: room.village ? [roomFile.exit] : null })
+  for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  entrances.place(spawn.x, spawn.z)
+  console.log(`[v2] entrances ${entrances.stats.placed} mouths in ${entrances.placeMs.toFixed(1)} ms, refused ${JSON.stringify(entrances.stats.rejected)}`)
+  window.v2entrances = entrances
+
+  // One leafkin a village (render/leafkin.js), out of its mouth into the wood for mushrooms, its caps carried by the hands' pool. None inside a village.
+  if (room.leafkin) {
+    await bootStep('leafkin')
+    leafkin = new Leafkin(scene, waterSurfaces, { walk, entrances, mushrooms, hands })
+    for (const m of leafkin.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-leafkin' })
+    leafkin.ready.then(() => console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`))
+  }
+  window.v2leafkin = leafkin
+
+  // The ambient sound over this room's layers, once the clips are in.
   await bootStep('sound')
-  sound = new SoundEngine()
-  sound.load(SOUNDS).then(
-    () => {
-      ambience = new Ambience({
-        engine: sound,
-        sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
-        // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-        herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }],
-        crawlers: [crabs],
-        startlers: [spiders],
-        dragons,
-        fish,
-        grasshoppers,
-      })
-      window.v2ambience = ambience
-      console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`)
-    },
-    (err) => console.error('[v2] sound disabled:', err),
-  )
+  soundReady.then((ok) => {
+    if (!ok || build !== roomBuild) return
+    ambience = new Ambience({
+      engine: sound,
+      sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
+      // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...(leafkin ? [{ layer: leafkin, clips: 'human' }] : [])],
+      voiced: leafkin ? [leafkin] : [],
+      crawlers: [crabs],
+      startlers: [spiders],
+      dragons,
+      fish,
+      grasshoppers,
+    })
+    window.v2ambience = ambience
+  })
 
-  // Last of the five, so the cursor readout can be bound now. Deliberately here
-  // rather than lazily inside the readout: a missing scatter should be a boot
-  // error next to the thing that failed to build, not a readout that silently
-  // stops naming ferns.
+  // Last of the layers, so the cursor readout can be bound now. Deliberately
+  // here rather than lazily inside the readout: a missing scatter should be a
+  // boot error next to the thing that failed to build, not a readout that
+  // silently stops naming ferns.
   await bootStep('ui')
   bindCursorPicks()
-
-  // The weather, which until now nothing in v2 ever turned on: the props have
-  // carried a snow shader and a moss shader since they were written, and both
-  // have been sitting at zero. Setting them here is what makes a rock on a
-  // summit white and the same rock in a damp wood green -- and it also puts snow
-  // on the TREES above the line for the first time, because it is one uniform
-  // for the whole world by design (see material.js).
-  //
-  // Both are CEILINGS. What a given prop wears is this scaled by where it stands
-  // against its line, which is what rocks.syncBands set from the terrain's own
-  // snow band a few lines up.
-  setSnow(1)
-  setMoss(0.85)
-  // How unevenly each of the two is spread from one rock to the next is NOT set
-  // here: both ranges are stone-only knobs and Rocks.syncBands owns them, a few
-  // lines up. Setting them here as well would just be a second place to forget
-  // to change.
-
-  // ONE loadImageLayers for all three, and the bakes hang off the same promise.
-  // Separate calls would be separate decodes of the same PNGs into the same
-  // atlas.
-  loadImageLayers(propTextures).then(() => {
-    propLayersReady = true
-    const baked = trees.bakeCards(renderer)
-    if (ferns) ferns.bakeCards(renderer)
-    if (grass) grass.bakeCards(renderer)
-    mushrooms.bakeCards(renderer)
-    // The rock cards: one photograph per SHAPE in the bank, the boulder and the
-    // cap. Unlike the four above this is not a method on the scatter, because
-    // there is nothing per-bed about it -- a bed picks a shape and the shape's
-    // picture serves every bed that picked it, so it lives on the bank. See
-    // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
-    const rockCards = bakeRockImpostor(renderer, propTextures)
-    // The one measurement that says whether the impostor bake rig is aimed
-    // right, and there is nowhere else it can be taken: the bake needs a live
-    // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
-    // for what these numbers are supposed to be.
-    console.log(
-      'tree impostors baked:',
-      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
-    )
-    // Same instrument, same reason. A rock card is a grey blob, which makes
-    // coverage the number that matters more than luma here: it says how much of
-    // the quad is stone rather than hole, and a card whose coverage collapses is
-    // a distant boulder that has become a rectangle of sky.
-    //
-    // THE KIND IS PRINTED because the two rows are not the same measurement. The
-    // boulder is shot side-on and the cap from straight above (see THE CARD in
-    // rock-bank.js), and a plate seen down its own axis fills far more of its
-    // slice than anything seen broadside -- which is the whole reason it is shot
-    // that way, and would read as an anomaly next to an unlabelled boulder.
-    console.log(
-      'rock impostors baked:',
-      rockCards
-        .map((b) => `${b.name} (${b.card}) luma ${b.meanLuma.toFixed(3)} `
-          + `cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
-        .join(', ')
-    )
-  })
-
-  if (EDITOR_MODE) editor = new Editor({
-    scene,
-    camera,
-    renderer,
-    layers,
-    height,
-    markers,
-    terrain,
-    onDirty,
-    onRiversMoved: () => waterSurfaces.rebuild(),
-    onView,
-    orbitLock,
-    // The heightmap's DECODED extremes, not meta.minY/maxY: the encoding's range
-    // is what the bake could have expressed, and the sliders should offer what
-    // the image actually contains. See heightmap.js's `min`/`max`.
-    elevation: { min: heightmap.min, max: heightmap.max },
-  })
-  // The hide set lives in the editor and every renderer that draws from the
-  // document has to read it. Wired AFTER the editor exists rather than in each
-  // constructor, because `markers.setVisibility` re-syncs immediately and the
-  // predicate it is handed is the editor's.
-  const isVisible = editor ? (kind, id, index) => editor.isVisible(kind, id, index) : () => true
-  markers.setVisibility(isVisible)
-  waterSurfaces.setVisibility(isVisible)
-  roads.setVisibility(isVisible)
-
-  if (EDITOR_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
+  if (propLayersReady) bakeImpostors()
 
   // Each layer starts where its toggle says, READ FROM THE TOGGLE rather than
   // from a literal, so a changed default takes effect instead of leaving the
@@ -3019,6 +3346,7 @@ async function bootWorld() {
   // under this one -- so hiding it and then toggling the CHILD is a lake that
   // can never be shown, the parent flag still false underneath.
   terrain.batch.visible = questToggles.terrain
+  terrainWire.visible = questToggles.terrainWire
   trees.batch.visible = questToggles.trees
   trees.setCardsOnly(!questToggles.treeTiers)
   trees.setCutout(questToggles.treeCutout)
@@ -3075,18 +3403,26 @@ async function bootWorld() {
   terrain.batch.perObjectFrustumCulled = false
   terrain.batch.sortObjects = false
   terrain.cullDeg = (70 * Math.PI) / 180
-  // The 8 m chunk floor is NOT set here. It is config.js's MAX_DEPTH: one
-  // world, one cap, desktop and headset alike.
-  ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
-  buildQuestPanel()
-  window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
-  // The rest of the save, now that there is a backpack view to paint. Her
-  // position was the spawn above.
-  if (saved) { applySave(saved); console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)}`) }
-  logSceneCensus()
+  return { spawn, fresh }
+}
 
-  ready = true
-  await bootDone()
+/** A village's wood: full cover everywhere but its clearing, which is meadow. */
+function villageBiome(seed, clearing) {
+  const { x, z, r } = clearing
+  return { seed, coverAt: (px, pz) => { const dx = px - x, dz = pz - z; return dx * dx + dz * dz < r * r ? 0 : 1 } }
+}
+
+/** What each hand held goes back into that hand, or, while its source has not landed the asset it is dressed with, into a free backpack slot. */
+function restoreHeld(held) {
+  for (const key of HAND_KEYS) {
+    if (!(key in held)) continue
+    const slot = held[key]
+    if (hands.dressed(slot) !== null) { hands.give(key, slot, handsHead()); continue }
+    const free = backpack.indexOf(null)
+    if (free >= 0) { backpack[free] = slot; console.warn(`[v2] the ${slot.kind} in the ${key} hand is not dressed yet, put in slot ${free}`) }
+    else console.warn(`[v2] the ${slot.kind} in the ${key} hand is not dressed yet and the backpack is full; lost`)
+  }
+  paintBackpack()
 }
 
 // --- the edit -> world channel ----------------------------------------------
@@ -3215,6 +3551,7 @@ function replacePropsOnMovedGround(cx, cz) {
     rocks.syncBands(layers)
     rocks.place(cx, cz)
   }
+  if (entrances) entrances.place(cx, cz)
   if (litter) litter.place(cx, cz)
   // LAST, and after rocks specifically, for the reason given where mushrooms
   // are constructed: a clump is placed against the trees and rocks that are
@@ -3461,6 +3798,7 @@ const KEY_ACTIONS = {
   v: 'stow',
   n: 'timeSkip',
   p: 'auroraPattern',
+  k: 'weather',
   m: 'grassStyle',
   '[': 'coarser',
   ']': 'finer',
@@ -3483,6 +3821,7 @@ const CODE_ACTIONS = {
   KeyV: 'stow',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
+  KeyK: 'weather',
   KeyM: 'grassStyle',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
@@ -3512,6 +3851,7 @@ const HOTKEYS = [
       // `,aoe` are the characters the physical WASD keys produce on Dvorak; both
       // bindings are live at once, which is what actionsFor resolves.
       { keys: 'W A S D  /  , a o e', what: 'walk forward, strafe left, back, strafe right' },
+      { keys: 'mouse', what: 'look around once a click on the world has captured it; esc gives the cursor back, and a drag looks around while it is free' },
       { keys: 'up / down', what: 'walk forward and back' },
       { keys: 'left / right', what: 'turn on the spot' },
       { keys: 'space', what: 'start flying, and hold to climb' },
@@ -3520,8 +3860,8 @@ const HOTKEYS = [
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds; the trigger in the headset' },
-      { keys: 'click', what: `take the thing under the cursor within ${DESK_CLICK_M} m, and let go of what the hand holds; with the backpack open, press a slot to stow, take or swap` },
-      { keys: 'v', what: 'put what the hand holds in the backpack, when it is under a metre; over the shoulder in the headset' },
+      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
     ],
   },
   {
@@ -3529,9 +3869,10 @@ const HOTKEYS = [
     rows: [
       { keys: 'n', what: `skip time forward ${CLOCK.skipHours} hours` },
       { keys: 'p', what: 'cycle the aurora pattern' },
+      { keys: 'k', what: 'hold the weather: live, clear, scattered, overcast, rain' },
       { keys: 'm', what: 'swap the grass bed between scattered strips and card clumps' },
       { keys: 'h', what: 'hide and show this panel' },
-      { keys: 'esc', what: 'open and close the world menu, the same one B / Y opens in the headset' },
+      { keys: 'tab', what: 'open and close the world menu, the same one B / Y opens in the headset' },
     ],
   },
   {
@@ -3544,7 +3885,7 @@ const HOTKEYS = [
   {
     group: 'editor',
     rows: [
-      { keys: 'tab', what: 'arm and disarm the editor' },
+      { keys: '`', what: 'arm and disarm the editor' },
       { keys: `${TOOL_KEYS.join(' ')}`, what: `arm a tool: ${TOOLS.join(', ')}` },
       // G/R/S are the editor's only while a gizmo is attached -- see the
       // key-conflict note at the top of editor.js. With nothing selected, S is
@@ -3552,7 +3893,7 @@ const HOTKEYS = [
       { keys: 'g r s', what: 'gizmo move, rotate, scale -- only with something selected' },
       { keys: 'x y z', what: 'constrain the gizmo to one axis, same key again to release' },
       { keys: 'enter', what: 'finish the river or road being drawn' },
-      { keys: 'esc', what: 'cancel the path being drawn, else deselect; with nothing to back out of it is the world menu; also closes this list' },
+      { keys: 'esc', what: 'cancel the path being drawn, else deselect; also closes this list, and frees a captured mouse' },
       { keys: 'delete / backspace', what: 'delete the selected point or object' },
       { keys: 'ctrl/cmd Z', what: 'undo, and shift-Z or Y to redo' },
     ],
@@ -3572,6 +3913,32 @@ const typing = (e) =>
   e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
 
 let dragging = false
+// THE MOUSE IS CAPTURED FOR LOOKING. A left click on the world takes the
+// pointer lock, and from then on the mouse turns the view with no button held
+// and a click lands at the centre of the view, under the crosshair -- on the
+// open menu too, which is aimed at like the world. Escape (the browser's own
+// exit, which the page never sees as a key) gives the cursor back; so does
+// arming the editor, which wants it for its handles. Without the lock a drag
+// still looks around, so nothing is lost while the cursor is free.
+const mouseCaptured = () => document.pointerLockElement === renderer.domElement
+function captureMouse() {
+  if (mouseCaptured() || renderer.xr.isPresenting) return
+  // Refused by the browser without a fresh user gesture, or while the tab is
+  // not focused; both are the browser's call and neither is worth an error.
+  const p = renderer.domElement.requestPointerLock()
+  if (p && typeof p.catch === 'function') p.catch(() => {})
+}
+function freeMouse() {
+  if (mouseCaptured()) document.exitPointerLock()
+}
+const crosshair = document.createElement('div')
+crosshair.className = 'qa-crosshair'
+crosshair.style.cssText = 'position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:rgba(255,255,255,0.75);box-shadow:0 0 2px rgba(0,0,0,0.8);pointer-events:none;z-index:998;display:none'
+document.body.appendChild(crosshair)
+document.addEventListener('pointerlockchange', () => {
+  crosshair.style.display = mouseCaptured() ? 'block' : 'none'
+  dragging = false
+})
 // Set by the gizmo through the Editor while a handle is being dragged. Without
 // it, dragging the translate arrow also spins the camera, and the object appears
 // to fly off across the world because the ray it is being dragged along moved.
@@ -3618,9 +3985,23 @@ function skipTime() {
   console.log(`[clock] +${CLOCK.skipHours}h -> ${clock.clockText}  sun ${clock.sun.elevDeg.toFixed(1)}deg`)
 }
 
+// The debug hold on the weather: live, then each preset in turn, then live.
+const WEATHER_CYCLE = [null, ...Object.keys(WEATHER.presets)]
+const weatherLabel = () => (clock.weather === null ? `live ${(clock.state().cover * 100).toFixed(0)}%` : WEATHER_CYCLE.find((k) => k !== null && WEATHER.presets[k] === clock.weather) ?? `${clock.weather}`)
+function cycleWeather() {
+  const at = clock.weather === null ? 0 : WEATHER_CYCLE.findIndex((k) => k !== null && WEATHER.presets[k] === clock.weather)
+  const next = WEATHER_CYCLE[(at + 1) % WEATHER_CYCLE.length]
+  clock.weather = next === null ? null : WEATHER.presets[next]
+  console.log(`[weather] ${weatherLabel()}`)
+}
+
 function cycleAurora() {
   const i = aurora.cyclePattern()
   console.log(`[aurora] ${aurora.label}${aurora.blurb ? `  --  ${aurora.blurb}` : ''}`, i)
+}
+
+function cycleAuroraInterval() {
+  console.log(`[aurora] map every ${aurora.cycleInterval()}s`)
 }
 
 /**
@@ -3713,25 +4094,28 @@ function setTreeScatter(patch) {
 addEventListener('keydown', (e) => {
   if (!ready || typing(e)) return
 
-  // Escape opens and closes the menu, the keyboard twin of B / Y. On a desktop
+  // Tab opens and closes the menu, the keyboard twin of B / Y. On a desktop
   // there is no controller to press, so without this the menu is unreachable.
-  // The editor keeps Escape only while it has something to back out of -- a
-  // half-drawn path or a selection -- so the same key does not also drop the
-  // menu on the world the moment a lake is deselected.
-  if (e.code === 'Escape' && !(editor && editor.active && (editor.draft || editor.selection))) {
+  // Not Escape: the browser takes that key to free a captured mouse and the
+  // page never sees it, so a menu on Escape could not be opened while looking
+  // around.
+  if (e.code === 'Tab') {
+    e.preventDefault()
     toggleQuestPanel()
     return
   }
 
-  // Tab arms and disarms the editor. A dedicated key rather than a mode that is
-  // always on, because an armed lake tool turns every stray click on the ground
-  // into a lake -- and because G/R/S mean two different things depending on this
-  // flag (see the key-conflict note in editor.js).
-  if (e.code === 'Tab') {
+  // Backquote arms and disarms the editor. A dedicated key rather than a mode
+  // that is always on, because an armed lake tool turns every stray click on
+  // the ground into a lake -- and because G/R/S mean two different things
+  // depending on this flag (see the key-conflict note in editor.js).
+  if (e.code === 'Backquote') {
     e.preventDefault()
     if (editor && panel) {
       editor.setActive(!editor.active)
       panel.syncSelection()
+      // An armed editor wants the cursor, for its handles and its context menu.
+      if (editor.active) freeMouse()
     }
     return
   }
@@ -3758,9 +4142,10 @@ addEventListener('keydown', (e) => {
   for (const a of actions) held.add(a)
 
   if (fresh.includes('timeSkip')) skipTime()
-  if (fresh.includes('grab') && hands) hands.press('desk', handsHead())
+  if (fresh.includes('grab') && hands && hands.press('desk', handsHead()) === 'pick') playPick()
   if (fresh.includes('stow') && hands) hands.stowPress('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
+  if (fresh.includes('weather')) cycleWeather()
   // M cycles the three grass beds in place, under the player's feet, so they can
   // be judged against the same hillside in the same light. Rebuilding a bed is
   // ~100 ms of one frame; a swap is not something a player does.
@@ -3815,6 +4200,15 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   dragging = e.button === 0 && !orbitLocked
   if (editor) editor.onPointerDown(e)
 })
+// A click on the world captures the mouse; not with the menu up or the editor
+// armed, which want the cursor. ON CLICK, NOT POINTERDOWN: the lock is taken
+// the moment it is asked for, and TransformControls' own pointerdown listener,
+// which runs after this one on the same press, then throws out of
+// setPointerCapture -- pointer lock and pointer capture exclude each other.
+renderer.domElement.addEventListener('click', (e) => {
+  if (!ready || e.button !== 0) return
+  if (!(questPanelGroup && questPanelGroup.visible) && !(editor && editor.active)) captureMouse()
+})
 // Right-click on a handle. The editor decides WHAT can be done to the thing
 // under the cursor and hands back closures; the panel draws them. The browser's
 // own menu is suppressed only when the editor is armed and actually answered --
@@ -3844,7 +4238,7 @@ addEventListener('pointermove', (e) => {
   cursorNdc.x = ndc.x
   cursorNdc.y = ndc.y
   cursorNdc.seen = true
-  if (!dragging || orbitLocked || renderer.xr.isPresenting) return
+  if (!(dragging || mouseCaptured()) || orbitLocked || renderer.xr.isPresenting) return
   camera.rotation.y -= e.movementX * 0.0026
   camera.rotation.x = THREE.MathUtils.clamp(
     camera.rotation.x - e.movementY * 0.0026,
@@ -3863,17 +4257,8 @@ addEventListener('resize', () => {
 const tmpCol = new THREE.Color()
 const setSRGB = (col, rgb) => col.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
 
-/**
- * How much of a day it is, 0 to 1: the world's one scalar for "is it night",
- * read by the caustics, the ambience and the animals that settle after dark.
- *
- * It is the SUN's own elevation and not `state.lightIntensity`, because that
- * number swaps bodies at -6 degrees and anything reading it would call
- * nightfall a brightening as the moon took over. -6 to +4 puts the whole
- * handover inside civil twilight, where the light is visibly changing anyway,
- * and 0.6 is the sun exactly on the horizon.
- */
-const daynessOf = (state) => Math.max(0, Math.min(1, (state.sun.elevDeg + 6) / 10))
+/** How much of a day it is, 0 to 1: the world's one scalar for "is it night" (clock.js daynessOfElev), read by the caustics, the ambience and the animals that settle after dark. */
+const daynessOf = (state) => daynessOfElev(state.sun.elevDeg)
 // Last frame's, for the layers that are stepped before the clock is read. It moves over minutes; a frame of lag is not a thing that can be seen.
 let dayness = 1
 
@@ -3921,6 +4306,8 @@ function applySky(state, head, elapsedReal) {
   // there is no mode for anything above to know about, no flag to leave set,
   // and surfacing is simply the frame where it stops overwriting.
   applySubmersion(head, elapsedReal, state)
+  // The same later writer for the inside of a boulder, and the murk wins under its lake.
+  if (cave && !submerged) sinkCave()
 }
 
 // --- underwater (§11) --------------------------------------------------------
@@ -4058,6 +4445,8 @@ function updateAmbience(dt, state) {
     submerged,
     speed: player.speed,
     afoot: !player.flying && !player.travel,
+    cover: state.cover,
+    precip: state.precip,
   })
 }
 
@@ -4132,6 +4521,27 @@ function sinkAir() {
   // sets it; these two are not, because their own update() decides their
   // visibility from the hour every frame and forcing them true here would
   // hang stars in a midday sky.
+  sky.mesh.visible = false
+  stars.points.visible = false
+  aurora.mesh.visible = false
+}
+
+// What lights a village (DESIGN.md §30): the sun and the sky lamp turned down
+// this far, so its hour is still read off the light's colour and angle.
+const CAVE = { light: 0.35, ambient: 0.5 }
+
+/**
+ * The air inside a boulder, over applySky's: its own fog colour and density
+ * from the room file, no sky, no stars, no aurora, and the lights dimmed. A
+ * later writer like sinkAir, and it holds for the frame the same way.
+ */
+function sinkCave() {
+  scene.fog.density = cave.density
+  scene.fog.color.copy(cave.linear)
+  lighting.setAir(cave.air)
+  scene.background.copy(cave.linear)
+  sun.intensity *= CAVE.light
+  hemi.intensity *= CAVE.ambient
   sky.mesh.visible = false
   stars.points.visible = false
   aurora.mesh.visible = false
@@ -4310,14 +4720,18 @@ function readQuestFallback(st) {
 // backpack zone is judged in. One object, rewritten each call.
 const handsHeadTmp = { x: 0, y: 0, z: 0, yaw: 0 }
 // The desk hand's node under the camera: at rest while empty, and with a thing
-// of size s in it at the bottom-right corner of the view, far enough out that
-// the thing fits the frustum's height and set 0.35 s inside each edge so about
-// a third of it hangs off screen. Nothing in XR, where the grips are the hands.
+// in it at the bottom-right corner of the view, drawn at its size up to
+// DESK_HAND_MAX_M (a bigger thing is shrunk to that, hands.draw), far enough
+// out that the drawn thing fits the frustum's height and set 0.35 s inside each
+// edge so about a third of it hangs off screen. Drawn at its own size a 1.5 m
+// fern sat 2.4 m out with its centre at the ground, and was never seen.
+// Nothing in XR, where the grips are the hands.
 function placeDeskHand() {
   if (sceneEl.is('vr-mode')) return
   const held = hands.holding('desk')
   if (held === null) { deskHand.position.set(DESK_HAND_REST.x, DESK_HAND_REST.y, DESK_HAND_REST.z); return }
-  const s = held.size
+  const s = Math.min(held.size, DESK_HAND_MAX_M)
+  hands.draw('desk', s / held.size)
   const d = Math.max(0.45, 1.6 * s)
   const halfH = d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
   const halfW = halfH * camera.aspect
@@ -4444,8 +4858,36 @@ function fireTeleport() {
   if (!teleportTarget.valid) return
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
   player.teleportTo(teleportTarget.x, teleportTarget.z)
+  portalBlink = true
   teleportReadyAt = performance.now() + TELEPORT_COOLDOWN_S * 1000
   if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE)
+}
+
+/** After the step: the mouth her feet just entered, if any (PORTAL), and the village it opens on. */
+function portalTest() {
+  const blink = portalBlink
+  portalBlink = false
+  if (!entrances) return
+  const feet = player.originPosition()
+  const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
+  const step = Math.hypot(sx, sz)
+  portalSites.length = 0
+  entrances.sites(portalSites)
+  let door = null
+  for (const site of portalSites) {
+    const dx = feet.x - site.x, dz = feet.z - site.z
+    const d = Math.hypot(dx, dz)
+    if (d > PORTAL.reach) continue
+    const walked = d <= PORTAL.walk && step > 0 && -(sx * site.nx + sz * site.nz) / step >= PORTAL.into
+    if (walked || (blink && d <= PORTAL.blink)) { door = site; break }
+  }
+  if (door === portalIn) return
+  portalIn = door
+  if (!door || EDITOR_MODE) return
+  // Out of a village, the mouth she came in by; into one, its own way out.
+  const out = currentRoom.village
+  if (!out) cameInBy = { ...door }
+  bootRoom(out ? ROOMS.overworld : ROOMS.leafkin, out ? cameInBy : null).catch(reportRuntimeError)
 }
 
 /**
@@ -4970,8 +5412,12 @@ function tick() {
   // The boats move before she does, so the one under her carries her and the
   // mover's step is then hers alone; where her feet came to rest in it is read after.
   if (boats) boats.update(dt, now)
+  portalFrom.copy(player.originPosition())
   player.update(dt, moveInput)
   if (boats) boats.settle()
+  portalTest()
+  // A mouth she stepped into has just torn the room down under this frame.
+  if (!ready) return
 
   updateQuestPanel()
 
@@ -4995,8 +5441,9 @@ function tick() {
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
-  if (questToggles.terrain) {
+  if (questToggles.terrain || questToggles.terrainWire) {
     terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
+    terrainWire.update()
   }
   // Rocks first, and it is the same hard ordering the construction has: the tree,
   // fern, grass and litter scatters all ask the stone where it is before they
@@ -5013,7 +5460,12 @@ function tick() {
   // trees may sit where a boulder would have pushed them. That is invisible while
   // the boulder is, and an ablation panel that cannot ablate is worth less than an
   // exact one.
-  if (questToggles.boulders) rocks.update(headTmp.x, headTmp.y, headTmp.z)
+  if (questToggles.boulders) {
+    rocks.update(headTmp.x, headTmp.y, headTmp.z)
+    // After the rocks: a mouth follows its boulder's residency.
+    if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
+    if (roomProps) roomProps.update(headTmp.x, headTmp.y, headTmp.z)
+  }
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.ferns) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
@@ -5060,23 +5512,27 @@ function tick() {
   hands.lures(lures)
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
+  // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
   stepAnimal('fish', () => {
-    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, dt, lures)
+    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
     else fish.follow(headTmp.x, headTmp.y, headTmp.z)
   })
-  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, dt, lures))
+  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
-  // The butterflies and the wildlife settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
+  // The butterflies settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
-  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness, lures))
+  // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
+  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt))
-  // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident.
+  // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
+  if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
+  // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
   stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
-    dragons.update(headTmp.x, headTmp.y, headTmp.z, dt, lures)
+    dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
   })
   bankAnimalMs(dt)
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
@@ -5084,15 +5540,27 @@ function tick() {
   hands.update(dt, handsHead())
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
+  // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.
+  creatureNet.update()
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.
   if (netplay.time) clock.sync(netplay.time)
   clock.tick()
+  askRoomHour()
   // Held in a local because the world probe wants it too: the capture is taken
   // in air even while she is under, and putting the air back for that one face
   // means restating this hour's palette. See airHook.
   const state = clock.state()
+  // A wreath she is inside is culled, and the air thickens in its place (§10). Under a roof there is no cloud and no weather.
+  if (cave) { state.cover = 0; state.precip = 0 }
+  if (wreaths) wreaths.visible = questToggles.wreaths && !cave
+  if (wreaths && wreaths.visible) {
+    state.hazeDensity *= wreaths.hazeGain(headTmp)
+    wreaths.update(headTmp, state)
+  }
+  // Snow above the line, rain below, sleet across it (§10).
+  precip.update(dt, headTmp, state, height.snowLineAt(headTmp.x, headTmp.z))
   dayness = daynessOf(state)
   applySky(state, headTmp, now / 1000)
   updateAmbience(dt, state)
@@ -5144,13 +5612,36 @@ function tick() {
 // renderer.setAnimationLoop -- see quest-main.js's header for why calling
 // setAnimationLoop here would silently stop laser-controls (and any other
 // A-Frame component) from ticking at all.
+// WHAT HER HANDS HOLD DRAWS OVER THE FINISHED FRAME: hands.js keeps it in
+// `over`, a group outside the scene, rendered here as a pass of its own with
+// the depth cleared, so it is never behind the menu (which has no depth) nor a
+// wall she stands against. Its lights are this frame's sun and sky copied, and
+// the scene's own fog, so the pool materials keep the one program.
+const overlay = new THREE.Scene()
+overlay.fog = scene.fog
+const overSun = new THREE.DirectionalLight()
+const overHemi = new THREE.HemisphereLight()
+overlay.add(overSun, overHemi)
+function renderOverlay() {
+  if (!hands || !hands.over.children.some((m) => m.count > 0)) return
+  if (overlay.children.length === 2) overlay.add(hands.over)
+  overSun.position.copy(sun.position); overSun.color.copy(sun.color); overSun.intensity = sun.intensity
+  overHemi.color.copy(hemi.color); overHemi.groundColor.copy(hemi.groundColor); overHemi.intensity = hemi.intensity
+  const autoClear = renderer.autoClear
+  renderer.autoClear = false
+  renderer.clearDepth()
+  renderer.render(overlay, sceneEl.camera)
+  renderer.autoClear = autoClear
+}
+
 AFRAME.registerComponent('v2-quest-tick', {
   tick: () => tick(),
   // After A-Frame's renderer.render, so this is the main pass and not the last
-  // offscreen one -- see mainRender.
+  // offscreen one -- see mainRender. The overlay pass goes after the copy.
   tock: () => {
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
+    renderOverlay()
   },
 })
 sceneEl.setAttribute('v2-quest-tick', '')

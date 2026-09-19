@@ -228,6 +228,23 @@ plain.place(0, 0)
   check(countIn(stony, -R, R, -R, R) - near === countIn(plain, -R, R, -R, R) - ring(plain, LUSH.rockReach),
     'and plain beyond it')
 }
+{
+  // A road along z at x = 0, half-width 3 m and feather 8 m; the stub answers only within the feather, as PathSet.nearest does. Its verge is lush from the kerb (past pathClearance) to roadReach.
+  const HW = 3
+  const FEATHER = 8
+  const { pathClearance } = FERN_TUNING.PLACEMENT
+  const roaded = { ...layers, paths: { nearest: (x, z, kind) => (kind === 'road' && Math.abs(x) <= HW + FEATHER ? { dist: Math.abs(x), halfWidth: HW } : null) } }
+  const verge = new Ferns(new THREE.Scene(), field, { ...water, shoreDistAt: (x, z, reach) => reach }, roaded, textures, { seed: 7 })
+  verge.place(0, 0)
+  const on = countIn(verge, -HW - pathClearance, HW + pathClearance, -R, R)
+  const band = countIn(verge, HW + pathClearance, HW + LUSH.roadReach, -R, R)
+  const bandLush = countIn(lush, HW + pathClearance, HW + LUSH.roadReach, -R, R)
+  const beyond = countIn(verge, HW + FEATHER, R, -R, R)
+  const beyondPlain = countIn(plain, HW + FEATHER, R, -R, R)
+  check(on === 0 && countIn(lush, -HW, HW, -R, R) > 0, 'no fern stands on a road', `${on} on it`)
+  check(band === bandLush && band > 0, `the verge is the full carpet out to ${LUSH.roadReach} m past the kerb`, `${band} vs ${bandLush}`)
+  check(beyond === beyondPlain, 'and past the feather it is the plain one', `${beyond} vs ${beyondPlain}`)
+}
 
 // ---------------------------------------------------------------------------
 console.log('\n5. what a butterfly lands on\n')
@@ -322,10 +339,10 @@ console.log('\n5. what a butterfly lands on\n')
   check(f.pickAt(x, y + size + 5, z, 0.1, 10) === null, 'and nothing five metres above it')
   check(f.pickAt(x, y + size * 0.5, z, 0.1, size)?.id !== id0, 'and not one at or over maxSize across: the big ones stay rooted')
   const rec = f.take(hit, size + 0.01)
-  check(rec.kind === 'fern' && rec.name === 'fern' && rec.size === size && rec.geometry === f.rings[0].mesh.geometry && rec.geometry.getAttribute('aPropFade')?.isInstancedBufferAttribute && rec.material === f.material && rec.color.length === 3 && rec.scale[0] === f.instScale[id0] && rec.scale[1] === rec.scale[0] && rec.stowable === true,
-    'take hands back the record: the LOD0 rosette, the shared material, its tint and scale, stowable under stowMax', JSON.stringify({ size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
+  check(rec.kind === 'fern' && rec.name === 'fern' && rec.size === size && rec.geometry === f.rings[0].mesh.geometry && rec.geometry.getAttribute('aPropFade')?.isInstancedBufferAttribute && rec.material === f.heldMaterial && rec.material !== f.material && rec.color.length === 3 && rec.scale[0] === f.instScale[id0] && rec.scale[1] === rec.scale[0] && rec.stowable === true,
+    'take hands back the record: the LOD0 rosette, the windless held material, its tint and scale, stowable under stowMax', JSON.stringify({ size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
   const dress = f.dress({ kind: 'fern' })
-  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on the rosette and the shared material')
+  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on the rosette and the held material')
   let wrong = false
   try { f.dress({ kind: 'carrot' }) } catch { wrong = true }
   check(wrong, 'and throws for another kind')

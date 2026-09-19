@@ -26,6 +26,10 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- [ ] Leafkin: test
+  - [ ] Can find them running through the woods
+  - [ ] They're making the correct noises
+  - [ ] If they see you, they shriek, drop what they're carrying, and 
 - [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
   - [x] Meaning, we need an inventory system.
   - [ ] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
@@ -36,9 +40,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
 - [ ] Human villages. If you do a favor for the potionmaker, he'll thank you by giving you a flare gun. Flare guns shoot out permanent flares which hover and shimmer in the air forever -- but you only have 10 charges. If you run out, you'll need to do another potionmaker another favor. and other human NPCs have similar such quest lines.
 - [ ] another human villager quest is that there's a person who says that they've always dreamed of having a pet deer. And if you figure out a way to lead a wild deer into their fenced yard and close the gate, then they will be over the moon about it and will give you something cool as a reward. Same with pet foxes and pet rabbits and pet frogs (maybe multiple in the latter case). Deer and rabbits can be led by holding a carrot. Foxes can be led by holding a chicken egg. (Oh yeah!! Villages are full of chickens!) Frogs and fish can be led by holding a butterfly or a spider. Again, this sort of information can be gleaned by talking to human NPCs who bring it up in a natural way, like mentioning that they did a certain thing, but sometimes it can be hard to distinguish between truth and tall tales.
-- [ ] 
+- \[ \]
 - [ ] Adjust the terrain to be more jagged:
-  - Peaks need more jaggedness. 
+  - Peaks need more jaggedness.
   - sheer cliffs: lips at tops & bottoms of many cliffs, rather than rounding (ie steep angles tend steeper)
 - [ ] Lakes: Bake the shoreline cutout (there may be multiple) and render the lake as a mesh whose shape roughly follows the shoreline, roughly 1 vertex per 10m of shoreline (all poking 1-2m into the ground). When viewed from much higher up, lakes should be raised up 5m so they don't z-fight with the terraiSo each player in VR is randomly assigned an NPC mesh for their body, like a different human mesh for their body. But currently the body isn't rigged to anything. It's just kind of statically standing there in the T-pose. we want to bind that body to an actual skeleton so that you can look around in the VR headset and the character's head actually looks around and like the like the neck stretches and the the head rotates to match your actual look angle and n under them.
 - [ ] Rivers:
@@ -62,7 +66,6 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - [ ] Hawks wheeling around cliffs.
 - ...
   - [ ] simple shadows.
-  - [ ] Gnome doorways into giant boulders. You can go inside, and you're transported into an interior of the same rock but 2x the size.
   - [ ] procedural towns, grown around a seed central location. Procedural roads between them. Each has a stable w horses you can take.
   - [ ] procedural house interiors. Hearth and chimney, table, food, dishware, beds, storage barrels, shelves, chairs, divider walls, stairs down to cellar, candles (cast light), torches, windows.
   - [ ] procedural caves. Mazelike
@@ -77,6 +80,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Wishlist
 
+- A complex achievement ladder of things you can get. Advanced tools etc which each require coordinating / solving many quest-pieces to achieve.
 - [ ] Ruins (in caves?) full of statues that move when you aren't looking, like Weeping Angels. A whole class of monster/creature that you can never actually see move, or hear or talk with, and yet it can pose dangers and opportunities and provide hints to you, ask for help and offer points of help in return.
 - [ ] Idea for a creepy rare wilderness encounter: on misty days, ghosts that pull you into an alternate dimension, where you start hearing creepy sounds and see hints of something sinister following you, and no matter where you go, the world is empty, there's no creatures or NPCs anywhere.
 - [ ] Cheap API-fed TTS so NPCs can actually speak to you with realistic voices.
@@ -85,7 +89,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - [ ] Weather
 
-  - [ ] Randomly changes / comes and goes
+  - [x] Randomly changes / comes and goes
+  - [ ] Fucking AMAZING. Now: clouds should be in front of, and block, the aurora. At night when there's clouds, they generally seem "behind" the aurora; they should not be. 
   - [ ] Rain & snow: visibility distance
   - [ ] Rain at temperate elevations, snow once you reach snowline
   - [ ] Low-lying cloud cover in mountains sometimes
@@ -102,6 +107,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Cave-wall meshes that can open up to different sizes and have regions with different tints, darknesses, biome foliage, etc. Very dark by default, some local procedurally placed lights or glowing foliage (lighting baked for performance)
 
 - [ ] Wild creatures roaming around, walking or running or flying (songbirds, eagles, deer, mythic creatures). They pause and turn to look at you when you get close
+
+- [ ] A creature let go from the hand should run, swim or fly off the same way for everyone. Today a released creature exists only in the releaser's world (hands.js `release`; hands-net.js syncs held and dropped things, not creatures). Once creature behaviour is a deterministic function of a shared seed and a shared timestamp (the cross-player creature sync work), a release is one small message: kind, spawn pose, seed, room time; every client spawns the creature into its own layer and the same seed walks it the same path. Nothing streamed after the spawn.
 
 - [ ] Creatures' poses fitted to the slope naturally. Bodies stand on the world vertical now, so on a hillside a stag's uphill feet sink into the ground and its downhill feet float. The real fix is foot IK (runtime inverse kinematics): a ground probe under each foot, a two-bone solve per leg to plant it, and the pelvis dropped to the lowest reach -- a body-height row of the same walk.js probe the creature already pays once, times four, plus a bone solve per drawn creature per frame. Cheaper stand-ins that get most of the look: a baked uphill and downhill variant of each gait clip blended by the slope under the body, or just pitching the body a few degrees toward the slope, capped well short of the ground's normal. Far down the roadmap, and worth a measurement on the Quest 2 before committing to the IK version; the blend-pose version costs nothing at runtime.
 
@@ -210,6 +217,7 @@ The cycle, the horizon-map shadows, the starfield, the moon and the aurora are b
 - [ ] The drifting cloud layer from §13 (two scrolling alpha-blended layers on the dome). Not built.
 - [ ] Per-chunk fine horizon maps (§8). Deliberately skipped -- the 1024^2 global tier plus the AO bake carries it. Revisit only if crevice-scale shadowing looks flat on device.
 - [ ] Aurora reflections in water. `src/water.js` samples the sky colour, not the aurora, so a lake under a full storm stays dark.
+- [ ] **Sky-map blend: revisit in whichever direction the headset's fps points.** The map is rebuilt once a second and the dome blends the three newest by a quadratic B-spline (`skymap/skymap.js` THE SCHEDULE, DESIGN.md §13); measured 50 vs 62 fps before the change. If fps still suffers, drop back to two snapshots and hide the kinks with an eased weight curve instead of a third map (a two-map crossfade pulses at 1 Hz because contrast peaks at every landing; smoothing the ramp alone was not tried). If fps is comfortable, spend the headroom on the sky: raise `smRows`/`smAzRes`/`smTaps` (512x64 at 40 taps today), or a 0.5 s interval.
 - [ ] Village window and fire light does not respond to the clock. `flameMat` is deliberately unshadowed so it stays bright at night, but nothing lights up *at dusk* -- windows should come on as the sun goes down.
 - [ ] `curl` **was tuned against a reversal count, not against a look.** The gate walks each footprint and counts bearing reversals, and the per-form `curl` values were picked to land each form in a target band: quiet arc 0.0, omega 1.0, drapery 13.3, flaming 20.7, breakup 59.3, auroral curls 69.1. That measurement is honest about *whether* a band folds back; it says nothing about whether the folds are the right size or read as curtain rather than as ribbon-tangle. `breakup` and `auroral curls` at 60-70 reversals per frame are the two most likely to be too much. The knob is `curl` per band and the gate re-measures it.
 - [ ] Substorm activity is a pure function of in-world time (`clock.js`, `AURORA_ACTIVITY`). When §10 weather exists, cloud cover should gate it -- an overcast night should hide the aurora entirely.

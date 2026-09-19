@@ -1,24 +1,42 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
+import { CHAPTER_S, GRID_S, TICK_S, CATCH_UP_TICKS, hash32, keyHash, phraseRand, chapterOf, tickAfter, stepTo, easeWeight } from '../../sim/score.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
-import { hueVary, makeHueAttribute } from './critters.js'
+import { hueVary, makeHueAttribute, tierTintSplice, tileSeed, walkTiles } from './critters.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
 // swimming on their own with nothing to react to but each other and the shore.
 //
-// THE POOL FOLLOWS HER. Underwater visibility is 20 m (water.js UNDERWATER) and
-// the surface is nearly opaque from above, so a fish 100 m away is a fish
-// nobody can see. Every species has a fixed pool of slots that only ever hold
-// fish inside POOL_RADIUS of her head: a school whose anchor drifts past
-// RETIRE_RADIUS is retired whole and its slots re-seeded at a fresh site in the
-// disc, found by rejection sampling against the water and the bed. A full pool
-// also turns over as she swims: every few metres of her travel, the school
-// farthest out past the murk is recycled, so the water ahead of her is never
-// empty just because the water behind her was full. Standing on dry land, the
-// sampling fails and the pool simply empties. Nothing is stored per tile: the
-// fish are not a function of position the way the plants are, so leaving a
-// lake and coming back meets a different shoal.
+// THE BEDS ARE THE WATER'S. The water within RADIUS of her head is cut into
+// TILE-metre beds and each grows its schools from its tile seed (critters.js
+// tileSeed): `perTile` sites a species, kept where the water is `minDepth`
+// deep with `clearance` of the same around, every roll of a member (station,
+// size, colour, temperament) drawn before the site is tested so a refused
+// site leaves the stream where an accepted one would. A bed is a pure
+// function of position like the plants, so leaving a lake and coming back
+// meets the same schools, and so does everyone else in the room; a fish her
+// hand took is recorded in taken.js against its bed's home, and the bed grows
+// without it. Underwater visibility is 20 m (water.js UNDERWATER), so a bed
+// further than RADIUS is a bed nobody can see. Standing on dry land every
+// site fails and the layer is simply empty.
+//
+// EVERY CLIENT SWIMS THE SAME FISH (_notes/creature-sync.md). A school's
+// anchor is a chain of hops rolled from hash(key, chapter): from home at the
+// chapter turn, a new target every `anchorEvery` seconds within `anchorHop`
+// of the anchor and `tether` of home, drifted to at `anchorSpeed`; a
+// glimmerfin shoal's anchor also jumps `boltHop` every `boltEvery` seconds,
+// the fright that sends the shoal after it; and the chapter's last hop goes
+// home, so the next chapter starts from nothing. The anchor at any world time
+// is that chain walked from the chapter start, every roll and every shore
+// test a pure function, so two clients hold it to the bit. The fish are
+// stepped at TICK_HZ on absolute ticks of the room's clock, each from its own
+// PRNG keyed by segment, and every GRID_S seconds (the school's grid, offset
+// by its key) each is put back at its station -- a pose closed-form in (key,
+// segment) -- with the last EASE_S of a segment a pull onto the next station,
+// so what one client integrates never strays from what another does for
+// longer than a segment. A frame draws each fish between its last two ticks.
 //
 // ONE AI, THREE PERSONALITIES. Every fish is a heading that wanders, a speed
 // that is steered toward a target, a pull toward its own station in the
@@ -41,22 +59,29 @@ import { hueVary, makeHueAttribute } from './critters.js'
 // skew of the draw both climb with depth until DEEP_M, where most of a school
 // is near the species' sizeMax and only the odd one is small.
 //
+// A LURE IS LIVE. A spider, butterfly or grasshopper in a hand (hands.js
+// lures) has the fish within LURE_M swimming through it, kept to
+// LURE_FORGET_M; a lured fish skips its station until the lure ends and
+// rejoins at the next grid turn. The fish her own hand has are told to the
+// room per bed as a lured set, `[bedKey, 'fs', null, indices]`
+// (creature-net.js), so a peer's copy of her hand keeps the same fish on it.
+//
 // NO NEIGHBOUR SEARCH. Separation runs only inside a school, and a school is
-// at most 14 fish, so the whole step is linear in the pool. Pike keep apart
-// from other pike by a scan over their own ten slots. Bed and surface are
-// probed every PROBE_EVERY frames per fish and cached, because heightAt is the
-// one thing in this file that is not arithmetic.
+// at most 14 fish, so a tick is linear in the fish. Pike keep apart from the
+// other pike of their bed. Bed and surface are probed every PROBE_EVERY ticks
+// per fish and cached, because heightAt is the one thing in this file that
+// is not arithmetic.
 //
 // THE TAIL IS THE SHADER'S. public/fauna/fish.json (tools/fauna/ship.mjs)
 // carries each species' picked Tripo mesh, nose at -Z, with a per-vertex
 // swim-bend weight, and each fish is one InstancedMesh instance with (phase,
 // amplitude, curve, lift): the vertex stage bends every vertex sideways by
 // bend * (amplitude * sin(phase - k * z) + curve) and up by bend * lift. The
-// CPU advances the phase at a rate that follows the fish's speed, so a lurking
-// pike barely sculls and a bolting glimmerfin is a blur, and it sets curve and
-// lift from the turn and the pitch in hand, so the body arcs into every turn
-// and climb and the tail beats harder through it: a fish never swings round
-// or tilts straight as a board.
+// frame advances the phase at a rate that follows the fish's speed, so a
+// lurking pike barely sculls and a bolting glimmerfin is a blur, and it sets
+// curve and lift from the turn and the pitch in hand, so the body arcs into
+// every turn and climb and the tail beats harder through it: a fish never
+// swings round or tilts straight as a board.
 //
 // NO TWO FISH ARE THE SAME COLOUR. Each rolls a brightness (instanceColor) and
 // a hue, a turn of up to HUE radians either way round the colour wheel
@@ -66,63 +91,67 @@ import { hueVary, makeHueAttribute } from './critters.js'
 const ASSET_URL = 'fauna/fish.json'
 const TEXTURE_URL = (file) => `fauna/${file}`
 
-// The seed disc and the retire ring, both sized against the 20 m murk: 40% of the disc is in sight, and a school is gone before it is 20 m past it.
-export const POOL_RADIUS = 32
-export const RETIRE_RADIUS = 40
-// No school seeds closer than this to her head: a shoal appearing at arm's length is the pop-in the whole pool exists to hide.
-const NEAR_RADIUS = 10
-// A school past this is out of sight and may be recycled once she has swum RECYCLE_TRAVEL metres, per species. Standing still recycles nothing; 30 m of swimming turns most of the pool over.
-export const RECYCLE_RADIUS = 24
-const RECYCLE_TRAVEL = 3
-// Seconds a newborn takes to grow to size, so a school seeded at the edge of the murk swims in rather than popping in.
-export const BORN_FOR = 1.5
+// A bed's side and how far out beds are kept, both against the 20 m murk: the furthest bed's near edge is just past it.
+export const TILE = 24
+export const RADIUS = 36
+// Metres her head moves before the beds are walked again.
+const WALK_M = 4
 // Water this deep, under a fish's own spot, hands out the species' full size ceiling; 0.5 m hands out the shore's.
 const DEEP_M = 12
-// Seed attempts per pass across all species. A lake shore is roughly half water, so a dozen tries a pass refills an emptied pool in well under a second under water.
-const SEEDS_PER_FRAME = 12
-// With her head out of the water the pass runs on every FOLLOW_EVERY-th call: the retire ring is 8 m past the seed disc and she walks under 1 m in these frames, so nothing is lost, and the seeds -- each a levelAt and a heightAt, and each failing on dry ground -- are what a dry frame would otherwise spend.
-export const FOLLOW_EVERY = 8
+// A fish probes the bed, the surface and the water ahead every this many ticks.
 const PROBE_EVERY = 4
-// A startle crosses a shoal at BOLT_WAVE m/s, each fish reacting up to BOLT_JITTER s late on top, and BOLT_MISS of the shoal never bolts at all: a fright is a ripple through the shoal, never one frame's broadcast.
+// A startle crosses a shoal at BOLT_WAVE m/s, each fish reacting up to BOLT_JITTER s late on top, and BOLT_MISS of the shoal never bolts at all: a fright is a ripple through the shoal, never one tick's broadcast.
 const BOLT_WAVE = 4
 const BOLT_JITTER = 0.4
 const BOLT_MISS = 0.15
-// How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY frames stale, so this also covers the distance a bolting fish crosses between probes.
+// How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY ticks stale, so this also covers the distance a bolting fish crosses between probes.
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
+// A hop's path is tested for water every this many metres, so a school is never led across a spit its fish would beach on.
+const HOP_STEP_M = 2
+// The pull onto the next station over a segment's last EASE_S seconds: the fraction of the gap closed a second at full weight.
+const EASE_PULL = 4
 export const HUE = 0.35
 // A fish setting off at a target speed of at least this, m/s, is listed in startled() for the ear: a glimmerfin's bolt, a pike's burst, a bass's dart, but not a glimmerfin's fidget or any hang.
 export const DART_SPEED = 1
 
-// A fish she let go of in the water: seconds it hangs stunned before it wakes, the speed it then darts from her at (a multiple of its cruise), and how often its line is jinked.
+// A fish she let go of in the water: seconds it hangs stunned before it wakes, the speed it then darts from her at (a multiple of its cruise), how often its line is jinked, and how far from her head it is forgotten.
 export const STUN_S = [1, 2]
 export const LOOSE_HASTE = 3
 const LOOSE_JINK = 1.2
+export const LOOSE_GONE_M = 40
 
-// A LURE. A spider, butterfly or grasshopper in her hand (hands.js lures) within LURE_M of a fish has it swimming at the hand at LURE_HASTE times its cruise and LURE_AGILITY times its agility, kept to LURE_FORGET_M, its station forgotten. The walk swings onto the hand's bearing at LURE_TURN radians a second and no faster, with its jitter still on it, so the fish runs through the hand and comes round on a circle of its speed over LURE_TURN to run through it again.
+// A LURE. A spider, butterfly or grasshopper in a hand (hands.js lures) within LURE_M of a fish has it swimming at the hand at LURE_HASTE times its cruise and LURE_AGILITY times its agility, kept to LURE_FORGET_M, its station forgotten. The walk swings onto the hand's bearing at LURE_TURN radians a second and no faster, with its jitter still on it, so the fish runs through the hand and comes round on a circle of its speed over LURE_TURN to run through it again.
 export const LURES = ['spider', 'butterfly', 'grasshopper']
 export const LURE_M = 3
 export const LURE_FORGET_M = 6
 export const LURE_HASTE = 3
 const LURE_AGILITY = 2
 export const LURE_TURN = 3
+// A bed's lured set goes to the room at most this often while it changes; an emptied set goes at once.
+export const LURED_EVERY_S = 1
 const NO_LURES = []
+
+export const bedKey = (tx, tz) => `fs:${tx},${tz}`
+export const keyOf = (tx, tz, s) => `${bedKey(tx, tz)}:${s}`
 
 /**
  * The species table. Speeds in m/s, times in seconds, depths as a fraction of
- * the water column measured up from the bed. `minDepth` is the column a
- * school will seed in and `clearance` how far around an anchor that column
- * must extend; `wander` is the heading's random walk in rad/s^0.5; `agility`
- * is how fast velocity chases its target, 1/s. `size` is the scale drawn at
- * the shore and the ceiling reached in DEEP_M of water (see sizeAt); `sizeVary`
- * a jitter on top. `fidget` is one fish's own dart or hang: every
- * `fidgetEvery` seconds, `fidgetFor` seconds at `fidgetSpeed` or at a third of
- * cruise, with a kick to the heading.
+ * the water column measured up from the bed. `count` is the species' slots,
+ * `perTile` the sites a bed rolls for it; `minDepth` is the column a school
+ * will seed in and `clearance` how far around an anchor that column must
+ * extend; `tether` how far from home the anchor may be sent. `wander` is the
+ * heading's random walk in rad/s^0.5; `agility` is how fast velocity chases
+ * its target, 1/s. `size` is the scale drawn at the shore and the ceiling
+ * reached in DEEP_M of water (see sizeAt); `sizeVary` a jitter on top.
+ * `fidget` is one fish's own dart or hang: every `fidgetEvery` seconds,
+ * `fidgetFor` seconds at `fidgetSpeed` or at a third of cruise, with a kick to
+ * the heading.
  */
 export const SPECIES = {
   'ironscale-bass': {
-    count: 72, school: [4, 9], schoolRadius: 3, separation: 0.5,
-    minDepth: 1.0, clearance: 3, depth: [0.3, 0.7],
+    count: 128, perTile: 2, school: [4, 9], schoolRadius: 3, separation: 0.5,
+    minDepth: 1.0, clearance: 3, depth: [0.3, 0.7], tether: 10,
     cruise: 0.55, agility: 1.4, wander: 0.9, lookahead: 3,
     tailHz: 2.0, tailAmp: 0.11, size: [0.55, 2.6], sizeVary: 0.2,
     anchorSpeed: 0.3, anchorHop: [6, 14], anchorEvery: [8, 16],
@@ -130,8 +159,8 @@ export const SPECIES = {
     material: { color: 0xffffff },
   },
   'rime-fangpike': {
-    count: 10, school: [1, 1], schoolRadius: 6, separation: 6,
-    minDepth: 1.5, clearance: 2.5, depth: [0.08, 0.3],
+    count: 24, perTile: 2, school: [1, 1], schoolRadius: 6, separation: 6,
+    minDepth: 1.5, clearance: 2.5, depth: [0.08, 0.3], tether: 12,
     cruise: 0.28, agility: 0.8, wander: 0.35, lookahead: 6,
     tailHz: 1.1, tailAmp: 0.08, size: [0.6, 2.6], sizeVary: 0.25,
     anchorSpeed: 0.2, anchorHop: [8, 20], anchorEvery: [10, 24],
@@ -140,8 +169,8 @@ export const SPECIES = {
     material: { color: 0xffffff },
   },
   'glimmerfin': {
-    count: 90, school: [6, 14], schoolRadius: 1.2, separation: 0.25,
-    minDepth: 0.5, clearance: 1.5, depth: [0.6, 0.9],
+    count: 176, perTile: 2, school: [6, 14], schoolRadius: 1.2, separation: 0.25,
+    minDepth: 0.5, clearance: 1.5, depth: [0.6, 0.9], tether: 5,
     cruise: 0.18, agility: 3.5, wander: 3.0, lookahead: 1.5,
     tailHz: 3.5, tailAmp: 0.12, size: [0.5, 2.2], sizeVary: 0.3,
     anchorSpeed: 0.15, anchorHop: [2, 5], anchorEvery: [3, 8],
@@ -161,38 +190,48 @@ const _quat = new THREE.Quaternion()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+const _a = { x: 0, z: 0, y: 0 }
+const _e = { x: 0, z: 0, y: 0 }
+const _s = { sx: 0, sy: 0, sz: 0, bed: 0, level: 0 }
 
 export class Fish {
   /**
-   * `height.heightAt(x, z)` is the bed and `water.levelAt(x, z)` the surface
-   * (null on dry land) -- the two questions the pool asks the world. The
-   * materials exist from construction so the host can patch them for lighting
-   * before the assets land; the geometry arrives asynchronously via `ready`,
-   * or at once from `assets`, the parsed fish.json, which is how a gate runs
-   * this without a page.
+   * @param scene   the three.js scene
+   * @param height  V2Height: heightAt(x, z)
+   * @param water   WaterSurfaces: levelAt(x, z) -> level or null
+   * @param opts.seed    the world seed, for the beds and the loose fish
+   * @param opts.assets  parsed fish.json for a gate; the world fetches it
    */
   constructor(scene, height, water, { seed = 1, assets = null } = {}) {
-    if (!height || typeof height.heightAt !== 'function') throw new Error('Fish needs a height field with heightAt(x, z)')
-    if (!water || typeof water.levelAt !== 'function') throw new Error('Fish needs WaterSurfaces, for levelAt(x, z)')
+    if (!height || typeof height.heightAt !== 'function') throw new Error('Fish needs a height field with heightAt')
+    if (!water || typeof water.levelAt !== 'function') throw new Error('Fish needs WaterSurfaces, for levelAt')
     this.height = height
     this.water = water
+    this.seed = seed
+    // The layer's own noise: the loose fish only. Everything in a bed rolls from its key.
     this.rand = mulberry32(seed)
-
     this.batch = new THREE.Group()
     this.batch.name = 'v2-fish'
     scene.add(this.batch)
-
-    this.species = []
-    for (const [id, cfg] of Object.entries(SPECIES)) this.species.push(this.makeSpecies(id, cfg))
-
+    this.species = Object.entries(SPECIES).map(([id, cfg]) => this.makeSpecies(id, cfg))
     this.frame = 0
-    this.time = 0
-    // Counts follow() calls, so the dry pass runs one call in FOLLOW_EVERY.
-    this.dryTick = 0
+    // The room's clock at the last update, or null before the first.
+    this.now = null
     this.head = { x: 0, y: 0, z: 0 }
-    // The fish that set off at DART_SPEED or more this frame, for startled().
+    // The fish that set off fast this frame, for startled().
     this.startles = []
-    this.lures = NO_LURES
+    this.tiles = new Map()
+    // Where the beds were last walked from.
+    this.walkedX = Infinity
+    this.walkedZ = Infinity
+    // Members a bed rolled that found no free slot.
+    this.overflow = 0
+    this.ticks = 0
+    // Fish a probe found on the bank, put back at their anchor.
+    this.beached = 0
+    // Lured sets owed to the room (pendingLured), and the peers' by bed key (applyLured): { by, has }.
+    this.owed = []
+    this.luredIn = new Map()
     if (assets) {
       for (const sp of this.species) this.setAsset(sp, this.assetFor(assets, sp))
       this.ready = Promise.resolve(true)
@@ -216,6 +255,7 @@ export class Fish {
         .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
       hueVary(shader)
+      tierTintSplice(shader, 0)
     }
     material.customProgramCacheKey = () => `fish-${id}`
     material.defines = { FISH_WAVE_K: '0.0' }
@@ -223,24 +263,31 @@ export class Fish {
     const slots = []
     for (let i = 0; i < cfg.count; i++) {
       slots.push({
-        alive: false, school: null,
-        x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+        alive: false, loose: false, school: null, tile: null,
+        // Its index in its bed, for the lured sets and the taken registry.
+        index: -1,
+        // The pose at the last tick and the one before it; the frame draws between them. A loose fish is stepped per frame and drawn at (x, y, z).
+        x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0,
         // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be.
         hx: 0, hz: -1, pitch: 0, roll: 0,
         // `size` is its length in metres, for the ear.
-        wander: 0, depthFrac: 0.5, scale: 1, size: 0, margin: 0, tint: 1, hue: 0, born: 0,
+        wander: 0, depthFrac: 0.5, scale: 1, size: 0, margin: 0, tint: 1, hue: 0,
         phase: 0, amp: 0, curve: 0, lift: 0,
-        // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s, plus a slow vertical bob.
-        pace: 1, verve: 1, beat: 1, ring: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
-        bed: 0, level: 0, probeAt: i % PROBE_EVERY,
+        // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s from `station0` at world time zero -- plus a slow vertical bob.
+        pace: 1, verve: 1, beat: 1, ring: 0, station0: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
+        bed: 0, level: 0, probeAt: 0,
         // Seconds left steering back to the anchor after the probe found the shore ahead, and until the shoal's startle reaches this fish.
         homing: 0, boltIn: 0,
         // Mood: pike glide/lurk/burst, bass and glimmerfin fidget. `speed` is the mood's target speed.
         mood: 'glide', moodLeft: 0, speed: cfg.cruise,
+        // The segment's PRNG, and the station the segment ends at.
+        rand: null, ex: 0, ey: 0, ez: 0,
         // Let go of by her hand: no school, stunned for `stun` seconds, then darting from her head (stepLoose).
-        loose: false, stun: 0,
-        // The hands.js lure it is swimming at, or null.
-        lure: null,
+        stun: 0,
+        // The hands.js lure it is swimming at, or null; `lured` while it is off its station for one.
+        lure: null, lured: false,
+        // The frame it was last listed for the ear.
+        listedAt: -1,
       })
     }
     const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), material, cfg.count)
@@ -248,7 +295,7 @@ export class Fish {
     mesh.count = 0
     // Hidden, not merely empty, until the asset lands: the boot's scene census throws on a visible mesh with no geometry.
     mesh.visible = false
-    // The instances move every frame and the pool is a disc around the head anyway; a per-mesh sphere would have to be rebuilt each frame to cull anything.
+    // The instances move every frame and the beds are a disc around the head anyway; a per-mesh sphere would have to be rebuilt each frame to cull anything.
     mesh.frustumCulled = false
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 3).fill(1), 3)
@@ -258,8 +305,7 @@ export class Fish {
     const hue = makeHueAttribute(mesh, cfg.count)
     cullTripoBackfaces(mesh)
     this.batch.add(mesh)
-    // `travel` is the metres she has swum that this species has not yet spent on a recycle.
-    return { id, cfg, material, mesh, swim, hue, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0, travel: 0 }
+    return { id, cfg, material, mesh, swim, hue, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0 }
   }
 
   /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
@@ -299,26 +345,201 @@ export class Fish {
     sp.loaded = true
   }
 
-  /** Drop every school and refill around (cx, cz). The ground moved, or she was put down somewhere new. */
+  // --- the beds ---------------------------------------------------------------
+
+  /** Rebuild every bed around (cx, cz) and forget the loose fish. Boot, and whenever she is put down somewhere new. */
   place(cx, cz) {
-    for (const sp of this.species) {
-      for (const school of sp.schools.slice()) this.retire(sp, school)
-      for (const f of sp.slots) if (f.loose) this.unslot(sp, f)
-    }
+    for (const t of this.tiles.values()) this._leave(t)
+    this.tiles.clear()
+    for (const sp of this.species) for (const f of sp.slots) if (f.loose) this.unslot(sp, f)
+    this.overflow = 0
     this.head.x = cx
     this.head.z = cz
-    for (let i = 0; i < 400; i++) this.seed()
+    walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+    this.walkedX = cx
+    this.walkedZ = cz
+  }
+
+  _walkTiles(x, z) {
+    if (Math.hypot(x - this.walkedX, z - this.walkedZ) <= WALK_M) return
+    walkTiles(this.tiles, x, z, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
+    this.walkedX = x
+    this.walkedZ = z
+  }
+
+  /** The bed at tile (tx, tz): its schools from the tile seed, in species order, `s` the site's index in the bed and every member numbered through the bed. */
+  _enter(tx, tz) {
+    const rand = mulberry32(tileSeed(tx, tz, this.seed))
+    const t = { tx, tz, key: bedKey(tx, tz), schools: [], fish: [], luredSent: '', luredAt: -Infinity }
+    let index = 0
+    let s = 0
+    for (const sp of this.species) {
+      const cfg = sp.cfg
+      for (let k = 0; k < cfg.perTile; k++, s++) {
+        // Every roll first, so a site refused leaves the stream where an accepted one would.
+        const x = (tx + rand()) * TILE
+        const z = (tz + rand()) * TILE
+        const n = Math.round(between(rand, cfg.school))
+        const rolls = []
+        for (let i = 0; i < n; i++) rolls.push(this._roll(rand, cfg, n))
+        const first = index
+        index += n
+        const at = this.site(sp, x, z, cfg.clearance)
+        if (at === null || !sp.loaded) continue
+        // A solo species does not seed on top of its own kind: two pike in a ditch now and then otherwise.
+        if (cfg.school[1] === 1 && t.schools.some((o) => o.sp === sp && Math.hypot(o.home.x - x, o.home.z - z) < cfg.separation)) continue
+        const key = keyOf(tx, tz, s)
+        const school = {
+          key, sp, tile: t, offset: keyHash(key) % GRID_S,
+          home: { x, z, bed: at.bed, level: at.level },
+          // The anchor at the last tick; `chapters` the hop chains by chapter index (_walk); `seg` the segment the members were last put at their stations for, `rec` their tick record (score.js stepTo).
+          x, z, y: this.column(at.bed, at.level, 0.5), fleeAt: 0, chapters: new Map(), seg: null, rec: { tick: 0, alpha: 0 },
+          members: [],
+        }
+        for (let i = 0; i < n; i++) {
+          if (taken.has(`fish${first + i}`, x, z)) continue
+          const f = sp.free.pop()
+          if (!f) { this.overflow++; continue }
+          this._seat(sp, f, school, first + i, rolls[i])
+          school.members.push(f)
+          t.fish.push(f)
+        }
+        if (school.members.length === 0) continue
+        sp.schools.push(school)
+        t.schools.push(school)
+      }
+    }
+    return t
+  }
+
+  /** One member's rolls, in a fixed order, off the bed's stream. */
+  _roll(rand, cfg, n) {
+    return {
+      spread: n > 1 ? rand() * cfg.schoolRadius : 0, b: rand() * TAU, depthFrac: between(rand, cfg.depth),
+      sizeU: rand(), sizeJ: rand() * 2 - 1,
+      // A big fish swims faster and beats slower than a small one of its kind, and each has its own temperament on top.
+      pace: 0.8 + 0.4 * rand(), beat: 0.85 + 0.3 * rand(), verve: 0.6 + rand() * rand() * 1.4,
+      ring: n > 1 ? (0.25 + 0.6 * rand()) * cfg.schoolRadius : 0, orbit: (rand() < 0.5 ? -1 : 1) * (0.05 + 0.2 * rand()),
+      bobHz: 0.05 + 0.1 * rand(), bobAt: rand() * TAU, tint: 0.85 + rand() * 0.2, hue: (rand() * 2 - 1) * HUE, phase: rand() * TAU,
+    }
+  }
+
+  /** Slot `f` as member `index` of `school` from its rolls `r`: spread around the home, unless that spot is shore, when it starts on the home itself. */
+  _seat(sp, f, school, index, r) {
+    const cfg = sp.cfg
+    const home = school.home
+    let fx = home.x + Math.cos(r.b) * r.spread
+    let fz = home.z + Math.sin(r.b) * r.spread
+    let level = this.water.levelAt(fx, fz)
+    let bed = level === null ? 0 : this.height.heightAt(fx, fz)
+    if (level === null || level - bed < cfg.minDepth) { fx = home.x; fz = home.z; level = home.level; bed = home.bed }
+    f.alive = true
+    f.loose = false
+    f.school = school
+    f.tile = school.tile
+    f.index = index
+    f.x = f.px = fx
+    f.z = f.pz = fz
+    f.depthFrac = r.depthFrac
+    f.bed = bed
+    f.level = level
+    f.scale = this.sizeAt(cfg, level - bed, r.sizeU, r.sizeJ)
+    f.size = sp.lengthM * f.scale
+    f.margin = 0.2 * f.size
+    f.y = f.py = this.column(bed, level, f.depthFrac, f.margin)
+    f.wander = r.b
+    f.hx = Math.cos(r.b)
+    f.hz = Math.sin(r.b)
+    f.vx = f.hx * cfg.cruise
+    f.vz = f.hz * cfg.cruise
+    f.vy = 0
+    f.pitch = 0
+    f.roll = 0
+    f.curve = 0
+    f.lift = 0
+    f.amp = 0
+    f.pace = r.pace * Math.sqrt(f.scale)
+    f.beat = r.beat / Math.sqrt(f.scale)
+    f.verve = r.verve
+    f.ring = r.ring
+    f.station0 = f.station = r.b
+    f.orbit = r.orbit
+    f.bobHz = r.bobHz
+    f.bobAt = r.bobAt
+    f.tint = r.tint
+    f.hue = r.hue
+    f.phase = r.phase
+    f.probeAt = index % PROBE_EVERY
+    f.homing = 0
+    f.boltIn = 0
+    f.mood = 'glide'
+    f.moodLeft = 0
+    f.speed = cfg.cruise
+    f.rand = null
+    f.ex = fx
+    f.ey = f.y
+    f.ez = fz
+    f.stun = 0
+    f.lure = null
+    f.lured = false
+    f.listedAt = -1
+  }
+
+  _leave(t) {
+    // A bed her hand had fish of: the room hears they are let go.
+    if (t.luredSent !== '') this.owed.push([t.key, 'fs', null, []])
+    this.luredIn.delete(t.key)
+    for (const school of t.schools.slice()) this._retire(school)
+    t.fish.length = 0
+  }
+
+  /** Every member back to the free list and the school off its species and its bed. */
+  _retire(school) {
+    const sp = school.sp
+    for (const f of school.members) {
+      f.alive = false
+      f.school = null
+      f.tile = null
+      sp.free.push(f)
+    }
+    school.members.length = 0
+    const i = sp.schools.indexOf(school)
+    if (i >= 0) sp.schools.splice(i, 1)
+    const j = school.tile.schools.indexOf(school)
+    if (j >= 0) school.tile.schools.splice(j, 1)
+  }
+
+  /** One fish out of its school and its bed and back to the free list; the school goes with it when it was the last. */
+  _drop(sp, f) {
+    const school = f.school
+    const t = f.tile
+    school.members.splice(school.members.indexOf(f), 1)
+    t.fish.splice(t.fish.indexOf(f), 1)
+    this.unslot(sp, f)
+    if (!school.members.length) this._retire(school)
+  }
+
+  /** A fish with no school -- one she let go of, or one just taken -- back to the free list. */
+  unslot(sp, f) {
+    f.alive = false
+    f.loose = false
+    f.stun = 0
+    f.school = null
+    f.tile = null
+    f.index = -1
+    f.lured = false
+    f.lure = null
+    sp.free.push(f)
   }
 
   get stats() {
-    const out = {}
-    let alive = 0
+    const out = { alive: 0, schools: 0, tiles: this.tiles.size, overflow: this.overflow, ticks: this.ticks, beached: this.beached }
     for (const sp of this.species) {
       const n = sp.cfg.count - sp.free.length
       out[sp.id] = { alive: n, schools: sp.schools.length }
-      alive += n
+      out.alive += n
+      out.schools += sp.schools.length
     }
-    out.alive = alive
     return out
   }
 
@@ -342,7 +563,7 @@ export class Fish {
     return { bed, level }
   }
 
-  /** The vertical band at a site, [bed + margin, level - margin] widened by `extra` for a fish's own bulk, with `frac` of the way up it. */
+  /** The vertical band at a site, [bed + margin, level - margin] narrowed by `extra` for a fish's own bulk, with `frac` of the way up it. */
   column(bed, level, frac, extra = 0) {
     const lo = bed + BED_MARGIN + extra
     const hi = level - SURFACE_MARGIN - extra
@@ -351,140 +572,440 @@ export class Fish {
   }
 
   /**
-   * A size for a fish born over `depth` metres of water. The ceiling climbs
-   * from 0.8 at the shore to the species' size[1] at DEEP_M, and the draw's
-   * skew turns over with it: shallow, most rolls land near the floor; deep,
-   * most land near the ceiling and only the odd one is small.
+   * A size for a fish born over `depth` metres of water from its rolls `u`
+   * and `j` in [0, 1] and [-1, 1]. The ceiling climbs from 0.8 at the shore
+   * to the species' size[1] at DEEP_M, and the draw's skew turns over with
+   * it: shallow, most rolls land near the floor; deep, most land near the
+   * ceiling and only the odd one is small.
    */
-  sizeAt(cfg, depth) {
+  sizeAt(cfg, depth, u, j) {
     const t = Math.max(0, Math.min(1, (depth - 0.5) / (DEEP_M - 0.5)))
     const ease = t * t * (3 - 2 * t)
     const top = 0.8 + (cfg.size[1] - 0.8) * ease
-    const u = Math.pow(this.rand(), 2.2 - 1.75 * ease)
-    return (cfg.size[0] + (top - cfg.size[0]) * u) * (1 + (this.rand() * 2 - 1) * cfg.sizeVary)
+    const k = Math.pow(u, 2.2 - 1.75 * ease)
+    return (cfg.size[0] + (top - cfg.size[0]) * k) * (1 + j * cfg.sizeVary)
   }
+
+  // --- the anchor's chain -----------------------------------------------------
 
   /**
-   * One attempt to seed one school. The species with the most empty slots
-   * goes first, so a lake never fills with bass while the shoals wait. `born`
-   * is the growth timer the school starts at: 0 swims in over BORN_FOR seconds,
-   * BORN_FOR is full-grown at once. Returns true when a school was placed.
+   * The hop chain of `school`'s chapter holding world time `t`, walked to
+   * `t`: `events` is the anchor's state at each hop -- where it was, what it
+   * was sent at, its depth -- from home at the chapter start, `bolts` the
+   * frights not yet run through the shoal. The last two chapters are kept, so
+   * a segment straddling a chapter turn reads both without rebuilding either.
    */
-  seed(born = 0) {
-    let sp = null
-    let need = 0
-    for (const s of this.species) {
-      if (!s.loaded) continue
-      const frac = s.free.length / s.cfg.count
-      if (s.free.length >= s.cfg.school[0] && frac > need) { sp = s; need = frac }
+  _walk(school, t) {
+    const c = chapterOf(t, school.key)
+    let ch = school.chapters.get(c.index)
+    if (ch === undefined) {
+      const cfg = school.sp.cfg
+      const rand = phraseRand(school.key, c.index, 0)
+      const home = school.home
+      ch = {
+        index: c.index, start: c.start, end: c.start + CHAPTER_S, rand,
+        hopAt: c.start + between(rand, cfg.anchorEvery),
+        boltAt: cfg.boltEvery ? c.start + between(rand, cfg.boltEvery) : Infinity,
+        // The last hop goes home, early enough to get there at the anchor's speed from the tether's edge.
+        homeAt: c.start + CHAPTER_S - (cfg.tether / cfg.anchorSpeed + GRID_S), homed: false,
+        events: [{ at: c.start, x: home.x, z: home.z, tx: home.x, tz: home.z, y: this.column(home.bed, home.level, between(rand, cfg.depth)) }],
+        bolts: [],
+      }
+      for (const k of school.chapters.keys()) if (k < c.index - 1 || k > c.index + 1) school.chapters.delete(k)
+      school.chapters.set(c.index, ch)
     }
-    if (!sp) return false
-    const rand = this.rand
-    const r = NEAR_RADIUS + (POOL_RADIUS - NEAR_RADIUS) * Math.sqrt(rand())
-    const a = rand() * TAU
-    const x = this.head.x + Math.cos(a) * r
-    const z = this.head.z + Math.sin(a) * r
+    for (;;) {
+      const next = Math.min(ch.hopAt, ch.boltAt, ch.homed ? Infinity : ch.homeAt)
+      if (next > t) break
+      this._event(school, ch, next)
+    }
+    return ch
+  }
+
+  /** The chain's next hop at world time `at`: the anchor moved to where it is, then a new target rolled -- kept only in the tether, over water all the way, deep enough with clearance at the end -- or home once and for all. */
+  _event(school, ch, at) {
+    const sp = school.sp
     const cfg = sp.cfg
-    const at = this.site(sp, x, z, cfg.clearance)
-    if (!at) return false
-    // A solo species does not seed on top of its own kind: ten pike in a disc are otherwise two pike in a ditch now and then.
-    if (cfg.school[1] === 1) {
-      for (const g of sp.slots) {
-        if (g.alive && Math.hypot(g.x - x, g.z - z) < cfg.separation) return false
+    const rand = ch.rand
+    const home = school.home
+    const last = ch.events[ch.events.length - 1]
+    const ev = { at, x: 0, z: 0, tx: last.tx, tz: last.tz, y: last.y }
+    Fish._anchorOf(last, at, cfg.anchorSpeed, ev)
+    if (!ch.homed && at >= ch.homeAt) {
+      ch.homed = true
+      ch.hopAt = Infinity
+      ch.boltAt = Infinity
+      const site = this._clear(sp, ev.x, ev.z, home.x, home.z)
+      if (site !== null) { ev.tx = home.x; ev.tz = home.z; ev.y = this.column(site.bed, site.level, between(rand, cfg.depth)) }
+    } else {
+      const bolt = at >= ch.boltAt
+      if (bolt) ch.boltAt = at + between(rand, cfg.boltEvery)
+      else ch.hopAt = at + between(rand, cfg.anchorEvery)
+      const a = rand() * TAU
+      const hop = between(rand, bolt ? cfg.boltHop : cfg.anchorHop)
+      const depth = between(rand, cfg.depth)
+      const tx = ev.x + Math.cos(a) * hop
+      const tz = ev.z + Math.sin(a) * hop
+      const site = Math.hypot(tx - home.x, tz - home.z) <= cfg.tether ? this._clear(sp, ev.x, ev.z, tx, tz) : null
+      if (site !== null) {
+        ev.tx = tx
+        ev.tz = tz
+        ev.y = this.column(site.bed, site.level, depth)
+        if (bolt) {
+          // The anchor arrives at once. The fright does not: it starts at the edge the shoal flees from and runs through it (the tick).
+          ch.bolts.push({ at, x: tx, z: tz, fx: tx - ev.x, fz: tz - ev.z, fd: hop })
+          ev.x = tx
+          ev.z = tz
+        }
       }
     }
-    const { bed, level } = at
-    const size = Math.min(sp.free.length, Math.round(between(rand, cfg.school)))
-    const school = {
-      x, z, tx: x, tz: z, y: this.column(bed, level, between(rand, cfg.depth)),
-      hopLeft: between(rand, cfg.anchorEvery),
-      boltLeft: cfg.boltEvery ? between(rand, cfg.boltEvery) : Infinity,
-      fleeAt: 0,
-      members: [],
+    ch.events.push(ev)
+  }
+
+  /** The anchor's position at `t` from the event `ev` before it: on its way to the target at `speed`, or there. */
+  static _anchorOf(ev, t, speed, into) {
+    const dx = ev.tx - ev.x
+    const dz = ev.tz - ev.z
+    const d = Math.hypot(dx, dz)
+    const step = Math.min(d, speed * (t - ev.at))
+    into.x = d > 0 ? ev.x + (dx / d) * step : ev.x
+    into.z = d > 0 ? ev.z + (dz / d) * step : ev.z
+    into.y = ev.y
+    return into
+  }
+
+  /** The anchor at world time `t`, into `into` (x, z, y); the chain it was read off is returned on `into.ch`. */
+  _anchorAt(school, t, into) {
+    const ch = this._walk(school, t)
+    let i = ch.events.length - 1
+    while (i > 0 && ch.events[i].at > t) i--
+    Fish._anchorOf(ch.events[i], t, school.sp.cfg.anchorSpeed, into)
+    into.ch = ch
+    return into
+  }
+
+  /** The site at (x1, z1) with clearance, when the way there from (x0, z0) is water deep enough every HOP_STEP_M; null otherwise. */
+  _clear(sp, x0, z0, x1, z1) {
+    const d = Math.hypot(x1 - x0, z1 - z0)
+    const steps = Math.max(1, Math.ceil(d / HOP_STEP_M))
+    for (let i = 1; i < steps; i++) {
+      if (!this.site(sp, x0 + (x1 - x0) * (i / steps), z0 + (z1 - z0) * (i / steps), 0)) return null
     }
-    for (let i = 0; i < size; i++) {
-      const f = sp.free.pop()
-      // Spread around the anchor, unless that spot is shore: the anchor itself is known-good, so a fish whose roll lands dry simply starts on it.
-      const spread = size > 1 ? rand() * cfg.schoolRadius : 0
-      const b = rand() * TAU
-      let fx = x + Math.cos(b) * spread
-      let fz = z + Math.sin(b) * spread
-      let fLevel = this.water.levelAt(fx, fz)
-      let fBed = fLevel === null ? 0 : this.height.heightAt(fx, fz)
-      if (fLevel === null || fLevel - fBed < cfg.minDepth) { fx = x; fz = z; fLevel = level; fBed = bed }
-      f.alive = true
-      f.school = school
-      f.x = fx
-      f.z = fz
-      f.depthFrac = between(rand, cfg.depth)
-      f.bed = fBed
-      f.level = fLevel
-      f.scale = this.sizeAt(cfg, fLevel - fBed)
-      f.size = sp.lengthM * f.scale
-      f.margin = 0.2 * f.size
-      f.y = this.column(fBed, fLevel, f.depthFrac, f.margin)
-      f.born = born
-      f.wander = rand() * TAU
-      f.hx = Math.cos(f.wander)
-      f.hz = Math.sin(f.wander)
-      f.vx = f.hx * cfg.cruise
-      f.vz = f.hz * cfg.cruise
+    return this.site(sp, x1, z1, sp.cfg.clearance)
+  }
+
+  // --- the segments -----------------------------------------------------------
+
+  /**
+   * Segment `g` begins for `school`: the chain is walked through it, and every
+   * member not on a lure is put at its station for the segment's start -- its
+   * ring point about the anchor, or the anchor itself where that is shore --
+   * with its heading, mood and tick PRNG rolled from (key, g, index), and
+   * told the station the segment ends at. A lured fish keeps swimming and is
+   * put back at the next turn it is free for.
+   */
+  _reset(sp, school, g) {
+    const cfg = sp.cfg
+    const start = g * GRID_S + school.offset
+    school.seg = g
+    school.rec.tick = tickAfter(start) - 1
+    const ch = this._walk(school, start + GRID_S)
+    // The chain before the segment is history: one event stands for the anchor at its start, and no fright before it reaches a fish put freshly at its station.
+    while (ch.events.length > 1 && ch.events[1].at <= start) ch.events.shift()
+    while (ch.bolts.length && ch.bolts[0].at < start) ch.bolts.shift()
+    this._anchorAt(school, start, _a)
+    this._anchorAt(school, start + GRID_S, _e)
+    school.x = _a.x
+    school.z = _a.z
+    school.y = _a.y
+    for (const f of school.members) {
+      f.rand = mulberry32(hash32(keyHash(school.key), g, f.index))
+      const rand = f.rand
+      const station = f.station0 + f.orbit * start
+      this._station(sp, f, _e, station + f.orbit * GRID_S, _s)
+      f.ex = _s.sx; f.ey = _s.sy; f.ez = _s.sz
+      if (f.lured) continue
+      f.station = station
+      this._station(sp, f, _a, station, _s)
+      f.x = f.px = _s.sx
+      f.y = f.py = _s.sy
+      f.z = f.pz = _s.sz
+      f.bed = _s.bed
+      f.level = _s.level
+      // Headed for where the segment ends, which is about where the ease was taking it; a station that stays put gets a fresh heading.
+      const ed = Math.hypot(f.ex - f.x, f.ez - f.z)
+      f.wander = ed > 0.05 ? Math.atan2(f.ez - f.z, f.ex - f.x) : rand() * TAU
+      f.vx = Math.cos(f.wander) * cfg.cruise * f.pace
+      f.vz = Math.sin(f.wander) * cfg.cruise * f.pace
       f.vy = 0
-      f.pitch = 0
-      f.roll = 0
-      f.curve = 0
-      f.lift = 0
-      // A big fish swims faster and beats slower than a small one of its kind, and each has its own temperament on top.
-      f.pace = (0.8 + 0.4 * rand()) * Math.sqrt(f.scale)
-      f.beat = (0.85 + 0.3 * rand()) / Math.sqrt(f.scale)
-      f.verve = 0.6 + rand() * rand() * 1.4
-      f.ring = size > 1 ? (0.25 + 0.6 * rand()) * cfg.schoolRadius : 0
-      f.station = b
-      f.orbit = (rand() < 0.5 ? -1 : 1) * (0.05 + 0.2 * rand())
-      f.bobHz = 0.05 + 0.1 * rand()
-      f.bobAt = rand() * TAU
-      f.tint = 0.85 + rand() * 0.2
-      f.hue = (rand() * 2 - 1) * HUE
-      f.phase = rand() * TAU
       f.homing = 0
       f.boltIn = 0
-      f.lure = null
-      f.mood = 'glide'
-      f.moodLeft = cfg.glide ? between(rand, cfg.glide) : cfg.fidgetEvery ? between(rand, cfg.fidgetEvery) : Infinity
-      f.speed = cfg.cruise
-      school.members.push(f)
+      if (cfg.glide) {
+        if (rand() < 0.6) { f.mood = 'glide'; f.moodLeft = rand() * cfg.glide[1]; f.speed = cfg.cruise }
+        else { f.mood = 'lurk'; f.moodLeft = rand() * cfg.lurk[1]; f.speed = cfg.lurkSpeed }
+      } else {
+        f.mood = 'glide'
+        f.moodLeft = rand() * cfg.fidgetEvery[1]
+        f.speed = cfg.cruise
+      }
     }
-    sp.schools.push(school)
-    return true
   }
 
-  retire(sp, school) {
+  /** Fish `f`'s station about the anchor `a` at ring angle `station`, into `into` (sx, sy, sz, and the bed and level there): over water deep enough, else the anchor. */
+  _station(sp, f, a, station, into) {
+    let sx = a.x + Math.cos(station) * f.ring
+    let sz = a.z + Math.sin(station) * f.ring
+    let level = this.water.levelAt(sx, sz)
+    let bed = level === null ? 0 : this.height.heightAt(sx, sz)
+    if (level === null || level - bed < sp.cfg.minDepth) {
+      sx = a.x
+      sz = a.z
+      level = this.water.levelAt(sx, sz)
+      bed = level === null ? 0 : this.height.heightAt(sx, sz)
+      if (level === null) throw new Error(`Fish: the anchor of ${f.school.key} is on dry ground at (${sx.toFixed(1)}, ${sz.toFixed(1)})`)
+    }
+    into.sx = sx
+    into.sy = this.column(bed, level, f.depthFrac, f.margin)
+    into.sz = sz
+    into.bed = bed
+    into.level = level
+  }
+
+  /** One tick of `school`: the anchor read off its chain, a fright due run through the shoal, every member stepped. */
+  _tick(sp, school, tick) {
+    this.ticks++
+    const tNow = tick * TICK_S
+    const ch = this._anchorAt(school, tNow, _a).ch
+    school.x = _a.x
+    school.z = _a.z
+    school.y = _a.y
+    while (ch.bolts.length && ch.bolts[0].at <= tNow) this._fright(sp, school, ch.bolts.shift())
+    const w = easeWeight(tNow - (school.seg * GRID_S + school.offset), GRID_S)
+    for (const f of school.members) this._step(sp, f, school, tNow, tick, w)
+  }
+
+  /** A fright `b` through the shoal: each fish reacts when the wave reaches it, at its own delay on top, and BOLT_MISS of them never notice and just get pulled along after. */
+  _fright(sp, school, b) {
+    school.fleeAt = Math.atan2(b.fz, b.fx)
     for (const f of school.members) {
-      f.alive = false
-      f.school = null
-      sp.free.push(f)
+      if (f.rand() < BOLT_MISS) continue
+      const along = ((f.x - b.x) * b.fx + (f.z - b.z) * b.fz) / b.fd + sp.cfg.schoolRadius
+      f.boltIn = Math.max(0, along) / BOLT_WAVE + f.rand() * BOLT_JITTER
     }
-    school.members.length = 0
-    const i = sp.schools.indexOf(school)
-    if (i >= 0) sp.schools.splice(i, 1)
   }
 
-  /** One fish out of its school and back to the free list; the school goes with it when it was the last. */
-  drop(sp, f) {
-    const school = f.school
-    school.members.splice(school.members.indexOf(f), 1)
-    this.unslot(sp, f)
-    if (!school.members.length) this.retire(sp, school)
+  /** One tick of a schooled fish, TICK_S long, at world time `tNow`; `w` the ease onto its end station. */
+  _step(sp, f, school, tNow, tick, w) {
+    const cfg = sp.cfg
+    const rand = f.rand
+    const dt = TICK_S
+    f.px = f.x
+    f.py = f.y
+    f.pz = f.z
+
+    // The startle wave reaching this fish: it bolts at its own speed, a little off the shoal's line, and the wander is re-aimed so it stays on that line when the bolt ends.
+    if (f.boltIn > 0) {
+      f.boltIn -= dt
+      if (f.boltIn <= 0) {
+        f.mood = 'bolt'
+        f.moodLeft = cfg.boltFor * (0.6 + 0.8 * rand())
+        f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
+        f.wander = school.fleeAt + (rand() - 0.5) * 1.2
+        this.setOff(f)
+      }
+    }
+    // Moods. Pike cycle glide -> lurk -> burst -> glide; bass and glimmerfin fidget, each fish on its own clock: a dart or a hang, with a kick to the heading either way.
+    f.moodLeft -= dt
+    if (cfg.glide) {
+      if (f.moodLeft <= 0) {
+        if (f.mood === 'glide') { f.mood = 'lurk'; f.moodLeft = between(rand, cfg.lurk); f.speed = cfg.lurkSpeed }
+        else if (f.mood === 'lurk') { f.mood = 'burst'; f.moodLeft = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5; this.setOff(f) }
+        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.glide); f.speed = cfg.cruise }
+      }
+    } else if (cfg.fidgetEvery) {
+      if (f.moodLeft <= 0) {
+        if (f.mood === 'glide') { f.mood = 'fidget'; f.moodLeft = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3; this.setOff(f) }
+        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.fidgetEvery); f.speed = cfg.cruise }
+      }
+    }
+
+    // The probe: bed and surface under the fish, and the water ahead of it along its velocity. Staggered so the bed's heightAt calls spread across ticks. A big fish wants proportionally more water ahead. A fish that has beached anyway is put back at the anchor, the one spot known to be deep.
+    if ((tick + f.probeAt) % PROBE_EVERY === 0) {
+      const level = this.water.levelAt(f.x, f.z)
+      if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) {
+        this.beached++
+        f.x = school.x
+        f.z = school.z
+        f.level = this.water.levelAt(f.x, f.z)
+        f.bed = this.height.heightAt(f.x, f.z)
+        if (f.level === null) throw new Error(`Fish: the anchor of ${school.key} is on dry ground at (${f.x.toFixed(1)}, ${f.z.toFixed(1)})`)
+        f.y = this.column(f.bed, f.level, f.depthFrac, f.margin)
+      } else {
+        f.level = level
+        f.bed = this.height.heightAt(f.x, f.z)
+      }
+      const spd = Math.hypot(f.vx, f.vz)
+      const ux = spd > 0.02 ? f.vx / spd : Math.cos(f.wander)
+      const uz = spd > 0.02 ? f.vz / spd : Math.sin(f.wander)
+      const ax = f.x + ux * cfg.lookahead
+      const az = f.z + uz * cfg.lookahead
+      const aheadLevel = this.water.levelAt(ax, az)
+      const shallow = aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)
+      if (shallow && f.homing <= 0) f.homing = 1.5
+    }
+    if (f.homing > 0) f.homing -= dt
+
+    // Heading: a random walk, pulled toward the fish's own station in the school when it has strayed, or turned hard for the anchor itself when the shore is ahead. The anchor is always in deep water (the chain), so it is the one heading that is known to be safe.
+    f.wander += (rand() - 0.5) * cfg.wander * f.verve * Math.sqrt(dt) * 2
+    let dx = Math.cos(f.wander)
+    let dz = Math.sin(f.wander)
+    f.station += f.orbit * dt
+    const ax = school.x + Math.cos(f.station) * f.ring - f.x
+    const az = school.z + Math.sin(f.station) * f.ring - f.z
+    const ad = Math.hypot(ax, az)
+    if (f.homing > 0) {
+      const hx = school.x - f.x
+      const hz = school.z - f.z
+      const hd = Math.hypot(hx, hz)
+      if (hd > 0.5) {
+        dx = (hx / hd) * 2
+        dz = (hz / hd) * 2
+        // Re-aim the walk itself, so the fish is still heading in when the timer runs out rather than turning straight back.
+        f.wander = Math.atan2(hz, hx)
+      }
+    }
+    if (f.lure !== null) {
+      const off = Math.atan2(f.lure.z - f.z, f.lure.x - f.x) - f.wander
+      const swing = Math.atan2(Math.sin(off), Math.cos(off))
+      f.wander += Math.max(-LURE_TURN * dt, Math.min(LURE_TURN * dt, swing))
+      dx = Math.cos(f.wander)
+      dz = Math.sin(f.wander)
+    }
+    const stray = f.lure !== null ? 0 : ad / cfg.schoolRadius
+    if (stray > 0.6) {
+      const pull = f.mood === 'bolt' ? 3 : Math.min(2.5, (stray - 0.6) * 1.5)
+      dx += (ax / ad) * pull
+      dz += (az / ad) * pull
+    }
+    // The ease: over the segment's last EASE_S the heading leans onto the end station too.
+    const ease = w > 0 && !f.lured
+    if (ease) {
+      const ex = f.ex - f.x
+      const ez = f.ez - f.z
+      const ed = Math.max(0.2, Math.hypot(ex, ez))
+      dx += (ex / ed) * w * 2.5
+      dz += (ez / ed) * w * 2.5
+    }
+    // Separation: from school-mates, or for a solo species from every other fish of its kind in the bed. Other species are ignored; they are going about their own business.
+    const sep = cfg.separation
+    dx += Fish._apart(f, school.members, sep, 0)
+    dz += Fish._apart(f, school.members, sep, 1)
+    if (cfg.school[1] === 1) {
+      for (const s of school.tile.schools) {
+        if (s.sp !== sp || s === school) continue
+        dx += Fish._apart(f, s.members, sep, 0)
+        dz += Fish._apart(f, s.members, sep, 1)
+      }
+    }
+    const dl = Math.hypot(dx, dz) || 1
+    // A fish left behind swims harder to rejoin: without this a shoal that cruises slower than its anchor drifts never catches it.
+    const speed = (f.lure !== null ? cfg.cruise * LURE_HASTE : f.speed) * f.pace * Math.max(1, Math.min(2.5, stray))
+    const wantX = (dx / dl) * speed
+    const wantZ = (dz / dl) * speed
+    const k = Math.min(1, cfg.agility * (f.lure !== null ? LURE_AGILITY : 1) * dt)
+    f.vx += (wantX - f.vx) * k
+    f.vz += (wantZ - f.vz) * k
+
+    // Depth: chase the fish's own place in the column, bobbing slowly about it; the school's anchor y draws it too so a shoal rises and sinks together. A lured fish chases the hand's height, within the column.
+    const lo = f.bed + BED_MARGIN + f.margin
+    const hi = f.level - SURFACE_MARGIN - f.margin
+    const bob = 0.06 * Math.sin(tNow * TAU * f.bobHz + f.bobAt)
+    const target = f.lure !== null ? Math.max(lo, Math.min(hi, f.lure.y)) : 0.5 * (this.column(f.bed, f.level, f.depthFrac + bob, f.margin) + school.y)
+    const wantY = Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) * Math.max(0.3, speed / cfg.cruise)
+    f.vy += (wantY - f.vy) * Math.min(1, 2 * dt)
+
+    f.x += f.vx * dt
+    f.y += f.vy * dt
+    f.z += f.vz * dt
+    // The ease closes the gap to the end station, so the turn's snap onto it is nothing the eye reads.
+    if (ease) {
+      const ke = Math.min(1, w * EASE_PULL * dt)
+      f.x += (f.ex - f.x) * ke
+      f.y += (f.ey - f.y) * ke
+      f.z += (f.ez - f.z) * ke
+    }
+    if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
+    if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
   }
 
-  /** A fish with no school -- one she let go of -- back to the free list. */
-  unslot(sp, f) {
-    f.alive = false
-    f.loose = false
-    f.stun = 0
-    f.school = null
-    sp.free.push(f)
+  /** The push on `f` away from the `others` within `sep` metres, along axis 0 (x) or 1 (z). */
+  static _apart(f, others, sep, axis) {
+    let push = 0
+    for (const g of others) {
+      if (g === f || !g.alive) continue
+      const gx = f.x - g.x
+      const gz = f.z - g.z
+      const d2 = gx * gx + gz * gz
+      if (d2 < sep * sep && d2 > 1e-6) {
+        const d = Math.sqrt(d2)
+        push += ((axis === 0 ? gx : gz) / d) * ((sep - d) / sep) * 2
+      }
+    }
+    return push
   }
+
+  // --- the lures --------------------------------------------------------------
+
+  /** The lure fish `f` is on this frame: the nearest of `lures` it wants, noticed within LURE_M of the hand and kept to LURE_FORGET_M -- from LURE_M on when a peer's set says that hand already has it. Taken up at a dart the ear hears, let go of at a cruise. */
+  _notice(f, lures) {
+    let lure = null
+    let best = Infinity
+    for (const l of lures) {
+      if (!LURES.includes(l.kind)) continue
+      const d = Math.hypot(l.x - f.x, l.y - f.y, l.z - f.z)
+      if (d < best) { best = d; lure = l }
+    }
+    if (lure !== null) {
+      const set = lure.by !== null ? this.luredIn.get(f.tile.key) : undefined
+      const kept = f.lured || (set !== undefined && set.by === lure.by && set.has.has(f.index))
+      if (best <= (kept ? LURE_FORGET_M : LURE_M)) {
+        f.lure = lure
+        if (!f.lured) { f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f) }
+        return
+      }
+    }
+    if (!f.lured) return
+    f.lured = false
+    f.lure = null
+    f.speed = f.school.sp.cfg.cruise
+  }
+
+  /** The lured sets owed since the last call, pushed onto `into` (creature-net.js): `[bedKey, 'fs', null, indices]`, one a bed. */
+  pendingLured(into = []) {
+    for (const set of this.owed) into.push(set)
+    this.owed.length = 0
+    return into
+  }
+
+  /** A peer's lured set for one of the beds: the fish its hand has, kept from LURE_M on while that hand's lure is near them. */
+  applyLured(set) {
+    if (!Array.isArray(set) || set.length !== 4 || typeof set[0] !== 'string' || !Array.isArray(set[3])) throw new Error(`Fish.applyLured: bad set ${JSON.stringify(set)}`)
+    if (set[3].length === 0) this.luredIn.delete(set[0])
+    else this.luredIn.set(set[0], { by: set[2], has: new Set(set[3]) })
+  }
+
+  /** Bed `t`'s lured set owed when the fish her own hand has changed since the last sent and LURED_EVERY_S has passed, or when they are none now and were not. */
+  _owe(t, now) {
+    let mine = ''
+    for (const f of t.fish) if (f.lured && f.lure.by === null) mine += `${f.index},`
+    if (mine === t.luredSent) return
+    if (mine !== '' && now - t.luredAt < LURED_EVERY_S) return
+    t.luredSent = mine
+    t.luredAt = now
+    this.owed.push([t.key, 'fs', null, mine === '' ? [] : mine.slice(0, -1).split(',').map(Number)])
+  }
+
+  // --- her hand ---------------------------------------------------------------
 
   /**
    * The drawn fish nearest a hand at (x, y, z) whose body -- a ball of its own
@@ -511,11 +1032,12 @@ export class Fish {
   }
 
   /**
-   * Grab the fish of a pickAt() hit: its slot goes back to the pool (a fish
-   * the pool re-seeds elsewhere, so nothing is recorded), and what the hand
-   * holds is returned as a record for hands.js -- the species' geometry and
-   * material, its tail's phase and beat, its tint and hue, its scale. Only a
-   * fish under a metre may go in the backpack; `stowMax` says where that is.
+   * Grab the fish of a pickAt() hit: out of its school and, unless it was
+   * loose, recorded in taken.js as `fish<index>` at its bed's home so the bed
+   * never grows it back, here or on any peer. What the hand holds is returned
+   * as a record for hands.js -- the species' geometry and material, its tail's
+   * phase and beat, its tint and hue, its scale. Only a fish under a metre may
+   * go in the backpack; `stowMax` says where that is.
    */
   take(hit, stowMax) {
     const { sp, f } = hit
@@ -532,8 +1054,33 @@ export class Fish {
       stowable: f.size < stowMax,
     }
     if (f.loose) this.unslot(sp, f)
-    else this.drop(sp, f)
+    else {
+      taken.add(`fish${f.index}`, f.school.home.x, f.school.home.z)
+      this._drop(sp, f)
+    }
     return rec
+  }
+
+  /**
+   * A peer took the fish `fish<index>` of the bed whose home is (x, z): take
+   * it here too, drawn or not, and record the place. True when a resident bed
+   * has that school with that member; a loose fish is nobody's to evict. For
+   * hands-net.js.
+   */
+  evict(key, x, z) {
+    if (!key.startsWith('fish')) return false
+    const index = Number(key.slice(4))
+    if (!Number.isInteger(index)) return false
+    for (const t of this.tiles.values()) {
+      for (const school of t.schools) {
+        if (Math.abs(school.home.x - x) >= TOLERANCE_M || Math.abs(school.home.z - z) >= TOLERANCE_M) continue
+        const f = school.members.find((m) => m.index === index)
+        if (!f) continue
+        this.take({ dist: 0, sp: school.sp, f, size: f.size }, Infinity)
+        return true
+      }
+    }
+    return false
   }
 
   /** The geometry and material a packed fish record is drawn with, by the species its name is, or null until that species' asset lands. For hands.js. */
@@ -547,8 +1094,10 @@ export class Fish {
 
   /**
    * Let a taken fish go at (x, y, z). In water it hangs stunned for STUN_S,
-   * then wakes and darts from her head until it is RETIRE_RADIUS out, where
-   * the pool forgets it. Out of water it is false, and hands.js beaches it.
+   * then wakes and darts from her head until it is LOOSE_GONE_M out, where
+   * the layer forgets it. Out of water it is false, and hands.js beaches it.
+   * A loose fish is this client's alone: the room sees the drop through
+   * hands-net.js, and each client swims its own copy off.
    */
   release(rec, x, y, z, head) {
     if (rec.kind !== 'fish') throw new Error(`Fish.release: not a fish, ${rec.kind}`)
@@ -564,14 +1113,15 @@ export class Fish {
     f.alive = true
     f.loose = true
     f.school = null
-    f.x = x; f.y = y; f.z = z
+    f.tile = null
+    f.index = -1
+    f.x = f.px = x; f.y = f.py = y; f.z = f.pz = z
     f.vx = f.vy = f.vz = 0
     f.scale = rec.scale[0]
     f.size = rec.size
     f.margin = 0.2 * f.size
     f.bed = bed
     f.level = level
-    f.born = BORN_FOR
     // Facing away from her, lying as it was dropped.
     f.wander = Math.atan2(z - head.z, x - head.x)
     f.hx = Math.cos(f.wander)
@@ -587,13 +1137,16 @@ export class Fish {
     f.hue = rec.attrs.aHue[0]
     f.phase = rec.attrs.aSwim[0]
     f.amp = 0
+    f.probeAt = 0
     f.homing = 0
     f.boltIn = 0
     f.lure = null
+    f.lured = false
     f.mood = 'glide'
     f.moodLeft = Infinity
     f.speed = 0
     f.stun = between(rand, STUN_S)
+    f.listedAt = -1
     return true
   }
 
@@ -601,16 +1154,15 @@ export class Fish {
    * One frame of a loose fish: stunned, it sinks a little and drifts to a
    * stop; awake, it runs from her head at LOOSE_HASTE times its cruise with a
    * jink every LOOSE_JINK seconds, turning along the shore where the water
-   * ahead is shallow, and is forgotten RETIRE_RADIUS out. A fish that has
-   * beached anyway goes the same way a schooled one does.
+   * ahead is shallow, and is forgotten LOOSE_GONE_M out or beached.
    */
   stepLoose(sp, f, dt) {
     const cfg = sp.cfg
     const rand = this.rand
     const head = this.head
     const dx0 = f.x - head.x, dz0 = f.z - head.z
-    if (dx0 * dx0 + dz0 * dz0 > RETIRE_RADIUS * RETIRE_RADIUS) return this.unslot(sp, f)
-    if ((this.frame + f.probeAt) % PROBE_EVERY === 0) {
+    if (dx0 * dx0 + dz0 * dz0 > LOOSE_GONE_M * LOOSE_GONE_M) return this.unslot(sp, f)
+    if (this.frame % PROBE_EVERY === 0) {
       const level = this.water.levelAt(f.x, f.z)
       if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) return this.unslot(sp, f)
       f.level = level
@@ -633,9 +1185,9 @@ export class Fish {
         // Away from her, jinked up to a quarter turn either side.
         f.wander = Math.atan2(dz0, dx0) + (rand() - 0.5) * (Math.PI / 2)
       }
-      let ax = f.x + f.hx * cfg.lookahead
-      let az = f.z + f.hz * cfg.lookahead
-      if ((this.frame + f.probeAt) % PROBE_EVERY === 0) {
+      if (this.frame % PROBE_EVERY === 0) {
+        const ax = f.x + f.hx * cfg.lookahead
+        const az = f.z + f.hz * cfg.lookahead
         const aheadLevel = this.water.levelAt(ax, az)
         if (aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)) {
           // Shore ahead: a quarter turn, to whichever side leads further from her.
@@ -663,66 +1215,67 @@ export class Fish {
     if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
   }
 
-  /**
-   * The pool alone: retire what drifted out, recycle, seed what is empty. What
-   * a frame costs while her head is OUT of the water -- no fish is stepped and
-   * no buffer written, but the pool keeps following her along the shore, so
-   * the moment she goes under the water around her is already stocked.
-   * Whatever seeds here is born full-grown: nobody watched it arrive, and a
-   * shoal swelling from nothing on the dive is the pop-in the pool exists to
-   * hide. (x, y, z) is her head. Only every FOLLOW_EVERY-th call does the
-   * work; the rest return at once, so a forest far from any water pays
-   * nothing for the fish.
-   */
-  follow(x, y, z) {
-    if (this.dryTick++ % FOLLOW_EVERY !== 0) return
-    this._follow(x, y, z, BORN_FOR)
+  // --- the ear ----------------------------------------------------------------
+
+  /** The fish has just taken a new target speed: listed for the ear if it is a fast one, once a frame. */
+  setOff(f) {
+    if (f.speed >= DART_SPEED && f.listedAt !== this.frame) {
+      f.listedAt = this.frame
+      this.startles.push(f)
+    }
   }
 
-  _follow(x, y, z, born) {
-    const moved = Math.hypot(x - this.head.x, z - this.head.z)
+  /** The fish that set off at DART_SPEED or more this frame, for the ear (audio/ambience.js): the slots themselves, with x, y, z and `size` (its length in metres) on them, each once. A hidden layer lists nobody. */
+  startled(into) {
+    if (!this.batch.visible) return into
+    for (const f of this.startles) into.push(f)
+    return into
+  }
+
+  // --- the frame --------------------------------------------------------------
+
+  /**
+   * Her head out of the water: the beds follow her along the shore so the
+   * water around her is stocked the moment she goes under, and nothing is
+   * stepped or drawn. Cheap: the beds are walked only once she has moved
+   * WALK_M, so a forest far from any water pays nothing for the fish.
+   */
+  follow(x, y, z) {
     this.head.x = x
     this.head.y = y
     this.head.z = z
-    this.startles.length = 0
-    for (const sp of this.species) {
-      let farthest = null
-      let farD2 = 0
-      for (let i = sp.schools.length - 1; i >= 0; i--) {
-        const s = sp.schools[i]
-        const dx = s.x - x
-        const dz = s.z - z
-        const d2 = dx * dx + dz * dz
-        if (d2 > RETIRE_RADIUS * RETIRE_RADIUS) this.retire(sp, s)
-        else if (d2 > farD2) { farthest = s; farD2 = d2 }
-      }
-      for (const f of sp.slots) {
-        if (f.loose && (f.x - x) ** 2 + (f.z - z) ** 2 > RETIRE_RADIUS * RETIRE_RADIUS) this.unslot(sp, f)
-      }
-      // The turnover: a full pool spends her travel on recycling its farthest out-of-sight school. The budget caps at a few recycles so a teleport does not empty the pool in one frame.
-      sp.travel = Math.min(sp.travel + moved, RECYCLE_TRAVEL * 3)
-      if (sp.free.length < sp.cfg.school[0] && sp.travel >= RECYCLE_TRAVEL && farthest && farD2 > RECYCLE_RADIUS * RECYCLE_RADIUS) {
-        this.retire(sp, farthest)
-        sp.travel -= RECYCLE_TRAVEL
-      }
-    }
-    for (let i = 0; i < SEEDS_PER_FRAME; i++) this.seed(born)
+    this._walkTiles(x, z)
   }
 
   /**
-   * One frame with her head under: the pool follows her, then every school
-   * and every fish is stepped and the instance buffers written.
+   * One frame with her head under, at the room's clock `now`: the beds
+   * follow her, the lures are noticed, every school is ticked up to `now`
+   * and the instance buffers written. `lures`: hands.js lures() this frame,
+   * the spiders, butterflies and grasshoppers among them swum at.
    */
-  /** `lures`: hands.js lures() this frame, the spiders and butterflies among them swum at. */
-  update(x, y, z, dt, lures = NO_LURES) {
-    this._follow(x, y, z, 0)
+  update(x, y, z, now, lures = NO_LURES) {
+    if (!Number.isFinite(now)) throw new Error(`Fish.update: bad time ${now}`)
+    this.head.x = x
+    this.head.y = y
+    this.head.z = z
+    this._walkTiles(x, z)
     this.frame++
-    this.time += dt
-    this.lures = lures
+    // The frame's own seconds, for the tail, the facing and the loose fish; the ticks run on `now` itself.
+    const dt = this.now === null ? 0 : Math.min(0.1, Math.max(0, now - this.now))
+    this.now = now
+    this.startles.length = 0
+    for (const t of this.tiles.values()) {
+      for (const f of t.fish) this._notice(f, lures)
+      this._owe(t, now)
+    }
 
     for (const sp of this.species) {
       const cfg = sp.cfg
-      for (const school of sp.schools) this.stepSchool(sp, school, dt)
+      for (const school of sp.schools) {
+        const g = Math.floor((now - school.offset) / GRID_S)
+        if (school.seg !== g) this._reset(sp, school, g)
+        stepTo(school.rec, now, (tick) => this._tick(sp, school, tick), CATCH_UP_TICKS)
+      }
 
       const mat = sp.mesh.instanceMatrix.array
       const col = sp.mesh.instanceColor.array
@@ -731,9 +1284,17 @@ export class Fish {
       let n = 0
       for (const f of sp.slots) {
         if (!f.alive) continue
-        if (f.loose) this.stepLoose(sp, f, dt)
-        else this.stepFish(sp, f, dt)
-        if (!f.alive) continue
+        let x, y, z
+        if (f.loose) {
+          this.stepLoose(sp, f, dt)
+          if (!f.alive) continue
+          x = f.x; y = f.y; z = f.z
+        } else {
+          const a = f.school.rec.alpha
+          x = f.px + (f.x - f.px) * a
+          y = f.py + (f.y - f.py) * a
+          z = f.pz + (f.z - f.pz) * a
+        }
 
         // Facing chases velocity; the pitch is read straight off it and the roll leans into the turn.
         const spd = Math.hypot(f.vx, f.vz)
@@ -772,10 +1333,8 @@ export class Fish {
         // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
         _euler.set(f.pitch, Math.atan2(-f.hx, -f.hz), f.roll)
         _quat.setFromEuler(_euler)
-        _pos.set(f.x, f.y, f.z)
-        f.born = Math.min(BORN_FOR, f.born + dt)
-        const grown = f.born / BORN_FOR
-        _scl.setScalar(f.scale * grown * grown * (3 - 2 * grown))
+        _pos.set(x, y, z)
+        _scl.setScalar(f.scale)
         _mat.compose(_pos, _quat, _scl)
         _mat.toArray(mat, n * 16)
         col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = f.tint
@@ -792,218 +1351,6 @@ export class Fish {
       sp.swim.needsUpdate = true
       sp.hue.needsUpdate = true
     }
-  }
-
-  /** The anchor: a slow drift between hops, each hop a new target that must itself be in deep enough water. Startles are the glimmerfin's. */
-  stepSchool(sp, school, dt) {
-    const cfg = sp.cfg
-    const rand = this.rand
-    school.hopLeft -= dt
-    if (school.hopLeft <= 0) {
-      school.hopLeft = between(rand, cfg.anchorEvery)
-      this.hop(sp, school, between(rand, cfg.anchorHop))
-    }
-    if (cfg.boltEvery) {
-      school.boltLeft -= dt
-      if (school.boltLeft <= 0) {
-        school.boltLeft = between(rand, cfg.boltEvery)
-        if (this.hop(sp, school, between(rand, cfg.boltHop))) {
-          // The anchor arrives at once. The fright does not: it starts at the edge the shoal flees from and runs through it at BOLT_WAVE, each fish adding its own reaction time, and BOLT_MISS of them never notice and just get pulled along after.
-          const fx = school.tx - school.x
-          const fz = school.tz - school.z
-          const fd = Math.hypot(fx, fz) || 1
-          school.fleeAt = Math.atan2(fz, fx)
-          school.x = school.tx
-          school.z = school.tz
-          for (const f of school.members) {
-            if (rand() < BOLT_MISS) continue
-            const along = ((f.x - school.x) * fx + (f.z - school.z) * fz) / fd + cfg.schoolRadius
-            f.boltIn = Math.max(0, along) / BOLT_WAVE + rand() * BOLT_JITTER
-          }
-        }
-      }
-    }
-    const dx = school.tx - school.x
-    const dz = school.tz - school.z
-    const d = Math.hypot(dx, dz)
-    if (d > 0.05) {
-      const step = Math.min(d, cfg.anchorSpeed * dt)
-      school.x += (dx / d) * step
-      school.z += (dz / d) * step
-    }
-  }
-
-  /**
-   * Try a new anchor target `hop` metres away; keep the old one when the roll
-   * lands on shore or shallows. The whole segment is checked, every 2 m, so a
-   * school is never led across a spit of land its fish would have to beach on.
-   * Returns whether it moved.
-   */
-  hop(sp, school, hop) {
-    const a = this.rand() * TAU
-    const tx = school.x + Math.cos(a) * hop
-    const tz = school.z + Math.sin(a) * hop
-    const steps = Math.max(1, Math.ceil(hop / 2))
-    for (let i = 1; i < steps; i++) {
-      const x = school.x + (tx - school.x) * (i / steps)
-      const z = school.z + (tz - school.z) * (i / steps)
-      if (!this.site(sp, x, z, 0)) return false
-    }
-    const at = this.site(sp, tx, tz, sp.cfg.clearance)
-    if (!at) return false
-    school.tx = tx
-    school.tz = tz
-    school.y = this.column(at.bed, at.level, between(this.rand, sp.cfg.depth))
-    return true
-  }
-
-  /** The fish has just taken a new target speed: listed for the ear if it is a fast one. */
-  setOff(f) {
-    if (f.speed >= DART_SPEED) this.startles.push(f)
-  }
-
-  /** The fish that set off at DART_SPEED or more this frame, for the ear (audio/ambience.js): the slots themselves, with x, y, z and `size` (its length in metres) on them, each once. A hidden layer lists nobody. */
-  startled(into) {
-    if (!this.batch.visible) return into
-    for (const f of this.startles) into.push(f)
-    return into
-  }
-
-  /** The lure this fish is on this frame: the nearest of this.lures it wants, noticed within LURE_M of the hand and kept to LURE_FORGET_M; null when there is none. */
-  _lure(f) {
-    let lure = null
-    let best = Infinity
-    for (const l of this.lures) {
-      if (!LURES.includes(l.kind)) continue
-      const d = Math.hypot(l.x - f.x, l.y - f.y, l.z - f.z)
-      if (d < best) { best = d; lure = l }
-    }
-    return lure !== null && best <= (f.lure ? LURE_FORGET_M : LURE_M) ? lure : null
-  }
-
-  stepFish(sp, f, dt) {
-    const cfg = sp.cfg
-    const rand = this.rand
-    const school = f.school
-
-    // The lure: taken up at a dart the ear hears, and let go of at a cruise.
-    const lure = this._lure(f)
-    if (lure !== null && f.lure === null) { f.speed = cfg.cruise * LURE_HASTE; this.setOff(f) }
-    else if (lure === null && f.lure !== null) f.speed = cfg.cruise
-    f.lure = lure
-
-    // The startle wave reaching this fish: it bolts at its own speed, a little off the shoal's line, and the wander is re-aimed so it stays on that line when the bolt ends.
-    if (f.boltIn > 0) {
-      f.boltIn -= dt
-      if (f.boltIn <= 0) {
-        f.mood = 'bolt'
-        f.moodLeft = cfg.boltFor * (0.6 + 0.8 * rand())
-        f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
-        f.wander = school.fleeAt + (rand() - 0.5) * 1.2
-        this.setOff(f)
-      }
-    }
-    // Moods. Pike cycle glide -> lurk -> burst -> glide; bass and glimmerfin fidget, each fish on its own clock: a dart or a hang, with a kick to the heading either way.
-    f.moodLeft -= dt
-    if (cfg.glide) {
-      if (f.moodLeft <= 0) {
-        if (f.mood === 'glide') { f.mood = 'lurk'; f.moodLeft = between(rand, cfg.lurk); f.speed = cfg.lurkSpeed }
-        else if (f.mood === 'lurk') { f.mood = 'burst'; f.moodLeft = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5; this.setOff(f) }
-        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.glide); f.speed = cfg.cruise }
-      }
-    } else if (cfg.fidgetEvery) {
-      if (f.moodLeft <= 0) {
-        if (f.mood === 'glide') { f.mood = 'fidget'; f.moodLeft = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3; this.setOff(f) }
-        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.fidgetEvery); f.speed = cfg.cruise }
-      }
-    }
-
-    // The probe: bed and surface under the fish, and the water ahead of it. Staggered so the pool's heightAt calls spread across frames. A big fish wants proportionally more water ahead.
-    if ((this.frame + f.probeAt) % PROBE_EVERY === 0) {
-      const level = this.water.levelAt(f.x, f.z)
-      // A fish that has beached anyway is better gone than gasping on the bank; its slot re-seeds out in the pool.
-      if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) return this.drop(sp, f)
-      f.level = level
-      f.bed = this.height.heightAt(f.x, f.z)
-      const ax = f.x + f.hx * cfg.lookahead
-      const az = f.z + f.hz * cfg.lookahead
-      const aheadLevel = this.water.levelAt(ax, az)
-      const shallow = aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)
-      if (shallow && f.homing <= 0) f.homing = 1.5
-    }
-    if (f.homing > 0) f.homing -= dt
-
-    // Heading: a random walk, pulled toward the fish's own station in the school when it has strayed, or turned hard for the anchor itself when the shore is ahead. The anchor is always in deep water (hop), so it is the one heading that is known to be safe.
-    f.wander += (rand() - 0.5) * cfg.wander * f.verve * Math.sqrt(dt) * 2
-    let dx = Math.cos(f.wander)
-    let dz = Math.sin(f.wander)
-    f.station += f.orbit * dt
-    const ax = school.x + Math.cos(f.station) * f.ring - f.x
-    const az = school.z + Math.sin(f.station) * f.ring - f.z
-    const ad = Math.hypot(ax, az)
-    if (f.homing > 0) {
-      const hx = school.x - f.x
-      const hz = school.z - f.z
-      const hd = Math.hypot(hx, hz)
-      if (hd > 0.5) {
-        dx = (hx / hd) * 2
-        dz = (hz / hd) * 2
-        // Re-aim the walk itself, so the fish is still heading in when the timer runs out rather than turning straight back.
-        f.wander = Math.atan2(hz, hx)
-      }
-    }
-    if (f.lure) {
-      const off = Math.atan2(f.lure.z - f.z, f.lure.x - f.x) - f.wander
-      const swing = Math.atan2(Math.sin(off), Math.cos(off))
-      f.wander += Math.max(-LURE_TURN * dt, Math.min(LURE_TURN * dt, swing))
-      dx = Math.cos(f.wander)
-      dz = Math.sin(f.wander)
-    }
-    const stray = f.lure ? 0 : ad / cfg.schoolRadius
-    if (stray > 0.6) {
-      const pull = f.mood === 'bolt' ? 3 : Math.min(2.5, (stray - 0.6) * 1.5)
-      dx += (ax / ad) * pull
-      dz += (az / ad) * pull
-    }
-    // Separation: from school-mates, or for a solo species from every other fish of its kind (ten pike, so a plain scan). Other species are ignored; they are going about their own business.
-    const sep = cfg.separation
-    const others = school.members.length > 1 ? school.members : cfg.school[1] === 1 ? sp.slots : null
-    if (others) {
-      for (const g of others) {
-        if (g === f || !g.alive) continue
-        const gx = f.x - g.x
-        const gz = f.z - g.z
-        const d2 = gx * gx + gz * gz
-        if (d2 < sep * sep && d2 > 1e-6) {
-          const d = Math.sqrt(d2)
-          const push = (sep - d) / sep * 2
-          dx += (gx / d) * push
-          dz += (gz / d) * push
-        }
-      }
-    }
-    const dl = Math.hypot(dx, dz) || 1
-    // A fish left behind swims harder to rejoin: without this a shoal that cruises slower than its anchor drifts never catches it.
-    const speed = (f.lure ? cfg.cruise * LURE_HASTE : f.speed) * f.pace * Math.max(1, Math.min(2.5, stray))
-    const wantX = (dx / dl) * speed
-    const wantZ = (dz / dl) * speed
-    const k = Math.min(1, cfg.agility * (f.lure ? LURE_AGILITY : 1) * dt)
-    f.vx += (wantX - f.vx) * k
-    f.vz += (wantZ - f.vz) * k
-
-    // Depth: chase the fish's own place in the column, bobbing slowly about it; the school's anchor y draws it too so a shoal rises and sinks together. A lured fish chases the hand's height, within the column.
-    const lo = f.bed + BED_MARGIN + f.margin
-    const hi = f.level - SURFACE_MARGIN - f.margin
-    const bob = 0.06 * Math.sin(this.time * TAU * f.bobHz + f.bobAt)
-    const target = f.lure ? Math.max(lo, Math.min(hi, f.lure.y)) : 0.5 * (this.column(f.bed, f.level, f.depthFrac + bob, f.margin) + school.y)
-    const wantY = Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) * Math.max(0.3, speed / cfg.cruise)
-    f.vy += (wantY - f.vy) * Math.min(1, 2 * dt)
-
-    f.x += f.vx * dt
-    f.y += f.vy * dt
-    f.z += f.vz * dt
-    if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
-    if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
   }
 
   dispose() {

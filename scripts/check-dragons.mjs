@@ -12,18 +12,20 @@
 // and whose other lies flat, and a scatter on a flat field that is one per
 // 160 000 square metres, the same twice, and turned away by a slope, a tarn or
 // a road. Then the dragon itself, on a stand-in slab whose `fly` swings its
-// wings out, over a stand-in roost and a stand-in herd: that it is born on its
-// nest and, hungry, flies the hunt -- patrol, hunt, strike, seize, return,
-// land -- and comes home with the stag hanging from it, drawn every frame it
-// is carried, laid at one spot on the nest, walked round and eaten; that fed
-// it potters on the nest for minutes and then explores rather than hunts,
-// alighting on ground away from home that is neither steep nor drowned; that
-// it never turns, pitches, banks or speeds faster than its rates, never walks
-// faster than its gait and never flies into the ground; that a stag
-// that leaves the world sends it back on patrol; that it is drawn as a puppet
-// near, as two crossed cards fixed in its body's frame far, and as nothing
-// past that while still being simulated; that it goes with its roost, and that
-// a relief edit drops what it carried without a fade.
+// wings out, over a stand-in roost and a stand-in herd: that its chapter is a
+// closed-form chain of phrases from the nest and back to it, the same on every
+// instance; that flown on the room's clock it rests, flies, lands and rests
+// again with no tick turning, pitching, banking or speeding the body faster
+// than its rates and no snap at a phrase's end the eye would read; that two
+// instances stepped on different frame times agree to the bit at every tick,
+// as does one born mid-phrase once it has caught up; that a kill on the nest
+// is laid at one spot, walked round and eaten; that exploring it alights on
+// ground away from home that is neither steep nor drowned; that a fish in her
+// hand takes it off its score and, put away, a rejoin anchor puts it back, on
+// this client and on a peer's; that it is drawn between its last two ticks as
+// a puppet near, as two crossed cards fixed in its body's frame far, and as
+// nothing past that while still being simulated; that it goes with its roost,
+// and that a relief edit drops what it carried without a fade.
 //
 // What this can NOT check: whether a dragon coming over the ridge is a thing
 // to see. That needs eyes, in the world.
@@ -31,11 +33,13 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, CARD_EVERY, PATROL_MPS, HUNT_MPS, DIVE_MPS, LAND_MPS, ACCEL,
-  TURN_RATE, LAND_TURN_RATE, PITCH_MAX, DIVE_PITCH, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, HUNT_M,
-  STRIKE_M, LAND_M, REST_S, FIRST_S, FLIGHT_S, PERCH_S, EAT_S, HUNGER_S, WAY_M, WALK_TURN_RATE, EAT_REACH, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly,
-  LURES, LURE_M, LURE_FORGET_M, MENACE_RUN_M, MENACE_M,
+  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, DIVE_MPS, LAND_MPS, ACCEL,
+  TURN_RATE, LAND_TURN_RATE, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, LAND_M, LOITER_PACE, REST_S, FLIGHT_MIN_S, PERCH_S, EAT_S,
+  WAY_M, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf,
+  HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
+  LURES, LURE_M, LURE_FORGET_M, MENACE_RUN_M, MENACE_M, ANCHOR_S, ANCHOR_STALE_S,
 } from '../src/v2/render/dragons.js'
+import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickOf } from '../src/sim/score.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
@@ -471,22 +475,21 @@ function makeAsset() {
   return { root, skeleton, tiers, clips, map: null, sizeM: wyvern.sizeM, span, width, height, gait: { ...wyvern.gait }, legs }
 }
 
-/** A stand-in herd: `stags` the slots a dragon may find, seize, carry and drop, every call counted on the slot. */
+/** A stand-in herd: `stags` the slots a dragon may roster, pose, kill, carry and drop, each standing still at its spawn, every call counted on the slot. */
 function makeHerd(stags) {
+  const of = (key) => { const s = stags.find((c) => c.key === key); if (!s) throw new Error(`no stag keyed ${key}`); return s }
   return {
     stags,
-    prey(x, z, range) {
-      this.preyCalls++
-      let best = null, bestD = range
-      for (const s of stags) {
-        if (!s.spawn) continue
-        const d = Math.hypot(s.x - x, s.z - z)
-        if (d < bestD) { best = s; bestD = d }
-      }
-      return best
+    hunter: null,
+    roster(x, z, range, into = []) {
+      this.rosterCalls++
+      for (const s of stags) if (Math.hypot(s.x - x, s.z - z) <= range) into.push({ key: s.key, x: s.x, z: s.z })
+      return into.sort((a, b) => (a.key < b.key ? -1 : 1))
     },
-    preyCalls: 0,
-    seize(c) { c.spawn = null; c.act = 'dead'; c.seized++; return c },
+    rosterCalls: 0,
+    spawnAt(key) { const s = of(key); return { x: s.x, z: s.z } },
+    poseAt(key, T, into = { x: 0, y: 0, z: 0, heading: 0 }) { const s = of(key); into.x = s.x; into.y = s.y; into.z = s.z; into.heading = 0; return into },
+    kill(key, now) { const c = of(key); c.spawn = null; c.act = 'dead'; c.seized++; c.killed.push(now); return c },
     carry(c, m, dist, dt, lain = false, shown) {
       c.carried++
       c.lain = lain
@@ -501,8 +504,8 @@ function makeHerd(stags) {
     drop(c, fade = true) { c.drops.push(fade) },
   }
 }
-const stag = (x, z, y = GROUND) => ({ spawn: {}, x, y, z, k: 0.5, size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, shown: null, shownFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
-const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into } })
+const stag = (x, z, y = GROUND, key = 'st:0,0:0') => ({ key, spawn: {}, x, y, z, k: 0.5, killed: [], size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, shown: null, shownFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
+const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into }, siteAt: (tx, tz) => sites.find((s) => s.tx === tx && s.tz === tz) ?? null })
 const dry = { isSubmerged: () => false }
 const dragonsOn = (field, sites, herd, seed = 3, water = dry) => new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, asset: makeAsset() })
 const DT = 1 / 60
@@ -512,7 +515,7 @@ const HER = { x: 5, y: GROUND + 1.6, z: 5 }
 console.log('\ndragons')
 {
   const flat = flatField(GROUND)
-  check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: {}, asset: makeAsset() }); return false } catch (e) { return /prey, seize, carry and drop/.test(e.message) } })(), 'a wildlife without the prey hooks is refused by name')
+  check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: {}, asset: makeAsset() }); return false } catch (e) { return /roster, spawnAt, poseAt, kill, carry and drop/.test(e.message) } })(), 'a wildlife without the hunt\'s verbs is refused by name')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: {}, wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /sites/.test(e.message) } })(), 'so is a roost layer with no sites()')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /isSubmerged/.test(e.message) } })(), 'and a world with no water to ask, since a dragon must not alight in a lake')
 
@@ -545,87 +548,262 @@ console.log('\ndragons')
   d.dispose()
 }
 
-// --- the loop: born on the nest, out, the kill, home with it -------------------------
+// --- the score: a chapter of phrases, closed-form, chained, home at both ends, the same everywhere ---
+const homeSite = (key) => ({ key, tx: key, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
+/** A plan of nothing but rests on the nest, `durs` seconds each, for the gates that want the dragon kept home. */
+const restPlan = (d) => (key) => {
+  const dr = d.byKey.get(key)
+  return [300, 300].map((dur) => ({ kind: 'rest', dur, from: dr.home, to: dr.home, at: dr.site, meal: false }))
+}
+const pose = (dr) => ({ x: dr.x, y: dr.y, z: dr.z, heading: dr.heading, pitch: dr.pitch, roll: dr.roll, speed: dr.speed })
+const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.heading === b.heading && a.pitch === b.pitch && a.roll === b.roll && a.speed === b.speed
 {
   const flat = flatField(GROUND)
-  const site = { key: 1234, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
-  const stags = [stag(120, 60)]
-  const herd = makeHerd(stags)
-  const d = dragonsOn(flat, [site], herd)
-
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(site.key)
+  const site = homeSite(1234)
+  const d = dragonsOn(flat, [site], makeHerd([]))
+  const t0 = chapterOf(1000, keyOf(site)).start
+  d.update(HER.x, HER.y, HER.z, t0)
+  const dr = d.byKey.get(keyOf(site))
   check(dr && d.byKey.size === 1 && d.free.length === MAX - 1 && dr.site === site, 'the frame a site is listed a dragon is born to it, keyed by the roost\'s tile')
-  check(dr.state === 'roost' && Math.abs(dr.x - site.x) < 1e-9 && Math.abs(dr.z - site.z) < 1e-9 && dr.y > site.y && dr.y < site.y + 0.1 * site.r && dr.clip === 'idle', 'born on its nest, standing a hand over the floor, idling', `y ${fmt(dr.y)} over ${fmt(site.y)}`)
+  check(dr.state === 'roost' && Math.abs(dr.x - site.x) < 1e-9 && Math.abs(dr.z - site.z) < 1e-9 && dr.y > site.y && dr.y < site.y + 0.1 * site.r && dr.clip === 'idle', 'born on its nest at the chapter\'s turn, standing a hand over the floor, idling', `y ${fmt(dr.y)} over ${fmt(site.y)}`)
   check(Math.abs(dr.size / wyvern.sizeM - 1) <= SIZE_VARY && Math.abs(dr.k - dr.size / wyvern.span) < 1e-12 && Math.abs(dr.lodSize - dr.size * d.bulk) < 1e-12, `sized within ${SIZE_VARY * 100}% of the roster, the ladder sized by the flying bulk`, `${fmt(dr.size)} m, lod size ${fmt(dr.lodSize)}`)
-  check(dr.timer >= FIRST_S[0] && dr.timer <= FIRST_S[1] && dr.lod === 0 && dr.puppet, `born rested, off within ${FIRST_S[0]} to ${FIRST_S[1]} s, and wearing a puppet with her beside the nest`, `rest left ${fmt(dr.timer)} s`)
-  const born = { size: dr.size, heading: dr.heading }
+  check(dr.lod === 0 && dr.puppet && dr.rec.tick === tickOf(t0), 'wearing a puppet with her beside the nest, stepped to the clock\'s tick')
   const twin = dragonsOn(flat, [site], makeHerd([]), 3)
-  twin.update(HER.x, HER.y, HER.z, DT)
-  check(twin.byKey.get(site.key).size === born.size && twin.byKey.get(site.key).heading === born.heading, 'the same nest holds the same dragon every visit: its size and its first heading are the roost\'s seed')
+  twin.update(HER.x, HER.y, HER.z, t0 + 250)
+  const tw = twin.byKey.get(keyOf(site))
+  check(tw.size === dr.size && tw.home.heading === dr.home.heading, 'the same nest holds the same dragon every visit: its size and its home heading are the roost\'s seed')
+
+  const ch = d.score.chapter(keyOf(site), t0)
+  const ph = ch.phrases
+  const sum = ph.reduce((s, p) => s + p.dur, 0)
+  check(ch.start === t0 && Math.abs(sum - CHAPTER_S) < 1e-6 && ph.every((p) => p.dur > 0), `the chapter is ${ph.length} phrases whose durations sum to CHAPTER_S ${CHAPTER_S} s exactly`, `${fmt(sum)} s`)
+  check(ph[0].kind === 'rest' && ph[0].at === site && ph[0].from === dr.home && ph[ph.length - 1].to === dr.home && ph[ph.length - 1].kind === 'rest', 'it opens with a rest on the nest from the home pose and closes with one ending at it')
+  check(ph.every((p, i) => i === 0 || p.from === ph[i - 1].to), 'every phrase starts from the object the one before ends at: one chain, no two poses to disagree')
+  check(ph.every((p) => Number.isFinite(p.to.speed) && (p.kind === 'fly' ? p.to.speed === p.mps * LOITER_PACE : p.to.speed === 0)), 'every end pose carries the speed the body arrives at: LOITER_PACE of the leg\'s cruise in the air, nothing on the ground')
+  const flies = ph.filter((p) => p.kind === 'fly')
+  const lands = ph.map((p, i) => [p, i]).filter(([p]) => p.kind === 'land')
+  check(flies.length >= 3 && flies.every((p) => Math.hypot(p.to.x - site.x, p.to.z - site.z) <= PATROL_M + LAND_M + 1e-6 && p.to.y > GROUND + MIN_AGL), `the legs end within PATROL_M + LAND_M of the nest and well over the ground`, `${flies.length} legs`)
+  check(lands.length >= 1 && lands.every(([p, i]) => ph[i - 1].kind === 'fly' && ph[i - 1].dest === p.dest && ph[i + 1].kind === 'rest' && ph[i + 1].at === p.dest && Math.abs(p.to.y - (p.dest.y + (p.dest.turf ? 0 : 0.04 * p.dest.r))) < 1e-9), 'every landing follows a leg to its floor and is followed by a rest on it, touching down a hand over that floor')
+  check(ph.some((p) => p.kind === 'rest' && p.at === site && p !== ph[0] && p !== ph[ph.length - 1]) || ph.length <= 4, 'between flights it rests on the nest')
+  const chapters = (dd, n) => Array.from({ length: n }, (_, c) => dd.score.chapter(keyOf(site), t0 + c * CHAPTER_S))
+  const modes = new Set(chapters(d, 12).flatMap((c) => c.phrases.filter((p) => p.kind === 'fly').map((p) => p.mode)))
+  check(modes.has('patrol') && modes.has('explore') && modes.has('return'), 'over a dozen chapters it patrols hungry and explores fed, and every flight returns', [...modes].join(' '))
+  const budgets = chapters(d, 12).map((c) => c.phrases.filter((p) => p.kind !== 'rest' || p.at !== site).reduce((s, p) => s + p.dur, 0))
+  check(budgets.every((b) => b >= FLIGHT_MIN_S), `no chapter's flying, perches and all, is under FLIGHT_MIN_S ${FLIGHT_MIN_S} s`, budgets.map((b) => fmt(b)).join(' '))
+  const strip = (c) => JSON.stringify(c.phrases.map((p) => [p.kind, p.dur, p.to, p.mode ?? '', p.at === site || p.dest === site ? 'home' : p.dest?.turf || p.at?.turf ? 'turf' : '']))
+  check(chapters(d, 3).every((c, i) => strip(c) === strip(chapters(twin, 3)[i])), 'and another instance plans the same three chapters to the digit: the plan is a function of the key and the chapter alone')
+  twin.dispose()
+  d.dispose()
+}
+
+// --- a chapter flown on the room's clock: rests, legs, landings, no tick faster than its rates, no snap the eye reads ---
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(1234)
+  const d = dragonsOn(flat, [site], makeHerd([]))
+  const t0 = chapterOf(1000, keyOf(site)).start
+  d.update(HER.x, HER.y, HER.z, t0)
+  const dr = d.byKey.get(keyOf(site))
+  const AIRBORNE = new Set(['patrol', 'explore', 'hunt', 'stoop', 'return', 'rejoin'])
+  const worst = { turn: 0, pitch: 0, roll: 0, accel: 0, move: 0, under: Infinity, farFromHome: 0, banked: 0, snap: 0, snapTurn: 0, snapSpeed: 0, ticksPerFrame: 0, alphaOut: 0 }
+  const seen = new Set()
+  const trace = []
+  let phrase = dr.phrase
+  let tick = dr.rec.tick
+  let cruised = 0
+  const measure = () => {
+    const ran = dr.rec.tick - tick
+    tick = dr.rec.tick
+    worst.ticksPerFrame = Math.max(worst.ticksPerFrame, ran)
+    if (dr.rec.alpha < 0 || dr.rec.alpha > 1) worst.alphaOut++
+    if (ran !== 1) return
+    const speedWas = speed
+    speed = dr.speed
+    if (dr.phrase !== phrase) {
+      // The tick that crossed a boundary: the pose before it is what the ease left, the phrase's end is what it was snapped to.
+      worst.snap = Math.max(worst.snap, Math.hypot(dr.px - phrase.to.x, dr.py - phrase.to.y, dr.pz - phrase.to.z))
+      worst.snapTurn = Math.max(worst.snapTurn, Math.abs(swing(dr.pheading, phrase.to.heading)))
+      worst.snapSpeed = Math.max(worst.snapSpeed, Math.abs(speedWas - phrase.to.speed))
+      phrase = dr.phrase
+      return
+    }
+    worst.turn = Math.max(worst.turn, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S)
+    worst.pitch = Math.max(worst.pitch, Math.abs(dr.pitch - dr.ppitch) / TICK_S)
+    worst.roll = Math.max(worst.roll, Math.abs(dr.roll - dr.proll) / TICK_S)
+    worst.accel = Math.max(worst.accel, Math.abs(dr.speed - speedWas) / TICK_S)
+    worst.move = Math.max(worst.move, Math.hypot(dr.x - dr.px, dr.y - dr.py, dr.z - dr.pz) / TICK_S)
+    worst.banked = Math.max(worst.banked, Math.abs(dr.roll))
+    if (AIRBORNE.has(dr.state)) { worst.under = Math.min(worst.under, dr.y - GROUND); if (dr.y - GROUND > MIN_AGL) cruised++ }
+    worst.farFromHome = Math.max(worst.farFromHome, Math.hypot(dr.x - site.x, dr.z - site.z))
+  }
+  let speed = dr.speed
+  const FRAMES = 60 * CHAPTER_S
+  for (let i = 1; i <= FRAMES; i++) {
+    const now = t0 + i / 60
+    d.update(HER.x, HER.y, HER.z, now)
+    measure()
+    if (!seen.has(dr.state)) { seen.add(dr.state); trace.push(`${dr.state}@${((i / 60)).toFixed(0)}s`) }
+    if (d.stats.behind) throw new Error(`fell behind the clock at frame ${i}`)
+  }
+  check(seen.has('roost') && (seen.has('patrol') || seen.has('explore')) && seen.has('return') && seen.has('land') && !seen.has('menace'), 'through the chapter it rests, flies out, returns and lands, never live', trace.join(' '))
+  check(worst.ticksPerFrame === 1 && worst.alphaOut === 0, 'at 60 Hz no frame runs more than one tick, and the frame\'s blend between ticks stays in [0, 1]')
+  check(worst.turn <= Math.max(TURN_RATE, LAND_TURN_RATE, WALK_TURN_RATE) + EASE_TURN + 1e-6, 'no tick turned the body faster than its turn rate plus the ease\'s', `${fmt(worst.turn)} rad/s`)
+  check(worst.pitch <= 2 * PITCH_RATE + 1e-6 && worst.roll <= 2 * ROLL_RATE + 1e-6, 'nor pitched or banked it faster than its rates plus the ease\'s', `pitch ${fmt(worst.pitch)} roll ${fmt(worst.roll)} rad/s`)
+  check(worst.accel <= 2 * ACCEL + 1e-6, 'nor changed its speed faster than ACCEL plus the ease\'s', `${fmt(worst.accel)} m/s per s`)
+  check(worst.move <= PATROL_MPS + Math.sqrt(3) * EASE_MPS + 1e-6, 'nor moved it faster than the cruise plus the ease\'s pull', `${fmt(worst.move)} m/s`)
+  check(worst.snap < 1 && worst.snapTurn < 0.2 && worst.snapSpeed < 1, 'at every phrase boundary the ease had the body within a metre, a fifth of a radian and a metre a second of the planned end, so the snap onto it is nothing the eye reads', `worst ${fmt(worst.snap)} m, ${fmt(worst.snapTurn)} rad, ${fmt(worst.snapSpeed)} m/s`)
+  check(worst.under > 0.1 && cruised > 60 * 20, `in the air it was never under the ground and cruised above MIN_AGL ${MIN_AGL} m for most of its flying`, `lowest ${fmt(worst.under)} m, ${cruised} ticks high`)
+  check(worst.farFromHome < PATROL_M + LAND_M + 50, `and never strayed much past ${PATROL_M} m from the nest`, `${fmt(worst.farFromHome)} m at most`)
+  check(worst.banked > 0.3 && worst.banked <= BANK + 1e-9, `it banked into its turns, never past ${BANK} rad`, `${fmt(worst.banked)} rad at most`)
+  check(dr.x === dr.home.x && dr.y === dr.home.y && dr.z === dr.home.z && dr.heading === dr.home.heading && dr.speed === 0 && dr.state === 'roost' && dr.chapter === chapterOf(t0, keyOf(site)).index + 1, 'at the chapter\'s turn it is exactly at its home pose, on the next chapter\'s first rest', `chapter ${dr.chapter}`)
+  d.dispose()
+}
+
+// --- determinism: two clients on different frame times agree to the bit at every tick, and a late joiner catches up to the same ---
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(1234)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  const A = dragonsOn(flat, [site], makeHerd([]))
+  const B = dragonsOn(flat, [site], makeHerd([]))
+  A.update(HER.x, HER.y, HER.z, t0)
+  B.update(HER.x + 300, HER.y, HER.z, t0)
+  const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
+  const poses = new Map([[a.rec.tick, pose(a)]])
+  let differ = 0, compared = 0, multi = 0
+  const END = t0 + CHAPTER_S + 30
+  for (let i = 1; i <= 60 * (CHAPTER_S + 330); i++) { A.update(HER.x, HER.y, HER.z, t0 + i / 60); poses.set(a.rec.tick, pose(a)) }
+  let tB = t0
+  let jitter = 0.37
+  while (tB < END) {
+    jitter = (jitter * 9301 + 49297) % 233280
+    // B's frames run 5 to 125 ms, so some carry no tick and some carry two.
+    tB += 0.005 + 0.12 * (jitter / 233280)
+    const was = b.rec.tick
+    B.update(HER.x + 300, HER.y, HER.z, tB)
+    if (b.rec.tick - was > 1) multi++
+    const ref = poses.get(b.rec.tick)
+    if (ref) { compared++; if (!samePose(ref, pose(b))) differ++ }
+  }
+  check(compared > 60 * CHAPTER_S / 4 && multi > 100 && differ === 0, 'a client at 60 Hz beside the nest and one on jittery frames 300 m off agree on the pose at every tick to the last bit, through a whole chapter', `${compared} ticks compared, ${multi} frames of two ticks or more, ${differ} differ`)
+  // A joiner mid-chapter: placed at its phrase's start pose and replayed, no more than CATCH_UP_TICKS a frame, to the same tick pose.
+  const tj = t0 + 200
+  const C = dragonsOn(flat, [site], makeHerd([]))
+  let frames = 0, replayed = 0, overBudget = 0
+  do {
+    C.update(HER.x, HER.y, HER.z, tj)
+    frames++
+    replayed += C.stats.replayed
+    if (C.stats.replayed > CATCH_UP_TICKS) overBudget++
+  } while (C.stats.behind && frames < 100)
+  const c = C.byKey.get(keyOf(site))
+  check(!C.stats.behind && frames >= 1 && overBudget === 0 && replayed <= CHAPTER_S * 20, `born 200 s into the chapter it replays its phrase from the start, at most CATCH_UP_TICKS ${CATCH_UP_TICKS} a frame, and is caught up`, `${replayed} ticks over ${frames} frames, ${c.state}`)
+  check(c.rec.tick === tickOf(tj) && samePose(poses.get(c.rec.tick), pose(c)), 'and stands where the resident stood at that tick, to the bit', `${c.state} at (${fmt(c.x)}, ${fmt(c.y)}, ${fmt(c.z)})`)
+  let cDiffer = 0
+  for (let i = 1; i <= 60 * 300; i++) {
+    C.update(HER.x, HER.y, HER.z, tj + i / 60)
+    if (!samePose(poses.get(c.rec.tick), pose(c))) cDiffer++
+  }
+  check(cDiffer === 0 && c.rec.tick === tickOf(tj + 300), 'and stays with the resident to the bit for the five minutes after, across every boundary between', `${cDiffer} ticks differ`)
+  A.dispose(); B.dispose(); C.dispose()
+}
+
+// --- the hunt: a hungry flight takes a stag off the wildlife's own score, the strike one closed-form fact both layers and every client agree on ---
+{
+  const flat = flatField(GROUND)
+  const site = { ...homeSite(1234), tx: 0, tz: 0 }
+  const herdOf = () => makeHerd([stag(120, 60, GROUND, 'st:3,1:0'), stag(-90, 40, GROUND, 'st:-3,1:1'), stag(600, 0, GROUND, 'st:18,0:0')])
+  const herd = herdOf()
+  const d = dragonsOn(flat, [site], herd)
+  check(typeof herd.hunter === 'function', 'born, the layer hangs itself on the wildlife as its hunter')
+  const key = keyOf(site)
+  const t0 = chapterOf(1000, key).start
+  let ch = null, at = -1
+  for (let c = 0; c < 12 && !ch; c++) {
+    const cc = d.score.chapter(key, t0 + c * CHAPTER_S)
+    const i = cc.phrases.findIndex((p) => p.kind === 'stoop')
+    if (i >= 0) { ch = cc; at = i }
+  }
+  check(ch !== null, 'within a dozen chapters a hungry flight hunts', ch ? `chapter ${ch.index}, phrase ${at}` : 'none')
+  const ph = ch.phrases
+  const [hunt, stoop, back, land, meal] = ph.slice(at - 1, at + 4)
+  const strip = (c) => JSON.stringify(c.phrases.map((p) => [p.kind, p.dur, p.to, p.mode ?? '', p.prey ?? '', p.kill ?? '']))
+  const prey = herd.stags.find((c) => c.key === stoop.prey)
+  check(prey && prey.key !== 'st:18,0:0' && Math.hypot(prey.x - site.x, prey.z - site.z) <= HUNT_M && herd.rosterCalls > 0, `the stag is one of the roster within HUNT_M ${HUNT_M} m of the nest, never the one 600 m off`, stoop.prey)
+  check(hunt.kind === 'fly' && hunt.mode === 'hunt' && hunt.mps === HUNT_MPS && Math.abs(Math.hypot(hunt.to.x - prey.x, hunt.to.z - prey.z) - STOOP_M) < 1e-9 && Math.abs(hunt.to.y - (prey.y + STOOP_AGL)) < 1e-9 && hunt.to === stoop.from, `the hunt leg flies at HUNT_MPS ${HUNT_MPS} m/s to STOOP_M ${STOOP_M} m short of and STOOP_AGL ${STOOP_AGL} m over where the stag's own plan has it`)
+  check(Math.abs(stoop.to.x - prey.x) < 1e-9 && Math.abs(stoop.to.z - prey.z) < 1e-9 && Math.abs(stoop.to.y - (prey.y + STRIKE_AGL)) < 1e-9 && stoop.dur > 1 && stoop.dur < 10 && stoop.to.speed === HUNT_MPS && Math.abs(swing(stoop.to.heading, Math.atan2(-(stoop.to.z - stoop.from.z), stoop.to.x - stoop.from.x))) < 1e-9, `the stoop ends STRIKE_AGL ${STRIKE_AGL} m over the stag at the hunt's pace, headed along the dive`, `${fmt(stoop.dur)} s`)
+  const struck = back.kill?.struck
+  check(back.kind === 'fly' && back.mode === 'return' && back.from === stoop.to && back.kill && back.kill.prey === prey.key && Math.abs(struck - (ch.start + ch.starts[at] + stoop.dur)) < 1e-6 && land.kind === 'land' && land.kill === back.kill && meal.kind === 'rest' && meal.meal === true && meal.kill === back.kill && !meal.at.turf, 'the return leg, the landing and the rest on the nest carry the kill: the stag, and the strike, which is the stoop\'s end')
+  const stoops = ph.map((p, i) => [p, i]).filter(([p]) => p.kind === 'stoop')
+  check(stoops.every(([p, i]) => ph[i - 1].mode === 'hunt' && ph[i + 1].mode === 'return' && ph[i + 2].kind === 'land' && ph[i + 3].meal && ph[i + 3].dur >= MEAL_S) && ph.filter((p) => p.kill).length === 3 * stoops.length && ph.filter((p) => p.kind === 'rest' && p.meal).length === stoops.length, `every stoop follows its hunt leg and is followed by the return, the landing and a meal of MEAL_S ${MEAL_S} s at least, and nothing else carries a kill`, `${stoops.length} hunts`)
+  check(d.strikeOn(prey.key, ch.start, ch.start + CHAPTER_S) === struck && herd.hunter(prey.key, struck - 1, struck + 1) === struck && d.strikeOn(prey.key, struck + 1e-6, struck + 100) === null && d.strikeOn('st:18,0:0', ch.start, ch.start + CHAPTER_S) === null, 'strikeOn answers the strike for any window holding it, none for a window past it, and none for the stag out of reach')
+  const twin = dragonsOn(flat, [site], herdOf())
+  check(twin.strikeOn(prey.key, ch.start, ch.start + CHAPTER_S) === struck && twin.byKey.size === 0 && strip(twin.score.chapter(key, ch.start)) === strip(ch), 'another client, its dragon never born, plans the same hunt to the digit from the roost\'s tile and answers the same strike')
   twin.dispose()
 
-  check(dr.fedAt <= 0 && dr.fedAt > -HUNGER_S, 'born some way into its hunger, so a valley of roosts does not all hunt at once', `fed ${fmt(-dr.fedAt)} s ago`)
-  // Hungry by hand, so this first flight is the hunt.
-  dr.fedAt = -Infinity
-
-  // Fly the loop, measuring every frame against the rates.
-  const trace = []
-  const seen = new Set(['roost'])
-  // Every frame measured against the rates, in every state: a landing that snaps level or onto its stand point is a pop on a nest she may be standing beside.
-  const worst = { turn: 0, pitch: 0, roll: 0, speed: 0, accel: 0, move: 0, under: Infinity, farFromHome: 0, banked: 0 }
-  const AIRBORNE = new Set(['patrol', 'explore', 'visit', 'hunt', 'strike', 'return'])
-  const prev = { x: dr.x, y: dr.y, z: dr.z, heading: dr.heading, pitch: dr.pitch, roll: dr.roll, speed: dr.speed }
-  const measure = () => {
-    worst.turn = Math.max(worst.turn, Math.abs(swing(prev.heading, dr.heading)) / DT)
-    worst.pitch = Math.max(worst.pitch, Math.abs(dr.pitch - prev.pitch) / DT)
-    worst.roll = Math.max(worst.roll, Math.abs(dr.roll - prev.roll) / DT)
-    worst.accel = Math.max(worst.accel, Math.abs(dr.speed - prev.speed) / DT)
-    worst.speed = Math.max(worst.speed, dr.speed)
-    worst.move = Math.max(worst.move, Math.hypot(dr.x - prev.x, dr.y - prev.y, dr.z - prev.z) / DT)
-    worst.banked = Math.max(worst.banked, Math.abs(dr.roll))
-    if (AIRBORNE.has(dr.state)) worst.under = Math.min(worst.under, dr.y - GROUND)
-    worst.farFromHome = Math.max(worst.farFromHome, Math.hypot(dr.x - site.x, dr.z - site.z))
-    Object.assign(prev, { x: dr.x, y: dr.y, z: dr.z, heading: dr.heading, pitch: dr.pitch, roll: dr.roll, speed: dr.speed })
+  d.update(HER.x, HER.y, HER.z, ch.start)
+  const dr = d.byKey.get(key)
+  const gap = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+  const seen = []
+  let now = ch.start, nearest = Infinity, deepest = 0, stooped = 0, returnedEmpty = 0, ateAt = -1
+  const mealStart = ch.start + ch.starts[at + 3]
+  while (now < mealStart + meal.dur) {
+    now += DT
+    d.update(HER.x, HER.y, HER.z, now)
+    if (seen[seen.length - 1] !== dr.state) seen.push(dr.state)
+    if (dr.state === 'stoop') { stooped++; nearest = Math.min(nearest, gap(dr, stoop.to)); deepest = Math.min(deepest, dr.pitch) }
+    if ((dr.state === 'return' || dr.state === 'land') && dr.cargo !== prey) returnedEmpty++
+    if (now > mealStart && dr.state === 'roost' && !dr.cargo && ateAt < 0) ateAt = now - mealStart
   }
-  let seizedAt = -1, homeAt = -1, tookOff = -1, t = 0
-  let cargoFrames = 0
-  for (let i = 0; i < 60 * 900 && homeAt < 0; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    t += DT
-    measure()
-    if (dr.cargo) cargoFrames++
-    if (!seen.has(dr.state)) {
-      seen.add(dr.state)
-      trace.push(`${dr.state}@${t.toFixed(1)}s`)
-      if (dr.state === 'patrol') tookOff = t
-      if (dr.state === 'return') seizedAt = t
-    }
-    if (dr.state === 'roost' && seen.has('land')) homeAt = t
-  }
-  check(trace.join(' ').replace(/@[\d.]+s/g, '') === 'patrol hunt strike return land', 'hungry, it flies the hunt in order: patrol, hunt, strike, return, land, and is home again', trace.join(' '))
-  check(homeAt > 0 && homeAt < 400, 'and the whole flight, with a stag 130 m off, takes under seven minutes', `${fmt(homeAt)} s`)
-  check(tookOff > 0 && tookOff <= FIRST_S[1] && dr.clip === 'walk' && dr.rest === 'walk', 'off the nest when its first rest ran out, and back on it walking a circuit before it eats', `took off at ${fmt(tookOff)} s`)
-  check(stags[0].seized === 1 && stags[0].spawn === null && stags[0].act === 'dead' && dr.cargo === stags[0] && d.stats.carrying === 1, 'the stag was seized ONCE -- its spawn dead, its slot the dragon\'s cargo -- and is still the cargo on the nest')
-  check(worst.speed <= DIVE_MPS + 1e-6 && worst.speed > HUNT_MPS, 'the dive was the fastest it flew, faster than the hunt and no faster than the dive allows', `${fmt(worst.speed)} m/s`)
-  check(worst.under > 0.1 && worst.under < 1.001, 'never once in the air was the body under its nest floor, and it climbed off the nest rather than being lifted to its metre of clearance', `lowest ${fmt(worst.under)} m over the ground`)
-  check(worst.farFromHome < PATROL_M + 100, `and never strayed much past ${PATROL_M} m from the nest`, `${fmt(worst.farFromHome)} m at most`)
-  check(d.stats.forced === 0, 'the landing was flown, not forced by the clock', `forced ${d.stats.forced}`)
-  const landed = { x: dr.x, y: dr.y, z: dr.z, pitch: dr.pitch }
-  const kill = { x: stags[0].x, z: stags[0].z }
+  const order = ['hunt', 'stoop', 'return', 'land', 'roost'].map((st) => seen.lastIndexOf(st))
+  check(order.every((i, n) => i >= 0 && (n === 0 || i > order[n - 1])), 'flown, it hunts, stoops, returns, lands and roosts, in that order', seen.join(' '))
+  check(stooped > 20 && deepest < -0.5 && nearest < 3, 'the stoop is a dive, pitched down past half a radian, that brings the body within 3 m of the strike before the boundary snaps it there', `${stooped} ticks, pitch ${fmt(deepest)}, nearest ${fmt(nearest)} m`)
+  check(prey.killed.length === 1 && prey.killed[0] === struck && prey.seized === 1 && returnedEmpty === 0 && prey.carried > 0 && prey.lainFrames > 0, 'at the stoop\'s end the stag is killed at the strike time, in the talons the whole way home, and laid on the nest')
+  check(ateAt > 0 && prey.drops.join() === 'true' && dr.cargo === null, 'and eaten on the nest: dropped to fade when the meal ends', `${fmt(ateAt)} s into the rest`)
 
-  // The meal: a circuit of the nest, round behind the kill, up to it, and the eating; the carcass never moves until it is eaten.
+  const J = dragonsOn(flat, [site], herdOf())
+  const tj = ch.start + ch.starts[at + 1] + back.dur / 2
+  for (let i = 0; i < 100; i++) { J.update(HER.x, HER.y, HER.z, tj); if (!J.stats.behind) break }
+  const j = J.byKey.get(key)
+  const jprey = J.wildlife.stags.find((c) => c.key === prey.key)
+  check(j.state === 'return' && j.cargo === jprey && jprey.killed.join() === String(struck) && !J.stats.behind, 'a client joining mid-return finds the kill in the talons, taken at the strike time')
+  const turn = chapterOf(struck, prey.key).start + CHAPTER_S
+  j.cargo = null
+  J._enter(j, { phrase: back, start: ch.start + ch.starts[at + 1], end: ch.start + ch.starts[at + 2], index: at + 1, chapter: ch.index, rejoin: false }, turn)
+  check(j.cargo === null && jprey.killed.length === 1, 'entered once the stag\'s chapter has turned, the leg takes no kill: the stag is on its feet again and the dragon flies home with nothing')
+  J.dispose()
+  d.dispose()
+}
+
+// --- the meal: a kill on the nest is laid at one spot, walked round and eaten, and a fed dragon potters ---
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(1234)
+  const stags = [stag(120, 60)]
+  const d = dragonsOn(flat, [site], makeHerd(stags))
+  d.plan = restPlan(d)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  let now = t0
+  const step = () => { now += DT; d.update(HER.x, HER.y, HER.z, now) }
+  d.update(HER.x, HER.y, HER.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  check(dr.phrase.kind === 'rest' && dr.phrase.dur === 300 && d.score.chapter(keyOf(site), t0).phrases.length === 2, 'a gate may lay its own chapter under a dragon: two rests of 300 s here')
+  // The kill laid on the nest by hand, as the hunt will lay it.
+  dr.cargo = stags[0]
+  d._meal(dr)
   const walkMps = wyvern.gait.walk * dr.k
   const nest = { moved: 0, walkFast: 0, offFloor: 0, killMoved: 0, farthest: 0, headings: 0, eatAt: -1, ateAt: -1, eatFacing: Infinity, eatFrom: Infinity, clips: new Set() }
-  let lastHeading = dr.heading
+  let cargoFrames = 0, lastHeading = dr.heading, tick = dr.rec.tick
+  step()
+  const kill = { x: stags[0].x, z: stags[0].z }
+  check(Math.hypot(kill.x - site.x, kill.z - site.z) < site.r && Math.hypot(kill.x - site.x, kill.z - site.z) > 0.5 && Math.abs(stags[0].y - site.y) < 1e-6 && stags[0].lain === true, 'the kill is laid on the nest floor off centre, on its flank', `at (${fmt(kill.x)}, ${fmt(kill.z)}), nest r ${site.r}`)
   for (let i = 0; i < 60 * 240 && nest.ateAt < 0; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    nest.moved += Math.hypot(dr.x - prev.x, dr.z - prev.z)
-    measure()
+    step()
     if (dr.cargo) cargoFrames++
     nest.clips.add(dr.clip)
-    // Three seconds in, the landing's speed has bled off and the body is on the floor: from here every frame is a walk or a stand.
-    if (i > 60 * 3) {
+    if (dr.rec.tick !== tick) {
+      tick = dr.rec.tick
+      nest.moved += Math.hypot(dr.x - dr.px, dr.z - dr.pz)
       if (dr.speed > walkMps * 1.001) nest.walkFast++
       if (Math.abs(dr.y - (site.y + 0.04 * site.r)) > 1e-6) nest.offFloor++
       if (dr.state !== 'roost') throw new Error(`left the nest mid-meal: ${dr.state}`)
@@ -633,117 +811,85 @@ console.log('\ndragons')
     nest.headings += Math.abs(swing(lastHeading, dr.heading)); lastHeading = dr.heading
     nest.farthest = Math.max(nest.farthest, Math.hypot(dr.x - site.x, dr.z - site.z))
     if (dr.cargo && (Math.abs(stags[0].x - kill.x) > 1e-9 || Math.abs(stags[0].z - kill.z) > 1e-9)) nest.killMoved++
-    if (dr.rest === 'eat' && nest.eatAt < 0) nest.eatAt = i * DT
+    if (dr.rest === 'eat' && nest.eatAt < 0) nest.eatAt = now - t0
     if (dr.rest === 'eat') {
       nest.eatFacing = Math.min(nest.eatFacing, Math.abs(swing(dr.heading, Math.atan2(-(kill.z - dr.z), kill.x - dr.x))))
       nest.eatFrom = Math.hypot(kill.x - dr.x, kill.z - dr.z)
     }
-    if (!dr.cargo && nest.ateAt < 0) nest.ateAt = i * DT
+    if (!dr.cargo && nest.ateAt < 0) nest.ateAt = now - t0
   }
-  check(Math.hypot(landed.x - site.x, landed.z - site.z) > 0.01 && nest.eatAt > 5 && nest.eatAt < 120, 'the landing hands over short of the stand point and the dragon walks a circuit of the nest before it eats', `landed ${fmt(Math.hypot(landed.x - site.x, landed.z - site.z))} m out, eating from ${fmt(nest.eatAt)} s`)
-  check(nest.moved > 2 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than two radii and turned more than a half turn, all of it inside the rim', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
-  check(nest.walkFast === 0 && nest.offFloor === 0, 'and once down, never moved faster than the shipped walk gait at its size nor left the floor plane', `walk ${fmt(walkMps)} m/s; ${nest.walkFast} fast frames, ${nest.offFloor} off the floor`)
-  check(nest.killMoved === 0 && Math.hypot(kill.x - site.x, kill.z - site.z) < site.r && Math.hypot(kill.x - site.x, kill.z - site.z) > 0.5 && Math.abs(stags[0].y - site.y) < 1e-6, 'the kill lay where it was dropped, on the nest floor off centre, through the whole circuit: it does not follow the dragon round', `at (${fmt(kill.x)}, ${fmt(kill.z)}), nest r ${site.r}`)
+  check(nest.eatAt > 5 && nest.eatAt < 120, 'the dragon walks a circuit of the nest before it eats', `eating from ${fmt(nest.eatAt)} s`)
+  check(nest.moved > 1.5 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than a radius and a half and turned more than a half turn, all of it inside the rim', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
+  check(nest.walkFast === 0 && nest.offFloor === 0, 'and never moved faster than the shipped walk gait at its size nor left the floor plane', `walk ${fmt(walkMps)} m/s; ${nest.walkFast} fast ticks, ${nest.offFloor} off the floor`)
+  check(nest.killMoved === 0, 'the kill lay where it was laid through the whole circuit: it does not follow the dragon round')
   check(nest.eatFacing < 0.1 && Math.abs(nest.eatFrom - EAT_REACH * dr.k) < WAY_M, `eating, it faces the kill with the kill ${fmt(EAT_REACH * dr.k)} m ahead, where the eat clip's snout plunges`, `off by ${fmt(nest.eatFacing)} rad, ${fmt(nest.eatFrom)} m`)
   check(nest.ateAt > 0 && nest.ateAt - nest.eatAt >= EAT_S[0] - 0.1 && nest.ateAt - nest.eatAt <= EAT_S[1] + 0.1 && stags[0].drops.join() === 'true' && dr.cargo === null && d.stats.carrying === 0, `after ${EAT_S[0]} to ${EAT_S[1]} s of eating the carcass is gone -- dropped to fade -- and the dragon carries nothing`, `ate for ${fmt(nest.ateAt - nest.eatAt)} s`)
-  check(Math.abs(dr.age - dr.fedAt) < 1e-9 && !d._hungry(dr), 'and the meal is when it last ate: it is not hungry now')
-  check(stags[0].carried === cargoFrames && cargoFrames > 60 && stags[0].carryDt === DT, 'wildlife.carry was called on every frame it was cargo, with the frame', `${cargoFrames} frames`)
-  check(stags[0].shownFrames === cargoFrames, 'and told the dragon was drawn on every one of them: she stood beside the nest the whole hunt', `${stags[0].shownFrames} of ${cargoFrames}`)
-  check(stags[0].lain === true && stags[0].lainFrames > 60 * 5 && stags[0].lainFrames < cargoFrames, 'hanging from the talons through the whole flight and laid on its flank from the frame it landed to the frame it was eaten', `lain ${stags[0].lainFrames} of ${cargoFrames} cargo frames`)
-  check(worst.turn <= LAND_TURN_RATE + 1e-6 && worst.pitch <= PITCH_RATE + 1e-6 && worst.roll <= ROLL_RATE + 1e-6 && worst.accel <= ACCEL + 1e-6 && worst.move <= DIVE_MPS * 1.001, 'and no frame of it, landing, walking and eating included, turned, pitched, banked, accelerated or moved the body faster than its rates', `turn ${fmt(worst.turn)}/${LAND_TURN_RATE} pitch ${fmt(worst.pitch)}/${PITCH_RATE} roll ${fmt(worst.roll)}/${ROLL_RATE} accel ${fmt(worst.accel)}/${ACCEL} move ${fmt(worst.move)}/${DIVE_MPS}`)
-  check(worst.banked > 0.3 && worst.banked <= BANK + 1e-9, `it banked into its turns, never past ${BANK} rad`, `${fmt(worst.banked)} rad at most`)
-  check(seizedAt > 0 && Math.abs(dr.roll) < 1e-9 && Math.abs(dr.pitch) < 1e-9, 'standing level')
-
-  // Fed, it potters for the rest: several kinds of step, walks among them, and no takeoff before the rest's least.
-  const potter = { clips: new Set(), walked: 0, tookOff: -1 }
-  for (let i = 0; i < 60 * (REST_S[1] + 5) && potter.tookOff < 0; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    if (dr.state === 'roost') { potter.clips.add(dr.clip); if (dr.rest === 'walk') potter.walked += DT }
-    else potter.tookOff = i * DT
+  check(stags[0].carried === cargoFrames + 1 && cargoFrames > 60 && Math.abs(stags[0].carryDt - DT) < 1e-9, 'wildlife.carry was called on every frame it was cargo, with the frame', `${cargoFrames} frames`)
+  check(stags[0].shownFrames === stags[0].carried && stags[0].lainFrames === stags[0].carried, 'and told the dragon was drawn on every one of them, the kill lying on its flank on every one')
+  check(Math.abs(dr.roll) < 1e-9 && Math.abs(dr.pitch) < 1e-9, 'standing level')
+  // Fed, it potters: several kinds of step, walks among them, and no eating with nothing to eat.
+  const potter = { clips: new Set(), walked: 0 }
+  for (let i = 0; i < 60 * 60; i++) {
+    step()
+    potter.clips.add(dr.clip)
+    if (dr.rest === 'walk') potter.walked += DT
   }
-  check(potter.tookOff >= REST_S[0] - 1 && potter.tookOff <= REST_S[1] + 1, `fed, it stays on the nest for the rest, ${REST_S[0]} to ${REST_S[1]} s`, `${fmt(potter.tookOff)} s`)
-  check(potter.clips.size >= 3 && potter.walked > 5 && !potter.clips.has('eat') && !potter.clips.has('fly'), 'and does not just stand there: three kinds of step at least, walking among them, and no eating with nothing to eat', [...potter.clips].join(' ') + `, walked ${fmt(potter.walked)} s`)
-  check(dr.state === 'explore' && dr.cargo === null && herd.preyCalls > 0, `fed within ${HUNGER_S} s, its next flight is to explore, not to hunt`)
-  check(herd.prey(dr.x, dr.z, HUNT_M) === null, 'a seized stag is not prey again')
-  const preyCallsBefore = herd.preyCalls
-
-  // The explore: no stag is looked for, the cruise meanders, and hunger in the air turns it to a patrol.
-  let pitchFlips = 0, rollFlips = 0, swung = 0, netted = 0, patrolLow = Infinity, patrolHigh = 0
-  let lastPitch = 0, lastRoll = 0
-  lastHeading = dr.heading
-  for (let i = 0; i < 60 * 40; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    if (dr.state === 'explore' && i > 60 * 20) {
-      patrolLow = Math.min(patrolLow, dr.y - GROUND); patrolHigh = Math.max(patrolHigh, dr.y - GROUND)
-      if (dr.pitch * lastPitch < 0) pitchFlips++
-      if (dr.roll * lastRoll < 0) rollFlips++
-      swung += Math.abs(swing(lastHeading, dr.heading)); netted += swing(lastHeading, dr.heading)
-    }
-    lastPitch = dr.pitch; lastRoll = dr.roll; lastHeading = dr.heading
-  }
-  check(herd.preyCalls === preyCallsBefore && ['explore', 'visit', 'land', 'perch'].includes(dr.state), 'forty seconds of exploring asked the wildlife for no stag at all', dr.state)
-  check(patrolLow >= MIN_AGL - 5 && patrolHigh > MIN_AGL, `once up, the cruise kept about ${MIN_AGL} m over the ground or higher`, `${fmt(patrolLow)} to ${fmt(patrolHigh)} m`)
-  check(pitchFlips >= 2 && rollFlips >= 2 && swung > 2 * Math.abs(netted) + 1, 'and it swooped and careened the whole way: pitch and roll crossed level again and again and the heading swung far more than it netted', `pitch flips ${pitchFlips}, roll flips ${rollFlips}, swung ${fmt(swung)} rad for ${fmt(netted)} net`)
-  if (dr.state !== 'explore') { dr.state = 'explore'; dr.dest = site }
-  dr.fedAt = -Infinity
-  d.update(HER.x, HER.y, HER.z, DT)
-  check(dr.state === 'patrol', 'an explorer that goes hungry in the air turns to patrolling where it is')
-  // Empty patrol: with the only stag eaten, the flight clock sends it home.
-  let home = -1
-  for (let i = 0; i < 60 * (FLIGHT_S[1] + 200) && home < 0; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    if (dr.state === 'roost') home = i * DT
-  }
-  check(home > 0 && home < FLIGHT_S[1] + 150 && !dr.cargo && herd.preyCalls > preyCallsBefore, `with nothing to hunt the patrol turns for home when its clock runs out and lands within ${FLIGHT_S[1]} s and the flight back`, `${fmt(home)} s`)
+  check(dr.state === 'roost' && potter.clips.size >= 3 && potter.walked > 5 && !potter.clips.has('eat') && !potter.clips.has('fly'), 'and does not just stand there: three kinds of step at least, walking among them, and no eating with nothing to eat', [...potter.clips].join(' ') + `, walked ${fmt(potter.walked)} s`)
+  const listed = d.bodies([])
+  check(listed.length === 1 && listed[0] === dr && typeof dr.cycle === 'number' && dr.cycle > 0, 'bodies() lists it for the ear with its clip\'s cycle')
   d.dispose()
 }
 
-// --- exploring: a sated dragon visits a spot away from the nest, perches and potters there, and flies on; steep or drowned ground it does not ---
+// --- exploring: a fed dragon visits a spot away from the nest, perches and potters there, and flies on; steep or drowned ground it does not ---
 {
   const flat = flatField(GROUND)
-  const site = { key: 4321, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
-  const herd = makeHerd([stag(150, 0)])
-  const d = dragonsOn(flat, [site], herd, 8)
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(site.key)
-  dr.fedAt = dr.age
-  dr.timer = 0.5
-  const visit = { at: -1, flights: 0, state: '' }
-  let was = dr.state
-  for (let i = 0; i < 60 * 3 * (FLIGHT_S[1] + REST_S[1] + 400) && visit.at < 0; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    dr.fedAt = dr.age
-    if (dr.state === 'explore' && was === 'roost') visit.flights++
-    if (dr.state === 'perch') visit.at = i * DT
-    was = dr.state
+  const site = homeSite(4321)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  /** The first landing on turf in the plan's first `n` chapters, with the world time it starts, or null. */
+  const firstVisit = (dd, n = 12) => {
+    dd.update(HER.x, HER.y, HER.z, t0)
+    for (let c = 0; c < n; c++) {
+      const ch = dd.score.chapter(keyOf(site), t0 + c * CHAPTER_S)
+      const i = ch.phrases.findIndex((p) => p.kind === 'land' && p.dest.turf)
+      if (i >= 0) return { start: ch.start + ch.starts[i], phrase: ch.phrases[i], perch: ch.phrases[i + 1] }
+    }
+    return null
   }
-  check(visit.at > 0 && visit.flights <= 3 && herd.preyCalls === 0, 'kept fed, within three flights it alights on a spot away from the nest, and never once looked for a stag', `perched at ${fmt(visit.at)} s on flight ${visit.flights}`)
-  const spot = dr.dest
+  const seek = dragonsOn(flat, [site], makeHerd([]), 8)
+  const visit = firstVisit(seek)
+  seek.dispose()
+  check(visit !== null && visit.perch.kind === 'rest' && visit.perch.at === visit.phrase.dest && visit.perch.dur >= PERCH_S[0] - 1e-9 && visit.perch.dur <= PERCH_S[1] + 1e-9, `fed, within a dozen chapters it plans to alight on a spot away from the nest and perch ${PERCH_S[0]} to ${PERCH_S[1]} s`, visit ? `at ${fmt(visit.start - t0)} s, ${fmt(visit.perch.dur)} s perched` : 'never')
+  const spot = visit.phrase.dest
   check(spot !== site && spot.turf === true && Math.hypot(spot.x - site.x, spot.z - site.z) >= SPOT_AWAY * site.r && Math.hypot(spot.x - site.x, spot.z - site.z) <= PATROL_M + 20, `the spot is turf ${SPOT_AWAY} nest radii or more from home and within the patrol's range`, `${fmt(Math.hypot(spot.x - site.x, spot.z - site.z))} m from the nest`)
-  const perch = { clips: new Set(), walked: 0, offGround: 0, off: 0, y: 0 }
-  for (let i = 0; i < 60 * (PERCH_S[1] + 5) && dr.state === 'perch'; i++) {
-    d.update(HER.x, HER.y, HER.z, DT)
-    dr.fedAt = dr.age
-    if (dr.state === 'perch') perch.clips.add(dr.clip)
-    if (dr.rest === 'walk') perch.walked += DT
-    if (i > 60 * 3 && Math.abs(dr.y - GROUND) > 1e-6) perch.offGround++
-    perch.off = Math.max(perch.off, Math.hypot(dr.x - spot.x, dr.z - spot.z))
+  // A dragon born at the landing's start glides onto the spot and perches.
+  const d = dragonsOn(flat, [site], makeHerd([]), 8)
+  let now = visit.start
+  d.update(HER.x, HER.y, HER.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  check(dr.state === 'land' && dr.clip === 'fly' && dr.dest.turf === true && Math.abs(dr.y - (GROUND + 30)) < 1e-6, 'born at the landing\'s start it is on the approach, flying, over the spot', `${dr.state} at ${fmt(dr.y - GROUND)} m up`)
+  const perch = { clips: new Set(), walked: 0, offGround: 0, off: 0, at: -1 }
+  for (let i = 0; i < 60 * (visit.phrase.dur + visit.perch.dur + 1); i++) {
+    now += DT
+    d.update(HER.x, HER.y, HER.z, now)
+    if (dr.state === 'perch') {
+      if (perch.at < 0) perch.at = now - visit.start
+      perch.clips.add(dr.clip)
+      if (dr.rest === 'walk') perch.walked += DT
+      if (now - visit.start > visit.phrase.dur + 3 && Math.abs(dr.y - GROUND) > 1e-6) perch.offGround++
+      perch.off = Math.max(perch.off, Math.hypot(dr.x - spot.x, dr.z - spot.z))
+    }
   }
+  check(perch.at > 0 && perch.at <= visit.phrase.dur + 0.1, 'it is down and perched when the landing\'s clock says', `perched at ${fmt(perch.at)} s of a ${fmt(visit.phrase.dur)} s landing`)
   check(perch.clips.size >= 2 && perch.walked > 2 && perch.offGround === 0 && perch.off < site.r, 'perched, it potters as at home -- walking about, standing on the ground itself -- and stays about the spot', `${[...perch.clips].join(' ')}, walked ${fmt(perch.walked)} s, ${fmt(perch.off)} m out at most`)
-  check(['explore', 'return'].includes(dr.state) && dr.clip === 'fly' && dr.dest === site, `and after ${PERCH_S[0]} to ${PERCH_S[1]} s it flies on, or home if the flight's clock ran out perched`, dr.state)
+  check(['explore', 'return'].includes(dr.state) && dr.clip === 'fly', 'and after the perch it flies on, or home if the flight has no more legs', dr.state)
   d.dispose()
 
   const never = (label, field, water = dry) => {
     const dd = dragonsOn(field, [site], makeHerd([]), 8, water)
-    dd.update(HER.x, HER.y, HER.z, DT)
-    const b = dd.byKey.get(site.key)
-    b.timer = 0.5
-    let perched = false
-    for (let i = 0; i < 60 * 3 * (FLIGHT_S[1] + REST_S[1] + 400) && !perched; i++) { dd.update(HER.x, HER.y, HER.z, DT); b.fedAt = b.age; if (b.state === 'perch' || b.state === 'visit') perched = true }
-    check(!perched, label)
+    check(firstVisit(dd) === null, label)
     dd.dispose()
   }
-  never('with every spot under water, three flights alight nowhere but the nest', flat, { isSubmerged: () => true })
+  never('with every spot under water, a dozen chapters alight nowhere but the nest', flat, { isSubmerged: () => true })
   never(`nor on ground steeper than ${SPOT_SLOPE_DEG} degrees`, flatField(GROUND, Math.tan((SPOT_SLOPE_DEG + 5) * Math.PI / 180)))
 }
 
@@ -751,54 +897,61 @@ console.log('\ndragons')
 {
   const gx = 0.25, gz = -0.15
   const hill = hillField(GROUND, gx, gz)
-  const site = { key: 31, x: 40, y: hill.heightAt(40, -20) - 0.06 * 4, z: -20, r: 4, gx, gz }
+  const site = { key: 31, tx: 31, tz: 0, x: 40, y: hill.heightAt(40, -20) - 0.06 * 4, z: -20, r: 4, gx, gz }
   const stags = [stag(500, 500)]
   const d = dragonsOn(hill, [site], makeHerd(stags))
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(site.key)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  d.update(HER.x, HER.y, HER.z, t0)
+  const dr = d.byKey.get(keyOf(site))
   check(Math.abs(dr.y - (site.y + 0.04 * site.r)) < 1e-9 && dr.y > hill.heightAt(site.x, site.z) - 0.1, 'born standing a hand over the floor at the bowl\'s centre, which is at the turf, not under the uphill half of the hill')
-  // The kill laid on this nest, by hand: landed with it.
+  // The kill laid on this nest, by hand.
   dr.cargo = stags[0]
-  d._perch(dr)
-  d.update(HER.x, HER.y, HER.z, DT)
+  d._meal(dr)
+  d.update(HER.x, HER.y, HER.z, t0 + DT)
   const c = stags[0]
   const u = c.x - site.x, v = c.z - site.z
   const normal = new THREE.Vector3(-gx, 1, -gz).normalize()
   check(c.lain === true && Math.hypot(u, v) > 0.5 && Math.hypot(u, v) < site.r && Math.abs(c.y - (site.y + gx * u + gz * v)) < 1e-9, 'a kill on this nest lies beside the dragon ON the tilted floor plane, at that plane\'s own height there, not at the centre\'s', `at (${fmt(u)}, ${fmt(v)}) off centre, y ${fmt(c.y)} for a floor of ${fmt(site.y + gx * u + gz * v)}`)
   check(c.up.distanceTo(normal) < 1e-9, 'and lies tilted with the floor, its up the nest plane\'s normal', `up (${fmt(c.up.x)}, ${fmt(c.up.y)}, ${fmt(c.up.z)})`)
-  check((() => { try { dragonsOn(hill, [{ key: 32, x: 0, y: GROUND, z: 0, r: 4 }], makeHerd([])).update(0, 0, 0, DT); return false } catch (e) { return /floor plane/.test(e.message) } })(), 'a site with no floor plane is refused by name, not stood on at NaN')
+  check((() => { try { dragonsOn(hill, [{ key: 32, tx: 32, tz: 0, x: 0, y: GROUND, z: 0, r: 4 }], makeHerd([])).update(0, 0, 0, t0); return false } catch (e) { return /floor plane/.test(e.message) } })(), 'a site with no floor plane is refused by name, not stood on at NaN')
+  check((() => { try { d.update(0, 0, 0, NaN); return false } catch (e) { return /world time/.test(e.message) } })(), 'and a frame with no world time is refused: nothing about a dragon is timed from anything else')
   d.dispose()
 }
 
-// --- a fish in her hand: a roosting dragon drops its kill and comes off the nest at her ----
+// --- a fish in her hand: a roosting dragon drops its kill and comes off the nest at her, live; put away, it rejoins its score ----
 {
   const flat = flatField(GROUND)
-  const site = { key: 78, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
+  const site = homeSite(78)
   const stags = [stag(500, 500)]
   const d = dragonsOn(flat, [site], makeHerd(stags), 5)
+  d.plan = restPlan(d)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  let now = t0
   // She stands east of the nest, the hand a metre up, and never moves her feet: the hand is what the dragon reads.
   const her = { x: 12, y: GROUND + 1.6, z: 0 }
   const hand = (kind, x, z = 0) => ({ kind, x, y: GROUND + 1, z })
   let turned = 0
-  const run = (s, lures, seen) => { for (let i = 0; i < s * 60; i++) { const h0 = dr.heading; d.update(her.x, her.y, her.z, DT, lures); turned = Math.max(turned, Math.abs(swing(h0, dr.heading)) / DT); if (seen) seen() } }
-  d.update(her.x, her.y, her.z, DT)
-  const dr = d.byKey.get(site.key)
-  dr.timer = Infinity
+  const frame = (lures) => { now += DT; const tick = dr.rec.tick; d.update(her.x, her.y, her.z, now, lures); if (dr.rec.tick !== tick) turned = Math.max(turned, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S) }
+  const run = (s, lures, seen) => { for (let i = 0; i < s * 60; i++) { frame(lures); if (seen) seen() } }
+  /** Frames until one tick has run. */
+  const tick = (lures) => { const t = dr.rec.tick; while (dr.rec.tick === t) frame(lures) }
+  d.update(her.x, her.y, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
   const reach = EAT_REACH * dr.k + MENACE_M
   const gap = (l) => Math.hypot(l.x - dr.x, l.z - dr.z)
   // Out of reach, or the wrong thing: the dragon rests on.
   run(2, [hand('fish', LURE_M + 1)])
-  check(dr.state === 'roost' && dr.lure === null, `a fish ${LURE_M + 1} m off is not noticed`)
+  check(dr.state === 'roost' && dr.lure === null && dr.live === null, `a fish ${LURE_M + 1} m off is not noticed`)
   run(2, [hand('carrot', 2)])
   check(dr.state === 'roost' && dr.lure === null, 'nor is a carrot in reach', LURES.join(', '))
   // Eating its kill on the nest when the fish comes within reach: the kill is let go, and the dragon is up and alert.
   dr.cargo = stags[0]
-  d._perch(dr)
+  d._meal(dr)
   run(1, [])
   check(dr.state === 'roost' && dr.cargo === stags[0] && dr.queue.length > 0, 'settled on the nest with its kill, working through its circuit')
   const fish = hand('fish', LURE_M - 0.5)
-  d.update(her.x, her.y, her.z, DT, [fish])
-  check(dr.state === 'menace' && dr.lure === fish && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0 && dr.timer === Infinity, `a fish ${LURE_M - 0.5} m off has it drop the kill to fade and go to menace, alert`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
+  tick([fish])
+  check(dr.state === 'menace' && dr.lure === fish && dr.live && dr.live.by === null && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0, `a fish ${LURE_M - 0.5} m off has it drop the kill to fade and go LIVE to menace, alert, this client the authority`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
   // The stomp: at the walk gait inside MENACE_RUN_M, toward the hand, and stopped with its head at her, eating at her.
   turned = 0
   let walked = false
@@ -810,8 +963,10 @@ console.log('\ndragons')
   const stops = (l) => gap(l) < reach + 0.05 && gap(l) > reach - (wyvern.gait.walk * dr.k) ** 2 / (2 * ACCEL) - 0.05
   const facing = (l) => Math.abs(swing(dr.heading, Math.atan2(-(l.z - dr.z), l.x - dr.x))) < 0.05
   check(dr.clip === 'eat' && dr.speed < 0.05 && stops(fish) && facing(fish), `and stops eating at her, its head EAT_REACH + MENACE_M ${fmt(reach)} m short of the hand, facing it`, `clip ${dr.clip}, ${fmt(gap(fish))} m off, heading ${fmt(dr.heading)}`)
-  check(turned <= WALK_TURN_RATE + 1e-6, `never turning faster than WALK_TURN_RATE ${WALK_TURN_RATE}`, `${fmt(turned)} rad/s`)
+  check(turned <= WALK_TURN_RATE + 1e-6, `never turning faster than WALK_TURN_RATE ${WALK_TURN_RATE} a tick`, `${fmt(turned)} rad/s`)
   check(dr.y >= GROUND && dr.y < GROUND + 0.05 * site.r && Math.abs(dr.pitch) < 1e-6 && Math.abs(dr.roll) < 1e-6, 'level, standing over the nest floor still', `y ${fmt(dr.y)}`)
+  const anchors = d.pending()
+  check(anchors.length >= 6 && anchors.length <= 8 && anchors.every((a) => a[0] === keyOf(site) && a[7] === 'menace' && a[8] === null && Number.isFinite(a[9]) && a[1] > t0) && anchors.every((a, i) => i === 0 || a[1] - anchors[i - 1][1] >= ANCHOR_S - 1e-9), `seven seconds live, the authority owes the room one menace anchor a second, none sooner than ANCHOR_S ${ANCHOR_S} s after the last, each carrying its speed`, `${anchors.length} anchors`)
   // A step back holds it; MENACE_M back has it after her again; and off past MENACE_RUN_M it runs.
   run(2, [hand('fish', fish.x + MENACE_M * 0.5)])
   check(dr.clip === 'eat', `a half step back and it eats on`)
@@ -833,61 +988,147 @@ console.log('\ndragons')
   let running = false
   run(20, [walk], () => { walk.z -= 1.45 * DT; worst = Math.max(worst, gap(walk)); if (dr.clip === 'run') { if (!running) rushes++; running = true } else running = false })
   check(worst < reach + MENACE_RUN_M + 1 && rushes >= 2 && rushes <= 5 && gap(walk) < reach + MENACE_RUN_M + 1, 'carried off at her walk it stomps after her in rushes, run and stop, never far off', `never more than ${fmt(worst)} m off, ${rushes} rushes in 20 s, ${fmt(gap(walk))} m at the end`)
-  // Kept to LURE_FORGET_M, given up past it: home to the nest and the rest clock started over.
-  d.update(her.x, her.y, her.z, DT, [hand('fish', dr.x + LURE_FORGET_M - 0.5, dr.z)])
+  // Kept to LURE_FORGET_M, given up past it: the rejoin, a leg home from here.
+  tick([hand('fish', dr.x + LURE_FORGET_M - 0.5, dr.z)])
   check(dr.state === 'menace', `a fish ${LURE_FORGET_M - 0.5} m off is still menaced`)
-  d.update(her.x, her.y, her.z, DT, [hand('fish', dr.x + LURE_FORGET_M + 1, dr.z)])
-  check(dr.state === 'return' && dr.lure === null && dr.clip === 'fly' && dr.dest === site, `and one ${LURE_FORGET_M + 1} m off is given up: it flies home`, `state ${dr.state}`)
+  d.pending()
+  const left = { x: dr.x, y: dr.y, z: dr.z }
+  tick([hand('fish', dr.x + LURE_FORGET_M + 1, dr.z)])
+  const rejoin = d.pending()
+  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.length === 3, `and one ${LURE_FORGET_M + 1} m off is given up: it is on its rejoin, a leg home, a landing and a rest, flying`, `state ${dr.state}`)
+  check(rejoin.length === 1 && rejoin[0][7] === 'rejoin' && rejoin[0][8] === null && Math.hypot(rejoin[0][2] - left.x, rejoin[0][4] - left.z) < 1 && Math.abs(rejoin[0][1] - now) < TICK_S, 'the authority owes the room one rejoin anchor, from where the lure ended and when', JSON.stringify(rejoin[0]?.map((v) => (typeof v === 'number' ? +v.toFixed(2) : v))))
   let frames = 0
-  while (dr.state !== 'roost' && frames++ < 60 * 120) d.update(her.x, her.y, her.z, DT)
-  check(dr.state === 'roost' && Math.hypot(dr.x - site.x, dr.z - site.z) < site.r && dr.timer >= REST_S[0] && dr.timer <= REST_S[1] && dr.cargo === null, 'and is on its nest again, resting', `${(frames / 60).toFixed(1)} s, rest ${fmt(dr.timer)} s`)
+  while (dr.state !== 'roost' && frames++ < 60 * 120) frame([])
+  check(dr.state === 'roost' && Math.hypot(dr.x - site.x, dr.z - site.z) < site.r && dr.cargo === null && dr.rejoin !== null && dr.phrase.kind === 'rest' && Math.abs(dr.phraseEnd - dr.rejoin.end) < 1e-9, 'and is on its nest again, resting out the rejoin until the score\'s next rest on the nest', `${(frames / 60).toFixed(1)} s`)
+  check(d.pending().length === 0, 'with nothing more sent')
+  const rjEnd = dr.rejoin.end
+  while (now < rjEnd + 1) frame([])
+  check(dr.rejoin === null && dr.state === 'roost' && dr.phrase.kind === 'rest' && dr.phrase.at === site && dr.x === dr.home.x && dr.z === dr.home.z, 'at that rest it is on the score again, at its home pose, the rejoin forgotten')
   // Put away in its face: given up at once, from the ground.
-  dr.timer = Infinity
   const near = hand('fish', dr.x + reach, dr.z)
   run(3, [near])
   check(dr.state === 'menace' && dr.clip === 'eat', 'a fish put at its face on the nest is eaten at')
-  d.update(her.x, her.y, her.z, DT, [])
-  check(dr.state === 'return' && dr.lure === null, 'and put away, it is given up the same frame')
+  tick([])
+  check(dr.state === 'rejoin' && dr.live === null && d.pending().some((a) => a[7] === 'rejoin'), 'and put away, it is given up the same tick, the rejoin anchor owed')
   d.dispose()
 }
 
-// --- a stag that leaves the world mid-hunt, and a relief edit under a carrying dragon --
+// --- anchors: the lurer's client leads, a peer's follows its anchors, and a rejoin anchor puts every client on the same rejoin ----
 {
   const flat = flatField(GROUND)
-  const site = { key: 77, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
+  const site = homeSite(78)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  const born = (seed = 5) => { const dd = dragonsOn(flat, [site], makeHerd([]), seed); dd.plan = restPlan(dd); return dd }
+  const A = born(), B = born()
+  const her = { x: 12, y: GROUND + 1.6, z: 0 }
+  let now = t0
+  A.update(her.x, her.y, her.z, now)
+  B.update(her.x, her.y, her.z, now)
+  const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
+  // The same fish, in A's own hand and, to B, in a peer's.
+  const fish = { kind: 'fish', x: LURE_M - 0.5, y: GROUND + 1, z: 0 }
+  const peerFish = { ...fish, by: 'peerA' }
+  const both = (s, la, lb) => { for (let i = 0; i < s * 60; i++) { now += DT; A.update(her.x, her.y, her.z, now, la); B.update(her.x, her.y, her.z, now, lb) } }
+  both(5, [fish], [peerFish])
+  const fromA = A.pending(), fromB = B.pending()
+  check(a.live && a.live.by === null && b.live && b.live.by === 'peerA' && fromA.length >= 5 && fromA.length <= 6 && fromB.length === 0, 'both menace the fish; the client whose hand it is publishes the anchors and the peer\'s client publishes none', `A ${fromA.length}, B ${fromB.length}`)
+  check(samePose(pose(a), pose(b)), 'and, on the same hand, they agree to the bit without one')
+  // The relay stamps who sent it; a client's own anchor coming back is ignored, a peer's is applied.
+  B.apply(fromA[fromA.length - 1], now)
+  check(B.anchored.size === 0 && b.live.anchor === null, 'an anchor with no sender is this client\'s own, and is ignored')
+  const stamped = fromA.map((an) => { const s = an.slice(); s[8] = 'peerA'; return s })
+  B.apply(stamped[stamped.length - 1], now)
+  check(B.anchored.get(keyOf(site)) === stamped[stamped.length - 1] && b.live.anchor === stamped[stamped.length - 1] && b.live.by === 'peerA', 'a peer\'s anchor is kept and, its dragon live here, becomes the correction it is nudged onto')
+  // The lure over on A: its rejoin anchor, applied on B, puts B's dragon on the same rejoin from the same pose and tick.
+  both(0.2, [], [])
+  const rj = A.pending().filter((an) => an[7] === 'rejoin')
+  check(rj.length === 1 && a.state === 'rejoin' && b.state === 'menace' && b.clip === 'alert' && b.live.by === 'peerA', 'the fish put away, the lurer\'s client starts the rejoin and owes its anchor; the peer\'s, its anchor still fresh, stands alert at it waiting on that word', `A ${a.state}, B ${b.state} ${b.clip}`)
+  const rjStamped = rj[0].slice(); rjStamped[8] = 'peerA'
+  B.apply(rjStamped, now)
+  check(b.state === 'rejoin' && b.live === null && b.rec.tick === tickOf(rj[0][1]) && b.rejoin.start === a.rejoin.start && b.rejoin.end === a.rejoin.end, 'the rejoin anchor applied puts B\'s dragon on the same rejoin, from the anchor\'s tick', `A tick ${a.rec.tick}, B tick ${b.rec.tick}`)
+  let differ = 0, frames = 0
+  while (a.state !== 'roost' && frames++ < 60 * 120) {
+    both(DT, [], [])
+    if (a.rec.tick === b.rec.tick && !samePose(pose(a), pose(b))) differ++
+  }
+  check(differ === 0 && a.state === 'roost' && b.state === 'roost' && samePose(pose(a), pose(b)) && b.rejoin && Math.abs(b.rejoin.end - a.rejoin.end) < 1e-9, 'and from there both fly the same rejoin home to the bit and rest until the same planned rest', `${differ} ticks differ`)
+  // A client that meets the rejoin anchor before it has the dragon at all: born onto that rejoin, caught up to the same pose.
+  const C = born()
+  C.apply(rjStamped, now)
+  check(C.anchored.get(keyOf(site)) === rjStamped && C.byKey.size === 0, 'a rejoin anchor for a dragon not yet born is kept for it')
+  for (let i = 0; i < 100 && (C.byKey.size === 0 || C.stats.behind); i++) C.update(her.x, her.y, her.z, now)
+  const c = C.byKey.get(keyOf(site))
+  check(c && !C.stats.behind && c.rec.tick === a.rec.tick && samePose(pose(a), pose(c)) && c.state === 'roost' && c.rejoin && Math.abs(c.rejoin.end - a.rejoin.end) < 1e-9, 'and born, it is placed at the anchor, replays the rejoin from the anchor\'s time and stands where the others do, to the bit', `${c?.state} at tick ${c?.rec.tick}`)
+  // A peer's live anchor with no hand in sight: stood alert at the anchor while it is fresh, the lure ended once it is stale.
+  const D = born()
+  D.update(her.x, her.y, her.z, now)
+  const dd = D.byKey.get(keyOf(site))
+  const late = stamped[stamped.length - 1].slice(); late[1] = now
+  D.apply(late, now)
+  D.update(her.x, her.y, her.z, now + TICK_S)
+  check(dd.state === 'menace' && dd.live && dd.live.by === 'peerA' && dd.clip === 'alert' && D.pending().length === 0, 'a peer\'s live anchor puts the dragon here to menace, alert at the anchor, publishing nothing')
+  D.update(her.x, her.y, her.z, now + ANCHOR_STALE_S + 0.1)
+  check(dd.state === 'rejoin' && dd.live === null && D.pending().length === 0, `and with no hand in sight, ANCHOR_STALE_S ${ANCHOR_STALE_S} s after the anchor the lure ends here, on a rejoin, nothing owed`)
+  check((() => { try { D.apply([keyOf(site), 1, 0, 0, 0, 0, -1, 'dance', 'peerA', 0], now); return false } catch (e) { return /anchor mode/.test(e.message) } })(), 'an anchor in a mode no dragon has is refused by name')
+  A.dispose(); B.dispose(); C.dispose(); D.dispose()
+}
+
+// --- a relief edit under a flying dragon --------------------------------------------------
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(77)
   const stags = [stag(150, 0)]
-  const herd = makeHerd(stags)
-  const d = dragonsOn(flat, [site], herd, 11)
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(site.key)
-  dr.fedAt = -Infinity
-  const until = (state, frames) => { for (let i = 0; i < frames; i++) { d.update(HER.x, HER.y, HER.z, DT); if (dr.state === state) return true } return false }
-  check(until('hunt', 60 * 200), 'a dragon on patrol finds a stag inside its range and hunts it')
-  stags[0].spawn = null
-  d.update(HER.x, HER.y, HER.z, DT)
-  check(dr.state === 'patrol' && dr.prey === null && stags[0].seized === 0, 'a stag whose tile unloads mid-hunt sends it back on patrol, unseized')
-  stags[0].spawn = {}
-  check(until('return', 60 * 200) && dr.cargo === stags[0], 'back in the world, it is hunted again and taken')
+  const d = dragonsOn(flat, [site], makeHerd(stags), 11)
+  const twin = dragonsOn(flat, [site], makeHerd([stag(150, 0)]), 11)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  let now = t0
+  const both = () => { now += DT; d.update(HER.x, HER.y, HER.z, now); twin.update(HER.x, HER.y, HER.z, now) }
+  both()
+  let dr = d.byKey.get(keyOf(site))
+  let frames = 0
+  while (dr.phrase.kind !== 'fly' && frames++ < 60 * 120) both()
+  dr.cargo = stags[0]
+  both()
+  check(dr.phrase.kind === 'fly' && stags[0].carried === 1, 'a dragon in the air with a kill in its talons')
   d.place()
   check(stags[0].drops.join() === 'false' && d.byKey.size === 0 && d.free.length === MAX && d.freePuppets.length === PUPPETS && d.fading.length === 0 && d.cardMesh.count === 0, 'a relief edit puts every dragon away at once: the kill dropped with NO fade, every slot and puppet free, nothing dissolving')
-  d.update(HER.x, HER.y, HER.z, DT)
-  check(d.byKey.size === 1 && d.byKey.get(site.key).state === 'roost', 'and the next frame the roost has its dragon again, on the nest')
-  d.dispose()
+  both()
+  dr = d.byKey.get(keyOf(site))
+  check(d.byKey.size === 1 && dr.phrase.kind === 'fly', 'and the next frame the roost has its dragon again, in the air on the same leg')
+  for (let i = 0; i < 100 && d.stats.behind; i++) d.update(HER.x, HER.y, HER.z, now)
+  const tw = twin.byKey.get(keyOf(site))
+  check(!d.stats.behind && dr.rec.tick === tw.rec.tick && samePose(pose(dr), pose(tw)), 'caught up, it is where a client that never rebuilt has it, to the bit')
+  d.dispose(); twin.dispose()
 }
 
-// --- the rungs: puppet near, two fixed cards far, nothing past that, simulated throughout --
+// --- the rungs: puppet near, two fixed cards far, nothing past that, simulated throughout, drawn between ticks --
 {
   const flat = flatField(GROUND)
-  const site = { key: 9, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }
+  const site = homeSite(9)
   const d = dragonsOn(flat, [site], makeHerd([]), 5)
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(site.key)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  let now = t0
+  d.update(HER.x, HER.y, HER.z, now)
+  const dr = d.byKey.get(keyOf(site))
   const reach = (k) => lodReach(dr.lodSize, k)
-  const at = (dist, frames = 90) => { for (let i = 0; i < frames; i++) d.update(site.x + dist, HER.y, site.z, DT); return dr.lod }
+  const at = (dist, frames = 90) => { for (let i = 0; i < frames; i++) { now += DT; d.update(site.x + dist, HER.y, site.z, now) } return dr.lod }
   check(at(reach(0) * 0.9) === 0 && dr.puppet && dr.puppet.tier === 0, `inside ${reach(0).toFixed(0)} m it is a puppet on the top tier`)
   const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
-  dr.puppet.group.matrix.decompose(p, q, s)
-  check(Math.abs(p.x - dr.x) < 1e-9 && Math.abs(p.y - dr.y) < 1e-9 && Math.abs(p.z - dr.z) < 1e-9 && Math.abs(s.x - dr.k) < 1e-9 && d.batch.children.includes(dr.puppet.group), 'the puppet\'s matrix is the dragon\'s: where it is, at its size, and in the batch')
+  // Drawn between its last two ticks: the puppet stands at the blend of them by the frame's alpha.
+  {
+    let checked = 0, off = 0
+    for (let i = 0; i < 60; i++) {
+      now += DT
+      d.update(site.x + reach(0) * 0.9, HER.y, site.z, now)
+      const al = dr.rec.alpha
+      if (al <= 0.05 || al >= 0.95) continue
+      dr.puppet.group.matrix.decompose(p, q, s)
+      checked++
+      const want = { x: dr.px + (dr.x - dr.px) * al, y: dr.py + (dr.y - dr.py) * al, z: dr.pz + (dr.z - dr.pz) * al }
+      if (Math.abs(p.x - want.x) > 1e-9 || Math.abs(p.y - want.y) > 1e-9 || Math.abs(p.z - want.z) > 1e-9 || Math.abs(s.x - dr.k) > 1e-9) off++
+    }
+    check(checked > 20 && off === 0 && d.batch.children.includes(dr.puppet.group), 'the puppet\'s matrix is the dragon\'s between its last two ticks, blended by the frame\'s alpha, at its size, and in the batch', `${checked} frames between ticks`)
+  }
   check(at(reach(LOD_RUNGS - 1) * 0.9) === LOD_RUNGS - 1 && dr.puppet && dr.puppet.tier === LOD_RUNGS - 1, `at ${(reach(LOD_RUNGS - 1) * 0.9).toFixed(0)} m it is on the bottom mesh tier, still a puppet`)
   // A kill in its talons for the rest of the walk out, to see what it is told about the dragon's own rung.
   const kill = stag(0, 0)
@@ -897,59 +1138,44 @@ console.log('\ndragons')
   d.cardMesh.getMatrixAt(0, m)
   m.decompose(p, q, s)
   const e = new THREE.Euler().setFromQuaternion(q, 'YZX')
-  check(Math.abs(p.x - dr.x) < 1e-3 && Math.abs(p.y - dr.y) < 1e-3 && Math.abs(p.z - dr.z) < 1e-3 && Math.abs(s.x - dr.k) < 1e-6, 'the card instance stands where the dragon is, at its size')
-  check(Math.abs(swing(e.y, dr.heading)) < 1e-6 && Math.abs(e.z - dr.pitch) < 1e-6 && Math.abs(e.x - dr.roll) < 1e-6, 'and carries its whole orientation -- heading, pitch AND roll -- since a fixed pair of quads is turned by its matrix and by nothing else', `yaw ${fmt(e.y)} pitch ${fmt(e.z)} roll ${fmt(e.x)}`)
+  const al = dr.rec.alpha
+  const blend = (a, b) => a + (b - a) * al
+  check(Math.abs(p.x - blend(dr.px, dr.x)) < 1e-6 && Math.abs(p.y - blend(dr.py, dr.y)) < 1e-6 && Math.abs(p.z - blend(dr.pz, dr.z)) < 1e-6 && Math.abs(s.x - dr.k) < 1e-6, 'the card instance stands where the dragon is between its ticks, at its size')
+  check(Math.abs(swing(e.y, dr.pheading + swing(dr.pheading, dr.heading) * al)) < 1e-6 && Math.abs(e.z - blend(dr.ppitch, dr.pitch)) < 1e-6 && Math.abs(e.x - blend(dr.proll, dr.roll)) < 1e-6, 'and carries its whole orientation -- heading, pitch AND roll -- since a fixed pair of quads is turned by its matrix and by nothing else', `yaw ${fmt(e.y)} pitch ${fmt(e.z)} roll ${fmt(e.x)}`)
   check(d.cardFade.array[0] === 1, 'settled: the whole card is drawn, no dither left', `fade ${d.cardFade.array[0]}`)
-  // The card cadence: with the kill put down, the dragon is behaved on one frame in CARD_EVERY, by the time banked, and its card is drawn on every one where it last was.
-  {
-    const held = { cargo: dr.cargo, ages: [], cards: 0, slid: 0 }
-    dr.cargo = null
-    const eye = { x: site.x + reach(LOD_RUNGS) * 0.9, y: HER.y, z: site.z }
-    const last = new THREE.Matrix4()
-    for (let i = 0; i < CARD_EVERY; i++) d.update(eye.x, eye.y, eye.z, DT)
-    for (let i = 0; i < CARD_EVERY * 12; i++) {
-      const age = dr.age
-      d.cardMesh.getMatrixAt(0, last)
-      d.update(eye.x, eye.y, eye.z, DT)
-      d.cardMesh.getMatrixAt(0, m)
-      if (dr.age !== age) held.ages.push(dr.age - age)
-      else if (!m.equals(last)) held.slid++
-      if (d.cardN === 1) held.cards++
-    }
-    check(dr.lod === LOD_RUNGS && held.ages.length === 12 && held.ages.every((a) => Math.abs(a - CARD_EVERY * DT) < 1e-9) && held.cards === CARD_EVERY * 12 && held.slid === 0, `on the card rung it is stepped once in ${CARD_EVERY} frames by ${CARD_EVERY} frames' time, and its card is drawn on all of them, where it last was on the held ones`, `${held.ages.length} steps of ${held.ages.map((a) => fmt(a / DT)).join('/')} frames, ${held.cards} card frames, ${held.slid} held frames with the card moved`)
-    dr.cargo = held.cargo
-  }
-  const before = { x: dr.x, z: dr.z, state: dr.state }
   check(at(reach(LOD_RUNGS) * 4) === CARD_RUNGS && d.cardN === 0 && d.cardMesh.count === 0 && !dr.puppet && d.byKey.size === 1, `four times the card's reach, it is drawn as nothing at all -- and is still alive`)
   check(kill.shown === false, 'and the kill is told so, and goes with it')
   dr.cargo = null
-  for (let i = 0; i < 60 * 120; i++) d.update(site.x + reach(LOD_RUNGS) * 4, HER.y, site.z, DT)
-  check(dr.state !== 'roost' || before.state !== dr.state || dr.x !== before.x || dr.z !== before.z || d.stats.states.roost === 1, 'and still simulated out of sight: two minutes on, it has been about its loop', `now ${dr.state} at (${fmt(dr.x)}, ${fmt(dr.z)})`)
-  check(d.stats.alive === 1 && d.stats.lod.length === LOD_RUNGS && d.stats.cards === 0 && typeof d.stats.states === 'object' && d.stats.starved === 0 && d.stats.overflow === 0, 'the stats read alive, a row a mesh rung, the cards, the states and the counters', JSON.stringify(d.stats))
+  const before = { x: dr.x, z: dr.z, state: dr.state, tick: dr.rec.tick }
+  for (let i = 0; i < 60 * 120; i++) { now += DT; d.update(site.x + reach(LOD_RUNGS) * 4, HER.y, site.z, now) }
+  check(dr.rec.tick === tickOf(now) && dr.rec.tick - before.tick === 120 * 20 && (dr.state !== before.state || dr.x !== before.x || dr.z !== before.z), 'and still simulated out of sight: two minutes on, every tick of it is run and it has been about its score', `now ${dr.state} at (${fmt(dr.x)}, ${fmt(dr.z)})`)
+  check(d.stats.alive === 1 && d.stats.lod.length === LOD_RUNGS && d.stats.cards === 0 && typeof d.stats.states === 'object' && d.stats.starved === 0 && d.stats.overflow === 0 && d.stats.live === 0 && d.stats.behind === 0, 'the stats read alive, a row a mesh rung, the cards, the states and the counters', JSON.stringify(d.stats))
   d.dispose()
 }
 
 // --- a roost that goes, too many roosts, and too many in mesh range -------------------
 {
   const flat = flatField(GROUND)
-  const sites = [{ key: 1, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
+  const sites = [{ key: 1, tx: 1, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
   const roosts = roostOf(sites)
   const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, asset: makeAsset() })
-  d.update(HER.x, HER.y, HER.z, DT)
-  const dr = d.byKey.get(1)
+  let now = chapterOf(1000, keyOf(sites[0])).start
+  const step = () => { now += DT; d.update(HER.x, HER.y, HER.z, now) }
+  step()
+  const dr = d.byKey.get(keyOf(sites[0]))
   check(dr && dr.puppet, 'a dragon with her beside its nest wears a puppet')
   sites.length = 0
-  d.update(HER.x, HER.y, HER.z, DT)
+  step()
   check(d.byKey.size === 0 && d.free.length === MAX && dr.site === null && d.fading.length === 1 && d.freePuppets.length === PUPPETS - 1, 'the frame its roost goes the dragon is retired and its body left to dissolve')
-  for (let i = 0; i < 60 * 3; i++) d.update(HER.x, HER.y, HER.z, DT)
+  for (let i = 0; i < 60 * 3; i++) step()
   check(d.fading.length === 0 && d.freePuppets.length === PUPPETS, 'and the puppet is back in the pool once the dissolve is done')
 
-  for (let k = 0; k < MAX + 1; k++) sites.push({ key: 100 + k, x: k * 8, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
-  d.update(HER.x, HER.y, HER.z, DT)
+  for (let k = 0; k < MAX + 1; k++) sites.push({ key: 100 + k, tx: 100 + k, tz: 0, x: k * 8, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
+  step()
   check(d.byKey.size === MAX && d.stats.overflow === 1 && d.free.length === 0, `${MAX + 1} roosts in range is one more dragon than there are slots: ${MAX} fly and the overflow is counted`)
   check(d.stats.puppets === PUPPETS && d.stats.starved > 0 && Array.from(d.byKey.values()).filter((x) => x.puppet).length === PUPPETS, `all of them at her feet, ${PUPPETS} wear puppets and the rest are counted starved rather than drawn wrong`, `starved ${d.stats.starved}`)
   sites.length = 0
-  d.update(HER.x, HER.y, HER.z, DT)
+  step()
   check(d.byKey.size === 0 && d.free.length === MAX && d.fading.length === PUPPETS, 'every roost gone, every dragon retired, the puppets they wore dissolving')
   d.dispose()
   check(d.batch.parent === null && d.freePuppets.length === PUPPETS, 'disposed, the batch is out of the scene and every puppet parked')

@@ -41,7 +41,7 @@ import {
 import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
-import { CRITTER_GLB, LOD_RUNGS, CARD_RUNGS, lodReach } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, LOD_RUNGS, CARD_RUNGS, TIER_TINTS, lodReach } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -375,11 +375,16 @@ check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.childre
   check(threw, 'a skeleton naming no legs is refused at setAsset')
 }
 {
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <dithering_fragment>\n' }
   spiders.material.onBeforeCompile(shader)
   check(shader.vertexShader.includes('attribute vec2 aLeg;') && shader.vertexShader.includes('attribute vec2 aGait;') && /transformed\.z -= legSwing \* sin\( legAt \)/.test(shader.vertexShader) && shader.vertexShader.indexOf('#include <begin_vertex>') < shader.vertexShader.indexOf('legSwing'), 'the legs are the vertex shader: the swing is added to `transformed` after begin_vertex, phased by the instance\'s gait and the vertex\'s leg')
   check(!shader.fragmentShader.includes('uHue') && !shader.vertexShader.includes('aHue') && !shader.fragmentShader.includes('discard'), 'nothing per-spider in the fragment and no discard in it, so it does not cost a tiled GPU its early-Z')
   check(spiders.material.customProgramCacheKey() === 'spiders-legs', 'one program for every tier')
+  // The tint row (critters.js tierTintSplice): the one mesh is the shipped MESH_TIER, so it wears that tier's colour, not tier 0's.
+  const tint = shader.uniforms.uTierTint.value
+  const want = TIER_TINTS[MESH_TIER].color.getHex()
+  const near = (v, byte) => Math.abs(v * 255 - byte) < 1
+  check(/<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader) && near(tint.x, (want >> 16) & 255) && near(tint.y, (want >> 8) & 255) && near(tint.z, want & 255), `the tint row paints the mesh tier ${MESH_TIER}'s own colour over the output`, `#${want.toString(16)}`)
   const cshader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n' }
   spiders.cardMaterial.onBeforeCompile(cshader)
   check(!cshader.vertexShader.includes('attribute float aHue;') && spiders.cardMaterial.customProgramCacheKey().endsWith('-flat'), 'and the card wears no hue either, there being none on the mesh it takes over from')

@@ -15,9 +15,9 @@ const { TREELINE, BIOME } = TREE_TUNING
 
 export const SENSE_HZ = 4
 
-// How far the ambience listens for a shore, a frog, a boulder field. The spec's
-// 10 m gets a margin so a fade can finish before the rule switches off.
-export const SHORE_REACH = 12
+// How far the ambience listens for a shore, a frog, a boulder field. The wave
+// rule's 20 m gets a margin so a fade can finish before the rule switches off.
+export const SHORE_REACH = 22
 export const FROG_REACH = 10
 export const FROG_CAP = 16
 // Half-side of the box looseCountIn counts around her, and the ring the cliff
@@ -59,10 +59,10 @@ export class WorldSense {
       forest: 0,
       cliff: 0,
       // Signed metres to the nearest lake shore (negative = out over water) and
-      // the unit XZ bearing toward the water; same for the rivers. `overLake`
-      // is open water under her, and `lakeLevel` the surface she is over or,
-      // on land, the one at the shore found; -Infinity when there is none.
-      lakeShore: SHORE_REACH, lakeDirX: 0, lakeDirZ: 0, overLake: false, lakeLevel: -Infinity,
+      // the unit XZ bearing toward the water; same for the rivers. `lakeLevel`
+      // is the surface she is over or, on land, the one at the shore found;
+      // -Infinity when there is none.
+      lakeShore: SHORE_REACH, lakeDirX: 0, lakeDirZ: 0, lakeLevel: -Infinity,
       riverShore: SHORE_REACH, riverDirX: 0, riverDirZ: 0,
       // World positions of the frogs within FROG_REACH, flat, three per frog.
       frogs: new Float32Array(FROG_CAP * 3), frogCount: 0,
@@ -134,7 +134,7 @@ export class WorldSense {
 
   /**
    * The nearest lake shore by search (see SHORE_DIRS). Writes lakeShore,
-   * lakeDirX/Z, overLake and lakeLevel; the shore lands mid-step of the first
+   * lakeDirX/Z and lakeLevel; the shore lands mid-step of the first
    * ring that crosses it, and the bearing is the mean of that ring's crossed
    * samples, which points at the water from land and at the land from the
    * water.
@@ -143,7 +143,6 @@ export class WorldSense {
     const field = this.field
     const hereLevel = this.wetAt(hx, hz, groundH)
     const wetHere = hereLevel !== null
-    out.overLake = wetHere
     out.lakeLevel = wetHere ? hereLevel : -Infinity
     out.lakeDirX = out.lakeDirZ = 0
     for (let k = 1; k * SHORE_STEP <= SHORE_REACH; k++) {

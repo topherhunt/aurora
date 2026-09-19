@@ -1,7 +1,7 @@
 /**
  * Work out what a Tripo rig's joints ARE, from geometry alone.
  *
- *   node tools/creatures/anim/rig-map.mjs <id> [--write]
+ *   node tools/creatures/anim/rig-map.mjs <id> [--write] [--forward=<degrees off +X>]
  *
  * Tripo's joint names cannot be trusted: on the red fox `tripo::0_Left_Limb_0`
  * is the second spine bone and both front legs are called `bone_14`..`bone_23`.
@@ -170,7 +170,7 @@ function runFrom(skel, start) {
   return out
 }
 
-export function buildRigMap(file) {
+export function buildRigMap(file, { forwardDeg = null } = {}) {
   const skel = loadSkeleton(file)
   const ys = skel.joints.map((j) => skel.pos(j)[1])
   const ground = Math.min(...ys), height = Math.max(...ys) - ground
@@ -180,7 +180,7 @@ export function buildRigMap(file) {
   // may hang low too, so it is "two or fewer", not "exactly two": one foot is a
   // biped Tripo left half-rigged, and the biped reading says so.
   const low = skel.leaves().filter((j) => skel.pos(j)[1] < ground + FOOT_BAND * height)
-  const body = low.length <= 2 ? bipedMap(skel, low, ground, height) : quadrupedMap(skel, ground, height)
+  const body = low.length <= 2 ? bipedMap(skel, low, ground, height, forwardDeg) : quadrupedMap(skel, ground, height)
   return {
     source: path.basename(file),
     ...(body.plan ? { plan: body.plan } : {}),
@@ -238,7 +238,7 @@ function snapToAxis(v) {
   const axes = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]
   const best = axes.reduce((a, b) => (dot(b, v) > dot(a, v) ? b : a))
   const off = Math.acos(Math.min(1, dot(best, norm(v)))) * 180 / Math.PI
-  if (off > 35) throw new Error(`the toes point ${off.toFixed(0)} degrees off every world axis -- write frame.forward into rig-map.json by hand`)
+  if (off > 35) throw new Error(`the toes point ${off.toFixed(0)} degrees off every world axis -- pass --forward=<degrees off +X>`)
   return best
 }
 
@@ -273,10 +273,12 @@ function armAnatomy(skel, chain, frame) {
  * The `human` reading. Forward is where the toes point -- the only cue a
  * standing figure offers, since its spine is vertical and its width is its
  * length -- snapped to a world axis because Tripo poses a humanoid square to
- * one and the toes themselves splay by twenty degrees. Left is the leg on the
- * positive lateral side, whatever Tripo called it.
+ * one and the toes themselves splay by twenty degrees. A foot that is a root
+ * has toes on every side, so `forwardDeg` says the facing outright when the
+ * toes cannot. Left is the leg on the positive lateral side, whatever Tripo
+ * called it.
  */
-function bipedMap(skel, low, ground, height) {
+function bipedMap(skel, low, ground, height, forwardDeg = null) {
   const feet = low.map(skel.name).join(', ') || '(none)'
   if (low.length !== 2) {
     throw new Error(`found ${low.length} foot chain(s) reaching the ground, a biped needs 2 -- ${feet}. `
@@ -294,8 +296,8 @@ function bipedMap(skel, low, ground, height) {
   }
   let cue = [0, 0, 0]
   for (const c of chains) { const d = toeOf(c); if (d) cue = add(cue, d) }
-  if (len(cue) < 0.02 * height) throw new Error('neither foot has a toe joint to say which way this biped faces -- write frame.forward into rig-map.json by hand')
-  const forward = snapToAxis(cue)
+  if (forwardDeg === null && len(cue) < 0.02 * height) throw new Error('neither foot has a toe joint to say which way this biped faces -- pass --forward=<degrees off +X>')
+  const forward = forwardDeg === null ? snapToAxis(cue) : [Math.cos((forwardDeg * Math.PI) / 180), 0, Math.sin((forwardDeg * Math.PI) / 180)]
   const up = [0, 1, 0]
   const lateral = cross(up, forward)
   const hips = chains.map((c) => skel.pos(c[0]))
@@ -324,10 +326,20 @@ function bipedMap(skel, low, ground, height) {
 
   // Arms: the two longest chains that are not legs, one each side. Stray
   // single joints Tripo leaves at hip height have no chain and drop out here.
+  // A hand with fingers is a branch too, so a fingertip's walk stops at the
+  // palm: when a chain's attach joint is off the trunk (the pelvis-to-skull
+  // path, whose branches are the arms and the neck), it is a palm, and the arm
+  // runs on up from it with the longest finger as its hand.
   const legJoints = new Set(chains.flat())
+  const trunk = new Set([skull, ...skel.ancestors(skull)])
+  const armChain = (leaf) => {
+    const chain = limbChain(skel, leaf)
+    const palm = attachOf(skel, chain)
+    return palm === undefined || trunk.has(palm) ? chain : [...limbChain(skel, palm), ...chain]
+  }
   const armCands = skel.leaves()
     .filter((j) => !legJoints.has(j) && j !== skull)
-    .map((j) => ({ chain: limbChain(skel, j), lat: inFrame(frame, skel.pos(j)).lat }))
+    .map((j) => ({ chain: armChain(j), lat: inFrame(frame, skel.pos(j)).lat }))
     .filter((c) => c.chain.length >= 3)
     .sort((a, b) => b.chain.length - a.chain.length)
   const armOf = (side) => armCands.find((c) => Math.sign(c.lat) === side)
@@ -366,12 +378,13 @@ export function readRigMap(id) {
 
 function main() {
   const [id, ...flags] = process.argv.slice(2)
-  if (!id) throw new Error('usage: rig-map.mjs <id> [--write]')
+  if (!id) throw new Error('usage: rig-map.mjs <id> [--write] [--forward=<degrees off +X>]')
   const dir = workDir(id)
   const src = ['rig-fixed.glb', 'rig.glb'].map((f) => path.join(dir, f)).find((f) => fs.existsSync(f))
   if (!src) throw new Error(`no rig for "${id}"`)
 
-  const map = buildRigMap(src)
+  const fwd = flags.find((f) => f.startsWith('--forward='))
+  const map = buildRigMap(src, { forwardDeg: fwd ? Number(fwd.slice('--forward='.length)) : null })
   const show = (label, list) => console.log(`  ${label.padEnd(10)} ${list.length ? list.join(' -> ') : '(none found)'}`)
   console.log(`${id}  <- ${map.source}${map.plan ? `  (${map.plan})` : ''}`)
   console.log(`  frame      forward ${map.frame.yawDegrees.toFixed(1)} deg off +X, ground y=${map.ground}, height ${map.height}, wheelbase ${map.wheelbase}`)

@@ -10,7 +10,8 @@
 // Distance is to the closest point on the closest SEGMENT, not to the closest sample. With 2 m sampling, point-distance is wrong by up to 1 m near the middle of a segment, and that error is periodic along the bank -- a visibly scalloped waterline, one scallop per sample.
 // ---------------------------------------------------------------------------
 
-import { clamp01, smoothstep } from '../../sim/mathx.js'
+import { clamp01, smoothstep, mulberry32 } from '../../sim/mathx.js'
+import { hash32 } from '../../sim/score.js'
 import { UniformGrid } from './grid.js'
 import { shoreBand } from './water-bodies.js'
 import { Spline } from './spline.js'
@@ -89,6 +90,34 @@ export function livePoints(rec) {
   const out = []
   for (let i = 0; i < rec.pts.length; i++) {
     if (rec.pts[i] !== null) out.push(rec.pts[i])
+  }
+  return out
+}
+
+// A road abhors a straight: an authored leg longer than STRAIGHT_MAX is splined through extra points, one every WEND.spacing metres, each pushed sideways by WEND.amp scaled by a roll in [WEND.floor, 1] with the side alternating, so the spline meanders through the leg instead of ruling it. The endpoints never move -- a village door still opens on its road -- and a leg at or under STRAIGHT_MAX is left alone, so a hut's yard and the village's own wander (make-village.mjs) are untouched. The rolls are seeded from the leg's endpoints, so a leg keeps its wend when a point elsewhere on the road is dragged.
+export const STRAIGHT_MAX = 24
+export const WEND = { spacing: 12, amp: 2.2, floor: 0.5 }
+
+function wendRoad(pts) {
+  const out = [pts[0]]
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1]
+    const b = pts[k]
+    const dx = b[0] - a[0]
+    const dz = b[2] - a[2]
+    const len = Math.hypot(dx, dz)
+    if (len > STRAIGHT_MAX) {
+      const rand = mulberry32(hash32(Math.round(a[0] * 4), Math.round(a[2] * 4), Math.round(b[0] * 4), Math.round(b[2] * 4)))
+      const n = Math.ceil(len / WEND.spacing)
+      let side = rand() < 0.5 ? -1 : 1
+      for (let i = 1; i < n; i++) {
+        const t = i / n
+        const off = side * WEND.amp * (WEND.floor + (1 - WEND.floor) * rand())
+        out.push([a[0] + dx * t - (dz / len) * off, a[1] + (b[1] - a[1]) * t, a[2] + dz * t + (dx / len) * off, a[3] + (b[3] - a[3]) * t])
+        side = -side
+      }
+    }
+    out.push(b)
   }
   return out
 }
@@ -287,7 +316,7 @@ export class PathSet {
   }
 
   _buildRoad(rec) {
-    rec.spline = new Spline(livePoints(rec))
+    rec.spline = new Spline(wendRoad(livePoints(rec)))
     rec.samples = rec.spline.flatten(SAMPLE_SPACING)
     rec.box = this._boxOf(rec)
     rec.reach = rec.box

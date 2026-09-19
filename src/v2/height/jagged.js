@@ -1,6 +1,7 @@
 import { clamp01, smoothstep } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
 import { SLOPE_BOOST, LAMBDA_MIN } from './detail.js'
+import { Hillocks } from './hillocks.js'
 
 // ---------------------------------------------------------------------------
 // The UNSMOOTHED detail stack: lattice midpoint displacement in place of
@@ -32,17 +33,28 @@ import { SLOPE_BOOST, LAMBDA_MIN } from './detail.js'
 //                                   applies -- so the sub-metre end is the one
 //                                   that ships, rendered without the smoothing.
 //
+// plus a term that does not read the slope at all: `bump` metres of scattered
+// hillocks and pits (hillocks.js), under the fine layers' slope gain. Without
+// it a level forest floor is the bilinear macro plus 2-3 cm, because both
+// rules above go to nothing there -- one by construction, the other by
+// calibration -- and a lattice layer given a floor instead is a grid of
+// moguls, which is why the scatter is a separate construction.
+//
 // The slope in both is the MACRO's, from Heightmap.slopeAt over the bilinear
 // read, rather than the parent layer's own: self-similar halving down the
 // coarse layers is what the 20% rule applied recursively produces anyway, and
 // it costs one gradient instead of one per layer.
 //
-// THE BAND LIMIT IS THE SAME AS DETAIL'S, on the layer's spacing in place of
-// the octave's wavelength: a layer fades out as the mesh cell approaches its
-// spacing. This is LOD selection, not smoothing -- it decides which layers a
-// distant chunk carries and never changes the shape of a layer that is drawn --
-// and it has to match Detail's so the exact field stays the limit of every
-// band-limited one and a chunk swap breathes rather than pops.
+// THE BAND LIMIT IS ONE OCTAVE LOOSER THAN DETAIL'S: a layer is drawn in full
+// once the mesh cell is half its spacing (two vertices per lattice cell) and
+// gone once the cell reaches its spacing. Detail's edges are twice that,
+// because a simplex octave near the cell aliases; an axis-aligned bilinear
+// lattice sampled at two vertices per cell does not. This is LOD selection,
+// not smoothing: it decides which layers a distant chunk carries and never
+// changes the shape of a layer that is drawn. Loosening it further would put
+// one vertex per lattice cell, and since the lattice is a hair off the mesh
+// pitch (the texel is not a power of two) that phase-drifts through the
+// lattice every few hundred metres and beats.
 // ---------------------------------------------------------------------------
 
 /** Layers whose spacing is at or under this take the calibrated fine amplitude instead of the jitter rule. Geometric midpoint of 1 m and 2 m, so a texel a hair over a power of two still puts its ~1 m layer on the calibrated side. */
@@ -64,18 +76,21 @@ function latticeRand(i, j, k, seed) {
 export class Jagged {
   /**
    * `texel` is the macro grid's spacing in metres; the first layer sits at half
-   * of it. `jitter` is the coarse-layer fraction. `fineTable` is Detail.table
-   * from the calibrated smooth stack, read for the fine layers' amplitudes.
+   * of it. `jitter` is the coarse-layer fraction, `bump` the hillocks' peak
+   * height in metres (0 for none). `fineTable` is Detail.table from the
+   * calibrated smooth stack, read for the fine layers' amplitudes.
    */
-  constructor({ seed, texel, jitter, fineTable }) {
+  constructor({ seed, texel, jitter, bump = 0, fineTable }) {
     if (!Number.isFinite(seed)) throw new Error(`Jagged: seed must be a finite number, got ${seed}`)
     if (!(texel > 0) || !Number.isFinite(texel)) throw new Error(`Jagged: texel must be a finite number of metres > 0, got ${texel}`)
     if (!Number.isFinite(jitter) || jitter < 0) throw new Error(`Jagged: jitter must be a finite fraction >= 0, got ${jitter}`)
+    if (!Number.isFinite(bump) || bump < 0) throw new Error(`Jagged: bump must be a finite number of metres >= 0, got ${bump}`)
     if (!Array.isArray(fineTable) || fineTable.length === 0) throw new Error('Jagged: fineTable must be the calibrated Detail table')
 
     this.seed = seed | 0
     this.texel = texel
     this.jitter = jitter
+    this.hillocks = bump > 0 ? new Hillocks({ seed, height: bump }) : null
 
     const K = Math.round(Math.log2(texel / LAMBDA_MIN))
     if (K < 1) throw new Error(`Jagged: texel ${texel} m leaves no layer above LAMBDA_MIN ${LAMBDA_MIN} m`)
@@ -127,8 +142,8 @@ export class Jagged {
     const tan = s01 >= 1 ? 1e6 : s01 / (1 - s01)
     const fineGain = 1 + SLOPE_BOOST * s01
 
-    const lo = cell * 2
-    const hi = cell * 4
+    const lo = cell
+    const hi = cell * 2
     let sum = 0
     for (let k = 0; k < this.count; k++) {
       const s = this._spacing[k]
@@ -149,6 +164,7 @@ export class Jagged {
       const d = this._corner(i + 1, j + 1, k)
       sum += amp * w * ((a + (b - a) * fx) * (1 - fz) + (c + (d - c) * fx) * fz)
     }
+    if (this.hillocks !== null) sum += this.hillocks.at(x, z, cell, fineGain)
     return sum * suppress
   }
 }

@@ -221,16 +221,19 @@ export class TerrainV2 {
     // Bind one geometry slot to one instance permanently, 1:1. Nothing is ever
     // added or deleted after this, which sidesteps BatchedMesh's id-shuffling on
     // deleteGeometry entirely -- recycling is setGeometryAt + setMatrixAt.
+    // See groundAt: the interior height grid is kept CPU-side so props can
+    // stand on the surface that is DRAWN rather than on the one the field
+    // would have drawn at infinite resolution. One arena, a row per slot, so
+    // the wireframe overlay (wire.js) can read it as a texture; each slot's
+    // `heights` is a view of its row. 289 floats x 1024 slots is 1.18 MB, fixed.
+    this.heightsArena = new Float32Array(SLOT_COUNT * GRID_VERTS)
+    this.heightsVersion = 0
     this._free = []
     for (let i = 0; i < SLOT_COUNT; i++) {
       const geometryId = this.batch.addGeometry(this._scratch, CHUNK_VERTS, CHUNK_INDICES)
       const instanceId = this.batch.addInstance(geometryId)
       this.batch.setVisibleAt(instanceId, false)
-      // See groundAt: the interior height grid is kept CPU-side so props can
-      // stand on the surface that is DRAWN rather than on the one the field
-      // would have drawn at infinite resolution. Allocated with the slot and
-      // never reallocated -- 289 floats x 1024 slots is 1.18 MB, fixed.
-      this._free.push({ geometryId, instanceId, heights: new Float32Array(GRID_VERTS) })
+      this._free.push({ geometryId, instanceId, row: i, heights: this.heightsArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS) })
     }
 
     this._mat = new THREE.Matrix4()
@@ -782,6 +785,7 @@ export class TerrainV2 {
     // chunk load, against the ~360 the worker already spent building it.
     const heights = slot.heights
     for (let i = 0; i < GRID_VERTS; i++) heights[i] = msg.positions[i * 3 + 1]
+    this.heightsVersion++
 
     // Set the bounding sphere by hand rather than calling computeBoundingSphere,
     // which would walk every vertex on the main thread for every chunk load.

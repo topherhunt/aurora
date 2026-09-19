@@ -43,7 +43,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
   CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, hueVary, loadCritterGlb, makeHueAttribute,
-  setCritterAsset, setCritterCard, tileKey, walkTiles,
+  setCritterAsset, setCritterCard, tierTintSplice, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -150,6 +150,7 @@ export class Crabs {
         )
       glint(shader)
       hueVary(shader)
+      tierTintSplice(shader, 0)
     }
     this.material.customProgramCacheKey = () => 'crabs'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)

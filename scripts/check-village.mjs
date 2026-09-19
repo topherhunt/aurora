@@ -1,415 +1,293 @@
-// Node-side gates for villages (src/village/*, DESIGN.md §6 and §9).
+// Node-side gates for the leafkin village room (tools/rooms/make-village.mjs,
+// public/rooms/leafkin, DESIGN.md §30).
 //
-//   node scripts/check-village.mjs [seed] [gridN]
+//   node scripts/check-village.mjs
 //
-// Villages fail the way Phase A fails: silently. A hut standing in the middle
-// of the road, a fence run that misses its corner, a crop row spearing out of
-// its field, a door with no path to it -- none of those throw. They are all
-// things you find by walking there, which is the most expensive way to find
-// anything.
-//
-// This runs the WHOLE runtime, not just the planner: it builds a real
-// THREE.Scene, drives Villages.update() until the resident village is live, and
-// measures the geometry that comes out. src/village/plan.js has no three.js in
-// it (§1's porting rule) so the layout could be gated without any of that, but
-// the failures that actually cost time -- a geometry with a stray attribute
-// that makes a merge return null, a building sunk into its own plinth -- only
-// exist once there is a mesh.
+// The room is world files, so what is gated is the files as shipped: that the
+// generator reproduces them, that the ground is a bowl she can walk and a cliff
+// she cannot, that the river reaches the lake, that every road holds its grade
+// and never runs straight, that each hut stands on dry level ground with its
+// door on a road and the wood kept off it, that the shell roofs every walkable
+// metre with three to spare, and that the room boots on the layers the
+// overworld boots on: rocks without a hollow bed, the exit mouth seated where
+// the room says, the huts stone to the walker.
 
+import { readFile } from 'node:fs/promises'
 import * as THREE from 'three'
-import { runPhaseA, VILLAGE } from '../src/sim/phase-a.js'
-import { TerrainHeight } from '../src/sim/terrain-height.js'
-import { planVillage, VILLAGE_PLAN, CROPS, STALL_GOODS } from '../src/village/plan.js'
-import { Villages } from '../src/village/village.js'
 
-const SEED = Number(process.argv[2] ?? 20260804)
-const N = Number(process.argv[3] ?? 1024)
-const P = VILLAGE_PLAN
+import { LOCOMOTION } from '../src/player.js'
+import { Heightmap } from '../src/v2/height/heightmap.js'
+import { V2Height } from '../src/v2/height/field.js'
+import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
+import { Layers } from '../src/v2/layers/layers.js'
+import { validate } from '../src/v2/layers/doc.js'
+import { Spline } from '../src/v2/layers/spline.js'
+import { buildRockBank } from '../src/props/rock-bank.js'
+import { buildTextureArray } from '../src/textures.js'
+import { Rocks } from '../src/v2/render/rocks.js'
+import { Trees } from '../src/v2/render/trees.js'
+import { Entrances, MOUTH_STEP_M, mouthBankFrom } from '../src/v2/render/entrances.js'
+import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
+import { Shell } from '../src/v2/render/shell.js'
+import { WalkSurface } from '../src/v2/walk.js'
+import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import {
+  BOWL, CLEARING, FLOOR, HOUSE, LAKE, OUT_DIR, ROAD_GRADE, STRAIGHT_M, WALL, buildVillage, longestStraight,
+} from '../tools/rooms/make-village.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
   if (!ok) failures++
-  console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? `   ${detail}` : ''}`)
 }
 
-console.log(`\n=== village checks, seed ${SEED}, ${N}^2 phase-A grid ===\n`)
+const MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
+const HEADROOM_M = 3
 
-const th = new TerrainHeight(SEED)
-const W = runPhaseA(SEED, N)
-const sites = W.villages
-console.log(`phase A sited ${sites.length} villages (VILLAGE.count ${VILLAGE.count}, minSeparation ${VILLAGE.minSeparation}m)`)
-for (const s of sites) console.log(`       ${s.x.toFixed(0)},${s.z.toFixed(0)}  ${th.heightAt(s.x, s.z).toFixed(0)}m`)
-console.log()
-
-if (sites.length === 0) {
-  console.log(' FAIL  phase A sited no villages, so there is nothing to plan')
-  process.exit(1)
+// --- the files ----------------------------------------------------------------
+console.log('\nthe files')
+const shipped = {
+  heightmap: await Heightmap.read({ path: `${OUT_DIR}/height.png`, metaPath: `${OUT_DIR}/height.json` }),
+  layers: await readFile(`${OUT_DIR}/layers.json`, 'utf8'),
+  room: await readFile(`${OUT_DIR}/room.json`, 'utf8'),
 }
-
-// --- 1. every real site plans, and plans quickly -----------------------------
-
-console.log('planning')
-const plans = []
+const doc = validate(JSON.parse(shipped.layers))
+const room = JSON.parse(shipped.room)
 {
-  let worstMs = 0
-  const warned = []
-  for (const s of sites) {
-    const t0 = performance.now()
-    const plan = planVillage(s, th, { seed: SEED, id: s.id ?? 0 })
-    const ms = performance.now() - t0
-    worstMs = Math.max(worstMs, ms)
-    plans.push({ site: s, plan, ms })
-    if (plan.warnings.length) warned.push(`${s.x.toFixed(0)},${s.z.toFixed(0)}: ${plan.warnings.join('; ')}`)
-  }
-  check(warned.length === 0, 'no site reports a planning warning', warned.join(' | '))
-  // The planner runs on the frame the player crosses the load radius. It is
-  // allowed one frame, not four.
-  check(worstMs < 16, 'the slowest plan fits in a frame', `worst ${worstMs.toFixed(1)}ms`)
-
-  for (const { site, plan, ms } of plans) {
-    const st = plan.stats
-    console.log(
-      `       ${String(site.x.toFixed(0)).padStart(6)},${String(site.z.toFixed(0)).padStart(6)}` +
-      `  ${ms.toFixed(1)}ms  inst ${String(st.instances).padStart(4)}` +
-      `  huts ${String(st.dwellings).padStart(2)}  fields ${st.fields}  rows ${String(st.cropRows).padStart(3)}` +
-      `  fence ${String(st.fences).padStart(3)}  props ${String(st.props).padStart(3)}` +
-      `  lamps ${String(st.lamps).padStart(2)}  fires ${st.bonfires}  paths ${String(st.paths).padStart(2)}` +
-      `  ${st.pathMetres}m  probes ${st.probeCalls}`
-    )
-  }
-}
-
-// --- 2. the village has everything the brief asks for ------------------------
-
-console.log('\ncontent')
-{
-  const missing = []
-  for (const { site, plan } of plans) {
-    const at = `${site.x.toFixed(0)},${site.z.toFixed(0)}`
-    const has = (ok, what) => { if (!ok) missing.push(`${at} has no ${what}`) }
-    has(plan.buildings.some((b) => b.kind === 'hall'), 'great hall')
-    // The planner asks for 9-15 dwellings but siting can refuse on steep
-    // ground, so the gate is a floor rather than the range: a hamlet is fine, a
-    // pair of huts is not a village.
-    has(plan.stats.dwellings >= 6, '6+ dwellings')
-    has(plan.buildings.some((b) => b.kind === 'barn' || b.kind === 'shed' || b.kind === 'workshop'), 'farm buildings')
-    has(plan.fields.length >= 3, '3+ fields')
-    has(plan.fields.some((f) => f.pasture), 'pasture')
-    has(plan.props.some((p) => ['sheep', 'cow', 'goat', 'chicken'].includes(p.kind)), 'livestock')
-    has(plan.lamps.length >= 8, '8+ lampposts')
-    has(plan.bonfires.length >= 1, 'bonfire')
-    has(plan.props.some((p) => p.kind === 'bench' || p.kind === 'stool'), 'seating')
-    has(plan.props.filter((p) => p.kind === 'stall').length >= 4, '4+ market stalls')
-    has(plan.props.some((p) => p.kind === 'well'), 'well')
-    has(plan.paths.some((p) => p.cls === 'artery'), 'road out')
-    has(plan.paths.some((p) => p.cls === 'spur'), 'footpath to a door')
-    has(plan.fences.some((f) => f.kind === 'gate'), 'field gate')
-  }
-  check(missing.length === 0, 'every village has a hall, farms, fields, stock, light, fire and a market', missing.join(' | '))
-
-  const crops = new Set()
-  const goods = new Set()
-  for (const { plan } of plans) {
-    for (const f of plan.fields) if (f.crop) crops.add(f.crop)
-    for (const p of plan.props) if (p.kind === 'stall') goods.add(p.goods)
-  }
-  check(crops.size >= 3, 'at least three kinds of crop appear across the world', [...crops].join(','))
-  check(
-    [...crops].every((c) => CROPS.some((k) => k.name === c)),
-    'every planted crop is one the geometry kit knows how to build'
-  )
-  check(
-    [...goods].every((g) => STALL_GOODS.includes(g)),
-    'every stall sells goods the geometry kit knows how to build',
-    [...goods].join(',')
-  )
-  check(goods.size >= 4, 'the market sells at least four kinds of thing', `${goods.size} kinds`)
-}
-
-// --- 3. nothing stands on top of anything else ------------------------------
-
-console.log('\nlayout')
-{
-  // Segment-vs-OBB, in the rectangle's frame. Same test plan.js uses to keep
-  // fields off the roads, applied here to the finished layout.
-  const pathHitsRect = (pts, x, z, yaw, w, d, margin) => {
-    const hw = w / 2 + margin
-    const hd = d / 2 + margin
-    const s = Math.sin(yaw)
-    const c = Math.cos(yaw)
-    const local = (px, pz) => {
-      const dx = px - x
-      const dz = pz - z
-      return { u: dx * c - dz * s, v: dx * s + dz * c }
-    }
-    for (let i = 0; i + 1 < pts.length; i++) {
-      const a = local(pts[i].x, pts[i].z)
-      const b = local(pts[i + 1].x, pts[i + 1].z)
-      // Cheap reject on the separating axes first.
-      if (Math.max(a.u, b.u) < -hw || Math.min(a.u, b.u) > hw) continue
-      if (Math.max(a.v, b.v) < -hd || Math.min(a.v, b.v) > hd) continue
-      // Sample the segment. The rectangles are 5-20 m and the steps are under a
-      // metre, so this cannot miss a crossing.
-      const steps = Math.ceil(Math.hypot(b.u - a.u, b.v - a.v)) + 1
-      for (let k = 0; k <= steps; k++) {
-        const t = k / steps
-        const u = a.u + (b.u - a.u) * t
-        const v = a.v + (b.v - a.v) * t
-        if (Math.abs(u) <= hw && Math.abs(v) <= hd) return true
-      }
-    }
-    return false
-  }
-
-  let overlaps = 0
-  let onRoad = 0
-  let rowsOut = 0
-  let sunk = 0
-  let firstOverlap = ''
-  let firstOnRoad = ''
-  for (const { plan } of plans) {
-    for (let i = 0; i < plan.buildings.length; i++) {
-      const a = plan.buildings[i]
-      for (let j = i + 1; j < plan.buildings.length; j++) {
-        const b = plan.buildings[j]
-        const need = (Math.hypot(a.w, a.d) + Math.hypot(b.w, b.d)) / 2
-        if (Math.hypot(a.x - b.x, a.z - b.z) < need) {
-          overlaps++
-          if (!firstOverlap) firstOverlap = `${a.kind} and ${b.kind} at ${a.x.toFixed(0)},${a.z.toFixed(0)}`
-        }
-      }
-      // A road through a building. Spurs are exempt: a spur ENDS at the door,
-      // which is on the footprint edge by construction.
-      for (const p of plan.paths) {
-        if (p.cls === 'spur') continue
-        if (pathHitsRect(p.pts, a.x, a.z, a.yaw, a.w, a.d, 0)) {
-          onRoad++
-          if (!firstOnRoad) firstOnRoad = `${p.cls} through the ${a.kind} at ${a.x.toFixed(0)},${a.z.toFixed(0)}`
-          break
-        }
-      }
-      // The plinth has to reach the lowest corner of the footprint or the
-      // downhill wall hangs in the air.
-      const s = Math.sin(a.yaw)
-      const c = Math.cos(a.yaw)
-      let lowest = Infinity
-      for (const [ox, oz] of [[-a.w / 2, -a.d / 2], [a.w / 2, -a.d / 2], [a.w / 2, a.d / 2], [-a.w / 2, a.d / 2]]) {
-        lowest = Math.min(lowest, th.heightAt(a.x + ox * c + oz * s, a.z - ox * s + oz * c))
-      }
-      if (a.y - a.plinth > lowest) sunk++
-    }
-
-    for (const f of plan.fields) {
-      const s = Math.sin(f.yaw)
-      const c = Math.cos(f.yaw)
-      for (const r of f.rows) {
-        const dx = r.x - f.x
-        const dz = r.z - f.z
-        const u = dx * c - dz * s
-        const v = dx * s + dz * c
-        // Half the row's own length, plus the weave, has to stay inside.
-        if (Math.abs(u) + r.len / 2 > f.w / 2 + 0.01 || Math.abs(v) > f.d / 2 + 0.01) rowsOut++
-      }
-    }
-  }
-  check(overlaps === 0, 'no two buildings share ground', firstOverlap)
-  check(onRoad === 0, 'no road, ring or field lane runs through a building', firstOnRoad)
-  check(sunk === 0, 'every plinth reaches the lowest corner of its own footprint', `${sunk} floating`)
-  check(rowsOut === 0, 'every crop row stays inside its field', `${rowsOut} rows outside`)
-}
-
-// --- 4. fences close, and each field has exactly one gate --------------------
-
-{
-  let openFields = 0
-  let gateCount = 0
-  let fieldsWithoutGate = 0
-  for (const { plan } of plans) {
-    for (const f of plan.fields) {
-      // Fence runs belonging to this plot: the ones whose centre lies on its
-      // perimeter, within half a run.
-      const s = Math.sin(f.yaw)
-      const c = Math.cos(f.yaw)
-      let perimeter = 0
-      let gates = 0
-      for (const fen of plan.fences) {
-        const dx = fen.x - f.x
-        const dz = fen.z - f.z
-        const u = Math.abs(dx * c - dz * s)
-        const v = Math.abs(dx * s + dz * c)
-        const onEdge =
-          (Math.abs(u - f.w / 2) < 0.6 && v <= f.d / 2 + 0.6) ||
-          (Math.abs(v - f.d / 2) < 0.6 && u <= f.w / 2 + 0.6)
-        if (!onEdge) continue
-        perimeter += fen.len
-        if (fen.kind === 'gate') gates++
-      }
-      const want = 2 * (f.w + f.d)
-      if (Math.abs(perimeter - want) > want * 0.06) openFields++
-      gateCount += gates
-      if (gates !== 1) fieldsWithoutGate++
-    }
-  }
-  check(openFields === 0, 'every field is fenced the whole way round', `${openFields} with gaps`)
-  check(fieldsWithoutGate === 0, 'every field has exactly one gate', `${gateCount} gates in total`)
-}
-
-// --- 5. every door is reachable ---------------------------------------------
-
-{
-  // The door is on local +Z by construction (see plan.js's header), so this
-  // recomputes it the same way the planner does rather than trusting a stored
-  // value that could drift.
-  const distToPaths = (paths, px, pz) => {
-    let best = Infinity
-    for (const p of paths) {
-      for (let i = 0; i + 1 < p.pts.length; i++) {
-        const a = p.pts[i]
-        const b = p.pts[i + 1]
-        const dx = b.x - a.x
-        const dz = b.z - a.z
-        const l2 = dx * dx + dz * dz || 1
-        const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (pz - a.z) * dz) / l2))
-        best = Math.min(best, Math.hypot(px - (a.x + dx * t), pz - (a.z + dz * t)))
-      }
-    }
-    return best
-  }
-
-  let stranded = 0
+  const made = await buildVillage()
+  check(JSON.stringify(made.doc) + '\n' === shipped.layers, 'the generator reproduces layers.json')
+  check(JSON.stringify(made.room, null, 2) + '\n' === shipped.room, 'the generator reproduces room.json')
+  const a = made.heightmap.field, b = shipped.heightmap.field
   let worst = 0
-  let where = ''
-  for (const { plan } of plans) {
-    for (const b of plan.buildings) {
-      const doorX = b.x + Math.sin(b.yaw) * (b.d / 2)
-      const doorZ = b.z + Math.cos(b.yaw) * (b.d / 2)
-      // The hall opens onto the plaza, which is bare ground and has no ribbon.
-      if (Math.hypot(doorX - plan.x, doorZ - plan.z) < P.plazaRadius + 2) continue
-      const d = distToPaths(plan.paths, doorX, doorZ)
-      if (d > worst) {
-        worst = d
-        where = `${b.kind} at ${b.x.toFixed(0)},${b.z.toFixed(0)}`
-      }
-      if (d > 3) stranded++
+  for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] - b[i]))
+  // rg16 over the encoding's range: a step of maxY / 65535.
+  check(a.length === b.length && worst < 0.01, 'the generator reproduces height.png to the encoding', `worst ${worst.toFixed(4)} m`)
+  check(shipped.heightmap.texelSize === 8, 'the room keeps the overworld pitch', `${shipped.heightmap.texelSize} m a texel`)
+}
+for (const k of ['seed', 'spawn', 'exit', 'shell', 'props', 'clearing', 'fog']) check(k in room, `room.json has ${k}`)
+
+// --- the ground ---------------------------------------------------------------
+console.log('\nthe ground')
+const layers = Layers.deserialize(doc)
+const field = new V2Height({ heightmap: shipped.heightmap, layers, seed: room.seed, relief: RELIEF_SHIPPED })
+const heightAt = (x, z) => field.heightAt(x, z)
+const slopeAt = (x, z, eps = 0.5) => {
+  const dx = (heightAt(x + eps, z) - heightAt(x - eps, z)) / (2 * eps)
+  const dz = (heightAt(x, z + eps) - heightAt(x, z - eps)) / (2 * eps)
+  return Math.atan(Math.hypot(dx, dz))
+}
+const wet = (x, z) => layers.waterLevelAt(x, z) !== null
+{
+  check(field.bands.altSpan > 0, 'the altitude bands are not degenerate', `span ${field.bands.altSpan.toFixed(1)} m`)
+  let lo = Infinity, steep = 0, n = 0
+  for (let z = -BOWL.rz; z <= BOWL.rz; z += 2) {
+    for (let x = -BOWL.rx; x <= BOWL.rx; x += 2) {
+      if ((x / BOWL.rx) ** 2 + (z / BOWL.rz) ** 2 > 1 || wet(x, z)) continue
+      n++
+      lo = Math.min(lo, heightAt(x, z))
+      if (slopeAt(x, z) > MAX_SLOPE) steep++
     }
   }
-  check(stranded === 0, 'every door outside the plaza is within 3 m of a path', `worst ${worst.toFixed(1)}m -- ${where}`)
+  check(lo > 25, 'the dry floor stands over every scatter floor', `lowest ${lo.toFixed(1)} m over ${n} points`)
+  check(steep === 0, 'the dry bowl is walkable everywhere', `${steep} of ${n} points over ${LOCOMOTION.maxSlopeDeg} degrees`)
+  // The cliff: out from the origin on every bearing, she meets a slope she cannot walk before the shell's wall.
+  let open = 0, nearest = Infinity, farthest = 0
+  for (let b = 0; b < 360; b += 5) {
+    const c = Math.cos((b * Math.PI) / 180), s = Math.sin((b * Math.PI) / 180)
+    const wall = Math.min(room.shell.width / 2 / Math.abs(c || 1e-9), room.shell.depth / 2 / Math.abs(s || 1e-9))
+    let stop = null
+    for (let r = 0; r < wall; r += 0.5) {
+      if (slopeAt(c * r, s * r) > MAX_SLOPE && !wet(c * r, s * r) && r > Math.hypot(WALL.rx * c, WALL.rz * s) * 0.9) { stop = r; break }
+    }
+    if (stop === null) open++
+    else { nearest = Math.min(nearest, wall - stop); farthest = Math.max(farthest, wall - stop) }
+  }
+  check(open === 0, 'a cliff she cannot walk stands between the rim and the shell on every bearing', `${open} open bearings`)
+  check(nearest > 0, 'the cliff starts inside the shell footprint', `cliff ${nearest.toFixed(1)}..${farthest.toFixed(1)} m in from the wall`)
 }
 
-// --- 6. determinism ----------------------------------------------------------
-
-console.log('\ndeterminism')
+// --- the water ----------------------------------------------------------------
+console.log('\nthe water')
 {
-  const s = sites[0]
-  const a = planVillage(s, th, { seed: SEED, id: 0 })
-  const b = planVillage(s, th, { seed: SEED, id: 0 })
-  // probeCalls counts a mutable counter on the probe, so it is part of the
-  // output and has to agree too.
-  check(JSON.stringify(a) === JSON.stringify(b), 'two plans of the same site are identical')
-
-  // siteSeed() quantises to 25 cm, so a site that jitters below that keeps its
-  // random stream. It does NOT keep an identical village -- the planner accepts
-  // and rejects on terrain samples and a marginal footprint can flip -- so what
-  // is gated here is the part the quantisation actually buys: the road bearings
-  // and counts, which are drawn before the first terrain-dependent branch.
-  const nudged = planVillage({ x: s.x + 0.01, z: s.z + 0.01 }, th, { seed: SEED, id: 0 })
-  const bearings = (p) => p.paths.filter((q) => q.cls === 'artery').map((q) => q.bearing.toFixed(9)).join(' ')
-  check(
-    bearings(nudged) === bearings(a) && bearings(a).length > 0,
-    'a centimetre of jitter in the site keeps the same road network',
-    `${bearings(a)} vs ${bearings(nudged)}`
-  )
-
-  // A site that MOVES is different ground and must plan differently.
-  const moved = planVillage({ x: s.x + 500, z: s.z - 500 }, th, { seed: SEED, id: 0 })
-  check(bearings(moved) !== bearings(a), 'a village 700 m away is a different village')
+  const paths = layers.paths
+  const reach = paths.flowReach('r1')
+  check(reach.mouth > 0, 'the river ends in the lake', `${reach.mouth.toFixed(1)} m of it on the lake`)
+  const s = paths.drawnSamples('r1')
+  const n = s.length / 4
+  const fwd = paths.flowsForward('r1')
+  let rises = 0
+  for (let i = 1; i < n; i++) {
+    const a = fwd ? s[(i - 1) * 4 + 1] : s[i * 4 + 1], b = fwd ? s[i * 4 + 1] : s[(i - 1) * 4 + 1]
+    if (b > a + 1e-6) rises++
+  }
+  check(rises === 0, 'the river only descends', `${rises} rising samples of ${n}`)
+  const mouth = fwd ? n - 1 : 0, source = fwd ? 0 : n - 1
+  check(Math.abs(s[mouth * 4 + 1] - LAKE.y) < 0.05, 'the mouth sits at the lake level', `${s[mouth * 4 + 1].toFixed(2)} vs ${LAKE.y}`)
+  check(s[source * 4 + 1] > LAKE.y + 2, 'the source is well above the lake', `${(s[source * 4 + 1] - LAKE.y).toFixed(1)} m up`)
+  check(layers.lakes.levelAt(LAKE.x, LAKE.z) === LAKE.y && heightAt(LAKE.x, LAKE.z) < LAKE.y - 1, 'the lake holds water', `bed ${heightAt(LAKE.x, LAKE.z).toFixed(1)} under ${LAKE.y}`)
 }
 
-// --- 7. the runtime, headless ------------------------------------------------
+// --- the roads ----------------------------------------------------------------
+console.log('\nthe roads')
+const roads = doc.roads
+const ways = roads.filter((r) => !r.id.startsWith('yard'))
+const yards = roads.filter((r) => r.id.startsWith('yard'))
+{
+  check(ways.length === 2 && ways[0].id === 'd1' && ways[1].id === 'd2', 'a trunk and an arc')
+  check(yards.length === room.props.length, 'a yard under every hut')
+  for (const r of ways) {
+    const s = new Spline(r.pts).flatten(1)
+    let worst = 0, wetSamples = 0, off = 0
+    for (let i = 4; i < s.length; i += 4) {
+      const d = Math.hypot(s[i] - s[i - 4], s[i + 2] - s[i - 2])
+      if (d > 0) worst = Math.max(worst, Math.abs(s[i + 1] - s[i - 3]) / d)
+      if (wet(s[i], s[i + 2])) wetSamples++
+      // The road is laid on the ground: what the surface will be is the authored y, and it should be at the ground, not floating or buried by more than a cut.
+      const g = heightAt(s[i], s[i + 2])
+      if (s[i + 1] > g + 0.3 || s[i + 1] < g - 3) off++
+    }
+    check(worst <= ROAD_GRADE, `${r.id} holds its grade`, `steepest ${((Math.atan(worst) * 180) / Math.PI).toFixed(1)} degrees`)
+    check(longestStraight(r.pts) < STRAIGHT_M, `${r.id} never runs straight`, `longest run ${longestStraight(r.pts)} m`)
+    check(wetSamples === 0, `${r.id} keeps out of the water`, `${wetSamples} wet metres`)
+    check(off === 0, `${r.id} lies on the ground`, `${off} metres floating or buried`)
+  }
+  const trunk = ways[0].pts
+  const a = trunk[0], b = trunk[trunk.length - 1]
+  check(Math.hypot(a[0] - room.spawn.x, a[2] - room.spawn.z) < 0.01, 'the trunk starts where she arrives')
+  const arcEnd = new Spline(ways[1].pts).flatten(0.5)
+  let gap = Infinity
+  for (let i = 0; i < arcEnd.length; i += 4) gap = Math.min(gap, Math.hypot(arcEnd[i] - b[0], arcEnd[i + 2] - b[2]))
+  check(gap < 0.6, 'the trunk meets the arc', `${gap.toFixed(2)} m`)
+}
 
-console.log('\ngeometry')
+// --- the huts -----------------------------------------------------------------
+console.log('\nthe huts')
+const texArray = buildTextureArray()
+const houseBank = propBankFrom(readShippedLadder(HOUSE))
+const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
+{
+  check(room.props.length === 7 && room.props.some((p) => p.height === 20), 'six huts and the great hut')
+  const doors = roomProps.doors()
+  let offRoad = 0, worstDoor = 0
+  for (const d of doors) {
+    const hit = layers.paths.nearest(d.x, d.z, 'road')
+    const dist = hit === null ? Infinity : hit.dist
+    worstDoor = Math.max(worstDoor, dist)
+    if (dist > 1) offRoad++
+  }
+  check(offRoad === 0, 'every door opens on a road', `farthest ${worstDoor.toFixed(2)} m from a centreline`)
+  let wetHuts = 0, tilted = 0, onRoad = 0
+  for (const h of roomProps.props) {
+    let lo = Infinity, hi = -Infinity
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2
+      const x = h.x + Math.cos(a) * h.r, z = h.z + Math.sin(a) * h.r
+      if (wet(x, z)) wetHuts++
+      const g = heightAt(x, z)
+      lo = Math.min(lo, g); hi = Math.max(hi, g)
+    }
+    if (hi - lo > 0.5) tilted++
+    // A way under the hut: its centreline inside the footprint, well in from the door.
+    for (const w of ways) {
+      const s = new Spline(w.pts).flatten(1)
+      for (let i = 0; i < s.length; i += 4) if (Math.hypot(s[i] - h.x, s[i + 2] - h.z) < h.r - 1) { onRoad++; break }
+    }
+  }
+  check(wetHuts === 0, 'no hut stands in the water')
+  check(tilted === 0, 'every hut stands on ground within 0.5 m of level across its footprint')
+  check(onRoad === 0, 'no way runs under a hut')
+  const c = room.clearing
+  check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + c.r + 40, c.z, 0), 'the clearing is the wood\'s occupier')
+  check(roomProps.blockTopAt(roomProps.props[6].x, roomProps.props[6].z) > heightAt(roomProps.props[6].x, roomProps.props[6].z) + 19, 'the great hut is stone to the walker')
+}
+
+// --- the wood -----------------------------------------------------------------
+console.log('\nthe wood')
+const water = {
+  levelAt: (x, z) => layers.waterLevelAt(x, z),
+  isSubmerged: (x, z, g) => { const l = layers.waterLevelAt(x, z); return l !== null && g < l },
+  shoreDistAt: (x, z, reach) => reach,
+}
+{
+  const biome = { seed: room.seed, coverAt: (x, z) => ((x - CLEARING.x) ** 2 + (z - CLEARING.z) ** 2 < CLEARING.r ** 2 ? 0 : 1) }
+  const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: room.seed, radius: 200, biome, deadwood: roomProps })
+  trees.place(0, 0)
+  let placed = 0, inClearing = 0, inHut = 0
+  for (const tile of trees.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      const x = trees.instX[id], z = trees.instZ[id]
+      placed++
+      if ((x - CLEARING.x) ** 2 + (z - CLEARING.z) ** 2 < CLEARING.r ** 2) inClearing++
+      if (roomProps.props.some((h) => (x - h.x) ** 2 + (z - h.z) ** 2 < h.r ** 2)) inHut++
+    }
+  }
+  check(placed > 40, 'the room grows a wood', `${placed} trees within 200 m`)
+  check(inClearing === 0, 'the clearing is treeless', `${inClearing} in it`)
+  check(inHut === 0, 'no tree stands in a hut', `${inHut} in one`)
+  const outside = roomProps.props.filter((h) => Math.hypot(h.x - CLEARING.x, h.z - CLEARING.z) + h.r > CLEARING.r).length
+  check(outside === 0, 'every hut stands in the clearing', `${outside} outside it`)
+  const lakeOut = Math.hypot(LAKE.x - CLEARING.x, LAKE.z - CLEARING.z) + Math.max(LAKE.rx, LAKE.rz) > CLEARING.r
+  check(!lakeOut, 'the lake lies in the clearing', `lake at ${LAKE.x}, ${LAKE.z} r ${Math.max(LAKE.rx, LAKE.rz)}`)
+}
+
+// --- the shell ----------------------------------------------------------------
+console.log('\nthe shell')
+const bank = buildRockBank()
+const shell = new Shell(new THREE.Scene(), bank, texArray, room.shell)
+{
+  const ray = new THREE.Raycaster()
+  const up = new THREE.Vector3(0, 1, 0)
+  const origin = new THREE.Vector3()
+  shell.mesh.updateMatrixWorld(true)
+  let low = Infinity, unroofed = 0, n = 0
+  const half = { x: room.shell.width / 2, z: room.shell.depth / 2 }
+  for (let z = -half.z; z <= half.z; z += 3) {
+    for (let x = -half.x; x <= half.x; x += 3) {
+      // Every metre she can stand on: under the walk slope and short of the cliff's foot.
+      if ((x / WALL.rx) ** 2 + (z / WALL.rz) ** 2 > 1 || slopeAt(x, z) > MAX_SLOPE) continue
+      n++
+      ray.set(origin.set(x, heightAt(x, z), z), up)
+      const hit = ray.intersectObject(shell.mesh, false)
+      if (hit.length === 0) { unroofed++; continue }
+      low = Math.min(low, hit[0].distance)
+    }
+  }
+  check(unroofed === 0, 'the shell roofs every walkable metre', `${unroofed} of ${n} points open to the sky`)
+  check(low >= HEADROOM_M, `the shell clears every walkable metre by ${HEADROOM_M} m`, `lowest ${low.toFixed(1)} m`)
+  const e = room.exit
+  ray.set(origin.set(e.x, heightAt(e.x, e.z), e.z), up)
+  const hit = ray.intersectObject(shell.mesh, false)
+  check(hit.length > 0 && hit[0].distance >= HEADROOM_M, 'the exit mouth stands under the shell', hit.length ? `${hit[0].distance.toFixed(1)} m of roof` : 'open')
+  check(shell.mesh.name === 'v2-shell' && shell.material.side === THREE.FrontSide, 'the shell draws its inside')
+}
+
+// --- the boot -----------------------------------------------------------------
+console.log('\nthe boot')
 {
   const scene = new THREE.Scene()
-  const layer = new Villages(scene, th, { seed: SEED })
-  layer.setSites(sites)
-
-  const target = sites[0]
-  let frames = 0
-  let worstFrame = 0
-  while (layer.stats.state !== 'live' && frames < 600) {
-    const t0 = performance.now()
-    layer.update(target.x, target.z, frames * 0.016)
-    worstFrame = Math.max(worstFrame, performance.now() - t0)
-    frames++
-  }
-  check(layer.stats.state === 'live', 'the resident village builds', `${frames} frames`)
-  // The planner runs on the first of those frames, so the ceiling is the plan
-  // budget plus the geometry budget, not the geometry budget alone.
-  check(worstFrame < 20, 'no build frame blows the frame budget', `worst ${worstFrame.toFixed(1)}ms over ${frames} frames`)
-
-  check(layer.solid !== null, 'the static village is one mesh')
-  check(layer.pathMesh !== null, 'the paths are one mesh')
-
-  const total = layer.stats.tris + layer.stats.pathTris
-  console.log(`       ${layer.stats.tris} village tris + ${layer.stats.pathTris} path tris, ` +
-    `${layer.stats.instances} pieces, kit ${layer.kit.cache.size} geometries / ${layer.kit.tris} tris`)
-  console.log(`       plan ${layer.stats.planMs.toFixed(1)}ms, geometry ${layer.stats.buildMs.toFixed(1)}ms over ${frames} frames`)
-  // §5 budgets the whole frame at ~800k triangles and gives village buildings
-  // 16k of it. This is the whole settlement -- crops, fences, market, stock --
-  // so it gets more, but a village that eats a tenth of the frame is a village
-  // that has stopped being placeholder art.
-  check(total < 90000, 'a whole village stays under 90k triangles', `${total}`)
-
-  for (const [key, g] of layer.kit.cache) {
-    const attrs = Object.keys(g.attributes).sort().join(',')
-    if (attrs !== 'color,normal,position' || !g.index) {
-      check(false, `kit geometry "${key}" has the batching attribute layout`, attrs)
-    }
-  }
-  check(true, `all ${layer.kit.cache.size} kit geometries are indexed position/normal/color`)
-
-  const solidAttrs = Object.keys(layer.solid.geometry.attributes).sort().join(',')
-  check(solidAttrs === 'color,normal,position', 'the merged village geometry survived with its attributes intact', solidAttrs)
-
-  // Fire. Nothing is animated until update() has run with a live plan, so this
-  // runs a few more frames first.
-  for (let i = 0; i < 4; i++) layer.update(target.x, target.z, 10 + i * 0.016)
-  check(layer.flames.count > 0, 'flames are instanced and drawn', `${layer.flames.count} flames`)
-  check(layer.puffs.count > 0, 'smoke puffs are instanced and drawn', `${layer.puffs.count} puffs`)
-  check(
-    layer.flames.count === layer.plan.lamps.length + layer.plan.bonfires.length,
-    'every lamppost and every bonfire has a flame',
-    `${layer.flames.count} flames for ${layer.plan.lamps.length} lamps + ${layer.plan.bonfires.length} fires`
-  )
-
-  // A puff has to reach zero size rather than vanishing at full size: §7 rules
-  // out alpha blending in anything instanced, so shrinking is the only exit it
-  // has, and a pop is exactly what this is guarding against.
-  {
-    const m = new THREE.Matrix4()
-    const scale = new THREE.Vector3()
-    let biggestAtEnds = 0
-    for (let k = 0; k < 240; k++) {
-      layer.update(target.x, target.z, 40 + k * 0.05)
-      for (let i = 0; i < layer.puffs.count; i++) {
-        layer.puffs.getMatrixAt(i, m)
-        m.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale)
-        biggestAtEnds = Math.max(biggestAtEnds, scale.x)
-      }
-    }
-    check(biggestAtEnds > 0.1 && biggestAtEnds < 3, 'smoke puffs stay a sensible size', `max ${biggestAtEnds.toFixed(2)}m`)
-  }
-
-  // Prop exclusion (§6: "reject ... inside village footprints").
-  check(layer.excludes(target.x + 40, target.z, 'tree'), 'trees are rejected inside the village')
-  check(!layer.excludes(target.x + 40, target.z, 'grass'), 'grass still grows between the huts')
-  check(!layer.excludes(target.x + 400, target.z, 'tree'), 'the exclusion ends at the field fence')
-
-  // Walking away tears it down, and walking back builds it again.
-  layer.update(target.x + 4000, target.z, 100)
-  check(layer.stats.state === 'idle' && layer.solid === null, 'walking away unloads the village')
-  layer.dispose()
+  const rocks = new Rocks(scene, field, water, layers, texArray, { seed: room.seed, hollows: false })
+  rocks.place(0, 0)
+  const hollows = new Float32Array(64)
+  check(rocks.hollowsInto(-400, -400, 400, 400, hollows) === 0, 'a room grows no hollow bed')
+  const trees = new Trees(scene, field, water, texArray, { seed: room.seed, radius: 200, deadwood: roomProps })
+  trees.place(0, 0)
+  const e = new Entrances(scene, field, water, rocks, { seed: room.seed, bank: mouthBankFrom(readShippedLadder('cave-mouth')), fixed: [room.exit] })
+  e.place(room.spawn.x, room.spawn.z)
+  check(e.resident.size === 1 && e.resident.has('exit'), 'the exit mouth is seated where the room says', `${e.resident.size} resident`)
+  const site = e.resident.get('exit')
+  // The layer's site is the mouth point, a step in from the face along the normal.
+  check(site && Math.abs(site.x - room.exit.x - room.exit.nx * MOUTH_STEP_M) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * MOUTH_STEP_M) < 0.01 && site.nx === room.exit.nx, 'the mouth is a step in from the room\'s point along its normal')
+  const walk = new WalkSurface(field, rocks, trees)
+  walk.addStone(roomProps)
+  const great = roomProps.props[6]
+  const onTop = walk.heightAt(great.x, great.z)
+  check(onTop >= great.top - 0.01, 'the walk surface stands on the great hut', `${onTop.toFixed(1)} vs ground ${great.y.toFixed(1)}`)
+  const arrive = { x: room.spawn.x, z: room.spawn.z }
+  check(walk.slopeAt(arrive.x, arrive.z) <= MAX_SLOPE && !wet(arrive.x, arrive.z), 'she arrives on dry walkable ground')
+  const ex = room.exit
+  check(Math.abs(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)) < 1, 'the mouth and the arrival stand level', `${(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)).toFixed(2)} m`)
 }
 
-console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
-process.exit(failures === 0 ? 0 : 1)
+console.log(failures ? `\n${failures} failure(s)` : '\nall ok')
+process.exit(failures ? 1 : 0)

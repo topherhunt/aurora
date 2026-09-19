@@ -18,7 +18,7 @@
 // that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, UNPLACED_Y } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, OVER_CAP, CARRY_MAX, CARRIERS, UNPLACED_Y } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -69,7 +69,7 @@ class Source {
     const t = hit.t
     this.things.splice(this.things.indexOf(t), 1)
     this.taken.push(t)
-    return { kind: t.kind, name: t.kind, size: t.size, geometry: geo, material, attrs: { aSwim: [1, 2, 3, 4] }, color: [0.5, 0.6, 0.7], scale: [t.size, t.size, t.size], stowable: t.size < stowMax }
+    return { kind: t.kind, name: t.kind, size: t.size, geometry: geo, material, attrs: { aSwim: [1, 2, 3, 4] }, color: [0.5, 0.6, 0.7], scale: [t.size, t.size, t.size], stowable: t.size < stowMax && !t.bulky }
   }
   release(rec, x, y, z, head) {
     this.releases.push({ rec, x, y, z, head: { ...head } })
@@ -85,7 +85,7 @@ const build = () => {
   const thuds = []
   let room = 8
   const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), rand: mulberry32(3) })
-  const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), thing('crab', 4, 0, 0, 1.5), thing('crab', 6, 0, 0, 2.5)])
+  const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), { ...thing('crab', 4, 0, 0, 1.5), bulky: true }, thing('crab', 6, 0, 0, 2.5)])
   hands.addSource(src, ['mushroom', 'fish', 'crab'])
   const node = new THREE.Group()
   scene.add(node)
@@ -134,9 +134,9 @@ const build = () => {
   check(w.hands.press('right', w.head) === 'pick' && w.src.taken.length === 1 && w.src.taken[0].kind === 'mushroom', 'within reach the nearest thing is taken')
   check(w.hands.holding('right')?.kind === 'mushroom' && w.hands.stats.held === 1, 'and the hand holds its record')
   check(w.hands.press('right', w.head) === 'drop' && w.hands.holding('right') === null, 'a second press lets it go')
-  // The size caps: a 1.5 m crab is lifted and not stowable, a 2.5 m one is never offered.
+  // The size caps are one, so whatever is lifted would stow; the 1.5 m crab is lifted, and its source alone says it does not stow. A 2.5 m one is never offered.
   w.at(4, 0.7, 0)
-  check(w.hands.press('right', w.head) === 'pick' && w.hands.holding('right').size === 1.5 && w.hands.holding('right').stowable === false, `a ${1.5} m crab is lifted but does not stow`, `GRAB_MAX ${GRAB_MAX_M} STOW_MAX ${STOW_MAX_M}`)
+  check(STOW_MAX_M === GRAB_MAX_M && w.hands.press('right', w.head) === 'pick' && w.hands.holding('right').size === 1.5 && w.hands.holding('right').stowable === false, `a ${1.5} m crab is lifted, and its source's word on stowing is kept`, `GRAB_MAX ${GRAB_MAX_M} STOW_MAX ${STOW_MAX_M}`)
   w.hands.press('right', w.head)
   w.at(6, 1.2, 0)
   check(w.hands.press('right', w.head) === null, 'a 2.5 m crab is beyond the grab')
@@ -150,19 +150,29 @@ const build = () => {
   w.at(3, 1.4, -2)
   w.hands.update(1 / 60, w.head)
   const pool = w.hands.pools.get(geo)
-  check(pool && pool.mesh.count === 1 && pool.mesh.parent === w.hands.batch, 'one pool for the geometry, one instance drawn')
-  const m = new THREE.Matrix4().fromArray(pool.mesh.instanceMatrix.array, 0)
+  check(pool && pool.mesh.count === 0 && pool.mesh.parent === w.hands.batch && pool.over.mesh.count === 1 && pool.over.mesh.parent === w.hands.over && w.hands.over.parent === null, 'one pool for the geometry; what she holds is its one instance on the over mesh, out of the scene')
+  const m = new THREE.Matrix4().fromArray(pool.over.mesh.instanceMatrix.array, 0)
   const p = new THREE.Vector3().setFromMatrixPosition(m)
   // The centre of the box is HOLD_OFFSET off the hand; the box's origin is its centre less (0, 0.1, 0) scaled.
   check(Math.abs(p.x - 3) < 1e-6 && Math.abs(p.y - (1.4 - 0.03 - 0.1 * 0.2)) < 1e-6 && Math.abs(p.z - (-2 - 0.06)) < 1e-6, 'the held thing sits a little under and ahead of the hand', `${p.x.toFixed(3)} ${p.y.toFixed(3)} ${p.z.toFixed(3)}`)
-  const swim = pool.geo.getAttribute('aSwim')
-  const fade = pool.geo.getAttribute('aPropFade')
+  const swim = pool.over.geo.getAttribute('aSwim')
+  const fade = pool.over.geo.getAttribute('aPropFade')
   check(swim.isInstancedBufferAttribute && swim !== geo.getAttribute('aSwim') && swim.array[0] === 1 && swim.array[3] === 4, "the record's instanced attributes ride the pool's own copy", Array.from(swim.array.slice(0, 4)).join(','))
-  check(fade.array[0] === 1 && pool.geo.getAttribute('position') === geo.getAttribute('position') && pool.geo.index === geo.index, 'aPropFade defaults to 1; the vertex buffers are shared')
-  const c = pool.mesh.instanceColor.array
+  check(fade.array[0] === 1 && pool.over.geo.getAttribute('position') === geo.getAttribute('position') && pool.over.geo.index === geo.index, 'aPropFade defaults to 1; the vertex buffers are shared')
+  const c = pool.over.mesh.instanceColor.array
   check(Math.abs(c[0] - 0.5) < 1e-6 && Math.abs(c[2] - 0.7) < 1e-6, 'the tint is the record colour')
   const s = new THREE.Vector3().setFromMatrixScale(m)
   check(Math.abs(s.x - 0.2) < 1e-6, 'and the scale the record scale')
+  // Drawn smaller: the scale and the offset to the centre shrink together, so the centre stays at the hand.
+  w.hands.draw('right', 0.5)
+  w.hands.update(1 / 60, w.head)
+  m.fromArray(pool.over.mesh.instanceMatrix.array, 0)
+  p.setFromMatrixPosition(m)
+  check(Math.abs(new THREE.Vector3().setFromMatrixScale(m).x - 0.1) < 1e-6 && Math.abs(p.y - (1.4 - 0.03 - 0.1 * 0.2 * 0.5)) < 1e-6, 'draw(key, k) draws what the hand holds k times smaller about the same centre', `${p.y.toFixed(4)}`)
+  let threw = 0
+  for (const k of [0, 1.5, 'x']) { try { w.hands.draw('right', k) } catch { threw++ } }
+  check(threw === 3, 'and a draw scale outside (0, 1] throws')
+  w.hands.draw('right', 1)
 }
 
 // --- the drop: the source first, then the fall, the roll, the stop --------------
@@ -215,7 +225,7 @@ const build = () => {
   const asked = w.src.taken.length
   check(w.hands.press('right', w.head) === 'pick' && w.hands.holding('right') === item.rec && w.hands.loose.length === 0 && w.src.taken.length === asked && w.hands.stats.taken === 2, 'a dropped thing is picked up again, the bed not asked')
   w.hands.update(1 / 60, w.head)
-  check(w.hands.pools.get(geo).mesh.count === 1 && item.state === 'held', 'and drawn once, at the hand')
+  check(w.hands.pools.get(geo).over.mesh.count === 1 && w.hands.pools.get(geo).mesh.count === 0 && item.state === 'held', 'and drawn once, at the hand, on the over mesh')
   check(w.hands.press('right', w.head) === 'drop' && w.hands.loose.length === 1 && w.hands.loose[0] === item && item.state === 'fall', 'and dropped again')
   const slopeRun = Math.hypot(item.x - x1, item.z - z1)
   // Flat ground: the kick alone, half a metre at least, and the roll stops early. Several drops, since the heading and the kick are rolled.
@@ -435,7 +445,7 @@ const build = () => {
   behind(4)
   w.hands.update(1 / 60, w.head)
   // Six: the re-entry before the stow and the fish on its way in, above.
-  check(w.pulses.length === 6, 'a crab too big to stow does not buzz in the zone', `${w.pulses.length}`)
+  check(w.pulses.length === 6, 'a crab its source calls unstowable does not buzz in the zone', `${w.pulses.length}`)
   check(w.hands.press('right', w.head) === 'drop' && w.pack.length === 2 && w.hands.loose.length === 1, 'and the trigger there drops it')
 }
 
@@ -469,7 +479,7 @@ const build = () => {
   const held = w.hands.holding('right')
   check(held !== rec && held.kind === 'mushroom' && held.geometry === geo && w.hands.loose.length === 1 && w.hands.loose[0].rec === rec && w.hands.loose[0].state === 'fall' && w.hands.stats.dropped === 1, 'given to a full hand, the slot is held and what was held falls at the hand')
   w.hands.update(1 / 60, w.head)
-  check(w.hands.pools.get(geo).mesh.count === 2, 'both drawn')
+  check(w.hands.pools.get(geo).mesh.count === 1 && w.hands.pools.get(geo).over.mesh.count === 1, 'both drawn, the held one over')
   // Into an empty hand: nothing falls.
   w.hands.stowPress('right')
   w.hands.give('right', saved, w.head)
@@ -486,7 +496,7 @@ const build = () => {
   check(put !== null && put.kind === 'mushroom' && !('geometry' in put) && w.hands.holding('right') === null && w.hands.stats.stowed === stowed + 1 && w.pack.length === 2 && w.hands.pools.get(geo).items.length === 1, 'put hands back the held thing packed, the hand empty, the backpack callback not asked')
   w.at(4, 0.7, 0)
   w.hands.press('right', w.head)
-  check(w.hands.put('right') === null && w.hands.holding('right')?.kind === 'crab', 'and null for a thing too big to stow, still held')
+  check(w.hands.put('right') === null && w.hands.holding('right')?.kind === 'crab', 'and null for a thing its source calls unstowable, still held')
 }
 
 // --- the photograph -------------------------------------------------------------------
@@ -679,6 +689,15 @@ const build = () => {
   const pos = new THREE.Vector3().setFromMatrixPosition(m)
   check(Math.abs(pos.x - 3 + held[0].item.off.x) < 1e-6 && Math.abs(pos.z - 4 + held[0].item.off.z) < 1e-6, 'placed, the copy is drawn at the peer\'s hand', `${pos.x.toFixed(3)} ${pos.z.toFixed(3)}`)
   check(held[0].item.q.equals(q), 'in its rotation')
+  // Lures: hers by nobody, a placed copy by its peer, an unplaced one not at all.
+  const lures = w.hands.lures([])
+  const peerLure = lures.find((l) => l.by === 'peer-a')
+  check(lures.length === 1 && peerLure && peerLure.kind === 'mushroom' && peerLure.x === 3 && peerLure.y === 1.2 && peerLure.z === 4, 'a placed copy is a lure by its peer, at the copy; the crab copy still out of sight is not', lures.map((l) => `${l.kind} by ${l.by}`).join(', '))
+  w.hands.placePeer('peer-a', 2, 5, 1, 5, q)
+  check(w.hands.lures([]).length === 2 && w.hands.lures([]).every((l) => l.by === 'peer-a'), 'placed, the crab is one too')
+  w.at(2, 0, 0)
+  check(w.hands.holding('right') === null && w.hands.press('right', w.head) === 'pick' && w.hands.lures([]).some((l) => l.by === null && l.kind === 'fish'), 'and what her own hand holds is a lure by null: this client\'s to tell the room about')
+  w.hands.put('right')
   // Replaced, emptied, gone.
   w.hands.netHold('peer-a', 0, { ...slot, name: 'other' })
   check(held[0].item.rec.name === 'other' && pool().items.length === 3, 'a new slot in the same hand replaces the copy')
@@ -700,7 +719,7 @@ const build = () => {
   try { w.hands.netLoose('x', slot, [0, 0, 0], 0) } catch { bad++ }
   try { w.hands.netLoose('x', slot, [0, 0, 0, 0, 0, 0, 1], 5) } catch { bad++ }
   check(bad === 3, 'a fourth hand, a short pose and an unknown state throw', `${bad} of 3`)
-  check(POOL_CAP === LOOSE_MAX + 3 + 7 * 3, 'a pool holds the loose things, her hands and seven peers\' hands', `${POOL_CAP}`)
+  check(POOL_CAP === LOOSE_MAX + 7 * 3 + CARRY_MAX * CARRIERS && OVER_CAP === 3, 'a pool holds the loose things, seven peers\' hands and the carriers\' armfuls; its over mesh her three hands\'', `${POOL_CAP}`)
   w.hands.dispose()
   check(w.hands.peerHeld.size === 0, 'dispose forgets the peers')
 }

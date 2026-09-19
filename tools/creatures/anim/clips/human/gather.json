@@ -1,0 +1,30 @@
+{
+  "kind": "pose",
+  "note": "Gather something off the ground: the knees fold to a half crouch, the torso tips forward over them with the head looking down at the spot, and the right hand reaches down and out ahead of the feet to the ground while the left stays in against the belly holding what was picked already; the hand closes on the thing and the body straightens back to the stance. One reach, not a loop; the runtime plays it once per mushroom. hipLimit and fold are widened for the crouch.",
+  "loops": false,
+  "samples": 30,
+  "crouch": 0.045,
+  "limits": { "hipLimit": 1.6, "fold": 2.6 },
+  "keys": [
+    { "t": 0.0, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } },
+    { "t": 0.45, "pose": {
+      "root": { "lift": -0.2, "fore": 0.02 },
+      "spine": { "pitch": 1.1 },
+      "head": { "pitch": 0.5 },
+      "arms": {
+        "left": { "raise": 0.5, "spread": -0.2, "twist": 1.0, "elbow": 1.8 },
+        "right": { "raise": 2.1, "spread": 0.15, "twist": 0.0, "elbow": -0.9, "wristPitch": 0.3 }
+      }
+    } },
+    { "t": 0.6, "pose": {
+      "root": { "lift": -0.2, "fore": 0.02 },
+      "spine": { "pitch": 1.1 },
+      "head": { "pitch": 0.5 },
+      "arms": {
+        "left": { "raise": 0.5, "spread": -0.2, "twist": 1.0, "elbow": 1.8 },
+        "right": { "raise": 2.1, "spread": 0.15, "twist": 0.0, "elbow": -0.9, "wristPitch": 0.3, "curl": 0.8 }
+      }
+    } },
+    { "t": 0.95, "pose": { "arms": { "both": { "elbow": 0.15, "spread": 0.05 } } } }
+  ]
+}

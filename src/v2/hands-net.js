@@ -95,6 +95,12 @@ export class HandsNet {
     for (const [kind, list] of this.taken.byKind) for (let i = 0; i < list.length; i += 2) this.takeQueue.push([kind, round(list[i]), round(list[i + 1])])
   }
 
+  /** Unhooks the hands and the registry; the relay keeps what it heard. A room swap (main.js disposeRoom) builds a fresh one on the new hands. */
+  dispose() {
+    this.hands.sync = null
+    this.taken.onAdd = null
+  }
+
   update() {
     const net = this.netplay
     if (net.welcomes !== this.welcomes && net.id) {

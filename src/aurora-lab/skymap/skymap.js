@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// The four passes that fill the sky map. All of them run once per frame, before anything is drawn, in the order they appear below.
+// The four passes that fill the sky map, in the order they appear below, before anything is drawn. At `interval` 0 all four run every frame; above it they are spread one per frame and the map is rebuilt once per interval -- see THE SCHEDULE below.
 //
 // Read skymap/glsl.js for what the maps ARE and why the integral is a convolution at all. This file is only the plumbing, and it is PlanMapAurora's plumbing with one pass turned into four -- deliberately the same shape, so the page drives it the same way.
 //
@@ -13,6 +13,18 @@
 //   4. CONVOLVE. Reads all three of the above and writes the map the screen fetches.
 //
 // So 1, 2 and 3 are mutually independent and 4 waits on all of them. There is no barrier to issue: consecutive renderer.render calls to different targets are ordered by the GL pipeline, and the only thing that would break it is a pass reading a target it is also writing.
+//
+// ===========================================================================
+// THE SCHEDULE, when `interval` is above zero
+// ===========================================================================
+//
+// The map is a ring of three targets (skymap/target.js) and the screen reads their sum by uSkyWeights. A map lands every `interval` seconds and its weight from then on is the quadratic B-spline of (time since it landed) / interval: in over 1.5 intervals, out over the next 1.5, so three maps are always live, the weights always sum to 1, and the sum's slope is continuous everywhere. That last property is why three and not two: a linear crossfade of two maps peaks in contrast at every landing and dips between them, and the eye reads the dips as a pulse at the rebuild rate. The map that lands is rendered for the instant its weight will peak, 1.5 intervals ahead, so keyframes are spaced the way the fades are and the shimmer keeps its speed rather than stepping.
+//
+// The four passes are spread so no frame pays more than one, and so no map is ever on screen half-built: kernel, lanes and hue run on the three frames before the next landing (LEAD), since they write only intermediates, and the convolve -- the only pass that writes a map -- waits until the ring's oldest map has faded to weight zero, and lands in its slot.
+//
+// The shared uniforms are written ONCE, at the kernel pass, and held through the convolve, because the four materials read them by reference (below) and a value that moved between the lanes and the convolve would build a map from two weathers. Sizes are applied at the same moment for the same reason.
+//
+// Cold, after a change of interval, or after more than two intervals without a call -- a whole day, on the world clock -- all three maps are rebuilt at once for the current time, so nothing fades in from a map of last night's sky.
 //
 // ===========================================================================
 // FOUR MATERIALS, NOT ONE MATERIAL WITH A PASS UNIFORM
@@ -54,7 +66,7 @@ import { SKYMAP_GLSL, SKYMAP_FRAME_GLSL } from './glsl.js'
 import {
   DEFAULT_AZIMUTH, DEFAULT_ROWS, DEFAULT_TAPS, DEFAULT_LANE_ROWS, MIN_TEXELS, MAX_TEXELS,
   skyKernelTarget, skyLanesTarget, skyHueTarget, skyMapTarget,
-  skyKernelTexture, skyLanesTexture, skyHueTexture, skyMapTexture,
+  skyKernelTexture, skyLanesTexture, skyHueTexture, skyMapTexture, skyMapTextureB, skyMapTextureC,
   setSkyKernelSize, setSkyLaneSize, setSkyMapSize,
 } from './target.js'
 
@@ -64,8 +76,21 @@ const DEG = Math.PI / 180
 const MAP_READERS = new Set( ALGORITHMS.filter( a => a.needs.indexOf( 'skymap' ) !== -1 ).map( a => a.id ) )
 if ( !MAP_READERS.has( SKYMAP.id ) ) throw new Error( 'SkyMapAurora: the skymap algorithm does not declare "skymap" in its needs, so the chunk would not be compiled and nothing would regenerate the map' )
 
-// The four samplers the chunk declares, in the order screen.js's CHUNK_SAMPLERS lists them. Named here rather than imported because what this file needs is the NAMES, and CHUNK_SAMPLERS carries the runtime texture accessors alongside them.
-const SAMPLERS = [ 'u_skyMap', 'u_skyLanes', 'u_skyHue', 'u_skyKernel' ]
+// The six samplers the chunk declares, in the order screen.js's CHUNK_SAMPLERS lists them. Named here rather than imported because what this file needs is the NAMES, and CHUNK_SAMPLERS carries the runtime texture accessors alongside them.
+const SAMPLERS = [ 'u_skyMap', 'u_skyMapB', 'u_skyMapC', 'u_skyLanes', 'u_skyHue', 'u_skyKernel' ]
+
+// How far ahead of a landing the three intermediate passes start, in seconds: three frames at the headset's 72 Hz. At a slower frame rate the convolve simply lands a frame or two late.
+const LEAD = 3 / 72
+
+const MAPS = 3
+
+// The uniform quadratic B-spline on [ 0, 3 ], zero outside it. Its integer shifts sum to 1, which is what lets three maps landing one interval apart share the screen without a normalisation.
+function bspline( x ) {
+  if ( !( x > 0 && x < 3 ) ) return 0
+  if ( x < 1 ) return 0.5 * x * x
+  if ( x < 2 ) return 0.5 * ( -2 * x * x + 6 * x - 3 )
+  return 0.5 * ( 3 - x ) * ( 3 - x )
+}
 
 // A quad in clip space with no matrices at all, exactly as in planmap/planmap.js. uv IS the map coordinate; a projection in the path would only be somewhere for a half-texel offset to hide.
 const VERTEX_GLSL = `
@@ -88,16 +113,16 @@ function mainFor( call ) {
 `
 }
 
-// The four passes, in dependency order. `target` is called per frame rather than captured, because a resize replaces the GL storage behind it.
+// The four passes, in dependency order. `target` is called per pass rather than captured, because a resize replaces the GL storage behind it; it takes the index of the map being built, which only the convolve reads.
 const PASSES = [
-  { key: 'kernel', call: 'smKernel( vSkyUv )', target: skyKernelTarget, binds: [] },
-  { key: 'lanes', call: 'smLanes( vSkyUv, u_smTime )', target: skyLanesTarget, binds: [] },
-  { key: 'hue', call: 'smHue( vSkyUv, u_smTime )', target: skyHueTarget, binds: [] },
+  { key: 'kernel', call: 'smKernel( vSkyUv )', target: () => skyKernelTarget(), binds: [] },
+  { key: 'lanes', call: 'smLanes( vSkyUv, u_smTime )', target: () => skyLanesTarget(), binds: [] },
+  { key: 'hue', call: 'smHue( vSkyUv, u_smTime )', target: () => skyHueTarget(), binds: [] },
   {
     key: 'convolve',
     call: 'smConvolve( vSkyUv, u_smTime )',
-    target: skyMapTarget,
-    // Everything except u_skyMap, which is this pass's own output. See the header.
+    target: ( map ) => skyMapTarget( map ),
+    // Everything except the three maps, one of which is this pass's own output. See the header.
     binds: [
       { uniform: 'u_skyLanes', texture: skyLanesTexture },
       { uniform: 'u_skyHue', texture: skyHueTexture },
@@ -157,7 +182,8 @@ export class SkyMapAurora {
     // The params that actually become uniforms, resolved once. render() runs per frame and has no business re-walking the schema.
     this._uniformParams = params.filter( p => p.uniform !== false )
 
-    const lines = [ 'uniform float u_smTime;' ]
+    // uSkyWeights is declared because the reader half of the chunk references it; no pass reads it.
+    const lines = [ 'uniform float u_smTime;', 'uniform vec3 uSkyWeights;' ]
     for ( const s of SAMPLERS ) lines.push( 'uniform sampler2D ' + s + ';' )
     for ( const p of this._uniformParams ) {
       const t = GLSL_TYPE[ p.type ]
@@ -222,6 +248,32 @@ export class SkyMapAurora {
     this._rows = DEFAULT_ROWS
     this._taps = DEFAULT_TAPS
     this._laneRows = DEFAULT_LANE_ROWS
+
+    // Seconds between rebuilds of the map; 0 rebuilds every frame. See THE SCHEDULE.
+    this._interval = 0
+    // When each of the ring's maps landed, and which landed last.
+    this._landed = new Array( MAPS ).fill( -Infinity )
+    this._newest = 0
+    // Index into PASSES of the next staggered pass for the map about to land, -1 when none is under way.
+    this._pending = -1
+    this._weights = [ 1, 0, 0 ]
+  }
+
+  get interval() {
+    return this._interval
+  }
+
+  set interval( seconds ) {
+    if ( !( seconds >= 0 ) ) throw new Error( 'SkyMapAurora: interval must be a non-negative number of seconds, got ' + seconds )
+    this._interval = seconds
+    // Forces the cold path on the next render, so a change of pace never continues fades timed for the old one.
+    this._landed.fill( -Infinity )
+    this._pending = -1
+  }
+
+  // What the screen's uSkyWeights must be this frame, one per map in SAMPLERS order, summing to 1.
+  get weights() {
+    return this._weights
   }
 
   // -------------------------------------------------------------------------
@@ -229,6 +281,14 @@ export class SkyMapAurora {
   // What screen.js's material is bound to through CHUNK_SAMPLERS. Stable across every resize -- see the header of skymap/target.js.
   get texture() {
     return skyMapTexture()
+  }
+
+  get textureB() {
+    return skyMapTextureB()
+  }
+
+  get textureC() {
+    return skyMapTextureC()
   }
 
   get azimuthTexels() {
@@ -246,7 +306,7 @@ export class SkyMapAurora {
 
   // -------------------------------------------------------------------------
 
-  // Called once per frame, BEFORE the frame that reads the map. `values` is the panel's whole state, in schema units, exactly as AuroraScreen holds it.
+  // Called once per frame, BEFORE the frame that reads the map. `values` is the panel's whole state, in schema units, exactly as AuroraScreen holds it. The caller hands `weights` to the screen after this returns.
   //
   // A no-op under every algorithm that does not read the map, for the reason PlanMapAurora gives at length: paying for a prepass the selected algorithm does not read makes every A/B on the panel a comparison against a handicapped reference. The test is on `needs` rather than on the id, so any future pairing of this field with another frame regenerates the map without an edit here.
   render( algorithmId, values, time ) {
@@ -255,9 +315,54 @@ export class SkyMapAurora {
     if ( !Number.isFinite( time ) ) throw new Error( 'SkyMapAurora: render() needs a finite time, got ' + time )
     if ( !values ) throw new Error( 'SkyMapAurora: render() needs the panel values' )
 
+    const T = this._interval
+    const last = this._passes.length - 1
+
+    // Every frame: one map, whole weight.
+    if ( T === 0 ) {
+      this._prepare( values, time )
+      for ( const pass of this._passes ) this._draw( pass, 0 )
+      this._weights = [ 1, 0, 0 ]
+      return
+    }
+
+    const since = time - this._landed[ this._newest ]
+
+    // Cold: the ring filled with one map, its landings backdated one interval apart so the next is due LEAD from now, the passes starting at once. `!( since < 2 * T )` rather than `>=` so that -Infinity and NaN both land here.
+    if ( !( since < 2 * T ) ) {
+      this._prepare( values, time )
+      for ( const pass of this._passes ) this._draw( pass, 0 )
+      for ( let i = 1; i < MAPS; i++ ) this._draw( this._passes[ last ], i )
+      this._newest = MAPS - 1
+      for ( let i = 0; i < MAPS; i++ ) this._landed[ i ] = time + LEAD - ( MAPS - i ) * T
+      this._pending = -1
+    } else {
+      // Landings are logged at their scheduled time, one interval after the last, not at the frame that drew them: the weights then sum to exactly 1 and keyframes are exactly an interval apart whatever the frame rate does. A frame late by dt only lands the map at weight bspline( dt / T ), which is below 1e-4 at 72 Hz.
+      const slot = ( this._newest + 1 ) % MAPS
+      const landing = this._landed[ this._newest ] + T
+      if ( this._pending < 0 && since >= T - LEAD ) {
+        this._prepare( values, landing + 1.5 * T )
+        this._pending = 0
+      }
+      if ( this._pending >= 0 && this._pending < last ) {
+        this._draw( this._passes[ this._pending ], slot )
+        this._pending++
+      } else if ( this._pending === last && since >= T ) {
+        this._draw( this._passes[ last ], slot )
+        this._landed[ slot ] = landing
+        this._newest = slot
+        this._pending = -1
+      }
+    }
+
+    this._weights = this._landed.map( at => bspline( ( time - at ) / T ) )
+  }
+
+  // The shared uniforms and the target sizes, written for the map about to be built. Held untouched until its convolve has run -- see THE SCHEDULE.
+  _prepare( values, time ) {
     this._time.value = time
 
-    // Read straight out of the panel state rather than from a cached copy. Every map is rebuilt from scratch every frame anyway, so a dirty flag would be bookkeeping that can go wrong in exchange for saving sixty assignments. The write goes to the SHARED slot, so it lands in all four materials.
+    // Read straight out of the panel state rather than from a cached copy: a dirty flag would be bookkeeping that can go wrong in exchange for saving sixty assignments. The write goes to the SHARED slot, so it lands in all four materials.
     for ( const p of this._uniformParams ) {
       const v = values[ p.key ]
       if ( p.type === 'color' ) {
@@ -270,7 +375,7 @@ export class SkyMapAurora {
       writeUniformValue( p, this._shared[ 'u_' + p.key ], v )
     }
 
-    // Sizes follow the panel every frame. Each setter early-returns when nothing moved, so this is three comparisons on a still frame and a reallocation on the frame a slider crosses a step.
+    // Sizes follow the panel. Each setter early-returns when nothing moved, so this is three comparisons on a still frame and a reallocation on the frame a slider crosses a step.
     this._taps = Math.round( values.smTaps )
     this._azimuth = Math.round( values.smAzRes )
     this._rows = Math.round( values.smRows )
@@ -278,7 +383,10 @@ export class SkyMapAurora {
     setSkyKernelSize( this._taps )
     setSkyLaneSize( this._laneRows, this._azimuth )
     setSkyMapSize( this._rows, this._azimuth )
+  }
 
+  // One pass into its target; `map` is which of the ring the convolve writes.
+  _draw( pass, map ) {
     const renderer = this._renderer
 
     // Restore whatever was bound rather than assuming null: on this page it is null, inside a post chain or an XR frame it is not, and hardcoding null there redirects the rest of the frame to the canvas with no error.
@@ -290,12 +398,10 @@ export class SkyMapAurora {
     const wasXR = renderer.xr.enabled
     renderer.xr.enabled = false
 
-    for ( const pass of this._passes ) {
-      this._mesh( pass )
-      renderer.setRenderTarget( pass.target() )
-      // autoClear is left ON and the clear is not waste: on a tile-based GPU a pass that does not begin with a clear must LOAD the old contents into tile memory first, and that load is bandwidth this file exists to avoid. The clear COLOUR is not saved and restored because every texel is overwritten by the quad and nothing here can read it.
-      renderer.render( this._scene, this._camera )
-    }
+    this._mesh( pass )
+    renderer.setRenderTarget( pass.target( map ) )
+    // autoClear is left ON and the clear is not waste: on a tile-based GPU a pass that does not begin with a clear must LOAD the old contents into tile memory first, and that load is bandwidth this file exists to avoid. The clear COLOUR is not saved and restored because every texel is overwritten by the quad and nothing here can read it.
+    renderer.render( this._scene, this._camera )
 
     this._scene.clear()
     renderer.setRenderTarget( prevTarget )

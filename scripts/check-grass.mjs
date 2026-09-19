@@ -75,7 +75,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol
 const { DENSITY, SHORE, FULL_RADIUS, DRAW_RADIUS, LOD_BANDS, RIM_PHASES, TILE, HEIGHT, PLACEMENT,
   GROW_FROM, GROW_TO, GROW_SCALE, GROW_SINK,
   STRIP_MATCH, STRIP_DENSITY, STRIP_HEIGHT, STRIP_TILES, STRIP_SINK,
-  STRIP_FULL_RADIUS, STRIP_THIN, STRIP_THIN_OCTAVES, stripThinAt } = GRASS_TUNING
+  STRIP_FULL_RADIUS, STRIP_THIN, STRIP_THIN_OCTAVES, stripThinAt, VERGE } = GRASS_TUNING
 
 // --- 1. the bank ------------------------------------------------------------
 
@@ -1096,6 +1096,30 @@ console.log('\n-- placement --')
       && shoreClumpAt(3.2, -7.9, 7) === shoreClumpAt(3.2, -7.9, 7),
       `and it is constant across a ${SHORE.clump} m cell`)
   }
+
+  // THE VERGE: a road along z at x = 0, half-width 3 m, feather 8 m, the stub answering only within the feather as PathSet.nearest does. Every tuft past the kerb stands where it stood on the dry flat, VERGE.size x as tall at the kerb and easing to its old height at VERGE.reach past it.
+  const HW = 3
+  const FEATHER = 8
+  const road = { nearest: (x, z, kind) => (kind === 'road' && Math.abs(x) <= HW + FEATHER ? { dist: Math.abs(x), halfWidth: HW } : null) }
+  const verged = new Grass(new THREE.Scene(), flat, dry, road, texArray, { layers: noSand, seed: 7, style: 'tufts' })
+  verged.place(0, 0)
+  const verge = inBand(verged, HW + PLACEMENT.pathClearance, DRAW_RADIUS)
+  const vergePlain = inBand(plain, HW + PLACEMENT.pathClearance, DRAW_RADIUS)
+  let vergeWrong = 0, vergeTall = 0, vergeSame = 0
+  for (const [key, e] of vergePlain) {
+    const twin = verge.get(key)
+    if (!twin) { vergeWrong++; continue }
+    const past = e.x - HW
+    const want = past < VERGE.reach ? 1 + (VERGE.size - 1) * (1 - past / VERGE.reach) : 1
+    if (!near(twin.sy / e.sy, want, 1e-4)) vergeWrong++
+    else if (want > 1) vergeTall++
+    else vergeSame++
+  }
+  check(verge.size === vergePlain.size && vergeWrong === 0 && vergeTall > 100 && vergeSame > 100,
+    `past the kerb every tuft is the dry flat's, ${VERGE.size}x as tall at the kerb and its own height again past ${VERGE.reach} m`,
+    `${vergeTall} taller, ${vergeSame} unchanged, ${vergeWrong} off, ${verge.size} vs ${vergePlain.size}`)
+  check(inBand(verged, -HW - PLACEMENT.pathClearance, HW + PLACEMENT.pathClearance).size === 0, 'and none on the road')
+  verged.dispose()
   shore.dispose()
   plain.dispose()
 }

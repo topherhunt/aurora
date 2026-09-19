@@ -63,6 +63,10 @@ export class Netplay {
     // knows nothing of what this client holds.
     this.things = []
     this.welcomes = 0
+    // The relay's changes to the creatures someone is interacting with since
+    // the last snapshot that carried any, `{ anchors, lured }` blocks
+    // (v2/creature-net.js drains it).
+    this.creatures = []
     this.connect()
   }
 
@@ -84,6 +88,7 @@ export class Netplay {
         this.boatsSerial++
       }
       if (message.things && typeof message.things === 'object') this.things.push(message.things)
+      if (message.creatures && typeof message.creatures === 'object') this.creatures.push(message.creatures)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours }
       }
@@ -122,11 +127,35 @@ export class Netplay {
     return true
   }
 
+  // An anchor for a creature this client is the authority for, or a lured
+  // set for a bed (v2/creature-net.js). False when there is no relay to
+  // tell; the caller drops it, since the next says everything this one did.
+  sendAnchor(anchor) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'anchor', anchor }))
+    return true
+  }
+
+  sendLured(set) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'lured', set }))
+    return true
+  }
+
   // Ask the relay to move the room's clock. False when there is no relay to
   // ask, so the caller can skip locally instead.
   sendSkip(hours) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
     this.socket.send(JSON.stringify({ version: 1, type: 'skip', hours }))
+    return true
+  }
+
+  // Ask the relay to set the room's skip count outright, for a saved game's
+  // hour; it grants this only to a client alone in the room. False with no
+  // relay to ask.
+  sendClock(skipHours) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'clock', skipHours }))
     return true
   }
 

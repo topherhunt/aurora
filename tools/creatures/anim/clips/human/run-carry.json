@@ -1,0 +1,31 @@
+{
+  "note": "Run with the arms full: run's legs, lean and bob, but the arms held forward at hip height with the elbows folded past a right angle and the forearms drawn in across the belly, cradling a load, and no pump at all -- a swing would drop what they hold. The leafkin's flight home with her mushrooms.",
+  "duration": 0.7,
+  "samples": 24,
+  "stride": 0.95,
+  "stepHeight": 0.08,
+  "duty": 0.4,
+  "crouch": 0.085,
+  "toeOff": 0.4,
+  "phases": {
+    "legLeft": 0,
+    "legRight": 0.5
+  },
+  "bodyBob": 0.03,
+  "bobFreq": 2,
+  "bobPhase": 0.63,
+  "bodySway": 0.008,
+  "spineYaw": 0.06,
+  "spinePitch": 0.18,
+  "headPitch": -0.12,
+  "headBob": 0.03,
+  "armRaise": 0.3,
+  "armSpread": -0.3,
+  "armTwist": 0.9,
+  "armElbow": 1.2,
+  "armSwing": 0,
+  "elbowSwing": 0,
+  "limits": {
+    "fold": 2.4
+  }
+}

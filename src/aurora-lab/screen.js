@@ -89,7 +89,7 @@ import { noiseLutTexture } from './lut-texture.js'
 import { PLANMAP_GLSL } from './planmap/glsl.js'
 import { planMapTexture } from './planmap/target.js'
 import { SKYMAP_GLSL, SKYMAP_FRAME_GLSL } from './skymap/glsl.js'
-import { skyMapTexture, skyLanesTexture, skyHueTexture, skyKernelTexture } from './skymap/target.js'
+import { skyMapTexture, skyMapTextureB, skyMapTextureC, skyLanesTexture, skyHueTexture, skyKernelTexture } from './skymap/target.js'
 import { algorithmById, paramsFor, defaultsFor } from './algorithms.js'
 
 // Beyond the mountains (1500), well inside the stars (15000).
@@ -198,6 +198,8 @@ const CHUNK_SAMPLERS = {
   planmap: [ { uniform: 'u_planMap', texture: planMapTexture } ],
   skymap: [
     { uniform: 'u_skyMap', texture: skyMapTexture },
+    { uniform: 'u_skyMapB', texture: skyMapTextureB },
+    { uniform: 'u_skyMapC', texture: skyMapTextureC },
     { uniform: 'u_skyLanes', texture: skyLanesTexture },
     { uniform: 'u_skyHue', texture: skyHueTexture },
     { uniform: 'u_skyKernel', texture: skyKernelTexture },
@@ -232,9 +234,9 @@ export const GLSL_TYPE = {
 
 // ---------------------------------------------------------------------------
 
-// `uDitherScale` sits outside the u_ namespace alongside uTime for the same reason uTime does: it is not a knob. There is no slider for it and no preset records it, because it is not an opinion about the sky -- it is the low-res divisor, which the panel already owns, arriving in the one place that needs to know the size of a texel. See the dither in glsl/frame.js for what it does with it.
+// `uDitherScale` and `uSkyWeights` sit outside the u_ namespace alongside uTime for the same reason uTime does: they are not knobs. No slider sets them and no preset records them, because neither is an opinion about the sky -- one is the low-res divisor, which the panel already owns, arriving in the one place that needs to know the size of a texel (see the dither in glsl/frame.js), and the other is where each of the three sky maps' fade stands this frame (see THE SCHEDULE in skymap/skymap.js). Declared for every algorithm so the block is one shape; only the skymap reader fetches uSkyWeights.
 function declarationsFor( params, chunks ) {
-  const lines = [ 'uniform float uTime;', 'uniform float uDitherScale;' ]
+  const lines = [ 'uniform float uTime;', 'uniform float uDitherScale;', 'uniform vec3 uSkyWeights;' ]
   for ( const name of chunks ) {
     if ( !CHUNK_SAMPLERS[ name ] ) continue
     for ( const s of CHUNK_SAMPLERS[ name ] ) lines.push( 'uniform sampler2D ' + s.uniform + ';' )
@@ -285,6 +287,7 @@ export class AuroraScreen {
     // has to live on the instance rather than in the uniform it initialises --
     // otherwise changing algorithm silently resets the dither to full-res.
     this._ditherScale = 1
+    this._skyWeights = new THREE.Vector3( 1, 0, 0 )
     if ( opts.values ) this.setValues( opts.values )
 
     // theta is measured DOWN from the zenith, so the high elevation is the low
@@ -350,7 +353,7 @@ export class AuroraScreen {
       MAIN_GLSL,
     ].join( '\n' )
 
-    const uniforms = { uTime: { value: 0 }, uDitherScale: { value: this._ditherScale } }
+    const uniforms = { uTime: { value: 0 }, uDitherScale: { value: this._ditherScale }, uSkyWeights: { value: this._skyWeights } }
     for ( const name of ordered ) {
       if ( !CHUNK_SAMPLERS[ name ] ) continue
       for ( const s of CHUNK_SAMPLERS[ name ] ) uniforms[ s.uniform ] = { value: s.texture() }
@@ -429,6 +432,12 @@ export class AuroraScreen {
   setDitherScale( div ) {
     this._ditherScale = Math.max( div, 1 )
     this.material.uniforms.uDitherScale.value = this._ditherScale
+  }
+
+  // SkyMapAurora.weights, handed over every frame after its render(). Held on the instance as well as in the uniform so a material rebuilt on an algorithm switch starts where the fades are.
+  setSkyWeights( w ) {
+    if ( !( w.length === 3 && w.every( x => x >= 0 && x <= 1 ) ) ) throw new Error( 'AuroraScreen.setSkyWeights: needs three numbers in 0..1, got ' + JSON.stringify( w ) )
+    this._skyWeights.fromArray( w )
   }
 
   setValues( values ) {
