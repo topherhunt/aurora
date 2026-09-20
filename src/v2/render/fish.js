@@ -1,6 +1,6 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CHAPTER_S, GRID_S, TICK_S, CATCH_UP_TICKS, hash32, keyHash, phraseRand, chapterOf, tickAfter, stepTo, easeWeight } from '../../sim/score.js'
+import { CHAPTER_S, GRID_S, TICK_S, CATCH_UP_TICKS, SILENT_TICKS, hash32, keyHash, phraseRand, chapterOf, tickAfter, stepTo, easeWeight } from '../../sim/score.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { hueVary, makeHueAttribute, tierTintSplice, tileSeed, walkTiles } from './critters.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -193,6 +193,7 @@ const _mat = new THREE.Matrix4()
 const _a = { x: 0, z: 0, y: 0 }
 const _e = { x: 0, z: 0, y: 0 }
 const _s = { sx: 0, sy: 0, sz: 0, bed: 0, level: 0 }
+const _o = { x: 0, z: 0, y: 0 }
 
 export class Fish {
   /**
@@ -896,15 +897,21 @@ export class Fish {
       dx += (ex / ed) * w * 2.5
       dz += (ez / ed) * w * 2.5
     }
-    // Separation: from school-mates, or for a solo species from every other fish of its kind in the bed. Other species are ignored; they are going about their own business.
+    // Separation: from school-mates, or for a solo species from every other school of its kind in the bed, at its anchor for this tick -- closed-form, where the other body's integrated position would depend on which school stepped first and how far behind it was. Other species are ignored; they are going about their own business.
     const sep = cfg.separation
     dx += Fish._apart(f, school.members, sep, 0)
     dz += Fish._apart(f, school.members, sep, 1)
     if (cfg.school[1] === 1) {
       for (const s of school.tile.schools) {
         if (s.sp !== sp || s === school) continue
-        dx += Fish._apart(f, s.members, sep, 0)
-        dz += Fish._apart(f, s.members, sep, 1)
+        this._anchorAt(s, tNow, _o)
+        const gx = f.x - _o.x, gz = f.z - _o.z
+        const d2 = gx * gx + gz * gz
+        if (d2 < sep * sep && d2 > 1e-6) {
+          const d = Math.sqrt(d2)
+          dx += (gx / d) * ((sep - d) / sep) * 2
+          dz += (gz / d) * ((sep - d) / sep) * 2
+        }
       }
     }
     const dl = Math.hypot(dx, dz) || 1
@@ -1269,12 +1276,13 @@ export class Fish {
       this._owe(t, now)
     }
 
+    let stepped = 0
     for (const sp of this.species) {
       const cfg = sp.cfg
       for (const school of sp.schools) {
         const g = Math.floor((now - school.offset) / GRID_S)
         if (school.seg !== g) this._reset(sp, school, g)
-        stepTo(school.rec, now, (tick) => this._tick(sp, school, tick), CATCH_UP_TICKS)
+        stepped = Math.max(stepped, stepTo(school.rec, now, (tick) => this._tick(sp, school, tick), CATCH_UP_TICKS))
       }
 
       const mat = sp.mesh.instanceMatrix.array
@@ -1351,6 +1359,8 @@ export class Fish {
       sp.swim.needsUpdate = true
       sp.hue.needsUpdate = true
     }
+    // A catch-up frame (a join, a clock skip) darts nobody in the ear: she was not there for it.
+    if (stepped > SILENT_TICKS) this.startles.length = 0
   }
 
   dispose() {

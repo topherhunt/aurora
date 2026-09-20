@@ -1,5 +1,6 @@
 import { clamp01 } from '../sim/mathx.js'
 import { priorityFlood } from '../sim/hydrology.js'
+import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
 // The map instrument's painters -- §31. DOM-free, so /terrain-v3-map and scripts/island-png.mjs draw from one implementation.
@@ -12,6 +13,7 @@ export const LAYERS = [
   ['elev', 'elevation'],
   ['slope', 'slope'],
   ['bowls', 'closed bowls'],
+  ['biomes', 'biomes'],
 ]
 
 /** Lit from the north-west at 42 degrees, the cartographic convention; lit from anywhere else the eye reads every valley as a ridge. */
@@ -124,12 +126,23 @@ function paintBowls(px, r) {
   }
 }
 
+// Each class in its map colour over the hillshade, the sea as on the relief layer.
+function paintBiomes(px, r) {
+  const { height: H, n } = r
+  for (let c = 0; c < n * n; c++) {
+    const sh = r._shade[c]
+    if (H[c] <= 0) put(px, c, mix(SEA, SEA_DEEP, clamp01(-H[c] / 300)), 0.55 + 0.45 * sh)
+    else put(px, c, BIOMES[r.ground[c]].map, 0.45 + 0.65 * sh)
+  }
+}
+
 export function paintInto(px, r, layerId) {
   switch (layerId) {
     case 'relief': return paintRelief(px, r)
     case 'elev': return paintElev(px, r)
     case 'slope': return paintSlope(px, r)
     case 'bowls': return paintBowls(px, r)
+    case 'biomes': return paintBiomes(px, r)
     default: throw new Error(`paint: unknown layer ${layerId}`)
   }
 }

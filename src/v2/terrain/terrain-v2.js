@@ -28,6 +28,7 @@ import {
 } from './stream-policy.js'
 import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
+import { GroundTint } from '../layers/ground.js'
 
 // ---------------------------------------------------------------------------
 // v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
@@ -141,9 +142,12 @@ export class TerrainV2 {
    * @param workers       worker count.
    * @param queueDepth    requests in flight per worker; see WORKER_QUEUE_DEPTH.
    * @param axis          compile the reduced ground shader; see the LEAN and AXIS blocks in terrain-material.js.
+   * @param ground        {size, world, classes: Uint8Array, palette: Float32Array} for layers/ground.js, or null: the biome class grid the mesher tints the ground from. Copied to every worker like the heightmap.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
+    // Validated here so a wrong grid throws on the main thread at boot rather than inside a worker.
+    if (ground !== null) new GroundTint(ground)
     if (!doc) throw new Error('TerrainV2: no doc -- the workers have no content layers to bake')
     const { width, height, data, meta } = heightmapRaw
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2) {
@@ -387,9 +391,10 @@ export class TerrainV2 {
       // COOP/COEP cross-origin isolation headers, which vite.config.js does not
       // set and which are not this file's to add.
       const copy = data.slice()
+      const groundCopy = ground ? { ...ground, classes: ground.classes.slice(), palette: ground.palette.slice() } : null
       w.postMessage(
-        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, epoch: this.epoch },
-        [copy.buffer]
+        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, epoch: this.epoch, ground: groundCopy },
+        groundCopy ? [copy.buffer, groundCopy.classes.buffer, groundCopy.palette.buffer] : [copy.buffer]
       )
       this.workers.push(w)
     }

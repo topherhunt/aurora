@@ -29,6 +29,8 @@ export const EASE_S = 3
 export const GRID_S = 8
 // Ticks a frame may spend replaying one creature toward now: a join replays at most one phrase, spread over frames at this rate (20 s of world time a frame).
 export const CATCH_UP_TICKS = 400
+// A frame that stepped more ticks than this was a catch-up, not a frame she stood through: a creature's one-shots (voices, darts) from it are dropped, and a gap wider than CATCH_UP_TICKS is re-placed from the plan rather than replayed, so a clock skip is silent and meets nobody (creature-sync.md).
+export const SILENT_TICKS = 5
 
 /** A 32-bit mix of integers, the same on every engine: the seed of everything a creature rolls. */
 export function hash32(...ints) {

@@ -3,6 +3,7 @@ import { clamp } from '../sim/mathx.js'
 import { LAYERS, derive, paintInto } from './paint.js'
 import { load, optionsFromUrl } from './store.js'
 import { MACRO } from './island.js'
+import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
 // /terrain-v3-map -- the 2D eye on the generated island (§31).
@@ -118,11 +119,12 @@ function showStats() {
   const s = R.stats
   const relief = s.relief.map((r) => `${String(r.radius).padStart(5)} m  ${r.rms.toFixed(1).padStart(6)} m`).join('\n')
   const bowls = s.bowls.bodies.map((b) => `${String(Math.round(b.x)).padStart(6)},${String(Math.round(b.z)).padStart(6)}  ${b.km2.toFixed(3)} km2  ${b.deepest.toFixed(0).padStart(3)} m deep at ${b.level.toFixed(0)} m`).join('\n')
+  const biomes = BIOMES.map((b, k) => `${b.id.padEnd(8)}${(s.biomes.landShare[k] * 100).toFixed(1).padStart(6)}%`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
 ${(WORLD_SIZE / 1000).toFixed(2)} km across   ${R.ms.toFixed(0)} ms
 elevation ${s.min.toFixed(0)} .. ${s.max.toFixed(0)} m
 
-<h2>step A -- macro shape</h2>land      ${(s.landFraction * 100).toFixed(1)}%  (${s.landKm2.toFixed(1)} km2)
+<h2>steps A + B -- shape and octaves</h2>land      ${(s.landFraction * 100).toFixed(1)}%  (${s.landKm2.toFixed(1)} km2)
 summit    ${s.summit.h.toFixed(0)} m, ${s.summit.offset.toFixed(0)} m off centre
 coast     ${s.coast.lengthKm.toFixed(1)} km, x${s.coast.irregularity.toFixed(2)} its circle
 sea floor ${s.seaFloor.offshore1km.toFixed(0)} m at 1 km out, ${s.seaFloor.boxEdge.toFixed(0)} m at the edge
@@ -130,7 +132,9 @@ snow line ${R.doc.snow.base.toFixed(0)} m
 
 <h2>relief removed by a box blur</h2>${relief}
 
-<h2>closed bowls (${s.bowls.count}, ${s.bowls.km2.toFixed(2)} km2)</h2>${bowls || 'none'}`
+<h2>closed bowls (${s.bowls.count}, ${s.bowls.km2.toFixed(2)} km2)</h2>${bowls || 'none'}
+
+<h2>step C -- biomes (${s.biomes.polygons} polygons, ${s.biomes.vertices} vertices, ${(s.biomes.agree * 100).toFixed(1)}% agree)</h2>${biomes}`
 }
 
 function showHover() {
@@ -147,7 +151,7 @@ function showHover() {
   const deg = (R._slope[c] * 180) / Math.PI
   elReadout.textContent =
     `texel ${i},${j}   world ${x.toFixed(0)}, ${z.toFixed(0)} m\n` +
-    `elev  ${h.toFixed(1)} m   ${h <= 0 ? 'sea' : 'land'}\n` +
+    `elev  ${h.toFixed(1)} m   ${h <= 0 ? 'sea' : BIOMES[R.ground[c]].id}\n` +
     `slope ${deg.toFixed(1)} deg${deg > 38 ? '  IMPASSABLE' : ''}\n` +
     `from centre ${Math.hypot(x, z).toFixed(0)} m`
 }

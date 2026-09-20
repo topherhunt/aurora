@@ -413,13 +413,14 @@ function snowBandAt(band, wx, wz) {
   return band * 2 ** Math.max(-1, Math.min(1, n))
 }
 
-function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, wz, out, o) {
+// `tint`, when given, is the biome's ground colour (GroundTint.tintAt) and stands in for the grass-to-scrub base; rock, snow, mottle, road and shore go on over it as over grass.
+function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, wz, out, o, tint = null) {
   const steep = smoothstep(0.86, 0.62, ny)
   const alt = clamp01((h - altLo) / altSpan)
 
-  let r = lerp(C_GRASS[0], C_SCRUB[0], alt)
-  let g = lerp(C_GRASS[1], C_SCRUB[1], alt)
-  let b = lerp(C_GRASS[2], C_SCRUB[2], alt)
+  let r = tint ? tint[0] : lerp(C_GRASS[0], C_SCRUB[0], alt)
+  let g = tint ? tint[1] : lerp(C_GRASS[1], C_SCRUB[1], alt)
+  let b = tint ? tint[2] : lerp(C_GRASS[2], C_SCRUB[2], alt)
 
   // Snow accumulates with altitude but slides off near-vertical faces. Without
   // that term the cliffs read as white walls and all the relief goes invisible.
@@ -522,12 +523,14 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  * @param biome BiomeField, or null for a world without one, on the same terms
  *   as Trees: null is full forest everywhere the treeline allows, which is what
  *   the gates measure against. The shipped worker passes the real field.
+ * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
  * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, forest:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
-export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null) {
+export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
     throw new Error(`buildChunkV2: spec.cam must be a finite {x, y, z}, got ${JSON.stringify(cam)}`)
   }
+  const tint = ground ? [0, 0, 0] : null
   const step = size / res
   const vpr = res + 1
   const innerCount = vpr * vpr
@@ -759,7 +762,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
         nyClass = 1 / Math.hypot(gx, 1, gz)
       }
 
-      shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o)
+      if (ground) ground.tintAt(wx, wz, tint)
+      shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o, tint)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal

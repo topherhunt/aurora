@@ -5,6 +5,7 @@
 // The generator is judged by eye on /terrain-v3-map; this asserts the things an eye cannot, and the things §31 step A promised in numbers: the same seed gives the same field, the field is finite and inside its encoding, the island is an island (a summit near the centre, a sea that falls to the box edge, a coast that is not a circle), the doc validates, the rg16 round trip is exact to a quantum, and v2's V2Height will stand on the result, since that is what /terrain-v3 boots.
 
 import { generate, MIN_Y, MAX_Y, TEXELS } from '../src/v3/generate.js'
+import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
@@ -29,6 +30,9 @@ export async function run() {
   let differ = 0
   for (let i = 0; i < a.height.length; i++) if (a.height[i] !== c.height[i]) differ++
   check(differ > a.height.length * 0.9, `seed ${SEED + 1} differs on ${((differ / a.height.length) * 100).toFixed(1)}% of texels`)
+  let sameGround = a.ground.length === b.ground.length
+  for (let i = 0; sameGround && i < a.ground.length; i++) sameGround = a.ground[i] === b.ground[i]
+  check(sameGround, 'and the identical class grid')
   check(a.n === TEXELS && a.height.length === TEXELS * TEXELS, `${a.n}^2 texels`)
   console.log(`       ${a.ms.toFixed(0)} ms per generate`)
 
@@ -36,7 +40,7 @@ export async function run() {
   const s = a.stats
   check(s.min > MIN_Y && s.max < MAX_Y, `extremes ${s.min.toFixed(0)}..${s.max.toFixed(0)} m inside the rg16 range ${MIN_Y}..${MAX_Y}`)
   check(s.landFraction > 0.22 && s.landFraction < 0.5, `land ${(s.landFraction * 100).toFixed(1)}% of the box (${s.landKm2.toFixed(1)} km2)`)
-  check(s.summit.h > 700 && s.summit.offset < 700, `summit ${s.summit.h.toFixed(0)} m, ${s.summit.offset.toFixed(0)} m off centre`)
+  check(s.summit.h > 350 && s.summit.offset < 700, `summit ${s.summit.h.toFixed(0)} m, ${s.summit.offset.toFixed(0)} m off centre`)
   check(s.seaFloor.offshore1km < -30 && s.seaFloor.boxEdge < s.seaFloor.offshore1km - 50, `sea floor ${s.seaFloor.offshore1km.toFixed(0)} m a kilometre out, ${s.seaFloor.boxEdge.toFixed(0)} m at the box edge`)
   check(s.coast.irregularity > 1.6, `coast ${s.coast.lengthKm.toFixed(1)} km long, x${s.coast.irregularity.toFixed(2)} the circle of the same area`)
   check(s.bowls.count >= 6 && s.bowls.km2 > 0.2, `${s.bowls.count} closed bowls over 2 ha, ${s.bowls.km2.toFixed(2)} km2 ponded, largest ${s.bowls.largest ? s.bowls.largest.km2.toFixed(3) : 0} km2`)
@@ -50,7 +54,26 @@ export async function run() {
   check(layers.lakes.lakes.size === 1, 'one lake, the sea')
   const sea = [...layers.lakes.lakes.values()][0]
   check(sea.y === 0 && sea.carve === false && sea.rx >= 8192, `the sea is an uncarved rectangle at y 0, ${sea.rx * 2} m across`)
-  check(a.doc.snow.base > 400 && a.doc.snow.base < s.summit.h, `snow line ${a.doc.snow.base.toFixed(0)} m under the summit`)
+  let above = 0
+  let land = 0
+  for (let i = 0; i < a.height.length; i++) if (a.height[i] > 0) { land++; if (a.height[i] > a.doc.snow.base) above++ }
+  check(Math.abs(above / land - 1 / 7) < 0.01, `snow line ${a.doc.snow.base.toFixed(0)} m, ${((above / land) * 100).toFixed(1)}% of the land above it`)
+
+  console.log('\n[v3] the biomes')
+  const polygons = deserialise(a.biomes)
+  check(polygons.length === s.biomes.polygons && polygons.length > 5 && polygons.length < 400, `${polygons.length} polygons, ${s.biomes.vertices} vertices, deserialise validates them`)
+  check(a.ground instanceof Uint8Array && a.ground.length === a.n * a.n, 'the class grid is a Uint8Array over the field')
+  const rebuilt = rasterise(polygons, a.n, a.cell)
+  let agree = 0
+  for (let i = 0; i < rebuilt.length; i++) if (rebuilt[i] === a.ground[i]) agree++
+  check(agree === rebuilt.length, 'the grid rasterised from the cached polygons is the cached grid')
+  check(s.biomes.agree > 0.98, `the polygons carry the traced classes on ${(s.biomes.agree * 100).toFixed(2)}% of texels`)
+  const shares = s.biomes.landShare.map((f, k) => `${BIOMES[k].id} ${(f * 100).toFixed(1)}%`).join(', ')
+  check(s.biomes.landShare.every((f) => f > 0.1 && f < 0.19), `every class holds about a seventh of the land: ${shares}`)
+  const half = ((a.n - 1) * a.cell) / 2
+  const si = Math.round((s.summit.x + half) / a.cell)
+  const sj = Math.round((s.summit.z + half) / a.cell)
+  check(a.ground[sj * a.n + si] === 0, `the summit texel is ${BIOMES[a.ground[sj * a.n + si]].id}`)
 
   console.log('\n[v3] into v2')
   const hm = Heightmap.fromRaw({ width: a.n, height: a.n, data: a.height, meta: a.meta })

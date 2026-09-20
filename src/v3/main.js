@@ -1,7 +1,7 @@
 import THREE from '../three-instance.js'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 
-import { SEED } from '../v2/config.js'
+import { SEED, WORLD_SIZE } from '../v2/config.js'
 import { Heightmap } from '../v2/height/heightmap.js'
 import { V2Height } from '../v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../v2/height/relief.js'
@@ -15,6 +15,7 @@ import { Input } from '../input.js'
 import { Player, LOCOMOTION } from '../player.js'
 import { load, optionsFromUrl } from './store.js'
 import { MACRO } from './island.js'
+import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
 // /terrain-v3 -- stand on the generated island (§31).
@@ -97,6 +98,7 @@ async function bootWorld() {
   // `axis` is the shipped ground shader; this page judges the field, not the surface, so it draws what the game draws.
   terrain = new TerrainV2(scene, {
     heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: RELIEF_DEFAULTS, workers: 2, axis: true,
+    ground: { size: island.n, world: WORLD_SIZE, classes: island.ground, palette: Float32Array.from(BIOMES.flatMap((b) => b.colour)) },
   })
   lighting.patch(terrain.material, {
     mode: 'fragment', cacheKey: 'v2-terrain-shadow-axis', worldPosVarying: 'vWorldPos',
@@ -122,6 +124,8 @@ async function bootWorld() {
   look.yaw = Math.atan2(spawn.x, spawn.z)
   look.pitch = -0.05
   console.log(`[terrain-v3] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m, island from ${from}`)
+  // A handle for the console and the headless probe: `__v3.player.setFlying(true); __v3.rig.position.y = 900; __v3.look.pitch = -0.6`.
+  window.__v3 = { rig, camera, look, player, height, clock }
 
   boot.classList.add('gone')
   ready = true
@@ -246,6 +250,13 @@ renderer.setAnimationLoop(() => {
   scene.background.copy(scene.fog.color)
 
   camera.getWorldPosition(_head)
+  // The near plane climbs with height above the ground: depth precision at range goes as d² / near, and at 0.1 m the sea plane and the shelf fight each other a kilometre out. Stepped in quarter metres so XR is not handed a new render state every frame.
+  const agl = _head.y - Math.max(0, height.heightAt(_head.x, _head.z))
+  const near = Math.max(0.1, Math.min(8, Math.round(agl / 25) / 4))
+  if (near !== camera.near) {
+    camera.near = near
+    camera.updateProjectionMatrix()
+  }
   sky.update(_head, state)
   terrain.update({ x: _head.x, y: _head.y, z: _head.z, yaw: look.yaw })
 

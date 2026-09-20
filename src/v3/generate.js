@@ -2,6 +2,7 @@ import { WORLD_SIZE } from '../v2/config.js'
 import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
 import { Island, rasterise } from './island.js'
+import { buildBiomes, serialise } from './biomes.js'
 
 // ---------------------------------------------------------------------------
 // The v3 pipeline -- §31. Seed in, the coarse field and its layers document out, with the numbers the map page and the gate read off it.
@@ -9,19 +10,19 @@ import { Island, rasterise } from './island.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'a1'
+export const VERSION = 'c2'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
-// The rg16 encoding's range. Not the field's extremes -- those are measured -- but the metres a texel can hold, at 2.2 cm a step; the gate asserts the field stays inside it, because Heightmap.toPng clamps rather than throws.
-export const MIN_Y = -450
+// The rg16 encoding's range. Not the field's extremes -- those are measured -- but the metres a texel can hold, at 2.4 cm a step; the gate asserts the field stays inside it, because Heightmap.toPng clamps rather than throws.
+export const MIN_Y = -600
 export const MAX_Y = 1000
 
 // Relief by scale: the rms of what a box blur of this radius removes, over land. Step B's target law is read off this table.
 export const BLUR_RADII = [32, 128, 512, 2048]
 
 /**
- * `generate({ seed, n = TEXELS, log })` -> { v, seed, n, cell, height, meta, doc, stats, ms }
+ * `generate({ seed, n = TEXELS, log })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, ms }
  *
  * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage.
  */
@@ -34,16 +35,20 @@ export function generate({ seed, n = TEXELS, log = () => {} }) {
   const island = new Island(seed)
   const height = rasterise(island, n, cell)
   const tMacro = now()
-  log(`macro shape    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
+  log(`shape+octaves  ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
+
+  const biomes = buildBiomes(height, n, cell, seed)
+  const tBiomes = now()
+  log(`biomes         ${ms(tBiomes - tMacro)}  ${biomes.stats.polygons} polygons, ${biomes.stats.vertices} vertices, rebuilt grid agrees ${(biomes.stats.agree * 100).toFixed(2)}%`)
 
   const stats = measure(height, n, cell, island)
+  stats.biomes = biomes.stats
   const tStats = now()
-  log(`instruments    ${ms(tStats - tMacro)}  land ${(stats.landFraction * 100).toFixed(1)}%, summit ${stats.summit.h.toFixed(0)} m, ${stats.bowls.count} bowls`)
+  log(`instruments    ${ms(tStats - tBiomes)}  land ${(stats.landFraction * 100).toFixed(1)}%, summit ${stats.summit.h.toFixed(0)} m, ${stats.bowls.count} bowls`)
 
   const doc = validate({
     v: DOC_VERSION,
-    // The snow line is a fraction of the massif, not a percentile of the field: most of this field is sea floor and a percentile would read the sea.
-    snow: { base: stats.summit.h * 0.7, band: 60, points: [] },
+    snow: { base: stats.snowLine, band: 60, points: [] },
     // The sea is one uncarved lake at y = 0 larger than the box, as the shipped world's ocean is (§18): its surface runs under the whole island and breaks it at the coast.
     lakes: [{ id: 'l1', x: 0, z: 0, y: 0, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }],
     rivers: [],
@@ -51,7 +56,8 @@ export function generate({ seed, n = TEXELS, log = () => {} }) {
   })
 
   const meta = { world: WORLD_SIZE, size: n, minY: MIN_Y, maxY: MAX_Y, encoding: 'rg16', exaggeration: 1, v3: VERSION, seed }
-  return { v: VERSION, seed, n, cell, height, meta, doc, stats, ms: now() - t0 }
+  // `biomes` is the drawn truth (polygons in world metres), `ground` the class grid rebuilt from it, which is what the mesher tints from.
+  return { v: VERSION, seed, n, cell, height, meta, doc, biomes: serialise(biomes.polygons), ground: biomes.grid, stats, ms: now() - t0 }
 }
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
@@ -79,6 +85,12 @@ function measure(H, n, cell, island) {
   const summit = { h: hi, x: (hiAt % n) * cell - half, z: Math.floor(hiAt / n) * cell - half }
   summit.offset = Math.hypot(summit.x, summit.z)
 
+  // The height a seventh of the land lies above: where the snow line goes so v2's snow and the arctic class (the coldest seventh) roughly agree.
+  const landHeights = new Float32Array(land)
+  for (let c = 0, k = 0; c < size; c++) if (H[c] > 0) landHeights[k++] = H[c]
+  landHeights.sort()
+  const snowLine = landHeights[Math.floor((land * 6) / 7)]
+
   // The sea floor at the box edge (the outermost ring of texels) and one kilometre past the mean coast, so "keeps falling" is two numbers.
   let edgeSum = 0
   let edgeN = 0
@@ -98,6 +110,7 @@ function measure(H, n, cell, island) {
     min: lo,
     max: hi,
     summit,
+    snowLine,
     seaFloor: { offshore1km: offshore, boxEdge: edgeSum / edgeN },
     coast: coastIrregularity(H, n, cell, land),
     relief: reliefByScale(H, n, cell),
@@ -152,7 +165,7 @@ function reliefByScale(H, n, cell) {
 }
 
 /** Separable box blur, edge-clamped, radius in texels. Two running sums, so a 256-texel radius costs the same as a 4. */
-function boxBlur(H, n, r) {
+export function boxBlur(H, n, r) {
   const tmp = new Float32Array(n * n)
   const out = new Float32Array(n * n)
   const w = 2 * r + 1

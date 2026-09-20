@@ -98,7 +98,7 @@
 import THREE from '../../three-instance.js'
 import { clamp, lerp, mulberry32 } from '../../sim/mathx.js'
 import {
-  CHAPTER_S, EASE_S, TICK_S, Score, chapterOf, easeWeight, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
+  CATCH_UP_TICKS, CHAPTER_S, EASE_S, TICK_S, Score, chapterOf, easeWeight, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
 } from '../../sim/score.js'
 import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, bakeCritterCard, createCritterCardMaterial, critterTier, makeCardFadeAttribute,
@@ -505,14 +505,21 @@ export class Dragons {
     d.lodSize = d.size * this.bulk
     d.home = born.home
     d.phase = born.phase
-    d.cargo = d.lure = d.live = d.rejoin = null
-    d.queue.length = 0
     d.lod = CARD_RUNGS
     d.puppet = null
     d.cardWant = false
     d.cardP = 1
     d.dest = site
     this.byKey.set(d.key, d)
+    this._replace(d, now)
+    return d
+  }
+
+  /** The dragon placed afresh at `now`: where the room's anchor has it when there is one from this chapter, else on its score. Birth, and a body too long unstepped to replay (a clock skip): its kill let go where it lies, its lure and rejoin forgotten. */
+  _replace(d, now) {
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.lure = d.live = d.rejoin = null
+    d.queue.length = 0
     const anchor = this.anchored.get(d.key)
     if (anchor && anchor[1] >= chapterOf(now, d.key).start) {
       this._fromAnchor(d, anchor, now)
@@ -523,7 +530,6 @@ export class Dragons {
       d.rec.tick = tickAfter(at.start) - 1
       this._enter(d, at, now)
     }
-    return d
   }
 
   /** The body put at a pose -- level, at the pose's speed -- the tick before it the same. */
@@ -1382,6 +1388,8 @@ export class Dragons {
 
   /** One dragon: stepped to `now`, then drawn on whichever rung its flying body's size puts it at. */
   _tick(d, hx, hy, hz, now, dt) {
+    // A gap a frame cannot replay (a clock skip) is not replayed at all: the dragon is put where the score has it now, as if she had stepped out of the timeline and back in.
+    if (tickOf(now) - d.rec.tick > CATCH_UP_TICKS) this._replace(d, now)
     this.replayed += stepTo(d.rec, now, (k) => this._step(d, k))
     if (d.rec.tick < tickOf(now)) this.behind++
     const dist = Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2)

@@ -32,7 +32,7 @@
 
 import THREE from '../../three-instance.js'
 import { clamp, mulberry32 } from '../../sim/mathx.js'
-import { TICK_S, hash32, keyHash, stepTo, swing, tickOf } from '../../sim/score.js'
+import { CATCH_UP_TICKS, SILENT_TICKS, TICK_S, hash32, keyHash, stepTo, swing, tickOf } from '../../sim/score.js'
 import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange } from './critters.js'
 import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
@@ -708,16 +708,21 @@ export class Leafkin {
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
 
-    // The sites: a resident one without its leafkin gets one when the village is not lying empty and she is inside its roam; a gone one takes its leafkin with it.
+    // The sites: a resident one without its leafkin gets one when the village is not lying empty and she is inside its roam; a gone one takes its leafkin with it. A leafkin too long unstepped to replay (a clock skip) is born again like one never met, not walked through the gap under her feet.
     const sites = this._sites
     sites.length = 0
     this.entrances.sites(sites)
     const seen = this._seen
     seen.clear()
+    const tick = tickOf(seconds)
     for (const site of sites) {
       seen.add(site.key)
       const c = this.byKey.get(site.key)
-      if (c) { c.site = site; continue }
+      if (c) {
+        c.site = site
+        if (tick - c.tick <= CATCH_UP_TICKS) continue
+        this._retire(c)
+      }
       const until = site.state.emptyUntil
       if (until !== undefined && seconds <= until) continue
       if (Math.hypot(site.x - feet.x, site.z - feet.z) > ROAM_M) continue
@@ -725,11 +730,14 @@ export class Leafkin {
     }
     for (const c of [...this.byKey.values()]) if (!seen.has(c.key)) this._retire(c)
 
+    let stepped = 0
     for (const c of [...this.byKey.values()]) {
-      stepTo(c, seconds, (tick) => this._tick(c, tick))
+      stepped = Math.max(stepped, stepTo(c, seconds, (tick) => this._tick(c, tick)))
       if (c.site === null) continue
       this._draw(c, dt)
     }
+    // A catch-up frame says nothing in the ear: she was not there for it.
+    if (stepped > SILENT_TICKS) this.pending.length = 0
   }
 
   /** The frame's pose between the last two ticks, and the puppet on it. */

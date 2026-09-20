@@ -24,7 +24,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S } from '../src/v2/render/fish.js'
-import { CHAPTER_S, GRID_S, chapterOf } from '../src/sim/score.js'
+import { CHAPTER_S, GRID_S, chapterOf, tickOf } from '../src/sim/score.js'
 import { taken } from '../src/v2/taken.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -204,9 +204,9 @@ for (let i = 0; i < SECONDS / DT; i++) {
       const fresh = f.alive && mood !== undefined && !turned && (f.mood !== mood.mood || f.moodLeft > mood.left)
       const fast = fresh && f.speed >= DART_SPEED
       if (fast) setOffs[sp.id]++
-      // The first frame catches every school up from its segment's start, many ticks in one frame; a turn frame re-rolls the mood after the tick.
-      if (i > 0 && !turned && fast !== listedNow.has(f)) listedWrong++
-      if (i > 0 && listedNow.has(f) && f.speed < DART_SPEED) listedSlow++
+      // A turn frame re-rolls the mood after the tick.
+      if (!turned && fast !== listedNow.has(f)) listedWrong++
+      if (listedNow.has(f) && f.speed < DART_SPEED) listedSlow++
       const bolt = f.alive && f.mood === 'bolt'
       const onset = bolt && !wasBolt.get(f)
       // A segment turn resets the school, its bolt timers with it: the ripple is cut where it stood.
@@ -681,6 +681,24 @@ const agree = (a, b) => {
   fish.place(200, 0)
   check(!fish.luredIn.has(bed), 'leaving the bed forgets the peer\'s set')
   fish.place(0, 0)
+}
+
+// --- a clock skip: +5 h is 300 s on the room's clock, caught up in one silent frame ---
+{
+  const schools = fish.species.flatMap((sp) => sp.schools)
+  const ticked = new Map()
+  const tick = fish._tick
+  fish._tick = function (sp, school, k) { ticked.set(school, (ticked.get(school) ?? 0) + 1); return tick.call(this, sp, school, k) }
+  clock.seconds += 300
+  fish.update(0, LEVEL + 1.6, 0, clock.seconds)
+  fish._tick = tick
+  const now = tickOf(clock.seconds)
+  const most = Math.max(...ticked.values())
+  const caught = schools.every((sc) => sc.rec.tick === now)
+  check(caught && most <= GRID_S * 20 + 1, 'a 300 s skip has every school on the clock after one frame, its own segment replayed and nothing of the gap', `${most} ticks the most over ${schools.length} schools`)
+  check(fish.startled([]).length === 0, 'and the catch-up frame lists nothing for the ear', `${fish.startles.length} listed`)
+  const still = alive().every((f) => Number.isFinite(f.x + f.y + f.z) && f.y >= f.bed && f.y <= f.level)
+  check(still, 'and every fish is in its water', '')
 }
 
 // --- cost -------------------------------------------------------------------

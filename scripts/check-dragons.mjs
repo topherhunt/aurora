@@ -39,7 +39,7 @@ import {
   HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
   LURES, LURE_M, LURE_FORGET_M, MENACE_RUN_M, MENACE_M, ANCHOR_S, ANCHOR_STALE_S,
 } from '../src/v2/render/dragons.js'
-import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickOf } from '../src/sim/score.js'
+import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
   Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
@@ -705,7 +705,23 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
     if (!samePose(poses.get(c.rec.tick), pose(c))) cDiffer++
   }
   check(cDiffer === 0 && c.rec.tick === tickOf(tj + 300), 'and stays with the resident to the bit for the five minutes after, across every boundary between', `${cDiffer} ticks differ`)
-  A.dispose(); B.dispose(); C.dispose()
+  // A clock skip (+5 h is 300 s on the room's clock): the gap is not replayed, the dragon is put on its score where the resident is, and the resident's ticks it replays are its current phrase's alone.
+  const D = dragonsOn(flat, [site], makeHerd([]))
+  const ts = t0 + 100
+  for (let i = 0; i <= 60 * 50; i++) D.update(HER.x, HER.y, HER.z, ts + i / 60)
+  const d = D.byKey.get(keyOf(site))
+  const skipTo = ts + 50 + 300
+  const sinceStart = tickOf(skipTo) - tickAfter(D._phraseAt(d, skipTo).start) + 1
+  let sFrames = 0, sReplayed = 0, sOver = 0
+  do {
+    D.update(HER.x, HER.y, HER.z, skipTo)
+    sFrames++
+    sReplayed += D.stats.replayed
+    if (D.stats.replayed > CATCH_UP_TICKS) sOver++
+  } while (D.stats.behind && sFrames < 100)
+  check(!D.stats.behind && sOver === 0 && sReplayed <= sinceStart && sReplayed < 6000, `a 300 s clock skip replays no more than the current phrase, at most CATCH_UP_TICKS a frame, never the gap`, `${sReplayed} ticks over ${sFrames} frames, the phrase ${sinceStart} ticks in`)
+  check(d.rec.tick === tickOf(skipTo) && samePose(poses.get(d.rec.tick), pose(d)), 'and lands the dragon where the resident stands at that tick, to the bit', `${d.state} at (${fmt(d.x)}, ${fmt(d.y)}, ${fmt(d.z)})`)
+  A.dispose(); B.dispose(); C.dispose(); D.dispose()
 }
 
 // --- the hunt: a hungry flight takes a stag off the wildlife's own score, the strike one closed-form fact both layers and every client agree on ---

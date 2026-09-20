@@ -10,11 +10,10 @@ import { createPropMaterial } from '../../material.js'
 // front-face-only from within on the same stone layer. NEGATIVE SCALE ALONE
 // DOES NOT EXPOSE THE INSIDE: three flips the front face for a negative
 // determinant, so the winding is reversed on the index and the normals negated
-// instead. The stone tiles at TILE_M in world metres rather than the boulder's
-// own, since a rock stretched a hundredfold is a blur.
+// instead. The stone is the boulder's own tile at the stood scale (a placed
+// boulder's tile scales with the rock, gen-rock-main.js), so the wall reads as
+// one rock's grain seen from inside rather than a wall of small stones.
 // ---------------------------------------------------------------------------
-
-export const TILE_M = 8
 
 export class Shell {
   /**
@@ -38,10 +37,6 @@ export class Shell {
     geo.rotateY(f.yaw)
     geo.computeBoundingBox()
     const bb = geo.boundingBox
-    const uv = geo.attributes.uvProj.array
-    const k = (f.scale * src.userData.rock.texMetres) / TILE_M
-    for (let i = 0; i < uv.length; i++) uv[i] *= k
-    geo.attributes.uvProj.needsUpdate = true
     this.material = createPropMaterial(textureArray, { side: THREE.FrontSide, bump: true })
     this.mesh = new THREE.Mesh(geo, this.material)
     this.mesh.name = 'v2-shell'

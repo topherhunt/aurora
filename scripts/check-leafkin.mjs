@@ -566,5 +566,36 @@ console.log('\ntwo instances agree')
   b.dispose()
 }
 
+// --- the clock skip: out of the timeline and back in, silent, meeting nobody ---------
+console.log('\nthe clock skip')
+{
+  const w = make()
+  const feet = { x: 30, y: GROUND, z: 0 }
+  let t = run(w, T0, 3, feet)
+  const c = one(w)
+  const said = []
+  w.voices(said)
+  said.length = 0
+  // A gap a frame can replay (10 s, half CATCH_UP_TICKS) is replayed in that frame, with every call it would have made through it dropped.
+  const was = c.tick
+  w.update(feet, head(feet), t += 10, 1 / 60)
+  w.voices(said)
+  check(c.tick === tickOf(t) && c.tick - was === 200 && w.spawned === 1 && said.length === 0, `a 10 s gap is replayed in one frame, its ${CHATTER_S[0]}-${CHATTER_S[1]} s chatter unsaid`, `${c.tick - was} ticks, ${said.length} said`)
+  // +5 h is 300 s on the room's clock: too long to replay, so the leafkin is born again for that moment, clear of her feet, even with her feet on its old spot, and says nothing.
+  const at = { x: c.x + STARTLE_M - 0.5, y: GROUND, z: c.z }
+  w.update(at, head(at), t += 300, 1 / 60)
+  w.voices(said)
+  const d = one(w)
+  const fromHer = d && Math.hypot(d.x - at.x, d.z - at.z)
+  check(w.byKey.size === 1 && d && d.tick === tickOf(t) && d.state === 'roam' && w.spawned === 2 && fromHer >= SPAWN_CLEAR_M, `a 300 s skip with her feet ${fmt(STARTLE_M - 0.5)} m off its spot puts a fresh leafkin on the clock, ${SPAWN_CLEAR_M} m clear of her`, d && `${d.state}, ${fmt(fromHer)} m from her, spawned ${w.spawned}`)
+  check(said.length === 0, 'and nothing is said on the frame of the skip', said.map((v) => v.sound).join(' '))
+  t = run(w, t, 2, at, () => w.voices(said))
+  check(d.state === 'roam' && said.every((v) => v.sound !== 'leafkinScream'), 'nor is it startled after: she was never beside it', said.map((v) => v.sound).join(' '))
+  // Skipped with her feet outside the roam, it goes and nobody comes out.
+  w.update(FAR, head(FAR), t += 300, 1 / 60)
+  check(w.byKey.size === 0 && w.free.length === MAX, `a skip with her ${FAR.x} m off retires it and sends nobody out`)
+  w.dispose()
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall leafkin checks passed')
 process.exit(failures ? 1 : 0)

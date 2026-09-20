@@ -4,6 +4,7 @@ import { Layers } from '../layers/layers.js'
 import { rectToWorld } from '../height/sculpt.js'
 import { buildChunkV2 } from './chunk-mesh-v2.js'
 import { BiomeField } from '../layers/biome.js'
+import { GroundTint } from '../layers/ground.js'
 import { SEED } from '../config.js'
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ import { SEED } from '../config.js'
 
 let field = null
 let layers = null
+let ground = null
 // The forest tint's biome, seeded from the same module constant main.js seeds
 // the trees' from, for the reason V2Height's seed is: a seed in the message
 // could drift from the scatter's and the ground would go green where no wood
@@ -79,6 +81,8 @@ function onInit(msg) {
   // an unknown key, so a protocol that has drifted takes the worker down at init
   // instead of meshing a world with one knob quietly missing.
   field = new V2Height({ heightmap, layers, relief: msg.relief })
+  // The biome class grid, when the world has one (v3 does, the shipped world does not); GroundTint validates it so a grid of the wrong size fails here, not as a wrongly coloured world.
+  ground = msg.ground ? new GroundTint(msg.ground) : null
   // Force the lazy percentile pass now rather than inside the first chunk, where
   // it would show up as one inexplicably slow mesh in the ms/chunk numbers.
   field.bands
@@ -196,7 +200,7 @@ self.onmessage = (e) => {
   if (msg.type === 'chunk') {
     if (!field) throw new Error('v2 terrain worker got a chunk request before init')
     const t0 = performance.now()
-    const r = buildChunkV2(field, layers, msg, biome)
+    const r = buildChunkV2(field, layers, msg, biome, ground)
     // Transfer rather than copy: these six buffers are the bulk of the per-chunk
     // cost and structured-cloning them would put that cost back on the main
     // thread, which is the one thing this worker exists to avoid.

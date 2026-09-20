@@ -5,7 +5,7 @@ self.onmessage = (e) => {
   const { seed, n } = e.data
   try {
     const r = generate({ seed, n, log: (line) => self.postMessage({ type: 'log', line }) })
-    self.postMessage({ type: 'done', result: r }, [r.height.buffer])
+    self.postMessage({ type: 'done', result: r }, [r.height.buffer, r.ground.buffer])
   } catch (err) {
     self.postMessage({ type: 'error', message: err.message, stack: err.stack })
   }

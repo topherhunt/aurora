@@ -1624,9 +1624,13 @@ function buildQuestPanel() {
   })
   setQuestView(questView)
 
+  // THE POINTER IS TRANSPARENT LIKE THE MENU, or it never reaches it: three
+  // draws the whole opaque list before the transparent one whatever the render
+  // order, so an opaque dot went down first and the depth-test-off panel
+  // painted over it. In the transparent list QUEST_POINTER_ORDER puts it last.
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false })
+    new THREE.MeshBasicMaterial({ color: 0xff3b3b, toneMapped: false, depthTest: false, depthWrite: false, transparent: true })
   )
   dot.visible = false
   dot.renderOrder = QUEST_POINTER_ORDER
@@ -1637,7 +1641,7 @@ function buildQuestPanel() {
   // stands through a wall.
   const line = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]),
-    new THREE.LineBasicMaterial({ color: QUEST_POINTER_COLOR, toneMapped: false, depthTest: false })
+    new THREE.LineBasicMaterial({ color: QUEST_POINTER_COLOR, toneMapped: false, depthTest: false, depthWrite: false, transparent: true })
   )
   line.visible = false
   line.renderOrder = QUEST_POINTER_ORDER
@@ -2893,7 +2897,7 @@ async function buildRoom(room, at) {
     roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomSpec.props, clearing: roomSpec.clearing })
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
-    window.v2village = roomSpec // console: `v2village.spec.lake`, `v2village.props`
+    window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
   }
   window.v2huts = roomProps
 

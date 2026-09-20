@@ -30,6 +30,24 @@ export const MACRO = {
   basin: { inner: 0.3, outer: 0.75, wavelength: 900, amp: 90, dipShare: 1.0, lumpShare: 0.6, apronAmp: 40 },
 }
 
+// ---------------------------------------------------------------------------
+// The OCTAVES -- §31 step B. Eight of fbm from `top` down at gain 0.5, the 1/f law, the top `warped` of them reading the macro shape's warped position; ridged noise blended in over the massif so the centre is a cluster of peaks and not the cone's cap; and a variance mask on the MACRO height so the lowlands stay quiet, the mountains do not, and the sea floor keeps enough structure for v2's roughness calibration to fit.
+// ---------------------------------------------------------------------------
+
+export const OCTAVES = {
+  top: 2048,              // wavelength in metres of the first octave; the eighth is top / 128 = 16 m
+  count: 8,
+  gain: 0.5,
+  amp: 150,               // metres, the first octave's amplitude at full mask
+  warped: 3,              // how many of the top octaves read the warped position
+  lowland: 0.25,          // the mask at the apron and on the shelf
+  seaFloor: 0.5,          // the mask on the deep sea floor
+  maskFrom: 0.15,         // fractions of the summit over which the mask rises from `lowland` to 1
+  maskTo: 0.7,
+  // The massif's ridged term: `wavelength` of the base octave, `amp` metres from valley to crest at full weight, weight rising over `from`..`to` of the summit. `round` as for Noise.ridged, so the crests are wider than the 8 m texel.
+  ridge: { wavelength: 1100, octaves: 5, amp: 340, from: 0.3, to: 0.75, round: 0.12 },
+}
+
 /** Softplus with a shoulder of `eps`: max(0, v) without the crease at zero. */
 function soft(v, eps) {
   return 0.5 * (v + Math.sqrt(v * v + eps * eps))
@@ -39,9 +57,12 @@ function soft(v, eps) {
  * The macro field as a sampler over world metres, (x, z) -> metres. Built once per seed; `at` is what the grid loop and the instruments call.
  */
 export class Island {
-  constructor(seed, macro = MACRO) {
+  constructor(seed, macro = MACRO, octaves = OCTAVES) {
     if (!Number.isFinite(seed)) throw new Error(`Island: seed must be a finite number, got ${seed}`)
     this.macro = macro
+    this.octaves = octaves
+    this.fbm = new Noise(seed * 7 + 401)
+    this.ridge = new Noise(seed * 7 + 409)
     // One noise per role, seeded apart, so a warp octave and the coast harmonic never share a lattice and line up.
     this.warpX = macro.warp.map((_, i) => new Noise(seed * 7 + 11 + i))
     this.warpZ = macro.warp.map((_, i) => new Noise(seed * 7 + 31 + i))
@@ -76,9 +97,21 @@ export class Island {
     return { wx, wz, r, R, d: r / R, cx, sz, cliff }
   }
 
+  /** Step A alone: the macro shape in metres. */
+  macroAt(x, z) {
+    return this.macroIn(this.frame(x, z))
+  }
+
+  /** The field: macro shape plus octaves. */
   at(x, z) {
+    const f = this.frame(x, z)
+    const macro = this.macroIn(f)
+    return macro + this.octavesIn(f, x, z, macro)
+  }
+
+  macroIn(f) {
     const m = this.macro
-    const { wx, wz, r, R, d, cx, sz, cliff } = this.frame(x, z)
+    const { wx, wz, r, R, d, cx, sz, cliff } = f
     let h
     if (d < 1) {
       let v = Math.pow(1 - d, m.profileExp)
@@ -121,6 +154,37 @@ export class Island {
     if (amp > 0) {
       const nz = this.basin.simplex2(wx / b.wavelength + 9.2, wz / b.wavelength - 4.4)
       h += amp * (b.lumpShare * soft(nz, 0.15) - b.dipShare * soft(-nz, 0.15))
+    }
+    return h
+  }
+
+  /** Step B: what the octaves add at this texel, given the macro height there. */
+  octavesIn(f, x, z, macro) {
+    const o = this.octaves
+    const H = this.macro.summit
+    // The mask reads the macro height, not the sum, so an octave cannot feed its own amplitude. Continuous through the shore: the apron and the shelf share `lowland`, and the floor takes `seaFloor` once it is 60 m under.
+    let mask
+    if (macro >= 0) mask = o.lowland + (1 - o.lowland) * smoothstep(o.maskFrom * H, o.maskTo * H, macro)
+    else mask = o.lowland + (o.seaFloor - o.lowland) * smoothstep(0, -60, macro)
+
+    let sum = 0
+    let amp = o.amp
+    let lambda = o.top
+    for (let i = 0; i < o.count; i++) {
+      const px = i < o.warped ? f.wx : x
+      const pz = i < o.warped ? f.wz : z
+      sum += amp * this.fbm.simplex2(px / lambda + 17.3 * i, pz / lambda - 5.9 * i)
+      amp *= o.gain
+      lambda *= 0.5
+    }
+    let h = mask * sum
+
+    const rd = o.ridge
+    const w = smoothstep(rd.from * H, rd.to * H, macro)
+    if (w > 0) {
+      const n = this.ridge.ridged(f.wx / rd.wavelength + 2.2, f.wz / rd.wavelength + 7.7, rd.octaves, 2, 0.5, rd.round)
+      // Zero-mean about the ridged field's typical level so the massif's mean height stays the cone's and the crests rise as far as the valleys fall.
+      h += w * rd.amp * (n - 0.4)
     }
     return h
   }
