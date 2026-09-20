@@ -14,6 +14,7 @@ import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import { BiomeField } from '../layers/biome.js'
+import { forestKeepAt } from '../layers/forest.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: boulders through the wood and across the
@@ -569,24 +570,24 @@ const BEDS = [
     minGap: 0.7,
   },
   {
-    // THE ENTRANCE BOULDERS (DESIGN.md §30): one standing stone per 460 m tile
-    // of deep wood, its longest axis upright and the burial pinned so the mouth
-    // entrances.js cuts into its face is always at the same height. `centre`
-    // jitters the one candidate within 30 m of the tile's middle, which is what
-    // puts every pair at least 400 m apart; `cover` refuses ground the biome
-    // field calls less than 0.6 forest, so a hollow is always something she
-    // has to find.
+    // THE ENTRANCE BOULDERS (DESIGN.md §30): one standing stone per 300 m tile
+    // that holds a wood, its longest axis upright and the burial pinned so the
+    // mouth entrances.js cuts into its face is always at the same height.
+    // `deep` puts the one candidate at the point of the tile furthest from
+    // open ground and refuses the tile unless that point is 50 m into the
+    // wood, so a hollow is always something she has to find. The wood is the
+    // forest law's, which runs 55 m up into what `_envAt` calls peak, so peak
+    // ground is claimed too.
     name: 'hollow',
     hollow: true,
     field: 9,
-    density: 1 / (460 * 460),
-    centre: 30,
-    cover: 0.6,
+    density: 1 / (300 * 300),
+    deep: 50,
     stand: true,
-    envDensity: { river: 0, forest: 1, cliff: 0, peak: 0 },
+    envDensity: { river: 0, forest: 1, cliff: 0, peak: 1 },
     fullRadius: 270,
     radius: 1250,
-    tile: 460,
+    tile: 300,
     minElev: 0,
     maxSlopeDeg: 20,
     allowSubmerged: false,
@@ -598,7 +599,7 @@ const BEDS = [
     sinkRange: [0.4, 0.41],
     anchor: true,
     blocks: true,
-    sizeByEnv: { forest: [8.0, 12.0] },
+    sizeByEnv: { forest: [8.0, 12.0], peak: [8.0, 12.0] },
     minGap: 0.7,
   },
   {
@@ -1066,6 +1067,8 @@ const CLUMP_GAIN = 2.2
 // 1: the stones still have to be findable. Free either way -- three multiplies per
 // rock, chosen once at placement and baked into the instance colour. §25.
 const GROUND_CUE = { river: 0.75, forest: 0.45, cliff: 0.55, peak: 0.55 }
+// What the tint row paints an entrance boulder (setHollowTint): a gain like the palette's, so it reads as purple under the ground cue and the lighting.
+const HOLLOW_TINT = new THREE.Color(2.4, 0.6, 3.4)
 
 // --- and the one bed that is not a rock standing on the ground --------------
 //
@@ -1101,6 +1104,14 @@ const FACADE_GAIN = ROCK_TILE_MEAN.map((m) => 1 / m)
 const LOD_HYSTERESIS = ROCK_LOD_HYSTERESIS
 const BUILD_BUDGET_MS = 1.5
 const PLACEMENT_CELL = 4.0
+
+// A `deep` bed's forest scan (see the hollow bed): the tile sampled every
+// STEP metres, a cell wood when the forest law keeps at least KEEP of its
+// trees, the site the cell furthest from open ground among those INSET
+// metres in from the tile's edge, and the one candidate jittered JITTER
+// metres about it. Neighbours across a tile edge are then at least
+// 2 * (INSET - JITTER) apart.
+const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7 }
 
 // THE TILE WALK IS BUCKETED BY PHASE AND A BUCKET IS WALKED ONLY WHEN ITS ANSWER
 // CAN HAVE CHANGED -- render/trees.js's STILL_M scheme, whose header argues it,
@@ -1364,20 +1375,19 @@ class RockBed {
     this.ground = ground
 
     const tile = cfg.tile
-    // A `cover` bed refuses ground the biome field calls less wooded than this,
-    // and a road; a bed without one never asks. See the hollow bed.
-    this.cover = cfg.cover ?? 0
-    if (this.cover > 0 && (!biome || typeof biome.coverAt !== 'function')) {
-      throw new Error(`RockBed ${cfg.name}: \`cover\` needs a BiomeField with coverAt`)
+    // A `deep` bed seats its one candidate at the tile's point furthest from
+    // open ground, and only if that is `deep` metres in; see `_deepSite` and
+    // the hollow bed. A bed without one never asks the biome field.
+    this.deep = cfg.deep ?? 0
+    if (this.deep > 0 && (!biome || typeof biome.coverAt !== 'function')) {
+      throw new Error(`RockBed ${cfg.name}: \`deep\` needs a BiomeField with coverAt`)
+    }
+    if (this.deep > 0 && (Math.round(tile * tile * cfg.density) !== 1 || cfg.lattice || this.deep >= tile / 2)) {
+      throw new Error(`RockBed ${cfg.name}: \`deep\` ${this.deep} m needs one candidate per tile and under half of ${tile} m`)
     }
     this.biome = biome
-    // A `centre` bed draws its one candidate within this many metres of the
-    // tile's middle rather than anywhere in it, so neighbours are at least
-    // `tile - 2 * centre` apart. Only a one-candidate tile can mean it.
-    this.centre = cfg.centre ?? 0
-    if (this.centre > 0 && (Math.round(tile * tile * cfg.density) !== 1 || cfg.lattice || this.centre >= tile / 2)) {
-      throw new Error(`RockBed ${cfg.name}: \`centre\` ${this.centre} m needs one candidate per tile and under half of ${tile} m`)
-    }
+    this._deepN = this.deep > 0 ? Math.round(tile / DEEP.step) + 1 : 0
+    this._deepDist = this.deep > 0 ? new Float32Array(this._deepN * this._deepN) : null
     // A `stand` bed takes the quarter turn that puts the shape's longest
     // measured axis upright, mirrored by the roll draw, instead of a rolled one.
     this.stand = cfg.stand ?? false
@@ -1912,6 +1922,9 @@ class RockBed {
     // `ghostsAt` counts them per departing tier against `ghostRoom`.
     this.fades = []
     this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
+    // A hollow bed keeps each boulder's own colour, so the debug tint (setTint) can be put on and taken off a standing rock.
+    this.natural = cfg.hollow ? new Float32Array(this.maxInstances * 3) : null
+    this.tint = null
     this.fadeTris = 0
     this.ghostsAt = new Int32Array(ROCK_BAND_COUNT)
 
@@ -1997,7 +2010,7 @@ class RockBed {
     this.regrows = 0
     this.regrounds = 0
     this.sited = { foot: 0, brow: 0 }
-    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, cover: 0, gap: 0, road: 0, fit: 0, pool: 0 }
+    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, deep: 0, gap: 0, road: 0, fit: 0, pool: 0 }
     this.poolDry = false
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -2208,6 +2221,79 @@ class RockBed {
     if (h > snowLine - PEAK_BELOW_SNOW) return 'peak'
     if (tan > CLIFF_TAN) return 'cliff'
     return 'forest'
+  }
+
+  /**
+   * Where a `deep` bed's one candidate goes in tile (tx, tz), or null when no
+   * point INSET metres in from its edge is `deep` metres from open ground.
+   *
+   * The tile is sampled on a DEEP.step grid; a cell is wood when the forest
+   * law (layers/forest.js, the definition trees.js and the terrain tint share)
+   * keeps at least DEEP.keep of its trees there, and it is not under water, on
+   * a road or on flattened ground. A two-pass chamfer over the grid gives
+   * every cell its distance to the nearest open cell; ground past the tile's
+   * edge is unscanned and counts as wood, so a wood that runs out of the tile
+   * is measured only to the open ground inside it. The site is the deepest
+   * inset cell, ties to the one nearest the tile's middle.
+   */
+  _deepSite(tx, tz) {
+    const n = this._deepN
+    const dist = this._deepDist
+    const tile = this.tile
+    const step = DEEP.step
+    const x0 = tx * tile, z0 = tz * tile
+    const g = this._scatter
+    let open = 0
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const x = x0 + i * step, z = z0 + j * step
+        this.field.scatterAt(x, z, PLACEMENT_CELL, g)
+        const level = this.water.levelAt(x, z)
+        const wet = level !== null && g.h < level + SHORE_RISE
+        const wood = !wet && this.layers.flattenAt(x, z) === 0 &&
+          forestKeepAt(g.h, g.tan, g.h - this.field.snowLineAt(x, z), this.biome, x, z) >= DEEP.keep
+        dist[j * n + i] = wood ? Infinity : 0
+        if (!wood) open++
+      }
+    }
+    const diag = step * Math.SQRT2
+    if (open > 0) {
+      for (let j = 0; j < n; j++) {
+        for (let i = 0; i < n; i++) {
+          const k = j * n + i
+          if (i > 0) dist[k] = Math.min(dist[k], dist[k - 1] + step)
+          if (j > 0) {
+            dist[k] = Math.min(dist[k], dist[k - n] + step)
+            if (i > 0) dist[k] = Math.min(dist[k], dist[k - n - 1] + diag)
+            if (i < n - 1) dist[k] = Math.min(dist[k], dist[k - n + 1] + diag)
+          }
+        }
+      }
+      for (let j = n - 1; j >= 0; j--) {
+        for (let i = n - 1; i >= 0; i--) {
+          const k = j * n + i
+          if (i < n - 1) dist[k] = Math.min(dist[k], dist[k + 1] + step)
+          if (j < n - 1) {
+            dist[k] = Math.min(dist[k], dist[k + n] + step)
+            if (i < n - 1) dist[k] = Math.min(dist[k], dist[k + n + 1] + diag)
+            if (i > 0) dist[k] = Math.min(dist[k], dist[k + n - 1] + diag)
+          }
+        }
+      }
+    }
+    const lo = Math.ceil(DEEP.inset / step), hi = n - 1 - lo
+    const mid = (n - 1) / 2
+    let best = -1, bestD = 0, bestC = Infinity
+    for (let j = lo; j <= hi; j++) {
+      for (let i = lo; i <= hi; i++) {
+        const d = dist[j * n + i]
+        if (d < this.deep) continue
+        const c = Math.hypot(i - mid, j - mid)
+        if (d > bestD || (d === bestD && c < bestC)) { best = j * n + i; bestD = d; bestC = c }
+      }
+    }
+    if (best < 0) return null
+    return { x: x0 + (best % n) * step, z: z0 + ((best / n) | 0) * step }
   }
 
   /**
@@ -2935,11 +3021,12 @@ class RockBed {
       // candidate sits anywhere inside its own square of the tile's grid, which
       // keeps the positions irregular while bounding the gap between them at one
       // cell. See `lattice` for why a wall wants that and a hillside does not.
-      // A `centre` bed's one candidate is jittered about the tile's middle instead.
-      const x = this.lattice ? tx * tile + ((k % gN) + rand()) * cell
-        : this.centre > 0 ? (tx + 0.5) * tile + (rand() * 2 - 1) * this.centre : (tx + rand()) * tile
-      const z = this.lattice ? tz * tile + (((k / gN) | 0) + rand()) * cell
-        : this.centre > 0 ? (tz + 0.5) * tile + (rand() * 2 - 1) * this.centre : (tz + rand()) * tile
+      // A `deep` bed's one candidate is jittered about the point its forest
+      // scan picks instead, below.
+      const ux = rand()
+      const uz = rand()
+      let x = this.lattice ? tx * tile + ((k % gN) + ux) * cell : (tx + ux) * tile
+      let z = this.lattice ? tz * tile + (((k / gN) | 0) + uz) * cell : (tz + uz) * tile
       const envRoll = rand()
       const yaw = rand() * Math.PI * 2
       // Drawn here and RESOLVED against the environment in pass two, which keeps
@@ -2975,6 +3062,18 @@ class RockBed {
       const rankU = this._rankOf(this._sizeRoll(scaleRoll))
 
       if (rankU > uNew || rankU <= uOld) continue
+
+      // The scan is paid once per tile: a `deep` bed has one candidate and a
+      // rank window admits it exactly once.
+      if (this.deep > 0) {
+        const site = this._deepSite(tx, tz)
+        if (site === null) {
+          this.rejected.deep++
+          continue
+        }
+        x = site.x + (ux * 2 - 1) * DEEP.jitter
+        z = site.z + (uz * 2 - 1) * DEEP.jitter
+      }
 
       c.x[m] = x
       c.z[m] = z
@@ -3049,12 +3148,6 @@ class RockBed {
       if (phase === 0) c.fit[k] = 0
       // A rock she carried off (hands.js) is not laid here again. Position-only, so it consumes no randoms.
       if (taken.has('rock', x, z)) continue
-      // Position-only like `taken`, so it consumes no randoms.
-      if (this.cover > 0 && (this.biome.coverAt(x, z) < this.cover || this.layers.flattenAt(x, z) > 0)) {
-        this.rejected.cover++
-        continue
-      }
-
       // THE PILE FIELD, TAKEN BEFORE ANY FIELD QUERY. `_clump` is four hashes of
       // position against a `scatterAt` at ~960 ns, so what it rejects here it
       // rejects for free, and what it rejects is exactly the ground between one
@@ -3566,6 +3659,10 @@ class RockBed {
         gain[2] * v * (1 + skew * 0.5 - warm * skew) * (k0 + gc[2] * k1)
       )
       this.batch.setColorAt(id, this._c)
+      if (this.natural) {
+        this.natural[id * 3] = this._c.r; this.natural[id * 3 + 1] = this._c.g; this.natural[id * 3 + 2] = this._c.b
+        if (this.tint) this.batch.setColorAt(id, this.tint)
+      }
 
       // WHERE THIS ROCK DISSOLVES, AND WHY IT CANNOT BE BEFORE ITS LADDER ENDS.
       //
@@ -3960,6 +4057,18 @@ class RockBed {
       }
     }
     return w
+  }
+
+  /** Flat-colour every standing boulder of a hollow bed `color` (a THREE.Color), or null for its own stone again; a rock grown later takes the same. */
+  setTint(color) {
+    if (!this.natural) throw new Error(`Rocks: setTint is for a hollow bed, not ${this.cfg.name}`)
+    this.tint = color
+    for (const t of this.tiles.values()) {
+      for (let k = 0; k < t.n; k++) {
+        const id = t.ids[k]
+        this.batch.setColorAt(id, color ?? this._c.setRGB(this.natural[id * 3], this.natural[id * 3 + 1], this.natural[id * 3 + 2]))
+      }
+    }
   }
 
   /** The walk both of the above share; `radius` is per unit of instance scale, and a stride past 4 gets the size. */
@@ -4402,8 +4511,9 @@ export class Rocks {
    *                      the same position.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
+   * @param opts.bank     buildRockBank()'s answer when the caller built it already (a room's shell shares it); built here otherwise.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4419,7 +4529,7 @@ export class Rocks {
     // NO SEED. `seed` is the world's and every bed below takes it, because where
     // the rocks land is world-seeded; the boulder ITSELF is art direction and is
     // pinned to the seed it was signed off at. See BOULDER.
-    const bank = buildRockBank()
+    if (bank === null) bank = buildRockBank()
     this.bank = bank
 
     // ONE material for every bed: every tier of every bed is a rock mesh on the
@@ -4450,7 +4560,7 @@ export class Rocks {
     // A room (DESIGN.md §30) has no hollow bed: no village inside a village.
     const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
     // The world's own biome field, for the beds that gate on cover (the hollow bed).
-    const biome = beds.some((cfg) => cfg.cover > 0) ? new BiomeField({ seed }) : null
+    const biome = beds.some((cfg) => cfg.deep > 0) ? new BiomeField({ seed }) : null
     this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome }))
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
@@ -4807,6 +4917,32 @@ export class Rocks {
       w = bed._hollowsInto(x0, z0, x1, z1, out, w, cap)
     }
     return w
+  }
+
+  /**
+   * The tint a boulder of `env`'s commonest stone wears standing at (x, z): the
+   * palette gain at the middle of the per-instance jitter, pulled toward the
+   * ground there by GROUND_CUE, as the placement rolls it. A room's shell takes
+   * this so the inside of the boulder is the stone of the boulder she walked into.
+   */
+  tintAt(x, z, env, out = new THREE.Color()) {
+    if (!(env in ENV_TINTS)) throw new Error(`Rocks.tintAt: no environment ${env}`)
+    const bed = this.beds[0]
+    const g = bed.field.scatterAt(x, z, PLACEMENT_CELL, bed._scatter)
+    const snowLine = bed.field.snowLineAt(x, z)
+    const { altLo, altSpan } = bed.field.bands
+    const gc = bed._gc
+    const layers = bed.layers
+    shade(g.h, 1 / Math.hypot(g.tan, 1), snowLine, layers.snow.band, layers.flattenAt(x, z), layers.shoreAt(x, z, g.h), altLo, altSpan, x, z, gc, 0)
+    const gain = TINT_GAIN[ENV_TINTS[env][0]]
+    const cue = GROUND_CUE[env]
+    const v = 0.86 + 0.5 * 0.3
+    return out.setRGB(gain[0] * v * (1 - cue + gc[0] * cue), gain[1] * v * (1 - cue + gc[1] * cue), gain[2] * v * (1 - cue + gc[2] * cue))
+  }
+
+  /** The critter LOD tint row's rock: every entrance boulder purple, so a village can be found from across a wood. */
+  setHollowTint(on) {
+    for (const bed of this.beds) if (bed.cfg.hollow) bed.setTint(on ? HOLLOW_TINT : null)
   }
 
   /** rayAt against the hollow beds alone, any size, each boulder at its field seating: where a ray meets an entrance boulder's own hull, the same on every client. */

@@ -12,7 +12,6 @@ import { TerrainWire } from './terrain/wire.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
-import { RoadSurfaces } from './render/road-surfaces.js'
 import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
 import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
@@ -44,10 +43,11 @@ import { Dragons } from './render/dragons.js'
 import { Entrances, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { Shell } from './render/shell.js'
+import { SHELL, buildVillage } from './rooms/village.js'
 import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
-import { bakeRockImpostor } from '../props/rock-bank.js'
+import { bakeRockImpostor, buildRockBank } from '../props/rock-bank.js'
 import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
@@ -863,7 +863,7 @@ const QUEST_TOGGLE_ROWS = [
   // -- green, yellow, orange, red, and blue for a card -- so the ladder in
   // critters.js can be confirmed by walking up to a stag and watching where it
   // changes. See THE TINT ROW in critters.js.
-  { key: 'critterTint', text: 'critter LOD tint', on: 'by tier', off: 'normal' },
+  { key: 'critterTint', text: 'critter LOD tint', on: 'by tier, entrances purple', off: 'normal' },
   // Her own body as a peer sees it, stood 2 m ahead and facing her: see placeMirror.
   { key: 'mirror', text: 'body double', on: 'shown', off: 'hidden' },
   { key: 'wind', text: 'wind' },
@@ -948,7 +948,7 @@ function applyQuestToggle(key) {
       applyAnimalVisibility()
       break
     case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'spiders': case 'wildlife': case 'snowmen': case 'leafkin': case 'dragons': applyAnimalVisibility(); break
-    case 'critterTint': setTierTint(enabled); break
+    case 'critterTint': setTierTint(enabled); rocks?.setHollowTint(enabled); break
     case 'mirror': if (enabled) placeMirror(); else peerAvatars.mirror(null); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
     // "off" is the wind's whole per-vertex cost gone and the A/B against "on" is
@@ -2215,7 +2215,6 @@ let player = null
 let walk = null
 let markers = null
 let waterSurfaces = null
-let roads = null
 let trees = null
 let ferns = null
 let grass = null
@@ -2254,10 +2253,9 @@ let rowboats = null
 let boats = null
 let dragons = null
 let entrances = null
-// A village's own (DESIGN.md §30): its huts, the boulder's inside, and the air in it; all null in the overworld.
+// A village's own (DESIGN.md §30): its huts and the boulder's inside; both null in the overworld.
 let roomProps = null
 let shell = null
-let cave = null
 // The mouth she came in by, to put her back at when she leaves.
 let cameInBy = null
 // The village doors (DESIGN.md §30): a mouth within `reach` takes her when the step just taken ends her feet within `walk` of its point heading into the face (the cosine at least `into`), or a teleport lands them within `blink`. The limiter has already refused the face, so both land on the point.
@@ -2465,16 +2463,16 @@ function buildGrass(style, cx, cz, opts = {}) {
 // the water ever rises over it, since nothing else here checks the ground.
 const SPAWN = { x: -320, z: 1367 }
 
-// The rooms she can be in (DESIGN.md §30): the overworld, and the village
-// inside a hollow boulder. Each is a set of world files under `dir`; a village
-// also has a `room.json` with its seed, its exit mouth, its shell and its huts.
+// The rooms she can be in (DESIGN.md §30): the overworld, a set of world files
+// under `dir`, and the village inside a hollow boulder, built in memory at boot
+// (rooms/village.js) from the boulder's own inside.
 const ROOMS = {
   overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false },
-  leafkin: { id: 'leafkin', dir: 'rooms/leafkin', height: 'rooms/leafkin/height.png', meta: 'rooms/leafkin/height.json', hollows: false, leafkin: false, village: true },
+  leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true },
 }
 let currentRoom = ROOMS.overworld
-// The room's own file, when it has one.
-let roomFile = null
+// What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
+let roomSpec = null
 let roomHeightmap = null
 // Counts the builds, so a bake or the sound landing after the room it was for has gone does nothing.
 let roomBuild = 0
@@ -2559,7 +2557,6 @@ async function bootWorld() {
   const isVisible = editor ? (kind, id, index) => editor.isVisible(kind, id, index) : () => true
   markers.setVisibility(isVisible)
   waterSurfaces.setVisibility(isVisible)
-  roads.setVisibility(isVisible)
 
   if (EDITOR_MODE) panel = new Panel({ layers, editor, relief, hotkeys: HOTKEYS, onTool, onAction, onRelief })
 
@@ -2635,11 +2632,11 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   for (const layer of [
     leafkin, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, grasshoppers, butterflies, crabs, frogs, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, shell, markers, roads, waterSurfaces, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   leafkin = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = grasshoppers = butterflies = crabs = frogs = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = shell = markers = roads = waterSurfaces = terrainWire = terrain = null
-  terrainTint = player = walk = height = layers = roomFile = roomHeightmap = cave = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = shell = markers = waterSurfaces = terrainWire = terrain = null
+  terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
   deskHand = null
   portalIn = null
@@ -2649,7 +2646,7 @@ function disposeRoom() {
  * The world she is leaving for another (DESIGN.md §30): black over the view,
  * every layer down, the room's files up and its stack built against them, her
  * feet ARRIVE_M out from `site` facing along its normal -- a village's own
- * exit when `site` is null, since only its file knows where that is. The
+ * exit when `site` is null, since only its own build knows where that is. The
  * clock, the backpack, the net and what her hands hold come with her; a
  * creature in a hand does not, since its layer is gone -- it goes in the
  * backpack if there is room.
@@ -2675,7 +2672,7 @@ async function bootRoom(room, site) {
   disposeRoom()
   const at = site === null ? null : { x: site.x + site.nx * ARRIVE_M, z: site.z + site.nz * ARRIVE_M }
   const { spawn } = await buildRoom(room, at)
-  const face = site ?? roomFile.exit
+  const face = site ?? roomSpec.exit
   faceAlong(face.nx, face.nz)
   restoreHeld(held)
   logSceneCensus()
@@ -2694,35 +2691,39 @@ function faceAlong(fx, fz) {
 }
 
 /**
- * The room's stack, built against its files: heightmap, layers, terrain, the
- * water and the roads, then every scatter and creature layer around `at` (or
- * the room's own spawn when `at` is null or under water), her walk surface,
- * her hands, the mouths and, in the overworld, the leafkin. Returns `{ spawn,
- * fresh }`, `fresh` when `at` was refused.
+ * The room's stack, built against its files or, for a village, against the
+ * valley built in memory: heightmap, layers, terrain, the water, then every
+ * scatter and creature layer around `at` (or the room's own spawn when `at`
+ * is null or under water), her walk surface, her hands, the mouths and, in
+ * the overworld, the leafkin. Returns `{ spawn, fresh }`, `fresh` when `at`
+ * was refused.
  */
 async function buildRoom(room, at) {
   const build = ++roomBuild
   currentRoom = room
   bootSteps.length = 0
-  bootSay(`loading <b>${room.height}</b> ...`)
-  await bootStep('heightmap')
-  const heightmap = await Heightmap.load({ url: room.height, metaUrl: room.meta })
-  roomHeightmap = heightmap
+  // ONE SEED FOR EVERY ROOM: the terrain worker seeds its own V2Height from the
+  // shared constant (terrain/worker.js), so a room seeded otherwise would draw
+  // one ground and collide with another.
+  const seed = SEED
+  let heightmap
+  // The rock bank a village's shell is cut from; the rocks share it below.
+  let bank = null
   if (room.village) {
-    const res = await fetch(`${room.dir}/room.json`)
-    if (!res.ok) throw new Error(`${room.dir}/room.json: ${res.status}`)
-    roomFile = await res.json()
-    for (const k of ['seed', 'spawn', 'exit', 'shell', 'props', 'clearing', 'fog']) if (roomFile[k] === undefined) throw new Error(`${room.dir}/room.json has no ${k}`)
-    // The air inside, in the terms sinkCave writes it: the colour as three uploads a fog colour, and as the aerial ramp's raw sRGB ends.
-    const linear = new THREE.Color(roomFile.fog.color)
-    const c = { r: 0, g: 0, b: 0 }
-    linear.getRGB(c, THREE.SRGBColorSpace)
-    cave = { linear, air: new THREE.Vector3(c.r, c.g, c.b), density: roomFile.fog.density }
+    bootSay('building the village ...')
+    await bootStep('village')
+    bank = buildRockBank()
+    shell = new Shell(scene, bank, propTextures, SHELL)
+    lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
+    roomSpec = buildVillage({ shell, house: (await loadHouseBank()).bounds })
+    heightmap = roomSpec.heightmap
   } else {
-    roomFile = null
-    cave = null
+    bootSay(`loading <b>${room.height}</b> ...`)
+    await bootStep('heightmap')
+    heightmap = await Heightmap.load({ url: room.height, metaUrl: room.meta })
+    roomSpec = null
   }
-  const seed = room.village ? roomFile.seed : SEED
+  roomHeightmap = heightmap
 
   // BEFORE the scratch V2Height, because the relief changes what `bands` says
   // and the snow defaults are derived from bands. Booting with the knobs off and
@@ -2736,18 +2737,16 @@ async function buildRoom(room, at) {
   height = new V2Height({ heightmap, layers: new Layers(), seed, relief })
   const bands = height.bands
 
-  bootSay(`loading <b>${room.dir}/layers.json</b> ...`)
   await bootStep('layers')
   const snow = snowDefaults(bands)
   let doc, from
   if (room.village) {
-    // A village's document is what its generator wrote (tools/rooms/make-village.mjs): never the editor's.
-    const res = await fetch(`${room.dir}/layers.json`)
-    if (!res.ok) throw new Error(`${room.dir}/layers.json: ${res.status}`)
-    doc = await res.json()
-    from = 'the room file'
+    // A village's document is what buildVillage drew: never the editor's.
+    doc = roomSpec.doc
+    from = 'the village build'
   } else {
-    ({ doc, from } = await persist.loadInitial(snow))
+    bootSay(`loading <b>${room.dir}/layers.json</b> ...`)
+    ;({ doc, from } = await persist.loadInitial(snow))
   }
   layers = Layers.deserialize(doc)
   height.setLayers(layers)
@@ -2788,19 +2787,13 @@ async function buildRoom(room, at) {
   // draw with a surface nobody ships. See plainTerrainRung.
   applyTerrainShader()
 
-  // The authored surfaces. Water first, because the spawn search asks it what is
-  // wet before the player is placed.
-  await bootStep('water+roads')
+  // The authored surfaces. Water before the spawn search, which asks it what is
+  // wet before the player is placed. A road draws nothing of its own: the
+  // smooth flattens the terrain to the spline and the litter cobbles it.
+  await bootStep('water')
   waterSurfaces = new WaterSurfaces({ water, layers })
-  roads = new RoadSurfaces({ scene, layers })
-  // Per-vertex, like v1's props and village and NOT like the terrain: a road is
-  // a metre-wide ribbon, so a fragment-rate shadow lookup on it buys nothing.
-  // Skipping this patch entirely is the visible failure -- the road would be the
-  // one surface the night lift never reaches, and it would glow after sunset.
-  lighting.patch(roads.material, { mode: 'vertex', cacheKey: 'v2-road' })
   markers = new Markers({ scene, layers })
   waterSurfaces.rebuild()
-  roads.rebuild()
   markers.sync()
 
   await bootStep('spawn')
@@ -2811,7 +2804,7 @@ async function buildRoom(room, at) {
     console.warn(`[v2] ${at.x.toFixed(0)}, ${at.z.toFixed(0)} is underwater; spawning fresh`)
     fresh = true
   }
-  const home = room.village ? roomFile.spawn : room.spawn
+  const home = room.village ? roomSpec.spawn : room.spawn
   const start = fresh ? home : at
   const spawn = { x: start.x, z: start.z, y: height.heightAt(start.x, start.z) }
   if (waterSurfaces.isSubmerged(spawn.x, spawn.z, spawn.y)) throw new Error(`v2: ${room.id}'s spawn (${spawn.x}, ${spawn.z}) is underwater`)
@@ -2838,7 +2831,7 @@ async function buildRoom(room, at) {
   // `batch.visible` and the beds are placed and stepped either way, so what the
   // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows })
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
@@ -2853,11 +2846,8 @@ async function buildRoom(room, at) {
   // misbehaves in the browser is actually doing, since a blink does not survive
   // into a headless traverse. See render/rocks.js.
   window.v2rocks = rocks
-  // The shell: the inside of the boulder a village is in (render/shell.js), the bank's boulder turned inside out.
-  if (room.village) {
-    shell = new Shell(scene, rocks.bank, propTextures, roomFile.shell)
-    lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
-  }
+  // The shell wears the tint a boulder placed in a wood would (render/shell.js).
+  if (shell) shell.setTint(rocks.tintAt(0, 0, 'forest'))
 
   // Fallen logs and rotten stumps. BEFORE THE TREES, on purpose: a piece is
   // metres long and claims its ground first, and the forest keeps off it
@@ -2867,7 +2857,7 @@ async function buildRoom(room, at) {
   // in the open, off the same biome field the trees read.
   await bootStep('deadwood')
   // A village is wood to its walls: full cover everywhere but the clearing.
-  const biome = room.village ? villageBiome(seed, roomFile.clearing) : new BiomeField({ seed })
+  const biome = room.village ? villageBiome(seed, roomSpec.clearing) : new BiomeField({ seed })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await loadDeadwoodBank(), biome })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
@@ -2885,12 +2875,12 @@ async function buildRoom(room, at) {
   )
   window.v2deadwood = deadwood
 
-  // The village's huts (render/room-props.js), where its file puts them, and
+  // The village's huts (render/room-props.js), where its build puts them, and
   // stone to her. Before the trees, which keep off the clearing and the huts
   // the way they keep off the dead wood.
   if (room.village) {
     await bootStep('huts')
-    roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomFile.props, clearing: roomFile.clearing })
+    roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomSpec.props, clearing: roomSpec.clearing })
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
   }
@@ -3292,7 +3282,7 @@ async function buildRoom(room, at) {
   // mouth on the face of every hollow boulder the rocks hold resident, or in a
   // village the one mouth out, where its file says.
   await bootStep('entrances')
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await loadMouthBank(), fixed: room.village ? [roomFile.exit] : null })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await loadMouthBank(), fixed: room.village ? [roomSpec.exit] : null })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
   console.log(`[v2] entrances ${entrances.stats.placed} mouths in ${entrances.placeMs.toFixed(1)} ms, refused ${JSON.stringify(entrances.stats.rejected)}`)
@@ -3351,6 +3341,7 @@ async function buildRoom(room, at) {
   trees.setCardsOnly(!questToggles.treeTiers)
   trees.setCutout(questToggles.treeCutout)
   setTierTint(questToggles.critterTint)
+  rocks.setHollowTint(questToggles.critterTint)
   applyRockVisibility()
   grass.batch.visible = questToggles.grass
   ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
@@ -3435,10 +3426,11 @@ function restoreHeld(held) {
  * is the whole reason the rect exists, and passing null here would silently
  * re-mesh the world on every drag of a river point.
  *
- * The surfaces rebuild WHOLE, and that is not an oversight: a lake is two
- * hundred triangles and a road is one per metre, so the entire authored set is
+ * The water rebuilds WHOLE, and that is not an oversight: a lake is two
+ * hundred triangles and a river is one per metre, so the entire authored set is
  * cheaper to rebuild than to diff. `rebuildOne(id)` exists for when that stops
- * being true.
+ * being true. A road has no mesh to rebuild; its surface is the terrain the
+ * rect just rebaked.
  *
  * V2Height is NOT told anything. It holds the live Layers by reference and
  * re-reads `epoch` per query, so it is already correct by the time this runs.
@@ -3450,7 +3442,6 @@ function restoreHeld(held) {
 function onDirty(rect) {
   terrain.setLayers(layers.serialize(), rect)
   waterSurfaces.rebuild()
-  roads.rebuild()
 }
 
 /**
@@ -3482,9 +3473,9 @@ function onDirty(rect) {
  *
  * WHAT IS NOT HERE. No `onDirty`: the document did not change, so there is
  * nothing to autosave, no undo entry, and no layer rebake. Water levels and
- * roads are untouched for the same reason -- both are authored surfaces at
- * authored elevations, and a lake does not move because the hillside beside it
- * grew a crag. That is deliberate rather than an oversight: relief is gated off
+ * road heights are untouched for the same reason -- both are authored
+ * elevations, and a lake does not move because the hillside beside it grew a
+ * crag. That is deliberate rather than an oversight: relief is gated off
  * flat, concave ground precisely so that it cannot walk a river out of its bed.
  * The river meshes alone are rebuilt, because the lift they carry over the far
  * terrain is measured from the ground as the `peaks` knob draws it.
@@ -3692,12 +3683,11 @@ function applyTerrainShader() {
 /**
  * A row's eye button was clicked. Nothing about the DOCUMENT changed, so this is
  * deliberately not onDirty: no rebake, no rebuild, no dirty rect, no undo entry
- * -- hiding a lake must not cost a terrain remesh. Both surface sets already
- * hold the predicate, so all that is needed is for them to re-read it.
+ * -- hiding a lake must not cost a terrain remesh. The water already holds the
+ * predicate, so all that is needed is for it to re-read it.
  */
 function onView() {
   waterSurfaces.applyVisibility()
-  roads.applyVisibility()
 }
 
 function onTool(name) {
@@ -3762,9 +3752,9 @@ async function onAction(name) {
  * Replace the whole document in place.
  *
  * `editor.loadDoc` restores INTO the live Layers rather than swapping in a new
- * instance, which is what makes this a one-liner: V2Height, WaterSurfaces,
- * RoadSurfaces and Markers all hold that same object by reference and would
- * otherwise every one of them keep editing the document that was just replaced.
+ * instance, which is what makes this a one-liner: V2Height, WaterSurfaces and
+ * Markers all hold that same object by reference and would otherwise every one
+ * of them keep editing the document that was just replaced.
  * See restore.js.
  */
 function loadDoc(doc) {
@@ -3774,7 +3764,6 @@ function loadDoc(doc) {
   // correct rather than lazy.
   terrain.setLayers(layers.serialize(), null)
   waterSurfaces.rebuild()
-  roads.rebuild()
   markers.sync()
 }
 
@@ -4307,7 +4296,7 @@ function applySky(state, head, elapsedReal) {
   // and surfacing is simply the frame where it stops overwriting.
   applySubmersion(head, elapsedReal, state)
   // The same later writer for the inside of a boulder, and the murk wins under its lake.
-  if (cave && !submerged) sinkCave()
+  if (currentRoom.village && !submerged) sinkCave()
 }
 
 // --- underwater (§11) --------------------------------------------------------
@@ -4526,22 +4515,12 @@ function sinkAir() {
   aurora.mesh.visible = false
 }
 
-// What lights a village (DESIGN.md §30): the sun and the sky lamp turned down
-// this far, so its hour is still read off the light's colour and angle.
-const CAVE = { light: 0.35, ambient: 0.5 }
-
 /**
- * The air inside a boulder, over applySky's: its own fog colour and density
- * from the room file, no sky, no stars, no aurora, and the lights dimmed. A
- * later writer like sinkAir, and it holds for the frame the same way.
+ * Inside a boulder (DESIGN.md §30): the overworld's hour, air and lights,
+ * unchanged, and no sky, stars or aurora, since the shell closes over all of
+ * them. A later writer like sinkAir, and it holds for the frame the same way.
  */
 function sinkCave() {
-  scene.fog.density = cave.density
-  scene.fog.color.copy(cave.linear)
-  lighting.setAir(cave.air)
-  scene.background.copy(cave.linear)
-  sun.intensity *= CAVE.light
-  hemi.intensity *= CAVE.ambient
   sky.mesh.visible = false
   stars.points.visible = false
   aurora.mesh.visible = false
@@ -5553,16 +5532,16 @@ function tick() {
   // means restating this hour's palette. See airHook.
   const state = clock.state()
   // A wreath she is inside is culled, and the air thickens in its place (§10). Under a roof there is no cloud and no weather.
-  if (cave) { state.cover = 0; state.precip = 0 }
-  if (wreaths) wreaths.visible = questToggles.wreaths && !cave
+  if (currentRoom.village) { state.cover = 0; state.precip = 0 }
+  if (wreaths) wreaths.visible = questToggles.wreaths && !currentRoom.village
   if (wreaths && wreaths.visible) {
     state.hazeDensity *= wreaths.hazeGain(headTmp)
     wreaths.update(headTmp, state)
   }
-  // Snow above the line, rain below, sleet across it (§10).
-  precip.update(dt, headTmp, state, height.snowLineAt(headTmp.x, headTmp.z))
   dayness = daynessOf(state)
   applySky(state, headTmp, now / 1000)
+  // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.
+  precip.update(dt, headTmp, state, height.snowLineAt(headTmp.x, headTmp.z), submerged)
   updateAmbience(dt, state)
 
   // BEFORE the render, and it must be the only caller of markers.update(): the

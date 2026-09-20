@@ -1297,7 +1297,7 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
     `${analysis.pieces} piece${analysis.pieces === 1 ? '' : 's'}` +
     `${analysis.pieces === 1 ? '' : ` (${analysis.minorFaces} faces off the main one)`} &middot; ` +
     `${analysis.uvIslands} UV island${analysis.uvIslands === 1 ? '' : 's'} &middot; ` +
-    `${analysis.lockedPoints} pinned (${Math.round((analysis.lockedPoints / analysis.points) * 100)}%) &middot; ` +
+    `${analysis.lockedPoints} pinned (${Math.round((analysis.lockedPoints / analysis.points) * 100)}%), ${analysis.rimPoints} on a rim &middot; ` +
     `${analysis.lockedFaces} unremovable faces &middot; ` +
     `quads ${Math.round(analysis.quadFraction * 100)}% &middot; ` +
     `atlas floor ${floor} tris`
@@ -1325,7 +1325,7 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
       texture: material.map ?? null,
       detail:
         `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
-        `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned &middot; ` +
+        `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned, ${t.stats.rimPoints} on a rim &middot; ` +
         `${t.stats.pieces} &rarr; ${t.stats.piecesLeft} pieces (${t.stats.piecesDropped} deleted whole) &middot; ` +
         (t.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours'
           : t.stats.uvMode === 'stretch' ? `atlas kept, ${t.stats.stretched} collapses stretched texels`

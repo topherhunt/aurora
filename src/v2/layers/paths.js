@@ -94,7 +94,7 @@ export function livePoints(rec) {
   return out
 }
 
-// A road abhors a straight: an authored leg longer than STRAIGHT_MAX is splined through extra points, one every WEND.spacing metres, each pushed sideways by WEND.amp scaled by a roll in [WEND.floor, 1] with the side alternating, so the spline meanders through the leg instead of ruling it. The endpoints never move -- a village door still opens on its road -- and a leg at or under STRAIGHT_MAX is left alone, so a hut's yard and the village's own wander (make-village.mjs) are untouched. The rolls are seeded from the leg's endpoints, so a leg keeps its wend when a point elsewhere on the road is dragged.
+// A road abhors a straight: an authored leg longer than STRAIGHT_MAX is splined through extra points, one every WEND.spacing metres, each pushed sideways by WEND.amp scaled by a roll in [WEND.floor, 1] with the side alternating, so the spline meanders through the leg instead of ruling it. The endpoints never move -- a village door still opens on its road -- and a leg at or under STRAIGHT_MAX is left alone, so a hut's yard and the village's own wander (rooms/village.js) are untouched. The rolls are seeded from the leg's endpoints, so a leg keeps its wend when a point elsewhere on the road is dragged.
 export const STRAIGHT_MAX = 24
 export const WEND = { spacing: 12, amp: 2.2, floor: 0.5 }
 
@@ -120,6 +120,22 @@ function wendRoad(pts) {
     out.push(b)
   }
   return out
+}
+
+// A road's edge is not ruled either: every baked sample's half-width is scaled by 1 + SWELL.amp * w(u), w the mean of two sines on arc length u at SWELL.long and SWELL.short metres, so the width breathes by up to a fifth either way and never more. Both sines are in every consumer at once -- the smooth, the litter's cobbles, the scatter layers' road clearance -- because they all read the samples through nearest(). The phases are seeded from the road's first point, so a road keeps its swell when a point elsewhere on it is dragged.
+export const SWELL = { amp: 0.2, long: 23.7, short: 8.9 }
+
+function swellRoad(samples) {
+  const rand = mulberry32(hash32(Math.round(samples[0] * 4), Math.round(samples[2] * 4)))
+  const phaseLong = rand() * 2 * Math.PI
+  const phaseShort = rand() * 2 * Math.PI
+  let u = 0
+  for (let i = 0; i < samples.length; i += 4) {
+    if (i > 0) u += Math.hypot(samples[i] - samples[i - 4], samples[i + 1] - samples[i - 3], samples[i + 2] - samples[i - 2])
+    const w = 0.5 * (Math.sin((u / SWELL.long) * 2 * Math.PI + phaseLong) + Math.sin((u / SWELL.short) * 2 * Math.PI + phaseShort))
+    samples[i + 3] *= 1 + SWELL.amp * w
+  }
+  return samples
 }
 
 function finite(v) {
@@ -317,7 +333,7 @@ export class PathSet {
 
   _buildRoad(rec) {
     rec.spline = new Spline(wendRoad(livePoints(rec)))
-    rec.samples = rec.spline.flatten(SAMPLE_SPACING)
+    rec.samples = swellRoad(rec.spline.flatten(SAMPLE_SPACING))
     rec.box = this._boxOf(rec)
     rec.reach = rec.box
   }

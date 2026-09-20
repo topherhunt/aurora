@@ -26,7 +26,7 @@ import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth, SAMPLE_SPACING, STRAIGHT_MAX, WEND } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth, SAMPLE_SPACING, STRAIGHT_MAX, WEND, SWELL } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
 import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
@@ -666,15 +666,15 @@ export async function run() {
     // Sloping ground, so "returns the spline y" is a real claim and not a coincidence of a flat fixture.
     const ground = (x, z) => 100 + 0.35 * z + 0.02 * x
 
-    // The centreline wends (WEND), so the carriageway is wherever nearest() says it is, not a band about z = 0.
+    // The centreline wends (WEND) and the width swells (SWELL), so the carriageway is wherever nearest() says it is, not a band about z = 0.
     let worstOn = 0
     let onCount = 0
     for (let s = 0; s <= 200; s++) {
       const x = -400 + (s / 200) * 800
       for (let n = -10; n <= 10; n++) {
-        const z = (n / 10) * (HW + WEND.amp)
+        const z = (n / 10) * (HW * (1 + SWELL.amp) + WEND.amp)
         const road = paths.nearest(x, z, 'road')
-        if (road === null || road.dist > HW) continue
+        if (road === null || road.dist > road.halfWidth) continue
         onCount++
         worstOn = Math.max(worstOn, Math.abs(paths.smoothRoads(x, z, ground(x, z)) - 100))
       }
@@ -682,18 +682,55 @@ export async function run() {
     console.log(`        carriageway half-width ${HW} m over ground sloping 0.35 m/m: worst deviation from the spline y ${worstOn.toExponential(2)} m over ${onCount} points`)
     check(onCount > 1500 && worstOn < 0.01, 'the road surface is within 1 cm of the spline y everywhere inside the half-width', `worst ${worstOn.toExponential(2)} m over ${onCount} points`)
 
+    // The shoulder is measured across the road at x = 0, where the half-width is whatever the swell put there.
+    const hw0 = paths.nearest(0, 0, 'road').halfWidth
     const at = (d) => paths.smoothRoads(0, d, ground(0, d))
-    const jumpInner = Math.abs(at(HW - 1e-5) - at(HW + 1e-5))
-    const jumpOuter = Math.abs(at(HW + FEATHER - 1e-5) - at(HW + FEATHER + 1e-5))
+    const jumpInner = Math.abs(at(hw0 - 1e-5) - at(hw0 + 1e-5))
+    const jumpOuter = Math.abs(at(hw0 + FEATHER - 1e-5) - at(hw0 + FEATHER + 1e-5))
     check(jumpInner < 1e-3 && jumpOuter < 1e-3, 'the shoulder is C0 across both feather boundaries', `${jumpInner.toExponential(1)} m at the kerb, ${jumpOuter.toExponential(1)} m at the toe`)
 
-    check(at(HW + FEATHER + 1) === ground(0, HW + FEATHER + 1), 'beyond the feather the road leaves the terrain exactly alone')
+    check(at(hw0 + FEATHER + 1) === ground(0, hw0 + FEATHER + 1), 'beyond the feather the road leaves the terrain exactly alone')
 
     // Smoothstep, not a linear ramp: a linear shoulder has a nonzero slope at the toe and that crease runs the whole length of the road.
     const shoulderSlope = (d) => (at(d + 1e-4) - at(d - 1e-4)) / 2e-4
-    const toe = shoulderSlope(HW + FEATHER - 1e-3)
-    const outside = shoulderSlope(HW + FEATHER + 1e-3)
+    const toe = shoulderSlope(hw0 + FEATHER - 1e-3)
+    const outside = shoulderSlope(hw0 + FEATHER + 1e-3)
     check(Math.abs(toe - outside) < 0.05, 'the shoulder meets the terrain tangentially (smoothstep, not a linear ramp)', `slope ${toe.toFixed(4)} vs ${outside.toFixed(4)}`)
+  }
+
+  console.log('\npaths: a road swells and narrows')
+  {
+    const W = 6
+    const paths = new PathSet([{ id: 'd1', kind: 'road', feather: 8, pts: [[-300, 100, 0, W], [300, 100, 0, W]] }])
+    paths.nearest(0, 0)
+    const s = paths.paths.get('d1').samples
+    let lo = Infinity
+    let hi = -Infinity
+    let sum = 0
+    let worstStep = 0
+    for (let i = 0; i < s.length; i += 4) {
+      const hw = s[i + 3] / (W / 2)
+      lo = Math.min(lo, hw)
+      hi = Math.max(hi, hw)
+      sum += hw
+      if (i > 0) worstStep = Math.max(worstStep, Math.abs(s[i + 3] - s[i - 1]))
+    }
+    const mean = sum / (s.length / 4)
+    console.log(`        a ${W} m road over 600 m: half-width ${(lo * 100).toFixed(0)}% to ${(hi * 100).toFixed(0)}% of authored, mean ${(mean * 100).toFixed(1)}%, steepest change ${worstStep.toFixed(3)} m per sample`)
+    check(lo >= 1 - SWELL.amp - 1e-9 && hi <= 1 + SWELL.amp + 1e-9, `the width never leaves +/- ${SWELL.amp * 100}% of the authored width`, `${(lo * 100).toFixed(1)}% .. ${(hi * 100).toFixed(1)}%`)
+    check(lo < 1 - SWELL.amp * 0.8 && hi > 1 + SWELL.amp * 0.8, 'and over 600 m it reaches most of both extremes', `${(lo * 100).toFixed(1)}% .. ${(hi * 100).toFixed(1)}%`)
+    check(Math.abs(mean - 1) < 0.03, 'the authored width is the mean, not the maximum', `${(mean * 100).toFixed(1)}%`)
+    // The two sines' summed peak slope, per sample: a change steeper than that is a notch the sines did not draw.
+    const steepest = (W / 2) * SWELL.amp * Math.PI * (1 / SWELL.long + 1 / SWELL.short) * SAMPLE_SPACING
+    check(worstStep <= steepest, 'the swell is gradual across neighbouring samples, a breath and not a notch', `${worstStep.toFixed(3)} m per ${SAMPLE_SPACING} m, the sines allow ${steepest.toFixed(3)}`)
+
+    const again = new PathSet([{ id: 'd1', kind: 'road', feather: 8, pts: [[-300, 100, 0, W], [300, 100, 0, W], [300, 100, 200, W]] }])
+    again.nearest(0, 0)
+    const s2 = again.paths.get('d1').samples
+    // The first half of the samples: the added point reshapes the last spline segment before the old end, not the run up to it.
+    let same = true
+    for (let i = 0; i < s.length / 2 && same; i += 4) same = s2[i + 3] === s[i + 3]
+    check(same, 'the swell is seeded from the first point, so extending the far end leaves the near widths as they were')
   }
 
   console.log('\npaths: a road abhors a straight')

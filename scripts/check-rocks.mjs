@@ -2132,11 +2132,11 @@ console.log('\nscatter')
         // positive form of that one.
         // `shoreOnly` is `footOnly` for the waterline, and none of these four
         // worlds has one -- the `bank` world below is where that bed has to
-        // actually place. And a `cover` bed asks the biome field, which these
+        // actually place. And a `deep` bed asks the biome field, which these
         // uniform worlds do not author -- the hollow bed's own block below is
         // where it has to actually place.
         const tooFlat = bed.minSlopeTan > worlds[env].beds[0].field.scatterAt(0, 0, 4, { h: 0, tan: 0 }).tan
-        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || bed.cfg.cover > 0 || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
+        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || bed.cfg.deep > 0 || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
         if (!declined && claims !== placed > 0) wrong.push(`${bed.cfg.name}/${env}`)
         census.push(`${bed.cfg.name[0]}/${env} ${claims ? placed : '-'}`)
       }
@@ -2167,12 +2167,13 @@ console.log('\nscatter')
 
   // --- the hollow bed: the entrance boulders (DESIGN.md §30) --------------
   //
-  // One standing stone per 460 m tile of deep wood, so what is promised is
-  // the SPACING (400 m by construction, `tile - 2 * centre`), the STANCE (the
-  // boulder's longest axis upright, so the mouth's face is a wall and not a
-  // roof) and a pinned burial (never squashed, so the face is the hull's own).
-  // The forest disc is uniform ground, so what thins it here is the biome
-  // field alone, and the `cover` counter is what says that gate ran.
+  // One standing stone per 300 m tile with a wood in it, so what is promised
+  // is the SPACING (100 m by construction: the site is at least 60 m in from
+  // the tile's edge and jittered 7), the STANCE (the boulder's longest axis
+  // upright, so the mouth's face is a wall and not a roof) and a pinned burial
+  // (never squashed, so the face is the hull's own). The forest disc is
+  // uniform ground, so what thins it here is the biome field alone, and the
+  // `deep` counter is what says that scan ran.
   {
     const bed = forestRocks.beds.find((b) => b.cfg.name === 'hollow')
     const rows = []
@@ -2183,13 +2184,13 @@ console.log('\nscatter')
       }
     }
     check(rows.length >= 2, 'the wood grows hollows, one per deep-forest tile',
-      `${rows.length} in the disc, ${bed.rejected.cover} refused by the cover field`)
-    check(bed.rejected.cover > 0, 'and the cover field refused some', `${bed.rejected.cover} refused`)
+      `${rows.length} in the disc, ${bed.rejected.deep} tiles without a wood deep enough`)
+    check(bed.rejected.deep > 0, 'and the forest scan refused some tiles', `${bed.rejected.deep} refused`)
     let closest = Infinity
     for (let i = 0; i < rows.length; i++) {
       for (let j = i + 1; j < rows.length; j++) closest = Math.min(closest, Math.hypot(rows[i].x - rows[j].x, rows[i].z - rows[j].z))
     }
-    check(closest >= 400, 'no two hollows within 400 m of each other', `closest pair ${closest.toFixed(0)} m`)
+    check(closest >= 100, 'no two hollows within 100 m of each other', `closest pair ${closest.toFixed(0)} m`)
     // The matrix's first column is the boulder's own width axis in the world;
     // stood up, it points along Y.
     const e = bed.instM

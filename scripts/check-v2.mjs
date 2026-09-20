@@ -16,7 +16,7 @@
 //
 // Ordering is not cosmetic. §18's field composes coarse -> detail -> layers ->
 // LOD -> surfaces -> editing, and a failure upstream makes every downstream
-// number meaningless. Reporting "the road surface is 8 cm off the terrain" is
+// number meaningless. Reporting "the river surface is 8 cm off the bed" is
 // noise when the heightmap underneath it decoded wrong, so the run stops at the
 // first section that throws rather than collecting a screenful of consequences.
 
@@ -173,11 +173,12 @@ function hostWiring() {
     out.push('src/v2/main.js transforms water.group -- the water shader reads world position off modelMatrix and the waves would detach from the world')
   }
 
-  // road-surfaces.js: without this the road is the only surface the night lift
-  // and the horizon shadow never reach, and it reads as the brightest thing on
-  // the hillside after sunset.
-  if (!/lighting\.patch\(\s*roads\.material,\s*\{\s*mode:\s*'vertex'/.test(src)) {
-    out.push("src/v2/main.js does not lighting.patch(roads.material, {mode: 'vertex'}) -- the road would stay lit after dark")
+  // A road draws no surface of its own: the smooth flattens the terrain to the
+  // spline and the litter cobbles it. A ribbon drawn over that is a decal that
+  // has to be lifted clear of the ground it sits on, and it was the "flat
+  // triangles along the road" bug when it forgot its index.
+  if (/road-surfaces|RoadSurfaces|\broads\s*=\s*new\b/.test(src)) {
+    out.push('src/v2/main.js draws a road surface -- the road is the flattened terrain plus the litter cobbles, nothing on top')
   }
 
   // The eye toggle in the panel's layer list is EDITOR-LOCAL state -- Layers has
@@ -185,7 +186,7 @@ function hostWiring() {
   // told how to read it. Miss one and hiding a lake takes its handles away and
   // leaves the water sitting there, which reads as "the toggle sometimes works"
   // and is exactly the bug this check was written after.
-  for (const target of ['markers', 'waterSurfaces', 'roads']) {
+  for (const target of ['markers', 'waterSurfaces']) {
     if (!new RegExp(`\\b${target}\\.setVisibility\\s*\\(`).test(src)) {
       out.push(`src/v2/main.js never calls ${target}.setVisibility() -- the panel's hide toggle would silently do nothing to that layer`)
     }
@@ -256,7 +257,7 @@ const SECTIONS = [
   ['check-v2-layers.mjs', 'layers -- snow line interpolation, river level and carve, dirty-rect rebake, culling rate'],
   ['check-v2-quadtree.mjs', 'quadtree -- split rule, depth ladder, slot pool high-water mark'],
   ['check-v2-terrain.mjs', 'streaming -- key packing, dirty-rect invalidation, fallback walks, eviction'],
-  ['check-v2-surfaces.mjs', 'surfaces -- lake discs, river ribbons, road ribbons against the carved ground'],
+  ['check-v2-surfaces.mjs', 'surfaces -- lake discs and river ribbons against the carved ground, roads flattened into it'],
   ['check-v2-edit.mjs', 'edit -- tool state machine, undo, document round trip'],
 ]
 

@@ -81,7 +81,7 @@ Local shadows get the same treatment: a compile flag, its own row in the headset
 
 ## Coverage: which surfaces receive
 
-The patch already reaches every surface that matters, and in the right mode. Terrain is fragment mode. Props, the village and **roads** are vertex mode -- `road-surfaces.js:41` builds a plain `MeshLambertMaterial` but its doc comment requires the caller to run `lighting.patch(roads.material, { mode: 'vertex', cacheKey: 'v2-road' })`, with the reason stated: fragment mode "costs a horizon-map tap per fragment to buy a shadow edge that a road at 2 m sample spacing has nowhere to put." That is the same argument this proposal makes, already settled for one surface.
+The patch already reaches every surface that matters, and in the right mode. Terrain is fragment mode; props and the village are vertex mode, because a fragment-rate horizon-map tap buys a shadow edge that geometry sampled every couple of metres has nowhere to put. A road has no surface of its own (it is the flattened terrain plus the litter's cobbles), so it takes the terrain's own shadows. That is the same argument this proposal makes, already settled for the props.
 
 So local shadows inherit the coverage rather than re-establishing it. **Water is the exception** -- `src/water.js` carries its own shader and is outside the patch, which is correct for now.
 

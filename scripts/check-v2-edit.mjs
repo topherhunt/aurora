@@ -23,6 +23,7 @@
 //
 //   node scripts/check-v2-edit.mjs
 
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { WORLD_SIZE } from '../src/v2/config.js'
@@ -411,6 +412,56 @@ function sectionHandles() {
   check(idx === 3 && compacting[idx][0] === wantCompact.x, 'the same rebind is correct against a list that splices instead', `#4 -> #${idx}`)
 }
 
+// --- section 5b: one width for the whole road --------------------------------
+//
+// The panel's whole-road "width" row is Editor._setRoadWidth, which cannot be
+// built here (it needs a scene), so what runs is the same write it makes: every
+// handle of the road through Layers.setPathWidth. The failure it guards is a
+// width that reaches some points and not others -- a tombstoned slot is not a
+// handle and must be skipped, and the swell is the ONLY thing that may leave
+// the walked half-width off w/2 afterwards.
+function sectionRoadWidth() {
+  console.log('\none width for the whole road')
+
+  const layers = fixtureLayers()
+  layers.removePathPoint('d1', 2)
+  const before = livePoints(layers.paths.paths.get('d1')).map((p) => p[3])
+  check(new Set(before).size === before.length, 'the fixture road starts with a different width at every point', before.join(', '))
+
+  const w = 5
+  const epoch = layers.epoch
+  for (const h of layers.paths.handlesOf('d1')) layers.setPathWidth('d1', h, w)
+  const rec = layers.paths.paths.get('d1')
+  const after = livePoints(rec).map((p) => p[3])
+  check(after.length === 4 && after.every((x) => x === w), 'every live point takes the new width', after.join(', '))
+  check(rec.pts[2] === null, 'and the tombstoned point stays a tombstone rather than being revived by the write')
+  check(layers.epoch > epoch, 'the write bumps the epoch so the smooth rebakes', `${epoch} -> ${layers.epoch}`)
+
+  // Along the road the swell is all that is left of the old widths: within a
+  // fifth of w/2 everywhere, and not the flat w/2 of an unswelled bake.
+  let lo = Infinity, hi = -Infinity
+  for (let i = 3; i < rec.samples.length; i += 4) {
+    lo = Math.min(lo, rec.samples[i])
+    hi = Math.max(hi, rec.samples[i])
+  }
+  check(lo >= (w / 2) * 0.8 - 1e-9 && hi <= (w / 2) * 1.2 + 1e-9, 'the baked half-width is w/2 within the swell band along the whole road', `${lo.toFixed(3)}..${hi.toFixed(3)} against ${w / 2}`)
+  check(hi - lo > (w / 2) * 0.1, 'and it is swelled, not ruled', `${(hi - lo).toFixed(3)} m of play`)
+
+  // The editor's write is the loop above; make sure it has not been narrowed to
+  // the selected point or the first handle.
+  const src = readFileSync(new URL('../src/v2/edit/editor.js', import.meta.url), 'utf8')
+  const start = src.indexOf('_setRoadWidth(id, w')
+  const body = src.slice(start, src.indexOf('_setPathPoint(sel, patch', start))
+  check(/for \(const h of this\.layers\.paths\.handlesOf\(id\)\) this\.layers\.setPathWidth\(id, h, w\)/.test(body), 'Editor._setRoadWidth writes the width to every handle of the road')
+  // The panel's fields are unclamped by design and PathSet.setWidth throws on
+  // 0, so a typed 0 reached the layer and took the route down. Both width
+  // setters floor first now; the check is that the floor sits before the write.
+  check(body.indexOf('w = clampWidth(w)') !== -1 && body.indexOf('w = clampWidth(w)') < body.indexOf('setPathWidth('), 'and floors a typed width before the layer sees it, since the layer throws on 0')
+  const point = src.slice(src.indexOf('_setPathPoint(sel, patch'), src.indexOf('dispose() {'))
+  check(/setPathWidth\(sel\.id, sel\.index, patch\.width === null \? null : clampWidth\(patch\.width\)\)/.test(point), 'a per-point width is floored the same way, and a river node can still clear its width to null')
+  check(/label: mixed \? 'width \(mixed\)' : 'width'/.test(src), 'and the status row says so when the points disagree, since the number shown is then nobody\'s width')
+}
+
 // --- section 6: splitting a spline segment -----------------------------------
 //
 // The right-click "split before / split after" arithmetic. What makes it worth
@@ -617,6 +668,7 @@ export async function run() {
   sectionHistory()
   sectionRestore()
   sectionHandles()
+  sectionRoadWidth()
   sectionSplit()
   sectionPick()
   console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)

@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // THE LEAFKIN: one per village entrance (render/entrances.js), a metre tall,
-// bumbling about its own ROAM_M of wood for mushrooms and bolting home the
-// moment she comes near. DESIGN.md §30 has the whole of it; here is the state
-// machine and how it is stepped.
+// scurrying about its own ROAM_M of wood for mushrooms, chattering as it goes,
+// and bolting home the moment she comes near. DESIGN.md §30 has the whole of
+// it; here is the state machine and how it is stepped.
 //
 // It steps on the score's fixed ticks (sim/score.js stepTo) of world time,
 // every roll off a PRNG seeded from its site and its spawn tick, so two
@@ -11,10 +11,11 @@
 // resident (entrances.js RADIUS_M, past its whole roam) and drawn only within
 // critterTier's cull, some 36 m for a metre of body.
 //
-//   roam     a target inside the site's disc every RETARGET_S, walked
-//            (run-carry with a bundle) on a heading that random-walks about
-//            the bearing, so the path arcs and doubles; a refused probe turns
-//            it away, REFUSALS in a row pick a new target; a cap within SEEK_M ->
+//   roam     a target inside the site's disc every RETARGET_S, run (run-carry
+//            with a bundle -- it never walks) on a heading that random-walks
+//            about the bearing, so the path arcs and doubles; a refused probe
+//            turns it away, REFUSALS in a row pick a new target; a cap within
+//            SEEK_M ->
 //   gather   run to the cap, the gather clip, and at its key the cap is taken
 //            (mushrooms.take) into the bundle (hands.js carry, CARRY_MAX);
 //            then the next cap in reach, else roam.
@@ -22,7 +23,8 @@
 //            bundle scattered, a scream, STARTLE_S; then
 //   flee     run at the mouth, a refused step sliding along the obstacle;
 //            gone within HOME_M of the mouth, or out past its own cull.
-//   gone     the site is empty EMPTY_S, then refilled only with her inside ROAM_M.
+//   gone     the site is empty EMPTY_S, then refilled only with her inside
+//            ROAM_M -- at a random point of the disc, SPAWN_CLEAR_M from her.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -34,16 +36,18 @@ import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './
 import { loadBipedGlb } from './snowmen.js'
 
 export const LOD_TIERS = LOD_RUNGS
-// Resident sites at 400 m spacing within the entrances' radius, and how many can be within the cull at once: two villages' leafkin can meet at the edge of both roams.
-export const MAX = 8
+// Resident sites within the entrances' radius (400 m, on a 300 m tiling: at most 16) each keep a leafkin once she has passed within its roam; how many can be within the cull at once, where two villages' leafkin can meet.
+export const MAX = 16
 export const PUPPETS = 4
 
 // A metre tall, give or take this fraction, from the site.
 export const SIZE_M = 1
 export const SIZE_VAR = 0.15
-// The disc about the mouth it roams and is spawned for, and a new target every so often.
-export const ROAM_M = 200
+// The disc about the mouth it roams, is spawned for and spawns in, a new target every so often, and how far from her feet a spawn lands so it is never seen to appear.
+export const ROAM_M = 100
 export const RETARGET_S = [5, 15]
+export const SPAWN_CLEAR_M = 15
+const SPAWN_TRIES = 12
 // The heading's wander about the bearing: a damped swing with this period, driven by noise of this much (rad/s^2), clamped at this far off. A random walk would hold one offset the length of a leg and walk it straight.
 export const WOBBLE_PERIOD_S = 4
 export const WOBBLE_DRIVE = 10
@@ -72,7 +76,7 @@ const REFUSALS = 10
 // A fleeing body's way round what blocks the straight line home: the perpendicular, then the back-quarter, on the side it is already sliding to.
 const SLIDES = [Math.PI / 2, (3 * Math.PI) / 4]
 // Chatter while it roams, whimpers while it flees.
-export const CHATTER_S = [4, 12]
+export const CHATTER_S = [1.5, 4]
 export const WHIMPER_S = [2, 5]
 export const CHATTERS = 4
 // A gait step, extended in place when it runs out; the chest, as a fraction of the body, where the bundle rides.
@@ -80,7 +84,7 @@ const STEP_S = 2
 const CHEST = 0.5
 const FADE_S = 0.25
 
-export const CLIPS = ['idle', 'walk', 'run', 'run-carry', 'gather', 'recoil']
+export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
 // The clips whose feet stay put (puppet.js FootIK): a recoil steps back, a gait walks.
 export const PLANTED = new Set(['idle', 'gather'])
 
@@ -245,10 +249,20 @@ export class Leafkin {
     c.rand = mulberry32(hash32(keyHash(site.key), tick))
     c.size = SIZE_M * (1 + SIZE_VAR * (2 * mulberry32(keyHash(site.key))() - 1))
     c.k = c.size / this.asset.height
-    c.x = c.px = site.x
-    c.z = c.pz = site.z
-    c.y = c.py = this.walk.heightAt(site.x, site.z)
-    c.heading = c.ph = c.aim = Math.atan2(-site.nz, site.nx)
+    // Somewhere in the disc it can stand, clear of her; every try burns the same draws, and none passing it is at the mouth.
+    let x = site.x, z = site.z, y = null
+    for (let i = 0; i < SPAWN_TRIES; i++) {
+      const r = ROAM_M * Math.sqrt(c.rand())
+      const a = c.rand() * Math.PI * 2
+      const sx = site.x + r * Math.cos(a), sz = site.z + r * Math.sin(a)
+      if (y !== null || Math.hypot(sx - this.feet.x, sz - this.feet.z) < SPAWN_CLEAR_M) continue
+      const sy = this.seat(sx, sz)
+      if (sy !== null) { x = sx; z = sz; y = sy }
+    }
+    c.x = c.px = x
+    c.z = c.pz = z
+    c.y = c.py = y ?? this.walk.heightAt(x, z)
+    c.heading = c.ph = c.aim = c.rand() * Math.PI * 2
     c.wob = c.wobv = 0
     c.bundle = 0
     c.carrier = null
@@ -295,7 +309,7 @@ export class Leafkin {
     c.detour = 0
     c.voice = between(c.rand, CHATTER_S)
     this._target(c)
-    this._play(c, c.bundle > 0 ? 'run-carry' : 'walk', STEP_S)
+    this._play(c, c.bundle > 0 ? 'run-carry' : 'run', STEP_S)
   }
 
   _target(c) {

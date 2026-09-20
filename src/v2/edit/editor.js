@@ -100,12 +100,14 @@ const DOUBLE_CLICK_MS = 350
 // at (HANDLE_TAN in markers.js), which is what keeps this from feeling magnetic.
 const HANDLE_PICK_PX = 10
 
-// Floors for SCALE drags, and only for scale drags. Neither layer needs them --
-// SnowField takes any radius > 0 and a path any width > 0 -- but a scale gizmo
-// is MULTIPLICATIVE, and a factor that is allowed to reach zero cannot be
-// dragged back out: the size it was scaling is gone. Same reason MIN_LAKE_RADIUS
-// exists in lake-transform.js. The panel's own numeric fields keep their own
-// bounds and are not affected.
+// Floors for SCALE drags. Neither layer needs them -- SnowField takes any
+// radius > 0 and a path any width > 0 -- but a scale gizmo is MULTIPLICATIVE,
+// and a factor that is allowed to reach zero cannot be dragged back out: the
+// size it was scaling is gone. Same reason MIN_LAKE_RADIUS exists in
+// lake-transform.js. A width TYPED into the panel is floored to the same value
+// (clampWidth below): the panel's fields are unclamped by design, and a 0 the
+// layer refuses would otherwise throw out of an onchange and take the route
+// down with it.
 const MIN_SNOW_RADIUS = 10
 const MIN_PATH_WIDTH = 0.5
 
@@ -151,6 +153,8 @@ const PATH_WIDTH = { river: 8, road: 6 } // metres of real river and real road; 
 // swept spline is the right primitive at all.
 const PATH_WIDTH_MAX = 64
 
+const clampWidth = (w) => Math.min(PATH_WIDTH_MAX, Math.max(MIN_PATH_WIDTH, w))
+
 // The preview polyline is lifted off the ground so it is not in a z-fight with
 // the terrain it traces. 0.4 m is under a step and over any LOD disagreement.
 const PREVIEW_LIFT = 0.4
@@ -175,7 +179,7 @@ export class Editor {
     // invisible: every button still works, the hidden set still fills up, and
     // the only symptom is that hiding an object does not hide it -- which is
     // the bug this argument was added to fix.
-    if (typeof onView !== 'function') throw new Error('Editor: onView() is required -- it is how a visibility change reaches the water and road surfaces')
+    if (typeof onView !== 'function') throw new Error('Editor: onView() is required -- it is how a visibility change reaches the water surfaces')
     if (typeof orbitLock !== 'function') throw new Error('Editor: orbitLock(bool) is required')
     if (typeof layers.takeDirtyRect !== 'function') throw new Error('Editor: layers does not look like a v2 Layers')
     if (typeof markers.hitTest !== 'function') throw new Error('Editor: markers does not look like a v2 Markers')
@@ -1051,7 +1055,7 @@ export class Editor {
       // field beside it. There is no per-point scale in the document to write,
       // so the scale drag lands on the width, which is the only size a point
       // has -- and on a river node that had none, the drag is what sets one.
-      const w = Math.min(PATH_WIDTH_MAX, Math.max(MIN_PATH_WIDTH, this._dragBase.width * this._scaleFactor()))
+      const w = clampWidth(this._dragBase.width * this._scaleFactor())
       if (w !== pt.width) this.layers.setPathWidth(sel.id, sel.index, w)
     }
     this._touch()
@@ -1230,12 +1234,22 @@ export class Editor {
     const path = this._path(sel.id)
     const live = this._pathCount(sel.id)
     if (sel.index === null) {
-      return [
+      const rows = [
         { label: sel.kind, value: path.id },
         { label: 'points', value: live },
         { label: 'depth', value: path.depth, unit: 'm' },
         { label: 'feather', value: path.feather, unit: 'm' },
       ]
+      if (sel.kind === 'road') {
+        // One width for the whole road, written to every point. Shown as the
+        // mean when the points disagree, and labelled so, since the number in
+        // the box is then nobody's width until it is typed.
+        const widths = this.layers.paths.handlesOf(sel.id).map((h) => this._pathPoint(sel.id, h).width)
+        const mean = widths.reduce((a, b) => a + b, 0) / widths.length
+        const mixed = widths.some((w) => w !== widths[0])
+        rows.push({ label: mixed ? 'width (mixed)' : 'width', value: mean, step: 0.5, min: MIN_PATH_WIDTH, max: PATH_WIDTH_MAX, unit: 'm', set: (v, c) => this._setRoadWidth(sel.id, v, c) })
+      }
+      return rows
     }
     const p = this._pathPoint(sel.id, sel.index)
     // The handle is an index into pts INCLUDING tombstones and the count is
@@ -1393,10 +1407,18 @@ export class Editor {
     this._after(commit)
   }
 
+  /** Every live point of a road takes width `w`, floored: the whole-road field in status(). */
+  _setRoadWidth(id, w, commit = true) {
+    if (this._path(id).kind !== 'road') throw new Error(`Editor._setRoadWidth: ${id} is not a road`)
+    w = clampWidth(w)
+    for (const h of this.layers.paths.handlesOf(id)) this.layers.setPathWidth(id, h, w)
+    this._after(commit)
+  }
+
   _setPathPoint(sel, patch, commit = true) {
     const p = this._pathPoint(sel.id, sel.index)
     const river = this._path(sel.id).kind === 'river'
-    if ('width' in patch) this.layers.setPathWidth(sel.id, sel.index, patch.width)
+    if ('width' in patch) this.layers.setPathWidth(sel.id, sel.index, patch.width === null ? null : clampWidth(patch.width))
     if ('x' in patch || 'y' in patch || 'z' in patch) {
       const at = this._clampXZ('x' in patch ? patch.x : p.x, 'z' in patch ? patch.z : p.z)
       this.layers.movePathPoint(sel.id, sel.index, at.x, river ? null : 'y' in patch ? patch.y : p.y, at.z)

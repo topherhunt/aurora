@@ -851,7 +851,8 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   run(amb, 1, {})
   const screams = engine.plays.filter((p) => p.name === 'leafkinScream')
   check(screams.length === 1 && screams[0].at.x === HEAD.x + 4, 'a scream said 4 m off is fired once, from there', `${screams.length}`)
-  check(screams.every((p) => within(p.gain, V.level * (V.near / 4) * V.gain[0], V.level * (V.near / 4) * V.gain[1])), 'at the voice level over its distance')
+  const fall = V.near / Math.max(V.near, 4)
+  check(screams.every((p) => within(p.gain, V.level * fall * V.gain[0], V.level * fall * V.gain[1])), 'at the voice level over its distance')
   check(count(engine, 'leafkinChatter2') === 0 && said.length === 0, `chatter past ${V.reach} m is not heard, and the layer is drained either way`)
   const near = { x: HEAD.x + 2, y: HEAD.y, z: HEAD.z, size: 1, clip: 'run-carry', cycle: 0.7, speed: 1, pant: true }
   const far = { x: HEAD.x, y: HEAD.y, z: HEAD.z + 5, size: 1, clip: 'idle', cycle: 3.2, speed: 0, pant: true }

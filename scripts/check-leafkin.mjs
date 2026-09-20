@@ -6,8 +6,9 @@
 // ladder over one skeleton, the whole human library with gather and run-carry
 // in it, the biped extras, a bind pose on y = 0 facing +X. Then one leafkin on
 // a flat field with a stand-in mouth, stand-in caps and the real hands: it is
-// spawned only with her inside its roam; its roam stays in the disc and never
-// beelines; a cap in reach is taken at the gather's key into the bundle, which
+// spawned only with her inside its roam, somewhere in the disc clear of her;
+// its roam is run, never walked, stays in the disc and never beelines, and it
+// chatters as it goes; a cap in reach is taken at the gather's key into the bundle, which
 // fills at five; her feet within three metres scatter exactly the bundle and
 // send it home, sliding round a wall on the way, and past its own cull it is
 // gone the same; the village stays empty 300 s and refills only with her in
@@ -17,10 +18,10 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, SEEK_M, REACH_M, GATHER_KEY,
-  STARTLE_M, STARTLE_S, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S,
+  STARTLE_M, STARTLE_S, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S, SPAWN_CLEAR_M,
 } from '../src/v2/render/leafkin.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
-import { CRITTER_GLB, critterTier, cullRange } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, TIER_TINTS, critterTier, cullRange, setTierTint } from '../src/v2/render/critters.js'
 import { TICK_S, tickOf } from '../src/sim/score.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
@@ -199,6 +200,8 @@ function run(w, t, seconds, feet, each = null) {
   return t
 }
 const one = (w) => w.byKey.values().next().value
+/** A spawned leafkin moved onto the mouth point, for the tests that set caps and walls about it. */
+const atMouth = (c) => { c.x = c.px = 0; c.z = c.pz = 0; return c }
 
 // --- construction ---------------------------------------------------------------
 console.log('\nconstruction')
@@ -225,14 +228,24 @@ console.log('\nthe spawn')
   const w = make()
   let t = run(w, T0, 1, FAR)
   check(w.byKey.size === 0 && w.spawned === 0, `her feet ${FAR.x} m off, the village sends nobody out`)
-  const near = { x: 150, y: GROUND, z: 0 }
+  const near = { x: 80, y: GROUND, z: 0 }
   w.update(near, head(near), t += 1 / 60, 1 / 60)
   const c = one(w)
-  check(w.byKey.size === 1 && c && c.x === 0 && c.z === 0 && c.y === GROUND, `inside ${ROAM_M} m, a leafkin stands at the mouth point`, c && `${fmt(c.x)}, ${fmt(c.z)}`)
-  check(c && Math.abs(swing(c.heading, 0)) < 1e-9, 'facing out along the mouth\'s normal', c && `${fmt(c.heading)}`)
-  check(c && c.tick === tickOf(t) && c.state === 'roam' && c.clip === 'walk' && c.speed > 0, 'on the world clock\'s tick, roaming at the walk', c && `${c.state} ${c.clip}`)
+  const off = c && Math.hypot(c.x, c.z), fromHer = c && Math.hypot(c.x - near.x, c.z - near.z)
+  check(w.byKey.size === 1 && c && off > 1 && off <= ROAM_M && fromHer >= SPAWN_CLEAR_M && c.y === GROUND, `inside ${ROAM_M} m, a leafkin stands somewhere in the disc, ${SPAWN_CLEAR_M} m clear of her`, c && `${fmt(off)} m from the mouth, ${fmt(fromHer)} m from her`)
+  check(c && Math.abs(swing(c.heading, 0)) > 1e-3, 'facing whichever way', c && `${fmt(c.heading)}`)
+  check(c && c.tick === tickOf(t) && c.state === 'roam' && c.clip === 'run' && c.speed > 0, 'on the world clock\'s tick, roaming at the run', c && `${c.state} ${c.clip}`)
   check(c && Math.abs(c.size - SIZE_M) <= SIZE_M * SIZE_VAR + 1e-9 && Math.abs(c.k - c.size / biped.height) < 1e-12, `a metre tall, give or take ${SIZE_VAR * 100}%, wearing the scale that makes it so`, c && `${fmt(c.size)} m`)
-  check(c && c.lod === LOD_TIERS && c.puppet === null && w.bodies([]).length === 0, `150 m off it is minded and not drawn: past its cull of ${fmt(cullRange(c.size))} m`)
+  check(c && c.lod === LOD_TIERS && c.puppet === null && w.bodies([]).length === 0, `${fmt(fromHer)} m off it is minded and not drawn: past its cull of ${fmt(cullRange(c.size))} m`)
+  const spots = new Set()
+  for (let i = 0; i < 6; i++) {
+    const v = make()
+    v.update(near, head(near), T0 + i * 7, 1 / 60)
+    const d = one(v)
+    spots.add(`${fmt(d.x)},${fmt(d.z)}`)
+    v.dispose()
+  }
+  check(spots.size === 6, 'another spawn tick, another spot', [...spots].join('  '))
   const sizes = new Set()
   for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) {
     const v = make({ entrances: entrancesOf({ ...mouth(), key }) })
@@ -252,13 +265,14 @@ console.log('\nthe spawn')
 console.log('\nthe roam')
 {
   const w = make()
-  const feet = { x: 150, y: GROUND, z: 0 }
+  const feet = { x: 80, y: GROUND, z: 0 }
   let t = T0
   w.update(feet, head(feet), t, 1 / 60)
   const c = one(w)
   let far = 0, legs = 0, straight = 0, path = 0, off = 0, wob = 0, ticks = 0, lastTick = c.tick, lx = c.x, lz = c.z
   let tx = c.tx, tz = c.tz, legX = c.x, legZ = c.z
   let minRetarget = Infinity, maxRetarget = 0, legT = t
+  const clips = new Set()
   t = run(w, t, 180, feet, (c, now) => {
     far = Math.max(far, Math.hypot(c.x, c.z))
     if (c.tick !== lastTick) {
@@ -269,6 +283,7 @@ console.log('\nthe roam')
       if (Math.abs(swing(c.heading, Math.atan2(-(c.tz - c.z), c.tx - c.x))) > (10 * Math.PI) / 180) off++
       wob += Math.abs(c.wob)
     }
+    clips.add(c.clip)
     if (c.tx !== tx || c.tz !== tz) {
       legs++
       straight += Math.hypot(c.x - legX, c.z - legZ)
@@ -281,7 +296,7 @@ console.log('\nthe roam')
   check(c.state === 'roam' && far <= ROAM_M + 1, `three minutes of roaming stays inside the ${ROAM_M} m disc`, `out to ${fmt(far)} m`)
   check(legs >= 180 / RETARGET_S[1] - 1 && legs <= 180 / RETARGET_S[0] + 1 && minRetarget >= RETARGET_S[0] - 0.1 && maxRetarget <= RETARGET_S[1] + 0.1, `a new target every ${RETARGET_S[0]}-${RETARGET_S[1]} s`, `${legs} legs, ${fmt(minRetarget)}-${fmt(maxRetarget)} s`)
   check(off / ticks > 0.3 && path > straight * 1.08, 'and it never beelines: the heading is off the bearing more than a third of the time, and the path is longer than its legs', `off ${(100 * off / ticks).toFixed(0)}% of ${ticks} ticks, the wander ${((wob / ticks) * 180 / Math.PI).toFixed(0)}° on average, ${fmt(path)} m walked over ${fmt(straight)} m of legs`)
-  check(path > 0.9 * biped.gait.walk * c.k * 180 * 0.6, 'at the walk', `${fmt(path / 180)} m/s of ${fmt(biped.gait.walk * c.k)}`)
+  check(path > 0.9 * biped.gait.run * c.k * 180 * 0.6 && !clips.has('walk') && clips.has('run'), 'at the run, never the walk', `${fmt(path / 180)} m/s of ${fmt(biped.gait.run * c.k)}, clips ${[...clips].join(' ')}`)
   const voices = w.voices([])
   check(voices.length > 0 && w.voices([]).length === 0, 'its voices wait for the ear, which drains them', `${voices.length} waiting`)
   w.dispose()
@@ -289,7 +304,7 @@ console.log('\nthe roam')
 {
   // Chatter: counted by an ear.
   const w = make()
-  const feet = { x: 150, y: GROUND, z: 0 }
+  const feet = { x: 80, y: GROUND, z: 0 }
   let t = T0
   w.update(feet, head(feet), t, 1 / 60)
   const said = []
@@ -298,7 +313,7 @@ console.log('\nthe roam')
   check(chatter.length >= 120 / CHATTER_S[1] - 1 && chatter.length <= 120 / CHATTER_S[0] + 1 && chatter.length === said.length, `it chatters every ${CHATTER_S[0]}-${CHATTER_S[1]} s and says nothing else roaming`, `${chatter.length} in 120 s: ${[...new Set(chatter.map((v) => v.sound))].sort().join(' ')}`)
   check(new Set(chatter.map((v) => v.sound)).size >= 3, 'in more than one voice')
   check(chatter.every((v) => Math.abs(v.y - GROUND) < 1 && Math.hypot(v.x, v.z) <= ROAM_M), 'each from where it stands')
-  check(w.bodies([]).length === 0, 'the roam in a 150 m wood is not drawn')
+  check(w.bodies([]).length === 0, 'the roam 80 m off is not drawn')
   w.dispose()
 }
 
@@ -311,7 +326,7 @@ console.log('\nthe gather')
   const feet = { x: 30, y: GROUND, z: 0 }
   let t = T0
   w.update(feet, head(feet), t, 1 / 60)
-  const c = one(w)
+  const c = atMouth(one(w))
   const said = []
   let bundleAt = null, tookAt = null
   t = run(w, t, 6, feet, (c, now) => {
@@ -347,11 +362,12 @@ console.log('\nthe startle')
   const feet = { x: 30, y: GROUND, z: 0 }
   let t = T0
   w.update(feet, head(feet), t, 1 / 60)
-  const c = one(w)
+  const c = atMouth(one(w))
   const said = []
   t = run(w, t, 12, feet, () => w.voices(said))
   check(c.bundle === 3, 'three caps in the arms', `${c.bundle}`)
-  // Her feet step to within STARTLE_M of its own: on the next tick it is startled.
+  // Carried 25 m out, so the run home is long enough to whimper on. Her feet step to within STARTLE_M of its own: on the next tick it is startled.
+  c.x = c.px = 25; c.z = c.pz = 0
   const at = { x: c.x + STARTLE_M - 0.5, y: GROUND, z: c.z }
   said.length = 0
   const x0 = c.x, z0 = c.z
@@ -386,7 +402,7 @@ console.log('\nthe startle')
   w.update(FAR, head(FAR), t, 1 / 60)
   check(w.byKey.size === 0, `nor after the ${EMPTY_S} s with her ${FAR.x} m off`)
   w.update(at, head(at), t += 1 / 60, 1 / 60)
-  check(w.byKey.size === 1 && one(w).x === 0 && one(w).state === 'roam', 'and with her inside the roam, a fresh leafkin at the mouth', `${w.byKey.size}`)
+  check(w.byKey.size === 1 && Math.hypot(one(w).x, one(w).z) <= ROAM_M && one(w).state === 'roam', 'and with her inside the roam, a fresh leafkin in the disc', `${w.byKey.size}`)
   w.dispose()
 }
 
@@ -439,14 +455,21 @@ console.log('\nthe puppet')
   const feet = { x: 10, y: GROUND, z: 0 }
   let t = T0
   w.update(feet, head(feet), t, 1 / 60)
-  const c = one(w)
+  const c = atMouth(one(w))
   t = run(w, t, 0.5, feet)
   const dist = Math.hypot(c.pose.x - 10, c.pose.y - GROUND - 1.6, c.pose.z)
   check(c.puppet !== null && c.lod < LOD_TIERS && c.lod === critterTier(c.size, dist, LOD_TIERS, LOD_TIERS) && w.bodies([]).length === 1 && w.bodies([])[0] === c.pose, 'ten metres off it wears a puppet on the ladder\'s rung for that distance, and the ear is given its frame pose', `rung ${c.lod} at ${fmt(dist)} m`)
   const b = w.bodies([])[0]
-  check(b.clip === 'walk' && b.speed === c.speed && b.cycle === w.durations.walk && b.size === c.size && b.pant, 'with the clip, its cycle, the speed and the size on it, panting')
+  check(b.clip === 'run' && b.speed === c.speed && b.cycle === w.durations.run && b.size === c.size && b.pant, 'with the clip, its cycle, the speed and the size on it, panting')
   check(Math.abs(c.pose.x - c.x) <= c.speed * TICK_S + 1e-9 && c.alpha >= 0 && c.alpha <= 1, 'the frame\'s pose lies between the last two ticks', `alpha ${fmt(c.alpha)}`)
   check(c.puppet.group.matrix.elements[12] === c.pose.x && c.puppet.group.matrix.elements[13] === c.pose.y, 'and the puppet stands on it')
+  setTierTint(true)
+  t = run(w, t, 0.5, feet)
+  const shown = c.puppet.meshes.filter((m) => m.visible)
+  check(shown.length === 1 && shown[0].material === TIER_TINTS[c.lod], 'under the critter LOD tint row it wears its rung\'s flat colour like every other creature', `rung ${c.lod}`)
+  setTierTint(false)
+  t = run(w, t, 0.5, feet)
+  check(c.puppet.meshes.filter((m) => m.visible)[0].material === w.plain, 'and its own skin again with the row off')
   w.dispose()
 }
 
@@ -459,6 +482,7 @@ console.log('\ntwo instances agree')
   let ta = T0, tb = T0
   a.update(feet, head(feet), ta, 1 / 60)
   b.update(feet, head(feet), tb, 1 / 60)
+  atMouth(one(a)); atMouth(one(b))
   const rand = mulberry32(9)
   let compared = 0, same = 0
   for (let i = 0; i < 60 * 90; i++) {

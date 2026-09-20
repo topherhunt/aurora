@@ -28,8 +28,7 @@ const throws = (fn) => { try { fn(); return false } catch { return true } }
 
 /**
  * An n x n quad grid on the XZ plane, triangulated, with one continuous UV
- * chart. Interior vertices are free, the rim is boundary and locked, so the
- * reduction ceiling is known in advance.
+ * chart. Interior vertices are free; the rim collapses only along itself.
  */
 function grid(n, { uvScale = 1 } = {}) {
   const positions = [], uvs = [], indices = []
@@ -279,6 +278,54 @@ function triQualities(m) {
   return out
 }
 
+/**
+ * A closed cube whose twelve faces each own a UV triangle nobody else touches,
+ * so every welded point is a seam and, under 'preserve', no collapse is legal:
+ * the shattered Tripo atlas at its worst.
+ */
+function shatteredCube(size, at) {
+  const c = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]
+  const tris = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2], [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5]]
+  const positions = [], uvs = [], indices = []
+  tris.forEach((t, f) => {
+    t.forEach((v, k) => {
+      positions.push(...c[v].map((x, i) => at[i] + x * size))
+      uvs.push((f + k * 0.3) / 12, k === 2 ? 1 : 0)
+      indices.push(f * 3 + k)
+    })
+  })
+  return { positions: Float32Array.from(positions), uvs: Float32Array.from(uvs), indices: Uint32Array.from(indices) }
+}
+
+/** Several meshes as one, UVs kept only if every part has them. */
+function join(...parts) {
+  const positions = [], uvs = [], indices = []
+  const withUvs = parts.every((p) => p.uvs)
+  for (const p of parts) {
+    const base = positions.length / 3
+    positions.push(...p.positions)
+    if (withUvs) uvs.push(...p.uvs)
+    for (const i of p.indices) indices.push(base + i)
+  }
+  return { positions: Float32Array.from(positions), uvs: withUvs ? Float32Array.from(uvs) : null, indices: Uint32Array.from(indices) }
+}
+
+/** Edges with more than two faces, and points on other than zero or two open edges. */
+function rimShape(m) {
+  const t = buildTopology(m)
+  const use = new Map()
+  for (let f = 0; f < t.faceCount; f++) {
+    const a = t.faces[f * 3], b = t.faces[f * 3 + 1], c = t.faces[f * 3 + 2]
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) { const k = u < v ? `${u}_${v}` : `${v}_${u}`; use.set(k, (use.get(k) ?? 0) + 1) }
+  }
+  const open = new Int32Array(t.pointCount)
+  let nonManifold = 0
+  for (const [k, n] of use) {
+    if (n === 1) { const [u, v] = k.split('_'); open[+u]++; open[+v]++ } else if (n > 2) nonManifold++
+  }
+  return { nonManifold, pinches: open.reduce((s, n) => s + (n !== 0 && n !== 2 ? 1 : 0), 0) }
+}
+
 function boundsOf(m) {
   const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]
   for (let i = 0; i < m.positions.length / 3; i++) {
@@ -297,10 +344,11 @@ console.log('\ntopology and locking')
   const g = grid(6)
   const topo = buildTopology(g)
   check(topo.pointCount === 49, 'a 6x6 grid welds to 49 distinct points', String(topo.pointCount))
-  let lockedCount = 0
-  for (let p = 0; p < topo.pointCount; p++) if (topo.locked[p]) lockedCount++
-  // The rim of a 7x7 lattice is 24 vertices, and an open boundary is locked.
-  check(lockedCount === 24, 'exactly the 24 rim vertices are locked as boundary', String(lockedCount))
+  let lockedCount = 0, rimCount = 0
+  for (let p = 0; p < topo.pointCount; p++) { if (topo.locked[p]) lockedCount++; if (topo.rim[p]) rimCount++ }
+  // The rim of a 7x7 lattice is 24 vertices, each on exactly two open edges, so
+  // every one is rim and none is pinned.
+  check(rimCount === 24 && lockedCount === 0, 'exactly the 24 rim vertices are rim, and none is locked', `${rimCount} rim, ${lockedCount} locked`)
   check(countUvIslands(g) === 1, 'a continuous chart is one UV island')
 }
 {
@@ -309,16 +357,16 @@ console.log('\ntopology and locking')
   const topo = buildTopology(s)
   // The shared spine is coincident in space but split in the atlas, so those
   // points must classify on the UV test. The two spine ends sit on the open
-  // boundary as well, and boundary outranks seam: it is the stricter answer.
-  let spineSeam = 0, spineLocked = 0
+  // rim as well, and rim outranks seam: it is the stricter answer.
+  let spineSeam = 0, spineRim = 0
   for (let p = 0; p < topo.pointCount; p++) {
     const o = p * 3
     if (Math.abs(topo.pointPos[o + 2] - 1) > 1e-9) continue
-    if (topo.locked[p]) spineLocked++
+    if (topo.rim[p]) spineRim++
     else if (topo.seam[p]) spineSeam++
   }
-  check(spineSeam + spineLocked === 5, 'every vertex on the shared spine is seam or boundary', `${spineSeam} seam + ${spineLocked} boundary`)
-  check(spineSeam === 3, 'the three interior spine vertices read as seam, not as pinned', String(spineSeam))
+  check(spineSeam + spineRim === 5, 'every vertex on the shared spine is seam or rim', `${spineSeam} seam + ${spineRim} rim`)
+  check(spineSeam === 3, 'the three interior spine vertices read as seam, not as rim', String(spineSeam))
 }
 
 // --- the invariant ----------------------------------------------------------
@@ -513,10 +561,26 @@ console.log('\nreduction')
   check(grew <= 0.005 * diag + 1e-6, 'fitted, it grows by at most half a percent of the diagonal', `${(100 * grew / diag).toFixed(2)}%`)
 }
 {
-  // A mesh that is all seam cannot reduce, and must say so rather than
-  // corrupting itself to hit the number. This is the shattered-atlas case, and
-  // the refusal is the useful signal.
-  const cube = {
+  // A mesh that is all seam cannot reduce under 'preserve', and must say so
+  // rather than corrupting itself to hit the number. This is the
+  // shattered-atlas case, and the refusal is the useful signal.
+  const cubes = join(shatteredCube(1, [0, 0, 0]), shatteredCube(1, [3, 0, 0]))
+  const out = decimate(cubes, 1, { dropIslands: false })
+  check(triCount(out) === 24, 'an all-seam mesh refuses to reduce under preserve', `${triCount(out)} triangles`)
+  // Two equal halves and no collapse to price against: deleting one of them
+  // would hit the number by gutting the mesh, which is how the leafkin lost
+  // its legs.
+  const culled = decimate(cubes, 1)
+  check(triCount(culled) === 24 && culled.stats.piecesDropped === 0, 'and does not delete half of itself to hit the number', `${triCount(culled)} triangles`)
+  check(/ran out of legal collapses/.test(out.stats.reason) && /ran out of legal collapses/.test(culled.stats.reason), 'and reports why', out.stats.reason)
+  check(analyzeMesh(cubes).seamPoints === 16, 'and analyzeMesh shows the cause without decimating: every point is seam', String(analyzeMesh(cubes).seamPoints))
+}
+{
+  // Two open sheets facing each other, every point on a rim. A rim is not a
+  // pin: each sheet thins along its own edge, one chord at a time, so two quads
+  // reach two triangles by collapse alone -- and one, when only one is asked
+  // for, still without deleting a piece.
+  const sheets = {
     positions: Float32Array.from([
       0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
       0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
@@ -524,14 +588,18 @@ console.log('\nreduction')
     uvs: Float32Array.from([0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1]),
     indices: Uint32Array.from([0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6]),
   }
-  const out = decimate(cube, 1, { dropIslands: false })
-  check(triCount(out) === 4, 'an all-boundary mesh refuses to reduce', `${triCount(out)} triangles`)
-  const culled = decimate(cube, 1)
-  check(triCount(culled) === 2 && culled.stats.piecesDropped === 1, 'unless a whole detached piece can go', `${triCount(culled)} triangles`)
-  check(/ran out of legal collapses/.test(out.stats.reason), 'and reports why', out.stats.reason)
-  // lockedFaces predicts that refusal ahead of time, which is what makes it
-  // worth showing in the bench rather than discovering by running a decimation.
-  check(analyzeMesh(cube).lockedFaces === 4, 'and analyzeMesh predicts the floor without decimating', String(analyzeMesh(cube).lockedFaces))
+  const two = decimate(sheets, 2)
+  check(triCount(two) === 2 && two.stats.piecesDropped === 0 && two.stats.collapses === 2, 'an open sheet thins along its rim', `${triCount(two)} triangles, ${two.stats.collapses} collapses`)
+  // The whole 10x10 sheet, down to eight triangles: the rim stays a simple
+  // rim the whole way -- no edge picks up a third face, no point ends on more
+  // than two open edges -- and its four corners hold, so the sheet keeps its
+  // full extent rather than shrinking from the edges in.
+  const sheet = grid(10)
+  const eight = decimate(sheet, 8)
+  const shape = rimShape(eight)
+  check(triCount(eight) === 8, 'a 10x10 open sheet reaches eight triangles', `${triCount(eight)} triangles`)
+  check(shape.nonManifold === 0 && shape.pinches === 0, 'and its rim stays a simple rim', `${shape.nonManifold} non-manifold edges, ${shape.pinches} pinch points`)
+  check(boundsOf(eight).every((v, k) => Math.abs(v - boundsOf(sheet)[k]) < 1e-6), 'and it keeps its full extent', boundsOf(eight).map((v) => v.toFixed(2)).join(' '))
 }
 {
   const g = bumpyGrid(20)
@@ -674,14 +742,12 @@ console.log('\nanalyzeMesh')
 {
   const a = analyzeMesh(bumpyGrid(10))
   check(a.tris === 200, 'reports triangle count', String(a.tris))
-  check(a.points === 121 && a.lockedPoints === 40, 'reports welded points and how many are pinned', `${a.points} pts, ${a.lockedPoints} locked`)
-  check(a.freePoints + a.seamPoints + a.lockedPoints === a.points, 'free, seam and locked account for every point')
+  check(a.points === 121 && a.rimPoints === 40 && a.lockedPoints === 0, 'reports welded points, and the rim apart from the pinned', `${a.points} pts, ${a.rimPoints} rim, ${a.lockedPoints} locked`)
+  check(a.freePoints + a.seamPoints + a.rimPoints + a.lockedPoints === a.points, 'free, seam, rim and locked account for every point')
   check(a.seamPoints === 0, 'a single-chart grid has no seam points', String(a.seamPoints))
   check(a.uvIslands === 1, 'reports the island count')
-  // A grid's four corner triangles have all three vertices on the rim, so a
-  // small non-zero floor is correct. It should stay small.
-  check(a.lockedFaces > 0 && a.lockedFaces < a.tris * 0.1,
-    'a grid has a small floor of fully-pinned faces at its corners', `${a.lockedFaces} of ${a.tris}`)
+  // A rim thins along itself, so an open sheet has no face it can never remove.
+  check(a.lockedFaces === 0, 'an open sheet has no unremovable face', `${a.lockedFaces} of ${a.tris}`)
 }
 
 // --- silhouette -------------------------------------------------------------
@@ -771,6 +837,36 @@ console.log('\ndetached pieces go before the body does')
   const kept = decimate(mesh, 20, { dropIslands: false })
   check(kept.stats.piecesDropped === 0 && analyzeMesh(kept).pieces === 1 && boundsOf(kept).every((v, k) => Math.abs(v - body[k]) < nudge),
     'dropIslands:false deletes nothing whole; the tetrahedra still fold away before the body pays', `${triCount(kept)} triangles`)
+}
+
+console.log('\na piece is deleted only when a collapse that costs more is about to happen')
+{
+  // The leafkin in miniature: a body, a second piece that is a third of the
+  // surface (its legs), and specks, every point of them seam so that under
+  // 'preserve' no collapse is ever legal. With nothing to price against,
+  // nothing may go -- the old fallback took the pieces in cost order once the
+  // heap held nothing else, and deleted the legs at five hundred times the
+  // dearest collapse.
+  const specks = Array.from({ length: 6 }, (_, i) => shatteredCube(0.05, [30 + i, 0, 0]))
+  const mesh = join(shatteredCube(20, [0, 0, 0]), shatteredCube(12, [0, -20, 0]), ...specks)
+  const a = analyzeMesh(mesh)
+  check(a.pieces === 8 && a.seamPoints === a.points, 'the mesh is eight pieces and every point is seam', `${a.pieces} pieces, ${a.seamPoints}/${a.points} seam`)
+  const out = decimate(mesh, 1)
+  check(triCount(out) === 96 && out.stats.piecesDropped === 0, 'nothing is deleted when no collapse is left to price against', `${triCount(out)} triangles, ${out.stats.piecesDropped} deleted`)
+  check(support(out, [0, -1, 0]) >= 20 - 1e-6, 'so the legs are still there', support(out, [0, -1, 0]).toFixed(2))
+  check(/ran out of legal collapses/.test(out.stats.reason), 'and the tier says so rather than claiming the target', out.stats.reason)
+
+  // Give the body edges to collapse and the order is honest again: the specks
+  // go -- deleted, or folded away chord by chord -- the moment collapses
+  // dearer than them are made, and the legs never do.
+  // The legs are an open sheet a third of the surface, free to thin along its
+  // rim but too large a share of the shape to lose to a tier that keeps twelve
+  // of the body's twenty faces.
+  const legs = { positions: Float32Array.from([0, -42, 0, 30, -42, 0, 30, -12, 0, 0, -12, 0]), indices: Uint32Array.from([0, 1, 2, 0, 2, 3]) }
+  const legged = join(bodyWithTets(5.7, []), legs, ...specks)
+  const some = decimate(legged, 14)
+  check(triCount(some) === 14 && support(some, [1, 0, 0]) <= 30 + 1e-6, 'the specks go as soon as collapses cost more than they do', `${triCount(some)} triangles, ${some.stats.piecesDropped} deleted, reaches x=${support(some, [1, 0, 0]).toFixed(2)}`)
+  check(support(some, [0, -1, 0]) >= 42 - 1e-6, 'and the legs stand', support(some, [0, -1, 0]).toFixed(2))
 }
 
 console.log('\na ridge of pillows folds away')

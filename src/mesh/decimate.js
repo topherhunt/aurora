@@ -44,7 +44,8 @@
 //     which is what the caller bakes into vertex colours. Neighbouring corners
 //     can come from unrelated islands, so these are not atlas coordinates.
 //
-//   'auto'  'preserve' where it reaches the target, else 'stretch'.
+//   'auto'  'preserve' where it reaches the target without reaching much
+//     further up the cost order than 'stretch' would, else 'stretch'.
 //
 // Whatever the mode, a piece of geometry -- faces joined by manifold edges or
 // shared unlocked points, `piecesOf` -- is deleted outright when that is cheaper
@@ -89,6 +90,16 @@ const SIZE_WEIGHT = 10
 // collapse that halves a triangle's quality costs double; at 2 it costs four
 // times but the silhouette pays for it, same as the size term.
 const SHAPE_WEIGHT = 1
+
+// How much dearer the dearest collapse of a 'preserve' pass may be than that of
+// the 'stretch' pass on the same input before 'auto' gives the atlas up.
+// 'preserve' can only take the collapses the atlas allows, so on a mesh that is
+// mostly seam it reaches its count by grinding down whatever is legal -- the
+// leafkin's leaf loincloth went from 21 faces to 1 at the 50% tier while its
+// body, 90% seam, lost a third -- and its frontier tells: over the roster a
+// sane atlas reaches the target at 1.1 to 2.3 times the stretch frontier, a
+// shattered one at 27 to 155. Set in the gap; nothing sits between 3.4 and 4.
+const AUTO_SLACK = 3
 
 // Mean-ratio quality of a triangle: 1 equilateral, 0 degenerate; a right
 // isosceles half-square is 0.87, a 3:1 sliver about 0.5.
@@ -169,8 +180,11 @@ function quadricError(Q, o, x, y, z) {
  * Two separate classifications come out of this, and the difference is the
  * whole reason a shattered atlas can still decimate:
  *
- *   LOCKED -- touches an edge used by 1 face (open boundary) or by 3+
- *     (non-manifold). Never collapsible; there is no defined answer.
+ *   LOCKED -- touches an edge used by 3+ faces (non-manifold), or is where
+ *     two open rims meet. Never collapsible; there is no defined answer.
+ *   RIM -- has exactly two edges used by one face: a simple point on an open
+ *     boundary. Collapsible only along the rim, into the next rim point, so
+ *     the outline shrinks by one chord and the rim stays a rim.
  *   SEAM -- its corners disagree about UV. Collapsible, but only into another
  *     point that carries a matching wedge on every face involved. `wedgeMap`
  *     in `decimate` is what decides that, per candidate edge.
@@ -230,7 +244,7 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
     }
   }
 
-  // Edge use counts -> boundary and non-manifold.
+  // Edge use counts -> rim and non-manifold.
   const faces = new Int32Array(faceCount * 3)
   for (let f = 0; f < faceCount * 3; f++) faces[f] = pointOf[indices[f]]
   const edgeUse = new Map()
@@ -241,27 +255,32 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
       edgeUse.set(k, (edgeUse.get(k) ?? 0) + 1)
     }
   }
+  const rimEdges = new Int32Array(pointCount)
   for (const [k, n] of edgeUse) {
     if (n === 2) continue
     const [u, v] = k.split('_')
-    locked[+u] = 1
-    locked[+v] = 1
+    if (n === 1) { rimEdges[+u]++; rimEdges[+v]++ } else { locked[+u] = 1; locked[+v] = 1 }
+  }
+  const rim = new Uint8Array(pointCount)
+  for (let p = 0; p < pointCount; p++) {
+    if (locked[p] || rimEdges[p] === 0) continue
+    if (rimEdges[p] === 2) rim[p] = 1; else locked[p] = 1
   }
 
-  return { pointOf, pointPos: Float64Array.from(pointPos), locked, seam, uvId, pointCount, faces, faceCount, eps, diag }
+  return { pointOf, pointPos: Float64Array.from(pointPos), locked, rim, seam, uvId, pointCount, faces, faceCount, eps, diag }
 }
 
 /**
  * The pieces a mesh falls into once the pins are honoured: faces joined by a
- * manifold edge or by an unpinned point. A detached shell is a piece; so is a
- * crest fin glued to the body along one edge, because that edge carries four
- * faces, its endpoints are pinned, and the fin's tip can never collapse into
- * anything -- the fin is immortal unless it is deleted whole. Pieces only meet
- * across pinned points and non-manifold or boundary edges, so removing one
- * never opens a hole in another. `area` is left at zero for a caller with face
- * areas to hand.
+ * manifold edge or by a point that is neither locked nor rim. A detached shell
+ * is a piece; so is a crest fin glued to the body along one edge, because that
+ * edge carries four faces, its endpoints are pinned, and the fin's tip can
+ * never collapse into anything -- the fin is immortal unless it is deleted
+ * whole. Pieces only meet across pinned or rim points and non-manifold or
+ * boundary edges, so removing one never opens a hole in another. `area` is
+ * left at zero for a caller with face areas to hand.
  */
-export function piecesOf({ faces, faceCount, pointCount, pointPos, locked }) {
+export function piecesOf({ faces, faceCount, pointCount, pointPos, locked, rim }) {
   const parent = Int32Array.from({ length: faceCount }, (_, i) => i)
   const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a] } return a }
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb }
@@ -275,7 +294,7 @@ export function piecesOf({ faces, faceCount, pointCount, pointPos, locked }) {
       if (list) list.push(f); else edgeFaces.set(k, [f])
     }
     for (const p of [a, b, c]) {
-      if (locked[p]) continue
+      if (locked[p] || rim[p]) continue
       if (firstAt[p] === -1) firstAt[p] = f; else union(firstAt[p], f)
     }
   }
@@ -400,9 +419,11 @@ export function estimateQuadFraction({ positions, indices }, cosTol = 0.9995) {
 export function analyzeMesh(mesh, { weldEps } = {}) {
   const topo = buildTopology(mesh, { weldEps })
   let lockedPoints = 0
+  let rimPoints = 0
   let seamPoints = 0
   for (let p = 0; p < topo.pointCount; p++) {
     if (topo.locked[p]) lockedPoints++
+    else if (topo.rim[p]) rimPoints++
     else if (topo.seam[p]) seamPoints++
   }
   let lockedFaces = 0
@@ -422,12 +443,15 @@ export function analyzeMesh(mesh, { weldEps } = {}) {
     vertices: mesh.positions.length / 3,
     points: topo.pointCount,
     lockedPoints,
-    // Seam points are not free -- a collapse across one needs a matching wedge
-    // on both ends -- but they are not pinned either. A mesh that is mostly
-    // seam decimates worse than one that is mostly interior, and reporting the
-    // two apart is what tells a shattered atlas from a genuinely dense mesh.
+    // A rim point collapses along its rim and nowhere else; an open leaf card
+    // is all rim and still thins. Seam points are not free either -- a
+    // collapse across one needs a matching wedge on both ends -- but neither
+    // kind is pinned. A mesh that is mostly seam decimates worse than one that
+    // is mostly interior, and reporting the kinds apart is what tells a
+    // shattered atlas from a genuinely dense mesh.
+    rimPoints,
     seamPoints,
-    freePoints: topo.pointCount - lockedPoints - seamPoints,
+    freePoints: topo.pointCount - lockedPoints - rimPoints - seamPoints,
     // Faces pinned at all three corners can never be removed, whatever target is
     // asked for. This is the honest floor on what decimation can achieve here.
     lockedFaces,
@@ -793,11 +817,14 @@ export function decimate(mesh, targetTris, opts = {}) {
   if (!Number.isFinite(targetTris) || targetTris < 1) throw new Error(`decimate requires a positive targetTris, got ${targetTris}`)
   if (!['preserve', 'stretch', 'drop', 'auto'].includes(uvMode)) throw new Error(`unknown uvMode "${uvMode}" -- want preserve, stretch, drop or auto`)
 
-  // The exact atlas where it reaches the target, the stretched one where it
-  // does not. Which one ran is in the stats.
+  // The exact atlas where it reaches the target at close to the price the
+  // stretched one pays, the stretched one otherwise. Which one ran is in the
+  // stats.
   if (uvMode === 'auto') {
     const kept = decimate(mesh, targetTris, { ...opts, uvMode: 'preserve' })
-    return kept.stats.outputTris <= targetTris ? kept : decimate(mesh, targetTris, { ...opts, uvMode: 'stretch' })
+    if (kept.stats.outputTris > targetTris) return decimate(mesh, targetTris, { ...opts, uvMode: 'stretch' })
+    const slid = decimate(mesh, targetTris, { ...opts, uvMode: 'stretch' })
+    return kept.stats.maxCost <= AUTO_SLACK * slid.stats.maxCost ? kept : slid
   }
 
   // An input carrying `sampleUvs` instead of `uvs` has already had its atlas
@@ -807,7 +834,7 @@ export function decimate(mesh, targetTris, opts = {}) {
   const keepAtlas = uvMode !== 'drop' && Boolean(uvs)
   const stretch = keepAtlas && uvMode === 'stretch'
   const topo = buildTopology(keepAtlas ? mesh : { positions, indices }, { weldEps })
-  const { pointPos, locked, seam, uvId, pointCount, faceCount } = topo
+  const { pointPos, locked, rim, seam, uvId, pointCount, faceCount } = topo
 
   // Working copies -- faces in point space, and the original corner each face
   // slot still refers to. An untouched slot keeps its original corner, so its
@@ -993,9 +1020,9 @@ export function decimate(mesh, targetTris, opts = {}) {
 
   const heap = new MinHeap()
   const pushEdge = (u, v) => {
-    // Geometric boundary and non-manifold points are pinned outright. Seam
-    // points are not -- whether a particular seam collapse is legal depends on
-    // the edge, and `wedgeMap` decides it when the edge comes off the heap.
+    // Non-manifold points are pinned outright. Rim and seam points are not --
+    // whether a particular collapse of theirs is legal depends on the edge, and
+    // `alongRim` and `wedgeMap` decide it when the edge comes off the heap.
     if (locked[u] || locked[v]) return
     if (!seamCollapse && (seam[u] || seam[v])) return
     heap.push({ cost: costOf(u, v), u, v, stamp: version[u] + version[v] })
@@ -1009,17 +1036,25 @@ export function decimate(mesh, targetTris, opts = {}) {
   //
   // A piece is priced as if every point it owns were collapsed to its centre:
   // plane term `area * r^2` plus the feature term at the same radius, with r
-  // half its bounding diagonal -- the same units as an edge collapse, so it
-  // sits in the same heap and goes when the next collapse costs more than it
-  // does. That is exactly the order wanted: a crest fin is 0.03% of the
-  // surface and a few millimetres across, so it costs nothing beside a flank
-  // collapse late in the ladder, while a wing modelled as its own shell costs
-  // more than any collapse ever will. The largest piece is never offered: a
-  // mesh that is all pinned specks still keeps one.
+  // half its bounding diagonal -- the same units as an edge collapse, and it
+  // goes the moment a LEGAL collapse that costs more is about to happen. That
+  // is exactly the order wanted: a crest fin is 0.03% of the surface and a few
+  // millimetres across, so it costs nothing beside a flank collapse late in
+  // the ladder, while a wing modelled as its own shell costs more than any
+  // collapse ever will. The largest piece is never offered: a mesh that is all
+  // pinned specks still keeps one.
+  //
+  // The comparison is against a collapse that is really going to happen, not
+  // against the heap: an all-seam mesh under 'preserve' runs out of legal
+  // collapses with the target still far off, and pieces left in the heap as the
+  // only entries would then be taken in cost order with nothing bounding them.
+  // The leafkin's legs are a 523-face piece, 38% of its surface, and went that
+  // way at five hundred times the price of the dearest collapse ever made. A
+  // tier that cannot reach its target by collapsing says so instead, and `auto`
+  // falls through to 'stretch', where the pricing holds all the way down.
   //
   // A point belongs to the piece that holds every face at it; pinned points
   // where two pieces meet belong to neither and survive the deletion.
-  const pieceAlive = new Uint8Array(pieces.length).fill(1)
   const ownerOf = new Int32Array(pointCount).fill(-1)
   for (let p = 0; p < pointCount; p++) {
     let owner = -1
@@ -1029,7 +1064,10 @@ export function decimate(mesh, targetTris, opts = {}) {
     }
     ownerOf[p] = owner
   }
+  let liveFaces = faceCount
   let piecesDropped = 0
+  // Offered pieces, cheapest first; `nextOffer` walks them as collapses get dearer.
+  const offers = []
   if (dropIslands && pieces.length > 1) {
     const featureAt = new Float64Array(pieces.length)
     for (let p = 0; p < pointCount; p++) if (ownerOf[p] !== -1) featureAt[ownerOf[p]] += featureW[p] + sizeWeight * meanMass
@@ -1037,8 +1075,21 @@ export function decimate(mesh, targetTris, opts = {}) {
     pieces.forEach((c, i) => {
       if (i === largest) return
       const r2 = c.diag * c.diag * 0.25
-      heap.push({ cost: (c.area + featureAt[i]) * r2, piece: i })
+      offers.push({ cost: (c.area + featureAt[i]) * r2, piece: i })
     })
+    offers.sort((a, b) => a.cost - b.cost)
+  }
+  let nextOffer = 0
+  /** Deletes every offered piece priced at or under `cost`, stopping at the target. */
+  const dropPiecesUpTo = (cost) => {
+    while (nextOffer < offers.length && offers[nextOffer].cost <= cost && liveFaces > targetTris) {
+      const piece = offers[nextOffer++].piece
+      piecesDropped++
+      for (let f = 0; f < faceCount; f++) {
+        if (faceAlive[f] && pieceOf[f] === piece) { faceAlive[f] = 0; liveFaces-- }
+      }
+      for (let p = 0; p < pointCount; p++) if (ownerOf[p] === piece) removed[p] = 1
+    }
   }
 
   /**
@@ -1121,6 +1172,25 @@ export function decimate(mesh, targetTris, opts = {}) {
     return shared === opposite.size
   }
 
+  /**
+   * A rim point leaves only along its rim: the edge to v must be a boundary
+   * edge -- one live face -- so the outline loses one chord and v, already on
+   * the rim, keeps exactly the two boundary edges it had. Across any other edge
+   * the collapse would pull the rim into the sheet or weld two rims into a
+   * pinch, so it is refused. An interior point folding onto a rim point is fine
+   * and needs no test. Rim status never changes under these rules, so the flag
+   * `buildTopology` set stands for the whole run.
+   */
+  const alongRim = (u, v) => {
+    if (!rim[u]) return true
+    let shared = 0
+    for (const f of facesAt[u]) {
+      if (!faceAlive[f]) continue
+      if (facePoints[f * 3] === v || facePoints[f * 3 + 1] === v || facePoints[f * 3 + 2] === v) shared++
+    }
+    return shared === 1
+  }
+
   const wouldFlip = (u, v) => {
     const vo = v * 3
     for (const f of facesAt[u]) {
@@ -1145,29 +1215,20 @@ export function decimate(mesh, targetTris, opts = {}) {
     return false
   }
 
-  let liveFaces = faceCount
   let collapses = 0
   let stretched = 0
+  let maxCost = 0
   let reason = 'reached target'
 
   while (liveFaces > targetTris) {
     if (heap.size === 0) { reason = 'ran out of legal collapses -- the rest of the mesh is seam or boundary'; break }
     const e = heap.pop()
-    if (e.piece !== undefined) {
-      if (!pieceAlive[e.piece]) continue
-      pieceAlive[e.piece] = 0
-      piecesDropped++
-      for (let f = 0; f < faceCount; f++) {
-        if (faceAlive[f] && pieceOf[f] === e.piece) { faceAlive[f] = 0; liveFaces-- }
-      }
-      for (let p = 0; p < pointCount; p++) if (ownerOf[p] === e.piece) removed[p] = 1
-      continue
-    }
     const { u, v } = e
     if (removed[u] || removed[v]) continue
     if (locked[u] || locked[v]) continue
     if (!neighbours[u].has(v)) continue
     if (e.stamp !== version[u] + version[v]) { pushEdge(u, v); continue } // stale cost
+    if (!alongRim(u, v)) continue
     if (!linkConditionOk(u, v)) continue
     if (wouldFlip(u, v)) continue
     // Read the correspondence before anything is retired -- it is sourced from
@@ -1176,6 +1237,12 @@ export function decimate(mesh, targetTris, opts = {}) {
     // own UV and the island's texels stretch over the new triangle.
     const wedges = wedgeMap(u, v)
     if (!wedges && !stretch) continue
+    // This collapse is going to happen, so every piece cheaper than it goes
+    // first -- possibly the very piece the edge is in, and possibly enough of
+    // them to reach the target without it.
+    dropPiecesUpTo(e.cost)
+    if (liveFaces <= targetTris) break
+    if (removed[u] || removed[v]) continue
     if (!wedges) stretched++
 
     // Retire the faces on the collapsed edge -- unless they are the last ones:
@@ -1226,6 +1293,7 @@ export function decimate(mesh, targetTris, opts = {}) {
     version[v]++
     for (let i = 0; i < 10; i++) { Q[v * 10 + i] += Q[u * 10 + i]; F[v * 10 + i] += F[u * 10 + i] }
     collapses++
+    if (e.cost > maxCost) maxCost = e.cost
 
     for (const n of neighbours[v]) { pushEdge(v, n); pushEdge(n, v) }
   }
@@ -1298,6 +1366,9 @@ export function decimate(mesh, targetTris, opts = {}) {
       outputTris: outTris,
       targetTris,
       collapses,
+      // The dearest collapse made: how far up the cost order the pass had to
+      // reach for its target.
+      maxCost,
       // Collapses that had no consistent wedge map and went ahead anyway; zero
       // outside 'stretch', and the count of triangles wearing slid texture.
       stretched,
@@ -1311,6 +1382,7 @@ export function decimate(mesh, targetTris, opts = {}) {
       uvMode: !keepAtlas ? 'drop' : stretch ? 'stretch' : 'preserve',
       reduction: faceCount ? 1 - outTris / faceCount : 0,
       lockedPoints: locked.reduce((s, x) => s + x, 0),
+      rimPoints: rim.reduce((s, x) => s + x, 0),
       seamPoints: seam.reduce((s, x) => s + x, 0),
       totalPoints: pointCount,
       weldedFrom: positions.length / 3,

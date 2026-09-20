@@ -1,6 +1,6 @@
 // The v2 surface geometry, checked without a browser.
 //
-// src/v2/render/ribbon.js is the arithmetic behind every lake disc, river ribbon and road ribbon in a v2 world, and it is deliberately three-free so that this file can exercise it directly -- no GL context, no stub renderer, no shader compile. What is being checked is not that something drew: it is that the vertices are in the right places, that the winding is uniform, and that the miter clamp really does stop an inside corner folding the ribbon through itself. All three fail silently on screen. A folded ribbon looks like a dark smear, a mis-wound disc looks like a lake that is only visible from underneath, and a segment rule that is quietly wrong looks like a slightly polygonal shoreline nobody mentions for a month.
+// src/v2/render/ribbon.js is the arithmetic behind every lake disc and river ribbon in a v2 world, and it is deliberately three-free so that this file can exercise it directly -- no GL context, no stub renderer, no shader compile. What is being checked is not that something drew: it is that the vertices are in the right places, that the winding is uniform, and that the miter clamp really does stop an inside corner folding the ribbon through itself. All three fail silently on screen. A folded ribbon looks like a dark smear, a mis-wound disc looks like a lake that is only visible from underneath, and a segment rule that is quietly wrong looks like a slightly polygonal shoreline nobody mentions for a month.
 //
 // Section 6 is the exception and imports three.js, because Markers is a three class and the bug it guards is not arithmetic. three constructs InstancedMesh, Scene and BufferGeometry perfectly well in node -- what needs a GPU is rendering, and nothing here renders.
 //
@@ -9,13 +9,12 @@
 import { pathToFileURL } from 'node:url'
 import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
-import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, ROAD_LIFT, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
+import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
 import { riverRaise, DrawnTerrain, RAISE_RUNGS, RAISE_MARGIN, RAISE_END, RUNG_AT_DEPTH } from '../src/v2/render/river-raise.js'
 import { nodeKey } from '../src/v2/terrain/quadtree-v2.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { SAMPLE_SPACING, RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../src/v2/layers/paths.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
-import { RoadSurfaces } from '../src/v2/render/road-surfaces.js'
 // The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { WORLD_HALF } from '../src/v2/config.js'
@@ -320,7 +319,7 @@ export async function run() {
 
   // --- 4. arc length ---------------------------------------------------------
   //
-  // `u` is metres along the path in 3D, not a 0..1 parameter: normalised UVs over a 3 km road mean a texture repeat of 3000 that has to be re-authored the moment a control point moves. So it has to be monotone, it has to be in metres, and it has to be the length of the thing it is measuring.
+  // `u` is metres along the path in 3D, not a 0..1 parameter: normalised UVs over a 3 km river mean a texture repeat of 3000 that has to be re-authored the moment a control point moves. So it has to be monotone, it has to be in metres, and it has to be the length of the thing it is measuring.
   {
     const R = 100
     const CLIMB = 30
@@ -330,7 +329,7 @@ export async function run() {
       const th = (k / STEPS) * (Math.PI / 2)
       pts.push([R * Math.cos(th), (k / STEPS) * CLIMB, R * Math.sin(th), 6])
     }
-    const r = ribbonVertices(packed(pts), { lift: ROAD_LIFT })
+    const r = ribbonVertices(packed(pts))
 
     let monotone = true
     for (let i = 1; i < r.count; i++) if (!(r.arc[i] > r.arc[i - 1])) monotone = false
@@ -354,10 +353,10 @@ export async function run() {
     }
     check(uvOk, 'the uv buffer carries metres in u and 0..1 across in v')
 
-    // The road lift is z-fighting margin, so it has to be exactly what was asked for and applied once.
-    let lifted = true
-    for (let i = 0; i < r.count; i++) if (Math.abs(r.positions[i * 6 + 1] - (pts[i][1] + ROAD_LIFT)) > 1e-4) lifted = false
-    check(lifted, 'the road lift is applied to y exactly once')
+    // The offset is XZ-only, so every vertex carries its sample's y verbatim.
+    let level = true
+    for (let i = 0; i < r.count; i++) if (Math.abs(r.positions[i * 6 + 1] - pts[i][1]) > 1e-4 || Math.abs(r.positions[i * 6 + 4] - pts[i][1]) > 1e-4) level = false
+    check(level, 'both vertices of a sample sit at the sample y')
 
     const areas = triAreas(r)
     let wrongSign = 0
@@ -369,9 +368,8 @@ export async function run() {
   //
   // Sections 1 to 4 check the ribbon against itself. This one checks it against the terrain it has to sit on, which is the only place the two halves of the feature can disagree, and it does it in RELATIONSHIPS rather than in elevations: the world's vertical range is still being surveyed out of the reference jpg, so every number here is a difference between two heights the document itself supplies. An absolute metre literal in this section would be a check with a shelf life.
   //
-  // The river is solved against a synthetic hillside, so the ground handed to carve() under it is that hillside. A road has no terrain of its own: the ground handed to carve() is the spline's own y plus AMBIENT, so "the terrain before anyone dug it" is defined relative to the authored path rather than pinned to a sea level nobody has chosen yet.
+  // The river is solved against a synthetic hillside, so the ground handed to carve() under it is that hillside. A road is not here: it draws nothing, and check-v2-layers asserts the smooth puts the terrain on its spline.
   {
-    const AMBIENT = 5
     const DEPTH = 2
     const HALF = 6
     // Falling 1 m in 60 along +x: about 16 m over the river's run, so the level solve has a real slope to follow.
@@ -381,16 +379,14 @@ export async function run() {
       snow: { base: 100, band: 40, points: [] },
       lakes: [],
       rivers: [{ id: 'r', depth: DEPTH, pts: [[-400, -200, 2 * HALF], [-100, -60], [220, 90], [560, 300, 2 * HALF]] }],
-      roads: [{ id: 'd', feather: 8, pts: [[-500, 80, 400, 4], [-120, 74, 320, 4], [300, 66, 380, 5], [700, 61, 520, 5]] }],
+      roads: [],
     }
     const layers = new Layers(doc)
     layers.paths.setTerrain(terrainOf(ground))
     void layers.paths.segmentCount
 
     const river = layers.paths.paths.get('r')
-    const road = layers.paths.paths.get('d')
     const rr = ribbonVertices(river.samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
-    const dr = ribbonVertices(road.samples, { lift: ROAD_LIFT })
 
     // The stated river depth is 2 m at the middle, and it is the ribbon that has to be 2 m above the bed -- not the solved level, which nobody sees. Measured at every sample's centreline, where the carve is the full depth.
     let worstDepth = 0
@@ -416,46 +412,6 @@ export async function run() {
       }
     }
     check(exposed === 0, 'the widened river edge is under ground, not over air', `${exposed} of ${rr.vertices} edge vertices exposed`)
-
-    // A road is a decal on ground that was flattened TO it, so the gap is ROAD_LIFT everywhere: any more is a kerb, any less is a stipple.
-    let worstGap = 0
-    for (let i = 0; i < dr.count; i++) {
-      const x = road.samples[i * 4]
-      const z = road.samples[i * 4 + 2]
-      worstGap = Math.max(worstGap, Math.abs(dr.positions[i * 6 + 1] - layers.carve(x, z, road.samples[i * 4 + 1] + AMBIENT) - ROAD_LIFT))
-    }
-    check(worstGap < 1e-3, `the road surface clears the flattened terrain by exactly ${ROAD_LIFT} m`, `worst error ${worstGap.toExponential(1)} m`)
-    check(ROAD_LIFT > 0, 'the road lift is a positive gap, so the depth test never has to break a tie', `${ROAD_LIFT} m`)
-
-    // The mesh RoadSurfaces builds is the indexed strip, not the vertex soup: without the index three reads the 2n vertices as consecutive triples, which draws one sliver every three vertices and leaves the ground showing between -- a row of flat triangles every 3 m that renders without a warning. Every centreline midpoint has to fall inside one of the mesh's own triangles.
-    {
-      const scene = new THREE.Scene()
-      const rs = new RoadSurfaces({ scene, layers })
-      rs.rebuild()
-      const geo = rs.meshes.get('d').geometry
-      const idx = geo.getIndex()
-      const pos = geo.getAttribute('position').array
-      const s = road.samples
-      let bare = 0
-      let mids = 0
-      for (let i = 0; i + 1 < s.length / 4; i++) {
-        const px = (s[i * 4] + s[(i + 1) * 4]) / 2
-        const pz = (s[i * 4 + 2] + s[(i + 1) * 4 + 2]) / 2
-        let inside = false
-        for (let t = 0; idx !== null && t < idx.count / 3 && !inside; t++) {
-          const a = idx.array[t * 3], b = idx.array[t * 3 + 1], c = idx.array[t * 3 + 2]
-          const d1 = cross2(pos[b * 3] - pos[a * 3], pos[b * 3 + 2] - pos[a * 3 + 2], px - pos[a * 3], pz - pos[a * 3 + 2])
-          const d2 = cross2(pos[c * 3] - pos[b * 3], pos[c * 3 + 2] - pos[b * 3 + 2], px - pos[b * 3], pz - pos[b * 3 + 2])
-          const d3 = cross2(pos[a * 3] - pos[c * 3], pos[a * 3 + 2] - pos[c * 3 + 2], px - pos[c * 3], pz - pos[c * 3 + 2])
-          inside = (d1 <= 0 && d2 <= 0 && d3 <= 0) || (d1 >= 0 && d2 >= 0 && d3 >= 0)
-        }
-        mids++
-        if (!inside) bare++
-      }
-      check(idx !== null && idx.count === dr.indices.length, 'the drawn road is the indexed strip ribbonVertices emitted', idx === null ? 'no index' : `${idx.count} indices`)
-      check(bare === 0, 'and every span between two samples is under one of its triangles', `${bare} of ${mids} midpoints bare`)
-      rs.dispose()
-    }
 
     // levelAt is the submersion test, and it has to answer the surface DRAWN over the point, which on a grade is the nearest quad's level and not the highest level of every segment whose half-width reaches the point: a segment's reach runs a half-width past its own ends, so the highest is up to that far upstream, and on this 1:5 rapid that is 1.4 m of water over her head while she stands on the bank. Measured at every sample and across the wet width, where the nearest segment's y is the sample's own.
     {

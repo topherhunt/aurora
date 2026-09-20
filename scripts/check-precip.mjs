@@ -49,6 +49,10 @@ console.log('\n--- precip: the numbers --------------------------------------')
   p.update(1 / 60, head, state(1), 2000)
   check(!p.mesh.visible, 'the row hides it whatever the weather')
   p.enabled = true
+  p.update(1 / 60, head, state(1), 2000, true)
+  check(!p.mesh.visible && p.intensity > 0, 'and under water nothing is drawn in the same downpour')
+  p.update(1 / 60, head, state(1), 2000, false)
+  check(p.mesh.visible, 'and it is back the frame she surfaces')
 
   head.y = 100
   p.update(1 / 60, head, state(1), 100 + SLEET_BAND_M + 1)

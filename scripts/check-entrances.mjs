@@ -51,29 +51,33 @@ const out = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0, ox: 0, oz: 0, size: 0 }
 
 // --- the sites --------------------------------------------------------------
 //
-// The rocks hold the spacing (check-rocks pins 400 m by the hollow bed's
+// The rocks hold the spacing (check-rocks pins 100 m by the hollow bed's
 // construction); what is new here is that a hollow the rocks grow is a mouth
-// the layer seats, and where it puts it. Walking four boots over a 4 km
-// square gathers every hollow the wood grows in it.
+// the layer seats, and where it puts it. Boots 600 m apart over a 2.7 km
+// square, each reaching 450, gather every hollow the wood grows in it
+// without asking a 48-mouth pool for more than a 300 m tiling can hold.
 console.log('\nthe sites')
 const all = new Map()
 let blind = 0
-for (const [cx, cz] of [[-1000, -1000], [1000, -1000], [-1000, 1000], [1000, 1000]]) {
-  const { rocks, e } = boot(cx, cz, { radius: 1400 })
-  const hollows = rocks.hollowsInto(cx - 1400, cz - 1400, cx + 1400, cz + 1400, new Float32Array(64 * 5))
-  check(e.stats.placed + e.stats.blind === hollows, `every hollow the rocks grew about (${cx}, ${cz}) was probed`,
-    `${hollows} hollows, ${e.stats.placed} mouths, ${e.stats.blind} blind, rejected ${JSON.stringify(e.stats.rejected)}`)
-  blind += e.stats.blind
-  for (const s of e.sites()) all.set(s.key, s)
+let probed = true
+for (const cz of [-900, -300, 300, 900]) {
+  for (const cx of [-900, -300, 300, 900]) {
+    const { rocks, e } = boot(cx, cz, { radius: 450 })
+    const hollows = rocks.hollowsInto(cx - 450, cz - 450, cx + 450, cz + 450, new Float32Array(64 * 5))
+    if (e.stats.placed + e.stats.blind !== hollows) probed = false
+    blind += e.stats.blind
+    for (const s of e.sites()) all.set(s.key, s)
+  }
 }
+check(probed, 'every hollow the rocks grew about a boot was probed', `${all.size} mouths, ${blind} blind`)
 const sites = [...all.values()]
-check(sites.length >= 6, 'the square holds a handful of villages', `${sites.length} sites, ${blind} blind`)
+check(sites.length >= 20, 'the square holds a village most tiles', `${sites.length} sites, ${blind} blind`)
 check(blind === 0, 'and no hollow was refused a mouth on flat ground', `${blind} blind`)
 let closest = Infinity
 for (let i = 0; i < sites.length; i++) {
   for (let j = i + 1; j < sites.length; j++) closest = Math.min(closest, Math.hypot(sites[i].x - sites[j].x, sites[i].z - sites[j].z))
 }
-check(closest >= 400, 'no two mouths within 400 m', `closest ${closest.toFixed(0)} m`)
+check(closest >= 100, 'no two mouths within 100 m', `closest ${closest.toFixed(0)} m`)
 
 // --- the face ---------------------------------------------------------------
 //
@@ -83,7 +87,7 @@ check(closest >= 400, 'no two mouths within 400 m', `closest ${closest.toFixed(0
 // meets the quad before the stone, and one to each of its corners too.
 console.log('\nthe face')
 {
-  const { rocks, e } = boot(-1000, -1000, { radius: 1400 })
+  const { rocks, e } = boot(-900, -900, { radius: 450 })
   const rows = e.sites()
   let faced = 0, walled = 0, holed = 0, arched = 0
   const q = new THREE.Quaternion()

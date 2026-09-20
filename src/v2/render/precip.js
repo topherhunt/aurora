@@ -179,15 +179,16 @@ export class Precip {
 
   /**
    * Per frame. `state` is the clock's; `snowLine` the snow line's height at
-   * her xz. Off entirely (no draw) when nothing falls.
+   * her xz; `submerged` whether her eye is under a water surface, where no
+   * drop falls. Off entirely (no draw) when nothing falls.
    */
-  update(dt, head, state, snowLine) {
+  update(dt, head, state, snowLine, submerged = false) {
     if (!(dt >= 0)) throw new Error(`Precip.update: dt must be non-negative, got ${dt}`)
     const u = this.uniforms
     const elev = Math.max(0, Math.min(1, head.y / ELEVATION_TOP_M))
     const intensity = state.precip * (1 - ELEVATION_GAIN + ELEVATION_GAIN * elev)
     this.intensity = intensity
-    this.mesh.visible = this.enabled && intensity > 0.001
+    this.mesh.visible = this.enabled && !submerged && intensity > 0.001
     // Her own motion, smoothed, for the streak direction; a teleport is not motion.
     if (this._havePrev && dt > 0) {
       const vx = (head.x - this._prev.x) / dt, vy = (head.y - this._prev.y) / dt, vz = (head.z - this._prev.z) / dt

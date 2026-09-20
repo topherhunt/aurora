@@ -106,9 +106,9 @@ const DRIFT_EASE_S = 1.5
 const LEVEL_EPS = 0.05
 // Where a held thing's centre sits in the hand's frame: a little under and ahead of the grip.
 export const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
-// What a carrier (carry(), the leafkin's arms) holds at most, and how many carriers can be about at once: two leafkin villages 400 m apart can both be resident.
+// What a carrier (carry(), the leafkin's arms) holds at most, and how many carriers can be about at once: every resident leafkin (render/leafkin.js MAX) gathers whether or not it is drawn.
 export const CARRY_MAX = 5
-export const CARRIERS = 2
+export const CARRIERS = 16
 // Where a carried thing sits, per slot: metres ahead of the feet, to the left, above the chest line, and its tilt about the body's side axis -- a fan in the hollow of the arms.
 const CARRY_FAN = [[0.2, 0, 0, 0.3], [0.22, 0.08, 0.02, 0.5], [0.22, -0.08, 0.02, 0.1], [0.18, 0.04, 0.09, 0.7], [0.18, -0.04, 0.09, -0.1]]
 // Instances a pool holds: every loose thing, three for each of a full room's seven peers and every carrier's armful, all of one kind at worst; its over mesh holds her three hands'.

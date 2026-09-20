@@ -129,7 +129,7 @@ export class WaterSurfaces {
     }
     const path = this.layers.paths.paths.get(id)
     if (!path) throw new Error(`WaterSurfaces.rebuildOne: no lake or path with id ${id}`)
-    if (path.kind !== 'river') throw new Error(`WaterSurfaces.rebuildOne: path ${id} is a ${path.kind}, which belongs to RoadSurfaces`)
+    if (path.kind !== 'river') throw new Error(`WaterSurfaces.rebuildOne: path ${id} is a ${path.kind}, which draws no surface of its own`)
     this.buildRiver(path)
     this.reindex()
     this.applyVisibility()

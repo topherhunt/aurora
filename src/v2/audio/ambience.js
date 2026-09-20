@@ -147,8 +147,8 @@ export const RULES = {
   deerGrunt: { reach: 25, near: 4, level: 0.25, every: [20, 60], gain: [0.7, 1.0] },
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
-  // A voiced layer's one-shots (a leafkin's chatter, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance.
-  voice: { reach: 40, near: 2, level: 0.6, gain: [0.8, 1.0] },
+  // A voiced layer's one-shots (a leafkin's chatter, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance. A leafkin is heard across its wood before it is seen, so the reach runs past its cull and the level holds out to five metres.
+  voice: { reach: 60, near: 5, level: 0.8, gain: [0.8, 1.0] },
   // One breathing loop at the nearest body of a voiced layer that reports `pant` within `reach`, its level near/distance.
   panting: { reach: 12, near: 1, level: 0.3, gain: [0.7, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.

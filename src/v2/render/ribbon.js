@@ -26,13 +26,6 @@ const RIM_SCALE = 1 / Math.cos(Math.PI / LAKE_SEGMENTS)
 // It falls out of the fan for free at a multiple of eight segments: cast a ray at every multiple of 45 degrees onto the rectangle and the hits ARE its four corners and its four edge midpoints, so the polygon through them is the rectangle and not an approximation of one.
 if (LAKE_SEGMENTS % 8 !== 0) throw new Error(`ribbon.js: LAKE_SEGMENTS is ${LAKE_SEGMENTS}; it must be a multiple of 8 or a shape-1 lake's rim cuts its own corners off`)
 
-// How far above the road spline's y the road ribbon sits, in metres.
-//
-// THIS IS Z-FIGHTING MARGIN, NOT A KERB. PathSet.smoothRoads returns the spline's own y verbatim inside halfWidth, so a ribbon at exactly that y is coplanar with the ground it lies on and the depth test decides between them per fragment, per frame, per camera position -- the classic stipple. 5 cm wins that test everywhere and is below the noise of the surface it sits on: at a walking eye height of 1.65 m it subtends about a twentieth of a degree at 5 m, which is under a pixel. Nothing steps up onto a road here.
-//
-// It lives in this file rather than in road-surfaces.js because it is a number the GATE has to know: check-v2-surfaces.mjs asserts the ribbon clears the flattened terrain by exactly this and no more, and importing road-surfaces.js to learn it would drag three.js into a node script that deliberately has none.
-export const ROAD_LIFT = 0.05
-
 // Over how far, past the run a river spends inside the body it starts or ends in, its own flow frame fades in from the shared world frame: this many of its local half-widths, and never less than the metres. See flowFrame.
 export const FLOW_FADE_HALF_WIDTHS = 4
 export const FLOW_FADE_MIN = 8
@@ -132,11 +125,10 @@ export function discVertices(lake, opts = {}) {
 /**
  * A path's surface ribbon: two vertices per sample, offset along the 2D normal of the tangent, triangulated as a strip.
  *
- * `samples` is a flattened spline -- a Float32Array of packed (x, y, z, halfWidth) quads, which is what Spline.flatten returns. The offset is XZ-ONLY: a water surface is horizontal across its width whatever the valley wall is doing, and a road that banked with its own tangent would roll the camera on every bend.
+ * `samples` is a flattened spline -- a Float32Array of packed (x, y, z, halfWidth) quads, which is what Spline.flatten returns. The offset is XZ-ONLY: a water surface is horizontal across its width whatever the valley wall is doing.
  *
  * Options:
  *   widen / widenFrac  extra half-width, min(widen, halfWidth * widenFrac). A river passes paths.js RIVER_WIDEN and RIVER_WIDEN_FRAC.
- *   lift               metres added to every y. Roads use it; see road-surfaces.js.
  *   minHalf            the miter clamp's floor.
  *
  * Besides the buffers it returns per-sample `arc` (3D metres from sample 0), `halfRight` / `halfLeft` (each edge's offset after widening and the clamps below; right is +normal, vertex a) and `tangents` (unit XZ, in sample order), which is what the river's flow frame is built from.
@@ -146,7 +138,7 @@ export function discVertices(lake, opts = {}) {
  * The cap acts on the INSIDE edge of a turn only. The outside edge cannot fold, and the channel the carve cuts is the union of every segment's own footprint, so it runs at full width round the outside of a bend; a cap that narrowed both edges together left a wedge of bare bed between the sheet and the outer bank on every bend it fired on -- two metres of it on the shipped rivers, whose tightest bends have a radius about their half-width. And the cap is the fallback, not the answer: on its own it leaves the inside of such a bend both bare (between the centre of curvature and the inner bank) and double-covered (the two arms' full-width quads cross each other there), so the inside vertices of a capped run are collapsed onto the corner of the trimmed inner bank instead -- see the collapse below -- and the cap stands only where no such corner exists.
  */
 export function ribbonVertices(samples, opts = {}) {
-  const { widen = 0, widenFrac = 0, lift = 0, minHalf = MIN_HALF } = opts
+  const { widen = 0, widenFrac = 0, minHalf = MIN_HALF } = opts
   if (!samples || typeof samples.length !== 'number') throw new Error('ribbonVertices: samples must be an array-like of packed (x, y, z, halfWidth) quads')
   if (samples.length % 4 !== 0) throw new Error(`ribbonVertices: sample buffer length ${samples.length} is not a multiple of 4`)
   const n = samples.length / 4
@@ -161,7 +153,7 @@ export function ribbonVertices(samples, opts = {}) {
   for (let i = 0; i < n; i++) {
     const o = i * 4
     px[i] = samples[o]
-    py[i] = samples[o + 1] + lift
+    py[i] = samples[o + 1]
     pz[i] = samples[o + 2]
     const hw = samples[o + 3]
     if (!Number.isFinite(px[i]) || !Number.isFinite(py[i]) || !Number.isFinite(pz[i])) throw new Error(`ribbonVertices: sample ${i} is not finite`)
@@ -205,7 +197,7 @@ export function ribbonVertices(samples, opts = {}) {
     nz[i] = tx
   }
 
-  // Arc length in 3D, not XZ. `u` is metres along the road as walked, so a switchback that climbs 40 m over 60 m of plan distance gets the 72 m of texture it actually has under it.
+  // Arc length in 3D, not XZ. `u` is metres along the ribbon as walked, so a river that drops 40 m over 60 m of plan distance gets the 72 m of texture it actually has under it.
   const arc = new Float64Array(n)
   for (let i = 1; i < n; i++) {
     arc[i] = arc[i - 1] + Math.hypot(px[i] - px[i - 1], py[i] - py[i - 1], pz[i] - pz[i - 1])
