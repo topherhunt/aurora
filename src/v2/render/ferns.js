@@ -414,7 +414,7 @@ export class Ferns {
    * @param scene         THREE.Scene to add the three ring meshes to.
    * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
    * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
-   * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
+   * @param layers        Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param rocks         Optional Rocks. Needs blockTopAt and anchorsInto; without
    *                      it no fern is raised onto a boulder or thickened beside one.
@@ -439,8 +439,8 @@ export class Ferns {
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Ferns: needs Layers with a PathSet')
     }
-    if (typeof layers.flattenAt !== 'function' || !layers.snow) {
-      throw new Error('Ferns: needs Layers with flattenAt and a snow field')
+    if (typeof layers.dirtAt !== 'function' || !layers.snow) {
+      throw new Error('Ferns: needs Layers with dirtAt and a snow field')
     }
     // Optional, so the probes under tmp/ can run the scatter with no rock bed
     // built. Without it a fern that lands inside a boulder is placed inside it
@@ -1135,12 +1135,12 @@ export class Ferns {
 
       // The terrain's OWN vertex colour at this point, from the chunk mesher's
       // own `shade`, so the cue cannot drift away from what the ground is
-      // actually painted. `flattenAt` is only asked when a road was found
+      // actually painted. `dirtAt` is only asked when a road was found
       // nearby: it is the second-most expensive call in this loop, and away from
       // a road the only other contributor is a lake, whose flattened apron is
       // already water-rejected above.
       const ny = 1 / Math.hypot(tan, 1)
-      shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
+      shade(h, ny, snowLine, snowBand, road ? this.layers.dirtAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
       // Renormalised to unit luminance, so what survives is HUE. See the header:
       // the terrain palette's magnitude is near-black and multiplying by it raw
       // would undo the whole de-light.

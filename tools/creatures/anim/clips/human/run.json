@@ -1,10 +1,10 @@
 {
   "note": "Run: duty under 0.5 puts both feet in the air twice a cycle, the body leans into the stride, the hips sit lower to absorb each landing, and the arms are carried bent at the elbow, the upper arms drawn in to the flanks and the hands turned in to hip height in front, with a short pump. The knees fold past a walk's limit on the swing-through, so fold is widened.",
-  "duration": 0.7,
+  "duration": 0.5,
   "samples": 24,
-  "stride": 0.95,
+  "stride": 1,
   "stepHeight": 0.08,
-  "duty": 0.4,
+  "duty": 0.32,
   "crouch": 0.085,
   "toeOff": 0.4,
   "phases": {

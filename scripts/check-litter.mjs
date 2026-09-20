@@ -93,7 +93,7 @@ console.log('pebble')
 // 2. Stones on the ground you walk on, counted per square metre.
 // ---------------------------------------------------------------------------
 //
-// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with flattenAt, shoreAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the sink assertions in section 7 exact.
+// The stubs are check-rocks.mjs's, verbatim in shape, because Litter needs exactly what Rocks needs: a field with scatterAt / heightAt / snowLineAt / bands, a water surface with levelAt -- which both the environment test and the wet pass go through, isSubmerged being spelled out inline there rather than called -- and a Layers with dirtAt, shoreAt and a snow band for the ground cue. `bands` is 0..900 m, the world's own altitude span. No `ground` is passed: headless, so _groundFor falls through to the field's own height, which is what makes the sink assertions in section 7 exact.
 
 console.log('\ndensity')
 
@@ -133,7 +133,7 @@ const ridge = {
   water: { levelAt: () => null, isSubmerged: () => false },
 }
 
-const scatterLayers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const scatterLayers = { dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 const SEED = 7
@@ -707,12 +707,15 @@ console.log('\nrocks')
   console.log('\n6b. the road\n')
   const ROAD_DENSITY = srcNum('ROAD_DENSITY')
   const ROAD_SPREAD = srcNum('ROAD_SPREAD')
+  const ROAD_FULL_RADIUS = srcNum('ROAD_FULL_RADIUS')
+  const ROAD_RADIUS = srcNum('ROAD_RADIUS')
+  const POOL = srcNum('POOL')
   // A straight road along x at z = 0, in the wood: half-width 3 m, feather 8 m, the index stub answering only within the feather the way PathSet.nearest does.
   const HW = 3
   const FEATHER = 8
   const w = world(60, 0, 9999, null)
   const paths = {
-    nearest: (x, z, kind) => (kind === 'road' && Math.abs(z) <= HW + FEATHER ? { dist: Math.abs(z), halfWidth: HW } : null),
+    nearest: (x, z, kind) => (kind === 'road' && Math.abs(z) <= HW + FEATHER ? { dist: Math.abs(z), halfWidth: HW, id: 'r1' } : null),
     overlaps: (minX, minZ, maxX, maxZ) => !(minZ > HW + FEATHER || maxZ < -(HW + FEATHER)),
   }
   const l = new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths }, texArray, { seed: SEED })
@@ -721,50 +724,138 @@ console.log('\nrocks')
   const m = new THREE.Matrix4()
   const sc = new THREE.Vector3()
   const scaleOf = (lit, id) => { lit.batch.getMatrixAt(id, m); return sc.setFromMatrixScale(m).clone() }
+  // The matrix scale is (size * stretch * spread, size * flat, size / stretch * spread), so sqrt(sx * sz) is size * spread and sy / size is the flatness roll.
+  const ROAD_SIZE = srcPair('ROAD_SIZE')
+  const planOf = (lit, id) => { const v = scaleOf(lit, id); return Math.sqrt(v.x * v.z) }
+  const flatOf = (lit, id, spread) => { const v = scaleOf(lit, id); return v.y / (planOf(lit, id) / spread) }
+  // A cobble's plan is ROAD_SIZE times ROAD_SPREAD, 0.44 m and up; a pebble's is its size, SIZE's 0.30 m at most; 0.4 m parts them.
+  const isCobble = (lit, id) => planOf(lit, id) > 0.4
   // A 12 m by 6 m rectangle of carriageway, wholly inside the full-density disc.
   const X = 6
-  const onRoad = liveIds(l).filter((id) => Math.abs(l.instX[id]) <= X && Math.abs(l.instZ[id]) <= HW)
+  const inRect = (lit) => liveIds(lit).filter((id) => Math.abs(lit.instX[id]) <= X && Math.abs(lit.instZ[id]) <= HW)
+  const onRoad = inRect(l)
+  const cobbles = onRoad.filter((id) => isCobble(l, id))
+  const pebbles = onRoad.filter((id) => !isCobble(l, id))
   const area = 2 * X * 2 * HW
-  const expected = (DENSITY + ROAD_DENSITY) * area
-  console.log(`       ${onRoad.length} stones on ${area} m² of road, ${(onRoad.length / area).toFixed(2)} per m² against ${perM2(wood).toFixed(2)} in the wood; samplesRoad ${l.stats.samplesRoad}, rejectedRoad ${JSON.stringify(l.stats.rejectedRoad)}`)
-  check(Math.abs(onRoad.length - expected) < expected * 0.08,
-    'on the road every dry-pass and road-pass candidate stands: DENSITY + ROAD_DENSITY per m², no drift floor and no environment rate',
-    `${onRoad.length} against ${expected.toFixed(0)} expected`)
-  check(onRoad.length / area > 4 * perM2(wood), 'which is many times the wood', `${(onRoad.length / area).toFixed(2)} vs ${perM2(wood).toFixed(2)} per m²`)
+  const expected = ROAD_DENSITY * area
+  console.log(`       ${cobbles.length} cobbles and ${pebbles.length} pebbles on ${area} m² of road, ${(cobbles.length / area).toFixed(2)} cobbles per m² against ${perM2(wood).toFixed(2)} stones in the wood; samplesRoad ${l.stats.samplesRoad}, rejectedRoad ${JSON.stringify(l.stats.rejectedRoad)}`)
+  check(Math.abs(cobbles.length - expected) < expected * 0.12,
+    'on the road every road-pass candidate stands: ROAD_DENSITY cobbles per m², no drift floor and no environment rate',
+    `${cobbles.length} against ${expected.toFixed(0)} expected`)
+  check(cobbles.length / area > 2 * perM2(wood), 'which is several times the wood\'s stones', `${(cobbles.length / area).toFixed(2)} vs ${perM2(wood).toFixed(2)} per m²`)
+  const key = (lit, id) => `${lit.instX[id].toFixed(3)},${lit.instZ[id].toFixed(3)}`
+  const keys = (lit, ids) => ids.map((id) => key(lit, id)).sort().join('|')
+  check(pebbles.length > 0 && keys(l, pebbles) === keys(wood, inRect(wood)),
+    'and under the cobbles the road carries the wood\'s pebbles, stone for stone: the dry pass treats a road as any other ground',
+    `${pebbles.length} pebbles on the road, ${inRect(wood).length} on the same ground in the wood`)
   check(l.stats.samplesRoad > 0 && l.stats.rejectedRoad.off > 0 && wood.stats.samplesRoad === 0,
     'the road pass ran here and refused what fell beside the road, and never ran in the wood',
     `road: ${l.stats.samplesRoad} sampled, ${l.stats.rejectedRoad.off} off; wood: ${wood.stats.samplesRoad}`)
 
-  // The matrix scale is (size * stretch * spread, size * flat, size / stretch * spread), so sqrt(sx * sz) is size * spread and sy / size is the flatness roll.
-  const ROAD_SIZE = srcPair('ROAD_SIZE')
   const woodIds = liveIds(wood).filter((id) => wood.instX[id] ** 2 + wood.instZ[id] ** 2 < wood.fullSq)
-  const planOf = (lit, id) => { const v = scaleOf(lit, id); return Math.sqrt(v.x * v.z) }
-  const flatOf = (lit, id, spread) => { const v = scaleOf(lit, id); return v.y / (planOf(lit, id) / spread) }
-  const roadSizes = onRoad.map((id) => planOf(l, id) / ROAD_SPREAD)
+  const roadSizes = cobbles.map((id) => planOf(l, id) / ROAD_SPREAD)
   const woodSizes = woodIds.map((id) => planOf(wood, id))
   const lo = Math.min(...roadSizes), hi = Math.max(...roadSizes)
   const meanRoad = roadSizes.reduce((a, b) => a + b, 0) / roadSizes.length
   const meanWood = woodSizes.reduce((a, b) => a + b, 0) / woodSizes.length
   check(lo >= ROAD_SIZE[0] - 1e-3 && hi <= ROAD_SIZE[1] + 1e-3 && lo < ROAD_SIZE[0] + 0.02 && hi > ROAD_SIZE[1] - 0.02,
-    'every stone on the road is a big one: its size is drawn from ROAD_SIZE and spans it', `${lo.toFixed(3)}..${hi.toFixed(3)} against ${ROAD_SIZE[0]}..${ROAD_SIZE[1]}`)
+    'every cobble is a big one: its size is drawn from ROAD_SIZE and spans it', `${lo.toFixed(3)}..${hi.toFixed(3)} against ${ROAD_SIZE[0]}..${ROAD_SIZE[1]}`)
   check(Math.abs(meanRoad - (ROAD_SIZE[0] + ROAD_SIZE[1]) / 2) < 0.01, 'drawn evenly across it, with no small-end skew', `mean ${meanRoad.toFixed(3)}`)
-  check(meanRoad > 1.6 * meanWood, 'so the road\'s stones are well above the wood\'s average', `${meanRoad.toFixed(3)} vs ${meanWood.toFixed(3)} m`)
-  const sx = onRoad.map((id) => scaleOf(l, id).x)
+  check(meanRoad > 1.6 * meanWood, 'so a cobble is well above the wood\'s average stone', `${meanRoad.toFixed(3)} vs ${meanWood.toFixed(3)} m`)
+  const sx = cobbles.map((id) => scaleOf(l, id).x)
   const stretchRoad = sx.reduce((a, b) => a + b, 0) / sx.length / (meanRoad * ROAD_SPREAD)
   check(Math.abs(stretchRoad - 1) < 0.1, 'and each is ROAD_SPREAD times wider in x and z than its size', `x scale / (size * ROAD_SPREAD) ${stretchRoad.toFixed(2)}`)
-  const flatRoad = onRoad.reduce((a, id) => a + flatOf(l, id, ROAD_SPREAD), 0) / onRoad.length
+  const flatRoad = cobbles.reduce((a, id) => a + flatOf(l, id, ROAD_SPREAD), 0) / cobbles.length
   const flatWood = woodIds.reduce((a, id) => a + flatOf(wood, id, 1), 0) / woodIds.length
   check(Math.abs(flatRoad / flatWood - 1) < 0.1, 'but no flatter or taller for its size than a stone in the wood', `height / size ${flatRoad.toFixed(3)} vs ${flatWood.toFixed(3)}`)
 
   // Off the road the dry pass is untouched: the stones past the kerb are the wood's, stone for stone.
-  const key = (lit, id) => `${lit.instX[id].toFixed(3)},${lit.instZ[id].toFixed(3)}`
-  const off = (lit) => liveIds(lit).filter((id) => Math.abs(lit.instZ[id]) > HW + 0.01).map((id) => key(lit, id)).sort().join('|')
+  const off = (lit) => keys(lit, liveIds(lit).filter((id) => Math.abs(lit.instZ[id]) > HW + 0.01))
   check(off(l) === off(wood) && off(l).length > 0, 'and beside the road the litter is the wood\'s, stone for stone')
+
+  // The reach. Cobbles are laid to ROAD_RADIUS and kept in full to ROAD_FULL_RADIUS on their own ladder; the wood's stones stop at RADIUS as before, and past it the only resident tiles are the road's, holding cobbles alone.
+  const live = liveIds(l)
+  const dist = (id) => Math.hypot(l.instX[id], l.instZ[id])
+  // Tiles load by their centre, so a wood tile inside RADIUS can carry pebbles a tile past it, and a road's cobbles stop a tile short of ROAD_RADIUS or so past it.
+  const far = live.filter((id) => dist(id) > RADIUS + TILE)
+  const farOff = far.filter((id) => Math.abs(l.instZ[id]) > HW || !isCobble(l, id))
+  const farthest = Math.max(...live.map(dist))
+  check(far.length > 0 && farOff.length === 0 && farthest > ROAD_RADIUS - TILE && farthest < ROAD_RADIUS + TILE,
+    'past RADIUS only cobbles are laid, out to ROAD_RADIUS', `${far.length} stones past ${RADIUS + TILE} m, ${farOff.length} of them off the road or not a cobble, farthest ${farthest.toFixed(1)} m of ${ROAD_RADIUS}`)
+  const cobblesIn = (lo, hi) => live.filter((id) => isCobble(l, id) && l.instX[id] >= lo && l.instX[id] <= hi && Math.abs(l.instZ[id]) <= HW).length
+  const bandExpected = (lo, hi) => ROAD_DENSITY * (hi - lo) * 2 * HW
+  const nearBand = cobblesIn(20, 28) / bandExpected(20, 28)
+  const farBand = cobblesIn(34, 42) / bandExpected(34, 42)
+  check(nearBand > 0.85 && farBand > 0.4 && farBand < 0.85,
+    'the road is full to ROAD_FULL_RADIUS, where the pebbles about it have been thinning since FULL_RADIUS, and thins past it',
+    `${(nearBand * 100).toFixed(0)}% of full density at 20-28 m, ${(farBand * 100).toFixed(0)}% at 34-42 m`)
+  const farTiles = [...l.tiles.values()].filter((t) => Math.hypot((t.tx + 0.5) * TILE, (t.tz + 0.5) * TILE) > RADIUS)
+  check(farTiles.length > 0 && farTiles.every((t) => t.road && !t.dry) && l.tiles.size < 2 * wood.tiles.size,
+    'and past RADIUS only the road\'s tiles are resident, with their pebbles unlaid',
+    `${farTiles.length} far tiles of ${l.tiles.size} (the wood holds ${wood.tiles.size})`)
+  // The pool: a flat POOL whether or not there is a road, and a standing wood with a road through it uses well under it.
+  check(l.maxInstances === POOL && wood.maxInstances === POOL && l.maxInstances - l.freeCount < 0.8 * POOL && l.stats.starved === 0,
+    'the pool is the flat POOL, road or no road, and a wood with a road through it fills under four fifths of it',
+    `${l.maxInstances - l.freeCount} of ${l.maxInstances} used, ${l.stats.starved} starved`)
+
+  // Walk along the road: a far tile comes near and gets its pebbles, at the level it already holds, and nothing is laid twice.
+  const walk = new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths }, texArray, { seed: SEED })
+  walk.place(0, 0)
+  const spots = (lit) => liveIds(lit).map((id) => `${lit.instX[id].toFixed(4)},${lit.instZ[id].toFixed(4)}`)
+  // Compared tile by tile where the two builds hold the same level and both have laid pebbles: the walk's tiles behind her sit a level richer (the regrow hysteresis) or keep pebbles a fresh build past RADIUS never lays, and neither is a stone out of place.
+  const tileSpots = (lit, t) => { const out = []; for (let k = 0; k < t.n; k++) out.push(`${lit.instX[t.ids[k]].toFixed(4)},${lit.instZ[t.ids[k]].toFixed(4)}`); return out.sort().join('|') }
+  let dup = 0
+  let seenNear = false
+  for (let i = 1; i <= 12; i++) {
+    walk.update(i * 3, 60, 0)
+    while (walk.queue.length) walk._growTile(walk.queue.pop())
+    const s = spots(walk)
+    dup += s.length - new Set(s).size
+    const t = walk.tiles.get(4 * 0x10000 + 0)
+    if (t && t.dry) seenNear = true
+  }
+  const fresh = new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths }, texArray, { seed: SEED })
+  fresh.place(36, 0)
+  let alike = 0
+  let unlike = 0
+  for (const t of walk.tiles.values()) {
+    const f = fresh.tiles.get(t.tx * 0x10000 + t.tz)
+    if (!f || f.q !== t.q || !f.dry || !t.dry || t.n === 0) continue
+    if (tileSpots(walk, t) === tileSpots(fresh, f)) alike++; else unlike++
+  }
+  check(dup === 0 && seenNear && alike >= 8 && unlike === 0,
+    'walked up the road, the tiles it carried in from afar fill with pebbles as she nears, and any tile at the level a fresh build there gives it holds the same stones',
+    `${dup} spots laid twice, tile 4,0 came near: ${seenNear}, ${alike} tiles alike, ${unlike} not`)
+  walk.dispose()
+  fresh.dispose()
 
   let threw = false
   try { new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths: { nearest: () => null } }, texArray, { seed: SEED }) } catch { threw = true }
   check(threw, 'a `layers.paths` that cannot answer overlaps throws at construction')
   l.dispose()
+
+  // The pool running dry: the free list cut to 50 slots, the build places 50, warns ONCE and drops the rest rather than throwing; and once tiles are evicted their slots are laid again.
+  const dry = new Litter(new THREE.Scene(), w.field, w.water, { ...scatterLayers, paths }, texArray, { seed: SEED })
+  dry.freeCount = 50
+  const warn = console.warn
+  let warned = 0
+  console.warn = () => { warned++ }
+  let dryThrew = null
+  try {
+    dry.place(0, 0)
+    dry.place(500, 500)
+  } catch (err) {
+    dryThrew = err.message
+  } finally {
+    console.warn = warn
+  }
+  check(dryThrew === null && warned === 1 && dry.stats.starved > 1000 && dry.stats.placed === 50,
+    'when the pool runs dry the build warns once, drops what it cannot place and goes on, rather than throwing',
+    dryThrew || `warned ${warned}, ${dry.stats.starved} dropped, ${dry.stats.placed} placed`)
+  check(dry.freeCount === 0 && [...dry.tiles.values()].every((t) => Math.hypot((t.tx + 0.5) * TILE - 500, (t.tz + 0.5) * TILE - 500) < 60),
+    'and a move far off evicts the old tiles and lays their slots again where she is now',
+    `${dry.tiles.size} tiles resident, ${dry.freeCount} free`)
+  dry.dispose()
 }
 
 {

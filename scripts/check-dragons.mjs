@@ -157,8 +157,8 @@ console.log('\nroost bank')
 console.log('\nroost scatter')
 const DRY = { isSubmerged: () => false }
 const WET = { isSubmerged: () => true }
-const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, flattenAt: () => 0 }
-const ROADS = { paths: { nearest: () => ({ dist: 0, halfWidth: 3 }) }, snow: LAYERS.snow, flattenAt: () => 0 }
+const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, dirtAt: () => 0 }
+const ROADS = { paths: { nearest: () => ({ dist: 0, halfWidth: 3 }) }, snow: LAYERS.snow, dirtAt: () => 0 }
 const flatField = (h, tan = 0) => ({ heightAt: () => h, heightAndSlopeAt: () => ({ h, tan }) })
 // A planar hillside rising gx per metre along +X and gz along +Z.
 const hillField = (h0, gx, gz) => ({ heightAt: (x, z) => h0 + gx * x + gz * z, heightAndSlopeAt: (x, z) => ({ h: h0 + gx * x + gz * z, tan: Math.hypot(gx, gz) }) })

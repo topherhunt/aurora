@@ -49,7 +49,7 @@ const ridge = {
   },
   water: { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach },
 }
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 
 // Counting wrappers around the stub, so a bed's field traffic can be attributed.
 const count = { scatter: 0, height: 0 }

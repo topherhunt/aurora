@@ -26,7 +26,7 @@ import { UniformGrid } from '../src/v2/layers/grid.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { SnowField, GRID_RES, TEXEL } from '../src/v2/layers/snowline.js'
 import { LakeSet, footprint } from '../src/v2/layers/water-bodies.js'
-import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, drawnHalfWidth, SAMPLE_SPACING, STRAIGHT_MAX, WEND, SWELL } from '../src/v2/layers/paths.js'
+import { PathSet, BANK, FREEBOARD, BED_SHOAL, DIVE_GRADE, DIVE_MAX, ROAD_DIRT_FEATHER, drawnHalfWidth, SAMPLE_SPACING, STRAIGHT_MAX, WEND, SWELL } from '../src/v2/layers/paths.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { defaultDoc, validate } from '../src/v2/layers/doc.js'
 import { terrainOf, FLAT_100 } from './lib/synthetic-terrain.mjs'
@@ -1007,6 +1007,21 @@ export async function run() {
 
     check(world.flattenAt(0, 0) > 0.99, 'flattenAt is saturated on a road deck')
     check(world.flattenAt(4000, 4000) === 0, 'and zero in open country')
+    // The paint reach against the flatten reach, probed across the road at z = 150, clear of the river. On the deck both are 1; a metre past the kerb the flatten is still most of the way up its 8 m feather and the dirt is gone, so a verge is shaped by the road and coloured like the ground it stands on.
+    {
+      // The road wends and swells, so the kerb is found by the index's own distance: the first x whose hit lies `past` metres beyond the half-width.
+      const xPast = (past) => { for (let x = 0; x < 60; x += 0.02) { const h = world.paths.nearest(x, 150, 'road'); if (h !== null && h.dist - h.halfWidth >= past) return x } throw new Error('no kerb found at z = 150') }
+      const deck = world.dirtAt(xPast(-0.5), 150)
+      const mid = world.dirtAt(xPast(ROAD_DIRT_FEATHER / 2), 150)
+      const verge = world.dirtAt(xPast(ROAD_DIRT_FEATHER + 0.01), 150)
+      const flatVerge = world.flattenAt(xPast(ROAD_DIRT_FEATHER + 0.01), 150)
+      console.log(`        dirtAt on the deck ${deck.toFixed(2)}, ${(ROAD_DIRT_FEATHER / 2).toFixed(1)} m past the kerb ${mid.toFixed(2)}, ${ROAD_DIRT_FEATHER} m past it ${verge.toFixed(2)} where flattenAt is ${flatVerge.toFixed(2)}`)
+      check(deck > 0.99 && mid > 0.3 && mid < 0.7 && verge === 0 && flatVerge > 0.9,
+        'dirtAt paints the deck, ramps off within ROAD_DIRT_FEATHER of the kerb and is gone where flattenAt still runs its feather',
+        `${deck.toFixed(2)} / ${mid.toFixed(2)} / ${verge.toFixed(2)}, flattenAt there ${flatVerge.toFixed(2)}`)
+      check(world.dirtAt(600, 0) === world.flattenAt(600, 0) && world.dirtAt(150, 0) === world.flattenAt(150, 0) && world.dirtAt(150, 0) > 0,
+        'and on a lake bed and in a river channel dirtAt is flattenAt', `lake ${world.dirtAt(600, 0).toFixed(2)}, river ${world.dirtAt(150, 0).toFixed(2)}`)
+    }
     check(world.waterLevelAt(600, 0) === 98, 'waterLevelAt reports the lake surface')
 
     // Sculpting the ground under a river re-solves it through the facade, and the region it hands back is what the streamer remeshes. Ground nowhere near a river reports nothing.

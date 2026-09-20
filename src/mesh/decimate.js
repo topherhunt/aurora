@@ -180,11 +180,26 @@ function quadricError(Q, o, x, y, z) {
  * Two separate classifications come out of this, and the difference is the
  * whole reason a shattered atlas can still decimate:
  *
- *   LOCKED -- touches an edge used by 3+ faces (non-manifold), or is where
- *     two open rims meet. Never collapsible; there is no defined answer.
+ *   LOCKED -- has three or more edges used by one face: where two rims meet
+ *     at a point. Never collapsible; there is no defined answer.
  *   RIM -- has exactly two edges used by one face: a simple point on an open
  *     boundary. Collapsible only along the rim, into the next rim point, so
- *     the outline shrinks by one chord and the rim stays a rim.
+ *     the outline shrinks by one chord and the rim stays a rim. A point with
+ *     ONE open edge -- the end of a glued sheet's side, where its rim runs
+ *     into the body -- is a rim point too and leaves the same way, so the
+ *     junction slides along the body or up the sheet. The flag here is the
+ *     source's; `decimate` reads a point's open edges off the live faces,
+ *     since a point's count can only fall as its neighbours leave.
+ *
+ * A point on an edge three or more faces share -- a leaf glued to a torso
+ * along one edge, a fin's root -- is NOT pinned. The link condition asks that
+ * the neighbours an edge's ends share be exactly the points opposite it in the
+ * faces containing it, however many faces that is, so collapsing such an edge
+ * takes all of them and nothing else is welded. Pinning those points made them
+ * sinks: every neighbour could collapse into one and none could ever leave, so
+ * the leafkin's 27 junction points at the front of its torso, 24-face fans in
+ * the source, grew fans of slivers on every tier while the rest of the body
+ * paid for them.
  *   SEAM -- its corners disagree about UV. Collapsible, but only into another
  *     point that carries a matching wedge on every face involved. `wedgeMap`
  *     in `decimate` is what decides that, per candidate edge.
@@ -244,7 +259,7 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
     }
   }
 
-  // Edge use counts -> rim and non-manifold.
+  // Edge use counts -> rim.
   const faces = new Int32Array(faceCount * 3)
   for (let f = 0; f < faceCount * 3; f++) faces[f] = pointOf[indices[f]]
   const edgeUse = new Map()
@@ -259,12 +274,12 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
   for (const [k, n] of edgeUse) {
     if (n === 2) continue
     const [u, v] = k.split('_')
-    if (n === 1) { rimEdges[+u]++; rimEdges[+v]++ } else { locked[+u] = 1; locked[+v] = 1 }
+    if (n === 1) { rimEdges[+u]++; rimEdges[+v]++ }
   }
   const rim = new Uint8Array(pointCount)
   for (let p = 0; p < pointCount; p++) {
-    if (locked[p] || rimEdges[p] === 0) continue
-    if (rimEdges[p] === 2) rim[p] = 1; else locked[p] = 1
+    if (rimEdges[p] === 0) continue
+    if (rimEdges[p] <= 2) rim[p] = 1; else locked[p] = 1
   }
 
   return { pointOf, pointPos: Float64Array.from(pointPos), locked, rim, seam, uvId, pointCount, faces, faceCount, eps, diag }
@@ -273,12 +288,11 @@ export function buildTopology({ positions, uvs, indices }, { weldEps } = {}) {
 /**
  * The pieces a mesh falls into once the pins are honoured: faces joined by a
  * manifold edge or by a point that is neither locked nor rim. A detached shell
- * is a piece; so is a crest fin glued to the body along one edge, because that
- * edge carries four faces, its endpoints are pinned, and the fin's tip can
- * never collapse into anything -- the fin is immortal unless it is deleted
- * whole. Pieces only meet across pinned or rim points and non-manifold or
- * boundary edges, so removing one never opens a hole in another. `area` is
- * left at zero for a caller with face areas to hand.
+ * is a piece; a fin glued to the body along two or more edges is not, since the
+ * glued points between them are free and its tip can fold into them. Pieces
+ * only meet across pinned or rim points and boundary edges, so removing one
+ * never opens a hole in another. `area` is left at zero for a caller with face
+ * areas to hand.
  */
 export function piecesOf({ faces, faceCount, pointCount, pointPos, locked, rim }) {
   const parent = Int32Array.from({ length: faceCount }, (_, i) => i)
@@ -415,6 +429,37 @@ export function estimateQuadFraction({ positions, indices }, cosTol = 0.9995) {
   return paired / faceCount
 }
 
+/**
+ * How even the triangles are: the 5th and 95th percentile face area over the
+ * mean, and the most faces any welded point holds. An even mesh sits near 1
+ * both sides with a fan in the single digits; a sink -- a point everything
+ * around it folds into and nothing leaves -- shows as a p5 far below 1 and a
+ * fan in the twenties, which is what the leafkin's front looked like when its
+ * junction points were pinned. `pointOf` maps a vertex to its welded point.
+ */
+export function evenness(positions, indices, pointOf) {
+  const faceCount = indices.length / 3
+  if (faceCount === 0) return { areaP5: 1, areaP95: 1, maxFan: 0 }
+  const areas = new Float64Array(faceCount)
+  let sum = 0
+  const fan = new Map()
+  for (let f = 0; f < faceCount; f++) {
+    const a = indices[f * 3] * 3, b = indices[f * 3 + 1] * 3, c = indices[f * 3 + 2] * 3
+    const ux = positions[b] - positions[a], uy = positions[b + 1] - positions[a + 1], uz = positions[b + 2] - positions[a + 2]
+    const vx = positions[c] - positions[a], vy = positions[c + 1] - positions[a + 1], vz = positions[c + 2] - positions[a + 2]
+    areas[f] = 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+    sum += areas[f]
+    for (let s = 0; s < 3; s++) { const q = pointOf[indices[f * 3 + s]]; fan.set(q, (fan.get(q) ?? 0) + 1) }
+  }
+  areas.sort()
+  const mean = sum / faceCount || 1
+  return {
+    areaP5: areas[Math.floor(0.05 * (faceCount - 1))] / mean,
+    areaP95: areas[Math.floor(0.95 * (faceCount - 1))] / mean,
+    maxFan: Math.max(...fan.values()),
+  }
+}
+
 /** Everything the bench wants to say about a mesh before touching it. */
 export function analyzeMesh(mesh, { weldEps } = {}) {
   const topo = buildTopology(mesh, { weldEps })
@@ -457,6 +502,7 @@ export function analyzeMesh(mesh, { weldEps } = {}) {
     lockedFaces,
     uvIslands: countUvIslands(mesh),
     quadFraction: estimateQuadFraction(mesh),
+    ...evenness(mesh.positions, mesh.indices, topo.pointOf),
   }
 }
 
@@ -802,9 +848,9 @@ function fitToSurface(V, I, pointOf, pointCount, source, outFraction) {
  * `weldEps` is the distance under which two vertices are the same point,
  * defaulting to a millionth of the bounding diagonal -- enough to fuse the
  * duplicated vertices a glTF seam is made of and nothing else. Raising it fuses
- * genuinely distinct geometry, which on a thin-featured mesh makes edges
- * non-manifold and PINS them: on the fox, 2% of the diagonal locked 42 points
- * and cost more reduction than it bought.
+ * genuinely distinct geometry, which on a thin-featured mesh welds surfaces
+ * that were apart: on the fox, 2% of the diagonal cost more reduction than it
+ * bought.
  */
 export function decimate(mesh, targetTris, opts = {}) {
   const {
@@ -1020,9 +1066,10 @@ export function decimate(mesh, targetTris, opts = {}) {
 
   const heap = new MinHeap()
   const pushEdge = (u, v) => {
-    // Non-manifold points are pinned outright. Rim and seam points are not --
-    // whether a particular collapse of theirs is legal depends on the edge, and
-    // `alongRim` and `wedgeMap` decide it when the edge comes off the heap.
+    // Only a point where rims meet is pinned outright. Rim and seam points are
+    // not -- whether a particular collapse of theirs is legal depends on the
+    // edge, and `alongRim` and `wedgeMap` decide it when the edge comes off the
+    // heap.
     if (locked[u] || locked[v]) return
     if (!seamCollapse && (seam[u] || seam[v])) return
     heap.push({ cost: costOf(u, v), u, v, stamp: version[u] + version[v] })
@@ -1150,10 +1197,11 @@ export function decimate(mesh, targetTris, opts = {}) {
    * vertices opposite their edge in the faces that contain it. Any other shared
    * neighbour means the collapse would weld together parts of the surface that
    * only meet in the index buffer, a non-manifold pinch no later step can undo.
-   * That is two vertices on a manifold edge, and ONE on a pillow -- two faces
-   * back to back on the same three points, a crest scale or what a spine
-   * collapses down to -- so a pillow's tip can fold in and take both faces with
-   * it.
+   * That is two vertices on a manifold edge, ONE on a pillow -- two faces back
+   * to back on the same three points, a crest scale or what a spine collapses
+   * down to -- so a pillow's tip can fold in and take both faces with it, and
+   * three or more where a leaf or fin is glued on along an edge, which then
+   * collapses like any other and takes every face on it.
    */
   const linkConditionOk = (u, v) => {
     const opposite = new Set()
@@ -1173,22 +1221,36 @@ export function decimate(mesh, targetTris, opts = {}) {
   }
 
   /**
-   * A rim point leaves only along its rim: the edge to v must be a boundary
-   * edge -- one live face -- so the outline loses one chord and v, already on
-   * the rim, keeps exactly the two boundary edges it had. Across any other edge
-   * the collapse would pull the rim into the sheet or weld two rims into a
-   * pinch, so it is refused. An interior point folding onto a rim point is fine
-   * and needs no test. Rim status never changes under these rules, so the flag
-   * `buildTopology` set stands for the whole run.
+   * A point with open edges leaves only along one of them: the edge to v must
+   * be a boundary edge -- one live face -- so the outline loses one chord and
+   * v takes over u's other open edge, if it had one. Across any other edge the
+   * collapse would pull the rim into the sheet or weld two rims into a pinch,
+   * so it is refused. An interior point folding onto a rim point is fine and
+   * needs no test. Read off the live faces, not the source flag: the ends of
+   * a glued sheet's side rims have one open edge each, and as they leave the
+   * count at the point they fold into falls -- a rim point becomes an end, an
+   * end becomes interior -- so the flag would soon strand points with no open
+   * edge left to leave by. No collapse under this rule raises a count, which
+   * is why the pinned class can stay static.
    */
+  const seenAt = new Int32Array(pointCount)
+  const touched = []
   const alongRim = (u, v) => {
-    if (!rim[u]) return true
-    let shared = 0
+    touched.length = 0
     for (const f of facesAt[u]) {
       if (!faceAlive[f]) continue
-      if (facePoints[f * 3] === v || facePoints[f * 3 + 1] === v || facePoints[f * 3 + 2] === v) shared++
+      for (let s = 0; s < 3; s++) {
+        const x = facePoints[f * 3 + s]
+        if (x === u) continue
+        if (seenAt[x] === 0) touched.push(x)
+        seenAt[x]++
+      }
     }
-    return shared === 1
+    let open = 0
+    for (const x of touched) if (seenAt[x] === 1) open++
+    const ok = open === 0 || seenAt[v] === 1
+    for (const x of touched) seenAt[x] = 0
+    return ok
   }
 
   const wouldFlip = (u, v) => {
@@ -1387,6 +1449,8 @@ export function decimate(mesh, targetTris, opts = {}) {
       totalPoints: pointCount,
       weldedFrom: positions.length / 3,
       reason,
+      // Even density is the whole point of the size term; this is its receipt.
+      ...evenness(outPositions, outIndices, cornerPoint),
     },
   }
 }

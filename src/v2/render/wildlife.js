@@ -351,8 +351,9 @@ export class Wildlife {
    * @param opts.walk  WalkSurface: heightAt, normalAt. The ground she walks is the ground their feet are probed against.
    * @param opts.dayness  the world's day scalar at a world time (clock.js WorldClock.daynessAt), read by the plan; noon when absent
    * @param opts.assets a loaded asset per species, keyed by SPECIES.key, for a gate; the world fetches the GLBs
+   * @param opts.species the SPECIES keys this room holds; every one when absent
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
     }
@@ -376,7 +377,8 @@ export class Wildlife {
     // Every material the world's lighting patches; two programs a species, the dissolve's cut being a uniform and not a variant.
     this.materials = []
 
-    this.species = SPECIES.map((sp) => {
+    if (species !== null) for (const key of species) if (!SPECIES.some((sp) => sp.key === key)) throw new Error(`Wildlife: no species named ${key}`)
+    this.species = SPECIES.filter((sp) => species === null || species.includes(sp.key)).map((sp) => {
       // ONE settled material for the whole species, and a fade pair per puppet.
       // A settled animal is the usual case and a fading one lasts FADE_S, so a
       // frame of a dozen drawn stags is one material change and not a dozen.

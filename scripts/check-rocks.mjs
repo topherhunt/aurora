@@ -1925,11 +1925,11 @@ console.log('\nscatter')
   }
 
   // One Layers stub for every world here. Rocks needs it for two things and both
-  // are the terrain's: `snow.band`, `flattenAt` and `shoreAt` feed the ground
-  // cue, and syncBands reads the snow line off it. flattenAt and shoreAt return
+  // are the terrain's: `snow.band`, `dirtAt` and `shoreAt` feed the ground
+  // cue, `flattenAt` the deep-wood test, and syncBands reads the snow line off it. All three return
   // 0 -- no road and no waterline under any of these rocks -- which is the case
   // the cue has to be right in anyway.
-  const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+  const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 
   const build = (w) => {
     const r = new Rocks(new THREE.Scene(), w.field, w.water, layers, texArray, { seed: 7 })
@@ -2191,24 +2191,25 @@ console.log('\nscatter')
       for (let j = i + 1; j < rows.length; j++) closest = Math.min(closest, Math.hypot(rows[i].x - rows[j].x, rows[i].z - rows[j].z))
     }
     check(closest >= 100, 'no two hollows within 100 m of each other', `closest pair ${closest.toFixed(0)} m`)
-    // The matrix's first column is the boulder's own width axis in the world;
-    // stood up, it points along Y.
+    // The matrix's columns are the boulder's own axes in the world: lying,
+    // the width (its longest) stays level and the depth (its middle) points
+    // along Y, so the flat bed face stands as a wall.
     const e = bed.instM
-    const upright = rows.every((r) => {
+    const lying = rows.every((r) => {
       const o = r.id * 16
-      return Math.abs(e[o + 1]) / Math.hypot(e[o], e[o + 1], e[o + 2]) > 0.95
+      return Math.abs(e[o + 1]) / Math.hypot(e[o], e[o + 1], e[o + 2]) < 0.3 && Math.abs(e[o + 9]) / Math.hypot(e[o + 8], e[o + 9], e[o + 10]) > 0.95
     })
-    check(upright, 'every hollow stands its longest axis upright', `${rows.length} checked`)
+    check(lying, 'every hollow lies with its longest axis level and its middle axis up', `${rows.length} checked`)
     const sizes = rows.map((r) => bed.shapeLod * r.scale)
-    check(sizes.every((s) => s >= 8 - 1e-6 && s <= 12 + 1e-6), 'and stands 8 to 12 m tall',
+    check(sizes.every((s) => s >= 8 - 1e-6 && s <= 12 + 1e-6), 'and spans 8 to 12 m',
       sizes.map((s) => s.toFixed(1)).join(' '))
     const buf = new Float32Array(rows.length * 5 + 5)
     const n = forestRocks.hollowsInto(-1e4, -1e4, 1e4, 1e4, buf)
     check(n === rows.length && Array.from({ length: n }, (_, i) => buf[i * 5 + 4]).every((s) => s >= 8 && s <= 12),
       'hollowsInto lists every resident hollow with its size in slot 4', `${n} listed`)
-    // Slots 0..2 are the box's centre, not the origin: stood up, the boulder's
-    // footprint is half its height off the origin, so a ray aimed at the origin
-    // can pass beside it. From 20 m out, three quarters of a metre up, aimed at
+    // Slots 0..2 are the box's centre, not the origin: turned on its side, the
+    // boulder's footprint is off the origin by half a measured axis, so a ray
+    // aimed at the origin can pass beside it. From 20 m out, three quarters of a metre up, aimed at
     // the centre, every bearing meets the hull short of it with a normal facing back.
     const out = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0, ox: 0, oz: 0, size: 0 }
     const faces = []

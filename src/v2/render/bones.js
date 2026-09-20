@@ -179,7 +179,7 @@ export class Bones {
    * @param scene    THREE.Scene to add the arena's Group to.
    * @param field    V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
    * @param water    WaterSurfaces. Needs isSubmerged.
-   * @param layers   Layers. Needs `paths`, `snow.band` and flattenAt.
+   * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param bank     bonesBankFrom's answer. Required: a scatter with nothing to
    *                 draw is a bug, not a state.
    */
@@ -195,8 +195,8 @@ export class Bones {
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Bones: needs Layers with a PathSet')
     }
-    if (typeof layers.flattenAt !== 'function' || !layers.snow) {
-      throw new Error('Bones: needs Layers with flattenAt and a snow field')
+    if (typeof layers.dirtAt !== 'function' || !layers.snow) {
+      throw new Error('Bones: needs Layers with dirtAt and a snow field')
     }
 
     this.field = field
@@ -512,7 +512,7 @@ export class Bones {
     // the hue survives (ferns.js), and a value swing so two finds differ.
     const { altLo, altSpan } = this.field.bands
     const gc = this._gc
-    shade(h, 1 / Math.hypot(tan, 1), snowLine, this.layers.snow.band, road ? this.layers.flattenAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
+    shade(h, 1 / Math.hypot(tan, 1), snowLine, this.layers.snow.band, road ? this.layers.dirtAt(x, z) : 0, 0, altLo, altSpan, x, z, gc, 0)
     const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
     const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
     const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

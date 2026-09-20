@@ -30,6 +30,8 @@ const STRIDE = 8
 
 const DEFAULT_RIVER_DEPTH = 2.0
 const DEFAULT_ROAD_FEATHER = 8
+// Metres past a road's edge its dirt paint reaches (dirtAt), against the feather the height and the detail suppression ramp over (flattenAt). The two were one number, and a verge painted four fifths dirt two metres off the kerb tinted every blade of grass standing on it: the strip the grass grows tallest in read as dead. A trodden margin is about a metre.
+export const ROAD_DIRT_FEATHER = 1
 
 // The river cross-section, in half-widths from the centreline. Inside u = 1 the bed is a parabola from `level - depth` at the centre to exactly `level` at the water's edge, with the terrain's own fractal detail kept as depth variation (see BED_SHOAL); from 1 to BANK the ground smoothsteps from the water level back up to the natural terrain. The water is flat across the whole channel because the level is one number per sample.
 export const BANK = 1.5
@@ -929,8 +931,17 @@ export class PathSet {
     return smoothstep(BANK, 1 + (BANK - 1) / 2, u)
   }
 
-  // How hard to suppress fractal detail here: the road surface and the river bed are authored, and fbm sprinkled on top of either is gravel in the water and potholes in the road.
+  // How hard to suppress fractal detail here: the road surface and the river bed are authored, and fbm sprinkled on top of either is gravel in the water and potholes in the road. A road's term ramps over its feather, the same shoulder smoothRoads blends the height over.
   flattenAt(x, z) {
+    return this._flattenAt(x, z, null)
+  }
+
+  // How far toward packed earth to paint the ground here: the same as flattenAt in a river's channel, but a road's dirt stops ROAD_DIRT_FEATHER past its edge, not the feather -- the shoulder is shaped like the road and coloured like the ground beside it.
+  dirtAt(x, z) {
+    return this._flattenAt(x, z, ROAD_DIRT_FEATHER)
+  }
+
+  _flattenAt(x, z, roadReach) {
     let f = 0
     const k = this._rivers(x, z)
     if (k >= 1 && HIT_A.halfWidth > 0) f = PathSet.channelProfile(HIT_A.dist / HIT_A.halfWidth)
@@ -940,8 +951,8 @@ export class PathSet {
     }
     if (this._nearestInto(x, z, 'road', HIT_B)) {
       const hw = HIT_B.halfWidth
-      const feather = HIT_B.rec.feather
-      const r = HIT_B.dist <= hw ? 1 : feather <= 0 ? 0 : smoothstep(1, 0, (HIT_B.dist - hw) / feather)
+      const reach = roadReach === null ? HIT_B.rec.feather : roadReach
+      const r = HIT_B.dist <= hw ? 1 : reach <= 0 ? 0 : smoothstep(1, 0, (HIT_B.dist - hw) / reach)
       if (r > f) f = r
     }
     return clamp01(f)

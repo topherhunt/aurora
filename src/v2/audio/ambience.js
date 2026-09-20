@@ -65,7 +65,7 @@ export const SOUNDS = {
   foxYip: 'sounds/animal-fox-yip.mp3',
   deerGrunt: 'sounds/animal-deer-grunt.mp3',
   crawl: 'sounds/footstep-spider.mp3',
-  // The leafkin (render/leafkin.js): its one-shots by the names its voices() says, and the loop of it breathing.
+  // The leafkin (render/leafkin.js): its one-shots by the names its voices() says, its panting among them.
   leafkinChatter1: 'sounds/npc-leafkin-chatter-1.mp3',
   leafkinChatter2: 'sounds/npc-leafkin-chatter-2.mp3',
   leafkinChatter3: 'sounds/npc-leafkin-chatter-3.mp3',
@@ -147,10 +147,8 @@ export const RULES = {
   deerGrunt: { reach: 25, near: 4, level: 0.25, every: [20, 60], gain: [0.7, 1.0] },
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
-  // A voiced layer's one-shots (a leafkin's chatter, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance. A leafkin is heard across its wood before it is seen, so the reach runs past its cull and the level holds out to five metres.
+  // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance. A leafkin is heard across its wood before it is seen, so the reach runs past its cull and the level holds out to five metres.
   voice: { reach: 60, near: 5, level: 0.8, gain: [0.8, 1.0] },
-  // One breathing loop at the nearest body of a voiced layer that reports `pant` within `reach`, its level near/distance.
-  panting: { reach: 12, near: 1, level: 0.3, gain: [0.7, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
@@ -197,7 +195,7 @@ export class Ambience {
    */
   constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
-    for (const l of voiced) if (!l || typeof l.voices !== 'function' || typeof l.bodies !== 'function') throw new Error('Ambience: a voiced layer needs voices() and bodies()')
+    for (const l of voiced) if (!l || typeof l.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
     if (!sense) throw new Error('Ambience: missing sense')
     if (dragons && typeof dragons.bodies !== 'function') throw new Error('Ambience: the dragon layer needs bodies()')
     if (fish && typeof fish.startled !== 'function') throw new Error('Ambience: the fish layer needs startled()')
@@ -246,7 +244,6 @@ export class Ambience {
       wind: engine.loop('wind', { gain: RULES.wind.gain }),
       rain: engine.loop('rain', { gain: RULES.rain.gain }),
       crawl: engine.loop('crawl', { directional: true, gain: RULES.crawl.gain }),
-      panting: engine.loop('panting', { directional: true, gain: RULES.panting.gain }),
     }
     this.leavesOn = false
     this.windOn = false
@@ -660,11 +657,9 @@ export class Ambience {
     this._loop('crawl', at !== null, C.level * Math.min(1, sum), at)
   }
 
-  /** The voiced layers: every one-shot since the last frame from where it was said, within reach, and the panting loop at the nearest panting body. */
+  /** The voiced layers: every one-shot since the last frame from where it was said, within reach. */
   _voices(head) {
-    const V = RULES.voice, P = RULES.panting
-    let at = null
-    let nearest = Infinity
+    const V = RULES.voice
     const listed = this.listed
     for (const layer of this.voiced) {
       listed.length = 0
@@ -675,17 +670,7 @@ export class Ambience {
         if (d > V.reach) continue
         this.fire(v.sound, { rate: this.rate(), gain: V.level * (V.near / Math.max(V.near, d)) * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z } })
       }
-      listed.length = 0
-      layer.bodies(listed)
-      for (const c of listed) {
-        if (!c.pant) continue
-        const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
-        if (d > P.reach || d >= nearest) continue
-        nearest = d
-        at = c
-      }
     }
-    this._loop('panting', at !== null, at === null ? 0 : P.level * (P.near / Math.max(P.near, nearest)), at)
   }
 
   _startle(layer, C) {

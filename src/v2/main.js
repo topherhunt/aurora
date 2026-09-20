@@ -40,10 +40,11 @@ import { Snowmen } from './render/snowmen.js'
 import { Leafkin } from './render/leafkin.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
-import { Entrances, loadMouthBank } from './render/entrances.js'
+import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { Shell } from './render/shell.js'
-import { SHELL, buildVillage } from './rooms/village.js'
+import { rollVillage, buildVillage } from './rooms/village.js'
+import { keyHash } from '../sim/score.js'
 import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
@@ -721,6 +722,8 @@ function saveGame() {
     held: {},
     hour: clock.hour,
     room: currentRoom.id,
+    // A village is the one behind the mouth she came in by: its seed, and the door out.
+    door: cameInBy,
   }
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
@@ -986,7 +989,7 @@ function applyQuestToggle(key) {
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) entrances.batch.visible = entrances.holes.visible = questToggles.boulders
+  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -2256,14 +2259,14 @@ let entrances = null
 // A village's own (DESIGN.md §30): its huts and the boulder's inside; both null in the overworld.
 let roomProps = null
 let shell = null
-// The mouth she came in by, to put her back at when she leaves.
+// The mouth she came in by (Entrances.sites()): the village's seed, and where to put her back when she leaves. Saved with the game; null in the overworld.
 let cameInBy = null
-// The village doors (DESIGN.md §30): a mouth within `reach` takes her when the step just taken ends her feet within `walk` of its point heading into the face (the cosine at least `into`), or a teleport lands them within `blink`. The limiter has already refused the face, so both land on the point.
-const PORTAL = { reach: 20, walk: 0.9, blink: 1.2, into: 0.5 }
+// A village's seed: the hash of its mouth's key, the boulder's place in the overworld.
+const villageSeed = () => keyHash(cameInBy.key)
+// The village doors (DESIGN.md §30, entrances.js PORTAL): where the step began, the mouths in reach, whether it was a teleport, and the door she stands in, so a mouth takes her once a visit.
 const portalFrom = new THREE.Vector3()
 const portalSites = []
 let portalBlink = false
-// The door she stands in, so a mouth takes her once a visit.
 let portalIn = null
 let editor = null
 let panel = null
@@ -2339,9 +2342,9 @@ function applyAnimalVisibility() {
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
-  // The roosts go with their dragons: a nest is where a dragon lives, not litter.
-  dragons.batch.visible = animalOn('dragons')
-  roosts.batch.visible = animalOn('dragons')
+  // The roosts go with their dragons: a nest is where a dragon lives, not litter. Neither in a village.
+  if (dragons) dragons.batch.visible = animalOn('dragons')
+  if (roosts) roosts.batch.visible = animalOn('dragons')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -2507,8 +2510,13 @@ async function bootWorld() {
   // placed -- so it is read HERE and not applied after the fact, or the forest
   // would be planted around the room's spawn and she would be standing outside it.
   let saved = readSave()
-  const room = ROOMS[saved?.room ?? 'overworld']
+  let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
+  if (room.village) {
+    // A village save from before the door was written names no village to build.
+    if (saved.door?.key === undefined) { console.warn('[v2] the save is in a village with no door: booting the overworld'); room = ROOMS.overworld; saved = null }
+    else cameInBy = saved.door
+  }
   const { fresh } = await buildRoom(room, saved)
   if (fresh) saved = null
 
@@ -2713,9 +2721,11 @@ async function buildRoom(room, at) {
     bootSay('building the village ...')
     await bootStep('village')
     bank = buildRockBank()
-    shell = new Shell(scene, bank, propTextures, SHELL)
+    const house = (await loadHouseBank()).bounds
+    const spec = rollVillage(villageSeed(), house)
+    shell = new Shell(scene, bank, propTextures, spec.shell)
     lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
-    roomSpec = buildVillage({ shell, house: (await loadHouseBank()).bounds })
+    roomSpec = buildVillage({ spec, shell, house })
     heightmap = roomSpec.heightmap
   } else {
     bootSay(`loading <b>${room.height}</b> ...`)
@@ -2883,6 +2893,7 @@ async function buildRoom(room, at) {
     roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomSpec.props, clearing: roomSpec.clearing })
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
+    window.v2village = roomSpec // console: `v2village.spec.lake`, `v2village.props`
   }
   window.v2huts = roomProps
 
@@ -3182,9 +3193,10 @@ async function buildRoom(room, at) {
   // The stag, the fox and the hare wandering the open ground (render/wildlife.js):
   // they stand on the WalkSurface, so after the rocks and the trees that compose
   // it. The GLBs land after boot; until they do the layer places nothing, and
-  // the first frame after they land fills the tiles around her.
+  // the first frame after they land fills the tiles around her. A village holds
+  // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s) })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -3260,23 +3272,25 @@ async function buildRoom(room, at) {
   // dragons that live in them (render/dragons.js), hunting the wildlife's
   // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
   await bootStep('dragons')
-  const [roostMaps, eggBank] = await Promise.all([loadRoostMaps(), loadEggBank()])
-  roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, maps: roostMaps, egg: eggBank })
-  for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
-  roosts.place(spawn.x, spawn.z)
-  roosts.bakeCards(renderer)
-  console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
-  window.v2roosts = roosts
-  hands.addSource(roosts, 'egg')
-  dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces })
-  for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
-  dragons.ready.then(() => {
-    if (build !== roomBuild) return
-    dragons.bakeCards(renderer)
-    console.log(`[v2] dragons: fly pose ${(2 * dragons.fly.halfZ * dragons.asset.sizeM / dragons.asset.span).toFixed(1)} m across`)
-  })
-  window.v2dragons = dragons
-  creatureNet.add(dragons, ['dr'])
+  if (!room.village) {
+    const [roostMaps, eggBank] = await Promise.all([loadRoostMaps(), loadEggBank()])
+    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, maps: roostMaps, egg: eggBank })
+    for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+    roosts.place(spawn.x, spawn.z)
+    roosts.bakeCards(renderer)
+    console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
+    window.v2roosts = roosts
+    hands.addSource(roosts, 'egg')
+    dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces })
+    for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
+    dragons.ready.then(() => {
+      if (build !== roomBuild) return
+      dragons.bakeCards(renderer)
+      console.log(`[v2] dragons: fly pose ${(2 * dragons.fly.halfZ * dragons.asset.sizeM / dragons.asset.span).toFixed(1)} m across`)
+    })
+    window.v2dragons = dragons
+    creatureNet.add(dragons, ['dr'])
+  }
 
   // The leafkin village entrances (render/entrances.js, DESIGN.md §30): a
   // mouth on the face of every hollow boulder the rocks hold resident, or in a
@@ -3285,6 +3299,7 @@ async function buildRoom(room, at) {
   entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await loadMouthBank(), fixed: room.village ? [roomSpec.exit] : null })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
+  walk.addStone(entrances)
   console.log(`[v2] entrances ${entrances.stats.placed} mouths in ${entrances.placeMs.toFixed(1)} ms, refused ${JSON.stringify(entrances.stats.rejected)}`)
   window.v2entrances = entrances
 
@@ -4854,8 +4869,7 @@ function portalTest() {
   entrances.sites(portalSites)
   let door = null
   for (const site of portalSites) {
-    const dx = feet.x - site.x, dz = feet.z - site.z
-    const d = Math.hypot(dx, dz)
+    const d = Math.hypot(feet.x - site.holeX, feet.z - site.holeZ)
     if (d > PORTAL.reach) continue
     const walked = d <= PORTAL.walk && step > 0 && -(sx * site.nx + sz * site.nz) / step >= PORTAL.into
     if (walked || (blink && d <= PORTAL.blink)) { door = site; break }
@@ -4865,8 +4879,9 @@ function portalTest() {
   if (!door || EDITOR_MODE) return
   // Out of a village, the mouth she came in by; into one, its own way out.
   const out = currentRoom.village
-  if (!out) cameInBy = { ...door }
-  bootRoom(out ? ROOMS.overworld : ROOMS.leafkin, out ? cameInBy : null).catch(reportRuntimeError)
+  const by = out ? cameInBy : { ...door }
+  cameInBy = out ? null : by
+  bootRoom(out ? ROOMS.overworld : ROOMS.leafkin, out ? by : null).catch(reportRuntimeError)
 }
 
 /**
@@ -5509,7 +5524,7 @@ function tick() {
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
-  stepAnimal('dragons', () => {
+  if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
     dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
   })

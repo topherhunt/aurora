@@ -28,7 +28,7 @@ import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
 import { Layers } from '../src/v2/layers/layers.js'
 
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 const hm = await Heightmap.read({

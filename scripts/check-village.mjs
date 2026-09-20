@@ -2,21 +2,22 @@
 //
 //   node scripts/check-village.mjs
 //
-// The room is built in memory at boot from the shell's own wall, so what is
-// gated is that build: that it is deterministic and quick, that the ground is
-// a bowl she can walk and a cliff she cannot on every bearing, that its
-// sub-texel relief calibrates to the overworld's, that the river reaches the
-// lake, that every road holds its grade and never runs straight, that each
-// hut stands on dry level ground with its door on a road and the wood kept
-// off it, that the shell roofs every walkable metre with three to spare, and
-// that the room boots on the layers the overworld boots on: rocks without a
-// hollow bed, the exit mouth seated where the build says, the huts stone to
-// the walker.
+// The room is built in memory at boot from the shell's own wall and the
+// entrance's seed, so what is gated is that build, over several seeds: that
+// it is deterministic and quick, that no two seeds build the same valley,
+// that the ground is a bowl she can walk and a cliff she cannot on every
+// bearing, that its sub-texel relief calibrates to the overworld's, that the
+// river reaches the lake, that every road holds its grade and never runs
+// straight, that each hut stands on dry level ground with its door on a road
+// and the wood kept off it, that the shell roofs every walkable metre with
+// three to spare, and that the room boots on the layers the overworld boots
+// on: rocks without a hollow bed, the exit mouth seated where the build says,
+// the huts stone to the walker.
 
 import { readFile } from 'node:fs/promises'
 import * as THREE from 'three'
 
-import { LOCOMOTION } from '../src/player.js'
+import { LOCOMOTION, Player } from '../src/player.js'
 import { SEED } from '../src/v2/config.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
@@ -28,13 +29,14 @@ import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { Trees } from '../src/v2/render/trees.js'
-import { Entrances, MOUTH_STEP_M, mouthBankFrom } from '../src/v2/render/entrances.js'
+import { Entrances, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { WalkSurface } from '../src/v2/walk.js'
+import { keyHash } from '../src/sim/score.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  CLEARING, FLOOR, LAKE, ROAD_GRADE, SHELL, STRAIGHT_M, TEXELS, TILE_TEXELS, buildVillage, longestStraight,
+  FLOOR, HUTS, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS, buildVillage, longestStraight, rollVillage,
 } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -47,24 +49,42 @@ const MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 const HEADROOM_M = 3
 const BUILD_MS = 250
 const HOUSE = 'house-leafkin'
+// The seeds gated: real entrance keys from the shipped overworld (probe-villages.mjs), hashed the way main.js villageSeed hashes them.
+const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:190.0', 'hollow:-2218.0:-821.0', 'hollow:-244.0:-1563.0', 'hollow:-1947.0:380.0']
+
+const texArray = buildTextureArray()
+const bank = buildRockBank()
+const houseBank = propBankFrom(readShippedLadder(HOUSE))
+const overworld = new V2Height({
+  heightmap: await Heightmap.read({ path: 'public/world/height.png', metaPath: 'public/world/height.json' }),
+  layers: Layers.deserialize(validate(JSON.parse(await readFile('public/world/layers.json', 'utf8')))),
+  seed: SEED, relief: RELIEF_SHIPPED,
+})
+
+/** One seed's build: the shell on its roll, the room, and the field the walker reads. */
+function build(seed) {
+  const spec = rollVillage(seed, houseBank.bounds)
+  const shell = new Shell(new THREE.Scene(), bank, texArray, spec.shell)
+  const t0 = performance.now()
+  const room = buildVillage({ spec, shell, house: houseBank.bounds })
+  const buildMs = performance.now() - t0
+  const layers = Layers.deserialize(validate(room.doc))
+  const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
+  return { seed, spec, shell, room, buildMs, layers, field }
+}
 
 // --- the build ----------------------------------------------------------------
 console.log('\nthe build')
-const texArray = buildTextureArray()
-const bank = buildRockBank()
-const shell = new Shell(new THREE.Scene(), bank, texArray, SHELL)
-const houseBank = propBankFrom(readShippedLadder(HOUSE))
-const t0 = performance.now()
-const room = buildVillage({ shell, house: houseBank.bounds })
-const buildMs = performance.now() - t0
-const doc = validate(room.doc)
+const builds = KEYS.map((key) => build(keyHash(key)))
 {
-  check(buildMs < BUILD_MS, `the village builds in under ${BUILD_MS} ms`, `${buildMs.toFixed(0)} ms`)
-  const again = buildVillage({ shell, house: houseBank.bounds })
+  const { room, spec, shell, buildMs } = builds[0]
+  check(builds.every((b) => b.buildMs < BUILD_MS), `every village builds in under ${BUILD_MS} ms`, `${builds.map((b) => b.buildMs.toFixed(0)).join(' ')} ms`)
+  const again = buildVillage({ spec, shell, house: houseBank.bounds })
   const a = room.heightmap.field, b = again.heightmap.field
   let same = a.length === b.length
   for (let i = 0; same && i < a.length; i++) same = a[i] === b[i]
   check(same && JSON.stringify(again.doc) === JSON.stringify(room.doc) && JSON.stringify(again.props) === JSON.stringify(room.props), 'the build is deterministic')
+  check(JSON.stringify(rollVillage(spec.seed, houseBank.bounds)) === JSON.stringify(spec), 'the roll is deterministic')
   check(room.heightmap.texelSize === 8 && room.heightmap.width === TEXELS, 'the room keeps the overworld pitch', `${room.heightmap.texelSize} m a texel`)
   // The tile repeats: the texel a tile over is the same texel.
   let seams = 0
@@ -72,13 +92,36 @@ const doc = validate(room.doc)
     for (let i = 0; i < TEXELS - TILE_TEXELS; i += 7) if (a[j * TEXELS + i] !== a[(j + TILE_TEXELS) * TEXELS + i + TILE_TEXELS]) seams++
   }
   check(seams === 0, 'the valley tiles the map without a seam', `${seams} texels differ a tile over`)
-  for (const k of ['spawn', 'exit', 'clearing', 'props']) check(k in room, `the build answers ${k}`)
+  for (const k of ['spawn', 'exit', 'clearing', 'props', 'spec']) check(k in room, `the build answers ${k}`)
+  // No two seeds build the same valley: the ground, the lake, the huts and the shell's turn all differ pairwise.
+  let alike = 0, hutCounts = new Set(), yaws = new Set()
+  for (let i = 0; i < builds.length; i++) {
+    hutCounts.add(builds[i].room.props.length)
+    yaws.add(builds[i].spec.shell.yaw.toFixed(2))
+    for (let j = i + 1; j < builds.length; j++) {
+      const p = builds[i].room.heightmap.field, q = builds[j].room.heightmap.field
+      let differ = 0
+      for (let k = 0; k < p.length; k += 97) if (Math.abs(p[k] - q[k]) > 0.5) differ++
+      const li = builds[i].spec.lake, lj = builds[j].spec.lake
+      const lakeMoved = Math.hypot(li.x - lj.x, li.z - lj.z) > 2 || Math.abs(li.rx - lj.rx) > 1 || Math.abs(li.rz - lj.rz) > 1 || Math.abs(li.rot - lj.rot) > 0.2
+      const huts = JSON.stringify(builds[i].room.props) !== JSON.stringify(builds[j].room.props)
+      if (differ < p.length / 97 / 4 || !lakeMoved || !huts) { alike++; console.log(`    seeds ${builds[i].seed} and ${builds[j].seed} alike: ${differ} texels differ, lake ${lakeMoved ? 'moved' : 'held'}, huts ${huts ? 'differ' : 'agree'}`) }
+    }
+  }
+  check(alike === 0, 'no two seeds build the same valley', `${alike} alike pairs of ${(builds.length * (builds.length - 1)) / 2}`)
+  check(hutCounts.size > 1 && yaws.size === builds.length, 'the seeds differ in their hut counts and their shells\' turns', `huts ${[...hutCounts].join('/')}, ${yaws.size} turns`)
 }
+
+for (const b of builds) gateVillage(b)
+
+/** The ground, the water, the roads, the huts, the wood and the shell of one seed's village. */
+function gateVillage({ seed, spec, shell, room, layers, field }) {
+console.log(`\n=== seed ${seed}: ${room.props.length - 1} huts, lake at ${spec.lake.x.toFixed(0)}, ${spec.lake.z.toFixed(0)}, shell turned ${((spec.shell.yaw * 180) / Math.PI).toFixed(0)} degrees`)
+const LAKE = spec.lake
+const doc = room.doc
 
 // --- the ground ---------------------------------------------------------------
 console.log('\nthe ground')
-const layers = Layers.deserialize(doc)
-const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
 const heightAt = (x, z) => field.heightAt(x, z)
 // The walker's slope (walk.js SLOPE_EPS), so a point is steep here where it stops her.
 const slopeAt = (x, z, eps = 0.75) => {
@@ -94,11 +137,6 @@ const inBowl = (x, z) => Math.hypot(x, z) < rimAt(x, z)
   // The overworld's calibration, which this valley's should match: the same
   // detail stack is fed by what the map measures at 16 and 32 m, and a map
   // that is all cliff or all plain hands it a different amplitude.
-  const overworld = new V2Height({
-    heightmap: await Heightmap.read({ path: 'public/world/height.png', metaPath: 'public/world/height.json' }),
-    layers: Layers.deserialize(validate(JSON.parse(await readFile('public/world/layers.json', 'utf8')))),
-    seed: SEED, relief: RELIEF_SHIPPED,
-  })
   const ratio = field.calibration.rough / overworld.calibration.rough
   check(ratio > 0.5 && ratio < 2, 'the sub-texel relief calibrates to the overworld\'s', `rough ${field.calibration.rough.toFixed(3)} vs ${overworld.calibration.rough.toFixed(3)}`)
   // Walkable short of the cliff's foot, which the 8 m reconstruction rounds over a texel, and off the lake's carved bank; both are steep by design like the overworld's. The overworld's detail stops her on 0.1% of its gentle ground, and the valley's is calibrated to it.
@@ -168,7 +206,7 @@ const ways = roads.filter((r) => !r.id.startsWith('yard'))
 const yards = roads.filter((r) => r.id.startsWith('yard'))
 {
   check(ways.length === 2 && ways[0].id === 'd1' && ways[1].id === 'd2', 'a trunk and an arc')
-  check(yards.length === room.props.length, 'a yard under every hut')
+  check(yards.length === 2 * room.props.length, 'two rings of yard under every hut')
   for (const r of ways) {
     const s = new Spline(r.pts).flatten(1)
     let worst = 0, wetSamples = 0, off = 0
@@ -198,7 +236,7 @@ const yards = roads.filter((r) => r.id.startsWith('yard'))
 console.log('\nthe huts')
 const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
 {
-  check(room.props.length === 7 && room.props.some((p) => p.height === 20), 'six huts and the great hut')
+  check(room.props.length - 1 >= HUTS.least && room.props.length - 1 <= 2 * HUTS.perSide[1] && room.props.filter((p) => p.height > 15).length === 1, 'the rolled number of huts and the great hut', `${room.props.length - 1} huts`)
   const doors = roomProps.doors()
   let offRoad = 0, worstDoor = 0
   for (const d of doors) {
@@ -208,7 +246,7 @@ const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, pro
     if (dist > 1) offRoad++
   }
   check(offRoad === 0, 'every door opens on a road', `farthest ${worstDoor.toFixed(2)} m from a centreline`)
-  let wetHuts = 0, tilted = 0, onRoad = 0
+  let wetHuts = 0, tilted = 0, onRoad = 0, worstTilt = 0, worstHut = ''
   for (const h of roomProps.props) {
     let lo = Infinity, hi = -Infinity
     for (let k = 0; k < 8; k++) {
@@ -218,7 +256,7 @@ const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, pro
       const g = heightAt(x, z)
       lo = Math.min(lo, g); hi = Math.max(hi, g)
     }
-    if (hi - lo > 0.5) tilted++
+    if (hi - lo > 0.5) { tilted++; if (hi - lo > worstTilt) { worstTilt = hi - lo; worstHut = `${roomProps.props.indexOf(h)} at ${h.x.toFixed(0)}, ${h.z.toFixed(0)} r ${h.r.toFixed(1)}` } }
     // A way under the hut: its centreline inside the footprint, well in from the door.
     for (const w of ways) {
       const s = new Spline(w.pts).flatten(1)
@@ -226,11 +264,12 @@ const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, pro
     }
   }
   check(wetHuts === 0, 'no hut stands in the water')
-  check(tilted === 0, 'every hut stands on ground within 0.5 m of level across its footprint')
+  check(tilted === 0, 'every hut stands on ground within 0.5 m of level across its footprint', `${tilted} tilted, worst ${worstTilt.toFixed(2)} m on hut ${worstHut}`)
   check(onRoad === 0, 'no way runs under a hut')
   const c = room.clearing
   check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + c.r + 40, c.z, 0), 'the clearing is the wood\'s occupier')
-  check(roomProps.blockTopAt(roomProps.props[6].x, roomProps.props[6].z) > heightAt(roomProps.props[6].x, roomProps.props[6].z) + 19, 'the great hut is stone to the walker')
+  const great = roomProps.props[roomProps.props.length - 1]
+  check(roomProps.blockTopAt(great.x, great.z) > great.top - 1, 'the great hut is stone to the walker')
 }
 
 // --- the wood -----------------------------------------------------------------
@@ -241,6 +280,7 @@ const water = {
   shoreDistAt: (x, z, reach) => reach,
 }
 {
+  const CLEARING = room.clearing
   const biome = { seed: SEED, coverAt: (x, z) => ((x - CLEARING.x) ** 2 + (z - CLEARING.z) ** 2 < CLEARING.r ** 2 ? 0 : 1) }
   const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: SEED, radius: 200, biome, deadwood: roomProps })
   trees.place(0, 0)
@@ -261,8 +301,8 @@ const water = {
   const outside = roomProps.props.filter((h) => Math.hypot(h.x - CLEARING.x, h.z - CLEARING.z) + h.r > CLEARING.r).length
   check(outside === 0, 'every hut stands in the clearing', `${outside} outside it`)
   const lakeOut = Math.hypot(LAKE.x - CLEARING.x, LAKE.z - CLEARING.z) + Math.max(LAKE.rx, LAKE.rz) > CLEARING.r
-  check(!lakeOut, 'the lake lies in the clearing', `lake at ${LAKE.x}, ${LAKE.z} r ${Math.max(LAKE.rx, LAKE.rz)}`)
-  const c = room.clearing
+  check(!lakeOut, 'the lake lies in the clearing', `lake at ${LAKE.x.toFixed(0)}, ${LAKE.z.toFixed(0)} r ${Math.max(LAKE.rx, LAKE.rz).toFixed(0)}`)
+  const c = CLEARING
   let woodOut = 0
   for (let b = 0; b < 360; b += 15) {
     const a = (b * Math.PI) / 180
@@ -293,10 +333,20 @@ console.log('\nthe shell')
   check(shell.mesh.name === 'v2-shell' && shell.material.side === THREE.FrontSide, 'the shell draws its inside')
   check(shell.mesh.geometry.attributes.texLayer !== undefined && shell.mesh.geometry.index.count === bank.shapes.boulder.tiers[0].index.count, 'the shell is the bank\'s boulder on the bank\'s stone')
 }
+}
 
 // --- the boot -----------------------------------------------------------------
 console.log('\nthe boot')
 {
+  const { room, layers, field } = builds[builds.length - 1]
+  const heightAt = (x, z) => field.heightAt(x, z)
+  const wet = (x, z) => layers.waterLevelAt(x, z) !== null
+  const water = {
+    levelAt: (x, z) => layers.waterLevelAt(x, z),
+    isSubmerged: (x, z, g) => { const l = layers.waterLevelAt(x, z); return l !== null && g < l },
+    shoreDistAt: (x, z, reach) => reach,
+  }
+  const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
   const scene = new THREE.Scene()
   const rocks = new Rocks(scene, field, water, layers, texArray, { seed: SEED, hollows: false, bank })
   check(rocks.bank === bank, 'the rocks share the shell\'s bank')
@@ -315,13 +365,33 @@ console.log('\nthe boot')
   check(site && Math.abs(site.x - room.exit.x - room.exit.nx * MOUTH_STEP_M) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * MOUTH_STEP_M) < 0.01 && site.nx === room.exit.nx, 'the mouth is a step in from the build\'s point along its normal')
   const walk = new WalkSurface(field, rocks, trees)
   walk.addStone(roomProps)
-  const great = roomProps.props[6]
+  const great = roomProps.props[roomProps.props.length - 1]
   const onTop = walk.heightAt(great.x, great.z)
   check(onTop >= great.top - 0.01, 'the walk surface stands on the great hut', `${onTop.toFixed(1)} vs ground ${great.y.toFixed(1)}`)
   const arrive = { x: room.spawn.x, z: room.spawn.z }
   check(walk.slopeAt(arrive.x, arrive.z) <= MAX_SLOPE && !wet(arrive.x, arrive.z), 'she arrives on dry walkable ground')
   const ex = room.exit
   check(Math.abs(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)) < 1, 'the mouth and the arrival stand level', `${(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)).toFixed(2)} m`)
+  // The way out: walked from the arrival into the face, her feet come within PORTAL.walk of the hole, or the door never opens.
+  walk.addStone(e)
+  const rig = new THREE.Group()
+  const camera = new THREE.PerspectiveCamera()
+  camera.position.y = LOCOMOTION.eyeHeight
+  camera.rotation.y = Math.atan2(site.nx, site.nz)
+  rig.add(camera)
+  const player = new Player(rig, camera, walk)
+  player.spawnAt(arrive.x, arrive.z)
+  rig.updateMatrixWorld(true)
+  let nearest = Infinity
+  const warn = console.warn
+  console.warn = () => {}
+  for (let f = 0; f < 72 * 4; f++) {
+    player.update(1 / 72, { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true })
+    rig.updateMatrixWorld(true)
+    nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ))
+  }
+  console.warn = warn
+  check(nearest <= PORTAL.walk, `walked in from the arrival, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `nearest ${nearest.toFixed(2)} m`)
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall ok')

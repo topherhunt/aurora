@@ -21,8 +21,11 @@
 //            then the next cap in reach, else roam.
 //   startle  she is within STARTLE_M, feet to feet: face her, recoil, the
 //            bundle scattered, a scream, STARTLE_S; then
-//   flee     run at the mouth, a refused step sliding along the obstacle;
-//            gone within HOME_M of the mouth, or out past its own cull.
+//   flee     run home on a path planned over the walker's ground (A* on a
+//            CELL grid, planPath), weaving about it, a refused step
+//            re-planning; inside FINAL_M of the mouth, straight at the arch
+//            unprobed, and gone within HOME_M of the arch, or out past its
+//            own cull.
 //   gone     the site is empty EMPTY_S, then refilled only with her inside
 //            ROAM_M -- at a random point of the disc, SPAWN_CLEAR_M from her.
 // ---------------------------------------------------------------------------
@@ -57,10 +60,12 @@ const WOBBLE_W = (2 * Math.PI) / WOBBLE_PERIOD_S
 export const SEEK_M = 3
 export const REACH_M = 0.6
 export const GATHER_KEY = 0.5
-// Her feet within this of its own, and it is startled; how long the recoil holds before it runs; the mouth this close is home.
+// Her feet within this of its own, and it is startled; how long the recoil holds before it runs.
 export const STARTLE_M = 3
 export const STARTLE_S = 1.0
-export const HOME_M = 0.6
+// The mouth point this close, and it makes for the arch itself, its step no longer probed -- the probe lands on the boulder there and refuses a step that is the whole point; the arch this close is home.
+export const FINAL_M = 1.2
+export const HOME_M = 0.3
 // A scared-out village stays empty this long.
 export const EMPTY_S = 300
 // Ground it will not step onto: hers (player.js LOCOMOTION.maxSlopeDeg).
@@ -73,15 +78,24 @@ const AHEAD = 0.75
 const DETOUR = [Math.PI / 2, (5 * Math.PI) / 6]
 const DETOUR_S = 1
 const REFUSALS = 10
-// A fleeing body's way round what blocks the straight line home: the perpendicular, then the back-quarter, on the side it is already sliding to.
-const SLIDES = [Math.PI / 2, (3 * Math.PI) / 4]
-// Chatter while it roams, whimpers while it flees.
-export const CHATTER_S = [1.5, 4]
-export const WHIMPER_S = [2, 5]
+// A flight's path home: the grid it is planned on, the cells A* may open before it settles for the one nearest home, how near a waypoint counts as reached, how many waypoints ahead a clear line is looked for, a probe every this far along it, the weave about the line (the roam's wobble, scaled), and the ticks a refused step waits before the path is planned again.
+const CELL = 0.5
+const PLAN_OPEN = 800
+const WAYPOINT_M = 0.4
+const LOOKAHEAD = 8
+const LINE_STEP = 0.25
+const FLEE_WOBBLE = (25 * Math.PI) / 180
+const REPLAN_TICKS = 10
+// A call and a pant by turns, this long apart: chatter while it roams, whimpers while it flees.
+export const CHATTER_S = [2, 3.5]
+export const WHIMPER_S = [2.7, 4.1]
 export const CHATTERS = 4
-// A gait step, extended in place when it runs out; the chest, as a fraction of the body, where the bundle rides.
+// The squeal at a cap in sight, no oftener than this: a bed of caps is a run of gathers seconds apart.
+export const SQUEAL_S = 5
+// A gait step, extended in place when it runs out; the chest, as a fraction of the body, where the bundle rides, and what each cap in it is drawn across: half the torso's width.
 const STEP_S = 2
 const CHEST = 0.5
+export const CARRY_SPAN = 0.14
 const FADE_S = 0.25
 
 export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
@@ -96,6 +110,102 @@ const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _trunk = { x: 0, z: 0, r: 0 }
+
+// A cell's key: i and j within +-1024 cells (512 m) of the grid's origin.
+const cellKey = (i, j) => (i + 1024) * 2048 + (j + 1024)
+const STEPS8 = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]]
+
+/**
+ * A* over a CELL grid about (ox, oz) from (sx, sz) to within `near` of
+ * (gx, gz): a cell passable where `open(x, z)` says so, its answer kept in
+ * `cells` for the next plan; eight-connected, a diagonal refused past a
+ * blocked cell so no corner is cut. Opens at most `budget` cells and then
+ * settles for the opened one nearest the goal, so the way out of a pocket is
+ * found before the whole wood is. Returns the waypoints `[x, z][]` past the
+ * start cell -- none where nothing opened.
+ */
+export function planPath(open, cells, ox, oz, sx, sz, gx, gz, near, budget) {
+  const pass = (i, j) => {
+    const k = cellKey(i, j)
+    let v = cells.get(k)
+    if (v === undefined) { v = open(ox + i * CELL, oz + j * CELL); cells.set(k, v) }
+    return v
+  }
+  const octile = (i, j) => {
+    const di = Math.abs(gx - ox - i * CELL) / CELL, dj = Math.abs(gz - oz - j * CELL) / CELL
+    return Math.max(di, dj) + (Math.SQRT2 - 1) * Math.min(di, dj)
+  }
+  let si = Math.round((sx - ox) / CELL), sj = Math.round((sz - oz) / CELL)
+  // Standing on a blocked cell's centre, it starts from the nearest passable neighbour.
+  if (!pass(si, sj)) {
+    let found = false
+    for (const [di, dj] of STEPS8) if (pass(si + di, sj + dj)) { si += di; sj += dj; found = true; break }
+    if (!found) return []
+  }
+  const g = new Map(), parent = new Map(), closed = new Set()
+  const heapK = [], heapF = []
+  const push = (k, f) => {
+    let n = heapK.length
+    heapK.push(k); heapF.push(f)
+    while (n > 0) {
+      const p = (n - 1) >> 1
+      if (heapF[p] <= heapF[n]) break
+      ;[heapK[p], heapK[n]] = [heapK[n], heapK[p]]; [heapF[p], heapF[n]] = [heapF[n], heapF[p]]
+      n = p
+    }
+  }
+  const pop = () => {
+    const k = heapK[0]
+    const lk = heapK.pop(), lf = heapF.pop()
+    if (heapK.length > 0) {
+      heapK[0] = lk; heapF[0] = lf
+      let n = 0
+      for (;;) {
+        const a = 2 * n + 1, b = a + 1
+        let m = n
+        if (a < heapK.length && heapF[a] < heapF[m]) m = a
+        if (b < heapK.length && heapF[b] < heapF[m]) m = b
+        if (m === n) break
+        ;[heapK[m], heapK[n]] = [heapK[n], heapK[m]]; [heapF[m], heapF[n]] = [heapF[n], heapF[m]]
+        n = m
+      }
+    }
+    return k
+  }
+  const sk = cellKey(si, sj)
+  g.set(sk, 0)
+  push(sk, octile(si, sj))
+  let bestK = sk, bestH = octile(si, sj), goalK = -1, opened = 0
+  while (heapK.length > 0 && opened < budget) {
+    const k = pop()
+    if (closed.has(k)) continue
+    closed.add(k)
+    opened++
+    const i = Math.floor(k / 2048) - 1024, j = (k % 2048) - 1024
+    if (Math.hypot(ox + i * CELL - gx, oz + j * CELL - gz) <= near) { goalK = k; break }
+    const h = octile(i, j)
+    if (h < bestH) { bestH = h; bestK = k }
+    const gk = g.get(k)
+    for (const [di, dj, cost] of STEPS8) {
+      const ni = i + di, nj = j + dj
+      if (!pass(ni, nj)) continue
+      if (di !== 0 && dj !== 0 && !(pass(i + di, j) && pass(i, j + dj))) continue
+      const nk = cellKey(ni, nj)
+      if (closed.has(nk)) continue
+      const ng = gk + cost
+      const old = g.get(nk)
+      if (old !== undefined && old <= ng) continue
+      g.set(nk, ng)
+      parent.set(nk, k)
+      push(nk, ng + octile(ni, nj))
+    }
+  }
+  const path = []
+  for (let k = goalK >= 0 ? goalK : bestK; k !== sk; k = parent.get(k)) {
+    path.push([ox + (Math.floor(k / 2048) - 1024) * CELL, oz + ((k % 2048) - 1024) * CELL])
+  }
+  return path.reverse()
+}
 const _norm = { x: 0, y: 1, z: 0 }
 
 export class Leafkin {
@@ -141,15 +251,17 @@ export class Leafkin {
         // The tick's pose and the one before it, for the frame to lerp; `tick` and `alpha` are the score's.
         x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0, tick: 0, alpha: 0,
         // The frame's pose, what the puppet and the ear are given.
-        pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1, pant: false },
+        pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1 },
         // roam, gather, startle or flee.
         state: 'roam',
-        // The roam's target and when it is replaced, the heading's wander, seconds left of a turn off a refused probe, probes refused in a row, and the side (+1, -1, or 0 for none) a flight slides round an obstacle on.
-        tx: 0, tz: 0, retarget: 0, wob: 0, wobv: 0, detour: 0, refused: 0, slide: 0,
+        // The roam's target and when it is replaced, the heading's wander, seconds left of a turn off a refused probe, and probes refused in a row.
+        tx: 0, tz: 0, retarget: 0, wob: 0, wobv: 0, detour: 0, refused: 0,
+        // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over, and the tick the path was last planned on.
+        path: [], wp: 0, cells: new Map(), planned: -1,
         // The cap it is going for, whether this gather has taken it, and the bundle: caps carried and the carrier holding them.
         cx: 0, cy: 0, cz: 0, took: false, bundle: 0, carrier: null,
-        // Seconds the recoil has left, and to the next chatter or whimper.
-        hold: 0, voice: 0,
+        // Seconds the recoil has left, and to the next call or pant, and whether the last was a pant.
+        hold: 0, voice: 0, panted: false, squeal: 0,
         // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of steps, and the ground speed.
         clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
         lod: LOD_TIERS, puppet: null,
@@ -220,7 +332,7 @@ export class Leafkin {
     return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, spawned: this.spawned, fled: this.fled, starved: this.starved, overflow: this.overflow }
   }
 
-  /** Every leafkin drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle, speed and `pant`. */
+  /** Every leafkin drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
   bodies(into) {
     if (!this.batch.visible) return into
     for (const c of this.byKey.values()) if (c.lod < LOD_TIERS) into.push(c.pose)
@@ -304,10 +416,18 @@ export class Leafkin {
     this.pending.push({ sound, x: c.x, y: c.y + c.size * CHEST, z: c.z })
   }
 
+  /** The state's call, or a pant if the last was the call, and the wait to the next. */
+  _call(c, sound, gap) {
+    c.voice = between(c.rand, gap)
+    c.panted = !c.panted
+    this._voice(c, c.panted ? 'panting' : sound)
+  }
+
   _roam(c) {
     c.state = 'roam'
     c.detour = 0
     c.voice = between(c.rand, CHATTER_S)
+    c.panted = true
     this._target(c)
     this._play(c, c.bundle > 0 ? 'run-carry' : 'run', STEP_S)
   }
@@ -330,7 +450,7 @@ export class Leafkin {
     c.cx = m.instX[hit.id]
     c.cy = m.instY[hit.id]
     c.cz = m.instZ[hit.id]
-    this._voice(c, 'leafkinSqueal')
+    if (c.squeal <= 0) { this._voice(c, 'leafkinSqueal'); c.squeal = SQUEAL_S }
     this._play(c, 'run', STEP_S)
   }
 
@@ -346,8 +466,14 @@ export class Leafkin {
 
   _flee(c) {
     c.state = 'flee'
-    c.slide = 0
+    c.cells.clear()
+    c.path.length = 0
+    c.wp = 0
+    c.planned = -1
+    c.refused = 0
+    c.wob = 0; c.wobv = 0
     c.voice = between(c.rand, WHIMPER_S)
+    c.panted = true
     this._play(c, 'run', STEP_S)
   }
 
@@ -426,10 +552,7 @@ export class Leafkin {
     if (c.detour <= 0) c.aim = this._toward(c, c.tx, c.tz) + c.wob
     this._advance(c, dt)
     c.voice -= dt
-    if (c.voice <= 0) {
-      c.voice = between(c.rand, CHATTER_S)
-      this._voice(c, `leafkinChatter${1 + Math.min(CHATTERS - 1, (c.rand() * CHATTERS) | 0)}`)
-    }
+    if (c.voice <= 0) this._call(c, `leafkinChatter${1 + Math.min(CHATTERS - 1, (c.rand() * CHATTERS) | 0)}`, CHATTER_S)
   }
 
   _tickGather(c, dt) {
@@ -460,7 +583,7 @@ export class Leafkin {
     if (!hit || !this._canCarry(c)) return
     const rec = m.take(hit)
     if (this.hands) {
-      if (!c.carrier) c.carrier = this.hands.carry(`leafkin:${c.key}`)
+      if (!c.carrier) c.carrier = this.hands.carry(`leafkin:${c.key}`, c.size * CARRY_SPAN)
       c.carrier.add(rec, m)
     }
     c.bundle++
@@ -468,46 +591,68 @@ export class Leafkin {
 
   _tickFlee(c, tick, dt) {
     const site = c.site
-    const dx = site.x - c.x, dz = site.z - c.z
-    const home = Math.hypot(dx, dz)
     const seconds = tick * TICK_S
-    if (home <= HOME_M || Math.hypot(c.x - this.head.x, c.y - this.head.y, c.z - this.head.z) > cullRange(c.size)) { this._gone(c, seconds); return }
-    // Straight at the mouth, or a slide along whatever is in the way: the perpendicular, then the back-quarter, on the side it took up first -- a side chosen afresh each step would flip across a wall square to the path and never reach its end. Nothing clear, and it stands.
-    const want = Math.atan2(-dz, dx)
-    let h = want
-    if (this._blocked(c, want)) {
-      h = NaN
-      const sides = c.slide === 0 ? [1, -1] : [c.slide, -c.slide]
-      for (const side of sides) {
-        for (const off of SLIDES) {
-          if (this._blocked(c, want + side * off)) continue
-          h = want + side * off
-          c.slide = side
-          break
-        }
-        if (Number.isFinite(h)) break
-      }
-    } else c.slide = 0
-    if (Number.isFinite(h)) {
-      c.aim = h
+    if (Math.hypot(site.ax - c.x, site.az - c.z) <= HOME_M || Math.hypot(c.x - this.head.x, c.y - this.head.y, c.z - this.head.z) > cullRange(c.size)) { this._gone(c, seconds); return }
+    const dx = site.x - c.x, dz = site.z - c.z
+    if (Math.hypot(dx, dz) <= FINAL_M) {
+      c.aim = Math.atan2(c.z - site.az, site.ax - c.x)
       const d = c.speed * dt * this._turn(c, dt, FLEE_TURN)
-      if (!this._blocked(c, c.heading)) {
-        c.x += Math.cos(c.heading) * d
-        c.z -= Math.sin(c.heading) * d
-      }
+      c.x += Math.cos(c.heading) * d
+      c.z -= Math.sin(c.heading) * d
+      c.voice -= dt
+      if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
+      return
+    }
+    // Along the planned path, weaving about it; a step onto ground it cannot stand on is refused, and REPLAN_TICKS of those plan the path again from here.
+    if (c.wp >= c.path.length && (c.planned < 0 || tick - c.planned >= REPLAN_TICKS)) this._plan(c, tick)
+    // The path run out, or none found: straight at the mouth point.
+    let wx = site.x, wz = site.z
+    if (c.wp < c.path.length) {
+      if (Math.hypot(c.path[c.wp][0] - c.x, c.path[c.wp][1] - c.z) <= WAYPOINT_M) c.wp = this._lookahead(c)
+      if (c.wp < c.path.length) [wx, wz] = c.path[c.wp]
+    }
+    c.wobv += ((c.rand() * 2 - 1) * WOBBLE_DRIVE - c.wobv * WOBBLE_W - c.wob * WOBBLE_W * WOBBLE_W) * dt
+    c.wob = clamp(c.wob + c.wobv * dt, -WOBBLE_MAX, WOBBLE_MAX)
+    c.aim = this._toward(c, wx, wz) + c.wob * (FLEE_WOBBLE / WOBBLE_MAX)
+    const d = c.speed * dt * this._turn(c, dt, FLEE_TURN)
+    const nx = c.x + Math.cos(c.heading) * d, nz = c.z - Math.sin(c.heading) * d
+    if (this.seat(nx, nz) !== null) { c.x = nx; c.z = nz; c.refused = 0 } else {
+      c.wob = 0; c.wobv = 0
+      if (++c.refused >= REPLAN_TICKS && tick - c.planned >= REPLAN_TICKS) { c.cells.clear(); this._plan(c, tick) }
     }
     c.voice -= dt
-    if (c.voice <= 0) {
-      c.voice = between(c.rand, WHIMPER_S)
-      this._voice(c, 'leafkinWhimper')
-    }
+    if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
   }
 
   /** One tick of world time. A slot retired mid-catch-up is left alone. */
+  /** The path home from where it stands, over the site's ground: planPath's, from the cell it is in to a cell whose reach puts it inside FINAL_M of the mouth point. */
+  _plan(c, tick) {
+    const site = c.site
+    c.path = planPath((x, z) => this.seat(x, z) !== null, c.cells, site.x, site.z, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, PLAN_OPEN)
+    c.wp = 0
+    c.planned = tick
+    c.refused = 0
+  }
+
+  /** The furthest of the next LOOKAHEAD waypoints it can run straight at, probed every LINE_STEP along the line; the next one when none. */
+  _lookahead(c) {
+    const last = Math.min(c.path.length - 1, c.wp + LOOKAHEAD)
+    for (let k = last; k > c.wp + 1; k--) {
+      const [wx, wz] = c.path[k]
+      const dx = wx - c.x, dz = wz - c.z
+      const n = Math.ceil(Math.hypot(dx, dz) / LINE_STEP)
+      let clear = true
+      for (let i = 1; i <= n && clear; i++) clear = this.seat(c.x + (dx * i) / n, c.z + (dz * i) / n) !== null
+      if (clear) return k
+    }
+    return c.wp + 1
+  }
+
   _tick(c, tick) {
     if (c.site === null) return
     c.px = c.x; c.py = c.y; c.pz = c.z; c.ph = c.heading
     const dt = TICK_S
+    c.squeal -= dt
     if ((c.state === 'roam' || c.state === 'gather') && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M) this._startle(c)
     switch (c.state) {
       case 'roam': this._tickRoam(c, tick, dt); break
@@ -523,7 +668,9 @@ export class Leafkin {
     if (c.site === null) return
     c.left -= dt
     if (c.left <= 0) this._step(c)
+    // The last stretch is over the boulder's own footprint, where the walker's ground is the boulder's top: the arch's floor caps it there.
     c.y = this.walk.heightAt(c.x, c.z)
+    if (c.state === 'flee' && Math.hypot(c.site.x - c.x, c.site.z - c.z) <= FINAL_M) c.y = Math.min(c.y, Math.max(c.site.y, c.site.ay))
   }
 
   // -------------------------------------------------------------------------
@@ -598,7 +745,6 @@ export class Leafkin {
     pose.speed = c.speed
     pose.clip = c.clip
     pose.cycle = c.cycle
-    pose.pant = c.state === 'roam' || c.state === 'gather' || c.state === 'flee'
     if (c.carrier) c.carrier.place(pose.x, pose.y, pose.z, pose.heading, c.size * CHEST)
 
     const dist = Math.hypot(pose.x - this.head.x, pose.y - this.head.y, pose.z - this.head.z)

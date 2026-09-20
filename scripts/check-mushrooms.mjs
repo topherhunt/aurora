@@ -1742,7 +1742,7 @@ for (const s of SUBJECTS) s.geo.dispose()
     bands: { altLo: 0, altSpan: 900 },
   }
   const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, z, reach) => reach }
-  const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
+  const layers = { dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
   const textures = buildTextureArray()
   // A tree every 3 m, honouring the half-open box.
   const grove = {

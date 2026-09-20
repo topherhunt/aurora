@@ -68,7 +68,7 @@ const field = {
   bands: { altLo: 0, altSpan: 900 },
 }
 const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, z, reach) => reach }
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null, overlaps: () => false } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null, overlaps: () => false } }
 const textures = buildTextureArray()
 const noAnchors = { anchorsInto: () => 0 }
 const deadwoodBank = deadwoodBankFrom({
@@ -171,10 +171,12 @@ console.log('\n2. and the beds with no re-levelling thin have the margin to go w
 // camera, keep every surviving tile at the level it was grown at, never thin.
 // It is an upper bound on demand -- the real grow loop is budgeted and the tile
 // loop's thin jobs run in between -- so a bed UNDER its pool here cannot reach
-// the failure at all, whatever the camera does. Litter and mushrooms are under
-// it by a quarter of their pool or more, deadwood -- whose grid reaches the
-// longest log's card at 1.4 km -- by its own headroom's margin; this is what
-// would catch a density, a falloff or a reach being raised past that.
+// the failure at all, whatever the camera does. Mushrooms are under it by half
+// their pool, litter -- a flat 20,000 that warns and drops the pebble when it
+// runs dry rather than throwing, so this bound is the only thing that says it
+// never does -- by a quarter, deadwood -- whose grid reaches the longest log's
+// card at 1.4 km -- by its own headroom's margin; this is what would catch a
+// density, a falloff or a reach being raised past that.
 const ratchet = (bed, perTileAt) => {
   // The tile pitch, recovered exactly: the evict radius is radius + 1.5 tiles.
   const T = (Math.sqrt(bed.evictSq) - Math.sqrt(bed.radiusSq)) / 1.5
@@ -228,7 +230,7 @@ const ratchet = (bed, perTileAt) => {
   return peak
 }
 
-// Each bed's own _poolBound integrand, which is the thing being bounded.
+// Each bed's own _poolBound integrand, which is the thing being bounded (litter has a flat pool; this is what a tile of it holds).
 const INTEGRAND = {
   litter: (b) => (d2) => (b.perTile + b.perTileWet) * b.uAt[b._levelFor(d2)],
   rock: (b) => (d2) => b.perTile * b._keepFrac(b._levelFor(d2)),

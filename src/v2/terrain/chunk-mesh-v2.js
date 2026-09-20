@@ -116,7 +116,7 @@ const C_SNOW = [0.86, 0.88, 0.93]
 // was the first thing anyone noticed about an early road.
 const C_DIRT = [0.070, 0.058, 0.041]
 
-// How far toward C_DIRT fully-flattened ground goes. Not 1.0: a road surface
+// How far toward C_DIRT fully-dirtied ground goes (`dirt01`, Layers.dirtAt: a road's paint stops a metre past its edge while its flatten runs the feather, so a verge is shaped by the road and coloured like the ground). Not 1.0: a road surface
 // that ignores altitude entirely reads as a decal pasted over the terrain, and
 // keeping 15% of the underlying colour lets a road high on a mountain stay
 // visibly paler than the same road in a valley.
@@ -413,7 +413,7 @@ function snowBandAt(band, wx, wz) {
   return band * 2 ** Math.max(-1, Math.min(1, n))
 }
 
-function shade(h, ny, snowLine, snowBand, flatten01, shore01, altLo, altSpan, wx, wz, out, o) {
+function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, wz, out, o) {
   const steep = smoothstep(0.86, 0.62, ny)
   const alt = clamp01((h - altLo) / altSpan)
 
@@ -490,8 +490,8 @@ function shade(h, ny, snowLine, snowBand, flatten01, shore01, altLo, altSpan, wx
   // LAST, after snow: a road above the snow line is a road that has been
   // cleared, and a road that disappears under the snow layer is a road the
   // player cannot follow to the pass it was drawn to reach.
-  if (flatten01 > 0) {
-    const t = flatten01 * DIRT_MAX
+  if (dirt01 > 0) {
+    const t = dirt01 * DIRT_MAX
     r = lerp(r, C_DIRT[0], t)
     g = lerp(g, C_DIRT[1], t)
     b = lerp(b, C_DIRT[2], t)
@@ -759,7 +759,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
         nyClass = 1 / Math.hypot(gx, 1, gz)
       }
 
-      shade(h, nyClass, snowLine, snowBand, touched ? layers.flattenAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o)
+      shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal

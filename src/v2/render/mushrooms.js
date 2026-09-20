@@ -224,7 +224,7 @@ function triangleCount(geo) {
  * @param scene         THREE.Scene to add the arena's Group to.
  * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
  * @param water         WaterSurfaces. Needs isSubmerged.
- * @param layers        Layers. Needs `paths`, `snow.band` and flattenAt.
+ * @param layers        Layers. Needs `paths`, `snow.band` and dirtAt.
  * @param textureArray  The shared prop atlas from buildTextureArray().
  * @param anchors       Array of prop scatters exposing
  *                      `anchorsInto(x0, z0, x1, z1, out)` -- in practice the
@@ -253,8 +253,8 @@ export class Mushrooms {
     if (!layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Mushrooms: layers needs paths.nearest')
     }
-    if (!layers.snow || typeof layers.flattenAt !== 'function') {
-      throw new Error('Mushrooms: layers needs snow and flattenAt')
+    if (!layers.snow || typeof layers.dirtAt !== 'function') {
+      throw new Error('Mushrooms: layers needs snow and dirtAt')
     }
     if (!Array.isArray(anchors) || anchors.length === 0) {
       throw new Error('Mushrooms: needs at least one anchor source (trees, rocks)')
@@ -932,7 +932,7 @@ export class Mushrooms {
         this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
 
         const ny = 1 / Math.hypot(tan, 1)
-        shade(h, ny, snowLine, snowBand, road ? this.layers.flattenAt(mx, mz) : 0, 0, altLo, altSpan, mx, mz, gc, 0)
+        shade(h, ny, snowLine, snowBand, road ? this.layers.dirtAt(mx, mz) : 0, 0, altLo, altSpan, mx, mz, gc, 0)
         const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
         const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
         const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

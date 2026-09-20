@@ -18,9 +18,10 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, SEEK_M, REACH_M, GATHER_KEY,
-  STARTLE_M, STARTLE_S, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S, SPAWN_CLEAR_M,
+  STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S, SQUEAL_S, SPAWN_CLEAR_M, CARRY_SPAN,
 } from '../src/v2/render/leafkin.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
+import { MOUTH_STEP_M, MOUTH_SINK_M } from '../src/v2/render/entrances.js'
 import { CRITTER_GLB, TIER_TINTS, critterTier, cullRange, setTierTint } from '../src/v2/render/critters.js'
 import { TICK_S, tickOf } from '../src/sim/score.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -139,20 +140,34 @@ function makeAsset() {
   return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped, legs }
 }
 
-// --- the stand-in world: a flat field, a wall of trunks when asked, one mouth, caps where they are put ------
+// --- the stand-in world: a flat field, a wall of trunks when asked, one mouth over a boulder's footprint when asked, caps where they are put ------
 const GROUND = 40
-const wall = { on: false, x: 10, half: 6, r: 0.5 }
+// Walls of trunks, each a segment `[x0, z0, x1, z1]` of WALL_R about its line; the one across the line home is `wall`.
+const WALL_R = 0.5
+const wall = [10, -6, 10, 6]
+const walls = []
+const nearSegment = (x, z, [x0, z0, x1, z1]) => {
+  const dx = x1 - x0, dz = z1 - z0
+  const t = Math.max(0, Math.min(1, ((x - x0) * dx + (z - z0) * dz) / (dx * dx + dz * dz)))
+  return [x0 + t * dx, z0 + t * dz]
+}
+// The boulder the walker sees: its top over everything behind BOULDER.face, the footprint the shipped hollows have (0.6 m ahead of the eye-height face the mouth point is set from), a cliff to the slope test.
+const BOULDER = { on: false, face: 0.05, top: GROUND + 3 }
 const walk = {
-  heightAt: () => GROUND,
-  normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { out.x = 0; out.y = 1; out.z = 0; return out },
+  heightAt: (x) => (BOULDER.on && x < BOULDER.face ? BOULDER.top : GROUND),
+  normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { out.x = 0; out.y = 1; out.z = 0; if (BOULDER.on && Math.abs(x - BOULDER.face) < 0.02) { out.x = 1; out.y = 0 } return out },
   obstacleAt(x, z, out) {
-    if (!wall.on || Math.abs(x - wall.x) > wall.r || Math.abs(z) > wall.half) return null
-    out.x = wall.x; out.z = z; out.r = wall.r
-    return out
+    for (const seg of walls) {
+      const [px, pz] = nearSegment(x, z, seg)
+      if (Math.hypot(px - x, pz - z) > WALL_R) continue
+      out.x = px; out.z = pz; out.r = WALL_R
+      return out
+    }
+    return null
   },
 }
 const water = { isSubmerged: () => false, levelAt: () => null }
-const mouth = () => ({ key: 'hollow:0,0', id: 0, blind: false, x: 0, y: GROUND, z: 0, nx: 1, nz: 0, r: 8, state: {} })
+const mouth = () => ({ key: 'hollow:0,0', id: 0, blind: false, x: 0, y: GROUND, z: 0, nx: 1, nz: 0, r: 8, ax: -MOUTH_STEP_M - MOUTH_SINK_M, ay: GROUND - 0.05, az: 0, state: {} })
 const entrancesOf = (...list) => ({ list, sites(into) { into.push(...this.list); return into } })
 
 const capGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2).translate(0, 0.1, 0)
@@ -310,7 +325,9 @@ console.log('\nthe roam')
   const said = []
   t = run(w, t, 120, feet, () => w.voices(said))
   const chatter = said.filter((v) => v.sound.startsWith('leafkinChatter'))
-  check(chatter.length >= 120 / CHATTER_S[1] - 1 && chatter.length <= 120 / CHATTER_S[0] + 1 && chatter.length === said.length, `it chatters every ${CHATTER_S[0]}-${CHATTER_S[1]} s and says nothing else roaming`, `${chatter.length} in 120 s: ${[...new Set(chatter.map((v) => v.sound))].sort().join(' ')}`)
+  const pants = said.filter((v) => v.sound === 'panting')
+  check(said.length >= 120 / CHATTER_S[1] - 1 && said.length <= 120 / CHATTER_S[0] + 1 && chatter.length + pants.length === said.length, `it speaks every ${CHATTER_S[0]}-${CHATTER_S[1]} s roaming, chatter or a pant and nothing else`, `${said.length} in 120 s: ${[...new Set(said.map((v) => v.sound))].sort().join(' ')}`)
+  check(said.every((v, i) => (v.sound === 'panting') === (i % 2 === 1)), 'chatter and a pant by turns, the chatter first')
   check(new Set(chatter.map((v) => v.sound)).size >= 3, 'in more than one voice')
   check(chatter.every((v) => Math.abs(v.y - GROUND) < 1 && Math.hypot(v.x, v.z) <= ROAM_M), 'each from where it stands')
   check(w.bodies([]).length === 0, 'the roam 80 m off is not drawn')
@@ -341,14 +358,31 @@ console.log('\nthe gather')
   check(hands.stats.pools === 1 && hands.pools.values().next().value.items.length === 1 && hands.loose.length === 0, 'the cap is drawn from the hands\' pool and is not loose')
   const item = hands.pools.values().next().value.items[0]
   check(item.state === 'carried' && Math.hypot(item.x - c.pose.x, item.z - c.pose.z) < 0.5 && item.y > c.pose.y + 0.3 && item.y < c.pose.y + c.size, 'carried at its chest', `${fmt(item.x - c.pose.x)}, ${fmt(item.y - c.pose.y)}, ${fmt(item.z - c.pose.z)}`)
-  // Five more within reach, one after another: the bundle fills at CARRY_MAX and the sixth stands.
+  // Five more within reach, one after another, CAP_S apart: the bundle fills at CARRY_MAX and the sixth stands.
+  const CAP_S = 2.5
+  const squealAt = []
+  said.length = 0
   for (let i = 0; i < CARRY_MAX; i++) {
     caps.instX = Float32Array.from([c.x + 1.5 * Math.cos(c.heading)]); caps.instZ = Float32Array.from([c.z - 1.5 * Math.sin(c.heading)]); caps.instY = Float32Array.from([GROUND])
     caps.alive = new Set([0])
-    t = run(w, t, 5, feet)
+    t = run(w, t, CAP_S, feet, (c, now) => { w.voices(said); for (const v of said) if (v.sound === 'leafkinSqueal') squealAt.push(now); said.length = 0 })
   }
   check(c.bundle === CARRY_MAX && c.carrier.count() === CARRY_MAX && caps.taken.length === CARRY_MAX && caps.alive.size === 1, `the bundle fills at ${CARRY_MAX} and the next cap is left standing`, `bundle ${c.bundle}, ${caps.taken.length} taken, ${caps.alive.size} standing`)
+  // The first squeal was at the first cap: a second cap seen inside SQUEAL_S is gathered without one.
+  let gap = Infinity
+  for (let i = 1; i < squealAt.length; i++) gap = Math.min(gap, squealAt[i] - squealAt[i - 1])
+  check(CAP_S < SQUEAL_S && squealAt.length >= 2 && squealAt.length < CARRY_MAX && gap >= SQUEAL_S - TICK_S, `the ${CARRY_MAX} caps gathered ${CAP_S} s apart squeal no oftener than SQUEAL_S ${SQUEAL_S} s`, `${squealAt.length} squeals, ${fmt(gap)} s apart at the least`)
   check(hands.pools.values().next().value.items.length === CARRY_MAX && POOL_CAP - LOOSE_MAX >= CARRY_MAX * CARRIERS + 3, `the pool holds every carried thing beside the loose and the held`, `${POOL_CAP}`)
+  // The armful: every cap resized to CARRY_SPAN of the body, no two at one spot or one angle, and none of them what a cap in the ground spans.
+  const armful = hands.pools.values().next().value.items
+  const span = c.size * CARRY_SPAN
+  check(armful.every((i) => Math.abs(i.rec.size - span) < 1e-9 && Math.abs(i.rec.scale[0] - span / CAP_SPAN) < 1e-9) && Math.abs(span - CAP_SPAN) > 0.01, `each cap is drawn ${CARRY_SPAN} of the body across, its record resized`, `${fmt(span)} m of a ${CAP_SPAN} m cap`)
+  let apart = Infinity, alike = 0
+  for (let i = 0; i < armful.length; i++) for (let j = i + 1; j < armful.length; j++) {
+    apart = Math.min(apart, Math.hypot(armful[i].x - armful[j].x, armful[i].y - armful[j].y, armful[i].z - armful[j].z))
+    if (Math.abs(armful[i].q.angleTo(armful[j].q)) < 0.1) alike++
+  }
+  check(apart > span * 0.5 && alike === 0, 'no two nearer than half a span, and no two within 0.1 rad of one rotation', `${fmt(apart)} m apart, ${alike} alike`)
   w.dispose()
   check(hands.carriers === 0 && hands.pools.values().next().value.items.length === 0, 'the layer disposed, the carrier and its things are gone')
 }
@@ -376,24 +410,28 @@ console.log('\nthe startle')
   check(hold !== null && hold - t <= -0.2 + TICK_S + 1 / 60 + 1e-9 && c.state === 'startle' && c.clip === 'recoil' && c.speed === 0, `her feet within ${STARTLE_M} m of its own and on the next tick it recoils`, `${c.state} ${c.clip}, ${hold && fmt(hold - t + 0.2)} s on`)
   check(c.bundle === 0 && c.carrier.count() === 0 && hands.loose.length === 3 && hands.loose.every((i) => i.state === 'fall' && !i.mine && i.netId === null), 'the bundle is scattered: exactly the three caps, falling, loose, and nobody\'s to the room', `${hands.loose.length} loose`)
   check(said.length === 1 && said[0].sound === 'leafkinScream', 'with a scream', said.map((v) => v.sound).join(' '))
-  check(!c.pose.pant, 'and the panting stops')
   let fleeAt = null, faced = NaN
   t = run(w, t, STARTLE_S, at, (c, now) => { w.voices(said); if (c.state === 'flee' && fleeAt === null) { fleeAt = now; faced = c.heading } })
   check(Math.abs(swing(faced, 0)) < 0.05, 'it has turned to face her by the time it runs', `${fmt(faced)}`)
   check(fleeAt !== null && Math.abs(fleeAt - hold - STARTLE_S) <= TICK_S + 1 / 60 && c.state === 'flee' && c.clip === 'run', `${STARTLE_S} s later it runs`, `${fleeAt && fmt(fleeAt - hold)} s`)
-  check(c.pose.pant, 'panting')
-  const home = Math.hypot(x0, z0)
+  const site = w.entrances.list[0]
+  const home = Math.hypot(x0 - site.ax, z0 - site.az)
   const runS = home / (biped.gait.run * c.k)
   let gone = null
   said.length = 0
   let farthest = 0
-  t = run(w, t, runS * 1.5 + 2, at, (c, now) => { w.voices(said); if (c) farthest = Math.max(farthest, Math.hypot(c.x - x0, c.z - z0)); else if (gone === null) gone = now })
-  check(w.byKey.size === 0 && gone !== null && gone - fleeAt < runS * 1.3 + 0.5, `it reaches the mouth ${fmt(home)} m off within the run's time and is gone`, `${gone && fmt(gone - fleeAt)} s of ${fmt(runS)}`)
+  let lastSeen = null
+  BOULDER.on = true
+  t = run(w, t, runS * 1.5 + 2, at, (c, now) => { w.voices(said); if (c) { farthest = Math.max(farthest, Math.hypot(c.x - x0, c.z - z0)); lastSeen = { x: c.x, y: c.y, z: c.z } } else if (gone === null) gone = now })
+  BOULDER.on = false
+  check(w.byKey.size === 0 && gone !== null && gone - fleeAt < runS * 1.3 + 0.5, `it reaches the arch ${fmt(home)} m off within the run's time and is gone`, `${gone && fmt(gone - fleeAt)} s of ${fmt(runS)}`)
+  check(lastSeen !== null && Math.hypot(lastSeen.x - site.ax, lastSeen.z - site.az) <= HOME_M + biped.gait.run * c.k * TICK_S && lastSeen.y <= GROUND, `last seen within ${HOME_M} m of the arch, on the ground`, lastSeen && `${fmt(Math.hypot(lastSeen.x - site.ax, lastSeen.z - site.az))} m off at y ${fmt(lastSeen.y)}`)
   check(farthest <= home + 0.5, 'straight there', `${fmt(farthest)} m of ${fmt(home)}`)
-  const site = w.entrances.list[0]
   check(Math.abs(site.state.emptyUntil - (gone + EMPTY_S)) < 1 / 60 + TICK_S, `the village is empty ${EMPTY_S} s from then`, `${fmt(site.state.emptyUntil - gone)}`)
   const whimpers = said.filter((v) => v.sound === 'leafkinWhimper')
-  check(whimpers.length >= 1 && whimpers.length === said.length && whimpers.length <= (gone - fleeAt) / WHIMPER_S[0] + 1, `it whimpers every ${WHIMPER_S[0]}-${WHIMPER_S[1]} s on the way and says nothing else`, `${whimpers.length} in ${fmt(gone - fleeAt)} s`)
+  const fleePants = said.filter((v) => v.sound === 'panting')
+  check(whimpers.length >= 1 && whimpers.length + fleePants.length === said.length && said.length <= (gone - fleeAt) / WHIMPER_S[0] + 1, `it speaks every ${WHIMPER_S[0]}-${WHIMPER_S[1]} s on the way, a whimper or a pant and nothing else`, `${whimpers.length} whimpers, ${fleePants.length} pants in ${fmt(gone - fleeAt)} s`)
+  check(said.every((v, i) => (v.sound === 'panting') === (i % 2 === 1)), 'a whimper and a pant by turns, the whimper first')
   check(hands.carriers === 0, 'the carrier is handed back')
   // Empty: nobody comes out while the cooldown runs, nor after it with her outside the roam; inside it, a fresh one.
   t = run(w, t, 10, at)
@@ -416,17 +454,41 @@ console.log('\nthe wall')
   const c = one(w)
   // Planted 20 m out with a wall of trunks across the line home, and her on its heels.
   c.x = c.px = 20; c.z = c.pz = 0
-  wall.on = true
+  walls.push(wall)
   const at = { x: 22, y: GROUND, z: 0 }
   let gone = null, farthest = 0, nearest = Infinity
   t = run(w, t, 60, at, (c, now) => {
     if (!c) { if (gone === null) gone = now; return }
     farthest = Math.max(farthest, Math.abs(c.z))
-    if (Math.abs(c.x - wall.x) <= wall.r) nearest = Math.min(nearest, Math.abs(c.z))
+    if (Math.abs(c.x - wall[0]) <= WALL_R) nearest = Math.min(nearest, Math.abs(c.z))
   })
-  wall.on = false
+  walls.length = 0
   check(gone !== null, 'it gets home round the wall', gone ? `${fmt(gone - t + 60)} s` : 'never')
-  check(farthest > wall.half && nearest >= wall.half - 0.05, 'by sliding along it to its end, never through it', `out to z ${fmt(farthest)}, past the wall\'s line at ${fmt(nearest)}`)
+  check(farthest > wall[3] && nearest >= wall[3] - 0.05, 'by going round it to its end, never through it', `out to z ${fmt(farthest)}, past the wall\'s line at ${fmt(nearest)}`)
+  w.dispose()
+}
+
+// --- the pocket -------------------------------------------------------------------
+console.log('\nthe pocket')
+{
+  // Startled inside a pocket of trunks open only AWAY from the mouth -- a U 6 m deep and 4 m wide, its mouth at x 26 -- it has to run the wrong way first. A slide along whatever is in the way circled in here for good.
+  const w = make()
+  const feet = { x: 30, y: GROUND, z: 0 }
+  let t = T0
+  w.update(feet, head(feet), t, 1 / 60)
+  const c = one(w)
+  c.x = c.px = 22; c.z = c.pz = 0
+  walls.push([20, -2, 20, 2], [20, -2, 26, -2], [20, 2, 26, 2])
+  const at = { x: 23, y: GROUND, z: 0 }
+  let gone = null, out = null, through = 0
+  t = run(w, t, 60, at, (c, now) => {
+    if (!c) { if (gone === null) gone = now; return }
+    if (out === null && c.x > 26.5) out = now
+    if (walk.obstacleAt(c.x, c.z, { x: 0, z: 0, r: 0 }) !== null) through++
+  })
+  walls.length = 0
+  check(gone !== null, 'it gets home out of the pocket', gone ? `${fmt(gone - t + 60)} s` : 'never')
+  check(out !== null && through === 0, 'by way of its open end, never through a trunk', out ? `out at ${fmt(out - t + 60)} s, ${through} frames in a trunk` : 'never out')
   w.dispose()
 }
 
@@ -460,7 +522,7 @@ console.log('\nthe puppet')
   const dist = Math.hypot(c.pose.x - 10, c.pose.y - GROUND - 1.6, c.pose.z)
   check(c.puppet !== null && c.lod < LOD_TIERS && c.lod === critterTier(c.size, dist, LOD_TIERS, LOD_TIERS) && w.bodies([]).length === 1 && w.bodies([])[0] === c.pose, 'ten metres off it wears a puppet on the ladder\'s rung for that distance, and the ear is given its frame pose', `rung ${c.lod} at ${fmt(dist)} m`)
   const b = w.bodies([])[0]
-  check(b.clip === 'run' && b.speed === c.speed && b.cycle === w.durations.run && b.size === c.size && b.pant, 'with the clip, its cycle, the speed and the size on it, panting')
+  check(b.clip === 'run' && b.speed === c.speed && b.cycle === w.durations.run && b.size === c.size, 'with the clip, its cycle, the speed and the size on it')
   check(Math.abs(c.pose.x - c.x) <= c.speed * TICK_S + 1e-9 && c.alpha >= 0 && c.alpha <= 1, 'the frame\'s pose lies between the last two ticks', `alpha ${fmt(c.alpha)}`)
   check(c.puppet.group.matrix.elements[12] === c.pose.x && c.puppet.group.matrix.elements[13] === c.pose.y, 'and the puppet stands on it')
   setTierTint(true)

@@ -5,26 +5,32 @@ import { LOD_DEG, distAt, ladderTier } from './critters.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash } from '../../sim/score.js'
 import { PropArena } from './prop-arena.js'
+import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
 
 // ---------------------------------------------------------------------------
-// THE LEAFKIN VILLAGE ENTRANCES (DESIGN.md §30): a stone arch on the face of
-// each entrance boulder (rocks.js's `hollow` bed) with a black hole behind it.
-// The layer owns no scatter of its own: every frame it asks the rocks for the
+// THE LEAFKIN VILLAGE ENTRANCES (DESIGN.md §30): a stone arch on the flank of
+// each entrance boulder (rocks.js's `hollow` bed) with a black hole behind it
+// and a few smaller stones tucked against the boulder either side of it. The
+// layer owns no scatter of its own: every frame it asks the rocks for the
 // resident hollows within RADIUS_M and seats a mouth on each new one, so a
 // site is where its boulder is, on every client, and goes when the boulder
 // goes. The face is found by rays against the boulder's own hull, from a
 // bearing rolled off the site's key, so two clients agree on the mouth to the
 // bit without exchanging it.
 //
-// The hole is a quad, not a cavity: an unlit black plane a hair proud of the
-// stone across the arch's passage, so the depth test keeps it in front of the
-// face and the arch's own walls around it. It reads as a hole because the
-// parallax across the arch's protruding half metre is real.
+// The hole is a polygon, not a cavity: an unlit black plane a hair proud of
+// the stone across the arch's passage, so the depth test keeps it in front of
+// the face and the arch's own ring around it. It reads as a hole because the
+// parallax across the arch's protruding half metre is real -- and it is cut
+// inside the ring's solid (HOLE.outline), because wherever it reaches past the
+// ring it is a black shape on the boulder, and wherever it falls short a rim
+// of stone shows inside the ring.
 //
 // Drawn on the props' ladder (gen-props.js) with the shipped T3 in the card's
 // place: an arch is on a wall, and a card spun to her would stand out of it.
 // A rung switch is a plain swap -- a few dozen instances, none nearer than a
-// boulder apart.
+// boulder apart. The flanking stones are the rocks' own boulder on the rocks'
+// own material, on the rocks' own ladder.
 // ---------------------------------------------------------------------------
 
 export const MOUTH_GLB = 'gen-props/cave-mouth.glb'
@@ -35,18 +41,51 @@ export const RUNGS = PROP_RUNGS
 // The arch, metres tall over its floor, and how far its centre is set into the face.
 export const MOUTH_HEIGHT_M = 1.5
 export const MOUTH_SINK_M = 0.1
-// The hole: its size, how far it stands proud of the stone at its most bulging corner, and the bulge across it a face may have.
-export const HOLE = { width: 1.1, height: 1.3, proud: 0.04, maxBulge: 0.4 }
+// The hole: its outline in the arch's frame, metres across the passage (the
+// pick's Z) and above the arch's base, every edge inside the ring's solid at
+// its plane, MOUTH_SINK_M + proud into the arch (check-entrances samples the
+// pick), so no stone shows between the black and the ring; how far it stands
+// proud of the stone at its most bulging vertex, the arch brought forward with
+// it so that plane holds; how far a face may bulge, the arch standing that
+// much further out of it; and the bulge across it a face may have. The left
+// shoulder is notched under a seam that opens 0.1 past the plane.
+export const HOLE = {
+  outline: [[-0.62, 0.1], [-0.62, 0.8], [-0.6, 0.9], [-0.46, 0.9], [-0.45, 1.1], [0.35, 1.1], [0.45, 1.05], [0.55, 0.95], [0.6, 0.6], [0.6, 0.1]],
+  proud: 0.04,
+  maxProud: 0.2,
+  maxBulge: 0.4,
+}
+/** The outline's box: `[u0, u1, v0, v1]`. */
+export const holeBox = () => [
+  Math.min(...HOLE.outline.map((p) => p[0])), Math.max(...HOLE.outline.map((p) => p[0])),
+  Math.min(...HOLE.outline.map((p) => p[1])), Math.max(...HOLE.outline.map((p) => p[1])),
+]
+
+// The flanking stones: this many each side of the arch, this many metres
+// across, bedded this fraction of their height, this far off the arch and
+// each other, and leaning into the boulder by this fraction of their radius.
+export const FLANK = { perSide: [1, 2], size: [4.8, 8.8], sink: 0.4, gap: 0.25, lean: 0.4 }
+// A stone steps down the rocks' own ladder at the rocks' own distances per
+// metre of its size (rock.js ROCK_LOD_AT), not at the arch's rungs: those are
+// scaled to a 1.5 m arch and put a 6 m stone on its 20-face tier at 10 m.
+const FLANK_LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => k * k)
+const FLANK_LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + ROCK_LOD_HYSTERESIS)) ** 2)
 
 // How far out a boulder is given a mouth, and its leafkin a home (leafkin.js).
 export const RADIUS_M = 400
+// The door (main.js portalTest): a mouth within `reach` takes her when the
+// step just taken ends her feet within `walk` of its hole heading into the
+// face (the cosine at least `into`), or a teleport lands them within `blink`.
+// The limiter stops her feet 0.1-0.5 m short of the hole at the boulder's
+// foot, so `walk` is as near as she can get and no nearer.
+export const PORTAL = { reach: 20, walk: 0.5, blink: 0.8, into: 0.5 }
 
 // The face probe: a ray from `out` metres past the hull's radius, `eye` above
 // the ground there, toward the boulder's centre; the face passes when its
 // normal is within `faceDeg` of horizontal, a second ray from the mouth point
 // `wall` higher meets stone within `wallReach()`, and the ground at the hit
 // and at the mouth point is within `level` of the ray's own.
-export const PROBE = { out: 1, eye: 0.75, wall: 2, recede: 0.3, faceDeg: 20, level: 0.5, bearings: 8 }
+export const PROBE = { out: 1, eye: 0.75, wall: 1.5, recede: 0.3, faceDeg: 20, level: 0.5, bearings: 16 }
 // The mouth point: this far out from the face, on the ground.
 export const MOUTH_STEP_M = 0.7
 /** How far the wall ray may travel: the step, the lean a face at the limit has over `wall` metres, and `recede` of slack. */
@@ -54,6 +93,7 @@ export const wallReach = () => MOUTH_STEP_M + PROBE.wall * Math.tan((PROBE.faceD
 
 const HOLLOW_STRIDE = 5
 const POOL = 48
+const FLANK_POOL = POOL * 2 * 2
 
 /** The bank from the shipped ladder (gen-props.js loadGenProp): the drawn tiers, the scale to MOUTH_HEIGHT_M, the map. Pure, so the gate builds it in node. */
 export function mouthBankFrom(ladder) {
@@ -80,11 +120,24 @@ export async function loadMouthBank() {
   return mouthBankFrom(await loadGenProp(MOUTH_GLB))
 }
 
+/** HOLE.outline as a fan in the arch's frame -- X out of the face, Y up, Z across -- wound to face out. */
+function holeGeometry() {
+  const o = HOLE.outline
+  const pos = new Float32Array(o.length * 3)
+  for (let i = 0; i < o.length; i++) { pos[i * 3 + 1] = o[i][1]; pos[i * 3 + 2] = o[i][0] }
+  const idx = []
+  for (let i = 1; i + 1 < o.length; i++) idx.push(0, i, i + 1)
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  g.setIndex(idx)
+  return g
+}
+
 export class Entrances {
   /**
    * @param field  V2Height: heightAt
    * @param water  WaterSurfaces: isSubmerged
-   * @param rocks  Rocks: hollowsInto, hollowRayAt
+   * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, hollowTintAt
    * @param opts.bank  mouthBankFrom's answer. Required.
    * @param opts.fixed  a room's own mouths in place of the rocks' hollows: `[{ key, x, z, nx, nz }]`, the face point and its outward normal, seated once.
    */
@@ -92,8 +145,8 @@ export class Entrances {
     if (!bank || !Array.isArray(bank.tiers)) throw new Error('Entrances: needs the bank from loadMouthBank (or mouthBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Entrances: needs a V2Height with heightAt')
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Entrances: needs WaterSurfaces with isSubmerged')
-    if (!rocks || typeof rocks.hollowsInto !== 'function' || typeof rocks.hollowRayAt !== 'function') {
-      throw new Error('Entrances: needs Rocks with hollowsInto and hollowRayAt')
+    if (!rocks || ['hollowsInto', 'hollowRayAt', 'boulder', 'hollowTintAt'].some((f) => typeof rocks[f] !== 'function')) {
+      throw new Error('Entrances: needs Rocks with hollowsInto, hollowRayAt, boulder and hollowTintAt')
     }
     this.field = field
     this.water = water
@@ -121,16 +174,31 @@ export class Entrances {
     this.tierAt = new Int8Array(POOL).fill(-1)
 
     // The holes, one instance per arch on the same ids; a hidden one is a zero matrix.
-    const quad = new THREE.PlaneGeometry(HOLE.width, HOLE.height)
-    quad.rotateY(Math.PI / 2)
     this.holeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false })
-    this.holes = new THREE.InstancedMesh(quad, this.holeMaterial, POOL)
+    this.holes = new THREE.InstancedMesh(holeGeometry(), this.holeMaterial, POOL)
     this.holes.name = 'v2-entrance-holes'
     this.holes.frustumCulled = false
     this.holes.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.holeM = new Float32Array(POOL * 16)
     this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
     for (let i = 0; i < POOL; i++) this.holes.setMatrixAt(i, this._zero)
+
+    // The flanking stones: the tiers are cloned because PropMeshes hangs its
+    // fade attribute on the geometry it is given, and the rocks' own meshes
+    // already hold that on these.
+    const boulder = rocks.boulder()
+    this.boulder = boulder.measured
+    this.flank = new PropArena(FLANK_POOL, boulder.tiers.map((g) => ({ geometries: [g.clone()] })), new Array(boulder.tiers.length).fill(FLANK_POOL), () => boulder.material, 'v2-entrance-flank')
+    this.flankTris = ladderTris(boulder.tiers)
+    this.flankFree = new Int32Array(FLANK_POOL)
+    this.flankFreeCount = FLANK_POOL
+    for (let i = 0; i < FLANK_POOL; i++) {
+      const id = this.flank.addInstance(0)
+      this.flank.setVisibleAt(id, false)
+      this.flankFree[FLANK_POOL - 1 - i] = id
+    }
+    this.flankTier = new Int8Array(FLANK_POOL).fill(-1)
+    this._c = new THREE.Color()
 
     // key -> site, the resident mouths; `memory` keeps a site's `state` past its eviction, for the leafkin's cooldown.
     this.resident = new Map()
@@ -153,6 +221,7 @@ export class Entrances {
 
     scene.add(this.batch)
     scene.add(this.holes)
+    scene.add(this.flank)
   }
 
   /** Seat a mouth on every resident hollow within the radius. For boot and for a relief edit. */
@@ -165,17 +234,20 @@ export class Entrances {
 
   /**
    * Every resident mouth, for the portal (main.js) and the leafkin: `{ key,
-   * x, y, z, nx, nz, r, state }` -- the point on the ground MOUTH_STEP_M out
-   * from the face, the face's outward normal in the plane, the boulder's hull
-   * radius about its centre and the site's own record, which survives
-   * eviction.
+   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank, flankReach }`
+   * -- the point on the ground MOUTH_STEP_M + MOUTH_SINK_M out from the arch's
+   * centre, the face's outward normal in the plane, the boulder's hull radius
+   * about its centre, the arch's own position, the hole's plane on the ground
+   * line (MOUTH_SINK_M + HOLE.proud out from the arch), the site's own record,
+   * which survives eviction, its flanking stones and how far from the mouth
+   * point they reach.
    */
   sites(into = []) {
     for (const site of this.resident.values()) if (!site.blind) into.push(site)
     return into
   }
 
-  /** Follow the rocks' residency and re-rung every arch by its distance. */
+  /** Follow the rocks' residency and re-rung every arch and stone by its distance. */
   update(camX, camY, camZ) {
     this._reseat(camX, camZ)
     let tris = 0
@@ -195,7 +267,23 @@ export class Entrances {
         this.holes.setMatrixAt(i, drawn ? this._m.fromArray(this.holeM, i * 16) : this._zero)
         this.holes.instanceMatrix.needsUpdate = true
       }
-      if (tier < RUNGS) tris += this.bank.tris[tier] + 2
+      if (tier < RUNGS) tris += this.bank.tris[tier] + HOLE.outline.length - 2
+      // The stones stand while the boulder does, each on the rung its own size and distance earn, leaving a rung 12% further out than it came in.
+      for (const f of site.flank) {
+        const fx = f.x - camX, fy = 0.5 * (f.y + f.top) - camY, fz = f.z - camZ
+        const d2 = fx * fx + fy * fy + fz * fz
+        const fcur = this.flankTier[f.id]
+        let ft = FLANK_LOD_SQ.length
+        for (let b = 0; b < FLANK_LOD_SQ.length; b++) {
+          if (d2 < f.size * f.size * (fcur >= 0 && fcur <= b ? FLANK_LOD_SQ_OUT[b] : FLANK_LOD_SQ[b])) { ft = b; break }
+        }
+        if (ft !== fcur) {
+          this.flankTier[f.id] = ft
+          this.flank.setGeometryIdAt(f.id, ft)
+          this.flank.setVisibleAt(f.id, true)
+        }
+        tris += this.flankTris[ft]
+      }
     }
     this.tris = tris
   }
@@ -255,30 +343,34 @@ export class Entrances {
       const nx = hit.nx / nl
       const nz = hit.nz / nl
       const floor = field.heightAt(hx, hz)
-      const mx = hx + nx * MOUTH_STEP_M
-      const mz = hz + nz * MOUTH_STEP_M
-      const my = field.heightAt(mx, mz)
-      // The wall: from the mouth point, PROBE.wall above the eye, along the
-      // normal, stone within the step plus what a face at the limit leans back.
-      if (rocks.hollowRayAt(mx, my + PROBE.eye + PROBE.wall, mz, -nx, 0, -nz, wallReach(), hit) === Infinity) { this.rejected.wall++; continue }
-      if (Math.abs(floor - g) > PROBE.level || Math.abs(my - g) > PROBE.level) { this.rejected.level++; continue }
-      if (this.water.isSubmerged(mx, mz, my)) { this.rejected.water++; continue }
-      // The stone across the hole: probed at the quad's corners, along the
-      // normal from a metre out, so the quad stands proud of the most bulging
-      // one and a face that recedes or bulges past HOLE.maxBulge is refused.
+      // The stone across the hole: probed at the outline's vertices and its
+      // box's centre, along the normal from a metre out. The arch, the hole
+      // and the mouth point all come forward by the most bulging one, so the
+      // hole keeps its plane in the ring; a face bulging past HOLE.maxProud,
+      // or receding or bulging across itself past HOLE.maxBulge, is refused.
       const ax = -nz, az = nx
+      const box = holeBox()
       let proud = -Infinity, deep = Infinity
-      for (let c = 0; c < 4; c++) {
-        const u = (c & 1 ? 0.45 : -0.45) * HOLE.width
-        const v = floor + (c & 2 ? 0.92 : 0.08) * HOLE.height
+      for (let c = 0; c <= HOLE.outline.length; c++) {
+        const u = c < HOLE.outline.length ? HOLE.outline[c][0] : (box[0] + box[1]) / 2
+        const v = floor + (c < HOLE.outline.length ? HOLE.outline[c][1] : (box[2] + box[3]) / 2)
         const tc = rocks.hollowRayAt(hx + ax * u + nx, v, hz + az * u + nz, -nx, 0, -nz, 2, hit)
         if (tc === Infinity) { proud = Infinity; break }
         const p = 1 - tc
         if (p > proud) proud = p
         if (p < deep) deep = p
       }
-      if (proud === Infinity || proud - deep > HOLE.maxBulge) { this.rejected.bulge++; continue }
-      this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, Math.max(0, proud) + HOLE.proud)
+      if (proud === Infinity || proud > HOLE.maxProud || proud - deep > HOLE.maxBulge) { this.rejected.bulge++; continue }
+      const bulge = Math.max(0, proud)
+      const mx = hx + nx * (MOUTH_STEP_M + bulge)
+      const mz = hz + nz * (MOUTH_STEP_M + bulge)
+      const my = field.heightAt(mx, mz)
+      // The wall: from the mouth point, PROBE.wall above the eye, along the
+      // normal, stone within the step plus what a face at the limit leans back.
+      if (rocks.hollowRayAt(mx, my + PROBE.eye + PROBE.wall, mz, -nx, 0, -nz, wallReach() + bulge, hit) === Infinity) { this.rejected.wall++; continue }
+      if (Math.abs(floor - g) > PROBE.level || Math.abs(my - g) > PROBE.level) { this.rejected.level++; continue }
+      if (this.water.isSubmerged(mx, mz, my)) { this.rejected.water++; continue }
+      this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge)
       return
     }
     this.rejected.none++
@@ -292,24 +384,28 @@ export class Entrances {
     nz /= nl
     const mx = x + nx * MOUTH_STEP_M
     const mz = z + nz * MOUTH_STEP_M
-    this._place(key, x, z, nx, nz, this.field.heightAt(x, z), this.field.heightAt(mx, mz), mx, mz, 0, HOLE.proud)
+    this._place(key, x, z, nx, nz, this.field.heightAt(x, z), this.field.heightAt(mx, mz), mx, mz, 0, 0)
   }
 
-  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, hole) {
+  /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. */
+  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge) {
     if (this.freeCount === 0) throw new Error(`Entrances: instance pool exhausted at ${POOL}`)
     const id = this.free[--this.freeCount]
     const bank = this.bank
     // The arch's floor at the lower of its two feet, so the higher is bedded and neither floats.
     const half = bank.width * 0.45
     const ay = Math.min(floor, this.field.heightAt(hx - nz * half, hz + nx * half), this.field.heightAt(hx + nz * half, hz - nx * half)) - 0.05
-    const ax = hx - nx * MOUTH_SINK_M
-    const az = hz - nz * MOUTH_SINK_M
+    const ax = hx - nx * (MOUTH_SINK_M - bulge)
+    const az = hz - nz * (MOUTH_SINK_M - bulge)
     // Yawed so the pick's +X, the passage, runs along the normal.
     this._q.setFromAxisAngle(this._up, Math.atan2(-nz, nx))
     this._s.setScalar(bank.scale)
     this.batch.setMatrixAt(id, this._m.compose(this._p.set(ax, ay, az), this._q, this._s))
+    // The hole's outline is over the arch's base, so it stays inside the ring where the ground steps.
     this._s.setScalar(1)
-    this._m.compose(this._p.set(hx + nx * hole, floor + HOLE.height / 2, hz + nz * hole), this._q, this._s)
+    const hole = bulge + HOLE.proud
+    const holeX = hx + nx * hole, holeZ = hz + nz * hole
+    this._m.compose(this._p.set(holeX, ay, holeZ), this._q, this._s)
     this._m.toArray(this.holeM, id * 16)
     this.tierAt[id] = -1
     let state = this.memory.get(key)
@@ -317,8 +413,57 @@ export class Entrances {
       state = {}
       this.memory.set(key, state)
     }
-    this.resident.set(key, { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, state })
+    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank: [], flankReach: 0 }
+    if (r > 0) this._flank(site, hx, hz)
+    this.resident.set(key, site)
     this.placed++
+  }
+
+  /**
+   * The flanking stones, rolled off the key: FLANK.perSide each side of the
+   * arch, along the face from its ring outward, each leaning into the
+   * boulder where a ray along the normal finds its face at that offset, and
+   * bedded in the ground there.
+   */
+  _flank(site, hx, hz) {
+    const rand = mulberry32(keyHash(site.key + ':flank') ^ this.seed)
+    const { nx, nz } = site
+    const ax = -nz, az = nx
+    const mm = this.boulder
+    const hit = this._hit
+    const my = this.field.heightAt(site.x, site.z)
+    // The boulder's own colour, so the stones read as its stone and not the wood's.
+    const tint = this.rocks.hollowTintAt(hx, hz, this._c)
+    for (const side of [-1, 1]) {
+      const n = FLANK.perSide[0] + Math.floor(rand() * (FLANK.perSide[1] - FLANK.perSide[0] + 1))
+      let u = this.bank.width * 0.5 + FLANK.gap
+      for (let k = 0; k < n; k++) {
+        if (this.flankFreeCount === 0) throw new Error(`Entrances: flank pool exhausted at ${FLANK_POOL}`)
+        const across = FLANK.size[0] + rand() * (FLANK.size[1] - FLANK.size[0])
+        const scale = across / mm.width
+        const radius = 0.5 * Math.max(mm.width, mm.depth) * scale
+        const height = mm.height * scale
+        u += radius
+        let fx = hx + ax * u * side
+        let fz = hz + az * u * side
+        // The boulder's face at this offset, from three metres out at knee height, or the arch's own face line without one.
+        const t = this.rocks.hollowRayAt(fx + nx * 3, my + 0.3, fz + nz * 3, -nx, 0, -nz, 6, hit)
+        if (t !== Infinity) { fx = hit.x; fz = hit.z }
+        fx += nx * radius * (1 - FLANK.lean)
+        fz += nz * radius * (1 - FLANK.lean)
+        const y = this.field.heightAt(fx, fz) - FLANK.sink * height
+        const id = this.flankFree[--this.flankFreeCount]
+        this._q.setFromAxisAngle(this._up, rand() * Math.PI * 2)
+        this._s.setScalar(scale)
+        this.flank.setMatrixAt(id, this._m.compose(this._p.set(fx, y, fz), this._q, this._s))
+        this.flank.setColorAt(id, tint)
+        this.flankTier[id] = -1
+        // The walker's stone: a column at the rock's plan radius, to its top.
+        site.flank.push({ id, x: fx, z: fz, y, r: radius * 0.8, top: y + height, size: rockLodSize(mm) * scale })
+        site.flankReach = Math.max(site.flankReach, Math.hypot(fx - site.x, fz - site.z) + radius)
+        u += radius + FLANK.gap
+      }
+    }
   }
 
   _release(site) {
@@ -329,7 +474,47 @@ export class Entrances {
     this.holes.instanceMatrix.needsUpdate = true
     this.tierAt[id] = -1
     this.free[this.freeCount++] = id
+    for (const f of site.flank) {
+      this.flank.setVisibleAt(f.id, false)
+      this.flankTier[f.id] = -1
+      this.flankFree[this.flankFreeCount++] = f.id
+    }
     this.placed--
+  }
+
+  // -- the flanking stones to the walker (walk.js addStone) -------------------
+
+  columnAt(x, z, _minSize, out) {
+    const cap = out.length >> 1
+    let n = 0
+    for (const site of this.resident.values()) {
+      if (site.blind) continue
+      const sx = x - site.x, sz = z - site.z
+      if (sx * sx + sz * sz > site.flankReach * site.flankReach) continue
+      for (const f of site.flank) {
+        if (n >= cap) return n
+        const dx = x - f.x, dz = z - f.z
+        if (dx * dx + dz * dz > f.r * f.r) continue
+        out[n * 2] = f.y
+        out[n * 2 + 1] = f.top
+        n++
+      }
+    }
+    return n
+  }
+
+  blockTopAt(x, z) {
+    let top = -Infinity
+    for (const site of this.resident.values()) {
+      if (site.blind) continue
+      const sx = x - site.x, sz = z - site.z
+      if (sx * sx + sz * sz > site.flankReach * site.flankReach) continue
+      for (const f of site.flank) {
+        const dx = x - f.x, dz = z - f.z
+        if (dx * dx + dz * dz <= f.r * f.r && f.top > top) top = f.top
+      }
+    }
+    return top
   }
 
   get stats() {
@@ -348,6 +533,7 @@ export class Entrances {
 
   dispose() {
     this.batch.dispose()
+    this.flank.dispose()
     this.holes.geometry.dispose()
     this.holeMaterial.dispose()
     if (this.material.map) this.material.map.dispose()

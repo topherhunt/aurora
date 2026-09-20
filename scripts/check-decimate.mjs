@@ -163,7 +163,8 @@ function icosahedron() {
  * Returns the mesh plus the two tip positions, so a check can ask how far the
  * output still reaches in each ear's direction.
  */
-function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBase = 0.16 } = {}) {
+/** A unit UV sphere as point and triangle lists; `at(ring, seg)` indexes it. */
+function ball(rings, segs) {
   const P = [], tri = []
   P.push([0, 1, 0])
   for (let r = 1; r <= rings; r++) {
@@ -184,7 +185,11 @@ function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBas
     }
   }
   for (let s = 0; s < segs; s++) tri.push([south, at(rings, s), at(rings, s + 1)])
+  return { P, tri, at }
+}
 
+function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBase = 0.16 } = {}) {
+  const { P, tri, at } = ball(rings, segs)
   const tips = []
   for (const v of [at(2, 2), at(2, 5)]) {
     // Walk the fan around v into a ring in order, then cut the fan out. The ring
@@ -214,6 +219,28 @@ function earedBall({ rings = 8, segs = 12, earRings = 7, earHeight = 0.5, earBas
     tips.push(P[tip].slice())
   }
   return { mesh: { positions: Float32Array.from(P.flat()), indices: Uint32Array.from(tri.flat()) }, tips }
+}
+
+/**
+ * The leafkin's front in miniature: a ball with open strips glued on along one
+ * equator edge each, the way its leaves are glued to the torso. Every glued
+ * edge has three faces; the two points where a strip's side rims run into the
+ * ball have one open edge each.
+ */
+function leafedBall({ rings = 10, segs = 16, leaves = 6, rows = 4, len = 0.6 } = {}) {
+  const { P, tri, at } = ball(rings, segs)
+  for (let l = 0; l < leaves; l++) {
+    const a = at(5, l * 2), b = at(5, l * 2 + 1)
+    const n = [0, 1, 2].map((k) => (P[a][k] + P[b][k]) / 2)
+    const nl = Math.hypot(...n)
+    let prev = [a, b]
+    for (let r = 1; r <= rows; r++) {
+      const cur = [a, b].map((q) => P.push(P[q].map((x, k) => x + (n[k] / nl) * len * (r / rows))) - 1)
+      tri.push([prev[0], prev[1], cur[1]], [prev[0], cur[1], cur[0]])
+      prev = cur
+    }
+  }
+  return { positions: Float32Array.from(P.flat()), indices: Uint32Array.from(tri.flat()) }
 }
 
 /**
@@ -323,7 +350,11 @@ function rimShape(m) {
   for (const [k, n] of use) {
     if (n === 1) { const [u, v] = k.split('_'); open[+u]++; open[+v]++ } else if (n > 2) nonManifold++
   }
-  return { nonManifold, pinches: open.reduce((s, n) => s + (n !== 0 && n !== 2 ? 1 : 0), 0) }
+  return {
+    nonManifold,
+    pinches: open.reduce((s, n) => s + (n !== 0 && n !== 2 ? 1 : 0), 0),
+    meets: open.reduce((s, n) => s + (n > 2 ? 1 : 0), 0),
+  }
 }
 
 function boundsOf(m) {
@@ -600,6 +631,27 @@ console.log('\nreduction')
   check(triCount(eight) === 8, 'a 10x10 open sheet reaches eight triangles', `${triCount(eight)} triangles`)
   check(shape.nonManifold === 0 && shape.pinches === 0, 'and its rim stays a simple rim', `${shape.nonManifold} non-manifold edges, ${shape.pinches} pinch points`)
   check(boundsOf(eight).every((v, k) => Math.abs(v - boundsOf(sheet)[k]) < 1e-6), 'and it keeps its full extent', boundsOf(eight).map((v) => v.toFixed(2)).join(' '))
+}
+{
+  // Leaves glued to a torso along one edge each. The points where a leaf's
+  // side rims meet the body have a single open edge; they are rim points that
+  // leave along it, not pins. Pinned, every neighbour folded into them and
+  // none ever left, so they grew fans of slivers -- 24 faces at the leafkin's
+  // front -- while the body around them was spent to pay for the count. Freed,
+  // the tiers come out even: no fan past ten faces, the smallest twentieth of
+  // the triangles at least four tenths of the mean, and no rim ever meeting
+  // another in a pinch.
+  const mesh = leafedBall()
+  const src = analyzeMesh(mesh)
+  check(src.lockedPoints === 0 && src.rimPoints === 60 && src.maxFan === 16, 'a leaf glued along one edge pins nothing', `${src.lockedPoints} locked, ${src.rimPoints} rim, fan ${src.maxFan}`)
+  const meshMeets = rimShape(mesh).meets
+  for (const target of [160, 80, 40]) {
+    const out = decimate(mesh, target)
+    const shape = rimShape(out)
+    check(triCount(out) === target && out.stats.maxFan <= 10, `at ${target} no point is a fan sink`, `${triCount(out)} triangles, max fan ${out.stats.maxFan}`)
+    check(out.stats.areaP5 >= 0.4 && out.stats.areaP95 <= 2, 'and the triangles come out even', `p5 ${out.stats.areaP5.toFixed(2)} p95 ${out.stats.areaP95.toFixed(2)} x mean`)
+    check(shape.meets === meshMeets, 'and no rim meets another', `${shape.meets} points on three or more open edges`)
+  }
 }
 {
   const g = bumpyGrid(20)

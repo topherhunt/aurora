@@ -19,12 +19,12 @@ export const TILE_M = 8
 export class Shell {
   /**
    * @param bank  buildRockBank()'s answer; the boulder's tier 0 is the shell.
-   * @param fit  `{ x, z, floor, scale, sink }`: the axis, the room's floor height, the uniform scale over the bank's metres, and the fraction of the stood height under the floor.
+   * @param fit  `{ x, z, floor, scale, sink, yaw }`: the axis, the room's floor height, the uniform scale over the bank's metres, the fraction of the stood height under the floor, and the stood boulder's turn about the axis (radians; a village's roll).
    */
   constructor(scene, bank, textureArray, fit) {
-    const f = fit
-    if (!f || ![f.x, f.z, f.floor, f.scale, f.sink].every(Number.isFinite) || !(f.scale > 0) || !(f.sink >= 0 && f.sink < 1)) {
-      throw new Error('Shell: `fit` is { x, z, floor, scale, sink }')
+    const f = { yaw: 0, ...fit }
+    if (!fit || ![f.x, f.z, f.floor, f.scale, f.sink, f.yaw].every(Number.isFinite) || !(f.scale > 0) || !(f.sink >= 0 && f.sink < 1)) {
+      throw new Error('Shell: `fit` is { x, z, floor, scale, sink, yaw }')
     }
     const src = bank.shapes.boulder.tiers[0]
     const geo = src.clone()
@@ -35,6 +35,7 @@ export class Shell {
     const n = geo.attributes.normal.array
     for (let i = 0; i < n.length; i++) n[i] = -n[i]
     geo.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2))
+    geo.rotateY(f.yaw)
     geo.computeBoundingBox()
     const bb = geo.boundingBox
     const uv = geo.attributes.uvProj.array

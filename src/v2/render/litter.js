@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, levelFor } from './tile-pool.js'
 
 import { buildRock } from '../../props/rock.js'
 import { rockParams, TINTS, TINT_GAIN, ENV_TINTS } from '../../props/rock-bank.js'
@@ -106,8 +106,8 @@ const TILE = 8
 // face the same drift fields and the same `river` rate.
 const WET_DENSITY = 2.0
 
-// A road is cobbled. EXTRA candidates per square metre, offered by the road pass and thrown away everywhere off a road's surface (within its half-width), on top of the dry pass's -- so a road is offered twice what its verge is; on the road neither pass applies the drift floor or the environment rate, so every candidate that reaches level ground stands; every stone on the road draws its size UNIFORMLY from ROAD_SIZE, the big end of SIZE with no small-end skew, so a road has no grit in it, only set stones of much one size; and each is ROAD_SPREAD times wider in x and z (not in height). The pass only runs in a tile whose box a path overlaps, so a wood pays nothing for it. The stones fall where the rolls put them, not on a lattice: the dry pass lays its share of the road from the same random stream as the verge, so evening out the road pass alone would buy nothing.
-const ROAD_DENSITY = 3.4
+// A ROAD IS COBBLED ON TOP OF ITS PEBBLES. To the dry and wet passes a road is ground like any other: the same stream, the same drift floor, the same environment rate and the same SIZE lay the same pebbles on it as beside it. The road pass then ADDS cobbles: it rolls ROAD_DENSITY candidates per square metre of tile on its own stream, throws away every one off the road, and on the road applies neither the drift floor nor the environment rate, so every candidate that reaches level ground stands -- the road's cobble density IS this number, and the stones fall where the rolls put them, as the pebbles do. Every cobble draws its size UNIFORMLY from ROAD_SIZE, the big end of SIZE with no small-end skew, so a road has no grit in it, only set stones of much one size, and each is ROAD_SPREAD times wider in x and z (not in height): 0.44 to 0.60 m across, a fifth of a square metre each, so at two a square metre they cover about half the road and overlap where the rolls bunch them. The pass only runs in a tile whose box a path overlaps, so a wood pays nothing for it.
+const ROAD_DENSITY = 2.0
 const ROAD_SIZE = [0.22, 0.30]
 const ROAD_SPREAD = 2
 
@@ -132,9 +132,33 @@ const ROAD_SPREAD = 2
 // it the wood draws 564 stones standing still instead of 1807. It costs one
 // min at placement: the rim already holds a radius per stone, and a hidden
 // stone leaves the instanced mesh's live range.
+//
+// A COBBLE HAS ITS OWN LADDER. It is four times the width of the mean pebble
+// (0.52 m drawn against 0.14), and thinned on the pebble's ladder it was being
+// taken out of the road from 8 m while still a hand wide on the screen. Its
+// full-density disc is ROAD_FULL_RADIUS and its reach ROAD_RADIUS, the pebble's
+// proportions scaled by that width, and past the reach the rim hides it. ONE
+// RANK SERVES BOTH: a cobble's rank is its roll times ROAD_RANK, so the keep
+// test `rank < uAt[q]` that _thin and the passes share keeps every cobble to
+// 30 m and 30 / d of them past it, with no second ladder anywhere. Tiles are
+// resident to ROAD_RADIUS, but past RADIUS only a tile a road crosses is loaded
+// (_reseat), and it holds cobbles alone until she is within RADIUS of it -- a
+// wood 40 m off pays nothing for the road's reach.
 const FULL_RADIUS = 8
 const RADIUS = 28
 const REACH_SIZES = 90
+const ROAD_FULL_RADIUS = 30
+const ROAD_RADIUS = 42
+const ROAD_RANK = FULL_RADIUS / ROAD_FULL_RADIUS
+
+// The instance pool, a flat allowance and NOT a bound summed over the tile grid
+// as the rock beds' is: summed, every resident tile is charged as lake bed and
+// every tile to ROAD_RADIUS as solid road, and that came to 74,000 slots. The
+// scatter-pools gate's ratchet -- every survivor left at the level it was grown
+// at, never thinned -- peaks at 14,400 without a road, and a road tile adds at
+// most its perTileRoad. When the pool does run dry _stamp warns once and places
+// nothing more until a tile is evicted, rather than throwing -- see `starved`.
+const POOL = 20000
 
 // The steepest ground a pebble will lie on, in degrees, and it is the terrain's
 // own stone line: shade() starts painting a hillside as bare rock at ny 0.86
@@ -290,7 +314,7 @@ export class Litter {
    *                      environment test and the wet pass go through --
    *                      isSubmerged is not called, because the wet pass
    *                      already holds the level it would look up again.
-   * @param layers        Layers. Needs `snow.band` and flattenAt, for the
+   * @param layers        Layers. Needs `snow.band` and dirtAt, for the
    *                      ground cue -- same argument Rocks and Ferns take.
    * @param textureArray  The shared prop atlas from buildTextureArray(). The
    *                      pebble samples LAYER.ROCK off it, like every rock.
@@ -299,8 +323,8 @@ export class Litter {
   constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Litter: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Litter: needs WaterSurfaces with levelAt')
-    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
-      throw new Error('Litter: needs Layers with flattenAt, shoreAt and a snow field')
+    if (!layers || typeof layers.dirtAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
+      throw new Error('Litter: needs Layers with dirtAt, shoreAt and a snow field')
     }
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Litter: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
@@ -311,7 +335,7 @@ export class Litter {
     if (rocks && typeof rocks.blockTopAt !== 'function') {
       throw new Error('Litter: `rocks` was given but has no blockTopAt -- pass the Rocks or nothing')
     }
-    // Optional on the same terms: the gates' stub layers carry no paths. Without it no ground is a road and the litter is what it was.
+    // Optional on the same terms: the gates' stub layers carry no paths. Without it no ground is a road, the reach is RADIUS, and the litter is what it was.
     const paths = layers.paths === undefined ? null : layers.paths
     if (paths && (typeof paths.nearest !== 'function' || typeof paths.overlaps !== 'function')) {
       throw new Error('Litter: `layers.paths` has no nearest/overlaps -- pass the PathSet or leave it off')
@@ -337,13 +361,19 @@ export class Litter {
     // that scatters nothing.
     this.perTileWet = Math.max(0, Math.round(TILE * TILE * WET_DENSITY))
     this.perTileRoad = paths === null ? 0 : Math.max(0, Math.round(TILE * TILE * ROAD_DENSITY))
-    this.tileSpan = Math.ceil(RADIUS / TILE) + 1
+    // How far tiles are resident: the cobbles' reach, or the pebbles' where there are no roads to reach for.
+    const reach = paths === null ? RADIUS : ROAD_RADIUS
+    this.roadRadius = reach
+    this.tileSpan = Math.ceil(reach / TILE) + 1
     this.radiusSq = RADIUS * RADIUS
+    this.roadRadiusSq = reach * reach
+    // A tile a road crosses lives to the far radius; any other to the near one.
     this.evictSq = (RADIUS + TILE * 1.5) ** 2
+    this.roadEvictSq = (reach + TILE * 1.5) ** 2
     this.maxSlopeTan = Math.tan((MAX_SLOPE_DEG * Math.PI) / 180)
     this.minNy = Math.cos((MAX_SLOPE_DEG * Math.PI) / 180)
 
-    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / FULL_RADIUS) * QUANT))
+    this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.roadEvictSq) / FULL_RADIUS) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
     this.loSq = new Float32Array(this.maxQ + 2)
     for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, -q / QUANT)
@@ -361,7 +391,7 @@ export class Litter {
     this.pebbleHeight = this.pebble.userData.rock.measured.height
     // The unit pebble's extents, which a hand's ball and a held one's size come from through the instance's scale.
     this.pebbleExt = this.pebble.userData.rock.measured
-    this.maxInstances = this._poolBound()
+    this.maxInstances = POOL
 
     this.batch = new InstancedArena(this.maxInstances, this.material)
     this.batch.name = 'v2-litter'
@@ -429,13 +459,15 @@ export class Litter {
     // still reads as the drift's own doing. `rejectedWet.dry` is the wet pass's
     // bulk -- candidates that fell on land, nearly all of them on any real world --
     // and is the number to watch if the second pass ever looks expensive. There is
-    // no `water` bucket in `rejected`: the dry pass refuses nothing for standing in
-    // a river.
+    // no `water` or `road` bucket in `rejected`: the dry pass refuses nothing for
+    // standing in a river or on a road.
     this.rejected = { slope: 0, env: 0, clump: 0 }
     this.rejectedWet = { dry: 0, clump: 0, slope: 0, env: 0 }
-    // The road pass's own: `off` is its bulk, candidates that fell beside the road in a tile it crosses.
+    // The road pass's own: `off` is its bulk, a candidate that fell beside the road.
     this.rejectedRoad = { off: 0, slope: 0 }
     this.samplesRoad = 0
+    // Candidates that found the pool empty and were dropped. See POOL.
+    this.starved = 0
     // Every pass's rock drops on one counter, because the test they share lives in
     // the one method they share (_stamp). Counted rather than silent: a pebble
     // rejected by stone is indistinguishable in the world from one that was never
@@ -447,23 +479,6 @@ export class Litter {
     this.buildMs = performance.now() - t0
 
     scene.add(this.batch)
-  }
-
-  /**
-   * See RockBed._poolBound: summed over the real tile grid, because the law is
-   * not exact.
-   *
-   * ALL THREE PASSES, AND IT HAS TO BE ALL THREE. The bound is position-blind -- it knows
-   * how many candidates a tile rolls and nothing about whether that tile is
-   * under water or a road -- so it has to assume every tile in range is lake bed and road and every
-   * candidate of every pass survives. In a real world that is generous by a
-   * wide margin, because the wet pass places nothing at all on dry land and the road pass nothing off a road. The
-   * alternative is not a smaller arena, it is a crash on a riverbank: running
-   * dry THROWS in _growTile rather than quietly placing less.
-   */
-  _poolBound() {
-    return poolBound(this.tile, this.tileSpan, this.evictSq, 1.35,
-      (d2) => (this.perTile + this.perTileWet + this.perTileRoad) * this.uAt[this._levelFor(d2)])
   }
 
   _levelFor(d2) {
@@ -605,13 +620,15 @@ export class Litter {
       const nx = Math.max(t.tx * tile, Math.min(camX, (t.tx + 1) * tile))
       const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
       const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+      const near = ((t.tx + 0.5) * tile - camX) ** 2 + ((t.tz + 0.5) * tile - camZ) ** 2 <= this.radiusSq
 
       const q = t.q
       const thicken = near2 < this.loSq[q]
       const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
-      if (!t.queued && (thicken || thin)) {
+      // A road tile she has walked within RADIUS of owes its pebbles at the level it already holds.
+      if (!t.queued && (thicken || thin || (near && !t.dry))) {
         t.queued = true
-        this.queue.push({ key: t.tx * 0x10000 + t.tz, tx: t.tx, tz: t.tz, q: this._levelFor(near2), d2: near2 })
+        this.queue.push({ key: t.tx * 0x10000 + t.tz, tx: t.tx, tz: t.tz, q: this._levelFor(near2), d2: near2, near })
       }
 
       hidden += this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
@@ -630,7 +647,7 @@ export class Litter {
     for (const [key, t] of this.tiles) {
       const dx = (t.tx + 0.5) * tile - cx
       const dz = (t.tz + 0.5) * tile - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz > (t.road ? this.roadEvictSq : this.evictSq)) {
         this._release(t)
         this.tiles.delete(key)
       }
@@ -646,12 +663,15 @@ export class Litter {
         const dcx = (gx + 0.5) * tile - cx
         const dcz = (gz + 0.5) * tile - cz
         const d2 = dcx * dcx + dcz * dcz
-        if (d2 > this.radiusSq) continue
+        if (d2 > this.roadRadiusSq) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
+        // Past RADIUS only a tile a road crosses is loaded, and for its cobbles alone.
+        const near = d2 <= this.radiusSq
+        if (!near && !this.paths.overlaps(gx * tile, gz * tile, (gx + 1) * tile, (gz + 1) * tile)) continue
         const nx = Math.max(gx * tile, Math.min(cx, (gx + 1) * tile))
         const nz = Math.max(gz * tile, Math.min(cz, (gz + 1) * tile))
-        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2) })
+        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2), near })
       }
     }
     this.queue.sort((a, b) => b.d2 - a.d2)
@@ -672,11 +692,11 @@ export class Litter {
    * filled; `u` there is its rank, which the rim dissolve is set from. The
    * tile's three shading terms are read off the instance too -- see _altLo.
    *
-   * RETURNS -1 IF THE PEBBLE WAS REFUSED, which happens for exactly one reason: a
-   * rock is already standing there. Callers must skip a -1 rather than write it
-   * into their id list.
+   * RETURNS -1 IF THE PEBBLE WAS REFUSED: a rock is standing there, she took the
+   * pebble that lay there, or the pool is empty. Callers must skip a -1 rather
+   * than write it into their id list.
    *
-   * `onRoad` stamps a cobble: size from ROAD_SIZE in place of SIZE, and ROAD_SPREAD times wider in x and z only, the rim reach widening with it since the reach is a function of the drawn width.
+   * `onRoad` stamps a cobble: size from ROAD_SIZE in place of SIZE, ROAD_SPREAD times wider in x and z only, and the rim reach on the cobbles' own ladder.
    */
   _stamp(x, z, h, snowLine, env, onRoad) {
     // NOT INSIDE A ROCK, and this is a DROP rather than a lift: a pebble bedded
@@ -692,14 +712,15 @@ export class Litter {
     // A pebble she picked up does not lie there again.
     if (taken.has('pebble', x, z)) return -1
 
-    // Running dry THROWS rather than quietly placing less. A scatter that
-    // silently stopped scattering on the densest ground in the world would be
-    // indistinguishable from one tuned that way, and the riverbed is where that
-    // would happen first. See _poolBound for what covers it.
+    // Running dry drops the pebble and says so ONCE: a scatter that silently
+    // stopped scattering would be indistinguishable from one tuned that way, but a
+    // throw here takes the frame down for a slot. See POOL.
     if (this.freeCount === 0) {
-      throw new Error(
-        `Litter: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
-      )
+      if (this.starved === 0) {
+        console.warn(`Litter: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident); placing nothing more until a tile is evicted`)
+      }
+      this.starved++
+      return -1
     }
 
     const id = this.free[--this.freeCount]
@@ -745,7 +766,7 @@ export class Litter {
     // as the ground it is lying on rather than as the heightmap's coarser slope.
     const pal = PEBBLE_TINTS[env]
     const gain = TINT_GAIN[pal[Math.min(pal.length - 1, (r.tint * pal.length) | 0)]]
-    shade(h, this._n.y, snowLine, this._snowBand, this.layers.flattenAt(x, z),
+    shade(h, this._n.y, snowLine, this._snowBand, this.layers.dirtAt(x, z),
       this.layers.shoreAt(x, z, h), this._altLo, this._altSpan, x, z, gc, 0)
     const k1 = GROUND_CUE[env]
     const k0 = 1 - k1
@@ -765,8 +786,13 @@ export class Litter {
     this.batch.setColorAt(id, this._c)
 
     // Hidden and FRESH until the rim has looked at it -- see rim.js. The caller
-    // marks the tile due, because a pebble is laid before its tile exists.
-    this.rim.place(id, Math.min(this.fullRadius / r.u, this.radius, REACH_SIZES * size * spread))
+    // marks the tile due, because a pebble is laid before its tile exists. A
+    // cobble's reach is on its own ladder (ROAD_FULL_RADIUS), matching the rank
+    // its tile thins it by.
+    const gone = onRoad
+      ? Math.min(ROAD_FULL_RADIUS / r.u, ROAD_RADIUS, REACH_SIZES * size * spread)
+      : Math.min(this.fullRadius / r.u, this.radius, REACH_SIZES * size)
+    this.rim.place(id, gone)
     return id
   }
 
@@ -805,32 +831,43 @@ export class Litter {
   }
 
   _growTile(job) {
-    const { key, tx, tz, q } = job
+    const { key, tx, tz, q, near } = job
     const tile = this.tile
     const existing = this.tiles.get(key)
     const uNew = this.uAt[q]
 
+    // THE DRY AND WET PASSES RUN ONLY ON A TILE SHE HAS BEEN WITHIN RADIUS OF, and
+    // once run their pebbles stay, thinned by rank like everything else, until the
+    // tile is evicted: `dry` is sticky. A road tile loaded from past RADIUS holds
+    // cobbles alone; the first job that finds it near (`wantDry`) lays its
+    // pebbles from rank 0 up to the level the tile already stands at, so they
+    // arrive at the same fraction the cobbles are already thinned to.
+    const dry = near || (existing !== undefined && existing.dry)
+    const wantDry = dry && !(existing !== undefined && existing.dry)
     if (existing) {
       existing.queued = false
-      if (existing.q === q) return
+      if (existing.q === q && !wantDry) return
       this.regrows++
       if (uNew < existing.u) {
         this._thin(existing, uNew)
         existing.q = q
         existing.u = uNew
-        return
+        if (!wantDry) return
       }
     }
+    // What the tile is grown to already: the road pass's floor, and the dry and wet passes' unless they have yet to run here.
     const uOld = existing ? existing.u : 0
+    const uOldDry = wantDry ? 0 : uOld
 
     // ONE SET OF ARRAYS FOR EVERY PASS, sized for the worst case of a tile
-    // entirely under water and road: the dry pass appends, then the wet and road passes append
-    // behind it. Nothing downstream cares which pass an entry came from --
-    // _thin compacts by rank, _release and _reground walk the whole of `n` --
-    // so a pebble on a riverbed is thinned and re-seated on exactly the terms a
-    // pebble in a wood is.
-    const ids = existing ? existing.ids : new Int32Array(this.perTile + this.perTileWet + this.perTileRoad)
-    const rank = existing ? existing.rank : new Float32Array(this.perTile + this.perTileWet + this.perTileRoad)
+    // entirely under water and entirely road: the dry pass appends, then the wet
+    // and road passes append behind it. Nothing downstream cares which pass an
+    // entry came from -- _thin compacts by rank, _release and _reground walk the
+    // whole of `n` -- so a pebble on a riverbed is thinned and re-seated on
+    // exactly the terms a pebble in a wood is.
+    const capacity = this.perTile + this.perTileWet + this.perTileRoad
+    const ids = existing ? existing.ids : new Int32Array(capacity)
+    const rank = existing ? existing.rank : new Float32Array(capacity)
     let n = existing ? existing.n : 0
 
     // Whether any path crosses this tile's box, asked once: a tile a road never reaches pays no per-candidate road query and skips the road pass outright.
@@ -846,21 +883,18 @@ export class Litter {
 
     // --- the dry pass: ordinary ground, and the riverbed at the shore's rate ---
     const rand = mulberry32(tileSeed(tx, tz, this.seed, 0))
-    for (let k = 0; k < this.perTile; k++) {
+    for (let k = 0, end = dry ? this.perTile : 0; k < end; k++) {
       const { x, z, envRoll } = this._draw(rand, tx, tz)
-      if (r.u >= uNew || r.u < uOld) continue
+      if (r.u >= uNew || r.u < uOldDry) continue
 
-      // On a road's surface the drift floor and the environment rate below are both waived -- see ROAD_DENSITY. Position-only, so it draws no randoms.
-      const onRoad = roadTile && this._onRoad(x, z)
       // The drift field, taken BEFORE the terrain sample, which is what makes a
       // scatter this dense affordable. See CLUMP_FLOOR. Position-only, so it
       // draws no randoms.
       const clump = this._clump(x, z, CLUMP_CELL, -1)
-      if (!onRoad && clump < CLUMP_FLOOR) {
+      if (clump < CLUMP_FLOOR) {
         this.rejected.clump++
         continue
       }
-
       this.samples++
       const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
       // The slope, twice: the heightmap's own out of scatterAt, then the 1.2 m
@@ -876,14 +910,14 @@ export class Litter {
       // strewn instead of merely not-swept. Capped by the accept rate itself,
       // which is why the gain buys nothing at all on shingle and everything in
       // a wood -- see the RIVER IS SATURATED note above ENV_DENSITY.
-      if (!onRoad && envRoll >= this._rateAt(env, clump, this._clump(x, z, FINE_CELL, -2), h, snowLine)) {
+      if (envRoll >= this._rateAt(env, clump, this._clump(x, z, FINE_CELL, -2), h, snowLine)) {
         this.rejected.env++
         continue
       }
       // No water test: submerged ground is `river` to _envAt and takes the
       // shore's saturated rate above, and the wet pass below lays more on top.
 
-      const id = this._stamp(x, z, h, snowLine, env, onRoad)
+      const id = this._stamp(x, z, h, snowLine, env, false)
       if (id < 0) continue
       ids[n] = id
       rank[n] = r.u
@@ -901,9 +935,9 @@ export class Litter {
     // does differently are that it offers WET_DENSITY more candidates per square
     // metre and that it demands water.
     const wet = mulberry32(tileSeed(tx, tz, this.seed, 1))
-    for (let k = 0; k < this.perTileWet; k++) {
+    for (let k = 0, end = dry ? this.perTileWet : 0; k < end; k++) {
       const { x, z, envRoll } = this._draw(wet, tx, tz)
-      if (r.u >= uNew || r.u < uOld) continue
+      if (r.u >= uNew || r.u < uOldDry) continue
 
       // THE ORDER OF THE NEXT THREE TESTS IS THE COST OF THIS WHOLE PASS, and it
       // is cheapest-first. `_clump` is four hashes, ~34 ns, and throws away a
@@ -962,12 +996,19 @@ export class Litter {
 
     // --- the road pass: the road's surface, and nothing else -----------------
     //
-    // A third stream (slot 2) on the wet pass's terms: the draws above are untouched, and this loop only runs where a path crosses the tile. Off the road is the bulk reject and comes before the terrain sample; on the road the only test left is the slope, since the drift and the environment are waived there (ROAD_DENSITY).
+    // A third stream (slot 2) on the wet pass's terms: the draws above are
+    // untouched, and this loop only runs where a path crosses the tile. Off the
+    // road is the bulk reject and comes before the terrain sample; on the road
+    // the only test left is the slope, since the drift and the environment are
+    // waived there (ROAD_DENSITY). The rank is the roll scaled onto the pebbles'
+    // ladder (ROAD_RANK) before the keep test, which is the whole of the cobbles'
+    // longer reach.
     if (roadTile) {
       const rd = mulberry32(tileSeed(tx, tz, this.seed, 2))
       for (let k = 0; k < this.perTileRoad; k++) {
         const { x, z } = this._draw(rd, tx, tz)
-        if (r.u >= uNew || r.u < uOld) continue
+        const rankOf = r.u * ROAD_RANK
+        if (rankOf >= uNew || rankOf < uOld) continue
         if (!this._onRoad(x, z)) {
           this.rejectedRoad.off++
           continue
@@ -984,7 +1025,7 @@ export class Litter {
         const id = this._stamp(x, z, h, snowLine, env, true)
         if (id < 0) continue
         ids[n] = id
-        rank[n] = r.u
+        rank[n] = rankOf
         n++
       }
     }
@@ -994,6 +1035,8 @@ export class Litter {
       existing.n = n
       existing.q = q
       existing.u = uNew
+      existing.dry = dry
+      existing.road = roadTile
       this.rim.markDue(existing)
     } else {
       this.tiles.set(key, {
@@ -1004,6 +1047,8 @@ export class Litter {
         n,
         q,
         u: uNew,
+        dry,
+        road: roadTile,
         queued: false,
         gkey: this.ground ? this.ground.groundKeyAt((tx + 0.5) * tile, (tz + 0.5) * tile) : null,
       })
@@ -1163,6 +1208,7 @@ export class Litter {
       rejectedWet: this.rejectedWet,
       rejectedRoad: this.rejectedRoad,
       rejectedRock: this.rejectedRock,
+      starved: this.starved,
       buildMs: this.buildMs,
       placeMs: this.placeMs,
       lastBuildMs: this.lastBuildMs,

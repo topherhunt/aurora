@@ -209,7 +209,7 @@ export class Carrots {
    * @param scene    THREE.Scene to add the arena's Group to.
    * @param field    V2Height. Needs heightAndSlopeAt, snowLineAt, bands.
    * @param water    WaterSurfaces. Needs isSubmerged.
-   * @param layers   Layers. Needs `paths`, `snow.band` and flattenAt.
+   * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
    */
@@ -220,7 +220,7 @@ export class Carrots {
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Carrots: needs WaterSurfaces with isSubmerged')
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') throw new Error('Carrots: needs Layers with a PathSet')
-    if (typeof layers.flattenAt !== 'function' || !layers.snow) throw new Error('Carrots: needs Layers with flattenAt and a snow field')
+    if (typeof layers.dirtAt !== 'function' || !layers.snow) throw new Error('Carrots: needs Layers with dirtAt and a snow field')
     if (!rocks || typeof rocks.blockTopAt !== 'function') throw new Error('Carrots: needs Rocks with blockTopAt')
 
     this.field = field
@@ -449,7 +449,7 @@ export class Carrots {
 
       // The terrain's own colour underfoot, renormalised to unit luminance so
       // only the hue survives (ferns.js), and a value swing so two carrots differ.
-      shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, road ? this.layers.flattenAt(mx, mz) : 0, 0, altLo, altSpan, mx, mz, gc, 0)
+      shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, road ? this.layers.dirtAt(mx, mz) : 0, 0, altLo, altSpan, mx, mz, gc, 0)
       const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
       const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
       const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

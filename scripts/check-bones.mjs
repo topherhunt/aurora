@@ -34,7 +34,7 @@ const shippedBank = () => bonesBankFrom({
 
 const DRY = { isSubmerged: () => false }
 const WET = { isSubmerged: () => true }
-const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, flattenAt: () => 0 }
+const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, dirtAt: () => 0 }
 const flatField = (h, snowLine = 900) => ({
   heightAt: () => h,
   heightAndSlopeAt: () => ({ h, tan: 0 }),

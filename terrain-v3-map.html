@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- terrain v3 map</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --bad: #d98c8c; }
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #05080f; color: var(--ink); font: 12px/1.5 monospace; }
+      canvas { display: block; cursor: crosshair; }
+
+      .panel {
+        position: fixed; z-index: 10; background: var(--panel);
+        border: 1px solid var(--edge); border-radius: 6px; padding: 10px 12px;
+      }
+      #controls { top: 8px; left: 8px; width: 232px; max-height: calc(100vh - 16px); overflow-y: auto; }
+      #readout { bottom: 8px; left: 8px; white-space: pre; pointer-events: none; min-width: 232px; }
+      #stats { top: 8px; right: 8px; white-space: pre; max-height: calc(100vh - 16px); overflow-y: auto; }
+
+      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 12px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      .row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+      .row > label { flex: 0 0 46px; color: var(--dim); }
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      .row > input { flex: 1 1 auto; }
+      button { cursor: pointer; width: 100%; padding: 5px; }
+      button:hover { background: #17263c; }
+      button:disabled { opacity: .45; cursor: default; }
+
+      .layer { display: block; padding: 2px 4px; border-radius: 3px; cursor: pointer; }
+      .layer:hover { background: #17263c; }
+      .layer input { margin-right: 6px; }
+      .layer .key { color: var(--dim); float: right; }
+
+      #log { color: var(--dim); white-space: pre-wrap; font-size: 11px; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+      .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; white-space: normal; }
+    </style>
+  </head>
+  <body>
+    <canvas id="map"></canvas>
+
+    <div id="controls" class="panel">
+      <h2>island</h2>
+      <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="20260824" /></div>
+      <button id="run">generate</button>
+      <p class="note">Runs the generator in a worker every time and writes the result to the cache <em>/terrain-v3</em> boots from, so what you approve here is what you will stand on there.</p>
+
+      <h2>layer</h2>
+      <div id="layers"></div>
+
+      <h2>log</h2>
+      <div id="log"></div>
+    </div>
+
+    <div id="readout" class="panel">hover the map</div>
+    <div id="stats" class="panel">generating...</div>
+
+    <script type="module" src="/src/v3/map-main.js"></script>
+  </body>
+</html>

@@ -570,20 +570,20 @@ const BEDS = [
     minGap: 0.7,
   },
   {
-    // THE ENTRANCE BOULDERS (DESIGN.md §30): one standing stone per 300 m tile
-    // that holds a wood, its longest axis upright and the burial pinned so the
-    // mouth entrances.js cuts into its face is always at the same height.
-    // `deep` puts the one candidate at the point of the tile furthest from
-    // open ground and refuses the tile unless that point is 50 m into the
-    // wood, so a hollow is always something she has to find. The wood is the
-    // forest law's, which runs 55 m up into what `_envAt` calls peak, so peak
-    // ground is claimed too.
+    // THE ENTRANCE BOULDERS (DESIGN.md §30): one boulder per 300 m tile that
+    // holds a wood, lying on its long side like every other big rock in the
+    // wood and the burial pinned so the mouth entrances.js cuts into its
+    // flank is always at the same height. `deep` puts the one candidate at
+    // the point of the tile furthest from open ground and refuses the tile
+    // unless that point is 50 m into the wood, so a hollow is always
+    // something she has to find. The wood is the forest law's, which runs
+    // 55 m up into what `_envAt` calls peak, so peak ground is claimed too.
     name: 'hollow',
     hollow: true,
     field: 9,
     density: 1 / (300 * 300),
     deep: 50,
-    stand: true,
+    lie: true,
     envDensity: { river: 0, forest: 1, cliff: 0, peak: 1 },
     fullRadius: 270,
     radius: 1250,
@@ -594,9 +594,9 @@ const BEDS = [
     tilt: 0.2,
     tiltJitter: 0,
     sinkVary: false,
-    // Pinned just above SINK_MIN and under SQUASH_AT: never squashed, so the
-    // face the mouth sits in is the hull's own.
-    sinkRange: [0.4, 0.41],
+    // Pinned just under half its height and under SQUASH_AT: never squashed,
+    // so the face the mouth sits in is the hull's own.
+    sinkRange: [0.45, 0.46],
     anchor: true,
     blocks: true,
     sizeByEnv: { forest: [8.0, 12.0], peak: [8.0, 12.0] },
@@ -1389,8 +1389,13 @@ class RockBed {
     this._deepN = this.deep > 0 ? Math.round(tile / DEEP.step) + 1 : 0
     this._deepDist = this.deep > 0 ? new Float32Array(this._deepN * this._deepN) : null
     // A `stand` bed takes the quarter turn that puts the shape's longest
-    // measured axis upright, mirrored by the roll draw, instead of a rolled one.
+    // measured axis upright, a `lie` bed the one that puts its middle axis
+    // up -- the longest level, the shape on its narrowest side, so the flat
+    // bed face stands as a wall -- each mirrored by the roll draw, instead of
+    // a rolled one.
     this.stand = cfg.stand ?? false
+    this.lie = cfg.lie ?? false
+    if (this.stand && this.lie) throw new Error(`RockBed ${cfg.name}: \`stand\` and \`lie\` are two turns, take one`)
     this.tile = tile
     this.density = cfg.density
     this.radius = cfg.radius
@@ -1621,13 +1626,16 @@ class RockBed {
           `set \`roll: false\` or the bed will show the inside of its own rocks`
       )
     }
-    // The two mirrored turns of ROLL_STEPS that stand the longest axis up: a Z
-    // quarter turn (ri 4, 12) lifts the width, an X one (ri 1, 3) the depth.
-    if (this.stand) {
-      if (!this.roll) throw new Error(`RockBed ${cfg.name}: \`stand\` is a quarter turn, which \`roll: false\` declines`)
+    // The two mirrored turns of ROLL_STEPS that put a measured axis up: a Z
+    // quarter turn (ri 4, 12) lifts the width, an X one (ri 1, 3) the depth,
+    // and the height stays up through the identity or a half turn (ri 0, 2).
+    this.turnRi = null
+    if (this.stand || this.lie) {
+      if (!this.roll) throw new Error(`RockBed ${cfg.name}: \`stand\` and \`lie\` are quarter turns, which \`roll: false\` declines`)
       const mm = this.shape.measured
-      this.standRi = mm.width >= mm.depth && mm.width >= mm.height ? [4, 12]
-        : mm.depth >= mm.height ? [1, 3] : [0, 0]
+      const byLength = ['width', 'depth', 'height'].sort((a, b) => mm[b] - mm[a])
+      const up = byLength[this.stand ? 0 : 1]
+      this.turnRi = up === 'width' ? [4, 12] : up === 'depth' ? [1, 3] : [0, 2]
     }
 
     // HOW FAR THE SHELL'S CURTAIN HANGS below its own bed plane, per metre of the
@@ -3336,7 +3344,7 @@ class RockBed {
       // not shift the random stream and every other bed places where it did.
       const q = this._rollQ.identity()
       if (this.roll) {
-        const ri = this.stand ? this.standRi[rollRoll < 0.5 ? 0 : 1]
+        const ri = this.turnRi ? this.turnRi[rollRoll < 0.5 ? 0 : 1]
           : Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
         q.setFromAxisAngle(this._zAxis, ((ri / ROLL_STEPS) | 0) * (Math.PI / 2))
         q.multiply(this._rollXQ.setFromAxisAngle(this._xAxis, (ri % ROLL_STEPS) * (Math.PI / 2)))
@@ -3626,10 +3634,10 @@ class RockBed {
       // The terrain's own vertex colour here, from the chunk mesher's own
       // `shade`, so the cue cannot drift away from what the ground is actually
       // painted -- render/ferns.js takes a fern's the same way and for the same
-      // reason. `flattenAt` unconditionally rather than ferns' road-gated call:
+      // reason. `dirtAt` unconditionally rather than ferns' road-gated call:
       // this file has no path index to gate on, and one lookup sits next to the
       // four _groundTilt is about to take anyway.
-      shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, this.layers.flattenAt(x, z),
+      shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, this.layers.dirtAt(x, z),
         this.layers.shoreAt(x, z, h), altLo, altSpan, x, z, gc, 0)
       // Taken at FULL MAGNITUDE, so the cue carries lightness and not just hue --
       // see GROUND_CUE for why the old renormalisation went and what the change
@@ -4506,7 +4514,7 @@ export class Rocks {
    * @param scene         THREE.Scene. Gets `batch`, the one group of tier meshes.
    * @param field         V2Height. Needs scatterAt, heightAt, snowLineAt, bands.
    * @param water         WaterSurfaces. Needs levelAt, isSubmerged and shoreDistAt.
-   * @param layers        Layers. Needs `snow.band` and flattenAt, for the ground
+   * @param layers        Layers. Needs `snow.band` and dirtAt, for the ground
    *                      cue -- see GROUND_CUE. Same argument Ferns takes and in
    *                      the same position.
    * @param textureArray  The shared prop atlas from buildTextureArray().
@@ -4518,8 +4526,8 @@ export class Rocks {
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
     }
-    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
-      throw new Error('Rocks: needs Layers with flattenAt, shoreAt and a snow field')
+    if (!layers || typeof layers.dirtAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
+      throw new Error('Rocks: needs Layers with dirtAt, shoreAt and a snow field')
     }
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Rocks: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
@@ -4888,6 +4896,12 @@ export class Rocks {
     return false
   }
 
+  /** The boulder every bed takes, its tiers and measured extents, and the one stone material: for a layer drawing a few rocks of its own (entrances.js's flanking stones). */
+  boulder() {
+    const shape = this.beds[0].shape
+    return { tiers: shape.tiers, measured: shape.measured, material: this.material }
+  }
+
   /** The geometry and material a packed rock record is drawn with: the boulder at LOD0 on the stone material. For hands.js. */
   dress(slot) {
     if (slot.kind !== 'rock') throw new Error(`Rocks.dress: not a rock, ${slot.kind}`)
@@ -4933,7 +4947,7 @@ export class Rocks {
     const { altLo, altSpan } = bed.field.bands
     const gc = bed._gc
     const layers = bed.layers
-    shade(g.h, 1 / Math.hypot(g.tan, 1), snowLine, layers.snow.band, layers.flattenAt(x, z), layers.shoreAt(x, z, g.h), altLo, altSpan, x, z, gc, 0)
+    shade(g.h, 1 / Math.hypot(g.tan, 1), snowLine, layers.snow.band, layers.dirtAt(x, z), layers.shoreAt(x, z, g.h), altLo, altSpan, x, z, gc, 0)
     const gain = TINT_GAIN[ENV_TINTS[env][0]]
     const cue = GROUND_CUE[env]
     const v = 0.86 + 0.5 * 0.3
@@ -4943,6 +4957,30 @@ export class Rocks {
   /** The critter LOD tint row's rock: every entrance boulder purple, so a village can be found from across a wood. */
   setHollowTint(on) {
     for (const bed of this.beds) if (bed.cfg.hollow) bed.setTint(on ? HOLLOW_TINT : null)
+  }
+
+  /** The colour the entrance boulder nearest (x, z) was placed with, its own roll rather than tintAt's middle, so a stone tucked against it matches it; none within 20 m throws. */
+  hollowTintAt(x, z, out = new THREE.Color()) {
+    let best = 400, bx = -1, bid = -1
+    for (let b = 0; b < this.beds.length; b++) {
+      const bed = this.beds[b]
+      if (!bed.cfg.hollow) continue
+      const tile = bed.tile
+      for (let gx = Math.floor((x - 20) / tile); gx <= Math.floor((x + 20) / tile); gx++) {
+        for (let gz = Math.floor((z - 20) / tile); gz <= Math.floor((z + 20) / tile); gz++) {
+          const t = bed.tiles.get(gx * 0x10000 + gz)
+          if (!t) continue
+          for (let k = 0; k < t.n; k++) {
+            const id = t.ids[k]
+            const d = (bed.instX[id] - x) ** 2 + (bed.instZ[id] - z) ** 2
+            if (d < best) { best = d; bx = b; bid = id }
+          }
+        }
+      }
+    }
+    if (bid < 0) throw new Error(`Rocks.hollowTintAt: no entrance boulder within 20 m of ${x.toFixed(1)}, ${z.toFixed(1)}`)
+    const n = this.beds[bx].natural
+    return out.setRGB(n[bid * 3], n[bid * 3 + 1], n[bid * 3 + 2])
   }
 
   /** rayAt against the hollow beds alone, any size, each boulder at its field seating: where a ray meets an entrance boulder's own hull, the same on every client. */

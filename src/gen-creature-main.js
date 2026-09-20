@@ -1299,6 +1299,7 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
     `${analysis.uvIslands} UV island${analysis.uvIslands === 1 ? '' : 's'} &middot; ` +
     `${analysis.lockedPoints} pinned (${Math.round((analysis.lockedPoints / analysis.points) * 100)}%), ${analysis.rimPoints} on a rim &middot; ` +
     `${analysis.lockedFaces} unremovable faces &middot; ` +
+    `area p5/p95 ${analysis.areaP5.toFixed(2)}/${analysis.areaP95.toFixed(2)} x mean, fan ${analysis.maxFan} &middot; ` +
     `quads ${Math.round(analysis.quadFraction * 100)}% &middot; ` +
     `atlas floor ${floor} tris`
 
@@ -1327,6 +1328,7 @@ $('genLod').addEventListener('click', () => withButton($('genLod'), 'decimating'
         `lod${i + 1}: ${t.stats.outputTris} tris (asked ${t.stats.targetTris}, from ${t.stats.inputTris}) &middot; ` +
         `${t.stats.collapses} collapses &middot; ${t.stats.lockedPoints}/${t.stats.totalPoints} points pinned, ${t.stats.rimPoints} on a rim &middot; ` +
         `${t.stats.pieces} &rarr; ${t.stats.piecesLeft} pieces (${t.stats.piecesDropped} deleted whole) &middot; ` +
+        `area p5/p95 ${t.stats.areaP5.toFixed(2)}/${t.stats.areaP95.toFixed(2)} x mean, fan ${t.stats.maxFan} &middot; ` +
         (t.stats.uvMode === 'drop' ? 'atlas dropped, texture baked to vertex colours'
           : t.stats.uvMode === 'stretch' ? `atlas kept, ${t.stats.stretched} collapses stretched texels`
           : 'atlas preserved exactly'),

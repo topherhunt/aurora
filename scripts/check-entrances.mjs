@@ -4,8 +4,8 @@
 //   node scripts/check-entrances.mjs
 //
 // A mouth is a thing she walks into, so what is gated is the walk: a mouth
-// point on dry level ground in front of a face with two metres of wall behind
-// it, the hole's quad proud of that stone and inside the arch, the arch upright
+// point on dry level ground in front of a face with PROBE.wall of wall behind
+// it, the hole proud of that stone and inside the arch, the arch upright
 // with its passage on the face's normal, every site the same on a second boot
 // to the bit, and a site's record kept across the layer losing and regrowing
 // it. The world is check-rocks' flat forest: the real biome field over flat
@@ -14,11 +14,14 @@
 import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
 import {
-  Entrances, HOLE, MOUTH_HEIGHT_M, MOUTH_STEP_M, PROBE, RADIUS_M, RUNGS, mouthBankFrom, wallReach,
+  Entrances, FLANK, HOLE, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
 } from '../src/v2/render/entrances.js'
 import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
+import { WalkSurface } from '../src/v2/walk.js'
+import { LOCOMOTION, Player } from '../src/player.js'
 import { buildTextureArray } from '../src/textures.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { ROCK_LOD_AT } from '../src/props/rock.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -34,7 +37,7 @@ const field = {
   bands: { altLo: 0, altSpan: 900 },
 }
 const water = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 /** A world grown about (cx, cz): the rocks, and the entrances over them. */
@@ -79,12 +82,68 @@ for (let i = 0; i < sites.length; i++) {
 }
 check(closest >= 100, 'no two mouths within 100 m', `closest ${closest.toFixed(0)} m`)
 
+// --- the hole is inside the ring ----------------------------------------------
+//
+// The outline's edges, sampled every centimetre, against the pick's own
+// solid on the hole's plane: a point is inside the arch when a ray out of it
+// along +X crosses the mesh an odd number of times. Every sample must be in
+// stone at the plane the layer seats the hole on and a hair either side of
+// it, and grown 1.5 cm about its centre the outline must still fit, so a
+// vertex is not sitting on the ring's edge.
+console.log('\nthe hole is inside the ring')
+{
+  const bank = mouthBankFrom(readShippedLadder('cave-mouth'))
+  const g = bank.tiers[0].geometries[0]
+  const pos = g.getAttribute('position').array
+  const idx = g.index.array
+  const crossings = (x, y, z) => {
+    let n = 0
+    for (let t = 0; t < idx.length; t += 3) {
+      const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
+      const ay = pos[a + 1], az = pos[a + 2], by = pos[b + 1], bz = pos[b + 2], cy = pos[c + 1], cz = pos[c + 2]
+      const d = (by - cy) * (az - cz) + (cz - bz) * (ay - cy)
+      if (Math.abs(d) < 1e-12) continue
+      const l1 = ((by - cy) * (z - cz) + (cz - bz) * (y - cy)) / d
+      const l2 = ((cy - ay) * (z - cz) + (az - cz) * (y - cy)) / d
+      const l3 = 1 - l1 - l2
+      if (l1 < 0 || l2 < 0 || l3 < 0) continue
+      if (l1 * pos[a] + l2 * pos[b] + l3 * pos[c] > x) n++
+    }
+    return n
+  }
+  const solid = (plane, u, v) => crossings(plane / bank.scale, v / bank.scale, u / bank.scale) % 2 === 1
+  const plane = MOUTH_SINK_M + HOLE.proud
+  const edgeSamples = (outline) => {
+    const out = []
+    for (let i = 0; i < outline.length; i++) {
+      const [u0, v0] = outline[i], [u1, v1] = outline[(i + 1) % outline.length]
+      const n = Math.max(1, Math.ceil(Math.hypot(u1 - u0, v1 - v0) / 0.01))
+      for (let k = 0; k < n; k++) out.push([u0 + (u1 - u0) * (k / n), v0 + (v1 - v0) * (k / n)])
+    }
+    return out
+  }
+  const open = (outline, at) => edgeSamples(outline).filter(([u, v]) => !solid(at, u, v))
+  const vertices = HOLE.outline.filter(([u, v]) => !solid(plane, u, v))
+  check(vertices.length === 0, `every outline vertex is in the ring's stone at the hole's plane, ${plane.toFixed(2)} m into the arch`, vertices.length ? `open at ${JSON.stringify(vertices)}` : `${HOLE.outline.length} vertices`)
+  for (const at of [plane - 0.02, plane, plane + 0.02]) {
+    const bad = open(HOLE.outline, at)
+    check(bad.length === 0, `and every centimetre of its edges at ${at.toFixed(2)} m`, bad.length ? `${bad.length} open, first (${bad[0][0].toFixed(2)}, ${bad[0][1].toFixed(2)})` : `${edgeSamples(HOLE.outline).length} samples`)
+  }
+  const [u0, u1, v0, v1] = holeBox()
+  const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2
+  const grown = HOLE.outline.map(([u, v]) => { const l = Math.hypot(u - cu, v - cv); return [u + ((u - cu) / l) * 0.015, v + ((v - cv) / l) * 0.015] })
+  const bad = open(grown, plane)
+  check(bad.length === 0, 'grown 1.5 cm about its centre it still fits', bad.length ? `${bad.length} open, first (${bad[0][0].toFixed(2)}, ${bad[0][1].toFixed(2)})` : '')
+  const shrunk = HOLE.outline.map(([u, v]) => [cu + (u - cu) * 0.6, cv + (v - cv) * 0.6])
+  check(open(shrunk, plane).length > 0, 'and shrunk to 0.6 it does not, so the test can fail', '')
+}
+
 // --- the face ---------------------------------------------------------------
 //
 // From the mouth point, looking along -n: the stone is MOUTH_STEP_M away, a
-// wall for two metres above the eye, and its normal is within PROBE.faceDeg of
-// the plane. Then the hole: a ray from the mouth point to the quad's centre
-// meets the quad before the stone, and one to each of its corners too.
+// wall for PROBE.wall above the eye, and its normal is within PROBE.faceDeg of
+// the plane. Then the hole: a ray from the mouth point to the centre of its
+// outline's box meets the hole before the stone, and one to each corner too.
 console.log('\nthe face')
 {
   const { rocks, e } = boot(-900, -900, { radius: 450 })
@@ -101,15 +160,17 @@ console.log('\nthe face')
     const flat = Math.abs(out.ny) <= Math.sin((PROBE.faceDeg * Math.PI) / 180)
     faced += t < wallReach() && flat ? 1 : 0
     walled += rocks.hollowRayAt(x, y + PROBE.eye + PROBE.wall, z, -nx, 0, -nz, wallReach(), out) < Infinity ? 1 : 0
-    // The hole's quad, off the layer's own matrix: its centre and corners in
-    // the world, each a ray target from the mouth point.
+    // The hole, off the layer's own matrix: the centre and corners of its
+    // outline's box in the world, each a ray target from the mouth point.
     m.fromArray(e.holeM, site.id * 16)
     m.decompose(p, q, s)
     const across = new THREE.Vector3(0, 0, 1).applyQuaternion(q)
     const up = new THREE.Vector3(0, 1, 0)
+    const [u0, u1, v0, v1] = holeBox()
+    const um = (u0 + u1) / 2, vm = (v0 + v1) / 2
     let ok = 0
-    for (const [u, v] of [[0, 0], [-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]) {
-      const c = p.clone().addScaledVector(across, u * HOLE.width * 0.9).addScaledVector(up, v * HOLE.height * 0.9)
+    for (const [u, v] of [[um, vm], [u0, v0], [u1, v0], [u0, v1], [u1, v1]]) {
+      const c = p.clone().addScaledVector(across, um + (u - um) * 0.9).addScaledVector(up, vm + (v - vm) * 0.9)
       const d = c.clone().sub(new THREE.Vector3(x, y + 0.5, z))
       const len = d.length()
       d.divideScalar(len)
@@ -127,11 +188,64 @@ console.log('\nthe face')
     arched += aligned && seated ? 1 : 0
   }
   check(faced === rows.length, 'every mouth point looks at a face within 20 deg of vertical, within reach', `${faced}/${rows.length}`)
-  check(walled === rows.length, 'and at two metres of wall above it', `${walled}/${rows.length}`)
-  check(holed === rows.length, 'the hole\'s quad stands proud of the stone at its centre and its corners', `${holed}/${rows.length}`)
+  check(walled === rows.length, `and at ${PROBE.wall} m of wall above it`, `${walled}/${rows.length}`)
+  check(holed === rows.length, 'the hole stands proud of the stone at its centre and its corners', `${holed}/${rows.length}`)
   check(arched === rows.length, 'the arch stands upright on the floor, MOUTH_HEIGHT_M tall, its passage on the normal', `${arched}/${rows.length}`)
   const stepped = rows.every((site) => Math.hypot(site.x - site.ax, site.z - site.az) > MOUTH_STEP_M)
   check(stepped, 'the mouth point is outside the arch\'s centre', '')
+  // The flanking stones: FLANK.perSide each side of the arch, none across the
+  // mouth point's path, every one a column the walker climbs.
+  let flanked = 0, clear = 0, climbed = 0
+  const col = new Float32Array(8)
+  for (const site of rows) {
+    const n = site.flank.length
+    flanked += n >= 2 * FLANK.perSide[0] && n <= 2 * FLANK.perSide[1] ? 1 : 0
+    const across = [-site.nz, site.nx]
+    let sides = 0
+    for (const f of site.flank) {
+      const lateral = Math.abs((f.x - site.ax) * across[0] + (f.z - site.az) * across[1])
+      if (lateral > e.bank.width * 0.5 + f.r * 0.5) sides++
+      const top = e.blockTopAt(f.x, f.z)
+      const cols = e.columnAt(f.x, f.z, 0, col)
+      if (cols >= 1 && top === f.top && top > GROUND) climbed++
+    }
+    clear += sides === n ? 1 : 0
+  }
+  check(flanked === rows.length, `every mouth has ${FLANK.perSide[0]}-${FLANK.perSide[1]} stones a side`, `${flanked}/${rows.length}`)
+  check(clear === rows.length, 'every stone is beside the arch, none across its passage', `${clear}/${rows.length}`)
+  const total = rows.reduce((a, s) => a + s.flank.length, 0)
+  check(climbed === total, 'and each is a column the walker stands on', `${climbed}/${total}`)
+  // The door: walked at the face from 3 m out, her feet come within
+  // PORTAL.walk of the hole, on the ground the whole way (past the hole she
+  // slides along the face, and where the hull's foot is shallow she climbs
+  // it, but the door has taken her by then).
+  const walk = new WalkSurface(field, rocks, { trunkAt: () => 0 })
+  walk.addStone(e)
+  const warn = console.warn
+  console.warn = () => {}
+  let reached = 0, stayed = 0
+  for (const site of rows) {
+    const rig = new THREE.Group()
+    const camera = new THREE.PerspectiveCamera()
+    camera.position.y = LOCOMOTION.eyeHeight
+    camera.rotation.y = Math.atan2(site.nx, site.nz)
+    rig.add(camera)
+    const player = new Player(rig, camera, walk)
+    player.spawnAt(site.x + site.nx * 3, site.z + site.nz * 3)
+    rig.updateMatrixWorld(true)
+    let nearest = Infinity, top = -Infinity
+    for (let f = 0; f < 72 * 4 && nearest > PORTAL.walk; f++) {
+      player.update(1 / 72, { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true })
+      rig.updateMatrixWorld(true)
+      nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ))
+      top = Math.max(top, rig.position.y)
+    }
+    reached += nearest <= PORTAL.walk ? 1 : 0
+    stayed += top < GROUND + 0.5 ? 1 : 0
+  }
+  console.warn = warn
+  check(reached === rows.length, `walked at the face, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `${reached}/${rows.length}`)
+  check(stayed === rows.length, 'on the ground the whole way', `${stayed}/${rows.length}`)
 }
 
 // --- two boots agree ----------------------------------------------------------
@@ -192,6 +306,16 @@ console.log('\nthe ladder')
   e.update(site.ax + site.nx * reach(0) * 0.5, site.ay, site.az + site.nz * reach(0) * 0.5)
   check(e.batch.getVisibleAt(site.id) && e.tris > 0, 'and back in, drawn', `${e.tris} tris`)
   check(e.stats.cull > 100, 'the props\' cull for a 1.5 m arch is past a hundred metres', `${e.stats.cull.toFixed(0)} m`)
+  // The stones are on the rocks' ladder, not the arch's: a rock of size s is
+  // T0 within ROCK_LOD_AT[0] * s and stands when the arch is culled.
+  const stone = site.flank[0]
+  const stoneTiers = []
+  for (const k of [0.5, 1.5, 4, 9]) {
+    const d = ROCK_LOD_AT[0] * stone.size * k
+    e.update(stone.x + site.nx * d, 0.5 * (stone.y + stone.top), stone.z + site.nz * d)
+    stoneTiers.push(`${e.flankTier[stone.id]}${e.flank.getVisibleAt(stone.id) ? '' : 'hidden'}`)
+  }
+  check(stoneTiers.join(' ') === '0 1 2 3', `a ${stone.size.toFixed(1)} m stone steps down the rocks' four tiers at ROCK_LOD_AT, standing past the arch's cull`, `tiers ${stoneTiers.join(' ')} at ${ROCK_LOD_AT.join('/')} m per metre`)
   check(RADIUS_M >= 200, 'a site is resident past the leafkin\'s roam', `${RADIUS_M} m`)
 }
 

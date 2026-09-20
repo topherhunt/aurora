@@ -109,8 +109,14 @@ export const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
 // What a carrier (carry(), the leafkin's arms) holds at most, and how many carriers can be about at once: every resident leafkin (render/leafkin.js MAX) gathers whether or not it is drawn.
 export const CARRY_MAX = 5
 export const CARRIERS = 16
-// Where a carried thing sits, per slot: metres ahead of the feet, to the left, above the chest line, and its tilt about the body's side axis -- a fan in the hollow of the arms.
-const CARRY_FAN = [[0.2, 0, 0, 0.3], [0.22, 0.08, 0.02, 0.5], [0.22, -0.08, 0.02, 0.1], [0.18, 0.04, 0.09, 0.7], [0.18, -0.04, 0.09, -0.1]]
+// Where a carried thing sits, per slot, in spans (the size a carrier draws
+// everything at): ahead of the feet, to the left and above the chest line,
+// the side and height jittered by CARRY_JITTER and each thing rolled its own
+// way about the body's forward axis and tilted about its side axis, so an
+// armful is a jumble against the chest and not one shape drawn five times.
+const CARRY_SLOTS = [[1.4, 0, 0], [1.4, 1.1, 0.1], [1.4, -1.1, 0.1], [1.2, 0.55, 1.0], [1.2, -0.55, 1.0]]
+const CARRY_JITTER = 0.15
+const CARRY_TILT = [-0.4, 0.8]
 // Instances a pool holds: every loose thing, three for each of a full room's seven peers and every carrier's armful, all of one kind at worst; its over mesh holds her three hands'.
 export const POOL_CAP = LOOSE_MAX + 7 * 3 + CARRY_MAX * CARRIERS
 export const OVER_CAP = 3
@@ -311,24 +317,34 @@ export class Hands {
    * drawn from the pools as hers are, posed by its layer each frame and let go
    * all at once when it is startled. Nothing carried reaches the room; a
    * scattered thing is loose here only, and hers to pick up like any drop.
+   * Everything it takes is resized to `span` metres across -- the record
+   * itself, so the thing stays that size scattered and in her hand.
    */
-  carry(owner) {
+  carry(owner, span) {
     if (typeof owner !== 'string' || owner === '') throw new Error(`Hands.carry: needs an owner name, got ${owner}`)
+    if (!(span > 0)) throw new Error(`Hands.carry: ${owner} needs a span in metres, got ${span}`)
     if (this.carriers >= CARRIERS) throw new Error(`Hands.carry: ${CARRIERS} carriers are already out`)
     this.carriers++
     const items = []
+    const holds = []
     const hands = this
     return {
       owner,
       count() { return items.length },
-      /** A record into the arms, from the source `src` it was taken off. Refused full. */
+      /** A record into the arms, from the source `src` it was taken off, at the carrier's span and its own roll of the slot's jitter and angles. Refused full. */
       add(rec, src) {
         if (items.length >= CARRY_MAX) throw new Error(`Hands.carry: ${owner} already carries ${CARRY_MAX}`)
         if (!src) throw new Error(`Hands.carry: ${owner} needs the source a ${rec?.kind} came from`)
         hands._checkRecord(rec)
+        const k = span / rec.size
+        rec.scale = rec.scale.map((v) => v * k)
+        rec.size = span
         const item = hands._item(rec, src)
         item.state = 'carried'
         items.push(item)
+        const [, side, up] = CARRY_SLOTS[items.length - 1]
+        const jitter = () => (hands.rand() * 2 - 1) * CARRY_JITTER
+        holds.push({ side: side + jitter(), up: up + jitter(), roll: hands.rand() * Math.PI * 2, tilt: between(hands.rand, CARRY_TILT) })
         return item
       },
       /** The arms this frame: feet at (x, y, z), the body facing `yaw` (a +X body yawed about the world up), the chest `chest` metres up the body. */
@@ -336,11 +352,12 @@ export class Hands {
         const c = Math.cos(yaw), s = Math.sin(yaw)
         for (let i = 0; i < items.length; i++) {
           const item = items[i]
-          const [fwd, side, up, tilt] = CARRY_FAN[i]
+          const h = holds[i]
+          const fwd = CARRY_SLOTS[i][0] * span, side = h.side * span
           item.x = x + c * fwd + s * side
-          item.y = y + chest + up
+          item.y = y + chest + h.up * span
           item.z = z - s * fwd + c * side
-          item.q.setFromAxisAngle(UP, yaw).multiply(_dq.setFromAxisAngle(_axis.set(0, 0, 1), tilt))
+          item.q.setFromAxisAngle(UP, yaw).multiply(_dq.setFromAxisAngle(_axis.set(0, 0, 1), h.tilt)).multiply(_q.setFromAxisAngle(_axis.set(1, 0, 0), h.roll))
         }
       },
       /** Every carried thing let fall where it is: loose, falling, to thud and roll as a drop of hers does. */
@@ -355,13 +372,13 @@ export class Hands {
           item.netId = null
           hands.loose.push(item)
         }
-        items.length = 0
+        items.length = holds.length = 0
         while (hands.loose.length > LOOSE_MAX) hands._forget(hands.loose.shift())
       },
       /** Everything carried gone with the carrier, off into the village. */
       clear() {
         for (const item of items) hands._forget(item)
-        items.length = 0
+        items.length = holds.length = 0
       },
       /** The carrier handed back: its slots free for another. */
       release() {

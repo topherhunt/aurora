@@ -915,7 +915,7 @@ const MOCK_WATER = { isSubmerged: () => false }
 const MOCK_LAYERS = {
   paths: { nearest: () => null },
   snow: { base: 900, band: 40 },
-  flattenAt: () => 0,
+  dirtAt: () => 0,
 }
 
 {

@@ -78,7 +78,7 @@ export class TerrainTint {
    *
    * @param {THREE.Material} material  the terrain's, after createTerrainMaterial
    *   and any lighting patch.
-   * @param {Layers} layers  for `flattenAt` and the live snow band.
+   * @param {Layers} layers  for `dirtAt`, `shoreAt` and the live snow band.
    * @param {object} bands  V2Height's, for `altLo` and `altSpan`.
    * @param {'plain'|'shader'} [chain]  which rung to replay; see the banner. The
    *   default is what the world draws, and nothing switches it now that the
@@ -93,8 +93,8 @@ export class TerrainTint {
         throw new Error(`TerrainTint: the terrain material has no ${key}; this module is out of date with terrain-material.js`)
       }
     }
-    if (!layers || typeof layers.flattenAt !== 'function' || typeof layers.shoreAt !== 'function') {
-      throw new Error('TerrainTint: needs a Layers with flattenAt and shoreAt')
+    if (!layers || typeof layers.dirtAt !== 'function' || typeof layers.shoreAt !== 'function') {
+      throw new Error('TerrainTint: needs a Layers with dirtAt and shoreAt')
     }
     if (!bands || typeof bands.altLo !== 'number' || typeof bands.altSpan !== 'number') {
       throw new Error('TerrainTint: needs V2Height.bands, for altLo and altSpan')
@@ -117,7 +117,7 @@ export class TerrainTint {
    * Mutates `rgb` in place; values are LINEAR.
    */
   groundAt(rgb, x, z, h, ny, snowLine) {
-    shade(h, ny, snowLine, this.layers.snow.band, this.layers.flattenAt(x, z),
+    shade(h, ny, snowLine, this.layers.snow.band, this.layers.dirtAt(x, z),
       this.layers.shoreAt(x, z, h), this.bands.altLo, this.bands.altSpan, x, z, rgb, 0)
     return this.apply(rgb, x, z)
   }

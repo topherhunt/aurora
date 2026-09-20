@@ -56,7 +56,7 @@ const field = {
   bands: { altLo: 0, altSpan: 900 },
 }
 const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: () => 0 }
-const layers = { flattenAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
+const layers = { dirtAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
 const textures = buildTextureArray()
 
 const build = (w = water, opts = {}) => new Ferns(new THREE.Scene(), field, w, layers, textures, { seed: 7, ...opts })

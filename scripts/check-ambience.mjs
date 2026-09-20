@@ -837,16 +837,15 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(threw, 'a startler layer without startled() throws')
 }
 {
-  // A voiced layer: each one-shot it says is fired once, from where it was said, at the voice rule's level for its distance and not at all past its reach; the panting loop runs at the nearest panting body within its reach and stops with none.
-  const V = RULES.voice, P = RULES.panting
+  // A voiced layer: each one-shot it says is fired once, from where it was said, at the voice rule's level for its distance and not at all past its reach.
+  const V = RULES.voice
   const said = []
-  const alive = []
-  const leafkin = { voices(into) { into.push(...said); said.length = 0; return into }, bodies(into) { into.push(...alive); return into } }
+  const leafkin = { voices(into) { into.push(...said); said.length = 0; return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
   const amb = new Ambience({ engine, sense, rand: mulberry32(31), voiced: [leafkin] })
   run(amb, 1, {})
-  check(count(engine, 'leafkinScream', 'leafkinSqueal', 'leafkinWhimper', 'leafkinChatter1') === 0 && !engine.loops.panting.active, 'a silent layer fires nothing and no loop runs')
+  check(count(engine, 'leafkinScream', 'leafkinSqueal', 'leafkinWhimper', 'leafkinChatter1', 'panting') === 0, 'a silent layer fires nothing')
   said.push({ sound: 'leafkinScream', x: HEAD.x + 4, y: HEAD.y, z: HEAD.z }, { sound: 'leafkinChatter2', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach + 1 })
   run(amb, 1, {})
   const screams = engine.plays.filter((p) => p.name === 'leafkinScream')
@@ -854,19 +853,10 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const fall = V.near / Math.max(V.near, 4)
   check(screams.every((p) => within(p.gain, V.level * fall * V.gain[0], V.level * fall * V.gain[1])), 'at the voice level over its distance')
   check(count(engine, 'leafkinChatter2') === 0 && said.length === 0, `chatter past ${V.reach} m is not heard, and the layer is drained either way`)
-  const near = { x: HEAD.x + 2, y: HEAD.y, z: HEAD.z, size: 1, clip: 'run-carry', cycle: 0.7, speed: 1, pant: true }
-  const far = { x: HEAD.x, y: HEAD.y, z: HEAD.z + 5, size: 1, clip: 'idle', cycle: 3.2, speed: 0, pant: true }
-  const quiet = { x: HEAD.x + 1, y: HEAD.y, z: HEAD.z, size: 1, clip: 'recoil', cycle: 2.4, speed: 0, pant: false }
-  alive.push(far, quiet)
+  said.push({ sound: 'panting', x: HEAD.x, y: HEAD.y, z: HEAD.z + 5 })
   run(amb, 1, {})
-  check(engine.loops.panting.active && engine.loops.panting.at.z === far.z && Math.abs(engine.loops.panting.level - P.level * (P.near / 5)) < 1e-9, 'the panting loop runs at the one panting body, 5 m off, at near/distance of its level', `${engine.loops.panting.level}`)
-  alive.push(near)
-  run(amb, 1, {})
-  check(engine.loops.panting.at.x === near.x && Math.abs(engine.loops.panting.level - P.level * (P.near / 2)) < 1e-9, 'and moves to the nearer one', `${engine.loops.panting.level}`)
-  alive.length = 0
-  alive.push(quiet, { ...far, z: HEAD.z + P.reach + 1 })
-  run(amb, 1, {})
-  check(!engine.loops.panting.active, 'a startled body does not pant and one past the reach is not heard: the loop stops')
+  const pants = engine.plays.filter((p) => p.name === 'panting')
+  check(pants.length === 1 && pants[0].at.z === HEAD.z + 5 && within(pants[0].gain, V.level * V.gain[0], V.level * V.gain[1]), 'a pant said 5 m off is a one-shot at the voice level, from there', `${pants.length}`)
   let threw = 0
   try { new Ambience({ engine, sense, voiced: [{ bodies() {} }] }) } catch { threw++ }
   said.push({ sound: 'leafkinChanting', x: HEAD.x, y: HEAD.y, z: HEAD.z })

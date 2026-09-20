@@ -186,7 +186,7 @@ const P_TILT = 10
 const P_H = 11
 const P_TAN = 12
 const P_SNOW = 13
-const P_FLATTEN = 14
+const P_DIRT = 14
 
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
 // a retry -- see ferns.js on why re-rolling would thicken the litter beside
@@ -453,7 +453,7 @@ export class Deadwood {
    * @param scene    THREE.Scene to add the arena's Group to.
    * @param field    V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
    * @param water    WaterSurfaces. Needs isSubmerged.
-   * @param layers   Layers. Needs `paths`, `snow.band` and flattenAt.
+   * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param bank     deadwoodBankFrom's answer. Required: the ladders are fetched,
    *                 and a scatter with nothing to draw is a bug, not a state.
    * @param biome    BiomeField, or anything with coverAt(x, z) -> 0..1. Optional
@@ -490,8 +490,8 @@ export class Deadwood {
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Deadwood: needs Layers with a PathSet')
     }
-    if (typeof layers.flattenAt !== 'function' || !layers.snow) {
-      throw new Error('Deadwood: needs Layers with flattenAt and a snow field')
+    if (typeof layers.dirtAt !== 'function' || !layers.snow) {
+      throw new Error('Deadwood: needs Layers with dirtAt and a snow field')
     }
 
     this.field = field
@@ -856,8 +856,8 @@ export class Deadwood {
       at[o + P_H] = h
       at[o + P_TAN] = tan
       at[o + P_SNOW] = snowLine
-      // `flattenAt` is only asked when a road was found nearby.
-      at[o + P_FLATTEN] = road ? this.layers.flattenAt(x, z) : 0
+      // `dirtAt` is only asked when a road was found nearby.
+      at[o + P_DIRT] = road ? this.layers.dirtAt(x, z) : 0
       plan.n++
     }
     this.plans.set(key, plan)
@@ -1435,7 +1435,7 @@ export class Deadwood {
       // near-black in magnitude and multiplying by it raw would put the wood
       // back in shadow.
       const ny = 1 / Math.hypot(tan, 1)
-      shade(h, ny, snowLine, snowBand, at[o + P_FLATTEN], 0, altLo, altSpan, x, z, gc, 0)
+      shade(h, ny, snowLine, snowBand, at[o + P_DIRT], 0, altLo, altSpan, x, z, gc, 0)
       const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
       const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
       const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1

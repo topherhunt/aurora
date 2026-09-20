@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- terrain v3</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; --bad: #d98c8c; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 0; overflow: hidden; background: #05080f; color: var(--ink); font: 12px/1.5 monospace; }
+      canvas { display: block; }
+
+      #stage { position: absolute; inset: 0; }
+      #hint {
+        position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+      #hint em { color: #a9c2e6; font-style: normal; }
+      #boot {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        background: #05080f; color: var(--dim); transition: opacity .4s; z-index: 5; padding: 20px;
+      }
+      #boot.gone { opacity: 0; pointer-events: none; }
+      #boot pre { white-space: pre-wrap; max-width: 80ch; margin: 0; }
+      #boot pre.bad { color: var(--bad); }
+
+      #panel {
+        position: absolute; right: 8px; top: 8px; z-index: 10; width: 250px;
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px;
+      }
+      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 10px; border-top: 1px solid #1b2c44; padding-top: 8px; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: baseline; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+      button {
+        font: inherit; color: var(--ink); background: #0e1726; cursor: pointer;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 4px 6px; flex: 1 1 auto;
+      }
+      button:hover { background: #17263c; }
+      .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+      .note em { color: #a9c2e6; font-style: normal; }
+      .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="hint">click to look &middot; WASD to walk &middot; space to fly and hold to climb, shift to sink &middot; double-tap space to land</div>
+      <div id="boot"><pre id="bootlog">booting&hellip;</pre></div>
+    </div>
+
+    <div id="panel">
+      <h2>island</h2>
+      <table id="island"></table>
+      <h2>this frame</h2>
+      <table id="frame"></table>
+      <div id="buttons">
+        <button id="skip" title="Jump the world clock forward five hours.">+5h</button>
+        <button id="regen" title="Throw the cached island away and generate it again in the worker.">regen</button>
+      </div>
+      <p class="note">The island boots from IndexedDB when <em>/terrain-v3-map</em> has generated this seed and algorithm; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>
+    </div>
+
+    <script type="module" src="/src/v3/main.js"></script>
+  </body>
+</html>

@@ -44,7 +44,7 @@ const CELL = 2
 // The face the promise is made about, as a diameter in metres of WALL.
 const FACE_MIN = 5
 
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 const hm = await Heightmap.read({

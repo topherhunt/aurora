@@ -29,7 +29,7 @@ const bank = () => {
   return b
 }
 const DRY = { isSubmerged: () => false }
-const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, flattenAt: () => 0 }
+const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, dirtAt: () => 0 }
 const flatField = (h) => ({
   heightAndSlopeAt: () => ({ h, tan: 0 }),
   snowLineAt: () => 900,

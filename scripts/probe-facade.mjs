@@ -34,7 +34,7 @@ import { V2Height, WORLD_SEED } from '../src/v2/height/field.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { shade } from '../src/v2/terrain/chunk-mesh-v2.js'
 
-const layers = { flattenAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
 
 const hm = await Heightmap.read({
@@ -62,7 +62,7 @@ const sample = (bed) => {
       const z = bed.instZ[id]
       field.scatterAt(x, z, 4, out)
       shade(out.h, 1 / Math.hypot(out.tan, 1), field.snowLineAt(x, z), layers.snow.band,
-        layers.flattenAt(x, z), layers.shoreAt(x, z, out.h), altLo, altSpan, x, z, gc, 0)
+        layers.dirtAt(x, z), layers.shoreAt(x, z, out.h), altLo, altSpan, x, z, gc, 0)
       bed.batch.getColorAt(id, col)
       rows.push({
         drawn: [col.r, col.g, col.b],
