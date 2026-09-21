@@ -1,5 +1,6 @@
 import THREE from './three-instance.js'
 import { CLOCK } from './clock.js'
+import { CLOUD_GLSL, makeCloudUniforms } from './sky-glsl.js'
 
 // ---------------------------------------------------------------------------
 // The starfield: one THREE.Points draw of a few thousand stars on a sphere,
@@ -138,7 +139,10 @@ function makeStars(seed) {
 }
 
 export class Stars {
-  constructor(scene, { seed = 1, pixelRatio = 1 } = {}) {
+  // `clouds` is the sky's cloud uniform block (sky-glsl.js makeCloudUniforms),
+  // shared by reference so the cloud that hides the sun hides the stars under
+  // it; without one the field is drawn under a clear sky.
+  constructor(scene, { seed = 1, pixelRatio = 1, clouds = makeCloudUniforms() } = {}) {
     const { pos, col, size, phase } = makeStars(seed)
 
     const geo = new THREE.BufferGeometry()
@@ -157,6 +161,9 @@ export class Stars {
         uFade: { value: 0 },
         uTime: { value: 0 },
         uPixel: { value: pixelRatio },
+        uClouds: clouds.uClouds,
+        uCloud: clouds.uCloud,
+        uCloudDrift: clouds.uCloudDrift,
       },
       vertexShader: `
         attribute vec3 aColor;
@@ -165,6 +172,7 @@ export class Stars {
         uniform float uTime;
         uniform float uPixel;
         varying vec3 vCol;
+        ${CLOUD_GLSL}
 
         void main() {
           vec4 mv = modelViewMatrix * vec4( position, 1.0 );
@@ -189,7 +197,11 @@ export class Stars {
           // on the mountains. This fades the last few degrees.
           float ext = smoothstep( -0.02, 0.12, wdir.y );
 
-          vCol = aColor * tw * ext;
+          // The cloud in front of it, fetched here per star rather than per
+          // fragment: a star is a point, so one direction is the whole of it.
+          float cloud = cloudAt( wdir ).x;
+
+          vCol = aColor * tw * ext * ( 1.0 - cloud );
 
           // Size in framebuffer pixels, not world units -- no distance
           // attenuation, because a star has no distance worth modelling.

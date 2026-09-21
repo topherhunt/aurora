@@ -585,8 +585,9 @@ const probe = new SkyProbe()
 // of the bank for everything the horizon map cannot hold. See water.js.
 const worldProbe = new WorldProbe()
 const water = new Water(scene, { sky, lighting, probe, world: worldProbe })
-const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio() })
-const aurora = new SkyAurora(scene, { renderer, seed: SEED })
+// Both under the sky's clouds, by reference: the cloud that hides the sun hides the stars and the curtain behind it.
+const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio(), clouds: sky.uniforms })
+const aurora = new SkyAurora(scene, { renderer, seed: SEED, clouds: sky.uniforms })
 // The aurora only. The stars are POINTS, and gl_PointSize counts framebuffer
 // pixels rather than angle -- so the 1.1-4.5 px speck that is right on a 1500 px
 // screen spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees
@@ -2360,7 +2361,7 @@ function placeAnimals(cx, cz) {
   if (grasshoppers && animalOn('grasshoppers')) grasshoppers.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
   if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
-  if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz)
+  if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz, clock.seconds)
   // After the wildlife: a dragon's kill is a wildlife slot, and place() hands it back.
   if (dragons && animalOn('dragons')) dragons.place()
 }
@@ -2554,7 +2555,7 @@ async function bootWorld() {
     markers,
     terrain,
     onDirty,
-    onRiversMoved: () => waterSurfaces.rebuild(),
+    onGroundChanged: (rect) => waterSurfaces.rebuild(rect),
     onView,
     orbitLock,
     // The heightmap's DECODED extremes, not meta.minY/maxY: the encoding's range
@@ -2805,7 +2806,7 @@ async function buildRoom(room, at) {
   // wet before the player is placed. A road draws nothing of its own: the
   // smooth flattens the terrain to the spline and the litter cobbles it.
   await bootStep('water')
-  waterSurfaces = new WaterSurfaces({ water, layers })
+  waterSurfaces = new WaterSurfaces({ water, layers, field: height })
   markers = new Markers({ scene, layers })
   waterSurfaces.rebuild()
   markers.sync()
@@ -3224,9 +3225,10 @@ async function buildRoom(room, at) {
   for (const m of snowmen.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-snowmen' })
   snowmen.ready.then(() => {
     if (build !== roomBuild) return
-    snowmen.place(player.rig.position.x, player.rig.position.z)
+    snowmen.place(player.rig.position.x, player.rig.position.z, clock.seconds)
     console.log(`[v2] snowmen ${snowmen.stats.alive} on ${snowmen.stats.tiles} tiles`)
   })
+  creatureNet.add(snowmen, ['sn'])
   window.v2snowmen = snowmen
 
   // Her hands (hands.js): what a controller takes from the beds, the ground
@@ -3460,7 +3462,7 @@ function restoreHeld(held) {
  */
 function onDirty(rect) {
   terrain.setLayers(layers.serialize(), rect)
-  waterSurfaces.rebuild()
+  waterSurfaces.rebuild(rect)
 }
 
 /**
@@ -4381,14 +4383,19 @@ function applySubmersion(head, elapsedReal, state) {
   // footprint to bury its edge under the bank. Same 3x3 block and same scan
   // either way -- the cost that made levelAt careful was one call per scatter
   // candidate, and this is one call a frame.
-  const level = waterSurfaces === null ? null : waterSurfaces.levelAt(head.x, head.z, true)
+  let level = waterSurfaces === null ? null : waterSurfaces.levelAt(head.x, head.z, true)
+  // A lake is DRAWN water.lap over its level this frame (the vertex stage's
+  // lap) and a river is not; the eye is under what is drawn, so a lake wins
+  // here where its risen plane stands over the river's.
+  const lake = waterSurfaces === null ? null : waterSurfaces.lakeLevelAt(head.x, head.z)
+  if (lake !== null && (level === null || lake + water.lap > level)) level = lake + water.lap
   // Aboard, her eye is over the lid whatever the level says, and the bilge is dry.
   submerged = level !== null && head.y < level && !(boats && boats.aboard)
   // Kept for the panel, which is the only way to see the two numbers this rule
-  // compares from inside a headset. The surfaces are drawn flat at exactly the
-  // y this returns -- there is no vertex displacement in the water shader -- so
-  // eye and level meeting anywhere other than at the visible waterline is a
-  // disagreement worth reading off rather than guessing at.
+  // compares from inside a headset. This y is exactly where the surface is
+  // drawn this frame, so eye and level meeting anywhere other than at the
+  // visible waterline is a disagreement worth reading off rather than
+  // guessing at.
   eyeY = head.y
   waterY = level
 
@@ -4625,6 +4632,19 @@ const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instan
 const headTmp = new THREE.Vector3()
 // The things in her hands this frame, as the creature layers read them (hands.js lures).
 const lures = []
+// The peers' heads this frame, `{ x, y, z, by }` with `by` the peer's client id, as the snowmen read them (render/snowmen.js): a pool, so a frame allocates nothing.
+const peerHeads = []
+const peerHeadPool = []
+function peerHeadsNow() {
+  peerHeads.length = 0
+  for (const peer of netplay.peers.values()) {
+    if (!(peer.alpha > 0)) continue
+    const h = peerHeadPool[peerHeads.length] ?? (peerHeadPool[peerHeads.length] = { x: 0, y: 0, z: 0, by: null })
+    h.x = peer.pose[0]; h.y = peer.pose[1]; h.z = peer.pose[2]; h.by = peer.id
+    peerHeads.push(h)
+  }
+  return peerHeads
+}
 
 // ---------------------------------------------------------------------------
 // VR LOCOMOTION. The binding, in one place, because a control scheme spread
@@ -5524,7 +5544,8 @@ function tick() {
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
-  stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, dt))
+  // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
+  stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.

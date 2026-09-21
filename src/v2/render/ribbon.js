@@ -1,30 +1,10 @@
 // ---------------------------------------------------------------------------
-// Vertex generation for the v2 surface layers: the lake disc and the path ribbon.
+// Vertex generation for the v2 surface layers: the path ribbon (a lake's outline is shoreline.js's).
 //
-// THREE-FREE ON PURPOSE, even though it lives under src/v2/render/ where §18 says three.js starts. Same exemption chunk-mesh-v2.js gets and for the same reason: only the renderer calls it, but the thing that can actually be WRONG here is arithmetic -- a ribbon that folds through itself on a hairpin, a disc whose segment count is a guess -- and arithmetic is checkable in node. scripts/check-v2-surfaces.mjs holds it in node, so the gate costs no GL context and no stub renderer.
+// THREE-FREE ON PURPOSE, even though it lives under src/v2/render/ where §18 says three.js starts. Same exemption chunk-mesh-v2.js gets and for the same reason: only the renderer calls it, but the thing that can actually be WRONG here is arithmetic -- a ribbon that folds through itself on a hairpin -- and arithmetic is checkable in node. scripts/check-v2-surfaces.mjs holds it in node, so the gate costs no GL context and no stub renderer.
 //
-// Both generators emit WORLD-space positions. The meshes that wrap them sit at identity under a group at the origin, which is not an accident: src/water.js's fragment shader recovers world position as `modelMatrix * position` and feeds it straight into the wave field, so a river ribbon carrying a local origin would sample the waves from the wrong place and drift against the lake beside it.
+// It emits WORLD-space positions. The meshes that wrap them sit at identity under a group at the origin, which is not an accident: src/water.js's fragment shader recovers world position as `modelMatrix * position` and feeds it straight into the wave field, so a river ribbon carrying a local origin would sample the waves from the wrong place and drift against the lake beside it.
 // ---------------------------------------------------------------------------
-
-// How far a lake disc reaches past its authored rx/rz, in metres.
-//
-// Same trick as Water.setFromPhaseA's one-cell mask dilation, for the same reason spelled out in its header: a polygon edge that stops exactly where the water meets the ground is a straight line you can see, and it moves with the LOD. Push it a metre and a half under the bank instead and the shoreline you see is where the full-resolution terrain crosses the plane -- free, exact, and as detailed as the chunk happens to be. v1 needed a whole 16 m sim cell because its mask was a raster; here the ellipse is exact, so this only has to cover the lake carve's feather (the last 15% of the radius, where the ground is still coming down to meet the water) plus the mesher's 50 cm leaf.
-export const LAKE_OVERHANG = 1.5
-
-// How many segments a lake rim gets. EIGHT, at every size, which is the shape of the request that produced it: a lake is a flat quad-ish sheet of water, and 128 triangles of rim were buying a curve nobody was ever close enough to read. Eight is also the smallest count that still puts a vertex on all four axes AND all four diagonals, so a rotated or elongated lake keeps its own axes rather than reading as a tilted stop sign.
-//
-// The rim is CIRCUMSCRIBED, not inscribed, and at eight segments that stops being a detail. An inscribed polygon has its edge midpoints INSIDE the footprint, by 7.6% of the radius here -- on a 400 m lake that is a 30 m band of carved lake bed showing through a hole in the water, at eight places around the shore. So every vertex is pushed out by RIM_SCALE below, which puts the edge midpoints exactly on the footprint + overhang and leaves the whole error on the outside, where the bank hides it. The old sag-budget-picks-the-count rule was solving the same problem from the other end and could afford to be inscribed because the error was half a metre.
-//
-// WHAT THE CORNERS COST, since it is the price of this: a vertex now sticks out 8.2% of the radius past the rim -- 1.6 m on the default 20 m pond, 33 m on a 400 m lake -- lying on natural terrain rather than on anything the lake carved. That is buried wherever the ground keeps rising away from the water, which is what a basin does; where it does not, a corner of the sheet can show over falling ground. The same assumption already justifies LAKE_OVERHANG, just at 1.5 m rather than at a fraction, and it is the reason to reach for a shorter, wider lake rather than one huge one.
-const LAKE_SEGMENTS = 8
-
-// Vertex radius / rim radius: sec(pi/N). The edge midpoint of a circumscribed regular N-gon sits at cos(pi/N) of its vertex radius, so this is exactly the factor that puts that midpoint back on the rim. Exact for an ellipse as well as a circle -- the rim is the affine image of a circle and an affine map preserves midpoints -- and measured rather than assumed for the superellipse, in check-v2-surfaces.mjs.
-const RIM_SCALE = 1 / Math.cos(Math.PI / LAKE_SEGMENTS)
-
-// A shape-1 lake's rim is the RECTANGLE ITSELF, exactly, which is why there is no superellipse exponent here any more. There was one -- 8, a rectangle with a corner radius of about a tenth of the short half-extent, "what a lake edge actually looks like" -- and it was drawing a shape the document does not have: water-bodies.js's footprint() tests shape 1 as max(|x/rx|, |z/rz|), a hard rectangle with square corners, and that is what the basin is carved to and what the player reads as wet. A rounded rim over a square basin leaves the four corners of the bed uncovered, which is bare ground inside the lake. Rounding is authored by choosing shape 0.
-//
-// It falls out of the fan for free at a multiple of eight segments: cast a ray at every multiple of 45 degrees onto the rectangle and the hits ARE its four corners and its four edge midpoints, so the polygon through them is the rectangle and not an approximation of one.
-if (LAKE_SEGMENTS % 8 !== 0) throw new Error(`ribbon.js: LAKE_SEGMENTS is ${LAKE_SEGMENTS}; it must be a multiple of 8 or a shape-1 lake's rim cuts its own corners off`)
 
 // Over how far, past the run a river spends inside the body it starts or ends in, its own flow frame fades in from the shared world frame: this many of its local half-widths, and never less than the metres. See flowFrame.
 export const FLOW_FADE_HALF_WIDTHS = 4
@@ -46,81 +26,6 @@ const MIN_HALF = 0.02
 
 // Signed area x2 of a triangle projected to XZ. Sign convention: this is the NEGATIVE of the y component of the 3D cross product, so an upward-facing (+Y normal) triangle comes out NEGATIVE here. Every triangle both generators emit must be negative; the gate checks exactly that.
 const cross2 = (ax, az, bx, bz) => ax * bz - az * bx
-
-/**
- * Segments in a lake's rim: eight, always. See LAKE_SEGMENTS.
- *
- * It stays a FUNCTION of the extents rather than becoming a bare constant because it is also where a degenerate lake is caught -- discVertices would happily emit a fan of zero-area triangles for rx 0 -- and because the count being size-independent is a decision that could be revisited, whereas callers asking "how many segments does this lake get" is not.
- */
-export function discSegments(rx, rz) {
-  const r = Math.max(rx, rz)
-  if (!(r > 0)) throw new Error(`discSegments: lake half-extents must be positive, got rx ${rx} rz ${rz}`)
-  return LAKE_SEGMENTS
-}
-
-/**
- * A lake's water surface: a radial fan at `lake.y`, in world space.
- *
- * `lake` is a LakeSet record -- { x, z, y, rx, rz, rot, shape } -- and `rot` is radians about +Y, matching three's own rotation matrix so the disc and the gizmo cannot disagree about which way positive is.
- *
- * A fan rather than a strip because the surface is flat and the shading is entirely a function of world XZ (see src/water.js): interior vertices buy nothing at all, so N + 1 vertices and N triangles is the whole cost -- nine vertices and eight triangles, for a pond and for a lake the width of the world alike.
- */
-export function discVertices(lake, opts = {}) {
-  const { overhang = LAKE_OVERHANG } = opts
-  const { x, z, y, rx, rz, rot, shape } = lake
-  for (const [name, v] of [['x', x], ['z', z], ['y', y], ['rx', rx], ['rz', rz], ['rot', rot]]) {
-    if (!Number.isFinite(v)) throw new Error(`discVertices: lake ${lake.id} has non-finite ${name} (${v})`)
-  }
-  if (shape !== 0 && shape !== 1) throw new Error(`discVertices: lake ${lake.id} has shape ${shape}, expected 0 (ellipse) or 1 (rectangle)`)
-
-  const segments = discSegments(rx, rz)
-  const ax = rx + overhang
-  const bz = rz + overhang
-  const cs = Math.cos(rot)
-  const sn = Math.sin(rot)
-
-  const positions = new Float32Array((segments + 1) * 3)
-  const indices = new Uint32Array(segments * 3)
-
-  positions[0] = x
-  positions[1] = y
-  positions[2] = z
-
-  for (let k = 0; k < segments; k++) {
-    const th = (2 * Math.PI * k) / segments
-    const c = Math.cos(th)
-    const s = Math.sin(th)
-    let lx
-    let lz
-    if (shape === 0) {
-      // RIM_SCALE here and not on the rectangle: an ellipse can only be approximated by a polygon, so its rim is pushed out until the edge midpoints land back on the footprint, while the rectangle's rim is exact and needs no push at all.
-      lx = ax * RIM_SCALE * c
-      lz = bz * RIM_SCALE * s
-    } else {
-      // The UNIT SQUARE cast along the ray at angle th, then stretched by (ax, bz): the affine image of a unit-square polygon, exactly as the ellipse case is the affine image of a circle.
-      //
-      // NOT a ray cast against the already-stretched shape, which is what this was. The two agree on a square lake and diverge hard on a long one: casting at uniform WORLD angle puts almost every vertex in the short direction, so a 100 x 10 m rectangular lake spent seven of its eight vertices on the ends and the rim along the flat fell to 0.58 of the footprint -- 42 m of bed showing. Sampling the unit shape instead makes the coverage independent of how elongated the lake is, which is the only reason eight vertices can be enough for both shapes.
-      const t = 1 / Math.max(Math.abs(c), Math.abs(s))
-      lx = ax * t * c
-      lz = bz * t * s
-    }
-    // Local -> world, and it is the INVERSE of the rotation water-bodies.js's footprint() applies. That function takes a world offset to the lake's frame with [[c, s], [-s, c]]; getting back out wants [[c, -s], [s, c]], and using the first matrix in both directions is a bug that is invisible on a round lake and silently mirrors the rotation of an elongated one -- the drawn water at ninety degrees to the basin it was carved into. The gate checks the drawn rim against footprint() itself for exactly this reason.
-    const o = (k + 1) * 3
-    positions[o] = x + lx * cs - lz * sn
-    positions[o + 1] = y
-    positions[o + 2] = z + lx * sn + lz * cs
-  }
-
-  // Wound (centre, k+1, k) rather than (centre, k, k+1): with theta increasing the naive order faces -Y, which draws a lake you can only see from underneath.
-  for (let k = 0; k < segments; k++) {
-    const o = k * 3
-    indices[o] = 0
-    indices[o + 1] = ((k + 1) % segments) + 1
-    indices[o + 2] = k + 1
-  }
-
-  return { segments, positions, indices, triangles: segments, vertices: segments + 1 }
-}
 
 /**
  * A path's surface ribbon: two vertices per sample, offset along the 2D normal of the tangent, triangulated as a strip.

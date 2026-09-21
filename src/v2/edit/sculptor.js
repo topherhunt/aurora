@@ -60,7 +60,7 @@ const SMOOTH = { min: 0.25, max: 8, step: 0.25, def: 3 }
 const UNDO_DEPTH = 32
 
 export class Sculptor {
-  constructor({ heightmap, field, terrain, onRiversMoved = null }) {
+  constructor({ heightmap, field, terrain, onGroundChanged = null }) {
     if (!heightmap?.field) throw new Error('Sculptor: heightmap is required -- the brush writes the decoded coarse field in place')
     if (typeof field?.coarsePatched !== 'function') throw new Error('Sculptor: field must be a V2Height (no coarsePatched)')
     if (typeof terrain?.patchHeight !== 'function') throw new Error('Sculptor: terrain must be a TerrainV2 (no patchHeight)')
@@ -74,9 +74,10 @@ export class Sculptor {
     // colliding with terrain that is no longer being drawn.
     this.field = field
     this.terrain = terrain
-    // Called with the world rect of every river a flush re-routed, so the water
-    // surfaces can be rebuilt; the terrain itself is told through patchHeight.
-    this.onRiversMoved = onRiversMoved
+    // Called after every flush with the world rect the ground changed in, plus
+    // every river it re-routed, so the water surfaces can re-trace the lakes
+    // and rebuild the rivers there; the terrain itself is told through patchHeight.
+    this.onGroundChanged = onGroundChanged
 
     this.mode = 'raise'
     this.radius = RADIUS.def
@@ -248,17 +249,14 @@ export class Sculptor {
   _patch(rect, data) {
     const world = rectToWorld(this.heightmap, rect)
     const rivers = this.field.layers.terrainChanged(world)
-    if (rivers === null) {
-      this.terrain.patchHeight(rect, data, world)
-      return
-    }
-    this.terrain.patchHeight(rect, data, {
+    const changed = rivers === null ? world : {
       minX: Math.min(world.minX, rivers.minX),
       minZ: Math.min(world.minZ, rivers.minZ),
       maxX: Math.max(world.maxX, rivers.maxX),
       maxZ: Math.max(world.maxZ, rivers.maxZ),
-    })
-    if (this.onRiversMoved !== null) this.onRiversMoved(rivers)
+    }
+    this.terrain.patchHeight(rect, data, changed)
+    if (this.onGroundChanged !== null) this.onGroundChanged(changed)
   }
 }
 

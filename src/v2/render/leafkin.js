@@ -70,9 +70,9 @@ export const HOME_M = 0.3
 export const EMPTY_S = 300
 // Ground it will not step onto: hers (player.js LOCOMOTION.maxSlopeDeg).
 export const MAX_SLOPE = (50 * Math.PI) / 180
-// Radians a second the body swings, roaming and fleeing; body heights ahead a step is probed.
-export const TURN_RATE = 2.5
-export const FLEE_TURN = 4
+// Radians a second the body swings, roaming and fleeing -- an about-face in 0.4 s or 0.3 s, a turn on the spot that is still drawn as a turn; body heights ahead a step is probed.
+export const TURN_RATE = 8
+export const FLEE_TURN = 10
 const AHEAD = 0.75
 // A refused probe turns it away this far for this long; this many in a row and the target was a bad one.
 const DETOUR = [Math.PI / 2, (5 * Math.PI) / 6]

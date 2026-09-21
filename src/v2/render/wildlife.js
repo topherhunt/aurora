@@ -78,7 +78,8 @@
 //
 // IT TURNS, IT DOES NOT SNAP. `heading` is where a body faces and `aim` is
 // where it wants to face; the gap closes at TURN_RATE and never faster, so
-// every turn is one you can watch. A planned walk pivots to its aim and then
+// every turn is one you can watch -- a quick one, an about-face in under half a
+// second, since a hare wheels where it stands. A planned walk pivots to its aim and then
 // goes, which is what makes its length closed-form in ticks; a live follower
 // makes ground only in the direction it is actually facing, so a beast
 // mid-turn slows and one turning back on itself pivots on the spot.
@@ -179,8 +180,8 @@ const GRAZE_LOOPS = [2, 7]
 const TURN = 1.4
 // What a rest's weight is multiplied by at full dark. Half the ramp is spent before the sun is down, which is when a real herd starts settling.
 export const NIGHT_REST = 2
-// Radians a second a body may swing. A stag needs a second and a half to turn around, which is about what a stag needs.
-export const TURN_RATE = 1.6
+// Radians a second a body may swing: an about-face in 0.4 s, fast enough that a hare's dodging reads as wheeling on the spot, slow enough that the pose interpolation between ticks still draws the turn.
+export const TURN_RATE = 8
 // Body lengths ahead a live follower tests the next seat at.
 const AHEAD = 1.5
 // A planned walk is sampled against the seat test every this many metres along it, and clipped this short of the first sample that fails; the straight line home from where it ends is sampled the same way, so the chapter's way home is on ground it can walk. A metre, because a trunk is under two across and the samples must not straddle one.
@@ -1119,6 +1120,8 @@ export class Wildlife {
     c.sz = c.lz = pose.z
     c.sh = c.lh = pose.heading
     c.px = c.pz = NaN
+    // Put somewhere else, its feet read the ground there afresh: a plant is heights off where it last stood.
+    if (c.puppet) c.puppet.unplant()
   }
 
   /**

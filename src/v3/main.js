@@ -13,6 +13,9 @@ import { WorldLighting } from '../lighting.js'
 import { Sky } from '../sky.js'
 import { Input } from '../input.js'
 import { Player, LOCOMOTION } from '../player.js'
+import { buildTextureArray, loadImageLayers } from '../textures.js'
+import { setPropClock } from '../material.js'
+import { Pines } from './pines.js'
 import { load, optionsFromUrl } from './store.js'
 import { MACRO } from './island.js'
 import { BIOMES } from './biomes.js'
@@ -79,6 +82,7 @@ const sky = new Sky(scene)
 
 let height = null
 let terrain = null
+let pines = null
 let island = null
 let from = ''
 
@@ -111,13 +115,19 @@ async function bootWorld() {
   }
   water.group.name = 'terrain-v3-stub-water'
   scene.add(water.group)
-  new WaterSurfaces({ water, layers }).rebuild()
+  new WaterSurfaces({ water, layers, field: height }).rebuild()
 
   // What the Player walks on: the field clamped to the sea's surface, and no slope under water so the shore's drowned cliffs cannot refuse her on the sea.
   const ground = {
     heightAt: (x, z) => Math.max(0, height.heightAt(x, z)),
     slopeAt: (x, z) => (height.heightAt(x, z) <= 0 ? 0 : height.slopeAt(x, z)),
   }
+  // The yardstick: a 9 m pine every 50 m. The atlas' images land on their own; the cards are baked, and shown, once they have.
+  const propTextures = buildTextureArray()
+  pines = new Pines(scene, propTextures, (x, z) => height.heightAt(x, z))
+  lighting.patch(pines.material, { mode: 'vertex', cacheKey: 'v3-pine' })
+  loadImageLayers(propTextures).then(() => pines.bakeCards(renderer))
+
   player = new Player(rig, camera, ground)
   const spawn = findSpawn()
   player.spawnAt(spawn.x, spawn.z)
@@ -125,7 +135,7 @@ async function bootWorld() {
   look.pitch = -0.05
   console.log(`[terrain-v3] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m, island from ${from}`)
   // A handle for the console and the headless probe: `__v3.player.setFlying(true); __v3.rig.position.y = 900; __v3.look.pitch = -0.6`.
-  window.__v3 = { rig, camera, look, player, height, clock }
+  window.__v3 = { rig, camera, look, player, height, clock, pines }
 
   boot.classList.add('gone')
   ready = true
@@ -259,6 +269,8 @@ renderer.setAnimationLoop(() => {
   }
   sky.update(_head, state)
   terrain.update({ x: _head.x, y: _head.y, z: _head.z, yaw: look.yaw })
+  setPropClock(now / 1000)
+  pines.update(_head)
 
   renderer.render(scene, camera)
 
@@ -303,6 +315,7 @@ function refreshPanel() {
     ['fps', fps ? fps.toFixed(0) : '--', fps >= 58 ? 'ok' : fps >= 40 ? 'warn' : 'bad'],
     ['main thread', `${frameMs.toFixed(2)} ms`],
     ['world clock', clock.clockText],
+    ['pines lod0/1/card', `${pines.drawn[0]} / ${pines.drawn[1]} / ${pines.drawn[2]}`],
   ])
 }
 

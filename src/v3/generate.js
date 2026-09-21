@@ -1,7 +1,7 @@
 import { WORLD_SIZE } from '../v2/config.js'
 import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
-import { Island, rasterise } from './island.js'
+import { Island, JITTER, rasterise } from './island.js'
 import { buildBiomes, serialise } from './biomes.js'
 
 // ---------------------------------------------------------------------------
@@ -10,7 +10,7 @@ import { buildBiomes, serialise } from './biomes.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'c2'
+export const VERSION = 'j1'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
@@ -22,20 +22,20 @@ export const MAX_Y = 1000
 export const BLUR_RADII = [32, 128, 512, 2048]
 
 /**
- * `generate({ seed, n = TEXELS, log })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, ms }
+ * `generate({ seed, n = TEXELS, log, jitter })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, ms }
  *
- * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage.
+ * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment; the cache never sees an overridden field.
  */
-export function generate({ seed, n = TEXELS, log = () => {} }) {
+export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
   if (!Number.isInteger(seed)) throw new Error(`generate: seed must be an integer, got ${seed}`)
   if (!Number.isInteger(n) || n < 3) throw new Error(`generate: n must be an integer >= 3, got ${n}`)
   const cell = WORLD_SIZE / (n - 1)
   const t0 = now()
 
-  const island = new Island(seed)
+  const island = new Island(seed, undefined, jitter ? { ...JITTER, ...jitter } : JITTER)
   const height = rasterise(island, n, cell)
   const tMacro = now()
-  log(`shape+octaves  ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
+  log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
 
   const biomes = buildBiomes(height, n, cell, seed)
   const tBiomes = now()

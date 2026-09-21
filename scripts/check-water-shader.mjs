@@ -23,7 +23,7 @@
 import { bakeHorizon, AZIMUTHS, decodeHorizon } from '../src/sim/horizon.js'
 import { SAMPLE_GLSL } from '../src/lighting.js'
 import { SKY_GLSL } from '../src/sky-glsl.js'
-import { WAVE_LAYERS, WATER, RIVER_SPREAD } from '../src/water.js'
+import { WAVE_LAYERS, WATER, RIVER_SPREAD, lapAt } from '../src/water.js'
 import { RAISE_SLOPE } from '../src/v2/render/river-raise.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -570,6 +570,23 @@ check(waterSrc.includes('wlBlocked('), 'the reflection is occluded by the terrai
     `the vertex stage scales the river lift by the sight-line slope, none under ${RAISE_SLOPE[0]} and all from ${RAISE_SLOPE[1]}`, stops === null ? 'no smoothstep on slope' : `${stops[1]}..${stops[2]}`)
   check(raiseDflt.map((d) => d.length).join() === '4,3,1' && raiseDflt.every((d) => d.every((v) => v === 0)),
     'a sheet without the lift buffers defaults to no lift at rung 0', JSON.stringify(raiseDflt))
+  // The lake terms: a lake's vertices carry aLake 1 and rise by uLap.x * (0.5 - 0.5 cos(uLap.y t)), which is never under the level and reaches lapHeight once per lapPeriod, plus uLakeRaise.x once the eye is uLakeRaise.z above the plane, ramped from uLakeRaise.y, so a lake seen from high up clears the terrain it would otherwise z-fight. lapAt is the lap curve in JS, and the eye test reads it, so the two are pinned to each other. A river lacks the buffer and defaults to 0, still.
+  const lakeDflt = water.material.defaultAttributeValues.aLake
+  const lapUniform = water.material.uniforms.uLap.value
+  const raiseUniform = water.material.uniforms.uLakeRaise.value
+  check(/attribute float aLake;/.test(vs) && /aLake \* \( uLap\.x \* \( 0\.5 - 0\.5 \* cos\( uLap\.y \* uTime \) \)\s*\+ uLakeRaise\.x \* smoothstep\( uLakeRaise\.y, uLakeRaise\.z, cameraPosition\.y - worldPos\.y \) \)/.test(vs),
+    'the vertex stage lifts a sheet by aLake times a raised cosine of uLap on uTime plus uLakeRaise ramped on the eye\'s height over the plane')
+  check(Array.isArray(lakeDflt) && lakeDflt.length === 1 && lakeDflt[0] === 0, 'a sheet without an aLake buffer defaults to 0, still', JSON.stringify(lakeDflt))
+  check(lapUniform.x === WATER.lapHeight && Math.abs(lapUniform.y - (2 * Math.PI) / WATER.lapPeriod) < 1e-9 && WATER.lapHeight > 0 && WATER.lapPeriod > 0,
+    `uLap carries lapHeight ${WATER.lapHeight} m and the rate for a ${WATER.lapPeriod} s period`, `${lapUniform.x}, ${lapUniform.y}`)
+  check(raiseUniform.x === WATER.lakeRaise && raiseUniform.y === WATER.lakeRaiseFrom && raiseUniform.z === WATER.lakeRaiseTo && WATER.lakeRaise === 5 && WATER.lakeRaiseFrom > 0 && WATER.lakeRaiseTo > WATER.lakeRaiseFrom,
+    `uLakeRaise carries the 5 m high-eye raise ramped from ${WATER.lakeRaiseFrom} m to ${WATER.lakeRaiseTo} m over the plane`, `${raiseUniform.x}, ${raiseUniform.y}, ${raiseUniform.z}`)
+  const lapSamples = [0, 0.25, 0.5, 0.75, 1].map((f) => lapAt(f * WATER.lapPeriod))
+  check(lapSamples[0] === 0 && Math.abs(lapSamples[2] - WATER.lapHeight) < 1e-12 && Math.abs(lapSamples[4]) < 1e-12 && lapSamples.every((v) => v >= 0 && v <= WATER.lapHeight),
+    'lapAt starts at the level, peaks at lapHeight half a period in, is back at the level by the period and never under it', lapSamples.map((v) => v.toFixed(4)).join(', '))
+  water.update(0.3 * WATER.lapPeriod, new THREE.HemisphereLight())
+  check(water.lap === lapAt(0.3 * WATER.lapPeriod) && water.uniforms.uTime.value === 0.3 * WATER.lapPeriod,
+    'Water.update writes the frame\'s lap beside uTime, from the same clock', `${water.lap}`)
   // Downstream and a fan about it: all five in one direction would slide as a
   // slab, and a layer more than 30 degrees off would read as a cross-current.
   const meanHeading = WAVE_LAYERS.reduce((s, L) => s + L.heading, 0) / WAVE_LAYERS.length

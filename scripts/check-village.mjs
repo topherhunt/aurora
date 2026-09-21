@@ -7,15 +7,18 @@
 // it is deterministic and quick, that no two seeds build the same hollow,
 // that the ground falls from the wall to the lake and climbs into the stone
 // on every bearing, that its sub-texel relief calibrates to the overworld's,
-// that the lake is no circle and every river ends in it, that the loop and
-// the trunk hold their grade and never run straight, that the ring passes
-// every door and no cobble shows past a hut's walls, that each hut stands
-// level on dry ground with the wood kept off the clearing and nothing else,
-// that the shell roofs every walkable metre with three to spare and the exit
-// stands against its wall, and that the room boots on the layers the
+// that the lake is no circle and every river winds down and ends under it,
+// that the loop, the trunk and every branch hold their grade and never run
+// straight, that the ring passes every ring house's door and a branch ends at
+// every outlying one's, that no cobble shows past a hut's walls, that each hut
+// stands level on dry ground with the wood kept off the clearing and nothing
+// else, that the shell roofs every walkable metre with three to spare and the
+// exit stands against its wall, and that the room boots on the layers the
 // overworld boots on: rocks without a hollow bed, the exit mouth seated where
-// the build says, the huts stone to the walker.
+// the build says, the huts stone to the walker, and the lake's creatures --
+// grasshoppers, crabs, frogs and fish -- finding somewhere to live.
 
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import * as THREE from 'three'
 
@@ -30,7 +33,12 @@ import { FREEBOARD } from '../src/v2/layers/paths.js'
 import { Spline } from '../src/v2/layers/spline.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
+import { Crabs } from '../src/v2/render/crabs.js'
+import { Fish } from '../src/v2/render/fish.js'
+import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Rocks } from '../src/v2/render/rocks.js'
+import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 import { Trees } from '../src/v2/render/trees.js'
 import { Entrances, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
@@ -39,8 +47,8 @@ import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, JITTER, LAKE, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS,
-  buildVillage, longestStraight, rollVillage,
+  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, LAKE, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS,
+  buildVillage, longestStraight, rollVillage, sinuosity,
 } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -53,8 +61,14 @@ const MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 const HEADROOM_M = 3
 const ENTER_M = 3
 const BUILD_MS = 400
-// The jitter is the ground's only smoothing (DESIGN.md §30), so a share of the hollow stands over the walk slope by design; this is the most of it that may.
-const STEEP_SHARE = 0.2
+// The cone itself runs at DROP over the rim's radius (20 m over 29-40 m, 27-35 degrees) and steeper past its rounded tip; on that the roads' cut-and-fill banks (ROAD_FEATHER), the river banks and the sub-texel detail put about a third of the dry hollow over the walk slope (DESIGN.md §30). This is the most of it that may.
+const STEEP_SHARE = 0.35
+// The fewest trees the wood may hold: the forest law (layers/forest.js PLACEMENT.maxSlopeDeg) rejects ground over 32 degrees, which at this grade is most of the hollow, so the wood is the rim's shelf, the terraces and the shore.
+const TREES_LEAST = 10
+// How far under the overworld's the hollow's sub-texel calibration may fall: a jittered cone measures about half the shipped island's roughness at 16 and 32 m.
+const CALIBRATION_LEAST = 0.4
+// The fewest square metres of frog seat (frogs.js seat) about a lake: at frogs.js DENSITY that is two frogs' worth, and the seeds gated hold 100 to 180.
+const FROG_SEATS_LEAST = 60
 const HOUSE = 'house-leafkin'
 // The seeds gated: real entrance keys from the shipped overworld (probe-villages.mjs), hashed the way main.js villageSeed hashes them.
 const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:190.0', 'hollow:-2218.0:-821.0', 'hollow:-244.0:-1563.0', 'hollow:-1947.0:380.0']
@@ -100,7 +114,18 @@ const builds = KEYS.map((key) => build(keyHash(key)))
   }
   check(seams === 0, 'the hollow tiles the map without a seam', `${seams} texels differ a tile over`)
   for (const k of ['spawn', 'exit', 'clearing', 'lake', 'props', 'spec']) check(k in room, `the build answers ${k}`)
-  // No two seeds build the same hollow: the ground, the lake, the huts and the shell's turn all differ pairwise.
+  // No two seeds build the same hollow: the ground, the lake's shore, the huts and the shell's turn all differ pairwise. The lake always stands on the cone's axis, so it is its reach every ten degrees that must differ.
+  const reachOf = ({ room, layers, field }) => {
+    const out = []
+    for (let b = 0; b < 360; b += 10) {
+      const a = (b * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)
+      let last = 0, dry = 0
+      for (let r = 0; r < 80 && dry < 6; r += 0.5) { const l = layers.waterLevelAt(room.lake.x + c * r, room.lake.z + s * r); if (l !== null && field.heightAt(room.lake.x + c * r, room.lake.z + s * r) < l) { last = r; dry = 0 } else dry += 0.5 }
+      out.push(last)
+    }
+    return out
+  }
+  const reaches = builds.map(reachOf)
   let alike = 0, hutCounts = new Set(), yaws = new Set()
   for (let i = 0; i < builds.length; i++) {
     hutCounts.add(builds[i].room.props.length)
@@ -109,10 +134,9 @@ const builds = KEYS.map((key) => build(keyHash(key)))
       const p = builds[i].room.heightmap.field, q = builds[j].room.heightmap.field
       let differ = 0
       for (let k = 0; k < p.length; k += 97) if (Math.abs(p[k] - q[k]) > 0.5) differ++
-      const li = builds[i].room.lake, lj = builds[j].room.lake
-      const lakeMoved = Math.hypot(li.x - lj.x, li.z - lj.z) > 2 || Math.abs(li.area - lj.area) > 20
+      const shore = reaches[i].reduce((sum, r, k) => sum + Math.abs(r - reaches[j][k]), 0) / reaches[i].length
       const huts = JSON.stringify(builds[i].room.props) !== JSON.stringify(builds[j].room.props)
-      if (differ < p.length / 97 / 4 || !lakeMoved || !huts) { alike++; console.log(`    seeds ${builds[i].seed} and ${builds[j].seed} alike: ${differ} texels differ, lake ${lakeMoved ? 'moved' : 'held'}, huts ${huts ? 'differ' : 'agree'}`) }
+      if (differ < p.length / 97 / 4 || shore < 1 || !huts) { alike++; console.log(`    seeds ${builds[i].seed} and ${builds[j].seed} alike: ${differ} texels differ, shores ${shore.toFixed(1)} m apart, huts ${huts ? 'differ' : 'agree'}`) }
     }
   }
   check(alike === 0, 'no two seeds build the same hollow', `${alike} alike pairs of ${(builds.length * (builds.length - 1)) / 2}`)
@@ -146,7 +170,7 @@ const inBowl = (x, z) => Math.hypot(x, z) < rimAt(x, z)
   // detail stack is fed by what the map measures at 16 and 32 m, and a map
   // that is all cliff or all plain hands it a different amplitude.
   const ratio = field.calibration.rough / overworld.calibration.rough
-  check(ratio > 0.5 && ratio < 2, 'the sub-texel relief calibrates to the overworld\'s', `rough ${field.calibration.rough.toFixed(3)} vs ${overworld.calibration.rough.toFixed(3)}`)
+  check(ratio > CALIBRATION_LEAST && ratio < 2, 'the sub-texel relief calibrates to the overworld\'s', `rough ${field.calibration.rough.toFixed(3)} vs ${overworld.calibration.rough.toFixed(3)}`)
   let lo = Infinity, hi = -Infinity, steep = 0, n = 0, wetN = 0
   for (let z = -128; z <= 128; z += 2) {
     for (let x = -128; x <= 128; x += 2) {
@@ -162,12 +186,12 @@ const inBowl = (x, z) => Math.hypot(x, z) < rimAt(x, z)
   check(hi - lo > DROP * 0.6, 'the hollow falls to the lake', `${(hi - lo).toFixed(1)} m lake shore to rim`)
   check(steep <= n * STEEP_SHARE, 'most of the dry hollow is walkable', `${((100 * steep) / n).toFixed(1)}% of ${n} points over ${LOCOMOTION.maxSlopeDeg} degrees`)
   check(Math.abs(wetN * 4 - lake.area) < lake.area * 0.5, 'the water the field shows is the lake the build found', `${wetN * 4} m2 wet vs ${lake.area} m2 found`)
-  // The ground falls toward the lake on every bearing: from the rim in to the water, the run's mean grade is downhill.
+  // The ground falls toward the lake on every bearing: from the rim in to the water, the run's mean grade is downhill. Read on the build's own ground, under the roads: the terrace the ring and the loop's level stretch make is cut into the slope behind the houses and built up over the water in front of them (CLEARING), a step the field shows on purpose.
   let uphill = 0
   for (let b = 0; b < 360; b += 5) {
     const a = (b * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)
     const R = rimAt(c, s)
-    const outer = heightAt(lake.x + c * (R * 0.8), lake.z + s * (R * 0.8)), inner = heightAt(lake.x + c * (R * 0.3), lake.z + s * (R * 0.3))
+    const outer = room.ground.at(lake.x + c * (R * 0.8), lake.z + s * (R * 0.8)), inner = room.ground.at(lake.x + c * (R * 0.3), lake.z + s * (R * 0.3))
     if (outer < inner) uphill++
   }
   check(uphill === 0, 'the ground falls from the wall toward the lake on every bearing', `${uphill} of 72 bearings run uphill`)
@@ -218,12 +242,16 @@ console.log('\nthe water')
     }
     check(rises === 0, `${r.id} only descends`, `${rises} rising samples of ${n}`)
     const mouth = fwd ? n - 1 : 0, source = fwd ? 0 : n - 1
-    check(Math.abs(s[mouth * 4 + 1] - lake.y) < 0.05, `${r.id}'s mouth sits at the lake level`, `${s[mouth * 4 + 1].toFixed(2)} vs ${lake.y.toFixed(2)}`)
+    // The mouth is walked RIVER.into under the lake's plane and the solve puts the sheet FREEBOARD under the lowest ground of its section, so the sheet dives under the water and the river's water and the lake's are one: under the level, and by no more than the walk, the freeboard and the channel's depth.
+    const under = lake.y - s[mouth * 4 + 1]
+    check(under > 0 && under <= RIVER.into + FREEBOARD + RIVER.depth, `${r.id}'s mouth dives under the lake's plane`, `${under.toFixed(2)} m under ${lake.y.toFixed(2)}`)
     check(s[source * 4 + 1] > lake.y + 2, `${r.id}'s source is well above the lake`, `${(s[source * 4 + 1] - lake.y).toFixed(1)} m up`)
     const m = r.pts[r.pts.length - 1]
     check(heightAt(m[0], m[1]) < lake.y, `${r.id}'s channel opens under the lake's water`, `bed ${heightAt(m[0], m[1]).toFixed(2)} under ${lake.y.toFixed(2)}`)
-    // The mouth stands on the far side from the exit, so the river comes down the wall she faces.
-    const bearing = (Math.atan2(m[1] - lake.z, m[0] - lake.x) * 180) / Math.PI
+    // The river winds: its plan runs RIVER.wind times the straight line from its source to its mouth at the least.
+    check(sinuosity(r.pts) >= RIVER.wind, `${r.id} winds down to the lake`, `${sinuosity(r.pts).toFixed(2)} times its chord`)
+    // The source stands on the far side from the exit, so the river comes down the wall she faces.
+    const bearing = (Math.atan2(r.pts[0][1] - lake.z, r.pts[0][0] - lake.x) * 180) / Math.PI
     const heading = (Math.atan2(room.exit.z - lake.z, room.exit.x - lake.x) * 180) / Math.PI
     const across = 180 - Math.abs(((((bearing - heading) % 360) + 540) % 360) - 180)
     check(across <= 2 * RIVER.sector, `${r.id} comes down across the lake from the exit`, `${across.toFixed(0)} degrees off straight across`)
@@ -236,13 +264,17 @@ console.log('\nthe water')
 
 // --- the roads ----------------------------------------------------------------
 console.log('\nthe roads')
+const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
 const roads = doc.roads
 const trunk = roads.find((r) => r.id === 'd1'), loop = roads.find((r) => r.id === 'd2'), ring = roads.find((r) => r.id === 'd3'), spur = roads.find((r) => r.id === 'd4')
 const pads = roads.filter((r) => r.id.startsWith('pad-'))
+// The build's own roll (it re-rolls under the same shell until a village builds): its ring houses come first in the props, its outlying houses after, each with a branch in the roads' order.
+const ringCount = room.spec.huts.length, outCount = room.spec.outlying.length
+const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d${5 + i}`))
 {
-  check(trunk && loop && ring && spur && roads.length === 4 + pads.length, 'a trunk, a loop, a ring, a spur and the pads', `${roads.length} roads`)
+  check(trunk && loop && ring && spur && branches.every(Boolean) && roads.length === 4 + outCount + pads.length, 'a trunk, a loop, a ring, a spur, a branch an outlying house and the pads', `${roads.length} roads, ${outCount} branches`)
   check(pads.length === HUTS.pads.length * room.props.length, 'the pads under every hut and no other', `${pads.length} pads, ${room.props.length} huts`)
-  for (const r of [trunk, loop]) {
+  for (const r of [trunk, loop, ...branches]) {
     const s = new Spline(r.pts).flatten(1)
     let worst = 0, wetSamples = 0, off = 0, low = Infinity
     for (let i = 4; i < s.length; i += 4) {
@@ -278,29 +310,46 @@ const pads = roads.filter((r) => r.id.startsWith('pad-'))
   check(gapTo(s0[0], s0[2]) < 0.6, 'the spur leaves the loop', `${gapTo(s0[0], s0[2]).toFixed(2)} m`)
   check(Math.hypot(s1[0] - ring.pts[0][0], s1[2] - ring.pts[0][2]) < 0.01 && spur.pts.every((p) => p[1] === ring.pts[0][1]), 'the spur ends on the ring at its level')
   check(longestStraight(spur.pts) < STRAIGHT_M, 'the spur is a short straight', `${longestStraight(spur.pts)} m`)
+  // Each branch leaves the loop at a point of it and ends at its house's door, at the level the house's pad holds the ground at.
+  const doors = roomProps.doors()
+  let offLoop = 0, offDoor = 0, offLevel = 0
+  branches.forEach((br, i) => {
+    const b0 = br.pts[0], b1 = br.pts[br.pts.length - 1], h = roomProps.props[ringCount + i], d = doors[ringCount + i]
+    if (gapTo(b0[0], b0[2]) >= 0.6) offLoop++
+    if (Math.hypot(b1[0] - d.x, b1[2] - d.z) > 1) offDoor++
+    if (Math.abs(b1[1] - h.y) > 0.3) offLevel++
+  })
+  check(offLoop === 0 && offDoor === 0 && offLevel === 0, 'every branch leaves the loop and ends at its outlying house\'s door at its pad\'s level', `${offLoop} off the loop, ${offDoor} off a door, ${offLevel} off its level`)
   const c = room.clearing
   const ringLevel = ring.pts.every((p) => p[1] === ring.pts[0][1])
   const ringRound = ring.pts.every((p) => Math.abs(Math.hypot(p[0] - c.x, p[2] - c.z) - c.r) < 0.01)
   check(ringLevel && ringRound && ring.pts[0][1] >= lake.y + CLEARING.dry, 'the ring is level round the clearing, over the lake', `${ring.pts[0][1].toFixed(1)} m, ${(ring.pts[0][1] - lake.y).toFixed(1)} over the water`)
   check(Math.abs(c.r - CLEARING.r) < 1e-9, 'the clearing is ten metres across', `r ${c.r}`)
-  check(Math.hypot(c.x, c.z) + c.r < rimAt(c.x, c.z) - 10, 'the clearing stands well in from the wall')
+  // The houses stand CLEARING.wall clear of the stone: in a bowl this size the clearing itself stands where the wall lets it.
+  const nearWall = roomProps.props.slice(0, ringCount).filter((h) => Math.hypot(h.x, h.z) + h.r + CLEARING.wall > rimAt(h.x, h.z)).length
+  check(nearWall === 0, 'every ring house stands clear of the wall', `${nearWall} against it`)
 }
 
 // --- the huts -----------------------------------------------------------------
 console.log('\nthe huts')
-const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
 {
-  check(room.props.length >= HUTS.count[0] && room.props.length <= HUTS.count[1] && room.props.filter((p) => p.height >= GREAT_HUT.height[0]).length === 1, 'five or six huts and one great house', `${room.props.length} huts`)
+  const ringHouses = room.props.slice(0, ringCount), outlying = room.props.slice(ringCount)
+  check(room.props.length === ringCount + outCount && ringCount >= HUTS.count[0] && ringCount <= HUTS.count[1] && ringHouses.filter((p) => p.height >= GREAT_HUT.height[0]).length === 1, 'five or six huts round the ring and one of them the great house', `${ringCount} huts`)
+  check(outCount >= OUTLYING.count[0] && outCount <= OUTLYING.count[1] && outlying.every((p) => p.height >= OUTLYING.height[0] && p.height <= OUTLYING.height[1]), 'two or three outlying houses, none of them great', `${outCount} outlying`)
   const doors = roomProps.doors()
   let offRing = 0, worstDoor = 0
   const ringLine = new Spline(ring.pts).flatten(0.5)
-  for (const d of doors) {
+  for (const d of doors.slice(0, ringCount)) {
     let dist = Infinity
     for (let i = 0; i < ringLine.length; i += 4) dist = Math.min(dist, Math.hypot(ringLine[i] - d.x, ringLine[i + 2] - d.z))
     worstDoor = Math.max(worstDoor, dist)
     if (dist > 1) offRing++
   }
-  check(offRing === 0, 'every door opens on the ring', `farthest ${worstDoor.toFixed(2)} m from its centreline`)
+  check(offRing === 0, 'every ring house\'s door opens on the ring', `farthest ${worstDoor.toFixed(2)} m from its centreline`)
+  // An outlying house stands off in the wood or on the shore: its door is well off the ring, and it stands as far from every other house as the ring's do from each other.
+  let nearRing = 0
+  for (const d of doors.slice(ringCount)) if (Math.hypot(d.x - room.clearing.x, d.z - room.clearing.z) < CLEARING.r + 5) nearRing++
+  check(nearRing === 0, 'every outlying house stands well off the clearing', `${nearRing} within 5 m of its ring`)
   const c = room.clearing
   let wetHuts = 0, tilted = 0, onRoad = 0, worstTilt = 0, worstHut = '', inClearing = 0, cobbled = 0, apart = Infinity
   for (const h of roomProps.props) {
@@ -316,8 +365,8 @@ const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, pro
       if (hit !== null && hit.id.startsWith('pad-') && hit.dist <= hit.halfWidth) cobbled++
     }
     if (hi - lo > 0.5) { tilted++; if (hi - lo > worstTilt) { worstTilt = hi - lo; worstHut = `${roomProps.props.indexOf(h)} at ${h.x.toFixed(0)}, ${h.z.toFixed(0)} r ${h.r.toFixed(1)}` } }
-    // A way under the hut: the trunk's, the loop's or the spur's centreline inside the footprint.
-    for (const w of [trunk, loop, spur]) {
+    // A way under the hut: the trunk's, the loop's, the spur's or a branch's centreline inside the footprint.
+    for (const w of [trunk, loop, spur, ...branches]) {
       const s = new Spline(w.pts).flatten(1)
       for (let i = 0; i < s.length; i += 4) if (Math.hypot(s[i] - h.x, s[i + 2] - h.z) < h.r) { onRoad++; break }
     }
@@ -328,7 +377,7 @@ const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, pro
   check(tilted === 0, 'every hut stands on ground within 0.5 m of level across its footprint', `${tilted} tilted, worst ${worstTilt.toFixed(2)} m on hut ${worstHut}`)
   check(onRoad === 0, 'no way runs under a hut')
   check(cobbled === 0, 'no pad cobbles past its hut\'s walls', `${cobbled} wall points on a pad`)
-  check(inClearing === 0, 'every hut stands outside the clearing, round its ring', `${inClearing} in it`)
+  check(inClearing === 0, 'every hut stands outside the clearing', `${inClearing} in it`)
   check(apart >= HUTS.gap - 0.01, 'the huts stand a gap apart', `nearest ${apart.toFixed(2)} m`)
   check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + c.r + 40, c.z, 0), 'the clearing is the wood\'s occupier')
   const great = roomProps.props[room.props.findIndex((p) => p.height >= GREAT_HUT.height[0])]
@@ -361,7 +410,7 @@ const water = {
       if (Math.hypot(x - lake.x, z - lake.z) < 40) byLake++
     }
   }
-  check(placed > 40, 'the room grows a wood', `${placed} trees inside the rim`)
+  check(placed > TREES_LEAST, 'the room grows a wood', `${placed} trees inside the rim`)
   check(inClearing === 0, 'the clearing is treeless', `${inClearing} in it`)
   check(inHut === 0, 'no tree stands in a hut', `${inHut} in one`)
   check(behind > 0, 'the wood comes up to the huts\' backs', `${behind} trees within 16 m of the clearing`)
@@ -388,9 +437,10 @@ console.log('\nthe shell')
   const e = room.exit, ax = e.x + e.nx * ARRIVE_M, az = e.z + e.nz * ARRIVE_M
   const roof = shell.roofAt(ax, heightAt(ax, az), az)
   check(roof !== null && roof >= HEADROOM_M, 'the arrival inside the exit mouth stands under the shell', roof === null ? 'open' : `${roof.toFixed(1)} m of roof`)
-  // The exit is attached to the wall: its face point stands on the stone at the arch's mid height, its normal into the room, and the wall moves little across the arch's height, so the arch's back is in the stone top to bottom.
+  // The exit is attached to the wall: its face point stands on the stone at the arch's mid height over the ground the build read, which is the ground the field shows under the mouth once the trunk's shoulder has blended it toward the arrival's; its normal into the room; and the wall moves little across the arch's height, so the arch's back is in the stone top to bottom.
   const a = Math.atan2(e.z, e.x)
-  const y = heightAt(e.x, e.z)
+  const y = e.y
+  check(Math.abs(heightAt(e.x, e.z) - y) < 0.3, 'the ground under the exit is what the build read there', `${(heightAt(e.x, e.z) - y).toFixed(2)} m off`)
   const face = shell.wallAt(y + EXIT.band / 2, a)
   let lo = Infinity, hi = -Infinity
   for (let k = 0; k <= 6; k++) { const w = shell.wallAt(y + (EXIT.band * k) / 6, a); lo = Math.min(lo, w); hi = Math.max(hi, w) }
@@ -464,6 +514,50 @@ console.log('\nthe boot')
   }
   console.warn = warn
   check(nearest <= PORTAL.walk, `walked in from the arrival, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `nearest ${nearest.toFixed(2)} m`)
+}
+
+// --- the creatures ------------------------------------------------------------
+console.log('\nthe creatures')
+{
+  // The lake's creatures on the layers main.js boots them on: the water surfaces the shore is read off, the placed rocks the crabs perch on, and a walk that is the bare field for the grasshoppers.
+  const boxAsset = (segments) => {
+    const box = new THREE.BoxGeometry(1, 0.5, 0.7, segments, segments, segments).translate(0, 0.25, 0)
+    return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
+  }
+  const frogAssets = Array.from({ length: LOD_TIERS }, (_, k) => boxAsset(LOD_TIERS - k))
+  const fishAssets = JSON.parse(readFileSync('public/fauna/fish.json', 'utf8'))
+  let schools = 0, frogsSeated = 0
+  for (const { seed, room, layers, field } of builds) {
+    const scene = new THREE.Scene()
+    const water = new WaterSurfaces({ water: { material: new THREE.ShaderMaterial(), group: new THREE.Group() }, layers, field })
+    water.rebuild()
+    const rocks = new Rocks(scene, field, water, layers, texArray, { seed: SEED, hollows: false, bank })
+    rocks.place(room.lake.x, room.lake.z)
+    const walk = { heightAt: (x, z) => field.heightAt(x, z) }
+    const hoppers = new Grasshoppers(scene, field, water, { seed, walk, assets: boxAsset(1) })
+    hoppers.place(room.lake.x, room.lake.z)
+    const crabs = new Crabs(scene, field, water, { seed, rocks, assets: boxAsset(1) })
+    crabs.place(room.lake.x, room.lake.z)
+    const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets })
+    frogs.place(room.lake.x, room.lake.z)
+    let seated = 0
+    for (const t of frogs.tiles.values()) seated += t.frogs.length
+    frogsSeated += seated
+    // The square metres of dry ground a frog may sit on (frogs.seat: off the stone, under 35 degrees, within SHORE_M of the water) about the lake: the shore's shelf, the loop cut a metre over the water.
+    let seats = 0
+    for (let z = -24; z <= 24; z++) for (let x = -24; x <= 24; x++) { const st = frogs.seat(room.lake.x + x, room.lake.z + z); if (st !== null && !st.wet) seats++ }
+    const fish = new Fish(scene, field, water, { seed, assets: fishAssets })
+    fish.place(room.lake.x, room.lake.z)
+    schools += fish.stats.schools
+    console.log(`=== seed ${seed}: ${hoppers.stats.alive} grasshoppers, ${crabs.stats.alive} crabs on ${crabs.stats.perches} perches, ${seated} frogs on ${seats} m2 of seats, ${fish.stats.schools} school(s) of fish`)
+    check(hoppers.stats.alive > 0, 'grasshoppers live about the lake')
+    check(crabs.stats.alive > 0, 'crabs perch on the shore stones')
+    check(seats >= FROG_SEATS_LEAST, 'the shore has a band of frog seats', `${seats} m2`)
+  }
+  // Frogs are rolled per 8 m tile at frogs.js DENSITY, a candidate anywhere on the tile and kept only on a seat, so a seed's lake can roll none; over the seeds gated they average one and more.
+  check(frogsSeated >= builds.length, 'frogs sit by the lakes', `${frogsSeated} over ${builds.length} seeds`)
+  // A school needs a bed (fish.js minDepth with clearance) in a lake this small (LAKE.least to 300 m2, under 3 m deep), which few seeds' lakes hold.
+  check(schools > 0, 'some seed\'s lake seeds a school of fish', `${schools} over ${builds.length} seeds`)
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall ok')

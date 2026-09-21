@@ -40,7 +40,7 @@ const hm = await Heightmap.read({
 const height = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 const layers = Layers.deserialize(JSON.parse(readFileSync(new URL('../public/world/layers.json', import.meta.url), 'utf8')))
 height.setLayers(layers)
-const water = new WaterSurfaces({ water: { material: new THREE.ShaderMaterial(), group: new THREE.Group() }, layers })
+const water = new WaterSurfaces({ water: { material: new THREE.ShaderMaterial(), group: new THREE.Group() }, layers, field: height })
 water.rebuild()
 
 const rocks = new Rocks(new THREE.Scene(), height, water, layers, buildTextureArray(), { seed: SEED })

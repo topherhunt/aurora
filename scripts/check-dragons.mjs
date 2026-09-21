@@ -705,6 +705,19 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
     if (!samePose(poses.get(c.rec.tick), pose(c))) cDiffer++
   }
   check(cDiffer === 0 && c.rec.tick === tickOf(tj + 300), 'and stays with the resident to the bit for the five minutes after, across every boundary between', `${cDiffer} ticks differ`)
+  // A joiner deep into a long phrase: the replay spans frames, and no frame takes the lag for a clock skip and starts it over.
+  let tl = null
+  for (let t = t0 + 30; t < t0 + CHAPTER_S - 30 && tl === null; t += 5) if (t - A._phraseAt(a, t).start > (CATCH_UP_TICKS * 3) * TICK_S) tl = t
+  check(tl !== null, 'there is a moment in the chapter more than three catch-ups into its phrase', tl === null ? 'none' : `${fmt(tl - A._phraseAt(a, tl).start)} s in`)
+  if (tl !== null) {
+    const L = dragonsOn(flat, [site], makeHerd([]))
+    let lFrames = 0, lReplayed = 0
+    do { L.update(HER.x, HER.y, HER.z, tl); lFrames++; lReplayed += L.stats.replayed } while (L.stats.behind && lFrames < 100)
+    const l = L.byKey.get(keyOf(site))
+    check(!L.stats.behind && lFrames >= 4 && lReplayed === tickOf(tl) - tickAfter(A._phraseAt(a, tl).start) + 1, 'born there it catches up over several frames, replaying the phrase exactly once', `${lReplayed} ticks over ${lFrames} frames`)
+    check(l.rec.tick === tickOf(tl) && samePose(poses.get(l.rec.tick), pose(l)), 'and stands where the resident stood at that tick, to the bit')
+    L.dispose()
+  }
   // A clock skip (+5 h is 300 s on the room's clock): the gap is not replayed, the dragon is put on its score where the resident is, and the resident's ticks it replays are its current phrase's alone.
   const D = dragonsOn(flat, [site], makeHerd([]))
   const ts = t0 + 100

@@ -31,7 +31,11 @@
 //   to CROUCH_FOLD of their length -- a deep squat bent double, which is what
 //   she looks like to the others when she kneels to a mushroom. The neck the
 //   lean carries forward is where the body stands its feet from, so a head
-//   that goes forward as she bends is read as the bend, not as a step.
+//   that goes forward as she bends is read as the bend, not as a step. A head
+//   higher over the ground than a standing body's eyes by more than FLY_M is
+//   ALOFT -- she is flying, or the ground is a lake bed under a boat's sole
+//   that the walk surface's ceiling rule can never lift the body onto -- and
+//   the body is carried under its head, feet loose, until ground comes up.
 //
 //   THE BODY'S YAW follows the head's with a deadzone: the neck twists up to
 //   YAW_SLACK before the body turns under it, and once turning it turns until
@@ -62,6 +66,10 @@ import THREE from '../../three-instance.js'
 export const HEAD_SLACK_M = 0.1
 export const EYE_LINE = 0.93
 export const TELEPORT_M = 1
+// A head higher over the ground than the standing eyes by more than this is in the air, and the body hangs under it. Wider than
+// any headset stood taller than its avatar, narrower than the walk surface's reach, so a body the ceiling rule holds under a
+// boat's sole is always lifted.
+export const FLY_M = 0.75
 // A crouch folds a leg to no shorter than this fraction of its rest length, and bends the waist forward no further than LEAN_MAX.
 export const CROUCH_FOLD = 0.35
 export const LEAN_MAX = (40 * Math.PI) / 180
@@ -209,6 +217,7 @@ export class VrBody {
     this.headYaw = 0
     this.placed = false
     this.gliding = false
+    this.aloft = false
     this.running = false
     this.pace = 0
     this.turning = false
@@ -247,7 +256,8 @@ export class VrBody {
     if (!this.placed) { this.yaw = headYaw; this.y = hy - eye }
     // The crouch, off the ground it last stood on: the headset below the standing eyes by more than the neck's slack
     // bends the waist, further the deeper it goes, and the hips take up exactly what the bend has not, as far as the legs fold.
-    const deficit = Math.max(0, this.y + eye - hy - HEAD_SLACK_M) * this.hold
+    // A body in the air hangs straight; a descent is not a squat.
+    const deficit = this.aloft ? 0 : Math.max(0, this.y + eye - hy - HEAD_SLACK_M) * this.hold
     this.lean = LEAN_MAX * Math.min(1, deficit / (this.crouchMax * this.k + this.leanDrop(LEAN_MAX)))
     this.crouch = Math.min(this.crouchMax * this.k, Math.max(0, deficit - this.leanDrop(this.lean)))
     const nx = (this.neckRest.x + this.leanReach(this.lean)) * this.k, nz = this.neckRest.z * this.k
@@ -260,12 +270,17 @@ export class VrBody {
     let dx = underX - this.x, dz = underZ - this.z
     let dist = Math.hypot(dx, dz)
     if (!this.gliding && dist > TELEPORT_M) { this.gliding = true; this.running = false; this.pace = 0 }
+    // In the air: the head higher over the ground than a standing body's eyes by more than FLY_M -- flying, or a lake bed under
+    // a boat's sole the ceiling rule can never lift it onto. The body is carried under its head, feet loose, until ground comes
+    // up under it. On a trip the ground under the HEAD decides, read as a body stood there would, so a teleport up a hill is
+    // still walked and a flight is never walked after.
+    const ground = this.walk.heightAt(this.x, this.z, this.y)
+    this.aloft = hy - (this.gliding ? this.walk.heightAt(underX, underZ, hy - eye) : ground) > eye + FLY_M
+    if (this.aloft) this.gliding = false
     let faceYaw = headYaw
     let facingTravel = false
-    if (this.gliding && dist <= GLIDE_STOP_M) {
-      this.gliding = false
-      this.clip = 'idle'
-    } else if (this.gliding) {
+    if (this.gliding && dist <= GLIDE_STOP_M) this.gliding = false
+    else if (this.gliding) {
       // The trip's gait and pace are settled as it starts, and raised only if the
       // head jumps further off mid-trip: a walk, a run once RUN_FROM_M off, and
       // faster than a run only so a teleport is over in MAX_TRAVEL_S. Settled per
@@ -283,15 +298,15 @@ export class VrBody {
       dx = underX - this.x; dz = underZ - this.z
       dist = Math.hypot(dx, dz)
     }
-    // Not on a trip, it stands under its head.
-    if (!this.gliding) { this.x = underX; this.z = underZ; dx = dz = dist = 0 }
+    // Not on a trip, it stands under its head, idle.
+    if (!this.gliding) { this.x = underX; this.z = underZ; dx = dz = dist = 0; this.clip = 'idle' }
     // The body turns under a twisted neck, and to face a long walk.
     const twist = wrap(faceYaw - this.yaw)
     if (facingTravel || Math.abs(twist) > YAW_SLACK) this.turning = true
     else if (Math.abs(twist) < YAW_SETTLE) this.turning = false
     if (this.turning) this.yaw = wrap(this.yaw + twist * (1 - Math.exp(-dt / TURN_TAU_S)))
-    // The ground where it stands, read from where it last stood so that stone over its head is not ground.
-    this.y = this.walk.heightAt(this.x, this.z, this.y)
+    // Under its head in the air, else on the ground where it stands, read from where it last stood so that stone over its head is not ground.
+    this.y = this.aloft ? hy - eye : this.walk.heightAt(this.x, this.z, this.y)
 
     // The head and arms hold their targets while the body is near enough to reach them.
     const holdTo = dist > IK_OFF_M ? 0 : 1
@@ -320,8 +335,8 @@ export class VrBody {
       this.arms[i].target.set(pose[at], pose[at + 1], pose[at + 2]).applyMatrix4(this.bodyInv)
     }
 
-    // Standing, the feet are planted to the ground under each and the hips sunk by the crouch; walking, they are the clip's.
-    if (this.gliding) this.puppet.unplant()
+    // Standing, the feet are planted to the ground under each and the hips sunk by the crouch; walking or in the air, they are the clip's.
+    if (this.gliding || this.aloft) this.puppet.unplant()
     else {
       const feet = this.puppet.feet
       const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)

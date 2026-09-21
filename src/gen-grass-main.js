@@ -390,7 +390,7 @@ async function bootWorld() {
   }
   water.group.name = 'gen-grass-stub-water'
   scene.add(water.group)
-  waterSurfaces = new WaterSurfaces({ water, layers })
+  waterSurfaces = new WaterSurfaces({ water, layers, field: height })
   waterSurfaces.rebuild()
 
   const spawn = findSpawn(bands)

@@ -29,8 +29,9 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX,
+  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M,
 } from '../src/v2/render/avatar-rig.js'
+import { WALK } from '../src/v2/walk.js'
 import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PeerAvatars, handGeometry, ownHand } from '../src/v2/render/avatar.js'
 
 let failures = 0
@@ -353,6 +354,39 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(body.gliding && !puppet.planted, 'walking off to a head that has moved, its feet are the clip\'s, not planted')
   run(b, shelf, [true, true], MAX_TRAVEL_S + 3)
   check(!body.gliding && body.y === 2 && puppet.planted, 'arrived on a shelf 2 m up, it stands on the shelf', `y ${body.y}`)
+}
+
+// --- in the air: a flight, and a boat's sole over a lake bed ---------------------------
+{
+  const b = makeBody(fisher, stature)
+  const { body, puppet } = b
+  const rest = restOf(b, 0, 0, 0)
+  run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
+  // The head 3 m up, on a still frame: the body hangs under it, idle, its feet loose, without a walk.
+  const lift = (h) => poseOf(rest.head.clone().setY(rest.head.y + h), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y + h), quat: g.quat })))
+  run(b, lift(3), [true, true], 1)
+  check(body.aloft && !body.gliding && !puppet.planted && puppet.current === puppet.actions.get('idle') && Math.abs(body.y - 3) < 1e-6 && body.crouch === 0, `a head more than ${FLY_M} m higher over the ground than its standing eyes carries the body under it, idle, feet loose`, `y ${body.y.toFixed(3)} crouch ${body.crouch.toFixed(3)}`)
+  // Flying fast, the head is a teleport off every frame: the body is carried, never walked after.
+  let walked = false
+  for (let i = 0; i < 60; i++) {
+    const p = lift(3); p[0] += 1.5 * (i + 1); p[7] += 1.5 * (i + 1); p[14] += 1.5 * (i + 1)
+    body.drive(p, [true, true], DT); walked ||= body.gliding
+  }
+  check(!walked && body.aloft && Math.abs(body.x - 90) < 1e-6 && body.hold === 1, 'a flight at a teleport a frame is carried under the head, holding on, not walked after', `at x ${body.x.toFixed(2)}`)
+  // Down again to the ground, it stands.
+  run(b, poseOf(rest.head.clone().setX(rest.head.x + 90), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setX(g.pos.x + 90), quat: g.quat }))), [true, true], 1)
+  check(!body.aloft && body.y === 0 && puppet.planted, 'and stands on the ground again when the head comes down to it')
+}
+{
+  // A boat's sole at 0 over a lake bed 2 m down, past the walk surface's reach: stone the ceiling rule gives a body on the bed no way up onto.
+  const b = makeBody(fisher, stature, { heightAt: (x, z, y) => (y === undefined || y + WALK.reach >= 0 ? 0 : -2) })
+  const { body, puppet } = b
+  const rest = restOf(b, 0, 0, 0)
+  const at = (h) => poseOf(rest.head.clone().setY(rest.head.y + h), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y + h), quat: g.quat })))
+  run(b, at(-2), [true, true], 1)
+  check(body.y === -2 && puppet.planted, 'a body on the lake bed under a boat stands on the bed', `y ${body.y}`)
+  run(b, at(0), [true, true], 1)
+  check(!body.aloft && body.y === 0 && puppet.planted, 'and when she boards, her head over the sole, the body is lifted onto the sole and stands there', `y ${body.y}`)
 }
 
 // --- release --------------------------------------------------------------------------

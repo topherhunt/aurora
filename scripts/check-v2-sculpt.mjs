@@ -552,13 +552,14 @@ function sectionSculptor() {
 
   // A stroke under a river re-routes it, and the chunks it moved between have to
   // be remeshed along with the ones under the brush: the world rect handed to the
-  // terrain is the union, and the water surfaces are told which rivers moved.
+  // terrain is the union, and the water surfaces hear the same union so the
+  // lakes under the brush re-trace along with the rivers that moved.
   {
     const riverRect = { minX: -3000, minZ: -2500, maxX: -2600, maxZ: -1900 }
     const rf = fakeField(riverRect)
     const rt = fakeTerrain()
     const moved = []
-    const rs = new Sculptor({ heightmap: makeField(() => 100), field: rf, terrain: rt, onRiversMoved: (r) => moved.push(r) })
+    const rs = new Sculptor({ heightmap: makeField(() => 100), field: rf, terrain: rt, onGroundChanged: (r) => moved.push(r) })
     rs.radius = 200
     rs.strength = 10
     rs.begin()
@@ -567,7 +568,7 @@ function sectionSculptor() {
     const p = rt.patches[rt.patches.length - 1]
     check(rf.asked.length > 0 && rf.asked[0].minX < 0 && rf.asked[0].maxX > 0, 'the rivers are told the world rect the stroke changed', rf.asked[0] === undefined ? 'never asked' : `${rf.asked[0].minX.toFixed(0)}..${rf.asked[0].maxX.toFixed(0)} m`)
     check(p.worldRect.minX <= riverRect.minX && p.worldRect.minZ <= riverRect.minZ && p.worldRect.maxX >= 200 && p.worldRect.maxZ >= 200, 'the terrain remeshes the brush and the re-routed river together', `${p.worldRect.minX.toFixed(0)}..${p.worldRect.maxX.toFixed(0)} m`)
-    check(moved.length === 1 && moved[0] === riverRect, 'and the water surfaces hear which rivers moved', `${moved.length} calls`)
+    check(moved.length === 1 && moved[0].minX === p.worldRect.minX && moved[0].maxX === p.worldRect.maxX && moved[0].minZ === p.worldRect.minZ && moved[0].maxZ === p.worldRect.maxZ, 'and the water surfaces hear the same union', `${moved.length} calls`)
   }
 
   // A press that moved nothing must not push an entry, or Ctrl-Z starts doing

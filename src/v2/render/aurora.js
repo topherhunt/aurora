@@ -61,6 +61,7 @@ import {
   WORLD_ALGORITHM, VISIBLE_AT, ACT_LO, PATTERNS,
   worldDrivenValues, worldFieldSeed, nearestPattern,
 } from '../../aurora-lab/world-drive.js'
+import { CLOUD_GLSL } from '../../sky-glsl.js'
 
 // ---------------------------------------------------------------------------
 
@@ -71,10 +72,19 @@ export class SkyAurora {
   // `renderer` is REQUIRED and there is no fallback, because the four prepasses
   // are renders and a missing renderer would otherwise show up as a sky that is
   // simply black -- the failure mode this lab has already paid for twice.
-  constructor( scene, { renderer, seed = 0 } = {} ) {
+  //
+  // `clouds` is the sky's cloud uniform block (sky-glsl.js makeCloudUniforms),
+  // by reference: the screen is dimmed by the cloud the dome composites over
+  // the sun, so a curtain never glows through a ceiling. Without it the sky is
+  // clear, which is what the lab and the bench want.
+  constructor( scene, { renderer, seed = 0, clouds = null } = {} ) {
     if ( !renderer ) throw new Error( 'SkyAurora: needs the WebGLRenderer -- the sky map is built by rendering' )
 
-    this.screen = new AuroraScreen( scene, { algorithm: WORLD_ALGORITHM } )
+    const occluder = clouds ? {
+      glsl: CLOUD_GLSL + '\n  float skyOcclusion( vec3 dir ) { return cloudAt( dir ).x; }\n',
+      uniforms: { uClouds: clouds.uClouds, uCloud: clouds.uCloud, uCloudDrift: clouds.uCloudDrift },
+    } : null
+    this.screen = new AuroraScreen( scene, { algorithm: WORLD_ALGORITHM, occluder } )
     this.skymap = new SkyMapAurora( renderer )
     this.skymap.interval = MAP_INTERVALS[ 0 ]
 

@@ -1,6 +1,6 @@
 // The v3 island as a PNG -- §31's headless eye.
 //
-//   node scripts/island-png.mjs [--seed N] [--layer relief|elev|slope|bowls] [--out path]
+//   node scripts/island-png.mjs [--seed N] [--layer relief|elev|slope|bowls|biomes] [--jitter key=value,...] [--out path]
 //
 // Draws exactly what /terrain-v3-map draws, through the same painters in src/v3/paint.js, so a picture taken here and a picture taken there are the same instrument.
 
@@ -17,9 +17,11 @@ const opt = (name, fallback) => {
 const seed = Number(opt('seed', 20260824))
 const layer = opt('layer', 'relief')
 const out = opt('out', `tmp/island-${seed}-${layer}.png`)
+// `--jitter byHeight=1,start=256`: overrides for JITTER, numbers parsed, so a knob can be tried without editing island.js.
+const jitter = opt('jitter', '') ? Object.fromEntries(opt('jitter', '').split(',').map((kv) => { const [k, v] = kv.split('='); return [k, Number.isNaN(Number(v)) ? v : Number(v)] })) : null
 if (!LAYERS.some(([id]) => id === layer)) throw new Error(`island-png: unknown layer ${layer}, expected one of ${LAYERS.map(([id]) => id).join(', ')}`)
 
-const r = derive(generate({ seed, log: (line) => console.log(line) }))
+const r = derive(generate({ seed, jitter, log: (line) => console.log(line) }))
 const rgba = new Uint8ClampedArray(r.n * r.n * 4)
 paintInto(rgba, r, layer)
 const rgb = new Uint8Array(r.n * r.n * 3)

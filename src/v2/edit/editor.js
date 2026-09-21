@@ -170,11 +170,11 @@ const PREVIEW_MAX_VERTS = 512
 const CURSOR_MS = 250 // the cursor readout repaints with the panel, at 4 Hz
 
 export class Editor {
-  constructor({ scene, camera, renderer, layers, height, markers, terrain, onDirty, onRiversMoved, onView, orbitLock, elevation }) {
+  constructor({ scene, camera, renderer, layers, height, markers, terrain, onDirty, onGroundChanged, onView, orbitLock, elevation }) {
     if (typeof onDirty !== 'function') throw new Error('Editor: onDirty(rect) is required')
-    // The sculpt brush re-routes rivers without changing the document, so the
-    // water surfaces have to be told separately from onDirty.
-    if (typeof onRiversMoved !== 'function') throw new Error('Editor: onRiversMoved(rect) is required -- it is how a sculpt that moved a river reaches the water surfaces')
+    // The sculpt brush moves shores and re-routes rivers without changing the
+    // document, so the water surfaces have to be told separately from onDirty.
+    if (typeof onGroundChanged !== 'function') throw new Error('Editor: onGroundChanged(rect) is required -- it is how a sculpt reaches the water surfaces')
     // Required rather than defaulted to a no-op, because a missing one is
     // invisible: every button still works, the hidden set still fills up, and
     // the only symptom is that hiding an object does not hide it -- which is
@@ -239,7 +239,7 @@ export class Editor {
     // is what the brush writes and what the PNG writer saves; `height` itself is
     // what the player collides with, and with the erode knob on those are two
     // different surfaces. See Sculptor's constructor.
-    this.sculptor = new Sculptor({ heightmap: height.heightmap, field: height, terrain, onRiversMoved })
+    this.sculptor = new Sculptor({ heightmap: height.heightmap, field: height, terrain, onGroundChanged })
 
     this.gizmo = new Gizmo({ scene, camera, domElement: renderer.domElement, orbitLock })
     this.gizmo.onChange(() => this._onGizmoChange())

@@ -12,13 +12,18 @@
 // but cowering, or that cowers on with her in its face; one that notices her
 // from too far, that does not turn to her, that follows her while she comes
 // closer or fails to when she backs off, that walks through her, that will not
-// run, that skates, or that holds on to her past its own cull; one that snaps to
-// a heading; one lost with its tile while it was still following her, or laid
-// twice because it was; a frame that costs more than a scatter is allowed to.
-// The shipped GLB is checked for shape too -- the halving ladder over the one
-// skeleton, the human clip library, the biped extras, and a bind pose that
-// stands on y = 0 facing +X -- because the world loads it by name and builds
-// every puppet from it.
+// run, that skates, or that does not walk home once it has forgotten her; one
+// that snaps to a heading; one lost with its tile while it was still following
+// her, or laid twice because it was; a frame that costs more than a scatter is
+// allowed to. And the room (_notes/creature-sync.md): two clients on different
+// frame rates that do not step the same ticks to the same pose, a gesture that
+// is not closed-form in the key and the tick, an authority that does not owe an
+// anchor a second or its rejoin, a joiner that does not land on the anchor or
+// stay with it, a peer's snowman that notices a player on its own, a skip that
+// is replayed. The shipped GLB is checked for shape too -- the halving ladder
+// over the one skeleton, the human clip library, the biped extras, and a bind
+// pose that stands on y = 0 facing +X -- because the world loads it by name and
+// builds every puppet from it.
 //
 // What this can NOT check: whether it is unsettling. That needs eyes, in the
 // world, at night.
@@ -27,8 +32,9 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Snowmen, CLIPS, PLANTED, TILE, RADIUS, DENSITY, LOD_TIERS, MAX, PUPPETS, SIZE_M, MAX_SLOPE, FOLLOW_SLOPE,
-  NOTICE_M, AWAY_M, STANDOFF_M, RESUME_M, RUN_M, FORGET_M, TURN_RATE,
+  NOTICE_M, AWAY_M, STANDOFF_M, RESUME_M, RUN_M, FORGET_M, HOME_M, TURN_RATE, ANCHOR_S, ANCHOR_STALE_S, COWER_ACTS, WATCH_ACTS,
 } from '../src/v2/render/snowmen.js'
+import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, tickOf } from '../src/sim/score.js'
 import { CRITTER_GLB, LOD_HYSTERESIS, critterTier, cullRange, lodReach } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, REPLANT } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
@@ -235,13 +241,13 @@ const SEEDS = 160
   let below = 0
   for (let seed = 1; seed <= SEEDS * 2; seed++) {
     const k = make(seed, { walk: plain, water: noWater, height })
-    k.place(0, 0)
+    k.place(0, 0, 1000)
     tiles += k.tiles.size
     overflow += k.overflow
     count += MAX - k.free.length
     k.dispose()
     const low = make(seed, { walk: plainAt(SNOW_LINE - 0.01), water: noWater, height })
-    low.place(0, 0)
+    low.place(0, 0, 1000)
     below += MAX - low.free.length
     low.dispose()
   }
@@ -254,12 +260,12 @@ const SEEDS = 160
 }
 
 // --- where they stand --------------------------------------------------------------
-w.place(0, 0)
+w.place(0, 0, 1000)
 {
   const pool = []
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = make(seed)
-    k.place(0, 0)
+    k.place(0, 0, 1000)
     for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, k: c.k, nx: c.nx, ny: c.ny, nz: c.nz, state: c.state, clip: c.clip, slot: c })
     k.dispose()
   }
@@ -283,139 +289,272 @@ w.place(0, 0)
   // Determinism: the same seed lays the same snowmen twice.
   const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)}`).sort().join('|')
   const again = make(7)
-  again.place(0, 0)
+  again.place(0, 0, 1000)
   check(key(again) === key(w) && alive(w).length > 0, 'the scatter is a pure function of the seed', `${alive(w).length} snowmen`)
   const kept = alive(again).filter((c) => Math.hypot(c.x, c.z) < 30).map((c) => ({ c, x: c.x, z: c.z }))
-  again.update(TILE, GROUND + 1.6, 0, 0)
+  again.update(TILE, GROUND + 1.6, 0, 1000, [], 0)
   check(kept.every(({ c, x, z }) => c.tile !== null && c.x === x && c.z === z), 'a step of one tile leaves the snowmen she keeps exactly where they were', `${kept.length} kept`)
   again.dispose()
 }
 
 // --- what one does, by her distance --------------------------------------------------
 //
-// One snowman on the open shoulder, her head moved about it. dt 0 where only
-// the state is asked, real frames where it has to turn or walk.
+// One snowman on the open shoulder, her head moved about it, on the room's
+// clock: every instance carries its own `t`, a frame moves it on by dt and
+// steps the layer to it. dt 0 where only the drawing is asked.
 const HEAD = 1.6
-const dt = 1 / 60
-function lone(seed = 3) {
-  const k = make(seed, { walk: plain, water: noWater, height })
-  k.place(0, 0)
+// Exact binary fractions, so a frame time is exact and two instances on different frame rates read a tick boundary the same way.
+const dt = 1 / 64
+// A frame long enough to step a tick whatever the frame before it left the clock at, for the checks that ask what the next tick does.
+const TICK = 1 / 16
+const T0 = 1000
+const face = (c, rad) => { c.sh = c.lh = c.heading = c.aim = rad }
+const frame = (k, hx, hy, hz, step = dt, peers = []) => { k.t += step; k.update(hx, hy, hz, k.t, peers, step) }
+function lone(seed = 3, world = { walk: plain, water: noWater, height }) {
+  const k = make(seed, world)
+  k.t = T0
+  k.place(0, 0, k.t)
   const c = alive(k)[0]
-  return { k, c, at: (d, frames = 1, step = 0) => { for (let f = 0; f < frames; f++) k.update(c.x + d, GROUND + HEAD, c.z, step) } }
+  return { k, c, at: (d, frames = 1, step = dt) => { for (let f = 0; f < frames; f++) frame(k, c.x + d, GROUND + HEAD, c.z, step) } }
+}
+/** The chain of gestures a snowman's `table` has it on from tick `from` to `to`, closed-form. */
+const chainOf = (k, c, table, from, to) => {
+  const out = []
+  for (let t = from; t < to;) { const g = { ...k._gestureAt(c, table, t) }; out.push(g); t = g.end }
+  return out
 }
 {
   const { k, c, at } = lone()
   const d = k.durations
-  // Cowering: cower and recoil in whole cycles, a still stand between, nothing else, whichever way it happened to face.
-  const acts = new Set()
-  let whole = true
-  const heading = c.heading
-  for (let i = 0; i < 400; i++) {
-    k._step(c)
-    acts.add(c.clip)
-    if (c.clip !== 'idle' && Math.abs(c.left / d[c.clip] - Math.round(c.left / d[c.clip])) > 1e-9) whole = false
-    if (c.speed !== 0) whole = false
+  // Cowering is closed-form in (key, tick): three minutes of it, cower and recoil in whole cycles with a stand between, nothing else; and stepped through those minutes, the snowman plays exactly that chain.
+  const from = tickOf(k.t)
+  const chain = chainOf(k, c, COWER_ACTS, from, from + 180 * TICK_HZ)
+  // The minute's last gesture ends on the minute, and only that one may be cut.
+  const onMinute = (g) => (g.end + c.hash % (60 * TICK_HZ)) % (60 * TICK_HZ) === 0
+  const cut = chain.filter(onMinute)
+  const wholeCycles = (g) => g.clip === 'idle' || Math.abs((g.end - g.start) * TICK_S - Math.round((g.end - g.start) * TICK_S / d[g.clip]) * d[g.clip]) <= TICK_S / 2 + 1e-9
+  const acts = new Set(chain.map((g) => g.clip))
+  check([...acts].sort().join() === 'cower,idle,recoil' && chain.every((g, i) => i + 1 === chain.length || g.end === chain[i + 1].start) && chain.every((g) => wholeCycles(g) || onMinute(g)), 'cowering is cower and recoil in whole cycles with a stand between, chained without a gap, only the minute\'s last cut short', `${chain.length} gestures, ${cut.length} cut`)
+  let matched = true
+  let moved = false
+  for (let f = 0; f < 180 * 64; f++) {
+    at(NOTICE_M + 5)
+    const g = chain.find((g) => g.start <= c.rec.tick && c.rec.tick < g.end)
+    if (!g || c.clip !== g.clip || c.stepStart !== g.start || c.stepEnd !== g.end) matched = false
+    if (c.speed !== 0 || c.x !== c.homeX || c.z !== c.homeZ) moved = true
   }
-  check([...acts].sort().join() === 'cower,idle,recoil' && whole, 'cowering is cower and recoil in whole cycles with a stand between, and it does not move', [...acts].join(' '))
+  check(matched && !moved, 'and three minutes of frames play that chain to the tick, without moving', c.clip)
   // She comes at it from +x. It notices her only inside NOTICE_M on the side it faces: not from behind, not from beside, not a metre too far.
-  const facing = (rad) => { c.heading = c.aim = rad }
-  facing(Math.PI)
-  at(NOTICE_M - 1, 60, dt)
-  check(c.state === 'cower' && c.heading === Math.PI, `${NOTICE_M - 1} m behind it she is nothing to it`, c.clip)
-  facing(Math.PI / 2 + 0.05)
-  at(NOTICE_M - 1, 60, dt)
+  const heading = c.homeHeading
+  face(c, Math.PI)
+  at(NOTICE_M - 1, 60)
+  check(c.state === 'cower' && c.heading === Math.PI && !c.live, `${NOTICE_M - 1} m behind it she is nothing to it`, c.clip)
+  face(c, Math.PI / 2 + 0.05)
+  at(NOTICE_M - 1, 60)
   check(c.state === 'cower', 'nor just past its shoulder')
-  facing(heading)
-  at(NOTICE_M + 1, 60, dt)
+  face(c, heading)
+  at(NOTICE_M + 1, 60)
   check(c.state === 'cower' && c.heading === heading, `nor ${NOTICE_M + 1} m off, whichever way it faces`, c.clip)
-  facing(Math.PI / 2 - 0.05)
-  at(NOTICE_M - 1)
-  check(c.state === 'watch', `just inside its shoulder at ${NOTICE_M - 1} m it notices her`)
+  face(c, Math.PI / 2 - 0.05)
+  at(NOTICE_M - 1, 1, TICK)
+  check(c.state === 'watch' && c.live && c.live.by === null, `just inside its shoulder at ${NOTICE_M - 1} m it notices her, and this client is its authority`)
+  const owed = k.pending([])
+  check(owed.length === 1 && owed[0][0] === c.key && /^sn:-?\d+,-?\d+,\d+$/.test(c.key) && c.rec.tick * TICK_S - owed[0][1] < 2 * TICK_S && owed[0][7] === 'watch' && owed[0][8] === null && Math.abs(owed[0][9] - Math.hypot(NOTICE_M - 1, HEAD)) < 1e-9 && owed.every((a) => a.length === 10 && a.every((f) => f === null || typeof f === 'string' || Number.isFinite(f))), 'and owes the room a watch anchor at once, under its key, with the nearest she has come', JSON.stringify(owed[0]))
   // Noticed: it turns to her, and keeps turning to her wherever she goes.
-  at(NOTICE_M - 1, 240, dt)
+  at(NOTICE_M - 1, 240)
   check(Math.abs(swing(c.heading, Math.atan2(0, 1))) < 1e-6, 'and four seconds later it is facing her', `${c.heading.toFixed(4)} rad`)
-  for (let f = 0; f < 240; f++) k.update(c.x, GROUND + HEAD, c.z + NOTICE_M - 1, dt)
+  for (let f = 0; f < 240; f++) frame(k, c.x, GROUND + HEAD, c.z + NOTICE_M - 1)
   check(Math.abs(swing(c.heading, -Math.PI / 2)) < 1e-6, 'she steps round it and it turns to keep her in front', `${c.heading.toFixed(4)} rad`)
-  const gestures = new Set()
-  let timed = true
-  for (let i = 0; i < 400; i++) {
-    k._step(c)
-    gestures.add(c.clip)
-    if (c.clip !== 'idle' && Math.abs(c.left - d[c.clip]) > 1e-9) timed = false
-    if (c.speed !== 0) timed = false
-  }
-  check(gestures.has('beckon') && gestures.has('idle') && [...gestures].every((g) => ['beckon', 'talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug', 'idle'].includes(g)) && gestures.size >= 5 && timed, 'watching, it beckons and talks with its hands, each gesture once through, and stares between', [...gestures].join(' '))
+  check(k.pending([]).filter((a) => a[7] === 'watch').length === 7 || k.pending([]).length === 0, `an anchor a second while she stands there`)
+  const watched = chainOf(k, c, WATCH_ACTS, tickOf(k.t), tickOf(k.t) + 180 * TICK_HZ)
+  const gestures = new Set(watched.map((g) => g.clip))
+  const once = (g) => g.clip === 'idle' ? (g.end - g.start) * TICK_S >= 2 - TICK_S && (g.end - g.start) * TICK_S <= 5 + TICK_S : Math.abs((g.end - g.start) * TICK_S - d[g.clip]) <= TICK_S / 2 + 1e-9
+  check(gestures.has('beckon') && gestures.has('idle') && [...gestures].every((g) => ['beckon', 'talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug', 'idle'].includes(g)) && gestures.size >= 5 && watched.every((g) => once(g) || onMinute(g)), 'watching, it beckons and talks with its hands, each gesture once through, and stares between', [...gestures].join(' '))
   // Approaching does nothing; the first step back does.
   const near = 6
-  for (const dd of [NOTICE_M - 1, 8, near]) at(dd, 5, dt)
-  check(c.state === 'watch' && Math.abs(c.near - Math.hypot(near, HEAD)) < 1e-9, `she walks up to ${near} m and it only watches`, `near ${c.near.toFixed(2)}`)
-  at(near + AWAY_M - 0.5, 5, dt)
+  for (const dd of [NOTICE_M - 1, 8, near]) at(dd, 5)
+  check(c.state === 'watch' && Math.abs(c.live.near - Math.hypot(near, HEAD)) < 1e-9, `she walks up to ${near} m and it only watches`, `near ${c.live.near.toFixed(2)}`)
+  at(near + AWAY_M - 0.5, 5)
   check(c.state === 'watch', `she backs off ${AWAY_M - 0.5} m and it only watches`)
-  at(near + AWAY_M + 0.5)
+  at(near + AWAY_M + 0.5, 1, TICK)
   check(c.state === 'follow' && c.clip === 'walk' && Math.abs(c.speed - biped.gait.walk * c.k) < 1e-12, `she backs off ${AWAY_M + 0.5} m and it comes after her, at a walk`, `${c.speed.toFixed(2)} m/s for a ${c.size.toFixed(2)} m snowman`)
   // She stands: it closes to the standoff, and stops there to watch.
   const [hx, hz] = [c.x + near + AWAY_M + 0.5, c.z]
   let closest = Infinity
   let farthest = 0
-  for (let f = 0; f < 900; f++) {
-    k.update(hx, GROUND + HEAD, hz, dt)
+  k.pending([])
+  for (let f = 0; f < 960; f++) {
+    frame(k, hx, GROUND + HEAD, hz)
     const dist = Math.hypot(c.x - hx, c.z - hz)
-    if (f > 600) { closest = Math.min(closest, dist); farthest = Math.max(farthest, dist) }
+    if (f > 640) { closest = Math.min(closest, dist); farthest = Math.max(farthest, dist) }
   }
   check(c.state === 'follow' && c.speed === 0 && closest > STANDOFF_M - HEAD && farthest < STANDOFF_M + RESUME_M, `it walks up to ${STANDOFF_M} m of her and stops there`, `${closest.toFixed(2)} to ${farthest.toFixed(2)} m over the last five seconds, ${c.clip}`)
   check(Math.abs(swing(c.heading, Math.atan2(-(hz - c.z), hx - c.x))) < 1e-6, 'facing her')
+  const following = k.pending([])
+  check(following.length === 15 && following.every((a) => a[7] === 'follow') && following.every((a, i) => i === 0 || Math.abs(a[1] - following[i - 1][1] - ANCHOR_S) < 1e-9), `fifteen seconds of following owed fifteen follow anchors, one a second`, `${following.length} anchors, ${[...new Set(following.map((a) => a[7]))].join(' ')}`)
   // She runs: it runs.
   // Facing her exactly, so the ground covered is the gait alone and not a curve.
   const far = RUN_M + 6
-  c.heading = 0
+  face(c, 0)
   const [rx, rz] = [c.x + far, c.z]
-  k.update(rx, GROUND + HEAD, rz, dt)
+  frame(k, rx, GROUND + HEAD, rz, TICK)
   check(c.state === 'follow' && c.clip === 'run' && Math.abs(c.speed - biped.gait.run * c.k) < 1e-12, `${far} m off she is chased at a run`, `${c.speed.toFixed(2)} m/s`)
   const [x0, z0] = [c.x, c.z]
-  for (let f = 0; f < 30; f++) k.update(rx, GROUND + HEAD, rz, dt)
-  check(Math.abs(Math.hypot(c.x - x0, c.z - z0) - c.speed * dt * 30) < 1e-6, 'and covers exactly the ground its clip was built for -- it does not skate')
+  for (let f = 0; f < 32; f++) frame(k, rx, GROUND + HEAD, rz)
+  check(Math.abs(Math.hypot(c.x - x0, c.z - z0) - c.speed * 0.5) < 1e-6, 'and covers exactly the ground its clip was built for -- it does not skate')
   let walked = false
-  for (let f = 0; f < 900 && !walked; f++) { k.update(rx, GROUND + HEAD, rz, dt); walked = c.clip === 'walk' }
+  for (let f = 0; f < 960 && !walked; f++) { frame(k, rx, GROUND + HEAD, rz); walked = c.clip === 'walk' }
   check(walked && Math.hypot(c.x - rx, c.z - rz) < RUN_M, `and drops to a walk inside ${RUN_M} m`, `${Math.hypot(c.x - rx, c.z - rz).toFixed(2)} m`)
-  // Forgotten past FORGET_M, in any state, and not a metre before.
-  k.update(c.x + FORGET_M - 1, GROUND + HEAD, c.z, dt)
+  // Forgotten past FORGET_M, in any state, and not a metre before: a last rejoin anchor, and the walk home.
+  frame(k, c.x + FORGET_M - 1, GROUND + HEAD, c.z, TICK)
   check(c.state === 'follow', `${FORGET_M - 1} m off it still follows`)
-  k.update(c.x + FORGET_M + 1, GROUND + HEAD, c.z, dt)
-  check(c.state === 'cower' && c.homeX === c.x && c.homeZ === c.z && c.speed === 0, `${FORGET_M + 1} m off it forgets her and cowers where it stands`, c.clip)
-  at(NOTICE_M - 1)
-  k.update(c.x + FORGET_M + 1, GROUND + HEAD, c.z, dt)
-  check(c.state === 'cower', 'a watcher forgets her past it too')
+  k.pending([])
+  const fx = c.x + FORGET_M + 1
+  frame(k, fx, GROUND + HEAD, c.z, TICK)
+  const last = k.pending([])
+  check(c.state === 'home' && !c.live && c.clip === 'walk' && c.speed > 0 && last.length === 1 && last[0][7] === 'rejoin' && Math.abs(last[0][2] - c.lx) < 1e-9, `${FORGET_M + 1} m off it forgets her, owes the room one rejoin anchor from where it was, and sets off home`, `${Math.hypot(c.x - c.homeX, c.z - c.homeZ).toFixed(1)} m from home`)
+  let frames = 0
+  while (c.state === 'home' && frames < 64 * 120) { frame(k, fx, GROUND + HEAD, c.z); frames++ }
+  check(c.state === 'cower' && Math.hypot(c.sx - c.homeX, c.sz - c.homeZ) <= HOME_M && c.speed === 0 && k.pending([]).length === 0, 'and walks there, cowers within a metre of it, and owes nothing more', `${(frames * dt).toFixed(1)} s`)
+  face(c, 0)
+  at(NOTICE_M - 1, 1, TICK)
+  check(c.state === 'watch', 'home, she is noticed again')
+  frame(k, c.x + FORGET_M + 1, GROUND + HEAD, c.z, TICK)
+  check(c.state === 'cower' && k.pending([]).filter((a) => a[7] === 'rejoin').length === 1, 'a watcher forgets her past it too, and at home already it only cowers')
   k.dispose()
 }
 
 // --- it turns, and never snaps ------------------------------------------------------
 {
   const { k, c, at } = lone(5)
-  c.heading = c.aim = 0
-  at(NOTICE_M - 1)
-  c.heading = Math.PI
+  face(c, 0)
+  at(NOTICE_M - 1, 1, TICK)
+  check(c.live?.by === null, 'noticed')
+  face(c, Math.PI)
   let worst = 0
   let frames = 0
   let prev = c.heading
   // The hardest turn there is: she is right behind it.
   while (Math.abs(swing(c.heading, 0)) > 1e-9 && frames < 600) {
-    at(NOTICE_M - 1, 1, dt)
+    at(NOTICE_M - 1)
     worst = Math.max(worst, Math.abs(swing(prev, c.heading)))
     prev = c.heading
     frames++
   }
-  check(frames >= Math.PI / TURN_RATE / dt && worst <= TURN_RATE * dt + 1e-12, 'an about-face to her is turned through, not snapped to', `${(frames * dt).toFixed(2)} s at up to ${(worst / dt).toFixed(2)} rad/s`)
+  check(frames >= Math.PI / TURN_RATE / dt && worst <= TURN_RATE * dt + 1e-9, 'an about-face to her is turned through, not snapped to', `${(frames * dt).toFixed(2)} s at up to ${(worst / dt).toFixed(2)} rad/s`)
   // A minute of her circling it at a run, then dragging it about: every heading of every frame.
   let snapped = 0
   let was = c.heading
-  for (let f = 0; f < 3600; f++) {
+  for (let f = 0; f < 3840; f++) {
     const a = f * dt * 1.2
     const r = 8 + 20 * Math.abs(Math.sin(f * dt * 0.15))
-    k.update(c.x + Math.cos(a) * r, GROUND + HEAD, c.z + Math.sin(a) * r, dt)
+    frame(k, c.x + Math.cos(a) * r, GROUND + HEAD, c.z + Math.sin(a) * r)
     snapped = Math.max(snapped, Math.abs(swing(was, c.heading)))
     was = c.heading
   }
-  check(snapped <= TURN_RATE * dt + 1e-12, 'in a minute of being circled and led about, it never turned faster than it may', `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
+  check(snapped <= TURN_RATE * dt + 1e-9, 'in a minute of being circled and led about, it never turned faster than it may', `worst ${(snapped / dt).toFixed(3)} rad/s of ${TURN_RATE}`)
+  k.dispose()
+}
+
+// --- the same on every client -------------------------------------------------------
+//
+// Two instances of the one seed on different frame rates, her head moved on
+// integer seconds; a third joins forty seconds in with only the room's anchors
+// and her relayed head; a fourth watches a peer stand in its face with no
+// anchor at all.
+{
+  const A = lone(3)
+  const B = lone(3)
+  const c = A.c
+  const her = (t) => {
+    const s = t - T0
+    if (s < 10) return [c.homeX + NOTICE_M - 1, c.homeZ]
+    if (s < 20) return [c.homeX + NOTICE_M - 1 + AWAY_M + 1, c.homeZ]
+    if (s < 40) return [c.homeX + 40, c.homeZ + 5]
+    // Then away at a walk, a stride a second, so a joiner's replay sees near enough the head A's copy followed.
+    const d = Math.min(20, (Math.floor(s) - 40) * 1.4)
+    return [c.homeX + 40 - d, c.homeZ + 5 - d]
+  }
+  check(B.c.key === c.key && B.c.homeX === c.homeX, 'the twin lays the same snowman under the same key')
+  face(c, 0)
+  face(B.c, 0)
+  const run = (k, step, until, peers = () => []) => { while (k.t + step <= until + 1e-9) { const [hx, hz] = her(k.t + step); frame(k, hx, GROUND + HEAD, hz, step, peers()) } }
+  const same = (a, b) => a.sx === b.sx && a.sz === b.sz && a.sh === b.sh && a.state === b.state && a.clip === b.clip && a.stepStart === b.stepStart && a.rec.tick === b.rec.tick
+  // The joiner: her head reaches it as a peer's, under A's id; its own player stands behind it, out of its notice.
+  const J = lone(3)
+  J.k.t = T0 + 40
+  J.k.place(0, 0, J.k.t)
+  const j = alive(J.k).find((s) => s.key === c.key)
+  const anchors = []
+  const relay = () => { for (const a of A.k.pending([])) { a[8] = 'a'; anchors.push(a) } }
+  run(A.k, 1 / 64, T0 + 40, relay)
+  run(B.k, 1 / 32, T0 + 40)
+  check(same(c, B.c) && c.state === 'follow' && c.live?.by === null, 'forty seconds in, the twins have stepped the same ticks to the same pose, both following her', `${c.state} ${c.clip} at ${c.sx.toFixed(3)},${c.sz.toFixed(3)}`)
+  check(anchors.length >= 38 && anchors.every((a) => ['watch', 'follow'].includes(a[7])), 'A owed the room an anchor a second all the while', `${anchors.length}`)
+  // Everything the relay holds lands on the joiner: the latest for the key.
+  J.k.apply(anchors[anchors.length - 1], J.k.t)
+  const peer = { x: 0, y: GROUND + HEAD, z: 0, by: 'a' }
+  const jHead = () => [c.homeX - 20, c.homeZ]
+  const jPeers = () => { [peer.x, peer.z] = her(J.k.t); return [peer] }
+  frame(J.k, jHead()[0], GROUND + HEAD, jHead()[1], TICK, jPeers())
+  check(j.state === 'follow' && j.live?.by === 'a' && j.live.anchor === anchors[anchors.length - 1] && Math.hypot(j.x - c.x, j.z - c.z) < 1, 'the joiner puts it where the anchor has it, following A\'s player, and owes nothing', `${Math.hypot(j.x - c.x, j.z - c.z).toFixed(2)} m off A's`)
+  const relayJ = () => { relay(); for (const a of anchors.splice(0)) J.k.apply(a, J.k.t); return jPeers() }
+  let gap = 0
+  let jOwed = 0
+  while (A.k.t < T0 + 70) {
+    const [hx, hz] = her(A.k.t + dt)
+    frame(A.k, hx, GROUND + HEAD, hz, dt)
+    frame(J.k, c.homeX - 20, GROUND + HEAD, c.homeZ, dt, relayJ())
+    jOwed += J.k.pending([]).length
+    gap = Math.max(gap, Math.hypot(j.x - c.x, j.z - c.z))
+  }
+  check(c.state === 'follow' && j.state === 'follow' && gap < 1.5 && jOwed === 0 && Math.hypot(j.x - c.x, j.z - c.z) < 0.5, 'half a minute on, nudged onto each anchor, it has stayed within arm\'s reach of A\'s and stands with it, having sent nothing', `at most ${gap.toFixed(2)} m apart, ${Math.hypot(j.x - c.x, j.z - c.z).toFixed(2)} m now`)
+  // A's player leaves the room: A forgets her, sends its rejoin, the joiner walks home on that.
+  // Past FORGET_M of A's copy, and inside RADIUS + TILE of its home so the loose snowman is not freed.
+  const gone = c.sx + FORGET_M + 1
+  frame(A.k, gone, GROUND + HEAD, c.homeZ, TICK)
+  const rejoin = A.k.pending([])
+  check(c.state === 'home' && rejoin.length === 1 && rejoin[0][7] === 'rejoin', 'she leaves and A sets it walking home with a rejoin anchor')
+  rejoin[0][8] = 'a'
+  J.k.apply(rejoin[0], J.k.t)
+  check(j.state === 'home' && !j.live && Math.abs(j.sx - rejoin[0][2]) < 1e-9 && Math.abs(j.sz - rejoin[0][4]) < 1e-9, 'which puts the joiner\'s at the anchor\'s pose, walking home')
+  while ((c.state === 'home' || j.state === 'home') && A.k.t < T0 + 200) {
+    frame(A.k, gone, GROUND + HEAD, c.homeZ, dt)
+    frame(J.k, c.homeX - 20, GROUND + HEAD, c.homeZ, dt, [])
+  }
+  check(c.state === 'cower' && j.state === 'cower' && Math.hypot(j.x - c.x, j.z - c.z) < 2 * HOME_M && c.clip === j.clip && c.stepStart === j.stepStart, 'both walk home, and cower there on the same gesture', `${Math.hypot(j.x - c.x, j.z - c.z).toFixed(2)} m apart, ${c.clip}`)
+  // A peer with no anchor is nobody to it.
+  const D = lone(3)
+  face(D.c, 0)
+  for (let f = 0; f < 64; f++) frame(D.k, D.c.homeX - 20, GROUND + HEAD, D.c.homeZ, dt, [{ x: D.c.homeX + 3, y: GROUND + HEAD, z: D.c.homeZ, by: 'b' }])
+  check(D.c.state === 'cower' && !D.c.live && D.k.pending([]).length === 0, 'a peer standing in its face with no anchor from their client is not noticed: only their client\'s anchor makes it theirs')
+  // A live anchor a chapter old is not read; one from this chapter but past ANCHOR_STALE_S sets the resident walking home from ANCHOR_STALE_S after it, the walk since replayed.
+  const old = [D.c.key, chapterOf(D.k.t, D.c.key).start - 1, D.c.homeX + 30, GROUND, D.c.homeZ, 0, -1, 'follow', 'b', 5]
+  D.k.apply(old, D.k.t)
+  check(D.c.state === 'cower' && !D.c.live && D.c.sx === D.c.homeX, 'a live anchor from a chapter gone is not read: the resident cowers at home')
+  const stale = [D.c.key, D.k.t - ANCHOR_STALE_S - 2, D.c.homeX + 30, GROUND, D.c.homeZ, Math.PI, -1, 'follow', 'b', 5]
+  D.k.apply(stale, D.k.t)
+  frame(D.k, D.c.homeX - 20, GROUND + HEAD, D.c.homeZ, TICK, [{ x: D.c.homeX + 33, y: GROUND + HEAD, z: D.c.homeZ, by: 'b' }])
+  const walked = 30 - (D.c.sx - D.c.homeX)
+  check(D.c.state === 'home' && !D.c.live && D.c.rec.tick === tickOf(D.k.t) && walked > 1.5 * D.c.speed && walked < 3 * D.c.speed, 'one from this chapter, gone stale, puts it at the anchor\'s pose walking home from ANCHOR_STALE_S after it, the walk since replayed', `${walked.toFixed(1)} m along`)
+  for (const k of [A.k, B.k, J.k, D.k]) k.dispose()
+}
+
+// --- a skip is a step out of the timeline ---------------------------------------------
+{
+  const { k, c } = lone(3)
+  face(c, 0)
+  frame(k, c.homeX + NOTICE_M - 1, GROUND + HEAD, c.homeZ, TICK)
+  frame(k, c.homeX + NOTICE_M - 1 + AWAY_M + 2, GROUND + HEAD, c.homeZ, TICK)
+  for (let f = 0; f < 64; f++) frame(k, c.homeX + 30, GROUND + HEAD, c.homeZ)
+  check(c.state === 'follow' && Math.hypot(c.x - c.homeX, c.z - c.homeZ) > 1, 'following her, a few metres out')
+  k.pending([])
+  const t1 = k.t + 500
+  frame(k, c.homeX + 30, GROUND + HEAD, c.homeZ, 500)
+  const a = k.anchored.get(c.key)
+  const fromAnchor = a[1] >= chapterOf(t1, c.key).start
+  check(k.stats.replayed === 0 && !k.stats.behind && c.rec.tick === tickOf(t1) && !c.live && k.pending([]).length === 0, `${CATCH_UP_TICKS * TICK_S}+ s in one frame is a skip: nothing replayed, the snowman placed afresh at now, its player forgotten`, `${k.stats.replayed} ticks`)
+  check(fromAnchor ? (c.state === 'home' || c.state === 'cower') && (c.state === 'cower' ? Math.hypot(c.x - c.homeX, c.z - c.homeZ) <= HOME_M : true) : c.state === 'cower' && c.x === c.homeX && c.z === c.homeZ, fromAnchor ? 'on its own last follow anchor, stale by then: walking home from ANCHOR_STALE_S after it, replayed' : 'its last anchor a chapter old: laid at home, cowering')
   k.dispose()
 }
 
@@ -431,15 +570,16 @@ function lone(seed = 3) {
   let k
   for (let seed = 1; ; seed++) {
     k = make(seed, { walk: tilted, water: noWater, height })
-    k.place(0, 0)
+    k.t = T0
+    k.place(0, 0, k.t)
     if (alive(k).length) break
     k.dispose()
   }
   const c = alive(k)[0]
   // Facing +x, across the slope: its left foot uphill, its right downhill.
-  c.heading = c.aim = 0
+  face(c, 0)
   // Her head `dx, dz` off it for `s` seconds; a metre past its notice straight ahead, it goes on cowering.
-  const over = (s, dx = NOTICE_M + 1, dz = 0) => { for (let f = 0; f < Math.round(s / dt); f++) k.update(c.x + dx, tilted.heightAt(c.x + dx, c.z + dz) + HEAD, c.z + dz, dt) }
+  const over = (s, dx = NOTICE_M + 1, dz = 0) => { for (let f = 0; f < Math.round(s / dt); f++) frame(k, c.x + dx, tilted.heightAt(c.x + dx, c.z + dz) + HEAD, c.z + dz) }
   // Each foot joint in the world: its height over the ground under it, and the bend at its knee.
   const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3()
   const feet = () => {
@@ -454,7 +594,7 @@ function lone(seed = 3) {
   const identity = new THREE.Quaternion()
   const untouched = () => !c.puppet.planted && !c.puppet.ik.active && !c.puppet.ik.dirty && c.puppet.ik.legs.every((l) => l.A.quaternion.equals(identity) && l.B.quaternion.equals(identity)) && feet().every((f) => Math.abs(f.knee - restKnee) < 1e-9)
   check([...PLANTED].sort().join() === 'beckon,cower,idle,talk-gesture,talk-nod,talk-point,talk-shrug', 'the clips whose feet stay put are the stand, the cower and every gesture -- a recoil steps a foot back, and no gait plants', [...PLANTED].join(' '))
-  k._play(c, 'cower', 1e9)
+  k._play(c, 'cower', c.rec.tick, Infinity)
   over(1)
   const own = LEG_FOOT_Y * biped.height * c.k
   const rise = 0.6 * biped.width * c.k * TILT
@@ -462,14 +602,14 @@ function lone(seed = 3) {
   check(c.state === 'cower' && c.clip === 'cower' && c.speed === 0 && c.puppet?.planted && c.puppet.ik.w === 1, `a ${c.size.toFixed(1)} m snowman cowering side-on to a ${((Math.atan(TILT) * 180) / Math.PI).toFixed(0)}-degree slope has its feet planted`)
   check(planted.every((f) => Math.abs(f.hover - own) < 1e-3), `and a second later each foot stands exactly its clip's own ${(own * 100).toFixed(1)} cm over the ground under it, which rises ${(rise * 100).toFixed(0)} cm from its right foot to its left`, planted.map((f) => `${f.id} ${(f.hover * 100).toFixed(2)}`).join(' '))
   check(planted.find((f) => f.id === 'L').knee < restKnee - 0.02 && planted.find((f) => f.id === 'R').knee > restKnee + 0.02, 'its uphill knee folded and its downhill knee opened off the clip to get there', planted.map((f) => `${f.id} ${((f.knee * 180) / Math.PI).toFixed(1)}`).join(' ') + ` of ${((restKnee * 180) / Math.PI).toFixed(1)}`)
-  k._play(c, 'recoil', 1e9)
+  k._play(c, 'recoil', c.rec.tick, Infinity)
   over(0.5)
   check(c.clip === 'recoil' && c.speed === 0 && untouched(), 'recoiling, half a second later its legs are the clip\'s exactly: a still clip that moves a foot is not planted')
-  k._play(c, 'walk', 1e9)
+  k._play(c, 'walk', c.rec.tick, Infinity)
   over(0.25)
   check(c.clip === 'walk' && c.speed > 0 && untouched(), 'and walking, so are they, whatever the ground under each foot')
   // She steps in front and round it: noticed, it turns to keep her in front, gesturing all the while, and past REPLANT of turning reads the ground under where its feet are now.
-  k._play(c, 'cower', 1e9)
+  k._play(c, 'cower', c.rec.tick, Infinity)
   over(1, NOTICE_M - 1, 0)
   const first = c.puppet.plantHeading
   check(c.state === 'watch' && c.puppet.planted && Math.abs(c.heading) < 1e-6, 'she steps in front of it and it watches her, planted, facing +x', `${c.clip} at ${first.toFixed(2)} rad`)
@@ -487,40 +627,40 @@ function lone(seed = 3) {
   const stage = (hx, hz, x, z) => {
     for (let seed = 1; ; seed++) {
       const k = make(seed)
-      k.place(hx, hz)
+      k.t = T0
+      k.place(hx, hz, k.t)
       const c = alive(k).find((a) => Math.hypot((a.tile.tx + 0.5) * TILE - hx, (a.tile.tz + 0.5) * TILE - hz) < RADIUS - 10)
       if (!c) { k.dispose(); continue }
-      c.x = x; c.z = z; c.y = fieldAt(x, z)
-      c.heading = c.aim = Math.atan2(-(hz - z), hx - x)
+      k._place(c, x, z, Math.atan2(-(hz - z), hx - x))
       return { k, c }
     }
   }
   // It faces the tarn from the near rim; she is noticed on that rim, then crosses to the far one.
   const [hx, hz] = [TARN.x - TARN.r - 1, TARN.z]
   const { k, c } = stage(hx, hz, hx - NOTICE_M + 1, TARN.z)
-  k.update(hx, fieldAt(hx, hz) + HEAD, hz, dt)
+  frame(k, hx, fieldAt(hx, hz) + HEAD, hz, TICK)
   check(c.state === 'watch', 'it sees her on the near rim of the tarn')
   const far = TARN.x + TARN.r + 2
   let wet = 0
   let ms = 0
-  for (let f = 0; f < 3600; f++) {
+  for (let f = 0; f < 3840; f++) {
     const t0 = performance.now()
-    k.update(far, fieldAt(far, hz) + HEAD, hz, dt)
+    frame(k, far, fieldAt(far, hz) + HEAD, hz)
     ms += performance.now() - t0
     if (water.isSubmerged(c.x, c.z, c.y)) wet++
   }
   check(c.state === 'follow' && c.speed === 0 && Math.hypot(c.x - far, c.z - hz) < STANDOFF_M + RESUME_M + 0.5, 'she crosses to the far rim and a minute later it stands at her side of it', `${Math.hypot(c.x - far, c.z - hz).toFixed(2)} m from her`)
   check(wet === 0, 'having gone round, not through', `${wet} wet frames`)
   check(alive(k).every((a) => Math.abs(a.y - fieldAt(a.x, a.z)) < 1e-9 && !water.isSubmerged(a.x, a.z, a.y) && Math.acos(Math.min(1, walk.normalAt(a.x, a.z).y)) <= FOLLOW_SLOPE + 1e-9 && TRUNKS.every((t) => Math.hypot(a.x - t.x, a.z - t.z) > t.r)), 'everybody is on the ground, and nobody in the water, up a face it could not climb or through a trunk')
-  check(ms / 3600 < 1.5, `a frame of ${alive(k).length} snowmen costs under 1.5 ms`, `${(ms / 3600).toFixed(3)} ms`)
+  check(ms / 3840 < 1.5, `a frame of ${alive(k).length} snowmen, every one of them minded, costs under 1.5 ms`, `${(ms / 3840).toFixed(3)} ms`)
   k.dispose()
   // Led down the slope: it follows her under the snow line, where none is ever placed, and out of its tile.
   let [lx, lz] = [0, SLOPE_Z]
   const led = stage(lx, lz, lx, lz + NOTICE_M - 1)
-  led.k.update(lx, fieldAt(lx, lz) + HEAD, lz, dt)
-  for (let f = 0; f < 3600; f++) {
+  frame(led.k, lx, fieldAt(lx, lz) + HEAD, lz)
+  for (let f = 0; f < 3840; f++) {
     lz -= 1.5 * dt
-    led.k.update(lx, fieldAt(lx, lz) + HEAD, lz, dt)
+    frame(led.k, lx, fieldAt(lx, lz) + HEAD, lz)
   }
   check(led.c.state === 'follow' && led.c.y < SNOW_LINE - 5 && Math.hypot(led.c.x - lx, led.c.z - lz) < RUN_M, 'led down the slope for a minute, it follows her well below the snow line', `at ${led.c.y.toFixed(1)} m, ${Math.hypot(led.c.x - lx, led.c.z - lz).toFixed(1)} m behind her`)
   {
@@ -536,25 +676,25 @@ function lone(seed = 3) {
   const SHELF = { z: 0, w: 2, rise: 2 }
   const shelfAt = (x, z) => GROUND + Math.min(1, Math.max(0, (z - SHELF.z) / SHELF.w)) * SHELF.rise
   const shelfWalk = walkOn(shelfAt)
-  const face = Math.acos(shelfWalk.normalAt(0, SHELF.z + SHELF.w / 2, 0.75).y)
-  check(face > MAX_SLOPE && face < FOLLOW_SLOPE, `the shelf's face reads ${((face * 180) / Math.PI).toFixed(0)} degrees over the walk surface's own 1.5 m span: past ${Math.round((MAX_SLOPE * 180) / Math.PI)} where one is laid, inside ${Math.round((FOLLOW_SLOPE * 180) / Math.PI)} where one follows`)
+  const face45 = Math.acos(shelfWalk.normalAt(0, SHELF.z + SHELF.w / 2, 0.75).y)
+  check(face45 > MAX_SLOPE && face45 < FOLLOW_SLOPE, `the shelf's face reads ${((face45 * 180) / Math.PI).toFixed(0)} degrees over the walk surface's own 1.5 m span: past ${Math.round((MAX_SLOPE * 180) / Math.PI)} where one is laid, inside ${Math.round((FOLLOW_SLOPE * 180) / Math.PI)} where one follows`)
   {
     let sx = 0, sz = -3
     let k, c
     for (let seed = 1; !c; seed++) {
       k = make(seed, { walk: shelfWalk, water: noWater, height })
-      k.place(sx, sz)
+      k.t = T0
+      k.place(sx, sz, k.t)
       c = alive(k).find((a) => Math.hypot((a.tile.tx + 0.5) * TILE - sx, (a.tile.tz + 0.5) * TILE - sz) < RADIUS - 10)
       if (!c) k.dispose()
     }
-    c.x = 0; c.z = -12; c.y = shelfAt(c.x, c.z)
-    c.heading = c.aim = Math.atan2(-(sz - c.z), sx - c.x)
-    k.update(sx, shelfAt(sx, sz) + HEAD, sz, dt)
+    k._place(c, 0, -12, Math.atan2(-(sz - -12), sx - 0))
+    frame(k, sx, shelfAt(sx, sz) + HEAD, sz, TICK)
     check(c.state === 'watch', 'it sees her from the foot of the shelf')
     sz = SHELF.z + SHELF.w + 20
     let steepest = 0
-    for (let f = 0; f < 3600; f++) {
-      k.update(sx, shelfAt(sx, sz) + HEAD, sz, dt)
+    for (let f = 0; f < 3840; f++) {
+      frame(k, sx, shelfAt(sx, sz) + HEAD, sz)
       steepest = Math.max(steepest, Math.acos(shelfWalk.normalAt(c.x, c.z).y))
     }
     check(c.state === 'follow' && c.speed === 0 && c.z > SHELF.z + SHELF.w && Math.hypot(c.x - sx, c.z - sz) < STANDOFF_M + RESUME_M + 0.5, 'she crosses the shelf and a minute later it stands at her side of it', `${Math.hypot(c.x - sx, c.z - sz).toFixed(2)} m from her, ${c.z.toFixed(1)} m past its foot`)
@@ -573,30 +713,31 @@ function lone(seed = 3) {
   const key = c.key
   const [homeX, homeZ] = [c.x, c.z]
   const tile = c.tile
-  c.heading = c.aim = 0
+  face(c, 0)
   let hx = c.x + NOTICE_M - 1
-  k.update(hx, GROUND + HEAD, c.z, dt)
+  frame(k, hx, GROUND + HEAD, c.z, TICK)
   hx += AWAY_M + 1
   // She walks straight on for a minute, faster than it walks and slower than it runs.
-  for (let f = 0; f < 3600; f++) {
+  for (let f = 0; f < 3840; f++) {
     hx += 3 * dt
-    k.update(hx, GROUND + HEAD, c.z, dt)
+    frame(k, hx, GROUND + HEAD, c.z)
   }
   check(!k.tiles.has([...k.tiles.keys()].find((kk) => k.tiles.get(kk) === tile)) && c.tile === null && c.loose && k.loose.includes(c) && c.key === key, 'its tile has unloaded behind it and it is loose', `${k.stats.loose} loose, ${k.stats.states.follow} following`)
   check(c.state === 'follow' && Math.hypot(c.x - hx, c.z - homeZ) < RUN_M + 1 && c.puppet && k.batch.children.includes(c.puppet.group), 'still following her, still drawn', `${Math.hypot(c.x - hx, c.z - homeZ).toFixed(1)} m behind her, ${(hx - homeX).toFixed(0)} m from home`)
   // She goes back for the tile: the snowman it would lay is the one already out, so the tile takes that one back.
-  k.update(homeX, GROUND + HEAD, homeZ, dt)
+  frame(k, homeX, GROUND + HEAD, homeZ, TICK)
   const home = [...k.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
-  check(c.state === 'cower' && !c.loose && c.tile === home && home.animals.includes(c) && !k.loose.includes(c) && alive(k).filter((a) => a.key === key).length === 1, 'its home tile re-entered while it is loose takes it back, once, where it stands, and it forgets her at that distance', `${alive(k).filter((a) => a.key === key).length} with its key`)
+  check(c.state === 'home' && !c.loose && c.tile === home && home.animals.includes(c) && !k.loose.includes(c) && alive(k).filter((a) => a.key === key).length === 1, 'its home tile re-entered while it is loose takes it back, once, where it stands, and at that distance it forgets her and turns for home', `${alive(k).filter((a) => a.key === key).length} with its key`)
   // And out past the tile horizon, on the far side from its home tile, it dissolves and is freed.
   const [lx, lz] = [c.x + RADIUS + TILE + 2, c.z]
   let frames = 0
-  while ((c.tile || c.loose) && frames < 120) { k.update(lx, GROUND + HEAD, lz, dt); frames++ }
-  check(!k.loose.includes(c) && c.tile === null && !c.loose && !c.puppet && k.free.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 60, `once she is ${RADIUS + TILE} m from a forgotten loose one it dissolves out and is freed`, `${(frames * dt).toFixed(2)} s`)
+  while ((c.tile || c.loose) && frames < 120) { frame(k, lx, GROUND + HEAD, lz); frames++ }
+  check(!k.loose.includes(c) && c.tile === null && !c.loose && !c.puppet && k.free.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 64, `once she is ${RADIUS + TILE} m from a forgotten loose one it dissolves out and is freed`, `${(frames * dt).toFixed(2)} s`)
   check(k.freePuppets.length === PUPPETS - (k.batch.children.length), 'the pools balance')
-  k.place(homeX, homeZ)
+  k.place(homeX, homeZ, k.t)
   const back = alive(k).find((a) => a.key === key)
-  check(back && back.x === homeX && back.z === homeZ && back.state === 'cower', 'and laid again from its tile, it is home and cowering')
+  const a = k.anchored.get(key)
+  check(back && a[7] === 'rejoin' && a[1] >= chapterOf(k.t, key).start && back.state === 'home' && !back.live && Math.hypot(back.x - a[2], back.z - a[4]) < Math.hypot(homeX - a[2], homeZ - a[4]), 'and laid again from its tile, it is on its way home from its own rejoin anchor, the ticks since replayed', `${Math.hypot(back.x - homeX, back.z - homeZ).toFixed(1)} m from home, rejoined ${(k.t - a[1]).toFixed(1)} s ago`)
   k.dispose()
 }
 
@@ -620,7 +761,7 @@ function lone(seed = 3) {
     c.lod = LOD_TIERS
     // Just inside each rung and just outside it, as a FRACTION of the rung -- clear of the hysteresis at either size, which a fixed metre is not.
     const step = LOD_HYSTERESIS * 2
-    return Array.from({ length: LOD_TIERS }, (_, i) => lodReach(m, i)).flatMap((d) => [d * (1 - step), d * (1 + step)]).map((d) => { for (let f = 0; f < 3; f++) k.update(c.x, c.y + d, c.z, 0); return c.lod })
+    return Array.from({ length: LOD_TIERS }, (_, i) => lodReach(m, i)).flatMap((d) => [d * (1 - step), d * (1 + step)]).map((d) => { for (let f = 0; f < 3; f++) frame(k, c.x, c.y + d, c.z, 0); return c.lod })
   }
   const [small, big] = [walkOut(SIZE_M[0]), walkOut(SIZE_M[1])]
   check(small.join() === big.join() && small.join() === '0,1,1,2,2,3,3,4', `a ${SIZE_M[0]} m and a ${SIZE_M[1]} m snowman walk the same ladder, one at ${SIZE_M[1] / SIZE_M[0]}x the other's distances`, `${lodReach(SIZE_M[0], 0).toFixed(0)} m against ${lodReach(SIZE_M[1], 0).toFixed(0)} m for the top rung`)
@@ -630,8 +771,8 @@ function lone(seed = 3) {
 // --- drawn, or not drawn; nothing pops ---------------------------------------------------
 {
   const { k, c } = lone(3)
-  const at = (d, frames = 2, step = 0) => { for (let f = 0; f < frames; f++) k.update(c.x, c.y + d, c.z, step); return c.lod }
-  const settle = (d) => at(d, Math.ceil(LOD_FADE_S * 60) + 2, dt)
+  const at = (d, frames = 2, step = 0) => { for (let f = 0; f < frames; f++) frame(k, c.x, c.y + d, c.z, step); return c.lod }
+  const settle = (d) => at(d, Math.ceil(LOD_FADE_S * 64) + 2, dt)
   // Read off its own height, because that is what the ladder is a ratio of.
   const expect = (d) => critterTier(c.size, d, -1, LOD_TIERS)
   const close = lodReach(c.size, 0) / 2
@@ -647,6 +788,9 @@ function lone(seed = 3) {
   }
   const gone = settle(400)
   check(gone === LOD_TIERS && expect(400) === LOD_TIERS && !c.puppet && k.freePuppets.length === PUPPETS, 'four hundred metres off it is not drawn at all, and the pool is whole')
+  const before = { clip: c.clip, start: c.stepStart }
+  at(400, 64 * 30, dt)
+  check(c.rec.tick === tickOf(k.t) && (c.clip !== before.clip || c.stepStart !== before.start), 'and undrawn, it is minded all the same: half a minute on it is on another gesture', `${before.clip} then ${c.clip}`)
   at(close, 40, dt)
   const p = c.puppet
   check(p && p.meshes[0].visible && p.meshes[0].material === p.mats.plain && p.mats.uCut.value === 1, 'settled on a rung it draws that tier through the plain material')
@@ -658,7 +802,7 @@ function lone(seed = 3) {
   check(c.lod === LOD_TIERS && c.puppet === p && vis().length >= 1 && p.mats.uCut.value < 1, 'past the last rung it is not switched off but dissolved')
   let frames = 1
   while (c.puppet && frames < 120) { at(400, 1, dt); frames++ }
-  check(!c.puppet && Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60, 'a vanishing takes LOD_FADE_S however far the step was', `${(frames / 60).toFixed(3)} s`)
+  check(!c.puppet && Math.abs(frames / 64 - LOD_FADE_S) < 3 / 64, 'a vanishing takes LOD_FADE_S however far the step was', `${(frames / 64).toFixed(3)} s`)
   k.dispose()
 }
 
@@ -669,18 +813,17 @@ function lone(seed = 3) {
   c.size = SIZE_M[1]
   c.k = c.size / k.asset.height
   const close = lodReach(c.size, 0) / 2
-  const cull = cullRange(c.size)
   const tile = c.tile
   const [tcx, tcz] = [(tile.tx + 0.5) * TILE, (tile.tz + 0.5) * TILE]
   // Standing 15 m from its tile's centre, toward her: the tile can unload with it still well inside the last rung.
-  c.x = tcx + 15; c.z = tcz
-  for (let f = 0; f < 30; f++) k.update(c.x, c.y + close, c.z, dt)
+  k._place(c, tcx + 15, tcz, c.heading)
+  for (let f = 0; f < 30; f++) frame(k, c.x, c.y + close, c.z)
   const p = c.puppet
   check(p && c.lod === 0 && p.mats.uCut.value === 1, 'settled on the top rung over its tile')
-  k.update(tcx + 97, GROUND + HEAD, tcz, dt)
+  frame(k, tcx + 97, GROUND + HEAD, tcz)
   check(!k.tiles.has([...k.tiles.keys()].find((kk) => k.tiles.get(kk) === tile)) && c.tile === null && c.loose && c.state === 'cower', 'her 97 m from the tile centre unloads the tile, and the cowering snowman 82 m off is loose', `${k.stats.loose} loose`)
   check(c.puppet === p && k.batch.children.includes(p.group) && p.from === 0 && p.to > p.from && p.to < LOD_TIERS && p.mats.uCut.value < 1, 'and still drawn, stepping down the ladder through a dissolve rather than switched off', `tier ${p.from} to ${p.to}`)
-  for (let f = 0; f < 3; f++) k.update(c.x, c.y + close, c.z, dt)
+  for (let f = 0; f < 3; f++) frame(k, c.x, c.y + close, c.z)
   const back = [...k.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
   check(back && c.tile === back && !c.loose && !k.loose.includes(c) && alive(k).filter((a) => a.key === c.key).length === 1 && c.puppet === p, 'she comes back and the tile takes it back, the one puppet on it throughout', `${alive(k).filter((a) => a.key === c.key).length} with its key`)
   // Out past its cull but not past the tile horizon -- which only the SMALLEST can be, a big one's last rung reaching further than any tile of it is loaded. So it shrinks to be the other case.
@@ -689,9 +832,9 @@ function lone(seed = 3) {
   const small = cullRange(c.size)
   const far = (small * (1 + LOD_HYSTERESIS) + RADIUS + TILE) / 2
   let frames = 0
-  while (c.puppet && frames < 120) { k.update(c.x + far, GROUND + HEAD, c.z, dt); frames++ }
-  check(!c.puppet && c.loose && k.loose.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 60, `at ${far.toFixed(0)} m, past its ${small.toFixed(0)} m cull, it has dissolved out over LOD_FADE_S and is loose, undrawn, its slot kept`, `${(frames * dt).toFixed(2)} s`)
-  k.update(c.x + RADIUS + TILE + 1, GROUND + HEAD, c.z, dt)
+  while (c.puppet && frames < 120) { frame(k, c.x + far, GROUND + HEAD, c.z); frames++ }
+  check(!c.puppet && c.loose && k.loose.includes(c) && Math.abs(frames * dt - LOD_FADE_S) < 3 / 64, `at ${far.toFixed(0)} m, past its ${small.toFixed(0)} m cull, it has dissolved out over LOD_FADE_S and is loose, undrawn, its slot kept`, `${(frames * dt).toFixed(2)} s`)
+  frame(k, c.x + RADIUS + TILE + 1, GROUND + HEAD, c.z)
   check(!c.loose && c.tile === null && k.free.includes(c), `and at ${RADIUS + TILE + 1} m the slot is freed`)
   k.dispose()
 }
@@ -705,14 +848,14 @@ function lone(seed = 3) {
   const { k, c, at } = lone()
   at(NOTICE_M + 5)
   check(c.state === 'cower' && k.bodies([]).includes(c) && c.speed === 0, 'a cowering snowman is listed, standing')
-  c.heading = c.aim = Math.PI / 2 - 0.05
-  at(NOTICE_M - 1)
+  face(c, Math.PI / 2 - 0.05)
+  at(NOTICE_M - 1, 1, TICK)
   check(c.state === 'watch' && k.bodies([]).includes(c) && c.speed === 0, 'so is a watcher')
-  at(6, 5, dt)
-  at(6 + AWAY_M + 0.5)
+  at(6, 5)
+  at(6 + AWAY_M + 0.5, 1, TICK)
   check(c.state === 'follow' && c.clip === 'walk' && c.speed > 0 && k.bodies([]).includes(c) && c.cycle === k.durations.walk, 'following her at a walk it moves, carrying the walk clip\'s own length for the footfall clock', `${c.cycle.toFixed(3)} s`)
-  c.heading = 0
-  k.update(c.x + RUN_M + 6, GROUND + HEAD, c.z, dt)
+  face(c, 0)
+  frame(k, c.x + RUN_M + 6, GROUND + HEAD, c.z, TICK)
   check(c.clip === 'run' && c.speed > 0 && c.cycle === k.durations.run, 'chasing her at a run it carries the run clip\'s length', `${c.cycle.toFixed(3)} s`)
   k.batch.visible = false
   check(k.bodies([]).length === 0, 'a hidden layer lists nobody')

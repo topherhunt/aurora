@@ -1,6 +1,6 @@
 // The v2 surface geometry, checked without a browser.
 //
-// src/v2/render/ribbon.js is the arithmetic behind every lake disc and river ribbon in a v2 world, and it is deliberately three-free so that this file can exercise it directly -- no GL context, no stub renderer, no shader compile. What is being checked is not that something drew: it is that the vertices are in the right places, that the winding is uniform, and that the miter clamp really does stop an inside corner folding the ribbon through itself. All three fail silently on screen. A folded ribbon looks like a dark smear, a mis-wound disc looks like a lake that is only visible from underneath, and a segment rule that is quietly wrong looks like a slightly polygonal shoreline nobody mentions for a month.
+// src/v2/render/ribbon.js is the arithmetic behind every river ribbon in a v2 world and shoreline.js behind every lake, and both are deliberately three-free so that this file can exercise it directly -- no GL context, no stub renderer, no shader compile. What is being checked is not that something drew: it is that the vertices are in the right places, that the winding is uniform, and that the miter clamp really does stop an inside corner folding the ribbon through itself. All three fail silently on screen. A folded ribbon looks like a dark smear, a mis-wound sheet looks like a lake that is only visible from underneath, and a segment rule that is quietly wrong looks like a slightly polygonal shoreline nobody mentions for a month.
 //
 // Section 6 is the exception and imports three.js, because Markers is a three class and the bug it guards is not arithmetic. three constructs InstancedMesh, Scene and BufferGeometry perfectly well in node -- what needs a GPU is rendering, and nothing here renders.
 //
@@ -9,13 +9,14 @@
 import { pathToFileURL } from 'node:url'
 import * as THREE from 'three'
 import { Markers } from '../src/v2/render/markers.js'
-import { ribbonVertices, discVertices, discSegments, ribbonLod, lodIndices, LAKE_OVERHANG, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
+import { ribbonVertices, ribbonLod, lodIndices, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN, LOD_FINE, LOD_SPACING, LOD_TURN, LOD_CHUNK, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE } from '../src/v2/render/ribbon.js'
 import { riverRaise, DrawnTerrain, RAISE_RUNGS, RAISE_MARGIN, RAISE_END, RUNG_AT_DEPTH } from '../src/v2/render/river-raise.js'
 import { nodeKey } from '../src/v2/terrain/quadtree-v2.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { SAMPLE_SPACING, RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../src/v2/layers/paths.js'
-import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
-// The one thing this file imports from outside its own subject, and deliberately: a lake disc that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
+import { WaterSurfaces, lakeVertices } from '../src/v2/render/water-surfaces.js'
+import { traceShore, ringArea, inRing, SHORE_BURY, SHORE_SPACING, WORLD_SKIRT } from '../src/v2/render/shoreline.js'
+// The one thing this file imports from outside its own subject, and deliberately: a lake sheet that disagrees with the footprint it is drawn over is the failure that renders perfectly and is still wrong, so the two are checked against each other rather than against two copies of the same algebra.
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { WORLD_HALF } from '../src/v2/config.js'
 import { terrainOf } from './lib/synthetic-terrain.mjs'
@@ -210,111 +211,100 @@ export async function run() {
     check(doubled === 0, 'and covers none of them twice', `${doubled} of ${wet} under two triangles`)
   }
 
-  // --- 3. lake discs ---------------------------------------------------------
+  // --- 3. the traced shoreline -------------------------------------------------
   //
-  // A lake rim is EIGHT segments at every size (ribbon.js, LAKE_SEGMENTS), circumscribed rather than inscribed so the polygon covers the water it stands for. The old rule picked the count from a sag budget and could afford to be inscribed because the error was under half a metre; at eight segments the inscribed error is 7.6% of the radius, which on a 400 m lake is a 30 m bite of bare lake bed showing through the water at each of eight places around the shore.
-  //
-  // So COVERAGE is the assertion this section is really about, and it is checked by sampling the chords rather than by re-deriving sec(pi/N) here: every point on every rim edge must be outside the authored footprint, at every size, at both shapes, elongated, and rotated. That is the property that survives a change of parametrisation -- and it is exactly what failed for a long shape-1 lake before the superellipse switched to sampling the unit curve.
+  // A lake is the region of its footprint where the ground lies under its plane plus SHORE_BURY, traced by shoreline.js from the height field and ear-clipped by lakeVertices. Every way this fails is silent on screen: a ring a cell short of the bank shows lake bed through the water, an island filed under the wrong ring is drawn over, a mis-wound triangle is a lake seen only from underneath, and a rebuild that re-traces the ocean on every brush stroke is 180 ms nobody attributes. So the tracer runs over a closed-form bowl with an island in it, and everything is checked against that ground rather than against the tracer's own arithmetic.
   {
-    // Sizes: the pond the lake tool places by default, a mid-sized lake, a big one, and WORLD_HALF -- read from config rather than typed, so that if the world box moves again (it has, twice) this follows it instead of testing a size the box can no longer hold.
-    for (const rmax of [40, 400, 1500, WORLD_HALF]) {
-      const lake = { id: `l${rmax}`, x: 100, z: -250, y: 130, rx: rmax, rz: rmax * 0.6, rot: 0.4, shape: 0, carve: 1, depth: 8 }
-      const d = discVertices(lake)
-      check(
-        d.segments === 8 && d.vertices === 9 && d.triangles === 8,
-        `a ${rmax} m half-extent lake is an octagon`,
-        `${d.segments} segments, ${d.vertices} verts, ${d.triangles} tris`
-      )
-      check(discSegments(rmax, rmax * 0.6) === 8, `discSegments agrees for ${rmax} m`)
-    }
+    const LEVEL = 120
+    const PLANE = LEVEL + SHORE_BURY
+    // A paraboloid bowl with a gaussian island off centre, both smooth enough that the fine grid's linear crossings land on the true contour.
+    const ground = (x, z) => 100 + 0.004 * (x * x + z * z) + 30 * Math.exp(-((x - 30) ** 2 + z * z) / 225)
+    const lake = { id: 'bowl', x: 0, z: 0, y: LEVEL, rx: 150, rz: 150, rot: 0, shape: 0, carve: 0, depth: 8 }
+    const field = { reads: 0, heightAt(x, z) { this.reads++; return ground(x, z) } }
+    const shore = traceShore(lake, field)
+    check(shore.polygons.length === 1 && shore.slabs.length === 0, 'a bowl inside the world traces one water ring and no slabs', `${shore.polygons.length} rings, ${shore.slabs.length} slabs`)
+    const [poly] = shore.polygons
+    check(poly.area > 0 && poly.holes.length === 1 && ringArea(poly.holes[0]) < 0, 'wound with the water on the left: the ring positive, its one island negative', `${poly.holes.length} holes`)
+    check(inRing(poly.outer, 30, 0) && inRing(poly.holes[0], 30, 0) && !inRing(poly.holes[0], -30, 0), 'the island is where the ground rises above the plane')
+    check(shore.vertices === poly.outer.length / 2 + poly.holes[0].length / 2, 'and the vertex count is the rings\'')
 
-    // Coverage, over the cases that can break it independently: both shapes, round and long, unrotated and rotated. `footprint` is 0 outside the rim and positive inside, so a single non-zero sample anywhere on a chord is water that is not being drawn.
-    for (const shape of [0, 1]) {
-      for (const [rx, rz] of [[20, 20], [400, 240], [100, 10], [10, 100]]) {
-        for (const rot of [0, 0.9, -2.1]) {
-          const lake = { id: 'lc', x: -30, z: 70, y: 12, rx, rz, rot, shape, carve: 1, depth: 4 }
-          const d = discVertices(lake)
-          let worst = 0
-          for (let k = 0; k < d.segments; k++) {
-            const a = (k + 1) * 3
-            const b = ((k + 1) % d.segments + 1) * 3
-            // Nine samples per chord rather than the midpoint alone: the midpoint is the deepest cut only when the two vertices are equidistant from the centre, which they are not on a long lake.
-            for (let t = 0; t <= 8; t++) {
-              const u = t / 8
-              const px = d.positions[a] + (d.positions[b] - d.positions[a]) * u
-              const pz = d.positions[a + 2] + (d.positions[b + 2] - d.positions[a + 2]) * u
-              worst = Math.max(worst, footprint(lake, px, pz))
-            }
-          }
-          check(worst === 0, `a ${rx}x${rz} m shape-${shape} lake at ${rot} rad is covered by its own rim`, `deepest uncovered footprint ${worst.toFixed(3)}`)
-        }
+    // Every vertex sits on the contour: SHORE_BURY under the bank, within what a 1 m simplification can move it on this slope.
+    let worstOff = 0
+    let longest = 0
+    for (const ring of [poly.outer, poly.holes[0]]) {
+      for (let i = 0, n = ring.length; i < n; i += 2) {
+        worstOff = Math.max(worstOff, Math.abs(ground(ring[i], ring[i + 1]) - PLANE))
+        longest = Math.max(longest, Math.hypot(ring[(i + 2) % n] - ring[i], ring[(i + 3) % n] - ring[i + 1]))
       }
     }
+    check(worstOff < 2, `every ring vertex is ${SHORE_BURY} m under the bank`, `worst ${worstOff.toFixed(2)} m off the plane`)
+    check(longest <= SHORE_SPACING + 1e-6, `no edge is longer than ${SHORE_SPACING} m`, `longest ${longest.toFixed(2)} m`)
+    const circumference = 2 * Math.PI * Math.sqrt((PLANE - 100) / 0.004)
+    check(poly.outer.length / 2 >= circumference / SHORE_SPACING && poly.outer.length / 2 <= circumference / 4, 'about one vertex per ten metres of shore', `${poly.outer.length / 2} vertices round ${circumference.toFixed(0)} m`)
 
-    const lake = { id: 'lw', x: 0, z: 0, y: 100, rx: 200, rz: 90, rot: 0.9, shape: 0, carve: 1, depth: 6 }
-    const d = discVertices(lake)
-    const areas = triAreas(d)
+    // Coverage against the ground itself, well clear of the tolerance band: a point under the plane is in the water ring and out of the island, a point over it is not.
+    let missed = 0
+    let flooded = 0
+    for (let z = -150; z <= 150; z += 3) {
+      for (let x = -150; x <= 150; x += 3) {
+        if (footprint(lake, x, z) <= 0) continue
+        const wet = inRing(poly.outer, x, z) && !inRing(poly.holes[0], x, z)
+        const g = ground(x, z)
+        if (g < PLANE - 2.5 && !wet) missed++
+        if (g > PLANE + 2.5 && wet) flooded++
+      }
+    }
+    check(missed === 0 && flooded === 0, 'the ring covers the water and nothing else', `${missed} wet points bare, ${flooded} dry points flooded`)
+
+    // The sheet: every triangle faces +Y and together they weigh the ring less its island.
+    const mesh = lakeVertices(shore, LEVEL)
     let wrongSign = 0
-    let minAbs = Infinity
-    for (const a of areas) {
-      if (a >= 0) wrongSign++
-      minAbs = Math.min(minAbs, Math.abs(a))
+    let sheet = 0
+    for (const twice of triAreas(mesh)) {
+      if (twice >= 0) wrongSign++
+      sheet -= twice
     }
-    check(wrongSign === 0, 'every disc triangle faces up', `${wrongSign} of ${areas.length} wound the other way`)
-    check(minAbs > 1e-6, 'no zero-area triangles on a disc', `smallest |2A| ${minAbs.toFixed(1)} m^2`)
+    check(wrongSign === 0, 'every lake triangle faces up', `${wrongSign} of ${mesh.triangles} wound the other way`)
+    check(Math.abs(sheet - (poly.area + ringArea(poly.holes[0]))) < 1e-6 * poly.area, 'and the sheet is exactly the ring less its island', `${(sheet / 2).toFixed(1)} vs ${((poly.area + ringArea(poly.holes[0])) / 2).toFixed(1)} m^2`)
+    check(mesh.positions.every((v, i) => i % 3 !== 1 || v === LEVEL), 'at the lake\'s level')
 
-    // Rotation is about +Y, and the disc has to turn the SAME way the footprint does. This is checked against water-bodies.js's own footprint() rather than against a formula written again here, because the failure it catches is precisely a formula written again here: local-to-world is the inverse of world-to-local, and using the same matrix both ways is invisible on a round lake and mirrors the rotation of an elongated one. A disc drawn at ninety degrees to the basin it was carved into still renders, still ripples, and is wrong.
-    let outsideRim = 0
-    let insideRim = 0
-    for (let k = 0; k < d.segments; k++) {
-      const px = d.positions[(k + 1) * 3]
-      const pz = d.positions[(k + 1) * 3 + 2]
-      // Every rim vertex is past the authored footprint, which is what LAKE_OVERHANG means.
-      if (footprint(lake, px, pz) !== 0) outsideRim++
-      // ...and pulling it back in by more than the overhang has to land inside it, or the disc is not merely dilated, it is somewhere else.
-      const inx = lake.x + (px - lake.x) * 0.9
-      const inz = lake.z + (pz - lake.z) * 0.9
-      if (footprint(lake, inx, inz) <= 0) insideRim++
-    }
-    check(outsideRim === 0, 'every rim vertex sits outside the authored footprint', `${outsideRim} of ${d.segments} still inside`)
-    check(insideRim === 0, 'the rim is the footprint dilated, not a differently-rotated shape', `${insideRim} of ${d.segments} vertices are not over their own lake`)
-
-    // And the plain algebra, so the check still says something if water-bodies.js ever moves. SEC is ribbon.js's RIM_SCALE, re-derived here rather than imported: the point of this assertion is that the two derivations agree.
-    const SEC = 1 / Math.cos(Math.PI / d.segments)
-    const cs = Math.cos(lake.rot)
-    const sn = Math.sin(lake.rot)
-    let worst = 0
-    for (let k = 0; k < d.segments; k++) {
-      const th = (2 * Math.PI * k) / d.segments
-      const lx = (lake.rx + LAKE_OVERHANG) * SEC * Math.cos(th)
-      const lz = (lake.rz + LAKE_OVERHANG) * SEC * Math.sin(th)
-      worst = Math.max(
-        worst,
-        Math.abs(d.positions[(k + 1) * 3] - (lake.x + lx * cs - lz * sn)),
-        Math.abs(d.positions[(k + 1) * 3 + 2] - (lake.z + lx * sn + lz * cs))
-      )
-    }
-    check(worst < 1e-3, 'rim vertices land on the circumscribed rotated ellipse', `worst ${worst.toExponential(1)} m`)
-
-    // The edge midpoint of the circumscribed octagon lands ON the dilated rim, which is the whole reason for the sec(pi/N): further out wastes overhang, further in is uncovered water. Measured on a round lake, where the ellipse's affine argument and the circle's are the same number.
+    // The ocean: an unrotated rectangle past the world traces the skirt and fills the rest with slabs that meet it exactly, so the sheet is the whole box with no gap and no overlap.
+    const sea = { id: 'sea', x: 0, z: 0, y: 100, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }
+    const deep = traceShore(sea, { heightAt: () => 0 })
+    check(deep.polygons.length === 1 && deep.polygons[0].holes.length === 0 && deep.slabs.length === 4, 'an ocean over a drowned world is one ring and four slabs', `${deep.polygons.length} rings, ${deep.slabs.length} slabs`)
     {
-      const round = { id: 'lr8', x: 0, z: 0, y: 0, rx: 100, rz: 100, rot: 0, shape: 0, carve: 1, depth: 4 }
-      const r8 = discVertices(round)
-      const mx = (r8.positions[3] + r8.positions[6]) / 2
-      const mz = (r8.positions[5] + r8.positions[8]) / 2
-      const mid = Math.hypot(mx, mz)
-      check(Math.abs(mid - (round.rx + LAKE_OVERHANG)) < 1e-3, 'the rim edge midpoint sits exactly on the dilated footprint', `${mid.toFixed(4)} m vs ${(round.rx + LAKE_OVERHANG).toFixed(4)} m`)
+      const ring = deep.polygons[0].outer
+      let ext = 0
+      for (let i = 0; i < ring.length; i += 2) ext = Math.max(ext, Math.abs(ring[i]), Math.abs(ring[i + 1]))
+      check(ext > WORLD_HALF && ext <= WORLD_HALF + WORLD_SKIRT + 2, 'the ring runs a skirt past the world', `${ext.toFixed(1)} m`)
+      let covered = deep.polygons[0].area / 2
+      let flush = true
+      for (const s of deep.slabs) {
+        covered += (s.maxX - s.minX) * (s.maxZ - s.minZ)
+        flush &&= [s.minX, s.maxX, s.minZ, s.maxZ].every((e) => Math.abs(e) === ext || Math.abs(e) === sea.rx)
+      }
+      check(flush && Math.abs(covered - 4 * sea.rx * sea.rx) < 1e-3, 'and the slabs meet it exactly, the sheet the whole authored box', `${covered.toExponential(4)} vs ${(4 * sea.rx * sea.rx).toExponential(4)} m^2`)
     }
+    check(traceShore({ ...lake, y: 50 }, field).vertices === 0, 'a lake sunk wholly under its ground draws nothing')
 
-    // A rectangle is a superellipse, so it has to reach further into its corners than an ellipse does -- 1.40 normalised against the ellipse's flat 1.08 -- while still being the same eight vertices.
-    const rect = discVertices({ ...lake, id: 'lr', rot: 0, shape: 1 })
-    let corner = 0
-    for (let k = 0; k < rect.segments; k++) {
-      const px = rect.positions[(k + 1) * 3] - lake.x
-      const pz = rect.positions[(k + 1) * 3 + 2] - lake.z
-      corner = Math.max(corner, Math.hypot(px / (lake.rx + LAKE_OVERHANG), pz / (lake.rz + LAKE_OVERHANG)))
+    // The cache: WaterSurfaces keeps a shore across rebuilds and re-traces only the lakes a rect touches or whose record changed.
+    {
+      const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [lake], rivers: [], roads: [] })
+      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers, field })
+      ws.rebuild()
+      const first = ws.meshes.get('bowl').userData.shore
+      const reads = field.reads
+      ws.rebuild({ minX: 1000, minZ: 1000, maxX: 1100, maxZ: 1100 })
+      check(ws.meshes.get('bowl').userData.shore === first && field.reads === reads, 'a rebuild over a rect clear of the lake keeps its shore without reading the field')
+      ws.rebuild({ minX: 100, minZ: 100, maxX: 200, maxZ: 200 })
+      check(ws.meshes.get('bowl').userData.shore !== first && field.reads > reads, 'a rect touching the lake\'s box re-traces it')
+      const second = ws.meshes.get('bowl').userData.shore
+      layers.lakes.update('bowl', { y: LEVEL + 1 })
+      ws.rebuild({ minX: 1000, minZ: 1000, maxX: 1100, maxZ: 1100 })
+      check(ws.meshes.get('bowl').userData.shore !== second, 'and so does a change to the record, whatever the rect')
+      check(ws.meshes.get('bowl').geometry.getAttribute('position').count === ws.meshes.get('bowl').userData.shore.vertices, 'the mesh carries one position per traced vertex')
+      ws.dispose()
     }
-    check(corner > 1.2, 'a rectangular lake actually reaches into its corners', `furthest normalised radius ${corner.toFixed(2)} vs ${(1 / Math.cos(Math.PI / rect.segments)).toFixed(2)} for an ellipse`)
   }
 
   // --- 4. arc length ---------------------------------------------------------
@@ -418,7 +408,7 @@ export async function run() {
       const STEEP = 5
       const rapid = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], roads: [], rivers: [{ id: 'r', depth: DEPTH, pts: [[-200, 0, 2 * HALF], [200, 0, 2 * HALF]] }] })
       rapid.paths.setTerrain(terrainOf((x) => 100 - x / STEEP))
-      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: rapid })
+      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: rapid, field: { heightAt: (x) => 100 - x / STEEP } })
       ws.rebuild()
       const s = rapid.paths.paths.get('r').samples
       let worst = 0
@@ -502,8 +492,12 @@ export async function run() {
     check(threw(() => ribbonVertices(packed([[0, 0, 0, 2], [0, 0, 0, 2], [10, 0, 0, 2]]))), 'coincident samples throw')
     check(threw(() => ribbonVertices(packed([[0, 0, 0, 2], [10, 0, 0, 0]]))), 'a zero half-width throws')
     check(threw(() => ribbonVertices(new Float32Array(7))), 'a sample buffer that is not a multiple of 4 throws')
-    check(threw(() => discVertices({ id: 'x', x: 0, z: 0, y: 0, rx: 40, rz: 40, rot: 0, shape: 2 })), 'an unknown lake shape throws')
-    check(threw(() => discVertices({ id: 'x', x: 0, z: 0, y: 0, rx: 0, rz: 0, rot: 0, shape: 0 })), 'a zero-extent lake throws')
+    const deep = { heightAt: () => 0 }
+    check(threw(() => traceShore({ id: 'x', x: 0, z: 0, y: 0, rx: 40, rz: 40, rot: 0, shape: 2 }, deep)), 'an unknown lake shape throws')
+    check(threw(() => traceShore({ id: 'x', x: 0, z: 0, y: 0, rx: 0, rz: 0, rot: 0, shape: 0 }, deep)), 'a zero-extent lake throws')
+    check(threw(() => traceShore({ id: 'x', x: 0, z: 0, y: 0, rx: 40, rz: 40, rot: 0, shape: 0 }, {})), 'a field without heightAt throws')
+    check(threw(() => traceShore({ id: 'x', x: 0, z: 0, y: 0, rx: 10000, rz: 10000, rot: 0.1, shape: 1 }, deep)) && threw(() => traceShore({ id: 'x', x: 0, z: 0, y: 0, rx: 10000, rz: 10000, rot: 0, shape: 0 }, deep)), 'a lake past the world throws unless it is an unrotated rectangle')
+    check(threw(() => new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers: new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [], rivers: [], roads: [] }) })), 'WaterSurfaces without a field throws')
   }
 
   // --- 8. the shoreline fringe -----------------------------------------------
@@ -527,7 +521,7 @@ export async function run() {
     }
     const layers = new Layers(doc)
     layers.paths.setTerrain(terrainOf(() => 12))
-    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers, field: { heightAt: () => 12 } })
     ws.rebuild()
     const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
     const REACH = 20
@@ -595,6 +589,7 @@ export async function run() {
     const sea = new WaterSurfaces({
       water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() },
       layers: new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [{ id: 'sea', x: 0, z: 0, y: LEVEL, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }], rivers: [], roads: [] }),
+      field: { heightAt: () => 0 },
     })
     sea.rebuild()
     check(sea.shoreDistAt(0, 0, REACH, LEVEL + 150, 0.3) === REACH, 'a landscape over a buried plane is not a shore')
@@ -618,7 +613,7 @@ export async function run() {
     const build = (pts, lakes = []) => {
       const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes, rivers: [{ id: 'r', depth: 2, pts }], roads: [] })
       layers.paths.setTerrain(terrainOf(ground))
-      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+      const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers, field: { heightAt: ground } })
       ws.rebuild()
       const mesh = ws.meshes.get('r')
       return { layers, ws, mesh, flow: mesh.geometry.getAttribute('aFlow'), n: mesh.userData.lod.count }
@@ -709,8 +704,8 @@ export async function run() {
       check(clear > 10 && clearBad === 0, 'and its own frame once it is a fade clear of the lake', `${clearBad} of ${clear} vertices short of 1`)
     }
 
-    // A lake disc carries no aFlow at all: it takes the material's default, which is the world frame. Asserted here because a disc that grew the attribute by accident would drift the lake with whatever zeros or garbage it was given.
-    check(into.ws.meshes.get('l').geometry.getAttribute('aFlow') === undefined, 'a lake disc carries no aFlow and takes the default')
+    // A lake sheet carries no aFlow at all: it takes the material's default, which is the world frame. Asserted here because a sheet that grew the attribute by accident would drift the lake with whatever zeros or garbage it was given.
+    check(into.ws.meshes.get('l').geometry.getAttribute('aFlow') === undefined, 'a lake sheet carries no aFlow and takes the default')
     fwd.ws.dispose()
     rev.ws.dispose()
     into.ws.dispose()
@@ -726,7 +721,7 @@ export async function run() {
       { id: 'trib', depth: 2, pts: [[0, 400, 10], [0, 0, 10]] },
     ] })
     layers.paths.setTerrain(terrainOf(ground))
-    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers, field: { heightAt: ground } })
     ws.rebuild()
     const drawn = layers.paths.drawnSamples('trib')
     const full = layers.paths.paths.get('trib').samples
@@ -831,9 +826,9 @@ export async function run() {
     // A river with real bends, solved over terrain the way a shipped one is. The repair is what keeps this strip from folding, so it is measured here where the turn rule alone would fold it; the pick must also have spent extra samples on the bends, and the strip must still cover the channel a metre in from each bank, which is what the chord across a LOD_TURN bend costs at most.
     const ground = (x, z) => 60 - x / 60 + Math.sin(z / 90) * 8
     const bendy = [[-400, -200, 12], [-250, 40], [-100, -60], [40, 120], [220, 90], [380, 260], [560, 300, 12]]
-    const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [{ id: 'pond', x: 0, z: -3000, y: 30, rx: 40, rz: 40, rot: 0, shape: 1, carve: 0, depth: 8 }], roads: [], rivers: [{ id: 'r', depth: 2, pts: bendy }, { id: 'far', depth: 2, pts: [[-400, 3000, 12], [400, 3000, 12]] }] })
+    const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [{ id: 'pond', x: 0, z: -3000, y: 56, rx: 40, rz: 40, rot: 0, shape: 1, carve: 0, depth: 8 }], roads: [], rivers: [{ id: 'r', depth: 2, pts: bendy }, { id: 'far', depth: 2, pts: [[-400, 3000, 12], [400, 3000, 12]] }] })
     layers.paths.setTerrain(terrainOf(ground))
-    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers })
+    const ws = new WaterSurfaces({ water: { material: new THREE.MeshBasicMaterial(), group: new THREE.Group() }, layers, field: { heightAt: ground } })
     ws.rebuild()
     {
       const s = ws.riverSamples.get('r')
@@ -964,6 +959,10 @@ export async function run() {
       check(aRaise.isInterleavedBufferAttribute && aRaise.itemSize === 4 && aRaise.offset === 0 && aRaiseFar.itemSize === 3 && aRaiseFar.offset === 4 && aRaise.data === aRaiseFar.data && aRaise.data.stride === R && aRaise.count === n, 'a river\'s seven lifts ride one interleaved buffer as a vec4 and a vec3')
       check(aRung.itemSize === 1 && aRung.count === n && aRung.array instanceof Uint8Array && aRung.usage === THREE.DynamicDrawUsage && aRung.array.every((v) => v === 0), 'and a dynamic byte per vertex for the rung, built at zero')
       check(pond !== undefined && pond.geometry.getAttribute('aRaise') === undefined && pond.geometry.getAttribute('aRung') === undefined && pond.geometry.getAttribute('aFlow') === undefined, 'a lake carries none of the river attributes and takes the material\'s zero defaults')
+      // The lake flag runs the other way: every lake vertex carries aLake 1 so the sheet laps and lifts with the shader's lake terms, and a river has no aLake and takes the still default.
+      const aLake = pond.geometry.getAttribute('aLake')
+      check(aLake !== undefined && aLake.itemSize === 1 && aLake.count > 0 && aLake.count === pond.geometry.getAttribute('position').count && aLake.array.every((v) => v === 1), 'a lake carries aLake 1 on every vertex', aLake ? `${aLake.count} of ${pond.geometry.getAttribute('position').count}` : 'no attribute')
+      check(geo.getAttribute('aLake') === undefined && far.geometry.getAttribute('aLake') === undefined, 'a river carries no aLake and holds still on the default')
       check(geo.index.array.length === lod.capacity && geo.drawRange.count === lod.capacity && geo.index.usage === THREE.DynamicDrawUsage, 'a river is built all-fine into a dynamic index buffer of exactly that size', `${geo.drawRange.count} of ${lod.capacity}`)
 
       // The stub draws depth 5 (32 m, rung 2) west of `seam`, depth 6 (8 m, rung 1) for 300 m east of it, and depth 7 (4 m, no lift) beyond; from the eye both seams are within 400 m, so the near river reads every coarse sample there. Both rivers run monotone in x, so a vertex between two read samples has the drawn rung of one of them or between, and the fill can only lift it to the coarser neighbour.

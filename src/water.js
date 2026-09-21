@@ -111,6 +111,27 @@ export const WATER = {
   // streaks. See the domain-warp note in WAVE_GLSL.
   warp: 0.6,
 
+  // The lapping. A lake's whole plane rises this many metres above its
+  // authored level and settles back, once per period, never dipping below
+  // the level: what the eye reads is the waterline creeping up the shore and
+  // draining off it, and how far it creeps is this over the bank's slope.
+  // Uniform across the sheet, in the vertex stage, on the wall clock like
+  // the ripples; rivers hold still (see `aLake`). The queries (levelAt) answer
+  // the still level -- the eye test adds the current rise, nothing else does.
+  lapHeight: 0.08,
+  lapPeriod: 4,
+
+  // The high-eye lift. A lake's sheet rises `lakeRaise` metres over its level
+  // once the eye stands `lakeRaiseTo` metres above it, none of it under
+  // `lakeRaiseFrom`, so a lake seen from a flight or a summit sits clear of
+  // the coarse terrain drawn under it instead of z-fighting through it. The
+  // sheet's edges are buried SHORE_BURY under the bank (v2/render/shoreline.js),
+  // so the lift floods `lakeRaise / slope` of shore, which from that high is
+  // nothing. Nothing on the ground, not even the eye test, ever sees it.
+  lakeRaise: 5,
+  lakeRaiseFrom: 120,
+  lakeRaiseTo: 360,
+
   // Where the fine ripples fade out, in metres. Past this the normal relaxes
   // toward flat and the specular lobe broadens to compensate, which is the
   // aggregate of all the ripples inside one pixel rather than a random sample
@@ -440,6 +461,11 @@ export function currentDrift(t, strength, out) {
   return out
 }
 
+/** The lakes' rise over their level at wall-clock second `t`, metres in [0, WATER.lapHeight]: the JS twin of the vertex stage's lap term, for anything that has to meet the drawn surface. */
+export function lapAt(t) {
+  return WATER.lapHeight * (0.5 - 0.5 * Math.cos(((2 * Math.PI) / WATER.lapPeriod) * t))
+}
+
 // Visibility in metres -> the extinction coefficient lighting.js's aerial chunk
 // wants, which is also the FogExp2 density the water's own fog term reads.
 //
@@ -746,6 +772,10 @@ export class Water {
       uChop: { value: WATER.chop },
       uFlow: { value: WATER.flow },
       uWarp: { value: WATER.warp },
+      // x: lapHeight, y: the lap's angular rate, so the shader is one cosine.
+      uLap: { value: new THREE.Vector2(WATER.lapHeight, (2 * Math.PI) / WATER.lapPeriod) },
+      // x: lakeRaise, y and z: the eye heights over the sheet it ramps between.
+      uLakeRaise: { value: new THREE.Vector3(WATER.lakeRaise, WATER.lakeRaiseFrom, WATER.lakeRaiseTo) },
       // Scaled every frame by syncShading. WATER.tint is the colour as authored
       // under full daylight; what reaches the shader is that colour dimmed by
       // however much ambient light there actually is.
@@ -863,6 +893,14 @@ export class Water {
         attribute vec4 aRaise;
         attribute vec3 aRaiseFar;
         attribute float aRung;
+        // 1 on a lake: the sheet laps (WATER.lapHeight, rising and settling
+        // once per WATER.lapPeriod, never under its level) and lifts by
+        // WATER.lakeRaise once the eye is high over it. Rivers lack the
+        // attribute and take the default 0.
+        attribute float aLake;
+        uniform float uTime;
+        uniform vec2 uLap;
+        uniform vec3 uLakeRaise;
         varying vec3 vWorldPos;
         varying vec3 vFlow;
         varying vec2 vFlowDir;
@@ -873,6 +911,8 @@ export class Water {
             + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
           float slope = ( cameraPosition.y - worldPos.y ) / max( 1.0, length( cameraPosition.xz - worldPos.xz ) );
           lift *= smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, slope );
+          lift += aLake * ( uLap.x * ( 0.5 - 0.5 * cos( uLap.y * uTime ) )
+            + uLakeRaise.x * smoothstep( uLakeRaise.y, uLakeRaise.z, cameraPosition.y - worldPos.y ) );
           vWorldPos = worldPos + vec3( 0.0, lift, 0.0 );
           vFlow = aFlow.xyz;
           // Unpacked here so the fragment stage interpolates a vector; an
@@ -1303,11 +1343,16 @@ export class Water {
     // constant to the attribute (gl.vertexAttribNfv, N from the length) for any
     // name listed here, and disables it otherwise, which reads as zero on some
     // drivers and as whatever the slot last held on others. Only the rivers
-    // carry the buffers; these zeros are the world flow frame and no lift.
+    // carry the first four and only the lakes the last; these zeros are the
+    // world flow frame, no lift, no lap.
     this.material.defaultAttributeValues.aFlow = [0, 0, 0, 0]
     this.material.defaultAttributeValues.aRaise = [0, 0, 0, 0]
     this.material.defaultAttributeValues.aRaiseFar = [0, 0, 0]
     this.material.defaultAttributeValues.aRung = [0]
+    this.material.defaultAttributeValues.aLake = [0]
+
+    // The lakes' rise over their level right now, metres; what the vertex stage adds this frame, for the eye test.
+    this.lap = 0
 
     this.lakes = new THREE.Group()
     this.lakes.name = 'lakes'
@@ -1320,6 +1365,7 @@ export class Water {
    *  thing here that runs on the wall clock rather than on the world clock. */
   update(elapsed, hemi) {
     this.uniforms.uTime.value = elapsed
+    this.lap = lapAt(elapsed)
     // Pulled rather than pushed: the probe owns the schedule and has no business
     // knowing a water material exists. One frame stale, because this runs before
     // the probe does -- which against a one-second fade is 1.4% of it.
@@ -1569,6 +1615,7 @@ export class Water {
       const nrm = new Float32Array(quads * 4 * 3)
       for (let k = 1; k < nrm.length; k += 3) nrm[k] = 1
       geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3))
+      geo.setAttribute('aLake', new THREE.BufferAttribute(new Uint8Array(quads * 4).fill(1), 1))
       geo.computeBoundingSphere()
       const mesh = new THREE.Mesh(geo, this.material)
       mesh.name = `water-${key}`

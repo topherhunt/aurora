@@ -363,7 +363,8 @@ export class Dragons {
         // The pose at the last tick, and at the tick before it, which the frame draws between.
         x: 0, y: 0, z: 0, heading: 0, pitch: 0, roll: 0, speed: 0,
         px: 0, py: 0, pz: 0, pheading: 0, ppitch: 0, proll: 0,
-        rec: { tick: 0, alpha: 1 },
+        // `at` is the tick of the last frame that stepped it: the gauge of a clock skip, where `tick` also lags through a join's replay.
+        rec: { tick: 0, alpha: 1, at: 0 },
         // The home pose the chapters turn at, and this dragon's phase in the meander, so no two swing together.
         home: null, phase: 0,
         // The ground under the body and under the point LOOK_AHEAD_M ahead of it, as last probed.
@@ -520,6 +521,7 @@ export class Dragons {
     if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
     d.lure = d.live = d.rejoin = null
     d.queue.length = 0
+    d.rec.at = tickOf(now)
     const anchor = this.anchored.get(d.key)
     if (anchor && anchor[1] >= chapterOf(now, d.key).start) {
       this._fromAnchor(d, anchor, now)
@@ -1388,8 +1390,9 @@ export class Dragons {
 
   /** One dragon: stepped to `now`, then drawn on whichever rung its flying body's size puts it at. */
   _tick(d, hx, hy, hz, now, dt) {
-    // A gap a frame cannot replay (a clock skip) is not replayed at all: the dragon is put where the score has it now, as if she had stepped out of the timeline and back in.
-    if (tickOf(now) - d.rec.tick > CATCH_UP_TICKS) this._replace(d, now)
+    // The clock moved further since its last frame than a frame can replay (a skip): the gap is not replayed at all, the dragon is put where the score has it now, as if she had stepped out of the timeline and back in. A join's replay lags `rec.tick` just as far, over many frames, and is not a skip.
+    if (tickOf(now) - d.rec.at > CATCH_UP_TICKS) this._replace(d, now)
+    d.rec.at = tickOf(now)
     this.replayed += stepTo(d.rec, now, (k) => this._step(d, k))
     if (d.rec.tick < tickOf(now)) this.behind++
     const dist = Math.sqrt((d.x - hx) ** 2 + (d.y - hy) ** 2 + (d.z - hz) ** 2)

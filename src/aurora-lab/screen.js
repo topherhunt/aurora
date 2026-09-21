@@ -82,7 +82,7 @@ import THREE from '../three-instance.js'
 
 import { UTIL_GLSL, HASH_GLSL, VALUE_GLSL, GRAD_GLSL, FBM_GLSL, WARP_GLSL, FILAMENT_GLSL } from './glsl/noise.js'
 import { PALETTE_GLSL } from './glsl/palette.js'
-import { VERTEX_GLSL, MARCH_GLSL, MAIN_GLSL } from './glsl/frame.js'
+import { VERTEX_GLSL, MARCH_GLSL, MAIN_GLSL, NO_OCCLUDER_GLSL } from './glsl/frame.js'
 import { LUT_GLSL } from './glsl/lut.js'
 import { SLAB_MARCH_GLSL } from './glsl/slab.js'
 import { noiseLutTexture } from './lut-texture.js'
@@ -288,6 +288,13 @@ export class AuroraScreen {
     // otherwise changing algorithm silently resets the dither to full-res.
     this._ditherScale = 1
     this._skyWeights = new THREE.Vector3( 1, 0, 0 )
+    // What the aurora is seen through: `{ glsl, uniforms }`, the GLSL defining
+    // `float skyOcclusion( vec3 dir )` -- 0 clear, 1 hidden -- and the uniforms
+    // it reads, held by reference so the sky's writer moves them. Null is a
+    // clear sky. Kept on the instance since the material is rebuilt on every
+    // algorithm switch.
+    this._occluder = opts.occluder || null
+    if ( this._occluder && ( typeof this._occluder.glsl !== 'string' || !this._occluder.uniforms ) ) throw new Error( 'AuroraScreen: an occluder is { glsl, uniforms }' )
     if ( opts.values ) this.setValues( opts.values )
 
     // theta is measured DOWN from the zenith, so the high elevation is the low
@@ -350,10 +357,11 @@ export class AuroraScreen {
       PALETTE_GLSL,
       algo.glsl,
       march,
+      this._occluder ? this._occluder.glsl : NO_OCCLUDER_GLSL,
       MAIN_GLSL,
     ].join( '\n' )
 
-    const uniforms = { uTime: { value: 0 }, uDitherScale: { value: this._ditherScale }, uSkyWeights: { value: this._skyWeights } }
+    const uniforms = { uTime: { value: 0 }, uDitherScale: { value: this._ditherScale }, uSkyWeights: { value: this._skyWeights }, ...( this._occluder ? this._occluder.uniforms : {} ) }
     for ( const name of ordered ) {
       if ( !CHUNK_SAMPLERS[ name ] ) continue
       for ( const s of CHUNK_SAMPLERS[ name ] ) uniforms[ s.uniform ] = { value: s.texture() }

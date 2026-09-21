@@ -32,6 +32,21 @@ import { AIR_FALL, airCeiling } from './lighting.js'
 const DEG = Math.PI / 180
 
 /**
+ * The cloud layer's own block (§10), what CLOUD_GLSL reads: the stars and the
+ * aurora take the sky's by reference so that one cloud hides all three. The
+ * texture is public/world/clouds.png, handed in by Sky.setClouds; until then,
+ * and while the debug row has clouds off, uCloud.w is 0 and every shader skips
+ * the fetches. x = cover, y/z = the coverage remap's lo/hi, w = on.
+ */
+export function makeCloudUniforms() {
+  return {
+    uClouds: { value: null },
+    uCloud: { value: new THREE.Vector4(0, 1, 1.3, 0) },
+    uCloudDrift: { value: new THREE.Vector2(0, 0) },
+  }
+}
+
+/**
  * The uniform block the GLSL below reads. Created once by `Sky` and handed to
  * anything else that needs to evaluate the sky; see writeSkyUniforms for the
  * single writer.
@@ -60,13 +75,7 @@ export function makeSkyUniforms() {
     // constant across the whole disc.
     uMoonU: { value: new THREE.Vector3(1, 0, 0) },
     uMoonV: { value: new THREE.Vector3(0, 1, 0) },
-    // The cloud layer (§10). The texture is public/world/clouds.png, handed in
-    // by Sky.setClouds; until then, and while the debug row has clouds off,
-    // uCloud.w is 0 and the dome skips the fetches. x = cover, y/z = the
-    // coverage remap's lo/hi, w = on.
-    uClouds: { value: null },
-    uCloud: { value: new THREE.Vector4(0, 1, 1.3, 0) },
-    uCloudDrift: { value: new THREE.Vector2(0, 0) },
+    ...makeCloudUniforms(),
     uCloudLit: { value: new THREE.Color(1, 1, 1) },
     uCloudShade: { value: new THREE.Color(0.4, 0.45, 0.5) },
     // The haze the sky is seen through (§10): x = hazeDensity, the terrain's
@@ -197,7 +206,32 @@ export function writeSkyUniforms(u, state) {
 // atmospheric glow -- reflects unchanged, because smooth things survive being
 // sampled through a wavy normal.
 // ---------------------------------------------------------------------------
+// The cloud layer alone (§10): a plane 1500 m up, above every summit, the view
+// ray projected onto it and one seamless fBm sampled at two scales that drift
+// with the wind. `cloudAt` gives x = how much of the sky that way the cloud
+// hides, 0 with clouds off or below the horizon fade, and y = the raw density,
+// which the dome darkens the bellies from. Its own chunk so the stars and the
+// aurora, drawn before the dome, can be dimmed by the same cloud that the dome
+// composites over the sun.
+export const CLOUD_GLSL = /* glsl */ `
+  uniform sampler2D uClouds;
+  uniform vec4 uCloud;
+  uniform vec2 uCloudDrift;
+
+  vec2 cloudAt( vec3 dir ) {
+    if ( uCloud.w < 0.5 || dir.y <= 0.02 ) return vec2( 0.0 );
+    vec2 p = dir.xz * ( 1500.0 / dir.y );
+    float a = texture2D( uClouds, p / 6000.0 + uCloudDrift ).r;
+    float b = texture2D( uClouds, p / 2600.0 * vec2( 0.8, 1.1 ) + uCloudDrift * 1.7 + 0.37 ).r;
+    float tex = a * 0.65 + b * 0.35;
+    float density = smoothstep( uCloud.y, uCloud.z, tex );
+    float fade = smoothstep( 0.02, 0.15, dir.y );
+    return vec2( density * fade, tex );
+  }
+`
+
 export const SKY_GLSL = /* glsl */ `
+  ${CLOUD_GLSL}
   uniform vec3 uHorizon;
   uniform vec3 uZenith;
   uniform vec3 uGlow;
@@ -209,9 +243,6 @@ export const SKY_GLSL = /* glsl */ `
   uniform vec3 uMoon;
   uniform vec3 uMoonU;
   uniform vec3 uMoonV;
-  uniform sampler2D uClouds;
-  uniform vec4 uCloud;
-  uniform vec2 uCloudDrift;
   uniform vec3 uCloudLit;
   uniform vec3 uCloudShade;
   uniform vec2 uSkyHaze;
@@ -348,29 +379,22 @@ export const SKY_GLSL = /* glsl */ `
     // lake read as moonlit.
     col += vec3( 0.62, 0.70, 0.90 ) * ( pow( max( md, 0.0 ), 900.0 ) * 0.30 * uMoon.y );
 
-    // ---- Clouds (§10). A plane 1500 m up, above every summit, the view ray
-    // projected onto it and one seamless fBm sampled at two scales that drift
-    // with the wind. Composited over everything above, so a thick cloud hides
-    // the sun and the moon and a thin one dims them, with no switch. Behind
-    // the coreGain branch so the water, which calls this three times a pixel,
-    // pays none of the fetches; under an overcast it goes grey anyway through
-    // uHorizon and uZenith. The horizon fade hands the plane's far stretch to
-    // the fog, which is eating the terrain there.
-    if ( coreGain > 0.5 && uCloud.w > 0.5 && dir.y > 0.02 ) {
-      vec2 p = dir.xz * ( 1500.0 / dir.y );
-      float a = texture2D( uClouds, p / 6000.0 + uCloudDrift ).r;
-      float b = texture2D( uClouds, p / 2600.0 * vec2( 0.8, 1.1 ) + uCloudDrift * 1.7 + 0.37 ).r;
-      float tex = a * 0.65 + b * 0.35;
-      float density = smoothstep( uCloud.y, uCloud.z, tex );
-      float fade = smoothstep( 0.02, 0.15, dir.y );
+    // ---- Clouds (§10, CLOUD_GLSL). Composited over everything above, so a
+    // thick cloud hides the sun and the moon and a thin one dims them, with no
+    // switch. Behind the coreGain branch so the water, which calls this three
+    // times a pixel, pays none of the fetches; under an overcast it goes grey
+    // anyway through uHorizon and uZenith. The horizon fade hands the plane's
+    // far stretch to the fog, which is eating the terrain there.
+    if ( coreGain > 0.5 ) {
+      vec2 cl = cloudAt( dir );
       // Bellies darken with thickness past the remap's edge, so a solid ceiling
       // still shows its texture instead of one flat grey; and the layer takes
       // the horizon colour as it recedes, the aerial perspective the terrain
       // gets from lighting.js, so a ceiling meets the fog instead of ending
       // on it.
-      vec3 cloud = mix( uCloudLit, uCloudShade, smoothstep( uCloud.y, uCloud.z + 0.35, tex ) );
+      vec3 cloud = mix( uCloudLit, uCloudShade, smoothstep( uCloud.y, uCloud.z + 0.35, cl.y ) );
       cloud = mix( cloud, uHorizon, ( 1.0 - smoothstep( 0.03, 0.45, dir.y ) ) * 0.85 );
-      col = mix( col, cloud, density * fade );
+      col = mix( col, cloud, cl.x );
     }
 
     return col;

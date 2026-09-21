@@ -1,12 +1,13 @@
 import THREE from '../../three-instance.js'
-import { footprint, SHAPE_RECT } from '../layers/water-bodies.js'
+import { footprint, lakeBox, SHAPE_RECT } from '../layers/water-bodies.js'
 import { RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../layers/paths.js'
-import { ribbonVertices, discVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from './ribbon.js'
+import { traceShore } from './shoreline.js'
+import { ribbonVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from './ribbon.js'
 import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH } from './river-raise.js'
 import { unpackKey } from '../terrain/quadtree-v2.js'
 
 /**
- * The visible water of a v2 world: one disc per authored lake, one ribbon per authored river.
+ * The visible water of a v2 world: one shore-traced sheet per authored lake, one ribbon per authored river.
  *
  * IT REUSES src/water.js's MATERIAL, AND THAT IS THE WHOLE POINT. Everything that makes a lake read as a mirror rather than as a blue plane -- the analytic sky reflection along the reflected ray, the four drifting layers of gradient noise, the horizon-map silhouette, the thresholded glitter, the exemption from the night fog rule -- lives in that one ShaderMaterial (§11). Authoring a second water shader here would give v2 a lake that disagrees with a v1 lake about what the sky looks like, and it would disagree SLOWLY, one tuning pass at a time, which is the failure mode that never gets noticed until it is a rewrite.
  *
@@ -37,12 +38,14 @@ const LOD_RUNG_NEAR = 400
 const LOD_RUNG_STRIDE = 4
 
 export class WaterSurfaces {
-  constructor({ water, layers }) {
+  constructor({ water, layers, field }) {
     if (!water || !water.material || !water.group) throw new Error('WaterSurfaces needs the shared Water, for its material and its group')
     if (!layers || !layers.lakes || !layers.paths) throw new Error('WaterSurfaces needs Layers, for the lake and path sets')
+    if (!field || typeof field.heightAt !== 'function') throw new Error('WaterSurfaces needs the height field, heightAt(x, z, cell), to trace the lakes\' shores')
 
     this.water = water
     this.layers = layers
+    this.field = field
 
     this.group = new THREE.Group()
     this.group.name = 'v2-water-surfaces'
@@ -52,6 +55,8 @@ export class WaterSurfaces {
     this.meshes = new Map()
     // id -> the flattened spline it was built from, kept for levelAt. The AUTHORED half-widths, not the widened ones: the widening exists to bury a polygon edge under a bank, and treating that overhang as wet would strip a band of props off both sides of every stream, which is the mistake Water.levelAt's undilated-mask comment already records once.
     this.riverSamples = new Map()
+    // id -> { key, shore }: the traced outline of each lake (shoreline.js), kept across rebuilds. Tracing the ocean reads the field 440k times, 180 ms on the shipped world, so a rebuild re-traces only a lake whose record changed or whose box the rebuild's rect touches.
+    this.shores = new Map()
 
     this.buckets = new Map()
     this.lakeBoxes = []
@@ -71,15 +76,23 @@ export class WaterSurfaces {
     this.lodVersion = NaN
   }
 
-  /** Every lake and every river, from scratch. Called when the epoch moves and nothing narrower is known. */
-  rebuild() {
+  /** Every lake and every river, from scratch. `rect` is the world region whose ground or records changed -- the lakes outside it keep their traced shores -- and null means everything did. */
+  rebuild(rect = null) {
     for (const mesh of this.meshes.values()) mesh.geometry.dispose()
     this.meshes.clear()
     this.riverSamples.clear()
     this.group.clear()
     this.triangles = 0
 
-    for (const lake of this.layers.lakes.lakes.values()) this.buildLake(lake)
+    const lakes = this.layers.lakes.lakes
+    for (const id of this.shores.keys()) if (!lakes.has(id)) this.shores.delete(id)
+    for (const lake of lakes.values()) {
+      const key = shoreKey(lake)
+      const kept = this.shores.get(lake.id)
+      if (kept !== undefined && kept.key === key && rect !== null && !touches(rect, lakeBox(lake))) continue
+      this.shores.delete(lake.id)
+    }
+    for (const lake of lakes.values()) this.buildLake(lake)
     for (const path of this.pathRecords()) {
       if (path.kind === 'river') this.buildRiver(path)
     }
@@ -119,6 +132,7 @@ export class WaterSurfaces {
       this.triangles -= old.userData.triangles
     }
     this.riverSamples.delete(id)
+    this.shores.delete(id)
 
     const lake = this.layers.lakes.lakes.get(id)
     if (lake) {
@@ -136,17 +150,26 @@ export class WaterSurfaces {
   }
 
   buildLake(lake) {
-    const { positions, indices, triangles } = discVertices(lake)
+    let kept = this.shores.get(lake.id)
+    if (kept === undefined) {
+      kept = { key: shoreKey(lake), shore: traceShore(lake, this.field) }
+      this.shores.set(lake.id, kept)
+    }
+    const { positions, indices, triangles, vertices } = lakeVertices(kept.shore, lake.y)
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geo.setIndex(new THREE.BufferAttribute(indices, 1))
-    // No normal attribute, and no aFlow. The water shader's vertex stage reads `position` and `aFlow`, and a lake wants the latter's default: a normal buffer nothing samples is upload bandwidth spent on a lie -- v1 emits normals only because its geometry predates the shader.
-    geo.computeBoundingSphere()
+    // `aLake` 1 on every vertex: the sheet laps and lifts by the water shader's lake terms. No normal attribute, and none of the river attributes: a lake wants their defaults, and a normal buffer nothing samples is upload bandwidth spent on a lie -- v1 emits normals only because its geometry predates the shader.
+    geo.setAttribute('aLake', new THREE.BufferAttribute(new Uint8Array(vertices).fill(1), 1))
+    // The bound is the authored box, not the vertices: a lake sunk wholly under its ground has none.
+    const box = lakeBox(lake)
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(lake.x, lake.y, lake.z), Math.hypot(box.maxX - box.minX, box.maxZ - box.minZ) / 2)
 
     const mesh = new THREE.Mesh(geo, this.water.material)
     mesh.name = `v2-lake-${lake.id}`
     mesh.userData.kind = 'lake'
     mesh.userData.triangles = triangles
+    mesh.userData.shore = kept.shore
     this.group.add(mesh)
     this.meshes.set(lake.id, mesh)
     this.triangles += triangles
@@ -590,4 +613,59 @@ export class WaterSurfaces {
     if (this.group.parent) this.group.parent.remove(this.group)
     this.triangles = 0
   }
+}
+
+// What a lake's traced shore depends on besides the ground: the record itself.
+function shoreKey(lake) {
+  return `${lake.x},${lake.z},${lake.y},${lake.rx},${lake.rz},${lake.rot},${lake.shape},${lake.carve ? 1 : 0},${lake.depth}`
+}
+
+function touches(a, b) {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ
+}
+
+/**
+ * A traced shore (shoreline.js) as one flat sheet at `y`: each water ring ear-clipped around its islands, each slab two triangles, all wound to face +Y.
+ */
+export function lakeVertices(shore, y) {
+  const positions = new Float32Array(shore.vertices * 3)
+  const tris = []
+  let base = 0
+  const put = (pts) => {
+    for (let i = 0; i < pts.length; i += 2) {
+      const o = (base + i / 2) * 3
+      positions[o] = pts[i]
+      positions[o + 1] = y
+      positions[o + 2] = pts[i + 1]
+    }
+    base += pts.length / 2
+  }
+  // Ear clipping does not promise a winding, so every triangle is checked: facing +Y is clockwise in (x, z).
+  const push = (a, b, c) => {
+    const ax = positions[a * 3], az = positions[a * 3 + 2]
+    const up = (positions[b * 3] - ax) * (positions[c * 3 + 2] - az) - (positions[b * 3 + 2] - az) * (positions[c * 3] - ax) < 0
+    tris.push(a, up ? b : c, up ? c : b)
+  }
+  for (const p of shore.polygons) {
+    const start = base
+    const contour = []
+    for (let i = 0; i < p.outer.length; i += 2) contour.push(new THREE.Vector2(p.outer[i], p.outer[i + 1]))
+    const holes = p.holes.map((h) => {
+      const ring = []
+      for (let i = 0; i < h.length; i += 2) ring.push(new THREE.Vector2(h[i], h[i + 1]))
+      return ring
+    })
+    put(p.outer)
+    for (const h of p.holes) put(h)
+    for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, holes)) push(start + a, start + b, start + c)
+  }
+  for (const s of shore.slabs) {
+    const start = base
+    put([s.minX, s.minZ, s.maxX, s.minZ, s.maxX, s.maxZ, s.minX, s.maxZ])
+    push(start, start + 1, start + 2)
+    push(start, start + 2, start + 3)
+  }
+  if (base !== shore.vertices) throw new Error(`lakeVertices: placed ${base} of ${shore.vertices} vertices`)
+  const indices = shore.vertices > 65535 ? new Uint32Array(tris) : new Uint16Array(tris)
+  return { positions, indices, triangles: tris.length / 3, vertices: shore.vertices }
 }

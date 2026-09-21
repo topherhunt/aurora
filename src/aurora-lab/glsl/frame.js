@@ -435,6 +435,13 @@ export const MARCH_GLSL = `
   #endif
 `
 
+// What the aurora is seen through. The world hands the screen the sky's cloud
+// layer as its occluder (v2/render/aurora.js); the lab and the bench, with no
+// clouds, compile this stub in its place so MAIN_GLSL links either way.
+export const NO_OCCLUDER_GLSL = `
+  float skyOcclusion( vec3 dir ) { return 0.0; }
+`
+
 export const MAIN_GLSL = `
   void main() {
     // The eye is the origin of the aurora's own space. It is sky-locked: at 100
@@ -443,7 +450,9 @@ export const MAIN_GLSL = `
     // aurora would slide past the mountains as you walked, which is precisely
     // the wrong cue.
     vec3 rd = normalize( vWorld - cameraPosition );
-    vec3 c = auroraRadiance( vec3( 0.0 ), rd, vUv, uTime );
+    // Under whatever cloud the occluder finds that way: a curtain over a
+    // ceiling is not seen at all, one behind a wisp is dimmed by it.
+    vec3 c = auroraRadiance( vec3( 0.0 ), rd, vUv, uTime ) * ( 1.0 - skyOcclusion( rd ) );
 
     // The screen's border must never be findable, and it now has only one.
     //
