@@ -131,6 +131,54 @@ const CARD_NORMAL = /* glsl */ `
   }`
 
 /**
+ * Lights `points` of a material's mesh from inside: the leafkin huts' windows
+ * and the lamps' paper lanterns (§30). Each point is `{ x, y, z, r }` in the
+ * geometry's OWN frame (the pick's, before the instance matrix), so one list
+ * authored on the pick lights every decimated tier, and the fragment shader
+ * adds `material.uGlow` times the surface's own colour lifted a third of the way to
+ * white, inside a disc that is full at 0.6 r and gone at r. The lift is what
+ * lets a pane painted dark light up at all; the albedo kept is
+ * what keeps a honeycomb's cells readable while it glows. The
+ * count is baked into the program, so materials with different lists compile
+ * apart. Chains onBeforeCompile the way lighting.patch does, so it composes
+ * with createGenPropMaterial and with a plain Lambert alike.
+ */
+export function addGlow(material, points) {
+  if (!Array.isArray(points) || points.length === 0 || points.some((p) => ![p.x, p.y, p.z, p.r].every(Number.isFinite) || !(p.r > 0))) {
+    throw new Error('addGlow: points is a non-empty list of { x, y, z, r }')
+  }
+  const n = points.length
+  material.uGlow = { value: new THREE.Color(0, 0, 0) }
+  const pts = { value: points.map((p) => new THREE.Vector4(p.x, p.y, p.z, p.r)) }
+  const prev = material.onBeforeCompile
+  const prevKey = material.customProgramCacheKey
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(material, shader, renderer)
+    shader.uniforms.uGlow = material.uGlow
+    shader.uniforms.uGlowPts = pts
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGlowPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlowPos = position;')
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlowPos;\nuniform vec3 uGlow;\nuniform vec4 uGlowPts[${n}];`)
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        {
+          float glowMask = 0.0;
+          for ( int i = 0; i < ${n}; i++ ) {
+            vec4 g = uGlowPts[i];
+            glowMask += 1.0 - smoothstep( g.w * 0.6, g.w, distance( vGlowPos, g.xyz ) );
+          }
+          totalEmissiveRadiance += mix( diffuseColor.rgb, vec3( 1.0 ), 0.35 ) * uGlow * min( glowMask, 1.0 );
+        }`
+      )
+  }
+  material.customProgramCacheKey = () => `${prevKey ? prevKey.call(material) : ''}|glow${n}`
+  return material
+}
+
+/**
  * The material one generated prop draws through: Lambert with its own map and
  * the rim dissolve. A `card` is a far card off critters.js -- a cutout,
  * double-sided, lit by CARD_NORMAL on both faces of every quad so a cross's
@@ -148,6 +196,7 @@ const CARD_NORMAL = /* glsl */ `
  * shell): the one prop that shines, on a program of its own. There is no
  * environment map, so the shine is the sun's alone and lighting.js gates it
  * with the diffuse's shadow, as it does the wet creatures' glint (critters.js).
+ * `glow` is addGlow's list of points lit from inside, on a mesh only.
  * THE PROGRAM IS KEYED ON THESE FLAGS AND NOTHING ELSE, so every mesh variant of
  * every prop scatter compiles to one program and its calls differ by material
  * only -- a map bind, not a useProgram with the lights and camera re-uploaded
@@ -155,12 +204,13 @@ const CARD_NORMAL = /* glsl */ `
  * map is set) needs no help here. The lighting patch (lighting.js) composes
  * its key onto this one, so its callers must share theirs too.
  */
-export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false, foliage = false, gloss = false } = {}) {
+export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard = false, foliage = false, gloss = false, glow = null } = {}) {
   if (billboard && !card) throw new Error('createGenPropMaterial: a billboard is a card')
   if (billboard !== false && billboard !== true && billboard !== 'mixed') throw new Error(`createGenPropMaterial: billboard is true, false or 'mixed', not ${billboard}`)
   if (foliage && card) throw new Error('createGenPropMaterial: foliage is a mesh, not a card')
   if (gloss !== false && !(gloss > 0 && gloss < 1)) throw new Error(`createGenPropMaterial: gloss is a roughness in (0, 1), not ${gloss}`)
   if (gloss !== false && (card || foliage)) throw new Error('createGenPropMaterial: gloss is a solid mesh, not a cutout')
+  if (glow !== null && card) throw new Error('createGenPropMaterial: glow lights a mesh, not a card')
   const mixed = billboard === 'mixed'
   const params = {
     color: tint,
@@ -196,5 +246,5 @@ export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard
     }
   }
   material.customProgramCacheKey = () => `gen-prop${mixed ? '-billboard-mixed' : billboard ? '-billboard' : card ? '-card' : foliage ? '-foliage' : gloss !== false ? '-gloss' : ''}`
-  return material
+  return glow !== null ? addGlow(material, glow) : material
 }

@@ -377,14 +377,14 @@ export class Entrances {
     this.resident.set(key, { key, id: -1, blind: true })
   }
 
-  /** A room's mouth: the arch on the face point, the hole at HOLE.proud, no hull. */
-  _seatFixed({ key, x, z, nx, nz }) {
+  /** A room's mouth: the arch on the face point, brought forward by the room's own `bulge` (village.js placeExit), the hole at HOLE.proud past that, no hull. */
+  _seatFixed({ key, x, z, nx, nz, bulge = 0 }) {
     const nl = Math.hypot(nx, nz)
     nx /= nl
     nz /= nl
-    const mx = x + nx * MOUTH_STEP_M
-    const mz = z + nz * MOUTH_STEP_M
-    this._place(key, x, z, nx, nz, this.field.heightAt(x, z), this.field.heightAt(mx, mz), mx, mz, 0, 0)
+    const mx = x + nx * (MOUTH_STEP_M + bulge)
+    const mz = z + nz * (MOUTH_STEP_M + bulge)
+    this._place(key, x, z, nx, nz, this.field.heightAt(x, z), this.field.heightAt(mx, mz), mx, mz, 0, bulge)
   }
 
   /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. */

@@ -17,7 +17,7 @@ import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip } from './log-ship.js'
-import { Trees } from './render/trees.js'
+import { Trees, DENSITY as TREE_DENSITY } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -45,7 +45,7 @@ import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { Lamps } from './render/lamps.js'
 import { Shell } from './render/shell.js'
-import { rollVillage, buildVillage } from './rooms/village.js'
+import { rollVillage, buildVillage, WOOD } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
 import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
@@ -2899,8 +2899,8 @@ async function buildRoom(room, at) {
   // frame loop steps them in. Full density in forest cover and a quarter of it
   // in the open, off the same biome field the trees read.
   await bootStep('deadwood')
-  // A village is wood to its walls: full cover everywhere but the clearing.
-  const biome = room.village ? villageBiome(seed, roomSpec.clearing) : new BiomeField({ seed })
+  // A village is wood to its walls, thickest along its roads (village.js WOOD), meadow in the clearing.
+  const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await loadDeadwoodBank(), biome })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
@@ -2927,8 +2927,8 @@ async function buildRoom(room, at) {
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
-    // The lamps where the build put them (render/lamps.js), their light baked into every lit material until the room goes.
-    lamps = new Lamps(scene, height, { lamps: roomSpec.lamps, seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
+    // The lamps where the build put them (render/lamps.js), their light and the huts' windows' baked into every lit material until the room goes.
+    lamps = new Lamps(scene, height, { lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
     if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
     console.log(`[v2] lamps ${lamps.lamps.length}`)
   }
@@ -2944,6 +2944,7 @@ async function buildRoom(room, at) {
   await bootStep('trees')
   trees = new Trees(scene, height, waterSurfaces, propTextures, {
     seed,
+    density: room.village ? TREE_DENSITY * WOOD.density : TREE_DENSITY,
     ground: terrain,
     // Constructed above, and it has to be: a trunk that lands inside a boulder
     // stands on the boulder. See Rocks.blockTopAt.
@@ -3101,7 +3102,9 @@ async function buildRoom(room, at) {
   // The array order is load-bearing too: [trees, rocks] is the order the
   // constructor documents, and the layer weights its anchor kinds by it.
   await bootStep('mushrooms')
-  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed })
+  // A village grows no mushroom and no bone (DESIGN.md §30): the layers still
+  // exist so a mushroom she carried in stays hers.
+  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed, none: !!room.village })
   // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
   // three keys its program cache on this string, and this material's
   // uBillboardLayers is its own length, so reusing the ferns' 'v2-prop-bb'
@@ -3128,7 +3131,7 @@ async function buildRoom(room, at) {
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
   await bootStep('bones')
-  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await loadBonesBank() })
+  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await loadBonesBank(), none: !!room.village })
   for (const m of bones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   bones.place(spawn.x, spawn.z)
   bones.bakeCards(renderer)
@@ -3140,9 +3143,9 @@ async function buildRoom(room, at) {
   window.v2bones = bones
 
   // The carrots: bunches on open ground (render/carrots.js), placed against the
-  // trees and rocks already standing, like the mushrooms.
+  // trees and rocks already standing, like the mushrooms; every tile in a village.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await loadCarrotsBank() })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await loadCarrotsBank(), keep: room.village ? 1 : undefined })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   carrots.place(spawn.x, spawn.z)
   const cs = carrots.stats
@@ -3466,10 +3469,18 @@ async function buildRoom(room, at) {
   return { spawn, fresh }
 }
 
-/** A village's wood: full cover everywhere but its clearing, which is meadow. */
-function villageBiome(seed, clearing) {
+/** A village's wood (village.js WOOD): meadow in the clearing, full cover along the roads' verges and WOOD.cover between them. */
+function villageBiome(seed, clearing, paths) {
   const { x, z, r } = clearing
-  return { seed, coverAt: (px, pz) => { const dx = px - x, dz = pz - z; return dx * dx + dz * dz < r * r ? 0 : 1 } }
+  return {
+    seed,
+    coverAt: (px, pz) => {
+      const dx = px - x, dz = pz - z
+      if (dx * dx + dz * dz < r * r) return 0
+      const road = paths.nearest(px, pz, 'road')
+      return road !== null && road.dist - road.halfWidth < WOOD.verge ? 1 : WOOD.cover
+    },
+  }
 }
 
 /** What each hand held goes back into that hand, or, while its source has not landed the asset it is dressed with, into a free backpack slot. */
@@ -5631,10 +5642,11 @@ function tick() {
     wreaths.update(headTmp, state)
   }
   dayness = daynessOf(state)
-  // The lamps light after dark on the room's clock; their flicker is real time, this frame's glow into the lighting.
+  // The lamps light after dark on the room's clock; their flicker is real time, this frame's glow into the lighting and the huts' windows.
   if (lamps) {
     lamps.update((now / 1000) % 1024, dayness)
     lighting.uniforms.uLampGlow.value.copy(lamps.glow)
+    roomProps.setGlow(lamps.breath)
   }
   applySky(state, headTmp, now / 1000)
   // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.

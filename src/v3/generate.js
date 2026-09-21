@@ -3,6 +3,7 @@ import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
 import { Island, JITTER, rasterise } from './island.js'
 import { buildBiomes, serialise } from './biomes.js'
+import { runHydrology } from './hydrology.js'
 
 // ---------------------------------------------------------------------------
 // The v3 pipeline -- §31. Seed in, the coarse field and its layers document out, with the numbers the map page and the gate read off it.
@@ -10,7 +11,7 @@ import { buildBiomes, serialise } from './biomes.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'j1'
+export const VERSION = 'd1'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
@@ -24,7 +25,9 @@ export const BLUR_RADII = [32, 128, 512, 2048]
 /**
  * `generate({ seed, n = TEXELS, log, jitter })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, ms }
  *
- * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment; the cache never sees an overridden field.
+ * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment; the cache never sees an overridden field.
+ *
+ * The biomes are classed on the raw field and the carve reads its knobs from them; they are not reclassed afterwards, since the carve moves a few percent of the land by tens of metres and the classes are quantiles of the whole.
  */
 export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
   if (!Number.isInteger(seed)) throw new Error(`generate: seed must be an integer, got ${seed}`)
@@ -33,25 +36,34 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
   const t0 = now()
 
   const island = new Island(seed, undefined, jitter ? { ...JITTER, ...jitter } : JITTER)
-  const height = rasterise(island, n, cell)
+  const raw = rasterise(island, n, cell)
   const tMacro = now()
   log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
 
-  const biomes = buildBiomes(height, n, cell, seed)
+  const biomes = buildBiomes(raw, n, cell, seed)
   const tBiomes = now()
   log(`biomes         ${ms(tBiomes - tMacro)}  ${biomes.stats.polygons} polygons, ${biomes.stats.vertices} vertices, rebuilt grid agrees ${(biomes.stats.agree * 100).toFixed(2)}%`)
 
+  const hydro = runHydrology(raw, n, cell, biomes.grid)
+  const height = hydro.height
+  const tHydro = now()
+  const hs = hydro.stats
+  log(`hydrology      ${ms(tHydro - tBiomes)}  ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2, ${hs.breach.dropped} cut away in ${hs.breach.rounds} rounds), ${hs.breach.channels} channels in ${hs.breach.passes} passes (deepest ${hs.breach.deepestCut.toFixed(0)} m), carved ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
+
   const stats = measure(height, n, cell, island)
+  // The bowls are the raw field's: what the hydrology had to choose its lakes from and drain.
+  stats.bowls = bowls(raw, n, cell)
   stats.biomes = biomes.stats
+  stats.hydrology = hs
   const tStats = now()
-  log(`instruments    ${ms(tStats - tBiomes)}  land ${(stats.landFraction * 100).toFixed(1)}%, summit ${stats.summit.h.toFixed(0)} m, ${stats.bowls.count} bowls`)
+  log(`instruments    ${ms(tStats - tHydro)}  land ${(stats.landFraction * 100).toFixed(1)}%, summit ${stats.summit.h.toFixed(0)} m, ${stats.bowls.count} bowls`)
 
   const doc = validate({
     v: DOC_VERSION,
     snow: { base: stats.snowLine, band: 60, points: [] },
-    // The sea is one uncarved lake at y = 0 larger than the box, as the shipped world's ocean is (§18): its surface runs under the whole island and breaks it at the coast.
-    lakes: [{ id: 'l1', x: 0, z: 0, y: 0, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }],
-    rivers: [],
+    // The sea is one uncarved lake at y = 0 larger than the box, as the shipped world's ocean is (§18): its surface runs under the whole island and breaks it at the coast. The island's lakes follow it.
+    lakes: [{ id: 'l1', x: 0, z: 0, y: 0, rx: 10000, rz: 10000, rot: 0, shape: 1, carve: 0, depth: 8 }, ...hydro.lakes.map((l, i) => ({ id: `l${i + 2}`, ...l }))],
+    rivers: hydro.rivers.map((r, i) => ({ id: `r${i + 1}`, ...r })),
     roads: [],
   })
 

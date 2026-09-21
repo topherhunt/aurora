@@ -14,6 +14,7 @@ export const LAYERS = [
   ['slope', 'slope'],
   ['bowls', 'closed bowls'],
   ['biomes', 'biomes'],
+  ['water', 'lakes and rivers'],
 ]
 
 /** Lit from the north-west at 42 degrees, the cartographic convention; lit from anywhere else the eye reads every valley as a ridge. */
@@ -136,6 +137,58 @@ function paintBiomes(px, r) {
   }
 }
 
+const WATER = [40, 110, 210]
+const WATER_DEEP = [20, 50, 140]
+
+// Relief with the doc's water on it, read the way v2 reads it: each island lake is the ground inside its ellipse that lies under its level, the sea excepted; each river its polyline, one texel wide plus its width, brightening with the width.
+function paintWater(px, r) {
+  paintRelief(px, r)
+  const { height: H, n, cell } = r
+  const half = ((n - 1) * cell) / 2
+  for (const lake of r.doc.lakes) {
+    if (lake.y <= 0) continue
+    const c = Math.cos(lake.rot)
+    const s = Math.sin(lake.rot)
+    const reach = Math.max(lake.rx, lake.rz)
+    const i0 = Math.max(0, Math.floor((lake.x - reach + half) / cell))
+    const i1 = Math.min(n - 1, Math.ceil((lake.x + reach + half) / cell))
+    const j0 = Math.max(0, Math.floor((lake.z - reach + half) / cell))
+    const j1 = Math.min(n - 1, Math.ceil((lake.z + reach + half) / cell))
+    for (let j = j0; j <= j1; j++) {
+      const dz = j * cell - half - lake.z
+      for (let i = i0; i <= i1; i++) {
+        const dx = i * cell - half - lake.x
+        const lx = c * dx + s * dz
+        const lz = -s * dx + c * dz
+        if ((lx * lx) / (lake.rx * lake.rx) + (lz * lz) / (lake.rz * lake.rz) > 1) continue
+        const k = j * n + i
+        const depth = lake.y - H[k]
+        if (depth > 0) put(px, k, mix(WATER, WATER_DEEP, clamp01(depth / 40)))
+      }
+    }
+  }
+  for (const river of r.doc.rivers) {
+    for (let p = 1; p < river.pts.length; p++) {
+      const [ax, az, aw = 1] = river.pts[p - 1]
+      const [bx, bz, bw = aw] = river.pts[p]
+      const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / (cell * 0.5)))
+      for (let t = 0; t <= steps; t++) {
+        const u = t / steps
+        const w = aw + (bw - aw) * u
+        const rad = 0.5 + w / cell
+        const ci = (ax + (bx - ax) * u + half) / cell
+        const cj = (az + (bz - az) * u + half) / cell
+        const rgb = mix(WATER, [120, 190, 255], clamp01(w / 10))
+        for (let j = Math.max(0, Math.floor(cj - rad)); j <= Math.min(n - 1, Math.ceil(cj + rad)); j++) {
+          for (let i = Math.max(0, Math.floor(ci - rad)); i <= Math.min(n - 1, Math.ceil(ci + rad)); i++) {
+            if (Math.hypot(i - ci, j - cj) <= rad) put(px, j * n + i, rgb)
+          }
+        }
+      }
+    }
+  }
+}
+
 export function paintInto(px, r, layerId) {
   switch (layerId) {
     case 'relief': return paintRelief(px, r)
@@ -143,6 +196,7 @@ export function paintInto(px, r, layerId) {
     case 'slope': return paintSlope(px, r)
     case 'bowls': return paintBowls(px, r)
     case 'biomes': return paintBiomes(px, r)
+    case 'water': return paintWater(px, r)
     default: throw new Error(`paint: unknown layer ${layerId}`)
   }
 }

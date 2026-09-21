@@ -284,7 +284,7 @@ import { PLACEMENT, TREELINE, BIOME, forestKeepAt, forestScaleAt } from '../laye
 
 // Trees per square metre at full density: one per 20 m^2. This is the near-field
 // density; see the header for how it decays past FULL_RADIUS.
-const DENSITY = 0.05
+export const DENSITY = 0.05
 
 // Metres. Inside this every tree stands. Past it the density is scaled by
 // FULL_RADIUS / d. It wants to be past the last mesh band, so the forest you

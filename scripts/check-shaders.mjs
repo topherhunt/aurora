@@ -32,6 +32,7 @@ import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Wreaths } from '../src/v2/render/wreaths.js'
 import { Precip } from '../src/v2/render/precip.js'
+import { Flames } from '../src/v2/render/fire.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -1005,11 +1006,29 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!vert.includes('if ( aPick.y > uIntensity ) gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );')) MISSING_MARKS.push('precip.js vert: the intensity cull')
 }
 
-// The generated props' three programs (gen-props.js): the mesh with the rim
-// dissolve over `aPropFade`, the axis card and the spun card. The card's normal
-// is the world's, not the instance's, and both card programs are checked for it.
+// The flames (fire.js): a GLSL1 ShaderMaterial on an InstancedMesh of cards,
+// each card built about its instance's origin in the vertex stage. The foot
+// pinch and the outline cut are the two lines a silent edit would lose.
+{
+  const material = new Flames(1).material
+  const GLSL1_OUT = 'out highp vec4 pc_fragColor;\n#define gl_FragColor pc_fragColor\n'
+  const vert = finish(material.vertexShader)
+  const frag = finish(material.fragmentShader)
+  SHADERS.push(['fire.js        VERT', 'vert', V_PRE + 'attribute mat4 instanceMatrix;\n', vert])
+  SHADERS.push(['fire.js        FRAG', 'frag', F_PRE + GLSL1_OUT + COLOR_FNS + '\n', frag])
+  CROSS_STAGE.push(['fire.js', vert, frag])
+  if (!vert.includes('vec3 origin = instanceMatrix[3].xyz;')) MISSING_MARKS.push('fire.js vert: the card about the instance origin')
+  if (!frag.includes('v *= smoothstep( 0.0, 0.1, p.y ) * ( 1.0 - smoothstep( 1.0, 1.35, p.y ) );')) MISSING_MARKS.push('fire.js frag: the foot pinch and the overhang fade')
+  if (!frag.includes('v -= ( n.x + n.y ) * uCut * rise;')) MISSING_MARKS.push('fire.js frag: the outline cut')
+}
+
+// The generated props' four programs (gen-props.js): the mesh with the rim
+// dissolve over `aPropFade`, the mesh lit from inside at addGlow's points, the
+// axis card and the spun card. The card's normal is the world's, not the
+// instance's, and both card programs are checked for it.
 for (const [label, opts, defines] of [
   ['gen-prop mesh        ', {}, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']],
+  ['gen-prop glow        ', { glow: [{ x: 0, y: 0.4, z: 0, r: 0.1 }, { x: 0.2, y: 0.6, z: 0, r: 0.1 }] }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']],
   ['gen-prop card        ', { card: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
   ['gen-prop spun card   ', { card: true, billboard: true }, ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']],
 ]) {
@@ -1032,6 +1051,8 @@ for (const [label, opts, defines] of [
   if (!frag.includes('abs( vPropFade ) <= fadeT ) discard')) MISSING_MARKS.push(`${label} frag: the dither`)
   if (!!opts.card !== frag.includes('vec3 cnUp = normalize( ( viewMatrix')) MISSING_MARKS.push(`${label} frag: the card normal ${opts.card ? 'missing' : 'on a mesh'}`)
   if (!!opts.billboard !== vert.includes('vec2 bbTo = cameraPosition.xz')) MISSING_MARKS.push(`${label} vert: the spin ${opts.billboard ? 'missing' : 'on a flat card'}`)
+  // The glow reads the pre-instance `position`, so one list of points lights every instance, and lifts the albedo a third of the way to white so a dark pane lights and a patterned one stays readable.
+  if (!!opts.glow !== (vert.includes('vGlowPos = position;') && frag.includes(`uniform vec4 uGlowPts[${opts.glow?.length}];`) && frag.includes('totalEmissiveRadiance += mix( diffuseColor.rgb, vec3( 1.0 ), 0.35 ) * uGlow * min( glowMask, 1.0 );'))) MISSING_MARKS.push(`${label}: the glow ${opts.glow ? 'missing' : 'on an unlit prop'}`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

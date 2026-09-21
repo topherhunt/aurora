@@ -41,6 +41,7 @@ import { FREEBOARD } from '../layers/paths.js'
 import { Spline } from '../layers/spline.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { tileSeed } from '../render/critters.js'
+import { HOLE } from '../render/entrances.js'
 import { TILE as FISH_TILE, SPECIES as FISH_SPECIES } from '../render/fish.js'
 
 // The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (80 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
@@ -50,8 +51,10 @@ export const FLOOR = SHELL.floor
 // The ground. Metres; the floor stays over every scatter's elevation floor (trees 25 m).
 export const TEXELS = 1025                       // WORLD_SIZE / (TEXELS - 1) = 8 m a texel, the overworld's pitch
 export const TILE_TEXELS = 16                    // the repeated tile, 128 m: the widest wall plus the climb past it fits in it on every yaw, and the plateau past the climb stays under the 65% of the map V2Height.bands lets sit at one height
-export const DROP = 10                           // the cone: its tip FLOOR at the axis, its rim DROP over that on the mean, where the shell's wall stands at the rim's height
-export const TIP = 0.15                          // the cone's tip rounded off: its profile is a hyperbola whose asymptote is the cone, flat at the axis, this fraction of the rim's radius from it
+export const DROP = 10                           // the cone: its tip FLOOR at the basin, its rim DROP over that on the mean, where the shell's wall stands at the rim's height
+export const TIP = 0.15                          // the cone's tip rounded off: its profile is a hyperbola whose asymptote is the cone, flat at the tip, this fraction of the rim's radius from it
+// The basin: with odds `odds` the cone's tip stands off the axis, `off` of the rim's radius on a rolled bearing, so the lake sits toward one wall and the ground falls to it steeper on that side and gentler on the others; otherwise on the axis.
+export const BASIN = { odds: 0.5, off: [0.25, 0.6] }
 // The rim's height round the bearing: DROP over the floor scaled by the rim's radius on that bearing over its mean, so the ground climbs at one grade on every side and the rim stands highest where the boulder is longest (`stretch` is the most a radius may stand over the mean, the boulder's long axis over its mean, and TOP allows for it), plus `amp` metres of value noise, one lattice of `lattices[k]` rolled values round the circle per octave, smoothly interpolated, the octaves weighted by halves; so the ground meets the stone at a different height on every side.
 export const RIM = { amp: 2, lattices: [6, 12], stretch: 1.25 }
 // The jitter: one lattice per octave, periodic on the tile, each vertex moved by up to `amp` of that octave's spacing either way, bilinear between vertices; the finest lattice is the texel grid itself, so the map holds the jitter exactly. It dies over the last `foot` metres to the wall, so the ground meets the stone at the height the wall was read at: jitter at the wall would stand the ground through the stone where the wall leans in above the rim.
@@ -61,19 +64,21 @@ export const PAST = { in: 3.5, fade: 12, grade: 1.4 }
 export const TOP = FLOOR + DROP * RIM.stretch + RIM.amp + PAST.fade * PAST.grade
 export const MAX_Y = 300                         // the encoding's range
 
-// The lake: its level `over` metres above the lowest ground `margin` metres inside the wall, drawn as an uncarved plane across the hollow (water-bodies.js: water shows wherever the ground is under it). The largest pool under that level, found on a `grid` metre grid, is the lake the village stands about; one under `least` square metres re-rolls the jitter.
-export const LAKE = { over: 3, margin: 12, least: 120, depth: 4, grid: 1 }
-// The rivers (DESIGN.md §30): `count` of them from a source `from` of the way to the wall within `sector` degrees of straight away from the exit, `apart` degrees apart. Each is walked down in `step` metre steps, every step downhill, on the fall line pulled toward the lake's deepest point by `follow` and swung across it by a sine of `swing` degrees over `wavelength` metres, the swing shallowed until the step descends; stalled `stall` steps in a pit, it runs straight for the deepest point; in the water it runs for that point until the ground stands `into` metres under the lake, and that is the mouth, so the sheet dives under the lake's plane (paths.js reads a mouth on the lake wherever the ground is within a channel depth of its level, and never raises a level). A node every `node` steps, a fifth of the shortest wave, so the spline through them keeps the bends (a node every 4 m flattened them). A bearing whose walk reaches no water of the lake's own, or runs under `wind` times its chord (a swing whose phase happens to cancel over so short a run comes down all but straight), is stepped `retry` degrees either side. No road comes within `clear` metres of a river: a road's feather (ROAD_FEATHER, laid over the carve by paths.js smoothRoads) would lift the bed out of the water, so `clear` is half a road, its feather and a bank (paths.js BANK) of half a river, and a metre.
-export const RIVER = { count: [1, 2], sector: 40, apart: 30, from: 0.85, step: 0.5, node: 4, follow: 1.5, swing: [50, 75], wavelength: [10, 16], wind: 1.15, into: 0.8, width: 1.5, depth: 1, retry: 5, stall: 12, clear: 6 }
+// The lake: its level `over` metres above the lowest ground, drawn as an uncarved plane across the hollow (water-bodies.js: water shows wherever the ground is under it). The largest pool under that level, found on a `grid` metre grid, is the lake the village stands about; one under `least` square metres, or one reaching within `margin` metres of the rim (the loop must pass between the water and the wall), re-rolls the jitter.
+export const LAKE = { over: 3, margin: 7, least: 120, depth: 4, grid: 1 }
+// The rivers (DESIGN.md §30): `count` of them from a source `from` of the way to the wall, the first within `sector` degrees of straight away from the exit or, with odds `nearOdds`, `near` degrees off the exit's bearing on a rolled side, so she sometimes comes down beside a stream; the next `apart` degrees on from it, away from the exit. Each is walked down in `step` metre steps, every step downhill, on the fall line pulled toward the lake's deepest point by `follow` and swung across it by a sine of `swing` degrees over `wavelength` metres, the swing shallowed until the step descends; stalled `stall` steps in a pit, it runs straight for the deepest point; in the water it runs for that point until the ground stands `into` metres under the lake, and that is the mouth, so the sheet dives under the lake's plane (paths.js reads a mouth on the lake wherever the ground is within a channel depth of its level, and never raises a level). A node every `node` steps, a fifth of the shortest wave, so the spline through them keeps the bends (a node every 4 m flattened them). A bearing whose walk reaches no water of the lake's own, whose source ground stands under `rise` metres over the lake (a lake set toward one wall leaves that side's source all but level with the water, and a stream that does not fall is a ditch), runs under `wind` times its chord (a swing whose phase happens to cancel over so short a run comes down all but straight), or folds back on itself by over `turn` degrees between nodes or lays two nodes within two `step`s of each other (a walk bouncing in a pit stacks its nodes, and the ribbon drawn along the spline through them has a cusp its miter cannot rescue -- ribbon.js throws on it; a river that flows turns under 95 degrees and its nodes stand 2 m apart), is stepped `retry` degrees either side. No road comes within `clear` metres of a river: a road's feather (ROAD_FEATHER, laid over the carve by paths.js smoothRoads) would lift the bed out of the water, so `clear` is half a road, its feather and a bank (paths.js BANK) of half a river, and a metre.
+export const RIVER = { count: [1, 2], sector: 40, near: [55, 100], nearOdds: 0.4, apart: 30, from: 0.85, rise: 3, step: 0.5, node: 4, follow: 1.5, swing: [50, 75], wavelength: [10, 16], wind: 1.15, turn: 120, into: 0.8, width: 1.5, depth: 1, retry: 5, stall: 12, clear: 6 }
 // The path round the lake: `over` metres past the water on every bearing (the wet radius dilated and averaged over `smooth` degrees), ending where it comes within RIVER.clear of a river, held at the ring's height for `level` degrees either side of the clearing's bearing, where the spur leaves it, and wherever it passes within the houses' reach of the clearing, so every road about the houses stands at one level (paths.js smoothRoads reads the nearest road alone, and a loop falling past a house's wall would tilt its footprint); and everywhere else cut level `dry` metres over the water, its feather the shore's shelf, where the frogs sit (frogs.js seats on dry ground under 35 degrees within 5 m of the water, and the cone alone is steeper wherever the jitter adds to it), with a ramp's length between the two levels left to fall at the chord grade.
 export const LOOP = { over: [2, 4], smooth: 30, level: 15, dry: 1 }
 // The clearing: a disc of radius `r` the wood keeps off (main.js villageBiome, RoomProps.occupiesAt), ringed by a path the houses' doors open on, its ring's inner point `spur` metres out from the loop on a bearing from the lake `bearing` degrees off the exit's on a rolled side, a spur straight in from the loop to it: it is the houses that cluster round the ring, and a loop run onto it would pass under them. The rolled bearing is stepped `sweep` degrees at a time within `bearing`, the other side after, until the houses stand `wall` metres clear of the stone. The ring is level at the ground's mean over it and the loop's level stretch (LOOP.level), `dry` over the lake at the least; the ring's and the pads' smooth (paths.js smoothRoads) cut the clearing and the houses into the slope at that level, and the loop's stretch is built up to it.
 export const CLEARING = { r: 5, spur: 2, bearing: [50, 120], sweep: 5, wall: 1.5, dry: 1 }
+// The wood (main.js villageBiome): `density` times the forest's candidates a tile (trees.js DENSITY), full cover within `verge` metres of a road's edge and `cover` elsewhere (forest.js BIOME reads cover onto the keep and the height: at 0.6 about 0.7 of the candidates stand, a little shorter), so the roads are lined thicker than the wood between them; the clearing is meadow. The forest's own verge (trees.js ROAD) cannot do this in a village, where the keep is 1 already and it only ever multiplies up to 1.
+export const WOOD = { density: 2, verge: 8, cover: 0.6 }
 // The houses (DESIGN.md §30): `count` round the ring, the great house at its head and the rest packed either side, `gap` metres apart and from the spur and the loop, `height` by their count (a house is half as wide as it is tall: six round this ring, with the spur's wedge, fit only small). Each stands on a pad of two road rings hidden under its floor at its road's height, `pads` of its radius out and `padHalf` of it wide, so the flatten (paths.js smoothRoads, the nearest road alone) levels the whole footprint and the cobble (SWELL) never shows past the walls.
-export const HUTS = { count: [5, 6], height: { 5: [4, 6], 6: [4, 4.5] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25 }
-export const GREAT_HUT = { height: [6, 6.5] }
+export const HUTS = { count: [5, 6], height: { 5: [3, 6], 6: [3, 5] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25 }
+export const GREAT_HUT = { height: [6.2, 7.5] }
 // The outlying houses: `count` of them off the loop, each sited off a rolled point of it on a bearing from the lake, `off` metres out from the loop to its door, along it by that distance times the tangent of `skew` degrees, in the wood or, where the loop's radius leaves a bay dry enough, down on the shore between the loop and the water (`shore` is the odds a house tries the shore first); `gap` metres clear of every road and house, `wall` clear of the stone, a house `tries` sites before the village does without it. Its branch leaves the loop at the nearest point within `window` of the rolled one from which one grade reaches the door crossing no road (roadsCross), its first `apron` metres held at the loop's height, wobbling `wander` of WANDER.amp so it cannot bend back over the loop. Its door faces its branch, and its pad stands at the ground under its centre.
-export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [4, 6] }
+export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [3, 6.5] }
 export const ROAD_WIDTH = 1
 // Two roads meet only where one ends on the other, within `JUNCTION_M` of an end: the ground takes the nearest road's height (paths.js smoothRoads), so a crossing at two heights is a broken bridge (roadsCross).
 export const JUNCTION_M = 1
@@ -97,10 +102,10 @@ const PROFILE_M = 24
 export const STRAIGHT_M = 8
 export const STRAIGHT_DEG = 6
 export const WANDER = { wavelength: 12, amp: 1.2 }
-// The trunk: legs from the exit down to the loop, each sweeping up to `sweep` degrees round the lake and back, as many as hold the drop at CHORD_GRADE with `slack` to spare and no more than `legs`, its hairpins turned on `hairpin` metres, the last `approach` metres straight in on the exit's bearing so it meets the loop square.
-export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 8 }
+// The trunk: legs from the exit down to the loop, each sweeping up to `sweep` degrees round the lake and back, as many as hold the drop at CHORD_GRADE with `slack` to spare and no more than `legs`, its hairpins turned on `hairpin` metres, the last `approach` metres straight in on the exit's bearing so it meets the loop square. The top of the approach stands `room` metres nearer the lake than the arrival, or there is no trunk: a leg returning to the exit's bearing ends there, and with the lake near the exit it ended at the arrival's feet, five metres under the mouth.
+export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 8, room: 6 }
 // The exit mouth: on the bearing where the shell's wall stands most nearly plumb across the arch's height (entrances.js MOUTH_HEIGHT_M), its face point on the wall at the arch's mid height so the arch's back half stands in the stone, its normal into the room. The shell's stone gives way within `door` metres of the face point (Shell.setDoor), the arch and a shoulder, so she walks up to the hole. No house's wall stands within `houses` metres of it: she comes down through the wood before the village shows.
-export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, door: 1.5, houses: 20 }
+export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.5, houses: 20 }
 export const ARRIVE_M = 2
 const ROLL_TRIES = 128
 
@@ -112,7 +117,8 @@ const TILE_M = WORLD_SIZE / (TEXELS - 1) * TILE_TEXELS
 
 /**
  * What one village is built from, off its seed:
- * `{ seed, attempt, shell, jitter, rivers: [{ bearing, swing, wavelength, phase }], loop: { over }, clearing: { side, bearing }, huts: [height], great, outlying: [height] }`,
+ * `{ seed, attempt, shell, jitter, basin: { bearing, off }, rivers: [{ bearing, swing, wavelength, phase }], loop: { over }, clearing: { side, bearing }, huts: [height], great, outlying: [height] }`,
+ * the basin's bearing in radians from +X and its `off` a fraction of the rim's radius (BASIN),
  * bearings in degrees off the one from the lake to the exit, `great` the
  * index of the great house among the heights. `attempt` above 0 rolls another
  * village under the same shell, for a build the ground refused (buildVillage).
@@ -124,8 +130,10 @@ export function rollVillage(seed, house, attempt = 0) {
   const shell = { ...SHELL, yaw: rng() * TAU }
   for (let i = 0; i < attempt; i++) rng()
   const jitter = Math.floor(rng() * 2 ** 31)
+  const basin = rng() < BASIN.odds ? { bearing: rng() * TAU, off: between(BASIN.off) } : { bearing: 0, off: 0 }
   const river = (bearing) => ({ bearing, swing: between(RIVER.swing), wavelength: between(RIVER.wavelength), phase: rng() * TAU })
-  const rivers = [river(180 + RIVER.sector * (2 * rng() - 1))]
+  const nearSide = rng() < 0.5 ? -1 : 1
+  const rivers = [river(rng() < RIVER.nearOdds ? wrapDeg(nearSide * between(RIVER.near)) : 180 + RIVER.sector * (2 * rng() - 1))]
   if (Math.round(between(RIVER.count)) > 1) {
     const side = rivers[0].bearing >= 180 ? -1 : 1
     rivers.push(river(rivers[0].bearing + side * (RIVER.apart + rng() * (RIVER.sector * 2 - RIVER.apart))))
@@ -139,17 +147,17 @@ export function rollVillage(seed, house, attempt = 0) {
   huts[great] = between(GREAT_HUT.height)
   const outlying = []
   for (let i = 0, m = Math.round(between(OUTLYING.count)); i < m; i++) outlying.push(between(OUTLYING.height))
-  return { seed, attempt, shell, jitter, rivers, loop, clearing, huts, great, outlying }
+  return { seed, attempt, shell, jitter, basin, rivers, loop, clearing, huts, great, outlying }
 }
 
 // --- the ground --------------------------------------------------------------
 
 /**
- * The hollow's ground off the shell's wall: `{ at(x, z), coneAt(x, z), rimAt(bearing), rimYAt(bearing) }`,
- * the rim's radius and height on a bearing in radians. The wall is read once a degree at that degree's rim height.
+ * The hollow's ground off the shell's wall: `{ at(x, z), coneAt(x, z), rimAt(bearing), rimYAt(bearing), tip: { x, z } }`,
+ * the rim's radius and height on a bearing in radians from the axis, and where the cone's tip stands (BASIN). The wall is read once a degree at that degree's rim height.
  */
 const WIDE = new WeakMap()
-export function makeGround(shell, { jitter }) {
+export function makeGround(shell, { jitter, basin = { bearing: 0, off: 0 } }) {
   const rng = mulberry32(jitter)
   // The rim's height round the circle: RIM's value noise, each octave a ring of rolled values interpolated by a smoothstep, weighted by halves and normalised to `amp` at the most.
   const rings = RIM.lattices.map((n, k) => ({ n, w: 0.5 ** k, v: Float32Array.from({ length: n }, () => rng() * 2 - 1) }))
@@ -201,16 +209,31 @@ export function makeGround(shell, { jitter }) {
     }
     return j
   }
+  // The cone's tip, and from it the rim's reach and height on every degree: the rim is read about the axis, so the reach on a bearing from the tip is bisected for where that ray meets it.
+  const tip = { x: Math.cos(basin.bearing) * basin.off * rimAt(basin.bearing), z: Math.sin(basin.bearing) * basin.off * rimAt(basin.bearing) }
+  const reach = new Float32Array(360), reachY = new Float32Array(360)
+  for (let d = 0; d < 360; d++) {
+    const c = Math.cos(deg(d)), sn = Math.sin(deg(d))
+    const past = (r) => Math.hypot(tip.x + c * r, tip.z + sn * r) - rimAt(Math.atan2(tip.z + sn * r, tip.x + c * r))
+    let lo = 0, hi = 4 * mean
+    if (past(lo) >= 0 || past(hi) <= 0) throw new Error('village: the cone\'s tip stands outside the rim')
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (past(mid) < 0) lo = mid; else hi = mid }
+    reach[d] = hi
+    reachY[d] = rimYAt(Math.atan2(tip.z + sn * hi, tip.x + c * hi))
+  }
+  const reachAt = ringOf(reach), reachYAt = ringOf(reachY)
   const coneAt = (x, z) => {
-    const b = Math.atan2(z, x), r = Math.hypot(x, z), R = rimAt(b)
+    const b = Math.atan2(z - tip.z, x - tip.x), r = Math.hypot(x - tip.x, z - tip.z), R = reachAt(b)
     const t = Math.min(1, r / R)
     const profile = (Math.hypot(t, TIP) - TIP) / (Math.hypot(1, TIP) - TIP)
-    return Math.min(TOP, FLOOR + (rimYAt(b) - FLOOR) * profile + Math.max(0, r - R) * PAST.grade)
+    const out = Math.hypot(x, z) - rimAt(Math.atan2(z, x))
+    return Math.min(TOP, FLOOR + (reachYAt(b) - FLOOR) * profile + Math.max(0, out) * PAST.grade)
   }
   const ground = {
     rimAt,
     rimYAt,
     coneAt,
+    tip,
     at(x, z) {
       const past = Math.hypot(x, z) - rimAt(Math.atan2(z, x))
       return coneAt(x, z) + jitterAt(x, z) * (1 - smoothstep(-JITTER.foot, 0, past))
@@ -244,22 +267,26 @@ export function buildHeightmap(ground) {
 // --- the water ---------------------------------------------------------------
 
 /**
- * The lake on `ground`: `{ x, z, y, area, deep, inLake(x, z), wetRadius(bearing) }`
- * -- its level; the largest pool's centroid, area in square metres and
- * deepest point; whether a point is in that pool; and how far the water
- * reaches from the centroid on a bearing (degrees from +X).
+ * The lake on `ground`: `{ x, z, y, area, wall, deep, inLake(x, z), wetRadius(bearing) }`
+ * -- its level; the largest pool's centroid, area in square metres, how much
+ * of that stands within LAKE.margin of the rim and its deepest point; whether
+ * a point is in that pool; and how far the water reaches from the centroid on
+ * a bearing (degrees from +X).
  */
 export function findLake(ground) {
   const step = LAKE.grid, half = Math.ceil(TILE_M / 2 / step)
   const w = 2 * half + 1
   const h = new Float32Array(w * w).fill(NaN)
+  const near = new Uint8Array(w * w)
   let lo = Infinity
   for (let v = -half; v <= half; v++) {
     for (let u = -half; u <= half; u++) {
       const x = u * step, z = v * step
-      if (Math.hypot(x, z) >= ground.rimAt(Math.atan2(z, x)) - LAKE.margin) continue
+      const in_ = ground.rimAt(Math.atan2(z, x)) - Math.hypot(x, z)
+      if (in_ <= 0) continue
       const y = ground.at(x, z)
       h[(v + half) * w + u + half] = y
+      near[(v + half) * w + u + half] = in_ < LAKE.margin ? 1 : 0
       lo = Math.min(lo, y)
     }
   }
@@ -271,11 +298,11 @@ export function findLake(ground) {
     const id = ++pools
     const stack = [i]
     pool[i] = id
-    let count = 0, sx = 0, sz = 0, deep = i
+    let count = 0, sx = 0, sz = 0, deep = i, wall = 0
     while (stack.length) {
       const k = stack.pop()
       const u = (k % w) - half, v = Math.floor(k / w) - half
-      count++; sx += u; sz += v
+      count++; sx += u; sz += v; wall += near[k]
       if (h[k] < h[deep]) deep = k
       for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const uu = u + du, vv = v + dv
@@ -284,7 +311,7 @@ export function findLake(ground) {
         if (h[kk] < y && pool[kk] === 0) { pool[kk] = id; stack.push(kk) }
       }
     }
-    if (best === null || count > best.count) best = { id, count, x: (sx / count) * step, z: (sz / count) * step, deep: { x: ((deep % w) - half) * step, z: (Math.floor(deep / w) - half) * step } }
+    if (best === null || count > best.count) best = { id, count, wall, x: (sx / count) * step, z: (sz / count) * step, deep: { x: ((deep % w) - half) * step, z: (Math.floor(deep / w) - half) * step } }
   }
   if (best === null) throw new Error('village: no ground under the lake\'s level')
   const { x, z, deep } = best
@@ -302,7 +329,7 @@ export function findLake(ground) {
     }
     return last
   }
-  return { x, z, y, area, deep, inLake, wetRadius }
+  return { x, z, y, area, wall: best.wall * step * step, deep, inLake, wetRadius }
 }
 
 // --- the roads ---------------------------------------------------------------
@@ -315,6 +342,24 @@ export function bearings(pts) {
     out.push((Math.atan2(s[i] - s[i - 4], s[i + 2] - s[i - 2]) * 180) / Math.PI)
   }
   return out
+}
+
+/** The sharpest turn in degrees between successive legs of `pts` (`[x, z]`): 0 straight on, 180 folded back. */
+export function sharpestTurn(pts) {
+  let worst = 0
+  for (let i = 1; i < pts.length - 1; i++) {
+    const ux = pts[i][0] - pts[i - 1][0], uz = pts[i][1] - pts[i - 1][1], vx = pts[i + 1][0] - pts[i][0], vz = pts[i + 1][1] - pts[i][1]
+    const l = Math.hypot(ux, uz) * Math.hypot(vx, vz)
+    if (l > 0) worst = Math.max(worst, (Math.acos(Math.max(-1, Math.min(1, (ux * vx + uz * vz) / l))) * 180) / Math.PI)
+  }
+  return worst
+}
+
+/** The shortest leg in metres between successive points of `pts` (`[x, z]`). */
+export function closestNodes(pts) {
+  let least = Infinity
+  for (let i = 1; i < pts.length; i++) least = Math.min(least, Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
+  return least
 }
 
 /** How much longer `pts` (`[x, z]`) runs than the chord from its first point to its last. */
@@ -460,6 +505,7 @@ const nearestOf = (pts, x, z) => pts.reduce((best, p) => Math.min(best, Math.hyp
 function trunkPlan(lake, from, to, side, drop) {
   const need = (drop / CHORD_GRADE) * TRUNK.slack
   const r0 = Math.hypot(from[0] - lake.x, from[1] - lake.z), r1 = Math.hypot(to[0] - lake.x, to[1] - lake.z) + TRUNK.approach
+  if (r0 - r1 < TRUNK.room) return null
   const b0 = bearingDeg(lake, from[0], from[1])
   for (let legs = 1; legs <= TRUNK.legs; legs++) {
     for (let sweep = 10; sweep <= TRUNK.sweep; sweep += 2) {
@@ -588,16 +634,13 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   const ground = makeGround(shell, spec)
   const lake = findLake(ground)
   if (lake.area < LAKE.least) return again('the lake is a puddle')
+  if (lake.wall > 0) return again('the lake reaches the wall')
 
   const heightmap = buildHeightmap(ground)
   const lakeRec = { id: 'l1', x: 0, z: 0, y: lake.y, rx: TILE_M / 2, rz: TILE_M / 2, rot: 0, shape: SHAPE_RECT, carve: 0, depth: LAKE.depth }
-  const fieldOf = (rivers) => {
-    const candidate = { v: DOC_VERSION, snow: { base: 5000, band: 10, points: [] }, lakes: [lakeRec], rivers, roads: [] }
-    return new V2Height({ heightmap, layers: Layers.deserialize(validate(candidate)), seed: SEED, relief: RELIEF_SHIPPED })
-  }
-  // The field with the lake alone: the ground the exit stands on and the rivers are walked on.
-  const bare = fieldOf([])
-  const bareAt = (x, z) => bare.heightAt(x, z)
+  // One field an attempt (its reconstruction over the map is most of a build), the lake alone in it: the ground the exit stands on and the rivers are walked on. The rivers are swapped into the same field once they are found (V2Height.setLayers).
+  const field = new V2Height({ heightmap, layers: Layers.deserialize(validate({ v: DOC_VERSION, snow: { base: 5000, band: 10, points: [] }, lakes: [lakeRec], rivers: [], roads: [] })), seed: SEED, relief: RELIEF_SHIPPED })
+  const bareAt = (x, z) => field.heightAt(x, z)
 
   // The exit: the bearing whose wall stands most nearly plumb across the arch, its face point on that wall.
   const exit = placeExit(shell, ground, bareAt)
@@ -659,7 +702,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
       for (const b of off === 0 ? [rolled.bearing] : [rolled.bearing + off, rolled.bearing - off]) {
         if (rivers.some((r) => Math.abs(r.bearing - b) < RIVER.apart)) continue
         const pts = riverPlan(bareAt, ground, lake, { ...rolled, bearing: heading + b })
-        if (pts === null || sinuosity(pts) < RIVER.wind || pts.some(([x, z]) => Math.hypot(x - clearing.x, z - clearing.z) < CLEARING.r + RIVER.clear || houses.some((h) => Math.hypot(x - h.x, z - h.z) < h.r + RIVER.clear) || nearestOf(spurPlan, x, z) < RIVER.clear)) continue
+        if (pts === null || bareAt(pts[0][0], pts[0][1]) < lake.y + RIVER.rise || sinuosity(pts) < RIVER.wind || sharpestTurn(pts) > RIVER.turn || closestNodes(pts) < RIVER.step * 2 || pts.some(([x, z]) => Math.hypot(x - clearing.x, z - clearing.z) < CLEARING.r + RIVER.clear || houses.some((h) => Math.hypot(x - h.x, z - h.z) < h.r + RIVER.clear) || nearestOf(spurPlan, x, z) < RIVER.clear)) continue
         found = { bearing: b, pts }
         break
       }
@@ -674,7 +717,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     rivers: rivers.map((r, i) => ({ id: `r${i + 1}`, depth: RIVER.depth, pts: r.pts.map(([x, z]) => [x, z, RIVER.width]) })),
     roads: [],
   }
-  const field = new V2Height({ heightmap, layers: Layers.deserialize(validate(doc)), seed: SEED, relief: RELIEF_SHIPPED })
+  field.setLayers(Layers.deserialize(validate(doc)))
   const heightAt = (x, z) => field.heightAt(x, z)
   // Each river's solve carries it under the lake's plane: the sheet at its mouth stands no higher than the water.
   field.heightAt(lake.x, lake.z)
@@ -928,8 +971,8 @@ function fishSeedFor(seed, lake, heightAt) {
 }
 
 /**
- * The exit mouth: `{ key, x, z, nx, nz, bearing, y, arrivalY }`. The trunk
- * starts ARRIVE_M in from the face at `arrivalY`, the bare ground there or
+ * The exit mouth: `{ key, x, z, nx, nz, bearing, y, arrivalY, bulge }`. The
+ * trunk starts ARRIVE_M in from the face at `arrivalY`, the bare ground there or
  * whatever higher stands the face within a chord's rise of it, and `y` is the
  * ground the field will read under the mouth: the bare ground at the face
  * blended toward the trunk's start by its shoulder (paths.js smoothRoads, the
@@ -937,9 +980,13 @@ function fishSeedFor(seed, lake, heightAt) {
  * the bare ground climbs into the stone past the rim, and the wall there is
  * another wall). On each bearing the face point is where the wall stands at
  * the arch's mid height over that ground; the bearing taken is the one whose
- * wall moves least across the arch's height, so the arch stands against the
- * stone top to bottom: swept every EXIT.sweep degrees (thirteen rays a
- * bearing is most of a build), then every degree about the best.
+ * wall moves least across the arch's height plus `bulge`, how far the stone
+ * across the hole's outline (entrances.js HOLE, read EXIT.foot either side of
+ * `y` for the ground the arch will read there) stands into the room past the
+ * face's plane; the arch and the hole come forward by it (Entrances._place),
+ * so no stone covers the black. Swept every EXIT.sweep degrees (the arch's
+ * rays alone are much of a build, the outline's read only where the spread
+ * still beats the best), then every degree about the best.
  */
 export function placeExit(shell, ground, heightAt) {
   const shoulder = smoothstep(0, 1, (ARRIVE_M - ROAD_WIDTH / 2) / ROAD_FEATHER)
@@ -958,15 +1005,27 @@ export function placeExit(shell, ground, heightAt) {
     const read = (k) => { const w = shell.wallAt(y + (EXIT.band * k) / 6, b); lo = Math.min(lo, w); hi = Math.max(hi, w) }
     for (const k of [0, 3, 6]) read(k)
     if (hi - lo < beat) for (const k of [1, 2, 4, 5]) read(k)
-    return { spread: hi - lo, x: c * r, z: s * r, nx: -c, nz: -s, bearing: d, y, arrival }
+    const spread = hi - lo
+    // The stone across the hole (entrances.js HOLE): the wall read from the axis at the outline's vertices about the face point, EXIT.foot under it and over it for the ground the arch will read there, and how far the innermost stands into the room past the face's plane is the bulge the arch and the hole come forward by (Entrances._place). Only where the spread alone still beats the best: the bulge only adds.
+    let bulge = 0
+    if (spread < beat) {
+      for (const [u, v] of HOLE.outline) {
+        for (const dy of [-EXIT.foot, 0, EXIT.foot]) {
+          const px = c * r - s * u, pz = s * r + c * u
+          const bp = Math.atan2(pz, px)
+          bulge = Math.max(bulge, r - shell.wallAt(y + v + dy, bp) * Math.cos(bp - b))
+        }
+      }
+    }
+    return { spread, bulge, x: c * r, z: s * r, nx: -c, nz: -s, bearing: d, y, arrival }
   }
   let best = null, beat = Infinity
-  const take = (e) => { if (e.spread < beat) { best = e; beat = e.spread } }
+  const take = (e) => { if (e.spread + e.bulge < beat) { best = e; beat = e.spread + e.bulge } }
   for (let d = 0; d < 360; d += EXIT.sweep) take(at(d))
   const coarse = best.bearing
   for (let d = coarse - EXIT.sweep + 1; d < coarse + EXIT.sweep; d++) take(at((d + 360) % 360))
   if (best.spread > EXIT.plumb) throw new Error(`village: no wall stands within ${EXIT.plumb} m of plumb across the arch`)
-  return { key: 'exit', x: best.x, z: best.z, nx: best.nx, nz: best.nz, bearing: best.bearing, y: best.y, arrivalY: best.arrival }
+  return { key: 'exit', x: best.x, z: best.z, nx: best.nx, nz: best.nz, bearing: best.bearing, y: best.y, arrivalY: best.arrival, bulge: best.bulge }
 }
 
 /**

@@ -147,8 +147,8 @@ export const RULES = {
   deerGrunt: { reach: 25, near: 4, level: 0.25, every: [20, 60], gain: [0.7, 1.0] },
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
-  // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance. A leafkin is heard across its wood before it is seen, so the reach runs past its cull and the level holds out to five metres.
-  voice: { reach: 60, near: 5, level: 0.8, gain: [0.8, 1.0] },
+  // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance and fading out over the last `edge` metres to nothing at the reach. A leafkin is a small quiet thing: its chatter is heard from across a glade's pond, not across its wood.
+  voice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
@@ -161,10 +161,10 @@ export const RULES = {
   growl: { reach: 25, near: 3, level: 0.5, rate: [0.8, 1.05], pause: [0.5, 3], gain: [0.6, 1.0] },
   // A dragon walking on the ground within `reach` lands a tread on each beat of its gait (FOOTFALLS.wyvern), within `jitter` of a cycle of the beat: `level` up to `near` off, falling as near/distance.
   tread: { reach: 60, near: 4, level: 0.7, jitter: 0.05, gain: [0.7, 1.0] },
-  // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field...
-  rockslideNear: { interval: [20, 60], gain: [0.1, 0.3], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
+  // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field, and given its metres as the engine's far treatment, so it is dull and washed the way a slide across the scree is...
+  rockslideNear: { interval: [20, 60], gain: [0.025, 0.075], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
-  rockslideFoot: { chance: 0.15, gain: [0.3, 0.7] },
+  rockslideFoot: { chance: 0.15, gain: [0.075, 0.175] },
   // Lake: a wave every so often from the shore while one is within `reach` of her, on land or wading, and her head within `height` of the water; open water with no shore in reach is silent, since waves lap on a shore. Full volume up to `near` metres off the shore or above the surface, fading to nothing at the reach or the height, and the shot is given its metres as the engine's far treatment, so a distant shore is dull and washed rather than quiet at her ear.
   wave: { interval: [2, 5], gain: [0.3, 0.8], reach: 20, near: 3, height: 20 },
   lakeBed: { level: 0.5, gain: [0.6, 1.0] },
@@ -670,7 +670,8 @@ export class Ambience {
         if (!SOUNDS[v.sound]) throw new Error(`Ambience: a voiced layer said ${v.sound}, which is no sound`)
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
-        this.fire(v.sound, { rate: this.rate(), gain: V.level * (V.near / Math.max(V.near, d)) * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z } })
+        const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)
+        this.fire(v.sound, { rate: this.rate(), gain: level * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z } })
       }
     }
   }
@@ -734,7 +735,7 @@ export class Ambience {
       const at = this.aroundHead(head, this.between(...R.range), 0)
       at.y = s.groundH + this.between(...R.rise)
       const d = Math.hypot(at.x - head.x, at.y - head.y, at.z - head.z)
-      this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...R.gain) * (R.near / Math.max(R.near, d)), at })
+      this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...R.gain) * (R.near / Math.max(R.near, d)), at, distance: d })
     }
   }
 

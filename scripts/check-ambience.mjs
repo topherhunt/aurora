@@ -850,13 +850,16 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   run(amb, 1, {})
   const screams = engine.plays.filter((p) => p.name === 'leafkinScream')
   check(screams.length === 1 && screams[0].at.x === HEAD.x + 4, 'a scream said 4 m off is fired once, from there', `${screams.length}`)
-  const fall = V.near / Math.max(V.near, 4)
+  const fallAt = (d) => (V.near / Math.max(V.near, d)) * Math.min(1, (V.reach - d) / V.edge)
+  const fall = fallAt(4)
   check(screams.every((p) => within(p.gain, V.level * fall * V.gain[0], V.level * fall * V.gain[1])), 'at the voice level over its distance')
   check(count(engine, 'leafkinChatter2') === 0 && said.length === 0, `chatter past ${V.reach} m is not heard, and the layer is drained either way`)
-  said.push({ sound: 'panting', x: HEAD.x, y: HEAD.y, z: HEAD.z + 5 })
+  said.push({ sound: 'panting', x: HEAD.x, y: HEAD.y, z: HEAD.z + 5 }, { sound: 'leafkinChatter3', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach - 0.5 })
   run(amb, 1, {})
   const pants = engine.plays.filter((p) => p.name === 'panting')
-  check(pants.length === 1 && pants[0].at.z === HEAD.z + 5 && within(pants[0].gain, V.level * V.gain[0], V.level * V.gain[1]), 'a pant said 5 m off is a one-shot at the voice level, from there', `${pants.length}`)
+  check(pants.length === 1 && pants[0].at.z === HEAD.z + 5 && within(pants[0].gain, V.level * fallAt(5) * V.gain[0], V.level * fallAt(5) * V.gain[1]), 'a pant said 5 m off is a one-shot at the voice level over its distance, from there', `${pants.length}`)
+  const edge = engine.plays.filter((p) => p.name === 'leafkinChatter3')
+  check(edge.length === 1 && edge[0].gain < V.level * fallAt(5) * 0.25, `chatter half a metre inside the ${V.reach} m reach has faded almost to nothing`, edge.map((p) => p.gain.toFixed(3)).join(','))
   let threw = 0
   try { new Ambience({ engine, sense, voiced: [{ bodies() {} }] }) } catch { threw++ }
   said.push({ sound: 'leafkinChanting', x: HEAD.x, y: HEAD.y, z: HEAD.z })
@@ -1048,6 +1051,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const rolled = (head) => (p) => p.gain / (R.near / Math.max(R.near, Math.hypot(p.at.x - head.x, p.at.y - head.y, p.at.z - head.z)))
   const talus = engine.plays.filter((p) => p.name.startsWith('rockslide'))
   check(talus.every((p) => within(rolled(HEAD)(p), ...R.gain) && p.at && Math.hypot(p.at.x, p.at.z) >= R.range[0] - 1e-6), 'a talus slide is quiet and off in the distance')
+  check(talus.every((p) => Math.abs(p.distance - Math.hypot(p.at.x - HEAD.x, p.at.y - HEAD.y, p.at.z - HEAD.z)) < 1e-6), 'and given its metres as the far treatment')
   check(talus.some((p) => p.gain < R.gain[0]) && talus.some((p) => p.gain > R.gain[0]), 'and quieter the further off it is', `${Math.min(...talus.map((p) => p.gain)).toFixed(2)}-${Math.max(...talus.map((p) => p.gain)).toFixed(2)}`)
   // Flying 40 m over the field: the same slides at no more than a quarter of their rolled gain.
   const up = { x: 0, y: sense.s.groundH + 40, z: 0 }

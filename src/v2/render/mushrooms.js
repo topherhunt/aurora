@@ -243,7 +243,7 @@ export class Mushrooms {
     layers,
     textureArray,
     anchors,
-    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS } = {}
+    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false } = {}
   ) {
     if (typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Mushrooms: field needs heightAndSlopeAt')
@@ -275,6 +275,10 @@ export class Mushrooms {
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
+    // `none`: the layer grows no tile at all but still dresses a carried
+    // mushroom (Hands.dressed throws for a kind with no source), which is how a
+    // village keeps her bundle without a mushroom in its glade.
+    this.none = none
 
     // The per-tile instance budget, and unlike its siblings this is an ESTIMATE
     // of another module's output rather than a count this file chose. Written
@@ -627,6 +631,7 @@ export class Mushrooms {
    * Returns immediately unless the camera has actually changed tile.
    */
   _reseat(cx, cz) {
+    if (this.none) return
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
     if (tx === this.camTileX && tz === this.camTileZ) return

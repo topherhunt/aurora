@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>test-fire</title>
+    <style>
+      :root { --panel: rgba(8,14,26,.88); --edge: #2b4a72; --ink: #cfe3ff; --dim: #7f96b8; --good: #6fbf73; --warn: #c9a227; }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; overflow: hidden; background: #05080f; color: var(--ink);
+        font: 12px/1.5 monospace; display: flex;
+      }
+      canvas { display: block; }
+
+      h2 {
+        margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+        color: var(--dim); font-weight: normal;
+      }
+      h2:not(:first-child) { margin-top: 14px; border-top: 1px solid #1b2c44; padding-top: 10px; }
+
+      input, select, button {
+        font: inherit; color: var(--ink); background: #0e1726;
+        border: 1px solid var(--edge); border-radius: 3px; padding: 3px 5px; min-width: 0;
+      }
+      button { cursor: pointer; }
+      button:hover { background: #17263c; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; color: #eaf3ff; }
+
+      /* --- left: the controls ------------------------------------------ */
+      #panel {
+        flex: 0 0 300px; display: flex; flex-direction: column;
+        border-right: 1px solid var(--edge); background: var(--panel);
+      }
+      #panel > header { padding: 8px 10px; border-bottom: 1px solid #1b2c44; }
+      #panel > header .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel > header .s { color: var(--dim); font-size: 11px; }
+      #controls { flex: 1 1 auto; overflow-y: auto; padding: 8px 10px; }
+
+      .row { display: grid; grid-template-columns: 84px 1fr 46px; gap: 6px; align-items: center; margin-bottom: 3px; }
+      .row label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+      .row input[type=range] { width: 100%; padding: 0; background: none; border: none; }
+      .row input[type=color] { width: 100%; height: 22px; padding: 1px; }
+      .row .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+      #presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+      #presets button { font-size: 11px; padding: 2px 5px; }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-top: 1px solid #1b2c44; }
+      #buttons button { flex: 1 1 auto; padding: 4px 6px; }
+
+      /* --- centre: viewport -------------------------------------------- */
+      #stage { flex: 1 1 auto; position: relative; min-width: 0; }
+      #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
+      #err { position: absolute; left: 10px; bottom: 10px; color: #ff7b6b; white-space: pre-wrap; max-width: 60%; }
+
+      /* --- right: the cost --------------------------------------------- */
+      #budget {
+        flex: 0 0 260px; overflow-y: auto; padding: 8px 10px;
+        border-left: 1px solid var(--edge); background: var(--panel);
+      }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 1px 0; vertical-align: baseline; }
+      td.k { color: var(--dim); }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
+      #noise { width: 100%; height: auto; image-rendering: pixelated; border: 1px solid var(--edge); border-radius: 3px; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <header>
+        <div class="t">FIRE</div>
+        <div class="s">one additive card, its outline blown by noise</div>
+      </header>
+      <div id="controls">
+        <h2>presets</h2>
+        <div id="presets"></div>
+
+        <div id="sliders"></div>
+
+        <h2>colour, outline to axis</h2>
+        <div id="colors"></div>
+      </div>
+      <div id="buttons">
+        <button id="pause">pause</button>
+        <button id="spin">spin</button>
+        <button id="reset">defaults</button>
+        <button id="copy" title="every knob as one object literal, to the clipboard">copy</button>
+      </div>
+    </div>
+
+    <div id="stage"><div id="hint">drag to orbit &middot; scroll to zoom</div><div id="err"></div></div>
+
+    <div id="budget">
+      <h2>frame</h2>
+      <table id="frame"></table>
+
+      <h2>fill</h2>
+      <table id="fill"></table>
+      <p class="note">The first flame's card, projected: what the fragment shader is actually paid on. A lamp flame at arm's length should be a few thousand pixels; the lake is millions.</p>
+
+      <h2>noise tile</h2>
+      <canvas id="noise" width="64" height="64"></canvas>
+      <p class="note">R and G, two independent fbm fields the fragment fetches twice each.</p>
+    </div>
+
+    <script type="module" src="/src/test-fire-main.js"></script>
+  </body>
+</html>

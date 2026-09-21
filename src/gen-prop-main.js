@@ -660,6 +660,38 @@ window.addEventListener('pointermove', (e) => {
 })
 $('rotateLight').addEventListener('change', () => { orbit.enableRotate = !$('rotateLight').checked })
 
+// A click that did not drag reads a glow point off the model, in the frame the
+// world draws the prop in (loadCritterGlb: centred over its feet on XZ, feet at
+// y = 0), and marks it. The frame is the PICK's; a tier's bounds drift by its
+// decimation, so read points off the pick.
+const CLICK_PX = 4
+const pickRay = new THREE.Raycaster()
+let clickFrom = null
+let glowMark = null
+canvas.addEventListener('pointerdown', (e) => { if (e.button === 0) clickFrom = { x: e.clientX, y: e.clientY } })
+canvas.addEventListener('pointerup', (e) => {
+  const from = clickFrom
+  clickFrom = null
+  if (!from || !model || Math.hypot(e.clientX - from.x, e.clientY - from.y) > CLICK_PX) return
+  const r = canvas.getBoundingClientRect()
+  pickRay.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera)
+  const hit = pickRay.intersectObject(model, true)[0]
+  if (!hit) return
+  const box = new THREE.Box3().setFromObject(model)
+  const p = hit.point.clone().sub(new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2))
+  const r3 = (v) => Math.round(v * 1000) / 1000
+  const span = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z)
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld)
+  $('glowPick').textContent = `glow point { x: ${r3(p.x)}, y: ${r3(p.y)}, z: ${r3(p.z)}, r: ${r3(span * 0.07)}, nx: ${r3(n.x)}, nz: ${r3(n.z)} } -- the pick's frame, r a guess at the pane, n the face's way out`
+  if (!glowMark) {
+    glowMark = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffb35c, depthTest: false, transparent: true, opacity: 0.8 }))
+    glowMark.renderOrder = 1
+  }
+  glowMark.scale.setScalar(span * 0.02)
+  glowMark.position.copy(hit.point)
+  scene.add(glowMark)
+})
+
 const dragAxis = new THREE.Vector3()
 function turnLight(yaw, pitch) {
   sun.position.applyAxisAngle(dragAxis.set(0, 1, 0), yaw)
@@ -718,6 +750,8 @@ function clearModel() {
     }
     model = null
   }
+  if (glowMark) scene.remove(glowMark)
+  $('glowPick').textContent = ''
   $('viewer').classList.remove('on')
   $('texRow').classList.remove('on')
 }

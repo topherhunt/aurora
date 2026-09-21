@@ -33,7 +33,7 @@ import { taken, TOLERANCE_M } from '../taken.js'
 
 // Metres per tile, and the chance a tile grows its one clump. About half the
 // tiles inside the cull hold a bunch: a walk keeps finding them without the
-// meadow reading as a plot.
+// meadow reading as a plot. A village asks for every tile (`keep` 1).
 const TILE = 10
 const KEEP = 0.5
 
@@ -213,7 +213,7 @@ export class Carrots {
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
    */
-  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null } = {}) {
+  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Carrots: needs a V2Height with heightAndSlopeAt and snowLineAt')
@@ -231,6 +231,7 @@ export class Carrots {
     this.seed = (seed | 0) ^ SEED_SALT
     this.bank = bank
     this.size = bank.size
+    this.keep = keep
     // The tile grid: to the biggest carrot's cull unless told otherwise.
     this.radius = radius ?? propCull(this.size * SIZE_JITTER[1])
     this.radiusSq = this.radius * this.radius
@@ -374,7 +375,7 @@ export class Carrots {
     const members = CLUMP_MIN + ((Math.pow(rand(), CLUMP_SKEW) * (CLUMP_MAX - CLUMP_MIN + 1)) | 0)
     const ring = members > 1 ? CLUMP_RADIUS[0] + rand() * (CLUMP_RADIUS[1] - CLUMP_RADIUS[0]) : 0
     const phase = rand() * Math.PI * 2
-    if (keep >= KEEP) return
+    if (keep >= this.keep) return
 
     const rej = this.rejected
     const centre = this.field.heightAndSlopeAt(cx, cz)

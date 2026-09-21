@@ -120,6 +120,8 @@ function showStats() {
   const relief = s.relief.map((r) => `${String(r.radius).padStart(5)} m  ${r.rms.toFixed(1).padStart(6)} m`).join('\n')
   const bowls = s.bowls.bodies.map((b) => `${String(Math.round(b.x)).padStart(6)},${String(Math.round(b.z)).padStart(6)}  ${b.km2.toFixed(3)} km2  ${b.deepest.toFixed(0).padStart(3)} m deep at ${b.level.toFixed(0)} m`).join('\n')
   const biomes = BIOMES.map((b, k) => `${b.id.padEnd(8)}${(s.biomes.landShare[k] * 100).toFixed(1).padStart(6)}%`).join('\n')
+  const hs = s.hydrology
+  const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m  leak ${(l.leakKm2 * 100).toFixed(1)} ha`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
 ${(WORLD_SIZE / 1000).toFixed(2)} km across   ${R.ms.toFixed(0)} ms
 elevation ${s.min.toFixed(0)} .. ${s.max.toFixed(0)} m
@@ -134,7 +136,13 @@ snow line ${R.doc.snow.base.toFixed(0)} m
 
 <h2>closed bowls (${s.bowls.count}, ${s.bowls.km2.toFixed(2)} km2)</h2>${bowls || 'none'}
 
-<h2>step C -- biomes (${s.biomes.polygons} polygons, ${s.biomes.vertices} vertices, ${(s.biomes.agree * 100).toFixed(1)}% agree)</h2>${biomes}`
+<h2>step C -- biomes (${s.biomes.polygons} polygons, ${s.biomes.vertices} vertices, ${(s.biomes.agree * 100).toFixed(1)}% agree)</h2>${biomes}
+
+<h2>step D -- hydrology</h2>breach    ${hs.breach.channels} channels in ${hs.breach.passes} passes over ${hs.breach.rounds} rounds, deepest cut ${hs.breach.deepestCut.toFixed(0)} m, ${hs.breach.refused} refused
+carve     ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, deepest pass ${hs.carve.deepest.toFixed(1)} m
+rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
+
+<h2>lakes (${hs.lakes.count} of ${hs.lakes.candidates} bowls, ${hs.breach.dropped} given up, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
 }
 
 function showHover() {

@@ -17,7 +17,7 @@ const opt = (name, fallback) => {
 const seed = Number(opt('seed', 20260824))
 const layer = opt('layer', 'relief')
 const out = opt('out', `tmp/island-${seed}-${layer}.png`)
-// `--jitter byHeight=1,start=256`: overrides for JITTER, numbers parsed, so a knob can be tried without editing island.js.
+// `--jitter interp=linear,start=256`: overrides for top-level keys of JITTER, numbers parsed, so a knob can be tried without editing island.js.
 const jitter = opt('jitter', '') ? Object.fromEntries(opt('jitter', '').split(',').map((kv) => { const [k, v] = kv.split('='); return [k, Number.isNaN(Number(v)) ? v : Number(v)] })) : null
 if (!LAYERS.some(([id]) => id === layer)) throw new Error(`island-png: unknown layer ${layer}, expected one of ${LAYERS.map(([id]) => id).join(', ')}`)
 

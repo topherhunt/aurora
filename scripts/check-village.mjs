@@ -39,17 +39,17 @@ import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
-import { Trees } from '../src/v2/render/trees.js'
-import { Entrances, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
-import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
+import { DENSITY as TREE_DENSITY, Trees } from '../src/v2/render/trees.js'
+import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
+import { RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { LAMP, Lamps } from '../src/v2/render/lamps.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS,
-  buildVillage, longestStraight, roadsCross, rollVillage, sinuosity,
+  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
+  buildVillage, closestNodes, longestStraight, roadsCross, rollVillage, sharpestTurn, sinuosity,
 } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -64,11 +64,11 @@ const ENTER_M = 3
 const BUILD_MS = 400
 // The cone itself runs at DROP over the rim's radius (10 m over 29-40 m, 14-19 degrees) and steeper past its rounded tip; on that the roads' cut-and-fill banks (ROAD_FEATHER), the river banks and the sub-texel detail put 7-12 % of the dry hollow over the walk slope on the seeds gated (DESIGN.md §30). This is the most of it that may.
 const STEEP_SHARE = 0.2
-// The fewest trees the wood may hold: the forest law (layers/forest.js PLACEMENT.maxSlopeDeg) rejects ground over 32 degrees, the banks and the rivers' cuts; the seeds gated grow 58-80.
-const TREES_LEAST = 30
+// The fewest trees the wood may hold: the forest law (layers/forest.js PLACEMENT.maxSlopeDeg) rejects ground over 32 degrees, the banks and the rivers' cuts, and the roads clear their own width; at WOOD's density the seeds gated grow 83-136.
+const TREES_LEAST = 60
 // The wood she comes down through: this many trees at the least within EXIT_WOOD_M of the line from the exit to the nearest hut.
 const EXIT_WOOD_M = 6
-const EXIT_WOOD_LEAST = 3
+const EXIT_WOOD_LEAST = 6
 // How far under the overworld's the hollow's sub-texel calibration may fall: a jittered cone measures about half the shipped island's roughness at 16 and 32 m.
 const CALIBRATION_LEAST = 0.4
 // The fewest square metres of frog seat (frogs.js seat) about a lake: at frogs.js DENSITY that is two frogs' worth, and the seeds gated hold 100 to 180.
@@ -121,7 +121,7 @@ const builds = KEYS.map((key) => build(keyHash(key)))
   }
   check(seams === 0, 'the hollow tiles the map without a seam', `${seams} texels differ a tile over`)
   for (const k of ['spawn', 'exit', 'clearing', 'lake', 'props', 'spec']) check(k in room, `the build answers ${k}`)
-  // No two seeds build the same hollow: the ground, the lake's shore, the huts and the shell's turn all differ pairwise. The lake always stands on the cone's axis, so it is its reach every ten degrees that must differ.
+  // No two seeds build the same hollow: the ground, the lake's shore (its reach from its own centre every ten degrees), the huts and the shell's turn all differ pairwise.
   const reachOf = ({ room, layers, field }) => {
     const out = []
     for (let b = 0; b < 360; b += 10) {
@@ -148,9 +148,17 @@ const builds = KEYS.map((key) => build(keyHash(key)))
   }
   check(alike === 0, 'no two seeds build the same hollow', `${alike} alike pairs of ${(builds.length * (builds.length - 1)) / 2}`)
   check(hutCounts.size > 1 && yaws.size === builds.length, 'the seeds differ in their hut counts and their shells\' turns', `huts ${[...hutCounts].join('/')}, ${yaws.size} turns`)
+  // The basin: some seeds roll the cone's tip off the axis and some do not, and a lake with a basin stands on the tip's side of the axis (the jitter alone moves a lake some metres either way).
+  const basins = builds.filter((b) => b.room.spec.basin.off > 0), axial = builds.filter((b) => b.room.spec.basin.off === 0)
+  const offOf = (b) => Math.hypot(b.room.lake.x, b.room.lake.z)
+  const tipSide = (b) => b.room.lake.x * Math.cos(b.room.spec.basin.bearing) + b.room.lake.z * Math.sin(b.room.spec.basin.bearing) > 0
+  check(basins.length > 0 && axial.length > 0 && basins.every(tipSide), 'some seeds set the lake toward a wall and some on the axis', `basin ${basins.map((b) => offOf(b).toFixed(0)).join('/')} m off on the tip's side, axial ${axial.map((b) => offOf(b).toFixed(0)).join('/')} m`)
 }
 
+const riverSides = []
 for (const b of builds) gateVillage(b)
+console.log('\nthe rivers across the seeds')
+check(riverSides.some((d) => d <= RIVER.near[1] + RIVER.sector) && riverSides.some((d) => d >= 180 - 2 * RIVER.sector), 'some rivers come down beside the exit and some across the lake from it', `${riverSides.map((d) => d.toFixed(0)).join(' ')} degrees off the exit`)
 
 /** The ground, the water, the roads, the huts, the wood and the shell of one seed's village. */
 function gateVillage({ seed, spec, shell, room, layers, field }) {
@@ -197,7 +205,9 @@ const inBowl = (x, z) => Math.hypot(x, z) < rimAt(x, z)
   let uphill = 0
   for (let b = 0; b < 360; b += 5) {
     const a = (b * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)
-    const R = rimAt(c, s)
+    // The rim on this bearing from the lake: where the ray from the lake leaves the rim about the axis.
+    let R = 0
+    while (Math.hypot(lake.x + c * R, lake.z + s * R) < rimAt(lake.x + c * R, lake.z + s * R)) R += 0.5
     const outer = room.ground.at(lake.x + c * (R * 0.8), lake.z + s * (R * 0.8)), inner = room.ground.at(lake.x + c * (R * 0.3), lake.z + s * (R * 0.3))
     if (outer < inner) uphill++
   }
@@ -257,11 +267,14 @@ console.log('\nthe water')
     check(heightAt(m[0], m[1]) < lake.y, `${r.id}'s channel opens under the lake's water`, `bed ${heightAt(m[0], m[1]).toFixed(2)} under ${lake.y.toFixed(2)}`)
     // The river winds: its plan runs RIVER.wind times the straight line from its source to its mouth at the least.
     check(sinuosity(r.pts) >= RIVER.wind, `${r.id} winds down to the lake`, `${sinuosity(r.pts).toFixed(2)} times its chord`)
-    // The source stands on the far side from the exit, so the river comes down the wall she faces.
+    // No fold and no stacked nodes (RIVER.turn, two steps): the ribbon drawn along the spline through them (ribbon.js) throws on the cusp either makes, and the water block below draws every river.
+    check(sharpestTurn(r.pts) <= RIVER.turn && closestNodes(r.pts) >= RIVER.step * 2, `${r.id} never folds back on itself`, `sharpest turn ${sharpestTurn(r.pts).toFixed(0)} deg, closest nodes ${closestNodes(r.pts).toFixed(2)} m`)
+    // The source stands off the exit's bearing by the nearest a near river's roll and its retries reach, so no river comes down the trunk's own wall; across the seeds some come down beside the exit and some across the lake from it (checked over the builds).
     const bearing = (Math.atan2(r.pts[0][1] - lake.z, r.pts[0][0] - lake.x) * 180) / Math.PI
     const heading = (Math.atan2(room.exit.z - lake.z, room.exit.x - lake.x) * 180) / Math.PI
-    const across = 180 - Math.abs(((((bearing - heading) % 360) + 540) % 360) - 180)
-    check(across <= 2 * RIVER.sector, `${r.id} comes down across the lake from the exit`, `${across.toFixed(0)} degrees off straight across`)
+    const offExit = Math.abs(((((bearing - heading) % 360) + 540) % 360) - 180)
+    riverSides.push(offExit)
+    check(offExit >= RIVER.near[0] - RIVER.sector, `${r.id} comes down off the exit's own wall`, `${offExit.toFixed(0)} degrees off the exit's bearing`)
     // No road's feather reaches the river's bed (paths.js smoothRoads runs over the carve).
     let nearRoad = Infinity
     for (const road of doc.roads) for (const q of road.pts) for (const p of r.pts) nearRoad = Math.min(nearRoad, Math.hypot(q[0] - p[0], q[2] - p[1]))
@@ -346,7 +359,12 @@ const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d$
 console.log('\nthe huts')
 {
   const ringHouses = room.props.slice(0, ringCount), outlying = room.props.slice(ringCount)
-  check(room.props.length === ringCount + outCount && ringCount >= HUTS.count[0] && ringCount <= HUTS.count[1] && ringHouses.filter((p) => p.height >= GREAT_HUT.height[0]).length === 1, 'five or six huts round the ring and one of them the great house', `${ringCount} huts`)
+  // The great house is the first round the ring (housesRound puts it at the head) and the tallest; the rest are within their count's range, which stops under the great house's.
+  const greatHouse = ringHouses[0], tallest = Math.max(...ringHouses.map((p) => p.height)), hutRange = HUTS.height[ringCount] ?? [Infinity, -Infinity]
+  check(room.props.length === ringCount + outCount && ringCount >= HUTS.count[0] && ringCount <= HUTS.count[1] && greatHouse.height === tallest && greatHouse.height >= GREAT_HUT.height[0] && greatHouse.height <= GREAT_HUT.height[1] && ringHouses.slice(1).every((p) => p.height >= hutRange[0] && p.height <= hutRange[1]), 'five or six huts round the ring and the first of them the great house, the tallest', `${ringCount} huts, ${ringHouses.map((p) => p.height.toFixed(1)).join(' ')} m`)
+  // The houses vary: the ring's ordinary huts span at least a third of their range.
+  const spread = Math.max(...ringHouses.slice(1).map((p) => p.height)) - Math.min(...ringHouses.slice(1).map((p) => p.height))
+  check(spread >= (hutRange[1] - hutRange[0]) / 3, 'the huts round the ring vary in size', `${spread.toFixed(1)} m between the smallest and the largest`)
   check(outCount >= OUTLYING.count[0] && outCount <= OUTLYING.count[1] && outlying.every((p) => p.height >= OUTLYING.height[0] && p.height <= OUTLYING.height[1]), 'two or three outlying houses, none of them great', `${outCount} outlying`)
   const doors = roomProps.doors()
   let offRing = 0, worstDoor = 0
@@ -394,7 +412,7 @@ console.log('\nthe huts')
   const fromExit = Math.min(...roomProps.props.map((h) => Math.hypot(h.x - room.exit.x, h.z - room.exit.z) - h.r))
   check(fromExit >= EXIT.houses, `no hut's wall stands within ${EXIT.houses} m of the exit`, `nearest ${fromExit.toFixed(1)} m`)
   check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + c.r + 40, c.z, 0), 'the clearing is the wood\'s occupier')
-  const great = roomProps.props[room.props.findIndex((p) => p.height >= GREAT_HUT.height[0])]
+  const great = roomProps.props[0]
   check(roomProps.blockTopAt(great.x, great.z) > great.top - 1, 'the great hut is stone to the walker')
 }
 
@@ -407,8 +425,16 @@ const water = {
 }
 {
   const c = room.clearing
-  const biome = { seed: SEED, coverAt: (x, z) => ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r ** 2 ? 0 : 1) }
-  const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: SEED, radius: 200, biome, deadwood: roomProps })
+  // main.js villageBiome and its Trees boot: meadow in the clearing, full cover within WOOD.verge of a road's edge, WOOD.cover between, at WOOD.density times the forest's density.
+  const biome = {
+    seed: SEED,
+    coverAt: (x, z) => {
+      if ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r ** 2) return 0
+      const road = layers.paths.nearest(x, z, 'road')
+      return road !== null && road.dist - road.halfWidth < WOOD.verge ? 1 : WOOD.cover
+    },
+  }
+  const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: SEED, radius: 200, density: TREE_DENSITY * WOOD.density, biome, deadwood: roomProps, paths: layers.paths })
   trees.place(0, 0)
   // The way from the exit to the nearest hut runs through the wood: trees stand within EXIT_WOOD_M of the line between them.
   const e = room.exit
@@ -471,6 +497,25 @@ console.log('\nthe shell')
   check(Math.abs(face - Math.hypot(e.x, e.z)) < 0.1, 'the exit\'s face point stands on the wall', `${(Math.hypot(e.x, e.z) - face).toFixed(2)} m off it`)
   check(hi - lo <= EXIT.plumb, 'the wall behind the exit stands near plumb across the arch', `${(hi - lo).toFixed(2)} m of lean over ${EXIT.band} m`)
   check(Math.abs(e.nx + Math.cos(a)) < 1e-9 && Math.abs(e.nz + Math.sin(a)) < 1e-9, 'the exit faces into the room')
+  // The hole's black stands in front of the stone: along the hole's outline (every 5 cm of its edges, EXIT.foot under and over the ground for the feet the arch is bedded at), the wall read from the axis stands no further into the room than the plane the hole is drawn on, `bulge` past the face and HOLE.proud past that (Entrances._place).
+  let covered = 0, deepest = -Infinity, holeSamples = 0
+  const rFace = Math.hypot(e.x, e.z)
+  for (let i = 0; i < HOLE.outline.length; i++) {
+    const [u0, v0] = HOLE.outline[i], [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length]
+    const steps = Math.ceil(Math.hypot(u1 - u0, v1 - v0) / 0.05)
+    for (let k = 0; k < steps; k++) {
+      const u = u0 + ((u1 - u0) * k) / steps, v = v0 + ((v1 - v0) * k) / steps
+      const bp = Math.atan2(e.z + Math.cos(a) * u, e.x - Math.sin(a) * u)
+      for (const dy of [-EXIT.foot, 0, EXIT.foot]) {
+        holeSamples++
+        const proud = rFace - shell.wallAt(heightAt(e.x, e.z) + v + dy, bp) * Math.cos(bp - a)
+        deepest = Math.max(deepest, proud)
+        if (proud > e.bulge + HOLE.proud) covered++
+      }
+    }
+  }
+  check(covered === 0, 'the wall stands behind the hole\'s plane all round its outline', `${covered} of ${holeSamples} samples covered, the stone ${deepest.toFixed(2)} m past the face against a plane ${(e.bulge + HOLE.proud).toFixed(2)} m in`)
+  check(e.bulge >= 0 && e.bulge <= HOLE.maxBulge, 'the arch stands out of the wall by no more than a face may bulge', `${e.bulge.toFixed(2)} m`)
   check(shell.mesh.name === 'v2-shell' && shell.material.side === THREE.FrontSide, 'the shell draws its inside')
   check(shell.mesh.geometry.attributes.texLayer !== undefined && shell.mesh.geometry.index.count === bank.shapes.boulder.tiers[0].index.count, 'the shell is the bank\'s boulder on the bank\'s stone')
   // The stone's grain is the boulder's own: the shell's uvs are the bank's, unscaled.
@@ -537,8 +582,9 @@ console.log('\nthe lamps')
     }
   }
   check(longest <= LAMPS_GAP_M, `no road runs ${LAMPS_GAP_M} m without a lamp beside it`, `the longest dark stretch ${longest} m on ${longestRoad}`)
-  // The layer main.js boots: 2 m posts, a map lit at every foot and dark at its reach, flames out by day and lit by night, a post stone to the walker.
-  const layer = new Lamps(new THREE.Scene(), field, { lamps, seed, patch: (m) => m })
+  // The layer main.js boots: 2 m posts, a map lit at every foot and dark at its reach, coned out of every window, the paper dark by day and glowing by night, a post stone to the walker.
+  const windows = roomProps.windows()
+  const layer = new Lamps(new THREE.Scene(), field, { lamps, windows, seed, patch: (m) => m })
   layer.postGeo.computeBoundingBox()
   const postH = layer.postGeo.boundingBox.max.y - layer.postGeo.boundingBox.min.y
   check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length, `${LAMP.height} m posts, one a lamp`, `${postH.toFixed(2)} m, ${layer.posts.count} posts`)
@@ -550,22 +596,45 @@ console.log('\nthe lamps')
   }
   let dimFoot = 0, litPast = 0, darkNear = 0
   for (const l of layer.lamps) if (texel(l.x, l.z) < 200) dimFoot++
+  const nearEmitter = (x, z) => Math.min(...layer.lamps.map((l) => Math.hypot(l.x - x, l.z - z)), ...windows.map((w) => Math.hypot(w.x - x, w.z - z) + LAMP.reach - LAMP.window.reach))
   for (let j = 0; j < tex.image.height; j++) {
     for (let i = 0; i < tex.image.width; i++) {
       const x = frame.x0 + (i + 0.5) * LAMP.texel, z = frame.z0 + (j + 0.5) * LAMP.texel
-      const near = Math.min(...layer.lamps.map((l) => Math.hypot(l.x - x, l.z - z)))
+      const near = nearEmitter(x, z), nearLamp = Math.min(...layer.lamps.map((l) => Math.hypot(l.x - x, l.z - z)))
       if (near > LAMP.reach && texel(x, z) > 0) litPast++
-      if (near < LAMP.reach - LAMP.texel && texel(x, z) === 0) darkNear++
+      if (nearLamp < LAMP.reach - LAMP.texel && texel(x, z) === 0) darkNear++
     }
   }
   check(dimFoot === 0, 'the lamp map is bright at every foot', `${dimFoot} dim feet`)
-  check(litPast === 0 && darkNear === 0, `the lamp map is lit within ${LAMP.reach} m of a lamp and dark past it`, `${litPast} texels lit past the reach, ${darkNear} dark within it`)
+  check(litPast === 0 && darkNear === 0, `the lamp map is lit within ${LAMP.reach} m of a lamp and dark past every emitter's reach`, `${litPast} texels lit past the reach, ${darkNear} dark within it`)
+  // Every window lights the ground a step out of its wall over the same bake with the windows' gain off (the same emitters, so the same frame and texel grid); that the light is a cone is pinned once below on a bake of one window.
+  check(windows.length === roomProps.props.length * WINDOWS.length, `every hut has ${WINDOWS.length} windows`, `${windows.length} windows`)
+  check(WINDOWS.every((w) => Math.abs(Math.hypot(w.nx, w.nz) - 1) < 0.05), 'every window faces a unit way out along the ground', WINDOWS.map((w) => Math.hypot(w.nx, w.nz).toFixed(2)).join(' '))
+  const windowGain = LAMP.window.gain
+  LAMP.window.gain = 0
+  const dark = new Lamps(new THREE.Scene(), field, { lamps, windows, seed, patch: (m) => m })
+  LAMP.window.gain = windowGain
+  const darkTexel = (x, z) => {
+    const { frame: f, tex: t } = dark.map
+    const i = Math.floor((x - f.x0) / LAMP.texel), j = Math.floor((z - f.z0) / LAMP.texel)
+    if (i < 0 || j < 0 || i >= t.image.width || j >= t.image.height) return 0
+    const o = (j * t.image.width + i) * 4
+    return t.image.data[o] + t.image.data[o + 1] + t.image.data[o + 2]
+  }
+  let outLit = 0
+  for (const w of windows) if (texel(w.x + w.dx * 2, w.z + w.dz * 2) > darkTexel(w.x + w.dx * 2, w.z + w.dz * 2)) outLit++
+  dark.dispose()
+  check(outLit === windows.length, 'every window lights the ground a step out of its wall', `${outLit} of ${windows.length}`)
   layer.update(3, 1)
-  const dayGlow = layer.glow.length(), dayFlames = layer.flames.visible
+  const dayGlow = layer.glow.length(), dayPaper = layer.postMaterial.uGlow.value.r, dayBreath = layer.breath
   layer.update(3, 0)
   const g = layer.glow
-  check(!dayFlames && dayGlow === 0, 'by day the flames are out and the glow is nothing', `glow ${dayGlow.toFixed(2)}`)
-  check(layer.flames.visible && [g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1), 'by night the flames burn and every group glows', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)}`)
+  check(dayGlow === 0 && dayPaper === 0 && dayBreath === 0, 'by day the glow, the breath and the paper are nothing', `glow ${dayGlow.toFixed(2)} paper ${dayPaper.toFixed(2)}`)
+  check([g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1) && layer.breath > 0.55 && layer.postMaterial.uGlow.value.r > 1, 'by night every group glows, the lanterns breathe and the paper is lit', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)} breath ${layer.breath.toFixed(2)} paper ${layer.postMaterial.uGlow.value.r.toFixed(2)}`)
+  roomProps.setGlow(0)
+  const dayWindow = roomProps.material.uGlow.value.r
+  roomProps.setGlow(layer.breath)
+  check(dayWindow > 0 && roomProps.material.uGlow.value.r > dayWindow * 2, 'the windows glow by day and brighter by night', `day ${dayWindow.toFixed(2)} night ${roomProps.material.uGlow.value.r.toFixed(2)}`)
   const walk = new WalkSurface(field, shell, { trunkAt: () => null })
   walk.addStone(layer)
   const l0 = layer.lamps[0]
@@ -601,10 +670,11 @@ console.log('\nthe boot')
   check(e.resident.size === 1 && e.resident.has('exit'), 'the exit mouth is seated where the build says', `${e.resident.size} resident`)
   const site = e.resident.get('exit')
   // The layer's site is the mouth point, a step in from the face along the normal.
-  check(site && Math.abs(site.x - room.exit.x - room.exit.nx * MOUTH_STEP_M) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * MOUTH_STEP_M) < 0.01 && Math.abs(site.nx - room.exit.nx) < 1e-9, 'the mouth is a step in from the build\'s point along its normal')
+  const stepIn = MOUTH_STEP_M + room.exit.bulge
+  check(site && Math.abs(site.x - room.exit.x - room.exit.nx * stepIn) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * stepIn) < 0.01 && Math.abs(site.nx - room.exit.nx) < 1e-9, 'the mouth is a step and the bulge in from the build\'s point along its normal')
   const walk = new WalkSurface(field, rocks, trees)
   walk.addStone(roomProps)
-  const great = roomProps.props[room.props.findIndex((p) => p.height >= GREAT_HUT.height[0])]
+  const great = roomProps.props[0]
   const onTop = walk.heightAt(great.x, great.z)
   check(onTop >= great.top - 0.01, 'the walk surface stands on the great hut', `${onTop.toFixed(1)} vs ground ${great.y.toFixed(1)}`)
   const arrive = { x: room.spawn.x, z: room.spawn.z }
@@ -717,6 +787,23 @@ console.log('\nthe creatures')
   }
   // Frogs are rolled per 8 m tile at frogs.js DENSITY, a candidate anywhere on the tile and kept only on a seat, so a seed's lake can roll none; over the seeds gated they average one and more.
   check(frogsSeated >= builds.length, 'frogs sit by the lakes', `${frogsSeated} over ${builds.length} seeds`)
+}
+
+{
+  console.log('\nthe window cone')
+  // One window on flat ground, 30 m from the one lamp the bake needs: its light is a cone out of the wall, on the ground a step out, none a step in or along the wall, and at the window's height.
+  const flat = { heightAt: () => 0 }
+  const one = new Lamps(new THREE.Scene(), flat, { lamps: [{ x: 0, z: 0 }], windows: [{ x: 30, y: 0.5, z: 0, dx: 1, dz: 0 }], seed: 1, patch: (m) => m })
+  const { frame, tex } = one.map
+  const at = (x, z) => {
+    const i = Math.floor((x - frame.x0) / LAMP.texel), j = Math.floor((z - frame.z0) / LAMP.texel)
+    const o = (j * tex.image.width + i) * 4
+    return { lit: tex.image.data[o] + tex.image.data[o + 1] + tex.image.data[o + 2], y: frame.y0 + (tex.image.data[o + 3] / 255) * frame.span }
+  }
+  const out = at(32, 0), inside = at(28, 0), along = at(30, 2), past = at(30 + LAMP.window.reach + 1, 0)
+  check(out.lit > 0 && inside.lit === 0 && along.lit === 0 && past.lit === 0, 'a window lights a cone out of its wall and nothing behind, beside or past its reach', `out ${out.lit}, in ${inside.lit}, along ${along.lit}, past ${past.lit}`)
+  check(Math.abs(out.y - 0.5) < 0.05, 'the cone is lit from the window\'s height', `${out.y.toFixed(2)} m`)
+  one.dispose()
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall ok')

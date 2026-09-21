@@ -27,9 +27,12 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [ ] Fireflies at night.
-- [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
+- [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. 
   - [x] Meaning, we need an inventory system.
-  - [ ] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
+  - [x] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
+  - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
+  - [ ] Leafkin glades hold puzzles:
+    - Each glade has an assigned song.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
 - [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
@@ -87,7 +90,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Weather
 
   - [x] Randomly changes / comes and goes
-  - [ ] Fucking AMAZING. Now: clouds should be in front of, and block, the aurora. At night when there's clouds, they generally seem "behind" the aurora; they should not be. 
+  - [ ] Fucking AMAZING. Now: clouds should be in front of, and block, the aurora. At night when there's clouds, they generally seem "behind" the aurora; they should not be.
   - [ ] Rain & snow: visibility distance
   - [ ] Rain at temperate elevations, snow once you reach snowline
   - [ ] Low-lying cloud cover in mountains sometimes

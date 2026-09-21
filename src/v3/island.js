@@ -5,7 +5,7 @@ import { smoothstep } from '../sim/mathx.js'
 // The island's field -- §31 steps A and B. Two terms, added:
 //
 //   1. THE CONE. A circular cone standing in a sea that keeps falling, its coast pushed in and out by a warp of the position and a per-angle coast radius so the shore has bays and headlands at three sizes. Height is a function of `r / R(theta)`, so ground that reaches further out reaches further out at height and a peninsula carries a ridge on its own.
-//   2. THE JITTER. `count` octaves of value noise from `start` metres down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to `jitter` of the spacing, and the ground between nodes interpolated. Each octave refines the one before it; the finest is the 8 m texel.
+//   2. THE JITTER. `count` octaves of value noise from `start` metres down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to `jitter` of the spacing, and the ground between nodes interpolated. Each octave refines the one before it; the finest is the 8 m texel. The same everywhere inland, eased down over the last `shore.band` of the radius so the coast is not cut into islets.
 //
 // Nothing else. Three-free and DOM-free: the gate and the PNG script run this in node.
 // ---------------------------------------------------------------------------
@@ -13,11 +13,12 @@ import { smoothstep } from '../sim/mathx.js'
 export const MACRO = {
   coastRadius: 2500,      // R0, metres: the mean distance from the centre to the shore
   summit: 450,            // H, metres, before the summit rounding
-  profileExp: 1.7,        // (1 - d)^p: above 1 the skirt is gentle and the massif steep
+  profileExp: 1.2,        // (1 - d)^p: 1 is a straight cone, above it the skirt is gentler and the massif steeper
   summitRound: 0.08,      // fraction of H over which the cone's point is rounded into a massif
   apron: 0.12,            // fraction of H under which the profile bends toward lowland
   apronSlope: 0.15,       // share of the cone's own slope the apron keeps at the waterline, so the beach is never a plane the sea can fight
   shelfDepth: 6,          // metres under the sea the coastal shelf sits
+  shelfDrop: 24,          // metres past the waterline over which the shelf is reached
   shelfWidth: 120,        // metres of shelf before the sea floor falls
   seaSlope: 1 / 9,        // the fall past the shelf, all the way to the box edge
   // [wavelength, amplitude] in metres. Three sizes of bay and headland. Amplitude under a tenth of the wavelength, or the warp folds the plane over itself and the fold is a crease running inland.
@@ -34,7 +35,8 @@ export const JITTER = {
   jitter: 0.25,           // a node moves up or down by up to this fraction of its octave's spacing
   interp: 'smooth',       // 'smooth' (a smoothstep between nodes) or 'linear' (a straight lerp, which shows the lattice as creases)
   rotate: true,           // turn each octave's lattice by the golden angle so no two share axes
-  byHeight: 0.7,          // 0: the same jitter everywhere. 1: the jitter scaled by cone / H, so the beach is still and the massif rough. 0.7 leaves the shore 30% of the massif's jitter, enough to cut the apron into coves without shredding it into islets
+  // The jitter is full inland and eases over the last `band` of the radius to `floor` of itself at the waterline, holding there over the sea. Full jitter at the shore is +-128 m on a 54 m apron: islets. 0.3 cuts the apron into coves and leaves it a coast.
+  shore: { band: 0.2, floor: 0.3 },
 }
 
 /** Softplus with a shoulder of `eps`: max(0, v) without the crease at zero. */
@@ -103,8 +105,8 @@ export class Island {
 
   /** The field: cone plus jitter. */
   at(x, z) {
-    const macro = this.macroIn(this.frame(x, z))
-    return macro + this.jitterAt(x, z, macro)
+    const f = this.frame(x, z)
+    return this.macroIn(f) + this.jitterAt(x, z, f)
   }
 
   macroIn(f) {
@@ -114,7 +116,7 @@ export class Island {
       // Sea: a shelf reached by a short steep drop, then a floor that falls to the box edge.
       const s = (d - 1) * R
       const deep = s - m.shelfWidth
-      return -(m.shelfDepth * smoothstep(0, 24, s) + m.seaSlope * soft(deep, 40))
+      return -(m.shelfDepth * smoothstep(0, m.shelfDrop, s) + m.seaSlope * soft(deep, 40))
     }
     let v = Math.pow(1 - d, m.profileExp)
     // Rounded cap: above 1 - 2s the line is swapped for the parabola tangent to it there and flat at the top, so the summit is a massif at (1 - s) H and not a point at H.
@@ -135,12 +137,11 @@ export class Island {
     return h
   }
 
-  /** Step B: the octaves of jitter at this position, given the cone's height there. */
-  jitterAt(x, z, macro) {
+  /** Step B: the octaves of jitter at this position, given its frame. */
+  jitterAt(x, z, f) {
     const j = this.jitter
     const smooth = j.interp === 'smooth'
-    let scale = j.jitter
-    if (j.byHeight > 0) scale *= 1 - j.byHeight + j.byHeight * Math.max(0, macro) / this.macro.summit
+    const scale = j.jitter * (1 - (1 - j.shore.floor) * smoothstep(1 - j.shore.band, 1, f.d))
     let sum = 0
     for (const o of this.octaves) {
       // Lattice coordinates: the position turned by the octave's angle, in node spacings.

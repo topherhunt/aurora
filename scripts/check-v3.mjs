@@ -2,10 +2,12 @@
 //
 //   node scripts/check-v3.mjs
 //
-// The generator is judged by eye on /terrain-v3-map; this asserts the things an eye cannot, and the things §31 step A promised in numbers: the same seed gives the same field, the field is finite and inside its encoding, the island is an island (a summit near the centre, a sea that falls to the box edge, a coast that is not a circle), the doc validates, the rg16 round trip is exact to a quantum, and v2's V2Height will stand on the result, since that is what /terrain-v3 boots.
+// The generator is judged by eye on /terrain-v3-map; this asserts the things an eye cannot, and the things §31 step A promised in numbers: the same seed gives the same field, the field is finite and inside its encoding, the island is an island (a summit near the centre, a sea that falls to the box edge, a coast that is not a circle), the water drains (every river runs downhill to the sea, a lake or another river, every lake is a bowl the ellipse round it does not overrun), the doc validates, the rg16 round trip is exact to a quantum, and v2's V2Height will stand on the result, since that is what /terrain-v3 boots.
 
 import { generate, MIN_Y, MAX_Y, TEXELS } from '../src/v3/generate.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
+import { LAKES, RIVERS } from '../src/v3/hydrology.js'
+import { footprint } from '../src/v2/layers/water-bodies.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
@@ -49,10 +51,39 @@ export async function run() {
   for (let i = 1; i < s.relief.length; i++) if (!(s.relief[i].rms > s.relief[i - 1].rms)) rising = false
   check(rising, `relief by blur radius rises with the radius (${relief})`)
 
+  console.log('\n[v3] the water')
+  const hs = s.hydrology
+  check(hs.breach.refused === 0 && hs.breach.channels > 1000, `${hs.breach.channels} outlet channels cut in ${hs.breach.passes} passes over ${hs.breach.rounds} rounds, none refused, deepest ${hs.breach.deepestCut.toFixed(0)} m`)
+  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep && hs.breach.dropped <= LAKES.keep / 2, `${hs.lakes.count} lakes kept of ${hs.lakes.candidates} bowls, ${hs.breach.dropped} given up`)
+  check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
+  check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)
+  check(hs.carve.deepest > 0.5 && hs.carve.deepest < 20 && hs.carve.meanCut > 1, `the carve cut ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, ${hs.carve.deepest.toFixed(1)} m the deepest single pass`)
+  check(hs.rivers.count >= 20 && hs.rivers.km > 10 && hs.rivers.km / s.landKm2 > 1 && hs.rivers.km / s.landKm2 < 6, `${hs.rivers.count} rivers, ${hs.rivers.km.toFixed(1)} km on ${s.landKm2.toFixed(1)} km2 of land, longest ${hs.rivers.longestKm.toFixed(1)} km`)
+  check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
+  // Every river's ground never climbs from source to mouth on the field itself (a source in a lake sits under its own outlet, so that first step is free), its widths are inside the ladder, and its mouth is in the sea, in a lake or on another river.
+  const half = ((a.n - 1) * a.cell) / 2
+  const groundAt = (x, z) => a.height[Math.round((z + half) / a.cell) * a.n + Math.round((x + half) / a.cell)]
+  let climbs = 0
+  let widths = 0
+  let mouths = 0
+  const lakes = a.doc.lakes.filter((l) => l.y > 0)
+  for (const r of a.doc.rivers) {
+    for (let k = 2; k < r.pts.length; k++) if (groundAt(r.pts[k][0], r.pts[k][1]) > groundAt(r.pts[k - 1][0], r.pts[k - 1][1]) + 0.01) climbs++
+    for (const p of r.pts) if (!(p[2] >= RIVERS.widthAtMin && p[2] <= RIVERS.maxWidth)) widths++
+    const [mx, mz] = r.pts[r.pts.length - 1]
+    const inSea = groundAt(mx, mz) <= 0
+    const inLake = lakes.some((l) => footprint(l, mx, mz) > 0)
+    const onRiver = a.doc.rivers.some((o) => o !== r && o.pts.some(([x, z]) => Math.hypot(x - mx, z - mz) < a.cell))
+    if (!(inSea || inLake || onRiver)) mouths++
+  }
+  check(climbs === 0, `no river climbs between its nodes (${climbs} climbs)`)
+  check(widths === 0, `every river node carries a width in ${RIVERS.widthAtMin}..${RIVERS.maxWidth} m (${widths} outside)`)
+  check(mouths === 0, `every mouth is in the sea, in a lake or on another river (${mouths} are not)`)
+
   console.log('\n[v3] the document')
   const layers = Layers.deserialize(a.doc)
-  check(layers.lakes.lakes.size === 1, 'one lake, the sea')
-  const sea = [...layers.lakes.lakes.values()][0]
+  check(layers.lakes.lakes.size === 1 + hs.lakes.count && layers.paths.paths.size === hs.rivers.count, `${layers.lakes.lakes.size} lakes and ${layers.paths.paths.size} rivers deserialise`)
+  const sea = layers.lakes.lakes.get('l1')
   check(sea.y === 0 && sea.carve === false && sea.rx >= 8192, `the sea is an uncarved rectangle at y 0, ${sea.rx * 2} m across`)
   let above = 0
   let land = 0
@@ -70,7 +101,6 @@ export async function run() {
   check(s.biomes.agree > 0.98, `the polygons carry the traced classes on ${(s.biomes.agree * 100).toFixed(2)}% of texels`)
   const shares = s.biomes.landShare.map((f, k) => `${BIOMES[k].id} ${(f * 100).toFixed(1)}%`).join(', ')
   check(s.biomes.landShare.every((f) => f > 0.1 && f < 0.19), `every class holds about a seventh of the land: ${shares}`)
-  const half = ((a.n - 1) * a.cell) / 2
   const si = Math.round((s.summit.x + half) / a.cell)
   const sj = Math.round((s.summit.z + half) / a.cell)
   check(a.ground[sj * a.n + si] === 0, `the summit texel is ${BIOMES[a.ground[sj * a.n + si]].id}`)

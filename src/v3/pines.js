@@ -3,11 +3,20 @@ import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers } from '../props/t
 import { createPropMaterial } from '../material.js'
 
 // ---------------------------------------------------------------------------
-// A yardstick for /terrain-v3: the game's pine, one every SPACING metres on a square grid over the whole island, so the ground's size can be read against a thing whose size is known. Not the forest -- no scatter, no thinning, no rim fade -- just the bank's three tiers handed out by distance and cut dead at CULL.
+// A yardstick for /terrain-v3: the game's pine, one in every SPACING-metre cell of a grid over the whole island, standing anywhere in its cell, so the ground's size can be read against a thing whose size is known. Not the forest -- no scatter, no thinning, no rim fade -- just the bank's three tiers handed out by distance and cut dead at CULL.
 // ---------------------------------------------------------------------------
 
+/** A cell's own random in -1..1, the same every time it is asked. */
+function cellRand(i, j, salt) {
+  let h = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(salt, 1442695041)) | 0
+  h = Math.imul(h ^ (h >>> 13), 1274126177)
+  h ^= h >>> 16
+  return ((h >>> 0) / 4294967296) * 2 - 1
+}
+
 export const PINES = {
-  spacing: 50,        // metres between trunks
+  spacing: 50,        // metres between trunks: one tree per spacing^2, each standing anywhere in its own cell
+  scatter: 0.9,       // how much of its cell a tree may wander off the cell's centre, 0 for rows
   height: 9,          // metres, root to tip
   bands: [100, 300],  // LOD0 inside the first, LOD1 to the second, the billboard card beyond
   cull: 1000,         // metres; past this nothing is drawn
@@ -86,17 +95,16 @@ export class Pines {
     const j1 = Math.ceil((head.z + PINES.cull) / S)
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
-        const x = i * S
-        const z = j * S
+        const x = (i + 0.5 * PINES.scatter * cellRand(i, j, 1)) * S
+        const z = (j + 0.5 * PINES.scatter * cellRand(i, j, 2)) * S
         const d = Math.hypot(x - head.x, z - head.z)
         if (d > PINES.cull) continue
-        const y = this._groundAt(i, j)
+        const y = this._groundAt(i, j, x, z)
         if (y <= 0) continue
         const t = d < b0 ? 0 : d < b1 ? 1 : 2
         const n = counts[t]
         if (n >= this.capacity) throw new Error(`Pines: tier ${t} is full at ${this.capacity}`)
-        // A yaw off the grid coordinates, so a row of trees is not a row of one tree.
-        this._q.setFromAxisAngle(this._up, ((i * 7 + j * 13) % 16) * (Math.PI / 8))
+        this._q.setFromAxisAngle(this._up, Math.PI * cellRand(i, j, 3))
         this._p.set(x, y - PINES.sink, z)
         this._s.setScalar(this.scale)
         this._m.compose(this._p, this._q, this._s)
@@ -111,11 +119,11 @@ export class Pines {
     this.drawn = counts
   }
 
-  _groundAt(i, j) {
+  _groundAt(i, j, x, z) {
     const key = i * 65536 + j
     let y = this.heights.get(key)
     if (y === undefined) {
-      y = this.heightAt(i * PINES.spacing, j * PINES.spacing)
+      y = this.heightAt(x, z)
       this.heights.set(key, y)
     }
     return y

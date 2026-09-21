@@ -183,7 +183,7 @@ export class Bones {
    * @param bank     bonesBankFrom's answer. Required: a scatter with nothing to
    *                 draw is a bug, not a state.
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null, none = false } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Bones: needs the bank from loadBonesBank (or bonesBankFrom)')
     }
@@ -206,6 +206,8 @@ export class Bones {
     this.seed = (seed | 0) ^ SEED_SALT
     // The tile grid: to the biggest find's cull unless told otherwise (the gates measure smaller worlds).
     this.radius = radius ?? propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]))
+    // `none`: no tile ever grows, but a carried find still dresses (mushrooms.js).
+    this.none = none
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
@@ -421,6 +423,7 @@ export class Bones {
 
   /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing only. */
   _reseat(cx, cz) {
+    if (this.none) return
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
     if (tx === this.camTileX && tz === this.camTileZ) return

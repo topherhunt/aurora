@@ -33,6 +33,8 @@ const CELL = 0.5
 const CROSS_CAP = 12
 // How far apart two crossings must stand to be two: a centre on a shared edge is in both triangles.
 const CROSS_EPS = 1e-3
+// The wall reader's bands: the triangles spanning each `BAND` metres of height, so a level ray tests a few of the 320 faces rather than all of them (village.js placeExit reads thousands a build).
+const BAND = 1
 
 export class Shell {
   /**
@@ -122,6 +124,21 @@ export class Shell {
       col.sort()
     }
     this._grid = { x0, z0, nx, nz, cross, count }
+    // The bands: every triangle's world vertices, and per BAND of height the triangles that span it.
+    const tri = new Float64Array(idx.length * 3)
+    for (let t = 0; t < idx.length; t++) {
+      const v = idx[t] * 3
+      tri[t * 3] = pos[v] * s + m.x
+      tri[t * 3 + 1] = pos[v + 1] * s + m.y
+      tri[t * 3 + 2] = pos[v + 2] * s + m.z
+    }
+    const y0 = m.y + bb.min.y * s, bands = Math.ceil(((bb.max.y - bb.min.y) * s) / BAND) + 1
+    const inBand = Array.from({ length: bands }, () => [])
+    for (let t = 0; t < idx.length; t += 3) {
+      const lo = Math.min(tri[t * 3 + 1], tri[t * 3 + 4], tri[t * 3 + 7]), hi = Math.max(tri[t * 3 + 1], tri[t * 3 + 4], tri[t * 3 + 7])
+      for (let k = Math.max(0, Math.floor((lo - y0) / BAND)); k <= Math.min(bands - 1, Math.floor((hi - y0) / BAND)); k++) inBand[k].push(t)
+    }
+    this._bands = { y0, tri, inBand: inBand.map((b) => Int32Array.from(b)) }
   }
 
   /**
@@ -191,10 +208,34 @@ export class Shell {
 
   /** The wall's distance from the axis at height `y` along `bearing` (radians from +X toward +Z). Throws when the ray leaves the hull, since that is not a room. */
   wallAt(y, bearing) {
-    this._ray.set(this._origin.set(this.fit.x, y, this.fit.z), this._dir.set(Math.cos(bearing), 0, Math.sin(bearing)))
-    const hit = this._ray.intersectObject(this.mesh, false)
-    if (hit.length === 0) throw new Error(`Shell.wallAt: no wall at ${y.toFixed(1)} m along ${((bearing * 180) / Math.PI).toFixed(0)} degrees`)
-    return hit[0].distance
+    const { y0, tri, inBand } = this._bands
+    const k = Math.floor((y - y0) / BAND)
+    const band = k >= 0 && k < inBand.length ? inBand[k] : null
+    const ox = this.fit.x, oz = this.fit.z, dx = Math.cos(bearing), dz = Math.sin(bearing)
+    let nearest = Infinity
+    // Möller-Trumbore on a level ray, the faces turned away culled as the Raycaster culls them for a FrontSide material.
+    for (let i = 0; band !== null && i < band.length; i++) {
+      const t = band[i] * 3
+      const ax = tri[t], ay = tri[t + 1], az = tri[t + 2]
+      const e1x = tri[t + 3] - ax, e1y = tri[t + 4] - ay, e1z = tri[t + 5] - az
+      const e2x = tri[t + 6] - ax, e2y = tri[t + 7] - ay, e2z = tri[t + 8] - az
+      const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x
+      const ddn = dx * nx + dz * nz
+      if (ddn >= 0) continue
+      const px = -dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y
+      const det = e1x * px + e1y * py + e1z * pz
+      if (Math.abs(det) < 1e-12) continue
+      const tx = ox - ax, ty = y - ay, tz = oz - az
+      const u = (tx * px + ty * py + tz * pz) / det
+      if (u < 0 || u > 1) continue
+      const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x
+      const v = (dx * qx + dz * qz) / det
+      if (v < 0 || u + v > 1) continue
+      const d = (e2x * qx + e2y * qy + e2z * qz) / det
+      if (d > 0 && d < nearest) nearest = d
+    }
+    if (nearest === Infinity) throw new Error(`Shell.wallAt: no wall at ${y.toFixed(1)} m along ${((bearing * 180) / Math.PI).toFixed(0)} degrees`)
+    return nearest
   }
 
   /** The roof's height over (x, z) from `y`, or null where there is none. */

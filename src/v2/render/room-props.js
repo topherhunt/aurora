@@ -11,7 +11,9 @@ import { PropArena } from './prop-arena.js'
 // point, facing `yaw`; re-runged by distance on the props' steps with the
 // shipped T3 in the card's place, like the entrances' arch. Every one is stone
 // to the walker: a column over its footprint, so she walks round a hut and
-// not through it.
+// not through it. Its windows glow from inside (gen-props.js addGlow) at
+// WINDOWS, amber all day and bright after dark on the lamps' breath, and each
+// throws a cone of light out of the wall through the lamp map (lamps.js).
 // ---------------------------------------------------------------------------
 
 export const HOUSE_GLB = 'gen-props/house-leafkin.glb'
@@ -19,6 +21,14 @@ export const HOUSE_GLB = 'gen-props/house-leafkin.glb'
 export const TIERS = [0, 2, 3]
 // Which way the pick's door faces, in its own frame: +X at yaw 0.
 export const DOOR = { x: 1, z: 0 }
+// The windows, in the pick's frame (a unit box over its feet): the honeycomb
+// pane in the trunk's flank, picked in the /gen-prop viewer (its "glow point"
+// readout), r the disc each lights and (nx, nz) the way the pane faces.
+export const WINDOWS = [
+  { x: 0.035, y: 0.31, z: -0.14, r: 0.05, nx: 0.43, nz: -0.90 },
+]
+// The glow's colour over the pane's own, and its gain by day and at the lamps' full breath.
+export const GLOW = { color: [1, 0.62, 0.28], day: 0.4, night: 1.4 }
 const POOL = 32
 
 /** The bank from a shipped ladder (loadGenProp): the drawn tiers, the pick's box. */
@@ -52,8 +62,9 @@ export class RoomProps {
     this.clearing = { ...clearing }
     this.field = field
     this.bank = bank
-    this.material = createGenPropMaterial()
+    this.material = createGenPropMaterial({ glow: WINDOWS })
     this.material.map = bank.map
+    this.setGlow(0)
     this.materials = [this.material]
     this.batch = new PropArena(POOL, bank.tiers, new Array(bank.tiers.length).fill(POOL), () => this.material, 'v2-room-props')
     this.tierAt = new Int8Array(POOL).fill(-1)
@@ -86,6 +97,28 @@ export class RoomProps {
       const dz = -DOOR.x * sn + DOOR.z * c
       return { x: h.x + dx * (h.r + 0.5), z: h.z + dz * (h.r + 0.5) }
     })
+  }
+
+  /** Every window in the world, with the way it faces out of the wall: `[{ x, y, z, dx, dz }]`, for the lamp map. */
+  windows() {
+    const out = []
+    for (const h of this.props) {
+      const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
+      for (const w of WINDOWS) {
+        const x = w.x * c + w.z * sn, z = -w.x * sn + w.z * c
+        const dx = w.nx * c + w.nz * sn, dz = -w.nx * sn + w.nz * c
+        const len = Math.hypot(dx, dz)
+        if (!(len > 1e-3)) throw new Error('RoomProps: a window facing straight up or down lights no ground')
+        out.push({ x: h.x + x * h.scale, y: h.y + w.y * h.scale, z: h.z + z * h.scale, dx: dx / len, dz: dz / len })
+      }
+    }
+    return out
+  }
+
+  /** The windows' glow this frame: `breath` the lamps' mean glow, 0 by day (Lamps.breath). */
+  setGlow(breath) {
+    const g = GLOW.day + (GLOW.night - GLOW.day) * breath
+    this.material.uGlow.value.setRGB(GLOW.color[0] * g, GLOW.color[1] * g, GLOW.color[2] * g)
   }
 
   /** Re-rung every prop by its distance. */
