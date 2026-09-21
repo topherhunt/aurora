@@ -448,6 +448,40 @@ const AERIAL_GLSL = /* glsl */ `
   #endif
 `
 
+// LAMPS: the village's flames after dark (§30, render/lamps.js), a third
+// compile-time axis so the overworld pays nothing for them.
+//
+// Not point lights. Every lit material in the world shares one program, and a
+// loop over twenty lamps in it is twenty distances per vertex of every tree in
+// the wood and per FRAGMENT of the ground, on a Quest 2. The lamps' light is
+// instead BAKED once into a map over the room's plan when the room boots -- the
+// sum of each lamp's falloff, one fetch per vertex or fragment -- and the
+// shader reads it like it reads the horizon map. Three channels carry three
+// groups of lamps so uLampGlow can flicker them out of step; the alpha carries
+// the flames' height, so a roof ten metres over a lamp stays dark and the
+// hut wall beside it does not. The light multiplies the surface's own colour,
+// which is what makes it read as a flame's light and not as the night lift.
+// Metres above or below a flame at which its light on a surface has gone.
+const LAMP_TALL = 7
+const LAMP_GLSL = /* glsl */ `
+  uniform sampler2D uLampMap;
+  // x, z of the map's corner and the reciprocal of its size, metres.
+  uniform vec4 uLampRect;
+  // The flames' height range the alpha spans: base and span, metres.
+  uniform vec2 uLampY;
+  // Linear, the flame's colour at full glow.
+  uniform vec3 uLampColor;
+  // Each group's glow this frame: 0 by day, the flicker by night.
+  uniform vec3 uLampGlow;
+
+  vec3 wlLamp( vec3 p ) {
+    vec2 uv = ( p.xz - uLampRect.xy ) * uLampRect.zw;
+    vec4 s = texture2D( uLampMap, uv );
+    float tall = 1.0 - smoothstep( 0.0, ${LAMP_TALL.toFixed(1)}, abs( p.y - uLampY.x - s.a * uLampY.y ) );
+    return uLampColor * ( dot( s.rgb, uLampGlow ) * tall );
+  }
+`
+
 export class WorldLighting {
   constructor() {
     this.ready = false
@@ -495,6 +529,12 @@ export class WorldLighting {
       // a float that has been counting since page load loses its low bits by
       // the time anyone has walked anywhere.
       uCausticT: { value: 0 },
+      // The lamp map and its frame (LAMP_GLSL); null and inert in the overworld.
+      uLampMap: { value: null },
+      uLampRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+      uLampY: { value: new THREE.Vector2(0, 1) },
+      uLampColor: { value: new THREE.Color(0, 0, 0) },
+      uLampGlow: { value: new THREE.Vector3(0, 0, 0) },
     }
 
     this.horizonTex = null
@@ -551,6 +591,28 @@ export class WorldLighting {
   }
 
   /**
+   * The lamps' light is in every lit material from here until clearLamps:
+   * `map` over the plan from (x0, z0) `w` by `h` metres, its alpha spanning
+   * flame heights y0 to y0 + span, at `color` (linear). A recompile.
+   */
+  setLamps(map, { x0, z0, w, h, y0, span, color }) {
+    if (!map || !map.isTexture) throw new Error('setLamps: needs the lamp map texture')
+    if (![x0, z0, w, h, y0, span].every(Number.isFinite) || !(w > 0 && h > 0 && span > 0)) throw new Error('setLamps: bad frame')
+    this.uniforms.uLampMap.value = map
+    this.uniforms.uLampRect.value.set(x0, z0, 1 / w, 1 / h)
+    this.uniforms.uLampY.value.set(y0, span)
+    this.uniforms.uLampColor.value.copy(color)
+    this.recompile()
+  }
+
+  clearLamps() {
+    if (this.uniforms.uLampMap.value === null) return
+    this.uniforms.uLampMap.value = null
+    this.uniforms.uLampGlow.value.set(0, 0, 0)
+    this.recompile()
+  }
+
+  /**
    * Compile this whole system in or out of every material it has patched.
    *
    * Off is stock Lambert with stock fog: no shadow or occlusion lookup, no
@@ -568,13 +630,13 @@ export class WorldLighting {
     this.recompile()
   }
 
-  // The two compile-time axes, as three's program cache sees them. Composed
+  // The compile-time axes, as three's program cache sees them. Composed
   // into every patched material's customProgramCacheKey, or a recompile would
   // find the program the other variant already built and hand that back --
   // which is how the wind switch once measured "no difference". See patch().
   variantKey() {
     if (!this.enabled) return 'wl-off'
-    return this.ready ? 'wl-maps' : 'wl-flat'
+    return `${this.ready ? 'wl-maps' : 'wl-flat'}${this.uniforms.uLampMap.value ? '-lamps' : ''}`
   }
 
   recompile() {
@@ -752,11 +814,14 @@ export class WorldLighting {
       // two lookups ARE the constant 1.0, so they are folded in as one and
       // nothing that would have sampled them is emitted.
       const maps = self.ready
+      // The lamp axis: the fragment path reads the map where it stands, the
+      // vertex path reads it per vertex and carries the light across.
+      const lamps = self.uniforms.uLampMap.value !== null
 
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}${lamps ? LAMP_GLSL : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -764,7 +829,8 @@ export class WorldLighting {
               maps ? `wlSun( ${worldPosVarying}.xz )` : '1.0',
               maps ? `wlSky( ${worldPosVarying}.xz )` : '1.0',
               NEAR_GLSL(`${worldPosVarying}.xyz`)
-            )}`
+            )}
+            ${lamps ? `reflectedLight.directDiffuse += diffuseColor.rgb * wlLamp( ${worldPosVarying}.xyz );` : ''}`
           )
           // Caustics ahead of the aerial mix, in the same slot, so the murk
           // gets the last word on a bed at range.
@@ -783,8 +849,10 @@ export class WorldLighting {
         // material in the world, so it is here on exactly one of them and only
         // in the program she is under water for.
         const bed = caustics ? '\nvarying vec3 vWlBed;' : ''
+        // The lamps' light at the vertex, a varying only while a room has lamps.
+        const lamp = lamps ? '\nvarying vec3 vWlLamp;' : ''
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}${lamp}${lamps ? LAMP_GLSL : ''}`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
@@ -793,10 +861,11 @@ export class WorldLighting {
               ? `vWlShade = vec3( wlSun( wlWorld.xz ), wlSky( wlWorld.xz ),
                              ${NEAR_GLSL('wlWorld')} );`
               : `vWlNear = ${NEAR_GLSL('wlWorld')};`}
-            ${caustics ? 'vWlBed = wlWorld;' : ''}`
+            ${caustics ? 'vWlBed = wlWorld;' : ''}
+            ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${varying}${bed}\n${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
+          .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -804,7 +873,8 @@ export class WorldLighting {
               maps ? 'vWlShade.x' : '1.0',
               maps ? 'vWlShade.y' : '1.0',
               maps ? 'vWlShade.z' : 'vWlNear'
-            )}`
+            )}
+            ${lamps ? 'reflectedLight.directDiffuse += diffuseColor.rgb * vWlLamp;' : ''}`
           )
           // Same slot and same order as the fragment path: the net goes on
           // before the murk gets the last word.

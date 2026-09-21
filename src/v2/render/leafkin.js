@@ -27,7 +27,9 @@
 //            unprobed, and gone within HOME_M of the arch, or out past its
 //            own cull.
 //   gone     the site is empty EMPTY_S, then refilled only with her inside
-//            ROAM_M -- at a random point of the disc, SPAWN_CLEAR_M from her.
+//            ROAM_M -- where a walk out from the mouth over the flee's grid
+//            ends (_search), past SPAWN_MIN_M and SPAWN_CLEAR_M from her;
+//            SPAWN_FAILS walks ending short leave the village empty again.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -47,10 +49,13 @@ export const PUPPETS = 4
 export const SIZE_M = 1
 export const SIZE_VAR = 0.15
 // The disc about the mouth it roams, is spawned for and spawns in, a new target every so often, and how far from her feet a spawn lands so it is never seen to appear.
-export const ROAM_M = 100
+export const ROAM_M = 150
 export const RETARGET_S = [5, 15]
 export const SPAWN_CLEAR_M = 15
-const SPAWN_TRIES = 12
+// A spawn's search (_search): how far out from the mouth the walk must end, the grid steps it takes a frame (each 1-8 seat probes), and walks ended short before the village is given up.
+export const SPAWN_MIN_M = 40
+export const SPAWN_STEP = 100
+export const SPAWN_FAILS = 5
 // The heading's wander about the bearing: a damped swing with this period, driven by noise of this much (rad/s^2), clamped at this far off. A random walk would hold one offset the length of a leg and walk it straight.
 export const WOBBLE_PERIOD_S = 4
 export const WOBBLE_DRIVE = 10
@@ -279,6 +284,9 @@ export class Leafkin {
     this.head = { x: 0, y: 0, z: 0 }
     this._sites = []
     this._seen = new Set()
+    // key -> the site's search for a spot, while she is inside its roam and it has no leafkin.
+    this.searches = new Map()
+    this.skipped = 0
     this.frame = 0
     this.loaded = false
     this.starved = 0
@@ -329,7 +337,7 @@ export class Leafkin {
   get stats() {
     const states = { roam: 0, gather: 0, startle: 0, flee: 0 }
     for (const c of this.byKey.values()) states[c.state]++
-    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, spawned: this.spawned, fled: this.fled, starved: this.starved, overflow: this.overflow }
+    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, spawned: this.spawned, skipped: this.skipped, fled: this.fled, starved: this.starved, overflow: this.overflow }
   }
 
   /** Every leafkin drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -350,7 +358,79 @@ export class Leafkin {
   // Coming and going.
   // -------------------------------------------------------------------------
 
-  _spawn(site, seconds) {
+  /**
+   * A frame of a site's search for a spot: a walk out from the mouth over the
+   * flee's own cell grid, so wherever it ends the way home is known. With no
+   * walk in hand a target is drawn in the disc past SPAWN_MIN_M and the walk
+   * starts on the passable cell nearest the mouth inside FINAL_M -- none, and
+   * the site itself fails. Each step takes the passable neighbour nearest the
+   * target's bearing it has not stood on (the flee's corner rule kept), up
+   * to SPAWN_STEP a frame; at the target, stuck, or out of steps it stops,
+   * and where it stands is the spot if it is SPAWN_MIN_M from the mouth and
+   * SPAWN_CLEAR_M from her, else a failure. SPAWN_FAILS failures give the
+   * village up for EMPTY_S with a warning (log-ship.js carries it to the dev
+   * server) and no leafkin.
+   */
+  _search(site, seconds) {
+    let s = this.searches.get(site.key)
+    if (!s) {
+      s = { rand: mulberry32(hash32(keyHash(site.key), tickOf(seconds))), fails: 0, short: 0, walk: null, cells: new Map() }
+      this.searches.set(site.key, s)
+    }
+    const cells = s.cells
+    const pass = (i, j) => {
+      const k = cellKey(i, j)
+      let v = cells.get(k)
+      if (v === undefined) { v = this.seat(site.x + i * CELL, site.z + j * CELL) !== null; cells.set(k, v) }
+      return v
+    }
+    let w = s.walk
+    if (!w) {
+      cells.clear()
+      const r = Math.sqrt(SPAWN_MIN_M * SPAWN_MIN_M + (ROAM_M * ROAM_M - SPAWN_MIN_M * SPAWN_MIN_M) * s.rand()), a = s.rand() * Math.PI * 2
+      const ti = Math.round((r * Math.cos(a)) / CELL), tj = Math.round((r * Math.sin(a)) / CELL)
+      let i = 0, j = 0, best = Infinity
+      const reach = Math.ceil(FINAL_M / CELL)
+      for (let di = -reach; di <= reach; di++) for (let dj = -reach; dj <= reach; dj++) {
+        const d = Math.hypot(di, dj) * CELL
+        if (d <= FINAL_M && d < best && pass(di, dj)) { best = d; i = di; j = dj }
+      }
+      if (best === Infinity) { s.fails = SPAWN_FAILS - 1; s.short = 0; this._fail(site, s, seconds, `no ground within ${FINAL_M} m of the mouth`); return }
+      w = s.walk = { i, j, ti, tj, steps: 0, cap: 2 * Math.max(Math.abs(ti - i), Math.abs(tj - j)) + 20, visited: new Set([cellKey(i, j)]) }
+    }
+    for (let n = 0; n < SPAWN_STEP; n++) {
+      if (w.i === w.ti && w.j === w.tj) break
+      if (w.steps >= w.cap) break
+      const bearing = Math.atan2(w.tj - w.j, w.ti - w.i)
+      let di = 0, dj = 0, off = Infinity
+      for (const [si, sj] of STEPS8) {
+        const o = Math.abs(swing(Math.atan2(sj, si), bearing))
+        if (o >= off || w.visited.has(cellKey(w.i + si, w.j + sj)) || !pass(w.i + si, w.j + sj)) continue
+        if (si !== 0 && sj !== 0 && !(pass(w.i + si, w.j) && pass(w.i, w.j + sj))) continue
+        di = si; dj = sj; off = o
+      }
+      if (off === Infinity) { w.steps = w.cap; break }
+      w.i += di; w.j += dj; w.steps++
+      w.visited.add(cellKey(w.i, w.j))
+      if (n === SPAWN_STEP - 1) return
+    }
+    s.walk = null
+    const x = site.x + w.i * CELL, z = site.z + w.j * CELL
+    if (Math.hypot(w.i, w.j) * CELL < SPAWN_MIN_M) { s.short++; this._fail(site, s, seconds, `of ${SPAWN_FAILS} walks ${s.short} ended short of ${SPAWN_MIN_M} m`); return }
+    if (Math.hypot(x - this.feet.x, z - this.feet.z) < SPAWN_CLEAR_M) return
+    this.searches.delete(site.key)
+    this._spawn(site, seconds, x, z, this.seat(x, z))
+  }
+
+  _fail(site, s, seconds, why) {
+    if (++s.fails < SPAWN_FAILS) return
+    console.warn(`leafkin: no spot within ${ROAM_M} m of ${site.key} at ${site.x.toFixed(0)},${site.z.toFixed(0)} -- ${why}; the village lies empty ${EMPTY_S} s`)
+    this.searches.delete(site.key)
+    site.state.emptyUntil = seconds + EMPTY_S
+    this.skipped++
+  }
+
+  _spawn(site, seconds, x, z, y) {
     const c = this.free.pop()
     if (!c) { this.overflow++; return null }
     const tick = tickOf(seconds)
@@ -361,19 +441,9 @@ export class Leafkin {
     c.rand = mulberry32(hash32(keyHash(site.key), tick))
     c.size = SIZE_M * (1 + SIZE_VAR * (2 * mulberry32(keyHash(site.key))() - 1))
     c.k = c.size / this.asset.height
-    // Somewhere in the disc it can stand, clear of her; every try burns the same draws, and none passing it is at the mouth.
-    let x = site.x, z = site.z, y = null
-    for (let i = 0; i < SPAWN_TRIES; i++) {
-      const r = ROAM_M * Math.sqrt(c.rand())
-      const a = c.rand() * Math.PI * 2
-      const sx = site.x + r * Math.cos(a), sz = site.z + r * Math.sin(a)
-      if (y !== null || Math.hypot(sx - this.feet.x, sz - this.feet.z) < SPAWN_CLEAR_M) continue
-      const sy = this.seat(sx, sz)
-      if (sy !== null) { x = sx; z = sz; y = sy }
-    }
     c.x = c.px = x
     c.z = c.pz = z
-    c.y = c.py = y ?? this.walk.heightAt(x, z)
+    c.y = c.py = y
     c.heading = c.ph = c.aim = c.rand() * Math.PI * 2
     c.wob = c.wobv = 0
     c.bundle = 0
@@ -708,7 +778,7 @@ export class Leafkin {
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
 
-    // The sites: a resident one without its leafkin gets one when the village is not lying empty and she is inside its roam; a gone one takes its leafkin with it. A leafkin too long unstepped to replay (a clock skip) is born again like one never met, not walked through the gap under her feet.
+    // The sites: a resident one without its leafkin searches for a spot for one while the village is not lying empty and she is inside its roam; a gone one takes its leafkin and its search with it. A leafkin too long unstepped to replay (a clock skip) is born again like one never met, not walked through the gap under her feet.
     const sites = this._sites
     sites.length = 0
     this.entrances.sites(sites)
@@ -724,11 +794,11 @@ export class Leafkin {
         this._retire(c)
       }
       const until = site.state.emptyUntil
-      if (until !== undefined && seconds <= until) continue
-      if (Math.hypot(site.x - feet.x, site.z - feet.z) > ROAM_M) continue
-      this._spawn(site, seconds)
+      if ((until !== undefined && seconds <= until) || Math.hypot(site.x - feet.x, site.z - feet.z) > ROAM_M) { this.searches.delete(site.key); continue }
+      this._search(site, seconds)
     }
     for (const c of [...this.byKey.values()]) if (!seen.has(c.key)) this._retire(c)
+    for (const key of this.searches.keys()) if (!seen.has(key)) this.searches.delete(key)
 
     let stepped = 0
     for (const c of [...this.byKey.values()]) {
@@ -775,6 +845,7 @@ export class Leafkin {
 
   dispose() {
     for (const c of [...this.byKey.values()]) this._retire(c)
+    this.searches.clear()
     this.batch.parent?.remove(this.batch)
     for (const m of this.materials) m.dispose()
     this.asset?.map?.dispose()

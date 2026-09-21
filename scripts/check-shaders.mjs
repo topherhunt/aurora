@@ -715,6 +715,46 @@ for (const variant of ['maps', 'unready', 'off']) {
   }
 }
 
+// AND THE LAMP AXIS (lighting.js setLamps), compiled in both modes on the
+// unready side the village runs on: the map fetch is a fourth compile-time
+// axis and the vertex build carries it over a varying of its own, vWlLamp, so a
+// stage it reaches alone is a link error the first night in the glade. The
+// overworld build above must stay free of it.
+{
+  const lighting = new WorldLighting()
+  const tex = new THREE.DataTexture(new Uint8Array(4 * 4 * 4), 4, 4, THREE.RGBAFormat, THREE.UnsignedByteType)
+  lighting.setLamps(tex, { x0: 0, z0: 0, w: 2, h: 2, y0: 0, span: 1, color: new THREE.Color(1, 0.8, 0.3) })
+  if (!lighting.variantKey().endsWith('-lamps')) MISSING_MARKS.push('lighting.js lamps: variantKey does not carry the axis')
+  const lib = THREE.ShaderLib.lambert
+  const defines = ['#define USE_FOG', '#define FOG_EXP2']
+  const fragStub = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: `varying vec3 vWorldPos;\n${lib.fragmentShader}`, defines: {} }
+  const fragMat = new THREE.MeshLambertMaterial()
+  lighting.patch(fragMat, { mode: 'fragment', cacheKey: 'check-lamps', worldPosVarying: 'vWorldPos' })
+  fragMat.onBeforeCompile(fragStub, { capabilities: { isWebGL2: true } })
+  const frag = finish(fragStub.fragmentShader)
+  SHADERS.push(['lighting.js    fragment lamps     frag', 'frag', builtinPrologue('frag', defines), frag])
+  if (!frag.includes('wlLamp( vWorldPos.xyz )')) MISSING_MARKS.push('lighting.js fragment lamps frag: wlLamp( vWorldPos.xyz )')
+
+  const vertStub = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines: {} }
+  const vertMat = new THREE.MeshLambertMaterial()
+  lighting.patch(vertMat, { mode: 'vertex', cacheKey: 'check-vertex-lamps' })
+  vertMat.onBeforeCompile(vertStub, { capabilities: { isWebGL2: true } })
+  const vsrc = finish(vertStub.vertexShader)
+  const fsrc = finish(vertStub.fragmentShader)
+  SHADERS.push(['lighting.js    vertex   lamps     vert', 'vert', builtinPrologue('vert', defines), vsrc])
+  SHADERS.push(['lighting.js    vertex   lamps     frag', 'frag', builtinPrologue('frag', defines), fsrc])
+  CROSS_STAGE.push(['lighting.js vertex lamps', vsrc, fsrc])
+  if (!vsrc.includes('vWlLamp = wlLamp( wlWorld );') || !fsrc.includes('varying vec3 vWlLamp;')) MISSING_MARKS.push('lighting.js vertex lamps: vWlLamp')
+
+  lighting.clearLamps()
+  if (lighting.variantKey().endsWith('-lamps')) MISSING_MARKS.push('lighting.js lamps: variantKey keeps the axis after clearLamps')
+  const offStub = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines: {} }
+  const offMat = new THREE.MeshLambertMaterial()
+  lighting.patch(offMat, { mode: 'vertex', cacheKey: 'check-vertex-lamps-off' })
+  offMat.onBeforeCompile(offStub, { capabilities: { isWebGL2: true } })
+  if (offStub.vertexShader.includes('wlLamp') || offStub.fragmentShader.includes('vWlLamp')) MISSING_MARKS.push('lighting.js lamps: emitted the lamp fetch with no lamps set')
+}
+
 // --- src/props/grass-blades.js: the blade bed --------------------------------
 //
 // BOTH BUILDS, because they are two programs -- see the cacheKey -- and because

@@ -150,6 +150,25 @@ export class WalkSurface {
     return false
   }
 
+  /**
+   * The underside of the lowest stone over (x, z) from `y` up -- a roof, an
+   * overhang -- or Infinity under the sky; -Infinity when `y` itself is in
+   * stone. What flight is held under (Player._fly).
+   */
+  ceilingAt(x, z, y) {
+    let low = Infinity
+    for (let s = 0; s < this.stone.length; s++) {
+      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      if (n >= SPAN_CAP) return -Infinity
+      for (let i = 0; i < n; i++) {
+        const bottom = spans[i * 2]
+        if (bottom <= y && y <= spans[i * 2 + 1]) return -Infinity
+        if (bottom > y && bottom < low) low = bottom
+      }
+    }
+    return low
+  }
+
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
   _crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {

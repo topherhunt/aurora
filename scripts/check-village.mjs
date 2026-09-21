@@ -43,12 +43,13 @@ import { Trees } from '../src/v2/render/trees.js'
 import { Entrances, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
+import { LAMP, Lamps } from '../src/v2/render/lamps.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, LAKE, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS,
-  buildVillage, longestStraight, rollVillage, sinuosity,
+  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS,
+  buildVillage, longestStraight, roadsCross, rollVillage, sinuosity,
 } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -61,14 +62,20 @@ const MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 const HEADROOM_M = 3
 const ENTER_M = 3
 const BUILD_MS = 400
-// The cone itself runs at DROP over the rim's radius (20 m over 29-40 m, 27-35 degrees) and steeper past its rounded tip; on that the roads' cut-and-fill banks (ROAD_FEATHER), the river banks and the sub-texel detail put about a third of the dry hollow over the walk slope (DESIGN.md §30). This is the most of it that may.
-const STEEP_SHARE = 0.35
-// The fewest trees the wood may hold: the forest law (layers/forest.js PLACEMENT.maxSlopeDeg) rejects ground over 32 degrees, which at this grade is most of the hollow, so the wood is the rim's shelf, the terraces and the shore.
-const TREES_LEAST = 10
+// The cone itself runs at DROP over the rim's radius (10 m over 29-40 m, 14-19 degrees) and steeper past its rounded tip; on that the roads' cut-and-fill banks (ROAD_FEATHER), the river banks and the sub-texel detail put 7-12 % of the dry hollow over the walk slope on the seeds gated (DESIGN.md §30). This is the most of it that may.
+const STEEP_SHARE = 0.2
+// The fewest trees the wood may hold: the forest law (layers/forest.js PLACEMENT.maxSlopeDeg) rejects ground over 32 degrees, the banks and the rivers' cuts; the seeds gated grow 58-80.
+const TREES_LEAST = 30
+// The wood she comes down through: this many trees at the least within EXIT_WOOD_M of the line from the exit to the nearest hut.
+const EXIT_WOOD_M = 6
+const EXIT_WOOD_LEAST = 3
 // How far under the overworld's the hollow's sub-texel calibration may fall: a jittered cone measures about half the shipped island's roughness at 16 and 32 m.
 const CALIBRATION_LEAST = 0.4
 // The fewest square metres of frog seat (frogs.js seat) about a lake: at frogs.js DENSITY that is two frogs' worth, and the seeds gated hold 100 to 180.
 const FROG_SEATS_LEAST = 60
+// A road is dark where no lamp stands within LAMPS_NEAR_M of it; lamps every LAMPS.spacing on the verge leave half that between them, and a place that fails (LAMPS) is skipped, so a stretch may run to LAMPS_GAP_M.
+const LAMPS_NEAR_M = 7
+const LAMPS_GAP_M = 20
 const HOUSE = 'house-leafkin'
 // The seeds gated: real entrance keys from the shipped overworld (probe-villages.mjs), hashed the way main.js villageSeed hashes them.
 const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:190.0', 'hollow:-2218.0:-821.0', 'hollow:-244.0:-1563.0', 'hollow:-1947.0:380.0']
@@ -218,7 +225,7 @@ console.log('\nthe water')
 {
   const paths = layers.paths
   check(lake.area >= LAKE.least, 'the lake is no puddle', `${lake.area} m2`)
-  check(lake.y < FLOOR + DROP - LAKE.over * 2, 'the lake lies deep in the hollow', `${lake.y.toFixed(1)} m against the rim at ${FLOOR + DROP}`)
+  check(lake.y < FLOOR + DROP / 2, 'the lake lies in the hollow\'s lower half', `${lake.y.toFixed(1)} m against the rim at ${FLOOR + DROP}`)
   check(layers.lakes.levelAt(lake.x, lake.z) === lake.y, 'the lake holds water at the build\'s level')
   // The shore is where the jitter put it: the water's reach from its centroid differs round it.
   const reaches = []
@@ -320,6 +327,11 @@ const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d$
     if (Math.abs(b1[1] - h.y) > 0.3) offLevel++
   })
   check(offLoop === 0 && offDoor === 0 && offLevel === 0, 'every branch leaves the loop and ends at its outlying house\'s door at its pad\'s level', `${offLoop} off the loop, ${offDoor} off a door, ${offLevel} off its level`)
+  // The ground takes the nearest road's height (paths.js smoothRoads), so two roads crossing at two heights would be a broken bridge: no two roads but the pads cross anywhere but at a junction, where one ends on the other.
+  const walked = roads.filter((r) => !r.id.startsWith('pad-'))
+  const crossings = []
+  for (let i = 0; i < walked.length; i++) for (let j = i + 1; j < walked.length; j++) { const at = roadsCross(walked[i].pts, walked[j].pts); if (at !== null) crossings.push(`${walked[i].id} over ${walked[j].id} at ${at[0].toFixed(0)}, ${at[1].toFixed(0)}`) }
+  check(crossings.length === 0, `no road crosses another away from a junction (${JUNCTION_M} m of an end)`, crossings.join('; '))
   const c = room.clearing
   const ringLevel = ring.pts.every((p) => p[1] === ring.pts[0][1])
   const ringRound = ring.pts.every((p) => Math.abs(Math.hypot(p[0] - c.x, p[2] - c.z) - c.r) < 0.01)
@@ -379,6 +391,8 @@ console.log('\nthe huts')
   check(cobbled === 0, 'no pad cobbles past its hut\'s walls', `${cobbled} wall points on a pad`)
   check(inClearing === 0, 'every hut stands outside the clearing', `${inClearing} in it`)
   check(apart >= HUTS.gap - 0.01, 'the huts stand a gap apart', `nearest ${apart.toFixed(2)} m`)
+  const fromExit = Math.min(...roomProps.props.map((h) => Math.hypot(h.x - room.exit.x, h.z - room.exit.z) - h.r))
+  check(fromExit >= EXIT.houses, `no hut's wall stands within ${EXIT.houses} m of the exit`, `nearest ${fromExit.toFixed(1)} m`)
   check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + c.r + 40, c.z, 0), 'the clearing is the wood\'s occupier')
   const great = roomProps.props[room.props.findIndex((p) => p.height >= GREAT_HUT.height[0])]
   check(roomProps.blockTopAt(great.x, great.z) > great.top - 1, 'the great hut is stone to the walker')
@@ -396,7 +410,15 @@ const water = {
   const biome = { seed: SEED, coverAt: (x, z) => ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r ** 2 ? 0 : 1) }
   const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: SEED, radius: 200, biome, deadwood: roomProps })
   trees.place(0, 0)
-  let placed = 0, inClearing = 0, inHut = 0, behind = 0, byLake = 0
+  // The way from the exit to the nearest hut runs through the wood: trees stand within EXIT_WOOD_M of the line between them.
+  const e = room.exit
+  const near = roomProps.props.reduce((a, h) => (Math.hypot(h.x - e.x, h.z - e.z) < Math.hypot(a.x - e.x, a.z - e.z) ? h : a))
+  const wayLen = Math.hypot(near.x - e.x, near.z - e.z)
+  const offWay = (x, z) => {
+    const t = Math.max(0, Math.min(1, ((x - e.x) * (near.x - e.x) + (z - e.z) * (near.z - e.z)) / (wayLen * wayLen)))
+    return Math.hypot(x - e.x - (near.x - e.x) * t, z - e.z - (near.z - e.z) * t)
+  }
+  let placed = 0, inClearing = 0, inHut = 0, behind = 0, byLake = 0, onWay = 0
   for (const tile of trees.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
@@ -408,6 +430,7 @@ const water = {
       // Wood at the huts' backs: within the huts' reach of the clearing but outside them and it.
       if (Math.hypot(x - c.x, z - c.z) < c.r + 16) behind++
       if (Math.hypot(x - lake.x, z - lake.z) < 40) byLake++
+      if (offWay(x, z) < EXIT_WOOD_M) onWay++
     }
   }
   check(placed > TREES_LEAST, 'the room grows a wood', `${placed} trees inside the rim`)
@@ -415,6 +438,7 @@ const water = {
   check(inHut === 0, 'no tree stands in a hut', `${inHut} in one`)
   check(behind > 0, 'the wood comes up to the huts\' backs', `${behind} trees within 16 m of the clearing`)
   check(byLake > 0, 'the wood comes down to the lake', `${byLake} trees within 40 m of it`)
+  check(onWay >= EXIT_WOOD_LEAST, 'the wood stands between the exit and the nearest hut', `${onWay} trees within ${EXIT_WOOD_M} m of the ${wayLen.toFixed(0)} m line between them`)
 }
 
 // --- the shell ----------------------------------------------------------------
@@ -454,13 +478,106 @@ console.log('\nthe shell')
   let scaled = 0
   for (let i = 0; i < su.length; i += 97) if (su[i] !== bu[i]) scaled++
   check(scaled === 0, 'the shell wears the boulder\'s own tile', `${scaled} uvs differ from the bank\'s`)
+  // The shell is stone to the walker (render/shell.js, walk.js): nowhere she can stand inside the rim does its stone reach her head, its roof is the one the rays read, and past where the ground enters the stone she does not fit.
+  const walk = new WalkSurface(field, shell, { trunkAt: () => null })
+  let intrudes = 0, roofOff = 0, m = 0, fitsPast = 0
+  for (let z = -128; z <= 128; z += 3) {
+    for (let x = -128; x <= 128; x += 3) {
+      if (Math.hypot(x, z) > rimAt(x, z) - 1 || slopeAt(x, z) > MAX_SLOPE) continue
+      m++
+      const h = heightAt(x, z)
+      if (!walk.fits(x, z, h, null)) intrudes++
+      const rayRoof = shell.roofAt(x, h, z)
+      if (rayRoof === null || Math.abs(walk.ceilingAt(x, z, h + 1) - h - rayRoof) > 0.5) roofOff++
+    }
+  }
+  for (let b = 0; b < 360; b += 10) {
+    const a = (b * Math.PI) / 180, R = rimAt(Math.cos(a), Math.sin(a)) + PAST.in + ENTER_M + 1
+    if (walk.fits(Math.cos(a) * R, Math.sin(a) * R, heightAt(Math.cos(a) * R, Math.sin(a) * R), null)) fitsPast++
+  }
+  check(intrudes === 0, 'the shell\'s stone reaches no head inside the rim', `${intrudes} of ${m} standing points`)
+  check(roofOff === 0, 'the walker\'s roof is the shell\'s', `${roofOff} of ${m} points off by over 0.5 m`)
+  check(fitsPast === 0, 'past the wall she does not fit', `${fitsPast} of 36 bearings fit ${ENTER_M + 1} m past where the ground enters the stone`)
+}
+
+// --- the lamps ----------------------------------------------------------------
+console.log('\nthe lamps')
+{
+  const lamps = room.lamps
+  const doors = roomProps.doors()
+  // Every house has a lamp by its door: within LAMPS.door of the door point, plus the step it hugs the wall by.
+  const doorLamps = doors.map((d) => Math.min(...lamps.map((l) => Math.hypot(l.x - d.x, l.z - d.z))))
+  const farDoor = Math.max(...doorLamps)
+  check(farDoor <= LAMPS.door + 0.5, 'a lamp stands by every house door', `the farthest ${farDoor.toFixed(2)} m from its door`)
+  let close = 0, onRoad = 0, inHouse = 0, wet = 0, inStone = 0
+  const lines = roads.filter((r) => !r.id.startsWith('pad-')).map((r) => new Spline(r.pts).flatten(0.5))
+  const nearRoad = (x, z) => { let best = Infinity; for (const s of lines) for (let i = 0; i < s.length; i += 4) best = Math.min(best, Math.hypot(s[i] - x, s[i + 2] - z)); return best }
+  for (let i = 0; i < lamps.length; i++) {
+    const l = lamps[i]
+    // The house lamps come first, and one of those may stand LAMPS.doorApart from any other.
+    for (let j = 0; j < i; j++) if (Math.hypot(l.x - lamps[j].x, l.z - lamps[j].z) < (i < doors.length ? LAMPS.doorApart : LAMPS.apart) - 0.01) close++
+    if (nearRoad(l.x, l.z) < 0.25) onRoad++
+    if (roomProps.props.some((h) => Math.hypot(l.x - h.x, l.z - h.z) < h.r)) inHouse++
+    if (heightAt(l.x, l.z) <= lake.y) wet++
+    if (Math.hypot(l.x, l.z) > rimAt(l.x, l.z) - LAMPS.wall) inStone++
+  }
+  check(close === 0, `no two lamps stand within ${LAMPS.apart} m, a house's within ${LAMPS.doorApart}`, `${close} close pairs of ${lamps.length}`)
+  check(onRoad === 0, 'no lamp stands on a road', `${onRoad} within 0.25 m of a centreline`)
+  check(inHouse === 0 && wet === 0 && inStone === 0, 'no lamp stands in a house, in the water or in the stone', `${inHouse} in houses, ${wet} wet, ${inStone} in the stone`)
+  // Along every road but the pads, the longest run of metres with no lamp within LAMPS_NEAR_M.
+  let longest = 0, longestRoad = ''
+  for (const r of roads) {
+    if (r.id.startsWith('pad-')) continue
+    const s = new Spline(r.pts).flatten(1)
+    let run = 0
+    for (let i = 0; i < s.length; i += 4) {
+      const near = Math.min(...lamps.map((l) => Math.hypot(l.x - s[i], l.z - s[i + 2])))
+      run = near > LAMPS_NEAR_M ? run + 1 : 0
+      if (run > longest) { longest = run; longestRoad = r.id }
+    }
+  }
+  check(longest <= LAMPS_GAP_M, `no road runs ${LAMPS_GAP_M} m without a lamp beside it`, `the longest dark stretch ${longest} m on ${longestRoad}`)
+  // The layer main.js boots: 2 m posts, a map lit at every foot and dark at its reach, flames out by day and lit by night, a post stone to the walker.
+  const layer = new Lamps(new THREE.Scene(), field, { lamps, seed, patch: (m) => m })
+  layer.postGeo.computeBoundingBox()
+  const postH = layer.postGeo.boundingBox.max.y - layer.postGeo.boundingBox.min.y
+  check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length, `${LAMP.height} m posts, one a lamp`, `${postH.toFixed(2)} m, ${layer.posts.count} posts`)
+  const { tex, frame } = layer.map
+  const texel = (x, z) => {
+    const i = Math.min(tex.image.width - 1, Math.max(0, Math.floor((x - frame.x0) / LAMP.texel))), j = Math.min(tex.image.height - 1, Math.max(0, Math.floor((z - frame.z0) / LAMP.texel)))
+    const o = (j * tex.image.width + i) * 4
+    return tex.image.data[o] + tex.image.data[o + 1] + tex.image.data[o + 2]
+  }
+  let dimFoot = 0, litPast = 0, darkNear = 0
+  for (const l of layer.lamps) if (texel(l.x, l.z) < 200) dimFoot++
+  for (let j = 0; j < tex.image.height; j++) {
+    for (let i = 0; i < tex.image.width; i++) {
+      const x = frame.x0 + (i + 0.5) * LAMP.texel, z = frame.z0 + (j + 0.5) * LAMP.texel
+      const near = Math.min(...layer.lamps.map((l) => Math.hypot(l.x - x, l.z - z)))
+      if (near > LAMP.reach && texel(x, z) > 0) litPast++
+      if (near < LAMP.reach - LAMP.texel && texel(x, z) === 0) darkNear++
+    }
+  }
+  check(dimFoot === 0, 'the lamp map is bright at every foot', `${dimFoot} dim feet`)
+  check(litPast === 0 && darkNear === 0, `the lamp map is lit within ${LAMP.reach} m of a lamp and dark past it`, `${litPast} texels lit past the reach, ${darkNear} dark within it`)
+  layer.update(3, 1)
+  const dayGlow = layer.glow.length(), dayFlames = layer.flames.visible
+  layer.update(3, 0)
+  const g = layer.glow
+  check(!dayFlames && dayGlow === 0, 'by day the flames are out and the glow is nothing', `glow ${dayGlow.toFixed(2)}`)
+  check(layer.flames.visible && [g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1), 'by night the flames burn and every group glows', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)}`)
+  const walk = new WalkSurface(field, shell, { trunkAt: () => null })
+  walk.addStone(layer)
+  const l0 = layer.lamps[0]
+  check(Math.abs(walk.heightAt(l0.x, l0.z) - (l0.y + LAMP.height)) < 1e-6 && !walk.fits(l0.x, l0.z, l0.y, null), 'a post is stone to the walker', `top ${walk.heightAt(l0.x, l0.z).toFixed(2)} over the foot at ${l0.y.toFixed(2)}`)
+  layer.dispose()
 }
 }
 
 // --- the boot -----------------------------------------------------------------
 console.log('\nthe boot')
 {
-  const { room, layers, field } = builds[builds.length - 1]
+  const { room, layers, field, shell } = builds[builds.length - 1]
   const heightAt = (x, z) => field.heightAt(x, z)
   const wet = (x, z) => { const l = layers.waterLevelAt(x, z); return l !== null && heightAt(x, z) < l }
   const water = {
@@ -493,27 +610,71 @@ console.log('\nthe boot')
   const arrive = { x: room.spawn.x, z: room.spawn.z }
   check(walk.slopeAt(arrive.x, arrive.z) <= MAX_SLOPE && !wet(arrive.x, arrive.z), 'she arrives on dry walkable ground')
   const ex = room.exit
-  check(Math.abs(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)) < 1, 'the mouth and the arrival stand level', `${(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)).toFixed(2)} m`)
-  // The way out: walked from the arrival into the face, her feet come within PORTAL.walk of the hole, or the door never opens.
+  check(Math.abs(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)) <= ROAD_GRADE * ARRIVE_M, 'the arrival stands under the mouth at no more than a footpath\'s pitch', `${(heightAt(ex.x, ex.z) - heightAt(arrive.x, arrive.z)).toFixed(2)} m over ${ARRIVE_M} m`)
+  // The way out: walked from the arrival into the face, her feet come within PORTAL.walk of the hole, or the door never opens -- through the shell's stone, which gives way at the door.
   walk.addStone(e)
+  walk.addStone(shell)
   const rig = new THREE.Group()
   const camera = new THREE.PerspectiveCamera()
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.y = Math.atan2(site.nx, site.nz)
   rig.add(camera)
   const player = new Player(rig, camera, walk)
+  const warn = console.warn
+  console.warn = () => {}
+  const run = (seconds, input) => {
+    for (let f = 0; f < 72 * seconds; f++) {
+      player.update(1 / 72, { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true, ...input })
+      rig.updateMatrixWorld(true)
+      input.each?.()
+    }
+  }
   player.spawnAt(arrive.x, arrive.z)
   rig.updateMatrixWorld(true)
   let nearest = Infinity
-  const warn = console.warn
-  console.warn = () => {}
-  for (let f = 0; f < 72 * 4; f++) {
-    player.update(1 / 72, { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true })
+  run(4, { move: 1, each: () => { nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ)) } })
+  check(nearest <= PORTAL.walk, `walked in from the arrival, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `nearest ${nearest.toFixed(2)} m`)
+  // The shell is an obstacle: walked at the wall from inside the rim on every bearing, flown up from the arrival and flown at the wall, she stays in the hull -- her feet over its underside and her head under its roof on the line she stands on -- and no teleport lands past the wall.
+  const crossings = new Float32Array(16)
+  const inHull = (x, y, z) => {
+    if (shell.door !== null && Math.hypot(x - shell.door.x, z - shell.door.z) < shell.door.r) return true
+    const n = shell.crossingsAt(x, z, crossings)
+    for (let q = 0; q + 1 < n; q += 2) if (crossings[q] <= y + 0.05 && y + 1.9 <= crossings[q + 1]) return true
+    return false
+  }
+  const rimAt = (x, z) => room.ground.rimAt(Math.atan2(z, x))
+  let walkedOut = 0, flewOut = 0, landedPast = 0
+  for (let b = 0; b < 360; b += 30) {
+    const a = (b * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)
+    const R = rimAt(c, s)
+    camera.rotation.y = Math.atan2(-c, -s)
+    player.teleportTo(c * (R - 6), s * (R - 6))
     rig.updateMatrixWorld(true)
-    nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ))
+    run(6, { move: 1 })
+    if (!inHull(rig.position.x, rig.position.y, rig.position.z)) walkedOut++
+    const past = R + PAST.in + ENTER_M + 2
+    if (player.pathClear(c * (R - 6), s * (R - 6), c * past, s * past)) landedPast++
+  }
+  check(walkedOut === 0, 'walked at the wall on every bearing, she stays in the hull', `${walkedOut} of 12 bearings out`)
+  check(landedPast === 0, 'no teleport lands past the wall', `${landedPast} of 12 bearings clear`)
+  player.teleportTo(arrive.x, arrive.z)
+  rig.updateMatrixWorld(true)
+  player.setFlying(true)
+  run(20, { lift: 1 })
+  const roofY = walk.ceilingAt(rig.position.x, rig.position.z, heightAt(rig.position.x, rig.position.z) + 1)
+  const climbed = rig.position.y - heightAt(rig.position.x, rig.position.z)
+  const headroom = roofY - rig.position.y - LOCOMOTION.eyeHeight
+  check(climbed > 3 && Math.abs(headroom - LOCOMOTION.flyClearance) < 0.2 && inHull(rig.position.x, rig.position.y, rig.position.z), `flown up from the arrival, she climbs and hangs flyClearance ${LOCOMOTION.flyClearance} m under the roof`, `${climbed.toFixed(1)} m up, head ${headroom.toFixed(1)} m under the roof`)
+  for (let b = 0; b < 360; b += 45) {
+    const a = (b * Math.PI) / 180
+    player.teleportTo(arrive.x, arrive.z)
+    player.setFlying(true)
+    rig.updateMatrixWorld(true)
+    run(20, { move: 1, flyDirection: new THREE.Vector3(Math.cos(a), 0, Math.sin(a)) })
+    if (!inHull(rig.position.x, rig.position.y, rig.position.z)) flewOut++
   }
   console.warn = warn
-  check(nearest <= PORTAL.walk, `walked in from the arrival, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `nearest ${nearest.toFixed(2)} m`)
+  check(flewOut === 0, 'flown at the wall on every bearing, she stays in the hull', `${flewOut} of 8 bearings out`)
 }
 
 // --- the creatures ------------------------------------------------------------
@@ -526,7 +687,7 @@ console.log('\nthe creatures')
   }
   const frogAssets = Array.from({ length: LOD_TIERS }, (_, k) => boxAsset(LOD_TIERS - k))
   const fishAssets = JSON.parse(readFileSync('public/fauna/fish.json', 'utf8'))
-  let schools = 0, frogsSeated = 0
+  let frogsSeated = 0
   for (const { seed, room, layers, field } of builds) {
     const scene = new THREE.Scene()
     const water = new WaterSurfaces({ water: { material: new THREE.ShaderMaterial(), group: new THREE.Group() }, layers, field })
@@ -546,9 +707,9 @@ console.log('\nthe creatures')
     // The square metres of dry ground a frog may sit on (frogs.seat: off the stone, under 35 degrees, within SHORE_M of the water) about the lake: the shore's shelf, the loop cut a metre over the water.
     let seats = 0
     for (let z = -24; z <= 24; z++) for (let x = -24; x <= 24; x++) { const st = frogs.seat(room.lake.x + x, room.lake.z + z); if (st !== null && !st.wet) seats++ }
-    const fish = new Fish(scene, field, water, { seed, assets: fishAssets })
+    const fish = new Fish(scene, field, water, { seed: room.fishSeed, assets: fishAssets })
     fish.place(room.lake.x, room.lake.z)
-    schools += fish.stats.schools
+    check(fish.stats.schools > 0, 'the lake seeds a school of fish on the build\'s fish seed', `${fish.stats.schools}, seed ${room.fishSeed - seed} over the room\'s`)
     console.log(`=== seed ${seed}: ${hoppers.stats.alive} grasshoppers, ${crabs.stats.alive} crabs on ${crabs.stats.perches} perches, ${seated} frogs on ${seats} m2 of seats, ${fish.stats.schools} school(s) of fish`)
     check(hoppers.stats.alive > 0, 'grasshoppers live about the lake')
     check(crabs.stats.alive > 0, 'crabs perch on the shore stones')
@@ -556,8 +717,6 @@ console.log('\nthe creatures')
   }
   // Frogs are rolled per 8 m tile at frogs.js DENSITY, a candidate anywhere on the tile and kept only on a seat, so a seed's lake can roll none; over the seeds gated they average one and more.
   check(frogsSeated >= builds.length, 'frogs sit by the lakes', `${frogsSeated} over ${builds.length} seeds`)
-  // A school needs a bed (fish.js minDepth with clearance) in a lake this small (LAKE.least to 300 m2, under 3 m deep), which few seeds' lakes hold.
-  check(schools > 0, 'some seed\'s lake seeds a school of fish', `${schools} over ${builds.length} seeds`)
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall ok')

@@ -18,7 +18,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, SEEK_M, REACH_M, GATHER_KEY,
-  STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S, SQUEAL_S, SPAWN_CLEAR_M, CARRY_SPAN,
+  STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, CHATTER_S, WHIMPER_S, SQUEAL_S, SPAWN_CLEAR_M, CARRY_SPAN, SPAWN_FAILS, SPAWN_MIN_M, SPAWN_STEP, planPath,
 } from '../src/v2/render/leafkin.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
 import { MOUTH_STEP_M, MOUTH_SINK_M } from '../src/v2/render/entrances.js'
@@ -202,9 +202,14 @@ const handsOf = () => new Hands(new THREE.Scene(), { walk, water, haptic() {}, s
 const T0 = 1000
 const FAR = { x: 300, y: GROUND, z: 0 }
 const head = (feet) => ({ x: feet.x, y: feet.y + 1.6, z: feet.z })
-const make = ({ entrances = entrancesOf(mouth()), mushrooms = null, hands = null } = {}) =>
-  new Leafkin(new THREE.Scene(), water, { walk, entrances, mushrooms, hands, asset: makeAsset() })
+const make = ({ entrances = entrancesOf(mouth()), mushrooms = null, hands = null, pool = water } = {}) =>
+  new Leafkin(new THREE.Scene(), pool, { walk, entrances, mushrooms, hands, asset: makeAsset() })
 /** Drive `w` for `seconds` at 60 Hz from world time `t`, her feet at `feet`; `each(c, t)` after every frame. Returns the time reached. */
+/** Frames at 60 Hz from `t` with her feet at `feet` until a leafkin is out, at most `limit` s of them. Returns the time reached: the spawn's frame. */
+function until(w, feet, t, limit = 10) {
+  for (let i = 0; i < limit * 60 && w.byKey.size === 0; i++) w.update(feet, head(feet), t += 1 / 60, 1 / 60)
+  return t
+}
 function run(w, t, seconds, feet, each = null) {
   const frames = Math.round(seconds * 60)
   for (let i = 0; i < frames; i++) {
@@ -244,18 +249,20 @@ console.log('\nthe spawn')
   let t = run(w, T0, 1, FAR)
   check(w.byKey.size === 0 && w.spawned === 0, `her feet ${FAR.x} m off, the village sends nobody out`)
   const near = { x: 80, y: GROUND, z: 0 }
-  w.update(near, head(near), t += 1 / 60, 1 / 60)
+  const t1 = t
+  t = until(w, near, t)
   const c = one(w)
   const off = c && Math.hypot(c.x, c.z), fromHer = c && Math.hypot(c.x - near.x, c.z - near.z)
   check(w.byKey.size === 1 && c && off > 1 && off <= ROAM_M && fromHer >= SPAWN_CLEAR_M && c.y === GROUND, `inside ${ROAM_M} m, a leafkin stands somewhere in the disc, ${SPAWN_CLEAR_M} m clear of her`, c && `${fmt(off)} m from the mouth, ${fmt(fromHer)} m from her`)
   check(c && Math.abs(swing(c.heading, 0)) > 1e-3, 'facing whichever way', c && `${fmt(c.heading)}`)
   check(c && c.tick === tickOf(t) && c.state === 'roam' && c.clip === 'run' && c.speed > 0, 'on the world clock\'s tick, roaming at the run', c && `${c.state} ${c.clip}`)
+  check(t - t1 > 1 / 60 && t - t1 < 1, `after a search of frames for a spot with a way home, not one`, `${Math.round((t - t1) * 60)} frames`)
   check(c && Math.abs(c.size - SIZE_M) <= SIZE_M * SIZE_VAR + 1e-9 && Math.abs(c.k - c.size / biped.height) < 1e-12, `a metre tall, give or take ${SIZE_VAR * 100}%, wearing the scale that makes it so`, c && `${fmt(c.size)} m`)
   check(c && c.lod === LOD_TIERS && c.puppet === null && w.bodies([]).length === 0, `${fmt(fromHer)} m off it is minded and not drawn: past its cull of ${fmt(cullRange(c.size))} m`)
   const spots = new Set()
   for (let i = 0; i < 6; i++) {
     const v = make()
-    v.update(near, head(near), T0 + i * 7, 1 / 60)
+    until(v, near, T0 + i * 7)
     const d = one(v)
     spots.add(`${fmt(d.x)},${fmt(d.z)}`)
     v.dispose()
@@ -264,7 +271,7 @@ console.log('\nthe spawn')
   const sizes = new Set()
   for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) {
     const v = make({ entrances: entrancesOf({ ...mouth(), key }) })
-    v.update(near, head(near), T0, 1 / 60)
+    until(v, near, T0)
     sizes.add(one(v).size)
     v.dispose()
   }
@@ -276,13 +283,56 @@ console.log('\nthe spawn')
   w.dispose()
 }
 
+// --- the way home ---------------------------------------------------------------
+console.log('\nthe way home')
+{
+  // A river across the disc at x 30-32: the far bank is ground it can stand on with no way to the mouth. Over eight spawn ticks every leafkin stands on the near bank, past SPAWN_MIN_M, and the flee's own planner finds each a way in.
+  const river = { isSubmerged: (x) => x > 30 && x < 32, levelAt: () => null }
+  const near = { x: -80, y: GROUND, z: 0 }
+  let bank = 0, home = 0, far = 0, frames = 0, probes = 0
+  for (let i = 0; i < 8; i++) {
+    const w = make({ pool: river })
+    const seat = w.seat.bind(w)
+    w.seat = (x, z) => { probes++; return seat(x, z) }
+    const t = until(w, near, T0 + i * 7)
+    const c = one(w)
+    const off = c ? Math.hypot(c.x, c.z) : 0
+    if (c && c.x < 30) bank++
+    if (off >= SPAWN_MIN_M) far++
+    const path = c ? planPath((x, z) => seat(x, z) !== null, new Map(), 0, 0, c.x, c.z, 0, 0, FINAL_M - 0.4, 1e6) : []
+    if (path.length && Math.hypot(...path[path.length - 1]) <= FINAL_M) home++
+    frames += Math.round((t - T0 - i * 7) * 60)
+    w.dispose()
+  }
+  check(bank === 8 && home === 8, 'a leafkin is only ever placed with a way home: across a river it stands on the mouth\'s bank, where the flee\'s planner reaches the mouth', `${bank} of 8 on the near bank, ${home} with a plan home`)
+  check(far === 8, `and never inside ${SPAWN_MIN_M} m of the mouth`, `${far} of 8`)
+  check(frames / 8 >= 2 && frames / 8 <= 2 * ROAM_M / 0.5 / SPAWN_STEP + 2 && probes / 8 < 2000, `each walk a slice of ${SPAWN_STEP} steps a frame, a few probes a step`, `${(frames / 8).toFixed(1)} frames and ${(probes / 8).toFixed(0)} probes a spawn`)
+  // Water everywhere past the mouth: every walk ends at its edge, and after SPAWN_FAILS the village is given up for EMPTY_S with one warning.
+  const warned = []
+  const warn = console.warn
+  console.warn = (...a) => warned.push(a.join(' '))
+  let w = make({ pool: { isSubmerged: (x, z) => Math.hypot(x, z) > 3, levelAt: () => null } })
+  let t = until(w, near, T0, 1)
+  const site = w.entrances.list[0]
+  check(w.byKey.size === 0 && w.skipped === 1 && warned.length === 1 && warned[0].includes(`of ${SPAWN_FAILS} walks ${SPAWN_FAILS} ended short of ${SPAWN_MIN_M} m`), `${SPAWN_FAILS} walks ended short: no leafkin, one warning`, warned[0])
+  check(site.state.emptyUntil > t && site.state.emptyUntil <= t + EMPTY_S && w.searches.size === 0, `and the village lies empty ${EMPTY_S} s`, `${fmt(site.state.emptyUntil - t)} s`)
+  t = run(w, t, 1, near)
+  check(w.byKey.size === 0 && warned.length === 1, 'with no search and no second warning while it does')
+  w.dispose()
+  // The mouth itself under water: no cell to start from, and the site fails at once.
+  w = make({ pool: { isSubmerged: () => true, levelAt: () => null } })
+  w.update(near, head(near), T0, 1 / 60)
+  check(w.byKey.size === 0 && w.skipped === 1 && warned.length === 2 && warned[1].includes(`no ground within ${FINAL_M} m of the mouth`), 'no ground at the mouth: the site fails in one frame', warned[1])
+  console.warn = warn
+  w.dispose()
+}
+
 // --- the roam ---------------------------------------------------------------------
 console.log('\nthe roam')
 {
   const w = make()
   const feet = { x: 80, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = one(w)
   let far = 0, legs = 0, straight = 0, path = 0, off = 0, wob = 0, ticks = 0, lastTick = c.tick, lx = c.x, lz = c.z
   let tx = c.tx, tz = c.tz, legX = c.x, legZ = c.z
@@ -320,8 +370,7 @@ console.log('\nthe roam')
   // Chatter: counted by an ear.
   const w = make()
   const feet = { x: 80, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const said = []
   t = run(w, t, 120, feet, () => w.voices(said))
   const chatter = said.filter((v) => v.sound.startsWith('leafkinChatter'))
@@ -341,8 +390,7 @@ console.log('\nthe gather')
   const caps = new Caps([[2, 0]])
   const w = make({ mushrooms: caps, hands })
   const feet = { x: 30, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = atMouth(one(w))
   const said = []
   let bundleAt = null, tookAt = null
@@ -394,8 +442,7 @@ console.log('\nthe startle')
   const caps = new Caps([[2, 0], [2.5, 0.4], [3, -0.4]])
   const w = make({ mushrooms: caps, hands })
   const feet = { x: 30, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = atMouth(one(w))
   const said = []
   t = run(w, t, 12, feet, () => w.voices(said))
@@ -439,7 +486,7 @@ console.log('\nthe startle')
   t = site.state.emptyUntil + 1
   w.update(FAR, head(FAR), t, 1 / 60)
   check(w.byKey.size === 0, `nor after the ${EMPTY_S} s with her ${FAR.x} m off`)
-  w.update(at, head(at), t += 1 / 60, 1 / 60)
+  t = until(w, at, t)
   check(w.byKey.size === 1 && Math.hypot(one(w).x, one(w).z) <= ROAM_M && one(w).state === 'roam', 'and with her inside the roam, a fresh leafkin in the disc', `${w.byKey.size}`)
   w.dispose()
 }
@@ -449,8 +496,7 @@ console.log('\nthe wall')
 {
   const w = make()
   const feet = { x: 30, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = one(w)
   // Planted 20 m out with a wall of trunks across the line home, and her on its heels.
   c.x = c.px = 20; c.z = c.pz = 0
@@ -474,8 +520,7 @@ console.log('\nthe pocket')
   // Startled inside a pocket of trunks open only AWAY from the mouth -- a U 6 m deep and 4 m wide, its mouth at x 26 -- it has to run the wrong way first. A slide along whatever is in the way circled in here for good.
   const w = make()
   const feet = { x: 30, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = one(w)
   c.x = c.px = 22; c.z = c.pz = 0
   walls.push([20, -2, 20, 2], [20, -2, 26, -2], [20, 2, 26, 2])
@@ -497,8 +542,7 @@ console.log('\nthe cull')
 {
   const w = make()
   const feet = { x: 30, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = one(w)
   const cull = cullRange(c.size)
   c.x = c.px = cull + 30; c.z = c.pz = 0
@@ -515,8 +559,7 @@ console.log('\nthe puppet')
 {
   const w = make()
   const feet = { x: 10, y: GROUND, z: 0 }
-  let t = T0
-  w.update(feet, head(feet), t, 1 / 60)
+  let t = until(w, feet, T0)
   const c = atMouth(one(w))
   t = run(w, t, 0.5, feet)
   const dist = Math.hypot(c.pose.x - 10, c.pose.y - GROUND - 1.6, c.pose.z)
@@ -541,9 +584,8 @@ console.log('\ntwo instances agree')
   const feet = { x: 30, y: GROUND, z: 0 }
   const a = make({ mushrooms: new Caps([[2, 0], [3, 1], [6, -2]]) })
   const b = make({ mushrooms: new Caps([[2, 0], [3, 1], [6, -2]]) })
-  let ta = T0, tb = T0
-  a.update(feet, head(feet), ta, 1 / 60)
-  b.update(feet, head(feet), tb, 1 / 60)
+  // Both found their spot at 60 Hz, on the same tick: the search runs a slice a frame, so it is the stepping after that is compared.
+  let ta = until(a, feet, T0), tb = until(b, feet, T0)
   atMouth(one(a)); atMouth(one(b))
   const rand = mulberry32(9)
   let compared = 0, same = 0
@@ -585,9 +627,11 @@ console.log('\nthe clock skip')
   const at = { x: c.x + STARTLE_M - 0.5, y: GROUND, z: c.z }
   w.update(at, head(at), t += 300, 1 / 60)
   w.voices(said)
+  const gone = w.byKey.size === 0
+  t = until(w, at, t)
   const d = one(w)
   const fromHer = d && Math.hypot(d.x - at.x, d.z - at.z)
-  check(w.byKey.size === 1 && d && d.tick === tickOf(t) && d.state === 'roam' && w.spawned === 2 && fromHer >= SPAWN_CLEAR_M, `a 300 s skip with her feet ${fmt(STARTLE_M - 0.5)} m off its spot puts a fresh leafkin on the clock, ${SPAWN_CLEAR_M} m clear of her`, d && `${d.state}, ${fmt(fromHer)} m from her, spawned ${w.spawned}`)
+  check(gone && w.byKey.size === 1 && d && d.tick === tickOf(t) && d.state === 'roam' && w.spawned === 2 && fromHer >= SPAWN_CLEAR_M, `a 300 s skip with her feet ${fmt(STARTLE_M - 0.5)} m off its spot retires it, and a fresh leafkin is found a spot on the clock, ${SPAWN_CLEAR_M} m clear of her`, d && `${d.state}, ${fmt(fromHer)} m from her, spawned ${w.spawned}`)
   check(said.length === 0, 'and nothing is said on the frame of the skip', said.map((v) => v.sound).join(' '))
   t = run(w, t, 2, at, () => w.voices(said))
   check(d.state === 'roam' && said.every((v) => v.sound !== 'leafkinScream'), 'nor is it startled after: she was never beside it', said.map((v) => v.sound).join(' '))

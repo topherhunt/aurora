@@ -192,8 +192,9 @@ export class Ambience {
    * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
    * @param fish      the fish layer, if any: startled(into) lists the fish that set off fast this frame, x, y, z and size (length in metres) on each.
    * @param grasshoppers  the grasshopper layer, if any: bodies(into) lists the ones it is showing, x, y, z on each.
+   * @param waves     false where the water is a pond too small for a wave to break on its shore (a village's lake): the lapping bed loops and the wave one-shot never fires.
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [] }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const l of voiced) if (!l || typeof l.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
     if (!sense) throw new Error('Ambience: missing sense')
@@ -217,6 +218,7 @@ export class Ambience {
     this.fish = fish
     this.grasshoppers = grasshoppers
     this.voiced = voiced
+    this.waves = waves
     // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
     this.bodies = new Map()
     // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, growling, growl, gait, step, beat, land, seen }. See _dragons.
@@ -764,7 +766,7 @@ export class Ambience {
   _lake(dt, head, s) {
     const W = RULES.wave
     const ear = this.lakeEar(head, s)
-    if (this.due('wave', ear.on, W.interval, dt)) {
+    if (this.due('wave', ear.on && this.waves, W.interval, dt)) {
       this.fire('wave', { rate: this.rate(), gain: this.between(...W.gain) * ear.fade, at: ear.at, distance: ear.dist })
     }
   }

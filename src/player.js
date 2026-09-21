@@ -290,6 +290,9 @@ export class Player {
     // samples can be higher than either, so keep the same floor free flight
     // uses as a backstop.
     const floor = this.th.heightAt(p.x, p.z) + LOCOMOTION.flyClearance
+    // A room's roof is nearer than the cruise (travelClearance), so the rail runs under it.
+    const ceiling = this._ceiling(p.x, p.z, floor, this.headPosition().y - p.y)
+    if (p.y > ceiling) p.y = ceiling
     if (p.y < floor) p.y = floor
 
     if (T.t >= 1) {
@@ -418,6 +421,8 @@ export class Player {
     this._step.multiplyScalar((this.speed * dt) / len)
 
     const p = this.rig.position
+    const headUp = this.headPosition().y - p.y
+    const x0 = p.x, y0 = p.y, z0 = p.z
     p.x = THREE.MathUtils.clamp(p.x + this._step.x, -WORLD_HALF + 32, WORLD_HALF - 32)
     p.z = THREE.MathUtils.clamp(p.z + this._step.z, -WORLD_HALF + 32, WORLD_HALF - 32)
     p.y += this._step.y
@@ -425,11 +430,32 @@ export class Player {
     // Never below the ground. Flying inside a mountain is disorienting and the
     // only way out is guesswork, so the floor just pushes her back up. On the
     // origin, not the head: a floor that tracked the head would lift the rig
-    // whenever she leaned out over a drop. See originPosition.
+    // whenever she leaned out over a drop. See originPosition. Nor above a
+    // roof (WalkSurface.ceilingAt): her head keeps the same clearance under it
+    // that her feet keep over the ground, and a column with no room for both
+    // -- the foot of a room's wall -- refuses the step, unless she was already
+    // in one, so a step out of stone is never refused the way a step in is.
     const origin = this.originPosition()
     const floor = this.th.heightAt(origin.x, origin.z) + LOCOMOTION.flyClearance
+    const ceiling = this._ceiling(origin.x, origin.z, floor, headUp)
+    if (ceiling < floor) {
+      const floor0 = this.th.heightAt(x0, z0) + LOCOMOTION.flyClearance
+      if (this._ceiling(x0, z0, floor0, headUp) >= floor0) {
+        p.set(x0, y0, z0)
+        this.blocked = true
+        return
+      }
+    }
+    this.blocked = false
+    if (p.y > ceiling) p.y = ceiling
     if (p.y < floor) p.y = floor
     this.smoothY = p.y
+  }
+
+  /** The highest the rig may fly over (x, z): the roof's underside read from `floor`, less the head's height over the rig and its clearance; Infinity under the sky. */
+  _ceiling(x, z, floor, headUp) {
+    if (typeof this.th.ceilingAt !== 'function') return Infinity
+    return this.th.ceilingAt(x, z, floor) - LOCOMOTION.flyClearance - headUp
   }
 
   _snapTurn(stickX, head) {

@@ -38,10 +38,12 @@ import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
 import { Leafkin } from './render/leafkin.js'
+import { Villagers } from './render/villagers.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
+import { Lamps } from './render/lamps.js'
 import { Shell } from './render/shell.js'
 import { rollVillage, buildVillage } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
@@ -68,7 +70,7 @@ import { Stars } from '../stars.js'
 // on a 512x64 map once per frame instead of per pixel, which is what pays for a
 // full sky dome. The band mesh it replaced is parked in archive/aurora-mesh/.
 import { SkyAurora } from './render/aurora.js'
-import { Water, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
+import { Water, WATER, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK, WEATHER, daynessOfElev } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { SkyProbe, PROBE } from '../sky-probe.js'
@@ -2242,6 +2244,7 @@ let spiders = null
 let wildlife = null
 let snowmen = null
 let leafkin = null
+let villagers = null
 let hands = null
 let handsNet = null
 let creatureNet = null
@@ -2261,8 +2264,9 @@ let rowboats = null
 let boats = null
 let dragons = null
 let entrances = null
-// A village's own (DESIGN.md §30): its huts and the boulder's inside; both null in the overworld.
+// A village's own (DESIGN.md §30): its huts, its lamps and the boulder's inside; all null in the overworld.
 let roomProps = null
+let lamps = null
 let shell = null
 // The mouth she came in by (Entrances.sites()): the village's seed, and where to put her back when she leaves. Saved with the game; null in the overworld.
 let cameInBy = null
@@ -2347,6 +2351,7 @@ function applyAnimalVisibility() {
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
+  if (villagers) villagers.batch.visible = animalOn('leafkin')
   // The roosts go with their dragons: a nest is where a dragon lives, not litter. Neither in a village.
   if (dragons) dragons.batch.visible = animalOn('dragons')
   if (roosts) roosts.batch.visible = animalOn('dragons')
@@ -2479,6 +2484,8 @@ const ROOMS = {
   leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true },
 }
 let currentRoom = ROOMS.overworld
+// A village pond's water: how far she sees into it looking straight down and the angle below the horizontal the seeing-in begins at (water.js WATER.clarity, clarityAngle), set on the room's boot. A pond 20 m across is looked into from its shore at 20 or 30 degrees, where a lake's mirror would show her nothing of its fish.
+const VILLAGE_POND = { clarity: 0.7, clarityAngle: 15 }
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
 let roomSpec = null
 let roomHeightmap = null
@@ -2488,8 +2495,26 @@ let roomBuild = 0
 let soundReady = null
 // How far out from a mouth she arrives, and the way she faces: along the mouth's normal, off the face.
 const ARRIVE_M = 2
-// Black over the whole view while a room is swapped: on the camera, so it holds in XR where the DOM overlay is not drawn.
+// Black over the whole view while a room is swapped: a sphere on the camera, so it holds in XR where the DOM overlay is not drawn, faded in over FADE_MS before the swap and out over FADE_MS after, its opacity stepped by the tick (fadeStep).
+const FADE_MS = 500
 let blackout = null
+let fadeGoal = 0
+let fadeDone = null
+function fadeStep(ms) {
+  if (blackout === null) return
+  const m = blackout.material
+  m.opacity = Math.max(0, Math.min(1, m.opacity + (Math.sign(fadeGoal - m.opacity) * ms) / FADE_MS))
+  blackout.visible = m.opacity > 0
+  if (m.opacity === fadeGoal && fadeDone !== null) { fadeDone(); fadeDone = null }
+}
+/** Resolves once the view has faded to `goal` (1 black, 0 clear); a hidden tab, which ticks no frame, snaps there after two fades' time so the swap cannot stall. */
+function fade(goal) {
+  fadeGoal = goal
+  return new Promise((resolve) => {
+    fadeDone = resolve
+    setTimeout(() => { if (fadeDone === resolve) { blackout.material.opacity = goal; fadeStep(0) } }, 2 * FADE_MS)
+  })
+}
 
 async function bootWorld() {
   // The atlas is built once, ahead of every room: createTerrainMaterial decides
@@ -2644,11 +2669,12 @@ function disposeRoom() {
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   for (const layer of [
-    leafkin, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, grasshoppers, butterflies, crabs, frogs, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, shell, markers, waterSurfaces, terrainWire, terrain,
+    leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, grasshoppers, butterflies, crabs, frogs, fish,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
-  leafkin = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = grasshoppers = butterflies = crabs = frogs = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = shell = markers = waterSurfaces = terrainWire = terrain = null
+  lighting.clearLamps()
+  leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = grasshoppers = butterflies = crabs = frogs = fish = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = shell = markers = waterSurfaces = terrainWire = terrain = null
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
   deskHand = null
@@ -2656,10 +2682,11 @@ function disposeRoom() {
 }
 
 /**
- * The world she is leaving for another (DESIGN.md §30): black over the view,
- * every layer down, the room's files up and its stack built against them, her
- * feet ARRIVE_M out from `site` facing along its normal -- a village's own
- * exit when `site` is null, since only its own build knows where that is. The
+ * The world she is leaving for another (DESIGN.md §30): the view faded to
+ * black, every layer down, the room's files up and its stack built against
+ * them, her feet ARRIVE_M out from `site` facing along its normal -- a
+ * village's own exit when `site` is null, since only its own build knows where
+ * that is -- and the view faded back in on the new room. The
  * clock, the backpack, the net and what her hands hold come with her; a
  * creature in a hand does not, since its layer is gone -- it goes in the
  * backpack if there is room.
@@ -2669,14 +2696,15 @@ async function bootRoom(room, site) {
   if (!blackout) {
     blackout = new THREE.Mesh(
       new THREE.SphereGeometry(1, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0, side: THREE.BackSide, depthTest: false, depthWrite: false, fog: false }),
+      new THREE.MeshBasicMaterial({ color: 0, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false }),
     )
     blackout.renderOrder = 1e6
     blackout.frustumCulled = false
+    blackout.visible = false
     camera.add(blackout)
   }
-  blackout.visible = true
   ready = false
+  await fade(1)
   const held = {}
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
@@ -2689,9 +2717,9 @@ async function bootRoom(room, site) {
   faceAlong(face.nx, face.nz)
   restoreHeld(held)
   logSceneCensus()
-  blackout.visible = false
   ready = true
   console.log(`[v2] room: ${room.id} at ${spawn.x.toFixed(1)}, ${spawn.z.toFixed(1)}`)
+  await fade(0)
 }
 
 /** The rig turned so her gaze runs along (fx, fz), wherever her head is turned within it. */
@@ -2899,6 +2927,10 @@ async function buildRoom(room, at) {
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
+    // The lamps where the build put them (render/lamps.js), their light baked into every lit material until the room goes.
+    lamps = new Lamps(scene, height, { lamps: roomSpec.lamps, seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
+    if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
+    console.log(`[v2] lamps ${lamps.lamps.length}`)
   }
   window.v2huts = roomProps
 
@@ -2920,8 +2952,8 @@ async function buildRoom(room, at) {
     // the scatter itself, so the clearings are the same on every boot.
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
-    // and in a village one in the clearing or through a hut.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) } : deadwood,
+    // and in a village one in the clearing, through a hut or on a lamp.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
   })
@@ -2949,6 +2981,9 @@ async function buildRoom(room, at) {
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
+  // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
+  if (shell) walk.addStone(shell)
+  if (lamps) walk.addStone(lamps)
   // And so are the other players, and her double: their bodies stand on it, feet planted.
   peerAvatars.ground(walk)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
@@ -3139,8 +3174,11 @@ async function buildRoom(room, at) {
   // The fish: a pool that follows her through whatever water is in reach (see
   // render/fish.js). Its materials are patched here, like every other layer's,
   // before the mesh and cutouts arrive -- the pool stays empty until they do.
+  // A village seeds them on the seed its build found a school for in its lake.
   await bootStep('fish')
-  fish = new Fish(scene, height, waterSurfaces, { seed })
+  fish = new Fish(scene, height, waterSurfaces, { seed: room.village ? roomSpec.fishSeed : seed })
+  // A village's pond is clear: seen into from the shore (VILLAGE_POND), and its fish drawn from above (the frame loop's fishShown), where the overworld's lakes are mirrors until she dives.
+  water.uniforms.uClarity.value.set(room.village ? VILLAGE_POND.clarity : WATER.clarity, Math.sin(((room.village ? VILLAGE_POND.clarityAngle : WATER.clarityAngle) * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
@@ -3317,6 +3355,14 @@ async function buildRoom(room, at) {
     leafkin.ready.then(() => console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`))
   }
   window.v2leafkin = leafkin
+  // The villagers (render/villagers.js): the leafkin who live here, one a house and a spare, about the roads and in and out of their doors.
+  if (room.village) {
+    await bootStep('villagers')
+    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seed: villageSeed() })
+    for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
+    villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
+  }
+  window.v2villagers = villagers
 
   // The ambient sound over this room's layers, once the clips are in.
   await bootStep('sound')
@@ -3326,13 +3372,15 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...(leafkin ? [{ layer: leafkin, clips: 'human' }] : [])],
-      voiced: leafkin ? [leafkin] : [],
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' }))],
+      voiced: [leafkin, villagers].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
       fish,
       grasshoppers,
+      // A village's pond is too small for a wave to break on its shore: the quiet lapping alone.
+      waves: !room.village,
     })
     window.v2ambience = ambience
   })
@@ -5367,6 +5415,7 @@ function tick() {
   last = now
   // Clamp dt so a tab-switch or a GC pause cannot teleport her across a valley.
   const dt = Math.min(0.1, raw / 1000)
+  fadeStep(dt * 1000)
 
   acc += raw
   frames++
@@ -5512,7 +5561,8 @@ function tick() {
   // WHAT IS UNDER THE SURFACE IS ONLY DRAWN FROM UNDER IT. The water is nearly
   // opaque from above (WATER.clarity), so with her head in the air every fish
   // and every sunk crab is triangles and a step spent on something nobody can
-  // see. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
+  // see; a village's pond is the exception, clear from the shore (VILLAGE_POND),
+  // so its fish are drawn from above. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
   // no fish stepped, one frame in fish.js FOLLOW_EVERY -- so the lake is stocked
   // the moment she dives; a sunk crab simply pauses on its stone. `submerged` is last frame's answer (see
   // applySubmersion), one frame late on the dive and the surfacing, which the
@@ -5528,7 +5578,7 @@ function tick() {
   // moves the items to them.
   lures.length = 0
   hands.lures(lures)
-  const fishShown = animalOn('fish') && submerged
+  const fishShown = animalOn('fish') && (submerged || currentRoom.village)
   fish.batch.visible = fishShown
   // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
   stepAnimal('fish', () => {
@@ -5548,6 +5598,8 @@ function tick() {
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
+  // The villagers likewise, under the leafkin's row.
+  if (villagers) stepAnimal('leafkin', () => villagers.update(player.originPosition(), headTmp, clock.seconds, dt))
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
   if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
@@ -5579,6 +5631,11 @@ function tick() {
     wreaths.update(headTmp, state)
   }
   dayness = daynessOf(state)
+  // The lamps light after dark on the room's clock; their flicker is real time, this frame's glow into the lighting.
+  if (lamps) {
+    lamps.update((now / 1000) % 1024, dayness)
+    lighting.uniforms.uLampGlow.value.copy(lamps.glow)
+  }
   applySky(state, headTmp, now / 1000)
   // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.
   precip.update(dt, headTmp, state, height.snowLineAt(headTmp.x, headTmp.z), submerged)
