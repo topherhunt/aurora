@@ -34,6 +34,7 @@ const TRUNK_PAD = 0.15
 // so slopeAt and the limiter keep asking the same question.
 const SLOPE_EPS = 0.75
 
+// Her capsule at full size; a WalkSurface holds these times its scale.
 export const WALK = {
   // Metres of rise, from where her feet are, within which a stone's top is a
   // step she can take rather than a ceiling. A waist-high mantle. Below
@@ -58,10 +59,24 @@ const spans = new Float64Array(SPAN_CAP * 2)
 const RING = [[1, 0], [0, 1], [-1, 0], [0, -1]]
 
 export class WalkSurface {
-  constructor(field, rocks, trees) {
+  /**
+   * `scale` is her size against the world (DESIGN.md §30, her half size in a
+   * glade): her reach, her crown, her shoulder, the stone she steps over and
+   * the pace slopeAt measures over all shrink with her, while the stone and
+   * the trunks stay what they are.
+   */
+  constructor(field, rocks, trees, { scale = 1 } = {}) {
     if (!field || !rocks || !trees) throw new Error('WalkSurface: needs the field, the rocks and the trees')
+    if (!(scale > 0)) throw new Error(`WalkSurface: scale must be positive, not ${scale}`)
     this.field = field
     this.trees = trees
+    this.scale = scale
+    this.reach = WALK.reach * scale
+    this.height = WALK.height * scale
+    this.radius = WALK.radius * scale
+    this.rockMin = ROCK_WALK_MIN * scale
+    this.trunkPad = TRUNK_PAD * scale
+    this.slopeEps = SLOPE_EPS * scale
     // Every layer that is stone to her, the rocks first. Each answers
     // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
     // Rocks' terms and is read on its own into the one span buffer; one with
@@ -84,7 +99,7 @@ export class WalkSurface {
    * The ground at (x, z). Without `y`, the field or the highest stone over the
    * point, whichever is higher -- what a teleport arc, a spawn or a HUD readout
    * wants. With `y`, her current foot height, the highest stone whose top is
-   * within WALK.reach of her feet, else the field: stone further up is over her
+   * within her reach of her feet, else the field: stone further up is over her
    * head and not ground at all.
    */
   heightAt(x, z, y) {
@@ -95,14 +110,14 @@ export class WalkSurface {
         // The stone's own surface, not the prop seat Rocks settles into it: a
         // teleport landed on the seat stands inside the boulder and rides up to
         // the top the walker's columnAt read gives on the next frame.
-        const top = this.stone[s].blockTopAt(x, z, ROCK_WALK_MIN, false)
+        const top = this.stone[s].blockTopAt(x, z, this.rockMin, false)
         if (top > best) best = top
       }
       return best
     }
-    const ceiling = y + WALK.reach
+    const ceiling = y + this.reach
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
       for (let i = 0; i < n; i++) {
         const top = spans[i * 2 + 1]
         if (top > best && top <= ceiling) best = top
@@ -123,8 +138,8 @@ export class WalkSurface {
    * favour. Untouched when she fits.
    */
   fits(x, z, standY, out) {
-    const lo = standY + WALK.reach
-    const hi = standY + WALK.height
+    const lo = standY + this.reach
+    const hi = standY + this.height
     if (this._crossed(x, z, lo, hi)) {
       if (out) out.x = out.z = 0
       return false
@@ -133,8 +148,8 @@ export class WalkSurface {
     let pz = 0
     let hit = 0
     for (let k = 0; k < RING.length; k++) {
-      const rx = RING[k][0] * WALK.radius
-      const rz = RING[k][1] * WALK.radius
+      const rx = RING[k][0] * this.radius
+      const rz = RING[k][1] * this.radius
       if (!this._crossed(x + rx, z + rz, lo, hi)) continue
       hit++
       px -= rx
@@ -158,7 +173,7 @@ export class WalkSurface {
   ceilingAt(x, z, y) {
     let low = Infinity
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
       if (n >= SPAN_CAP) return -Infinity
       for (let i = 0; i < n; i++) {
         const bottom = spans[i * 2]
@@ -172,7 +187,7 @@ export class WalkSurface {
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
   _crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, ROCK_WALK_MIN, spans)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
       if (n >= SPAN_CAP) return true
       for (let i = 0; i < n; i++) {
         if (spans[i * 2 + 1] > lo && spans[i * 2] < hi) return true
@@ -186,7 +201,7 @@ export class WalkSurface {
    * surface -- or straight up on a stone's deck (a boat's sole), whose slope
    * is its own and not the lake bed's a stride either side of it.
    */
-  normalAt(x, z, eps = SLOPE_EPS, out = { x: 0, y: 1, z: 0 }) {
+  normalAt(x, z, eps = this.slopeEps, out = { x: 0, y: 1, z: 0 }) {
     for (let s = 0; s < this.stone.length; s++) {
       if (this.stone[s].deckAt && this.stone[s].deckAt(x, z)) { out.x = out.z = 0; out.y = 1; return out }
     }
@@ -200,7 +215,7 @@ export class WalkSurface {
   }
 
   /** Slope in radians, the convention Player compares against maxSlopeDeg. */
-  slopeAt(x, z, eps = SLOPE_EPS) {
+  slopeAt(x, z, eps = this.slopeEps) {
     return Math.acos(Math.min(1, this.normalAt(x, z, eps).y))
   }
 
@@ -209,6 +224,6 @@ export class WalkSurface {
    * null. Player slides around it; the teleport arc stops at it.
    */
   obstacleAt(x, z, out) {
-    return this.trees.trunkAt(x, z, TRUNK_PAD, out)
+    return this.trees.trunkAt(x, z, this.trunkPad, out)
   }
 }

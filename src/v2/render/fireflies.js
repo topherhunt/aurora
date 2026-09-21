@@ -27,7 +27,7 @@ export const NIGHT_DAY = 0.5
 export const DARK_DAY = 0.2
 // The flash and the dark between, seconds, each re-rolled every cycle; the fraction of a flash spent brightening.
 export const ON_S = [0.3, 0.7]
-export const OFF_S = [3, 9]
+export const OFF_S = [6, 18]
 export const RISE = 0.3
 // Flight height over the walk surface, metres per second, how long a height and a speed are held, and how far from home a firefly ranges before it is turned back.
 export const FLY_M = [0.3, 3]
@@ -47,7 +47,7 @@ export const FLASH_LIFT = 0.15
 export const FLASH_SLOW = 0.5
 // The body's radius and the card's half-size (the halo's reach), metres; the glow's linear RGB at full flash, and the body's.
 export const BODY_M = 0.007
-export const HALO_M = 0.7
+export const HALO_M = 0.35
 export const GLOW = [0.55, 1.0, 0.2]
 export const BODY_RGB = [0.02, 0.015, 0.01]
 // Frames between a firefly's ground reads (staggered by slot), and between one tile's leftover candidates being looked at again for trees.

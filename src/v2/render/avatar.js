@@ -197,9 +197,9 @@ export class PeerAvatars {
     return roster.find((a) => a.id === avatarId) ?? roster[hash(peerId) % roster.length]
   }
 
-  /** An undressed peer: no body yet. `tier` is the rung it was last drawn on, `at` when it was last posed. */
+  /** An undressed peer: no body yet. `tier` is the rung it was last drawn on, `at` when it was last posed, `wants` and `scale` the avatar and the size it was last asked to wear. */
   makePeer(id) {
-    return { id, puppet: null, body: null, heightM: 0, tier: -1, wants: undefined, at: performance.now() }
+    return { id, puppet: null, body: null, heightM: 0, tier: -1, wants: undefined, scale: 1, at: performance.now() }
   }
 
   get(id) {
@@ -212,19 +212,22 @@ export class PeerAvatars {
 
   /**
    * Dresses a peer in `avatarId`, or in the id-hashed fallback when that names
-   * nothing shipped. The wanted id is recorded before the load, and checked
-   * again after it, so a peer who leaves or changes mid-download is not dressed.
+   * nothing shipped, at `scale` times the villager's stature: the peer's own
+   * size against the world (DESIGN.md §30, half in a glade). The wanted id and
+   * size are recorded before the load, and checked again after it, so a peer
+   * who leaves or changes mid-download is not dressed.
    */
-  async dress(peer, avatarId) {
+  async dress(peer, avatarId, scale) {
     peer.wants = avatarId
+    peer.scale = scale
     const roster = await this.ready
     const entry = this.entryFor(peer.id, avatarId)
     const loaded = await this.asset(entry.id)
-    if (peer.wants !== avatarId || !this.live(peer)) return
+    if (peer.wants !== avatarId || peer.scale !== scale || !this.live(peer)) return
     this.undress(peer)
     peer.puppet = this.makePuppet(entry.id, loaded)
-    peer.body = new VrBody(peer.puppet, loaded.asset, entry.heightM / loaded.asset.height, this.walk)
-    peer.heightM = entry.heightM
+    peer.body = new VrBody(peer.puppet, loaded.asset, (entry.heightM * scale) / loaded.asset.height, this.walk)
+    peer.heightM = entry.heightM * scale
     peer.tier = -1
     this.group.add(peer.puppet.group)
   }
@@ -254,12 +257,14 @@ export class PeerAvatars {
     this.pose(this.double, state)
   }
 
-  /** One peer's body from one state; a pose of the wrong length is skipped, not thrown, since it came off the wire. */
+  /** One peer's body from one state; a pose of the wrong length or a size that is not one is skipped, not thrown, since it came off the wire. */
   pose(peer, state) {
     const { pose, hands, alpha = 1 } = state
     if (!pose || pose.length !== 21 || !this.walk) return
     const avatar = state.avatar ?? null
-    if (peer.wants !== avatar) this.dress(peer, avatar)
+    const scale = state.scale ?? 1
+    if (!(scale > 0)) return
+    if (peer.wants !== avatar || peer.scale !== scale) this.dress(peer, avatar, scale)
     const now = performance.now()
     const dt = Math.min(0.1, Math.max(0, (now - peer.at) / 1000))
     peer.at = now

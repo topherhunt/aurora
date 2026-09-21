@@ -19,8 +19,9 @@
 // and after a teleport, the brook loop on only by the river, the wind only over
 // the snow, high off the ground or under an overcast, the rain loop by precip, a dragon's wingbeats and treads on their
 // clips' cycles and its roars and growls on theirs, a fiddle through a house's wall
-// louder and clearer as she nears it, and nothing at all above the surface
-// while she is under it.
+// louder and clearer as she nears it, a campfire's crackle within reach of its
+// flame drawn from its four takes in no order, a softer one from a torch while
+// it is lit, and nothing at all above the surface while she is under it.
 //
 // What this can NOT check: what any of it sounds like. That needs ears, in the
 // world.
@@ -206,6 +207,31 @@ console.log('loop voice')
   for (let i = 0; i < 60 * 30; i++) { ctx.currentTime = i / 60; engine.update() }
   const rates = ctx.sources.slice(before).map((s) => s.playbackRate.value)
   check(rates.length >= 6 && rates.every((r) => r === 1), 'every cycle plays at rate 1', `${rates.length} cycles, ${new Set(rates).size} rate(s)`)
+}
+
+{
+  // A loop over a list of clips draws one each cycle, in no order, and joins the takes like a single clip's passes.
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  const takes = { c1: 3.0, c2: 4.5, c3: 2.0, c4: 5.0 }
+  for (const [k, d] of Object.entries(takes)) engine.buffers.set(k, { duration: d })
+  const voice = engine.loop(['c1', 'c2', 'c3', 'c4'], { directional: true, rand: mulberry32(7) })
+  check(voice.name === 'c1|c2|c3|c4' && voice.names.length === 4, 'the voice names its takes')
+  voice.start()
+  for (let i = 0; i < 60 * 120; i++) { ctx.currentTime = i / 60; engine.update() }
+  const played = ctx.sources.map((s) => Object.keys(takes).find((k) => engine.buffers.get(k) === s.buffer))
+  const seen = new Set(played)
+  check(played.length >= 20 && seen.size === 4, 'two minutes plays every take', `${played.length} cycles, ${[...seen].join(' ')}`)
+  check(played.some((k, i) => i > 0 && k === played[i - 1]) && played.some((k, i) => i > 0 && k !== played[i - 1]), 'in no order: a take follows itself sometimes and another take other times')
+  const joins = ctx.sources.slice(1).every((s, i) => {
+    const prev = ctx.sources[i]
+    const out = prev.env.log.filter((e) => e.op === 'curve')[1]
+    return Math.abs(out.t - (prev.startAt + prev.buffer.duration / prev.playbackRate.value - out.dur)) < 1e-6 && Math.abs(s.startAt - out.t) < 1e-6
+  })
+  check(joins, 'each take runs its own length and the next fades in as it fades out')
+  let threw = 0
+  try { engine.loop([]) } catch { threw++ }
+  check(threw === 1, 'a loop with no clips throws')
 }
 
 // --- the engine's buses ------------------------------------------------------
@@ -1224,6 +1250,72 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   let threw = 0
   try { new Ambience({ engine: fakeEngine(), sense, fiddlers: [{ x: 0, y: 0, z: 0, r: 0 }] }) } catch { threw++ }
   check(threw === 1, 'a fiddler with no radius throws')
+}
+{
+  // A campfire: its own loop over the four takes, placed at the flame, off out of reach, quiet at the edge, full beside it.
+  const C = RULES.campfire
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  const fires = [{ x: 0, y: GROUND + 0.1, z: 0 }, { x: 100, y: GROUND + 0.1, z: 0 }]
+  const amb = new Ambience({ engine, sense, rand: mulberry32(15), campfires: fires })
+  const a = amb.loops.campfire0, b = amb.loops.campfire1
+  check(a && b && Array.isArray(a.name) && a.name.length === 4 && a.name.every((n) => n.startsWith('campfire') && n in SOUNDS) && a.opts.directional === true && !a.opts.muffle, 'a loop a fire over the four campfire takes, placed, in the open')
+  const at = (d) => ({ x: d, y: GROUND + 0.1, z: 0 })
+  run(amb, 1, { head: at(C.reach + 5) })
+  check(!a.active && !b.active, 'nothing out of reach of either fire')
+  run(amb, 1, { head: at(C.reach - 0.5) })
+  const edgeLevel = a.level
+  check(a.active && !b.active && edgeLevel > 0 && edgeLevel < 0.05 * C.level, 'inside the reach of one fire its crackle is on, near nothing', `level ${edgeLevel?.toFixed(4)}`)
+  run(amb, 1, { head: at(C.reach / 2) })
+  const midLevel = a.level
+  check(midLevel > edgeLevel, 'halfway in it is louder', `level ${midLevel?.toFixed(3)}`)
+  run(amb, 1, { head: at(1) })
+  check(a.level > midLevel && Math.abs(a.level - C.level) < 1e-9, 'beside the fire it is at full level', `level ${a.level?.toFixed(3)}`)
+  check(a.at.x === 0 && a.at.y === GROUND + 0.1 && a.at.z === 0, 'placed at the flame')
+  run(amb, 1, { head: { x: 101, y: GROUND + 0.1, z: 0 } })
+  check(!a.active && a.stops === 1 && b.active && Math.abs(b.level - C.level) < 1e-9, 'walking to the other fire stops the first and starts the second')
+  amb.dispose()
+  check(!b.active, 'dispose stops it with the rest')
+  const bare = new Ambience({ engine: fakeEngine(), sense, rand: mulberry32(15) })
+  run(bare, 1, { head: at(1) })
+  check(bare.campfires.length === 0 && !('campfire0' in bare.loops), 'no campfires, no loops')
+  let threw = 0
+  try { new Ambience({ engine: fakeEngine(), sense, campfires: [{ x: 0, y: NaN, z: 0 }] }) } catch { threw++ }
+  check(threw === 1, 'a campfire without a height throws')
+}
+{
+  // A torch: a muffled loop over the same takes, off by day however near, on and scaled by how lit the torches are after dark, quieter and shorter-reached than a campfire.
+  const T = RULES.torch, C = RULES.campfire
+  check(T.level < C.level / 2 && T.reach < C.reach, 'a torch is quieter and closer than a campfire')
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  let lit = 0
+  const at = (d) => ({ x: d, y: GROUND + 1.6, z: 0 })
+  const amb = new Ambience({ engine, sense, rand: mulberry32(15), torches: { at: [{ x: 0, y: GROUND + 1.6, z: 0 }, { x: 50, y: GROUND + 1.6, z: 0 }], lit: () => lit } })
+  const a = amb.loops.torch0, b = amb.loops.torch1
+  check(a && b && Array.isArray(a.name) && a.name.length === 4 && a.name.every((n) => n.startsWith('campfire')) && a.opts.muffle === true && a.opts.directional === true && a.cutoff === T.cutoff, 'a muffled loop a torch over the campfire takes, its cutoff set once')
+  run(amb, 1, { head: at(0.5) })
+  check(!a.active && !b.active, 'unlit, silent beside it')
+  lit = 1
+  run(amb, 1, { head: at(T.reach + 2) })
+  check(!a.active, 'lit, silent out of reach')
+  run(amb, 1, { head: at(0.5) })
+  check(a.active && !b.active && Math.abs(a.level - T.level) < 1e-9 && a.at.x === 0 && a.at.y === GROUND + 1.6, 'lit and beside it, on at full level, placed at the flame', `level ${a.level?.toFixed(3)}`)
+  const full = a.level
+  lit = 0.5
+  run(amb, 1, { head: at(0.5) })
+  check(Math.abs(a.level - full / 2) < 1e-9, 'half lit is half as loud')
+  run(amb, 1, { head: at(T.reach - 0.5) })
+  check(a.active && a.level > 0 && a.level < 0.05 * T.level, 'at the edge of reach, near nothing', `level ${a.level?.toFixed(4)}`)
+  lit = 0
+  run(amb, 1, { head: at(0.5) })
+  check(!a.active && a.stops === 1, 'the torches going out stops it')
+  let threw = 0
+  try { new Ambience({ engine: fakeEngine(), sense, torches: { at: [{ x: 0, y: 0, z: 0 }] } }) } catch { threw++ }
+  try { new Ambience({ engine: fakeEngine(), sense, torches: { at: [{ x: 0, z: 0 }], lit: () => 1 } }) } catch { threw++ }
+  lit = 2
+  try { run(amb, 1, { head: at(0.5) }) } catch { threw++ }
+  check(threw === 3, 'torches without lit(), a torch without a height, or a lit past 1 throws')
 }
 {
   // Bad input throws.

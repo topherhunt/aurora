@@ -45,6 +45,9 @@ export class Netplay {
     // roster loads and sent with every pose since the relay keeps only the
     // latest message per client.
     this.avatar = null
+    // Her size against the world (DESIGN.md §30, half in a glade), sent with
+    // every pose so a peer draws her body at it; 1 is left off the wire.
+    this.scale = 1
     // The room's world clock as the relay last stated it, `{ anchorMs,
     // skipHours }` for WorldClock.sync, or null until the first snapshot.
     this.time = null
@@ -111,9 +114,10 @@ export class Netplay {
   sendPose(pose, hands, now = performance.now(), boats = null) {
     if (now - this.lastSend < SEND_MS || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
     this.lastSend = now
-    const { avatar } = this
+    const { avatar, scale } = this
     const message = { version: 1, type: 'pose', pose, hands }
     if (avatar) message.avatar = avatar
+    if (scale !== 1) message.scale = scale
     if (boats && boats.aboard) message.aboard = boats.aboard
     if (boats && boats.boat) message.boat = boats.boat
     this.socket.send(JSON.stringify(message))

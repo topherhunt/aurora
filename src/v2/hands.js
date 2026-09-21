@@ -153,12 +153,16 @@ export class Hands {
    * lake. `haptic(key, intensity, ms)` buzzes a hand; `stow(rec)` takes a
    * record into the backpack and says whether it fit; `thud(x, y, z)` is a
    * dropped thing meeting the ground. `rand` is the roll's, the flap's and
-   * the drift's own stream.
+   * the drift's own stream. `scale` is her size against the world (DESIGN.md
+   * §30): each hand's reach, the size of thing it lifts and the backpack zone
+   * about her head are hers, and shrink with her.
    */
-  constructor(scene, { walk, water, haptic, stow, thud, rand = Math.random }) {
+  constructor(scene, { walk, water, haptic, stow, thud, rand = Math.random, scale = 1 }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
     if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec) and thud(x, y, z)')
+    if (!(scale > 0)) throw new Error(`Hands: scale must be positive, not ${scale}`)
+    this.scale = scale
     this.walk = walk
     this.water = water
     this.haptic = haptic
@@ -218,7 +222,7 @@ export class Hands {
     this.sources.push(src)
   }
 
-  /** A hand: the node whose world position is its point, and how far from that point it grabs. */
+  /** A hand: the node whose world position is its point, and how far from that point it grabs, at her full size. */
   addHand(key, node, { reach = REACH_M } = {}) {
     if (this.hands.has(key)) throw new Error(`Hands.addHand: ${key} twice`)
     if (!node || !node.isObject3D) throw new Error(`Hands.addHand: ${key} needs an Object3D`)
@@ -297,7 +301,7 @@ export class Hands {
       return 'drop'
     }
     const p = this._point(hand)
-    const best = this._nearestAt(p.x, p.y, p.z, hand.reach)
+    const best = this._nearestAt(p.x, p.y, p.z, hand.reach * this.scale)
     if (!best) return null
     this._take(hand, best)
     return 'pick'
@@ -418,7 +422,7 @@ export class Hands {
       hand.held.netId = null
       hand.held.mine = false
     } else {
-      const rec = best.src.take(best.hit, STOW_MAX_M)
+      const rec = best.src.take(best.hit, STOW_MAX_M * this.scale)
       this._checkRecord(rec)
       if (this.byKind.get(rec.kind) !== best.src) throw new Error(`Hands: a source handed out a ${rec.kind}, which is not its kind`)
       hand.held = this._item(rec, best.src)
@@ -597,7 +601,7 @@ export class Hands {
   _nearestAt(x, y, z, reach) {
     let best = null
     for (const src of this.sources) {
-      const hit = src.pickAt(x, y, z, reach, GRAB_MAX_M)
+      const hit = src.pickAt(x, y, z, reach, GRAB_MAX_M * this.scale)
       if (hit && (!best || hit.dist < best.hit.dist)) best = { src, hit }
     }
     for (const item of this.loose) {
@@ -612,7 +616,8 @@ export class Hands {
     const p = this._point(hand)
     const dx = p.x - head.x, dy = p.y - head.y, dz = p.z - head.z
     const along = dx * Math.sin(head.yaw) + dz * Math.cos(head.yaw)
-    return along < -ZONE.behind && dy > -ZONE.below && dx * dx + dy * dy + dz * dz < ZONE.within * ZONE.within
+    const k = this.scale
+    return along < -ZONE.behind * k && dy > -ZONE.below * k && dx * dx + dy * dy + dz * dz < ZONE.within * ZONE.within * k * k
   }
 
   // -- the drawing -----------------------------------------------------------
@@ -1109,15 +1114,16 @@ export class Hands {
 
   dispose() {
     this.batch.parent?.remove(this.batch)
+    this.over.parent?.remove(this.over)
     this.peerHeld.clear()
+    // Disposing a pool geometry frees its own instanced attributes' buffers; the shared vertex buffers it also drops are re-uploaded by their source if that is still drawn. The arrays stay: a nulled array crashes the renderer on any mesh still reachable.
     for (const pool of this.pools.values()) {
-      // The vertex buffers are the source's; only the pool's own instanced attributes go.
-      for (const { attr } of pool.instanced) attr.array = null
-      for (const { attr } of pool.over.instanced) attr.array = null
+      pool.geo.dispose()
+      pool.over.geo.dispose()
     }
     this.pools.clear()
     if (this.studio) {
-      for (const { instanced } of this.studio.subjects.values()) for (const { attr } of instanced) attr.array = null
+      for (const { geo } of this.studio.subjects.values()) geo.dispose()
       this.studio = null
     }
   }

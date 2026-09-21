@@ -5,7 +5,7 @@ import { createPropMaterial } from '../../material.js'
 import { TINT_GAIN } from '../../props/rock-bank.js'
 import { decimate } from '../../mesh/decimate.js'
 import { bakeImpostor, buildImpostorCard } from '../../props/impostor.js'
-import { CAMPFIRE, Flames, flicker } from './fire.js'
+import { CAMPFIRE, Flames } from './fire.js'
 
 // ---------------------------------------------------------------------------
 // A VILLAGE'S GATHERING PLACE (DESIGN.md §30): a campfire at the centre of the
@@ -40,6 +40,8 @@ export const HEARTH = {
 export const HEARTH_CARD_SEED = 1978
 
 const RING_TOP = (s) => s * 0.75
+
+const STEADY = [1, 1, 1]
 
 // The rock's tint gain, per instance; the bark tile is an albedo and wears none.
 const WHITE = [1, 1, 1]
@@ -96,13 +98,14 @@ function prism(faces, ring, tops, m, tile, color) {
     const a = at(ring[i][0], 0, ring[i][1]), b = at(ring[j][0], 0, ring[j][1])
     const c = at(ring[j][0], tops[j], ring[j][1]), d = at(ring[i][0], tops[i], ring[i][1])
     const u0 = along / tile, u1 = (along + w) / tile
-    faces.tri(a, b, c, [u0, 0], [u1, 0], [u1, tops[j] / tile], LAYER.BARK_PINE, color)
-    faces.tri(a, c, d, [u0, 0], [u1, tops[j] / tile], [u0, tops[i] / tile], LAYER.BARK_PINE, color)
+    // The ring runs clockwise seen from +Y, so the outward face is a, c, b.
+    faces.tri(a, c, b, [u0, 0], [u1, tops[j] / tile], [u1, 0], LAYER.BARK_PINE, color)
+    faces.tri(a, d, c, [u0, 0], [u0, tops[i] / tile], [u1, tops[j] / tile], LAYER.BARK_PINE, color)
     along += w
   }
   const cap = (y, flip) => {
     for (let i = 1; i < n - 1; i++) {
-      const [p, q, r] = flip ? [0, i + 1, i] : [0, i, i + 1]
+      const [p, q, r] = flip ? [0, i, i + 1] : [0, i + 1, i]
       const uv = (k) => [ring[k][0] / tile, ring[k][1] / tile]
       faces.tri(at(ring[p][0], y(p), ring[p][1]), at(ring[q][0], y(q), ring[q][1]), at(ring[r][0], y(r), ring[r][1]), uv(p), uv(q), uv(r), LAYER.BARK_PINE, color)
     }
@@ -283,8 +286,7 @@ export class Hearth {
     this.tier = 0
     // The flame's shader reads its instance origin as world space, so it hangs off the scene, not the group.
     this.flames = new Flames(1, CAMPFIRE, { seed })
-    this.phase = mulberry32(seed + 7)() * Math.PI * 2
-    this.flames.place(0, this.x, this.y + HEARTH.fire.lift, this.z, { height: CAMPFIRE.height, radius: CAMPFIRE.radius, phase: this.phase, group: 0 })
+    this.flames.place(0, this.x, this.y + HEARTH.fire.lift, this.z, { height: CAMPFIRE.height, radius: CAMPFIRE.radius, group: 0 })
     scene.add(this.flames.group)
     scene.add(this.group)
     this.textures = textures
@@ -319,7 +321,7 @@ export class Hearth {
     if (this.card) this.card.visible = tier === 2
   }
 
-  /** Once a frame: the rung by the eye's distance, and the flame's flicker by `t` seconds. */
+  /** Once a frame: the rung by the eye's distance, and the flame's clock in seconds. */
   update(camX, camY, camZ, t) {
     const dx = this.x - camX, dy = this.y + this.extent.height / 2 - camY, dz = this.z - camZ
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -330,7 +332,8 @@ export class Hearth {
     if (tier < 1 && d > mid) tier = 1
     else if (tier === 1 && d < mid * HEARTH.hysteresis) tier = 0
     if (tier !== this.tier) this._show(tier)
-    this.flames.update(t, [flicker(t, this.phase), 1, 1])
+    // A steady glow of 1: the campfire was locked on /test-fire with `flicker` 0, and the lamps' breathing curve would pulse its height by a fifth.
+    this.flames.update(t, STEADY)
   }
 
   /** Whether (x, z) is within `pad` of the gathering place: the trees' `deadwood` contract. */
@@ -372,6 +375,11 @@ export class Hearth {
 
   get stats() {
     return { tier: this.tier, tris: this.tier === 2 && this.card ? 2 : this.tris[Math.min(this.tier, 1)], stools: this.stools.length, card: !!this.card }
+  }
+
+  /** Where the fire burns, for the ambience's crackle (RULES.campfire). */
+  get fire() {
+    return { x: this.x, y: this.y + HEARTH.fire.lift, z: this.z }
   }
 
   dispose() {

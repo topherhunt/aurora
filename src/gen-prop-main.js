@@ -645,8 +645,14 @@ scene.add(hemi)
 const sun = new THREE.DirectionalLight(0xfff3e2, 1.6)
 sun.position.set(1, 1.5, 1)
 scene.add(sun)
-// Dusk keeps a tenth of the light: the glow is judged against the village's night, not a lit bench.
-$('glowDusk').addEventListener('change', () => { const k = $('glowDusk').checked ? 0.1 : 1; hemi.intensity = 1.1 * k; sun.intensity = 1.6 * k })
+// Dusk keeps a tenth of the light and turns the glow on, as the village's night does: the glow is judged against that, not a lit bench.
+$('glowDusk').addEventListener('change', () => {
+  const k = $('glowDusk').checked ? 0.1 : 1
+  hemi.intensity = 1.1 * k
+  sun.intensity = 1.6 * k
+  model?.traverse((o) => { if (o.material?.uGlowOn) o.material.uGlowOn.value = glowOn() })
+})
+const glowOn = () => ($('glowDusk').checked ? 1 : 0)
 const orbit = new OrbitControls(camera, renderer.domElement)
 orbit.enableDamping = true
 
@@ -668,11 +674,13 @@ $('rotateLight').addEventListener('change', () => { orbit.enableRotate = !$('rot
 // --- glow points --------------------------------------------------------------
 //
 // The panes the preview lights from inside (addGlow), listed in the frame the
-// world draws the prop in (loadCritterGlb: centred over its feet on XZ, feet at
-// y = 0), which is the PICK's: a tier's bounds drift by its decimation, so the
-// list is read off and previewed on the pick. A click that did not drag adds a
-// point where its ray lands, the table moves or drops one, and every change
-// rebuilds the pick's materials: addGlow bakes the count into the program.
+// world draws the prop in: the mesh's RAW vertices, centred over their feet on
+// XZ with the feet at y = 0 (ship.mjs drops Tripo's node yaw, which the
+// working mesh here still carries, and loadCritterGlb centres what ships).
+// The PICK's: a tier's bounds drift by its decimation, so the list is read off
+// and previewed on the pick. A click that did not drag adds a point where its
+// ray lands, the table moves or drops one, and every change rebuilds the
+// pick's materials: addGlow bakes the count into the program.
 const GLOW_SEED = { 'house-leafkin': WINDOWS }
 let glowPoints = []
 let glowFor = null // the prop the list belongs to
@@ -688,18 +696,23 @@ canvas.addEventListener('pointerup', (e) => {
   pickRay.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera)
   const hit = pickRay.intersectObject(model, true)[0]
   if (!hit) return
-  const p = hit.point.clone().sub(glowFoot())
-  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld)
+  const { inv, foot, scale } = shipFrame(hit.object)
+  const p = hit.point.clone().applyMatrix4(inv).sub(foot)
+  // The pane's facing is the face's way out along the ground, unit (the lamp map cones the light along it); the face normal is already in the mesh's own frame.
+  const n = hit.face.normal
+  const flat = Math.hypot(n.x, n.z)
+  if (flat < 0.3) { setStatus('that face looks up or down, not out of a wall', 'warn'); return }
   // A new pane takes the last one's radius: the panes of one prop are of a size.
   const last = glowPoints.at(-1)
-  glowPoints.push({ x: p.x, y: p.y, z: p.z, r: last ? last.r : glowSpan() * 0.05, nx: n.x, nz: n.z })
+  glowPoints.push({ x: p.x, y: p.y, z: p.z, r: last ? last.r : (glowSpan() / scale) * 0.05, nx: n.x / flat, nz: n.z / flat })
   glowChanged()
 })
 
-/** The pick's frame's origin in the scene: the box's XZ centre at its feet. */
-function glowFoot() {
-  const box = new THREE.Box3().setFromObject(model)
-  return new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2)
+/** The frame a mesh node ships in: into its raw vertices (`inv`), whose box's XZ centre at its feet is the origin (`foot`); `scale` the node's, raw units to the scene's. */
+function shipFrame(o) {
+  if (!o.geometry.boundingBox) o.geometry.computeBoundingBox()
+  const b = o.geometry.boundingBox
+  return { inv: o.matrixWorld.clone().invert(), foot: new THREE.Vector3((b.min.x + b.max.x) / 2, b.min.y, (b.min.z + b.max.z) / 2), scale: o.matrixWorld.getMaxScaleOnAxis() }
 }
 function glowSpan() {
   const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3())
@@ -709,19 +722,17 @@ function glowSpan() {
 /** Lights the pick from the list. A tier is borrowed from the ladder and keeps its own material. */
 function applyGlow() {
   if (!model || model.userData.borrowed) return
-  const foot = glowFoot(), inv = new THREE.Matrix4(), q = new THREE.Vector3()
   model.traverse((o) => {
     if (!o.isMesh) return
     const base = o.userData.glowBase ?? (o.userData.glowBase = o.material)
     const wireframe = o.material.wireframe
     if (o.material !== base) o.material.dispose()
     if (glowPoints.length === 0) { o.material = base; base.wireframe = wireframe; return }
-    // addGlow reads the geometry's own position, so a point goes back through the node's matrix.
-    inv.copy(o.matrixWorld).invert()
-    const s = o.matrixWorld.getMaxScaleOnAxis()
-    const pts = glowPoints.map((p) => { q.set(p.x, p.y, p.z).add(foot).applyMatrix4(inv); return { x: q.x, y: q.y, z: q.z, r: p.r / s } })
-    o.material = addGlow(base.clone(), pts)
+    // addGlow reads the geometry's own position: the shipped frame's, moved by its foot.
+    const { foot } = shipFrame(o)
+    o.material = addGlow(base.clone(), glowPoints.map((p) => ({ x: p.x + foot.x, y: p.y + foot.y, z: p.z + foot.z, r: p.r })))
     o.material.uGlow.value.setRGB(GLOW.color[0] * GLOW.night, GLOW.color[1] * GLOW.night, GLOW.color[2] * GLOW.night)
+    o.material.uGlowOn.value = glowOn()
     o.material.wireframe = wireframe
   })
 }

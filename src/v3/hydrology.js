@@ -115,7 +115,7 @@ export function runHydrology(height, n, cell, ground, seed) {
   // --- 5. the lakes as records ------------------------------------------------
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
   lakes.sort((a, b) => b.km2 - a.km2)
-  stats.lakes = { candidates: picked.total, count: lakes.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), bodies: lakes.map(({ rec, ...rest }) => rest) }
+  stats.lakes = { candidates: picked.total, count: lakes.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ rec, ...rest }) => rest) }
 
   // --- 6. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
@@ -167,12 +167,11 @@ function seaMask(height, n) {
   return sea
 }
 
-/** A lake record over a flooded body: the ellipse of the pool's principal axes, grown until every pool cell is inside, at the body's level. `leakKm2` is ground inside the ellipse but outside the body that lies under the level -- water v2 will draw that is not the lake. */
+/** A lake record over a flooded body: the ellipse of its deep pool's principal axes, grown until every pool cell is inside, at the body's level. The pool and not the whole body, because a bowl's shallow arms stretch the ellipse over the ground beside it: `leakKm2` is ground inside the ellipse but outside the body that lies under the level -- water v2 will draw that is not the lake -- and `dryKm2` the body outside the ellipse, hollows v2 will leave dry, `dryDeepest` the deepest of them. */
 function fitLake(body, elev, n, cell, half) {
-  const { cells: body_, level } = body
-  const cells = globalThis.POOL_FIT ? body.pool : body_
+  const { cells: body_, pool: cells, level } = body
   let deepest = 0
-  for (const c of cells) if (level - elev[c] > deepest) deepest = level - elev[c]
+  for (const c of body_) if (level - elev[c] > deepest) deepest = level - elev[c]
   let mx = 0
   let mz = 0
   for (const c of cells) {
@@ -204,8 +203,7 @@ function fitLake(body, elev, n, cell, half) {
   let a = Math.max(2 * Math.sqrt(Math.max(l1, 0)), 0.5)
   let b = Math.max(2 * Math.sqrt(Math.max(l2, 0)), 0.5)
   let far = 0
-  for (const c of body_) {
-    if (level - elev[c] < (globalThis.GROW_DEPTH ?? 0)) continue
+  for (const c of cells) {
     const dx = (c % n) - mx
     const dz = ((c / n) | 0) - mz
     const u = (cr * dx + sr * dz) / a
@@ -220,18 +218,18 @@ function fitLake(body, elev, n, cell, half) {
   const z = mz * cell - half
   const rx = a * cell
   const rz = b * cell
-  // The leak: texels the ellipse covers, under the level, that are not the body.
   const inBody = new Set(body_)
   let dry = 0
-  let dryDeep = 0
+  let dryDeepest = 0
   for (const c of body_) {
     const dx = (c % n) - mx
     const dz = ((c / n) | 0) - mz
     const u = (cr * dx + sr * dz) / a
     const v = (-sr * dx + cr * dz) / b
-    if (u * u + v * v > 1) { dry++; dryDeep = Math.max(dryDeep, level - elev[c]) }
+    if (u * u + v * v <= 1) continue
+    dry++
+    if (level - elev[c] > dryDeepest) dryDeepest = level - elev[c]
   }
-  if (globalThis.POOL_FIT) console.log('dry', dry, 'deepest', dryDeep.toFixed(2))
   let leak = 0
   const reach = Math.ceil(Math.max(a, b))
   for (let j = Math.max(0, Math.floor(mz - reach)); j <= Math.min(n - 1, Math.ceil(mz + reach)); j++) {
@@ -247,8 +245,10 @@ function fitLake(body, elev, n, cell, half) {
   }
   return {
     x, z, level, rx, rz, rot,
-    km2: (cells.length * cell * cell) / 1e6,
+    km2: (body_.length * cell * cell) / 1e6,
     leakKm2: (leak * cell * cell) / 1e6,
+    dryKm2: (dry * cell * cell) / 1e6,
+    dryDeepest,
     deepest,
     rec: { x: round1(x), z: round1(z), y: round2(level), rx: round1(rx), rz: round1(rz), rot: Math.round(rot * 1000) / 1000, shape: 0, carve: 0, depth: round1(Math.max(1, deepest)) },
   }
@@ -308,7 +308,6 @@ function traceRivers(river, recv, acc, wet, n, cell, half) {
       const nn = nj * n + ni
       if (recv[nn] === src && wet[nn] && (fromLake < 0 || acc[nn] > acc[fromLake])) fromLake = nn
     }
-    if (fromLake >= 0 && globalThis.DEBUG_FROMLAKE) console.log('fromLake', (fromLake % n) * cell - half, ((fromLake / n) | 0) * cell - half, 'src', (src % n) * cell - half, ((src / n) | 0) * cell - half, 'acc', acc[fromLake], acc[src], 'cells', cells.length, 'into', head.into)
     let km = 0
     for (let k = 1; k < cells.length; k++) km += Math.hypot((cells[k] % n) - (cells[k - 1] % n), ((cells[k] / n) | 0) - ((cells[k - 1] / n) | 0)) * cell
     // A stub joining a trunk with nothing of its own is not drawn; one with branches is, or they would end on nothing.

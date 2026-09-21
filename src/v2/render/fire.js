@@ -61,8 +61,8 @@ export const FIRE = {
   coreColor: [1.0, 0.85, 0.45],
 }
 
-// A campfire's knobs (locked on /test-fire, 2026-09-21): twice the lamp's height and four times its half-width, slower and less stretched, tongues cut hard off the tip and a little lean.
-export const CAMPFIRE = { ...FIRE, height: 0.78, radius: 0.46, width: 0.73, speed: 0.9, stretch: 0.5, turb: 0.28, cut: 1.0, sway: 0.1, edge: 0.5, core: 0.71, gain: 1.4, sheets: 1 }
+// A campfire's knobs (locked on /test-fire, 2026-09-22): twice the lamp's height on a card eight times as wide, the mask narrow in it so the outline has room to go, slower and less stretched, tongues cut hard off the tip and a little lean.
+export const CAMPFIRE = { ...FIRE, height: 0.78, radius: 0.77, width: 0.47, speed: 2.4, stretch: 1.0, turb: 0.73, cut: 1.0, sway: 0.1, edge: 0.5, core: 0.71, gain: 1.4, sheets: 1 }
 
 // The three flicker groups: each a slow and a fast sine about a mean, on the seconds clock. lamps.js flickers the lamp map's channels by the same numbers, so a flame and its pool of light breathe together.
 export const FLICKER = { mean: 0.84, slow: 0.16, slowHz: 11.3, fast: 0.09, fastHz: 24.7 }
@@ -196,10 +196,13 @@ const FRAG = /* glsl */ `
     float amp = 0.15 + 0.85 * p.y;
     vec2 q = p + n * uTurb * amp;
     // Parabolic across the width, so the bright core is half the flame rather than a line down its axis.
-    float x = abs( q.x ) / max( halfWidth( q.y ), 1e-3 );
+    float hw = halfWidth( q.y );
+    float x = abs( q.x ) / max( hw, 1e-3 );
     float v = 1.0 - x * x;
     // The tongues: the same noise cutting into the mask, so a lobe near the tip separates.
     v -= ( n.x + n.y ) * uCut * rise;
+    // The mask closes with the width. Past the teardrop's point the width sits on its floor, a hair along the zero set of q.x -- a wiggly thread tethered to the tip -- and the cut is signed, so where the noise runs negative it would light that hair up.
+    v *= smoothstep( 0.0, 0.04, hw );
     // The foot is pinched shut whatever the noise says, and a lifted tongue fades out across the overhang, so neither edge of the card ever shows.
     v *= smoothstep( 0.0, 0.1, p.y ) * ( 1.0 - smoothstep( 1.0, ${(1 + OVERHANG).toFixed(2)}, p.y ) );
     if ( v <= 0.0 ) {

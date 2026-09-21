@@ -26,6 +26,8 @@ export const LAMP = {
   radius: 0.07,
   // Where the dish's floor is, as a fraction of the post's height: the flame's foot, and the light's height in the map.
   bowl: 0.765,
+  // The dish's flame against FIRE's size, which /test-fire tunes for a hearth: a lamp's is a wick's.
+  flame: 0.5,
   // Metres a lamp's light reaches along the ground, and its gain at the foot.
   reach: 9,
   gain: 0.6,
@@ -88,7 +90,7 @@ export class Lamps {
     this.posts.frustumCulled = false
     // One flame in every dish, all in one draw, shown only while lit.
     this.flames = new Flames(n, FIRE, { seed })
-    this.lamps.forEach((l, i) => this.flames.place(i, l.x, l.flameY, l.z, { height: FIRE.height, radius: FIRE.radius, phase: l.phase, group: l.group }))
+    this.lamps.forEach((l, i) => this.flames.place(i, l.x, l.flameY, l.z, { height: FIRE.height * LAMP.flame, radius: FIRE.radius * LAMP.flame, phase: l.phase, group: l.group }))
     this.flames.group.visible = false
     this.group = new THREE.Group()
     this.group.add(this.posts, this.flames.group)

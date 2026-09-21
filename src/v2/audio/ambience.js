@@ -10,8 +10,9 @@
 // snowline never lands a raptor on the exact step; every one-shot is pitched
 // 0.9x-1.1x and given its own volume so the same clip twice is not a machine
 // gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater, a fiddle a
-// house) are held by _loop(): started when their rule turns on, stopped when
-// it turns off, level and bearing refreshed every update.
+// house, a campfire a hearth, a crackle a lit torch) are held by _loop():
+// started when their rule turns on, stopped when it turns off, level and
+// bearing refreshed every update.
 //
 // DIRECTION IS PROXY FOR PLACE. A bird has no position in the world, so it is
 // given one: a random bearing at a plausible range and height, and the panner
@@ -90,6 +91,10 @@ export const SOUNDS = {
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
   fiddle: 'sounds/ambience-violin-playing.mp3',
+  campfire1: 'sounds/ambience-campfire-1.mp3',
+  campfire2: 'sounds/ambience-campfire-2.mp3',
+  campfire3: 'sounds/ambience-campfire-3.mp3',
+  campfire4: 'sounds/ambience-campfire-4.mp3',
   // The menu's and the hand's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
@@ -100,6 +105,7 @@ const RAPTORS = ['crow', 'eagle', 'hawk']
 const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5', 'songbird6']
 const CROAKS = ['croak1', 'croak2']
 const ROCKSLIDES = ['rockslide1', 'rockslide2']
+const CAMPFIRES = ['campfire1', 'campfire2', 'campfire3', 'campfire4']
 
 /** Every one-shot's pitch range; a clip never plays at exactly its recorded speed twice. */
 export const RATE = [0.9, 1.1]
@@ -179,6 +185,10 @@ export const RULES = {
   underwater: { level: 1.0, gain: [0.8, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0] },
+  // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
+  campfire: { reach: 8, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
+  // A torch (lamps.js, the room's lamps, a wick in a dish): the campfire's takes again, a loop a torch placed at its flame, quieter and low-passed at `cutoff` Hz so the pops are gone and a soft crackle is left, the level scaled by how lit the torches are (0..1, off by day) and by her distance as a campfire's.
+  torch: { reach: 4, near: 0.8, edge: 1.5, level: 0.08, cutoff: 1800, gain: [0.8, 1.0] },
   // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
   swoosh: { reach: 8, near: 1, size: 0.5, level: 0.5, max: 1, deep: 0.5, gain: [0.7, 1.0] },
 }
@@ -197,8 +207,10 @@ export class Ambience {
    * @param grasshoppers  the grasshopper layer, if any: bodies(into) lists the ones it is showing, x, y, z on each.
    * @param waves     false where the water is a pond too small for a wave to break on its shore (a village's lake): the lapping bed loops and the wave one-shot never fires.
    * @param fiddlers  the houses with a violin playing inside, if any: `[{ x, y, z, r }]`, each its floor and its trunk's radius (RULES.fiddle).
+   * @param campfires the fires burning, if any: `[{ x, y, z }]`, each its flame (RULES.campfire).
+   * @param torches   the room's torches, if any: `{ at: [{ x, y, z }], lit }`, each flame's position and lit() how lit they all are now, 0..1 (RULES.torch).
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [] }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const l of voiced) if (!l || typeof l.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
     if (!sense) throw new Error('Ambience: missing sense')
@@ -213,6 +225,11 @@ export class Ambience {
     for (const l of crawlers) if (!l || typeof l.bodies !== 'function') throw new Error('Ambience: a crawler layer needs bodies()')
     for (const l of startlers) if (!l || typeof l.startled !== 'function') throw new Error('Ambience: a startler layer needs startled()')
     for (const h of fiddlers) if (!h || ![h.x, h.y, h.z, h.r].every(Number.isFinite) || !(h.r > 0)) throw new Error('Ambience: a fiddler is { x, y, z, r }, r positive')
+    for (const f of campfires) if (!f || ![f.x, f.y, f.z].every(Number.isFinite)) throw new Error('Ambience: a campfire is { x, y, z }')
+    if (torches) {
+      if (!Array.isArray(torches.at) || typeof torches.lit !== 'function') throw new Error('Ambience: torches are { at: [{ x, y, z }], lit() }')
+      for (const f of torches.at) if (!f || ![f.x, f.y, f.z].every(Number.isFinite)) throw new Error('Ambience: a torch is { x, y, z }')
+    }
     this.engine = engine
     this.sense = sense
     this.rand = rand
@@ -256,6 +273,18 @@ export class Ambience {
     this.fiddlers = fiddlers.map((h, i) => {
       this.loops[`fiddle${i}`] = engine.loop('fiddle', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.fiddle.gain })
       return { key: `fiddle${i}`, x: h.x, y: h.y + RULES.fiddle.ear, z: h.z, r: h.r }
+    })
+    // One loop a campfire, over all four takes.
+    this.campfires = campfires.map((f, i) => {
+      this.loops[`campfire${i}`] = engine.loop(CAMPFIRES, { directional: true, gain: RULES.campfire.gain })
+      return { key: `campfire${i}`, x: f.x, y: f.y, z: f.z }
+    })
+    // One muffled loop a torch, over the same takes, its cutoff fixed at construction.
+    this.torchLit = torches ? torches.lit : () => 0
+    this.torches = (torches ? torches.at : []).map((f, i) => {
+      this.loops[`torch${i}`] = engine.loop(CAMPFIRES, { directional: true, muffle: true, gain: RULES.torch.gain })
+      this.loops[`torch${i}`].setCutoff(RULES.torch.cutoff)
+      return { key: `torch${i}`, x: f.x, y: f.y, z: f.z }
     })
     this.leavesOn = false
     this.windOn = false
@@ -376,6 +405,8 @@ export class Ambience {
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s, cover, precip)
     this._fiddlers(head)
+    this._campfires(head)
+    this._torches(head)
     this._crawl(head)
     this._fish(head)
     // Nothing above the surface fires while she is under it; the loops already
@@ -819,6 +850,26 @@ export class Ambience {
       const on = d < F.reach
       this._loop(h.key, on, F.level * Math.min(1, F.near / Math.max(d, 1e-3)) * (1 - smoothstep(F.reach - F.edge, F.reach, d)), h)
       if (on) this.loops[h.key].setCutoff(F.cutoff[1] + (F.cutoff[0] - F.cutoff[1]) * clamp(d / F.reach, 0, 1))
+    }
+  }
+
+  /** Each campfire's loop by her distance to its flame: level by RULES.campfire, placed at the flame. */
+  _campfires(head) {
+    const C = RULES.campfire
+    for (const f of this.campfires) {
+      const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
+      this._loop(f.key, d < C.reach, C.level * Math.min(1, C.near / Math.max(d, 1e-3)) * (1 - smoothstep(C.reach - C.edge, C.reach, d)), f)
+    }
+  }
+
+  /** Each torch's loop by her distance to its flame and how lit the torches are: level by RULES.torch, placed at the flame, off unlit. */
+  _torches(head) {
+    const T = RULES.torch
+    const lit = this.torches.length ? this.torchLit() : 0
+    if (!(lit >= 0 && lit <= 1)) throw new Error(`Ambience: torches lit() must be 0..1, got ${lit}`)
+    for (const f of this.torches) {
+      const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
+      this._loop(f.key, lit > 0 && d < T.reach, lit * T.level * Math.min(1, T.near / Math.max(d, 1e-3)) * (1 - smoothstep(T.reach - T.edge, T.reach, d)), f)
     }
   }
 }

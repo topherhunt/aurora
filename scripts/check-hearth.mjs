@@ -119,6 +119,28 @@ const patch = (m) => m
   }
   check(ring9.length === 2 && Math.abs(ring9[0] - ring9[1]) > 1e-4, 'a stool\'s corners are jittered', ring9.map((r) => r.toFixed(3)).join(' vs '))
 
+  // Every prism faces out: its face normals point away from its own centroid. The bark corners come in runs, 48 a log and 96 a stool.
+  const nrm = g.attributes.normal.array
+  const barkCorners = []
+  for (let i = 0; i < lay.length; i++) if (lay[i] === LAYER.BARK_PINE) barkCorners.push(i)
+  let inward = 0, prisms = 0
+  for (let at = 0; at < barkCorners.length;) {
+    const run = prisms < HEARTH.logs.count ? 48 : 96
+    const ids = barkCorners.slice(at, at + run)
+    const c = [0, 0, 0]
+    for (const i of ids) { c[0] += pos[i * 3] / run; c[1] += pos[i * 3 + 1] / run; c[2] += pos[i * 3 + 2] / run }
+    for (let f = 0; f < ids.length; f += 3) {
+      const i = ids[f]
+      const mx = (pos[i * 3] + pos[i * 3 + 3] + pos[i * 3 + 6]) / 3 - c[0]
+      const my = (pos[i * 3 + 1] + pos[i * 3 + 4] + pos[i * 3 + 7]) / 3 - c[1]
+      const mz = (pos[i * 3 + 2] + pos[i * 3 + 5] + pos[i * 3 + 8]) / 3 - c[2]
+      if (nrm[i * 3] * mx + nrm[i * 3 + 1] * my + nrm[i * 3 + 2] * mz <= 0) inward++
+    }
+    at += run
+    prisms++
+  }
+  check(prisms === HEARTH.logs.count + built.stools.length && inward === 0, 'every log and stool faces out', `${inward} inward faces over ${prisms} prisms`)
+
   // The decimated tier.
   const mid = decimateHearth(g, HEARTH.decimate)
   const full = g.index.count / 3, less = mid.index.count / 3
@@ -149,6 +171,14 @@ const patch = (m) => m
   const im = h.flames.mesh.instanceMatrix.array
   check(Math.abs(im[12] - at.x) < 1e-4 && Math.abs(im[13] - (y + HEARTH.fire.lift)) < 1e-4 && Math.abs(im[14] - at.z) < 1e-4, 'the flame burns at the fire\'s foot in world space', `${im[12].toFixed(2)}, ${im[13].toFixed(2)}, ${im[14].toFixed(2)}`)
   check(Math.abs(im[5] - CAMPFIRE.height) < 1e-6, 'the flame is the campfire\'s height', `${im[5].toFixed(2)}`)
+  {
+    // The bench's locked `flicker: 0`: the glow the flame rides is a steady 1 at every instant, not the lamps' breathing.
+    const u = h.flames.material.uniforms.uGlow.value
+    let steady = true
+    for (const t of [0, 0.37, 1.9, 7.25, 100.1]) { h.update(at.x + 3, y + 1.6, at.z, t); if (u.x !== 1 || u.y !== 1 || u.z !== 1) steady = false }
+    check(steady, 'the flame burns on a steady glow of 1, the bench\'s flicker 0', `${u.x} ${u.y} ${u.z}`)
+  check(h.fire.x === h.x && h.fire.z === h.z && Math.abs(h.fire.y - (h.y + HEARTH.fire.lift)) < 1e-9, 'the fire is reported where the flame burns, for its crackle')
+  }
   check(h.material.vertexColors === true, 'the mesh material multiplies the tint')
 
   // Every stool stands on its own ground, not the centre's.

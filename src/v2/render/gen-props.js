@@ -132,16 +132,19 @@ const CARD_NORMAL = /* glsl */ `
 
 /**
  * Lights `points` of a material's mesh from inside: the leafkin huts' windows
- * (§30). Each point is `{ x, y, z, r }` in the
- * geometry's OWN frame (the pick's, before the instance matrix), so one list
- * authored on the pick lights every decimated tier, and the fragment shader
- * adds `material.uGlow` times the surface's own colour lifted a third of the way to
- * white, inside a disc that is full at 0.6 r and gone at r. The lift is what
- * lets a pane painted dark light up at all; the albedo kept is
- * what keeps a honeycomb's cells readable while it glows. The
- * count is baked into the program, so materials with different lists compile
- * apart. Chains onBeforeCompile the way lighting.patch does, so it composes
- * with createGenPropMaterial and with a plain Lambert alike.
+ * (§30). Each point is `{ x, y, z, r }` in the geometry's OWN frame (the
+ * pick's, before the instance matrix), so one list authored on the pick lights
+ * every decimated tier. Inside a disc that is full at 0.6 r and gone at r the
+ * surface is UNLIT by `material.uGlowOn` (0..1): its lit colour gives way to
+ * its own albedo times `material.uGlow`, so a pane's amber cells come up amber
+ * whatever the night, and the dark bars painted between them stay dark -- an
+ * additive glow lifted the bars with the cells and read as an orange wash. At
+ * uGlowOn 0 the disc shades like the wall about it. The mix goes in before
+ * opaque_fragment, after lighting.patch's shading and the lamps, and before
+ * its aerial mix. The count is baked into the program, so materials with
+ * different lists compile apart. Chains onBeforeCompile the way
+ * lighting.patch does, so it composes with createGenPropMaterial and with a
+ * plain Lambert alike.
  */
 export function addGlow(material, points) {
   if (!Array.isArray(points) || points.length === 0 || points.some((p) => ![p.x, p.y, p.z, p.r].every(Number.isFinite) || !(p.r > 0))) {
@@ -149,29 +152,31 @@ export function addGlow(material, points) {
   }
   const n = points.length
   material.uGlow = { value: new THREE.Color(0, 0, 0) }
+  material.uGlowOn = { value: 0 }
   const pts = { value: points.map((p) => new THREE.Vector4(p.x, p.y, p.z, p.r)) }
   const prev = material.onBeforeCompile
   const prevKey = material.customProgramCacheKey
   material.onBeforeCompile = (shader, renderer) => {
     if (prev) prev.call(material, shader, renderer)
     shader.uniforms.uGlow = material.uGlow
+    shader.uniforms.uGlowOn = material.uGlowOn
     shader.uniforms.uGlowPts = pts
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vGlowPos;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlowPos = position;')
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vGlowPos;\nuniform vec3 uGlow;\nuniform vec4 uGlowPts[${n}];`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlowPos;\nuniform vec3 uGlow;\nuniform float uGlowOn;\nuniform vec4 uGlowPts[${n}];`)
       .replace(
-        '#include <emissivemap_fragment>',
-        `#include <emissivemap_fragment>
-        {
+        '#include <opaque_fragment>',
+        `{
           float glowMask = 0.0;
           for ( int i = 0; i < ${n}; i++ ) {
             vec4 g = uGlowPts[i];
             glowMask += 1.0 - smoothstep( g.w * 0.6, g.w, distance( vGlowPos, g.xyz ) );
           }
-          totalEmissiveRadiance += mix( diffuseColor.rgb, vec3( 1.0 ), 0.35 ) * uGlow * min( glowMask, 1.0 );
-        }`
+          outgoingLight = mix( outgoingLight, diffuseColor.rgb * uGlow, min( glowMask, 1.0 ) * uGlowOn );
+        }
+        #include <opaque_fragment>`
       )
   }
   material.customProgramCacheKey = () => `${prevKey ? prevKey.call(material) : ''}|glow${n}`

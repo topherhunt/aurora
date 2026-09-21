@@ -45,11 +45,12 @@ import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/
 import { DOOR, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
+import { FIRE } from '../src/v2/render/fire.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
+  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
   buildVillage, closestNodes, longestStraight, roadsCross, rollVillage, sharpestTurn, sinuosity,
 } from '../src/v2/rooms/village.js'
 
@@ -641,10 +642,17 @@ console.log('\nthe lamps')
   const postH = layer.scale * layer.bank.bounds.height
   check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length && layer.flames.mesh.count === lamps.length, `${LAMP.height} m posts, one a lamp, a flame in every dish`, `${postH.toFixed(2)} m, ${layer.posts.count} posts, ${layer.flames.mesh.count} flames`)
   check(layer.postMaterial.side === THREE.DoubleSide, 'a post shows both faces: the dish and the hood are open shells', `side ${layer.postMaterial.side}`)
-  const flameM = new THREE.Matrix4(), flameP = new THREE.Vector3()
-  let inDish = 0
-  layer.lamps.forEach((l, i) => { layer.flames.mesh.getMatrixAt(i, flameM); flameP.setFromMatrixPosition(flameM); if (Math.abs(flameP.x - l.x) < 1e-3 && Math.abs(flameP.z - l.z) < 1e-3 && Math.abs(flameP.y - (l.y + LAMP.height * LAMP.bowl)) < 1e-3) inDish++ })
+  const flameM = new THREE.Matrix4(), flameP = new THREE.Vector3(), flameS = new THREE.Vector3()
+  let inDish = 0, wick = 0
+  layer.lamps.forEach((l, i) => {
+    layer.flames.mesh.getMatrixAt(i, flameM)
+    flameP.setFromMatrixPosition(flameM)
+    flameS.setFromMatrixScale(flameM)
+    if (Math.abs(flameP.x - l.x) < 1e-3 && Math.abs(flameP.z - l.z) < 1e-3 && Math.abs(flameP.y - (l.y + LAMP.height * LAMP.bowl)) < 1e-3) inDish++
+    if (Math.abs(flameS.y - FIRE.height * LAMP.flame) < 1e-3 && Math.abs(flameS.x - FIRE.radius * LAMP.flame) < 1e-3) wick++
+  })
   check(inDish === lamps.length, `every flame stands in its dish, ${LAMP.bowl} of the way up the post`, `${inDish} of ${lamps.length}`)
+  check(wick === lamps.length, `every flame is ${LAMP.flame} of the hearth's size`, `${wick} of ${lamps.length} at ${(FIRE.height * LAMP.flame).toFixed(2)} m`)
   const { tex, frame } = layer.map
   const texel = (x, z) => {
     const i = Math.min(tex.image.width - 1, Math.max(0, Math.floor((x - frame.x0) / LAMP.texel))), j = Math.min(tex.image.height - 1, Math.max(0, Math.floor((z - frame.z0) / LAMP.texel)))
@@ -689,9 +697,9 @@ console.log('\nthe lamps')
   check(dayGlow === 0 && dayBreath === 0 && !dayFlames, 'by day the glow and the breath are nothing and the flames are hidden', `glow ${dayGlow.toFixed(2)} flames ${dayFlames}`)
   check([g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1) && layer.breath > 0.55 && layer.flames.group.visible && nightFlame.x === g.x && nightFlame.z === g.z, 'by night every group glows and the flames burn on the same glow', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)} breath ${layer.breath.toFixed(2)} flames ${layer.flames.group.visible}`)
   roomProps.setGlow(0)
-  const dayWindow = roomProps.material.uGlow.value.r
+  const dayWindow = roomProps.material.uGlowOn.value
   roomProps.setGlow(layer.breath)
-  check(dayWindow > 0 && roomProps.material.uGlow.value.r > dayWindow * 2, 'the windows glow by day and brighter by night', `day ${dayWindow.toFixed(2)} night ${roomProps.material.uGlow.value.r.toFixed(2)}`)
+  check(dayWindow === 0 && roomProps.material.uGlowOn.value === layer.breath && roomProps.material.uGlow.value.r > 1, 'the panes shade like the wall by day and burn unlit on the breath by night', `on ${dayWindow} / ${roomProps.material.uGlowOn.value.toFixed(2)} gain ${roomProps.material.uGlow.value.r.toFixed(2)}`)
   const walk = new WalkSurface(field, shell, { trunkAt: () => null })
   walk.addStone(layer)
   const l0 = layer.lamps[0]
@@ -729,7 +737,8 @@ console.log('\nthe boot')
   // The layer's site is the mouth point, a step in from the face along the normal.
   const stepIn = MOUTH_STEP_M + room.exit.bulge
   check(site && Math.abs(site.x - room.exit.x - room.exit.nx * stepIn) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * stepIn) < 0.01 && Math.abs(site.nx - room.exit.nx) < 1e-9, 'the mouth is a step and the bulge in from the build\'s point along its normal')
-  const walk = new WalkSurface(field, rocks, trees)
+  // At her size in the glade, as main.js builds them.
+  const walk = new WalkSurface(field, rocks, trees, { scale: HER_SCALE })
   walk.addStone(roomProps)
   const great = roomProps.props[0]
   const onTop = walk.heightAt(great.x, great.z)
@@ -746,7 +755,7 @@ console.log('\nthe boot')
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.y = Math.atan2(site.nx, site.nz)
   rig.add(camera)
-  const player = new Player(rig, camera, walk)
+  const player = new Player(rig, camera, walk, { scale: HER_SCALE })
   const warn = console.warn
   console.warn = () => {}
   const run = (seconds, input) => {
@@ -766,7 +775,7 @@ console.log('\nthe boot')
   const inHull = (x, y, z) => {
     if (shell.door !== null && Math.hypot(x - shell.door.x, z - shell.door.z) < shell.door.r) return true
     const n = shell.crossingsAt(x, z, crossings)
-    for (let q = 0; q + 1 < n; q += 2) if (crossings[q] <= y + 0.05 && y + 1.9 <= crossings[q + 1]) return true
+    for (let q = 0; q + 1 < n; q += 2) if (crossings[q] <= y + 0.05 && y + WALK.height * HER_SCALE <= crossings[q + 1]) return true
     return false
   }
   const rimAt = (x, z) => room.ground.rimAt(Math.atan2(z, x))
@@ -790,8 +799,9 @@ console.log('\nthe boot')
   run(20, { lift: 1 })
   const roofY = walk.ceilingAt(rig.position.x, rig.position.z, heightAt(rig.position.x, rig.position.z) + 1)
   const climbed = rig.position.y - heightAt(rig.position.x, rig.position.z)
-  const headroom = roofY - rig.position.y - LOCOMOTION.eyeHeight
-  check(climbed > 3 && Math.abs(headroom - LOCOMOTION.flyClearance) < 0.2 && inHull(rig.position.x, rig.position.y, rig.position.z), `flown up from the arrival, she climbs and hangs flyClearance ${LOCOMOTION.flyClearance} m under the roof`, `${climbed.toFixed(1)} m up, head ${headroom.toFixed(1)} m under the roof`)
+  const headroom = roofY - rig.position.y - LOCOMOTION.eyeHeight * HER_SCALE
+  const clearance = LOCOMOTION.flyClearance * HER_SCALE
+  check(climbed > 3 && Math.abs(headroom - clearance) < 0.2 && inHull(rig.position.x, rig.position.y, rig.position.z), `flown up from the arrival, she climbs and hangs flyClearance ${clearance} m under the roof at her size`, `${climbed.toFixed(1)} m up, head ${headroom.toFixed(1)} m under the roof`)
   for (let b = 0; b < 360; b += 45) {
     const a = (b * Math.PI) / 180
     player.teleportTo(arrive.x, arrive.z)

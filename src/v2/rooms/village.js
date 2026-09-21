@@ -48,6 +48,8 @@ import { TILE as FISH_TILE, SPECIES as FISH_SPECIES } from '../render/fish.js'
 // The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (80 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
 export const SHELL = { x: 0, z: 0, floor: 60, scale: 55, sink: 0.4 }
 export const FLOOR = SHELL.floor
+// Her size in the glade, against the world's metres (DESIGN.md §30): near a leafkin's own, and every metre that is hers goes by it (player.js, walk.js, hands.js and main.js).
+export const HER_SCALE = 0.5
 
 // The ground. Metres; the floor stays over every scatter's elevation floor (trees 25 m).
 export const TEXELS = 1025                       // WORLD_SIZE / (TEXELS - 1) = 8 m a texel, the overworld's pitch

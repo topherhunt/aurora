@@ -103,10 +103,20 @@ const UP = new THREE.Vector3(0, 1, 0)
 const PATH_STEP = 0.3
 
 export class Player {
-  constructor(rig, camera, terrainHeight) {
+  /**
+   * `scale` is her size against the world, 1 outside a leafkin glade (DESIGN.md
+   * §30). It is set on the rig, which is what WebXR composes the headset's pose
+   * through, so her eye height, her stride across the room and her hands all
+   * shrink with it; every metre LOCOMOTION states is hers, so it is scaled
+   * here too. `terrainHeight` carries its own (WalkSurface's `scale`).
+   */
+  constructor(rig, camera, terrainHeight, { scale = 1 } = {}) {
+    if (!(scale > 0)) throw new Error(`Player: scale must be positive, not ${scale}`)
     this.rig = rig
     this.camera = camera
     this.th = terrainHeight
+    this.scale = scale
+    rig.scale.setScalar(scale)
     // Solid things she walks AROUND rather than over -- v2's tree trunks, via
     // WalkSurface.obstacleAt. v1's TerrainHeight has none, so the hook is
     // optional and the check below is skipped without it.
@@ -251,11 +261,11 @@ export class Player {
       t: 0,
       startY: this.rig.position.y,
       endY: this.th.heightAt(x, z),
-      cruiseY: peak + LOCOMOTION.travelClearance,
+      cruiseY: peak + LOCOMOTION.travelClearance * this.scale,
     }
     this.flying = false // travel owns the rig until it finishes
     this.blocked = false
-    this.speed = LOCOMOTION.travelSpeed
+    this.speed = LOCOMOTION.travelSpeed * this.scale
     return true
   }
 
@@ -268,7 +278,7 @@ export class Player {
 
   _travelStep(dt) {
     const T = this.travel
-    T.t = Math.min(1, T.t + (LOCOMOTION.travelSpeed * dt) / T.dist)
+    T.t = Math.min(1, T.t + (LOCOMOTION.travelSpeed * this.scale * dt) / T.dist)
 
     const p = this.rig.position
     p.x = T.fromX + (T.toX - T.fromX) * T.t
@@ -289,7 +299,7 @@ export class Player {
     // The precomputed profile samples every ~40 m and the ground between two
     // samples can be higher than either, so keep the same floor free flight
     // uses as a backstop.
-    const floor = this.th.heightAt(p.x, p.z) + LOCOMOTION.flyClearance
+    const floor = this.th.heightAt(p.x, p.z) + LOCOMOTION.flyClearance * this.scale
     // A room's roof is nearer than the cruise (travelClearance), so the rail runs under it.
     const ceiling = this._ceiling(p.x, p.z, floor, this.headPosition().y - p.y)
     if (p.y > ceiling) p.y = ceiling
@@ -332,7 +342,7 @@ export class Player {
     // would make the ascend key double as a walk key.
     const drive = this.flying ? Math.min(1, Math.hypot(demand, liftIn)) : demand
 
-    const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed
+    const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed * this.scale
     if (drive <= 0) {
       this.speed = 0 // instant stop on release (§12)
     } else if (input.instant) {
@@ -384,9 +394,9 @@ export class Player {
   // its own legible rather than mysterious.
   flySpeedAt(origin) {
     const L = LOCOMOTION
-    const alt = origin.y - this.th.heightAt(origin.x, origin.z)
+    const alt = (origin.y - this.th.heightAt(origin.x, origin.z)) / this.scale
     const t = THREE.MathUtils.clamp((alt - L.flyLowAlt) / (L.flyHighAlt - L.flyLowAlt), 0, 1)
-    return L.flyLowSpeed + (L.flyHighSpeed - L.flyLowSpeed) * t
+    return (L.flyLowSpeed + (L.flyHighSpeed - L.flyLowSpeed) * t) * this.scale
   }
 
   // Free 6DOF flight. Forward follows the full look direction including pitch,
@@ -436,10 +446,10 @@ export class Player {
     // -- the foot of a room's wall -- refuses the step, unless she was already
     // in one, so a step out of stone is never refused the way a step in is.
     const origin = this.originPosition()
-    const floor = this.th.heightAt(origin.x, origin.z) + LOCOMOTION.flyClearance
+    const floor = this.th.heightAt(origin.x, origin.z) + LOCOMOTION.flyClearance * this.scale
     const ceiling = this._ceiling(origin.x, origin.z, floor, headUp)
     if (ceiling < floor) {
-      const floor0 = this.th.heightAt(x0, z0) + LOCOMOTION.flyClearance
+      const floor0 = this.th.heightAt(x0, z0) + LOCOMOTION.flyClearance * this.scale
       if (this._ceiling(x0, z0, floor0, headUp) >= floor0) {
         p.set(x0, y0, z0)
         this.blocked = true
@@ -455,7 +465,7 @@ export class Player {
   /** The highest the rig may fly over (x, z): the roof's underside read from `floor`, less the head's height over the rig and its clearance; Infinity under the sky. */
   _ceiling(x, z, floor, headUp) {
     if (typeof this.th.ceilingAt !== 'function') return Infinity
-    return this.th.ceilingAt(x, z, floor) - LOCOMOTION.flyClearance - headUp
+    return this.th.ceilingAt(x, z, floor) - LOCOMOTION.flyClearance * this.scale - headUp
   }
 
   _snapTurn(stickX, head) {
@@ -513,7 +523,7 @@ export class Player {
       // Too steep head-on. Slide along the contour instead of stopping dead --
       // stopping at a wall she is pressed against feels broken, whereas sliding
       // reads as "the mountain is steering me", which is the intended experience.
-      const eps = 1.0
+      const eps = 1.0 * this.scale
       const gx = (this.th.heightAt(origin.x + eps, origin.z, y) - this.th.heightAt(origin.x - eps, origin.z, y)) / (2 * eps)
       const gz = (this.th.heightAt(origin.x, origin.z + eps, y) - this.th.heightAt(origin.x, origin.z - eps, y)) / (2 * eps)
       let cx = -gz
@@ -705,9 +715,10 @@ export class Player {
     const h0 = this.th.heightAt(x, z, y)
     const h1 = this.th.heightAt(x + dx, z + dz, h0)
     if (Math.abs(h1 - h0) / dist <= this._maxTan) return h1
-    const k = LOCOMOTION.stride / dist
+    const stride = LOCOMOTION.stride * this.scale
+    const k = stride / dist
     const h2 = this.th.heightAt(x + dx * k, z + dz * k, h0)
-    return Math.abs(h2 - h0) / LOCOMOTION.stride <= this._maxTan ? h1 : NaN
+    return Math.abs(h2 - h0) / stride <= this._maxTan ? h1 : NaN
   }
 
   _unstick(origin) {
@@ -741,7 +752,8 @@ export class Player {
     const offset = new XRRigidTransform({ x: local.x, y: 0, z: local.z })
     renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(offset))
 
-    const shift = new THREE.Vector3(local.x, 0, local.z).applyQuaternion(this.rig.quaternion)
+    // The pose is in the reference space's metres; the rig's scale takes it to the world's.
+    const shift = new THREE.Vector3(local.x, 0, local.z).applyQuaternion(this.rig.quaternion).multiplyScalar(this.scale)
     this.rig.position.x += shift.x
     this.rig.position.z += shift.z
     return true

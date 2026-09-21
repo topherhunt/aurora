@@ -47,7 +47,7 @@ import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Shell } from './render/shell.js'
-import { rollVillage, buildVillage, WOOD } from './rooms/village.js'
+import { rollVillage, buildVillage, WOOD, HER_SCALE } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
 import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
@@ -1709,7 +1709,7 @@ function buildQuestPanel() {
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
-    if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M, handsHead()) === 'pick') playPick()
+    if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
 
@@ -1778,9 +1778,13 @@ function updateQuestPointer() {
   p.line.visible = true
   p.line.position.copy(rc.data.origin)
   p.line.quaternion.setFromUnitVectors(Z_AXIS, questPointerDir.copy(rc.data.direction).normalize())
-  p.line.scale.z = hit ? hit.distance : QUEST_POINTER_FAR
+  // The line hangs under the rig, so a world distance is its length over her scale; the dot stands in the world at her scale.
+  p.line.scale.z = (hit ? hit.distance : QUEST_POINTER_FAR) / herScale()
   p.dot.visible = !!hit
-  if (hit) p.dot.position.copy(hit.point)
+  if (hit) {
+    p.dot.position.copy(hit.point)
+    p.dot.scale.setScalar(herScale())
+  }
 }
 
 const questPanelFwd = new THREE.Vector3()
@@ -1794,8 +1798,8 @@ function questPanelDesiredPosition(out) {
   questPanelFwd.normalize()
   // At 2.2 m the 2.7 m panel subtends about 64 degrees, so the outer columns
   // sit out where a Quest 2's lenses go soft and you have to turn your head to
-  // read them.
-  const dist = 2.8
+  // read them. In her metres: the panel is drawn at her scale and stands off her by it.
+  const dist = 2.8 * herScale()
   out.x = rig.position.x + questPanelFwd.x * dist
   out.z = rig.position.z + questPanelFwd.z * dist
 
@@ -1804,7 +1808,7 @@ function questPanelDesiredPosition(out) {
   // at the same height in view wherever she opens it, walking or flying. The
   // origin a hand above the eye puts the tab bar about 20 degrees up and the
   // debug grid's rows across the eye line.
-  out.y = camera.getWorldPosition(questPanelEye).y + 0.1
+  out.y = camera.getWorldPosition(questPanelEye).y + 0.1 * herScale()
   return out
 }
 
@@ -1826,12 +1830,13 @@ function questPanelDesiredPosition(out) {
 function placeQuestPanel() {
   if (!questPanelGroup || !questPanelGroup.visible) return
   questPanelDesiredPosition(questPanelGroup.position)
+  questPanelGroup.scale.setScalar(herScale())
   questPanelGroup.lookAt(rig.position.x, questPanelGroup.position.y, rig.position.z)
 }
 
-// How far she may walk from the open menu before it closes behind her: it is
-// world-furniture, so she can leave it, and this is what stops it standing on
-// a hillside two valleys back.
+// How far she may walk from the open menu before it closes behind her, at her
+// full size: it is world-furniture, so she can leave it, and this is what
+// stops it standing on a hillside two valleys back.
 const QUEST_PANEL_LEAVE_M = 5
 
 /**
@@ -1873,7 +1878,8 @@ function updateQuestPanel() {
   if (questPanelGroup.visible) {
     const dx = rig.position.x - questPanelGroup.position.x
     const dz = rig.position.z - questPanelGroup.position.z
-    if (dx * dx + dz * dz > QUEST_PANEL_LEAVE_M * QUEST_PANEL_LEAVE_M) toggleQuestPanel()
+    const leave = QUEST_PANEL_LEAVE_M * herScale()
+    if (dx * dx + dz * dz > leave * leave) toggleQuestPanel()
   }
   updateQuestPointer()
 }
@@ -2194,7 +2200,8 @@ function placeMirror() {
   // Looking straight up or down leaves no gaze to stand it along; the rig's -Z then.
   if (mirrorFwd.lengthSq() < 1e-4) mirrorFwd.set(0, 0, -1).applyQuaternion(rig.quaternion)
   mirrorFwd.normalize()
-  mirrorFrame.makeTranslation(mirrorPos.x + MIRROR_AHEAD_M * mirrorFwd.x, 0, mirrorPos.z + MIRROR_AHEAD_M * mirrorFwd.z)
+  const ahead = MIRROR_AHEAD_M * herScale()
+  mirrorFrame.makeTranslation(mirrorPos.x + ahead * mirrorFwd.x, 0, mirrorPos.z + ahead * mirrorFwd.z)
     .multiply(mirrorTmpM.makeRotationY(Math.PI))
     .multiply(mirrorTmpM.makeTranslation(-mirrorPos.x, 0, -mirrorPos.z))
     .multiply(rig.matrixWorld)
@@ -2258,9 +2265,9 @@ const HAND_KEYS = ['left', 'right', 'desk']
 // shows partly off screen, as if carried near her face by a hand out of frame.
 let deskHand = null
 const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
-// Metres a thing in the desk hand is drawn at, at most (placeDeskHand): a fern is shown a third its size, like a thing carried near the face.
+// Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size: a fern is shown a third its size, like a thing carried near the face.
 const DESK_HAND_MAX_M = 0.4
-// A desktop click within this many px of its press picks along the camera ray this far.
+// A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
 const DESK_CLICK_M = 2
 let roosts = null
@@ -2485,12 +2492,16 @@ const SPAWN = { x: -320, z: 1367 }
 
 // The rooms she can be in (DESIGN.md §30): the overworld, a set of world files
 // under `dir`, and the village inside a hollow boulder, built in memory at boot
-// (rooms/village.js) from the boulder's own inside.
+// (rooms/village.js) from the boulder's own inside. `scale` is her size
+// against the room (HER_SCALE in a glade), and every metre that is hers --
+// her pace, her reach, her lob, her menu -- follows it.
 const ROOMS = {
-  overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false },
-  leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true },
+  overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false, scale: 1 },
+  leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true, scale: HER_SCALE },
 }
 let currentRoom = ROOMS.overworld
+/** Her size against the room she is in. Set only under the swap's black, on the rig by the room's Player. */
+const herScale = () => currentRoom.scale
 // A village pond's water: how far she sees into it looking straight down and the angle below the horizontal the seeing-in begins at (water.js WATER.clarity, clarityAngle), set on the room's boot. A pond 20 m across is looked into from its shore at 20 or 30 degrees, where a lake's mirror would show her nothing of its fish.
 const VILLAGE_POND = { clarity: 0.7, clarityAngle: 15 }
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
@@ -2994,7 +3005,7 @@ async function buildRoom(room, at) {
 
   // She stands on the rocks and walks around the trunks, so she is placed only
   // once both are on the ground. See v2/walk.js.
-  walk = new WalkSurface(height, rocks, trees)
+  walk = new WalkSurface(height, rocks, trees, { scale: room.scale })
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
@@ -3009,7 +3020,8 @@ async function buildRoom(room, at) {
   // Only now: probeVantage reads the walk surface and the water polygons.
   worldProbe.setVantage(probeVantage)
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
-  player = new Player(rig, camera, walk)
+  player = new Player(rig, camera, walk, { scale: room.scale })
+  netplay.scale = room.scale
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   player.spawnAt(spawn.x, spawn.z)
 
@@ -3316,6 +3328,7 @@ async function buildRoom(room, at) {
     },
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
     thud: (x, y, z) => { if (ambience) sound.play('footfall', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
+    scale: room.scale,
   })
   hands.addSource(mushrooms, 'mushroom')
   hands.addSource(carrots, 'carrot')
@@ -3411,6 +3424,9 @@ async function buildRoom(room, at) {
       waves: !room.village,
       // A violin through the wall of half a village's houses.
       fiddlers: room.village ? roomProps.fiddlers() : [],
+      // The crackle of the clearing's hearth, and a soft one from every torch while they are lit.
+      campfires: hearth ? [hearth.fire] : [],
+      torches: lamps ? { at: lamps.lamps.map((l) => ({ x: l.x, y: l.flameY, z: l.z })), lit: () => lamps.lit } : null,
     })
     window.v2ambience = ambience
   })
@@ -4544,7 +4560,8 @@ function updateAmbience(dt, state) {
     head: headTmp,
     dayness: daynessOf(state),
     submerged,
-    speed: player.speed,
+    // In her own metres, so a walk at half size is still a walk to the footstep rule.
+    speed: player.speed / player.scale,
     afoot: !player.flying && !player.travel,
     cover: state.cover,
     precip: state.precip,
@@ -4834,8 +4851,10 @@ function placeDeskHand() {
   if (sceneEl.is('vr-mode')) return
   const held = hands.holding('desk')
   if (held === null) { deskHand.position.set(DESK_HAND_REST.x, DESK_HAND_REST.y, DESK_HAND_REST.z); return }
-  const s = Math.min(held.size, DESK_HAND_MAX_M)
-  hands.draw('desk', s / held.size)
+  const k = herScale()
+  hands.draw('desk', Math.min(1, DESK_HAND_MAX_M * k / held.size))
+  // The node's metres are hers (the camera hangs under the scaled rig), so the drawn size is taken into them.
+  const s = Math.min(held.size, DESK_HAND_MAX_M * k) / k
   const d = Math.max(0.45, 1.6 * s)
   const halfH = d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
   const halfW = halfH * camera.aspect
@@ -4872,7 +4891,9 @@ function questPulse(key, intensity, ms) {
 // from a hand at 1.3 m: ~3.3 m level, ~5.4 m at the best angle -- that is
 // what LOB tunes, at reach ~ LOB^2 / g. TELEPORT_RANGE is the hard cap on the
 // landing's horizontal distance from the rig, because a lob down a cliff would
-// otherwise carry as far as the cliff is tall.
+// otherwise carry as far as the cliff is tall. All three are hers, at her full
+// size: the lob, its gravity and the cap go by her scale (herScale), so the
+// arc keeps its shape and its timing and lands half as far when she is half as tall.
 const QUEST_TELEPORT_ARM = 0.7
 const QUEST_TELEPORT_FIRE = 0.35
 const TELEPORT_LOB = 6.5
@@ -4964,7 +4985,7 @@ function fireTeleport() {
   player.teleportTo(teleportTarget.x, teleportTarget.z)
   portalBlink = true
   teleportReadyAt = performance.now() + TELEPORT_COOLDOWN_S * 1000
-  if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE)
+  if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE * herScale())
 }
 
 /** After the step: the mouth her feet just entered, if any (PORTAL), and the village it opens on. */
@@ -5004,10 +5025,12 @@ function portalTest() {
 function aimTeleport(origin, dir) {
   const { ring, arc } = ensureTeleportGfx()
   const feet = player.originPosition()
-  const vx = dir.x * TELEPORT_LOB
-  const vy = dir.y * TELEPORT_LOB
-  const vz = dir.z * TELEPORT_LOB
-  const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * TELEPORT_GRAVITY * t * t, z: origin.z + vz * t })
+  const k = herScale()
+  const vx = dir.x * TELEPORT_LOB * k
+  const vy = dir.y * TELEPORT_LOB * k
+  const vz = dir.z * TELEPORT_LOB * k
+  const gravity = TELEPORT_GRAVITY * k
+  const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
   const clear = (t) => {
     const p = at(t)
     return p.y > walk.heightAt(p.x, p.z) && !walk.obstacleAt(p.x, p.z, teleportObstacle)
@@ -5042,7 +5065,7 @@ function aimTeleport(origin, dir) {
         p.z = hit.z
       }
     }
-    arc.setMatrixAt(count++, teleportBead.makeTranslation(p.x, p.y, p.z))
+    arc.setMatrixAt(count++, teleportBead.makeScale(k, k, k).setPosition(p.x, p.y, p.z))
     if (stopped) break
     prevT = t
   }
@@ -5055,7 +5078,7 @@ function aimTeleport(origin, dir) {
   // with a walkable straight line from her feet to it -- a lob clears a
   // boulder or a trunk that her legs would not. Whether she can go NOW is the
   // cooldown, kept apart so the colour can tell the two refusals apart.
-  const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE
+  const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE * k
   const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z)
   const ready = performance.now() >= teleportReadyAt
@@ -5071,7 +5094,8 @@ function aimTeleport(origin, dir) {
     // centimetres either side of.
     const drawn = terrain.groundAt(hit.x, hit.z)
     const ground = drawn !== null && drawn > hit.y ? drawn : hit.y
-    ring.position.set(hit.x, ground + TELEPORT_RING_LIFT, hit.z)
+    ring.position.set(hit.x, ground + TELEPORT_RING_LIFT * k, hit.z)
+    ring.scale.setScalar(k)
     ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal))
   }
   ring.visible = inRange
@@ -5542,7 +5566,7 @@ function tick() {
   player.headPosition(headTmp)
   const [pose, poseHands] = currentPose()
   netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null)
-  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar })
+  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale() })
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
@@ -5743,7 +5767,7 @@ const overHemi = new THREE.HemisphereLight()
 overlay.add(overSun, overHemi)
 function renderOverlay() {
   if (!hands || !hands.over.children.some((m) => m.count > 0)) return
-  if (overlay.children.length === 2) overlay.add(hands.over)
+  if (hands.over.parent !== overlay) overlay.add(hands.over)
   overSun.position.copy(sun.position); overSun.color.copy(sun.color); overSun.intensity = sun.intensity
   overHemi.color.copy(hemi.color); overHemi.groundColor.copy(hemi.groundColor); overHemi.intensity = hemi.intensity
   const autoClear = renderer.autoClear

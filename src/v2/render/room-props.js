@@ -14,9 +14,9 @@ import { PropArena } from './prop-arena.js'
 // shape (a column table off its finest tier), so she walks up the roots,
 // round the trunk and under the eaves, and onto a roof only where its eave
 // stands within her reach. Its windows glow from inside (gen-props.js
-// addGlow) at WINDOWS, amber all day and bright after dark on the lamps'
-// breath, and each throws a cone of light out of the wall through the lamp
-// map (lamps.js).
+// addGlow) at WINDOWS, shaded like the wall by day and amber after dark on
+// the lamps' breath, and each throws a cone of light out of the wall through
+// the lamp map (lamps.js).
 // ---------------------------------------------------------------------------
 
 export const HOUSE_GLB = 'gen-props/house-leafkin.glb'
@@ -26,17 +26,16 @@ export const TIERS = [0, 2, 3]
 // wall under it stands `wall` of the box's half-width out; the roots and the
 // eaves reach the rest (village.js HUTS packs the trunks).
 export const DOOR = { x: 1, z: 0, wall: 0.7 }
-// The windows, in the pick's frame (a unit box over its feet), picked in the
-// /gen-prop viewer (its "glow point" readout): r the disc each lights and
-// (nx, nz) the way the pane faces. A mirrored house's are these with z and
-// nz negated.
+// The windows, in the shipped pick's frame (its raw vertices over their feet,
+// Tripo's node yaw dropped by ship.mjs), placed in the /gen-prop viewer's glow
+// points table: r the disc each lights and (nx, nz) the way the pane faces.
+// A mirrored house's are these with z and nz negated.
 export const WINDOWS = [
-  { x: 0.084, y: 0.293, z: -0.127, r: 0.089, nx: 0.701, nz: -0.66 },
-  { x: -0.095, y: 0.711, z: -0.145, r: 0.089, nx: 0.955, nz: -0.011 },
-  { x: -0.084, y: 0.322, z: 0.19, r: 0.089, nx: -0.174, nz: 0.954 },
+  { x: 0.038, y: 0.3, z: -0.138, r: 0.07, nx: 0.472, nz: -0.882 },
+  { x: -0.136, y: 0.706, z: -0.097, r: 0.025, nx: 0.99, nz: 0.142 },
 ]
-// The glow's colour over the pane's own, and its gain by day and at the lamps' full breath.
-export const GLOW = { color: [1, 0.62, 0.28], day: 0.4, night: 1.4 }
+// After dark the pane's own colour is drawn unlit (gen-props.js addGlow) times this tint at this gain.
+export const GLOW = { color: [1, 0.62, 0.28], night: 1.6 }
 const POOL = 32
 // The column table's cell, in the pick's unit: 0.24 m at the tallest house.
 const CELL = 1 / 40
@@ -165,6 +164,7 @@ export class RoomProps {
       const m = createGenPropMaterial({ glow })
       m.map = bank.map
       m.side = THREE.DoubleSide
+      m.uGlow.value.setRGB(GLOW.color[0] * GLOW.night, GLOW.color[1] * GLOW.night, GLOW.color[2] * GLOW.night)
       return m
     })
     this.material = this.materials[0]
@@ -226,10 +226,9 @@ export class RoomProps {
     return out
   }
 
-  /** The windows' glow this frame: `breath` the lamps' mean glow, 0 by day (Lamps.breath). */
+  /** How unlit the panes are this frame: `breath` the lamps' mean glow, 0 by day (Lamps.breath), when they shade like the wall. */
   setGlow(breath) {
-    const g = GLOW.day + (GLOW.night - GLOW.day) * breath
-    for (const m of this.materials) m.uGlow.value.setRGB(GLOW.color[0] * g, GLOW.color[1] * g, GLOW.color[2] * g)
+    for (const m of this.materials) m.uGlowOn.value = breath
   }
 
   /** Re-rung every prop by its distance. */

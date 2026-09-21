@@ -51,13 +51,13 @@ const stone = (boxes) => ({
 // eye height, so the locomotion origin is the rig and forward is the camera's.
 // (0, 0, -1) turned by yaw about Y is (-sin, 0, -cos), so -PI/2 faces +x.
 // `feet` puts her at a foot height a spawn would not choose -- under a ledge.
-const walker = (rocks, x, z, yaw, feet) => {
+const walker = (rocks, x, z, yaw, feet, scale = 1) => {
   const rig = new THREE.Group()
   const camera = new THREE.PerspectiveCamera()
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.y = yaw
   rig.add(camera)
-  const player = new Player(rig, camera, new WalkSurface(field, rocks, trees))
+  const player = new Player(rig, camera, new WalkSurface(field, rocks, trees, { scale }), { scale })
   player.spawnAt(x, z)
   if (feet !== undefined) player.smoothY = player.standY = rig.position.y = feet
   rig.updateMatrixWorld(true)
@@ -243,6 +243,38 @@ console.log('the capsule')
   deck.deckAt = (x, z) => deck.blockTopAt(x, z) > -Infinity
   check(plain.slopeAt(0.9, 0.5) === 0 && plain.slopeAt(1.5, 0.5) > Math.PI / 4,
     'but a deck is level at its edge, and the ground beside it is still the ground', `${(plain.slopeAt(0.9, 0.5) * 180 / Math.PI).toFixed(0)} deg on, ${(plain.slopeAt(1.5, 0.5) * 180 / Math.PI).toFixed(0)} deg off`)
+}
+
+console.log('her size (DESIGN.md §30)')
+{
+  // At half size every metre of hers halves and the stone stays: a step she
+  // could mantle at full size is a wall, a bridge over her crown then is a
+  // bridge over her crown now, her eye is half as high, and she walks at
+  // half her pace.
+  const K = 0.5
+  const step = [20, 22, -5, 5, GROUND, GROUND + WALK.reach - 0.1]
+  const p = walker(stone([step]), 18, 0, -Math.PI / 2, undefined, K)
+  check(p.rig.scale.x === K && p.th.reach === WALK.reach * K && p.th.radius === WALK.radius * K, 'the rig and the walk surface carry her scale')
+  walk(p, 3)
+  check(p.blocked && p.rig.position.x < 20 && p.standY === GROUND, 'a step she could mantle at full size is a wall at half',
+    `x = ${p.rig.position.x.toFixed(2)}, feet at ${p.standY}`)
+  const low = [10, 12, -5, 5, GROUND + (WALK.height + 0.6) * K, GROUND + (WALK.height + 1.6) * K]
+  const q = walker(stone([low]), 5, 0, -Math.PI / 2, undefined, K)
+  let lifted = 0
+  for (let f = 0; f < Math.round(16 / DT); f++) {
+    q.update(DT, INPUT)
+    q.rig.updateMatrixWorld(true)
+    if (q.standY > GROUND + 1e-6) lifted++
+  }
+  check(q.rig.position.x > 13 && !q.blocked && lifted === 0, 'a bridge half as high over her clears her crown at half size', `reached x = ${q.rig.position.x.toFixed(2)}, ${lifted} frames lifted`)
+  const eye = q.headPosition().y - q.rig.position.y
+  check(Math.abs(eye - LOCOMOTION.eyeHeight * K) < 1e-9, 'her eye stands at half its height', `${eye.toFixed(3)} m`)
+  const r = walker(stone([]), 0, 0, -Math.PI / 2, undefined, K)
+  walk(r, 4)
+  check(Math.abs(r.rig.position.x - LOCOMOTION.maxSpeed * K * 4) < 0.05, 'and she walks at half her pace', `${(r.rig.position.x / 4).toFixed(3)} m/s`)
+  const full = walker(stone([]), 0, 0, -Math.PI / 2, undefined, 1)
+  walk(full, 4)
+  check(Math.abs(full.rig.position.x - LOCOMOTION.maxSpeed * 4) < 0.05, 'at full size, her full pace', `${(full.rig.position.x / 4).toFixed(3)} m/s`)
 }
 
 console.warn = warn

@@ -400,7 +400,8 @@ export class Villagers {
     const home = this.graph.nodes[c.home]
     c.x = c.px = home.x
     c.z = c.pz = home.z
-    c.y = c.py = this.walk.heightAt(c.x, c.z)
+    // The road at the door, read from under any stone: the door stands under the house's awning.
+    c.y = c.py = this.walk.heightAt(c.x, c.z, -Infinity)
     c.heading = c.ph = c.aim = 0
     c.at = c.home
     c.partner = null
@@ -640,7 +641,8 @@ export class Villagers {
     }
     c.left -= dt
     if (c.left <= 0) this._step(c)
-    c.y = this.walk.heightAt(c.x, c.z)
+    // From its own feet, so a house's awning or roof overhead is not ground it is lifted onto.
+    c.y = this.walk.heightAt(c.x, c.z, c.y)
   }
 
   // -------------------------------------------------------------------------

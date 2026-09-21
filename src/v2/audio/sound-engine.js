@@ -370,7 +370,7 @@ export class SoundEngine {
     voice.src.stop(now + CULL_FADE_S)
   }
 
-  /** A self-crossfading loop; see LoopVoice. Idle until start(). */
+  /** A self-crossfading loop; see LoopVoice. Idle until start(). `name` may be a list of clips, one drawn at random each cycle. */
   loop(name, opts = {}) {
     const voice = new LoopVoice(this, name, opts)
     this.loops.add(voice)
@@ -390,7 +390,9 @@ export class SoundEngine {
 }
 
 /**
- * A clip played end to end forever, each pass crossfaded into the next.
+ * A clip played end to end forever, each pass crossfaded into the next; given
+ * a list of clips, each pass is one of them drawn at random (a campfire's four
+ * takes in no order), so `name` is the list joined with '|' and `names` the list.
  *
  * Every cycle re-rolls three things: the crossfade into the next cycle
  * (LOOP_XFADE_S), its playback rate, and its gain -- and the last two WALK
@@ -413,7 +415,9 @@ export const LOOP_STEP = 0.05
 export class LoopVoice {
   constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, rand = Math.random } = {}) {
     this.engine = engine
-    this.name = name
+    this.names = Array.isArray(name) ? name : [name]
+    if (this.names.length === 0) throw new Error('LoopVoice: no clip named')
+    this.name = this.names.join('|')
     this.rand = rand
     this.gainRange = gain
     this.rateRange = rate
@@ -503,7 +507,7 @@ export class LoopVoice {
 
   _cycle() {
     const ctx = this.engine.ctx
-    const buffer = this.engine.buffer(this.name)
+    const buffer = this.engine.buffer(this.names.length === 1 ? this.names[0] : this.names[Math.floor(this.rand() * this.names.length)])
     const start = this.nextAt
     const dur = buffer.duration / this.rate
     const fadeIn = this.nextFadeIn

@@ -20,7 +20,7 @@ const TOL = 1e-3
 // Object-per-entry would allocate several million short-lived objects and hand
 // the GC a pause in the middle of a load screen. Two parallel typed arrays cost
 // 8 bytes per slot and never allocate after growth settles.
-export class MinHeap {
+class MinHeap {
   constructor(capacity = 1 << 16) {
     this.k = new Float32Array(capacity)
     this.v = new Int32Array(capacity)

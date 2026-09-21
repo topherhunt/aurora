@@ -720,8 +720,18 @@ const build = () => {
   try { w.hands.netLoose('x', slot, [0, 0, 0, 0, 0, 0, 1], 5) } catch { bad++ }
   check(bad === 3, 'a fourth hand, a short pose and an unknown state throw', `${bad} of 3`)
   check(POOL_CAP === LOOSE_MAX + 7 * 3 + CARRY_MAX * CARRIERS && OVER_CAP === 3, 'a pool holds the loose things, seven peers\' hands and the carriers\' armfuls; its over mesh her three hands\'', `${POOL_CAP}`)
+  // Dispose, with the over group mounted where main.js renders it: a peer's pool whose over mesh was never drawn must not be left there with a nulled array, which the renderer reads on the room's next overlay pass.
+  const overlay = new THREE.Scene()
+  overlay.add(w.hands.over)
+  const pools = [...w.hands.pools.values()]
+  const geos = pools.flatMap((p) => [p.geo, p.over.geo])
+  let disposed = 0
+  for (const g of geos) g.addEventListener('dispose', () => disposed++)
   w.hands.dispose()
   check(w.hands.peerHeld.size === 0, 'dispose forgets the peers')
+  check(w.hands.over.parent === null && overlay.children.length === 0, 'dispose takes the over group out of the overlay')
+  check(disposed === geos.length && geos.length > 0, 'dispose frees every pool geometry, main and over', `${disposed} of ${geos.length}`)
+  check(pools.every((p) => [...p.instanced, ...p.over.instanced].every(({ attr }) => attr.array instanceof Float32Array)), 'and leaves every instanced attribute its array')
 }
 
 // --- a record with a bad shape throws --------------------------------------------
@@ -744,6 +754,41 @@ const build = () => {
   check(threw === 3, 'a bad entry throws', `${threw} of 3`)
   t.clear()
   check(t.count === 0 && !t.has('mushroom', 10, 20), 'clear empties it')
+}
+
+// --- her size (DESIGN.md §30): the reach, the lift cap and the zone are hers ---------
+{
+  const K = 0.5
+  const scene = new THREE.Scene()
+  const pulses = []
+  const hands = new Hands(scene, { walk, water, haptic: (key) => pulses.push(key), stow: () => true, thud() {}, rand: mulberry32(3), scale: K })
+  const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('crab', 4, 0, 0, 1.5)])
+  hands.addSource(src, ['mushroom', 'crab'])
+  const node = new THREE.Group()
+  scene.add(node)
+  hands.addHand('right', node)
+  const head = { x: 0, y: 0.8, z: 0, yaw: 0 }
+  const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
+  let threw = false
+  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, scale: 0 }) } catch { threw = true }
+  check(threw, 'a scale that is not positive throws')
+  at(0, 0.1 + REACH_M * K + 0.02, 0)
+  check(hands.press('right', head) === null, 'at half size a thing just past half her reach is out of it', `hand ${(REACH_M * K + 0.02).toFixed(3)} m over a 0.2 m cap`)
+  at(0, 0.1 + REACH_M * K - 0.02, 0)
+  check(hands.press('right', head) === 'pick' && hands.holding('right').kind === 'mushroom', 'and within it is taken')
+  hands.drop('right', head)
+  at(4, 0.3, 0)
+  check(hands.press('right', head) === null && src.taken.length === 1, `a ${1.5} m crab is past the lift cap at half size`, `cap ${GRAB_MAX_M * K} m`)
+  at(0, 0.1 + REACH_M * K - 0.02, 0)
+  hands.press('right', head)
+  at(0, 0.9, 0.3 * K)
+  hands.update(1 / 60, head)
+  at(0, 0.9, -ZONE.within * K - 0.05)
+  hands.update(1 / 60, head)
+  check(pulses.length === 0, 'the zone about her head is half as wide: past it is out')
+  at(0, 0.9, -ZONE.within * K + 0.1)
+  hands.update(1 / 60, head)
+  check(pulses.length === 1 && hands.hands.get('right').inZone, 'and inside it the hand buzzes')
 }
 
 console.log(failures === 0 ? 'check-hands: all passed' : `check-hands: ${failures} FAILED`)

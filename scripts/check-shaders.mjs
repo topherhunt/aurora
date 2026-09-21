@@ -1020,6 +1020,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!vert.includes('vec3 origin = instanceMatrix[3].xyz;')) MISSING_MARKS.push('fire.js vert: the card about the instance origin')
   if (!frag.includes('v *= smoothstep( 0.0, 0.1, p.y ) * ( 1.0 - smoothstep( 1.0, 1.35, p.y ) );')) MISSING_MARKS.push('fire.js frag: the foot pinch and the overhang fade')
   if (!frag.includes('v -= ( n.x + n.y ) * uCut * rise;')) MISSING_MARKS.push('fire.js frag: the outline cut')
+  if (!frag.includes('v *= smoothstep( 0.0, 0.04, hw );')) MISSING_MARKS.push('fire.js frag: the mask closing with the width, or a thread hangs off the tip')
 }
 
 // The generated props' four programs (gen-props.js): the mesh with the rim
@@ -1051,8 +1052,8 @@ for (const [label, opts, defines] of [
   if (!frag.includes('abs( vPropFade ) <= fadeT ) discard')) MISSING_MARKS.push(`${label} frag: the dither`)
   if (!!opts.card !== frag.includes('vec3 cnUp = normalize( ( viewMatrix')) MISSING_MARKS.push(`${label} frag: the card normal ${opts.card ? 'missing' : 'on a mesh'}`)
   if (!!opts.billboard !== vert.includes('vec2 bbTo = cameraPosition.xz')) MISSING_MARKS.push(`${label} vert: the spin ${opts.billboard ? 'missing' : 'on a flat card'}`)
-  // The glow reads the pre-instance `position`, so one list of points lights every instance, and lifts the albedo a third of the way to white so a dark pane lights and a patterned one stays readable.
-  if (!!opts.glow !== (vert.includes('vGlowPos = position;') && frag.includes(`uniform vec4 uGlowPts[${opts.glow?.length}];`) && frag.includes('totalEmissiveRadiance += mix( diffuseColor.rgb, vec3( 1.0 ), 0.35 ) * uGlow * min( glowMask, 1.0 );'))) MISSING_MARKS.push(`${label}: the glow ${opts.glow ? 'missing' : 'on an unlit prop'}`)
+  // The glow reads the pre-instance `position`, so one list of points lights every instance, and draws the pane unlit by uGlowOn -- its albedo times uGlow in the lit colour's place -- so its dark bars stay dark.
+  if (!!opts.glow !== (vert.includes('vGlowPos = position;') && frag.includes(`uniform vec4 uGlowPts[${opts.glow?.length}];`) && frag.includes('outgoingLight = mix( outgoingLight, diffuseColor.rgb * uGlow, min( glowMask, 1.0 ) * uGlowOn );'))) MISSING_MARKS.push(`${label}: the glow ${opts.glow ? 'missing' : 'on an unlit prop'}`)
 }
 
 // --- src/terrain/terrain-material.js: the ground itself ----------------------

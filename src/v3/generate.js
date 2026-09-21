@@ -27,7 +27,7 @@ export const BLUR_RADII = [32, 128, 512, 2048]
  *
  * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment from the PNG script; the cache never sees an overridden field. `tune` is the map page's amplitudes, `{ warp: metres per warp octave, jitter: metres per jitter octave }`, either or both; what was used comes back as `tune`, and a tuned island IS cached, since the map page is where the numbers are chosen and /terrain-v3 is where they are judged.
  *
- * The biomes are classed on the raw field and the carve reads its knobs from them; they are not reclassed afterwards, since the carve moves a few percent of the land by tens of metres and the classes are quantiles of the whole.
+ * The biomes are classed on the raw field and the rain reads how fast the ground yields from them; they are not reclassed afterwards, since the rain moves half the land by a few metres and the classes are quantiles of the whole.
  */
 export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune = null }) {
   if (!Number.isInteger(seed)) throw new Error(`generate: seed must be an integer, got ${seed}`)

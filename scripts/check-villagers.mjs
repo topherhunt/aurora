@@ -31,7 +31,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import {
   Villagers, CALM_M, CLIPS, EXTRA, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
-import { WalkSurface } from '../src/v2/walk.js'
+import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -162,7 +162,7 @@ console.log('\na day with her far off')
 {
   const v = make()
   const seen = new Set()
-  let strayed = 0, worst = 0, unseat = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, meetings = 0, apart = 0, gestures = 0
+  let strayed = 0, worst = 0, unseat = 0, vaulted = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, meetings = 0, apart = 0, gestures = 0
   const was = v.all.map(() => null)
   const voices = []
   const talkers = new Map()
@@ -190,6 +190,7 @@ console.log('\na day with her far off')
       const allowed = atSpot ? GAZE_OFF_M + 0.4 : 0.8
       if (near > allowed) { strayed++; worst = Math.max(worst, near) }
       if (v.seat(c.x, c.z) === null) unseat++
+      if (c.y - field.heightAt(c.x, c.z) > WALK.reach) vaulted++
       if (c.state === 'walk' && (c.clip !== (c.runner ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
       if ((c.state === 'stand' || c.state === 'gaze') && (c.clip !== 'idle' || c.speed !== 0)) badClip++
       if (c.state === 'talk' && (!CLIPS.includes(c.clip) || c.speed !== 0)) badClip++
@@ -206,6 +207,7 @@ console.log('\na day with her far off')
   check(['inside', 'walk', 'stand', 'gaze', 'talk'].every((s) => seen.has(s)) && !seen.has('flee'), 'they go in and out, walk, stand, gaze and talk, and nothing frightens them', [...seen].join(' '))
   check(strayed === 0, 'nobody steps off the cobbles but for a gazing spot, and every door is crossed at its own house', `${strayed} strayed, worst ${worst.toFixed(2)} m`)
   check(unseat === 0, 'every step is on dry ground clear of the trunks')
+  check(vaulted === 0, `nobody stands over ${WALK.reach} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
   check(entries >= 2 && exits >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits`)
   check(badClip === 0, 'a walker walks at its pace, a runner runs, a stander idles, a talker gestures or idles, none of them moving')
   const paces = new Set(v.all.map((c) => c.pace)), runners = v.all.filter((c) => c.runner).length

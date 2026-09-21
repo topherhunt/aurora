@@ -258,9 +258,9 @@
         <button id="reveal" class="wide" disabled style="margin-top:8px">reveal work dir in Finder</button>
 
         <h2>5. glow points</h2>
-        <div class="step">Panes lit from inside the mesh (src/v2/render/gen-props.js addGlow). Click the mesh in the preview to add a point where the ray lands; edit its place or its radius here, or drop it with &times;. The list is the pick's frame, feet at y 0, and lights every tier. The house's shipping list (room-props.js WINDOWS) loads with it, and the preview burns at the night's colour.</div>
+        <div class="step">Panes lit from inside the mesh (src/v2/render/gen-props.js addGlow). Click the mesh in the preview to add a point where the ray lands; edit its place or its radius here, or drop it with &times;. The list is the shipped pick's frame (its raw vertices, feet at y 0, Tripo's node yaw dropped) and lights every tier. The house's shipping list (room-props.js WINDOWS) loads with it. The panes shade like the wall until dusk, then burn at the night's colour.</div>
         <div class="field check">
-          <label><input type="checkbox" id="glowDusk" /> dusk: dim the bench's lights to judge the glow</label>
+          <label><input type="checkbox" id="glowDusk" /> dusk: dim the bench's lights and light the panes</label>
         </div>
         <table class="data" id="glowTable"></table>
         <div class="field">
