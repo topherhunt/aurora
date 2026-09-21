@@ -34,6 +34,7 @@ import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Butterflies } from './render/butterflies.js'
 import { Grasshoppers } from './render/grasshoppers.js'
+import { Fireflies } from './render/fireflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
@@ -43,7 +44,8 @@ import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
-import { Lamps } from './render/lamps.js'
+import { Lamps, loadLampBank } from './render/lamps.js'
+import { Hearth } from './render/hearth.js'
 import { Shell } from './render/shell.js'
 import { rollVillage, buildVillage, WOOD } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
@@ -849,6 +851,7 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'crabs', text: 'crabs' },
   { key: 'butterflies', text: 'butterflies' },
   { key: 'grasshoppers', text: 'grasshoppers' },
+  { key: 'fireflies', text: 'fireflies' },
   { key: 'spiders', text: 'spiders' },
   { key: 'wildlife', text: 'wildlife' },
   { key: 'snowmen', text: 'snowmen' },
@@ -953,7 +956,7 @@ function applyQuestToggle(key) {
       if (enabled) placeAnimals(player.rig.position.x, player.rig.position.z)
       applyAnimalVisibility()
       break
-    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'spiders': case 'wildlife': case 'snowmen': case 'leafkin': case 'dragons': applyAnimalVisibility(); break
+    case 'fish': case 'frogs': case 'crabs': case 'butterflies': case 'grasshoppers': case 'fireflies': case 'spiders': case 'wildlife': case 'snowmen': case 'leafkin': case 'dragons': applyAnimalVisibility(); break
     case 'critterTint': setTierTint(enabled); rocks?.setHollowTint(enabled); break
     case 'mirror': if (enabled) placeMirror(); else peerAvatars.mirror(null); break
     // RECOMPILES the three prop materials rather than zeroing uWindStrength, so
@@ -2240,6 +2243,7 @@ let frogs = null
 let crabs = null
 let butterflies = null
 let grasshoppers = null
+let fireflies = null
 let spiders = null
 let wildlife = null
 let snowmen = null
@@ -2264,9 +2268,10 @@ let rowboats = null
 let boats = null
 let dragons = null
 let entrances = null
-// A village's own (DESIGN.md §30): its huts, its lamps and the boulder's inside; all null in the overworld.
+// A village's own (DESIGN.md §30): its huts, its lamps, its gathering place and the boulder's inside; all null in the overworld.
 let roomProps = null
 let lamps = null
+let hearth = null
 let shell = null
 // The mouth she came in by (Entrances.sites()): the village's seed, and where to put her back when she leaves. Saved with the game; null in the overworld.
 let cameInBy = null
@@ -2290,7 +2295,7 @@ let ready = false
 // measurement.
 const questToggles = {
   terrain: true,
-  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
+  trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, fireflies: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
   water: true, reflections: true, aurora: true, clouds: true, wreaths: true, precip: true, sound: true,
   critterTint: false, mirror: false, terrainWire: false,
   wind: true, treeTiers: true, treeCutout: true,
@@ -2304,14 +2309,14 @@ const animalOn = (key) => questToggles.animals && questToggles[key]
 // Main-thread milliseconds each animal layer's step spent per frame, the mean
 // over the last ANIMAL_MS_WINDOW_S seconds, keyed by its toggle row. This is
 // the instrument that says whether the `animals` row's toll is CPU or draw: the
-// row switches NINE layers at once, and if the nine numbers here sum to a
+// row switches every animal layer at once, and if the numbers here sum to a
 // fraction of the frame time the toggle moves, the rest of it is on the GPU and
 // no amount of bucketing the simulation will find it. A window, not a running
 // blend: performance.now() is coarsened to 100 us on this page, so a single
 // frame reads 0 or 0.1, and a step that bursts once a second (a tile row of
 // seats, a puppet pool refill) is only visible as its share of a long mean.
 const ANIMAL_MS_WINDOW_S = 5
-const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons']
+const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons']
 const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 const animalMsAcc = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 let animalMsFrames = 0
@@ -2338,7 +2343,7 @@ function bankAnimalMs(dt) {
 }
 
 /**
- * The frogs', crabs', butterflies', grasshoppers' and spiders' batches, off their rows. Not the fish's:
+ * The frogs', crabs', butterflies', grasshoppers', fireflies' and spiders' batches, off their rows. Not the fish's:
  * theirs is decided every frame in the tick, because it also asks whether her
  * head is under the water.
  */
@@ -2347,6 +2352,7 @@ function applyAnimalVisibility() {
   crabs.batch.visible = animalOn('crabs')
   butterflies.batch.visible = animalOn('butterflies')
   grasshoppers.batch.visible = animalOn('grasshoppers')
+  fireflies.batch.visible = animalOn('fireflies')
   spiders.batch.visible = animalOn('spiders')
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
@@ -2364,6 +2370,7 @@ function placeAnimals(cx, cz) {
   if (crabs && animalOn('crabs')) crabs.place(cx, cz)
   if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
   if (grasshoppers && animalOn('grasshoppers')) grasshoppers.place(cx, cz)
+  if (fireflies && animalOn('fireflies')) fireflies.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
   if (wildlife && animalOn('wildlife')) wildlife.place(cx, cz)
   if (snowmen && animalOn('snowmen')) snowmen.place(cx, cz, clock.seconds)
@@ -2626,6 +2633,10 @@ function bakeImpostors() {
   // picture serves every bed that picked it, so it lives on the bank. See
   // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
   const rockCards = bakeRockImpostor(renderer, propTextures)
+  if (hearth) {
+    const h = hearth.bakeCard(renderer)
+    console.log(`hearth impostor baked: luma ${h.meanLuma.toFixed(3)} cover ${h.coverage.toFixed(3)} ${h.width.toFixed(2)} x ${h.height.toFixed(2)} m`)
+  }
   // The one measurement that says whether the impostor bake rig is aimed
   // right, and there is nowhere else it can be taken: the bake needs a live
   // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
@@ -2669,12 +2680,12 @@ function disposeRoom() {
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   for (const layer of [
-    leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, grasshoppers, butterflies, crabs, frogs, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, shell, markers, waterSurfaces, terrainWire, terrain,
+    leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fish,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   lighting.clearLamps()
-  leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = grasshoppers = butterflies = crabs = frogs = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = shell = markers = waterSurfaces = terrainWire = terrain = null
+  leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fish = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = shell = markers = waterSurfaces = terrainWire = terrain = null
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
   deskHand = null
@@ -2928,9 +2939,14 @@ async function buildRoom(room, at) {
     console.log(`[v2] huts ${roomProps.stats.placed}`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
     // The lamps where the build put them (render/lamps.js), their light and the huts' windows' baked into every lit material until the room goes.
-    lamps = new Lamps(scene, height, { lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
+    lamps = new Lamps(scene, height, { bank: await loadLampBank(), lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
     if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
     console.log(`[v2] lamps ${lamps.lamps.length}`)
+    window.v2lamps = lamps // console: `v2lamps.lamps`, `v2lamps.postMaterial`
+    // The gathering place at the clearing's centre (render/hearth.js): the fire, its ring and the stools round it, its card baked with the rock cards.
+    hearth = new Hearth(scene, height, { bank, at: roomSpec.clearing, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    console.log(`[v2] hearth ${hearth.stats.stools} stools, ${hearth.tris.join('/')} tris`)
+    window.v2hearth = hearth // console: `v2hearth.stats`, `v2hearth.tier`
   }
   window.v2huts = roomProps
 
@@ -2953,8 +2969,8 @@ async function buildRoom(room, at) {
     // the scatter itself, so the clearings are the same on every boot.
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
-    // and in a village one in the clearing, through a hut or on a lamp.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) } : deadwood,
+    // and in a village one in the clearing, through a hut, on a lamp or in the gathering place.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
   })
@@ -2985,6 +3001,8 @@ async function buildRoom(room, at) {
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
   if (lamps) walk.addStone(lamps)
+  // And the fire ring and the stools: a step up onto each.
+  if (hearth) walk.addStone(hearth)
   // And so are the other players, and her double: their bodies stand on it, feet planted.
   peerAvatars.ground(walk)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
@@ -3224,6 +3242,13 @@ async function buildRoom(room, at) {
   console.log(`[v2] grasshoppers ${grasshoppers.stats.alive} on ${grasshoppers.stats.tiles} tiles at boot`)
   window.v2grasshoppers = grasshoppers
 
+  // The fireflies under the trees after dark (render/fireflies.js): one
+  // instanced draw of sprite cards, admitted only beside a resident trunk, so after the trees.
+  await bootStep('fireflies')
+  fireflies = new Fireflies(scene, height, waterSurfaces, { seed, walk, trees })
+  fireflies.place(spawn.x, spawn.z)
+  window.v2fireflies = fireflies
+
   // The spiders on the trunks, the boulders and the ground (render/spiders.js):
   // a scatter that climbs the trees and the rocks, so after both. One material
   // for the mesh, its legs in the vertex shader, and one for the card.
@@ -3384,6 +3409,8 @@ async function buildRoom(room, at) {
       grasshoppers,
       // A village's pond is too small for a wave to break on its shore: the quiet lapping alone.
       waves: !room.village,
+      // A violin through the wall of half a village's houses.
+      fiddlers: room.village ? roomProps.fiddlers() : [],
     })
     window.v2ambience = ambience
   })
@@ -5544,6 +5571,8 @@ function tick() {
     if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
     if (roomProps) roomProps.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
+  if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.ferns) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
@@ -5580,7 +5609,7 @@ function tick() {
   // eye cannot tell from the splash.
   //
   // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
-  // shows: nine layers behind one switch is exactly the shape where a guess at
+  // shows: ten-odd layers behind one switch is exactly the shape where a guess at
   // which one costs what is worthless.
   //
   // WHAT SHE HOLDS IS A LURE to the fish, the frogs, the wildlife and the
@@ -5601,6 +5630,8 @@ function tick() {
   // The butterflies settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  // The fireflies exist only after dark, off the same scalar.
+  stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.

@@ -9,9 +9,9 @@
 // rule holds and is re-rolled when the rule first becomes true, so crossing a
 // snowline never lands a raptor on the exact step; every one-shot is pitched
 // 0.9x-1.1x and given its own volume so the same clip twice is not a machine
-// gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater) are held by _loop():
-// started when their rule turns on, stopped when it turns off, level and
-// bearing refreshed every update.
+// gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater, a fiddle a
+// house) are held by _loop(): started when their rule turns on, stopped when
+// it turns off, level and bearing refreshed every update.
 //
 // DIRECTION IS PROXY FOR PLACE. A bird has no position in the world, so it is
 // given one: a random bearing at a plausible range and height, and the panner
@@ -89,6 +89,7 @@ export const SOUNDS = {
   wingbeat: 'sounds/dragon-wings-flapping.mp3',
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
+  fiddle: 'sounds/ambience-violin-playing.mp3',
   // The menu's and the hand's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
@@ -176,6 +177,8 @@ export const RULES = {
   // Rain: a loop at `level` times the share of the fall that is rain, precip times how far she is under the snow line's `sleet` band (the precip draw's band, check-ambience pins them equal); snow is silent, so on a summit the loop is off (§10). The patter is the drops on the ground and the leaves, so it thins to nothing across the `aloft` band of metres her head is above the ground and is off above it.
   rain: { on: 0.02, off: 0.01, level: 0.35, sleet: [-60, 60], aloft: [2, 20], gain: [0.7, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
+  // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little.
+  fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0] },
   // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
   swoosh: { reach: 8, near: 1, size: 0.5, level: 0.5, max: 1, deep: 0.5, gain: [0.7, 1.0] },
 }
@@ -193,8 +196,9 @@ export class Ambience {
    * @param fish      the fish layer, if any: startled(into) lists the fish that set off fast this frame, x, y, z and size (length in metres) on each.
    * @param grasshoppers  the grasshopper layer, if any: bodies(into) lists the ones it is showing, x, y, z on each.
    * @param waves     false where the water is a pond too small for a wave to break on its shore (a village's lake): the lapping bed loops and the wave one-shot never fires.
+   * @param fiddlers  the houses with a violin playing inside, if any: `[{ x, y, z, r }]`, each its floor and its trunk's radius (RULES.fiddle).
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const l of voiced) if (!l || typeof l.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
     if (!sense) throw new Error('Ambience: missing sense')
@@ -208,6 +212,7 @@ export class Ambience {
     }
     for (const l of crawlers) if (!l || typeof l.bodies !== 'function') throw new Error('Ambience: a crawler layer needs bodies()')
     for (const l of startlers) if (!l || typeof l.startled !== 'function') throw new Error('Ambience: a startler layer needs startled()')
+    for (const h of fiddlers) if (!h || ![h.x, h.y, h.z, h.r].every(Number.isFinite) || !(h.r > 0)) throw new Error('Ambience: a fiddler is { x, y, z, r }, r positive')
     this.engine = engine
     this.sense = sense
     this.rand = rand
@@ -247,6 +252,11 @@ export class Ambience {
       rain: engine.loop('rain', { gain: RULES.rain.gain }),
       crawl: engine.loop('crawl', { directional: true, gain: RULES.crawl.gain }),
     }
+    // One muffled loop a fiddler, under its own key in `loops` so _loop and dispose hold it like the rest.
+    this.fiddlers = fiddlers.map((h, i) => {
+      this.loops[`fiddle${i}`] = engine.loop('fiddle', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.fiddle.gain })
+      return { key: `fiddle${i}`, x: h.x, y: h.y + RULES.fiddle.ear, z: h.z, r: h.r }
+    })
     this.leavesOn = false
     this.windOn = false
     this.rainOn = false
@@ -365,6 +375,7 @@ export class Ambience {
     }
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s, cover, precip)
+    this._fiddlers(head)
     this._crawl(head)
     this._fish(head)
     // Nothing above the surface fires while she is under it; the loops already
@@ -798,6 +809,17 @@ export class Ambience {
     const rain = precip * (1 - smoothstep(R.sleet[0], R.sleet[1], s.aboveSnow)) * (1 - smoothstep(R.aloft[0], R.aloft[1], head.y - s.groundH))
     if (this.rainOn ? rain < R.off : rain > R.on) this.rainOn = !this.rainOn
     this._loop('rain', this.rainOn, R.level * rain)
+  }
+
+  /** Each fiddler's loop by her distance to its house's wall: level and cutoff by RULES.fiddle, placed at the fiddler. */
+  _fiddlers(head) {
+    const F = RULES.fiddle
+    for (const h of this.fiddlers) {
+      const d = Math.max(0, Math.hypot(head.x - h.x, head.y - h.y, head.z - h.z) - h.r)
+      const on = d < F.reach
+      this._loop(h.key, on, F.level * Math.min(1, F.near / Math.max(d, 1e-3)) * (1 - smoothstep(F.reach - F.edge, F.reach, d)), h)
+      if (on) this.loops[h.key].setCutoff(F.cutoff[1] + (F.cutoff[0] - F.cutoff[1]) * clamp(d / F.reach, 0, 1))
+    }
   }
 }
 

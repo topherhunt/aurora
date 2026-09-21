@@ -23,6 +23,8 @@ import { analyzeMesh, decimate, decimateLadder } from './mesh/decimate.js'
 import { cullTripoBackfaces } from './tripo-culling.js'
 import { TEX_SIZE } from './textures.js'
 import { SUPERSAMPLE, BAKE_ROCK_BOUNCE, impostorCardExtents, downsample, dilate } from './props/impostor.js'
+import { addGlow } from './v2/render/gen-props.js'
+import { GLOW, WINDOWS } from './v2/render/room-props.js'
 
 const $ = (id) => document.getElementById(id)
 const status = $('status')
@@ -638,10 +640,13 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true 
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1))
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(35, 420 / 320, 0.01, 100)
-scene.add(new THREE.HemisphereLight(0x9fc6ff, 0x1a1420, 1.1))
+const hemi = new THREE.HemisphereLight(0x9fc6ff, 0x1a1420, 1.1)
+scene.add(hemi)
 const sun = new THREE.DirectionalLight(0xfff3e2, 1.6)
 sun.position.set(1, 1.5, 1)
 scene.add(sun)
+// Dusk keeps a tenth of the light: the glow is judged against the village's night, not a lit bench.
+$('glowDusk').addEventListener('change', () => { const k = $('glowDusk').checked ? 0.1 : 1; hemi.intensity = 1.1 * k; sun.intensity = 1.6 * k })
 const orbit = new OrbitControls(camera, renderer.domElement)
 orbit.enableDamping = true
 
@@ -660,14 +665,20 @@ window.addEventListener('pointermove', (e) => {
 })
 $('rotateLight').addEventListener('change', () => { orbit.enableRotate = !$('rotateLight').checked })
 
-// A click that did not drag reads a glow point off the model, in the frame the
+// --- glow points --------------------------------------------------------------
+//
+// The panes the preview lights from inside (addGlow), listed in the frame the
 // world draws the prop in (loadCritterGlb: centred over its feet on XZ, feet at
-// y = 0), and marks it. The frame is the PICK's; a tier's bounds drift by its
-// decimation, so read points off the pick.
+// y = 0), which is the PICK's: a tier's bounds drift by its decimation, so the
+// list is read off and previewed on the pick. A click that did not drag adds a
+// point where its ray lands, the table moves or drops one, and every change
+// rebuilds the pick's materials: addGlow bakes the count into the program.
+const GLOW_SEED = { 'house-leafkin': WINDOWS }
+let glowPoints = []
+let glowFor = null // the prop the list belongs to
 const CLICK_PX = 4
 const pickRay = new THREE.Raycaster()
 let clickFrom = null
-let glowMark = null
 canvas.addEventListener('pointerdown', (e) => { if (e.button === 0) clickFrom = { x: e.clientX, y: e.clientY } })
 canvas.addEventListener('pointerup', (e) => {
   const from = clickFrom
@@ -677,20 +688,77 @@ canvas.addEventListener('pointerup', (e) => {
   pickRay.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera)
   const hit = pickRay.intersectObject(model, true)[0]
   if (!hit) return
-  const box = new THREE.Box3().setFromObject(model)
-  const p = hit.point.clone().sub(new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2))
-  const r3 = (v) => Math.round(v * 1000) / 1000
-  const span = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z)
+  const p = hit.point.clone().sub(glowFoot())
   const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld)
-  $('glowPick').textContent = `glow point { x: ${r3(p.x)}, y: ${r3(p.y)}, z: ${r3(p.z)}, r: ${r3(span * 0.07)}, nx: ${r3(n.x)}, nz: ${r3(n.z)} } -- the pick's frame, r a guess at the pane, n the face's way out`
-  if (!glowMark) {
-    glowMark = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffb35c, depthTest: false, transparent: true, opacity: 0.8 }))
-    glowMark.renderOrder = 1
-  }
-  glowMark.scale.setScalar(span * 0.02)
-  glowMark.position.copy(hit.point)
-  scene.add(glowMark)
+  // A new pane takes the last one's radius: the panes of one prop are of a size.
+  const last = glowPoints.at(-1)
+  glowPoints.push({ x: p.x, y: p.y, z: p.z, r: last ? last.r : glowSpan() * 0.05, nx: n.x, nz: n.z })
+  glowChanged()
 })
+
+/** The pick's frame's origin in the scene: the box's XZ centre at its feet. */
+function glowFoot() {
+  const box = new THREE.Box3().setFromObject(model)
+  return new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2)
+}
+function glowSpan() {
+  const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3())
+  return Math.max(size.x, size.y, size.z)
+}
+
+/** Lights the pick from the list. A tier is borrowed from the ladder and keeps its own material. */
+function applyGlow() {
+  if (!model || model.userData.borrowed) return
+  const foot = glowFoot(), inv = new THREE.Matrix4(), q = new THREE.Vector3()
+  model.traverse((o) => {
+    if (!o.isMesh) return
+    const base = o.userData.glowBase ?? (o.userData.glowBase = o.material)
+    const wireframe = o.material.wireframe
+    if (o.material !== base) o.material.dispose()
+    if (glowPoints.length === 0) { o.material = base; base.wireframe = wireframe; return }
+    // addGlow reads the geometry's own position, so a point goes back through the node's matrix.
+    inv.copy(o.matrixWorld).invert()
+    const s = o.matrixWorld.getMaxScaleOnAxis()
+    const pts = glowPoints.map((p) => { q.set(p.x, p.y, p.z).add(foot).applyMatrix4(inv); return { x: q.x, y: q.y, z: q.z, r: p.r / s } })
+    o.material = addGlow(base.clone(), pts)
+    o.material.uGlow.value.setRGB(GLOW.color[0] * GLOW.night, GLOW.color[1] * GLOW.night, GLOW.color[2] * GLOW.night)
+    o.material.wireframe = wireframe
+  })
+}
+
+const r3 = (v) => Math.round(v * 1000) / 1000
+function glowChanged() {
+  const t = $('glowTable')
+  t.innerHTML = glowPoints.length ? '<tr><th>x</th><th>y</th><th>z</th><th>r</th><th></th></tr>' : ''
+  glowPoints.forEach((p, i) => {
+    const tr = document.createElement('tr')
+    for (const k of ['x', 'y', 'z', 'r']) {
+      const input = document.createElement('input')
+      input.type = 'number'
+      input.step = k === 'r' ? 0.005 : 0.01
+      input.value = r3(p[k])
+      input.addEventListener('input', () => {
+        const v = Number(input.value)
+        if (!Number.isFinite(v) || (k === 'r' && !(v > 0))) return
+        p[k] = v
+        writeGlowOut()
+        applyGlow()
+      })
+      tr.appendChild(document.createElement('td')).appendChild(input)
+    }
+    const drop = document.createElement('button')
+    drop.textContent = '×'
+    drop.title = 'drop this point'
+    drop.addEventListener('click', () => { glowPoints.splice(i, 1); glowChanged() })
+    tr.appendChild(document.createElement('td')).appendChild(drop)
+    t.appendChild(tr)
+  })
+  writeGlowOut()
+  applyGlow()
+}
+function writeGlowOut() {
+  $('glowOut').value = glowPoints.map((p) => `  { x: ${r3(p.x)}, y: ${r3(p.y)}, z: ${r3(p.z)}, r: ${r3(p.r)}, nx: ${r3(p.nx)}, nz: ${r3(p.nz)} },`).join('\n')
+}
 
 const dragAxis = new THREE.Vector3()
 function turnLight(yaw, pitch) {
@@ -746,12 +814,10 @@ function clearModel() {
     // get shown again when another tier is clicked, so they are borrowed, not
     // owned. Disposing them here is what turns a second click into a blank view.
     if (!model.userData.borrowed) {
-      model.traverse((o) => { o.geometry?.dispose(); if (o.material) [].concat(o.material).forEach((m) => m.dispose()) })
+      model.traverse((o) => { o.geometry?.dispose(); if (o.material) [].concat(o.material, o.userData.glowBase ?? []).forEach((m) => m.dispose()) })
     }
     model = null
   }
-  if (glowMark) scene.remove(glowMark)
-  $('glowPick').textContent = ''
   $('viewer').classList.remove('on')
   $('texRow').classList.remove('on')
 }
@@ -811,6 +877,11 @@ async function showModel(which) {
   })
 
   const span = frameModel()
+  if (glowFor !== id) {
+    glowPoints = (GLOW_SEED[id] ?? []).map((p) => ({ ...p }))
+    glowFor = id
+  }
+  glowChanged()
 
   const requested = Number($('faceLimit').value)
   const over = tris > requested * 1.25

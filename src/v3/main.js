@@ -8,7 +8,7 @@ import { RELIEF_DEFAULTS } from '../v2/height/relief.js'
 import { Layers } from '../v2/layers/layers.js'
 import { TerrainV2 } from '../v2/terrain/terrain-v2.js'
 import { WaterSurfaces } from '../v2/render/water-surfaces.js'
-import { WorldClock } from '../clock.js'
+import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { Sky } from '../sky.js'
 import { Input } from '../input.js'
@@ -166,6 +166,7 @@ const CODE_ACTIONS = {
   KeyW: 'forward', KeyA: 'left', KeyS: 'back', KeyD: 'right',
   ArrowUp: 'forward', ArrowDown: 'back', ArrowLeft: 'turnLeft', ArrowRight: 'turnRight',
   Space: 'flyUp', ShiftLeft: 'flyDown', ShiftRight: 'flyDown',
+  KeyN: 'timeSkip',
 }
 
 const DOUBLE_TAP_MS = 320
@@ -188,6 +189,7 @@ addEventListener('keydown', (e) => {
   const fresh = !held.has(action)
   held.add(action)
   if (fresh && action === 'flyUp' && player) onSpacePress(e.timeStamp)
+  if (fresh && action === 'timeSkip') clock.skip(CLOCK.skipHours)
 })
 addEventListener('keyup', (e) => held.delete(CODE_ACTIONS[e.code]))
 addEventListener('blur', () => held.clear())
@@ -321,7 +323,7 @@ function refreshPanel() {
 
 // --- controls ---------------------------------------------------------------
 
-document.getElementById('skip').addEventListener('click', () => clock.skip(5))
+document.getElementById('skip').addEventListener('click', () => clock.skip(CLOCK.skipHours))
 document.getElementById('regen').addEventListener('click', () => {
   location.search = `?seed=${opts.seed}&regen`
 })

@@ -386,12 +386,17 @@ export const LAYER = {
   // into the cap's frame at exactly the distance where nothing else is left to
   // tell the two apart.
   //
-  // 80..94 ARE FREE and are not yet reclaimed: this was a 25-layer run, one
+  // 81..94 ARE FREE and are not yet reclaimed: this was a 25-layer run, one
   // picture per variant, and collapsing the bank emptied all but the base.
   // Renumbering means moving every layer above it, which is a change with a
   // blast radius out of proportion to the ~1 MB it reclaims.
   IMPOSTOR_ROCK: 70,
   IMPOSTOR_ROCK_CAP: 71,
+
+  // A village's gathering place from over 30 m (v2/render/hearth.js): the fire
+  // ring, its logs and the stools round it, one photograph baked at boot beside
+  // the rock cards, in the first of the run's free layers.
+  IMPOSTOR_HEARTH: 80,
 
   // Forest clump cards, baked at boot beside the tree impostors (see
   // props/tree-clump.js): a photograph of several trees of one species at

@@ -275,28 +275,25 @@ export const PROPS = [
     label: 'Leafkin Lamp-post',
     category: 'other',
     // The village's lamp-post (render/lamps.js): the world scales it to
-    // LAMP.height and lights the lantern's paper from inside at LAMP.lanternY,
-    // 0.85 of the way up, so the lantern is a closed drum of waxed paper with
-    // the flame out of sight and the glow the world's. Slender parts
-    // reconstruct as blobs, so the legs are stout.
+    // LAMP.height and stands a flame in the dish, LAMP.bowl of the way up, so
+    // the dish is open and empty with the hood a hand span over it. Slender
+    // parts reconstruct as blobs, so the legs are stout.
     sizeM: 2.0,
     aspectRatio: '3:4',
     description:
       'a rustic lamp-post about two metres tall standing upright on the ground, one straight slim trunk of ' +
-      'weathered grey-brown wood with its bark on, the foot a little wider and bedded in packed earth, a ' +
-      'closed six-sided lantern at the top of the trunk about a third of a metre tall, its walls panes of ' +
-      'creased waxed paper the colour of old parchment, translucent and mottled, stretched over a frame of ' +
-      'thin bent twigs bound with vine, the panes a little bellied and scuffed, a shallow dish of dark cracked ' +
-      'clay for its floor lashed to the trunk, a wide cone hood for its roof, a stretched hide of scraped tan ' +
-      'leather stitched with sinew over a ring of bent twigs, its edge ragged and sagging, sooted dark ' +
-      'inside the peak, three stout crooked branch legs lashed to the trunk just under the dish and splaying ' +
-      'up to hold the hood ring, small bundles of dried herbs and a few acorn caps hung from the hood ring on ' +
-      'twine, moss and lichen on the shaded side of the trunk',
+      'weathered grey-brown wood with its bark on, the foot a little wider and bedded in packed earth, an ' +
+      'open shallow dish of dark cracked clay bound to the top of the trunk with vine, the dish empty and ' +
+      'blackened with soot inside, three stout crooked branch legs lashed to the trunk just under the dish ' +
+      'and splaying up and out to hold a wide cone hood a hand span above the dish, the hood a stretched hide ' +
+      'of scraped tan leather stitched with sinew over a ring of bent twigs, its edge ragged and sagging, ' +
+      'sooted dark inside, the space between the dish and the hood open on every side, small bundles of dried ' +
+      'herbs and a few acorn caps hung from the hood ring on twine, moss and lichen on the shaded side of the trunk',
     // The house style asks for a broken silhouette; a post is one whole
     // upright stick, so the note lands after the style to have the last word.
     styleNote:
       'The trunk is one whole straight upright piece with a clean outline, its weathering in the grain, the ' +
-      'staining and the worn bark. The paper panes are whole and closed all the way round.',
+      'staining and the worn bark.',
   },
 ]
 

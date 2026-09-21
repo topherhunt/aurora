@@ -401,28 +401,42 @@ export class SoundEngine {
  *
  * `level` is the caller's fader on top of all that -- distance, enter/exit --
  * and lives on a separate gain node so the per-cycle envelopes never fight it.
+ * A tune is not a brook: `rate` narrows the walk's range and `drift` its step
+ * (0 holds the rate rolled at construction), and `muffle` puts a low-pass
+ * after the level, its cutoff the caller's (setCutoff), for a sound heard
+ * through a wall.
  */
 export const LOOP_XFADE_S = [0.1, 1.0]
 export const LOOP_RATE = [0.9, 1.1]
 export const LOOP_STEP = 0.05
 
 export class LoopVoice {
-  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rand = Math.random } = {}) {
+  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, rand = Math.random } = {}) {
     this.engine = engine
     this.name = name
     this.rand = rand
     this.gainRange = gain
+    this.rateRange = rate
+    this.drift = drift
     const ctx = engine.ctx
     this.level = ctx.createGain()
     this.level.gain.value = 0
+    this.filter = null
+    if (muffle) {
+      this.filter = ctx.createBiquadFilter()
+      this.filter.type = 'lowpass'
+      this.filter.frequency.value = LP_MAX
+    }
     this.panner = directional ? engine._panner() : null
+    const out = this.filter ?? this.level
+    if (this.filter) this.level.connect(this.filter)
     if (this.panner) {
-      this.level.connect(this.panner)
+      out.connect(this.panner)
       this.panner.connect(engine[bus])
     } else {
-      this.level.connect(engine[bus])
+      out.connect(engine[bus])
     }
-    this.rate = LOOP_RATE[0] + rand() * (LOOP_RATE[1] - LOOP_RATE[0])
+    this.rate = rate[0] + rand() * (rate[1] - rate[0])
     this.cycleGain = gain[0] + rand() * (gain[1] - gain[0])
     this.active = false
     // ctx time the next cycle starts, and how long its fade-in is (the previous cycle's fade-out).
@@ -459,9 +473,16 @@ export class LoopVoice {
     this.engine._place(this.panner, x, y, z, 0.1)
   }
 
-  /** Walk a value by at most LOOP_STEP, held inside [lo, hi]. */
-  static walk(v, lo, hi, rand) {
-    const next = v + (rand() * 2 - 1) * LOOP_STEP
+  /** The low-pass cutoff in Hz, on a muffled loop. */
+  setCutoff(hz, tau = 0.15) {
+    if (!this.filter) throw new Error(`LoopVoice(${this.name}) is not muffled; it has no cutoff`)
+    if (!(hz > 0)) throw new Error(`LoopVoice(${this.name}).setCutoff: got ${hz}`)
+    setParam(this.filter.frequency, hz, this.engine.ctx.currentTime, tau)
+  }
+
+  /** Walk a value by at most `step`, held inside [lo, hi]. */
+  static walk(v, lo, hi, rand, step = LOOP_STEP) {
+    const next = v + (rand() * 2 - 1) * step
     return next < lo ? lo : next > hi ? hi : next
   }
 
@@ -515,7 +536,7 @@ export class LoopVoice {
 
     this.nextAt = start + dur - xfade
     this.nextFadeIn = xfade
-    this.rate = LoopVoice.walk(this.rate, LOOP_RATE[0], LOOP_RATE[1], this.rand)
+    this.rate = LoopVoice.walk(this.rate, this.rateRange[0], this.rateRange[1], this.rand, this.drift)
     this.cycleGain = LoopVoice.walk(this.cycleGain, this.gainRange[0], this.gainRange[1], this.rand)
   }
 }

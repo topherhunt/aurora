@@ -132,7 +132,7 @@ const CARD_NORMAL = /* glsl */ `
 
 /**
  * Lights `points` of a material's mesh from inside: the leafkin huts' windows
- * and the lamps' paper lanterns (§30). Each point is `{ x, y, z, r }` in the
+ * (§30). Each point is `{ x, y, z, r }` in the
  * geometry's OWN frame (the pick's, before the instance matrix), so one list
  * authored on the pick lights every decimated tier, and the fragment shader
  * adds `material.uGlow` times the surface's own colour lifted a third of the way to

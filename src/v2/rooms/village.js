@@ -42,6 +42,7 @@ import { Spline } from '../layers/spline.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { tileSeed } from '../render/critters.js'
 import { HOLE } from '../render/entrances.js'
+import { DOOR } from '../render/room-props.js'
 import { TILE as FISH_TILE, SPECIES as FISH_SPECIES } from '../render/fish.js'
 
 // The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (80 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
@@ -74,16 +75,18 @@ export const LOOP = { over: [2, 4], smooth: 30, level: 15, dry: 1 }
 export const CLEARING = { r: 5, spur: 2, bearing: [50, 120], sweep: 5, wall: 1.5, dry: 1 }
 // The wood (main.js villageBiome): `density` times the forest's candidates a tile (trees.js DENSITY), full cover within `verge` metres of a road's edge and `cover` elsewhere (forest.js BIOME reads cover onto the keep and the height: at 0.6 about 0.7 of the candidates stand, a little shorter), so the roads are lined thicker than the wood between them; the clearing is meadow. The forest's own verge (trees.js ROAD) cannot do this in a village, where the keep is 1 already and it only ever multiplies up to 1.
 export const WOOD = { density: 2, verge: 8, cover: 0.6 }
-// The houses (DESIGN.md §30): `count` round the ring, the great house at its head and the rest packed either side, `gap` metres apart and from the spur and the loop, `height` by their count (a house is half as wide as it is tall: six round this ring, with the spur's wedge, fit only small). Each stands on a pad of two road rings hidden under its floor at its road's height, `pads` of its radius out and `padHalf` of it wide, so the flatten (paths.js smoothRoads, the nearest road alone) levels the whole footprint and the cobble (SWELL) never shows past the walls.
-export const HUTS = { count: [5, 6], height: { 5: [3, 6], 6: [3, 5] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25 }
-export const GREAT_HUT = { height: [6.2, 7.5] }
+// The houses (DESIGN.md §30): `count` round the ring, the great house at its head and the rest packed either side, `gap` metres between their trunks and from the spur and the loop, `height` by their count. A house's box is as wide as it is tall (`r` is its half-width) but its trunk stands only DOOR.wall of that out (`core`): the trunks are packed round the ring and their roots and eaves interleave between them, while the box keeps clear of the wall, the water, the roads and the wood. Each stands on a pad of two road rings hidden under its floor at its road's height, `pads` of its radius out and `padHalf` of it wide, so the flatten (paths.js smoothRoads, the nearest road alone) levels the whole footprint and the cobble (SWELL) never shows past the walls.
+export const HUTS = { count: [5, 6], height: { 5: [3.75, 7.5], 6: [3.75, 6.25] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25 }
+export const GREAT_HUT = { height: [7.75, 9.4] }
 // The outlying houses: `count` of them off the loop, each sited off a rolled point of it on a bearing from the lake, `off` metres out from the loop to its door, along it by that distance times the tangent of `skew` degrees, in the wood or, where the loop's radius leaves a bay dry enough, down on the shore between the loop and the water (`shore` is the odds a house tries the shore first); `gap` metres clear of every road and house, `wall` clear of the stone, a house `tries` sites before the village does without it. Its branch leaves the loop at the nearest point within `window` of the rolled one from which one grade reaches the door crossing no road (roadsCross), its first `apron` metres held at the loop's height, wobbling `wander` of WANDER.amp so it cannot bend back over the loop. Its door faces its branch, and its pad stands at the ground under its centre.
-export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [3, 6.5] }
+// A violin playing inside `share` of the houses, the ring's and the outlying together, heard through the wall (ambience.js RULES.fiddle).
+export const FIDDLE = { share: 0.5 }
+export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [3.75, 8.1] }
 export const ROAD_WIDTH = 1
 // Two roads meet only where one ends on the other, within `JUNCTION_M` of an end: the ground takes the nearest road's height (paths.js smoothRoads), so a crossing at two heights is a broken bridge (roadsCross).
 export const JUNCTION_M = 1
-// The lamps (render/lamps.js): one beside every house door, `door` metres along the wall from it with its foot at the road's edge, and one every `spacing` metres along every road but the pads, `verge` metres off the centreline on alternate sides, the other side where that fails; none within `apart` of another lamp (a house's within `doorApart`: neighbours a HUTS.gap apart put their door lamps nearer than the verge's), in a house, on another road, in the water or within `wall` of the stone -- a place that fails is skipped, not moved.
-export const LAMPS = { spacing: 10, verge: 1, apart: 4, doorApart: 3, door: 1.2, wall: 1.5 }
+// The lamps (render/lamps.js): one every `spacing` metres along every road but the pads, the trunk's first `exit` metres in from the arrival, or the first half metre on from there clear of the wall, so she comes in by a lamp, `verge` metres off the centreline on alternate sides, the other side where that fails; none within `apart` of another lamp, in a house's trunk, on another road, in the water or within `wall` of the stone -- a place that fails is skipped, not moved. None by the doors: the windows light a house, and a post beside them drowned their glow.
+export const LAMPS = { spacing: 10, exit: 1.5, verge: 1, apart: 4, wall: 1.5 }
 // Metres a village road ramps back to the ground over: footpaths in a bowl 60 m across, not the overworld's 8 m shoulders, which would leave no bank between the loop and a river.
 export const ROAD_FEATHER = 4
 // The steepest a drawn road gets: a footpath's pitch. Its chords are held to CHORD_GRADE by cut and fill alike, since the spline between chords steepens by a few degrees over them.
@@ -117,10 +120,13 @@ const TILE_M = WORLD_SIZE / (TEXELS - 1) * TILE_TEXELS
 
 /**
  * What one village is built from, off its seed:
- * `{ seed, attempt, shell, jitter, basin: { bearing, off }, rivers: [{ bearing, swing, wavelength, phase }], loop: { over }, clearing: { side, bearing }, huts: [height], great, outlying: [height] }`,
+ * `{ seed, attempt, shell, jitter, basin: { bearing, off }, rivers: [{ bearing, swing, wavelength, phase }], loop: { over }, clearing: { side, bearing }, huts: [height], great, outlying: [height], mirror: [bool], fiddle: [bool] }`,
  * the basin's bearing in radians from +X and its `off` a fraction of the rim's radius (BASIN),
  * bearings in degrees off the one from the lake to the exit, `great` the
- * index of the great house among the heights. `attempt` above 0 rolls another
+ * index of the great house among the heights, `mirror` whether each house, the
+ * ring's then the outlying, is the pick's mirror image, and `fiddle` whether a
+ * violin plays inside it (FIDDLE.share of the houses, rolled last so the rest
+ * of a seed's village stands as it did). `attempt` above 0 rolls another
  * village under the same shell, for a build the ground refused (buildVillage).
  * `house` is taken for the caller's convenience and not read.
  */
@@ -147,7 +153,13 @@ export function rollVillage(seed, house, attempt = 0) {
   huts[great] = between(GREAT_HUT.height)
   const outlying = []
   for (let i = 0, m = Math.round(between(OUTLYING.count)); i < m; i++) outlying.push(between(OUTLYING.height))
-  return { seed, attempt, shell, jitter, basin, rivers, loop, clearing, huts, great, outlying }
+  const mirror = [...huts, ...outlying].map(() => rng() < 0.5)
+  // A shuffle of the houses, the first FIDDLE.share of them the ones with a fiddler.
+  const order = mirror.map((_, i) => i)
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]] }
+  const fiddle = mirror.map(() => false)
+  for (const i of order.slice(0, Math.round(order.length * FIDDLE.share))) fiddle[i] = true
+  return { seed, attempt, shell, jitter, basin, rivers, loop, clearing, huts, great, outlying, mirror, fiddle }
 }
 
 // --- the ground --------------------------------------------------------------
@@ -568,10 +580,10 @@ function hairpinned(corners, radius) {
 // --- the houses --------------------------------------------------------------
 
 /**
- * The houses round the ring at (cx, cz): `[{ x, z, yaw, height, r }]` for `heights`,
+ * The houses round the ring at (cx, cz): `[{ x, z, yaw, height, r, core }]` for `heights`,
  * each facing the ring's centre with its door on the ring, the house `great` on
  * `headBearing` (degrees) and the rest packed out from it to either side in
- * turn, HUTS.gap between neighbours, each standing where `clearOf(x, z, r)`
+ * turn, HUTS.gap between neighbours' trunks, each standing where `clearOf(x, z, r)`
  * allows; null where they do not all fit round.
  */
 function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
@@ -579,10 +591,11 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
   const stood = heights.map((_, i) => {
     const height = heights[(i + great) % heights.length]
     const r = (Math.min(bounds.halfX, bounds.halfZ) * height) / bounds.height
-    return { height, r, d: R + r + 0.5 }
+    const core = r * DOOR.wall
+    return { height, r, core, d: R + core + 0.5 }
   })
   // The angle between two neighbours' centres.
-  const between = (a, b) => Math.acos(Math.max(-1, Math.min(1, (a.d * a.d + b.d * b.d - (a.r + b.r + HUTS.gap) ** 2) / (2 * a.d * b.d))))
+  const between = (a, b) => Math.acos(Math.max(-1, Math.min(1, (a.d * a.d + b.d * b.d - (a.core + b.core + HUTS.gap) ** 2) / (2 * a.d * b.d))))
   const at = (h, a) => { const b = deg(headBearing) + a; return [cx + Math.cos(b) * h.d, cz + Math.sin(b) * h.d] }
   const clear = (h, a) => clearOf(...at(h, a), h.r)
   if (!clear(stood[0], 0)) return null
@@ -609,7 +622,7 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
   return placed.map(({ h, a }) => {
     const [x, z] = at(h, a), b = deg(headBearing) + a
     // The door is +X in the pick's frame and a rotation of `yaw` about Y sends +X to (cos yaw, -sin yaw); it faces the ring's centre.
-    return { x, z, yaw: Math.atan2(Math.sin(b), -Math.cos(b)), height: h.height, r: h.r }
+    return { x, z, yaw: Math.atan2(Math.sin(b), -Math.cos(b)), height: h.height, r: h.r, core: h.core }
   })
 }
 
@@ -675,7 +688,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     // The great house on a flank: on the far side it would be the one house standing nearest the wall.
     const houses = housesRound(clearing.x, clearing.z, spec.huts, house, cb + 90 * side, spec.great, clearOf)
     if (houses === null) return null
-    const reach = CLEARING.r + 0.5 + 2 * Math.max(...houses.map((h) => h.r))
+    const reach = CLEARING.r + 0.5 + Math.max(...houses.map((h) => h.core + h.r))
     if (houses.some((h) => Math.hypot(h.x, h.z) + h.r + CLEARING.wall > ground.rimAt(Math.atan2(h.z, h.x)) || Math.hypot(h.x - exit.x, h.z - exit.z) < h.r + EXIT.houses)) return null
     return { cb, spurEnd, clearing, spurPlan, houses, reach }
   }
@@ -816,7 +829,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     return true
   }
   for (const height of spec.outlying) {
-    const r = hutR(height)
+    const r = hutR(height), core = r * DOOR.wall
     let put = null
     for (let t = 0; put === null && t < OUTLYING.tries; t++) {
       const k = 1 + Math.floor(rng() * (loop.length - 2))
@@ -826,7 +839,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
       const off = between(OUTLYING.off)
       const radial = Math.atan2(jz - lake.z, jx - lake.x) + (shore ? Math.PI : 0)
       const slant = Math.tan(deg(between(OUTLYING.skew))) * (rng() < 0.5 ? -1 : 1)
-      const d = off + r + 0.5
+      const d = off + core + 0.5
       const cx = jx + (Math.cos(radial) - Math.sin(radial) * slant) * d, cz = jz + (Math.sin(radial) + Math.cos(radial) * slant) * d
       if (!houseClear(cx, cz, r, OUTLYING.gap)) continue
       const padY = heightAt(cx, cz)
@@ -836,13 +849,13 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
           if (j < 1 || j >= loop.length - 1 || Math.abs(j - trunkAt) < 3 || Math.abs(j - spurAt) < 3) continue
           const [jx, jy, jz] = loop[j]
           const reachTo = Math.hypot(cx - jx, cz - jz), ux = (cx - jx) / reachTo, uz = (cz - jz) / reachTo
-          const door = [cx - ux * (r + 0.5), cz - uz * (r + 0.5)]
+          const door = [cx - ux * (core + 0.5), cz - uz * (core + 0.5)]
           const plan = wandering([[jx, jz], door], rng, WANDER.amp * OUTLYING.wander)
           if (plan.some(([x, z]) => riverNear(x, z) < RIVER.clear) || plan.some(([x, z]) => [...houses, ...outlying].some((h) => Math.hypot(h.x - x, h.z - z) < h.r + ROAD_WIDTH / 2 + HUTS.gap))) continue
           const pts = roadThrough(plan, heightAt, { floor: dry, pins: new Map([[0, jy], [plan.length - 1, padY]]), ramp: true, apron: OUTLYING.apron })
           if (pts === null || roadPts.some((o) => roadsCross(pts, o) !== null)) continue
           // The door is +X in the pick's frame and a rotation of `yaw` about Y sends +X to (cos yaw, -sin yaw); it faces down the branch.
-          put = { x: cx, z: cz, yaw: Math.atan2(uz, -ux), height, r, y: padY, pts }
+          put = { x: cx, z: cz, yaw: Math.atan2(uz, -ux), height, r, core, y: padY, pts }
           break
         }
       }
@@ -862,7 +875,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   validate(doc)
   const lamps = placeLamps(doc.roads, all, heightAt, dry, ground)
 
-  const props = all.map((h) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height }))
+  const props = all.map((h, i) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height, mirror: spec.mirror[i], fiddle: spec.fiddle[i] }))
   return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, lamps, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
 }
 
@@ -901,42 +914,38 @@ function segmentsNear(pts, x, z) {
   return best
 }
 
-/** Where the lamps stand (LAMPS): `[{ x, z }]`, the house lamps first. */
+/** Where the lamps stand (LAMPS): `[{ x, z }]`. */
 function placeLamps(roads, houses, heightAt, dry, ground) {
+  if (roads[0].id !== 'd1') throw new Error('placeLamps: the trunk is the first road')
   const lines = roads.filter((r) => !r.id.startsWith('pad-')).map((r) => r.pts.map(([x, , z]) => [x, z]))
   const lamps = []
-  // `edge` is how far past the road's edge a lamp must stand and `wall` how far off a house: a house lamp hugs its wall with its foot on the cobbles' edge (the ring runs along the doors), a verge lamp stands a step off both.
-  const clear = (x, z, edge, wall, apart) =>
+  // `edge` is how far past the road's edge a lamp must stand and `wall` how far off a house's trunk (among its roots, under its eaves).
+  const clear = (x, z, edge, wall) =>
     heightAt(x, z) >= dry &&
     lines.every((pts) => segmentsNear(pts, x, z) >= ROAD_WIDTH / 2 + edge) &&
-    houses.every((h) => Math.hypot(x - h.x, z - h.z) > h.r + wall) &&
+    houses.every((h) => Math.hypot(x - h.x, z - h.z) > h.core + wall) &&
     Math.hypot(x, z) < ground.rimAt(Math.atan2(z, x)) - LAMPS.wall &&
-    lamps.every((l) => Math.hypot(x - l.x, z - l.z) >= apart)
-  for (const h of houses) {
-    // The door is +X in the pick's frame and a rotation of `yaw` about Y sends +X to (cos yaw, -sin yaw) (room-props.js DOOR).
-    const dx = Math.cos(h.yaw), dz = -Math.sin(h.yaw)
-    const doorX = h.x + dx * (h.r + 0.5), doorZ = h.z + dz * (h.r + 0.5)
-    for (const side of [1, -1]) {
-      const x = doorX - dx * 0.25 - dz * side * LAMPS.door, z = doorZ - dz * 0.25 + dx * side * LAMPS.door
-      if (!clear(x, z, -0.25, 0.15, LAMPS.doorApart)) continue
-      lamps.push({ x, z })
-      break
-    }
-  }
+    lamps.every((l) => Math.hypot(x - l.x, z - l.z) >= LAMPS.apart)
   for (const pts of lines) {
-    let along = 0, next = LAMPS.spacing / 2, side = 1
+    // The trunk's first lamp stands LAMPS.exit along it from the arrival, or at the first half metre on from there that stands clear of the stone (the arrival is in the mouth, in the wall's own thickness): she comes in by a lamp.
+    const trunk = pts === lines[0]
+    let along = 0, next = trunk ? LAMPS.exit : LAMPS.spacing / 2, side = 1, lit = !trunk
     for (let i = 1; i < pts.length; i++) {
       const [ax, az] = pts[i - 1], [bx, bz] = pts[i]
       const len = Math.hypot(bx - ax, bz - az)
       while (next <= along + len) {
         const t = (next - along) / len, ux = (bx - ax) / len, uz = (bz - az) / len
+        let placed = false
         for (const s of [side, -side]) {
           const x = ax + (bx - ax) * t - uz * s * LAMPS.verge, z = az + (bz - az) * t + ux * s * LAMPS.verge
           // A step out from its own road's edge, less what a bend's chord takes off the offset.
-          if (!clear(x, z, LAMPS.verge - ROAD_WIDTH / 2 - 0.3, 0.4, LAMPS.apart)) continue
+          if (!clear(x, z, LAMPS.verge - ROAD_WIDTH / 2 - 0.3, 0.4)) continue
           lamps.push({ x, z })
+          placed = true
           break
         }
+        if (!lit && !placed) { next += 0.5; continue }
+        lit = true
         next += LAMPS.spacing
         side = -side
       }

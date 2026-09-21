@@ -61,7 +61,10 @@ export const FIRE = {
   coreColor: [1.0, 0.85, 0.45],
 }
 
-// The three flicker groups: each a slow and a fast sine about a mean, on the seconds clock. lamps.js carries its own copy of these numbers for the lamp map; the two merge when the shader lands there.
+// A campfire's knobs (locked on /test-fire, 2026-09-21): twice the lamp's height and four times its half-width, slower and less stretched, tongues cut hard off the tip and a little lean.
+export const CAMPFIRE = { ...FIRE, height: 0.78, radius: 0.46, width: 0.73, speed: 0.9, stretch: 0.5, turb: 0.28, cut: 1.0, sway: 0.1, edge: 0.5, core: 0.71, gain: 1.4, sheets: 1 }
+
+// The three flicker groups: each a slow and a fast sine about a mean, on the seconds clock. lamps.js flickers the lamp map's channels by the same numbers, so a flame and its pool of light breathe together.
 export const FLICKER = { mean: 0.84, slow: 0.16, slowHz: 11.3, fast: 0.09, fastHz: 24.7 }
 
 export const flicker = (t, phase) => FLICKER.mean + FLICKER.slow * Math.sin(t * FLICKER.slowHz + phase) + FLICKER.fast * Math.sin(t * FLICKER.fastHz + phase * 2.3)

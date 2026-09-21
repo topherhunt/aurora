@@ -18,7 +18,8 @@
 // at night in dense wood, crickets on their 1.5-3 s beat, footsteps on theirs
 // and after a teleport, the brook loop on only by the river, the wind only over
 // the snow, high off the ground or under an overcast, the rain loop by precip, a dragon's wingbeats and treads on their
-// clips' cycles and its roars and growls on theirs, and nothing at all above the surface
+// clips' cycles and its roars and growls on theirs, a fiddle through a house's wall
+// louder and clearer as she nears it, and nothing at all above the surface
 // while she is under it.
 //
 // What this can NOT check: what any of it sounds like. That needs ears, in the
@@ -80,7 +81,8 @@ function fakeCtx() {
       return node({ positionX: fakeParam('x', []), positionY: fakeParam('y', []), positionZ: fakeParam('z', []) })
     },
     createBiquadFilter() {
-      return node({ type: null, frequency: fakeParam('frequency', []), Q: fakeParam('Q', []) })
+      const log = []
+      return node({ type: null, log, frequency: fakeParam('frequency', log), Q: fakeParam('Q', log) })
     },
     createConvolver() {
       const c = node({ buffer: null, normalize: true })
@@ -184,6 +186,26 @@ console.log('loop voice')
     if (!within(v, LOOP_RATE[0], LOOP_RATE[1])) { clampedHi = clampedLo = false; break }
   }
   check(clampedHi && clampedLo, 'the walk reaches both band edges and never leaves the band')
+}
+
+{
+  // A muffled loop holding its pitch: the low-pass sits between the level and the panner, setCutoff drives it, and a [1, 1] rate with no drift never leaves 1.
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  engine.buffers.set('fiddle', { duration: 4.0 })
+  const voice = engine.loop('fiddle', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: [0.9, 1.0], rand: mulberry32(3) })
+  check(voice.level.outs[0] === voice.filter && voice.filter.type === 'lowpass' && voice.filter.outs[0] === voice.panner, 'level -> low-pass -> panner')
+  voice.setCutoff(1200)
+  check(voice.filter.log.at(-1).v === 1200, 'setCutoff sets the low-pass')
+  let threw = 0
+  try { voice.setCutoff(0) } catch { threw++ }
+  try { engine.loop('brook', { rand: mulberry32(1) }).setCutoff(1000) } catch { threw++ }
+  check(threw === 2, 'a cutoff of 0, or on a loop with no filter, throws')
+  voice.start()
+  const before = ctx.sources.length
+  for (let i = 0; i < 60 * 30; i++) { ctx.currentTime = i / 60; engine.update() }
+  const rates = ctx.sources.slice(before).map((s) => s.playbackRate.value)
+  check(rates.length >= 6 && rates.every((r) => r === 1), 'every cycle plays at rate 1', `${rates.length} cycles, ${new Set(rates).size} rate(s)`)
 }
 
 // --- the engine's buses ------------------------------------------------------
@@ -363,10 +385,11 @@ function fakeEngine() {
     loop(name, opts) {
       const v = { name, opts, active: false, level: null, at: null, starts: 0, stops: 0,
         start() { v.active = true; v.starts++ }, stop() { v.active = false; v.stops++ },
-        setLevel(l) { v.level = l }, setPosition(x, y, z) { v.at = { x, y, z } } }
+        setLevel(l) { v.level = l }, setPosition(x, y, z) { v.at = { x, y, z } }, setCutoff(hz) { v.cutoff = hz } }
       loops[name] = v
       return v
     },
+    unloop(v) { v.stop() },
     setSubmerged(w) { this.wet = w },
     duration(name) { return { growl: 3.84 }[name] ?? 1 },
     update() {},
@@ -1167,6 +1190,40 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(engine.wet === false && !engine.loops.underwater.active, 'surfacing: buses back, underwater loop stopped')
   check(engine.plays.length > 40, 'the world comes back the moment she surfaces', `${engine.plays.length} plays in 30 s`)
   check(engine.loops.underwater.starts === 1 && engine.loops.underwater.stops === 1, 'the underwater loop started and stopped once')
+}
+{
+  // A fiddle inside a house: its own muffled loop, off out of reach, quiet and dull at the edge, loud and clearer at the wall, never clear.
+  const F = RULES.fiddle
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  const homes = [{ x: 0, y: GROUND, z: 0, r: 2 }, { x: 100, y: GROUND, z: 0, r: 2 }]
+  const amb = new Ambience({ engine, sense, rand: mulberry32(15), fiddlers: homes })
+  // The fake keys its loops by clip name, so the two are read off the ambience's own keys.
+  const a = amb.loops.fiddle0, b = amb.loops.fiddle1
+  check(a && b && a.name === 'fiddle' && a.opts.muffle === true && a.opts.directional === true && a.opts.rate[0] === 1 && a.opts.rate[1] === 1 && a.opts.drift === 0, 'a loop a house, muffled, placed, its pitch held')
+  const at = (d) => ({ x: homes[0].r + d, y: GROUND + F.ear, z: 0 })
+  run(amb, 1, { head: at(F.reach + 5) })
+  check(!a.active && !b.active, 'nothing out of reach of either house')
+  run(amb, 1, { head: at(F.reach - 0.5) })
+  const edgeLevel = a.level, edgeCut = a.cutoff
+  check(a.active && !b.active && edgeLevel > 0 && edgeLevel < 0.05 * F.level, 'inside the reach of one house its fiddle is on, near nothing', `level ${edgeLevel?.toFixed(4)}`)
+  check(edgeCut > F.cutoff[0] && edgeCut < F.cutoff[0] + 0.1 * (F.cutoff[1] - F.cutoff[0]), 'and dull, its cutoff by the far end', `${edgeCut?.toFixed(0)} Hz`)
+  run(amb, 1, { head: at(F.reach / 2) })
+  const midLevel = a.level, midCut = a.cutoff
+  check(midLevel > edgeLevel && midCut > edgeCut, 'halfway in it is louder and clearer', `level ${midLevel?.toFixed(3)}, ${midCut?.toFixed(0)} Hz`)
+  run(amb, 1, { head: at(0.5) })
+  check(a.level > midLevel && Math.abs(a.level - F.level) < 1e-9 && a.cutoff > midCut && a.cutoff < F.cutoff[1], 'at the wall it is at full level and its clearest, still under the wall\'s cutoff', `level ${a.level?.toFixed(3)}, ${a.cutoff?.toFixed(0)} Hz`)
+  check(a.at.x === 0 && a.at.y === GROUND + F.ear && a.at.z === 0, 'placed inside the house at the fiddler\'s height')
+  run(amb, 1, { head: { x: 100 + homes[1].r + 1, y: GROUND + F.ear, z: 0 } })
+  check(!a.active && a.stops === 1 && b.active && Math.abs(b.level - F.level) < 1e-9, 'walking to the other house stops the first and starts the second')
+  amb.dispose()
+  check(!b.active, 'dispose stops it with the rest')
+  const bare = new Ambience({ engine: fakeEngine(), sense, rand: mulberry32(15) })
+  run(bare, 1, { head: at(0.5) })
+  check(bare.fiddlers.length === 0 && !('fiddle0' in bare.loops), 'no fiddlers, no loops')
+  let threw = 0
+  try { new Ambience({ engine: fakeEngine(), sense, fiddlers: [{ x: 0, y: 0, z: 0, r: 0 }] }) } catch { threw++ }
+  check(threw === 1, 'a fiddler with no radius throws')
 }
 {
   // Bad input throws.

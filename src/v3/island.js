@@ -5,7 +5,7 @@ import { smoothstep } from '../sim/mathx.js'
 // The island's field -- §31 steps A and B. Two terms, added:
 //
 //   1. THE CONE. A circular cone standing in a sea that keeps falling, its coast pushed in and out by a warp of the position and a per-angle coast radius so the shore has bays and headlands at three sizes. Height is a function of `r / R(theta)`, so ground that reaches further out reaches further out at height and a peninsula carries a ridge on its own.
-//   2. THE JITTER. `count` octaves of value noise from `start` metres down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to `jitter` of the spacing, and the ground between nodes interpolated. Each octave refines the one before it; the finest is the 8 m texel. The same everywhere inland, eased down over the last `shore.band` of the radius so the coast is not cut into islets.
+//   2. THE JITTER. One octave of value noise per entry of `amps`, from `start` metres between nodes down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to that octave's amp, and the ground between nodes interpolated. Each octave refines the one before it; the finest is the 8 m texel. The same everywhere inland, eased down over the last `shore.band` of the radius so the coast is not cut into islets.
 //
 // Nothing else. Three-free and DOM-free: the gate and the PNG script run this in node.
 // ---------------------------------------------------------------------------
@@ -30,9 +30,8 @@ export const MACRO = {
 }
 
 export const JITTER = {
-  start: 512,             // metres between nodes in the first octave; the last is start / 2^(count-1)
-  count: 7,               // 512, 256, 128, 64, 32, 16, 8
-  jitter: 0.25,           // a node moves up or down by up to this fraction of its octave's spacing
+  start: 512,             // metres between nodes in the first octave, halving each octave: 512, 256, 128, 64, 32, 16, 8
+  amps: [128, 64, 32, 16, 8, 4, 2], // metres a node moves up or down by, at most, per octave; a quarter of the spacing each
   interp: 'smooth',       // 'smooth' (a smoothstep between nodes) or 'linear' (a straight lerp, which shows the lattice as creases)
   rotate: true,           // turn each octave's lattice by the golden angle so no two share axes
   // The jitter is full inland and eases over the last `band` of the radius to `floor` of itself at the waterline, holding there over the sea. Full jitter at the shore is +-128 m on a 54 m apron: islets. 0.3 cuts the apron into coves and leaves it a coast.
@@ -71,9 +70,10 @@ export class Island {
     this.coastHigh = new Noise(seed * 7 + 103)
     // Each octave's lattice rotation, precomputed.
     this.octaves = []
-    for (let k = 0; k < jitter.count; k++) {
+    for (let k = 0; k < jitter.amps.length; k++) {
       const a = jitter.rotate ? k * GOLDEN : 0
-      this.octaves.push({ spacing: jitter.start / 2 ** k, cos: Math.cos(a), sin: Math.sin(a), salt: this.seed * 31 + 7 * k + 1 })
+      if (!Number.isFinite(jitter.amps[k])) throw new Error(`Island: jitter amp ${k} is ${jitter.amps[k]}`)
+      this.octaves.push({ spacing: jitter.start / 2 ** k, amp: jitter.amps[k], cos: Math.cos(a), sin: Math.sin(a), salt: this.seed * 31 + 7 * k + 1 })
     }
   }
 
@@ -141,7 +141,7 @@ export class Island {
   jitterAt(x, z, f) {
     const j = this.jitter
     const smooth = j.interp === 'smooth'
-    const scale = j.jitter * (1 - (1 - j.shore.floor) * smoothstep(1 - j.shore.band, 1, f.d))
+    const scale = 1 - (1 - j.shore.floor) * smoothstep(1 - j.shore.band, 1, f.d)
     let sum = 0
     for (const o of this.octaves) {
       // Lattice coordinates: the position turned by the octave's angle, in node spacings.
@@ -161,7 +161,7 @@ export class Island {
       const d = nodeAt(ix + 1, iz + 1, o.salt)
       const top = a + (b - a) * tx
       const bottom = c + (d - c) * tx
-      sum += (top + (bottom - top) * tz) * o.spacing
+      sum += (top + (bottom - top) * tz) * o.amp
     }
     return scale * sum
   }

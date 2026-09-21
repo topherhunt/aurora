@@ -27,7 +27,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [ ] Fireflies at night.
-- [ ] Forests have little grubby leafkin elf-men who run around grunting and squeaking and collecting mushrooms. And if they see you, they squeal, drop their mushrooms, and run back to the cave-entrance they came from. The cave-entrances should be easy to miss, but if you find one, you can go in and discover a massive inside-rock world, replete with terraced earth, paths, streams / waterfalls / pools of water, and shabby leafkin huts. 
+- [ ] Leafkin
   - [x] Meaning, we need an inventory system.
   - [x] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
   - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.

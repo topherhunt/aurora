@@ -7,6 +7,7 @@
 import { generate, MIN_Y, MAX_Y, TEXELS } from '../src/v3/generate.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { LAKES, RIVERS } from '../src/v3/hydrology.js'
+import { EROSION } from '../src/v3/erosion.js'
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
@@ -53,11 +54,13 @@ export async function run() {
 
   console.log('\n[v3] the water')
   const hs = s.hydrology
-  check(hs.breach.refused === 0 && hs.breach.channels > 1000, `${hs.breach.channels} outlet channels cut in ${hs.breach.passes} passes over ${hs.breach.rounds} rounds, none refused, deepest ${hs.breach.deepestCut.toFixed(0)} m`)
-  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep && hs.breach.dropped <= LAKES.keep / 2, `${hs.lakes.count} lakes kept of ${hs.lakes.candidates} bowls, ${hs.breach.dropped} given up`)
+  const er = hs.erosion
+  check(er.toSea > er.droplets * 0.8 && er.offEdge === 0 && er.spent < er.droplets * 0.05, `${er.droplets} droplets, ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps, none left the box`)
+  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= EROSION.maxCut && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.2, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${EROSION.maxCut} m`)
+  check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
+  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep, `${hs.lakes.count} lakes kept of ${hs.lakes.candidates} bowls the rain left`)
   check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
   check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)
-  check(hs.carve.deepest > 0.5 && hs.carve.deepest < 20 && hs.carve.meanCut > 1, `the carve cut ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, ${hs.carve.deepest.toFixed(1)} m the deepest single pass`)
   check(hs.rivers.count >= 20 && hs.rivers.km > 10 && hs.rivers.km / s.landKm2 > 1 && hs.rivers.km / s.landKm2 < 6, `${hs.rivers.count} rivers, ${hs.rivers.km.toFixed(1)} km on ${s.landKm2.toFixed(1)} km2 of land, longest ${hs.rivers.longestKm.toFixed(1)} km`)
   check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
   // Every river's ground never climbs from source to mouth on the field itself (a source in a lake sits under its own outlet, so that first step is free), its widths are inside the ladder, and its mouth is in the sea, in a lake or on another river.

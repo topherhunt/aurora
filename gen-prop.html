@@ -125,6 +125,7 @@
       table.data th { text-align: left; color: var(--dim); font-weight: normal; padding: 2px 10px 4px 0; border-bottom: 1px solid #1b2c44; }
       table.data td { padding: 3px 10px 3px 0; border-bottom: 1px solid #101c2e; }
       table.data td button { padding: 0 5px; }
+      #glowTable input { width: 66px; padding: 1px 3px; }
 
       #budget { flex: 0 0 320px; overflow-y: auto; padding: 8px 10px; border-left: 1px solid var(--edge); background: var(--panel); }
       .note { color: var(--dim); margin: 6px 0 0; font-size: 11px; }
@@ -255,6 +256,17 @@
         <button id="genCards" class="wide local" disabled style="margin-top:4px">bake card cross (4 tris, free)</button>
         <button id="saveLod" class="wide local" disabled style="margin-top:4px">save tiers to disk</button>
         <button id="reveal" class="wide" disabled style="margin-top:8px">reveal work dir in Finder</button>
+
+        <h2>5. glow points</h2>
+        <div class="step">Panes lit from inside the mesh (src/v2/render/gen-props.js addGlow). Click the mesh in the preview to add a point where the ray lands; edit its place or its radius here, or drop it with &times;. The list is the pick's frame, feet at y 0, and lights every tier. The house's shipping list (room-props.js WINDOWS) loads with it, and the preview burns at the night's colour.</div>
+        <div class="field check">
+          <label><input type="checkbox" id="glowDusk" /> dusk: dim the bench's lights to judge the glow</label>
+        </div>
+        <table class="data" id="glowTable"></table>
+        <div class="field">
+          <label>the list, for WINDOWS</label>
+          <textarea id="glowOut" class="short" readonly></textarea>
+        </div>
       </div>
     </div>
 
@@ -281,10 +293,9 @@
             <label><input type="checkbox" id="rotateLight" /> rotate light</label>
             <label>file <select id="fileSelect"></select></label>
             <button id="refit" title="re-centre the camera on the current model">refit</button>
-            <span class="label">drag orbits the camera, or swings the sun with rotate light on; wheel zooms, right-drag pans. Click the mesh to read a glow point off it, for a window or a lantern's paper (room-props.js WINDOWS).</span>
+            <span class="label">drag orbits the camera, or swings the sun with rotate light on; wheel zooms, right-drag pans. Click the mesh to add a glow point where the ray lands (5).</span>
           </div>
           <div id="meshStats" class="label"></div>
-          <div id="glowPick" class="label"></div>
           <div id="meshAnalysis" class="label"></div>
         </div>
         <div id="texRow">

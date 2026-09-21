@@ -14,6 +14,7 @@
 
 import * as THREE from 'three'
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 
 import { SEED } from '../src/v2/config.js'
 import { V2Height } from '../src/v2/height/field.js'
@@ -24,16 +25,16 @@ import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
 import { SOUNDS } from '../src/v2/audio/ambience.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
-import { Lamps } from '../src/v2/render/lamps.js'
+import { LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import {
-  Villagers, CALM_M, CLIPS, EXTRA, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
+  Villagers, CALM_M, CLIPS, EXTRA, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
-import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -52,7 +53,8 @@ const room = buildVillage({ spec, shell, house: houseBank.bounds })
 const layers = Layers.deserialize(validate(room.doc))
 const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
 const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
-const lamps = new Lamps(new THREE.Scene(), field, { lamps: room.lamps, seed: 1, patch: (m) => m })
+const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
+const lamps = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps: room.lamps, seed: 1, patch: (m) => m })
 const walk = new WalkSurface(field, shell, { trunkAt: () => null })
 walk.addStone(roomProps)
 walk.addStone(lamps)
@@ -188,7 +190,7 @@ console.log('\na day with her far off')
       const allowed = atSpot ? GAZE_OFF_M + 0.4 : 0.8
       if (near > allowed) { strayed++; worst = Math.max(worst, near) }
       if (v.seat(c.x, c.z) === null) unseat++
-      if (c.state === 'walk' && (c.clip !== 'walk' || !(c.speed > 0))) badClip++
+      if (c.state === 'walk' && (c.clip !== (c.runner ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
       if ((c.state === 'stand' || c.state === 'gaze') && (c.clip !== 'idle' || c.speed !== 0)) badClip++
       if (c.state === 'talk' && (!CLIPS.includes(c.clip) || c.speed !== 0)) badClip++
       if (c.state === 'talk' && c.clip !== 'idle') gestures++
@@ -205,7 +207,9 @@ console.log('\na day with her far off')
   check(strayed === 0, 'nobody steps off the cobbles but for a gazing spot, and every door is crossed at its own house', `${strayed} strayed, worst ${worst.toFixed(2)} m`)
   check(unseat === 0, 'every step is on dry ground clear of the trunks')
   check(entries >= 2 && exits >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits`)
-  check(badClip === 0, 'a walker walks, a stander idles, a talker gestures or idles, none of them moving')
+  check(badClip === 0, 'a walker walks at its pace, a runner runs, a stander idles, a talker gestures or idles, none of them moving')
+  const paces = new Set(v.all.map((c) => c.pace)), runners = v.all.filter((c) => c.runner).length
+  check(paces.size === v.all.length && v.all.every((c) => c.pace >= PACE[0] && c.pace <= PACE[1]) && runners >= 1 && runners < v.all.length, 'every villager has its own pace and some, not all, run their errands', `paces ${[...paces].map((p) => p.toFixed(2)).join(' ')}, ${runners} runners`)
   check(gazeOff === 0, 'a gazer faces the lake')
   check(meetings > 0 && apart === 0, 'a talk is two, within reach of each other, each the other\'s partner', `${meetings} talk frames`)
   check(talkers.size >= 2 && [...talkers.values()].every((n) => n >= 2), 'both of a pair chatter, more than once', `${[...talkers.values()].join('/')} calls by ${talkers.size} talkers`)

@@ -1,7 +1,7 @@
 import { WORLD_SIZE } from '../v2/config.js'
 import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
-import { Island, JITTER, rasterise } from './island.js'
+import { Island, MACRO, JITTER, rasterise } from './island.js'
 import { buildBiomes, serialise } from './biomes.js'
 import { runHydrology } from './hydrology.js'
 
@@ -11,7 +11,7 @@ import { runHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'd1'
+export const VERSION = 'd3'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
@@ -23,19 +23,20 @@ export const MAX_Y = 1000
 export const BLUR_RADII = [32, 128, 512, 2048]
 
 /**
- * `generate({ seed, n = TEXELS, log, jitter })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, ms }
+ * `generate({ seed, n = TEXELS, log, jitter, tune })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, tune, ms }
  *
- * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment; the cache never sees an overridden field.
+ * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment from the PNG script; the cache never sees an overridden field. `tune` is the map page's amplitudes, `{ warp: metres per warp octave, jitter: metres per jitter octave }`, either or both; what was used comes back as `tune`, and a tuned island IS cached, since the map page is where the numbers are chosen and /terrain-v3 is where they are judged.
  *
  * The biomes are classed on the raw field and the carve reads its knobs from them; they are not reclassed afterwards, since the carve moves a few percent of the land by tens of metres and the classes are quantiles of the whole.
  */
-export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
+export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune = null }) {
   if (!Number.isInteger(seed)) throw new Error(`generate: seed must be an integer, got ${seed}`)
   if (!Number.isInteger(n) || n < 3) throw new Error(`generate: n must be an integer >= 3, got ${n}`)
   const cell = WORLD_SIZE / (n - 1)
   const t0 = now()
 
-  const island = new Island(seed, undefined, jitter ? { ...JITTER, ...jitter } : JITTER)
+  const { macro, jitter: jit } = tuned(tune, jitter)
+  const island = new Island(seed, macro, jit)
   const raw = rasterise(island, n, cell)
   const tMacro = now()
   log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
@@ -44,11 +45,12 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
   const tBiomes = now()
   log(`biomes         ${ms(tBiomes - tMacro)}  ${biomes.stats.polygons} polygons, ${biomes.stats.vertices} vertices, rebuilt grid agrees ${(biomes.stats.agree * 100).toFixed(2)}%`)
 
-  const hydro = runHydrology(raw, n, cell, biomes.grid)
+  const hydro = runHydrology(raw, n, cell, biomes.grid, seed)
   const height = hydro.height
   const tHydro = now()
   const hs = hydro.stats
-  log(`hydrology      ${ms(tHydro - tBiomes)}  ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2, ${hs.breach.dropped} cut away in ${hs.breach.rounds} rounds), ${hs.breach.channels} channels in ${hs.breach.passes} passes (deepest ${hs.breach.deepestCut.toFixed(0)} m), carved ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
+  const er = hs.erosion
+  log(`hydrology      ${ms(tHydro - tBiomes)}  ${er.droplets} droplets in ${ms(er.ms)}, ${er.meanSteps.toFixed(0)} steps each, ${((er.toSea / er.droplets) * 100).toFixed(0)}% to the sea; cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * cell * cell) / 1e6).toFixed(2)} km2 (deepest ${er.deepest.toFixed(0)} m), laid ${er.fillMean.toFixed(1)} m over ${((er.fillCells * cell * cell) / 1e6).toFixed(2)} km2; silted ${hs.silt.km2.toFixed(2)} km2 ${hs.silt.mean.toFixed(1)} m mean; ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2), ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
 
   const stats = measure(height, n, cell, island)
   // The bowls are the raw field's: what the hydrology had to choose its lakes from and drain.
@@ -69,7 +71,22 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null }) {
 
   const meta = { world: WORLD_SIZE, size: n, minY: MIN_Y, maxY: MAX_Y, encoding: 'rg16', exaggeration: 1, v3: VERSION, seed }
   // `biomes` is the drawn truth (polygons in world metres), `ground` the class grid rebuilt from it, which is what the mesher tints from.
-  return { v: VERSION, seed, n, cell, height, meta, doc, biomes: serialise(biomes.polygons), ground: biomes.grid, stats, ms: now() - t0 }
+  return { v: VERSION, seed, n, cell, height, meta, doc, biomes: serialise(biomes.polygons), ground: biomes.grid, stats, tune: { warp: macro.warp.map(([, a]) => a), jitter: jit.amps.slice() }, ms: now() - t0 }
+}
+
+/** MACRO and JITTER with the tune's amplitudes in place of theirs, and the script's key overrides on top. An amplitude list must be the octaves' own length: a shorter one would silently drop octaves. */
+export function tuned(tune, jitter) {
+  let macro = MACRO
+  let jit = jitter ? { ...JITTER, ...jitter } : JITTER
+  if (tune && tune.warp) {
+    if (tune.warp.length !== MACRO.warp.length || !tune.warp.every(Number.isFinite)) throw new Error(`generate: tune.warp must be ${MACRO.warp.length} finite amplitudes, got ${JSON.stringify(tune.warp)}`)
+    macro = { ...MACRO, warp: MACRO.warp.map(([lambda], i) => [lambda, tune.warp[i]]) }
+  }
+  if (tune && tune.jitter) {
+    if (tune.jitter.length !== JITTER.amps.length || !tune.jitter.every(Number.isFinite)) throw new Error(`generate: tune.jitter must be ${JITTER.amps.length} finite amplitudes, got ${JSON.stringify(tune.jitter)}`)
+    jit = { ...jit, amps: tune.jitter.slice() }
+  }
+  return { macro, jitter: jit }
 }
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())

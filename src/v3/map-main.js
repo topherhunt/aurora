@@ -2,7 +2,7 @@ import { WORLD_SIZE, SEED } from '../v2/config.js'
 import { clamp } from '../sim/mathx.js'
 import { LAYERS, derive, paintInto } from './paint.js'
 import { load, optionsFromUrl } from './store.js'
-import { MACRO } from './island.js'
+import { MACRO, JITTER } from './island.js'
 import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
@@ -121,10 +121,12 @@ function showStats() {
   const bowls = s.bowls.bodies.map((b) => `${String(Math.round(b.x)).padStart(6)},${String(Math.round(b.z)).padStart(6)}  ${b.km2.toFixed(3)} km2  ${b.deepest.toFixed(0).padStart(3)} m deep at ${b.level.toFixed(0)} m`).join('\n')
   const biomes = BIOMES.map((b, k) => `${b.id.padEnd(8)}${(s.biomes.landShare[k] * 100).toFixed(1).padStart(6)}%`).join('\n')
   const hs = s.hydrology
+  const er = hs.erosion
   const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m  leak ${(l.leakKm2 * 100).toFixed(1)} ha`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
 ${(WORLD_SIZE / 1000).toFixed(2)} km across   ${R.ms.toFixed(0)} ms
 elevation ${s.min.toFixed(0)} .. ${s.max.toFixed(0)} m
+warp ${R.tune.warp.join(' / ')} m   jitter ${R.tune.jitter.join(' / ')} m
 
 <h2>steps A + B -- shape and octaves</h2>land      ${(s.landFraction * 100).toFixed(1)}%  (${s.landKm2.toFixed(1)} km2)
 summit    ${s.summit.h.toFixed(0)} m, ${s.summit.offset.toFixed(0)} m off centre
@@ -138,11 +140,13 @@ snow line ${R.doc.snow.base.toFixed(0)} m
 
 <h2>step C -- biomes (${s.biomes.polygons} polygons, ${s.biomes.vertices} vertices, ${(s.biomes.agree * 100).toFixed(1)}% agree)</h2>${biomes}
 
-<h2>step D -- hydrology</h2>breach    ${hs.breach.channels} channels in ${hs.breach.passes} passes over ${hs.breach.rounds} rounds, deepest cut ${hs.breach.deepestCut.toFixed(0)} m, ${hs.breach.refused} refused
-carve     ${hs.carve.meanCut.toFixed(1)} m mean over ${hs.carve.cutKm2.toFixed(2)} km2, deepest pass ${hs.carve.deepest.toFixed(1)} m
+<h2>step D -- hydrology</h2>rain      ${er.droplets} droplets in ${(er.ms / 1000).toFixed(1)} s, ${er.meanSteps.toFixed(0)} cells each; ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps
+cut       ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * R.cell * R.cell) / 1e6).toFixed(2)} km2, deepest ${er.deepest.toFixed(0)} m, ${er.deepestStep.toFixed(2)} m the deepest single step
+laid      ${er.fillMean.toFixed(1)} m mean over ${((er.fillCells * R.cell * R.cell) / 1e6).toFixed(2)} km2, highest ${er.highest.toFixed(0)} m
+silt      ${hs.silt.km2.toFixed(2)} km2 of bowl raised to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m deepest
 rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
 
-<h2>lakes (${hs.lakes.count} of ${hs.lakes.candidates} bowls, ${hs.breach.dropped} given up, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
+<h2>lakes (${hs.lakes.count} of ${hs.lakes.candidates} bowls left after the rain, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
 }
 
 function showHover() {
@@ -168,13 +172,15 @@ function showHover() {
 
 async function run() {
   const seed = Number(elSeed.value) | 0
+  const tune = readTune()
   elRun.disabled = true
   elLog.textContent = ''
   elStats.textContent = 'generating...'
-  history.replaceState(null, '', `?seed=${seed}`)
+  history.replaceState(null, '', `?seed=${seed}&warp=${tune.warp.join(',')}&jitter=${tune.jitter.join(',')}`)
   try {
-    const { result } = await load({ seed, regen: true, log: (line) => { elLog.textContent += `${line}\n` } })
+    const { result } = await load({ seed, regen: true, tune, log: (line) => { elLog.textContent += `${line}\n` } })
     R = derive(result)
+    writeTune(R.tune)
     fit()
     buildLayer()
     showStats()
@@ -270,10 +276,40 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') run()
 })
 
+// The shape fields: one per warp octave (labelled by wavelength) and one per jitter octave (by node spacing), metres of amplitude. Blank or unparseable is refused at generate, not silently defaulted.
+const DEFAULT_TUNE = { warp: MACRO.warp.map(([, a]) => a), jitter: JITTER.amps.slice() }
+function field(parent, id, label, value) {
+  const row = document.createElement('div')
+  row.className = 'row'
+  row.innerHTML = `<label for="${id}">${label}</label><input id="${id}" type="number" step="1" value="${value}" />`
+  row.querySelector('input').addEventListener('keydown', (e) => { if (e.key === 'Enter') run() })
+  parent.appendChild(row)
+}
+MACRO.warp.forEach(([lambda, amp], i) => field(document.getElementById('warp'), `warp${i}`, `warp ${lambda}`, amp))
+JITTER.amps.forEach((amp, k) => field(document.getElementById('jitter'), `jitter${k}`, `jit ${JITTER.start / 2 ** k}`, amp))
+
+function readTune() {
+  const read = (id) => {
+    const v = Number(document.getElementById(id).value)
+    if (!Number.isFinite(v)) throw new Error(`${id} is not a number`)
+    return v
+  }
+  return { warp: MACRO.warp.map((_, i) => read(`warp${i}`)), jitter: JITTER.amps.map((_, k) => read(`jitter${k}`)) }
+}
+function writeTune(tune) {
+  tune.warp.forEach((a, i) => { document.getElementById(`warp${i}`).value = a })
+  tune.jitter.forEach((a, k) => { document.getElementById(`jitter${k}`).value = a })
+}
+document.getElementById('reset').addEventListener('click', () => writeTune(DEFAULT_TUNE))
+
 elRun.addEventListener('click', run)
 elSeed.addEventListener('keydown', (e) => { if (e.key === 'Enter') run() })
 
 const opts = optionsFromUrl(SEED)
 elSeed.value = opts.seed
+// `?warp=150,45,15&jitter=128,...` restores the fields a reload would lose; the URL is rewritten with them on every generate.
+const q = new URLSearchParams(location.search)
+const fromQuery = (key, fallback) => (q.has(key) ? q.get(key).split(',').map(Number) : fallback)
+writeTune({ warp: fromQuery('warp', DEFAULT_TUNE.warp), jitter: fromQuery('jitter', DEFAULT_TUNE.jitter) })
 resize()
 run()

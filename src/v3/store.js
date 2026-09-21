@@ -56,7 +56,7 @@ export async function clear() {
   }
 }
 
-function runWorker(seed, log) {
+function runWorker(seed, tune, log) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
     worker.onmessage = (e) => {
@@ -78,14 +78,14 @@ function runWorker(seed, log) {
       worker.terminate()
       reject(e.error || new Error(e.message || 'v3 worker failed'))
     }
-    worker.postMessage({ seed })
+    worker.postMessage({ seed, tune })
   })
 }
 
 /**
- * The island for `seed`: cached, or generated in the worker and then cached. `from` says which. `regen` skips the read but still writes, so `?regen` is how a client is made to take a new algorithm before its VERSION is bumped.
+ * The island for `seed`: cached, or generated in the worker and then cached. `from` says which. `regen` skips the read but still writes, so `?regen` is how a client is made to take a new algorithm before its VERSION is bumped. `tune` (the map page's amplitudes, see generate) goes to the worker and is cached with the result under the seed's own key, so /terrain-v3 flies the island the map page last made.
  */
-export async function load({ seed, regen = false, log = () => {} }) {
+export async function load({ seed, regen = false, tune = null, log = () => {} }) {
   if (!regen) {
     const hit = await read(seed)
     if (hit) {
@@ -93,7 +93,7 @@ export async function load({ seed, regen = false, log = () => {} }) {
       return { result: hit, from: 'cache' }
     }
   }
-  const result = await runWorker(seed, log)
+  const result = await runWorker(seed, tune, log)
   await write(seed, result)
   log(`island ${seed} generated in ${result.ms.toFixed(0)} ms and cached`)
   return { result, from: 'worker' }

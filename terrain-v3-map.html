@@ -48,6 +48,11 @@
     <div id="controls" class="panel">
       <h2>island</h2>
       <div class="row"><label for="seed">seed</label><input id="seed" type="number" value="20260824" /></div>
+      <h2>shape, metres</h2>
+      <p class="note">Each warp octave displaces the cone's position by up to this much; each jitter octave moves its lattice nodes up or down by up to this much. Labels are the octave's wavelength or node spacing.</p>
+      <div id="warp"></div>
+      <div id="jitter"></div>
+      <button id="reset">defaults</button>
       <button id="run">generate</button>
       <p class="note">Runs the generator in a worker every time and writes the result to the cache <em>/terrain-v3</em> boots from, so what you approve here is what you will stand on there.</p>
 

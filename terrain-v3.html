@@ -48,7 +48,7 @@
   </head>
   <body>
     <div id="stage">
-      <div id="hint">click to look &middot; WASD to walk &middot; space to fly and hold to climb, shift to sink &middot; double-tap space to land</div>
+      <div id="hint">click to look &middot; WASD to walk &middot; space to fly and hold to climb, shift to sink &middot; double-tap space to land &middot; N to skip 6 hours</div>
       <div id="boot"><pre id="bootlog">booting&hellip;</pre></div>
     </div>
 
@@ -58,7 +58,7 @@
       <h2>this frame</h2>
       <table id="frame"></table>
       <div id="buttons">
-        <button id="skip" title="Jump the world clock forward five hours.">+5h</button>
+        <button id="skip" title="Jump the world clock forward six hours, as N does.">+6h</button>
         <button id="regen" title="Throw the cached island away and generate it again in the worker.">regen</button>
       </div>
       <p class="note">The island boots from IndexedDB when <em>/terrain-v3-map</em> has generated this seed and algorithm; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>

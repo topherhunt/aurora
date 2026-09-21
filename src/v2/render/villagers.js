@@ -19,6 +19,7 @@
 //            the loop, GAZE_OFF_M off it toward the water, and stand facing
 //            the lake GAZE_S) or wander (to a node of the loop, the ring or a
 //            branch, and stand STAND_S), weighted by ERRANDS; then another.
+//            Each goes at its own PACE, and a RUNNERS share run their errands.
 //   talk     two passing within TALK_M with neither TALK_COOL_S from its last
 //            talk stop, face each other and chatter by turns TALK_S, a talk
 //            gesture with every call.
@@ -43,6 +44,9 @@ export const PUPPETS = 8
 export const EXTRA = 1
 export const SIZE_M = 1
 export const SIZE_VAR = 0.15
+// Each villager's own pace, on the gait's ground speed and the clip's rate alike, and the share that run their errands rather than walk (never fewer than one a village).
+export const PACE = [0.75, 1.3]
+export const RUNNERS = 0.25
 // The graph: metres between a road's nodes, how far a road's end reaches for another road, and how near a node counts as reached.
 export const SAMPLE_M = 1.5
 export const JOIN_M = 3
@@ -250,7 +254,7 @@ export class Villagers {
     this.all = []
     for (let k = 0; k < doors.length + EXTRA; k++) {
       this.all.push({
-        id: k, key: `villager:${k}`, home: doorNodes[k % doors.length], rand: null, size: 1, k: 1, turnTick: 0,
+        id: k, key: `villager:${k}`, home: doorNodes[k % doors.length], rand: null, size: 1, k: 1, pace: 1, runner: false, turnTick: 0,
         // The tick's pose and the one before it, for the frame to lerp; `tick` and `alpha` are the score's.
         x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0, tick: 0, alpha: 0,
         // The frame's pose, what the puppet and the ear are given.
@@ -308,10 +312,16 @@ export class Villagers {
       this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S }))
     }
     this.freePuppets = this.puppets.slice()
+    let fastest = null
     for (const c of this.all) {
-      c.size = SIZE_M * (1 + SIZE_VAR * (2 * mulberry32(hash32(this.seed, c.id))() - 1))
+      const rand = mulberry32(hash32(this.seed, c.id))
+      c.size = SIZE_M * (1 + SIZE_VAR * (2 * rand() - 1))
       c.k = c.size / asset.height
+      c.pace = between(rand, PACE)
+      c.runner = rand() < RUNNERS
+      if (fastest === null || c.pace > fastest.pace) fastest = c
     }
+    if (!this.all.some((c) => c.runner)) fastest.runner = true
     this.loaded = true
   }
 
@@ -368,10 +378,10 @@ export class Villagers {
     c.clip = clip
     c.dur = seconds
     c.left = seconds
-    c.cycle = this.durations[clip]
+    c.cycle = this.durations[clip] / c.pace
     c.cue++
     const speed = this.asset.gait[clip]
-    c.speed = speed === undefined ? 0 : speed * c.k
+    c.speed = speed === undefined ? 0 : speed * c.k * c.pace
   }
 
   /** The step's clip has run out: extended in place, a talk gesture ending on the idle. */
@@ -423,7 +433,7 @@ export class Villagers {
     c.wp = 0
     c.then = then
     c.state = 'walk'
-    this._play(c, 'walk', STEP_S)
+    this._play(c, c.runner ? 'run' : 'walk', STEP_S)
     if (c.route.length === 0) this._arrive(c)
   }
 
@@ -643,7 +653,9 @@ export class Villagers {
       if (!p) { this.starved++; return null }
       c.puppet = p
       this.batch.add(p.group)
-      p.play(c.clip, c.cue, c.dur - c.left)
+      // The clip at its pace, so the feet cover the ground the speed does.
+      p.mixer.timeScale = c.pace
+      p.play(c.clip, c.cue, (c.dur - c.left) * c.pace)
     }
     return c.puppet
   }

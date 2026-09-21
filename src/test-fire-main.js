@@ -1,6 +1,6 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { Flames, FIRE, CARD_OUTLINE, OVERHANG, flicker } from './v2/render/fire.js'
+import { Flames, FIRE, CAMPFIRE, CARD_OUTLINE, OVERHANG, flicker } from './v2/render/fire.js'
 
 // ---------------------------------------------------------------------------
 // /test-fire: the flame shader (v2/render/fire.js) on a bench, at lamp scale
@@ -50,7 +50,7 @@ const BENCH = { flicker: 0.0, count: 1, spacing: 1.45, glowReach: 4.9, glowGain:
 const PRESETS = {
   lamp: { ...FIRE, ...BENCH },
   torch: { ...FIRE, ...BENCH, height: 0.45, radius: 0.2, gain: 1.3, turb: 0.4, cut: 0.5, sway: 0.18, glowReach: 5, glowGain: 0.7, context: 'torch' },
-  campfire: { ...FIRE, ...BENCH, height: 0.78, radius: 0.46, width: 0.73, speed: 0.9, stretch: 0.5, turb: 0.28, cut: 1.0, sway: 0.1, edge: 0.5, core: 0.71, gain: 1.4, sheets: 1, glowReach: 9, glowGain: 1.2, context: 'campfire' },
+  campfire: { ...CAMPFIRE, ...BENCH, glowReach: 9, glowGain: 1.2, context: 'campfire' },
 }
 
 const url = new URL(location.href)
