@@ -89,6 +89,8 @@ export const ROAD_WIDTH = 1
 export const JUNCTION_M = 1
 // The lamps (render/lamps.js): one every `spacing` metres along every road but the pads, the trunk's first `exit` metres in from the arrival, or the first half metre on from there clear of the wall, so she comes in by a lamp, `verge` metres off the centreline on alternate sides, the other side where that fails; none within `apart` of another lamp, in a house's trunk, on another road, in the water or within `wall` of the stone -- a place that fails is skipped, not moved. None by the doors: the windows light a house, and a post beside them drowned their glow.
 export const LAMPS = { spacing: 10, exit: 1.5, verge: 1, apart: 4, wall: 1.5 }
+// The scattered stools (render/stools.js, the villagers' seats off the hearth): one by each outlying house's door, at its trunk's edge `beside` metres off its branch's centreline on whichever side stands clear, facing down the branch; and `shore` of them spread along the loop where the water lies within `wet` metres past it, `off` metres off the loop toward the lake, facing it. Each stands on dry ground within `level` metres of flat `flat` metres about and `flat` toward its look, where a sitter's feet stand (stools.js sets it on the lower of the two), `edge` metres past every road's edge, `wall` off a house's trunk, `lamp` off a lamp, `apart` from every other stool and LAMPS.wall inside the stone -- a place that fails is skipped, not moved.
+export const STOOLS = { shore: 3, off: 1.2, wet: 4, beside: 1.2, level: 0.1, flat: 0.3, edge: 0.4, wall: 0.4, lamp: 0.8, apart: 5 }
 // Metres a village road ramps back to the ground over: footpaths in a bowl 60 m across, not the overworld's 8 m shoulders, which would leave no bank between the loop and a river.
 export const ROAD_FEATHER = 4
 // The steepest a drawn road gets: a footpath's pitch. Its chords are held to CHORD_GRADE by cut and fill alike, since the spline between chords steepens by a few degrees over them.
@@ -876,9 +878,12 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   for (const r of doc.roads) r.feather = ROAD_FEATHER
   validate(doc)
   const lamps = placeLamps(doc.roads, all, heightAt, dry, ground)
+  // The stools are set on the shipped ground, the roads and pads cut into it: the field before them is rougher along every verge.
+  field.setLayers(Layers.deserialize(validate(doc)))
+  const stools = placeStools(doc.roads, all, outlying, lake, lamps, heightAt, dry, ground)
 
   const props = all.map((h, i) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height, mirror: spec.mirror[i], fiddle: spec.fiddle[i] }))
-  return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, lamps, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
+  return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, lamps, stools, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
 }
 
 /**
@@ -955,6 +960,54 @@ function placeLamps(roads, houses, heightAt, dry, ground) {
     }
   }
   return lamps
+}
+
+/** Where the scattered stools stand (STOOLS): `[{ x, z, lookX, lookZ }]`, the outlying houses' first, then the shore's. */
+function placeStools(roads, houses, outlying, lake, lamps, heightAt, dry, ground) {
+  if (roads[1].id !== 'd2') throw new Error('placeStools: the loop is the second road')
+  const lines = roads.filter((r) => !r.id.startsWith('pad-')).map((r) => r.pts.map(([x, , z]) => [x, z]))
+  const stools = []
+  // `a` is the look's bearing: the ground is level about the stool and out to the sitter's feet.
+  const clear = (x, z, a) =>
+    heightAt(x, z) >= dry &&
+    [0, TAU / 4, TAU / 2, (3 * TAU) / 4, a].every((b) => Math.abs(heightAt(x + Math.cos(b) * STOOLS.flat, z + Math.sin(b) * STOOLS.flat) - heightAt(x, z)) <= STOOLS.level) &&
+    lines.every((pts) => segmentsNear(pts, x, z) >= ROAD_WIDTH / 2 + STOOLS.edge) &&
+    houses.every((h) => Math.hypot(x - h.x, z - h.z) > h.core + STOOLS.wall) &&
+    lamps.every((l) => Math.hypot(x - l.x, z - l.z) >= STOOLS.lamp) &&
+    Math.hypot(x, z) < ground.rimAt(Math.atan2(z, x)) - LAMPS.wall &&
+    stools.every((s) => Math.hypot(x - s.x, z - s.z) >= STOOLS.apart)
+  for (const h of outlying) {
+    // The door is +X in the pick's frame, sent to (cos yaw, -sin yaw); the stool stands level with it, a side of the branch.
+    const dx = Math.cos(h.yaw), dz = -Math.sin(h.yaw)
+    const out = h.core + STOOLS.wall + 0.1
+    let placed = false
+    for (const step of [0, 0.5, 1, 1.5]) {
+      for (const side of [1, -1]) {
+        const x = h.x + dx * (out + step) - dz * STOOLS.beside * side, z = h.z + dz * (out + step) + dx * STOOLS.beside * side
+        if (!clear(x, z, Math.atan2(dz, dx))) continue
+        stools.push({ x, z, lookX: x + dx, lookZ: z + dz })
+        placed = true
+        break
+      }
+      if (placed) break
+    }
+  }
+  // The shore's: every point of the loop with water within `wet` past it, off it toward the lake and clear, and `shore` of those spread along it.
+  const shore = []
+  for (const [x, , z] of roads[1].pts) {
+    const a = Math.atan2(lake.z - z, lake.x - x), ux = Math.cos(a), uz = Math.sin(a)
+    for (const off of [STOOLS.off, STOOLS.off + 0.5, STOOLS.off + 1]) {
+      const sx = x + ux * off, sz = z + uz * off
+      if (heightAt(sx + ux * STOOLS.wet, sz + uz * STOOLS.wet) >= lake.y || !clear(sx, sz, a)) continue
+      shore.push({ x: sx, z: sz, lookX: lake.x, lookZ: lake.z })
+      break
+    }
+  }
+  for (let k = 0; k < STOOLS.shore && shore.length > 0; k++) {
+    const s = shore[Math.floor(((k + 0.5) / STOOLS.shore) * shore.length)]
+    if (clear(s.x, s.z, Math.atan2(s.lookZ - s.z, s.lookX - s.x))) stools.push(s)
+  }
+  return stools
 }
 
 /**

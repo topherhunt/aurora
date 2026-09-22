@@ -17,9 +17,16 @@
 //   inside   in its house, unseen, INSIDE_S; then out of the door on an --
 //   errand   home (walk to the door, inside), gaze (to one of GAZE_SPOTS on
 //            the loop, GAZE_OFF_M off it toward the water, and stand facing
-//            the lake GAZE_S) or wander (to a node of the loop, the ring or a
-//            branch, and stand STAND_S), weighted by ERRANDS; then another.
-//            Each goes at its own PACE, and a RUNNERS share run their errands.
+//            the lake GAZE_S), sit (to a free one of the room's `seats`, the
+//            hearth's stools and the scattered ones, round its side to the
+//            point its feet stand at) or wander (to a node of the loop, the
+//            ring or a branch, and stand STAND_S), weighted by ERRANDS; then
+//            another. Each goes at its own PACE, and a RUNNERS share run.
+//   sit      at its stool: turns to its look (the fire, the lake), sits down
+//            on the sit clip's first SIT_CUT[0] seconds, holds on idle-sit
+//            SIT_S facing it, rises on the clip from SIT_CUT[1], and plans
+//            again from its node. The stool is its from the errand's roll to
+//            its rising; a talk or a fright on the way lets it go.
 //   talk     two passing within TALK_M with neither TALK_COOL_S from its last
 //            talk stop, face each other and chatter by turns TALK_S, a talk
 //            gesture with every call.
@@ -57,7 +64,11 @@ export const GAZE_OFF_M = 1
 export const INSIDE_S = [20, 90]
 export const STAND_S = [3, 10]
 export const GAZE_S = [15, 40]
-export const ERRANDS = [['home', 0.2], ['gaze', 0.3], ['wander', 0.5]]
+export const SIT_S = [20, 60]
+export const ERRANDS = [['home', 0.2], ['gaze', 0.25], ['sit', 0.25], ['wander', 0.3]]
+// The sit clip is one round trip, down by SIT_CUT[0] seconds and rising from SIT_CUT[1], the hold between them idle-sit's pose (tools/creatures/anim/clips/human/sit.json); at the hold the hips sit `back` of the wheelbase behind the feet and `drop` of the height down. The feet stand `clear` metres past the stool's edge at the least, or the walker would lift the sitter onto it, reached within `near` metres (NODE_M's slack would leave the hips off the stool), and it comes round the stool `round` metres wide of its side.
+export const SIT_CUT = [1.4, 3.0]
+export const SIT = { back: 0.5, drop: 0.2, clear: 0.05, near: 0.03, round: 0.5 }
 export const TALK_M = 1.6
 export const TALK_S = [8, 20]
 export const TALK_COOL_S = 45
@@ -80,9 +91,9 @@ const FADE_S = 0.25
 const MEET_TICKS = 10
 
 export const TALKS = ['talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
-export const CLIPS = ['idle', 'walk', 'run', ...TALKS]
+export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', ...TALKS]
 // The clips whose feet stay put (puppet.js FootIK).
-export const PLANTED = new Set(['idle', ...TALKS])
+export const PLANTED = new Set(['idle', 'sit', 'idle-sit', ...TALKS])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 
@@ -212,14 +223,16 @@ export class Villagers {
    * @param opts.roads   the build's doc roads
    * @param opts.doors   RoomProps.doors(): `[{ x, z }]`
    * @param opts.lake    the build's lake: x, z
+   * @param opts.seats   the stools, `[{ x, z, top, r, lookX, lookZ }]`: each a disc of `r` about (x, z) whose top is `top` in the world, sat on facing (lookX, lookZ)
    * @param opts.seed    the room's seed
    * @param opts.asset   a loaded asset, for a gate; the world fetches the GLB
    */
-  constructor(scene, water, { walk, roads, doors, lake, seed = 1, asset = null } = {}) {
+  constructor(scene, water, { walk, roads, doors, lake, seats = [], seed = 1, asset = null } = {}) {
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Villagers need WaterSurfaces, for isSubmerged')
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.obstacleAt !== 'function') throw new Error('Villagers need the WalkSurface, for heightAt and obstacleAt')
     if (!Array.isArray(roads) || !Array.isArray(doors) || doors.length === 0) throw new Error('Villagers need the roads and at least one door')
     if (!lake || !Number.isFinite(lake.x) || !Number.isFinite(lake.z)) throw new Error('Villagers need the lake, for where to gaze')
+    if (!Array.isArray(seats)) throw new Error('Villagers: seats is a list')
     this.water = water
     this.walk = walk
     this.seed = seed
@@ -228,7 +241,17 @@ export class Villagers {
     // Where a wander may end: any node of a road but the trunk, which leads only to her door.
     this.targets = nodes.map((n, i) => i).filter((i) => nodes[i].road !== 'd1' && nodes[i].road !== 'door')
     if (this.targets.length === 0) throw new Error('Villagers: no road to wander')
-    // The gazing spots: GAZE_SPOTS nodes spread along the loop, each with a stand a step toward the water where it can stand there.
+    // The seats, each reached from the node nearest it, and who has claimed it.
+    this.seats = seats.map((s) => {
+      if (![s.x, s.z, s.top, s.r, s.lookX, s.lookZ].every(Number.isFinite) || !(s.r > 0)) throw new Error(`Villagers: a seat is { x, z, top, r, lookX, lookZ }: ${JSON.stringify(s)}`)
+      let node = -1, at = Infinity
+      for (let i = 0; i < nodes.length; i++) {
+        const d = Math.hypot(nodes[i].x - s.x, nodes[i].z - s.z)
+        if (d < at) { at = d; node = i }
+      }
+      return { x: s.x, z: s.z, top: s.top, r: s.r, lookX: s.lookX, lookZ: s.lookZ, node, by: null }
+    })
+    // The gazing spots: GAZE_SPOTS nodes spread along the loop, each with a stand a step toward the water where it can stand there, and no stool stands.
     const loop = nodes.map((n, i) => i).filter((i) => nodes[i].road === 'd2')
     if (loop.length === 0) throw new Error('Villagers: no loop to gaze from')
     this.spots = Array.from({ length: GAZE_SPOTS }, (_, k) => {
@@ -236,7 +259,8 @@ export class Villagers {
       const n = nodes[node]
       const a = Math.atan2(lake.z - n.z, lake.x - n.x)
       const x = n.x + Math.cos(a) * GAZE_OFF_M, z = n.z + Math.sin(a) * GAZE_OFF_M
-      return this.seat(x, z) === null ? { node, x: n.x, z: n.z } : { node, x, z }
+      const stool = this.seats.some((s) => Math.hypot(s.x - x, s.z - z) < s.r + SIT.round)
+      return stool || this.seat(x, z) === null ? { node, x: n.x, z: n.z } : { node, x, z }
     })
     this.lake = { x: lake.x, z: lake.z }
 
@@ -259,14 +283,14 @@ export class Villagers {
         x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0, tick: 0, alpha: 0,
         // The frame's pose, what the puppet and the ear are given.
         pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1 },
-        // inside, walk, stand, gaze, talk or flee; inside, it is drawn by nobody.
+        // inside, walk, stand, gaze, sit, talk or flee; inside, it is drawn by nobody.
         state: 'inside', hidden: true,
-        // The node it stands at or is making for, the route on from it (`{ x, z, node }`, node -1 off the road), the point of it it is on, and what the route's end is for: stand, gaze, enter, calm.
+        // The node it stands at or is making for, the route on from it (`{ x, z, node }`, node -1 off the road), the point of it it is on, and what the route's end is for: stand, gaze, sit, enter, calm.
         at: 0, route: [], wp: 0, then: 'stand',
-        // Seconds the state has left, to the next call, whether the last was a pant, and until it will talk again; who it is talking to.
-        hold: 0, voice: 0, panted: false, talked: 0, partner: null,
-        // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of steps, and the ground speed.
-        clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
+        // Seconds the state has left, to the next call, whether the last was a pant, and until it will talk again; who it is talking to; the seat it has claimed and where a sit is: turn, down, hold, up.
+        hold: 0, voice: 0, panted: false, talked: 0, partner: null, seat: null, phase: '',
+        // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of steps, the ground speed, and the second of the clip the step cuts in at (-1 to fade in from its start).
+        clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0, from: -1,
         lod: LOD_TIERS, puppet: null,
       })
     }
@@ -302,6 +326,7 @@ export class Villagers {
     for (const name of CLIPS) if (!asset.clips.some((c) => c.name === name)) throw new Error(`Villagers: the asset has no ${name} clip`)
     this.asset = asset
     this.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
+    if (!(this.durations.sit > SIT_CUT[1] && SIT_CUT[0] < SIT_CUT[1])) throw new Error(`Villagers: the sit clip is ${this.durations.sit} s, cut at ${SIT_CUT}`)
     this.plain.map = asset.map
     this.plain.needsUpdate = true
     for (const mats of this.puppetMats) {
@@ -334,9 +359,9 @@ export class Villagers {
   }
 
   get stats() {
-    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, talk: 0, flee: 0 }
+    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, flee: 0 }
     for (const c of this.all) states[c.state]++
-    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, nodes: this.graph.nodes.length }
+    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
 
   /** Every villager drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -374,19 +399,23 @@ export class Villagers {
     return `leafkinChatter${1 + Math.min(CHATTERS - 1, (c.rand() * CHATTERS) | 0)}`
   }
 
-  _play(c, clip, seconds) {
+  /** The step's clip: faded in from its start, or cut in at `from` seconds of it. */
+  _play(c, clip, seconds, from = -1) {
     c.clip = clip
     c.dur = seconds
     c.left = seconds
     c.cycle = this.durations[clip] / c.pace
     c.cue++
+    c.from = from
     const speed = this.asset.gait[clip]
     c.speed = speed === undefined ? 0 : speed * c.k * c.pace
   }
 
-  /** The step's clip has run out: extended in place, a talk gesture ending on the idle. */
+  /** The step's clip has run out: extended in place, a talk gesture ending on the idle, a sit's cut ending its phase. */
   _step(c) {
     if (c.state === 'talk' && c.clip !== 'idle') { this._play(c, 'idle', STEP_S); return }
+    if (c.state === 'sit' && c.phase === 'down') { this._phase(c, 'hold'); return }
+    if (c.state === 'sit' && c.phase === 'up') { this._rise(c); return }
     c.left = c.dur = STEP_S
   }
 
@@ -407,7 +436,15 @@ export class Villagers {
     c.partner = null
     c.talked = 0
     c.lod = LOD_TIERS
+    this._leaveSeat(c)
     this._inside(c, c.rand() * INSIDE_S[1])
+  }
+
+  _leaveSeat(c) {
+    if (c.seat === null) return
+    if (c.seat.by !== c) throw new Error(`Villagers: ${c.key} leaves a seat it does not hold`)
+    c.seat.by = null
+    c.seat = null
   }
 
   _inside(c, wait) {
@@ -425,8 +462,9 @@ export class Villagers {
     this._errand(c)
   }
 
-  /** A route to `node`, and beyond it `extra` off-road points, ending in `then`. */
+  /** A route to `node`, and beyond it `extra` off-road points, ending in `then`; a seat claimed for anything else is let go. */
   _go(c, node, then, extra = []) {
+    this._leaveSeat(c)
     const { nodes } = this.graph
     const { parent } = dijkstra(this.graph, c.at, node)
     c.route = pathTo(parent, c.at, node).map((k) => ({ x: nodes[k].x, z: nodes[k].z, node: k }))
@@ -448,6 +486,10 @@ export class Villagers {
       this._go(c, s.node, 'gaze', s.x === this.graph.nodes[s.node].x && s.z === this.graph.nodes[s.node].z ? [] : [s])
       return
     }
+    if (kind === 'sit') {
+      const free = this.seats.filter((s) => s.by === null)
+      if (free.length > 0) { this._seat(c, free[(c.rand() * free.length) | 0]); return }
+    }
     let node = this.targets[(c.rand() * this.targets.length) | 0]
     if (node === c.at) node = this.targets[(this.targets.indexOf(node) + 1) % this.targets.length]
     this._go(c, node, 'stand')
@@ -466,11 +508,51 @@ export class Villagers {
     this._play(c, 'idle', STEP_S)
   }
 
-  /** The route's end. A gazer walks back to its node before its next errand. */
+  /** Its way onto `seat` from the seat's node: `feet`, where they stand, `SIT.back` of the wheelbase short of the stool's centre toward its look, and `round`, level with them SIT.round wide of the stool on the side its node is on. */
+  _approach(c, seat) {
+    const ax = seat.lookX - seat.x, az = seat.lookZ - seat.z, len = Math.hypot(ax, az)
+    if (!(len > seat.r)) throw new Error(`Villagers: a seat looks at its own stool`)
+    const ux = ax / len, uz = az / len
+    const fore = Math.max(SIT.back * this.asset.wheelbase * c.k, seat.r + SIT.clear)
+    const n = this.graph.nodes[seat.node]
+    const wide = (Math.sign(-uz * (n.x - seat.x) + ux * (n.z - seat.z)) || 1) * (seat.r + SIT.round)
+    const feet = { x: seat.x + ux * fore, z: seat.z + uz * fore }
+    return { feet, round: { x: feet.x - uz * wide, z: feet.z + ux * wide } }
+  }
+
+  /** Off to `seat`, its from now. */
+  _seat(c, seat) {
+    const { feet, round } = this._approach(c, seat)
+    this._go(c, seat.node, 'sit', [round, feet])
+    c.seat = seat
+    seat.by = c
+  }
+
+  /** Up from its stool: back round it to its node, and an errand from there. */
+  _rise(c) {
+    const { round } = this._approach(c, c.seat)
+    const n = this.graph.nodes[c.at]
+    this._go(c, c.at, 'errand', [round, { x: n.x, z: n.z }])
+  }
+
+  /** A sit's phases in turn: turn to the look, down on the sit clip's first cut, the seated hold, and up on its last; the cuts end with their step (_step). */
+  _phase(c, phase) {
+    c.phase = phase
+    switch (phase) {
+      case 'turn': c.aim = this._toward(c, c.seat.lookX, c.seat.lookZ); this._play(c, 'idle', STEP_S); break
+      case 'down': this._play(c, 'sit', SIT_CUT[0] / c.pace); break
+      case 'hold': c.hold = between(c.rand, SIT_S); this._play(c, 'idle-sit', STEP_S); break
+      case 'up': this._play(c, 'sit', (this.durations.sit - SIT_CUT[1]) / c.pace, SIT_CUT[1]); break
+      default: throw new Error(`Villagers: no sit phase named ${phase}`)
+    }
+  }
+
+  /** The route's end. A gazer or a sitter walks back to its node before its next errand. */
   _arrive(c) {
     switch (c.then) {
       case 'stand': this._stand(c, between(c.rand, STAND_S)); break
       case 'gaze': this._gaze(c); break
+      case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
       case 'enter': this._inside(c, between(c.rand, INSIDE_S)); break
       case 'errand': this._errand(c); break
       case 'calm':
@@ -491,6 +573,7 @@ export class Villagers {
       c.aim = this._toward(c, other.x, other.z)
       c.route.length = 0
       c.wp = 0
+      this._leaveSeat(c)
       this._play(c, 'idle', STEP_S)
     }
     this.talks++
@@ -520,6 +603,7 @@ export class Villagers {
 
   /** Home if home is CALM_M from her, else the node farthest from her within FLEE_M of road, never the one it stands on: a cornered villager runs back the way it came rather than stand. */
   _flee(c) {
+    this._leaveSeat(c)
     const { nodes } = this.graph
     const home = nodes[c.home]
     const shun = (j) => (Math.hypot(nodes[j].x - this.feet.x, nodes[j].z - this.feet.z) < SHUN_M ? SHUN : 1)
@@ -555,7 +639,7 @@ export class Villagers {
    * A step along the route at the gait, carried through every point it
    * passes: a point within NODE_M is left behind where the villager stands
    * (never snapped to -- a snap every node was a lurch every 1.5 m of walk),
-   * and the last left behind is the arrival.
+   * and the last left behind is the arrival; a seat's feet within SIT.near.
    */
   _follow(c, dt, rate) {
     const step = c.speed * dt
@@ -563,7 +647,7 @@ export class Villagers {
     while (left > 0) {
       const p = c.route[c.wp]
       const d = Math.hypot(p.x - c.x, p.z - c.z)
-      if (d <= NODE_M) {
+      if (d <= (c.then === 'sit' && c.wp === c.route.length - 1 ? SIT.near : NODE_M)) {
         if (p.node >= 0) c.at = p.node
         c.wp++
         if (c.wp >= c.route.length) { c.route.length = 0; c.wp = 0; this._arrive(c); return }
@@ -619,6 +703,15 @@ export class Villagers {
         this._turn(c, dt)
         if (c.hold <= 0) this._go(c, c.at, 'errand')
         break
+      case 'sit':
+        if (c.phase === 'turn') {
+          this._turn(c, dt)
+          if (Math.abs(swing(c.heading, c.aim)) < 0.02) this._phase(c, 'down')
+        } else if (c.phase === 'hold') {
+          c.hold -= dt
+          if (c.hold <= 0) this._phase(c, 'up')
+        }
+        break
       case 'talk':
         c.hold -= dt
         c.aim = this._toward(c, c.partner.x, c.partner.z)
@@ -643,6 +736,8 @@ export class Villagers {
     if (c.left <= 0) this._step(c)
     // From its own feet, so a house's awning or roof overhead is not ground it is lifted onto.
     c.y = this.walk.heightAt(c.x, c.z, c.y)
+    // A sitter's hips on its stool's top where the ground would leave them under it.
+    if (c.state === 'sit') c.y = Math.max(c.y, c.seat.top - (this.asset.wheelbase - SIT.drop * this.asset.height) * c.k)
   }
 
   // -------------------------------------------------------------------------
@@ -655,9 +750,9 @@ export class Villagers {
       if (!p) { this.starved++; return null }
       c.puppet = p
       this.batch.add(p.group)
-      // The clip at its pace, so the feet cover the ground the speed does.
+      // The clip at its pace, so the feet cover the ground the speed does, and as far into the step as the tick is.
       p.mixer.timeScale = c.pace
-      p.play(c.clip, c.cue, (c.dur - c.left) * c.pace)
+      p.play(c.clip, c.cue, Math.max(0, c.from) + (c.dur - c.left) * c.pace)
     }
     return c.puppet
   }
@@ -719,7 +814,7 @@ export class Villagers {
     _quat.setFromAxisAngle(UP, pose.heading)
     _scl.setScalar(c.k)
     _mat.compose(_pos, _quat, _scl)
-    puppet.play(c.clip, c.cue)
+    puppet.play(c.clip, c.cue, c.from)
     groundFeet(puppet, pose, this.walk, PLANTED, (this.frame + c.id) % 6 === 0)
     puppet.step(dt)
     puppet.group.matrix.copy(_mat)

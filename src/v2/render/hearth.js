@@ -27,8 +27,8 @@ export const HEARTH = {
   logs: { count: 6, foot: 0.4, tip: 0.1, rise: 0.5, radius: 0.055, length: 0.7, tile: 1 },
   // The flame's foot, metres over the ground: up among the logs.
   fire: { lift: 0.1 },
-  // The stools: `count` nonagon prisms on a ring `r` metres out with `spread` metres of play, each `radius` across and `height` tall, every corner moved `jitter` of the radius.
-  stools: { count: [5, 7], r: 1.7, spread: 0.3, radius: [0.16, 0.2], height: [0.32, 0.44], jitter: 0.15, tile: 1 },
+  // The stools: `count` nonagon prisms on a ring `r` metres out with `spread` metres of play, each `radius` across and `height` tall (a metre-tall leafkin's seated hips, villagers.js SIT), every corner moved `jitter` of the radius. The scattered stools (stools.js) are cut to the same numbers.
+  stools: { count: [5, 7], r: 1.7, spread: 0.3, radius: [0.16, 0.2], height: [0.22, 0.28], jitter: 0.15, tile: 1 },
   // Metres: where the decimated tier takes over, where the card does, and the fraction of that a rung comes back at.
   lod: [15, 30],
   hysteresis: 0.9,
@@ -47,7 +47,7 @@ const STEADY = [1, 1, 1]
 const WHITE = [1, 1, 1]
 
 // The prop layout (material.js): every face its own three vertices under the face's normal, `uvProj` in the tile's metres, `texLayer`, and `color` the tint over the tile.
-class Faces {
+export class Faces {
   constructor() { this.pos = []; this.nrm = []; this.uv = []; this.lay = []; this.col = [] }
   tri(a, b, c, uva, uvb, uvc, layer, color) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
@@ -88,7 +88,7 @@ class Faces {
  * along the perimeter and v up the height, in metres over `tile`; a cap
  * projects its own plane.
  */
-function prism(faces, ring, tops, m, tile, color) {
+export function prism(faces, ring, tops, m, tile, color) {
   const n = ring.length
   const at = (x, y, z) => { const p = new THREE.Vector3(x, y, z).applyMatrix4(m); return [p.x, p.y, p.z] }
   let along = 0
@@ -115,7 +115,7 @@ function prism(faces, ring, tops, m, tile, color) {
 }
 
 /** A regular n-gon of radius `r`, each corner pushed in or out by up to `jitter` of it. */
-function polygon(n, r, jitter, rand) {
+export function polygon(n, r, jitter, rand) {
   const ring = []
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2

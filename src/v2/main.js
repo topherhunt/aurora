@@ -46,6 +46,7 @@ import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
+import { Stools } from './render/stools.js'
 import { Shell } from './render/shell.js'
 import { rollVillage, buildVillage, WOOD, HER_SCALE } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
@@ -2279,6 +2280,7 @@ let entrances = null
 let roomProps = null
 let lamps = null
 let hearth = null
+let stools = null
 let shell = null
 // The mouth she came in by (Entrances.sites()): the village's seed, and where to put her back when she leaves. Saved with the game; null in the overworld.
 let cameInBy = null
@@ -2692,11 +2694,11 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   for (const layer of [
     leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, shell, markers, waterSurfaces, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, stools, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   lighting.clearLamps()
   leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = shell = markers = waterSurfaces = terrainWire = terrain = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = stools = shell = markers = waterSurfaces = terrainWire = terrain = null
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
   deskHand = null
@@ -2958,6 +2960,10 @@ async function buildRoom(room, at) {
     hearth = new Hearth(scene, height, { bank, at: roomSpec.clearing, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     console.log(`[v2] hearth ${hearth.stats.stools} stools, ${hearth.tris.join('/')} tris`)
     window.v2hearth = hearth // console: `v2hearth.stats`, `v2hearth.tier`
+    // The scattered stools where the build put them (render/stools.js): by the outlying doors and on the shore, the villagers' other seats.
+    stools = new Stools(scene, height, { sites: roomSpec.stools, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    console.log(`[v2] stools ${stools.stats.stools}`)
+    window.v2stools = stools // console: `v2stools.stools`
   }
   window.v2huts = roomProps
 
@@ -2980,8 +2986,8 @@ async function buildRoom(room, at) {
     // the scatter itself, so the clearings are the same on every boot.
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
-    // and in a village one in the clearing, through a hut, on a lamp or in the gathering place.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) } : deadwood,
+    // and in a village one in the clearing, through a hut, on a lamp, in the gathering place or on a stool.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
   })
@@ -3012,8 +3018,9 @@ async function buildRoom(room, at) {
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
   if (lamps) walk.addStone(lamps)
-  // And the fire ring and the stools: a step up onto each.
+  // And the fire ring and every stool: a step up onto each.
   if (hearth) walk.addStone(hearth)
+  if (stools) walk.addStone(stools)
   // And so are the other players, and her double: their bodies stand on it, feet planted.
   peerAvatars.ground(walk)
   window.v2walk = walk // console: `v2walk.heightAt(x, z)`, `v2walk.obstacleAt(x, z, {})`
@@ -3399,7 +3406,9 @@ async function buildRoom(room, at) {
   // The villagers (render/villagers.js): the leafkin who live here, one a house and a spare, about the roads and in and out of their doors.
   if (room.village) {
     await bootStep('villagers')
-    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seed: villageSeed() })
+    // Their seats: the hearth's stools, sat on facing the fire, and the scattered ones.
+    const seats = [...hearth.stools.map((s) => ({ x: hearth.x + s.x, z: hearth.z + s.z, top: hearth.y + s.top, r: s.r, lookX: hearth.x, lookZ: hearth.z })), ...stools.seats()]
+    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed() })
     for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
     villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
   }

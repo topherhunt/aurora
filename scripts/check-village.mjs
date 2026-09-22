@@ -45,12 +45,14 @@ import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/
 import { DOOR, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
+import { Stools } from '../src/v2/render/stools.js'
+import { HEARTH } from '../src/v2/render/hearth.js'
 import { FIRE } from '../src/v2/render/fire.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
+  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, ROAD_WIDTH, STOOLS, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
   buildVillage, closestNodes, longestStraight, roadsCross, rollVillage, sharpestTurn, sinuosity,
 } from '../src/v2/rooms/village.js'
 
@@ -636,7 +638,7 @@ console.log('\nthe lamps')
   check(longest <= LAMPS_GAP_M, `no road runs ${LAMPS_GAP_M} m without a lamp beside it`, `the longest dark stretch ${longest} m on ${longestRoad}`)
   const exitLamp = Math.min(...lamps.map((l) => Math.hypot(l.x - room.spawn.x, l.z - room.spawn.z)))
   check(exitLamp <= EXIT_LAMP_M, `a lamp stands within ${EXIT_LAMP_M} m of the arrival`, `${exitLamp.toFixed(2)} m`)
-  // The layer main.js boots: 2 m posts with a flame in every dish, a map lit at every foot and dark at its reach, coned out of every window, the flames out by day and burning by night, a post stone to the walker.
+  // The layer main.js boots: LAMP.height posts with a flame in every dish, a map lit at every foot and dark at its reach, coned out of every window, the flames out by day and burning by night, a post stone to the walker.
   const windows = roomProps.windows()
   const layer = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps, windows, seed, patch: (m) => m })
   const postH = layer.scale * layer.bank.bounds.height
@@ -704,6 +706,60 @@ console.log('\nthe lamps')
   walk.addStone(layer)
   const l0 = layer.lamps[0]
   check(Math.abs(walk.heightAt(l0.x, l0.z) - (l0.y + LAMP.height)) < 1e-6 && !walk.fits(l0.x, l0.z, l0.y, null), 'a post is stone to the walker', `top ${walk.heightAt(l0.x, l0.z).toFixed(2)} over the foot at ${l0.y.toFixed(2)}`)
+  layer.dispose()
+}
+
+// --- the stools ---------------------------------------------------------------
+console.log('\nthe stools')
+{
+  const stools = room.stools
+  const outlying = roomProps.props.slice(ringCount), coreOf = (h) => h.r * DOOR.wall
+  const lines = roads.filter((r) => !r.id.startsWith('pad-')).map((r) => new Spline(r.pts).flatten(0.5))
+  const nearRoad = (x, z) => { let best = Infinity; for (const s of lines) for (let i = 0; i < s.length; i += 4) best = Math.min(best, Math.hypot(s[i] - x, s[i + 2] - z)); return best }
+  const loopPts = new Spline(loop.pts).flatten(0.5)
+  const nearLoop = (x, z) => { let best = Infinity; for (let i = 0; i < loopPts.length; i += 4) best = Math.min(best, Math.hypot(loopPts[i] - x, loopPts[i + 2] - z)); return best }
+  let close = 0, onRoad = 0, inHouse = 0, byLamp = 0, wet = 0, inStone = 0, sloped = 0, byDoor = 0, onShore = 0, lookOff = 0
+  for (let i = 0; i < stools.length; i++) {
+    const s = stools[i]
+    for (let j = 0; j < i; j++) if (Math.hypot(s.x - stools[j].x, s.z - stools[j].z) < STOOLS.apart - 0.01) close++
+    // The flattened road runs within a quarter metre of the centreline.
+    if (nearRoad(s.x, s.z) < ROAD_WIDTH / 2 + STOOLS.edge - 0.25) onRoad++
+    if (roomProps.props.some((h) => Math.hypot(s.x - h.x, s.z - h.z) <= coreOf(h) + STOOLS.wall)) inHouse++
+    if (room.lamps.some((l) => Math.hypot(s.x - l.x, s.z - l.z) < STOOLS.lamp)) byLamp++
+    if (heightAt(s.x, s.z) <= lake.y) wet++
+    if (Math.hypot(s.x, s.z) > rimAt(s.x, s.z) - LAMPS.wall) inStone++
+    const a = Math.atan2(s.lookZ - s.z, s.lookX - s.x)
+    if ([0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2, a].some((b) => Math.abs(heightAt(s.x + Math.cos(b) * STOOLS.flat, s.z + Math.sin(b) * STOOLS.flat) - heightAt(s.x, s.z)) > STOOLS.level + 1e-9)) sloped++
+    // By an outlying house's door, facing the way it does, or off the loop toward the lake with water within STOOLS.wet past it, facing the lake.
+    const door = outlying.find((h) => Math.hypot(s.x - h.x, s.z - h.z) < coreOf(h) + STOOLS.wall + 2 + STOOLS.beside)
+    if (door) {
+      byDoor++
+      if (Math.abs(Math.atan2(Math.sin(a + door.yaw), Math.cos(a + door.yaw))) > 0.01) lookOff++
+    } else if (nearLoop(s.x, s.z) <= STOOLS.off + 1 + 0.1 && heightAt(s.x + Math.cos(a) * STOOLS.wet, s.z + Math.sin(a) * STOOLS.wet) < lake.y) {
+      onShore++
+      if (Math.hypot(s.lookX - lake.x, s.lookZ - lake.z) > 1e-9) lookOff++
+    }
+  }
+  check(stools.length >= outCount + 2 && byDoor === outCount && onShore === stools.length - byDoor, `a stool by every outlying house's door and two or more on the loop's shore`, `${stools.length} stools, ${byDoor} by doors, ${onShore} on the shore, ${outCount} outlying`)
+  check(lookOff === 0, 'a door\'s stool faces the way its door does and a shore\'s the lake', `${lookOff} face elsewhere`)
+  check(close === 0 && onRoad === 0 && inHouse === 0 && byLamp === 0, `no stool stands within ${STOOLS.apart} m of another, ${STOOLS.edge} m of a road's edge, ${STOOLS.wall} m of a house's trunk or ${STOOLS.lamp} m of a lamp`, `${close} close pairs, ${onRoad} on roads, ${inHouse} in houses, ${byLamp} by lamps`)
+  check(wet === 0 && inStone === 0 && sloped === 0, `no stool stands in the water, in the stone or on ground more than ${STOOLS.level} m off level ${STOOLS.flat} m about`, `${wet} wet, ${inStone} in the stone, ${sloped} sloped`)
+  const layer = new Stools(new THREE.Scene(), field, { sites: stools, textures: texArray, seed, patch: (m) => m })
+  const seats = layer.seats()
+  let footed = 0, seated = 0
+  for (const t of layer.stools) {
+    const a = Math.atan2(t.lookZ - t.z, t.lookX - t.x), feet = heightAt(t.x + Math.cos(a) * 0.3, t.z + Math.sin(a) * 0.3)
+    // Its top a stool's height over the ground and never more than that over the feet: a sitter's hips ride the stool, not the air.
+    if (t.top - feet <= HEARTH.stools.height[1] && t.top - heightAt(t.x, t.z) >= HEARTH.stools.height[0] - STOOLS.level - 0.02) footed++
+    if (t.r >= HEARTH.stools.radius[0] && t.r <= HEARTH.stools.radius[1] * (1 + HEARTH.stools.jitter)) seated++
+  }
+  check(layer.stats.stools === stools.length && seats.length === stools.length && seats.every((t, i) => t.x === stools[i].x && t.z === stools[i].z && t.lookX === stools[i].lookX && t.top > heightAt(t.x, t.z)), 'the layer cuts one stool a site and lists each as a seat', JSON.stringify(layer.stats))
+  check(footed === stools.length && seated === stools.length, 'every stool is cut to the hearth\'s numbers and stands a seat\'s height over a sitter\'s feet', `${footed} footed, ${seated} sized of ${stools.length}`)
+  const walk = new WalkSurface(field, shell, { trunkAt: () => null })
+  walk.addStone(layer)
+  const t0 = layer.stools[0], a0 = Math.atan2(t0.lookZ - t0.z, t0.lookX - t0.x), fx = t0.x + Math.cos(a0) * (t0.r + 0.05), fz = t0.z + Math.sin(a0) * (t0.r + 0.05)
+  check(Math.abs(walk.heightAt(t0.x, t0.z) - t0.top) < 1e-6 && Math.abs(walk.heightAt(fx, fz) - heightAt(fx, fz)) < 1e-6, 'a stool is stone to the walker and the ground past its rim is not', `top ${walk.heightAt(t0.x, t0.z).toFixed(2)}`)
+  check(layer.occupiesAt(t0.x, t0.z, 0) && !layer.occupiesAt(t0.x + t0.r + 1, t0.z, 0.5), 'the wood keeps off a stool')
   layer.dispose()
 }
 }

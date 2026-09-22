@@ -21,13 +21,13 @@ export const LAMP_GLB = 'gen-props/lamp-post-leafkin.glb'
 export const LAMP_ORIGIN = [0, 0, 0]
 
 export const LAMP = {
-  // Metres, the post's height and its trunk's radius.
-  height: 2.0,
-  radius: 0.07,
+  // Metres, the post's height and its trunk's radius: a leafkin's post, seven tenths of the pick's 2 m.
+  height: 1.4,
+  radius: 0.049,
   // Where the dish's floor is, as a fraction of the post's height: the flame's foot, and the light's height in the map.
   bowl: 0.765,
-  // The dish's flame against FIRE's size, which /test-fire tunes for a hearth: a lamp's is a wick's.
-  flame: 0.5,
+  // The dish's flame against FIRE's size, which /test-fire tunes for a hearth: a lamp's is a wick's, at the post's seven tenths.
+  flame: 0.35,
   // Metres a lamp's light reaches along the ground, and its gain at the foot.
   reach: 9,
   gain: 0.6,

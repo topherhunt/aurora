@@ -5,8 +5,10 @@
 // One real village (rooms/village.js on a shipped entrance key) under a
 // stand-in asset carrying the shipped leafkin's numbers: the road graph
 // covers every road but the pads and every door and is one piece; a day of
-// villagers with her far off never leaves the cobbles but for a gazing spot,
-// goes in and out of its doors, stands, gazes at the lake and stops to talk
+// villagers with her far off never leaves the cobbles but for a gazing spot
+// or a stool, goes in and out of its doors, stands, gazes at the lake, sits
+// on the stools (never two on one, its feet clear of the disc, facing the
+// fire or the lake, down and up on the sit clip's cuts) and stops to talk
 // in pairs, chattering by turns; two instances stepped on different frame
 // times agree to the bit; a boot mid-chapter finds the village already about
 // its day, silent; her feet within three metres set every villager running,
@@ -28,8 +30,10 @@ import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
+import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
+import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, CALM_M, CLIPS, EXTRA, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
+  Villagers, CALM_M, CLIPS, EXTRA, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
@@ -58,6 +62,18 @@ const lamps = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps: room.
 const walk = new WalkSurface(field, shell, { trunkAt: () => null })
 walk.addStone(roomProps)
 walk.addStone(lamps)
+// The seats: the hearth's stools about the clearing's centre (its geometry alone, the way main.js reads Hearth.stools) and the room's scattered ones.
+const textures = buildTextureArray()
+const hearthAt = { x: room.clearing.x, z: room.clearing.z, y: field.heightAt(room.clearing.x, room.clearing.z) }
+const hearth = buildHearth(buildRockBank(), spec.seed, (x, z) => field.heightAt(hearthAt.x + x, hearthAt.z + z) - hearthAt.y)
+const hearthStone = {
+  columnAt: (x, z, _m, out) => { let n = 0; for (const s of hearth.stools) if (Math.hypot(x - hearthAt.x - s.x, z - hearthAt.z - s.z) <= s.r && n * 2 + 1 < out.length) { out[n * 2] = hearthAt.y + s.y; out[n * 2 + 1] = hearthAt.y + s.top; n++ } return n },
+  blockTopAt: (x, z) => { let top = -Infinity; for (const s of hearth.stools) if (Math.hypot(x - hearthAt.x - s.x, z - hearthAt.z - s.z) <= s.r) top = Math.max(top, hearthAt.y + s.top); return top },
+}
+walk.addStone(hearthStone)
+const stools = new Stools(new THREE.Scene(), field, { sites: room.stools, textures, seed: spec.seed, patch: (m) => m })
+walk.addStone(stools)
+const seats = [...hearth.stools.map((s) => ({ x: hearthAt.x + s.x, z: hearthAt.z + s.z, top: hearthAt.y + s.top, r: s.r, lookX: hearthAt.x, lookZ: hearthAt.z })), ...stools.seats()]
 const water = { isSubmerged: (x, z, y) => y < room.lake.y }
 const doors = roomProps.doors()
 const roads = room.doc.roads.filter((r) => !r.id.startsWith('pad-'))
@@ -120,7 +136,7 @@ function makeAsset() {
   return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped, legs }
 }
 
-const make = () => new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seed: spec.seed, asset: makeAsset() })
+const make = () => new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats, seed: spec.seed, asset: makeAsset() })
 const T0 = 1000
 const FAR = { x: 400, y: 100, z: 400 }
 const head = (feet) => ({ x: feet.x, y: feet.y + 1.6, z: feet.z })
@@ -154,6 +170,10 @@ console.log('\nthe graph')
   const v = make()
   check(v.all.length === doors.length + EXTRA && v.all.every((c) => c.hidden && c.state === 'inside'), `one villager a house and ${EXTRA} more, all indoors until stepped`, `${v.all.length}`)
   check(v.spots.every((s) => roadNear(s.x, s.z) <= GAZE_OFF_M + 0.3 && field.heightAt(s.x, s.z) >= room.lake.y), 'every gazing spot is a step off the loop on dry ground')
+  check(v.spots.every((s) => !seats.some((t) => Math.hypot(t.x - s.x, t.z - s.z) < t.r + SIT.round)), 'no gazing spot stands on a stool')
+  check(v.seats.length === seats.length && v.seats.length >= HEARTH.stools.count[0] + room.stools.length && v.seats.every((s) => s.by === null && s.node >= 0 && Math.hypot(v.graph.nodes[s.node].x - s.x, v.graph.nodes[s.node].z - s.z) < 4), 'every seat is on the list, free, and reached from a node within four metres', `${v.seats.length} seats`)
+  const ok = () => { try { return new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats: [{ x: 0, z: 0 }], seed: 1, asset: makeAsset() }) } catch (e) { return e.message } }
+  check(typeof ok() === 'string', 'a seat without its top, disc or look is refused')
   check(v.bodies([]).length === 0 && v.voices([]).length === 0, 'nothing is drawn or heard before the first frame')
 }
 
@@ -163,8 +183,11 @@ console.log('\na day with her far off')
   const v = make()
   const seen = new Set()
   let strayed = 0, worst = 0, unseat = 0, vaulted = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, meetings = 0, apart = 0, gestures = 0
+  let sitFrames = 0, sitOff = 0, sitFar = 0, sitOn = 0, sitLow = 0, sitClip = 0, sitAway = 0, doubled = 0, unheld = 0, phases = new Set(), satOn = new Set(), sitters = new Set()
   const was = v.all.map(() => null)
   const voices = []
+  // The chapter's replay on the first frame may leave some already out of doors, their exit unseen.
+  let out0 = -1
   const talkers = new Map()
   run(v, T0, 600, FAR, () => {
     const said = v.voices([])
@@ -183,11 +206,15 @@ console.log('\na day with her far off')
         if (Math.hypot(c.x - home.x, c.z - home.z) > 0.5) strayed++
         if (c.hidden) entries++; else exits++
       }
+      if (prev === null && !c.hidden) out0++
       was[i] = c.hidden
       if (c.hidden) return
       const near = roadNear(c.x, c.z)
       const atSpot = v.spots.some((s) => Math.hypot(s.x - c.x, s.z - c.z) <= GAZE_OFF_M + 0.4)
-      const allowed = atSpot ? GAZE_OFF_M + 0.4 : 0.8
+      // On its way round to a stool and back it is as far off the road as the stool is from its node, and SIT.round wide of that.
+      const seatOff = (s) => Math.hypot(s.x - v.graph.nodes[s.node].x, s.z - v.graph.nodes[s.node].z) + s.r + SIT.round + 0.5
+      const atSeat = v.seats.reduce((best, s) => (Math.hypot(s.x - c.x, s.z - c.z) <= seatOff(s) ? Math.max(best, seatOff(s)) : best), 0)
+      const allowed = Math.max(atSpot ? GAZE_OFF_M + 0.4 : 0, atSeat, 0.8)
       if (near > allowed) { strayed++; worst = Math.max(worst, near) }
       if (v.seat(c.x, c.z) === null) unseat++
       if (c.y - field.heightAt(c.x, c.z) > WALK.reach) vaulted++
@@ -197,6 +224,26 @@ console.log('\na day with her far off')
       if (c.state === 'talk' && c.clip !== 'idle') gestures++
       // A second into the gaze, past the longest turn at TURN_RATE.
       if (c.state === 'gaze' && c.hold < GAZE_S[0] - 1 && Math.abs(swing(c.heading, Math.atan2(-(room.lake.z - c.z), room.lake.x - c.x))) > 0.05) gazeOff++
+      if (c.state === 'sit') {
+        sitFrames++
+        sitters.add(c.id)
+        phases.add(c.phase)
+        const s = c.seat
+        if (s === null || s.by !== c) { unheld++; return }
+        satOn.add(seats.indexOf(seats.find((t) => t.x === s.x && t.z === s.z)))
+        // Its feet a `SIT.back` of the wheelbase short of the stool's centre toward its look, outside the disc, on the ground and never lifted onto the stool.
+        const d = Math.hypot(c.x - s.x, c.z - s.z)
+        if (d <= s.r) sitOn++
+        if (d > Math.max(SIT.back * v.asset.wheelbase * c.k, s.r + SIT.clear) + 0.4) sitFar++
+        if (c.y < field.heightAt(c.x, c.z) - 1e-6 || c.y > field.heightAt(c.x, c.z) + 0.12) sitLow++
+        if (c.phase !== 'turn' && Math.abs(swing(c.heading, Math.atan2(-(s.lookZ - c.z), s.lookX - c.x))) > 0.05) sitAway++
+        const want = { turn: 'idle', down: 'sit', hold: 'idle-sit', up: 'sit' }[c.phase]
+        if (c.clip !== want || c.speed !== 0 || (c.phase === 'up' ? c.from !== SIT_CUT[1] : c.from !== -1)) sitClip++
+        if (c.phase === 'down' && Math.abs(c.dur * c.pace - SIT_CUT[0]) > 1e-9) sitClip++
+        if (c.phase === 'up' && Math.abs(c.dur * c.pace - (v.durations.sit - SIT_CUT[1])) > 1e-9) sitClip++
+        if (c.phase === 'hold' && c.hold > SIT_S[1]) sitClip++
+        for (const o of v.all) if (o !== c && o.seat === s) doubled++
+      } else if (c.seat !== null && c.state !== 'walk') sitOff++
       if (c.state === 'talk') {
         meetings++
         const d = Math.hypot(c.x - c.partner.x, c.z - c.partner.z)
@@ -204,11 +251,19 @@ console.log('\na day with her far off')
       }
     })
   })
-  check(['inside', 'walk', 'stand', 'gaze', 'talk'].every((s) => seen.has(s)) && !seen.has('flee'), 'they go in and out, walk, stand, gaze and talk, and nothing frightens them', [...seen].join(' '))
-  check(strayed === 0, 'nobody steps off the cobbles but for a gazing spot, and every door is crossed at its own house', `${strayed} strayed, worst ${worst.toFixed(2)} m`)
+  check(['inside', 'walk', 'stand', 'gaze', 'sit', 'talk'].every((s) => seen.has(s)) && !seen.has('flee'), 'they go in and out, walk, stand, gaze, sit and talk, and nothing frightens them', [...seen].join(' '))
+  check(strayed === 0, 'nobody steps off the cobbles but for a gazing spot or a stool, and every door is crossed at its own house', `${strayed} strayed, worst ${worst.toFixed(2)} m`)
+  check(sitFrames > 0 && sitters.size >= 2 && ['turn', 'down', 'hold', 'up'].every((p) => phases.has(p)), 'more than one sits, turning, sitting down, holding and rising', `${sitters.size} sitters over ${sitFrames} frames, phases ${[...phases].join(' ')}`)
+  check(satOn.size >= 2, 'more than one stool is sat on', `${satOn.size} of ${seats.length}`)
+  check(unheld === 0 && doubled === 0 && sitOff === 0, 'a sitter holds its stool, nobody else does, and a seat is claimed only by a walker on its way or a sitter', `${unheld} unheld, ${doubled} doubled, ${sitOff} held idle`)
+  check(sitOn === 0 && sitFar === 0, 'a sitter\'s feet stand just off its stool, never on it', `${sitOn} on, ${sitFar} far`)
+  check(sitLow === 0, 'a sitter stands on the ground, lifted a hand\'s breadth at most for its stool', `${sitLow}`)
+  check(sitAway === 0, 'a sitter faces the fire or the lake once turned', `${sitAway}`)
+  check(sitClip === 0, 'a sitter idles while it turns, sits on the sit clip\'s first cut, holds on idle-sit and rises on the clip from its second cut, still', `${sitClip}`)
+  check(v.seats.every((s) => s.by === null || (!s.by.hidden && (s.by.state === 'sit' || s.by.state === 'walk'))), 'at the day\'s end every seat is free or held by one on it or on its way')
   check(unseat === 0, 'every step is on dry ground clear of the trunks')
   check(vaulted === 0, `nobody stands over ${WALK.reach} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
-  check(entries >= 2 && exits >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits`)
+  check(entries >= 2 && exits + out0 + 1 >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits, ${out0 + 1} out at the first frame`)
   check(badClip === 0, 'a walker walks at its pace, a runner runs, a stander idles, a talker gestures or idles, none of them moving')
   const paces = new Set(v.all.map((c) => c.pace)), runners = v.all.filter((c) => c.runner).length
   check(paces.size === v.all.length && v.all.every((c) => c.pace >= PACE[0] && c.pace <= PACE[1]) && runners >= 1 && runners < v.all.length, 'every villager has its own pace and some, not all, run their errands', `paces ${[...paces].map((p) => p.toFixed(2)).join(' ')}, ${runners} runners`)
