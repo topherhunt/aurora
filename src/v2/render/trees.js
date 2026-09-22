@@ -405,7 +405,10 @@ const FADE_MESH_RESERVE = 8
 // that crossing a boundary invalidates a thin row and that the keep-fraction is
 // evaluated finely, large enough that the resident set is ~2000 Map entries
 // rather than tens of thousands.
-const TILE = 25
+export const TILE = 25
+// A planted tree's rank: under every thinning band, so no distance cuts it, and
+// over 0, so _goneFor reads it as the whole draw radius rather than NaN.
+const PLANT_U = 1e-9
 
 // Floats per trunk in `trunksInto`: [x, y, z, base trunk radius, scale, yaw, variant, stretch].
 export const TRUNK_STRIDE = 8
@@ -613,6 +616,7 @@ export class Trees {
       deadwood = null,
       paths = null,
       bounds = null,
+      plants = [],
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -678,10 +682,27 @@ export class Trees {
     this.bounds = bounds
     this._ladder(boundedRadius(radius, bounds, TILE), falloff)
 
+    // Trees the room planted rather than the scatter rolled (rooms/village.js
+    // DECOR): binned onto the same grid, so residency, thinning and the rim own
+    // them like any other. A plant stands where it is told and takes no terrain
+    // test -- a village's crown tree stands on a house's pad, in the road's
+    // clearance, through a roof -- and its rank is PLANT_U, under every thinning
+    // band, so distance never cuts it.
+    if (!Array.isArray(plants) || plants.some((p) => ![p.x, p.z, p.scale].every(Number.isFinite) || !(p.scale > 0))) {
+      throw new Error('Trees: `plants` is a list of { x, z, scale }')
+    }
+    this.plants = new Map()
+    for (const p of plants) {
+      const key = Math.floor(p.x / TILE) * 0x10000 + Math.floor(p.z / TILE)
+      const at = this.plants.get(key)
+      if (at) at.push(p)
+      else this.plants.set(key, [p])
+    }
+
     // Sized ONCE, from the ladder this was booted on. `setScatter` may only move
     // to a ladder that fits inside this: the arena's twelve meshes are
     // allocated against it and cannot grow afterwards.
-    this.maxInstances = this._poolBound()
+    this.maxInstances = this._poolBound() + plants.length
 
     const t0 = performance.now()
     const bank = buildTreeBank({ billboard: true })
@@ -920,6 +941,7 @@ export class Trees {
 
     this._m = new THREE.Matrix4()
     this._scatter = { h: 0, tan: 0 }
+    this._site = { h: 0, tan: 0, scale: 0 }
     this.regrounds = 0
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
@@ -1868,8 +1890,12 @@ export class Trees {
     // A THIRD for the stretch and the sink, two draws per candidate, on the
     // same terms.
     const formRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x7f4a7c15))
-    const ids = tile ? tile.ids : new Int32Array(this.perTile)
-    const rank = tile ? tile.rank : new Float32Array(this.perTile)
+    // The room's own trees, on a new tile alone: a tile that already stands has
+    // already planted them, and its `n` still counts them.
+    const planted = tile ? null : this.plants.get(key)
+    const nPlant = planted ? planted.length : 0
+    const ids = tile ? tile.ids : new Int32Array(this.perTile + nPlant)
+    const rank = tile ? tile.rank : new Float32Array(this.perTile + nPlant)
     let n = tile ? tile.n : 0
     // A tree is born on the band the tile is cut at: the centre's level for a
     // new tile, whatever `_walkTile` last cut for a thickening one.
@@ -1878,56 +1904,39 @@ export class Trees {
     const clumpTop = this.clumpTop[qc]
     let clumps = tile ? tile.clumps : 0
 
-    for (let k = 0; k < this.perTile; k++) {
+    // The planted trees run first, at k below 0: they draw nothing from the
+    // tile's three streams, so the wood stands exactly where it always did.
+    for (let k = -nPlant; k < this.perTile; k++) {
+      const plant = k < 0 ? planted[nPlant + k] : null
       // EVERY candidate draws the same randoms whether or not it survives, so a
       // tree's identity cannot depend on how many of its neighbours happened to
       // be rejected, or on the level this tile was grown at. Moving any of these
       // below the tests would make the forest change shape when a lake is edited
       // or when the player walks toward it.
-      const x = (tx + rand()) * TILE
-      const z = (tz + rand()) * TILE
-      const variant = (rand() * this.variantCount) | 0
-      const yaw = rand() * Math.PI * 2
-      let scale = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
-      const tintG = rand()
-      const tintR = rand()
-      const u = rand()
+      // A plant's look is drawn off its own point instead, so a village's tree
+      // does not change when the tile under it is re-rolled.
+      const pr = plant ? mulberry32(tileSeed(Math.round(plant.x * 64), Math.round(plant.z * 64), this.seed)) : rand
+      const x = plant ? plant.x : (tx + rand()) * TILE
+      const z = plant ? plant.z : (tz + rand()) * TILE
+      const variant = (pr() * this.variantCount) | 0
+      const yaw = pr() * Math.PI * 2
+      let scale = plant ? plant.scale : SCALE[0] + rand() * (SCALE[1] - SCALE[0])
+      const tintG = pr()
+      const tintR = pr()
+      const u = plant ? PLANT_U : rand()
       // One roll against the keep-probability the treeline and the biome
       // multiply into.
-      const keepRoll = keepRand()
-      const stretch = STRETCH[0] + formRand() * (STRETCH[1] - STRETCH[0])
-      const sinkRoll = formRand()
+      const keepRoll = plant ? 0 : keepRand()
+      const stretch = STRETCH[0] + (plant ? pr() : formRand()) * (STRETCH[1] - STRETCH[0])
+      const sinkRoll = plant ? pr() : formRand()
 
       if (u >= uNew || u < uOld) continue
 
       this.samples++
-      // ONE field evaluation, at a fixed band limit, and it answers only
-      // "should a tree be here". Where the trunk MEETS THE GROUND is a
-      // different question with a different answer -- see _groundFor.
-      const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
-      const above = h - this.field.snowLineAt(x, z)
-      // The forest law (layers/forest.js) is shared with the terrain's vertex
-      // tint, so the ground is green exactly where the roll below can win.
-      // Water is this side's alone.
-      let keep = forestKeepAt(h, tan, above, this.biome, x, z)
+      const keep = this._stands(x, z, variant, scale, keepRoll, plant !== null)
       if (keep === 0) continue
-      // Off the road, and thick along its verge (ROAD). The verge is this side's alone: the vertex tint says where a tree CAN stand, and the verge only raises the odds where it already can.
-      if (this.paths !== null) {
-        const road = this.paths.nearest(x, z, 'road')
-        if (road !== null) {
-          const past = road.dist - road.halfWidth
-          if (past < ROAD.clearance) continue
-          if (past < ROAD.reach) keep = Math.min(1, keep * (1 + ROAD.gain * (1 - past / ROAD.reach)))
-        }
-      }
-      if (keepRoll >= keep) continue
-      if (this.water.isSubmerged(x, z, h)) continue
-      scale *= forestScaleAt(above, this.biome, x, z)
-      // OFF THE DEAD WOOD, which is placed first (v2/main.js): a log is metres
-      // long and a trunk through it reads as the scatter's mistake, so the
-      // trunk gives way. Pure functions of position on both sides, so it is
-      // answered here for ground the dead wood has not grown yet.
-      if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) continue
+      const { h, tan } = this._site
+      scale = this._site.scale
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
       // tile was leaked -- either way it must be loud, because the quiet version
@@ -1981,7 +1990,8 @@ export class Trees {
       // frame where the tier is undefined. Which clump picture this tree
       // wears, off the tint roll so no draw is added to the stream above.
       this.instPicture[id] = ((tintG * 4096) | 0) % CLUMP_VARIANTS
-      this.instInWood[id] = keep >= CLUMP_MIN_KEEP ? 1 : 0
+      // A plant is never a clump card: it stands alone by the thing it was planted against, and a clump card draws a stand of several.
+      this.instInWood[id] = !plant && keep >= CLUMP_MIN_KEEP ? 1 : 0
       const far = this._farFor(id, u, clumpTop)
       this.farTierAt[id] = far
       this._wear(id, far)
@@ -2083,6 +2093,66 @@ export class Trees {
    * corrected by the sweep in `update` within a quarter second, during which the
    * terrain under them is popping in anyway.
    */
+  /**
+   * The pure tests a drawn candidate passes to stand: its keep, or 0 when it does not, with its h, tan and final scale left in `_site`. A plant passes all of them. Pure functions of position, so `pureTrunksInto` asks the same.
+   */
+  _stands(x, z, variant, scale, keepRoll, planted) {
+    const site = this._site
+    // ONE field evaluation, at a fixed band limit, and it answers only "should a tree be here". Where the trunk MEETS THE GROUND is a different question with a different answer -- see _groundFor.
+    const { h, tan } = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
+    site.h = h
+    site.tan = tan
+    site.scale = scale
+    if (planted) return 1
+    const above = h - this.field.snowLineAt(x, z)
+    // The forest law (layers/forest.js) is shared with the terrain's vertex tint, so the ground is green exactly where the roll below can win. Water is this side's alone.
+    let keep = forestKeepAt(h, tan, above, this.biome, x, z)
+    if (keep === 0) return 0
+    // Off the road, and thick along its verge (ROAD). The verge is this side's alone: the vertex tint says where a tree CAN stand, and the verge only raises the odds where it already can.
+    if (this.paths !== null) {
+      const road = this.paths.nearest(x, z, 'road')
+      if (road !== null) {
+        const past = road.dist - road.halfWidth
+        if (past < ROAD.clearance) return 0
+        if (past < ROAD.reach) keep = Math.min(1, keep * (1 + ROAD.gain * (1 - past / ROAD.reach)))
+      }
+    }
+    if (keepRoll >= keep) return 0
+    if (this.water.isSubmerged(x, z, h)) return 0
+    scale *= forestScaleAt(above, this.biome, x, z)
+    // OFF THE DEAD WOOD: a log is metres long and a trunk through it reads as the scatter's mistake, so the trunk gives way. Pure on both sides, so it is answered for ground the dead wood has not grown yet.
+    if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) return 0
+    site.scale = scale
+    return keep
+  }
+
+  /**
+   * Every trunk tile (tx, tz) stands at full density, as [x, z, trunk radius] triples appended to `out` -- the same stream and `_stands` as `_growTile`, read without the pool or the viewer, so every client gets the same answer for ground none has grown. For the leafkin (leafkin-ground.js).
+   */
+  pureTrunksInto(tx, tz, out) {
+    if (tileOutOfBounds(this.bounds, tx, tz, TILE)) return out
+    const key = tx * 0x10000 + tz
+    for (const p of this.plants.get(key) ?? []) {
+      const pr = mulberry32(tileSeed(Math.round(p.x * 64), Math.round(p.z * 64), this.seed))
+      out.push(Math.fround(p.x), Math.fround(p.z), Math.fround(this.unitTrunkRadius[(pr() * this.variantCount) | 0] * Math.fround(p.scale)))
+    }
+    const rand = mulberry32(tileSeed(tx, tz, this.seed))
+    const keepRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x5bd1e995))
+    for (let k = 0; k < this.perTile; k++) {
+      // `_growTile`'s draws, in its order: x, z, variant, yaw, scale, two tints, rank.
+      const x = (tx + rand()) * TILE
+      const z = (tz + rand()) * TILE
+      const variant = (rand() * this.variantCount) | 0
+      rand()
+      const scale = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
+      rand(); rand(); rand()
+      if (this._stands(x, z, variant, scale, keepRand(), false) === 0) continue
+      // Rounded as the pool's Float32Arrays round them, so a mushroom's `clumpSeed` off this trunk is the one `anchorsInto` seeds.
+      out.push(Math.fround(x), Math.fround(z), Math.fround(this.unitTrunkRadius[variant] * Math.fround(this._site.scale)))
+    }
+    return out
+  }
+
   _groundFor(x, z) {
     if (this.ground) {
       const g = this.ground.groundAt(x, z)

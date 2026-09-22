@@ -98,6 +98,7 @@ export const SOUNDS = {
   campfire2: 'sounds/ambience-campfire-2.mp3',
   campfire3: 'sounds/ambience-campfire-3.mp3',
   campfire4: 'sounds/ambience-campfire-4.mp3',
+  door: 'sounds/building-door-opening.mp3',
   // The menu's and the hand's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
@@ -157,8 +158,12 @@ export const RULES = {
   deerGrunt: { reach: 25, near: 4, level: 0.25, every: [20, 60], gain: [0.7, 1.0] },
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
-  // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance and fading out over the last `edge` metres to nothing at the reach. A leafkin is a small quiet thing: its chatter is heard from across a glade's pond, not across its wood.
-  voice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
+  // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance and fading out over the last `edge` metres to nothing at the reach. The wild forager is heard across its wood before it is seen, so its reach runs past its cull...
+  voice: { reach: 60, near: 5, edge: 10, level: 0.8, gain: [0.8, 1.0] },
+  // ...and a glade's villagers, a dozen within earshot of each other, are heard across its pond, not across its wood.
+  villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
+  // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
+  door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
@@ -202,6 +207,7 @@ export class Ambience {
   /**
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
+   * @param voiced    the layers whose one-shots are heard, each { layer, rule }: layer.voices(into) drains them, `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door).
    * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, and `calls`, if any, maps a species key (body.sp.key) to the rule of its call.
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
@@ -215,7 +221,10 @@ export class Ambience {
    */
   constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null }) {
     if (!engine) throw new Error('Ambience: missing engine')
-    for (const l of voiced) if (!l || typeof l.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
+    for (const v of voiced) {
+      if (!v?.layer || typeof v.layer.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
+      if (!RULES[v.rule]?.edge) throw new Error(`Ambience: a voiced layer's rule ${v.rule} is no voice rule`)
+    }
     if (!sense) throw new Error('Ambience: missing sense')
     if (dragons && typeof dragons.bodies !== 'function') throw new Error('Ambience: the dragon layer needs bodies()')
     if (fish && typeof fish.startled !== 'function') throw new Error('Ambience: the fish layer needs startled()')
@@ -736,13 +745,14 @@ export class Ambience {
 
   /** The voiced layers: every one-shot since the last frame from where it was said, within reach. */
   _voices(head) {
-    const V = RULES.voice
     const listed = this.listed
-    for (const layer of this.voiced) {
+    for (const { layer, rule } of this.voiced) {
       listed.length = 0
       layer.voices(listed)
       for (const v of listed) {
         if (!SOUNDS[v.sound]) throw new Error(`Ambience: a voiced layer said ${v.sound}, which is no sound`)
+        const V = RULES[v.rule === undefined ? rule : v.rule]
+        if (!V?.edge) throw new Error(`Ambience: a voiced layer's ${v.sound} names ${v.rule}, which is no voice rule`)
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
         const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)

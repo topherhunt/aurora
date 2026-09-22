@@ -297,6 +297,9 @@ const _edge = new THREE.Vector3()
 // far half. 12 m also keeps a single regrow (72 candidates) inside the frame
 // budget.
 const TILE = 12
+// A planted fern's rank: under every thinning band, so no distance cuts it, and
+// over 0, so _goneFor reads it as the whole draw radius rather than NaN.
+const PLANT_U = 1e-9
 
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 2.0
@@ -425,7 +428,7 @@ export class Ferns {
     water,
     layers,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [] } = {}
   ) {
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with heightAndSlopeAt')
@@ -506,7 +509,23 @@ export class Ferns {
     for (let q = 0; q <= this.maxQ; q++) this.uAt[q] = Math.pow(2, (-q / QUANT) * FALLOFF)
     for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
 
-    this.maxInstances = this._poolBound()
+    // Ferns the room planted rather than the scatter rolled (rooms/village.js
+    // DECOR): binned onto the same grid, so residency, thinning, the rim and the
+    // butterflies own them like any other. A plant stands where it is told and
+    // takes no terrain test -- one on a roof would fail every one of them -- and
+    // its rank is PLANT_U, under every thinning band, so distance never cuts it.
+    // An explicit `y` seats it there; without one it takes the ground.
+    if (!Array.isArray(plants) || plants.some((p) => ![p.x, p.z, p.scale].every(Number.isFinite) || !(p.scale > 0) || (p.y != null && !Number.isFinite(p.y)))) {
+      throw new Error('Ferns: `plants` is a list of { x, z, scale, y? }')
+    }
+    this.plants = new Map()
+    for (const p of plants) {
+      const key = Math.floor(p.x / TILE) * 0x10000 + Math.floor(p.z / TILE)
+      const at = this.plants.get(key)
+      if (at) at.push(p)
+      else this.plants.set(key, [p])
+    }
+    this.maxInstances = this._poolBound() + plants.length
 
     this.scaleLo = SCALE_RANGE[0]
     this.scaleHi = SCALE_RANGE[1]
@@ -1001,8 +1020,12 @@ export class Ferns {
 
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
-    const ids = tile ? tile.ids : new Int32Array(this.perTile)
-    const rank = tile ? tile.rank : new Float32Array(this.perTile)
+    // The room's own ferns, on a new tile alone: a tile that already stands has
+    // already planted them, and its `n` still counts them.
+    const planted = tile ? null : this.plants.get(key)
+    const nPlant = planted ? planted.length : 0
+    const ids = tile ? tile.ids : new Int32Array(this.perTile + nPlant)
+    const rank = tile ? tile.rank : new Float32Array(this.perTile + nPlant)
     let n = tile ? tile.n : 0
 
     // Hoisted: `bands` is a lazy percentile pass behind a getter and the snow
@@ -1030,21 +1053,27 @@ export class Ferns {
       }
     }
 
-    for (let k = 0; k < this.perTile; k++) {
+    // The planted ferns run first, at k below 0: they draw nothing from the
+    // tile's stream, so the wild bed stands exactly where it always did.
+    for (let k = -nPlant; k < this.perTile; k++) {
+      const plant = k < 0 ? planted[nPlant + k] : null
       // EVERY candidate draws the same randoms whether or not it survives, so a
       // fern's identity cannot depend on how many of its neighbours happened to
       // be rejected, or on the level this tile was grown at. Moving any of these
       // below the tests would make the bed change shape when a lake is edited or
       // when the player walks toward it.
-      const x = (tx + rand()) * TILE
-      const z = (tz + rand()) * TILE
-      const yaw = rand() * Math.PI * 2
-      const lean = rand()
-      const leanDir = rand() * Math.PI * 2
-      const size = rand()
-      const tintG = rand()
-      const tintR = rand()
-      const u = rand()
+      // A plant's look is drawn off its own point instead, so a garden's fern
+      // does not change when the tile under it is re-rolled.
+      const pr = plant ? mulberry32(tileSeed(Math.round(plant.x * 64), Math.round(plant.z * 64), this.seed)) : rand
+      const x = plant ? plant.x : (tx + rand()) * TILE
+      const z = plant ? plant.z : (tz + rand()) * TILE
+      const yaw = pr() * Math.PI * 2
+      const lean = pr()
+      const leanDir = pr() * Math.PI * 2
+      const size = pr()
+      const tintG = pr()
+      const tintR = pr()
+      const u = plant ? PLANT_U : rand()
 
       if (u >= uNew || u < uOld) continue
 
@@ -1052,15 +1081,18 @@ export class Ferns {
       // is not paying for the tests behind it. Elevation and slope come out of
       // one height query; water is a grid lookup; the two path queries are the
       // expensive pair and go last.
+      // A plant takes none of these: the room put it where it wants it, and one
+      // on a roof stands over no ground the tests would pass. The height and the
+      // road are still read, because the tint is taken off the ground below.
       const { h, tan } = this.field.heightAndSlopeAt(x, z)
-      if (h < PLACEMENT.minElev) { rej.elev++; continue }
-      if (tan > maxSlopeTan) { rej.slope++; continue }
+      if (!plant && h < PLACEMENT.minElev) { rej.elev++; continue }
+      if (!plant && tan > maxSlopeTan) { rej.slope++; continue }
       // A ground height of h - freeboard is "would this still be dry if the
       // water rose by `freeboard`", which is the verge we want without a second
       // API. Covers lakes and river channels alike.
-      if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
+      if (!plant && this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
-      if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+      if (!plant && h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
 
       // See ROCK_STAND_MIN and the placement below for what `top` is.
       const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
@@ -1071,7 +1103,7 @@ export class Ferns {
       // an abs; strict `<`, because `reach` is the nothing-near answer). Before
       // the river test because three quarters of the carpet leave here.
       const road = this.paths.nearest(x, z, 'road')
-      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      if (!plant && road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       if (k >= this.plainCount) {
         let lush = top > -Infinity || (road !== null && road.dist - road.halfWidth < LUSH.roadReach) || this.water.shoreDistAt(x, z, LUSH.shoreReach, h, tan) < LUSH.shoreReach
         for (let a = 0; !lush && a < nAnchors; a++) {
@@ -1082,7 +1114,7 @@ export class Ferns {
       }
 
       const river = this.paths.nearest(x, z, 'river')
-      if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      if (!plant && river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       // Last, on the survivors only: a fern she pulled up does not grow back.
       if (taken.has('fern', x, z)) continue
 
@@ -1096,7 +1128,7 @@ export class Ferns {
         )
       }
 
-      const scale = this.scaleLo + scaleSpan * size
+      const scale = plant ? plant.scale : this.scaleLo + scaleSpan * size
       const id = this.free[--this.freeCount]
       ids[n] = id
       rank[n] = u
@@ -1116,7 +1148,9 @@ export class Ferns {
       // those agree. That is the near field, which is the only place a fern is
       // more than a few pixels, and it is the same error the fern already carries
       // against the drawn ground.
-      this.instY[id] = Math.max(h - PLACEMENT.sink * scale, top)
+      // A plant given a `y` sits on that surface -- a roof (room-props.js
+      // roofSpots) -- and sinks into it by the same margin as into the ground.
+      this.instY[id] = plant?.y != null ? plant.y - PLACEMENT.sink * scale : Math.max(h - PLACEMENT.sink * scale, top)
       this.instZ[id] = z
       this.instScale[id] = scale
 

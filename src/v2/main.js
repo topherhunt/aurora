@@ -19,6 +19,7 @@ import * as persist from './edit/persist.js'
 import { installLogShip } from './log-ship.js'
 import { Trees, DENSITY as TREE_DENSITY } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
+import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
 import { createPlainTerrainMaterial } from '../terrain/terrain-material.js'
@@ -39,6 +40,7 @@ import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
 import { Leafkin } from './render/leafkin.js'
+import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
@@ -48,7 +50,7 @@ import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
 import { Shell } from './render/shell.js'
-import { rollVillage, buildVillage, WOOD, HER_SCALE } from './rooms/village.js'
+import { rollVillage, buildVillage, gardenSpots, plotsOccupy, roofFerns, weedGardens, WOOD, HER_SCALE } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
 import { setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
@@ -2309,6 +2311,9 @@ let roomProps = null
 let lamps = null
 let hearth = null
 let stools = null
+// The stones set against its houses, and the ferns seated on their roofs (rooms/village.js DECOR); the roof ferns are grown by the fern bed, so they are a list rather than a layer.
+let boulders = null
+let roofPlants = []
 let shell = null
 // The mouth she came in by (Entrances.sites()): the village's seed, and where to put her back when she leaves. Saved with the game; null in the overworld.
 let cameInBy = null
@@ -2753,11 +2758,12 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   for (const layer of [
     leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, stools, shell, markers, waterSurfaces, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   lighting.clearLamps()
   leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = stools = shell = markers = waterSurfaces = terrainWire = terrain = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
+  roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
   deskHand = null
@@ -3026,6 +3032,8 @@ async function buildRoom(room, at) {
   await bootStep('deadwood')
   // A village is wood to its walls, thickest along its roads (village.js WOOD), meadow in the clearing.
   const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
+  // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
+  let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) })) : []
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
@@ -3050,7 +3058,10 @@ async function buildRoom(room, at) {
     await bootStep('huts')
     roomProps = new RoomProps(scene, height, { bank: await banks.house, props: roomSpec.props, clearing: roomSpec.clearing })
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
-    console.log(`[v2] huts ${roomProps.stats.placed}`)
+    // The carrots the houses' roots stand over, dropped now that the houses are built: only they know where the pick's mesh reaches.
+    const sown = plots.reduce((n, p) => n + p.spots.length, 0)
+    plots = weedGardens(plots, roomProps)
+    console.log(`[v2] huts ${roomProps.stats.placed}, gardens ${plots.length} plots, ${plots.reduce((n, p) => n + p.spots.length, 0)}/${sown} carrots clear of the roots`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
     // The lamps where the build put them (render/lamps.js), their light and the huts' windows' baked into every lit material until the room goes.
     lamps = new Lamps(scene, height, { bank: await banks.lamp, lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
@@ -3065,6 +3076,13 @@ async function buildRoom(room, at) {
     stools = new Stools(scene, height, { sites: roomSpec.stools, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     console.log(`[v2] stools ${stools.stats.stools}`)
     window.v2stools = stools // console: `v2stools.stools`
+    // The stones set against the houses (render/boulders.js), and the ferns on
+    // the roofs, whose seats only the built huts know (room-props.js roofSpots).
+    boulders = new Boulders(scene, height, rocks, { boulders: roomSpec.decor.boulders, seed: villageSeed() })
+    roofPlants = roofFerns(roomProps, roomSpec.decor.roofs)
+    console.log(`[v2] decor ${roomSpec.decor.trees.length} trees, ${roomSpec.decor.ferns.length + roofPlants.length} ferns (${roofPlants.length} on roofs), ${boulders.stats.placed} boulders`)
+    window.v2boulders = boulders // console: `v2boulders.stones`
+    window.v2roofferns = roofPlants // console: where the roofs seated their ferns
   }
   window.v2huts = roomProps
 
@@ -3087,11 +3105,17 @@ async function buildRoom(room, at) {
     // the scatter itself, so the clearings are the same on every boot.
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
-    // and in a village one in the clearing, through a hut, on a lamp, in the gathering place or on a stool.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) } : deadwood,
+    // and in a village one in the clearing, through a hut, on a lamp, in the gathering place, on a stool or over a garden.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
     bounds,
+    // The village's own trees (rooms/village.js): the crowns standing where a
+    // house does, so the trunk comes up through its roof, the ones set against
+    // a wall (DECOR), and the thicket that carries the wood up the bowl's side
+    // to the stone (RIM_WOOD), on ground too steep for the bed above. Planted,
+    // so none of the tests above can refuse them.
+    plants: room.village ? [...roomSpec.decor.trees, ...roomSpec.wood] : [],
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -3117,6 +3141,7 @@ async function buildRoom(room, at) {
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
+  if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
   if (lamps) walk.addStone(lamps)
@@ -3150,7 +3175,8 @@ async function buildRoom(room, at) {
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
   await bootStep('ferns')
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds })
+  // The village's own ferns come in as plants: the ones leaning on a wall, and the ones seated on a roof, which carry their own y.
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds, plants: room.village ? [...roomSpec.decor.ferns, ...roofPlants] : [] })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -3282,9 +3308,10 @@ async function buildRoom(room, at) {
   window.v2bones = bones
 
   // The carrots: bunches on open ground (render/carrots.js), placed against the
-  // trees and rocks already standing, like the mushrooms; every tile in a village.
+  // trees and rocks already standing, like the mushrooms; every tile in a
+  // village, and its gardens planted in rows on top of the wild bed.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds, plots })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   carrots.place(spawn.x, spawn.z)
   const cs = carrots.stats
@@ -3509,9 +3536,11 @@ async function buildRoom(room, at) {
   // One leafkin a village (render/leafkin.js), out of its mouth into the wood for mushrooms, its caps carried by the hands' pool. None inside a village.
   if (room.leafkin) {
     await bootStep('leafkin')
-    leafkin = new Leafkin(scene, waterSurfaces, { walk, entrances, mushrooms, hands })
+    const ground = new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
+    leafkin = new Leafkin(scene, { ground, walk, entrances, mushrooms, hands })
     for (const m of leafkin.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-leafkin' })
     leafkin.ready.then(() => console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`))
+    creatureNet.add(leafkin, ['lk'])
   }
   window.v2leafkin = leafkin
   // The villagers (render/villagers.js): the leafkin who live here, one a house and a spare, about the roads and in and out of their doors.
@@ -3522,6 +3551,7 @@ async function buildRoom(room, at) {
     villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed() })
     for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
     villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
+    creatureNet.add(villagers, ['vg'])
   }
   window.v2villagers = villagers
 
@@ -3534,7 +3564,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' }))],
-      voiced: [leafkin, villagers].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -5768,6 +5798,7 @@ function tick() {
     // After the rocks: a mouth follows its boulder's residency.
     if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
     if (roomProps) roomProps.update(headTmp.x, headTmp.y, headTmp.z)
+    if (boulders) boulders.update(headTmp.x, headTmp.y, headTmp.z)
   }
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)

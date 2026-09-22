@@ -1,11 +1,14 @@
 import { Noise } from '../sim/noise.js'
-import { smoothstep } from '../sim/mathx.js'
+import { clamp01, smoothstep } from '../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
-// The island's field -- §31 steps A and B. Two terms, added:
+// The island's field -- §31 steps A and B. Three terms, added:
 //
 //   1. THE CONE. A circular cone standing in a sea that keeps falling, its coast pushed in and out by a warp of the position and a per-angle coast radius so the shore has bays and headlands at three sizes. Height is a function of `r / R(theta)`, so ground that reaches further out reaches further out at height and a peninsula carries a ridge on its own.
-//   2. THE JITTER. One octave of value noise per entry of `amps`, from `start` metres between nodes down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to that octave's amp, and the ground between nodes interpolated. Each octave refines the one before it; the finest is the 8 m texel. The same everywhere inland, eased down over the last `shore.band` of the radius so the coast is not cut into islets.
+//   2. THE JITTER. One octave of value noise per entry of `amps`, from `start` metres between nodes down, halving each time: a lattice of nodes at that spacing, each node moved up or down by up to that octave's amp, and the ground between nodes interpolated. Each octave refines the one before it. The same everywhere inland, eased down over the last `shore.band` of the radius so the coast is not cut into islets.
+//   3. THE RIDGE. A ridged multifractal on the high ground: crests where the noise crosses zero, hollows where it does not, each octave riding on the one above it so the detail gathers on the crests and leaves the hollows broad. This is where jaggedness comes from now, and it is jagged because it is ASYMMETRIC -- `1 - |s|` has a corner at every crest and a smooth floor between them, which is a mountain's profile and not a hill's.
+//
+// THE CASCADE STOPS AT FOUR TEXELS, and it is the most important number in this file. The field is rasterised at 8 m a texel, so a lattice at 8 m puts one independent node under every texel (white noise, and its golden-angle rotation beats against the texel grid as visible moire) and a lattice at 16 m puts one under every second texel (the Nyquist period exactly, which samples as a regular two-texel sawtooth). Both were in the cascade and both read, once the bicubic had rounded them off, as a row of identical humps marching along every crest at a fixed interval -- grain, not landform: they doubled the field's curvature and its slope reversals (10.5% of texels to 22.2%) while adding 0.3 m to the mean step. The finest octave is therefore 32 m, four texels to a node, which is the finest lattice this grid can carry without aliasing. Relief below that scale is the droplets' (erosion.js), the cliffs' (cliffs.js) and v2's own procedural detail's -- all three of which put it where the ground gives a reason for it, rather than everywhere at once.
 //
 // Nothing else. Three-free and DOM-free: the gate and the PNG script run this in node.
 // ---------------------------------------------------------------------------
@@ -30,12 +33,29 @@ export const MACRO = {
 }
 
 export const JITTER = {
-  start: 512,             // metres between nodes in the first octave, halving each octave: 512, 256, 128, 64, 32, 16, 8
-  amps: [128, 64, 32, 16, 8, 4, 2], // metres a node moves up or down by, at most, per octave; a quarter of the spacing each
+  start: 512,             // metres between nodes in the first octave, halving each octave: 512, 256, 128, 64, 32
+  // Metres a node moves up or down by, at most, per octave; a quarter of the spacing each. FIVE octaves, not seven: see THE CASCADE STOPS AT FOUR TEXELS above. Adding entries here takes the lattice to 16 m and then 8 m, which is the sawtooth.
+  amps: [128, 64, 32, 16, 8],
   interp: 'smooth',       // 'smooth' (a smoothstep between nodes) or 'linear' (a straight lerp, which shows the lattice as creases)
   rotate: true,           // turn each octave's lattice by the golden angle so no two share axes
   // The jitter is full inland and eases over the last `band` of the radius to `floor` of itself at the waterline, holding there over the sea. Full jitter at the shore is +-128 m on a 54 m apron: islets. 0.3 cuts the apron into coves and leaves it a coast.
   shore: { band: 0.2, floor: 0.3 },
+}
+
+// The ridged term. Crests, not humps: what the jitter's dead octaves used to supply, supplied by something with a corner on it.
+export const RIDGE = {
+  wavelength: 440,        // metres between one crest line and the next in the first octave
+  octaves: 4,             // halving: 440, 220, 110, 55 -- the last is seven texels, so the grid can still draw its crest
+  amp: 26,                // metres the first octave's crest stands over its hollow
+  gain: 0.5,              // each octave's amplitude as a share of the one before
+  ride: true,             // weight each octave by the one above it, so detail gathers on the crests and the hollows stay broad -- the multifractal half of "ridged multifractal", and what stops this reading as another layer of bumps
+  sharp: 2,               // exponent on 1 - |s|: at 1 the crest is a plain corner, over it the crest narrows and the floor broadens. This is the asymmetry.
+  // Where ridges run at all. Two gates, multiplied: height, so the lowland is never spiked, and a slow patch noise, so the high ground carries RANGES of jagged ground with smooth country between them rather than a uniform rash of spires.
+  floor: 0.35,            // fraction of MACRO.summit under which no ridge runs
+  band: 0.3,              // fraction of it over which that gate opens
+  patchScale: 1500,       // metres of the patch noise
+  patch: 0.1,             // the noise level the patch has to stand above
+  patchBand: 0.4,         // noise units over which it opens
 }
 
 /** Softplus with a shoulder of `eps`: max(0, v) without the crease at zero. */
@@ -57,12 +77,20 @@ const GOLDEN = Math.PI * (3 - Math.sqrt(5))
  * The field as a sampler over world metres, (x, z) -> metres. Built once per seed; `at` is what the grid loop and the instruments call.
  */
 export class Island {
-  constructor(seed, macro = MACRO, jitter = JITTER) {
+  constructor(seed, macro = MACRO, jitter = JITTER, ridge = RIDGE) {
     if (!Number.isFinite(seed)) throw new Error(`Island: seed must be a finite number, got ${seed}`)
     if (jitter.interp !== 'smooth' && jitter.interp !== 'linear') throw new Error(`Island: interp must be 'smooth' or 'linear', got ${jitter.interp}`)
+    // The cascade's finest lattice, in metres. Under four texels it aliases; see the header.
+    const finest = jitter.start / 2 ** (jitter.amps.length - 1)
+    if (!(finest >= 32)) throw new Error(`Island: the finest jitter lattice is ${finest} m, under the 32 m the 8 m grid can carry without aliasing`)
     this.macro = macro
     this.jitter = jitter
+    this.ridge = ridge
     this.seed = seed | 0
+    // One noise per ridge octave plus the patch mask, seeded clear of the warp and the coast.
+    this.ridgeN = []
+    for (let k = 0; k < ridge.octaves; k++) this.ridgeN.push(new Noise(seed * 7 + 211 + k))
+    this.patchN = new Noise(seed * 7 + 241)
     // One noise per role, seeded apart, so a warp octave and the coast harmonic never share a lattice and line up.
     this.warpX = macro.warp.map((_, i) => new Noise(seed * 7 + 11 + i))
     this.warpZ = macro.warp.map((_, i) => new Noise(seed * 7 + 31 + i))
@@ -103,10 +131,11 @@ export class Island {
     return this.macroIn(this.frame(x, z))
   }
 
-  /** The field: cone plus jitter. */
+  /** The field: cone plus jitter plus ridge. */
   at(x, z) {
     const f = this.frame(x, z)
-    return this.macroIn(f) + this.jitterAt(x, z, f)
+    const m = this.macroIn(f)
+    return m + this.jitterAt(x, z, f) + this.ridgeAt(x, z, m)
   }
 
   macroIn(f) {
@@ -164,6 +193,32 @@ export class Island {
       sum += (top + (bottom - top) * tz) * o.amp
     }
     return scale * sum
+  }
+
+  /**
+   * The ridged term, in metres and never negative: it lifts crests out of the cone rather than cutting valleys into it, so the hollows between ridges are the cone's own ground and keep whatever the jitter and the droplets put there.
+   *
+   * `macro` is the cone's height at this position, which is what the height gate reads -- the cone and not the field, so a jitter node cannot push a patch of lowland over the line and stand a range of spires on it.
+   */
+  ridgeAt(x, z, macro) {
+    const R = this.ridge
+    const lift = smoothstep(R.floor * this.macro.summit, (R.floor + R.band) * this.macro.summit, macro)
+    if (lift <= 0) return 0
+    const patch = clamp01((this.patchN.simplex2(x / R.patchScale, z / R.patchScale) - R.patch) / R.patchBand)
+    if (patch <= 0) return 0
+    let sum = 0
+    let amp = R.amp
+    let lam = R.wavelength
+    let prev = 1
+    for (let k = 0; k < R.octaves; k++) {
+      // 1 - |s|: 1 on the crest line, 0 where the noise is furthest from it. The corner at the crest is the point; `sharp` narrows it.
+      const r = Math.pow(1 - Math.abs(this.ridgeN[k].simplex2(x / lam, z / lam)), R.sharp)
+      sum += amp * r * prev
+      if (R.ride) prev = clamp01(r)
+      amp *= R.gain
+      lam *= 0.5
+    }
+    return lift * patch * sum
   }
 }
 

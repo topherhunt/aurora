@@ -8,18 +8,14 @@
 // within JOIN_M, and every house door a node off its nearest road node. Every
 // trip is a shortest path over it, so a villager is always on the cobbles,
 // which the build keeps dry, clear of the huts and off the lamps -- no step is
-// probed. The whole village steps tick by tick together on the score's ticks
-// (sim/score.js) of the room's clock, every roll off a PRNG kept on the
-// villager and seeded from the room, the villager and the village's chapter.
-// A chapter's turn puts everyone indoors (HOMING_S before it they make for
-// their doors), so a client arriving mid-chapter places them there at its
-// start and replays it silent, landing where the room's are. Her feet are the
-// one thing a client knows that the others do not: a startle is an EVENT sent
-// to the room, and a client hearing one for a tick it has stepped past rolls
-// back to a snapshot before it and replays (design/30-leafkin.md, Netplay).
+// probed. They step on the score's ticks (sim/score.js stepTo) of the room's
+// clock, every roll off a PRNG seeded from the room, the villager and the
+// chapter; at boot each is put inside its house at the chapter's start and
+// its chapter so far is replayed silent, so she arrives on a village already
+// about its day.
 //
 //   inside   in its house, unseen, INSIDE_S; then out of the door on an --
-//   errand   home (up its steps to the door's sill, inside), gaze (to one of GAZE_SPOTS on
+//   errand   home (walk to the door, inside), gaze (to one of GAZE_SPOTS on
 //            the loop, GAZE_OFF_M off it toward the water, and stand facing
 //            the lake GAZE_S), sit (to a free one of the room's `seats`, the
 //            hearth's stools and the scattered ones, round its side to the
@@ -30,29 +26,23 @@
 //            on the sit clip's first SIT_CUT[0] seconds, holds on idle-sit
 //            SIT_S facing it, rises on the clip from SIT_CUT[1], and plans
 //            again from its node. The stool is its from the errand's roll to
-//            its rising; it stops for no talk, but a fright lets it go.
+//            its rising; a talk or a fright on the way lets it go.
 //   talk     two passing within TALK_M with neither TALK_COOL_S from its last
 //            talk stop, face each other and chatter by turns TALK_S, a talk
 //            gesture with every call.
-//   (all)    nobody walks through anybody: a mover veers off its route to
-//            pass on its right anyone LOOK_M ahead, never steps within
-//            SPACE_M of another, counts a point taken by someone as reached
-//            beside them, and STALL_S blocked gives the errand up.
-//   flee     a player's feet within STARTLE_M: it runs home if home is CALM_M
-//            from where they stood and goes inside, else to the node farthest
-//            from there within FLEE_M of road, whimpering and panting by
-//            turns; it never stands its ground. At the end of its run it calms
-//            and takes up an errand, unless its player's client says they are
-//            still within CALM_M, and it runs again.
+//   flee     her feet within STARTLE_M: it runs home if home is CALM_M from
+//            her and goes inside, else to the node farthest from her within
+//            FLEE_M of road, whimpering and panting by turns, and plans again
+//            from there; it never stands its ground. It calms only once she
+//            is CALM_M off, and takes up an errand.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CHAPTER_S, SILENT_TICKS, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
-import { snap } from '../creature-net.js'
+import { CHAPTER_S, SILENT_TICKS, TICK_S, chapterOf, hash32, stepTo, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
-import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 
 export const LOD_TIERS = LOD_RUNGS
@@ -98,37 +88,9 @@ export const FLEE_TURN = 10
 // A gait or a hold extended in place when it runs out; the chest, as a fraction of the body, the voice comes from.
 const STEP_S = 2
 const CHEST = 0.5
-// The clip crossfade, and the dither out of sight through a door.
 const FADE_S = 0.25
-export const DOOR_FADE_S = 0.25
-// Two bodies' centres keep SPACE_M apart (at SIZE_M; scaled by their mean size); everyone keeps KEEP_M right of a road's centreline; a mover looks LOOK_M ahead for someone within that of its line and veers up to DODGE off its route, more the nearer they are and the less room it has, but never past LANE_M of the leg it walks or the roads (PART_M to part from someone it stands inside); STALL_S of no headway and it gives up the errand, or plans the flight again. All of them are stepped tick by tick together (update), so each sees the others where they stand now.
-export const SPACE_M = 0.4
-export const LOOK_M = 2.5
-export const DODGE = (60 * Math.PI) / 180
-export const STALL_S = 3
-export const LANE_M = 0.5
-export const KEEP_M = 0.22
-export const PART_M = 0.75
 // Ticks between looks for someone to talk to.
 const MEET_TICKS = 10
-// Seconds before a chapter's turn that everyone makes for home, so the turn finds them indoors.
-export const HOMING_S = 120
-// The village's state is kept every SNAP_TICKS, SNAPS deep, for a startle heard late to roll back to; one older than that replays the chapter.
-const SNAP_TICKS = 20
-const SNAPS = 30
-// A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
-const MAX_NAMED = 15
-// A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'by']
-
-/** mulberry32 with its state on the villager (`rs`), so a snapshot keeps where its rolls are. */
-function roll(c) {
-  c.rs = (c.rs + 0x6d2b79f5) >>> 0
-  let t = c.rs
-  t = Math.imul(t ^ (t >>> 15), t | 1)
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-}
 
 export const TALKS = ['talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
 export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', ...TALKS]
@@ -142,6 +104,7 @@ const _quat = new THREE.Quaternion()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+const _trunk = { x: 0, z: 0, r: 0 }
 
 /**
  * How high a seated body's underside rides over the rig's own floor, in the
@@ -186,7 +149,7 @@ export function seatY(asset) {
 /**
  * The roads as a graph: `nodes` `[{ x, z, road }]`, `adj` each node's
  * neighbours, and `doorNodes`, the node of each door in `doors` order (road
- * 'door', with its `sill`). `roads` are the build's doc roads, `[x, y, z, w]` points.
+ * 'door'). `roads` are the build's doc roads, `[x, y, z, w]` points.
  */
 export function roadGraph(roads, doors) {
   const nodes = [], adj = []
@@ -220,11 +183,9 @@ export function roadGraph(roads, doors) {
     const [j, d] = nearest(n.x, n.z, (i) => i === e || (nodes[i].road === n.road && Math.abs(i - e) < 3))
     if (j >= 0 && d <= JOIN_M) link(e, j)
   }
-  const doorNodes = doors.map(({ x, z, sill }) => {
-    if (!sill || !Number.isFinite(sill.x) || !Number.isFinite(sill.z)) throw new Error('roadGraph: a door without its sill')
+  const doorNodes = doors.map(({ x, z }) => {
     const [j] = nearest(x, z, () => false)
     const n = add(x, z, 'door')
-    nodes[n].sill = sill
     link(n, j)
     return n
   })
@@ -300,27 +261,23 @@ export function pathTo(parent, from, to) {
 export class Villagers {
   /**
    * @param water        WaterSurfaces: isSubmerged, for the gazing spots
-   * @param opts.walk    WalkSurface: heightAt
+   * @param opts.walk    WalkSurface: heightAt, obstacleAt
    * @param opts.roads   the build's doc roads
-   * @param opts.doors   RoomProps.doors(): `[{ x, z, sill }]`
+   * @param opts.doors   RoomProps.doors(): `[{ x, z }]`
    * @param opts.lake    the build's lake: x, z
    * @param opts.seats   the stools, `[{ x, z, top, r, lookX, lookZ }]`: each a disc of `r` about (x, z) whose top is `top` in the world, sat on facing (lookX, lookZ)
-   * @param opts.seed    the room's seed, a uint32 every client of the room shares
+   * @param opts.seed    the room's seed
    * @param opts.asset   a loaded asset, for a gate; the world fetches the GLB
    */
   constructor(scene, water, { walk, roads, doors, lake, seats = [], seed = 1, asset = null } = {}) {
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Villagers need WaterSurfaces, for isSubmerged')
-    if (!walk || typeof walk.heightAt !== 'function') throw new Error('Villagers need the WalkSurface, for heightAt')
-    if (!Number.isInteger(seed) || seed < 0) throw new Error(`Villagers: the seed is a uint32, got ${seed}`)
+    if (!walk || typeof walk.heightAt !== 'function' || typeof walk.obstacleAt !== 'function') throw new Error('Villagers need the WalkSurface, for heightAt and obstacleAt')
     if (!Array.isArray(roads) || !Array.isArray(doors) || doors.length === 0) throw new Error('Villagers need the roads and at least one door')
     if (!lake || !Number.isFinite(lake.x) || !Number.isFinite(lake.z)) throw new Error('Villagers need the lake, for where to gaze')
     if (!Array.isArray(seats)) throw new Error('Villagers: seats is a list')
     this.water = water
     this.walk = walk
     this.seed = seed
-    this.key = `village:${seed}`
-    // Every startle's anchor wears this: the village it is for.
-    this.wire = `vg:${seed.toString(36)}:`
     this.graph = roadGraph(roads, doors)
     const { nodes, doorNodes } = this.graph
     // Where a wander may end: any node of a road but the trunk, which leads only to her door.
@@ -362,52 +319,34 @@ export class Villagers {
     }
     this.all = []
     for (let k = 0; k < doors.length + EXTRA; k++) {
-      const c = {
-        id: k, key: `villager:${k}`, home: doorNodes[k % doors.length], rs: 0, rand: null, size: 1, k: 1, pace: 1, runner: false,
-        // The tick's pose and the one before it, for the frame to lerp.
-        x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0,
+      this.all.push({
+        id: k, key: `villager:${k}`, home: doorNodes[k % doors.length], rand: null, size: 1, k: 1, pace: 1, runner: false, turnTick: 0,
+        // The tick's pose and the one before it, for the frame to lerp; `tick` and `alpha` are the score's.
+        x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0, tick: 0, alpha: 0,
         // The frame's pose, what the puppet and the ear are given.
         pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1 },
         // inside, walk, stand, gaze, sit, talk or flee; inside, it is drawn by nobody.
         state: 'inside', hidden: true,
         // The node it stands at or is making for, the route on from it (`{ x, z, node }`, node -1 off the road), the point of it it is on, and what the route's end is for: stand, gaze, sit, enter, calm.
         at: 0, route: [], wp: 0, then: 'stand',
-        // Seconds the state has left, to the next call, whether the last was a pant, and until it will talk again; who it is talking to; the seat it has claimed and where a sit is: turn, down, hold, up; seconds blocked.
-        hold: 0, voice: 0, panted: false, talked: 0, partner: null, seat: null, phase: '', stall: 0, side: 0,
+        // Seconds the state has left, to the next call, whether the last was a pant, and until it will talk again; who it is talking to; the seat it has claimed and where a sit is: turn, down, hold, up.
+        hold: 0, voice: 0, panted: false, talked: 0, partner: null, seat: null, phase: '',
         // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of steps, the ground speed, and the second of the clip the step cuts in at (-1 to fade in from its start).
         clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0, from: -1,
-        // Where the player it last ran from stood, and whose client that is (null for this one's).
-        fx: 0, fz: 0, by: null,
         lod: LOD_TIERS, puppet: null,
-      }
-      c.rand = () => roll(c)
-      this.all.push(c)
+      })
     }
     this.puppets = []
     this.freePuppets = []
     this.asset = null
     this.durations = null
     // One-shots for the ear, drained by voices(): { sound, x, y, z }.
-    this.calls = []
+    this.pending = []
     this.feet = { x: 0, y: 0, z: 0 }
     this.head = { x: 0, y: 0, z: 0 }
     this.frame = 0
     this.loaded = false
-    // The village's last tick stepped (null until placed), the tick its chapter turns on, how far into the next tick the frame is, and the highest tick ever stepped: a tick past it is live, heard and watched for her feet, one at or under it a replay.
-    this.tick = null
-    this.turnTick = 0
-    this.alpha = 0
-    this.live = -Infinity
-    this.voicing = false
-    this.homing = false
-    // The startles, the room's and hers: tick -> [{ key, tick, fx, fy, fz, ids, by, done }] sorted by key; hers owed to the relay; the kept states; and the earliest tick a startle heard late needs stepped again.
-    this.log = new Map()
-    this.outbox = []
-    this.snaps = []
-    this.rewind = Infinity
-    this.rewinds = 0
-    this.popped = 0
-    this.hearsOwn = true
+    this.placed = false
     this.starved = 0
     this.talks = 0
     this.startles = 0
@@ -455,17 +394,18 @@ export class Villagers {
     this.loaded = true
   }
 
-  /** The ground at (x, z) it may stand on, or null: dry. Not the trunks: which trees a client holds is its own residency, and every client must refuse the same steps. */
+  /** The ground at (x, z) it may stand on, or null: dry and clear of a trunk. */
   seat(x, z) {
     const y = this.walk.heightAt(x, z)
     if (this.water.isSubmerged(x, z, y)) return null
+    if (this.walk.obstacleAt(x, z, _trunk)) return null
     return y
   }
 
   get stats() {
     const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, flee: 0 }
     for (const c of this.all) states[c.state]++
-    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
+    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
 
   /** Every villager drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -477,8 +417,8 @@ export class Villagers {
 
   /** The one-shots since the last call, each `{ sound, x, y, z }`, drained. */
   voices(into) {
-    for (const v of this.calls) into.push(v)
-    this.calls.length = 0
+    for (const v of this.pending) into.push(v)
+    this.pending.length = 0
     return into
   }
 
@@ -488,9 +428,8 @@ export class Villagers {
 
   _toward(c, x, z) { return Math.atan2(-(z - c.z), x - c.x) }
 
-  /** A one-shot from its chest, heard by the layer's rule or by `rule` (ambience.js RULES). */
-  _voice(c, sound, rule) {
-    if (this.voicing) this.calls.push({ sound, rule, x: c.x, y: c.y + c.size * CHEST, z: c.z })
+  _voice(c, sound) {
+    this.pending.push({ sound, x: c.x, y: c.y + c.size * CHEST, z: c.z })
   }
 
   /** The state's call, or a pant if the last was the call, and the wait to the next. */
@@ -524,35 +463,25 @@ export class Villagers {
     c.left = c.dur = STEP_S
   }
 
-  /** Everyone into their houses at the start of the chapter `seconds` falls in, each a roll of INSIDE_S from coming out; the village's tick is the chapter's first, which is never stepped. The startles before it are let go. */
-  _placeAll(seconds) {
-    const { index, start } = chapterOf(seconds, this.key)
-    this.tick = tickOf(start)
-    this.turnTick = tickAfter(start + CHAPTER_S)
-    for (const c of this.all) {
-      c.rs = hash32(this.seed, c.id, index)
-      const home = this.graph.nodes[c.home]
-      c.x = c.px = home.sill.x
-      c.z = c.pz = home.sill.z
-      // The road at the door read from under any stone (the door stands under the house's awning), and the sill a reach up from it.
-      c.y = c.py = this.walk.heightAt(c.x, c.z, this.walk.heightAt(home.x, home.z, -Infinity))
-      c.heading = c.ph = c.aim = 0
-      c.at = c.home
-      c.partner = null
-      c.talked = 0
-      c.fx = c.fz = 0
-      c.by = null
-      c.voice = 0
-      c.panted = false
-      c.stall = c.side = 0
-      c.phase = ''
-      c.then = 'stand'
-      if (c.seat !== null) this._leaveSeat(c)
-      this._inside(c, c.rand() * INSIDE_S[1])
-    }
-    for (const t of this.log.keys()) if (t <= this.tick) this.log.delete(t)
-    this.snaps.length = 0
-    this._snap()
+  /** Into its house at the chapter's start, `wait` seconds from coming out; the frame it is placed on is the chapter's first tick. */
+  _place(c, seconds) {
+    const { index, start } = chapterOf(seconds, c.key)
+    c.rand = mulberry32(hash32(this.seed, c.id, index))
+    c.turnTick = tickAfter(start + CHAPTER_S)
+    c.tick = tickOf(start)
+    c.alpha = 0
+    const home = this.graph.nodes[c.home]
+    c.x = c.px = home.x
+    c.z = c.pz = home.z
+    // The road at the door, read from under any stone: the door stands under the house's awning.
+    c.y = c.py = this.walk.heightAt(c.x, c.z, -Infinity)
+    c.heading = c.ph = c.aim = 0
+    c.at = c.home
+    c.partner = null
+    c.talked = 0
+    c.lod = LOD_TIERS
+    this._leaveSeat(c)
+    this._inside(c, c.rand() * INSIDE_S[1])
   }
 
   _leaveSeat(c) {
@@ -571,30 +500,27 @@ export class Villagers {
     this._play(c, 'idle', STEP_S)
   }
 
-  /** Out of the door and off on an errand, once nobody stands in it. */
+  /** Out of the door and off on an errand. */
   _exit(c) {
     c.hidden = false
-    this._voice(c, 'door', 'door')
     this._errand(c)
   }
 
-  /** A route to `node`, and beyond it `extra` off-road points (up its steps to the sill, for `enter`), ending in `then`; a seat claimed for anything else is let go. */
+  /** A route to `node`, and beyond it `extra` off-road points, ending in `then`; a seat claimed for anything else is let go. */
   _go(c, node, then, extra = []) {
     this._leaveSeat(c)
+    const { nodes } = this.graph
     const { parent } = dijkstra(this.graph, c.at, node)
-    c.route = this._keepRight(c, pathTo(parent, c.at, node))
-    // Sent home from its own door, the sill's leg still starts at the door: a route of the sill alone has no leg to keep its lane on, and pins it half a metre up the steps.
-    if (then === 'enter') extra = c.route.length === 0 ? [this.graph.nodes[node], this.graph.nodes[node].sill] : [this.graph.nodes[node].sill]
+    c.route = pathTo(parent, c.at, node).map((k) => ({ x: nodes[k].x, z: nodes[k].z, node: k }))
     for (const p of extra) c.route.push({ x: p.x, z: p.z, node: -1 })
     c.wp = 0
     c.then = then
     c.state = 'walk'
-    this._play(c, c.runner || this.homing ? 'run' : 'walk', STEP_S)
+    this._play(c, c.runner ? 'run' : 'walk', STEP_S)
     if (c.route.length === 0) this._arrive(c)
   }
 
   _errand(c) {
-    if (this.homing) { this._go(c, c.home, 'enter'); return }
     let roll = c.rand() * ERRANDS.reduce((s, [, w]) => s + w, 0)
     let kind = ERRANDS[ERRANDS.length - 1][0]
     for (const [k, w] of ERRANDS) { roll -= w; if (roll < 0) { kind = k; break } }
@@ -671,24 +597,12 @@ export class Villagers {
       case 'stand': this._stand(c, between(c.rand, STAND_S)); break
       case 'gaze': this._gaze(c); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
-      case 'enter': {
-        // Reached beside someone on the steps, it is through the door all the same, and comes out of it.
-        const { sill } = this.graph.nodes[c.home]
-        c.x = sill.x
-        c.z = sill.z
-        this._voice(c, 'door', 'door')
-        this._inside(c, between(c.rand, INSIDE_S))
-        break
-      }
+      case 'enter': this._inside(c, between(c.rand, INSIDE_S)); break
       case 'errand': this._errand(c); break
-      case 'calm': {
-        // A startle naming it on the tick it calms is its player still near, said by that player's client; on a live tick this client says so of her.
-        let e = this._startleOf(c)
-        if (!e && c.by === null && this.voicing && Math.hypot(c.x - this.feet.x, c.z - this.feet.z) < CALM_M) e = this._raise([c.id])
-        if (e) this._fright(c, e)
-        else this._errand(c)
+      case 'calm':
+        if (this._farFromHer(c) >= CALM_M) this._errand(c)
+        else this._flee(c)
         break
-      }
       default: throw new Error(`Villagers: a route ends in ${c.then}`)
     }
   }
@@ -703,9 +617,10 @@ export class Villagers {
       c.aim = this._toward(c, other.x, other.z)
       c.route.length = 0
       c.wp = 0
+      this._leaveSeat(c)
       this._play(c, 'idle', STEP_S)
     }
-    if (this.voicing) this.talks++
+    this.talks++
   }
 
   /** Out of a talk: the partner left standing takes up an errand of its own. */
@@ -720,74 +635,36 @@ export class Villagers {
     }
   }
 
-  /** The startle naming `c` on the tick being stepped, or null. */
-  _startleOf(c) {
-    const events = this.log.get(this.tick)
-    if (events) for (const e of events) if (e.ids.includes(c.id)) return e
-    return null
-  }
+  _farFromHer(c) { return Math.hypot(c.x - this.feet.x, c.z - this.feet.z) }
 
-  /** Her startle of `ids` on the tick being stepped, from where her feet stand: logged, and owed to the room. */
-  _raise(ids) {
-    const tick = this.tick
-    const fx = snap(this.feet.x), fy = snap(this.feet.y), fz = snap(this.feet.z)
-    const key = `${this.wire}${tick.toString(36)}:${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids).toString(36)}`
-    const e = this._log({ key, tick, fx, fy, fz, ids, by: null, done: false })
-    this.outbox.push([key, tick / TICK_HZ, fx, fy, fz, 0, 0, 'startle', null, ...ids])
-    return e
-  }
-
-  /** Into the log in key order, so every client steps a tick's startles alike; the one already there if the key is. */
-  _log(e) {
-    let events = this.log.get(e.tick)
-    if (!events) this.log.set(e.tick, (events = []))
-    const had = events.find((o) => o.key === e.key)
-    if (had) return had
-    events.push(e)
-    events.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    return e
-  }
-
-  _startle(c, e) {
-    if (!e.done) {
-      this.startles++
-      // A startle first stepped in a rollback is heard all the same, if it is fresh.
-      if (!this.voicing && e.tick > this.live - SILENT_TICKS) this.calls.push({ sound: 'leafkinWhimper', x: c.x, y: c.y + c.size * CHEST, z: c.z })
-    }
+  _startle(c) {
+    this.startles++
     if (c.state === 'talk') this._untalk(c)
     c.voice = 0.1
     c.panted = true
-    this._fright(c, e)
-  }
-
-  _fright(c, e) {
-    c.fx = e.fx
-    c.fz = e.fz
-    c.by = e.by
     this._flee(c)
   }
 
-  /** Home if home is CALM_M from where the player stood, else the node farthest from there within FLEE_M of road, never the one it stands on: a cornered villager runs back the way it came rather than stand. */
+  /** Home if home is CALM_M from her, else the node farthest from her within FLEE_M of road, never the one it stands on: a cornered villager runs back the way it came rather than stand. */
   _flee(c) {
     this._leaveSeat(c)
     const { nodes } = this.graph
     const home = nodes[c.home]
-    const shun = (j) => (Math.hypot(nodes[j].x - c.fx, nodes[j].z - c.fz) < SHUN_M ? SHUN : 1)
-    if (Math.hypot(home.x - c.fx, home.z - c.fz) >= CALM_M && c.at !== c.home) {
+    const shun = (j) => (Math.hypot(nodes[j].x - this.feet.x, nodes[j].z - this.feet.z) < SHUN_M ? SHUN : 1)
+    if (Math.hypot(home.x - this.feet.x, home.z - this.feet.z) >= CALM_M && c.at !== c.home) {
       const { parent } = dijkstra(this.graph, c.at, c.home, shun)
-      c.route = this._keepRight(c, pathTo(parent, c.at, c.home))
-      c.route.push({ x: home.sill.x, z: home.sill.z, node: -1 })
+      c.route = pathTo(parent, c.at, c.home).map((k) => ({ x: nodes[k].x, z: nodes[k].z, node: k }))
       c.then = 'enter'
     } else {
       const { dist, parent } = dijkstra(this.graph, c.at, -1, shun)
       let best = -1, far = -Infinity
       for (let j = 0; j < nodes.length; j++) {
         if (j === c.at || dist[j] > FLEE_M) continue
-        const d = Math.hypot(nodes[j].x - c.fx, nodes[j].z - c.fz)
+        const d = Math.hypot(nodes[j].x - this.feet.x, nodes[j].z - this.feet.z)
         if (d > far) { far = d; best = j }
       }
       if (best < 0) throw new Error(`Villagers: ${c.key} has nowhere to run from node ${c.at}`)
-      c.route = this._keepRight(c, pathTo(parent, c.at, best))
+      c.route = pathTo(parent, c.at, best).map((k) => ({ x: nodes[k].x, z: nodes[k].z, node: k }))
       c.then = 'calm'
     }
     c.wp = 0
@@ -810,175 +687,49 @@ export class Villagers {
    */
   _follow(c, dt, rate) {
     const step = c.speed * dt
-    const dodge = this._dodge(c)
-    const wp0 = c.wp, d0 = Math.hypot(c.route[c.wp].x - c.x, c.route[c.wp].z - c.z)
     let left = step
     while (left > 0) {
       const p = c.route[c.wp]
       const d = Math.hypot(p.x - c.x, p.z - c.z)
-      const sitting = c.then === 'sit' && c.wp >= c.route.length - 2
-      if (sitting ? d <= (c.wp === c.route.length - 1 ? SIT.near : NODE_M) : this._reached(c, p, d)) {
+      if (d <= (c.then === 'sit' && c.wp === c.route.length - 1 ? SIT.near : NODE_M)) {
         if (p.node >= 0) c.at = p.node
         c.wp++
         if (c.wp >= c.route.length) { c.route.length = 0; c.wp = 0; this._arrive(c); return }
         continue
       }
-      c.aim = this._toward(c, p.x, p.z) + dodge
+      c.aim = this._toward(c, p.x, p.z)
       const m = Math.min(left, d)
       const moved = m * this._turn(c, (dt * m) / step, rate)
-      this._stepTo(c, c.x + Math.cos(c.heading) * moved, c.z - Math.sin(c.heading) * moved)
+      c.x += Math.cos(c.heading) * moved
+      c.z -= Math.sin(c.heading) * moved
       left -= m
     }
-    // Headway is ground gained on the point it makes for: circling someone is no headway.
-    c.stall = c.wp === wp0 && d0 - Math.hypot(c.route[c.wp].x - c.x, c.route[c.wp].z - c.z) < 0.2 * step ? c.stall + dt : 0
-    if (c.stall < STALL_S) return
-    c.stall = 0
-    if (c.state !== 'flee') { this._errand(c); return }
-    // Blocked on the run, it runs from where it was blocked: planned again from the same point, the same route would block it again.
-    const p = c.route[c.wp]
-    c.fx = p.x
-    c.fz = p.z
-    this._flee(c)
   }
 
-  /** A path's nodes as route points, each between its ends KEEP_M to the right of the way it is walked, so two meeting on a road pass without a dodge; a door is its own point, and one it stands up the steps from is the first. */
-  _keepRight(c, path) {
-    const { nodes } = this.graph
-    const at = nodes[c.at], route = path.length > 0 && at.road === 'door' && Math.hypot(c.x - at.x, c.z - at.z) > NODE_M ? [{ x: at.x, z: at.z, node: c.at }] : []
-    return route.concat(path.map((k, i) => {
-      const n = nodes[k]
-      if (i === 0 || i === path.length - 1 || n.road === 'door') return { x: n.x, z: n.z, node: k }
-      const a = nodes[path[i - 1]], b = nodes[path[i + 1]], L = Math.hypot(b.x - a.x, b.z - a.z) || 1
-      // Right of the way (ux, uz) is (uz, -ux): the dodge's side, +90° of the heading.
-      return { x: n.x + (KEEP_M * (b.z - a.z)) / L, z: n.z - (KEEP_M * (b.x - a.x)) / L, node: k }
-    }))
-  }
-
-  _space(c, o) { return (SPACE_M * (c.size + o.size)) / (2 * SIZE_M) }
-
-  /** The veer off its route this tick: away from the nearest body within LOOK_M ahead on its bearing to the point it makes for (never its heading, which the veer itself turns) and within its space of that line, to its right when dead ahead -- so two meeting head on both go right and pass -- but inward at the lane's edge. */
-  _dodge(c) {
-    const p = c.route[c.wp], b = this._toward(c, p.x, p.z), fx = Math.cos(b), fz = -Math.sin(b)
-    let dodge = 0, nearest = LOOK_M
-    for (const o of this.all) {
-      if (o === c || o.hidden) continue
-      const dx = o.x - c.x, dz = o.z - c.z
-      const fwd = dx * fx + dz * fz
-      if (fwd <= 0 || fwd >= nearest) continue
-      const lat = fx * dz - fz * dx, space = this._space(c, o)
-      if (Math.abs(lat) >= space) continue
-      nearest = fwd
-      dodge = (lat >= 0 ? 1 : -1) * DODGE * (1 - fwd / LOOK_M) * (1 - Math.abs(lat) / space)
-    }
-    // Never out past the lane: at its edge it veers inward instead, (fz, -fx) being +90° of the bearing.
-    const k = Math.sign(dodge)
-    if (k !== 0 && this._off(c, c.x + k * 0.3 * fz, c.z - k * 0.3 * fx) > LANE_M) dodge = -dodge
-    return dodge
-  }
-
-  /** A route point d off is reached within NODE_M, or when pressed against whoever stands on it. */
-  _reached(c, p, d) {
-    if (d <= NODE_M) return true
-    for (const o of this.all) {
-      if (o === c || o.hidden) continue
-      const q = Math.hypot(o.x - p.x, o.z - p.z), space = this._space(c, o)
-      if (q < space + NODE_M && d <= space + q + 0.05 && Math.hypot(o.x - c.x, o.z - c.z) <= space + 0.05) return true
-    }
-    return false
-  }
-
-  /**
-   * Onto (x, z), or round whoever is in the way: a step into someone's space
-   * slides along their rim at its full length, to the side it already leans
-   * (the dodge's side when dead on), else the other side, else not at all,
-   * and never back the way it came, out to PART_M of the way; it keeps that
-   * side (`side`) until a step goes clear, or it would circle.
-   */
-  _stepTo(c, x, z) {
-    if (this._free(c, x, z)) { c.x = x; c.z = z; c.side = 0; return }
-    let o = null, near = Infinity
-    for (const q of this.all) {
-      if (q === c || q.hidden) continue
-      const d = Math.hypot(x - q.x, z - q.z)
-      if (d < this._space(c, q) && d < Math.hypot(c.x - q.x, c.z - q.z) && d < near) { near = d; o = q }
-    }
-    if (o === null) return
-    const space = this._space(c, o), sx = x - c.x, sz = z - c.z, L = Math.hypot(sx, sz)
-    let nx = c.x - o.x, nz = c.z - o.z
-    const n = Math.hypot(nx, nz) || 1
-    nx /= n; nz /= n
-    // Dead on, the dodge's side: (-sin h, -cos h), +90° of the heading.
-    const lean = sx * -nz + sz * nx
-    const side = c.side || (Math.abs(lean) > 1e-6 * L ? Math.sign(lean) : nz * Math.sin(c.heading) - nx * Math.cos(c.heading) >= 0 ? 1 : -1)
-    for (const k of [side, -side]) {
-      if (k * lean < -0.1 * L) continue
-      let px = c.x - k * nz * L, pz = c.z + k * nx * L
-      const d = Math.hypot(px - o.x, pz - o.z)
-      if (d < space) { px = o.x + ((px - o.x) / d) * space; pz = o.z + ((pz - o.z) / d) * space }
-      if (this._free(c, px, pz, PART_M)) { c.x = px; c.z = pz; c.side = k; return }
-    }
-  }
-
-  /**
-   * Whether it may step to (x, z): no nearer anyone whose space that is in (a
-   * step away is let through, so two put together part), within LANE_M of its
-   * leg or the roads (`lane`; PART_M while parting) unless nearer them than
-   * it was, and on ground it can stand on.
-   */
-  _free(c, x, z, lane = LANE_M) {
-    let parting = false
-    for (const o of this.all) {
-      if (o === c || o.hidden) continue
-      const space = this._space(c, o), was = Math.hypot(c.x - o.x, c.z - o.z)
-      if (Math.hypot(x - o.x, z - o.z) < space - 1e-9 && Math.hypot(x - o.x, z - o.z) < was) return false
-      if (was < space) parting = true
-    }
-    const off = this._off(c, x, z)
-    if (off > (parting ? PART_M : lane) && off > this._off(c, c.x, c.z)) return false
-    return this.seat(x, z) !== null
-  }
-
-  /** How far (x, z) lies from the leg of its route it walks (its first point, before it has one: a riser's way off its stool), or from the roads if they are nearer. */
-  _off(c, x, z) {
-    const seg = (a, b) => {
-      const ux = b.x - a.x, uz = b.z - a.z, L = ux * ux + uz * uz
-      const t = L > 0 ? Math.max(0, Math.min(1, ((x - a.x) * ux + (z - a.z) * uz) / L)) : 0
-      return Math.hypot(x - a.x - t * ux, z - a.z - t * uz)
-    }
-    let off = c.wp < c.route.length ? seg(c.route[Math.max(0, c.wp - 1)], c.route[c.wp]) : Infinity
-    if (off <= LANE_M) return off
-    const { nodes, adj } = this.graph
-    for (let i = 0; i < nodes.length; i++) for (const j of adj[i]) if (j > i) off = Math.min(off, seg(nodes[i], nodes[j]))
-    return off
-  }
-
-  /** Someone else passing within TALK_M, with neither just out of a talk nor on its way to a stool. */
+  /** Someone else passing within TALK_M, with neither just out of a talk. */
   _meet(c) {
-    if (c.talked > 0 || this.homing || c.seat !== null) return null
+    if (c.talked > 0) return null
     for (const o of this.all) {
-      if (o === c || o.talked > 0 || o.hidden || o.seat !== null || (o.state !== 'walk' && o.state !== 'stand')) continue
+      if (o === c || o.talked > 0 || o.hidden || (o.state !== 'walk' && o.state !== 'stand')) continue
       if (Math.hypot(o.x - c.x, o.z - c.z) <= TALK_M) return o
     }
     return null
   }
 
   _tick(c, tick) {
+    if (tick >= c.turnTick) {
+      const { index, start } = chapterOf(tick * TICK_S, c.key)
+      c.rand = mulberry32(hash32(this.seed, c.id, index))
+      c.turnTick = tickAfter(start + CHAPTER_S)
+    }
     c.px = c.x; c.py = c.y; c.pz = c.z; c.ph = c.heading
     const dt = TICK_S
     c.talked = Math.max(0, c.talked - dt)
-    if (c.state !== 'inside' && c.state !== 'flee') {
-      const e = this._startleOf(c)
-      if (e) this._startle(c, e)
-    }
-    // Homing, every hold runs out and every walker runs for its door (_errand, _go).
-    if (this.homing && c.state !== 'inside') {
-      c.hold = Math.min(c.hold, 0)
-      if (c.state === 'walk' && c.clip !== 'run') this._go(c, c.home, 'enter')
-    }
+    if (c.state !== 'inside' && c.state !== 'flee' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M) this._startle(c)
     switch (c.state) {
       case 'inside':
         c.hold -= dt
-        if (c.hold <= 0 && !this.homing && !this.all.some((o) => o !== c && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < this._space(c, o))) this._exit(c)
+        if (c.hold <= 0) this._exit(c)
         break
       case 'walk':
         if (tick % MEET_TICKS === 0) {
@@ -1067,8 +818,7 @@ export class Villagers {
    * world clock (clock.js WorldClock.seconds) and `dt` the frame's own time,
    * for the puppets. The first frame places everyone at the chapter's start
    * and replays it in one go, as does a clock skip past a chapter; a shorter
-   * skip is caught up in one frame too, silent. A startle heard late is
-   * stepped again from the last state kept before it.
+   * skip is caught up in one frame too, silent.
    */
   update(feet, head, seconds, dt) {
     if (!this.loaded) return
@@ -1076,98 +826,20 @@ export class Villagers {
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
     const tick = tickOf(seconds)
-    if (this.tick === null || tick - this.tick > CHAPTER_S * TICK_HZ) this._placeAll(seconds)
-    else if (this.rewind <= this.tick) this._rollback()
-    this.rewind = Infinity
-    const live = this.live
-    for (let t = this.tick + 1; t <= tick; t++) this._stepAll(t, tick)
-    this.alpha = Math.min(1, Math.max(0, (seconds - this.tick * TICK_S) * TICK_HZ))
-    for (const c of this.all) this._draw(c, dt)
-    if (tick - live > SILENT_TICKS) this.calls.length = 0
-  }
-
-  /** Tick `t` for the whole village, `target` the frame's: the chapter's turn puts everyone indoors; a live tick near the frame's looks for her feet first. */
-  _stepAll(t, target) {
-    if (t >= this.turnTick) {
-      if (t > this.live) for (const c of this.all) if (!c.hidden) this.popped++
-      this._placeAll(t / TICK_HZ)
-      this.live = Math.max(this.live, t)
-      return
+    let stepped = 0
+    for (const c of this.all) {
+      if (!this.placed || tick - c.tick > CHAPTER_S / TICK_S) this._place(c, seconds)
+      stepped = Math.max(stepped, stepTo(c, seconds, (t) => this._tick(c, t), Infinity))
+      this._draw(c, dt)
     }
-    this.tick = t
-    this.voicing = t > this.live
-    this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
-    if (this.voicing && t > target - SILENT_TICKS) {
-      const ids = []
-      for (const c of this.all) if (c.state !== 'inside' && c.state !== 'flee' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M) ids.push(c.id)
-      if (ids.length > 0) this._raise(ids.slice(0, MAX_NAMED))
-    }
-    for (const c of this.all) this._tick(c, t)
-    const events = this.log.get(t)
-    if (events) for (const e of events) e.done = true
-    this.live = Math.max(this.live, t)
-    this.voicing = false
-    if (t % SNAP_TICKS === 0) this._snap()
-  }
-
-  /** The village's state as it stands, kept for a rollback. */
-  _snap() {
-    this.snaps.push({
-      tick: this.tick,
-      rows: this.all.map((c) => ({ kept: KEPT.map((f) => c[f]), route: c.route.slice(), partner: c.partner === null ? -1 : c.partner.id, seat: c.seat === null ? -1 : this.seats.indexOf(c.seat) })),
-    })
-    if (this.snaps.length > SNAPS) this.snaps.shift()
-  }
-
-  /** Back to the last state kept before the startle heard late, or the chapter's start if none is. */
-  _rollback() {
-    this.rewinds++
-    while (this.snaps.length > 0 && this.snaps[this.snaps.length - 1].tick >= this.rewind) this.snaps.pop()
-    const s = this.snaps[this.snaps.length - 1]
-    if (!s) { this._placeAll(this.tick / TICK_HZ); return }
-    this.tick = s.tick
-    for (const seat of this.seats) seat.by = null
-    this.all.forEach((c, i) => {
-      const row = s.rows[i]
-      const clip = c.clip
-      KEPT.forEach((f, k) => { c[f] = row.kept[k] })
-      c.route = row.route.slice()
-      c.partner = row.partner < 0 ? null : this.all[row.partner]
-      c.seat = row.seat < 0 ? null : this.seats[row.seat]
-      if (c.seat !== null) c.seat.by = c
-      // A clip the rollback changed is started afresh, the puppet reading a new cue.
-      if (c.clip !== clip) c.cue++
-    })
-  }
-
-  // -------------------------------------------------------------------------
-  // The room: her startles out, the others' in (creature-net.js).
-  // -------------------------------------------------------------------------
-
-  /** Her startles since the last call, as anchors `[key, T, fx, fy, fz, 0, 0, 'startle', null, ...ids]`, drained. */
-  pending(into) {
-    for (const a of this.outbox) into.push(a)
-    this.outbox.length = 0
-    return into
-  }
-
-  /** Someone's startle: logged, and stepped again from before it if this client is past it. Another village's, one before the chapter or one already logged is let go. */
-  apply(a) {
-    if (typeof a[0] !== 'string' || !a[0].startsWith(this.wire) || a[7] !== 'startle') return
-    const tick = Math.round(a[1] * TICK_HZ)
-    const ids = a.slice(9)
-    if (![tick, a[2], a[3], a[4]].every(Number.isFinite) || ids.length === 0) throw new Error(`Villagers: a malformed startle ${JSON.stringify(a)}`)
-    if (!ids.every((id) => Number.isInteger(id) && id >= 0 && id < this.all.length)) throw new Error(`Villagers: a startle names villagers this village has not: ${JSON.stringify(a)}`)
-    if (this.tick !== null && tick <= tickOf(chapterOf(this.tick / TICK_HZ, this.key).start)) return
-    const e = { key: a[0], tick, fx: a[2], fy: a[3], fz: a[4], ids, by: a[8], done: false }
-    if (this._log(e) !== e) return
-    if (this.tick !== null && tick <= this.tick) this.rewind = Math.min(this.rewind, tick)
+    this.placed = true
+    if (stepped > SILENT_TICKS) this.pending.length = 0
   }
 
   /** The frame's pose between the last two ticks, and the puppet on it. */
   _draw(c, dt) {
-    if (c.hidden && !c.puppet) return
-    const a = this.alpha
+    if (c.hidden) { this._releasePuppet(c); return }
+    const a = c.alpha
     const pose = c.pose
     pose.x = c.px + (c.x - c.px) * a
     pose.y = c.py + (c.y - c.py) * a
@@ -1181,11 +853,10 @@ export class Villagers {
 
     const dist = Math.hypot(pose.x - this.head.x, pose.y - this.head.y, pose.z - this.head.z)
     c.lod = critterTier(c.size, dist, c.lod, LOD_TIERS)
-    const want = c.hidden || c.lod === LOD_TIERS ? -1 : c.lod
+    const want = c.lod === LOD_TIERS ? -1 : c.lod
     const puppet = want === -1 && !c.puppet ? null : this._takePuppet(c)
     if (!puppet) return
-    // Through its door it dithers out where it stands, over DOOR_FADE_S.
-    puppet.show(want, c.hidden ? DOOR_FADE_S : LOD_FADE_S)
+    puppet.show(want)
     _pos.set(pose.x, pose.y, pose.z)
     _quat.setFromAxisAngle(UP, pose.heading)
     _scl.setScalar(c.k)

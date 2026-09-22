@@ -18,6 +18,14 @@
 // say), an anchor at the room's clock. One stamped with this client's own id
 // would be its own echoed back, and is dropped.
 //
+// HEARD: every anchor through here in the last chapter, the room's and this
+// client's own (stamped with its id, as the relay would), outlives the net
+// itself: a room change disposes it, and the relay sends a client only what
+// it has not heard. A layer added later is handed those of its prefixes; its
+// own come too only to a layer with `hearsOwn` (the glade's villagers, the
+// gatherer), since the rest never see their own and would read them as a
+// peer's. forgetHeard() on leaving the relay's room.
+//
 // A RELEASE rides the same channel as one anchor in mode DROP: the second a
 // hand let a creature go, where, which way its head faced, and the few
 // numbers the creature was dressed in, so the layer that grew it can let the
@@ -27,7 +35,15 @@
 // else at all.
 // ---------------------------------------------------------------------------
 
-import { keyHash } from '../sim/score.js'
+import { CHAPTER_S, keyHash } from '../sim/score.js'
+
+const heard = new Map()
+/** On leaving the relay's room, or between gate blocks: what was heard there is not for the next. */
+export const forgetHeard = () => heard.clear()
+const remember = (anchor, now) => {
+  heard.set(anchor[0], anchor)
+  for (const [k, a] of heard) if (a[1] < now - CHAPTER_S) heard.delete(k)
+}
 
 export const DROP = 'drop'
 // A drop is named to the millimetre on both sides of the wire -- by the layer
@@ -71,6 +87,13 @@ export class CreatureNet {
       this.byPrefix.set(p, layer)
     }
     this.layers.push(layer)
+    if (!anchors) return
+    const now = this.clock.seconds
+    const me = this.netplay.id
+    for (const a of heard.values()) {
+      if (!prefixes.includes(a[0].slice(0, a[0].indexOf(':'))) || (a[8] === me && !layer.hearsOwn)) continue
+      layer.apply(a, now)
+    }
   }
 
   /** After the layers have stepped this frame, so what they owe leaves now and what came in lands before the next step. */
@@ -78,7 +101,10 @@ export class CreatureNet {
     const out = this.out
     out.length = 0
     for (const layer of this.layers) layer.pending?.(out)
+    const now = this.clock.seconds
+    const me = this.netplay.id
     for (const anchor of out) {
+      if (me !== null && me !== undefined) { const own = anchor.slice(); own[8] = me; remember(own, now) }
       if (this.netplay.sendAnchor(anchor)) this.stats.sent++
       else this.stats.dropped++
     }
@@ -90,11 +116,10 @@ export class CreatureNet {
     }
     const blocks = this.netplay.creatures
     if (blocks.length === 0) return
-    const now = this.clock.seconds
-    const me = this.netplay.id
     for (const block of blocks) {
       for (const anchor of block.anchors ?? []) {
         if (!Array.isArray(anchor) || typeof anchor[0] !== 'string' || anchor[8] === me) continue
+        remember(anchor, now)
         const layer = this._layerFor(anchor[0])
         if (!layer?.apply) continue
         layer.apply(anchor, now)
@@ -120,7 +145,7 @@ export class CreatureNet {
     return null
   }
 
-  /** On leaving a room: what came in for it is not for the next. */
+  /** On leaving a room: what came in for it is not for the next, but what was heard is (forgetHeard). */
   dispose() {
     this.netplay.creatures.length = 0
     this.layers.length = 0

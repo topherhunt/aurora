@@ -27,7 +27,7 @@ import { createPropMaterial } from '../../material.js'
 // (setDoor): the arch's hole is drawn there.
 // ---------------------------------------------------------------------------
 
-const CELL = 0.5
+export const CELL = 0.5
 // Crossings one column may hold: a span each and one more in the walker's
 // eight (walk.js SPAN_CAP), which is past what the boulder's 320 faces fold.
 const CROSS_CAP = 12

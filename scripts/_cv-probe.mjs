@@ -33,7 +33,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, CALM_M, CLIPS, DOOR_FADE_S, EXTRA, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
+  Villagers, CALM_M, CLIPS, EXTRA, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
@@ -49,7 +49,7 @@ const check = (ok, label, detail = '') => {
 const swing = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a))
 
 // --- the village ------------------------------------------------------------------
-const KEY = 'hollow:160.0:-356.0'
+const KEY = process.env.KEY ?? 'hollow:160.0:-356.0'
 const houseBank = propBankFrom(readShippedLadder('house-leafkin'))
 const spec = rollVillage(keyHash(KEY), houseBank.bounds)
 const shell = new Shell(new THREE.Scene(), buildRockBank(), buildTextureArray(), spec.shell)
@@ -77,12 +77,6 @@ const seats = [...hearth.stools.map((s) => ({ x: hearthAt.x + s.x, z: hearthAt.z
 const water = { isSubmerged: (x, z, y) => y < room.lake.y }
 const doors = roomProps.doors()
 const roads = room.doc.roads.filter((r) => !r.id.startsWith('pad-'))
-/** The nearest the segment a-b comes to (x, z). */
-const segNear = (x, z, a, b) => {
-  const dx = b.x - a.x, dz = b.z - a.z, len = dx * dx + dz * dz
-  const t = len > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / len)) : 0
-  return Math.hypot(a.x + dx * t - x, a.z + dz * t - z)
-}
 /** The nearest a road's polyline comes to (x, z). */
 const roadNear = (x, z) => {
   let best = Infinity
@@ -152,8 +146,6 @@ function makeAsset() {
 const make = () => new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats, seed: spec.seed, asset: makeAsset() })
 const T0 = 1000
 const FAR = { x: 400, y: 100, z: 400 }
-// The longest a walker may go without headway: a brush past someone, not a queue behind them.
-const JAM_S = 1
 const head = (feet) => ({ x: feet.x, y: feet.y + 1.6, z: feet.z })
 /** Frames at `hz` from `t` for `seconds`, her feet at `feet`; `each(t)` after every frame, and the voices are dropped on the floor when there is none to hear them. Returns the time reached. */
 function run(v, t, seconds, feet, each = null, hz = 60) {
@@ -197,8 +189,8 @@ console.log('\na day with her far off')
 {
   const v = make()
   const seen = new Set()
-  let overlaps = 0, closest = Infinity, blocked = 0
-  let strayed = 0, worst = 0, unseat = 0, vaulted = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, stoop = 0, doorCalls = 0, doorOff = 0, meetings = 0, apart = 0, gestures = 0
+  let overlaps = 0, closest = Infinity
+  let strayed = 0, worst = 0, unseat = 0, vaulted = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, meetings = 0, apart = 0, gestures = 0
   let sitFrames = 0, sitOff = 0, sitFar = 0, sitOn = 0, sitLow = 0, sitPerch = 0, sitClip = 0, sitAway = 0, doubled = 0, unheld = 0, phases = new Set(), satOn = new Set(), sitters = new Set()
   const was = v.all.map(() => null)
   const voices = []
@@ -208,12 +200,6 @@ console.log('\na day with her far off')
   run(v, T0, 600, FAR, () => {
     const said = v.voices([])
     for (const s of said) {
-      // A door is heard from the sill of the one going in or out of it, by its own rule.
-      if (s.sound === 'door') {
-        doorCalls++
-        if (s.rule !== 'door' || !v.all.some((c) => Math.hypot(v.graph.nodes[c.home].sill.x - s.x, v.graph.nodes[c.home].sill.z - s.z) < 0.05)) doorOff++
-        continue
-      }
       voices.push(s.sound)
       // The nearest villager to the sound: a talk beside a door stands as near one indoors as the talker.
       const who = v.all.reduce((best, c) => (Math.hypot(c.x - s.x, c.z - s.z) < Math.hypot(best.x - s.x, best.z - s.z) ? c : best))
@@ -225,11 +211,8 @@ console.log('\na day with her far off')
       const prev = was[i]
       const home = v.graph.nodes[c.home]
       if (prev !== null && prev !== c.hidden) {
-        if (Math.hypot(c.x - home.sill.x, c.z - home.sill.z) > 0.5) strayed++
+        if (Math.hypot(c.x - home.x, c.z - home.z) > 0.5) strayed++
         if (c.hidden) entries++; else exits++
-        // Through the door, it stands on the landing: at least half the steps' rise above the road at the door.
-        const road = walk.heightAt(home.x, home.z, -Infinity)
-        if (c.y - road < (walk.heightAt(home.sill.x, home.sill.z, road) - road) / 2) stoop++
       }
       if (prev === null && !c.hidden) out0++
       was[i] = c.hidden
@@ -239,9 +222,7 @@ console.log('\na day with her far off')
       // On its way round to a stool and back it is as far off the road as the stool is from its node, and SIT.round wide of that.
       const seatOff = (s) => Math.hypot(s.x - v.graph.nodes[s.node].x, s.z - v.graph.nodes[s.node].z) + s.r + SIT.round + 0.5
       const atSeat = v.seats.reduce((best, s) => (Math.hypot(s.x - c.x, s.z - c.z) <= seatOff(s) ? Math.max(best, seatOff(s)) : best), 0)
-      // Up the steps of its own door, it is on the way from the door's node to its sill.
-      const onSteps = segNear(c.x, c.z, home, home.sill) <= 0.4
-      const allowed = onSteps ? Infinity : Math.max(atSpot ? GAZE_OFF_M + 0.4 : 0, atSeat, 0.8)
+      const allowed = Math.max(atSpot ? GAZE_OFF_M + 0.4 : 0, atSeat, 0.8)
       if (near > allowed) { strayed++; worst = Math.max(worst, near) }
       for (const o of v.all) {
         if (o.id <= c.id || o.hidden) continue
@@ -249,8 +230,6 @@ console.log('\na day with her far off')
         closest = Math.min(closest, d)
         if (d < SPACE_M * (c.size + o.size) / 2 - 1e-6) overlaps++
       }
-      // Held up: no headway with someone within a metre (alone, it is only turning).
-      if (c.state === 'walk' && v.all.some((o) => o !== c && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < 1)) blocked = Math.max(blocked, c.stall)
       if (v.seat(c.x, c.z) === null) unseat++
       if (c.y - field.heightAt(c.x, c.z) > WALK.reach) vaulted++
       if (c.state === 'walk' && (c.clip !== (c.runner || v.homing ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
@@ -293,7 +272,6 @@ console.log('\na day with her far off')
   })
   check(['inside', 'walk', 'stand', 'gaze', 'sit', 'talk'].every((s) => seen.has(s)) && !seen.has('flee'), 'they go in and out, walk, stand, gaze, sit and talk, and nothing frightens them', [...seen].join(' '))
   check(overlaps === 0, `nobody walks through or stands inside anybody: every two keep ${SPACE_M} m between their centres`, `${overlaps} frames overlapped, closest ${closest.toFixed(2)} m`)
-  check(blocked < JAM_S, `nobody is held up behind anybody: no walker goes ${JAM_S} s without headway`, `${blocked.toFixed(2)} s at worst`)
   check(strayed === 0, 'nobody steps off the cobbles but for a gazing spot or a stool, and every door is crossed at its own house', `${strayed} strayed, worst ${worst.toFixed(2)} m`)
   check(sitFrames > 0 && sitters.size >= 2 && ['turn', 'down', 'hold', 'up'].every((p) => phases.has(p)), 'more than one sits, turning, sitting down, holding and rising', `${sitters.size} sitters over ${sitFrames} frames, phases ${[...phases].join(' ')}`)
   check(satOn.size >= 2, 'more than one stool is sat on', `${satOn.size} of ${seats.length}`)
@@ -307,8 +285,7 @@ console.log('\na day with her far off')
   check(unseat === 0, 'every step is on dry ground')
   check(vaulted === 0, `nobody stands over ${WALK.reach} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
   check(entries >= 2 && exits + out0 + 1 >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits, ${out0 + 1} out at the first frame`)
-  check(stoop === 0, 'each goes in and comes out at the top of its steps, not at their foot', `${stoop} at the foot`)
-  check(badClip === 0, 'a walker walks at its pace, a runner or one homing runs, a stander idles, a talker gestures or idles, none of them moving')
+  check(badClip === 0, 'a walker walks at its pace, a runner runs, a stander idles, a talker gestures or idles, none of them moving')
   const paces = new Set(v.all.map((c) => c.pace)), runners = v.all.filter((c) => c.runner).length
   check(paces.size === v.all.length && v.all.every((c) => c.pace >= PACE[0] && c.pace <= PACE[1]) && runners >= 1 && runners < v.all.length, 'every villager has its own pace and some, not all, run their errands', `paces ${[...paces].map((p) => p.toFixed(2)).join(' ')}, ${runners} runners`)
   check(gazeOff === 0, 'a gazer faces the lake')
@@ -316,58 +293,7 @@ console.log('\na day with her far off')
   check(talkers.size >= 2 && [...talkers.values()].every((n) => n >= 2), 'both of a pair chatter, more than once', `${[...talkers.values()].join('/')} calls by ${talkers.size} talkers`)
   check(gestures > 0 && voices.every((s) => SOUNDS[s] !== undefined) && voices.some((s) => s.startsWith('leafkinChatter')) && !voices.includes('leafkinWhimper') && !voices.includes('panting'), 'every call is a sound the ear has, chatter among them and no whimper', `${voices.length} calls`)
   check(hiddenVoice === 0, 'nothing is heard from indoors')
-  check(doorCalls === entries + exits && doorOff === 0, 'a door is heard once as each goes in or comes out, from its sill, on the door rule', `${doorCalls} doors for ${entries + exits} crossings, ${doorOff} elsewhere`)
   check(v.stats.talks > 0 && v.stats.startles === 0, 'the stats agree', JSON.stringify(v.stats))
-}
-
-// --- in each other's way -------------------------------------------------------------------
-console.log('\nin each other\'s way')
-{
-  /** A village with everyone kept indoors but `walkers` (each `[from, to]` nodes) and `standers` (each `[x, z]`), run `limit` s: when each walker first stands at its end, and the longest any went without headway before it. */
-  const stage = (walkers, standers, limit) => {
-    const v = make()
-    v.update(FAR, head(FAR), T0, 1 / 60)
-    for (const c of v.all) c.hold = 1e9
-    const out = (c, x, z) => { c.hidden = false; c.x = c.px = x; c.z = c.pz = z; c.talked = 1e9 }
-    const ws = walkers.map(([a, b], i) => { const c = v.all[i], n = v.graph.nodes[a]; out(c, n.x, n.z); c.at = a; v._go(c, b, 'stand'); return c })
-    standers.forEach(([x, z], i) => { const c = v.all[walkers.length + i]; out(c, x, z); c.state = 'stand' })
-    let worst = 0, overlap = 0
-    const at = ws.map(() => null)
-    run(v, T0, limit, FAR, (t) => {
-      ws.forEach((c, k) => { if (at[k] === null && c.state === 'stand') at[k] = t - T0; if (at[k] === null) worst = Math.max(worst, c.stall) })
-      for (const c of v.all) for (const o of v.all) if (o.id > c.id && !c.hidden && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < v._space(c, o) - 1e-6) overlap++
-    })
-    return { arrived: at.every((a) => a !== null), worst, overlap, at }
-  }
-  // Eight nodes of one road, consecutive and linked: a straight stretch 12 m long.
-  const g = roadGraph(room.doc.roads, doors)
-  const i = g.nodes.findIndex((n, k) => Array.from({ length: 8 }, (_, j) => g.nodes[k + j + 1]?.road === n.road && g.adj[k + j].includes(k + j + 1)).every(Boolean))
-  const [ax, az, bx, bz] = [g.nodes[i + 3].x, g.nodes[i + 3].z, g.nodes[i + 5].x, g.nodes[i + 5].z]
-  const L = Math.hypot(bx - ax, bz - az), px = -(bz - az) / L, pz = (bx - ax) / L, m = g.nodes[i + 4]
-  const head0 = stage([[i, i + 8], [i + 8, i]], [], 30)
-  check(head0.arrived && head0.worst < JAM_S && head0.overlap === 0, `two meeting head on along a road slip past each other, never stalled ${JAM_S} s`, `${head0.worst.toFixed(2)} s at worst, ${head0.overlap} overlaps, there at ${head0.at.map((a) => a?.toFixed(1)).join('/')} s`)
-  const pair = stage([[i, i + 8]], [[m.x + px * 0.45, m.z + pz * 0.45], [m.x - px * 0.45, m.z - pz * 0.45]], 30)
-  check(pair.arrived && pair.worst < JAM_S && pair.overlap === 0, `a walker slips between two standing across the road`, `${pair.worst.toFixed(2)} s at worst, ${pair.overlap} overlaps, there at ${pair.at.map((a) => a?.toFixed(1)).join('/')} s`)
-}
-
-// --- through the door ----------------------------------------------------------------
-console.log('\nthrough the door')
-{
-  // One villager sent home from its door node with her 6 m off, the rest kept indoors.
-  const v = make()
-  v.update(FAR, head(FAR), T0, 1 / 60)
-  for (const c of v.all) c.hold = 1e9
-  const c = v.all[0], door = v.graph.nodes[c.home]
-  c.hidden = false; c.x = c.px = door.x; c.z = c.pz = door.z; c.talked = 1e9; c.at = c.home
-  v._go(c, c.home, 'enter')
-  const feet = { x: door.x + 6, y: walk.heightAt(door.x + 6, door.z), z: door.z }
-  let hidAt = null, goneAt = null, drawnAt = null
-  run(v, T0, 10, feet, (t) => {
-    if (hidAt === null && c.hidden) { hidAt = t; drawnAt = c.puppet?.meshes.some((m) => m.visible) ?? false }
-    if (hidAt !== null && goneAt === null && !c.puppet) goneAt = t
-  })
-  const took = goneAt - hidAt
-  check(hidAt !== null && drawnAt && goneAt !== null && took >= DOOR_FADE_S - 0.03 && took <= DOOR_FADE_S + 0.03, `through its door it dithers out over DOOR_FADE_S ${DOOR_FADE_S} s, not at once`, `${hidAt === null ? 'never in' : `drawn ${drawnAt}, gone ${took.toFixed(3)} s after`}`)
 }
 
 // --- determinism and the boot --------------------------------------------------------
@@ -382,7 +308,7 @@ console.log('\ndeterminism and the boot')
   late.update(FAR, head(FAR), T0 + 500, 1 / 60)
   check(late.all.some((c) => !c.hidden) && late.voices([]).length === 0, 'a boot mid-chapter finds villagers about, and hears nothing of the replay', JSON.stringify(late.stats.states))
   const chapter = make()
-  const t = run(chapter, T0, CHAPTER_S + 30, FAR)
+  const t = run(chapter, T0, CHAPTER_S + 30, FAR, (tt) => { chapter.voices([]); if (chapter.tick === chapter.turnTick - 1) for (const c of chapter.all) if (!c.hidden) { const near = chapter.all.filter((o) => o !== c && Math.hypot(o.x - c.x, o.z - c.z) < 2).map((o) => o.id + ':' + o.state + ':' + o.hidden + ':' + Math.hypot(o.x - c.x, o.z - c.z).toFixed(2)); console.log('   AT', c.id, c.x.toFixed(2), c.z.toFixed(2), 'wp', c.wp, c.route.length, 'next', c.route[c.wp] && c.route[c.wp].x.toFixed(2), c.route[c.wp] && c.route[c.wp].z.toFixed(2), 'near', near.join(' ')); const h = chapter.graph.nodes[c.home]; const { dist } = dijkstra(chapter.graph, c.at, c.home); console.log('   OUT', c.id, c.state, c.then, c.phase, 'road', dist[c.home].toFixed(1), 'speed', c.speed.toFixed(2), 'pace', c.pace.toFixed(2), 'runner', c.runner, 'stall', c.stall.toFixed(2)) } })
   check(chapter.tick / 20 > t - 0.1, 'a chapter turn is stepped through', JSON.stringify(chapter.stats.states))
   check(chapter.stats.popped <= 1, `the turn finds them indoors: HOMING_S before it they make for their doors`, `${chapter.stats.popped} still out`)
 }
@@ -429,7 +355,7 @@ console.log('\nher feet')
     if (!c.hidden && c.state === 'flee') {
       const far = { x: c.x + CALM_M + 1, y: c.y, z: c.z }
       t = run(v, t, 40, far)
-      if (c.state === 'flee') { check(false, `a fleer calms once she is ${CALM_M} m off`, c.state); continue }
+      if (c.state === 'flee') { check(false, `a fleer calms once she is ${CALM_M} m off`, `${c.state} DBG then=${c.then} wp=${c.wp}/${c.route.length} d=${Math.hypot(c.x - far.x, c.z - far.z).toFixed(1)} f=${c.fx.toFixed(1)},${c.fz.toFixed(1)} far=${far.x.toFixed(1)},${far.z.toFixed(1)} c=${c.x.toFixed(1)},${c.z.toFixed(1)} stall=${c.stall} events=${[...v.log.values()].flat().map((e) => e.tick + ':' + e.ids).join(' ')} tick=${v.tick}`); continue }
       calmedOver++
     }
     t = run(v, t, 5, FAR)

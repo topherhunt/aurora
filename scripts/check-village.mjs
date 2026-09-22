@@ -12,7 +12,10 @@
 // straight, that the ring passes every ring house's door and a branch ends at
 // every outlying one's, that no cobble shows past a hut's walls, that each hut
 // stands level on dry ground with the wood kept off the clearing and nothing
-// else, that the shell roofs every walkable metre with three to spare and the
+// else, that what grows on and against a house stands on its own offer -- the
+// crown at its point, the ferns on the roof's own mesh, the rest touching the
+// wall and clear of everything sited before it -- that the shell roofs every
+// walkable metre with three to spare and the
 // exit stands against its wall, and that the room boots on the layers the
 // overworld boots on: rocks without a hollow bed, the exit mouth seated where
 // the build says, the huts stone to the walker, and the lake's creatures --
@@ -41,9 +44,12 @@ import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 import { DENSITY as TREE_DENSITY, Trees } from '../src/v2/render/trees.js'
+import { treeVariants } from '../src/props/tree-bank.js'
+import { forestKeepAt } from '../src/v2/layers/forest.js'
 import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
-import { DOOR, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
-import { Shell } from '../src/v2/render/shell.js'
+import { DOOR, ROOF, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
+import { Boulders } from '../src/v2/render/boulders.js'
+import { CELL as SHELL_CELL, Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { Stools } from '../src/v2/render/stools.js'
 import { HEARTH, feetGround } from '../src/v2/render/hearth.js'
@@ -53,8 +59,8 @@ import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DROP, EXIT, FLOOR, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIVER, ROAD_GRADE, ROAD_WIDTH, STOOLS, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
-  buildVillage, closestNodes, longestStraight, roadsCross, rollVillage, sharpestTurn, sinuosity,
+  ARRIVE_M, CLEARING, DECOR, DROP, EXIT, FLOOR, GARDEN, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIM_WOOD, RIVER, ROAD_GRADE, ROAD_WIDTH, STOOLS, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
+  buildVillage, closestNodes, gardenSpots, longestStraight, roadsCross, rollVillage, roofFerns, sharpestTurn, sinuosity, weedGardens,
 } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -74,6 +80,11 @@ const TREES_LEAST = 60
 // The wood she comes down through: this many trees at the least within EXIT_WOOD_M of the line from the exit to the nearest hut.
 const EXIT_WOOD_M = 6
 const EXIT_WOOD_LEAST = 6
+// The bare ring the thicket (RIM_WOOD) is there to close: the furthest the outermost tree of a fifteen-degree sector may stand inside the rim. The wild bed alone leaves 3 to 10 m there, and whole sectors empty. The bar is not tighter than this because the last stretch inside the rim belongs to the bed, not the thicket -- where the slope stays gentle to the wall the thicket plants nothing, and the bed's own cell is 4 m, so one unlucky roll reads as a gap this wide.
+const RIM_BARE_M = 5
+// What a plot keeps once the roots are weeded out of it (weedGardens): this many carrots at the least, and this share of what was sown across the plot.
+const CARROTS_LEAST = 6
+const CARROTS_KEPT = 0.5
 // How far under the overworld's the hollow's sub-texel calibration may fall: a jittered cone measures about half the shipped island's roughness at 16 and 32 m.
 const CALIBRATION_LEAST = 0.4
 // The fewest square metres of frog seat (frogs.js seat) about a lake: at frogs.js DENSITY that is two frogs' worth, and the seeds gated hold 100 to 180.
@@ -166,9 +177,21 @@ const builds = KEYS.map((key) => build(keyHash(key)))
 }
 
 const riverSides = []
+// Per house across the seeds, how many things stand on or against it; and per seed, the share of its houses crowned.
+const dressed = [], crowned = []
 for (const b of builds) gateVillage(b)
 console.log('\nthe rivers across the seeds')
 check(riverSides.some((d) => d <= RIVER.near[1] + RIVER.sector) && riverSides.some((d) => d >= 180 - 2 * RIVER.sector), 'some rivers come down beside the exit and some across the lake from it', `${riverSides.map((d) => d.toFixed(0)).join(' ')} degrees off the exit`)
+
+console.log('\nthe decorations across the seeds')
+{
+  // About half the houses carry a tree through the roof (DECOR.crown), and no seed is all of one or none of it.
+  const share = crowned.reduce((a, v) => a + v, 0) / crowned.length
+  check(Math.abs(share - DECOR.crown) < 0.2 && crowned.some((v) => v < 1) && crowned.some((v) => v > 0), 'about half the houses wear a tree through the roof', `${(share * 100).toFixed(0)}%, by seed ${crowned.map((v) => (v * 100).toFixed(0)).join('/')}`)
+  // And the village is no row of tidy models: nearly every house carries something, and most carry more than one thing.
+  const bare = dressed.filter((n) => n === 0).length, several = dressed.filter((n) => n > 1).length
+  check(bare / dressed.length <= 0.1 && several / dressed.length >= 0.5, 'nearly every house is dressed and most carry more than one thing', `${bare} bare and ${several} with several of ${dressed.length} houses`)
+}
 
 /** The ground, the water, the roads, the huts, the wood and the shell of one seed's village. */
 function gateVillage({ seed, spec, shell, room, layers, field }) {
@@ -347,7 +370,8 @@ const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d$
     const b0 = br.pts[0], b1 = br.pts[br.pts.length - 1], h = roomProps.props[ringCount + i], d = doors[ringCount + i]
     if (gapTo(b0[0], b0[2]) >= 0.6) offLoop++
     if (Math.hypot(b1[0] - d.x, b1[2] - d.z) > 1) offDoor++
-    if (Math.abs(b1[1] - h.y) > 0.3) offLevel++
+    // Against the ground its pad holds, not the floor: a house is set HUTS.sink into that pad (room-props.js).
+    if (Math.abs(b1[1] - (h.y + h.sink)) > 0.3) offLevel++
   })
   check(offLoop === 0 && offDoor === 0 && offLevel === 0, 'every branch leaves the loop and ends at its outlying house\'s door at its pad\'s level', `${offLoop} off the loop, ${offDoor} off a door, ${offLevel} off its level`)
   // The ground takes the nearest road's height (paths.js smoothRoads), so two roads crossing at two heights would be a broken bridge: no two roads but the pads cross anywhere but at a junction, where one ends on the other.
@@ -371,11 +395,19 @@ console.log('\nthe huts')
   const ringHouses = room.props.slice(0, ringCount), outlying = room.props.slice(ringCount)
   // The great house is the first round the ring (housesRound puts it at the head) and the tallest; the rest are within their count's range, which stops under the great house's.
   const greatHouse = ringHouses[0], tallest = Math.max(...ringHouses.map((p) => p.height)), hutRange = HUTS.height[ringCount] ?? [Infinity, -Infinity]
-  check(room.props.length === ringCount + outCount && ringCount >= HUTS.count[0] && ringCount <= HUTS.count[1] && greatHouse.height === tallest && greatHouse.height >= GREAT_HUT.height[0] && greatHouse.height <= GREAT_HUT.height[1] && ringHouses.slice(1).every((p) => p.height >= hutRange[0] && p.height <= hutRange[1]), 'five or six huts round the ring and the first of them the great house, the tallest', `${ringCount} huts, ${ringHouses.map((p) => p.height.toFixed(1)).join(' ')} m`)
+  check(room.props.length === ringCount + outCount && ringCount >= HUTS.count[0] && ringCount <= HUTS.count[1] && greatHouse.height === tallest && greatHouse.height >= GREAT_HUT.height[0] && greatHouse.height <= GREAT_HUT.height[1] && ringHouses.slice(1).every((p) => p.height >= hutRange[0] && p.height <= hutRange[1]), `${HUTS.count[0]} to ${HUTS.count[1]} huts round the ring and the first of them the great house, the tallest`, `${ringCount} huts, ${ringHouses.map((p) => p.height.toFixed(1)).join(' ')} m`)
   // The houses vary: the ring's ordinary huts span at least a third of their range.
   const spread = Math.max(...ringHouses.slice(1).map((p) => p.height)) - Math.min(...ringHouses.slice(1).map((p) => p.height))
   check(spread >= (hutRange[1] - hutRange[0]) / 3, 'the huts round the ring vary in size', `${spread.toFixed(1)} m between the smallest and the largest`)
   check(outCount >= OUTLYING.count[0] && outCount <= OUTLYING.count[1] && outlying.every((p) => p.height >= OUTLYING.height[0] && p.height <= OUTLYING.height[1]), 'two or three outlying houses, none of them great', `${outCount} outlying`)
+  // Every house is set into the ground its pad holds (HUTS.sink), by a rolled depth that varies down the row, and its floor mesh is under that ground rather than over it.
+  const hutCol = new Float32Array(16)
+  const sunk = roomProps.props.map((h) => {
+    const n = roomProps.columnAt(h.x, h.z, 0, hutCol)
+    return { deep: field.heightAt(h.x, h.z) - h.y, floor: n > 0 ? hutCol[0] : Infinity, ground: field.heightAt(h.x, h.z) }
+  })
+  const deeps = sunk.map((s) => s.deep)
+  check(deeps.every((d) => d >= HUTS.sink[0] - 1e-6 && d <= HUTS.sink[1] + 1e-6) && Math.max(...deeps) - Math.min(...deeps) > 0.05 && sunk.every((s) => s.floor <= s.ground), 'every house is set into its ground, none floats over it, and the depth varies', `${deeps.map((d) => d.toFixed(2)).join('/')} m`)
   const doors = roomProps.doors()
   let offRing = 0, worstDoor = 0
   const ringLine = new Spline(ring.pts).flatten(0.5)
@@ -450,7 +482,8 @@ console.log('\nthe huts')
     const n = roomProps.columnAt(h.x, h.z, 0, col)
     if (n === 0 || col[0] - h.y > 0.5 || col[n * 2 - 1] - h.y < height * 0.5) trunkOpen++
     let top = -Infinity
-    for (let i = -10; i <= 10; i++) for (let j = -10; j <= 10; j++) top = Math.max(top, roomProps.blockTopAt(h.x + (i / 10) * core, h.z + (j / 10) * core))
+    // A twentieth of the core a step: a roof's ridge is narrower than a tenth of it, and a grid that steps over the ridge reads the eaves as the top.
+    for (let i = -20; i <= 20; i++) for (let j = -20; j <= 20; j++) top = Math.max(top, roomProps.blockTopAt(h.x + (i / 20) * core, h.z + (j / 20) * core))
     if (top < h.top - height * 0.1) roofLow++
     let roots = 0, past = 0
     for (let q = 0; q < 16; q++) {
@@ -475,6 +508,102 @@ console.log('\nthe huts')
   check(rootless === 0, `every house has roots round it she can step onto, under ${WALK.reach} m`, `${rootless} without`)
   check(awningless === 0, 'under every door\'s awning there is air to over a third of the house', `${awningless} without`)
   check(pastBox === 0, 'past the box there is nothing to walk on', `${pastBox} houses reach past it`)
+}
+
+// --- what grows on and against the houses --------------------------------------
+console.log('\nthe decorations')
+{
+  const d = room.decor, roll = room.spec.decor
+  const coreOf = (h) => h.r * DOOR.wall
+  const off180 = (deg) => Math.abs(((((deg + 180) % 360) + 360) % 360) - 180)
+  // A crown is a tree at its house's own point, at the scale its house rolled: nothing sites it, so every crown rolled stands.
+  let crowns = 0, offCentre = 0
+  roomProps.props.forEach((h, i) => {
+    if (!roll[i].crown) return
+    crowns++
+    if (!d.trees.some((t) => t.x === h.x && t.z === h.z && t.scale === roll[i].crownScale)) offCentre++
+  })
+  check(offCentre === 0, 'every crowned house has its tree standing at its own point, at its rolled scale', `${crowns} crowns, ${offCentre} off`)
+  // And it towers: twice its house at the least, and still clear under the shell's roof, which is the ceiling a crown may be scaled to (DECOR.crownScale).
+  const unitTree = treeVariants()[0].height
+  let squat = 0, throughStone = 0, tallestCrown = 0
+  roomProps.props.forEach((h, i) => {
+    if (!roll[i].crown) return
+    const tall = roll[i].crownScale * unitTree
+    tallestCrown = Math.max(tallestCrown, tall)
+    if (tall < 2 * (h.top - h.y)) squat++
+    const under = shell.roofAt(h.x, h.y + 0.1, h.z)
+    if (under !== null && tall > under) throughStone++
+  })
+  check(squat === 0 && throughStone === 0, 'every crown stands twice its house and under the shell\'s roof', `tallest ${tallestCrown.toFixed(0)} m, ${squat} squat, ${throughStone} through the stone`)
+  // The gardens, weeded once the houses stand (weedGardens): nothing is left under a root, every plot keeps rows enough to read as one, and most of what was sown stays.
+  const plots = room.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) }))
+  const kept = weedGardens(plots, roomProps)
+  const sown = plots.reduce((n, p) => n + p.spots.length, 0), left = kept.reduce((n, p) => n + p.spots.length, 0)
+  const rooted = kept.reduce((n, p) => n + p.spots.filter(([x, z]) => roomProps.rootedAt(x, z, GARDEN.root)).length, 0)
+  check(rooted === 0 && kept.every((p) => p.spots.length >= CARROTS_LEAST) && left >= sown * CARROTS_KEPT, 'no carrot stands under a house\'s roots and every plot keeps its rows', kept.length === 0 ? 'this glade sows no plot' : `${left} of ${sown} sown over ${kept.length} plots, fewest ${Math.min(...kept.map((p) => p.spots.length))}`)
+  // The roof ferns (room-props.js roofSpots): each seat stands on its own house's roof mesh, over half its height, and no two on one roof crowd each other.
+  let seats = 0, asked = 0, offMesh = 0, tooLow = 0, crowded = 0, emptyRoof = 0, lowest = Infinity
+  for (const r of d.roofs) {
+    const h = roomProps.props[r.house]
+    const mine = roofFerns(roomProps, [r])
+    asked += r.count
+    seats += mine.length
+    if (mine.length === 0) emptyRoof++
+    mine.forEach((f, k) => {
+      const over = (f.y - h.y) / (h.top - h.y)
+      lowest = Math.min(lowest, over)
+      if (roomProps.blockTopAt(f.x, f.z) < f.y - 0.05) offMesh++
+      if (over < ROOF.high) tooLow++
+      for (let q = 0; q < k; q++) if (Math.hypot(mine[q].x - f.x, mine[q].z - f.z) < ROOF.apart * h.r - 1e-9) crowded++
+      if (f.scale < DECOR.roof.size[0] || f.scale > DECOR.roof.size[1]) tooLow++
+    })
+  }
+  check(d.roofs.every((r) => roll[r.house].roof === r.count) && seats <= asked, 'every roof carries the ferns its house rolled, or as many as it has room for', `${seats} of ${asked} seats on ${d.roofs.length} roofs`)
+  check(offMesh === 0 && emptyRoof === 0, 'every roof fern sits on its own house\'s roof mesh', `${offMesh} off the mesh, ${emptyRoof} roofs with no seat`)
+  check(tooLow === 0, `every roof fern stands over ${ROOF.high * 100}% of its house's height, at a size in DECOR.roof.size`, `lowest ${(lowest * 100).toFixed(0)}%`)
+  check(crowded === 0, `no two ferns on one roof stand within ${ROOF.apart} of its radius`, `${crowded} pairs`)
+  // The pieces against the walls: each stands at the point its own offer computes, so the room accepted or dropped an offer and never moved one.
+  const offers = []
+  roomProps.props.forEach((h, i) => {
+    const door = Math.atan2(-Math.sin(h.yaw), Math.cos(h.yaw))
+    for (const p of roll[i].against) {
+      const pr = p.kind === 'rock' ? p.size / 2 : p.size * DECOR.spread[p.kind]
+      const at = coreOf(h) + pr * (1 - p.bite)
+      offers.push({ h, kind: p.kind, pr, size: p.size, yaw: p.yaw, doorOff: off180(((p.a - door) * 180) / Math.PI), x: h.x + Math.cos(p.a) * at, z: h.z + Math.sin(p.a) * at })
+    }
+  })
+  const against = [...d.boulders.map((b) => ({ ...b, kind: 'rock', size: b.across })), ...d.ferns.map((f) => ({ ...f, kind: 'fern', size: f.scale })),
+    ...d.trees.filter((t) => !roomProps.props.some((h, i) => roll[i].crown && h.x === t.x && h.z === t.z)).map((t) => ({ ...t, kind: 'tree', size: t.scale }))]
+  const offerOf = (p) => offers.find((o) => o.kind === p.kind && o.size === p.size && Math.abs(o.x - p.x) < 1e-9 && Math.abs(o.z - p.z) < 1e-9)
+  const strays = against.filter((p) => !offerOf(p)).length
+  const onDoor = against.filter((p) => offerOf(p).doorOff < DECOR.against.arc).length
+  check(strays === 0 && onDoor === 0, `every piece against a wall stands on its own offer, at least ${DECOR.against.arc} degrees off its door`, `${against.length} of ${offers.length} offers placed, ${strays} stray, ${onDoor} across a door`)
+  // Against the wall, not out on the lawn: its hull touches the trunk, and it bites no deeper into it than its kind rolls.
+  let adrift = 0, deepBite = 0
+  for (const p of against) {
+    const o = offerOf(p), dist = Math.hypot(p.x - o.h.x, p.z - o.h.z), core = coreOf(o.h)
+    if (dist > core + o.pr + 1e-6) adrift++
+    if (dist < core + o.pr * (1 - DECOR.against[p.kind].bite[1]) - 1e-6) deepBite++
+  }
+  check(adrift === 0 && deepBite === 0, 'every piece touches the wall it leans on and bites no deeper than its kind', `${adrift} adrift, ${deepBite} too deep`)
+  // The room's own siting: it gives way to the ways, the clearing, the stone, the water, the lamps and the stools, all of which stood first. (The gardens' plots are gated by the carrots' own spots, which the room does not publish.)
+  const ways = roads.filter((r) => !r.id.startsWith('pad-')).map((r) => new Spline(r.pts).flatten(0.5))
+  let onWay = 0, inClearing = 0, pastRim = 0, inWater = 0, onLamp = 0
+  for (const p of against) {
+    const r = offerOf(p).pr
+    for (const s of ways) for (let i = 0; i < s.length; i += 4) if (Math.hypot(s[i] - p.x, s[i + 2] - p.z) < ROAD_WIDTH / 2 + DECOR.against.gap + r) { onWay++; break }
+    if (Math.hypot(p.x - room.clearing.x, p.z - room.clearing.z) < CLEARING.r + r) inClearing++
+    if (Math.hypot(p.x, p.z) + r + OUTLYING.wall > rimAt(p.x, p.z)) pastRim++
+    if (wet(p.x, p.z)) inWater++
+    if ([...room.lamps, ...room.stools].some((q) => Math.hypot(q.x - p.x, q.z - p.z) < r + DECOR.against.gap)) onLamp++
+  }
+  check(onWay === 0 && inClearing === 0 && pastRim === 0 && inWater === 0 && onLamp === 0, 'no piece stands on a way, in the clearing, in the stone, in the water or on a lamp or stool',
+    `${onWay} on a way, ${inClearing} in the clearing, ${pastRim} in the stone, ${inWater} wet, ${onLamp} on a lamp or stool`)
+  // Carried across the seeds: how many houses are crowned, and how many stand with nothing at all.
+  roomProps.props.forEach((h, i) => dressed.push((roll[i].crown ? 1 : 0) + (d.roofs.some((r) => r.house === i) ? 1 : 0) + against.filter((p) => offerOf(p).h === h).length))
+  crowned.push(crowns / roomProps.props.length)
+  console.log(`  ${crowns} crowned, ${seats} ferns on ${d.roofs.length} roofs, ${against.length} pieces against the walls (${against.filter((p) => p.kind === 'rock').length} stones)`)
 }
 
 // --- the wood -----------------------------------------------------------------
@@ -506,11 +635,18 @@ const water = {
     return Math.hypot(x - e.x - (near.x - e.x) * t, z - e.z - (near.z - e.z) * t)
   }
   let placed = 0, inClearing = 0, inHut = 0, behind = 0, byLake = 0, onWay = 0
+  // The outermost tree of each fifteen-degree sector, as a distance inside the rim: the wild bed's and then the thicket's, which is what closes it.
+  const SECTORS = 24, TAU = Math.PI * 2
+  const wildEdge = new Array(SECTORS).fill(Infinity), edge = new Array(SECTORS).fill(Infinity)
+  const sectorOf = (x, z) => Math.floor((((Math.atan2(z, x) % TAU) + TAU) % TAU) / (TAU / SECTORS))
+  const reach = (x, z, into) => { const k = sectorOf(x, z); into[k] = Math.min(into[k], room.ground.rimAt(Math.atan2(z, x)) - Math.hypot(x, z)) }
   for (const tile of trees.tiles.values()) {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       const x = trees.instX[id], z = trees.instZ[id]
       if (!inBowl(x, z)) continue
+      reach(x, z, wildEdge)
+      reach(x, z, edge)
       placed++
       if ((x - c.x) ** 2 + (z - c.z) ** 2 < c.r ** 2) inClearing++
       if (roomProps.props.some((h) => (x - h.x) ** 2 + (z - h.z) ** 2 < h.r ** 2)) inHut++
@@ -526,6 +662,17 @@ const water = {
   check(behind > 0, 'the wood comes up to the huts\' backs', `${behind} trees within 16 m of the clearing`)
   check(byLake > 0, 'the wood comes down to the lake', `${byLake} trees within 40 m of it`)
   check(onWay >= EXIT_WOOD_LEAST, 'the wood stands between the exit and the nearest hut', `${onWay} trees within ${EXIT_WOOD_M} m of the ${wayLen.toFixed(0)} m line between them`)
+  // The thicket (RIM_WOOD): planted on ground the forest law refuses, so it takes the band the bed above left bare and carries the wood to the stone -- and some of it leans past the rim, into the wall.
+  for (const w of room.wood) reach(w.x, w.z, edge)
+  const at = { h: 0, tan: 0 }
+  const allowed = room.wood.filter((w) => {
+    field.scatterAt(w.x, w.z, RIM_WOOD.cell, at)
+    return forestKeepAt(at.h, at.tan, at.h - field.snowLineAt(w.x, w.z), null, w.x, w.z) > 0
+  }).length
+  const pastRim = room.wood.filter((w) => Math.hypot(w.x, w.z) > room.ground.rimAt(Math.atan2(w.z, w.x))).length
+  check(allowed === 0 && pastRim > 0, 'the thicket stands only where the forest law refuses to, and leans into the wall', `${room.wood.length} trees, ${allowed} on ground the bed could have taken, ${pastRim} past the rim`)
+  const wildWorst = Math.max(...wildEdge.filter(Number.isFinite)), wildBare = wildEdge.filter((e) => !Number.isFinite(e)).length
+  check(Math.max(...edge) < RIM_BARE_M, 'the wood runs up to the stone on every bearing', `worst sector ${Math.max(...edge).toFixed(1)} m inside the rim; the bed alone leaves ${wildWorst.toFixed(1)} m and ${wildBare} of ${SECTORS} sectors bare`)
 }
 
 // --- the shell ----------------------------------------------------------------
@@ -594,7 +741,14 @@ console.log('\nthe shell')
       const h = heightAt(x, z)
       if (!walk.fits(x, z, h, null)) intrudes++
       const rayRoof = shell.roofAt(x, h, z)
-      if (rayRoof === null || Math.abs(walk.ceilingAt(x, z, h + 1) - h - rayRoof) > 0.5) roofOff++
+      // Read off a CELL grid (render/shell.js crossingsAt), so what the table promises is the roof a ray finds within half a cell of the point, not at the point itself: up the wall the roof climbs metres a metre, and half a cell of misregistration there is most of a metre of height that no head is anywhere near.
+      let lo = rayRoof, hi = rayRoof
+      for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const q = shell.roofAt(x + (dx * SHELL_CELL) / 2, h, z + (dz * SHELL_CELL) / 2)
+        if (q !== null) { lo = Math.min(lo, q); hi = Math.max(hi, q) }
+      }
+      const tableRoof = walk.ceilingAt(x, z, h + 1) - h
+      if (rayRoof === null || tableRoof < lo - 0.5 || tableRoof > hi + 0.5) roofOff++
     }
   }
   for (let b = 0; b < 360; b += 10) {
@@ -602,7 +756,7 @@ console.log('\nthe shell')
     if (walk.fits(Math.cos(a) * R, Math.sin(a) * R, heightAt(Math.cos(a) * R, Math.sin(a) * R), null)) fitsPast++
   }
   check(intrudes === 0, 'the shell\'s stone reaches no head inside the rim', `${intrudes} of ${m} standing points`)
-  check(roofOff === 0, 'the walker\'s roof is the shell\'s', `${roofOff} of ${m} points off by over 0.5 m`)
+  check(roofOff === 0, 'the walker\'s roof is the shell\'s', `${roofOff} of ${m} points off by over 0.5 m from any ray within half a cell`)
   check(fitsPast === 0, 'past the wall she does not fit', `${fitsPast} of 36 bearings fit ${ENTER_M + 1} m past where the ground enters the stone`)
 }
 
@@ -731,10 +885,10 @@ console.log('\nthe stools')
     if (Math.hypot(s.x, s.z) > rimAt(s.x, s.z) - LAMPS.wall) inStone++
     const a = Math.atan2(s.lookZ - s.z, s.lookX - s.x)
     if ([0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2, a].some((b) => Math.abs(heightAt(s.x + Math.cos(b) * STOOLS.flat, s.z + Math.sin(b) * STOOLS.flat) - heightAt(s.x, s.z)) > STOOLS.level + 1e-9)) sloped++
-    // By an outlying house's door, facing the way it does, or off the loop toward the lake with water within STOOLS.wet past it, facing the lake.
-    const door = outlying.find((h) => Math.hypot(s.x - h.x, s.z - h.z) < coreOf(h) + STOOLS.wall + 2 + STOOLS.beside)
+    // Stool i is outlying house i's, the doors' first and in their order, then the shore's (rooms/village.js placeStools). Read off the index and not off what stands near it: a lakeside house and the shore stools off the loop beside it put two houses within one stool's reach, and the nearer is not always the one whose door it is.
+    const door = i < outlying.length ? outlying[i] : null
     if (door) {
-      byDoor++
+      if (Math.hypot(s.x - door.x, s.z - door.z) < coreOf(door) + STOOLS.wall + 2 + STOOLS.beside) byDoor++
       if (Math.abs(Math.atan2(Math.sin(a + door.yaw), Math.cos(a + door.yaw))) > 0.01) lookOff++
     } else if (nearLoop(s.x, s.z) <= STOOLS.off + 1 + 0.1 && heightAt(s.x + Math.cos(a) * STOOLS.wet, s.z + Math.sin(a) * STOOLS.wet) < lake.y) {
       onShore++
@@ -787,6 +941,31 @@ console.log('\nthe boot')
   check([tint.r, tint.g, tint.b].every((v) => v > 0 && Number.isFinite(v)), 'the shell takes a placed boulder\'s tint', `${tint.r.toFixed(2)} ${tint.g.toFixed(2)} ${tint.b.toFixed(2)}`)
   const trees = new Trees(scene, field, water, texArray, { seed: SEED, radius: 200, deadwood: roomProps })
   trees.place(0, 0)
+  // The stones set against the houses (render/boulders.js): every one of them placed, bedded into the ground, rung by distance and stone to the walker.
+  const boulders = new Boulders(scene, field, rocks, { boulders: room.decor.boulders, seed: room.spec.seed })
+  check(room.decor.boulders.length > 0 && boulders.stats.placed === room.decor.boulders.length, 'every boulder the room sites is placed', `${boulders.stats.placed} of ${room.decor.boulders.length}`)
+  const bedded = boulders.stones.filter((s) => s.y < heightAt(s.x, s.z) && s.top > heightAt(s.x, s.z)).length
+  check(bedded === boulders.stones.length, 'each one sits in the earth rather than on it', `${bedded} of ${boulders.stones.length} bedded`)
+  const first = boulders.stones[0]
+  boulders.update(first.x, first.top, first.z)
+  const near = boulders.stats.tris, tiers = boulders.stones.map((s) => boulders.tierAt[s.id])
+  boulders.update(first.x + 400, first.top, first.z)
+  check(tiers[0] === 0 && boulders.stats.tris < near && boulders.stones.every((s) => boulders.tierAt[s.id] >= tiers[boulders.stones.indexOf(s)]), 'and is rung down as she walks away', `${near} triangles underfoot, ${boulders.stats.tris} from 400 m`)
+  // A cylinder at its plan radius: its own span stands at its centre, and a step past the radius there is nothing to climb. `col` is a Float32Array, as the walker's is, so the spans come back rounded.
+  const col = new Float32Array(16)
+  let footless = 0, spilt = 0
+  for (const s of boulders.stones) {
+    const n = boulders.columnAt(s.x, s.z, 0, col)
+    let mine = false
+    for (let i = 0; i < n; i++) if (Math.abs(col[i * 2] - s.y) < 1e-4 && Math.abs(col[i * 2 + 1] - s.top) < 1e-4) mine = true
+    if (!mine) footless++
+    for (let q = 0; q < 8; q++) {
+      const a = (q / 8) * Math.PI * 2, x = s.x + Math.cos(a) * s.r * 1.05, z = s.z + Math.sin(a) * s.r * 1.05
+      if (boulders.stones.some((o) => Math.hypot(o.x - x, o.z - z) <= o.r)) continue
+      if (boulders.columnAt(x, z, 0, col) > 0) spilt++
+    }
+  }
+  check(footless === 0 && spilt === 0, 'each is a column from its foot to its crown and nothing past its plan radius', `${footless} without a foot, ${spilt} points past one`)
   const e = new Entrances(scene, field, water, rocks, { seed: SEED, bank: mouthBankFrom(readShippedLadder('cave-mouth')), fixed: [room.exit] })
   e.place(room.spawn.x, room.spawn.z)
   check(e.resident.size === 1 && e.resident.has('exit'), 'the exit mouth is seated where the build says', `${e.resident.size} resident`)
@@ -797,6 +976,8 @@ console.log('\nthe boot')
   // At her size in the glade, as main.js builds them.
   const walk = new WalkSurface(field, rocks, trees, { scale: HER_SCALE })
   walk.addStone(roomProps)
+  walk.addStone(boulders)
+  check(walk.heightAt(first.x, first.z) >= first.top - 0.01, 'and she stands on top of it', `${walk.heightAt(first.x, first.z).toFixed(1)} vs its top ${first.top.toFixed(1)}`)
   const great = roomProps.props[0]
   const onTop = walk.heightAt(great.x, great.z)
   check(onTop >= roomProps.blockTopAt(great.x, great.z) - 0.01 && onTop > great.y + 0.5 * (great.top - great.y), 'the walk surface stands on the great hut', `${onTop.toFixed(1)} vs ground ${great.y.toFixed(1)}`)
@@ -890,7 +1071,8 @@ console.log('\nthe creatures')
     rocks.place(room.lake.x, room.lake.z)
     const walk = { heightAt: (x, z) => field.heightAt(x, z) }
     const hoppers = new Grasshoppers(scene, field, water, { seed, walk, assets: boxAsset(1) })
-    hoppers.place(room.lake.x, room.lake.z)
+    // Rolled about the clearing rather than the lake: a grasshopper's tiles reach 14 m (grasshoppers.js RADIUS) and the water fills that much of some lakes, where the crabs' and frogs' 40 m still find a shore.
+    hoppers.place(room.clearing.x, room.clearing.z)
     const crabs = new Crabs(scene, field, water, { seed, rocks, assets: boxAsset(1) })
     crabs.place(room.lake.x, room.lake.z)
     const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets })
@@ -905,7 +1087,7 @@ console.log('\nthe creatures')
     fish.place(room.lake.x, room.lake.z)
     check(fish.stats.schools > 0, 'the lake seeds a school of fish on the build\'s fish seed', `${fish.stats.schools}, seed ${room.fishSeed - seed} over the room\'s`)
     console.log(`=== seed ${seed}: ${hoppers.stats.alive} grasshoppers, ${crabs.stats.alive} crabs on ${crabs.stats.perches} perches, ${seated} frogs on ${seats} m2 of seats, ${fish.stats.schools} school(s) of fish`)
-    check(hoppers.stats.alive > 0, 'grasshoppers live about the lake')
+    check(hoppers.stats.alive > 0, 'grasshoppers live on the clearing\'s grass')
     check(crabs.stats.alive > 0, 'crabs perch on the shore stones')
     check(seats >= FROG_SEATS_LEAST, 'the shore has a band of frog seats', `${seats} m2`)
   }

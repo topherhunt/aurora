@@ -37,6 +37,7 @@ import { RELIEF_SHIPPED } from '../height/relief.js'
 import { Layers } from '../layers/layers.js'
 import { DOC_VERSION, validate } from '../layers/doc.js'
 import { SHAPE_RECT } from '../layers/water-bodies.js'
+import { forestKeepAt } from '../layers/forest.js'
 import { FREEBOARD } from '../layers/paths.js'
 import { Spline } from '../layers/spline.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
@@ -45,8 +46,8 @@ import { HOLE } from '../render/entrances.js'
 import { DOOR } from '../render/room-props.js'
 import { TILE as FISH_TILE, SPECIES as FISH_SPECIES } from '../render/fish.js'
 
-// The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (80 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
-export const SHELL = { x: 0, z: 0, floor: 60, scale: 55, sink: 0.4 }
+// The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (96 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
+export const SHELL = { x: 0, z: 0, floor: 60, scale: 66, sink: 0.4 }
 export const FLOOR = SHELL.floor
 // Her size in the glade, against the world's metres (DESIGN.md §30): near a leafkin's own, and every metre that is hers goes by it (player.js, walk.js, hands.js and main.js).
 export const HER_SCALE = 0.5
@@ -54,7 +55,7 @@ export const HER_SCALE = 0.5
 // The ground. Metres; the floor stays over every scatter's elevation floor (trees 25 m).
 export const TEXELS = 1025                       // WORLD_SIZE / (TEXELS - 1) = 8 m a texel, the overworld's pitch
 export const TILE_TEXELS = 16                    // the repeated tile, 128 m: the widest wall plus the climb past it fits in it on every yaw, and the plateau past the climb stays under the 65% of the map V2Height.bands lets sit at one height
-export const DROP = 10                           // the cone: its tip FLOOR at the basin, its rim DROP over that on the mean, where the shell's wall stands at the rim's height
+export const DROP = 12                           // the cone: its tip FLOOR at the basin, its rim DROP over that on the mean, where the shell's wall stands at the rim's height
 export const TIP = 0.15                          // the cone's tip rounded off: its profile is a hyperbola whose asymptote is the cone, flat at the tip, this fraction of the rim's radius from it
 // The basin: with odds `odds` the cone's tip stands off the axis, `off` of the rim's radius on a rolled bearing, so the lake sits toward one wall and the ground falls to it steeper on that side and gentler on the others; otherwise on the axis.
 export const BASIN = { odds: 0.5, off: [0.25, 0.6] }
@@ -71,19 +72,43 @@ export const MAX_Y = 300                         // the encoding's range
 export const LAKE = { over: 3, margin: 7, least: 120, depth: 4, grid: 1 }
 // The rivers (DESIGN.md §30): `count` of them from a source `from` of the way to the wall, the first within `sector` degrees of straight away from the exit or, with odds `nearOdds`, `near` degrees off the exit's bearing on a rolled side, so she sometimes comes down beside a stream; the next `apart` degrees on from it, away from the exit. Each is walked down in `step` metre steps, every step downhill, on the fall line pulled toward the lake's deepest point by `follow` and swung across it by a sine of `swing` degrees over `wavelength` metres, the swing shallowed until the step descends; stalled `stall` steps in a pit, it runs straight for the deepest point; in the water it runs for that point until the ground stands `into` metres under the lake, and that is the mouth, so the sheet dives under the lake's plane (paths.js reads a mouth on the lake wherever the ground is within a channel depth of its level, and never raises a level). A node every `node` steps, a fifth of the shortest wave, so the spline through them keeps the bends (a node every 4 m flattened them). A bearing whose walk reaches no water of the lake's own, whose source ground stands under `rise` metres over the lake (a lake set toward one wall leaves that side's source all but level with the water, and a stream that does not fall is a ditch), runs under `wind` times its chord (a swing whose phase happens to cancel over so short a run comes down all but straight), or folds back on itself by over `turn` degrees between nodes or lays two nodes within two `step`s of each other (a walk bouncing in a pit stacks its nodes, and the ribbon drawn along the spline through them has a cusp its miter cannot rescue -- ribbon.js throws on it; a river that flows turns under 95 degrees and its nodes stand 2 m apart), is stepped `retry` degrees either side. No road comes within `clear` metres of a river: a road's feather (ROAD_FEATHER, laid over the carve by paths.js smoothRoads) would lift the bed out of the water, so `clear` is half a road, its feather and a bank (paths.js BANK) of half a river, and a metre.
 export const RIVER = { count: [1, 2], sector: 40, near: [55, 100], nearOdds: 0.4, apart: 30, from: 0.85, rise: 3, step: 0.5, node: 4, follow: 1.5, swing: [50, 75], wavelength: [10, 16], wind: 1.15, turn: 120, into: 0.8, width: 1.5, depth: 1, retry: 5, stall: 12, clear: 6 }
-// The path round the lake: `over` metres past the water on every bearing (the wet radius dilated and averaged over `smooth` degrees), ending where it comes within RIVER.clear of a river, held at the ring's height for `level` degrees either side of the clearing's bearing, where the spur leaves it, and wherever it passes within the houses' reach of the clearing, so every road about the houses stands at one level (paths.js smoothRoads reads the nearest road alone, and a loop falling past a house's wall would tilt its footprint); and everywhere else cut level `dry` metres over the water, its feather the shore's shelf, where the frogs sit (frogs.js seats on dry ground under 35 degrees within 5 m of the water, and the cone alone is steeper wherever the jitter adds to it), with a ramp's length between the two levels left to fall at the chord grade.
-export const LOOP = { over: [2, 4], smooth: 30, level: 15, dry: 1 }
+// The path round the lake: `over` metres past the water on every bearing (the wet radius dilated and averaged over `smooth` degrees) and further still over one stretch of it -- `away.span` degrees of the turn about a middle rolled within `away.mid` of the exit's bearing, as far as that window allows from the rivers' mouths and from the whole arc the clearing may be swept through, where it swings out to `away.out` more on a raised cosine and comes back, so the path does not border the water the whole way round and one bank has room for a house between the path and the lake (OUTLYING). It ends where it comes within RIVER.clear of a river, held at the ring's height for `level` degrees either side of the clearing's bearing, where the spur leaves it, and wherever it passes within the houses' reach of the clearing, so every road about the houses stands at one level (paths.js smoothRoads reads the nearest road alone, and a loop falling past a house's wall would tilt its footprint); and everywhere else cut level `dry` metres over the water, its feather the shore's shelf, where the frogs sit (frogs.js seats on dry ground under 35 degrees within 5 m of the water, and the cone alone is steeper wherever the jitter adds to it), with a ramp's length between the two levels left to fall at the chord grade.
+export const LOOP = { over: [2, 4], smooth: 30, level: 15, dry: 1, away: { span: [80, 150], out: [4, 8], mid: [60, 300], jitter: 20, cap: 14 } }
 // The clearing: a disc of radius `r` the wood keeps off (main.js villageBiome, RoomProps.occupiesAt), ringed by a path the houses' doors open on, its ring's inner point `spur` metres out from the loop on a bearing from the lake `bearing` degrees off the exit's on a rolled side, a spur straight in from the loop to it: it is the houses that cluster round the ring, and a loop run onto it would pass under them. The rolled bearing is stepped `sweep` degrees at a time within `bearing`, the other side after, until the houses stand `wall` metres clear of the stone. The ring is level at the ground's mean over it and the loop's level stretch (LOOP.level), `dry` over the lake at the least; the ring's and the pads' smooth (paths.js smoothRoads) cut the clearing and the houses into the slope at that level, and the loop's stretch is built up to it.
 export const CLEARING = { r: 5, spur: 2, bearing: [50, 120], sweep: 5, wall: 1.5, dry: 1 }
 // The wood (main.js villageBiome): `density` times the forest's candidates a tile (trees.js DENSITY), full cover within `verge` metres of a road's edge and `cover` elsewhere (forest.js BIOME reads cover onto the keep and the height: at 0.6 about 0.7 of the candidates stand, a little shorter), so the roads are lined thicker than the wood between them; the clearing is meadow. The forest's own verge (trees.js ROAD) cannot do this in a village, where the keep is 1 already and it only ever multiplies up to 1.
 export const WOOD = { density: 2, verge: 8, cover: 0.6 }
-// The houses (DESIGN.md §30): `count` round the ring, the great house at its head and the rest packed either side, `gap` metres between their trunks and from the spur and the loop, `height` by their count. A house's box is as wide as it is tall (`r` is its half-width) but its trunk stands only DOOR.wall of that out (`core`): the trunks are packed round the ring and their roots and eaves interleave between them, while the box keeps clear of the wall, the water, the roads and the wood. Each stands on a pad of two road rings hidden under its floor at its road's height, `pads` of its radius out and `padHalf` of it wide, so the flatten (paths.js smoothRoads, the nearest road alone) levels the whole footprint and the cobble (SWELL) never shows past the walls.
-export const HUTS = { count: [5, 6], height: { 5: [3.75, 7.5], 6: [3.75, 6.25] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25 }
+// The thicket that carries the wood up the bowl's side to the stone, over the ground the forest law refuses (DESIGN.md §30): a tree every `spacing` metres of a grid moved up to `jitter` off its point, within `reach` of the rim and out to `past` beyond it, each taking `r` metres of plan. `cell` is the span the slope is read over, trees.js PLACEMENT_CELL, so the law's answer here is the one the wild bed acted on.
+// A planted tree takes no terrain test at all (trees.js `plants`) -- which is what lets these stand -- so rimWood must do the whole siting itself, against everything else the village has already put down.
+export const RIM_WOOD = { spacing: 3.6, jitter: 1.4, reach: 14, past: 2.5, scale: [0.55, 1.35], r: 0.6, cell: 4 }
+// The houses (DESIGN.md §30): `count` round the ring, the great house at its head and the rest packed either side, `gap` metres between their trunks and from the spur and the loop, one height per band of `height` by their count so the row steps up and down. A house's box is as wide as it is tall (`r` is its half-width) but its trunk stands only DOOR.wall of that out (`core`): the trunks are packed round the ring and their roots and eaves interleave between them, while the box keeps clear of the wall, the water, the roads and the wood. Each stands on a pad of two road rings hidden under its floor at its road's height, `pads` of its radius out and `padHalf` of it wide, so the flatten (paths.js smoothRoads, the nearest road alone) levels the whole footprint and the cobble (SWELL) never shows past the walls. Each house is set `sink` metres into that pad, rolled per house: the pick's floor stands at its origin, so a house seated exactly on the ground shows daylight under its sills, and a sunk one comes out of the grass.
+export const HUTS = { count: [4, 5], height: { 4: [3.75, 8.5], 5: [3.75, 7.5] }, gap: 1, pads: [0.25, 0.7], padHalf: 0.25, sink: [0.3, 0.55] }
 export const GREAT_HUT = { height: [7.75, 9.4] }
-// The outlying houses: `count` of them off the loop, each sited off a rolled point of it on a bearing from the lake, `off` metres out from the loop to its door, along it by that distance times the tangent of `skew` degrees, in the wood or, where the loop's radius leaves a bay dry enough, down on the shore between the loop and the water (`shore` is the odds a house tries the shore first); `gap` metres clear of every road and house, `wall` clear of the stone, a house `tries` sites before the village does without it. Its branch leaves the loop at the nearest point within `window` of the rolled one from which one grade reaches the door crossing no road (roadsCross), its first `apron` metres held at the loop's height, wobbling `wander` of WANDER.amp so it cannot bend back over the loop. Its door faces its branch, and its pad stands at the ground under its centre.
+// What breaks up the ring's row (DESIGN.md §30): `share` of the houses stand `arc` metres of extra arc off the neighbour they were packed against, so the row is a few clusters rather than one unbroken palisade. A gap wide enough is planted (gardensBetween); the rest are left as ways through to the wood behind.
+export const RING_GAP = { share: 0.55, arc: [2.5, 5.5] }
+// A garden in one of those gaps: `rows` rows of carrots `gap` metres apart, the plants `spacing` apart along a row `len` metres long, laid square to the clearing's radius and kept `off` metres clear of either trunk and `verge` clear of any road's edge. `count` of the ring's gaps are planted at the most -- a village is a few plots, not an allotment. `off` is measured from the trunk's core, and a house's roots reach out past it: the spots those roots stand over, within `root` metres, are dropped once the houses are built (weedGardens), so the rows nestle between the roots instead of running under one.
+export const GARDEN = { count: [1, 3], rows: [2, 4], gap: [0.55, 0.8], spacing: [0.35, 0.5], len: [1.6, 3.2], off: 0.6, verge: 0.3, root: 0.35 }
+// The outlying houses: `count` of them off the loop, each sited off a rolled point of it on a bearing from the lake, `off` metres out from the loop to its door, along it by that distance times the tangent of `skew` degrees, in the wood or, where the loop's radius leaves a bay dry enough, down on the shore between the loop and the water, sited off the water's own edge `bay` degrees round from its loop point with `bank` metres of bank in front of its box (`shore` is the odds a house tries that side, and the first house takes it alone for half its tries: a village with no house's trunk within `lakeside` metres of the water is re-rolled); `gap` metres clear of every road and house, `wall` clear of the stone, a house `tries` sites before the village does without it. Its branch leaves the loop at the nearest point within `window` of the rolled one from which one grade reaches the door crossing no road (roadsCross), its first `apron` metres held at the loop's height, wobbling `wander` of WANDER.amp so it cannot bend back over the loop. Its door faces its branch, and its pad stands at the ground under its centre.
 // A violin playing inside `share` of the houses, the ring's and the outlying together, heard through the wall (ambience.js RULES.fiddle).
 export const FIDDLE = { share: 0.5 }
-export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [3.75, 8.1] }
+// What grows on and against the houses (DESIGN.md §30): `crown` of them carry a tree of `crownScale` at their own point, `roof.share` carry `roof.count` ferns of `roof.size` where the pick's mesh allows (room-props.js roofSpots, resolved by roofFerns once the houses are built), and each is offered `against.count` pieces by the weights in `against.kinds`, on a bearing `against.arc` degrees off its door, its own plan radius out from the wall less `against.bite` of it. `spread` is that radius over the piece's `size` (a boulder's `size` is metres across); a piece the siting refuses is dropped, not moved.
+// crownScale is in trees.js SCALE's own unit, where 1 is an 11 m tree, and the shell's roof stands 48 m over the ground at its meanest: a crown much past 3.0 comes out through the stone.
+export const DECOR = {
+  crown: 0.5,
+  crownScale: [2.3, 3.0],
+  roof: { share: 0.5, count: [2, 5], size: [1, 1.8] },
+  spread: { fern: 0.61, tree: 0.3 },
+  against: {
+    count: [1, 3],
+    kinds: ['fern', 'fern', 'tree', 'rock', 'rock'],
+    arc: 60,
+    gap: 0.3,
+    fern: { size: [1.3, 2.3], bite: [0.1, 0.4] },
+    tree: { size: [0.5, 1.1], bite: [0, 0.2] },
+    rock: { size: [2, 4.2], bite: [0.15, 0.5] },
+  },
+}
+export const OUTLYING = { count: [2, 3], off: [3, 6], skew: [50, 65], shore: 0.5, lakeside: 4, bay: 25, bank: [1, 2.5], shoreGap: 0.75, gap: 2, wall: 2, tries: 120, window: 10, apron: 4, wander: 0.5, height: [3.75, 8.1] }
 export const ROAD_WIDTH = 1
 // Two roads meet only where one ends on the other, within `JUNCTION_M` of an end: the ground takes the nearest road's height (paths.js smoothRoads), so a crossing at two heights is a broken bridge (roadsCross).
 export const JUNCTION_M = 1
@@ -112,7 +137,7 @@ export const WANDER = { wavelength: 12, amp: 1.2 }
 // The trunk: legs from the exit down to the loop, each sweeping up to `sweep` degrees round the lake and back, as many as hold the drop at CHORD_GRADE with `slack` to spare and no more than `legs`, its hairpins turned on `hairpin` metres, the last `approach` metres straight in on the exit's bearing so it meets the loop square. The top of the approach stands `room` metres nearer the lake than the arrival, or there is no trunk: a leg returning to the exit's bearing ends there, and with the lake near the exit it ended at the arrival's feet, five metres under the mouth.
 export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 8, room: 6 }
 // The exit mouth: on the bearing where the shell's wall stands most nearly plumb across the arch's height (entrances.js MOUTH_HEIGHT_M), its face point on the wall at the arch's mid height so the arch's back half stands in the stone, its normal into the room. The shell's stone gives way within `door` metres of the face point (Shell.setDoor), the arch and a shoulder, so she walks up to the hole. No house's wall stands within `houses` metres of it: she comes down through the wood before the village shows.
-export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.5, houses: 20 }
+export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.5, houses: 20, step: 0.05 }
 export const ARRIVE_M = 2
 const ROLL_TRIES = 128
 // Which attempt of a seed built, once one has. A refused roll still costs its
@@ -130,13 +155,17 @@ const TILE_M = WORLD_SIZE / (TEXELS - 1) * TILE_TEXELS
 
 /**
  * What one village is built from, off its seed:
- * `{ seed, attempt, shell, jitter, basin: { bearing, off }, rivers: [{ bearing, swing, wavelength, phase }], loop: { over }, clearing: { side, bearing }, huts: [height], great, outlying: [height], mirror: [bool], fiddle: [bool] }`,
+ * `{ seed, attempt, shell, jitter, basin: { bearing, off }, rivers: [{ bearing, swing, wavelength, phase }], loop: { over, away: { mid, span, out } }, clearing: { side, bearing }, huts: [height], great, spread: [m], gardens: [{ rows, gap, spacing, len }], outlying: [height], mirror: [bool], fiddle: [bool], decor: [{ crown, crownScale, roof, roofSeed, against }], sink: [m] }`,
  * the basin's bearing in radians from +X and its `off` a fraction of the rim's radius (BASIN),
  * bearings in degrees off the one from the lake to the exit, `great` the
- * index of the great house among the heights, `mirror` whether each house, the
+ * index of the great house among the heights, `spread` the extra arc each house
+ * stands off the neighbour it was packed against (RING_GAP) and `gardens` the
+ * plots offered to the gaps that result (GARDEN), `mirror` whether each house, the
  * ring's then the outlying, is the pick's mirror image, and `fiddle` whether a
- * violin plays inside it (FIDDLE.share of the houses, rolled last so the rest
- * of a seed's village stands as it did). `attempt` above 0 rolls another
+ * violin plays inside it (FIDDLE.share of the houses), `decor` what grows
+ * on and against it (DECOR) and `sink` how far it is set into its pad
+ * (HUTS.sink), the last three rolled last so the rest of a seed's
+ * village stands as it did. `attempt` above 0 rolls another
  * village under the same shell, for a build the ground refused (buildVillage).
  * `house` is taken for the caller's convenience and not read.
  */
@@ -154,13 +183,29 @@ export function rollVillage(seed, house, attempt = 0) {
     const side = rivers[0].bearing >= 180 ? -1 : 1
     rivers.push(river(rivers[0].bearing + side * (RIVER.apart + rng() * (RIVER.sector * 2 - RIVER.apart))))
   }
-  const loop = { over: between(LOOP.over) }
   const clearing = { side: rng() < 0.5 ? -1 : 1, bearing: between(CLEARING.bearing) }
+  // Where the path leaves the water (LOOP.away): the bearing off the exit's, within `mid` of the turn, standing furthest from the rivers' mouths and from the clearing, then jittered. A bank a river crosses or the ring backs on to has no room for the house that stretch is for.
+  const keepOff = [...rivers.map((r) => r.bearing), ...CLEARING.bearing.map((b) => clearing.side * b), clearing.side * clearing.bearing]
+  let mid = LOOP.away.mid[0], apart = -1
+  for (let b = LOOP.away.mid[0]; b <= LOOP.away.mid[1]; b += 5) {
+    const d = Math.min(...keepOff.map((k) => Math.abs(wrapDeg(b - k + 180) - 180)))
+    if (d > apart) { apart = d; mid = b }
+  }
+  const loop = { over: between(LOOP.over), away: { mid: mid + (rng() - 0.5) * LOOP.away.jitter, span: between(LOOP.away.span), out: between(LOOP.away.out) } }
   const n = Math.round(between(HUTS.count))
+  // One hut per band of the count's range, the bands then shuffled between them: four rolled freely come up a size as often as not, and the row wants to step up and down.
+  const [hutLo, hutHi] = HUTS.height[n]
   const huts = []
-  for (let i = 0; i < n; i++) huts.push(between(HUTS.height[n]))
+  for (let i = 0; i < n; i++) huts.push(hutLo + ((i + rng()) * (hutHi - hutLo)) / n)
+  for (let i = n - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [huts[i], huts[j]] = [huts[j], huts[i]] }
   const great = Math.floor(rng() * n)
   huts[great] = between(GREAT_HUT.height)
+  // The extra arc each house after the great one stands off its neighbour, and the plots that go in the gaps wide enough to take one.
+  const spread = huts.map((_, i) => (i > 0 && rng() < RING_GAP.share ? between(RING_GAP.arc) : 0))
+  const gardens = []
+  for (let i = 0, m = Math.round(between(GARDEN.count)); i < m; i++) {
+    gardens.push({ rows: Math.round(between(GARDEN.rows)), gap: between(GARDEN.gap), spacing: between(GARDEN.spacing), len: between(GARDEN.len) })
+  }
   const outlying = []
   for (let i = 0, m = Math.round(between(OUTLYING.count)); i < m; i++) outlying.push(between(OUTLYING.height))
   const mirror = [...huts, ...outlying].map(() => rng() < 0.5)
@@ -169,7 +214,23 @@ export function rollVillage(seed, house, attempt = 0) {
   for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]] }
   const fiddle = mirror.map(() => false)
   for (const i of order.slice(0, Math.round(order.length * FIDDLE.share))) fiddle[i] = true
-  return { seed, attempt, shell, jitter, basin, rivers, loop, clearing, huts, great, outlying, mirror, fiddle }
+  // What is grown on and against each house (DECOR), rolled last so the rest of a seed's village stands where it always did.
+  const decor = mirror.map(() => {
+    const crown = rng() < DECOR.crown
+    const crownScale = between(DECOR.crownScale)
+    const roof = rng() < DECOR.roof.share ? Math.round(between(DECOR.roof.count)) : 0
+    const roofSeed = Math.floor(rng() * 2 ** 31)
+    const against = []
+    for (let i = 0, m = Math.round(between(DECOR.against.count)); i < m; i++) {
+      const kind = DECOR.against.kinds[Math.floor(rng() * DECOR.against.kinds.length)]
+      const k = DECOR.against[kind]
+      against.push({ kind, a: rng() * TAU, yaw: rng() * TAU, size: between(k.size), bite: between(k.bite) })
+    }
+    return { crown, crownScale, roof, roofSeed, against }
+  })
+  // How far each house is set into its own pad (HUTS.sink), rolled after the decor for the same reason.
+  const sink = mirror.map(() => between(HUTS.sink))
+  return { seed, attempt, shell, jitter, basin, rivers, loop, clearing, huts, great, spread, gardens, outlying, mirror, fiddle, decor, sink }
 }
 
 // --- the ground --------------------------------------------------------------
@@ -596,13 +657,16 @@ function hairpinned(corners, radius) {
 // --- the houses --------------------------------------------------------------
 
 /**
- * The houses round the ring at (cx, cz): `[{ x, z, yaw, height, r, core }]` for `heights`,
+ * The houses round the ring at (cx, cz): `[{ x, z, yaw, height, r, core, a, d }]` for `heights`,
  * each facing the ring's centre with its door on the ring, the house `great` on
  * `headBearing` (degrees) and the rest packed out from it to either side in
- * turn, HUTS.gap between neighbours' trunks, each standing where `clearOf(x, z, r)`
- * allows; null where they do not all fit round.
+ * turn, HUTS.gap between neighbours' trunks plus `spread[i]` metres of arc
+ * (RING_GAP: the gaps that break up the row), each standing where
+ * `clearOf(x, z, r)` allows; null where they do not all fit round.
+ * `a` is the house's angle off `headBearing` and `d` its radius, which the
+ * gardens between them are sited from.
  */
-function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
+function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf, spread = []) {
   const R = CLEARING.r
   const stood = heights.map((_, i) => {
     const height = heights[(i + great) % heights.length]
@@ -622,7 +686,7 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
     const h = stood[i]
     let put = null
     for (const s of [side, -side]) {
-      let a = last[s].a + s * between(last[s].h, h)
+      let a = last[s].a + s * (between(last[s].h, h) + (spread[i] ?? 0) / h.d)
       while (Math.abs(a) < Math.PI && !clear(h, a)) a += s * deg(1)
       if (Math.abs(a) >= Math.PI) continue
       const other = last[-s]
@@ -638,8 +702,161 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
   return placed.map(({ h, a }) => {
     const [x, z] = at(h, a), b = deg(headBearing) + a
     // The door is +X in the pick's frame and a rotation of `yaw` about Y sends +X to (cos yaw, -sin yaw); it faces the ring's centre.
-    return { x, z, yaw: Math.atan2(Math.sin(b), -Math.cos(b)), height: h.height, r: h.r, core: h.core }
+    return { x, z, yaw: Math.atan2(Math.sin(b), -Math.cos(b)), height: h.height, r: h.r, core: h.core, a, d: h.d }
   })
+}
+
+/**
+ * The gardens in the ring's gaps: `[{ x, z, yaw, rows, spacing, gap, len }]`,
+ * one in each gap between neighbouring ring houses wide enough to hold GARDEN's
+ * narrowest plot, taken in the order `rolls` gives until `rolls` runs out.
+ *
+ * A gap is measured between the two trunks' EDGES along the arc they sit on, so
+ * a pair of tall houses -- whose cores are wide -- has to stand further apart to
+ * earn the same plot as a pair of small ones. The plot is laid square to the
+ * clearing's radius at the middle of the gap, its rows running across it, and
+ * kept GARDEN.off clear of both trunks so the wood between them still shows.
+ */
+function gardensBetween(cx, cz, headBearing, houses, rolls) {
+  const order = houses.map((h, i) => i).sort((p, q) => houses[p].a - houses[q].a)
+  const out = []
+  for (let k = 0; k < order.length && out.length < rolls.length; k++) {
+    const h0 = houses[order[k]], h1 = houses[order[(k + 1) % order.length]]
+    let da = h1.a - h0.a
+    if (k === order.length - 1) da += TAU
+    const roll = rolls[out.length]
+    const depth = (roll.rows - 1) * roll.gap
+    // Far enough out that the plot's inner row clears the ring the doors open on, and no nearer the clearing than the houses themselves.
+    const d = Math.max((h0.d + h1.d) / 2, CLEARING.r + ROAD_WIDTH / 2 + GARDEN.off + depth / 2)
+    const free = da * d - h0.core - h1.core - 2 * GARDEN.off
+    const len = Math.min(roll.len, free)
+    if (len < GARDEN.len[0]) continue
+    const b = deg(headBearing) + h0.a + da / 2
+    out.push({ x: cx + Math.cos(b) * d, z: cz + Math.sin(b) * d, yaw: b, rows: roll.rows, spacing: roll.spacing, gap: roll.gap, len, depth, r: Math.hypot(len, depth) / 2 })
+  }
+  return out
+}
+
+/**
+ * Where a plot's carrots stand: `[[x, z]]`, `rows` rows `gap` apart running
+ * across the gap, each row `len` long with its plants `spacing` apart.
+ *
+ * The plot's own frame: `yaw` is the bearing out from the clearing, so a row
+ * runs square to it. Siting tests these points rather than a disc round the
+ * plot -- a plot is a wide, shallow rectangle and its circle takes in a metre of
+ * ring road that no carrot ever stands on.
+ */
+export function gardenSpots(g) {
+  const ux = Math.cos(g.yaw), uz = Math.sin(g.yaw)
+  const n = Math.max(2, Math.round(g.len / g.spacing) + 1)
+  const out = []
+  for (let r = 0; r < g.rows; r++) {
+    const off = (r - (g.rows - 1) / 2) * g.gap
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1) - 0.5) * g.len
+      out.push([g.x + ux * off - uz * t, g.z + uz * off + ux * t])
+    }
+  }
+  return out
+}
+
+/** Whether (x, z) with `pad` metres of skirt stands on one of `plots` (each `{ x, z, r }`). For the scatter beds' occupiesAt: a tree does not grow out of a vegetable plot. */
+export function plotsOccupy(plots, x, z, pad = 0) {
+  return plots.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + pad)
+}
+
+/**
+ * What stands on and against each house (DECOR), off the per-house rolls:
+ * `{ trees: [{ x, z, scale }], ferns: [{ x, z, scale }], boulders: [{ x, z,
+ * across, yaw }], roofs: [{ house, count, seed }] }`, metres and radians.
+ *
+ * A crown is a tree at the house's own point, so nothing sites it: the trunk
+ * comes up through the roof by standing where the house does. A piece against a
+ * house is offered one bearing and dropped where the ground refuses it, never
+ * moved -- a boulder walked round the house until it fitted would end up in the
+ * road as often as against the wall. `clear(x, z, r)` is the room's own siting
+ * test; the house it leans on is exempt from it, which is what lets a boulder
+ * take its bite out of the wall.
+ */
+function dressHouses(all, decor, clear) {
+  const trees = [], ferns = [], boulders = [], roofs = []
+  for (let i = 0; i < all.length; i++) {
+    const h = all[i], d = decor[i]
+    if (d.crown) trees.push({ x: h.x, z: h.z, scale: d.crownScale })
+    if (d.roof > 0) roofs.push({ house: i, count: d.roof, seed: d.roofSeed })
+    // The door is +X in the pick's frame and a yaw about Y sends it to (cos yaw, -sin yaw).
+    const door = Math.atan2(-Math.sin(h.yaw), Math.cos(h.yaw))
+    for (const p of d.against) {
+      if (Math.abs(wrapDeg(((p.a - door) * 180) / Math.PI + 180) - 180) < DECOR.against.arc) continue
+      const pr = p.kind === 'rock' ? p.size / 2 : p.size * DECOR.spread[p.kind]
+      const at = h.core + pr * (1 - p.bite)
+      const x = h.x + Math.cos(p.a) * at, z = h.z + Math.sin(p.a) * at
+      if (!clear(x, z, pr, h)) continue
+      if (p.kind === 'rock') boulders.push({ x, z, across: p.size, yaw: p.yaw })
+      else (p.kind === 'tree' ? trees : ferns).push({ x, z, scale: p.size })
+    }
+  }
+  return { trees, ferns, boulders, roofs }
+}
+
+/**
+ * Where the roof ferns of `roofs` (dressHouses) actually sit, once the houses
+ * stand: `[{ x, y, z, scale }]`, world metres. Only the built props know the
+ * pick's mesh, so the seats cannot be rolled with the rest -- `seed` carries the
+ * roll across, and each house's ferns are drawn from the seats its own roof
+ * allows (room-props.js roofSpots). A roof too small for the count asked seats
+ * fewer, and a fern's size is rolled after its seat, off the same stream.
+ */
+/**
+ * The thicket that carries the wood up to the stone (RIM_WOOD): `[{ x, z, scale }]`
+ * for trees.js `plants`, one at each point of a jittered grid that falls on
+ * ground the forest law refuses, within `reach` of the rim and out to `past`
+ * metres beyond it. `clear(x, z, r)` is the room's own siting test; a point it
+ * refuses is dropped, not moved.
+ *
+ * The law is asked here exactly as the scatter asks it (forest.js forestKeepAt
+ * over RIM_WOOD.cell metres, and with no biome, since a village's cover only
+ * ever thins what the law already allows), so the thicket takes the ground the
+ * wild bed left and the two meet along the line the slope draws.
+ */
+export function rimWood(ground, field, rng, clear) {
+  const out = []
+  const at = { h: 0, tan: 0 }
+  const [lo, hi] = RIM_WOOD.scale
+  const span = ground.bounds.r
+  for (let gx = -span; gx <= span; gx += RIM_WOOD.spacing) {
+    for (let gz = -span; gz <= span; gz += RIM_WOOD.spacing) {
+      const x = gx + (rng() * 2 - 1) * RIM_WOOD.jitter, z = gz + (rng() * 2 - 1) * RIM_WOOD.jitter
+      const rim = ground.rimAt(Math.atan2(z, x)), d = Math.hypot(x, z)
+      if (d > rim + RIM_WOOD.past || d < rim - RIM_WOOD.reach) continue
+      field.scatterAt(x, z, RIM_WOOD.cell, at)
+      if (forestKeepAt(at.h, at.tan, at.h - field.snowLineAt(x, z), null, x, z) > 0) continue
+      if (!clear(x, z, RIM_WOOD.r)) continue
+      out.push({ x, z, scale: lo + (hi - lo) * rng() })
+    }
+  }
+  return out
+}
+
+/**
+ * The garden plots (main.js, each `{ x, z, r, spots }`) with every spot a
+ * house's mesh stands over dropped: a carrot inside a root is a carrot nobody
+ * can pull. Only the built houses know where the pick's roots reach, so the
+ * plots are sited before them (gardensBetween, off the trunk's core) and weeded
+ * after (GARDEN.root).
+ */
+export function weedGardens(plots, props) {
+  return plots.map((p) => ({ ...p, spots: p.spots.filter(([x, z]) => !props.rootedAt(x, z, GARDEN.root)) }))
+}
+
+export function roofFerns(props, roofs) {
+  const out = []
+  for (const r of roofs) {
+    const rand = mulberry32(r.seed)
+    const [lo, hi] = DECOR.roof.size
+    for (const s of props.roofSpots(r.house, r.count, rand)) out.push({ ...s, scale: lo + (hi - lo) * rand() })
+  }
+  return out
 }
 
 // --- the whole ---------------------------------------------------------------
@@ -647,8 +864,9 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
 /**
  * The room, from its rolls (rollVillage), the shell standing in it (built on
  * `spec.shell`) and the house's bounds: `{ heightmap, doc, spawn, exit, clearing,
- * lake, props, ground, spec }`. `doc` is the layers document (validated), `exit`
- * a fixed mouth for Entrances, `props` what RoomProps places, `spec` the rolls
+ * lake, props, gardens, decor, lamps, stools, ground, spec }`. `doc` is the layers
+ * document (validated), `exit` a fixed mouth for Entrances, `props` what RoomProps
+ * places, `decor` what stands on and against the houses (dressHouses), `spec` the rolls
  * built: the given ones, or the next village under the same shell where the
  * ground refused theirs.
  */
@@ -674,24 +892,31 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   const bareAt = (x, z) => field.heightAt(x, z)
 
   // The exit: the bearing whose wall stands most nearly plumb across the arch, its face point on that wall.
-  const exit = placeExit(shell, ground, bareAt)
+  const exit = placeExit(shell, ground, bareAt, (x, z) => heightmap.sample(x, z))
   shell.setDoor(exit.x, exit.z, EXIT.door)
   const heading = bearingDeg(lake, exit.x, exit.z)
 
-  // The loop's radius on every bearing: the water's reach dilated and averaged over LOOP.smooth degrees, LOOP.over past it.
+  const hutR = (height) => (Math.min(house.halfX, house.halfZ) * height) / house.height
+
+  // The loop's radius on every bearing: the water's reach dilated and averaged over LOOP.smooth degrees, LOOP.over past it, and the swing away from the shore over LOOP.away's stretch. The raised cosine is flat at both ends of that stretch, so the path leaves the water and returns to it without a kink for the wander to sharpen.
   const wet = new Float32Array(360)
   for (let d = 0; d < 360; d++) wet[d] = lake.wetRadius(d)
   const half = Math.round(LOOP.smooth / 2)
   const wide = new Float32Array(360)
   for (let d = 0; d < 360; d++) { let m = 0; for (let k = -half; k <= half; k++) m = Math.max(m, wet[wrapDeg(d + k)]); wide[d] = m }
+  const { span } = spec.loop.away
+  const awayMid = wrapDeg(heading + spec.loop.away.mid)
+  const at = wrapDeg(awayMid - span / 2)
+  // The swing is at least as deep as the shore house needs to stand between the path and the water: its box twice over to its centre, the bank in front of it, the road's half width and its keep. Rolled deeper than that, it stays where the roll put it.
+  const out = Math.min(LOOP.away.cap, Math.max(spec.loop.away.out, 2 * hutR(spec.outlying[0]) + OUTLYING.bank[1] + ROAD_WIDTH / 2 + OUTLYING.shoreGap + 0.5 - spec.loop.over))
   const loopR = (bearing) => {
     let sum = 0
     for (let k = -half; k <= half; k++) sum += wide[Math.round(wrapDeg(bearing + k)) % 360]
-    return sum / (2 * half + 1) + spec.loop.over
+    const t = wrapDeg(bearing - at)
+    return sum / (2 * half + 1) + spec.loop.over + (t < span ? (out / 2) * (1 - Math.cos((t / span) * TAU)) : 0)
   }
 
   // The clearing off the loop (CLEARING), the spur straight out from the loop to its ring's inner point, the houses round the ring clear of the spur and the loop: on the rolled bearing, or the nearest one within CLEARING.bearing, either side, where they all stand clear of the wall.
-  const hutR = (height) => (Math.min(house.halfX, house.halfZ) * height) / house.height
   const placeClearing = (side, bearing) => {
     const cb = heading + side * bearing
     const spurEnd = { x: lake.x + Math.cos(deg(cb)) * loopR(cb), z: lake.z + Math.sin(deg(cb)) * loopR(cb) }
@@ -704,11 +929,11 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
       return nearestOf(spurPlan, x, z) >= keep && Math.hypot(x - lake.x, z - lake.z) >= loopR(bearingDeg(lake, x, z)) + keep + WANDER.amp * 1.3
     }
     // The great house on a flank: on the far side it would be the one house standing nearest the wall.
-    const houses = housesRound(clearing.x, clearing.z, spec.huts, house, cb + 90 * side, spec.great, clearOf)
+    const houses = housesRound(clearing.x, clearing.z, spec.huts, house, cb + 90 * side, spec.great, clearOf, spec.spread)
     if (houses === null) return null
     const reach = CLEARING.r + 0.5 + Math.max(...houses.map((h) => h.core + h.r))
     if (houses.some((h) => Math.hypot(h.x, h.z) + h.r + CLEARING.wall > ground.rimAt(Math.atan2(h.z, h.x)) || Math.hypot(h.x - exit.x, h.z - exit.z) < h.r + EXIT.houses)) return null
-    return { cb, spurEnd, clearing, spurPlan, houses, reach }
+    return { cb, head: cb + 90 * side, spurEnd, clearing, spurPlan, houses, reach }
   }
   let placed = null
   for (const side of [spec.clearing.side, -spec.clearing.side]) {
@@ -722,7 +947,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     if (placed !== null) break
   }
   if (placed === null) return again('the houses do not fit round the ring clear of the wall and the exit')
-  const { cb, spurEnd, clearing, spurPlan, houses, reach } = placed
+  const { cb, head, spurEnd, clearing, spurPlan, houses, reach } = placed
   const offCb = (b) => offDeg(b, cb)
 
   // The rivers, walked on the bare field, RIVER.clear off the ring, the houses and the spur.
@@ -846,20 +1071,37 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     for (let k = 0; k < 8; k++) { const a = (k / 8) * TAU; if (heightAt(x + Math.cos(a) * r, z + Math.sin(a) * r) < dry + 0.3) return false }
     return true
   }
-  for (const height of spec.outlying) {
+  for (let oi = 0; oi < spec.outlying.length; oi++) {
+    const height = spec.outlying[oi]
     const r = hutR(height), core = r * DOOR.wall
     let put = null
     for (let t = 0; put === null && t < OUTLYING.tries; t++) {
-      const k = 1 + Math.floor(rng() * (loop.length - 2))
-      if (k === trunkAt || k === spurAt || Math.abs(k - trunkAt) < 3 || Math.abs(k - spurAt) < 3) continue
-      const [jx, , jz] = loop[k]
-      const shore = rng() < OUTLYING.shore
+      // The first house takes the water side alone while half its tries last: one house on the shore is the village's, and the bank with room for it is one stretch of the turn. The rolls are drawn whichever side the try took, so a try costs the same stream either way.
+      const roll = rng() < OUTLYING.shore
+      const shore = (oi === 0 && t < OUTLYING.tries / 2) || roll
       const off = between(OUTLYING.off)
-      const radial = Math.atan2(jz - lake.z, jx - lake.x) + (shore ? Math.PI : 0)
       const slant = Math.tan(deg(between(OUTLYING.skew))) * (rng() < 0.5 ? -1 : 1)
-      const d = off + core + 0.5
-      const cx = jx + (Math.cos(radial) - Math.sin(radial) * slant) * d, cz = jz + (Math.sin(radial) + Math.cos(radial) * slant) * d
-      if (!houseClear(cx, cz, r, OUTLYING.gap)) continue
+      const bay = (rng() - 0.5) * 2 * OUTLYING.bay
+      const bank = between(OUTLYING.bank)
+      let k = 1 + Math.floor(rng() * (loop.length - 2))
+      let cx, cz
+      if (shore) {
+        // Sited off the water rather than off a point of the path, on the stretch where the path has swung away from the shore (LOOP.away) -- the only one with room between the two -- `bay` degrees either side of its middle, the house's box `bank` metres back from the edge. Its point of the loop is then the nearest one to it.
+        const b = wrapDeg(awayMid + bay * (span / (8 * OUTLYING.bay)))
+        const rad = lake.wetRadius(b) + r + bank
+        cx = lake.x + Math.cos(deg(b)) * rad
+        cz = lake.z + Math.sin(deg(b)) * rad
+        k = 1
+        for (let i = 2; i < loop.length - 1; i++) if (Math.hypot(loop[i][0] - cx, loop[i][2] - cz) < Math.hypot(loop[k][0] - cx, loop[k][2] - cz)) k = i
+      } else {
+        const [jx, , jz] = loop[k]
+        const radial = Math.atan2(jz - lake.z, jx - lake.x)
+        const d = off + core + 0.5
+        cx = jx + (Math.cos(radial) - Math.sin(radial) * slant) * d
+        cz = jz + (Math.sin(radial) + Math.cos(radial) * slant) * d
+      }
+      if (k === trunkAt || k === spurAt || Math.abs(k - trunkAt) < 3 || Math.abs(k - spurAt) < 3) continue
+      if (!houseClear(cx, cz, r, shore ? OUTLYING.shoreGap : OUTLYING.gap)) continue
       const padY = heightAt(cx, cz)
       // The branch leaves the loop at the nearest point about `k` from which one grade reaches the door crossing no road.
       for (let step = 0; put === null && step <= OUTLYING.window; step++) {
@@ -885,6 +1127,8 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
     roadLines.push(put.pts.map(([x, , z]) => [x, z]))
   }
   const all = [...houses, ...outlying]
+  // One house stands on the water: its trunk within OUTLYING.lakeside of the lake's edge on its own bearing. Nothing moves a house onto the shore -- a village whose bays are all too wet or too steep for one is re-rolled.
+  if (!all.some((h) => Math.hypot(h.x - lake.x, h.z - lake.z) - h.core - lake.wetRadius(bearingDeg(lake, h.x, h.z)) < OUTLYING.lakeside)) return again('no house stands on the lake')
 
   // A pad under each house at its road's height.
   const pads = all.flatMap((h, k) => HUTS.pads.map((f, j) => ({ id: `pad-${k}-${j}`, pts: arcPoints(h.x, h.z, () => f * h.r, 0, 360, 1.5).map(([x, z]) => [x, h.y, z, 2 * HUTS.padHalf * h.r]) })))
@@ -896,9 +1140,48 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   field.setLayers(Layers.deserialize(validate(doc)))
   const stools = placeStools(doc.roads, all, outlying, lake, lamps, heightAt, dry, ground)
 
-  const props = all.map((h, i) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height, mirror: spec.mirror[i], fiddle: spec.fiddle[i] }))
+  // The gardens in the ring's gaps, those that clear the roads and stand on dry
+  // ground inside the stone. A plot that does not is dropped rather than moved:
+  // it is the gap that chose the site, and a plot shuffled off its gap is a plot
+  // in the wood.
+  const gardens = gardensBetween(clearing.x, clearing.z, head, houses, spec.gardens).filter((g) => {
+    if (Math.hypot(g.x, g.z) + g.r + OUTLYING.wall > ground.rimAt(Math.atan2(g.z, g.x))) return false
+    return gardenSpots(g).every(([x, z]) => {
+      if (roadLines.some((pts) => nearestOf(pts, x, z) < ROAD_WIDTH / 2 + GARDEN.verge)) return false
+      if (riverNear(x, z) < RIVER.clear) return false
+      return heightAt(x, z) >= dry + 0.3
+    })
+  })
+
+  // What grows on and against the houses, sited last: it gives way to the roads, the plots, the lamps and the stools, all of which are already standing.
+  const decor = dressHouses(all, spec.decor, (x, z, r, own) => {
+    if (Math.hypot(x, z) + r + OUTLYING.wall > ground.rimAt(Math.atan2(z, x))) return false
+    if (Math.hypot(x - clearing.x, z - clearing.z) < CLEARING.r + r) return false
+    if (roadLines.some((pts) => nearestOf(pts, x, z) < ROAD_WIDTH / 2 + DECOR.against.gap + r)) return false
+    if (riverNear(x, z) < RIVER.width / 2 + DECOR.against.gap + r) return false
+    if (all.some((o) => o !== own && Math.hypot(o.x - x, o.z - z) < o.core + r)) return false
+    if (plotsOccupy(gardens, x, z, r)) return false
+    if ([...lamps, ...stools].some((p) => Math.hypot(p.x - x, p.z - z) < r + DECOR.against.gap)) return false
+    return heightAt(x, z) >= dry + 0.3
+  })
+
+  const props = all.map((h, i) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height, mirror: spec.mirror[i], fiddle: spec.fiddle[i], sink: spec.sink[i] }))
+
+  // The thicket up to the stone (RIM_WOOD), sited last with the decor: it gives way to everything already standing.
+  const wood = rimWood(ground, field, rng, (x, z, r) => {
+    if (Math.hypot(x - clearing.x, z - clearing.z) < CLEARING.r + r) return false
+    if (Math.hypot(x - exit.x, z - exit.z) < EXIT.door + r) return false
+    if (roadLines.some((pts) => nearestOf(pts, x, z) < ROAD_WIDTH / 2 + DECOR.against.gap + r)) return false
+    if (riverNear(x, z) < RIVER.width / 2 + DECOR.against.gap + r) return false
+    if (all.some((h) => Math.hypot(h.x - x, h.z - z) < h.core + r)) return false
+    if (decor.boulders.some((b) => Math.hypot(b.x - x, b.z - z) < b.across / 2 + r)) return false
+    if (plotsOccupy(gardens, x, z, r)) return false
+    if ([...lamps, ...stools].some((p) => Math.hypot(p.x - x, p.z - z) < r)) return false
+    return heightAt(x, z) >= dry + 0.3
+  })
+
   rollWinner.set(spec.seed, attempt)
-  return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, lamps, stools, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
+  return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, gardens, decor, wood, lamps, stools, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
 }
 
 /**
@@ -1053,27 +1336,30 @@ function fishSeedFor(seed, lake, heightAt) {
  * The exit mouth: `{ key, x, z, nx, nz, bearing, y, arrivalY, bulge }`. The
  * trunk starts ARRIVE_M in from the face at `arrivalY`, the bare ground there or
  * whatever higher stands the face within a chord's rise of it, and `y` is the
- * ground the field will read under the mouth: the bare ground at the face
- * blended toward the trunk's start by its shoulder (paths.js smoothRoads, the
- * feather's smoothstep at the face's distance from the trunk's first point;
- * the bare ground climbs into the stone past the rim, and the wall there is
- * another wall). On each bearing the face point is where the wall stands at
+ * ground the field will read under the mouth: the ground at the face, its fbm
+ * detail cut to the shoulder's weight and then itself blended toward the
+ * trunk's start by that same shoulder (paths.js smoothRoads and flattenAt,
+ * both the feather's smoothstep at the face's distance from the trunk's first
+ * point; the bare ground climbs into the stone past the rim, and the wall
+ * there is another wall). On each bearing the face point is where the wall stands at
  * the arch's mid height over that ground; the bearing taken is the one whose
  * wall moves least across the arch's height plus `bulge`, how far the stone
- * across the hole's outline (entrances.js HOLE, read EXIT.foot either side of
- * `y` for the ground the arch will read there) stands into the room past the
- * face's plane; the arch and the hole come forward by it (Entrances._place),
- * so no stone covers the black. Swept every EXIT.sweep degrees (the arch's
- * rays alone are much of a build, the outline's read only where the spread
- * still beats the best), then every degree about the best.
+ * across the hole's outline (entrances.js HOLE, walked every EXIT.step and read
+ * EXIT.foot either side of `y` for the ground the arch will read there) stands
+ * into the room past the face's plane; the arch and the hole come forward by it
+ * (Entrances._place), so no stone covers the black. Swept every EXIT.sweep
+ * degrees (the arch's rays alone are much of a build, the outline's read only
+ * where the spread still beats the best), then every degree about the best.
  */
-export function placeExit(shell, ground, heightAt) {
+export function placeExit(shell, ground, heightAt, sampleAt) {
   const shoulder = smoothstep(0, 1, (ARRIVE_M - ROAD_WIDTH / 2) / ROAD_FEATHER)
   const at = (d) => {
     const b = deg(d), c = Math.cos(b), s = Math.sin(b)
     let r = ground.rimAt(b)
     const under = (r) => {
-      const face = heightAt(c * r, s * r)
+      // The face's ground as the shipped field will show it, not as the bare one reads: a road suppresses the fbm detail over the same shoulder it blends the height over (paths.js flattenAt, height/field.js heightAt), so the detail standing in the coarse sample is left at the shoulder's weight too. The glade's detail runs half a metre either way, which is more than the arch's feet can bridge.
+      const coarse = sampleAt(c * r, s * r)
+      const face = coarse + (heightAt(c * r, s * r) - coarse) * shoulder
       const arrival = Math.max(heightAt(c * (r - ARRIVE_M), s * (r - ARRIVE_M)), face - (CHORD_GRADE * ARRIVE_M) / shoulder)
       return { y: arrival + (face - arrival) * shoulder, arrival }
     }
@@ -1085,14 +1371,17 @@ export function placeExit(shell, ground, heightAt) {
     for (const k of [0, 3, 6]) read(k)
     if (hi - lo < beat) for (const k of [1, 2, 4, 5]) read(k)
     const spread = hi - lo
-    // The stone across the hole (entrances.js HOLE): the wall read from the axis at the outline's vertices about the face point, EXIT.foot under it and over it for the ground the arch will read there, and how far the innermost stands into the room past the face's plane is the bulge the arch and the hole come forward by (Entrances._place). Only where the spread alone still beats the best: the bulge only adds.
+    // The stone across the hole (entrances.js HOLE): the wall read from the axis every EXIT.step along the outline's edges about the face point, EXIT.foot under it and over it for the ground the arch will read there, and how far the innermost stands into the room past the face's plane is the bulge the arch and the hole come forward by (Entrances._place). Along the edges, not at the vertices alone: a wall bulging over the sill between two vertices that both recede leaves a sliver of stone across the black. Only where the spread alone still beats the best: the bulge only adds.
     let bulge = 0
     if (spread < beat) {
-      for (const [u, v] of HOLE.outline) {
-        for (const dy of [-EXIT.foot, 0, EXIT.foot]) {
-          const px = c * r - s * u, pz = s * r + c * u
-          const bp = Math.atan2(pz, px)
-          bulge = Math.max(bulge, r - shell.wallAt(y + v + dy, bp) * Math.cos(bp - b))
+      for (let i = 0; i < HOLE.outline.length; i++) {
+        const [u0, v0] = HOLE.outline[i], [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length]
+        const steps = Math.ceil(Math.hypot(u1 - u0, v1 - v0) / EXIT.step)
+        for (let k = 0; k < steps; k++) {
+          const u = u0 + ((u1 - u0) * k) / steps, v = v0 + ((v1 - v0) * k) / steps
+          const bp = Math.atan2(s * r + c * u, c * r - s * u)
+          const cos = Math.cos(bp - b)
+          for (const dy of [-EXIT.foot, 0, EXIT.foot]) bulge = Math.max(bulge, r - shell.wallAt(y + v + dy, bp) * cos)
         }
       }
     }

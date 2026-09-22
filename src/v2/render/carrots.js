@@ -39,6 +39,9 @@ import { taken, TOLERANCE_M } from '../taken.js'
 const TILE = 10
 const KEEP = 0.5
 
+// Metres past a garden plot's edge the wild clumps keep off, so the rows read as rows.
+const PLOT_KEEP_OFF = 0.8
+
 // Members in a clump, skewed small so a pair is the common sight and five the
 // occasional one (mushrooms.js CLUMP_SKEW).
 const CLUMP_MIN = 1
@@ -214,8 +217,9 @@ export class Carrots {
    * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
+   * @param plots    Garden plots `[{ x, z, r, spots: [[x, z]] }]` planted on top of the wild bed.
    */
-  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null } = {}) {
+  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [] } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Carrots: needs a V2Height with heightAndSlopeAt and snowLineAt')
@@ -242,6 +246,20 @@ export class Carrots {
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
 
+    // The village's garden plots (rooms/village.js gardenSpots), binned onto the
+    // same grid so residency, eviction and the rim own their carrots like any
+    // other. A plot's own `r` keeps the wild clumps out of its rows.
+    this.plots = plots
+    this.plotSpots = new Map()
+    for (const p of plots) {
+      for (const [x, z] of p.spots) {
+        const key = Math.floor(x / TILE) * 0x10000 + Math.floor(z / TILE)
+        const at = this.plotSpots.get(key)
+        if (at) at.push([x, z])
+        else this.plotSpots.set(key, [[x, z]])
+      }
+    }
+
     // A full clump per tile the eviction disc can hold, counted on the grid.
     let bound = 0
     const c = TILE / 2
@@ -252,7 +270,7 @@ export class Carrots {
         if (dcx * dcx + dcz * dcz <= this.evictSq) bound++
       }
     }
-    this.maxInstances = bound * CLUMP_MAX
+    this.maxInstances = bound * CLUMP_MAX + plots.reduce((n, p) => n + p.spots.length, 0)
 
     const t0 = performance.now()
     this.variantCount = bank.tiers[0].geometries.length
@@ -367,10 +385,21 @@ export class Carrots {
     }
   }
 
-  /** Roll the tile's one clump and plant what passes. */
+  /** Plant the tile's share of any garden, then roll its one wild clump and plant what passes. */
   _growTile(key, tx, tz) {
-    const tile = { tx, tz, ids: new Int32Array(CLUMP_MAX), n: 0 }
+    const spots = this.plotSpots.get(key) ?? null
+    const tile = { tx, tz, ids: new Int32Array(CLUMP_MAX + (spots?.length ?? 0)), n: 0 }
     this.tiles.set(key, tile)
+    if (spots) this._growPlots(tile, spots)
+    this._growClump(tile, tx, tz)
+    if (tile.n > 0) {
+      this.clumps++
+      this.rim.markDue(tile)
+    }
+  }
+
+  /** The tile's one wild clump, where its roll keeps it and the ground takes it. */
+  _growClump(tile, tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     // The clump's whole description is drawn before any test, so a bunch is a
     // pure function of position whatever the tile around it rejected (ferns.js).
@@ -392,85 +421,100 @@ export class Carrots {
     if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; return }
     const river = this.paths.nearest(cx, cz, 'river')
     if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; return }
+    // A wild bunch in the middle of a planted plot would read as a weed in the rows, which are the whole point of the plot.
+    if (this.plots.some((p) => Math.hypot(p.x - cx, p.z - cz) < p.r + PLOT_KEEP_OFF)) { rej.path++; return }
 
-    const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
-    const { altLo, altSpan } = this.field.bands
-    const snowBand = this.layers.snow.band
-    const gc = this._gc
-    let grew = 0
+    const env = { snowLine, road }
     for (let mi = 0; mi < members; mi++) {
       // Even angles with a random phase, so no two members land on each other.
       const mAz = phase + (mi / members) * Math.PI * 2
       const out = members > 1 ? ring * (0.55 + rand() * 0.45) : 0
-      const mx = cx + Math.cos(mAz) * out
-      const mz = cz + Math.sin(mAz) * out
-      const variant = (rand() * this.variantCount) | 0
-      const scale = SIZE_JITTER[0] + rand() * (SIZE_JITTER[1] - SIZE_JITTER[0])
-      const yaw = rand() * Math.PI * 2
-      const poke = POKE[0] + rand() * (POKE[1] - POKE[0])
-      const tiltAz = rand() * Math.PI * 2
-      const tilt = rand() * TILT_JITTER
-      const tintV = rand()
-      // After every roll, so a carrot she pulled leaves the rest of its clump as it grew.
-      if (taken.has('carrot', mx, mz)) continue
-
-      const { h, tan } = this.field.heightAndSlopeAt(mx, mz)
-      if (tan > maxSlopeTan) { rej.slope++; continue }
-      if (this.rocks.blockTopAt(mx, mz, 0) > -Infinity) { rej.rock++; continue }
-
-      if (this.freeCount === 0) {
-        throw new Error(`Carrots: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`)
-      }
-      const id = this.free[--this.freeCount]
-      tile.ids[tile.n++] = id
-      grew++
-      this.placed++
-      this.variantAt[id] = variant
-      // The shoulder is ROOT_HEIGHT * CROWN_DROP above the crown; the crown goes
-      // under by that less the poke, so `poke` metres of orange show.
-      const y = h - ROOT_HEIGHT * CROWN_DROP * scale + poke
-      this.instX[id] = mx
-      this.instY[id] = y
-      this.instZ[id] = mz
-
-      // Spin about the root, then tip away from the clump's centre by how far
-      // out the member sits, with the jitter tilt summed in as a vector so the
-      // lean is one rotation about one horizontal axis.
+      // Tip away from the clump's centre by how far out the member sits.
       const lean = CLUMP_LEAN * (ring > 1e-6 ? out / ring : 0)
-      const lx = Math.cos(mAz) * lean + Math.cos(tiltAz) * tilt
-      const lz = Math.sin(mAz) * lean + Math.sin(tiltAz) * tilt
-      const mag = Math.hypot(lx, lz)
-      this._qYaw.setFromAxisAngle(this._up, yaw)
-      if (mag > 1e-4) {
-        // The axis that tips +Y toward (lx, 0, lz).
-        this._axis.set(lz / mag, 0, -lx / mag)
-        this._qLean.setFromAxisAngle(this._axis, mag)
-        this._q.multiplyQuaternions(this._qLean, this._qYaw)
-      } else {
-        this._q.copy(this._qYaw)
-      }
-      this._p.set(mx, y, mz)
-      this._s.set(scale, scale, scale)
-      this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
-
-      // The terrain's own colour underfoot, renormalised to unit luminance so
-      // only the hue survives (ferns.js), and a value swing so two carrots differ.
-      shade(h, 1 / Math.hypot(tan, 1), snowLine, snowBand, road ? this.layers.dirtAt(mx, mz) : 0, 0, altLo, altSpan, mx, mz, gc, 0)
-      const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
-      const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
-      const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
-      const v = 0.88 + tintV * 0.2
-      this._c.setRGB((k0 + gc[0] * k1) * v, (k0 + gc[1] * k1) * v, (k0 + gc[2] * k1) * v)
-      this.batch.setColorAt(id, this._c)
-      this.batch.setGeometryIdAt(id, variant)
-
-      // Hidden until the rim's sweep has looked at it, which the tile is marked due for.
-      this.rim.place(id, Math.min(this.radius, propCull(this.size * scale)))
+      this._plant(tile, cx + Math.cos(mAz) * out, cz + Math.sin(mAz) * out, rand, Math.cos(mAz) * lean, Math.sin(mAz) * lean, env)
     }
-    if (grew > 0) {
-      this.clumps++
-      this.rim.markDue(tile)
+  }
+
+  /** The tile's share of a garden's rows (rooms/village.js gardenSpots): a carrot at every spot, standing plumb but for its own tilt. */
+  _growPlots(tile, spots) {
+    const env = { snowLine: this.field.snowLineAt(spots[0][0], spots[0][1]), road: null }
+    for (const [x, z] of spots) {
+      // Off the spot rather than off the tile: a plot straddles tiles and a row must not change where it crosses one.
+      this._plant(tile, x, z, mulberry32(tileSeed(Math.round(x * 64), Math.round(z * 64), this.seed)), 0, 0, env)
     }
+  }
+
+  /**
+   * One carrot at (mx, mz), leaning by the vector (lx, lz) before its own tilt
+   * jitter is summed in: a pool slot, a matrix, a tint and the rim's reach.
+   * False where the ground refuses it or she has already pulled it.
+   *
+   * `rand` supplies every roll and is drawn in a fixed order whatever the
+   * answer, so a carrot is a pure function of its spot however its neighbours
+   * fared. `env` carries what the caller measured once for the whole group.
+   */
+  _plant(tile, mx, mz, rand, lx, lz, env) {
+    const variant = (rand() * this.variantCount) | 0
+    const scale = SIZE_JITTER[0] + rand() * (SIZE_JITTER[1] - SIZE_JITTER[0])
+    const yaw = rand() * Math.PI * 2
+    const poke = POKE[0] + rand() * (POKE[1] - POKE[0])
+    const tiltAz = rand() * Math.PI * 2
+    const tilt = rand() * TILT_JITTER
+    const tintV = rand()
+    // After every roll, so a carrot she pulled leaves the rest of its clump as it grew.
+    if (taken.has('carrot', mx, mz)) return false
+
+    const { h, tan } = this.field.heightAndSlopeAt(mx, mz)
+    if (tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { this.rejected.slope++; return false }
+    if (this.rocks.blockTopAt(mx, mz, 0) > -Infinity) { this.rejected.rock++; return false }
+
+    if (this.freeCount === 0) {
+      throw new Error(`Carrots: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`)
+    }
+    const id = this.free[--this.freeCount]
+    tile.ids[tile.n++] = id
+    this.placed++
+    this.variantAt[id] = variant
+    // The shoulder is ROOT_HEIGHT * CROWN_DROP above the crown; the crown goes
+    // under by that less the poke, so `poke` metres of orange show.
+    const y = h - ROOT_HEIGHT * CROWN_DROP * scale + poke
+    this.instX[id] = mx
+    this.instY[id] = y
+    this.instZ[id] = mz
+
+    // Spin about the root, then tip, the two leans summed as a vector so it is
+    // one rotation about one horizontal axis.
+    lx += Math.cos(tiltAz) * tilt
+    lz += Math.sin(tiltAz) * tilt
+    const mag = Math.hypot(lx, lz)
+    this._qYaw.setFromAxisAngle(this._up, yaw)
+    if (mag > 1e-4) {
+      // The axis that tips +Y toward (lx, 0, lz).
+      this._axis.set(lz / mag, 0, -lx / mag)
+      this._qLean.setFromAxisAngle(this._axis, mag)
+      this._q.multiplyQuaternions(this._qLean, this._qYaw)
+    } else {
+      this._q.copy(this._qYaw)
+    }
+    this._p.set(mx, y, mz)
+    this._s.set(scale, scale, scale)
+    this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
+
+    // The terrain's own colour underfoot, renormalised to unit luminance so
+    // only the hue survives (ferns.js), and a value swing so two carrots differ.
+    const gc = this._gc
+    shade(h, 1 / Math.hypot(tan, 1), env.snowLine, this.layers.snow.band, env.road ? this.layers.dirtAt(mx, mz) : 0, 0, this.field.bands.altLo, this.field.bands.altSpan, mx, mz, gc, 0)
+    const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
+    const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
+    const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
+    const v = 0.88 + tintV * 0.2
+    this._c.setRGB((k0 + gc[0] * k1) * v, (k0 + gc[1] * k1) * v, (k0 + gc[2] * k1) * v)
+    this.batch.setColorAt(id, this._c)
+    this.batch.setGeometryIdAt(id, variant)
+
+    // Hidden until the rim's sweep has looked at it, which the tile is marked due for.
+    this.rim.place(id, Math.min(this.radius, propCull(this.size * scale)))
+    return true
   }
 
   /**

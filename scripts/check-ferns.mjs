@@ -387,6 +387,76 @@ console.log('\n5. what a butterfly lands on\n')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n6. the ferns a room plants\n')
+
+{
+  // A room hands the bed ferns of its own (rooms/village.js DECOR: against a
+  // wall, on a roof), and the bed grows them inside its own tiles so the rim,
+  // the thinning and the butterflies own them like any other. Ground no wild
+  // fern would take -- too steep, over the snow, under water -- is the test:
+  // the plant stands on it anyway, because the room has already decided.
+  taken.clear()
+  const steep = { heightAndSlopeAt: () => ({ h: GROUND, tan: 4 }), snowLineAt: () => GROUND - 50, bands: field.bands }
+  const flood = { isSubmerged: () => true, levelAt: () => GROUND + 5, shoreDistAt: () => 0 }
+  const plants = [{ x: 3.5, z: 4.25, scale: 1.1 }, { x: -6.5, z: 2.5, scale: 2, y: GROUND + 7 }, { x: 40.5, z: -18.5, scale: 0.9 }]
+  const { sink } = FERN_TUNING.PLACEMENT
+  const nothing = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7 })
+  nothing.place(0, 0)
+  check(nothing.placed === 0, 'no wild fern takes ground this steep, this high and this wet', `${nothing.placed} placed`)
+  taken.clear()
+  const bed = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, plants })
+  bed.place(0, 0)
+  const standing = plants.map((p) => {
+    for (const tile of bed.tiles.values()) for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (bed.instX[id] === p.x && bed.instZ[id] === p.z) return id
+    }
+    return -1
+  })
+  check(bed.placed === plants.length && standing.every((id) => id >= 0), 'every fern the room plants stands, on ground the bed would refuse', `${bed.placed} of ${plants.length}`)
+  // fround: the instance arrays are Float32Array, so the scale it was given comes back rounded to a float.
+  const sized = standing.filter((id, i) => id >= 0 && bed.instScale[id] === Math.fround(plants[i].scale)).length
+  // A plant given a y sits on that surface -- a roof -- sunk into it as a fern is into the ground; one without takes the ground under it.
+  const seated = standing.filter((id, i) => id >= 0 && Math.abs(bed.instY[id] - ((plants[i].y ?? GROUND) - sink * plants[i].scale)) < 1e-5).length
+  check(sized === plants.length && seated === plants.length, 'at the size it was given, seated on its own y where it has one and on the ground where it has not', `${sized} sized, ${seated} seated`)
+  // The wild bed does not move: a plant draws its look off its own point, never off the tile's stream.
+  taken.clear()
+  const wild = build()
+  wild.place(0, 0)
+  taken.clear()
+  const both = new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7, plants })
+  both.place(0, 0)
+  let moved = 0, wildN = 0
+  for (const tile of wild.tiles.values()) {
+    const other = both.tiles.get(tile.tx * 0x10000 + tile.tz)
+    if (!other) { moved += tile.n; continue }
+    for (let k = 0; k < tile.n; k++) {
+      const a = tile.ids[k]
+      wildN++
+      let found = false
+      for (let q = 0; q < other.n && !found; q++) {
+        const b = other.ids[q]
+        found = wild.instX[a] === both.instX[b] && wild.instZ[a] === both.instZ[b] && wild.instScale[a] === both.instScale[b] && wild.instY[a] === both.instY[b]
+      }
+      if (!found) moved++
+    }
+  }
+  check(moved === 0 && both.placed === wildN + plants.length, 'and the wild bed round it stands exactly where it did', `${moved} of ${wildN} moved, ${both.placed - wildN} planted`)
+  check(both.maxInstances === wild.maxInstances + plants.length, 'the pool grows by the plants and no more', `${both.maxInstances} over ${wild.maxInstances}`)
+  // The thinning cuts the wild bed by distance; a plant's rank is under every band, so it is still standing when the ferns rolled beside it are gone.
+  const key = Math.floor(3.5 / 12) * 0x10000 + Math.floor(4.25 / 12)
+  const before = both.tiles.get(key).n
+  let t6 = 0
+  for (let f = 0; f < 240; f++) { t6 += 1 / 72; setPropClock(t6); both.update(100, GROUND + 1.6, 0) }
+  const home = both.tiles.get(key)
+  let stands = false
+  for (let k = 0; k < home.n; k++) if (both.instX[home.ids[k]] === 3.5 && both.instZ[home.ids[k]] === 4.25) stands = true
+  check(stands && home.n < before / 4, 'a plant survives the thinning that cuts the ferns rolled beside it', `${home.n} of ${before} left in its tile a hundred metres off`)
+  nothing.dispose(); bed.dispose(); wild.dispose(); both.dispose()
+  taken.clear()
+}
+
+// ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all fern checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

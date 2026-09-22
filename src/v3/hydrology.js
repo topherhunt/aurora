@@ -3,16 +3,18 @@ import { selectLakes } from '../sim/phase-a.js'
 import { NB_DI, NB_DJ } from '../sim/world-grid.js'
 import { clamp } from '../sim/mathx.js'
 import { erode } from './erosion.js'
+import { table } from './cliffs.js'
 
 // ---------------------------------------------------------------------------
 // Step D -- the island drains. Rain is thrown at the raw field and walked to the sea, cutting the valleys (erosion.js); then what still ponds is read, a few of the bowls are kept as lakes and the rest are silted up to their spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
 //
-//   1. RAIN. EROSION.droplets droplets over the land, each grooving its way down. The field after this is the island's ground.
-//   2. LAKES. The bowls a priority flood still finds on land, each filled to LAKES.maxArea of surface or to its spill, whichever comes first, scored by the widest open water in them (Phase A's selectLakes); the widest LAKES.keep are lakes. A lake has no dam: its shore is wherever the ground meets its level.
-//   3. SILT. Every other ponded cell is raised to its water's level: a bowl the rain did not cut an outlet for is a bowl it filled. What is left of a lake's bowl above its pool is silted the same way.
-//   4. ROUTE. Priority flood, D8 steepest descent, accumulation in cells.
-//   5. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a width from the sqrt of the catchment, source to mouth.
-//   6. THE DOC. Each lake is an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it, which is the bowl.
+//   1. RAIN. EROSION.droplets droplets over the land, each grooving its way down.
+//   2. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). It runs here, after the rain so the droplets cannot grind a scarp back into a slope and before everything else so the lakes, the silt, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
+//   3. LAKES. The bowls a priority flood still finds on land, each filled to LAKES.maxArea of surface or to its spill, whichever comes first, scored by the widest open water in them (Phase A's selectLakes); the widest LAKES.keep are lakes. A lake has no dam: its shore is wherever the ground meets its level.
+//   4. SILT. Every other ponded cell is raised to its water's level: a bowl the rain did not cut an outlet for is a bowl it filled, and a bench the tabling closed off is a flat that drains through its notch. What is left of a lake's bowl above its pool is silted the same way.
+//   5. ROUTE. Priority flood, D8 steepest descent, accumulation in cells.
+//   6. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a width from the sqrt of the catchment, source to mouth.
+//   7. THE DOC. Each lake is an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it, which is the bowl.
 // ---------------------------------------------------------------------------
 
 export const LAKES = {
@@ -29,6 +31,7 @@ export const RIVERS = {
   maxWidth: 14,
   minLength: 60,       // metres; a shorter tributary with nothing feeding it is not drawn
   tolerance: 5,        // Douglas-Peucker on the cell centres, metres
+  pinDrop: 3,          // metres of fall between one cell and the next that keeps both as nodes through it, so a cliff's lip and foot survive in plan
 }
 
 /**
@@ -51,7 +54,12 @@ export function runHydrology(height, n, cell, ground, seed) {
   stats.erosion = erode(elev, sea, ground, n, seed)
   stats.erosion.ms = Date.now() - t0
 
-  // --- 2. lakes ---------------------------------------------------------------
+  // --- 2. cliffs --------------------------------------------------------------
+  const t1 = Date.now()
+  stats.cliffs = table(elev, sea, ground, n, cell, seed)
+  stats.cliffs.ms = Date.now() - t1
+
+  // --- 3. lakes ---------------------------------------------------------------
   // The jitter over the sea leaves bowls in the sea floor too, and they are the widest. The flood is read as the ground itself over the sea, and a coastal pocket the rain opened to the sea is the sea's now, so only the land's bowls are candidates.
   let flood = priorityFlood(elev, n)
   for (let c = 0; c < size; c++) if (flood.filled[c] <= 0) sea[c] = 1
@@ -85,7 +93,7 @@ export function runHydrology(height, n, cell, ground, seed) {
     kept.push({ cells, level, pool: b.cells })
   }
 
-  // --- 3. silt ----------------------------------------------------------------
+  // --- 4. silt ----------------------------------------------------------------
   let siltCells = 0
   let siltSum = 0
   let siltDeepest = 0
@@ -100,7 +108,7 @@ export function runHydrology(height, n, cell, ground, seed) {
   }
   stats.silt = { cells: siltCells, km2: (siltCells * cellArea) / 1e6, mean: siltCells ? siltSum / siltCells : 0, deepest: siltDeepest }
 
-  // --- 4. route ---------------------------------------------------------------
+  // --- 5. route ---------------------------------------------------------------
   flood = priorityFlood(elev, n)
   const recv = flowDirections(flood.filled, flood.tree, n)
   // A lake drains through its spill and nowhere else. Steepest descent off the flat would let the cells beside the spill step straight over the rim into the ground falling away past it, and each such step is a source, so one lake would let out three or four rivers a few cells apart; the flood's tree leads every lake cell to the spill.
@@ -112,12 +120,12 @@ export function runHydrology(height, n, cell, ground, seed) {
     if (flood.filled[c] - elev[c] > 1e-3) throw new Error(`runHydrology: ${(flood.filled[c] - elev[c]).toFixed(2)} m of water still stands outside the lakes at ${((c % n) * cell - half).toFixed(0)},${(((c / n) | 0) * cell - half).toFixed(0)}`)
   }
 
-  // --- 5. the lakes as records ------------------------------------------------
+  // --- 6. the lakes as records ------------------------------------------------
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
   lakes.sort((a, b) => b.km2 - a.km2)
   stats.lakes = { candidates: picked.total, count: lakes.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ rec, ...rest }) => rest) }
 
-  // --- 6. rivers --------------------------------------------------------------
+  // --- 7. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
   let riverCells = 0
   for (let c = 0; c < size; c++) {
@@ -126,7 +134,7 @@ export function runHydrology(height, n, cell, ground, seed) {
       riverCells++
     }
   }
-  const rivers = traceRivers(river, recv, acc, wet, n, cell, half)
+  const rivers = traceRivers(river, recv, acc, wet, elev, n, cell, half)
   let km = 0
   let longest = 0
   for (const r of rivers) {
@@ -257,7 +265,7 @@ function fitLake(body, elev, n, cell, half) {
 /**
  * The river polylines. Donors are gathered per cell; every mouth (a river cell whose receiver is not one) is walked up its largest donor to a source, and each other donor met on the way is the mouth of a tributary, walked the same way. A river ends one cell past its mouth -- in the sea, in a lake, or on the trunk cell it joins -- and begins one cell early when its source is fed by a lake, so v2 pins its level to the water at either end.
  */
-function traceRivers(river, recv, acc, wet, n, cell, half) {
+function traceRivers(river, recv, acc, wet, elev, n, cell, half) {
   const size = n * n
   const start = new Int32Array(size + 1)
   for (let c = 0; c < size; c++) {
@@ -318,9 +326,12 @@ function traceRivers(river, recv, acc, wet, n, cell, half) {
     if (fromLake >= 0) pts.push(point(fromLake, acc[src], n, cell, half))
     // The cell a tributary joins at stays a node through the simplification, so the tributary's last point lies on the trunk's line and v2 pins its mouth to the trunk.
     const junctions = new Set(branches.map((b) => b.tail))
-    for (const k of cells) {
-      if (junctions.has(k)) pinned.push(pts.length)
-      pts.push(point(k, acc[k], n, cell, half))
+    // A fall of more than RIVERS.pinDrop between one cell and the next keeps both of them as nodes. The simplification is in PLAN and reads no elevation at all, so on a straight reach it would drop the lip and the foot of a cliff and leave v2 a chord that its router is free to lay up to RIVERS.tolerance metres to the side -- off the notch the water cut and onto the face beside it. Pinned, the leg over the fall is a couple of cells long and the line stays in the notch.
+    for (let k = 0; k < cells.length; k++) {
+      const c = cells[k]
+      const fall = k + 1 < cells.length ? elev[c] - elev[cells[k + 1]] : 0
+      if (junctions.has(c) || fall > RIVERS.pinDrop || (k > 0 && elev[cells[k - 1]] - elev[c] > RIVERS.pinDrop)) pinned.push(pts.length)
+      pts.push(point(c, acc[c], n, cell, half))
     }
     if (head.tail >= 0) pts.push(point(head.tail, acc[cells[cells.length - 1]], n, cell, half))
     const kept = simplify(pts, RIVERS.tolerance, pinned)

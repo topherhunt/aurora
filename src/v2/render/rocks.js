@@ -1980,6 +1980,8 @@ class RockBed {
     this._yawQ = new THREE.Quaternion()
     this._tiltQ = new THREE.Quaternion()
     this._rollQ = new THREE.Quaternion()
+    this._ps = { h: 0, tan: 0, snowLine: 0, env: '' }
+    this._box = { m00: 0, m01: 0, m02: 0, m10: 0, m11: 0, m12: 0, m20: 0, m21: 0, m22: 0, yMax: 0, yMin: 0, stand: 0, planX: 0, planZ: 0, span: 0 }
     this._rollXQ = new THREE.Quaternion()
     this._leanQ = new THREE.Quaternion()
     this._leanAxis = new THREE.Vector3()
@@ -2968,6 +2970,143 @@ class RockBed {
     this.queue.sort((a, b) => b.d2 - a.d2)
   }
 
+  /**
+   * The tests a candidate's position must pass, every one a pure function of it: the pile field, the landform, the field sample's elevation and slope window, the environment's density against `envRoll`, the shore strip and the water. Returns the `rejected` key it failed on, or null with its h, tan, snow line and environment left in `_ps`. `count` bumps `samples` and `sited`, which `_growTile` alone keeps.
+   */
+  _pureSite(x, z, envRoll, tx, tz, count) {
+    const cfg = this.cfg
+    // THE PILE FIELD FIRST: four hashes against a `scatterAt` at ~960 ns, so the ground between one drift and the next is refused for free. Scree rejects on it (`clumpFloor`); the boulders bed only runs denser at a foot by it (`footDense`).
+    const clump = cfg.clumpFloor > 0 || this.footDense ? this._clump(x, z) : 0
+    if (cfg.clumpFloor > 0 && clump < cfg.clumpFloor) return 'clump'
+    // THE LANDFORM BEFORE THE FIELD SAMPLE on a bed with no business off a foot: cached per cell (RELIEF_CELL) it is a fifth of a sample and refuses nine candidates in ten. Both are pure, so the order moves only which counter records a refusal.
+    let site = null
+    if (this.footOnly) {
+      site = this._reliefAt(x, z, tx, tz)
+      if (count && site !== null) this.sited[site]++
+      if (site !== 'foot') return 'foot'
+    }
+    if (count) this.samples++
+    const g = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
+    const h = g.h, tan = g.tan
+    if (h < cfg.minElev) return 'elev'
+    if (tan > this.maxSlopeTan) return 'slope'
+    // The floor of the window, which only a cap bed sets. See minSlopeTan.
+    if (tan < this.minSlopeTan) return 'flat'
+    const snowLine = this.field.snowLineAt(x, z)
+    const env = this._envAt(x, z, h, tan, snowLine)
+    // `sited` counts what the probe SAW, not what was placed: a brow the bed then ignores is still a brow.
+    if (this.footDense) {
+      site = this._reliefAt(x, z, tx, tz)
+      if (count && site !== null) this.sited[site]++
+    }
+    // How MUCH stone this environment has lying about (BEDS); at a foot denser, and in piles.
+    let dens = site === 'foot' ? cfg.envDensity[env] * (1 + CLUMP_GAIN * clump) : cfg.envDensity[env]
+    // Thicker along a shore, wet or dry: |d|, the candidate may be standing in the shallows.
+    if (this.shoreGain !== 1 && Math.abs(this.water.shoreDistAt(x, z, SHORE_REACH, h, tan)) < SHORE_REACH) dens *= this.shoreGain
+    // A bed that only exists at the waterline refuses everything past it and thins from `shoreCore` out to the edge.
+    if (this.shoreOnly > 0) {
+      const d = Math.abs(this.water.shoreDistAt(x, z, this.shoreOnly, h, tan))
+      if (d >= this.shoreOnly) return 'shore'
+      if (d > this.shoreCore) dens *= smoothstep(this.shoreOnly, this.shoreCore, d)
+    }
+    if (envRoll >= dens) return 'env'
+    // BOTH WAYS, because `river` is not `underwater`: `_envAt` calls anything within SHORE_RISE of the surface river, and a sunken boulder on dry shingle is just a boulder. A bed that neither refuses water nor demands it never looks.
+    if (!cfg.allowSubmerged || cfg.submergedOnly) {
+      if (this.water.isSubmerged(x, z, h) !== Boolean(cfg.submergedOnly)) return 'water'
+    }
+    const ps = this._ps
+    ps.h = h
+    ps.tan = tan
+    ps.snowLine = snowLine
+    ps.env = env
+    return null
+  }
+
+  /**
+   * THE SCALE, RESOLVED from the size roll: a range in METRES for the environment, divided through the boulder's measured WIDTH (not its authored `size`, a parameter to the generator). The range's top is a ceiling on EVERY axis, because the bed's LOD reach is derived from it; where the bed has a `barrenTop` and the roll would overtop the wooded range, the footprint probe (four field samples) may grant the barren one. Not final on a `fitSlope` bed, whose fit ladder may cut it down.
+   */
+  _scaleAt(x, z, h, snowLine, env, sizeRoll) {
+    const metres = this.cfg.sizeByEnv[env]
+    if (!metres) throw new Error(`RockBed ${this.cfg.name}: sizeByEnv has no entry for ${env}`)
+    let top = metres[1]
+    if (this.barrenTop[env] > 0) {
+      const want = metres[0] + sizeRoll * (this.barrenTop[env] - metres[0])
+      if (want > top && this._barrenAt(x, z, h, snowLine, want)) top = this.barrenTop[env]
+    }
+    return Math.min((metres[0] + sizeRoll * (top - metres[0])) / this.shape.measured.width, top / this.shapeLod)
+  }
+
+  /**
+   * THE QUARTER TURNS AND THE ROLLED BOX, EXACTLY. One roll picks a whole number of right angles about x and then about z (ROLL_STEPS), `rollQ = qz * qx`; a bed placing an open shape takes the identity, the roll still drawn. rock.js puts the origin ON the bed face, so the unturned rock spans y in [0, height], and a quarter turn maps each local axis onto a world one, so the box stays a box: `stand` is what it now presents vertically (its DEPTH once on its side), `yMin` how far it hangs below its origin, and `planX`/`planZ`/`span` the GROUND it covers, which the dart and `anchorsInto` ask about. Returns the scratch `_box`, with the rotation's m00..m22.
+   */
+  _turnedBox(rollRoll, scale) {
+    const q = this._rollQ.identity()
+    if (this.roll) {
+      const ri = this.turnRi ? this.turnRi[rollRoll < 0.5 ? 0 : 1]
+        : Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
+      q.setFromAxisAngle(this._zAxis, ((ri / ROLL_STEPS) | 0) * (Math.PI / 2))
+      q.multiply(this._rollXQ.setFromAxisAngle(this._xAxis, (ri % ROLL_STEPS) * (Math.PI / 2)))
+    }
+    const qx = q.x, qy = q.y, qz = q.z, qw = q.w
+    const b = this._box
+    b.m00 = 1 - 2 * (qy * qy + qz * qz)
+    b.m01 = 2 * (qx * qy - qw * qz)
+    b.m02 = 2 * (qx * qz + qw * qy)
+    b.m10 = 2 * (qx * qy + qw * qz)
+    b.m11 = 1 - 2 * (qx * qx + qz * qz)
+    b.m12 = 2 * (qy * qz - qw * qx)
+    b.m20 = 2 * (qx * qz - qw * qy)
+    b.m21 = 2 * (qy * qz + qw * qx)
+    b.m22 = 1 - 2 * (qx * qx + qy * qy)
+    const m = this.shape.measured
+    const bw = m.width * scale, bh = m.height * scale, bd = m.depth * scale
+    b.yMax = Math.abs(b.m10) * bw * 0.5 + Math.max(0, b.m11) * bh + Math.abs(b.m12) * bd * 0.5
+    b.yMin = -Math.abs(b.m10) * bw * 0.5 + Math.min(0, b.m11) * bh - Math.abs(b.m12) * bd * 0.5
+    b.stand = b.yMax - b.yMin
+    // The LOD thresholds want the longest axis instead, `rockLodSize`, which does not care how the rock was turned.
+    b.planX = Math.abs(b.m00) * bw + Math.abs(b.m01) * bh + Math.abs(b.m02) * bd
+    b.planZ = Math.abs(b.m20) * bw + Math.abs(b.m21) * bh + Math.abs(b.m22) * bd
+    b.span = Math.max(b.planX, b.planZ)
+    return b
+  }
+
+  /**
+   * Every rock of `minSize` or more tile (tx, tz) might stand, as [x, z, reach] triples appended to `out`: pass one's stream and `_pureSite`, at full density, each at its unfitted scale and inside the road's clearance test, the hull's circle about its origin -- skipping the dart, `taken`, the pool and the drawn ground, so it is a superset of what `_growTile` places and the same on every client. For the leafkin (leafkin-ground.js); check-leafkin holds it to containing every rock placed. Not on a `deep` or `fitSlope` bed.
+   */
+  pureRocksInto(tx, tz, minSize, out) {
+    if (this.deep > 0 || this.fitSlope || !this.blocks) throw new Error(`RockBed ${this.cfg.name}: no pure superset on a deep, fitted or open bed`)
+    if (tileOutOfBounds(this.bounds, tx, tz, this.tile)) return out
+    const tile = this.tile
+    const rand = mulberry32(tileSeed(tx, tz, this.seed, this.cfg.field))
+    if (this.probesRelief) this.reliefMemo.fill(0)
+    const asks = this.reliefAsks, reliefs = this.reliefs
+    const gN = this.latticeN, cell = this.latticePitch
+    for (let k = 0; k < this.perTile; k++) {
+      // Pass one's thirteen draws: ux, uz, env, yaw, scale, tone, warm, tint, sink, roll, lean dir, lean mag, the burned rank.
+      const ux = rand(), uz = rand()
+      const x = this.lattice ? tx * tile + ((k % gN) + ux) * cell : (tx + ux) * tile
+      const z = this.lattice ? tz * tile + (((k / gN) | 0) + uz) * cell : (tz + uz) * tile
+      const envRoll = rand()
+      rand()
+      const scaleRoll = rand()
+      rand(); rand(); rand(); rand()
+      const rollRoll = rand()
+      rand(); rand(); rand()
+      if (this._pureSite(x, z, envRoll, tx, tz, false) !== null) continue
+      const { h, snowLine, env } = this._ps
+      const scale = this._scaleAt(x, z, h, snowLine, env, this._sizeRoll(scaleRoll))
+      if (this.shapeLod * scale < minSize) continue
+      if (this.layers.paths !== undefined) {
+        const road = this.layers.paths.nearest(x, z, 'road')
+        if (road !== null && road.dist < road.halfWidth + this._turnedBox(rollRoll, scale).span * 0.5 + ROAD_CLEARANCE) continue
+      }
+      out.push(x, z, this.hull.radius * scale)
+    }
+    this.reliefAsks = asks
+    this.reliefs = reliefs
+    return out
+  }
+
   _growTile(job) {
     const { key, tx, tz, q } = job
     const tile = this.tile
@@ -3161,27 +3300,7 @@ class RockBed {
       if (phase === 0) c.fit[k] = 0
       // A rock she carried off (hands.js) is not laid here again. Position-only, so it consumes no randoms.
       if (taken.has('rock', x, z)) continue
-      // THE PILE FIELD, TAKEN BEFORE ANY FIELD QUERY. `_clump` is four hashes of
-      // position against a `scatterAt` at ~960 ns, so what it rejects here it
-      // rejects for free, and what it rejects is exactly the ground between one
-      // drift and the next. Position-only, so it consumes no randoms and the
-      // deterministic stream is untouched -- see the draw block above.
-      //
-      // IT IS NOT WHAT MAKES A DENSE BED AFFORDABLE. On a `footOnly` bed the
-      // dominant cost is `_relief`: four more field samples at ~4.3 us the set,
-      // paid on every candidate that clears both this floor and the slope test,
-      // then thrown away for 91% of them. On the scree bed that is 81% of placement
-      // against `scatterAt`'s 18%. The cheap fix would be to memoize `_relief` on
-      // the PLACEMENT_CELL grid -- distinct cells plateau near 2100 whatever the
-      // density, so that bed goes from ~200 ms to ~80 ms. NOT FREE: candidate
-      // positions are not quantised (PLACEMENT_CELL is only the `cell` hint handed
-      // to scatterAt), so it would reclassify candidates near a foot/brow edge.
-      // Well inside the signal's own resolution (RELIEF_STEP 6 m, RELIEF_PROBE
-      // 16 m), but a real change to where rocks stand rather than an optimisation
-      // you can land without re-reading the gate.
-      // Wanted by two different beds for two different things: scree rejects on
-      // it (`clumpFloor`, the drifts) and the boulders bed only multiplies its
-      // foot density by it (`footDense`). A bed that wants neither never hashes.
+      // The pure tests, `_pureSite`'s, read back from phase zero on a packing bed rather than paid twice.
       let h, tan, snowLine, env
       if (cached) {
         h = c.h[k]
@@ -3189,201 +3308,18 @@ class RockBed {
         snowLine = c.snow[k]
         env = c.env[k]
       } else {
-      const clump = cfg.clumpFloor > 0 || this.footDense ? this._clump(x, z) : 0
-      if (cfg.clumpFloor > 0 && clump < cfg.clumpFloor) {
-        this.rejected.clump++
-        continue
-      }
-
-      // THE LANDFORM FIRST ON A BED THAT HAS NO BUSINESS OFF A FOOT. `_relief`
-      // used to sit below the terrain sample because it was four field samples
-      // against one; cached per cell (see RELIEF_CELL) it is a fifth of one, and
-      // it throws away nine candidates in ten where the slope test throws away
-      // almost none. So the scree bed pays `scatterAt` on the tenth that is
-      // standing somewhere it could belong, instead of on all of them.
-      //
-      // ORDER-FREE, WHICH IS WHY THIS IS A REORDER AND NOT A RULE CHANGE. Both
-      // tests are pure functions of position and neither reads the other's
-      // output, so the set that survives both is the same set whichever runs
-      // first; only which counter in `rejected` records a refusal moves.
-      let site = null
-      if (this.footOnly) {
-        site = this._reliefAt(x, z, tx, tz)
-        if (site !== null) this.sited[site]++
-        if (site !== 'foot') {
-          this.rejected.foot++
+        const why = this._pureSite(x, z, envRoll, tx, tz, true)
+        if (why !== null) {
+          this.rejected[why]++
           continue
         }
+        ;({ h, tan, snowLine, env } = this._ps)
       }
-
-      this.samples++
-      const g = this.field.scatterAt(x, z, PLACEMENT_CELL, this._scatter)
-      h = g.h
-      tan = g.tan
-      if (h < cfg.minElev) {
-        this.rejected.elev++
-        continue
-      }
-      if (tan > this.maxSlopeTan) {
-        this.rejected.slope++
-        continue
-      }
-      // AND THE FLOOR OF THE WINDOW, which only a cap bed sets. See minSlopeTan.
-      if (tan < this.minSlopeTan) {
-        this.rejected.flat++
-        continue
-      }
-      // Wanted twice -- by the environment test and by the ground cue further
-      // down -- so it is taken once here rather than inside _envAt.
-      snowLine = this.field.snowLineAt(x, z)
-      env = this._envAt(x, z, h, tan, snowLine)
-
-      // THE RELIEF FOR A BED THAT MERELY LEANS ON IT, asked here rather than above
-      // because a `footDense` bed places everywhere and only runs denser at a foot,
-      // so nothing is thrown away by asking and the answer is wanted one line down.
-      // A bed that asked for neither flag never probes at all. See _relief.
-      //
-      // `sited` counts what the probe SAW, not what was placed: it is the only
-      // readout of the landform this file has, and a brow the bed then ignores is
-      // still a brow.
-      if (this.footDense) {
-        site = this._reliefAt(x, z, tx, tz)
-        if (site !== null) this.sited[site]++
-      }
-
-      // How MUCH stone this environment has lying about, as opposed to which
-      // kind. See BEDS: without this a bed is equally dense everywhere.
-      //
-      // A FOOT SITE RUNS DENSER, and unevenly. Scree does not lie in a band of
-      // constant density along the base of a cliff, it lies in piles with bare
-      // ground between them, and the clump field is the difference -- see _clump.
-      let dens = site === 'foot'
-        ? cfg.envDensity[env] * (1 + CLUMP_GAIN * clump)
-        : cfg.envDensity[env]
-      // THICKER ALONG A SHORE, wet or dry -- |d|, because this candidate may be
-      // standing in the shallows and the gain is meant for both sides. Only a
-      // bed with a gain pays for the lookup.
-      if (this.shoreGain !== 1 && Math.abs(this.water.shoreDistAt(x, z, SHORE_REACH, h, tan)) < SHORE_REACH) {
-        dens *= this.shoreGain
-      }
-      // AND A BED THAT ONLY EXISTS AT THE WATERLINE refuses everything past it,
-      // wet or dry alike, and thins from `shoreCore` out to the edge. After the
-      // field sample because the lake half of the distance needs the ground
-      // height and slope; before the rate so a refused candidate costs one
-      // lookup and nothing else.
-      if (this.shoreOnly > 0) {
-        const d = Math.abs(this.water.shoreDistAt(x, z, this.shoreOnly, h, tan))
-        if (d >= this.shoreOnly) {
-          this.rejected.shore++
-          continue
-        }
-        if (d > this.shoreCore) dens *= smoothstep(this.shoreOnly, this.shoreCore, d)
-      }
-      if (envRoll >= dens) {
-        this.rejected.env++
-        continue
-      }
-      // THE WATER TEST RUNS IN BOTH DIRECTIONS, because `river` is not the same
-      // question as `underwater`. `_envAt` gives the river environment to anything
-      // within SHORE_RISE of the surface, which is the right rule for the SHAPES a
-      // bank wants and the wrong one for a bed that only makes sense on a floor --
-      // a sunken boulder on dry shingle is just a boulder. So `submergedOnly` is
-      // `footOnly` for water: not a bed that prefers a lake, one with no business
-      // out of it. The branch is written so that a bed which neither refuses water
-      // nor demands it -- most of them -- never pays for the lookup.
-      if (!cfg.allowSubmerged || cfg.submergedOnly) {
-        if (this.water.isSubmerged(x, z, h) !== Boolean(cfg.submergedOnly)) {
-          this.rejected.water++
-          continue
-        }
-      }
-      }
-      const s = this.shape
-
-      // THE SCALE, RESOLVED: a range in METRES for this environment, divided back
-      // through the boulder's measured WIDTH -- not its authored `size`, which is a
-      // parameter to the generator rather than a promise about the result.
-      //
-      // `sizeBias` bends the roll before the range reads it. Under 1 it weights the
-      // range towards its top, the only way to ask for "more big ones" without also
-      // throwing the small ones away as widening the range would; over 1 it weights
-      // it small, which is how a bed affords a rare 15 m landmark.
       const sizeRoll = this._sizeRoll(scaleRoll)
-      const metres = cfg.sizeByEnv[env]
-      if (!metres) throw new Error(`RockBed ${cfg.name}: sizeByEnv has no entry for ${env}`)
-      // THE BARREN TOP, where the bed has one and the roll would use it: the
-      // footprint probe is four field samples, paid only by the rock that
-      // would overtop the wooded range. Refused, the roll lands on that range
-      // as it would in a wood.
-      let top = metres[1]
-      if (this.barrenTop[env] > 0) {
-        const want = metres[0] + sizeRoll * (this.barrenTop[env] - metres[0])
-        if (want > top && this._barrenAt(x, z, h, snowLine, want)) top = this.barrenTop[env]
-      }
-      // AND THE TOP OF THE RANGE IS A CEILING ON EVERY AXIS, not just on the one it
-      // divides through. The boulder is deeper than it is wide, so the width
-      // division alone comes out over the range's top -- and that number is not
-      // cosmetic: `maxLod` and through it the bed's whole LOD reach are derived from
-      // the range's top, so a rock over it is a rock whose far distance the bed's
-      // own `radius` was never sized for. Clamping here rather than widening the
-      // reach keeps "half a metre to ten" true of the ROCK rather than of one of its
-      // three extents, and makes the bound seed-independent.
-      // NOT FINAL ON A `fitSlope` BED: the fit probe below may cut it down to
-      // what the ground under this candidate can actually hold. Everything
-      // derived from it is scaled by the same factor there.
-      let scale = Math.min(
-        (metres[0] + sizeRoll * (top - metres[0])) / s.measured.width,
-        top / this.shapeLod
-      )
-
-      // THE QUARTER TURNS, WHICH DECIDE WHICH WAY IS UP BEFORE ANYTHING ELSE DOES.
-      // One roll picks a whole number of right angles about x and then about z --
-      // see ROLL_STEPS for why the increment is 90 and not a free angle. The x turn
-      // is applied first in the rock's own frame, so `rollQ = qz * qx`. Held here,
-      // ahead of the dart, because what the dart measures is the FOOTPRINT and
-      // turning the rock changes it.
-      // A BED PLACING AN OPEN SHAPE TAKES NONE OF THEM and gets the identity, so
-      // everything below reads the unturned box: `m11` is 1, so `yMax` is the
-      // height, `yMin` is zero, and the plan extents are the shape's own. The roll
-      // was still DRAWN either way, up in the draw block, so turning it off does
-      // not shift the random stream and every other bed places where it did.
-      const q = this._rollQ.identity()
-      if (this.roll) {
-        const ri = this.turnRi ? this.turnRi[rollRoll < 0.5 ? 0 : 1]
-          : Math.min(ROLL_STEPS * ROLL_STEPS - 1, (rollRoll * ROLL_STEPS * ROLL_STEPS) | 0)
-        q.setFromAxisAngle(this._zAxis, ((ri / ROLL_STEPS) | 0) * (Math.PI / 2))
-        q.multiply(this._rollXQ.setFromAxisAngle(this._xAxis, (ri % ROLL_STEPS) * (Math.PI / 2)))
-      }
-      const qx = q.x, qy = q.y, qz = q.z, qw = q.w
-      const m00 = 1 - 2 * (qy * qy + qz * qz)
-      const m01 = 2 * (qx * qy - qw * qz)
-      const m02 = 2 * (qx * qz + qw * qy)
-      const m10 = 2 * (qx * qy + qw * qz)
-      const m11 = 1 - 2 * (qx * qx + qz * qz)
-      const m12 = 2 * (qy * qz - qw * qx)
-      const m20 = 2 * (qx * qz - qw * qy)
-      const m21 = 2 * (qy * qz + qw * qx)
-      const m22 = 1 - 2 * (qx * qx + qy * qy)
-
-      // THE ROLLED BOX, EXACTLY. rock.js puts the origin ON the bed face, so the
-      // unturned rock spans y in [0, height] and x and z about zero -- and a
-      // quarter turn maps each local axis onto a world one, so the box stays a box
-      // and one term per row survives. `stand` is what the rock now presents
-      // vertically (its DEPTH once it is on its side, not its height) and `yMin` is
-      // how far it now hangs below its own origin; both are needed to seat it.
-      const bw = s.measured.width * scale
-      const bh = s.measured.height * scale
-      const bd = s.measured.depth * scale
-      let yMax = Math.abs(m10) * bw * 0.5 + Math.max(0, m11) * bh + Math.abs(m12) * bd * 0.5
-      let yMin = -Math.abs(m10) * bw * 0.5 + Math.min(0, m11) * bh - Math.abs(m12) * bd * 0.5
-      let stand = yMax - yMin
-      // How much GROUND this rock covers, which is what the dart and every caller
-      // of `anchorsInto` are asking about. The LOD thresholds in `update` want a
-      // different number and take it from `rockLodSize`, which is the longest axis
-      // and so does not care how the rock was turned.
-      let planX = Math.abs(m00) * bw + Math.abs(m01) * bh + Math.abs(m02) * bd
-      let planZ = Math.abs(m20) * bw + Math.abs(m21) * bh + Math.abs(m22) * bd
-      let span = Math.max(planX, planZ)
+      let scale = this._scaleAt(x, z, h, snowLine, env, sizeRoll)
+      const b = this._turnedBox(rollRoll, scale)
+      const { m00, m01, m02, m10, m11, m12, m20, m21, m22 } = b
+      let { yMax, yMin, stand, planX, planZ, span } = b
 
       // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it.
       if (this.layers.paths !== undefined) {
@@ -4575,6 +4511,7 @@ export class Rocks {
     // The world's own biome field, for the beds that gate on cover (the hollow bed).
     const biome = beds.some((cfg) => cfg.deep > 0) ? new BiomeField({ seed }) : null
     this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds }))
+    this._hollowCol = new Float64Array(SPAN_STRIDE)
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
     // bounded for that tier (`_tierCaps`): each bed's cap already holds its own
@@ -4995,6 +4932,19 @@ export class Rocks {
       if (bed.cfg.hollow) best = bed._rayAt(x, y, z, dx, dy, dz, reach, 0, best, out, true)
     }
     return best
+  }
+
+  /** The beds with a pure superset (RockBed.pureRocksInto): every one that blocks, less the entrance boulders (hollowOver) and the fitted caps, which a leafkin walks over. */
+  pureBeds() {
+    return this.beds.filter((b) => b.blocks && !b.fitSlope && !b.cfg.hollow && !(b.deep > 0))
+  }
+
+  /** Whether the vertical line through (x, z) passes through a resident entrance boulder, which is placed on the field alone (hollowRayAt) and resident 1250 m out. */
+  hollowOver(x, z) {
+    for (const bed of this.beds) {
+      if (bed.cfg.hollow && bed._columnAt(x, z, 0, this._hollowCol, 0, 1) > 0) return true
+    }
+    return false
   }
 
   /**

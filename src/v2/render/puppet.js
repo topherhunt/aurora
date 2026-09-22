@@ -593,6 +593,7 @@ export class Puppet {
     this.from = -1
     this.to = -1
     this.fade = 1
+    this.fadeS = LOD_FADE_S
   }
 
   /** The tier a puppet has settled on, or is on its way to; -1 is gone. */
@@ -625,9 +626,10 @@ export class Puppet {
     this.current = next
   }
 
-  /** Ask for `tier`, -1 for gone. Starts a dissolve; a reversal mid-fade rewinds the one already running rather than starting a third. */
-  show(tier) {
+  /** Ask for `tier`, -1 for gone. Starts a dissolve over `seconds`; a reversal mid-fade rewinds the one already running rather than starting a third. */
+  show(tier, seconds = LOD_FADE_S) {
     if (tier === this.to) return
+    this.fadeS = seconds
     const reversing = tier === this.from && this.fade < 1
     this.from = this.to
     this.to = tier
@@ -678,7 +680,7 @@ export class Puppet {
     // A settled puppet holds its materials, so the tint row flipping is the one
     // thing besides a fade that has to repaint one.
     if (this.fade < 1) {
-      this.fade = Math.min(1, this.fade + dt / LOD_FADE_S)
+      this.fade = Math.min(1, this.fade + dt / this.fadeS)
       this._apply()
     } else if (this.tinted !== tierTintOn()) this._apply()
   }

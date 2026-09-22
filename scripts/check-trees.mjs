@@ -2323,5 +2323,70 @@ console.log('\n-- the road --')
 
 // ---------------------------------------------------------------------------
 
+console.log('\n-- the trees a room plants --')
+
+{
+  // A room hands the wood trees of its own (rooms/village.js DECOR: the crown
+  // standing where a house does, so its trunk comes up through the roof, and
+  // the ones set against a wall), and the wood grows them inside its own tiles
+  // so the LOD, the rim and the thinning own them like any other. Ground no
+  // wild tree would take -- a cliff under water, far over the snow -- is the
+  // test: the plant stands on it anyway, because the room has already decided.
+  const plants = [{ x: 3.5, z: 4.25, scale: 1.25 }, { x: -18.5, z: 6.5, scale: 0.5 }, { x: 40.5, z: -30.5, scale: 1.5 }]
+  const cliff = { scatterAt: (x, z, cell, out) => { out.h = 60; out.tan = 9; return out }, heightAt: () => 60, snowLineAt: () => -1000 }
+  const wet = { isSubmerged: () => true }
+  const nothing = new Trees(new THREE.Scene(), cliff, wet, texArray, { seed: 7, radius: 200 })
+  nothing.place(0, 0)
+  const wood = new Trees(new THREE.Scene(), cliff, wet, texArray, { seed: 7, radius: 200, plants })
+  wood.place(0, 0)
+  const standing = plants.map((p) => {
+    for (const tile of wood.tiles.values()) for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (wood.instX[id] === p.x && wood.instZ[id] === p.z) return id
+    }
+    return -1
+  })
+  check(nothing.placed === 0, 'no wild tree takes a cliff under water over the snow line', `${nothing.placed} placed`)
+  // fround: the instance arrays are Float32Array, so the scale it was given comes back rounded to a float.
+  const sized = standing.filter((id, i) => id >= 0 && wood.instScale[id] === Math.fround(plants[i].scale)).length
+  check(wood.placed === plants.length && sized === plants.length, 'every tree the room plants stands on it, at the size it was given', `${wood.placed} of ${plants.length}, ${sized} sized`)
+  // Never a clump card: a clump draws a stand of several, and a planted tree is the one thing standing where it was put.
+  check(standing.every((id) => wood.instInWood[id] === 0), 'and none of them is a clump')
+  // The wild wood does not move: a plant draws its look off its own point, never off the tile's three streams.
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  bare.place(0, 0)
+  const both = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, plants })
+  both.place(0, 0)
+  let moved = 0, wildN = 0
+  for (const tile of bare.tiles.values()) {
+    const other = both.tiles.get(tile.tx * 0x10000 + tile.tz)
+    if (!other) { moved += tile.n; continue }
+    for (let k = 0; k < tile.n; k++) {
+      const a = tile.ids[k]
+      wildN++
+      let found = false
+      for (let q = 0; q < other.n && !found; q++) {
+        const b = other.ids[q]
+        found = bare.instX[a] === both.instX[b] && bare.instZ[a] === both.instZ[b] && bare.instScale[a] === both.instScale[b]
+          && bare.instStretch[a] === both.instStretch[b] && bare.instSink[a] === both.instSink[b] && bare.variantAt[a] === both.variantAt[b]
+      }
+      if (!found) moved++
+    }
+  }
+  check(moved === 0 && both.placed === wildN + plants.length, 'the wild wood round them stands exactly where it did', `${moved} of ${wildN} moved, ${both.placed - wildN} planted`)
+  check(both.maxInstances === bare.maxInstances + plants.length, 'and the pool grows by the plants and no more', `${both.maxInstances} over ${bare.maxInstances}`)
+  // The thinning cuts the wild wood by distance; a plant's rank is under every band, so it is still standing when the trees rolled beside it are gone.
+  const key = Math.floor(3.5 / TILE) * 0x10000 + Math.floor(4.25 / TILE)
+  const before = both.tiles.get(key).n
+  for (let f = 0; f < 240; f++) both.update(220, EYE, 0)
+  const home = both.tiles.get(key)
+  let stands = false
+  for (let k = 0; k < home.n; k++) if (both.instX[home.ids[k]] === 3.5 && both.instZ[home.ids[k]] === 4.25) stands = true
+  check(stands && home.n < before, 'a plant survives the thinning that cuts the trees rolled beside it', `${home.n} of ${before} left in its tile`)
+  nothing.dispose(); wood.dispose(); bare.dispose(); both.dispose()
+}
+
+// ---------------------------------------------------------------------------
+
 console.log(`\n${failures === 0 ? 'all tree checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

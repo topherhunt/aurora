@@ -8,6 +8,8 @@ import { generate, MIN_Y, MAX_Y, TEXELS } from '../src/v3/generate.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { LAKES, RIVERS } from '../src/v3/hydrology.js'
 import { EROSION } from '../src/v3/erosion.js'
+import { CLIFFS, table } from '../src/v3/cliffs.js'
+import { NB_DI, NB_DJ } from '../src/sim/world-grid.js'
 import { footprint } from '../src/v2/layers/water-bodies.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
@@ -58,6 +60,83 @@ export async function run() {
   check(er.toSea > er.droplets * 0.8 && er.offEdge === 0 && er.spent < er.droplets * 0.05, `${er.droplets} droplets, ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps, none left the box`)
   check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= EROSION.maxCut && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.2, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${EROSION.maxCut} m`)
   check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
+
+  console.log('\n[v3] the cliffs')
+  const cl = hs.cliffs
+  const lift = Math.max(...Object.values(CLIFFS.byBiome).map((k) => (k.snap[1] - k.riser) * k.step))
+  check(cl.maxMove <= lift + 1e-3, `the tabling lifted a texel ${cl.maxMove.toFixed(1)} m at the most, inside the ${lift.toFixed(1)} m a shelf can stand above the foot of its own band`)
+  check(cl.km2 > 0.5 && cl.km2 < s.landKm2 * 0.25, `${cl.km2.toFixed(2)} km2 tabled of ${s.landKm2.toFixed(1)}, ${cl.meanMove.toFixed(1)} m mean lift`)
+  check(cl.byBiome.every((b) => Math.abs(b.share - CLIFFS.byBiome[b.id].share) < 0.02), `every class banded its own share of its steep ground, of which the sparse ladder moves about a third: ${cl.byBiome.map((b) => `${b.id} ${(b.share * 100).toFixed(0)}%`).join(', ')}`)
+  check(cl.byBiome.find((b) => b.id === 'swamp').cells === 0, 'the swamp is left alone')
+  // The two promises the ramp's shape makes, on a clean 32-degree ramp of canyon with the band gate held open: it only ever lifts, so nothing is dug out under a face, and no face stands in the band above another, so a hillside is not a staircase.
+  {
+    const m = 96
+    const fall = a.cell * Math.tan((32 * Math.PI) / 180)
+    const ramp = new Float32Array(m * m)
+    for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) ramp[j * m + i] = 10 + j * fall
+    const was = Float32Array.from(ramp)
+    const T = { ...CLIFFS, byBiome: { ...CLIFFS.byBiome, canyon: { ...CLIFFS.byBiome.canyon, share: 1 } } }
+    table(ramp, new Uint8Array(m * m), new Uint8Array(m * m).fill(BIOMES.findIndex((b) => b.id === 'canyon')), m, a.cell, SEED, T)
+    let cut = 0
+    for (let c = 0; c < ramp.length; c++) if (ramp[c] < was[c] - 1e-4) cut++
+    check(cut === 0, `the tabling only ever lifts: ${cut} of ${m * m} texels on that ramp finished below where they started`)
+    const deep = []
+    for (let j = 1; j < m; j++) { const c = j * m + (m >> 1); if (ramp[c] - ramp[c - m] >= 12) deep.push(j) }
+    // Neighbouring texels are the same face; a gap is the climb from one face to the next.
+    const gaps = []
+    for (let k = 1; k < deep.length; k++) if (deep[k] - deep[k - 1] > 1) gaps.push(deep[k] - deep[k - 1])
+    const bandCells = CLIFFS.byBiome.canyon.step / fall
+    check(gaps.length >= 2 && Math.min(...gaps) > bandCells * 1.4, `no face stands in the band above another: ${gaps.length + 1} faces up that ramp, the nearest two ${Math.min(...gaps)} texels apart where a band is ${bandCells.toFixed(1)}`)
+  }
+  // The face each land texel presents, as the steepest of its four axis neighbours read through the 8 m grid. A cliff biome should not merely be steeper on average: it should be BIMODAL, bench and wall, with the 40-50 degree ground it abhors thinned out under the wall it prefers.
+  const faces = BIOMES.map(() => [])
+  for (let j = 1; j < a.n - 1; j++) {
+    for (let i = 1; i < a.n - 1; i++) {
+      const c = j * a.n + i
+      if (a.height[c] <= 0) continue
+      let d = 0
+      for (const k of [c - 1, c + 1, c - a.n, c + a.n]) { const dd = a.height[c] - a.height[k]; if (dd > d) d = dd }
+      faces[a.ground[c]].push((Math.atan(d / a.cell) * 180) / Math.PI)
+    }
+  }
+  const band = (k, lo, hi) => faces[k].filter((v) => v >= lo && v < hi).length / faces[k].length
+  const CANYON = BIOMES.findIndex((b) => b.id === 'canyon')
+  const FOREST = BIOMES.findIndex((b) => b.id === 'forest')
+  const wallToRamp = (k) => band(k, 60, 90) / band(k, 40, 50)
+  check(wallToRamp(CANYON) > wallToRamp(FOREST) * 3, `the canyon stands its steep ground up where the forest lays it down: ${(wallToRamp(CANYON) * 100).toFixed(0)} texels over 60 deg per 100 at 40-50, against the forest's ${(wallToRamp(FOREST) * 100).toFixed(0)}`)
+  check(band(CANYON, 70, 90) > band(FOREST, 70, 90) * 8, `the canyon walls where the forest slopes: ${(band(CANYON, 70, 90) * 100).toFixed(2)}% of canyon against ${(band(FOREST, 70, 90) * 100).toFixed(2)}% of forest over 70 deg`)
+  // Only the canyon's shelves snap near flat; every other class keeps a grade on its, so the gap here is narrower than the one over 70 degrees and is meant to be.
+  check(band(CANYON, 40, 50) < band(FOREST, 40, 50) * 0.8 && band(CANYON, 0, 10) > band(FOREST, 0, 10) * 1.2, `the canyon abhors the 45-degree slope and keeps its mesa tops: ${(band(CANYON, 40, 50) * 100).toFixed(1)}% at 40-50 deg and ${(band(CANYON, 0, 10) * 100).toFixed(1)}% under 10, against the forest's ${(band(FOREST, 40, 50) * 100).toFixed(1)}% and ${(band(FOREST, 0, 10) * 100).toFixed(1)}%`)
+  // A per-texel coin flip would leave every face isolated. Bands leave runs.
+  const face = new Uint8Array(a.n * a.n)
+  for (let j = 1; j < a.n - 1; j++) for (let i = 1; i < a.n - 1; i++) { const c = j * a.n + i; if (a.height[c] > 0) for (const k of [c - 1, c + 1, c - a.n, c + a.n]) if (a.height[c] - a.height[k] > 12) face[c] = 1 }
+  const seen = new Uint8Array(a.n * a.n)
+  let longest = 0
+  let runs = 0
+  let faceCells = 0
+  for (let c = 0; c < face.length; c++) {
+    if (!face[c] || seen[c]) continue
+    let size = 0
+    const stack = [c]
+    seen[c] = 1
+    while (stack.length) {
+      const p = stack.pop()
+      size++
+      const pi = p % a.n
+      const pj = (p / a.n) | 0
+      for (let k = 0; k < 8; k++) {
+        const ni = pi + NB_DI[k]
+        const nj = pj + NB_DJ[k]
+        if (ni < 0 || nj < 0 || ni >= a.n || nj >= a.n) continue
+        const nn = nj * a.n + ni
+        if (face[nn] && !seen[nn]) { seen[nn] = 1; stack.push(nn) }
+      }
+    }
+    runs++
+    faceCells += size
+    if (size > longest) longest = size
+  }
+  check(faceCells > 2000 && longest > 60 && faceCells / runs > 3, `faces over 12 m run in bands, not specks: ${faceCells} texels in ${runs} runs, ${(faceCells / runs).toFixed(1)} mean and ${longest} at the longest`)
   check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep, `${hs.lakes.count} lakes kept of ${hs.lakes.candidates} bowls the rain left`)
   check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
   check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)

@@ -11,7 +11,7 @@ import { runHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'd4'
+export const VERSION = 'd7'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
@@ -50,7 +50,8 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune
   const tHydro = now()
   const hs = hydro.stats
   const er = hs.erosion
-  log(`hydrology      ${ms(tHydro - tBiomes)}  ${er.droplets} droplets in ${ms(er.ms)}, ${er.meanSteps.toFixed(0)} steps each, ${((er.toSea / er.droplets) * 100).toFixed(0)}% to the sea; cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * cell * cell) / 1e6).toFixed(2)} km2 (deepest ${er.deepest.toFixed(0)} m), laid ${er.fillMean.toFixed(1)} m over ${((er.fillCells * cell * cell) / 1e6).toFixed(2)} km2; silted ${hs.silt.km2.toFixed(2)} km2 ${hs.silt.mean.toFixed(1)} m mean; ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2), ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
+  const cl = hs.cliffs
+  log(`hydrology      ${ms(tHydro - tBiomes)}  ${er.droplets} droplets in ${ms(er.ms)}, ${er.meanSteps.toFixed(0)} steps each, ${((er.toSea / er.droplets) * 100).toFixed(0)}% to the sea; cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * cell * cell) / 1e6).toFixed(2)} km2 (deepest ${er.deepest.toFixed(0)} m), laid ${er.fillMean.toFixed(1)} m over ${((er.fillCells * cell * cell) / 1e6).toFixed(2)} km2; tabled ${cl.km2.toFixed(2)} km2 in ${ms(cl.ms)}, ${cl.meanMove.toFixed(1)} m mean lift (most ${cl.maxMove.toFixed(0)} m); silted ${hs.silt.km2.toFixed(2)} km2 ${hs.silt.mean.toFixed(1)} m mean; ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2), ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
 
   const stats = measure(height, n, cell, island)
   // The bowls are the raw field's: what the hydrology had to choose its lakes from and drain.

@@ -36,6 +36,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Leafkin glades hold puzzles:
     - Each glade has an assigned song.
   - [ ] A giant deer-skull, either a house, or on top of of a house?
+  - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
 - [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
@@ -87,6 +88,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Idea for a creepy rare wilderness encounter: on misty days, ghosts that pull you into an alternate dimension, where you start hearing creepy sounds and see hints of something sinister following you, and no matter where you go, the world is empty, there's no creatures or NPCs anywhere.
 - [ ] Cheap API-fed TTS so NPCs can actually speak to you with realistic voices.
 - [ ] Water sfx by pond size: play `water-lapping-wave-1.mp3` only where a lake is large enough for a wave to break on its shore, and `water-lapping-quiet-1.mp3` alone on small ponds (for now the village lake alone is quiet, via `Ambience`'s `waves` option).
+
+- [ ] Keep the gen-prop GLBs loaded across a room swap. `loadGenProp` (render/gen-props.js) re-fetches and re-decodes every GLB on each room build -- walking into the glade and back out reloads the same meshes twice, which is still a few hundred ms of the swap. Cache each bank by URL for the life of the session. The blocker: eight beds (deadwood, bones, carrots, rowboats, entrances, roosts, lamps, room-props) free bank-owned geometry and maps in their own `dispose()`, so the cache needs the banks to own their assets and the beds to stop disposing what they borrowed.
 
 - [ ] Props should cast shadows on the terrain and on other props. See \_notes/local-shadows.md.
 

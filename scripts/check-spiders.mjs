@@ -29,9 +29,10 @@
 // And, because the life is on the score (src/sim/score.js): two clients on
 // different frame rates that draw the same second differently, one joining the
 // wood mid-crawl that does not cross the rest of the scoot where the others see
-// it, and a release that does not reach the room, or does not put the one
-// spider on the one spot on the client it reaches (the only thing a spider
-// sends). The shipped
+// it, a release that does not reach the room, or does not put the one spider on
+// the one spot on the client it reaches (the only thing a spider sends), and a
+// bolt out of that release that the two clients do not run stride for stride,
+// down to where it calms and the life it takes up there. The shipped
 // GLB is checked for shape too -- a skinned tier per rung of the ladder, the
 // skeleton naming its legs and its six clips -- because the world loads it by
 // name and bakes the legs off its skeleton.
@@ -44,6 +45,7 @@ import fs from 'node:fs'
 import {
   Spiders, SHIPPED_TIERS, MESH_TIER, LOD_TIERS, SIZE_M, GROUND_SCALE, CLIMB_M, GROUP, GROUND_ROAM_M, GROUND_FLEE_M, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, AMP_EASE_S, REAR_RAD, TINT_DARK, TINT_BROWN, TILE,
 } from '../src/v2/render/spiders.js'
+import { TICK_S } from '../src/sim/score.js'
 import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
@@ -753,7 +755,10 @@ spiders.place(0, 0)
     return target.lod
   }
   const drawn = () => spiders.stats.meshes.reduce((a, b) => a + b, 0) + spiders.card.count
-  const seat = (c) => { const sink = SINK * spiders.bodyH * c.size / spiders.span; return new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink) }
+  // A flight steps on the world's ticks, so mid-tick the drawn pose runs on along the heading by what is left of the step, its legs with it.
+  const lead = (c) => (c.state === 'flee' ? c.speed * TICK_S * c.alpha : 0)
+  const seat = (c) => { const sink = SINK * spiders.bodyH * c.size / spiders.span, d = lead(c); return new THREE.Vector3(c.x + c.tx * d - c.nx * sink, c.y + c.ty * d - c.ny * sink, c.z + c.tz * d - c.nz * sink) }
+  const gaitOf = (c) => { const d = lead(c); return d > 0 ? (c.gait + (2 * Math.PI * d * spiders.span) / (c.size * STRIDE.run)) % (2 * Math.PI) : c.gait }
   /** The instance of tier k standing where the spider is, or -1. */
   const instanceOf = (k, c) => {
     const a = spiders.meshes[k].instanceMatrix.array
@@ -761,9 +766,9 @@ spiders.place(0, 0)
     for (let i = 0; i < spiders.meshes[k].count; i++) if (Math.abs(a[i * 16 + 12] - p.x) < 1e-5 && Math.abs(a[i * 16 + 13] - p.y) < 1e-5 && Math.abs(a[i * 16 + 14] - p.z) < 1e-5) return i
     return -1
   }
-  // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres, which is inside FLEE_M and sets it running: on the move either way, so its legs swing for the matrix check and it is not reared up.
+  // Well inside its own top rung -- a spider is a hand's breadth across, so that is centimetres and not metres, which is inside FLEE_M and sets it running: on the move either way, so its legs swing for the matrix check and it is not reared up. Held a tenth of a second, which is ticks of the flight and not one part-tick frame, so the swing has eased up off nothing.
   const close = lodReach(target.size, 0) / 2
-  const t1 = tiersAt(close)
+  const t1 = tiersAt(close, 6)
   const i1 = instanceOf(0, target)
   check(t1 === 0 && i1 >= 0 && spiders.meshes[0].count >= 1, `${close.toFixed(2)} m off, the spider is an instance of the mesh`, `tier ${t1}, instance ${i1}`)
   {
@@ -775,7 +780,7 @@ spiders.place(0, 0)
     const k = target.size / spiders.span
     check(Math.abs(s.x - k) < 1e-6 && up.distanceTo(new THREE.Vector3(target.nx, target.ny, target.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(target.tx, target.ty, target.tz)) < 1e-5, 'the instance stands where the spider is at its size, its up the bark\'s normal and its nose along its heading')
     const g = spiders.gaits[0].array
-    check(Math.abs(g[i1 * 2] - target.gait) < 1e-6 && Math.abs(g[i1 * 2 + 1] - target.amp) < 1e-6 && target.amp > 0, 'and carries its gait: the phase and a swing', `phase ${target.gait.toFixed(3)} amp ${target.amp.toFixed(4)}`)
+    check(Math.abs(g[i1 * 2] - gaitOf(target)) < 1e-6 && Math.abs(g[i1 * 2 + 1] - target.amp) < 1e-6 && target.amp > 0, 'and carries its gait: the phase and a swing', `phase ${gaitOf(target).toFixed(3)} amp ${target.amp.toFixed(4)}`)
     const t = spiders.meshes[0].instanceColor.array
     check(Math.abs(t[i1 * 3] - target.tr) < 1e-6 && Math.abs(t[i1 * 3 + 1] - target.tg) < 1e-6 && Math.abs(t[i1 * 3 + 2] - target.tb) < 1e-6, 'and its tint', `${target.tr.toFixed(3)} ${target.tg.toFixed(3)} ${target.tb.toFixed(3)}`)
   }
@@ -847,10 +852,12 @@ spiders.place(0, 0)
   const runSpeed = (STRIDE.run / 0.42) * target.size / spiders.span
   check(target.state === 'flee' && target.clip === 'run', `her body 0.2 m off and her head ${Math.hypot(0.2 + WALK.radius, GROUND + EYE - target.y).toFixed(2)} m off, the spider flees at the run`, `${target.state} ${target.clip}`)
   {
-    const was = target.gait
-    run(target, t.her, 1)
-    const turned = (target.gait - was + 2 * Math.PI) % (2 * Math.PI)
-    check(Math.abs(target.speed - FLEE_HASTE * runSpeed) < 1e-9 && Math.abs(turned - (2 * Math.PI * target.speed * (1 / 60) * spiders.span) / (target.size * STRIDE.run)) < 1e-9, `${FLEE_HASTE} times as fast as its run, the legs cycling ${FLEE_HASTE} times as fast to match`, `${target.speed.toFixed(3)} m/s, ${(turned * 60 / (2 * Math.PI)).toFixed(2)} cycles a second`)
+    // The drawn phase over a stretch of frames, against the ground the flight covers in that stretch -- ticks stepped and the part-tick lead alike -- so it holds whatever the frames fall on. Under half a cycle of it, so the turn does not wrap.
+    const was = gaitOf(target), t0 = target.tick + target.alpha
+    run(target, t.her, 3)
+    const turned = (gaitOf(target) - was + 2 * Math.PI) % (2 * Math.PI)
+    const crossed = target.speed * (target.tick + target.alpha - t0) * TICK_S
+    check(Math.abs(target.speed - FLEE_HASTE * runSpeed) < 1e-9 && crossed > 0 && Math.abs(turned - (2 * Math.PI * crossed * spiders.span) / (target.size * STRIDE.run)) < 1e-9, `${FLEE_HASTE} times as fast as its run, the legs cycling ${FLEE_HASTE} times as fast to match`, `${target.speed.toFixed(3)} m/s, ${(turned / (2 * Math.PI) / (crossed / target.speed)).toFixed(2)} cycles a second`)
   }
   check(t.fled.length === 1 && t.fled[0] === target && t.twice === 0 && t.still, 'it is listed as startled the frame it sets off and never again while it runs')
   check(t.away < 0.05 && target.ty > 0.3, 'it makes for the far side of the trunk and the top of the climb, not toward her', `heading ty ${target.ty.toFixed(2)}, toward her ${t.away.toFixed(2)}`)
@@ -905,7 +912,7 @@ spiders.place(0, 0)
 // --- two clients see the one wood -----------------------------------------------
 // Before the hands below: `taken` is a module-global, and a spider caught there would be missing from every wood rolled after.
 {
-  // Her head three metres up over the middle of the wood: everything near is simulated, and her body is out of FLEE_M of all of it, so nothing here is on a flight -- a flight is the one part of a spider's life that is not on the score.
+  // Her head three metres up over the middle of the wood: everything near is simulated, and her body is out of FLEE_M of all of it, so nothing here is on a flight until the drop below sets one off.
   const HEAD = GROUND + 3
   const frame = (k, t) => k.update(0, HEAD, 0, t, HEAD - EYE)
   const pose = (of) => alive(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.tx.toFixed(9)},${c.ty.toFixed(9)},${c.tz.toFixed(9)}|${c.state}|${c.clip}|${c.gait.toFixed(9)},${c.amp.toFixed(9)}`).sort().join('\n')
@@ -933,30 +940,47 @@ spiders.place(0, 0)
   check(pose(late) === pose(slow), 'and one arriving in the middle of a scoot crawls the rest of it the same')
   check(alive(slow).some((c) => c.state === 'go'), 'and a spider was mid-scoot at that second', `${alive(slow).filter((c) => c.state === 'go').length} of ${alive(slow).length}`)
   check(slow.pending().length === 0 && typeof slow.applyLured !== 'function', 'and a spider on its plan owes the room nothing: no anchor, no lured set')
+  check(slow.rand === undefined, 'and nothing in a spider\'s life is dealt off dice this client keeps -- the layer holds none: every roll is off the spider\'s own name, or off the ground it stands on')
 
   // The one thing a spider does send: the release, without which a peer watches it go into a hand and never land.
   const loose = (of) => alive(of).filter((c) => c.member === -1)
   const looseDress = (of) => loose(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.size.toFixed(9)},${c.tr.toFixed(9)},${c.tg.toFixed(9)},${c.tb.toFixed(9)},${c.gait0.toFixed(9)}|${c.state}|${c.ex.toFixed(9)},${c.ez.toFixed(9)}`).sort().join('\n')
   const rec = { kind: 'spider', size: 0.317, color: [0.61, 0.33, 0.22], attrs: { aGait: [1.23] } }
-  check(slow.release(rec, 2.0004, GROUND + 1, 2.0004, { x: 0.0004, y: HEAD, z: 0 }, 4103.5), 'a spider let go here is let go')
+  // Let go at arm's length in front of her, as a hand lets one go: a spider dropped further off than it flees is already where it wants to be and never runs.
+  check(slow.release(rec, 0.0004, GROUND + 1, 0.6004, { x: 0.0004, y: HEAD, z: 0 }, 4103.5), 'a spider let go here is let go')
   const owed = slow.pending()
   check(owed.length === 1 && slow.pending().length === 0, 'and is owed to the room once', `${owed.length} anchor`)
   const drop = owed[0]
   check(drop[0].startsWith('sp:') && /^[a-z0-9:,-]{1,32}$/.test(drop[0]) && drop[7] === 'drop' && drop[8] === null && Number.isInteger(drop[6]), 'as one anchor in mode drop under the spiders\' prefix', drop[0])
   check(JSON.stringify(drop).length <= 256, 'inside the relay\'s 256 bytes', `${JSON.stringify(drop).length} bytes`)
   drop[8] = 'peer'
-  late.apply(drop, 4103.5)
+  // The peer hears of it two tenths of a second late, its own frame already past the drop: the flight starts at the second on the wire either way, and the ticks it missed are caught up on its next frame.
+  frame(late, 4103.7)
+  late.apply(drop, 4103.7)
   check(loose(late).length === 1 && late.pending().length === 0, 'the peer told of it lets the same spider go, and owes it nobody')
-  // Its bolt is off the score -- the heading carries a jitter off this.rand() -- so the two agree on where it landed and where it is headed, not on the centimetres between.
   check(looseDress(late) === looseDress(slow), 'on the same key, in the same tint, bolting for the same spot', loose(slow)[0].key)
-  late.apply(drop, 4103.5)
+  late.apply(drop, 4103.7)
   check(loose(late).length === 1, 'and a second telling -- a fresh welcome -- lets no second spider go')
   slow.apply(drop, 4103.5)
   check(loose(slow).length === 1, 'nor does her own drop come back to her')
+  // And then the bolt itself, on two frame rates: it runs on the world's ticks off the second on the wire, and every roll in it -- the heading's jitter, a bounce off a wall -- is drawn off the spider's own name and the tick, so the two clients run it stride for stride.
+  const flight = (of) => loose(of).map((c) => `${c.key}|${c.state}|${c.clip}|${c.tick},${c.alpha.toFixed(9)}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.tx.toFixed(9)},${c.ty.toFixed(9)},${c.tz.toFixed(9)}|${c.gait.toFixed(9)},${c.amp.toFixed(9)}|${c.ex.toFixed(9)},${c.ey.toFixed(9)},${c.ez.toFixed(9)}`).sort().join('\n')
+  const spot = [loose(slow)[0].x, loose(slow)[0].z]
+  let c1 = 4103.5, c2 = 4103.7
+  const wind = (to) => {
+    while (c1 + 1 / 30 < to) { c1 += 1 / 30; frame(slow, c1) }
+    while (c2 + 1 / 111 < to) { c2 += 1 / 111; frame(late, c2) }
+    c1 = c2 = to; frame(slow, to); frame(late, to)
+  }
+  wind(4104.3)
+  check(loose(slow)[0].state === 'flee' && flight(late) === flight(slow), 'the two run it stride for stride: mid-bolt, a second on, the one spider is on the one spot at the one point of its stride', `${Math.hypot(loose(slow)[0].x - spot[0], loose(slow)[0].z - spot[1]).toFixed(2)} m out`)
+  wind(4123.5)
+  check(loose(slow)[0].state !== 'flee' && Math.hypot(loose(slow)[0].x - spot[0], loose(slow)[0].z - spot[1]) > 0.5, 'the bolt runs out and it calms where it got to', `${loose(slow)[0].state} ${Math.hypot(loose(slow)[0].x - spot[0], loose(slow)[0].z - spot[1]).toFixed(2)} m out`)
+  check(flight(late) === flight(slow) && pose(late) === pose(slow), 'and twenty seconds on the two still hold it on the one spot, calmed on the same tick and on the same life since')
   // A drop out where this client holds no tile: refused, and that client never sees that spider.
   const away = { x: POND.x + 400, z: POND.z + 400 }
   check(!late.tiles.has(Math.floor(away.x / TILE) * 0x10000 + Math.floor(away.z / TILE)), 'and no tile is resident four hundred metres out')
-  late.apply([drop[0], 4103.5, away.x, GROUND, away.z, 0, 0, 'drop', 'peer', away.x + 1, away.z, 0.3, 0.5, 0.5, 0.5, 0], 4103.5)
+  late.apply([drop[0], 4123.5, away.x, GROUND, away.z, 0, 0, 'drop', 'peer', away.x + 1, away.z, 0.3, 0.5, 0.5, 0.5, 0], 4123.5)
   check(loose(late).length === 1, 'where a drop lets no spider go')
   slow.dispose(); fast.dispose(); joined.dispose(); late.dispose()
 }

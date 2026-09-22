@@ -143,6 +143,8 @@ snow line ${R.doc.snow.base.toFixed(0)} m
 <h2>step D -- hydrology</h2>rain      ${er.droplets} droplets in ${(er.ms / 1000).toFixed(1)} s, ${er.meanSteps.toFixed(0)} cells each; ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps
 cut       ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * R.cell * R.cell) / 1e6).toFixed(2)} km2, deepest ${er.deepest.toFixed(0)} m, ${er.deepestStep.toFixed(2)} m the deepest single step
 laid      ${er.fillMean.toFixed(1)} m mean over ${((er.fillCells * R.cell * R.cell) / 1e6).toFixed(2)} km2, highest ${er.highest.toFixed(0)} m
+cliffs    ${hs.cliffs.km2.toFixed(2)} km2 tabled in ${hs.cliffs.ms} ms, ${hs.cliffs.meanMove.toFixed(1)} m mean lift, ${hs.cliffs.maxMove.toFixed(0)} m the most
+          banded, of which the sparse ladder moves about a third: ${hs.cliffs.byBiome.filter((b) => b.cells).map((b) => `${b.id} ${(b.share * 100).toFixed(0)}% of ${b.steep}`).join('   ')}
 silt      ${hs.silt.km2.toFixed(2)} km2 of bowl raised to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m deepest
 rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
 

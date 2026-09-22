@@ -442,6 +442,8 @@ export class Mushrooms {
     // Scratch, reused by every tile grow. `_anchor` is the buffer the sources
     // write into; nothing here is allocated on the frame path.
     this._anchor = new Float32Array(ANCHOR_CAP * 4)
+    this._cl = { rand: null, u: 0, hosts: false, species: 0, members: 0, phase: 0, ring: 0, cx: 0, cz: 0, snowLine: 0, road: false }
+    this._mem = { mAz: 0, out: 0, mx: 0, mz: 0 }
     this._m = new THREE.Matrix4()
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
@@ -452,6 +454,8 @@ export class Mushrooms {
     this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
     this._gc = new Float32Array(3)
+    // Told (x, z) of every cap take() pulls, or null: the leafkin's picks (leafkin.js).
+    this.onTake = null
 
     this.placed = 0
     this.clumps = 0
@@ -725,6 +729,86 @@ export class Mushrooms {
    * break that quietly -- clumps appearing and vanishing as the tree under them was
    * thinned in and out -- which is why both numbers are named here.
    */
+  /**
+   * The clump off one anchor, drawn whole from the anchor's own stream before any test, so whether it exists and what it looks like are independent of what the tile around it rejected. Returns the scratch `_cl`, its `rand` left at the first member's draws.
+   */
+  _drawClump(ax, az, aRad) {
+    const c = this._cl
+    const rand = (c.rand = mulberry32(clumpSeed(ax, az, this.seed)))
+    c.u = rand()
+    c.hosts = rand() < CLUMP_CHANCE
+    c.species = (rand() * this.speciesList.length) | 0
+    c.members = CLUMP_MIN + ((Math.pow(rand(), CLUMP_SKEW) * (CLUMP_MAX - CLUMP_MIN + 1)) | 0)
+    const clumpAz = rand() * Math.PI * 2
+    const gap = ANCHOR_GAP[0] + rand() * (ANCHOR_GAP[1] - ANCHOR_GAP[0])
+    const spreadRoll = CLUMP_RADIUS[0] + rand() * (CLUMP_RADIUS[1] - CLUMP_RADIUS[0])
+    c.phase = rand() * Math.PI * 2
+    // The footprint scales with the clump's own species: five parasols need more room than five ink caps.
+    c.ring = c.members > 1 ? this.speciesTallest[c.species] * spreadRoll : 0
+    // The centre sits out past the trunk or boulder's own radius `aRad`, and past the ring's too: members scatter `ring` metres from it in every direction, including back at the anchor, and a centre at `aRad + gap` put 13 of 390 caps inside the bark.
+    c.cx = ax + Math.cos(clumpAz) * (aRad + gap + c.ring)
+    c.cz = az + Math.sin(clumpAz) * (aRad + gap + c.ring)
+    return c
+  }
+
+  /** The tests a clump's centre passes, counted into `rej` when it fails one; leaves its snow line and road on the clump. Pure functions of position. */
+  _centreStands(c, rej) {
+    const { cx, cz } = c
+    const centre = this.field.heightAndSlopeAt(cx, cz)
+    if (centre.h < PLACEMENT.minElev) {
+      if (rej) rej.elev++
+      return false
+    }
+    if (this.water.isSubmerged(cx, cz, centre.h - PLACEMENT.freeboard)) {
+      if (rej) rej.water++
+      return false
+    }
+    c.snowLine = this.field.snowLineAt(cx, cz)
+    if (centre.h > c.snowLine - PLACEMENT.snowMargin) {
+      if (rej) rej.snow++
+      return false
+    }
+    const road = this.paths.nearest(cx, cz, 'road')
+    c.road = road !== null
+    if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) {
+      if (rej) rej.path++
+      return false
+    }
+    const river = this.paths.nearest(cx, cz, 'river')
+    if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) {
+      if (rej) rej.path++
+      return false
+    }
+    return true
+  }
+
+  /** Member `mi`'s bearing, reach and point, its one draw taken. Even angles with a random phase rather than random bearings, which put two of five caps on top of each other a third of the time. */
+  _memberAt(c, mi) {
+    const m = this._mem
+    m.mAz = c.phase + (mi / c.members) * Math.PI * 2
+    m.out = c.members > 1 ? c.ring * (0.55 + c.rand() * 0.45) : 0
+    m.mx = c.cx + Math.cos(m.mAz) * m.out
+    m.mz = c.cz + Math.sin(m.mAz) * m.out
+    return m
+  }
+
+  /**
+   * Every cap the clump off the anchor (ax, az, aRad) grows at full density, as [x, z] pairs appended to `out` -- `_growTile`'s draws and tests without the pool, the viewer or `taken`, so every client gets the same answer. For the leafkin (leafkin-ground.js).
+   */
+  pureCapsInto(ax, az, aRad, out) {
+    const c = this._drawClump(ax, az, aRad)
+    if (!c.hosts || !this._centreStands(c, null)) return out
+    const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
+    for (let mi = 0; mi < c.members; mi++) {
+      const { mx, mz } = this._memberAt(c, mi)
+      if (this.field.heightAndSlopeAt(mx, mz).tan > maxSlopeTan) continue
+      // Variant, scale, spin and value: drawn by `_growTile` after the slope test, so a later member's reach depends on them.
+      c.rand(); c.rand(); c.rand(); c.rand()
+      out.push(mx, mz)
+    }
+    return out
+  }
+
   _growTile(job) {
     const { key, tx, tz, q } = job
     const tile = this.tiles.get(key)
@@ -794,82 +878,17 @@ export class Mushrooms {
       const ax = a[k * 4 + 0]
       const az = a[k * 4 + 2]
       const aRad = a[k * 4 + 3]
-      const rand = mulberry32(clumpSeed(ax, az, this.seed))
-
-      // Draw the clump's whole description before any test, so that whether a
-      // clump exists and what it looks like are independent of what the tile
-      // around it rejected. Same discipline as the fern loop's eight draws.
-      const u = rand()
-      const hosts = rand() < CLUMP_CHANCE
-      const species = (rand() * this.speciesList.length) | 0
-      const members = CLUMP_MIN + ((Math.pow(rand(), CLUMP_SKEW) * (CLUMP_MAX - CLUMP_MIN + 1)) | 0)
-      const clumpAz = rand() * Math.PI * 2
-      const gap = ANCHOR_GAP[0] + rand() * (ANCHOR_GAP[1] - ANCHOR_GAP[0])
-      const spreadRoll = CLUMP_RADIUS[0] + rand() * (CLUMP_RADIUS[1] - CLUMP_RADIUS[0])
-      const phase = rand() * Math.PI * 2
-
-      if (u >= uNew || u < uOld) continue
-      if (!hosts) continue
-
-      // The clump's footprint scales with its own members, not with a fixed
-      // metre count: five parasols need more room than five ink caps, and a
-      // ring sized in metres would either overlap the big species or scatter
-      // the small one into five unrelated mushrooms.
-      const memberPool = this.speciesList[species]
-      const ring = members > 1 ? this.speciesTallest[species] * spreadRoll : 0
-
-      // The clump's centre: out past the anchor's own solid footprint, at a
-      // random bearing around it. `aRad` is the radius of the TRUNK or the
-      // BOULDER at the ground, so the gap is measured from the bark outward and
-      // a fat oak pushes its mushrooms further out than a sapling does, which
-      // is what actually happens.
-      //
-      // THE RING'S OWN RADIUS IS IN THAT SUM, and it has to be. Members scatter up to
-      // `ring` metres from this centre in EVERY direction, including straight back at
-      // the anchor, so a centre at just `aRad + gap` puts the inward members inside
-      // the trunk -- measured on 0.25 m trunks, 13 of 390 mushrooms ended up inside
-      // the bark and the closest sat 2 cm from the axis. Pushing the centre out keeps
-      // the ring a ring, and is right anyway: a troop of five stands further off the
-      // trunk than a single cap, because it needs the room.
-      const cx = ax + Math.cos(clumpAz) * (aRad + gap + ring)
-      const cz = az + Math.sin(clumpAz) * (aRad + gap + ring)
-
-      const centre = this.field.heightAndSlopeAt(cx, cz)
-      if (centre.h < PLACEMENT.minElev) {
-        rej.elev++
-        continue
-      }
-      if (this.water.isSubmerged(cx, cz, centre.h - PLACEMENT.freeboard)) {
-        rej.water++
-        continue
-      }
-      const snowLine = this.field.snowLineAt(cx, cz)
-      if (centre.h > snowLine - PLACEMENT.snowMargin) {
-        rej.snow++
-        continue
-      }
-      const road = this.paths.nearest(cx, cz, 'road')
-      if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) {
-        rej.path++
-        continue
-      }
-      const river = this.paths.nearest(cx, cz, 'river')
-      if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) {
-        rej.path++
-        continue
-      }
+      const c = this._drawClump(ax, az, aRad)
+      if (c.u >= uNew || c.u < uOld) continue
+      if (!c.hosts) continue
+      if (!this._centreStands(c, rej)) continue
+      const { rand, members, ring, phase, cx, cz, snowLine, road } = c
+      const memberPool = this.speciesList[c.species]
+      const u = c.u
 
       let grew = 0
       for (let mi = 0; mi < members; mi++) {
-        // Members sit on a ring at even angles with a random phase, rather than
-        // at random bearings. Random bearings put two of five caps on top of
-        // each other about a third of the time, and a clump with a collision in
-        // it does not read as denser, it reads as broken.
-        const mAz = phase + (mi / members) * Math.PI * 2
-        const out = members > 1 ? ring * (0.55 + rand() * 0.45) : 0
-        const mx = cx + Math.cos(mAz) * out
-        const mz = cz + Math.sin(mAz) * out
-
+        const { mAz, out, mx, mz } = this._memberAt(c, mi)
         const { h, tan } = this.field.heightAndSlopeAt(mx, mz)
         if (tan > maxSlopeTan) {
           rej.slope++
@@ -1070,6 +1089,7 @@ export class Mushrooms {
     this.batch.getColorAt(id, this._c)
     const color = [this._c.r, this._c.g, this._c.b]
     taken.add('mushroom', this.instX[id], this.instZ[id])
+    if (this.onTake) this.onTake(this.instX[id], this.instZ[id])
     // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive; the clump is gone with its last member.
     const rank = tile.rank[k]
     for (let j = k; j < tile.n - 1; j++) {

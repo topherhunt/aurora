@@ -89,11 +89,23 @@
 // The one term not shared is the surface it is drawn against -- the bark's
 // origin, the stone's face -- which rides each client's own LOD.
 //
-// A FLIGHT is the exception: it steps on the frame's own length, away from the
-// player at this client's own keyboard, and when it calms down the spider takes
-// a name from where it stopped and a fresh grid from that second (_rekey), so
-// it is back on a shared life the moment the flight ends. A released spider
-// starts the same way.
+// A FLIGHT is not planned -- it is a chase, and where it goes depends on where
+// the body goes -- but it is still on the world's clock: it steps at TICK_HZ on
+// absolute ticks (sim/score.js), re-aims and turns on tick counts rather than
+// frame counts, and draws every noise it needs from phraseRand on its own name
+// and the tick, never the layer's roll. So two clients that agree on the body
+// run the identical flight whatever their frame rates, and a client that joins
+// it late catches its ticks up. When it calms the spider takes a name from
+// where it stopped and a fresh grid from that second (_rekey), so it is back on
+// a shared life the moment the flight ends.
+//
+// A BOLT is the flight a released spider makes, and it is exactly shared: the
+// column it runs from is the hand's, fixed at the release, so it never re-aims
+// at a body this client sees differently, and its first tick is the release's
+// own second, which came over the wire. Both clients run the same ticks from
+// the same pose, calm on the same tick at the same spot, and take up the same
+// name from it. A flight a body startles is only as shared as the two clients'
+// view of that body: hers is this frame's, a peer's is the last pose relayed.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -107,7 +119,7 @@ import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
 import { taken, TOLERANCE_M } from '../taken.js'
-import { keyHash, phraseRand } from '../../sim/score.js'
+import { keyHash, phraseRand, stepTo, tickOf, TICK_S } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 
 export const TILE = 16
@@ -194,11 +206,11 @@ export const FLEE_HASTE = 4
 export const STALL_S = 1
 const STALL_FRAC = 0.25
 const ARRIVE_M = 0.1
-// Frames between a fleeing spider's re-aims.
-const STEER_EVERY = 6
+// Ticks between a fleeing spider's re-aims, and how many of its ticks one call may catch up (a flight is seconds long, so a joiner never has far to come).
+const STEER_TICKS = 2
+const FLEE_CATCH_UP = 200
 // Feet into the surface, as a fraction of the body's height, so eight feet meet a round trunk.
 export const SINK = 0.15
-const REPROJECT_EVERY = 3
 const RESCAN_FRAMES = 4
 // The bones whose vertices swing: the leg's number, its joint and its side. The GLB names them `Leg1Hip.L`; GLTFLoader runs every node name through PropertyBinding.sanitizeNodeName, which drops the dot, so this matches the loaded `Leg1HipL`.
 const LEG_BONE = /^Leg(\d)(Hip|Knee|Ankle|Foot)(L|R)$/
@@ -322,7 +334,6 @@ export class Spiders {
     this.trees = trees
     this.rocks = rocks
     this.seed = seed
-    this.rand = mulberry32(seed ^ 0x59d3)
 
     // ONE material for every mesh spider, its legs in the vertex shader (the
     // header). The world's lighting patches it; its own splice runs first.
@@ -396,10 +407,10 @@ export class Spiders {
         key: '', offset: 0, epoch: 0, u0: 0, v0: 0, su: 0, sv: 0,
         // The spell it is playing, the phrase within it and the seconds into that phrase; null before its first frame.
         spell: null, phrase: null, elapsed: 0,
-        // 'go' crosses to the phrase's waypoint at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, off the score entirely and ended by distance or by stalling.
+        // 'go' crosses to the phrase's waypoint at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from a body, on the world's ticks rather than the score's phrases and ended by distance or by stalling.
         state: 'pause', clip: 'idle', speed: 0,
-        // Fleeing: the furthest from her body it has got, and the seconds since that grew. `near` is whether her body was within FLEE_M last frame.
-        ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false,
+        // Fleeing: where it is making for, how far off it was last tick, and the seconds it has gone without closing on it. `near` is whether a body was within FLEE_M last frame. The flight steps at TICK_HZ on absolute world ticks: `tick` is the last one taken and `alpha` how far the frame is past it, for the draw to lead by. `bolt` is the column a released spider runs from -- fixed at the release, so every client runs the one flight -- and null for a flight a body startled, which re-aims at that body as it moves.
+        ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false, tick: 0, alpha: 0, bolt: null,
         // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase, the phase it rolled to start from and their swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
         rung: -1, lod: LOD_TIERS, gait: 0, gait0: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
       })
@@ -700,7 +711,7 @@ export class Spiders {
     c.spell = null
     this._anchor(c)
     this._placeGround(c, x, z)
-    this._flee(c, hx, head.y, head.y, hz)
+    this._flee(c, hx, head.y, head.y, hz, now, true)
     host.spiders.push(c)
     this._owe(c.key, now, x, y, z, Math.atan2(x - hx, z - hz), hx, hz, c.size, c.tr, c.tg, c.tb, c.gait0)
     return true
@@ -726,8 +737,9 @@ export class Spiders {
    * run. A drop already made here -- this client's own, come back on a fresh
    * welcome -- is nothing. Where no tile is resident, or the ground there is
    * under water or snow, it is refused and this client never sees that spider.
-   * The bolt itself is off the score (see the header), so the two copies part
-   * company by the centimetres they stop apart. For creature-net.js.
+   * The bolt runs from the second on the wire, on the world's ticks, so a
+   * client told of it late catches those ticks up and the two run it stride
+   * for stride to the same stopping place. For creature-net.js.
    */
   apply(anchor, now) {
     const [, T, x, y, z, , , mode, by, hx, hz, size, r, g, b, gait] = anchor
@@ -1388,19 +1400,64 @@ export class Spiders {
     return out
   }
 
-  /** Off at the run, hastened, away from her body: the column at (x, z) from y0 up to y1. */
-  _flee(c, x, y0, y1, z) {
+  /**
+   * Off at the run, hastened, away from a body: the column at (x, z) from y0 up
+   * to y1, at world second `now`. `fixed` is a released spider's bolt -- it runs
+   * from that column wherever the bodies go afterwards, so the flight is the
+   * same on every client that heard the release.
+   */
+  _flee(c, x, y0, y1, z, now, fixed = false) {
     c.state = 'flee'
     c.clip = 'run'
     c.speed = (FLEE_HASTE * GAIT.run * c.size) / this.span
     c.stall = 0
-    this._aim(c, x, y0, y1, z)
+    c.tick = tickOf(now)
+    c.alpha = 0
+    c.bolt = fixed ? { x, z, lo: y0, hi: y1 } : null
+    this._aim(c, x, y0, y1, z, c.tick)
     this.startles.push(c)
   }
 
-  /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. On the ground, the point GROUND_FLEE_M off her surface straight away from the column -- a fixed point while she stands, so it arrives; a 10 cm spider at the hastened run would take twenty seconds over FLEE_TO_M. */
-  _aim(c, x, y0, y1, z) {
+  /** How far spider `c` is from the body `b`, squared: to the nearest point of its capsule's axis. */
+  _bodyD2(c, b) {
+    const dx = c.x - b.x
+    const dz = c.z - b.z
+    const dy = c.y - (c.y < b.lo ? b.lo : c.y > b.hi ? b.hi : c.y)
+    return dx * dx + dy * dy + dz * dz
+  }
+
+  /**
+   * One tick of a flight, at absolute tick `tick`, running from the body `b` --
+   * the column a release fixed, or this frame's nearest. The flight may end
+   * here, FLEE_TO_M from that body, within ARRIVE_M of the point it is making
+   * for, or cornered; the ticks left in a catch-up then do nothing.
+   */
+  _fleeTick(c, tick, b) {
+    if (c.state !== 'flee') return
+    const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
+    if (c.togo - togo > STALL_FRAC * c.speed * TICK_S) c.stall = 0; else c.stall += TICK_S
+    c.togo = togo
+    if (Math.sqrt(this._bodyD2(c, b)) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) {
+      this._calm(c, tick * TICK_S)
+      return
+    }
+    if (tick % STEER_TICKS === 0) this._aim(c, b.x, b.lo, b.hi, b.z, tick)
+    const d = c.speed * TICK_S
+    // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run.
+    c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE.run)) % TAU
     const host = c.host
+    if (host.kind === 'tree') this._stepTree(c, d)
+    else if (host.kind === 'rock') this._stepRock(c, d, tick)
+    else this._stepGround(c, d, tick)
+    // Its flight is not planned, so the swing eases on the tick's own length rather than into a waypoint.
+    c.amp += (STRIDE.run / 2 - c.amp) * Math.min(1, GAIT_EASE * TICK_S)
+  }
+
+  /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. On the ground, the point GROUND_FLEE_M off her surface straight away from the column -- a fixed point while she stands, so it arrives; a 10 cm spider at the hastened run would take twenty seconds over FLEE_TO_M. */
+  _aim(c, x, y0, y1, z, tick) {
+    const host = c.host
+    // The heading is set a little off the straight line away, so a group does not run as one body; the roll is off the spider's own name and the tick, not the layer's, so every client turns it the same way.
+    const jitter = (phraseRand(c.key, tick, 12)() - 0.5) * 0.6
     if (host.kind === 'ground') {
       const ax = c.x - x, az = c.z - z
       const len = Math.hypot(ax, az) || 1
@@ -1409,7 +1466,7 @@ export class Spiders {
       c.ez = z + (az / len) * off
       c.ey = this.height.heightAt(c.ex, c.ez)
       c.togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
-      this._headGround(c, Math.atan2(ax, az) + (this.rand() - 0.5) * 0.6)
+      this._headGround(c, Math.atan2(ax, az) + jitter)
       return
     }
     let ex = host.x - x, ez = host.z - z
@@ -1427,7 +1484,7 @@ export class Spiders {
     const a = c.tx * wx + c.ty * wy + c.tz * wz
     this._face(c, TAU / 4)
     const b = c.tx * wx + c.ty * wy + c.tz * wz
-    this._face(c, Math.atan2(b, a) + (this.rand() - 0.5) * 0.6)
+    this._face(c, Math.atan2(b, a) + jitter)
   }
 
   /** Turn to the heading `phi` in the host's surface frame: up the bark toward round it, or a rock face's upmost toward its right. */
@@ -1448,19 +1505,19 @@ export class Spiders {
   }
 
   /**
-   * One step of `d` metres along the heading, then, every REPROJECT_EVERY
-   * frames, back onto the stone along the normal. No standable stone under the
-   * step, or the top of the rock: the step is not taken and the spider turns
-   * back, roughly the way it came, and keeps turning until its flight ends.
+   * One tick's step of `d` metres along the heading, then back onto the stone
+   * along the normal. No standable stone under the step, or the top of the
+   * rock: the step is not taken and the spider turns back, roughly the way it
+   * came, and keeps turning until its flight ends.
    */
-  _stepRock(c, d) {
+  _stepRock(c, d, tick) {
     const x = c.x + c.tx * d
     const y = c.y + c.ty * d
     const z = c.z + c.tz * d
-    if ((this.frame + c.id) % REPROJECT_EVERY !== 0) { c.x = x; c.y = y; c.z = z; c.dirty = true; return }
     const probe = c.size * 0.5
     if (!this._rockRay(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe) || _hit.ny > FLAT_NY) {
-      this._heading(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
+      // The turn is drawn off the spider's own name and the tick, not the layer's roll, so two clients watching the one flight turn it the same way.
+      this._heading(c, c.phi + Math.PI + (phraseRand(c.key, tick, 13)() - 0.5) * 0.8)
       return
     }
     this._snapRock(c)
@@ -1472,12 +1529,12 @@ export class Spiders {
    * the way it came. A flight is not tethered to the host's point, so nothing
    * here turns it for home.
    */
-  _stepGround(c, d) {
+  _stepGround(c, d, tick) {
     const x = c.x + c.tx * d
     const z = c.z + c.tz * d
     if (this._barred(x, z)) {
-      // The turn is drawn off the spider's own name and the second, not the layer's roll, so two clients watching the same flight turn it the same way.
-      this._headGround(c, c.phi + Math.PI + (phraseRand(c.key, Math.floor(this.now), 11)() - 0.5) * 0.8)
+      // The turn is drawn off the spider's own name and the tick, not the layer's roll, so two clients watching the one flight turn it the same way.
+      this._headGround(c, c.phi + Math.PI + (phraseRand(c.key, tick, 11)() - 0.5) * 0.8)
       return
     }
     this._placeGround(c, x, z)
@@ -1533,32 +1590,22 @@ export class Spiders {
           let bd2 = Infinity
           let near = players[0]
           for (const b of players) {
-            const bdx = c.x - b.x
-            const bdz = c.z - b.z
-            const bdy = c.y - (c.y < b.lo ? b.lo : c.y > b.hi ? b.hi : c.y)
-            const d2b = bdx * bdx + bdy * bdy + bdz * bdz
+            const d2b = this._bodyD2(c, b)
             if (d2b < bd2) { bd2 = d2b; near = b }
           }
           const close = bd2 < flee2
-          if (close && !c.near && c.state !== 'flee') this._flee(c, near.x, near.lo, near.hi, near.z)
+          if (close && !c.near && c.state !== 'flee') this._flee(c, near.x, near.lo, near.hi, near.z, now)
           c.near = close
           if (c.state === 'flee') {
-            const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
-            if (c.togo - togo > STALL_FRAC * c.speed * dt) c.stall = 0; else c.stall += dt
-            c.togo = togo
-            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._calm(c, now)
-            else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, near.x, near.lo, near.hi, near.z)
+            // A flight steps on the world's own ticks, so two clients take the same steps in the same order whatever their frame rates, and one that heard of it late catches its ticks up. A released spider runs from the column the release fixed rather than a body this client may see elsewhere.
+            const from = c.bolt ?? near
+            stepTo(c, now, (tick) => this._fleeTick(c, tick, from), FLEE_CATCH_UP)
+            // The part-tick lead dies with the flight: stepTo leaves it standing at whatever this frame fell on, which is the one thing about a calmed spider that would differ from client to client.
+            if (c.state !== 'flee') c.alpha = 0
           }
           if (c.state === 'flee') {
-            const d = c.speed * dt
-            // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run.
-            c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE.run)) % TAU
-            if (host.kind === 'tree') this._stepTree(c, d)
-            else if (host.kind === 'rock') this._stepRock(c, d)
-            else this._stepGround(c, d)
-            // Its flight is not planned, so the swing eases on the frame's own length rather than into a waypoint.
-            const ampTo = STRIDE.run / 2
-            c.amp += (ampTo - c.amp) * Math.min(1, GAIT_EASE * dt)
+            // The draw leads the last tick along the heading by however much of a tick the frame is past it, so the flight reads as smoothly as the frame rate allows.
+            c.dirty = true
           } else {
             // A trunk that re-seated with its chunk is followed by re-planning off its new origin, and a rock that re-split is read for the stone still being there.
             if (host.kind === 'tree' && host.moved) c.spell = null
@@ -1580,10 +1627,13 @@ export class Spiders {
           // On the four mesh rungs a spider is the one mesh; on the card rung, the card.
           const lod = meshes && c.rung < LOD_RUNGS ? 0 : LOD_TIERS
           c.lod = lod
+          // Mid-tick of a flight, the drawn pose runs on along the heading: the tick's own step is that line, so the lead meets the next tick where it lands.
+          const lead = c.state === 'flee' ? c.speed * TICK_S * c.alpha : 0
+          const gait = lead > 0 ? (c.gait + (TAU * lead * this.span) / (c.size * STRIDE.run)) % TAU : c.gait
           if (c.dirty) {
             const k = c.size / this.span
             const sink = SINK * this.bodyH * k
-            _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
+            _pos.set(c.x + c.tx * lead - c.nx * sink, c.y + c.ty * lead - c.ny * sink, c.z + c.tz * lead - c.nz * sink)
             // Local +Y along the normal, local -Z along the heading; a reared spider pitches both back about its local X by REAR_RAD.
             _y.set(c.nx, c.ny, c.nz)
             _z.set(-c.tx, -c.ty, -c.tz)
@@ -1605,7 +1655,7 @@ export class Spiders {
             if (n < MAX) {
               this.meshes[lod].instanceMatrix.array.set(c.m, n * 16)
               const g = this.gaits[lod].array
-              g[n * 2] = c.gait
+              g[n * 2] = gait
               g[n * 2 + 1] = c.amp
               const t = this.meshes[lod].instanceColor.array
               t[n * 3] = c.tr; t[n * 3 + 1] = c.tg; t[n * 3 + 2] = c.tb

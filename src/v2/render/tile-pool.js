@@ -32,7 +32,7 @@ export function levelFor(d2, fullSq, ladderFrom, maxQ) {
 // --- the room's bounds -------------------------------------------------------
 //
 // A room may be a disc inside the map rather than the whole of it: the leafkin
-// glade is a bowl some 60 m across, and the rest of its 8 km heightmap is that
+// glade is a bowl some 70 m across, and the rest of its 8 km heightmap is that
 // same bowl repeated (rooms/village.js buildHeightmap), so a bed sweeping its
 // own draw radius grows thousands of tiles of wood behind a wall she can never
 // see through. `bounds` is `{ x, z, r }`, or null for the open world.

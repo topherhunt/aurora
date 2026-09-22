@@ -893,35 +893,70 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   try { new Ambience({ engine, sense, startlers: [{}] }) } catch { threw = true }
   check(threw, 'a startler layer without startled() throws')
 }
-{
-  // A voiced layer: each one-shot it says is fired once, from where it was said, at the voice rule's level for its distance and not at all past its reach.
-  const V = RULES.voice
+for (const rule of ['voice', 'villagerVoice']) {
+  // A voiced layer: each one-shot it says is fired once, from where it was said, at its rule's level for its distance and not at all past its reach.
+  const V = RULES[rule]
+  console.log(`  -- ${rule}`)
   const said = []
   const leafkin = { voices(into) { into.push(...said); said.length = 0; return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
-  const amb = new Ambience({ engine, sense, rand: mulberry32(31), voiced: [leafkin] })
+  const amb = new Ambience({ engine, sense, rand: mulberry32(31), voiced: [{ layer: leafkin, rule }] })
   run(amb, 1, {})
   check(count(engine, 'leafkinScream', 'leafkinSqueal', 'leafkinWhimper', 'leafkinChatter1', 'panting') === 0, 'a silent layer fires nothing')
-  said.push({ sound: 'leafkinScream', x: HEAD.x + 4, y: HEAD.y, z: HEAD.z }, { sound: 'leafkinChatter2', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach + 1 })
+  said.push({ sound: 'leafkinScream', x: HEAD.x + V.near + 2, y: HEAD.y, z: HEAD.z }, { sound: 'leafkinChatter2', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach + 1 })
   run(amb, 1, {})
   const screams = engine.plays.filter((p) => p.name === 'leafkinScream')
-  check(screams.length === 1 && screams[0].at.x === HEAD.x + 4, 'a scream said 4 m off is fired once, from there', `${screams.length}`)
+  check(screams.length === 1 && screams[0].at.x === HEAD.x + V.near + 2, `a scream said ${V.near + 2} m off is fired once, from there`, `${screams.length}`)
   const fallAt = (d) => (V.near / Math.max(V.near, d)) * Math.min(1, (V.reach - d) / V.edge)
-  const fall = fallAt(4)
+  const fall = fallAt(V.near + 2)
   check(screams.every((p) => within(p.gain, V.level * fall * V.gain[0], V.level * fall * V.gain[1])), 'at the voice level over its distance')
   check(count(engine, 'leafkinChatter2') === 0 && said.length === 0, `chatter past ${V.reach} m is not heard, and the layer is drained either way`)
-  said.push({ sound: 'panting', x: HEAD.x, y: HEAD.y, z: HEAD.z + 5 }, { sound: 'leafkinChatter3', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach - 0.5 })
+  said.push({ sound: 'panting', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.near + 3 }, { sound: 'leafkinChatter3', x: HEAD.x, y: HEAD.y, z: HEAD.z + V.reach - 0.5 })
   run(amb, 1, {})
   const pants = engine.plays.filter((p) => p.name === 'panting')
-  check(pants.length === 1 && pants[0].at.z === HEAD.z + 5 && within(pants[0].gain, V.level * fallAt(5) * V.gain[0], V.level * fallAt(5) * V.gain[1]), 'a pant said 5 m off is a one-shot at the voice level over its distance, from there', `${pants.length}`)
+  check(pants.length === 1 && pants[0].at.z === HEAD.z + V.near + 3 && within(pants[0].gain, V.level * fallAt(V.near + 3) * V.gain[0], V.level * fallAt(V.near + 3) * V.gain[1]), `a pant said ${V.near + 3} m off is a one-shot at the voice level over its distance, from there`, `${pants.length}`)
   const edge = engine.plays.filter((p) => p.name === 'leafkinChatter3')
-  check(edge.length === 1 && edge[0].gain < V.level * fallAt(5) * 0.25, `chatter half a metre inside the ${V.reach} m reach has faded almost to nothing`, edge.map((p) => p.gain.toFixed(3)).join(','))
+  check(edge.length === 1 && edge[0].gain < V.level * fallAt(V.reach - V.edge) * 0.25, `chatter half a metre inside the ${V.reach} m reach has faded almost to nothing`, edge.map((p) => p.gain.toFixed(3)).join(','))
   let threw = 0
-  try { new Ambience({ engine, sense, voiced: [{ bodies() {} }] }) } catch { threw++ }
+  try { new Ambience({ engine, sense, voiced: [{ layer: { bodies() {} }, rule }] }) } catch { threw++ }
+  try { new Ambience({ engine, sense, voiced: [{ layer: leafkin, rule: 'crawl' }] }) } catch { threw++ }
   said.push({ sound: 'leafkinChanting', x: HEAD.x, y: HEAD.y, z: HEAD.z })
   try { run(amb, 1, {}) } catch { threw++ }
-  check(threw === 2, 'a voiced layer without voices(), and a sound the table does not list, throw')
+  check(threw === 3, 'a voiced layer without voices(), or with a rule that is no voice rule, and a sound the table does not list, throw')
+}
+{
+  // The wild forager is heard across its wood; a villager 30 m off across the glade is not.
+  const said = { wild: [], village: [] }
+  const layer = (k) => ({ voices(into) { into.push(...said[k]); said[k].length = 0; return into } })
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(32), voiced: [{ layer: layer('wild'), rule: 'voice' }, { layer: layer('village'), rule: 'villagerVoice' }] })
+  said.wild.push({ sound: 'leafkinChatter1', x: HEAD.x + 30, y: HEAD.y, z: HEAD.z })
+  said.village.push({ sound: 'leafkinChatter2', x: HEAD.x + 30, y: HEAD.y, z: HEAD.z })
+  run(amb, 1, {})
+  check(RULES.voice.reach >= 50 && count(engine, 'leafkinChatter1') === 1 && count(engine, 'leafkinChatter2') === 0, `30 m off, the forager's chatter is heard (reach ${RULES.voice.reach} m) and a villager's is not (reach ${RULES.villagerVoice.reach} m)`)
+}
+{
+  // A villager's door, said on the villagers' layer under its own rule: heard past their voices' reach and not past its own.
+  const D = RULES.door
+  const said = []
+  const layer = { voices(into) { into.push(...said); said.length = 0; return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(33), voiced: [{ layer, rule: 'villagerVoice' }] })
+  const at = (d) => ({ sound: 'door', rule: 'door', x: HEAD.x + d, y: HEAD.y, z: HEAD.z })
+  said.push(at(D.near + 2), at(RULES.villagerVoice.reach + 2), at(D.reach + 0.5))
+  run(amb, 1, {})
+  const doors = engine.plays.filter((p) => p.name === 'door')
+  const fallAt = (d) => (D.near / Math.max(D.near, d)) * Math.min(1, (D.reach - d) / D.edge)
+  const near = doors.find((p) => p.at.x === HEAD.x + D.near + 2), far = doors.find((p) => p.at.x === HEAD.x + RULES.villagerVoice.reach + 2)
+  check(D.reach === 15 && doors.length === 2 && near && far, `a door is heard within ${D.reach} m, past the villagers' ${RULES.villagerVoice.reach} m, from where it was said, and not past its reach`, `${doors.length} of 3`)
+  check(near && within(near.gain, D.level * fallAt(D.near + 2) * D.gain[0], D.level * fallAt(D.near + 2) * D.gain[1]) && far.gain < near.gain, 'at the door level over its distance, fainter farther', doors.map((p) => p.gain.toFixed(3)).join(','))
+  said.push({ sound: 'door', rule: 'crawl', x: HEAD.x, y: HEAD.y, z: HEAD.z })
+  let threw = false
+  try { run(amb, 1, {}) } catch { threw = true }
+  check(threw, 'a one-shot naming a rule that is no voice rule throws')
 }
 {
   // The fish: a swoosh on the water bus from each that sets off fast within reach, as loud and as deep as it is long, and only on the frame it is listed.
