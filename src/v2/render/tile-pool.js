@@ -29,6 +29,35 @@ export function levelFor(d2, fullSq, ladderFrom, maxQ) {
   return q < 0 ? 0 : q > maxQ ? maxQ : q
 }
 
+// --- the room's bounds -------------------------------------------------------
+//
+// A room may be a disc inside the map rather than the whole of it: the leafkin
+// glade is a bowl some 60 m across, and the rest of its 8 km heightmap is that
+// same bowl repeated (rooms/village.js buildHeightmap), so a bed sweeping its
+// own draw radius grows thousands of tiles of wood behind a wall she can never
+// see through. `bounds` is `{ x, z, r }`, or null for the open world.
+
+/** Whether a tile of `tile` metres at grid `tx, tz` lies wholly outside `bounds`. */
+export function tileOutOfBounds(bounds, tx, tz, tile) {
+  if (!bounds) return false
+  const nx = Math.max(tx * tile, Math.min(bounds.x, (tx + 1) * tile))
+  const nz = Math.max(tz * tile, Math.min(bounds.z, (tz + 1) * tile))
+  return (nx - bounds.x) ** 2 + (nz - bounds.z) ** 2 > bounds.r * bounds.r
+}
+
+// A bed's draw radius in a bounded room: the far side of the disc is the whole
+// horizon, however far the bed would otherwise reach. This shrinks the tile
+// sweep AND the pool poolBound sizes from it -- the bounds test alone would
+// still pay for a 1.5 km grid of rejections.
+//
+// 2.5 DIAMETERS AND NOT ONE, plus a tile. A bed dissolves its instances as they
+// approach its own edge -- the rocks' floor starts at 0.85 of `radius` -- so a
+// radius of exactly the diameter has the far side of the room dithering while
+// she looks straight at it. It also puts a bounded bed's radius under the far
+// distance its biggest instance wants; that check stays on the AUTHORED radius,
+// because out here the bed edge is behind the wall with nothing placed on it.
+export const boundedRadius = (radius, bounds, tile) => (bounds ? Math.min(radius, 2.5 * bounds.r + tile) : radius)
+
 // The instance pool a bed has to allocate, summed over the real tile grid
 // rather than integrated over the disc: the law is applied per tile, and a tile
 // takes its level from its NEAREST corner, so the continuous form overcounts

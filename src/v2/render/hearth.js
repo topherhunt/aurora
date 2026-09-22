@@ -6,6 +6,7 @@ import { TINT_GAIN } from '../../props/rock-bank.js'
 import { decimate } from '../../mesh/decimate.js'
 import { bakeImpostor, buildImpostorCard } from '../../props/impostor.js'
 import { CAMPFIRE, Flames } from './fire.js'
+import { SEAT_M } from './villagers.js'
 
 // ---------------------------------------------------------------------------
 // A VILLAGE'S GATHERING PLACE (DESIGN.md §30): a campfire at the centre of the
@@ -27,8 +28,8 @@ export const HEARTH = {
   logs: { count: 6, foot: 0.4, tip: 0.1, rise: 0.5, radius: 0.055, length: 0.7, tile: 1 },
   // The flame's foot, metres over the ground: up among the logs.
   fire: { lift: 0.1 },
-  // The stools: `count` nonagon prisms on a ring `r` metres out with `spread` metres of play, each `radius` across and `height` tall (a metre-tall leafkin's seated hips, villagers.js SIT), every corner moved `jitter` of the radius. The scattered stools (stools.js) are cut to the same numbers.
-  stools: { count: [5, 7], r: 1.7, spread: 0.3, radius: [0.16, 0.2], height: [0.22, 0.28], jitter: 0.15, tile: 1 },
+  // The stools: `count` nonagon prisms on a ring `r` metres out with `spread` metres of play, each `radius` across, every corner moved `jitter` of the radius. The scattered stools (stools.js) are cut to the same numbers. A stool is not cut to a height but to its ground (cutStool): its top rides SEAT_M over the ground its sitter's feet stand on, taller where the fire side falls away and shorter where it rises, and `height` is only the most and least a cut may come to.
+  stools: { count: [5, 7], r: 1.7, spread: 0.3, radius: [0.16, 0.2], height: [0.14, 0.34], jitter: 0.15, tile: 1 },
   // Metres: where the decimated tier takes over, where the card does, and the fraction of that a rung comes back at.
   lod: [15, 30],
   hysteresis: 0.9,
@@ -127,6 +128,29 @@ export function polygon(n, r, jitter, rand) {
 
 const between = (rand, [lo, hi]) => lo + rand() * (hi - lo)
 
+// Metres from a stool's centre a sitter's feet stand (villagers.js SIT: its own reach, or just past the rim).
+const FEET = [0.15, 0.2, 0.25, 0.3]
+
+/** The ground a sitter's feet stand on, `a` the bearing from the stool toward what it faces. */
+export function feetGround(groundAt, x, z, a) {
+  let sum = 0
+  for (const d of FEET) sum += groundAt(x + Math.cos(a) * d, z + Math.sin(a) * d)
+  return sum / FEET.length
+}
+
+/**
+ * How a stool is cut for a leafkin: `{ y, height }`, the base in the lower of
+ * its own ground and its sitter's so it never stands off a bank's lip, and the
+ * top SEAT_M over the ground where the feet go, since the sitter hangs from the
+ * top (villagers.js seatY) and its feet keep the ground. `band` is the most and
+ * least it may be cut to, and where it bites the feet take the rest.
+ */
+export function cutStool(groundAt, x, z, a, band) {
+  const feet = feetGround(groundAt, x, z, a)
+  const y = Math.min(groundAt(x, z), feet) - 0.02
+  return { y, height: Math.min(band[1], Math.max(band[0], feet + SEAT_M - y)) }
+}
+
 /**
  * The hearth's geometry, built about (0, 0) on a ground `groundAt(x, z)`:
  * `{ geometry, ring, stools, top, extent }`, the ring and each stool as the
@@ -194,10 +218,17 @@ export function buildHearth(bank, seed, groundAt) {
   const stools = []
   for (let i = 0; i < count; i++) {
     const a = ((i + rand() * 0.5) / count) * Math.PI * 2
-    const r = S.r + (rand() * 2 - 1) * S.spread
+    // Out along its own bearing to where the fire side stands nearest level with it: the ring has `spread` of play, and a stool cut on a step is one whose sitter's feet dangle or sink.
+    let r = S.r, fit = Infinity
+    for (let k = -3; k <= 3; k++) {
+      const rk = S.r + (k / 3) * S.spread
+      const d = Math.abs(feetGround(groundAt, Math.cos(a) * rk, Math.sin(a) * rk, a + Math.PI) - groundAt(Math.cos(a) * rk, Math.sin(a) * rk))
+      if (d < fit) { fit = d; r = rk }
+    }
     const x = Math.cos(a) * r, z = Math.sin(a) * r
-    const radius = between(rand, S.radius), height = between(rand, S.height)
-    const y = groundAt(x, z) - 0.02
+    const radius = between(rand, S.radius)
+    // It faces the fire at the centre, and is cut to the ground its sitter's feet reach.
+    const { y, height } = cutStool(groundAt, x, z, a + Math.PI, S.height)
     q.setFromAxisAngle(up, rand() * Math.PI * 2)
     m.compose(v.set(x, y, z), q, new THREE.Vector3(1, 1, 1))
     const ring9 = polygon(9, radius, S.jitter, rand)

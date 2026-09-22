@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
@@ -1060,7 +1060,7 @@ export class Grass {
     {
       seed = 1, style = 'tufts', density = null, height = null,
       radius = null, fullRadius = null, falloff = null, spin = true, grow = true,
-      tint = null, rocks = null, bladeCount = null, ground = null, layers = null,
+      tint = null, rocks = null, bladeCount = null, ground = null, layers = null, bounds = null,
     } = {}
   ) {
     if (style !== 'tufts' && style !== 'strips' && style !== 'blades') {
@@ -1153,7 +1153,9 @@ export class Grass {
     // Resolved here rather than in the parameter list because each bed has its
     // own pair and the style is not known until now. A caller that passes either
     // one overrides it -- main.js's Quest sliders do.
-    radius = radius === null ? (this.blades ? BLADE_DRAW_RADIUS : DRAW_RADIUS) : radius
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    radius = boundedRadius(radius === null ? (this.blades ? BLADE_DRAW_RADIUS : DRAW_RADIUS) : radius, bounds, TILE)
     fullRadius = fullRadius === null ? (this.blades ? BLADE_FULL_RADIUS : FULL_RADIUS) : fullRadius
     this.falloff = falloff === null ? (this.blades ? BLADE_FALLOFF : 1) : falloff
     if (!(this.falloff > 0)) throw new Error(`Grass: falloff must be positive, got ${this.falloff}`)
@@ -1823,6 +1825,7 @@ export class Grass {
         const dcz = (gz + 0.5) * TILE - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * TILE, Math.min(cx, (gx + 1) * TILE))

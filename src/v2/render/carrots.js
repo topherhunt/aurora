@@ -1,4 +1,6 @@
 import THREE from '../../three-instance.js'
+
+import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 import { createGenPropMaterial, propCull } from './gen-props.js'
@@ -213,7 +215,7 @@ export class Carrots {
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
    */
-  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP } = {}) {
+  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Carrots: needs a V2Height with heightAndSlopeAt and snowLineAt')
@@ -233,7 +235,9 @@ export class Carrots {
     this.size = bank.size
     this.keep = keep
     // The tile grid: to the biggest carrot's cull unless told otherwise.
-    this.radius = radius ?? propCull(this.size * SIZE_JITTER[1])
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    this.radius = boundedRadius(radius ?? propCull(this.size * SIZE_JITTER[1]), bounds, TILE)
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
@@ -355,6 +359,7 @@ export class Carrots {
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
         if (dcx * dcx + dcz * dcz > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         this._growTile(key, gx, gz)

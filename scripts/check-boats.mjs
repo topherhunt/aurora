@@ -244,6 +244,9 @@ const firstBoat = (r) => {
   const st = boats.netState()
   check(st.aboard && st.aboard[0] === b.origin && st.boat && st.boat[0] === b.origin && st.boat.length === 6 && st.boat[4] === Math.round(b.v * 1000) / 1000,
     'her pose carries her place aboard and the boat\'s state', JSON.stringify(st.boat))
+  // The fourth number is her feet over the hull's datum, which is what keeps a peer on the deck rather than under it.
+  check(st.aboard.length === 4 && Math.abs(st.aboard[3] - (feet.y - b.ry)) < 0.001,
+    'and her feet\'s height over the hull, so a peer is not left to guess at it', `rise ${st.aboard[3]} of feet ${feet.y.toFixed(3)} over ry ${b.ry.toFixed(3)}`)
 
   // A teleport lands BETWEEN frames, before the carry: it keeps its landing,
   // whether that is amidships or off the boat, plus the frame's travel.
@@ -456,7 +459,7 @@ const firstBoat = (r) => {
   tick(1)
   check(boats.live[0] === b && !boats.aboard, 'the boat beside her is live and she is ashore')
   // A peer with a lower id aboard: its samples drive the boat, at 20 Hz, 1 m/s ahead.
-  const peer = { id: 'a', alpha: 1, aboard: [b.origin, 0, 0], pose: new Array(21).fill(0) }
+  const peer = { id: 'a', alpha: 1, aboard: [b.origin, 0, 0, 0.42], pose: new Array(21).fill(0) }
   net.peers.set('a', peer)
   const fx = Math.sin(b.yaw) * hull.bow
   const fz = Math.cos(b.yaw) * hull.bow
@@ -479,6 +482,10 @@ const firstBoat = (r) => {
   const [anchored] = boats.anchorPeers([peer])
   check(Math.abs(anchored.pose[0] - b.rx) < 1e-9 && Math.abs(anchored.pose[2] - b.rz) < 1e-9 && Math.abs(anchored.pose[7] - (b.rx + 1)) < 1e-9,
     'a peer aboard is drawn at its place in the hull, its hands moved with it')
+  check(Math.abs(anchored.foot - (b.ry + 0.42)) < 1e-9, 'and its feet stand on the deck at the height it reports, off THIS client\'s hull', `foot ${anchored.foot?.toFixed(3)} of ry ${b.ry.toFixed(3)}`)
+  // A peer from a client too old to send the rise has none, and avatar-rig.js goes back to reading the surface.
+  const [old] = boats.anchorPeers([{ id: 'b', alpha: 1, aboard: [b.origin, 0, 0], pose: new Array(21).fill(0) }])
+  check(old.foot === undefined, 'a peer that sends no rise is left without one, to be guessed at as before')
   // The peer steps off and the last sample ages: the boat glides to a stop everywhere alike.
   net.peers.clear()
   net.boats = [[b.origin, sx, sz, b.yaw, 1.0, 0, 8000]]

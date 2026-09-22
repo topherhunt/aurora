@@ -17,8 +17,9 @@ import { HOLD_OFFSET } from './hands.js'
 // IN: the relay sends the changes since this client last heard, and only
 // then. A peer's held slot becomes a copy in the pools, placed each frame at
 // that peer's hand: the grip as the pose says, when the peer holds a
-// controller in it; the body's wrist otherwise, which is the desktop's hand
-// too. A loose thing appears, eases or goes as hands.js has it. A take
+// controller in it and their body has caught up with it; the body's own wrist
+// while it has not, and whenever there is no controller, which is the
+// desktop's hand too -- see _placePeers. A loose thing appears, eases or goes as hands.js has it. A take
 // evicts the thing from the bed that grew it here, or, not grown here yet,
 // keeps it out of the registry so it never is.
 // ---------------------------------------------------------------------------
@@ -37,6 +38,8 @@ const roundAll = (v) => (Array.isArray(v) ? v.map(roundAll) : typeof v === 'numb
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _o = new THREE.Vector3()
+const _fp = new THREE.Vector3()
+const _fq = new THREE.Quaternion()
 
 export class HandsNet {
   /**
@@ -147,20 +150,47 @@ export class HandsNet {
     }
   }
 
-  /** Each peer's copies to that peer's hands this frame. */
+  /**
+   * Each peer's copies to that peer's hands this frame.
+   *
+   * THE BODY'S FIST, NOT THE CONTROLLER, WHILE THE BODY IS WALKING. A peer's
+   * grip pose is where their controller is NOW, which after a teleport is the
+   * far end of the jump -- while their body is still walking the distance
+   * (avatar-rig.js: a trip of up to MAX_TRAVEL_S). Placed at the grip
+   * throughout, the thing in their hand arrives a second before the hand does
+   * and hangs there animating in mid-air. So it is placed between the body's
+   * own wrist and the grip by exactly how far that arm has taken the grip up
+   * (PeerAvatars.armWeight): 0 while the body is walking and the arm is the
+   * clip's, so the thing rides the fist, and 1 once it is standing, which is
+   * the grip and nothing else. There is no second threshold to keep in step
+   * with the rig -- it is the rig's own weight -- and the ease back onto the
+   * controller is the same fifth of a second the arm takes.
+   *
+   * Both ends carry HOLD_OFFSET so the thing sits in the hand and not at the
+   * wrist bone's origin, which also makes the blend a move of centimetres: the
+   * solve puts the wrist AT the grip, so at weight 1 the two agree on where
+   * the thing is and differ only in how it is turned (the wrist keeps the
+   * clip's rotation, never the controller's).
+   */
   _placePeers() {
     for (const [id, held] of this.hands.peerHeld) {
       const peer = this.netplay.peers.get(id)
       if (!peer) continue
       for (let h = 0; h < 3; h++) {
         if (!held[h]?.item) continue
+        const side = h === 2 ? 1 : h
+        const fist = this.avatars.handAt(id, side, _fp, _fq)
+        if (fist) _fp.add(_o.copy(HOLD_OFFSET).applyQuaternion(_fq))
         if (h < 2 && peer.hands[h]) {
           const at = GRIP_AT[h]
           _q.set(peer.pose[at + 3], peer.pose[at + 4], peer.pose[at + 5], peer.pose[at + 6])
           _o.copy(HOLD_OFFSET).applyQuaternion(_q)
-          this.hands.placePeer(id, h, peer.pose[at] + _o.x, peer.pose[at + 1] + _o.y, peer.pose[at + 2] + _o.z, _q)
-        } else if (this.avatars.handAt(id, h === 2 ? 1 : h, _p, _q)) {
+          _p.set(peer.pose[at] + _o.x, peer.pose[at + 1] + _o.y, peer.pose[at + 2] + _o.z)
+          const w = fist ? this.avatars.armWeight(id, side) : 1
+          if (w < 1) { _p.lerp(_fp, 1 - w); _q.slerp(_fq, 1 - w) }
           this.hands.placePeer(id, h, _p.x, _p.y, _p.z, _q)
+        } else if (fist) {
+          this.hands.placePeer(id, h, _fp.x, _fp.y, _fp.z, _fq)
         }
       }
     }

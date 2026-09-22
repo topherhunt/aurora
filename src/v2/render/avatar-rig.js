@@ -17,10 +17,16 @@
 //   its shoulders to a wiggling headset read as rubber, so THE FEET FOLLOW at
 //   once, the body standing under its head every frame, feet planted. A
 //   TELEPORT -- the head TELEPORT_M or more from where it was a frame ago --
-//   is the one trip it walks: the body glides after her playing `walk` at the
-//   clip's own ground speed, or `run` from further, and the arms and head let
-//   go of their targets while it is more than IK_OFF_M from them, since a
-//   body a room away cannot reach them.
+//   is the one trip it walks, and it is over inside MAX_TRAVEL_S, because for
+//   every second the body is behind its head a thing in its hand is somewhere
+//   its hand is not. The trip is paced to arrive by that deadline and the gait
+//   is the walk unless meeting it would speed the clip past WALK_MAX_RATE, so
+//   a short hop is a brisk walk and anything past a couple of metres is a run.
+//   A jump of more than SNAP_HEIGHTS statures was not a teleport at all and
+//   the body simply stands where its head is. The arms and head let go of
+//   their targets while it is more than IK_OFF_M from them, since a body a
+//   room away cannot reach them, and hands-net.js rides that same weight to
+//   keep a held thing in the fist for as long as the walk lasts.
 //
 //   THE FEET STAND ON THE GROUND, not under the head: the body is placed on
 //   the walk surface where it stands, and while it stands its feet are planted
@@ -79,12 +85,29 @@ export const YAW_SETTLE = (8 * Math.PI) / 180
 const TURN_TAU_S = 0.2
 // The twist the neck is never asked past, whatever the body has yet to turn.
 const NECK_MAX = (70 * Math.PI) / 180
-// A glide ends this close to its mark; with more than FACE_TRAVEL_M left the body faces the way it walks,
-// with more than RUN_FROM_M it runs, and it is never asked to take longer than MAX_TRAVEL_S over a trip.
+// A glide ends this close to its mark; with more than FACE_TRAVEL_M left the body faces the way it walks.
 export const GLIDE_STOP_M = 0.02
 export const FACE_TRAVEL_M = 0.75
-export const RUN_FROM_M = 5
-export const MAX_TRAVEL_S = 6
+// Seconds a trip may take. Short on purpose, and it is the whole reason the
+// trip is paced rather than merely walked: the body is behind its head for
+// exactly this long, and a thing in its hand is out of place for the same
+// second (hands-net.js keeps it in the fist meanwhile). A teleport reaches
+// TELEPORT_RANGE -- 6 m at her full size, main.js -- so one second is a whole
+// one at 6 m/s, which is also the rate the teleport's own cooldown allows.
+export const MAX_TRAVEL_S = 1
+// The walk clip is sped up to meet that deadline, up to this multiple of its
+// own rate; past it the trip is run instead. A RATIO rather than a distance,
+// so the gait turns over at the same fraction of a body's reach whatever its
+// scale: at the roster's walks that is between 1.5 and 2.3 m, and at half her
+// size it halves with her. A raw-metre threshold would sit beyond a halved
+// leafkin's whole teleport range and so never fire.
+export const WALK_MAX_RATE = 2
+// Statures past which a jump was never a teleport -- a peer re-seated, a boat
+// carried off, a room away -- and the body stands where its head is rather
+// than sprinting the distance at a rate no clip can carry. About 12 m at the
+// roster's statures, twice main.js's TELEPORT_RANGE, and measured in the
+// body's own height so it follows a peer's scale exactly as their teleport does.
+export const SNAP_HEIGHTS = 7
 // Further than this from its head the body is only walking there: the arms and head are the clip's.
 export const IK_OFF_M = 1
 // Seconds an arm or the head takes to take up or let go of its target.
@@ -241,8 +264,17 @@ export class VrBody {
    * One frame off one pose: the 21 floats of net.js (head, left grip, right
    * grip; position then quaternion, world space) and which grips are held.
    * The puppet's tier is the caller's; this steps it.
+   *
+   * `foot`, when the wire carries it, is where the sender's own feet stand,
+   * and it IS the ground -- the surface is not read under it. Without one the
+   * ground is this client's read of the walk surface under a guess at the
+   * feet, made by subtracting a villager's neck from the sender's head; the
+   * guess is worth centimetres where heightAt is a cliff at a gunwale and a
+   * rock's rim, so a few centimetres over an edge drops the body the height of
+   * the step, and WALK.reach can leave it there. Only the mirror double and a
+   * peer too old to send its feet take that path now.
    */
-  drive(pose, hands, dt) {
+  drive(pose, hands, dt, foot = null) {
     const hx = pose[0], hy = pose[1], hz = pose[2]
     _quat.set(pose[3], pose[4], pose[5], pose[6])
     _a.set(0, 0, -1).applyQuaternion(_quat)
@@ -250,42 +282,57 @@ export class VrBody {
     if (Math.hypot(_a.x, _a.z) > 0.25) this.headYaw = yawTo(_a.x, _a.z)
     const headYaw = this.headYaw
     const eye = EYE_LINE * this.height * this.k
+    const told = Number.isFinite(foot)
 
     // Where the body would stand with its neck under the head -- the neck as the crouch's lean carries it forward,
     // since a head that goes forward as she bends is the lean, not a step. A body not yet placed stands there at once, facing as she does.
-    if (!this.placed) { this.yaw = headYaw; this.y = hy - eye }
+    if (!this.placed) { this.yaw = headYaw; this.y = told ? foot : hy - eye }
     // The crouch, off the ground it last stood on: the headset below the standing eyes by more than the neck's slack
     // bends the waist, further the deeper it goes, and the hips take up exactly what the bend has not, as far as the legs fold.
     // A body in the air hangs straight; a descent is not a squat.
     const deficit = this.aloft ? 0 : Math.max(0, this.y + eye - hy - HEAD_SLACK_M) * this.hold
     this.lean = LEAN_MAX * Math.min(1, deficit / (this.crouchMax * this.k + this.leanDrop(LEAN_MAX)))
     this.crouch = Math.min(this.crouchMax * this.k, Math.max(0, deficit - this.leanDrop(this.lean)))
-    const nx = (this.neckRest.x + this.leanReach(this.lean)) * this.k, nz = this.neckRest.z * this.k
+    const rx = this.neckRest.x * this.k, nz = this.neckRest.z * this.k
+    const nx = rx + this.leanReach(this.lean) * this.k
     const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)
     const underX = hx - (nx * cs + nz * sn), underZ = hz - (nz * cs - nx * sn)
+    // THE GROUND IS READ WHERE IT WOULD STAND UPRIGHT, never where the lean has carried its feet. The crouch is measured
+    // off the ground, so a crouch that moved its own ground closes a loop with no damping in it: wherever the lean's
+    // reach straddles a step -- a rock's edge, a boat's gunwale -- the body takes the step's two heights one a frame,
+    // for ever, and a peer buzzes up and down by the height of the step.
+    const standX = hx - (rx * cs + nz * sn), standZ = hz - (nz * cs - rx * sn)
     if (!this.placed) {
       this.placed = true
       this.x = underX; this.z = underZ
     }
     let dx = underX - this.x, dz = underZ - this.z
     let dist = Math.hypot(dx, dz)
-    if (!this.gliding && dist > TELEPORT_M) { this.gliding = true; this.running = false; this.pace = 0 }
+    if (!this.gliding && dist > TELEPORT_M) {
+      // Past the snap nothing walked that far: the body is simply stood where its head is, this frame, no trip.
+      if (dist > SNAP_HEIGHTS * this.height * this.k) { this.x = underX; this.z = underZ; dx = dz = dist = 0 }
+      else { this.gliding = true; this.running = false; this.pace = 0 }
+    }
     // In the air: the head higher over the ground than a standing body's eyes by more than FLY_M -- flying, or a lake bed under
     // a boat's sole the ceiling rule can never lift it onto. The body is carried under its head, feet loose, until ground comes
     // up under it. On a trip the ground under the HEAD decides, read as a body stood there would, so a teleport up a hill is
     // still walked and a flight is never walked after.
-    const ground = this.walk.heightAt(this.x, this.z, this.y)
-    this.aloft = hy - (this.gliding ? this.walk.heightAt(underX, underZ, hy - eye) : ground) > eye + FLY_M
+    const ground = told ? foot : this.walk.heightAt(standX, standZ, this.y)
+    this.aloft = hy - (this.gliding && !told ? this.walk.heightAt(underX, underZ, hy - eye) : ground) > eye + FLY_M
     if (this.aloft) this.gliding = false
     let faceYaw = headYaw
     let facingTravel = false
     if (this.gliding && dist <= GLIDE_STOP_M) this.gliding = false
     else if (this.gliding) {
-      // The trip's gait and pace are settled as it starts, and raised only if the
-      // head jumps further off mid-trip: a walk, a run once RUN_FROM_M off, and
-      // faster than a run only so a teleport is over in MAX_TRAVEL_S. Settled per
-      // frame instead, a long trip would slow as it closed and never end.
-      if (dist > RUN_FROM_M) this.running = true
+      // The trip's gait and pace are settled as it starts, and raised only if
+      // the head jumps further off mid-trip: the pace is whatever arrives
+      // inside MAX_TRAVEL_S, never slower than the chosen clip's own ground
+      // speed, and the gait is the walk unless the deadline would speed it
+      // past WALK_MAX_RATE. Flooring the pace at the clip's own speed is what
+      // keeps a run from ever playing in slow motion: a trip long enough to
+      // run is over early rather than dragged out to fill the second. Settled
+      // per frame instead, a long trip would slow as it closed and never end.
+      if (dist > this.walkSpeed * WALK_MAX_RATE * MAX_TRAVEL_S) this.running = true
       this.pace = Math.max(this.pace, this.running ? this.runSpeed : this.walkSpeed, dist / MAX_TRAVEL_S)
       const step = Math.min(dist, this.pace * dt)
       this.x += (dx / dist) * step
@@ -305,8 +352,10 @@ export class VrBody {
     if (facingTravel || Math.abs(twist) > YAW_SLACK) this.turning = true
     else if (Math.abs(twist) < YAW_SETTLE) this.turning = false
     if (this.turning) this.yaw = wrap(this.yaw + twist * (1 - Math.exp(-dt / TURN_TAU_S)))
-    // Under its head in the air, else on the ground where it stands, read from where it last stood so that stone over its head is not ground.
-    this.y = this.aloft ? hy - eye : this.walk.heightAt(this.x, this.z, this.y)
+    // Under its head in the air, else on the ground the sender stands on, or without one the ground it walks over on a
+    // trip and the ground it stands upright on off one, read from where it last stood so stone over its head is not ground.
+    const stood = told ? foot : this.walk.heightAt(this.gliding ? this.x : standX, this.gliding ? this.z : standZ, this.y)
+    this.y = this.aloft ? hy - eye : stood
 
     // The head and arms hold their targets while the body is near enough to reach them.
     const holdTo = dist > IK_OFF_M ? 0 : 1
@@ -342,7 +391,11 @@ export class VrBody {
       const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw)
       for (let i = 0; i < feet.length; i++) {
         const fx = feet[i].x * this.k, fz = feet[i].z * this.k
-        this.dys[i] = (this.walk.heightAt(this.x + fx * cs + fz * sn, this.z - fx * sn + fz * cs, this.y) - this.y) / this.k
+        const dy = (this.walk.heightAt(this.x + fx * cs + fz * sn, this.z - fx * sn + fz * cs, this.y) - this.y) / this.k
+        // A foot goes no further below the body than the leg has travel. Its sample is a stance's width off the body's
+        // own, which at an edge -- a boat's gunwale, a rock's rim -- is the far side of a cliff, and unclamped the leg
+        // reaches for a lake bed metres down. Standing on an edge is standing on it, not dangling a leg into the hole.
+        this.dys[i] = Math.max(-this.crouchMax, dy)
       }
       this.puppet.plant(this.dys, this.yaw, this.crouch / this.k)
     }

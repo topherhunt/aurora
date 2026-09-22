@@ -7,6 +7,7 @@ import { BIOMES } from './biomes.js'
 // Step D, first half -- rain. EROSION.droplets units of water are thrown at random over the land and each is walked downhill, cell to steepest cell, until it reaches the sea or runs out of steps, cutting a slight groove as it goes and dropping what it carries where it slows. The field is never routed for them: each droplet reads the slope under its own feet, so where many of them agree a valley forms and its tributaries branch off it on their own.
 //
 //   THE GROOVE. A droplet carries sediment up to a capacity that grows with the drop it just took, its speed and the water left in it. Under capacity it cuts the difference times EROSION.erode (times the biome's yield) out of the ground, never more than the drop itself so it can make no pit; over capacity it drops EROSION.deposit of the surplus. The cut is spread over a brush of EROSION.radius cells with a weight falling off from the centre, so a groove is a V cut into the slopes beside it and not a slot one texel wide; the deposit lands on the cell it stands on.
+//   THE BEND. Eight headings on a grid make ruled lines: a droplet on an even slope takes the same one of the eight over and over and its groove comes out as a straightedge. So the heading just taken is scored at EROSION.straight of its slope against the other seven, and the droplet holds it only where it is more than twice the steepest turn -- a fall line stays a fall line, an even slope is walked as a shallow zigzag, and the grooves that gather out of them bend. This works on the ground only: a droplet crossing a pond follows the flood's way to the spill, so the straight reaches that are left are the ones under standing water.
 //   THE BOWL. A droplet that finds no downhill has run into a closed bowl. The water that gathers there stands at the level of the bowl's spill -- the lowest point on its rim -- and that is what the droplet flows on: a priority flood, re-run every EROSION.batch droplets, gives every ponded cell the level the water would rise to and the way to its spill, so a droplet crossing a bowl walks the flat to the rim and grooves the rim on its way down the far side, while the sediment it carried in settles on the bowl's floor, never over the water. The bowl drains as its outlet cuts, and fills as the floor rises: both are what a lake does with time. A pit made since the last flood, by a deposit, holds the droplet that meets it: it lays what it carries and is done.
 //
 // Heights are metres. Three-free and DOM-free like the rest of src/v3.
@@ -23,6 +24,7 @@ export const EROSION = {
   evaporate: 0.003,     // share of the water lost per step
   gravity: 2,           // speed^2 grows by this per metre of drop
   maxCut: 1,            // metres one droplet may cut in one step, whatever the cliff it fell down
+  straight: 0.5,        // what the heading just taken is worth against the others: under 1 a droplet turns unless going straight on is much the steepest. See THE BEND.
   radius: 5,            // cells the cut spreads over either side of the droplet, weight 1 - d / (radius + 1): a groove 88 m wide at the ground, 3 made the trunks slots
   // Multipliers on the cut per class, by BIOMES id: how fast the ground yields.
   byBiome: { arctic: 0.6, forest: 1, plains: 1, jungle: 1.3, swamp: 0.3, canyon: 2.5, desert: 1.6 },
@@ -85,13 +87,15 @@ export function erode(elev, sea, ground, n, seed) {
     let water = 1
     let sediment = 0
     let fate = 'spent'
+    let lastK = -1
     for (let step = 0; step < E.maxSteps; step++) {
       const ci = c % n
       const cj = (c / n) | 0
       const hc = S[c]
-      // The steepest of the eight; on a flat, the flood's way to the spill.
+      // The steepest of the eight, the heading just taken discounted; on a flat, the flood's way to the spill.
       let next = -1
-      let bestSlope = 0
+      let nextK = -1
+      let best = 0
       let edge = false
       for (let k = 0; k < 8; k++) {
         const ni = ci + NB_DI[k]
@@ -102,9 +106,12 @@ export function erode(elev, sea, ground, n, seed) {
         }
         const nn = nj * n + ni
         const s = (hc - S[nn]) / NB_DIST[k]
-        if (s > bestSlope) {
-          bestSlope = s
+        if (s <= 0) continue
+        const score = k === lastK ? s * E.straight : s
+        if (score > best) {
+          best = score
           next = nn
+          nextK = k
         }
       }
       if (next < 0) {
@@ -145,6 +152,7 @@ export function erode(elev, sea, ground, n, seed) {
       speed = Math.sqrt(Math.max(0, speed * speed - dh * E.gravity))
       water *= 1 - E.evaporate
       c = next
+      lastK = nextK
       steps++
     }
     if (fate === 'sea') toSea++

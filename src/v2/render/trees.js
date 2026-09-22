@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
 import { buildTreeClumpTier, bakeTreeClumps, treeClumpLayers, CLUMP_TREES } from '../../props/tree-clump.js'
@@ -612,6 +612,7 @@ export class Trees {
       biome = null,
       deadwood = null,
       paths = null,
+      bounds = null,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -672,7 +673,10 @@ export class Trees {
     this.cardsOnly = false
 
     this.nearSq = this._near(this.lodBands[this.lodBands.length - 1])
-    this._ladder(radius, falloff)
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a
+    // draw radius cut to what fits inside it.
+    this.bounds = bounds
+    this._ladder(boundedRadius(radius, bounds, TILE), falloff)
 
     // Sized ONCE, from the ladder this was booted on. `setScatter` may only move
     // to a ladder that fits inside this: the arena's twelve meshes are
@@ -1804,6 +1808,7 @@ export class Trees {
         const dcz = (gz + 0.5) * TILE - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * TILE, Math.min(cx, (gx + 1) * TILE))

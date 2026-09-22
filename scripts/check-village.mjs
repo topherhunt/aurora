@@ -46,7 +46,8 @@ import { DOOR, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-pr
 import { Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { Stools } from '../src/v2/render/stools.js'
-import { HEARTH } from '../src/v2/render/hearth.js'
+import { HEARTH, feetGround } from '../src/v2/render/hearth.js'
+import { SEAT_M } from '../src/v2/render/villagers.js'
 import { FIRE } from '../src/v2/render/fire.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
@@ -748,13 +749,13 @@ console.log('\nthe stools')
   const seats = layer.seats()
   let footed = 0, seated = 0
   for (const t of layer.stools) {
-    const a = Math.atan2(t.lookZ - t.z, t.lookX - t.x), feet = heightAt(t.x + Math.cos(a) * 0.3, t.z + Math.sin(a) * 0.3)
-    // Its top a stool's height over the ground and never more than that over the feet: a sitter's hips ride the stool, not the air.
-    if (t.top - feet <= HEARTH.stools.height[1] && t.top - heightAt(t.x, t.z) >= HEARTH.stools.height[0] - STOOLS.level - 0.02) footed++
+    const a = Math.atan2(t.lookZ - t.z, t.lookX - t.x), feet = feetGround(heightAt, t.x, t.z, a)
+    // Its top a leafkin's seat over the ground its feet stand on, with the base under both: the level rule leaves these well inside the cut's band, so none of them clamps.
+    if (Math.abs(t.top - (feet + SEAT_M)) < 1e-6 && t.y <= Math.min(feet, heightAt(t.x, t.z))) footed++
     if (t.r >= HEARTH.stools.radius[0] && t.r <= HEARTH.stools.radius[1] * (1 + HEARTH.stools.jitter)) seated++
   }
   check(layer.stats.stools === stools.length && seats.length === stools.length && seats.every((t, i) => t.x === stools[i].x && t.z === stools[i].z && t.lookX === stools[i].lookX && t.top > heightAt(t.x, t.z)), 'the layer cuts one stool a site and lists each as a seat', JSON.stringify(layer.stats))
-  check(footed === stools.length && seated === stools.length, 'every stool is cut to the hearth\'s numbers and stands a seat\'s height over a sitter\'s feet', `${footed} footed, ${seated} sized of ${stools.length}`)
+  check(footed === stools.length && seated === stools.length, 'every stool is cut to the hearth\'s numbers, its top a leafkin\'s seat over a sitter\'s feet', `${footed} footed, ${seated} sized of ${stools.length}`)
   const walk = new WalkSurface(field, shell, { trunkAt: () => null })
   walk.addStone(layer)
   const t0 = layer.stools[0], a0 = Math.atan2(t0.lookZ - t0.z, t0.lookX - t0.x), fx = t0.x + Math.cos(a0) * (t0.r + 0.05), fz = t0.z + Math.sin(a0) * (t0.r + 0.05)

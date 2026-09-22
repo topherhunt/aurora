@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor } from './tile-pool.js'
+import { QUANT, levelFor, tileOutOfBounds } from './tile-pool.js'
 
 import { buildRock } from '../../props/rock.js'
 import { rockParams, TINTS, TINT_GAIN, ENV_TINTS } from '../../props/rock-bank.js'
@@ -320,7 +320,7 @@ export class Litter {
    *                      pebble samples LAYER.ROCK off it, like every rock.
    * @param opts.ground   TerrainV2, or null for headless probes.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, rocks = null, bounds = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Litter: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Litter: needs WaterSurfaces with levelAt')
     if (!layers || typeof layers.dirtAt !== 'function' || typeof layers.shoreAt !== 'function' || !layers.snow) {
@@ -351,6 +351,9 @@ export class Litter {
     this.seed = seed
 
     this.tile = TILE
+    // The room's disc, if it has one (tile-pool.js). The reach is already well
+    // inside any room, so this only keeps the cobbles off the ground past the wall.
+    this.bounds = bounds
     this.radius = RADIUS
     this.fullRadius = FULL_RADIUS
     this.fullSq = FULL_RADIUS * FULL_RADIUS
@@ -664,6 +667,7 @@ export class Litter {
         const dcz = (gz + 0.5) * tile - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.roadRadiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, tile)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         // Past RADIUS only a tile a road crosses is loaded, and for its cobbles alone.

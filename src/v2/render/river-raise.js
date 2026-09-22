@@ -39,6 +39,10 @@ export const RAISE_RUNGS = Object.freeze([8, 16, 32, 64, 128, 256, 512])
 // Per rung, metres added over the replica for what it leaves out. Measured along the shipped rivers against the mesher's own field with `peaks` both up and down, the replica came within 1.2 m of the drawn ground at 16 m and within 1.0 m elsewhere; these hold half a metre past that.
 export const RAISE_MARGIN = Object.freeze([1.5, 2.0, 1.5, 1.5, 1.5, 1.5, 1.5])
 
+// The lift a river carries at every rung including the finest, metres, and the plan distance from the eye over which it ramps in. The per-rung lift above covers what the TERRAIN hides by drawing coarse; this covers what the RIBBON does by the same trick -- past ribbon.js LOD_FINE the strip keeps one sample in LOD_STEP and the chord between two of them cuts the corner off a bend, which is enough to sink it into ground drawn at full detail under the eye. It is taken as a floor, not added, so a rung that measured more still wins, and it is inside the sight-line gate with the rest, so a river you stand beside keeps to its bed.
+export const RAISE_EYE_LIFT = 1
+export const RAISE_EYE = Object.freeze([30, 60])
+
 // The sight-line slope -- the eye's height over the vertex per metre of plan distance to it -- below which none of the lift is drawn and from which all of it is, smoothstepped between. A shore stands under 0.05 over every river it can see across a lake; the far side of a valley seen from a mountainside is 0.4 and more.
 export const RAISE_SLOPE = Object.freeze([0.05, 0.25])
 

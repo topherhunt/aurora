@@ -280,7 +280,7 @@ export class PeerAvatars {
       peer.body.placed = false
       return
     }
-    peer.body.drive(pose, hands, dt)
+    peer.body.drive(pose, hands, dt, state.foot)
   }
 
   /**
@@ -293,6 +293,21 @@ export class PeerAvatars {
     if (!peer?.body?.placed) return false
     peer.body.arms[side].W.bone.matrixWorld.decompose(pos, quat, _bs)
     return true
+  }
+
+  /**
+   * How far a peer's arm has taken up the grip it was sent: 1 while the body
+   * stands within reach of its head, 0 while it is walking to a head more than
+   * IK_OFF_M off and the arm is the clip's, crossfading over the same fifth of
+   * a second the arm itself does. hands-net.js places a thing in that hand by
+   * it, so a teleported peer's butterfly rides the fist for the walk instead
+   * of hanging at a grip the body has not reached yet. 1 with no body
+   * standing: there is no fist for it to ride.
+   */
+  armWeight(id, side) {
+    const peer = this.peers.get(id)
+    if (!peer?.body?.placed) return 1
+    return peer.body.arms[side].w
   }
 
   apply(list) {

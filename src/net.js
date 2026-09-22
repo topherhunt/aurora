@@ -16,7 +16,8 @@ function slerp(a, b, t) {
   return a.map((v, i) => (Math.sin((1 - t) * theta) * v + Math.sin(t * theta) * b[i]) / sin)
 }
 
-function interpolate(a, b, t) {
+// Exported for scripts/check-net.mjs: the Netplay that owns it needs a socket.
+export function interpolate(a, b, t) {
   const pose = a.pose.map((v, i) => {
     const part = i % 7
     return part < 3 ? lerp(v, b.pose[i], t) : v
@@ -25,7 +26,10 @@ function interpolate(a, b, t) {
     const q = slerp(a.pose.slice(start, start + 4), b.pose.slice(start, start + 4), t)
     pose.splice(start, 4, ...q)
   }
-  return { pose, hands: t < 0.5 ? a.hands : b.hands }
+  const out = { pose, hands: t < 0.5 ? a.hands : b.hands }
+  // The foot lerps with the head: taken from the newer sample alone it would step a walker down a slope every SEND_MS.
+  if (Number.isFinite(b.foot)) out.foot = Number.isFinite(a.foot) ? lerp(a.foot, b.foot, t) : b.foot
+  return out
 }
 
 export class Netplay {
@@ -110,14 +114,20 @@ export class Netplay {
   /**
    * `boats`, when given, is `{ aboard, boat }` from Boats.netState: her place
    * aboard a boat and, as its authority, the boat's state; each null when not.
+   * `foot` is the world height of her feet, which a peer stands its body on
+   * rather than reading its own ground under a guess at where her feet are --
+   * see v2/render/avatar-rig.js. Aboard a boat it is overridden by `aboard`,
+   * which carries the same height in the hull's frame so it survives the
+   * INTERPOLATION_MS the boat travels under her.
    */
-  sendPose(pose, hands, now = performance.now(), boats = null) {
+  sendPose(pose, hands, now = performance.now(), boats = null, foot = null) {
     if (now - this.lastSend < SEND_MS || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
     this.lastSend = now
     const { avatar, scale } = this
     const message = { version: 1, type: 'pose', pose, hands }
     if (avatar) message.avatar = avatar
     if (scale !== 1) message.scale = scale
+    if (Number.isFinite(foot)) message.foot = Math.round(foot * 1000) / 1000
     if (boats && boats.aboard) message.aboard = boats.aboard
     if (boats && boats.boat) message.boat = boats.boat
     this.socket.send(JSON.stringify(message))

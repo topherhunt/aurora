@@ -30,7 +30,9 @@
 // the body's size at its distance. The dragons are read the same way, and are given the engine's FAR
 // treatment (sound-engine.js `distance`): a wingbeat a cycle of the fly clip
 // while one flies near, a roar every minute or so from one in the air anywhere
-// in the valley, dulled, washed, late and echoed off the hills by its metres,
+// in the valley, dulled, washed, late and echoed off the hills by its metres
+// and, being on the score (sim/score.js), at the same world second in every
+// client in the room rather than when each first walked into earshot,
 // a growl over and over, each at its own pitch with its own pause, from one
 // resting on its nest, and a heavy tread on each footfall of its walk clip
 // from one pottering on the ground. The songbird bed is the only other thing given it:
@@ -44,6 +46,7 @@
 // ---------------------------------------------------------------------------
 
 import { clamp, smoothstep } from '../../sim/mathx.js'
+import { Score, CHAPTER_S } from '../../sim/score.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from './sense.js'
 
 /** Every clip the ambience uses, by the name the rules call it. Paths are public/-relative like every other asset. */
@@ -243,8 +246,20 @@ export class Ambience {
     this.waves = waves
     // Each herd body within reach: body -> { clip, phase, beat, at, call, seen }. See _herds.
     this.bodies = new Map()
-    // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, growling, growl, gait, step, beat, land, seen }. See _dragons.
+    // Each dragon within reach of any of its sounds: body -> { beating, phase, at, roar, roarAt, growling, growl, gait, step, beat, land, seen }. See _dragons.
     this.wings = new Map()
+    // When each dragon roars: a chapter of gaps rolled from the dragon's own key, so two clients standing together hear the one roar rather than counting their own timers down from whenever each walked into earshot. Only the idle cadence is scored -- a menacing dragon is off the score entirely (render/dragons.js), and its roars are timed below.
+    this.roars = new Score((key, chapter, rand) => {
+      const [lo, hi] = RULES.roar.every
+      const phrases = []
+      let t = 0
+      while (t < CHAPTER_S) {
+        const dur = lo + rand() * (hi - lo)
+        phrases.push({ dur })
+        t += dur
+      }
+      return phrases
+    }, { cap: 32 })
     this.listed = []
     this.frame = 0
     this.s = WorldSense.blank()
@@ -385,9 +400,11 @@ export class Ambience {
    * @param submerged head under the water
    * @param speed     rig speed in m/s
    * @param afoot     she is walking, not flying or in a travel arc
+   * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
    */
-  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0 }) {
+  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0, now }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
+    if (!Number.isFinite(now)) throw new Error(`Ambience.update: needs the room's world seconds, got ${now}`)
     this.frame++
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
     this.senseLeft -= dt
@@ -422,7 +439,7 @@ export class Ambience {
     this._crickets(dt, dayness, below)
     this._feet(dt, head, s, speed, afoot)
     this._herds(dt, head)
-    this._dragons(dt, head)
+    this._dragons(dt, head, now)
     this._frogs(dt, head, s)
     this._grasshoppers(dt, head)
     this._voices(head)
@@ -569,9 +586,13 @@ export class Ambience {
    * The dragons. Flying within the wingbeat's reach, a body has a clock here
    * in cycles of its fly clip, one beat a cycle, jittered, started fresh the
    * frame the beating begins, as the footfall clock is. Flying within the
-   * roar's reach it keeps the seconds to its next roar, counted only while it
-   * flies within reach; after her on the ground it roars the frame it sets
-   * out and on the menace's shorter clock from there. Resting within the growl's reach it growls, each one
+   * roar's reach it roars as each gap of its scored chain turns over (the
+   * `roars` Score, rolled from the dragon's own key), so every client in the
+   * room hears that roar at the one world second; the roar a client arrives
+   * inside is not replayed, and a clock skip lands one roar rather than the
+   * chapter it jumped. After her on the ground it is off the score, so it
+   * roars the frame it sets out and on the menace's shorter local clock from
+   * there. Resting within the growl's reach it growls, each one
    * at its own rate, and the next only after this one has ended and a pause
    * rolled with it; the first waits one pause too, so a nest she walks up on
    * is not a growl on the step. Walking a gait clip on the ground within the
@@ -580,7 +601,7 @@ export class Ambience {
    * with no footfalls (its speed dying under the idle a walk ends on) lands
    * none. A body heard by none of these this frame is gone from here.
    */
-  _dragons(dt, head) {
+  _dragons(dt, head, now) {
     if (!this.dragons) return
     const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl, T = RULES.tread
     const listed = this.listed
@@ -598,7 +619,7 @@ export class Ambience {
       if (!beating && !roaring && !growling && !treading) continue
       let f = this.wings.get(c)
       if (!f) {
-        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.every), menacing: false, growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0 }
+        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.menace), roarAt: null, menacing: false, growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0 }
         this.wings.set(c, f)
       }
       f.seen = this.frame
@@ -643,15 +664,27 @@ export class Ambience {
       }
       if (menacing !== f.menacing) {
         f.menacing = menacing
-        f.roar = menacing ? 0 : this.between(...R.every)
+        // Lured off the score: it roars on the step it turns, then every R.menace seconds while it holds.
+        f.roar = menacing ? 0 : this.between(...R.menace)
       }
       if (roaring) {
-        f.roar -= dt
-        if (f.roar <= 0) {
-          f.roar += this.between(...(menacing ? R.menace : R.every))
+        // Menacing, on this client's own timer, because the dragon itself is off the score while a lure holds it. Otherwise on the score: it roars as each scored gap turns over, wherever the listener is and whenever they arrived. One roar a turn, so a clock skip is one roar and not a chapter of them.
+        let sounds = false
+        if (menacing) {
+          f.roar -= dt
+          if (f.roar <= 0) { f.roar += this.between(...R.menace); sounds = true }
+        } else {
+          const index = this.roars.at(c.key, now).index
+          if (f.roarAt !== null && f.roarAt !== index) sounds = true
+          f.roarAt = index
+        }
+        if (sounds) {
           const level = R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * clamp((R.reach - d) / R.edge, 0, 1)
           this.fire('roar', { rate: this.rate(), gain: level * this.between(...R.gain), at, distance: d, echo: R.echo })
         }
+      } else {
+        // Out of earshot: the next roar it is near for is heard as it lands, not the backlog.
+        f.roarAt = null
       }
       if (growling) {
         if (!f.growling) {

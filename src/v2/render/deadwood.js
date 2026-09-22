@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
@@ -465,7 +465,7 @@ export class Deadwood {
     field,
     water,
     layers,
-    { seed = 1, density = DENSITY, radius = null, fullRadius = null, bank = null, biome = null } = {}
+    { seed = 1, density = DENSITY, radius = null, fullRadius = null, bank = null, biome = null, bounds = null } = {}
   ) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Deadwood: needs the bank from loadDeadwoodBank (or deadwoodBankFrom)')
@@ -560,7 +560,9 @@ export class Deadwood {
     // gates measure smaller worlds). Nearly all of it is empty of anything
     // drawn -- a piece is culled at its own size's range -- and holds the odd
     // long log's card.
-    this.radius = radius ?? propCull(maxLod)
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    this.radius = boundedRadius(radius ?? propCull(maxLod), bounds, TILE)
     this.perTile = Math.max(1, Math.round(TILE * TILE * density))
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.radiusSq = this.radius * this.radius
@@ -1302,6 +1304,7 @@ export class Deadwood {
         const dcz = (gz + 0.5) * TILE - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * TILE, Math.min(cx, (gx + 1) * TILE))

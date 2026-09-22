@@ -427,10 +427,18 @@ function scripted() {
 }
 const HEAD = { x: 0, y: GROUND + 1.6, z: 0 }
 const DAY = 1, NIGHT = 0
+// A world clock per ambience, wound by the frame lengths it is driven with: the dragons' roars are scored against the room's clock (sim/score.js), not this client's frames, and every drive below has to carry one.
+const worldNow = new WeakMap()
+/** One frame of `amb`, `ctx` over the standing frame facts. */
+function step(amb, dt, ctx) {
+  const now = (worldNow.get(amb) ?? 0) + dt
+  worldNow.set(amb, now)
+  amb.update(dt, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true, ...ctx, now })
+}
 /** Drive `amb` for `seconds` at 60 Hz with a fixed frame context. */
 function run(amb, seconds, ctx) {
   const frames = Math.round(seconds * 60)
-  for (let i = 0; i < frames; i++) amb.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true, ...ctx })
+  for (let i = 0; i < frames; i++) step(amb, 1 / 60, ctx)
 }
 const count = (engine, ...names) => engine.plays.filter((p) => names.includes(p.name)).length
 const RAPTORS = ['crow', 'eagle', 'hawk']
@@ -500,7 +508,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const at = []
   for (let i = 0; i < 3600 * 60; i++) {
     const before = meadow.plays.length
-    amb.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    step(amb, 1 / 60, {})
     t += 1 / 60
     for (const p of meadow.plays.slice(before)) if (SONGBIRDS.includes(p.name) && !(p.distance > 0)) at.push(t)
   }
@@ -782,7 +790,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
     const steps = () => e2.plays.filter((p) => p.name === 'footfall').length
     for (let i = 0; i < frames; i++) {
       const before = steps()
-      a2.update(1 / 60, { head, dayness: DAY, submerged: false, speed: 0, afoot: true })
+      step(a2, 1 / 60, { head })
       if (steps() > before) { if (last !== null) gaps.push((i - last) / 60); last = i }
     }
   }
@@ -987,18 +995,18 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   // The dragons: wingbeats on the fly clip's cycle near, roars across the valley with the far treatment and the echo, growls with pauses from a nest, treads on the walk clip's beats from one pottering.
   const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl
   const FLY = 0.9
-  // The flights at her ears' height, so a body's distance is its x.
-  const nearFly = { x: 10, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
-  const midFly = { x: 100, y: HEAD.y, z: 0, state: 'hunt', clip: 'fly', cycle: FLY, speed: 16 }
-  const farFly = { x: 200, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
-  const goneFly = { x: R.reach + 20, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
-  const nest = { x: 0, y: GROUND + 1.6, z: 5, state: 'roost', clip: 'idle', cycle: 4, speed: 0 }
-  const farNest = { x: 0, y: GROUND + 1.6, z: G.reach + 5, state: 'roost', clip: 'alert', cycle: 2, speed: 0 }
+  // Each with a key of its own: a roar is on the score, which is a chain rolled from that key. The flights at her ears' height, so a body's distance is its x.
+  const nearFly = { key: 'wyvern:near', x: 10, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const midFly = { key: 'wyvern:mid', x: 100, y: HEAD.y, z: 0, state: 'hunt', clip: 'fly', cycle: FLY, speed: 16 }
+  const farFly = { key: 'wyvern:far', x: 200, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const goneFly = { key: 'wyvern:gone', x: R.reach + 20, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: FLY, speed: 12 }
+  const nest = { key: 'wyvern:nest', x: 0, y: GROUND + 1.6, z: 5, state: 'roost', clip: 'idle', cycle: 4, speed: 0 }
+  const farNest = { key: 'wyvern:farnest', x: 0, y: GROUND + 1.6, z: G.reach + 5, state: 'roost', clip: 'alert', cycle: 2, speed: 0 }
   // One potters on a perch 20 m off at the shipped walk's cycle, one past the tread's reach, and one's speed is still dying under the idle its walk ended on.
   const T = RULES.tread, WALK = 1.24
-  const walker = { x: 20, y: HEAD.y, z: 0, state: 'perch', clip: 'walk', cycle: WALK, speed: 1.2 }
-  const farWalker = { x: T.reach + 10, y: HEAD.y, z: 0, state: 'roost', clip: 'walk', cycle: WALK, speed: 1.2 }
-  const slowing = { x: 0, y: HEAD.y, z: -8, state: 'perch', clip: 'idle', cycle: 4, speed: 0.3 }
+  const walker = { key: 'wyvern:walker', x: 20, y: HEAD.y, z: 0, state: 'perch', clip: 'walk', cycle: WALK, speed: 1.2 }
+  const farWalker = { key: 'wyvern:farwalker', x: T.reach + 10, y: HEAD.y, z: 0, state: 'roost', clip: 'walk', cycle: WALK, speed: 1.2 }
+  const slowing = { key: 'wyvern:slowing', x: 0, y: HEAD.y, z: -8, state: 'perch', clip: 'idle', cycle: 4, speed: 0.3 }
   const dragons = { bodies(into) { into.push(nearFly, midFly, farFly, goneFly, nest, farNest, walker, farWalker, slowing); return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
@@ -1035,7 +1043,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const at = []
   for (let i = 0; i < 60 * 120; i++) {
     const n = e2.plays.length
-    a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    step(a2, 1 / 60, {})
     for (const p of e2.plays.slice(n)) if (p.name === 'growl') at.push({ t: i / 60, rate: p.rate })
   }
   const gaps = at.slice(1).map((g, i) => g.t - at[i].t - e2.duration('growl') / at[i].rate)
@@ -1045,17 +1053,17 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   // She walks in on a resting dragon, and it takes off: the growls stop; landing again, the pause is rolled fresh.
   nest.state = 'patrol'; nest.clip = 'fly'; nest.cycle = FLY
   const n = e2.plays.length
-  for (let i = 0; i < 60; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  for (let i = 0; i < 60; i++) step(a2, 1 / 60, {})
   check(e2.plays.slice(n).every((p) => p.name !== 'growl') && e2.plays.slice(n).some((p) => p.name === 'wingbeat'), 'taken off, a dragon stops growling and starts beating')
   nest.state = 'roost'; nest.clip = 'idle'
   // The fish in her hand: the frame it comes after her it roars, and every R.menace seconds after; put away, the roaring stops with the growls back.
-  for (let i = 0; i < 60; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  for (let i = 0; i < 60; i++) step(a2, 1 / 60, {})
   nest.state = 'menace'; nest.clip = 'walk'; nest.cycle = WALK; nest.speed = 1.1
   const setOut = e2.plays.length
   const roared = []
   for (let i = 0; i < 60 * 60; i++) {
     const n = e2.plays.length
-    a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+    step(a2, 1 / 60, {})
     for (const p of e2.plays.slice(n)) if (p.name === 'roar') roared.push(i / 60)
   }
   const spacing = roared.slice(1).map((t, i) => t - roared[i])
@@ -1064,11 +1072,38 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(e2.plays.slice(setOut).every((p) => p.name !== 'growl') && e2.plays.slice(setOut).some((p) => p.name === 'tread') && a2.wings.get(nest).menacing, 'off the nest after her it growls no more, and its steps are heard')
   nest.state = 'roost'; nest.clip = 'idle'; nest.cycle = 4; nest.speed = 0
   const back = e2.plays.length
-  for (let i = 0; i < 60 * 40; i++) a2.update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true })
+  for (let i = 0; i < 60 * 40; i++) step(a2, 1 / 60, {})
   check(e2.plays.slice(back).every((p) => p.name !== 'roar') && e2.plays.slice(back).some((p) => p.name === 'growl'), 'the fish put away and the dragon home, it roars no more and growls again')
+  // Two clients hear the one dragon roar at the one world second: the roar is on the score (sim/score.js), a chain of gaps rolled from the dragon's key, rather than a timer each started when it first walked into earshot.
+  {
+    const bird = { key: 'wyvern:scored', x: 10, y: HEAD.y, z: 0, state: 'patrol', clip: 'fly', cycle: 0.9, speed: 12 }
+    const layer = { bodies(into) { into.push(bird); return into } }
+    // Each roar heard, as the world second it was heard at and the scored second it belongs to -- the start of the gap playing then, which is the boundary the roar lands on.
+    const listen = (seed, from, to, dt, stutter = 0) => {
+      const e = fakeEngine()
+      const a = new Ambience({ engine: e, sense: scripted(), rand: mulberry32(seed), dragons: layer })
+      const heard = []
+      let seen = 0
+      let f = 0
+      for (let t = from; t <= to; t += stutter && f % 7 === 0 ? stutter : dt, f++) {
+        a.update(dt, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true, now: t })
+        for (; seen < e.plays.length; seen++) if (e.plays[seen].name === 'roar') heard.push({ t, at: a.roars.at(bird.key, t).start, late: t - a.roars.at(bird.key, t).start })
+      }
+      return heard
+    }
+    // One at 24 fps across ten minutes of the room's clock; one at 144 with a stutter every seventh frame; one that walks up halfway through.
+    const slow = listen(41, 3000, 3600, 1 / 24)
+    const fast = listen(42, 3000, 3600, 1 / 144, 0.4)
+    const on = (heard, frame) => heard.every((r) => r.late >= 0 && r.late <= frame + 1e-9)
+    const same = slow.length === fast.length && slow.every((r, i) => r.at === fast[i].at)
+    check(same && on(slow, 1 / 24) && on(fast, 0.4) && slow.length >= 4, 'two clients on different frame rates hear the one dragon roar at the same scored seconds, each within a frame of it', `${slow.length} roars, ${fast.length} on the other`)
+    const late = listen(43, 3300, 3600, 1 / 24)
+    const after = slow.filter((r) => r.at > 3300)
+    check(late.length === after.length && late.every((r, i) => r.at === after[i].at), 'and one that walks up halfway hears the rest of them with the others, not a cadence of its own', `${late.length} of ${slow.length} after it arrived`)
+  }
   let threw = 0
   try { new Ambience({ engine, sense, dragons: {} }) } catch { threw++ }
-  try { new Ambience({ engine, sense, dragons: { bodies(into) { into.push({ ...nearFly, cycle: 0 }); return into } } }).update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true }) } catch { threw++ }
+  try { new Ambience({ engine, sense, dragons: { bodies(into) { into.push({ ...nearFly, cycle: 0 }); return into } } }).update(1 / 60, { head: HEAD, dayness: DAY, submerged: false, speed: 0, afoot: true, now: 0 }) } catch { threw++ }
   check(threw === 2, 'a dragon layer without bodies(), or a flight with no cycle, throws')
 }
 {

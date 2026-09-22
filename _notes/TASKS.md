@@ -26,14 +26,16 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] Fireflies at night.
 - [ ] Leafkin
   - [x] Meaning, we need an inventory system.
   - [x] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
+  - [x] They sit and gaze at the campfire.
+  - [x] Debug: The leafkin glade takes an unreasonably long amount of time to load into in Quest 2 vr. Maybe the map gen process is part of that? We want to get it to under 2 seconds. The 4km-by-4km square map probably is part of it. Can we refactor so rooms can be smaller than that? And don't place props outside of the world map boundary, that's just a waste of compute and triangles.
+  - [ ] Debug: leafkins are not netplay-synced. Leafkin gatherer (outside the glade) was visible to my sister but not to me. And then in the village also, leafkins are doing totally different things for one of us vs the other, they aren't synced.
   - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
-  - [ ] They sit and gaze at the campfire.
   - [ ] Leafkin glades hold puzzles:
     - Each glade has an assigned song.
+  - [ ] A giant deer-skull, either a house, or on top of of a house?
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
 - [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
@@ -112,6 +114,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] A creature let go from the hand should run, swim or fly off the same way for everyone. Today a released creature exists only in the releaser's world (hands.js `release`; hands-net.js syncs held and dropped things, not creatures). Once creature behaviour is a deterministic function of a shared seed and a shared timestamp (the cross-player creature sync work), a release is one small message: kind, spawn pose, seed, room time; every client spawns the creature into its own layer and the same seed walks it the same path. Nothing streamed after the spawn.
 
 - [ ] Creatures' poses fitted to the slope naturally. Bodies stand on the world vertical now, so on a hillside a stag's uphill feet sink into the ground and its downhill feet float. The real fix is foot IK (runtime inverse kinematics): a ground probe under each foot, a two-bone solve per leg to plant it, and the pelvis dropped to the lowest reach -- a body-height row of the same walk.js probe the creature already pays once, times four, plus a bone solve per drawn creature per frame. Cheaper stand-ins that get most of the look: a baked uphill and downhill variant of each gait clip blended by the slope under the body, or just pitching the body a few degrees toward the slope, capped well short of the ground's normal. Far down the roadmap, and worth a measurement on the Quest 2 before committing to the IK version; the blend-pose version costs nothing at runtime.
+
+- [ ] Foot IK for a seated leafkin. A villager on a stool is placed by its butt: the stool is cut so its top lands a metre-tall leafkin's seat height (`SEAT_M` 0.19) over the ground its feet will stand on, and the body hangs from that, so the contact with the wood is exact by construction. What the cut cannot absorb is the sitter's own size roll (0.85-1.15): a big one's feet ride up to 4.4 cm off the ground, a small one's sink. The fix is the same two-bone solve as the row above, but only from the knee down and only against the ground under the foot, with the pelvis left where the seat puts it -- the opposite of `puppet.js`'s `FootIK`, which drops the root onto the ground and would pull a seated body off its stool (which is why the sit clips are kept out of `PLANTED`). See `design/30-leafkin.md` §30 stools.
 
 - \[ \]
 

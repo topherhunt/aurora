@@ -8,6 +8,7 @@ import { RELIEF_DEFAULTS } from '../v2/height/relief.js'
 import { Layers } from '../v2/layers/layers.js'
 import { TerrainV2 } from '../v2/terrain/terrain-v2.js'
 import { WaterSurfaces } from '../v2/render/water-surfaces.js'
+import { RAISE_SLOPE, RAISE_EYE, RAISE_EYE_LIFT } from '../v2/render/river-raise.js'
 import { WorldClock, CLOCK } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { Sky } from '../sky.js'
@@ -82,6 +83,7 @@ const sky = new Sky(scene)
 
 let height = null
 let terrain = null
+let waterSurfaces = null
 let pines = null
 let island = null
 let from = ''
@@ -113,9 +115,33 @@ async function bootWorld() {
     material: new THREE.MeshBasicMaterial({ color: 0x2b4a66 }),
     group: new THREE.Group(),
   }
+  // The one stage of the shipped water shader this page cannot do without: the per-rung lift (src/water.js, river-raise.js). Without it a river is drawn at the level it was solved against the full-detail ground while the terrain under it is drawn at the rung the eye's distance picks, whose vertices sit on the banks and whose chord fills the valley in -- so from the air the network breaks into dashes as the ground eats it. The waves, the flow and the lakes' lap stay out: this page judges the island, not the water.
+  // A plain Material carries no defaults table, and the sea's plane has none of these attributes.
+  water.material.defaultAttributeValues = { aRaise: [0, 0, 0, 0], aRaiseFar: [0, 0, 0], aRung: [0], aLake: [0] }
+  water.material.onBeforeCompile = (shader) => {
+    shader.vertexShader = `
+      attribute vec4 aRaise;
+      attribute vec3 aRaiseFar;
+      attribute float aRung;
+      attribute float aLake;
+    ` + shader.vertexShader.replace('#include <begin_vertex>', `
+      #include <begin_vertex>
+      {
+        float lift = dot( aRaise, max( vec4( 0.0 ), 1.0 - abs( vec4( aRung ) - vec4( 1.0, 2.0, 3.0, 4.0 ) ) ) )
+          + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
+        vec3 wp = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+        float plan = length( cameraPosition.xz - wp.xz );
+        lift = max( lift, ${RAISE_EYE_LIFT.toFixed(1)} * ( 1.0 - aLake )
+          * smoothstep( ${RAISE_EYE[0].toFixed(1)}, ${RAISE_EYE[1].toFixed(1)}, plan ) );
+        float sight = ( cameraPosition.y - wp.y ) / max( 1.0, plan );
+        transformed.y += lift * smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, sight );
+      }
+    `)
+  }
   water.group.name = 'terrain-v3-stub-water'
   scene.add(water.group)
-  new WaterSurfaces({ water, layers, field: height }).rebuild()
+  waterSurfaces = new WaterSurfaces({ water, layers, field: height })
+  waterSurfaces.rebuild()
 
   // What the Player walks on: the field clamped to the sea's surface, and no slope under water so the shore's drowned cliffs cannot refuse her on the sea.
   const ground = {
@@ -271,6 +297,8 @@ renderer.setAnimationLoop(() => {
   }
   sky.update(_head, state)
   terrain.update({ x: _head.x, y: _head.y, z: _head.z, yaw: look.yaw })
+  // After the terrain has chosen its render set, never before: this reads the rung of the chunk drawn under each river sample, which is what lifts the ribbon clear of the coarse ground it would otherwise sink into, and switches the ribbon to its coarse index. It returns at once unless the eye has moved or the terrain re-split.
+  waterSurfaces.updateLod(_head.x, _head.z, terrain)
   setPropClock(now / 1000)
   pines.update(_head)
 

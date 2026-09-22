@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINT_GAIN } from '../../props/rock-bank.js'
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_LOD_FAR_MAX, ROCK_LOD_GONE_MAX, rockLodSize } from '../../props/rock.js'
@@ -1366,7 +1366,7 @@ function blockHull(shape) {
  * shared meshes.
  */
 class RockBed {
-  constructor(field, water, layers, bank, cfg, { seed, ground, biome = null }) {
+  constructor(field, water, layers, bank, cfg, { seed, ground, biome = null, bounds = null }) {
     this.field = field
     this.water = water
     this.layers = layers
@@ -1398,7 +1398,11 @@ class RockBed {
     if (this.stand && this.lie) throw new Error(`RockBed ${cfg.name}: \`stand\` and \`lie\` are two turns, take one`)
     this.tile = tile
     this.density = cfg.density
-    this.radius = cfg.radius
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a
+    // reach cut to what fits inside it. `_reseat` squeezes this further by
+    // altitude, so the bed's OWN radius is the one clamped here.
+    this.bounds = bounds
+    this.radius = boundedRadius(cfg.radius, bounds, tile)
     this.fullRadius = cfg.fullRadius
     this.fullSq = cfg.fullRadius * cfg.fullRadius
 
@@ -1407,9 +1411,9 @@ class RockBed {
     // below are the LIVE reach, squeezed by altitude in `_reseat` -- see there.
     // Read `radius` for anything that describes the bed, these for anything that
     // decides which tiles exist right now.
-    this.tileSpan = Math.ceil(cfg.radius / tile) + 1
-    this.radiusSq = cfg.radius * cfg.radius
-    this.evictSq = (cfg.radius + tile * 1.5) ** 2
+    this.tileSpan = Math.ceil(this.radius / tile) + 1
+    this.radiusSq = this.radius * this.radius
+    this.evictSq = (this.radius + tile * 1.5) ** 2
     this.maxSlopeTan = Math.tan((cfg.maxSlopeDeg * Math.PI) / 180)
     // THE OTHER END OF THE SLOPE WINDOW, and only the cliff cap bed asks for one.
     // `envDensity.cliff` is not the same question: `_envAt` calls anything past
@@ -2953,6 +2957,7 @@ class RockBed {
         const dcz = (gz + 0.5) * tile - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, tile)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * tile, Math.min(cx, (gx + 1) * tile))
@@ -4521,7 +4526,7 @@ export class Rocks {
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
    * @param opts.bank     buildRockBank()'s answer when the caller built it already (a room's shell shares it); built here otherwise.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null, bounds = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4569,7 +4574,7 @@ export class Rocks {
     const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
     // The world's own biome field, for the beds that gate on cover (the hollow bed).
     const biome = beds.some((cfg) => cfg.deep > 0) ? new BiomeField({ seed }) : null
-    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome }))
+    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds }))
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
     // bounded for that tier (`_tierCaps`): each bed's cap already holds its own

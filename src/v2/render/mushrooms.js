@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   buildMushroomBank,
@@ -243,7 +243,7 @@ export class Mushrooms {
     layers,
     textureArray,
     anchors,
-    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false } = {}
+    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false, bounds = null } = {}
   ) {
     if (typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Mushrooms: field needs heightAndSlopeAt')
@@ -272,6 +272,9 @@ export class Mushrooms {
     this.textureArray = textureArray
     this.anchors = anchors
     this.seed = seed
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    radius = boundedRadius(radius, bounds, TILE)
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
@@ -658,6 +661,7 @@ export class Mushrooms {
         const dcz = (gz + 0.5) * TILE - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * TILE, Math.min(cx, (gx + 1) * TILE))

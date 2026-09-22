@@ -58,24 +58,42 @@
 // moved, turned, been re-seated or is rearing; a paused tree spider is not
 // re-placed on its bark unless its trunk's origin moved with a re-seated chunk.
 //
-// Her head within ALERT_M rears a paused spider up. Her BODY -- the capsule
-// under her head, feet to crown, WALK.radius wide -- coming within FLEE_M of a
+// Her head within ALERT_M rears a paused spider up. A BODY -- the capsule
+// under a head, feet to crown, WALK.radius wide -- coming within FLEE_M of a
 // spider makes it FLEE: off at FLEE_HASTE times the run toward the point of
-// its host furthest from her -- the far side of the trunk or the stone from
-// where she stands, at whichever end of the climb is further from the nearest
-// point of her -- re-aimed every STEER_EVERY frames as she moves, until it is
-// FLEE_TO_M from her, within ARRIVE_M of that point, or closing on it at under
-// STALL_FRAC of its pace for STALL_S (cornered), when it calms down where it
-// is; calm, it does not run again until she has
-// been out of FLEE_M and come back. A destination rather than a direction
-// because, square to the bark, no direction along it leads away from her to
-// the first order. The ear (audio/ambience.js) is told once as it sets off,
-// through startled(). A spider that is not fleeing pays one squared distance
-// to her body a frame; the root is taken only while it flees.
+// its host furthest from that body -- the far side of the trunk or the stone
+// from where it stands, at whichever end of the climb is further from the
+// nearest point of it -- re-aimed every STEER_EVERY frames as the body moves,
+// until it is FLEE_TO_M off, within ARRIVE_M of that point, or closing on it
+// at under STALL_FRAC of its pace for STALL_S (cornered), when it calms down
+// where it is; calm, it does not run again until every body has been out of
+// FLEE_M and one has come back. A destination rather than a direction because,
+// square to the bark, no direction along it leads away from a body to the
+// first order. The bodies are hers and every peer's (main.js peerHeadsNow),
+// and a spider runs from whichever is nearest, so a player who watches a
+// friend walk up to a trunk watches the spider bolt from the friend. The ear
+// (audio/ambience.js) is told once as it sets off, through startled(). A
+// spider that is not fleeing pays one squared distance per body a frame; the
+// root is taken only while it flees.
 //
 // A group is a pure function of its host's origin and the world seed, so the
-// same trunk carries the same spiders every visit; behaviour draws from one
-// stream and is not.
+// same trunk carries the same spiders every visit, and so is its LIFE: each
+// spider is named for its host and its place in the group, and that name and
+// the world clock (sim/score.js) give its every spell, so two clients at the
+// same trunk watch the same spider do the same thing at the same second and one
+// arriving mid-crawl crosses the rest of it alike. A spell is the crossing from
+// the seat it holds at one turn of its grid to the seat it holds at the next,
+// broken into short scoots with a sit before each; the seats themselves wander
+// the host's band as smooth noise in the spell index (_wave), so a spell only
+// ever moves it as far as it can crawl and no seat is read off the one before.
+// The one term not shared is the surface it is drawn against -- the bark's
+// origin, the stone's face -- which rides each client's own LOD.
+//
+// A FLIGHT is the exception: it steps on the frame's own length, away from the
+// player at this client's own keyboard, and when it calms down the spider takes
+// a name from where it stopped and a fresh grid from that second (_rekey), so
+// it is back on a shared life the moment the flight ends. A released spider
+// starts the same way.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -89,6 +107,8 @@ import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { keyHash, phraseRand } from '../../sim/score.js'
+import { DROP, dropWire, snap } from '../creature-net.js'
 
 export const TILE = 16
 // The skinned tiers the shipped GLB carries, one per rung of the world ladder; the one drawn as a mesh, tier 1 (tier 0 is the card's photograph, the coarser pair are smears); and how many mesh tiers there are, which is also a slot's `lod` for the card.
@@ -132,14 +152,26 @@ export const HANG_NY = -0.3
 export const WALL_M = 0.4
 // A face this close to the water is wet.
 const WET_M = 0.05
-// A sitting rock spider re-reads its stone every so many frames.
+// A ground crossing is read for water at this fraction of it at a time, back from where the spider has got to.
+const WET_STEP = 1 / 16
+// A rock spider re-reads the stone under it every so many frames.
 export const RESEAT_EVERY = 45
-// Steps turned back before a rock spider sits down.
-const STUCK_MAX = 3
 export const MAX = 256
 const HOST_BUF = 64
 
-const GO_S = [1, 4]
+// A spider's life is cut into SPELLs this long on its own grid (sim/score.js), each a crossing from the seat it holds at one turn to the seat it holds at the next, broken into SCOOTS short scoots with a sit before each. A ground spider's spell is the long one: it covers more ground and hardly ever stops.
+export const SPELL_S = { tree: 24, rock: 24, ground: 48 }
+const SCOOTS = { tree: 3, rock: 3, ground: 6 }
+// The seat itself wanders the host's band as smooth noise in the spell index: a corner every WANDER_SEGS spells, hashed off the spider's key, eased between. Locality by construction -- one spell moves it a fraction of the band, which is all a spider can crawl in that time -- and still a pure function of the key and the spell.
+const WANDER_SEGS = { tree: 16, rock: 16, ground: 24 }
+// How far a scoot's waypoint may wander off the straight line between the spell's two seats, in the band's own units: radians round a trunk or a rock, metres up it, metres over the ground.
+const JITTER = { tree: [0.5, 0.2], rock: [0.5, 0.2], ground: [0.6, 0.6] }
+// Draws for a seat in the band, at the roll and at every spell's turn: a rock's side is undercut and buried in places, and the ground has water and a snow line on it.
+const SEAT_TRIES = 8
+// No scoot is shorter than this, however near its waypoint, and none is dawdled over at more than STRETCH_MAX times its own pace to fill out a spell.
+const MIN_GO_S = 0.4
+const STRETCH_MAX = 3
+// The sits' wanted lengths, which the spell's spare time is split between in proportion; a ground spider only ever idles, and briefly.
 const PAUSE_S = [1.5, 6]
 const REST_S = [6, 14]
 // A gait's stride in the unit frame and its cycle in seconds, from tools/creatures/anim/clips/spider/{walk,run}.json; the seat moves at stride/cycle and the legs swing one cycle a stride, so the feet hold the bark.
@@ -147,7 +179,8 @@ export const STRIDE = { walk: 0.11, run: 0.15 }
 const CYCLE_S = { walk: 0.9, run: 0.42 }
 const GAIT = { walk: STRIDE.walk / CYCLE_S.walk, run: STRIDE.run / CYCLE_S.run }
 const RUN_CHANCE = 0.12
-// How fast the legs' swing amplitude eases in and out per second, and a rear-up eases up and down.
+// The legs' swing eases in and out over this long at either end of a scoot; a fleeing spider's eases at GAIT_EASE a second instead, its flight not being planned, and a rear-up eases up and down at REAR_EASE.
+export const AMP_EASE_S = 0.12
 const GAIT_EASE = 12
 const REAR_EASE = 6
 // A reared spider's pitch, nose up about its seat.
@@ -173,6 +206,11 @@ const LEGS = 8
 
 const TAU = Math.PI * 2
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+// A value folded back into [0, R] as if the band's two ends were mirrors, so a wander shifted off the band's middle keeps moving rather than piling up against an edge.
+const fold = (t, R) => {
+  const m = ((t % (2 * R)) + 2 * R) % (2 * R)
+  return m > R ? 2 * R - m : m
+}
 const _x = new THREE.Vector3()
 const _y = new THREE.Vector3()
 const _z = new THREE.Vector3()
@@ -181,9 +219,24 @@ const _scl = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 const _mat = new THREE.Matrix4()
 const _hit = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, ox: 0, oz: 0, size: 0 }
+// A waypoint: a seat in its host's own two coordinates (`u`, `v` -- round and up a trunk or a rock, east and north over the ground) and the world seat, normal and bark radius those resolve to.
+const seat = () => ({ u: 0, v: 0, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, tx: 0, ty: 1, tz: 0, r: 1 })
+const _seatA = seat()
+const _seatB = seat()
+const _seatC = seat()
+// A rock spider's tangent plane, its upmost direction and its right.
+const _up = { x: 0, y: 0, z: 0 }
+const _rt = { x: 0, y: 0, z: 0 }
+// The band a seat wanders in: the low end and the width of each of the host's two coordinates, and whether the first wraps (an angle round a trunk or a rock) rather than folding.
+const _ax = { ulo: 0, urange: 1, vlo: 0, vrange: 1, wrap: false }
 
 // A host's identity and its seed come from its quantised origin: the same trunk, the same spiders.
 const hostKey = (x, z) => Math.round(x * 8) * 0x100000 + Math.round(z * 8)
+// A spider's name on the score: its host's quantised origin and its place in the group. A loose one is named for where it came to rest instead, which is the same point on every client once the wire carries the release.
+const seatKey = (host, member) => `sp:${host.kind}:${Math.round(host.x * 8)},${Math.round(host.z * 8)}:${member}`
+const restKey = (x, y, z) => `sp@${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}`
+// The spiders' prefix in the room's creature keys (creature-net.js): a release is all they send.
+export const PREFIX = 'sp'
 function hostSeed(x, z, seed) {
   const qx = Math.round(x * 8) | 0
   const qz = Math.round(z * 8) | 0
@@ -339,22 +392,35 @@ export class Spiders {
         size: 0.2,
         // The tint, linear RGB (`r` is the bark radius above).
         tr: 1, tg: 1, tb: 1,
-        // 'go' crawls along the heading at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, ended by distance or by stalling and not by `left`.
-        state: 'pause', clip: 'idle', left: 0, speed: 0,
+        // Its name on the score, the grid offset that name hashes to, and the shift that opens its first spell at the second it last calmed down (0 for one that has never fled). (u0, v0) is the seat it took its life up on -- the one it was dealt, or where it calmed -- which its wander is anchored through (su, sv) to pass through, and which every seat falls back on.
+        key: '', offset: 0, epoch: 0, u0: 0, v0: 0, su: 0, sv: 0,
+        // The spell it is playing, the phrase within it and the seconds into that phrase; null before its first frame.
+        spell: null, phrase: null, elapsed: 0,
+        // 'go' crosses to the phrase's waypoint at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from her, off the score entirely and ended by distance or by stalling.
+        state: 'pause', clip: 'idle', speed: 0,
         // Fleeing: the furthest from her body it has got, and the seconds since that grew. `near` is whether her body was within FLEE_M last frame.
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false,
-        // On a rock: steps turned back since it last walked.
-        stuck: 0,
-        // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase and swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
-        rung: -1, lod: LOD_TIERS, gait: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
+        // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase, the phase it rolled to start from and their swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
+        rung: -1, lod: LOD_TIERS, gait: 0, gait0: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
       })
     }
     this.free = this.slots.slice()
+    // The releases owed to the room (pending), and the drop key of every release made here, hers or a peer's, so one heard twice lets one spider go.
+    this.outbox = []
+    this.drops = new Set()
+    // Set while a peer's release is being made here: it is theirs, and is not owed back to the room.
+    this.applying = false
     // The spiders that set off fleeing this frame, for startled().
     this.startles = []
+    // The bodies a spider flees this frame -- hers, then every peer's -- each `{ x, z, lo, hi }`, the axis of its capsule. A pool, so a frame allocates nothing.
+    this.players = []
+    this.playerPool = []
     this.tiles = new Map()
     this.rescan = []
     this.frame = 0
+    // The world second the last frame was drawn at, which is all a flight's step needs of the clock, and how many spells have been planned.
+    this.now = 0
+    this.spells = 0
     this.trunkBuf = new Float32Array(HOST_BUF * TRUNK_STRIDE)
     this.perchBuf = new Float32Array(HOST_BUF * PERCH_STRIDE)
     this.asset = null
@@ -489,13 +555,20 @@ export class Spiders {
       c.tr = shade; c.tg = shade * (1 - TINT_BROWN.g * warm); c.tb = shade * (1 - TINT_BROWN.b * warm)
       c.rung = -1
       c.lod = LOD_TIERS
-      c.gait = rand() * TAU
+      c.gait = c.gait0 = rand() * TAU
       c.amp = 0
       c.rear = 0
+      c.near = false
+      c.state = 'pause'
+      c.clip = 'idle'
+      c.speed = 0
       c.dirty = true
-      // A ground spider is on the move from its first frame, its heading off the group's stream so the scatter stays a function of the seed; the rest sit a while first.
-      if (kind === 'ground') this._go(c, rand)
-      else { this._pause(c); c.left = between(rand, PAUSE_S) }
+      // Its name on the score: every spell of its life follows from that and the world clock, so it is doing the same thing on every client that has this trunk.
+      c.key = seatKey(host, k)
+      c.offset = keyHash(c.key) % SPELL_S[kind]
+      c.epoch = 0
+      c.spell = null
+      this._anchor(c)
       c.member = k
       // After every roll, so one she picked off leaves the rest of its group as it grew.
       if (taken.has(`spider:${kind}${k}`, host.x, host.z)) { c.host = null; this.free.push(c); continue }
@@ -589,9 +662,13 @@ export class Spiders {
    * host of its own in the tile under it, and runs from her the way a ground
    * spider does. False when no tile is resident there, the ground is under
    * water or snow, or the pool is empty, and hands.js drops it as a thing.
+   * The drop is owed to the room (pending), which is the only way the other
+   * client is told of it at all.
    */
-  release(rec, x, y, z, head) {
+  release(rec, x, y, z, head, now = this.now) {
     if (rec.kind !== 'spider') throw new Error(`Spiders.release: not a spider, ${rec.kind}`)
+    x = snap(x); y = snap(y); z = snap(z)
+    const hx = snap(head.x), hz = snap(head.z)
     const t = this.tiles.get(tileKey(Math.floor(x / TILE), Math.floor(z / TILE)))
     if (!t) return false
     const groundY = this.height.heightAt(x, z)
@@ -610,15 +687,60 @@ export class Spiders {
     c.tr = rec.color[0]; c.tg = rec.color[1]; c.tb = rec.color[2]
     c.rung = -1
     c.lod = LOD_TIERS
-    c.gait = rec.attrs.aGait[0]
+    c.gait = c.gait0 = rec.attrs.aGait[0]
     c.amp = 0
     c.rear = 0
     c.near = false
     c.phi = 0
+    c.key = restKey(x, groundY, z)
+    c.offset = keyHash(c.key) % SPELL_S.ground
+    c.epoch = 0
+    c.u0 = x
+    c.v0 = z
+    c.spell = null
+    this._anchor(c)
     this._placeGround(c, x, z)
-    this._flee(c, head.x, head.y, head.y, head.z)
+    this._flee(c, hx, head.y, head.y, hz)
     host.spiders.push(c)
+    this._owe(c.key, now, x, y, z, Math.atan2(x - hx, z - hz), hx, hz, c.size, c.tr, c.tg, c.tb, c.gait0)
     return true
+  }
+
+  /** A spider let go here goes to the room as one anchor in mode DROP; one heard from the room is only remembered, so it is not sent back. */
+  _owe(key, T, x, y, z, yaw, hx, hz, size, r, g, b, gait) {
+    this.drops.add(key)
+    if (this.applying) return
+    this.outbox.push([dropWire(PREFIX, key), T, x, y, z, yaw, 0, DROP, null, hx, hz, size, r, g, b, gait])
+  }
+
+  /** The releases this client owes the room since the last call, moved into `into`. For creature-net.js. */
+  pending(into = []) {
+    for (const a of this.outbox) into.push(a)
+    this.outbox.length = 0
+    return into
+  }
+
+  /**
+   * A spider a peer let go: put on the ground here where their hand let it go
+   * and bolting from where their head was, so both clients see it land and
+   * run. A drop already made here -- this client's own, come back on a fresh
+   * welcome -- is nothing. Where no tile is resident, or the ground there is
+   * under water or snow, it is refused and this client never sees that spider.
+   * The bolt itself is off the score (see the header), so the two copies part
+   * company by the centimetres they stop apart. For creature-net.js.
+   */
+  apply(anchor, now) {
+    const [, T, x, y, z, , , mode, by, hx, hz, size, r, g, b, gait] = anchor
+    if (by === null) return
+    if (mode !== DROP) throw new Error(`Spiders: no anchor mode ${mode}`)
+    if (![T, x, y, z, hx, hz, size, r, g, b, gait].every(Number.isFinite)) throw new Error(`Spiders: a drop short of its numbers: ${JSON.stringify(anchor)}`)
+    if (this.drops.has(restKey(x, this.height.heightAt(x, z), z))) return
+    this.applying = true
+    try {
+      this.release({ kind: 'spider', size, color: [r, g, b], attrs: { aGait: [gait] } }, x, y, z, { x: hx, y, z: hz }, T)
+    } finally {
+      this.applying = false
+    }
   }
 
   /**
@@ -641,33 +763,41 @@ export class Spiders {
     return host.hHi > host.hLo
   }
 
+  /** The seat a tree spider is dealt, kept as `u0`, `v0`: the one its spells fall back on where the wander finds nowhere to stand. */
   _seatTree(c, host, rand) {
-    c.ang = rand() * TAU
-    c.h = between(rand, [host.hLo, host.hHi])
+    c.ang = c.u0 = rand() * TAU
+    c.h = c.v0 = between(rand, [host.hLo, host.hHi])
     c.phi = rand() * TAU
     this._placeTree(c)
     return true
   }
 
-  /**
-   * A tree spider's world seat, normal and heading from its angle and height:
-   * the point on the bark between the four profile corners round it, in the
-   * instance's frame (scaled, its Y stretched on top, yawed, at its origin).
-   * The heading is `phi` from the bark's up direction toward its round
-   * direction, and `r` is the bark's radius there -- how far a metre round the
-   * trunk turns the angle.
-   */
+  /** Spider `c` onto its own bark coordinates. */
   _placeTree(c) {
-    const host = c.host
+    this._barkAt(c.host, c.ang, c.h, c.phi, c)
+    c.dirty = true
+  }
+
+  /**
+   * A point on a trunk's bark from an angle round it and a height up it, into
+   * `out`: the world seat, normal and heading, and `r`, the bark's radius
+   * there -- how far a metre round the trunk turns the angle. The point lies
+   * between the four profile corners round it, in the instance's frame
+   * (scaled, its Y stretched on top, yawed, at its origin), and the heading is
+   * `phi` from the bark's up direction toward its round direction. Nothing is
+   * read off `out`, so it answers for any point on any trunk, not only for
+   * where a spider sits.
+   */
+  _barkAt(host, ang, h, phi, out) {
     const { sides, y, centre, corners } = host.prof
     // The profile's rings are at unit height; the stretch is applied to every
     // corner Y below, so the seat, its tangents and its normal are the drawn bark's.
     const st = host.stretch
-    const fh = c.h / (host.scale * st)
+    const fh = h / (host.scale * st)
     let r = 0
     while (r < y.length - 2 && y[r + 1] <= fh) r++
     const fr = Math.min(1, Math.max(0, (fh - y[r]) / (y[r + 1] - y[r])))
-    const ka = ((((c.ang / TAU) % 1) + 1) % 1) * sides
+    const ka = ((((ang / TAU) % 1) + 1) % 1) * sides
     const k0 = Math.floor(ka) % sides
     const k1 = (k0 + 1) % sides
     const fk = ka - Math.floor(ka)
@@ -696,19 +826,19 @@ export class Spiders {
     const dv = vx * ux + vy * uy + vz * uz
     vx -= ux * dv; vy -= uy * dv; vz -= uz * dv
     len = Math.hypot(vx, vy, vz)
-    c.r = ((len * sides) / TAU) * host.scale
+    out.r = ((len * sides) / TAU) * host.scale
     vx /= len; vy /= len; vz /= len
-    const cp = Math.cos(c.phi)
-    const sp = Math.sin(c.phi)
+    const cp = Math.cos(phi)
+    const sp = Math.sin(phi)
     const tx = ux * cp + vx * sp, ty = uy * cp + vy * sp, tz = uz * cp + vz * sp
     // Into the world: scaled, turned by the yaw about +Y, from the origin.
     const s = host.scale, cy = host.cy, sy = host.sy
-    c.x = host.x + s * (px * cy + pz * sy)
-    c.y = host.y + s * py
-    c.z = host.z + s * (pz * cy - px * sy)
-    c.nx = nx * cy + nz * sy; c.ny = ny; c.nz = nz * cy - nx * sy
-    c.tx = tx * cy + tz * sy; c.ty = ty; c.tz = tz * cy - tx * sy
-    c.dirty = true
+    out.x = host.x + s * (px * cy + pz * sy)
+    out.y = host.y + s * py
+    out.z = host.z + s * (pz * cy - px * sy)
+    out.nx = nx * cy + nz * sy; out.ny = ny; out.nz = nz * cy - nx * sy
+    out.tx = tx * cy + tz * sy; out.ty = ty; out.tz = tz * cy - tx * sy
+    return out
   }
 
   /**
@@ -753,31 +883,12 @@ export class Spiders {
       const wall = (this._rockRay(ox, c.y + WALL_M, oz, -ca, 0, -sa, reach) && _hit.ny <= FLAT_NY)
         || (this._rockRay(ox, c.y - WALL_M, oz, -ca, 0, -sa, reach) && _hit.ny <= FLAT_NY)
       if (!wall) continue
+      c.u0 = ang
+      c.v0 = c.y - host.groundY
       this._heading(c, rand() * TAU)
-      c.stuck = 0
       c.dirty = true
       return true
     }
-    return false
-  }
-
-  /**
-   * A sitting rock spider's stone, re-read: a longer probe along the normal,
-   * because the rocks re-seat under it when a chunk re-splits. Back onto the
-   * face it finds; a new seat when it finds none; gone when the rock offers
-   * none. The step keeps the group's own stream out of it, so the seats other
-   * spiders were dealt stay theirs.
-   */
-  _reseatRock(c) {
-    const probe = Math.max(c.size * 0.5, 0.3)
-    if (this._rockRay(c.x + c.nx * probe, c.y + c.ny * probe, c.z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe)) {
-      this._snapRock(c)
-      return true
-    }
-    if (this._seatRock(c, c.host, this.rand)) return true
-    c.host = null
-    this.free.push(c)
-    this.dropped++
     return false
   }
 
@@ -793,43 +904,66 @@ export class Spiders {
     c.tx /= len; c.ty /= len; c.tz /= len
   }
 
-  /** A rock spider's heading: the angle `phi` in its tangent plane, measured from the plane's upmost direction (or from world X on a flat face). */
-  _heading(c, phi) {
-    // The tangent plane's "up": world up with the normal's share removed.
+  /** A rock face's tangent plane at `c`'s normal, into `_up` and `_rt`: world up with the normal's share removed (or world X on a flat face), and n x u. */
+  _tangents(c) {
     let ux = -c.ny * c.nx, uy = 1 - c.ny * c.ny, uz = -c.ny * c.nz
     let len = Math.hypot(ux, uy, uz)
     if (len < 1e-3) { ux = 1 - c.nx * c.nx; uy = -c.nx * c.ny; uz = -c.nx * c.nz; len = Math.hypot(ux, uy, uz) }
-    ux /= len; uy /= len; uz /= len
-    // And its "right": n x u.
-    const rx = c.ny * uz - c.nz * uy
-    const ry = c.nz * ux - c.nx * uz
-    const rz = c.nx * uy - c.ny * ux
+    _up.x = ux / len; _up.y = uy / len; _up.z = uz / len
+    _rt.x = c.ny * _up.z - c.nz * _up.y
+    _rt.y = c.nz * _up.x - c.nx * _up.z
+    _rt.z = c.nx * _up.y - c.ny * _up.x
+  }
+
+  /** A rock spider's heading: the angle `phi` in its tangent plane, measured from the plane's upmost direction (or from world X on a flat face). */
+  _heading(c, phi) {
+    this._tangents(c)
     const cp = Math.cos(phi)
     const sp = Math.sin(phi)
-    c.tx = ux * cp + rx * sp
-    c.ty = uy * cp + ry * sp
-    c.tz = uz * cp + rz * sp
+    c.tx = _up.x * cp + _rt.x * sp
+    c.ty = _up.y * cp + _rt.y * sp
+    c.tz = _up.z * cp + _rt.z * sp
     c.phi = phi
     c.dirty = true
   }
 
+  /** A rock spider turned to the world direction (wx, wy, wz), laid into its tangent plane; `phi` follows it, so a flee picks up from the heading it was crawling on. */
+  _headTo(c, wx, wy, wz) {
+    this._tangents(c)
+    this._heading(c, Math.atan2(wx * _rt.x + wy * _rt.y + wz * _rt.z, wx * _up.x + wy * _up.y + wz * _up.z))
+  }
+
   /** A seat on the ground at the tile's point, heading anywhere. */
   _seatGround(c, host, rand) {
+    c.u0 = host.x
+    c.v0 = host.z
     this._placeGround(c, host.x, host.z)
     this._headGround(c, rand() * TAU)
     return true
   }
 
   /** A ground spider's seat at (x, z): the height there, and the field's normal from its slopes GROUND_EPS either way. The heading is re-laid on the new plane. */
+  /** Whether the ground at (x, z) is barred to a spider: under water, or over the snow line. */
+  _barred(x, z) {
+    const y = this.height.heightAt(x, z)
+    return this.water.isSubmerged(x, z, y) || y > this.height.snowLineAt(x, z)
+  }
+
   _placeGround(c, x, z) {
-    const h = this.height
-    c.x = x; c.y = h.heightAt(x, z); c.z = z
-    let nx = h.heightAt(x - GROUND_EPS, z) - h.heightAt(x + GROUND_EPS, z)
-    let nz = h.heightAt(x, z - GROUND_EPS) - h.heightAt(x, z + GROUND_EPS)
-    let ny = 2 * GROUND_EPS
-    const len = Math.hypot(nx, ny, nz)
-    c.nx = nx / len; c.ny = ny / len; c.nz = nz / len
+    c.x = x; c.z = z
+    c.y = this._groundNormal(x, z, c)
     this._headGround(c, c.phi)
+  }
+
+  /** The ground's normal at (x, z) into `out`, from its slopes GROUND_EPS either way; returns the height there. */
+  _groundNormal(x, z, out) {
+    const h = this.height
+    const nx = h.heightAt(x - GROUND_EPS, z) - h.heightAt(x + GROUND_EPS, z)
+    const nz = h.heightAt(x, z - GROUND_EPS) - h.heightAt(x, z + GROUND_EPS)
+    const ny = 2 * GROUND_EPS
+    const len = Math.hypot(nx, ny, nz)
+    out.nx = nx / len; out.ny = ny / len; out.nz = nz / len
+    return h.heightAt(x, z)
   }
 
   /** A ground spider's heading: the azimuth `phi` -- +Z at 0, +X at a quarter turn -- laid into the ground's plane. */
@@ -874,7 +1008,7 @@ export class Spiders {
     }
     return {
       alive: MAX - this.free.length, tiles: this.tiles.size, hosts, groups,
-      meshes: this.meshes.map((m) => m.count), cards: this.card.count, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped,
+      meshes: this.meshes.map((m) => m.count), cards: this.card.count, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped, spells: this.spells,
     }
   }
 
@@ -898,33 +1032,360 @@ export class Spiders {
     return into
   }
 
-  /** Sit down; a ground spider only idles, and briefly. */
-  _pause(c) {
+  /**
+   * A smooth wander in the spell index, 0 to 1: a corner hashed off the
+   * spider's key every `segs` spells, eased between with a smoothstep. `axis`
+   * picks the stream, so a seat's two coordinates wander apart. Pure in (key,
+   * seg), and one spell moves it about 1.5/segs of the range -- a fraction of
+   * the band, which is all a spider can crawl in that time.
+   */
+  _wave(key, axis, seg, segs) {
+    const t = seg / segs
+    const i = Math.floor(t)
+    const f = t - i
+    const a = phraseRand(key, i, axis)()
+    const b = phraseRand(key, i + 1, axis)()
+    return a + (b - a) * f * f * (3 - 2 * f)
+  }
+
+  /**
+   * The two host coordinates on `out` to a world seat and normal, and on a
+   * trunk the bark's radius there. False where there is nowhere a spider could
+   * stand: a rock's undercut, buried or wet side, water or snow over the
+   * ground. `flat` false also turns down a rock's upward faces, the top and
+   * its shelves, which a seat only takes FLAT_CHANCE of the time.
+   */
+  _resolve(c, out, flat = true) {
+    const host = c.host
+    if (host.kind === 'tree') { this._barkAt(host, out.u, out.v, 0, out); return true }
+    if (host.kind === 'rock') {
+      const ca = Math.cos(out.u), sa = Math.sin(out.u)
+      const reach = host.r * 1.3
+      if (!this._rockRay(host.x + ca * reach, host.groundY + out.v, host.z + sa * reach, -ca, 0, -sa, reach)) return false
+      if (!flat && _hit.ny > FLAT_NY) return false
+      out.x = _hit.x; out.y = _hit.y; out.z = _hit.z
+      out.nx = _hit.nx; out.ny = _hit.ny; out.nz = _hit.nz
+      return true
+    }
+    if (this._barred(out.u, out.v)) return false
+    out.x = out.u; out.z = out.v
+    out.y = this._groundNormal(out.u, out.v, out)
+    return true
+  }
+
+  /**
+   * The band spider `c`'s seat wanders in, into `_ax`: round and up a trunk or
+   * a rock, east and north within GROUND_ROAM_M of the point it took its life
+   * up on. A trunk's climb and a rock's side are walls; the ground's is a
+   * tether, and both are folded rather than clamped (see `fold`).
+   */
+  _axes(c) {
+    const host = c.host
+    if (host.kind === 'ground') {
+      // The square of east and north the seat wanders is the one inscribed in the roam, so its corners are GROUND_ROAM_M from the point and no seat is further.
+      const roam = GROUND_ROAM_M * Math.SQRT1_2
+      _ax.ulo = c.u0 - roam; _ax.urange = 2 * roam
+      _ax.vlo = c.v0 - roam; _ax.vrange = 2 * roam
+      _ax.wrap = false
+      return _ax
+    }
+    // Two turns of the wander over one of the trunk, so the seam at zero is no wall.
+    _ax.ulo = 0; _ax.urange = TAU * 2; _ax.wrap = true
+    if (host.kind === 'tree') { _ax.vlo = host.hLo; _ax.vrange = host.hHi - host.hLo }
+    else { _ax.vlo = 0.05; _ax.vrange = Math.max(0.05, Math.min(CLIMB_M, host.size) - 0.05) }
+    return _ax
+  }
+
+  /**
+   * The shift that carries spider `c`'s wander through (u0, v0) at the turn of
+   * its first spell. Every seat of its life is the wander plus this, so its
+   * first spell opens exactly where it is standing -- on the seat it was dealt,
+   * or where it calmed down from a flight -- and steps off from there, rather
+   * than starting with a crossing of the whole band it has no time to make.
+   */
+  _anchor(c) {
+    const a = this._axes(c)
+    const segs = WANDER_SEGS[c.host.kind]
+    c.su = c.u0 - a.ulo - this._wave(c.key, 0, 0, segs) * a.urange
+    c.sv = c.v0 - a.vlo - this._wave(c.key, 1, 0, segs) * a.vrange
+  }
+
+  /**
+   * Spider `c`'s seat at the turn of spell `seg`, into `out`: its anchored
+   * wander, folded into the band. Where there is nothing to stand on there --
+   * a rock's undercut side, water or snow over the ground -- the point is
+   * drawn in toward the seat it was dealt, which always held, up to SEAT_TRIES
+   * times, and that seat is the last resort. Null only where even that has
+   * gone, the rock having re-split out from under it, and the spider is taken
+   * away.
+   */
+  _seatAt(c, seg, out) {
+    const a = this._axes(c)
+    const segs = WANDER_SEGS[c.host.kind]
+    const wu = this._wave(c.key, 0, seg, segs) * a.urange + c.su
+    const wv = this._wave(c.key, 1, seg, segs) * a.vrange + c.sv
+    const u = a.ulo + (a.wrap ? wu : fold(wu, a.urange))
+    const v = a.vlo + fold(wv, a.vrange)
+    const flat = phraseRand(c.key, seg, 7)() < FLAT_CHANCE
+    for (let k = 0; k < SEAT_TRIES; k++) {
+      const f = k / SEAT_TRIES
+      out.u = u + (c.u0 - u) * f
+      out.v = v + (c.v0 - v) * f
+      if (this._resolve(c, out, flat)) return out
+    }
+    out.u = c.u0; out.v = c.v0
+    return this._resolve(c, out) ? out : null
+  }
+
+  /**
+   * Spell `seg` of spider `c`, planned outright from its key: the crossing from
+   * the seat it holds at this turn to the one it holds at the next, broken into
+   * SCOOTS scoots through waypoints jittered off the straight line, each a sit
+   * and then a crawl. The scoots take what they take at their clip's pace and
+   * the sits share out what is left, so the spell ends on its seat whatever the
+   * distances; a crossing too long for the spell is crawled faster and its sits
+   * go to nothing. Nothing here reads where the spider is or was, so a client
+   * meeting it mid-crawl plans the same spell and crosses the rest of it alike.
+   */
+  _spell(c, seg) {
+    const host = c.host
+    const kind = host.kind
+    const span = SPELL_S[kind]
+    const a = this._seatAt(c, seg, _seatA)
+    if (a === null) return null
+    const pts = [{ ...a }]
+    const b = this._seatAt(c, seg + 1, _seatB)
+    if (b === null) return null
+    let du = b.u - a.u
+    if (kind !== 'ground') du -= TAU * Math.round(du / TAU)
+    const dv = b.v - a.v
+    const [ju, jv] = JITTER[kind]
+    const n = SCOOTS[kind]
+    for (let i = 1; i < n; i++) {
+      const rand = phraseRand(c.key, seg, i)
+      const f = i / n
+      const mu = a.u + du * f
+      const mv = a.v + dv * f
+      const w = this._waypoint(c, mu + (rand() - 0.5) * ju, mv + (rand() - 0.5) * jv) ?? this._waypoint(c, mu, mv)
+      if (w) pts.push(w)
+    }
+    pts.push({ ...b })
+
+    // Each scoot at its own clip's pace, and a sit before it of the length that clip wants; nothing is written until both are known, because the sits are only as long as the crossing leaves room for.
+    const legs = []
+    let go = 0
+    let sit = 0
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i - 1], q = pts[i]
+      const rand = phraseRand(c.key, seg, 32 + i)
+      const clip = rand() < RUN_CHANCE ? 'run' : 'walk'
+      // On a trunk the crossing is measured round and up the bark, not through the air, so a re-seated chunk under it changes nothing about the pace.
+      let dist
+      if (kind === 'tree') {
+        let dd = q.u - p.u
+        dd -= TAU * Math.round(dd / TAU)
+        dist = Math.hypot(dd * p.r, q.v - p.v)
+      } else dist = Math.hypot(q.x - p.x, q.y - p.y, q.z - p.z)
+      const dur = Math.max(MIN_GO_S, (dist * this.span) / (GAIT[clip] * c.size))
+      // The sit before it: a ground spider only idles, and only GROUND_REST_CHANCE of the time, so it is nearly always on the move.
+      const r = rand()
+      const sits = kind !== 'ground' || r < GROUND_REST_CHANCE
+      const clip2 = kind === 'ground' ? 'idle' : r < 0.65 ? 'idle' : r < 0.85 ? 'eat' : 'rest'
+      const want = sits ? between(rand, kind === 'ground' ? GROUND_PAUSE_S : clip2 === 'rest' ? REST_S : PAUSE_S) : 0
+      legs.push({ p, q, dist, clip, dur, want, clip2 })
+      go += dur
+      sit += want
+    }
+    // The spell is exactly as long as its grid, so the sits come first -- what each wanted, or their share of the time the crossing leaves, whichever is less -- and the scoots take the rest, crawled faster or slower than their own pace to fit it. A crossing short enough that even dawdling over it at STRETCH_MAX cannot fill the spell is followed by a long rest at the last seat.
+    const sitTime = Math.min(sit, Math.max(0, span - go))
+    const share = sit > 0 ? sitTime / sit : 0
+    let squeeze = (span - sitTime) / go
+    let tail = 0
+    if (squeeze > STRETCH_MAX) { squeeze = STRETCH_MAX; tail = span - sitTime - go * squeeze }
+
+    const phrases = []
+    let at = 0
+    let travelled = 0
+    for (let i = 0; i < legs.length; i++) {
+      const g = legs[i]
+      const hold = g.want * share
+      if (hold > 0) { phrases.push({ go: false, start: at, dur: hold, clip: g.clip2, at: g.p, s0: travelled }); at += hold }
+      const dur = g.dur * squeeze
+      // The legs' swing eases up out of a sit and back down into the next one; where the crossing has squeezed the sits away, the scoots run into each other and the swing holds across them.
+      phrases.push({ go: true, start: at, dur, clip: g.clip, from: g.p, to: g.q, len: g.dist, speed: dur > 0 ? g.dist / dur : 0, s0: travelled, easeIn: hold > 0, easeOut: i === legs.length - 1 || legs[i + 1].want * share > 0 })
+      at += dur
+      travelled += g.dist
+    }
+    if (tail > 0) phrases.push({ go: false, start: at, dur: tail, clip: kind === 'ground' ? 'idle' : 'rest', at: pts[pts.length - 1], s0: travelled })
+    this.spells++
+    return { seg, start: seg * span + c.offset + c.epoch, phrases }
+  }
+
+  /** The waypoint at the host coordinates (u, v), clamped into the band, or null where there is nowhere to stand there. */
+  _waypoint(c, u, v) {
+    const host = c.host
+    _seatC.u = u
+    if (host.kind === 'tree') _seatC.v = Math.min(host.hHi, Math.max(host.hLo, v))
+    else if (host.kind === 'rock') _seatC.v = Math.min(Math.min(CLIMB_M, host.size), Math.max(0.05, v))
+    else _seatC.v = v
+    return this._resolve(c, _seatC) ? { ..._seatC } : null
+  }
+
+  /** The phrase of `phrases` that second `e` into the spell falls in; the last one where rounding has carried `e` past its end. */
+  static _phraseAt(phrases, e) {
+    for (let i = phrases.length - 1; i > 0; i--) if (e >= phrases[i].start) return phrases[i]
+    return phrases[0]
+  }
+
+  /** Spider `c` posed `e` seconds into phrase `ph`: sitting on its waypoint, or `e`'s share of the way across to the next. */
+  _pose(c, ph, e) {
+    c.clip = ph.clip
+    if (!ph.go) {
+      c.state = 'pause'
+      c.speed = 0
+      c.amp = 0
+      this._sit(c, ph.at)
+      return
+    }
+    c.state = 'go'
+    c.speed = ph.speed
+    const u = ph.dur > 0 ? Math.min(1, e / ph.dur) : 1
+    // The legs cycle once per stride of the seat, whatever the pace, so the feet hold the bark; the phase runs on the distance crossed since the spell opened, and the roll spreads a group out of step.
+    c.gait = (c.gait0 + (TAU * (ph.s0 + ph.len * u) * this.span) / (c.size * STRIDE[ph.clip])) % TAU
+    c.amp = (STRIDE[ph.clip] / 2) * Math.min(1, ph.easeIn ? e / AMP_EASE_S : 1, ph.easeOut ? (ph.dur - e) / AMP_EASE_S : 1)
+    this._between(c, ph.from, ph.to, u)
+  }
+
+  /** A sitting spider on the waypoint `w`, its heading kept; a trunk that re-seated under it is followed. */
+  _sit(c, w) {
+    const host = c.host
+    if (host.kind === 'tree') {
+      if (c.ang === w.u && c.h === w.v && !host.moved) return
+      c.ang = w.u; c.h = w.v
+      this._placeTree(c)
+      return
+    }
+    if (c.x === w.x && c.y === w.y && c.z === w.z) return
+    c.x = w.x; c.y = w.y; c.z = w.z
+    c.nx = w.nx; c.ny = w.ny; c.nz = w.nz
+    if (host.kind === 'rock') this._heading(c, c.phi)
+    else this._headGround(c, c.phi)
+  }
+
+  /** Spider `c` the fraction `u` of the way from waypoint `p` to waypoint `q`, headed along the crossing. The seat comes from the coordinates, not the two ends, so it rides the bark or the stone rather than cutting the corner. */
+  _between(c, p, q, u) {
+    const host = c.host
+    if (host.kind === 'ground') {
+      c.phi = Math.atan2(q.u - p.u, q.v - p.v)
+      // Both ends are dry, but the line between them can dip into water or over the snow line: the spider waits out the wet stretch at the last dry step of the crossing rather than walking under the surface.
+      let f = u
+      while (f > 0 && this._barred(p.u + (q.u - p.u) * f, p.v + (q.v - p.v) * f)) f -= WET_STEP
+      this._placeGround(c, p.u + (q.u - p.u) * Math.max(0, f), p.v + (q.v - p.v) * Math.max(0, f))
+      return
+    }
+    let du = q.u - p.u
+    du -= TAU * Math.round(du / TAU)
+    const dv = q.v - p.v
+    if (host.kind === 'tree') {
+      c.ang = p.u + du * u
+      c.h = p.v + dv * u
+      c.phi = Math.atan2(du * p.r, dv)
+      this._placeTree(c)
+      return
+    }
+    _seatC.u = p.u + du * u
+    _seatC.v = p.v + dv * u
+    if (this._resolve(c, _seatC)) {
+      c.x = _seatC.x; c.y = _seatC.y; c.z = _seatC.z
+      c.nx = _seatC.nx; c.ny = _seatC.ny; c.nz = _seatC.nz
+    } else {
+      // The ray found no stone at this angle and height -- a notch in the side -- so the seat runs straight between the two ends across it.
+      c.x = p.x + (q.x - p.x) * u; c.y = p.y + (q.y - p.y) * u; c.z = p.z + (q.z - p.z) * u
+      const nx = p.nx + (q.nx - p.nx) * u, ny = p.ny + (q.ny - p.ny) * u, nz = p.nz + (q.nz - p.nz) * u
+      const len = Math.hypot(nx, ny, nz) || 1
+      c.nx = nx / len; c.ny = ny / len; c.nz = nz / len
+    }
+    this._headTo(c, q.x - p.x, q.y - p.y, q.z - p.z)
+    c.dirty = true
+  }
+
+  /** Spider `c` posed at world second `now`, planning the spell it has crossed into. False where its host offers it nowhere to stand any more. */
+  _play(c, now) {
+    const span = SPELL_S[c.host.kind]
+    if (c.spell === null || now < c.spell.start || now >= c.spell.start + span) {
+      const spell = this._spell(c, Math.floor((now - c.epoch - c.offset) / span))
+      if (spell === null) return false
+      c.spell = spell
+    }
+    const e = now - c.spell.start
+    const ph = Spiders._phraseAt(c.spell.phrases, e)
+    c.phrase = ph
+    c.elapsed = e - ph.start
+    this._pose(c, ph, c.elapsed)
+    return true
+  }
+
+  /** Spider `c` onto a name and a grid of its own from `now`, its next spell opening on the seat it is standing on. A flight and a release both end here, because neither is on the score. */
+  _rekey(c, now) {
+    c.key = restKey(c.x, c.y, c.z)
+    const span = SPELL_S[c.host.kind]
+    c.offset = keyHash(c.key) % span
+    c.epoch = now - c.offset
+    if (c.host.kind === 'tree') { c.u0 = c.ang; c.v0 = c.h }
+    else if (c.host.kind === 'ground') { c.u0 = c.x; c.v0 = c.z }
+    else { c.u0 = Math.atan2(c.z - c.host.z, c.x - c.host.x); c.v0 = c.y - c.host.groundY }
+    this._anchor(c)
+    c.spell = null
+  }
+
+  /** A flight over: calm down where it stands, and take up a life from there. */
+  _calm(c, now) {
     c.state = 'pause'
     c.speed = 0
-    if (c.host.kind === 'ground') { c.clip = 'idle'; c.left = between(this.rand, GROUND_PAUSE_S); return }
-    const r = this.rand()
-    c.clip = r < 0.65 ? 'idle' : r < 0.85 ? 'eat' : 'rest'
-    c.left = between(this.rand, c.clip === 'rest' ? REST_S : PAUSE_S)
+    this._rekey(c, now)
   }
 
-  /** A spell or a flight over: sit down, unless it is a ground spider, which mostly sets straight off on another spell. */
-  _calm(c) {
-    if (c.host.kind === 'ground' && this.rand() >= GROUND_REST_CHANCE) this._go(c)
-    else this._pause(c)
+  /**
+   * A rock re-split under a spider: back onto the seat it was dealt, and a life
+   * from there. False where that seat has gone too, and the spider is taken away.
+   */
+  _reseat(c, now) {
+    _seatC.u = c.u0; _seatC.v = c.v0
+    if (!this._resolve(c, _seatC)) {
+      c.host = null
+      this.free.push(c)
+      this.dropped++
+      return false
+    }
+    c.x = _seatC.x; c.y = _seatC.y; c.z = _seatC.z
+    c.nx = _seatC.nx; c.ny = _seatC.ny; c.nz = _seatC.nz
+    this._heading(c, c.phi)
+    this._rekey(c, now)
+    return true
   }
 
-  /** Off on a spell of walking or running, turned a little; `rand` is the stream the turn and the spell draw from. */
-  _go(c, rand = this.rand) {
-    c.state = 'go'
-    c.clip = rand() < RUN_CHANCE ? 'run' : 'walk'
-    c.speed = (GAIT[c.clip] * c.size) / this.span
-    c.left = between(rand, GO_S)
-    c.stuck = 0
-    const turn = (rand() - 0.5) * 1.2
-    if (c.host.kind === 'tree') c.phi += turn
-    else if (c.host.kind === 'rock') this._heading(c, c.phi + turn)
-    else this._headGround(c, c.phi + turn)
+  /**
+   * The bodies a spider may flee this frame: hers first, from her feet `fy` to
+   * her head, then one per peer from main.js's peerHeadsNow(). A peer that
+   * sends no foot is known by its head alone, so its body is that one point
+   * rather than a guessed-at column.
+   */
+  _players(hx, fy, hy, hz, peers) {
+    const out = this.players
+    out.length = 0
+    const body = (x, z, lo, hi) => {
+      const b = this.playerPool[out.length] ?? (this.playerPool[out.length] = { x: 0, z: 0, lo: 0, hi: 0 })
+      b.x = x; b.z = z; b.lo = lo; b.hi = hi
+      out.push(b)
+    }
+    body(hx, hz, fy, hy)
+    if (peers) {
+      for (const p of peers) {
+        if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) continue
+        body(p.x, p.z, Number.isFinite(p.foot) ? Math.min(p.foot, p.y) : p.y, p.y)
+      }
+    }
+    return out
   }
 
   /** Off at the run, hastened, away from her body: the column at (x, z) from y0 up to y1. */
@@ -932,7 +1393,6 @@ export class Spiders {
     c.state = 'flee'
     c.clip = 'run'
     c.speed = (FLEE_HASTE * GAIT.run * c.size) / this.span
-    c.stuck = 0
     c.stall = 0
     this._aim(c, x, y0, y1, z)
     this.startles.push(c)
@@ -989,10 +1449,9 @@ export class Spiders {
 
   /**
    * One step of `d` metres along the heading, then, every REPROJECT_EVERY
-   * frames, back onto the stone along the normal. No standable stone under
-   * the step, or the top of the rock: the step is not taken and the spider
-   * turns back, roughly the way it came; STUCK_MAX of those and it sits down,
-   * unless it is fleeing, when it keeps turning until its clock runs out.
+   * frames, back onto the stone along the normal. No standable stone under the
+   * step, or the top of the rock: the step is not taken and the spider turns
+   * back, roughly the way it came, and keeps turning until its flight ends.
    */
   _stepRock(c, d) {
     const x = c.x + c.tx * d
@@ -1002,43 +1461,40 @@ export class Spiders {
     const probe = c.size * 0.5
     if (!this._rockRay(x + c.nx * probe, y + c.ny * probe, z + c.nz * probe, -c.nx, -c.ny, -c.nz, 2 * probe) || _hit.ny > FLAT_NY) {
       this._heading(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
-      if (++c.stuck >= STUCK_MAX && c.state === 'go') this._pause(c)
       return
     }
-    c.stuck = 0
     this._snapRock(c)
   }
 
   /**
    * One step of `d` metres along the heading over the ground. Water or the
    * snow line ahead: the step is not taken and the spider turns back, roughly
-   * the way it came. Past GROUND_ROAM_M from its point and still heading away
-   * (a flee is not tethered): it turns for home instead.
+   * the way it came. A flight is not tethered to the host's point, so nothing
+   * here turns it for home.
    */
   _stepGround(c, d) {
-    const host = c.host
     const x = c.x + c.tx * d
     const z = c.z + c.tz * d
-    const y = this.height.heightAt(x, z)
-    if (this.water.isSubmerged(x, z, y) || y > this.height.snowLineAt(x, z)) {
-      this._headGround(c, c.phi + Math.PI + (this.rand() - 0.5) * 0.8)
-      return
-    }
-    const hx = host.x - x, hz = host.z - z
-    if (c.state === 'go' && hx * hx + hz * hz > GROUND_ROAM_M * GROUND_ROAM_M && c.tx * hx + c.tz * hz < 0) {
-      this._headGround(c, Math.atan2(hx, hz) + (this.rand() - 0.5) * 0.8)
+    if (this._barred(x, z)) {
+      // The turn is drawn off the spider's own name and the second, not the layer's roll, so two clients watching the same flight turn it the same way.
+      this._headGround(c, c.phi + Math.PI + (phraseRand(c.key, Math.floor(this.now), 11)() - 0.5) * 0.8)
       return
     }
     this._placeGround(c, x, z)
   }
 
   /**
-   * One frame: every spider stepped, and written to a mesh tier or the card by
-   * its distance from her head. `fy` is where her feet are: her body, for the
-   * flee, is the capsule from there up to her head.
+   * One frame: every spider posed at world second `now` and written to a mesh
+   * tier or the card by its distance from her head. `fy` is where her feet are:
+   * her body, for the flee, is the capsule from there up to her head.
    */
-  update(hx, hy, hz, dt, fy) {
+  update(hx, hy, hz, now, fy, peers = null) {
+    if (!Number.isFinite(now)) throw new Error(`Spiders.update: bad world time ${now}`)
     if (!(fy <= hy)) throw new Error(`Spiders.update: her feet must be under her head, got feet ${fy} and head ${hy}`)
+    const players = this._players(hx, fy, hy, hz, peers)
+    // A flight is not on the score, so it steps on the frame's own length; a long stall (a tab asleep, a room swap) is clamped rather than teleporting anybody.
+    const dt = Math.min(0.1, Math.max(0, now - this.now))
+    this.now = now
     if (walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t)) > 0) {
       this.rescan = []
     }
@@ -1073,43 +1529,47 @@ export class Spiders {
             if (host.kind === 'tree' && host.moved) this._placeTree(c)
             continue
           }
-          c.left -= dt
-          // Her body: the nearest point of the capsule's axis to the spider, and whether the spider is within FLEE_M of its surface. Squared, so the root is only taken by a spider already fleeing.
-          const by = c.y < fy ? fy : c.y > hy ? hy : c.y
-          const bdy = c.y - by
-          const bd2 = dx * dx + bdy * bdy + dz * dz
+          // The nearest body, hers or a peer's: the nearest point of its capsule's axis to the spider, and whether the spider is within FLEE_M of its surface. Squared, so the root is only taken by a spider already fleeing.
+          let bd2 = Infinity
+          let near = players[0]
+          for (const b of players) {
+            const bdx = c.x - b.x
+            const bdz = c.z - b.z
+            const bdy = c.y - (c.y < b.lo ? b.lo : c.y > b.hi ? b.hi : c.y)
+            const d2b = bdx * bdx + bdy * bdy + bdz * bdz
+            if (d2b < bd2) { bd2 = d2b; near = b }
+          }
           const close = bd2 < flee2
-          if (close && !c.near && c.state !== 'flee') this._flee(c, hx, fy, hy, hz)
+          if (close && !c.near && c.state !== 'flee') this._flee(c, near.x, near.lo, near.hi, near.z)
           c.near = close
           if (c.state === 'flee') {
             const togo = Math.hypot(c.ex - c.x, c.ey - c.y, c.ez - c.z)
             if (c.togo - togo > STALL_FRAC * c.speed * dt) c.stall = 0; else c.stall += dt
             c.togo = togo
-            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._calm(c)
-            else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, hx, fy, hy, hz)
+            if (Math.sqrt(bd2) - WALK.radius >= FLEE_TO_M || togo < ARRIVE_M || c.stall >= STALL_S) this._calm(c, now)
+            else if ((this.frame + c.id) % STEER_EVERY === 0) this._aim(c, near.x, near.lo, near.hi, near.z)
           }
-          if (c.state !== 'pause') {
+          if (c.state === 'flee') {
             const d = c.speed * dt
-            // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run. Before the step, which may sit a stuck rock spider down and change its clip.
-            c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE[c.clip])) % TAU
+            // The legs cycle once per stride of the seat, whatever the pace: a fleeing spider's legs go at FLEE_HASTE times the run.
+            c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE.run)) % TAU
             if (host.kind === 'tree') this._stepTree(c, d)
             else if (host.kind === 'rock') this._stepRock(c, d)
             else this._stepGround(c, d)
-            if (c.left <= 0) this._calm(c)
-          } else {
-            // A sitting tree spider follows its trunk's origin when that has moved; a sitting rock spider re-reads its stone.
-            if (host.kind === 'tree') { if (host.moved) this._placeTree(c) }
-            else if (host.kind === 'rock' && (this.frame + c.id) % RESEAT_EVERY === 0 && !this._reseatRock(c)) { dropped++; continue }
-            // Reared up while she is close, back to what it was doing when she leaves.
-            if (d2 < ALERT_M * ALERT_M) c.clip = 'alert'
-            else if (c.clip === 'alert') this._pause(c)
-            if (c.left <= 0) this._go(c)
-          }
-          // The swing eases in and out of a stride so the legs do not snap between still and full stride; the rear-up eases the same way.
-          const ampTo = c.state === 'pause' ? 0 : STRIDE[c.clip] / 2
-          if (c.amp !== ampTo) {
+            // Its flight is not planned, so the swing eases on the frame's own length rather than into a waypoint.
+            const ampTo = STRIDE.run / 2
             c.amp += (ampTo - c.amp) * Math.min(1, GAIT_EASE * dt)
-            if (Math.abs(c.amp - ampTo) < 1e-4) c.amp = ampTo
+          } else {
+            // A trunk that re-seated with its chunk is followed by re-planning off its new origin, and a rock that re-split is read for the stone still being there.
+            if (host.kind === 'tree' && host.moved) c.spell = null
+            else if (host.kind === 'rock' && (this.frame + c.id) % RESEAT_EVERY === 0) {
+              _seatC.u = Math.atan2(c.z - host.z, c.x - host.x)
+              _seatC.v = c.y - host.groundY
+              if (!this._resolve(c, _seatC) && !this._reseat(c, now)) { dropped++; continue }
+            }
+            if (!this._play(c, now)) { dropped++; continue }
+            // Reared up while she is close, back to what it was doing when she leaves.
+            if (c.state === 'pause' && d2 < ALERT_M * ALERT_M) c.clip = 'alert'
           }
           const rearTo = c.clip === 'alert' ? 1 : 0
           if (c.rear !== rearTo) {

@@ -11,7 +11,7 @@ import { runHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'd3'
+export const VERSION = 'd4'
 export const TEXELS = 1025
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 

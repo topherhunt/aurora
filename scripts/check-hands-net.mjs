@@ -70,13 +70,15 @@ class StubNet {
   welcome(id) { this.id = id; this.welcomes++; this.open = true }
 }
 class StubAvatars {
-  constructor() { this.wrists = new Map() }
+  constructor() { this.wrists = new Map(); this.weights = new Map() }
   handAt(id, side, pos, quat) {
     const w = this.wrists.get(`${id}:${side}`)
     if (!w) return false
     pos.set(w[0], w[1], w[2]); quat.identity()
     return true
   }
+  // As the real one: 1 -- the arm on its grip -- unless a walk has been set up for this side.
+  armWeight(id, side) { const w = this.weights.get(`${id}:${side}`); return w === undefined ? 1 : w }
 }
 
 const build = () => {
@@ -180,11 +182,22 @@ const ME = 'aabbccdd-1111-2222-3333-444444444444'
   check(desk.y < -1000, 'the desktop hand\'s copy waits out of sight without a body to put it at')
   w.avatars.wrists.set(`${P1}:1`, [7, 1.1, 7])
   w.run(0.05)
-  check(desk.x === 7 && desk.y === 1.1 && desk.z === 7, 'with a body it is at the right wrist')
-  w.net.peers.get(P1).hands = [false, false]
+  const atWrist = (item, x, y, z) => Math.abs(item.x - (x + HOLD_OFFSET.x)) < 1e-9 && Math.abs(item.y - (y + HOLD_OFFSET.y)) < 1e-9 && Math.abs(item.z - (z + HOLD_OFFSET.z)) < 1e-9
+  check(atWrist(desk, 7, 1.1, 7), 'with a body it is in the right fist, the same offset off the wrist so the two hands agree on where a thing sits')
+  // Walking to a head it has teleported to: the copy rides the body's fist, and eases back onto the controller as the arm takes it up.
   w.avatars.wrists.set(`${P1}:0`, [8, 1.2, 8])
+  w.avatars.weights.set(`${P1}:0`, 0)
   w.run(0.05)
-  check(grip.x === 8 && grip.y === 1.2, 'a controller put down, the copy moves to the wrist')
+  check(atWrist(grip, 8, 1.2, 8), 'a controller hand whose body is still walking holds its copy in the fist, not at the grip it has not reached', `${grip.x} ${grip.y} ${grip.z}`)
+  w.avatars.weights.set(`${P1}:0`, 0.5)
+  w.run(0.05)
+  check(Math.abs(grip.x - (6.5 + HOLD_OFFSET.x)) < 1e-9 && Math.abs(grip.y - (1.1 + HOLD_OFFSET.y)) < 1e-9, 'half way up, half way between the fist and the grip', `${grip.x} ${grip.y}`)
+  w.avatars.weights.delete(`${P1}:0`)
+  w.run(0.05)
+  check(Math.abs(grip.x - (5 + HOLD_OFFSET.x)) < 1e-9 && Math.abs(grip.y - (1 + HOLD_OFFSET.y)) < 1e-9, 'and arrived, back on the controller and nothing else')
+  w.net.peers.get(P1).hands = [false, false]
+  w.run(0.05)
+  check(atWrist(grip, 8, 1.2, 8), 'a controller put down, the copy moves to the wrist')
   check(w.net.sent.length === 0, 'nothing of a peer\'s hands goes back to the relay')
   // A peer's loose thing, one of hers echoed, a lift, a thing not yet dressable.
   w.net.things.push({ loose: [['p1p1p1p1-0', slot, [-5, 1, 0, 0, 0, 0, 1], 2, P1], ['aabbccdd-9', slot, [9, 9, 9, 0, 0, 0, 1], 0, ME]] })

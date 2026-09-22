@@ -22,6 +22,12 @@
 // The shipped GLB is checked for existence and shape too, because the world
 // loads it by name.
 //
+// And, because the life is on the score (src/sim/score.js): two clients on
+// different frame rates that draw the same second differently, one joining the
+// shore mid-scuttle that crosses the rest of it differently, and a release
+// that does not reach the room, or does not put the one crab on the one spot
+// on the client it reaches (the only thing a crab sends).
+//
 // What this can NOT check: whether they look like crabs, or how the scuttle
 // reads. That needs eyes, in the world.
 
@@ -111,6 +117,17 @@ const rocks = {
 }
 const stoneUnder = (c) => rocks.blockTopAt(c.x, c.z, PERCH_MIN, false)
 const boulderOf = (c) => BOULDERS.find((b) => surfaceOf(b, c.x, c.z) > -Infinity)
+
+// The room's clock in seconds, which a crab's every pose is a pure function of. The gate walks it by the frame; the frame's length itself never reaches a crab -- see the two rates at the end.
+const DT = 1 / 72
+let T = 0
+const HEAD_Y = () => LEVEL + 1.6
+// Frames from here until `pred` holds, up to `cap` seconds; used to reach a frame with a crab doing a particular thing rather than poking one into that state.
+const windTo = (of, pred, cap = 200) => {
+  let i = 0
+  while (i++ < cap / DT && !pred()) of.update(15, HEAD_Y(), 0, (T += DT))
+  return pred()
+}
 
 // --- the shipped asset ---------------------------------------------------------
 {
@@ -229,10 +246,10 @@ crabs.place(200, 200)
 check(alive().length === 0, 'nothing away from the lake')
 {
   // The first frame empties the buffers; after that a frame with no crab uploads nothing.
-  for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, 1 / 72)
+  for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
   const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.card.instanceMatrix.version, crabs.cardHue.version].join(',')
   const v0 = versions()
-  for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, 1 / 72)
+  for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
   check(versions() === v0 && crabs.mesh.count === 0, 'and a second of frames there re-uploads no buffer', `versions ${v0}`)
 }
 crabs.place(15, 0)
@@ -240,7 +257,6 @@ const snapB = alive().map((c) => [c.x, c.z, c.size]).sort((a, b) => a[0] - b[0] 
 check(JSON.stringify(snapA) === JSON.stringify(snapB), 'placement is a pure function of the rocks', `${snapA.length} crabs`)
 
 // --- the run -------------------------------------------------------------------
-const DT = 1 / 72
 const SECONDS = 60
 const start = new Map(alive().map((c) => [c, { x: c.x, z: c.z }]))
 let offStone = 0
@@ -253,7 +269,7 @@ const lastPace = new Map()
 rocks.calls = 0
 const t0 = performance.now()
 for (let i = 0; i < SECONDS / DT; i++) {
-  crabs.update(15, LEVEL + 1.6, 0, DT)
+  crabs.update(15, LEVEL + 1.6, 0, (T += DT))
   for (const c of alive()) {
     const top = stoneUnder(c)
     if (top === -Infinity) offStone++
@@ -280,18 +296,19 @@ check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame
 check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
 
 // --- the stone moving under a seated crab ----------------------------------------
-// A rock re-seated on a re-split chunk drops or rises by more than a crab may step; a crab follows within RESEAT_EVERY frames either way, pausing or walking.
+// A rock re-seated on a re-split chunk drops or rises by more than the drawn top a crab's spell was planned against; a crab follows within RESEAT_EVERY frames either way, sitting or scuttling.
 {
   const seated = () => alive().filter((c) => Math.abs(c.y - stoneUnder(c)) < 1e-6).length
   const n = alive().length
-  const [walker, pauser] = alive()
-  walker.state = 'go'; walker.left = 10; walker.speed = SPEED[0]
-  pauser.state = 'pause'; pauser.left = 10
+  // A frame with one of each, so the re-seat is asked of a crab mid-scuttle and of one sitting still.
+  const both = () => alive().some((c) => c.state === 'go') && alive().some((c) => c.state === 'pause')
+  check(windTo(crabs, both), 'some frame has a crab crossing its rock and another sitting on theirs')
   for (const shift of [-0.45, 0.45]) {
     lift += shift
     check(seated() < n * 0.5, `the stone ${shift < 0 ? 'drops' : 'rises'} ${Math.abs(shift)} m and the crabs are left ${shift < 0 ? 'in the air' : 'in the stone'}`, `${seated()} of ${n} seated`)
-    for (let i = 0; i < RESEAT_EVERY; i++) crabs.update(15, LEVEL + 1.6, 0, DT)
-    check(seated() === n, `every crab is back on the stone within ${RESEAT_EVERY} frames, the walker (whose step is refused as a ledge) and the pauser alike`, `${seated()} of ${n}`)
+    const going = alive().filter((c) => c.state === 'go').length
+    for (let i = 0; i < RESEAT_EVERY; i++) crabs.update(15, LEVEL + 1.6, 0, (T += DT))
+    check(seated() === n, `every crab is back on the stone within ${RESEAT_EVERY} frames, the ${going} scuttling and the ${n - going} sitting alike`, `${seated()} of ${n}`)
   }
   check(lift === 0 && seated() === n, 'and on it again once the stone is back')
 }
@@ -299,15 +316,14 @@ check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instan
 // --- the ear hears the crabs -----------------------------------------------------
 // bodies() is what the ambience reads for the crawl loop: the slots themselves, `speed > 0` on the ones on the move, a pause at speed 0.
 {
-  const [walker, pauser] = alive()
-  walker.state = 'go'; walker.left = 10; walker.speed = SPEED[0]
-  pauser.state = 'pause'; pauser.left = 10; pauser.speed = 0
+  windTo(crabs, () => alive().some((c) => c.state === 'go') && alive().some((c) => c.state === 'pause'))
+  const walker = alive().find((c) => c.state === 'go')
+  const pauser = alive().find((c) => c.state === 'pause')
   const listed = crabs.bodies([])
   check(listed.length === alive().length && listed.includes(walker) && walker.speed > 0, 'every seated crab is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
   check(listed.includes(pauser) && pauser.speed === 0, 'the pauser listed at speed 0')
-  walker.left = 0
-  crabs.update(15, LEVEL + 1.6, 0, DT)
-  check(walker.state === 'pause' && walker.speed === 0 && crabs.bodies([]).includes(walker), 'its spell over, the walker pauses at speed 0 and stays listed')
+  windTo(crabs, () => walker.state !== 'go')
+  check(walker.state === 'pause' && walker.speed === 0 && crabs.bodies([]).includes(walker), 'its scuttle over, the walker sits down at speed 0 and stays listed')
   crabs.batch.visible = false
   check(crabs.bodies([]).length === 0, 'a hidden layer lists nobody')
   crabs.batch.visible = true
@@ -376,7 +392,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
     const k = new Crabs(scene, height, water, { seed, rocks, assets: asset })
     k.setCard(null)
     k.place(15, 0)
-    k.update(...HEAD, DT)
+    k.update(...HEAD, T)
     const e = k.mesh.instanceMatrix.array, ce = k.card.instanceMatrix.array
     for (let i = 0; i < k.mesh.count; i++) near.push(dist(e, i))
     for (let i = 0; i < k.card.count; i++) {
@@ -400,7 +416,7 @@ live = []
 crabs.place(15, 0)
 check(alive().length === 0, 'no rocks, no crabs')
 live = BOULDERS
-for (let i = 0; i < 400; i++) crabs.update(15, LEVEL + 1.6, 0, DT)
+for (let i = 0; i < 400; i++) crabs.update(15, LEVEL + 1.6, 0, (T += DT))
 check(alive().length === snapA.length, 'a tile whose rocks landed after the scan gets its crabs on the rescan', `${alive().length} of ${snapA.length}`)
 
 // --- from above the surface, a sunk crab is neither drawn nor stepped ----------
@@ -418,16 +434,68 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   const sunk = alive(k).filter((c) => c.y < c.perch.level)
   const dry = alive(k).filter((c) => !(c.y < c.perch.level))
   check(sunk.every((c) => c.y < LEVEL) && dry.every((c) => c.y >= LEVEL), 'every crab knows its lake level, and whether it is under it', `${sunk.length} sunk, ${dry.length} dry`)
-  const pose = sunk.map((c) => [c, c.x, c.y, c.z, c.left, c.phase])
-  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL + 1.6, 0, DT, false)
+  const pose = sunk.map((c) => [c, c.x, c.y, c.z, c.elapsed, c.phase])
+  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL + 1.6, 0, (T += DT), false)
   check(written() === dry.length, 'with her head in the air only the dry crabs are written', `${written()} of ${alive(k).length}`)
-  check(pose.every(([c, x, y, z, left, phase]) => c.x === x && c.y === y && c.z === z && c.left === left && c.phase === phase), 'and no sunk crab moves or counts the time')
+  check(pose.every(([c, x, y, z, elapsed, phase]) => c.x === x && c.y === y && c.z === z && c.elapsed === elapsed && c.phase === phase), 'and no sunk crab moves or counts the time')
   check(k.bodies([]).length === dry.length && !k.bodies([]).some((c) => sunk.includes(c)), 'and the ear is offered the dry crabs alone', `${k.bodies([]).length} listed`)
-  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL - 1, 0, DT, true)
+  for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL - 1, 0, (T += DT), true)
   check(written() === alive(k).length, 'under, every crab is written again', `${written()} of ${alive(k).length}`)
-  check(pose.some(([c, x, y, z, left]) => c.left !== left), 'and the sunk ones pick up where they paused')
+  check(pose.some(([c, x, y, z, elapsed]) => c.elapsed !== elapsed), 'and the sunk ones pick their spell back up when she goes under')
   check(k.bodies([]).length === alive(k).length, 'and the ear is offered all of them')
   k.dispose()
+}
+
+// --- two clients see the one shore ----------------------------------------------
+// Before the hands below: `taken` is a module-global, and a crab caught there would be missing from every shore rolled after.
+{
+  const pose = (of) => alive(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.yaw.toFixed(9)}|${c.state}`).sort().join('\n')
+  const make = () => new Crabs(scene, height, water, { seed: 4, rocks, assets: asset })
+  const slow = make(); slow.place(15, 0, 4000)
+  const fast = make(); fast.place(15, 0, 4000)
+  // One at 24 fps from the shore's first second; one at 144 with a stutter every seventh frame, joining at the same second.
+  let a = 4000
+  slow.update(15, HEAD_Y(), 0, a)
+  for (let k = 0; k < 24 * 90; k++) { a += 1 / 24; slow.update(15, HEAD_Y(), 0, a) }
+  slow.update(15, HEAD_Y(), 0, 4090)
+  let b = 4000
+  fast.update(15, HEAD_Y(), 0, b)
+  for (let k = 0; k < 900; k++) { b += k % 7 === 0 ? 0.4 : 1 / 144; fast.update(15, HEAD_Y(), 0, b) }
+  fast.update(15, HEAD_Y(), 0, 4090)
+  check(pose(slow) === pose(fast) && alive(slow).length > 0, 'two clients on different frame rates draw the same shore at the same world second', `${alive(slow).length} crabs`)
+  const joined = make()
+  joined.place(15, 0, 4090)
+  joined.update(15, HEAD_Y(), 0, 4090)
+  check(pose(joined) === pose(slow), 'and so does one meeting the shore at that second, from its first frame')
+  // One that walks up mid-scuttle, a spell's width later, still agrees.
+  const late = make()
+  late.place(15, 0, 4103.5)
+  late.update(15, HEAD_Y(), 0, 4103.5)
+  slow.update(15, HEAD_Y(), 0, 4103.5)
+  check(pose(late) === pose(slow), 'and one arriving in the middle of a scuttle crosses the rest of it the same')
+  check(alive(slow).some((c) => c.state === 'go'), 'and a crab was mid-scuttle at that second', `${alive(slow).filter((c) => c.state === 'go').length} of ${alive(slow).length}`)
+  check(slow.pending().length === 0 && typeof slow.applyLured !== 'function', 'and a crab on its plan owes the room nothing: no anchor, no lured set')
+
+  // The one thing a crab does send: the release, without which a peer watches it go into a hand and never land.
+  const loosePose = (of) => of.loose.map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.yaw.toFixed(9)}|${c.state}|${c.size.toFixed(9)},${c.hue.toFixed(9)}`).sort().join('\n')
+  const rec = { kind: 'crab', size: 0.337, attrs: { aHue: [0.21] } }
+  check(slow.release(rec, 15.0004, LEVEL, 0.0004, { x: 13.0004, y: HEAD_Y(), z: 0 }, 4103.5), 'a crab let go here is let go')
+  const owed = slow.pending()
+  check(owed.length === 1 && slow.pending().length === 0, 'and is owed to the room once', `${owed.length} anchor`)
+  const drop = owed[0]
+  check(drop[0].startsWith('cb:') && /^[a-z0-9:,-]{1,32}$/.test(drop[0]) && drop[7] === 'drop' && drop[8] === null && Number.isInteger(drop[6]), 'as one anchor in mode drop under the crabs\' prefix', drop[0])
+  check(JSON.stringify(drop).length <= 256, 'inside the relay\'s 256 bytes', `${JSON.stringify(drop).length} bytes`)
+  drop[8] = 'peer'
+  late.apply(drop, 4103.5)
+  check(late.loose.length === 1 && late.pending().length === 0, 'the peer told of it lets the same crab go, and owes it nobody')
+  check(loosePose(late) === loosePose(slow), 'at the same spot, the same size and hue, on the same key', slow.loose[0].key)
+  late.apply(drop, 4103.5)
+  check(late.loose.length === 1, 'and a second telling -- a fresh welcome -- lets no second crab go')
+  slow.apply(drop, 4103.5)
+  check(slow.loose.length === 1, 'nor does her own drop come back to her')
+  for (let k = 0; k < 24 * 20; k++) { const t = 4103.5 + k / 24; slow.update(15, HEAD_Y(), 0, t); late.update(15, HEAD_Y(), 0, t) }
+  check(loosePose(late) === loosePose(slow) && slow.loose[0].x !== 15.0004, 'and twenty seconds on they are watching the one crab run the one way', `${(slow.loose[0].x - 15.0004).toFixed(2)} m off`)
+  slow.dispose(); fast.dispose(); joined.dispose(); late.dispose()
 }
 
 // --- her hand: a crab taken, the perch never regrowing it, one let go of scuttling off --
@@ -444,7 +512,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   }
   check(k !== null, 'some seed seats a crab on the beach', `seed ${seed}`)
   const head = { x: 15, y: LEVEL + 1.6, z: 0, yaw: 0 }
-  k.update(head.x, head.y, head.z, DT, false)
+  k.update(head.x, head.y, head.z, (T += DT), false)
   const dry = alive(k).filter((c) => c.y >= LEVEL)
   const c = dry[0]
   const perch = c.perch
@@ -489,14 +557,14 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   let yawTurns = 0
   let yaw = loose.yaw
   for (let i = 0; i < 5 * 72; i++) {
-    k.update(head.x, head.y, head.z, DT, false)
+    k.update(head.x, head.y, head.z, (T += DT), false)
     if (loose.yaw !== yaw) { yawTurns++; yaw = loose.yaw }
   }
   const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
   check(d1 > d0 + 2 && yawTurns >= 2, 'it scuttles away, jinking as it goes', `${(d1 - d0).toFixed(1)} m further off in 5 s, ${yawTurns} turns`)
   check(k.bodies([]).includes(loose), 'and the ear is offered it')
   let frames = 0
-  while (k.loose.length > 0 && frames++ < 120 * 72) k.update(head.x, head.y, head.z, DT, false)
+  while (k.loose.length > 0 && frames++ < 120 * 72) k.update(head.x, head.y, head.z, (T += DT), false)
   check(k.loose.length === 0 && !loose.loose, `and it is forgotten past RADIUS ${RADIUS}`, `${(frames / 72).toFixed(1)} s`)
   k.dispose()
 }

@@ -29,7 +29,7 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, RUN_FROM_M, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M,
+  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, WALK_MAX_RATE, SNAP_HEIGHTS, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M,
 } from '../src/v2/render/avatar-rig.js'
 import { WALK } from '../src/v2/walk.js'
 import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PeerAvatars, handGeometry, ownHand } from '../src/v2/render/avatar.js'
@@ -155,7 +155,7 @@ const poseOf = (head, headQuat, grips) => [
   head.x, head.y, head.z, headQuat.x, headQuat.y, headQuat.z, headQuat.w,
   ...grips.flatMap((g) => [g.pos.x, g.pos.y, g.pos.z, g.quat.x, g.quat.y, g.quat.z, g.quat.w]),
 ]
-const run = (b, pose, hands, seconds) => { for (let t = 0; t < seconds; t += DT) b.body.drive(pose, hands, DT) }
+const run = (b, pose, hands, seconds, foot = null) => { for (let t = 0; t < seconds; t += DT) b.body.drive(pose, hands, DT, foot) }
 
 // --- at rest: the hands on the grips, the head where the headset is ---------------------
 for (const s of shipped.filter((s) => VILLAGERS.includes(s.id))) {
@@ -239,15 +239,17 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.grips[i].pos))
   check(off.every((d) => d < 2e-3), 'with the hands still on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
   run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
-  // A jump: the body walks after it, at the walk's ground speed, and settles.
-  const step = rest.head.clone().add(new THREE.Vector3(TELEPORT_M + 0.3, 0, 0))
+  // A hop: the body walks after it, brisk enough to be there inside the second, and settles.
+  const hop = TELEPORT_M + 0.3
+  const step = rest.head.clone().add(new THREE.Vector3(hop, 0, 0))
   const pose = poseOf(step, rest.headQuat, rest.grips)
   body.drive(pose, [true, true], DT)
   check(body.gliding && puppet.current === puppet.actions.get('walk') && !puppet.planted, `a head jumped more than ${TELEPORT_M} m in a frame sets the body walking, its feet the clip's`)
+  const pace = Math.max(body.walkSpeed, hop / MAX_TRAVEL_S)
   run(b, pose, [true, true], 0.1)
   const moved = body.x
-  check(Math.abs(moved - body.walkSpeed * (0.1 + DT)) < body.walkSpeed * DT * 1.5, 'at the walk clip\'s own ground speed', `${moved.toFixed(3)} m in ${(0.1 + DT).toFixed(3)} s at ${body.walkSpeed.toFixed(3)} m/s`)
-  check(Math.abs(puppet.actions.get('walk').timeScale - 1) < 1e-6 && Math.abs(body.yaw) < 1e-9, 'the clip at its own rate, and the body still facing the head, this short of a trip')
+  check(Math.abs(moved - pace * (0.1 + DT)) < pace * DT * 1.5, `at the pace that has it there inside the ${MAX_TRAVEL_S} s`, `${moved.toFixed(3)} m in ${(0.1 + DT).toFixed(3)} s at ${pace.toFixed(3)} m/s`)
+  check(Math.abs(puppet.actions.get('walk').timeScale - pace / body.walkSpeed) < 1e-6 && Math.abs(body.yaw) < 1e-9, `the walk clip sped to that pace to keep the stride, short of the ${WALK_MAX_RATE}x that would make it a run, and the body square to the head, the hop being straight ahead of it`, `clip at ${(pace / body.walkSpeed).toFixed(2)}x`)
   run(b, pose, [true, true], 3)
   check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.abs(body.x - (TELEPORT_M + 0.3)) < 1e-6 && body.hold === 1, `and settles to idle under the head, holding on`, `at ${body.x.toFixed(4)}`)
   const slid2 = b.at(neckName).sub(neck0)
@@ -282,28 +284,35 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(Math.abs(b.turn(topName).angleTo(restTop.clone().premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), body.yaw))) - (0.9 - body.yaw)) < 1e-3, 'the neck keeping the rest of the twist')
 }
 
-// --- a teleport: the body runs there, arms and head let go on the way -------------------
+// --- a teleport: the body runs there inside the second, arms and head let go on the way ---
 {
   const b = makeBody(fisher, stature)
   const { body, puppet } = b
   const rest = restOf(b, 0, 0, 0)
   run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
-  const there = restOf(b, 20, -12, 0)
+  // Six metres: a full teleport at her own size, and well inside the snap.
+  const there = restOf(b, 4.8, -3.6, 0)
   const pose = poseOf(there.head, there.headQuat, there.grips)
   body.drive(pose, [true, true], DT)
-  check(body.gliding && puppet.current === puppet.actions.get('run'), `a head ${RUN_FROM_M} m or more away sets the body running`)
-  run(b, pose, [true, true], 1)
-  const travel = Math.atan2(12, 20)
+  check(body.gliding && puppet.current === puppet.actions.get('run'), `a head 6 m off -- more than the ${WALK_MAX_RATE} walks the second would hold -- sets the body running`, `the walk turns over at ${(body.walkSpeed * WALK_MAX_RATE * MAX_TRAVEL_S).toFixed(2)} m`)
+  const pace = Math.max(body.runSpeed, 6 / MAX_TRAVEL_S)
+  check(Math.abs(body.pace - pace) < 1e-9 && Math.abs(puppet.actions.get('run').timeScale - pace / body.runSpeed) < 1e-9, `the pace is the run's or the ${MAX_TRAVEL_S} s deadline's, whichever is faster, and the feet keep it: the clip at pace over its own`, `${pace.toFixed(2)} m/s, run ${body.runSpeed.toFixed(2)}, clip at ${puppet.actions.get('run').timeScale.toFixed(2)}x`)
+  run(b, pose, [true, true], 0.8)
+  const travel = Math.atan2(3.6, 4.8)
   check(body.hold === 0 && body.arms.every((a) => a.w === 0), `more than ${IK_OFF_M} m from its head it has let go of the head and both grips`)
-  check(body.turning && Math.abs(body.yaw - travel) < 0.01, `and, more than ${FACE_TRAVEL_M} m from it, faces the way it runs`, `yaw ${body.yaw.toFixed(3)} travel ${travel.toFixed(3)}`)
-  const pace = Math.max(body.runSpeed, Math.hypot(20, 12) / MAX_TRAVEL_S)
-  check(Math.abs(body.pace - pace) < 1e-9 && Math.abs(puppet.actions.get('run').timeScale - pace / body.runSpeed) < 1e-9, `the pace is the run's or the ${MAX_TRAVEL_S} s cap's, whichever is faster, and the feet keep it: the clip at pace over its own`, `${pace.toFixed(2)} m/s, run ${body.runSpeed.toFixed(2)}, clip at ${puppet.actions.get('run').timeScale.toFixed(2)}x`)
-  run(b, pose, [true, true], MAX_TRAVEL_S - 1)
-  check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.hypot(body.x - 20, body.z + 12) <= GLIDE_STOP_M, `arrived and idle within ${MAX_TRAVEL_S} s`, `at (${body.x.toFixed(3)}, ${body.z.toFixed(3)})`)
+  check(body.turning && Math.abs(body.yaw - travel) < 0.02, `and, more than ${FACE_TRAVEL_M} m from it, faces the way it runs`, `yaw ${body.yaw.toFixed(3)} travel ${travel.toFixed(3)}`)
+  run(b, pose, [true, true], 0.5)
+  check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.hypot(body.x - 4.8, body.z + 3.6) <= GLIDE_STOP_M, `arrived and idle within ${MAX_TRAVEL_S} s`, `at (${body.x.toFixed(3)}, ${body.z.toFixed(3)})`)
   run(b, pose, [true, true], 3)
   check(body.hold === 1 && !body.turning && Math.abs(body.yaw) < YAW_SETTLE, 'then takes the head and grips back up and turns back to the gaze', `yaw ${body.yaw.toFixed(3)}`)
   const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(there.grips[i].pos))
   check(off.every((d) => d < 2e-3), 'the hands back on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
+  // Past the snap nothing walked that far: a head a room away puts the body there in the frame, no trip.
+  const snap = SNAP_HEIGHTS * body.height * body.k
+  const gone = restOf(b, 20, -12, 0)
+  body.drive(poseOf(gone.head, gone.headQuat, gone.grips), [true, true], DT)
+  // Under the head, not on it: the feet sit a neck's offset back, turned by whatever yaw the body kept.
+  check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.hypot(body.x - 20, body.z + 12) < 0.02, `a head jumped ${Math.hypot(15.2, 8.4).toFixed(1)} m, past the ${SNAP_HEIGHTS} statures, is stood under rather than run to`, `snap at ${snap.toFixed(2)} m, at (${body.x.toFixed(3)}, ${body.z.toFixed(3)})`)
   // Gone and back: it stands afresh where the head is, without walking.
   body.placed = false
   const back = restOf(b, -5, 4, 2)
@@ -356,6 +365,33 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(!body.gliding && body.y === 2 && puppet.planted, 'arrived on a shelf 2 m up, it stands on the shelf', `y ${body.y}`)
 }
 
+// --- a crouch beside a step: the ground is read where it stands upright ----------------
+// The lean carries the feet back by its reach, so a body that read its ground from where
+// the lean had put them would pick the next frame's lean off that ground: standing anywhere
+// within the reach of a step, it takes the step's two heights one a frame, for ever. Thirty
+// centimetres of buzz on a peer at a rock's edge or a boat's gunwale, once per frame.
+{
+  const STEP = 0.6
+  const walk = { heightAt: (x, z, y) => (x <= 0 ? 0 : (y === undefined || y + WALK.reach >= STEP ? STEP : 0)) }
+  let worst = 0
+  let worstX = 0
+  let crouched = 0
+  for (let hx = -0.5; hx <= 0.5; hx += 0.01) {
+    const b = makeBody(fisher, stature, walk)
+    const rest = restOf(b, hx, 0, 0)
+    // The headset 30 cm under the standing eye line: a peer whose own head sits lower than the villager it wears.
+    const pose = poseOf(rest.head.clone().setY(STEP + EYE_LINE * stature - 0.3), rest.headQuat, rest.grips)
+    run(b, pose, [true, true], 2)
+    const ys = []
+    for (let i = 0; i < 30; i++) { b.body.drive(pose, [true, true], DT); ys.push(b.body.y) }
+    const swing = Math.max(...ys) - Math.min(...ys)
+    if (swing > worst) { worst = swing; worstX = hx }
+    if (b.body.lean > 0) crouched++
+  }
+  check(crouched > 0, 'swept across a step with the headset under the eye line, the body does crouch somewhere along it', `${crouched} of 101 head positions leaning`)
+  check(worst === 0, 'and its feet settle at every one of them -- the crouch never moves the ground it is measured off', `worst swing ${(worst * 100).toFixed(1)} cm at head x ${worstX.toFixed(2)}`)
+}
+
 // --- in the air: a flight, and a boat's sole over a lake bed ---------------------------
 {
   const b = makeBody(fisher, stature)
@@ -387,6 +423,38 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(body.y === -2 && puppet.planted, 'a body on the lake bed under a boat stands on the bed', `y ${body.y}`)
   run(b, at(0), [true, true], 1)
   check(!body.aloft && body.y === 0 && puppet.planted, 'and when she boards, her head over the sole, the body is lifted onto the sole and stands there', `y ${body.y}`)
+}
+
+// --- a told ground: the sender's feet beat this client's read of the surface ----------
+// A peer's feet are not on the wire unless the sender sends them, and reconstructing them
+// from a head and a villager's neck lands them a setback from the truth. Over a boat's
+// gunwale that setback is the difference between the sole and the lake bed: the body drops
+// through the boards, and the walk surface's reach can never lift it back. A told ground is
+// the ground, and no read of the surface under it is consulted at all.
+{
+  // A hull whose pad ends at x = 0.5, its sole at 0.4 over a bed 2 m down -- past WALK.reach from the sole.
+  const SOLE = 0.4
+  const BED = -1.6
+  const walk = { heightAt: (x, z, y) => {
+    if (Math.abs(x) > 0.5) return BED
+    return y === undefined || y + WALK.reach >= SOLE ? SOLE : BED
+  } }
+  // Seated on a thwart: the sender's headset well under the villager's standing eye line, which is the shape that sinks.
+  const b = makeBody(fisher, stature, walk)
+  const rest = restOf(b, 0, 0, 0)
+  const seated = (x) => poseOf(new THREE.Vector3(x, SOLE + 0.95, 0), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setX(g.pos.x + x).setY(SOLE + 0.45), quat: g.quat })))
+  run(b, seated(0), [true, true], 2, SOLE)
+  check(b.body.y === SOLE && !b.body.aloft, 'a peer that sends its feet stands on them, seated amidships', `y ${b.body.y}`)
+  run(b, seated(0.5), [true, true], 3, SOLE)
+  check(b.body.y === SOLE && !b.body.aloft, 'and still stands on them carried to the bow, where its guessed-at feet are over the side', `y ${b.body.y}`)
+  check(Math.min(...b.body.dys) > -1, 'and neither leg reaches for the bed the foot beside it samples', `dys ${b.body.dys.map((d) => d.toFixed(2)).join(' ')}`)
+  // The same trip with nothing told, which is what the wire used to carry: the body drops through the boards.
+  const c = makeBody(fisher, stature, walk)
+  run(c, seated(0), [true, true], 2)
+  const amidships = c.body.y
+  run(c, seated(0.5), [true, true], 3)
+  check(amidships === SOLE && c.body.y < SOLE - 0.3, 'guessing at the ground instead, the same peer drops through the boards at the bow',
+    `amidships ${amidships.toFixed(2)} -> bow ${c.body.y.toFixed(2)}`)
 }
 
 // --- release --------------------------------------------------------------------------

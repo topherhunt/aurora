@@ -183,36 +183,64 @@ const bootSay = (html) => {
 // line written before a step is never painted: the browser gets no frame until
 // bootDone, and the overlay sits on "loading world/layers.json" for the whole
 // build. bootStep closes the previous step's timer, writes the running
-// breakdown, then yields ONE frame so what it wrote is on screen while the
-// step runs. The step's clock starts after the yield, so a render the yield
-// lets through (flat mode draws the half-built scene until `ready`) is not
-// charged to the step that follows it. The frame is raced against a timeout
-// because a hidden tab never fires requestAnimationFrame, and boot must not
-// stall in a tab nobody is looking at.
+// breakdown, then yields a frame so what it wrote is on screen while the step
+// runs. The step's clock starts after the yield, so a render the yield lets
+// through (flat mode draws the half-built scene until `ready`) is not charged
+// to the step that follows it. The frame is raced against a timeout because a
+// hidden tab never fires requestAnimationFrame, and boot must not stall in a
+// tab nobody is looking at.
+//
+// A YIELD IS NOT FREE, so `YIELD_AFTER_MS` caps how stale the overlay may go
+// rather than buying a frame per step: half the build's steps run under 5 ms
+// and a frame costs 13.9 ms on a 72 Hz headset whatever the step did, so a run
+// of cheap ones collapses into one frame and only what could hold the screen
+// gets its own. No timer here reports that wait -- it falls between the steps.
 const bootSteps = []
 let bootStepName = null
 let bootStepAt = 0
+let bootUnyielded = 0
+const YIELD_AFTER_MS = 16
 const bootFmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`)
 async function bootStep(name) {
-  if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: performance.now() - bootStepAt })
+  if (bootStepName !== null) {
+    const ms = performance.now() - bootStepAt
+    bootSteps.push({ name: bootStepName, ms })
+    bootUnyielded += ms
+  }
   bootStepName = name
   if (bootSub) {
     bootSub.innerHTML =
       bootSteps.map((s) => `${s.name} ${bootFmtMs(s.ms)}`).concat(name === null ? [] : [`<b>${name} ...</b>`]).join(' &middot; ')
   }
-  await new Promise((resolve) => {
-    requestAnimationFrame(() => setTimeout(resolve, 0))
-    setTimeout(resolve, 100)
-  })
+  if (bootUnyielded >= YIELD_AFTER_MS || bootSteps.length === 0) {
+    bootUnyielded = 0
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0))
+      setTimeout(resolve, 100)
+    })
+  }
   bootStepAt = performance.now()
 }
-const bootDone = async () => {
-  await bootStep(null)
+/**
+ * Close the running step and print the build's table.
+ *
+ * EVERY build calls this, the first and each swap after it. A step left open
+ * runs until the next `bootStep`, which for a swap is the next room -- so the
+ * whole of her stay in this room would be charged to the step that finished
+ * building it.
+ */
+function bootReport() {
+  if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: performance.now() - bootStepAt })
+  bootStepName = null
   const total = bootSteps.reduce((s, x) => s + x.ms, 0)
   console.log(
     `[v2] boot ${bootFmtMs(total)} in ${bootSteps.length} steps: ` +
       bootSteps.slice().sort((a, b) => b.ms - a.ms).map((s) => `${s.name} ${bootFmtMs(s.ms)}`).join(', ')
   )
+}
+const bootDone = async () => {
+  await bootStep(null)
+  bootReport()
   if (boot) boot.classList.add('gone')
 }
 // A failed boot must READ as a failed boot. The overlay covers the canvas, so
@@ -2376,8 +2404,8 @@ function applyAnimalVisibility() {
 function placeAnimals(cx, cz) {
   if (fish && animalOn('fish')) fish.place(cx, cz)
   if (frogs && animalOn('frogs')) frogs.place(cx, cz)
-  if (crabs && animalOn('crabs')) crabs.place(cx, cz)
-  if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz)
+  if (crabs && animalOn('crabs')) crabs.place(cx, cz, clock.seconds)
+  if (butterflies && animalOn('butterflies')) butterflies.place(cx, cz, clock.seconds)
   if (grasshoppers && animalOn('grasshoppers')) grasshoppers.place(cx, cz)
   if (fireflies && animalOn('fireflies')) fireflies.place(cx, cz)
   if (spiders && animalOn('spiders')) spiders.place(cx, cz)
@@ -2463,7 +2491,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   }
   grassStyle = style
   grass = new Grass(scene, height, waterSurfaces, layers.paths, propTextures, {
-    seed: SEED, style, tint: terrainTint, rocks, ground: terrain, layers, ...opts,
+    seed: SEED, style, tint: terrainTint, rocks, ground: terrain, layers, bounds: roomBounds, ...opts,
   })
   // The cache key carries the style: the two materials compile DIFFERENT
   // programs (one billboards, one tiles), and a shared key would hand the second
@@ -2474,13 +2502,13 @@ function buildGrass(style, cx, cz, opts = {}) {
   // A rebuilt bed is a new mesh and arrives visible. Without this, changing
   // the density while the grass row is OFF turns the grass back on.
   grass.batch.visible = questToggles.grass
-  if (propLayersReady) grass.bakeCards(renderer)
+  if (propLayersReady) once(`grass-${style}`, () => grass.bakeCards(renderer))
   const gs = grass.stats
   const gr = gs.rejected
   console.log(
     `[v2] grass (${gs.style}) ${gs.placed} of ${gs.samples} placed over ${gs.tiles} tiles in ` +
     `${gs.placeMs.toFixed(0)} ms (${gs.density}/m^2 to ${gs.fullRadius} m, thinning ^${gs.falloff} to ` +
-    `${gs.radius} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
+    `${gs.radius.toFixed(0)} m, pool ${gs.used}/${gs.pool}; dropped: ${gr.elev} elev, ${gr.slope} slope, ` +
     `${gr.water} water, ${gr.snow} snow, ${gr.sand} sand, ${gr.path} path)`
   )
 }
@@ -2509,6 +2537,14 @@ const VILLAGE_POND = { clarity: 0.7, clarityAngle: 15 }
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
 let roomSpec = null
 let roomHeightmap = null
+// THE DISC THIS ROOM IS INSIDE, or null for the open world. A village's
+// heightmap is one 128 m tile repeated across the whole 8 km map
+// (rooms/village.js buildHeightmap), so a scatter left to its own draw radius
+// fills hundreds of copies of the hollow with a wood she can never reach and
+// never see -- 27k trees over 11k tiles for a bowl 60 m across. Every tiled bed
+// takes it and grows no tile outside it (render/tile-pool.js). Module state
+// rather than a local, because buildGrass rebuilds the bed from the console.
+let roomBounds = null
 // Counts the builds, so a bake or the sound landing after the room it was for has gone does nothing.
 let roomBuild = 0
 // Resolves true once the clips are in, false if one failed -- and then the frame loop stays silent for good; see the sound step.
@@ -2632,20 +2668,39 @@ async function bootWorld() {
   await bootDone()
 }
 
+// WHAT THE SHARED ATLAS ALREADY HOLDS. The four scatter bakes and the rock bake
+// photograph into `propTextures`, which is built once at boot and OUTLIVES a
+// room swap -- and every one of them is a pure function of its bank and a pinned
+// seed, so the second room's photographs would be byte-for-byte the first's.
+// They are the most expensive thing in the boot (a readRenderTargetPixels stall
+// per view), so walking into a glade from the overworld paid for all of them
+// twice. Keyed by what the picture is OF: the grass bed's style decides whether
+// its layer holds tufts or nothing at all, so it carries the style.
+const atlasBaked = new Set()
+/** `bake()` the first time this atlas picture is asked for, and its answer; null on every later room. */
+function once(key, bake) {
+  if (atlasBaked.has(key)) return null
+  const out = bake()
+  atlasBaked.add(key)
+  return out
+}
+
 /** The far cards, once the atlas' images are in: every bake that reads the images, for the room standing now. */
 function bakeImpostors() {
   // The images can land mid-swap, with no room standing; the next room bakes at its own end.
   if (!trees) return
-  const baked = trees.bakeCards(renderer)
-  ferns.bakeCards(renderer)
-  grass.bakeCards(renderer)
-  mushrooms.bakeCards(renderer)
+  const baked = once('trees', () => trees.bakeCards(renderer))
+  once('ferns', () => ferns.bakeCards(renderer))
+  once(`grass-${grassStyle}`, () => grass.bakeCards(renderer))
+  once('mushrooms', () => mushrooms.bakeCards(renderer))
   // The rock cards: one photograph per SHAPE in the bank, the boulder and the
   // cap. Unlike the four above this is not a method on the scatter, because
   // there is nothing per-bed about it -- a bed picks a shape and the shape's
   // picture serves every bed that picked it, so it lives on the bank. See
   // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
-  const rockCards = bakeRockImpostor(renderer, propTextures)
+  const rockCards = once('rocks', () => bakeRockImpostor(renderer, propTextures))
+  // NOT on that list: the hearth builds a card MESH of its own each time, so its
+  // bake is per-hearth and not per-atlas.
   if (hearth) {
     const h = hearth.bakeCard(renderer)
     console.log(`hearth impostor baked: luma ${h.meanLuma.toFixed(3)} cover ${h.coverage.toFixed(3)} ${h.width.toFixed(2)} x ${h.height.toFixed(2)} m`)
@@ -2654,10 +2709,12 @@ function bakeImpostors() {
   // right, and there is nowhere else it can be taken: the bake needs a live
   // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
   // for what these numbers are supposed to be.
-  console.log(
-    'tree impostors baked:',
-    baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
-  )
+  if (baked) {
+    console.log(
+      'tree impostors baked:',
+      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+    )
+  }
   // Same instrument, same reason. A rock card is a grey blob, which makes
   // coverage the number that matters more than luma here: it says how much of
   // the quad is stone rather than hole, and a card whose coverage collapses is
@@ -2668,13 +2725,15 @@ function bakeImpostors() {
   // rock-bank.js), and a plate seen down its own axis fills far more of its
   // slice than anything seen broadside -- which is the whole reason it is shot
   // that way, and would read as an anomaly next to an unlabelled boulder.
-  console.log(
-    'rock impostors baked:',
-    rockCards
-      .map((b) => `${b.name} (${b.card}) luma ${b.meanLuma.toFixed(3)} `
-        + `cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
-      .join(', ')
-  )
+  if (rockCards) {
+    console.log(
+      'rock impostors baked:',
+      rockCards
+        .map((b) => `${b.name} (${b.card}) luma ${b.meanLuma.toFixed(3)} `
+          + `cover ${b.coverage.toFixed(3)} layer ${b.layer}`)
+        .join(', ')
+    )
+  }
 }
 
 /**
@@ -2728,22 +2787,47 @@ async function bootRoom(room, site) {
     camera.add(blackout)
   }
   ready = false
+  // The wait she meets at a mouth, split three ways, because only the middle of
+  // it is the room build the boot table breaks down: the fade she watches, the
+  // teardown of the room she is leaving, and the build of the one she enters.
+  const t0 = performance.now()
   await fade(1)
   const held = {}
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
     if (rec !== null) held[key] = hands.pack(rec)
   }
+  const t1 = performance.now()
   disposeRoom()
   const at = site === null ? null : { x: site.x + site.nx * ARRIVE_M, z: site.z + site.nz * ARRIVE_M }
+  const t2 = performance.now()
   const { spawn } = await buildRoom(room, at)
+  const t3 = performance.now()
   const face = site ?? roomSpec.exit
   faceAlong(face.nx, face.nz)
   restoreHeld(held)
   logSceneCensus()
   ready = true
-  console.log(`[v2] room: ${room.id} at ${spawn.x.toFixed(1)}, ${spawn.z.toFixed(1)}`)
+  console.log(
+    `[v2] room: ${room.id} at ${spawn.x.toFixed(1)}, ${spawn.z.toFixed(1)}` +
+      ` -- fade ${bootFmtMs(t1 - t0)}, teardown ${bootFmtMs(t2 - t1)}, build ${bootFmtMs(t3 - t2)}`
+  )
   await fade(0)
+}
+
+// The swap without the walk: `v2enter()` into the glade by the mouth she last
+// came in by (or a named door key), `v2enter(null)` back out. What the console
+// needs to time a room swap, which is the wait she actually complains about --
+// a cold page load is the app coming up, and the overworld pays more of it.
+window.v2enter = (key = cameInBy?.key ?? 'hollow:160.0:-356.0') => {
+  if (key === null) {
+    const by = cameInBy
+    cameInBy = null
+    return bootRoom(ROOMS.overworld, by)
+  }
+  const [, x, z] = key.split(':').map(Number)
+  cameInBy = { key, x, y: 0, z, nx: 1, nz: 0, r: 8 }
+  return bootRoom(ROOMS.leafkin, null)
 }
 
 /** The rig turned so her gaze runs along (fx, fz), wherever her head is turned within it. */
@@ -2771,6 +2855,20 @@ async function buildRoom(room, at) {
   // shared constant (terrain/worker.js), so a room seeded otherwise would draw
   // one ground and collide with another.
   const seed = SEED
+  // EVERY GEN-PROP BANK AT ONCE, awaited where it is used. Each is a GLB fetch
+  // and a texture decode that runs off the main thread, so taken in turn down
+  // the build they queue behind one another with the CPU idle: the mouth's,
+  // last in line, waited the better part of a second for a decode that could
+  // have run while the village was being rolled.
+  const banks = {
+    deadwood: loadDeadwoodBank(),
+    bones: loadBonesBank(),
+    carrots: loadCarrotsBank(),
+    rowboats: loadRowboatsBank(),
+    mouth: loadMouthBank(),
+    house: room.village ? loadHouseBank() : null,
+    lamp: room.village ? loadLampBank() : null,
+  }
   let heightmap
   // The rock bank a village's shell is cut from; the rocks share it below.
   let bank = null
@@ -2778,7 +2876,7 @@ async function buildRoom(room, at) {
     bootSay('building the village ...')
     await bootStep('village')
     bank = buildRockBank()
-    const house = (await loadHouseBank()).bounds
+    const house = (await banks.house).bounds
     const spec = rollVillage(villageSeed(), house)
     shell = new Shell(scene, bank, propTextures, spec.shell)
     lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
@@ -2791,6 +2889,9 @@ async function buildRoom(room, at) {
     roomSpec = null
   }
   roomHeightmap = heightmap
+  const bounds = roomSpec ? roomSpec.ground.bounds : null
+  roomBounds = bounds
+  if (bounds) console.log(`[v2] ${room.id} is a ${bounds.r.toFixed(0)} m disc; the scatters keep inside it`)
 
   // BEFORE the scratch V2Height, because the relief changes what `bands` says
   // and the snow defaults are derived from bands. Booting with the knobs off and
@@ -2898,7 +2999,7 @@ async function buildRoom(room, at) {
   // `batch.visible` and the beds are placed and stepped either way, so what the
   // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank })
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
@@ -2906,7 +3007,7 @@ async function buildRoom(room, at) {
   console.log(
     `[v2] rocks ${rs.placed} placed in ${rs.placeMs.toFixed(0)} ms, bank ` +
     `${rs.bankTris} tris / ${rs.bankKB} KB in ${rs.buildMs.toFixed(0)} ms; ` +
-    rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius} m`).join(', ')
+    rs.beds.map((b) => `${b.name} ${b.placed} (${b.used}/${b.pool}) to ${b.radius.toFixed(0)} m`).join(', ')
   )
   // Same console hook the ferns, mushrooms and dead wood keep, and here it earns
   // itself twice over: `describeNear` is the only way to see what a rock that
@@ -2925,7 +3026,7 @@ async function buildRoom(room, at) {
   await bootStep('deadwood')
   // A village is wood to its walls, thickest along its roads (village.js WOOD), meadow in the clearing.
   const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
-  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await loadDeadwoodBank(), biome })
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
   // card flags), so one program serves every mesh variant and each call is a
@@ -2947,12 +3048,12 @@ async function buildRoom(room, at) {
   // the way they keep off the dead wood.
   if (room.village) {
     await bootStep('huts')
-    roomProps = new RoomProps(scene, height, { bank: await loadHouseBank(), props: roomSpec.props, clearing: roomSpec.clearing })
+    roomProps = new RoomProps(scene, height, { bank: await banks.house, props: roomSpec.props, clearing: roomSpec.clearing })
     for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     console.log(`[v2] huts ${roomProps.stats.placed}`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
     // The lamps where the build put them (render/lamps.js), their light and the huts' windows' baked into every lit material until the room goes.
-    lamps = new Lamps(scene, height, { bank: await loadLampBank(), lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
+    lamps = new Lamps(scene, height, { bank: await banks.lamp, lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
     if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
     console.log(`[v2] lamps ${lamps.lamps.length}`)
     window.v2lamps = lamps // console: `v2lamps.lamps`, `v2lamps.postMaterial`
@@ -2990,6 +3091,7 @@ async function buildRoom(room, at) {
     deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
+    bounds,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -3005,7 +3107,7 @@ async function buildRoom(room, at) {
   const ts = trees.stats
   console.log(
     `[v2] trees ${ts.placed} placed over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
-    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius} m, ` +
+    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius.toFixed(0)} m, ` +
     `pool ${ts.used}/${ts.pool}), ${ts.bankKB} KB bank`
   )
 
@@ -3048,7 +3150,7 @@ async function buildRoom(room, at) {
   // the terrain colour underfoot, which needs the snow band and the road
   // flattening as well as the path exclusions.
   await bootStep('ferns')
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks })
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -3113,7 +3215,7 @@ async function buildRoom(room, at) {
   // it is constructed AFTER them so it can refuse to bed a pebble inside one.
   // See render/litter.js.
   await bootStep('litter')
-  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, rocks })
+  litter = new Litter(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, rocks, bounds })
   lighting.patch(litter.material, { mode: 'vertex', cacheKey: 'v2-litter' })
   litter.place(spawn.x, spawn.z)
   // Reachable from the console so the layer's cost can be measured on its own:
@@ -3141,7 +3243,7 @@ async function buildRoom(room, at) {
   await bootStep('mushrooms')
   // A village grows no mushroom and no bone (DESIGN.md §30): the layers still
   // exist so a mushroom she carried in stays hers.
-  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed, none: !!room.village })
+  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed, none: !!room.village, bounds })
   // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
   // three keys its program cache on this string, and this material's
   // uBillboardLayers is its own length, so reusing the ferns' 'v2-prop-bb'
@@ -3168,7 +3270,7 @@ async function buildRoom(room, at) {
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
   await bootStep('bones')
-  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await loadBonesBank(), none: !!room.village })
+  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await banks.bones, none: !!room.village, bounds })
   for (const m of bones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   bones.place(spawn.x, spawn.z)
   bones.bakeCards(renderer)
@@ -3182,7 +3284,7 @@ async function buildRoom(room, at) {
   // The carrots: bunches on open ground (render/carrots.js), placed against the
   // trees and rocks already standing, like the mushrooms; every tile in a village.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await loadCarrotsBank(), keep: room.village ? 1 : undefined })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   carrots.place(spawn.x, spawn.z)
   const cs = carrots.stats
@@ -3195,7 +3297,9 @@ async function buildRoom(room, at) {
   // The rowboats: the viking rowboat afloat in the shallows of every lake, one
   // every 300 m or so of shoreline (render/rowboats.js), on the water row.
   await bootStep('rowboats')
-  rowboats = new Rowboats(scene, height, waterSurfaces, { seed, bank: await loadRowboatsBank() })
+  // A village's pond is a puddle with no shoreline to moor on: `none` grows no
+  // tile and photographs no card, which is a quarter second of GPU readback.
+  rowboats = new Rowboats(scene, height, waterSurfaces, { seed, bank: await banks.rowboats, none: !!room.village, bounds })
   for (const m of rowboats.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   rowboats.place(spawn.x, spawn.z)
   rowboats.bakeCards(renderer)
@@ -3237,7 +3341,7 @@ async function buildRoom(room, at) {
   crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })
-  crabs.place(spawn.x, spawn.z)
+  crabs.place(spawn.x, spawn.z, clock.seconds)
   crabs.ready.then(() => { if (build === roomBuild) crabs.bakeCard(renderer) })
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
   window.v2crabs = crabs
@@ -3245,9 +3349,9 @@ async function buildRoom(room, at) {
   // The butterflies over the fields and through the woods (render/butterflies.js):
   // a scatter that lands on the trees, the rocks, the ferns and the deadwood, so after all of them.
   await bootStep('butterflies')
-  butterflies = new Butterflies(scene, height, waterSurfaces, { seed, walk, rocks, trees, ferns, deadwood })
+  butterflies = new Butterflies(scene, height, waterSurfaces, { seed, walk, clock, rocks, trees, ferns, deadwood })
   lighting.patch(butterflies.material, { mode: 'vertex', cacheKey: 'v2-butterflies' })
-  butterflies.place(spawn.x, spawn.z)
+  butterflies.place(spawn.x, spawn.z, clock.seconds)
   console.log(`[v2] butterflies ${butterflies.stats.alive} on ${butterflies.stats.tiles} tiles at boot`)
   window.v2butterflies = butterflies
 
@@ -3255,7 +3359,7 @@ async function buildRoom(room, at) {
   // one instanced low-poly mesh, seated on the walk surface, so after the rocks.
   // The GLB lands after boot; until it does the mesh stays hidden.
   await bootStep('grasshoppers')
-  grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed, walk })
+  grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed, walk, clock })
   lighting.patch(grasshoppers.material, { mode: 'vertex', cacheKey: 'v2-grasshoppers' })
   grasshoppers.place(spawn.x, spawn.z)
   console.log(`[v2] grasshoppers ${grasshoppers.stats.alive} on ${grasshoppers.stats.tiles} tiles at boot`)
@@ -3301,6 +3405,13 @@ async function buildRoom(room, at) {
   creatureNet = new CreatureNet(netplay, clock, [{ layer: wildlife, prefixes: ['st', 'fx', 'hr'] }])
   creatureNet.add(frogs, ['fg'])
   creatureNet.add(fish, ['fs'])
+  // The four small layers whose whole life is closed form send one thing only:
+  // the release, so a creature let out of a hand lands on every client rather
+  // than vanishing into it for everyone but the one who dropped it.
+  creatureNet.add(butterflies, ['bf'])
+  creatureNet.add(spiders, ['sp'])
+  creatureNet.add(crabs, ['cb'])
+  creatureNet.add(grasshoppers, ['gh'])
   window.v2creatureNet = creatureNet
 
   // The abominable snowmen above the snow line (render/snowmen.js): the same
@@ -3388,7 +3499,7 @@ async function buildRoom(room, at) {
   // mouth on the face of every hollow boulder the rocks hold resident, or in a
   // village the one mouth out, where its file says.
   await bootStep('entrances')
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await loadMouthBank(), fixed: room.village ? [roomSpec.exit] : null })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)
@@ -3518,6 +3629,9 @@ async function buildRoom(room, at) {
   terrain.batch.perObjectFrustumCulled = false
   terrain.batch.sortObjects = false
   terrain.cullDeg = (70 * Math.PI) / 180
+  // The first build reports from bootDone, which has the overlay to take down
+  // and a save to apply after this returns; a swap has nothing after it.
+  if (build > 1) bootReport()
   return { spawn, fresh }
 }
 
@@ -3722,11 +3836,16 @@ function logSceneCensus() {
   scene.traverseVisible((o) => {
     const geo = o.geometry
     if (!geo || !o.isMesh) return
+    const instances = o.isInstancedMesh ? o.count : 1
+    // A layer waiting on its GLB stands as an empty geometry with no instance
+    // on it (spiders.js, and every critter layer built the same way). Nothing
+    // is drawn, so there is no row -- and the throw below is for a mesh that IS
+    // drawn with no geometry under it, which is a bug.
+    if (instances === 0) return
     const index = geo.getIndex()
     const position = geo.getAttribute('position')
     if (!index && !position) throw new Error(`scene census: ${o.name || o.type} is a mesh with neither an index nor a position attribute`)
     const verts = index ? index.count : position.count
-    const instances = o.isInstancedMesh ? o.count : 1
     rows.push({
       name: o.name || o.type,
       tris: Math.floor(verts / 3) * instances,
@@ -4207,7 +4326,7 @@ function setTreeScatter(patch) {
   const ts = trees.stats
   console.log(
     `[v2] trees regrown: ${ts.placed} over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
-    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius} m, ` +
+    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius.toFixed(0)} m, ` +
     `pool ${ts.used}/${ts.pool})`
   )
 }
@@ -4567,6 +4686,8 @@ function updateAmbience(dt, state) {
   sound.setListener(headTmp.x, headTmp.y, headTmp.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
   ambience.update(dt, {
     head: headTmp,
+    // The room's clock, last frame's reading, as every creature layer takes it: the dragons' roars are scored against it (sim/score.js), so two headsets in the room hear the one roar.
+    now: clock.seconds,
     dayness: daynessOf(state),
     submerged,
     // In her own metres, so a walk at half size is still a walk to the footstep rule.
@@ -4744,15 +4865,16 @@ const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instan
 const headTmp = new THREE.Vector3()
 // The things in her hands this frame, as the creature layers read them (hands.js lures).
 const lures = []
-// The peers' heads this frame, `{ x, y, z, by }` with `by` the peer's client id, as the snowmen read them (render/snowmen.js): a pool, so a frame allocates nothing.
+// The peers' heads this frame, `{ x, y, z, foot, by }` with `by` the peer's client id, as the snowmen read them (render/snowmen.js) and the spiders flee them (render/spiders.js): a pool, so a frame allocates nothing. `foot` is where that peer says its feet are, and is NaN for a peer that sends no foot -- one whose body is known by its head alone.
 const peerHeads = []
 const peerHeadPool = []
 function peerHeadsNow() {
   peerHeads.length = 0
   for (const peer of netplay.peers.values()) {
     if (!(peer.alpha > 0)) continue
-    const h = peerHeadPool[peerHeads.length] ?? (peerHeadPool[peerHeads.length] = { x: 0, y: 0, z: 0, by: null })
+    const h = peerHeadPool[peerHeads.length] ?? (peerHeadPool[peerHeads.length] = { x: 0, y: 0, z: 0, foot: NaN, by: null })
     h.x = peer.pose[0]; h.y = peer.pose[1]; h.z = peer.pose[2]; h.by = peer.id
+    h.foot = Number.isFinite(peer.foot) ? peer.foot : NaN
     peerHeads.push(h)
   }
   return peerHeads
@@ -4898,33 +5020,54 @@ function questPulse(key, intensity, ms) {
 // gravity, so it is always SHORT of a straight-line hit and never beyond it,
 // and pointing higher reaches further only up to 45 degrees. Flat-ground reach
 // from a hand at 1.3 m: ~3.3 m level, ~5.4 m at the best angle -- that is
-// what LOB tunes, at reach ~ LOB^2 / g. TELEPORT_RANGE is the hard cap on the
-// landing's horizontal distance from the rig, because a lob down a cliff would
-// otherwise carry as far as the cliff is tall. All three are hers, at her full
-// size: the lob, its gravity and the cap go by her scale (herScale), so the
-// arc keeps its shape and its timing and lands half as far when she is half as tall.
+// what LOB tunes, at reach ~ LOB^2 / g. All three are hers, at her full size:
+// the lob, its gravity and the cap go by her scale (herScale), so the arc
+// keeps its shape and its timing and lands half as far when she is half as tall.
+//
+// THE REACH CUTS THE FLIGHT SHORT, IT DOES NOT REFUSE IT. TELEPORT_RANGE caps
+// the landing's horizontal distance from the rig -- on the flat the lob cannot
+// carry that far anyway, but a lob down a cliff would otherwise carry as far
+// as the cliff is tall -- and the cap is another thing the flight STOPS at,
+// like the ground and a trunk: the arc ends at the reach and the ring drops to
+// the ground under it. So no way of aiming can turn the arc red. Red is only
+// ever the ground refusing her -- a slope past the limiter's, a trunk, a
+// boulder her legs could not climb -- which is a thing she can see and aim off.
 const QUEST_TELEPORT_ARM = 0.7
 const QUEST_TELEPORT_FIRE = 0.35
 const TELEPORT_LOB = 6.5
 const TELEPORT_GRAVITY = 9.81
 const TELEPORT_RANGE = 6
-// Seconds after a landing before the next lob is accepted. Without it the
-// gesture repeats as fast as a stick can be flicked -- four or five 6 m jumps
-// a second, 25-30 m/s, twenty times the walk -- and a hike stops being one.
-// The arc still aims through the wait; a landing she could take shows
-// TELEPORT_WAIT until the wait is up, so a release inside it is refused
-// visibly rather than eaten. Caps travel at TELEPORT_RANGE /
-// TELEPORT_COOLDOWN_S: 6 m/s, four times the walk.
+// THE COOLDOWN SHORTENS THE LOB, IT DOES NOT REFUSE IT. Without any cooldown
+// the gesture repeats as fast as a stick can be flicked -- four or five 6 m
+// jumps a second, 25-30 m/s, twenty times the walk -- and a hike stops being
+// one. But a flat refusal makes the answer to "may I move?" no, which is the
+// one answer locomotion should never give. So the wait caps the REACH instead:
+// it grows from a notch to the whole of TELEPORT_RANGE over
+// TELEPORT_COOLDOWN_S, a step every TELEPORT_GROW_S, and a release inside the
+// wait always goes -- just not far. Held out through the wait, the arc visibly
+// grows a notch at a time until it is full length.
+//
+// That caps her speed exactly as the refusal did, and by the same number,
+// because the reach is PROPORTIONAL to the time waited: ten flicks a second
+// carry 0.6 m each and one flick a second carries 6 m, and both are
+// TELEPORT_RANGE / TELEPORT_COOLDOWN_S = 6 m/s, four times the walk. It is
+// also the rate the peer bodies are paced to cross (avatar-rig.js
+// MAX_TRAVEL_S), so a watcher's copy of her is never more than one jump behind.
 const TELEPORT_COOLDOWN_S = 1
+// The notch the reach grows by. Quantised rather than continuous so the growth
+// reads as steps rather than as a creep, and floored at one notch so an
+// instant re-flick has some arc to aim rather than a zero-length one.
+const TELEPORT_GROW_S = 0.1
 // Samples along the flight. 0.04 s at 6.5 m/s is a 26 cm segment, and the ground
 // crossing is bisected between samples, so the landing is exact at that
 // spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
 const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
 // A landing is refused where she could not have walked to: a slope past the
-// limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and
-// TELEPORT_WAIT for a landing that is fine but inside the cooldown -- "not
-// yet" against "not there", so a red arc always means the ground.
+// limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
+// the ONLY thing that turns it red. TELEPORT_WAIT is not a refusal: it says
+// the cooldown still has the reach short of full, and a release on an orange
+// arc goes.
 const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
 const TELEPORT_WAIT = 0xffb347
@@ -4936,8 +5079,9 @@ const TELEPORT_RING_LIFT = 0.06
 const TELEPORT_UP = new THREE.Vector3(0, 1, 0)
 let questTeleportArmed = false
 let desktopTeleportArmed = false
-// performance.now() ms at which the next landing is accepted.
-let teleportReadyAt = 0
+// performance.now() ms of the last landing; the reach grows from it. Set a
+// whole cooldown in the past so the first lob of a session is full length.
+let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
 const teleportTarget = { x: 0, z: 0, valid: false }
 // The arc and the landing ring, built together on first aim. The arc is a
 // dotted trail -- one instanced bead per sample -- rather than a Line, because
@@ -4987,13 +5131,24 @@ function hideTeleport() {
   teleportGfx.arc.visible = false
 }
 
+/**
+ * How much of TELEPORT_RANGE the cooldown allows right now: 0 to 1, a notch
+ * per TELEPORT_GROW_S since the last landing, never less than one notch.
+ */
+function teleportAllowance() {
+  const waited = (performance.now() - teleportFiredAt) / 1000
+  const notches = Math.max(TELEPORT_GROW_S, Math.floor(waited / TELEPORT_GROW_S) * TELEPORT_GROW_S)
+  return Math.min(1, notches / TELEPORT_COOLDOWN_S)
+}
+
 /** Land the aimed teleport, and let the ambience count it as the walk it stands in for. */
 function fireTeleport() {
   if (!teleportTarget.valid) return
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
   player.teleportTo(teleportTarget.x, teleportTarget.z)
   portalBlink = true
-  teleportReadyAt = performance.now() + TELEPORT_COOLDOWN_S * 1000
+  teleportFiredAt = performance.now()
+  // The full range, not the allowance: the sound is how far this jump went against a whole one.
   if (ambience) ambience.onTeleport(dist, TELEPORT_RANGE * herScale())
 }
 
@@ -5030,11 +5185,21 @@ function portalTest() {
  * thing Player stands on, so the arc lands on a boulder rather than inside it
  * and lands in the same place whether or not the terrain layer is drawn. A
  * trunk in the way stops the arc at the bark with no landing.
+ *
+ * THREE THINGS STOP THE FLIGHT and they are asked as one question: the ground
+ * under it, a trunk, and the reach the cooldown allows. Horizontal distance
+ * from her grows monotonically along a lob, so the reach has exactly one
+ * crossing and the same bisection finds it to the same precision as the
+ * ground's. Stopped at the reach the arc is over open air, so the ring goes on
+ * the ground below -- which is then asked the same slope and path questions as
+ * any other landing, and may well refuse, since the ground under a lob cut
+ * short over a cliff IS the cliff face.
  */
 function aimTeleport(origin, dir) {
   const { ring, arc } = ensureTeleportGfx()
   const feet = player.originPosition()
   const k = herScale()
+  const reach = TELEPORT_RANGE * k * teleportAllowance()
   const vx = dir.x * TELEPORT_LOB * k
   const vy = dir.y * TELEPORT_LOB * k
   const vz = dir.z * TELEPORT_LOB * k
@@ -5042,7 +5207,8 @@ function aimTeleport(origin, dir) {
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
   const clear = (t) => {
     const p = at(t)
-    return p.y > walk.heightAt(p.x, p.z) && !walk.obstacleAt(p.x, p.z, teleportObstacle)
+    return p.y > walk.heightAt(p.x, p.z) && !walk.obstacleAt(p.x, p.z, teleportObstacle) &&
+      Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   let count = 0
   let hit = null
@@ -5081,21 +5247,20 @@ function aimTeleport(origin, dir) {
   arc.count = count
   arc.instanceMatrix.needsUpdate = true
   arc.visible = true
-  // A landing counts only where she could have walked: within reach, on ground
-  // the slope limiter would let her stand on (a cliff face or a boulder's flank
-  // is a step in the walk surface, so it fails this), not inside a trunk, and
-  // with a walkable straight line from her feet to it -- a lob clears a
-  // boulder or a trunk that her legs would not. Whether she can go NOW is the
-  // cooldown, kept apart so the colour can tell the two refusals apart.
-  const inRange = hit !== null && Math.hypot(hit.x - feet.x, hit.z - feet.z) <= TELEPORT_RANGE * k
-  const standable = inRange && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
+  // A landing counts only where she could have walked: on ground the slope
+  // limiter would let her stand on (a cliff face or a boulder's flank is a step
+  // in the walk surface, so it fails this), not inside a trunk, and with a
+  // walkable straight line from her feet to it -- a lob clears a boulder or a
+  // trunk that her legs would not. Reach is not asked here: the flight already
+  // stopped at it, so every landing is one she may take. Orange says the
+  // cooldown still has the arc short of full length, not that she may not go.
+  const standable = hit !== null && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z)
-  const ready = performance.now() >= teleportReadyAt
-  teleportTarget.valid = standable && ready
-  const colour = !standable ? TELEPORT_NO : ready ? TELEPORT_OK : TELEPORT_WAIT
+  teleportTarget.valid = standable
+  const colour = !standable ? TELEPORT_NO : reach >= TELEPORT_RANGE * k ? TELEPORT_OK : TELEPORT_WAIT
   arc.material.color.setHex(colour)
   ring.material.color.setHex(colour)
-  if (inRange) {
+  if (hit !== null) {
     teleportTarget.x = hit.x
     teleportTarget.z = hit.z
     // Over the DRAWN ground where a chunk exists, since that is what would hide
@@ -5107,7 +5272,7 @@ function aimTeleport(origin, dir) {
     ring.scale.setScalar(k)
     ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal))
   }
-  ring.visible = inRange
+  ring.visible = hit !== null
 }
 
 /**
@@ -5574,7 +5739,7 @@ function tick() {
 
   player.headPosition(headTmp)
   const [pose, poseHands] = currentPose()
-  netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null)
+  netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null, player.originPosition().y)
   if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale() })
   netplay.update(now)
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
@@ -5659,14 +5824,15 @@ function tick() {
     else fish.follow(headTmp.x, headTmp.y, headTmp.z)
   })
   stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
-  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, dt, submerged))
-  // The butterflies settle after dark, so they take the day scalar too. It is last frame's -- the clock is read below, after every layer has stepped.
-  stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
+  // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
+  stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds))
+  // The grasshoppers run on the room's clock too, and read the night off it themselves at a segment's turn; the scalar is only for a world with no clock.
+  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, dayness))
   // The fireflies exist only after dark, off the same scalar.
   stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  // The spiders flee her whole body, so they take her feet too: the rig's, under her head.
-  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, dt, player.originPosition().y))
+  // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go.
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).

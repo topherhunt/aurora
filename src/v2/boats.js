@@ -37,9 +37,17 @@
 // A RIDER IS CARRIED, not simulated: her feet's place in the hull's frame is
 // read after she moves and written back before the next move, so the boat
 // travels under her and the mover's own step is what walks her about it. A
-// peer aboard is drawn at the place in the hull it reports, since its pose
-// is interpolated 120 ms late and would trail the boat by a third of a metre
-// at full speed.
+// peer aboard is drawn at the place in the hull it reports -- all three of
+// x, z and y -- since its pose is interpolated 120 ms late and would trail
+// the boat by a third of a metre at full speed. The y matters as much as the
+// other two and for a different reason: a peer's feet are not on the wire,
+// so avatar-rig.js otherwise reconstructs them from its head and a villager's
+// neck and asks the walk surface what is under THAT. The estimate is off by
+// the neck's setback, the pad's edge is a cliff, and a rider carried to the
+// bow to drive the boat stands where the pad is a quarter of a metre wide --
+// the estimate lands outside it and the peer drops through the boards. So
+// `aboard` carries the rider's height over the hull's own datum (`ry`, heave
+// included) and every client puts its feet back exactly where they were.
 //
 // THE HULL IS STONE TO THE WALKER (WalkSurface.addStone): the bank's sole
 // grid is the ground inside the pad -- the boards, a thwart, and the gunwale
@@ -170,12 +178,14 @@ export class Boats {
     this.appliedSerial = 0
 
     // Her ride: the record she is aboard, her feet's place in its frame and
-    // in the world as settle last read them, and her head's place in the hull.
+    // in the world as settle last read them, her feet's height over its datum,
+    // and her head's place in the hull.
     this.ride = null
     this.rideU = 0
     this.rideV = 0
     this.rideX = 0
     this.rideZ = 0
+    this.rideRise = 0
     this.headU = 0
     this.headV = 0
     // The boat she is authority of, or null: the one she rides, or the one
@@ -193,7 +203,7 @@ export class Boats {
     this._localX = 0
     this._localZ = 0
     this._sample = [0, 0, 0, 0, 0, 0]
-    this._aboardMsg = [0, 0, 0]
+    this._aboardMsg = [0, 0, 0, 0]
     this.aground = false
     this.simMs = 0
   }
@@ -256,6 +266,9 @@ export class Boats {
     this.rideV = dx * s + dz * c
     this.rideX = this.player.rig.position.x
     this.rideZ = this.player.rig.position.z
+    // Her feet against the hull's datum rather than against the sole under them: `ry` is one number both clients hold,
+    // where the sole's height is a lookup into the bank's grid at a point each would read from a little different place.
+    this.rideRise = origin.y - ride.ry
     dx = head.x - ride.rx
     dz = head.z - ride.rz
     this.headU = dx * c - dz * s
@@ -263,7 +276,7 @@ export class Boats {
     this.authorityOf = this._peerAuthority(ride) === null ? ride : null
   }
 
-  /** Move every peer aboard a live boat to where in the hull it says it stands. */
+  /** Move every peer aboard a live boat to where in the hull it says it stands, and stand its feet on the deck it reports. */
   anchorPeers(peers) {
     for (const peer of peers) {
       const a = peer.aboard
@@ -279,6 +292,9 @@ export class Boats {
       const pose = peer.pose.slice()
       for (const k of [0, 7, 14]) { pose[k] += dx; pose[k + 2] += dz }
       peer.pose = pose
+      // The rider's own height over the hull, which avatar-rig.js stands on instead of guessing at the walk surface.
+      // A peer from a client too old to send it has none, and is guessed at as before.
+      if (a.length > 3) peer.foot = b.ry + a[3]
     }
     return peers
   }
@@ -291,6 +307,7 @@ export class Boats {
       m[0] = this.ride.origin
       m[1] = round3(this.headU)
       m[2] = round3(this.headV)
+      m[3] = round3(this.rideRise)
       out.aboard = m
     }
     const b = this.authorityOf

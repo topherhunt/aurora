@@ -6,7 +6,7 @@ import { PROBE } from './sky-probe.js'
 import { WORLD_PROBE } from './world-probe.js'
 import { TERRAIN_DARKEST, luminance } from './terrain/terrain-material.js'
 import { paletteAt } from './clock.js'
-import { RAISE_SLOPE } from './v2/render/river-raise.js'
+import { RAISE_SLOPE, RAISE_EYE, RAISE_EYE_LIFT } from './v2/render/river-raise.js'
 
 /**
  * Lake surfaces (§11), built from Phase A's lake mask.
@@ -885,7 +885,9 @@ export class Water {
         // seven rungs across the two), and the rung of the terrain chunk drawn
         // under the vertex right now, 0 for none: a tent at each integer picks
         // that rung's lift, so a far river stands on the terrain's low LOD
-        // instead of under it. The lift is scaled by the slope of the eye's
+        // instead of under it, with RAISE_EYE_LIFT under all of them past
+        // RAISE_EYE for the corners the ribbon's own coarse strip cuts. The
+        // lift is scaled by the slope of the eye's
         // sight line down to the vertex, nothing under RAISE_SLOPE[0] and all
         // of it from RAISE_SLOPE[1]: a river seen from near its own level stays
         // in its bed behind the near bank instead of floating over the far one.
@@ -909,6 +911,8 @@ export class Water {
           vec3 worldPos = ( modelMatrix * vec4( position, 1.0 ) ).xyz;
           float lift = dot( aRaise, max( vec4( 0.0 ), 1.0 - abs( vec4( aRung ) - vec4( 1.0, 2.0, 3.0, 4.0 ) ) ) )
             + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
+          lift = max( lift, ${RAISE_EYE_LIFT.toFixed(1)} * ( 1.0 - aLake )
+            * smoothstep( ${RAISE_EYE[0].toFixed(1)}, ${RAISE_EYE[1].toFixed(1)}, length( cameraPosition.xz - worldPos.xz ) ) );
           float slope = ( cameraPosition.y - worldPos.y ) / max( 1.0, length( cameraPosition.xz - worldPos.xz ) );
           lift *= smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, slope );
           lift += aLake * ( uLap.x * ( 0.5 - 0.5 * cos( uLap.y * uTime ) )

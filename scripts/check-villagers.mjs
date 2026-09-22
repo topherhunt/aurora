@@ -94,9 +94,12 @@ const roadNear = (x, z) => {
 // --- a stand-in asset: a slab on a skeleton of a spine and two legs, the shipped clips and numbers ---------
 const { json } = readGlb(new URL(`../public/${CRITTER_GLB.leafkin}`, import.meta.url))
 const biped = json.scenes[json.scene ?? 0].extras.biped
+// Where the stand-in's idle-sit holds its body over its own floor, as a fraction of its height: the shipped leafkin's seated underside (villagers.js seatY) measures 0.189. FOOT_M is how far a sitter's feet may then hang off the ground or sink into it -- the last centimetres a seated foot IK would take (design/30-leafkin.md).
+const SEAT = 0.19
+const FOOT_M = 0.06
 function makeAsset() {
   const root = new THREE.Bone()
-  root.name = 'tripo::Root'
+  root.name = 'tripoRoot'
   const spine = new THREE.Bone()
   spine.name = 'Spine'
   spine.position.set(0, 0.5, 0)
@@ -131,7 +134,11 @@ function makeAsset() {
   })
   const clips = json.animations.map((a) => {
     const dur = Math.max(...a.samplers.map((s) => json.accessors[s.input].max[0]))
-    return new THREE.AnimationClip(a.name, dur, [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])])
+    const tracks = [new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, dur], [0, 0, 0, 1, 0, 0, 0, 1])]
+    // The hold lifts the whole slab a seat's height, so what the sitter is set down by is a real measurement off a real pose.
+    const lift = SEAT * biped.height
+    if (a.name === 'idle-sit') tracks.push(new THREE.VectorKeyframeTrack('tripoRoot.position', [0, dur], [0, lift, 0, 0, lift, 0]))
+    return new THREE.AnimationClip(a.name, dur, tracks)
   })
   return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped, legs }
 }
@@ -183,7 +190,7 @@ console.log('\na day with her far off')
   const v = make()
   const seen = new Set()
   let strayed = 0, worst = 0, unseat = 0, vaulted = 0, badClip = 0, gazeOff = 0, hiddenVoice = 0, entries = 0, exits = 0, meetings = 0, apart = 0, gestures = 0
-  let sitFrames = 0, sitOff = 0, sitFar = 0, sitOn = 0, sitLow = 0, sitClip = 0, sitAway = 0, doubled = 0, unheld = 0, phases = new Set(), satOn = new Set(), sitters = new Set()
+  let sitFrames = 0, sitOff = 0, sitFar = 0, sitOn = 0, sitLow = 0, sitPerch = 0, sitClip = 0, sitAway = 0, doubled = 0, unheld = 0, phases = new Set(), satOn = new Set(), sitters = new Set()
   const was = v.all.map(() => null)
   const voices = []
   // The chapter's replay on the first frame may leave some already out of doors, their exit unseen.
@@ -235,7 +242,12 @@ console.log('\na day with her far off')
         const d = Math.hypot(c.x - s.x, c.z - s.z)
         if (d <= s.r) sitOn++
         if (d > Math.max(SIT.back * v.asset.wheelbase * c.k, s.r + SIT.clear) + 0.4) sitFar++
-        if (c.y < field.heightAt(c.x, c.z) - 1e-6 || c.y > field.heightAt(c.x, c.z) + 0.12) sitLow++
+        // Set down by its seated underside (seatY): on the stool's top through the hold, eased onto it over the cuts and never past either end of that ease.
+        const ground = field.heightAt(c.x, c.z), onStool = s.top - v.sitY * c.k
+        if (c.phase === 'hold' && Math.abs(c.y - onStool) > 1e-9) sitPerch++
+        if (c.phase === 'turn' && Math.abs(c.y - ground) > 1e-9) sitPerch++
+        if (c.y < Math.min(ground, onStool) - 1e-6 || c.y > Math.max(ground, onStool) + 1e-6) sitPerch++
+        if (c.phase === 'hold') sitLow = Math.max(sitLow, Math.abs(onStool - ground))
         if (c.phase !== 'turn' && Math.abs(swing(c.heading, Math.atan2(-(s.lookZ - c.z), s.lookX - c.x))) > 0.05) sitAway++
         const want = { turn: 'idle', down: 'sit', hold: 'idle-sit', up: 'sit' }[c.phase]
         if (c.clip !== want || c.speed !== 0 || (c.phase === 'up' ? c.from !== SIT_CUT[1] : c.from !== -1)) sitClip++
@@ -257,7 +269,8 @@ console.log('\na day with her far off')
   check(satOn.size >= 2, 'more than one stool is sat on', `${satOn.size} of ${seats.length}`)
   check(unheld === 0 && doubled === 0 && sitOff === 0, 'a sitter holds its stool, nobody else does, and a seat is claimed only by a walker on its way or a sitter', `${unheld} unheld, ${doubled} doubled, ${sitOff} held idle`)
   check(sitOn === 0 && sitFar === 0, 'a sitter\'s feet stand just off its stool, never on it', `${sitOn} on, ${sitFar} far`)
-  check(sitLow === 0, 'a sitter stands on the ground, lifted a hand\'s breadth at most for its stool', `${sitLow}`)
+  check(sitPerch === 0, 'a sitter is set down by its seated underside: on the stool\'s top through the hold, on the ground as it turns, and eased between over the cuts', `${sitPerch}`)
+  check(sitLow <= FOOT_M, 'a stool is cut close enough to a leafkin\'s seat that a sitter\'s feet keep the ground', `${sitLow.toFixed(3)} m at worst`)
   check(sitAway === 0, 'a sitter faces the fire or the lake once turned', `${sitAway}`)
   check(sitClip === 0, 'a sitter idles while it turns, sits on the sit clip\'s first cut, holds on idle-sit and rises on the clip from its second cut, still', `${sitClip}`)
   check(v.seats.every((s) => s.by === null || (!s.by.hidden && (s.by.state === 'sit' || s.by.state === 'walk'))), 'at the day\'s end every seat is free or held by one on it or on its way')
@@ -297,9 +310,12 @@ console.log('\nher feet')
   const v = make()
   let t = run(v, T0, 120, FAR)
   let fleers = 0, calmedUnder = 0, calmedOver = 0, whimpers = 0, pants = 0, fled = 0, homed = 0, wrongVoice = 0
-  /** The sounds `c` made this frame: those nearest it, since the others go on talking and a fleer runs past them. */
+  // Where each villager stood at the end of the last frame: a call is placed where its caller was when it made it, and a runner has moved on by the time the ear drains it.
+  const was = new Map()
+  const mark = () => { for (const o of v.all) was.set(o, { x: o.x, z: o.z }) }
+  /** The sounds `c` made this frame: those nearest it now or a frame ago, since the others go on talking and a fleer runs within centimetres of them. */
   const saidBy = (c) => v.voices([]).filter((s) => {
-    const by = (o) => Math.hypot(s.x - o.x, s.z - o.z)
+    const by = (o) => { const w = was.get(o) ?? o; return Math.min(Math.hypot(s.x - o.x, s.z - o.z), Math.hypot(s.x - w.x, s.z - w.z)) }
     return by(c) < 0.5 && v.all.every((o) => o === c || o.hidden || by(o) >= by(c))
   }).map((s) => s.sound)
   for (const c of v.all) {
@@ -312,12 +328,14 @@ console.log('\nher feet')
     const d0 = Math.hypot(c.x - feet.x, c.z - feet.z)
     let ran = 0
     const running = []
+    mark()
     t = run(v, t, 12, feet, () => {
       if (c.state === 'flee' && c.clip === 'run' && c.speed > 0) ran++
       for (const s of saidBy(c)) {
         if (s === 'leafkinWhimper') whimpers++; else if (s === 'panting') pants++; else wrongVoice++
         if (c.state === 'flee') running.push(s)
       }
+      mark()
     })
     // On the run the whimper and the panting take turns.
     if (running.some((s, i) => i > 0 && s === running[i - 1])) wrongVoice++

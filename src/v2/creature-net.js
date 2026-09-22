@@ -17,7 +17,28 @@
 // prefix it wears (a wildlife key is `st:tile:index`, a frog bed's `fg:tile`,
 // say), an anchor at the room's clock. One stamped with this client's own id
 // would be its own echoed back, and is dropped.
+//
+// A RELEASE rides the same channel as one anchor in mode DROP: the second a
+// hand let a creature go, where, which way its head faced, and the few
+// numbers the creature was dressed in, so the layer that grew it can let the
+// same creature go at the same spot on every client rather than the peers
+// watching it vanish into a hand and never land. The layers whose whole life
+// is closed form (butterflies, spiders, crabs, grasshoppers) send nothing
+// else at all.
 // ---------------------------------------------------------------------------
+
+import { keyHash } from '../sim/score.js'
+
+export const DROP = 'drop'
+// A drop is named to the millimetre on both sides of the wire -- by the layer
+// before it makes the key, and by the anchor that carries it -- so the key two
+// clients make of the one release is the one key, and the anchor stays inside
+// the relay's ANCHOR_MAX_JSON.
+export const snap = (v) => Math.round(v * 1000) / 1000
+// The room's name for a release: the layer's own key for it, hashed into the
+// layer's prefix. A drop key carries a decimal point and the relay's keys are
+// `[a-z0-9:,-]`, so the key itself cannot go as the name.
+export const dropWire = (prefix, key) => `${prefix}:d${keyHash(key).toString(36)}`
 
 export class CreatureNet {
   /**

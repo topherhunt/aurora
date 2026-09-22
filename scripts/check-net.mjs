@@ -1,4 +1,17 @@
 import { spawn } from 'node:child_process'
+import { interpolate } from '../src/net.js'
+
+// The client's own lerp, before the relay is spun up: the foot follows the head
+// rather than stepping to the newer sample, or a peer walking a slope stairs down
+// it every send. A peer from a client too old to send one gets none, and
+// avatar-rig.js falls back to reading the ground.
+{
+  const frame = (y, foot) => ({ pose: [0, y, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1], hands: [false, false], ...(foot === undefined ? {} : { foot }) })
+  const half = interpolate(frame(1, 10), frame(2, 11), 0.5)
+  if (half.foot !== 10.5) throw new Error(`foot should lerp with the head: got ${half.foot}`)
+  if (interpolate(frame(1), frame(2), 0.5).foot !== undefined) throw new Error('a peer that sends no foot should be given none')
+  if (interpolate(frame(1), frame(2, 11), 0.5).foot !== 11) throw new Error('the first foot of a peer that has just started sending one should be taken whole')
+}
 
 const WebSocket = globalThis.WebSocket
 if (!WebSocket) throw new Error('check-net requires a Node version with the WebSocket client (Node 22+)')
@@ -35,15 +48,26 @@ try {
   // so the first pose the peer ever sees is the well-formed one after it.
   first.send(JSON.stringify({ version: 1, type: 'pose', pose: pose.map((v) => -v), hands: [true, false], avatar: '../etc' }))
   await wait(30)
-  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, false], avatar: 'blacksmith' }))
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, false], avatar: 'blacksmith', foot: 12.5, aboard: [7, 0.1, 0.2, 0.3] }))
   const peer = await nextSnapshot(second, () => true)
   if (peer.pose.join(',') !== pose.join(',') || peer.hands[0] !== true) throw new Error('pose round-trip mismatch')
   if (peer.avatar !== 'blacksmith') throw new Error(`avatar round-trip mismatch: got ${JSON.stringify(peer.avatar)}`)
+  // The feet: where the sender stands, so a peer draws its body there rather than
+  // reading its own ground under a guess at where the feet are. Aboard a boat the
+  // fourth number of `aboard` carries the same height in the hull's frame.
+  if (peer.foot !== 12.5) throw new Error(`foot round-trip mismatch: got ${JSON.stringify(peer.foot)}`)
+  if (peer.aboard?.join(',') !== '7,0.1,0.2,0.3') throw new Error(`aboard round-trip mismatch: got ${JSON.stringify(peer.aboard)}`)
+  // A client too old to send the rise sends three, and is relayed as it always was.
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, true], avatar: 'blacksmith', aboard: [7, 0.1, 0.2] }))
+  const older = await nextSnapshot(second, (p) => p.hands[1] === true)
+  if (older.aboard?.length !== 3) throw new Error(`a three-number aboard should still relay: got ${JSON.stringify(older.aboard)}`)
   // Without the field the relay says null, which the client reads as "dress by id hash".
   await wait(30)
   first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false] }))
   const bare = await nextSnapshot(second, (p) => p.hands[0] === false)
   if (bare.avatar !== null) throw new Error(`avatar should be null when unsent, got ${JSON.stringify(bare.avatar)}`)
+  if (bare.foot !== undefined) throw new Error(`foot should be absent when unsent, got ${JSON.stringify(bare.foot)}`)
   // The room clock: every snapshot carries the room's anchor and skip count,
   // a skip from one client reaches the other, and an unbounded skip is dropped.
   const nextClock = (ws, accept) => new Promise((resolve, reject) => {
@@ -218,7 +242,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (pose, hands, avatar round-trip; malformed avatar dropped; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
   first.close()
   second.close()
 } finally {

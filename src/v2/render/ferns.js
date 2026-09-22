@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, poolBound } from './tile-pool.js'
+import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'
@@ -425,7 +425,7 @@ export class Ferns {
     water,
     layers,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null } = {}
   ) {
     if (!field || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with heightAndSlopeAt')
@@ -476,6 +476,9 @@ export class Ferns {
     this.textureArray = textureArray
     this.seed = seed
     this.density = density
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    radius = boundedRadius(radius, bounds, TILE)
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
@@ -947,6 +950,7 @@ export class Ferns {
         const dcz = (gz + 0.5) * TILE - cz
         const d2 = dcx * dcx + dcz * dcz
         if (d2 > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * TILE, Math.min(cx, (gx + 1) * TILE))

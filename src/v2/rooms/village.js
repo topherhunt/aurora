@@ -115,6 +115,12 @@ export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 
 export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.5, houses: 20 }
 export const ARRIVE_M = 2
 const ROLL_TRIES = 128
+// Which attempt of a seed built, once one has. A refused roll still costs its
+// whole field reconstruction (~15 ms), and the shipped glade's seed refuses 24
+// of them before it takes -- a third of a second burnt to reach a village that
+// is a pure function of the seed and so lands identically every time. Walking
+// back out and in again starts at the winner instead.
+const rollWinner = new Map()
 
 const deg = (d) => (d * Math.PI) / 180
 const TAU = Math.PI * 2
@@ -169,8 +175,8 @@ export function rollVillage(seed, house, attempt = 0) {
 // --- the ground --------------------------------------------------------------
 
 /**
- * The hollow's ground off the shell's wall: `{ at(x, z), coneAt(x, z), rimAt(bearing), rimYAt(bearing), tip: { x, z } }`,
- * the rim's radius and height on a bearing in radians from the axis, and where the cone's tip stands (BASIN). The wall is read once a degree at that degree's rim height.
+ * The hollow's ground off the shell's wall: `{ at(x, z), coneAt(x, z), rimAt(bearing), rimYAt(bearing), tip: { x, z }, bounds: { x, z, r } }`,
+ * the rim's radius and height on a bearing in radians from the axis, where the cone's tip stands (BASIN), and the disc the room is inside. The wall is read once a degree at that degree's rim height.
  */
 const WIDE = new WeakMap()
 export function makeGround(shell, { jitter, basin = { bearing: 0, off: 0 } }) {
@@ -250,6 +256,12 @@ export function makeGround(shell, { jitter, basin = { bearing: 0, off: 0 } }) {
     rimYAt,
     coneAt,
     tip,
+    // The room's world disc, centred on the axis: the wall's own foot at its
+    // widest bearing, so nothing outside it stands anywhere she can see. The
+    // scatters take it as `bounds` and grow no tile beyond it -- without that
+    // they would fill the repeated copies of this tile that buildHeightmap
+    // lays across the rest of the 8 km map with a wood nobody reaches.
+    bounds: { x: 0, z: 0, r: Math.max(...Array.from({ length: 360 }, (_, d) => rim[d])) + PAST.in },
     at(x, z) {
       const past = Math.hypot(x, z) - rimAt(Math.atan2(z, x))
       return coneAt(x, z) + jitterAt(x, z) * (1 - smoothstep(-JITTER.foot, 0, past))
@@ -642,6 +654,8 @@ function housesRound(cx, cz, heights, bounds, headBearing, great, clearOf) {
  */
 export function buildVillage({ spec, shell, house, attempt = 0 }) {
   if (!spec || !shell || shell.fit.yaw !== spec.shell.yaw) throw new Error('village: the shell must stand on the spec\'s fit')
+  const won = rollWinner.get(spec.seed)
+  if (attempt === 0 && won > 0) return buildVillage({ spec: rollVillage(spec.seed, house, won), shell, house, attempt: won })
   const again = (why) => {
     if (attempt >= ROLL_TRIES) throw new Error(`village: no village of seed ${spec.seed} builds (${why})`)
     return buildVillage({ spec: rollVillage(spec.seed, house, attempt + 1), shell, house, attempt: attempt + 1 })
@@ -883,6 +897,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
   const stools = placeStools(doc.roads, all, outlying, lake, lamps, heightAt, dry, ground)
 
   const props = all.map((h, i) => ({ x: h.x, z: h.z, yaw: h.yaw, height: h.height, mirror: spec.mirror[i], fiddle: spec.fiddle[i] }))
+  rollWinner.set(spec.seed, attempt)
   return { heightmap, doc, spawn: { x: from[0], z: from[1] }, exit, clearing, lake: { x: lake.x, z: lake.z, y: lake.y, area: lake.area }, props, lamps, stools, ground, spec, fishSeed: fishSeedFor(spec.seed, lake, heightAt) }
 }
 

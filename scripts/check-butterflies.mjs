@@ -3,20 +3,25 @@
 //   node scripts/check-butterflies.mjs
 //
 // A synthetic meadow: a gentle slope with a snow line at 60 m, a pond, one
-// tree, one boulder, one fern and one stump near the origin. Everything below
-// is a way a butterfly can go wrong without anything throwing: rolled on snow
-// or on water; a scatter that is not the same twice, or far off its density;
-// a flier under FLY_M[0] or over FLY_M[1] above the ground, or one that never
-// lands; a landing on water; a perch the trunk, the stone, the fern and the
-// stump never get; a landed butterfly that does not sit on its perch with its
-// up along the surface, or one whose wings do not raise and slow, or a flier
-// whose wings do not flutter fast; one still in the air after sunset, one that
-// takes off in the dark, a meadow rolled at night that arrives flying, or a
-// whole meadow leaving on the one frame the sun comes up; a frame that costs
-// more than a scatter is allowed to; the wing flap not in the vertex shader;
-// a meadow all one colour, a butterfly whose tint is no morph of MORPHS, a
-// blue that is not blue or an orange not orange, or an instance not carrying
-// its butterfly's own tint.
+// tree, one boulder, one fern and one stump near the origin, and a clock the
+// gate moves the sun on. Everything below is a way a butterfly can go wrong
+// without anything throwing: rolled on snow or on water; a scatter that is not
+// the same twice, or far off its density; a flier under FLY_M[0] or over
+// FLY_M[1] above the ground, or one that never lands; a landing on water; a
+// perch the trunk, the stone, the fern and the stump never get; a landed
+// butterfly that does not sit on its perch with its up along the surface, or
+// one whose wings do not raise and slow, or a flier whose wings do not flutter
+// fast; one still in the air after sunset, one that takes off in the dark, a
+// meadow rolled at night that arrives flying, or a whole meadow leaving on the
+// one frame the sun comes up; a frame that costs more than a scatter is
+// allowed to; the wing flap not in the vertex shader; a meadow all one colour,
+// a butterfly whose tint is no morph of MORPHS, a blue that is not blue or an
+// orange not orange, or an instance not carrying its butterfly's own tint.
+// And, because the life is on the score (src/sim/score.js): two clients on
+// different frame rates that draw the same second differently, one joining the
+// meadow mid-flight that does not land where the others see it, and a release
+// that does not reach the room, or does not put the one butterfly on the one
+// spot on the client it reaches (the only thing a butterfly sends).
 // The shipped GLB is checked too, because the world loads it by name.
 //
 // What this can NOT check: whether the flight reads as a butterfly's. That
@@ -25,8 +30,10 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NEAR_M, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TILE,
+  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TETHER, TILE,
 } from '../src/v2/render/butterflies.js'
+import { TICK_S } from '../src/sim/score.js'
+import { mulberry32 } from '../src/sim/mathx.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
 
@@ -35,6 +42,9 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures++
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
+
+// Within this of her head a butterfly is worth looking at closely; the gate's own reach, not the flock's.
+const NEAR_M = 10
 
 // --- the synthetic meadow ------------------------------------------------------
 const SNOW = 60
@@ -87,6 +97,8 @@ const ferns = {
 }
 const deadwood = { perchesInto: (x0, z0, x1, z1, out) => into([STUMP], x0, z0, x1, z1, out, (p) => ({ y: p.top })) }
 const walk = { heightAt: (x, z) => Math.max(groundAt(x, z), stoneAt(x, z)) }
+// The room's clock the plan reads the night off. Broad daylight unless a block says otherwise.
+const DAY = { daynessAt: () => 1 }
 
 // --- the shipped asset ---------------------------------------------------------
 {
@@ -115,7 +127,7 @@ const asset = {
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const make = (seed = 7) => new Butterflies(scene, height, water, { seed, walk, rocks, trees, ferns, deadwood, assets: asset })
+const make = (seed = 7, clock = DAY) => new Butterflies(scene, height, water, { seed, walk, clock, rocks, trees, ferns, deadwood, assets: asset })
 const flock = make()
 check(flock.loaded && flock.mesh.visible && Math.abs(flock.span - 0.06) < 1e-6, 'asset set: visible, span 6 cm', `span ${flock.span}`)
 {
@@ -130,34 +142,45 @@ check(flock.loaded && flock.mesh.visible && Math.abs(flock.span - 0.06) < 1e-6, 
 
 // --- placement -----------------------------------------------------------------
 const alive = (of = flock) => of.slots.filter((b) => b.tile !== null)
-flock.place(0, 0)
+// The world second `flock` has been run to.
+let T = 0
+flock.place(0, 0, T)
 {
   const n = alive().length
   const area = Math.PI * RADIUS * RADIUS
   check(n > 0 && n <= MAX, `placed ${n} butterflies in ${flock.tiles.size} tiles`)
   check(Math.abs(n / area - DENSITY) < DENSITY * 0.5, `density near ${DENSITY}/m2`, `${(n / area).toFixed(4)}/m2`)
   const again = make()
-  again.place(0, 0)
+  again.place(0, 0, 0)
   const key = (of) => alive(of).map((b) => `${b.homeX.toFixed(3)},${b.homeZ.toFixed(3)}`).sort().join('|')
   check(key(flock) === key(again), 'the same seed scatters the same butterflies')
-  check(alive().every((b) => b.y >= b.ground + FLY_M[0] - 1e-6 && b.y <= b.ground + FLY_M[1] + 1e-6 && b.state === 'fly'), 'every butterfly starts in flight inside FLY_M')
+  // A chapter opens on its roost and each butterfly's is offset from the next's, so a meadow at any second is part seated and part on the wing -- each one where the chain says, not left hanging.
+  const seated = alive().filter((b) => b.state === 'rest')
+  const off = alive().filter((b) => (b.state === 'rest'
+    ? Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) > 1e-6
+    : b.y < b.ground - 1e-6 || b.y > b.ground + FLY_M[1] + 0.5))
+  check(off.length === 0 && seated.length > 0 && seated.length < n, 'every butterfly starts where its chain says: on a perch, or in the air over the ground', `${seated.length} of ${n} seated, ${off.length} adrift`)
+  again.dispose()
 }
 {
   // On snow: the ground at x = 1000 is 60 m, the snow line.
   // The ground reaches SNOW - SNOW_MARGIN at x = 600, so the tiles around it straddle the cut.
   const cold = make()
-  cold.place((SNOW - SNOW_MARGIN - 10) / SLOPE, 0)
+  cold.place((SNOW - SNOW_MARGIN - 10) / SLOPE, 0, 0)
   const under = alive(cold).filter((b) => b.ground > SNOW - SNOW_MARGIN)
   check(alive(cold).length > 0 && under.length === 0, 'none rolled within SNOW_MARGIN of the snow line', `${alive(cold).length} placed, ${under.length} too high`)
+  cold.dispose()
   const wet = make()
-  wet.place(POND.x, POND.z)
+  wet.place(POND.x, POND.z, 0)
   const onWater = alive(wet).filter((b) => Math.hypot(b.homeX - POND.x, b.homeZ - POND.z) < POND.r)
   check(onWater.length === 0 && alive(wet).length > 0, 'none rolled over the pond', `${onWater.length} wet of ${alive(wet).length}`)
   check(wet._groundPerch(wet.slots[0], POND.x, POND.z) === null && wet._groundPerch(wet.slots[0], POND.x + POND.r + 1, POND.z) === 'ground', 'the ground perch refuses the pond')
   // A minute at the pond's edge: the ones rolled on its shore wander over it, and must not land there.
   let wetLanding = 0, landed = 0
+  let t = 0
   for (let f = 0; f < 72 * 60; f++) {
-    wet.update(POND.x + POND.r, 11, POND.z, 1 / 72)
+    t += 1 / 72
+    wet.update(POND.x + POND.r, 11, POND.z, t)
     for (const b of alive(wet)) {
       if (b.state !== 'rest') continue
       landed++
@@ -165,6 +188,7 @@ flock.place(0, 0)
     }
   }
   check(landed > 0 && wetLanding === 0, 'no landing on the pond', `${wetLanding} wet of ${landed} resting frames`)
+  wet.dispose()
 }
 
 // --- the colour: one morph a butterfly, carried in instanceColor ----------------
@@ -181,14 +205,12 @@ flock.place(0, 0)
   check(blue && mid(blue.b) >= 0.9 && mid(blue.g) < 0.35 && mid(blue.r) < 0.05, 'the blue morph is an electric blue: full blue, little green, no red')
   check(orange && mid(orange.r) >= 0.95 && mid(orange.g) < 0.35 && mid(orange.g) > 0.1 && mid(orange.b) < 0.05, 'the orange morph is a flame orange: full red, some green, no blue')
   // One frame at the origin, then every written instance carries its butterfly's own tint.
-  flock.update(0, 11, 0, 1 / 72)
-  const c = flock.mesh.instanceColor.array, m = flock.mesh.instanceMatrix.array
-  let matched = 0
-  for (let k = 0; k < flock.mesh.count; k++) {
-    const b = alive().find((b) => Math.abs(m[k * 16 + 12] - b.x) < 1e-4 && Math.abs(m[k * 16 + 14] - b.z) < 1e-4)
-    if (b && Math.abs(c[k * 3] - b.r) < 1e-6 && Math.abs(c[k * 3 + 1] - b.g) < 1e-6 && Math.abs(c[k * 3 + 2] - b.b) < 1e-6) matched++
-  }
-  check(flock.mesh.count > 0 && matched === flock.mesh.count, 'each written instance carries its butterfly\'s tint', `${matched} of ${flock.mesh.count}`)
+  T += 1 / 72
+  flock.update(0, 11, 0, T)
+  const c = flock.mesh.instanceColor.array
+  const drawn = alive().filter((b) => b.row >= 0)
+  const matched = drawn.filter((b) => Math.abs(c[b.row * 3] - b.r) < 1e-6 && Math.abs(c[b.row * 3 + 1] - b.g) < 1e-6 && Math.abs(c[b.row * 3 + 2] - b.b) < 1e-6)
+  check(flock.mesh.count > 0 && drawn.length === flock.mesh.count && matched.length === drawn.length, 'each written instance carries its butterfly\'s tint', `${matched.length} of ${flock.mesh.count}`)
 }
 
 // --- flight and landing --------------------------------------------------------
@@ -210,16 +232,11 @@ flock.place(0, 0)
   // The frame each approach began, and how long every finished one took: an approach that never seats is a butterfly circling its perch for the tile's life.
   const approach = new Map()
   const approaches = []
-  // The matrix written for b this frame, or null when it was culled.
-  const rowOf = (b) => {
-    const m = flock.mesh.instanceMatrix.array
-    for (let k = 0; k < flock.mesh.count; k++) if (Math.abs(m[k * 16 + 12] - b.x) < 1e-4 && Math.abs(m[k * 16 + 14] - b.z) < 1e-4) return k
-    return null
-  }
   // Two minutes of frames about the origin, where every kind of perch is in reach.
   for (let f = 0; f < 72 * 120; f++) {
+    T += dt
     const t0 = performance.now()
-    flock.update(0, 11, 0, dt)
+    flock.update(0, 11, 0, T)
     const ms = performance.now() - t0
     if (f > 10) { maxMs = Math.max(maxMs, ms); totalMs += ms; frames++ }
     for (const b of alive()) {
@@ -229,14 +246,14 @@ flock.place(0, 0)
       if (b.state !== 'land' && approach.has(b.id)) { approaches.push((f - approach.get(b.id)) / 72); approach.delete(b.id) }
       was.set(b.id, b.state)
       if (b.state !== 'rest') {
-        // Never straight up: a frame's rise is at most the run times CLIMB_TAN (the seat's snap on landing is a frame of the 'land' state, and is skipped).
+        // Never straight up: a frame's rise is at most the run times CLIMB_TAN (the seat's snap on landing is a frame of the 'land' state, and the segment turn puts it back on the chain's own pose, so both are skipped).
         const p = prev.get(b.id)
-        if (p && was.get(b.id) === b.state && b.state !== 'land') {
+        if (p && p.state === b.state && p.seg === b.seg && b.state !== 'land') {
           const run = Math.hypot(b.x - p.x, b.z - p.z), rise = b.y - p.y
           steps++
           if (rise > run * CLIMB_TAN + 1e-4) steep++
         }
-        prev.set(b.id, { x: b.x, y: b.y, z: b.z })
+        prev.set(b.id, { x: b.x, y: b.y, z: b.z, seg: b.seg, state: b.state })
         if (b.amp > FLUTTER_AMP * 0.9) flapped++
         if (b.glide && Math.abs(b.base - GLIDE_BASE) < 0.05) glided++
       } else prev.delete(b.id)
@@ -252,7 +269,7 @@ flock.place(0, 0)
           }
           trail.set(b.id, t)
         }
-        // The band is over the ground read every HEIGHT_EVERY frames and chased at a capped climb over the first seconds of a bout, so the boulder's metre step and the take-off are left out; a glide's sink and a stroke's bounce are the slack.
+        // The band is over the ground read every HEIGHT_EVERY ticks and chased at a capped climb over the first seconds of a bout, so the boulder's metre step and the take-off are left out; a glide's sink and a stroke's bounce are the slack.
         if (Math.hypot(b.x - ROCK.x, b.z - ROCK.z) < ROCK.r + 2 || f - (tookOff.get(b.id) ?? 0) < 72 * 3) continue
         const g = walk.heightAt(b.x, b.z)
         if (b.y < g + FLY_M[0] - 0.05) low++
@@ -260,10 +277,10 @@ flock.place(0, 0)
       } else if (b.state === 'rest') {
         landed.add(b.id)
         if (Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) > 1e-6) seatOff++
-        const k = rowOf(b)
-        if (k === null) { if (Math.hypot(b.x, b.y - 11, b.z) < b.size * DRAW_SPANS) unwritten++; continue }
+        if (b.row < 0) { if (Math.hypot(b.x, b.y - 11, b.z) < b.size * DRAW_SPANS) unwritten++; continue }
         // The card's up is the matrix's y column; it must be the perch's normal.
         const m = flock.mesh.instanceMatrix.array
+        const k = b.row
         const s = Math.hypot(m[k * 16 + 4], m[k * 16 + 5], m[k * 16 + 6])
         if ((m[k * 16 + 4] * b.nx + m[k * 16 + 5] * b.ny + m[k * 16 + 6] * b.nz) / s < 0.999) upOff++
         const w = flock.wing.array
@@ -288,102 +305,130 @@ flock.place(0, 0)
   check(chords.length > 100 && median < 0.85 && chords[Math.floor(chords.length * 0.9)] < 0.97, 'a 3 s stretch of flight is not a straight line', `chord / path: median ${median.toFixed(2)}, 90th ${chords[Math.floor(chords.length * 0.9)].toFixed(2)} over ${chords.length} stretches`)
   check(glided > 0 && flapped > glided * 1.5, 'the wings beat in bursts with short glides between, held at GLIDE_BASE', `${flapped} flapping frames, ${glided} gliding`)
   check(alive().every((b) => b.size >= SIZE_M[0] && b.size <= SIZE_M[1]) && SIZE_M[0] === 0.05 && SIZE_M[1] === 0.2, 'wingspans run 5 to 20 cm', `${Math.min(...alive().map((b) => b.size)).toFixed(3)}..${Math.max(...alive().map((b) => b.size)).toFixed(3)} m`)
-  // Each perch kind is one roll among the kinds in reach when a bout ends near it, so a rarer one may want a few minutes more.
-  const L = flock.landings
-  const allKinds = () => L.trunk > 0 && L.rock > 0 && L.fern > 0 && L.deadwood > 0 && L.ground > 0
+  // Each perch kind is one roll among the kinds in reach when a flight of the chain ends near it, so a rarer one may want a few minutes more.
+  const sat = new Set()
+  const allKinds = () => ['trunk', 'rock', 'fern', 'deadwood', 'ground'].every((k) => sat.has(k))
   let more = 0
-  for (; more < 72 * 240 && !allKinds(); more++) flock.update(0, 11, 0, dt)
-  check(allKinds(), 'the trunk, the stone, the fern, the stump and the ground each got a landing', `${JSON.stringify(L)} after ${(more / 72).toFixed(0)} s more`)
-  // A butterfly that has rested a second: its wings have had time to ease. `left` cannot say (a fresh landing may roll a short rest), so the frames are counted.
+  for (; more < 72 * 600 && !allKinds(); more++) {
+    T += dt
+    flock.update(0, 11, 0, T)
+    for (const b of alive()) if (b.state === 'rest') sat.add(b.perch)
+  }
+  check(allKinds(), 'the trunk, the stone, the fern, the stump and the ground each got a butterfly sitting on it', `${[...sat].join(', ')} after ${(more / 72).toFixed(0)} s more, landings ${JSON.stringify(flock.landings)}`)
+  // A butterfly that has rested a second: its wings have had time to ease.
   const rested = new Map()
   let rest = null
   for (let f = 0; f < 72 * 30 && !rest; f++) {
-    flock.update(0, 11, 0, dt)
+    T += dt
+    flock.update(0, 11, 0, T)
     for (const b of alive()) {
       const n = b.state === 'rest' ? (rested.get(b.id) ?? 0) + 1 : 0
       rested.set(b.id, n)
       if (n >= 72) rest = b
     }
   }
-  // A flier on the last frames of a flap burst (0.38 s of flapping at least, so the wings have eased from a glide's 0.08) within NEAR_M of her head, where it is stepped every frame; frames until one turns up.
-  const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && b.beat < 0.02 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M).sort((a, b) => a.beat - b.beat)[0]
+  // A flier whose wings have reached full flutter (a glide holds them near shut) within NEAR_M of her head; frames until one turns up.
+  const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && b.amp > FLUTTER_AMP - 0.05 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M)[0]
   let flier = nearFlier()
-  for (let f = 0; f < 72 * 30 && !flier; f++) { flock.update(0, 11, 0, dt); flier = nearFlier() }
+  for (let f = 0; f < 72 * 30 && !flier; f++) { T += dt; flock.update(0, 11, 0, T); flier = nearFlier() }
   check(!!rest && Math.abs(rest.amp - REST_AMP) < 0.05 && Math.abs(rest.base - REST_BASE) < 0.05, 'a resting butterfly holds its wings raised, pulsing narrowly', rest ? `amp ${rest.amp.toFixed(2)} base ${rest.base.toFixed(2)}` : 'none resting')
   check(!!flier && Math.abs(flier.amp - FLUTTER_AMP) < 0.05 && Math.abs(flier.base) < 0.05, 'a flapping butterfly flutters wide about the flat', flier ? `amp ${flier.amp.toFixed(2)} base ${flier.base.toFixed(2)}` : 'none flying')
   check(REST_HZ < 1 && FLUTTER_HZ >= 8, 'the pulse is slow and the flutter fast', `${REST_HZ} Hz / ${FLUTTER_HZ} Hz`)
   if (flier) {
     const p0 = flier.phase
-    flock.update(0, 11, 0, dt)
+    T += dt
+    flock.update(0, 11, 0, T)
     const ran = (flier.phase - p0 + Math.PI * 2) % (Math.PI * 2)
     check(Math.abs(ran - Math.PI * 2 * FLUTTER_HZ * dt) < 1e-6, 'a flier\'s phase runs at FLUTTER_HZ', `${ran.toFixed(4)} rad in a frame`)
   }
   check(maxMs < 1 && totalMs / frames < 0.2, 'a frame of butterflies is cheap', `max ${maxMs.toFixed(3)} ms, mean ${(totalMs / frames).toFixed(3)} ms`)
 }
 
-// --- the trunk perch: on the bark, head up ---------------------------------------
+// --- a sitter's matrix is copied, not recomposed ---------------------------------
 {
-  const b = alive()[0]
-  b.x = TREE.x + 1; b.z = TREE.z + 1; b.y = groundAt(b.x, b.z) + 1
-  let kind = null
-  for (let i = 0; i < 64 && kind !== 'trunk'; i++) kind = flock._perch(b)
-  check(kind === 'trunk', 'a trunk in reach is picked')
-  if (kind === 'trunk') {
-    check(Math.abs(Math.hypot(b.px - TREE.x, b.pz - TREE.z) - TREE.r) < 0.01 && Math.abs(b.ny) < 1e-6 && Math.abs(b.nx * (b.px - TREE.x) + b.nz * (b.pz - TREE.z) - TREE.r) < 0.01, 'the perch is on the bark, facing out', `${b.nx.toFixed(2)},${b.ny.toFixed(2)},${b.nz.toFixed(2)}`)
-    const g = groundAt(TREE.x, TREE.z)
-    check(b.py >= g + FLY_M[0] && b.py <= g + FLY_M[1], 'at a height in FLY_M up the trunk', `${(b.py - g).toFixed(2)} m`)
-    // Seat it and read the matrix's x column: the body must point up the bark.
-    b.perch = 'trunk'; b.state = 'rest'; b.left = 100
-    b.x = b.px; b.y = b.py; b.z = b.pz
-    // Seated by hand, so the frame is told: a sitter's matrix is otherwise kept.
-    b.stale = true
-    flock.update(0, 11, 0, 0)
-    const m = flock.mesh.instanceMatrix.array
-    let k = null
-    for (let i = 0; i < flock.mesh.count; i++) if (Math.abs(m[i * 16 + 12] - b.x) < 1e-6 && Math.abs(m[i * 16 + 14] - b.z) < 1e-6) k = i
-    const bodyUp = k !== null && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
-    check(bodyUp, 'seated with its head up the trunk', k === null ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
-    // A sitter is copied, not recomposed: _seat is not called for it again while it rests.
+  // One resting with seconds of its phrase left, so the run below stays inside the sit and inside its segment.
+  const held = () => alive().find((b) => b.state === 'rest' && b.phEnd - (T - b.epoch) > 2)
+  let b = held()
+  for (let f = 0; f < 72 * 30 && !b; f++) { T += 1 / 72; flock.update(0, 11, 0, T); b = held() }
+  if (!b) check(false, 'a butterfly sits still long enough to read')
+  else {
+    const seg = b.seg
     const seat = flock._seat
     let seated = 0
     flock._seat = function (c) { if (c === b) seated++; return seat.call(this, c) }
-    for (let i = 0; i < 72; i++) flock.update(0, 11, 0, 1 / 72)
+    let f = 0
+    for (; f < 72 && b.state === 'rest' && b.seg === seg; f++) { T += 1 / 72; flock.update(0, 11, 0, T) }
     flock._seat = seat
-    check(b.state === 'rest' && seated === 0, 'and a second of sitting recomposes its matrix on no frame', `${seated} seats`)
+    check(f > 36 && seated === 0, 'a second of sitting recomposes its matrix on no frame', `${seated} seats over ${f} frames`)
+  }
+}
+
+// --- the trunk perch: on the bark, head up ---------------------------------------
+{
+  const b = alive()[0]
+  const rand = mulberry32(4242)
+  const st = { kind: null, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }
+  let kind = null
+  for (let i = 0; i < 64 && kind !== 'trunk'; i++) kind = flock._perchAt(TREE.x + 1, TREE.z + 1, rand, st)
+  check(kind === 'trunk', 'a trunk in reach is picked')
+  if (kind === 'trunk') {
+    check(Math.abs(Math.hypot(st.x - TREE.x, st.z - TREE.z) - TREE.r) < 0.01 && Math.abs(st.ny) < 1e-6 && Math.abs(st.nx * (st.x - TREE.x) + st.nz * (st.z - TREE.z) - TREE.r) < 0.01, 'the perch is on the bark, facing out', `${st.nx.toFixed(2)},${st.ny.toFixed(2)},${st.nz.toFixed(2)}`)
+    const g = groundAt(TREE.x, TREE.z)
+    check(st.y >= g + FLY_M[0] && st.y <= g + FLY_M[1], 'at a height in FLY_M up the trunk', `${(st.y - g).toFixed(2)} m`)
+    // Seat it on that perch by hand and read the matrix's x column at the same second -- no tick runs, so the chain does not put it back -- : the body must point up the bark.
+    flock._target(b, st)
+    b.state = 'rest'
+    b.x = b.ox = b.px; b.y = b.oy = b.py; b.z = b.oz = b.pz
+    b.stale = true
+    flock.update(0, 11, 0, T)
+    const m = flock.mesh.instanceMatrix.array
+    const k = b.row
+    const bodyUp = k >= 0 && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
+    check(bodyUp, 'seated with its head up the trunk', k < 0 ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
   }
 }
 
 // --- the fern perch: on a frond, lifted for the sway ------------------------------
 {
   const b = alive()[0]
-  b.x = FERN.x + 1; b.z = FERN.z + 1; b.y = groundAt(b.x, b.z) + 1
+  const rand = mulberry32(99)
+  const st = { kind: null, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }
   let kind = null
-  for (let i = 0; i < 64 && kind !== 'fern'; i++) kind = flock._perch(b)
+  for (let i = 0; i < 64 && kind !== 'fern'; i++) kind = flock._perchAt(FERN.x + 1, FERN.z + 1, rand, st)
   check(kind === 'fern', 'a fern in reach is picked')
   if (kind === 'fern') {
-    const off = Math.hypot(b.px - FERN_HIT.x - FERN_HIT.nx * FERN_LIFT_M, b.py - FERN_HIT.y - FERN_HIT.ny * FERN_LIFT_M, b.pz - FERN_HIT.z - FERN_HIT.nz * FERN_LIFT_M)
+    const off = Math.hypot(st.x - FERN_HIT.x - FERN_HIT.nx * FERN_LIFT_M, st.y - FERN_HIT.y - FERN_HIT.ny * FERN_LIFT_M, st.z - FERN_HIT.z - FERN_HIT.nz * FERN_LIFT_M)
     check(off < 1e-6 && FERN_LIFT_M >= 0.02 && FERN_LIFT_M <= 0.03, 'the perch is the frond\'s point, 2 to 3 cm off it along its normal', `${off.toExponential(1)} m off, lift ${FERN_LIFT_M}`)
-    check(b.nx === FERN_HIT.nx && b.ny === FERN_HIT.ny && b.nz === FERN_HIT.nz, 'with the frond\'s normal, not straight up')
-    // Flown in and seated: it rests exactly where the perch was set.
-    b.state = 'land'; b.perch = 'fern'
-    let f = 0
-    for (; f < 72 * 30 && b.state === 'land'; f++) flock.update(0, 11, 0, 1 / 72)
-    check(b.state === 'rest' && Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6, 'and it settles onto that point', `${(f / 72).toFixed(1)} s in`)
+    check(st.nx === FERN_HIT.nx && st.ny === FERN_HIT.ny && st.nz === FERN_HIT.nz, 'with the frond\'s normal, not straight up')
+    // Flown in tick by tick: it seats exactly where the perch was set.
+    flock._target(b, st)
+    b.state = 'fly'
+    b.x = FERN.x + 1; b.z = FERN.z + 1; b.y = groundAt(b.x, b.z) + 1
+    b.spd = 1
+    let n = 0
+    for (; n < 20 * 30 && b.state !== 'rest'; n++) flock._approach(b, TICK_S, Math.min(1, 3 * TICK_S))
+    check(b.state === 'rest' && Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6, 'and it settles onto that point', `${(n * TICK_S).toFixed(1)} s in`)
   }
 }
 
 // --- after sunset nothing flies --------------------------------------------------
 {
   const dt = 1 / 72
-  const night = make(3)
-  night.place(0, 0)
+  // A step of a clock: broad daylight but for the hundred seconds after DUSK. Both the plan and the run read it, so they agree on the night.
+  const DUSK = 1000, DAWN = 1100
+  const NC = { daynessAt: (t) => (t >= DUSK && t < DAWN ? NIGHT_DAY - 0.4 : 1) }
+  const night = make(3, NC)
+  let t = DUSK - 20
+  night.place(0, 0, t)
   const n0 = alive(night).length
-  check(n0 > 0 && alive(night).every((b) => b.state === 'fly'), 'a meadow rolled in daylight starts in the air', `${n0} flying`)
-  // Sundown, then a minute of it. NIGHT_DAY is the sun on the horizon.
+  check(n0 > 0 && alive(night).some((b) => b.state !== 'rest'), 'a meadow rolled in daylight has butterflies in the air', `${alive(night).filter((b) => b.state !== 'rest').length} of ${n0} flying`)
+  // Up to sundown, then a minute of it.
+  for (; t < DUSK; ) { t += dt; night.update(0, 11, 0, t) }
   let settled = -1
   let flyingAfter = 0
   for (let f = 0; f < 72 * 60; f++) {
-    night.update(0, 11, 0, dt, NIGHT_DAY - 0.05)
+    t += dt
+    night.update(0, 11, 0, t)
     const flying = alive(night).filter((b) => b.state !== 'rest').length
     if (flying === 0 && settled < 0) settled = f
     if (settled >= 0) flyingAfter += flying
@@ -394,22 +439,24 @@ flock.place(0, 0)
   check(alive(night).every((b) => Math.abs(b.amp - REST_AMP) < 1e-6 && Math.abs(b.base - REST_BASE) < 1e-6), 'with its wings raised and pulsing, as a resting butterfly holds them')
 
   // A tile that grows in the dark arrives seated: she walks a long way after sunset and the new meadow is not a cloud of fliers.
-  night.update(400, groundAt(400, 0) + 1.6, 0, dt, 0)
+  t += dt
+  night.update(400, groundAt(400, 0) + 1.6, 0, t)
   const fresh = alive(night)
   check(fresh.length > 0 && fresh.every((b) => b.state === 'rest'), 'a meadow rolled in the dark arrives already landed', `${fresh.filter((b) => b.state === 'rest').length} of ${fresh.length} seated`)
   check(fresh.every((b) => Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6), 'each on the perch it found, not floating over one')
-  // The seating happens in the tile generator, so it must not have spent the flock's own stream: the same seed, in the dark, lays the same butterflies.
-  const twin = make(3)
-  twin.dayness = 0
-  twin.place(400, 0)
+  // The seating happens in the tile generator, so it must not have spent the flock's own stream: the same seed, in daylight, lays the same butterflies.
+  const twin = make(3, NC)
+  twin.place(400, 0, DUSK - 500)
   const key = (of) => alive(of).map((b) => `${b.homeX.toFixed(4)},${b.homeZ.toFixed(4)},${b.size.toFixed(4)}`).sort().join('|')
   check(key(twin) === key(night), 'and the night scatter is the same pure function of the seed the day one is')
   twin.dispose()
 
   // Dawn: they do not all leave on the frame the sun clears the horizon.
   const first = new Map()
+  for (; t < DAWN; ) { t += dt; night.update(400, groundAt(400, 0) + 1.6, 0, t) }
   for (let f = 0; f < 72 * 60; f++) {
-    night.update(400, groundAt(400, 0) + 1.6, 0, dt, 1)
+    t += dt
+    night.update(400, groundAt(400, 0) + 1.6, 0, t)
     for (const b of alive(night)) if (b.state !== 'rest' && !first.has(b.id)) first.set(b.id, f / 72)
   }
   const offs = [...first.values()].sort((a, b) => a - b)
@@ -420,14 +467,68 @@ flock.place(0, 0)
 
 // --- the tiles follow her ------------------------------------------------------
 {
-  flock.update(200, 21, 0, 1 / 72)
+  T += 1 / 72
+  flock.update(200, 21, 0, T)
   check(alive().every((b) => Math.hypot(b.homeX - 200, b.homeZ) < RADIUS + TILE), 'a move frees the tiles left behind and rolls the new ones')
+}
+
+// --- two clients see the one meadow ---------------------------------------------
+// Before the hands below: `taken` is a module-global, and a butterfly caught there would be missing from every meadow rolled after.
+{
+  const pose = (of) => alive(of).map((b) => `${b.key}|${b.x.toFixed(9)},${b.y.toFixed(9)},${b.z.toFixed(9)}|${b.state}`).sort().join('\n')
+  const slow = make(13); slow.place(0, 0, 0)
+  const fast = make(13); fast.place(0, 0, 0)
+  // One at 24 fps from the meadow's first second; one at 144 with a stutter every seventh frame, joining at the same second.
+  let a = 5000
+  slow.update(0, 11, 0, a)
+  for (let k = 0; k < 24 * 40; k++) { a += 1 / 24; slow.update(0, 11, 0, a) }
+  slow.update(0, 11, 0, 5040)
+  let b = 5000
+  fast.update(0, 11, 0, b)
+  for (let k = 0; k < 400; k++) { b += k % 7 === 0 ? 0.4 : 1 / 144; fast.update(0, 11, 0, b) }
+  fast.update(0, 11, 0, 5040)
+  check(pose(slow) === pose(fast) && alive(slow).length > 0, 'two clients on different frame rates draw the same meadow at the same world second', `${alive(slow).length} butterflies`)
+  const joined = make(13)
+  joined.place(0, 0, 5040)
+  joined.update(0, 11, 0, 5040)
+  check(pose(joined) === pose(slow), 'and so does one meeting the meadow at that second, from its first frame')
+  // One that walks up mid-flight, a segment's width later, still agrees.
+  const late = make(13)
+  late.place(0, 0, 5043.5)
+  late.update(0, 11, 0, 5043.5)
+  slow.update(0, 11, 0, 5043.5)
+  check(pose(late) === pose(slow), 'and one arriving in the middle of a flight flies the rest of it the same')
+  check(slow.pending().length === 0 && typeof slow.applyLured !== 'function', 'and a butterfly on its plan owes the room nothing: no anchor, no lured set')
+
+  // The one thing a butterfly does send: the release, without which a peer watches it go into a hand and never land.
+  const dropped = (of) => alive(of).find((b) => b.key.startsWith('bf@'))
+  const rec = { kind: 'butterfly', size: 0.041, color: [0.2, 0.4, 0.9], attrs: { aWing: [1.25] } }
+  const hand = { x: 2.0004, y: groundAt(2.0004, 0.0004) + 1.6, z: 0.0004 }
+  check(slow.release(rec, 0.0004, hand.y - 0.3, 0.0004, hand, 5043.5), 'a butterfly let go here is let go')
+  const owed = slow.pending()
+  check(owed.length === 1 && slow.pending().length === 0, 'and is owed to the room once', `${owed.length} anchor`)
+  const drop = owed[0]
+  check(drop[0].startsWith('bf:') && /^[a-z0-9:,-]{1,32}$/.test(drop[0]) && drop[7] === 'drop' && drop[8] === null && Number.isInteger(drop[6]), "as one anchor in mode drop under the butterflies' prefix", drop[0])
+  check(JSON.stringify(drop).length <= 256, "inside the relay's 256 bytes", `${JSON.stringify(drop).length} bytes`)
+  drop[8] = 'peer'
+  late.apply(drop, 5043.5)
+  const there = dropped(late)
+  check(there && late.pending().length === 0, 'the peer told of it lets the same butterfly go, and owes it nobody')
+  check(there && there.key === dropped(slow).key && there.r === 0.2 && there.b === 0.9 && there.size === rec.size, 'on the same key, in the same colours', there?.key)
+  late.apply(drop, 5043.5)
+  check(alive(late).filter((b) => b.key.startsWith('bf@')).length === 1, 'and a second telling -- a fresh welcome -- lets no second butterfly go')
+  slow.apply(drop, 5043.5)
+  check(alive(slow).filter((b) => b.key.startsWith('bf@')).length === 1, 'nor does her own drop come back to her')
+  for (let k = 0; k < 24 * 20; k++) { const t = 5043.5 + k / 24; slow.update(0, 11, 0, t); late.update(0, 11, 0, t) }
+  check(pose(late) === pose(slow) && Math.hypot(dropped(slow).x, dropped(slow).z) > 0.5, 'and twenty seconds on they are watching the one butterfly fly the one way', `${Math.hypot(dropped(slow).x, dropped(slow).z).toFixed(2)} m off`)
+  slow.dispose(); fast.dispose(); joined.dispose(); late.dispose()
 }
 
 // --- her hand: a butterfly caught, its tile never regrowing it, one let go of flying off --
 {
   const k = make(9)
-  k.place(0, 0)
+  let t = 0
+  k.place(0, 0, t)
   const b = alive(k)[0]
   const tile = b.tile
   const before = alive(k).length
@@ -446,7 +547,7 @@ flock.place(0, 0)
   check(wrong, 'and throws for another kind')
   check(b.tile === null && !tile.flock.includes(b) && alive(k).length === before - 1, 'and the butterfly is out of its flock')
   const again = make(9)
-  again.place(0, 0)
+  again.place(0, 0, 0)
   const key = (of) => alive(of).map((g) => `${g.homeX.toFixed(3)},${g.homeZ.toFixed(3)},${g.size.toFixed(3)}`).sort().join('|')
   check(key(again) === key(k) && alive(again).length === before - 1, 'the tile regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
   {
@@ -458,16 +559,26 @@ flock.place(0, 0)
     check(again.evict('butterfly', e.homeX, e.homeZ) === false, 'and is false for the home once emptied')
   }
   again.dispose()
-  // Let go: it flies from her.
+  // Let go: it flies from her, and the key it is let go under carries the drop and the heading, so a peer told them plans the same escape.
   const head = { x: 10, y: groundAt(10, 0) + 1.6, z: 0, yaw: 0 }
   const ok = k.release(rec, 10.5, head.y - 0.3, 0.2, head)
   const loose = alive(k).find((g) => g.homeX === 10.5)
   check(ok && loose && loose.state === 'fly' && loose.size === rec.size && loose.tile !== null, 'release puts it on the wing in the tile under the hand', loose ? loose.state : 'none')
+  check(loose && loose.key.startsWith('bf@10.50,0.20,'), 'under a key that is the drop and the heading, not a slot or a tile', loose?.key)
   const d0 = Math.hypot(loose.x - head.x, loose.z - head.z)
-  for (let i = 0; i < 3 * 72; i++) k.update(head.x, head.y, head.z, 1 / 72, 1)
+  for (let i = 0; i < 3 * 72; i++) { t += 1 / 72; k.update(head.x, head.y, head.z, t) }
   const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
   check(d1 > d0 + 1 && loose.amp > REST_AMP, 'it flutters away from her', `${d0.toFixed(2)} to ${d1.toFixed(2)} m in 3 s, amp ${loose.amp.toFixed(3)}`)
+  check(Math.hypot(loose.x - 10.5, loose.z - 0.2) < TETHER + 1, 'and stays on the meadow it was let go over', `${Math.hypot(loose.x - 10.5, loose.z - 0.2).toFixed(1)} m out`)
   check(k.release(rec, 5000, 0, 5000, head) === false, 'and is refused where no tile is resident')
+  {
+    // Let go under the pond's surface: refused, so hands.js keeps it as a thing and floats it up to bob. Over the same water, in the air, it flies.
+    const surface = water.levelAt(POND.x, POND.z)
+    const wet = { x: POND.x, y: surface - 0.3, z: POND.z, yaw: 0 }
+    check(k.release(rec, POND.x, surface - 0.3, POND.z, wet) === false, 'release is refused under a water surface, so the drop floats instead')
+    check(k.release(rec, POND.x, surface, POND.z, wet) === false, 'and refused exactly at it')
+    check(k.release(rec, POND.x, surface + 1.5, POND.z, wet) === true, 'but taken in the air over the same water')
+  }
   k.dispose()
 }
 

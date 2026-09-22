@@ -42,7 +42,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, SILENT_TICKS, TICK_S, chapterOf, hash32, stepTo, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
-import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 
 export const LOD_TIERS = LOD_RUNGS
@@ -66,9 +66,11 @@ export const STAND_S = [3, 10]
 export const GAZE_S = [15, 40]
 export const SIT_S = [20, 60]
 export const ERRANDS = [['home', 0.2], ['gaze', 0.25], ['sit', 0.25], ['wander', 0.3]]
-// The sit clip is one round trip, down by SIT_CUT[0] seconds and rising from SIT_CUT[1], the hold between them idle-sit's pose (tools/creatures/anim/clips/human/sit.json); at the hold the hips sit `back` of the wheelbase behind the feet and `drop` of the height down. The feet stand `clear` metres past the stool's edge at the least, or the walker would lift the sitter onto it, reached within `near` metres (NODE_M's slack would leave the hips off the stool), and it comes round the stool `round` metres wide of its side.
+// The sit clip is one round trip, down by SIT_CUT[0] seconds and rising from SIT_CUT[1], the hold between them idle-sit's pose (tools/creatures/anim/clips/human/sit.json); at the hold the hips sit `back` of the wheelbase behind the feet, and the body is set down by what touches the stool (seatY). The feet stand `clear` metres past the stool's edge at the least, or the walker would lift the sitter onto it, reached within `near` metres (NODE_M's slack would leave the hips off the stool), and it comes round the stool `round` metres wide of its side.
 export const SIT_CUT = [1.4, 3.0]
-export const SIT = { back: 0.5, drop: 0.2, clear: 0.05, near: 0.03, round: 0.5 }
+// Metres a SIZE_M leafkin's seated underside rides over the ground it sits down on: what a stool's top is cut to (hearth.js cutStool). The runtime measures each body's own (seatY) and setAsset refuses an asset whose sit has drifted from this, since the stools were cut before it loaded.
+export const SEAT_M = 0.19
+export const SIT = { back: 0.5, clear: 0.05, near: 0.03, round: 0.5 }
 export const TALK_M = 1.6
 export const TALK_S = [8, 20]
 export const TALK_COOL_S = 45
@@ -92,8 +94,8 @@ const MEET_TICKS = 10
 
 export const TALKS = ['talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
 export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', ...TALKS]
-// The clips whose feet stay put (puppet.js FootIK).
-export const PLANTED = new Set(['idle', 'sit', 'idle-sit', ...TALKS])
+// The clips whose feet stay put (puppet.js FootIK). A sit is not among them: the solver drops the root onto the ground under the feet, which is the one thing that would pull a seated body off its stool.
+export const PLANTED = new Set(['idle', ...TALKS])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 
@@ -103,6 +105,46 @@ const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _trunk = { x: 0, z: 0, r: 0 }
+
+/**
+ * How high a seated body's underside rides over the rig's own floor, in the
+ * asset's units: the lowest skinned vertex of the pelvis and the thighs with
+ * the hold pose on the rig, so a sitter can be set down by what touches the
+ * stool rather than by its feet (`_move`, DESIGN.md §30). A vertex counts only
+ * where those bones carry all of its weight; the leafkin's is 0.145 of its
+ * height, a thigh's thickness below the hip joint.
+ */
+export function seatY(asset) {
+  const copies = new Map()
+  const rig = cloneBones(asset.root, copies)
+  const mixer = new THREE.AnimationMixer(rig)
+  mixer.clipAction(asset.clips.find((c) => c.name === 'idle-sit')).play()
+  mixer.update(0)
+  rig.updateMatrixWorld(true)
+  const seated = new Set([asset.root.name, ...asset.legs.map((l) => THREE.PropertyBinding.sanitizeNodeName(l.chain[0]))])
+  const skin = asset.skeleton.bones.map((b, i) => (seated.has(b.name) ? new THREE.Matrix4().multiplyMatrices(copies.get(b).matrixWorld, asset.skeleton.boneInverses[i]) : null))
+  const geo = asset.tiers[0]
+  const pos = geo.getAttribute('position'), index = geo.getAttribute('skinIndex'), weight = geo.getAttribute('skinWeight')
+  const e = _mat.elements
+  let low = Infinity
+  for (let v = 0; v < pos.count; v++) {
+    e.fill(0)
+    let held = 0
+    for (let k = 0; k < 4; k++) {
+      const w = weight.getComponent(v, k)
+      if (w <= 0) continue
+      const m = skin[index.getComponent(v, k)]
+      if (!m) { held = 0; break }
+      for (let i = 0; i < 16; i++) e[i] += m.elements[i] * w
+      held += w
+    }
+    if (held < 0.999) continue
+    const y = _pos.fromBufferAttribute(pos, v).applyMatrix4(_mat).y
+    if (y < low) low = y
+  }
+  if (!(low >= 0 && low < asset.height)) throw new Error(`Villagers: the seated underside measures ${low} against a body ${asset.height} tall`)
+  return low
+}
 
 /**
  * The roads as a graph: `nodes` `[{ x, z, road }]`, `adj` each node's
@@ -325,6 +367,8 @@ export class Villagers {
   setAsset(asset) {
     for (const name of CLIPS) if (!asset.clips.some((c) => c.name === name)) throw new Error(`Villagers: the asset has no ${name} clip`)
     this.asset = asset
+    this.sitY = seatY(asset)
+    if (Math.abs((this.sitY / asset.height) * SIZE_M - SEAT_M) > 0.03) throw new Error(`Villagers: a ${SIZE_M} m body of this one sits ${((this.sitY / asset.height) * SIZE_M).toFixed(3)} m up, and the stools are cut to ${SEAT_M}`)
     this.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
     if (!(this.durations.sit > SIT_CUT[1] && SIT_CUT[0] < SIT_CUT[1])) throw new Error(`Villagers: the sit clip is ${this.durations.sit} s, cut at ${SIT_CUT}`)
     this.plain.map = asset.map
@@ -736,8 +780,11 @@ export class Villagers {
     if (c.left <= 0) this._step(c)
     // From its own feet, so a house's awning or roof overhead is not ground it is lifted onto.
     c.y = this.walk.heightAt(c.x, c.z, c.y)
-    // A sitter's hips on its stool's top where the ground would leave them under it.
-    if (c.state === 'sit') c.y = Math.max(c.y, c.seat.top - (this.asset.wheelbase - SIT.drop * this.asset.height) * c.k)
+    // Its seated underside onto the stool's top (seatY) and off again, eased over the clip's own cuts so it neither pops at the contact nor stands lifted while it turns.
+    if (c.state === 'sit') {
+      const on = c.phase === 'hold' ? 1 : c.phase === 'down' ? 1 - c.left / c.dur : c.phase === 'up' ? c.left / c.dur : 0
+      c.y += Math.min(1, Math.max(0, on)) * (c.seat.top - this.sitY * c.k - c.y)
+    }
   }
 
   // -------------------------------------------------------------------------

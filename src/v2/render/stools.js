@@ -1,7 +1,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { createPropMaterial } from '../../material.js'
-import { Faces, HEARTH, polygon, prism } from './hearth.js'
+import { Faces, HEARTH, cutStool, polygon, prism } from './hearth.js'
 
 // ---------------------------------------------------------------------------
 // THE SCATTERED STOOLS (DESIGN.md §30): the village's seats away from the
@@ -14,8 +14,6 @@ import { Faces, HEARTH, polygon, prism } from './hearth.js'
 // ---------------------------------------------------------------------------
 
 const WHITE = [1, 1, 1]
-// Metres from a stool's centre a sitter's feet may stand (villagers.js SIT: a sitter's own reach or just past the rim).
-const FEET = [0.15, 0.2, 0.25, 0.3]
 const between = (rand, [lo, hi]) => lo + rand() * (hi - lo)
 
 export class Stools {
@@ -36,10 +34,10 @@ export class Stools {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0)
     this.stools = sites.map((s) => {
       if (![s.x, s.z, s.lookX, s.lookZ].every(Number.isFinite)) throw new Error(`Stools: a site is { x, z, lookX, lookZ }: ${JSON.stringify(s)}`)
-      const radius = between(rand, S.radius), height = between(rand, S.height)
-      // On the lowest of its own ground and the ground toward its look where a sitter's feet stand, so its top is never more than its height over the feet: sunk into a bank rather than lifting a sitter.
+      const radius = between(rand, S.radius)
+      // Cut to the ground its sitter's feet reach, the hearth's own rule.
       const a = Math.atan2(s.lookZ - s.z, s.lookX - s.x)
-      const y = Math.min(field.heightAt(s.x, s.z), ...FEET.map((d) => field.heightAt(s.x + Math.cos(a) * d, s.z + Math.sin(a) * d))) - 0.02
+      const { y, height } = cutStool((x, z) => field.heightAt(x, z), s.x, s.z, a, S.height)
       q.setFromAxisAngle(up, rand() * Math.PI * 2)
       m.compose(v.set(s.x, y, s.z), q, new THREE.Vector3(1, 1, 1))
       const ring9 = polygon(9, radius, S.jitter, rand)

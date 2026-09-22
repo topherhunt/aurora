@@ -1,5 +1,7 @@
 import THREE from '../../three-instance.js'
 
+import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
+
 import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
 } from './gen-props.js'
@@ -183,7 +185,7 @@ export class Bones {
    * @param bank     bonesBankFrom's answer. Required: a scatter with nothing to
    *                 draw is a bug, not a state.
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null, none = false } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null, none = false, bounds = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Bones: needs the bank from loadBonesBank (or bonesBankFrom)')
     }
@@ -205,7 +207,9 @@ export class Bones {
     this.paths = layers.paths
     this.seed = (seed | 0) ^ SEED_SALT
     // The tile grid: to the biggest find's cull unless told otherwise (the gates measure smaller worlds).
-    this.radius = radius ?? propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]))
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    this.radius = boundedRadius(radius ?? propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1])), bounds, TILE)
     // `none`: no tile ever grows, but a carried find still dresses (mushrooms.js).
     this.none = none
     this.radiusSq = this.radius * this.radius
@@ -447,6 +451,7 @@ export class Bones {
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
         if (dcx * dcx + dcz * dcz > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         this._growTile(key, gx, gz)
@@ -691,8 +696,13 @@ export class Bones {
   /**
    * Photograph each variant's pick for its card and let the cards draw. Call
    * once, with the renderer, at boot. Until it runs a distant find is not drawn at all.
+   *
+   * A readback off the GPU is the most expensive thing a scatter does at boot,
+   * so `none` skips it outright: a bed that never grows a tile has nothing for
+   * a card to stand in for.
    */
   bakeCards(renderer) {
+    if (this.none) return
     const t0 = performance.now()
     this.bank.variants.forEach((v, i) => {
       const card = this.cardMaterials[i]

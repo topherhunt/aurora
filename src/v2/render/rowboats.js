@@ -1,5 +1,7 @@
 import THREE from '../../three-instance.js'
 
+import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
+
 import { PROP_STEPS, createGenPropMaterial, ladderBounds, ladderGeometries, propReach } from './gen-props.js'
 import { AXIS_VIEWS, LOD_DEG, bakeCritterCard, distAt, ladderTier, loadCritterGlb, setAxisCard } from './critters.js'
 import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
@@ -436,7 +438,7 @@ export class Rowboats {
    * @param water    WaterSurfaces. Needs levelAt, lakeLevelAt, lakeShoreDistAt.
    * @param bank     rowboatsBankFrom's answer. Required.
    */
-  constructor(scene, field, water, { seed = 1, radius = null, bank = null } = {}) {
+  constructor(scene, field, water, { seed = 1, radius = null, bank = null, none = false, bounds = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !bank.bounds) throw new Error('Rowboats: needs the bank from loadRowboatsBank (or rowboatsBankFrom)')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
       throw new Error('Rowboats: needs a V2Height with heightAt and heightAndSlopeAt')
@@ -448,7 +450,11 @@ export class Rowboats {
     this.field = field
     this.water = water
     this.seed = (seed | 0) ^ SEED_SALT
-    this.radius = radius ?? rowboatCull(LENGTH[1])
+    // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
+    this.bounds = bounds
+    // `none`: no tile ever grows, and no card is photographed (bakeCards). A village's pond floats no boat.
+    this.none = none
+    this.radius = boundedRadius(radius ?? rowboatCull(LENGTH[1]), bounds, TILE)
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
@@ -583,6 +589,7 @@ export class Rowboats {
 
   /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing only. */
   _reseat(cx, cz) {
+    if (this.none) return
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
     if (tx === this.camTileX && tz === this.camTileZ) return
@@ -606,6 +613,7 @@ export class Rowboats {
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
         if (dcx * dcx + dcz * dcz > this.radiusSq) continue
+        if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue
         this._growTile(key, gx, gz)
@@ -867,8 +875,9 @@ export class Rowboats {
     }
   }
 
-  /** Photograph the pick for its card and let the card draw. Once, with the renderer, at boot. */
+  /** Photograph the pick for its card and let the card draw. Once, with the renderer, at boot. Skipped under `none`, which grows no tile for it to stand in for. */
   bakeCards(renderer) {
+    if (this.none) return
     const t0 = performance.now()
     this.cardMaterial.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[0], this.bank.map, this.bank.bounds, AXIS_VIEWS)
     this.cardMaterial.visible = true

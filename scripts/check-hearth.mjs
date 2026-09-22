@@ -18,7 +18,8 @@ import * as THREE from 'three'
 
 import { LAYER, buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
-import { HEARTH, Hearth, buildHearth, decimateHearth } from '../src/v2/render/hearth.js'
+import { HEARTH, Hearth, buildHearth, decimateHearth, feetGround } from '../src/v2/render/hearth.js'
+import { SEAT_M } from '../src/v2/render/villagers.js'
 import { CAMPFIRE } from '../src/v2/render/fire.js'
 
 let failures = 0
@@ -119,7 +120,7 @@ const patch = (m) => m
   }
   check(ring9.length === 2 && Math.abs(ring9[0] - ring9[1]) > 1e-4, 'a stool\'s corners are jittered', ring9.map((r) => r.toFixed(3)).join(' vs '))
 
-  // Every prism faces out: its face normals point away from its own centroid. The bark corners come in runs, 48 a log and 96 a stool.
+  // Every prism faces out: a side away from its own axis, a cap up or down. A jittered top is a fan over corners of differing heights, not a plane, so a cap triangle is judged by the way it faces and not against the centroid. The bark corners come in runs, 48 a log and 96 a stool.
   const nrm = g.attributes.normal.array
   const barkCorners = []
   for (let i = 0; i < lay.length; i++) if (lay[i] === LAYER.BARK_PINE) barkCorners.push(i)
@@ -129,12 +130,23 @@ const patch = (m) => m
     const ids = barkCorners.slice(at, at + run)
     const c = [0, 0, 0]
     for (const i of ids) { c[0] += pos[i * 3] / run; c[1] += pos[i * 3 + 1] / run; c[2] += pos[i * 3 + 2] / run }
-    for (let f = 0; f < ids.length; f += 3) {
-      const i = ids[f]
-      const mx = (pos[i * 3] + pos[i * 3 + 3] + pos[i * 3 + 6]) / 3 - c[0]
-      const my = (pos[i * 3 + 1] + pos[i * 3 + 4] + pos[i * 3 + 7]) / 3 - c[1]
-      const mz = (pos[i * 3 + 2] + pos[i * 3 + 5] + pos[i * 3 + 8]) / 3 - c[2]
-      if (nrm[i * 3] * mx + nrm[i * 3 + 1] * my + nrm[i * 3 + 2] * mz <= 0) inward++
+    // A prism of n corners is 2n sides, then a fan of n - 2 over the foot and another over the top.
+    const corners = (run / 3 + 4) / 4
+    const mean = (from, to) => {
+      const m = [0, 0, 0]
+      for (let f = from; f < to; f++) for (let v = 0; v < 3; v++) for (let k = 0; k < 3; k++) m[k] += pos[ids[f * 3 + v] * 3 + k] / ((to - from) * 3)
+      return m
+    }
+    // The prism's own axis, foot to top: a log leans, so neither cap is level.
+    const foot = mean(corners * 2, corners * 3 - 2), tip = mean(corners * 3 - 2, corners * 4 - 4)
+    const axis = [tip[0] - foot[0], tip[1] - foot[1], tip[2] - foot[2]]
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    for (let f = 0; f * 3 < ids.length; f++) {
+      const i = ids[f * 3]
+      const m = [0, 1, 2].map((k) => (pos[i * 3 + k] + pos[ids[f * 3 + 1] * 3 + k] + pos[ids[f * 3 + 2] * 3 + k]) / 3 - c[k])
+      const n = [nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]]
+      const out = f < corners * 2 ? dot(n, m) > 0 : f < corners * 3 - 2 ? dot(n, axis) < 0 : dot(n, axis) > 0
+      if (!out) inward++
     }
     at += run
     prisms++
@@ -181,10 +193,14 @@ const patch = (m) => m
   }
   check(h.material.vertexColors === true, 'the mesh material multiplies the tint')
 
-  // Every stool stands on its own ground, not the centre's.
+  // Every stool is cut to its own ground, not the centre's: its base under both its own ground and its sitter's, its top a leafkin's seat over where the feet go (villagers.js SEAT_M).
+  const ground = (x, z) => field.heightAt(at.x + x, at.z + z) - h.y
   let onGround = true
-  for (const s of h.stools) if (Math.abs((h.y + s.y) - (field.heightAt(at.x + s.x, at.z + s.z) - 0.02)) > 1e-6) onGround = false
-  check(onGround, 'every stool stands on its own ground')
+  for (const s of h.stools) {
+    const feet = feetGround(ground, s.x, s.z, Math.atan2(-s.z, -s.x))
+    if (Math.abs(s.top - (feet + SEAT_M)) > 1e-6 || s.y > Math.min(ground(s.x, s.z), feet) + 1e-9) onGround = false
+  }
+  check(onGround, 'every stool is cut to its own ground, its top a leafkin\'s seat over its sitter\'s feet')
 
   // The rungs.
   const [mid, far] = HEARTH.lod
