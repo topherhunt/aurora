@@ -10,9 +10,9 @@ import { createPropMaterial } from '../../material.js'
 // front-face-only from within on the same stone layer. NEGATIVE SCALE ALONE
 // DOES NOT EXPOSE THE INSIDE: three flips the front face for a negative
 // determinant, so the winding is reversed on the index and the normals negated
-// instead. The stone is the boulder's own tile at the stood scale (a placed
-// boulder's tile scales with the rock, gen-rock-main.js), so the wall reads as
-// one rock's grain seen from inside rather than a wall of small stones.
+// instead. The stone is the boulder's own tile at the stood scale over GRAIN
+// (a placed boulder's tile scales with the rock, gen-rock-main.js), so the
+// wall reads as one rock's grain seen from inside, a little finer.
 //
 // THE SHELL IS STONE TO HER (walk.js addStone, Player._fly): a column table
 // over the hull's plan at CELL m, each cell the heights at which the vertical
@@ -28,6 +28,8 @@ import { createPropMaterial } from '../../material.js'
 // ---------------------------------------------------------------------------
 
 export const CELL = 0.5
+// How many times finer than the stood boulder's own the shell's stone tile is.
+export const GRAIN = 2
 // Crossings one column may hold: a span each and one more in the walker's
 // eight (walk.js SPAN_CAP), which is past what the boulder's 320 faces fold.
 const CROSS_CAP = 12
@@ -54,6 +56,8 @@ export class Shell {
     }
     const n = geo.attributes.normal.array
     for (let i = 0; i < n.length; i++) n[i] = -n[i]
+    const uv = geo.attributes.uvProj.array
+    for (let i = 0; i < uv.length; i++) uv[i] *= GRAIN
     geo.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2))
     geo.rotateY(f.yaw)
     geo.computeBoundingBox()

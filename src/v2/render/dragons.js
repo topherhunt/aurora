@@ -473,13 +473,13 @@ export class Dragons {
   // Slots.
   // -------------------------------------------------------------------------
 
-  /** The dragon of a roost, from the roost's own seed so the same nest holds the same dragon every visit and on every client: its site, its size, the home pose its chapters turn at and its phase in the meander. */
+  /** The dragon of a roost, from the roost's own seed so the same nest holds the same dragon every visit and on every client: its site, its size as a multiple of the species', the home pose its chapters turn at and its phase in the meander. Needs no GLB: the wildlife plans a stag's chapter through strikeOn before the dragon's body has landed. */
   _born(site) {
     if (!Number.isFinite(site.gx + site.gz)) throw new Error(`Dragons: roost ${keyOf(site)} carries no floor plane (gx, gz)`)
     const rand = mulberry32(tileSeed(site.key, 0x5d, this.seed))
-    const size = this.asset.sizeM * (1 + SIZE_VARY * (2 * rand() - 1))
+    const scale = 1 + SIZE_VARY * (2 * rand() - 1)
     const home = { x: site.x, y: this._standY(site), z: site.z, heading: rand() * Math.PI * 2, speed: 0 }
-    return { site, size, home, phase: rand() * Math.PI * 2 }
+    return { site, scale, home, phase: rand() * Math.PI * 2 }
   }
 
   /** The site and home of the dragon keyed `key`, born or not: the live dragon's, else the roost's tile asked of the Roosts, which answers past the resident radius. */
@@ -501,7 +501,7 @@ export class Dragons {
     const born = this._born(site)
     d.site = site
     d.key = keyOf(site)
-    d.size = born.size
+    d.size = this.asset.sizeM * born.scale
     d.k = d.size / this.asset.span
     d.lodSize = d.size * this.bulk
     d.home = born.home

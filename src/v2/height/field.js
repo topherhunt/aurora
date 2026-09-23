@@ -5,6 +5,7 @@ import { ExposureField } from './exposure.js'
 import { RidgeField } from './ridge.js'
 import { Crag } from './crag.js'
 import { CreaseField } from './crease.js'
+import { ScarpField } from './scarp.js'
 import { thermalErode } from './erode.js'
 import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './relief.js'
 
@@ -17,7 +18,8 @@ import { RELIEF_DEFAULTS, normalizeRelief, reliefNeeds, sameRelief } from './rel
 // EVALUATION ORDER, and it is an order and not a set:
 //
 //   1. coarse   Heightmap.sample -- bicubic over the imported image, or
-//               bilinear under the `jagged` knob
+//               bilinear under the `jagged` knob, kinked at crests under
+//               `crease` and stood up into risers under `scarp`
 //   2. detail   + Detail.at -- band-limited fractal, modulated by the coarse
 //               slope; or Jagged.at, the creased lattice stack, under `jagged`
 //   3. rivers   carve. Channels cut through whatever is there.
@@ -245,10 +247,11 @@ export class V2Height {
   }
 
   /**
-   * Point the reconstruction -- the bilinear read under `jagged`, else the
-   * crease operator under `crease` -- at whatever `this.ground` currently is,
-   * or leave it plain when neither knob is up. Idempotent, and safe to call on
-   * a ground that already carries one.
+   * Point the reconstruction -- the bilinear read under `jagged`, the crease
+   * operator under `crease`, the height remap under `scarp`, or any of them
+   * composed -- at whatever `this.ground` currently is, or leave it plain when
+   * no knob is up. Idempotent, and safe to call on a ground that already
+   * carries one.
    *
    * IT IS A METHOD BECAUSE TWO PATHS REPLACE `this.ground` AND BOTH MUST DO
    * THIS: `_rebuild` makes one from the import or the eroded copy, and
@@ -259,20 +262,40 @@ export class V2Height {
    */
   _attachReconstruction() {
     this.crease = null
+    this.scarp = null
     const linear = this.relief.jagged > 0
-    if (!linear && this.relief.crease <= 0) return
+    const wantCrease = !linear && this.relief.crease > 0
+    const wantScarp = this.relief.scarp > 0
+    if (!linear && !wantCrease && !wantScarp) return
     // A VIEW, NEVER THE OBJECT ITSELF. With `erode` off `this.ground` is the
     // import, shared by reference with every other V2Height reading it, and
     // attaching to that lets one field's knob decide what the others stand on.
     // See Heightmap.view.
-    this.ground = this.ground.view()
-    if (linear) {
-      this.ground.attachLinear(true)
+    const g = this.ground.view()
+    this.ground = g
+    if (linear && !wantScarp) {
+      g.attachLinear(true)
       return
     }
-    this.crease = new CreaseField(this.ground, this.seed)
-    this.crease.lift = this.relief.crease
-    this.ground.attachCrease(this.crease)
+    if (wantCrease) {
+      this.crease = new CreaseField(g, this.seed)
+      this.crease.lift = this.relief.crease
+    }
+    if (!wantScarp) {
+      g.attachCrease(this.crease)
+      return
+    }
+    // SCARP TAKES THE SLOT AND CARRIES WHATEVER WAS GOING TO HAVE IT. There is
+    // one reconstruction hook on a Heightmap and sample() consults `_linear`
+    // before `_crease`, so under `jagged` an attached scarp would never be
+    // reached and under `crease` one of the two would silently win. Passing the
+    // other in as scarp's base makes all three compose through the single
+    // choke point instead. attachLinear stays OFF on this view for the same
+    // reason: scarp reads the texels bilinearly itself when that is the base.
+    const base = linear ? (x, z) => g.sampleBilinear(x, z) : this.crease !== null ? (x, z) => this.crease.at(x, z) : null
+    this.scarp = new ScarpField(g, this.seed, base)
+    this.scarp.lift = this.relief.scarp
+    g.attachCrease(this.scarp)
   }
 
   /**

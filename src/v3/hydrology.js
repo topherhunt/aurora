@@ -22,7 +22,9 @@ export const LAKES = {
   minDepth: 1.5,      // metres a bowl must pond before it is a candidate
   maxArea: 4e6,       // square metres of surface a lake may keep; a bowl is filled to this or to its spill, whichever comes first
   minWidth: 80,       // metres of open water across the widest inscribed disc, under which a candidate is a spider of arms and not a lake
-  margin: 1.06,       // the fitted ellipse is scaled by this past the last pool cell
+  margin: 1.06,       // the fitted ellipse is scaled by this past the pool cell it is sized to
+  cover: 0.985,       // the fraction of pool cells it is sized to hold. Short of 1 because the furthest cell of a curved pool is an outlier that swings the whole ellipse out over the ground at the corners, and a few square metres left dry at the tip of one arm costs far less than that
+  holdDepth: 3,       // metres, overriding `cover`: however far out it lies, water this deep is inside the ellipse. A shallow rim drawn as land reads as a beach; a three-metre hole drawn as land reads as a bug
 }
 
 export const RIVERS = {
@@ -207,11 +209,22 @@ function fitLake(body, elev, n, cell, half) {
   const sr = Math.sin(rot)
   const l1 = cr * cr * sxx + 2 * cr * sr * sxz + sr * sr * szz
   const l2 = sr * sr * sxx - 2 * cr * sr * sxz + cr * cr * szz
-  // A uniform ellipse's variance along a semi-axis a is a^2 / 4; then grown until the furthest cell centre is inside, plus half a cell.
+  // A uniform ellipse's variance along a semi-axis a is a^2 / 4; then grown until all but the outlying LAKES.cover of the pool is inside, plus half a cell.
   let a = Math.max(2 * Math.sqrt(Math.max(l1, 0)), 0.5)
   let b = Math.max(2 * Math.sqrt(Math.max(l2, 0)), 0.5)
-  let far = 0
+  const qs = new Float64Array(cells.length)
+  let k = 0
   for (const c of cells) {
+    const dx = (c % n) - mx
+    const dz = ((c / n) | 0) - mz
+    const u = (cr * dx + sr * dz) / a
+    const v = (-sr * dx + cr * dz) / b
+    qs[k++] = u * u + v * v
+  }
+  qs.sort()
+  let far = qs[Math.min(qs.length - 1, Math.floor((qs.length - 1) * LAKES.cover))]
+  for (const c of body_) {
+    if (level - elev[c] < LAKES.holdDepth) continue
     const dx = (c % n) - mx
     const dz = ((c / n) | 0) - mz
     const u = (cr * dx + sr * dz) / a

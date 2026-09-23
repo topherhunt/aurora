@@ -96,7 +96,7 @@ export const FIDDLE = { share: 0.5 }
 export const DECOR = {
   crown: 0.5,
   crownScale: [2.3, 3.0],
-  roof: { share: 0.5, count: [2, 5], size: [1, 1.8] },
+  roof: { share: 0.85, count: [3, 5], size: [1, 1.8] },
   spread: { fern: 0.61, tree: 0.3 },
   against: {
     count: [1, 3],
@@ -136,8 +136,8 @@ export const STRAIGHT_DEG = 6
 export const WANDER = { wavelength: 12, amp: 1.2 }
 // The trunk: legs from the exit down to the loop, each sweeping up to `sweep` degrees round the lake and back, as many as hold the drop at CHORD_GRADE with `slack` to spare and no more than `legs`, its hairpins turned on `hairpin` metres, the last `approach` metres straight in on the exit's bearing so it meets the loop square. The top of the approach stands `room` metres nearer the lake than the arrival, or there is no trunk: a leg returning to the exit's bearing ends there, and with the lake near the exit it ended at the arrival's feet, five metres under the mouth.
 export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 8, room: 6 }
-// The exit mouth: on the bearing where the shell's wall stands most nearly plumb across the arch's height (entrances.js MOUTH_HEIGHT_M), its face point on the wall at the arch's mid height so the arch's back half stands in the stone, its normal into the room. The shell's stone gives way within `door` metres of the face point (Shell.setDoor), the arch and a shoulder, so she walks up to the hole. No house's wall stands within `houses` metres of it: she comes down through the wood before the village shows.
-export const EXIT = { band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.5, houses: 20, step: 0.05 }
+// The exit mouth: the overworld's arch at `scale` times its size (entrances.js MOUTH_HEIGHT_M, HOLE), `band` metres tall, on the bearing where the shell's wall stands most nearly plumb across it, its face point on the wall at the arch's mid height so the arch's back half stands in the stone, its normal into the room. The shell's stone gives way within `door` metres of the face point (Shell.setDoor), the arch and a shoulder, so she walks up to the hole. The ground before it is a pad (a road at the arrival's height, `pad.width` metres wide from `pad.into` metres inside the face to `pad.narrow` short of the arrival, narrowing to the trunk's width there: the ground takes the nearest road's height, and the trunk falling away from the arrival would tilt a full-width pad's corners), so the arch stands on level ground. No house's wall stands within `houses` metres of it: she comes down through the wood before the village shows.
+export const EXIT = { scale: 2, band: 3, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.8, houses: 20, step: 0.05, pad: { width: 5, into: 1, narrow: 1 } }
 export const ARRIVE_M = 2
 const ROLL_TRIES = 128
 // Which attempt of a seed built, once one has. A refused roll still costs its
@@ -1132,6 +1132,7 @@ export function buildVillage({ spec, shell, house, attempt = 0 }) {
 
   // A pad under each house at its road's height.
   const pads = all.flatMap((h, k) => HUTS.pads.map((f, j) => ({ id: `pad-${k}-${j}`, pts: arcPoints(h.x, h.z, () => f * h.r, 0, 360, 1.5).map(([x, z]) => [x, h.y, z, 2 * HUTS.padHalf * h.r]) })))
+  pads.push({ id: 'pad-exit', pts: [[-EXIT.pad.into, EXIT.pad.width], [ARRIVE_M - EXIT.pad.narrow, EXIT.pad.width], [ARRIVE_M, ROAD_WIDTH]].map(([d, w]) => [exit.x + exit.nx * d, exit.arrivalY, exit.z + exit.nz * d, w]) })
   doc.roads.push({ id: 'd1', pts: trunkPts }, { id: 'd2', pts: loop }, { id: 'd3', pts: ring }, { id: 'd4', pts: spur }, ...branches.map((pts, i) => ({ id: `d${5 + i}`, pts })), ...pads)
   for (const r of doc.roads) r.feather = ROAD_FEATHER
   validate(doc)
@@ -1335,13 +1336,9 @@ function fishSeedFor(seed, lake, heightAt) {
 /**
  * The exit mouth: `{ key, x, z, nx, nz, bearing, y, arrivalY, bulge }`. The
  * trunk starts ARRIVE_M in from the face at `arrivalY`, the bare ground there or
- * whatever higher stands the face within a chord's rise of it, and `y` is the
- * ground the field will read under the mouth: the ground at the face, its fbm
- * detail cut to the shoulder's weight and then itself blended toward the
- * trunk's start by that same shoulder (paths.js smoothRoads and flattenAt,
- * both the feather's smoothstep at the face's distance from the trunk's first
- * point; the bare ground climbs into the stone past the rim, and the wall
- * there is another wall). On each bearing the face point is where the wall stands at
+ * whatever higher stands the face within a chord's rise of it (its fbm detail
+ * read at the trunk's shoulder's weight there), and `y`, the ground under the
+ * mouth, is the same: the exit's pad (EXIT.pad) levels the face to it. On each bearing the face point is where the wall stands at
  * the arch's mid height over that ground; the bearing taken is the one whose
  * wall moves least across the arch's height plus `bulge`, how far the stone
  * across the hole's outline (entrances.js HOLE, walked every EXIT.step and read
@@ -1357,11 +1354,11 @@ export function placeExit(shell, ground, heightAt, sampleAt) {
     const b = deg(d), c = Math.cos(b), s = Math.sin(b)
     let r = ground.rimAt(b)
     const under = (r) => {
-      // The face's ground as the shipped field will show it, not as the bare one reads: a road suppresses the fbm detail over the same shoulder it blends the height over (paths.js flattenAt, height/field.js heightAt), so the detail standing in the coarse sample is left at the shoulder's weight too. The glade's detail runs half a metre either way, which is more than the arch's feet can bridge.
+      // The face's ground with its fbm detail at the shoulder's weight (paths.js flattenAt, height/field.js heightAt): the glade's detail runs half a metre either way.
       const coarse = sampleAt(c * r, s * r)
       const face = coarse + (heightAt(c * r, s * r) - coarse) * shoulder
       const arrival = Math.max(heightAt(c * (r - ARRIVE_M), s * (r - ARRIVE_M)), face - (CHORD_GRADE * ARRIVE_M) / shoulder)
-      return { y: arrival + (face - arrival) * shoulder, arrival }
+      return { y: arrival, arrival }
     }
     for (let i = 0; i < 6; i++) r = shell.wallAt(under(r).y + EXIT.band / 2, b)
     const { y, arrival } = under(r)
@@ -1375,7 +1372,7 @@ export function placeExit(shell, ground, heightAt, sampleAt) {
     let bulge = 0
     if (spread < beat) {
       for (let i = 0; i < HOLE.outline.length; i++) {
-        const [u0, v0] = HOLE.outline[i], [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length]
+        const [u0, v0] = HOLE.outline[i].map((w) => w * EXIT.scale), [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length].map((w) => w * EXIT.scale)
         const steps = Math.ceil(Math.hypot(u1 - u0, v1 - v0) / EXIT.step)
         for (let k = 0; k < steps; k++) {
           const u = u0 + ((u1 - u0) * k) / steps, v = v0 + ((v1 - v0) * k) / steps
@@ -1393,7 +1390,7 @@ export function placeExit(shell, ground, heightAt, sampleAt) {
   const coarse = best.bearing
   for (let d = coarse - EXIT.sweep + 1; d < coarse + EXIT.sweep; d++) take(at((d + 360) % 360))
   if (best.spread > EXIT.plumb) throw new Error(`village: no wall stands within ${EXIT.plumb} m of plumb across the arch`)
-  return { key: 'exit', x: best.x, z: best.z, nx: best.nx, nz: best.nz, bearing: best.bearing, y: best.y, arrivalY: best.arrival, bulge: best.bulge }
+  return { key: 'exit', x: best.x, z: best.z, nx: best.nx, nz: best.nz, bearing: best.bearing, y: best.y, arrivalY: best.arrival, bulge: best.bulge, scale: EXIT.scale }
 }
 
 /**

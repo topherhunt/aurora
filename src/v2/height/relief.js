@@ -219,6 +219,28 @@ export const RELIEF_KNOBS = Object.freeze([
     off: 0, on: 3, min: 0, max: 6, step: 0.25,
   },
   {
+    // THE SECOND KNOB THAT CHANGES HOW THE FIELD IS READ, and the only one that
+    // can make a face SHEER. See scarp.js.
+    //
+    // `crease` un-rounds a crest; this stands a cliff up. The v3 cliff pass
+    // concentrates a drop into one 8 m texel, which is as far as the grid goes
+    // by itself and reads as at most 78 degrees through the bicubic. This
+    // squeezes a band of ELEVATION into a narrow interval instead, so the same
+    // drop is crossed in a tenth of the horizontal run: about 87 degrees on the
+    // riser and a near-level tread either side of it. Gated on slope, so
+    // ordinary hillside is untouched, and modulated by noise at two scales so a
+    // face runs from sheer to slanted and back along its own length rather than
+    // being uniformly one or the other.
+    //
+    // Its units are a BLEND, not metres: 0 is the plain read, 1 the full remap.
+    // It occupies the same slot on the Heightmap as `crease` and composes with
+    // it (and with `jagged`'s bilinear read) rather than displacing either.
+    key: 'scarp',
+    label: 'scarp',
+    hint: 'stand the cliffs up -- remap elevation into treads and risers so a tabled step reads sheer instead of at 78 degrees',
+    off: 0, on: 1, min: 0, max: 1, step: 0.05,
+  },
+  {
     key: 'erode',
     label: 'erode',
     hint: 'thermal (talus) relaxation passes over the imported field -- ~190 ms to toggle',

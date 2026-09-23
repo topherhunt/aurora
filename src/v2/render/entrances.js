@@ -55,6 +55,9 @@ export const HOLE = {
   maxProud: 0.2,
   maxBulge: 0.4,
 }
+// A room's mouth casts a shadow on the ground from its hole's plane out this far, black there and fading to nothing, over the seam where the ground meets the black; drawn this far over the ground.
+export const SHADOW_M = 1
+const SHADOW_LIFT_M = 0.02
 /** The outline's box: `[u0, u1, v0, v1]`. */
 export const holeBox = () => [
   Math.min(...HOLE.outline.map((p) => p[0])), Math.max(...HOLE.outline.map((p) => p[0])),
@@ -179,6 +182,9 @@ export class Entrances {
     this.holes.name = 'v2-entrance-holes'
     this.holes.frustumCulled = false
     this.holes.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.scene = scene
+    this.shadows = []
+    this.shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     this.holeM = new Float32Array(POOL * 16)
     this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
     for (let i = 0; i < POOL; i++) this.holes.setMatrixAt(i, this._zero)
@@ -377,33 +383,79 @@ export class Entrances {
     this.resident.set(key, { key, id: -1, blind: true })
   }
 
-  /** A room's mouth: the arch on the face point, brought forward by the room's own `bulge` (village.js placeExit), the hole at HOLE.proud past that, no hull. */
-  _seatFixed({ key, x, z, nx, nz, bulge = 0 }) {
+  /**
+   * A room's mouth: the arch on the face point, `scale` times MOUTH_HEIGHT_M, brought forward by the room's own `bulge` (village.js placeExit), the hole at HOLE.proud past that, no hull.
+   * Its floor is the lowest ground under it from the face out past its front: the floor falls away from the wall, and an arch seated at the face alone stands its front lip in the air.
+   */
+  _seatFixed({ key, x, z, nx, nz, bulge = 0, scale = 1 }) {
     const nl = Math.hypot(nx, nz)
     nx /= nl
     nz /= nl
     const mx = x + nx * (MOUTH_STEP_M + bulge)
     const mz = z + nz * (MOUTH_STEP_M + bulge)
-    this._place(key, x, z, nx, nz, this.field.heightAt(x, z), this.field.heightAt(mx, mz), mx, mz, 0, bulge)
+    let floor = Infinity
+    const reach = bulge + this.bank.depth * scale, half = this.bank.width * scale * 0.45
+    for (let k = 0; k <= 8; k++) {
+      const px = x + nx * ((reach * k) / 8), pz = z + nz * ((reach * k) / 8)
+      for (const s of [-half, 0, half]) floor = Math.min(floor, this.field.heightAt(px - nz * s, pz + nx * s))
+    }
+    this._place(key, x, z, nx, nz, floor, this.field.heightAt(mx, mz), mx, mz, 0, bulge, scale)
+    this._shade(this.resident.get(key), scale)
   }
 
-  /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. */
-  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge) {
+  /** The shadow out of a room's mouth: a sheet on the ground across the hole's width, from just inside its plane SHADOW_M out, its alpha falling from 1 to 0. */
+  _shade(site, scale) {
+    const [u0, u1] = holeBox().map((w) => w * scale)
+    const { nx, nz, holeX, holeZ } = site
+    const across = 12, out = 6
+    const pos = new Float32Array((across + 1) * (out + 1) * 3)
+    const col = new Float32Array((across + 1) * (out + 1) * 4).fill(1)
+    for (let j = 0; j <= out; j++) {
+      const t = j / out, d = -0.05 + (SHADOW_M + 0.05) * t
+      for (let i = 0; i <= across; i++) {
+        const u = u0 + ((u1 - u0) * i) / across
+        const x = holeX + nx * d - nz * u, z = holeZ + nz * d + nx * u
+        const k = j * (across + 1) + i
+        pos.set([x, this.field.heightAt(x, z) + SHADOW_LIFT_M, z], k * 3)
+        col[k * 4 + 3] = 1 - t
+      }
+    }
+    const idx = []
+    for (let j = 0; j < out; j++) {
+      for (let i = 0; i < across; i++) {
+        const a = j * (across + 1) + i, b = a + across + 1
+        idx.push(a, a + 1, b, a + 1, b + 1, b)
+      }
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4))
+    g.setIndex(idx)
+    const mesh = new THREE.Mesh(g, this.shadowMaterial)
+    mesh.name = 'v2-entrance-shadow'
+    mesh.frustumCulled = false
+    mesh.renderOrder = 1
+    this.scene.add(mesh)
+    this.shadows.push(mesh)
+  }
+
+  /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. `scale` sizes the arch and its hole together. */
+  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale = 1) {
     if (this.freeCount === 0) throw new Error(`Entrances: instance pool exhausted at ${POOL}`)
     const id = this.free[--this.freeCount]
     const bank = this.bank
     // The arch's floor at the lower of its two feet, so the higher is bedded and neither floats.
-    const half = bank.width * 0.45
+    const half = bank.width * scale * 0.45
     const ay = Math.min(floor, this.field.heightAt(hx - nz * half, hz + nx * half), this.field.heightAt(hx + nz * half, hz - nx * half)) - 0.05
-    const ax = hx - nx * (MOUTH_SINK_M - bulge)
-    const az = hz - nz * (MOUTH_SINK_M - bulge)
+    const ax = hx - nx * (MOUTH_SINK_M * scale - bulge)
+    const az = hz - nz * (MOUTH_SINK_M * scale - bulge)
     // Yawed so the pick's +X, the passage, runs along the normal.
     this._q.setFromAxisAngle(this._up, Math.atan2(-nz, nx))
-    this._s.setScalar(bank.scale)
+    this._s.setScalar(bank.scale * scale)
     this.batch.setMatrixAt(id, this._m.compose(this._p.set(ax, ay, az), this._q, this._s))
     // The hole's outline is over the arch's base, so it stays inside the ring where the ground steps.
-    this._s.setScalar(1)
-    const hole = bulge + HOLE.proud
+    this._s.setScalar(scale)
+    const hole = bulge + HOLE.proud * scale
     const holeX = hx + nx * hole, holeZ = hz + nz * hole
     this._m.compose(this._p.set(holeX, ay, holeZ), this._q, this._s)
     this._m.toArray(this.holeM, id * 16)
@@ -536,6 +588,11 @@ export class Entrances {
     this.flank.dispose()
     this.holes.geometry.dispose()
     this.holeMaterial.dispose()
+    for (const s of this.shadows) {
+      this.scene.remove(s)
+      s.geometry.dispose()
+    }
+    this.shadowMaterial.dispose()
     if (this.material.map) this.material.map.dispose()
     this.material.dispose()
     for (const t of this.bank.tiers) for (const g of t.geometries) g.dispose()

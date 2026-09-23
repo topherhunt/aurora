@@ -49,7 +49,7 @@ import { forestKeepAt } from '../src/v2/layers/forest.js'
 import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
 import { DOOR, ROOF, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
 import { Boulders } from '../src/v2/render/boulders.js'
-import { CELL as SHELL_CELL, Shell } from '../src/v2/render/shell.js'
+import { CELL as SHELL_CELL, GRAIN, Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { Stools } from '../src/v2/render/stools.js'
 import { HEARTH, feetGround } from '../src/v2/render/hearth.js'
@@ -82,6 +82,8 @@ const EXIT_WOOD_M = 6
 const EXIT_WOOD_LEAST = 6
 // The bare ring the thicket (RIM_WOOD) is there to close: the furthest the outermost tree of a fifteen-degree sector may stand inside the rim. The wild bed alone leaves 3 to 10 m there, and whole sectors empty. The bar is not tighter than this because the last stretch inside the rim belongs to the bed, not the thicket -- where the slope stays gentle to the wall the thicket plants nothing, and the bed's own cell is 4 m, so one unlucky roll reads as a gap this wide.
 const RIM_BARE_M = 5
+// The share of a village's houses that must carry roof ferns (DECOR.roof.share 0.85 per house, so a small ring can fall a good way under it by chance; the gate's seeds plant 4 of 6 at the barest).
+const ROOFED_LEAST = 0.6
 // What a plot keeps once the roots are weeded out of it (weedGardens): this many carrots at the least, and this share of what was sown across the plot.
 const CARROTS_LEAST = 6
 const CARROTS_KEPT = 0.5
@@ -326,7 +328,7 @@ const ringCount = room.spec.huts.length, outCount = room.spec.outlying.length
 const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d${5 + i}`))
 {
   check(trunk && loop && ring && spur && branches.every(Boolean) && roads.length === 4 + outCount + pads.length, 'a trunk, a loop, a ring, a spur, a branch an outlying house and the pads', `${roads.length} roads, ${outCount} branches`)
-  check(pads.length === HUTS.pads.length * room.props.length, 'the pads under every hut and no other', `${pads.length} pads, ${room.props.length} huts`)
+  check(pads.length === HUTS.pads.length * room.props.length + 1 && pads.some((r) => r.id === 'pad-exit'), 'the pads under every hut and before the exit, and no other', `${pads.length} pads, ${room.props.length} huts`)
   for (const r of [trunk, loop, ...branches]) {
     const s = new Spline(r.pts).flatten(1)
     let worst = 0, wetSamples = 0, off = 0, low = Infinity
@@ -544,11 +546,13 @@ console.log('\nthe decorations')
   check(rooted === 0 && kept.every((p) => p.spots.length >= CARROTS_LEAST) && left >= sown * CARROTS_KEPT, 'no carrot stands under a house\'s roots and every plot keeps its rows', kept.length === 0 ? 'this glade sows no plot' : `${left} of ${sown} sown over ${kept.length} plots, fewest ${Math.min(...kept.map((p) => p.spots.length))}`)
   // The roof ferns (room-props.js roofSpots): each seat stands on its own house's roof mesh, over half its height, and no two on one roof crowd each other.
   let seats = 0, asked = 0, offMesh = 0, tooLow = 0, crowded = 0, emptyRoof = 0, lowest = Infinity
+  const perRoof = []
   for (const r of d.roofs) {
     const h = roomProps.props[r.house]
     const mine = roofFerns(roomProps, [r])
     asked += r.count
     seats += mine.length
+    perRoof.push(mine.length)
     if (mine.length === 0) emptyRoof++
     mine.forEach((f, k) => {
       const over = (f.y - h.y) / (h.top - h.y)
@@ -563,6 +567,7 @@ console.log('\nthe decorations')
   check(offMesh === 0 && emptyRoof === 0, 'every roof fern sits on its own house\'s roof mesh', `${offMesh} off the mesh, ${emptyRoof} roofs with no seat`)
   check(tooLow === 0, `every roof fern stands over ${ROOF.high * 100}% of its house's height, at a size in DECOR.roof.size`, `lowest ${(lowest * 100).toFixed(0)}%`)
   check(crowded === 0, `no two ferns on one roof stand within ${ROOF.apart} of its radius`, `${crowded} pairs`)
+  check(d.roofs.length >= roomProps.props.length * ROOFED_LEAST && perRoof.every((n) => n >= DECOR.roof.count[0]), 'most of the houses carry a scattering of ferns, three at the least', `${d.roofs.length} of ${roomProps.props.length} roofs planted, fewest ${perRoof.length ? Math.min(...perRoof) : 0} ferns`)
   // The pieces against the walls: each stands at the point its own offer computes, so the room accepted or dropped an offer and never moved one.
   const offers = []
   roomProps.props.forEach((h, i) => {
@@ -709,7 +714,7 @@ console.log('\nthe shell')
   let covered = 0, deepest = -Infinity, holeSamples = 0
   const rFace = Math.hypot(e.x, e.z)
   for (let i = 0; i < HOLE.outline.length; i++) {
-    const [u0, v0] = HOLE.outline[i], [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length]
+    const [u0, v0] = HOLE.outline[i].map((w) => w * e.scale), [u1, v1] = HOLE.outline[(i + 1) % HOLE.outline.length].map((w) => w * e.scale)
     const steps = Math.ceil(Math.hypot(u1 - u0, v1 - v0) / 0.05)
     for (let k = 0; k < steps; k++) {
       const u = u0 + ((u1 - u0) * k) / steps, v = v0 + ((v1 - v0) * k) / steps
@@ -718,19 +723,19 @@ console.log('\nthe shell')
         holeSamples++
         const proud = rFace - shell.wallAt(heightAt(e.x, e.z) + v + dy, bp) * Math.cos(bp - a)
         deepest = Math.max(deepest, proud)
-        if (proud > e.bulge + HOLE.proud) covered++
+        if (proud > e.bulge + HOLE.proud * e.scale) covered++
       }
     }
   }
-  check(covered === 0, 'the wall stands behind the hole\'s plane all round its outline', `${covered} of ${holeSamples} samples covered, the stone ${deepest.toFixed(2)} m past the face against a plane ${(e.bulge + HOLE.proud).toFixed(2)} m in`)
+  check(covered === 0, 'the wall stands behind the hole\'s plane all round its outline', `${covered} of ${holeSamples} samples covered, the stone ${deepest.toFixed(2)} m past the face against a plane ${(e.bulge + HOLE.proud * e.scale).toFixed(2)} m in`)
   check(e.bulge >= 0 && e.bulge <= HOLE.maxBulge, 'the arch stands out of the wall by no more than a face may bulge', `${e.bulge.toFixed(2)} m`)
   check(shell.mesh.name === 'v2-shell' && shell.material.side === THREE.FrontSide, 'the shell draws its inside')
   check(shell.mesh.geometry.attributes.texLayer !== undefined && shell.mesh.geometry.index.count === bank.shapes.boulder.tiers[0].index.count, 'the shell is the bank\'s boulder on the bank\'s stone')
-  // The stone's grain is the boulder's own: the shell's uvs are the bank's, unscaled.
+  // The stone's grain is the boulder's own, GRAIN times finer: the shell's uvs are the bank's times GRAIN, and the bank's own are untouched.
   const su = shell.mesh.geometry.attributes.uvProj.array, bu = bank.shapes.boulder.tiers[0].attributes.uvProj.array
   let scaled = 0
-  for (let i = 0; i < su.length; i += 97) if (su[i] !== bu[i]) scaled++
-  check(scaled === 0, 'the shell wears the boulder\'s own tile', `${scaled} uvs differ from the bank\'s`)
+  for (let i = 0; i < su.length; i += 97) if (Math.abs(su[i] - bu[i] * GRAIN) > 1e-5 || (bu[i] !== 0 && su[i] === bu[i])) scaled++
+  check(scaled === 0, `the shell wears the boulder\'s own tile ${GRAIN} times finer`, `${scaled} uvs off`)
   // The shell is stone to the walker (render/shell.js, walk.js): nowhere she can stand inside the rim does its stone reach her head, its roof is the one the rays read, and past where the ground enters the stone she does not fit.
   const walk = new WalkSurface(field, shell, { trunkAt: () => null })
   let intrudes = 0, roofOff = 0, m = 0, fitsPast = 0
@@ -973,6 +978,17 @@ console.log('\nthe boot')
   // The layer's site is the mouth point, a step in from the face along the normal.
   const stepIn = MOUTH_STEP_M + room.exit.bulge
   check(site && Math.abs(site.x - room.exit.x - room.exit.nx * stepIn) < 0.01 && Math.abs(site.z - room.exit.z - room.exit.nz * stepIn) < 0.01 && Math.abs(site.nx - room.exit.nx) < 1e-9, 'the mouth is a step and the bulge in from the build\'s point along its normal')
+  // The pad levels the ground before the mouth to the arrival's height, a metre in from its edges, from the face to where it narrows to the trunk.
+  let offLevel = 0
+  for (let d = 0; d <= ARRIVE_M - EXIT.pad.narrow; d += 0.25) {
+    for (let u = -(EXIT.pad.width / 2 - 1); u <= EXIT.pad.width / 2 - 1; u += 0.25) {
+      const x = room.exit.x + room.exit.nx * d - room.exit.nz * u, z = room.exit.z + room.exit.nz * d + room.exit.nx * u
+      offLevel = Math.max(offLevel, Math.abs(heightAt(x, z) - room.exit.arrivalY))
+    }
+  }
+  check(offLevel < 0.02 && room.exit.y === room.exit.arrivalY, 'the ground before the exit is level at the arrival\'s height', `${offLevel.toFixed(3)} m off level at worst`)
+  const lipAt = room.exit.bulge + e.bank.depth * room.exit.scale, lipX = room.exit.x + room.exit.nx * lipAt, lipZ = room.exit.z + room.exit.nz * lipAt
+  check(room.exit.scale === EXIT.scale && site.ay <= heightAt(lipX, lipZ), `the arch, ${EXIT.scale} times the overworld's, stands its front lip on the ground`, `floor ${site.ay.toFixed(2)} vs ground ${heightAt(lipX, lipZ).toFixed(2)} at the lip`)
   // At her size in the glade, as main.js builds them.
   const walk = new WalkSurface(field, rocks, trees, { scale: HER_SCALE })
   walk.addStone(roomProps)

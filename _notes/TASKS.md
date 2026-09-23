@@ -31,7 +31,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [x] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
   - [x] They sit and gaze at the campfire.
   - [x] Debug: The leafkin glade takes an unreasonably long amount of time to load into in Quest 2 vr. Maybe the map gen process is part of that? We want to get it to under 2 seconds. The 4km-by-4km square map probably is part of it. Can we refactor so rooms can be smaller than that? And don't place props outside of the world map boundary, that's just a waste of compute and triangles.
-  - [ ] Debug: leafkins are not netplay-synced. Leafkin gatherer (outside the glade) was visible to my sister but not to me. And then in the village also, leafkins are doing totally different things for one of us vs the other, they aren't synced.
+  - [x] Debug: leafkins are not netplay-synced. Leafkin gatherer (outside the glade) was visible to my sister but not to me. And then in the village also, leafkins are doing totally different things for one of us vs the other, they aren't synced.
   - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
   - [ ] Leafkin glades hold puzzles:
     - Each glade has an assigned song.

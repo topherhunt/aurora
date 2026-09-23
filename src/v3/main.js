@@ -5,6 +5,11 @@ import { SEED, WORLD_SIZE } from '../v2/config.js'
 import { Heightmap } from '../v2/height/heightmap.js'
 import { V2Height } from '../v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../v2/height/relief.js'
+// The one knob this page runs with: the sheer-face remap, §31 step E. Everything
+// else stays off, because the whole point of the page is to judge the GENERATED
+// field rather than what the micro stack can add on top of it -- and scarp is
+// not an added term, it is how the cliff pass's tabled steps get read.
+const RELIEF_SCARP = Object.freeze({ ...RELIEF_DEFAULTS, scarp: 1 })
 import { Layers } from '../v2/layers/layers.js'
 import { TerrainV2 } from '../v2/terrain/terrain-v2.js'
 import { WaterSurfaces } from '../v2/render/water-surfaces.js'
@@ -98,12 +103,12 @@ async function bootWorld() {
 
   const heightmap = Heightmap.fromRaw({ width: island.n, height: island.n, data: island.height, meta: island.meta })
   const layers = Layers.deserialize(island.doc)
-  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: RELIEF_DEFAULTS })
+  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: RELIEF_SCARP })
 
   bootSay('meshing')
   // `axis` is the shipped ground shader; this page judges the field, not the surface, so it draws what the game draws.
   terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: RELIEF_DEFAULTS, workers: 2, axis: true,
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: RELIEF_SCARP, workers: 2, axis: true,
     ground: { size: island.n, world: WORLD_SIZE, classes: island.ground, palette: Float32Array.from(BIOMES.flatMap((b) => b.colour)) },
   })
   lighting.patch(terrain.material, {
@@ -193,6 +198,27 @@ const CODE_ACTIONS = {
   ArrowUp: 'forward', ArrowDown: 'back', ArrowLeft: 'turnLeft', ArrowRight: 'turnRight',
   Space: 'flyUp', ShiftLeft: 'flyDown', ShiftRight: 'flyDown',
   KeyN: 'timeSkip',
+  KeyC: 'scarpToggle',
+}
+
+// C toggles the sheer-face remap, because the only honest way to judge a cliff
+// operator is against the same cliff without it. Both halves of the transport
+// are called and neither is optional: `height` is what she collides with and
+// the two mesh workers hold their own V2Height, so a relief that reaches one
+// and not the others is ground she is not drawn standing on. See relief.js.
+// The pines are NOT re-scattered -- scarp is gated to ground far too steep for
+// one, so a tree left hanging is a thing to notice rather than a bug to hide.
+let scarpOn = true
+function setScarp(on) {
+  if (!ready) return
+  scarpOn = on
+  const relief = on ? RELIEF_SCARP : RELIEF_DEFAULTS
+  height.setRelief(relief)
+  terrain.setRelief(relief)
+  waterSurfaces.rebuild()
+  const p = player.rig.position
+  p.y = Math.max(p.y, Math.max(0, height.heightAt(p.x, p.z)))
+  console.log(`[terrain-v3] scarp ${on ? 'on' : 'off'}`)
 }
 
 const DOUBLE_TAP_MS = 320
@@ -216,6 +242,7 @@ addEventListener('keydown', (e) => {
   held.add(action)
   if (fresh && action === 'flyUp' && player) onSpacePress(e.timeStamp)
   if (fresh && action === 'timeSkip') clock.skip(CLOCK.skipHours)
+  if (fresh && action === 'scarpToggle') setScarp(!scarpOn)
 })
 addEventListener('keyup', (e) => held.delete(CODE_ACTIONS[e.code]))
 addEventListener('blur', () => held.clear())

@@ -766,8 +766,9 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const stoops = ph.map((p, i) => [p, i]).filter(([p]) => p.kind === 'stoop')
   check(stoops.every(([p, i]) => ph[i - 1].mode === 'hunt' && ph[i + 1].mode === 'return' && ph[i + 2].kind === 'land' && ph[i + 3].meal && ph[i + 3].dur >= MEAL_S) && ph.filter((p) => p.kill).length === 3 * stoops.length && ph.filter((p) => p.kind === 'rest' && p.meal).length === stoops.length, `every stoop follows its hunt leg and is followed by the return, the landing and a meal of MEAL_S ${MEAL_S} s at least, and nothing else carries a kill`, `${stoops.length} hunts`)
   check(d.strikeOn(prey.key, ch.start, ch.start + CHAPTER_S) === struck && herd.hunter(prey.key, struck - 1, struck + 1) === struck && d.strikeOn(prey.key, struck + 1e-6, struck + 100) === null && d.strikeOn('st:18,0:0', ch.start, ch.start + CHAPTER_S) === null, 'strikeOn answers the strike for any window holding it, none for a window past it, and none for the stag out of reach')
-  const twin = dragonsOn(flat, [site], herdOf())
-  check(twin.strikeOn(prey.key, ch.start, ch.start + CHAPTER_S) === struck && twin.byKey.size === 0 && strip(twin.score.chapter(key, ch.start)) === strip(ch), 'another client, its dragon never born, plans the same hunt to the digit from the roost\'s tile and answers the same strike')
+  // Its GLB not landed either: the wildlife asks strikeOn as soon as its own bodies land, which can be first.
+  const twin = Object.assign(dragonsOn(flat, [site], herdOf()), { asset: undefined, fly: undefined })
+  check(twin.strikeOn(prey.key, ch.start, ch.start + CHAPTER_S) === struck && twin.byKey.size === 0 && strip(twin.score.chapter(key, ch.start)) === strip(ch), 'another client, its dragon never born and its GLB not landed, plans the same hunt to the digit from the roost\'s tile and answers the same strike')
   twin.dispose()
 
   d.update(HER.x, HER.y, HER.z, ch.start)

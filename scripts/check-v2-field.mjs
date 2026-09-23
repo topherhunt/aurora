@@ -55,6 +55,7 @@ import { brushRect, stamp } from '../src/v2/height/sculpt.js'
 import { CRAG_SLOPE_LO } from '../src/v2/height/crag.js'
 import { RidgeField, SHATTER_VERTEX_CELLS } from '../src/v2/height/ridge.js'
 import { CreaseField, CREASE_CELL, CREASE_REACH, CREASE_JITTER, CREASE_CAP, CREASE_SILL, CREASE_ANISO, CREASE_FLOOR } from '../src/v2/height/crease.js'
+import { SCARP_SLOPE } from '../src/v2/height/scarp.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { BED_SHOAL, BANK } from '../src/v2/layers/paths.js'
 import { SHORE_DRY, SHORE_DRY_END, SHORE_WET, SHORE_WET_END, sandPatchAt } from '../src/v2/layers/water-bodies.js'
@@ -1277,7 +1278,12 @@ export async function run({ heightmap } = {}) {
     //   mesher    crest and peaks (DEAD CODE (peaks), off in RELIEF_SHIPPED).
     //             See the banner: asserted as a non-effect on the field; peaks'
     //             own effect on a coarse chunk is probed below.
-    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', bump: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
+    //   gated     scarp, the one knob whose CLAIM is that it moves almost
+    //             nothing. A 25% threshold on a random scatter is the wrong
+    //             question for it and passing one would be the failure: it is
+    //             a cliff operator, and a cliff operator that reaches a quarter
+    //             of the world has terraced the world. Probed by stratum below.
+    const PROBE = { bare: 'height', sharpen: 'height', exposure: 'height', crag: 'height', aniso: 'height', ridge: 'height', shatter: 'height', crease: 'height', scarp: 'gated', erode: 'height', talus: 'height', jagged: 'height', jitter: 'height', bump: 'height', snowJag: 'snowline', crest: 'mesher', peaks: 'mesher' }
     {
       const unlisted = RELIEF_KNOBS.filter((k) => PROBE[k.key] === undefined).map((k) => k.key)
       check(unlisted.length === 0, 'every knob in the table has a probe in this gate', unlisted.length ? `no probe for ${unlisted.join(', ')}` : `${RELIEF_KNOBS.length} knobs`)
@@ -1347,6 +1353,152 @@ export async function run({ heightmap } = {}) {
               CREST_CELL_LO >= CLASS_EPS,
               `the crest ramp starts at or above the finest cell, so leaf chunks are never crest-biased`,
               `CREST_CELL_LO ${CREST_CELL_LO} m vs CLASS_EPS ${CLASS_EPS} m`
+            )
+          }
+          continue
+        }
+        if (kind === 'gated') {
+          // THREE STATEMENTS, and the first two are a pair: the knob has to
+          // reach the cliffs and it has to reach NOTHING ELSE. Either alone is
+          // satisfiable by a broken operator -- one by a global terracer, the
+          // other by a knob wired to nothing.
+          //
+          // THE STRATUM IS THE COARSE FIELD'S OWN SLOPE, and it has to be, which
+          // is measured rather than assumed. The composed slope over a stride is
+          // NOT a proxy for it: the worst site on this import that the operator
+          // moves and a stride calls gentle reads 26.6 degrees over a stride and
+          // 57 at every scale from 5 cm to 8 m on the coarse field under it --
+          // the detail stack had laid a small bench across a steep face. Asking
+          // the composed question would fail this gate on an operator doing
+          // exactly what it says, so it asks the operator's own question.
+          //
+          // Gentle is read two ways and both must agree, at well under the
+          // operator's threshold: a point derivative, and a texel-baseline one
+          // close to the smoothed estimate the gate itself takes. A site the two
+          // disagree about is neither stratum and is skipped rather than made a
+          // coin flip.
+          const coarseDeg = (x, z, e) => {
+            const dx = (hm.sample(x + e, z) - hm.sample(x - e, z)) / (2 * e)
+            const dz = (hm.sample(x, z + e) - hm.sample(x, z - e)) / (2 * e)
+            return Math.atan(Math.hypot(dx, dz)) * 180 / Math.PI
+          }
+          const GENTLE = SCARP_SLOPE - 20
+          let gentleN = 0
+          let gentleMoved = 0
+          let gentleBleed = 0
+          const steepPts = []
+          for (let i = 0; i < 40000 && steepPts.length < 150; i++) {
+            const p = site(i)
+            const point = coarseDeg(p.x, p.z, 0.05)
+            if (point < GENTLE && coarseDeg(p.x, p.z, hm.texelSize * 0.5) < GENTLE) {
+              gentleN++
+              if (on.ground.sample(p.x, p.z) !== hm.sample(p.x, p.z)) gentleMoved++
+              const d = Math.abs(on.heightAt(p.x, p.z) - base.heightAt(p.x, p.z))
+              if (d > gentleBleed) gentleBleed = d
+            } else if (point >= SCARP_SLOPE) steepPts.push(p)
+          }
+          check(
+            gentleMoved === 0 && gentleN > 1000,
+            `${knob.key}=${value} leaves gentle ground's RECONSTRUCTION bit-identical -- it is a cliff operator, not a terrace`,
+            `${gentleMoved} of ${gentleN} sites under ${SCARP_SLOPE - 20} deg moved`
+          )
+          // AND THE COMPOSED FIELD THERE MOVES BY CENTIMETRES, WHICH IS NOT THE
+          // SAME STATEMENT AND CANNOT BE MADE AS AN IDENTITY. The detail stack
+          // is not point-local: terms that read the ground a few metres away
+          // pick up a riser the operator put there and carry a little of it back
+          // onto ground that is gentle itself. That bleed is real and has to be
+          // bounded rather than wished away -- the bound is what says a person
+          // standing on the flat above a cliff is standing where they were.
+          check(
+            gentleBleed < 0.5,
+            `and the composed field there moves by centimetres -- neighbour bleed, not a terrace`,
+            `worst ${gentleBleed.toFixed(3)} m over ${gentleN} gentle sites`
+          )
+          let steepMoved = 0
+          for (const p of steepPts) if (on.heightAt(p.x, p.z) !== base.heightAt(p.x, p.z)) steepMoved++
+          const steepFrac = steepPts.length ? steepMoved / steepPts.length : 0
+          check(
+            steepPts.length >= 100 && steepFrac > 0.25,
+            `and it does reach the steep ground, on a stratum of its own`,
+            `${pct(steepFrac)} of ${steepPts.length} sites over ${SCARP_SLOPE} deg`
+          )
+          // THE ASSERTION NOTHING ELSE IN THE FILE MAKES, and the reason the
+          // operator exists: the plain read cannot draw a face past about 78
+          // degrees, because Catmull-Rom smears a one-texel step over most of a
+          // texel however tall the step is.
+          //
+          // IT IS PUT TO THE RECONSTRUCTION AND NOT TO heightAt, because the
+          // composed field is not where the ceiling is. The detail stack is very
+          // rough at half a metre and already reaches 88 degrees over a 0.5 m
+          // cell on this import with every knob off -- as a bump on a slope, a
+          // metre wide and going back down, not as a landform. Reading the
+          // ground view alone asks about the LANDFORM, which is what the
+          // operator changes and what a person sees as a cliff.
+          //
+          // AND IT IS WALKED DOWN THE FALL LINE, not sampled at the site. A
+          // riser is a narrow band by construction -- that is the whole point of
+          // the remap, treads wide and risers thin -- so a random point lands on
+          // a tread nearly every time and a scatter is blind to exactly the
+          // thing being asserted. Read at points the operator leaves alone this
+          // knob looks like it FLATTENS the world, which it does, on the treads.
+          // Descending 40 m crosses whatever risers are on the way, which is
+          // also the path a person walking off the top takes.
+          const fall = (read, p) => {
+            let x = p.x
+            let z = p.z
+            let mx = 0
+            for (let s = 0; s < 160; s++) {
+              const dx = (read(x + 0.25, z) - read(x - 0.25, z)) / 0.5
+              const dz = (read(x, z + 0.25) - read(x, z - 0.25)) / 0.5
+              const g = Math.hypot(dx, dz)
+              const d = Math.atan(g) * 180 / Math.PI
+              if (d > mx) mx = d
+              if (g < 1e-6) break
+              x -= (dx / g) * 0.25
+              z -= (dz / g) * 0.25
+            }
+            return mx
+          }
+          const sheer = (read) => {
+            const all = steepPts.map((p) => fall(read, p)).sort((a, b) => a - b)
+            return { p90: all[Math.floor((all.length - 1) * 0.9)], max: all[all.length - 1], over: all.filter((v) => v >= 84).length }
+          }
+          const off = sheer((x, z) => hm.sample(x, z))
+          const lit = sheer((x, z) => on.ground.sample(x, z))
+          check(
+            lit.max >= 88 && off.max < 88 && lit.over >= off.over * 3 + 5,
+            `and it draws a landform face the plain bicubic cannot -- a sheer riser on the way down`,
+            `steepest 0.5 m cell on a 40 m fall line from ${steepPts.length} steep sites: p90 ${off.p90.toFixed(1)} -> ${lit.p90.toFixed(1)} deg, max ${off.max.toFixed(1)} -> ${lit.max.toFixed(1)}, past 84 deg on ${off.over} -> ${lit.over}`
+          )
+          // NO RISER DIRECTLY ABOVE ANOTHER, which is a rule about how a cliff
+          // reads, stated in the plan and easy to lose to a later retune of the
+          // band thresholds. Bands repeat every SCARP_RISE metres of elevation,
+          // so without this a tall face breaks into a staircase.
+          //
+          // Put to the band selector rather than to a rendered face: it is the
+          // selector that carries the property, and reading it directly says
+          // which retune broke it instead of leaving a slope histogram to be
+          // interpreted. A band at full strength must force its neighbours to
+          // zero, and short of that the two must trade -- never both past half.
+          {
+            const op = on.scarp
+            let worstPair = 0
+            let bothHalf = 0
+            let pairs = 0
+            for (let i = 0; i < 4000; i++) {
+              const p = site(i)
+              for (let k = -6; k < 14; k++) {
+                const a = op._pick(k, p.x, p.z) * (1 - op._pick(k - 1, p.x, p.z))
+                const b = op._pick(k + 1, p.x, p.z) * (1 - op._pick(k, p.x, p.z))
+                pairs++
+                if (a + b > worstPair) worstPair = a + b
+                if (a > 0.5 && b > 0.5) bothHalf++
+              }
+            }
+            check(
+              bothHalf === 0 && worstPair <= 1 + 1e-9,
+              `and no riser stands directly above another -- adjacent bands trade, they do not stack`,
+              `${bothHalf} of ${pairs} adjacent band pairs both past half, worst pair sums to ${worstPair.toFixed(3)}`
             )
           }
           continue
