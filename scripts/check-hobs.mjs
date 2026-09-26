@@ -8,8 +8,9 @@
 // keeps at most one adult and at most three babies, every baby smaller than
 // every adult; through a day with her far off no hob stands in the lake, a
 // baby keeps by its parent, a trailing adult by its owner, and a hob with
-// nobody to trail keeps its yard; two clients on different frame rates put
-// every hob in about the same place.
+// nobody to trail keeps its yard; two clients on different frame rates, one
+// booting late and one resuming after a pause, put every hob in about the
+// same place.
 
 import * as THREE from 'three'
 import path from 'node:path'
@@ -207,6 +208,23 @@ console.log('\ntwo clients')
   const gaps = a.hobs.all.map((h, i) => Math.hypot(h.x - b.hobs.all[i].x, h.z - b.hobs.all[i].z))
   const sorted = gaps.slice().sort((p, q) => p - q)
   check(sorted[Math.floor(sorted.length / 2)] < 0.3 && sorted[sorted.length - 1] < 1.5, 'two clients on 60 and 90 Hz frames put every hob in about the same place', `median ${sorted[Math.floor(sorted.length / 2)].toFixed(2)} m, worst ${sorted[sorted.length - 1].toFixed(2)} m`)
+  // A client booting late, and one whose leafkin were switched off for a minute, against one that watched throughout.
+  const late = make(), paused = make()
+  run(paused, T0, 240)
+  const spread = (w) => {
+    const d = a.hobs.all.map((h, i) => Math.hypot(h.x - w.hobs.all[i].x, h.z - w.hobs.all[i].z)).sort((p, q) => p - q)
+    return { median: d[Math.floor(d.length / 2)], worst: d[d.length - 1] }
+  }
+  const worlds = [[late, 'a client booting 300 s in'], [paused, 'a client resuming after 60 s unstepped']]
+  let t = T0 + 300
+  for (const [span, median, worst] of [[1, 1.5, 3], [29, 0.1, 0.1]]) {
+    for (const w of [a, late, paused]) run(w, t, span)
+    t += span
+    for (const [w, name] of worlds) {
+      const s = spread(w)
+      check(s.median < median && s.worst < worst, `${name} has every hob within ${worst} m of one that watched throughout, ${t - T0 - 300} s on`, `median ${s.median.toFixed(2)} m, worst ${s.worst.toFixed(2)} m`)
+    }
+  }
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

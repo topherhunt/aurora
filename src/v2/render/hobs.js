@@ -4,10 +4,10 @@
  * the villager of that house -- while the owner is out; each of its babies
  * trails it. Size and tint are rolled from the room's seed.
  *
- * NOT ON THE SCORE. A hob steers each frame toward a spot read off the
- * villagers' drawn poses, or off world-clock slots hashed with the seed, so
- * every client has it in about the same place without a rollback of its own;
- * it is never sent and never exactly agreed.
+ * NOT ON THE SCORE. Where a hob makes for is a function of the world clock,
+ * the seed and the villagers' drawn poses alone, and it is put straight there
+ * on a boot, after a clock jump, or when undrawn and LOSE_M off it; between
+ * those it steers there each frame. Never sent and never exactly agreed.
  */
 
 import THREE from '../../three-instance.js'
@@ -36,10 +36,12 @@ export const YARD_M = 1.2
 export const YARD_R = 1.3
 export const SLOT_S = [5, 12]
 export const EAT = 0.5
-// Trailing: GAP_M behind the leader's rim, stopped within STOP of its own lengths and off again past twice that; the owner given up past LOSE_M.
+// Trailing: GAP_M behind the leader's rim, stopped within STOP of its own lengths and off again past twice that.
+// A hob undrawn and LOSE_M off its spot is put on it; a clock step past RESYNC_S puts every hob on its spot.
 export const GAP_M = 0.2
 export const STOP = 0.6
 export const LOSE_M = 12
+const RESYNC_S = 1
 const VILLAGER_R = 0.25
 // Steering: speed per metre still to go, the turn rate, and the cadence caps -- a walk to WALK_PACE, then a run to an adult's or a baby's, a parent held to BROOD_KEEP of its slowest baby's top speed.
 const GAIN = 1.5
@@ -125,7 +127,7 @@ export class Hobs {
     this.asset = null
     this.head = { x: 0, y: 0, z: 0 }
     this.frame = 0
-    this.placed = false
+    this.seconds = null
     this.loaded = false
     this.starved = 0
     if (asset) {
@@ -174,22 +176,22 @@ export class Hobs {
     return { count: this.all.length, adults: this.all.length - babies, babies, trailing: this.all.filter((h) => h.owner && this._out(h)).length, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved }
   }
 
-  /** Whether an adult's owner is out and near enough to trail. */
+  /** Whether an adult's owner is out to trail. */
   _out(h) {
     const o = h.owner
-    return !o.hidden && o.state !== 'inside' && Math.hypot(o.pose.x - h.x, o.pose.z - h.z) < LOSE_M
+    return !o.hidden && o.state !== 'inside'
   }
 
-  /** Every hob in its yard, babies about their parent, on the first frame the villagers have a tick. */
-  _placeAll() {
-    for (const h of this.all) {
-      const a = h.heading, r = h.parent ? h.parent.size : YARD_R * 0.5
-      const at = h.parent ?? h.yard
-      h.x = at.x + Math.cos(a) * r
-      h.z = at.z - Math.sin(a) * r
-      h.y = this.walk.heightAt(h.x, h.z, -Infinity)
-    }
-    this.placed = true
+  /** `h` put straight on the spot it makes for now, or on its leader or yard where that spot is wet; a parent before its babies. */
+  _place(h, seconds) {
+    const lead = this._target(h, seconds)
+    let x = h.spotX, z = h.spotZ
+    if (this.villagers.seat(x, z) === null) ({ x, z } = lead ?? h.yard)
+    h.x = x
+    h.z = z
+    h.y = this.walk.heightAt(x, z, -Infinity)
+    if (lead) h.heading = lead.heading
+    h.moving = false
   }
 
   /** Where `h` makes for now, and what it faces once there (null: whichever way it came). */
@@ -202,6 +204,7 @@ export class Hobs {
       h.spotX = lead.x - fx * back - fz * lat
       h.spotZ = lead.z - fz * back + fx * lat
       h.eats = false
+      h.slot = -1
       return lead
     }
     const slot = Math.floor(seconds / h.slotS)
@@ -219,6 +222,7 @@ export class Hobs {
   /** One frame of steering: toward the spot at a speed that eases in on it, the gait and cadence picked from the speed. */
   _steer(h, seconds, dt) {
     const lead = this._target(h, seconds)
+    if (!h.puppet && Math.hypot(h.spotX - h.x, h.spotZ - h.z) > LOSE_M) this._place(h, seconds)
     const d = Math.hypot(h.spotX - h.x, h.spotZ - h.z), stop = STOP * h.size
     h.moving = h.moving ? d > stop : d > 2 * stop
     const walk = this.asset.gait.walk * h.k, run = this.asset.gait.run * h.k
@@ -252,8 +256,10 @@ export class Hobs {
     if (!this.loaded || !this.villagers.loaded || this.villagers.tick === null) return
     this.frame++
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
-    if (!this.placed) this._placeAll()
+    const jumped = this.seconds === null || Math.abs(seconds - this.seconds) > RESYNC_S
+    this.seconds = seconds
     for (const h of this.all) {
+      if (jumped) this._place(h, seconds)
       this._steer(h, seconds, dt)
       this._draw(h, dt)
     }

@@ -4,7 +4,10 @@
 //
 // The generator is judged by eye on /terrain-v3-map; this asserts the things an eye cannot, and the things §31 step A promised in numbers: the same seed gives the same field, the field is finite and inside its encoding, the island is an island (a summit near the centre, a sea that falls to the box edge, a coast that is not a circle), the water drains (every river runs downhill to the sea, a lake or another river, every lake is a bowl the ellipse round it does not overrun), the doc validates, the rg16 round trip is exact to a quantum, and v2's V2Height will stand on the result, since that is what /terrain-v3 boots.
 
-import { generate, MIN_Y, MAX_Y, TEXELS } from '../src/v3/generate.js'
+import { generate, MIN_Y, MAX_Y, TEXELS, CELL } from '../src/v3/generate.js'
+import { WORLD_SIZE } from '../src/v2/config.js'
+import { JITTER, TEXELS_PER_NODE, octaveTable, splitOctaves, octaveAt } from '../src/v3/island.js'
+import { FineJitter } from '../src/v3/fine.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { LAKES, RIVERS } from '../src/v3/hydrology.js'
 import { EROSION } from '../src/v3/erosion.js'
@@ -25,21 +28,24 @@ function check(ok, what) {
 
 export async function run() {
   const SEED = 20260824
+  // The shipped grid is 4097^2 and a generate on it costs 91 s, so the gate runs it ONCE, as `a`, and every check that needs a second island runs at COARSE. That is sound for the two that do. Determinism is a property of the hashes, which are keyed on world coordinates and the seed and know nothing of the grid. And the cliff block's numbers -- a 12 m fall between neighbouring texels is a 56 degree face at 8 m and an 81 degree one at 2 m -- were fitted on the 8 m grid and mean nothing on another.
+  const COARSE = 1025
   console.log('\n[v3] determinism')
   const a = generate({ seed: SEED })
-  const b = generate({ seed: SEED })
-  const c = generate({ seed: SEED + 1 })
-  let same = a.height.length === b.height.length
-  for (let i = 0; same && i < a.height.length; i++) same = a.height[i] === b.height[i]
+  const b = generate({ seed: SEED, n: COARSE })
+  const b2 = generate({ seed: SEED, n: COARSE })
+  const c = generate({ seed: SEED + 1, n: COARSE })
+  let same = b.height.length === b2.height.length
+  for (let i = 0; same && i < b.height.length; i++) same = b.height[i] === b2.height[i]
   check(same, `seed ${SEED} twice gives the identical field`)
   let differ = 0
-  for (let i = 0; i < a.height.length; i++) if (a.height[i] !== c.height[i]) differ++
-  check(differ > a.height.length * 0.9, `seed ${SEED + 1} differs on ${((differ / a.height.length) * 100).toFixed(1)}% of texels`)
-  let sameGround = a.ground.length === b.ground.length
-  for (let i = 0; sameGround && i < a.ground.length; i++) sameGround = a.ground[i] === b.ground[i]
+  for (let i = 0; i < b.height.length; i++) if (b.height[i] !== c.height[i]) differ++
+  check(differ > b.height.length * 0.9, `seed ${SEED + 1} differs on ${((differ / b.height.length) * 100).toFixed(1)}% of texels`)
+  let sameGround = b.ground.length === b2.ground.length
+  for (let i = 0; sameGround && i < b.ground.length; i++) sameGround = b.ground[i] === b2.ground[i]
   check(sameGround, 'and the identical class grid')
-  check(a.n === TEXELS && a.height.length === TEXELS * TEXELS, `${a.n}^2 texels`)
-  console.log(`       ${a.ms.toFixed(0)} ms per generate`)
+  check(a.n === TEXELS && a.height.length === TEXELS * TEXELS && a.cell === WORLD_SIZE / (TEXELS - 1), `${a.n}^2 texels at ${a.cell} m`)
+  console.log(`       ${a.ms.toFixed(0)} ms per generate at ${a.n}^2, ${b.ms.toFixed(0)} ms at ${b.n}^2`)
 
   console.log('\n[v3] the field')
   const s = a.stats
@@ -54,17 +60,50 @@ export async function run() {
   for (let i = 1; i < s.relief.length; i++) if (!(s.relief[i].rms > s.relief[i - 1].rms)) rising = false
   check(rising, `relief by blur radius rises with the radius (${relief})`)
 
+  // The layer model itself (§31 step B): one ladder of eleven rungs, cut by the grid into what the image can hold and what is read back per sample, and the cut is a storage decision that moves no ground.
+  console.log('\n[v3] the ladder')
+  const rungs = octaveTable(SEED)
+  const finest = JITTER.start / 2 ** (JITTER.amps.length - 1)
+  check(rungs.length === 11 && rungs[0].spacing === JITTER.start && rungs[rungs.length - 1].spacing === finest, `${rungs.length} rungs, ${JITTER.start} m down to ${finest} m`)
+  check(rungs.every((o) => Math.abs(o.amp - o.spacing / 4) < 1e-9), `every rung moves its lattice by a quarter of its own spacing (${rungs.map((o) => o.amp).join('/')} m)`)
+  const cut = splitOctaves(rungs, a.cell)
+  const floor = TEXELS_PER_NODE * a.cell
+  check(
+    cut.coarse.length + cut.fine.length === rungs.length &&
+      cut.coarse.every((o) => o.spacing >= floor) &&
+      cut.fine.every((o) => o.spacing < floor),
+    `the ${a.cell} m image bakes the ${cut.coarse.length} rungs down to ${floor} m (${TEXELS_PER_NODE} texels to a node) and leaves ${cut.fine.map((o) => o.spacing).join('/')} m to read time`,
+  )
+  {
+    const px = 1234.5
+    const pz = -678.25
+    const smooth = JITTER.interp === 'smooth'
+    const whole = rungs.reduce((t, o) => t + octaveAt(o, px, pz, smooth), 0)
+    const halves = [...cut.coarse, ...cut.fine].reduce((t, o) => t + octaveAt(o, px, pz, smooth), 0)
+    check(Math.abs(whole - halves) < 1e-9, 'the cut is a storage decision: the two halves sum to the whole ladder')
+    const fine = new FineJitter({ seed: SEED, cell: a.cell })
+    check(fine.octaves.length === cut.fine.length && Math.abs(fine.reach - cut.fine.reduce((t, o) => t + o.amp, 0)) < 1e-9, `FineJitter carries those ${fine.octaves.length} rungs, reach ${fine.reach} m`)
+    const all = fine.at(px, pz, 0, 0, 0)
+    // The LOD. A rung is at full weight once the sample spacing is a quarter of it -- the same four-samples-to-a-node rule that cut the ladder -- and gone once the spacing reaches half of it. cell 0 is what collision, picking and the editor pass, and means every rung.
+    check(all !== 0 && Math.abs(all) <= fine.reach, `cell 0 reads every read-time rung: ${all.toFixed(3)} m of ${fine.reach} m of reach`)
+    check(fine.at(px, pz, finest / 4, 0, 0) === all, `a ${finest / 4} m probe reads the same ${all.toFixed(3)} m`)
+    check(fine.at(px, pz, 128, 0, 0) === 0 && fine.at(px, pz, cut.fine[0].spacing, 0, 0) === 0, `a 128 m chunk vertex reads none of them, and neither does one at ${cut.fine[0].spacing} m`)
+    check(fine.at(px, pz, 0, 0, 1) === 0, 'and flattened ground (a road, a lake shore) reads none of them')
+  }
+
   console.log('\n[v3] the water')
   const hs = s.hydrology
   const er = hs.erosion
   check(er.toSea > er.droplets * 0.8 && er.offEdge === 0 && er.spent < er.droplets * 0.05, `${er.droplets} droplets, ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps, none left the box`)
-  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= EROSION.maxCut && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.2, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${EROSION.maxCut} m`)
+  // `maxCut` is a reference depth per reference step, and `deepestStep` is measured in metres on THIS grid, so the bound it has to clear is the conversion of the two: maxCut * perStep * toHere, which is maxCut * refCell / cell.
+  const stepCap = (EROSION.maxCut * EROSION.refCell) / a.cell
+  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= stepCap + 1e-6 && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.2, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${stepCap} m`)
   check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
 
   // The tabling is off by default (generate.js STEPS), so it is judged on an island generated with it switched back on, and the default is asserted to carry none of it. Everything below reads `cliffy` for that reason.
   console.log('\n[v3] the cliffs')
   check(hs.cliffs.cells === 0 && hs.cliffs.km2 === 0, 'the default island tables nothing: the cliff pass is off')
-  const cliffy = generate({ seed: SEED, tune: { steps: { cliffs: true } } })
+  const cliffy = generate({ seed: SEED, n: COARSE, tune: { steps: { cliffs: true } } })
   const cl = cliffy.stats.hydrology.cliffs
   const cliffyLandKm2 = cliffy.stats.landKm2
   const lift = Math.max(...Object.values(CLIFFS.byBiome).map((k) => (k.snap[1] - k.riser) * k.step))
@@ -75,12 +114,12 @@ export async function run() {
   // The two promises the ramp's shape makes, on a clean 32-degree ramp of canyon with the band gate held open: it only ever lifts, so nothing is dug out under a face, and no face stands in the band above another, so a hillside is not a staircase.
   {
     const m = 96
-    const fall = a.cell * Math.tan((32 * Math.PI) / 180)
+    const fall = cliffy.cell * Math.tan((32 * Math.PI) / 180)
     const ramp = new Float32Array(m * m)
     for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) ramp[j * m + i] = 10 + j * fall
     const was = Float32Array.from(ramp)
     const T = { ...CLIFFS, byBiome: { ...CLIFFS.byBiome, canyon: { ...CLIFFS.byBiome.canyon, share: 1 } } }
-    table(ramp, new Uint8Array(m * m), new Uint8Array(m * m).fill(BIOMES.findIndex((b) => b.id === 'canyon')), m, a.cell, SEED, T)
+    table(ramp, new Uint8Array(m * m), new Uint8Array(m * m).fill(BIOMES.findIndex((b) => b.id === 'canyon')), m, cliffy.cell, SEED, T)
     let cut = 0
     for (let c = 0; c < ramp.length; c++) if (ramp[c] < was[c] - 1e-4) cut++
     check(cut === 0, `the tabling only ever lifts: ${cut} of ${m * m} texels on that ramp finished below where they started`)

@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Flares: what the flare gun (flaregun.js) shoots, hers and every peer's. A
-// flare flies FLIGHT_S from the muzzle to its target on a bowed, spiralling,
-// jittered path rolled from its seed, so every client flies the same one; it
+// flare flies FLIGHT_S from the muzzle to its target on a bowed corkscrew
+// whose phase is its seed, so every client flies the same one; it
 // is FLY_M across on the way and grows to REST_M once there, and hangs there
 // for good. Each is a sprite laid in view space -- a white-hot ball in its
 // colour, a halo, and within NEAR_M rays of noise sliding outward past a
@@ -13,18 +13,17 @@
 
 import THREE from '../../three-instance.js'
 
-export const FLIGHT_S = 1
+export const FLIGHT_S = 0.8
 // Metres across in flight and at rest, the size it leaves the muzzle at, the seconds it takes to reach FLY_M, and to grow to REST_M on arrival.
 export const FLY_M = 1
 export const REST_M = 3
 export const MUZZLE_M = 0.25
 export const RAMP_S = 0.12
 export const GROW_S = 0.5
-// The path: its upward bow and the spiral's radius as fractions of the flight's length, the spiral's turns, and the jitter's reach, likewise.
+// The path: its upward bow and the corkscrew's radius as fractions of the flight's length, and the corkscrew's turns.
 export const BOW = 0.15
 export const SPIRAL = 0.05
 export const TURNS = 2.5
-export const JITTER = 0.02
 // Metres within which the rays and the wobbling rim are drawn, at which the flare is gone, and over which it fades out before that; its least radius on screen, pixels.
 export const NEAR_M = 300
 export const FAR_M = 2000
@@ -56,18 +55,19 @@ export function flightAt(f, u, out) {
   const len = Math.hypot(dx, dy, dz)
   // Fast off the muzzle, slowing into the target.
   const e = 1 - (1 - u) * (1 - u)
+  // The corkscrew turns in the plane square to the line: a level side (x, 0, z), and the line crossed with it (ux, uy, uz).
   let sx = -dz, sz = dx
   const sl = Math.hypot(sx, sz)
   if (sl > 1e-6) { sx /= sl; sz /= sl } else { sx = 1; sz = 0 }
-  const env = Math.sin(Math.PI * u)
+  const ux = (dy * sz) / len, uy = (dz * sx - dx * sz) / len, uz = (-dy * sx) / len
+  // Its radius swells from nothing at the muzzle and closes to nothing at the target; its angle keeps pace with the distance flown.
+  const r = SPIRAL * len * Math.sin(Math.PI * u)
   const a = f.seed * Math.PI * 2 + TURNS * Math.PI * 2 * e
-  const r = SPIRAL * len * env
-  const j = JITTER * len * env
-  const side = r * Math.cos(a) + j * (0.6 * Math.sin(u * 17 + f.seed * 31) + 0.4 * Math.sin(u * 41 + f.seed * 7))
-  const up = r * Math.sin(a) + j * (0.6 * Math.sin(u * 23 + f.seed * 13) + 0.4 * Math.sin(u * 37 + f.seed * 19)) + 4 * e * (1 - e) * BOW * len
-  out.x = f.ox + dx * e + sx * side
-  out.y = f.oy + dy * e + up
-  out.z = f.oz + dz * e + sz * side
+  const side = r * Math.cos(a), up = r * Math.sin(a)
+  const bow = 4 * e * (1 - e) * BOW * len
+  out.x = f.ox + dx * e + sx * side + ux * up
+  out.y = f.oy + dy * e + uy * up + bow
+  out.z = f.oz + dz * e + sz * side + uz * up
   return out
 }
 

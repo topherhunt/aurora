@@ -13,7 +13,7 @@
 // pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
-import { Flares, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP } from '../src/v2/render/flares.js'
+import { Flares, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
 import { FlareGuns, GunWindows, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, roomKey } from '../src/v2/flaregun.js'
 import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
@@ -59,6 +59,18 @@ console.log('flight')
   const up = flare({ ox: 0, oy: 0, oz: 0, tx: 0, ty: 100, tz: 0 })
   flightAt(up, 0.5, p)
   check(Number.isFinite(p.x) && Number.isFinite(p.z), 'a shot straight up still has a side to spiral on')
+  // A steep shot, where a corkscrew turning on the world's up would swing along the line: off the bowed line, only square to it, at the radius.
+  const steep = flare({ ox: 0, oy: 0, oz: 0, tx: 20, ty: 90, tz: -10 })
+  const d = new THREE.Vector3(steep.tx, steep.ty, steep.tz), len = d.length()
+  let along = 0, off = 0
+  for (let u = 0.05; u < 1; u += 0.05) {
+    const e = 1 - (1 - u) * (1 - u)
+    flightAt(steep, u, p)
+    const o = p.clone().sub(d.clone().multiplyScalar(e)).setY(p.y - d.y * e - 4 * e * (1 - e) * BOW * len)
+    along = Math.max(along, Math.abs(o.dot(d) / len))
+    off = Math.max(off, Math.abs(o.length() - SPIRAL * len * Math.sin(Math.PI * u)))
+  }
+  check(along < 1e-6 && off < 1e-6, 'it corkscrews round its line at an even radius, never along it', `along ${along.toExponential(1)}, radius off ${off.toExponential(1)}`)
 }
 
 console.log('size')

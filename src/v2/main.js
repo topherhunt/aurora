@@ -1571,7 +1571,7 @@ function fireFlare(key, aim = null) {
   }
   flares.add(f, 0)
   netplay.sendFlare(toWire(f))
-  if (ambience) sound.play('flaregun', { gain: 0.9 })
+  if (ambience) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
   questPulse(key, 0.8, 80)
 }
 
@@ -1590,7 +1590,7 @@ function drainFlares() {
     const f = fromWire(a.slice(0, 10))
     if (!flares.add(f, age) || age > 0.5 || f.room !== flares.room || !ambience) continue
     const d = Math.hypot(f.ox - headTmp.x, f.oy - headTmp.y, f.oz - headTmp.z)
-    if (d < FLARE_HEARD_M) sound.play('flaregun', { gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
+    if (d < FLARE_HEARD_M) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
   }
   netplay.flares.length = 0
 }
@@ -2397,10 +2397,11 @@ const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
 const DESK_CLICK_M = 2
-// The flare gun (flaregun.js): its source, registered with every room's hands; every room's flares, drawn in the room she is in (render/flares.js), built at boot and never torn down; and the peers' shots heard within FLARE_HEARD_M.
+// The flare gun (flaregun.js): its source, registered with every room's hands; every room's flares, drawn in the room she is in (render/flares.js), built at boot and never torn down; and the peers' shots heard within FLARE_HEARD_M, every shot's sound slowed to FLARE_RATE, then rolled like any other.
 const flareGuns = new FlareGuns()
 let flares = null
 const FLARE_HEARD_M = 1000
+const FLARE_RATE = 0.8
 let roosts = null
 let rowboats = null
 let boats = null

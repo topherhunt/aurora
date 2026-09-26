@@ -7,12 +7,13 @@ import { BIOMES } from './biomes.js'
 // ---------------------------------------------------------------------------
 // Step D, first half -- rain. EROSION.dropletsPerKm2 units of water per square kilometre of land are thrown at random over the land and each is walked downhill until it reaches the sea or runs out of steps, cutting a slight groove as it goes and dropping what it carries where it slows. The field is never routed for them: each droplet reads the slope under its own feet, so where many of them agree a valley forms and its tributaries branch off it on their own.
 //
+//   THE RAIN IS A DENSITY, AND THE RATES ARE IN A REFERENCE FRAME. Rain falls on ground, not on texels: the count is EROSION.dropletsPerKm2 times the land's area, so the same island gets the same storm at 8 m and at 2 m, and only the number of steps each droplet takes to cross it grows with the grid. Everything else here -- the capacity, the rates, maxCut, minSlope -- is stated per step and per metre of a reference grid of EROSION.refCell, and converted where it touches this one: `perStep` (cell / refCell) turns a rate per reference step into a rate per step, and `toHere` ((refCell / cell)^2) turns a reference depth into a depth here at the same VOLUME, because what a droplet carries is a volume and this grid's cells hold less of it. Both are 1 at cell = refCell, where the field is bit-identical to the one the rates were fitted on. Without the frame the whole carve scaled as the square of the cell: 17 m of mean cut at 16 m against 1.7 m at 2 m, the same island sanded flatter the finer it was drawn.
 //   THE DROPLET HAS A HEADING, and this is the whole of why the grooves curve. A walker that steps to the STEEPEST of eight neighbours can only ever draw one of eight headings, so its track is a ruled line or a zigzag between two ruled lines, and a valley gathered out of a thousand such tracks is a straightedge. This one carries a continuous unit HEADING that is turned toward the downhill gradient by `1 - inertia` each step and keeps `inertia` of where it was already going, and it steps to a lower neighbour that AGREES WITH THAT HEADING rather than to the lowest one (which of them, see THE DRAW). The eight cells are still all there is to step to, but which of them is taken is now decided by a quantity that varies smoothly, so a run of steps reads N, NNE, N, NNE as a curve where steepest descent would have locked onto one of them; and the droplet holds a bend past its apex instead of turning the instant the fall line does, which is what runs a river wide onto its outer bank.
 //   THE SWIRL, because inertia alone still settles onto the fall line on an even slope. A slow, spatially coherent nudge -- one pair of noise fields at EROSION.swirlScale metres, baked once per run -- is added to the heading. Coherent is the operative word: a random per-step jitter averages out over a thousand droplets and leaves the groove exactly where it was, while a nudge that every droplet crossing the same hillside feels the SAME way bends all of their tracks together, so the groove itself is laid down curved and the river routed along it later inherits the curve. `swirl` is its size against the unit gradient, so 0.9 pulls a heading up to about 40 degrees off the fall line and wanders back over a couple of hundred metres. It is what bends a gorge, the one place the draw cannot help: once a channel is cut, its bed is so much lower than the cells beside it that the draw's weights collapse onto the bed and the walk is deterministic again, so a steep valley only meanders if it was laid down meandering.
 //   THE DRAW, because a heading and a swirl together still cut straight gulches. Both of them are smooth in space, so on one hillside every droplet is turned the SAME way and takes the same one of the eight bearings; the track curves over a few hundred metres but is locally a ruled line, and a thousand of them stacked cut a straight slash a few texels wide. What breaks that is randomness per droplet, not per hillside. So the next cell is DRAWN rather than won: each lower neighbour gets a weight of its own slope times `stray` plus the heading's agreement with it, and the step is a roulette over those weights. On an even slope the fall line still takes about half the draws and its two flanking cells a quarter each, so the drift is downhill and along the heading exactly as before -- but no two droplets crossing that hillside walk the same cells, and the ensemble lays a groove with a width and a wander instead of a line.
-//   IT NEVER STEPS UP, and everything here rests on it. The droplet's height falls on every step, which is what bounds the whole pass: a track cannot cycle, so it cannot dig the same cell twice, and there is no ping-pong between two cells cutting over an 81-cell brush and laying it back on one. A first draft let the heading carry the droplet onto a rise and fill it to cross -- it dug craters and stood spikes in them, 158 m of deposit where the old walk laid 2. So the draw only ever runs over the LOWER neighbours; where there are none, the droplet ponds.
-//   THE GROOVE. A droplet carries sediment up to a capacity that grows with the drop it just took, its speed and the water left in it. Under capacity it cuts the difference times EROSION.erode (times the biome's yield) out of the ground, never more than the drop itself so it can make no pit; over capacity it drops EROSION.deposit of the surplus. The cut is spread over a brush of EROSION.radius cells with a weight falling off from the centre, so a groove is a V cut into the slopes beside it and not a slot one texel wide; the deposit lands on the cell it stands on.
-//   THE BOWL. A droplet that finds no downhill at all has run into a closed bowl. The water that gathers there stands at the level of the bowl's spill -- the lowest point on its rim -- and that is what the droplet flows on: a priority flood, re-run every EROSION.batchShare of the run, gives every ponded cell the level the water would rise to and the way to its spill, so a droplet crossing a bowl walks the flat to the rim and grooves the rim on its way down the far side, while the sediment it carried in settles on the bowl's floor, never over the water. The bowl drains as its outlet cuts, and fills as the floor rises: both are what a lake does with time. Crossing a pond is the one place the walk is still discrete, cell to cell down the flood's tree. That is not where the straightness that survives lives, though: of the 400 m river reaches that still read as straight, none is on a lake and none on flat ground -- they sit on 25 deg at the median where the network sits on 18.6, in the cut gorges, where the draw's weights have collapsed onto a bed and only the swirl can bend anything.
+//   IT NEVER STEPS UP, and everything here rests on it. The droplet's height falls on every step, which is what bounds the whole pass: a track cannot cycle, so it cannot dig the same cell twice, and there is no ping-pong between two cells cutting over an 81-cell brush and laying it back on one. A first draft let the heading carry the droplet onto a rise and fill it to cross -- it dug craters and stood spikes in them, 158 m of deposit where the old walk laid 2. So the draw only ever runs over the LOWER neighbours; where there are none, the droplet stops, and THE HOLLOW below is what it may do before it does. The line between the two is worth holding: the hollow's fill is offered only where the draw found NOTHING lower, it is levelled exactly to the rim, and it comes out of the load the droplet already carries -- so the step that follows is downhill like every other, and no cell can ever end above the ground around it. The draft that broke filled a rise the heading merely preferred, over a neighbour that was lower.
+//   THE GROOVE. A droplet carries sediment up to a capacity that grows with the drop it just took, its speed and the water left in it. Under capacity it cuts the difference times EROSION.erode (times the biome's yield) out of the ground, never more than the drop itself so it can make no pit; over capacity it drops EROSION.deposit of the surplus. The cut is spread over a brush of EROSION.radius cells with a weight falling off from the centre, so a groove is a V cut into the slopes beside it and not a slot one texel wide (and the brush is in CELLS, so the groove tracks the grid down: an 88 m trunk valley at 8 m, a 22 m rivulet at 2 m). A deposit made in passing lands on the cell the droplet stands on; the load a stranded droplet dumps is spread over a disc one reference cell across, for the reason written by `dump`.
+//   THE BOWL, and under it THE HOLLOW. A droplet that finds no downhill at all is either in a closed bowl of the landscape, which the flood answers here, or in a dimple the cut itself has just worn into a trench floor, which it fills from its own load and walks out of (see the strand branch). The water that gathers in a bowl stands at the level of the bowl's spill -- the lowest point on its rim -- and that is what the droplet flows on: a priority flood, re-run every EROSION.batchShare of the run, gives every ponded cell the level the water would rise to and the way to its spill, so a droplet crossing a bowl walks the flat to the rim and grooves the rim on its way down the far side, while the sediment it carried in settles on the bowl's floor, never over the water. The bowl drains as its outlet cuts, and fills as the floor rises: both are what a lake does with time. Crossing a pond is the one place the walk is still discrete, cell to cell down the flood's tree. That is not where the straightness that survives lives, though: of the 400 m river reaches that still read as straight, none is on a lake and none on flat ground -- they sit on 25 deg at the median where the network sits on 18.6, in the cut gorges, where the draw's weights have collapsed onto a bed and only the swirl can bend anything.
 //
 // Heights are metres. Three-free and DOM-free like the rest of src/v3.
 // ---------------------------------------------------------------------------
@@ -45,6 +46,9 @@ const NB_UX = NB_DI.map((d, k) => d / NB_DIST[k])
 const NB_UZ = NB_DJ.map((d, k) => d / NB_DIST[k])
 const NB_INV = NB_DIST.map((d) => 1 / d)
 
+// Metres a filled hollow is levelled ABOVE its rim, so the droplet has somewhere strictly lower to step and cannot ping-pong across a tie. A millimetre, well under the 2.44 cm the rg16 field quantises to, so it never reaches the stored island.
+const LEVEL = 0.001
+
 /**
  * `erode(elev, sea, ground, n, cell, seed)` -> stats. Works on `elev` in place. `sea` marks the cells a droplet dies on, `ground` the class grid the cut is scaled by, `cell` the metres a texel covers -- which is what turns EROSION's densities and distances into a droplet count and a step budget.
  */
@@ -71,19 +75,26 @@ export function erode(elev, sea, ground, n, cell, seed) {
   const perStep = cell / E.refCell
   const toHere = (E.refCell / cell) ** 2
 
-  // The brush: offsets and weights summing to one.
-  const brush = []
-  let wsum = 0
-  for (let dj = -E.radius; dj <= E.radius; dj++) {
-    for (let di = -E.radius; di <= E.radius; di++) {
-      const d = Math.hypot(di, dj)
-      if (d > E.radius) continue
-      const w = 1 - d / (E.radius + 1)
-      brush.push([di, dj, w])
-      wsum += w
+  /** A disc of `r` cells: offsets and weights falling off from the centre, summing to one. r = 0 is the single cell at weight 1. */
+  function disc(r) {
+    const out = []
+    let wsum = 0
+    for (let dj = -r; dj <= r; dj++) {
+      for (let di = -r; di <= r; di++) {
+        const d = Math.hypot(di, dj)
+        if (d > r) continue
+        const w = 1 - d / (r + 1)
+        out.push([di, dj, w])
+        wsum += w
+      }
     }
+    for (const b of out) b[2] /= wsum
+    return out
   }
-  for (const b of brush) b[2] /= wsum
+
+  // The cut's brush, and the footprint the whole remaining load is dumped on when a droplet strands. The dump's is a disc one REFERENCE cell across, because the load is a volume gathered over the droplet's own catchment and that catchment is refCell^2 of ground whatever the grid: dumped on a single fine cell instead, it stands as a needle -- 375 m of it at 2 m, and worse than tall, self-feeding, since the needle digs a pit beside it that the next droplet strands in and fills again. Floored, so the reference grid dumps on one cell exactly as it did before the frame existed.
+  const brush = disc(E.radius)
+  const dump = disc(Math.floor(E.refCell / (2 * cell)))
 
   // The swirl, baked once: the two components of the nudge per cell. Cheap to read and, more to the point, the SAME for every droplet that crosses a given hillside, which is what makes the bend it puts in survive a thousand of them. See THE SWIRL.
   const swirlX = new Float32Array(size)
@@ -163,6 +174,9 @@ export function erode(elev, sea, ground, n, cell, seed) {
       let nw = 0
       let wsum = 0
       let edge = false
+      let loC = -1
+      let loK = -1
+      let loH = Infinity
       for (let k = 0; k < 8; k++) {
         const ni = ci + NB_DI[k]
         const nj = cj + NB_DJ[k]
@@ -171,6 +185,11 @@ export function erode(elev, sea, ground, n, cell, seed) {
           continue
         }
         const nn = nj * n + ni
+        if (S[nn] < loH) {
+          loH = S[nn]
+          loC = nn
+          loK = k
+        }
         const s = (hc - S[nn]) * NB_INV[k]
         if (s <= 0) continue
         const agree = NB_UX[k] * dx + NB_UZ[k] * dz
@@ -199,9 +218,19 @@ export function erode(elev, sea, ground, n, cell, seed) {
           next = tree[c]
           nextK = -1
         }
+        if (next < 0 && loC >= 0 && !pond[c]) {
+          // A HOLLOW THE FLOOD DID NOT SEE, so the droplet fills it from what it carries and walks on. The cut's own floor is what makes these: the depth one step takes out is E.maxCut reference metres however fine the grid, which is a quarter of a metre at 2 m against a sixteenth at 8 m, so the trench a hundred droplets wear down the same line has a floor dimpled by centimetres while the ground it crosses falls by centimetres too. Left to strand there, most of the rain stops in its own groove: measured at 3.2 m, 19% of droplets ended in a dimple 6 cm deep at the median, and at 2 m 68% did. Filling is what water does with a puddle it is carrying silt through, it costs one comparison a step, and it cannot run away -- the fill is levelled to the rim, never piled above it.
+          const need = loH + LEVEL - S[c]
+          if (sediment * toHere >= need) {
+            lay(c, need)
+            sediment -= need / toHere
+            next = loC
+            nextK = loK
+          }
+        }
         if (next < 0) {
-          // A pit the last flood did not see, or the box edge: what it carries stays here.
-          lay(c, sediment * toHere)
+          // No load left to fill it with, or the box edge: what it carries stays here, spread over the dump's footprint.
+          spill(ci, cj, sediment * toHere)
           fate = edge ? 'edge' : 'ponded'
           break
         }
@@ -248,6 +277,17 @@ export function erode(elev, sea, ground, n, cell, seed) {
     else if (fate === 'edge') offEdge++
     else if (fate === 'ponded') ponded++
     else spent++
+  }
+
+  /** Spread `amt` metres of sediment over the dump's footprint around cell (i, j). The weights sum to one, so the VOLUME laid is the same as dropping it all on one cell; only the pile is the reference cell's width instead of this grid's. */
+  function spill(i, j, amt) {
+    for (let k = 0; k < dump.length; k++) {
+      const b = dump[k]
+      const bi = i + b[0]
+      const bj = j + b[1]
+      if (bi < 0 || bj < 0 || bi >= n || bj >= n) continue
+      lay(bj * n + bi, amt * b[2])
+    }
   }
 
   /** Drop `amt` metres of sediment on cell c -- a depth on THIS grid, converted by the caller -- never over the water standing on it. */
