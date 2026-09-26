@@ -56,8 +56,8 @@ export const TILE = 80
 const KEEP = TILE * TILE * DENSITY
 
 // Metres across the bowl's rim, the instance scale being half of it.
-export const DIAMETER = [7, 10]
-// How far out a roost tile is resident, and so its dragon alive (dragons.js): short of the widest bowl's card cull, so a far bowl comes in as its card, and short of a dragon's, which is a speck at this range.
+export const DIAMETER = [14, 20]
+// How far out a roost tile is resident, and so its dragon alive (dragons.js): short of any bowl's card cull and a dragon's. A bowl comes in as a mesh, not a card: its last mesh rung reaches past this.
 export const RADIUS_M = 400
 // Rolls kept for tiles that are not resident (siteAt): the oldest asked forgotten past this.
 const ROLLED_CAP = 256

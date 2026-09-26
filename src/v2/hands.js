@@ -152,15 +152,16 @@ export class Hands {
    * thing lands on; `water.levelAt(x, z)` is where a falling thing meets the
    * lake. `haptic(key, intensity, ms)` buzzes a hand; `stow(rec)` takes a
    * record into the backpack and says whether it fit; `thud(x, y, z)` is a
-   * dropped thing meeting the ground. `rand` is the roll's, the flap's and
+   * dropped thing meeting the ground, and `splash(x, y, z)` one falling into
+   * the water from above it. `rand` is the roll's, the flap's and
    * the drift's own stream. `scale` is her size against the world (DESIGN.md
    * §30): each hand's reach, the size of thing it lifts and the backpack zone
    * about her head are hers, and shrink with her.
    */
-  constructor(scene, { walk, water, haptic, stow, thud, rand = Math.random, scale = 1 }) {
+  constructor(scene, { walk, water, haptic, stow, thud, splash, rand = Math.random, scale = 1 }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
-    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec) and thud(x, y, z)')
+    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z) and splash(x, y, z)')
     if (!(scale > 0)) throw new Error(`Hands: scale must be positive, not ${scale}`)
     this.scale = scale
     this.walk = walk
@@ -168,6 +169,7 @@ export class Hands {
     this.haptic = haptic
     this.stow = stow
     this.thud = thud
+    this.splash = splash
     this.rand = rand
     this.batch = new THREE.Group()
     this.batch.name = 'v2-hands'
@@ -831,6 +833,8 @@ export class Hands {
         const level = this.water.levelAt(item.x, item.z)
         if (level !== null && bottom <= level) {
           item.tried = true
+          // Let go of under the surface, it was never above it: no splash.
+          if (bottom - item.vy * dt > level) this.splash(item.x, level, item.z)
           if (item.mine && this._giveBack(item, item.x, Math.min(item.y, level), item.z, item.head)) { this._settled(item, true); return false }
           if (!SWIMMERS.has(item.rec.kind)) {
             this._float(item)

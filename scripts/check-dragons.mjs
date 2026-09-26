@@ -33,11 +33,11 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, DIVE_MPS, LAND_MPS, ACCEL,
+  Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, DIVE_MPS, LAND_MPS, ACCEL, STRIDE_ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, LAND_M, LOITER_PACE, REST_S, FLIGHT_MIN_S, PERCH_S, EAT_S,
-  WAY_M, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf,
+  WAY, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf,
   HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
-  LURES, LURE_M, LURE_FORGET_M, MENACE_RUN_M, MENACE_M, ANCHOR_S, ANCHOR_STALE_S,
+  LURES, LURE, LURE_FORGET, MENACE_RUN, MENACE, ANCHOR_S, ANCHOR_STALE_S,
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
@@ -49,6 +49,7 @@ import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, cullRange, lodReach } from '
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
+import { BEND_MAX, TailLag } from '../src/v2/render/tail-lag.js'
 import { taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -95,6 +96,7 @@ let wyvern = null
   check(wyvern && wyvern.gait.walk > 0 && wyvern.gait.run > wyvern.gait.walk && Object.keys(wyvern.gait).length === 2, `${id}: walk and run carry a ground speed each, walk under run, and nothing else does`, wyvern && Object.entries(wyvern.gait).map(([n, v]) => `${n} ${v.toFixed(3)}`).join(' '))
   const jointNames = new Set([...joints].map((j) => json.nodes[j].name))
   check(wyvern?.legs?.length === 2 && wyvern.legs.every((l) => l.chain.length >= 3 && l.chain.every((n) => jointNames.has(n))), `${id}: two legs named, hip to foot, every joint of every chain one of the skeleton's -- the talons a kill hangs from are measured off their feet`, wyvern?.legs && wyvern.legs.map((l) => `${l.id} ${l.chain.join('>')}`).join(' '))
+  check(wyvern?.tail?.length >= 2 && wyvern.tail.every((n) => jointNames.has(n)), `${id}: the tail named root to tip, every joint one of the skeleton's -- its lag bends them`, wyvern?.tail?.join('>'))
 
   // The bind pose IS the POSITION accessor, so the frame the root joint carries can be checked by applying it: the body stands on y = 0, centred, its length along +X.
   if (wyvern && prim) {
@@ -178,7 +180,7 @@ const roostsOn = (field, water, layers, seed) => {
   check(r.materials.length === 3 && r.materials[0].customProgramCacheKey() === 'gen-prop' && r.materials[1].customProgramCacheKey() === 'gen-prop' && r.materials[2].customProgramCacheKey() === 'gen-prop-billboard-mixed', 'three materials offered to the lighting: bark and stone on the one gen-prop program, and the mixed card', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
   const cardShader = compile(r.card)
   check(cardShader.vertexShader.includes('attribute float aSpin') && !r.card.visible && r.card.map === null, 'the card program reads aSpin to spin one quad and leave the other, and is not drawn until it is photographed')
-  check(r.radius === RADIUS_M && r.radius === 400 && lodReach(DIAMETER[1], LODS - 1) < r.radius && r.radius < cullRange(DIAMETER[1], RUNGS), `the scatter reaches ${r.radius} m, past the widest bowl's last mesh rung and short of its card cull, so what comes in at the edge is a card`, `mesh to ${lodReach(DIAMETER[1], LODS - 1).toFixed(0)} m, card to ${cullRange(DIAMETER[1], RUNGS).toFixed(0)} m`)
+  check(r.radius === RADIUS_M && r.radius === 400 && r.radius < cullRange(DIAMETER[0], RUNGS), `the scatter reaches ${r.radius} m, short of the narrowest bowl's card cull, so a bowl is drawn wherever it is resident`, `card to ${cullRange(DIAMETER[0], RUNGS).toFixed(0)} m`)
   check(r.batch.name === 'v2-roosts' && r.batch._max === r.stats.pool && r.batch.meshes.length === RUNGS && r.stats.pool > r.stats.tiles, 'the arena is one batch, a mesh a rung, sized to a roost a resident tile plus the fades in flight', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
 
   // The rate over forty seeds against the tiles' own area: one to DENSITY, with a binomial's slack.
@@ -448,8 +450,11 @@ function makeAsset() {
     leg.add(foot); spine.add(leg)
     return [leg, foot]
   })
-  root.add(spine); root.updateMatrixWorld(true)
-  const bones = [root, spine, legBones[0][1], legBones[1][1], legBones[0][0], legBones[1][0]]
+  const tail = new THREE.Bone(); tail.name = 'Tail'; tail.position.set(-span / 4, height / 2, 0)
+  const tail1 = new THREE.Bone(); tail1.name = 'Tail1'; tail1.position.set(-span / 8, 0, 0)
+  tail.add(tail1)
+  root.add(spine, tail); root.updateMatrixWorld(true)
+  const bones = [root, spine, legBones[0][1], legBones[1][1], legBones[0][0], legBones[1][0], tail, tail1]
   const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
   const tiers = Array.from({ length: LOD_RUNGS }, (_, k) => {
     const g = new THREE.BoxGeometry(span, height, width, LOD_RUNGS - k, 1, 1).translate(0, height / 2, 0)
@@ -472,7 +477,7 @@ function makeAsset() {
     return new THREE.AnimationClip(name, dur, tracks)
   })
   const legs = [{ id: 'hindLeft', chain: ['Spine', 'LeftLeg', 'LeftFoot'] }, { id: 'hindRight', chain: ['Spine', 'RightLeg', 'RightFoot'] }]
-  return { root, skeleton, tiers, clips, map: null, sizeM: wyvern.sizeM, span, width, height, gait: { ...wyvern.gait }, legs }
+  return { root, skeleton, tiers, clips, map: null, sizeM: wyvern.sizeM, span, width, height, gait: { ...wyvern.gait }, legs, tail: ['Tail', 'Tail1'] }
 }
 
 /** A stand-in herd: `stags` the slots a dragon may roster, pose, kill, carry and drop, each standing still at its spawn, every call counted on the slot. */
@@ -549,7 +554,7 @@ console.log('\ndragons')
 }
 
 // --- the score: a chapter of phrases, closed-form, chained, home at both ends, the same everywhere ---
-const homeSite = (key) => ({ key, tx: key, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
+const homeSite = (key) => ({ key, tx: key, tz: 0, x: 0, y: GROUND, z: 0, r: (DIAMETER[0] + DIAMETER[1]) / 4, gx: 0, gz: 0 })
 /** A plan of nothing but rests on the nest, `durs` seconds each, for the gates that want the dragon kept home. */
 const restPlan = (d) => (key) => {
   const dr = d.byKey.get(key)
@@ -649,7 +654,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   check(worst.ticksPerFrame === 1 && worst.alphaOut === 0, 'at 60 Hz no frame runs more than one tick, and the frame\'s blend between ticks stays in [0, 1]')
   check(worst.turn <= Math.max(TURN_RATE, LAND_TURN_RATE, WALK_TURN_RATE) + EASE_TURN + 1e-6, 'no tick turned the body faster than its turn rate plus the ease\'s', `${fmt(worst.turn)} rad/s`)
   check(worst.pitch <= 2 * PITCH_RATE + 1e-6 && worst.roll <= 2 * ROLL_RATE + 1e-6, 'nor pitched or banked it faster than its rates plus the ease\'s', `pitch ${fmt(worst.pitch)} roll ${fmt(worst.roll)} rad/s`)
-  check(worst.accel <= 2 * ACCEL + 1e-6, 'nor changed its speed faster than ACCEL plus the ease\'s', `${fmt(worst.accel)} m/s per s`)
+  check(worst.accel <= Math.max(ACCEL, STRIDE_ACCEL * dr.k) + ACCEL + 1e-6, 'nor changed its speed faster than ACCEL, or STRIDE_ACCEL on foot, plus the ease\'s', `${fmt(worst.accel)} m/s per s`)
   check(worst.move <= PATROL_MPS + Math.sqrt(3) * EASE_MPS + 1e-6, 'nor moved it faster than the cruise plus the ease\'s pull', `${fmt(worst.move)} m/s`)
   check(worst.snap < 1 && worst.snapTurn < 0.2 && worst.snapSpeed < 1, 'at every phrase boundary the ease had the body within a metre, a fifth of a radian and a metre a second of the planned end, so the snap onto it is nothing the eye reads', `worst ${fmt(worst.snap)} m, ${fmt(worst.snapTurn)} rad, ${fmt(worst.snapSpeed)} m/s`)
   check(worst.under > 0.1 && cruised > 60 * 20, `in the air it was never under the ground and cruised above MIN_AGL ${MIN_AGL} m for most of its flying`, `lowest ${fmt(worst.under)} m, ${cruised} ticks high`)
@@ -852,7 +857,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   check(nest.moved > 1.5 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than a radius and a half and turned more than a half turn, all of it inside the rim', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
   check(nest.walkFast === 0 && nest.offFloor === 0, 'and never moved faster than the shipped walk gait at its size nor left the floor plane', `walk ${fmt(walkMps)} m/s; ${nest.walkFast} fast ticks, ${nest.offFloor} off the floor`)
   check(nest.killMoved === 0, 'the kill lay where it was laid through the whole circuit: it does not follow the dragon round')
-  check(nest.eatFacing < 0.1 && Math.abs(nest.eatFrom - EAT_REACH * dr.k) < WAY_M, `eating, it faces the kill with the kill ${fmt(EAT_REACH * dr.k)} m ahead, where the eat clip's snout plunges`, `off by ${fmt(nest.eatFacing)} rad, ${fmt(nest.eatFrom)} m`)
+  check(nest.eatFacing < 0.1 && Math.abs(nest.eatFrom - EAT_REACH * dr.k) < WAY * dr.k, `eating, it faces the kill with the kill ${fmt(EAT_REACH * dr.k)} m ahead, where the eat clip's snout plunges`, `off by ${fmt(nest.eatFacing)} rad, ${fmt(nest.eatFrom)} m`)
   check(nest.ateAt > 0 && nest.ateAt - nest.eatAt >= EAT_S[0] - 0.1 && nest.ateAt - nest.eatAt <= EAT_S[1] + 0.1 && stags[0].drops.join() === 'true' && dr.cargo === null && d.stats.carrying === 0, `after ${EAT_S[0]} to ${EAT_S[1]} s of eating the carcass is gone -- dropped to fade -- and the dragon carries nothing`, `ate for ${fmt(nest.ateAt - nest.eatAt)} s`)
   check(stags[0].carried === cargoFrames + 1 && cargoFrames > 60 && Math.abs(stags[0].carryDt - DT) < 1e-9, 'wildlife.carry was called on every frame it was cargo, with the frame', `${cargoFrames} frames`)
   check(stags[0].shownFrames === stags[0].carried && stags[0].lainFrames === stags[0].carried, 'and told the dragon was drawn on every one of them, the kill lying on its flank on every one')
@@ -967,11 +972,11 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const tick = (lures) => { const t = dr.rec.tick; while (dr.rec.tick === t) frame(lures) }
   d.update(her.x, her.y, her.z, now)
   const dr = d.byKey.get(keyOf(site))
-  const reach = EAT_REACH * dr.k + MENACE_M
+  const reach = (EAT_REACH + MENACE) * dr.k
   const gap = (l) => Math.hypot(l.x - dr.x, l.z - dr.z)
   // Out of reach, or the wrong thing: the dragon rests on.
-  run(2, [hand('fish', LURE_M + 1)])
-  check(dr.state === 'roost' && dr.lure === null && dr.live === null, `a fish ${LURE_M + 1} m off is not noticed`)
+  run(2, [hand('fish', LURE * dr.k + 1)])
+  check(dr.state === 'roost' && dr.lure === null && dr.live === null, `a fish ${fmt(LURE * dr.k + 1)} m off is not noticed`)
   run(2, [hand('carrot', 2)])
   check(dr.state === 'roost' && dr.lure === null, 'nor is a carrot in reach', LURES.join(', '))
   // Eating its kill on the nest when the fish comes within reach: the kill is let go, and the dragon is up and alert.
@@ -979,53 +984,54 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d._meal(dr)
   run(1, [])
   check(dr.state === 'roost' && dr.cargo === stags[0] && dr.queue.length > 0, 'settled on the nest with its kill, working through its circuit')
-  const fish = hand('fish', LURE_M - 0.5)
+  const fish = hand('fish', LURE * dr.k - 0.5)
   tick([fish])
-  check(dr.state === 'menace' && dr.lure === fish && dr.live && dr.live.by === null && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0, `a fish ${LURE_M - 0.5} m off has it drop the kill to fade and go LIVE to menace, alert, this client the authority`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
-  // The stomp: at the walk gait inside MENACE_RUN_M, toward the hand, and stopped with its head at her, eating at her.
+  check(dr.state === 'menace' && dr.lure === fish && dr.live && dr.live.by === null && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0, `a fish ${fmt(LURE * dr.k - 0.5)} m off has it drop the kill to fade and go LIVE to menace, alert, this client the authority`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
+  // The stomp: at the walk gait inside MENACE_RUN, toward the hand, and stopped with its head at her, eating at her.
   turned = 0
   let walked = false
   let top = 0
   const x0 = dr.x
   run(6, [fish], () => { if (dr.clip === 'walk') walked = true; top = Math.max(top, dr.speed) })
   check(walked && top > wyvern.gait.walk * dr.k * 0.9 && top <= wyvern.gait.walk * dr.k + 1e-9 && dr.x > x0 + 0.5, 'it walks at the hand at the walk gait', `top ${fmt(top)} of ${fmt(wyvern.gait.walk * dr.k)} m/s, ${fmt(dr.x - x0)} m east`)
-  // The stop is a deceleration at ACCEL from the walk, so the stance is that stopping distance short of reach.
-  const stops = (l) => gap(l) < reach + 0.05 && gap(l) > reach - (wyvern.gait.walk * dr.k) ** 2 / (2 * ACCEL) - 0.05
+  // The stop is a deceleration at STRIDE_ACCEL from the walk, so the stance is that stopping distance short of reach.
+  const brake = (wyvern.gait.walk * dr.k) ** 2 / (2 * STRIDE_ACCEL * dr.k)
+  const stops = (l) => gap(l) < reach + 0.05 && gap(l) > reach - brake - 0.05
   const facing = (l) => Math.abs(swing(dr.heading, Math.atan2(-(l.z - dr.z), l.x - dr.x))) < 0.05
-  check(dr.clip === 'eat' && dr.speed < 0.05 && stops(fish) && facing(fish), `and stops eating at her, its head EAT_REACH + MENACE_M ${fmt(reach)} m short of the hand, facing it`, `clip ${dr.clip}, ${fmt(gap(fish))} m off, heading ${fmt(dr.heading)}`)
+  check(dr.clip === 'eat' && dr.speed < 0.05 && stops(fish) && facing(fish), `and stops eating at her, its head EAT_REACH + MENACE ${fmt(reach)} m short of the hand, facing it`, `clip ${dr.clip}, ${fmt(gap(fish))} m off, heading ${fmt(dr.heading)}`)
   check(turned <= WALK_TURN_RATE + 1e-6, `never turning faster than WALK_TURN_RATE ${WALK_TURN_RATE} a tick`, `${fmt(turned)} rad/s`)
   check(dr.y >= GROUND && dr.y < GROUND + 0.05 * site.r && Math.abs(dr.pitch) < 1e-6 && Math.abs(dr.roll) < 1e-6, 'level, standing over the nest floor still', `y ${fmt(dr.y)}`)
   const anchors = d.pending()
   check(anchors.length >= 6 && anchors.length <= 8 && anchors.every((a) => a[0] === keyOf(site) && a[7] === 'menace' && a[8] === null && Number.isFinite(a[9]) && a[1] > t0) && anchors.every((a, i) => i === 0 || a[1] - anchors[i - 1][1] >= ANCHOR_S - 1e-9), `seven seconds live, the authority owes the room one menace anchor a second, none sooner than ANCHOR_S ${ANCHOR_S} s after the last, each carrying its speed`, `${anchors.length} anchors`)
-  // A step back holds it; MENACE_M back has it after her again; and off past MENACE_RUN_M it runs.
-  run(2, [hand('fish', fish.x + MENACE_M * 0.5)])
+  // A step back holds it; MENACE back has it after her again; and off past MENACE_RUN it runs.
+  run(2, [hand('fish', fish.x + MENACE * dr.k * 0.5)])
   check(dr.clip === 'eat', `a half step back and it eats on`)
-  const back = hand('fish', fish.x + MENACE_M + 0.3)
+  const back = hand('fish', fish.x + MENACE * dr.k + brake + 0.3)
   run(0.2, [back])
-  check(dr.clip === 'walk', `MENACE_M back and it is walking after her again`, dr.clip)
+  check(dr.clip === 'walk', `MENACE back and it is walking after her again`, dr.clip)
   run(3, [back])
   check(dr.clip === 'eat' && stops(back), 'to stop at her again', `${fmt(gap(back))} m off`)
-  const far = hand('fish', dr.x + reach + MENACE_RUN_M + 2)
+  const far = hand('fish', dr.x + reach + MENACE_RUN * dr.k + 2)
   let ran = false
   top = 0
   run(8, [far], () => { if (dr.clip === 'run') { ran = true; top = Math.max(top, dr.speed) } })
-  check(ran && top > wyvern.gait.run * dr.k * 0.9 && dr.state === 'menace', `the hand ${MENACE_RUN_M + 2} m past its head, it runs at the run gait`, `top ${fmt(top)} of ${fmt(wyvern.gait.run * dr.k)} m/s`)
+  check(ran && top > wyvern.gait.run * dr.k * 0.9 && dr.state === 'menace', `the hand ${fmt(MENACE_RUN * dr.k + 2)} m past its head, it runs at the run gait`, `top ${fmt(top)} of ${fmt(wyvern.gait.run * dr.k)} m/s`)
   check(dr.clip === 'eat' && stops(far) && Math.abs(dr.y - GROUND) < 1e-6, 'and is at her again, on the ground off the nest', `${fmt(gap(far))} m off, y ${fmt(dr.y)}`)
-  // Carried off at her 1.45 m/s walk, faster than its own: it stomps after her in rushes, run and stop, never far off.
+  // Carried off at a quarter again its walk: it stomps after her in rushes, run and stop, never far off.
   const walk = hand('fish', far.x, 0)
   let worst = 0
   let rushes = 0
   let running = false
-  run(20, [walk], () => { walk.z -= 1.45 * DT; worst = Math.max(worst, gap(walk)); if (dr.clip === 'run') { if (!running) rushes++; running = true } else running = false })
-  check(worst < reach + MENACE_RUN_M + 1 && rushes >= 2 && rushes <= 5 && gap(walk) < reach + MENACE_RUN_M + 1, 'carried off at her walk it stomps after her in rushes, run and stop, never far off', `never more than ${fmt(worst)} m off, ${rushes} rushes in 20 s, ${fmt(gap(walk))} m at the end`)
-  // Kept to LURE_FORGET_M, given up past it: the rejoin, a leg home from here.
-  tick([hand('fish', dr.x + LURE_FORGET_M - 0.5, dr.z)])
-  check(dr.state === 'menace', `a fish ${LURE_FORGET_M - 0.5} m off is still menaced`)
+  run(20, [walk], () => { walk.z -= 1.25 * wyvern.gait.walk * dr.k * DT; worst = Math.max(worst, gap(walk)); if (dr.clip === 'run') { if (!running) rushes++; running = true } else running = false })
+  check(worst < reach + MENACE_RUN * dr.k + 1 && rushes >= 2 && rushes <= 5 && gap(walk) < reach + MENACE_RUN * dr.k + 1, 'carried off at her walk it stomps after her in rushes, run and stop, never far off', `never more than ${fmt(worst)} m off, ${rushes} rushes in 20 s, ${fmt(gap(walk))} m at the end`)
+  // Kept to LURE_FORGET, given up past it: the rejoin, a leg home from here.
+  tick([hand('fish', dr.x + LURE_FORGET * dr.k - 0.5, dr.z)])
+  check(dr.state === 'menace', `a fish ${fmt(LURE_FORGET * dr.k - 0.5)} m off is still menaced`)
   d.pending()
   const left = { x: dr.x, y: dr.y, z: dr.z }
-  tick([hand('fish', dr.x + LURE_FORGET_M + 1, dr.z)])
+  tick([hand('fish', dr.x + LURE_FORGET * dr.k + 1, dr.z)])
   const rejoin = d.pending()
-  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.length === 3, `and one ${LURE_FORGET_M + 1} m off is given up: it is on its rejoin, a leg home, a landing and a rest, flying`, `state ${dr.state}`)
+  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.length === 3, `and one ${fmt(LURE_FORGET * dr.k + 1)} m off is given up: it is on its rejoin, a leg home, a landing and a rest, flying`, `state ${dr.state}`)
   check(rejoin.length === 1 && rejoin[0][7] === 'rejoin' && rejoin[0][8] === null && Math.hypot(rejoin[0][2] - left.x, rejoin[0][4] - left.z) < 1 && Math.abs(rejoin[0][1] - now) < TICK_S, 'the authority owes the room one rejoin anchor, from where the lure ended and when', JSON.stringify(rejoin[0]?.map((v) => (typeof v === 'number' ? +v.toFixed(2) : v))))
   let frames = 0
   while (dr.state !== 'roost' && frames++ < 60 * 120) frame([])
@@ -1056,7 +1062,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   B.update(her.x, her.y, her.z, now)
   const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
   // The same fish, in A's own hand and, to B, in a peer's.
-  const fish = { kind: 'fish', x: LURE_M - 0.5, y: GROUND + 1, z: 0 }
+  const fish = { kind: 'fish', x: LURE * a.k - 0.5, y: GROUND + 1, z: 0 }
   const peerFish = { ...fish, by: 'peerA' }
   const both = (s, la, lb) => { for (let i = 0; i < s * 60; i++) { now += DT; A.update(her.x, her.y, her.z, now, la); B.update(her.x, her.y, her.z, now, lb) } }
   both(5, [fish], [peerFish])
@@ -1129,6 +1135,35 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const tw = twin.byKey.get(keyOf(site))
   check(!d.stats.behind && dr.rec.tick === tw.rec.tick && samePose(pose(dr), pose(tw)), 'caught up, it is where a client that never rebuilt has it, to the bit')
   d.dispose(); twin.dispose()
+}
+
+// --- the tail's lag: a turn bends the tail behind it, a reversal runs down it root first, and restore gives the clip back ---
+{
+  const root = new THREE.Bone(), a = new THREE.Bone(), b = new THREE.Bone(), c = new THREE.Bone()
+  root.name = 'Root'; a.name = 'Tail'; b.name = 'Tail1'; c.name = 'Tip'
+  a.position.set(-1, 0, 0); b.position.set(-1, 0, 0); c.position.set(-1, 0, 0)
+  root.add(a); a.add(b); b.add(c)
+  const bones = [root, a, b, c]
+  const lag = new TailLag(bones, ['Tail', 'Tail1'])
+  const tipZ = () => { root.updateMatrixWorld(true); return c.getWorldPosition(new THREE.Vector3()).z }
+  const localBend = (bone) => new THREE.Euler().setFromQuaternion(bone.quaternion, 'YZX').y
+  let heading = 0
+  const turn = (rate, s) => { for (let i = 0; i < s * 60; i++) { lag.restore(); heading += rate / 60; lag.steer(heading, 0); lag.solve(1 / 60) } }
+  turn(0, 0.5)
+  check(Math.abs(tipZ()) < 1e-9, 'flying straight, the tail lies straight behind')
+  turn(0.6, 2)
+  // Turning +Y swings the nose toward -Z, the side the arc's centre is on, and a tail following the arc curls that way too.
+  const held = tipZ()
+  check(held < -0.1 && localBend(a) < 0 && localBend(b) < 0, 'a steady turn bends every joint behind the swing, so the tail curls along the arc, into the turn', `tip z ${fmt(held)}, bends ${fmt(localBend(a))} ${fmt(localBend(b))}`)
+  turn(-0.6, 0.15)
+  check(localBend(a) > 0 && localBend(b) < 0, 'a reversal reaches the root before the tip: the tail makes an S', `bends ${fmt(localBend(a))} ${fmt(localBend(b))}`)
+  lag.restore()
+  check(a.quaternion.equals(new THREE.Quaternion()) && b.quaternion.equals(new THREE.Quaternion()), 'restore puts back the pose it bent, so the mixer never compounds it')
+  turn(3, 1)
+  check(Math.abs(localBend(a)) <= BEND_MAX + 1e-9 && Math.abs(localBend(b)) <= BEND_MAX + 1e-9, `however hard the turn, no joint bends past ${BEND_MAX} rad`, `bends ${fmt(localBend(a))} ${fmt(localBend(b))}`)
+  lag.reset()
+  lag.steer(heading, 0); lag.solve(1 / 60)
+  check(Math.abs(localBend(a)) < 1e-9 && Math.abs(tipZ()) < 1e-9, 'reset forgets the turn: a puppet handed to another dragon starts straight')
 }
 
 // --- the rungs: puppet near, two fixed cards far, nothing past that, simulated throughout, drawn between ticks --

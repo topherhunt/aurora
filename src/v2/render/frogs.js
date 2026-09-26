@@ -51,6 +51,11 @@
 // hearing it keeps a frog the lure is between LURE_M and LURE_FORGET_M from,
 // as she does.
 //
+// A HOP IS HEARD. The frame a frog starts a hop, and the frame one lands in
+// the water off dry ground, it says so to the ear (voices(), ambience.js
+// frogHop and splash); the queue is this frame's only, so nothing said while
+// the ambience is not listening is heard late.
+//
 // A frog is drawn as the tier of its LOD ladder its apparent size calls for
 // (critters.js critterTier, the rungs a ratio of its own body length), one
 // InstancedMesh per tier under one material, and not at all under the last
@@ -122,6 +127,8 @@ export const BOB_S = 0.5
 export const BOB_AMP = 0.04
 // The tiles are re-walked once her head has moved this far from where they were last walked: RADIUS is generous by more than this, and a walk is a Map of a hundred tiles read and as many looked up.
 const WALK_M = 4
+// A frog further than this from her head says nothing to the ear: the splash's reach (ambience.js RULES.splash), the farther of its two sounds.
+const HEAR_M = 30
 
 /** The room's key for a bed of frogs, its tile; a frog's is the bed's and its candidate index (creature-net.js routes the `fg` prefix here). */
 export const bedKey = (tx, tz) => `fg:${tx},${tz}`
@@ -222,6 +229,8 @@ export class Frogs {
     this.owed = []
     this.luredIn = new Map()
     this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
+    // This frame's one-shots for the ear, drained by voices(): { sound, rule, x, y, z }.
+    this.calls = []
 
     if (assets) {
       this.setAsset(assets)
@@ -666,12 +675,27 @@ export class Frogs {
     this.owed.push([t.key, 'fg', null, mine === '' ? [] : mine.slice(0, -1).split(',').map(Number)])
   }
 
+  /** The one-shots since the last call, each `{ sound, rule, x, y, z }`, drained. */
+  voices(into) {
+    for (const v of this.calls) into.push(v)
+    this.calls.length = 0
+    return into
+  }
+
+  /** What frog `f` did going from phrase `prev` to the one it is posed on: a hop begun, or a hop off dry ground that came down in the water. */
+  _heard(f, prev, hx, hy, hz) {
+    if (prev === null || f.ph === prev || Math.hypot(f.x - hx, f.y - hy, f.z - hz) > HEAR_M) return
+    if (prev.kind === 'hop' && prev.to.wet && !prev.from.wet) this.calls.push({ sound: 'splash', rule: 'splash', x: prev.to.x, y: prev.to.level, z: prev.to.z })
+    if (f.ph.kind === 'hop') this.calls.push({ sound: 'frogBoing', rule: 'frogHop', x: f.x, y: f.y, z: f.z })
+  }
+
   /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame, the spiders, butterflies and grasshoppers among them chased. */
   update(hx, hy, hz, now, lures = NO_LURES) {
     if (!Number.isFinite(now)) throw new Error(`Frogs.update: bad time ${now}`)
     this.head.x = hx
     this.head.z = hz
     this.now = now
+    this.calls.length = 0
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
       this.walkedX = hx
@@ -701,10 +725,12 @@ export class Frogs {
           f.seg = seg
         }
         // Posed first, so a lure is measured from where the frog is, on its plan or off it; a lure noticed or lost this frame changes what plays from the next.
+        const prev = f.ph
         if (f.live === null || !this._live(f, now)) {
           const ph = Frogs._phraseAt(f.seg.phrases, now - f.seg.start)
           this._pose(f, ph, now - f.seg.start - ph.start)
         }
+        this._heard(f, prev, hx, hy, hz)
         this._notice(f, lures, now)
         let sy = 1
         let sx = 1

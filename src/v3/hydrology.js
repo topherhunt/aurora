@@ -8,7 +8,7 @@ import { table, CLIFFS, CLIFFS_OFF } from './cliffs.js'
 // ---------------------------------------------------------------------------
 // Step D -- the island drains. Rain is thrown at the raw field and walked to the sea, cutting the valleys (erosion.js); then what still ponds is read, a few of the bowls are kept as lakes and the rest are silted up to their spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
 //
-//   1. RAIN. EROSION.droplets droplets over the land, each grooving its way down.
+//   1. RAIN. EROSION.dropletsPerKm2 droplets over every square kilometre of land, each grooving its way down.
 //   2. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). It runs here, after the rain so the droplets cannot grind a scarp back into a slope and before everything else so the lakes, the silt, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
 //   3. LAKES. The bowls a priority flood still finds on land, each filled to LAKES.maxArea of surface or to its spill, whichever comes first, scored by the widest open water in them (Phase A's selectLakes); the widest LAKES.keep are lakes. A lake has no dam: its shore is wherever the ground meets its level.
 //   4. SILT. Every other ponded cell is raised to its water's level: a bowl the rain did not cut an outlet for is a bowl it filled, and a bench the tabling closed off is a flat that drains through its notch. What is left of a lake's bowl above its pool is silted the same way.
@@ -53,7 +53,7 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   const elev = Float32Array.from(height)
   const sea = seaMask(height, n)
   const t0 = Date.now()
-  stats.erosion = erode(elev, sea, ground, n, seed)
+  stats.erosion = erode(elev, sea, ground, n, cell, seed)
   stats.erosion.ms = Date.now() - t0
 
   // --- 2. cliffs --------------------------------------------------------------

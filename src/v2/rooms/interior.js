@@ -1,0 +1,551 @@
+// A leafkin house's inside (design/30-leafkin.md, Interiors): the room rolled from the village's seed and the house's index, and the stone she walks it by. Pure, no three. Local metres: the floor's centre at the origin, y up, the door on bearing pi, so she comes in facing +X. Leafkin-sized: a 1 m body sits at villagers.js SEAT_M.
+import { mulberry32 } from '../../sim/mathx.js'
+import { hash32 } from '../../sim/score.js'
+
+const TAU = 2 * Math.PI
+// Outline samples round the room.
+export const RING = 288
+// The floor's cove into the wall: the wall is stone from its foot in.
+export const FILLET = 0.15
+export const SEAT = 0.19
+export const TABLE_TOP = 0.42
+// A house this tall outside has a loft inside.
+const LOFT_HOUSE_M = 6
+// Three rises must stay within her glade reach (0.6 m): player.js looks a stride (0.75 m, ~2.7 treads) ahead on a steep step, and a tread past her reach reads as the floor below, so the stairs refuse her.
+const RISE = 0.17, TREAD = 0.28, STAIR_W = 0.55
+// Floor kept clear inside the door, and round the table for the chairs and the walk about it.
+const DOOR_CLEAR = 1.1
+const RING_M = 0.75
+// A loft's rail is stone this high whatever it looks, so she never takes it for a step.
+const RAIL_STONE = 0.7
+
+export const wrap = (a) => ((a % TAU) + TAU) % TAU
+export const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b))
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+export const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t) }
+
+/** The wall's radius on bearing `a` off the room's `rs`. */
+export function rAt(rs, a) {
+  const u = (wrap(a) / TAU) * RING, i = Math.floor(u) % RING, f = u - Math.floor(u)
+  return rs[i] * (1 - f) + rs[(i + 1) % RING] * f
+}
+
+/** The ceiling over (rho, bearing) in a room whose wall stands `hW` and apex `H`: an ellipse from the wall's top, level at the apex. */
+export function ceilingAt(room, rho, r) {
+  const t = Math.min(1, rho / r)
+  return room.hW + (room.H - room.hW) * Math.sqrt(1 - t * t)
+}
+
+/** How far a loft reaches in from the wall on bearing `a`, tapering into the wall at its far end; 0 off it. */
+export function loftDepthAt(loft, a) {
+  const t = wrap(a - loft.a0)
+  if (t > loft.a1 - loft.a0) return 0
+  const far = loft.dir > 0 ? t : loft.a1 - loft.a0 - t
+  return loft.depth * smooth(0, loft.taper, far)
+}
+
+/**
+ * The room for house `index` of the village seeded `seed`, whose house stands `height` metres outside. Everything placed is in `items` for the renderer, `solids` for the stone, `candles` for the flames and the light, and `spots` for the residents.
+ */
+export function rollInterior({ seed, index, height }) {
+  if (!Number.isInteger(seed) || !Number.isInteger(index) || !(height > 0)) throw new Error('rollInterior: needs an integer seed and index and a positive height')
+  const rng = mulberry32(hash32(seed, index, 0x1d0))
+  const range = (lo, hi) => lo + (hi - lo) * rng()
+  const pick = (list) => list[Math.floor(rng() * list.length)]
+
+  const R = clamp(1.9 + 0.2 * height, 2.5, 3.5) + range(-0.15, 0.15)
+  // The outline: two or three slow lobes, calmed a door's width about the door, and rounded nooks pushed out of it.
+  const lobes = [2, 3, 5].map((n) => ({ n, a: range(0, n === 5 ? 0.015 : 0.05), p: range(0, TAU) }))
+  const nooks = []
+  const nookCount = 2 + Math.floor(rng() * 3)
+  for (let tries = 0; nooks.length < nookCount && tries < 60; tries++) {
+    const a = range(-Math.PI, Math.PI)
+    if (Math.abs(angDiff(a, Math.PI)) < 0.9 || nooks.some((n) => Math.abs(angDiff(a, n.a)) < 1.0)) continue
+    nooks.push({ a, d: range(0.35, 0.7), w: range(0.2, 0.32) })
+  }
+  const rs = new Float32Array(RING)
+  for (let i = 0; i < RING; i++) {
+    const a = (i / RING) * TAU
+    let lobe = 0
+    for (const l of lobes) lobe += l.a * Math.cos(l.n * a + l.p)
+    let r = R * (1 + lobe * smooth(0.35, 0.8, Math.abs(angDiff(a, Math.PI))))
+    for (const n of nooks) r += n.d * Math.exp(-((angDiff(a, n.a) / n.w) ** 2))
+    rs[i] = r
+  }
+  const rOf = (a) => rAt(rs, a)
+  const polar = (a, inset, y = 0) => ({ x: Math.cos(a) * (rOf(a) - inset), y, z: Math.sin(a) * (rOf(a) - inset) })
+  // Yaws are three's rotation.y: a thing's front (+Z) looks along (sin yaw, cos yaw). Against the wall at bearing `a`, into the room.
+  const inward = (a) => Math.atan2(-Math.cos(a), -Math.sin(a))
+
+  const lofty = height >= LOFT_HOUSE_M
+  const yL = lofty ? range(1.75, 1.95) : 0
+  const hW = lofty ? yL + 1.25 : range(1.5, 1.8)
+  const H = hW + (lofty ? range(0.9, 1.2) : range(0.8, 1.1))
+  const room = { seed, index, R, rs, hW, H, nooks }
+
+  // Wall arcs taken, low (floor-standing things) and high (openings, shelves, hangings), each { a, half } in radians; the loft keeps its own pair, so its bed may lie under its window.
+  const low = [], high = [], up = [], upHigh = []
+  const free = (list, a, half) => list.every((c) => Math.abs(angDiff(a, c.a)) > half + c.half)
+  const claim = (lists, a, halfM) => {
+    const half = halfM / rOf(a)
+    if (!lists.every((l) => free(l, a, half))) return false
+    for (const l of lists) l.push({ a, half })
+    return true
+  }
+
+  const door = { a: Math.PI, r: range(0.5, 0.58), depth: 0.3 }
+  door.y = door.r + 0.06
+  claim([low, high], door.a, door.r + 0.35)
+
+  const solids = []
+  const items = []
+  const candles = []
+  const spots = []
+  // Floor discs taken: { x, z, r, level } -- level 0 the floor, 1 the loft.
+  const discs = []
+  const doorIn = polar(Math.PI, DOOR_CLEAR)
+  discs.push({ x: doorIn.x, z: doorIn.z, r: 0.55, level: 0 })
+
+  let loft = null
+  const stairs = []
+  const climb = []
+  if (lofty) {
+    const dir = rng() < 0.5 ? 1 : -1
+    const n = Math.round(yL / RISE), rise = yL / n
+    const run = ((n - 1) * TREAD) / (R - STAIR_W / 2)
+    const cL = range(-0.3, 0.3)
+    const room4door = Math.PI - 0.6 - run - dir * cL
+    const half = Math.min(range(1.0, 1.3), room4door)
+    if (half < 0.7) throw new Error(`rollInterior: no room for a loft in house ${index}`)
+    loft = { a0: cL - half, a1: cL + half, dir, depth: range(1.1, 1.4), y: yL, thick: 0.14, taper: 0.45 }
+    room.loft = loft
+    const e = dir > 0 ? loft.a1 : loft.a0
+    solids.push({ kind: 'band', a0: loft.a0, a1: loft.a1, loft, from: -0.5, y0: yL - loft.thick, y1: yL })
+    // The rail: a band at the loft's lip, all but the stair end's last half metre.
+    solids.push({ kind: 'band', a0: loft.a0, a1: loft.a1, loft, rail: 0.08, y0: yL, y1: yL + RAIL_STONE, open: { a: e, half: 0.55 / R } })
+    // The treads run down along the wall from the loft's stair end, each a block from the floor.
+    let a = e
+    for (let j = 0; j < n - 1; j++) {
+      const da = TREAD / (rOf(a) - STAIR_W / 2)
+      const lo = dir > 0 ? a : a - da, hi = dir > 0 ? a + da : a
+      const top = yL - (j + 1) * rise
+      stairs.push({ a0: lo, a1: hi, top, w: STAIR_W })
+      solids.push({ kind: 'band', a0: lo, a1: hi, from: -0.5, to: STAIR_W, y0: 0, y1: top })
+      a += dir * da
+    }
+    const s0 = Math.min(e, a), s1 = Math.max(e, a)
+    low.push({ a: (s0 + s1) / 2, half: (s1 - s0) / 2 + 0.1 })
+    high.push({ a: (s0 + s1) / 2, half: (s1 - s0) / 2 + 0.05 })
+    // The way up for a walker: the stairs' foot, each tread's middle, and a step onto the loft.
+    const foot = polar(a + dir * 0.25, STAIR_W / 2)
+    climb.push({ x: foot.x, z: foot.z })
+    for (let j = stairs.length - 1; j >= 0; j--) { const s = stairs[j], p = polar((s.a0 + s.a1) / 2, STAIR_W / 2); climb.push({ x: p.x, z: p.z }) }
+    const land = polar(e - dir * 0.35, 0.6)
+    climb.push({ x: land.x, z: land.z })
+    discs.push({ x: foot.x, z: foot.z, r: 0.4, level: 0 }, { x: land.x, z: land.z, r: 0.4, level: 1 })
+  }
+  const underLoft = (a, inset) => loft !== null && loftDepthAt(loft, a) > inset
+  const inLoft = (a) => loft !== null && wrap(a - loft.a0) <= loft.a1 - loft.a0
+
+  // --- the openings -------------------------------------------------------
+  const windows = []
+  const wantWin = 1 + Math.floor(rng() * 3)
+  for (let tries = 0; windows.length < wantWin && tries < 80; tries++) {
+    const onLoft = loft !== null && windows.length > 0 && rng() < 0.5
+    const r = onLoft ? range(0.2, 0.25) : range(0.22, 0.35)
+    const a = onLoft ? range(loft.a0 + 0.4, loft.a1 - 0.4) : tries < 20 && nooks.length > 0 ? pick(nooks).a + range(-0.1, 0.1) : range(-Math.PI, Math.PI)
+    let y = onLoft ? yL + range(0.5, 0.65) : range(1.05, 1.3)
+    // Under a loft a window sits low enough to clear its underside.
+    if (!onLoft && underLoft(a, 0)) y = Math.min(y, yL - loft.thick - 0.14 - r)
+    if (y - r < 0.55 || y + r > hW - 0.12) continue
+    if (!claim(onLoft ? [upHigh] : [high], a, r + 0.3)) continue
+    windows.push({ a, y, r, depth: 0.25, level: onLoft ? 1 : 0 })
+  }
+  if (!windows.some((w) => w.level === 0)) throw new Error(`rollInterior: house ${index} has no window on its floor`)
+
+  // --- floor placement ----------------------------------------------------
+  // Whether a disc is free of the placed discs and the stairs, and (unless it stands against the wall) of the wall.
+  const open = (x, z, r, level = 0, onWall = false) => {
+    const a = Math.atan2(z, x), rho = Math.hypot(x, z)
+    if (!onWall && rho + r > rOf(a) - FILLET - 0.02) return false
+    if (level === 0 && stairs.length > 0) {
+      for (const s of stairs) {
+        const mid = (s.a0 + s.a1) / 2, halfA = (s.a1 - s.a0) / 2 + r / rOf(mid)
+        if (Math.abs(angDiff(a, mid)) < halfA && rho + r > rOf(a) - s.w - 0.05) return false
+      }
+    }
+    if (level === 1 && rho - r < rOf(a) - loftDepthAt(loft, a) + 0.1) return false
+    return discs.every((d) => d.level !== level || Math.hypot(d.x - x, d.z - z) > d.r + r)
+  }
+  const take = (x, z, r, level = 0) => discs.push({ x, z, r, level })
+  const hue = (h, s, l) => ({ h, s, l })
+
+  const tints = {
+    wall: pick([hue(0.075, 0.45, 0.55), hue(0.06, 0.5, 0.48), hue(0.09, 0.35, 0.6), hue(0.11, 0.3, 0.5)]),
+    wood: pick([hue(0.08, 0.4, 0.42), hue(0.1, 0.35, 0.5), hue(0.065, 0.45, 0.38)]),
+    table: pick([hue(0.07, 0.25, 0.66), hue(0.05, 0.3, 0.5), hue(0.12, 0.25, 0.6), hue(0.09, 0.15, 0.45)]),
+    cloth: pick([hue(0.3, 0.35, 0.5), hue(0.03, 0.5, 0.5), hue(0.12, 0.55, 0.55), hue(0.58, 0.25, 0.55), hue(0.85, 0.2, 0.55)]),
+    cloth2: pick([hue(0.1, 0.3, 0.7), hue(0.25, 0.3, 0.6), hue(0.0, 0.35, 0.6)]),
+  }
+  room.tints = tints
+
+  // The table, with the walk about it clear of the wall, the loft's shadow, the stairs and the door.
+  const tr = range(0.45, 0.6)
+  const ringR = tr + RING_M
+  let table = null
+  for (let tries = 0; tries < 200 && table === null; tries++) {
+    const d = range(0, R * 0.45), b = range(-Math.PI, Math.PI)
+    const x = Math.cos(b) * d, z = Math.sin(b) * d
+    let ok = open(x, z, ringR)
+    for (let k = 0; k < 16 && ok; k++) {
+      const q = (k / 16) * TAU, px = x + Math.cos(q) * ringR, pz = z + Math.sin(q) * ringR, pa = Math.atan2(pz, px)
+      if (underLoft(pa, rOf(pa) - Math.hypot(px, pz) - 0.1)) ok = false
+    }
+    if (ok) table = { x, z }
+  }
+  if (table === null) throw new Error(`rollInterior: no floor for the table in house ${index}`)
+  take(table.x, table.z, ringR)
+  room.ring = { x: table.x, z: table.z, r: ringR }
+  const legs = rng() < 0.5 ? 3 : 4
+  items.push({ kind: 'table', x: table.x, z: table.z, r: tr, top: TABLE_TOP, legs, spin: range(0, TAU) })
+  solids.push({ kind: 'cyl', x: table.x, z: table.z, r: tr, y0: 0, y1: TABLE_TOP })
+
+  const chairs = 2 + Math.floor(rng() * 3)
+  const c0 = range(0, TAU)
+  for (let k = 0; k < chairs; k++) {
+    const q = c0 + (k / chairs) * TAU + range(-0.2, 0.2)
+    const sr = range(0.16, 0.2), cd = tr + 0.2
+    const x = table.x + Math.cos(q) * cd, z = table.z + Math.sin(q) * cd
+    const yaw = Math.atan2(-Math.cos(q), -Math.sin(q))
+    const back = rng() < 0.75 ? range(0.42, 0.58) : 0
+    items.push({ kind: 'chair', x, z, yaw, r: sr, top: SEAT, back, style: Math.floor(rng() * 3) })
+    solids.push({ kind: 'cyl', x, z, r: sr, y0: 0, y1: SEAT })
+    if (back > 0) {
+      const bx = x + Math.cos(q) * (sr - 0.03), bz = z + Math.sin(q) * (sr - 0.03)
+      solids.push({ kind: 'box', x: bx, z: bz, yaw, hx: sr * 0.9, hz: 0.04, y0: 0, y1: back })
+    }
+    spots.push({ kind: 'seat', x, z, top: SEAT, r: sr, lookX: -Math.cos(q), lookZ: -Math.sin(q), level: 0 })
+    // A place set before it: a plate, and sometimes a cup.
+    const pd = tr - 0.14
+    items.push({ kind: 'plate', x: table.x + Math.cos(q) * pd, z: table.z + Math.sin(q) * pd, y: TABLE_TOP, food: rng() < 0.5 ? pick(['berries', 'bread', 'acorns']) : null })
+    if (rng() < 0.7) items.push({ kind: 'cup', x: table.x + Math.cos(q + 0.35) * pd, z: table.z + Math.sin(q + 0.35) * pd, y: TABLE_TOP })
+  }
+  // The table's middle: flowers or a bowl, and one to three candles.
+  const midA = range(0, TAU)
+  items.push(rng() < 0.65 ? { kind: 'vase', x: table.x, z: table.z, y: TABLE_TOP, flowers: 3 + Math.floor(rng() * 4), hue: range(0, 1) } : { kind: 'bowl', x: table.x, z: table.z, y: TABLE_TOP, food: pick(['berries', 'acorns', 'apples']) })
+  const tableCandles = 1 + Math.floor(rng() * 3)
+  for (let k = 0; k < tableCandles; k++) {
+    const q = midA + (k / tableCandles) * TAU, d = tr * 0.45
+    const x = table.x + Math.cos(q) * d, z = table.z + Math.sin(q) * d, h = range(0.07, 0.14)
+    items.push({ kind: 'candle', x, z, y: TABLE_TOP, h })
+    candles.push({ x, y: TABLE_TOP + h + 0.035, z, i: 0.8 })
+  }
+
+  // Something against the wall at bearing `a`, `halfM` either side, `depthM` deep: its middle, and its claim, or null.
+  const wallSpot = (a, halfM, depthM, lists = [low]) => {
+    const inset = depthM / 2 + 0.03
+    const p = polar(a, FILLET + inset), level = lists.includes(up) ? 1 : 0
+    const r = Math.min(halfM, depthM / 2 + 0.02), steps = Math.ceil(halfM / r)
+    for (let k = -steps; k <= steps; k++) {
+      const q = polar(a + (k / steps) * (halfM - r) / rOf(a), FILLET + inset)
+      if (!open(q.x, q.z, r, level, true)) return null
+    }
+    if (!claim(lists, a, halfM)) return null
+    return { a, x: p.x, z: p.z, yaw: inward(a) }
+  }
+  const tryWall = (halfM, depthM, lists, pref = () => range(-Math.PI, Math.PI), tries = 60) => {
+    for (let t = 0; t < tries; t++) {
+      const s = wallSpot(pref(t), halfM, depthM, lists)
+      if (s) return s
+    }
+    return null
+  }
+
+  // --- the kitchen: under the loft where there is one, else in a nook ------
+  const kHalf = range(0.55, 0.75), kDepth = 0.42
+  const kitchen = tryWall(kHalf, kDepth, [low, high], (t) => (loft && t < 30 ? range(loft.a0 + 0.5, loft.a1 - 0.5) : t < 40 && nooks.length > 0 ? pick(nooks).a + range(-0.15, 0.15) : range(-Math.PI, Math.PI)))
+  if (kitchen === null) throw new Error(`rollInterior: no wall for the kitchen in house ${index}`)
+  {
+    const r = rOf(kitchen.a), half = kHalf / r
+    const top = 0.5
+    items.push({ kind: 'counter', a0: kitchen.a - half, a1: kitchen.a + half, depth: kDepth, top })
+    solids.push({ kind: 'band', a0: kitchen.a - half, a1: kitchen.a + half, from: -0.5, to: FILLET + kDepth, y0: 0, y1: top })
+    // Along its top, from one end: the basin, then jars, a loaf, a cheese.
+    const along = (t) => polar(kitchen.a + (t - 0.5) * 2 * half * 0.85, FILLET + kDepth / 2, top)
+    const b = along(0.12)
+    items.push({ kind: 'basin', x: b.x, z: b.z, y: top, r: 0.15 })
+    const goods = ['jar', 'jar', 'loaf', 'cheese', 'jar', 'crock'].sort(() => rng() - 0.5).slice(0, 3 + Math.floor(rng() * 2))
+    goods.forEach((g, k) => {
+      const p = along(0.35 + (k / goods.length) * 0.62)
+      items.push({ kind: g, x: p.x, z: p.z, y: top, h: range(0.1, 0.18), hue: range(0, 1), yaw: range(0, TAU) })
+    })
+    // Herbs on a pole above it, or from the loft's underside.
+    const hy = loft && underLoft(kitchen.a, 0.3) ? yL - loft.thick - 0.06 : Math.min(1.45, hW - 0.25)
+    items.push({ kind: 'herbs', a0: kitchen.a - half * 0.8, a1: kitchen.a + half * 0.8, y: hy, inset: FILLET + 0.18, n: 3 + Math.floor(rng() * 3) })
+    // Stores beside it on the floor: sacks and a barrel.
+    const side = rng() < 0.5 ? 1 : -1
+    for (const [kind, r] of [['sack', 0.17], ['barrel', 0.2], ['sack', 0.15]]) {
+      if (rng() < 0.25) continue
+      for (let t = 0; t < 8; t++) {
+        const a = kitchen.a + side * (half + (0.25 + t * 0.12) / r / 3)
+        const p = polar(a, FILLET + r + 0.04)
+        if (!open(p.x, p.z, r)) continue
+        take(p.x, p.z, r)
+        items.push({ kind, x: p.x, z: p.z, r, h: kind === 'barrel' ? 0.48 : range(0.28, 0.36), hue: range(0, 1), yaw: range(0, TAU) })
+        solids.push({ kind: 'cyl', x: p.x, z: p.z, r, y0: 0, y1: kind === 'barrel' ? 0.48 : 0.3 })
+        break
+      }
+    }
+    const stand = polar(kitchen.a, FILLET + kDepth + 0.3)
+    spots.push({ kind: 'cook', x: stand.x, z: stand.z, lookX: Math.cos(kitchen.a), lookZ: Math.sin(kitchen.a), level: 0 })
+  }
+
+  // --- the reading corner, by a window on the floor ---------------------
+  const readWin = windows.find((w) => w.level === 0)
+  {
+    let chair = null
+    for (let t = 0; t < 12 && chair === null; t++) {
+      const side = t % 2 ? -1 : 1
+      const a = readWin.a + side * (readWin.r + 0.3 + (t >> 1) * 0.1) / rOf(readWin.a)
+      chair = wallSpot(a, 0.34, 0.6, [low])
+      if (chair) chair.side = side
+    }
+    if (chair) {
+      // Turned half toward the window, so the page takes its light.
+      const yaw = chair.yaw - chair.side * 0.5
+      items.push({ kind: 'armchair', x: chair.x, z: chair.z, yaw, top: 0.2, r: 0.3 })
+      solids.push({ kind: 'cyl', x: chair.x, z: chair.z, r: 0.28, y0: 0, y1: 0.2 })
+      const bx = chair.x - Math.sin(yaw) * 0.22, bz = chair.z - Math.cos(yaw) * 0.22
+      solids.push({ kind: 'box', x: bx, z: bz, yaw, hx: 0.3, hz: 0.08, y0: 0, y1: 0.55 })
+      take(chair.x, chair.z, 0.34)
+      spots.push({ kind: 'read', x: chair.x, z: chair.z, top: 0.2, r: 0.26, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), level: 0 })
+      const st = polar(chair.a - chair.side * 0.5 / rOf(chair.a), FILLET + 0.22)
+      if (open(st.x, st.z, 0.16)) {
+        take(st.x, st.z, 0.16)
+        items.push({ kind: 'sidetable', x: st.x, z: st.z, r: 0.15, top: 0.32 })
+        items.push({ kind: 'books', x: st.x, z: st.z, y: 0.32, n: 2 + Math.floor(rng() * 3), yaw: range(0, TAU) })
+        solids.push({ kind: 'cyl', x: st.x, z: st.z, r: 0.15, y0: 0, y1: 0.32 })
+        if (rng() < 0.6) {
+          const cx = st.x + 0.06, cz = st.z - 0.05, h = range(0.06, 0.1)
+          items.push({ kind: 'candle', x: cx, z: cz, y: 0.32, h })
+          candles.push({ x: cx, y: 0.32 + h + 0.035, z: cz, i: 0.6 })
+        }
+      }
+      const rugAt = { x: chair.x - Math.cos(chair.a) * 0.55, z: chair.z - Math.sin(chair.a) * 0.55 }
+      items.push({ kind: 'rug', x: rugAt.x, z: rugAt.z, r: range(0.5, 0.65), hue: range(0, 1) })
+    }
+    const g = polar(readWin.a, FILLET + 0.55)
+    if (open(g.x, g.z, 0.2)) spots.push({ kind: 'gaze', x: g.x, z: g.z, lookX: Math.cos(readWin.a), lookZ: Math.sin(readWin.a), level: 0 })
+  }
+
+  // --- the bed: in the loft, else the deepest free nook ----------------------
+  const bedLen = range(1.2, 1.4), bedWid = range(0.65, 0.8)
+  const onLoft = loft !== null
+  let bedUp = onLoft
+  let bed = onLoft
+    ? tryWall(bedLen / 2 + 0.05, bedWid, [up], () => {
+      // Clear of the loft's tapered end, so the bed's corners stay on the boards.
+      const far = loft.taper + (bedLen / 2) / R, span = loft.a1 - loft.a0
+      const t = range(Math.min(far, span / 2), Math.max(span / 2, span - bedLen / 2 / R - 0.2))
+      return loft.dir > 0 ? loft.a0 + t : loft.a1 - t
+    })
+    : null
+  if (bed === null) {
+    bedUp = false
+    bed = tryWall(bedLen / 2 + 0.05, bedWid, [low], (t) => (t < 30 && nooks.length > 0 ? [...nooks].sort((p, q) => q.d - p.d)[t % nooks.length].a + range(-0.1, 0.1) : range(-Math.PI, Math.PI)))
+  }
+  if (bed) {
+    const y = bedUp ? yL : 0
+    const p = polar(bed.a, FILLET + bedWid / 2 + 0.03)
+    // Long along the wall; its head, pillow and plushies at its +Z end.
+    const along = bed.yaw + Math.PI / 2, c = Math.cos(along), s = Math.sin(along)
+    const top = y + 0.2
+    items.push({ kind: 'bed', x: p.x, z: p.z, y, yaw: along, len: bedLen, wid: bedWid, top: 0.2 })
+    solids.push({ kind: 'box', x: p.x, z: p.z, yaw: along, hx: bedWid / 2, hz: bedLen / 2, y0: y, y1: top })
+    discs.push({ x: p.x, z: p.z, r: bedLen / 2, level: bedUp ? 1 : 0 })
+    const plush = 1 + Math.floor(rng() * 3)
+    for (let k = 0; k < plush; k++) {
+      const u = range(-0.05, 0.22) * bedLen, v = range(-0.3, 0.3) * bedWid
+      items.push({ kind: 'plush', x: p.x + u * s + v * c, z: p.z + u * c - v * s, y: top + 0.04, yaw: range(0, TAU), size: range(0.1, 0.15), hue: range(0, 1), shape: Math.floor(rng() * 3) })
+    }
+    spots.push({ kind: 'bed', x: p.x, z: p.z, top, yaw: along, len: bedLen, wid: bedWid, lookX: s, lookZ: c, level: bedUp ? 1 : 0 })
+  }
+
+  // --- the bookcase: beside the bed in the loft, else on a free wall ---------
+  {
+    const w = range(0.3, 0.42), h = onLoft ? range(0.8, 0.95) : range(1.05, 1.3)
+    const bc = onLoft
+      ? tryWall(w, 0.26, [up, upHigh], () => range(loft.a0 + 0.2, loft.a1 - 0.2))
+      : tryWall(w, 0.26, [low, high])
+    if (bc) {
+      const y = onLoft ? yL : 0
+      items.push({ kind: 'bookcase', x: bc.x, z: bc.z, y, yaw: bc.yaw, w: w * 2, h, d: 0.26, shelves: onLoft ? 2 : 3, seed: Math.floor(rng() * 1e6) })
+      solids.push({ kind: 'box', x: bc.x, z: bc.z, yaw: bc.yaw, hx: w, hz: 0.13, y0: y, y1: y + h })
+      if (!onLoft) take(bc.x, bc.z, w)
+    }
+  }
+
+  // --- a divider: across a bed nook, or out from a free wall ----------------
+  if (rng() < (loft ? 0.35 : 0.7)) {
+    const kind = pick(['lattice', 'sticks', 'curtain'])
+    const len = range(0.8, 1.1)
+    for (let t = 0; t < 40; t++) {
+      const a = bed && !onLoft && t < 20 ? bed.a + (t % 2 ? 1 : -1) * (bedLen / 2 + 0.2 + 0.03 * t) / rOf(bed.a) : range(-Math.PI, Math.PI)
+      if (Math.abs(angDiff(a, Math.PI)) < 0.8 || underLoft(a, 0) || !free(low, a, 0.12 / rOf(a))) continue
+      const p0 = polar(a, FILLET - 0.02), p1 = polar(a, FILLET + len)
+      let ok = true
+      for (let s = 0.15; s <= 1 && ok; s += 0.15) ok = open(p0.x + (p1.x - p0.x) * s, p0.z + (p1.z - p0.z) * s, 0.08)
+      if (!ok) continue
+      low.push({ a, half: 0.12 / rOf(a) })
+      const mx = (p0.x + p1.x) / 2, mz = (p0.z + p1.z) / 2, yaw = Math.atan2(-(p1.z - p0.z), p1.x - p0.x)
+      for (let s = 0.2; s <= 1; s += 0.2) take(p0.x + (p1.x - p0.x) * s, p0.z + (p1.z - p0.z) * s, 0.1)
+      items.push({ kind: 'divider', style: kind, x0: p0.x, z0: p0.z, x1: p1.x, z1: p1.z, h: range(1.15, 1.35), hue: range(0, 1) })
+      solids.push({ kind: 'box', x: mx, z: mz, yaw, hx: len / 2 + 0.02, hz: 0.05, y0: 0, y1: 1.3 })
+      break
+    }
+  }
+
+  // --- decorations and chores -----------------------------------------------
+  const floorThing = (kind, r, extra) => {
+    const s = tryWall(r, r * 2, [low], undefined, 30)
+    if (!s) return false
+    take(s.x, s.z, r)
+    items.push({ kind, x: s.x, z: s.z, yaw: s.yaw + range(-0.6, 0.6), r, ...extra })
+    if (kind !== 'broom') solids.push({ kind: 'cyl', x: s.x, z: s.z, r: r * 0.9, y0: 0, y1: extra.h })
+    return true
+  }
+  if (rng() < 0.65) floorThing('mushpot', 0.14, { h: 0.3, hue: range(0, 1) })
+  const chores = [['broom', 0.1, { h: 0.95 }], ['bucket', 0.14, { h: 0.22 }], ['basket', 0.16, { h: 0.16, hue: range(0, 1) }]].sort(() => rng() - 0.5)
+  const choreCount = 1 + Math.floor(rng() * 3)
+  for (let k = 0; k < choreCount; k++) floorThing(...chores[k])
+  if (rng() < 0.6) items.push({ kind: 'mobile', y: H - 0.35, x: table.x * 0.3, z: table.z * 0.3, n: 5 + Math.floor(rng() * 4), hue: range(0, 1) })
+  if (rng() < 0.7) {
+    const span = range(0.35, 0.6)
+    for (let t = 0; t < 30; t++) {
+      const a = range(-Math.PI, Math.PI)
+      const y = (loft && inLoft(a) ? hW : Math.min(hW, loft ? yL - loft.thick : hW)) - 0.18
+      if (!free(high, a, span) || (loft && inLoft(a))) continue
+      high.push({ a, half: span })
+      items.push({ kind: 'garland', a0: a - span, a1: a + span, y, sag: range(0.12, 0.22), n: 7 + Math.floor(rng() * 5) })
+      break
+    }
+  }
+
+  // --- sconces --------------------------------------------------------------
+  const wantSconce = 2 + Math.floor(rng() * 3)
+  let sconces = 0
+  for (let t = 0; t < 60 && sconces < wantSconce; t++) {
+    const lofted = loft !== null && sconces === 0
+    const a = lofted ? range(loft.a0 + 0.3, loft.a1 - 0.3) : range(-Math.PI, Math.PI)
+    const y = lofted ? yL + range(0.75, 0.9) : range(1.1, 1.3)
+    if (!lofted && underLoft(a, 0)) continue
+    if (!claim(lofted ? [upHigh] : [high], a, 0.25)) continue
+    const p = polar(a, FILLET * 0.3 + 0.1, y)
+    items.push({ kind: 'sconce', a, y, x: p.x, z: p.z })
+    candles.push({ x: p.x, y: y + 0.13, z: p.z, i: 0.9 })
+    sconces++
+  }
+
+  // --- the residents' other places ------------------------------------------
+  // A pair talking on the walk round the table, and the walk itself to wander.
+  const ringPts = Array.from({ length: 12 }, (_, k) => {
+    const q = (k / 12) * TAU
+    return { x: table.x + Math.cos(q) * ringR, z: table.z + Math.sin(q) * ringR }
+  })
+  room.ringPts = ringPts
+  const tq = range(0, TAU)
+  const t0 = { x: table.x + Math.cos(tq) * ringR, z: table.z + Math.sin(tq) * ringR }
+  const tq1 = tq + 0.9 / ringR
+  const t1 = { x: table.x + Math.cos(tq1) * ringR, z: table.z + Math.sin(tq1) * ringR }
+  spots.push({ kind: 'talk', x: t0.x, z: t0.z, lookX: t1.x - t0.x, lookZ: t1.z - t0.z, level: 0, pair: spots.length + 1 })
+  spots.push({ kind: 'talk', x: t1.x, z: t1.z, lookX: t0.x - t1.x, lookZ: t0.z - t1.z, level: 0, pair: spots.length - 1 })
+
+  Object.assign(room, { door, windows, stairs, climb, doorIn, items, solids, candles, spots })
+  return room
+}
+
+/**
+ * The room as stone to the walker (walk.js addStone's contract), set down with its floor's centre at (ox, oy, oz): the wall from its foot out, the ceiling over every point, and every solid. `blockTopAt` is the top of the stone stacked up from the floor, so a teleport lands under a loft, not on it. A deck everywhere inside, so a landing by the wall is not read as a slope.
+ */
+export class InteriorStone {
+  constructor(room, ox, oy, oz) {
+    this.room = room
+    this.ox = ox
+    this.oy = oy
+    this.oz = oz
+    this.spans = new Float64Array(64)
+  }
+
+  /** Local (lx, lz)'s spans into this.spans as local [bottom, top] pairs, sorted and merged; -1 inside the wall. */
+  _local(lx, lz) {
+    const room = this.room, sp = this.spans
+    const rho = Math.hypot(lx, lz), a = Math.atan2(lz, lx), r = rAt(room.rs, a)
+    if (rho >= r - FILLET) return -1
+    let n = 0
+    sp[n++] = ceilingAt(room, rho, r); sp[n++] = 1e3
+    for (const s of room.solids) {
+      if (n >= sp.length) break
+      if (!inside(s, lx, lz, rho, a, room)) continue
+      sp[n++] = s.y0; sp[n++] = s.y1
+    }
+    // Insertion sort by bottom, then merge the overlaps.
+    const k = n / 2
+    for (let i = 1; i < k; i++) {
+      const b = sp[i * 2], t = sp[i * 2 + 1]
+      let j = i - 1
+      while (j >= 0 && sp[j * 2] > b) { sp[(j + 1) * 2] = sp[j * 2]; sp[(j + 1) * 2 + 1] = sp[j * 2 + 1]; j-- }
+      sp[(j + 1) * 2] = b; sp[(j + 1) * 2 + 1] = t
+    }
+    let m = 0
+    for (let i = 0; i < k; i++) {
+      const b = sp[i * 2], t = sp[i * 2 + 1]
+      if (m > 0 && b <= sp[m * 2 - 1]) sp[m * 2 - 1] = Math.max(sp[m * 2 - 1], t)
+      else { sp[m * 2] = b; sp[m * 2 + 1] = t; m++ }
+    }
+    return m
+  }
+
+  columnAt(x, z, minSize, out) {
+    const m = this._local(x - this.ox, z - this.oz)
+    if (m < 0) { out[0] = this.oy - 10; out[1] = this.oy + 1e3; return 1 }
+    const n = Math.min(m, out.length / 2)
+    for (let i = 0; i < n * 2; i++) out[i] = this.spans[i] + this.oy
+    return n
+  }
+
+  blockTopAt(x, z) {
+    const m = this._local(x - this.ox, z - this.oz)
+    if (m < 0) return this.oy + 1e3
+    let y = 0
+    for (let i = 0; i < m; i++) if (this.spans[i * 2] <= y + 0.02) y = Math.max(y, this.spans[i * 2 + 1])
+    return this.oy + y
+  }
+
+  deckAt(x, z) {
+    const lx = x - this.ox, lz = z - this.oz
+    return Math.hypot(lx, lz) < rAt(this.room.rs, Math.atan2(lz, lx)) - FILLET
+  }
+}
+
+function inside(s, lx, lz, rho, a, room) {
+  if (s.kind === 'cyl') return Math.hypot(lx - s.x, lz - s.z) <= s.r
+  if (s.kind === 'box') {
+    const dx = lx - s.x, dz = lz - s.z, c = Math.cos(s.yaw), sn = Math.sin(s.yaw)
+    // The box's own axes: +X along (cos yaw, -sin yaw), +Z along (sin yaw, cos yaw).
+    return Math.abs(dx * c - dz * sn) <= s.hx && Math.abs(dx * sn + dz * c) <= s.hz
+  }
+  // A band: bearings a0..a1, from `from` to `to` in off the wall; a loft's reach is its depth there, a rail its lip.
+  const t = wrap(a - s.a0)
+  if (t > s.a1 - s.a0) return false
+  if (s.open && Math.abs(angDiff(a, s.open.a)) < s.open.half) return false
+  const inset = rAt(room.rs, a) - rho
+  if (s.loft) {
+    const d = loftDepthAt(s.loft, a)
+    if (d < 0.05) return false
+    return s.rail ? inset <= d && inset >= d - s.rail : inset <= d
+  }
+  return inset >= s.from && inset <= s.to
+}
+
+/** The flat field under a room: the floor's height everywhere. */
+export const flatField = (y) => ({ heightAt: () => y })

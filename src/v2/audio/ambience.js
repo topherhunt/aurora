@@ -80,6 +80,8 @@ export const SOUNDS = {
   panting: 'sounds/npc-leafkin-panting.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
+  frogBoing: 'sounds/animal-frog-boing.mp3',
+  splash: 'sounds/water-splash-small.mp3',
   rockslide1: 'sounds/rockslide1.mp3',
   rockslide2: 'sounds/rockslide2.mp3',
   underwater: 'sounds/underwater-1.mp3',
@@ -167,6 +169,10 @@ export const RULES = {
   door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
+  // A frog's hop (frogs.js voices()), heard only within arm's reach or so and quietly: the clip is mastered 8 dB hotter than the chatter.
+  frogHop: { reach: 3, near: 1, edge: 1.5, level: 0.15, gain: [0.7, 1.0] },
+  // Something landing in the water from the air: a frog hopping in off the bank (frogs.js voices()) or a fish falling back from its leap (fish-leap.js voices()). A drop from her hand is main.js's own, off hands.js splash.
+  splash: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.7, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.
   chirp: { reach: 8, near: 1, level: 0.5, every: 60, gain: [0.5, 1.0] },
   // The dragons, every sound at its body's distance through the engine's far treatment. Its wings, while it flies within `reach`: one beat a cycle of its fly clip, within `jitter` of a cycle of the beat, at `level` up to `near` metres off and falling as near/distance past it, the clip slowed to `rate` so a beat is deep, not a pigeon's.

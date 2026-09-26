@@ -1,0 +1,24 @@
+{
+  "note": "The same tripod at a scurry: a shorter cycle, duty under a half so each tripod is briefly all in the air, a longer reach and a lower body. The ripple compresses at speed. The head is held steadier than in the walk -- it points where it is going.",
+  "duration": 0.45,
+  "samples": 24,
+  "stride": 0.16,
+  "stepHeight": 0.26,
+  "duty": 0.46,
+  "crouch": 0.05,
+  "toeOff": 0,
+  "phases": {
+    "leg1Left": 0,
+    "leg2Right": 0.02,
+    "leg3Left": 0.04,
+    "leg1Right": 0.5,
+    "leg2Left": 0.52,
+    "leg3Right": 0.54
+  },
+  "bodyBob": 0.02,
+  "bobFreq": 2,
+  "bodySway": 0.014,
+  "spineYaw": 0.04,
+  "headPitch": 0.06,
+  "headBob": 0.02
+}

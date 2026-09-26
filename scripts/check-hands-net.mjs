@@ -84,7 +84,7 @@ class StubAvatars {
 const build = () => {
   const taken = new Taken()
   const scene = new THREE.Scene()
-  const hands = new Hands(scene, { walk, water, haptic() {}, stow: () => true, thud() {}, rand: mulberry32(3) })
+  const hands = new Hands(scene, { walk, water, haptic() {}, stow: () => true, thud() {}, splash() {}, rand: mulberry32(3) })
   const src = new Source([{ x: 0, y: 0, z: 0, size: 0.2 }, { x: 3, y: 0, z: 0, size: 0.2 }, { x: 6, y: 0, z: 0, size: 0.2 }], taken)
   hands.addSource(src, 'mushroom')
   const node = new THREE.Group()

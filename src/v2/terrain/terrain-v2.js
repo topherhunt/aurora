@@ -143,8 +143,9 @@ export class TerrainV2 {
    * @param queueDepth    requests in flight per worker; see WORKER_QUEUE_DEPTH.
    * @param axis          compile the reduced ground shader; see the LEAN and AXIS blocks in terrain-material.js.
    * @param ground        {size, world, classes: Uint8Array, palette: Float32Array} for layers/ground.js, or null: the biome class grid the mesher tints the ground from. Copied to every worker like the heightmap.
+   * @param fine          {seed, cell} for a v3 island, or null: the rungs of the jitter ladder its image was too coarse to bake, which the worker rebuilds as the field's detail term. Travels for the reason `relief` does -- see the note by `this.relief`.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null, fine = null } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     // Validated here so a wrong grid throws on the main thread at boot rather than inside a worker.
     if (ground !== null) new GroundTint(ground)
@@ -181,6 +182,9 @@ export class TerrainV2 {
     // Normalizing before the postMessage means a misspelled knob throws once,
     // here, at construction -- not N times inside N workers, or on only some.
     this.relief = normalizeRelief(relief)
+    // Same footing, same reason: the fine rungs are part of the surface, so the mesher and the collision have to agree on them or she walks a metre off the ground she can see.
+    if (fine !== null && !(Number.isFinite(fine.seed) && fine.cell > 0)) throw new Error(`TerrainV2: fine must be null or { seed, cell }, got ${JSON.stringify(fine)}`)
+    this.fine = fine
 
     const budget = slotBudget(workers, queueDepth)
     this._inFlightCap = budget.inFlightCap
@@ -393,7 +397,7 @@ export class TerrainV2 {
       const copy = data.slice()
       const groundCopy = ground ? { ...ground, classes: ground.classes.slice(), palette: ground.palette.slice() } : null
       w.postMessage(
-        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, epoch: this.epoch, ground: groundCopy },
+        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, fine: this.fine, epoch: this.epoch, ground: groundCopy },
         groundCopy ? [copy.buffer, groundCopy.classes.buffer, groundCopy.palette.buffer] : [copy.buffer]
       )
       this.workers.push(w)

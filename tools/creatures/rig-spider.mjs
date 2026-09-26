@@ -67,7 +67,7 @@ const mean = (pts) => [0, 1, 2].map((k) => pts.reduce((s, p) => s + p[k], 0) / p
  * thing lifted so the lowest vertex is the ground. The rig is written with the
  * mesh node at identity, so the vertices themselves carry this transform.
  */
-function loadMesh(file) {
+export function loadMesh(file) {
   const { json, bin } = readGlb(file)
   if (json.meshes.length !== 1 || json.meshes[0].primitives.length !== 1) throw new Error(`${file}: expected one mesh with one primitive`)
   const meshNode = json.nodes.find((n) => n.mesh !== undefined)
@@ -98,7 +98,7 @@ function loadMesh(file) {
  * Vertex adjacency over WELDED positions. A UV seam splits a vertex in two, and
  * a leg traced over unwelded vertices stops dead at its first seam.
  */
-function adjacency(V, I) {
+export function adjacency(V, I) {
   const rep = []
   const seen = new Map()
   V.forEach((p, i) => {
@@ -270,7 +270,7 @@ const WEIGHT_FLOOR = 0.01
  * Per-vertex joint indices and weights. `groupOf(v)` says which segment a vertex
  * is in; only that segment's bones may claim it.
  */
-function skinWeights(V, joints, groupOf) {
+export function skinWeights(V, joints, groupOf) {
   const bones = joints.map((j, i) => ({ i, j })).filter(({ j }) => j.boneTo)
   const J = new Uint8Array(V.length * 4)
   const Wt = new Float32Array(V.length * 4)
@@ -293,7 +293,7 @@ function skinWeights(V, joints, groupOf) {
  * world frame, skin attributes added, and the joint nodes appended. The mesh's
  * material, textures and images ride through untouched.
  */
-function writeRig(out, mesh, joints, skin) {
+export function writeRig(out, mesh, joints, skin, id = ID) {
   const { json, bin, prim, V, N } = mesh
   const parts = [bin]
   let at = bin.length
@@ -323,7 +323,7 @@ function writeRig(out, mesh, joints, skin) {
   // translations, so a joint's world position is exactly its `at`.
   const meshNode = json.nodes[0]
   delete meshNode.matrix
-  meshNode.name = ID
+  meshNode.name = id
   meshNode.skin = 0
   const index = new Map(joints.map((j, i) => [j.name, i + 1]))
   json.nodes = [meshNode, ...joints.map((j) => {
@@ -338,7 +338,7 @@ function writeRig(out, mesh, joints, skin) {
 
   const ibm = joints.flatMap((j) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -j.at[0], -j.at[1], -j.at[2], 1])
   json.skins = [{
-    name: `${ID}-skeleton`,
+    name: `${id}-skeleton`,
     joints: joints.map((j) => index.get(j.name)),
     inverseBindMatrices: accessor(f32(ibm), 5126, joints.length, 'MAT4'),
     skeleton: index.get(root.name),

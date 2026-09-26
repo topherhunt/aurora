@@ -1,0 +1,13 @@
+{
+  "kind": "pose",
+  "note": "Rooting in leaf litter. The body settles a little and tips forward, the head pitches nose-down (positive) until the snout is at the ground, then works it: two nudges down and forward, swinging the snout to one side and then the other. All six feet stay planted. The last key repeats the first so the clip cycles.",
+  "samples": 48,
+  "keys": [
+    { "t": 0, "pose": { "root": { "lift": -0.08, "fore": 0.01 }, "spine": { "pitch": 0.05 }, "head": { "pitch": 0.44, "yaw": 0 } } },
+    { "t": 0.35, "pose": { "root": { "lift": -0.09, "fore": 0.02 }, "spine": { "pitch": 0.07 }, "head": { "pitch": 0.54, "yaw": 0.14 } } },
+    { "t": 0.7, "pose": { "root": { "lift": -0.08, "fore": 0.01 }, "spine": { "pitch": 0.05 }, "head": { "pitch": 0.4, "yaw": 0.05 } } },
+    { "t": 1.05, "pose": { "root": { "lift": -0.09, "fore": 0.02 }, "spine": { "pitch": 0.07 }, "head": { "pitch": 0.54, "yaw": -0.14 } } },
+    { "t": 1.4, "pose": { "root": { "lift": -0.08, "fore": 0.01 }, "spine": { "pitch": 0.05 }, "head": { "pitch": 0.4, "yaw": -0.05 } } },
+    { "t": 1.8, "pose": { "root": { "lift": -0.08, "fore": 0.01 }, "spine": { "pitch": 0.05 }, "head": { "pitch": 0.44, "yaw": 0 } } }
+  ]
+}

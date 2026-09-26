@@ -9,7 +9,9 @@
 // light flattened against the mesh (delight.mjs; preview it bare first). Absent means TEX_PX_MAX; a mushroom is a few
 // pixels tall in the world and is designated TEX_PX_SMALL. The cap and the
 // designation are the creature roster's, imported rather than copied, so one
-// number governs every generated asset.
+// number governs every generated asset. `cut` and `glass` name pieces of the
+// pick by a vertex-near point in its own frame, to drop or to paint their red
+// as dark glass (pieces.mjs); a new pick wants them measured again.
 //
 // Every mushroom is ONE specimen. Clusters and tufts are the placer's job:
 // scattering copies of a single mesh at random sizes and tilts gives a
@@ -299,10 +301,13 @@ export const PROPS = [
     id: 'flaregun',
     label: 'Flare Gun',
     category: 'other',
-    // Held in her hand (flaregun.js): the barrel runs along the hand's -Z, and
-    // the world draws the flare colour as a disc in the round window beside the
-    // button, so the window is modelled empty and flat-faced.
+    // Held in her hand (flaregun.js): the barrel runs along the hand's -Z. Pick
+    // 0 has the red button as a thumb-sized lump of its own, which is cut, and
+    // the brass collar it stood in has its red face glassed: the world draws
+    // the flare colour as a disc on that face (flaregun.js WINDOW).
     sizeM: 0.32,
+    cut: [[0, 0.25, 0.17]],
+    glass: [[-0.007, 0.237, 0.12]],
     aspectRatio: '4:3',
     description:
       'a medieval flare pistol with a mild steampunk touch, seen from the side, the barrel pointing right. A ' +

@@ -30,6 +30,7 @@ import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 import { setTierTint } from '../src/v2/render/critters.js'
+import { FishLeap, EVERY_S, RANGE_M, SHORE_M, RISE_M, RUN_M } from '../src/v2/render/fish-leap.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -710,6 +711,73 @@ const agree = (a, b) => {
   const ms = (performance.now() - t0) / FRAMES
   // Node, single-threaded, on whatever this machine is: a loose bound, there to catch a neighbour search that went quadratic, not to measure.
   check(ms < 1.5, 'a frame of the beds stays cheap', `${ms.toFixed(3)} ms for ${alive().length} fish`)
+}
+
+// --- leaping (fish-leap.js) -------------------------------------------------
+// A deeper bowl than the beds': 40 m at the middle, under MAX_DEPTH_M only past 30 m out, its shore at LAKE_R.
+{
+  const leapHeight = {
+    heightAt: (x, z) => leapHeight.heightAndSlopeAt(x, z).h,
+    heightAndSlopeAt(x, z) {
+      const r = Math.hypot(x, z) / LAKE_R
+      return { h: r < 1 ? LEVEL - 40 * (1 - r * r) : LEVEL + (r - 1), tan: 0, gx: 0, gz: 0 }
+    },
+  }
+  const leapWater = {
+    lakeLevelAt: (x, z) => (Math.hypot(x, z) < LAKE_R ? LEVEL : null),
+    lakeShoreDistAt: (x, z, reach) => Math.max(-reach, Math.min(reach, Math.hypot(x, z) - LAKE_R)),
+  }
+  let s = 7
+  const rand = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+  const leapScene = new THREE.Scene()
+  const fl = new FishLeap(leapScene, leapHeight, leapWater, fish, { rand })
+  check(fl.spot(0, 0) === null && fl.spot(45, 0) === LEVEL && fl.spot(0, LAKE_R - SHORE_M + 1) === null && fl.spot(LAKE_R + 5, 0) === null, 'a leap spot is open lake: not past MAX_DEPTH_M, not within SHORE_M of shore, not on land')
+
+  const head = { x: 40, y: LEVEL + 1.6, z: 0 }
+  const DT = 1 / 72
+  const SECONDS = 3000
+  const leaps = []
+  let splashes = 0
+  let L = null
+  let bad = ''
+  for (let i = 0; i < SECONDS / DT; i++) {
+    fl.update(DT, head, false)
+    for (const v of fl.voices([])) {
+      splashes++
+      if (L === null || v.sound !== 'splash' || v.y !== LEVEL || leapWater.lakeLevelAt(v.x, v.z) === null) bad ||= `splash ${JSON.stringify(v)}`
+      L = null
+    }
+    if (fl.leap !== null) {
+      const p = new THREE.Vector3()
+      const q = new THREE.Quaternion()
+      const m = new THREE.Matrix4()
+      fl.leap.mesh.getMatrixAt(0, m)
+      m.decompose(p, q, new THREE.Vector3())
+      const noseY = new THREE.Vector3(0, 0, -1).applyQuaternion(q).y
+      if (L !== fl.leap) {
+        L = fl.leap
+        leaps.push({ top: -Infinity, x0: p.x, z0: p.z, noseUp: noseY > 0.3, noseDown: false })
+      }
+      const rec = leaps[leaps.length - 1]
+      rec.top = Math.max(rec.top, p.y - LEVEL)
+      rec.noseDown = noseY < -0.3
+      rec.x1 = p.x
+      rec.z1 = p.z
+    }
+  }
+  const n = leaps.length
+  check(n > 10 && n < (2 * SECONDS) / EVERY_S, 'fish leap now and then, not constantly', `${n} leaps in ${SECONDS} s`)
+  check(leaps.every((r) => Math.hypot(r.x0 - head.x, r.z0 - head.z) <= RANGE_M && fl.spot(r.x0, r.z0) === LEVEL), 'every leap starts in open lake within RANGE_M of her')
+  check(leaps.every((r) => r.top >= RISE_M[0] - 0.05 && r.top <= RISE_M[1] + 1e-6), 'a leap tops out RISE_M over the surface', leaps.slice(0, 5).map((r) => r.top.toFixed(2)).join(', '))
+  check(leaps.every((r) => r.noseUp && r.noseDown), 'a leap rides its arc: nose up leaving the water, down coming back')
+  check(leaps.every((r) => Math.hypot(r.x1 - r.x0, r.z1 - r.z0) <= RUN_M[1] + 1e-6), 'a leap carries no further than RUN_M')
+  check(splashes === n - (fl.leap ? 1 : 0) && !bad, 'each leap ends in one splash on the lake where it came down', bad)
+
+  const before = fl.leaps
+  for (let i = 0; i < SECONDS / DT; i++) fl.update(DT, head, true)
+  check(fl.leaps === before, 'no leap starts while her head is under the water')
+  fl.dispose()
+  check(leapScene.children.length === 0, 'dispose removes the leap group from the scene')
 }
 
 twin.dispose()

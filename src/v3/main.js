@@ -24,8 +24,9 @@ import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { setPropClock } from '../material.js'
 import { Pines } from './pines.js'
 import { load, optionsFromUrl } from './store.js'
-import { MACRO, JITTER } from './island.js'
-import { STEPS } from './generate.js'
+import { MACRO, JITTER, TEXELS_PER_NODE } from './island.js'
+import { FineJitter } from './fine.js'
+import { STEPS, CELL } from './generate.js'
 import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,9 @@ import { BIOMES } from './biomes.js'
 //
 // The v2 engine drawing a field that came out of a worker instead of a PNG: the boot is /gen-grass's without the bed, so the only thing being judged is the ground. Anything the 2D map cannot show -- the read of a slope at eye height, how the coast lies against the sea, whether the summit cap is a cap or a whorl -- is what this page is for.
 //
-// THE LAYER SWITCHES. The sidebar carries one box per octave of jitter and one per step of the algorithm. Turning one off regenerates the island without it and rebuilds everything standing on the field, so what a layer contributes can be read off its absence rather than argued about. Each setting is its own cache slot (store.js), so the second look at a comparison is instant.
+// THE LAYER SWITCHES. The sidebar carries one box per rung of the jitter ladder and one per step of the algorithm. Turning one off rebuilds the island without it and stands everything back up on the new field, so what a layer contributes can be read off its absence rather than argued about. Each setting of the BAKED rungs is its own cache slot (store.js), so the second look at a comparison is instant; the read-time rungs are not in the key, because they never reach the image.
+//
+// THE FIELD IS THE IMAGE PLUS THE LAST RUNGS, and this page is where the two halves are put back together. The island arrives as a 2 m grid carrying the ladder down to 8 m between nodes; `FineJitter` adds the 4, 2 and 1 m rungs per sample. It goes to V2Height as `detail`, where v2's own fitted roughness would otherwise stand, and to the mesh workers as a `{ seed, cell }` descriptor they rebuild it from -- so the ground she is drawn on and the ground she collides with are the same surface. It also puts the coarse read on BILINEAR: a bicubic over a lattice sampled four texels to a node rounds off the very rungs the 2 m image was widened to carry.
 //
 // THE SUN DOES NOT MOVE. The clock is built at noon and never advanced: a terrain read changes with the light, and a light that is changing under you is a variable nobody asked for. Everything else on the page reads the clock as usual, so the day-night stack is exercised, just held.
 // ---------------------------------------------------------------------------
@@ -129,12 +132,14 @@ async function fetchIsland(regen) {
 function buildWorld() {
   const heightmap = Heightmap.fromRaw({ width: island.n, height: island.n, data: island.height, meta: island.meta })
   const layers = Layers.deserialize(island.doc)
-  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: relief() })
+  // The rungs the image was too coarse to bake, evaluated per sample. Built from the shadowed amplitudes so a read-time rung's switch reaches it, and from the island's own cell so it picks up exactly what splitOctaves left out.
+  const fine = { seed: opts.seed, cell: island.cell, jitter: { ...JITTER, amps: tuneNow().jitter } }
+  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: relief(), detail: new FineJitter(fine) })
 
   bootSay('meshing')
   // `axis` is the shipped ground shader; this page judges the field, not the surface, so it draws what the game draws.
   terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: relief(), workers: 2, axis: true,
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: relief(), fine, workers: 2, axis: true,
     ground: { size: island.n, world: WORLD_SIZE, classes: island.ground, palette: Float32Array.from(BIOMES.flatMap((b) => b.colour)) },
   })
   lighting.patch(terrain.material, {
@@ -466,20 +471,21 @@ const setSwitches = (enabled) => { for (const b of allSwitches) b.disabled = !en
 
 JITTER.amps.forEach((amp, k) => {
   const spacing = JITTER.start / 2 ** k
-  addSwitch(`jitter${spacing}`, `jitter ${spacing} m, +-${amp} m`, `Octave ${k + 1} of step B: a lattice of nodes ${spacing} m apart, each moved up or down by up to ${amp} m.`, true, (on) => {
-    octaveOn[k] = on
-    rebuild()
-  })
-})
-addSwitch('ridge', 'ridge', 'The ridged multifractal on the high ground (island.js RIDGE): crests with a corner on them, gated to the massif and to its patches.', steps.ridge, (on) => {
-  steps.ridge = on
-  rebuild()
+  // Which half of the ladder this rung is on, which is the grid's decision and not the rung's (island.js splitOctaves). A baked rung means a new image; a read-time one is re-evaluated as the world is stood back up.
+  const baked = spacing >= TEXELS_PER_NODE * CELL
+  addSwitch(`jitter${spacing}`, `jitter ${spacing} m, +-${amp} m${baked ? '' : ' (read-time)'}`,
+    `Rung ${k + 1} of the ladder: a lattice of nodes ${spacing} m apart, each moved up or down by up to ${amp} m. ` +
+    (baked ? `Baked into the ${CELL} m image, which holds ${TEXELS_PER_NODE} samples to a node here.` : `Under the image's floor of ${TEXELS_PER_NODE * CELL} m, so it is evaluated per sample at read time (fine.js) and costs no regenerate.`),
+    true, (on) => {
+      octaveOn[k] = on
+      rebuild()
+    })
 })
 addSwitch('hydrology', 'hydrology', 'The whole of step D: the rain and its cuts, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
   steps.hydrology = on
   rebuild()
 })
-addSwitch('cliffs', 'cliffs (tabled ladder)', 'The tabling inside step D (cliffs.js): bands of steep ground snapped onto a ladder of benches. Off by default -- a ladder of constant rise reads as striation, and its benches come back through the bicubic as rounded domes.', steps.cliffs, (on) => {
+addSwitch('cliffs', 'cliffs (tabled ladder)', 'The tabling inside step D (cliffs.js): bands of steep ground snapped onto a ladder of benches. Off by default -- a ladder of constant rise reads as striation, and its benches come back as rounded domes.', steps.cliffs, (on) => {
   steps.cliffs = on
   rebuild()
 })

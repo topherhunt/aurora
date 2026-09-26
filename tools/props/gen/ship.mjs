@@ -11,7 +11,9 @@
 // <id>.webp -- the pick's colour map boxed to the roster's `texPx` -- as an
 // external EXT_texture_webp image, so the world never decodes Tripo's 2048 JPEG
 // or the ladder's embedded PNGs. A roster entry flagged `delight` ships its map
-// with Tripo's baked top-down light taken out first (delight.mjs). NOT public/props/: `npm run props` wipes that
+// with Tripo's baked top-down light taken out first (delight.mjs). An entry's
+// `cut` pieces are dropped from the mesh and its `glass` pieces have their red
+// texels painted dark glass (pieces.mjs). NOT public/props/: `npm run props` wipes that
 // tree before the Blender build writes it.
 //
 // TWO THINGS DIFFER FROM A CRITTER. The mesh node ships under the IDENTITY, not
@@ -32,6 +34,7 @@ import { shipTexPx } from './prop-roster.mjs'
 import { listAll, readMeta, readState, workDir } from './workspace.mjs'
 import { packTexture, readGlbChunks, tripoColourJpeg, viewOf } from '../../tripo-pack.mjs'
 import { delightJpeg } from './delight.mjs'
+import { cutPieces, paintGlass } from './pieces.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const OUT = path.join(ROOT, 'public/gen-props')
@@ -56,27 +59,39 @@ function ship(id) {
   const src = path.join(workDir(id), 'meshes', pickedMesh)
   const entry = (state.meshes ?? []).find((m) => m.file === pickedMesh)
   if (!entry) throw new Error(`${id}: picked mesh ${pickedMesh} is not in state.json`)
-  const { json, bin } = readGlbChunks(src)
+  const lods = (entry.lods ?? []).filter((l) => l.kind === 'decimated')
+  // A decimated tier's pieces are not the pick's, so its points would name other parts or none.
+  if (meta.cut && lods.length) throw new Error(`${id}: a roster \`cut\` and a ladder together, which this shipper does not carry`)
+  let glb = readGlbChunks(src)
+  const notes = []
+  if (meta.cut) {
+    glb = cutPieces(src, glb.json, glb.bin, meta.cut)
+    notes.push(`${glb.cut} tris cut`)
+  }
   const texture = `${id}.webp`
   const texPx = shipTexPx(meta)
-  const jpeg = tripoColourJpeg(src, json, bin, 0)
+  const jpeg = tripoColourJpeg(src, glb.json, glb.bin, 0)
   // The roster's `delight` flag: the map flattened against the mesh's own
   // facing first, for a pick Tripo painted in its own top-down light.
-  const image = meta.delight ? delightJpeg(src, jpeg).png : jpeg
+  let image = meta.delight ? delightJpeg(src, jpeg).png : jpeg
+  if (meta.delight) notes.push('delighted')
+  if (meta.glass) {
+    const glass = paintGlass(src, image, glb.json, glb.bin, meta.glass)
+    image = glass.png
+    notes.push(`${glass.painted} texels glassed`)
+  }
   packTexture(image, path.join(OUT, texture), texPx)
-  meshNode(id, json)
-  pack(id, src, `${id}.glb`, texture, `texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB${meta.delight ? ', delighted' : ''}`)
-  const lods = (entry.lods ?? []).filter((l) => l.kind === 'decimated')
+  meshNode(id, glb.json)
+  pack(id, src, glb, `${id}.glb`, texture, [`texture ${texPx}px ${(fs.statSync(path.join(OUT, texture)).size / 1024).toFixed(0)} KB`, ...notes].join(', '))
   for (const lod of lods) {
-    const tier = `${pickedMesh.replace(/\.glb$/, '')}-lod${lod.level}.glb`
-    pack(id, path.join(workDir(id), 'meshes', tier), `${id}-lod${lod.level}.glb`, texture, `${lod.tris} tris`)
+    const tier = path.join(workDir(id), 'meshes', `${pickedMesh.replace(/\.glb$/, '')}-lod${lod.level}.glb`)
+    pack(id, tier, readGlbChunks(tier), `${id}-lod${lod.level}.glb`, texture, `${lod.tris} tris`)
   }
   return lods.length
 }
 
-/** One GLB with only the bufferViews its accessors read, its images replaced by `texture` as an external EXT_texture_webp image, its mesh node under the identity. */
-function pack(id, src, outName, texture, note) {
-  const { json, bin } = readGlbChunks(src)
+/** One GLB (`src`'s chunks, `{ json, bin }`) with only the bufferViews its accessors read, its images replaced by `texture` as an external EXT_texture_webp image, its mesh node under the identity. */
+function pack(id, src, { json, bin }, outName, texture, note) {
   if (json.extensionsRequired?.length) throw new Error(`${id}: ${src} requires ${json.extensionsRequired.join(', ')}, which this shipper does not carry`)
   if (json.materials.length !== 1 || json.meshes.length !== 1) throw new Error(`${id}: ${json.materials.length} materials and ${json.meshes.length} meshes in ${src}, expected one of each`)
   const node = meshNode(id, json)

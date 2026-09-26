@@ -673,7 +673,7 @@ export class Puppet {
       this.mixer.update(this.held)
       for (const b of this.bones) b.updateMatrix()
       if (solving) this.ik.solve(this.held, this.clipFade)
-      this.solver?.solve()
+      this.solver?.solve(this.held)
       this.rig.updateMatrixWorld(true)
       this.held = 0
     }

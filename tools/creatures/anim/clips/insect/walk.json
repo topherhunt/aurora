@@ -1,0 +1,24 @@
+{
+  "note": "Alternating tripod, the insect walk: the front and hind legs of one side step with the middle leg of the other, so three feet always hold a triangle under the body. Each tripod ripples a little from front to back so six footfalls do not land as two. A weevil is heavy and short-legged, so the stride is small against its leg span and the body rolls side to side over each tripod; the head nods with the step and pitches a touch positive (nose-down) to stay level as the body dips.",
+  "duration": 1.0,
+  "samples": 24,
+  "stride": 0.12,
+  "stepHeight": 0.22,
+  "duty": 0.6,
+  "crouch": 0.03,
+  "toeOff": 0,
+  "phases": {
+    "leg1Left": 0,
+    "leg2Right": 0.04,
+    "leg3Left": 0.08,
+    "leg1Right": 0.5,
+    "leg2Left": 0.54,
+    "leg3Right": 0.58
+  },
+  "bodyBob": 0.012,
+  "bobFreq": 2,
+  "bodySway": 0.01,
+  "spineYaw": 0.03,
+  "headPitch": 0.03,
+  "headBob": 0.04
+}

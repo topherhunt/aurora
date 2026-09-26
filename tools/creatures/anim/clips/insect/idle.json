@@ -1,0 +1,17 @@
+{
+  "note": "Standing. Zero stride with duty 1 keeps all six feet planted while the body breathes over them, and the head does the living: a slow bob and a sway side to side, as if the blank eyes were following something. Two breaths per loop.",
+  "duration": 3.6,
+  "samples": 36,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.02,
+  "phases": {
+    "leg1Left": 0, "leg1Right": 0, "leg2Left": 0, "leg2Right": 0, "leg3Left": 0, "leg3Right": 0
+  },
+  "bodyBob": 0.01,
+  "bobFreq": 2,
+  "headBob": 0.05,
+  "headYaw": 0.2
+}

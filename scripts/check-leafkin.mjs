@@ -204,7 +204,7 @@ class Caps {
 }
 /** Her hand on a cap: the pick the mushrooms tell the leafkin of. */
 const pick = (caps, x, z) => caps.take(caps.pickAt(x, GROUND + 0.1, z, 0.5))
-const handsOf = () => new Hands(new THREE.Scene(), { walk: { ...walk, normalAt: (x, z, e, o = { x: 0, y: 1, z: 0 }) => o, obstacleAt: () => null }, water, haptic() {}, stow: () => false, thud() {}, rand: mulberry32(5) })
+const handsOf = () => new Hands(new THREE.Scene(), { walk: { ...walk, normalAt: (x, z, e, o = { x: 0, y: 1, z: 0 }) => o, obstacleAt: () => null }, water, haptic() {}, stow: () => false, thud() {}, splash() {}, rand: mulberry32(5) })
 
 // A chapter's first second at the mouth; her feet just outside its roam (stepped, never startling it), and out of its reach.
 const START = chapterOf(100000, KEY).start

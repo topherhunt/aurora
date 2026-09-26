@@ -169,6 +169,13 @@ const SPIDER_MAP = {
   arms: WYVERN_MAP.wings,
 }
 
+// And as an insect: the spider's legs I, II and IV, with no tail and no arms.
+const INSECT_MAP = {
+  ...MAP,
+  tail: [],
+  legs: SPIDER_MAP.legs.filter((l) => !l.id.startsWith('leg3')).map((l) => ({ ...l, id: l.id.replace('leg4', 'leg3') })),
+}
+
 // A biped is not a reading of that skeleton: it has toes, a pelvis both legs
 // share, and arms that hang off the chest through a clavicle. So it gets its
 // own, +Z forward again, with a small forward crease at each knee and elbow so
@@ -218,7 +225,7 @@ const HUMAN_MAP = {
   ],
 }
 
-const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP, spider: SPIDER_MAP, human: HUMAN_MAP }
+const FIXTURES = { quadruped: MAP, wyvern: WYVERN_MAP, spider: SPIDER_MAP, insect: INSECT_MAP, human: HUMAN_MAP }
 
 /** The handle groups a pose key may name -- and so the ones `scale` may dial. */
 const GROUPS = new Set(['root', 'spine', 'head', 'tail', 'wings', 'arms', 'legs'])

@@ -1,7 +1,7 @@
 import { WORLD_SIZE } from '../v2/config.js'
 import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
-import { Island, MACRO, JITTER, RIDGE, rasterise } from './island.js'
+import { Island, MACRO, JITTER, octaveTable, splitOctaves, rasterise } from './island.js'
 import { buildBiomes, serialise } from './biomes.js'
 import { runHydrology, noHydrology } from './hydrology.js'
 
@@ -11,14 +11,14 @@ import { runHydrology, noHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'd9'
-export const TEXELS = 1025
+export const VERSION = 'e1'
+// 4097 texels over the 8192 m box is 2 m a texel, which is the resolution the whole design turns on: the image carries the ladder down to 8 m (four samples to a node, island.js), the read-time half carries it from there to a quarter of a metre (fine.js), and the rain's brush -- five cells either side -- is a 22 m groove instead of an 88 m one, which is a rivulet.
+export const TEXELS = 4097
 
 // The layers of the algorithm a page can switch off, so what each one contributes can be seen by its absence (/terrain-v3's sidebar, `tune.steps`). An octave of jitter is not here: an octave is switched off by setting its amplitude to zero, which `tune.jitter` already does.
 export const STEPS = Object.freeze({
-  ridge: true,        // the ridged multifractal on the high ground (island.js)
   hydrology: true,    // the whole of step D: the rain, the lakes, the silt, the route and the rivers
-  cliffs: false,      // the tabled ladder inside step D (cliffs.js). Off by default: a ladder of constant rise reads as striation from the air, and its benches -- 18.9% of canyon land under 10 degrees against the forest's 11.8 -- come back through the bicubic as rounded domes where the peaks should be sharp
+  cliffs: false,      // the tabled ladder inside step D (cliffs.js). Off by default: a ladder of constant rise reads as striation from the air, and its benches -- 18.9% of canyon land under 10 degrees against the forest's 11.8 -- read as rounded domes where the peaks should be sharp
 })
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
@@ -43,11 +43,11 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune
   const t0 = now()
 
   const { macro, jitter: jit, steps } = tuned(tune, jitter)
-  // A ridge term of no amplitude is the ridge step switched off: every gate still runs and every octave still sums, to nothing.
-  const island = new Island(seed, macro, jit, steps.ridge ? RIDGE : { ...RIDGE, amp: 0 })
+  // The island is told the grid it is being drawn on, and bakes only the rungs that grid can carry. The rest is not lost: fine.js evaluates it at read time off the same table.
+  const island = new Island(seed, macro, jit, cell)
   const raw = rasterise(island, n, cell)
   const tMacro = now()
-  log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m, jitter ${jit.amps.join('/')} m${steps.ridge ? '' : ', no ridge'}`)
+  log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m, baked ${island.octaves.map((o) => o.amp).join('/')} m, left to read time ${island.fine.map((o) => o.amp).join('/')} m`)
 
   const biomes = buildBiomes(raw, n, cell, seed)
   const tBiomes = now()
@@ -106,11 +106,16 @@ export function tuned(tune, jitter) {
   return { macro, jitter: jit, steps }
 }
 
-/** A tune's signature with every default filled in: the other half of the cache key (store.js). Two pages asking for the same island have to land on the same slot, and a page that has switched a layer off must not overwrite the island that has it on. */
+/**
+ * A tune's signature with every default filled in: the other half of the cache key (store.js). Two pages asking for the same island have to land on the same slot, and a page that has switched a layer off must not overwrite the island that has it on.
+ *
+ * ONLY THE BAKED RUNGS ARE IN IT. The rungs under the grid's floor are evaluated at read time and never reach the stored field, so two tunes that differ only there are the same island as far as the cache is concerned. Keying on them would spend a 67 MB slot per switch on fields that are identical texel for texel.
+ */
 export function tuneKey(tune) {
   const { macro, jitter, steps } = tuned(tune, null)
   const on = Object.keys(STEPS).map((k) => (steps[k] ? k[0] : '-')).join('')
-  return `${macro.warp.map(([, a]) => a).join(',')}/${jitter.amps.join(',')}/${on}`
+  const baked = splitOctaves(octaveTable(0, jitter), CELL).coarse.map((o) => o.amp)
+  return `${macro.warp.map(([, a]) => a).join(',')}/${baked.join(',')}/${on}`
 }
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())

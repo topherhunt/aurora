@@ -83,8 +83,9 @@ const build = () => {
   const pulses = []
   const pack = []
   const thuds = []
+  const splashes = []
   let room = 8
-  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), rand: mulberry32(3) })
+  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), splash: (x, y, z) => splashes.push({ x, y, z }), rand: mulberry32(3) })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), { ...thing('crab', 4, 0, 0, 1.5), bulky: true }, thing('crab', 6, 0, 0, 2.5)])
   hands.addSource(src, ['mushroom', 'fish', 'crab'])
   const node = new THREE.Group()
@@ -93,17 +94,17 @@ const build = () => {
   const head = { x: 0, y: 1.6, z: 0, yaw: 0 }
   const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
   const run = (s, dt = 1 / 60) => { for (let t = 0; t < s; t += dt) hands.update(dt, head) }
-  return { scene, hands, src, node, head, at, run, pulses, pack, thuds, setRoom: (n) => { room = n } }
+  return { scene, hands, src, node, head, at, run, pulses, pack, thuds, splashes, setRoom: (n) => { room = n } }
 }
 
 // --- the constructor refuses a missing world ---------------------------------
 {
   let threw = 0
-  for (const bad of [{ water, haptic() {}, stow() {}, thud() {} }, { walk, haptic() {}, stow() {}, thud() {} }, { walk, water, stow() {}, thud() {} }, { walk, water, haptic() {}, thud() {} }, { walk, water, haptic() {}, stow() {} }]) {
+  for (const bad of [{ water, haptic() {}, stow() {}, thud() {}, splash() {} }, { walk, haptic() {}, stow() {}, thud() {}, splash() {} }, { walk, water, stow() {}, thud() {}, splash() {} }, { walk, water, haptic() {}, thud() {}, splash() {} }, { walk, water, haptic() {}, stow() {}, splash() {} }, { walk, water, haptic() {}, stow() {}, thud() {} }]) {
     try { new Hands(new THREE.Scene(), bad) } catch { threw++ }
   }
-  check(threw === 5, 'the constructor throws without the walk surface, the water, the buzz, the backpack or the thud', `${threw} of 5`)
-  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {} })
+  check(threw === 6, 'the constructor throws without the walk surface, the water, the buzz, the backpack, the thud or the splash', `${threw} of 6`)
+  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {} })
   let bad = 0
   try { h.addSource({}) } catch { bad++ }
   try { h.addSource({ pickAt() {}, take() {} }, 'x') } catch { bad++ }
@@ -334,6 +335,7 @@ const build = () => {
   const line = LEVEL + m.r * 0.2
   check(Math.abs(m.y - line) < 0.03 && m.y > LEVEL, 'settled on the line, its centre a little over the water', `y ${m.y.toFixed(3)} line ${line.toFixed(3)}`)
   check(w.thuds.length === 0, 'without a thud')
+  check(w.splashes.length === 1 && Math.abs(w.splashes[0].x - 40) < 1e-6 && w.splashes[0].y === LEVEL, 'and heard splashing in, at the surface', JSON.stringify(w.splashes))
   const ys = []
   for (let t = 0; t < 4; t += 1 / 60) { w.hands.update(1 / 60, w.head); ys.push(m.y) }
   check(Math.max(...ys) - Math.min(...ys) > 0.02 && Math.max(...ys) - Math.min(...ys) < 0.06 && ys.every((y) => Math.abs(y - line) < 0.03), 'and bobbing on it', `swing ${(Math.max(...ys) - Math.min(...ys)).toFixed(3)} m`)
@@ -357,6 +359,7 @@ const build = () => {
   w.run(0.5)
   const deep = m.y
   check(m.state === 'float' && deep < LEVEL - 1 && deep > LEVEL - 1.5, 'let go under the water it floats up', `y ${deep.toFixed(2)} after 0.5 s`)
+  check(w.splashes.length === 1, 'never having been above it, without a splash', `${w.splashes.length} splashes`)
   w.run(2)
   check(m.y > deep + 0.4 && m.y < line - 0.2, 'slowly', `y ${m.y.toFixed(2)} after 2.5 s`)
   w.run(4)
@@ -761,7 +764,7 @@ const build = () => {
   const K = 0.5
   const scene = new THREE.Scene()
   const pulses = []
-  const hands = new Hands(scene, { walk, water, haptic: (key) => pulses.push(key), stow: () => true, thud() {}, rand: mulberry32(3), scale: K })
+  const hands = new Hands(scene, { walk, water, haptic: (key) => pulses.push(key), stow: () => true, thud() {}, splash() {}, rand: mulberry32(3), scale: K })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('crab', 4, 0, 0, 1.5)])
   hands.addSource(src, ['mushroom', 'crab'])
   const node = new THREE.Group()
@@ -770,7 +773,7 @@ const build = () => {
   const head = { x: 0, y: 0.8, z: 0, yaw: 0 }
   const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
   let threw = false
-  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, scale: 0 }) } catch { threw = true }
+  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {}, scale: 0 }) } catch { threw = true }
   check(threw, 'a scale that is not positive throws')
   at(0, 0.1 + REACH_M * K + 0.02, 0)
   check(hands.press('right', head) === null, 'at half size a thing just past half her reach is out of it', `hand ${(REACH_M * K + 0.02).toFixed(3)} m over a 0.2 m cap`)

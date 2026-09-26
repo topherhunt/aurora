@@ -68,7 +68,7 @@ const HIST_BINS = 8192
 export const WORLD_SEED = 20260824
 
 export class V2Height {
-  constructor({ heightmap, layers, seed = WORLD_SEED, rough, relief = RELIEF_DEFAULTS }) {
+  constructor({ heightmap, layers, seed = WORLD_SEED, rough, relief = RELIEF_DEFAULTS, detail = null }) {
     if (!heightmap) throw new Error('V2Height: heightmap is required')
     if (!layers) throw new Error('V2Height: layers is required -- pass a default Layers, not null; the carve chain is skipped by the authored flag, not by a null check')
     if (!Number.isFinite(seed)) throw new Error(`V2Height: seed must be a finite number, got ${seed}`)
@@ -84,6 +84,12 @@ export class V2Height {
     this.seed = seed
     this._pinnedRough = Number.isFinite(rough) ? rough : null
     this.relief = normalizeRelief(relief)
+    // A caller-supplied step 2, standing where `Detail` stands. v3 passes its own
+    // (FineJitter): the rungs of the jitter ladder its image was too coarse to
+    // hold, which is a continuation of the generator and not a fitted roughness.
+    // It must answer `at(x, z, cell, slope01, flatten01)` in metres. Nothing in
+    // the shipped world passes it, and `setRelief` keeps it across a rebuild.
+    this._detailOverride = detail
 
     // One scratch gradient, reused. gradientAt is called once per field
     // evaluation on a path that runs tens of millions of times per remesh, and
@@ -209,9 +215,11 @@ export class V2Height {
     // The jagged stack reads the smooth table for its sub-metre amplitudes, so
     // the calibration above runs either way and against the bicubic ground --
     // the bilinear read is attached below, after everything measured here.
-    this.detail = relief.jagged > 0
-      ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, bump: relief.bump, fineTable: smooth.table })
-      : smooth
+    this.detail = this._detailOverride
+      ? this._detailOverride
+      : relief.jagged > 0
+        ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, bump: relief.bump, fineTable: smooth.table })
+        : smooth
     this.crag = needs.crag ? new Crag({ seed }) : null
     // Baked against `ground` for the same reason exposure is: the spines this
     // describes have to be the spines of the mountain the world is sampled from,
@@ -263,7 +271,11 @@ export class V2Height {
   _attachReconstruction() {
     this.crease = null
     this.scarp = null
-    const linear = this.relief.jagged > 0
+    // A supplied detail term reads linear too, and for the same reason `jagged`
+    // does: its image is a value-noise lattice sampled four texels to a node, and
+    // a bicubic over that is a smoothing of the very rungs the image was widened
+    // to carry. See fine.js.
+    const linear = this.relief.jagged > 0 || this._detailOverride !== null
     const wantCrease = !linear && this.relief.crease > 0
     const wantScarp = this.relief.scarp > 0
     if (!linear && !wantCrease && !wantScarp) return

@@ -7,10 +7,9 @@ import THREE from '../three-instance.js'
 // all carry them with the gun. Nothing in the world hands one out -- it starts
 // in the backpack (main.js) -- so its source picks nothing and takes nothing,
 // and gives nothing back: a dropped gun lies loose until a hand lifts it.
-// Until its generated mesh exists (prop-roster.mjs 'flaregun') it is drawn in
-// primitives, barrel along -Z. The round window on top shows the colour it
-// will fire as a disc, smaller as the charges run down and gone at none; only
-// on her own held guns.
+// It wears its generated mesh (FLAREGUN_GLB). The round window at the back of
+// the lock shows the colour it will fire as a disc, smaller as the charges run
+// down and gone at none; only on her own held guns.
 // ---------------------------------------------------------------------------
 
 export const KIND = 'flaregun'
@@ -20,74 +19,53 @@ export const PALETTE = [0xff3020, 0x30ff50, 0xfff4e0, 0xffb020, 0x3080ff, 0xc050
 // A shot's target: this far down the barrel, and at least this far over the ground or the water under it.
 export const AIM_M = 100
 export const CLEAR_M = 20
-// In the gun's own frame: where a flare leaves, and the window's centre on its top face and its radius with every charge left.
-export const MUZZLE = new THREE.Vector3(0, 0.02, -0.205)
-export const WINDOW = new THREE.Vector3(0, 0.0526, -0.045)
-export const WINDOW_R = 0.0095
+// The shipped pick (tools/props/gen/prop-roster.mjs 'flaregun'), drawn SIZE_M long in its own frame: barrel along -Z, grip down.
+export const FLAREGUN_GLB = 'gen-props/flaregun.glb'
+export const SIZE_M = 0.32
+// Measured on pick 0 in its own units, where it is PICK_LONG along Z: the muzzle's centre, and the brass collar
+// ship.mjs glasses (the red button that stood in it is cut) -- the centre of its face, a hair proud of it, and
+// the glass's radius. A new pick wants these measured again; wear() throws on one of another length.
+const PICK_LONG = 0.998046875
+const S = SIZE_M / PICK_LONG
+// In the gun's frame: where a flare leaves, and the window's centre, facing and radius with every charge left.
+export const MUZZLE = new THREE.Vector3(-0.0073, 0.1281, -0.499).multiplyScalar(S)
+export const WINDOW = new THREE.Vector3(-0.0036, 0.1842, 0.1315).multiplyScalar(S)
+export const WINDOW_N = new THREE.Vector3(-0.099, 0.149, 0.984).normalize()
+export const WINDOW_R = 0.029 * S
 
-const WOOD = 0x5b3a21
-const IRON = 0x6e6f72
-const BRASS = 0xb08a3a
-const TWINE = 0xb59a68
-const RED = 0xa51c1c
-const GLASS = 0x10141a
-
-/** The primitives' pile: each part a geometry of its own, painted its colour and merged by hand into one non-indexed geometry. */
-function buildGeometry() {
-  const parts = []
-  const part = (geo, hex, place) => { place(geo); parts.push([geo.toNonIndexed(), new THREE.Color().setHex(hex)]) }
-  // Y-axis cylinders turned onto Z, their +Y end to -Z.
-  const alongZ = (x, y, z) => (g) => g.rotateX(-Math.PI / 2).translate(x, y, z)
-  const at = (x, y, z) => (g) => g.translate(x, y, z)
-  // The grip leans back from the barrel, its foot toward the wrist.
-  const grip = (y, x, z) => (g) => g.translate(0, y, 0).rotateX(-0.35).translate(x, -0.04, z)
-  part(new THREE.CylinderGeometry(0.026, 0.026, 0.19, 14), IRON, alongZ(0, 0.02, -0.075))
-  part(new THREE.CylinderGeometry(0.03, 0.03, 0.06, 14), TWINE, alongZ(0, 0.02, -0.08))
-  for (const z of [-0.02, -0.14]) part(new THREE.CylinderGeometry(0.029, 0.029, 0.012, 14), BRASS, alongZ(0, 0.02, z))
-  part(new THREE.CylinderGeometry(0.04, 0.026, 0.035, 14), BRASS, alongZ(0, 0.02, -0.1875))
-  part(new THREE.CylinderGeometry(0.03, 0.03, 0.02, 14), BRASS, alongZ(0, 0.02, 0.028))
-  part(new THREE.BoxGeometry(0.034, 0.12, 0.048), WOOD, grip(0, 0, 0.035))
-  part(new THREE.BoxGeometry(0.037, 0.035, 0.051), TWINE, grip(0.015, 0, 0.035))
-  part(new THREE.BoxGeometry(0.04, 0.018, 0.056), BRASS, grip(-0.065, 0, 0.035))
-  part(new THREE.BoxGeometry(0.006, 0.03, 0.008), IRON, at(0, -0.02, -0.005))
-  part(new THREE.CylinderGeometry(0.012, 0.012, 0.006, 14), BRASS, at(0, 0.047, -0.005))
-  part(new THREE.CylinderGeometry(0.009, 0.009, 0.012, 14), RED, at(0, 0.052, -0.005))
-  part(new THREE.CylinderGeometry(0.014, 0.014, 0.008, 14), BRASS, at(0, 0.048, WINDOW.z))
-  part(new THREE.CylinderGeometry(0.011, 0.011, 0.0082, 14), GLASS, at(0, 0.048, WINDOW.z))
-  let n = 0
-  for (const [g] of parts) n += g.attributes.position.count
-  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3)
-  let o = 0
-  for (const [g, c] of parts) {
-    const count = g.attributes.position.count
-    pos.set(g.attributes.position.array, o * 3)
-    nor.set(g.attributes.normal.array, o * 3)
-    for (let i = 0; i < count; i++) c.toArray(col, (o + i) * 3)
-    o += count
-    g.dispose()
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3))
-  geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
-  geo.computeBoundingBox()
-  return geo
-}
-
-/** The Hands source for the gun: see the header. One per Hands, built with it. */
+/** The Hands source for the gun: see the header. One per Hands; wear() gives it the shipped mesh before anything dresses one. */
 export class FlareGuns {
   constructor() {
-    this.geometry = buildGeometry()
-    this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
-    const size = this.geometry.boundingBox.getSize(new THREE.Vector3())
-    this.size = Math.max(size.x, size.y, size.z)
+    this.geometry = null
+    this.material = null
+    this.size = SIZE_M
+  }
+
+  /** The pick as critters.js loadCritterGlb hands it over, loaded with origin [0, 0, 0] so it keeps its own frame. */
+  wear(asset) {
+    if (this.geometry) throw new Error('FlareGuns.wear: already wearing its mesh')
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(asset.pos), 3))
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(asset.nrm), 3))
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(asset.uv), 2))
+    geo.setIndex(asset.idx)
+    geo.computeBoundingBox()
+    const long = geo.boundingBox.max.z - geo.boundingBox.min.z
+    if (Math.abs(long - PICK_LONG) > 1e-3) throw new Error(`FlareGuns.wear: the pick is ${long.toFixed(4)} long, not the ${PICK_LONG} MUZZLE and WINDOW were measured on`)
+    geo.scale(S, S, S)
+    geo.computeBoundingBox()
+    this.geometry = geo
+    this.material = new THREE.MeshLambertMaterial({ map: asset.map })
   }
 
   pickAt() { return null }
 
   take() { throw new Error('FlareGuns.take: nothing in the world hands out a flare gun') }
 
-  dress() { return { geometry: this.geometry, material: this.material } }
+  dress() {
+    if (!this.geometry) throw new Error('FlareGuns.dress: before wear()')
+    return { geometry: this.geometry, material: this.material }
+  }
 
   /** A new gun, packed for a backpack slot: every charge, the first colour. */
   slot() {
@@ -96,6 +74,7 @@ export class FlareGuns {
 
   dispose() {
     this.geometry.dispose()
+    this.material.map.dispose()
     this.material.dispose()
   }
 }
@@ -118,12 +97,15 @@ export function aimTarget(muzzle, dir, groundAt, levelAt, out) {
 
 const _m = new THREE.Matrix4()
 const _w = new THREE.Matrix4()
+const _s = new THREE.Vector3()
+// The disc (a CircleGeometry, facing +Z) turned to face out of the window.
+const FACING = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), WINDOW_N)
 
 /** The windows of her held guns: a disc per hand, in the scene the held things are drawn over the frame in. */
 export class GunWindows {
   constructor(parent, keys) {
     this.discs = new Map()
-    const geo = new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2)
+    const geo = new THREE.CircleGeometry(1, 24)
     for (const key of keys) {
       const disc = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }))
       disc.name = `v2-flaregun-window-${key}`
@@ -142,7 +124,7 @@ export class GunWindows {
       if (!disc.visible) continue
       const r = WINDOW_R * Math.sqrt(rec.charges / CHARGES)
       hands.heldFrame(key, _m)
-      disc.matrix.multiplyMatrices(_m, _w.makeScale(r, 1, r).setPosition(WINDOW))
+      disc.matrix.multiplyMatrices(_m, _w.compose(WINDOW, FACING, _s.set(r, r, 1)))
       disc.matrixWorldNeedsUpdate = true
       disc.material.color.setHex(PALETTE[rec.hue])
     }

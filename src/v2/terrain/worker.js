@@ -6,6 +6,7 @@ import { buildChunkV2 } from './chunk-mesh-v2.js'
 import { BiomeField } from '../layers/biome.js'
 import { GroundTint } from '../layers/ground.js'
 import { SEED } from '../config.js'
+import { FineJitter } from '../../v3/fine.js'
 
 // ---------------------------------------------------------------------------
 // The v2 terrain worker. Message plumbing only -- every line that computes
@@ -17,7 +18,7 @@ import { SEED } from '../config.js'
 //
 // THE PROTOCOL. Fixed by the renderer side; terrain-v2.js codes against it too.
 //
-//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, relief, epoch }
+//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, relief, fine, epoch }
 //                    { type: 'layers', doc, epoch }
 //                    { type: 'relief', relief, epoch }
 //                    { type: 'height', rect, data, epoch }
@@ -80,7 +81,11 @@ function onInit(msg) {
   // it. Passed straight through rather than defaulted: normalizeRelief throws on
   // an unknown key, so a protocol that has drifted takes the worker down at init
   // instead of meshing a world with one knob quietly missing.
-  field = new V2Height({ heightmap, layers, relief: msg.relief })
+  //
+  // `fine` is the third case: a v3 island's sub-texel jitter rungs, which are a
+  // continuation of the generator rather than a knob, so what travels is the
+  // descriptor and the object is rebuilt here. Null for the shipped world.
+  field = new V2Height({ heightmap, layers, relief: msg.relief, detail: msg.fine ? new FineJitter(msg.fine) : null })
   // The biome class grid, when the world has one (v3 does, the shipped world does not); GroundTint validates it so a grid of the wrong size fails here, not as a wrongly coloured world.
   ground = msg.ground ? new GroundTint(msg.ground) : null
   // Force the lazy percentile pass now rather than inside the first chunk, where

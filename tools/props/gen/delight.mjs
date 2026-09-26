@@ -39,7 +39,7 @@ const COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }
 const ARRAYS = { 5121: Uint8Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array }
 
 /** Accessor `i` as a typed array. Tightly packed, which is what Tripo and three's exporter write. */
-function readAccessor(json, bin, i) {
+export function readAccessor(json, bin, i) {
   const acc = json.accessors[i]
   const view = json.bufferViews[acc.bufferView]
   const Arr = ARRAYS[acc.componentType]

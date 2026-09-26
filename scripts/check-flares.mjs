@@ -9,11 +9,13 @@
 // leaves from somewhere other than the muzzle; two clients flying one flare on
 // different paths; a shot into a hillside or under a lake; a peer's flare drawn
 // twice; a village's flares hanging over the overworld; a window that stays lit
-// with no charge left.
+// with no charge left; the pick shipped with its red button still on, or a new
+// pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
 import { Flares, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP } from '../src/v2/render/flares.js'
-import { FlareGuns, GunWindows, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, WINDOW_R, aimTarget, roomKey } from '../src/v2/flaregun.js'
+import { FlareGuns, GunWindows, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, roomKey } from '../src/v2/flaregun.js'
+import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -136,6 +138,23 @@ console.log('the gun')
   check(slot.kind === KIND && slot.charges === CHARGES && slot.hue === 0 && slot.stowable, `a new gun: ${CHARGES} charges, the first colour, stowable`)
   check(guns.pickAt() === null && throws(() => guns.take()), 'nothing in the world hands one out')
   check(guns.size > 0.2 && guns.size < 0.4, 'it is pistol-sized', guns.size.toFixed(3))
+  check(throws(() => guns.dress(slot)), 'it cannot be dressed before it wears its mesh')
+  const box = (long) => {
+    const g = new THREE.BoxGeometry(0.2, 0.5, long)
+    return { pos: g.attributes.position.array, nrm: g.attributes.normal.array, uv: g.attributes.uv.array, idx: Array.from(g.index.array), map: new THREE.Texture() }
+  }
+  check(throws(() => new FlareGuns().wear(box(0.8))), 'a pick of another length is refused: its muzzle and window were measured on this one')
+  guns.wear(box(0.998046875))
+  const worn = guns.dress(slot).geometry.boundingBox
+  check(near(worn.max.z - worn.min.z, SIZE_M, 1e-6), `worn, it is ${SIZE_M} m long`)
+  check(MUZZLE.z < worn.min.z + 0.005 && WINDOW.z > 0 && WINDOW_N.z > 0.9, 'the muzzle is at the front and the window faces back at her', `muzzle z ${MUZZLE.z.toFixed(3)}, window z ${WINDOW.z.toFixed(3)}`)
+
+  // The shipped pick, as tools/props/gen/ship.mjs cut it: pick 0 is 1048 triangles, 68 of them the red button, whose top stood at 0.257.
+  const { json } = readGlbChunks(new URL(`../public/${FLAREGUN_GLB}`, import.meta.url).pathname)
+  const prim = json.meshes[0].primitives[0]
+  const tris = json.accessors[prim.indices].count / 3
+  const top = json.accessors[prim.attributes.POSITION].max[1]
+  check(tris === 1048 - 68 && top < 0.245, 'the shipped gun has no red button on it', `${tris} tris, top ${top.toFixed(3)}`)
 
   const over = new THREE.Group()
   const rec = { ...slot }

@@ -77,7 +77,7 @@ const ANIMALS = [
     rigType: 'quadruped',
     // Wingspan, not body length: with the wings spread they are the longest
     // dimension, and sizeM is what places the creature in the world.
-    sizeM: 6,
+    sizeM: 12,
     // Wings, but rigType stays quadruped: Tripo's RIG_TYPES has no draconic
     // skeleton, so the preset rigs the four legs and the wings ride along as
     // unweighted geometry until they get a hand-built hinge.
@@ -299,6 +299,27 @@ const ANIMALS = [
       'is an insect\'s head of gnarled bark with glowing bright-green eye-holes and a short insect-like proboscis. ' +
       'Playful and mischievous, with something wild and faintly sinister in the carved wooden expression and the ' +
       'hollow eyes',
+  },
+  {
+    id: 'hob-weevil',
+    label: 'Hob Weevil',
+    rigType: 'hexapod',
+    // The adult. Babies are the same mesh at about a third of this.
+    sizeM: 0.45,
+    // The pale fuzz is for the runtime tint, a per-channel multiply on the map:
+    // a dark or saturated base leaves it nothing to move. Legs and antennae are
+    // asked for thick, as the grasshopper's are, since thin parts are the first
+    // thing the decimator loses. "Pet" or "domesticated" are left out: they
+    // invite a collar or a harness.
+    description:
+      'a plump round forest weevil, soft and loaf-shaped, on six short thick stubby legs set wide apart and ' +
+      'clearly separated from the body. The whole body is covered in a dense short pile of pale ash-grey fuzz ' +
+      'like a moth\'s, fading to cream on the underside, over a high domed back of two smooth fused wing-cases ' +
+      'with a darker seam down the middle and faint bark-like ridges. The head is large for the body and carried ' +
+      'low, drawn out into a long gently down-curving snout for rooting in moss and leaf litter, tipped with ' +
+      'small blunt mandibles. Two short stout elbowed antennae with round clubbed tips sprout from halfway along ' +
+      'the snout. Two big round glossy black compound eyes with no pupils and a faint green glow deep inside ' +
+      'them. Gentle, stubby and endearing, with something quietly eerie in the blank staring eyes',
   },
 ]
 

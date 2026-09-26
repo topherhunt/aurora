@@ -53,16 +53,16 @@
 // fade.
 //
 // A FISH IN HER HAND IS ITS: the one thing that takes a dragon off its score.
-// A grounded dragon with a `fish` lure within LURE_M drops whatever it has and
+// A grounded dragon with a `fish` lure within LURE drops whatever it has and
 // goes LIVE to `menace`: off the nest onto the height field after the hand,
 // turning at WALK_TURN_RATE, stopped with its head at her -- EAT_REACH ahead
-// of the body, plus MENACE_M -- where it plays the eat clip at her, and after
-// her again once she is MENACE_M further off, at the walk gait, or the run
-// once the hand is MENACE_RUN_M past its head: it stomps after her in rushes.
+// of the body, plus MENACE -- where it plays the eat clip at her, and after
+// her again once she is MENACE further off, at the walk gait, or the run
+// once the hand is MENACE_RUN past its head: it stomps after her in rushes.
 // It does her no harm; the ear (audio/ambience.js) roars it. Every client runs
 // the same rule against the same relayed hands; the lurer's client is the
 // authority and publishes an anchor (pending()) every ANCHOR_S, applied
-// elsewhere as a nudge over CORRECT_S. The fish put away or LURE_FORGET_M
+// elsewhere as a nudge over CORRECT_S. The fish put away or LURE_FORGET
 // off, the lure ends: the authority publishes a `rejoin` anchor, and from its
 // pose and time every client builds the same REJOIN -- a leg home, a landing,
 // and a rest until the next planned rest on the nest -- after which the dragon
@@ -105,6 +105,7 @@ import {
   setCritterCard, tileSeed,
 } from './critters.js'
 import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { TailLag } from './tail-lag.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
 /** The room's key for the dragon of a roost: its tile, which is where the roost is a pure function of (creature-net.js routes the `dr` prefix here). */
@@ -186,12 +187,13 @@ export const IDLE_S = [3, 8]
 export const SIT_S = [8, 20]
 export const WALK_S = 20
 export const REST_ODDS = [0.3, 0.2, 0.3, 0.1, 0.1]
-// Walking: how fast the heading swings, how near a point counts as reached, the ring the walk goes round as a fraction of the floor's radius and the angle each walk step goes round it, and how far behind its eating stance a dragon lines up so it arrives facing the kill.
+// Walking: how fast the heading swings, how fast the ground gaits gather and shed speed (body units per s², so every size takes the same time to its gait and ACCEL stays the flight's), how near a point counts as reached (body units, past a walk's braking distance), the ring the walk goes round as a fraction of the floor's radius and the angle each walk step goes round it, and how far behind its eating stance a dragon lines up so it arrives facing the kill (body units).
 export const WALK_TURN_RATE = 1.5
-export const WAY_M = 0.6
+export const STRIDE_ACCEL = 3.2
+export const WAY = 0.5
 export const WALK_RING = 0.3
 export const WALK_STEP = 1.3
-export const APPROACH_M = 1.5
+export const APPROACH = 1.2
 // How often an aim on an explore becomes a visit, the steepest ground a dragon will alight on, and how many nest radii from home a spot must be to count as away.
 export const VISIT_P = 0.5
 export const SPOT_SLOPE_DEG = 30
@@ -206,11 +208,12 @@ const NEST_ASIDE = 0.35
 // How far ahead of the body's origin, in body units, the eat clip's snout plunges: measured on the shipped fen dragon at the bite, the snout's vertices lie 1.84 to 2.45 forward with the ground under them, so a kill this far ahead is what the head goes into.
 export const EAT_REACH = 2.1
 
+// The lure's distances, in body units like EAT_REACH: noticed within LURE, forgotten past LURE_FORGET, MENACE the slack either side of the head at the hand, MENACE_RUN past it the run.
 export const LURES = ['fish']
-export const LURE_M = 5
-export const LURE_FORGET_M = 12
-export const MENACE_M = 1
-export const MENACE_RUN_M = 3
+export const LURE = 4
+export const LURE_FORGET = 9.5
+export const MENACE = 0.8
+export const MENACE_RUN = 2.4
 // Seconds between a live dragon's anchors from its authority; how long a peer's anchor speaks for a dragon whose hand this client cannot see; how long a peer's anchor takes to pull the body here onto it.
 export const ANCHOR_S = 1
 export const ANCHOR_STALE_S = 3
@@ -227,6 +230,9 @@ const pull = (cur, want, w, cap) => cur + clamp((want - cur) * w, -cap, cap)
 const _quat = new THREE.Quaternion()
 const _euler = new THREE.Euler()
 const _pos = new THREE.Vector3()
+// The drawn heading and pitch _pose last wrote, for the tail's lag.
+let _heading = 0
+let _pitch = 0
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _cargoPos = new THREE.Vector3()
@@ -428,7 +434,9 @@ export class Dragons {
         m.map = asset.map
         m.needsUpdate = true
       }
-      this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
+      const p = new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT })
+      p.solver = new TailLag(p.bones, asset.tail)
+      this.puppets.push(p)
     }
     this.freePuppets = this.puppets.slice()
 
@@ -906,7 +914,7 @@ export class Dragons {
     if (d.cargo && ph.meal) {
       this._meal(d)
     } else {
-      if (Math.hypot(d.x - dest.x, d.z - dest.z) > WAY_M) d.queue.push({ kind: 'walk', u: 0, v: 0 })
+      if (Math.hypot(d.x - dest.x, d.z - dest.z) > WAY * d.k) d.queue.push({ kind: 'walk', u: 0, v: 0 })
       d.queue.push({ kind: 'idle' })
       this._restStep(d)
     }
@@ -924,11 +932,11 @@ export class Dragons {
     const ring = WALK_RING * dest.r
     let a = Math.atan2(d.z - dest.z, d.x - dest.x)
     for (let i = 0; i < 3; i++) { a += WALK_STEP; d.queue.push({ kind: 'walk', u: Math.cos(a) * ring, v: Math.sin(a) * ring }) }
-    // The stance: EAT_REACH short of the kill along the line from the nest's centre out through it, reached from APPROACH_M further back so the body arrives facing the kill.
+    // The stance: EAT_REACH short of the kill along the line from the nest's centre out through it, reached from APPROACH further back so the body arrives facing the kill.
     const len = Math.hypot(d.cargoU, d.cargoV)
     const ux = d.cargoU / len, uz = d.cargoV / len
     const stance = EAT_REACH * d.k
-    d.queue.push({ kind: 'walk', u: d.cargoU - (stance + APPROACH_M) * ux, v: d.cargoV - (stance + APPROACH_M) * uz })
+    d.queue.push({ kind: 'walk', u: d.cargoU - (stance + APPROACH * d.k) * ux, v: d.cargoV - (stance + APPROACH * d.k) * uz })
     d.queue.push({ kind: 'walk', u: d.cargoU - stance * ux, v: d.cargoV - stance * uz })
     d.queue.push({ kind: 'eat' })
     d.homing = false
@@ -958,7 +966,7 @@ export class Dragons {
     } else if (d.face !== null) {
       d.heading += clamp(swing(d.heading, d.face), -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
     }
-    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
+    d.speed += clamp(want - d.speed, -STRIDE_ACCEL * d.k * dt, STRIDE_ACCEL * d.k * dt)
     d.x += Math.cos(d.heading) * d.speed * dt
     d.z -= Math.sin(d.heading) * d.speed * dt
     const floor = this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest)
@@ -1028,13 +1036,13 @@ export class Dragons {
       if (ph.dur - elapsed <= dist / (this.asset.gait.walk * d.k) + HOMING_PAD_S) {
         d.homing = true
         d.queue.length = 0
-        d.queue.push(dist > WAY_M ? { kind: 'walk', u: ph.to.x - d.dest.x, v: ph.to.z - d.dest.z } : { kind: 'idle' })
+        d.queue.push(dist > WAY * d.k ? { kind: 'walk', u: ph.to.x - d.dest.x, v: ph.to.z - d.dest.z } : { kind: 'idle' })
         this._restStep(d)
       }
     }
     const dist = this._stand(d, TICK_S)
     d.left -= TICK_S
-    if (d.rest === 'walk' && dist < WAY_M) d.left = 0
+    if (d.rest === 'walk' && dist < WAY * d.k) d.left = 0
     if (d.left <= 0) this._restDone(d)
   }
 
@@ -1123,14 +1131,14 @@ export class Dragons {
         d.face = null
         this._play(d, 'walk', Infinity)
       }
-    } else if (this._stand(d, TICK_S) < WAY_M && d.rest === 'walk') {
+    } else if (this._stand(d, TICK_S) < WAY * d.k && d.rest === 'walk') {
       d.rest = 'idle'
       d.face = to.heading
       this._play(d, 'idle', Infinity)
     }
   }
 
-  /** The lure this dragon is after this tick: the nearest of this.lures it wants, noticed within LURE_M across the ground and kept to LURE_FORGET_M; null when there is none. */
+  /** The lure this dragon is after this tick: the nearest of this.lures it wants, noticed within LURE across the ground and kept to LURE_FORGET; null when there is none. */
   _lure(d) {
     let lure = null
     let best = Infinity
@@ -1139,7 +1147,7 @@ export class Dragons {
       const dist = Math.hypot(l.x - d.x, l.z - d.z)
       if (dist < best) { best = dist; lure = l }
     }
-    return lure !== null && best <= (d.lure ? LURE_FORGET_M : LURE_M) ? lure : null
+    return lure !== null && best <= (d.lure ? LURE_FORGET : LURE) * d.k ? lure : null
   }
 
   /** Off the score and after the lure, live: the kill, if any, let go where it lies. `by` is the lurer's client id, null for this client, which then owes the room the anchors. */
@@ -1158,8 +1166,8 @@ export class Dragons {
   /**
    * One tick after the lure: the heading closing on its bearing at
    * WALK_TURN_RATE and the body along where it points at the walk gait, or the
-   * run from the hand MENACE_RUN_M past its head until it is a run's braking
-   * distance at ACCEL off her (a third of either through a wide swing, as
+   * run from the hand MENACE_RUN past its head until it is a run's braking
+   * distance at STRIDE_ACCEL off her (a third of either through a wide swing, as
    * _stand), until the head is at the hand, where it stands and eats at her;
    * the floor under it is the ground, or the nest's plane while over the nest.
    */
@@ -1168,19 +1176,19 @@ export class Dragons {
     const dx = l.x - d.x
     const dz = l.z - d.z
     const dist = Math.hypot(dx, dz)
-    const reach = EAT_REACH * d.k + MENACE_M
+    const reach = (EAT_REACH + MENACE) * d.k
     const sw = swing(d.heading, Math.atan2(-dz, dx))
     d.heading += clamp(sw, -WALK_TURN_RATE * dt, WALK_TURN_RATE * dt)
     let want = 0
-    if (dist > (d.clip === 'eat' ? reach + MENACE_M : reach)) {
+    if (dist > (d.clip === 'eat' ? reach + MENACE * d.k : reach)) {
       const run = this.asset.gait.run * d.k
-      const gait = dist > reach + MENACE_RUN_M || (d.clip === 'run' && dist > reach + (run * run) / (2 * ACCEL)) ? 'run' : 'walk'
+      const gait = dist > reach + MENACE_RUN * d.k || (d.clip === 'run' && dist > reach + (run * run) / (2 * STRIDE_ACCEL * d.k)) ? 'run' : 'walk'
       if (d.clip !== gait) this._play(d, gait, Infinity)
       want = this.asset.gait[gait] * d.k * (Math.abs(sw) > 1 ? 0.3 : 1)
     } else if (d.clip !== 'eat') {
       this._play(d, 'eat', Infinity)
     }
-    d.speed += clamp(want - d.speed, -ACCEL * dt, ACCEL * dt)
+    d.speed += clamp(want - d.speed, -STRIDE_ACCEL * d.k * dt, STRIDE_ACCEL * d.k * dt)
     d.x += Math.cos(d.heading) * d.speed * dt
     d.z -= Math.sin(d.heading) * d.speed * dt
     const dest = d.dest
@@ -1346,11 +1354,13 @@ export class Dragons {
   // Drawing.
   // -------------------------------------------------------------------------
 
-  /** The body's matrix into _mat (and _pos, _quat) between its last two ticks by rec.alpha: +X forward yawed to the heading, pitched about its Z and rolled about its X, scaled by k. */
+  /** The body's matrix into _mat (and _pos, _quat, _heading, _pitch) between its last two ticks by rec.alpha: +X forward yawed to the heading, pitched about its Z and rolled about its X, scaled by k. */
   _pose(d) {
     const a = d.rec.alpha
     _pos.set(lerp(d.px, d.x, a), lerp(d.py, d.y, a), lerp(d.pz, d.z, a))
-    _quat.setFromEuler(_euler.set(lerp(d.proll, d.roll, a), d.pheading + swing(d.pheading, d.heading) * a, lerp(d.ppitch, d.pitch, a), 'YZX'))
+    _heading = d.pheading + swing(d.pheading, d.heading) * a
+    _pitch = lerp(d.ppitch, d.pitch, a)
+    _quat.setFromEuler(_euler.set(lerp(d.proll, d.roll, a), _heading, _pitch, 'YZX'))
     _scl.setScalar(d.k)
     _mat.compose(_pos, _quat, _scl)
   }
@@ -1416,6 +1426,7 @@ export class Dragons {
     if (!puppet) return
     puppet.show(tier)
     puppet.play(d.clip, d.cue)
+    puppet.solver.steer(_heading, _pitch)
     puppet.step(dt)
     puppet.group.matrix.copy(_mat)
     puppet.group.matrixWorldNeedsUpdate = true

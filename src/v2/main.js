@@ -31,6 +31,7 @@ import { Carrots, loadCarrotsBank } from './render/carrots.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
+import { FishLeap } from './render/fish-leap.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
 import { Butterflies } from './render/butterflies.js'
@@ -42,17 +43,21 @@ import { Snowmen } from './render/snowmen.js'
 import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
+import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
+import { InteriorView, loadInteriorTextures } from './render/interior.js'
+import { Residents } from './render/residents.js'
+import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
 import { Shell } from './render/shell.js'
 import { rollVillage, buildVillage, gardenSpots, plotsOccupy, roofFerns, weedGardens, WOOD, HER_SCALE } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
-import { setTierTint } from './render/critters.js'
+import { loadCritterGlb, setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor, buildRockBank } from '../props/rock-bank.js'
@@ -67,7 +72,7 @@ import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
-import { FlareGuns, GunWindows, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
+import { FLAREGUN_GLB, FlareGuns, GunWindows, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
 import { Flares, fromWire, toWire } from './render/flares.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -754,7 +759,8 @@ function saveGame() {
   // is a yaw and this is exact; rig.rotation's Euler would fold past 90 deg.
   const q = rig.quaternion
   const doc = {
-    x: rig.position.x, z: rig.position.z,
+    // In a house, the step before its door: the house is rolled on entering and not saved.
+    x: indoors ? indoors.back.x : rig.position.x, z: indoors ? indoors.back.z : rig.position.z,
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
@@ -1545,8 +1551,8 @@ const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
 const gunTarget = new THREE.Vector3()
-/** The trigger on a hand holding the flare gun: a flare off down the barrel to the room, or a dry click with no charge left. */
-function fireFlare(key) {
+/** The trigger on a hand holding the flare gun: a flare off down the barrel, or down `aim` (unit) where given, to the room; a dry click with no charge left. */
+function fireFlare(key, aim = null) {
   const rec = hands.holding(key)
   if (rec.charges <= 0) {
     if (ambience) sound.play('uiPop', { rate: 0.5, gain: 0.25 })
@@ -1554,7 +1560,8 @@ function fireFlare(key) {
   }
   hands.heldFrame(key, gunFrame)
   gunMuzzle.copy(MUZZLE).applyMatrix4(gunFrame)
-  gunAim.set(0, 0, -1).transformDirection(gunFrame)
+  if (aim === null) gunAim.set(0, 0, -1).transformDirection(gunFrame)
+  else gunAim.copy(aim)
   aimTarget(gunMuzzle, gunAim, (x, z) => walk.heightAt(x, z), (x, z) => waterSurfaces.levelAt(x, z, true), gunTarget)
   rec.charges--
   const f = {
@@ -1796,7 +1803,7 @@ function buildQuestPanel() {
   // open a click presses what is under the cursor, and one past the menu goes
   // on to the world: a click on the world reaches the desk hand down the
   // camera ray, to DESK_CLICK_M, for the first thing it can take (or drops
-  // what the hand holds, or fires the flare gun it holds -- G drops that). With the mouse captured the ray is the view's
+  // what the hand holds, or fires the flare gun it holds down the ray -- G drops that). With the mouse captured the ray is the view's
   // centre, since the cursor is not moving. A click is a press that moved
   // under DESK_CLICK_PX, so a drag-look never picks.
   const raycaster = new THREE.Raycaster()
@@ -1825,7 +1832,7 @@ function buildQuestPanel() {
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
-    if (holdsGun('desk')) fireFlare('desk')
+    if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -2364,6 +2371,7 @@ let deadwood = null
 let bones = null
 let carrots = null
 let fish = null
+let fishLeap = null
 let frogs = null
 let crabs = null
 let butterflies = null
@@ -2374,6 +2382,7 @@ let wildlife = null
 let snowmen = null
 let leafkin = null
 let villagers = null
+let hobs = null
 let hands = null
 let handsNet = null
 let creatureNet = null
@@ -2415,6 +2424,11 @@ const portalFrom = new THREE.Vector3()
 const portalSites = []
 let portalBlink = false
 let portalIn = null
+// The house she has gone into (design/30-leafkin.md, Interiors), or null: its entry (RoomProps.entries), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the village walk its own stands in for while she is in.
+let indoors = null
+// Through a house's door: her feet within `walk` of its face heading `into` it, or a teleport landing within `blink`; the same at the door inside. Outside, the landing's stone ends about 0.45 m short of the face, over a drop, so `walk` reaches onto the landing.
+const HOUSE_DOOR = { walk: 0.65, blink: 0.8, into: 0.5 }
+let doorBusy = false
 let editor = null
 let panel = null
 // The ambient sound (audio/): both stay null when the clips fail to load, and
@@ -2493,6 +2507,7 @@ function applyAnimalVisibility() {
   snowmen.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
   if (villagers) villagers.batch.visible = animalOn('leafkin')
+  if (hobs) hobs.batch.visible = animalOn('leafkin')
   // The roosts go with their dragons: a nest is where a dragon lives, not litter. Neither in a village.
   if (dragons) dragons.batch.visible = animalOn('dragons')
   if (roosts) roosts.batch.visible = animalOn('dragons')
@@ -2678,6 +2693,8 @@ async function bootWorld() {
   // batches do not wait on them, so the world has trees and stone from the
   // first frame wearing whatever the procedural layers already hold.
   propTextures = buildTextureArray()
+  // The flare gun's mesh, worn before the first room: a saved gun in a hand or the backpack is dressed as the room builds.
+  const flareGunMesh = loadCritterGlb(FLAREGUN_GLB, { origin: [0, 0, 0] })
 
   // The ambient sound's clips (audio/) load in the background so a slow fetch
   // never holds the world; until they land, and forever if one fails, the
@@ -2702,6 +2719,7 @@ async function bootWorld() {
     if (saved.door?.key === undefined) { console.warn('[v2] the save is in a village with no door: booting the overworld'); room = ROOMS.overworld; saved = null }
     else cameInBy = saved.door
   }
+  flareGuns.wear(await flareGunMesh)
   const { fresh } = await buildRoom(room, saved)
   if (fresh) saved = null
 
@@ -2851,12 +2869,13 @@ function disposeRoom() {
     if (Array.isArray(layer.meshes)) for (const m of layer.meshes) m.removeFromParent()
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
+  closeHouse()
   for (const layer of [
-    leafkin, villagers, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fish,
+    leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
     boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   lighting.clearLamps()
-  leafkin = villagers = entrances = dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fish = null
+  leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = null
   boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
@@ -2877,16 +2896,7 @@ function disposeRoom() {
  */
 async function bootRoom(room, site) {
   if (EDITOR_MODE) throw new Error('v2: no room swap in the editor')
-  if (!blackout) {
-    blackout = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false }),
-    )
-    blackout.renderOrder = 1e6
-    blackout.frustumCulled = false
-    blackout.visible = false
-    camera.add(blackout)
-  }
+  makeBlackout()
   ready = false
   // The wait she meets at a mouth, split three ways, because only the middle of
   // it is the room build the boot table breaks down: the fade she watches, the
@@ -2915,6 +2925,105 @@ async function bootRoom(room, site) {
   )
   await fade(0)
 }
+
+function makeBlackout() {
+  if (blackout) return
+  blackout = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false }),
+  )
+  blackout.renderOrder = 1e6
+  blackout.frustumCulled = false
+  blackout.visible = false
+  camera.add(blackout)
+}
+
+/**
+ * Into house `e` (RoomProps.entries) under the fade: its room rolled off the
+ * village's seed and the house, set down past the village's disc on its own
+ * floor above whatever ground is there, and her walk swapped for its own.
+ * The village goes on around it unseen.
+ */
+async function enterHouse(e) {
+  doorBusy = true
+  if (ambience) sound.play('door', { gain: 0.3 })
+  makeBlackout()
+  ready = false
+  await fade(1)
+  const room = rollInterior({ seed: villageSeed(), index: e.k, height: e.height })
+  const ox = roomBounds.x + roomBounds.r + 40 + e.k * 10, oz = roomBounds.z
+  let top = -Infinity
+  for (let x = -room.R - 1; x <= room.R + 1; x += 0.5) for (let z = -room.R - 1; z <= room.R + 1; z += 0.5) top = Math.max(top, height.heightAt(ox + x, oz + z))
+  const oy = top + 0.5
+  const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz)
+  scene.add(view.group)
+  const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
+  const home = villagers.graph.doorNodes[e.k]
+  const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace }))
+  const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
+  const rDoor = rAt(room.rs, Math.PI)
+  indoors = { e, back: roomProps.doors()[e.k], room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
+  walk = player.th = window.v2walk = inner
+  player.teleportTo(ox + room.doorIn.x, oz + room.doorIn.z)
+  faceAlong(1, 0)
+  console.log(`[v2] house ${e.k}: ${room.items.length} things, ${room.windows.length} windows, ${room.loft ? 'a loft' : 'no loft'}, ${residents.all.length} at home`)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** Back out of the house she is in, to the step before its door, facing away from it. */
+async function leaveHouse() {
+  doorBusy = true
+  if (ambience) sound.play('door', { gain: 0.3 })
+  ready = false
+  await fade(1)
+  const { e, back } = indoors
+  closeHouse()
+  player.teleportTo(back.x, back.z)
+  faceAlong(e.nx, e.nz)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** The house's view and residents down and the village walk hers again; nothing when she is outdoors. */
+function closeHouse() {
+  if (!indoors) return
+  indoors.view.dispose()
+  indoors.residents.dispose()
+  walk = window.v2walk = indoors.outside
+  if (player) player.th = walk
+  indoors = null
+}
+
+/** After the step, in a village: the house door her feet just went through, in or out. True when one did. */
+function houseTest(blink) {
+  if (doorBusy || EDITOR_MODE || !currentRoom.village || !roomProps || !villagers?.loaded) return false
+  const feet = player.originPosition()
+  const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
+  const step = Math.hypot(sx, sz)
+  const through = (x, z, nx, nz, inward) => {
+    const d = Math.hypot(feet.x - x, feet.z - z)
+    if (blink) return d <= HOUSE_DOOR.blink
+    return d <= HOUSE_DOOR.walk && step > 0 && (inward * -(sx * nx + sz * nz)) / step >= HOUSE_DOOR.into
+  }
+  if (indoors) {
+    const d = indoors.door
+    if (!through(d.x, d.z, d.nx, d.nz, -1)) return false
+    leaveHouse().catch(reportRuntimeError)
+    return true
+  }
+  for (const e of roomProps.entries()) {
+    if (!through(e.x, e.z, e.nx, e.nz, 1)) continue
+    enterHouse(e).catch(reportRuntimeError)
+    return true
+  }
+  return false
+}
+
+// A house by its index from the console: `v2house(3)` in, `v2house(null)` out.
+window.v2house = (k) => (k === null ? leaveHouse() : enterHouse(roomProps.entries()[k]))
 
 // The swap without the walk: `v2enter()` into the glade by the mouth she last
 // came in by (or a named door key), `v2enter(null)` back out. What the console
@@ -3450,6 +3559,9 @@ async function buildRoom(room, at) {
   fish.place(spawn.x, spawn.z)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
   window.v2fish = fish
+  // Now and then one clears the surface of a lake near her and falls back in (render/fish-leap.js).
+  fishLeap = new FishLeap(scene, height, waterSurfaces, fish)
+  window.v2fishLeap = fishLeap
 
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
@@ -3569,6 +3681,7 @@ async function buildRoom(room, at) {
     },
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
     thud: (x, y, z) => { if (ambience) sound.play('footfall', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
+    splash: (x, y, z) => { if (ambience) sound.play('splash', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: { x, y, z } }) },
     scale: room.scale,
   })
   hands.addSource(mushrooms, 'mushroom')
@@ -3649,8 +3762,13 @@ async function buildRoom(room, at) {
     for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
     villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
     creatureNet.add(villagers, ['vg'])
+    // Their pets (render/hobs.js): a hob weevil at most houses, trailing its owner or keeping the yard, babies trailing it.
+    hobs = new Hobs(scene, { walk, villagers, seed: villageSeed() })
+    for (const m of hobs.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-hobs' })
+    hobs.ready.then(() => console.log(`[v2] hobs ${hobs.stats.adults} adults, ${hobs.stats.babies} babies`))
   }
   window.v2villagers = villagers
+  window.v2hobs = hobs
 
   // The ambient sound over this room's layers, once the clips are in.
   await bootStep('sound')
@@ -3661,7 +3779,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' }))],
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -5283,7 +5401,7 @@ function fireTeleport() {
 function portalTest() {
   const blink = portalBlink
   portalBlink = false
-  if (!entrances) return
+  if (houseTest(blink) || indoors || !entrances) return
   const feet = player.originPosition()
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)
@@ -5953,7 +6071,9 @@ function tick() {
   stepAnimal('fish', () => {
     if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
     else fish.follow(headTmp.x, headTmp.y, headTmp.z)
+    fishLeap.update(dt, headTmp, submerged)
   })
+  fishLeap.group.visible = animalOn('fish')
   stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
   // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
@@ -5971,7 +6091,7 @@ function tick() {
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // The villagers likewise, under the leafkin's row.
-  if (villagers) stepAnimal('leafkin', () => villagers.update(player.originPosition(), headTmp, clock.seconds, dt))
+  if (villagers) stepAnimal('leafkin', () => { villagers.update(player.originPosition(), headTmp, clock.seconds, dt); hobs.update(headTmp, clock.seconds, dt) })
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
   if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
@@ -6011,6 +6131,11 @@ function tick() {
     lamps.update((now / 1000) % 1024, dayness)
     lighting.uniforms.uLampGlow.value.copy(lamps.glow)
     roomProps.setGlow(lamps.breath)
+  }
+  if (indoors) {
+    indoors.view.update((now / 1000) % 1024, dayness)
+    indoors.residents.sync(new Map(villagers.all.filter((c) => c.home === villagers.graph.doorNodes[indoors.e.k] && c.state === 'inside').map((c) => [c.id, c])))
+    indoors.residents.update(dt, indoors.view)
   }
   applySky(state, headTmp, now / 1000)
   // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.

@@ -305,8 +305,9 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
     // world photographs its far card off. `legs` names each leg's joint chain,
     // hip to foot, for the puppet's foot IK (render/puppet.js FootIK), `arms`
     // each arm's with its shoulder, elbow and wrist, and `spine` and `head` the
-    // trunk and the neck up, for a body posed off a headset (render/avatar-rig.js):
-    // names only, since the world reads the geometry off the live pose.
+    // trunk and the neck up, for a body posed off a headset (render/avatar-rig.js),
+    // and `tail` root to tip, for the tail's lag (render/tail-lag.js): names
+    // only, since the world reads the geometry off the live pose.
     scenes: [{
       nodes: [...tiers.map((_, k) => k), root],
       extras: {
@@ -318,6 +319,7 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
           arms: (map.arms ?? []).map((a) => ({ id: a.id, side: a.side, chain: carried(id, `arm ${a.id}`, a.chain, byName), shoulder: a.shoulder, elbow: a.elbow, wrist: a.wrist })),
           spine: carried(id, 'spine', map.spine ?? [], byName),
           head: carried(id, 'head', map.head ?? [], byName),
+          tail: carried(id, 'tail', map.tail ?? [], byName),
         },
       },
     }],

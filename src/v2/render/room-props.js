@@ -25,9 +25,9 @@ export const TIERS = [0, 2, 3]
 // Which way the pick's door faces, in its own frame: +X at yaw 0. The trunk's
 // wall under it stands `wall` of the box's half-width out; the roots and the
 // eaves reach the rest (village.js HUTS packs the trunks). Two steps up from the
-// ground, the landing meets the door `sill` out, in the pick's unit (its face
-// at 0.227, measured through the walker's columns).
-export const DOOR = { x: 1, z: 0, wall: 0.7, sill: 0.235 }
+// ground, the landing meets the door `sill` out, in the pick's unit, and the door's
+// `face` (measured through the walker's columns).
+export const DOOR = { x: 1, z: 0, wall: 0.7, sill: 0.235, face: 0.227 }
 // The windows, in the shipped pick's frame (its raw vertices over their feet,
 // Tripo's node yaw dropped by ship.mjs), placed in the /gen-prop viewer's glow
 // points table: r the disc each lights and (nx, nz) the way the pane faces.
@@ -53,6 +53,8 @@ const CELL = 1 / 40
 // Crossings one column may hold; the walker takes at most walk.js SPAN_CAP spans.
 const CROSS_CAP = 12
 const CROSS_EPS = 1e-3
+// The posts (columnTable): faces whose normal's y is under `steep` of its length, climbing from `foot` cells to `tall` cells over the ground.
+const POST = { steep: 0.5, foot: 2, tall: 8 }
 
 /** The bank from a shipped ladder (loadGenProp): the drawn tiers, each with its mirror image, the pick's box, and its column table. */
 export function propBankFrom(ladder) {
@@ -82,11 +84,11 @@ function mirrored(geo) {
  * per cell the spans of stone on the vertical line through its centre, in the
  * pick's unit, lowest first. A face looking down is the underside of stone and
  * a face looking up its top, read from the bottom up: an underside opens a
- * span, the next top closes it, and a top met in the air closes one from the
- * crossing under it (the mesh has holes) or, first on its line, a cell thick
- * (the awning is one cloth, its faces looking up alone). So a root is stone
- * from the ground to its back, the eaves are stone with the air of the porch
- * under them, and a hole in the roof does not turn the room under it to stone.
+ * span, the next top closes it, and a top met with no underside open is a
+ * cloth a cell thick (the awning and the roof's skirt have faces looking up
+ * alone). Closing that top from the crossing under it instead stood a wall
+ * from the porch's step to the awning. So a root is stone from the ground to
+ * its back, and the eaves and the awning are stone with open air under them.
  */
 export function columnTable(geo) {
   geo.computeBoundingBox()
@@ -141,11 +143,47 @@ export function columnTable(geo) {
     let m = 0, open = null
     for (let q = 0; q < n; q++) {
       if (!tops[q]) { if (open === null) open = ys[q] }
-      else if (m < CROSS_CAP / 2) { cross[base + m * 2] = open ?? (q > 0 ? ys[q - 1] : ys[q] - CELL); cross[base + m * 2 + 1] = ys[q]; m++; open = null }
+      else if (m < CROSS_CAP / 2) { cross[base + m * 2] = open ?? ys[q] - CELL; cross[base + m * 2 + 1] = ys[q]; m++; open = null }
     }
     spans[k] = m
   }
+  // The posts: a vertical line through a pole thinner than a cell crosses none of its faces. Its steep faces, taken lowest first, climb each cell their plan touches from within `foot` cells of the ground for as long as each starts under the reach so far; a climb `tall` cells high is stone from the ground to its top.
+  const steep = []
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2]
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2]
+    const ny = uz * vx - ux * vz
+    if (Math.abs(ny) > POST.steep * Math.hypot(uy * vz - uz * vy, ny, ux * vy - uy * vx)) continue
+    steep.push(t)
+  }
+  const low = (t) => Math.min(pos[idx[t] * 3 + 1], pos[idx[t + 1] * 3 + 1], pos[idx[t + 2] * 3 + 1])
+  steep.sort((p, q) => low(p) - low(q))
+  const reach = new Float32Array(nx * nz).fill(POST.foot * CELL)
+  for (const t of steep) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
+    const lo = low(t), hi = Math.max(pos[a + 1], pos[b + 1], pos[c + 1])
+    const i0 = Math.max(0, Math.floor((Math.min(pos[a], pos[b], pos[c]) - x0) / CELL)), i1 = Math.min(nx - 1, Math.floor((Math.max(pos[a], pos[b], pos[c]) - x0) / CELL))
+    const j0 = Math.max(0, Math.floor((Math.min(pos[a + 2], pos[b + 2], pos[c + 2]) - z0) / CELL)), j1 = Math.min(nz - 1, Math.floor((Math.max(pos[a + 2], pos[b + 2], pos[c + 2]) - z0) / CELL))
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (lo <= reach[j * nx + i] && hi > reach[j * nx + i]) reach[j * nx + i] = hi
+  }
+  for (let k = 0; k < nx * nz; k++) if (reach[k] >= POST.tall * CELL) spans[k] = mergeSpan(cross, k * CROSS_CAP, spans[k], 0, reach[k])
   return { x0, z0, nx, nz, cross, spans }
+}
+
+/** The `n` spans at `base` with [lo, hi] made stone too, overlapping ones merged, lowest first: how many now. */
+function mergeSpan(cross, base, n, lo, hi) {
+  const out = []
+  for (let q = 0; q < n; q++) {
+    const b = cross[base + q * 2], t = cross[base + q * 2 + 1]
+    if (t < lo || b > hi) out.push([b, t])
+    else { lo = Math.min(lo, b); hi = Math.max(hi, t) }
+  }
+  out.push([lo, hi])
+  out.sort((p, q) => p[0] - q[0])
+  if (out.length > CROSS_CAP / 2) throw new Error(`RoomProps: ${out.length} spans on one column`)
+  for (let q = 0; q < out.length; q++) { cross[base + q * 2] = out[q][0]; cross[base + q * 2 + 1] = out[q][1] }
+  return out.length
 }
 
 export async function loadHouseBank() {
@@ -216,6 +254,17 @@ export class RoomProps {
       const dz = -DOOR.x * sn + dz0 * c
       const out = h.r * DOOR.wall + 0.5, sill = h.scale * DOOR.sill
       return { x: h.x + dx * out, z: h.z + dz * out, sill: { x: h.x + dx * sill, z: h.z + dz * sill } }
+    })
+  }
+
+  /** Each house's doorway, on the face of its door, with the way out and its height, for going inside: `[{ k, x, z, nx, nz, height }]`. */
+  entries() {
+    return this.props.map((h, k) => {
+      const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
+      const dz0 = DOOR.z * h.mirror
+      const nx = DOOR.x * c + dz0 * sn, nz = -DOOR.x * sn + dz0 * c
+      const face = h.scale * DOOR.face
+      return { k, x: h.x + nx * face, z: h.z + nz * face, nx, nz, height: h.top - h.y }
     })
   }
 
