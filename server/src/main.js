@@ -8,6 +8,9 @@ const ROOM_CAP = Math.max(2, Number(process.env.ROOM_CAP || 8))
 const TICK_MS = 50
 const SILENCE_MS = 45_000
 const MAX_PAYLOAD = 4096
+// A client's diagnostic lines logged a connection, and a line's length (net.js Netplay.diag).
+const DIAG_CAP = 300
+const DIAG_MAX = 500
 
 const rooms = new Map()
 let serverTick = 0
@@ -22,7 +25,8 @@ function roomFor(name) {
     // was moving, so a joiner finds the boats where they were left.
     // `loose`, `gone`, `taken` and `rev`: the things in the room, see applyThing.
     // `anchors`, `lured` and `crev`: the creatures someone is interacting with, see applyCreature.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0 }
+    // `flares` and `frev`: the flares shot in the room, see applyFlare.
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -59,6 +63,32 @@ function validBoats(message) {
     (message.boat === undefined || finiteList(message.boat, 6))
 }
 const ROOM_BOATS_CAP = 32
+
+// THE FLARES (src/v2/render/flares.js): [id, room, ox, oy, oz, tx, ty, tz,
+// color, seed], `room` being the client's own room key (overworld or a
+// village), kept FLARE_CAP deep so a late joiner sees the sky as it is. Each
+// goes to every other client once, with its age in ms, so a shot still in
+// flight is flown from where it is.
+const FLARE_CAP = 64
+function validFlare(f) {
+  return Array.isArray(f) && f.length === 10 && typeof f[0] === 'string' && /^[0-9a-z]{1,16}$/.test(f[0]) &&
+    typeof f[1] === 'string' && /^[a-z0-9:.-]{1,40}$/.test(f[1]) && f.slice(2, 8).every((n) => Number.isFinite(n)) &&
+    Number.isInteger(f[8]) && f[8] >= 0 && f[8] <= 0xffffff && Number.isFinite(f[9])
+}
+
+function applyFlare(room, client, flare, now) {
+  if (room.flares.some((e) => e.data[0] === flare[0])) return
+  room.flares.push({ data: flare, at: now, rev: ++room.frev, by: client.id })
+  if (room.flares.length > FLARE_CAP) room.flares.shift()
+}
+
+/** The flares shot since this client last heard, none of them its own, each with its age in ms; null when there are none. */
+function flaresFor(room, client, now) {
+  const out = []
+  for (const e of room.flares) if (e.rev > client.seenFrev && e.by !== client.id) out.push([...e.data, now - e.at])
+  client.seenFrev = room.frev
+  return out.length ? out : null
+}
 
 // THE THINGS IN HANDS AND ON THE GROUND. What each client holds, what lies
 // loose where someone let it go, and where anyone has pulled something out
@@ -275,6 +305,7 @@ function validClock(message, room) {
 
 function leave(client) {
   if (!client.room) return
+  console.log(`[leave] ${client.tag}`)
   client.room.clients.delete(client.id)
   if (!client.room.clients.size) rooms.delete(client.roomName)
   client.room = null
@@ -315,8 +346,16 @@ wss.on('connection', (ws, request) => {
     held: new Array(HANDS).fill(null), heldRev: 0, seenRev: 0, takenSent: 0,
     // How far through the room's creatures it has been told.
     seenCrev: 0,
+    // How far through the room's flares it has been told.
+    seenFrev: 0,
+    // Who it is in this relay's log, and the diag lines it has said.
+    tag: '',
+    diags: 0,
   }
+  // Its address (Caddy's X-Forwarded-For, else the socket's) and its id's head.
+  client.tag = `${String(request.headers['x-forwarded-for'] || request.socket.remoteAddress).split(',')[0].trim()} ${client.id.slice(0, 8)}`
   room.clients.set(client.id, client)
+  console.log(`[join] ${client.tag} room=${roomName} ${String(request.headers['user-agent'] || '-').slice(0, DIAG_MAX)}`)
   ws.isAlive = true
   ws.on('pong', () => { ws.isAlive = true; client.lastSeen = Date.now() })
   ws.on('message', (raw) => {
@@ -326,6 +365,11 @@ wss.on('connection', (ws, request) => {
     // A client measures its clock against this one (net.js Netplay._pong): its own stamp back, and ours.
     if (message && message.type === 'ping' && Number.isFinite(message.t)) {
       send(client, { version: 1, type: 'pong', t: message.t, ms: now })
+      return
+    }
+    // A client's diagnostic line (net.js Netplay.diag), into this log beside who said it.
+    if (message && message.type === 'diag' && typeof message.text === 'string') {
+      if (++client.diags <= DIAG_CAP) console.log(`[diag] ${client.tag} ${message.text.slice(0, DIAG_MAX).replace(/\s+/g, ' ')}`)
       return
     }
     if (validSkip(message)) {
@@ -341,6 +385,13 @@ wss.on('connection', (ws, request) => {
     if (message && ['hold', 'loose', 'lift', 'take'].includes(message.type)) {
       if (validThing(message)) {
         applyThing(room, client, message, now)
+        client.lastSeen = now
+      }
+      return
+    }
+    if (message && message.type === 'flare') {
+      if (validFlare(message.flare)) {
+        applyFlare(room, client, message.flare, now)
         client.lastSeen = now
       }
       return
@@ -398,12 +449,14 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things and the creatures ride only when something changed since this client last heard.
+      // The things, the creatures and the flares ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
       const creatures = creaturesFor(room, client)
       if (creatures) snapshot.creatures = creatures
+      const flares = flaresFor(room, client, now)
+      if (flares) snapshot.flares = flares
       send(client, snapshot)
     }
   }

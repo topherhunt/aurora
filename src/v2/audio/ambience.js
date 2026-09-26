@@ -103,6 +103,7 @@ export const SOUNDS = {
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
   uiPop: 'sounds/ui-pop.mp3',
+  flaregun: 'sounds/ui-flaregun-shoot.mp3',
 }
 
 const RAPTORS = ['crow', 'eagle', 'hawk']

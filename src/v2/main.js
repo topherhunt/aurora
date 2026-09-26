@@ -67,6 +67,8 @@ import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
+import { FlareGuns, GunWindows, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
+import { Flares, fromWire, toWire } from './render/flares.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
 import { Sky } from '../sky.js'
@@ -85,6 +87,7 @@ import { Precip } from './render/precip.js'
 import { WorldProbe, WORLD_PROBE } from '../world-probe.js'
 import { Input } from '../input.js'
 import { Netplay } from '../net.js'
+import { popLog } from './render/net-ease.js'
 import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
@@ -760,6 +763,8 @@ function saveGame() {
     room: currentRoom.id,
     // A village is the one behind the mouth she came in by: its seed, and the door out.
     door: cameInBy,
+    // Every flare hers or a peer's, in every room, as flares.js toWire has them.
+    flares: flares.save(),
   }
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
@@ -783,6 +788,22 @@ function applySave(doc) {
   restoreHeld(doc.held ?? {})
   // A save from before the hour was written has no `hour`.
   if (doc.hour !== undefined) restoreHour(doc.hour)
+  // A save from before the flare gun has no `flares`, and no gun: she is given one.
+  if (doc.flares === undefined) giveFlareGun()
+  else flares.load(doc.flares)
+}
+
+/** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
+function giveFlareGun() {
+  if (backpack.some((s) => s !== null && s.kind === FLAREGUN)) return
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec !== null && rec.kind === FLAREGUN) return
+  }
+  const free = backpack.indexOf(null)
+  if (free < 0) { console.warn('[v2] no free backpack slot for the flare gun'); return }
+  backpack[free] = flareGuns.slot()
+  paintBackpack()
 }
 
 // The hour of day a load or a new game asks for, until the room has been asked.
@@ -818,12 +839,20 @@ function loadGame() {
 }
 
 // The start as a first boot has it: SPAWN at CLOCK.startHour, facing the way
-// the world opens, hands and backpack empty -- what she held is let go where
-// she stood. The saved game is kept; Load still returns her to it.
+// the world opens, the sky clear of flares, hands empty and a fresh flare gun
+// the only thing in the backpack -- what she held is let go where she stood,
+// but a gun in hand is gone with the old one. The saved game is kept; Load
+// still returns her to it.
 function newGame() {
   restoreHour(CLOCK.startHour)
-  for (const key of HAND_KEYS) hands.drop(key, handsHead())
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec !== null && rec.kind === FLAREGUN) hands.put(key)
+    else hands.drop(key, handsHead())
+  }
   backpack.fill(null)
+  flares.clear()
+  giveFlareGun()
   paintBackpack()
   player.teleportTo(SPAWN.x, SPAWN.z)
   rig.rotation.set(0, 0, 0)
@@ -1506,6 +1535,59 @@ function playPick() {
   if (ambience) sound.play('uiPop', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
+/** Whether the hand holds a flare gun. */
+function holdsGun(key) {
+  const rec = hands.holding(key)
+  return rec !== null && rec.kind === FLAREGUN
+}
+
+const gunFrame = new THREE.Matrix4()
+const gunMuzzle = new THREE.Vector3()
+const gunAim = new THREE.Vector3()
+const gunTarget = new THREE.Vector3()
+/** The trigger on a hand holding the flare gun: a flare off down the barrel to the room, or a dry click with no charge left. */
+function fireFlare(key) {
+  const rec = hands.holding(key)
+  if (rec.charges <= 0) {
+    if (ambience) sound.play('uiPop', { rate: 0.5, gain: 0.25 })
+    return
+  }
+  hands.heldFrame(key, gunFrame)
+  gunMuzzle.copy(MUZZLE).applyMatrix4(gunFrame)
+  gunAim.set(0, 0, -1).transformDirection(gunFrame)
+  aimTarget(gunMuzzle, gunAim, (x, z) => walk.heightAt(x, z), (x, z) => waterSurfaces.levelAt(x, z, true), gunTarget)
+  rec.charges--
+  const f = {
+    id: Math.random().toString(36).slice(2, 12), room: flares.room,
+    ox: gunMuzzle.x, oy: gunMuzzle.y, oz: gunMuzzle.z, tx: gunTarget.x, ty: gunTarget.y, tz: gunTarget.z,
+    color: PALETTE[rec.hue], seed: Math.random(),
+  }
+  flares.add(f, 0)
+  netplay.sendFlare(toWire(f))
+  if (ambience) sound.play('flaregun', { gain: 0.9 })
+  questPulse(key, 0.8, 80)
+}
+
+/** A/X or Q: the next colour in the palette for the gun in the hand. */
+function cycleFlareColor(key) {
+  const rec = hands.holding(key)
+  rec.hue = (rec.hue + 1) % PALETTE.length
+  if (ambience) sound.play('uiPop', { rate: 1.4, gain: 0.3 })
+}
+
+/** The flares peers shot since last frame, into the sky; one still leaving its muzzle in her room is heard, as far off as it is. */
+function drainFlares() {
+  player.headPosition(headTmp)
+  for (const a of netplay.flares) {
+    const age = a[10] / 1000
+    const f = fromWire(a.slice(0, 10))
+    if (!flares.add(f, age) || age > 0.5 || f.room !== flares.room || !ambience) continue
+    const d = Math.hypot(f.ox - headTmp.x, f.oy - headTmp.y, f.oz - headTmp.z)
+    if (d < FLARE_HEARD_M) sound.play('flaregun', { gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
+  }
+  netplay.flares.length = 0
+}
+
 function buildSettingsView() {
   const group = new THREE.Group()
   group.add(buildQuestPlate(QUEST_SETTINGS_BOTTOM))
@@ -1695,7 +1777,7 @@ function buildQuestPanel() {
     // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
     // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
-      // With the menu open the trigger presses what the pointer is on; off the menu, and with it closed, the trigger is her hand: it takes, drops and stows (see hands.js).
+      // With the menu open the trigger presses what the pointer is on; off the menu, and with it closed, the trigger is her hand: it takes, drops and stows (see hands.js), except that a flare gun held anywhere but the backpack fires.
       if (questPanelGroup.visible) {
         questPointerHand = el
         updateQuestPointer()
@@ -1703,7 +1785,10 @@ function buildQuestPanel() {
         if (act) { act(); return }
         if (el.components.raycaster && questPanelBlocks(el.components.raycaster.raycaster)) return
       }
-      if (hands && hands.press(el === leftHandEl ? 'left' : 'right', handsHead()) === 'pick') playPick()
+      if (!hands) return
+      const key = el === leftHandEl ? 'left' : 'right'
+      if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
+      else if (hands.press(key, handsHead()) === 'pick') playPick()
     })
   }
 
@@ -1711,7 +1796,7 @@ function buildQuestPanel() {
   // open a click presses what is under the cursor, and one past the menu goes
   // on to the world: a click on the world reaches the desk hand down the
   // camera ray, to DESK_CLICK_M, for the first thing it can take (or drops
-  // what the hand holds). With the mouse captured the ray is the view's
+  // what the hand holds, or fires the flare gun it holds -- G drops that). With the mouse captured the ray is the view's
   // centre, since the cursor is not moving. A click is a press that moved
   // under DESK_CLICK_PX, so a drag-look never picks.
   const raycaster = new THREE.Raycaster()
@@ -1740,7 +1825,8 @@ function buildQuestPanel() {
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
-    if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
+    if (holdsGun('desk')) fireFlare('desk')
+    else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
 
@@ -2173,6 +2259,7 @@ const netplay = new Netplay({
   // A peer aboard a live boat is drawn where in the hull it says it stands, not where its late pose puts it.
   onState: (peers) => peerAvatars.apply(boats ? boats.anchorPeers(peers) : peers),
 })
+popLog.send = (line) => netplay.diag(line)
 // A villager drawn at random on every load; the pick rides with each pose so
 // everyone in the room sees the same one.
 peerAvatars.ready.then((roster) => {
@@ -2301,6 +2388,10 @@ const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
 const DESK_CLICK_M = 2
+// The flare gun (flaregun.js): its source, registered with every room's hands; every room's flares, drawn in the room she is in (render/flares.js), built at boot and never torn down; and the peers' shots heard within FLARE_HEARD_M.
+const flareGuns = new FlareGuns()
+let flares = null
+const FLARE_HEARD_M = 1000
 let roosts = null
 let rowboats = null
 let boats = null
@@ -2602,6 +2693,7 @@ async function bootWorld() {
   // A saved game is where she boots, and it decides where every layer is first
   // placed -- so it is read HERE and not applied after the fact, or the forest
   // would be planted around the room's spawn and she would be standing outside it.
+  flares = new Flares(scene)
   let saved = readSave()
   let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
@@ -2669,6 +2761,7 @@ async function bootWorld() {
   // The rest of the save, now that there is a backpack view to paint. Her
   // position was the spawn above.
   if (saved) { applySave(saved); console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}`) }
+  else giveFlareGun()
   logSceneCensus()
 
   ready = true
@@ -2858,6 +2951,7 @@ function faceAlong(fx, fz) {
 async function buildRoom(room, at) {
   const build = ++roomBuild
   currentRoom = room
+  flares.setRoom(roomKey(room.id, room.village ? cameInBy : null))
   bootSteps.length = 0
   // ONE SEED FOR EVERY ROOM: the terrain worker seeds its own V2Height from the
   // shared constant (terrain/worker.js), so a room seeded otherwise would draw
@@ -3488,6 +3582,7 @@ async function buildRoom(room, at) {
   hands.addSource(grasshoppers, 'grasshopper')
   hands.addSource(bones, bones.kinds)
   hands.addSource(rocks, 'rock')
+  hands.addSource(flareGuns, FLAREGUN)
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   deskHand = new THREE.Group()
@@ -4068,6 +4163,7 @@ const KEY_ACTIONS = {
   u: 'unstick',
   g: 'grab',
   v: 'stow',
+  q: 'flareColor',
   n: 'timeSkip',
   p: 'auroraPattern',
   k: 'weather',
@@ -4091,6 +4187,7 @@ const CODE_ACTIONS = {
   KeyT: 'teleport',
   KeyG: 'grab',
   KeyV: 'stow',
+  KeyQ: 'flareColor',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
   KeyK: 'weather',
@@ -4131,9 +4228,10 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds; the trigger in the headset' },
-      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds, the flare gun too; the trigger in the headset, and a grip lets go' },
+      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds, or fire the flare gun it holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
+      { keys: 'q', what: 'the next colour for the flare gun in the hand, shown in its window; A / X in the headset' },
     ],
   },
   {
@@ -4416,6 +4514,7 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('grab') && hands && hands.press('desk', handsHead()) === 'pick') playPick()
   if (fresh.includes('stow') && hands) hands.stowPress('desk')
+  if (fresh.includes('flareColor') && hands && holdsGun('desk')) cycleFlareColor('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
   if (fresh.includes('weather')) cycleWeather()
   // M cycles the three grass beds in place, under the player's feet, so they can
@@ -4928,21 +5027,17 @@ function peerHeadsNow() {
 //   either stick  X   snap turn
 //   either stick  click   recentre
 //   B / Y             recall the toggle panel to where you are standing
-//   A / X             NOTHING. See below.
-//   grips             NOTHING. See below.
+//   A / X             the next flare colour, on a hand holding the flare gun
+//   grips             drop what that hand holds, anywhere -- the trigger fires a
+//                     held flare gun, so this is how one is let go
 //
-// GRIPS DO NOTHING, ON PURPOSE. They used to carry +5 hours and panel-recall,
-// and a grip is the button a hand presses by accident just holding a controller
-// -- so the sky would lurch five hours forward while you were reaching for
-// something. A binding you fire without meaning to is worse than no binding.
-//
-// A / X DO NOTHING EITHER, ON PURPOSE. They toggled fly, and a one-press fly
-// is the wrong shape for a world meant to be walked: it makes the far side of
-// the map a snap of the fingers and the walk a formality. Flight in the
-// headset lives on the debug view's `fly` row, the same toggle, reached by
-// opening the menu on purpose. Flying still steers off whichever HAND is
-// pushing its stick, wherever that hand points. A desktop keeps space / shift
-// for previewing.
+// A grip is the button a hand presses by accident just holding a controller, so
+// it carries only a drop, which costs a stoop to undo; nothing that moves the
+// sky or the player belongs on it. There is no one-press fly: it would make the
+// far side of the map a snap of the fingers. Flight in the headset lives on the
+// debug view's `fly` row, reached by opening the menu on purpose. Flying still
+// steers off whichever HAND is pushing its stick, wherever that hand points. A
+// desktop keeps space / shift for previewing.
 //
 // AXIS DOMINANCE, not a per-hand split, is what stops a walk from turning you.
 // Each stick contributes to move only while |y| > |x| and to turn only while
@@ -5387,12 +5482,15 @@ function readInput() {
       if (Object.values(st[hand].buttons).some((b) => b.justPressed)) questPointerHand = el
     }
 
-    // Mirrored, and NOTHING on the grips or on A / X. +5h and aurora-cycle
-    // moved to the panel, where they cannot go off in your hand; fly moved to
-    // the debug view's `fly` row, where it takes deliberate menu presses to
-    // reach -- see the banner.
+    // Mirrored; see the banner.
     if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) toggleQuestPanel()
     if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
+    if (hands) {
+      for (const hand of ['left', 'right']) {
+        if (st[hand].buttons.GRIP?.justPressed) hands.drop(hand, handsHead())
+        if (st[hand].buttons.PRIMARY?.justPressed && holdsGun(hand)) cycleFlareColor(hand)
+      }
+    }
 
     if (player.flying) {
       moveHand.getWorldQuaternion(questTempQuat)
@@ -5883,6 +5981,9 @@ function tick() {
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
+  gunWindows.update(hands)
+  drainFlares()
+  flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
   // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.
@@ -5973,6 +6074,8 @@ overlay.fog = scene.fog
 const overSun = new THREE.DirectionalLight()
 const overHemi = new THREE.HemisphereLight()
 overlay.add(overSun, overHemi)
+const gunWindows = new GunWindows(overlay, HAND_KEYS)
+const flarePx = new THREE.Vector2()
 function renderOverlay() {
   if (!hands || !hands.over.children.some((m) => m.count > 0)) return
   if (hands.over.parent !== overlay) overlay.add(hands.over)

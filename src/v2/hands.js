@@ -234,6 +234,24 @@ export class Hands {
     return this._hand(key).held?.rec ?? null
   }
 
+  /** The held thing's geometry frame in the world as the last update() posed it -- what its pool draws it with -- into `out`, a Matrix4; null with nothing held. */
+  heldFrame(key, out) {
+    const hand = this._hand(key)
+    const item = hand.held
+    if (!item) return null
+    const k = hand.draw
+    _c.copy(item.off).multiplyScalar(k).applyQuaternion(item.q)
+    _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
+    _s.fromArray(item.rec.scale).multiplyScalar(k)
+    return out.compose(_p, item.q, _s)
+  }
+
+  /** Whether a press on this hand would stow what it holds rather than let it go. */
+  wouldStow(key, head) {
+    const hand = this._hand(key)
+    return hand.held !== null && hand.held.rec.stowable && this._inZone(hand, head)
+  }
+
   /** How much smaller than it is the hand draws what it holds: 1 is life size. */
   draw(key, k) {
     if (!(k > 0 && k <= 1)) throw new Error(`Hands.draw: ${key} draws at ${k}, not in (0, 1]`)

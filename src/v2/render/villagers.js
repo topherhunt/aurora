@@ -54,7 +54,7 @@ import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
 import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
-import { JUMP_M, LEAD_TICKS, ease, easeFields, keepWas, warnPop } from './net-ease.js'
+import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
 
 export const LOD_TIERS = LOD_RUNGS
 export const PUPPETS = 8
@@ -1207,9 +1207,10 @@ export class Villagers {
     if (c.hidden && !c.puppet) { c.shown = false; return }
     const a = this.alpha
     const pose = c.pose
-    const wasX = pose.x, wasZ = pose.z
+    const wasX = pose.x, wasY = pose.y, wasZ = pose.z
     ease(c, pose, c.px + (c.x - c.px) * a, c.py + (c.y - c.py) * a, c.pz + (c.z - c.pz) * a, c.ph + swing(c.ph, c.heading) * a, this.rolled, dt)
-    if (c.shown && Math.hypot(pose.x - wasX, pose.z - wasZ) > JUMP_M) warnPop(this, seconds, { id: c.id, state: c.state, m: +Math.hypot(pose.x - wasX, pose.z - wasZ).toFixed(2), rewound: this.rewound })
+    const m = c.shown ? popM(pose, wasX, wasY, wasZ, dt) : 0
+    if (m > 0) warnPop(this, seconds, { id: c.id, state: c.state, m: +m.toFixed(2), dy: +(pose.y - wasY).toFixed(2), rewound: this.rewound })
     c.shown = !c.hidden
     pose.k = c.k
     pose.size = c.size

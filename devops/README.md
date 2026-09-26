@@ -35,6 +35,8 @@ only Aurora's unit.
 
 ## Later netplay work
 
+The relay logs each client's join and leave (address, id's head, user agent) and its diag lines (creature pops, the clock offset) to the unit's journal: `ssh racknerd1 journalctl -u aurora --since today | grep -E 'join|leave|diag'`.
+
 The relay carries pose, hand presence and the avatar id each client wears, nothing else. Its versioned
 message envelope leaves room for later ordered world events; it deliberately has no persistence. `APP_PORT` is bound to localhost and
 must never be opened publicly.

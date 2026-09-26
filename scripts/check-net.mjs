@@ -24,6 +24,14 @@ import { Netplay, interpolate } from '../src/net.js'
   if (n.offsetMs !== 1500 || n.time.offsetMs !== 1500) throw new Error(`a slow, lopsided trip should not move the offset: got ${n.offsetMs}`)
   trip(3000, 10)
   if (n.offsetMs !== 1500) throw new Error(`the quickest trip's offset should be believed: got ${n.offsetMs}`)
+  // The relay's log hears the clock once it has settled, and again only when it moves.
+  const said = []
+  const m = { pings: [], offsetMs: 0, time: null, clockSaid: null, diag: (line) => said.push(line) }
+  const at = (sent, rtt, offset) => pong.call(m, { t: sent, ms: sent + offset + rtt / 2 }, sent + rtt)
+  for (let i = 0; i < 12; i++) at(i * 1000, 40, 1500)
+  at(20_000, 20, 1550)
+  at(21_000, 10, 1700)
+  if (said.length !== 2 || said[0] !== 'clock offset 1500 ms, rtt 40 ms' || said[1] !== 'clock offset 1700 ms, rtt 10 ms') throw new Error(`the clock should be said settled and on a move past 100 ms: got ${JSON.stringify(said)}`)
 }
 
 const WebSocket = globalThis.WebSocket
@@ -34,6 +42,8 @@ const server = spawn(process.execPath, ['server/src/main.js'], {
   env: { ...process.env, HOST: '127.0.0.1', PORT: String(port) },
   stdio: ['ignore', 'pipe', 'inherit'],
 })
+let relayLog = ''
+server.stdout.on('data', (chunk) => { relayLog += chunk })
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 try {
   await wait(150)
@@ -109,6 +119,13 @@ try {
     first.send(JSON.stringify({ version: 1, type: 'ping', t: 12345 }))
   })
   if (pong.t !== 12345 || Math.abs(pong.ms - Date.now()) > 1000) throw new Error(`a ping should come back with its stamp and the relay's clock, got ${JSON.stringify(pong)}`)
+  // A diag line lands in the relay's log beside the sender's address and id, and the join before it names the device.
+  first.send(JSON.stringify({ version: 1, type: 'diag', text: '[net] Villagers pop\n{"m":4.2}' }))
+  await wait(100)
+  const diagLine = relayLog.split('\n').find((l) => l.startsWith('[diag] '))
+  if (!/^\[diag\] 127\.0\.0\.1 [0-9a-f]{8} \[net\] Villagers pop \{"m":4\.2\}$/.test(diagLine)) throw new Error(`a diag should be logged on one line with its sender: got ${JSON.stringify(diagLine)}`)
+  const tag = diagLine.split(' ').slice(1, 3).join(' ')
+  if (!relayLog.split('\n').some((l) => l === `[join] ${tag} room=check-net node`)) throw new Error(`the join should name the sender and its device: ${JSON.stringify(relayLog)}`)
   const startedAt = Date.now()
   const clock = await nextClock(second, () => true)
   if (!Number.isFinite(clock.anchorMs) || clock.anchorMs > startedAt || startedAt - clock.anchorMs > 5000) throw new Error(`anchorMs should be the room's creation time, got ${clock.anchorMs} at ${startedAt}`)
@@ -262,6 +279,36 @@ try {
   const keys = new Set(capped.anchors.map((a) => a[0]))
   if (keys.size !== 256 || keys.has('st:0,0:1') || !keys.has('fx:0,0:0') || !keys.has('fx:255,0:0')) throw new Error(`the cap should forget the oldest anchor: ${keys.size} kept, stag ${keys.has('st:0,0:1') ? 'kept' : 'gone'}`)
   fifth.close()
+  // A flare reaches the other client once with its age, never its shooter; a malformed one and a repeated id are dropped; a newcomer hears the sky.
+  const nextFlares = (ws) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('flares timeout')), 1000)
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (message.type === 'snapshot' && message.flares) {
+        clearTimeout(timer)
+        ws.removeEventListener('message', onMessage)
+        resolve(message.flares)
+      }
+    }
+    ws.addEventListener('message', onMessage)
+  })
+  const flareOf = (id) => [id, 'leafkin:hollow:3.5:-12.0', 1, 2, 3, 40, 90, -60, 0x30ff50, 0.37]
+  first.send(JSON.stringify({ version: 1, type: 'flare', flare: [...flareOf('bad'), 1] }))
+  first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('Bad Id') }))
+  first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('f1') }))
+  first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('f1') }))
+  const shot = await nextFlares(second)
+  if (shot.length !== 1 || !same(shot[0].slice(0, 10), flareOf('f1')) || !(shot[0][10] >= 0 && shot[0][10] < 500)) throw new Error(`flare round-trip mismatch: ${JSON.stringify(shot)}`)
+  await wait(120)
+  const shooter = await nextClock(first, () => true)
+  if ('flares' in shooter) throw new Error(`the shooter should not hear her own flare back, got ${JSON.stringify(shooter.flares)}`)
+  await wait(120)
+  const later = await nextClock(second, () => true)
+  if ('flares' in later) throw new Error(`a flare should be heard once, got ${JSON.stringify(later.flares)}`)
+  const sixth = await open()
+  const sky = await nextFlares(sixth)
+  if (sky.length !== 1 || sky[0][0] !== 'f1' || !(sky[0][10] >= 200)) throw new Error(`newcomer should hear the sky, aged: ${JSON.stringify(sky)}`)
+  sixth.close()
   // Alone, the clock lands to the minute, and one past the bound is dropped.
   second.close()
   await wait(120)
@@ -269,7 +316,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer)')
   first.close()
   second.close()
 } finally {

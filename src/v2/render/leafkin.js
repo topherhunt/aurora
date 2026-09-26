@@ -40,7 +40,7 @@ import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange } from './critters.js'
 import { BLOCKED, STONE } from './leafkin-ground.js'
 import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
-import { JUMP_M, LEAD_TICKS, ease, easeFields, keepWas, warnPop } from './net-ease.js'
+import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
 
 export const LOD_TIERS = LOD_RUNGS
 // Sites stepped at once: those whose roam and cull reach her feet, on a 300 m tiling of mouths far fewer than this.
@@ -990,13 +990,14 @@ export class Leafkin {
     const pose = c.pose
     const site = c.site
     const hidden = c.state === 'inside' || c.tick < want
-    const wasX = pose.x, wasZ = pose.z
+    const wasX = pose.x, wasY = pose.y, wasZ = pose.z
     ease(c, pose, c.px + (c.x - c.px) * a, 0, c.pz + (c.z - c.pz) * a, c.ph + swing(c.ph, c.heading) * a, rewound >= 0, dt)
-    if (c.shown && !hidden && Math.hypot(pose.x - wasX, pose.z - wasZ) > JUMP_M) warnPop(this, seconds, { key: c.key, state: c.state, m: +Math.hypot(pose.x - wasX, pose.z - wasZ).toFixed(2), rewound })
-    c.shown = !hidden
     // The last stretch is over the boulder's own footprint, where the walker's ground is the boulder's top: the arch's floor caps it there.
     pose.y = this.walk.heightAt(pose.x, pose.z)
     if (Math.hypot(site.x - pose.x, site.z - pose.z) <= FINAL_M) pose.y = Math.min(pose.y, Math.max(site.y, site.ay))
+    const m = c.shown && !hidden ? popM(pose, wasX, wasY, wasZ, dt) : 0
+    if (m > 0) warnPop(this, seconds, { key: c.key, state: c.state, m: +m.toFixed(2), dy: +(pose.y - wasY).toFixed(2), rewound })
+    c.shown = !hidden
     pose.k = c.k
     pose.size = c.size
     pose.speed = c.speed

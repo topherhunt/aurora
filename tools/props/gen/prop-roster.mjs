@@ -295,6 +295,28 @@ export const PROPS = [
       'The trunk is one whole straight upright piece with a clean outline, its weathering in the grain, the ' +
       'staining and the worn bark.',
   },
+  {
+    id: 'flaregun',
+    label: 'Flare Gun',
+    category: 'other',
+    // Held in her hand (flaregun.js): the barrel runs along the hand's -Z, and
+    // the world draws the flare colour as a disc in the round window beside the
+    // button, so the window is modelled empty and flat-faced.
+    sizeM: 0.32,
+    aspectRatio: '4:3',
+    description:
+      'a medieval flare pistol with a mild steampunk touch, seen from the side, the barrel pointing right. A ' +
+      'curved grip of dark oiled wood, worn pale where the hand holds it, wrapped at its neck with bundled ' +
+      'tarred twine. A short stout barrel that is a riveted brass-and-iron canister, wider than a musket ' +
+      'barrel, with a flared bell muzzle blackened by soot, bound to the wooden stock with two bands of ' +
+      'bundled twine. On top of the canister near the back, one fat round push button of red enamel in a ' +
+      'brass collar, and right beside it a small round glass indicator window set flush in a brass bezel, ' +
+      'the glass dark and empty. A simple curled iron trigger under a trigger guard, a small hammer at the ' +
+      'back, a few rivets and a pressure cap on the canister',
+    styleNote:
+      'One chunky readable silhouette: the grip, the canister barrel and the button and window on top each ' +
+      'clearly separate. The window is a flat dark disc facing straight up.',
+  },
 ]
 
 export const propById = (id) => PROPS.find((p) => p.id === id) ?? null

@@ -33,6 +33,7 @@ import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Wreaths } from '../src/v2/render/wreaths.js'
 import { Precip } from '../src/v2/render/precip.js'
 import { Flames } from '../src/v2/render/fire.js'
+import { Flares } from '../src/v2/render/flares.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
@@ -1021,6 +1022,19 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!frag.includes('v *= smoothstep( 0.0, 0.1, p.y ) * ( 1.0 - smoothstep( 1.0, 1.35, p.y ) );')) MISSING_MARKS.push('fire.js frag: the foot pinch and the overhang fade')
   if (!frag.includes('v -= ( n.x + n.y ) * uCut * rise;')) MISSING_MARKS.push('fire.js frag: the outline cut')
   if (!frag.includes('v *= smoothstep( 0.0, 0.04, hw );')) MISSING_MARKS.push('fire.js frag: the mask closing with the width, or a thread hangs off the tip')
+}
+
+// The flares (flares.js): a GLSL1 ShaderMaterial on instanced sprites laid in
+// view space. The least pixel radius is what keeps one a dot at 2 km.
+{
+  const material = new Flares(new THREE.Scene()).material
+  const GLSL1_OUT = 'out highp vec4 pc_fragColor;\n#define gl_FragColor pc_fragColor\n'
+  const vert = finish(material.vertexShader)
+  const frag = finish(material.fragmentShader)
+  SHADERS.push(['flares.js      VERT', 'vert', V_PRE, vert])
+  SHADERS.push(['flares.js      FRAG', 'frag', F_PRE + GLSL1_OUT + COLOR_FNS + '\n', frag])
+  CROSS_STAGE.push(['flares.js', vert, frag])
+  if (!vert.includes('* max( -mv.z, 0.01 ) / ( projectionMatrix[1][1] * uPx )')) MISSING_MARKS.push('flares.js vert: the least pixel radius')
 }
 
 // The generated props' four programs (gen-props.js): the mesh with the rim

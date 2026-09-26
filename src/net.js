@@ -6,6 +6,10 @@ const PING_MS = 10_000
 const FAST_MS = 500
 const PING_FAST = 8
 const PINGS = 12
+// Diagnostic lines for the relay's log (server/src/main.js 'diag'), capped a page load; the clock is said once settled and again when it moves SAY_CLOCK_MS.
+const DIAG_CAP = 200
+const DIAG_MAX = 500
+const SAY_CLOCK_MS = 100
 
 function lerp(a, b, t) { return a + (b - a) * t }
 function normalizeQuat(q) {
@@ -65,6 +69,9 @@ export class Netplay {
     this.offsetMs = 0
     this.pings = []
     this.pingTimer = null
+    // Diag lines sent this page load, and the clock offset last said.
+    this.diags = 0
+    this.clockSaid = null
     // This client's id as the relay named it on welcome; what a boat's
     // authority is decided by (v2/boats.js). Null until then.
     this.id = null
@@ -84,6 +91,8 @@ export class Netplay {
     // the last snapshot that carried any, `{ anchors, lured }` blocks
     // (v2/creature-net.js drains it).
     this.creatures = []
+    // The flares peers have shot since the last drain, `[...flare, ageMs]` each (v2/render/flares.js fromWire).
+    this.flares = []
     this.connect()
   }
 
@@ -117,6 +126,7 @@ export class Netplay {
       }
       if (message.things && typeof message.things === 'object') this.things.push(message.things)
       if (message.creatures && typeof message.creatures === 'object') this.creatures.push(message.creatures)
+      if (Array.isArray(message.flares)) this.flares.push(...message.flares)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours, offsetMs: this.offsetMs }
       }
@@ -177,6 +187,13 @@ export class Netplay {
     return true
   }
 
+  // A flare she shot, as flares.js toWire has it. False when there is no relay to tell; the room never hears of it.
+  sendFlare(flare) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'flare', flare }))
+    return true
+  }
+
   // Ask the relay to move the room's clock. False when there is no relay to
   // ask, so the caller can skip locally instead.
   sendSkip(hours) {
@@ -230,6 +247,17 @@ export class Netplay {
     for (const p of this.pings) if (p.rtt < best.rtt) best = p
     this.offsetMs = best.offset
     if (this.time) this.time.offsetMs = best.offset
+    if (this.pings.length >= PING_FAST && (this.clockSaid === null || Math.abs(best.offset - this.clockSaid) > SAY_CLOCK_MS)) {
+      this.clockSaid = best.offset
+      this.diag(`clock offset ${Math.round(best.offset)} ms, rtt ${best.rtt} ms`)
+    }
+  }
+
+  /** A line for the relay's log, tagged there with this client's address and device; dropped while the socket is down. */
+  diag(text) {
+    if (this.diags >= DIAG_CAP || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
+    this.diags++
+    this.socket.send(JSON.stringify({ version: 1, type: 'diag', text: String(text).slice(0, DIAG_MAX) }))
   }
 
   close() {

@@ -36,7 +36,7 @@ import {
   Villagers, CALM_M, CLIPS, DOOR_FADE_S, EXTRA, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
-import { LEAD_TICKS } from '../src/v2/render/net-ease.js'
+import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -329,7 +329,7 @@ console.log('\nin each other\'s way')
     const v = make()
     v.update(FAR, head(FAR), T0, 1 / 60)
     for (const c of v.all) c.hold = 1e9
-    const out = (c, x, z) => { c.hidden = false; c.x = c.px = x; c.z = c.pz = z; c.talked = 1e9 }
+    const out = (c, x, z) => { c.hidden = false; c.x = c.px = x; c.z = c.pz = z; c.y = c.py = walk.heightAt(x, z); c.talked = 1e9 }
     const ws = walkers.map(([a, b], i) => { const c = v.all[i], n = v.graph.nodes[a]; out(c, n.x, n.z); c.at = a; v._go(c, b, 'stand'); return c })
     standers.forEach(([x, z], i) => { const c = v.all[walkers.length + i]; out(c, x, z); c.state = 'stand' })
     let worst = 0, overlap = 0
@@ -488,6 +488,9 @@ console.log('\nthe room')
   B.feet = FAR
   t = run2(p, t, 30)
   check(A.v.all[d.id].by === 'b' && same(A.v, B.v), 'and hers the same the other way', `rewinds ${A.v.stats.rewinds}`)
+
+  const O = { x: 0, y: 0, z: 0 }
+  check(popM({ x: 0, y: 3, z: 0 }, 0, 0, 0, 1 / 60) > 0 && popM({ x: 0.1, y: 0, z: 0 }, 0, 0, 0, 1 / 60) === 0 && popM({ x: 3, y: 0, z: 0 }, 0, 0, 0, 0.5) === 0 && popM(O, 0, 0, 0, 1 / 60) === 0, 'a body drawn 3 m up onto a roof in a frame is a pop; a run\'s step, or a half-second hitch\'s 3 m, is not')
 
   // Her startle is raised LEAD_TICKS ahead: heard sooner than that, nobody rolls back; heard 1.5 s late, as off a clock that far out, the villager slides onto its run.
   for (const [lag, rewinds] of [[0.1, false], [1.5, true]]) {
