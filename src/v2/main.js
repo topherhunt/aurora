@@ -2338,7 +2338,9 @@ let ready = false
 const questToggles = {
   terrain: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, fireflies: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
-  water: true, reflections: true, aurora: true, clouds: true, wreaths: true, precip: true, sound: true,
+  water: true, reflections: true, aurora: true, clouds: true, precip: true, sound: true,
+  // Off until the summit wreaths are redone; the menu row still turns them on.
+  wreaths: false,
   critterTint: false, mirror: false, terrainWire: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.

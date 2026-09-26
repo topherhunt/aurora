@@ -40,6 +40,7 @@ import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange } from './critters.js'
 import { BLOCKED, STONE } from './leafkin-ground.js'
 import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
+import { JUMP_M, LEAD_TICKS, ease, easeFields, keepWas, warnPop } from './net-ease.js'
 
 export const LOD_TIERS = LOD_RUNGS
 // Sites stepped at once: those whose roam and cull reach her feet, on a 300 m tiling of mouths far fewer than this.
@@ -289,6 +290,7 @@ export class Leafkin {
         // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of starts, and the ground speed.
         clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
         lod: LOD_TIERS, puppet: null,
+        ...easeFields(),
       }
       c.rand = () => roll(c)
       this.slots.push(c)
@@ -324,6 +326,10 @@ export class Leafkin {
     this.frights = 0
     this.picks = 0
     this.rewinds = 0
+    // The deepest rollback yet in ticks, and pops drawn and when one was last said (net-ease.js).
+    this.maxRewind = 0
+    this.jumps = 0
+    this.jumpSaidAt = -Infinity
 
     if (asset) {
       this.setAsset(asset)
@@ -377,7 +383,7 @@ export class Leafkin {
   get stats() {
     const states = { roam: 0, gather: 0, startle: 0, flee: 0, home: 0, inside: 0 }
     for (const c of this.byKey.values()) states[c.state]++
-    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, fled: this.fled, frights: this.frights, picks: this.picks, rewinds: this.rewinds, starved: this.starved, overflow: this.overflow }
+    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, fled: this.fled, frights: this.frights, picks: this.picks, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, starved: this.starved, overflow: this.overflow }
   }
 
   /** Every leafkin drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -413,6 +419,7 @@ export class Leafkin {
     c.lod = LOD_TIERS
     c.puppet = null
     c.cue = 0
+    c.shown = false
     this.byKey.set(site.key, c)
     return c
   }
@@ -547,7 +554,7 @@ export class Leafkin {
     c.aim = this._toward(c, e.x, e.z)
     c.bundle = 0
     this._drop(c)
-    if (!e.done && c.loud) this.calls.push({ sound: 'leafkinScream', x: c.x, y: this.walk.heightAt(c.x, c.z) + c.size * CHEST, z: c.z })
+    if (!e.done && !e.screamed && c.loud) this.calls.push({ sound: 'leafkinScream', x: c.x, y: this.walk.heightAt(c.x, c.z) + c.size * CHEST, z: c.z })
     this._play(c, 'recoil', STARTLE_S)
   }
 
@@ -748,7 +755,12 @@ export class Leafkin {
     c.voicing = c.loud && t > c.live
     if (c.voicing && t > want - SILENT_TICKS && (c.state === 'roam' || c.state === 'gather' || c.state === 'home')) {
       const f = this.feet
-      if (Math.hypot(c.x - f.x, c.z - f.z) < STARTLE_M && Math.abs(this.walk.heightAt(c.x, c.z) - f.y) < STARTLE_M) this._raise(c.wire, t, 'fright', f.x, f.y, f.z)
+      if (Math.hypot(c.x - f.x, c.z - f.z) < STARTLE_M && Math.abs(this.walk.heightAt(c.x, c.z) - f.y) < STARTLE_M && !this._owed(c, t)) {
+        // Raised LEAD_TICKS on so a peer hears it before stepping that tick (net-ease.js), and screamed now on this client.
+        const e = this._raise(c.wire, t + LEAD_TICKS, 'fright', f.x, f.y, f.z)
+        e.screamed = true
+        this.calls.push({ sound: 'leafkinScream', x: c.x, y: this.walk.heightAt(c.x, c.z) + c.size * CHEST, z: c.z })
+      }
     }
     const events = this.logs.get(c.wire)?.get(t)
     if (events) {
@@ -786,6 +798,13 @@ export class Leafkin {
     if (c.state === 'inside') return
     c.left -= dt
     if (c.left <= 0) this._step(c)
+  }
+
+  /** Whether a fright already stands on tick `t` (stepped after this looks) or one her lead could reach. */
+  _owed(c, t) {
+    const log = this.logs.get(c.wire)
+    if (log) for (let k = t; k <= t + LEAD_TICKS; k++) if (log.get(k)?.some((e) => e.kind === 'fright')) return true
+    return false
   }
 
   /** The state as it stands, kept for a rollback. */
@@ -936,8 +955,14 @@ export class Leafkin {
     for (const c of [...this.byKey.values()]) if (!seen.has(c.key)) this._retire(c)
 
     for (const c of this.byKey.values()) {
+      let rewound = -1
       if (want - c.tick > CHAPTER_S * TICK_HZ) this._place(c, seconds)
-      else if (c.rewind <= c.tick) this._rollback(c)
+      else if (c.rewind <= c.tick) {
+        if (c.shown) keepWas(c, (seconds - c.tick * TICK_S) * TICK_HZ, 0)
+        rewound = c.tick - c.rewind
+        this.maxRewind = Math.max(this.maxRewind, rewound)
+        this._rollback(c)
+      }
       c.rewind = Infinity
       c.loud = want - c.live <= SILENT_TICKS
       const end = Math.min(want, c.tick + CATCH_UP_TICKS)
@@ -945,7 +970,7 @@ export class Leafkin {
       c.alpha = c.tick < want ? 1 : clamp((seconds - c.tick * TICK_S) * TICK_HZ, 0, 1)
       // Arms holding more than the bundle does: a rollback undid a take, or a fright let it fall.
       if (c.carrier && c.carrier.count() > c.bundle) this._drop(c)
-      this._draw(c, dt, want)
+      this._draw(c, dt, want, rewound, seconds)
     }
 
     // Anchors older than a chapter are no site's any more.
@@ -960,16 +985,18 @@ export class Leafkin {
   }
 
   /** The frame's pose between the last two ticks, stood on the walker's ground, and the puppet on it; nothing drawn inside or still catching up. */
-  _draw(c, dt, want) {
+  _draw(c, dt, want, rewound, seconds) {
     const a = c.alpha
     const pose = c.pose
     const site = c.site
-    pose.x = c.px + (c.x - c.px) * a
-    pose.z = c.pz + (c.z - c.pz) * a
+    const hidden = c.state === 'inside' || c.tick < want
+    const wasX = pose.x, wasZ = pose.z
+    ease(c, pose, c.px + (c.x - c.px) * a, 0, c.pz + (c.z - c.pz) * a, c.ph + swing(c.ph, c.heading) * a, rewound >= 0, dt)
+    if (c.shown && !hidden && Math.hypot(pose.x - wasX, pose.z - wasZ) > JUMP_M) warnPop(this, seconds, { key: c.key, state: c.state, m: +Math.hypot(pose.x - wasX, pose.z - wasZ).toFixed(2), rewound })
+    c.shown = !hidden
     // The last stretch is over the boulder's own footprint, where the walker's ground is the boulder's top: the arch's floor caps it there.
     pose.y = this.walk.heightAt(pose.x, pose.z)
     if (Math.hypot(site.x - pose.x, site.z - pose.z) <= FINAL_M) pose.y = Math.min(pose.y, Math.max(site.y, site.ay))
-    pose.heading = c.ph + swing(c.ph, c.heading) * a
     pose.k = c.k
     pose.size = c.size
     pose.speed = c.speed
@@ -977,7 +1004,6 @@ export class Leafkin {
     pose.cycle = c.cycle
     if (c.carrier) c.carrier.place(pose.x, pose.y, pose.z, pose.heading, c.size * CHEST)
 
-    const hidden = c.state === 'inside' || c.tick < want
     const dist = Math.hypot(pose.x - this.head.x, pose.y - this.head.y, pose.z - this.head.z)
     c.lod = hidden ? LOD_TIERS : critterTier(c.size, dist, c.lod, LOD_TIERS)
     const tier = c.lod === LOD_TIERS ? -1 : c.lod

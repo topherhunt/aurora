@@ -1,9 +1,9 @@
-import { VERSION } from './generate.js'
+import { VERSION, tuneKey } from './generate.js'
 
 // ---------------------------------------------------------------------------
 // The island's cache and the road to it -- §31.
 //
-// `load({ seed, regen, log })` answers with a generator result, from IndexedDB when one is there for this seed and this VERSION of the algorithm, and from the worker otherwise, storing what the worker made. The key carries the algorithm version so that a change to any stage invalidates every client's copy the next time it boots: nothing else does, and a stale island would look exactly like a real one.
+// `load({ seed, regen, tune, log })` answers with a generator result, from IndexedDB when one is there for this seed, this VERSION of the algorithm and this tune, and from the worker otherwise, storing what the worker made. The key carries the algorithm version so that a change to any stage invalidates every client's copy the next time it boots: nothing else does, and a stale island would look exactly like a real one. It carries the tune's signature too, so /terrain-v3's layer switches flip back to an island already generated instead of overwriting the one they were compared against.
 // ---------------------------------------------------------------------------
 
 const DB = 'aurora-v3'
@@ -27,21 +27,21 @@ function tx(db, mode, fn) {
   })
 }
 
-export const cacheKey = (seed) => `${seed}:${VERSION}`
+export const cacheKey = (seed, tune = null) => `${seed}:${VERSION}:${tuneKey(tune)}`
 
-async function read(seed) {
+async function read(seed, tune) {
   const db = await open()
   try {
-    return (await tx(db, 'readonly', (s) => s.get(cacheKey(seed)))) ?? null
+    return (await tx(db, 'readonly', (s) => s.get(cacheKey(seed, tune)))) ?? null
   } finally {
     db.close()
   }
 }
 
-async function write(seed, result) {
+async function write(seed, tune, result) {
   const db = await open()
   try {
-    await tx(db, 'readwrite', (s) => s.put(result, cacheKey(seed)))
+    await tx(db, 'readwrite', (s) => s.put(result, cacheKey(seed, tune)))
   } finally {
     db.close()
   }
@@ -83,18 +83,18 @@ function runWorker(seed, tune, log) {
 }
 
 /**
- * The island for `seed`: cached, or generated in the worker and then cached. `from` says which. `regen` skips the read but still writes, so `?regen` is how a client is made to take a new algorithm before its VERSION is bumped. `tune` (the map page's amplitudes, see generate) goes to the worker and is cached with the result under the seed's own key, so /terrain-v3 flies the island the map page last made.
+ * The island for `seed` and `tune`: cached, or generated in the worker and then cached. `from` says which. `regen` skips the read but still writes, so `?regen` is how a client is made to take a new algorithm before its VERSION is bumped. `tune` (the amplitudes and step switches, see generate) goes to the worker and is cached with the result under its own signature, so /terrain-v3 flies the island the map page last made at those settings and a switched-off layer can be switched back on without waiting for the worker again.
  */
 export async function load({ seed, regen = false, tune = null, log = () => {} }) {
   if (!regen) {
-    const hit = await read(seed)
+    const hit = await read(seed, tune)
     if (hit) {
       log(`island ${seed} from IndexedDB (${hit.v})`)
       return { result: hit, from: 'cache' }
     }
   }
   const result = await runWorker(seed, tune, log)
-  await write(seed, result)
+  await write(seed, tune, result)
   log(`island ${seed} generated in ${result.ms.toFixed(0)} ms and cached`)
   return { result, from: 'worker' }
 }

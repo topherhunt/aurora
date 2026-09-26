@@ -47,6 +47,12 @@ export const CLIFFS = {
   },
 }
 
+/** The pass switched off: no class bands any of its steep ground, so `table` walks the grid, moves nothing and returns the same stats record it always does, all zero. A table of zeroes rather than a skipped call, so the shape the map page and the gate read off never depends on whether the step ran. */
+export const CLIFFS_OFF = Object.freeze({
+  ...CLIFFS,
+  byBiome: Object.fromEntries(Object.entries(CLIFFS.byBiome).map(([id, k]) => [id, { ...k, share: 0 }])),
+})
+
 /** The value `share` of the way up a sorted copy of `values`, or -Infinity for an empty list. */
 function quantile(values, share) {
   if (values.length === 0) return -Infinity

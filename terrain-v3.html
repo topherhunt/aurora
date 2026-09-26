@@ -35,6 +35,11 @@
       td { padding: 1px 0; vertical-align: baseline; }
       td.k { color: var(--dim); }
       td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #switches { display: flex; flex-direction: column; gap: 1px; }
+      .sw { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+      .sw:hover { color: #fff; }
+      .sw input { margin: 0; accent-color: #4a7fb5; }
+      .sw input:disabled + span { color: var(--dim); }
       #buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
       button {
         font: inherit; color: var(--ink); background: #0e1726; cursor: pointer;
@@ -48,7 +53,7 @@
   </head>
   <body>
     <div id="stage">
-      <div id="hint">click to look &middot; WASD to walk &middot; space to fly and hold to climb, shift to sink &middot; double-tap space to land &middot; N to skip 6 hours</div>
+      <div id="hint">click to look &middot; WASD to walk &middot; space to fly and hold to climb, shift to sink &middot; double-tap space to land &middot; C toggles scarp</div>
       <div id="boot"><pre id="bootlog">booting&hellip;</pre></div>
     </div>
 
@@ -57,11 +62,13 @@
       <table id="island"></table>
       <h2>this frame</h2>
       <table id="frame"></table>
+      <h2>layers</h2>
+      <div id="switches"></div>
       <div id="buttons">
-        <button id="skip" title="Jump the world clock forward six hours, as N does.">+6h</button>
-        <button id="regen" title="Throw the cached island away and generate it again in the worker.">regen</button>
+        <button id="regen" title="Throw this combination's cached island away and generate it again in the worker.">regen</button>
       </div>
-      <p class="note">The island boots from IndexedDB when <em>/terrain-v3-map</em> has generated this seed and algorithm; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>
+      <p class="note">Each box regenerates the island without that layer and stands the world back up where you were, so a layer can be judged by its absence. Every combination is its own cache slot, so going back is instant. The sun is held at noon.</p>
+      <p class="note">The island boots from IndexedDB when this seed, algorithm and set of boxes has been generated before; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>
     </div>
 
     <script type="module" src="/src/v3/main.js"></script>

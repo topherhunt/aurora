@@ -709,6 +709,7 @@ export class WorldClock {
     this.startHour = hour
     this.anchorMs = anchorMs
     this.skipHours = 0
+    this.offsetMs = 0
     // Creature time (sim/score.js): real seconds since the anchor plus a minute
     // for every skipped hour, the same number on every client in a room.
     this.seconds = 0
@@ -725,18 +726,20 @@ export class WorldClock {
 
   // The wall-clock pace: elapsed is DERIVED from the anchor, never accumulated,
   // so two machines holding the same anchor draw the same sky with nothing sent
-  // per frame and nothing to drift. Date.now() on any NTP-synced machine agrees
-  // to well under a second, and one real second is one in-world minute.
-  tick(now = Date.now()) {
+  // per frame and nothing to drift. `now` is read on the relay's clock
+  // (offsetMs, net.js), since two devices' own clocks can be seconds apart --
+  // a leafkin startled on one would be replayed seconds late on the other.
+  tick(now = Date.now() + this.offsetMs) {
     this.elapsed = this.startHour + ((now - this.anchorMs) / 60000) * (24 / CLOCK.dayMinutes) + this.skipHours
     this.seconds = (now - this.anchorMs) / 1000 + this.skipHours * 60
     this._recompute()
   }
 
-  // Adopt the room's anchor and skip count. Takes effect on the next tick().
-  sync({ anchorMs, skipHours }) {
+  // Adopt the room's anchor and skip count, and this machine's offset from the relay's clock. Takes effect on the next tick().
+  sync({ anchorMs, skipHours, offsetMs = 0 }) {
     this.anchorMs = anchorMs
     this.skipHours = skipHours
+    this.offsetMs = offsetMs
   }
 
   // The hotkey. Returns the new hour of day so the caller can say so out loud.

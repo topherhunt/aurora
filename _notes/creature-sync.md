@@ -8,7 +8,7 @@
 
 ## The mental model
 
-1. **Creature time is the room's clock.** `WorldClock.seconds` is real seconds since the relay's `anchorMs` plus 60 s per skipped world hour (`skipHours`), so every client in a room reads the same number off `Date.now()` with nothing sent per frame. Solo play uses the local anchor. Nothing about a creature is ever timed from a local timestamp, a frame count or a tile's entry.
+1. **Creature time is the room's clock.** `WorldClock.seconds` is real seconds since the relay's `anchorMs` plus 60 s per skipped world hour (`skipHours`), read on the relay's clock (`Date.now()` plus the offset `Netplay` measures by ping), so every client in a room reads the same number with nothing sent per frame. Solo play uses the local anchor. Nothing about a creature is ever timed from a local timestamp, a frame count or a tile's entry.
 
 2. **A creature's life is a score: chapters of phrases.** Time is cut into fixed chapters (`CHAPTER_S`, ten minutes, each creature's grid offset by its key's hash so a valley does not turn over at once). Inside a chapter the creature plays a chain of phrases rolled from `hash(key, chapter, phraseIndex)`. Every phrase carries a closed-form duration and a closed-form end pose, computed from plan data and deterministic world inputs (height field, water, roost plane, herd tiles), never from integrated motion. The last phrase of every chapter ends at the creature's home pose, so at the chapter turn every creature is home and the next chapter starts from nothing.
 

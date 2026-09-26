@@ -36,6 +36,7 @@ import {
   Villagers, CALM_M, CLIPS, DOOR_FADE_S, EXTRA, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
+import { LEAD_TICKS } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -427,7 +428,9 @@ console.log('\nher feet')
     if (!c.hidden && c.state !== 'flee' && Math.hypot(c.x - feet.x, c.z - feet.z) < CALM_M) calmedUnder++
     if (ran === 0) check(false, 'a fleer runs', `${c.key} ${c.state} ${c.clip}`)
     if (!c.hidden && c.state === 'flee') {
-      const far = { x: c.x + CALM_M + 1, y: c.y, z: c.z }
+      // Behind it, on the side it fled from, so it does not run back within CALM_M of her.
+      const back = (CALM_M + 1) / Math.hypot(feet.x - c.x, feet.z - c.z)
+      const far = { x: c.x + (feet.x - c.x) * back, y: c.y, z: c.z + (feet.z - c.z) * back }
       t = run(v, t, 40, far)
       if (c.state === 'flee') { check(false, `a fleer calms once she is ${CALM_M} m off`, c.state); continue }
       calmedOver++
@@ -478,12 +481,27 @@ console.log('\nthe room')
   t = run2(p, t, 5)
   check(ran && same(A.v, B.v), 'her startle reaches the other client late, which rolls back to before it, and both see the villager run the same run', `rewinds ${B.v.stats.rewinds}, startles ${A.v.stats.startles}/${B.v.stats.startles}`)
   check(B.v.stats.rewinds > 0 && A.v.stats.rewinds === 0, 'only the client that heard it late rolled back')
+  check(B.v.stats.jumps === 0 && A.v.stats.jumps === 0, 'and the rollback is eased off, never drawn as a jump', `${B.v.stats.maxRewind} ticks rewound`)
   const d = walker(B.v)
   B.feet = { ...feetAt(d), x: d.x + 1 }
   t = run2(p, t, 3)
   B.feet = FAR
   t = run2(p, t, 30)
   check(A.v.all[d.id].by === 'b' && same(A.v, B.v), 'and hers the same the other way', `rewinds ${A.v.stats.rewinds}`)
+
+  // Her startle is raised LEAD_TICKS ahead: heard sooner than that, nobody rolls back; heard 1.5 s late, as off a clock that far out, the villager slides onto its run.
+  for (const [lag, rewinds] of [[0.1, false], [1.5, true]]) {
+    const q = pair(lag)
+    const [C, D] = q.sides
+    let u = run2(q, T0, 120)
+    const e = walker(C.v)
+    C.feet = { ...feetAt(e), x: e.x + 1 }
+    u = run2(q, u, 3)
+    C.feet = FAR
+    u = run2(q, u, 10)
+    const ok = rewinds ? D.v.stats.rewinds > 0 : D.v.stats.rewinds === 0
+    check(ok && D.v.stats.jumps === 0 && same(C.v, D.v), rewinds ? `heard ${lag} s late it is rolled back and drawn without a jump` : `heard ${lag} s late, inside the ${LEAD_TICKS}-tick lead, it is never rolled back`, `${D.v.stats.rewinds} rewinds of up to ${D.v.stats.maxRewind} ticks, ${D.v.stats.jumps} jumps`)
+  }
 
   // A client arriving now hears the room's startles on the welcome, before its first frame.
   const log = [...A.v.log.values()].flat().map((e) => [e.key, e.tick / 20, e.fx, e.fy, e.fz, 0, 0, 'startle', e.by ?? 'a', ...e.ids])

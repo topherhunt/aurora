@@ -1,6 +1,11 @@
 const SEND_MS = 50
 const INTERPOLATION_MS = 120
 const MAX_SNAPSHOTS = 12
+// The clock is measured against the relay's every PING_MS, the first PING_FAST of them FAST_MS apart, and the offset of the quickest round trip among the last PINGS is believed: a slow trip's half-way guess is the one that errs.
+const PING_MS = 10_000
+const FAST_MS = 500
+const PING_FAST = 8
+const PINGS = 12
 
 function lerp(a, b, t) { return a + (b - a) * t }
 function normalizeQuat(q) {
@@ -55,6 +60,11 @@ export class Netplay {
     // The room's world clock as the relay last stated it, `{ anchorMs,
     // skipHours }` for WorldClock.sync, or null until the first snapshot.
     this.time = null
+    // The relay's Date.now() less this machine's, from the pings (_pong); two
+    // devices' own clocks can stand seconds apart, and the room's time must not.
+    this.offsetMs = 0
+    this.pings = []
+    this.pingTimer = null
     // This client's id as the relay named it on welcome; what a boat's
     // authority is decided by (v2/boats.js). Null until then.
     this.id = null
@@ -83,11 +93,22 @@ export class Netplay {
     const base = this.url || `${protocol}//${location.host}/ws`
     const socket = new WebSocket(`${base}${base.includes('?') ? '&' : '?'}room=${encodeURIComponent(this.room)}`)
     this.socket = socket
-    socket.addEventListener('open', () => { this.retry = 250 })
+    socket.addEventListener('open', () => {
+      this.retry = 250
+      let sent = 0
+      const ping = () => {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+        socket.send(JSON.stringify({ version: 1, type: 'ping', t: Date.now() }))
+        this.pingTimer = setTimeout(ping, ++sent < PING_FAST ? FAST_MS : PING_MS)
+      }
+      clearTimeout(this.pingTimer)
+      ping()
+    })
     socket.addEventListener('message', (event) => {
       let message
       try { message = JSON.parse(event.data) } catch { return }
       if (message.version === 1 && message.type === 'welcome' && typeof message.id === 'string') { this.id = message.id; this.welcomes++; return }
+      if (message.version === 1 && message.type === 'pong') { this._pong(message, Date.now()); return }
       if (message.version !== 1 || message.type !== 'snapshot' || !Array.isArray(message.peers)) return
       const receivedAt = performance.now()
       if (Array.isArray(message.boats)) {
@@ -97,7 +118,7 @@ export class Netplay {
       if (message.things && typeof message.things === 'object') this.things.push(message.things)
       if (message.creatures && typeof message.creatures === 'object') this.creatures.push(message.creatures)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
-        this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours }
+        this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours, offsetMs: this.offsetMs }
       }
       const peers = message.peers.filter((p) => p && typeof p.id === 'string' && Array.isArray(p.pose) && p.pose.length === 21)
       this.snapshots.push({ receivedAt, peers, serial: ++this.snapshotSerial })
@@ -200,8 +221,20 @@ export class Netplay {
     this.onState?.([...this.peers.values()])
   }
 
+  /** A ping come back at local `now`: the relay stamped it `ms` half a round trip ago, give or take the trip's asymmetry. */
+  _pong({ t, ms }, now) {
+    if (!Number.isFinite(t) || !Number.isFinite(ms) || now < t) return
+    this.pings.push({ rtt: now - t, offset: ms + (now - t) / 2 - now })
+    if (this.pings.length > PINGS) this.pings.shift()
+    let best = this.pings[0]
+    for (const p of this.pings) if (p.rtt < best.rtt) best = p
+    this.offsetMs = best.offset
+    if (this.time) this.time.offsetMs = best.offset
+  }
+
   close() {
     this.closed = true
+    clearTimeout(this.pingTimer)
     this.socket?.close()
   }
 }

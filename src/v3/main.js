@@ -5,16 +5,17 @@ import { SEED, WORLD_SIZE } from '../v2/config.js'
 import { Heightmap } from '../v2/height/heightmap.js'
 import { V2Height } from '../v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../v2/height/relief.js'
-// The one knob this page runs with: the sheer-face remap, §31 step E. Everything
-// else stays off, because the whole point of the page is to judge the GENERATED
-// field rather than what the micro stack can add on top of it -- and scarp is
-// not an added term, it is how the cliff pass's tabled steps get read.
+// The one knob this page can run with, and it is off until asked for: the
+// sheer-face remap, §31 step E. Everything else stays off, because the whole
+// point of the page is to judge the GENERATED field rather than what the micro
+// stack can add on top of it -- and scarp is not an added term, it is how the
+// cliff pass's tabled steps get read, so it does nothing while `cliffs` is off.
 const RELIEF_SCARP = Object.freeze({ ...RELIEF_DEFAULTS, scarp: 1 })
 import { Layers } from '../v2/layers/layers.js'
 import { TerrainV2 } from '../v2/terrain/terrain-v2.js'
 import { WaterSurfaces } from '../v2/render/water-surfaces.js'
 import { RAISE_SLOPE, RAISE_EYE, RAISE_EYE_LIFT } from '../v2/render/river-raise.js'
-import { WorldClock, CLOCK } from '../clock.js'
+import { WorldClock } from '../clock.js'
 import { WorldLighting } from '../lighting.js'
 import { Sky } from '../sky.js'
 import { Input } from '../input.js'
@@ -23,14 +24,22 @@ import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { setPropClock } from '../material.js'
 import { Pines } from './pines.js'
 import { load, optionsFromUrl } from './store.js'
-import { MACRO } from './island.js'
+import { MACRO, JITTER } from './island.js'
+import { STEPS } from './generate.js'
 import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
 // /terrain-v3 -- stand on the generated island (§31).
 //
 // The v2 engine drawing a field that came out of a worker instead of a PNG: the boot is /gen-grass's without the bed, so the only thing being judged is the ground. Anything the 2D map cannot show -- the read of a slope at eye height, how the coast lies against the sea, whether the summit cap is a cap or a whorl -- is what this page is for.
+//
+// THE LAYER SWITCHES. The sidebar carries one box per octave of jitter and one per step of the algorithm. Turning one off regenerates the island without it and rebuilds everything standing on the field, so what a layer contributes can be read off its absence rather than argued about. Each setting is its own cache slot (store.js), so the second look at a comparison is instant.
+//
+// THE SUN DOES NOT MOVE. The clock is built at noon and never advanced: a terrain read changes with the light, and a light that is changing under you is a variable nobody asked for. Everything else on the page reads the clock as usual, so the day-night stack is exercised, just held.
 // ---------------------------------------------------------------------------
+
+// Hours. Solar noon at CLOCK.latitude, so the ground is lit from as high as this world's sun ever gets and no slope is reading as a shadow.
+const HELD_HOUR = 12
 
 const boot = document.getElementById('boot')
 const bootLog = document.getElementById('bootlog')
@@ -82,7 +91,7 @@ function resize() {
 addEventListener('resize', resize)
 
 const opts = optionsFromUrl(SEED)
-const clock = new WorldClock({ seed: opts.seed })
+const clock = new WorldClock({ seed: opts.seed, hour: HELD_HOUR })
 const lighting = new WorldLighting()
 const sky = new Sky(scene)
 
@@ -93,66 +102,91 @@ let pines = null
 let island = null
 let from = ''
 
+// What the switches are set to. `octaveOn` shadows JITTER.amps rather than
+// zeroing them, so an octave switched off keeps the amplitude it comes back on
+// with; `steps` is what the generator runs (generate.js STEPS).
+const octaveOn = JITTER.amps.map(() => true)
+const steps = { ...STEPS }
+let scarpOn = false
+const relief = () => (scarpOn ? RELIEF_SCARP : RELIEF_DEFAULTS)
+const tuneNow = () => ({ jitter: JITTER.amps.map((a, k) => (octaveOn[k] ? a : 0)), steps })
+
 // --- boot -------------------------------------------------------------------
 
-async function bootWorld() {
-  bootSay(`island ${opts.seed}${opts.regen ? ', regenerating' : ''}`)
-  const loaded = await load({ seed: opts.seed, regen: opts.regen, log: bootSay })
+// The stub water /gen-grass uses: WaterSurfaces wants a material and a group at the origin, and the sea is the one lake in the document. Unlit, because the lake plane it builds carries no normals and a lit material draws it black. Built once and kept across rebuilds; only the surfaces inside it are thrown away.
+const water = {
+  material: new THREE.MeshBasicMaterial({ color: 0x2b4a66 }),
+  group: new THREE.Group(),
+}
+
+async function fetchIsland(regen) {
+  const loaded = await load({ seed: opts.seed, regen, tune: tuneNow(), log: bootSay })
   island = loaded.result
   from = loaded.from
+}
 
+/** The field and everything standing on it. Everything it makes is thrown away by `dropWorld` before it is called again. */
+function buildWorld() {
   const heightmap = Heightmap.fromRaw({ width: island.n, height: island.n, data: island.height, meta: island.meta })
   const layers = Layers.deserialize(island.doc)
-  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: RELIEF_SCARP })
+  height = new V2Height({ heightmap, layers, seed: opts.seed, relief: relief() })
 
   bootSay('meshing')
   // `axis` is the shipped ground shader; this page judges the field, not the surface, so it draws what the game draws.
   terrain = new TerrainV2(scene, {
-    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: RELIEF_SCARP, workers: 2, axis: true,
+    heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: relief(), workers: 2, axis: true,
     ground: { size: island.n, world: WORLD_SIZE, classes: island.ground, palette: Float32Array.from(BIOMES.flatMap((b) => b.colour)) },
   })
   lighting.patch(terrain.material, {
     mode: 'fragment', cacheKey: 'v2-terrain-shadow-axis', worldPosVarying: 'vWorldPos',
   })
-
-  // The stub water /gen-grass uses: WaterSurfaces wants a material and a group at the origin, and the sea is the one lake in the document. Unlit, because the lake plane it builds carries no normals and a lit material draws it black.
-  const water = {
-    material: new THREE.MeshBasicMaterial({ color: 0x2b4a66 }),
-    group: new THREE.Group(),
-  }
-  // The one stage of the shipped water shader this page cannot do without: the per-rung lift (src/water.js, river-raise.js). Without it a river is drawn at the level it was solved against the full-detail ground while the terrain under it is drawn at the rung the eye's distance picks, whose vertices sit on the banks and whose chord fills the valley in -- so from the air the network breaks into dashes as the ground eats it. The waves, the flow and the lakes' lap stay out: this page judges the island, not the water.
-  // A plain Material carries no defaults table, and the sea's plane has none of these attributes.
-  water.material.defaultAttributeValues = { aRaise: [0, 0, 0, 0], aRaiseFar: [0, 0, 0], aRung: [0], aLake: [0] }
-  water.material.onBeforeCompile = (shader) => {
-    shader.vertexShader = `
-      attribute vec4 aRaise;
-      attribute vec3 aRaiseFar;
-      attribute float aRung;
-      attribute float aLake;
-    ` + shader.vertexShader.replace('#include <begin_vertex>', `
-      #include <begin_vertex>
-      {
-        float lift = dot( aRaise, max( vec4( 0.0 ), 1.0 - abs( vec4( aRung ) - vec4( 1.0, 2.0, 3.0, 4.0 ) ) ) )
-          + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
-        vec3 wp = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-        float plan = length( cameraPosition.xz - wp.xz );
-        lift = max( lift, ${RAISE_EYE_LIFT.toFixed(1)} * ( 1.0 - aLake )
-          * smoothstep( ${RAISE_EYE[0].toFixed(1)}, ${RAISE_EYE[1].toFixed(1)}, plan ) );
-        float sight = ( cameraPosition.y - wp.y ) / max( 1.0, plan );
-        transformed.y += lift * smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, sight );
-      }
-    `)
-  }
-  water.group.name = 'terrain-v3-stub-water'
-  scene.add(water.group)
   waterSurfaces = new WaterSurfaces({ water, layers, field: height })
   waterSurfaces.rebuild()
+}
 
-  // What the Player walks on: the field clamped to the sea's surface, and no slope under water so the shore's drowned cliffs cannot refuse her on the sea.
-  const ground = {
-    heightAt: (x, z) => Math.max(0, height.heightAt(x, z)),
-    slopeAt: (x, z) => (height.heightAt(x, z) <= 0 ? 0 : height.slopeAt(x, z)),
-  }
+/** The mesh workers and the water geometry, released. `height` and `island` are replaced rather than freed: nothing holds them but this module. */
+function dropWorld() {
+  waterSurfaces.dispose()
+  terrain.dispose()
+}
+
+// The one stage of the shipped water shader this page cannot do without: the per-rung lift (src/water.js, river-raise.js). Without it a river is drawn at the level it was solved against the full-detail ground while the terrain under it is drawn at the rung the eye's distance picks, whose vertices sit on the banks and whose chord fills the valley in -- so from the air the network breaks into dashes as the ground eats it. The waves, the flow and the lakes' lap stay out: this page judges the island, not the water.
+// A plain Material carries no defaults table, and the sea's plane has none of these attributes.
+water.material.defaultAttributeValues = { aRaise: [0, 0, 0, 0], aRaiseFar: [0, 0, 0], aRung: [0], aLake: [0] }
+water.material.onBeforeCompile = (shader) => {
+  shader.vertexShader = `
+    attribute vec4 aRaise;
+    attribute vec3 aRaiseFar;
+    attribute float aRung;
+    attribute float aLake;
+  ` + shader.vertexShader.replace('#include <begin_vertex>', `
+    #include <begin_vertex>
+    {
+      float lift = dot( aRaise, max( vec4( 0.0 ), 1.0 - abs( vec4( aRung ) - vec4( 1.0, 2.0, 3.0, 4.0 ) ) ) )
+        + dot( aRaiseFar, max( vec3( 0.0 ), 1.0 - abs( vec3( aRung ) - vec3( 5.0, 6.0, 7.0 ) ) ) );
+      vec3 wp = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+      float plan = length( cameraPosition.xz - wp.xz );
+      lift = max( lift, ${RAISE_EYE_LIFT.toFixed(1)} * ( 1.0 - aLake )
+        * smoothstep( ${RAISE_EYE[0].toFixed(1)}, ${RAISE_EYE[1].toFixed(1)}, plan ) );
+      float sight = ( cameraPosition.y - wp.y ) / max( 1.0, plan );
+      transformed.y += lift * smoothstep( ${RAISE_SLOPE[0].toFixed(3)}, ${RAISE_SLOPE[1].toFixed(3)}, sight );
+    }
+  `)
+}
+water.group.name = 'terrain-v3-stub-water'
+scene.add(water.group)
+
+// What the Player walks on: the field clamped to the sea's surface, and no slope under water so the shore's drowned cliffs cannot refuse her on the sea. `height` is read through the binding, so a rebuild swaps the field under her without touching the Player.
+const ground = {
+  heightAt: (x, z) => Math.max(0, height.heightAt(x, z)),
+  slopeAt: (x, z) => (height.heightAt(x, z) <= 0 ? 0 : height.slopeAt(x, z)),
+}
+
+async function bootWorld() {
+  bootSay(`island ${opts.seed}${opts.regen ? ', regenerating' : ''}`)
+  await fetchIsland(opts.regen)
+  buildWorld()
+
   // The yardstick: a 9 m pine every 50 m. The atlas' images land on their own; the cards are baked, and shown, once they have.
   const propTextures = buildTextureArray()
   pines = new Pines(scene, propTextures, (x, z) => height.heightAt(x, z))
@@ -166,10 +200,40 @@ async function bootWorld() {
   look.pitch = -0.05
   console.log(`[terrain-v3] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m, island from ${from}`)
   // A handle for the console and the headless probe: `__v3.player.setFlying(true); __v3.rig.position.y = 900; __v3.look.pitch = -0.6`.
-  window.__v3 = { rig, camera, look, player, height, clock, pines }
+  window.__v3 = { rig, camera, look, player, clock, pines, heightOf: () => height }
 
   boot.classList.add('gone')
   ready = true
+}
+
+/**
+ * A switch moved: generate the island again without that layer and stand the world back up on it. She keeps where she is (lifted clear if the new ground came up under her) and keeps looking where she was looking, because the whole value of the switch is the before-and-after from one spot. `force` skips the cache, which is what the regen button wants and a switch never does.
+ */
+let busy = false
+async function rebuild(force = false) {
+  if (!ready || busy) return
+  busy = true
+  setSwitches(false)
+  bootLog.className = ''
+  bootLog.textContent = 'regenerating'
+  boot.classList.remove('gone')
+  try {
+    await fetchIsland(force)
+    dropWorld()
+    buildWorld()
+    // The pines cache a ground height per grid cell; on a new field every one of them is wrong.
+    pines.heights.clear()
+    pines.last.x = NaN
+    const p = rig.position
+    p.y = Math.max(p.y, ground.heightAt(p.x, p.z) + LOCOMOTION.eyeHeight)
+    boot.classList.add('gone')
+    console.log(`[terrain-v3] rebuilt from ${from}, jitter ${island.tune.jitter.join('/')}, steps ${Object.entries(island.tune.steps).filter(([, v]) => v).map(([k]) => k).join(' ') || 'none'}`)
+  } catch (err) {
+    bootFail(err)
+  } finally {
+    busy = false
+    setSwitches(true)
+  }
 }
 
 /**
@@ -197,27 +261,26 @@ const CODE_ACTIONS = {
   KeyW: 'forward', KeyA: 'left', KeyS: 'back', KeyD: 'right',
   ArrowUp: 'forward', ArrowDown: 'back', ArrowLeft: 'turnLeft', ArrowRight: 'turnRight',
   Space: 'flyUp', ShiftLeft: 'flyDown', ShiftRight: 'flyDown',
-  KeyN: 'timeSkip',
   KeyC: 'scarpToggle',
 }
 
-// C toggles the sheer-face remap, because the only honest way to judge a cliff
-// operator is against the same cliff without it. Both halves of the transport
-// are called and neither is optional: `height` is what she collides with and
-// the two mesh workers hold their own V2Height, so a relief that reaches one
-// and not the others is ground she is not drawn standing on. See relief.js.
-// The pines are NOT re-scattered -- scarp is gated to ground far too steep for
-// one, so a tree left hanging is a thing to notice rather than a bug to hide.
-let scarpOn = true
+// The sheer-face remap, live: it is a read-time relief and not a term in the
+// generated field, so it costs a re-mesh and not a regenerate. Both halves of
+// the transport are called and neither is optional: `height` is what she
+// collides with and the two mesh workers hold their own V2Height, so a relief
+// that reaches one and not the others is ground she is not drawn standing on.
+// See relief.js. The pines are NOT re-scattered -- scarp is gated to ground far
+// too steep for one, so a tree left hanging is a thing to notice rather than a
+// bug to hide.
 function setScarp(on) {
   if (!ready) return
   scarpOn = on
-  const relief = on ? RELIEF_SCARP : RELIEF_DEFAULTS
-  height.setRelief(relief)
-  terrain.setRelief(relief)
+  height.setRelief(relief())
+  terrain.setRelief(relief())
   waterSurfaces.rebuild()
   const p = player.rig.position
   p.y = Math.max(p.y, Math.max(0, height.heightAt(p.x, p.z)))
+  swScarp.checked = on
   console.log(`[terrain-v3] scarp ${on ? 'on' : 'off'}`)
 }
 
@@ -241,7 +304,6 @@ addEventListener('keydown', (e) => {
   const fresh = !held.has(action)
   held.add(action)
   if (fresh && action === 'flyUp' && player) onSpacePress(e.timeStamp)
-  if (fresh && action === 'timeSkip') clock.skip(CLOCK.skipHours)
   if (fresh && action === 'scarpToggle') setScarp(!scarpOn)
 })
 addEventListener('keyup', (e) => held.delete(CODE_ACTIONS[e.code]))
@@ -301,7 +363,7 @@ renderer.setAnimationLoop(() => {
   readInput()
   player.update(dt, moveInput)
 
-  clock.advance(dt)
+  // The clock is never advanced (see THE SUN DOES NOT MOVE): the state is the same one every frame, read rather than stepped so the lighting, sky and fog stacks run exactly as they do in the game.
   const state = clock.state()
   sun.position.set(state.lightDir.x, state.lightDir.y, state.lightDir.z)
   sun.color.setRGB(state.lightColor[0], state.lightColor[1], state.lightColor[2], THREE.SRGBColorSpace)
@@ -371,17 +433,61 @@ function refreshPanel() {
   rows(frameEl, [
     ['fps', fps ? fps.toFixed(0) : '--', fps >= 58 ? 'ok' : fps >= 40 ? 'warn' : 'bad'],
     ['main thread', `${frameMs.toFixed(2)} ms`],
-    ['world clock', clock.clockText],
+    ['sun held at', clock.clockText],
     ['pines lod0/1/card', `${pines.drawn[0]} / ${pines.drawn[1]} / ${pines.drawn[2]}`],
   ])
 }
 
-// --- controls ---------------------------------------------------------------
+// --- the switches -------------------------------------------------------------
+//
+// One box per layer. An octave's box drops that octave's amplitude to zero and regenerates; a step's box takes the step out of the pipeline. The cache key carries all of it (store.js), so the second visit to any combination comes back from IndexedDB in a frame.
 
-document.getElementById('skip').addEventListener('click', () => clock.skip(CLOCK.skipHours))
-document.getElementById('regen').addEventListener('click', () => {
-  location.search = `?seed=${opts.seed}&regen`
+const elSwitches = document.getElementById('switches')
+const allSwitches = []
+
+function addSwitch(key, label, title, on, onChange) {
+  const l = document.createElement('label')
+  l.className = 'sw'
+  l.title = title
+  const box = document.createElement('input')
+  box.type = 'checkbox'
+  box.id = `qa-sw-${key}`
+  box.checked = on
+  box.addEventListener('change', () => onChange(box.checked))
+  const text = document.createElement('span')
+  text.textContent = label
+  l.append(box, text)
+  elSwitches.appendChild(l)
+  allSwitches.push(box)
+  return box
+}
+
+const setSwitches = (enabled) => { for (const b of allSwitches) b.disabled = !enabled }
+
+JITTER.amps.forEach((amp, k) => {
+  const spacing = JITTER.start / 2 ** k
+  addSwitch(`jitter${spacing}`, `jitter ${spacing} m, +-${amp} m`, `Octave ${k + 1} of step B: a lattice of nodes ${spacing} m apart, each moved up or down by up to ${amp} m.`, true, (on) => {
+    octaveOn[k] = on
+    rebuild()
+  })
 })
+addSwitch('ridge', 'ridge', 'The ridged multifractal on the high ground (island.js RIDGE): crests with a corner on them, gated to the massif and to its patches.', steps.ridge, (on) => {
+  steps.ridge = on
+  rebuild()
+})
+addSwitch('hydrology', 'hydrology', 'The whole of step D: the rain and its cuts, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
+  steps.hydrology = on
+  rebuild()
+})
+addSwitch('cliffs', 'cliffs (tabled ladder)', 'The tabling inside step D (cliffs.js): bands of steep ground snapped onto a ladder of benches. Off by default -- a ladder of constant rise reads as striation, and its benches come back through the bicubic as rounded domes.', steps.cliffs, (on) => {
+  steps.cliffs = on
+  rebuild()
+})
+// Read-time, so no regenerate: it re-reads the field the mesher already has.
+const swScarp = addSwitch('scarp', 'scarp (read-time faces)', 'The sheer-face remap, §31 step E (v2 scarp.js). It stands up the tabled steps the cliff pass wrote, so it does nothing while cliffs are off. Also on C.', scarpOn, setScarp)
+
+// Throw this combination's cached island away and make it again: the button for "I changed the algorithm", not "I changed a switch".
+document.getElementById('regen').addEventListener('click', () => rebuild(true))
 
 resize()
 bootWorld().catch(bootFail)

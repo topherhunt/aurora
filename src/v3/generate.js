@@ -1,9 +1,9 @@
 import { WORLD_SIZE } from '../v2/config.js'
 import { DOC_VERSION, validate } from '../v2/layers/doc.js'
 import { priorityFlood } from '../sim/hydrology.js'
-import { Island, MACRO, JITTER, rasterise } from './island.js'
+import { Island, MACRO, JITTER, RIDGE, rasterise } from './island.js'
 import { buildBiomes, serialise } from './biomes.js'
-import { runHydrology } from './hydrology.js'
+import { runHydrology, noHydrology } from './hydrology.js'
 
 // ---------------------------------------------------------------------------
 // The v3 pipeline -- §31. Seed in, the coarse field and its layers document out, with the numbers the map page and the gate read off it.
@@ -11,8 +11,15 @@ import { runHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'd8'
+export const VERSION = 'd9'
 export const TEXELS = 1025
+
+// The layers of the algorithm a page can switch off, so what each one contributes can be seen by its absence (/terrain-v3's sidebar, `tune.steps`). An octave of jitter is not here: an octave is switched off by setting its amplitude to zero, which `tune.jitter` already does.
+export const STEPS = Object.freeze({
+  ridge: true,        // the ridged multifractal on the high ground (island.js)
+  hydrology: true,    // the whole of step D: the rain, the lakes, the silt, the route and the rivers
+  cliffs: false,      // the tabled ladder inside step D (cliffs.js). Off by default: a ladder of constant rise reads as striation from the air, and its benches -- 18.9% of canyon land under 10 degrees against the forest's 11.8 -- come back through the bicubic as rounded domes where the peaks should be sharp
+})
 export const CELL = WORLD_SIZE / (TEXELS - 1)
 
 // The rg16 encoding's range. Not the field's extremes -- those are measured -- but the metres a texel can hold, at 2.4 cm a step; the gate asserts the field stays inside it, because Heightmap.toPng clamps rather than throws.
@@ -25,7 +32,7 @@ export const BLUR_RADII = [32, 128, 512, 2048]
 /**
  * `generate({ seed, n = TEXELS, log, jitter, tune })` -> { v, seed, n, cell, height, meta, doc, biomes, ground, stats, tune, ms }
  *
- * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment from the PNG script; the cache never sees an overridden field. `tune` is the map page's amplitudes, `{ warp: metres per warp octave, jitter: metres per jitter octave }`, either or both; what was used comes back as `tune`, and a tuned island IS cached, since the map page is where the numbers are chosen and /terrain-v3 is where they are judged.
+ * `height` is the field in metres, row-major, `n` x `n` over the WORLD_SIZE box centred on the origin, after the hydrology has carved it; `meta` is what Heightmap.fromRaw wants beside it. `log` gets one line per stage. `jitter` overrides keys of JITTER for an experiment from the PNG script; the cache never sees an overridden field. `tune` is what the pages choose: `{ warp: metres per warp octave, jitter: metres per jitter octave, steps: which of STEPS run }`, any subset; what was used comes back as `tune`, and a tuned island IS cached under its own key (store.js), since the map page is where the numbers are chosen and /terrain-v3 is where they are judged.
  *
  * The biomes are classed on the raw field and the rain reads how fast the ground yields from them; they are not reclassed afterwards, since the rain moves half the land by a few metres and the classes are quantiles of the whole.
  */
@@ -35,17 +42,18 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune
   const cell = WORLD_SIZE / (n - 1)
   const t0 = now()
 
-  const { macro, jitter: jit } = tuned(tune, jitter)
-  const island = new Island(seed, macro, jit)
+  const { macro, jitter: jit, steps } = tuned(tune, jitter)
+  // A ridge term of no amplitude is the ridge step switched off: every gate still runs and every octave still sums, to nothing.
+  const island = new Island(seed, macro, jit, steps.ridge ? RIDGE : { ...RIDGE, amp: 0 })
   const raw = rasterise(island, n, cell)
   const tMacro = now()
-  log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m`)
+  log(`cone+jitter    ${ms(tMacro - t0)}  ${n}^2 at ${cell.toFixed(1)} m, jitter ${jit.amps.join('/')} m${steps.ridge ? '' : ', no ridge'}`)
 
   const biomes = buildBiomes(raw, n, cell, seed)
   const tBiomes = now()
   log(`biomes         ${ms(tBiomes - tMacro)}  ${biomes.stats.polygons} polygons, ${biomes.stats.vertices} vertices, rebuilt grid agrees ${(biomes.stats.agree * 100).toFixed(2)}%`)
 
-  const hydro = runHydrology(raw, n, cell, biomes.grid, seed)
+  const hydro = steps.hydrology ? runHydrology(raw, n, cell, biomes.grid, seed, steps.cliffs) : noHydrology(raw)
   const height = hydro.height
   const tHydro = now()
   const hs = hydro.stats
@@ -72,10 +80,10 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune
 
   const meta = { world: WORLD_SIZE, size: n, minY: MIN_Y, maxY: MAX_Y, encoding: 'rg16', exaggeration: 1, v3: VERSION, seed }
   // `biomes` is the drawn truth (polygons in world metres), `ground` the class grid rebuilt from it, which is what the mesher tints from.
-  return { v: VERSION, seed, n, cell, height, meta, doc, biomes: serialise(biomes.polygons), ground: biomes.grid, stats, tune: { warp: macro.warp.map(([, a]) => a), jitter: jit.amps.slice() }, ms: now() - t0 }
+  return { v: VERSION, seed, n, cell, height, meta, doc, biomes: serialise(biomes.polygons), ground: biomes.grid, stats, tune: { warp: macro.warp.map(([, a]) => a), jitter: jit.amps.slice(), steps }, ms: now() - t0 }
 }
 
-/** MACRO and JITTER with the tune's amplitudes in place of theirs, and the script's key overrides on top. An amplitude list must be the octaves' own length: a shorter one would silently drop octaves. */
+/** MACRO, JITTER and STEPS with the tune's amplitudes and switches in place of theirs, and the script's key overrides on top. An amplitude list must be the octaves' own length: a shorter one would silently drop octaves. */
 export function tuned(tune, jitter) {
   let macro = MACRO
   let jit = jitter ? { ...JITTER, ...jitter } : JITTER
@@ -87,7 +95,22 @@ export function tuned(tune, jitter) {
     if (tune.jitter.length !== JITTER.amps.length || !tune.jitter.every(Number.isFinite)) throw new Error(`generate: tune.jitter must be ${JITTER.amps.length} finite amplitudes, got ${JSON.stringify(tune.jitter)}`)
     jit = { ...jit, amps: tune.jitter.slice() }
   }
-  return { macro, jitter: jit }
+  const steps = { ...STEPS }
+  if (tune && tune.steps) {
+    for (const [k, v] of Object.entries(tune.steps)) {
+      if (!(k in STEPS)) throw new Error(`generate: tune.steps has no step ${k}; the steps are ${Object.keys(STEPS).join(', ')}`)
+      if (typeof v !== 'boolean') throw new Error(`generate: tune.steps.${k} must be a boolean, got ${JSON.stringify(v)}`)
+      steps[k] = v
+    }
+  }
+  return { macro, jitter: jit, steps }
+}
+
+/** A tune's signature with every default filled in: the other half of the cache key (store.js). Two pages asking for the same island have to land on the same slot, and a page that has switched a layer off must not overwrite the island that has it on. */
+export function tuneKey(tune) {
+  const { macro, jitter, steps } = tuned(tune, null)
+  const on = Object.keys(STEPS).map((k) => (steps[k] ? k[0] : '-')).join('')
+  return `${macro.warp.map(([, a]) => a).join(',')}/${jitter.amps.join(',')}/${on}`
 }
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())

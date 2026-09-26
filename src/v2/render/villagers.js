@@ -54,6 +54,7 @@ import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
 import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
+import { JUMP_M, LEAD_TICKS, ease, easeFields, keepWas, warnPop } from './net-ease.js'
 
 export const LOD_TIERS = LOD_RUNGS
 export const PUPPETS = 8
@@ -379,6 +380,7 @@ export class Villagers {
         // Where the player it last ran from stood, and whose client that is (null for this one's).
         fx: 0, fz: 0, by: null,
         lod: LOD_TIERS, puppet: null,
+        ...easeFields(),
       }
       c.rand = () => roll(c)
       this.all.push(c)
@@ -407,6 +409,13 @@ export class Villagers {
     this.rewind = Infinity
     this.rewinds = 0
     this.popped = 0
+    // This frame rolled back (and how many ticks), the deepest rollback yet, pops drawn and when one was last said (net-ease.js); and each villager her startle has already whimpered for, until the tick its own first whimper would come.
+    this.rolled = false
+    this.rewound = 0
+    this.maxRewind = 0
+    this.jumps = 0
+    this.jumpSaidAt = -Infinity
+    this.hushed = new Map()
     this.hearsOwn = true
     this.starved = 0
     this.talks = 0
@@ -465,7 +474,7 @@ export class Villagers {
   get stats() {
     const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, flee: 0 }
     for (const c of this.all) states[c.state]++
-    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
+    return { count: this.all.length, states, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
 
   /** Every villager drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -490,7 +499,13 @@ export class Villagers {
 
   /** A one-shot from its chest, heard by the layer's rule or by `rule` (ambience.js RULES). */
   _voice(c, sound, rule) {
-    if (this.voicing) this.calls.push({ sound, rule, x: c.x, y: c.y + c.size * CHEST, z: c.z })
+    if (!this.voicing) return
+    const until = this.hushed.get(c.id)
+    if (until !== undefined && sound === 'leafkinWhimper') {
+      this.hushed.delete(c.id)
+      if (this.tick <= until) return
+    }
+    this.calls.push({ sound, rule, x: c.x, y: c.y + c.size * CHEST, z: c.z })
   }
 
   /** The state's call, or a pant if the last was the call, and the wait to the next. */
@@ -684,7 +699,7 @@ export class Villagers {
       case 'calm': {
         // A startle naming it on the tick it calms is its player still near, said by that player's client; on a live tick this client says so of her.
         let e = this._startleOf(c)
-        if (!e && c.by === null && this.voicing && Math.hypot(c.x - this.feet.x, c.z - this.feet.z) < CALM_M) e = this._raise([c.id])
+        if (!e && c.by === null && this.voicing && Math.hypot(c.x - this.feet.x, c.z - this.feet.z) < CALM_M) e = this._raise([c.id], this.tick)
         if (e) this._fright(c, e)
         else this._errand(c)
         break
@@ -727,9 +742,8 @@ export class Villagers {
     return null
   }
 
-  /** Her startle of `ids` on the tick being stepped, from where her feet stand: logged, and owed to the room. */
-  _raise(ids) {
-    const tick = this.tick
+  /** Her startle of `ids` on `tick`, from where her feet stand: logged, and owed to the room. */
+  _raise(ids, tick) {
     const fx = snap(this.feet.x), fy = snap(this.feet.y), fz = snap(this.feet.z)
     const key = `${this.wire}${tick.toString(36)}:${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids).toString(36)}`
     const e = this._log({ key, tick, fx, fy, fz, ids, by: null, done: false })
@@ -1076,13 +1090,22 @@ export class Villagers {
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
     const tick = tickOf(seconds)
+    this.rolled = false
+    this.rewound = 0
     if (this.tick === null || tick - this.tick > CHAPTER_S * TICK_HZ) this._placeAll(seconds)
-    else if (this.rewind <= this.tick) this._rollback()
+    else if (this.rewind <= this.tick) {
+      const a = (seconds - this.tick * TICK_S) * TICK_HZ
+      for (const c of this.all) if (c.shown) keepWas(c, a, c.py + (c.y - c.py) * a)
+      this.rewound = this.tick - this.rewind
+      this.maxRewind = Math.max(this.maxRewind, this.rewound)
+      this._rollback()
+      this.rolled = true
+    }
     this.rewind = Infinity
     const live = this.live
     for (let t = this.tick + 1; t <= tick; t++) this._stepAll(t, tick)
     this.alpha = Math.min(1, Math.max(0, (seconds - this.tick * TICK_S) * TICK_HZ))
-    for (const c of this.all) this._draw(c, dt)
+    for (const c of this.all) this._draw(c, dt, seconds)
     if (tick - live > SILENT_TICKS) this.calls.length = 0
   }
 
@@ -1099,8 +1122,8 @@ export class Villagers {
     this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
     if (this.voicing && t > target - SILENT_TICKS) {
       const ids = []
-      for (const c of this.all) if (c.state !== 'inside' && c.state !== 'flee' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M) ids.push(c.id)
-      if (ids.length > 0) this._raise(ids.slice(0, MAX_NAMED))
+      for (const c of this.all) if (c.state !== 'inside' && c.state !== 'flee' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t)) ids.push(c.id)
+      if (ids.length > 0) this._flinch(this._raise(ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
     }
     for (const c of this.all) this._tick(c, t)
     const events = this.log.get(t)
@@ -1108,6 +1131,21 @@ export class Villagers {
     this.live = Math.max(this.live, t)
     this.voicing = false
     if (t % SNAP_TICKS === 0) this._snap()
+  }
+
+  /** Whether a startle already names villager `id` on tick `t` (stepped after this looks) or one her lead could reach. */
+  _owed(id, t) {
+    for (let k = t; k <= t + LEAD_TICKS; k++) if (this.log.get(k)?.some((e) => e.ids.includes(id))) return true
+    return false
+  }
+
+  /** Her startle `e` whimpered now, where the room hears it LEAD_TICKS on, and each villager's own first whimper hushed on this client. */
+  _flinch(e) {
+    for (const id of e.ids) {
+      const c = this.all[id]
+      this.calls.push({ sound: 'leafkinWhimper', x: c.x, y: c.y + c.size * CHEST, z: c.z })
+      this.hushed.set(id, e.tick + TICK_HZ)
+    }
   }
 
   /** The village's state as it stands, kept for a rollback. */
@@ -1165,14 +1203,14 @@ export class Villagers {
   }
 
   /** The frame's pose between the last two ticks, and the puppet on it. */
-  _draw(c, dt) {
-    if (c.hidden && !c.puppet) return
+  _draw(c, dt, seconds) {
+    if (c.hidden && !c.puppet) { c.shown = false; return }
     const a = this.alpha
     const pose = c.pose
-    pose.x = c.px + (c.x - c.px) * a
-    pose.y = c.py + (c.y - c.py) * a
-    pose.z = c.pz + (c.z - c.pz) * a
-    pose.heading = c.ph + swing(c.ph, c.heading) * a
+    const wasX = pose.x, wasZ = pose.z
+    ease(c, pose, c.px + (c.x - c.px) * a, c.py + (c.y - c.py) * a, c.pz + (c.z - c.pz) * a, c.ph + swing(c.ph, c.heading) * a, this.rolled, dt)
+    if (c.shown && Math.hypot(pose.x - wasX, pose.z - wasZ) > JUMP_M) warnPop(this, seconds, { id: c.id, state: c.state, m: +Math.hypot(pose.x - wasX, pose.z - wasZ).toFixed(2), rewound: this.rewound })
+    c.shown = !c.hidden
     pose.k = c.k
     pose.size = c.size
     pose.speed = c.speed

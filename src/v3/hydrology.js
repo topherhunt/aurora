@@ -3,7 +3,7 @@ import { selectLakes } from '../sim/phase-a.js'
 import { NB_DI, NB_DJ } from '../sim/world-grid.js'
 import { clamp } from '../sim/mathx.js'
 import { erode } from './erosion.js'
-import { table } from './cliffs.js'
+import { table, CLIFFS, CLIFFS_OFF } from './cliffs.js'
 
 // ---------------------------------------------------------------------------
 // Step D -- the island drains. Rain is thrown at the raw field and walked to the sea, cutting the valleys (erosion.js); then what still ponds is read, a few of the bowls are kept as lakes and the rest are silted up to their spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
@@ -37,11 +37,11 @@ export const RIVERS = {
 }
 
 /**
- * `runHydrology(height, n, cell, ground, seed)` -> { height, lakes, rivers, stats }
+ * `runHydrology(height, n, cell, ground, seed, cliffs = true)` -> { height, lakes, rivers, stats }
  *
- * `height` in is the raw field, `ground` the class grid the erosion reads its yield from, `seed` what the rain falls by; `height` out is a new array, eroded and silted. `lakes` and `rivers` are doc records without ids.
+ * `height` in is the raw field, `ground` the class grid the erosion reads its yield from, `seed` what the rain falls by; `height` out is a new array, eroded and silted. `lakes` and `rivers` are doc records without ids. `cliffs` false runs step 2 with every class's share at zero, which moves nothing.
  */
-export function runHydrology(height, n, cell, ground, seed) {
+export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   if (ground.length !== height.length) throw new Error(`runHydrology: ground has ${ground.length} texels, the field ${height.length}`)
   if (!Number.isFinite(seed)) throw new Error(`runHydrology: seed must be a finite number, got ${seed}`)
   const size = n * n
@@ -58,7 +58,7 @@ export function runHydrology(height, n, cell, ground, seed) {
 
   // --- 2. cliffs --------------------------------------------------------------
   const t1 = Date.now()
-  stats.cliffs = table(elev, sea, ground, n, cell, seed)
+  stats.cliffs = table(elev, sea, ground, n, cell, seed, cliffs ? CLIFFS : CLIFFS_OFF)
   stats.cliffs.ms = Date.now() - t1
 
   // --- 3. lakes ---------------------------------------------------------------
@@ -146,6 +146,24 @@ export function runHydrology(height, n, cell, ground, seed) {
   stats.rivers = { count: rivers.length, cells: riverCells, km, longestKm: longest, intoSea: rivers.filter((r) => r.into === 'sea').length, intoLake: rivers.filter((r) => r.into === 'lake').length, fromLake: rivers.filter((r) => r.fromLake).length }
 
   return { height: elev, lakes: lakes.map((l) => l.rec), rivers: rivers.map((r) => r.rec), stats }
+}
+
+/**
+ * Step D switched off: the raw field passed straight through, with the stats record every stage would have filled in, all zero. Every key the map page and the gate read is here, because a missing one reads as `undefined` and prints as NaN rather than failing.
+ */
+export function noHydrology(height) {
+  return {
+    height: Float32Array.from(height),
+    lakes: [],
+    rivers: [],
+    stats: {
+      erosion: { droplets: 0, steps: 0, meanSteps: 0, toSea: 0, offEdge: 0, ponded: 0, spent: 0, deepestStep: 0, cutCells: 0, cutMean: 0, deepest: 0, fillCells: 0, fillMean: 0, highest: 0, ms: 0 },
+      cliffs: { cells: 0, km2: 0, meanMove: 0, maxMove: 0, ms: 0, byBiome: [] },
+      silt: { cells: 0, km2: 0, mean: 0, deepest: 0 },
+      lakes: { candidates: 0, count: 0, km2: 0, leakKm2: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
+      rivers: { count: 0, cells: 0, km: 0, longestKm: 0, intoSea: 0, intoLake: 0, fromLake: 0 },
+    },
+  }
 }
 
 /** The sea: every texel at or under the waterline reachable from the box edge through such texels. */

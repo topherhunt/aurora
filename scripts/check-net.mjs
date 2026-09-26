@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { interpolate } from '../src/net.js'
+import { Netplay, interpolate } from '../src/net.js'
 
 // The client's own lerp, before the relay is spun up: the foot follows the head
 // rather than stepping to the newer sample, or a peer walking a slope stairs down
@@ -11,6 +11,19 @@ import { interpolate } from '../src/net.js'
   if (half.foot !== 10.5) throw new Error(`foot should lerp with the head: got ${half.foot}`)
   if (interpolate(frame(1), frame(2), 0.5).foot !== undefined) throw new Error('a peer that sends no foot should be given none')
   if (interpolate(frame(1), frame(2, 11), 0.5).foot !== 11) throw new Error('the first foot of a peer that has just started sending one should be taken whole')
+}
+
+// The clock offset: a device 1.5 s behind the relay reads the relay's clock off the quickest round trip, not the latest.
+{
+  const n = { pings: [], offsetMs: 0, time: { anchorMs: 0, skipHours: 0, offsetMs: 0 } }
+  const pong = Netplay.prototype._pong
+  // Local clock 1500 ms behind: the relay stamps its reply at the midpoint of the trip.
+  const trip = (sent, rtt, skew = 0) => pong.call(n, { t: sent, ms: sent + 1500 + rtt / 2 + skew }, sent + rtt)
+  trip(1000, 40)
+  trip(2000, 400, 150)
+  if (n.offsetMs !== 1500 || n.time.offsetMs !== 1500) throw new Error(`a slow, lopsided trip should not move the offset: got ${n.offsetMs}`)
+  trip(3000, 10)
+  if (n.offsetMs !== 1500) throw new Error(`the quickest trip's offset should be believed: got ${n.offsetMs}`)
 }
 
 const WebSocket = globalThis.WebSocket
@@ -82,6 +95,20 @@ try {
     }
     ws.addEventListener('message', onMessage)
   })
+  // A ping comes back to its sender alone, its own stamp and the relay's clock beside it.
+  const pong = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('pong timeout')), 1000)
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (message.type !== 'pong') return
+      clearTimeout(timer)
+      first.removeEventListener('message', onMessage)
+      resolve(message)
+    }
+    first.addEventListener('message', onMessage)
+    first.send(JSON.stringify({ version: 1, type: 'ping', t: 12345 }))
+  })
+  if (pong.t !== 12345 || Math.abs(pong.ms - Date.now()) > 1000) throw new Error(`a ping should come back with its stamp and the relay's clock, got ${JSON.stringify(pong)}`)
   const startedAt = Date.now()
   const clock = await nextClock(second, () => true)
   if (!Number.isFinite(clock.anchorMs) || clock.anchorMs > startedAt || startedAt - clock.anchorMs > 5000) throw new Error(`anchorMs should be the room's creation time, got ${clock.anchorMs} at ${startedAt}`)
@@ -242,7 +269,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest)')
   first.close()
   second.close()
 } finally {

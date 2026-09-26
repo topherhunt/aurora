@@ -22,6 +22,7 @@ import {
 import { LeafkinGround, CELL, OPEN, BLOCKED } from '../src/v2/render/leafkin-ground.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
 import { MOUTH_STEP_M, MOUTH_SINK_M } from '../src/v2/render/entrances.js'
+import { LEAD_TICKS } from '../src/v2/render/net-ease.js'
 import { CRITTER_GLB, TIER_TINTS, critterTier, cullRange, setTierTint } from '../src/v2/render/critters.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -457,16 +458,17 @@ console.log('\nthe startle')
   const said = []
   const x0 = c.x, z0 = c.z
   const set = t
-  let hold = null
-  t = run(w, t, 0.2, at, (c, now) => { w.voices(said); if (c.state === 'startle' && hold === null) hold = now })
+  let hold = null, screamAt = null, toHer = NaN
+  t = run(w, t, 0.2 + LEAD_TICKS * TICK_S, at, (c, now) => { w.voices(said); if (said.length > 0 && screamAt === null) screamAt = now; if (c.state === 'startle' && hold === null) { hold = now; toHer = Math.atan2(-(at.z - c.z), at.x - c.x) } })
   const owed = w.pending([])
-  check(hold !== null && hold - set <= TICK_S + 1 / 60 + 1e-9 && c.clip === 'recoil' && c.speed === 0, `her feet within ${STARTLE_M} m of its own and on the next tick it recoils`, `${hold && fmt(hold - set)} s on`)
+  check(screamAt !== null && screamAt - set <= TICK_S + 1 / 60 + 1e-9, 'she hears it scream on the next tick', `${screamAt && fmt(screamAt - set)} s on`)
+  check(hold !== null && hold - set <= (LEAD_TICKS + 1) * TICK_S + 1 / 60 + 1e-9 && c.clip === 'recoil' && c.speed === 0, `her feet within ${STARTLE_M} m of its own and ${LEAD_TICKS} ticks on it recoils, the room's lead`, `${hold && fmt(hold - set)} s on`)
   check(owed.length === 1 && owed[0][7] === 'fright' && w.frights === 1, 'a fright owed the room, once', JSON.stringify(owed[0]))
   check(c.bundle === 0 && c.carrier.count() === 0 && hands.loose.length === 3 && hands.loose.every((i) => i.state === 'fall' && !i.mine && i.netId === null), 'the bundle is scattered: exactly the three caps, falling, loose, and nobody\'s to the room', `${hands.loose.length} loose`)
   check(said.length === 1 && said[0].sound === 'leafkinScream', 'with a scream', said.map((v) => v.sound).join(' '))
   let fleeAt = null, faced = NaN
   t = run(w, t, STARTLE_S, at, (c, now) => { w.voices(said); if (c.state === 'flee' && fleeAt === null) { fleeAt = now; faced = c.heading } })
-  check(Math.abs(swing(faced, 0)) < 0.05, 'it has turned to face her by the time it runs', `${fmt(faced)}`)
+  check(Math.abs(swing(faced, toHer)) < 0.05, 'it has turned to face her by the time it runs', `${fmt(faced)}`)
   check(fleeAt !== null && Math.abs(fleeAt - hold - STARTLE_S) <= TICK_S + 1 / 60 && c.clip === 'run', `${STARTLE_S} s later it runs`, `${fleeAt && fmt(fleeAt - hold)} s`)
   const site = w.entrances.list[0]
   const home = Math.hypot(x0 - site.ax, z0 - site.az)
@@ -656,7 +658,7 @@ const fits = ({ t, a }) => JSON.stringify(a).length <= 256 && a.length >= 9 && a
     if (aAt !== null && t > aAt) { after++; if (!same(one(p.A), one(p.B))) apartAfter++ }
   })
   const fright = p.sent.filter((s) => s.a[7] === 'fright')
-  check(bAt !== null && fright.length === 1 && fright[0].id === 'b', 'her feet at b\'s copy startle it there on the next tick, one fright sent', `${fright.length} sent`)
+  check(bAt !== null && fright.length === 1 && fright[0].id === 'b', 'her feet at b\'s copy startle it there, one fright sent', `${fright.length} sent`)
   check(aAt !== null && aAt - bAt <= 0.2 + 2 / 60 && p.A.rewinds >= 1 && p.B.rewinds === 0, 'a hears it within the lag and steps back to before it', `${aAt && fmt(aAt - bAt)} s later, ${p.A.rewinds} rewinds`)
   check(after > 0 && apartAfter === 0 && one(p.A).state === one(p.B).state, 'and from then the two agree to the bit, its flight home the same on both', `${apartAfter} of ${after} apart, ${one(p.A).state}`)
   check(p.sent.every(fits), 'every anchor fits the relay: 256 bytes of JSON, 9-24 fields, its key, its time within a chapter, a word and an integer where the relay wants them, and no sender', JSON.stringify(p.sent.find((s) => !fits(s))?.a))
@@ -668,6 +670,18 @@ const fits = ({ t, a }) => JSON.stringify(a).length <= 256 && a.length >= 9 && a
   p.A.apply([`${wire}0:0`, one(p.A).startTick / TICK_HZ, 1, GROUND, 1, 0, 0, 'fright', 'b'])
   p.step(0.1)
   check(p.A.rewinds === r && !p.A.logs.get(wire)?.has(one(p.A).startTick), 'and one on its chapter\'s first tick is let go')
+  p.A.dispose(); p.B.dispose()
+}
+for (const [lag, rewinds] of [[0.1, false], [1.5, true]]) {
+  // Her fright is raised LEAD_TICKS ahead: heard sooner than that, a never rolls back; heard 1.5 s late, as off a clock that far out, a's leafkin slides onto its flight.
+  const p = pair({ lag })
+  p.step(10)
+  p.fb = beside(one(p.B))
+  p.step(0.5)
+  p.fb = { x: 0, y: GROUND, z: -NEAR.z }
+  p.step(10)
+  const ok = rewinds ? p.A.rewinds > 0 : p.A.rewinds === 0
+  check(ok && p.A.jumps === 0 && p.B.jumps === 0 && same(one(p.A), one(p.B)), rewinds ? `heard ${lag} s late it is rolled back and drawn without a jump` : `heard ${lag} s late, inside the ${LEAD_TICKS}-tick lead, it is never rolled back`, `${p.A.rewinds} rewinds of up to ${p.A.maxRewind} ticks, ${p.A.jumps} jumps`)
   p.A.dispose(); p.B.dispose()
 }
 {

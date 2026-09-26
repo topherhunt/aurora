@@ -323,6 +323,11 @@ wss.on('connection', (ws, request) => {
     let message
     try { message = JSON.parse(raw.toString()) } catch { return }
     const now = Date.now()
+    // A client measures its clock against this one (net.js Netplay._pong): its own stamp back, and ours.
+    if (message && message.type === 'ping' && Number.isFinite(message.t)) {
+      send(client, { version: 1, type: 'pong', t: message.t, ms: now })
+      return
+    }
     if (validSkip(message)) {
       room.skipHours += message.hours
       client.lastSeen = now
