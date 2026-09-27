@@ -211,10 +211,11 @@ export class Player {
     this.speed = 0
   }
 
-  teleportTo(x, z) {
+  // With `y`, onto the ground within reach of that height (a landing under an awning) rather than the topmost stone.
+  teleportTo(x, z, y) {
     this.travel = null
     this.flying = false
-    this.rig.position.set(x, this.th.heightAt(x, z), z)
+    this.rig.position.set(x, this.th.heightAt(x, z, y), z)
     this.smoothY = this.standY = this.rig.position.y
     this.speed = 0
     this.blocked = false

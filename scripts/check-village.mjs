@@ -97,6 +97,8 @@ const LAMPS_GAP_M = 20
 // The trunk's first lamp (LAMPS.exit) steps in from the arrival until it stands LAMPS.wall clear of the stone, a verge off the road: the arrival is in the mouth, up to 2 m into the wall, so it is found within this of her.
 const EXIT_LAMP_M = 6
 const HOUSE = 'house-leafkin'
+// main.js HOUSE_DOOR's reach at a house's door outside.
+const HOUSE_DOOR = { walk: 0.5, side: 0.4, rise: 0.6 }
 // The seeds gated: real entrance keys from the shipped overworld (probe-villages.mjs), hashed the way main.js villageSeed hashes them.
 const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:190.0', 'hollow:-2218.0:-821.0', 'hollow:-244.0:-1563.0', 'hollow:-1947.0:380.0']
 
@@ -1024,6 +1026,21 @@ console.log('\nthe boot')
   let nearest = Infinity
   run(4, { move: 1, each: () => { nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ)) } })
   check(nearest <= PORTAL.walk, `walked in from the arrival, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `nearest ${nearest.toFixed(2)} m`)
+  // Each house's door: come out of it onto its landing (not the awning over it), then walk straight back in and her feet reach its entry as main.js HOUSE_DOOR reads it.
+  let offLanding = 0, shut = 0
+  for (const d of roomProps.entries()) {
+    player.teleportTo(d.back.x, d.back.z, d.back.y)
+    rig.updateMatrixWorld(true)
+    if (Math.abs(rig.position.y - d.y) > 0.3) offLanding++
+    camera.rotation.y = Math.atan2(d.nx, d.nz)
+    let through = false
+    run(3, { move: 1, each: () => {
+      const dx = rig.position.x - d.x, dz = rig.position.z - d.z
+      if (Math.abs(dx * d.nx + dz * d.nz) <= HOUSE_DOOR.walk && Math.abs(dx * d.nz - dz * d.nx) <= HOUSE_DOOR.side && Math.abs(rig.position.y - d.y) <= HOUSE_DOOR.rise) through = true
+    } })
+    if (!through) shut++
+  }
+  check(offLanding === 0 && shut === 0, 'she comes out of every house onto its landing and walks straight back in through its door', `${offLanding} off the landing, ${shut} never reach the door`)
   // The shell is an obstacle: walked at the wall from inside the rim on every bearing, flown up from the arrival and flown at the wall, she stays in the hull -- her feet over its underside and her head under its roof on the line she stands on -- and no teleport lands past the wall.
   const crossings = new Float32Array(16)
   const inHull = (x, y, z) => {

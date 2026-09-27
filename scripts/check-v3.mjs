@@ -65,7 +65,9 @@ export async function run() {
   const rungs = octaveTable(SEED)
   const finest = JITTER.start / 2 ** (JITTER.amps.length - 1)
   check(rungs.length === 11 && rungs[0].spacing === JITTER.start && rungs[rungs.length - 1].spacing === finest, `${rungs.length} rungs, ${JITTER.start} m down to ${finest} m`)
-  check(rungs.every((o) => Math.abs(o.amp - o.spacing / 4) < 1e-9), `every rung moves its lattice by a quarter of its own spacing (${rungs.map((o) => o.amp).join('/')} m)`)
+  // A quarter of the spacing above 16 m and an eighth from 16 m down to 2 m, with the 1 m rung back at a quarter because an eighth of a metre is under the field's own quantum. The macro rungs are what the island's shape is; the fine ones at a quarter read as grit.
+  const eighth = (o) => o.spacing <= 16 && o.spacing >= 2
+  check(rungs.every((o) => Math.abs(o.amp - o.spacing / (eighth(o) ? 8 : 4)) < 1e-9), `every rung moves its lattice by a quarter of its own spacing down to 32 m and an eighth from 16 m to 2 m (${rungs.map((o) => o.amp).join('/')} m)`)
   const cut = splitOctaves(rungs, a.cell)
   const floor = TEXELS_PER_NODE * a.cell
   check(
@@ -199,7 +201,11 @@ export async function run() {
     for (const p of r.pts) if (!(p[2] >= RIVERS.widthAtMin && p[2] <= RIVERS.maxWidth)) widths++
     const [mx, mz] = r.pts[r.pts.length - 1]
     const inSea = groundAt(mx, mz) <= 0
-    const inLake = lakes.some((l) => footprint(l, mx, mz) > 0)
+    // IN A LAKE MEANS IN ITS WATER, WHICH IS A TEXEL WIDER THAN ITS ELLIPSE. fitLake sizes the ellipse to LAKES.cover of the pool and leaves the shallowest rim outside on purpose, and LAKES.holdDepth is its statement of how deep that rim may be before being drawn as land is a bug. So a mouth standing under a lake's level, no deeper than holdDepth, on that lake's own rim is in the lake: measured, one of these 97 mouths sits at 1.07 of its ellipse's radius under 0.49 m of water, and which mouth lands in the 0.0001 km2 the ellipses leave dry is a coin toss the ladder's amplitudes flip. Asserting the ellipse alone here is asserting the same tolerance twice, once with a hair trigger. A mouth on dry ground stands ABOVE every lake's level and still fails.
+    const inLake = lakes.some((l) => {
+      const under = l.y - groundAt(mx, mz)
+      return footprint(l, mx, mz) > 0 || (under > 0 && under <= LAKES.holdDepth && footprint({ ...l, rx: l.rx * 1.2, rz: l.rz * 1.2 }, mx, mz) > 0)
+    })
     const onRiver = a.doc.rivers.some((o) => o !== r && o.pts.some(([x, z]) => Math.hypot(x - mx, z - mz) < a.cell))
     if (!(inSea || inLake || onRiver)) mouths++
   }
@@ -241,9 +247,17 @@ export async function run() {
   for (let i = 0; i < a.height.length; i++) worst = Math.max(worst, Math.abs(back.field[i] - a.height[i]))
   const quantum = (MAX_Y - MIN_Y) / 65535
   check(worst <= quantum * 0.5 + 1e-4, `rg16 round trip: worst ${(worst * 100).toFixed(2)} cm against a ${(quantum * 100).toFixed(2)} cm quantum (${(png.length / 1024).toFixed(0)} kB)`)
-  const height = new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS })
-  const cal = height.calibration
-  check(cal && cal.rough > 0 && Number.isFinite(cal.rough), `calibrateRough stands on the field: rough ${cal ? cal.rough.toFixed(4) : '--'}, exponent ${cal ? cal.exponent.toFixed(2) : '--'}`)
+  // WITH THE FINE RUNGS SUPPLIED, which is how /terrain-v3 boots it: main.js hands the worker `{ seed, cell, jitter }` and the worker makes this same FineJitter from it. Constructing it bare would be testing a configuration the route does not use, and the line below says what the bare one now does instead.
+  const height = new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS, detail: new FineJitter({ seed: SEED, cell: a.cell }) })
+  check(height.detail instanceof FineJitter && height.calibration === null, 'V2Height stands on the supplied rungs and fits no amplitude of its own')
+  // A 2 m import leaves v2's fitted detail term nothing to add, so the bare field REFUSES it rather than laying a second ladder over the one the image already carries: calibrateRough extrapolates the curvature at lags of 4 and 8 m down to a quarter metre, and the bicubic over 2 m texels already supplies 183% of that. Asserting the refusal is what keeps a later session from dropping the FineJitter above and meeting the throw with no idea why.
+  let bare = null
+  try {
+    new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS })
+  } catch (err) {
+    bare = err.message
+  }
+  check(bare !== null && bare.includes('more sub-texel roughness'), `and the bare field refuses the 2 m import: ${bare ? bare.slice(0, 96) : 'it did not refuse'}`)
   const at = height.heightAt(s.summit.x, s.summit.z)
   check(Math.abs(at - s.summit.h) < 5, `V2Height at the summit reads ${at.toFixed(1)} m`)
   const bands = height.bands

@@ -39,7 +39,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
 - [ ] terrain-v3
   - [ ] Simpler approach to hydrology:
-    - Identify all sealed water pockets.
+    - Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
+  - IF we take that simpler approach to the hydrology, then, maybe we only need to store coarser elevation map (8m / texel) and smaller-scale detail can be procedurally generated just-in-time?
 - [ ] Use Eleven Labs for better sound effects.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.

@@ -10,6 +10,8 @@ const REPEAT = new Set(['wall', 'grain', 'linen', 'pot', 'soil'])
 // Texture metres per repeat on the wall and on carved wood.
 const WALL_M = 2.0, WOOD_M = 0.6
 const FLAT = [0.5, 0.5]
+// The speckle every surface carries on top of its texture: `px` square, one repeat `m` metres on the plane its normal faces most, whole on the flat-coloured (FLAT) and `textured` of it on the rest.
+const SPECK = { px: 64, m: 0.3, textured: 0.35 }
 
 let texReady = null
 /** The interior textures, loaded once. */
@@ -27,13 +29,20 @@ const VERT = /* glsl */ `
 attribute vec2 tuv;
 attribute vec3 tint;
 attribute vec3 light;
+attribute float speck;
 varying vec2 vUv;
 varying vec3 vTint;
 varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vNrm;
+varying float vSpeck;
 void main() {
   vUv = tuv;
   vTint = tint;
   vLight = light;
+  vPos = position;
+  vNrm = normal;
+  vSpeck = speck;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
 const FRAG = /* glsl */ `
@@ -43,11 +52,17 @@ uniform float uCandle;
 uniform float uWin;
 uniform float uDay;
 uniform float uFlicker;
+uniform sampler2D speckMap;
 varying vec2 vUv;
 varying vec3 vTint;
 varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vNrm;
+varying float vSpeck;
 void main() {
-  vec3 t = texture2D(map, vUv).rgb;
+  vec3 an = abs(vNrm);
+  vec2 sp = an.y >= an.x && an.y >= an.z ? vPos.xz : an.x >= an.z ? vPos.zy : vPos.xy;
+  vec3 t = texture2D(map, vUv).rgb * mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
   float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
   gl_FragColor = vec4(t * vTint * lit, 1.0);
   #include <tonemapping_fragment>
@@ -69,6 +84,7 @@ class Mesher {
     this.nrm = []
     this.uv = []
     this.tint = []
+    this.speck = []
     this.idx = []
     this.lit = null
   }
@@ -80,6 +96,7 @@ class Mesher {
     this.nrm.push(n[0], n[1], n[2])
     this.uv.push(uv[0], uv[1])
     this.tint.push(tint[0], tint[1], tint[2])
+    this.speck.push(uv === FLAT ? 1 : SPECK.textured)
     return this.count - 1
   }
 
@@ -341,20 +358,24 @@ export class InteriorView {
       if (!make) throw new Error(`InteriorView: no builder for ${it.kind}`)
       make(it, M, K, room, rng, out)
     }
+    const occ = occupancy(Object.values(M))
+    const speckMap = speckleTexture()
     for (const id of TEX) {
       const m = M[id]
       if (m.count === 0) continue
-      bake(room, m)
+      bake(room, m, occ)
       // The panes are lit from outside, not by the room.
       if (id === 'window') for (let i = 0; i < m.count; i++) m.lit.set([0.35, 0.1, 1.5], i * 3)
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(m.nrm, 3))
+      g.setAttribute('speck', new THREE.Float32BufferAttribute(m.speck, 1))
       g.setAttribute('tuv', new THREE.Float32BufferAttribute(m.uv, 2))
       g.setAttribute('tint', new THREE.Float32BufferAttribute(m.tint, 3))
       g.setAttribute('light', new THREE.Float32BufferAttribute(m.lit, 3))
       g.setIndex(m.idx)
       g.computeBoundingSphere()
-      const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, uniforms: { map: { value: tex[id] }, ...this.uniforms }, fog: false })
+      const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, uniforms: { map: { value: tex[id] }, speckMap: { value: speckMap }, ...this.uniforms }, fog: false })
       const mesh = new THREE.Mesh(g, mat)
       mesh.name = `interior-${id}`
       mesh.frustumCulled = false
@@ -451,8 +472,8 @@ function buildShell(room, M, K) {
   // Tu (round the bearing) x Tv (up the profile) looks into the room.
   M.wall.grid(COLS, prof.length - 1, wallPt, tone(room.tints.wall, 0.12, 0.1), 1, true)
 
-  // The floor, in rings out to the wall's foot, its rings texture stretched once across it.
-  const RINGS = 12, span = 2 * Math.max(...rs)
+  // The floor, in rings out to the wall's foot, its rings texture stretched once across it; the rings close enough that the bake's furniture shadows don't smear out along the spokes.
+  const RINGS = 36, span = 2 * Math.max(...rs)
   M.floor.grid(COLS, RINGS, (i, j) => {
     const edge = wallPt(i, 0).p, t = j / RINGS
     const p = [edge[0] * t, 0, edge[2] * t]
@@ -614,37 +635,118 @@ function railRun(M, K, pts, wood) {
 
 // --- the bake ---------------------------------------------------------------
 
-/** Per vertex: x ambient (dimmer low, under the loft and facing down), y candle, z window. */
-function bake(room, m) {
+// The shadow grid: every mesh's triangles marked into `cell`-metre voxels. A ray from a vertex (lifted `lift` cells off its surface) to a light keeps `pass` of what it carries at each marked sample, `step` cells apart, from `skip` cells out to as far short of the light; `ao` rays of `aoM` metres read how shut in it stands. A light too faint to matter (`faint`) is not traced.
+const SHADE = { cell: 0.06, step: 0.75, pass: 0.45, lift: 1, skip: 1.5, ao: 8, aoM: 0.4, faint: 0.01 }
+// The ambient rays, in the normal's frame: [across, along, up the normal], two rings of four.
+const AO_DIRS = Array.from({ length: SHADE.ao }, (_, k) => { const a = (k * TAU) / SHADE.ao, e = k % 2 ? 1.05 : 0.45; return [Math.cos(a) * Math.cos(e), Math.sin(a) * Math.cos(e), Math.sin(e)] })
+
+/** The meshers' triangles as a voxel grid in room-local metres: `{ x0, y0, z0, nx, ny, nz, cells }`, 1 where a surface passes. */
+function occupancy(meshers) {
+  const c = SHADE.cell
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity
+  for (const m of meshers) for (let i = 0; i < m.pos.length; i += 3) {
+    x0 = Math.min(x0, m.pos[i]); y0 = Math.min(y0, m.pos[i + 1]); z0 = Math.min(z0, m.pos[i + 2])
+    x1 = Math.max(x1, m.pos[i]); y1 = Math.max(y1, m.pos[i + 1]); z1 = Math.max(z1, m.pos[i + 2])
+  }
+  x0 -= c; y0 -= c; z0 -= c
+  const nx = Math.ceil((x1 - x0) / c) + 2, ny = Math.ceil((y1 - y0) / c) + 2, nz = Math.ceil((z1 - z0) / c) + 2
+  const cells = new Uint8Array(nx * ny * nz)
+  for (const m of meshers) {
+    const P = m.pos, I = m.idx
+    for (let t = 0; t < I.length; t += 3) {
+      const a = I[t] * 3, b = I[t + 1] * 3, d = I[t + 2] * 3
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[d] - P[a], vy = P[d + 1] - P[a + 1], vz = P[d + 2] - P[a + 2]
+      const k = Math.max(1, Math.ceil(Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz), Math.hypot(ux - vx, uy - vy, uz - vz)) / (c * 0.5)))
+      for (let i = 0; i <= k; i++) for (let j = 0; j <= k - i; j++) {
+        const s = i / k, r = j / k
+        const gx = ((P[a] + ux * s + vx * r - x0) / c) | 0, gy = ((P[a + 1] + uy * s + vy * r - y0) / c) | 0, gz = ((P[a + 2] + uz * s + vz * r - z0) / c) | 0
+        cells[(gz * ny + gy) * nx + gx] = 1
+      }
+    }
+  }
+  return { x0, y0, z0, nx, ny, nz, cells }
+}
+
+/** What of a light gets from (px, py, pz) `len` metres along the unit (dx, dy, dz) through the grid. */
+function transmit(o, px, py, pz, dx, dy, dz, len) {
+  const c = SHADE.cell, end = len - SHADE.skip * c
+  let T = 1
+  for (let t = SHADE.skip * c; t < end; t += SHADE.step * c) {
+    const gx = ((px + dx * t - o.x0) / c) | 0, gy = ((py + dy * t - o.y0) / c) | 0, gz = ((pz + dz * t - o.z0) / c) | 0
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= o.nx || gy >= o.ny || gz >= o.nz) break
+    if (o.cells[(gz * o.ny + gy) * o.nx + gx] && (T *= SHADE.pass) < 0.02) return 0
+  }
+  return T
+}
+
+/** Per vertex: x ambient (dimmer low, under the loft, facing down and shut in), y candle, z window, each shadowed through `occ`. */
+function bake(room, m, occ) {
   const n = m.count, L = new Float32Array(n * 3)
-  const P = m.pos, N = m.nrm
+  const P = m.pos, N = m.nrm, lift = SHADE.lift * SHADE.cell
   const wins = room.windows.map((w) => {
-    const r = rAt(room.rs, w.a)
-    return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax: [-Math.cos(w.a), 0, -Math.sin(w.a)], k: ((w.r / 0.3) ** 2) * 1.2 }
+    const r = rAt(room.rs, w.a), ax = [-Math.cos(w.a), 0, -Math.sin(w.a)]
+    // Traced to a point just inside the pane, clear of the wall's own cells.
+    return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax, at: [Math.cos(w.a) * (r - 0.2), w.y, Math.sin(w.a) * (r - 0.2)], k: ((w.r / 0.3) ** 2) * 1.2 }
   })
   for (let i = 0; i < n; i++) {
     const p = [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]], nn = [N[i * 3], N[i * 3 + 1], N[i * 3 + 2]]
+    const ox = p[0] + nn[0] * lift, oy = p[1] + nn[1] * lift, oz = p[2] + nn[2] * lift
     let amb = (0.6 + 0.25 * nn[1]) * (0.7 + 0.3 * smooth(0, 0.4, p[1]))
     if (room.loft && p[1] < room.loft.y - room.loft.thick) {
       const a = Math.atan2(p[2], p[0]), inset = rAt(room.rs, a) - Math.hypot(p[0], p[2])
       amb *= 1 - 0.35 * smooth(-0.2, 0.3, loftDepthAt(room.loft, a) - inset)
     }
+    const tu = norm(Math.abs(nn[1]) < 0.9 ? cross(nn, [0, 1, 0]) : cross(nn, [1, 0, 0])), tv = cross(nn, tu)
+    let open = 0
+    for (const [u, v, w] of AO_DIRS) {
+      const dx = tu[0] * u + tv[0] * v + nn[0] * w, dy = tu[1] * u + tv[1] * v + nn[1] * w, dz = tu[2] * u + tv[2] * v + nn[2] * w
+      open += transmit(occ, ox, oy, oz, dx, dy, dz, SHADE.aoM + SHADE.skip * SHADE.cell)
+    }
+    amb *= 0.3 + 0.7 * (open / SHADE.ao)
     let cand = 0
     for (const c of room.candles) {
       const d = [c.x - p[0], c.y - p[1], c.z - p[2]], dl = Math.hypot(...d) || 1
-      cand += (c.i / (1 + (dl / 0.9) ** 2)) * (0.3 + 0.7 * Math.max(0, dot(nn, d) / dl))
+      const got = (c.i / (1 + (dl / 0.9) ** 2)) * (0.3 + 0.7 * Math.max(0, dot(nn, d) / dl))
+      if (got < SHADE.faint) { cand += got; continue }
+      const tx = c.x - ox, ty = c.y - oy, tz = c.z - oz, tl = Math.hypot(tx, ty, tz) || 1
+      cand += got * transmit(occ, ox, oy, oz, tx / tl, ty / tl, tz / tl, tl)
     }
     let win = 0
     for (const w of wins) {
       const d = sub(p, w.p), dl = Math.hypot(...d) || 1, along = dot(d, w.ax)
       if (along <= 0) continue
       const cone = smooth(0.15, 0.85, along / dl)
-      win += (w.k * cone * Math.max(0.2, -dot(nn, d) / dl)) / (1 + (dl / 1.6) ** 2)
+      const got = (w.k * cone * Math.max(0.2, -dot(nn, d) / dl)) / (1 + (dl / 1.6) ** 2)
+      if (got < SHADE.faint) { win += got; continue }
+      const tx = w.at[0] - ox, ty = w.at[1] - oy, tz = w.at[2] - oz, tl = Math.hypot(tx, ty, tz) || 1
+      win += got * transmit(occ, ox, oy, oz, tx / tl, ty / tl, tz / tl, tl + SHADE.skip * SHADE.cell)
     }
     // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
     L[i * 3] = amb; L[i * 3 + 1] = 1.1 * (1 - Math.exp(-cand / 1.1)); L[i * 3 + 2] = win
   }
   m.lit = L
+}
+
+let speckTex = null
+/** The speckle, built once in code: a fine grain of blurred noise with sparse dark and light flecks, about a half grey (the shader doubles it), tiling. */
+function speckleTexture() {
+  if (speckTex) return speckTex
+  const n = SPECK.px, rng = mulberry32(0x5bec1e), raw = Float32Array.from({ length: n * n }, () => rng() - 0.5), d = new Uint8Array(n * n * 4)
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    let g = 0
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) g += raw[((y + j + n) % n) * n + ((x + i + n) % n)]
+    const r = rng()
+    const v = 1 + 0.16 * g - (r < 0.05 ? 0.35 : 0) + (r > 0.97 ? 0.2 : 0)
+    d.fill(Math.max(0, Math.min(255, Math.round(v * 127.5))), (y * n + x) * 4, (y * n + x) * 4 + 3)
+    d[(y * n + x) * 4 + 3] = 255
+  }
+  speckTex = new THREE.DataTexture(d, n, n)
+  speckTex.wrapS = speckTex.wrapT = THREE.RepeatWrapping
+  speckTex.magFilter = THREE.LinearFilter
+  speckTex.minFilter = THREE.LinearMipmapLinearFilter
+  speckTex.generateMipmaps = true
+  speckTex.needsUpdate = true
+  return speckTex
 }
 
 // --- the flames -------------------------------------------------------------

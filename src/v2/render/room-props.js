@@ -22,12 +22,13 @@ import { PropArena } from './prop-arena.js'
 export const HOUSE_GLB = 'gen-props/house-leafkin.glb'
 // Shipped tiers drawn, in rung order, on PROP_STEPS.
 export const TIERS = [0, 2, 3]
-// Which way the pick's door faces, in its own frame: +X at yaw 0. The trunk's
-// wall under it stands `wall` of the box's half-width out; the roots and the
-// eaves reach the rest (village.js HUTS packs the trunks). Two steps up from the
-// ground, the landing meets the door `sill` out, in the pick's unit, and the door's
-// `face` (measured through the walker's columns).
-export const DOOR = { x: 1, z: 0, wall: 0.7, sill: 0.235, face: 0.227 }
+// The pick's door, in its own frame and unit: it faces +X at yaw 0, its middle
+// `z` across (the panel's, off the shipped mesh). The trunk's wall stands `wall`
+// of the box's half-width out; the roots and the eaves reach the rest (village.js
+// HUTS packs the trunks). Two steps up, the landing stands `landing` high, the
+// villagers' `sill` on it; her capsule stops against the door's `face`, and she
+// comes back out `back` further out, on the landing's lip.
+export const DOOR = { z: 0.085, wall: 0.7, sill: 0.235, face: 0.17, back: 0.08, landing: 0.071 }
 // The windows, in the shipped pick's frame (its raw vertices over their feet,
 // Tripo's node yaw dropped by ship.mjs), placed in the /gen-prop viewer's glow
 // points table: r the disc each lights and (nx, nz) the way the pane faces.
@@ -55,6 +56,12 @@ const CROSS_CAP = 12
 const CROSS_EPS = 1e-3
 // The posts (columnTable): faces whose normal's y is under `steep` of its length, climbing from `foot` cells to `tall` cells over the ground.
 const POST = { steep: 0.5, foot: 2, tall: 8 }
+
+/** The point `u` out along house `h`'s line `z` across, in the pick's unit, in the world: `{ x, z }`. */
+function doorAt(h, u, z) {
+  const c = Math.cos(h.yaw), sn = Math.sin(h.yaw), w = z * h.mirror
+  return { x: h.x + (u * c + w * sn) * h.scale, z: h.z + (-u * sn + w * c) * h.scale }
+}
 
 /** The bank from a shipped ladder (loadGenProp): the drawn tiers, each with its mirror image, the pick's box, and its column table. */
 export function propBankFrom(ladder) {
@@ -245,26 +252,19 @@ export class RoomProps {
     scene.add(this.batch)
   }
 
-  /** Where each prop's door is, on the ground a step out from its wall, and its sill atop the steps: `[{ x, z, sill: { x, z } }]`. */
+  /** Where each prop's door is, on the ground a step out from its wall, and its sill atop the steps: `[{ x, z, sill: { x, z } }]`. On the pick's axis, where village.js ends its roads, not DOOR.z: the villagers' and hobs' walks were tuned on it. */
   doors() {
     return this.props.map((h) => {
-      const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
-      const dz0 = DOOR.z * h.mirror
-      const dx = DOOR.x * c + dz0 * sn
-      const dz = -DOOR.x * sn + dz0 * c
-      const out = h.r * DOOR.wall + 0.5, sill = h.scale * DOOR.sill
-      return { x: h.x + dx * out, z: h.z + dz * out, sill: { x: h.x + dx * sill, z: h.z + dz * sill } }
+      const out = doorAt(h, (h.r * DOOR.wall + 0.5) / h.scale, 0)
+      return { x: out.x, z: out.z, sill: doorAt(h, DOOR.sill, 0) }
     })
   }
 
-  /** Each house's doorway, on the face of its door, with the way out and its height, for going inside: `[{ k, x, z, nx, nz, height }]`. */
+  /** Each house's doorway, on the face of its door at its landing's height `y`, with the way out and the house's height, for going inside, and where she stands on the landing coming back out: `[{ k, x, y, z, nx, nz, height, back: { x, y, z } }]`. */
   entries() {
     return this.props.map((h, k) => {
-      const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
-      const dz0 = DOOR.z * h.mirror
-      const nx = DOOR.x * c + dz0 * sn, nz = -DOOR.x * sn + dz0 * c
-      const face = h.scale * DOOR.face
-      return { k, x: h.x + nx * face, z: h.z + nz * face, nx, nz, height: h.top - h.y }
+      const face = doorAt(h, DOOR.face, DOOR.z), back = doorAt(h, DOOR.face + DOOR.back, DOOR.z), y = h.y + DOOR.landing * h.scale
+      return { k, x: face.x, y, z: face.z, nx: Math.cos(h.yaw), nz: -Math.sin(h.yaw), height: h.top - h.y, back: { ...back, y } }
     })
   }
 

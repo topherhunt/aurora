@@ -203,23 +203,38 @@ export class V2Height {
     // gravel by SLOPE_KNEE / HURST_FINE rather than by discounting the fit. The
     // ratio above exact continuity is DETAIL_GAIN. `rough` pins the calibration
     // for the gate; nothing at runtime passes it.
-    const knee = ground.texelSize * KNEE_TEXELS
-    const exposureGain = needs.exposure && relief.exposure > 0 ? (x, z) => this._exposureGain(x, z) : null
-    if (this._pinnedRough !== null) {
-      this.calibration = { rough: this._pinnedRough, pinned: true }
+    //
+    // A SUPPLIED TERM IS NOT FITTED AND `calibration` IS NULL, because both of
+    // the fit's premises are gone. It carries the sub-texel band as a KNOWN
+    // amplitude -- v3's remaining jitter rungs -- so there is no deficit to size,
+    // and it reads the ground LINEARLY (see _attachReconstruction), so the
+    // bicubic curvature the fit would measure is not a surface anyone samples.
+    // Fitting anyway is not merely wasted: on v3's 2 m island the import already
+    // supplies 79% of the extrapolated quarter-metre curvature with the fine
+    // rungs at a quarter of their spacing and 183% with them at an eighth, and
+    // over 100% is the case calibrateRough throws on. Read `.rough` off this and
+    // it fails loudly, which is the point -- nothing that wants a fitted
+    // amplitude should be handed a supplied term's.
+    if (this._detailOverride) {
+      this.calibration = null
+      this.detail = this._detailOverride
     } else {
-      this.calibration = calibrateRough({ heightmap: ground, seed, knee, sharpen: relief.sharpen, exposureGain })
-      this.calibration.pinned = false
-    }
-    const smooth = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
-    // The jagged stack reads the smooth table for its sub-metre amplitudes, so
-    // the calibration above runs either way and against the bicubic ground --
-    // the bilinear read is attached below, after everything measured here.
-    this.detail = this._detailOverride
-      ? this._detailOverride
-      : relief.jagged > 0
+      const knee = ground.texelSize * KNEE_TEXELS
+      const exposureGain = needs.exposure && relief.exposure > 0 ? (x, z) => this._exposureGain(x, z) : null
+      if (this._pinnedRough !== null) {
+        this.calibration = { rough: this._pinnedRough, pinned: true }
+      } else {
+        this.calibration = calibrateRough({ heightmap: ground, seed, knee, sharpen: relief.sharpen, exposureGain })
+        this.calibration.pinned = false
+      }
+      const smooth = new Detail({ seed, knee, rough: this.calibration.rough, sharpen: relief.sharpen })
+      // The jagged stack reads the smooth table for its sub-metre amplitudes, so
+      // the calibration above runs either way and against the bicubic ground --
+      // the bilinear read is attached below, after everything measured here.
+      this.detail = relief.jagged > 0
         ? new Jagged({ seed, texel: ground.texelSize, jitter: relief.jitter, bump: relief.bump, fineTable: smooth.table })
         : smooth
+    }
     this.crag = needs.crag ? new Crag({ seed }) : null
     // Baked against `ground` for the same reason exposure is: the spines this
     // describes have to be the spines of the mountain the world is sampled from,

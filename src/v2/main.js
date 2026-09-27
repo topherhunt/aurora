@@ -2428,8 +2428,8 @@ let portalBlink = false
 let portalIn = null
 // The house she has gone into (design/30-leafkin.md, Interiors), or null: its entry (RoomProps.entries), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the village walk its own stands in for while she is in.
 let indoors = null
-// Through a house's door: her feet within `side` of the door's middle line and `walk` of its face, heading `into` it, or a teleport landing within `blink`; the same at the door inside. Outside, the landing's stone ends about 0.45 m short of the face, and inside the wall's stone keeps her 0.3 m off it, so `walk` is the nearest she gets plus a little.
-const HOUSE_DOOR = { walk: 0.6, side: 0.2, blink: 0.5, into: 0.6 }
+// Through a house's door: her feet within `side` of the door's middle line (the door's half-width, less a little) and `walk` of its face, heading `into` it, or a teleport landing within `blink`, and outside, her feet within `rise` of the landing (not on the awning over it); the same at the door inside. Outside, her capsule stops up to 0.4 m short of the face across the door's width (the panel is not flat), and inside the wall's stone keeps her 0.3 m off it, so `walk` is the furthest she stops plus a little.
+const HOUSE_DOOR = { walk: 0.5, side: 0.4, blink: 0.5, into: 0.6, rise: 0.6 }
 let doorBusy = false
 let editor = null
 let panel = null
@@ -2964,7 +2964,7 @@ async function enterHouse(e) {
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace }))
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
   const rDoor = rAt(room.rs, Math.PI)
-  indoors = { e, back: roomProps.doors()[e.k], room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
+  indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
   walk = window.v2walk = inner
   player.setGround(inner)
   player.teleportTo(ox + room.doorIn.x, oz + room.doorIn.z)
@@ -2975,7 +2975,7 @@ async function enterHouse(e) {
   doorBusy = false
 }
 
-/** Back out of the house she is in, to the step before its door, facing away from it. */
+/** Back out of the house she is in, onto its landing before the door (not the awning over it), facing away from it. */
 async function leaveHouse() {
   doorBusy = true
   if (ambience) sound.play('door', { gain: 0.3 })
@@ -2983,7 +2983,7 @@ async function leaveHouse() {
   await fade(1)
   const { e, back } = indoors
   closeHouse()
-  player.teleportTo(back.x, back.z)
+  player.teleportTo(back.x, back.z, back.y)
   faceAlong(e.nx, e.nz)
   ready = true
   await fade(0)
@@ -3018,7 +3018,7 @@ function houseTest(blink) {
     return true
   }
   for (const e of roomProps.entries()) {
-    if (!through(e.x, e.z, e.nx, e.nz, 1)) continue
+    if (Math.abs(feet.y - e.y) > HOUSE_DOOR.rise || !through(e.x, e.z, e.nx, e.nz, 1)) continue
     enterHouse(e).catch(reportRuntimeError)
     return true
   }
