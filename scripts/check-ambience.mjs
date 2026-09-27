@@ -29,7 +29,7 @@
 import fs from 'node:fs'
 import {
   SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES,
-  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS,
+  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, INDOORS,
 } from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
@@ -245,6 +245,14 @@ console.log('buses')
   check(air.v === 0 && water.v === 1, 'submerging silences air and opens water')
   engine.setSubmerged(false)
   check(engine.air.log.at(-1).v === 1 && engine.water.log.at(-1).v === 0, 'surfacing swaps them back')
+  engine.setSubmerged(true)
+  check(engine.near.log.at(-1).v === 0, 'submerging silences near too')
+  engine.setSubmerged(false)
+  check(engine.air.outs[0] === engine.walls && engine.near.outs[0] === engine.master, 'air passes through the walls, near goes straight out')
+  engine.setIndoors(true)
+  check(engine.walls.log.at(-1).v === INDOORS.lp && engine.through.log.at(-1).v === INDOORS.gain, 'indoors, air is dulled and quietened')
+  engine.setIndoors(false)
+  check(engine.walls.log.at(-1).v === LP_MAX && engine.through.log.at(-1).v === 1, 'outdoors, the walls open again')
   engine.setMuted(true)
   check(engine.master.log.at(-1).v === 0, 'mute is the master fader')
   check(!engine.running, 'the context starts suspended')
@@ -722,7 +730,7 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const steps = count(engine, 'footstep')
   check(steps >= 30 / 0.6 - 2 && steps <= 30 / 0.4 + 2, 'a footstep every 0.4-0.6 s while walking', `${steps} in 30 s`)
   const step = engine.plays.filter((p) => p.name === 'footstep')
-  check(step.every((p) => within(p.rate, RATE[0], RATE[1]) && within(p.gain, ...RULES.footstep.gain) && !p.at), 'footsteps are pitched, levelled, and not placed')
+  check(step.every((p) => within(p.rate, RATE[0], RATE[1]) && within(p.gain, ...RULES.footstep.gain) && !p.at && p.bus === 'near'), 'footsteps are pitched, levelled, not placed, and near')
   const still = fakeEngine()
   run(new Ambience({ engine: still, sense, rand: mulberry32(7) }), 30, { speed: 0 })
   check(count(still, 'footstep') === 0, 'no footsteps standing still')

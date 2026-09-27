@@ -2,7 +2,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
-import { FILLET, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
+import { FILLET, HAMPER_H, STOOL_H, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
 
 const TAU = 2 * Math.PI
 const TEX = ['floor', 'wall', 'grain', 'linen', 'door', 'window', 'pot', 'soil']
@@ -65,6 +65,50 @@ void main() {
   vec3 t = texture2D(map, vUv).rgb * mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
   float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
   gl_FragColor = vec4(t * vTint * lit, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+
+const VERT_WATER = /* glsl */ `
+attribute vec3 light;
+varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vView;
+void main() {
+  vLight = light;
+  vPos = position;
+  vView = (modelMatrix * vec4(position, 1.0)).xyz - cameraPosition;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`
+// The basin's water: the room's baked light on dark water, with a Fresnel share of a made-up room (dim wood, lighter upward, banded so the swells visibly bend it) and the nearest candles' glints, all bent by three slow crossing swells a few centimetres long.
+const WATER_FRAG = /* glsl */ `
+uniform float uAmb;
+uniform float uCandle;
+uniform float uWin;
+uniform float uDay;
+uniform float uFlicker;
+uniform float uTime;
+uniform vec4 uGlint[3];
+varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vView;
+void main() {
+  vec2 p = vPos.xz, g = vec2(0.0);
+  vec2 k0 = vec2(118.0, 41.0), k1 = vec2(-52.0, 131.0), k2 = vec2(-97.0, -88.0);
+  g += 0.00022 * cos(dot(p, k0) + uTime * 2.1) * k0;
+  g += 0.00018 * cos(dot(p, k1) + uTime * 1.7) * k1;
+  g += 0.00015 * cos(dot(p, k2) - uTime * 2.6) * k2;
+  vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
+  vec3 v = normalize(vView), r = reflect(v, n);
+  float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
+  vec3 room = vec3(0.16, 0.1, 0.055) * (0.45 + 0.25 * r.y + 0.35 * sin(r.x * 23.0) * sin(r.z * 17.0));
+  float fres = 0.3 + 0.7 * pow(1.0 - max(0.0, dot(-v, n)), 5.0);
+  vec3 c = mix(vec3(0.012, 0.02, 0.018), room, fres) * lit;
+  for (int i = 0; i < 3; i++) {
+    vec3 l = uGlint[i].xyz - vPos;
+    c += vec3(1.0, 0.72, 0.4) * pow(max(0.0, dot(r, normalize(l))), 300.0) * 2.5 * uGlint[i].w * uFlicker / (1.0 + dot(l, l));
+  }
+  gl_FragColor = vec4(c, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`
@@ -351,19 +395,19 @@ export class InteriorView {
     const rng = mulberry32(hash32(room.seed, room.index, 0x1d1))
     const K = kit(rng)
     const M = Object.fromEntries(TEX.map((id) => [id, new Mesher()]))
-    const out = { shrooms: [] }
+    const out = { shrooms: [], water: [] }
     buildShell(room, M, K)
     for (const it of room.items) {
       const make = ITEMS[it.kind]
       if (!make) throw new Error(`InteriorView: no builder for ${it.kind}`)
       make(it, M, K, room, rng, out)
     }
-    const occ = occupancy(Object.values(M))
+    const tops = shadeTops(room)
     const speckMap = speckleTexture()
     for (const id of TEX) {
       const m = M[id]
       if (m.count === 0) continue
-      bake(room, m, occ)
+      bake(room, m, tops)
       // The panes are lit from outside, not by the room.
       if (id === 'window') for (let i = 0; i < m.count; i++) m.lit.set([0.35, 0.1, 1.5], i * 3)
       const g = new THREE.BufferGeometry()
@@ -381,6 +425,8 @@ export class InteriorView {
       mesh.frustumCulled = false
       this.group.add(mesh)
     }
+    this.uTime = { value: 0 }
+    for (const w of out.water) this.group.add(buildWater(room, w, tops, this.uniforms, this.uTime))
     this.shroomMeshes = buildShrooms(out.shrooms, mushrooms)
     for (const mesh of this.shroomMeshes) this.group.add(mesh)
     this.flames = buildFlames(room.candles)
@@ -391,6 +437,7 @@ export class InteriorView {
     const f = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
     this.uniforms.uFlicker.value = f
     this.uniforms.uDay.value = dayness
+    this.uTime.value = t
     this.flames.update(t, f)
   }
 
@@ -404,6 +451,26 @@ export class InteriorView {
     })
     this.flames.dispose()
   }
+}
+
+/** A basin's water: disc `w` ({ x, y, z, r }), baked like the room and glinting with its three nearest candles. */
+function buildWater(room, w, tops, uniforms, uTime) {
+  const m = new Mesher(), segs = 24
+  const c = m.v([w.x, w.y, w.z], [0, 1, 0], FLAT, [1, 1, 1])
+  for (let k = 0; k <= segs; k++) { const a = (k / segs) * TAU; m.v([w.x + Math.cos(a) * w.r, w.y, w.z + Math.sin(a) * w.r], [0, 1, 0], FLAT, [1, 1, 1]) }
+  for (let k = 0; k < segs; k++) m.tri(c, c + 1 + k, c + 2 + k)
+  bake(room, m, tops)
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
+  g.setAttribute('light', new THREE.Float32BufferAttribute(m.lit, 3))
+  g.setIndex(m.idx)
+  g.computeBoundingSphere()
+  const near = [...room.candles].sort((a, b) => Math.hypot(a.x - w.x, a.z - w.z) - Math.hypot(b.x - w.x, b.z - w.z))
+  const glint = [0, 1, 2].map((i) => (near[i] ? new THREE.Vector4(near[i].x, near[i].y, near[i].z, near[i].i) : new THREE.Vector4()))
+  const mat = new THREE.ShaderMaterial({ vertexShader: VERT_WATER, fragmentShader: WATER_FRAG, uniforms: { ...uniforms, uTime, uGlint: { value: glint } }, fog: false })
+  const mesh = new THREE.Mesh(g, mat)
+  mesh.name = 'interior-water'
+  return mesh
 }
 
 /** One InstancedMesh per mushroom variant in the pots, on the bank's finest tier; `aPropFade` 1 is the material's never-faded. */
@@ -442,14 +509,14 @@ function buildShrooms(list, { bank, material }) {
 
 // --- the shell: wall, floor, ceiling, ribs, openings, loft, stairs ------------------------------
 
-/** How far the wall at bearing `a`, height `y` is pushed out into the recess of an opening. */
+// A window's reveal: its own polar mesh easing from the pane out to the wall over `w` metres, then a `skirt` lying `lift` proud of the wall. The wall's grid is too coarse to carry that curve (its rim comes out in squares), so under the reveal the grid is sunk out of sight behind it; the skirt must outreach the sunk patch by a grid cell's diagonal (~0.1 m), or the cells sloping down into it notch the wall.
+const REVEAL = { w: 0.12, skirt: 0.14, lift: 0.004 }
+
+/** How far the wall at bearing `a`, height `y` is pushed out: into the door's recess, and out of sight behind a window's reveal. */
 function recess(room, a, y) {
-  let out = 0
-  for (const o of [room.door, ...room.windows]) {
-    const r = rAt(room.rs, o.a)
-    const d = Math.hypot(angDiff(a, o.a) * r, y - o.y)
-    out = Math.max(out, o.depth * (1 - smooth(o.r, o.r + 0.14, d)))
-  }
+  const at = (o) => Math.hypot(angDiff(a, o.a) * rAt(room.rs, o.a), y - o.y)
+  let out = room.door.depth * (1 - smooth(room.door.r, room.door.r + 0.14, at(room.door)))
+  for (const o of room.windows) if (at(o) < o.r + REVEAL.w + 0.02) out = Math.max(out, o.depth + 0.04)
   return out
 }
 
@@ -470,7 +537,19 @@ function buildShell(room, M, K) {
     return { p: [Math.cos(a) * rr, prof[j][1], Math.sin(a) * rr], uv: [(i / COLS) * around, arc[j] / WALL_M] }
   }
   // Tu (round the bearing) x Tv (up the profile) looks into the room.
-  M.wall.grid(COLS, prof.length - 1, wallPt, tone(room.tints.wall, 0.12, 0.1), 1, true)
+  const wallTint = tone(room.tints.wall, 0.12, 0.1)
+  M.wall.grid(COLS, prof.length - 1, wallPt, wallTint, 1, true)
+  // Each window's reveal, textured as the wall it stands in; Tu (round the pane) x Tv (outward) looks into the wall.
+  for (const o of room.windows) {
+    const r0 = rAt(rs, o.a), ds = []
+    for (let k = 0; k <= 8; k++) ds.push(o.r + (REVEAL.w * k) / 8)
+    ds.push(o.r + REVEAL.w + REVEAL.skirt)
+    M.wall.grid(48, ds.length - 1, (i, j) => {
+      const th = (i / 48) * TAU, d = ds[j], y = o.y + d * Math.sin(th), a = o.a + (d * Math.cos(th)) / r0
+      const rr = rAt(rs, a) + (o.depth - 0.012 + REVEAL.lift) * (1 - smooth(o.r, o.r + REVEAL.w, d)) - REVEAL.lift
+      return { p: [Math.cos(a) * rr, y, Math.sin(a) * rr], uv: [(a / TAU) * around, (arc[4] + y - FILLET) / WALL_M] }
+    }, wallTint, -1, true)
+  }
 
   // The floor, in rings out to the wall's foot, its rings texture stretched once across it; the rings close enough that the bake's furniture shadows don't smear out along the spokes.
   const RINGS = 36, span = 2 * Math.max(...rs)
@@ -635,94 +714,90 @@ function railRun(M, K, pts, wood) {
 
 // --- the bake ---------------------------------------------------------------
 
-// The shadow grid: every mesh's triangles marked into `cell`-metre voxels. A ray from a vertex (lifted `lift` cells off its surface) to a light keeps `pass` of what it carries at each marked sample, `step` cells apart, from `skip` cells out to as far short of the light; `ao` rays of `aoM` metres read how shut in it stands. A light too faint to matter (`faint`) is not traced.
-const SHADE = { cell: 0.06, step: 0.75, pass: 0.45, lift: 1, skip: 1.5, ao: 8, aoM: 0.4, faint: 0.01 }
-// The ambient rays, in the normal's frame: [across, along, up the normal], two rings of four.
-const AO_DIRS = Array.from({ length: SHADE.ao }, (_, k) => { const a = (k * TAU) / SHADE.ao, e = k % 2 ? 1.05 : 0.45; return [Math.cos(a) * Math.cos(e), Math.sin(a) * Math.cos(e), Math.sin(e)] })
+// The bake is analytic, a few hundred flops a vertex, so it runs behind the door's fade on a Quest. The fill `amb` falls to `corner` of itself in the wall's foot and under the loft; each candle gives `candle` times its `i` at the flame, falling by e every `reach` metres so its pool ends within a few metres and the corners stay dark; a flat top (a table, a chest, the loft) between a light and a vertex passes `pass` of it, softened over a penumbra from `pen[0]` metres at the top's edge widening `pen[1]` a metre of drop below it; under such a top the fill falls to `under`.
+const SHADE = { amb: 0.34, corner: 0.45, candle: 2.6, reach: 0.6, cap: 1.8, pass: 0.12, pen: [0.03, 0.35], under: 0.35 }
 
-/** The meshers' triangles as a voxel grid in room-local metres: `{ x0, y0, z0, nx, ny, nz, cells }`, 1 where a surface passes. */
-function occupancy(meshers) {
-  const c = SHADE.cell
-  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity
-  for (const m of meshers) for (let i = 0; i < m.pos.length; i += 3) {
-    x0 = Math.min(x0, m.pos[i]); y0 = Math.min(y0, m.pos[i + 1]); z0 = Math.min(z0, m.pos[i + 2])
-    x1 = Math.max(x1, m.pos[i]); y1 = Math.max(y1, m.pos[i + 1]); z1 = Math.max(z1, m.pos[i + 2])
+/** The flat tops that shade what is under them: the room's solids that are true furniture tops (under BLOCK) and the loft's floor, highest first, each with `y`, its footprint's bounds `x0 x1 z0 z1`, and `inBy(x, z)`, metres inside that footprint (negative outside). */
+function shadeTops(room) {
+  const tops = []
+  const box = (t, pts) => {
+    t.x0 = Math.min(...pts.map((p) => p[0])); t.x1 = Math.max(...pts.map((p) => p[0]))
+    t.z0 = Math.min(...pts.map((p) => p[1])); t.z1 = Math.max(...pts.map((p) => p[1]))
+    return t
   }
-  x0 -= c; y0 -= c; z0 -= c
-  const nx = Math.ceil((x1 - x0) / c) + 2, ny = Math.ceil((y1 - y0) / c) + 2, nz = Math.ceil((z1 - z0) / c) + 2
-  const cells = new Uint8Array(nx * ny * nz)
-  for (const m of meshers) {
-    const P = m.pos, I = m.idx
-    for (let t = 0; t < I.length; t += 3) {
-      const a = I[t] * 3, b = I[t + 1] * 3, d = I[t + 2] * 3
-      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[d] - P[a], vy = P[d + 1] - P[a + 1], vz = P[d + 2] - P[a + 2]
-      const k = Math.max(1, Math.ceil(Math.max(Math.hypot(ux, uy, uz), Math.hypot(vx, vy, vz), Math.hypot(ux - vx, uy - vy, uz - vz)) / (c * 0.5)))
-      for (let i = 0; i <= k; i++) for (let j = 0; j <= k - i; j++) {
-        const s = i / k, r = j / k
-        const gx = ((P[a] + ux * s + vx * r - x0) / c) | 0, gy = ((P[a + 1] + uy * s + vy * r - y0) / c) | 0, gz = ((P[a + 2] + uz * s + vz * r - z0) / c) | 0
-        cells[(gz * ny + gy) * nx + gx] = 1
+  for (const s of room.solids) {
+    if (s.rail || (!s.loft && (s.y1 >= 0.79 || s.y1 < 0.1))) continue
+    if (s.kind === 'cyl') tops.push(box({ y: s.y1, inBy: (x, z) => s.r - Math.sqrt((x - s.x) ** 2 + (z - s.z) ** 2) }, [[s.x - s.r, s.z - s.r], [s.x + s.r, s.z + s.r]]))
+    else if (s.kind === 'box') {
+      const c = Math.cos(s.yaw), sn = Math.sin(s.yaw), e = Math.hypot(s.hx, s.hz)
+      tops.push(box({ y: s.y1, inBy: (x, z) => { const dx = x - s.x, dz = z - s.z; return Math.min(s.hx - Math.abs(dx * c - dz * sn), s.hz - Math.abs(dx * sn + dz * c)) } }, [[s.x - e, s.z - e], [s.x + e, s.z + e]]))
+    } else {
+      const pts = []
+      for (let k = 0; k <= 24; k++) {
+        const a = s.a0 + ((s.a1 - s.a0) * k) / 24, r = rAt(room.rs, a)
+        for (const d of s.loft ? [0, loftDepthAt(s.loft, a)] : [s.from, s.to]) pts.push([Math.cos(a) * (r - d), Math.sin(a) * (r - d)])
       }
+      tops.push(box({ y: s.y1, loft: !!s.loft, inBy: (x, z) => bandIn(room, s, x, z) }, pts))
     }
   }
-  return { x0, y0, z0, nx, ny, nz, cells }
+  return tops.sort((a, b) => b.y - a.y)
 }
 
-/** What of a light gets from (px, py, pz) `len` metres along the unit (dx, dy, dz) through the grid. */
-function transmit(o, px, py, pz, dx, dy, dz, len) {
-  const c = SHADE.cell, end = len - SHADE.skip * c
-  let T = 1
-  for (let t = SHADE.skip * c; t < end; t += SHADE.step * c) {
-    const gx = ((px + dx * t - o.x0) / c) | 0, gy = ((py + dy * t - o.y0) / c) | 0, gz = ((pz + dz * t - o.z0) / c) | 0
-    if (gx < 0 || gy < 0 || gz < 0 || gx >= o.nx || gy >= o.ny || gz >= o.nz) break
-    if (o.cells[(gz * o.ny + gy) * o.nx + gx] && (T *= SHADE.pass) < 0.02) return 0
-  }
-  return T
+/** Whether (x, z) is within `m` metres of top `t`'s bounds. */
+const nearTop = (t, x, z, m) => x > t.x0 - m && x < t.x1 + m && z > t.z0 - m && z < t.z1 + m
+
+/** Metres inside band `s` (a wall arc, or the loft's floor to its lip) at (x, z), negative outside. */
+function bandIn(room, s, x, z) {
+  const a = Math.atan2(z, x), r = rAt(room.rs, a), inset = r - Math.sqrt(x * x + z * z)
+  const t = ((a - s.a0) % TAU + TAU) % TAU, span = s.a1 - s.a0
+  const side = (t > span ? -Math.min(t - span, TAU - t) : Math.min(t, span - t)) * r
+  const deep = s.loft ? loftDepthAt(s.loft, a) - inset : Math.min(inset - s.from, s.to - inset)
+  return Math.min(side, deep)
 }
 
-/** Per vertex: x ambient (dimmer low, under the loft, facing down and shut in), y candle, z window, each shadowed through `occ`. */
-function bake(room, m, occ) {
-  const n = m.count, L = new Float32Array(n * 3)
-  const P = m.pos, N = m.nrm, lift = SHADE.lift * SHADE.cell
+/** Per vertex: x fill, y candle, z window. */
+function bake(room, m, tops) {
+  const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
   const wins = room.windows.map((w) => {
-    const r = rAt(room.rs, w.a), ax = [-Math.cos(w.a), 0, -Math.sin(w.a)]
-    // Traced to a point just inside the pane, clear of the wall's own cells.
-    return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax, at: [Math.cos(w.a) * (r - 0.2), w.y, Math.sin(w.a) * (r - 0.2)], k: ((w.r / 0.3) ** 2) * 1.2 }
+    const r = rAt(room.rs, w.a)
+    return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax: [-Math.cos(w.a), 0, -Math.sin(w.a)], k: ((w.r / 0.3) ** 2) * 1.2 }
+  })
+  // Each candle's tops near enough to come between it and anything: those under its flame from the highest down, those over it from the lowest up, so a vertex's search stops at the first top not between them.
+  const lights = room.candles.map((c) => {
+    const near = tops.filter((t) => nearTop(t, c.x, c.z, 2.5))
+    return { c, under: near.filter((t) => t.y < c.y - 0.01).sort((a, b) => b.y - a.y), over: near.filter((t) => t.y > c.y + 0.01).sort((a, b) => a.y - b.y) }
   })
   for (let i = 0; i < n; i++) {
-    const p = [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]], nn = [N[i * 3], N[i * 3 + 1], N[i * 3 + 2]]
-    const ox = p[0] + nn[0] * lift, oy = p[1] + nn[1] * lift, oz = p[2] + nn[2] * lift
-    let amb = (0.6 + 0.25 * nn[1]) * (0.7 + 0.3 * smooth(0, 0.4, p[1]))
-    if (room.loft && p[1] < room.loft.y - room.loft.thick) {
-      const a = Math.atan2(p[2], p[0]), inset = rAt(room.rs, a) - Math.hypot(p[0], p[2])
-      amb *= 1 - 0.35 * smooth(-0.2, 0.3, loftDepthAt(room.loft, a) - inset)
-    }
-    const tu = norm(Math.abs(nn[1]) < 0.9 ? cross(nn, [0, 1, 0]) : cross(nn, [1, 0, 0])), tv = cross(nn, tu)
-    let open = 0
-    for (const [u, v, w] of AO_DIRS) {
-      const dx = tu[0] * u + tv[0] * v + nn[0] * w, dy = tu[1] * u + tv[1] * v + nn[1] * w, dz = tu[2] * u + tv[2] * v + nn[2] * w
-      open += transmit(occ, ox, oy, oz, dx, dy, dz, SHADE.aoM + SHADE.skip * SHADE.cell)
-    }
-    amb *= 0.3 + 0.7 * (open / SHADE.ao)
+    const px = P[i * 3], py = P[i * 3 + 1], pz = P[i * 3 + 2], nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2]
+    let amb = SHADE.amb * (0.8 + 0.2 * ny)
+    if (py < 0.5) amb *= 1 - (1 - SHADE.corner) * (1 - smooth(0, 0.5, py)) * (1 - smooth(FILLET, FILLET + 0.6, rAt(room.rs, Math.atan2(pz, px)) - Math.sqrt(px * px + pz * pz)))
+    // Under the loft the whole height; under furniture its first metre.
+    for (const t of tops) { if (py >= t.y - 0.01) break; if (nearTop(t, px, pz, 0.1)) amb *= 1 - (1 - SHADE.under) * smooth(-0.1, 0.12, t.inBy(px, pz)) * (t.loft ? 0.6 : 1 - smooth(0.3, 0.9, t.y - py)) }
     let cand = 0
-    for (const c of room.candles) {
-      const d = [c.x - p[0], c.y - p[1], c.z - p[2]], dl = Math.hypot(...d) || 1
-      const got = (c.i / (1 + (dl / 0.9) ** 2)) * (0.3 + 0.7 * Math.max(0, dot(nn, d) / dl))
-      if (got < SHADE.faint) { cand += got; continue }
-      const tx = c.x - ox, ty = c.y - oy, tz = c.z - oz, tl = Math.hypot(tx, ty, tz) || 1
-      cand += got * transmit(occ, ox, oy, oz, tx / tl, ty / tl, tz / tl, tl)
+    for (const { c, under, over } of lights) {
+      const dx = c.x - px, dy = c.y - py, dz = c.z - pz, d2 = dx * dx + dy * dy + dz * dz
+      if (d2 > 16) continue
+      const dl = Math.sqrt(d2) || 1
+      let got = SHADE.candle * c.i * Math.exp(-dl / SHADE.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / dl))
+      // A top between the flame's height and the vertex's shades it where the line between them crosses it; light this faint is left unshaded.
+      const list = py < c.y ? under : over
+      for (let j = 0; got > 0.03 && j < list.length; j++) {
+        const t = list[j], drop = Math.abs(t.y - py)
+        if (py < c.y ? t.y < py + 0.005 : t.y > py - 0.005) break
+        const k = (t.y - py) / dy, pen = SHADE.pen[0] + SHADE.pen[1] * drop, qx = px + dx * k, qz = pz + dz * k
+        if (nearTop(t, qx, qz, pen)) got *= 1 - (1 - SHADE.pass) * smooth(-pen, pen, t.inBy(qx, qz))
+      }
+      cand += got
     }
     let win = 0
     for (const w of wins) {
-      const d = sub(p, w.p), dl = Math.hypot(...d) || 1, along = dot(d, w.ax)
+      const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
       if (along <= 0) continue
-      const cone = smooth(0.15, 0.85, along / dl)
-      const got = (w.k * cone * Math.max(0.2, -dot(nn, d) / dl)) / (1 + (dl / 1.6) ** 2)
-      if (got < SHADE.faint) { win += got; continue }
-      const tx = w.at[0] - ox, ty = w.at[1] - oy, tz = w.at[2] - oz, tl = Math.hypot(tx, ty, tz) || 1
-      win += got * transmit(occ, ox, oy, oz, tx / tl, ty / tl, tz / tl, tl + SHADE.skip * SHADE.cell)
+      const dl = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
+      win += (w.k * smooth(0.15, 0.85, along / dl) * Math.max(0.2, -(nx * dx + ny * dy + nz * dz) / dl)) / (1 + (dl / 1.6) ** 2)
     }
     // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
-    L[i * 3] = amb; L[i * 3 + 1] = 1.1 * (1 - Math.exp(-cand / 1.1)); L[i * 3 + 2] = win
+    L[i * 3] = amb; L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap)); L[i * 3 + 2] = win * (amb / SHADE.amb)
   }
   m.lit = L
 }
@@ -972,10 +1047,10 @@ const ITEMS = {
     }
   },
 
-  basin(it, M, K) {
+  basin(it, M, K, room, rng, out) {
     const F = K.crook(frame(it.x, it.y, it.z), 0.02)
     K.lathe(M.linen, F, [[0, 0], [it.r * 0.7, 0], [it.r * 0.95, 0.06], [it.r, 0.09], [it.r - 0.015, 0.096], [it.r * 0.65, 0.02], [0, 0.02]], CLAY(0.2), { segs: 20, flat: true, rough: 0.02 })
-    K.lathe(M.linen, frame(it.x, it.y + 0.07, it.z), [[0, 0], [it.r * 0.9, 0], [0, 0]], rgb(0.5, 0.18, 0.3), { segs: 20, flat: true })
+    out.water.push({ x: it.x, y: it.y + 0.07, z: it.z, r: it.r * 0.9 })
   },
 
   jar(it, M, K) {
@@ -1316,10 +1391,10 @@ const ITEMS = {
     }
   },
 
-  stools(it, M, K, room) { stoolAt(M, K, K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), it.r, 0.24, woodOf(room, K)) },
+  stools(it, M, K, room) { stoolAt(M, K, K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), it.r, STOOL_H, woodOf(room, K)) },
 
   hamper(it, M, K) {
-    const F = K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), r = it.r, h = 0.36
+    const F = K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), r = it.r, h = HAMPER_H
     K.lathe(M.grain, F, [[0, 0.01], [r * 0.86, 0], [r * 0.95, 0.04], [r, h * 0.7], [r * 1.02, h - 0.02], [r * 0.98, h], [0, h - 0.01]], WICKER, { segs: 24, lobes: [24, 0.035], uvM: 0.12 })
     K.lathe(M.grain, F, [[r * 1.04, h - 0.03], [r * 1.07, h - 0.02], [r * 1.05, h + 0.01], [r * 0.7, h + 0.045], [0, h + 0.055]], WICKER, { segs: 24, uvM: 0.12 })
     for (const s of [-1, 1]) K.tube(M.grain, [-0.5, 0, 0.5].map((u) => put(F, s * (r + 0.012), h * 0.78 + (1 - 4 * u * u) * 0.04, u * r * 0.4)), [0.009, 0.01, 0.009], WICKER, { segs: 6 })

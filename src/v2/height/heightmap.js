@@ -90,6 +90,8 @@ export class Heightmap {
     this._crease = null
     // True when sample() reads bilinearly. See attachLinear.
     this._linear = false
+    // The resident fine tiles, or null. See attachTiles.
+    this._tiles = null
   }
 
   /**
@@ -105,9 +107,21 @@ export class Heightmap {
    * -- which is exactly what happened, and it also fed a creased surface to a
    * sibling's calibrateRough, so the knob changed a field that had it switched
    * off. A view costs one min/max rescan and makes that unrepresentable.
+   *
+   * A VIEW CARRIES THE FINE TILES and no other attachment, because they are not an
+   * attachment in the same sense: a crease is one reader's knob, while the tiles are
+   * the other half of these same texels (attachTiles). Dropping them here would give
+   * the reconstruction a view of the 8 m base while collision read the 2 m pyramid.
    */
   view() {
-    return Heightmap.fromRaw({ width: this.width, height: this.height, data: this.field, meta: this.meta })
+    const v = Heightmap.fromRaw({ width: this.width, height: this.height, data: this.field, meta: this.meta })
+    v.attachTiles(this._tiles)
+    return v
+  }
+
+  /** Is a fine pyramid attached? See attachTiles. */
+  get tiled() {
+    return this._tiles !== null
   }
 
   /**
@@ -139,6 +153,33 @@ export class Heightmap {
    */
   attachLinear(on) {
     this._linear = on === true
+  }
+
+  /**
+   * Read a finer grid than this one wherever `store` has a tile resident, and this
+   * grid everywhere else -- v3's elevation pyramid (src/v3/tiles.js).
+   *
+   * THE TWO GRIDS ARE THE SAME SURFACE AT TWO PITCHES, not a base plus a
+   * correction: the store's tiles are cut from the field this one was decimated
+   * FROM. So a tile does not add detail to the coarse read, it replaces it, and a
+   * point the store does not cover falls through to the bicubic (or bilinear, or
+   * crease) below with nothing to reconcile.
+   *
+   * Same choke-point argument as attachCrease, and it matters more here: the
+   * resident set changes as the player moves, and a reader that had reached past
+   * sample() into `field` would be standing on the coarse ground while the mesher
+   * drew the fine. The whole-world readers DO reach past it on purpose -- bands'
+   * histogram, route.js's cache, exposure.js's convexity grid -- and they are
+   * right to, because they want one stable statement about the world rather than
+   * whatever is paged in near the eye.
+   *
+   * texelSize is deliberately NOT changed: it is the pitch of THIS grid, it is the
+   * stencil slopeAt and gradientAt measure on, and it is the knee detail.js sizes
+   * its amplitude against. A texelSize that moved with the paging would make every
+   * derived quantity a function of where the player happens to be standing.
+   */
+  attachTiles(store) {
+    this._tiles = store ?? null
   }
 
   /** Metres per texel on X. Square images make this the same on both axes. */
@@ -350,6 +391,14 @@ export class Heightmap {
 
   /** Bicubic (Catmull-Rom). World metres in, metres out. This is the coarse term of V2Height. */
   sample(x, z) {
+    // The fine tile first, because where one is resident it IS this surface, at a
+    // finer pitch -- see attachTiles. NaN means no tile covers the point, and it is
+    // tested rather than a null-check on the store so the paged and unpaged worlds
+    // take the same one branch.
+    if (this._tiles !== null) {
+      const fine = this._tiles.sample(x, z)
+      if (fine === fine) return fine
+    }
     if (this._linear) return this.sampleBilinear(x, z)
     if (this._crease !== null) return this._crease.at(x, z)
     const u = (x + WORLD_HALF) * this._invX

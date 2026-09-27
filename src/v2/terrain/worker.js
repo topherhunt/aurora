@@ -7,6 +7,7 @@ import { BiomeField } from '../layers/biome.js'
 import { GroundTint } from '../layers/ground.js'
 import { SEED } from '../config.js'
 import { FineJitter } from '../../v3/fine.js'
+import { TileStore } from '../../v3/tiles.js'
 
 // ---------------------------------------------------------------------------
 // The v2 terrain worker. Message plumbing only -- every line that computes
@@ -18,19 +19,22 @@ import { FineJitter } from '../../v3/fine.js'
 //
 // THE PROTOCOL. Fixed by the renderer side; terrain-v2.js codes against it too.
 //
-//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, relief, fine, epoch }
+//   main -> worker   { type: 'init',   heightmap: { width, height, data, meta }, doc, relief, fine, tiles, epoch }
 //                    { type: 'layers', doc, epoch }
 //                    { type: 'relief', relief, epoch }
 //                    { type: 'height', rect, data, epoch }
+//                    { type: 'tile',   key, data, epoch }
+//                    { type: 'untile', key }
 //                    { type: 'chunk',  key, epoch, ox, oz, size, res }
 //   worker -> main   { type: 'ready' }
 //                    { type: 'layered',  epoch, bakeMs }
 //                    { type: 'relieved', epoch, ms }
 //                    { type: 'chunk',    key, epoch, positions, normals, colors, indices, minY, maxY, skirtDepth, ms }
 //
-// `height` has no reply. Messages from one port arrive in order, so a chunk
-// request posted after a patch is meshed against the patched field by
-// construction, and there is nothing for the main thread to wait on.
+// `height`, `tile` and `untile` have no reply. Messages from one port arrive in
+// order, so a chunk request posted after a patch, or after a tile, is meshed against
+// the field as it then stands by construction, and there is nothing for the main
+// thread to wait on.
 //
 // WHY `relief` IS ON THE WIRE AT ALL, when the seed deliberately is not (see
 // onInit, and WORLD_SEED in height/field.js). The seed can be a shared module
@@ -54,6 +58,11 @@ import { FineJitter } from '../../v3/fine.js'
 let field = null
 let layers = null
 let ground = null
+// This worker's copy of the resident fine tiles, or null for a world that does not
+// page any. The main thread decides WHICH tiles are resident -- see TerrainV2.putTile
+// -- and this only holds what it is sent, so all three copies of the field (here,
+// the other worker, the main thread's collision) read the same surface.
+let tiles = null
 // The forest tint's biome, seeded from the same module constant main.js seeds
 // the trees' from, for the reason V2Height's seed is: a seed in the message
 // could drift from the scatter's and the ground would go green where no wood
@@ -68,6 +77,14 @@ function onInit(msg) {
   // arrives neutered on the main thread, which is correct -- the renderer never
   // samples the coarse field.
   const heightmap = Heightmap.fromRaw(msg.heightmap)
+  // Attached before the V2Height is built, because _attachReconstruction takes a
+  // VIEW of this heightmap and a view carries the tiles forward -- so attaching
+  // afterwards would leave the reconstruction reading the base. Empty at init: the
+  // main thread posts the resident set as it loads it.
+  if (msg.tiles) {
+    tiles = new TileStore(msg.tiles)
+    heightmap.attachTiles(tiles)
+  }
   layers = Layers.deserialize(msg.doc)
   bakeSnow()
   // No seed in the message, deliberately: V2Height defaults it from a shared
@@ -199,6 +216,22 @@ self.onmessage = (e) => {
     // worker's copy, so the chunk requests queued behind the patch mesh the
     // re-routed river and not the old one.
     layers.terrainChanged(rectToWorld(field.heightmap, msg.rect))
+    return
+  }
+
+  if (msg.type === 'tile' || msg.type === 'untile') {
+    if (!field) throw new Error(`v2 terrain worker got a ${msg.type} message before init`)
+    if (tiles === null) throw new Error(`v2 terrain worker got a ${msg.type} message but was inited without a tiles descriptor`)
+    // Nothing to rebuild and nothing to rebake. A tile replaces the coarse read
+    // inside Heightmap.sample over its own 256 m, so the next chunk request picks it
+    // up with no further work here -- which is the point of hanging it off the
+    // heightmap rather than off the mesher. field.bands is deliberately left alone:
+    // it is a set of percentiles over the whole world, and the resident set moving
+    // must not move the altitude ramp, or the world would recolour as the player
+    // walked. Same argument as the 'height' patch above, for a stronger reason --
+    // this one fires every few seconds.
+    if (msg.type === 'tile') tiles.put(msg.key, msg.data)
+    else tiles.drop(msg.key)
     return
   }
 

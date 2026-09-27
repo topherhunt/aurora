@@ -180,8 +180,15 @@ async function run() {
   elStats.textContent = 'generating...'
   history.replaceState(null, '', `?seed=${seed}&warp=${tune.warp.join(',')}&jitter=${tune.jitter.join(',')}`)
   try {
-    const { result } = await load({ seed, regen: true, tune, log: (line) => { elLog.textContent += `${line}\n` } })
-    R = derive(result)
+    const { result } = await load({ seed, regen: true, tune, fine: true, log: (line) => { elLog.textContent += `${line}\n` } })
+    // THE MAP READS THE 2 M FIELD, NOT THE 8 M BASE THE 3D ROUTE IS HANDED. What the
+    // cache holds is the base plus the fine tiles (src/v3/tiles.js), because nothing
+    // flying the island can afford 67 MB resident three times over -- but this page
+    // paints every texel of one island once and the 2 m pitch is the thing it exists
+    // to judge, so it asks the worker for the whole field and puts it back under the
+    // keys the painters read. `n` and `cell` go with it or every screen-space
+    // conversion on the page is out by a factor of four.
+    R = derive({ ...result, n: result.fineN, cell: result.fineCell, height: result.fineHeight, ground: result.fineGround })
     writeTune(R.tune)
     fit()
     buildLayer()

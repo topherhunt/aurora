@@ -6,8 +6,8 @@
 //
 // LOCKSTEP (DESIGN.md §30 Netplay): every client steps a site's leafkin alike
 // on the score's ticks (sim/score.js) over the same ground (leafkin-ground.js,
-// pure of the viewer), its PRNG seeded from the site and the chapter. It comes
-// out of its mouth at the chapter's start, makes for home HOMING_S before the
+// pure of the viewer), its PRNG seeded from the site and the chapter. It is
+// placed out in its wood at the chapter's start, makes for home HOMING_S before the
 // turn, and is stepped while her feet are within its roam and cull; met
 // mid-chapter it replays from the start, hidden until caught up. The room
 // hears only her doings, as `lk` anchors: a `fright` (her feet within
@@ -27,7 +27,7 @@
 //            planPath), weaving about it; inside FINAL_M of the mouth, straight
 //            at the arch, and inside within HOME_M of it for EMPTY_S.
 //   home     the flight's path without the fright, HOMING_S before the turn.
-//   inside   out of sight, until it comes out again or the chapter turns.
+//   inside   out of sight, until it is placed out again or the chapter turns.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -52,6 +52,9 @@ export const SIZE_M = 1
 export const SIZE_VAR = 0.15
 // The disc about the mouth it roams, and a new target every so often.
 export const ROAM_M = 150
+// It is placed out in its wood, never at the mouth: on the first open spot of OUT_TRIES rolled between OUT_M and ROAM_M from it. OUT_M is past the cull of the largest leafkin, so one standing at the mouth never sees it appear.
+export const OUT_M = 40
+const OUT_TRIES = 64
 export const RETARGET_S = [5, 15]
 // Stepped while her feet are within its roam and its cull of the mouth; let go this much further out.
 export const SIM_OUT_M = 20
@@ -63,10 +66,11 @@ export const WOBBLE_PERIOD_S = 4
 export const WOBBLE_DRIVE = 10
 export const WOBBLE_MAX = (75 * Math.PI) / 180
 const WOBBLE_W = (2 * Math.PI) / WOBBLE_PERIOD_S
-// A cap it sees and goes for, how close it must stand to take one, and where in the gather clip the take is.
+// A cap it sees and goes for, how close it must stand to take one, where in the gather clip the take is, and how long it runs at one before it gives the cap up for the chapter: a cap deep in a trunk's or a rock's padding has no open ground within reach.
 export const SEEK_M = 3
 export const REACH_M = 0.6
 export const GATHER_KEY = 0.5
+export const GIVE_UP_S = 4
 // Her feet within this of its own, and it is startled; how long the recoil holds before it runs.
 export const STARTLE_M = 3
 export const STARTLE_S = 1.0
@@ -108,7 +112,7 @@ const FADE_S = 0.25
 // State kept every SNAP_TICKS, SNAPS deep, for an anchor heard late to roll back to; one older than that replays the chapter.
 const SNAP_TICKS = 20
 const SNAPS = 30
-const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'cx', 'cz', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
+const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
 
 export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
 // The clips whose feet stay put (puppet.js FootIK): a recoil steps back, a gait walks.
@@ -283,8 +287,8 @@ export class Leafkin {
         wob: 0, wobv: 0,
         // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over (pure, so never rolled back), and the tick it was last planned on.
         path: [], wp: 0, cells: new Map(), planned: -1,
-        // The cap it is going for, whether this gather has taken it, the caps gone this chapter (flat x, z: its own and her picks), and the bundle: caps carried, and the carrier drawing them.
-        cx: 0, cz: 0, took: false, eaten: [], bundle: 0, carrier: null,
+        // The cap it is going for, seconds left before it gives the cap up, whether this gather has taken it, the caps gone this chapter (flat x, z: its own takes, her picks and the caps it gave up), and the bundle: caps carried, and the carrier drawing them.
+        cx: 0, cz: 0, chase: 0, took: false, eaten: [], bundle: 0, carrier: null,
         // Seconds the recoil has left, and to the next call or pant, and whether the last was a pant.
         hold: 0, voice: 0, panted: false, squeal: 0,
         // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of starts, and the ground speed.
@@ -436,7 +440,7 @@ export class Leafkin {
     this.free.push(c)
   }
 
-  /** At the chapter `seconds` falls in, placed on its first tick, which is never stepped, and out of its mouth; the anchors before it let go. */
+  /** At the chapter `seconds` falls in, placed on its first tick, which is never stepped, and out in its wood; the anchors before it let go. */
   _place(c, seconds) {
     const { index, start } = chapterOf(seconds, c.key)
     c.startTick = c.tick = tickAfter(start)
@@ -454,12 +458,19 @@ export class Leafkin {
     this._snap(c)
   }
 
-  /** Out of the mouth point, facing out from the face, give or take an eighth of a turn. */
+  /** Out in its wood: an open spot rolled uniformly over the ring OUT_M to ROAM_M about the mouth, facing a rolled way. */
   _emerge(c) {
     const site = c.site
-    c.x = c.px = site.x
-    c.z = c.pz = site.z
-    c.heading = c.ph = c.aim = Math.atan2(-site.nz, site.nx) + (c.rand() - 0.5) * (Math.PI / 2)
+    let i = 0
+    for (; i < OUT_TRIES; i++) {
+      const r = Math.sqrt(OUT_M * OUT_M + (ROAM_M * ROAM_M - OUT_M * OUT_M) * c.rand())
+      const a = c.rand() * Math.PI * 2
+      c.x = c.px = site.x + r * Math.cos(a)
+      c.z = c.pz = site.z + r * Math.sin(a)
+      if (this.open(site, c.x, c.z)) break
+    }
+    if (i === OUT_TRIES) throw new Error(`Leafkin: no open ground ${OUT_M}-${ROAM_M} m from ${site.key} in ${OUT_TRIES} tries`)
+    c.heading = c.ph = c.aim = c.rand() * Math.PI * 2
     c.wob = c.wobv = 0
     c.squeal = 0
     c.took = false
@@ -542,6 +553,7 @@ export class Leafkin {
     c.refused = 0
     c.cx = caps[best]
     c.cz = caps[best + 1]
+    c.chase = GIVE_UP_S
     if (c.squeal <= 0) { this._voice(c, 'leafkinSqueal'); c.squeal = SQUEAL_S }
     this._play(c, 'run', STEP_S)
     return true
@@ -598,15 +610,14 @@ export class Leafkin {
     return Math.max(0, Math.cos(s))
   }
 
-  _blocked(c, heading) {
-    const ahead = c.size * AHEAD
+  _blocked(c, heading, ahead) {
     return !this.open(c.site, c.x + Math.cos(heading) * ahead, c.z - Math.sin(heading) * ahead)
   }
 
-  /** A step along the heading at the gait, after the probe: refused, it turns off instead. */
-  _advance(c, dt) {
+  /** A step along the heading at the gait, after the probe `ahead` of it: refused, it turns off instead. */
+  _advance(c, dt, ahead = c.size * AHEAD) {
     c.detour = Math.max(0, c.detour - dt)
-    if (this._blocked(c, c.heading)) {
+    if (this._blocked(c, c.heading, ahead)) {
       c.refused++
       c.detour = DETOUR_S
       c.aim = c.heading + (c.rand() < 0.5 ? 1 : -1) * between(c.rand, DETOUR)
@@ -649,10 +660,14 @@ export class Leafkin {
       this._play(c, 'gather', this.durations.gather)
       return
     }
-    // The cap picked from under it, or the ground refusing three times: back to the roam.
-    if (c.refused >= 3 || this._eaten(c, c.cx, c.cz)) { this._roam(c); return }
-    if (c.detour <= 0) c.aim = this._toward(c, c.cx, c.cz)
-    this._advance(c, dt)
+    if (this._eaten(c, c.cx, c.cz)) { this._roam(c); return }
+    // The ground refusing three times in a row, or GIVE_UP_S of running at it: the cap is out of reach, and gone for the chapter.
+    c.chase -= dt
+    if (c.refused >= 3 || c.chase <= 0) { c.eaten.push(c.cx, c.cz); this._roam(c); return }
+    // Closing on it, the probe goes no further than where it will stand to reach: the ground past a cap hugging a trunk or a rock is the padding, and the body's probe AHEAD would land in it short of REACH_M.
+    if (c.detour > 0) { this._advance(c, dt); return }
+    c.aim = this._toward(c, c.cx, c.cz)
+    this._advance(c, dt, Math.min(c.size * AHEAD, Math.max(d - REACH_M, c.speed * dt)))
   }
 
   /** The gather's key: the cap into the bundle, and out of this client's ground and into the arms if it stands here. Picked meanwhile, and the reach closes on air. */

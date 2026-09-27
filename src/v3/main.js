@@ -26,6 +26,8 @@ import { Pines } from './pines.js'
 import { load, optionsFromUrl } from './store.js'
 import { MACRO, JITTER, TEXELS_PER_NODE } from './island.js'
 import { FineJitter } from './fine.js'
+import { TilePager } from './pager.js'
+import { TILE_M, TileStore } from './tiles.js'
 import { STEPS, CELL } from './generate.js'
 import { BIOMES } from './biomes.js'
 
@@ -37,6 +39,8 @@ import { BIOMES } from './biomes.js'
 // THE LAYER SWITCHES. The sidebar carries one box per rung of the jitter ladder and one per step of the algorithm. Turning one off rebuilds the island without it and stands everything back up on the new field, so what a layer contributes can be read off its absence rather than argued about. Each setting of the BAKED rungs is its own cache slot (store.js), so the second look at a comparison is instant; the read-time rungs are not in the key, because they never reach the image.
 //
 // THE FIELD IS THE IMAGE PLUS THE LAST RUNGS, and this page is where the two halves are put back together. The island arrives as a 2 m grid carrying the ladder down to 8 m between nodes; `FineJitter` adds the 4, 2 and 1 m rungs per sample. It goes to V2Height as `detail`, where v2's own fitted roughness would otherwise stand, and to the mesh workers as a `{ seed, cell }` descriptor they rebuild it from -- so the ground she is drawn on and the ground she collides with are the same surface. It also puts the coarse read on BILINEAR: a bicubic over a lattice sampled four texels to a node rounds off the very rungs the 2 m image was widened to carry.
+//
+// THE IMAGE ITSELF ARRIVES IN TWO PITCHES, which is the memory design (§31 the elevation pyramid, src/v3/tiles.js). What the worker posts is the 8 m base, 4.0 MB, and the class grid coarsened to match, 1.0 MB; the 2 m texels the base was decimated from stay in IndexedDB as 256 m tiles, and `TilePager` holds the 16 within reach of the eye. Three objects read the field and none of them share memory -- this module for collision and the two mesh workers -- so the whole point is that what is multiplied by three is 6.1 MB and not 80 MB. `island.fineCell` and not `island.cell` is what the read-time rungs are built against: the split was made against the 2 m pitch and handing it the base pitch would re-add the 8 m and 16 m rungs the tiles already carry.
 //
 // THE SUN DOES NOT MOVE. The clock is built at noon and never advanced: a terrain read changes with the light, and a light that is changing under you is a variable nobody asked for. Everything else on the page reads the clock as usual, so the day-night stack is exercised, just held.
 // ---------------------------------------------------------------------------
@@ -104,6 +108,8 @@ let waterSurfaces = null
 let pines = null
 let island = null
 let from = ''
+let islandKey = ''
+let pager = null
 
 // What the switches are set to. `octaveOn` shadows JITTER.amps rather than
 // zeroing them, so an octave switched off keeps the amplitude it comes back on
@@ -126,22 +132,30 @@ async function fetchIsland(regen) {
   const loaded = await load({ seed: opts.seed, regen, tune: tuneNow(), log: bootSay })
   island = loaded.result
   from = loaded.from
+  // The key the fine tiles are filed under, so the pager can read them back.
+  islandKey = loaded.key
 }
 
 /** The field and everything standing on it. Everything it makes is thrown away by `dropWorld` before it is called again. */
 function buildWorld() {
   const heightmap = Heightmap.fromRaw({ width: island.n, height: island.n, data: island.height, meta: island.meta })
+  // ATTACHED BEFORE THE V2Height IS BUILT, and the order is load-bearing: a supplied detail term makes _attachReconstruction take a VIEW of this heightmap, and a view carries the tiles forward. Attach afterwards and the reconstruction everything is actually sampled through would be reading the 8 m base while this object held the 2 m pyramid.
+  const tileStore = new TileStore({ cell: island.fineCell })
+  heightmap.attachTiles(tileStore)
   const layers = Layers.deserialize(island.doc)
-  // The rungs the image was too coarse to bake, evaluated per sample. Built from the shadowed amplitudes so a read-time rung's switch reaches it, and from the island's own cell so it picks up exactly what splitOctaves left out.
-  const fine = { seed: opts.seed, cell: island.cell, jitter: { ...JITTER, amps: tuneNow().jitter } }
+  // The rungs the image was too coarse to bake, evaluated per sample. Built from the shadowed amplitudes so a read-time rung's switch reaches it, and from the FINE cell -- see THE IMAGE ITSELF ARRIVES IN TWO PITCHES above.
+  const fine = { seed: opts.seed, cell: island.fineCell, jitter: { ...JITTER, amps: tuneNow().jitter } }
   height = new V2Height({ heightmap, layers, seed: opts.seed, relief: relief(), detail: new FineJitter(fine) })
 
   bootSay('meshing')
   // `axis` is the shipped ground shader; this page judges the field, not the surface, so it draws what the game draws.
   terrain = new TerrainV2(scene, {
     heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief: relief(), fine, workers: 2, axis: true,
+    tiles: { cell: island.fineCell },
     ground: { size: island.n, world: WORLD_SIZE, classes: island.ground, palette: Float32Array.from(BIOMES.flatMap((b) => b.colour)) },
   })
+  // After the workers exist, because it feeds all three copies of the field at once.
+  pager = new TilePager({ key: islandKey, store: tileStore, baseTexel: heightmap.texelSize, terrain, log: bootSay })
   lighting.patch(terrain.material, {
     mode: 'fragment', cacheKey: 'v2-terrain-shadow-axis', worldPosVarying: 'vWorldPos',
   })
@@ -152,6 +166,9 @@ function buildWorld() {
 /** The mesh workers and the water geometry, released. `height` and `island` are replaced rather than freed: nothing holds them but this module. */
 function dropWorld() {
   waterSurfaces.dispose()
+  // Before the terrain, so a tile read still in flight cannot post to a disposed
+  // TerrainV2. The tiles themselves go with the store.
+  pager.dispose()
   terrain.dispose()
 }
 
@@ -201,6 +218,9 @@ async function bootWorld() {
   player = new Player(rig, camera, ground)
   const spawn = findSpawn()
   player.spawnAt(spawn.x, spawn.z)
+  // The first disc's reads issued here rather than on the first frame, so the tiles
+  // under the spawn are usually resident before the first chunk is meshed.
+  pager.update(spawn.x, spawn.z)
   look.yaw = Math.atan2(spawn.x, spawn.z)
   look.pitch = -0.05
   console.log(`[terrain-v3] spawn ${spawn.x.toFixed(0)}, ${spawn.z.toFixed(0)} at ${spawn.y.toFixed(1)} m, island from ${from}`)
@@ -390,6 +410,12 @@ renderer.setAnimationLoop(() => {
     camera.updateProjectionMatrix()
   }
   sky.update(_head, state)
+  // BEFORE the terrain chooses its render set, so a tile that crossed into reach this
+  // frame is resident in all three copies of the field before anything is meshed
+  // against it. The read from IndexedDB is asynchronous either way -- see
+  // TerrainV2.putTile for what covers the gap -- but the disc is wide enough that in
+  // steady walking the tile lands long before a chunk over it refines past 8 m.
+  pager.update(_head.x, _head.z)
   terrain.update({ x: _head.x, y: _head.y, z: _head.z, yaw: look.yaw })
   // After the terrain has chosen its render set, never before: this reads the rung of the chunk drawn under each river sample, which is what lifts the ribbon clear of the coarse ground it would otherwise sink into, and switches the ribbon to its coarse index. It returns at once unless the eye has moved or the terrain re-split.
   waterSurfaces.updateLod(_head.x, _head.z, terrain)
@@ -416,6 +442,7 @@ renderer.setAnimationLoop(() => {
 
 const islandEl = document.getElementById('island')
 const frameEl = document.getElementById('frame')
+const memoryEl = document.getElementById('memory')
 const rows = (el, list) => {
   el.innerHTML = list.map(([k, v, cls]) => `<tr><td class="k">${k}</td><td class="n ${cls || ''}">${v}</td></tr>`).join('')
 }
@@ -441,6 +468,38 @@ function refreshPanel() {
     ['sun held at', clock.clockText],
     ['pines lod0/1/card', `${pines.drawn[0]} / ${pines.drawn[1]} / ${pines.drawn[2]}`],
   ])
+  refreshMemory()
+}
+
+// --- the memory readout -------------------------------------------------------
+//
+// WHAT IT IS COUNTING AND WHAT IT CANNOT. The three field rows are exact: they are
+// the byteLengths of the arrays this module and the workers hold, and `x3` is the
+// multiplier that makes them the number that matters, because the three holders do
+// not share memory (see the transfer-list note in terrain-v2.js). The heap row is
+// Chrome's `performance.memory`, WHICH COUNTS THIS THREAD ONLY -- the two mesh
+// workers' heaps are not in it, and neither is anything on the GPU, so it is a floor
+// and a trend rather than the tab's footprint. Absent on Firefox and on Safari, where
+// it reads `--` rather than a zero that would look like good news.
+
+const MB = (bytes) => `${(bytes / 1048576).toFixed(2)} MB`
+
+function refreshMemory() {
+  const base = island.height.byteLength
+  const classes = island.ground.byteLength
+  const t = pager.stats
+  const heap = performance.memory?.usedJSHeapSize
+  const rowsOut = [
+    ['base field', `${MB(base)} at ${island.cell.toFixed(0)} m, ${island.n}&sup2;`],
+    ['class grid', `${MB(classes)} at ${island.cell.toFixed(0)} m`],
+    ['fine tiles', `${MB(t.bytes)}, ${t.resident} of ${t.wanted} within ${t.radius.toFixed(0)} m`],
+    ['x3 holders', MB(3 * (base + classes + t.bytes)), 'ok'],
+    ['tiles on disk', `${island.tiles.count} of ${TILE_M} m at ${island.fineCell.toFixed(0)} m`],
+    ['js heap, this thread', heap === undefined ? '--' : MB(heap)],
+  ]
+  if (t.loading > 0) rowsOut.push(['loading', `${t.loading} tile${t.loading === 1 ? '' : 's'}`, 'warn'])
+  if (t.missing > 0) rowsOut.push(['MISSING', `${t.missing} tile${t.missing === 1 ? '' : 's'} not in the cache`, 'bad'])
+  rows(memoryEl, rowsOut)
 }
 
 // --- the switches -------------------------------------------------------------

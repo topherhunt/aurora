@@ -5,7 +5,9 @@
 // The generator is judged by eye on /terrain-v3-map; this asserts the things an eye cannot, and the things §31 step A promised in numbers: the same seed gives the same field, the field is finite and inside its encoding, the island is an island (a summit near the centre, a sea that falls to the box edge, a coast that is not a circle), the water drains (every river runs downhill to the sea, a lake or another river, every lake is a bowl the ellipse round it does not overrun), the doc validates, the rg16 round trip is exact to a quantum, and v2's V2Height will stand on the result, since that is what /terrain-v3 boots.
 
 import { generate, MIN_Y, MAX_Y, TEXELS, CELL } from '../src/v3/generate.js'
-import { WORLD_SIZE } from '../src/v2/config.js'
+import { WORLD_SIZE, WORLD_HALF, CHUNK_RES } from '../src/v2/config.js'
+import { APRON, DECIMATE, TILE_M, TileStore, baseTexelsFor, cutTile, decimate, pageRadius, storedTexels, subsampleClasses, tileKey, tileTexels, tilesForRadius, tilesWithin } from '../src/v3/tiles.js'
+import { MIN_TRI_DEG, selectNodes } from '../src/v2/terrain/quadtree-v2.js'
 import { JITTER, TEXELS_PER_NODE, octaveTable, splitOctaves, octaveAt } from '../src/v3/island.js'
 import { FineJitter } from '../src/v3/fine.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
@@ -262,6 +264,153 @@ export async function run() {
   check(Math.abs(at - s.summit.h) < 5, `V2Height at the summit reads ${at.toFixed(1)} m`)
   const bands = height.bands
   check(bands.max === s.max, `bands ${bands.min.toFixed(0)}..${bands.max.toFixed(0)} m`)
+
+  // --- the elevation pyramid, §31 ----------------------------------------------
+  //
+  // What these assert is the one invariant the paging rests on: THE BASE AND THE
+  // TILES ARE THE SAME SURFACE AT TWO PITCHES. Registration first, because a
+  // half-texel shift between them reads as the island sliding as a tile pages in
+  // and is invisible in any single screenshot; then the disc, against the LOD's
+  // real selection rather than against the derivation of it.
+  console.log('\n[v3] the pyramid: registration')
+  // A PLANE, because a symmetric normalised filter reproduces one exactly and an
+  // asymmetric one cannot. This is the whole difference between the binomial 5-tap
+  // and the box average that was nearly written instead: the box shifts the coarse
+  // grid by (factor - 1) / 2 = 1.5 fine texels, which on this ramp is a 4.5 m error
+  // at every texel and on the island is the ground sliding under her.
+  const RN = 65
+  const ramp = new Float32Array(RN * RN)
+  for (let j = 0; j < RN; j++) for (let i = 0; i < RN; i++) ramp[j * RN + i] = i * 3 - j * 2
+  const dr = decimate(ramp, RN, DECIMATE)
+  check(dr.n === baseTexelsFor(RN) && dr.n === 17, `decimate takes ${RN}^2 to ${dr.n}^2, both edges kept`)
+  let shift = 0
+  // Interior only: the 5-tap clamps at the edges, which bends a plane there on purpose.
+  for (let r = 1; r < dr.n - 1; r++) {
+    for (let c = 1; c < dr.n - 1; c++) shift = Math.max(shift, Math.abs(dr.data[r * dr.n + c] - ramp[r * DECIMATE * RN + c * DECIMATE]))
+  }
+  check(shift < 1e-3, `coarse texel c lands exactly on fine texel ${DECIMATE}c: worst ${shift.toExponential(1)} against the 4.5 m a box average would cost`)
+
+  const base = decimate(a.height, a.n, DECIMATE)
+  const baseCell = WORLD_SIZE / (base.n - 1)
+  check(base.n === baseTexelsFor(a.n) && Math.abs(baseCell - a.cell * DECIMATE) < 1e-9, `the island's base is ${base.n}^2 at ${baseCell.toFixed(1)} m, ${(base.data.byteLength / 1048576).toFixed(2)} MB against ${(a.height.byteLength / 1048576).toFixed(1)} MB`)
+  let sq = 0
+  let worstBase = 0
+  for (let r = 0; r < base.n; r++) {
+    for (let c = 0; c < base.n; c++) {
+      const d = base.data[r * base.n + c] - a.height[r * DECIMATE * a.n + c * DECIMATE]
+      sq += d * d
+      worstBase = Math.max(worstBase, Math.abs(d))
+    }
+  }
+  const rms = Math.sqrt(sq / (base.n * base.n))
+  // What the filter removed is the 8 m and 16 m jitter rungs and the terrain's own
+  // curvature at those lags -- metres, not tens of metres. A failure here means the
+  // decimation is describing different ground, not merely smoother ground.
+  check(rms < 3 && worstBase < 40, `base against fine at shared texels: ${rms.toFixed(2)} m rms, ${worstBase.toFixed(1)} m worst`)
+
+  console.log('\n[v3] the pyramid: a tile is a window on the same texels')
+  const [TX, TZ] = [19, 11]
+  const T = tileTexels(a.cell)
+  const S = storedTexels(a.cell)
+  const tile = cutTile(a.height, a.n, a.cell, TX, TZ)
+  check(tile.length === S * S && S === T + 2 * APRON + 1, `a ${TILE_M} m tile at ${a.cell} m is ${S}^2 = ${(tile.byteLength / 1024).toFixed(1)} kB`)
+  let exact = true
+  for (let j = 0; j <= T && exact; j++) {
+    for (let i = 0; i <= T; i++) {
+      if (tile[(APRON + j) * S + APRON + i] !== a.height[(TZ * T + j) * a.n + TX * T + i]) {
+        exact = false
+        break
+      }
+    }
+  }
+  check(exact, 'every texel of the tile is the generator\'s own metre, apron included')
+
+  const store = new TileStore({ cell: a.cell })
+  store.put(tileKey(TX, TZ), tile)
+  // On a texel, where bilinear has to return that texel and nothing else.
+  const px = -WORLD_HALF + (TX * T + 7) * a.cell
+  const pz = -WORLD_HALF + (TZ * T + 5) * a.cell
+  const want = a.height[(TZ * T + 5) * a.n + TX * T + 7]
+  check(Math.abs(store.sample(px, pz) - want) < 1e-3, `TileStore.sample on a texel reads it exactly: ${store.sample(px, pz).toFixed(2)} m`)
+  check(Number.isNaN(store.sample(px + TILE_M * 2, pz)), 'and NaN where no tile is resident, which is what the Heightmap falls through on')
+  check(store.bytes === S * S * 4 && store.size === 1, `store.bytes reports ${(store.bytes / 1024).toFixed(1)} kB for the one tile`)
+
+  const hmBase = Heightmap.fromRaw({ width: base.n, height: base.n, data: base.data, meta: { ...a.meta, size: base.n } })
+  const coarseRead = hmBase.sample(px, pz)
+  hmBase.attachTiles(store)
+  check(Math.abs(hmBase.sample(px, pz) - want) < 1e-3, `attachTiles puts sample() on the fine texel (${want.toFixed(2)} m) where the base read ${coarseRead.toFixed(2)} m`)
+  check(hmBase.tiled && hmBase.view().tiled, 'and a view carries the tiles, which is what the reconstruction is built on')
+  const away = { x: px + TILE_M * 3, z: pz }
+  const awayBase = Heightmap.fromRaw({ width: base.n, height: base.n, data: base.data, meta: { ...a.meta, size: base.n } })
+  check(hmBase.sample(away.x, away.z) === awayBase.sample(away.x, away.z), 'and outside the resident set it is the base, unchanged')
+
+  console.log('\n[v3] the pyramid: the disc covers every sub-base vertex')
+  // THE LOAD-BEARING CHECK. pageRadius is derived from selectNodes' refine test, so
+  // this runs the real selectNodes and asserts the derivation: no node drawn at a
+  // cell finer than a base texel has a vertex outside the disc. Bounds are left NULL
+  // on purpose -- nodeRange without them ignores the camera's height, which is the
+  // MOST refinement any camera can provoke, so it is the case to be covered.
+  const cams = [
+    { x: 0, z: 0 },
+    { x: 137, z: -2041 },
+    { x: -WORLD_HALF + 3, z: -WORLD_HALF + 3 },
+    { x: 1024, z: 1024 },
+    { x: 1023.5, z: -128.5 },
+  ]
+  for (const triDeg of [MIN_TRI_DEG, 3.0, 4.0, 7.0]) {
+    const radius = pageRadius(triDeg, baseCell)
+    let worst = 0
+    let fine = 0
+    for (const cam of cams) {
+      for (const nd of selectNodes(cam, { triDeg, info: null })) {
+        if (nd.size / CHUNK_RES >= baseCell) continue
+        fine++
+        for (const cx of [nd.x, nd.x + nd.size]) {
+          for (const cz of [nd.z, nd.z + nd.size]) worst = Math.max(worst, Math.hypot(cx - cam.x, cz - cam.z))
+        }
+      }
+    }
+    check(worst <= radius, `triDeg ${triDeg}: ${fine} sub-base nodes, farthest vertex ${worst.toFixed(0)} m, disc ${radius.toFixed(0)} m`)
+  }
+  // The margin is the prefetch: a tile is admitted this far before anything over it
+  // can refine past the base, which is what keeps a chunk from meshing coarse and
+  // then re-meshing as the tile lands.
+  check(pageRadius(4, baseCell) - baseCell / Math.tan((4 * Math.PI) / 180) > TILE_M / 2, `the disc leads the reach by ${(pageRadius(4, baseCell) - baseCell / Math.tan((4 * Math.PI) / 180)).toFixed(0)} m at triDeg 4, over half a tile of prefetch`)
+
+  console.log('\n[v3] the pyramid: what stays resident')
+  const perTile = storedTexels(a.cell) ** 2 * 4
+  const classes = subsampleClasses(a.ground, a.n, DECIMATE)
+  check(classes.length === base.n * base.n, `the class grid coarsens to ${base.n}^2, ${(classes.byteLength / 1048576).toFixed(2)} MB against ${(a.ground.byteLength / 1048576).toFixed(1)} MB`)
+  let nearest = true
+  for (let r = 0; r < base.n && nearest; r++) {
+    for (let c = 0; c < base.n; c++) {
+      if (classes[r * base.n + c] !== a.ground[r * DECIMATE * a.n + c * DECIMATE]) {
+        nearest = false
+        break
+      }
+    }
+  }
+  check(nearest, 'by taking the label at the kept texel and never a mean of two biomes')
+  for (const triDeg of [3.0, 4.0, MIN_TRI_DEG]) {
+    const tiles = tilesForRadius(pageRadius(triDeg, baseCell))
+    const resident = base.data.byteLength + classes.byteLength + tiles * perTile
+    // Three holders: this page for collision and two mesh workers, which do not share
+    // memory (see the transfer-list note in terrain-v2.js). The number to beat is the
+    // 252 MB the un-paged 2 m island cost across the same three.
+    check(resident * 3 < 24 * 1048576, `triDeg ${triDeg}: ${tiles} tiles bounded, ${(resident / 1048576).toFixed(2)} MB a holder, ${((resident * 3) / 1048576).toFixed(1)} MB over three`)
+  }
+  // `tilesForRadius` is the square bound the memory claim above is made against; the
+  // disc clips the corners off that square, so the count actually asked for is lower.
+  // Swept over a tile's worth of eye offsets, because the count turns on where in a
+  // tile the eye stands, not on which tile it is in.
+  const radius3 = pageRadius(3.0, baseCell)
+  let peak = 0
+  for (let i = 0; i <= 32; i++) {
+    for (let j = 0; j <= 32; j++) peak = Math.max(peak, tilesWithin((i * TILE_M) / 32, (j * TILE_M) / 32, radius3).length)
+  }
+  check(peak <= tilesForRadius(radius3), `the disc never asks for more than the ${tilesForRadius(radius3)}-tile bound: worst of 1089 eye offsets is ${peak}, ${((peak * perTile) / 1024).toFixed(0)} kB`)
+  const mid = tilesWithin(-WORLD_HALF + TILE_M * 6.5, -WORLD_HALF + TILE_M * 6.5, radius3)
+  check(mid.length < peak, `and standing mid-tile wants ${mid.length}, ${((mid.length * perTile) / 1024).toFixed(0)} kB`)
 
   if (failures) throw new Error(`check-v3: ${failures} failure${failures === 1 ? '' : 's'}`)
 }

@@ -3,7 +3,7 @@
 //   node scripts/check-leafkin.mjs
 //
 // The shipped GLB is checked for shape as the snowman's is. Then one leafkin
-// on a flat stand-in ground: out of its mouth on its chapter's first tick,
+// on a flat stand-in ground: placed out in its wood on its chapter's first tick,
 // met mid-chapter replayed hidden and silent; it roams the disc on arcs,
 // gathers the caps its ground holds into a bundle of five, is startled by her
 // feet, flees round walls home and comes out EMPTY_S on, makes for home
@@ -17,7 +17,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
-  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, SEEK_M, GATHER_KEY, STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
+  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, OUT_M, SEEK_M, GATHER_KEY, GIVE_UP_S, STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
 } from '../src/v2/render/leafkin.js'
 import { LeafkinGround, CELL, OPEN, BLOCKED } from '../src/v2/render/leafkin-ground.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
@@ -233,6 +233,9 @@ function meet(w, feet, t, limit = 30) {
   return t
 }
 const same = (a, b) => a && b && a.tick === b.tick && a.x === b.x && a.z === b.z && a.heading === b.heading && a.state === b.state && a.rs === b.rs && a.bundle === b.bundle && a.clip === b.clip && a.eaten.length === b.eaten.length
+// Where the chapter at START places the stand-in's leafkin, and a spot `[f, s]` metres forward and to its left of there, as it faces: the caps and walls staged before it are staged about here.
+const OUT = (() => { const w = make(); meet(w, NEAR, START); const { x, z, heading } = one(w); w.dispose(); return { x, z, heading } })()
+const before = ([f, s]) => [OUT.x + f * Math.cos(OUT.heading) - s * Math.sin(OUT.heading), OUT.z - f * Math.sin(OUT.heading) - s * Math.cos(OUT.heading)]
 /** Her feet beside it: a stride off on the side away from the mouth. */
 const beside = (c) => ({ x: c.x + 1, y: GROUND, z: c.z })
 
@@ -274,9 +277,26 @@ console.log('\nthe chapter')
   v.update(NEAR, head(NEAR), START + 1 / 60, 1 / 60)
   const d = one(v)
   check(d && d.startTick === tickAfter(START) && d.turnTick === tickAfter(START + CHAPTER_S) && d.homingTick === d.turnTick - HOMING_S * TICK_HZ, `her feet within its roam and cull, it is taken up on its chapter: ${CHAPTER_S} s from the site's own offset, homing ${HOMING_S} s before the turn`)
-  check(d && d.tick === d.startTick && d.x === 0 && d.z === 0 && Math.abs(swing(d.heading, 0)) <= Math.PI / 4 && d.state === 'roam' && d.clip === 'run', 'on the chapter\'s first tick it stands on the mouth point, facing out of the face give or take an eighth of a turn, roaming', d && `${fmt(d.heading)} rad`)
+  check(d && d.tick === d.startTick && Math.hypot(d.x, d.z) >= OUT_M && Math.hypot(d.x, d.z) <= ROAM_M && d.state === 'roam' && d.clip === 'run', `on the chapter's first tick it stands out in its wood, ${OUT_M}-${ROAM_M} m from the mouth, roaming`, d && `${fmt(Math.hypot(d.x, d.z))} m out`)
   check(d && Math.abs(d.size - SIZE_M) <= SIZE_M * SIZE_VAR + 1e-9 && Math.abs(d.k - d.size / biped.height) < 1e-12, `a metre tall, give or take ${SIZE_VAR * 100}%, wearing the scale that makes it so`, d && `${fmt(d.size)} m`)
   v.dispose()
+  // Half its wood blocked: every chapter places it on the open half. None open, and the chapter throws rather than stand it in a trunk.
+  const half = new Ground()
+  half.cell = (x) => (x < 0 ? BLOCKED : OPEN)
+  const out = []
+  for (let k = 0; k < 20; k++) {
+    const h = make({ ground: half })
+    h.update(NEAR, head(NEAR), START + k * CHAPTER_S + 1 / 60, 1 / 60)
+    out.push(one(h))
+    h.dispose()
+  }
+  check(out.every((o) => o.x >= 0 && Math.hypot(o.x, o.z) >= OUT_M && Math.hypot(o.x, o.z) <= ROAM_M), `over 20 chapters it is only ever placed on open ground, ${OUT_M}-${ROAM_M} m out`, `${out.filter((o) => o.x < 0).length} on the blocked half`)
+  const none = new Ground()
+  none.cell = () => BLOCKED
+  const n = make({ ground: none })
+  let threw = null
+  try { n.update(NEAR, head(NEAR), START + 1 / 60, 1 / 60) } catch (e) { threw = e.message }
+  check(threw?.includes('no open ground'), 'with no open ground about the mouth, the chapter throws', threw ?? 'no throw')
   // Met two minutes in: replayed CATCH_UP_TICKS a frame from the chapter's start, undrawn and unheard, then the same leafkin as one stepped from its start.
   const a = make()
   let ta = meet(a, NEAR, START)
@@ -309,7 +329,7 @@ console.log('\nthe chapter')
   // Another chapter, another roam; another site, another size.
   const x = make()
   x.update(NEAR, head(NEAR), START + CHAPTER_S + 1 / 60, 1 / 60)
-  check(one(x).startTick === d.turnTick && one(x).heading !== d.heading, 'the next chapter is seeded afresh: out of the mouth another way', `${fmt(one(x).heading)} / ${fmt(d.heading)}`)
+  check(one(x).startTick === d.turnTick && one(x).x !== d.x && one(x).z !== d.z && Math.hypot(one(x).x, one(x).z) >= OUT_M, 'the next chapter is seeded afresh: placed out somewhere else', `${fmt(one(x).x)},${fmt(one(x).z)} / ${fmt(d.x)},${fmt(d.z)}`)
   x.dispose()
   const sizes = new Set()
   for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) {
@@ -389,8 +409,8 @@ console.log('\nthe roam')
 // --- the gather ------------------------------------------------------------------
 console.log('\nthe gather')
 {
-  // Seven caps in a bed before the mouth, each within SEEK_M of the last.
-  const spots = [[2, 0], [2.4, 0.5], [2.6, -0.5], [3.0, 0.3], [3.3, -0.3], [3.6, 0.6], [3.9, 0]]
+  // Seven caps in a bed before it, each within SEEK_M of the last.
+  const spots = [[2, 0], [2.4, 0.5], [2.6, -0.5], [3.0, 0.3], [3.3, -0.3], [3.6, 0.6], [3.9, 0]].map(before)
   const hands = handsOf()
   const caps = new Caps(spots)
   const w = make({ spots, mushrooms: caps, hands })
@@ -427,11 +447,11 @@ console.log('\nthe gather')
 }
 {
   // Her hand on the one cap before it gets there: a pick owed the room on the next tick, and the leafkin never goes for it.
-  const spots = [[2, 0]]
+  const spots = [before([2, 0])]
   const caps = new Caps(spots)
   const w = make({ spots, mushrooms: caps })
   let t = meet(w, NEAR, START)
-  pick(caps, 2, 0)
+  pick(caps, ...spots[0])
   const owed = w.pending([])
   let gathered = false
   t = run(w, t, 10, NEAR, (c) => { if (c.state === 'gather') gathered = true })
@@ -439,11 +459,28 @@ console.log('\nthe gather')
   check(!gathered && one(w).bundle === 0 && one(w).eaten.length === 2, 'and the leafkin never goes for the cap she took')
   w.dispose()
 }
+{
+  // A cap in a wall of trunks before it, where its reach never gets: given up on after GIVE_UP_S and never gone for again.
+  const spots = [before([2.5, 0])]
+  const ground = new Ground(spots)
+  ground.walls.push([...before([2.5, -1.5]), ...before([2.5, 1.5])])
+  const w = make({ spots, ground, mushrooms: new Caps(spots) })
+  let t = meet(w, NEAR, START)
+  let gathering = 0, tries = 0, was = null
+  t = run(w, t, 30, NEAR, (c) => {
+    if (c.state === 'gather') gathering += 1 / 60
+    if (c.state === 'gather' && was !== 'gather') tries++
+    was = c.state
+  })
+  const c = one(w)
+  check(tries === 1 && gathering <= GIVE_UP_S + 2 * TICK_S && c.bundle === 0 && c.state === 'roam', `a cap it cannot reach is given up on after GIVE_UP_S ${GIVE_UP_S} s and never gone for again`, `${tries} tries, ${fmt(gathering)} s gathering, ${c.state}`)
+  w.dispose()
+}
 
 // --- the startle and the flight ------------------------------------------------------
 console.log('\nthe startle')
 {
-  const spots = [[2, 0], [2.5, 0.4], [3, -0.4]]
+  const spots = [[2, 0], [2.5, 0.4], [3, -0.4]].map(before)
   const hands = handsOf()
   const caps = new Caps(spots)
   const w = make({ spots, mushrooms: caps, hands })
@@ -490,7 +527,7 @@ console.log('\nthe startle')
   check(c.until === goneTick + EMPTY_S * TICK_HZ && c.carrier.count() === 0, `inside for ${EMPTY_S} s, its arms empty`)
   let out = null
   t = run(w, t, EMPTY_S + 1, at, (c, now) => { if (out === null && c.state === 'roam') out = { now, tick: c.tick, x: c.px, z: c.pz } }, 20)
-  check(out && out.tick === c.until && Math.hypot(out.x, out.z) < 1e-9, `and ${EMPTY_S} s on, out of its mouth again`, out && `tick ${out.tick - goneTick}`)
+  check(out && out.tick === c.until && Math.hypot(out.x, out.z) >= OUT_M && Math.hypot(out.x, out.z) <= ROAM_M, `and ${EMPTY_S} s on, placed out in its wood again`, out && `tick ${out.tick - goneTick}, ${fmt(Math.hypot(out.x, out.z))} m out`)
   w.dispose()
 }
 
@@ -537,7 +574,7 @@ console.log('\nthe turn')
   check(homing === homingTick + 1 || homing === homingTick, `${HOMING_S} s before the turn it makes for home`, `tick ${homing - turnTick}`)
   check(inside !== null && inside < turnTick && w.frights === 0, 'and is inside before the turn', inside && `${fmt((turnTick - inside) / TICK_HZ)} s early`)
   check(said.length > 0 && said.every((v) => v.sound !== 'leafkinWhimper'), 'homing unfrightened, it chatters rather than whimpers', `${said.length} said`)
-  check(placed && placed.tick === turnTick && placed.x === 0 && placed.z === 0 && placed.state === 'roam', 'at the turn it is out of its mouth on the next chapter\'s first tick')
+  check(placed && placed.tick === turnTick && Math.hypot(placed.x, placed.z) >= OUT_M && placed.state === 'roam', 'at the turn it is placed out in its wood on the next chapter\'s first tick')
   w.dispose()
 }
 
@@ -545,7 +582,7 @@ console.log('\nthe turn')
 console.log('\nthe puppet')
 {
   const w = make()
-  const feet = { x: -6, y: GROUND, z: 6 }
+  const feet = { x: OUT.x - 6, y: GROUND, z: OUT.z + 6 }
   let t = meet(w, feet, START)
   const c = one(w)
   t = run(w, t, 0.5, feet)
@@ -568,7 +605,7 @@ console.log('\nthe puppet')
 // --- two instances agree ---------------------------------------------------------------
 console.log('\ntwo instances agree')
 {
-  const spots = [[2, 0], [3, 1], [6, -2], [20, 5], [21, 4]]
+  const spots = [[2, 0], [3, 1], [6, -2], [20, 5], [21, 4]].map(before)
   const a = make({ spots }), b = make({ spots })
   let ta = meet(a, NEAR, START), tb = START
   while (one(b)?.tick !== tickOf(ta)) b.update(NEAR, head(NEAR), (tb = Math.min(ta, tb + 1 / 30)), 1 / 30)
@@ -686,9 +723,9 @@ for (const [lag, rewinds] of [[0.1, false], [1.5, true]]) {
 }
 {
   // b's player picks the cap before it: a hears the pick, and neither goes for it.
-  const p = pair({ spots: [[2, 0]] })
+  const p = pair({ spots: [before([2, 0])] })
   p.step(1 / 60)
-  pick(p.B.mushrooms, 2, 0)
+  pick(p.B.mushrooms, ...before([2, 0]))
   let gathered = 0, apart = 0
   p.step(10, (t) => { if (one(p.A).state === 'gather' || one(p.B).state === 'gather') gathered++; if (t > START + 0.5 && !same(one(p.A), one(p.B))) apart++ })
   const picks = p.sent.filter((s) => s.a[7] === 'pick')

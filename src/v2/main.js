@@ -1533,12 +1533,12 @@ function pressBackpackSlot(i) {
 
 /** The bag's closing voice, for a thing put in it: the same one-shot as the menu closing. */
 function playStow() {
-  if (ambience) sound.play('uiClose', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
+  if (ambience) sound.play('uiClose', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
 /** The pop of a thing coming into a hand, from the ground or a backpack slot: one voice for every kind until each has its own. */
 function playPick() {
-  if (ambience) sound.play('uiPop', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
+  if (ambience) sound.play('uiPop', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
 /** Whether the hand holds a flare gun. */
@@ -1555,7 +1555,7 @@ const gunTarget = new THREE.Vector3()
 function fireFlare(key, aim = null) {
   const rec = hands.holding(key)
   if (rec.charges <= 0) {
-    if (ambience) sound.play('uiPop', { rate: 0.5, gain: 0.25 })
+    if (ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.25 })
     return
   }
   hands.heldFrame(key, gunFrame)
@@ -1572,7 +1572,7 @@ function fireFlare(key, aim = null) {
   flares.add(f, 0)
   shotFlash.fire(f.color)
   netplay.sendFlare(toWire(f))
-  if (ambience) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
+  if (ambience) sound.play('flaregun', { bus: 'near', rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
   questPulse(key, 0.8, 80)
 }
 
@@ -1580,7 +1580,7 @@ function fireFlare(key, aim = null) {
 function cycleFlareColor(key) {
   const rec = hands.holding(key)
   rec.hue = (rec.hue + 1) % PALETTE.length
-  if (ambience) sound.play('uiPop', { rate: 1.4, gain: 0.3 })
+  if (ambience) sound.play('uiPop', { bus: 'near', rate: 1.4, gain: 0.3 })
 }
 
 /** The flares peers shot since last frame, into the sky; one still leaving its muzzle in her room is heard, as far off as it is. */
@@ -1989,7 +1989,7 @@ function toggleQuestPanel() {
   // the valley -- on the same random pitch as every other one-shot. `ambience`
   // stands for the clips having loaded; before the context is unlocked play()
   // is a no-op.
-  if (open) { if (ambience) sound.play('uiOpen', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 }) } else playStow()
+  if (open) { if (ambience) sound.play('uiOpen', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 }) } else playStow()
   // The stats are drawn only while the debug view is up, and a slot whose
   // source had not landed its asset when it was filled is photographed now.
   if (open) { updateQuestStats(); paintBackpack() }
@@ -2948,7 +2948,7 @@ function makeBlackout() {
  */
 async function enterHouse(e) {
   doorBusy = true
-  if (ambience) sound.play('door', { gain: 0.3 })
+  if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
   makeBlackout()
   ready = false
   await fade(1)
@@ -2965,6 +2965,7 @@ async function enterHouse(e) {
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
   const rDoor = rAt(room.rs, Math.PI)
   indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
+  if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
   player.teleportTo(ox + room.doorIn.x, oz + room.doorIn.z)
@@ -2978,7 +2979,7 @@ async function enterHouse(e) {
 /** Back out of the house she is in, onto its landing before the door (not the awning over it), facing away from it. */
 async function leaveHouse() {
   doorBusy = true
-  if (ambience) sound.play('door', { gain: 0.3 })
+  if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
   ready = false
   await fade(1)
   const { e, back } = indoors
@@ -2995,6 +2996,7 @@ function closeHouse() {
   if (!indoors) return
   indoors.view.dispose()
   indoors.residents.dispose()
+  if (sound) sound.setIndoors(false)
   walk = window.v2walk = indoors.outside
   if (player) player.setGround(walk)
   indoors = null
@@ -3683,8 +3685,8 @@ async function buildRoom(room, at) {
       return true
     },
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
-    thud: (x, y, z) => { if (ambience) sound.play('footfall', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
-    splash: (x, y, z) => { if (ambience) sound.play('splash', { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: { x, y, z } }) },
+    thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
+    splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: { x, y, z } }) },
     scale: room.scale,
   })
   hands.addSource(mushrooms, 'mushroom')

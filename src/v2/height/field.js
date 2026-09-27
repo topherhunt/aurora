@@ -169,6 +169,12 @@ export class V2Height {
     // field the human authored, and so the knob is reversible.
     if (needs.erode) {
       const src = this.heightmap
+      // A relaxation makes a DIFFERENT surface, so the fine pyramid cut from the
+      // unrelaxed texels no longer describes it -- and sample() prefers a resident
+      // tile, so the world would read eroded outside the paging disc and uneroded
+      // inside it. Eroding the tiles too is the fix and nobody has needed it; until
+      // then this is a throw and not a silent drop of the detail.
+      if (src.tiled) throw new Error('V2Height: relief.erode is not implemented for a tiled heightmap -- the tiles are cut from the unrelaxed field (Heightmap.attachTiles)')
       const eroded = thermalErode(src.field, src.width, src.height, src.texelSize, {
         passes: relief.erode,
         talusDeg: relief.talus,

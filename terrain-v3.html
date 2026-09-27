@@ -62,6 +62,9 @@
       <table id="island"></table>
       <h2>this frame</h2>
       <table id="frame"></table>
+      <h2>memory</h2>
+      <table id="memory"></table>
+      <p class="note">The 8 m base field stays resident; the 2 m detail is cached on disk as 256 m tiles and only the ones near you are in memory. Three holders read the field and do not share it -- this page, for collision, and the two mesh workers -- so <em>terrain</em> is the per-holder cost times three. See design/31-terrain-v3.md, the elevation pyramid.</p>
       <h2>layers</h2>
       <div id="switches"></div>
       <div id="buttons">

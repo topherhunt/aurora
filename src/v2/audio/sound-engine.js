@@ -5,10 +5,12 @@
 // runs under A-Frame's bundled three, and so the loop crossfade below can be
 // scheduled sample-accurately rather than from the frame loop.
 //
-// TWO BUSES, `air` and `water`. Every sound above the surface goes through
-// `air`; the underwater loop is the only thing on `water`. Submersion is one
-// gain swap between them, which is what silences a croak already in flight the
-// instant her head goes under, with no per-sound bookkeeping.
+// THREE BUSES, `air`, `near` and `water`. Every sound of the world above the
+// surface goes through `air`; her own body, the door and the UI through `near`;
+// the underwater loop is the only thing on `water`. Submersion is one gain swap
+// between them, which is what silences a croak already in flight the instant
+// her head goes under, with no per-sound bookkeeping. Indoors, `air` passes
+// through the house's walls (INDOORS): dulled and quietened, `near` untouched.
 //
 // DIRECTION IS THE PANNER, DISTANCE IS OURS. A positioned sound sits at its
 // true world position so the equal-power pan puts it on the right side of her
@@ -77,6 +79,8 @@ export const REVERB_LEVEL = 0.6
 export const ECHO_TAPS = [[0.47, 0.32], [1.05, 0.25]]
 export const ECHO_LP = 1500
 export const ECHO_LEVEL = 0.7
+// The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds.
+export const INDOORS = { lp: 450, gain: 0.3, tau: 0.3 }
 
 // Equal-power fade curve, sampled once; scaled per cycle by the cycle's gain.
 const FADE_STEPS = 32
@@ -132,7 +136,15 @@ export class SoundEngine {
     this.master = ctx.createGain()
     this.master.connect(ctx.destination)
     this.air = ctx.createGain()
-    this.air.connect(this.master)
+    this.walls = ctx.createBiquadFilter()
+    this.walls.type = 'lowpass'
+    this.walls.frequency.value = LP_MAX
+    this.through = ctx.createGain()
+    this.air.connect(this.walls)
+    this.walls.connect(this.through)
+    this.through.connect(this.master)
+    this.near = ctx.createGain()
+    this.near.connect(this.master)
     this.water = ctx.createGain()
     this.water.gain.value = 0
     this.water.connect(this.master)
@@ -248,7 +260,15 @@ export class SoundEngine {
   setSubmerged(wet) {
     const now = this.ctx.currentTime
     setParam(this.air.gain, wet ? 0 : 1, now, wet ? 0.04 : 0.15)
+    setParam(this.near.gain, wet ? 0 : 1, now, wet ? 0.04 : 0.15)
     setParam(this.water.gain, wet ? 1 : 0, now, wet ? 0.08 : 0.1)
+  }
+
+  /** Put the house's walls between her and `air`, or take them away. */
+  setIndoors(inside) {
+    const now = this.ctx.currentTime
+    setParam(this.walls.frequency, inside ? INDOORS.lp : LP_MAX, now, INDOORS.tau)
+    setParam(this.through.gain, inside ? INDOORS.gain : 1, now, INDOORS.tau)
   }
 
   _panner() {

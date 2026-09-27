@@ -144,8 +144,9 @@ export class TerrainV2 {
    * @param axis          compile the reduced ground shader; see the LEAN and AXIS blocks in terrain-material.js.
    * @param ground        {size, world, classes: Uint8Array, palette: Float32Array} for layers/ground.js, or null: the biome class grid the mesher tints the ground from. Copied to every worker like the heightmap.
    * @param fine          {seed, cell} for a v3 island, or null: the rungs of the jitter ladder its image was too coarse to bake, which the worker rebuilds as the field's detail term. Travels for the reason `relief` does -- see the note by `this.relief`.
+   * @param tiles         {cell} for a v3 island, or null: the pitch of the fine pyramid this world pages (src/v3/tiles.js). Each worker then holds a TileStore and takes putTile/dropTile below; without it a tile message is a protocol error.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null, fine = null } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null, fine = null, tiles = null } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     // Validated here so a wrong grid throws on the main thread at boot rather than inside a worker.
     if (ground !== null) new GroundTint(ground)
@@ -185,6 +186,11 @@ export class TerrainV2 {
     // Same footing, same reason: the fine rungs are part of the surface, so the mesher and the collision have to agree on them or she walks a metre off the ground she can see.
     if (fine !== null && !(Number.isFinite(fine.seed) && fine.cell > 0)) throw new Error(`TerrainV2: fine must be null or { seed, cell }, got ${JSON.stringify(fine)}`)
     this.fine = fine
+    // Same footing again. A worker whose store is missing a tile the main thread has
+    // meshes the 8 m base where collision reads the 2 m pyramid, so the descriptor
+    // travels at init and putTile below keeps the copies in step.
+    if (tiles !== null && !(tiles.cell > 0)) throw new Error(`TerrainV2: tiles must be null or { cell }, got ${JSON.stringify(tiles)}`)
+    this.tiles = tiles
 
     const budget = slotBudget(workers, queueDepth)
     this._inFlightCap = budget.inFlightCap
@@ -397,7 +403,7 @@ export class TerrainV2 {
       const copy = data.slice()
       const groundCopy = ground ? { ...ground, classes: ground.classes.slice(), palette: ground.palette.slice() } : null
       w.postMessage(
-        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, fine: this.fine, epoch: this.epoch, ground: groundCopy },
+        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, fine: this.fine, tiles: this.tiles, epoch: this.epoch, ground: groundCopy },
         groundCopy ? [copy.buffer, groundCopy.classes.buffer, groundCopy.palette.buffer] : [copy.buffer]
       )
       this.workers.push(w)
@@ -526,6 +532,58 @@ export class TerrainV2 {
     }
     this._invalidateRect(worldRect)
     this._dirty = true
+  }
+
+  /**
+   * A fine tile is now resident: hand it to every worker and re-mesh what it covers.
+   *
+   * `worldRect` is the XZ box the tile's texels are read over, grown by the base
+   * pitch for the normal stencil -- `tileBox` in src/v3/tiles.js. The caller passes
+   * it for patchHeight's reason: the caller owns the geometry, and this file knows
+   * nothing about the tiling.
+   *
+   * WHY THIS INVALIDATES AT ALL, when the pager's disc is a superset of what
+   * selection can ask for. The disc is a superset in SPACE, not in time: a tile is
+   * read back from IndexedDB asynchronously, so at boot and after a teleport chunks
+   * inside the disc mesh against the base before their tile lands. Without the
+   * re-mesh they would keep that 8 m geometry until something else evicted them,
+   * with the player colliding against the 2 m field she is not drawn on. Steady
+   * walking pages tiles in well ahead of any chunk that needs them, so in the common
+   * case this invalidates nothing that was not already pending.
+   *
+   * The per-worker slice is patchHeight's argument exactly: one array transferred to
+   * N workers leaves N-1 holding a husk, and a husk here throws in TileStore.put.
+   */
+  putTile(key, data, worldRect) {
+    if (this.tiles === null) throw new Error(`TerrainV2.putTile: this world was built without a tiles descriptor, so its workers hold no store (tile ${key})`)
+    if (!validRect(worldRect)) throw new Error(`TerrainV2.putTile: worldRect ${JSON.stringify(worldRect)} is not a rect with finite minX/minZ/maxX/maxZ and max >= min`)
+    this.epoch++
+    for (const w of this.workers) {
+      const copy = data.slice()
+      w.postMessage({ type: 'tile', key, data: copy, epoch: this.epoch }, [copy.buffer])
+    }
+    this._invalidateRect(worldRect)
+    this._dirty = true
+  }
+
+  /**
+   * A fine tile has left the resident set. Dropped in the workers, and DELIBERATELY
+   * NOT INVALIDATED.
+   *
+   * A tile is only dropped once the eye is far enough away that every chunk over it
+   * draws cells of a base texel or wider, and at that pitch the base is what the
+   * mesh can represent -- so a re-mesh would move those vertices by what the
+   * decimation filter removed, sub-metre, for no visible gain and a burst of mesh
+   * work every time the player crosses a tile line. The cached geometry keeps the
+   * fine read it was built from until the ordinary LOD evicts it, and walking back in
+   * re-pages the tile and putTile re-meshes.
+   *
+   * No epoch bump either: messages from one port arrive in order, so a chunk
+   * requested after this meshes without the tile by construction.
+   */
+  dropTile(key) {
+    if (this.tiles === null) throw new Error(`TerrainV2.dropTile: this world was built without a tiles descriptor (tile ${key})`)
+    for (const w of this.workers) w.postMessage({ type: 'untile', key })
   }
 
   // The full reset. Everything cached is now wrong, so free it rather than wait

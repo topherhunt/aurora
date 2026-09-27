@@ -523,7 +523,7 @@ export class Ambience {
     const moving = walking || this.teleportCredit > 0
     this.teleportCredit = Math.max(0, this.teleportCredit - dt)
     if (this.due('footstep', moving, F.interval, dt)) {
-      this.fire('footstep', { rate: this.rate(), gain: this.between(...F.gain) })
+      this.fire('footstep', { rate: this.rate(), gain: this.between(...F.gain), bus: 'near' })
     }
     const K = RULES.rockslideFoot
     if (moving && s.onBoulder && this.rand() < K.chance * dt) {

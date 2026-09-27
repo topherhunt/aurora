@@ -9,8 +9,9 @@ export const RING = 288
 export const FILLET = 0.15
 export const SEAT = 0.19
 export const TABLE_TOP = 0.42
-// Furniture is stone this high whatever it looks: under her reach (0.6 m at HER_SCALE) it would be a step she climbs onto.
+// Stone this high stands for furniture she cannot climb (backs, pots, tools leant up): over her reach (0.6 m at HER_SCALE). Low furniture is stone to its own top, a step she climbs onto where her head clears.
 export const BLOCK = 0.8
+export const STOOL_H = 0.24, HAMPER_H = 0.36
 // A house this tall outside has a loft inside.
 const LOFT_HOUSE_M = 6
 // Three rises must stay within her glade reach (0.6 m): player.js looks a stride (0.75 m, ~2.7 treads) ahead on a steep step, and a tread past her reach reads as the floor below, so the stairs refuse her.
@@ -49,6 +50,11 @@ export function loftDepthAt(loft, a) {
   const far = loft.dir > 0 ? t : loft.a1 - loft.a0 - t
   return loft.depth * smooth(0, loft.taper, far)
 }
+
+// The tops of what render/interior.js builds, for their stone: a crate stack (each crate on the first 0.88 the size), a woodpile's rows of 0.06 m logs 1.72 radii apart (as many as its depth holds), and the free-standing heaps by their radius.
+const crateTop = (c) => c.s * (1 + 0.88 * (c.stack - 1))
+const woodpileTop = (rows, depth) => 0.06 * (2.1 + 1.72 * (Math.min(rows, Math.max(1, Math.floor((depth - 0.03) / 0.12))) - 1))
+const FREE_TOP = { stools: () => STOOL_H, hamper: () => HAMPER_H + 0.055, sacks: () => 0.47, gourds: (r) => r * 0.9 }
 
 /** The distance from (x, z) to the segment `l`. */
 const segDist = (l, x, z) => {
@@ -260,7 +266,7 @@ export function rollInterior({ seed, index, height }) {
   room.ring = { x: table.x, z: table.z, r: ringR }
   const legs = rng() < 0.5 ? 3 : 4
   items.push({ kind: 'table', x: table.x, z: table.z, r: tr, top: TABLE_TOP, legs, spin: range(0, TAU) })
-  solids.push({ kind: 'cyl', x: table.x, z: table.z, r: tr, y0: 0, y1: BLOCK })
+  solids.push({ kind: 'cyl', x: table.x, z: table.z, r: tr, y0: 0, y1: TABLE_TOP })
   cover += Math.PI * tr * tr
 
   const chairs = 2 + Math.floor(rng() * 3)
@@ -272,7 +278,7 @@ export function rollInterior({ seed, index, height }) {
     const yaw = Math.atan2(-Math.cos(q), -Math.sin(q))
     const back = rng() < 0.75 ? range(0.5, 0.66) : 0
     items.push({ kind: 'chair', x, z, yaw, r: sr, top: SEAT, back, style: Math.floor(rng() * 3), cushion: rng() < 0.6 })
-    solids.push({ kind: 'cyl', x, z, r: sr, y0: 0, y1: BLOCK })
+    solids.push({ kind: 'cyl', x, z, r: sr, y0: 0, y1: back ? BLOCK : SEAT })
     cover += Math.PI * sr * sr
     spots.push({ kind: 'seat', x, z, top: SEAT, r: sr, lookX: -Math.cos(q), lookZ: -Math.sin(q), level: 0 })
     // A place set before it: a plate, and sometimes a cup.
@@ -383,7 +389,7 @@ export function rollInterior({ seed, index, height }) {
     const along = bed.yaw + Math.PI / 2, c = Math.cos(along), s = Math.sin(along)
     const top = y + 0.2
     items.push({ kind: 'bed', x: p.x, z: p.z, y, yaw: along, len: bedLen, wid: bedWid, top: 0.2 })
-    solids.push({ kind: 'box', x: p.x, z: p.z, yaw: along, hx: bedWid / 2, hz: bedLen / 2, y0: y, y1: y + BLOCK })
+    solids.push({ kind: 'box', x: p.x, z: p.z, yaw: along, hx: bedWid / 2, hz: bedLen / 2, y0: y, y1: y + 0.24 })
     discs.push({ x: p.x, z: p.z, r: bedLen / 2, level: bedUp ? 1 : 0 })
     if (!bedUp) cover += bedLen * bedWid
     const plush = 1 + Math.floor(rng() * 3)
@@ -420,7 +426,7 @@ export function rollInterior({ seed, index, height }) {
         take(st.x, st.z, 0.17)
         items.push({ kind: 'sidetable', x: st.x, z: st.z, r: 0.17, top: 0.34 })
         items.push({ kind: 'books', x: st.x, z: st.z, y: 0.34, n: 2 + Math.floor(rng() * 3), yaw: range(0, TAU) })
-        solids.push({ kind: 'cyl', x: st.x, z: st.z, r: 0.17, y0: 0, y1: BLOCK })
+        solids.push({ kind: 'cyl', x: st.x, z: st.z, r: 0.17, y0: 0, y1: 0.34 })
         cover += Math.PI * 0.17 * 0.17
         if (rng() < 0.6) {
           const cx = st.x + 0.06, cz = st.z - 0.05, h = range(0.06, 0.1)
@@ -516,16 +522,24 @@ export function rollInterior({ seed, index, height }) {
     storage(s, half, depth) {
       // Stores in two rows: barrels and crates at the back, sacks before them.
       const n = Math.max(2, Math.round((2 * half) / 0.42))
+      let top = 0
       for (let k = 0; k < n; k++) {
         const a = s.a + ((((k + 0.5) / n) * 2 - 1) * (half - 0.2)) / rOf(s.a), back = polar(a, FILLET + 0.24)
-        if (rng() < 0.55) items.push({ kind: 'barrel', x: back.x, z: back.z, y: 0, r: 0.21, h: range(0.48, 0.6), yaw: range(0, TAU) })
-        else items.push({ kind: 'crate', x: back.x, z: back.z, y: 0, yaw: inward(a) + range(-0.25, 0.25), s: range(0.36, 0.42), stack: rng() < 0.5 ? 2 : 1 })
+        if (rng() < 0.55) {
+          const h = range(0.48, 0.6)
+          items.push({ kind: 'barrel', x: back.x, z: back.z, y: 0, r: 0.21, h, yaw: range(0, TAU) })
+          top = Math.max(top, h)
+        } else {
+          const c = { kind: 'crate', x: back.x, z: back.z, y: 0, yaw: inward(a) + range(-0.25, 0.25), s: range(0.36, 0.42), stack: rng() < 0.5 ? 2 : 1 }
+          items.push(c)
+          top = Math.max(top, crateTop(c))
+        }
         if (k % 2 === 0 || rng() < 0.4) {
           const fore = polar(a + range(-0.1, 0.1), FILLET + depth - 0.2)
           items.push({ kind: 'sack', x: fore.x, z: fore.z, y: 0, r: range(0.15, 0.19), h: range(0.28, 0.38), hue: range(0, 1), yaw: range(0, TAU) })
         }
       }
-      wallStone(s.a, half, depth)
+      wallStone(s.a, half, depth, 0, top)
     },
     dresser(s, half, depth) {
       const h = range(0.72, 0.9)
@@ -534,20 +548,26 @@ export function rollInterior({ seed, index, height }) {
       wallStone(s.a, half, depth, s.y, s.y + Math.max(h, BLOCK))
     },
     chest(s, half, depth) {
-      items.push({ kind: 'chest', x: s.x, z: s.z, y: s.y, yaw: s.yaw, w: half * 2 - 0.06, d: depth - 0.06, h: range(0.34, 0.42) })
-      wallStone(s.a, half, depth, s.y, s.y + BLOCK)
+      const h = range(0.34, 0.42)
+      items.push({ kind: 'chest', x: s.x, z: s.z, y: s.y, yaw: s.yaw, w: half * 2 - 0.06, d: depth - 0.06, h })
+      // Its lid tops out at 0.88 of `h` (render/interior.js chest).
+      wallStone(s.a, half, depth, s.y, s.y + h * 0.88)
     },
     crates(s, half, depth) {
       const n = half > 0.4 ? 2 : 1
+      let top = 0
       for (let k = 0; k < n; k++) {
         const a = s.a + ((((k + 0.5) / n) * 2 - 1) * (half - depth / 2)) / rOf(s.a), p = polar(a, FILLET + depth / 2)
-        items.push({ kind: 'crate', x: p.x, z: p.z, y: 0, yaw: inward(a) + range(-0.3, 0.3), s: depth - 0.06, stack: 1 + Math.floor(rng() * 2) })
+        const c = { kind: 'crate', x: p.x, z: p.z, y: 0, yaw: inward(a) + range(-0.3, 0.3), s: depth - 0.06, stack: 1 + Math.floor(rng() * 2) }
+        items.push(c)
+        top = Math.max(top, crateTop(c))
       }
-      wallStone(s.a, half, depth)
+      wallStone(s.a, half, depth, 0, top)
     },
     woodpile(s, half, depth) {
-      items.push({ kind: 'woodpile', a: s.a, half, depth, rows: 3 + Math.floor(rng() * 2), seed: Math.floor(rng() * 1e6) })
-      wallStone(s.a, half, depth)
+      const rows = 3 + Math.floor(rng() * 2)
+      items.push({ kind: 'woodpile', a: s.a, half, depth, rows, seed: Math.floor(rng() * 1e6) })
+      wallStone(s.a, half, depth, 0, woodpileTop(rows, depth))
     },
     planter(s, half, depth) {
       const r = Math.min(half, depth / 2) - 0.02
@@ -614,7 +634,7 @@ export function rollInterior({ seed, index, height }) {
       take(x + ax, z + az, r); take(x - ax, z - az, r)
       const top = range(0.44, 0.5)
       items.push({ kind: 'workbench', x, z, y: 0, yaw, hx, hz, top })
-      solids.push({ kind: 'box', x, z, yaw, hx, hz, y0: 0, y1: BLOCK })
+      solids.push({ kind: 'box', x, z, yaw, hx, hz, y0: 0, y1: top })
       cover += 4 * hx * hz
       const n = 2 + Math.floor(rng() * 2)
       for (let k = 0; k < n; k++) {
@@ -633,7 +653,7 @@ export function rollInterior({ seed, index, height }) {
     if (!open(x, z, r + AROUND)) continue
     take(x, z, r)
     items.push({ kind, x, z, y: 0, r, yaw: range(0, TAU), hue: range(0, 1), n: 3 + Math.floor(rng() * 4) })
-    solids.push({ kind: 'cyl', x, z, r, y0: 0, y1: BLOCK })
+    solids.push({ kind: 'cyl', x, z, r, y0: 0, y1: FREE_TOP[kind](r) })
     cover += Math.PI * r * r
   }
   // The loft's own: a chest and a planter where they fit.
