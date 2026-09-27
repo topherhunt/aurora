@@ -664,6 +664,40 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.dispose()
 }
 
+// --- in the air it is always flying forward: never hanging still on its wings, at a leg's end or anywhere else ---
+{
+  const flat = flatField(GROUND)
+  const sites = [1234, 77, 4242, 9001].map(homeSite)
+  let slowest = Infinity, where = '', ticks = 0
+  for (const site of sites) {
+    const d = dragonsOn(flat, [site], makeHerd([]))
+    const t0 = chapterOf(1000, keyOf(site)).start
+    d.update(HER.x, HER.y, HER.z, t0)
+    const dr = d.byKey.get(keyOf(site))
+    // The move along where the body points, over the last WINDOW ticks in the air: a hitch of a tick at a phrase's snap is not a hover, half a second still is.
+    const WINDOW = 10
+    const moves = []
+    let flying = false
+    for (let k = 1; k <= 4 * CHAPTER_S / TICK_S; k++) {
+      const now = t0 + k * TICK_S
+      d.update(HER.x, HER.y, HER.z, now)
+      const ph = dr.phrase
+      if (!(ph.kind === 'fly' || ph.kind === 'stoop' || (ph.kind === 'land' && !dr.down))) { moves.length = 0; flying = false; continue }
+      // A take-off from the floor is slow until it is flying.
+      if (!flying && dr.speed < LAND_MPS) continue
+      flying = true
+      moves.push(((dr.x - dr.px) * Math.cos(dr.heading) - (dr.z - dr.pz) * Math.sin(dr.heading)) * Math.cos(dr.pitch) + (dr.y - dr.py) * Math.sin(dr.pitch))
+      if (moves.length > WINDOW) moves.shift()
+      if (moves.length < WINDOW) continue
+      ticks++
+      const mps = moves.reduce((s, m) => s + m, 0) / (WINDOW * TICK_S)
+      if (mps < slowest) { slowest = mps; where = `${ph.kind} ${ph.mode ?? ''} ${fmt(now - dr.phraseStart)} of ${fmt(ph.dur)} s` }
+    }
+    d.dispose()
+  }
+  check(ticks > 1000 && slowest >= LAND_MPS * 0.9, `over four chapters at four nests, every half second in the air carries the body forward at LAND_MPS ${LAND_MPS} m/s or near it -- it never hangs still on its wings`, `slowest ${fmt(slowest)} m/s (${where}), ${ticks} ticks`)
+}
+
 // --- determinism: two clients on different frame times agree to the bit at every tick, and a late joiner catches up to the same ---
 {
   const flat = flatField(GROUND)
@@ -1031,7 +1065,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const left = { x: dr.x, y: dr.y, z: dr.z }
   tick([hand('fish', dr.x + LURE_FORGET * dr.k + 1, dr.z)])
   const rejoin = d.pending()
-  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.length === 3, `and one ${fmt(LURE_FORGET * dr.k + 1)} m off is given up: it is on its rejoin, a leg home, a landing and a rest, flying`, `state ${dr.state}`)
+  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.map((p) => p.kind).join(' ').match(/^(fly )?fly land rest$/), `and one ${fmt(LURE_FORGET * dr.k + 1)} m off is given up: it is on its rejoin -- a leg out if it is too near the nest to come round, a leg home, a landing and a rest -- flying`, `state ${dr.state}`)
   check(rejoin.length === 1 && rejoin[0][7] === 'rejoin' && rejoin[0][8] === null && Math.hypot(rejoin[0][2] - left.x, rejoin[0][4] - left.z) < 1 && Math.abs(rejoin[0][1] - now) < TICK_S, 'the authority owes the room one rejoin anchor, from where the lure ended and when', JSON.stringify(rejoin[0]?.map((v) => (typeof v === 'number' ? +v.toFixed(2) : v))))
   let frames = 0
   while (dr.state !== 'roost' && frames++ < 60 * 120) frame([])

@@ -451,22 +451,18 @@ function refreshPanel() {
   const s = island.stats
   const { h, tan } = height.heightAndSlopeAt(rig.position.x, rig.position.z)
   rows(islandEl, [
-    ['seed', `${island.seed} (${island.v})`],
-    ['from', from, from === 'cache' ? 'ok' : 'warn'],
-    ['generated in', `${island.ms.toFixed(0)} ms`],
-    ['land', `${(s.landFraction * 100).toFixed(1)}%`],
-    ['summit', `${s.summit.h.toFixed(0)} m`],
-    ['sea at the edge', `${s.seaFloor.boxEdge.toFixed(0)} m`],
+    ['seed', `${island.seed} (${island.v}) &middot; ${from}`, from === 'cache' ? 'ok' : 'warn'],
+    ['generated', `${(island.ms / 1000).toFixed(1)} s`],
+    ['land / summit', `${(s.landFraction * 100).toFixed(1)}% &middot; ${s.summit.h.toFixed(0)} m`],
+    ['sea at edge', `${s.seaFloor.boxEdge.toFixed(0)} m`],
     ['here', `${rig.position.x.toFixed(0)}, ${rig.position.z.toFixed(0)}`],
-    ['ground', `${h.toFixed(1)} m, ${((Math.atan(tan) * 180) / Math.PI).toFixed(0)}&deg;`],
-    ['mode', player.flying ? `fly, ${(rig.position.y - Math.max(0, h)).toFixed(0)} m up` : player.blocked ? 'walk, blocked' : 'walk'],
-    ['speed', `${player.speed.toFixed(1)} m/s`],
+    ['ground', `${h.toFixed(1)} m &middot; ${((Math.atan(tan) * 180) / Math.PI).toFixed(0)}&deg;`],
+    ['moving', `${player.flying ? `fly ${(rig.position.y - Math.max(0, h)).toFixed(0)} m up` : player.blocked ? 'walk, blocked' : 'walk'} &middot; ${player.speed.toFixed(1)} m/s`],
   ])
   rows(frameEl, [
-    ['fps', fps ? fps.toFixed(0) : '--', fps >= 58 ? 'ok' : fps >= 40 ? 'warn' : 'bad'],
-    ['main thread', `${frameMs.toFixed(2)} ms`],
+    ['fps &middot; main', `${fps ? fps.toFixed(0) : '--'} &middot; ${frameMs.toFixed(1)} ms`, fps >= 58 ? 'ok' : fps >= 40 ? 'warn' : 'bad'],
+    ['pines 0/1/card', `${pines.drawn[0]}/${pines.drawn[1]}/${pines.drawn[2]}`],
     ['sun held at', clock.clockText],
-    ['pines lod0/1/card', `${pines.drawn[0]} / ${pines.drawn[1]} / ${pines.drawn[2]}`],
   ])
   refreshMemory()
 }
@@ -490,15 +486,15 @@ function refreshMemory() {
   const t = pager.stats
   const heap = performance.memory?.usedJSHeapSize
   const rowsOut = [
-    ['base field', `${MB(base)} at ${island.cell.toFixed(0)} m, ${island.n}&sup2;`],
-    ['class grid', `${MB(classes)} at ${island.cell.toFixed(0)} m`],
-    ['fine tiles', `${MB(t.bytes)}, ${t.resident} of ${t.wanted} within ${t.radius.toFixed(0)} m`],
-    ['x3 holders', MB(3 * (base + classes + t.bytes)), 'ok'],
-    ['tiles on disk', `${island.tiles.count} of ${TILE_M} m at ${island.fineCell.toFixed(0)} m`],
-    ['js heap, this thread', heap === undefined ? '--' : MB(heap)],
+    ['base ' + island.n + '&sup2;', `${MB(base)} @${island.cell.toFixed(0)} m`],
+    ['classes', `${MB(classes)} @${island.cell.toFixed(0)} m`],
+    [`tiles &le;${t.radius.toFixed(0)} m`, `${MB(t.bytes)} &middot; ${t.resident}/${t.wanted}`],
+    ['&times;3 holders', MB(3 * (base + classes + t.bytes)), 'ok'],
+    ['on disk', `${island.tiles.count} &times; ${TILE_M} m @${island.fineCell.toFixed(0)} m`],
+    ['js heap', heap === undefined ? '--' : MB(heap)],
   ]
   if (t.loading > 0) rowsOut.push(['loading', `${t.loading} tile${t.loading === 1 ? '' : 's'}`, 'warn'])
-  if (t.missing > 0) rowsOut.push(['MISSING', `${t.missing} tile${t.missing === 1 ? '' : 's'} not in the cache`, 'bad'])
+  if (t.missing > 0) rowsOut.push(['MISSING', `${t.missing} not cached`, 'bad'])
   rows(memoryEl, rowsOut)
 }
 
@@ -507,9 +503,10 @@ function refreshMemory() {
 // One box per layer. An octave's box drops that octave's amplitude to zero and regenerates; a step's box takes the step out of the pipeline. The cache key carries all of it (store.js), so the second visit to any combination comes back from IndexedDB in a frame.
 
 const elSwitches = document.getElementById('switches')
+const elRungs = document.getElementById('rungs')
 const allSwitches = []
 
-function addSwitch(key, label, title, on, onChange) {
+function addSwitch(key, label, title, on, onChange, host = elSwitches) {
   const l = document.createElement('label')
   l.className = 'sw'
   l.title = title
@@ -519,9 +516,9 @@ function addSwitch(key, label, title, on, onChange) {
   box.checked = on
   box.addEventListener('change', () => onChange(box.checked))
   const text = document.createElement('span')
-  text.textContent = label
+  text.innerHTML = label
   l.append(box, text)
-  elSwitches.appendChild(l)
+  host.appendChild(l)
   allSwitches.push(box)
   return box
 }
@@ -532,24 +529,24 @@ JITTER.amps.forEach((amp, k) => {
   const spacing = JITTER.start / 2 ** k
   // Which half of the ladder this rung is on, which is the grid's decision and not the rung's (island.js splitOctaves). A baked rung means a new image; a read-time one is re-evaluated as the world is stood back up.
   const baked = spacing >= TEXELS_PER_NODE * CELL
-  addSwitch(`jitter${spacing}`, `jitter ${spacing} m, +-${amp} m${baked ? '' : ' (read-time)'}`,
+  addSwitch(`jitter${spacing}`, `${spacing} &plusmn;${amp}${baked ? '' : ' <span class="rt">rt</span>'}`,
     `Rung ${k + 1} of the ladder: a lattice of nodes ${spacing} m apart, each moved up or down by up to ${amp} m. ` +
     (baked ? `Baked into the ${CELL} m image, which holds ${TEXELS_PER_NODE} samples to a node here.` : `Under the image's floor of ${TEXELS_PER_NODE * CELL} m, so it is evaluated per sample at read time (fine.js) and costs no regenerate.`),
     true, (on) => {
       octaveOn[k] = on
       rebuild()
-    })
+    }, elRungs)
 })
 addSwitch('hydrology', 'hydrology', 'The whole of step D: the rain and its cuts, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
   steps.hydrology = on
   rebuild()
 })
-addSwitch('cliffs', 'cliffs (tabled ladder)', 'The tabling inside step D (cliffs.js): bands of steep ground snapped onto a ladder of benches. Off by default -- a ladder of constant rise reads as striation, and its benches come back as rounded domes.', steps.cliffs, (on) => {
+addSwitch('cliffs', 'cliffs &middot; tabled ladder', 'The tabling inside step D (cliffs.js): bands of steep ground snapped onto a ladder of benches. Off by default -- a ladder of constant rise reads as striation, and its benches come back as rounded domes.', steps.cliffs, (on) => {
   steps.cliffs = on
   rebuild()
 })
 // Read-time, so no regenerate: it re-reads the field the mesher already has.
-const swScarp = addSwitch('scarp', 'scarp (read-time faces)', 'The sheer-face remap, §31 step E (v2 scarp.js). It stands up the tabled steps the cliff pass wrote, so it does nothing while cliffs are off. Also on C.', scarpOn, setScarp)
+const swScarp = addSwitch('scarp', 'scarp &middot; <span class="rt">rt</span> faces', 'The sheer-face remap, §31 step E (v2 scarp.js). It stands up the tabled steps the cliff pass wrote, so it does nothing while cliffs are off. Also on C.', scarpOn, setScarp)
 
 // Throw this combination's cached island away and make it again: the button for "I changed the algorithm", not "I changed a switch".
 document.getElementById('regen').addEventListener('click', () => rebuild(true))

@@ -199,14 +199,16 @@ export class WalkSurface {
   /**
    * Unit normal by central difference over `eps`, off the composed walk
    * surface -- or straight up on a stone's deck (a boat's sole), whose slope
-   * is its own and not the lake bed's a stride either side of it.
+   * is its own and not the lake bed's a stride either side of it. With `y`,
+   * every height is asked from that foot height (heightAt's `y`), so an awning
+   * over her is not a cliff beside her.
    */
-  normalAt(x, z, eps = this.slopeEps, out = { x: 0, y: 1, z: 0 }) {
+  normalAt(x, z, eps = this.slopeEps, out = { x: 0, y: 1, z: 0 }, y) {
     for (let s = 0; s < this.stone.length; s++) {
       if (this.stone[s].deckAt && this.stone[s].deckAt(x, z)) { out.x = out.z = 0; out.y = 1; return out }
     }
-    const dx = (this.heightAt(x + eps, z) - this.heightAt(x - eps, z)) / (2 * eps)
-    const dz = (this.heightAt(x, z + eps) - this.heightAt(x, z - eps)) / (2 * eps)
+    const dx = (this.heightAt(x + eps, z, y) - this.heightAt(x - eps, z, y)) / (2 * eps)
+    const dz = (this.heightAt(x, z + eps, y) - this.heightAt(x, z - eps, y)) / (2 * eps)
     const len = Math.hypot(dx, 1, dz)
     out.x = -dx / len
     out.y = 1 / len
@@ -215,8 +217,8 @@ export class WalkSurface {
   }
 
   /** Slope in radians, the convention Player compares against maxSlopeDeg. */
-  slopeAt(x, z, eps = this.slopeEps) {
-    return Math.acos(Math.min(1, this.normalAt(x, z, eps).y))
+  slopeAt(x, z, eps = this.slopeEps, y) {
+    return Math.acos(Math.min(1, this.normalAt(x, z, eps, undefined, y).y))
   }
 
   /**

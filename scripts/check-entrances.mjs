@@ -13,8 +13,9 @@
 
 import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
+import { BLOCKED, LeafkinGround } from '../src/v2/render/leafkin-ground.js'
 import {
-  Entrances, FLANK, HOLE, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
+  Entrances, FLANK, HOLE, SCREEN, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
 } from '../src/v2/render/entrances.js'
 import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
 import { WalkSurface } from '../src/v2/walk.js'
@@ -33,6 +34,7 @@ const GROUND = 60
 const field = {
   scatterAt: (x, z, cell, out) => { out.h = GROUND; out.tan = 0; return out },
   heightAt: () => GROUND,
+  heightAndSlopeAt: () => ({ h: GROUND, tan: 0 }),
   snowLineAt: () => 9999,
   bands: { altLo: 0, altSpan: 900 },
 }
@@ -45,7 +47,7 @@ const boot = (cx, cz, { seed = 7, radius = null } = {}) => {
   const rocks = new Rocks(new THREE.Scene(), field, water, layers, texArray, { seed })
   rocks.place(cx, cz)
   const scene = new THREE.Scene()
-  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')) })
+  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }) })
   e.place(cx, cz)
   return { rocks, e, scene }
 }
@@ -194,31 +196,55 @@ console.log('\nthe face')
   const stepped = rows.every((site) => Math.hypot(site.x - site.ax, site.z - site.az) > MOUTH_STEP_M)
   check(stepped, 'the mouth point is outside the arch\'s centre', '')
   // The flanking stones: FLANK.perSide each side of the arch, none across the
-  // mouth point's path, every one a column the walker climbs.
-  let flanked = 0, clear = 0, climbed = 0
+  // mouth point's path, every one a column the walker climbs. The screen's
+  // stones come first in site.flank.
+  let flanked = 0, clear = 0, climbed = 0, screened = 0, hidden = 0
   const col = new Float32Array(8)
+  const eye = GROUND + LOCOMOTION.eyeHeight
   for (const site of rows) {
-    const n = site.flank.length
+    screened += site.screened !== 0 ? 1 : 0
+    const screen = site.flank.slice(0, site.screened !== 0 ? SCREEN.stones : 0)
+    const flank = site.flank.slice(screen.length)
+    const n = flank.length
     flanked += n >= 2 * FLANK.perSide[0] && n <= 2 * FLANK.perSide[1] ? 1 : 0
     const across = [-site.nz, site.nx]
     let sides = 0
-    for (const f of site.flank) {
+    for (const f of flank) {
       const lateral = Math.abs((f.x - site.ax) * across[0] + (f.z - site.az) * across[1])
       if (lateral > e.bank.width * 0.5 + f.r * 0.5) sides++
-      const top = e.blockTopAt(f.x, f.z)
-      const cols = e.columnAt(f.x, f.z, 0, col)
-      if (cols >= 1 && top === f.top && top > GROUND) climbed++
     }
     clear += sides === n ? 1 : 0
+    for (const f of site.flank) {
+      const top = e.blockTopAt(f.x, f.z)
+      const cols = e.columnAt(f.x, f.z, 0, col)
+      if (cols >= 1 && top >= f.top && top > GROUND) climbed++
+    }
+    // Front on: from 40 m out, straight and 20 degrees either way, the line to the hole crosses a screen stone standing over the eye.
+    let seen = 0
+    for (const deg of [-20, 0, 20]) {
+      const a = (deg * Math.PI) / 180
+      const dx = site.nx * Math.cos(a) - site.nz * Math.sin(a), dz = site.nz * Math.cos(a) + site.nx * Math.sin(a)
+      const vx = site.holeX + dx * 40, vz = site.holeZ + dz * 40
+      const blocked = screen.some((f) => {
+        if (f.top <= eye) return false
+        const ex = site.holeX - vx, ez = site.holeZ - vz
+        const t = Math.max(0, Math.min(1, ((f.x - vx) * ex + (f.z - vz) * ez) / (ex * ex + ez * ez)))
+        return Math.hypot(vx + ex * t - f.x, vz + ez * t - f.z) < f.r
+      })
+      if (!blocked) seen++
+    }
+    hidden += seen === 0 ? 1 : 0
   }
-  check(flanked === rows.length, `every mouth has ${FLANK.perSide[0]}-${FLANK.perSide[1]} stones a side`, `${flanked}/${rows.length}`)
-  check(clear === rows.length, 'every stone is beside the arch, none across its passage', `${clear}/${rows.length}`)
+  check(screened === rows.length && e.rejected.screen === 0, 'every mouth on the flat wood is screened', `${screened}/${rows.length}`)
+  check(hidden === screened, 'and no line from 40 m out, straight or 20 degrees off, sees the hole past its screen', `${hidden}/${screened}`)
+  check(flanked === rows.length, `every mouth has ${FLANK.perSide[0]}-${FLANK.perSide[1]} flanking stones a side`, `${flanked}/${rows.length}`)
+  check(clear === rows.length, 'every flanking stone is beside the arch, none across its passage', `${clear}/${rows.length}`)
   const total = rows.reduce((a, s) => a + s.flank.length, 0)
-  check(climbed === total, 'and each is a column the walker stands on', `${climbed}/${total}`)
-  // The door: walked at the face from 3 m out, her feet come within
-  // PORTAL.walk of the hole, on the ground the whole way (past the hole she
-  // slides along the face, and where the hull's foot is shallow she climbs
-  // it, but the door has taken her by then).
+  check(climbed === total, 'and every stone is a column the walker stands on', `${climbed}/${total}`)
+  // The door: walked in along the lane from past the screen's open end, then
+  // at the face, her feet come within PORTAL.walk of the hole, on the ground
+  // the whole way (past the hole she slides along the face, and where the
+  // hull's foot is shallow she climbs it, but the door has taken her by then).
   const walk = new WalkSurface(field, rocks, { trunkAt: () => 0 })
   walk.addStone(e)
   const warn = console.warn
@@ -228,13 +254,21 @@ console.log('\nthe face')
     const rig = new THREE.Group()
     const camera = new THREE.PerspectiveCamera()
     camera.position.y = LOCOMOTION.eyeHeight
-    camera.rotation.y = Math.atan2(site.nx, site.nz)
     rig.add(camera)
     const player = new Player(rig, camera, walk)
-    player.spawnAt(site.x + site.nx * 3, site.z + site.nz * 3)
+    // Along the face from the screen's open end, a metre past it; the lane's middle.
+    const ux = -site.nz * site.screened, uz = site.nx * site.screened
+    let end = 0
+    for (const f of site.flank.slice(0, SCREEN.stones)) end = Math.max(end, (f.x - site.x) * ux + (f.z - site.z) * uz + f.r)
+    player.spawnAt(site.x + ux * (end + 1), site.z + uz * (end + 1))
+    camera.rotation.y = Math.atan2(ux, uz)
     rig.updateMatrixWorld(true)
-    let nearest = Infinity, top = -Infinity
-    for (let f = 0; f < 72 * 4 && nearest > PORTAL.walk; f++) {
+    let nearest = Infinity, top = -Infinity, turned = false
+    for (let f = 0; f < 72 * 8 && nearest > PORTAL.walk; f++) {
+      if (!turned && Math.hypot(rig.position.x - site.x, rig.position.z - site.z) < 0.3) {
+        camera.rotation.y = Math.atan2(site.nx, site.nz)
+        turned = true
+      }
       player.update(1 / 72, { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true })
       rig.updateMatrixWorld(true)
       nearest = Math.min(nearest, Math.hypot(rig.position.x - site.holeX, rig.position.z - site.holeZ))
@@ -244,8 +278,14 @@ console.log('\nthe face')
     stayed += top < GROUND + 0.5 ? 1 : 0
   }
   console.warn = warn
-  check(reached === rows.length, `walked at the face, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `${reached}/${rows.length}`)
+  check(reached === rows.length, `walked in along the lane then at the face, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `${reached}/${rows.length}`)
   check(stayed === rows.length, 'on the ground the whole way', `${stayed}/${rows.length}`)
+  // Ground with no way out: the mouth keeps its flanking stones and no screen.
+  const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell: () => BLOCKED } })
+  shut.place(-900, -900)
+  const bare = shut.sites()
+  check(bare.length === rows.length && bare.every((s) => s.screened === 0 && s.flank.length <= 2 * FLANK.perSide[1]) && shut.rejected.screen === rows.length,
+    'on ground no walker gets out of, every mouth goes unscreened, counted', `${shut.rejected.screen}/${bare.length}`)
 }
 
 // --- two boots agree ----------------------------------------------------------

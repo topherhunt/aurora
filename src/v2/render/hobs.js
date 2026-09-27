@@ -41,6 +41,8 @@ export const EAT = 0.5
 export const GAP_M = 0.2
 export const STOP = 0.6
 export const LOSE_M = 12
+// Each hob cries once every CRY_S seconds, from its middle (ambience.js RULES.hobCry sets how far it carries).
+export const CRY_S = [40, 120]
 const RESYNC_S = 1
 const VILLAGER_R = 0.25
 // Steering: speed per metre still to go, the turn rate, and the cadence caps -- a walk to WALK_PACE, then a run to an adult's or a baby's, a parent held to BROOD_KEEP of its slowest baby's top speed.
@@ -102,6 +104,8 @@ export class Hobs {
       this.materials.push(mats.in, mats.out)
     }
     this.all = []
+    this.calls = []
+    this.cryRand = mulberry32(hash32(seed, 0xc41))
     const { nodes, doorNodes } = villagers.graph
     doorNodes.forEach((home, house) => {
       const rand = mulberry32(hash32(seed, 0x40b, house))
@@ -141,7 +145,7 @@ export class Hobs {
   _hob(rand, yard, size, tint) {
     const h = {
       id: this.all.length, yard, size, tint, k: 1, owner: null, parent: null, side: 1, row: 0,
-      slotS: between(rand, SLOT_S), slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
+      slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
       x: 0, y: 0, z: 0, heading: rand() * 2 * Math.PI, aim: 0, moving: false,
       clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null,
     }
@@ -258,11 +262,22 @@ export class Hobs {
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
     const jumped = this.seconds === null || Math.abs(seconds - this.seconds) > RESYNC_S
     this.seconds = seconds
+    this.calls.length = 0
     for (const h of this.all) {
       if (jumped) this._place(h, seconds)
       this._steer(h, seconds, dt)
       this._draw(h, dt)
+      if ((h.cry -= dt) <= 0) {
+        h.cry = between(this.cryRand, CRY_S)
+        this.calls.push({ sound: 'hobCry', x: h.x, y: h.y + h.size * 0.5, z: h.z })
+      }
     }
+  }
+
+  /** Drains this frame's cries into `into` for ambience.js, each { sound, x, y, z }. */
+  voices(into) {
+    for (const v of this.calls) into.push(v)
+    this.calls.length = 0
   }
 
   _takePuppet(h) {

@@ -1318,6 +1318,9 @@ for (const rule of ['voice', 'villagerVoice']) {
   const amb = new Ambience({ engine, sense, rand: mulberry32(15), fiddlers: homes })
   // The fake keys its loops by clip name, so the two are read off the ambience's own keys.
   const a = amb.loops.fiddle0, b = amb.loops.fiddle1
+  check(amb.fiddlers.every((h) => !h.playing && h.left >= 0 && h.left <= F.rest[1]), 'each fiddler starts in a rest no longer than RULES.fiddle.rest')
+  // Held mid-spell so the distance checks below read the level alone.
+  for (const h of amb.fiddlers) { h.playing = true; h.left = 1e9 }
   check(a && b && a.name === 'fiddle' && a.opts.muffle === true && a.opts.directional === true && a.opts.rate[0] === 1 && a.opts.rate[1] === 1 && a.opts.drift === 0, 'a loop a house, muffled, placed, its pitch held')
   const at = (d) => ({ x: homes[0].r + d, y: GROUND + F.ear, z: 0 })
   run(amb, 1, { head: at(F.reach + 5) })
@@ -1332,8 +1335,21 @@ for (const rule of ['voice', 'villagerVoice']) {
   run(amb, 1, { head: at(0.5) })
   check(a.level > midLevel && Math.abs(a.level - F.level) < 1e-9 && a.cutoff > midCut && a.cutoff < F.cutoff[1], 'at the wall it is at full level and its clearest, still under the wall\'s cutoff', `level ${a.level?.toFixed(3)}, ${a.cutoff?.toFixed(0)} Hz`)
   check(a.at.x === 0 && a.at.y === GROUND + F.ear && a.at.z === 0, 'placed inside the house at the fiddler\'s height')
+  run(amb, 1, { head: at(0.5), indoors: true })
+  check(!a.active, 'indoors the fiddle at the wall is silent')
+  run(amb, 1, { head: at(0.5) })
+  check(a.active, 'and plays again back outside')
+  amb.fiddlers[0].left = 0.5
+  run(amb, 1, { head: at(0.5) })
+  const rest = amb.fiddlers[0].left
+  check(!a.active && !amb.fiddlers[0].playing && rest >= F.rest[0] - 1 && rest <= F.rest[1], 'its spell over, it stops for a rest of RULES.fiddle.rest', `${rest.toFixed(0)} s`)
+  amb.fiddlers[0].left = 0.5
+  run(amb, 1, { head: at(0.5) })
+  check(a.active && amb.fiddlers[0].playing && amb.fiddlers[0].left <= F.play[1], 'its rest over, it plays a spell of RULES.fiddle.play', `${amb.fiddlers[0].left.toFixed(0)} s`)
+  amb.fiddlers[0].left = 1e9
+  const stops = a.stops
   run(amb, 1, { head: { x: 100 + homes[1].r + 1, y: GROUND + F.ear, z: 0 } })
-  check(!a.active && a.stops === 1 && b.active && Math.abs(b.level - F.level) < 1e-9, 'walking to the other house stops the first and starts the second')
+  check(!a.active && a.stops === stops + 1 && b.active && Math.abs(b.level - F.level) < 1e-9, 'walking to the other house stops the first and starts the second')
   amb.dispose()
   check(!b.active, 'dispose stops it with the rest')
   const bare = new Ambience({ engine: fakeEngine(), sense, rand: mulberry32(15) })

@@ -25,29 +25,45 @@
       #boot pre { white-space: pre-wrap; max-width: 80ch; margin: 0; }
       #boot pre.bad { color: var(--bad); }
 
+      /* The panel is taller than some screens -- eleven jitter rungs, three tables --
+         so it is a scroller pinned top to bottom rather than a column that runs off
+         the bottom of the window taking the switches with it. The wheel reaches it
+         only when the pointer is not locked, which is what escape is for. */
       #panel {
-        position: absolute; right: 8px; top: 8px; z-index: 10; width: 250px;
-        background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px;
+        position: absolute; right: 8px; top: 8px; bottom: 8px; z-index: 10; width: 250px;
+        background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: 6px 8px;
+        font-size: 11px; line-height: 1.35; overflow-y: auto; overscroll-behavior: contain;
+        scrollbar-width: thin; scrollbar-color: #2b4a72 transparent;
       }
-      h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
-      h2:not(:first-child) { margin-top: 10px; border-top: 1px solid #1b2c44; padding-top: 8px; }
+      #panel::-webkit-scrollbar { width: 8px; }
+      #panel::-webkit-scrollbar-thumb { background: #24405f; border-radius: 4px; }
+      h2 { margin: 0 0 3px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); font-weight: normal; }
+      h2:not(:first-child) { margin-top: 7px; border-top: 1px solid #1b2c44; padding-top: 5px; }
       table { width: 100%; border-collapse: collapse; }
-      td { padding: 1px 0; vertical-align: baseline; }
-      td.k { color: var(--dim); }
-      td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      #switches { display: flex; flex-direction: column; gap: 1px; }
-      .sw { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+      td { padding: 0; vertical-align: baseline; }
+      td.k { color: var(--dim); white-space: nowrap; }
+      td.n { text-align: right; font-variant-numeric: tabular-nums; }
+      #rungs { display: grid; grid-template-columns: 1fr 1fr; gap: 0 6px; }
+      #switches { display: flex; flex-direction: column; }
+      .sw { display: flex; align-items: center; gap: 4px; cursor: pointer; }
       .sw:hover { color: #fff; }
-      .sw input { margin: 0; accent-color: #4a7fb5; }
+      .sw input { width: 11px; height: 11px; margin: 0; flex: none; accent-color: #4a7fb5; }
       .sw input:disabled + span { color: var(--dim); }
-      #buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+      .sw span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sw .rt { color: var(--dim); }
+      #buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
       button {
         font: inherit; color: var(--ink); background: #0e1726; cursor: pointer;
         border: 1px solid var(--edge); border-radius: 3px; padding: 4px 6px; flex: 1 1 auto;
       }
       button:hover { background: #17263c; }
-      .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
-      .note em { color: #a9c2e6; font-style: normal; }
+      /* The prose is folded away: it is read once and then in the way. */
+      details { margin: 4px 0 0; color: var(--dim); }
+      summary { cursor: pointer; color: #6b82a4; }
+      summary:hover { color: #a9c2e6; }
+      details p { margin: 3px 0 0; }
+      details p + p { margin-top: 4px; }
+      details em { color: #a9c2e6; font-style: normal; }
       .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
     </style>
   </head>
@@ -62,16 +78,24 @@
       <table id="island"></table>
       <h2>this frame</h2>
       <table id="frame"></table>
-      <h2>memory</h2>
-      <table id="memory"></table>
-      <p class="note">The 8 m base field stays resident; the 2 m detail is cached on disk as 256 m tiles and only the ones near you are in memory. Three holders read the field and do not share it -- this page, for collision, and the two mesh workers -- so <em>terrain</em> is the per-holder cost times three. See design/31-terrain-v3.md, the elevation pyramid.</p>
-      <h2>layers</h2>
+      <h2 title="One box per rung of the jitter ladder: metres between nodes, and the metres a node moves by. `rt` is a rung under the image's floor, evaluated at read time.">jitter ladder</h2>
+      <div id="rungs"></div>
+      <h2>steps</h2>
       <div id="switches"></div>
       <div id="buttons">
         <button id="regen" title="Throw this combination's cached island away and generate it again in the worker.">regen</button>
       </div>
-      <p class="note">Each box regenerates the island without that layer and stands the world back up where you were, so a layer can be judged by its absence. Every combination is its own cache slot, so going back is instant. The sun is held at noon.</p>
-      <p class="note">The island boots from IndexedDB when this seed, algorithm and set of boxes has been generated before; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>
+      <details>
+        <summary>about the boxes</summary>
+        <p>Each box regenerates the island without that layer and stands the world back up where you were, so a layer can be judged by its absence. A rung marked <em>rt</em> is under the image's 8 m floor and is evaluated per sample at read time, so it costs a re-mesh and not a regenerate. Every combination is its own cache slot, so going back is instant. The sun is held at noon.</p>
+        <p>The island boots from IndexedDB when this seed, algorithm and set of boxes has been generated before; otherwise the worker runs here first. <em>?seed=N</em> picks another island, <em>?regen</em> forces the worker.</p>
+      </details>
+      <h2>memory</h2>
+      <table id="memory"></table>
+      <details>
+        <summary>what is counted</summary>
+        <p>The 8 m base field stays resident; the 2 m detail is cached on disk as 256 m tiles and only the ones near you are in memory. Three holders read the field and do not share it -- this page, for collision, and the two mesh workers -- so the number that matters is the per-holder cost times three. The heap row is this thread only: not the mesh workers, not the GPU. See design/31-terrain-v3.md, the elevation pyramid.</p>
+      </details>
     </div>
 
     <script type="module" src="/src/v3/main.js"></script>

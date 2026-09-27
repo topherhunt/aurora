@@ -538,6 +538,8 @@ for (const [name, walls, x0, feet, clear] of [
   ['wall', [[10, -6, 10, 6]], 20, { x: 22, y: GROUND, z: 0 }, (c) => Math.abs(c.z) > 6],
   // A pocket open only AWAY from the mouth, a U 6 m deep and 4 m wide: out the wrong way first.
   ['pocket', [[20, -2, 20, 2], [20, -2, 26, -2], [20, 2, 26, 2]], 22, { x: 23, y: GROUND, z: 0 }, (c) => c.x > 26.5],
+  // One too big for PLAN_OPEN to flood, 20 m deep and 16 wide, as beside a mouth's screen: planned again on a bigger budget.
+  ['deep pocket', [[20, -8, 20, 8], [20, -8, 40, -8], [20, 8, 40, 8]], 22, { x: 23, y: GROUND, z: 0 }, (c) => c.x > 40.5],
 ]) {
   const ground = new Ground()
   ground.walls = walls
@@ -807,9 +809,10 @@ console.log('\nthe real ground')
     const mushrooms = new Mushrooms(S(), field, waterS, layers, tex, [trees, rocks], { seed: SEED })
     mushrooms.syncSnowLine(layers)
     mushrooms.place(x, z)
-    const entrances = new Entrances(S(), field, waterS, rocks, { seed: SEED, bank: mouthBank })
+    const ground = () => new LeafkinGround({ field, water: waterS, trees, rocks, deadwood, mushrooms })
+    const entrances = new Entrances(S(), field, waterS, rocks, { seed: SEED, bank: mouthBank, ground: ground() })
     entrances.place(x, z)
-    return { rocks, deadwood, trees, mushrooms, entrances, ground: () => new LeafkinGround({ field, water: waterS, trees, rocks, deadwood, mushrooms }) }
+    return { rocks, deadwood, trees, mushrooms, entrances, ground }
   }
   const [cx, cz] = [160, -356]
   const w0 = grow(cx, cz)

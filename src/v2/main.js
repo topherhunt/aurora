@@ -3765,9 +3765,11 @@ async function buildRoom(room, at) {
 
   // The leafkin village entrances (render/entrances.js, DESIGN.md §30): a
   // mouth on the face of every hollow boulder the rocks hold resident, or in a
-  // village the one mouth out, where its file says.
+  // village the one mouth out, where its file says. The leafkin's ground is
+  // the one each screen is walked over.
   await bootStep('entrances')
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null })
+  const ground = room.village ? null : new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)
@@ -3777,7 +3779,6 @@ async function buildRoom(room, at) {
   // One leafkin a village (render/leafkin.js), out of its mouth into the wood for mushrooms, its caps carried by the hands' pool. None inside a village.
   if (room.leafkin) {
     await bootStep('leafkin')
-    const ground = new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
     leafkin = new Leafkin(scene, { ground, walk, entrances, mushrooms, hands })
     for (const m of leafkin.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-leafkin' })
     leafkin.ready.then(() => console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`))
@@ -3810,7 +3811,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }],
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -4997,6 +4998,7 @@ function updateAmbience(dt, state) {
     afoot: !player.flying && !player.travel,
     cover: state.cover,
     precip: state.precip,
+    indoors: !!indoors,
   })
 }
 
@@ -5380,7 +5382,7 @@ let desktopTeleportArmed = false
 // performance.now() ms of the last landing; the reach grows from it. Set a
 // whole cooldown in the past so the first lob of a session is full length.
 let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
-const teleportTarget = { x: 0, z: 0, valid: false }
+const teleportTarget = { x: 0, y: 0, z: 0, valid: false }
 // The arc and the landing ring, built together on first aim. The arc is a
 // dotted trail -- one instanced bead per sample -- rather than a Line, because
 // WebGL draws every line one pixel wide and a 1 px line at half opacity
@@ -5443,7 +5445,7 @@ function teleportAllowance() {
 function fireTeleport() {
   if (!teleportTarget.valid) return
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
-  player.teleportTo(teleportTarget.x, teleportTarget.z)
+  player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
   portalBlink = true
   teleportFiredAt = performance.now()
   // The full range, not the allowance: the sound is how far this jump went against a whole one.
@@ -5503,10 +5505,12 @@ function aimTeleport(origin, dir) {
   const vz = dir.z * TELEPORT_LOB * k
   const gravity = TELEPORT_GRAVITY * k
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
+  // Stone is asked as spans on the line, not as its topmost surface, so the
+  // lob flies under an awning or an overhang and only stops IN stone.
   const clear = (t) => {
     const p = at(t)
-    return p.y > walk.heightAt(p.x, p.z) && !walk.obstacleAt(p.x, p.z, teleportObstacle) &&
-      Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
+    return p.y > walk.field.heightAt(p.x, p.z) && walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
+      !walk.obstacleAt(p.x, p.z, teleportObstacle) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   let count = 0
   let hit = null
@@ -5531,7 +5535,9 @@ function aimTeleport(origin, dir) {
         p.y = end.y
         p.z = end.z
       } else {
-        hit = { x: end.x, y: walk.heightAt(end.x, end.z), z: end.z }
+        // The surface just crossed: the highest ground at or a hair above the
+        // crossing, never the awning over it.
+        hit = { x: end.x, y: walk.heightAt(end.x, end.z, end.y - walk.reach + 0.05 * k), z: end.z }
         // The last bead sits ON the ground, not a sample past it.
         p.x = hit.x
         p.y = hit.y
@@ -5552,8 +5558,10 @@ function aimTeleport(origin, dir) {
   // trunk that her legs would not. Reach is not asked here: the flight already
   // stopped at it, so every landing is one she may take. Orange says the
   // cooldown still has the arc short of full length, not that she may not go.
-  const standable = hit !== null && walk.slopeAt(hit.x, hit.z) <= TELEPORT_MAX_SLOPE &&
-    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z)
+  // Every height is asked from a foot height -- hers at the start, the
+  // landing's at the end -- so stone over either is headroom, not a wall.
+  const standable = hit !== null && walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE &&
+    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y)
   teleportTarget.valid = standable
   const colour = !standable ? TELEPORT_NO : reach >= TELEPORT_RANGE * k ? TELEPORT_OK : TELEPORT_WAIT
   arc.material.color.setHex(colour)
@@ -5561,6 +5569,7 @@ function aimTeleport(origin, dir) {
   if (hit !== null) {
     teleportTarget.x = hit.x
     teleportTarget.z = hit.z
+    teleportTarget.y = hit.y
     // Over the DRAWN ground where a chunk exists, since that is what would hide
     // it; the walk height is the field, which the chunk mesh sits a few
     // centimetres either side of.
@@ -5568,7 +5577,7 @@ function aimTeleport(origin, dir) {
     const ground = drawn !== null && drawn > hit.y ? drawn : hit.y
     ring.position.set(hit.x, ground + TELEPORT_RING_LIFT * k, hit.z)
     ring.scale.setScalar(k)
-    ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal))
+    ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal, hit.y))
   }
   ring.visible = hit !== null
 }

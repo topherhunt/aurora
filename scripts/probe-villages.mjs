@@ -28,6 +28,7 @@ import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { SEED, WORLD_HALF } from '../src/v2/config.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { LeafkinGround } from '../src/v2/render/leafkin-ground.js'
 import { readFileSync } from 'node:fs'
 
 const near = process.argv[2] ? process.argv[2].split(',').map(Number) : null
@@ -45,7 +46,8 @@ water.rebuild()
 
 const rocks = new Rocks(new THREE.Scene(), height, water, layers, buildTextureArray(), { seed: SEED })
 const hollowBed = rocks.beds.find((b) => b.cfg.hollow)
-const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')) })
+// The screens walked over the field, water and rocks alone: the census counts mouths, not which end of a screen is open.
+const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field: height, water, rocks }) })
 
 const hollows = new Map()
 const sites = new Map()

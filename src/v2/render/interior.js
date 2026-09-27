@@ -931,7 +931,7 @@ function candleOn(M, K, x, y, z, h, dish = CLAY(0.3)) {
 /** A clay pot on the pot texture with soil at `soilY` (all local to F), for real mushrooms. */
 function potOn(M, K, F, r, h, soilY) {
   K.lathe(M.pot, F, [[0, 0.003], [r * 0.62, 0], [r * 0.7, 0.012], [r * 0.86, h * 0.45], [r * 0.93, h * 0.8], [r * 1.02, h * 0.88], [r * 1.04, h * 0.97], [r * 0.99, h], [r * 0.9, h * 0.97], [r * 0.86, soilY - 0.01]], rgb(0.07, 0.18, 0.78), { segs: 18, rough: 0.025, uvM: 0.14 })
-  K.disc(M.soil, put(F, 0, soilY, 0), F.ay, r * 0.88, rgb(0.08, 0.1, 0.72), { segs: 16, uvM: 0.12, mound: 0.008 })
+  K.disc(M.soil, put(F, 0, soilY, 0), F.ay, r * 0.88, rgb(0.08, 0.1, 0.72), { segs: 16, uvM: 0.24, mound: 0.008 })
 }
 
 /** Queue a pot's mushrooms at room point (x, y, z): each sized to the pot. */

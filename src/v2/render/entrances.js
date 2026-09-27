@@ -6,11 +6,16 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash } from '../../sim/score.js'
 import { PropArena } from './prop-arena.js'
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
+import { BLOCKED, CELL, STONE } from './leafkin-ground.js'
+import { FINAL_M } from './leafkin.js'
+import { WALK } from '../walk.js'
 
 // ---------------------------------------------------------------------------
 // THE LEAFKIN VILLAGE ENTRANCES (DESIGN.md §30): a stone arch on the flank of
 // each entrance boulder (rocks.js's `hollow` bed) with a black hole behind it
-// and a few smaller stones tucked against the boulder either side of it. The
+// and a few smaller stones tucked against the boulder either side of it, and a
+// screen of boulders standing before it, so it is found only by sidling along
+// the face from the screen's one open end. The
 // layer owns no scatter of its own: every frame it asks the rocks for the
 // resident hollows within RADIUS_M and seats a mouth on each new one, so a
 // site is where its boulder is, on every client, and goes when the boulder
@@ -68,6 +73,10 @@ export const holeBox = () => [
 // across, bedded this fraction of their height, this far off the arch and
 // each other, and leaning into the boulder by this fraction of their radius.
 export const FLANK = { perSide: [1, 2], size: [4.8, 8.8], sink: 0.4, gap: 0.25, lean: 0.4 }
+// The screen before the arch: `stones` boulders `size` across in a line along the face, their hulls `lane` metres clear of the mouth point, the line's open end `past` metres past the arch's side, each overlapping the next by `overlap` of their radii so nothing shows between them, bedded `sink` of their height and turned broadside to the face within `twist` radians. On the open side the flanking stones start `exit` metres past the line's end, where the lane turns out into the wood.
+export const SCREEN = { stones: 2, size: [5.5, 7.5], lane: [1.2, 1.8], past: [2, 3], overlap: 0.3, exit: 2.5, sink: 0.25, twist: 0.5 }
+// A layout is kept only if a walker of her width gets from the mouth point out past every stone over the leafkin's ground (leafkin-ground.js), each stone's column grown by this: her shoulder and the cell's half diagonal.
+const PASS_PAD = WALK.radius + CELL * Math.SQRT1_2
 // A stone steps down the rocks' own ladder at the rocks' own distances per
 // metre of its size (rock.js ROCK_LOD_AT), not at the arch's rungs: those are
 // scaled to a 1.5 m arch and put a 6 m stone on its 20-face tier at 10 m.
@@ -96,7 +105,7 @@ export const wallReach = () => MOUTH_STEP_M + PROBE.wall * Math.tan((PROBE.faceD
 
 const HOLLOW_STRIDE = 5
 const POOL = 48
-const FLANK_POOL = POOL * 2 * 2
+const FLANK_POOL = POOL * (2 * FLANK.perSide[1] + SCREEN.stones)
 
 /** The bank from the shipped ladder (gen-props.js loadGenProp): the drawn tiers, the scale to MOUTH_HEIGHT_M, the map. Pure, so the gate builds it in node. */
 export function mouthBankFrom(ladder) {
@@ -143,8 +152,9 @@ export class Entrances {
    * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, hollowTintAt
    * @param opts.bank  mouthBankFrom's answer. Required.
    * @param opts.fixed  a room's own mouths in place of the rocks' hollows: `[{ key, x, z, nx, nz }]`, the face point and its outward normal, seated once.
+   * @param opts.ground  LeafkinGround (cell), which every screen is walked over; required unless `fixed`.
    */
-  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null } = {}) {
+  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null, ground = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers)) throw new Error('Entrances: needs the bank from loadMouthBank (or mouthBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Entrances: needs a V2Height with heightAt')
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Entrances: needs WaterSurfaces with isSubmerged')
@@ -160,6 +170,10 @@ export class Entrances {
       throw new Error('Entrances: `fixed` is a list of { key, x, z, nx, nz }')
     }
     this.fixed = fixed
+    if (fixed === null && (!ground || typeof ground.cell !== 'function')) throw new Error('Entrances: needs the LeafkinGround, to walk each screen')
+    this.ground = ground
+    this._seen = new Uint8Array(0)
+    this._queue = new Int32Array(0)
     this.bank = bank
     this.maxInstances = POOL
 
@@ -222,7 +236,7 @@ export class Entrances {
 
     this.placed = 0
     this.tris = 0
-    this.rejected = { face: 0, wall: 0, level: 0, water: 0, bulge: 0, none: 0 }
+    this.rejected = { face: 0, wall: 0, level: 0, water: 0, bulge: 0, none: 0, screen: 0 }
     this.placeMs = 0
 
     scene.add(this.batch)
@@ -240,13 +254,14 @@ export class Entrances {
 
   /**
    * Every resident mouth, for the portal (main.js) and the leafkin: `{ key,
-   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank, flankReach }`
+   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank, flankReach, screened }`
    * -- the point on the ground MOUTH_STEP_M + MOUTH_SINK_M out from the arch's
    * centre, the face's outward normal in the plane, the boulder's hull radius
    * about its centre, the arch's own position, the hole's plane on the ground
    * line (MOUTH_SINK_M + HOLE.proud out from the arch), the site's own record,
-   * which survives eviction, its flanking stones and how far from the mouth
-   * point they reach.
+   * which survives eviction, its flanking and screening stones, how far from
+   * the mouth point they reach, and the screen's open end along the face
+   * (-1, 1; 0 for none).
    */
   sites(into = []) {
     for (const site of this.resident.values()) if (!site.blind) into.push(site)
@@ -472,50 +487,143 @@ export class Entrances {
   }
 
   /**
-   * The flanking stones, rolled off the key: FLANK.perSide each side of the
-   * arch, along the face from its ring outward, each leaning into the
-   * boulder where a ray along the normal finds its face at that offset, and
-   * bedded in the ground there.
+   * The flanking stones and the screen, rolled off the key: FLANK.perSide
+   * each side of the arch, along the face from its ring outward, each leaning
+   * into the boulder, and SCREEN.stones standing before it open at one end.
+   * A screen no walker gets out past is tried on the other end, then left out.
    */
   _flank(site, hx, hz) {
     const rand = mulberry32(keyHash(site.key + ':flank') ^ this.seed)
+    const first = rand() < 0.5 ? -1 : 1
+    let stones = null
+    site.screened = 0
+    for (const side of [first, -first]) {
+      stones = this._layout(site, hx, hz, rand, side)
+      if (this._pathable(site, stones)) { site.screened = side; break }
+    }
+    if (site.screened === 0) {
+      this.rejected.screen++
+      stones = this._layout(site, hx, hz, rand, 0)
+    }
+    const mm = this.boulder
+    // The boulder's own colour, so the stones read as its stone and not the wood's.
+    const tint = this.rocks.hollowTintAt(hx, hz, this._c)
+    for (const f of stones) {
+      if (this.flankFreeCount === 0) throw new Error(`Entrances: flank pool exhausted at ${FLANK_POOL}`)
+      const y = this.field.heightAt(f.x, f.z) - f.sink * f.height
+      const id = this.flankFree[--this.flankFreeCount]
+      this._q.setFromAxisAngle(this._up, f.yaw ?? rand() * Math.PI * 2)
+      this._s.setScalar(f.scale)
+      this.flank.setMatrixAt(id, this._m.compose(this._p.set(f.x, y, f.z), this._q, this._s))
+      this.flank.setColorAt(id, tint)
+      this.flankTier[id] = -1
+      // The walker's stone: a column at the rock's plan radius, to its top.
+      site.flank.push({ id, x: f.x, z: f.z, y, r: f.r, top: y + f.height, size: rockLodSize(mm) * f.scale })
+      site.flankReach = Math.max(site.flankReach, Math.hypot(f.x - site.x, f.z - site.z) + f.radius)
+    }
+  }
+
+  /** The stones' plan, `open` the screen's open end along the face (-1, 1), or 0 for no screen. */
+  _layout(site, hx, hz, rand, open) {
     const { nx, nz } = site
     const ax = -nz, az = nx
     const mm = this.boulder
     const hit = this._hit
     const my = this.field.heightAt(site.x, site.z)
-    // The boulder's own colour, so the stones read as its stone and not the wood's.
-    const tint = this.rocks.hollowTintAt(hx, hz, this._c)
-    for (const side of [-1, 1]) {
-      const n = FLANK.perSide[0] + Math.floor(rand() * (FLANK.perSide[1] - FLANK.perSide[0] + 1))
-      let u = this.bank.width * 0.5 + FLANK.gap
-      for (let k = 0; k < n; k++) {
-        if (this.flankFreeCount === 0) throw new Error(`Entrances: flank pool exhausted at ${FLANK_POOL}`)
-        const across = FLANK.size[0] + rand() * (FLANK.size[1] - FLANK.size[0])
-        const scale = across / mm.width
-        const radius = 0.5 * Math.max(mm.width, mm.depth) * scale
-        const height = mm.height * scale
-        u += radius
-        let fx = hx + ax * u * side
-        let fz = hz + az * u * side
-        // The boulder's face at this offset, from three metres out at knee height, or the arch's own face line without one.
-        const t = this.rocks.hollowRayAt(fx + nx * 3, my + 0.3, fz + nz * 3, -nx, 0, -nz, 6, hit)
-        if (t !== Infinity) { fx = hit.x; fz = hit.z }
-        fx += nx * radius * (1 - FLANK.lean)
-        fz += nz * radius * (1 - FLANK.lean)
-        const y = this.field.heightAt(fx, fz) - FLANK.sink * height
-        const id = this.flankFree[--this.flankFreeCount]
-        this._q.setFromAxisAngle(this._up, rand() * Math.PI * 2)
-        this._s.setScalar(scale)
-        this.flank.setMatrixAt(id, this._m.compose(this._p.set(fx, y, fz), this._q, this._s))
-        this.flank.setColorAt(id, tint)
-        this.flankTier[id] = -1
-        // The walker's stone: a column at the rock's plan radius, to its top.
-        site.flank.push({ id, x: fx, z: fz, y, r: radius * 0.8, top: y + height, size: rockLodSize(mm) * scale })
-        site.flankReach = Math.max(site.flankReach, Math.hypot(fx - site.x, fz - site.z) + radius)
-        u += radius + FLANK.gap
+    const half = this.bank.width * 0.5
+    const out = []
+    const stone = (across) => {
+      const scale = across / mm.width
+      const radius = 0.5 * Math.max(mm.width, mm.depth) * scale
+      return { x: 0, z: 0, scale, radius, r: radius * 0.8, height: mm.height * scale, sink: FLANK.sink, yaw: null }
+    }
+    const roll = ([lo, hi]) => lo + rand() * (hi - lo)
+    const past = roll(SCREEN.past)
+    if (open !== 0) {
+      const lane = roll(SCREEN.lane)
+      // The mesh's width (+X) along the face, so each stone shows the viewer its broad side.
+      const yaw = Math.atan2(-nx, -nz)
+      let u = 0, prev = 0
+      for (let k = 0; k < SCREEN.stones; k++) {
+        const f = stone(roll(SCREEN.size))
+        u = k === 0 ? half + past - f.radius : u - (1 - SCREEN.overlap) * (prev + f.radius)
+        prev = f.radius
+        const n = lane + f.r
+        f.x = site.x + nx * n + ax * u * open
+        f.z = site.z + nz * n + az * u * open
+        f.sink = SCREEN.sink
+        f.yaw = yaw + (rand() - 0.5) * SCREEN.twist
+        out.push(f)
       }
     }
+    for (const side of [-1, 1]) {
+      const n = FLANK.perSide[0] + Math.floor(rand() * (FLANK.perSide[1] - FLANK.perSide[0] + 1))
+      let u = half + FLANK.gap + (side === open ? past + SCREEN.exit : 0)
+      for (let k = 0; k < n; k++) {
+        const f = stone(roll(FLANK.size))
+        u += f.radius
+        f.x = hx + ax * u * side
+        f.z = hz + az * u * side
+        // The boulder's face at this offset, from three metres out at knee height, or the arch's own face line without one.
+        const t = this.rocks.hollowRayAt(f.x + nx * 3, my + 0.3, f.z + nz * 3, -nx, 0, -nz, 6, hit)
+        if (t !== Infinity) { f.x = hit.x; f.z = hit.z }
+        f.x += nx * f.radius * (1 - FLANK.lean)
+        f.z += nz * f.radius * (1 - FLANK.lean)
+        out.push(f)
+        u += f.radius + FLANK.gap
+      }
+    }
+    return out
+  }
+
+  /**
+   * Whether a walker gets from the mouth point out past every stone: a flood
+   * over CELL steps of the leafkin's ground, open as leafkin.js open() has it
+   * (never BLOCKED; anything within FINAL_M of the mouth; never STONE), and
+   * shut within PASS_PAD of each stone's column.
+   */
+  _pathable(site, stones) {
+    let reach = 0
+    for (const f of stones) reach = Math.max(reach, Math.hypot(f.x - site.x, f.z - site.z) + f.radius)
+    const c = Math.ceil(reach / CELL) + 2, n = 2 * c + 1
+    if (this._seen.length < n * n) {
+      this._seen = new Uint8Array(n * n)
+      this._queue = new Int32Array(n * n)
+    }
+    const seen = this._seen, queue = this._queue
+    seen.fill(0, 0, n * n)
+    const passable = (i, j) => {
+      const dx = (i - c) * CELL, dz = (j - c) * CELL
+      const x = site.x + dx, z = site.z + dz
+      const v = this.ground.cell(x, z)
+      if (v === BLOCKED) return false
+      if (dx * dx + dz * dz <= FINAL_M * FINAL_M) return true
+      if (v === STONE) return false
+      for (const f of stones) {
+        const pad = f.r + PASS_PAD
+        if ((x - f.x) ** 2 + (z - f.z) ** 2 < pad * pad) return false
+      }
+      return true
+    }
+    if (!passable(c, c)) return false
+    const goal = (reach + CELL) * (reach + CELL)
+    let head = 0, tail = 0
+    queue[tail++] = c * n + c
+    seen[c * n + c] = 1
+    while (head < tail) {
+      const k = queue[head++]
+      const i = k % n, j = (k - i) / n
+      if (((i - c) ** 2 + (j - c) ** 2) * CELL * CELL >= goal) return true
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ii = i + di, jj = j + dj
+        if (ii < 0 || jj < 0 || ii >= n || jj >= n) continue
+        const kk = jj * n + ii
+        if (seen[kk]) continue
+        seen[kk] = 1
+        if (passable(ii, jj)) queue[tail++] = kk
+      }
+    }
+    return false
   }
 
   _release(site) {

@@ -670,7 +670,7 @@ export class Player {
    * is the question being asked. Steps are shorter than the thinnest padded
    * trunk so a sapling cannot fall between two samples.
    */
-  pathClear(x0, z0, x1, z1) {
+  pathClear(x0, z0, x1, z1, y0) {
     const len = Math.hypot(x1 - x0, z1 - z0)
     const n = Math.max(1, Math.ceil(len / PATH_STEP))
     const dx = (x1 - x0) / n
@@ -678,10 +678,11 @@ export class Player {
     const step = len / n
     let x = x0
     let z = z0
-    // Walked from the topmost surface at the start, which is where a teleport
-    // lands her; the headroom along the way is her own line only, since a lob
-    // is a coarse question and the ring's shoulder test at 30 cm buys nothing.
-    let y = this.th.heightAt(x, z)
+    // Walked from her feet at `y0` (standing under an awning), else from the
+    // topmost surface at the start; the headroom along the way is her own line
+    // only, since a lob is a coarse question and the ring's shoulder test at
+    // 30 cm buys nothing.
+    let y = this.th.heightAt(x, z, y0)
     for (let i = 0; i < n; i++) {
       let h = y
       if (step > 1e-6) {

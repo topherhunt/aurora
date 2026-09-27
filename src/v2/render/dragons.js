@@ -19,9 +19,10 @@
 // WALK_RING of the floor, sit, lie -- and walks back to the centre for the
 // end; a `fly` leg cruises CRUISE_AGL over the ground from one point to the
 // next at PATROL_MPS, meandering (CAREEN, SWOOP), keeping MIN_AGL over the
-// ground under or LOOK_AHEAD_M ahead, hanging slowly about the point within
-// LOITER_M of it if early, ending there at LOITER_PACE of the cruise, and
-// eased onto it, heading and all, over the leg's last EASE_S; `land`
+// ground under or LOOK_AHEAD_M ahead, flown after a ghost that travels the
+// end line at LOITER_PACE of the cruise and reaches the point on time,
+// wheeling round when early, and eased onto the ghost over the leg's last
+// EASE_S; `land`
 // glides the last LAND_M at LAND_MPS onto the floor and walks the last step. A flight is legs for FLIGHT_S of air time -- to
 // `explore` when the plan rolls the dragon fed, to `patrol` when hungry --
 // and, exploring, VISIT_P of the aims that are dry, under SPOT_SLOPE_DEG and
@@ -162,16 +163,22 @@ export const LAND_M = 30
 export const RETURN_AGL = 30
 export const LAND_SNAP_M = 3
 export const TOUCHDOWN = 0.8
-// How a leg's clock is sized from its distance: the flown path over the straight line (the meander), plus seconds for the turn onto it and the climb off the ground; a landing's likewise; how near a leg's end a body that is early slows to hang about it, and to what fraction of the cruise at least; how long before a rest's end the body starts walking back to its centre; the fastest the ease may pull the body and its heading onto a phrase's end, over what the flight itself does, and how far past a leg's end the flight steers as the ease takes over.
+// A stoop's clock: the dived path over the straight line, plus seconds; a landing's pad likewise.
 export const FLIGHT_SLACK = 1.15
-export const LEG_PAD_S = 5
 export const LAND_PAD_S = 4
-export const LOITER_M = 15
-export const LOITER_PACE = 0.3
+// A leg is flown after its ghost (_ghost): the ghost's pace as a fraction of the cruise, which the leg ends at; the slowest the body flies to fall back onto it; how far ahead of it the body wheels round to come at it again; how far past it along the end line the body steers; and how hard the pace closes the gap (per second).
+export const LOITER_PACE = 0.9
+export const SLOW_PACE = 0.5
+export const SPRINT_PACE = 1.3
+export const LOITER_M = 10
+export const LEAD_M = 30
+export const PACE_GAIN = 0.3
+// The shortest leg: one nearer its start than this has no room to come round onto its end line.
+export const MIN_LEG_M = 80
+// How long before a rest's end the body starts walking back to its centre; the fastest the ease may pull the body and its heading onto a phrase's end, over what the flight itself does.
 export const HOMING_PAD_S = 4
 export const EASE_MPS = 8
 export const EASE_TURN = 1
-export const EASE_AHEAD_M = 60
 // The least a flight is given, in seconds of air time: a chapter with less left rests it out.
 export const FLIGHT_MIN_S = 60
 // How likely a chapter's flight is a hungry one (a patrol) rather than a fed one (an explore); how long a dragon rests on the nest between flights; how long a flight lasts in the air, not counting time perched; how long a visited spot holds it; how long it eats. A dragon lives in the air: the flights are long and the rests between them short, so one seen on its nest is soon seen off it.
@@ -223,9 +230,20 @@ const NO_LURES = []
 const roll = (rand, [lo, hi]) => lerp(lo, hi, rand())
 // The heading that carries the body from a to b: +X forward, a positive heading toward -Z.
 const bearing = (a, b) => Math.atan2(-(b.z - a.z), b.x - a.x)
+// What a turn of `a` radians flown on an arc costs over flying its chord, in radians of turn.
+const turnLag = (a) => Math.abs(a) - 2 * Math.sin(Math.abs(a) / 2)
 const gap3 = (a, b) => Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
 // `cur` pulled toward `want` by the fraction `w`, no further than `cap` in one go.
 const pull = (cur, want, w, cap) => cur + clamp((want - cur) * w, -cap, cap)
+// Into (_gx, _gz): where phrase `ph` has the body `elapsed` seconds in. A leg's end is a ghost on the line through it along its heading, at its speed, reaching it on the phrase's end; any other phrase's is its end point. Easing a leg onto a fixed point would hold a flying body still in the air.
+let _gx = 0
+let _gz = 0
+function _ghost(ph, elapsed) {
+  const to = ph.to
+  const back = ph.kind === 'fly' ? to.speed * Math.max(0, ph.dur - elapsed) : 0
+  _gx = to.x - Math.cos(to.heading) * back
+  _gz = to.z + Math.sin(to.heading) * back
+}
 
 const _quat = new THREE.Quaternion()
 const _euler = new THREE.Euler()
@@ -636,9 +654,10 @@ export class Dragons {
     return { x, y: h, z, r: site.r, gx: 0, gz: 0, turf: true }
   }
 
-  /** Seconds a leg from pose `a` to pose `b` at `mps` is given: the line at the cruise's slack, the climb at the steepest cruise, and the turn onto it. */
+  /** Seconds a leg from pose `a` to pose `b` at `mps` is given: the line at the ghost's pace, the climb or descent at the steepest cruise, and what the turns onto the line and onto the end heading cost over flying straight. */
   _legTime(a, b, mps) {
-    return (Math.hypot(b.x - a.x, b.z - a.z) / mps) * FLIGHT_SLACK + Math.max(0, b.y - a.y) / (mps * Math.sin(PITCH_MAX)) + LEG_PAD_S
+    const h = bearing(a, b)
+    return Math.hypot(b.x - a.x, b.z - a.z) / (mps * LOITER_PACE) + Math.abs(b.y - a.y) / (mps * Math.sin(PITCH_MAX)) + (turnLag(swing(a.heading, h)) + turnLag(swing(h, b.heading))) / TURN_RATE
   }
 
   /** Where a leg that lands on `dest` ends: LAND_M short of its centre along the approach heading `h`, RETURN_AGL over it, at `mps`. */
@@ -659,16 +678,28 @@ export class Dragons {
     return { kind: 'rest', dur, from, to: { x: at.x, y: this._standY(at), z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
   }
 
-  /** A leg from `from` to `to` at `mps` in `mode`, its clock sized by the distance; `dest` is the floor it lands on, if it does. A leg ends hanging at its point at LOITER_PACE of its cruise, the pace the loiter holds, so the ease has no speed to make up there. */
+  /** A leg from `from` to `to` at `mps` in `mode`, its clock sized by the distance; `dest` is the floor it lands on, if it does. A leg ends at its point at LOITER_PACE of its cruise, the ghost's pace, so the ease has no speed to make up there. */
   _legPhrase(from, to, mps, mode, dest = null) {
     if (to.speed !== mps * LOITER_PACE) throw new Error('Dragons: a leg whose end is not at its loiter pace')
     return { kind: 'fly', dur: this._legTime(from, to, mps), from, to, mps, mode, dest }
   }
 
-  /** The two phrases that bring a dragon at `from` down on `dest`: the leg to the approach and the landing. */
+  /** The phrases that bring a dragon at `from` down on `dest`: the leg to the approach and the landing -- first, from nearer `dest` than a leg can come round from, a leg straight on along its heading to where one can. */
   _homeward(from, dest, mode) {
+    const out = []
+    const reach = LAND_M + MIN_LEG_M
+    if (Math.hypot(dest.x - from.x, dest.z - from.z) < reach) {
+      const ux = Math.cos(from.heading), uz = -Math.sin(from.heading)
+      const b = ux * (from.x - dest.x) + uz * (from.z - dest.z)
+      const s = Math.max(MIN_LEG_M, -b + Math.sqrt(b * b - ((from.x - dest.x) ** 2 + (from.z - dest.z) ** 2) + reach * reach))
+      const x = from.x + ux * s, z = from.z + uz * s
+      const aim = { x, y: this.field.heightAt(x, z) + CRUISE_AGL[0], z, heading: from.heading, speed: PATROL_MPS * LOITER_PACE }
+      out.push(this._legPhrase(from, aim, PATROL_MPS, mode))
+      from = aim
+    }
     const leg = this._legPhrase(from, this._approach(dest, bearing(from, dest), PATROL_MPS), PATROL_MPS, mode, dest)
-    return [leg, this._landPhrase(dest, leg.to)]
+    out.push(leg, this._landPhrase(dest, leg.to))
+    return out
   }
 
   /** Seconds a stoop from `a` onto `b` is given: the dive at the mean of the pace it starts at and DIVE_MPS, at the cruise's slack, and STOOP_PAD_S. */
@@ -752,6 +783,7 @@ export class Dragons {
         aim.heading = bearing(pos, aim)
         leg = this._legPhrase(pos, aim, PATROL_MPS, mode)
       }
+      if (Math.hypot(leg.to.x - pos.x, leg.to.z - pos.z) < MIN_LEG_M) continue
       const end = tail.length ? tail[tail.length - 1].to : leg.to
       const spent = leg.dur + cost(tail)
       if (flown + spent + cost(way(end, t0 + flown + spent)) > budget) break
@@ -1100,17 +1132,25 @@ export class Dragons {
     return Math.max(d.ground, d.ahead) + MIN_AGL
   }
 
-  /** One tick of a leg: the cruise toward its end, no lower than the floor; within LOITER_M of it early, at the pace that would arrive on time, LOITER_PACE of the cruise at least, so it wheels slowly about the point until the ease takes it in -- and as the ease weighs in, steering past the point along the end heading, so the wheel and the ease pull the heading the same way. */
+  /**
+   * One tick of a leg, flown after its ghost, no lower than the floor: behind
+   * it or level, steering LEAD_M past it along the end line and closing at
+   * up to SPRINT_PACE; ahead, easing off to SLOW_PACE; more than LOITER_M
+   * ahead, wheeling round at it again. The body never slows below
+   * SLOW_PACE, and the ease pulls it onto the ghost, which moves as it
+   * does, so nothing ever holds it still in the air.
+   */
   _stepFly(d, k, now, elapsed) {
     this._probe(d, k)
     const ph = d.phrase
     const to = ph.to
     const floor = this._floor(d)
-    const dist = Math.hypot(to.x - d.x, to.z - d.z)
-    const left = ph.dur - elapsed
-    const pace = dist < LOITER_M && left > 0 ? clamp(dist / (left * ph.mps), LOITER_PACE, 1) : 1
-    const ahead = easeWeight(elapsed, ph.dur) * EASE_AHEAD_M
-    this._fly(d, TICK_S, to.x + Math.cos(to.heading) * ahead, Math.max(to.y, floor), to.z - Math.sin(to.heading) * ahead, ph.mps * pace, PITCH_MAX, TURN_RATE, floor, now)
+    _ghost(ph, elapsed)
+    const cx = Math.cos(to.heading), cz = -Math.sin(to.heading)
+    const along = (d.x - _gx) * cx + (d.z - _gz) * cz
+    const lead = along > LOITER_M ? 0 : LEAD_M
+    const mps = clamp(to.speed - PACE_GAIN * along, SLOW_PACE * ph.mps, SPRINT_PACE * ph.mps)
+    this._fly(d, TICK_S, _gx + cx * lead, Math.max(to.y, floor), _gz + cz * lead, mps, PITCH_MAX, TURN_RATE, floor, now)
   }
 
   /** One tick of a stoop: the dive onto the strike at DIVE_MPS, flown true, the ease finishing it. */
@@ -1252,11 +1292,13 @@ export class Dragons {
   /** The rejoin from the body's pose at world time `t`: the leg home, the landing, and a rest until the next planned rest on the nest, whose start pose the rest ends at; then the score again. */
   _startRejoin(d, t) {
     const from = { x: d.x, y: d.y, z: d.z, heading: d.heading, speed: d.speed }
-    const [leg, land] = this._homeward(from, d.site, 'rejoin')
-    const ready = t + leg.dur + land.dur
+    const phrases = this._homeward(from, d.site, 'rejoin')
+    const starts = [0]
+    for (const ph of phrases) starts.push(starts[starts.length - 1] + ph.dur)
+    const ready = t + starts[phrases.length]
     const next = this._nextHomeRest(d, ready)
-    const rest = { kind: 'rest', dur: next.start - ready, from: land.to, to: next.to, at: d.site, meal: false }
-    d.rejoin = { start: t, phrases: [leg, land, rest], starts: [0, leg.dur, leg.dur + land.dur], end: next.start }
+    phrases.push({ kind: 'rest', dur: next.start - ready, from: phrases[phrases.length - 1].to, to: next.to, at: d.site, meal: false })
+    d.rejoin = { start: t, phrases, starts: starts.slice(0, phrases.length), end: next.start }
     this._enter(d, this._phraseAt(d, t), t)
   }
 
@@ -1340,9 +1382,10 @@ export class Dragons {
     const w = easeWeight(elapsed + TICK_S, ph.dur)
     if (w > 0) {
       const to = ph.to
-      d.x = pull(d.x, to.x, w, EASE_MPS * TICK_S)
+      _ghost(ph, elapsed + TICK_S)
+      d.x = pull(d.x, _gx, w, EASE_MPS * TICK_S)
       d.y = pull(d.y, to.y, w, EASE_MPS * TICK_S)
-      d.z = pull(d.z, to.z, w, EASE_MPS * TICK_S)
+      d.z = pull(d.z, _gz, w, EASE_MPS * TICK_S)
       d.heading += clamp(swing(d.heading, to.heading) * w, -EASE_TURN * TICK_S, EASE_TURN * TICK_S)
       d.pitch = pull(d.pitch, 0, w, PITCH_RATE * TICK_S)
       d.roll = pull(d.roll, 0, w, ROLL_RATE * TICK_S)

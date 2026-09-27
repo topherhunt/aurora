@@ -26,7 +26,7 @@ import { CRITTER_GLB, LOD_RUNGS } from '../src/v2/render/critters.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { Villagers } from '../src/v2/render/villagers.js'
-import { BABY, CLIPS, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, TINTS, YARD_R } from '../src/v2/render/hobs.js'
+import { BABY, CLIPS, CRY_S, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, TINTS, YARD_R } from '../src/v2/render/hobs.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
@@ -225,6 +225,24 @@ console.log('\ntwo clients')
       check(s.median < median && s.worst < worst, `${name} has every hob within ${worst} m of one that watched throughout, ${t - T0 - 300} s on`, `median ${s.median.toFixed(2)} m, worst ${s.worst.toFixed(2)} m`)
     }
   }
+}
+
+// --- the cries ---------------------------------------------------------------------
+console.log('\nthe cries')
+{
+  const w = make(), cries = [], said = []
+  const S = 600
+  run(w, T0, S, () => {
+    said.length = 0
+    w.hobs.voices(said)
+    for (const v of said) cries.push({ v, near: Math.min(...w.hobs.all.map((h) => Math.hypot(h.x - v.x, h.z - v.z))) })
+  })
+  const n = w.hobs.all.length, lo = Math.floor(S / CRY_S[1]) * n, hi = Math.ceil(S / CRY_S[0] + 1) * n
+  check(cries.length >= lo && cries.length <= hi, `each hob cries every ${CRY_S[0]}-${CRY_S[1]} s`, `${cries.length} cries from ${n} hobs in ${S} s (${lo}-${hi})`)
+  check(cries.every((c) => c.v.sound === 'hobCry' && c.near < 0.01), 'every cry is a hobCry from where a hob stands')
+  said.length = 0
+  w.hobs.voices(said)
+  check(said.length === 0, 'drained, the cries are gone')
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

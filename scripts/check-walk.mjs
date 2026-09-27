@@ -186,6 +186,13 @@ console.log('the capsule')
   check(p.pathClear(5, 0, 15, 0), 'a teleport path runs under a bridge')
   check(!p.pathClear(15, 0, 25, 0), 'and not through a wall')
   check(!p.pathClear(25, 0, 35, 0), 'and not under a ledge at head height')
+  // Standing under the bridge (an awning, an overhang), the teleport asks from
+  // her feet and the landing's: the stone over either is headroom, not a wall.
+  check(p.pathClear(11, 0, 15, 0, GROUND) && p.pathClear(11, 0, 7, 0, GROUND),
+    'a teleport path leaves from under a bridge when asked from her feet')
+  check(p.th.slopeAt(11.9, 0) > Math.PI / 4 && p.th.slopeAt(11.9, 0, undefined, GROUND) === 0,
+    'and the ground under the bridge\'s edge is level from her feet, a cliff only to the topmost surface',
+    `${(p.th.slopeAt(11.9, 0) * 180 / Math.PI).toFixed(0)} deg topmost, ${(p.th.slopeAt(11.9, 0, undefined, GROUND) * 180 / Math.PI).toFixed(0)} deg from her feet`)
 }
 
 {

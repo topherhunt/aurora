@@ -89,12 +89,14 @@ const AHEAD = 0.75
 const DETOUR = [Math.PI / 2, (5 * Math.PI) / 6]
 const DETOUR_S = 1
 const REFUSALS = 10
-// A flight's path home: the grid it is planned on (the ground's), the cells A* may open before it settles for the one nearest home, how near a waypoint counts as reached, how many waypoints ahead a clear line is looked for, a probe every this far along it, the weave about the line (the WOBBLE_* walk, scaled), and the ticks a refused step waits before the path is planned again.
+// A flight's path home: the grid it is planned on (the ground's), the cells A* may open before it settles for the one nearest home (PLAN_GROW times more after a plan that gets it no nearer, as in a pocket beside a mouth's screen, to PLAN_MAX), how near a waypoint counts as reached, how many waypoints ahead a clear line is looked for, a probe every this far along it, the weave about the line (the WOBBLE_* walk, scaled), and the ticks a refused step waits before the path is planned again.
 const CELL = 0.5
 const PLAN_OPEN = 800
+const PLAN_GROW = 4
+const PLAN_MAX = PLAN_OPEN * PLAN_GROW * PLAN_GROW
 const WAYPOINT_M = 0.4
 const LOOKAHEAD = 8
-const LINE_STEP = 0.25
+const LINE_STEP = 0.1
 const FLEE_WOBBLE = (25 * Math.PI) / 180
 const REPLAN_TICKS = 10
 // A flanking stone of the mouth (entrances.js) grown by the ground's own cell margin.
@@ -113,7 +115,7 @@ const FADE_S = 0.25
 // State kept every SNAP_TICKS, SNAPS deep, for an anchor heard late to roll back to; one older than that replays the chapter.
 const SNAP_TICKS = 20
 const SNAPS = 30
-const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
+const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'budget', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
 
 export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
 // The clips whose feet stay put (puppet.js FootIK): a recoil steps back, a gait walks.
@@ -286,8 +288,8 @@ export class Leafkin {
         tx: 0, tz: 0, retarget: 0, curve: 0, arc: 0, detour: 0, refused: 0,
         // The flight's weave.
         wob: 0, wobv: 0,
-        // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over (pure, so never rolled back), and the tick it was last planned on.
-        path: [], wp: 0, cells: new Map(), planned: -1,
+        // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over (pure, so never rolled back), the tick it was last planned on, and the cells its next plan may open.
+        path: [], wp: 0, cells: new Map(), planned: -1, budget: PLAN_OPEN,
         // The cap it is going for, seconds left before it gives the cap up, whether this gather has taken it, the caps gone this chapter (flat x, z: its own takes, her picks and the caps it gave up), and the bundle: caps carried, and the carrier drawing them.
         cx: 0, cz: 0, chase: 0, took: false, eaten: [], bundle: 0, carrier: null,
         // Seconds the recoil has left, and to the next call or pant, and whether the last was a pant.
@@ -577,6 +579,7 @@ export class Leafkin {
     c.path = []
     c.wp = 0
     c.planned = -1
+    c.budget = PLAN_OPEN
     c.refused = 0
     c.wob = 0; c.wobv = 0
     c.voice = between(c.rand, calm ? CHATTER_S : WHIMPER_S)
@@ -737,7 +740,8 @@ export class Leafkin {
   /** The path home from where it stands: planPath's over the ground's own grid, to a cell whose reach puts it inside FINAL_M of the mouth point. */
   _plan(c, tick) {
     const site = c.site
-    c.path = planPath((x, z) => this.open(site, x, z), c.cells, Math.round(site.x / CELL) * CELL, Math.round(site.z / CELL) * CELL, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, PLAN_OPEN)
+    c.path = planPath((x, z) => this.open(site, x, z), c.cells, Math.round(site.x / CELL) * CELL, Math.round(site.z / CELL) * CELL, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, c.budget)
+    if (c.path.length === 0) c.budget = Math.min(c.budget * PLAN_GROW, PLAN_MAX)
     c.wp = 0
     c.planned = tick
     c.refused = 0

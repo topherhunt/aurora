@@ -78,6 +78,8 @@ export const SOUNDS = {
   leafkinScream: 'sounds/npc-leafkin-scream.mp3',
   leafkinWhimper: 'sounds/npc-leafkin-whimper.mp3',
   panting: 'sounds/npc-leafkin-panting.mp3',
+  // A hob weevil's cry (render/hobs.js).
+  hobCry: 'sounds/animal-hob-weevil-cry.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   frogBoing: 'sounds/animal-frog-boing.mp3',
@@ -165,6 +167,8 @@ export const RULES = {
   voice: { reach: 60, near: 5, edge: 10, level: 0.8, gain: [0.8, 1.0] },
   // ...and a glade's villagers, a dozen within earshot of each other, are heard across its pond, not across its wood.
   villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
+  // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
+  hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
   door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
@@ -198,8 +202,8 @@ export const RULES = {
   // Rain: a loop at `level` times the share of the fall that is rain, precip times how far she is under the snow line's `sleet` band (the precip draw's band, check-ambience pins them equal); snow is silent, so on a summit the loop is off (§10). The patter is the drops on the ground and the leaves, so it thins to nothing across the `aloft` band of metres her head is above the ground and is off above it.
   rain: { on: 0.02, off: 0.01, level: 0.35, sleet: [-60, 60], aloft: [2, 20], gain: [0.7, 1.0] },
   underwater: { level: 1.0, gain: [0.8, 1.0] },
-  // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little.
-  fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0] },
+  // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
+  fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 8, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
   // A torch (lamps.js, the room's lamps, a wick in a dish): the campfire's takes again, a loop a torch placed at its flame, quieter and low-passed at `cutoff` Hz so the pops are gone and a soft crackle is left, the level scaled by how lit the torches are (0..1, off by day) and by her distance as a campfire's.
@@ -303,7 +307,7 @@ export class Ambience {
     // One muffled loop a fiddler, under its own key in `loops` so _loop and dispose hold it like the rest.
     this.fiddlers = fiddlers.map((h, i) => {
       this.loops[`fiddle${i}`] = engine.loop('fiddle', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.fiddle.gain })
-      return { key: `fiddle${i}`, x: h.x, y: h.y + RULES.fiddle.ear, z: h.z, r: h.r }
+      return { key: `fiddle${i}`, x: h.x, y: h.y + RULES.fiddle.ear, z: h.z, r: h.r, playing: false, left: this.rand() * RULES.fiddle.rest[1] }
     })
     // One loop a campfire, over all four takes.
     this.campfires = campfires.map((f, i) => {
@@ -417,8 +421,9 @@ export class Ambience {
    * @param speed     rig speed in m/s
    * @param afoot     she is walking, not flying or in a travel arc
    * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
+   * @param indoors   she is inside a house: the fiddles are silent
    */
-  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0, now }) {
+  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0, now, indoors = false }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
     if (!Number.isFinite(now)) throw new Error(`Ambience.update: needs the room's world seconds, got ${now}`)
     this.frame++
@@ -437,7 +442,7 @@ export class Ambience {
     }
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s, cover, precip)
-    this._fiddlers(head)
+    this._fiddlers(dt, head, indoors)
     this._campfires(head)
     this._torches(head)
     this._crawl(head)
@@ -892,12 +897,18 @@ export class Ambience {
     this._loop('rain', this.rainOn, R.level * rain)
   }
 
-  /** Each fiddler's loop by her distance to its house's wall: level and cutoff by RULES.fiddle, placed at the fiddler. */
-  _fiddlers(head) {
+  /** Each fiddler's loop, through its spells, by her distance to its house's wall: level and cutoff by RULES.fiddle, placed at the fiddler; off while she is indoors. */
+  _fiddlers(dt, head, indoors) {
     const F = RULES.fiddle
     for (const h of this.fiddlers) {
+      h.left -= dt
+      if (h.left <= 0) {
+        h.playing = !h.playing
+        const [lo, hi] = h.playing ? F.play : F.rest
+        h.left = lo + (hi - lo) * this.rand()
+      }
       const d = Math.max(0, Math.hypot(head.x - h.x, head.y - h.y, head.z - h.z) - h.r)
-      const on = d < F.reach
+      const on = h.playing && !indoors && d < F.reach
       this._loop(h.key, on, F.level * Math.min(1, F.near / Math.max(d, 1e-3)) * (1 - smoothstep(F.reach - F.edge, F.reach, d)), h)
       if (on) this.loops[h.key].setCutoff(F.cutoff[1] + (F.cutoff[0] - F.cutoff[1]) * clamp(d / F.reach, 0, 1))
     }
