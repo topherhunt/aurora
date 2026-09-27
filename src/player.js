@@ -114,18 +114,10 @@ export class Player {
     if (!(scale > 0)) throw new Error(`Player: scale must be positive, not ${scale}`)
     this.rig = rig
     this.camera = camera
-    this.th = terrainHeight
     this.scale = scale
     rig.scale.setScalar(scale)
-    // Solid things she walks AROUND rather than over -- v2's tree trunks, via
-    // WalkSurface.obstacleAt. v1's TerrainHeight has none, so the hook is
-    // optional and the check below is skipped without it.
-    this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
+    this.setGround(terrainHeight)
     this._obstacle = { x: 0, z: 0, r: 0 }
-    // Her capsule against the stone -- v2's WalkSurface.fits, which also makes
-    // its heightAt read from a foot height. v1 has neither; its heightAt ignores
-    // the third argument and the headroom check below is skipped.
-    this.capsule = typeof terrainHeight.fits === 'function' ? terrainHeight : null
     this._push = { x: 0, z: 0 }
     this._inStone = null
 
@@ -149,6 +141,20 @@ export class Player {
     this._step = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._maxTan = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180)
+  }
+
+  /**
+   * The ground she walks on. `obstacles` are v2's trunks (WalkSurface.obstacleAt)
+   * and `capsule` her body against its stone (WalkSurface.fits, which also makes
+   * heightAt read from a foot height); v1's TerrainHeight has neither and those
+   * checks are skipped. All three swap together: a house's walk with the glade's
+   * capsule lets her through the house's walls.
+   */
+  setGround(terrainHeight) {
+    this.th = terrainHeight
+    this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
+    this.capsule = typeof terrainHeight.fits === 'function' ? terrainHeight : null
+    this._inStone = null
   }
 
   // World position of her head, which is where she is LOOKING FROM.

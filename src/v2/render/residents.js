@@ -347,7 +347,8 @@ export class Residents {
     p.play(r.clip, r.cue, r.from)
     p.step(dt)
     _pos.set(x, y, z)
-    _quat.setFromAxisAngle(UP, r.heading)
+    // The leafkin mesh looks down its +X (villagers.js walks along (cos h, -sin h)); a heading here looks along (sin h, cos h).
+    _quat.setFromAxisAngle(UP, r.heading - Math.PI / 2)
     _scl.setScalar(r.k)
     p.group.matrix.compose(_pos, _quat, _scl)
     p.group.matrixWorldNeedsUpdate = true

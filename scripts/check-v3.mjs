@@ -95,9 +95,10 @@ export async function run() {
   const hs = s.hydrology
   const er = hs.erosion
   check(er.toSea > er.droplets * 0.8 && er.offEdge === 0 && er.spent < er.droplets * 0.05, `${er.droplets} droplets, ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps, none left the box`)
-  // `maxCut` is a reference depth per reference step, and `deepestStep` is measured in metres on THIS grid, so the bound it has to clear is the conversion of the two: maxCut * perStep * toHere, which is maxCut * refCell / cell.
-  const stepCap = (EROSION.maxCut * EROSION.refCell) / a.cell
-  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= stepCap + 1e-6 && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.2, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${stepCap} m`)
+  // `maxCut` is a reference depth per reference step and `deepestStep` is metres on THIS grid, but the two conversions cancel -- perStep is cell/refCell and toHere is refCell/cell -- so the deepest step is maxCut metres on every grid. That cancellation is the point of the length ratio, and asserting the bare constant is what would catch it being put back to an area one.
+  const stepCap = EROSION.maxCut
+  // The share of land the rain touches falls with the cell, because the brush is `radius` CELLS wide: 12.6 km2 of the 19.4 carved at 12.8 m, 5.3 at 3.2, 3.5 at 2. So this floor is a sixth of the land and not a third -- it is here to catch rain that stopped reaching the ground at all, not to pin the groove's width, which THE GROOVE's own note owns.
+  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= stepCap + 1e-6 && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.15, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${stepCap} m`)
   check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
 
   // The tabling is off by default (generate.js STEPS), so it is judged on an island generated with it switched back on, and the default is asserted to carry none of it. Everything below reads `cliffy` for that reason.

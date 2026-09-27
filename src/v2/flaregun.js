@@ -9,7 +9,8 @@ import THREE from '../three-instance.js'
 // and gives nothing back: a dropped gun lies loose until a hand lifts it.
 // It wears its generated mesh (FLAREGUN_GLB). The round window at the back of
 // the lock shows the colour it will fire as a disc, smaller as the charges run
-// down and gone at none; only on her own held guns.
+// down and gone at none; only on her own held guns. Her own shot flashes her
+// whole view in its colour, washed toward white (ShotFlash).
 // ---------------------------------------------------------------------------
 
 export const KIND = 'flaregun'
@@ -128,5 +129,47 @@ export class GunWindows {
       disc.matrixWorldNeedsUpdate = true
       disc.material.color.setHex(PALETTE[rec.hue])
     }
+  }
+}
+
+// The flash of her own shot: its peak opacity, how far its colour is washed toward white, and the seconds it fades over.
+export const FLASH_PEAK = 0.85
+export const FLASH_WHITE = 0.6
+export const FLASH_S = 0.5
+const WHITE = new THREE.Color(0xffffff)
+
+/**
+ * Her shot's flash: a sphere round her head, inside out and drawn last with no
+ * depth, like main.js's blackout, so it covers the whole view in both eyes of a
+ * headset for one blended layer of fill and no pass of its own.
+ */
+export class ShotFlash {
+  constructor(parent) {
+    this.mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 8, 6),
+      new THREE.MeshBasicMaterial({ side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false }),
+    )
+    this.mesh.name = 'v2-flaregun-flash'
+    this.mesh.renderOrder = 1e6
+    this.mesh.frustumCulled = false
+    this.mesh.visible = false
+    parent.add(this.mesh)
+    this.age = Infinity
+  }
+
+  /** A shot in `hex`: the flash at its peak. */
+  fire(hex) {
+    this.mesh.material.color.setHex(hex).lerp(WHITE, FLASH_WHITE)
+    this.age = 0
+  }
+
+  /** One frame, `dt` seconds on, round her head at `eye`: fading as the square of the time left, gone at FLASH_S. */
+  update(dt, eye) {
+    this.age += dt
+    const k = 1 - this.age / FLASH_S
+    this.mesh.visible = k > 0
+    if (!this.mesh.visible) return
+    this.mesh.material.opacity = FLASH_PEAK * k * k
+    this.mesh.position.copy(eye)
   }
 }

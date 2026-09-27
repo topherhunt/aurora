@@ -2,10 +2,10 @@
 //
 //   node scripts/check-interiors.mjs
 //
-// Many villages' houses on both sides of the loft height: a room rolls the same twice and differently for every house; it has 1-3 windows (one on the floor), a table with 2-4 chairs, a kitchen with its basin, herbs and stores, a bed, candles on the table and in sconces, and ten or more smaller things; a loft exactly when the house outside is tall; no two floor things overlap; she lands on the floor inside the door; and from there the floor reaches every place a resident walks to, and the stairs reach the loft.
+// Many villages' houses on both sides of the loft height: a room rolls the same twice and differently for every house; it has 1-3 windows (one on the floor), a table with 2-4 chairs, a kitchen with its basin, herbs and stores, a bed, candles on the table and in sconces, a corner of garden tools and (nearly always) one of stores, and ten or more smaller things; a third or more of the floor under stuff; a loft exactly when the house outside is tall; no two floor things overlap; she walks straight from inside the door to its mouth; she lands on the floor inside the door; from there the floor reaches every place a resident walks to, and the stairs reach the loft; and she never stands in the wall or on or in a piece of furniture.
 
 import { LOCOMOTION } from '../src/player.js'
-import { InteriorStone, flatField, rollInterior } from '../src/v2/rooms/interior.js'
+import { FILLET, InteriorStone, flatField, rAt, rollInterior } from '../src/v2/rooms/interior.js'
 import { HER_SCALE } from '../src/v2/rooms/village.js'
 import { WalkSurface } from '../src/v2/walk.js'
 
@@ -61,7 +61,9 @@ function flood(room) {
     for (let di = -near; di <= near; di++) for (let dj = -near; dj <= near; dj++) if ((seen.get(idx(i + di, j + dj)) ?? []).some((g) => Math.abs(g - y) < 0.1)) return true
     return false
   }
-  return { stone, reached }
+  const cells = [...seen].map(([k, hs]) => ({ x: xy(Math.floor(k / N)), z: xy(k % N), hs }))
+  const stoodAt = (x, z) => { const [i, j] = cellOf(x, z); return seen.get(idx(i, j)) ?? [] }
+  return { stone, reached, cells, stoodAt }
 }
 
 const rooms = []
@@ -88,6 +90,15 @@ every('a candle on the table and one in a sconce', (r) => r.items.some((it) => i
   const small = rooms.map((r) => r.items.filter((it) => !STRUCTURE.has(it.kind)).length)
   check(Math.min(...small) >= 10, `ten or more smaller things in every room (fewest ${Math.min(...small)}, most ${Math.max(...small)})`)
 }
+every('a corner of garden tools', (r) => kinds(r, 'tool').length >= 3 && kinds(r, 'wcan').length === 1)
+{
+  const stores = rooms.filter((r) => kinds(r, 'barrel').length + kinds(r, 'crate').length > 0).length
+  check(stores >= rooms.length * 0.95, `a corner of stores in nearly every room (${stores} of ${rooms.length})`)
+}
+{
+  const cover = rooms.map((r) => r.cover), mean = cover.reduce((a, b) => a + b) / cover.length
+  check(mean >= 0.33 && Math.min(...cover) >= 0.22, `a third or more of the floor under stuff (mean ${mean.toFixed(2)}, least ${Math.min(...cover).toFixed(2)})`)
+}
 every('a loft exactly when the house outside stands 6 m or more', (r) => (r.loft !== undefined) === (heightOf(r.index) >= 6))
 check(rooms.some((r) => r.loft) && rooms.some((r) => !r.loft), 'some houses have a loft and some do not')
 every('a lofted bed is up in the loft', (r) => !r.loft || r.spots.find((s) => s.kind === 'bed').level === 1)
@@ -101,11 +112,19 @@ every('no two floor things overlap', (r) => {
   return true
 })
 
+// The exit fires within 0.6 m of the door's middle (main.js HOUSE_DOOR.walk): walking straight at it from inside the door must get there.
+every('she walks straight from inside the door to within 0.5 m of it', (r) => {
+  const walk = new WalkSurface(flatField(0), new InteriorStone(r, 0, 0, 0), { trunkAt: () => null }, { scale: HER_SCALE })
+  let x = r.doorIn.x
+  while (walk.fits(x - 0.01, 0, 0, null)) x -= 0.01
+  return x + rAt(r.rs, Math.PI) < 0.5
+})
+
 // The walk: the flood is the slow part, so it runs on every house of three villages.
 const walked = rooms.filter((r) => SEEDS.slice(0, 3).includes(r.seed))
 const reachFails = []
 for (const r of walked) {
-  const { stone, reached } = flood(r)
+  const { stone, reached, cells, stoodAt } = flood(r)
   const fail = (what) => reachFails.push(`${r.seed}/${r.index} ${what}`)
   if (Math.abs(stone.blockTopAt(r.doorIn.x, r.doorIn.z)) > 1e-9) fail('lands off the floor')
   r.ringPts.forEach((p, k) => { if (!reached(p.x, p.z, 0)) fail(`ring ${k}`) })
@@ -115,8 +134,11 @@ for (const r of walked) {
     if (!reached(r.climb[0].x, r.climb[0].z, 0)) fail('the stairs\' foot')
     if (!reached(land.x, land.z, r.loft.y)) fail('the loft')
   }
+  if (cells.some((c) => Math.hypot(c.x, c.z) >= rAt(r.rs, Math.atan2(c.z, c.x)) - FILLET)) fail('stands in the wall')
+  // Over a thing's middle she may only stand clear above it, as on the loft over the floor's furniture.
+  for (const s of r.solids) if ((s.kind === 'cyl' || s.kind === 'box') && stoodAt(s.x, s.z).some((h) => h > s.y0 - 0.05 && h < s.y1 + 0.3)) fail(`stands on a ${s.kind} at (${s.x.toFixed(2)}, ${s.z.toFixed(2)})`)
 }
-check(reachFails.length === 0, `inside the door she stands on the floor, and walks to the table's ring, the kitchen, the window, the talkers and up to the loft (${walked.length} rooms)${reachFails.length ? ` -- ${reachFails.slice(0, 6).join('; ')}` : ''}`)
+check(reachFails.length === 0, `inside the door she stands on the floor, and walks to the table's ring, the kitchen, the window, the talkers and up to the loft, never in the wall or on furniture (${walked.length} rooms)${reachFails.length ? ` -- ${reachFails.slice(0, 6).join('; ')}` : ''}`)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')
 process.exit(failures ? 1 : 0)

@@ -1,14 +1,14 @@
-// A leafkin house's inside, meshed from rollInterior (design/30-leafkin.md, Interiors): one merged mesh per texture, lit by a per-vertex bake of ambient, candle and window light that three uniforms scale each frame, plus the flames. Everything is built in room-local metres and the group is set at the room's anchor.
+// A leafkin house's inside, meshed from rollInterior (design/30-leafkin.md, Interiors): one merged mesh per texture, lit by a per-vertex bake of ambient, candle and window light that three uniforms scale each frame, plus the flames and the potted mushrooms, which are the island's own. Everything is built in room-local metres and the group is set at the room's anchor.
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { FILLET, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
 
 const TAU = 2 * Math.PI
-const TEX = ['floor', 'wall', 'grain', 'linen', 'door', 'window']
-const REPEAT = new Set(['wall', 'grain', 'linen'])
+const TEX = ['floor', 'wall', 'grain', 'linen', 'door', 'window', 'pot', 'soil']
+const REPEAT = new Set(['wall', 'grain', 'linen', 'pot', 'soil'])
 // Texture metres per repeat on the wall and on carved wood.
-const WALL_M = 0.9, WOOD_M = 0.35
+const WALL_M = 2.0, WOOD_M = 0.6
 const FLAT = [0.5, 0.5]
 
 let texReady = null
@@ -54,12 +54,13 @@ void main() {
   #include <colorspace_fragment>
 }`
 
-/** Linear rgb for an sRGB hsl, mixed `white` of the way to white: textured surfaces take a wash of their tint, not the whole colour. */
-function rgb(h, s, l, white = 0) {
-  const c = new THREE.Color().setHSL(((h % 1) + 1) % 1, s, l, THREE.SRGBColorSpace)
-  return [c.r + (1 - c.r) * white, c.g + (1 - c.g) * white, c.b + (1 - c.b) * white]
+/** Linear rgb for an sRGB hsl. The wood, wall and floor textures are near grey, so the tint carries their colour. */
+function rgb(h, s, l) {
+  const c = new THREE.Color().setHSL(((h % 1) + 1) % 1, Math.min(1, Math.max(0, s)), Math.min(1, Math.max(0, l)), THREE.SRGBColorSpace)
+  return [c.r, c.g, c.b]
 }
-const hsl = (t, white = 0) => rgb(t.h, t.s, t.l, white)
+/** A room tint `{ h, s, l }`, `dl` lighter and `ds` more saturated. */
+const tone = (t, dl = 0, ds = 0) => rgb(t.h, t.s + ds, t.l + dl)
 
 /** One merged mesh's buffers. `tri` winds each triangle to face its vertices' normals, so no builder has to. */
 class Mesher {
@@ -94,7 +95,7 @@ class Mesher {
 
   quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d) }
 
-  /** A (cols+1) x (rows+1) grid of `at(i, j)` -> { p, uv, n? }; normals by finite difference where not given, faced the way `sign` says (+1: Tu x Tv). */
+  /** A (cols+1) x (rows+1) grid of `at(i, j)` -> { p, uv, n?, tint? }; normals by finite difference where not given, faced the way `sign` says (+1: Tu x Tv). */
   grid(cols, rows, at, tint, sign, wrap = false) {
     const pts = []
     for (let j = 0; j <= rows; j++) for (let i = 0; i <= cols; i++) pts.push(at(i, j))
@@ -124,21 +125,39 @@ class Mesher {
 }
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+const add = (a, b, k = 1) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k]
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l] }
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+/** `v` turned `ang` about the unit axis `k`. */
+const rot = (v, k, ang) => {
+  const c = Math.cos(ang), s = Math.sin(ang), d = dot(k, v) * (1 - c), x = cross(k, v)
+  return [v[0] * c + x[0] * s + k[0] * d, v[1] * c + x[1] * s + k[1] * d, v[2] * c + x[2] * s + k[2] * d]
+}
 
-/** Local -> room frame: a position and a yaw (three's rotation.y). */
-const frame = (x, y, z, yaw = 0) => ({ x, y, z, c: Math.cos(yaw), s: Math.sin(yaw) })
-const put = (F, lx, ly, lz) => [F.x + lx * F.c + lz * F.s, F.y + ly, F.z - lx * F.s + lz * F.c]
-const turn = (F, nx, ny, nz) => [nx * F.c + nz * F.s, ny, -nx * F.s + nz * F.c]
+/** Local -> room frame: an origin and an orthonormal basis with az = ax x ay. `frame` stands it upright at a yaw (three's rotation.y: +Z looks along (sin yaw, cos yaw)). */
+const frame = (x, y, z, yaw = 0) => { const c = Math.cos(yaw), s = Math.sin(yaw); return { x, y, z, ax: [c, 0, -s], ay: [0, 1, 0], az: [s, 0, c] } }
+/** A frame at `p` whose y runs along `up`, turned `spin` about it. */
+const along = (p, up, spin = 0) => {
+  const ay = norm(up), ax = rot(norm(cross(ay, Math.abs(ay[1]) < 0.95 ? [0, 1, 0] : [1, 0, 0])), ay, spin)
+  return { x: p[0], y: p[1], z: p[2], ax, ay, az: cross(ax, ay) }
+}
+/** `F` turned `ang` about its own axis `key` ('ax', 'ay' or 'az'), about its origin. */
+const tip = (F, key, ang) => { const k = F[key]; return { ...F, ax: rot(F.ax, k, ang), ay: rot(F.ay, k, ang), az: rot(F.az, k, ang) } }
+const put = (F, lx, ly, lz) => [F.x + lx * F.ax[0] + ly * F.ay[0] + lz * F.az[0], F.y + lx * F.ax[1] + ly * F.ay[1] + lz * F.az[1], F.z + lx * F.ax[2] + ly * F.ay[2] + lz * F.az[2]]
+const turn = (F, nx, ny, nz) => [nx * F.ax[0] + ny * F.ay[0] + nz * F.az[0], nx * F.ax[1] + ny * F.ay[1] + nz * F.az[1], nx * F.ax[2] + ny * F.ay[2] + nz * F.az[2]]
+/** Signed power: the superellipse's corner. */
+const sp = (t, e) => Math.sign(t) * Math.abs(t) ** e
 
 /** The build kit: every call adds to `m`, in frame `F`, jittered by `rng`. */
 function kit(rng) {
   const j = (a) => (rng() * 2 - 1) * a
+  /** `F` knocked a little off true, as nothing hand-made stands square. */
+  const crook = (F, a) => tip(tip(F, 'ax', j(a)), 'az', j(a))
 
-  /** A profile of [r, y] revolved about the frame's y, from the axis at the bottom up to the axis at the top; a repeated point is a hard edge. `sx`/`sz` squash it, `rough` wobbles its radius. */
-  function lathe(m, F, prof, tint, { segs = 12, rough = 0, sx = 1, sz = 1, uvM = WOOD_M, flat = false, phase = 0 } = {}) {
+  /** A profile of [r, y] revolved about the frame's y; a repeated point is a hard edge. `sx`/`sz` squash it, `rough` wobbles its radius, `lobes` [n, depth] ribs it like a gourd. */
+  function lathe(m, F, prof, tint, { segs = 16, rough = 0, sx = 1, sz = 1, uvM = WOOD_M, flat = false, phase = 0, lobes = null } = {}) {
     const wob = Array.from({ length: segs }, () => prof.map(() => 1 + j(rough)))
     const len = [0]
     for (let k = 1; k < prof.length; k++) len.push(len[k - 1] + Math.hypot(prof[k][0] - prof[k - 1][0], prof[k][1] - prof[k - 1][1]))
@@ -146,14 +165,17 @@ function kit(rng) {
     const base = m.count
     for (let i = 0; i <= segs; i++) {
       const q = phase + (i / segs) * TAU, cq = Math.cos(q), sq = Math.sin(q)
+      // The lobes' radius factor and its slope round the axis, which tips the normal into the grooves.
+      const L = lobes ? 1 - lobes[1] * (0.5 - 0.5 * Math.cos(lobes[0] * q)) : 1
+      const dL = lobes ? -lobes[1] * 0.5 * lobes[0] * Math.sin(lobes[0] * q) : 0
       for (let k = 0; k < prof.length; k++) {
-        const [r0, y] = prof[k], r = r0 * wob[i % segs][k]
+        const [r0, y] = prof[k], r = r0 * wob[i % segs][k] * L
         const prev = prof[Math.max(0, k - 1)], next = prof[Math.min(prof.length - 1, k + 1)]
         const same = (a, b) => a[0] === b[0] && a[1] === b[1]
         const t = same(prev, prof[k]) ? sub2(next, prof[k]) : same(next, prof[k]) ? sub2(prof[k], prev) : sub2(next, prev)
         const tl = Math.hypot(t[0], t[1]) || 1
-        const nr = t[1] / tl, ny = -t[0] / tl
-        const n = turn(F, cq * nr / sx, ny, sq * nr / sz)
+        const nr = t[1] / tl, ny = -t[0] / tl, nt = (-nr * dL) / L
+        const n = turn(F, (cq * nr - sq * nt) / sx, ny, (sq * nr + cq * nt) / sz)
         m.v(put(F, cq * r * sx, y, sq * r * sz), norm(n), flat ? FLAT : [(i / segs) * around, len[k] / uvM], tint)
       }
     }
@@ -167,30 +189,74 @@ function kit(rng) {
   }
   const sub2 = (a, b) => [a[0] - b[0], a[1] - b[1]]
 
-  /** Eight corners, bottom ring then top ring, as a rough carved block: flat faces, each textured along its own edges. */
-  function hexa(m, c, tint, { uvM = WOOD_M, flat = false } = {}) {
-    const mid = c.reduce((s, p) => [s[0] + p[0] / 8, s[1] + p[1] / 8, s[2] + p[2] / 8], [0, 0, 0])
-    const faces = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
-    for (const f of faces) {
-      const p = f.map((k) => c[k])
-      let n = norm(cross(sub(p[2], p[0]), sub(p[3], p[1])))
-      const fc = [(p[0][0] + p[2][0]) / 2, (p[0][1] + p[2][1]) / 2, (p[0][2] + p[2][2]) / 2]
-      if (dot(n, sub(fc, mid)) < 0) n = [-n[0], -n[1], -n[2]]
-      const e1 = norm(sub(p[1], p[0])), e2 = cross(n, e1)
-      const ids = p.map((q) => m.v(q, n, flat ? FLAT : [dot(sub(q, p[0]), e1) / uvM, dot(sub(q, p[0]), e2) / uvM], tint))
-      m.quad(...ids)
+  /** A rounded box centred at local (cx, cy, cz), half-sizes h: a superellipsoid, `round` 0 square to 1 round, its eight corners pushed about `crook` so no two are alike. Grain runs across each face. */
+  function box(m, F, cx, cy, cz, hx, hy, hz, tint, { round = 0.3, segs = 16, rows = 8, crook: cj = 0.01, uvM = WOOD_M, flat = false } = {}) {
+    const e = Math.max(0.08, round), jit = Array.from({ length: 8 }, () => [j(cj), j(cj) * 0.5, j(cj)])
+    const off = [rng(), rng()], base = m.count
+    for (let k = 0; k <= rows; k++) {
+      const v = -Math.PI / 2 + (k / rows) * Math.PI, cv = Math.cos(v), sv = Math.sin(v)
+      for (let i = 0; i <= segs; i++) {
+        const u = (i / segs) * TAU, cu = Math.cos(u), su = Math.sin(u)
+        const ux = sp(cv, e) * sp(cu, e), uy = sp(sv, e), uz = sp(cv, e) * sp(su, e)
+        const n = [sp(cv, 2 - e) * sp(cu, 2 - e) / hx, sp(sv, 2 - e) / hy, sp(cv, 2 - e) * sp(su, 2 - e) / hz]
+        // Trilinear in the corners' pushes.
+        const fx = (ux + 1) / 2, fy = (uy + 1) / 2, fz = (uz + 1) / 2
+        let d = [0, 0, 0]
+        for (let c = 0; c < 8; c++) {
+          const w = (c & 1 ? fx : 1 - fx) * (c & 2 ? fy : 1 - fy) * (c & 4 ? fz : 1 - fz)
+          d = add(d, jit[c], w)
+        }
+        const lx = ux * hx + d[0], ly = uy * hy + d[1], lz = uz * hz + d[2]
+        const an = [Math.abs(n[0] * hx), Math.abs(n[1] * hy), Math.abs(n[2] * hz)]
+        const uv = flat ? FLAT : an[1] >= an[0] && an[1] >= an[2] ? [lx / uvM + off[0], lz / uvM + off[1]] : an[0] >= an[2] ? [lz / uvM + off[0], ly / uvM + off[1]] : [lx / uvM + off[0], ly / uvM + off[1]]
+        m.v(put(F, cx + lx, cy + ly, cz + lz), norm(turn(F, ...n)), uv, tint)
+      }
+    }
+    for (let k = 0; k < rows; k++) for (let i = 0; i < segs; i++) {
+      const a = base + k * (segs + 1) + i
+      m.quad(a, a + 1, a + segs + 2, a + segs + 1)
     }
   }
 
-  /** A box centred at local (cx, cy, cz), half-sizes h, its corners jittered `rough`. */
-  function box(m, F, cx, cy, cz, hx, hy, hz, tint, { rough = 0.01, ...o } = {}) {
-    const c = []
-    for (const y of [-1, 1]) for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) c.push(put(F, cx + x * hx + j(rough), cy + y * hy + j(rough * 0.5), cz + z * hz + j(rough)))
-    hexa(m, c, tint, o)
+  /** Rings strung into a tube: each { c, u, v, a, b } is an ellipse about c with semi-axes a along u and b along v. */
+  function rings(m, list, tint, { segs = 8, uvM = WOOD_M, flat = false } = {}) {
+    const base = m.count
+    let len = 0
+    for (let k = 0; k < list.length; k++) {
+      const R = list[k]
+      if (k > 0) len += Math.hypot(...sub(R.c, list[k - 1].c))
+      for (let i = 0; i <= segs; i++) {
+        const q = (i / segs) * TAU, cq = Math.cos(q), sq = Math.sin(q)
+        const p = add(add(R.c, R.u, cq * R.a), R.v, sq * R.b)
+        const n = norm(add(R.u.map((x) => (x * cq) / Math.max(R.a, 1e-4)), R.v, sq / Math.max(R.b, 1e-4)))
+        m.v(p, n, flat ? FLAT : [(i / segs) * Math.max(1, Math.round((TAU * R.a) / uvM + 0.5)), len / uvM], tint)
+      }
+    }
+    for (let k = 0; k < list.length - 1; k++) for (let i = 0; i < segs; i++) {
+      const a = base + k * (segs + 1) + i
+      m.quad(a, a + 1, a + segs + 2, a + segs + 1)
+    }
   }
 
-  /** A tapered rod from p0 to p1 (room frame). */
-  function rod(m, p0, p1, r0, r1, tint, { segs = 6, rough = 0, flat = false, uvM = WOOD_M } = {}) {
+  /** A round tube through `pts` with radius `rads[k]` at each, its ends domed shut. */
+  function tube(m, pts, rads, tint, { segs = 8, uvM = WOOD_M, flat = false, caps = true } = {}) {
+    const T = pts.map((p, k) => norm(sub(pts[Math.min(pts.length - 1, k + 1)], pts[Math.max(0, k - 1)])))
+    let u = norm(cross(T[0], Math.abs(T[0][1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]))
+    const list = []
+    for (let k = 0; k < pts.length; k++) {
+      u = norm(sub(u, T[k].map((x) => x * dot(u, T[k]))))
+      list.push({ c: pts[k], u, v: cross(T[k], u), a: rads[k], b: rads[k] })
+    }
+    if (caps) {
+      const end = (R, t, s) => [0.45, 0.8, 1].map((o, k) => ({ ...R, c: add(R.c, t, s * o * R.a), a: R.a * [0.85, 0.5, 0.02][k], b: R.b * [0.85, 0.5, 0.02][k] }))
+      list.unshift(...end(list[0], T[0], -1).reverse())
+      list.push(...end(list[list.length - 1], T[T.length - 1], 1))
+    }
+    rings(m, list, tint, { segs, uvM, flat })
+  }
+
+  /** A tapered open rod from p0 to p1. */
+  function rod(m, p0, p1, r0, r1, tint, { segs = 8, rough = 0, flat = false, uvM = WOOD_M } = {}) {
     const w = norm(sub(p1, p0)), L = Math.hypot(...sub(p1, p0))
     const u = norm(cross(Math.abs(w[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], w)), v = cross(w, u)
     const base = m.count
@@ -198,15 +264,21 @@ function kit(rng) {
       const q = (i / segs) * TAU, dir = [u[0] * Math.cos(q) + v[0] * Math.sin(q), u[1] * Math.cos(q) + v[1] * Math.sin(q), u[2] * Math.cos(q) + v[2] * Math.sin(q)]
       for (const [t, r] of [[0, r0], [1, r1]]) {
         const rr = r * (1 + (i % segs === 0 ? 0 : j(rough)))
-        const at = t === 0 ? p0 : p1
-        m.v([at[0] + dir[0] * rr, at[1] + dir[1] * rr, at[2] + dir[2] * rr], dir, flat ? FLAT : [i / segs, (t * L) / uvM], tint)
+        m.v(add(t === 0 ? p0 : p1, dir, rr), dir, flat ? FLAT : [i / segs, (t * L) / uvM], tint)
       }
     }
     for (let i = 0; i < segs; i++) m.quad(base + i * 2, base + i * 2 + 2, base + i * 2 + 3, base + i * 2 + 1)
   }
 
+  /** A crooked tube from p0 to p1 bowed `bow` sideways at its middle: a leg, a handle, a post. */
+  function limb(m, p0, p1, r0, r1, tint, { bow = 0.01, segs = 8, uvM = WOOD_M } = {}) {
+    const d = sub(p1, p0), side = norm(cross(d, [j(1), j(1), j(1)]))
+    const pts = [0, 0.25, 0.5, 0.75, 1].map((t) => add(lerp3(p0, p1, t), side, bow * Math.sin(Math.PI * t) + j(bow * 0.3) * (t > 0 && t < 1 ? 1 : 0)))
+    tube(m, pts, [0, 0.25, 0.5, 0.75, 1].map((t) => r0 + (r1 - r0) * t), tint, { segs, uvM })
+  }
+
   /** An ellipsoid at local c with radii rx, ry, rz. */
-  function blob(m, F, c, rx, ry, rz, tint, { segs = 8, rows = 6, rough = 0, flat = true } = {}) {
+  function blob(m, F, c, rx, ry, rz, tint, { segs = 12, rows = 8, rough = 0, flat = true } = {}) {
     const base = m.count
     for (let k = 0; k <= rows; k++) {
       const phi = (k / rows) * Math.PI - Math.PI / 2
@@ -222,27 +294,39 @@ function kit(rng) {
     }
   }
 
+  /** A flat disc of radius r facing `n` at `c`, textured once across (the floor's tree rings on a log's end) or tiled by `uvM`. */
+  function disc(m, c, n, r, tint, { segs = 14, uvM = 0, mound = 0 } = {}) {
+    const u = norm(cross(n, Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), v = cross(n, u)
+    const uv = (x, y) => (uvM ? [x / uvM, y / uvM] : [0.5 + (0.45 * x) / r, 0.5 + (0.45 * y) / r])
+    const mid = m.v(add(c, n, mound), n, uv(0, 0), tint), ring = []
+    for (let i = 0; i <= segs; i++) {
+      const q = (i / segs) * TAU, rr = r * (i === segs ? 1 : 1 + j(0.04)), x = Math.cos(q) * rr, y = Math.sin(q) * rr
+      ring.push(m.v(add(add(c, u, x), v, y), n, uv(x, y), tint))
+    }
+    for (let i = 0; i < segs; i++) m.tri(mid, ring[i], ring[i + 1])
+  }
+
   /** A leaf: a two-sided pointed quad from `at` along `dir`, `w` wide, facing `face`. */
   function leaf(m, at, dir, len, w, face, tint) {
     const side = norm(cross(dir, face)), n = norm(face)
-    const tip = [at[0] + dir[0] * len, at[1] + dir[1] * len, at[2] + dir[2] * len]
-    const mid = [at[0] + dir[0] * len * 0.45, at[1] + dir[1] * len * 0.45, at[2] + dir[2] * len * 0.45]
-    const l = [mid[0] + side[0] * w, mid[1] + side[1] * w, mid[2] + side[2] * w], r = [mid[0] - side[0] * w, mid[1] - side[1] * w, mid[2] - side[2] * w]
+    const tip2 = add(at, dir, len), mid = add(at, dir, len * 0.45)
+    const l = add(mid, side, w), r = add(mid, side, -w)
     for (const s of [1, -1]) {
       const nn = [n[0] * s, n[1] * s, n[2] * s]
-      const ids = [at, l, tip, r].map((p) => m.v(p, nn, FLAT, tint))
+      const ids = [at, l, tip2, r].map((p) => m.v(p, nn, FLAT, tint))
       m.quad(...ids)
     }
   }
 
-  return { j, lathe, hexa, box, rod, blob, leaf }
+  return { j, crook, lathe, box, rings, tube, rod, limb, blob, disc, leaf }
 }
 
 /**
- * The meshes for `room`, set at (ox, oy, oz). `update(t, dayness)` flickers the candles and brings the windows up with the day.
+ * The meshes for `room`, set at (ox, oy, oz); its potted mushrooms are drawn from `mushrooms`, the island's own bank and material. `update(t, dayness)` flickers the candles and brings the windows up with the day.
  */
 export class InteriorView {
-  constructor(room, tex, ox, oy, oz) {
+  constructor(room, tex, ox, oy, oz, mushrooms) {
+    if (!mushrooms?.bank || !mushrooms.material) throw new Error('InteriorView: needs the island\'s mushrooms for the pots')
     this.room = room
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
@@ -250,11 +334,12 @@ export class InteriorView {
     const rng = mulberry32(hash32(room.seed, room.index, 0x1d1))
     const K = kit(rng)
     const M = Object.fromEntries(TEX.map((id) => [id, new Mesher()]))
+    const out = { shrooms: [] }
     buildShell(room, M, K)
     for (const it of room.items) {
       const make = ITEMS[it.kind]
       if (!make) throw new Error(`InteriorView: no builder for ${it.kind}`)
-      make(it, M, K, room, rng)
+      make(it, M, K, room, rng, out)
     }
     for (const id of TEX) {
       const m = M[id]
@@ -275,6 +360,8 @@ export class InteriorView {
       mesh.frustumCulled = false
       this.group.add(mesh)
     }
+    this.shroomMeshes = buildShrooms(out.shrooms, mushrooms)
+    for (const mesh of this.shroomMeshes) this.group.add(mesh)
     this.flames = buildFlames(room.candles)
     this.group.add(this.flames.group)
   }
@@ -288,15 +375,51 @@ export class InteriorView {
 
   dispose() {
     this.group.removeFromParent()
+    // The mushrooms' material is the island's; only their instance geometry is ours.
+    const shared = new Set(this.shroomMeshes.map((m) => m.material))
     this.group.traverse((o) => {
       o.geometry?.dispose()
-      o.material?.dispose()
+      if (o.material && !shared.has(o.material)) o.material.dispose()
     })
     this.flames.dispose()
   }
 }
 
-// --- the shell: wall, floor, ceiling, openings, loft, stairs -------------------------------------
+/** One InstancedMesh per mushroom variant in the pots, on the bank's finest tier; `aPropFade` 1 is the material's never-faded. */
+function buildShrooms(list, { bank, material }) {
+  const byV = new Map()
+  for (const s of list) {
+    const v = Math.min(bank.variants.length - 1, Math.floor(s.v * bank.variants.length))
+    if (!byV.has(v)) byV.set(v, [])
+    byV.get(v).push(s)
+  }
+  const meshes = []
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), qt = new THREE.Quaternion(), ax = new THREE.Vector3(), sc = new THREE.Vector3(), pos = new THREE.Vector3()
+  for (const [v, all] of byV) {
+    const src = bank.tiers[0].geometries[v], geo = new THREE.BufferGeometry()
+    for (const [name, attr] of Object.entries(src.attributes)) geo.setAttribute(name, attr)
+    geo.setIndex(src.index)
+    geo.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(all.length).fill(1), 1))
+    const mesh = new THREE.InstancedMesh(geo, material, all.length)
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(all.length * 3), 3)
+    all.forEach((s, k) => {
+      q.setFromAxisAngle(ax.set(0, 1, 0), s.yaw)
+      qt.setFromAxisAngle(ax.set(Math.cos(s.tiltA), 0, Math.sin(s.tiltA)), s.tilt)
+      q.premultiply(qt)
+      const k1 = s.size / bank.variants[v].height
+      m4.compose(pos.set(s.x, s.y, s.z), q, sc.set(k1, k1, k1))
+      mesh.setMatrixAt(k, m4)
+      // Sun-lit material in a candle-lit room: dimmed to sit with the bake.
+      mesh.instanceColor.setXYZ(k, 0.5, 0.47, 0.42)
+    })
+    mesh.frustumCulled = false
+    mesh.name = 'interior-shrooms'
+    meshes.push(mesh)
+  }
+  return meshes
+}
+
+// --- the shell: wall, floor, ceiling, ribs, openings, loft, stairs ------------------------------
 
 /** How far the wall at bearing `a`, height `y` is pushed out into the recess of an opening. */
 function recess(room, a, y) {
@@ -312,42 +435,57 @@ function recess(room, a, y) {
 function buildShell(room, M, K) {
   const { rs, hW, H } = room
   const COLS = 300
-  // The wall's profile up from the floor's edge: the cove, the wall, the dome to the apex, as [inset from the wall, y].
+  // The wall's profile up from the floor's edge: the cove, then the wall to the ring beam, as [inset from the wall, y].
   const prof = []
   for (let k = 0; k <= 4; k++) { const q = (k / 4) * (Math.PI / 2); prof.push([FILLET * (1 - Math.sin(q)), FILLET * (1 - Math.cos(q))]) }
   const rows = Math.ceil((hW - FILLET) / 0.065)
   for (let k = 1; k <= rows; k++) prof.push([0, FILLET + ((hW - FILLET) * k) / rows])
-  const domeRows = 16
   const arc = [0]
   for (let k = 1; k < prof.length; k++) arc.push(arc[k - 1] + Math.hypot(prof[k][0] - prof[k - 1][0], prof[k][1] - prof[k - 1][1]))
-  const wallTint = hsl(room.tints.wall, 0.45)
   const around = Math.round((TAU * room.R) / WALL_M)
-  const rowCount = prof.length - 1 + domeRows
   const wallPt = (i, j) => {
-    const a = (i / COLS) * TAU, r = rAt(rs, a)
-    let rr, y, v
-    if (j < prof.length) {
-      rr = r - prof[j][0]; y = prof[j][1]; v = arc[j] / WALL_M
-    } else {
-      const k = j - prof.length + 1, phi = (k / domeRows) * (Math.PI / 2)
-      rr = r * Math.cos(phi); y = hW + (H - hW) * Math.sin(phi)
-      v = (arc[prof.length - 1] + (k / domeRows) * (H - hW + r) * 0.8) / WALL_M
-    }
-    rr += recess(room, a, y)
-    const p = [Math.cos(a) * rr, y, Math.sin(a) * rr]
-    return { p, uv: [(i / COLS) * around, v], n: j === rowCount ? [0, -1, 0] : null }
+    const a = (i / COLS) * TAU
+    const rr = rAt(rs, a) - prof[j][0] + recess(room, a, prof[j][1])
+    return { p: [Math.cos(a) * rr, prof[j][1], Math.sin(a) * rr], uv: [(i / COLS) * around, arc[j] / WALL_M] }
   }
   // Tu (round the bearing) x Tv (up the profile) looks into the room.
-  M.wall.grid(COLS, rowCount, wallPt, wallTint, 1, true)
+  M.wall.grid(COLS, prof.length - 1, wallPt, tone(room.tints.wall, 0.12, 0.1), 1, true)
 
   // The floor, in rings out to the wall's foot, its rings texture stretched once across it.
-  const floorTint = hsl(room.tints.wood, 0.55)
   const RINGS = 12, span = 2 * Math.max(...rs)
   M.floor.grid(COLS, RINGS, (i, j) => {
     const edge = wallPt(i, 0).p, t = j / RINGS
     const p = [edge[0] * t, 0, edge[2] * t]
     return { p, uv: [p[0] / span + 0.5, p[2] / span + 0.5], n: [0, 1, 0] }
-  }, floorTint, 1, true)
+  }, tone(room.tints.wood, 0.2), 1, true)
+
+  // The dome, one slab of end grain: the floor's rings, laid out by true distance from the apex so they neither tile nor pinch.
+  const DOME = 18, dome = []
+  let reach = 0
+  for (let i = 0; i <= COLS; i++) {
+    const a = (i / COLS) * TAU, r = rAt(rs, a), col = []
+    for (let j = 0; j <= DOME; j++) {
+      const phi = (j / DOME) * (Math.PI / 2)
+      col.push([Math.cos(a) * r * Math.cos(phi), hW + (H - hW) * Math.sin(phi), Math.sin(a) * r * Math.cos(phi)])
+    }
+    const s = [0]
+    for (let j = DOME - 1; j >= 0; j--) s.unshift(s[0] + Math.hypot(...sub(col[j], col[j + 1])))
+    reach = Math.max(reach, s[0])
+    dome.push({ a, col, s })
+  }
+  M.floor.grid(COLS, DOME, (i, j) => {
+    const { a, col, s } = dome[i], k = (0.48 * s[j]) / reach
+    return { p: col[j], uv: [0.5 + Math.cos(a) * k, 0.5 + Math.sin(a) * k], n: j === DOME ? [0, -1, 0] : null }
+  }, tone(room.tints.wood, 0.12), 1, true)
+
+  // The ring beam over the seam of wall and dome.
+  const beam = []
+  for (let i = 0; i <= COLS; i += 2) {
+    const a = (i / COLS) * TAU, r = rAt(rs, a), c = [Math.cos(a) * r, hW + 0.01 * Math.sin(a * 7), Math.sin(a) * r]
+    beam.push({ c, u: [0, 1, 0], v: [-Math.cos(a), 0, -Math.sin(a)], a: 0.075 + 0.008 * Math.sin(a * 5), b: 0.07 })
+  }
+  K.rings(M.grain, beam, tone(room.tints.wood, -0.07, 0.08), { segs: 10 })
+  for (const rb of room.ribs) buildRib(room, M, K, rb)
 
   // The door and panes: patches of the wall's own curve at the back of each recess.
   const disc = (m, o, tint) => {
@@ -366,33 +504,85 @@ function buildShell(room, M, K) {
   for (const w of room.windows) disc(M.window, w, [1, 1, 1])
 
   if (room.loft) buildLoft(room, M, K)
-  const wood = hsl(room.tints.wood)
-  for (const s of room.stairs) {
-    const c = []
-    for (const y of [0, s.top]) for (const [a, inset] of [[s.a0, -0.08], [s.a1, -0.08], [s.a1, s.w], [s.a0, s.w]]) {
-      const r = rAt(room.rs, a) - inset - (y > 0 ? K.j(0.015) : 0)
-      c.push([Math.cos(a) * r, y + (y > 0 ? K.j(0.01) : 0), Math.sin(a) * r])
-    }
-    K.hexa(M.grain, c, wood)
+  if (room.stairs.length) buildStairs(room, M, K)
+}
+
+/** A rib: a timber half sunk in the wall, flared at its foot, leaning as it climbs, and carried over the dome to taper into it short of the apex. */
+function buildRib(room, M, K, rb) {
+  const { rs, hW, H } = room, list = []
+  const ring = (a, c, v, w, d) => list.push({ c, u: [-Math.sin(a), 0, Math.cos(a)], v, a: w, b: d })
+  const wob = K.j(10)
+  for (let y = -0.02; y < hW; y += 0.08) {
+    const a = rb.a + (rb.lean * y) / hW + 0.004 * Math.sin(y * 4 + wob), r = rAt(rs, a)
+    const flare = 1 + 0.6 * (1 - smooth(0, 0.35, y))
+    ring(a, [Math.cos(a) * r, y, Math.sin(a) * r], [-Math.cos(a), 0, -Math.sin(a)], (rb.w / 2) * flare, rb.d * flare)
   }
+  const a = rb.a + rb.lean, r = rAt(rs, a), N = 12, end = 0.8 * (Math.PI / 2)
+  for (let k = 0; k <= N; k++) {
+    const phi = (k / N) * end, t = k / N
+    const c = [Math.cos(a) * r * Math.cos(phi), hW + (H - hW) * Math.sin(phi), Math.sin(a) * r * Math.cos(phi)]
+    const out = norm([(Math.cos(a) * Math.cos(phi)) / r, Math.sin(phi) / (H - hW), (Math.sin(a) * Math.cos(phi)) / r])
+    ring(a, c, [-out[0], -out[1], -out[2]], (rb.w / 2) * (1 - 0.45 * t), rb.d * (1 - t) ** 1.5 * 0.9 + 0.005)
+  }
+  K.rings(M.grain, list, tone(room.tints.wood, -0.08, 0.08), { segs: 12 })
+}
+
+/**
+ * The stairs as one piece carved down the wall from the loft's end: a height field along the wall (each tread's top, blended into the next over a rounded nose) swept through a rounded cross-section. Every tread is knocked a little off in height, width and tilt, and blended by the same weights, so the whole flight is crooked and nothing is square.
+ */
+function buildStairs(room, M, K) {
+  const { loft, stairs } = room
+  const dir = loft.dir, e = dir > 0 ? loft.a1 : loft.a0, W0 = stairs[0].w
+  const rc = rAt(room.rs, e) - W0 / 2
+  // Metres along the wall from the loft's end to each tread's far edge.
+  const edge = stairs.map((s) => ((dir > 0 ? s.a1 : s.a0) - e) * dir * rc)
+  const n = stairs.length
+  const jit = stairs.map(() => ({ dh: K.j(0.02), dw: K.j(0.05), tilt: K.j(0.07), dl: K.j(0.05) }))
+  const B = 0.06
+  const step = (x) => smooth(-B, B, x)
+  const t0 = -0.14, t1 = edge[n - 1] + 0.08
+  const cols = Math.ceil((t1 - t0) / 0.015)
+  const phase = K.j(10)
+  const col = []
+  for (let i = 0; i <= cols; i++) {
+    const t = t0 + ((t1 - t0) * i) / cols
+    let h = 0, W = 0, tilt = 0, dl = 0
+    for (let k = 0; k < n; k++) {
+      const w = (k === 0 ? 1 : step(t - edge[k - 1])) - step(t - edge[k])
+      h += w * (stairs[k].top + jit[k].dh); W += w * (W0 + jit[k].dw); tilt += w * jit[k].tilt; dl += w * jit[k].dl
+    }
+    // Past the last tread it runs down to the floor; under the loft it narrows into the wall.
+    W = (W + step(t - edge[n - 1]) * W0 * 0.8 + 0.012 * Math.sin(t * 23 + phase)) * smooth(t0, -0.04, t)
+    // Treads worn hollow and lumpy, not planed.
+    h += 0.007 * Math.sin(t * 31 + phase) + 0.004 * Math.sin(t * 71 + 2 * phase)
+    const ht = (inset) => Math.max(0, h + tilt * (inset - W / 2) - 0.012 * Math.sin((Math.PI * Math.min(Math.max(inset, 0), W)) / Math.max(W, 0.01)))
+    const sec = [[W - 0.02, 0], [W + 0.012, h * 0.45], [W, Math.max(0, h - 0.05)], [W - 0.018, Math.max(0, h - 0.014)], [W - 0.05, ht(W - 0.05)], [W * 0.5, ht(W * 0.5) + 0.006], [0.05, ht(0.05)], [-0.1, ht(0)]]
+    const a = e + (dir * t) / rc
+    const pts = sec.map(([inset, y], k) => { const r = rAt(room.rs, a) - inset - (k > 0 && k < 7 ? K.j(0.005) : 0); return [Math.cos(a) * r, y, Math.sin(a) * r] })
+    const s = [0]
+    for (let k = 1; k < pts.length; k++) s.push(s[k - 1] + Math.hypot(...sub(pts[k], pts[k - 1])))
+    col.push({ t, pts, s, tint: tone(room.tints.wood, -0.03 + dl, 0.08) })
+  }
+  M.grain.grid(cols, 7, (i, k) => ({ p: col[i].pts[k], uv: [col[i].t / WOOD_M, col[i].s[k] / WOOD_M], tint: col[i].tint }), null, dir)
 }
 
 function buildLoft(room, M, K) {
   const { loft } = room
-  const wood = hsl(room.tints.wood)
-  const cols = Math.max(8, Math.ceil(((loft.a1 - loft.a0) * room.R) / 0.08))
+  const wood = tone(room.tints.wood, -0.03, 0.08)
+  const cols = Math.max(8, Math.ceil(((loft.a1 - loft.a0) * room.R) / 0.05))
   const y0 = loft.y - loft.thick, y1 = loft.y
-  // The slab's cross-section at each bearing, from the wall under it round its lip to the wall over it.
-  const sect = (d) => [[-0.1, y0], [d - 0.06, y0], [d, y0 + 0.05], [d, y1 - 0.03], [d - 0.03, y1], [-0.1, y1]]
+  // The slab's cross-section at each bearing, from the wall under it round its rounded lip to the wall over it.
+  const sect = (d) => [[-0.1, y0], [d - 0.07, y0], [d - 0.02, y0 + 0.015], [d, y0 + 0.05], [d + 0.006, y1 - 0.04], [d - 0.008, y1 - 0.01], [d - 0.035, y1], [-0.1, y1]]
+  const wob = K.j(10)
   const at = (i, k) => {
-    const a = loft.a0 + (i / cols) * (loft.a1 - loft.a0), d = loftDepthAt(loft, a), r = rAt(room.rs, a)
+    const a = loft.a0 + (i / cols) * (loft.a1 - loft.a0), d = loftDepthAt(loft, a) + 0.015 * Math.sin(a * 17 + wob), r = rAt(room.rs, a)
     const [inset, y] = sect(Math.max(d, 0.02))[k]
     return { a, p: [Math.cos(a) * (r - inset), y, Math.sin(a) * (r - inset)] }
   }
   // Grain across the boards on top, along the slab below.
-  M.grain.grid(cols, 5, (i, k) => {
+  M.grain.grid(cols, 7, (i, k) => {
     const { a, p } = at(i, k)
-    return { p, uv: [((a - loft.a0) * room.R) / WOOD_M, (k + Math.hypot(p[0], p[2])) / WOOD_M] }
+    return { p, uv: [((a - loft.a0) * room.R) / WOOD_M, (k * 0.05 + Math.hypot(p[0], p[2])) / WOOD_M] }
   }, wood, 1)
   // The stair end is cut square: cap it.
   const e = loft.dir > 0 ? loft.a1 : loft.a0
@@ -413,12 +603,12 @@ function buildLoft(room, M, K) {
 }
 
 function railRun(M, K, pts, wood) {
-  const top = (p) => [p[0], p[1] + 0.45, p[2]]
-  for (let k = 0; k < pts.length; k += 2) K.rod(M.grain, pts[k], top(pts[k]), 0.028, 0.022, wood, { rough: 0.2 })
-  for (let k = 0; k < pts.length - 1; k++) {
-    K.rod(M.grain, top(pts[k]), top(pts[k + 1]), 0.03, 0.03, wood, { rough: 0.1 })
-    const mid = (p, q) => [(p[0] + q[0]) / 2, p[1] + 0.22, (p[2] + q[2]) / 2]
-    if (k % 2 === 0) K.rod(M.grain, [pts[k][0], pts[k][1] + 0.05, pts[k][2]], mid(pts[k], pts[k + 1]), 0.012, 0.012, wood)
+  const top = (p, k) => [p[0], p[1] + 0.45 + 0.012 * Math.sin(k * 1.7), p[2]]
+  for (let k = 0; k < pts.length; k += 2) K.limb(M.grain, pts[k], top(pts[k], k), 0.03, 0.024, wood, { bow: 0.012 })
+  if (pts.length > 1) K.tube(M.grain, pts.map((p, k) => top(p, k)), pts.map((_, k) => 0.03 + 0.003 * Math.sin(k * 2.3)), wood, { segs: 10 })
+  for (let k = 0; k < pts.length - 1; k += 2) {
+    const mid = [(pts[k][0] + pts[k + 1][0]) / 2, pts[k][1] + 0.22, (pts[k][2] + pts[k + 1][2]) / 2]
+    K.limb(M.grain, [pts[k][0], pts[k][1] + 0.05, pts[k][2]], mid, 0.013, 0.012, wood, { bow: 0.006, segs: 6 })
   }
 }
 
@@ -451,7 +641,8 @@ function bake(room, m) {
       const cone = smooth(0.15, 0.85, along / dl)
       win += (w.k * cone * Math.max(0.2, -dot(nn, d) / dl)) / (1 + (dl / 1.6) ** 2)
     }
-    L[i * 3] = amb; L[i * 3 + 1] = cand; L[i * 3 + 2] = win
+    // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
+    L[i * 3] = amb; L[i * 3 + 1] = 1.1 * (1 - Math.exp(-cand / 1.1)); L[i * 3 + 2] = win
   }
   m.lit = L
 }
@@ -501,158 +692,217 @@ function buildFlames(candles) {
 
 // --- the furniture and things ---------------------------------------------------
 
-const CLAY = (h) => rgb(0.05 + h * 0.08, 0.35, 0.55)
-const CREAM = rgb(0.11, 0.3, 0.85)
-const WAX = rgb(0.12, 0.45, 0.88)
-const GREEN = (k = 0) => rgb(0.26 + k * 0.08, 0.45, 0.38)
-const PASTEL = (h) => rgb(h, 0.45, 0.68)
-const DARK = rgb(0.07, 0.35, 0.28)
-const IRON = rgb(0.08, 0.1, 0.25)
+// Worn country colours: earthenware, tallow, moss, rust, iron, cord and wicker, none of them brighter than the bark outside by much.
+const CLAY = (h) => rgb(0.05 + h * 0.04, 0.36, 0.3)
+const CREAM = rgb(0.11, 0.2, 0.52)
+const WAX = rgb(0.12, 0.3, 0.72)
+const GREEN = (k = 0) => rgb(0.24 + k * 0.06, 0.3, 0.3)
+const MUTED = (h) => rgb(h, 0.22, 0.36)
+const DARK = rgb(0.07, 0.3, 0.18)
+const IRON = rgb(0.08, 0.08, 0.2)
+const TIN = rgb(0.1, 0.08, 0.38)
+const CORD = rgb(0.1, 0.25, 0.45)
+const WICKER = rgb(0.1, 0.36, 0.4)
+const BURLAP = (h) => rgb(0.08 + h * 0.03, 0.28, 0.26 + h * 0.05)
+/** A room wood tint, a touch lighter or darker per piece. */
+const woodOf = (room, K, key = 'wood', dl = -0.03) => tone(room.tints[key], dl + K.j(0.04), 0.08)
 
 /** A point against the wall at bearing `a`, `inset` in, height y. */
 const wallAt = (room, a, inset, y) => { const r = rAt(room.rs, a) - inset; return [Math.cos(a) * r, y, Math.sin(a) * r] }
+/** The yaw that faces into the room from the wall at bearing `a`. */
+const inward = (a) => Math.atan2(-Math.cos(a), -Math.sin(a))
 
-function candleOn(M, K, x, y, z, h) {
-  K.lathe(M.linen, frame(x, y, z), [[0, 0], [0.04, 0], [0.045, 0.012], [0.02, 0.014], [0.02, 0.014], [0, 0.014]], CLAY(0.3), { segs: 10, flat: true })
-  K.lathe(M.linen, frame(x, y + 0.012, z), [[0, 0], [0.017, 0], [0.018, h * 0.6], [0.016, h], [0, h + 0.004]], WAX, { segs: 8, flat: true, rough: 0.08 })
+/**
+ * A run along the wall from bearing a0 to a1 of the cross-section `sec(f)` -> [[inset, y], ...], listed from its foot on the room side up and over into the wall. Its ends round back into the wall over `endM` as `f` goes to 0 there.
+ */
+function wallRun(m, room, a0, a1, sec, tint, { endM = 0.06, step = 0.03 } = {}) {
+  const rm = rAt(room.rs, (a0 + a1) / 2), cols = Math.max(6, Math.ceil(((a1 - a0) * rm) / step)), rows = sec(1).length - 1
+  m.grid(cols, rows, (i, k) => {
+    const a = a0 + (i / cols) * (a1 - a0), f = Math.sqrt(smooth(0, endM, Math.min(a - a0, a1 - a) * rm))
+    const s = sec(f), [inset, y] = s[k]
+    let v = 0
+    for (let q = 1; q <= k; q++) v += Math.hypot(s[q][0] - s[q - 1][0], s[q][1] - s[q - 1][1])
+    return { p: wallAt(room, a, inset, y), uv: [((a - a0) * rm) / WOOD_M, v / WOOD_M] }
+  }, tint, 1)
+}
+
+function candleOn(M, K, x, y, z, h, dish = CLAY(0.3)) {
+  K.lathe(M.linen, frame(x, y, z), [[0, 0], [0.04, 0], [0.046, 0.008], [0.044, 0.014], [0.02, 0.014], [0, 0.014]], dish, { segs: 14, flat: true, rough: 0.04 })
+  K.lathe(M.linen, frame(x, y + 0.012, z), [[0, 0], [0.017, 0], [0.018, h * 0.6], [0.016, h * 0.92], [0.012, h], [0, h + 0.004]], WAX, { segs: 10, flat: true, rough: 0.08 })
+}
+
+/** A clay pot on the pot texture with soil at `soilY` (all local to F), for real mushrooms. */
+function potOn(M, K, F, r, h, soilY) {
+  K.lathe(M.pot, F, [[0, 0.003], [r * 0.62, 0], [r * 0.7, 0.012], [r * 0.86, h * 0.45], [r * 0.93, h * 0.8], [r * 1.02, h * 0.88], [r * 1.04, h * 0.97], [r * 0.99, h], [r * 0.9, h * 0.97], [r * 0.86, soilY - 0.01]], rgb(0.07, 0.18, 0.78), { segs: 18, rough: 0.025, uvM: 0.14 })
+  K.disc(M.soil, put(F, 0, soilY, 0), F.ay, r * 0.88, rgb(0.08, 0.1, 0.72), { segs: 16, uvM: 0.12, mound: 0.008 })
+}
+
+/** Queue a pot's mushrooms at room point (x, y, z): each sized to the pot. */
+function shroomsAt(out, x, y, z, r, list) {
+  for (const s of list) out.shrooms.push({ v: s.v, x: x + s.dx, y: y + s.y, z: z + s.dz, yaw: s.yaw, tilt: s.tilt, tiltA: s.tiltA, size: s.s * r * 0.8 })
 }
 
 function food(M, K, F, kind, spread, rng) {
   if (kind === 'berries') {
-    const col = rng() < 0.5 ? rgb(0.95, 0.6, 0.35) : rgb(0.72, 0.4, 0.3)
-    for (let k = 0; k < 7; k++) K.blob(M.linen, F, [K.j(spread), 0.018 + (k > 4 ? 0.02 : 0), K.j(spread)], 0.018, 0.018, 0.018, col, { segs: 6, rows: 4 })
+    const col = rng() < 0.5 ? rgb(0.97, 0.45, 0.3) : rgb(0.72, 0.3, 0.26)
+    for (let k = 0; k < 7; k++) K.blob(M.linen, F, [K.j(spread), 0.018 + (k > 4 ? 0.02 : 0), K.j(spread)], 0.018, 0.018, 0.018, col, { segs: 8, rows: 5 })
   } else if (kind === 'bread') {
-    K.blob(M.linen, F, [0, 0.03, 0], spread * 0.9, 0.035, spread * 0.6, rgb(0.08, 0.55, 0.45), { rough: 0.08 })
+    K.blob(M.linen, F, [0, 0.03, 0], spread * 0.9, 0.035, spread * 0.6, rgb(0.08, 0.45, 0.38), { rough: 0.08 })
   } else if (kind === 'apples') {
-    for (let k = 0; k < 4; k++) K.blob(M.linen, F, [K.j(spread * 0.8), 0.035 + (k === 3 ? 0.035 : 0), K.j(spread * 0.8)], 0.035, 0.032, 0.035, rng() < 0.5 ? rgb(0.02, 0.6, 0.45) : rgb(0.18, 0.55, 0.5))
+    for (let k = 0; k < 4; k++) K.blob(M.linen, F, [K.j(spread * 0.8), 0.035 + (k === 3 ? 0.035 : 0), K.j(spread * 0.8)], 0.035, 0.032, 0.035, rng() < 0.5 ? rgb(0.02, 0.45, 0.36) : rgb(0.18, 0.4, 0.4))
   } else {
     for (let k = 0; k < 4; k++) {
       const c = [K.j(spread), 0.02, K.j(spread)]
-      K.blob(M.linen, F, c, 0.018, 0.024, 0.018, rgb(0.09, 0.55, 0.42), { segs: 6, rows: 4 })
-      K.blob(M.grain, F, [c[0], c[1] + 0.018, c[2]], 0.02, 0.01, 0.02, DARK, { segs: 6, rows: 3, flat: false })
+      K.blob(M.linen, F, c, 0.018, 0.024, 0.018, rgb(0.09, 0.45, 0.33), { segs: 8, rows: 5 })
+      K.blob(M.grain, F, [c[0], c[1] + 0.018, c[2]], 0.02, 0.01, 0.02, DARK, { segs: 8, rows: 4, flat: false })
     }
+  }
+}
+
+/** A sack: a slumped lathe with a tied neck. */
+function sackAt(M, K, F, r, h, tint) {
+  K.lathe(M.linen, F, [[0, 0], [r * 0.85, 0], [r, h * 0.3], [r * 0.92, h * 0.72], [r * 0.45, h * 0.9], [r * 0.2, h * 0.95], [r * 0.3, h * 1.08], [r * 0.12, h * 1.12], [0, h * 1.1]], tint, { segs: 16, rough: 0.07, sz: 0.85, uvM: 0.25 })
+  K.lathe(M.linen, F, [[r * 0.2, h * 0.9], [r * 0.26, h * 0.93], [r * 0.2, h * 0.96]], CORD, { segs: 10, flat: true })
+}
+
+/** A plain stool: a rounded seat on three splayed legs. */
+function stoolAt(M, K, F, r, h, wood) {
+  K.lathe(M.grain, F, [[0, h - 0.045], [r - 0.02, h - 0.045], [r + 0.006, h - 0.03], [r + 0.008, h - 0.012], [r - 0.014, h], [0, h + 0.004]], wood, { segs: 20, rough: 0.05 })
+  for (let k = 0; k < 3; k++) {
+    const q = (k / 3) * TAU + K.j(0.2)
+    K.limb(M.grain, put(F, Math.cos(q) * r * 0.95, 0, Math.sin(q) * r * 0.95), put(F, Math.cos(q) * r * 0.55, h - 0.04, Math.sin(q) * r * 0.55), 0.022, 0.019, wood, { bow: 0.008 })
   }
 }
 
 const ITEMS = {
   table(it, M, K, room) {
-    const tint = hsl(room.tints.table), T = it.top
-    K.lathe(M.grain, frame(it.x, 0, it.z, it.spin), [[0, T - 0.07], [it.r - 0.03, T - 0.07], [it.r, T - 0.04], [it.r, T - 0.015], [it.r - 0.02, T], [0, T]], tint, { segs: 18, rough: 0.05 })
+    const tint = tone(room.tints.table, -0.12 + K.j(0.03), 0.14), T = it.top, F = K.crook(frame(it.x, 0, it.z, it.spin), 0.015)
+    K.lathe(M.grain, F, [[0, T - 0.065], [it.r - 0.04, T - 0.065], [it.r - 0.008, T - 0.05], [it.r + 0.004, T - 0.03], [it.r, T - 0.012], [it.r - 0.018, T], [0, T + 0.003]], tint, { segs: 32, rough: 0.035 })
     for (let k = 0; k < it.legs; k++) {
-      const q = it.spin + (k / it.legs) * TAU
-      const lo = [it.x + Math.cos(q) * it.r * 0.72, 0, it.z + Math.sin(q) * it.r * 0.72], hi = [it.x + Math.cos(q) * it.r * 0.5, T - 0.07, it.z + Math.sin(q) * it.r * 0.5]
-      K.rod(M.grain, lo, hi, 0.05, 0.04, tint, { rough: 0.15, segs: 7 })
+      const q = (k / it.legs) * TAU
+      K.limb(M.grain, put(F, Math.cos(q) * it.r * 0.74, 0, Math.sin(q) * it.r * 0.74), put(F, Math.cos(q) * it.r * 0.5, T - 0.06, Math.sin(q) * it.r * 0.5), 0.05, 0.04, tint, { bow: 0.02, segs: 10 })
     }
   },
 
   chair(it, M, K, room, rng) {
-    const tint = hsl({ ...room.tints.wood, l: room.tints.wood.l * (0.85 + rng() * 0.3) }), F = frame(it.x, 0, it.z, it.yaw + K.j(0.15)), S = it.top, r = it.r
+    const tint = woodOf(room, K), F = K.crook(frame(it.x, 0, it.z, it.yaw + K.j(0.12)), 0.03), S = it.top, r = it.r
     if (it.style === 2) {
-      K.lathe(M.grain, F, [[0, 0], [r + 0.02, 0], [r, 0.05], [r * 0.95, S - 0.01], [r * 0.9, S], [0, S]], tint, { segs: 10, rough: 0.12 })
+      K.lathe(M.grain, F, [[0, 0], [r + 0.025, 0], [r + 0.01, 0.03], [r * 0.93, 0.1], [r * 0.9, S - 0.03], [r * 0.93, S - 0.012], [r * 0.85, S], [0, S + 0.004]], tint, { segs: 20, rough: 0.07 })
     } else {
-      if (it.style === 0) K.box(M.grain, F, 0, S - 0.03, 0, r, 0.03, r, tint, { rough: 0.02 })
-      else K.lathe(M.grain, F, [[0, S - 0.055], [r, S - 0.055], [r + 0.01, S - 0.02], [r - 0.01, S], [0, S]], tint, { segs: 10, rough: 0.08 })
-      const n = it.style === 0 ? 4 : 3
+      if (it.style === 0) K.box(M.grain, F, 0, S - 0.028, 0, r, 0.028, r, tint, { round: 0.45, rows: 6, crook: 0.012 })
+      else K.lathe(M.grain, F, [[0, S - 0.05], [r - 0.02, S - 0.05], [r + 0.008, S - 0.035], [r + 0.01, S - 0.015], [r - 0.012, S], [0, S + 0.004]], tint, { segs: 20, rough: 0.05 })
+      const n = it.style === 0 ? 4 : 3, feet = []
       for (let k = 0; k < n; k++) {
-        const q = (k / n) * TAU + Math.PI / 4
-        K.rod(M.grain, put(F, Math.cos(q) * r * 0.95, 0, Math.sin(q) * r * 0.95), put(F, Math.cos(q) * r * 0.6, S - 0.05, Math.sin(q) * r * 0.6), 0.03, 0.026, tint, { rough: 0.2 })
+        const q = (k / n) * TAU + Math.PI / 4, foot = put(F, Math.cos(q) * r * 1.0, 0, Math.sin(q) * r * 1.0)
+        feet.push(put(F, Math.cos(q) * r * 0.86, 0.07, Math.sin(q) * r * 0.86))
+        K.limb(M.grain, foot, put(F, Math.cos(q) * r * 0.62, S - 0.045, Math.sin(q) * r * 0.62), 0.027, 0.023, tint, { bow: 0.01 })
       }
+      if (it.style === 0) for (let k = 0; k < n; k += 2) K.limb(M.grain, feet[k], feet[(k + 1) % n], 0.012, 0.012, tint, { bow: 0.006, segs: 6 })
     }
     if (it.back > 0) {
-      const zb = -(r - 0.03)
-      for (const x of [-r * 0.75, r * 0.75]) K.rod(M.grain, put(F, x, S - 0.02, zb), put(F, x * 1.05, it.back, zb - 0.04), 0.026, 0.022, tint, { rough: 0.2 })
-      K.box(M.grain, F, 0, it.back - 0.05, zb - 0.035, r * 0.9, 0.06, 0.025, tint, { rough: 0.02 })
+      const zb = -(r - 0.035), B = it.back
+      for (const x of [-r * 0.72, r * 0.72]) K.tube(M.grain, [put(F, x, S - 0.03, zb), put(F, x * 1.02, (S + B) / 2, zb - 0.025), put(F, x * 1.05, B, zb - 0.06)], [0.024, 0.021, 0.02], tint)
+      const rail = (y, rr, cup) => K.tube(M.grain, [-1, -0.5, 0, 0.5, 1].map((u) => put(F, u * r * 0.8, y + 0.018 * (1 - u * u), zb - 0.06 * ((y - S) / (B - S)) - cup * (1 - u * u))), [rr, rr * 1.1, rr * 1.15, rr * 1.1, rr], tint, { segs: 10 })
+      rail(B - 0.035, 0.028, 0.025)
+      rail((S + B) / 2 + 0.02, 0.016, 0.018)
     }
+    if (it.cushion) K.blob(M.linen, F, [0, S + 0.016, 0.01], r * 0.86, 0.022, r * 0.84, tone(room.tints.cloth, -0.06 + K.j(0.03), -0.1), { segs: 16, rows: 6, flat: false, rough: 0.05 })
+    void rng
   },
 
   plate(it, M, K, room, rng) {
     const F = frame(it.x, it.y, it.z)
-    K.lathe(M.linen, F, [[0, 0], [0.09, 0], [0.11, 0.018], [0.1, 0.02], [0.08, 0.008], [0, 0.008]], CLAY(rng()), { segs: 12, flat: true })
-    if (it.food) food(M, K, frame(it.x, it.y + 0.008, it.z), it.food, 0.04, rng)
+    K.lathe(M.linen, F, [[0, 0], [0.085, 0], [0.108, 0.016], [0.106, 0.021], [0.08, 0.009], [0, 0.009]], CLAY(rng()), { segs: 18, flat: true, rough: 0.02 })
+    if (it.food) food(M, K, frame(it.x, it.y + 0.009, it.z), it.food, 0.04, rng)
   },
 
   cup(it, M, K, room, rng) {
-    K.lathe(M.linen, frame(it.x, it.y, it.z), [[0, 0], [0.03, 0], [0.036, 0.065], [0.03, 0.065], [0.026, 0.01], [0, 0.01]], CLAY(rng()), { segs: 10, flat: true })
+    const F = K.crook(frame(it.x, it.y, it.z, rng() * TAU), 0.04)
+    K.lathe(M.linen, F, [[0, 0], [0.03, 0], [0.035, 0.035], [0.037, 0.065], [0.032, 0.066], [0.029, 0.012], [0, 0.012]], CLAY(rng()), { segs: 14, flat: true, rough: 0.03 })
+    K.tube(M.linen, [put(F, 0.034, 0.052, 0), put(F, 0.055, 0.045, 0), put(F, 0.056, 0.025, 0), put(F, 0.034, 0.018, 0)], [0.006, 0.007, 0.007, 0.006], CLAY(rng()), { segs: 6, flat: true, caps: false })
   },
 
   vase(it, M, K, room, rng) {
-    const F = frame(it.x, it.y, it.z)
-    K.lathe(M.linen, F, [[0, 0], [0.05, 0], [0.065, 0.06], [0.03, 0.13], [0.04, 0.15], [0.03, 0.15], [0, 0.12]], CLAY(rng()), { segs: 12, flat: true })
+    const F = K.crook(frame(it.x, it.y, it.z), 0.04)
+    K.lathe(M.linen, F, [[0, 0], [0.05, 0], [0.066, 0.06], [0.034, 0.12], [0.03, 0.13], [0.042, 0.15], [0.032, 0.152], [0, 0.12]], CLAY(rng()), { segs: 16, flat: true, rough: 0.03 })
     for (let k = 0; k < it.flowers; k++) {
       const q = (k / it.flowers) * TAU, lean = 0.05 + rng() * 0.05
       const head = put(F, Math.cos(q) * lean, 0.26 + rng() * 0.08, Math.sin(q) * lean)
       K.rod(M.linen, put(F, 0, 0.12, 0), head, 0.004, 0.004, GREEN(), { segs: 4, flat: true })
-      const col = rgb(it.hue + k * 0.07, 0.6, 0.65)
+      const col = rgb(it.hue + k * 0.07, 0.35, 0.52)
       for (let p = 0; p < 5; p++) {
         const pq = (p / 5) * TAU
         K.leaf(M.linen, head, [Math.cos(pq), 0.3, Math.sin(pq)], 0.035, 0.015, [0, 1, 0], col)
       }
-      K.blob(M.linen, frame(...head), [0, 0.005, 0], 0.01, 0.01, 0.01, rgb(0.13, 0.8, 0.55), { segs: 5, rows: 3 })
+      K.blob(M.linen, frame(...head), [0, 0.005, 0], 0.01, 0.01, 0.01, rgb(0.13, 0.5, 0.5), { segs: 6, rows: 4 })
     }
   },
 
   bowl(it, M, K, room, rng) {
-    K.lathe(M.grain, frame(it.x, it.y, it.z), [[0, 0], [0.07, 0], [0.13, 0.06], [0.12, 0.065], [0.06, 0.012], [0, 0.012]], hsl(room.tints.wood), { segs: 14 })
-    food(M, K, frame(it.x, it.y + 0.012, it.z), it.food, 0.05, rng)
+    K.lathe(M.grain, K.crook(frame(it.x, it.y, it.z), 0.03), [[0, 0], [0.07, 0], [0.12, 0.045], [0.132, 0.062], [0.122, 0.066], [0.06, 0.014], [0, 0.014]], woodOf(room, K), { segs: 20, rough: 0.03 })
+    food(M, K, frame(it.x, it.y + 0.014, it.z), it.food, 0.05, rng)
   },
 
   candle(it, M, K) { candleOn(M, K, it.x, it.y, it.z, it.h) },
 
   counter(it, M, K, room) {
-    const wood = hsl(room.tints.wood), topTint = hsl(room.tints.table)
-    const segs = Math.max(2, Math.ceil(((it.a1 - it.a0) * room.R) / 0.3))
-    const face = (a, inset, y) => wallAt(room, a, inset, y)
-    for (let s = 0; s < segs; s++) {
-      const a0 = it.a0 + ((it.a1 - it.a0) * s) / segs, a1 = it.a0 + ((it.a1 - it.a0) * (s + 1)) / segs
-      const d = FILLET + it.depth
-      K.hexa(M.grain, [face(a0, -0.05, 0), face(a1, -0.05, 0), face(a1, d - 0.03, 0), face(a0, d - 0.03, 0), face(a0, -0.05, it.top - 0.05), face(a1, -0.05, it.top - 0.05), face(a1, d - 0.03, it.top - 0.05), face(a0, d - 0.03, it.top - 0.05)], wood)
-      K.hexa(M.grain, [face(a0, -0.05, it.top - 0.05), face(a1, -0.05, it.top - 0.05), face(a1, d + 0.02, it.top - 0.05), face(a0, d + 0.02, it.top - 0.05), face(a0, -0.05, it.top), face(a1, -0.05, it.top), face(a1, d + 0.02, it.top), face(a0, d + 0.02, it.top)], topTint)
+    const wood = woodOf(room, K), topTint = woodOf(room, K, 'table', -0.06), d = FILLET + it.depth, T = it.top
+    wallRun(M.grain, room, it.a0, it.a1, (f) => [[(d - 0.07) * f, 0], [(d - 0.065) * f, 0.06], [(d - 0.02) * f, 0.085], [(d - 0.012) * f, T - 0.08], [(d - 0.03) * f, T - 0.05], [-0.05, T - 0.05]], wood)
+    wallRun(M.grain, room, it.a0 - 0.02 / room.R, it.a1 + 0.02 / room.R, (f) => [[(d - 0.02) * f, T - 0.056], [(d + 0.025) * f, T - 0.05], [(d + 0.04) * f, T - 0.032], [(d + 0.034) * f, T - 0.008], [(d + 0.012) * f, T], [-0.05, T]], topTint)
+    // Cupboard doors along its front, each with a knob.
+    const rm = rAt(room.rs, (it.a0 + it.a1) / 2), n = Math.max(2, Math.round(((it.a1 - it.a0) * rm) / 0.34))
+    for (let k = 0; k < n; k++) {
+      const a = it.a0 + ((it.a1 - it.a0) * (k + 0.5)) / n, p = wallAt(room, a, d - 0.012, (T - 0.05 + 0.1) / 2)
+      const F = K.crook(frame(...p, inward(a)), 0.02), hw = ((it.a1 - it.a0) * rm) / n / 2 - 0.025
+      K.box(M.grain, F, 0, 0, 0, hw, (T - 0.2) / 2, 0.012, tone(room.tints.wood, 0 + K.j(0.04), 0.08), { round: 0.35, segs: 8, rows: 4, crook: 0.006 })
+      K.blob(M.grain, F, [(k % 2 ? -1 : 1) * (hw - 0.04), 0.03, 0.02], 0.014, 0.014, 0.012, DARK, { segs: 8, rows: 5, flat: false })
     }
     // A shelf of plates on the wall above.
     const shelfY = Math.min(1.25, room.hW - 0.3)
     if (!room.loft || loftDepthAt(room.loft, (it.a0 + it.a1) / 2) < 0.4) {
       const m0 = it.a0 + (it.a1 - it.a0) * 0.2, m1 = it.a1 - (it.a1 - it.a0) * 0.2
-      K.hexa(M.grain, [face(m0, -0.05, shelfY - 0.03), face(m1, -0.05, shelfY - 0.03), face(m1, 0.22, shelfY - 0.03), face(m0, 0.22, shelfY - 0.03), face(m0, -0.05, shelfY), face(m1, -0.05, shelfY), face(m1, 0.22, shelfY), face(m0, 0.22, shelfY)], wood)
+      wallRun(M.grain, room, m0, m1, (f) => [[0.2 * f, shelfY - 0.035], [0.225 * f, shelfY - 0.02], [0.215 * f, shelfY], [-0.05, shelfY]], wood)
+      for (const a of [m0 + 0.06 / rm, m1 - 0.06 / rm]) K.tube(M.grain, [wallAt(room, a, 0, shelfY - 0.2), wallAt(room, a, 0.06, shelfY - 0.12), wallAt(room, a, 0.16, shelfY - 0.04)], [0.018, 0.016, 0.014], wood)
       for (let k = 0; k < 3; k++) {
-        const a = m0 + ((m1 - m0) * (k + 0.5)) / 3, p = face(a, 0.08, shelfY)
-        const F = { x: p[0], y: p[1], z: p[2], c: 1, s: 0 }
-        K.lathe(M.linen, F, [[0, 0], [0.05, 0], [0.07, 0.06], [0.06, 0.065], [0, 0.01]], CLAY(k * 0.3), { segs: 10, flat: true })
+        const a = m0 + ((m1 - m0) * (k + 0.5)) / 3, p = wallAt(room, a, 0.1, shelfY)
+        K.lathe(M.linen, K.crook(frame(...p), 0.05), [[0, 0], [0.05, 0], [0.07, 0.055], [0.064, 0.062], [0.045, 0.012], [0, 0.012]], CLAY(k * 0.3), { segs: 14, flat: true })
       }
     }
   },
 
-  basin(it, M, K, room) {
-    const F = frame(it.x, it.y, it.z)
-    K.lathe(M.linen, F, [[0, 0], [it.r * 0.7, 0], [it.r, 0.09], [it.r - 0.015, 0.095], [it.r * 0.65, 0.02], [0, 0.02]], CLAY(0.2), { segs: 14, flat: true })
-    K.lathe(M.linen, frame(it.x, it.y + 0.07, it.z), [[0, 0], [it.r * 0.9, 0], [0, 0]], rgb(0.55, 0.35, 0.45), { segs: 14, flat: true })
+  basin(it, M, K) {
+    const F = K.crook(frame(it.x, it.y, it.z), 0.02)
+    K.lathe(M.linen, F, [[0, 0], [it.r * 0.7, 0], [it.r * 0.95, 0.06], [it.r, 0.09], [it.r - 0.015, 0.096], [it.r * 0.65, 0.02], [0, 0.02]], CLAY(0.2), { segs: 20, flat: true, rough: 0.02 })
+    K.lathe(M.linen, frame(it.x, it.y + 0.07, it.z), [[0, 0], [it.r * 0.9, 0], [0, 0]], rgb(0.5, 0.18, 0.3), { segs: 20, flat: true })
   },
 
   jar(it, M, K) {
-    const h = it.h, F = frame(it.x, it.y, it.z, it.yaw)
-    K.lathe(M.linen, F, [[0, 0], [0.045, 0], [0.055, h * 0.5], [0.04, h * 0.85], [0.032, h * 0.88], [0.032, h], [0, h]], PASTEL(it.hue), { segs: 10, flat: true })
-    K.blob(M.linen, F, [0, h, 0], 0.036, 0.015, 0.036, CREAM, { segs: 8, rows: 4 })
+    const h = it.h, F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.04)
+    K.lathe(M.linen, F, [[0, 0], [0.045, 0], [0.055, h * 0.5], [0.04, h * 0.85], [0.032, h * 0.88], [0.032, h], [0, h]], MUTED(it.hue), { segs: 14, flat: true, rough: 0.03 })
+    K.blob(M.linen, F, [0, h, 0], 0.037, 0.016, 0.037, CREAM, { segs: 12, rows: 5, rough: 0.1 })
+    K.lathe(M.linen, F, [[0.033, h * 0.9], [0.038, h * 0.93], [0.033, h * 0.96]], CORD, { segs: 12, flat: true })
   },
 
   crock(it, M, K) {
-    const h = it.h * 0.8, F = frame(it.x, it.y, it.z, it.yaw)
-    K.lathe(M.linen, F, [[0, 0], [0.06, 0], [0.07, h * 0.6], [0.055, h], [0.055, h], [0, h]], CLAY(it.hue), { segs: 12, flat: true })
+    const h = it.h * 0.8, F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.03)
+    K.lathe(M.pot, F, [[0, 0], [0.06, 0], [0.072, h * 0.6], [0.058, h * 0.95], [0.062, h], [0.05, h], [0, h * 0.97]], rgb(0.08, 0.15, 0.8), { segs: 16, uvM: 0.12, rough: 0.02 })
   },
 
-  loaf(it, M, K) { K.blob(M.linen, frame(it.x, it.y, it.z, it.yaw), [0, 0.04, 0], 0.09, 0.05, 0.06, rgb(0.08, 0.55, 0.45), { rough: 0.06 }) },
+  loaf(it, M, K) { K.blob(M.linen, frame(it.x, it.y, it.z, it.yaw), [0, 0.04, 0], 0.09, 0.05, 0.06, rgb(0.08, 0.45, 0.38), { rough: 0.06 }) },
 
   cheese(it, M, K) {
     const F = frame(it.x, it.y, it.z, it.yaw)
-    K.lathe(M.linen, F, [[0, 0], [0.07, 0], [0.075, 0.03], [0.07, 0.06], [0.07, 0.06], [0, 0.06]], rgb(0.13, 0.7, 0.6), { segs: 12, flat: true })
+    K.lathe(M.linen, F, [[0, 0], [0.07, 0], [0.076, 0.012], [0.076, 0.048], [0.07, 0.06], [0, 0.06]], rgb(0.12, 0.45, 0.55), { segs: 16, flat: true })
   },
 
   herbs(it, M, K, room, rng) {
     const p0 = wallAt(room, it.a0, it.inset, it.y), p1 = wallAt(room, it.a1, it.inset, it.y)
-    K.rod(M.grain, p0, p1, 0.015, 0.015, hsl(room.tints.wood))
+    K.limb(M.grain, p0, p1, 0.015, 0.015, woodOf(room, K), { bow: 0.01 })
     for (const [a, p] of [[it.a0, p0], [it.a1, p1]]) K.rod(M.grain, wallAt(room, a, -0.02, it.y), p, 0.01, 0.01, DARK)
     for (let k = 0; k < it.n; k++) {
       const t = (k + 0.5) / it.n, top = [p0[0] + (p1[0] - p0[0]) * t, it.y, p0[2] + (p1[2] - p0[2]) * t]
-      const len = 0.18 + rng() * 0.1, col = rng() < 0.3 ? rgb(0.12, 0.35, 0.45) : GREEN(rng())
-      K.rod(M.linen, top, [top[0], top[1] - 0.05, top[2]], 0.004, 0.004, CREAM, { segs: 4, flat: true })
+      const len = 0.18 + rng() * 0.1, col = rng() < 0.3 ? rgb(0.12, 0.28, 0.4) : GREEN(rng())
+      K.rod(M.linen, top, [top[0], top[1] - 0.05, top[2]], 0.004, 0.004, CORD, { segs: 4, flat: true })
       for (let s = 0; s < 7; s++) {
         const q = rng() * TAU, spread = 0.2 + rng() * 0.3
         K.leaf(M.linen, [top[0], top[1] - 0.04, top[2]], norm([Math.cos(q) * spread, -1, Math.sin(q) * spread]), len, 0.02, [Math.sin(q), 0, -Math.cos(q)], col)
@@ -660,32 +910,62 @@ const ITEMS = {
     }
   },
 
-  sack(it, M, K) {
-    const r = it.r, h = it.h
-    K.lathe(M.linen, frame(it.x, 0, it.z, it.yaw), [[0, 0], [r * 0.85, 0], [r, h * 0.3], [r * 0.92, h * 0.72], [r * 0.45, h * 0.9], [r * 0.2, h * 0.95], [r * 0.3, h * 1.08], [0, h * 1.1]], rgb(0.1, 0.3, 0.62), { segs: 12, rough: 0.07, sz: 0.85 })
+  sack(it, M, K) { sackAt(M, K, K.crook(frame(it.x, it.y, it.z, it.yaw), 0.12), it.r, it.h, BURLAP(it.hue)) },
+
+  sacks(it, M, K, room, rng) {
+    const n = Math.min(5, Math.max(3, it.n)), rs = it.r * 0.5
+    for (let k = 0; k < n; k++) {
+      const q = it.yaw + (k / n) * TAU, d = k === 0 ? 0 : it.r - rs * 0.85
+      sackAt(M, K, K.crook(frame(it.x + Math.cos(q) * d, 0, it.z + Math.sin(q) * d, rng() * TAU), 0.18), rs * (0.9 + rng() * 0.2), 0.3 + rng() * 0.12, BURLAP(rng()))
+    }
   },
 
   barrel(it, M, K, room) {
-    const r = it.r, h = it.h, F = frame(it.x, 0, it.z, it.yaw), wood = hsl(room.tints.wood)
-    K.lathe(M.grain, F, [[0, 0], [r * 0.88, 0], [r, h * 0.5], [r * 0.88, h], [r * 0.88, h], [0, h]], wood, { segs: 14, rough: 0.02 })
-    for (const y of [0.15, 0.85]) K.lathe(M.grain, frame(it.x, h * y - 0.015, it.z), [[r * 0.94, 0], [r * 0.99 + 0.006, 0], [r * 0.99 + 0.006, 0.03], [r * 0.94, 0.03]], IRON, { segs: 14, flat: true })
+    const r = it.r, h = it.h, F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.02), wood = woodOf(room, K)
+    K.lathe(M.grain, F, [[0, 0.01], [r * 0.86, 0], [r * 0.9, 0.02], [r, h * 0.5], [r * 0.9, h - 0.02], [r * 0.86, h], [r * 0.8, h - 0.012], [0, h - 0.015]], wood, { segs: 22, rough: 0.015, lobes: [22, 0.012] })
+    for (const y of [0.14, 0.86]) {
+      const ry = r * (1 - 0.5 * (0.5 - y) ** 2 * 0.56 * 2) + 0.004
+      K.lathe(M.grain, frame(it.x, it.y + h * y - 0.016, it.z), [[ry - 0.004, 0], [ry + 0.004, 0.004], [ry + 0.005, 0.028], [ry - 0.004, 0.032]], IRON, { segs: 22, flat: true })
+    }
+  },
+
+  crate(it, M, K, room) {
+    let y = it.y
+    for (let L = 0; L < it.stack; L++) {
+      const s = it.s * (L ? 0.88 : 1), hs = s / 2, F = K.crook(frame(it.x, y, it.z, it.yaw + (L ? K.j(0.3) : 0)), 0.02), wood = woodOf(room, K, 'wood', 0)
+      const o = { round: 0.3, segs: 8, rows: 4, crook: 0.004 }
+      K.box(M.grain, F, 0, hs, 0, hs - 0.02, hs - 0.012, hs - 0.02, tone(room.tints.wood, -0.22, 0.08), o)
+      for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) K.box(M.grain, F, x * (hs - 0.022), hs, z * (hs - 0.022), 0.024, hs, 0.024, wood, o)
+      for (let k = 0; k < 3; k++) {
+        const sy = 0.05 + ((s - 0.1) * k) / 2
+        for (const side of [-1, 1]) {
+          K.box(M.grain, F, 0, sy, side * (hs - 0.008), hs - 0.03, 0.034, 0.011, wood, o)
+          K.box(M.grain, F, side * (hs - 0.008), sy, 0, 0.011, 0.034, hs - 0.03, wood, o)
+        }
+      }
+      for (let k = -1; k <= 1; k++) K.box(M.grain, F, k * hs * 0.64, s - 0.012, 0, hs * 0.3, 0.012, hs - 0.01, wood, o)
+      y += s
+    }
   },
 
   armchair(it, M, K, room) {
-    const F = frame(it.x, 0, it.z, it.yaw), wood = hsl(room.tints.wood), cloth = hsl(room.tints.cloth, 0.1)
-    K.box(M.grain, F, 0, 0.08, 0, 0.3, 0.08, 0.26, wood, { rough: 0.02 })
-    K.box(M.grain, F, 0, 0.36, -0.22, 0.3, 0.2, 0.07, wood, { rough: 0.03 })
-    for (const x of [-0.26, 0.26]) K.box(M.grain, F, x, 0.24, -0.02, 0.05, 0.1, 0.24, wood, { rough: 0.02 })
-    K.blob(M.linen, F, [0, 0.19, 0.02], 0.22, 0.04, 0.22, cloth, { flat: false })
-    K.blob(M.linen, F, [0, 0.38, -0.13], 0.22, 0.14, 0.04, cloth, { flat: false })
+    const F = K.crook(frame(it.x, 0, it.z, it.yaw), 0.02), wood = woodOf(room, K), cloth = tone(room.tints.cloth, -0.06, -0.1)
+    K.box(M.grain, F, 0, 0.1, 0, 0.29, 0.07, 0.25, wood, { round: 0.4 })
+    const Fb = tip(F, 'ax', -0.18)
+    K.box(M.grain, Fb, 0, 0.38, -0.2, 0.29, 0.22, 0.065, wood, { round: 0.45, crook: 0.015 })
+    for (const x of [-0.26, 0.26]) K.box(M.grain, F, x, 0.22, -0.02, 0.055, 0.1, 0.24, wood, { round: 0.5, rows: 6, crook: 0.012 })
+    for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) K.lathe(M.grain, frame(...put(F, x * 0.24, 0, z * 0.2)), [[0, 0], [0.03, 0], [0.036, 0.02], [0.03, 0.035], [0, 0.036]], wood, { segs: 10 })
+    K.blob(M.linen, F, [0, 0.2, 0.03], 0.22, 0.05, 0.21, cloth, { segs: 18, rows: 8, flat: false, rough: 0.04 })
+    K.blob(M.linen, Fb, [0, 0.4, -0.12], 0.21, 0.16, 0.05, cloth, { segs: 18, rows: 8, flat: false, rough: 0.04 })
+    for (const x of [-0.26, 0.26]) K.blob(M.linen, F, [x, 0.32, 0.0], 0.06, 0.035, 0.2, cloth, { segs: 12, rows: 6, flat: false })
   },
 
   sidetable(it, M, K, room) {
-    const F = frame(it.x, 0, it.z), wood = hsl(room.tints.table)
-    K.lathe(M.grain, F, [[0, it.top - 0.04], [it.r, it.top - 0.04], [it.r, it.top], [0, it.top]], wood, { segs: 12, rough: 0.05 })
+    const F = K.crook(frame(it.x, 0, it.z), 0.02), wood = woodOf(room, K, 'table', -0.06), T = it.top
+    K.lathe(M.grain, F, [[0, T - 0.04], [it.r - 0.02, T - 0.04], [it.r + 0.004, T - 0.025], [it.r, T - 0.008], [it.r - 0.015, T], [0, T + 0.002]], wood, { segs: 22, rough: 0.04 })
     for (let k = 0; k < 3; k++) {
       const q = (k / 3) * TAU
-      K.rod(M.grain, put(F, Math.cos(q) * it.r * 0.8, 0, Math.sin(q) * it.r * 0.8), put(F, Math.cos(q) * it.r * 0.5, it.top - 0.04, Math.sin(q) * it.r * 0.5), 0.02, 0.018, wood, { rough: 0.2 })
+      K.limb(M.grain, put(F, Math.cos(q) * it.r * 0.85, 0, Math.sin(q) * it.r * 0.85), put(F, Math.cos(q) * it.r * 0.5, T - 0.04, Math.sin(q) * it.r * 0.5), 0.021, 0.018, wood, { bow: 0.01 })
     }
   },
 
@@ -693,83 +973,91 @@ const ITEMS = {
     let y = 0
     for (let k = 0; k < it.n; k++) {
       const hy = 0.012 + rng() * 0.01
-      K.box(M.linen, frame(it.x, it.y, it.z, it.yaw + K.j(0.4)), 0, y + hy, 0, 0.055 + rng() * 0.02, hy, 0.075, rgb(rng(), 0.45, 0.4), { flat: true, rough: 0.003 })
+      K.box(M.linen, frame(it.x, it.y, it.z, it.yaw + K.j(0.4)), 0, y + hy, 0, 0.055 + rng() * 0.02, hy, 0.075, rgb(rng(), 0.28, 0.28 + rng() * 0.12), { flat: true, round: 0.2, segs: 8, rows: 4, crook: 0.003 })
       y += hy * 2
     }
   },
 
-  rug(it, M, K, room) {
-    const segs = 24, F = frame(it.x, 0.006, it.z), col = rgb(it.hue, 0.35, 0.55, 0.2)
-    const c = M.linen.v(put(F, 0, 0, 0), [0, 1, 0], [0.5, 0.5], col)
-    const ring = []
-    for (let i = 0; i <= segs; i++) {
-      const q = (i / segs) * TAU, r = it.r * (i === segs ? 1 : 1 + K.j(0.06))
-      ring.push(M.linen.v(put(F, Math.cos(q) * r, 0, Math.sin(q) * r), [0, 1, 0], [0.5 + Math.cos(q) * r * 2, 0.5 + Math.sin(q) * r * 2], col))
+  rug(it, M, K) {
+    const segs = 40, F = frame(it.x, 0.006, it.z), cols = [rgb(it.hue, 0.14, 0.28), rgb(it.hue + 0.05, 0.12, 0.22), rgb(it.hue, 0.14, 0.28)]
+    const wob = Array.from({ length: segs }, () => 1 + K.j(0.05))
+    const at = (i, t) => { const q = (i / segs) * TAU, r = it.r * t * wob[i % segs]; return put(F, Math.cos(q) * r, 0, Math.sin(q) * r) }
+    const c = M.linen.v(put(F, 0, 0, 0), [0, 1, 0], [0.5, 0.5], cols[0])
+    let prev = null
+    for (const [ri, t] of [[0, 0.55], [1, 0.8], [2, 1]]) {
+      const ring = []
+      for (let i = 0; i <= segs; i++) { const p = at(i, t); ring.push(M.linen.v(p, [0, 1, 0], [(p[0] - it.x) * 2, (p[2] - it.z) * 2], cols[ri])) }
+      for (let i = 0; i < segs; i++) {
+        if (prev) M.linen.quad(prev[i], prev[i + 1], ring[i + 1], ring[i])
+        else M.linen.tri(c, ring[i], ring[i + 1])
+      }
+      prev = ring
     }
-    for (let i = 0; i < segs; i++) M.linen.tri(c, ring[i], ring[i + 1])
   },
 
   bed(it, M, K, room) {
-    const F = frame(it.x, it.y, it.z, it.yaw), wood = hsl(room.tints.wood), hl = it.len / 2, hw = it.wid / 2
-    K.box(M.grain, F, 0, 0.06, 0, hw, 0.06, hl, wood, { rough: 0.02 })
-    K.box(M.grain, F, 0, 0.3, hl - 0.04, hw + 0.02, 0.3, 0.04, wood, { rough: 0.03 })
-    K.box(M.linen, F, 0, 0.16, 0, hw - 0.03, 0.04, hl - 0.05, CREAM, { rough: 0.01 })
-    K.blob(M.linen, F, [0, 0.23, hl - 0.18], hw * 0.7, 0.05, 0.1, CREAM, { flat: false })
-    K.box(M.linen, F, 0, 0.19, -hl * 0.25, hw + 0.02, 0.03, hl * 0.72, hsl(room.tints.cloth2, 0.1), { rough: 0.015 })
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.015), wood = woodOf(room, K), hl = it.len / 2, hw = it.wid / 2
+    K.box(M.grain, F, 0, 0.075, 0, hw, 0.065, hl, wood, { round: 0.35 })
+    K.box(M.grain, F, 0, 0.27, hl - 0.04, hw + 0.03, 0.27, 0.045, wood, { round: 0.45, crook: 0.02 })
+    K.tube(M.grain, [-1, -0.5, 0, 0.5, 1].map((u) => put(F, u * (hw + 0.02), 0.54 + 0.07 * (1 - u * u), hl - 0.04)), [0.05, 0.055, 0.06, 0.055, 0.05], wood, { segs: 12 })
+    K.box(M.grain, F, 0, 0.15, -hl + 0.03, hw + 0.02, 0.15, 0.035, wood, { round: 0.5, crook: 0.015 })
+    K.box(M.linen, F, 0, 0.165, 0, hw - 0.02, 0.05, hl - 0.04, CREAM, { round: 0.6, segs: 12, rows: 6, flat: true })
+    K.blob(M.linen, F, [0, 0.235, hl - 0.18], hw * 0.72, 0.055, 0.1, CREAM, { flat: false, segs: 16, rows: 8, rough: 0.05 })
+    K.box(M.linen, F, 0, 0.19, -hl * 0.22, hw + 0.03, 0.04, hl * 0.74, tone(room.tints.cloth2, -0.04), { round: 0.6, segs: 16, rows: 6, crook: 0.02 })
   },
 
   plush(it, M, K) {
-    const F = frame(it.x, it.y, it.z, it.yaw), s = it.size, col = PASTEL(it.hue)
+    const F = frame(it.x, it.y, it.z, it.yaw), s = it.size, col = MUTED(it.hue), o = { flat: false, segs: 14, rows: 8 }
     if (it.shape === 2) {
-      K.blob(M.linen, F, [0, s * 0.4, 0], s * 0.35, s * 0.45, s * 0.35, CREAM, { flat: false })
-      K.blob(M.linen, F, [0, s * 0.95, 0], s * 0.7, s * 0.35, s * 0.7, col, { flat: false })
+      K.blob(M.linen, F, [0, s * 0.4, 0], s * 0.35, s * 0.45, s * 0.35, CREAM, o)
+      K.blob(M.linen, F, [0, s * 0.95, 0], s * 0.7, s * 0.35, s * 0.7, col, o)
       return
     }
-    K.blob(M.linen, F, [0, s * 0.45, 0], s * 0.5, s * 0.5, s * 0.42, col, { flat: false })
-    K.blob(M.linen, F, [0, s * 1.15, 0.02], s * 0.38, s * 0.35, s * 0.35, col, { flat: false })
+    K.blob(M.linen, F, [0, s * 0.45, 0], s * 0.5, s * 0.5, s * 0.42, col, o)
+    K.blob(M.linen, F, [0, s * 1.15, 0.02], s * 0.38, s * 0.35, s * 0.35, col, o)
     const ear = it.shape === 0 ? [s * 0.13, s * 0.12] : [s * 0.08, s * 0.35]
-    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.22, s * 1.4 + ear[1] * 0.6, 0], ear[0], ear[1], ear[0] * 0.6, col, { flat: false })
-    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.13, s * 1.2, s * 0.33], s * 0.05, s * 0.05, s * 0.03, DARK)
+    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.22, s * 1.4 + ear[1] * 0.6, 0], ear[0], ear[1], ear[0] * 0.6, col, o)
+    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.13, s * 1.2, s * 0.33], s * 0.05, s * 0.05, s * 0.03, DARK, { segs: 8, rows: 5 })
   },
 
   bookcase(it, M, K, room) {
-    const F = frame(it.x, it.y, it.z, it.yaw), wood = hsl(room.tints.wood), hw = it.w / 2, hd = it.d / 2
-    const rng = mulberry32(it.seed)
-    for (const x of [-hw, hw]) K.box(M.grain, F, x, it.h / 2, 0, 0.025, it.h / 2, hd, wood)
-    K.box(M.grain, F, 0, it.h / 2, -hd + 0.015, hw, it.h / 2, 0.015, wood)
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.015), wood = woodOf(room, K), hw = it.w / 2, hd = it.d / 2
+    const rng = mulberry32(it.seed), o = { round: 0.3, segs: 8, rows: 6, crook: 0.008 }
+    for (const x of [-hw, hw]) K.box(M.grain, F, x, it.h / 2, 0, 0.028, it.h / 2, hd, wood, o)
+    K.box(M.grain, F, 0, it.h / 2, -hd + 0.015, hw, it.h / 2, 0.015, tone(room.tints.wood, -0.16, 0.08), o)
     for (let k = 0; k <= it.shelves; k++) {
       const y = 0.03 + ((it.h - 0.06) * k) / it.shelves
-      K.box(M.grain, F, 0, y, 0, hw + 0.02, 0.02, hd + 0.01, wood)
+      K.box(M.grain, F, 0, y, 0, hw + 0.025, 0.022, hd + 0.012, wood, o)
       if (k === it.shelves) break
       const room2 = (it.h - 0.06) / it.shelves - 0.06
       let x = -hw + 0.03
       while (x < hw - 0.05) {
         const t = 0.02 + rng() * 0.025, bh = room2 * (0.6 + rng() * 0.35)
         if (rng() < 0.12) { x += 0.06; continue }
-        K.box(M.linen, F, x + t / 2, y + 0.02 + bh / 2, 0.01, t / 2 - 0.002, bh / 2, hd * 0.8, rgb(rng(), 0.4 + rng() * 0.2, 0.3 + rng() * 0.2), { flat: true, rough: 0.002 })
+        K.box(M.linen, frame(...put(F, x + t / 2, y + 0.02 + bh / 2, 0.01), it.yaw + (rng() - 0.5) * 0.1), 0, 0, 0, t / 2 - 0.002, bh / 2, hd * 0.8, rgb(rng(), 0.22 + rng() * 0.12, 0.26 + rng() * 0.14), { flat: true, round: 0.25, segs: 8, rows: 4, crook: 0.002 })
         x += t
       }
     }
   },
 
   divider(it, M, K, room, rng) {
-    const wood = hsl(room.tints.wood), p0 = [it.x0, 0, it.z0], p1 = [it.x1, 0, it.z1], h = it.h
+    const wood = woodOf(room, K), p0 = [it.x0, 0, it.z0], p1 = [it.x1, 0, it.z1], h = it.h
     const lerp = (t, y) => [p0[0] + (p1[0] - p0[0]) * t, y, p0[2] + (p1[2] - p0[2]) * t]
-    const along = norm(sub(p1, p0)), face = [-along[2], 0, along[0]]
+    const along2 = norm(sub(p1, p0)), face = [-along2[2], 0, along2[0]]
     if (it.style === 'sticks') {
       const n = Math.round(Math.hypot(...sub(p1, p0)) / 0.045)
       for (let k = 0; k <= n; k++) {
         const t = k / n
-        K.rod(M.grain, lerp(t, 0), lerp(t + K.j(0.01), h * (0.92 + rng() * 0.12)), 0.02, 0.014, hsl({ ...room.tints.wood, l: room.tints.wood.l * (0.8 + rng() * 0.4) }, 0.2), { rough: 0.2, segs: 5 })
+        K.limb(M.grain, lerp(t, 0), lerp(t + K.j(0.01), h * (0.92 + rng() * 0.12)), 0.02, 0.014, tone(room.tints.wood, -0.06 + K.j(0.08), 0.08), { bow: 0.015, segs: 6 })
       }
-      for (const y of [0.3, h * 0.75]) K.rod(M.linen, [lerp(0, y)[0] + face[0] * 0.025, y, lerp(0, y)[2] + face[2] * 0.025], [lerp(1, y)[0] + face[0] * 0.025, y, lerp(1, y)[2] + face[2] * 0.025], 0.01, 0.01, rgb(0.1, 0.35, 0.55), { flat: true })
+      for (const y of [0.3, h * 0.75]) K.limb(M.linen, add(lerp(0, y), face, 0.025), add(lerp(1, y), face, 0.025), 0.01, 0.01, CORD, { bow: 0.01, segs: 6 })
       return
     }
-    K.rod(M.grain, lerp(0, 0), lerp(0, h), 0.03, 0.028, wood, { rough: 0.15 })
-    K.rod(M.grain, lerp(1, 0), lerp(1, h), 0.03, 0.028, wood, { rough: 0.15 })
-    K.rod(M.grain, lerp(0, h - 0.02), lerp(1, h - 0.02), 0.022, 0.022, wood, { rough: 0.1 })
+    K.limb(M.grain, lerp(0, 0), lerp(0, h), 0.032, 0.028, wood, { bow: 0.015 })
+    K.limb(M.grain, lerp(1, 0), lerp(1, h), 0.032, 0.028, wood, { bow: 0.015 })
+    K.limb(M.grain, lerp(0, h - 0.02), lerp(1, h - 0.02), 0.024, 0.024, wood, { bow: 0.012 })
     if (it.style === 'curtain') {
-      const cols = 24, rows = 8, cloth = hsl({ h: it.hue, s: 0.4, l: 0.55 }, 0.15)
+      const cols = 24, rows = 8, cloth = rgb(it.hue, 0.25, 0.4)
       for (const side of [1, -1]) {
         M.linen.grid(cols, rows, (i, j) => {
           const t = 0.03 + (0.94 * i) / cols, y = 0.08 + ((h - 0.12) * (rows - j)) / rows, fold = 0.03 * Math.sin(i * 1.6) * side
@@ -783,8 +1071,8 @@ const ITEMS = {
     const L = Math.hypot(...sub(p1, p0)), n = Math.max(2, Math.round(L / 0.25)), leafCol = GREEN(0.5)
     for (let k = 0; k <= n; k++) {
       const t0 = k / n
-      K.rod(M.grain, lerp(Math.max(0, t0 - 0.5), 0.05), lerp(t0, h - 0.05), 0.012, 0.012, wood, { segs: 4 })
-      K.rod(M.grain, lerp(Math.min(1, t0 + 0.5), 0.05), lerp(t0, h - 0.05), 0.012, 0.012, wood, { segs: 4 })
+      K.limb(M.grain, lerp(Math.max(0, t0 - 0.5), 0.05), lerp(t0, h - 0.05), 0.013, 0.013, wood, { bow: 0.01, segs: 6 })
+      K.limb(M.grain, lerp(Math.min(1, t0 + 0.5), 0.05), lerp(t0, h - 0.05), 0.013, 0.013, wood, { bow: 0.01, segs: 6 })
     }
     for (let k = 0; k < n * 2; k++) {
       const at = lerp(rng(), 0.2 + rng() * (h - 0.35)), q = rng() * TAU
@@ -792,47 +1080,159 @@ const ITEMS = {
     }
   },
 
-  mushpot(it, M, K) {
-    const F = frame(it.x, 0, it.z, it.yaw)
-    K.lathe(M.linen, F, [[0, 0], [it.r * 0.7, 0], [it.r, 0.14], [it.r * 0.9, 0.15], [0, 0.13]], CLAY(0.1), { segs: 12, flat: true })
+  mushpot(it, M, K, room, rng, out) {
+    potOn(M, K, K.crook(frame(it.x, it.y, it.z, it.yaw), 0.03), it.r, it.h, it.shrooms[0].y)
+    shroomsAt(out, it.x, it.y, it.z, it.r, it.shrooms)
+  },
+
+  mushhang(it, M, K, room, rng, out) {
+    const soil = it.shrooms[0].y, F = frame(it.x, it.y, it.z, K.j(Math.PI))
+    potOn(M, K, F, it.r, it.h, soil)
+    // An iron arm from the wall to over the pot, and three cords down to its rim.
+    const knot = [it.x, it.hy - 0.03, it.z]
+    K.tube(M.grain, [[it.hx, it.hy, it.hz], lerp3([it.hx, it.hy, it.hz], knot, 0.5).map((v, k) => (k === 1 ? v + 0.03 : v)), [it.x, it.hy + 0.01, it.z], knot], [0.013, 0.012, 0.011, 0.01], IRON, { segs: 8 })
+    K.blob(M.grain, frame(it.hx, it.hy, it.hz, inward(Math.atan2(it.hz, it.hx))), [0, 0, 0], 0.04, 0.05, 0.012, IRON, { segs: 12, rows: 6, flat: false })
     for (let k = 0; k < 3; k++) {
-      const x = K.j(0.05), z = K.j(0.05), hh = 0.1 + k * 0.05
-      K.rod(M.linen, put(F, x, 0.13, z), put(F, x * 1.3, 0.13 + hh, z * 1.3), 0.012, 0.01, CREAM, { flat: true, segs: 5 })
-      K.blob(M.linen, F, [x * 1.3, 0.13 + hh, z * 1.3], 0.04 - k * 0.006, 0.02, 0.04 - k * 0.006, rgb(it.hue, 0.6, 0.5), { segs: 8, rows: 4 })
+      const q = (k / 3) * TAU
+      K.rod(M.linen, knot, put(F, Math.cos(q) * it.r, it.h, Math.sin(q) * it.r), 0.004, 0.004, CORD, { segs: 4, flat: true })
     }
+    shroomsAt(out, it.x, it.y, it.z, it.r, it.shrooms)
   },
 
   broom(it, M, K, room) {
     const F = frame(it.x, 0, it.z, it.yaw)
     const base = put(F, 0, 0.02, 0.06), top = put(F, 0, it.h, -it.r * 1.5)
-    K.rod(M.grain, base, top, 0.014, 0.014, hsl(room.tints.wood), { segs: 5 })
-    K.lathe(M.linen, frame(base[0], 0, base[2]), [[0, 0], [0.07, 0], [0.03, 0.2], [0, 0.22]], rgb(0.13, 0.55, 0.6), { segs: 8, rough: 0.12, sz: 0.5 })
+    K.limb(M.grain, base, top, 0.015, 0.014, woodOf(room, K), { bow: 0.015, segs: 6 })
+    K.lathe(M.linen, along(put(F, 0, 0, 0.04), sub(top, base)), [[0, 0], [0.075, 0], [0.06, 0.08], [0.03, 0.2], [0.018, 0.22], [0, 0.22]], rgb(0.12, 0.35, 0.5), { segs: 14, rough: 0.12, sz: 0.5, flat: true })
+    K.lathe(M.linen, along(put(F, 0, 0.19, 0.035), sub(top, base)), [[0.02, 0], [0.024, 0.01], [0.02, 0.02]], CORD, { segs: 10, flat: true })
   },
 
   bucket(it, M, K, room) {
-    const F = frame(it.x, 0, it.z, it.yaw), h = it.h, r = it.r
-    K.lathe(M.grain, F, [[0, 0.02], [r * 0.85, 0], [r, h], [r - 0.015, h], [r * 0.82, 0.03], [0, 0.03]], hsl(room.tints.wood), { segs: 12 })
+    const F = K.crook(frame(it.x, 0, it.z, it.yaw), 0.03), h = it.h, r = it.r
+    K.lathe(M.grain, F, [[0, 0.02], [r * 0.85, 0], [r, h], [r - 0.015, h], [r * 0.82, 0.03], [0, 0.03]], woodOf(room, K), { segs: 18, lobes: [14, 0.02] })
+    for (const y of [0.2, 0.8]) K.lathe(M.grain, put(F, 0, 0, 0) && frame(...put(F, 0, h * y - 0.012, 0)), [[r * (0.85 + 0.15 * y) - 0.002, 0], [r * (0.85 + 0.15 * y) + 0.005, 0.006], [r * (0.85 + 0.15 * y) + 0.005, 0.02], [r * (0.85 + 0.15 * y) - 0.002, 0.024]], IRON, { segs: 18, flat: true })
     const pts = Array.from({ length: 7 }, (_, k) => { const q = (k / 6) * Math.PI; return put(F, Math.cos(q) * r, h + Math.sin(q) * r * 0.8, 0) })
-    for (let k = 0; k < 6; k++) K.rod(M.grain, pts[k], pts[k + 1], 0.006, 0.006, IRON, { segs: 4, flat: true })
+    K.tube(M.grain, pts, pts.map(() => 0.006), IRON, { segs: 6, flat: true })
   },
 
   basket(it, M, K, room, rng) {
-    const F = frame(it.x, 0, it.z, it.yaw), h = it.h, r = it.r
-    K.lathe(M.linen, F, [[0, 0.01], [r * 0.8, 0], [r, h], [r - 0.012, h], [r * 0.78, 0.02], [0, 0.02]], rgb(0.1, 0.45, 0.5), { segs: 14 })
-    for (let k = 0; k < 3; k++) K.blob(M.linen, F, [K.j(r * 0.5), h - 0.02, K.j(r * 0.5)], 0.05, 0.05, 0.05, rgb(it.hue + k * 0.3, 0.5, 0.6), { flat: false })
-    if (rng() < 0.5) K.rod(M.grain, put(F, 0, h, 0), put(F, 0.1, h + 0.12, 0.05), 0.004, 0.004, DARK, { segs: 4 })
+    const F = K.crook(frame(it.x, it.y ?? 0, it.z, it.yaw), 0.04), h = it.h, r = it.r
+    K.lathe(M.grain, F, [[0, 0.01], [r * 0.8, 0], [r, h], [r - 0.012, h + 0.008], [r - 0.02, h], [r * 0.78, 0.02], [0, 0.02]], WICKER, { segs: 20, lobes: [20, 0.04], uvM: 0.12 })
+    for (let k = 0; k < 3; k++) K.blob(M.linen, F, [K.j(r * 0.5), h - 0.02, K.j(r * 0.5)], 0.05, 0.045, 0.05, rgb(it.hue + k * 0.3, 0.3, 0.42), { flat: false })
+    if (rng() < 0.5) K.tube(M.grain, [-1, -0.5, 0, 0.5, 1].map((u) => put(F, u * r * 0.95, h + (1 - u * u) * r * 0.9, 0)), [0.008, 0.009, 0.009, 0.009, 0.008], WICKER, { segs: 6 })
+  },
+
+  tool(it, M, K, room) {
+    const foot = [it.x0, 0, it.z0], top = [it.x1, it.y1, it.z1], d = norm(sub(top, foot)), wood = woodOf(room, K, 'wood', 0.02)
+    // The head rests on the floor; the handle leans up to the wall.
+    const head = it.tool === 'spade' ? 0.26 : it.tool === 'fork' ? 0.24 : 0.1
+    const F = along(foot, d, it.twist)
+    K.limb(M.grain, add(foot, d, head - 0.02), top, 0.017, 0.015, wood, { bow: 0.012 })
+    if (it.tool === 'spade') {
+      K.box(M.grain, F, 0, 0.12, 0, 0.085, 0.12, 0.011, IRON, { round: 0.35, segs: 12, rows: 6, flat: true })
+      K.lathe(M.grain, along(add(foot, d, 0.22), d, it.twist), [[0.012, 0], [0.024, 0.02], [0.02, 0.06], [0.014, 0.07]], IRON, { segs: 10, flat: true })
+      K.tube(M.grain, [-1, -0.5, 0, 0.5, 1].map((u) => add(put(F, u * 0.06, 0, 0), d, Math.hypot(...sub(top, foot)) + 0.03 + 0.05 * (1 - u * u))), [0.011, 0.012, 0.012, 0.012, 0.011], wood, { segs: 6 })
+    } else if (it.tool === 'rake') {
+      K.box(M.grain, F, 0, 0.08, 0, 0.16, 0.014, 0.016, IRON, { round: 0.4, segs: 12, rows: 6, flat: true })
+      for (let k = 0; k < 8; k++) K.rod(M.grain, put(F, -0.14 + k * 0.04, 0.075, 0.008), put(F, -0.14 + k * 0.04, 0.005, 0.03), 0.0045, 0.003, IRON, { segs: 4, flat: true })
+    } else if (it.tool === 'hoe') {
+      K.box(M.grain, F, 0, 0.05, 0.05, 0.075, 0.045, 0.008, IRON, { round: 0.35, segs: 12, rows: 6, flat: true })
+      K.limb(M.grain, put(F, 0, 0.09, 0.008), put(F, 0, 0.07, 0.05), 0.008, 0.007, IRON, { bow: 0.004, segs: 5 })
+    } else {
+      K.box(M.grain, F, 0, 0.2, 0, 0.07, 0.014, 0.014, IRON, { round: 0.45, segs: 12, rows: 6, flat: true })
+      for (let k = 0; k < 4; k++) K.tube(M.grain, [put(F, -0.06 + k * 0.04, 0.2, 0), put(F, -0.06 + k * 0.04, 0.1, 0.008), put(F, -0.06 + k * 0.04, 0.005, 0.02)], [0.006, 0.005, 0.003], IRON, { segs: 5, flat: true })
+    }
+  },
+
+  wcan(it, M, K) {
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.03), r = it.r, h = it.h
+    K.lathe(M.linen, F, [[0, 0], [r * 0.95, 0], [r, 0.02], [r, h * 0.8], [r * 0.9, h * 0.95], [r * 0.5, h], [r * 0.45, h + 0.01], [0, h]], TIN, { segs: 20, flat: true, rough: 0.015 })
+    const spout = [put(F, 0, h * 0.25, r * 0.85), put(F, 0, h * 0.6, r * 1.5), put(F, 0, h * 0.95, r * 2.1)]
+    K.tube(M.linen, spout, [0.018, 0.013, 0.012], TIN, { segs: 8, flat: true, caps: false })
+    K.lathe(M.linen, along(spout[2], sub(spout[2], spout[1])), [[0.012, -0.005], [0.03, 0.02], [0.032, 0.026], [0, 0.028]], TIN, { segs: 12, flat: true })
+    K.tube(M.linen, [put(F, 0, h * 0.95, -r * 0.4), put(F, 0, h * 1.3, -r * 0.3), put(F, 0, h * 1.25, -r * 1.05), put(F, 0, h * 0.55, -r * 1.02)], [0.01, 0.011, 0.011, 0.01], TIN, { segs: 8, flat: true })
+  },
+
+  dresser(it, M, K, room) {
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.015), wood = woodOf(room, K), hw = it.w / 2, hd = it.d / 2, h = it.h
+    for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) K.lathe(M.grain, frame(...put(F, x * (hw - 0.05), 0, z * (hd - 0.05))), [[0, 0], [0.03, 0], [0.038, 0.025], [0.03, 0.045], [0, 0.046]], wood, { segs: 10 })
+    K.box(M.grain, F, 0, (h + 0.04) / 2, 0, hw, (h - 0.04) / 2 - 0.02, hd, wood, { round: 0.14, crook: 0.012 })
+    K.box(M.grain, F, 0, h - 0.018, 0.012, hw + 0.025, 0.02, hd + 0.02, tone(room.tints.table, -0.05, 0.08), { round: 0.45, rows: 6, crook: 0.01 })
+    const cols = hw > 0.35 ? 2 : 1, rowH = (h - 0.14) / it.rows
+    for (let rI = 0; rI < it.rows; rI++) for (let c = 0; c < cols; c++) {
+      const cx = cols === 1 ? 0 : (c - 0.5) * hw, cy = 0.07 + rowH * (rI + 0.5), hwD = hw / cols - 0.03
+      const Fd = K.crook(frame(...put(F, cx, cy, hd + 0.006), it.yaw), 0.015)
+      K.box(M.grain, Fd, 0, 0, 0, hwD, rowH / 2 - 0.018, 0.014, tone(room.tints.wood, -0.05 + K.j(0.05), 0.08), { round: 0.18, segs: 16, rows: 6, crook: 0.004 })
+      K.blob(M.grain, Fd, [0, 0, 0.022], 0.017, 0.017, 0.013, DARK, { segs: 10, rows: 6, flat: false })
+    }
+  },
+
+  chest(it, M, K, room) {
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.015), wood = woodOf(room, K), hw = it.w / 2, hd = it.d / 2, h = it.h
+    K.box(M.grain, F, 0, h * 0.34, 0, hw, h * 0.34, hd, wood, { round: 0.3, crook: 0.012 })
+    K.box(M.grain, F, 0, h * 0.72, 0, hw + 0.015, h * 0.16, hd + 0.015, tone(room.tints.wood, 0, 0.08), { round: 0.75, crook: 0.012 })
+    for (const x of [-hw * 0.6, hw * 0.6]) K.box(M.grain, F, x, h * 0.46, 0, 0.022, h * 0.46 + 0.006, hd + 0.02, IRON, { round: 0.4, flat: true })
+    K.box(M.grain, F, 0, h * 0.62, hd + 0.02, 0.035, 0.042, 0.012, IRON, { round: 0.4, segs: 12, rows: 6, flat: true })
+  },
+
+  woodpile(it, M, K, room) {
+    const rng = mulberry32(it.seed), rm = rAt(room.rs, it.a), a0 = it.a - it.half / rm, a1 = it.a + it.half / rm
+    const lr = 0.06, n0 = Math.max(1, Math.floor((it.depth - 0.03) / (2 * lr))), segs = Math.max(1, Math.round((2 * it.half) / 0.5))
+    for (let row = 0; row < it.rows && n0 - row >= 1; row++) {
+      for (let i = 0; i < n0 - row; i++) {
+        const inset = FILLET * 0.4 + lr + (i + row * 0.5) * 2 * lr, y = lr + row * lr * 1.72
+        for (let s = 0; s < segs; s++) {
+          const r = lr * (0.8 + rng() * 0.3), b0 = a0 + ((a1 - a0) * s) / segs + (rng() * 0.04) / rm, b1 = a0 + ((a1 - a0) * (s + 1)) / segs - (rng() * 0.04) / rm
+          const p0 = wallAt(room, b0, inset + (rng() - 0.5) * 0.02, y + (r - lr)), p1 = wallAt(room, b1, inset + (rng() - 0.5) * 0.02, y + (r - lr))
+          const bark = tone(room.tints.wood, -0.16 + (rng() - 0.5) * 0.08, 0.06), ax = norm(sub(p1, p0))
+          K.rod(M.grain, p0, p1, r, r * (0.9 + rng() * 0.15), bark, { segs: 10, rough: 0.1 })
+          K.disc(M.floor, p0, ax.map((v) => -v), r, tone(room.tints.wood, 0.28), { segs: 10 })
+          K.disc(M.floor, p1, ax, r, tone(room.tints.wood, 0.28), { segs: 10 })
+        }
+      }
+    }
+  },
+
+  workbench(it, M, K, room) {
+    const F = K.crook(frame(it.x, it.y, it.z, it.yaw), 0.015), wood = woodOf(room, K), T = it.top
+    K.box(M.grain, F, 0, T - 0.03, 0, it.hx, 0.03, it.hz, woodOf(room, K, 'table', -0.06), { round: 0.3, rows: 6, crook: 0.012 })
+    const legs = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, z]) => [put(F, x * (it.hx - 0.05), 0, z * (it.hz - 0.04)), put(F, x * (it.hx - 0.08), T - 0.055, z * (it.hz - 0.06))])
+    for (const [lo, hi] of legs) K.limb(M.grain, lo, hi, 0.032, 0.028, wood, { bow: 0.012 })
+    K.box(M.grain, F, 0, 0.12, 0, it.hx - 0.07, 0.015, it.hz - 0.05, wood, { round: 0.3, segs: 12, rows: 4, crook: 0.01 })
+    K.box(M.grain, F, it.hx - 0.07, T + 0.03, it.hz - 0.02, 0.045, 0.03, 0.03, IRON, { round: 0.4, segs: 12, rows: 6, flat: true })
+  },
+
+  gourds(it, M, K, room, rng) {
+    const n = Math.max(3, it.n)
+    for (let k = 0; k < n; k++) {
+      const top = k === n - 1 && n > 3, q = it.yaw + (k / (n - (top ? 1 : 0))) * TAU, d = top ? 0 : it.r * 0.5 * (0.8 + rng() * 0.3)
+      const rr = it.r * (top ? 0.34 : 0.3 + rng() * 0.12), gh = rr * (1.1 + rng() * 0.4)
+      const pal = [rgb(0.07 + it.hue * 0.03, 0.42, 0.4), rgb(0.12, 0.32, 0.55), rgb(0.2, 0.2, 0.36), rgb(0.09, 0.45, 0.34)]
+      const F = K.crook(frame(it.x + Math.cos(q) * d, top ? it.r * 0.42 : 0, it.z + Math.sin(q) * d, rng() * TAU), 0.2)
+      K.lathe(M.linen, F, [[0, gh * 0.06], [rr * 0.6, 0], [rr * 0.95, gh * 0.3], [rr, gh * 0.55], [rr * 0.8, gh * 0.86], [rr * 0.3, gh], [0, gh * 0.92]], pal[Math.floor(rng() * pal.length)], { segs: 20, flat: true, lobes: [8, 0.14], rough: 0.02 })
+      K.limb(M.grain, put(F, 0, gh * 0.9, 0), put(F, 0.02, gh * 0.9 + 0.05, 0.01), 0.012, 0.008, DARK, { bow: 0.006, segs: 6 })
+    }
+  },
+
+  stools(it, M, K, room) { stoolAt(M, K, K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), it.r, 0.24, woodOf(room, K)) },
+
+  hamper(it, M, K) {
+    const F = K.crook(frame(it.x, 0, it.z, it.yaw), 0.04), r = it.r, h = 0.36
+    K.lathe(M.grain, F, [[0, 0.01], [r * 0.86, 0], [r * 0.95, 0.04], [r, h * 0.7], [r * 1.02, h - 0.02], [r * 0.98, h], [0, h - 0.01]], WICKER, { segs: 24, lobes: [24, 0.035], uvM: 0.12 })
+    K.lathe(M.grain, F, [[r * 1.04, h - 0.03], [r * 1.07, h - 0.02], [r * 1.05, h + 0.01], [r * 0.7, h + 0.045], [0, h + 0.055]], WICKER, { segs: 24, uvM: 0.12 })
+    for (const s of [-1, 1]) K.tube(M.grain, [-0.5, 0, 0.5].map((u) => put(F, s * (r + 0.012), h * 0.78 + (1 - 4 * u * u) * 0.04, u * r * 0.4)), [0.009, 0.01, 0.009], WICKER, { segs: 6 })
   },
 
   mobile(it, M, K, room, rng) {
     const rho = Math.hypot(it.x, it.z), ceil = ceilingAt(room, rho, rAt(room.rs, Math.atan2(it.z, it.x)))
     const hub = [it.x, it.y, it.z]
-    K.rod(M.linen, hub, [it.x, ceil + 0.05, it.z], 0.003, 0.003, CREAM, { segs: 3, flat: true })
-    K.lathe(M.grain, frame(it.x, it.y - 0.01, it.z), [[0.16, 0], [0.18, 0], [0.18, 0.02], [0.16, 0.02], [0.16, 0]], hsl(room.tints.wood), { segs: 16 })
+    K.rod(M.linen, hub, [it.x, ceil + 0.05, it.z], 0.003, 0.003, CORD, { segs: 3, flat: true })
+    K.lathe(M.grain, frame(it.x, it.y - 0.01, it.z), [[0.16, 0], [0.175, 0.002], [0.18, 0.012], [0.172, 0.02], [0.16, 0.018], [0.155, 0.006], [0.16, 0]], woodOf(room, K), { segs: 28 })
     for (let k = 0; k < it.n; k++) {
       const q = (k / it.n) * TAU, len = 0.12 + rng() * 0.2
       const top = [it.x + Math.cos(q) * 0.17, it.y, it.z + Math.sin(q) * 0.17], end = [top[0], top[1] - len, top[2]]
-      K.rod(M.linen, top, end, 0.002, 0.002, CREAM, { segs: 3, flat: true })
-      K.leaf(M.linen, end, [0, -1, 0], 0.11, 0.035, [Math.cos(q + 1), 0, Math.sin(q + 1)], rgb(it.hue + k * 0.05, 0.55, 0.5))
+      K.rod(M.linen, top, end, 0.002, 0.002, CORD, { segs: 3, flat: true })
+      K.leaf(M.linen, end, [0, -1, 0], 0.11, 0.035, [Math.cos(q + 1), 0, Math.sin(q + 1)], rgb(it.hue + k * 0.05, 0.3, 0.4))
     }
   },
 
@@ -841,19 +1241,20 @@ const ITEMS = {
     for (let k = 0; k <= it.n * 2; k++) {
       const t = k / (it.n * 2), a = it.a0 + (it.a1 - it.a0) * t
       const p = wallAt(room, a, 0.06 + 0.04 * Math.sin(Math.PI * t), it.y - it.sag * Math.sin(Math.PI * t))
-      if (prev) K.rod(M.linen, prev, p, 0.004, 0.004, GREEN(0.2), { segs: 3, flat: true })
+      if (prev) K.rod(M.linen, prev, p, 0.004, 0.004, CORD, { segs: 3, flat: true })
       if (k % 2 === 1) {
         const out = [-Math.cos(a), 0, -Math.sin(a)]
-        K.leaf(M.linen, p, norm([K.j(0.5), -1, K.j(0.5)]), 0.09, 0.035, out, rng() < 0.5 ? GREEN(rng()) : rgb(0.08 + rng() * 0.05, 0.7, 0.5))
+        K.leaf(M.linen, p, norm([K.j(0.5), -1, K.j(0.5)]), 0.09, 0.035, out, rng() < 0.5 ? GREEN(rng()) : rgb(0.07 + rng() * 0.04, 0.45, 0.38))
       }
       prev = p
     }
   },
 
   sconce(it, M, K, room) {
-    const wall = wallAt(room, it.a, -0.02, it.y - 0.05), cup = [it.x, it.y, it.z]
-    K.rod(M.grain, wall, cup, 0.018, 0.012, IRON, { segs: 5 })
-    K.box(M.grain, frame(...wallAt(room, it.a, 0.01, it.y - 0.05), Math.atan2(-Math.cos(it.a), -Math.sin(it.a))), 0, 0, 0, 0.05, 0.08, 0.015, hsl(room.tints.wood))
-    candleOn(M, K, it.x, it.y, it.z, 0.1)
+    const face = inward(it.a), plate = wallAt(room, it.a, 0.005, it.y - 0.05)
+    K.blob(M.grain, K.crook(frame(...plate, face), 0.08), [0, 0, 0], 0.058, 0.09, 0.02, woodOf(room, K, 'wood', -0.01), { segs: 16, rows: 10, flat: false, rough: 0.06 })
+    const cup = [it.x, it.y, it.z], out = norm(sub([it.x, 0, it.z], [plate[0], 0, plate[2]]))
+    K.tube(M.grain, [add(plate, out, 0.01), add(add(plate, out, 0.05), [0, 1, 0], -0.03), add(cup, [0, 1, 0], -0.03), add(cup, [0, 1, 0], -0.005)], [0.011, 0.01, 0.01, 0.012], IRON, { segs: 8 })
+    candleOn(M, K, it.x, it.y, it.z, 0.1, IRON)
   },
 }

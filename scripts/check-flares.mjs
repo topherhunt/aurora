@@ -9,12 +9,13 @@
 // leaves from somewhere other than the muzzle; two clients flying one flare on
 // different paths; a shot into a hillside or under a lake; a peer's flare drawn
 // twice; a village's flares hanging over the overworld; a window that stays lit
-// with no charge left; the pick shipped with its red button still on, or a new
+// with no charge left; a shot's flash that never fades or hides the view in
+// white rather than the flare's colour; the pick shipped with its red button still on, or a new
 // pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
 import { Flares, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
-import { FlareGuns, GunWindows, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, roomKey } from '../src/v2/flaregun.js'
+import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, roomKey } from '../src/v2/flaregun.js'
 import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
 let failures = 0
@@ -188,6 +189,23 @@ console.log('the gun')
   rec.charges = 0
   windows.update(hands)
   check(!disc('right').visible, 'empty, the disc is gone')
+}
+
+console.log('the flash')
+{
+  const flash = new ShotFlash(new THREE.Scene())
+  const eye = new THREE.Vector3(3, 1.6, -2)
+  flash.update(0.016, eye)
+  check(!flash.mesh.visible, 'no shot, no flash')
+  flash.fire(PALETTE[0])
+  flash.update(0, eye)
+  const c = flash.mesh.material.color
+  check(flash.mesh.visible && near(flash.mesh.material.opacity, FLASH_PEAK) && flash.mesh.position.equals(eye), 'a shot flashes round her head at its peak')
+  check(c.r > 0.9 && c.g > 0.5 && c.g < c.r - 0.1 && near(c.g, c.b, 0.05), 'nearly white, tinted the flare\'s red', c.getHexString())
+  flash.update(FLASH_S / 2, eye)
+  check(near(flash.mesh.material.opacity, FLASH_PEAK / 4), 'halfway, a quarter as bright', flash.mesh.material.opacity.toFixed(3))
+  flash.update(FLASH_S / 2 + 1e-3, eye)
+  check(!flash.mesh.visible, `gone by ${FLASH_S} s`)
 }
 
 if (failures) {

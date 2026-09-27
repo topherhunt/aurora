@@ -72,7 +72,7 @@ import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
-import { FLAREGUN_GLB, FlareGuns, GunWindows, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
+import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
 import { Flares, fromWire, toWire } from './render/flares.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -1570,6 +1570,7 @@ function fireFlare(key, aim = null) {
     color: PALETTE[rec.hue], seed: Math.random(),
   }
   flares.add(f, 0)
+  shotFlash.fire(f.color)
   netplay.sendFlare(toWire(f))
   if (ambience) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
   questPulse(key, 0.8, 80)
@@ -2427,8 +2428,8 @@ let portalBlink = false
 let portalIn = null
 // The house she has gone into (design/30-leafkin.md, Interiors), or null: its entry (RoomProps.entries), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the village walk its own stands in for while she is in.
 let indoors = null
-// Through a house's door: her feet within `walk` of its face heading `into` it, or a teleport landing within `blink`; the same at the door inside. Outside, the landing's stone ends about 0.45 m short of the face, over a drop, so `walk` reaches onto the landing.
-const HOUSE_DOOR = { walk: 0.65, blink: 0.8, into: 0.5 }
+// Through a house's door: her feet within `side` of the door's middle line and `walk` of its face, heading `into` it, or a teleport landing within `blink`; the same at the door inside. Outside, the landing's stone ends about 0.45 m short of the face, and inside the wall's stone keeps her 0.3 m off it, so `walk` is the nearest she gets plus a little.
+const HOUSE_DOOR = { walk: 0.6, side: 0.2, blink: 0.5, into: 0.6 }
 let doorBusy = false
 let editor = null
 let panel = null
@@ -2956,7 +2957,7 @@ async function enterHouse(e) {
   let top = -Infinity
   for (let x = -room.R - 1; x <= room.R + 1; x += 0.5) for (let z = -room.R - 1; z <= room.R + 1; z += 0.5) top = Math.max(top, height.heightAt(ox + x, oz + z))
   const oy = top + 0.5
-  const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz)
+  const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz, mushrooms)
   scene.add(view.group)
   const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const home = villagers.graph.doorNodes[e.k]
@@ -2964,7 +2965,8 @@ async function enterHouse(e) {
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
   const rDoor = rAt(room.rs, Math.PI)
   indoors = { e, back: roomProps.doors()[e.k], room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
-  walk = player.th = window.v2walk = inner
+  walk = window.v2walk = inner
+  player.setGround(inner)
   player.teleportTo(ox + room.doorIn.x, oz + room.doorIn.z)
   faceAlong(1, 0)
   console.log(`[v2] house ${e.k}: ${room.items.length} things, ${room.windows.length} windows, ${room.loft ? 'a loft' : 'no loft'}, ${residents.all.length} at home`)
@@ -2994,7 +2996,7 @@ function closeHouse() {
   indoors.view.dispose()
   indoors.residents.dispose()
   walk = window.v2walk = indoors.outside
-  if (player) player.th = walk
+  if (player) player.setGround(walk)
   indoors = null
 }
 
@@ -3005,9 +3007,9 @@ function houseTest(blink) {
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)
   const through = (x, z, nx, nz, inward) => {
-    const d = Math.hypot(feet.x - x, feet.z - z)
-    if (blink) return d <= HOUSE_DOOR.blink
-    return d <= HOUSE_DOOR.walk && step > 0 && (inward * -(sx * nx + sz * nz)) / step >= HOUSE_DOOR.into
+    const out = (feet.x - x) * nx + (feet.z - z) * nz, side = Math.abs((feet.x - x) * nz - (feet.z - z) * nx)
+    if (blink) return Math.hypot(out, side) <= HOUSE_DOOR.blink
+    return side <= HOUSE_DOOR.side && Math.abs(out) <= HOUSE_DOOR.walk && step > 0 && (inward * -(sx * nx + sz * nz)) / step >= HOUSE_DOOR.into
   }
   if (indoors) {
     const d = indoors.door
@@ -6103,6 +6105,7 @@ function tick() {
   placeDeskHand()
   hands.update(dt, handsHead())
   gunWindows.update(hands)
+  shotFlash.update(dt, headTmp)
   drainFlares()
   flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
@@ -6193,7 +6196,7 @@ function tick() {
 // WHAT HER HANDS HOLD DRAWS OVER THE FINISHED FRAME: hands.js keeps it in
 // `over`, a group outside the scene, rendered here as a pass of its own with
 // the depth cleared, so it is never behind the menu (which has no depth) nor a
-// wall she stands against. Its lights are this frame's sun and sky copied, and
+// wall she stands against. Her shot's flash is drawn in it last, over them. Its lights are this frame's sun and sky copied, and
 // the scene's own fog, so the pool materials keep the one program.
 const overlay = new THREE.Scene()
 overlay.fog = scene.fog
@@ -6201,9 +6204,10 @@ const overSun = new THREE.DirectionalLight()
 const overHemi = new THREE.HemisphereLight()
 overlay.add(overSun, overHemi)
 const gunWindows = new GunWindows(overlay, HAND_KEYS)
+const shotFlash = new ShotFlash(overlay)
 const flarePx = new THREE.Vector2()
 function renderOverlay() {
-  if (!hands || !hands.over.children.some((m) => m.count > 0)) return
+  if (!hands || (!hands.over.children.some((m) => m.count > 0) && !shotFlash.mesh.visible)) return
   if (hands.over.parent !== overlay) overlay.add(hands.over)
   overSun.position.copy(sun.position); overSun.color.copy(sun.color); overSun.intensity = sun.intensity
   overHemi.color.copy(hemi.color); overHemi.groundColor.copy(hemi.groundColor); overHemi.intensity = hemi.intensity
