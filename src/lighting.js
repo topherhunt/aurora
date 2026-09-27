@@ -184,13 +184,19 @@ const WORLD_POS_GLSL = /* glsl */ `
 // The directional keeps its shadow multiply either way -- the far field is not
 // "no lighting", it is "lighting that answers only to where the moon is",
 // which means a ridge shadow is still a ridge shadow out there.
-const APPLY = (sun, sky, near) => /* glsl */ `
+//
+// ---- `liftAlbedo`, a patch() option: uLiftAlbedo = (mix, gain) blends the
+// lift from flat toward `albedo * gain`. Flat lift is a grey floor under every
+// texel, which reads as grey shadow in a canopy; albedo-weighted lift keeps
+// greens green and lets dark texels fall toward black, at the cost of dark
+// trunks sinking back toward the hole the NIGHT block in clock.js describes.
+const APPLY = (sun, sky, near, liftAlbedo) => /* glsl */ `
   float wlNear = ${near};
   reflectedLight.directDiffuse *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
   reflectedLight.directSpecular *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
   float wlSkyF = mix( uSkyFloor, 1.0, ${sky} ) * mix( uFarLight.y, 1.0, wlNear );
   reflectedLight.indirectDiffuse *= wlSkyF;
-  reflectedLight.indirectDiffuse += uNightLift * wlSkyF;
+  reflectedLight.indirectDiffuse += uNightLift * wlSkyF${liftAlbedo ? ' * mix( vec3( 1.0 ), diffuseColor.rgb * uLiftAlbedo.y, uLiftAlbedo.x )' : ''};
 `
 
 // Declared separately from SAMPLE_GLSL because the vertex-shaded path does not
@@ -786,8 +792,12 @@ export class WorldLighting {
    * to read "no difference" on a headset. variantKey() rides in the same key
    * for the same reason: this file's own two axes are three programs.
    */
-  patch(material, { mode, cacheKey, worldPosVarying = null, caustics = mode === 'fragment' }) {
+  patch(material, { mode, cacheKey, worldPosVarying = null, caustics = mode === 'fragment', liftAlbedo = null }) {
     if (mode !== 'fragment' && mode !== 'vertex') throw new Error(`patch: bad mode ${mode}`)
+    // Per material, and on userData so a console can tune it live.
+    const liftU = liftAlbedo && { value: new THREE.Vector2(liftAlbedo.mix, liftAlbedo.gain) }
+    if (liftU) material.userData.wlLiftAlbedo = liftU
+    const liftDecl = liftU ? '\nuniform vec2 uLiftAlbedo;' : ''
 
     const prev = material.onBeforeCompile
     const self = this
@@ -809,6 +819,7 @@ export class WorldLighting {
       // the first flip still compiles the current state.
       if (!self.enabled) return
       Object.assign(shader.uniforms, self.uniforms)
+      if (liftU) shader.uniforms.uLiftAlbedo = liftU
 
       // The horizon axis, spelled out once for both stages: with no maps the
       // two lookups ARE the constant 1.0, so they are folded in as one and
@@ -821,14 +832,15 @@ export class WorldLighting {
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}${lamps ? LAMP_GLSL : ''}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}${lamps ? LAMP_GLSL : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
             ${APPLY(
               maps ? `wlSun( ${worldPosVarying}.xz )` : '1.0',
               maps ? `wlSky( ${worldPosVarying}.xz )` : '1.0',
-              NEAR_GLSL(`${worldPosVarying}.xyz`)
+              NEAR_GLSL(`${worldPosVarying}.xyz`),
+              liftU
             )}
             ${lamps ? `reflectedLight.directDiffuse += diffuseColor.rgb * wlLamp( ${worldPosVarying}.xyz );` : ''}`
           )
@@ -865,14 +877,15 @@ export class WorldLighting {
             ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}`
           )
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}\n${caustics ? CAUSTIC_DEFS : ''}`)
+          .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
             ${APPLY(
               maps ? 'vWlShade.x' : '1.0',
               maps ? 'vWlShade.y' : '1.0',
-              maps ? 'vWlShade.z' : 'vWlNear'
+              maps ? 'vWlShade.z' : 'vWlNear',
+              liftU
             )}
             ${lamps ? 'reflectedLight.directDiffuse += diffuseColor.rgb * vWlLamp;' : ''}`
           )

@@ -946,6 +946,20 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(RULES.voice.reach >= 50 && count(engine, 'leafkinChatter1') === 1 && count(engine, 'leafkinChatter2') === 0, `30 m off, the forager's chatter is heard (reach ${RULES.voice.reach} m) and a villager's is not (reach ${RULES.villagerVoice.reach} m)`)
 }
 {
+  // A leafkin at home in the house she is in: its mutters and its feet on `near`, clear of the walls; the rest of the world stays on `air`.
+  const said = []
+  const walker = { x: HEAD.x + 1, y: HEAD.y, z: HEAD.z, size: 0.5, clip: 'walk', cycle: 1, speed: 1 }
+  const home = { voices(into) { into.push(...said); said.length = 0; return into }, bodies(into) { into.push(walker); return into } }
+  const out = { voices(into) { into.push({ sound: 'leafkinChatter2', x: HEAD.x + 3, y: HEAD.y, z: HEAD.z }); return into } }
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  const amb = new Ambience({ engine, sense, rand: mulberry32(34), voiced: [{ layer: home, rule: 'villagerVoice', bus: 'near' }, { layer: out, rule: 'villagerVoice' }], herds: [{ layer: home, clips: 'human', bus: 'near' }] })
+  said.push({ sound: 'leafkinChatter1', x: HEAD.x + 2, y: HEAD.y, z: HEAD.z })
+  run(amb, 3, {})
+  const mine = engine.plays.filter((p) => p.name === 'leafkinChatter1' || p.name === 'footfall'), theirs = engine.plays.filter((p) => p.name === 'leafkinChatter2')
+  check(mine.some((p) => p.name === 'footfall') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined), 'a layer given the near bus mutters and steps on it; one not given it stays on air', `${mine.length} near, ${theirs.length} air`)
+}
+{
   // A villager's door, said on the villagers' layer under its own rule: heard past their voices' reach and not past its own.
   const D = RULES.door
   const said = []

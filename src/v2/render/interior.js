@@ -5,7 +5,7 @@ import { hash32 } from '../../sim/score.js'
 import { FILLET, HAMPER_H, STOOL_H, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
 
 const TAU = 2 * Math.PI
-const TEX = ['floor', 'wall', 'grain', 'linen', 'door', 'window', 'pot', 'soil']
+const TEX = ['floor', 'wall', 'grain', 'linen', 'door', 'window', 'pot', 'soil', 'pages']
 const REPEAT = new Set(['wall', 'grain', 'linen', 'pot', 'soil'])
 // Texture metres per repeat on the wall and on carved wood.
 const WALL_M = 2.0, WOOD_M = 0.6
@@ -16,7 +16,7 @@ const SPECK = { px: 64, m: 0.3, textured: 0.35 }
 let texReady = null
 /** The interior textures, loaded once. */
 export function loadInteriorTextures() {
-  texReady ??= Promise.all(TEX.map((id) => new THREE.TextureLoader().loadAsync(`interiors/${id}.webp`).then((t) => {
+  texReady ??= Promise.all(TEX.map((id) => id === 'pages' ? ['pages', pagesTexture()] : new THREE.TextureLoader().loadAsync(`interiors/${id}.webp`).then((t) => {
     t.colorSpace = THREE.SRGBColorSpace
     if (REPEAT.has(id)) t.wrapS = t.wrapT = THREE.RepeatWrapping
     t.anisotropy = 4
@@ -80,7 +80,7 @@ void main() {
   vView = (modelMatrix * vec4(position, 1.0)).xyz - cameraPosition;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
-// The basin's water: the room's baked light on dark water, with a Fresnel share of a made-up room (dim wood, lighter upward, banded so the swells visibly bend it) and the nearest candles' glints, all bent by three slow crossing swells a few centimetres long.
+// The basin's water: the room's baked light on dark water, with a Fresnel share of a made-up room (dim wood, lighter upward, banded so the swells visibly bend it) and the nearest candles' glints, all bent by three crossing standing swells a few centimetres long, which rise and fall in place rather than travel.
 const WATER_FRAG = /* glsl */ `
 uniform float uAmb;
 uniform float uCandle;
@@ -95,9 +95,9 @@ varying vec3 vView;
 void main() {
   vec2 p = vPos.xz, g = vec2(0.0);
   vec2 k0 = vec2(118.0, 41.0), k1 = vec2(-52.0, 131.0), k2 = vec2(-97.0, -88.0);
-  g += 0.00022 * cos(dot(p, k0) + uTime * 2.1) * k0;
-  g += 0.00018 * cos(dot(p, k1) + uTime * 1.7) * k1;
-  g += 0.00015 * cos(dot(p, k2) - uTime * 2.6) * k2;
+  g += 0.00022 * cos(dot(p, k0)) * sin(uTime * 1.3) * k0;
+  g += 0.00018 * cos(dot(p, k1) + 1.9) * sin(uTime * 0.9 + 2.0) * k1;
+  g += 0.00015 * cos(dot(p, k2) + 4.1) * sin(uTime * 1.7 + 4.0) * k2;
   vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
   vec3 v = normalize(vView), r = reflect(v, n);
   float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
@@ -509,16 +509,18 @@ function buildShrooms(list, { bank, material }) {
 
 // --- the shell: wall, floor, ceiling, ribs, openings, loft, stairs ------------------------------
 
-// A window's reveal: its own polar mesh easing from the pane out to the wall over `w` metres, then a `skirt` lying `lift` proud of the wall. The wall's grid is too coarse to carry that curve (its rim comes out in squares), so under the reveal the grid is sunk out of sight behind it; the skirt must outreach the sunk patch by a grid cell's diagonal (~0.1 m), or the cells sloping down into it notch the wall.
+// A door's or window's reveal: its own polar mesh easing from the pane out to the wall over `w` metres, then a `skirt` lying `lift` proud of the wall. The wall's grid is too coarse to carry that curve (its rim comes out in squares), so under the reveal the grid is sunk out of sight behind it; the skirt must outreach the sunk patch by a grid cell's diagonal (~0.1 m), or the cells sloping down into it notch the wall.
 const REVEAL = { w: 0.12, skirt: 0.14, lift: 0.004 }
 
-/** How far the wall at bearing `a`, height `y` is pushed out: into the door's recess, and out of sight behind a window's reveal. */
+/** How far the wall at bearing `a`, height `y` is pushed out of sight behind the door's or a window's reveal. */
 function recess(room, a, y) {
-  const at = (o) => Math.hypot(angDiff(a, o.a) * rAt(room.rs, o.a), y - o.y)
-  let out = room.door.depth * (1 - smooth(room.door.r, room.door.r + 0.14, at(room.door)))
-  for (const o of room.windows) if (at(o) < o.r + REVEAL.w + 0.02) out = Math.max(out, o.depth + 0.04)
+  let out = 0
+  for (const o of [room.door, ...room.windows]) if (Math.hypot(angDiff(a, o.a) * rAt(room.rs, o.a), y - o.y) < o.r + REVEAL.w + 0.02) out = Math.max(out, o.depth + 0.04)
   return out
 }
+
+/** The floor's cove at height `y`: how far in from the wall the profile stands there. */
+const coveAt = (y) => FILLET * (1 - Math.sqrt(1 - (1 - Math.min(Math.max(y, 0), FILLET) / FILLET) ** 2))
 
 function buildShell(room, M, K) {
   const { rs, hW, H } = room
@@ -539,14 +541,14 @@ function buildShell(room, M, K) {
   // Tu (round the bearing) x Tv (up the profile) looks into the room.
   const wallTint = tone(room.tints.wall, 0.12, 0.1)
   M.wall.grid(COLS, prof.length - 1, wallPt, wallTint, 1, true)
-  // Each window's reveal, textured as the wall it stands in; Tu (round the pane) x Tv (outward) looks into the wall.
-  for (const o of room.windows) {
+  // Each opening's reveal, textured as the wall it stands in; Tu (round the pane) x Tv (outward) looks into the wall. The door's runs under the floor: there it is held a hair over the floor and eased out of the cove, so it lays a threshold into the recess.
+  for (const o of [room.door, ...room.windows]) {
     const r0 = rAt(rs, o.a), ds = []
     for (let k = 0; k <= 8; k++) ds.push(o.r + (REVEAL.w * k) / 8)
     ds.push(o.r + REVEAL.w + REVEAL.skirt)
     M.wall.grid(48, ds.length - 1, (i, j) => {
-      const th = (i / 48) * TAU, d = ds[j], y = o.y + d * Math.sin(th), a = o.a + (d * Math.cos(th)) / r0
-      const rr = rAt(rs, a) + (o.depth - 0.012 + REVEAL.lift) * (1 - smooth(o.r, o.r + REVEAL.w, d)) - REVEAL.lift
+      const th = (i / 48) * TAU, d = ds[j], y = Math.max(0.003, o.y + d * Math.sin(th)), a = o.a + (d * Math.cos(th)) / r0
+      const rr = rAt(rs, a) + (o.depth - 0.012 + REVEAL.lift) * (1 - smooth(o.r, o.r + REVEAL.w, d)) - REVEAL.lift - coveAt(y) * smooth(o.r, o.r + REVEAL.w, d)
       return { p: [Math.cos(a) * rr, y, Math.sin(a) * rr], uv: [(a / TAU) * around, (arc[4] + y - FILLET) / WALL_M] }
     }, wallTint, -1, true)
   }
@@ -600,7 +602,7 @@ function buildShell(room, M, K) {
       return { p: [Math.cos(a) * rr, o.y + dv * R, Math.sin(a) * rr], uv: [du * 0.5 + 0.5, dv * 0.5 + 0.5], n: [-Math.cos(o.a), 0, -Math.sin(o.a)] }
     }, tint, 1)
   }
-  disc(M.door, room.door, [1, 1, 1])
+  disc(M.door, room.door, [0.27, 0.24, 0.21])
   for (const w of room.windows) disc(M.window, w, [1, 1, 1])
 
   if (room.loft) buildLoft(room, M, K)
@@ -714,8 +716,8 @@ function railRun(M, K, pts, wood) {
 
 // --- the bake ---------------------------------------------------------------
 
-// The bake is analytic, a few hundred flops a vertex, so it runs behind the door's fade on a Quest. The fill `amb` falls to `corner` of itself in the wall's foot and under the loft; each candle gives `candle` times its `i` at the flame, falling by e every `reach` metres so its pool ends within a few metres and the corners stay dark; a flat top (a table, a chest, the loft) between a light and a vertex passes `pass` of it, softened over a penumbra from `pen[0]` metres at the top's edge widening `pen[1]` a metre of drop below it; under such a top the fill falls to `under`.
-const SHADE = { amb: 0.34, corner: 0.45, candle: 2.6, reach: 0.6, cap: 1.8, pass: 0.12, pen: [0.03, 0.35], under: 0.35 }
+// The bake is analytic, a few hundred flops a vertex, so it runs behind the door's fade on a Quest. The fill `amb` falls to `corner` of itself in the wall's foot and under the loft; each candle gives `candle` times its `i` at the flame, falling by e every `reach` metres so its pool ends within a few metres and the corners stay dark; a flat top (a table, a chest, the loft) between a light and a vertex passes `pass` of it, softened over a penumbra from `pen[0]` metres at the top's edge widening `pen[1]` a metre of drop below it; under such a top the fill falls to `under`. A window's light comes from its pane, `depth` back in its reveal: a beam into the room, halved `beamM` metres out, and `spill` round itself whichever way a surface faces, falling by e every `spillM` metres, so the reveal and the wall about it are the room's brightest.
+const SHADE = { amb: 0.18, corner: 0.45, candle: 2.6, reach: 0.6, cap: 1.8, pass: 0.12, pen: [0.03, 0.35], under: 0.35, spill: 2.6, spillM: 1.0, beamM: 1.1 }
 
 /** The flat tops that shade what is under them: the room's solids that are true furniture tops (under BLOCK) and the loft's floor, highest first, each with `y`, its footprint's bounds `x0 x1 z0 z1`, and `inBy(x, z)`, metres inside that footprint (negative outside). */
 function shadeTops(room) {
@@ -759,7 +761,7 @@ function bandIn(room, s, x, z) {
 function bake(room, m, tops) {
   const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
   const wins = room.windows.map((w) => {
-    const r = rAt(room.rs, w.a)
+    const r = rAt(room.rs, w.a) + w.depth
     return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax: [-Math.cos(w.a), 0, -Math.sin(w.a)], k: ((w.r / 0.3) ** 2) * 1.2 }
   })
   // Each candle's tops near enough to come between it and anything: those under its flame from the highest down, those over it from the lowest up, so a vertex's search stops at the first top not between them.
@@ -792,9 +794,9 @@ function bake(room, m, tops) {
     let win = 0
     for (const w of wins) {
       const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
-      if (along <= 0) continue
-      const dl = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
-      win += (w.k * smooth(0.15, 0.85, along / dl) * Math.max(0.2, -(nx * dx + ny * dy + nz * dz) / dl)) / (1 + (dl / 1.6) ** 2)
+      if (along <= -0.1) continue
+      const dl = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1, facing = Math.max(0, -(nx * dx + ny * dy + nz * dz) / dl)
+      win += w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
     }
     // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
     L[i * 3] = amb; L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap)); L[i * 3 + 2] = win * (amb / SHADE.amb)
@@ -822,6 +824,24 @@ function speckleTexture() {
   speckTex.generateMipmaps = true
   speckTex.needsUpdate = true
   return speckTex
+}
+
+// A book's page edges, built in code: one repeat is `m` metres of paper across the block, cream leaves with grey gaps.
+const PAGES = { px: 32, m: 0.012 }
+function pagesTexture() {
+  const n = PAGES.px, rng = mulberry32(0x9a9e5), d = new Uint8Array(n * 4 * 4)
+  for (let x = 0; x < n; x++) {
+    const v = rng() < 0.3 ? 150 + rng() * 40 : 215 + rng() * 25
+    for (let y = 0; y < 4; y++) d.set([v, v * 0.97, v * 0.9, 255], (y * n + x) * 4)
+  }
+  const t = new THREE.DataTexture(d, n, 4)
+  t.colorSpace = THREE.SRGBColorSpace
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.magFilter = THREE.LinearFilter
+  t.minFilter = THREE.LinearMipmapLinearFilter
+  t.generateMipmaps = true
+  t.needsUpdate = true
+  return t
 }
 
 // --- the flames -------------------------------------------------------------
@@ -948,6 +968,41 @@ function stoolAt(M, K, F, r, h, wood) {
   for (let k = 0; k < 3; k++) {
     const q = (k / 3) * TAU + K.j(0.2)
     K.limb(M.grain, put(F, Math.cos(q) * r * 0.95, 0, Math.sin(q) * r * 0.95), put(F, Math.cos(q) * r * 0.55, h - 0.04, Math.sin(q) * r * 0.55), 0.022, 0.019, wood, { bow: 0.008 })
+  }
+}
+
+/** A square block in `F` from lo to hi, one quad a face, uv by `uvOf(p, n)` in local metres. */
+function slab(m, F, lo, hi, tint, uvOf) {
+  for (let ax = 0; ax < 3; ax++) for (const s of [-1, 1]) {
+    const a = (ax + 1) % 3, b = (ax + 2) % 3, n = [0, 0, 0]
+    n[ax] = s
+    m.quad(...[[0, 0], [1, 0], [1, 1], [0, 1]].map(([i, k]) => {
+      const p = [0, 0, 0]
+      p[ax] = s < 0 ? lo[ax] : hi[ax]; p[a] = i ? hi[a] : lo[a]; p[b] = k ? hi[b] : lo[b]
+      return m.v(put(F, ...p), turn(F, ...n), uvOf(p, n), tint)
+    }))
+  }
+}
+
+// Bookcloth: dark reds, blues, browns, a bottle green, an ochre, as [h, s, l].
+const BINDINGS = [[0.99, 0.5, 0.17], [0.02, 0.45, 0.2], [0.61, 0.4, 0.16], [0.63, 0.35, 0.12], [0.07, 0.45, 0.15], [0.08, 0.3, 0.2], [0.36, 0.3, 0.13], [0.1, 0.5, 0.2]]
+const binding = (rng) => { const [h, s, l] = BINDINGS[Math.floor(rng() * BINDINGS.length)]; return rgb(h + (rng() - 0.5) * 0.02, s, l * (0.85 + rng() * 0.3)) }
+
+/** A book in `F`, `t` thick along x, `h` tall along y, `d` deep along z with its spine to +z: cloth boards, a spine rounded across its width and straight along its length, and the page block set in between, striped along its head, tail and fore-edge. */
+function bookAt(M, F, t, h, d, tint) {
+  const ht = t / 2, hh = h / 2, hd = d / 2, b = Math.min(0.003, t * 0.15), bulge = Math.min(ht * 0.5, 0.01), zs = hd - bulge
+  const cloth = (p, n) => (n[0] ? [p[2] / 0.1, p[1] / 0.1] : n[1] ? [p[0] / 0.1, p[2] / 0.1] : [p[0] / 0.1, p[1] / 0.1])
+  for (const s of [-1, 1]) slab(M.linen, F, [s < 0 ? -ht : ht - b, -hh, -hd], [s < 0 ? -ht + b : ht, hh, zs], tint, cloth)
+  slab(M.pages, F, [-ht + b, -hh + 0.004, -hd + 0.003], [ht - b, hh - 0.004, zs], [1, 1, 1], (p, n) => [p[0] / PAGES.m, n[1] ? p[2] / 0.1 : p[1] / 0.1])
+  const spine = (q, y) => [Math.sin(q) * ht, y, zs + Math.cos(q) * bulge]
+  M.linen.grid(8, 1, (i, j) => {
+    const q = -Math.PI / 2 + (i / 8) * Math.PI
+    return { p: put(F, ...spine(q, j ? hh : -hh)), n: norm(turn(F, Math.sin(q) / ht, 0, Math.cos(q) / bulge)), uv: [q * ht / 0.1, (j ? hh : -hh) / 0.1] }
+  }, tint, 1)
+  for (const y of [-hh, hh]) {
+    const n = turn(F, 0, Math.sign(y), 0), mid = M.linen.v(put(F, 0, y, zs), n, FLAT, tint), rim = []
+    for (let i = 0; i <= 8; i++) rim.push(M.linen.v(put(F, ...spine(-Math.PI / 2 + (i / 8) * Math.PI, y)), n, FLAT, tint))
+    for (let i = 0; i < 8; i++) M.linen.tri(mid, rim[i], rim[i + 1])
   }
 }
 
@@ -1150,7 +1205,8 @@ const ITEMS = {
     let y = 0
     for (let k = 0; k < it.n; k++) {
       const hy = 0.012 + rng() * 0.01
-      K.box(M.linen, frame(it.x, it.y, it.z, it.yaw + K.j(0.4)), 0, y + hy, 0, 0.055 + rng() * 0.02, hy, 0.075, rgb(rng(), 0.28, 0.28 + rng() * 0.12), { flat: true, round: 0.2, segs: 8, rows: 4, crook: 0.003 })
+      // Lying flat: the book's thickness turned up.
+      bookAt(M, tip(frame(it.x, it.y + y + hy, it.z, it.yaw + K.j(0.4)), 'az', Math.PI / 2), hy * 2, 0.11 + rng() * 0.04, 0.15, binding(rng))
       y += hy * 2
     }
   },
@@ -1184,17 +1240,26 @@ const ITEMS = {
   },
 
   plush(it, M, K) {
-    const F = frame(it.x, it.y, it.z, it.yaw), s = it.size, col = MUTED(it.hue), o = { flat: false, segs: 14, rows: 8 }
+    const s = it.size, col = MUTED(it.hue), o = { flat: false, segs: 14, rows: 8 }
+    // Tossed down any which way: sat up, slumped, on its back, face-down or on either side. The
+    // lying poses turn the frame so its y runs along the bed, lifted by its half-thickness there.
+    const U = [0, 1, 0], S = frame(0, 0, 0, it.yaw), neg = (a) => a.map((x) => -x), pose = Math.floor((K.j(1) + 1) * 3) % 6
+    const [ax, ay, az] = [[S.ax, U, S.az], [S.ax, U, S.az], [S.ax, neg(S.az), U], [S.ax, S.az, neg(U)], [U, S.az, S.ax], [neg(U), S.az, neg(S.ax)]][pose]
+    const half = it.shape === 2 ? 0.7 : pose >= 4 ? 0.5 : 0.42
+    let F = { x: it.x, y: pose < 2 ? it.y : it.y - 0.04 + s * half * 0.9, z: it.z, ax, ay, az }
+    F = pose === 1 ? tip(tip(F, 'ax', -0.5), 'az', K.j(0.4)) : tip(F, 'ax', K.j(0.15))
+    if (pose >= 2) Object.assign(F, Object.fromEntries(['x', 'y', 'z'].map((k, i) => [k, put(F, 0, -s * 0.6, 0)[i]])))
     if (it.shape === 2) {
       K.blob(M.linen, F, [0, s * 0.4, 0], s * 0.35, s * 0.45, s * 0.35, CREAM, o)
       K.blob(M.linen, F, [0, s * 0.95, 0], s * 0.7, s * 0.35, s * 0.7, col, o)
       return
     }
     K.blob(M.linen, F, [0, s * 0.45, 0], s * 0.5, s * 0.5, s * 0.42, col, o)
-    K.blob(M.linen, F, [0, s * 1.15, 0.02], s * 0.38, s * 0.35, s * 0.35, col, o)
+    const n = put(F, 0, s * 0.85, 0), H = tip(tip({ ...F, x: n[0], y: n[1], z: n[2] }, 'az', K.j(0.45)), 'ax', K.j(0.3))
+    K.blob(M.linen, H, [0, s * 0.3, 0.02], s * 0.38, s * 0.35, s * 0.35, col, o)
     const ear = it.shape === 0 ? [s * 0.13, s * 0.12] : [s * 0.08, s * 0.35]
-    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.22, s * 1.4 + ear[1] * 0.6, 0], ear[0], ear[1], ear[0] * 0.6, col, o)
-    for (const x of [-1, 1]) K.blob(M.linen, F, [x * s * 0.13, s * 1.2, s * 0.33], s * 0.05, s * 0.05, s * 0.03, DARK, { segs: 8, rows: 5 })
+    for (const x of [-1, 1]) K.blob(M.linen, H, [x * s * 0.22, s * 0.55 + ear[1] * 0.6, 0], ear[0], ear[1], ear[0] * 0.6, col, o)
+    for (const x of [-1, 1]) K.blob(M.linen, H, [x * s * 0.13, s * 0.35, s * 0.33], s * 0.05, s * 0.05, s * 0.03, DARK, { segs: 8, rows: 5 })
   },
 
   bookcase(it, M, K, room) {
@@ -1211,7 +1276,7 @@ const ITEMS = {
       while (x < hw - 0.05) {
         const t = 0.02 + rng() * 0.025, bh = room2 * (0.6 + rng() * 0.35)
         if (rng() < 0.12) { x += 0.06; continue }
-        K.box(M.linen, frame(...put(F, x + t / 2, y + 0.02 + bh / 2, 0.01), it.yaw + (rng() - 0.5) * 0.1), 0, 0, 0, t / 2 - 0.002, bh / 2, hd * 0.8, rgb(rng(), 0.22 + rng() * 0.12, 0.26 + rng() * 0.14), { flat: true, round: 0.25, segs: 8, rows: 4, crook: 0.002 })
+        bookAt(M, frame(...put(F, x + t / 2, y + 0.02 + bh / 2, 0.01), it.yaw + (rng() - 0.5) * 0.1), t - 0.004, bh, hd * 1.6, binding(rng))
         x += t
       }
     }
@@ -1244,16 +1309,18 @@ const ITEMS = {
       }
       return
     }
-    // Lattice: crossed slats with leaves where they meet.
-    const L = Math.hypot(...sub(p1, p0)), n = Math.max(2, Math.round(L / 0.25)), leafCol = GREEN(0.5)
+    // Lattice: crossed slats, each leaf on a stalk sprouting from one of them.
+    const L = Math.hypot(...sub(p1, p0)), n = Math.max(2, Math.round(L / 0.25)), slats = []
     for (let k = 0; k <= n; k++) {
       const t0 = k / n
-      K.limb(M.grain, lerp(Math.max(0, t0 - 0.5), 0.05), lerp(t0, h - 0.05), 0.013, 0.013, wood, { bow: 0.01, segs: 6 })
-      K.limb(M.grain, lerp(Math.min(1, t0 + 0.5), 0.05), lerp(t0, h - 0.05), 0.013, 0.013, wood, { bow: 0.01, segs: 6 })
+      slats.push([lerp(Math.max(0, t0 - 0.5), 0.05), lerp(t0, h - 0.05)], [lerp(Math.min(1, t0 + 0.5), 0.05), lerp(t0, h - 0.05)])
     }
-    for (let k = 0; k < n * 2; k++) {
-      const at = lerp(rng(), 0.2 + rng() * (h - 0.35)), q = rng() * TAU
-      K.leaf(M.linen, at, norm([Math.cos(q), -0.3, Math.sin(q)]), 0.08, 0.03, face, leafCol)
+    for (const [a, b] of slats) K.limb(M.grain, a, b, 0.013, 0.013, wood, { bow: 0.01, segs: 6 })
+    for (let k = 0; k < n * 8; k++) {
+      const [a, b] = slats[Math.floor(rng() * slats.length)], base = lerp3(a, b, 0.1 + rng() * 0.8), side = rng() < 0.5 ? 1 : -1
+      const out = norm(add(add(face.map((x) => x * side), along2, K.j(0.8)), [0, 1, 0], K.j(0.5))), stalk = add(base, out, 0.035)
+      K.limb(M.grain, base, stalk, 0.004, 0.0025, wood, { bow: 0.004, segs: 4 })
+      K.leaf(M.linen, stalk, norm(add(out, [0, -0.6, 0], 1)), 0.06 + rng() * 0.03, 0.022, face, GREEN(0.35 + rng() * 0.3))
     }
   },
 

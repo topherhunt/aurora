@@ -12,6 +12,8 @@ export const TABLE_TOP = 0.42
 // Stone this high stands for furniture she cannot climb (backs, pots, tools leant up): over her reach (0.6 m at HER_SCALE). Low furniture is stone to its own top, a step she climbs onto where her head clears.
 export const BLOCK = 0.8
 export const STOOL_H = 0.24, HAMPER_H = 0.36
+// The armchair's cushion top (render/interior.js `armchair`).
+const ARMCHAIR_SEAT = 0.25
 // A house this tall outside has a loft inside.
 const LOFT_HOUSE_M = 6
 // Three rises must stay within her glade reach (0.6 m): player.js looks a stride (0.75 m, ~2.7 treads) ahead on a steep step, and a tread past her reach reads as the floor below, so the stairs refuse her.
@@ -278,7 +280,9 @@ export function rollInterior({ seed, index, height }) {
     const yaw = Math.atan2(-Math.cos(q), -Math.sin(q))
     const back = rng() < 0.75 ? range(0.5, 0.66) : 0
     items.push({ kind: 'chair', x, z, yaw, r: sr, top: SEAT, back, style: Math.floor(rng() * 3), cushion: rng() < 0.6 })
-    solids.push({ kind: 'cyl', x, z, r: sr, y0: 0, y1: back ? BLOCK : SEAT })
+    // The seat is a step; the back (render/interior.js leans it out behind the seat's rim) is a wall.
+    solids.push({ kind: 'cyl', x, z, r: sr, y0: 0, y1: SEAT })
+    if (back) solids.push({ kind: 'box', x: x - Math.sin(yaw) * (sr + 0.01), z: z - Math.cos(yaw) * (sr + 0.01), yaw, hx: sr * 0.85, hz: 0.05, y0: 0, y1: BLOCK })
     cover += Math.PI * sr * sr
     spots.push({ kind: 'seat', x, z, top: SEAT, r: sr, lookX: -Math.cos(q), lookZ: -Math.sin(q), level: 0 })
     // A place set before it: a plate, and sometimes a cup.
@@ -415,7 +419,8 @@ export function rollInterior({ seed, index, height }) {
       // Turned half toward the window, so the page takes its light.
       const yaw = chair.yaw - chair.side * 0.5
       items.push({ kind: 'armchair', x: chair.x, z: chair.z, yaw, top: 0.2, r: 0.34 })
-      solids.push({ kind: 'cyl', x: chair.x, z: chair.z, r: 0.32, y0: 0, y1: BLOCK })
+      solids.push({ kind: 'cyl', x: chair.x, z: chair.z, r: 0.32, y0: 0, y1: ARMCHAIR_SEAT })
+      solids.push({ kind: 'box', x: chair.x - Math.sin(yaw) * 0.2, z: chair.z - Math.cos(yaw) * 0.2, yaw, hx: 0.3, hz: 0.1, y0: 0, y1: BLOCK })
       cover += Math.PI * 0.32 * 0.32
       take(chair.x, chair.z, 0.38)
       spots.push({ kind: 'read', x: chair.x, z: chair.z, top: 0.2, r: 0.28, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), level: 0 })

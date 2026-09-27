@@ -2,10 +2,10 @@
 //
 //   node scripts/check-interiors.mjs
 //
-// Many villages' houses on both sides of the loft height: a room rolls the same twice and differently for every house; it has 1-3 windows (one on the floor), a table with 2-4 chairs, a kitchen with its basin, herbs and stores, a bed, candles on the table and in sconces, a corner of garden tools and (nearly always) one of stores, and ten or more smaller things; a third or more of the floor under stuff; a loft exactly when the house outside is tall; no two floor things overlap; she walks straight from inside the door to its mouth; she lands on the floor inside the door; from there the floor reaches every place a resident walks to, and the stairs reach the loft; she climbs onto the table and the stools; and she never stands in the wall or in a piece of furniture.
+// Many villages' houses on both sides of the loft height: a room rolls the same twice and differently for every house; it has 1-3 windows (one on the floor), a table with 2-4 chairs, a kitchen with its basin, herbs and stores, a bed, candles on the table and in sconces, a corner of garden tools and (nearly always) one of stores, and ten or more smaller things; a third or more of the floor under stuff; a loft exactly when the house outside is tall; no two floor things overlap; she walks straight from inside the door to its mouth; she lands on the floor inside the door; from there the floor reaches every place a resident walks to, and the stairs reach the loft; she climbs onto the table, the chairs and the stools; and she never stands in the wall or in a piece of furniture.
 
 import { LOCOMOTION } from '../src/player.js'
-import { FILLET, InteriorStone, STOOL_H, flatField, rAt, rollInterior } from '../src/v2/rooms/interior.js'
+import { FILLET, InteriorStone, SEAT, STOOL_H, flatField, rAt, rollInterior } from '../src/v2/rooms/interior.js'
 import { HER_SCALE } from '../src/v2/rooms/village.js'
 import { WalkSurface } from '../src/v2/walk.js'
 
@@ -123,7 +123,7 @@ every('she walks straight from inside the door to within 0.5 m of it', (r) => {
 // The walk: the flood is the slow part, so it runs on every house of three villages.
 const walked = rooms.filter((r) => SEEDS.slice(0, 3).includes(r.seed))
 const reachFails = []
-let climbable = 0, climbed = 0
+let climbable = 0, climbed = 0, chairs = 0, sat = 0
 for (const r of walked) {
   const { stone, reached, cells, stoodAt } = flood(r)
   const fail = (what) => reachFails.push(`${r.seed}/${r.index} ${what}`)
@@ -141,9 +141,11 @@ for (const r of walked) {
   const table = r.solids.find((s) => s.kind === 'cyl' && s.x === r.ring.x && s.z === r.ring.z)
   if (!stoodAt(table.x, table.z).some((h) => Math.abs(h - table.y1) < 0.01)) fail('never climbs onto the table')
   for (const it of kinds(r, 'stools')) { climbable++; if (stoodAt(it.x, it.z).some((h) => Math.abs(h - STOOL_H) < 0.01)) climbed++ }
+  for (const it of kinds(r, 'chair')) { chairs++; if (stoodAt(it.x, it.z).some((h) => Math.abs(h - SEAT) < 0.01)) sat++ }
 }
 check(reachFails.length === 0, `inside the door she stands on the floor, and walks to the table's ring, the kitchen, the window, the talkers and up to the loft, climbs onto the table, never in the wall or in furniture (${walked.length} rooms)${reachFails.length ? ` -- ${reachFails.slice(0, 6).join('; ')}` : ''}`)
 check(climbable > 0 && climbed >= climbable * 0.9, `she steps up onto the stools on the floor (${climbed} of ${climbable})`)
+check(chairs > 0 && sat >= chairs * 0.9, `she steps up onto the table's chairs (${sat} of ${chairs})`)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')
 process.exit(failures ? 1 : 0)

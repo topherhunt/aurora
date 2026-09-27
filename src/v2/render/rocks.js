@@ -574,9 +574,8 @@ const BEDS = [
     // holds a wood, lying on its long side like every other big rock in the
     // wood and the burial pinned so the mouth entrances.js cuts into its
     // flank is always at the same height. `deep` puts the one candidate at
-    // the point of the tile furthest from open ground and refuses the tile
-    // unless that point is 50 m into the wood, so a hollow is always
-    // something she has to find. The wood is the forest law's, which runs
+    // a rolled point of the tile 50 m into the wood and refuses the tile
+    // without one, so a hollow is always something she has to find. The wood is the forest law's, which runs
     // 55 m up into what `_envAt` calls peak, so peak ground is claimed too.
     name: 'hollow',
     hollow: true,
@@ -1107,11 +1106,12 @@ const PLACEMENT_CELL = 4.0
 
 // A `deep` bed's forest scan (see the hollow bed): the tile sampled every
 // STEP metres, a cell wood when the forest law keeps at least KEEP of its
-// trees, the site the cell furthest from open ground among those INSET
-// metres in from the tile's edge, and the one candidate jittered JITTER
+// trees, the site a cell rolled from those INSET metres in from the tile's
+// edge and `deep` from open ground, and the one candidate jittered JITTER
 // metres about it. Neighbours across a tile edge are then at least
-// 2 * (INSET - JITTER) apart.
-const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7 }
+// 2 * (INSET - JITTER) apart. A new `roll` moves every site in the world and
+// keeps which tiles hold one.
+const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7, roll: 1 }
 
 // THE TILE WALK IS BUCKETED BY PHASE AND A BUCKET IS WALKED ONLY WHEN ITS ANSWER
 // CAN HAVE CHANGED -- render/trees.js's STILL_M scheme, whose header argues it,
@@ -1375,8 +1375,8 @@ class RockBed {
     this.ground = ground
 
     const tile = cfg.tile
-    // A `deep` bed seats its one candidate at the tile's point furthest from
-    // open ground, and only if that is `deep` metres in; see `_deepSite` and
+    // A `deep` bed seats its one candidate at a rolled point of the tile
+    // `deep` metres from open ground; see `_deepSite` and
     // the hollow bed. A bed without one never asks the biome field.
     this.deep = cfg.deep ?? 0
     if (this.deep > 0 && (!biome || typeof biome.coverAt !== 'function')) {
@@ -2247,8 +2247,8 @@ class RockBed {
    * a road or on flattened ground. A two-pass chamfer over the grid gives
    * every cell its distance to the nearest open cell; ground past the tile's
    * edge is unscanned and counts as wood, so a wood that runs out of the tile
-   * is measured only to the open ground inside it. The site is the deepest
-   * inset cell, ties to the one nearest the tile's middle.
+   * is measured only to the open ground inside it. The site is an inset cell
+   * `deep` in, rolled off the tile and DEEP.roll.
    */
   _deepSite(tx, tz) {
     const n = this._deepN
@@ -2296,17 +2296,13 @@ class RockBed {
       }
     }
     const lo = Math.ceil(DEEP.inset / step), hi = n - 1 - lo
-    const mid = (n - 1) / 2
-    let best = -1, bestD = 0, bestC = Infinity
-    for (let j = lo; j <= hi; j++) {
-      for (let i = lo; i <= hi; i++) {
-        const d = dist[j * n + i]
-        if (d < this.deep) continue
-        const c = Math.hypot(i - mid, j - mid)
-        if (d > bestD || (d === bestD && c < bestC)) { best = j * n + i; bestD = d; bestC = c }
-      }
-    }
-    if (best < 0) return null
+    let deep = 0
+    for (let j = lo; j <= hi; j++) for (let i = lo; i <= hi; i++) if (dist[j * n + i] >= this.deep) deep++
+    if (deep === 0) return null
+    // Bed index -2 - roll: clear of the scatter's slots and of the clump field's -1.
+    let pick = Math.floor(mulberry32(tileSeed(tx, tz, this.seed, -2 - DEEP.roll))() * deep)
+    let best = -1
+    for (let j = lo; j <= hi && best < 0; j++) for (let i = lo; i <= hi; i++) if (dist[j * n + i] >= this.deep && pick-- === 0) { best = j * n + i; break }
     return { x: x0 + (best % n) * step, z: z0 + ((best / n) | 0) * step }
   }
 

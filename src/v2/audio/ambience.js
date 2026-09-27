@@ -214,8 +214,8 @@ export class Ambience {
   /**
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
-   * @param voiced    the layers whose one-shots are heard, each { layer, rule }: layer.voices(into) drains them, `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door).
-   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, and `calls`, if any, maps a species key (body.sp.key) to the rule of its call.
+   * @param voiced    the layers whose one-shots are heard, each { layer, rule, bus }: layer.voices(into) drains them, `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door); `bus` 'near' keeps them out of the house's walls (a leafkin at home), else `air`.
+   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, bus }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, and `bus` is as a voiced layer's.
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
    * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
@@ -576,7 +576,7 @@ export class Ambience {
           const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d))
           const rate = Math.pow(F.size / c.size, F.deep)
           while (f.phase >= f.at) {
-            this.fire('footfall', { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z } })
+            this.fire('footfall', { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus })
             if (++f.beat === beats.length) {
               f.beat = 0
               f.phase -= 1
@@ -753,7 +753,7 @@ export class Ambience {
   /** The voiced layers: every one-shot since the last frame from where it was said, within reach. */
   _voices(head) {
     const listed = this.listed
-    for (const { layer, rule } of this.voiced) {
+    for (const { layer, rule, bus } of this.voiced) {
       listed.length = 0
       layer.voices(listed)
       for (const v of listed) {
@@ -763,7 +763,7 @@ export class Ambience {
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
         const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)
-        this.fire(v.sound, { rate: this.rate(), gain: level * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z } })
+        this.fire(v.sound, { rate: this.rate(), gain: level * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z }, bus })
       }
     }
   }

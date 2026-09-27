@@ -52,8 +52,9 @@ export const SIZE_M = 1
 export const SIZE_VAR = 0.15
 // The disc about the mouth it roams, and a new target every so often.
 export const ROAM_M = 150
-// It is placed out in its wood, never at the mouth: on the first open spot of OUT_TRIES rolled between OUT_M and ROAM_M from it. OUT_M is past the cull of the largest leafkin, so one standing at the mouth never sees it appear.
-export const OUT_M = 40
+// It is placed out in its wood, never at the mouth: on the first open spot of OUT_TRIES rolled between OUT_M and OUT_FAR_M from it. OUT_M is past the cull of the largest leafkin, so one standing at the mouth never sees it appear.
+export const OUT_M = 50
+export const OUT_FAR_M = 100
 const OUT_TRIES = 64
 export const RETARGET_S = [5, 15]
 // Stepped while her feet are within its roam and its cull of the mouth; let go this much further out.
@@ -458,18 +459,18 @@ export class Leafkin {
     this._snap(c)
   }
 
-  /** Out in its wood: an open spot rolled uniformly over the ring OUT_M to ROAM_M about the mouth, facing a rolled way. */
+  /** Out in its wood: an open spot rolled uniformly over the ring OUT_M to OUT_FAR_M about the mouth, facing a rolled way. */
   _emerge(c) {
     const site = c.site
     let i = 0
     for (; i < OUT_TRIES; i++) {
-      const r = Math.sqrt(OUT_M * OUT_M + (ROAM_M * ROAM_M - OUT_M * OUT_M) * c.rand())
+      const r = Math.sqrt(OUT_M * OUT_M + (OUT_FAR_M * OUT_FAR_M - OUT_M * OUT_M) * c.rand())
       const a = c.rand() * Math.PI * 2
       c.x = c.px = site.x + r * Math.cos(a)
       c.z = c.pz = site.z + r * Math.sin(a)
       if (this.open(site, c.x, c.z)) break
     }
-    if (i === OUT_TRIES) throw new Error(`Leafkin: no open ground ${OUT_M}-${ROAM_M} m from ${site.key} in ${OUT_TRIES} tries`)
+    if (i === OUT_TRIES) throw new Error(`Leafkin: no open ground ${OUT_M}-${OUT_FAR_M} m from ${site.key} in ${OUT_TRIES} tries`)
     c.heading = c.ph = c.aim = c.rand() * Math.PI * 2
     c.wob = c.wobv = 0
     c.squeal = 0

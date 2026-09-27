@@ -23,6 +23,10 @@ const LIE_SLIDE = 0.4
 // Seconds each activity holds, and how likely each is picked.
 const HOLD_S = { seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], bed: [40, 90], wander: [3, 8], talk: [10, 20] }
 const PICK = [['seat', 0.25], ['read', 0.15], ['cook', 0.15], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.15], ['talk', 0.08]]
+// Seconds between one's mutters to itself while it walks, sits or potters; a pair talking, a third of that. Never asleep.
+const MUTTER_S = [15, 45]
+const CHATTERS = 4
+const CHEST = 0.5
 const TURN_RATE = 5
 const NEAR_M = 0.05
 const FADE_S = 0.25
@@ -69,6 +73,7 @@ export class Residents {
     this.plain.map = asset.map
     this.materials = [this.plain]
     this.rand = mulberry32(hash32(seed, room.index, 0x1d2))
+    this.calls = []
     // Each spot's resident, and the climb's heights: its foot on the floor, each tread's top, the loft.
     this.taken = new Map()
     const treads = room.stairs.map((s) => s.top).reverse()
@@ -100,6 +105,7 @@ export class Residents {
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null,
+      mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
     if (atDoor) this._choose(r, false)
@@ -278,7 +284,33 @@ export class Residents {
     const u = view.uniforms
     const k = LIGHT.amb * u.uAmb.value + LIGHT.candle * u.uCandle.value * u.uFlicker.value + LIGHT.win * u.uWin.value * (0.15 + 0.85 * u.uDay.value)
     this.light.value.set(LIGHT.tint.r * k, LIGHT.tint.g * k, LIGHT.tint.b * k)
-    for (const r of this.all.slice()) this._step(r, dt)
+    for (const r of this.all.slice()) {
+      this._step(r, dt)
+      if (r.state === 'gone' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
+      r.mutter -= r.phase === 'talk' ? dt * 3 : dt
+      if (r.mutter > 0) continue
+      r.mutter = between(this.rand, MUTTER_S)
+      const g = this.group.position
+      this.calls.push({ sound: `leafkinChatter${1 + Math.floor(this.rand() * CHATTERS)}`, x: g.x + r.x, y: g.y + r.y + r.size * CHEST, z: g.z + r.z })
+    }
+  }
+
+  /** The ones walking, in world metres, for their footfalls (ambience.js herds): one record each, rewritten per call. */
+  bodies(into) {
+    const g = this.group.position
+    for (const r of this.all) {
+      if (r.state !== 'walk' && r.state !== 'leave') continue
+      Object.assign(r.body, { x: g.x + r.x, y: g.y + r.y, z: g.z + r.z, speed: this.asset.gait.walk * r.k * r.pace })
+      into.push(r.body)
+    }
+    return into
+  }
+
+  /** Their mutters since the last call, each `{ sound, x, y, z }` in world metres, drained. */
+  voices(into) {
+    for (const v of this.calls) into.push(v)
+    this.calls.length = 0
+    return into
   }
 
   _step(r, dt) {

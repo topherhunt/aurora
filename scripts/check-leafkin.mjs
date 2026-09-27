@@ -17,7 +17,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
-  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, OUT_M, SEEK_M, GATHER_KEY, GIVE_UP_S, STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
+  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, OUT_M, OUT_FAR_M, SEEK_M, GATHER_KEY, GIVE_UP_S, STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
 } from '../src/v2/render/leafkin.js'
 import { LeafkinGround, CELL, OPEN, BLOCKED } from '../src/v2/render/leafkin-ground.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
@@ -277,7 +277,7 @@ console.log('\nthe chapter')
   v.update(NEAR, head(NEAR), START + 1 / 60, 1 / 60)
   const d = one(v)
   check(d && d.startTick === tickAfter(START) && d.turnTick === tickAfter(START + CHAPTER_S) && d.homingTick === d.turnTick - HOMING_S * TICK_HZ, `her feet within its roam and cull, it is taken up on its chapter: ${CHAPTER_S} s from the site's own offset, homing ${HOMING_S} s before the turn`)
-  check(d && d.tick === d.startTick && Math.hypot(d.x, d.z) >= OUT_M && Math.hypot(d.x, d.z) <= ROAM_M && d.state === 'roam' && d.clip === 'run', `on the chapter's first tick it stands out in its wood, ${OUT_M}-${ROAM_M} m from the mouth, roaming`, d && `${fmt(Math.hypot(d.x, d.z))} m out`)
+  check(d && d.tick === d.startTick && Math.hypot(d.x, d.z) >= OUT_M && Math.hypot(d.x, d.z) <= OUT_FAR_M && d.state === 'roam' && d.clip === 'run', `on the chapter's first tick it stands out in its wood, ${OUT_M}-${OUT_FAR_M} m from the mouth, roaming`, d && `${fmt(Math.hypot(d.x, d.z))} m out`)
   check(d && Math.abs(d.size - SIZE_M) <= SIZE_M * SIZE_VAR + 1e-9 && Math.abs(d.k - d.size / biped.height) < 1e-12, `a metre tall, give or take ${SIZE_VAR * 100}%, wearing the scale that makes it so`, d && `${fmt(d.size)} m`)
   v.dispose()
   // Half its wood blocked: every chapter places it on the open half. None open, and the chapter throws rather than stand it in a trunk.
@@ -290,7 +290,7 @@ console.log('\nthe chapter')
     out.push(one(h))
     h.dispose()
   }
-  check(out.every((o) => o.x >= 0 && Math.hypot(o.x, o.z) >= OUT_M && Math.hypot(o.x, o.z) <= ROAM_M), `over 20 chapters it is only ever placed on open ground, ${OUT_M}-${ROAM_M} m out`, `${out.filter((o) => o.x < 0).length} on the blocked half`)
+  check(out.every((o) => o.x >= 0 && Math.hypot(o.x, o.z) >= OUT_M && Math.hypot(o.x, o.z) <= OUT_FAR_M), `over 20 chapters it is only ever placed on open ground, ${OUT_M}-${OUT_FAR_M} m out`, `${out.filter((o) => o.x < 0).length} on the blocked half`)
   const none = new Ground()
   none.cell = () => BLOCKED
   const n = make({ ground: none })
@@ -527,7 +527,7 @@ console.log('\nthe startle')
   check(c.until === goneTick + EMPTY_S * TICK_HZ && c.carrier.count() === 0, `inside for ${EMPTY_S} s, its arms empty`)
   let out = null
   t = run(w, t, EMPTY_S + 1, at, (c, now) => { if (out === null && c.state === 'roam') out = { now, tick: c.tick, x: c.px, z: c.pz } }, 20)
-  check(out && out.tick === c.until && Math.hypot(out.x, out.z) >= OUT_M && Math.hypot(out.x, out.z) <= ROAM_M, `and ${EMPTY_S} s on, placed out in its wood again`, out && `tick ${out.tick - goneTick}, ${fmt(Math.hypot(out.x, out.z))} m out`)
+  check(out && out.tick === c.until && Math.hypot(out.x, out.z) >= OUT_M && Math.hypot(out.x, out.z) <= OUT_FAR_M, `and ${EMPTY_S} s on, placed out in its wood again`, out && `tick ${out.tick - goneTick}, ${fmt(Math.hypot(out.x, out.z))} m out`)
   w.dispose()
 }
 

@@ -2428,6 +2428,31 @@ let portalBlink = false
 let portalIn = null
 // The house she has gone into (design/30-leafkin.md, Interiors), or null: its entry (RoomProps.entries), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the village walk its own stands in for while she is in.
 let indoors = null
+/** A point in the house's room (or, with `dir`, a direction) onto the house in the village, for the ear (updateAmbience): the room's door onto its doorway, the room's +x (in at the door) onto the doorway's inward. */
+function houseOut(p, into, dir = false) {
+  const { e, door } = indoors
+  const qx = dir ? p.x : p.x - door.x, qy = dir ? p.y : p.y - door.y, qz = dir ? p.z : p.z - door.z
+  into.x = (dir ? 0 : e.x) - qx * e.nx + qz * e.nz
+  into.y = (dir ? 0 : e.y) + qy
+  into.z = (dir ? 0 : e.z) - qx * e.nz - qz * e.nx
+  return into
+}
+const heardAt = (p) => (indoors ? houseOut(p, p) : p)
+/** The leafkin at home in the house she is in, as ambience.js herds and voices them: their footfalls and mutters, carried out with her ears. */
+const atHome = {
+  bodies(into) {
+    const n = into.length
+    if (indoors) indoors.residents.bodies(into)
+    for (let i = n; i < into.length; i++) houseOut(into[i], into[i])
+    return into
+  },
+  voices(into) {
+    const n = into.length
+    if (indoors) indoors.residents.voices(into)
+    for (let i = n; i < into.length; i++) houseOut(into[i], into[i])
+    return into
+  },
+}
 // Through a house's door: her feet within `side` of the door's middle line (the door's half-width, less a little) and `walk` of its face, heading `into` it, or a teleport landing within `blink`, and outside, her feet within `rise` of the landing (not on the awning over it); the same at the door inside. Outside, her capsule stops up to 0.4 m short of the face across the door's width (the panel is not flat), and inside the wall's stone keeps her 0.3 m off it, so `walk` is the furthest she stops plus a little.
 const HOUSE_DOOR = { walk: 0.5, side: 0.4, blink: 0.5, into: 0.6, rise: 0.6 }
 let doorBusy = false
@@ -2964,7 +2989,7 @@ async function enterHouse(e) {
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace }))
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
   const rDoor = rAt(room.rs, Math.PI)
-  indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, z: oz, nx: -1, nz: 0 }, outside: walk }
+  indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, y: oy, z: oz, nx: -1, nz: 0 }, outside: walk }
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
@@ -3334,7 +3359,8 @@ async function buildRoom(room, at) {
   // on it, and these two materials compile DIFFERENT shader source -- the tree
   // material's uBillboardLayers is four long, the ferns' is one -- so sharing a
   // key would hand one of them the other's program.
-  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb' })
+  // liftAlbedo: see APPLY in lighting.js. Lets canopy shade go dark instead of grey.
+  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb', liftAlbedo: { mix: 1, gain: 7 } })
   // So a tree and the ground it stands on cross the snow line together.
   trees.syncSnowLine(layers)
   trees.place(spawn.x, spawn.z)
@@ -3685,8 +3711,8 @@ async function buildRoom(room, at) {
       return true
     },
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
-    thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: { x, y, z } }) },
-    splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: { x, y, z } }) },
+    thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: heardAt({ x, y, z }) }) },
+    splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
     scale: room.scale,
   })
   hands.addSource(mushrooms, 'mushroom')
@@ -3783,8 +3809,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' }))],
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }],
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -4929,17 +4955,39 @@ function applySubmersion(head, elapsedReal, state) {
 // The world's half lives in audio/; this is only what main.js knows and hands
 // over each frame: where her ears are and which way they face, the hour, and
 // whether she is under. Runs after applySky so `submerged` is this frame's.
+// Indoors, her ears and every sound of the room are carried out to where the
+// house stands in the village (houseOut), so the world is heard from the glade
+// round the house, not from the room's own spot past the village's edge.
 const earFwd = new THREE.Vector3()
 const earUp = new THREE.Vector3()
 const earQuat = new THREE.Quaternion()
+const earHead = new THREE.Vector3()
+
+// Through the walls now and then, beyond what the glade itself sends: a leafkin passing by day, an owl by night, `range` metres out.
+const OUTSIDE = [
+  { clips: ['leafkinChatter1', 'leafkinChatter2', 'leafkinChatter3', 'leafkinChatter4'], when: (day) => day > 0.25, every: [20, 60], range: [5, 12], gain: 0.6 },
+  { clips: ['owl'], when: (day) => day < 0.3, every: [25, 70], range: [10, 25], gain: 0.5 },
+]
+const outsideLeft = OUTSIDE.map(() => 10)
+
 function updateAmbience(dt, state) {
   if (!ambience) return
   camera.getWorldDirection(earFwd)
   camera.getWorldQuaternion(earQuat)
   earUp.set(0, 1, 0).applyQuaternion(earQuat)
-  sound.setListener(headTmp.x, headTmp.y, headTmp.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
+  const ears = indoors ? houseOut(headTmp, earHead) : headTmp
+  if (indoors) { houseOut(earFwd, earFwd, true); houseOut(earUp, earUp, true) }
+  sound.setListener(ears.x, ears.y, ears.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
+  if (indoors) {
+    OUTSIDE.forEach((O, i) => {
+      if (!O.when(daynessOf(state)) || (outsideLeft[i] -= dt) > 0) return
+      outsideLeft[i] = THREE.MathUtils.randFloat(...O.every)
+      const q = Math.random() * Math.PI * 2, d = THREE.MathUtils.randFloat(...O.range)
+      sound.play(O.clips[Math.floor(Math.random() * O.clips.length)], { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: O.gain, at: { x: ears.x + Math.cos(q) * d, y: ears.y, z: ears.z + Math.sin(q) * d } })
+    })
+  }
   ambience.update(dt, {
-    head: headTmp,
+    head: ears,
     // The room's clock, last frame's reading, as every creature layer takes it: the dragons' roars are scored against it (sim/score.js), so two headsets in the room hear the one roar.
     now: clock.seconds,
     dayness: daynessOf(state),
