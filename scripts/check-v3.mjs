@@ -201,7 +201,8 @@ export async function run() {
   // The lakes are the basins the drain kept and there is no other source of one, so `keep` is the whole ceiling. Some of the kept can still lose their water afterwards, to the outlet notch or to a chain cutting their rim, and those are dropped from the doc rather than drawn dry.
   check(hs.lakes.count >= 3 && hs.lakes.count <= BASINS.keep && hs.lakes.count === hs.lakes.spared - hs.lakes.drained, `${hs.lakes.count} lakes of the ${hs.lakes.spared} basins the drain kept (${hs.lakes.drained} drained out from under their water afterwards)`)
   check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
-  check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)
+  // ONE ELLIPSE CANNOT HOLD A BRANCHED POOL, and the drain picks its lakes on depth alone, so some of them are long or forked: a single fit round one of those covers the ridge between its arms and draws water in every hollow under the level inside it. So a part that spills more than `splitLeak` of its own area is cut in two and fitted again, up to `splitMax` ellipses at the one level -- measured, that took the worst two bodies on this island from 48% and 67% of their own area leaking to 1% and 2%, and the whole island from 9.5% to 1.9%, with the dry ground unmoved.
+  check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05 && hs.lakes.records >= hs.lakes.count && hs.lakes.records <= hs.lakes.count * LAKES.splitMax, `${hs.lakes.km2.toFixed(3)} km2 of lake in ${hs.lakes.records} ellipses, ${hs.lakes.leakKm2.toFixed(4)} km2 of water they would draw beside it`)
   check(hs.lakes.dryKm2 < hs.lakes.km2 * 0.02 && hs.lakes.dryDeepest < 4, `${hs.lakes.dryKm2.toFixed(4)} km2 of lake the ellipses leave dry, ${hs.lakes.dryDeepest.toFixed(1)} m at the deepest`)
   check(hs.rivers.count >= 20 && hs.rivers.km > 10 && hs.rivers.km / s.landKm2 > 1 && hs.rivers.km / s.landKm2 < 6, `${hs.rivers.count} rivers, ${hs.rivers.km.toFixed(1)} km on ${s.landKm2.toFixed(1)} km2 of land, longest ${hs.rivers.longestKm.toFixed(1)} km`)
   check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
@@ -235,7 +236,7 @@ export async function run() {
 
   console.log('\n[v3] the document')
   const layers = Layers.deserialize(a.doc)
-  check(layers.lakes.lakes.size === 1 + hs.lakes.count && layers.paths.paths.size === hs.rivers.count, `${layers.lakes.lakes.size} lakes and ${layers.paths.paths.size} rivers deserialise`)
+  check(layers.lakes.lakes.size === 1 + hs.lakes.records && layers.paths.paths.size === hs.rivers.count, `${layers.lakes.lakes.size} lake records (${hs.lakes.count} bodies) and ${layers.paths.paths.size} rivers deserialise`)
   const sea = layers.lakes.lakes.get('l1')
   check(sea.y === 0 && sea.carve === false && sea.rx >= 8192, `the sea is an uncarved rectangle at y 0, ${sea.rx * 2} m across`)
   let above = 0

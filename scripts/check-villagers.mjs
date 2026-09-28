@@ -33,11 +33,13 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, CALM_M, CLIPS, DOOR_FADE_S, EXTRA, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
-import { CHAPTER_S, keyHash } from '../src/sim/score.js'
+import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
+import { CARRY_MAX } from '../src/v2/hands.js'
+import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
@@ -150,7 +152,19 @@ function makeAsset() {
   return { root, skeleton, tiers, clips, map: null, extras: biped, ...biped, legs }
 }
 
-const make = () => new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats, seed: spec.seed, asset: makeAsset() })
+const make = (hands = null) => new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats, seed: spec.seed, asset: makeAsset(), exit: room.exit, hands, mushrooms: hands && { record: () => ({ kind: 'mushroom' }) } })
+/** A stand-in for hands.js: carriers that log what each is asked, and a ground of loose things. */
+function fakeHands() {
+  const h = { loose: [], tag: null, carriers: 0, lifted: [], log: [] }
+  h.carry = (owner) => {
+    h.carriers++
+    let n = 0
+    const say = (what) => () => { h.log.push([what, owner]) }
+    return { count: () => n, add: () => { n++ }, clear: () => { n = 0 }, place: say('place'), grip: say('grip'), scatter: say('scatter'), release: () => { h.carriers--; h.log.push(['release', owner]) } }
+  }
+  h.lift = (item) => { h.loose.splice(h.loose.indexOf(item), 1); h.lifted.push(item) }
+  return h
+}
 const T0 = 1000
 const FAR = { x: 400, y: 100, z: 400 }
 // The longest a walker may go without headway: a brush past someone, not a queue behind them.
@@ -254,7 +268,7 @@ console.log('\na day with her far off')
       if (c.state === 'walk' && v.all.some((o) => o !== c && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < 1)) blocked = Math.max(blocked, c.stall)
       if (v.seat(c.x, c.z) === null) unseat++
       if (c.y - field.heightAt(c.x, c.z) > WALK.reach) vaulted++
-      if (c.state === 'walk' && (c.clip !== (c.runner || v.homing ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
+      if (c.state === 'walk' && (c.clip !== (c.runner || v.homing || c.trip !== '' || c.then === 'take' ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
       if ((c.state === 'stand' || c.state === 'gaze') && (c.clip !== 'idle' || c.speed !== 0)) badClip++
       if (c.state === 'talk' && (!CLIPS.includes(c.clip) || c.speed !== 0)) badClip++
       if (c.state === 'talk' && c.clip !== 'idle') gestures++
@@ -309,7 +323,7 @@ console.log('\na day with her far off')
   check(vaulted === 0, `nobody stands over ${WALK.reach} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
   check(entries >= 2 && exits + out0 + 1 >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits, ${out0 + 1} out at the first frame`)
   check(stoop === 0, 'each goes in and comes out at the top of its steps, not at their foot', `${stoop} at the foot`)
-  check(badClip === 0, 'a walker walks at its pace, a runner or one homing runs, a stander idles, a talker gestures or idles, none of them moving')
+  check(badClip === 0, 'a walker walks at its pace, a runner, one homing or one foraging runs, a stander idles, a talker gestures or idles, none of them moving')
   const paces = new Set(v.all.map((c) => c.pace)), runners = v.all.filter((c) => c.runner).length
   check(paces.size === v.all.length && v.all.every((c) => c.pace >= PACE[0] && c.pace <= PACE[1]) && runners >= 1 && runners < v.all.length, 'every villager has its own pace and some, not all, run their errands', `paces ${[...paces].map((p) => p.toFixed(2)).join(' ')}, ${runners} runners`)
   check(gazeOff === 0, 'a gazer faces the lake')
@@ -371,6 +385,63 @@ console.log('\nthrough the door')
   check(hidAt !== null && drawnAt && goneAt !== null && took >= DOOR_FADE_S - 0.03 && took <= DOOR_FADE_S + 0.03, `through its door it dithers out over DOOR_FADE_S ${DOOR_FADE_S} s, not at once`, `${hidAt === null ? 'never in' : `drawn ${drawnAt}, gone ${took.toFixed(3)} s after`}`)
 }
 
+// --- the forage trip -----------------------------------------------------------------
+console.log('\nthe forage trip')
+{
+  // The first chapter from T0 that rolls a forager, stepped from its start.
+  let start = chapterOf(T0, make().key).start, v = null
+  for (let k = 0; k < 20 && (v === null || v.forager < 0); k++, start += CHAPTER_S) {
+    v = make()
+    v.update(FAR, head(FAR), start + 0.01, 1 / 60)
+  }
+  check(v.forager >= 0, 'some chapter sends a villager out foraging', `villager ${v.forager}, chapter at ${start - CHAPTER_S} s`)
+  start -= CHAPTER_S
+  v = make()
+  v.update(FAR, head(FAR), start + 0.01, 1 / 60)
+  const others = v.all.length - 1
+  const f = v.all[v.forager]
+  let leftAt = null, backAt = null, bundle = null, mouthOff = Infinity, homingBundle = null, doorsAtMouth = 0, overheard = 0, called = 0
+  const squeals = new Map(), took = new Set(), ate = new Set(), wrongGift = []
+  let wasFeast = new Set()
+  run(v, start + 0.01, CHAPTER_S - 1, FAR, () => {
+    if (f.state === 'away' && leftAt === null) { leftAt = v.tick / 20; mouthOff = Math.hypot(f.x - v.mouth.x, f.z - v.mouth.z) }
+    if (f.trip === 'back' && backAt === null) { backAt = v.tick / 20; bundle = f.bundle }
+    if (v.homing && homingBundle === null) homingBundle = f.bundle
+    for (const o of v.all) if (o.partner === f && o.then === 'take') called = Math.max(called, 1)
+    for (const call of v.voices([])) {
+      if (call.sound === 'door' && Math.hypot(call.x - v.mouth.x, call.z - v.mouth.z) < 3) doorsAtMouth++
+      if (call.sound !== 'leafkinSqueal') continue
+      // The nearest drawn body, which may have stepped on since it called.
+      const o = v.all.filter((c) => !c.hidden).sort((a, b) => Math.hypot(a.x - call.x, a.z - call.z) - Math.hypot(b.x - call.x, b.z - call.z))[0]
+      if (!o || Math.hypot(o.x - call.x, o.z - call.z) > 0.3) { overheard++; continue }
+      squeals.set(o.id, (squeals.get(o.id) ?? 0) + 1)
+    }
+    for (const o of v.all) {
+      if (o.feast && !wasFeast.has(o.id)) { took.add(o.id); if (o === f || o.state !== 'talk' || o.partner !== f) wrongGift.push(o.id) }
+      if (o.feast && o.state === 'inside') ate.add(o.id)
+    }
+    wasFeast = new Set(v.all.filter((o) => o.feast).map((o) => o.id))
+  })
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z)
+  check(leftAt !== null && leftAt - start < CHAPTER_S / 3, 'the forager goes out early in its chapter', `gone at ${leftAt === null ? '-' : (leftAt - start).toFixed(0)} s`)
+  check(mouthOff <= NODE_M + 0.1 && dist(v.mouth, room.exit) <= MOUTH_M + 1e-6 && doorsAtMouth === 0, 'it is gone at the exit mouth, and no door is heard there', `${mouthOff.toFixed(2)} m off the mouth, ${doorsAtMouth} doors`)
+  check(backAt !== null && backAt - leftAt >= AWAY_S[0] - 0.1 && backAt - leftAt <= AWAY_S[1] + 0.1, 'and back AWAY_S later, about five minutes', `back after ${backAt === null ? '-' : (backAt - leftAt).toFixed(0)} s`)
+  check(bundle === Math.min(CARRY_MAX, others), 'with a mushroom for each of the others, as many as its arms hold', `${bundle}`)
+  check(v.gifts === took.size && took.size >= 1 && wrongGift.length === 0 && !took.has(f.id), 'every mushroom given is taken by another, in a talk with the giver', `${v.gifts} given to ${[...took].join(' ')}, ${wrongGift.length} wrong`)
+  check(homingBundle === 0, 'the bundle is all given out before they make for home', `${homingBundle} left at homing, ${called ? 'some' : 'none'} called`)
+  check([...took].every((id) => ate.has(id)), 'each who took one goes home with it to eat', `${ate.size} of ${took.size} home`)
+  check([...took].every((id) => (squeals.get(id) ?? 0) >= 2) && overheard === 0, 'each who took one squealed at the sight of it and again at the gift, from where it stood', `${[...squeals].map(([id, n]) => `${id}:${n}`).join(' ')}, ${overheard} from nobody`)
+  check(v.stats.states.away === 0 && v.stats.states.give === 0 && v.all.every((c) => c.partner === null || c.state === 'talk' || c.then === 'take'), 'the day ends with nobody away or waiting, and nobody bound to a giver', JSON.stringify(v.stats.states))
+
+  // A client booted mid-trip lands where one stepped through it is.
+  const mid = backAt + 20
+  const a = make(), b = make()
+  run(a, start + 0.01, mid - start, FAR)
+  b.update(FAR, head(FAR), mid, 1 / 60)
+  run(b, mid, 0, FAR)
+  check(a.tick === b.tick && a.all.every((c, i) => c.x === b.all[i].x && c.z === b.all[i].z && c.bundle === b.all[i].bundle && c.state === b.all[i].state), 'a boot mid-trip lands where the room is', `${a.all[f.id].state} with ${a.all[f.id].bundle}`)
+}
+
 // --- determinism and the boot --------------------------------------------------------
 console.log('\ndeterminism and the boot')
 {
@@ -393,7 +464,7 @@ console.log('\nher feet')
 {
   const v = make()
   let t = run(v, T0, 120, FAR)
-  let fleers = 0, calmedUnder = 0, calmedOver = 0, whimpers = 0, pants = 0, fled = 0, homed = 0, wrongVoice = 0
+  let fleers = 0, whimpers = 0, pants = 0, wrongVoice = 0, hidden = 0, hideOff = 0, out = 0, outFleeing = 0
   // Where each villager stood at the end of the last frame: a call is placed where its caller was when it made it, and a runner has moved on by the time the ear drains it.
   const was = new Map()
   const mark = () => { for (const o of v.all) was.set(o, { x: o.x, z: o.z }) }
@@ -409,43 +480,86 @@ console.log('\nher feet')
     t = run(v, t, 0.5, feet)
     if (c.state !== 'flee') { check(false, `a villager within ${STARTLE_M} m of her feet runs`, `${c.key} ${c.state}`); continue }
     fleers++
-    const d0 = Math.hypot(c.x - feet.x, c.z - feet.z)
-    let ran = 0
+    let ran = 0, hidFor = null
     const running = []
     mark()
-    t = run(v, t, 12, feet, () => {
+    t = run(v, t, 60, feet, () => {
       if (c.state === 'flee' && c.clip === 'run' && c.speed > 0) ran++
+      if (hidFor === null && c.state === 'inside') hidFor = c.hold
       for (const s of saidBy(c)) {
-        if (s === 'leafkinWhimper') whimpers++; else if (s === 'panting') pants++; else wrongVoice++
+        if (s === 'leafkinWhimper') whimpers++; else if (s === 'panting') pants++; else if (s !== 'door') wrongVoice++
         if (c.state === 'flee') running.push(s)
       }
       mark()
     })
     // On the run the whimper and the panting take turns.
     if (running.some((s, i) => i > 0 && s === running[i - 1])) wrongVoice++
-    if (c.hidden) homed++
-    else if (Math.hypot(c.x - feet.x, c.z - feet.z) > d0 + 5) fled++
-    if (!c.hidden && c.state !== 'flee' && Math.hypot(c.x - feet.x, c.z - feet.z) < CALM_M) calmedUnder++
     if (ran === 0) check(false, 'a fleer runs', `${c.key} ${c.state} ${c.clip}`)
-    if (!c.hidden && c.state === 'flee') {
-      // Behind it, on the side it fled from, so it does not run back within CALM_M of her.
-      const back = (CALM_M + 1) / Math.hypot(feet.x - c.x, feet.z - c.z)
-      const far = { x: c.x + (feet.x - c.x) * back, y: c.y, z: c.z + (feet.z - c.z) * back }
-      t = run(v, t, 40, far)
-      if (c.state === 'flee') { check(false, `a fleer calms once she is ${CALM_M} m off`, c.state); continue }
-      calmedOver++
-    }
-    t = run(v, t, 5, FAR)
+    if (hidFor !== null) { hidden++; if (hidFor < HIDE_S[0] - 60 || hidFor > HIDE_S[1]) hideOff++ }
+    // Out again, calm, though she still stands where it fled her.
+    t = run(v, t, HIDE_S[1], feet, () => { if (!c.hidden && out === hidden - 1 && hidFor !== null) { out++; if (c.state === 'flee') outFleeing++ } v.voices([]) })
     if (fleers >= 3) break
   }
   check(fleers >= 3, 'everyone she comes upon runs, nobody stands whimpering', `${fleers}`)
-  check(calmedUnder === 0, `nobody calms with her under ${CALM_M} m`)
-  check(calmedOver > 0, `and they calm once she is past it`, `${calmedOver}`)
+  check(hidden === fleers && hideOff === 0, 'a fleer runs into its own house and hides there HIDE_S, two to five minutes', `${hidden} of ${fleers} in, ${hideOff} off the range`)
+  check(out === hidden && outFleeing === 0, 'and comes out again calm', `${out} out, ${outFleeing} still fleeing`)
   check(whimpers > 0 && pants > 0 && wrongVoice === 0, 'a fleer whimpers and pants by turns, and nothing else is heard', `${whimpers} whimpers, ${pants} pants, ${wrongVoice} wrong`)
-  check(fled + homed > 0, 'a fleer gets away from her, or indoors', `${fled} away, ${homed} home`)
   // Passers-by within her reach are startled too, so the count is at least the ones she was put beside.
   check(v.stats.startles >= fleers, 'the stats count the startles', JSON.stringify(v.stats))
   check(WHIMPER_S[0] > 0 && TALK_S[0] < TALK_S[1] && INSIDE_S[0] < INSIDE_S[1], 'the tunables are ranges')
+}
+
+// --- a carrier startled --------------------------------------------------------------
+console.log('\na carrier startled')
+{
+  const hands = fakeHands()
+  const v = make(hands)
+  let t = run(v, T0, 120, FAR)
+  const c = v.all.find((o) => !o.hidden && o.state === 'walk')
+  c.feast = true
+  t = run(v, t, 0.2, { ...feetAt(c), x: c.x + 5 })
+  const held = hands.log.some(([k, o]) => k === 'place' && o === c.key)
+  const feet = { ...feetAt(c), x: c.x + 1 }
+  const states = [], sounds = []
+  t = run(v, t, 60, feet, () => {
+    if (states.at(-1) !== c.state) states.push(c.state)
+    for (const s of v.voices([])) if (Math.hypot(s.x - c.x, s.z - c.z) < 0.5) sounds.push(s.sound)
+  })
+  const recoil = states.indexOf('startle')
+  check(held && recoil >= 0 && states[recoil + 1] === 'flee' && states.at(-1) === 'inside', 'one carrying a mushroom recoils where it stands, then runs home and hides', states.join(' > '))
+  check(hands.log.some(([k, o]) => k === 'scatter' && o === c.key) && !c.feast && hands.carriers === 0, 'and drops what it carried', JSON.stringify(hands.log.filter(([k]) => k !== 'place')))
+  check(sounds[0] === 'leafkinScream' && sounds.includes('leafkinWhimper'), 'it screams, then whimpers on the run', sounds.slice(0, 6).join(' '))
+  check(STARTLE_S > 0 && c.hold >= HIDE_S[0] - 60, 'hidden for HIDE_S', `${c.hold.toFixed(0)} s left`)
+}
+
+// --- a mushroom found -----------------------------------------------------------------
+console.log('\na mushroom found')
+{
+  const hands = fakeHands()
+  const v = make(hands)
+  let t = run(v, T0, 120, FAR)
+  const c = v.all.find((o) => !o.hidden && o.state === 'walk')
+  const n = v.graph.nodes[c.at]
+  for (const dx of [0.5, 1]) hands.loose.push({ rec: { kind: 'mushroom' }, x: n.x + dx, y: walk.heightAt(n.x + dx, n.z) + 0.05, z: n.z, state: 'still', netId: null })
+  let finder = null, seenM = null, picks = 0, squeals = 0, liftedAt = null, home = false
+  t = run(v, t, 60, FAR, () => {
+    if (finder === null) {
+      finder = v.all.find((o) => o.then === 'pick') ?? null
+      if (finder !== null) seenM = Math.hypot(finder.x - n.x, finder.z - n.z)
+    }
+    if (finder !== null) {
+      if (finder.state === 'pick' && finder.clip === 'gather' && picks === 0) picks++
+      if (liftedAt === null && hands.lifted.length > 0) liftedAt = finder.state
+      if (finder.state === 'inside' && finder.feast) home = true
+    }
+    for (const s of v.voices([])) if (finder && s.sound === 'leafkinSqueal' && Math.hypot(s.x - finder.x, s.z - finder.z) < 0.5) squeals++
+  })
+  const finds = [...v.log.values()].flat().filter((e) => e.kind === 'find')
+  const named = finds.flatMap((e) => e.ids)
+  check(finder !== null && seenM < FIND_M + 1, 'a leafkin near a mushroom on the ground goes for it', `${finds.length} finds, seen from ${seenM?.toFixed(1)} m`)
+  check(picks === 1 && liftedAt === 'pick' && home, 'it gathers it up, and runs home with it to eat', `lifted in ${liftedAt}, home ${home}`)
+  check(squeals >= 2, 'squealing at the sight of it and as it takes it', `${squeals}`)
+  check(new Set(named).size === named.length && hands.lifted.length === finds.length, 'each takes one, and goes after no other', `${finds.length} finds of ${named.join(' ')}, ${hands.lifted.length} lifted`)
 }
 
 // --- the room ------------------------------------------------------------------------
@@ -475,7 +589,8 @@ console.log('\nthe room')
   const c = walker(A.v)
   A.feet = { ...feetAt(c), x: c.x + 1 }
   t = run2(p, t, 3)
-  const ran = A.v.all[c.id].state === 'flee' && B.v.all[c.id].state === 'flee'
+  // Run, or already home through its door.
+  const ran = [A, B].every((S) => S.v.all[c.id].state === 'flee' || S.v.all[c.id].state === 'inside')
   t = run2(p, t, 20)
   A.feet = FAR
   t = run2(p, t, 5)
@@ -487,7 +602,7 @@ console.log('\nthe room')
   t = run2(p, t, 3)
   B.feet = FAR
   t = run2(p, t, 30)
-  check(A.v.all[d.id].by === 'b' && same(A.v, B.v), 'and hers the same the other way', `rewinds ${A.v.stats.rewinds}`)
+  check([...A.v.log.values()].flat().some((e) => e.by === 'b' && e.ids.includes(d.id)) && same(A.v, B.v), 'and hers the same the other way', `rewinds ${A.v.stats.rewinds}`)
 
   const O = { x: 0, y: 0, z: 0 }
   check(popM({ x: 0, y: 3, z: 0 }, 0, 0, 0, 1 / 60) > 0 && popM({ x: 0.1, y: 0, z: 0 }, 0, 0, 0, 1 / 60) === 0 && popM({ x: 3, y: 0, z: 0 }, 0, 0, 0, 0.5) === 0 && popM(O, 0, 0, 0, 1 / 60) === 0, 'a body drawn 3 m up onto a roof in a frame is a pop; a run\'s step, or a half-second hitch\'s 3 m, is not')
@@ -507,7 +622,7 @@ console.log('\nthe room')
   }
 
   // A client arriving now hears the room's startles on the welcome, before its first frame.
-  const log = [...A.v.log.values()].flat().map((e) => [e.key, e.tick / 20, e.fx, e.fy, e.fz, 0, 0, 'startle', e.by ?? 'a', ...e.ids])
+  const log = [...A.v.log.values()].flat().map((e) => [e.key, e.tick / 20, e.fx, e.fy, e.fz, 0, 0, e.kind, e.by ?? 'a', ...e.ids])
   const late = make()
   for (const a of log) late.apply(a)
   late.update(FAR, head(FAR), t, 1 / 60)

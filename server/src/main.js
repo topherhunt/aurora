@@ -40,13 +40,14 @@ function validRoom(name) {
 // is held to the creature id alphabet rather than relayed as free text.
 // `scale` is the client's size against the world, absent at 1. `foot` is the
 // world height of the client's feet, which a peer stands its body on instead
-// of guessing; absent from a client too old to send it.
+// of guessing; absent from a client too old to send it. `asleep` is present only while it sleeps.
 function validPose(message) {
   return message && message.type === 'pose' && Array.isArray(message.pose) && message.pose.length === 21 &&
     message.pose.every((n) => Number.isFinite(n)) && Array.isArray(message.hands) && message.hands.length === 2 &&
     message.hands.every((v) => typeof v === 'boolean') &&
     (message.avatar === undefined || (typeof message.avatar === 'string' && /^[a-z0-9-]{1,32}$/.test(message.avatar))) &&
     (message.foot === undefined || Number.isFinite(message.foot)) &&
+    (message.asleep === undefined || message.asleep === true) &&
     (message.scale === undefined || (Number.isFinite(message.scale) && message.scale >= 0.05 && message.scale <= 20))
 }
 
@@ -297,8 +298,8 @@ function validSkip(message) {
 }
 
 // A saved game's hour: the skip count outright, to the minute, bounded like a
-// skip. Only a client alone in its room may set it (the room's hour is then
-// nobody else's); with company the message is dropped and the room's clock stands.
+// skip. Only a client alone in its room, or a room whose every client sleeps,
+// may set it; otherwise the message is dropped and the room's clock stands.
 function validClock(message, room) {
   return message && message.type === 'clock' && Number.isFinite(message.skipHours) && Math.abs(message.skipHours - room.skipHours) <= 24
 }
@@ -341,7 +342,7 @@ wss.on('connection', (ws, request) => {
   }
 
   const client = {
-    id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, scale: 1, foot: null, aboard: null,
+    id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, scale: 1, foot: null, asleep: false, aboard: null,
     // What its hands hold, the rev that last changed, and how far through the room's things it has been told.
     held: new Array(HANDS).fill(null), heldRev: 0, seenRev: 0, takenSent: 0,
     // How far through the room's creatures it has been told.
@@ -378,7 +379,7 @@ wss.on('connection', (ws, request) => {
       return
     }
     if (validClock(message, room)) {
-      if (room.clients.size === 1) room.skipHours = message.skipHours
+      if (room.clients.size === 1 || [...room.clients.values()].every((c) => c.asleep)) room.skipHours = message.skipHours
       client.lastSeen = now
       return
     }
@@ -407,6 +408,7 @@ wss.on('connection', (ws, request) => {
     client.avatar = message.avatar ?? null
     client.scale = message.scale ?? 1
     client.foot = message.foot ?? null
+    client.asleep = message.asleep === true
     client.aboard = message.aboard ?? null
     if (message.boat) {
       if (room.boats.size >= ROOM_BOATS_CAP && !room.boats.has(message.boat[0])) {
@@ -444,6 +446,7 @@ setInterval(() => {
         if (peer.scale !== 1) p.scale = peer.scale
         if (peer.foot !== null) p.foot = peer.foot
         if (peer.aboard) p.aboard = peer.aboard
+        if (peer.asleep) p.asleep = true
         peers.push(p)
       }
       // The clock rides on every snapshot rather than on welcome alone, so a

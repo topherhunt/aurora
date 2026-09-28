@@ -62,6 +62,8 @@ export const SPEED_OF_SOUND = 343
 export const LP_MAX = 18000
 export const LP_MIN = 800
 export const AIR_M = 40
+// `bright` on a shot: the lows under `hp` Hz cut and a `db` shelf over `shelf` Hz, for a clip recorded muffled heard in the open air.
+export const BRIGHT = { hp: 300, shelf: 1500, db: 9 }
 export const WET_M = 30
 export const WET_MAX = 0.8
 // The valley reverb's impulse: seconds long, its -60 dB point, the pre-delay
@@ -301,7 +303,7 @@ export class SoundEngine {
    * its clock is frozen then, so every shot started would queue on the same
    * instant and the lot would fire together the moment unlock() lands.
    */
-  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0 } = {}) {
+  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0, bright = false } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
@@ -335,6 +337,19 @@ export class SoundEngine {
       src.connect(lp)
       head = lp
       nodes.push(lp)
+    }
+    if (bright) {
+      const hp = ctx.createBiquadFilter()
+      hp.type = 'highpass'
+      hp.frequency.value = BRIGHT.hp
+      const shelf = ctx.createBiquadFilter()
+      shelf.type = 'highshelf'
+      shelf.frequency.value = BRIGHT.shelf
+      shelf.gain.value = BRIGHT.db
+      head.connect(hp)
+      hp.connect(shelf)
+      head = shelf
+      nodes.push(hp, shelf)
     }
     head.connect(g)
     let tail = g

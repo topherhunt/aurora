@@ -142,6 +142,25 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'skip', hours: 1 }))
   const kept = await nextClock(second, (m) => m.skipHours !== 6)
   if (kept.skipHours !== 7) throw new Error(`a clock from a client with company should be dropped, got ${kept.skipHours}`)
+  // A room that all sleeps may set it: one sleeper is not enough, both are, and a sleeper's pose says so to the other.
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false], asleep: true }))
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 9.5 }))
+  first.send(JSON.stringify({ version: 1, type: 'skip', hours: 1 }))
+  const oneAsleep = await nextClock(second, (m) => m.skipHours !== 7)
+  if (oneAsleep.skipHours !== 8) throw new Error(`a clock with a peer awake should be dropped, got ${oneAsleep.skipHours}`)
+  const sleeper = await nextSnapshot(second, (p) => p.asleep === true)
+  if (sleeper.hands[0] !== false) throw new Error('a sleeper\'s pose should relay with its flag')
+  second.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false], asleep: true }))
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 19.25 }))
+  const slept = await nextClock(second, (m) => m.skipHours !== 8)
+  if (slept.skipHours !== 19.25) throw new Error(`a clock from a room that all sleeps should land, got ${slept.skipHours}`)
+  first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 7 }))
+  await nextClock(second, (m) => m.skipHours === 7)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false] }))
+  second.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, false] }))
+  await wait(30)
   // The things in hands and on the ground: a hold, a loose thing, a lift and a
   // take each reach the other client once, as a `things` block on the next
   // snapshot, and a snapshot between changes carries no block at all.
@@ -316,7 +335,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one or a room that all sleeps, and a sleeper\'s flag relays; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer)')
   first.close()
   second.close()
 } finally {

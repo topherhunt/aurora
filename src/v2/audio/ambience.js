@@ -36,8 +36,8 @@
 // a growl over and over, each at its own pitch with its own pause, from one
 // resting on its nest, and a heavy tread on each footfall of its walk clip
 // from one pottering on the ground. The songbird bed is the only other thing given it:
-// its birds are placed across the valley and sound like it. The fish are the
-// one thing heard on the water bus: a swoosh from each that sets off fast
+// its birds are placed across the valley and sound like it. The fish and her own
+// strokes are all that is heard on the water bus: a swoosh from each that sets off fast
 // (the layer's startled()) near her head, its loudness and pitch by its length.
 // The grasshoppers (bodies() lists the ones the layer shows) each chirp the
 // cricket clip now and then from where they sit, by day as well as by night:
@@ -155,6 +155,8 @@ export const RULES = {
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
   // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
   footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2] },
+  // Her own strokes while swimming, in place of her feet: the swoosh every `interval` seconds while moving past footstep.minSpeed, and once on each teleport. Under the water it is on the water bus as recorded; at the surface on the near bus, bright (SoundEngine BRIGHT) since the clip is muffled, with the small splash at `splash` gain.
+  stroke: { interval: [2, 6], gain: [0.4, 0.7], splash: [0.3, 0.5] },
   // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
@@ -287,12 +289,13 @@ export class Ambience {
     this.senseLeft = 0
     this.wet = false
     this.teleportCredit = 0
+    this.teleported = false
     // Seconds of ambience run, and the clock each songbird clip last sang at (RULES.songbirdVoice).
     this.clock = 0
     this.sang = {}
     // One-shot timers by rule name: { armed, left }.
     this.timers = {}
-    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'rockslideNear', 'wave']) {
+    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'stroke', 'rockslideNear', 'wave']) {
       this.timers[k] = { armed: false, left: 0 }
     }
     this.loops = {
@@ -405,9 +408,10 @@ export class Ambience {
     }
   }
 
-  /** She teleported `dist` metres: worth a second or two of footsteps. */
+  /** She teleported `dist` metres: worth a second or two of footsteps, or one stroke swimming. */
   onTeleport(dist, range) {
     if (!(range > 0)) throw new Error(`Ambience.onTeleport: range must be positive, got ${range}`)
+    this.teleported = true
     const [lo, hi] = RULES.footstep.teleport
     this.teleportCredit = lo + (hi - lo) * clamp(dist / range, 0, 1)
   }
@@ -419,11 +423,12 @@ export class Ambience {
    * @param dayness   0 full night .. 1 full day, main.js's own ramp
    * @param submerged head under the water
    * @param speed     rig speed in m/s
-   * @param afoot     she is walking, not flying or in a travel arc
+   * @param afoot     she is walking, not flying, swimming or in a travel arc
+   * @param swimming  she is swimming: strokes, not footsteps
    * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
    * @param indoors   she is inside a house: the fiddles are silent
    */
-  update(dt, { head, dayness, submerged, speed, afoot, cover = 0, precip = 0, now, indoors = false }) {
+  update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
     if (!Number.isFinite(now)) throw new Error(`Ambience.update: needs the room's world seconds, got ${now}`)
     this.frame++
@@ -447,6 +452,7 @@ export class Ambience {
     this._torches(head)
     this._crawl(head)
     this._fish(head)
+    this._strokes(dt, speed, swimming, submerged)
     // Nothing above the surface fires while she is under it; the loops already
     // running are silenced by the bus and keep their place for when she surfaces.
     if (submerged) {
@@ -522,10 +528,23 @@ export class Ambience {
     }
   }
 
+  _strokes(dt, speed, swimming, submerged) {
+    const S = RULES.stroke
+    const landed = this.teleported
+    this.teleported = false
+    const due = this.due('stroke', swimming && speed > RULES.footstep.minSpeed, S.interval, dt)
+    if (!due && !(swimming && landed)) return
+    if (submerged) {
+      this.fire('swoosh', { rate: this.rate(), gain: this.between(...S.gain), bus: 'water' })
+      return
+    }
+    this.fire('swoosh', { rate: this.rate(), gain: this.between(...S.gain), bus: 'near', bright: true })
+    this.fire('splash', { rate: this.rate(), gain: this.between(...S.splash), bus: 'near' })
+  }
+
   _feet(dt, head, s, speed, afoot) {
     const F = RULES.footstep
-    const walking = afoot && speed > F.minSpeed
-    const moving = walking || this.teleportCredit > 0
+    const moving = afoot && (speed > F.minSpeed || this.teleportCredit > 0)
     this.teleportCredit = Math.max(0, this.teleportCredit - dt)
     if (this.due('footstep', moving, F.interval, dt)) {
       this.fire('footstep', { rate: this.rate(), gain: this.between(...F.gain), bus: 'near' })

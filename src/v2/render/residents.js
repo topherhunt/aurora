@@ -5,6 +5,7 @@
 // `spots`) to the next: eating at the table, thinking in the reading chair,
 // busy at the kitchen, gazing out of a window, a pair talking on the walk
 // round the table, wandering it, and up the stairs to lie down and sleep.
+// One home from a forager's gift (villagers.js `feast`) sits and eats it first, squealing.
 // They walk the ring round the table and the stairs' `climb`, never probed:
 // the roll keeps both clear. Local to this client and stepped by the frame.
 // ---------------------------------------------------------------------------
@@ -12,8 +13,10 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
+import { CARRIERS } from '../hands.js'
+import { CARRY_SPAN } from './leafkin.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { PACE, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS } from './villagers.js'
+import { PACE, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many.
 export const HOMEBODIES = 2
@@ -25,6 +28,9 @@ const HOLD_S = { seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], 
 const PICK = [['seat', 0.25], ['read', 0.15], ['cook', 0.15], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.15], ['talk', 0.08]]
 // Seconds between one's mutters to itself while it walks, sits or potters; a pair talking, a third of that. Never asleep.
 const MUTTER_S = [15, 45]
+// A feast's hold at the table, and the seconds between its squeals.
+const FEAST_S = [25, 40]
+const SQUEAL_S = [4, 9]
 const CHATTERS = 4
 const CHEST = 0.5
 const TURN_RATE = 5
@@ -38,6 +44,7 @@ const UP = new THREE.Vector3(0, 1, 0)
 const _pos = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 const _scl = new THREE.Vector3()
+const _grip = new THREE.Vector3()
 
 /** A puppet material lit by `light` (a vec3 uniform) instead of the world's sun: the room's candles and windows reach no further than its own shell. */
 function roomLit(m, light) {
@@ -56,11 +63,16 @@ export class Residents {
   /**
    * @param room     rollInterior's room, set down at (ox, oy, oz)
    * @param asset    the villagers' loaded leafkin (Villagers.asset), its `sitY` the seated underside
-   * @param who      the villagers indoors, `[{ id, size, pace }]`; the homebodies are rolled here
+   * @param who      the villagers indoors, `[{ id, size, pace, feast }]`; the homebodies are rolled here
    * @param seed     the village's seed
+   * @param hands    hands.js, and the mushrooms layer its feasts hold, both or neither
    */
-  constructor(scene, room, { asset, sitY, who, seed, ox, oy, oz }) {
+  constructor(scene, room, { asset, sitY, who, seed, ox, oy, oz, hands = null, mushrooms = null }) {
     if (!asset || !(sitY > 0)) throw new Error('Residents: need the villagers\' loaded asset and its seated height')
+    if ((hands === null) !== (mushrooms === null)) throw new Error('Residents: hands and mushrooms come together')
+    this.hands = hands
+    this.mushrooms = mushrooms
+    this.seed = seed
     this.room = room
     this.asset = asset
     this.sitY = sitY
@@ -79,7 +91,7 @@ export class Residents {
     const treads = room.stairs.map((s) => s.top).reverse()
     this.climbY = room.climb.map((p, i) => (i === 0 ? 0 : i === room.climb.length - 1 ? room.loft.y : treads[i - 1]))
     this.all = []
-    for (const w of who) this._add(w.id, w.size, w.pace, false)
+    for (const w of who) this._add(w.id, w.size, w.pace, false, w.feast)
     const homebodies = Math.floor(this.rand() * (HOMEBODIES + 1))
     for (let i = 0; i < homebodies; i++) this._add(`home:${i}`, SIZE_M * (1 + SIZE_VAR * (2 * this.rand() - 1)), between(this.rand, PACE), false)
     // Two at home at once are likelier talking than not.
@@ -90,10 +102,10 @@ export class Residents {
   /** The villagers indoors now, by id: one come in walks in at the door, one gone out walks to it and is gone. */
   sync(inside) {
     for (const r of this.all) if (typeof r.id === 'number' && !inside.has(r.id) && r.state !== 'leave') this._leave(r)
-    for (const [id, c] of inside) if (!this.all.some((r) => r.id === id)) this._add(id, c.size, c.pace, true)
+    for (const [id, c] of inside) if (!this.all.some((r) => r.id === id)) this._add(id, c.size, c.pace, true, c.feast)
   }
 
-  _add(id, size, pace, atDoor) {
+  _add(id, size, pace, atDoor, feast = false) {
     const mats = makePuppetMaterials('residents', this.plain)
     for (const m of [mats.in, mats.out]) roomLit(m, this.light).map = this.asset.map
     this.materials.push(mats.in, mats.out)
@@ -104,7 +116,7 @@ export class Residents {
     const d = this.room.doorIn
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
-      state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null,
+      state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, feast, carrier: null,
       mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
@@ -125,6 +137,11 @@ export class Residents {
   /** Its next place, by PICK among the free ones; `now` puts it there already at its hold. */
   _choose(r, now) {
     const room = this.room
+    if (r.feast) {
+      const seats = room.spots.filter((s) => s.kind === 'seat' && this._free(s))
+      if (seats.length > 0) { this._goTo(r, seats[Math.floor(this.rand() * seats.length)], now); return }
+      r.feast = false
+    }
     for (let tries = 0; tries < 8; tries++) {
       let u = this.rand(), kind = PICK[PICK.length - 1][0]
       for (const [k, w] of PICK) { if (u < w) { kind = k; break } u -= w }
@@ -225,9 +242,9 @@ export class Residents {
   _begin(r, now) {
     r.state = 'act'
     const s = r.spot
-    r.hold = between(this.rand, HOLD_S[s.kind])
+    r.hold = between(this.rand, r.feast ? FEAST_S : HOLD_S[s.kind])
     if (s.kind === 'seat' || s.kind === 'read' || s.kind === 'bed') {
-      if (now) { r.phase = s.kind === 'bed' ? 'sleep' : 'hold'; r.on = 1; r.slide = s.kind === 'bed' ? LIE_SLIDE : 0; this._play(r, s.kind === 'bed' ? 'sleep' : 'idle-sit', r.hold) }
+      if (now) { r.phase = s.kind === 'bed' ? 'sleep' : 'hold'; r.on = 1; r.slide = s.kind === 'bed' ? LIE_SLIDE : 0; this._play(r, s.kind === 'bed' ? 'sleep' : r.feast ? 'eat' : 'idle-sit', r.hold) }
       else { r.phase = 'down'; this._play(r, 'sit', SIT_CUT[0], 0) }
     } else if (s.kind === 'cook') {
       r.phase = 'busy'; this._play(r, 'gather', this.durations.gather, 0)
@@ -245,10 +262,11 @@ export class Residents {
     switch (r.phase) {
       case 'down':
         if (s.kind === 'bed') { r.phase = 'lie'; this._play(r, 'lie', lie[0], 0) }
-        else { r.phase = 'hold'; this._play(r, s.kind === 'seat' && this.rand() < 0.6 ? 'eat' : 'idle-sit', Math.min(r.hold, 8)) }
+        else { r.phase = 'hold'; if (r.feast) r.mutter = 0.5; this._play(r, r.feast || (s.kind === 'seat' && this.rand() < 0.6) ? 'eat' : 'idle-sit', Math.min(r.hold, 8)) }
         return
       case 'hold':
-        if (r.hold > 0) { this._play(r, s.kind === 'seat' && this.rand() < 0.5 ? 'eat' : 'idle-sit', Math.min(r.hold, 8)); return }
+        if (r.hold > 0) { this._play(r, r.feast || (s.kind === 'seat' && this.rand() < 0.5) ? 'eat' : 'idle-sit', Math.min(r.hold, 8)); return }
+        r.feast = false
         r.phase = 'up'; this._play(r, 'sit', this.durations.sit - sit[1], sit[1]); return
       case 'lie': r.phase = 'sleep'; this._play(r, 'sleep', r.hold); return
       case 'sleep':
@@ -273,6 +291,7 @@ export class Residents {
   }
 
   _leave(r) {
+    r.feast = false
     if (r.state === 'act' && (r.phase === 'hold' || r.phase === 'sleep')) r.hold = 0
     this._release(r)
     const d = this.room.doorIn
@@ -289,9 +308,10 @@ export class Residents {
       if (r.state === 'gone' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
       r.mutter -= r.phase === 'talk' ? dt * 3 : dt
       if (r.mutter > 0) continue
-      r.mutter = between(this.rand, MUTTER_S)
+      const eating = r.feast && r.phase === 'hold'
+      r.mutter = between(this.rand, eating ? SQUEAL_S : MUTTER_S)
       const g = this.group.position
-      this.calls.push({ sound: `leafkinChatter${1 + Math.floor(this.rand() * CHATTERS)}`, x: g.x + r.x, y: g.y + r.y + r.size * CHEST, z: g.z + r.z })
+      this.calls.push({ sound: eating ? 'leafkinSqueal' : `leafkinChatter${1 + Math.floor(this.rand() * CHATTERS)}`, x: g.x + r.x, y: g.y + r.y + r.size * CHEST, z: g.z + r.z })
     }
   }
 
@@ -384,10 +404,27 @@ export class Residents {
     _scl.setScalar(r.k)
     p.group.matrix.compose(_pos, _quat, _scl)
     p.group.matrixWorldNeedsUpdate = true
+    if (this.hands) this._carry(r)
+  }
+
+  /** A feast's mushroom in its fist, the one its villager carried in (villagers.js _carry), until it is eaten. */
+  _carry(r) {
+    if (!r.feast) {
+      if (r.carrier !== null) { r.carrier.release(); r.carrier = null }
+      return
+    }
+    if (r.carrier === null) {
+      if (this.hands.carriers >= CARRIERS) return
+      r.carrier = this.hands.carry(`resident:${r.id}`, r.size * CARRY_SPAN)
+      r.carrier.add(this.mushrooms.record(hash32(this.seed, r.id, 0)), this.mushrooms)
+    }
+    if (!gripAt(r.puppet, _grip)) throw new Error('Residents: the leafkin has no right fist to hold its mushroom')
+    _grip.add(this.group.position)
+    r.carrier.grip(_grip.x, _grip.y, _grip.z, r.heading - Math.PI / 2)
   }
 
   dispose() {
-    for (const r of this.all) { r.puppet.release(); r.puppet.skeleton.dispose() }
+    for (const r of this.all) { r.carrier?.release(); r.puppet.release(); r.puppet.skeleton.dispose() }
     this.group.removeFromParent()
     for (const m of this.materials) m.dispose()
   }

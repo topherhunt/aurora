@@ -151,6 +151,12 @@ export class Player {
     // rise. null until she has stood somewhere.
     this.standY = null
     this.blocked = false // true when the slope limiter refused a move, for the HUD
+    // A drop steeper than she could climb is a fall: `_fallTop` is where it began,
+    // and `fell` is how far she landed below it, in her own metres, for the one
+    // frame she lands (v2/vitals.js). Only a step can start one: the ground
+    // sinking under her as a room builds, or arriving any way but walking, never counts.
+    this._fallTop = null
+    this.fell = 0
     this.flying = false
     this.travel = null // non-null while a double-click flight is in progress
     // Afloat or under: the rig's height is swimY plus the bob, not the ground.
@@ -206,6 +212,7 @@ export class Player {
   _landAt(ground, feetY) {
     const p = this.rig.position
     this.swimming = false
+    this._fallTop = null
     this.smoothY = this.standY = p.y = ground
     const level = this._waterAt(p.x, p.z)
     if (level === null) return
@@ -217,6 +224,7 @@ export class Player {
 
   _startSwim(headUp, y) {
     this.swimming = true
+    this._fallTop = null
     this._headUp = headUp
     this.swimY = y
     this._bobGain = 0
@@ -403,6 +411,7 @@ export class Player {
   // input: {move: -1..1 forward/back, strafe: -1..1, lift: -1..1 up/down,
   //         turn: raw stick X, unstick: bool, instant: bool}
   update(dt, input) {
+    this.fell = 0
     // Travel runs before anything else and consumes the frame. Input is ignored
     // rather than blended: see the note on it being a rail in LOCOMOTION.
     if (this.travel) {
@@ -450,6 +459,9 @@ export class Player {
 
     // Before the step moves the rig, while the camera's world pose is this frame's.
     const headUp = head.y - this.rig.position.y
+    const fromY = this.standY
+    const fromX = origin.x
+    const fromZ = origin.z
 
     if (this.speed > 0.001) this._tryMove(this.speed * dt, origin, fwdIn, strafeIn, demand)
 
@@ -462,6 +474,13 @@ export class Player {
       ? this.th.heightAt(origin.x, origin.z)
       : this.th.heightAt(origin.x, origin.z, this.standY)
     this.standY = ground
+    const run = Math.hypot(origin.x - fromX, origin.z - fromZ)
+    if (fromY !== null && fromY - ground > this._maxTan * run + 0.01 * this.scale) {
+      if (this._fallTop === null && run > 0) this._fallTop = fromY
+    } else if (this._fallTop !== null) {
+      this.fell = (this._fallTop - ground) / this.scale
+      this._fallTop = null
+    }
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY

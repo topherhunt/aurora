@@ -405,6 +405,13 @@ export class Hands {
           item.q.setFromAxisAngle(UP, yaw).multiply(_dq.setFromAxisAngle(_axis.set(0, 0, 1), h.tilt)).multiply(_q.setFromAxisAngle(_axis.set(1, 0, 0), h.roll))
         }
       },
+      /** The one thing it carries upright in its fist, its centre at (x, y, z), turned to the body's `yaw`. */
+      grip(x, y, z, yaw) {
+        if (items.length !== 1) throw new Error(`Hands.carry: ${owner} grips one thing, not ${items.length}`)
+        const item = items[0]
+        item.x = x; item.y = y; item.z = z
+        item.q.setFromAxisAngle(UP, yaw)
+      },
       /** Every carried thing let fall where it is: loose, falling, to thud and roll as a drop of hers does. */
       scatter() {
         for (const item of items) {
@@ -1064,6 +1071,15 @@ export class Hands {
     item.eq.set(pose[3], pose[4], pose[5], pose[6])
     item.eState = stateName
     return true
+  }
+
+  /** A loose thing picked up by a creature (villagers.js): gone here, and from the room if it is known there. */
+  lift(item) {
+    const i = this.loose.indexOf(item)
+    if (i < 0) throw new Error(`Hands.lift: the ${item.rec.kind} is not loose`)
+    this.loose.splice(i, 1)
+    this._forget(item)
+    if (item.netId !== null) this._emit({ type: 'lift', id: item.netId })
   }
 
   /** A loose thing the room has lost: picked up by a peer, or forgotten. Nothing here under that id is nothing to do. */

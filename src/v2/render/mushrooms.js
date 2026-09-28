@@ -1147,6 +1147,12 @@ export class Mushrooms {
     return { geometry, material: this.material }
   }
 
+  /** A mushroom of the bank's variant `n` (wrapped to the bank), at the variant's span and untinted, grown nowhere: one a villager brings home (villagers.js). */
+  record(n) {
+    const variant = n % this.bank.variants.length
+    return { kind: 'mushroom', name: this.bank.variants[variant].species, variant, size: this.variantSpan[variant], geometry: this.bank.tiers[0].geometries[variant], material: this.material, color: null, scale: [1, 1, 1], stowable: true }
+  }
+
   /** Hide a tile's instances and return their ids to the pool. */
   _release(tile) {
     for (let k = 0; k < tile.n; k++) {

@@ -1100,7 +1100,8 @@ export class Fish {
   }
 
   /**
-   * Let a taken fish go at (x, y, z). In water it hangs stunned for STUN_S,
+   * Let a taken fish go at (x, y, z). In water of any depth -- the shallows
+   * off a bank she stands on included -- it hangs stunned for STUN_S,
    * then wakes and darts from her head until it is LOOSE_GONE_M out, where
    * the layer forgets it. Out of water it is false, and hands.js beaches it.
    * A loose fish is this client's alone: the room sees the drop through
@@ -1111,7 +1112,7 @@ export class Fish {
     const level = this.water.levelAt(x, z)
     if (level === null) return false
     const bed = this.height.heightAt(x, z)
-    if (y > level || level - bed < BED_MARGIN + SURFACE_MARGIN) return false
+    if (y > level || bed >= level) return false
     const sp = this.species.find((s) => s.id === rec.name)
     if (!sp) throw new Error(`Fish.release: no species ${rec.name}`)
     const f = sp.free.pop()
@@ -1161,7 +1162,8 @@ export class Fish {
    * One frame of a loose fish: stunned, it sinks a little and drifts to a
    * stop; awake, it runs from her head at LOOSE_HASTE times its cruise with a
    * jink every LOOSE_JINK seconds, turning along the shore where the water
-   * ahead is shallow, and is forgotten LOOSE_GONE_M out or beached.
+   * ahead is shallow and shallower than here, and is forgotten LOOSE_GONE_M
+   * out or beached. Water too thin for the margins holds it mid-column.
    */
   stepLoose(sp, f, dt) {
     const cfg = sp.cfg
@@ -1171,9 +1173,10 @@ export class Fish {
     if (dx0 * dx0 + dz0 * dz0 > LOOSE_GONE_M * LOOSE_GONE_M) return this.unslot(sp, f)
     if (this.frame % PROBE_EVERY === 0) {
       const level = this.water.levelAt(f.x, f.z)
-      if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) return this.unslot(sp, f)
+      const bed = this.height.heightAt(f.x, f.z)
+      if (level === null || bed >= level) return this.unslot(sp, f)
       f.level = level
-      f.bed = this.height.heightAt(f.x, f.z)
+      f.bed = bed
     }
     if (f.stun > 0) {
       f.stun -= dt
@@ -1196,7 +1199,7 @@ export class Fish {
         const ax = f.x + f.hx * cfg.lookahead
         const az = f.z + f.hz * cfg.lookahead
         const aheadLevel = this.water.levelAt(ax, az)
-        if (aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)) {
+        if (aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < Math.min(cfg.minDepth * 0.6 * Math.max(1, f.scale), f.level - f.bed)) {
           // Shore ahead: a quarter turn, to whichever side leads further from her.
           const left = f.wander + Math.PI / 2
           const right = f.wander - Math.PI / 2
@@ -1218,8 +1221,9 @@ export class Fish {
     f.z += f.vz * dt
     const lo = f.bed + BED_MARGIN + f.margin
     const hi = f.level - SURFACE_MARGIN - f.margin
-    if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
-    if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
+    if (hi <= lo) { f.y = (f.bed + f.level) / 2; f.vy = 0 }
+    else if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
+    else if (f.y > hi) { f.y = hi; if (f.vy > 0) f.vy = 0 }
   }
 
   // --- the ear ----------------------------------------------------------------

@@ -737,6 +737,26 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   const flying = fakeEngine()
   run(new Ambience({ engine: flying, sense, rand: mulberry32(7) }), 30, { speed: 3, afoot: false })
   check(count(flying, 'footstep') === 0, 'no footsteps flying')
+  const swim = fakeEngine()
+  const amb3 = new Ambience({ engine: swim, sense, rand: mulberry32(7) })
+  const S = RULES.stroke
+  run(amb3, 120, { speed: 1.4, afoot: false, swimming: true })
+  const strokes = swim.plays.filter((p) => p.name === 'swoosh')
+  check(count(swim, 'footstep') === 0 && strokes.length >= 120 / S.interval[1] - 2 && strokes.length <= 120 / S.interval[0] + 2,
+    `swimming, a swoosh every ${S.interval[0]}-${S.interval[1]} s and no footsteps`, `${strokes.length} in 120 s`)
+  const splashes = swim.plays.filter((p) => p.name === 'splash')
+  check(strokes.every((p) => p.bus === 'near' && p.bright && within(p.rate, RATE[0], RATE[1]) && within(p.gain, ...S.gain)),
+    'at the surface, near and bright, at its own pace')
+  check(splashes.length === strokes.length && splashes.every((p) => p.bus === 'near' && within(p.gain, ...S.splash)), 'with a small splash on each', `${splashes.length} splashes`)
+  run(amb3, 30, { speed: 1.4, afoot: false, swimming: true, submerged: true })
+  const under = swim.plays.filter((p) => p.name === 'swoosh').slice(strokes.length)
+  check(under.length > 0 && under.every((p) => p.bus === 'water' && !p.bright && within(p.rate, RATE[0], RATE[1])) && count(swim, 'splash') === splashes.length,
+    'under it, on the water bus as recorded, with no splash')
+  const tele = fakeEngine()
+  const amb4 = new Ambience({ engine: tele, sense, rand: mulberry32(9) })
+  amb4.onTeleport(6, 6)
+  run(amb4, 3, { speed: 0, afoot: false, swimming: true })
+  check(count(tele, 'footstep') === 0 && count(tele, 'swoosh') === 1, 'a teleport while swimming is one swoosh and no footsteps', `${count(tele, 'swoosh')}`)
   const tp = fakeEngine()
   const amb2 = new Ambience({ engine: tp, sense, rand: mulberry32(8) })
   amb2.onTeleport(6, 6)

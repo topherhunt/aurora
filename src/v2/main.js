@@ -5,6 +5,8 @@ import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
+import { planTowns } from './layers/towns.js'
+import { Towns } from './render/towns.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
@@ -97,6 +99,8 @@ import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
+import { BED_REACH_M, Health, MAX_HP, Sleep, fallDamage, hoursToBoundary, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
+import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 
 // First, before anything below can warn: a copy of every warning and error goes
 // to the dev server's tmp/client-log.txt, for the headset, which shows none of
@@ -747,9 +751,10 @@ const BACKPACK_PHOTO_PX = 192
 // --- settings ----------------------------------------------------------------
 
 // The saved game: where she stands, which way she faces, what she carries and
-// the hour of day. In this browser's localStorage and nowhere else -- nothing
-// goes to a server -- and a refresh boots straight into it (see the spawn in
-// bootWorld).
+// the hour of day. Written only when she wakes from sleep (stepVitals), in this
+// browser's localStorage and nowhere else -- nothing goes to a server -- and a
+// refresh boots straight into it (see the spawn in bootWorld). Her health is
+// not in it: she saves only on waking, when it is full.
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
@@ -779,8 +784,6 @@ function saveGame() {
   localStorage.setItem(SAVE_KEY, JSON.stringify(doc))
   console.log(`[v2] saved at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}, ${clock.clockText}`)
   refreshQuestRow('load')
-  // The menu closes on the save, with the bag's closing voice: the press was seen.
-  if (questPanelGroup.visible) toggleQuestPanel()
 }
 
 // Everything in a save but her position, which boot and the Load button put
@@ -839,6 +842,7 @@ function loadGame() {
   if (doc === null) { console.warn('[v2] load: nothing saved'); return }
   player.teleportTo(doc.x, doc.z)
   applySave(doc)
+  health.heal()
   // She has moved; the menu follows her rather than closing behind her.
   placeQuestPanel()
   console.log(`[v2] loaded at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
@@ -863,16 +867,157 @@ function newGame() {
   player.teleportTo(SPAWN.x, SPAWN.z)
   rig.rotation.set(0, 0, 0)
   if (!sceneEl.is('vr-mode')) camera.rotation.set(0, 0, 0)
+  health.heal()
   placeQuestPanel()
   console.log(`[v2] new game at ${SPAWN.x}, ${SPAWN.z}`)
 }
+
+// --- health and sleep (design/33-vitals.md) -----------------------------------
+
+const health = new Health()
+const sleep = new Sleep()
+let vitalsHud = null
+// On a desktop, the bed a click laid her in and the standing pose to give back; null when she is not in one.
+let deskBed = null
+// A key, click or button this frame, taken by sleep rather than by the world.
+let vitalsPress = false
+let reviving = false
+// A room that all sleeps: whether its skip has landed, and the skip the leader has asked the relay for.
+let sleptThrough = false
+let sleepAsk = null
+const vitalsHead = new THREE.Vector3()
+const vitalsFwd = new THREE.Vector3()
+const deathButtons = document.createElement('div')
+
+/** Whether sleep or death has her, and the world's controls stand down: lying is her own body in the headset, and only a click's lie-down holds a desktop. */
+const vitalsHold = () => health.dead || deskBed !== null || sleep.state === 'closing' || sleep.state === 'asleep'
+
+/** The bed of the house she is in, in world metres, as vitals.js takes it; none outdoors. */
+function worldBeds() {
+  if (!indoors) return []
+  const o = indoors.view.group.position
+  return indoors.room.spots.filter((b) => b.kind === 'bed').map((b) => ({ x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid }))
+}
+
+/** A desktop click's lie-down: her head over the pillow, looking up past her feet. */
+function lieDown(bed) {
+  deskBed = { pos: rig.position.clone(), quat: rig.quaternion.clone(), camY: camera.position.y, camRot: camera.rotation.clone() }
+  const k = bed.len / 2 - 0.25
+  rig.position.set(bed.x + k * Math.sin(bed.yaw), bed.top, bed.z + k * Math.cos(bed.yaw))
+  rig.rotation.set(0, 0, 0)
+  camera.position.y = 0.2 / herScale()
+  camera.rotation.set(Math.PI / 2.2, bed.yaw, 0)
+}
+
+function getUp() {
+  rig.position.copy(deskBed.pos)
+  rig.quaternion.copy(deskBed.quat)
+  camera.position.y = deskBed.camY
+  camera.rotation.copy(deskBed.camRot)
+  deskBed = null
+}
+
+function harm(n, why) {
+  if (n <= 0 || health.dead) return
+  const died = health.harm(n)
+  console.log(`[vitals] ${why}: -${n} HP, ${health.hp} left`)
+  if (!died) return
+  freeMouse()
+  const xr = renderer.xr.isPresenting
+  vitalsHud.showDeath(!xr ? [] : hasSave() ? ['A  load your saved game', 'B  start a new game'] : ['A or B  start a new game'])
+}
+
+/** Back from death under the black: into the saved game's room and place, or a new game's. */
+async function revive(doc) {
+  reviving = true
+  closeHouse()
+  const room = doc === null ? ROOMS.overworld : ROOMS[doc.room]
+  if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${doc.room}`)
+  if (room.village && doc.door?.key === undefined) throw new Error('v2: the save is in a village with no door')
+  const door = room.village ? doc.door : null
+  if (room !== currentRoom || (room.village && door.key !== cameInBy.key)) {
+    ready = false
+    disposeRoom()
+    cameInBy = door
+    await buildRoom(room, doc)
+    ready = true
+  } else if (doc !== null) player.teleportTo(doc.x, doc.z)
+  if (doc === null) newGame()
+  else applySave(doc)
+  health.heal()
+  reviving = false
+}
+
+/** The death card's choice, from a page button or a controller's. */
+function reviveFrom(load) {
+  if (!vitalsHud.deathShown || reviving) return
+  revive(load && hasSave() ? readSave() : null).catch(reportRuntimeError)
+}
+
+/** Every frame from the top of the tick: the veil, the donut, the heartbeat and the death card. */
+function stepHud(dt) {
+  vitalsHud.place(renderer.xr.isPresenting, camera.fov, camera.aspect)
+  const card = health.dead && !reviving
+  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card })
+  if (beat && ambience) sound.play('heartbeat', { bus: 'near', gain: 0.25 + 0.35 * health.hurt })
+  const buttons = card && vitalsHud.deathShown && !renderer.xr.isPresenting
+  if (buttons !== (deathButtons.style.display === 'flex')) {
+    deathButtons.style.display = buttons ? 'flex' : 'none'
+    deathButtons.querySelector('.qa-death-load').disabled = !hasSave()
+  }
+}
+
+/** After the input, before she moves: in a bed or out, asleep or awake, and the room's night skipped when everyone in it sleeps. */
+function stepVitals(dt, now) {
+  camera.getWorldPosition(vitalsHead)
+  camera.getWorldDirection(vitalsFwd)
+  const lying = !health.dead && (renderer.xr.isPresenting ? worldBeds().some((b) => liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed !== null)
+  const event = sleep.update(dt, { lying, press: vitalsPress, head: vitalsHead, fwd: vitalsFwd, scale: herScale() })
+  vitalsPress = false
+  if (event === 'up' && deskBed) getUp()
+  if (event === 'asleep') console.log(`[vitals] asleep at ${clock.clockText}`)
+  if (event === 'woke') {
+    if (deskBed) getUp()
+    health.heal()
+    saveGame()
+    vitalsHud.showSaved()
+  }
+
+  netplay.asleep = sleep.asleep
+  const peers = [...netplay.peers.values()]
+  if (!sleep.asleep || !peers.every((p) => p.asleep === true)) { sleptThrough = false; sleepAsk = null; return }
+  if (sleptThrough) return
+  if (netplay.time === null) {
+    clock.skip(hoursToBoundary(clock.hour))
+    sleptThrough = true
+    console.log(`[vitals] slept through to ${clock.clockText}`)
+    return
+  }
+  if (!leadsSleep(netplay.id, peers.map((p) => p.id))) return
+  if (sleepAsk === null) sleepAsk = { from: netplay.time.skipHours, to: netplay.time.skipHours + hoursToBoundary(clock.hour), at: -Infinity }
+  if (netplay.time.skipHours !== sleepAsk.from) { sleptThrough = true; console.log(`[vitals] the room slept through to ${clock.clockText}`); return }
+  if (now - sleepAsk.at > 500 && netplay.sendClock(sleepAsk.to)) sleepAsk.at = now
+}
+
+deathButtons.className = 'qa-death'
+deathButtons.style.cssText = 'position:absolute;left:50%;top:62%;transform:translateX(-50%);display:none;gap:16px;z-index:1000'
+for (const [cls, text, load] of [['qa-death-load', 'Load saved game', true], ['qa-death-new', 'New game', false]]) {
+  const b = document.createElement('button')
+  b.className = cls
+  b.textContent = text
+  b.style.cssText = 'font:600 18px system-ui,sans-serif;padding:12px 22px;border-radius:8px;border:1px solid #fff8;background:#0008;color:#fff;cursor:pointer'
+  b.addEventListener('click', () => reviveFrom(load))
+  deathButtons.appendChild(b)
+}
+document.body.appendChild(deathButtons)
+// From the console: `v2vitals.harm(60)`, `v2vitals.lie()` into the house's bed.
+window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () => lieDown(worldBeds()[0]), wake: () => { vitalsPress = true } }
 
 // A row is `{ key, text }` and one of three shapes: a toggle on questToggles
 // (with optional `on`/`off` state names), an action, or an action with a
 // `value` readout. Shared by the settings and debug grids; a key is unique
 // across both, since applyQuestToggle and refreshQuestRow find rows by it.
 const QUEST_SETTING_ROWS = [
-  { key: 'save', text: 'Save', action: () => saveGame() },
   { key: 'load', text: 'Load', action: () => loadGame(), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
   { key: 'new', text: 'New game', action: () => newGame() },
   // Teleport is the headset's default (§12: comfort over capability); walk is
@@ -1785,6 +1930,7 @@ function buildQuestPanel() {
     // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
     // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
+      if (vitalsHold()) return
       // With the menu open the trigger presses what the pointer is on; off the menu, and with it closed, the trigger is her hand: it takes, drops and stows (see hands.js), except that a flare gun held anywhere but the backpack fires.
       if (questPanelGroup.visible) {
         questPointerHand = el
@@ -1814,6 +1960,10 @@ function buildQuestPanel() {
   renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
   window.addEventListener('pointerup', (e) => {
     if (sceneEl.is('vr-mode')) return
+    if (vitalsHold()) {
+      if (e.button === 0 && e.target === renderer.domElement && Math.hypot(e.clientX - downX, e.clientY - downY) <= DESK_CLICK_PX) vitalsPress = true
+      return
+    }
     const cam = sceneEl.camera
     if (!cam) return
     if (mouseCaptured()) pointer.set(0, 0)
@@ -1833,6 +1983,9 @@ function buildQuestPanel() {
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
+    const reach = BED_REACH_M * herScale()
+    const bed = sleep.state === 'awake' ? worldBeds().find((b) => (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
+    if (bed) { lieDown(bed); return }
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
@@ -2410,6 +2563,9 @@ let dragons = null
 let entrances = null
 // A village's own (DESIGN.md §30): its huts, its lamps, its gathering place and the boulder's inside; all null in the overworld.
 let roomProps = null
+// The overworld's human towns (DESIGN.md §32): their plan from layers/towns.js and their buildings; null in a room.
+let townPlan = null
+let towns = null
 let lamps = null
 let hearth = null
 let stools = null
@@ -2730,7 +2886,7 @@ async function bootWorld() {
   // until the first gesture; see unlockSound.
   sound = new SoundEngine()
   soundReady = sound.load(SOUNDS).then(
-    () => { console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
+    () => { sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },
   )
 
@@ -2802,6 +2958,7 @@ async function bootWorld() {
   // world, one cap, desktop and headset alike.
   ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
   buildQuestPanel()
+  vitalsHud = new VitalsHud(camera)
   window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
   // The rest of the save, now that there is a backpack view to paint. Her
   // position was the spawn above.
@@ -2986,8 +3143,8 @@ async function enterHouse(e) {
   scene.add(view.group)
   const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const home = villagers.graph.doorNodes[e.k]
-  const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace }))
-  const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz })
+  const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace, feast: c.feast }))
+  const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms })
   const rDoor = rAt(room.rs, Math.PI)
   indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, y: oy, z: oz, nx: -1, nz: 0 }, outside: walk }
   if (sound) sound.setIndoors(true)
@@ -3159,6 +3316,13 @@ async function buildRoom(room, at) {
   }
   layers = Layers.deserialize(doc)
   height.setLayers(layers)
+  // The towns' clearings, pads, paths and roads go into the layers before the terrain first reads them, so the ground is flat under every building from the first chunk.
+  if (room.id === 'overworld') {
+    const t0 = performance.now()
+    townPlan = planTowns({ ground: (x, z) => heightmap.sample(x, z), layers, seed, keepClear: [{ ...room.spawn, r: 0 }] })
+    layers.addGenerated(townPlan.records)
+    console.log(`[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ${townPlan.records.length} roads, in ${(performance.now() - t0).toFixed(0)} ms`)
+  }
   console.log(
     `[v2] ${room.id} ${heightmap.width}x${heightmap.height} texels, ${heightmap.texelSize.toFixed(2)} m/texel, ` +
       `relief ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, snow line ${layers.snow.base.toFixed(0)} m +/- ${layers.snow.band.toFixed(0)} m, ` +
@@ -3321,6 +3485,13 @@ async function buildRoom(room, at) {
   }
   window.v2huts = roomProps
 
+  if (townPlan) {
+    await bootStep('towns')
+    towns = new Towns(scene, { towns: townPlan.towns, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    towns.update(spawn.x, spawn.z)
+    window.v2towns = towns // console: `v2towns.stats`, `v2towns.towns`
+  }
+
   // Trees. The atlas was built up ahead of the terrain, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
   // layers landing, because a photograph taken before the bark has loaded would
@@ -3341,7 +3512,7 @@ async function buildRoom(room, at) {
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
     // and in a village one in the clearing, through a hut, on a lamp, in the gathering place, on a stool or over a garden.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : deadwood,
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : towns ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || towns.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
     bounds,
@@ -3380,6 +3551,7 @@ async function buildRoom(room, at) {
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
+  if (towns) walk.addStone(towns)
   if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
@@ -3793,7 +3965,7 @@ async function buildRoom(room, at) {
     await bootStep('villagers')
     // Their seats: the hearth's stools, sat on facing the fire, and the scattered ones.
     const seats = [...hearth.stools.map((s) => ({ x: hearth.x + s.x, z: hearth.z + s.z, top: hearth.y + s.top, r: s.r, lookX: hearth.x, lookZ: hearth.z })), ...stools.seats()]
-    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed() })
+    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed(), exit: roomSpec.exit, hands, mushrooms })
     for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
     villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
     creatureNet.add(villagers, ['vg'])
@@ -4319,7 +4491,6 @@ const KEY_ACTIONS = {
   q: 'flareColor',
   n: 'timeSkip',
   p: 'auroraPattern',
-  k: 'weather',
   m: 'grassStyle',
   '[': 'coarser',
   ']': 'finer',
@@ -4343,7 +4514,6 @@ const CODE_ACTIONS = {
   KeyQ: 'flareColor',
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
-  KeyK: 'weather',
   KeyM: 'grassStyle',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
@@ -4392,7 +4562,6 @@ const HOTKEYS = [
     rows: [
       { keys: 'n', what: `skip time forward ${CLOCK.skipHours} hours` },
       { keys: 'p', what: 'cycle the aurora pattern' },
-      { keys: 'k', what: 'hold the weather: live, clear, scattered, overcast, rain' },
       { keys: 'm', what: 'swap the grass bed between scattered strips and card clumps' },
       { keys: 'h', what: 'hide and show this panel' },
       { keys: 'tab', what: 'open and close the world menu, the same one B / Y opens in the headset' },
@@ -4616,6 +4785,12 @@ function setTreeScatter(patch) {
 
 addEventListener('keydown', (e) => {
   if (!ready || typing(e)) return
+  // Asleep, dying or laid in a bed on a desktop, a key only stirs her.
+  if (vitalsHold()) {
+    if (!e.repeat) vitalsPress = true
+    e.preventDefault()
+    return
+  }
 
   // Tab opens and closes the menu, the keyboard twin of B / Y. On a desktop
   // there is no controller to press, so without this the menu is unreachable.
@@ -4669,7 +4844,6 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('stow') && hands) hands.stowPress('desk')
   if (fresh.includes('flareColor') && hands && holdsGun('desk')) cycleFlareColor('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
-  if (fresh.includes('weather')) cycleWeather()
   // M cycles the three grass beds in place, under the player's feet, so they can
   // be judged against the same hillside in the same light. Rebuilding a bed is
   // ~100 ms of one frame; a swap is not something a player does.
@@ -4730,7 +4904,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 // which runs after this one on the same press, then throws out of
 // setPointerCapture -- pointer lock and pointer capture exclude each other.
 renderer.domElement.addEventListener('click', (e) => {
-  if (!ready || e.button !== 0) return
+  if (!ready || e.button !== 0 || health.dead) return
   if (!(questPanelGroup && questPanelGroup.visible) && !(editor && editor.active)) captureMouse()
 })
 // Right-click on a handle. The editor decides WHAT can be done to the thing
@@ -5007,7 +5181,8 @@ function updateAmbience(dt, state) {
     submerged,
     // In her own metres, so a walk at half size is still a walk to the footstep rule.
     speed: player.speed / player.scale,
-    afoot: !player.flying && !player.travel,
+    afoot: !player.flying && !player.travel && !player.swimming,
+    swimming: player.swimming,
     cover: state.cover,
     precip: state.precip,
     indoors: !!indoors,
@@ -5405,7 +5580,7 @@ const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false }
 const SWIM_BEAD_M = 0.2
 const SWIM_WAVE_M = 0.06
 const SWIM_WAVELENGTH_M = 0.9
-const SWIM_WAVE_HZ = 1.2
+const SWIM_WAVE_HZ = 0.6
 // The arc and the landing ring, built together on first aim. The arc is a
 // dotted trail -- one instanced bead per sample -- rather than a Line, because
 // WebGL draws every line one pixel wide and a 1 px line at half opacity
@@ -5629,8 +5804,8 @@ function aimTeleport(origin, dir) {
  * instead -- and stopped by the bed, stone, a trunk, dry land or the reach. The
  * reach grows from the later of the last landing and the stick's push, so it
  * starts at her hand and glides out while held. Drawn as a line of beads
- * wavering across it, still at both ends; the ring stands across the line at
- * its end, which is where her eye goes. Nothing on it can refuse her.
+ * wavering across it, still at both ends; the ring lies flat at its end,
+ * which is where her eye goes. Nothing on it can refuse her.
  */
 function aimSwimTeleport(origin, dir) {
   const { ring, arc } = ensureTeleportGfx()
@@ -5699,7 +5874,7 @@ function aimSwimTeleport(origin, dir) {
   teleportTarget.z = end.z
   ring.position.set(end.x, end.y, end.z)
   ring.scale.setScalar(k)
-  ring.quaternion.setFromUnitVectors(TELEPORT_UP, dir)
+  ring.quaternion.identity()
   ring.visible = true
 }
 
@@ -5729,8 +5904,8 @@ function desktopTeleportAim() {
   camera.getWorldPosition(teleportOrigin)
   camera.getWorldQuaternion(questTempQuat)
   teleportRight.set(1, 0, 0).applyQuaternion(questTempQuat)
-  teleportOrigin.addScaledVector(teleportRight, 0.2)
-  teleportOrigin.y -= 0.35
+  teleportOrigin.addScaledVector(teleportRight, 0.1)
+  teleportOrigin.y -= 0.175
   if (cursorNdc.seen) teleportDir.copy(screenRay(camera, cursorNdc.x, cursorNdc.y).dir)
   else teleportDir.set(0, 0, -1).applyQuaternion(questTempQuat)
   aimTeleport(teleportOrigin, teleportDir)
@@ -5746,6 +5921,15 @@ function readInput() {
     if (st.connected > 0) questInputSource = 'aframe'
   }
   if (st.connected > 0) {
+    if (vitalsHold()) {
+      const pressed = (name) => st.left.buttons[name]?.justPressed || st.right.buttons[name]?.justPressed
+      if (health.dead) {
+        if (pressed('PRIMARY')) reviveFrom(true)
+        else if (pressed('SECONDARY')) reviveFrom(false)
+      } else if (['left', 'right'].some((hand) => Object.values(st[hand].buttons).some((b) => b.justPressed))) vitalsPress = true
+      Object.assign(moveInput, { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null })
+      return
+    }
     const lx = st.left.axes[0]
     const ly = st.left.axes[1]
     const rx = st.right.axes[0]
@@ -6088,6 +6272,7 @@ function tick() {
   // Clamp dt so a tab-switch or a GC pause cannot teleport her across a valley.
   const dt = Math.min(0.1, raw / 1000)
   fadeStep(dt * 1000)
+  if (vitalsHud) stepHud(dt)
 
   acc += raw
   frames++
@@ -6151,8 +6336,12 @@ function tick() {
   // The boats move before she does, so the one under her carries her and the
   // mover's step is then hers alone; where her feet came to rest in it is read after.
   if (boats) boats.update(dt, now)
+  stepVitals(dt, now)
   portalFrom.copy(player.originPosition())
-  player.update(dt, moveInput)
+  if (!vitalsHold()) {
+    player.update(dt, moveInput)
+    harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
+  }
   if (boats) boats.settle()
   portalTest()
   // A mouth she stepped into has just torn the room down under this frame.
@@ -6208,6 +6397,7 @@ function tick() {
   }
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
+  if (towns) towns.update(headTmp.x, headTmp.z)
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.ferns) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)

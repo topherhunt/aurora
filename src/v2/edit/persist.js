@@ -66,7 +66,7 @@ function answerOf(res, body, endpoint) {
 }
 
 export function saveLocal(layers) {
-  const text = JSON.stringify(layers.serialize())
+  const text = JSON.stringify(layers.serialize({ authored: true }))
   // A quota failure is real and must be seen -- silently not autosaving looks
   // exactly like autosaving right up until the reload that loses the world.
   localStorage.setItem(KEY, text)
@@ -90,7 +90,7 @@ export function clearLocal() {
  * served" in the panel rather than as a save that quietly did nothing.
  */
 export async function saveServer(layers) {
-  const text = JSON.stringify(layers.serialize())
+  const text = JSON.stringify(layers.serialize({ authored: true }))
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -170,7 +170,7 @@ export async function loadInitial(snow) {
 }
 
 export function exportFile(layers, name = 'layers.json') {
-  const text = JSON.stringify(layers.serialize(), null, 2)
+  const text = JSON.stringify(layers.serialize({ authored: true }), null, 2)
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
   const a = document.createElement('a')
   a.href = url

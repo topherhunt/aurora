@@ -124,7 +124,7 @@ function showStats() {
   const hs = s.hydrology
   const ba = hs.basins
   const ch = hs.channels
-  const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m  leak ${(l.leakKm2 * 100).toFixed(1)} ha  dry ${(l.dryKm2 * 100).toFixed(1)} ha`).join('\n')
+  const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m${l.parts > 1 ? ` +${l.parts - 1}` : '   '}  leak ${(l.leakKm2 * 100).toFixed(1)} ha  dry ${(l.dryKm2 * 100).toFixed(1)} ha`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
 ${(WORLD_SIZE / 1000).toFixed(2)} km across   ${R.ms.toFixed(0)} ms
 elevation ${s.min.toFixed(0)} .. ${s.max.toFixed(0)} m
@@ -158,7 +158,7 @@ silt      ${hs.silt.km2.toFixed(2)} km2 of bowl raised to its spill, ${hs.silt.m
 rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
 water     ${hs.rivers.widthMean.toFixed(1)} m wide mean, ${hs.rivers.widthMax.toFixed(0)} m the widest, mouths x${hs.rivers.flare.toFixed(2)} their own river's mean
 
-<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} basins the drain kept, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
+<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} basins the drain kept, ${hs.lakes.km2.toFixed(2)} km2 in ${hs.lakes.records} ellipses)</h2>${lakes || 'none'}`
 }
 
 function showHover() {

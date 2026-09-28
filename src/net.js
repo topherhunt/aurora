@@ -61,6 +61,8 @@ export class Netplay {
     // Her size against the world (DESIGN.md §30, half in a glade), sent with
     // every pose so a peer draws her body at it; 1 is left off the wire.
     this.scale = 1
+    // Whether she sleeps (v2/vitals.js); the relay moves the room's clock only when every client does.
+    this.asleep = false
     // The room's world clock as the relay last stated it, `{ anchorMs,
     // skipHours }` for WorldClock.sync, or null until the first snapshot.
     this.time = null
@@ -158,6 +160,7 @@ export class Netplay {
     const message = { version: 1, type: 'pose', pose, hands }
     if (avatar) message.avatar = avatar
     if (scale !== 1) message.scale = scale
+    if (this.asleep) message.asleep = true
     if (Number.isFinite(foot)) message.foot = Math.round(foot * 1000) / 1000
     if (boats && boats.aboard) message.aboard = boats.aboard
     if (boats && boats.boat) message.boat = boats.boat

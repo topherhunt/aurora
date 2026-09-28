@@ -563,6 +563,19 @@ const agree = (a, b) => {
   let frames = 0
   while (loose.alive && frames++ < 60 * 72) step(head.x, head.y, head.z)
   check(!loose.alive && !loose.loose, `and is forgotten past LOOSE_GONE_M ${LOOSE_GONE_M}`, `${(frames / 72).toFixed(1)} s`)
+  // Let go from the bank into water thinner than the margins: stunned in it, then off into the deep.
+  const bank = { x: LAKE_R + 3, y: LEVEL + 1.6, z: 0 }
+  const sx = LAKE_R - 3
+  const depthAt = (f) => LEVEL - height.heightAt(f.x, f.z)
+  step(bank.x, bank.y, bank.z)
+  const shallowOk = fish.release(rec, sx, LEVEL, 0, bank)
+  const wader = sp.slots.find((g) => g.loose)
+  step(bank.x, bank.y, bank.z)
+  check(shallowOk && wader && wader.stun > 0 && inWater(wader), 'let go from the bank into the shallows, it is loose and stunned under the surface', wader ? `${(LEVEL - height.heightAt(sx, 0)).toFixed(2)} m of water, y ${(wader.y - LEVEL).toFixed(3)} m` : 'refused')
+  const d0 = depthAt(wader)
+  for (let i = 0; i < 4 * 72; i++) step(bank.x, bank.y, bank.z)
+  const away = wader.x < sx - 1
+  check(wader.alive && wader.stun <= 0 && inWater(wader) && away && depthAt(wader) > d0, 'and wakes and swims off from her into deeper water', `${(sx - wader.x).toFixed(2)} m out, ${d0.toFixed(2)} -> ${depthAt(wader).toFixed(2)} m deep`)
 }
 
 // --- a lure: a spider in her hand has a fish swimming through it ------------

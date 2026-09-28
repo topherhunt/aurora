@@ -164,14 +164,19 @@ export function validate(json) {
   return json
 }
 
-// Build the document from a live Layers. Each sub-layer knows its own compact form; this only assembles them, so there is exactly one place that decides what a lake looks like on disk.
-export function serialize(layers) {
+// A road the world generates at boot (the towns, layers/towns.js) rather than one authored in the editor. It rides every document the terrain workers and the undo stack see, and never one that is saved: the generator puts it back on the next boot, and a saved copy would stack a second one under it.
+export const GENERATED_ID = /^town\d/
+export const isGenerated = (id) => GENERATED_ID.test(id)
+
+// Build the document from a live Layers. Each sub-layer knows its own compact form; this only assembles them, so there is exactly one place that decides what a lake looks like on disk. `authored` drops the generated roads -- what a save writes.
+export function serialize(layers, { authored = false } = {}) {
+  const roads = layers.paths.toJSON('road')
   return {
     v: DOC_VERSION,
     snow: layers.snow.toJSON(),
     lakes: layers.lakes.toJSON(),
     rivers: layers.paths.toJSON('river'),
-    roads: layers.paths.toJSON('road'),
+    roads: authored ? roads.filter((r) => !isGenerated(r.id)) : roads,
   }
 }
 

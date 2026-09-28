@@ -10,7 +10,7 @@
 // `epoch` is the bake key. Every mutation bumps it; the chunk streamer drops any chunk stamped with a stale epoch, and takeDirtyRect() tells it WHICH chunks to re-request rather than making it re-request all of them.
 // ---------------------------------------------------------------------------
 
-import { defaultDoc, validate, serialize, IdAllocator } from './doc.js'
+import { defaultDoc, validate, serialize, IdAllocator, isGenerated, GENERATED_ID } from './doc.js'
 import { SnowField, TEXEL } from './snowline.js'
 import { LakeSet, sandPatchAt } from './water-bodies.js'
 import { PathSet } from './paths.js'
@@ -55,8 +55,8 @@ export class Layers {
     return new Layers(json)
   }
 
-  serialize() {
-    return serialize(this)
+  serialize(opts) {
+    return serialize(this, opts)
   }
 
   // --- the query surface ----------------------------------------------------
@@ -229,6 +229,16 @@ export class Layers {
     this.ids.observe(path.id)
     this._commit(this.paths.takeDirty())
     return path
+  }
+
+  // The generated roads (doc.js isGenerated) in one commit: a town is dozens of short roads, and a commit apiece rebuilds the segment index once per road.
+  addGenerated(records) {
+    if (records.length === 0) return null
+    for (const r of records) {
+      if (!isGenerated(r.id)) throw new Error(`Layers.addGenerated: ${JSON.stringify(r.id)} is not a generated id (${GENERATED_ID})`)
+      this.paths.addPath({ ...r, kind: 'road' })
+    }
+    return this._commit(this.paths.takeDirty())
   }
 
   removePath(id) {
