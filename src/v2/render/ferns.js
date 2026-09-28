@@ -5,7 +5,7 @@ import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor } from '../../pr
 import { FERN_DEFAULTS } from '../../props/fern.js'
 import {
   createPropMaterial, setSnowLine,
-  setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS,
+  setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { InstancedArena } from './instanced-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
@@ -1439,7 +1439,7 @@ export class Ferns {
     if (cur < 0 || !this.settled) return false
     // The rim owns this instance's one fade slot while it is running its own
     // dissolve, and a hidden fern has nothing on screen to blend past.
-    if (this.rim.isBusy(i) || this.rim.isHidden(i)) return false
+    if (this.rim.isBusy(i) || this.rim.isHidden(i) || !dissolvesOn()) return false
     if (this.fades.length >= FADE_MAX_INFLIGHT) return false
     // A ghost holds its ring slot for the length of the fade. Fly fast enough
     // and the boundary hands ferns across faster than they come back, so the

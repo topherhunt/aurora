@@ -4,7 +4,7 @@ import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
 
 import { PROP_STEPS, createGenPropMaterial, ladderBounds, ladderGeometries, propReach } from './gen-props.js'
 import { AXIS_VIEWS, LOD_DEG, bakeCritterCard, distAt, ladderTier, loadCritterGlb, setAxisCard } from './critters.js'
-import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 
@@ -831,7 +831,7 @@ export class Rowboats {
   _crossFade(i, oldTier, now) {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
 
     const dup = this.free[--this.freeCount]

@@ -62,4 +62,3 @@ The pool is 4 puppets per body, so at most 12 townsfolk draws per eye, plus each
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
 - Market stalls, fences and livestock. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
-- Roads between towns.

@@ -5,7 +5,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import {
   SPUN_TOP_VIEWS, bakeCritterCard, critterTier, cullRange, loadCritterGlb, setSpunTopCard, spunBounds, tileKey, tileSeed,
 } from './critters.js'
-import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -751,7 +751,7 @@ export class Roosts {
   _crossFade(i, oldTier, now) {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
     const dup = this.free[--this.freeCount]
     this.batch.getMatrixAt(i, this._m)

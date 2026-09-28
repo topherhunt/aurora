@@ -1,5 +1,5 @@
 import {
-  setPropFadeTimerAt, setPropSolidAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
+  setPropFadeTimerAt, setPropSolidAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 
 // ---------------------------------------------------------------------------
@@ -401,7 +401,10 @@ export class RimFade {
       }
 
       if (state === SOLID) {
-        if (d2 > from * from) this._startFade(id, now, false)
+        if (d2 > from * from) {
+          this._startFade(id, now, false)
+          if (this.state[id] === HIDDEN) hidden++
+        }
       } else if (state === HIDDEN) {
         // THE SLACK DOES NOT REACH THIS BOUNDARY, which is the other half of
         // never retracting a dissolve. The slack is there so a stale sweep
@@ -442,6 +445,12 @@ export class RimFade {
    */
   _startFade(id, now, fadeIn) {
     if (this.onPreempt) this.onPreempt(id)
+    // Dissolves off: the transition is over the instant it starts.
+    if (!dissolvesOn()) {
+      this.state[id] = fadeIn ? SOLID : HIDDEN
+      if (!fadeIn) this.batch.setVisibleAt(id, false)
+      return
+    }
     setPropFadeTimerAt(this.batch, id, now, fadeIn)
     this.state[id] = fadeIn ? IN : OUT
     this.start[id] = now

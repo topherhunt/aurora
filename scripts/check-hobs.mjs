@@ -26,7 +26,7 @@ import { CRITTER_GLB, LOD_RUNGS } from '../src/v2/render/critters.js'
 import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { Villagers } from '../src/v2/render/villagers.js'
-import { BABY, CLIPS, CRY_S, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, TINTS, YARD_R } from '../src/v2/render/hobs.js'
+import { BABY, CLIPS, CRY_S, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, SQUEAL_S, TINTS, YARD_R } from '../src/v2/render/hobs.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
@@ -243,6 +243,30 @@ console.log('\nthe cries')
   said.length = 0
   w.hobs.voices(said)
   check(said.length === 0, 'drained, the cries are gone')
+}
+
+// --- the chased squeal -------------------------------------------------------------
+console.log('\nthe chased squeal')
+{
+  const w = make(), hz = 60
+  let t = run(w, T0, 5)
+  const h = w.hobs.all[0], at = []
+  // Chased 40 s, let go 1 s, chased again 30 s: the second chase starts inside the last squeal's hush.
+  for (const [chased, seconds] of [[true, 40], [false, 1], [true, 30]]) {
+    for (let i = 0; i < seconds * hz; i++) {
+      t += 1 / hz
+      w.villagers.update(FAR, FAR, t, 1 / hz)
+      w.villagers.voices([])
+      w.hobs.update(FAR, t, 1 / hz, chased ? [{ hob: h.id, x: h.x + 1, y: h.y, z: h.z }] : [])
+      const said = []
+      w.hobs.voices(said)
+      for (const v of said) if (Math.hypot(v.x - h.x, v.z - h.z) < 0.01) at.push(t - T0 - 5)
+    }
+  }
+  let gap = Infinity
+  for (let i = 1; i < at.length; i++) gap = Math.min(gap, at[i] - at[i - 1])
+  check(at.length > 0 && at[0] < 0.1, 'a hob squeals the moment a frog starts after it', at.length ? `${at[0].toFixed(2)} s in` : 'never')
+  check(at.length >= 5 && gap >= SQUEAL_S[0] - 1 / hz, `then no oftener than every ${SQUEAL_S[0]}-${SQUEAL_S[1]} s, a fresh chase included`, `${at.length} squeals in 71 s, least gap ${gap.toFixed(2)} s`)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

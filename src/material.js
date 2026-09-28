@@ -1479,6 +1479,20 @@ export const FADE_BAND = 0.85
  */
 export const PROP_FADE_SECONDS = 0.25
 
+// Every LOD, rim and creature dissolve is gated on this: off, each one that
+// would start is a hard cut instead. Off under teleport locomotion, where the
+// cut lands on the jump and a quarter second of the whole view dithering
+// after every landing is what the eye catches. v2/main.js sets it per frame.
+let dissolves = true
+
+export function setDissolves(on) {
+  dissolves = on
+}
+
+export function dissolvesOn() {
+  return dissolves
+}
+
 // The packing. A start time is stored NEGATED, leaving the positive side of the
 // float free for the never-fade 1.0. The two DIRECTIONS are told apart within
 // the negative range by magnitude -- a fade-OUT start is biased by 1, a fade-IN

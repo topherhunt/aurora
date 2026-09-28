@@ -8,6 +8,11 @@ import { Layers } from './layers/layers.js'
 import { planTowns, townsOccupyAt } from './layers/towns.js'
 import { Towns } from './render/towns.js'
 import { Townsfolk } from './render/townsfolk.js'
+import { nameTowns } from './layers/names.js'
+import { planRoads } from './layers/roads.js'
+import { Signposts } from './render/signposts.js'
+import { Bridges } from './render/bridges.js'
+import { loadStoneBridge } from '../bridges/stone-bridge.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
@@ -64,7 +69,7 @@ import { loadCritterGlb, setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor, buildRockBank } from '../props/rock-bank.js'
-import { setSnow, setMoss, setPropClock, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
+import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -856,6 +861,16 @@ async function loadGame() {
   await fade(0)
 }
 
+/** The menu's New game, under the fade: out of any house and back to the overworld (revive), since SPAWN is an overworld spot. */
+async function menuNewGame() {
+  makeBlackout()
+  ready = false
+  await fade(1)
+  await revive(null)
+  ready = true
+  await fade(0)
+}
+
 // The start as a first boot has it: SPAWN at CLOCK.startHour, facing the way
 // the world opens, the sky clear of flares, hands empty and a fresh flare gun
 // the only thing in the backpack -- what she held is let go where she stood,
@@ -1039,7 +1054,7 @@ window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () 
 // across both, since applyQuestToggle and refreshQuestRow find rows by it.
 const QUEST_SETTING_ROWS = [
   { key: 'load', text: 'Load', action: () => loadGame().catch(reportRuntimeError), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
-  { key: 'new', text: 'New game', action: () => newGame() },
+  { key: 'new', text: 'New game', action: () => menuNewGame().catch(reportRuntimeError) },
   // Teleport is the headset's default (§12: comfort over capability); walk is
   // the continuous locomotion, for measuring what the world does to the frame
   // while she moves through it. Only readInput's XR branch reads this -- a
@@ -2587,6 +2602,9 @@ let roomProps = null
 let townPlan = null
 let towns = null
 let townsfolk = null
+let roadPlan = null
+let signposts = null
+let bridges = null
 let lamps = null
 let hearth = null
 let stools = null
@@ -3081,7 +3099,10 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   if (towns) { towns.dispose(); towns = null }
   if (townsfolk) { townsfolk.dispose(); townsfolk = null }
+  if (signposts) { signposts.dispose(); signposts = null }
+  if (bridges) { bridges.dispose(); bridges = null }
   townPlan = null
+  roadPlan = null
   closeHouse()
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
@@ -3368,6 +3389,12 @@ async function buildRoom(room, at) {
     townPlan = planTowns({ ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, keepClear: [{ ...room.spawn, r: 0 }] })
     layers.addGenerated(townPlan.records)
     console.log(`[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ${townPlan.records.length} roads, in ${(performance.now() - t0).toFixed(0)} ms`)
+    const t1 = performance.now()
+    nameTowns(townPlan.towns, { ground: (x, z) => heightmap.sample(x, z), layers, seed })
+    roadPlan = planRoads({ towns: townPlan.towns, ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed })
+    layers.addGenerated(roadPlan.records)
+    if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
+    console.log(`[v2] roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, in ${(performance.now() - t1).toFixed(0)} ms`)
   }
   console.log(
     `[v2] ${room.id} ${heightmap.width}x${heightmap.height} texels, ${heightmap.texelSize.toFixed(2)} m/texel, ` +
@@ -3537,6 +3564,15 @@ async function buildRoom(room, at) {
     towns.update(spawn.x, spawn.z)
     window.v2towns = towns // console: `v2towns.stats`, `v2towns.towns`
   }
+  if (roadPlan) {
+    await bootStep('roads')
+    const patch = (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey })
+    signposts = new Signposts(scene, { signs: roadPlan.signs, names: townPlan.towns.map((t) => t.name), field: height, textures: propTextures, patch })
+    signposts.update(spawn.x, spawn.z)
+    bridges = new Bridges(scene, { bridges: roadPlan.bridges, stone: await loadStoneBridge(), textures: propTextures, patch })
+    bridges.update(spawn.x, spawn.z)
+    window.v2roads = { plan: roadPlan, signposts, bridges } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
+  }
 
   // Trees. The atlas was built up ahead of the terrain, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
@@ -3604,6 +3640,7 @@ async function buildRoom(room, at) {
     walk.addStone(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
   }
+  if (bridges) walk.addStone(bridges)
   if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
@@ -6410,6 +6447,8 @@ function tick() {
   // finished fades and the shader that draws them read the same instant. It
   // wraps at 1024 s inside setPropClock -- see the packing note in material.js.
   setPropClock(now / 1000)
+  // Teleporting in the headset cuts every LOD and rim change instead of dissolving it (material.js setDissolves). Flight is continuous, so it keeps them.
+  setDissolves(!(renderer.xr.isPresenting && questToggles.teleport && !player.flying))
   // THE BLADE BED CARRIES ITS OWN CLOCK, and it is not uPropClock. Every other
   // wind material snaps its frequency to a whole number of cycles per 1024 s so
   // the wrap above is invisible (windFreq in material.js); a blade's rate is a
@@ -6454,6 +6493,8 @@ function tick() {
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
   if (towns) towns.update(headTmp.x, headTmp.z)
+  if (signposts) signposts.update(headTmp.x, headTmp.z)
+  if (bridges) bridges.update(headTmp.x, headTmp.z)
   if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024)
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.ferns) {

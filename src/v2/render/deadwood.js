@@ -9,7 +9,7 @@ import {
   AXIS_VIEWS, LOD_DEG, LOD_HYSTERESIS, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard,
   setCritterCard, spunBounds,
 } from './critters.js'
-import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -1561,7 +1561,7 @@ export class Deadwood {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
     // A rim transition owns the slot while it runs and outranks this one.
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
 
     const dup = this.free[--this.freeCount]

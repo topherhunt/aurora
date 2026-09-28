@@ -105,7 +105,7 @@ import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, bakeCritterCard, createCritterCardMaterial, critterTier, makeCardFadeAttribute,
   setCritterCard, tileSeed,
 } from './critters.js'
-import { LOD_FADE_S, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { TailLag } from './tail-lag.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
@@ -1455,7 +1455,7 @@ export class Dragons {
     if (d.cargo) this._carry(d, hx, hy, hz, dt, tier < CARD_RUNGS)
 
     this._wantCard(d, tier === LOD_RUNGS)
-    if (d.cardP < 1) d.cardP = Math.min(1, d.cardP + dt / LOD_FADE_S)
+    if (d.cardP < 1) d.cardP = stepLodFade(d.cardP, dt)
     if (d.cardWant || d.cardP < 1) this._drawCard(d)
     if (tier >= LOD_RUNGS) {
       if (!d.puppet) return

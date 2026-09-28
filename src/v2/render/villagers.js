@@ -65,7 +65,7 @@ import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
 import { CARRY_SPAN, STARTLE_S } from './leafkin.js'
-import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
 import { keyOf as frogKey } from './frogs.js'
@@ -1672,7 +1672,7 @@ export class Villagers {
     const puppet = want === -1 && !c.puppet ? null : this._takePuppet(c)
     if (puppet) {
       // Through its door it dithers out where it stands, over DOOR_FADE_S.
-      puppet.show(want, c.hidden ? DOOR_FADE_S : LOD_FADE_S)
+      puppet.show(want, c.hidden ? DOOR_FADE_S : lodFadeS())
       _pos.set(pose.x, pose.y, pose.z)
       _quat.setFromAxisAngle(UP, pose.heading)
       _scl.setScalar(c.k)

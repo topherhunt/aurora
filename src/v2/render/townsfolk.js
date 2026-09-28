@@ -3,7 +3,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth } from './hearth.js'
-import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
 
@@ -707,7 +707,7 @@ export class Townsfolk {
     }
     const puppet = c.puppet
     if (!puppet) return
-    puppet.show(want, gone ? DOOR_FADE_S : LOD_FADE_S)
+    puppet.show(want, gone ? DOOR_FADE_S : lodFadeS())
     puppet.mixer.timeScale = c.pace * pose.scale
     _pos.set(pose.x, pose.y, pose.z)
     _quat.setFromAxisAngle(UP, pose.heading)

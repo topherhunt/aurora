@@ -140,7 +140,7 @@ import {
   CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, SPUN_VIEWS, bakeCritterCard, createCritterCardMaterial, critterTier,
   cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileKey, tileSeed, walkTiles,
 } from './critters.js'
-import { LOD_FADE_S, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -843,7 +843,7 @@ export class Wildlife {
     // Only while the layer is stepped: with it hidden update() has not emptied the buffer this frame, and a card appended every frame would fill it.
     if (this.batch.visible) {
       this._wantCard(c, tier === LOD_RUNGS && shown)
-      if (c.cardP < 1) c.cardP = Math.min(1, c.cardP + dt / LOD_FADE_S)
+      if (c.cardP < 1) c.cardP = stepLodFade(c.cardP, dt)
       if (c.cardWant || c.cardP < 1) {
         // Upright on the nest spot, or its feet GRIP of its height under the talons, where the mesh's would be.
         this._cardAt(c, lain ? c.cardMat.copy(matrix) : c.cardMat.multiplyMatrices(matrix, _hang.makeTranslation(0, -GRIP * height, 0)))
@@ -1617,7 +1617,7 @@ export class Wildlife {
           live.lod = CARD_RUNGS
           this._wantCard(live, false)
           if (live.cardP < 1) {
-            live.cardP = Math.min(1, live.cardP + dt / LOD_FADE_S)
+            live.cardP = stepLodFade(live.cardP, dt)
             this._drawCard(live)
           }
           if (live.puppet) {
@@ -1670,7 +1670,7 @@ export class Wildlife {
         // The card rung: one quad in the species' instanced buffer, and whatever
         // puppet it still has finishing its dissolve out against it.
         this._wantCard(c, tier === LOD_RUNGS)
-        if (c.cardP < 1) c.cardP = Math.min(1, c.cardP + dt / LOD_FADE_S)
+        if (c.cardP < 1) c.cardP = stepLodFade(c.cardP, dt)
         if (c.cardWant || c.cardP < 1) this._drawCard(c)
         if (tier === LOD_RUNGS) {
           if (!c.puppet) continue
@@ -1703,7 +1703,7 @@ export class Wildlife {
     // The cards of dropped kills finishing their dissolve where they were let go.
     for (let i = this.fadingCards.length - 1; i >= 0; i--) {
       const f = this.fadingCards[i]
-      f.p = Math.min(1, f.p + dt / LOD_FADE_S)
+      f.p = stepLodFade(f.p, dt)
       if (f.p < 1) { this._pushCard(f.sp, f.mat, -(1 - f.p)); continue }
       this.fadingCards[i] = this.fadingCards[this.fadingCards.length - 1]
       this.fadingCards.pop()

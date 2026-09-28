@@ -71,9 +71,11 @@ stage.appendChild(renderer.domElement)
 document.body.appendChild(VRButton.createButton(renderer))
 
 const FOG_COLOR = 0x9fb4cc
+// The preview thins the game's haze so the far side of the island can be read. It is a viewing aid and nothing the game sees: the sky and lighting stacks run at their own strength, only the fog this scene hands the shaders is scaled.
+const HAZE = 0.5
 const scene = new THREE.Scene()
 scene.background = new THREE.Color(FOG_COLOR)
-scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022)
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00022 * HAZE)
 
 const sun = new THREE.DirectionalLight(0xfff0d8, 2.1)
 sun.position.set(0.4, 0.8, 0.3)
@@ -398,7 +400,7 @@ renderer.setAnimationLoop(() => {
   hemi.intensity = state.hemiIntensity
   lighting.update(state)
   scene.fog.color.setRGB(state.fog[0], state.fog[1], state.fog[2], THREE.SRGBColorSpace)
-  scene.fog.density = state.hazeDensity
+  scene.fog.density = state.hazeDensity * HAZE
   scene.background.copy(scene.fog.color)
 
   camera.getWorldPosition(_head)
@@ -537,7 +539,7 @@ JITTER.amps.forEach((amp, k) => {
       rebuild()
     }, elRungs)
 })
-addSwitch('hydrology', 'hydrology', 'The whole of step D: the channels and their beds, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
+addSwitch('hydrology', 'hydrology', 'The whole of step D: the drain, the cliffs, the lakes, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
   steps.hydrology = on
   rebuild()
 })

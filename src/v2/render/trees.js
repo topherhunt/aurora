@@ -7,7 +7,7 @@ import { CLUMP_VARIANTS } from '../../textures.js'
 import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
   createPropMaterial, setSnowLine, setLeafSnowVary,
-  getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS,
+  getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { RimFade, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
@@ -2421,7 +2421,7 @@ export class Trees {
 
     // A rim transition owns the slot while it runs and outranks this one. See
     // the RimFade constructed above for the other half of the deal.
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
 
     // Three ceilings, all of which degrade to the pop a swap was before this
     // existed. The third is this arena's alone: a mesh that fills THROWS.

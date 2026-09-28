@@ -5,7 +5,7 @@ import { buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINT_GAIN } fr
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_LOD_FAR_MAX, ROCK_LOD_GONE_MAX, rockLodSize } from '../../props/rock.js'
 import {
   createPropMaterial, setSnowLine, setMossLine, setSnowVary, setMossVary, setPropSolidAt,
-  setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS,
+  setPropFadeTimerAt, getPropClock, FADE_BAND, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { PropArena, PropMeshes } from './prop-arena.js'
 import { RimFade, RIM_AT, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
@@ -3750,7 +3750,7 @@ class RockBed {
     // A rim transition owns the slot while it runs, and it outranks this one:
     // which tier a rock was wearing on its way out of the world is not a
     // question anybody is asking. See RimFade's constructor for the other half.
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
 
     // Both ceilings degrade to a pop, which is what a swap did before this
     // existed. See FADE_POOL_RESERVE for why growth outranks polish.

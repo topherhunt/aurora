@@ -5,7 +5,7 @@ import { buildTextureArray, loadImageLayers } from './textures.js'
 import { createPropMaterial } from './material.js'
 import { grassTexture } from './preview-stage.js'
 import { smoothstep } from './sim/mathx.js'
-import { BRIDGE_DEFAULTS, DECOR_KINDS, buildBridge, planBridge } from './bridges/bridge.js'
+import { BRIDGE_DEFAULTS, DECOR_KINDS, LODS, buildBridge, planBridge } from './bridges/bridge.js'
 
 const SLIDERS = [
   ['span', 3, 60, 0.5, 'bank to bank: the width of water the arches clear'],
@@ -15,8 +15,7 @@ const SLIDERS = [
   ['bankB', 0.5, 8, 0.1, 'road level on the +x bank, above the water'],
   ['maxArch', 4, 20, 0.5, 'widest single arch before the span takes another pier'],
   ['pier', 1, 4, 0.1, 'pier width between arches'],
-  ['maxGrade', 0.06, 0.35, 0.01, 'steepest ramp allowed; a steeper one lengthens the abutment instead'],
-  ['abut', 1, 8, 0.1, 'least abutment on each bank, even when no ramp is needed'],
+  ['abut', 0.5, 2, 0.1, 'how far the bridge reaches past each bank'],
   ['depth', 0.5, 5, 0.1, 'foundations below the water'],
   ['wallH', 0.4, 1.4, 0.05, 'parapet height above the deck'],
   ['wallT', 0.25, 0.8, 0.05, 'parapet thickness'],
@@ -24,11 +23,11 @@ const SLIDERS = [
   ['cover', 0.2, 1.5, 0.05, 'masonry between the ring crown and the deck'],
   ['jitter', 0, 2.5, 0.05, 'every irregularity at once. 0 is the drafted bridge'],
   ['stone', 0.5, 2.5, 0.05, 'stone size, as a multiple of the tile the buildings wear'],
-  ['detail', 0.3, 1.5, 0.05, 'mesh density'],
 ]
 
 const params = { ...BRIDGE_DEFAULTS }
 let decorPick = 'random'
+let lod = 0
 let spin = false
 
 // --- scene ------------------------------------------------------------------
@@ -142,7 +141,7 @@ let night = false
 
 function rebuild() {
   const plan = planBridge(params)
-  const built = buildBridge(plan, { decor: decorPick })
+  const built = buildBridge(plan, { decor: decorPick, lod })
   if (mesh) { mesh.geometry.dispose(); scene.remove(mesh) }
   mesh = new THREE.Mesh(built.geometry, material)
   scene.add(mesh)
@@ -192,9 +191,10 @@ function renderStats() {
     ['crowns', plan.arches.map((a) => a.crown.toFixed(2)).join(' / ') + ' m'],
     ['length', `${(plan.xb - plan.xa).toFixed(1)} m`],
     ['deck top', `${plan.top.toFixed(2)} m`],
-    ['ramps', `${plan.rampA.toFixed(1)} / ${plan.rampB.toFixed(1)} m`],
+    ['rise', `${plan.rise.toFixed(2)} m`],
     ['max grade', `${(plan.grade * 100).toFixed(1)} %`],
     ['posts', built.sockets.map((s) => s.decor).join(', ')],
+    ['lod', `${lod}`],
     ['triangles', built.stats.triangles.toLocaleString()],
     ['vertices', built.stats.vertices.toLocaleString()],
     ['draw calls', '1'],
@@ -218,6 +218,11 @@ for (const [key, min, max, step, tip] of SLIDERS) {
   inputs[key] = { input, out }
   sliderBox.appendChild(row)
 }
+const lodRow = document.createElement('div')
+lodRow.className = 'row qa-slider-lod'
+lodRow.innerHTML = `<label title="0 the full bridge, 1 its silhouette, 2 a rectangle">lod</label><input type="range" min="0" max="${LODS - 1}" step="1" value="0"><span class="v">0</span>`
+lodRow.querySelector('input').addEventListener('input', (e) => { lod = Number(e.target.value); lodRow.querySelector('.v').textContent = lod; rebuild() })
+sliderBox.appendChild(lodRow)
 const pierRow = document.createElement('label')
 pierRow.className = 'pick qa-pierposts'
 pierRow.innerHTML = '<input type="checkbox" checked> posts over the piers'

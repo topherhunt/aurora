@@ -10,9 +10,9 @@ export const TOWN_BANDS = { near: 60, mid: 140, far: 1500, hysteresis: 4, prebui
 // Frame budget for building geometry: detail-2 builds run 3-4 ms on desktop and several times that on the Quest, so no more than one of those a frame.
 const BUILD_MS = 4
 
-// The distant box's colours: an average of what each wall style and roof kind reads as from a few hundred metres.
-const WALL_TINT = { log: [0.46, 0.36, 0.26], stave: [0.42, 0.32, 0.22], halfTimber: [0.86, 0.82, 0.72], stoneBase: [0.66, 0.62, 0.55], masonry: [0.7, 0.67, 0.6] }
-const ROOF_TINT = { thatch: [0.66, 0.56, 0.36], shake: [0.44, 0.35, 0.27], slate: [0.32, 0.36, 0.42], pantile: [0.66, 0.32, 0.22] }
+// The distant box's colours. They MULTIPLY the far box's PLASTER texture (linear mean about 0.47, 0.43, 0.34), so each is the detail-1 building's area-weighted linear albedo (texture mean times vertex colour) divided by that mean, not the colour it reads as. A tint picked by eye comes out about twice as bright as the house it swaps for.
+const WALL_TINT = { log: [0.26, 0.25, 0.22], stave: [0.25, 0.23, 0.21], halfTimber: [0.53, 0.53, 0.52], stoneBase: [0.25, 0.24, 0.23], masonry: [0.24, 0.26, 0.26] }
+const ROOF_TINT = { thatch: [0.36, 0.28, 0.16], shake: [0.24, 0.23, 0.21], slate: [0.17, 0.19, 0.19], pantile: [0.28, 0.17, 0.15] }
 const EAVE = 0.55
 const OVER = 0.06
 const CELL = 32

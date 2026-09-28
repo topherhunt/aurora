@@ -39,6 +39,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
   - Procedurally generate leafkin houses' exteriors, Taking inspiration from the original art, concept art, and taking inspiration from the way that the interiors were built. Each one should be procedurally generated with various decorations and windows and varying shapes and proportions. And then they will all be merged into one mesh when you enter the Leafkin Glade. since there's few enough houses that you don't need multiple.
 - [ ] Human villages
+  - [ ] Farmland. Crops, livestock.
+  - [ ] Stables w horses. You can "borrow" a horse to get around the countryside faster.
   - [ ] Walls & guardposts ringing the town
   - [ ] Human NPC chatter audio samples.
   - [ ] You sometimes find NPCs walking the roads between villages.

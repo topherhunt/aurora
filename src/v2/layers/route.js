@@ -56,7 +56,7 @@ export function invalidateRoutes(field, rect) {
 }
 
 // Binary min-heap over (f, index) pairs, kept in two parallel typed arrays. The search touches tens of thousands of cells on a long leg and an array-of-objects heap allocates once per push.
-class Heap {
+export class Heap {
   constructor(cap) {
     this.f = new Float64Array(cap)
     this.i = new Int32Array(cap)

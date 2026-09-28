@@ -6,7 +6,7 @@ const TOL = 1e-3
 // ---------------------------------------------------------------------------
 // Step D, first of all -- the basins drain. Eleven octaves of height jitter make a landscape that reads beautifully dry and holds water in thousands of places it should not: every dip is a lake. This pass empties them, and it is the first thing that touches the field.
 //
-//   THE ONLY THING A BASIN IS JUDGED ON IS HOW DEEP IT IS. The `keep` deepest keep their water and every other basin is drained until under `pond` metres stands in it. Not shape, not roundness, not the widest disc that fits inside it -- a lake picked for its roundness is a round lake, and the shapes the terrain actually offers are the interesting ones.
+//   A BASIN IS JUDGED ON HOW DEEP IT IS AND ON WHETHER THE LAND HOLDS IT. The `keep` deepest keep their water and every other basin is drained until under `pond` metres stands in it. Nothing is judged on shape, roundness, or the widest disc that fits inside it -- a lake picked for its roundness is a round lake, and the shapes the terrain actually offers are the interesting ones. The one other thing asked of a kept lake is containment: ground within `keepRim` of its water may not fall `keepDrop` below that water (`held`), because a pit on a mountainside can be twenty metres deep behind a rim two metres wide, and water in one reads as a plateau standing over the hillside rather than as a lake. Such a body is drained like any other basin, and nothing is promoted in its place.
 //   A KEPT BASIN IS STILL DRAINED, down to `keepDepth`. Left alone the deepest basins on the island flood to their spills and put a whole biome under water; held to fifty metres they are lakes in a valley rather than the valley.
 //   THE RIM IS CUT WITH A BROAD DISH AND NOTHING ELSE. Find the pond's lowest rim point, lower it by `drop` under a dish of radius half the pond's width that eases back into the ground at its edge, then solve the pond again -- new level, new rim point, usually somewhere else -- and repeat. The cut per round is `max(elev - drop * (1 - smoothstep), want)`, so its depth tapers to nothing at the dish's edge (no step) and it stops at the level this round is aiming for (the floor is not dug out from under the water). The union of a dozen overlapping dishes walking down and inward is a valley, which is what a basin that has drained looks like. Carving a line from the floor to a point past the rim is what it does not look like.
 //   IT ONLY EVER LOWERS A TEXEL. `elev = min(elev, target)` everywhere, so no round can stand a spike or a fin, and "the drain never raised a texel" is a one-line invariant over sixteen million cells. It is also the only thing in step D that moves the field at all: nothing anywhere fills a hollow in, so a hollow this pass leaves is a hollow the island has.
@@ -20,7 +20,9 @@ export const BASINS = {
   keep: 20,          // the deepest basins that keep their water. Everything else is emptied
   pond: 1,           // metres; a basin is drained until less than this stands in it, and less than this was never a basin. What is left under it stays where it is -- a hollow with no water drawn in it
   sweeps: 5,         // enumerate-and-drain passes over the field. One is the island's own basins, the rest are the dips the dishes dug, and each pass costs a global re-flood. They run out fast: at 4097 on seed 20260824 the island has 585 basins, the dishes leave 48 between them, and the third sweep finds nothing
-  keepDepth: 50,     // metres a kept basin may hold. A deeper one is drained down to this, so the island's biggest hollows are lakes in a valley and not the valley
+  keepDepth: 30,     // metres a kept basin may hold. A deeper one is drained down to this, so the island's biggest hollows are lakes in a valley and not the valley
+  keepRim: 24,       // metres out from a kept lake's water that the land has to hold it in. Counted in grid steps, so a diagonal reach runs to 1.4x this
+  keepDrop: 20,      // metres below the water's plane that counts as the land falling away. Ground that low within `keepRim` means the lake is a shelf on a knife edge, and it is drained like any other basin
   steps: 8,          // rounds the excess is meant to come off over, so each round's drop is a fraction of what is left rather than a fixed step
   minStep: 1.5,      // metres; never less than this in a round, so a shallow basin is done in one or two rather than creeping
   brush: 0.5,        // the dish's radius as a fraction of the pond's width -- half the width, so the dish spans about the water it is draining
@@ -68,6 +70,7 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
   let stuck = 0
   let drowned = 0
   let absorbed = 0
+  let perched = 0
   let drainedDeepest = 0
   let late = 0
 
@@ -152,9 +155,8 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
     return { level, floor, floorCell, spill, wet }
   }
 
-  /** One round's cut: a dish of radius `R` centred on the rim point, `drop` metres deep at the middle and tapering to nothing at the edge, and never below `want`. The taper is what keeps the dish's edge from standing as a step; `want` is what keeps the round from digging the floor out from under the water it is lowering. */
-  function cutRim(spill, drop, R) {
-    const want = elev[spill] - drop
+  /** One round's cut: a dish of radius `R` centred on the rim point, `drop` metres deep at the middle and tapering to nothing at the edge, and never below `want` -- the level this round is aiming for. The taper is what keeps the dish's edge from standing as a step; `want` is what keeps the round from digging the floor out from under the water it is lowering, which a wide shallow pan needs badly: its floor lies inside the dish, so a round clamped only at the rim's own new height takes the floor down with the rim, the water is as deep as it was, and the pond erodes tens of metres over hundreds of rounds without ever draining. */
+  function cutRim(spill, drop, R, want) {
     const ci = spill % n
     const cj = (spill / n) | 0
     const lo = Math.ceil(R / cell)
@@ -173,6 +175,97 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
         if (target < elev[c]) elev[c] = target
       }
     }
+  }
+
+  /**
+   * Does the land hold this lake? A basin can be deep, wide and still be a shelf of water on a knife edge: high on a mountainside the jitter leaves pits whose rim stands a couple of metres proud of ground that falls away tens of metres just past it, and water in one reads from below as a plateau with no land under its far side. The walk goes `keepRim` steps out from the body and fails it on the first cell that stands `keepDrop` under the water. A drained basin's dish is a broad taper, so an outlet does not trip it; a cliff two texels past the shore does.
+   */
+  function held(cells, level) {
+    const steps = Math.max(1, Math.round(O.keepRim / cell))
+    const floor = level - O.keepDrop
+    stamp++
+    for (const c of cells) visit[c] = stamp
+    let frontier = cells
+    for (let s = 0; s < steps; s++) {
+      const next = []
+      for (const c of frontier) {
+        const ci = c % n
+        const cj = (c / n) | 0
+        for (let k = 0; k < 8; k++) {
+          const ni = ci + NB_DI[k]
+          const nj = cj + NB_DJ[k]
+          if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+          const nn = nj * n + ni
+          if (visit[nn] === stamp) continue
+          visit[nn] = stamp
+          if (elev[nn] <= floor) return false
+          next.push(nn)
+        }
+      }
+      if (!next.length) break
+      frontier = next
+    }
+    return true
+  }
+
+  /**
+   * The kept lakes as the field holds them NOW, read off the flood and nothing else: the level at each lake's deepest cell, the body walked out from it, `spare` and `surface` rebuilt from scratch. It runs once per sweep, because a dish cut for some other basin lowers whatever rim it lands on, a kept lake's included -- erosion has collateral effects, so a lake is what the ground leaves it and never what was written down before the cut.
+   *
+   * A lake a neighbour's dish emptied is dropped (`lost`), two a cut joined come back as one body at one level, an arm that stopped being part of it becomes ordinary ground the same sweep will drain, one a dish dug deeper than `keepDepth` is returned to be drained again, and one the land does not hold is dropped for this sweep to drain (`perched`). Nothing here moves the field.
+   */
+  function refreshLakes(filled) {
+    spare.fill(0)
+    const again = []
+    const out = []
+    // A body the land does not hold stays marked while the rest are read, so a second lake's seed inside it is not walked again, and is unmarked at the end for the sweep to find and drain.
+    const shelf = []
+    for (const lake of lakes) {
+      if (spare[lake.seed]) continue
+      const level = filled[lake.seed]
+      if (level - elev[lake.seed] <= O.pond) {
+        lost++
+        continue
+      }
+      const cells = []
+      let top = 0
+      scan[top++] = lake.seed
+      spare[lake.seed] = 1
+      surface[lake.seed] = level
+      let floor = elev[lake.seed]
+      let floorCell = lake.seed
+      while (top > 0) {
+        const c = scan[--top]
+        cells.push(c)
+        if (elev[c] < floor) {
+          floor = elev[c]
+          floorCell = c
+        }
+        const ci = c % n
+        const cj = (c / n) | 0
+        for (let k = 0; k < 8; k++) {
+          const ni = ci + NB_DI[k]
+          const nj = cj + NB_DJ[k]
+          if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+          const nn = nj * n + ni
+          if (spare[nn] || sea[nn] || filled[nn] !== level || elev[nn] > level) continue
+          spare[nn] = 1
+          surface[nn] = level
+          scan[top++] = nn
+        }
+      }
+      const depth = level - floor
+      if (!held(cells, level)) {
+        perched++
+        for (const c of cells) shelf.push(c)
+        continue
+      }
+      out.push({ seed: floorCell, level, depth, cells })
+      if (depth > O.keepDepth + TOL) again.push({ cells, depth, level, keep: true })
+    }
+    for (const c of shelf) spare[c] = 0
+    lakes.length = 0
+    for (const l of out) lakes.push(l)
+    return again
   }
 
   /** Drain the given basins, lowest spill first so a basin that spills into another meets it already settled and reads a true `esc` there. A basin with no `keep` flag is emptied. */
@@ -238,7 +331,7 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
           const drop = Math.max(O.minStep, (deep - target) / O.steps)
           const width = 2 * Math.sqrt((p.wet.length * cellArea) / Math.PI)
           const R = Math.min(O.maxBrush, Math.max(O.minBrush, O.brush * width))
-          cutRim(p.spill, drop, R)
+          cutRim(p.spill, drop, R, Math.max(elev[p.spill] - drop, p.floor + target))
           brushSum += R
           if (R > brushMax) brushMax = R
           cuts++
@@ -257,29 +350,24 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
   const keptBasins = Math.min(O.keep, basins.length)
   drain(basins)
 
-  // Then the dips the dishes dug. Each sweep re-floods, forgets which cells it had settled everywhere but the lakes, and drains whatever now stands over `pond` -- none of which may keep its water. `left` is what the last sweep still found: nothing, unless the cap cut the sweeps short.
+  // Then the dips the dishes dug. Each sweep re-floods, re-reads the kept lakes off the new field, forgets which cells it had settled, and drains whatever now stands over `pond` -- none of which may keep its water. `left` is what the last sweep still found: nothing, unless the cap cut the sweeps short.
   let sweeps = 1
   let left = 0
+  let lost = 0
   for (;;) {
     const again = priorityFlood(elev, n)
+    const overDeep = refreshLakes(again.filled)
     for (let c = 0; c < size; c++) {
-      if (sea[c]) {
-        esc[c] = elev[c]
-        continue
-      }
-      if (spare[c]) {
-        esc[c] = surface[c]
-        continue
-      }
-      esc[c] = again.filled[c]
+      esc[c] = sea[c] ? elev[c] : again.filled[c]
       done[c] = 0
     }
     const more = findBasins()
     left = more.reduce((d, b) => Math.max(d, b.depth), 0)
-    if (!more.length || sweeps >= O.sweeps) break
+    const work = more.concat(overDeep)
+    if (!work.length || sweeps >= O.sweeps) break
     sweeps++
     late += more.length
-    drain(more)
+    drain(work)
   }
 
   let cutCells = 0
@@ -307,10 +395,12 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
       sweeps,
       late,
       left,
+      lost,
       ponds,
       stuck,
       drowned,
       absorbed,
+      perched,
       cuts,
       roundMean: ponds ? roundSum / ponds : 0,
       roundMax,

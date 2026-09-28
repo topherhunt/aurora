@@ -22,9 +22,9 @@
 // the masks complementary rather than merely both dithered. A cull is the
 // outgoing half alone, a pop-in the incoming half alone, one code path.
 //
-// The fade is TIMED, NOT BANDED, because teleport locomotion crosses a whole
-// distance band in one frame: a fade driven by distance across the band edge
-// would still pop under a teleport, and this one always takes its LOD_FADE_S.
+// The fade is TIMED, NOT BANDED: a fade driven by distance across a band edge
+// would pop whenever the camera crosses the band in one frame. Under teleport
+// locomotion every dissolve is a cut instead (lodFadeS, material.js setDissolves).
 //
 // A STANDING BODY PUTS ITS FEET ON THE GROUND (FootIK below). The clips are
 // made on a flat floor and the body stands on the world vertical, so on a
@@ -50,11 +50,22 @@
 import THREE from '../../three-instance.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { TIER_TINTS, glint, gltfLoader, tierTintOn } from './critters.js'
+import { dissolvesOn } from '../../material.js'
 
 // How long a tier change, an appearance or a vanishing takes. Long enough that
 // the eye reads a dissolve rather than a flicker, short enough that a creature
 // walking a threshold is not permanently half-there.
 export const LOD_FADE_S = 0.35
+
+/** The LOD dissolve's length right now: 0, a cut, while material.js's dissolves are off. */
+export function lodFadeS() {
+  return dissolvesOn() ? LOD_FADE_S : 0
+}
+
+/** A card's LOD dissolve `p` advanced by `dt`, in step with a puppet's. */
+export function stepLodFade(p, dt) {
+  return dissolvesOn() ? Math.min(1, p + dt / LOD_FADE_S) : 1
+}
 
 const IDENTITY = new THREE.Matrix4()
 
@@ -626,14 +637,14 @@ export class Puppet {
     this.current = next
   }
 
-  /** Ask for `tier`, -1 for gone. Starts a dissolve over `seconds`; a reversal mid-fade rewinds the one already running rather than starting a third. */
-  show(tier, seconds = LOD_FADE_S) {
+  /** Ask for `tier`, -1 for gone. Starts a dissolve over `seconds`, or cuts at 0; a reversal mid-fade rewinds the one already running rather than starting a third. */
+  show(tier, seconds = lodFadeS()) {
     if (tier === this.to) return
     this.fadeS = seconds
     const reversing = tier === this.from && this.fade < 1
     this.from = this.to
     this.to = tier
-    this.fade = reversing ? 1 - this.fade : 0
+    this.fade = seconds <= 0 ? 1 : reversing ? 1 - this.fade : 0
     this.poseIn = 0
     this.stale = true
     this._apply()

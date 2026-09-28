@@ -97,7 +97,7 @@ import {
 import { buildTreeBank, treeVariants, treeImpostorLayers, plantedSpecies, TREE_BANK_SPECIES } from '../src/props/tree-bank.js'
 import { buildImpostorCard } from '../src/props/impostor.js'
 import {
-  CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt,
+  CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt, setDissolves,
 } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
 import { ROCK_STAND_MIN } from '../src/v2/render/rocks.js'
@@ -1717,6 +1717,55 @@ console.log('\n-- the LOD swap dissolves --')
   check(walk.placed + walk.freeCount === walk.maxInstances,
     'and the pool is whole again',
     `${walk.placed} placed, ${walk.freeCount} free, ${walk.maxInstances} pool`)
+
+  // TELEPORTING CUTS: with dissolves off (the headset under teleport
+  // locomotion), a run of 6 m blinks swaps tiers and crosses the rim without
+  // stamping anything, so every tree is whole or gone on the frame it changes.
+  setDissolves(false)
+  const tierBefore = new Int16Array(walk.maxInstances).fill(-1)
+  const hiddenBefore = new Uint8Array(walk.maxInstances)
+  let cutSwaps = 0
+  let cutRim = 0
+  let cutStarted = 0
+  let cutStamped = 0
+  let cutWrongVis = 0
+  let clockF = FRAMES + 184
+  for (let jump = 0; jump < 12; jump++) {
+    for (const tile of walk.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const i = tile.ids[k]
+        tierBefore[i] = walk.tierAt[i]
+        hiddenBefore[i] = walk.rim.isHidden(i) ? 1 : 0
+      }
+    }
+    z -= 6
+    for (let f = 0; f < 9; f++) {
+      setPropClock(0.5 + clockF++ / 72)
+      walk.update(0, EYE, z)
+      cutStarted += walk.fades.length + walk.rim.flightN
+      for (const tile of walk.tiles.values()) {
+        for (let k = 0; k < tile.n; k++) {
+          const i = tile.ids[k]
+          if (walk.batch.fade[i] !== 1) cutStamped++
+          if (walk.batch.getVisibleAt(i) === walk.rim.isHidden(i)) cutWrongVis++
+        }
+      }
+    }
+    for (const tile of walk.tiles.values()) {
+      for (let k = 0; k < tile.n; k++) {
+        const i = tile.ids[k]
+        if (tierBefore[i] >= 0 && walk.tierAt[i] >= 0 && walk.tierAt[i] !== tierBefore[i]) cutSwaps++
+        if (tierBefore[i] >= 0 && (walk.rim.isHidden(i) ? 1 : 0) !== hiddenBefore[i]) cutRim++
+      }
+    }
+  }
+  setDissolves(true)
+  check(cutSwaps > 0 && cutRim > 0 && cutStarted === 0,
+    'with dissolves off, teleport blinks swap tiers and cross the rim with no duplicate and no rim fade in flight',
+    `${cutSwaps} swaps, ${cutRim} rim crossings, ${cutStarted} fade-frames in flight`)
+  check(cutStamped === 0 && cutWrongVis === 0,
+    'and every tree is unstamped and drawn exactly when the rim is not hiding it',
+    `${cutStamped} stamped, ${cutWrongVis} drawn against the rim's state`)
 }
 
 // --- 9c. the shape of the cross-dissolve ramp -------------------------------

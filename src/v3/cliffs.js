@@ -3,7 +3,7 @@ import { clamp01 } from '../sim/mathx.js'
 import { BIOMES } from './biomes.js'
 
 // ---------------------------------------------------------------------------
-// Step D, between the channels and the lakes -- the island grows cliffs. The carved field has none and cannot be made to yield any by thresholding: over 304592 land texels the steepest texel-to-texel drop is 24 deg at the median and 45 deg at p90, and only 0.216% of them fall more than two texel-distances (16 m over 8 m). Cliffs are not in the field to be found, so they are MADE here, by taking the slope that is there and standing it up.
+// Step D, between the drain and the lakes -- the island grows cliffs. The field has none and cannot be made to yield any by thresholding: over 304592 land texels the steepest texel-to-texel drop is 24 deg at the median and 45 deg at p90, and only 0.216% of them fall more than two texel-distances (16 m over 8 m). Cliffs are not in the field to be found, so they are MADE here, by taking the slope that is there and standing it up.
 //
 //   THE TABLE. A ladder of rungs `step` metres apart cuts the slope into bands. Inside a band a texel's height, 0 at the rung below to 1 at the rung above, is remapped through a ramp with two straight pieces: a FACE over the lowest `riser` of the band that climbs `snap` of its fall, and a SHELF over the rest that carries the remaining 1 - `snap` gently up to the rung above. The face's grade is therefore the old grade times `snap / riser` -- 30 degrees at 0.8 over 0.12 is 77 -- and the shelf's is the old grade times (1 - `snap`) / (1 - `riser`), a third of it or less, which is the "flat-ish mesa top" half of the ask without ever being dead level.
 //
@@ -19,7 +19,7 @@ import { BIOMES } from './biomes.js'
 //
 //   THE PHASE. One ladder over the whole island would put every shelf on the same rungs and read as a contour map. A second, slower noise offsets the ladder by up to a step, so two massifs a kilometre apart bench at different heights.
 //
-//   WHERE IT RUNS. After the channels and before the lakes (hydrology.js). After, because the carve's banks are a smooth parabola tens of metres wide and would grind a scarp back into a slope; before, because everything downstream of it re-reads the ground -- the priority flood finds the basins the shelves made, the silt fills them to their spill so a shelf drains through a notch instead of ponding, and the route and the rivers are solved on the shape that will actually be drawn. Nothing here knows about rivers or lakes because at this point there are none.
+//   WHERE IT RUNS. After the drain and before the lakes (hydrology.js). After, because the drain's dishes are broad and shallow and would grind a scarp back into a slope; before, because everything downstream of it re-reads the ground -- the lakes are fitted, and the route and the rivers are solved, on the shape that will actually be drawn. What it does not get is a second drain: this pass only ever lifts, so a shelf that dams a hollow the drain emptied leaves it dammed, one of the reasons the pass is off by default. Nothing here knows about rivers or lakes because at this point there are none.
 //
 // Heights are metres. Three-free and DOM-free like the rest of src/v3.
 // ---------------------------------------------------------------------------

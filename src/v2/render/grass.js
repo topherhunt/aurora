@@ -12,7 +12,7 @@ import {
 } from '../../props/grass-blades.js'
 import {
   createPropMaterial, setSnowLine, stripClumpScale,
-  setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS,
+  setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { RimFade, RIM_PHASES } from './rim.js'
 
@@ -1704,7 +1704,7 @@ export class Grass {
     // The rim owns the slot when it is using it -- see the callback in the
     // constructor. A tuft on its way out of the world, or back into it, cuts
     // between tiers instead.
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
     if (this.freeCount <= FADE_POOL_RESERVE) return
 

@@ -8,7 +8,7 @@ import {
 import {
   AXIS_VIEWS, LOD_DEG, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard, setCritterCard, spunBounds,
 } from './critters.js'
-import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -649,7 +649,7 @@ export class Bones {
   _crossFade(i, oldTier, variant, now) {
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
-    if (this.rim.isBusy(i)) return
+    if (this.rim.isBusy(i) || !dissolvesOn()) return
     if (this.fades.length >= FADE_MAX_INFLIGHT) return
 
     const dup = this.free[--this.freeCount]

@@ -23,9 +23,10 @@ export const LAKES = {
   margin: 1.06,       // the fitted ellipse is scaled by this past the pool cell it is sized to
   cover: 0.985,       // the fraction of pool cells it is sized to hold. Short of 1 because the furthest cell of a curved pool is an outlier that swings the whole ellipse out over the ground at the corners, and a few square metres left dry at the tip of one arm costs far less than that
   holdDepth: 3,       // metres, overriding `cover`: however far out it lies, water this deep is inside the ellipse. A shallow rim drawn as land reads as a beach; a three-metre hole drawn as land reads as a bug
-  splitLeak: 0.15,    // the share of its own area a part may draw water beside before its pool is cut in two and fitted again. One ellipse cannot hold a branched pool, and the drain picks its lakes on depth alone, so some of them are long or forked
-  splitMax: 4,        // ellipses one pool may be cut into. They share the body's level and may overlap freely: v2 draws water where the ground under a lake lies below its level, so two records over the same ground draw the same water
+  spill: 0.5,         // metres of water an ellipse may draw OUTSIDE its own body before it is split and then shrunk. This is the one thing the fit is judged on: v2 draws water wherever the ground inside a record lies under its level, so an ellipse overhanging the valley beside the lake draws a sheet standing on the hillside -- a 100 m2 sliver 70 m deep reads as a wall of water and costs nothing by area. Under `spill` it is a puddle at the shore
+  splitMax: 16,       // ellipses one pool may be cut into. They share the body's level and may overlap freely: v2 draws water where the ground under a lake lies below its level, so two records over the same ground draw the same water
   splitMin: 40,       // pool cells a part must keep for the cut to be worth making
+  shrink: 0.96,       // what a part's axes are multiplied by per shrinking round once splitting has run out. It stops when nothing over `spill` is drawn outside the body or when the part's own deepest cell would fall outside it -- the lake's deepest water is the one thing an ellipse must hold
 }
 
 // The drawn water: how wide the sheet in the v2 doc is at every node of every river. The bed under it is not cut here -- v2 solves the river's level and cuts the channel to it at render time -- so these are the only widths on the island and nothing has to be kept in step with them.
@@ -143,7 +144,7 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
   lakes.sort((a, b) => b.km2 - a.km2)
   const lakeRecs = lakes.flatMap((l) => l.recs)
-  stats.lakes = { candidates: stats.basins.basins, spared: emptied.lakes.length, drained, count: lakes.length, records: lakeRecs.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ recs, ...rest }) => rest) }
+  stats.lakes = { candidates: stats.basins.basins, spared: emptied.lakes.length, drained, count: lakes.length, records: lakeRecs.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), leakDeepest: lakes.reduce((s, l) => Math.max(s, l.leakDeep), 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ recs, ...rest }) => rest) }
 
   // --- 6. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
@@ -197,7 +198,7 @@ export function noHydrology(height) {
       cliffs: { cells: 0, km2: 0, meanMove: 0, maxMove: 0, ms: 0, byBiome: [] },
       puddles: { cells: 0, km2: 0, mean: 0, deepest: 0 },
       stranded: { cells: 0, km2: 0, deepest: 0 },
-      lakes: { candidates: 0, spared: 0, drained: 0, count: 0, records: 0, km2: 0, leakKm2: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
+      lakes: { candidates: 0, spared: 0, drained: 0, count: 0, records: 0, km2: 0, leakKm2: 0, leakDeepest: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
       rivers: { count: 0, cells: 0, km: 0, longestKm: 0, intoSea: 0, intoLake: 0, fromLake: 0, widthMean: 0, widthMax: 0, flare: 0 },
     },
   }
@@ -253,14 +254,14 @@ function fitLake(body, elev, n, cell, half) {
   const inBody = new Set(body_)
   const deep = body_.filter((c) => level - elev[c] >= LAKES.holdDepth)
 
-  // Cut the worst spiller in two and fit each half again, while one is still worth cutting. A part's own leak drives it: the ellipse round a forked pool covers the ridge between its arms, and splitting the pool along that ellipse's major axis puts each arm in an ellipse of its own.
+  // Cut the worst spiller in two and fit each half again, while one still draws water over `spill` metres deep outside the body. The ellipse round a forked pool covers the ridge between its arms and the hollows past them; splitting the pool along that ellipse's major axis puts each arm in an ellipse of its own, which is the cheap half of the fix.
   let parts = [fitPart(pool, deep, elev, n, level, inBody)]
   while (parts.length < LAKES.splitMax) {
     let worst = -1
     for (let i = 0; i < parts.length; i++) {
       if (parts[i].pool.length < LAKES.splitMin * 2) continue
-      if (parts[i].leak <= parts[i].pool.length * LAKES.splitLeak) continue
-      if (worst < 0 || parts[i].leak > parts[worst].leak) worst = i
+      if (parts[i].leakDeep <= LAKES.spill) continue
+      if (worst < 0 || parts[i].leakDeep > parts[worst].leakDeep) worst = i
     }
     if (worst < 0) break
     const p = parts[worst]
@@ -268,6 +269,27 @@ function fitLake(body, elev, n, cell, half) {
     const halves = [true, false].map((k) => ({ pool: p.pool.filter((c) => side(c) === k), deep: p.deep.filter((c) => side(c) === k) }))
     if (halves.some((h) => h.pool.length < LAKES.splitMin)) break
     parts.splice(worst, 1, ...halves.map((h) => fitPart(h.pool, h.deep, elev, n, level, inBody)))
+  }
+  // Then what splitting could not fix is pulled in, and what stops it is the other wrong. Shrinking takes back water drawn OUTSIDE the lake and gives up water INSIDE it, so a part shrinks only while what it draws outside stands deeper than what it would leave undrawn inside: a shallow sheet on the hillside is not worth a deep hollow of bed drawn as ground, and a deep sheet is worth a shallow one. The two figures are `leakDeepest` and `dryDeepest` below.
+  for (const q of parts) {
+    let rounds = 0
+    while (q.leakDeep > LAKES.spill && rounds++ < 120) {
+      const a0 = q.a
+      const b0 = q.b
+      q.a *= LAKES.shrink
+      q.b *= LAKES.shrink
+      if (dropped(q, parts, elev, n, level) >= q.leakDeep) {
+        q.a = a0
+        q.b = b0
+        break
+      }
+      scanLeak(q, elev, n, level, inBody)
+    }
+  }
+  // A part the shrinking took off the body altogether draws nothing and is dropped, so the doc carries no record that covers no water.
+  if (parts.length > 1) {
+    const live = parts.filter((q) => q.pool.some((c) => inEllipse(q, c, n)))
+    if (live.length) parts = live
   }
   parts.sort((x, y) => y.a * y.b - x.a * x.b)
 
@@ -291,11 +313,14 @@ function fitLake(body, elev, n, cell, half) {
     j1 = Math.max(j1, Math.min(n - 1, Math.ceil(q.mz + reach)))
   }
   let leak = 0
+  let leakDeep = 0
   for (let j = j0; j <= j1; j++) {
     for (let i = i0; i <= i1; i++) {
       const c = j * n + i
       if (elev[c] >= level || inBody.has(c)) continue
-      if (parts.some((q) => inEllipse(q, c, n))) leak++
+      if (!parts.some((q) => inEllipse(q, c, n))) continue
+      leak++
+      if (level - elev[c] > leakDeep) leakDeep = level - elev[c]
     }
   }
 
@@ -307,6 +332,7 @@ function fitLake(body, elev, n, cell, half) {
     parts: parts.length,
     km2: (body_.length * cell * cell) / 1e6,
     leakKm2: (leak * cell * cell) / 1e6,
+    leakDeep,
     dryKm2: (dry * cell * cell) / 1e6,
     dryDeepest,
     deepest,
@@ -377,15 +403,37 @@ function fitPart(pool, deep, elev, n, level, inBody) {
   const grow = Math.sqrt(far) * LAKES.margin
   a = a * grow + 0.5
   b = b * grow + 0.5
-  const part = { pool, deep, mx, mz, a, b, cr, sr, rot, leak: 0 }
-  const reach = Math.ceil(Math.max(a, b))
-  for (let j = Math.max(0, Math.floor(mz - reach)); j <= Math.min(n - 1, Math.ceil(mz + reach)); j++) {
-    for (let i = Math.max(0, Math.floor(mx - reach)); i <= Math.min(n - 1, Math.ceil(mx + reach)); i++) {
+  const part = { pool, deep, mx, mz, a, b, cr, sr, rot, leak: 0, leakDeep: 0 }
+  scanLeak(part, elev, n, level, inBody)
+  return part
+}
+
+/** What the part would draw outside the body: `leak` in cells, `leakDeep` in metres at the worst of them. The depth is what the fit is steered by -- a wide shallow spill at the shore is a beach, a narrow deep one is a wall of water. */
+function scanLeak(part, elev, n, level, inBody) {
+  part.leak = 0
+  part.leakDeep = 0
+  const reach = Math.ceil(Math.max(part.a, part.b))
+  for (let j = Math.max(0, Math.floor(part.mz - reach)); j <= Math.min(n - 1, Math.ceil(part.mz + reach)); j++) {
+    for (let i = Math.max(0, Math.floor(part.mx - reach)); i <= Math.min(n - 1, Math.ceil(part.mx + reach)); i++) {
       const c = j * n + i
-      if (elev[c] < level && !inBody.has(c) && inEllipse(part, c, n)) part.leak++
+      if (elev[c] >= level || inBody.has(c) || !inEllipse(part, c, n)) continue
+      part.leak++
+      const d = level - elev[c]
+      if (d > part.leakDeep) part.leakDeep = d
     }
   }
-  return part
+}
+
+/** How deep the water is that the ellipses would leave undrawn if `q` shrank: the deepest cell of the body `q` is answerable for that no ellipse covers. The parts overlap freely, so a cell a sibling draws is drawn, and a part whose whole contribution was its spill may shrink away to nothing. */
+function dropped(q, parts, elev, n, level) {
+  let d = 0
+  for (const c of q.deep) {
+    const w = level - elev[c]
+    if (w <= d) continue
+    if (inEllipse(q, c, n) || parts.some((o) => o !== q && inEllipse(o, c, n))) continue
+    d = w
+  }
+  return d
 }
 
 /**

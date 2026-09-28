@@ -15,7 +15,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32, swing } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
-import { LOD_FADE_S, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 
 export const HOB_GLB = 'creatures/hob-weevil.glb'
 export const CLIPS = ['idle', 'walk', 'run', 'eat']
@@ -43,11 +43,11 @@ export const GAP_M = 0.2
 export const STOP = 0.6
 export const LOSE_M = 12
 // Each hob cries once every CRY_S seconds, from its middle (ambience.js RULES.hobCry sets how far it carries).
-export const CRY_S = [40, 120]
-// Chased by a frog: it makes for a spot FLEE_M straight away from it (swung up to FLEE_SWING off where that is wet), squealing -- its cry -- at once and every SQUEAL_S.
+export const CRY_S = [80, 240]
+// Chased by a frog: it makes for a spot FLEE_M straight away from it (swung up to FLEE_SWING off where that is wet), squealing -- its cry -- at once and every SQUEAL_S; a chase begun within SQUEAL_S[0] of its last cry waits out the rest.
 export const FLEE_M = 3
 const FLEE_SWING = [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8]
-export const SQUEAL_S = [1.2, 2.5]
+export const SQUEAL_S = [10, 15]
 const NO_CHASERS = []
 const RESYNC_S = 1
 const VILLAGER_R = 0.25
@@ -151,7 +151,7 @@ export class Hobs {
   _hob(rand, yard, size, tint) {
     const h = {
       id: this.all.length, yard, size, tint, k: 1, owner: null, parent: null, side: 1, row: 0,
-      slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
+      slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), hush: 0, slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
       x: 0, y: 0, z: 0, heading: rand() * 2 * Math.PI, aim: 0, moving: false,
       clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null,
       // The frog after it this frame, and what the frogs chase it as.
@@ -298,12 +298,14 @@ export class Hobs {
       const was = h.chaser
       h.chaser = null
       for (const c of chasers) if (c.hob === h.id) h.chaser = c
-      if (h.chaser !== null && was === null) h.cry = 0
+      if (h.chaser !== null && was === null) h.cry = Math.max(0, h.hush)
+      h.hush -= dt
       if (jumped) this._place(h, seconds)
       this._steer(h, seconds, dt)
       this._draw(h, dt)
       if ((h.cry -= dt) <= 0) {
         h.cry = between(this.cryRand, h.chaser !== null ? SQUEAL_S : CRY_S)
+        h.hush = SQUEAL_S[0]
         this.calls.push({ sound: 'hobCry', x: h.x, y: h.y + h.size * 0.5, z: h.z })
       }
     }
@@ -344,7 +346,7 @@ export class Hobs {
     const want = h.lod === LOD_RUNGS ? -1 : h.lod
     const puppet = want === -1 && !h.puppet ? null : this._takePuppet(h)
     if (!puppet) return
-    puppet.show(want, LOD_FADE_S)
+    puppet.show(want)
     puppet.mixer.timeScale = h.pace
     puppet.play(h.clip, h.cue)
     groundFeet(puppet, h, this.walk, PLANTED, (this.frame + h.id) % 6 === 0)
