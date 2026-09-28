@@ -577,6 +577,8 @@ function tileSeed(tx, tz, seed) {
   return (h ^ (h >>> 15)) >>> 0
 }
 
+const plantKey = (p) => Math.floor(p.x / TILE) * 0x10000 + Math.floor(p.z / TILE)
+
 export class Trees {
   /**
    * @param scene         THREE.Scene to add the tree arena to.
@@ -598,6 +600,8 @@ export class Trees {
    * @param opts.paths    PathSet, or anything with nearest(x, z, 'road'). Optional
    *                      on the same terms; with it no trunk stands on a road and
    *                      the forest crowds the verge (ROAD).
+   * @param opts.plants   Trees standing at construction: `{ x, z, scale, sink? }`, `sink` metres in place of the SINK_M roll.
+   * @param opts.plantRoom How many trees `plant` may stand at once.
    */
   constructor(
     scene,
@@ -617,6 +621,7 @@ export class Trees {
       paths = null,
       bounds = null,
       plants = [],
+      plantRoom = 0,
     } = {}
   ) {
     if (!field || typeof field.scatterAt !== 'function') {
@@ -687,22 +692,19 @@ export class Trees {
     // them like any other. A plant stands where it is told and takes no terrain
     // test -- a village's crown tree stands on a house's pad, in the road's
     // clearance, through a roof -- and its rank is PLANT_U, under every thinning
-    // band, so distance never cuts it.
-    if (!Array.isArray(plants) || plants.some((p) => ![p.x, p.z, p.scale].every(Number.isFinite) || !(p.scale > 0))) {
-      throw new Error('Trees: `plants` is a list of { x, z, scale }')
-    }
+    // band, so distance never cuts it. `plant` bins its trees apart, in `loose`,
+    // because `pureTrunksInto` reads `plants` and must not change once asked.
+    this._checkPlants(plants)
     this.plants = new Map()
-    for (const p of plants) {
-      const key = Math.floor(p.x / TILE) * 0x10000 + Math.floor(p.z / TILE)
-      const at = this.plants.get(key)
-      if (at) at.push(p)
-      else this.plants.set(key, [p])
-    }
+    this.loose = new Map()
+    for (const p of plants) this._bin(this.plants, p)
+    this.plantRoom = plantRoom
+    this.loosePlanted = 0
 
     // Sized ONCE, from the ladder this was booted on. `setScatter` may only move
     // to a ladder that fits inside this: the arena's twelve meshes are
     // allocated against it and cannot grow afterwards.
-    this.maxInstances = this._poolBound() + plants.length
+    this.maxInstances = this._poolBound() + plants.length + plantRoom
 
     const t0 = performance.now()
     const bank = buildTreeBank({ billboard: true })
@@ -1255,6 +1257,87 @@ export class Trees {
     while (this.queue.length) this._growTile(this.queue.pop())
     this.placeMs = performance.now() - t0
     return this.placed
+  }
+
+  /**
+   * Stand `list` (`{ x, z, scale, sink? }`, as `plants`) until `unplant` is
+   * handed the same objects: a resident tile takes them at once, any other
+   * when it grows. `pureTrunksInto` never sees them.
+   */
+  plant(list) {
+    this._checkPlants(list)
+    if (this.loosePlanted + list.length > this.plantRoom) {
+      throw new Error(`Trees: ${this.loosePlanted + list.length} planted trees, room for ${this.plantRoom}`)
+    }
+    this.loosePlanted += list.length
+    const byTile = new Map()
+    for (const p of list) {
+      this._bin(this.loose, p)
+      this._bin(byTile, p)
+    }
+    for (const [key, plants] of byTile) {
+      const tile = this.tiles.get(key)
+      if (tile) this._growTile({ key, tx: tile.tx, tz: tile.tz, q: tile.q, qc: tile.qc, plants })
+    }
+  }
+
+  unplant(list) {
+    const gone = new Set()
+    for (const p of list) {
+      const key = plantKey(p)
+      const at = this.loose.get(key)
+      const i = at ? at.indexOf(p) : -1
+      if (i < 0) throw new Error(`Trees: no planted tree at ${p.x}, ${p.z} to take back`)
+      at.splice(i, 1)
+      if (at.length === 0) this.loose.delete(key)
+      this.loosePlanted--
+      gone.add(key)
+    }
+    for (const key of gone) {
+      const tile = this.tiles.get(key)
+      if (!tile) continue
+      const x = list.map((p) => Math.fround(p.x)), z = list.map((p) => Math.fround(p.z))
+      this._thin(tile, (k) => {
+        const id = tile.ids[k]
+        if (tile.rank[k] !== PLANT_U) return true
+        for (let i = 0; i < x.length; i++) if (this.instX[id] === x[i] && this.instZ[id] === z[i]) return false
+        return true
+      })
+    }
+  }
+
+  /** A plant's trunk and crown radii, top, and first bough over the ground before its sink, in metres, off the draws `_growTile` gives it. */
+  plantShape(p) {
+    const pr = mulberry32(tileSeed(Math.round(p.x * 64), Math.round(p.z * 64), this.seed))
+    const v = (pr() * this.variantCount) | 0
+    pr(); pr(); pr()
+    const stretch = STRETCH[0] + pr() * (STRETCH[1] - STRETCH[0])
+    const lift = -PLACEMENT.sink * p.scale
+    return {
+      trunk: this.unitTrunkRadius[v] * p.scale,
+      crown: this.unitCrownRadius[v] * p.scale,
+      hem: this.unitCrownBase[v] * p.scale * stretch + lift,
+      top: this.unitHeight[v] * p.scale * stretch + lift,
+    }
+  }
+
+  _checkPlants(list) {
+    if (!Array.isArray(list) || list.some((p) => ![p.x, p.z, p.scale].every(Number.isFinite) || !(p.scale > 0) || (p.sink !== undefined && !(p.sink >= 0)))) {
+      throw new Error('Trees: plants are a list of { x, z, scale, sink? }')
+    }
+  }
+
+  _bin(bins, p) {
+    const key = plantKey(p)
+    const at = bins.get(key)
+    if (at) at.push(p)
+    else bins.set(key, [p])
+  }
+
+  _plantsOf(key) {
+    const fixed = this.plants.get(key)
+    const loose = this.loose.get(key)
+    return loose ? (fixed ? [...fixed, ...loose] : loose) : fixed
   }
 
   /**
@@ -1868,10 +1951,10 @@ export class Trees {
 
     if (tile) {
       tile.queued = false
-      if (tile.q === q) return
+      if (tile.q === q && !job.plants) return
       this.regrows++
       if (uNew < tile.u) {
-        this._thin(tile, uNew)
+        this._thin(tile, (k) => tile.rank[k] < uNew)
         tile.q = q
         tile.u = uNew
         return
@@ -1890,10 +1973,22 @@ export class Trees {
     // A THIRD for the stretch and the sink, two draws per candidate, on the
     // same terms.
     const formRand = mulberry32(tileSeed(tx, tz, this.seed ^ 0x7f4a7c15))
-    // The room's own trees, on a new tile alone: a tile that already stands has
-    // already planted them, and its `n` still counts them.
-    const planted = tile ? null : this.plants.get(key)
+    // The planted trees, on a new tile or as `plant` hands them to a standing
+    // one: a tile that already stands has already planted the rest, and its `n`
+    // still counts them.
+    const planted = job.plants ?? (tile ? null : this._plantsOf(key))
     const nPlant = planted ? planted.length : 0
+    if (tile && nPlant > 0) {
+      const room = tile.n + nPlant + this.perTile
+      if (tile.ids.length < room) {
+        const ids = new Int32Array(room)
+        const rank = new Float32Array(room)
+        ids.set(tile.ids)
+        rank.set(tile.rank)
+        tile.ids = ids
+        tile.rank = rank
+      }
+    }
     const ids = tile ? tile.ids : new Int32Array(this.perTile + nPlant)
     const rank = tile ? tile.rank : new Float32Array(this.perTile + nPlant)
     let n = tile ? tile.n : 0
@@ -1930,7 +2025,7 @@ export class Trees {
       const stretch = STRETCH[0] + (plant ? pr() : formRand()) * (STRETCH[1] - STRETCH[0])
       const sinkRoll = plant ? pr() : formRand()
 
-      if (u >= uNew || u < uOld) continue
+      if (!plant && (u >= uNew || u < uOld)) continue
 
       this.samples++
       const keep = this._stands(x, z, variant, scale, keepRoll, plant !== null)
@@ -1969,7 +2064,7 @@ export class Trees {
           sinkMax += (Math.max(SINK_M, hem - SHORE_SINK.hemMin) - SINK_M) * near
         }
       }
-      this.instSink[id] = sinkMax * Math.pow(sinkRoll, sinkPow)
+      this.instSink[id] = plant && plant.sink !== undefined ? plant.sink : sinkMax * Math.pow(sinkRoll, sinkPow)
       this.instYaw[id] = yaw
       // ON TOP OF THE ROCK IF THERE IS ONE UNDER THE TRUNK. Only rocks over
       // ROCK_STAND_MIN answer, so a tree is never perched on a cobble, and the
@@ -2363,11 +2458,12 @@ export class Trees {
     }
   }
 
-  _thin(tile, uNew) {
+  /** Drop every tree of the tile `keep(k)` refuses: its rank past a new cut, or a plant taken back. */
+  _thin(tile, keep) {
     let w = 0
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
-      if (tile.rank[k] < uNew) {
+      if (keep(k)) {
         tile.ids[w] = id
         tile.rank[w] = tile.rank[k]
         w++

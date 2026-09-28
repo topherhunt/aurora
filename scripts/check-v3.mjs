@@ -12,7 +12,7 @@ import { JITTER, TEXELS_PER_NODE, octaveTable, splitOctaves, octaveAt } from '..
 import { FineJitter } from '../src/v3/fine.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { LAKES, RIVERS } from '../src/v3/hydrology.js'
-import { EROSION } from '../src/v3/erosion.js'
+import { CARVE } from '../src/v3/channels.js'
 import { CLIFFS, table } from '../src/v3/cliffs.js'
 import { NB_DI, NB_DJ } from '../src/sim/world-grid.js'
 import { footprint } from '../src/v2/layers/water-bodies.js'
@@ -97,12 +97,18 @@ export async function run() {
 
   console.log('\n[v3] the water')
   const hs = s.hydrology
-  const er = hs.erosion
-  check(er.toSea > er.droplets * 0.8 && er.offEdge === 0 && er.spent < er.droplets * 0.05, `${er.droplets} droplets, ${((er.toSea / er.droplets) * 100).toFixed(0)}% reached the sea, ${er.ponded} ponded, ${er.spent} ran out of steps, none left the box`)
-  // `maxCut` is a reference depth per reference step and `deepestStep` is metres on THIS grid, but the two conversions cancel -- perStep is cell/refCell and toHere is refCell/cell -- so the deepest step is maxCut metres on every grid. That cancellation is the point of the length ratio, and asserting the bare constant is what would catch it being put back to an area one.
-  const stepCap = EROSION.maxCut
-  // The share of land the rain touches falls with the cell, because the brush is `radius` CELLS wide: 12.6 km2 of the 19.4 carved at 12.8 m, 5.3 at 3.2, 3.5 at 2. So this floor is a sixth of the land and not a third -- it is here to catch rain that stopped reaching the ground at all, not to pin the groove's width, which THE GROOVE's own note owns.
-  check(er.cutMean > 1 && er.cutMean < 20 && er.deepestStep <= stepCap + 1e-6 && er.cutCells * a.cell * a.cell > s.landKm2 * 1e6 * 0.15, `the rain cut ${er.cutMean.toFixed(1)} m mean over ${((er.cutCells * a.cell * a.cell) / 1e6).toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${er.deepest.toFixed(0)} m at the deepest, no step over ${stepCap} m`)
+  const ch = hs.channels
+  // THE ONE INVARIANT THE WHOLE CARVE RESTS ON. Every write is `elev = min(elev, target)`, so the pass can make no spike, no fin and no needle -- the artifact class a deposition term produces. It is asserted as a count and not as a tolerance because there is no rounding here to forgive.
+  check(ch.raised === 0, `the carve never raised a texel (${ch.raised} did)`)
+  check(ch.chains > 50 && ch.km > 20 && ch.samples > 5000, `${ch.chains} chains, ${ch.km.toFixed(0)} km of centreline in ${ch.samples} samples`)
+  // THE MEANDER, which is the reason the flow network is not carved literally: the priority flood's tree crosses a flat as a straight BFS, and a bed stamped on it is the straight slash through a hillside this pass exists to avoid. The offset is a swirl field the valley clamp scales back where the walls are close, so the mean is tens of metres on open ground and near zero in a gorge -- `notch` counts the samples the clamp bit on, and it must bite on some and not on most.
+  check(ch.bendMean > 5 && ch.bendMax > CARVE.meander * 0.5 && ch.walled > 0 && ch.walled < ch.samples * 0.8, `centrelines bend ${ch.bendMean.toFixed(1)} m mean off the flow line, ${ch.bendMax.toFixed(0)} m at the most, ${((ch.walled / ch.samples) * 100).toFixed(0)}% of samples pulled back by a wall`)
+  // The cut's footprint is in METRES and not in cells, so it does not move with the grid: measured across the whole field, a run of cut ground is 16 m at the median and 126 m at p99 on the 2 m grid and 16 and 136 m on the 8 m one -- a headwater gully and a trunk valley, both, at either pitch. That is the fork the droplet brush had, closed.
+  // THE DEEPEST CUT IS BOUNDED BY THE REFUSAL TO GOUGE. Notching a bowl's rim cuts it down to the bowl's own floor, so the cut there is the bowl's depth plus the bed's, and a bowl deeper than `hold` is spared instead of drained -- so nothing the carve does can exceed the two together.
+  const gouge = CARVE.hold + CARVE.maxDepth
+  check(ch.cutMean > 0.5 && ch.cutMean < 20 && ch.deepest <= gouge + 1e-6 && ch.notch <= CARVE.hold + 1e-6 && ch.cutKm2 > 0.3 && ch.cutKm2 < s.landKm2 * 0.5, `the carve cut ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${ch.deepest.toFixed(0)} m at the deepest of the ${gouge} m it may gouge, notching ${ch.notch.toFixed(0)} m through a rise at the most`)
+  // A bowl is drained or it is spared, never gouged: one deeper than `hold` keeps its water rather than having a canyon cut out of its rim to let it out.
+  check(ch.spared > 0 && ch.spared < ch.bowls * 0.2 && ch.held <= ch.spared, `${ch.spared} of ${ch.bowls} enclosed bowls spared, ${ch.held} of them deeper than the ${CARVE.hold} m the carve refuses to cut through`)
   check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
 
   // The tabling is off by default (generate.js STEPS), so it is judged on an island generated with it switched back on, and the default is asserted to carry none of it. Everything below reads `cliffy` for that reason.
@@ -185,7 +191,8 @@ export async function run() {
     if (size > longest) longest = size
   }
   check(faceCells > 2000 && longest > 60 && faceCells / runs > 3, `faces over 12 m run in bands, not specks: ${faceCells} texels in ${runs} runs, ${(faceCells / runs).toFixed(1)} mean and ${longest} at the longest`)
-  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep, `${hs.lakes.count} lakes kept of ${hs.lakes.candidates} bowls the rain left`)
+  // `keep` bounds what selectLakes picks, but a bowl deeper than CARVE.hold is spared on top of that budget, so the ceiling here is the two together and not `keep` alone.
+  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep + hs.lakes.held, `${hs.lakes.count} lakes of the ${hs.lakes.spared} bowls the carve spared (${hs.lakes.drained} drained out from under their water afterwards)`)
   check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
   check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)
   check(hs.lakes.dryKm2 < hs.lakes.km2 * 0.02 && hs.lakes.dryDeepest < 4, `${hs.lakes.dryKm2.toFixed(4)} km2 of lake the ellipses leave dry, ${hs.lakes.dryDeepest.toFixed(1)} m at the deepest`)
@@ -252,14 +259,9 @@ export async function run() {
   // WITH THE FINE RUNGS SUPPLIED, which is how /terrain-v3 boots it: main.js hands the worker `{ seed, cell, jitter }` and the worker makes this same FineJitter from it. Constructing it bare would be testing a configuration the route does not use, and the line below says what the bare one now does instead.
   const height = new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS, detail: new FineJitter({ seed: SEED, cell: a.cell }) })
   check(height.detail instanceof FineJitter && height.calibration === null, 'V2Height stands on the supplied rungs and fits no amplitude of its own')
-  // A 2 m import leaves v2's fitted detail term nothing to add, so the bare field REFUSES it rather than laying a second ladder over the one the image already carries: calibrateRough extrapolates the curvature at lags of 4 and 8 m down to a quarter metre, and the bicubic over 2 m texels already supplies 183% of that. Asserting the refusal is what keeps a later session from dropping the FineJitter above and meeting the throw with no idea why.
-  let bare = null
-  try {
-    new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS })
-  } catch (err) {
-    bare = err.message
-  }
-  check(bare !== null && bare.includes('more sub-texel roughness'), `and the bare field refuses the 2 m import: ${bare ? bare.slice(0, 96) : 'it did not refuse'}`)
+  // WHAT THE BARE FIELD IS FOR: calibrateRough extrapolates the curvature at lags of 4 and 8 m down to a quarter metre and throws if the image already carries more than that, because an import that does is carrying resampling noise and not terrain. It is a NOISE DETECTOR, and it is the one instrument that reads on the carve's smoothness from outside the carve. The field is a terrain by this test -- the raw cone and its octaves come to 38% of the extrapolation and the carved field to 55%, so the channels add shape at the texel scale without adding grit.
+  const bare = new V2Height({ heightmap: hm, layers, seed: SEED, relief: RELIEF_DEFAULTS })
+  check(bare.calibration !== null && bare.calibration.imageShare > 0.2 && bare.calibration.imageShare < 1, `and the bare 2 m import is a terrain, not resampling noise: it carries ${(bare.calibration.imageShare * 100).toFixed(0)}% of the sub-texel roughness the power law extrapolates`)
   const at = height.heightAt(s.summit.x, s.summit.z)
   check(Math.abs(at - s.summit.h) < 5, `V2Height at the summit reads ${at.toFixed(1)} m`)
   const bands = height.bands

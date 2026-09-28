@@ -40,6 +40,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] terrain-v3
   - [ ] Simpler approach to hydrology:
     - Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
+    - Gaah it doesn't work. Maybe random jittering doesn't work with hydrology.
   - IF we take that simpler approach to the hydrology, then, maybe we only need to store coarser elevation map (8m / texel) and smaller-scale detail can be procedurally generated just-in-time?
 - [ ] Disable dither-fade for LOD swaps, pop-in, culls when you're in VR in teleport mode, ONLY for objects closer than 100m away.
 - [ ] Try fully mechanics / IK based dragon walk and fly motion.

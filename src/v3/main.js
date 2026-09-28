@@ -537,7 +537,7 @@ JITTER.amps.forEach((amp, k) => {
       rebuild()
     }, elRungs)
 })
-addSwitch('hydrology', 'hydrology', 'The whole of step D: the rain and its cuts, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
+addSwitch('hydrology', 'hydrology', 'The whole of step D: the channels and their beds, the lakes, the silt, the route and the rivers. Off, the field is the cone and its octaves as rasterised, and the document holds nothing but the sea.', steps.hydrology, (on) => {
   steps.hydrology = on
   rebuild()
 })

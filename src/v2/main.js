@@ -46,7 +46,7 @@ import { Villagers } from './render/villagers.js'
 import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
-import { Entrances, PORTAL, loadMouthBank } from './render/entrances.js'
+import { Entrances, PORTAL, SCREEN_POOL, loadMouthBank } from './render/entrances.js'
 import { RoomProps, loadHouseBank } from './render/room-props.js'
 import { InteriorView, loadInteriorTextures } from './render/interior.js'
 import { Residents } from './render/residents.js'
@@ -1061,7 +1061,10 @@ function applyQuestToggle(key) {
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
+  if (entrances) {
+    entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
+    if (entrances.stumps) entrances.stumps.arena.visible = questToggles.boulders
+  }
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -3351,6 +3354,8 @@ async function buildRoom(room, at) {
     // to the stone (RIM_WOOD), on ground too steep for the bed above. Planted,
     // so none of the tests above can refuse them.
     plants: room.village ? [...roomSpec.decor.trees, ...roomSpec.wood] : [],
+    // The glade mouths' screens (entrances.js SCREEN).
+    plantRoom: room.village ? 0 : SCREEN_POOL,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -3769,7 +3774,7 @@ async function buildRoom(room, at) {
   // the one each screen is walked over.
   await bootStep('entrances')
   const ground = room.village ? null : new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground, trees, deadwood: await banks.deadwood })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)

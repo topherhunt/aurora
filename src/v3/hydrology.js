@@ -1,17 +1,16 @@
 import { priorityFlood, flowDirections, flowAccumulation } from '../sim/hydrology.js'
-import { selectLakes } from '../sim/phase-a.js'
 import { NB_DI, NB_DJ } from '../sim/world-grid.js'
 import { clamp } from '../sim/mathx.js'
-import { erode } from './erosion.js'
+import { runChannels } from './channels.js'
 import { table, CLIFFS, CLIFFS_OFF } from './cliffs.js'
 
 // ---------------------------------------------------------------------------
-// Step D -- the island drains. Rain is thrown at the raw field and walked to the sea, cutting the valleys (erosion.js); then what still ponds is read, a few of the bowls are kept as lakes and the rest are silted up to their spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
+// Step D -- the island drains. The raw field is read by one priority flood and the valley network is cut into it as channels whose width and depth come from the catchment (channels.js); then what still ponds is read, the spared bowls become lakes and the rest is silted up to its spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
 //
-//   1. RAIN. EROSION.dropletsPerKm2 droplets over every square kilometre of land, each grooving its way down.
-//   2. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). It runs here, after the rain so the droplets cannot grind a scarp back into a slope and before everything else so the lakes, the silt, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
-//   3. LAKES. The bowls a priority flood still finds on land, each filled to LAKES.maxArea of surface or to its spill, whichever comes first, scored by the widest open water in them (Phase A's selectLakes); the widest LAKES.keep are lakes. A lake has no dam: its shore is wherever the ground meets its level.
-//   4. SILT. Every other ponded cell is raised to its water's level: a bowl the rain did not cut an outlet for is a bowl it filled, and a bench the tabling closed off is a flat that drains through its notch. What is left of a lake's bowl above its pool is silted the same way.
+//   1. CHANNELS. Every bowl, the flow network, and a meandering bed cut along each chain of it. The carve only ever lowers a texel; it spares the bowls that are to be lakes and drains the rest.
+//   2. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). It runs here, after the carve so the tabling cannot be cut back into a slope and before everything else so the lakes, the silt, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
+//   3. LAKES. The bowls the carve spared, grown from their deepest cell to the level the flood now stands them at. A lake has no dam: its shore is wherever the ground meets its level.
+//   4. SILT. Every other ponded cell is raised to its water's level: a bowl too small for the carve to reach is a bowl it filled, and a bench the tabling closed off is a flat that drains through its notch. What is left of a lake's bowl above its pool is silted the same way.
 //   5. ROUTE. Priority flood, D8 steepest descent, accumulation in cells.
 //   6. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a width from the sqrt of the catchment, source to mouth.
 //   7. THE DOC. Each lake is an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it, which is the bowl.
@@ -39,7 +38,7 @@ export const RIVERS = {
 /**
  * `runHydrology(height, n, cell, ground, seed, cliffs = true)` -> { height, lakes, rivers, stats }
  *
- * `height` in is the raw field, `ground` the class grid the erosion reads its yield from, `seed` what the rain falls by; `height` out is a new array, eroded and silted. `lakes` and `rivers` are doc records without ids. `cliffs` false runs step 2 with every class's share at zero, which moves nothing.
+ * `height` in is the raw field, `ground` the class grid the tabling reads its bands from, `seed` what the meander swirls by; `height` out is a new array, carved and silted. `lakes` and `rivers` are doc records without ids. `cliffs` false runs step 2 with every class's share at zero, which moves nothing.
  */
 export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   if (ground.length !== height.length) throw new Error(`runHydrology: ground has ${ground.length} texels, the field ${height.length}`)
@@ -47,14 +46,14 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   const size = n * n
   const half = ((n - 1) * cell) / 2
   const cellArea = cell * cell
+  const maxPoolCells = Math.max(1, Math.round(LAKES.maxArea / cellArea))
   const stats = {}
 
-  // --- 1. rain ----------------------------------------------------------------
+  // --- 1. channels --------------------------------------------------------------
   const elev = Float32Array.from(height)
   const sea = seaMask(height, n)
-  const t0 = Date.now()
-  stats.erosion = erode(elev, sea, ground, n, cell, seed)
-  stats.erosion.ms = Date.now() - t0
+  const carved = runChannels(elev, sea, n, cell, seed, LAKES)
+  stats.channels = carved.stats
 
   // --- 2. cliffs --------------------------------------------------------------
   const t1 = Date.now()
@@ -62,21 +61,23 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   stats.cliffs.ms = Date.now() - t1
 
   // --- 3. lakes ---------------------------------------------------------------
-  // The jitter over the sea leaves bowls in the sea floor too, and they are the widest. The flood is read as the ground itself over the sea, and a coastal pocket the rain opened to the sea is the sea's now, so only the land's bowls are candidates.
+  // The carve already chose which bowls keep their water; this reads what the tabling and the notched outlets left them standing at. A body is every cell the flood wets round the spared bowl's deepest cell, up to and including the new spill, at the spill's level, so the river out of it leaves from the water and not from a step above it. A bowl a neighbouring valley happened to open on its way past is no longer a lake and is counted as drained.
   let flood = priorityFlood(elev, n)
   for (let c = 0; c < size; c++) if (flood.filled[c] <= 0) sea[c] = 1
   const filledLand = Float32Array.from(flood.filled)
   for (let c = 0; c < size; c++) if (sea[c]) filledLand[c] = elev[c]
-  const picked = selectLakes(elev, filledLand, n, cell, LAKES.keep, LAKES.minDepth, LAKES.maxArea)
-  // A chosen bowl is scored on its deep water but kept whole: every cell the flood wets round that pool, up to and including the spill, at the spill's level, so the river out of it leaves from the water and not from a step above it. The rain lays sediment on a bowl's floor up to the water and no higher, so a lake has cells a hair under its level and at it; they are the lake too, or the silt would raise them to a dry flat in the water for the route to run rivers over.
   const wet = new Uint8Array(size)
   const kept = []
-  for (const b of picked.chosen) {
-    if (b.width < LAKES.minWidth || wet[b.cells[0]]) continue
-    const level = filledLand[b.cells[0]]
+  let drained = 0
+  for (const b of carved.spared) {
+    const level = filledLand[b.seed]
+    if (wet[b.seed] || sea[b.seed] || level - elev[b.seed] < LAKES.minDepth) {
+      drained++
+      continue
+    }
     const cells = []
-    const stack = [b.cells[0]]
-    wet[b.cells[0]] = 1
+    const stack = [b.seed]
+    wet[b.seed] = 1
     while (stack.length) {
       const c = stack.pop()
       cells.push(c)
@@ -92,7 +93,7 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
         stack.push(nn)
       }
     }
-    kept.push({ cells, level, pool: b.cells })
+    kept.push({ cells, level, pool: poolOf(cells, elev, level, maxPoolCells) })
   }
 
   // --- 4. silt ----------------------------------------------------------------
@@ -125,7 +126,7 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   // --- 6. the lakes as records ------------------------------------------------
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
   lakes.sort((a, b) => b.km2 - a.km2)
-  stats.lakes = { candidates: picked.total, count: lakes.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ rec, ...rest }) => rest) }
+  stats.lakes = { candidates: stats.channels.bowls, spared: carved.spared.length, held: stats.channels.held, drained, count: lakes.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ rec, ...rest }) => rest) }
 
   // --- 7. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
@@ -157,13 +158,26 @@ export function noHydrology(height) {
     lakes: [],
     rivers: [],
     stats: {
-      erosion: { droplets: 0, steps: 0, meanSteps: 0, toSea: 0, offEdge: 0, ponded: 0, spent: 0, deepestStep: 0, cutCells: 0, cutMean: 0, deepest: 0, fillCells: 0, fillMean: 0, highest: 0, ms: 0 },
+      channels: { bowls: 0, spared: 0, held: 0, chains: 0, samples: 0, cells: 0, km: 0, bendMean: 0, bendMax: 0, walled: 0, notch: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, ms: 0 },
       cliffs: { cells: 0, km2: 0, meanMove: 0, maxMove: 0, ms: 0, byBiome: [] },
       silt: { cells: 0, km2: 0, mean: 0, deepest: 0 },
-      lakes: { candidates: 0, count: 0, km2: 0, leakKm2: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
+      lakes: { candidates: 0, spared: 0, held: 0, drained: 0, count: 0, km2: 0, leakKm2: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
       rivers: { count: 0, cells: 0, km: 0, longestKm: 0, intoSea: 0, intoLake: 0, fromLake: 0 },
     },
   }
+}
+
+/** The open water of a body: the cells under the level the body's surface would reach if it held no more than `maxCells`. A whole bowl at its spill is a drowned valley with a dozen arms, and an ellipse fitted to the arms lies over the ground between them; the pool is the part of it that reads as a lake. */
+function poolOf(cells, elev, level, maxCells) {
+  const sorted = Array.from(cells).sort((a, b) => elev[a] - elev[b])
+  const at = Math.min(maxCells, sorted.length) - 1
+  const top = Math.min(level, elev[sorted[at]])
+  const pool = []
+  for (const c of sorted) {
+    if (elev[c] >= top) break
+    pool.push(c)
+  }
+  return pool.length ? pool : [sorted[0]]
 }
 
 /** The sea: every texel at or under the waterline reachable from the box edge through such texels. */
