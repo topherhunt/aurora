@@ -1366,8 +1366,9 @@ function blockHull(shape) {
  * shared meshes.
  */
 class RockBed {
-  constructor(field, water, layers, bank, cfg, { seed, ground, biome = null, bounds = null }) {
+  constructor(field, water, layers, bank, cfg, { seed, ground, biome = null, bounds = null, keepOut = null }) {
     this.field = field
+    this.keepOut = keepOut
     this.water = water
     this.layers = layers
     this.cfg = cfg
@@ -3093,9 +3094,10 @@ class RockBed {
       const scale = this._scaleAt(x, z, h, snowLine, env, this._sizeRoll(scaleRoll))
       if (this.shapeLod * scale < minSize) continue
       if (this.layers.paths !== undefined) {
-        const road = this.layers.paths.nearest(x, z, 'road', true)
+        const road = this.layers.paths.nearest(x, z, 'road')
         if (road !== null && road.dist < road.halfWidth + this._turnedBox(rollRoll, scale).span * 0.5 + ROAD_CLEARANCE) continue
       }
+      if (this.keepOut !== null && this.keepOut(x, z, this._turnedBox(rollRoll, scale).span * 0.5)) continue
       out.push(x, z, this.hull.radius * scale)
     }
     this.reliefAsks = asks
@@ -3319,11 +3321,15 @@ class RockBed {
 
       // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it.
       if (this.layers.paths !== undefined) {
-        const road = this.layers.paths.nearest(x, z, 'road', true)
+        const road = this.layers.paths.nearest(x, z, 'road')
         if (road !== null && road.dist < road.halfWidth + span * 0.5 + ROAD_CLEARANCE) {
           this.rejected.road++
           continue
         }
+      }
+      if (this.keepOut !== null && this.keepOut(x, z, span * 0.5)) {
+        this.rejected.road++
+        continue
       }
 
       // HOW DEEP THIS ONE IS BEDDED, as a fraction of what it stands. Held here,
@@ -4455,8 +4461,9 @@ export class Rocks {
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
    * @param opts.bank     buildRockBank()'s answer when the caller built it already (a room's shell shares it); built here otherwise.
+   * @param opts.keepOut  (x, z, r) => whether a rock of radius r there would stand in something (the towns' buildings), or null.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null, bounds = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null, bounds = null, keepOut = null } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4504,7 +4511,7 @@ export class Rocks {
     const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
     // The world's own biome field, for the beds that gate on cover (the hollow bed).
     const biome = beds.some((cfg) => cfg.deep > 0) ? new BiomeField({ seed }) : null
-    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds }))
+    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut }))
     this._hollowCol = new Float64Array(SPAN_STRIDE)
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed

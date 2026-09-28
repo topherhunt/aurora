@@ -30,7 +30,7 @@ function check(ok, what) {
 
 export async function run() {
   const SEED = 20260824
-  // The shipped grid is 4097^2 and a generate on it costs 91 s, so the gate runs it ONCE, as `a`, and every check that needs a second island runs at COARSE. That is sound for the two that do. Determinism is a property of the hashes, which are keyed on world coordinates and the seed and know nothing of the grid. And the cliff block's numbers -- a 12 m fall between neighbouring texels is a 56 degree face at 8 m and an 81 degree one at 2 m -- were fitted on the 8 m grid and mean nothing on another.
+  // The shipped grid is 4097^2 and a generate on it costs 37 s, so the gate runs it ONCE, as `a`, and every check that needs a second island runs at COARSE. That is sound for the two that do. Determinism is a property of the hashes, which are keyed on world coordinates and the seed and know nothing of the grid. And the cliff block's numbers -- a 12 m fall between neighbouring texels is a 56 degree face at 8 m and an 81 degree one at 2 m -- were fitted on the 8 m grid and mean nothing on another.
   const COARSE = 1025
   console.log('\n[v3] determinism')
   const a = generate({ seed: SEED })
@@ -200,15 +200,22 @@ export async function run() {
   check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
   // A RIVER GROWS DOWNSTREAM, which is `tip` and not the catchment exponent: a chain is walked up its largest donor and so keeps a median 0.84 of its mouth's catchment nearly to its head, and no width law honest enough to keep its exponent near a half can flare on that alone. So the taper carries it, and `flare` -- a mouth over that river's own mean width, averaged over the trunks that reach the sea -- is the number that says whether it did.
   check(hs.rivers.flare >= 1.5 && hs.rivers.flare <= 2 && hs.rivers.widthMean > 4 && hs.rivers.widthMax <= RIVERS.maxHalf * 2 + 1e-6, `water ${hs.rivers.widthMean.toFixed(1)} m wide mean (widest ${hs.rivers.widthMax.toFixed(0)} m), mouths x${hs.rivers.flare.toFixed(2)} their own river's mean`)
-  // Every river's ground never climbs from source to mouth on the field itself (a source in a lake sits under its own outlet, so that first step is free), its widths are inside the ladder, and its mouth is in the sea, in a lake or on another river.
+  // A RIVER FALLS FROM SOURCE TO MOUTH ON THE FIELD ITSELF, EXCEPT ACROSS WATER THAT IS STANDING IN IT. The route is D8 on the FLOODED surface, so over a hollow the drain left the surface is level while the ground under it rises, and the path climbs by at most what is standing there -- `BASINS.pond`, which is the drain's whole contract. Nothing carves that hollow out afterwards (v2 cuts the bed at render time from the polyline), so the bound is the assertion: a climb past it is a river running uphill on dry ground. A source in a lake sits under its own outlet, so that first step is free.
   const half = ((a.n - 1) * a.cell) / 2
   const groundAt = (x, z) => a.height[Math.round((z + half) / a.cell) * a.n + Math.round((x + half) / a.cell)]
   let climbs = 0
+  let worstClimb = 0
   let widths = 0
   let mouths = 0
   const lakes = a.doc.lakes.filter((l) => l.y > 0)
   for (const r of a.doc.rivers) {
-    for (let k = 2; k < r.pts.length; k++) if (groundAt(r.pts[k][0], r.pts[k][1]) > groundAt(r.pts[k - 1][0], r.pts[k - 1][1]) + 0.01) climbs++
+    for (let k = 2; k < r.pts.length; k++) {
+      const rise = groundAt(r.pts[k][0], r.pts[k][1]) - groundAt(r.pts[k - 1][0], r.pts[k - 1][1])
+      if (rise > 0.01) {
+        climbs++
+        if (rise > worstClimb) worstClimb = rise
+      }
+    }
     for (const p of r.pts) if (!(p[2] >= RIVERS.minHalf && p[2] <= RIVERS.maxHalf)) widths++
     const [mx, mz] = r.pts[r.pts.length - 1]
     const inSea = groundAt(mx, mz) <= 0
@@ -220,7 +227,7 @@ export async function run() {
     const onRiver = a.doc.rivers.some((o) => o !== r && o.pts.some(([x, z]) => Math.hypot(x - mx, z - mz) < a.cell))
     if (!(inSea || inLake || onRiver)) mouths++
   }
-  check(climbs === 0, `no river climbs between its nodes (${climbs} climbs)`)
+  check(worstClimb <= BASINS.pond + 1e-3, `no river climbs past the ${BASINS.pond} m the drain leaves standing: ${climbs} of its nodes climb at all, the worst by ${worstClimb.toFixed(2)} m`)
   check(widths === 0, `every river node carries a half-width in ${RIVERS.minHalf}..${RIVERS.maxHalf} m (${widths} outside)`)
   check(mouths === 0, `every mouth is in the sea, in a lake or on another river (${mouths} are not)`)
 

@@ -1,11 +1,12 @@
-// The towns' buildings (DESIGN.md §32), laid out by layers/towns.js. Near a town, its buildings are ONE merged mesh at each one's own tier (detail 2 within near, detail 1 within mid); past mid, every building in the world is a 14-triangle box-and-gable in ONE InstancedMesh, tinted per instance. So the town the player stands in costs one draw call, and every distant town together costs one more.
+// The towns' buildings (DESIGN.md §32), laid out by layers/towns.js. Near a town, its buildings are ONE merged mesh at each one's own tier (detail 2 within near, detail 1 within mid); from mid out to `far`, every building is a 14-triangle box-and-gable in ONE InstancedMesh, tinted per instance, and past `far` none is drawn. So the town the player stands in costs one draw call, and every distant town together costs one more.
 import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { buildBuilding2 } from '../../buildings/v2/building.js'
 import { roofHeightAt } from '../../buildings/plan.js'
+import { townsOccupyAt } from '../layers/towns.js'
 
-export const TOWN_BANDS = { near: 60, mid: 140, hysteresis: 4, prebuild: 300, evict: 420 }
+export const TOWN_BANDS = { near: 60, mid: 140, far: 1500, hysteresis: 4, prebuild: 300, evict: 420 }
 // Frame budget for building geometry: detail-2 builds run 3-4 ms on desktop and several times that on the Quest, so no more than one of those a frame.
 const BUILD_MS = 4
 
@@ -85,7 +86,7 @@ export class Towns {
   constructor(scene, { towns, textures, patch }) {
     this.scene = scene
     this.towns = towns
-    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t, tier: 0, want: 0, geo: [null, null, null], masses: [] })))
+    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t, tier: 0, want: 0, farShown: false, geo: [null, null, null], masses: [] })))
 
     this.material = createPropMaterial(textures, { vertexColors: true })
     this.material.side = THREE.FrontSide
@@ -108,17 +109,15 @@ export class Towns {
     let count = 0
     for (const b of this.buildings) count += b.plan.masses.length
     const geo = farBoxGeometry()
-    const wallTint = new Float32Array(count * 3)
-    geo.setAttribute('aWallTint', new THREE.InstancedBufferAttribute(wallTint, 3))
+    this.wallTint = new Float32Array(count * 3)
+    geo.setAttribute('aWallTint', new THREE.InstancedBufferAttribute(this.wallTint, 3))
     this.far = new THREE.InstancedMesh(geo, this.farMaterial, count)
     this.far.frustumCulled = false
     this.far.name = 'town-far'
     const m = new THREE.Matrix4()
     const tmp = new THREE.Matrix4()
-    const col = new THREE.Color()
-    let k = 0
     for (const b of this.buildings) {
-      const base = b.y - 0.3
+      const base = b.y + b.plan.plinthBottom
       for (const ms of b.plan.masses) {
         const top = b.y + (ms.roof.kind === 'lean' ? ms.roof.highY : ms.roof.ridgeY)
         const along = ms.ridgeAxis === 'z' ? ms.d : ms.w
@@ -127,16 +126,12 @@ export class Towns {
         m.multiply(tmp.makeTranslation(ms.cx, 0, ms.cz))
         if (ms.ridgeAxis === 'z') m.multiply(tmp.makeRotationY(Math.PI / 2))
         m.multiply(tmp.makeScale(along, top - base, across))
-        b.masses.push({ index: k, matrix: m.clone() })
-        this.far.setMatrixAt(k, m)
         const r = ROOF_TINT[b.plan.roofKind]
-        this.far.setColorAt(k, col.setRGB(r[0], r[1], r[2]))
-        wallTint.set(WALL_TINT[b.plan.style], k * 3)
-        k++
+        b.masses.push({ matrix: m.clone(), roof: new THREE.Color(r[0], r[1], r[2]), wall: WALL_TINT[b.plan.style] })
       }
     }
-    this.far.instanceMatrix.needsUpdate = true
-    this.far.instanceColor.needsUpdate = true
+    this.far.count = 0
+    this.far.setColorAt(0, new THREE.Color())
     scene.add(this.far)
 
     // One merged mesh per town, created when the town first has a building near enough.
@@ -152,8 +147,7 @@ export class Towns {
         }
       }
     }
-    this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
-    this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, nearTris: 0, builds: 0, buildMs: 0 }
+    this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, farShown: 0, nearTris: 0, builds: 0, buildMs: 0 }
   }
 
   // Tiers by distance from (x, z), geometry built under the frame budget, and each town whose tiers changed merged again.
@@ -161,6 +155,7 @@ export class Towns {
     const B = TOWN_BANDS
     const t0 = performance.now()
     const dirty = new Set()
+    let farDirty = false
     let heavy = false
     for (const b of this.buildings) {
       const d = Math.hypot(b.x - x, b.z - z)
@@ -182,11 +177,34 @@ export class Towns {
       if (tier !== b.tier) {
         b.tier = tier
         dirty.add(b.town)
-        for (const ms of b.masses) this.far.setMatrixAt(ms.index, tier > 0 ? this._zero : ms.matrix)
-        this.far.instanceMatrix.needsUpdate = true
+      }
+      const shown = tier === 0 && d < B.far + (b.farShown ? H : -H)
+      if (shown !== b.farShown) {
+        b.farShown = shown
+        farDirty = true
       }
     }
     for (const t of dirty) this._merge(t)
+    if (farDirty) this._packFar()
+  }
+
+  // The far boxes of every building showing one, packed to the front of the instance buffers.
+  _packFar() {
+    let k = 0
+    for (const b of this.buildings) {
+      if (!b.farShown) continue
+      for (const ms of b.masses) {
+        this.far.setMatrixAt(k, ms.matrix)
+        this.far.setColorAt(k, ms.roof)
+        this.wallTint.set(ms.wall, k * 3)
+        k++
+      }
+    }
+    this.far.count = k
+    this.far.instanceMatrix.needsUpdate = true
+    this.far.instanceColor.needsUpdate = true
+    this.far.geometry.getAttribute('aWallTint').needsUpdate = true
+    this.stats.farShown = k
   }
 
   _build(b, detail) {
@@ -315,20 +333,8 @@ export class Towns {
     this.farMaterial.dispose()
   }
 
-  // The trees' `deadwood` contract: within `pad` (plus a metre) of a building's box. The clearing and paths are roads, which the trees keep off already.
+  // The trees' `deadwood` contract (layers/towns.js townsOccupyAt).
   occupiesAt(x, z, pad) {
-    for (const t of this.towns) {
-      const dx = x - t.x
-      const dz = z - t.z
-      if (dx * dx + dz * dz > (t.radius + 20) ** 2) continue
-      for (const b of t.buildings) {
-        const bx = x - b.box.x
-        const bz = z - b.box.z
-        const lx = bx * b.box.c - bz * b.box.s
-        const lz = bx * b.box.s + bz * b.box.c
-        if (Math.abs(lx) < b.box.hx + pad + 1 && Math.abs(lz) < b.box.hz + pad + 1) return true
-      }
-    }
-    return false
+    return townsOccupyAt(this.towns, x, z, pad)
   }
 }

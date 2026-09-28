@@ -1,46 +1,69 @@
 // The overworld's human towns (DESIGN.md §32): where they stand and how each is laid out. Three-free, and a pure function of the heightmap, the authored layers and the seed, so every netplay client builds the same towns and the node gate can hold them to their rules.
 //
-// Everything on the ground is a generated road (doc.js isGenerated): the clearing is concentric rings, each building stands on an unpainted pad, each door has a path, and 1-2 main roads run out from the clearing. The road machinery then flattens, paints and keeps the scatters off all of it with no town-specific code.
+// Everything on the ground is a generated road (doc.js isGenerated): the clearing is concentric rings, each door has a winding path, and 1-2 main roads run out from the clearing. The road machinery then flattens, paints and keeps the scatters off all of it with no town-specific code. Buildings stand on the unflattened ground: the plan's floor goes at the highest corner and its plinth down past the lowest.
 import { planBuilding, KINDS } from '../../buildings/plan.js'
-import { mulberry32 } from '../../sim/mathx.js'
+import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
 
 export const TOWN = {
-  site: { grid: 40, slope: 0.2, flatR: 60, flatMax: 16, valleyR: 400, valleyMin: 15, disc: 90, spacing: 900, edge: 300, snowMargin: 60, keepClear: 150 },
+  // About one town per `tile`, the best-scoring site in each, then the best remaining below the snow up to `target`. A site above the snow is kept with chance `snowKeep`. Score: water within `water` metres (times `waterWeight`: flat sites by water are rare on this map), a cliff (ground ramping through the `cliff.slope` range) within `cliff.r`, a sunk valley, less unevenness.
+  site: { grid: 40, slope: 0.2, flatR: 50, flatMax: 12, valleyR: 400, disc: 45, spacing: 512, tile: 1000, target: 64, snowKeep: 0.35, edge: 300, keepClear: 150, water: [30, 60, 100, 150, 220], waterWeight: 1.5, cliff: { r: [60, 120, 180], slope: [1.2, 2.4] } },
   // The import mirror-extends the source past |z| = 3492 (config.js), so towns keep to the real map.
   realZ: 3492,
   count: [8, 25],
   clearing: { r: 5, rings: [1.5, 4], width: 3 },
-  road: { width: 2, step: 12, reach: 170, wobble: 1.5, grade: 0.22, past: 12, apart: 60 },
+  // `waves`: the meander's sines as [shortest, longest wavelength, amplitude per wavelength squared, amplitude cap]; the square keeps every bend's radius over about 1 / (4 pi^2 k).
+  road: { width: 2, step: 6, reach: 170, grade: 0.22, past: 12, apart: 60, waves: [[40, 80, 0.0008, 5], [90, 180, 0.0008, 8]] },
   // A building's rank is its radius plus `cost` per metre of door path, so a door near an existing path beats one nearer the centre with a long walk to it.
-  path: { width: 0.8, max: 24, step: 8, cost: 1.5 },
+  path: { width: 0.8, max: 24, step: 2, cost: 1.5, waves: [[8, 16, 0.002, 0.5], [18, 36, 0.002, 1.8]] },
   // Metres between building footprints: base plus per-metre growth past the clearing edge, so the centre packs and the outskirts spread.
   gap: [1.2, 0.08],
-  footRange: 3,
+  // Metres of fall across a footprint: the plinth takes up to this plus the ground's detail.
+  footRange: 2,
+  // The most treads a door's steps may take down to the ground, each TREAD deep and RISER high (parts.js steps); the plan's box reserves room for them.
+  stepsMax: 4,
   tries: 90,
+}
+
+// A lateral offset along a way, s metres from its start: a sine per wave, wavelength and phase rolled.
+function meander(rand, waves) {
+  const parts = waves.map(([l0, l1, k, cap]) => {
+    const l = l0 + rand() * (l1 - l0)
+    return { w: (2 * Math.PI) / l, ph: rand() * 2 * Math.PI, a: Math.min(cap, k * l * l) * (0.6 + rand() * 0.4) }
+  })
+  return (s) => parts.reduce((o, p) => o + p.a * Math.sin(p.w * s + p.ph), 0)
 }
 
 const WALLS_BY_PRESTIGE = ['log', 'stave', 'halfTimber', 'stoneBase', 'masonry']
 const ROOFS_BY_PRESTIGE = ['thatch', 'shake', 'pantile', 'slate']
-// Buildings' pads are road rings, and the road swell (paths.js SWELL) can narrow a pad to 0.8 of its width.
+// The road swell (paths.js SWELL) can narrow a way to 0.8 of its width.
 const SWELL_MIN = 0.8
+// paths.js DEFAULT_ROAD_FEATHER, which the clearing's rings take.
+const RING_FEATHER = 8
+const TREAD = 0.3
+const RISER = 0.19
 
-// Siting candidates, best first: dry, below the snow, on ground flat across flatR and sunk below the valleyR ring around it.
+// Siting candidates, best first: dry, on ground flat across flatR, clear of rivers and roads across disc, scored as TOWN.site says. `snow` marks one above the snow line.
 function candidates(ground, layers, keepClear) {
   const S = TOWN.site
-  const snow = layers.snow.base - S.snowMargin
+  const snowBase = layers.snow.base
+  const wetAt = (x, z, h) => {
+    const level = layers.waterLevelAt(x, z)
+    return level !== null && h < level
+  }
   const dry = (x, z, h) => {
     const level = layers.waterLevelAt(x, z)
     return level === null || h > level + 3
   }
+  const slopeAt = (x, z) => Math.hypot(ground(x + 4, z) - ground(x - 4, z), ground(x, z + 4) - ground(x, z - 4)) / 8
   const out = []
   const zMax = TOWN.realZ - S.edge
   const xMax = WORLD_HALF - S.edge
   for (let z = -zMax; z <= zMax; z += S.grid) {
     for (let x = -xMax; x <= xMax; x += S.grid) {
       const h0 = ground(x, z)
-      if (h0 > snow || !dry(x, z, h0)) continue
+      if (!dry(x, z, h0)) continue
       if (Math.hypot(ground(x + 8, z) - ground(x - 8, z), ground(x, z + 8) - ground(x, z - 8)) / 16 > S.slope) continue
       if (keepClear.some((k) => Math.hypot(x - k.x, z - k.z) < k.r + S.keepClear)) continue
       let lo = h0
@@ -62,13 +85,6 @@ function candidates(ground, layers, keepClear) {
       }
       const range = hi - lo
       if (range > S.flatMax) continue
-      let ring = 0
-      for (let k = 0; k < 16; k++) {
-        const a = (k / 16) * Math.PI * 2
-        ring += ground(x + Math.cos(a) * S.valleyR, z + Math.sin(a) * S.valleyR)
-      }
-      const valley = ring / 16 - h0
-      if (valley < S.valleyMin) continue
       let clear = true
       for (let k = 0; k < 12 && clear; k++) {
         const a = (k / 12) * Math.PI * 2
@@ -85,7 +101,27 @@ function candidates(ground, layers, keepClear) {
         }
       }
       if (!clear) continue
-      out.push({ x, z, score: Math.min(valley, 60) / 40 - range / 4 })
+      let ring = 0
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2
+        ring += ground(x + Math.cos(a) * S.valleyR, z + Math.sin(a) * S.valleyR)
+      }
+      const valley = Math.min(Math.max(ring / 16 - h0, 0), 60) / 60
+      let water = 0
+      for (const r of S.water) {
+        for (let k = 0; k < 12 && water === 0; k++) {
+          const px = x + Math.cos((k / 12) * Math.PI * 2) * r
+          const pz = z + Math.sin((k / 12) * Math.PI * 2) * r
+          if (wetAt(px, pz, ground(px, pz))) water = 1 - (0.5 * r) / S.water.at(-1)
+        }
+        if (water > 0) break
+      }
+      let steep = 0
+      for (const r of S.cliff.r) {
+        for (let k = 0; k < 12; k++) steep = Math.max(steep, slopeAt(x + Math.cos((k / 12) * Math.PI * 2) * r, z + Math.sin((k / 12) * Math.PI * 2) * r))
+      }
+      const cliff = Math.min(1, Math.max(0, (steep - S.cliff.slope[0]) / (S.cliff.slope[1] - S.cliff.slope[0])))
+      out.push({ x, z, snow: h0 > snowBase, score: water * S.waterWeight + cliff + valley * 0.5 - range / 8 })
     }
   }
   return out.sort((a, b) => b.score - a.score || a.x - b.x || a.z - b.z)
@@ -171,7 +207,7 @@ function byPrestige(allowed, order, p) {
   return opts[Math.min(opts.length - 1, Math.max(0, Math.floor(p * opts.length)))]
 }
 
-// The plan's local box: every mass plus the porch and steps out front, grown by the roof overhang. [minX, maxX, minZ, maxZ].
+// The plan's local box: every mass plus the porch and up to stepsMax treads out front, grown by the roof overhang. [minX, maxX, minZ, maxZ].
 function planBox(plan) {
   let x0 = Infinity
   let x1 = -Infinity
@@ -186,17 +222,19 @@ function planBox(plan) {
   const o = plan.overhang
   let front = z1 + o
   if (plan.porch) front = Math.max(front, plan.porch.z + plan.porch.depth)
-  if (plan.steps) front = Math.max(front, plan.steps.z + 0.4)
+  if (plan.steps) front = Math.max(front, plan.steps.z + TREAD * TOWN.stepsMax + 0.1)
   return [x0 - o, x1 + o, z0 - o, front]
 }
 
 function layoutTown(site, index, all, ctx) {
-  const { ground, layers, seed } = ctx
+  // Heights come from the live surface, so a building's plinth and the ways meet the ground as drawn.
+  const { surface: ground, layers, seed } = ctx
   const rand = mulberry32(hash32(seed, 7717, Math.round(site.x), Math.round(site.z)))
   const id = `town${index}`
   const cx = site.x
   const cz = site.z
   const C = TOWN.clearing
+  const ringEdge = C.rings.at(-1) + C.width / 2 / SWELL_MIN
   let yC = 0
   for (let k = 0; k < 16; k++) {
     const a = (k / 16) * Math.PI * 2
@@ -224,16 +262,17 @@ function layoutTown(site, index, all, ctx) {
   while (bearings.length < nRoads) bearings.push(bearings.length ? bearings[0] + Math.PI * (0.6 + rand() * 0.8) : rand() * Math.PI * 2)
   // A road runs out until the ground turns wet, steep or meets an authored road; the bearing swings up to 60 degrees either way to find one that gets clear of the town.
   const growRoad = (bearing) => {
+    const wave = meander(rand, R.waves)
     const pts = [[cx + Math.cos(bearing) * C.r * 0.6, yC, cz + Math.sin(bearing) * C.r * 0.6], [cx + Math.cos(bearing) * (C.r + 2), yC, cz + Math.sin(bearing) * (C.r + 2)]]
     let heading = bearing
     let px = pts[1][0]
     let pz = pts[1][2]
     let py = yC
     for (let d = C.r + 2 + R.step; d <= R.reach; d += R.step) {
-      heading += (rand() - 0.5) * 0.25
+      heading += (rand() - 0.5) * 0.18
       const nx = px + Math.cos(heading) * R.step
       const nz = pz + Math.sin(heading) * R.step
-      const side = (rand() - 0.5) * 2 * R.wobble
+      const side = wave(d) * Math.min(1, (d - C.r) / 30)
       const wx = nx - Math.sin(heading) * side
       const wz = nz + Math.cos(heading) * side
       const wy = ground(wx, wz)
@@ -270,13 +309,29 @@ function layoutTown(site, index, all, ctx) {
       }
     }
     for (const p of paths) {
-      const a = p.pts[0]
-      const b = p.pts[p.pts.length - 1]
-      const [nx, nz, t, d] = nearestOnSegment(a[0], a[2], b[0], b[2], x, z)
-      if (t < 0.3 || d >= best.dist) continue
-      best = { x: nx, z: nz, y: a[1] + (b[1] - a[1]) * t, dist: d }
+      for (let i = Math.ceil(p.pts.length * 0.3); i < p.pts.length; i++) {
+        const a = p.pts[i - 1]
+        const b = p.pts[i]
+        const [nx, nz, t, d] = nearestOnSegment(a[0], a[2], b[0], b[2], x, z)
+        if (d < best.dist) best = { x: nx, z: nz, y: a[1] + (b[1] - a[1]) * t, dist: d }
+      }
     }
     return best
+  }
+  // A door path from (ax, az) to (bx, bz), every path.step metres: the chord bent by a meander that fades out at both ends, so it leaves the door and meets the network square on.
+  const windingPath = (ax, az, bx, bz) => {
+    const len = Math.hypot(bx - ax, bz - az)
+    const wave = meander(rand, TOWN.path.waves)
+    const n = Math.max(1, Math.ceil(len / TOWN.path.step))
+    const ux = -(bz - az) / (len || 1)
+    const uz = (bx - ax) / (len || 1)
+    const out = []
+    for (let i = 0; i <= n; i++) {
+      const t = i / n
+      const off = wave(t * len) * Math.sin(Math.PI * t) ** 2 * Math.min(1, len / 16)
+      out.push([ax + (bx - ax) * t + ux * off, az + (bz - az) * t + uz * off])
+    }
+    return out
   }
   // Clearance from every road and path to a box: sampled every 2 m along each.
   const clearOfWays = (box) => {
@@ -286,9 +341,9 @@ function layoutTown(site, index, all, ctx) {
       }
     }
     for (const p of paths) {
-      const a = p.pts[0]
-      const b = p.pts[p.pts.length - 1]
-      if (segmentHitsBox(box, a[0], a[2], b[0], b[2], TOWN.path.width / 2 / SWELL_MIN + 0.6)) return false
+      for (let i = 1; i < p.pts.length; i++) {
+        if (segmentHitsBox(box, p.pts[i - 1][0], p.pts[i - 1][2], p.pts[i][0], p.pts[i][2], TOWN.path.width / 2 / SWELL_MIN + 0.6)) return false
+      }
     }
     return true
   }
@@ -332,39 +387,57 @@ function layoutTown(site, index, all, ctx) {
       if (end.dist > TOWN.path.max) continue
       rank += TOWN.path.cost * end.dist
       if (best !== null && rank >= best.rank) continue
-      if (buildings.some((o) => segmentHitsBox(o.box, dx, dz, end.x, end.z, 0.3))) continue
-      if (segmentHitsBox({ ...box, hz: hz - 0.35 }, dx, dz, end.x, end.z, 0)) continue
+      const way = windingPath(dx, dz, end.x, end.z)
+      const inner = { ...box, hz: hz - 0.35 }
+      let blocked = false
+      for (let i = 1; i < way.length && !blocked; i++) {
+        const [ax, az] = way[i - 1]
+        const [qx, qz] = way[i]
+        blocked = segmentHitsBox(inner, ax, az, qx, qz, 0) || buildings.some((o) => segmentHitsBox(o.box, ax, az, qx, qz, 0.3))
+      }
+      if (blocked) continue
+      // The ground under the box, a 3 x 3 grid of it.
       const samples = []
       let isWet = false
-      for (const [lx, lz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1], [ox, oz], [plan.door.x, doorZ]]) {
-        const [wx, wz] = toWorld(x, z, yaw, lx, lz)
-        const h = ground(wx, wz)
-        if (wet(wx, wz, h)) isWet = true
-        samples.push(h)
+      for (const lx of [x0, ox, x1]) {
+        for (const lz of [z0, oz, z1]) {
+          const [wx, wz] = toWorld(x, z, yaw, lx, lz)
+          const h = ground(wx, wz)
+          if (wet(wx, wz, h)) isWet = true
+          samples.push(h)
+        }
       }
-      if (isWet || Math.max(...samples) - Math.min(...samples) > TOWN.footRange) continue
-      best = { rank, x, z, yaw, box, door: [dx, dz], end, samples, r }
+      const top = Math.max(...samples)
+      const doorH = ground(dx, dz)
+      if (isWet || wet(dx, dz, doorH) || top - Math.min(...samples) > TOWN.footRange) continue
+      if (top + plan.floorY - doorH > RISER * (TOWN.stepsMax - 1)) continue
+      best = { rank, x, z, yaw, box, door: [dx, dz], end, doorH, way, r }
     }
     if (best === null) continue
 
-    const padY = best.samples.reduce((s, h) => s + h, 0) / best.samples.length
-    plan.plinthBottom = Math.min(plan.plinthBottom, Math.min(...best.samples) - padY - 0.3)
+    // The plan was drawn on flat ground at y = 0, so the building's y is the highest ground under it; its plinth reaches past the lowest and its steps down to the door's ground. The ground's detail moves tens of centimetres between the 3 x 3 the candidates read, so the chosen seat is read every metre.
+    let hi = -Infinity
+    let lo = Infinity
+    for (let lx = x0; lx <= x1 + 0.01; lx += (x1 - x0) / Math.ceil(x1 - x0)) {
+      for (let lz = z0; lz <= z1 + 0.01; lz += (z1 - z0) / Math.ceil(z1 - z0)) {
+        const [wx, wz] = toWorld(best.x, best.z, best.yaw, lx, lz)
+        const h = ground(wx, wz)
+        // The clearing's rings will blend the ground toward yC over their feather (paths.js smoothRoads), at the widest swell.
+        const s = smoothstep(0, 1, (Math.hypot(wx - cx, wz - cz) - ringEdge) / RING_FEATHER)
+        const g = yC + (h - yC) * s
+        hi = Math.max(hi, h, g)
+        lo = Math.min(lo, h, g)
+      }
+    }
+    plan.plinthBottom = Math.min(plan.plinthBottom, lo - hi - 0.6)
+    if (plan.steps) plan.steps.groundY = best.doorH - hi
     const bid = `${id}-b${buildings.length}`
-    buildings.push({ id: bid, kind, plan, x: best.x, z: best.z, y: padY, yaw: best.yaw, box: best.box, door: best.door, prestige: k })
+    buildings.push({ id: bid, kind, plan, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, door: best.door, prestige: k })
     rMax = Math.max(rMax, best.r)
 
-    const [dx, dz] = best.door
-    const len = Math.hypot(best.end.x - dx, best.end.z - dz)
-    const steps = Math.max(1, Math.ceil(len / TOWN.path.step))
-    const gEnd = ground(best.end.x, best.end.z)
-    const pts = []
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps
-      const x = dx + (best.end.x - dx) * t
-      const z = dz + (best.end.z - dz) * t
-      const pin = (1 - t) * (padY - best.samples[5]) + t * (best.end.y - gEnd)
-      pts.push([x, i === 0 ? padY : i === steps ? best.end.y : ground(x, z) + pin, z])
-    }
+    const n = best.way.length - 1
+    const pin = best.end.y - ground(best.end.x, best.end.z)
+    const pts = best.way.map(([x, z], i) => [x, i === 0 ? best.doorH : i === n ? best.end.y : ground(x, z) + (i / n) * pin, z])
     paths.push({ id: `${id}-path${paths.length}`, pts })
   }
 
@@ -388,19 +461,25 @@ function layoutTown(site, index, all, ctx) {
   })
   roads.forEach((pts, j) => records.push({ id: `${id}-road${j}`, pts: pts.map(([x, y, z]) => [x, y, z, R.width]) }))
   paths.forEach((p) => records.push({ id: p.id, feather: 3, pts: p.pts.map(([x, y, z]) => [x, y, z, TOWN.path.width]) }))
-  for (const b of buildings) {
-    // A capsule round the box's long axis, wide enough at the narrowest swell to cover the corners.
-    const long = b.box.hx >= b.box.hz ? 'x' : 'z'
-    const L = long === 'x' ? b.box.hx : b.box.hz
-    const S = long === 'x' ? b.box.hz : b.box.hx
-    const half = (S + 0.5) / SWELL_MIN
-    const a = Math.max(0.1, L - Math.sqrt((half * SWELL_MIN) ** 2 - S * S) + 0.3)
-    const ux = long === 'x' ? b.box.c : b.box.s
-    const uz = long === 'x' ? -b.box.s : b.box.c
-    records.push({ id: `${b.id}-pad`, feather: 4, dirt: false, pts: [[b.box.x - ux * a, b.y, b.box.z - uz * a, 2 * half], [b.box.x + ux * a, b.y, b.box.z + uz * a, 2 * half]] })
-  }
 
   return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, roads, paths, records }
+}
+
+// Whether (x, z) is within `pad` (plus a metre) of a building's box: what keeps the trees and rocks out of the buildings. The clearing and paths are roads, which they keep off already.
+export function townsOccupyAt(towns, x, z, pad) {
+  for (const t of towns) {
+    const dx = x - t.x
+    const dz = z - t.z
+    if (dx * dx + dz * dz > (t.radius + 20) ** 2) continue
+    for (const b of t.buildings) {
+      const bx = x - b.box.x
+      const bz = z - b.box.z
+      const lx = bx * b.box.c - bz * b.box.s
+      const lz = bx * b.box.s + bz * b.box.c
+      if (Math.abs(lx) < b.box.hx + pad + 1 && Math.abs(lz) < b.box.hz + pad + 1) return true
+    }
+  }
+  return false
 }
 
 function angleApart(a, b) {
@@ -408,16 +487,29 @@ function angleApart(a, b) {
   return Math.min(d, 2 * Math.PI - d)
 }
 
-// `ground` is the raw heightmap (Heightmap.sample), not the live field: it is what every client and the gate agree on. `keepClear` is [{x, z, r}] the towns stay TOWN.site.keepClear metres further from (the spawn). Returns { towns, records }, the records ready for Layers.addGenerated.
-export function planTowns({ ground, layers, seed, keepClear = [] }) {
+// `ground` is the raw heightmap (Heightmap.sample), which the siting reads; `surface` is the live field before the towns' own roads (V2Height.heightAt with the authored layers), which the layout seats buildings and ways on. Both are the same on every client. `keepClear` is [{x, z, r}] the towns stay TOWN.site.keepClear metres further from (the spawn). Returns { towns, records }, the records ready for Layers.addGenerated.
+export function planTowns({ ground, surface, layers, seed, keepClear = [] }) {
   const S = TOWN.site
+  const cands = candidates(ground, layers, keepClear)
   const sites = []
-  for (const c of candidates(ground, layers, keepClear)) {
-    if (sites.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= S.spacing)) sites.push(c)
+  const spaced = (c) => sites.every((s) => Math.hypot(s.x - c.x, s.z - c.z) >= S.spacing)
+  // Each tile's best, in score order (the candidates come sorted, so a tile's first is its best).
+  const tiles = new Map()
+  for (const c of cands) {
+    const key = `${Math.floor(c.x / S.tile)},${Math.floor(c.z / S.tile)}`
+    if (!tiles.has(key)) tiles.set(key, c)
+  }
+  for (const c of tiles.values()) {
+    if (c.snow && mulberry32(hash32(seed, 9431, c.x, c.z))() >= S.snowKeep) continue
+    if (spaced(c)) sites.push(c)
+  }
+  for (const c of cands) {
+    if (sites.length >= S.target) break
+    if (!c.snow && spaced(c)) sites.push(c)
   }
   const towns = []
   for (let i = 0; i < sites.length; i++) {
-    const t = layoutTown(sites[i], towns.length, sites, { ground, layers, seed })
+    const t = layoutTown(sites[i], towns.length, sites, { surface, layers, seed })
     if (t.buildings.length >= TOWN.count[0]) towns.push(t)
   }
   return { towns, records: towns.flatMap((t) => t.records) }

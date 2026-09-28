@@ -41,6 +41,20 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Human villages
   - [ ] Walls & guardposts ringing the town
   - [ ] Human NPC chatter audio samples.
+  - [ ] You sometimes find NPCs walking the roads between villages.
+  - [ ] NPC conversation system
+    - A simple menu of topics, each of which leads to procedurally-generated dialog trees.
+    - Simple topics first
+      - Gossip
+        - Tell me about yourself.
+        - Tell me about this town.
+        - Do you need anything?
+      - Where is...
+        - the village elder?
+        - the potionmaster?
+        - the nearest village? (only when talking to an NPC and you're not in a village)
+        - <village>
+      - Follow me!
 - [ ] Castles
 - [ ] terrain-v3
   - [ ] Simpler approach to hydrology:

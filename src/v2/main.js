@@ -5,7 +5,7 @@ import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
-import { planTowns } from './layers/towns.js'
+import { planTowns, townsOccupyAt } from './layers/towns.js'
 import { Towns } from './render/towns.js'
 import { Townsfolk } from './render/townsfolk.js'
 import { BiomeField } from './layers/biome.js'
@@ -3170,7 +3170,7 @@ async function enterHouse(e) {
   doorBusy = false
 }
 
-/** A saved game's house open again, and her beside the bed she slept in, facing it. */
+/** A saved game's house open again, and her beside the bed she slept in, facing away from it as if just up. */
 async function intoSavedHouse(house) {
   await villagers.ready
   await openHouse(roomProps.entries()[house.k])
@@ -3179,7 +3179,7 @@ async function intoSavedHouse(house) {
   if (!bed) throw new Error(`v2: the save's house ${house.k} has no bed ${house.bed}`)
   const at = besideBed(bed, walk, o)
   player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.top - 0.2)
-  faceAlong(at.fx, at.fz)
+  faceAlong(-at.fx, -at.fz)
 }
 
 /** House `e`'s room rolled off the village's seed, set down past the village's disc on its own floor above whatever ground is there, its residents in and her walk swapped for its own; where she stands in it is the caller's. */
@@ -3362,10 +3362,10 @@ async function buildRoom(room, at) {
   }
   layers = Layers.deserialize(doc)
   height.setLayers(layers)
-  // The towns' clearings, pads, paths and roads go into the layers before the terrain first reads them, so the ground is flat under every building from the first chunk.
+  // The towns' clearings, paths and roads go into the layers before the terrain first reads them, so the ground is shaped under them from the first chunk.
   if (room.id === 'overworld') {
     const t0 = performance.now()
-    townPlan = planTowns({ ground: (x, z) => heightmap.sample(x, z), layers, seed, keepClear: [{ ...room.spawn, r: 0 }] })
+    townPlan = planTowns({ ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, keepClear: [{ ...room.spawn, r: 0 }] })
     layers.addGenerated(townPlan.records)
     console.log(`[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ${townPlan.records.length} roads, in ${(performance.now() - t0).toFixed(0)} ms`)
   }
@@ -3450,7 +3450,7 @@ async function buildRoom(room, at) {
   // `batch.visible` and the beds are placed and stepped either way, so what the
   // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds })
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds, keepOut: townPlan ? (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) : null })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)

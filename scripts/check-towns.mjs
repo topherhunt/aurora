@@ -13,7 +13,7 @@ import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { serialize } from '../src/v2/layers/doc.js'
 import { TOWN, planTowns, boxesOverlap } from '../src/v2/layers/towns.js'
-import { Towns } from '../src/v2/render/towns.js'
+import { TOWN_BANDS, Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { Hearth } from '../src/v2/render/hearth.js'
@@ -38,9 +38,12 @@ const SPAWN = { x: -320, z: 1367 }
 const keepClear = [{ ...SPAWN, r: 0 }]
 
 const t0 = performance.now()
-const { towns, records } = planTowns({ ground, layers, seed: SEED, keepClear })
+const surface = (x, z) => field.heightAt(x, z)
+const { towns, records } = planTowns({ ground, surface, layers, seed: SEED, keepClear })
 const ms = performance.now() - t0
-check(towns.length >= 5, 'the map holds at least five towns', `${towns.length} in ${ms.toFixed(0)} ms`)
+check(towns.length >= 48, 'the map holds about a town per square kilometre', `${towns.length} in ${ms.toFixed(0)} ms`)
+const snowy = towns.filter((t) => t.y > layers.snow.base).length
+check(snowy < towns.length / 4, 'fewer towns stand above the snow than below', `${snowy} of ${towns.length}`)
 check(ms < 3000, 'planning costs under 3 s of boot', `${ms.toFixed(0)} ms`)
 
 // --- siting ---
@@ -51,6 +54,13 @@ const spawnDist = Math.min(...towns.map((t) => Math.hypot(t.x - SPAWN.x, t.z - S
 check(spawnDist >= TOWN.site.keepClear, 'no town within keepClear of the spawn', `${spawnDist.toFixed(0)} m`)
 const inReal = towns.every((t) => Math.abs(t.z) + t.radius < TOWN.realZ)
 check(inReal, 'every town lies inside the real map, off the mirror band')
+// Siting prefers water and cliffs (TOWN.site.water, TOWN.site.cliff). About 13% of flat sites have water within 220 m, so a fifth of towns by water is already a strong preference.
+const around = (t, radii, f) => radii.some((r) => Array.from({ length: 12 }, (_, k) => (k / 12) * Math.PI * 2).some((a) => f(t.x + Math.cos(a) * r, t.z + Math.sin(a) * r)))
+const byWater = towns.filter((t) => around(t, TOWN.site.water, (x, z) => { const l = layers.waterLevelAt(x, z); return l !== null && ground(x, z) < l })).length
+const slope = (x, z) => Math.hypot(ground(x + 4, z) - ground(x - 4, z), ground(x, z + 4) - ground(x, z - 4)) / 8
+const byCliff = towns.filter((t) => around(t, TOWN.site.cliff.r, (x, z) => slope(x, z) > TOWN.site.cliff.slope[0])).length
+const byEither = towns.filter((t) => around(t, TOWN.site.water, (x, z) => { const l = layers.waterLevelAt(x, z); return l !== null && ground(x, z) < l }) || around(t, TOWN.site.cliff.r, (x, z) => slope(x, z) > TOWN.site.cliff.slope[0])).length
+check(byWater >= towns.length * 0.2 && byEither > towns.length * 0.6, 'towns nestle by water or under a cliff', `${byWater} by water, ${byCliff} by a cliff, ${byEither} either, of ${towns.length}`)
 let worstRange = 0
 for (const t of towns) {
   let lo = Infinity
@@ -133,7 +143,12 @@ for (const t of towns) {
 check(roadBad.length === 0, 'every town has 1..2 roads from the clearing to the outskirts', roadBad.slice(0, 3).join(', '))
 
 // --- determinism and persistence ---
-const again = planTowns({ ground, layers: (() => { const l = loadLayers(); new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED }).setLayers(l); return l })(), seed: SEED, keepClear })
+const again = (() => {
+  const l = loadLayers()
+  const f = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
+  f.setLayers(l)
+  return planTowns({ ground, surface: (x, z) => f.heightAt(x, z), layers: l, seed: SEED, keepClear })
+})()
 check(JSON.stringify(again.records) === JSON.stringify(records), 'a second plan is identical to the bit')
 
 check(records.every((r) => /^town\d/.test(r.id)), 'every generated record carries a town id')
@@ -146,24 +161,27 @@ let threw = false
 try { layers.addGenerated([{ id: 'd99', pts: [[0, 0, 0, 1]] }]) } catch { threw = true }
 check(threw, 'addGenerated refuses a non-generated id')
 
-// Every building's box is flattened: the live field is level with the pad at its centre.
-let padWorst = 0
-for (const t of towns) for (const b of t.buildings) padWorst = Math.max(padWorst, Math.abs(layers.paths.nearest(b.box.x, b.box.z, 'road', true).y - b.y))
-check(padWorst < 0.05, 'the road under each building centre is at its pad height', `worst ${padWorst.toFixed(3)} m`)
-// The ground cover sees no pad: a point just outside a house's wall is open ground, not road.
-let padSeen = 0
+// No pad: each building stands on the live ground, its floor above every point under its walls and its plinth below.
+let buried = 0
+let floating = 0
 for (const t of towns) for (const b of t.buildings) {
-  const d = b.box.hx + 0.6, x = b.box.x - b.box.c * d, z = b.box.z + b.box.s * d
-  const r = layers.paths.nearest(x, z, 'road')
-  if (r !== null && r.id === `${b.id}-pad`) padSeen++
+  const c = Math.cos(b.yaw)
+  const sn = Math.sin(b.yaw)
+  for (const m of b.plan.masses) for (let u = -0.5; u <= 0.5; u += 0.25) for (let v = -0.5; v <= 0.5; v += 0.25) {
+    const lx = m.cx + u * m.w
+    const lz = m.cz + v * m.d
+    const h = field.heightAt(b.x + lx * c + lz * sn, b.z - lx * sn + lz * c)
+    if (h > b.y + b.plan.floorY + 0.05) buried++
+    if (h < b.y + b.plan.plinthBottom) floating++
+  }
 }
-check(padSeen === 0, 'the ground cover grows over a building\'s pad', `${padSeen} pads seen`)
+check(buried === 0, 'no building\'s floor sinks under the ground', `${buried} points`)
+check(floating === 0, 'no building\'s plinth floats over the ground', `${floating} points`)
 
-// A pad flattens but is not painted: just behind each building, out of reach of every painted road, is flat and not dirt.
-const painted = records.filter((r) => r.dirt !== false)
+// No dirt behind a building away from the paths.
 const paintedReach = (x, z) => {
   let d = Infinity
-  for (const r of painted) for (let i = 1; i < r.pts.length; i++) {
+  for (const r of records) for (let i = 1; i < r.pts.length; i++) {
     const [ax, , az, aw] = r.pts[i - 1]
     const [bx, , bz] = r.pts[i]
     const ex = bx - ax
@@ -175,23 +193,34 @@ const paintedReach = (x, z) => {
 }
 let backs = 0
 let dirtyBacks = 0
-let unflatBacks = 0
 for (const t of towns) for (const b of t.buildings) {
   const x = b.box.x - b.box.s * (b.box.hz + 0.4)
   const z = b.box.z - b.box.c * (b.box.hz + 0.4)
   if (paintedReach(x, z) < 2) continue
   backs++
   if (layers.dirtAt(x, z) > 0) dirtyBacks++
-  if (layers.flattenAt(x, z) < 1) unflatBacks++
 }
 check(backs > 50 && dirtyBacks === 0, 'no dirt behind a building away from the paths', `${dirtyBacks} of ${backs} painted`)
-check(unflatBacks === 0, 'the pad still flattens behind each building', `${unflatBacks} of ${backs} not flat`)
+
+// Door paths wind: the longer ones stray from their chord.
+let longPaths = 0
+let straight = 0
+for (const t of towns) for (const { pts } of t.paths) {
+  const [ax, , az] = pts[0]
+  const [bx, , bz] = pts.at(-1)
+  const len = Math.hypot(bx - ax, bz - az)
+  if (len < 10) continue
+  longPaths++
+  const stray = Math.max(...pts.map(([x, , z]) => Math.abs((x - ax) * (bz - az) - (z - az) * (bx - ax)) / len))
+  if (stray < 0.15) straight++
+}
+check(longPaths > 50 && straight < longPaths * 0.1, 'door paths over 10 m wind off their chord', `${straight} of ${longPaths} straight`)
 
 // --- rendering ---
 const scene = new THREE.Scene()
 const layer = new Towns(scene, { towns, textures: buildTextureArray(), patch: (m) => m })
 const massCount = towns.reduce((s, t) => s + t.buildings.reduce((u, b) => u + b.plan.masses.length, 0), 0)
-check(layer.far.count === massCount, 'one far instance per building mass', `${layer.far.count}`)
+check(layer.stats.instances === massCount, 'a far instance for every building mass', `${layer.stats.instances}`)
 const farTris = layer.far.geometry.index ? layer.far.geometry.index.count / 3 : layer.far.geometry.attributes.position.count / 3
 check(farTris === 14, 'the far box is 14 triangles', `${farTris}`)
 
@@ -200,14 +229,14 @@ layer.update(t.x, t.z)
 for (let i = 0; i < 400; i++) layer.update(t.x, t.z)
 const near = scene.children.filter((o) => o.isMesh && !o.isInstancedMesh)
 check(near.length === 1, 'standing in a town draws it as one merged mesh', `${near.length} meshes`)
-const hidden = new THREE.Matrix4()
-let shown = 0
-for (const b of layer.buildings.filter((b) => b.town === t)) for (const ms of b.masses) { layer.far.getMatrixAt(ms.index, hidden); if (hidden.determinant() !== 0) shown++ }
-check(shown === 0, 'a town drawn near hides its far boxes', `${shown} still shown`)
+check(layer.buildings.every((b) => b.town !== t || !b.farShown), 'a town drawn near hides its far boxes')
+const farMasses = layer.buildings.filter((b) => b.farShown).reduce((n, b) => n + b.masses.length, 0)
+const farOut = layer.buildings.filter((b) => b.farShown && Math.hypot(b.x - t.x, b.z - t.z) > TOWN_BANDS.far + TOWN_BANDS.hysteresis).length
+check(layer.far.count === farMasses && farOut === 0 && farMasses < massCount / 2, `the far boxes are packed and stop at ${TOWN_BANDS.far} m`, `${layer.far.count} of ${massCount} drawn`)
 
 const b0 = t.buildings[0]
 const top = layer.blockTopAt(b0.x, b0.z)
-check(top > b0.y + 2, 'a building blocks her walk up to its roof', `top ${top.toFixed(1)} over pad ${b0.y.toFixed(1)}`)
+check(top > b0.y + 2, 'a building blocks her walk up to its roof', `top ${top.toFixed(1)} over its base ${b0.y.toFixed(1)}`)
 check(layer.blockTopAt(t.x, t.z) === -Infinity, 'the clearing does not block')
 check(layer.occupiesAt(b0.x, b0.z, 0), 'trees keep off the buildings')
 const behind = t.buildings.map((b) => [b.box.x - b.box.s * (b.box.hz + 2), b.box.z - b.box.c * (b.box.hz + 2)])

@@ -184,7 +184,7 @@ function normalise(rec, where) {
     kind: rec.kind,
     depth,
     feather,
-    // False for a road that only shapes the ground (a building's pad): dirtAt and nearest look past it unless asked for unpainted roads.
+    // False for a road that flattens and clears the ground but is not painted (a building's pad): dirtAt looks past it to the nearest painted road.
     dirt: rec.dirt !== false,
     pts,
     spline: null,
@@ -807,9 +807,8 @@ export class PathSet {
     return true
   }
 
-  // The ground cover (grass, ferns, litter, mushrooms) asks without `unpainted`, so it grows over a pad as over open ground; rocks pass it and keep off pads as off roads.
-  nearest(x, z, kind = null, unpainted = false) {
-    if (!this._nearestInto(x, z, kind, HIT_A, null, !unpainted)) return null
+  nearest(x, z, kind = null) {
+    if (!this._nearestInto(x, z, kind, HIT_A)) return null
     return { dist: HIT_A.dist, y: HIT_A.y, halfWidth: HIT_A.halfWidth, id: HIT_A.id, kind: HIT_A.kind }
   }
 
