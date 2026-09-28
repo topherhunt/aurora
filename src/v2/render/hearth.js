@@ -285,17 +285,20 @@ export class Hearth {
    * @param opts.at  `{ x, z }`: the clearing's centre. Required.
    * @param opts.textures  the prop atlas (DataArrayTexture). Required.
    * @param opts.patch  (material, cacheKey) => material, the lighting patch. Required.
+   * @param opts.scale  the whole place grown about its centre: 1 for leafkin, more for the towns' people. Everything this class hands out is in the world's metres.
    */
-  constructor(scene, field, { bank = null, at = null, textures = null, seed = 1, patch = null } = {}) {
+  constructor(scene, field, { bank = null, at = null, textures = null, seed = 1, patch = null, scale = 1 } = {}) {
     if (!field || typeof field.heightAt !== 'function') throw new Error('Hearth: needs a V2Height with heightAt')
     if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.z)) throw new Error('Hearth: `at` is { x, z }')
     if (!textures || !textures.image || !(textures.image.depth > LAYER.IMPOSTOR_HEARTH)) throw new Error('Hearth: needs the prop atlas')
     if (typeof patch !== 'function') throw new Error('Hearth: needs the lighting patch')
+    if (!(scale > 0)) throw new Error(`Hearth: scale must be > 0, got ${scale}`)
+    this.scale = scale
     this.x = at.x
     this.z = at.z
     this.y = field.heightAt(at.x, at.z)
     // Built about the origin on the real ground under it, so the mesh's own bounds hold it and the card spins about the fire.
-    const built = buildHearth(bank, seed, (x, z) => field.heightAt(this.x + x, this.z + z) - this.y)
+    const built = buildHearth(bank, seed, (x, z) => (field.heightAt(this.x + x * scale, this.z + z * scale) - this.y) / scale)
     this.ring = built.ring
     this.stools = built.stools
     this.extent = built.extent
@@ -305,6 +308,7 @@ export class Hearth {
     this.tris = this.tiers.map((g) => g.index.count / 3)
     this.group = new THREE.Group()
     this.group.position.set(this.x, this.y, this.z)
+    this.group.scale.setScalar(scale)
     this.meshes = this.tiers.map((g, i) => {
       const mesh = new THREE.Mesh(g, this.material)
       mesh.name = `v2-hearth-${i}`
@@ -317,7 +321,7 @@ export class Hearth {
     this.tier = 0
     // The flame's shader reads its instance origin as world space, so it hangs off the scene, not the group.
     this.flames = new Flames(1, CAMPFIRE, { seed })
-    this.flames.place(0, this.x, this.y + HEARTH.fire.lift, this.z, { height: CAMPFIRE.height, radius: CAMPFIRE.radius, group: 0 })
+    this.flames.place(0, this.x, this.y + HEARTH.fire.lift * scale, this.z, { height: CAMPFIRE.height * scale, radius: CAMPFIRE.radius * scale, group: 0 })
     scene.add(this.flames.group)
     scene.add(this.group)
     this.textures = textures
@@ -354,8 +358,8 @@ export class Hearth {
 
   /** Once a frame: the rung by the eye's distance, and the flame's clock in seconds. */
   update(camX, camY, camZ, t) {
-    const dx = this.x - camX, dy = this.y + this.extent.height / 2 - camY, dz = this.z - camZ
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    const dx = this.x - camX, dy = this.y + (this.extent.height * this.scale) / 2 - camY, dz = this.z - camZ
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) / this.scale
     let tier = this.tier
     const [mid, far] = HEARTH.lod
     if (tier < 2 && d > far) tier = 2
@@ -370,14 +374,14 @@ export class Hearth {
   /** Whether (x, z) is within `pad` of the gathering place: the trees' `deadwood` contract. */
   occupiesAt(x, z, pad) {
     const dx = x - this.x, dz = z - this.z
-    const r = HEARTH.stools.r + HEARTH.stools.spread + HEARTH.stools.radius[1] * 2 + pad
+    const r = (HEARTH.stools.r + HEARTH.stools.spread + HEARTH.stools.radius[1] * 2) * this.scale + pad
     return dx * dx + dz * dz < r * r
   }
 
-  // -- stone to the walker (walk.js addStone): the fire ring one block, each stool its own ------
+  // -- stone to the walker (walk.js addStone): the fire ring one block, each stool its own; the discs are in the unscaled frame ------
 
   _discs(x, z, each) {
-    const lx = x - this.x, lz = z - this.z
+    const lx = (x - this.x) / this.scale, lz = (z - this.z) / this.scale
     const r = this.ring
     if (lx * lx + lz * lz <= r.r * r.r) each(r)
     for (const s of this.stools) {
@@ -391,8 +395,8 @@ export class Hearth {
     let n = 0
     this._discs(x, z, (d) => {
       if (n >= cap) return
-      out[n * 2] = this.y + d.y
-      out[n * 2 + 1] = this.y + d.top
+      out[n * 2] = this.y + d.y * this.scale
+      out[n * 2 + 1] = this.y + d.top * this.scale
       n++
     })
     return n
@@ -400,7 +404,7 @@ export class Hearth {
 
   blockTopAt(x, z) {
     let top = -Infinity
-    this._discs(x, z, (d) => { if (this.y + d.top > top) top = this.y + d.top })
+    this._discs(x, z, (d) => { if (this.y + d.top * this.scale > top) top = this.y + d.top * this.scale })
     return top
   }
 
@@ -410,7 +414,7 @@ export class Hearth {
 
   /** Where the fire burns, for the ambience's crackle (RULES.campfire). */
   get fire() {
-    return { x: this.x, y: this.y + HEARTH.fire.lift, z: this.z }
+    return { x: this.x, y: this.y + HEARTH.fire.lift * this.scale, z: this.z }
   }
 
   dispose() {

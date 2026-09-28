@@ -15,6 +15,10 @@ import { serialize } from '../src/v2/layers/doc.js'
 import { TOWN, planTowns, boxesOverlap } from '../src/v2/layers/towns.js'
 import { Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
+import { buildRockBank } from '../src/props/rock-bank.js'
+import { Hearth } from '../src/v2/render/hearth.js'
+import { TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
+import { SEAT_M, TALKS } from '../src/v2/render/villagers.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -26,7 +30,8 @@ const root = new URL('../public/world/', import.meta.url)
 const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: new URL('height.json', root) })
 const loadLayers = () => Layers.deserialize(JSON.parse(readFileSync(new URL('layers.json', root), 'utf8')))
 const layers = loadLayers()
-new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED }).setLayers(layers)
+const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
+field.setLayers(layers)
 const ground = (x, z) => hm.sample(x, z)
 // main.js's overworld SPAWN.
 const SPAWN = { x: -320, z: 1367 }
@@ -146,6 +151,34 @@ let padWorst = 0
 for (const t of towns) for (const b of t.buildings) padWorst = Math.max(padWorst, Math.abs(layers.paths.nearest(b.box.x, b.box.z, 'road').y - b.y))
 check(padWorst < 0.05, 'the road under each building centre is at its pad height', `worst ${padWorst.toFixed(3)} m`)
 
+// A pad flattens but is not painted: just behind each building, out of reach of every painted road, is flat and not dirt.
+const painted = records.filter((r) => r.dirt !== false)
+const paintedReach = (x, z) => {
+  let d = Infinity
+  for (const r of painted) for (let i = 1; i < r.pts.length; i++) {
+    const [ax, , az, aw] = r.pts[i - 1]
+    const [bx, , bz] = r.pts[i]
+    const ex = bx - ax
+    const ez = bz - az
+    const u = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)))
+    d = Math.min(d, Math.hypot(x - ax - ex * u, z - az - ez * u) - aw / 2)
+  }
+  return d
+}
+let backs = 0
+let dirtyBacks = 0
+let unflatBacks = 0
+for (const t of towns) for (const b of t.buildings) {
+  const x = b.box.x - b.box.s * (b.box.hz + 0.4)
+  const z = b.box.z - b.box.c * (b.box.hz + 0.4)
+  if (paintedReach(x, z) < 2) continue
+  backs++
+  if (layers.dirtAt(x, z) > 0) dirtyBacks++
+  if (layers.flattenAt(x, z) < 1) unflatBacks++
+}
+check(backs > 50 && dirtyBacks === 0, 'no dirt behind a building away from the paths', `${dirtyBacks} of ${backs} painted`)
+check(unflatBacks === 0, 'the pad still flattens behind each building', `${unflatBacks} of ${backs} not flat`)
+
 // --- rendering ---
 const scene = new THREE.Scene()
 const layer = new Towns(scene, { towns, textures: buildTextureArray(), patch: (m) => m })
@@ -168,8 +201,69 @@ const b0 = t.buildings[0]
 const top = layer.blockTopAt(b0.x, b0.z)
 check(top > b0.y + 2, 'a building blocks her walk up to its roof', `top ${top.toFixed(1)} over pad ${b0.y.toFixed(1)}`)
 check(layer.blockTopAt(t.x, t.z) === -Infinity, 'the clearing does not block')
-check(layer.occupiesAt(t.x, t.z, 0) && layer.occupiesAt(b0.x, b0.z, 0), 'trees keep off the clearing and the buildings')
-check(!layer.occupiesAt(t.x + t.radius + 25, t.z, 0), 'trees grow again past the town')
+check(layer.occupiesAt(b0.x, b0.z, 0), 'trees keep off the buildings')
+const behind = t.buildings.map((b) => [b.box.x - b.box.s * (b.box.hz + 2), b.box.z - b.box.c * (b.box.hz + 2)])
+const openBehind = behind.filter(([x, z]) => !layer.occupiesAt(x, z, 0)).length
+check(!layer.occupiesAt(t.x, t.z, 0) && openBehind > 0, 'trees may stand 2 m behind a building and in town, leaving the clearing to the roads', `${openBehind} of ${behind.length} backs open`)
+check(layer.nearBuildingAt(b0.x + 15, b0.z, 20) && !layer.nearBuildingAt(t.x + t.radius + 60, t.z, 20), 'wildlife keeps 20 m off the buildings and no further out')
+
+// --- the hearth, grown to a human seat ---
+const texArray = buildTextureArray()
+const S = 2.3
+const hearth = new Hearth(scene, field, { bank: buildRockBank(), at: t, textures: texArray, seed: 5, patch: (m) => m, scale: S })
+const st = hearth.stools[0]
+const sx = hearth.x + st.x * S, sz = hearth.z + st.z * S
+check(Math.abs(hearth.blockTopAt(sx, sz) - field.heightAt(sx, sz) - SEAT_M * S) < 0.1, 'a grown stool\'s top stands SEAT_M times the scale over its ground', `${(hearth.blockTopAt(sx, sz) - field.heightAt(sx, sz)).toFixed(2)} m`)
+check(hearth.occupiesAt(hearth.x + 1.7 * S, hearth.z, 0) && !hearth.occupiesAt(hearth.x + TOWN.clearing.r, hearth.z, 0), 'the grown hearth fills the clearing\'s middle, not its edge')
+hearth.dispose()
+
+// --- the townsfolk's ways and day ---
+const unreached = []
+for (const town of towns) {
+  const g = townGraph(town)
+  const seen = new Uint8Array(g.nodes.length)
+  const stack = [g.ring[0]]
+  seen[g.ring[0]] = 1
+  while (stack.length) for (const j of g.adj[stack.pop()]) if (!seen[j]) { seen[j] = 1; stack.push(j) }
+  if (!g.doors.every((d) => seen[d]) || g.doors.length !== town.buildings.length) unreached.push(town.id)
+}
+check(unreached.length === 0, 'every door is reachable from the clearing', unreached.join(', '))
+// Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.
+const durations = Object.fromEntries(['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', ...TALKS].map((c) => [c, c === 'sit' ? 4 : 2]))
+const bodies = TOWNSFOLK.bodies.map(() => ({ heightM: 1.7, height: 1, gait: { walk: 0.632 }, wheelbase: 0.474, sitY: SEAT_M * S / 1.7, durations }))
+const seats = Array.from({ length: 6 }, (_, k) => {
+  const x = t.x + Math.cos(k) * 4, z = t.z + Math.sin(k) * 4
+  return { x, z, top: field.heightAt(x, z) + SEAT_M * S, r: 0.4, lookX: t.x, lookZ: t.z }
+})
+const heightAt = (x, z) => field.heightAt(x, z)
+const life = (i = 0) => new TownLife(t, { index: i, seed: SEED, bodies, seats, heightAt })
+const a = life()
+const T0 = 10000 * 600 + 5
+const seen = { walk: 0, sit: 0, talk: 0, stand: 0 }
+let offWay = 0
+const g0 = a.graph
+const wayDist = (x, z) => {
+  let best = Infinity
+  for (let i = 0; i < g0.nodes.length; i++) for (const j of g0.adj[i]) {
+    const p = g0.nodes[i], q = g0.nodes[j], ux = q.x - p.x, uz = q.z - p.z, L = ux * ux + uz * uz
+    const u = L > 0 ? Math.max(0, Math.min(1, ((x - p.x) * ux + (z - p.z) * uz) / L)) : 0
+    best = Math.min(best, Math.hypot(x - p.x - u * ux, z - p.z - u * uz))
+  }
+  return best
+}
+for (let s = 0; s < 400; s += 2) {
+  a.advance(T0 + s)
+  for (const c of a.all) {
+    if (c.state in seen) seen[c.state]++
+    if (c.state === 'walk' && c.then !== 'sit' && c.then !== 'errand' && !(c.wp === 0 && c.route[0].node === c.at) && wayDist(c.x, c.z) > TOWNSFOLK.lane + 0.3) offWay++
+  }
+}
+check(seen.walk > 0 && seen.sit > 0 && seen.talk > 0 && seen.stand > 0, 'townsfolk walk, stand, sit at the fire and stop to talk', JSON.stringify(seen))
+check(offWay === 0, 'a walker keeps to its lane on the town\'s ways', `${offWay} samples off`)
+const b = life()
+b.advance(T0 + 398)
+check(a.all.every((c, i) => c.x === b.all[i].x && c.z === b.all[i].z && c.state === b.all[i].state), 'a town woken late replays to the same day as one watched throughout')
+check(new Set(a.all.map((c) => c.seat).filter(Boolean)).size === a.all.filter((c) => c.seat).length, 'no two townsfolk hold one stool')
 
 if (failures) {
   console.error(`\n${failures} town check(s) failed`)

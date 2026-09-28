@@ -50,6 +50,11 @@
 //            talks GIFT_S and goes home to eat it (residents.js `feast`).
 //   pick     a mushroom lying still within FIND_M of a free villager: it
 //            squeals, runs to it, gathers it up and runs home to eat it.
+//   frog     a frog chasing a hob (frogs.js chasers) within FROG_SEE_M of a
+//            free villager: it screams FROG_CRY_S, runs to where it saw it,
+//            gathers it up and walks it to the nearest water (_shore),
+//            chattering, throws it THROW_M out, watches, and goes on. An
+//            event like a find; `claims` hands the frog to frogs.js.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -63,6 +68,7 @@ import { CARRY_SPAN, STARTLE_S } from './leafkin.js'
 import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
+import { keyOf as frogKey } from './frogs.js'
 
 export const LOD_TIERS = LOD_RUNGS
 export const PUPPETS = 8
@@ -129,6 +135,16 @@ export const FIND_M = 8
 const FIND_ROAD_M = 4
 const FIND_UP_M = 0.5
 const PICK_M = 1
+// A frog seen chasing a hob: within FROG_SEE_M, water within FROG_SHORE_M of it to throw it in, THROW_M out past the bank; the scream is threaten's first FROG_CRY_S, the throw its first THROW_CUT with the frog let go at THROW_AT, then FROG_WATCH_S watching it land.
+export const FROG_SEE_M = 10
+export const FROG_SHORE_M = 8
+export const THROW_M = 1.5
+export const FROG_CRY_S = 1.2
+const THROW_CUT = 1
+const THROW_AT = 0.55
+const FROG_WATCH_S = 1.5
+const SHORE_BEARINGS = 24
+const NO_CHASES = []
 // Ticks between looks for someone to talk to, or to call for a mushroom.
 const MEET_TICKS = 10
 // Seconds before a chapter's turn that everyone makes for home, so the turn finds them indoors.
@@ -139,7 +155,7 @@ const SNAPS = 30
 // A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
 const MAX_NAMED = 15
 // A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast']
+const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt']
 // Salts the chapter's forage roll off the villagers' own.
 const FORAGE_SALT = 0xf0a6e
 
@@ -153,11 +169,12 @@ function roll(c) {
 }
 
 export const TALKS = ['talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
-export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', 'recoil', 'gather', ...TALKS]
+export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', 'recoil', 'gather', 'threaten', ...TALKS]
 // The clips whose feet stay put (puppet.js FootIK). A sit is not among them: the solver drops the root onto the ground under the feet, which is the one thing that would pull a seated body off its stool.
 export const PLANTED = new Set(['idle', ...TALKS])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+const sameFrog = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
 
 const UP = new THREE.Vector3(0, 1, 0)
 const _quat = new THREE.Quaternion()
@@ -441,6 +458,8 @@ export class Villagers {
         fx: 0, fz: 0,
         // The forage trip: '', 'out' (the forager, not yet gone) or 'back' (with `bundle` mushrooms to give); whether it has squealed at this trip's bundle, been given one, and has it yet to eat; its carrier. A giver's `partner` is whoever it talks to, a taker's the giver it is called to.
         trip: '', bundle: 0, saw: false, fed: false, feast: false, carrier: null,
+        // The frog it is seeing to, `[tx, tz, index]` (frogs.js keyOf), the bank it walks it to and the water it throws it at, `{ ex, ez, wx, wz }`, and the second it let go; and its hold as frogs.js reads it.
+        frog: null, toss: null, tossAt: null, claim: { phase: 'wait', x: 0, y: 0, z: 0, heading: 0, t0: 0, from: { x: 0, y: 0, z: 0 }, to: { x: 0, z: 0 } },
         lod: LOD_TIERS, puppet: null,
         ...easeFields(),
       }
@@ -481,6 +500,9 @@ export class Villagers {
     // The loose mushrooms this client has raised a find for.
     this.sought = new WeakSet()
     this.hearsOwn = true
+    // The frogs chasing hobs this frame (frogs.js chasers), and the villagers' holds on frogs by frog key, for frogs.js.
+    this.chases = NO_CHASES
+    this.claims = new Map()
     this.starved = 0
     this.talks = 0
     this.gifts = 0
@@ -537,7 +559,7 @@ export class Villagers {
   }
 
   get stats() {
-    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0 }
+    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0, frog: 0 }
     for (const c of this.all) states[c.state]++
     return { count: this.all.length, states, forager: this.forager, gifts: this.gifts, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
@@ -631,6 +653,7 @@ export class Villagers {
       c.trip = c.id === this.forager ? 'out' : ''
       c.bundle = 0
       c.saw = c.fed = c.feast = false
+      c.frog = c.toss = c.tossAt = null
       if (c.seat !== null) this._leaveSeat(c)
       this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1])
     }
@@ -676,11 +699,12 @@ export class Villagers {
     c.then = then
     c.state = 'walk'
     // Out to forage, on its rounds with the bundle, over for a mushroom and home with one, anyone runs.
-    this._play(c, c.runner || this.homing || c.trip !== '' || c.feast || then === 'take' || then === 'pick' ? 'run' : 'walk', STEP_S)
+    this._play(c, c.runner || this.homing || c.trip !== '' || c.feast || then === 'take' || then === 'pick' || then === 'grab' ? 'run' : 'walk', STEP_S)
     if (c.route.length === 0) this._arrive(c)
   }
 
   _errand(c) {
+    c.frog = c.toss = c.tossAt = null
     if (this.homing) { this._go(c, c.home, 'enter'); return }
     if (c.trip === 'out') { this._go(c, this.mouth.node, 'leave', [this.mouth]); return }
     if (c.trip === 'back') {
@@ -789,6 +813,20 @@ export class Villagers {
       case 'leave': this._away(c); break
       case 'take': if (c.partner === null) this._errand(c); else this._stand(c, GIVE_S); break
       case 'pick': c.state = 'pick'; c.hold = this.durations.gather / c.pace; this._play(c, 'gather', c.hold); break
+      case 'grab':
+        c.state = 'frog'
+        c.phase = 'grab'
+        c.aim = this._toward(c, c.fx, c.fz)
+        c.hold = this.durations.gather / c.pace
+        this._play(c, 'gather', c.hold)
+        break
+      case 'throw':
+        c.state = 'frog'
+        c.phase = 'throw'
+        c.aim = this._toward(c, c.toss.wx, c.toss.wz)
+        c.hold = THROW_CUT / c.pace
+        this._play(c, 'threaten', c.hold)
+        break
       default: throw new Error(`Villagers: a route ends in ${c.then}`)
     }
   }
@@ -877,7 +915,7 @@ export class Villagers {
     for (const o of this.all) {
       if (o === g || o.hidden || o.fed || o.state === 'flee' || o.state === 'startle' || Math.hypot(o.x - g.x, o.z - g.z) > SEE_M) continue
       if (!o.saw) { o.saw = true; this._voice(o, 'leafkinSqueal') }
-      if (called >= g.bundle || o.partner !== null || (o.state !== 'walk' && o.state !== 'stand' && o.state !== 'gaze')) continue
+      if (called >= g.bundle || o.partner !== null || o.frog !== null || (o.state !== 'walk' && o.state !== 'stand' && o.state !== 'gaze')) continue
       this._go(o, g.at, 'take', [g])
       // From its own node, where it stands off it: a stall re-plans an errand elsewhere, but a taker called again would take the same way into the same edge of its lane.
       const n = this.graph.nodes[o.at]
@@ -905,12 +943,12 @@ export class Villagers {
     return null
   }
 
-  /** This client's event of `kind` naming `ids` on `tick`, at (x, y, z) -- her feet for a startle, the mushroom for a find: logged, and owed to the room. */
-  _raise(kind, x, y, z, ids, tick) {
+  /** This client's event of `kind` naming `ids` on `tick`, at (x, y, z) -- her feet for a startle, the mushroom for a find, the frog for a frog, whose `[tx, tz, index]` is `frog`: logged, and owed to the room. */
+  _raise(kind, x, y, z, ids, tick, frog = null) {
     const fx = snap(x), fy = snap(y), fz = snap(z)
-    const key = `${this.wire}${tick.toString(36)}:${kind === 'find' ? 'f' : ''}${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids).toString(36)}`
-    const e = this._log({ key, kind, tick, fx, fy, fz, ids, by: null, done: false })
-    this.outbox.push([key, tick / TICK_HZ, fx, fy, fz, 0, 0, kind, null, ...ids])
+    const key = `${this.wire}${tick.toString(36)}:${kind === 'find' ? 'f' : kind === 'frog' ? 'g' : ''}${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids, ...(frog ?? [])).toString(36)}`
+    const e = this._log({ key, kind, tick, fx, fy, fz, ids, frog, by: null, done: false })
+    this.outbox.push([key, tick / TICK_HZ, fx, fy, fz, 0, 0, kind, null, ...ids, ...(frog ?? [])])
     return e
   }
 
@@ -940,6 +978,7 @@ export class Villagers {
     for (const o of this.all) if (o.partner === c) o.partner = null
     this._leaveSeat(c)
     c.partner = null
+    c.frog = c.toss = c.tossAt = null
     c.fx = e.fx
     c.fz = e.fz
     c.voice = 0.1
@@ -974,7 +1013,7 @@ export class Villagers {
 
   /** Free to go after a mushroom it sees: out and about its own business, with nothing in its arms. */
   _findable(c) {
-    return !c.hidden && (c.state === 'walk' || c.state === 'stand' || c.state === 'gaze') && c.partner === null && c.seat === null && c.trip === '' && !this._carrying(c) && c.then !== 'pick' && !this.homing
+    return !c.hidden && (c.state === 'walk' || c.state === 'stand' || c.state === 'gaze') && c.partner === null && c.seat === null && c.trip === '' && !this._carrying(c) && c.then !== 'pick' && c.frog === null && !this.homing
   }
 
   /** The node nearest (x, z), and how far it is. */
@@ -1029,6 +1068,136 @@ export class Villagers {
       this.sought.add(item)
       this._raise('find', item.x, item.y, item.z, [best.id], tick)
     }
+  }
+
+  /** Free to see to a frog: out about its own business or talking, nothing in its arms and nobody waiting on it. */
+  _scoldable(c) {
+    return !c.hidden && (c.state === 'walk' || c.state === 'stand' || c.state === 'gaze' || c.state === 'talk') && c.frog === null && c.trip === '' && !this._carrying(c) && c.then !== 'pick' && c.then !== 'take' && !this.homing
+  }
+
+  /** Whether a villager is seeing to frog `[tx, tz, index]`. */
+  _frogHeld(frog) {
+    return this.all.some((c) => c.frog !== null && sameFrog(c.frog, frog))
+  }
+
+  /** Whether frog `[tx, tz, index]` is seen to already, or named by an event not yet stepped. */
+  _frogTaken(frog) {
+    if (this._frogHeld(frog)) return true
+    for (const events of this.log.values()) for (const e of events) if (e.kind === 'frog' && !e.done && sameFrog(e.frog, frog)) return true
+    return false
+  }
+
+  /** Every frog seen chasing a hob this frame and not yet seen to, raised for `tick` on the nearest villager free to see to it, where there is water near to throw it in. */
+  _seeFrogs(tick) {
+    for (const f of this.chases) {
+      const frog = [f.tx, f.tz, f.index]
+      if (this._frogTaken(frog)) continue
+      let best = null, at = FROG_SEE_M
+      for (const c of this.all) {
+        const d = Math.hypot(c.x - f.x, c.z - f.z)
+        if (d < at && this._scoldable(c) && !this._owed(c.id, this.tick)) { at = d; best = c }
+      }
+      if (best === null || this._shore(f.x, f.z) === null) continue
+      this._raise('frog', f.x, f.y, f.z, [best.id], tick, frog)
+    }
+  }
+
+  /** The nearest water to (x, z) over SHORE_BEARINGS bearings, within FROG_SHORE_M: `{ ex, ez }` the dry bank half a metre short of it, `{ wx, wz }` THROW_M past where it starts; null for none. */
+  _shore(x, z) {
+    let best = null, at = FROG_SHORE_M
+    for (let k = 0; k < SHORE_BEARINGS; k++) {
+      const a = (k / SHORE_BEARINGS) * 2 * Math.PI, ux = Math.cos(a), uz = Math.sin(a)
+      for (let r = 0.25; r <= at; r += 0.25) {
+        if (this.seat(x + ux * r, z + uz * r) !== null) continue
+        const e = Math.max(0, r - 0.5)
+        if (r < at && this.seat(x + ux * e, z + uz * e) !== null) { at = r; best = { ex: x + ux * e, ez: z + uz * e, wx: x + ux * (r + THROW_M), wz: z + uz * (r + THROW_M) } }
+        break
+      }
+    }
+    return best
+  }
+
+  /** A frog event: whoever it talks to let go, a scream at the frog, and the chase on (_tickFrog). */
+  _scold(c, e) {
+    const toss = this._shore(e.fx, e.fz)
+    if (toss === null) return
+    if (c.state === 'talk') this._untalk(c)
+    this._leaveSeat(c)
+    c.partner = null
+    c.frog = e.frog
+    c.toss = toss
+    c.tossAt = null
+    c.fx = e.fx
+    c.fz = e.fz
+    c.state = 'frog'
+    c.phase = 'cry'
+    c.hold = FROG_CRY_S
+    c.voice = 0.2
+    c.aim = this._toward(c, e.fx, e.fz)
+    c.route.length = 0
+    c.wp = 0
+    this._voice(c, 'leafkinScream')
+    this._play(c, 'threaten', FROG_CRY_S)
+  }
+
+  /** A frog's phases in turn: the scream, then the run to it; the gather, then the walk to the bank; the throw, letting go at THROW_AT; the watch, then back to its node and an errand. */
+  _tickFrog(c, dt) {
+    c.hold -= dt
+    this._turn(c, dt)
+    if (c.phase === 'throw' && c.tossAt === null && c.dur - c.hold >= THROW_AT / c.pace) c.tossAt = this.tick * TICK_S
+    if (c.hold > 0) return
+    switch (c.phase) {
+      case 'cry':
+        this._go(c, this._nodeNear(c.fx, c.fz)[0], 'grab', [{ x: c.fx, z: c.fz }])
+        if (c.state === 'walk') c.phase = 'run'
+        break
+      case 'grab':
+        c.phase = 'carry'
+        // From where it stands, so the walk has a leg to keep its lane on (_off).
+        c.route = [{ x: c.x, z: c.z, node: -1 }, { x: c.toss.ex, z: c.toss.ez, node: -1 }]
+        c.wp = 0
+        c.then = 'throw'
+        c.state = 'walk'
+        this._play(c, 'walk', STEP_S)
+        break
+      case 'throw':
+        c.phase = 'watch'
+        c.hold = FROG_WATCH_S
+        this._play(c, 'idle', STEP_S)
+        break
+      case 'watch': {
+        c.frog = c.toss = c.tossAt = null
+        c.phase = ''
+        const n = this.graph.nodes[c.at]
+        this._go(c, c.at, 'errand', [{ x: n.x, z: n.z }])
+        break
+      }
+      default: throw new Error(`Villagers: no frog phase named ${c.phase}`)
+    }
+  }
+
+  /** Its hold on its frog this frame, for frogs.js: 'wait' till the gather's middle, 'held' in its fist (at the chest, a body without fingers) till THROW_AT, then 'thrown' from its reach at `t0` toward the water. */
+  _claim(c) {
+    const cl = c.claim, p = c.pose
+    cl.heading = p.heading
+    if (c.tossAt !== null) {
+      cl.phase = 'thrown'
+      cl.t0 = c.tossAt
+      cl.from.x = c.x + Math.cos(c.heading) * 0.3
+      cl.from.y = c.y + c.size
+      cl.from.z = c.z - Math.sin(c.heading) * 0.3
+      cl.to.x = c.toss.wx
+      cl.to.z = c.toss.wz
+    } else if (c.phase === 'carry' || c.phase === 'throw' || (c.phase === 'grab' && c.hold <= this.durations.gather / c.pace / 2)) {
+      cl.phase = 'held'
+      if (c.puppet && gripAt(c.puppet, _grip)) { cl.x = _grip.x; cl.y = _grip.y; cl.z = _grip.z }
+      else { cl.x = p.x; cl.y = p.y + c.size * CHEST; cl.z = p.z }
+    } else {
+      cl.phase = 'wait'
+      cl.x = c.fx
+      cl.z = c.fz
+    }
+    return cl
   }
 
   /** Ease the heading toward the aim, and report the cosine of the swing still owed, so a body half turned makes half a step. */
@@ -1190,7 +1359,7 @@ export class Villagers {
 
   /** Someone else passing within TALK_M, with neither just out of a talk, on its way to a stool or about the forage trip's business. */
   _meet(c) {
-    const busy = (o) => o.talked > 0 || o.seat !== null || o.partner !== null || o.feast || o.trip !== ''
+    const busy = (o) => o.talked > 0 || o.seat !== null || o.partner !== null || o.feast || o.trip !== '' || o.frog !== null
     if (this.homing || busy(c)) return null
     for (const o of this.all) {
       if (o === c || o.hidden || busy(o) || (o.state !== 'walk' && o.state !== 'stand')) continue
@@ -1211,8 +1380,16 @@ export class Villagers {
       const e = this._eventOf(c, 'find')
       if (e) this._find(c, e)
     }
-    // Homing, every hold runs out and every walker runs for its door (_errand, _go); a forager away stays out past the turn.
-    if (this.homing && c.state !== 'inside' && c.state !== 'away') {
+    if (this._scoldable(c)) {
+      const e = this._eventOf(c, 'frog')
+      if (e && !this._frogHeld(e.frog)) this._scold(c, e)
+    }
+    if (c.frog !== null && c.phase !== 'cry') {
+      c.voice -= dt
+      if (c.voice <= 0) { c.voice = between(c.rand, CHATTER_S); this._voice(c, this._chatter(c)) }
+    }
+    // Homing, every hold runs out and every walker runs for its door (_errand, _go); a forager away stays out past the turn, and one seeing to a frog finishes first.
+    if (this.homing && c.state !== 'inside' && c.state !== 'away' && c.frog === null) {
       c.hold = Math.min(c.hold, 0)
       if (c.state === 'walk' && c.clip !== 'run') this._go(c, c.home, 'enter')
     }
@@ -1289,6 +1466,7 @@ export class Villagers {
         if (c.hold <= 0) this._flee(c)
         break
       case 'pick': this._tickPick(c, dt); break
+      case 'frog': this._tickFrog(c, dt); break
       case 'flee':
         c.voice -= dt
         if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
@@ -1341,8 +1519,9 @@ export class Villagers {
    * skip is caught up in one frame too, silent. A startle heard late is
    * stepped again from the last state kept before it.
    */
-  update(feet, head, seconds, dt) {
+  update(feet, head, seconds, dt, chases = NO_CHASES) {
     if (!this.loaded) return
+    this.chases = chases
     this.frame++
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
@@ -1363,6 +1542,8 @@ export class Villagers {
     for (let t = this.tick + 1; t <= tick; t++) this._stepAll(t, tick)
     this.alpha = Math.min(1, Math.max(0, (seconds - this.tick * TICK_S) * TICK_HZ))
     for (const c of this.all) this._draw(c, dt, seconds)
+    this.claims.clear()
+    for (const c of this.all) if (c.frog !== null && !c.hidden) this.claims.set(frogKey(...c.frog), this._claim(c))
     if (tick - live > SILENT_TICKS) this.calls.length = 0
   }
 
@@ -1382,6 +1563,7 @@ export class Villagers {
       for (const c of this.all) if (this._startlable(c) && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
       if (ids.length > 0) this._flinch(this._raise('startle', this.feet.x, this.feet.y, this.feet.z, ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
       if (this.hands && t % MEET_TICKS === 0) this._seek(t + LEAD_TICKS)
+      if (t % MEET_TICKS === 0) this._seeFrogs(t + LEAD_TICKS)
     }
     for (const c of this.all) this._tick(c, t)
     const events = this.log.get(t)
@@ -1449,15 +1631,17 @@ export class Villagers {
     return into
   }
 
-  /** Someone's startle or find: logged, and stepped again from before it if this client is past it. Another village's, one before the chapter or one already logged is let go. */
+  /** Someone's startle, find or frog: logged, and stepped again from before it if this client is past it. Another village's, one before the chapter or one already logged is let go. */
   apply(a) {
-    if (typeof a[0] !== 'string' || !a[0].startsWith(this.wire) || (a[7] !== 'startle' && a[7] !== 'find')) return
+    if (typeof a[0] !== 'string' || !a[0].startsWith(this.wire) || (a[7] !== 'startle' && a[7] !== 'find' && a[7] !== 'frog')) return
     const tick = Math.round(a[1] * TICK_HZ)
-    const ids = a.slice(9)
+    const ids = a[7] === 'frog' ? a.slice(9, 10) : a.slice(9)
+    const frog = a[7] === 'frog' ? a.slice(10) : null
+    if (frog !== null && (frog.length !== 3 || !frog.every(Number.isInteger))) throw new Error(`Villagers: a frog naming no frog ${JSON.stringify(a)}`)
     if (![tick, a[2], a[3], a[4]].every(Number.isFinite) || ids.length === 0) throw new Error(`Villagers: a malformed ${a[7]} ${JSON.stringify(a)}`)
     if (!ids.every((id) => Number.isInteger(id) && id >= 0 && id < this.all.length)) throw new Error(`Villagers: a ${a[7]} names villagers this village has not: ${JSON.stringify(a)}`)
     if (this.tick !== null && tick <= tickOf(chapterOf(this.tick / TICK_HZ, this.key).start)) return
-    const e = { key: a[0], kind: a[7], tick, fx: a[2], fy: a[3], fz: a[4], ids, by: a[8], done: false }
+    const e = { key: a[0], kind: a[7], tick, fx: a[2], fy: a[3], fz: a[4], ids, frog, by: a[8], done: false }
     if (this._log(e) !== e) return
     if (this.tick !== null && tick <= this.tick) this.rewind = Math.min(this.rewind, tick)
   }

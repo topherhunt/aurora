@@ -51,6 +51,14 @@
 // hearing it keeps a frog the lure is between LURE_M and LURE_FORGET_M from,
 // as she does.
 //
+// A HOB IS PREY. In a glade the hobs are lures too (hobs.js lures), chased
+// the same way but on each client's own hobs, so never in a lured set; the
+// hob runs from it (chasers()). A villager who sees it CATCHES the frog
+// (villagers.js claims): it freezes where it was seen ('wait'), is posed in
+// the villager's fist ('held') and is thrown as one hop into the water from
+// the release second ('thrown'), then floats WET_PAUSE_S and rejoins; let go
+// unthrown, it drops and rejoins. Either way it ignores hobs CALM_S after.
+//
 // A HOP IS HEARD. The frame a frog starts a hop, and the frame one lands in
 // the water off dry ground, it says so to the ear (voices(), ambience.js
 // frogHop and splash); the queue is this frame's only, so nothing said while
@@ -110,8 +118,8 @@ const POST_TRIES = 4
 export const WADE_M = 1.5
 // A landing in the water floats there this long before the next hop.
 export const WET_PAUSE_S = [1.5, 4]
-// The lure: what in a hand a frog wants, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of the lure a hop goes across it rather than at it, how soon a sitting frog reacts, and the least a rejoin is given to reach its post.
-export const LURES = ['spider', 'butterfly', 'grasshopper']
+// The lure: what a frog wants, in a hand or (the hob) on its own feet, how near (across the ground) it is noticed and how far it is kept, the bout it is chased with, within what of the lure a hop goes across it rather than at it, how soon a sitting frog reacts, and the least a rejoin is given to reach its post.
+export const LURES = ['spider', 'butterfly', 'grasshopper', 'hob']
 export const LURE_M = 3
 export const LURE_FORGET_M = 8
 export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1, 0.45], turn: 1.6 }
@@ -121,6 +129,12 @@ export const REJOIN_MIN_S = 2
 const NO_LURES = []
 // A bed's lured set goes to the room when the frogs her hand has change, at most once in LURED_EVERY_S.
 export const LURED_EVERY_S = 1
+// Caught: the hop to where it was seen, the throw's flight and its rise over the line, and how long after it hobs are let be.
+const FREEZE_HOP_S = 0.3
+export const THROW_S = 0.7
+const THROW_RISE = 1
+export const CALM_S = 30
+const NO_CLAIMS = new Map()
 // Afloat, a frog sits SINK of its height under the surface and rides it up and down by BOB_AMP metres once every BOB_S seconds, on its breath's phase.
 export const SINK = 0.5
 export const BOB_S = 0.5
@@ -209,6 +223,8 @@ export class Frogs {
         seg: null, live: null,
         // Its own noise for the chase, and the lure it is chasing (hands.js lures: kind, x, y, z, by), if any.
         rand: null, lured: false, lure: null,
+        // A villager's hold on it (villagers.js claims) as last applied: null, 'wait', 'held' or 'thrown'; and the second it heeds hobs again.
+        caught: null, calm: -Infinity,
       })
     }
     this.free = this.slots.slice()
@@ -366,6 +382,8 @@ export class Frogs {
       f.rand = mulberry32(hash32(keyHash(f.key), 0x1e))
       f.lured = false
       f.lure = null
+      f.caught = null
+      f.calm = -Infinity
       t.frogs.push(f)
     }
     return t
@@ -555,7 +573,7 @@ export class Frogs {
     let lure = null
     let best = Infinity
     for (const l of lures) {
-      if (!LURES.includes(l.kind)) continue
+      if (!LURES.includes(l.kind) || (l.kind === 'hob' && now < f.calm)) continue
       const d = Math.hypot(l.x - f.x, l.z - f.z)
       if (d < best) { best = d; lure = l }
     }
@@ -616,19 +634,18 @@ export class Frogs {
   _startRejoin(f, now) {
     const L = f.live
     if (L.ph.kind === 'sit') L.ph = { kind: 'sit', dur: now - L.at, at: L.ph.at }
-    const end = L.at + L.ph.dur
-    const from = L.ph.kind === 'sit' ? L.ph.at : L.ph.to
-    let g = Math.floor((end + REJOIN_MIN_S - f.offset) / GRID_S) + 1
+    Object.assign(L, this._rejoin(f, L.ph.kind === 'sit' ? L.ph.at : L.ph.to, L.at + L.ph.dur))
+  }
+
+  /** The rejoin from spot `from` at second `end`: `{ queue, until }`, the bout to the post of the first turn REJOIN_MIN_S past it and the sit there to the turn. */
+  _rejoin(f, from, end) {
+    const g = Math.floor((end + REJOIN_MIN_S - f.offset) / GRID_S) + 1
     const turn = g * GRID_S + f.offset
     const post = Frogs._facing(this._post(f, g - 1), this._post(f, g))
     const hops = post === null ? null : this._lay(f, f.rand, from, post, turn - end)
-    if (hops === null) {
-      L.queue = [{ kind: 'sit', dur: turn - end, at: from }]
-    } else {
-      const bout = hops.reduce((sum, ph) => sum + ph.dur, 0)
-      L.queue = [...hops, { kind: 'sit', dur: turn - end - bout, at: post }]
-    }
-    L.until = turn
+    if (hops === null) return { queue: [{ kind: 'sit', dur: turn - end, at: from }], until: turn }
+    const bout = hops.reduce((sum, ph) => sum + ph.dur, 0)
+    return { queue: [...hops, { kind: 'sit', dur: turn - end - bout, at: post }], until: turn }
   }
 
   /** One frame off the plan: the live phrase advanced to `now`, the chase choosing each next phrase as the last ends and a rejoin playing its queue out; false once the queue is spent, the plan's again. */
@@ -646,6 +663,77 @@ export class Frogs {
     }
     this._pose(f, L.ph, now - L.at)
     return true
+  }
+
+  // --- caught -----------------------------------------------------------------
+
+  /** Frogs chasing a hob on dry ground, uncaught, for the villagers to see and the hobs to run from: `{ key, tx, tz, index, x, y, z, hob }` onto `into`. */
+  chasers(into) {
+    for (const t of this.tiles.values()) {
+      for (const f of t.frogs) if (f.lured && f.lure.kind === 'hob' && f.caught === null && !f.wet) into.push({ key: f.key, tx: t.tx, tz: t.tz, index: f.index, x: f.x, y: f.y, z: f.z, hob: f.lure.id })
+    }
+    return into
+  }
+
+  /** A spot on the ground under (x, z), not seated: where a frog let go in the air lands. */
+  _groundSpot(f, x, z, yaw) {
+    const h = this.height.heightAt(x, z)
+    return { x, z, h, y: this._groundFor(x, z, h), wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw }
+  }
+
+  /** The villager's hold `cl` on frog `f` this frame (undefined: none), after its plan has posed it: taken off the plan to sit where it was seen, posed in the fist, thrown, or let go. */
+  _caught(f, cl, now) {
+    if (cl === undefined) {
+      if (f.caught === 'wait') this._startRejoin(f, now)
+      else if (f.caught === 'held') {
+        const from = this._groundSpot(f, f.x, f.z, f.yaw)
+        const r = this._rejoin(f, from, now + FREEZE_HOP_S)
+        f.live = { ph: { kind: 'hop', dur: FREEZE_HOP_S, from: { ...from, y: f.y }, to: from, rise: 0, bout: CHASE }, at: now, queue: r.queue, until: r.until }
+      }
+      f.caught = null
+      f.calm = now + CALM_S
+      return
+    }
+    if (cl.phase === 'wait' && f.caught === null) {
+      f.lured = false
+      f.lure = null
+      const here = f.ph.kind === 'sit' ? f.ph.at : f.ph.to
+      const s = this.seat(cl.x, cl.z)
+      const spot = s === null || s.wet ? here : this._spot(f, cl.x, cl.z, s, Math.hypot(cl.x - here.x, cl.z - here.z) < 1e-3 ? here.yaw : bearing(here, cl))
+      const stay = { kind: 'sit', dur: Infinity, at: spot }
+      const ph = f.ph.kind === 'sit' ? { kind: 'sit', dur: f.t, at: here } : f.ph
+      const queue = spot === here ? [stay] : [{ kind: 'hop', dur: FREEZE_HOP_S, from: here, to: spot, rise: Math.hypot(spot.x - here.x, spot.z - here.z) * HOP_RISE, bout: CHASE }, stay]
+      f.live = { ph, at: now - f.t, queue, until: Infinity }
+    } else if (cl.phase === 'held') {
+      // Dangling from the fist by its back, nose up and belly out.
+      f.state = 'held'
+      f.x = cl.x; f.y = cl.y - f.size * 0.6; f.z = cl.z
+      f.yaw = cl.heading
+      _nrm.set(-Math.cos(cl.heading), 0.45, Math.sin(cl.heading)).normalize()
+      f.nx = _nrm.x; f.ny = _nrm.y; f.nz = _nrm.z
+      f.u = 0.5
+      f.wet = false
+    } else if (cl.phase === 'thrown' && f.caught !== 'thrown') {
+      this._throw(f, cl, now)
+    }
+    f.caught = cl.phase
+  }
+
+  /** Out of the fist at `cl.from` on the release second, one hop onto the water toward `cl.to` (nearer where that is not water), a float, and the rejoin. */
+  _throw(f, cl, now) {
+    const t0 = Math.min(cl.t0, now)
+    const from = { x: cl.from.x, y: cl.from.y, z: cl.from.z, h: cl.from.y, wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw: cl.heading }
+    let to = null
+    for (const k of [1, 0.8, 0.6, 0.4]) {
+      const x = from.x + (cl.to.x - from.x) * k, z = from.z + (cl.to.z - from.z) * k
+      const s = this.seat(x, z)
+      if (s !== null && s.wet) { to = this._spot(f, x, z, s, cl.heading); break }
+    }
+    to ??= this._groundSpot(f, cl.to.x, cl.to.z, cl.heading)
+    const float = { kind: 'sit', dur: between(f.rand, WET_PAUSE_S), at: to }
+    const r = this._rejoin(f, to, t0 + THROW_S + float.dur)
+    f.live = { ph: { kind: 'hop', dur: THROW_S, from, to, rise: THROW_RISE, bout: LEAP }, at: t0, queue: [float, ...r.queue], until: r.until }
+    this._live(f, now)
   }
 
   // --- the room ---------------------------------------------------------------
@@ -689,8 +777,8 @@ export class Frogs {
     if (f.ph.kind === 'hop') this.calls.push({ sound: 'frogBoing', rule: 'frogHop', x: f.x, y: f.y, z: f.z })
   }
 
-  /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame, the spiders, butterflies and grasshoppers among them chased. */
-  update(hx, hy, hz, now, lures = NO_LURES) {
+  /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame and the hobs', the spiders, butterflies, grasshoppers and hobs among them chased; `claims` the villagers' holds on frogs by key. */
+  update(hx, hy, hz, now, lures = NO_LURES, claims = NO_CLAIMS) {
     if (!Number.isFinite(now)) throw new Error(`Frogs.update: bad time ${now}`)
     this.head.x = hx
     this.head.z = hz
@@ -730,8 +818,10 @@ export class Frogs {
           const ph = Frogs._phraseAt(f.seg.phrases, now - f.seg.start)
           this._pose(f, ph, now - f.seg.start - ph.start)
         }
+        const claim = claims.get(f.key)
+        if (claim !== undefined || f.caught !== null) this._caught(f, claim, now)
         this._heard(f, prev, hx, hy, hz)
-        this._notice(f, lures, now)
+        if (f.caught === null) this._notice(f, lures, now)
         let sy = 1
         let sx = 1
         let sz = 1

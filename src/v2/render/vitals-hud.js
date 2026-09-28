@@ -73,6 +73,11 @@ function overlay(mesh, order) {
   return mesh
 }
 
+function setFace(g, face) {
+  g.font = face.font
+  g.letterSpacing = face.tracking
+}
+
 function textPlane(w, h, px) {
   const canvas = document.createElement('canvas')
   canvas.width = px
@@ -103,7 +108,9 @@ export function heartbeatBuffer(ctx) {
 }
 
 export class VitalsHud {
-  constructor(camera) {
+  /** `face(px, weight)` is the menu's type, { font, tracking } (main.js QUEST_SERIF). */
+  constructor(camera, face) {
+    this.face = face
     this.veil = overlay(new THREE.Mesh(
       new THREE.SphereGeometry(0.9, 24, 16),
       new THREE.ShaderMaterial({
@@ -123,7 +130,7 @@ export class VitalsHud {
     this.saved = textPlane(0.36, 0.09, 512)
     overlay(this.saved.mesh, ORDER + 2).position.set(0, 0, -0.8)
     const g = this.saved.canvas.getContext('2d')
-    g.font = '600 64px system-ui, sans-serif'
+    setFace(g, face(64))
     g.textAlign = 'center'
     g.textBaseline = 'middle'
     g.fillStyle = '#fff'
@@ -165,9 +172,9 @@ export class VitalsHud {
     g.textAlign = 'center'
     g.textBaseline = 'middle'
     g.fillStyle = '#fff'
-    g.font = '600 120px system-ui, sans-serif'
+    setFace(g, this.face(120))
     g.fillText('You died', canvas.width / 2, lines.length === 0 ? canvas.height / 2 : 140)
-    g.font = '52px system-ui, sans-serif'
+    setFace(g, this.face(52, 'normal'))
     lines.forEach((line, i) => g.fillText(line, canvas.width / 2, 300 + i * 80))
     tex.needsUpdate = true
   }

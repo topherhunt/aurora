@@ -1,6 +1,6 @@
 # §32 -- Towns
 
-The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing in a flat valley, each door on a path, and one or two roads running out to the edge of town. Towns are generated at boot from the heightmap, the layers and SEED, so every client plans the same ones and nothing is saved.
+The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing in a gently sloping valley, each door on a path, and one or two roads running out to the edge of town. A campfire and stools sit in the clearing, and townsfolk walk the ways between them. Towns are generated at boot from the heightmap, the layers and SEED, so every client plans the same ones and nothing is saved.
 
 ## The files
 
@@ -10,22 +10,23 @@ The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing
 | drawing, walk colliders, tree exclusion | `src/v2/render/towns.js` `Towns`, `TOWN_BANDS` |
 | generated roads in the document | `doc.js` `GENERATED_ID`, `serialize({ authored })`; `layers.js` `addGenerated` |
 | boot | `main.js`, straight after `height.setLayers(layers)` (overworld only) |
-| gate | `scripts/check-towns.mjs`; eyes: `tmp/townshot-drive.mjs` |
+| hearth and townsfolk | `src/v2/render/townsfolk.js` `Townsfolk`, `TownLife`, `townGraph`, `TOWNSFOLK`; `hearth.js` (`scale`) |
+| gate | `scripts/check-towns.mjs`; eyes: `tmp/townshot-drive.mjs`, `tmp/folkshot-drive.mjs` |
 
 ## Siting
 
-A 40 m grid scan keeps points that are dry, 60 m under the snow line, gentle underfoot, 150 m from the spawn, and flat: rise under 8 m over a 60 m disc (a 20 m grid plus a 24-sample rim ring, because the grid barely touches the rim where a valley's walls start). A point must also be a valley, with the 400 m ring on average 15 m above it, and have a 90 m disc clear of water, rivers and authored roads. Candidates are ranked by valley depth minus unevenness, then taken greedily at least 900 m apart. A layout with fewer than 8 buildings is dropped. On the shipped map that makes 12 towns.
+A 40 m grid scan keeps points that are dry, 60 m under the snow line, under a 0.2 slope underfoot, 150 m from the spawn, and even: rise under 16 m over a 60 m disc (a 20 m grid plus a 24-sample rim ring, because the grid barely touches the rim where a valley's walls start). A point must also be a valley, with the 400 m ring on average 15 m above it, and have a 90 m disc clear of water, rivers and authored roads. Candidates are ranked by valley depth minus unevenness, then taken greedily at least 900 m apart. A layout with fewer than 8 buildings is dropped. On the shipped map that makes 20 towns.
 
 ## Layout
 
 - **Clearing** r = 10 m, twice the leafkin clearing in metres (the leafkin room is at half scale, so it reads as four times hers). Kept for market stalls.
 - **Roads**, 1 or 2, 4 m wide. They aim at the nearest other towns, at least 60° apart, and grow in 12 m steps. A road stops at water, at a grade over 22% or near an authored road. A road that stalls tries swinging ±20/40/60°. At the end each road is trimmed to just past the outermost building, ready to be joined into a network between towns.
 - **Buildings** are placed in prestige order: inns, then longhouses, cottages and huts. Walls and roofs are picked by prestige, so slate and pantile sit near the centre and thatch at the edge. Each building takes the best of 90 random tries, preferring the nearest radius. Its yaw faces the nearest point on the network (the clearing's edge, a road, or an earlier path). The gap between boxes grows with radius, so the centre is dense and the edge is loose. A try is rejected on overlap, a road or path through it, a door path over 30 m or crossing another building, wet ground, or a footprint that rises more than 3 m.
-- **Paths**, 1.6 m wide, run from 0.3 m in front of the door's face to the nearest network point.
+- **Paths**, 1.6 m wide and at most 24 m, run from 0.3 m in front of the door's face to the nearest network point, which is often an earlier house's path rather than the clearing. A try's rank adds 1.5 per metre of path to its radius, so a door beside an existing path beats one nearer the centre, and the ways branch instead of spoking out from the hub.
 
 ## Everything on the ground is a road
 
-Clearing rings, building pads, door paths and roads are all road records with `town\d` ids. PathSet therefore flattens the ground under them, paints them dirt and keeps grass, rocks and litter off them, with no terrain code of its own. A building's pad is a capsule along its long axis, sized for the 0.8 minimum SWELL so the corners stay on flat ground. The plinth reaches 0.3 m below the lowest corner sample.
+Clearing rings, building pads, door paths and roads are all road records with `town\d` ids. PathSet therefore flattens the ground under them, paints them dirt and keeps grass, rocks and litter off them, with no terrain code of its own. Pads carry `dirt: false`: they flatten and clear but stay unpainted, so a house shows one path to its door and no dirt ring. PathSet ranks a road by its signed gap past the kerb, not by its centreline, so a narrow door path beside a wide road still wins where it is nearer; `out.dist` is still the centreline distance. A building's pad is a capsule along its long axis, sized for the 0.8 minimum SWELL so the corners stay on flat ground. The plinth reaches 0.3 m below the lowest corner sample.
 
 Generated roads ride every document the workers, the editor and the undo stack see. `serialize({ authored: true })` drops them for saves, because boot regenerates them and a saved copy would stack a second one underneath. So **editing a town road in the editor does not persist**.
 
@@ -40,11 +41,21 @@ A standing town costs 2 draws per eye (its merged mesh, plus the far pool that e
 
 ## Walking and trees
 
-`Towns` is a walk stone: `columnAt` and `blockTopAt` give each building a solid span from the plinth to the roof surface. Trees ask `occupiesAt`, which covers each town's meadow (a disc with three lobes, 70-100% of the town radius) and each building's box plus 2 m.
+`Towns` is a walk stone: `columnAt` and `blockTopAt` give each building a solid span from the plinth to the roof surface. Trees ask `occupiesAt`, which covers each building's box plus 2 m; roads and paths keep trees off themselves. There is no town-wide clearing, so forest stands right up behind the houses. Wildlife passes `avoid` = `nearBuildingAt(x, z, 20)` and spawns nothing within 20 m of a building.
+
+## Hearth and townsfolk
+
+Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. `hipSeat` measures that underside as the idle-sit hip joints less 0.05 of the body height. villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
+
+Townsfolk come from `farmer`, `shepherd` and `woodcutter`, dealt in turn, with 1 per hut or cottage and 2 per longhouse or inn. `townGraph` builds each town's ways as a graph: a 14-node ring at 9 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start. It reads heights only on the last two ticks, about 17 ms in node for a full wake. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.35 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
+
+The greeting is this client's alone. When she comes within 3 m of someone walking, standing or talking, they stop, turn to her, and wave (0.3), beckon (0.2) or just look (0.5) for 2.5-4 s. They then walk straight back to where the sim has them at 1.5x pace. The cooldown is 20 s.
+
+The pool is 4 puppets per body, so at most 12 townsfolk draws per eye, plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 4 people who want one. A farther holder fades out to free its puppet.
 
 ## Open
 
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
-- Market stalls, fences, livestock and townsfolk.
+- Market stalls, fences and livestock. Townsfolk have no audio, and they avoid each other only through the lane offset.
 - Roads between towns.

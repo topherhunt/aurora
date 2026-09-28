@@ -7,6 +7,7 @@ import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { planTowns } from './layers/towns.js'
 import { Towns } from './render/towns.js'
+import { Townsfolk } from './render/townsfolk.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
@@ -99,7 +100,7 @@ import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
-import { BED_REACH_M, Health, MAX_HP, Sleep, fallDamage, hoursToBoundary, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
+import { BED_REACH_M, Health, MAX_HP, Sleep, besideBed, fallDamage, hoursToBoundary, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 
 // First, before anything below can warn: a copy of every warning and error goes
@@ -764,8 +765,10 @@ function saveGame() {
   // is a yaw and this is exact; rig.rotation's Euler would fold past 90 deg.
   const q = rig.quaternion
   const doc = {
-    // In a house, the step before its door: the house is rolled on entering and not saved.
-    x: indoors ? indoors.back.x : rig.position.x, z: indoors ? indoors.back.z : rig.position.z,
+    // Her feet; in a house, the landing before its door, which the room is built around. `y` keeps a load under an awning from the roof.
+    x: indoors ? indoors.back.x : rig.position.x, y: indoors ? indoors.back.y : player.standY, z: indoors ? indoors.back.z : rig.position.z,
+    // In a house, which one and which of its beds she slept in: a load opens it again (it is rolled, not saved) and stands her beside that bed.
+    house: indoors ? { k: indoors.e.k, bed: sleptIn } : null,
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
@@ -777,6 +780,7 @@ function saveGame() {
     // Every flare hers or a peer's, in every room, as flares.js toWire has them.
     flares: flares.save(),
   }
+  if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
     if (rec !== null) doc.held[key] = hands.pack(rec)
@@ -837,15 +841,19 @@ function askRoomHour() {
   pendingHour = null
 }
 
-function loadGame() {
+/** The menu's Load, under the fade: out of any house, into the save's room and place (revive). */
+async function loadGame() {
   const doc = readSave()
   if (doc === null) { console.warn('[v2] load: nothing saved'); return }
-  player.teleportTo(doc.x, doc.z)
-  applySave(doc)
-  health.heal()
+  makeBlackout()
+  ready = false
+  await fade(1)
+  await revive(doc)
   // She has moved; the menu follows her rather than closing behind her.
   placeQuestPanel()
+  ready = true
   console.log(`[v2] loaded at ${doc.x.toFixed(0)}, ${doc.z.toFixed(0)}`)
+  await fade(0)
 }
 
 // The start as a first boot has it: SPAWN at CLOCK.startHour, facing the way
@@ -879,6 +887,8 @@ const sleep = new Sleep()
 let vitalsHud = null
 // On a desktop, the bed a click laid her in and the standing pose to give back; null when she is not in one.
 let deskBed = null
+// Which of the house's beds (worldBeds' `i`) she last fell asleep in: the save stands her beside it.
+let sleptIn = null
 // A key, click or button this frame, taken by sleep rather than by the world.
 let vitalsPress = false
 let reviving = false
@@ -892,16 +902,18 @@ const deathButtons = document.createElement('div')
 /** Whether sleep or death has her, and the world's controls stand down: lying is her own body in the headset, and only a click's lie-down holds a desktop. */
 const vitalsHold = () => health.dead || deskBed !== null || sleep.state === 'closing' || sleep.state === 'asleep'
 
-/** The bed of the house she is in, in world metres, as vitals.js takes it; none outdoors. */
+const roomBeds = (room) => room.spots.filter((b) => b.kind === 'bed')
+
+/** The beds of the house she is in, in world metres, as vitals.js takes them, each with its index `i` among the room's beds; none outdoors. */
 function worldBeds() {
   if (!indoors) return []
   const o = indoors.view.group.position
-  return indoors.room.spots.filter((b) => b.kind === 'bed').map((b) => ({ x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid }))
+  return roomBeds(indoors.room).map((b, i) => ({ x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid, i }))
 }
 
 /** A desktop click's lie-down: her head over the pillow, looking up past her feet. */
 function lieDown(bed) {
-  deskBed = { pos: rig.position.clone(), quat: rig.quaternion.clone(), camY: camera.position.y, camRot: camera.rotation.clone() }
+  deskBed = { bed: bed.i, pos: rig.position.clone(), quat: rig.quaternion.clone(), camY: camera.position.y, camRot: camera.rotation.clone() }
   const k = bed.len / 2 - 0.25
   rig.position.set(bed.x + k * Math.sin(bed.yaw), bed.top, bed.z + k * Math.cos(bed.yaw))
   rig.rotation.set(0, 0, 0)
@@ -941,9 +953,10 @@ async function revive(doc) {
     cameInBy = door
     await buildRoom(room, doc)
     ready = true
-  } else if (doc !== null) player.teleportTo(doc.x, doc.z)
+  } else if (doc !== null) player.teleportTo(doc.x, doc.z, doc.y)
   if (doc === null) newGame()
   else applySave(doc)
+  if (doc !== null && doc.house) await intoSavedHouse(doc.house)
   health.heal()
   reviving = false
 }
@@ -971,11 +984,12 @@ function stepHud(dt) {
 function stepVitals(dt, now) {
   camera.getWorldPosition(vitalsHead)
   camera.getWorldDirection(vitalsFwd)
-  const lying = !health.dead && (renderer.xr.isPresenting ? worldBeds().some((b) => liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed !== null)
+  const bed = health.dead ? -1 : renderer.xr.isPresenting ? worldBeds().findIndex((b) => liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed === null ? -1 : deskBed.bed
+  const lying = bed >= 0
   const event = sleep.update(dt, { lying, press: vitalsPress, head: vitalsHead, fwd: vitalsFwd, scale: herScale() })
   vitalsPress = false
   if (event === 'up' && deskBed) getUp()
-  if (event === 'asleep') console.log(`[vitals] asleep at ${clock.clockText}`)
+  if (event === 'asleep') { sleptIn = bed; console.log(`[vitals] asleep at ${clock.clockText}`) }
   if (event === 'woke') {
     if (deskBed) getUp()
     health.heal()
@@ -1005,20 +1019,20 @@ for (const [cls, text, load] of [['qa-death-load', 'Load saved game', true], ['q
   const b = document.createElement('button')
   b.className = cls
   b.textContent = text
-  b.style.cssText = 'font:600 18px system-ui,sans-serif;padding:12px 22px;border-radius:8px;border:1px solid #fff8;background:#0008;color:#fff;cursor:pointer'
+  b.style.cssText = 'padding:12px 22px;border-radius:8px;border:1px solid #fff8;background:#0008;color:#fff;cursor:pointer'
   b.addEventListener('click', () => reviveFrom(load))
   deathButtons.appendChild(b)
 }
 document.body.appendChild(deathButtons)
-// From the console: `v2vitals.harm(60)`, `v2vitals.lie()` into the house's bed.
-window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () => lieDown(worldBeds()[0]), wake: () => { vitalsPress = true } }
+// From the console: `v2vitals.harm(60)`, `v2vitals.lie()` into the house's bed, `v2vitals.load()` as the menu's Load, `v2vitals.beds()` the house's.
+window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () => lieDown(worldBeds()[0]), wake: () => { vitalsPress = true }, load: () => loadGame(), beds: worldBeds }
 
 // A row is `{ key, text }` and one of three shapes: a toggle on questToggles
 // (with optional `on`/`off` state names), an action, or an action with a
 // `value` readout. Shared by the settings and debug grids; a key is unique
 // across both, since applyQuestToggle and refreshQuestRow find rows by it.
 const QUEST_SETTING_ROWS = [
-  { key: 'load', text: 'Load', action: () => loadGame(), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
+  { key: 'load', text: 'Load', action: () => loadGame().catch(reportRuntimeError), value: () => (hasSave() ? 'saved game' : 'nothing saved') },
   { key: 'new', text: 'New game', action: () => newGame() },
   // Teleport is the headset's default (§12: comfort over capability); walk is
   // the continuous locomotion, for measuring what the world does to the frame
@@ -2563,9 +2577,10 @@ let dragons = null
 let entrances = null
 // A village's own (DESIGN.md §30): its huts, its lamps, its gathering place and the boulder's inside; all null in the overworld.
 let roomProps = null
-// The overworld's human towns (DESIGN.md §32): their plan from layers/towns.js and their buildings; null in a room.
+// The overworld's human towns (DESIGN.md §32): their plan from layers/towns.js, their buildings, and their hearths and people; null in a room.
 let townPlan = null
 let towns = null
+let townsfolk = null
 let lamps = null
 let hearth = null
 let stools = null
@@ -2958,11 +2973,16 @@ async function bootWorld() {
   // world, one cap, desktop and headset alike.
   ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
   buildQuestPanel()
-  vitalsHud = new VitalsHud(camera)
+  vitalsHud = new VitalsHud(camera, QUEST_SERIF)
+  for (const b of deathButtons.children) b.style.font = QUEST_SERIF(18).font
   window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
   // The rest of the save, now that there is a backpack view to paint. Her
   // position was the spawn above.
-  if (saved) { applySave(saved); console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}`) }
+  if (saved) {
+    applySave(saved)
+    if (saved.house) await intoSavedHouse(saved.house)
+    console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}${saved.house ? `, house ${saved.house.k}` : ''}`)
+  }
   else giveFlareGun()
   logSceneCensus()
 
@@ -3053,6 +3073,9 @@ function disposeRoom() {
     if (Array.isArray(layer.meshes)) for (const m of layer.meshes) m.removeFromParent()
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
+  if (towns) { towns.dispose(); towns = null }
+  if (townsfolk) { townsfolk.dispose(); townsfolk = null }
+  townPlan = null
   closeHouse()
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
@@ -3123,10 +3146,8 @@ function makeBlackout() {
 }
 
 /**
- * Into house `e` (RoomProps.entries) under the fade: its room rolled off the
- * village's seed and the house, set down past the village's disc on its own
- * floor above whatever ground is there, and her walk swapped for its own.
- * The village goes on around it unseen.
+ * Into house `e` (RoomProps.entries) under the fade, inside its door. The
+ * village goes on around it unseen.
  */
 async function enterHouse(e) {
   doorBusy = true
@@ -3134,6 +3155,29 @@ async function enterHouse(e) {
   makeBlackout()
   ready = false
   await fade(1)
+  await openHouse(e)
+  const o = indoors.view.group.position
+  player.teleportTo(o.x + indoors.room.doorIn.x, o.z + indoors.room.doorIn.z)
+  faceAlong(1, 0)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** A saved game's house open again, and her beside the bed she slept in, facing it. */
+async function intoSavedHouse(house) {
+  await villagers.ready
+  await openHouse(roomProps.entries()[house.k])
+  const o = indoors.view.group.position
+  const bed = roomBeds(indoors.room)[house.bed]
+  if (!bed) throw new Error(`v2: the save's house ${house.k} has no bed ${house.bed}`)
+  const at = besideBed(bed, walk, o)
+  player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.top - 0.2)
+  faceAlong(at.fx, at.fz)
+}
+
+/** House `e`'s room rolled off the village's seed, set down past the village's disc on its own floor above whatever ground is there, its residents in and her walk swapped for its own; where she stands in it is the caller's. */
+async function openHouse(e) {
   const room = rollInterior({ seed: villageSeed(), index: e.k, height: e.height })
   const ox = roomBounds.x + roomBounds.r + 40 + e.k * 10, oz = roomBounds.z
   let top = -Infinity
@@ -3150,12 +3194,7 @@ async function enterHouse(e) {
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
-  player.teleportTo(ox + room.doorIn.x, oz + room.doorIn.z)
-  faceAlong(1, 0)
   console.log(`[v2] house ${e.k}: ${room.items.length} things, ${room.windows.length} windows, ${room.loft ? 'a loft' : 'no loft'}, ${residents.all.length} at home`)
-  ready = true
-  await fade(0)
-  doorBusy = false
 }
 
 /** Back out of the house she is in, onto its landing before the door (not the awning over it), facing away from it. */
@@ -3551,7 +3590,13 @@ async function buildRoom(room, at) {
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
-  if (towns) walk.addStone(towns)
+  if (towns) {
+    walk.addStone(towns)
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
+    walk.addStone(townsfolk)
+    window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
+  }
   if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
@@ -3568,7 +3613,8 @@ async function buildRoom(room, at) {
   player = new Player(rig, camera, walk, { scale: room.scale })
   netplay.scale = room.scale
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
-  player.spawnAt(spawn.x, spawn.z)
+  // A save before `y` was written lands on the topmost surface.
+  player.spawnAt(spawn.x, spawn.z, fresh ? undefined : at.y)
 
   // Ferns, as an undercarpet at half a plant per square metre. Its own material
   // rather than instances in the tree batch, and that is not a violation of
@@ -3831,7 +3877,7 @@ async function buildRoom(room, at) {
   // the first frame after they land fills the tiles around her. A village holds
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -5356,6 +5402,9 @@ const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instan
 const headTmp = new THREE.Vector3()
 // The things in her hands this frame, as the creature layers read them (hands.js lures).
 const lures = []
+// Hers and the hobs, for the frogs; and the frogs chasing a hob, for the villagers and the hobs (render/frogs.js chasers).
+const frogLures = []
+const frogChases = []
 // The peers' heads this frame, `{ x, y, z, foot, by }` with `by` the peer's client id, as the snowmen read them (render/snowmen.js) and the spiders flee them (render/spiders.js): a pool, so a frame allocates nothing. `foot` is where that peer says its feet are, and is NaN for a peer that sends no foot -- one whose body is known by its head alone.
 const peerHeads = []
 const peerHeadPool = []
@@ -6398,6 +6447,7 @@ function tick() {
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
   if (towns) towns.update(headTmp.x, headTmp.z)
+  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024)
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   if (questToggles.ferns) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
@@ -6452,7 +6502,13 @@ function tick() {
     fishLeap.update(dt, headTmp, submerged)
   })
   fishLeap.group.visible = animalOn('fish')
-  stepAnimal('frogs', () => frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
+  // The frogs hunt the hobs too, and are seen to by the villagers holding them (render/villagers.js claims), last frame's.
+  stepAnimal('frogs', () => {
+    frogLures.length = 0
+    frogLures.push(...lures)
+    if (hobs) hobs.lures(frogLures)
+    frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, frogLures, villagers ? villagers.claims : undefined)
+  })
   stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
   // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds))
@@ -6469,7 +6525,12 @@ function tick() {
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // The villagers likewise, under the leafkin's row.
-  if (villagers) stepAnimal('leafkin', () => { villagers.update(player.originPosition(), headTmp, clock.seconds, dt); hobs.update(headTmp, clock.seconds, dt) })
+  if (villagers) stepAnimal('leafkin', () => {
+    frogChases.length = 0
+    frogs.chasers(frogChases)
+    villagers.update(player.originPosition(), headTmp, clock.seconds, dt, frogChases)
+    hobs.update(headTmp, clock.seconds, dt, frogChases)
+  })
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
   if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)

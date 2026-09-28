@@ -1,19 +1,20 @@
 // The overworld's human towns (DESIGN.md §32): where they stand and how each is laid out. Three-free, and a pure function of the heightmap, the authored layers and the seed, so every netplay client builds the same towns and the node gate can hold them to their rules.
 //
-// Everything on the ground is a generated road (doc.js isGenerated): the clearing is concentric rings, each building stands on a hidden pad, each door has a path, and 1-2 main roads run out from the clearing. The road machinery then flattens, paints and keeps the scatters off all of it with no town-specific code.
+// Everything on the ground is a generated road (doc.js isGenerated): the clearing is concentric rings, each building stands on an unpainted pad, each door has a path, and 1-2 main roads run out from the clearing. The road machinery then flattens, paints and keeps the scatters off all of it with no town-specific code.
 import { planBuilding, KINDS } from '../../buildings/plan.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
 
 export const TOWN = {
-  site: { grid: 40, slope: 0.12, flatR: 60, flatMax: 8, valleyR: 400, valleyMin: 15, disc: 90, spacing: 900, edge: 300, snowMargin: 60, keepClear: 150 },
+  site: { grid: 40, slope: 0.2, flatR: 60, flatMax: 16, valleyR: 400, valleyMin: 15, disc: 90, spacing: 900, edge: 300, snowMargin: 60, keepClear: 150 },
   // The import mirror-extends the source past |z| = 3492 (config.js), so towns keep to the real map.
   realZ: 3492,
   count: [8, 25],
   clearing: { r: 10, rings: [2, 5, 8], width: 5 },
   road: { width: 4, step: 12, reach: 170, wobble: 1.5, grade: 0.22, past: 12, apart: 60 },
-  path: { width: 1.6, max: 30, step: 8 },
+  // A building's rank is its radius plus `cost` per metre of door path, so a door near an existing path beats one nearer the centre with a long walk to it.
+  path: { width: 1.6, max: 24, step: 8, cost: 1.5 },
   // Metres between building footprints: base plus per-metre growth past the clearing edge, so the centre packs and the outskirts spread.
   gap: [1.2, 0.08],
   footRange: 3,
@@ -316,7 +317,7 @@ function layoutTown(site, index, all, ctx) {
       const r = C.r + 2 + hz + rand() * (rMax - C.r + 20)
       const x = cx + Math.cos(a) * r
       const z = cz + Math.sin(a) * r
-      const rank = r + rand() * 4
+      let rank = r + rand() * 4
       if (best !== null && rank >= best.rank) continue
       const net = nearestNetwork(x, z)
       const yaw = Math.atan2(net.x - x, net.z - z) + (rand() - 0.5) * 0.35
@@ -329,6 +330,8 @@ function layoutTown(site, index, all, ctx) {
       const [dx, dz] = toWorld(x, z, yaw, plan.door.x, doorZ)
       const end = nearestNetwork(dx, dz)
       if (end.dist > TOWN.path.max) continue
+      rank += TOWN.path.cost * end.dist
+      if (best !== null && rank >= best.rank) continue
       if (buildings.some((o) => segmentHitsBox(o.box, dx, dz, end.x, end.z, 0.3))) continue
       if (segmentHitsBox({ ...box, hz: hz - 0.35 }, dx, dz, end.x, end.z, 0)) continue
       const samples = []
@@ -394,7 +397,7 @@ function layoutTown(site, index, all, ctx) {
     const a = Math.max(0.1, L - Math.sqrt((half * SWELL_MIN) ** 2 - S * S) + 0.3)
     const ux = long === 'x' ? b.box.c : b.box.s
     const uz = long === 'x' ? -b.box.s : b.box.c
-    records.push({ id: `${b.id}-pad`, feather: 4, pts: [[b.box.x - ux * a, b.y, b.box.z - uz * a, 2 * half], [b.box.x + ux * a, b.y, b.box.z + uz * a, 2 * half]] })
+    records.push({ id: `${b.id}-pad`, feather: 4, dirt: false, pts: [[b.box.x - ux * a, b.y, b.box.z - uz * a, 2 * half], [b.box.x + ux * a, b.y, b.box.z + uz * a, 2 * half]] })
   }
 
   return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, roads, paths, records }

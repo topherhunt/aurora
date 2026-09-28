@@ -354,13 +354,16 @@ export class Wildlife {
    * @param opts.assets a loaded asset per species, keyed by SPECIES.key, for a gate; the world fetches the GLBs
    * @param opts.species the SPECIES keys this room holds; every one when absent
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Wildlife needs WaterSurfaces, for isSubmerged')
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Wildlife needs the WalkSurface, for heightAt and normalAt')
     if (dayness !== null && typeof dayness !== 'function') throw new Error('Wildlife: dayness must be a function of world time')
+    if (avoid !== null && typeof avoid !== 'function') throw new Error('Wildlife: avoid must be a function of (x, z)')
+    // (x, z) -> true where no animal may stand or walk (the towns' buildings). Must be pure in position, like seat.
+    this.avoid = avoid
     this.height = height
     this.water = water
     this.walk = walk
@@ -537,10 +540,11 @@ export class Wildlife {
 
   /**
    * The ground at (x, z) an animal may stand on, or null: the height field,
-   * gentle, dry and below the cold. Pure in position -- see the header -- so
+   * gentle, dry, below the cold and not avoided. Pure in position -- see the header -- so
    * every client plans the same walk. The normal there goes into `_norm`.
    */
   seat(x, z) {
+    if (this.avoid !== null && this.avoid(x, z)) return null
     const y = this.height.heightAt(x, z)
     if (this.water.isSubmerged(x, z, y)) return null
     if (y > this.height.snowLineAt(x, z) - SNOW_MARGIN) return null

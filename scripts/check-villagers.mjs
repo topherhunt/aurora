@@ -35,6 +35,7 @@ import { Stools } from '../src/v2/render/stools.js'
 import {
   Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
+import { keyOf as frogKey } from '../src/v2/render/frogs.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
@@ -560,6 +561,63 @@ console.log('\na mushroom found')
   check(picks === 1 && liftedAt === 'pick' && home, 'it gathers it up, and runs home with it to eat', `lifted in ${liftedAt}, home ${home}`)
   check(squeals >= 2, 'squealing at the sight of it and as it takes it', `${squeals}`)
   check(new Set(named).size === named.length && hands.lifted.length === finds.length, 'each takes one, and goes after no other', `${finds.length} finds of ${named.join(' ')}, ${hands.lifted.length} lifted`)
+}
+
+// --- a frog after a hob ---------------------------------------------------------------
+console.log('\na frog after a hob')
+{
+  const v = make(), w = make()
+  let t = T0
+  // A walker with a dry spot a metre off it that has water near: where a frog chasing a hob could be, and be thrown from.
+  const spot = (o) => [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => ({ x: o.x + dx, y: o.y, z: o.z + dz })).find((p) => v.seat(p.x, p.z) !== null && v._shore(p.x, p.z) !== null)
+  let c = null
+  while (c === null && t < T0 + 600) {
+    t = run(v, t, 1, FAR)
+    c = v.all.find((o) => !o.hidden && o.state === 'walk' && spot(o)) ?? null
+  }
+  const frog = [3, -2, 7]
+  const at = spot(c)
+  const chase = [{ key: 'f', tx: frog[0], tz: frog[1], index: frog[2], x: at.x, y: at.y, z: at.z, hob: 0 }]
+  let by = null, screams = 0, chatters = 0, done = false, bankWet = false
+  const phases = [], claims = [], clips = new Set()
+  const events = []
+  for (let i = 0; i < 60 * 60 && !done; i++) {
+    t += 1 / 60
+    v.update(FAR, head(FAR), t, 1 / 60, by === null ? chase : [])
+    for (const a of v.pending([])) events.push([...a.slice(0, 8), 'a', ...a.slice(9)])
+    by ??= v.all.find((o) => o.frog !== null) ?? null
+    for (const s of v.voices([])) {
+      if (by === null || Math.hypot(s.x - by.x, s.z - by.z) > 0.5) continue
+      if (s.sound === 'leafkinScream') screams++
+      if (s.sound.startsWith('leafkinChatter')) chatters++
+    }
+    if (by === null) continue
+    const ph = by.frog === null ? 'done' : by.phase
+    if (phases.at(-1) !== ph) phases.push(ph)
+    if (by.frog !== null) clips.add(`${by.phase}:${by.clip}`)
+    const cl = v.claims.get(frogKey(...frog))
+    if (cl && claims.at(-1)?.phase !== cl.phase) claims.push({ ...cl, to: { ...cl.to } })
+    if (by.phase === 'throw' && field.heightAt(by.x, by.z) < room.lake.y) bankWet = true
+    done = by.frog === null && by.state === 'walk'
+  }
+  const raised = [...v.log.values()].flat().filter((e) => e.kind === 'frog')
+  check(raised.length === 1 && by !== null && raised[0].ids[0] === by.id && raised[0].frog.join() === frog.join(), 'a leafkin near a frog chasing a hob goes for it, and only one', `${raised.length} raised`)
+  check(screams >= 1 && phases[0] === 'cry' && clips.has('cry:threaten'), 'it screams at it first', `${screams} screams, phases ${phases.join(' ')}`)
+  check(['cry', 'run', 'grab', 'carry', 'throw', 'watch', 'done'].every((p, k) => phases[k] === p) && clips.has('run:run') && clips.has('grab:gather') && clips.has('carry:walk') && clips.has('throw:threaten'), 'runs to it, gathers it up, walks it off, throws it and watches, then goes about its day', phases.join(' '))
+  check(chatters >= 1, 'chattering as it goes', `${chatters}`)
+  check(claims.map((cl) => cl.phase).join() === 'wait,held,thrown', 'the frog waits for it, is held, then thrown', claims.map((cl) => cl.phase).join())
+  const thrown = claims.find((cl) => cl.phase === 'thrown')
+  check(thrown && field.heightAt(thrown.to.x, thrown.to.z) < room.lake.y && !bankWet, 'thrown from the dry bank onto the water', thrown && `${(room.lake.y - field.heightAt(thrown.to.x, thrown.to.z)).toFixed(2)} m deep`)
+  check(v.claims.size === 0, 'and let go of once it has')
+
+  // Another client hears the frog on the wire and steps the same throw.
+  for (const a of events) w.apply(a)
+  w.update(FAR, head(FAR), t, 1 / 60)
+  const o = w.all[by.id]
+  check(o.x === by.x && o.z === by.z && o.state === by.state && o.phase === by.phase, 'another client stepping the frog lands where this one is', `${o.state}/${o.phase} vs ${by.state}/${by.phase}`)
+  let threw = false
+  try { w.apply([`${w.wire}zz:g1`, t, 0, 0, 0, 0, 0, 'frog', 'b', 0, 1, 2]) } catch { threw = true }
+  check(threw, 'a frog event naming no frog is refused')
 }
 
 // --- the room ------------------------------------------------------------------------

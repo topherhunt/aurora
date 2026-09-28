@@ -8,6 +8,7 @@ import { LOCOMOTION } from '../src/player.js'
 import { FILLET, InteriorStone, SEAT, STOOL_H, flatField, rAt, rollInterior } from '../src/v2/rooms/interior.js'
 import { HER_SCALE } from '../src/v2/rooms/village.js'
 import { WalkSurface } from '../src/v2/walk.js'
+import { besideBed } from '../src/v2/vitals.js'
 
 let failures = 0
 const check = (ok, what) => {
@@ -63,7 +64,7 @@ function flood(room) {
   }
   const cells = [...seen].map(([k, hs]) => ({ x: xy(Math.floor(k / N)), z: xy(k % N), hs }))
   const stoodAt = (x, z) => { const [i, j] = cellOf(x, z); return seen.get(idx(i, j)) ?? [] }
-  return { stone, reached, cells, stoodAt }
+  return { stone, walk, reached, cells, stoodAt }
 }
 
 const rooms = []
@@ -123,9 +124,10 @@ every('she walks straight from inside the door to within 0.5 m of it', (r) => {
 // The walk: the flood is the slow part, so it runs on every house of three villages.
 const walked = rooms.filter((r) => SEEDS.slice(0, 3).includes(r.seed))
 const reachFails = []
-let climbable = 0, climbed = 0, chairs = 0, sat = 0
+let climbable = 0, climbed = 0, chairs = 0, sat = 0, beds = 0
+const bedFails = []
 for (const r of walked) {
-  const { stone, reached, cells, stoodAt } = flood(r)
+  const { stone, walk, reached, cells, stoodAt } = flood(r)
   const fail = (what) => reachFails.push(`${r.seed}/${r.index} ${what}`)
   if (Math.abs(stone.blockTopAt(r.doorIn.x, r.doorIn.z)) > 1e-9) fail('lands off the floor')
   r.ringPts.forEach((p, k) => { if (!reached(p.x, p.z, 0)) fail(`ring ${k}`) })
@@ -141,9 +143,16 @@ for (const r of walked) {
   const table = r.solids.find((s) => s.kind === 'cyl' && s.x === r.ring.x && s.z === r.ring.z)
   if (!stoodAt(table.x, table.z).some((h) => Math.abs(h - table.y1) < 0.01)) fail('never climbs onto the table')
   for (const it of kinds(r, 'stools')) { climbable++; if (stoodAt(it.x, it.z).some((h) => Math.abs(h - STOOL_H) < 0.01)) climbed++ }
+  for (const bed of r.spots.filter((s) => s.kind === 'bed')) {
+    beds++
+    let p = null
+    try { p = besideBed(bed, walk) } catch (err) { bedFails.push(`${r.seed}/${r.index} ${err.message}`); continue }
+    if (!reached(p.x, p.z, bed.top - 0.2)) bedFails.push(`${r.seed}/${r.index} beside the bed at (${p.x.toFixed(2)}, ${p.z.toFixed(2)}) is not reached from the door`)
+  }
   for (const it of kinds(r, 'chair')) { chairs++; if (stoodAt(it.x, it.z).some((h) => Math.abs(h - SEAT) < 0.01)) sat++ }
 }
 check(reachFails.length === 0, `inside the door she stands on the floor, and walks to the table's ring, the kitchen, the window, the talkers and up to the loft, climbs onto the table, never in the wall or in furniture (${walked.length} rooms)${reachFails.length ? ` -- ${reachFails.slice(0, 6).join('; ')}` : ''}`)
+check(beds > 0 && bedFails.length === 0, `a load made in a house stands her beside the bed she slept in, on its floor and walkable from the door (${beds} beds)${bedFails.length ? ` -- ${bedFails.slice(0, 4).join('; ')}` : ''}`)
 check(climbable > 0 && climbed >= climbable * 0.9, `she steps up onto the stools on the floor (${climbed} of ${climbable})`)
 check(chairs > 0 && sat >= chairs * 0.9, `she steps up onto the table's chairs (${sat} of ${chairs})`)
 

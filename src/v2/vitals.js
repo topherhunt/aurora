@@ -61,6 +61,32 @@ export function liesOn(bed, head, fwd, scale) {
     rise < LIE.rise && rise > -LIE.sink && fwd.y > LIE.faceUp
 }
 
+/**
+ * Where a load made in a house stands her: on a ring just off `bed`'s outline
+ * (a rooms/interior.js spot, room-local with the room's middle at 0, 0),
+ * nearest the middle of its side toward the room's middle -- a loft bed fills
+ * its ledge, so there it is along the ledge past an end. The first spot where
+ * `walk` (the house's WalkSurface, its room set down at `o`) has her on the
+ * bed's own floor with room for her body; room-local, facing the bed.
+ */
+export function besideBed(bed, walk, o = { x: 0, y: 0, z: 0 }) {
+  const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
+  const inward = bed.x * c - bed.z * s > 0 ? -1 : 1
+  const floor = o.y + bed.top - 0.2
+  const ring = []
+  for (const gap of [walk.radius + 0.03, walk.radius + 0.2]) {
+    const hw = bed.wid / 2 + gap, hl = bed.len / 2 + gap
+    for (let t = -1; t <= 1.001; t += 0.05) ring.push([inward * hw, t * hl], [-inward * hw, t * hl], [t * hw, -hl], [t * hw, hl])
+  }
+  const off = ([across, along]) => Math.hypot(across - (inward * bed.wid) / 2, along)
+  ring.sort((p, q) => off(p) - off(q))
+  for (const [across, along] of ring) {
+    const x = bed.x + across * c + along * s, z = bed.z - across * s + along * c
+    if (Math.abs(walk.heightAt(o.x + x, o.z + z, floor) - floor) < 0.01 && walk.fits(o.x + x, o.z + z, floor, null)) return { x, z, fx: bed.x - x, fz: bed.z - z }
+  }
+  throw new Error(`besideBed: nowhere to stand by the bed at ${bed.x.toFixed(2)}, ${bed.z.toFixed(2)}`)
+}
+
 // How far off, in her metres, a desktop click lays her in a bed.
 export const BED_REACH_M = 3
 

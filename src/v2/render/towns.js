@@ -292,20 +292,41 @@ export class Towns {
     return top
   }
 
-  // The trees' `deadwood` contract: the town's meadow, a disc with a lobed edge out to its radius, or within `pad` (plus eaves room) of a building's box.
+  // Whether (x, z) is within about `r` of a building: its centre within r plus its half-diagonal. What keeps the wildlife out of town.
+  nearBuildingAt(x, z, r) {
+    for (const t of this.towns) {
+      if ((x - t.x) ** 2 + (z - t.z) ** 2 > (t.radius + r) ** 2) continue
+      for (const b of t.buildings) {
+        if ((x - b.box.x) ** 2 + (z - b.box.z) ** 2 < (r + Math.hypot(b.box.hx, b.box.hz)) ** 2) return true
+      }
+    }
+    return false
+  }
+
+  dispose() {
+    for (const mesh of this.near.values()) {
+      this.scene.remove(mesh)
+      mesh.geometry.dispose()
+    }
+    this.near.clear()
+    this.scene.remove(this.far)
+    this.far.geometry.dispose()
+    this.material.dispose()
+    this.farMaterial.dispose()
+  }
+
+  // The trees' `deadwood` contract: within `pad` (plus a metre) of a building's box. The clearing and paths are roads, which the trees keep off already.
   occupiesAt(x, z, pad) {
     for (const t of this.towns) {
       const dx = x - t.x
       const dz = z - t.z
       if (dx * dx + dz * dz > (t.radius + 20) ** 2) continue
-      const edge = t.radius * (0.85 + 0.15 * Math.sin(3 * Math.atan2(dz, dx) + t.x))
-      if (dx * dx + dz * dz < (edge + pad) ** 2) return true
       for (const b of t.buildings) {
         const bx = x - b.box.x
         const bz = z - b.box.z
         const lx = bx * b.box.c - bz * b.box.s
         const lz = bx * b.box.s + bz * b.box.c
-        if (Math.abs(lx) < b.box.hx + pad + 2 && Math.abs(lz) < b.box.hz + pad + 2) return true
+        if (Math.abs(lx) < b.box.hx + pad + 1 && Math.abs(lz) < b.box.hz + pad + 1) return true
       }
     }
     return false

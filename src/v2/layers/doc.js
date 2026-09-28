@@ -158,6 +158,7 @@ export function validate(json) {
     if (d === null || typeof d !== 'object' || Array.isArray(d)) fail(`roads[${i}]`, 'must be an object', d)
     id(d.id, `roads[${i}].id`, seen)
     if (d.feather !== undefined) nonNegative(d.feather, `roads[${i}].feather`)
+    if (d.dirt !== undefined && typeof d.dirt !== 'boolean') fail(`roads[${i}].dirt`, 'must be a boolean', d.dirt)
     roadPoints(d.pts, `roads[${i}].pts`)
   }
 

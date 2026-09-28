@@ -178,11 +178,14 @@ function normalise(rec, where) {
   const feather = rec.feather === undefined ? DEFAULT_ROAD_FEATHER : rec.feather
   if (!finite(depth) || depth < 0) throw new Error(`${where}: depth must be a finite number >= 0, got ${JSON.stringify(rec.depth)}`)
   if (!finite(feather) || feather < 0) throw new Error(`${where}: feather must be a finite number >= 0, got ${JSON.stringify(rec.feather)}`)
+  if (rec.dirt !== undefined && typeof rec.dirt !== 'boolean') throw new Error(`${where}: dirt must be a boolean, got ${JSON.stringify(rec.dirt)}`)
   return {
     id: rec.id,
     kind: rec.kind,
     depth,
     feather,
+    // False for a road that flattens and clears the ground but is not painted (a building's pad): dirtAt looks past it to the nearest painted road.
+    dirt: rec.dirt !== false,
     pts,
     spline: null,
     samples: null,
@@ -750,7 +753,7 @@ export class PathSet {
   // --- distance query -------------------------------------------------------
 
   // Fills `out` and returns true, or returns false if nothing reaches (x, z). Only sees segments whose SWEPT box covers the point, which is deliberate: the caller wants "does a path affect this vertex", not "how far is the nearest road in the county". `exclude` skips one record, which is how a river's endpoint finds the water it joins rather than itself.
-  _nearestInto(x, z, kind, out, exclude = null) {
+  _nearestInto(x, z, kind, out, exclude = null, paintedOnly = false) {
     this._ensureIndex()
     const bucket = this.grid.cellAt(x, z)
     if (bucket === undefined) return false
@@ -763,6 +766,7 @@ export class PathSet {
       const rec = this._pathList[this._segPath[si]]
       if (kind !== null && rec.kind !== kind) continue
       if (rec === exclude) continue
+      if (paintedOnly && !rec.dirt) continue
       const o = si * STRIDE
       const ax = seg[o]
       const az = seg[o + 2]
@@ -777,7 +781,12 @@ export class PathSet {
       }
       const dx = x - (ax + ex * t)
       const dz = z - (az + ez * t)
-      const d2 = dx * dx + dz * dz
+      let d2 = dx * dx + dz * dz
+      // Roads rank by distance past the kerb, so a wide pad beside a thin path owns the ground inside it; the key is the squared signed gap.
+      if (kind === 'road') {
+        const gap = Math.sqrt(d2) - (seg[o + 3] + (seg[o + 7] - seg[o + 3]) * t)
+        d2 = gap * Math.abs(gap)
+      }
       if (d2 < bestD2) {
         bestD2 = d2
         best = si
@@ -786,7 +795,9 @@ export class PathSet {
     }
     if (best < 0) return false
     const o = best * STRIDE
-    out.dist = Math.sqrt(bestD2)
+    const bx = seg[o] + (seg[o + 4] - seg[o]) * bestT - x
+    const bz = seg[o + 2] + (seg[o + 6] - seg[o + 2]) * bestT - z
+    out.dist = Math.sqrt(bx * bx + bz * bz)
     out.y = seg[o + 1] + (seg[o + 5] - seg[o + 1]) * bestT
     out.halfWidth = seg[o + 3] + (seg[o + 7] - seg[o + 3]) * bestT
     const rec = this._pathList[this._segPath[best]]
@@ -949,7 +960,7 @@ export class PathSet {
       const g = PathSet.channelProfile(HIT_B.dist / HIT_B.halfWidth)
       if (g > f) f = g
     }
-    if (this._nearestInto(x, z, 'road', HIT_B)) {
+    if (this._nearestInto(x, z, 'road', HIT_B, null, roadReach !== null)) {
       const hw = HIT_B.halfWidth
       const reach = roadReach === null ? HIT_B.rec.feather : roadReach
       const r = HIT_B.dist <= hw ? 1 : reach <= 0 ? 0 : smoothstep(1, 0, (HIT_B.dist - hw) / reach)
@@ -1167,7 +1178,9 @@ export class PathSet {
       if (kind === 'river') {
         out.push({ id: rec.id, depth: rec.depth, pts: live.map((p) => (p[2] === null ? [p[0], p[1]] : [p[0], p[1], p[2]])) })
       } else {
-        out.push({ id: rec.id, feather: rec.feather, pts: live.map((p) => [p[0], p[1], p[2], p[3]]) })
+        const road = { id: rec.id, feather: rec.feather, pts: live.map((p) => [p[0], p[1], p[2], p[3]]) }
+        if (!rec.dirt) road.dirt = false
+        out.push(road)
       }
     }
     return out

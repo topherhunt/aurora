@@ -1,6 +1,6 @@
 # 33 -- Health and sleep
 
-Code: `src/v2/vitals.js` (the rules), `src/v2/render/vitals-hud.js` (what she sees and hears), the fall in `src/player.js`, the wiring in `src/v2/main.js` (`stepVitals`, `stepHud`, `revive`), the relay's sleep rule in `server/src/main.js`. Gate: `scripts/check-vitals.mjs`.
+Code: `src/v2/vitals.js` (the rules), `src/v2/render/vitals-hud.js` (what she sees and hears), the fall in `src/player.js`, the wiring in `src/v2/main.js` (`stepVitals`, `stepHud`, `revive`), the relay's sleep rule in `server/src/main.js`. Gates: `scripts/check-vitals.mjs`, the bedside check in `scripts/check-interiors.mjs`.
 
 ## Health
 
@@ -10,7 +10,9 @@ The only harm is a fall. The Player has no gravity: walking off a ledge drops he
 
 Below half health (`Health.hurt` from 0 at 50 HP to 1 at 0 HP), a heartbeat plays on the `near` bus. It is a lub-dub synthesized at load (`heartbeatBuffer`), and it quickens from 1.3 s to 0.75 s as the hurt grows. A red veil pulses with each beat, and it thickens and darkens toward the edges of the view. Whenever she is below full health, a donut in the bottom-left shows what is left: at a fixed glance down and left in the headset, and at the frustum's corner on a desktop.
 
-At 0 HP the view goes black over 1.5 s. The card then offers her saved game or a new one: page buttons on a desktop (`qa-death-load`, `qa-death-new`), A and B on the controllers. `revive` rebuilds the saved game's room when she died in another one (a village is keyed by its door), puts her where the save says, heals her and lets the black lift.
+At 0 HP the view goes black over 1.5 s. The card then offers her saved game or a new one: page buttons on a desktop (`qa-death-load`, `qa-death-new`), A and B on the controllers. `revive` closes any house she is in, rebuilds the saved game's room when she is in another one (a village is keyed by its door), puts her where the save says, heals her and lets the black lift. The menu's Load is the same `revive` under the room-swap fade, and a refresh boots into the same place.
+
+Every save is made waking, so in a house. The save stores which house and which of its beds she fell asleep in, with its door's landing as the place the village is built around. The house is rolled off the village's seed rather than saved, so a load opens it again (`intoSavedHouse`, once the villagers are ready) and stands her beside that bed, facing it. `besideBed` takes the first spot on a ring just off the bed's outline, nearest the middle of the side toward the room's middle, where her body fits on the bed's own floor. A loft bed fills its ledge, so there the spot is along the ledge past an end. check-interiors holds every rolled bed to having such a spot, walkable from the door.
 
 ## Sleep
 

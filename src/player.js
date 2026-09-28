@@ -292,10 +292,11 @@ export class Player {
     return Math.atan2(this._fwd.x, this._fwd.z)
   }
 
-  spawnAt(x, z) {
+  // With `y`, onto the ground within reach of that height, as teleportTo.
+  spawnAt(x, z, y) {
     this.rig.position.x = x
     this.rig.position.z = z
-    this._landAt(this.th.heightAt(x, z))
+    this._landAt(this.th.heightAt(x, z, y))
     this.speed = 0
   }
 

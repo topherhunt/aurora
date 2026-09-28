@@ -8,6 +8,7 @@
  * the seed and the villagers' drawn poses alone, and it is put straight there
  * on a boot, after a clock jump, or when undrawn and LOSE_M off it; between
  * those it steers there each frame. Never sent and never exactly agreed.
+ * A frog chasing one (frogs.js chasers) sends it squealing FLEE_M off.
  */
 
 import THREE from '../../three-instance.js'
@@ -43,6 +44,11 @@ export const STOP = 0.6
 export const LOSE_M = 12
 // Each hob cries once every CRY_S seconds, from its middle (ambience.js RULES.hobCry sets how far it carries).
 export const CRY_S = [40, 120]
+// Chased by a frog: it makes for a spot FLEE_M straight away from it (swung up to FLEE_SWING off where that is wet), squealing -- its cry -- at once and every SQUEAL_S.
+export const FLEE_M = 3
+const FLEE_SWING = [0, 0.6, -0.6, 1.2, -1.2, 1.8, -1.8]
+export const SQUEAL_S = [1.2, 2.5]
+const NO_CHASERS = []
 const RESYNC_S = 1
 const VILLAGER_R = 0.25
 // Steering: speed per metre still to go, the turn rate, and the cadence caps -- a walk to WALK_PACE, then a run to an adult's or a baby's, a parent held to BROOD_KEEP of its slowest baby's top speed.
@@ -148,6 +154,8 @@ export class Hobs {
       slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
       x: 0, y: 0, z: 0, heading: rand() * 2 * Math.PI, aim: 0, moving: false,
       clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null,
+      // The frog after it this frame, and what the frogs chase it as.
+      chaser: null, lure: { kind: 'hob', x: 0, y: 0, z: 0, by: 'hob', id: this.all.length },
     }
     this.all.push(h)
     return h
@@ -223,9 +231,22 @@ export class Hobs {
     return null
   }
 
+  /** A spot FLEE_M from its chaser, straight away where that is dry, else swung off it. */
+  _flee(h) {
+    const c = h.chaser, away = Math.atan2(h.z - c.z, h.x - c.x)
+    h.eats = false
+    h.slot = -1
+    for (const a of FLEE_SWING) {
+      const x = h.x + Math.cos(away + a) * FLEE_M, z = h.z + Math.sin(away + a) * FLEE_M
+      if (this.villagers.seat(x, z) !== null) { h.spotX = x; h.spotZ = z; return }
+    }
+  }
+
   /** One frame of steering: toward the spot at a speed that eases in on it, the gait and cadence picked from the speed. */
   _steer(h, seconds, dt) {
-    const lead = this._target(h, seconds)
+    let lead = null
+    if (h.chaser !== null) this._flee(h)
+    else lead = this._target(h, seconds)
     if (!h.puppet && Math.hypot(h.spotX - h.x, h.spotZ - h.z) > LOSE_M) this._place(h, seconds)
     const d = Math.hypot(h.spotX - h.x, h.spotZ - h.z), stop = STOP * h.size
     h.moving = h.moving ? d > stop : d > 2 * stop
@@ -255,8 +276,18 @@ export class Hobs {
     h.y = this.walk.heightAt(x, z, h.y)
   }
 
-  /** One frame, after the villagers' own: `head` her eyes, `seconds` the world clock, `dt` the frame's time. */
-  update(head, seconds, dt) {
+  /** What the frogs chase, onto `into`: every hob, as a lure (frogs.js LURES). */
+  lures(into) {
+    if (!this.loaded || this.villagers.tick === null || !this.batch.visible) return into
+    for (const h of this.all) {
+      h.lure.x = h.x; h.lure.y = h.y; h.lure.z = h.z
+      into.push(h.lure)
+    }
+    return into
+  }
+
+  /** One frame, after the villagers' own: `head` her eyes, `seconds` the world clock, `dt` the frame's time, `chasers` the frogs after a hob (frogs.js chasers). */
+  update(head, seconds, dt, chasers = NO_CHASERS) {
     if (!this.loaded || !this.villagers.loaded || this.villagers.tick === null) return
     this.frame++
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
@@ -264,11 +295,15 @@ export class Hobs {
     this.seconds = seconds
     this.calls.length = 0
     for (const h of this.all) {
+      const was = h.chaser
+      h.chaser = null
+      for (const c of chasers) if (c.hob === h.id) h.chaser = c
+      if (h.chaser !== null && was === null) h.cry = 0
       if (jumped) this._place(h, seconds)
       this._steer(h, seconds, dt)
       this._draw(h, dt)
       if ((h.cry -= dt) <= 0) {
-        h.cry = between(this.cryRand, CRY_S)
+        h.cry = between(this.cryRand, h.chaser !== null ? SQUEAL_S : CRY_S)
         this.calls.push({ sound: 'hobCry', x: h.x, y: h.y + h.size * 0.5, z: h.z })
       }
     }
