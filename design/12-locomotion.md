@@ -10,8 +10,9 @@ She is a first-time-ish VR user. Comfort outranks capability.
 - **Eased acceleration to ~1.3-1.5 m/s** (normal walking pace). The ease-in curve is what prevents nausea, not the top speed. Instant stop on release. **Headset only:** the nausea is from a moving world the inner ear disagrees with, which does not happen on a monitor, so the desktop keyboard path takes top speed instantly -- there the ramp is just input lag.
 - **Comfort vignette** tunneling peripheral vision during movement, tightening with speed
 - **Damp vertical camera motion** on slopes. Pitch and bob from naive terrain-following is a major nausea source
-- **Max walkable slope ~35-40°**, no falling, no sliding (§4)
-- **'A' toggles teleport mode** for covering distance
+- **Max walkable slope going up** (§4); going down is never refused, even off a cliff. No sliding.
+- **Water is swum, never walked** (§11): the look (the hand in VR) steers, at walking pace.
+- **'A' toggles teleport mode** for covering distance. On land, a lob whose reach grows back over a 1 s cooldown after each landing, continuously per frame from a tenth of full; the arc is always blue, red only for a landing she could not stand on. Swimming, a straight wavering line where she points instead, held under the surface, whose reach restarts from near her each time the stick is pushed and glides out while held.
 - **Recenter** binding (long-press a face button)
 - **Unstick** binding (§4)
 

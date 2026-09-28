@@ -13,13 +13,13 @@
 
 import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
-import { BLOCKED, LeafkinGround } from '../src/v2/render/leafkin-ground.js'
+import { OPEN, STONE, LeafkinGround } from '../src/v2/render/leafkin-ground.js'
 import {
   Entrances, HOLE, SCREEN, SCREEN_POOL, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
 } from '../src/v2/render/entrances.js'
 import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
 import { Trees } from '../src/v2/render/trees.js'
-import { deadwoodBankFrom } from '../src/v2/render/deadwood.js'
+import { Ferns } from '../src/v2/render/ferns.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { LOCOMOTION, Player } from '../src/player.js'
 import { buildTextureArray } from '../src/textures.js'
@@ -43,7 +43,6 @@ const field = {
 const water = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
 const texArray = buildTextureArray()
-const deadwood = deadwoodBankFrom({ stump: readShippedLadder('stump-rotting'), log: readShippedLadder('log-fallen', { longAxisZ: true }) })
 
 /** A world grown about (cx, cz): the rocks, the trees the screens' pines are planted in (never placed, so no wood of their own), and the entrances. */
 const boot = (cx, cz, { seed = 7, radius = null } = {}) => {
@@ -51,7 +50,7 @@ const boot = (cx, cz, { seed = 7, radius = null } = {}) => {
   rocks.place(cx, cz)
   const scene = new THREE.Scene()
   const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed, plantRoom: SCREEN_POOL })
-  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }), trees, deadwood })
+  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }), trees })
   e.place(cx, cz)
   return { rocks, e, scene, trees }
 }
@@ -199,8 +198,8 @@ console.log('\nthe face')
   check(arched === rows.length, 'the arch stands upright on the floor, MOUTH_HEIGHT_M tall, its passage on the normal', `${arched}/${rows.length}`)
   const stepped = rows.every((site) => Math.hypot(site.x - site.ax, site.z - site.az) > MOUTH_STEP_M)
   check(stepped, 'the mouth point is outside the arch\'s centre', '')
-  // The screen: SCREEN.count pieces of SCREEN.kinds, every stone and stump a
-  // column the walker climbs, every pine planted in the trees.
+  // The screen: SCREEN.count pieces of SCREEN.kinds, every stone stone to the
+  // walker, every pine planted in the trees.
   let screened = 0, counted = 0, laid = 0, across = 0, climbed = 0, hidden = 0
   const kinds = Object.fromEntries(SCREEN.kinds.map((k) => [k, 0]))
   const col = new Float32Array(8)
@@ -225,7 +224,7 @@ console.log('\nthe face')
       if (f.kind === 'pine') continue
       const top = e.blockTopAt(f.x, f.z)
       const cols = e.columnAt(f.x, f.z, 0, col)
-      if (cols >= 1 && top >= f.top && top > GROUND) climbed++
+      if (cols >= 1 && Math.abs(top - col[1]) < 1e-3 && top > GROUND + 1 && Math.abs(top - f.top) < 0.25) climbed++
     }
     // The first piece beside the arch, the second beside it on the other side or before it.
     const u = site.flank.map((f) => (f.x - site.x) * -site.nz + (f.z - site.z) * site.nx)
@@ -245,7 +244,7 @@ console.log('\nthe face')
   check(laid === screened, 'the first beside the arch, the second beside it on the other side or before it', `${laid}/${screened}`)
   check(across > 0 && across < screened, 'and each of those at some mouth', `${across} across, ${screened - across} before`)
   check(hidden === screened, 'from 40 m out, a piece before the arch hides it straight on and 20 degrees off, one beside it 70 and 80 degrees off its side', `${hidden}/${screened}`)
-  check(climbed === pieces - kinds.pine, 'every stone and stump is a column the walker stands on', `${climbed}/${pieces - kinds.pine}`)
+  check(climbed === pieces - kinds.pine, 'every stone is stone to the walker at its centre, its hull\'s top within 25 cm of its box\'s', `${climbed}/${pieces - kinds.pine}`)
   check(trees.loosePlanted === kinds.pine, 'and every pine is planted in the trees', `${trees.loosePlanted}/${kinds.pine}`)
   // The walker, not the leafkin's ground: a flood over 0.2 m steps from the
   // mouth point, where her capsule fits on the ground (WalkSurface.fits) and no
@@ -316,16 +315,60 @@ console.log('\nthe face')
   console.warn = warn
   check(reached === rows.length, `at the face, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `${reached}/${rows.length}`)
   check(stayed === rows.length, 'on the ground the whole way', `${stayed}/${rows.length}`)
-  // Ground with no way out: no screen stands, and every one is counted.
+  // Ground walled in past FINAL_M: a screen has no way out to shut, so every mouth takes one.
   const bareTrees = new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, plantRoom: SCREEN_POOL })
-  const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell: () => BLOCKED }, trees: bareTrees, deadwood })
+  const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell: () => STONE }, trees: bareTrees })
   shut.place(-900, -900)
-  const bare = shut.sites()
-  check(bare.length === rows.length && bare.every((s) => !s.screened && s.flank.length === 0) && shut.rejected.screen === rows.length && bareTrees.loosePlanted === 0,
-    'on ground no walker gets out of, every mouth goes unscreened, counted', `${shut.rejected.screen}/${bare.length}`)
+  const penned = shut.sites()
+  check(penned.length === rows.length && penned.every((s) => s.screened && s.flank.length === SCREEN.count) && shut.rejected.screen === 0,
+    'on ground a walker never gets out of, every mouth is still screened, none refused', `${penned.filter((s) => s.screened).length}/${penned.length}`)
+  // The one way out a 1 m corridor straight off the mouth: open bare, shut by a boulder standing in it, so such a layout is rolled again.
+  const s0 = penned[0]
+  shut.ground = { cell: (x, z) => (Math.abs((x - s0.x) * -s0.nz + (z - s0.z) * s0.nx) < 0.5 && (x - s0.x) * s0.nx + (z - s0.z) * s0.nz > -0.5 ? 0 : STONE) }
+  const plug = [{ x: s0.x + s0.nx * 4, z: s0.z + s0.nz * 4, r: 1, hull: 2 }]
+  check(shut._pathable(s0, plug, false) && !shut._pathable(s0, plug), 'a piece across the only way out shuts a mouth that was open bare', `bare ${shut._pathable(s0, plug, false)}, screened ${shut._pathable(s0, plug)}`)
   // Released, a site's pines leave the trees.
   for (const site of [...e.resident.values()]) e._release(site)
   check(trees.loosePlanted === 0, 'and a released site unplants its pines', `${trees.loosePlanted} left`)
+}
+
+// --- the screens' stones grow what a boulder does -------------------------------
+//
+// The wood's trees and ferns placed first, as main.js boots them, then the
+// mouths: a tree or fern over a screen's stone stands on its surface, and off
+// it again once the site is released.
+console.log('\nthe screens\' stones grow what a boulder does')
+{
+  const site0 = boot(-900, -900, { radius: 450 }).e.sites()[0]
+  const rocks = new Rocks(new THREE.Scene(), field, water, layers, texArray, { seed: 7 })
+  rocks.place(site0.x, site0.z)
+  const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, rocks, plantRoom: SCREEN_POOL })
+  trees.place(site0.x, site0.z)
+  const ferns = new Ferns(new THREE.Scene(), field, water, { ...layers, paths: { nearest: () => null } }, texArray, { seed: 7, rocks })
+  ferns.place(site0.x, site0.z)
+  const e = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }), trees, ferns })
+  e.place(site0.x, site0.z)
+  // Every resident of `layer` standing over a screen's stone where no rock of the wood's is higher: [id, stone top].
+  const over = (layer, ids) => ids.flatMap((id) => {
+    const x = layer.instX[id], z = layer.instZ[id], top = e.blockTopAt(x, z)
+    return top > GROUND + 0.05 && top > rocks.blockTopAt(x, z, 0) ? [[id, top]] : []
+  })
+  const idsOf = (layer) => [...layer.tiles.values()].flatMap((t) => [...t.ids.subarray(0, t.n)])
+  // A tree's base is its y plus its sink; a fern's is its y.
+  const base = (layer, id) => layer.instY[id] + (layer === trees ? trees.instSink[id] : 0)
+  const onTrees = over(trees, idsOf(trees))
+  const lifted = onTrees.filter(([id, top]) => base(trees, id) >= top - 1e-3).length
+  check(onTrees.length > 0 && lifted === onTrees.length, 'every tree over a screen\'s stone stands on its surface', `${lifted}/${onTrees.length}`)
+  const onFerns = over(ferns, idsOf(ferns))
+  const seated = onFerns.filter(([id, top]) => base(ferns, id) >= top - 1e-3).length
+  check(onFerns.length > 0 && seated === onFerns.length, 'every fern over a screen\'s stone is seated on it', `${seated}/${onFerns.length}`)
+  // Evicted as place() evicts: out of the resident map, then released.
+  for (const [key, site] of [...e.resident]) {
+    e.resident.delete(key)
+    e._release(site)
+  }
+  const up = (layer) => idsOf(layer).filter((id) => base(layer, id) > Math.max(GROUND, rocks.blockTopAt(layer.instX[id], layer.instZ[id], 0)) + 1e-3).length
+  check(up(trees) === 0 && up(ferns) === 0, 'released, each stands on the ground or the wood\'s own rock again', `${up(trees)} trees, ${up(ferns)} ferns still up`)
 }
 
 // --- two boots agree ----------------------------------------------------------

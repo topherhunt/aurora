@@ -37,10 +37,14 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - Each glade has an assigned song.
   - [ ] A giant deer-skull, either a house, or on top of of a house?
   - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
+  - Procedurally generate leafkin houses' exteriors, Taking inspiration from the original art, concept art, and taking inspiration from the way that the interiors were built. Each one should be procedurally generated with various decorations and windows and varying shapes and proportions. And then they will all be merged into one mesh when you enter the Leafkin Glade. since there's few enough houses that you don't need multiple.
+- [ ] Human villages
+  - [ ] Fort walls
+- [ ] Castles
 - [ ] terrain-v3
   - [ ] Simpler approach to hydrology:
-    - Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
-    - Gaah it doesn't work. Maybe random jittering doesn't work with hydrology.
+    - [x] Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
+    - [x] Gaah it doesn't work. Maybe random jittering doesn't work with hydrology.
   - IF we take that simpler approach to the hydrology, then, maybe we only need to store coarser elevation map (8m / texel) and smaller-scale detail can be procedurally generated just-in-time?
 - [ ] Disable dither-fade for LOD swaps, pop-in, culls when you're in VR in teleport mode, ONLY for objects closer than 100m away.
 - [ ] Try fully mechanics / IK based dragon walk and fly motion.

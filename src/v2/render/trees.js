@@ -664,6 +664,7 @@ export class Trees {
     this.shoreSink = typeof water.shoreDistAt === 'function'
     this.ground = ground
     this.rocks = rocks
+    this.stones = []
     this.biome = biome
     this.deadwood = deadwood
     this.paths = paths
@@ -1319,6 +1320,32 @@ export class Trees {
       hem: this.unitCrownBase[v] * p.scale * stretch + lift,
       top: this.unitHeight[v] * p.scale * stretch + lift,
     }
+  }
+
+  /** Stone besides the rocks a trunk stands on (`blockTopAt(x, z)`), such as the entrances' screens; `restone` it where its stones come and go. */
+  addStone(layer) {
+    if (!layer || typeof layer.blockTopAt !== 'function') throw new Error('Trees.addStone: needs a layer with blockTopAt')
+    this.stones.push(layer)
+  }
+
+  /** Re-stand every resident tree with its trunk in the box on whatever stone is under it now. */
+  restone(x0, z0, x1, z1) {
+    for (const tile of this.tiles.values()) {
+      if ((tile.tx + 1) * TILE < x0 || tile.tx * TILE > x1 || (tile.tz + 1) * TILE < z0 || tile.tz * TILE > z1) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        const x = this.instX[id], z = this.instZ[id]
+        if (x < x0 || x > x1 || z < z0 || z > z1) continue
+        this.instLift[id] = Math.max(-PLACEMENT.sink * this.instScale[id], this._stoneTopAt(x, z) - this._groundFor(x, z)) - this.instSink[id]
+      }
+      this._reground(tile)
+    }
+  }
+
+  _stoneTopAt(x, z) {
+    let top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+    for (const s of this.stones) top = Math.max(top, s.blockTopAt(x, z, ROCK_STAND_MIN))
+    return top
   }
 
   _checkPlants(list) {
@@ -2074,8 +2101,7 @@ export class Trees {
       // the trunk, and a tree must not be dropped into a hill to reach it.
       // The tree's own sink comes off whichever it stands on.
       const ground = this._groundFor(x, z)
-      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
-      this.instLift[id] = Math.max(-PLACEMENT.sink * scale, top - ground) - this.instSink[id]
+      this.instLift[id] = Math.max(-PLACEMENT.sink * scale, this._stoneTopAt(x, z) - ground) - this.instSink[id]
       this.instY[id] = ground + this.instLift[id]
 
       // Born as its far card -- the clump card if its rank is in this level's

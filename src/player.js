@@ -15,7 +15,7 @@ export const LOCOMOTION = {
   // happens in the headset. On a monitor the ramp is pure input lag, so the
   // desktop path passes instant:true and skips it entirely (see update()).
   accelTau: 0.5,
-  // §4 -- this is what makes traps impossible by construction.
+  // §4 -- the steepest ground she may walk UP. Down is never refused.
   //
   // 38 -> 50, and the number is DERIVED rather than chosen. The rule is: she can
   // walk on anything the renderer does not draw as bare rock. chunk-mesh.js
@@ -95,6 +95,27 @@ export const LOCOMOTION = {
   travelSpeed: 500,
   travelClearance: 60, // above the HIGHEST ground on the path -- see travelTo()
   travelEase: 0.15, // fraction of the trip spent rising, and again descending
+
+  // --- swimming: where the water is over her head (§12) --------------------
+  // Afloat, her eye rides this far over the drawn surface. The margin over the
+  // lap (WATER.lapHeight 0.08) plus the bob is what keeps a floating head from
+  // dipping under and flickering the whole submersion effect.
+  swimEyeClear: 0.15,
+  // At rest with her eye less than this under the surface, she rises to float;
+  // deeper, she hangs where she is. Wider than the bob plus the lap, so a
+  // resting swimmer is always clearly under or clearly afloat.
+  swimSurfaceBand: 0.35,
+  swimSettleTau: 0.8, // seconds to rise to the surface from inside the band
+  swimBob: 0.035, // metres either way, at rest only
+  swimBobPeriod: 3.2,
+  swimBobTau: 0.6, // seconds for the bob to fade in on stopping, and out on moving
+  // Afloat, an aim this far below level dives; shallower keeps her on the
+  // surface, since a walker's gaze sits a little below the horizon anyway.
+  swimDiveDeg: 20,
+  // Walking in, she floats once the ground is this much under where floating
+  // would put her feet; afloat, she stands once it reaches that. The gap stops
+  // a lap flipping her between the two at the shelf's edge.
+  swimEnterHyst: 0.1,
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -132,6 +153,14 @@ export class Player {
     this.blocked = false // true when the slope limiter refused a move, for the HUD
     this.flying = false
     this.travel = null // non-null while a double-click flight is in progress
+    // Afloat or under: the rig's height is swimY plus the bob, not the ground.
+    this.swimming = false
+    this.swimY = 0
+    // Her eye over the rig, taken when she starts swimming and held, so ducking
+    // in the headset dips her head rather than lifting the world with it.
+    this._headUp = 0
+    this._swimT = 0
+    this._bobGain = 0
 
     this._head = new THREE.Vector3()
     this._origin = new THREE.Vector3()
@@ -148,13 +177,63 @@ export class Player {
    * and `capsule` her body against its stone (WalkSurface.fits, which also makes
    * heightAt read from a foot height); v1's TerrainHeight has neither and those
    * checks are skipped. All three swap together: a house's walk with the glade's
-   * capsule lets her through the house's walls.
+   * capsule lets her through the house's walls. The water is the surface's too
+   * (WalkSurface.waterAt), so a house's walk is dry.
    */
   setGround(terrainHeight) {
     this.th = terrainHeight
     this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
     this.capsule = typeof terrainHeight.fits === 'function' ? terrainHeight : null
+    this.water = typeof terrainHeight.waterAt === 'function' ? terrainHeight : null
     this._inStone = null
+    this.swimming = false
+  }
+
+  _waterAt(x, z) {
+    return this.water === null ? null : this.water.waterAt(x, z)
+  }
+
+  /** Where her feet float with her eye swimEyeClear over a surface at `level`. */
+  _floatY(level, headUp = this._headUp) {
+    return level + LOCOMOTION.swimEyeClear * this.scale - headUp
+  }
+
+  /**
+   * Put her feet on `ground` at the rig's (x, z) -- or, where the water there is
+   * over her head, afloat: at `feetY` if that is under the surface, else on it.
+   * Every way of arriving somewhere without walking there ends here.
+   */
+  _landAt(ground, feetY) {
+    const p = this.rig.position
+    this.swimming = false
+    this.smoothY = this.standY = p.y = ground
+    const level = this._waterAt(p.x, p.z)
+    if (level === null) return
+    const headUp = this.headPosition().y - p.y
+    const float = this._floatY(level, headUp)
+    if (ground >= float) return
+    this._startSwim(headUp, feetY === undefined ? float : Math.min(float, Math.max(ground, feetY)))
+  }
+
+  _startSwim(headUp, y) {
+    this.swimming = true
+    this._headUp = headUp
+    this.swimY = y
+    this._bobGain = 0
+    this.rig.position.y = this.smoothY = y
+  }
+
+  /** A swim teleport: her eye to (x, eyeY, z), held under the surface and over the bed. */
+  swimTo(x, eyeY, z) {
+    const headUp = this.swimming ? this._headUp : this.headPosition().y - this.rig.position.y
+    const feetY = eyeY - headUp
+    this.travel = null
+    this.flying = false
+    this.speed = 0
+    this.blocked = false
+    this.rig.position.x = x
+    this.rig.position.z = z
+    this._landAt(this.th.heightAt(x, z, feetY), feetY)
   }
 
   // World position of her head, which is where she is LOOKING FROM.
@@ -206,17 +285,19 @@ export class Player {
   }
 
   spawnAt(x, z) {
-    this.rig.position.set(x, this.th.heightAt(x, z), z)
-    this.smoothY = this.standY = this.rig.position.y
+    this.rig.position.x = x
+    this.rig.position.z = z
+    this._landAt(this.th.heightAt(x, z))
     this.speed = 0
   }
 
-  // With `y`, onto the ground within reach of that height (a landing under an awning) rather than the topmost stone.
+  // With `y`, onto the ground within reach of that height (a landing under an awning) rather than the topmost stone. Onto the surface where the water is over her head.
   teleportTo(x, z, y) {
     this.travel = null
     this.flying = false
-    this.rig.position.set(x, this.th.heightAt(x, z, y), z)
-    this.smoothY = this.standY = this.rig.position.y
+    this.rig.position.x = x
+    this.rig.position.z = z
+    this._landAt(this.th.heightAt(x, z, y))
     this.speed = 0
     this.blocked = false
   }
@@ -228,12 +309,12 @@ export class Player {
     this.flying = on
     this.speed = 0
     this.blocked = false
-    if (!on) {
+    if (on) this.swimming = false
+    else {
       // Asked from where she is hovering, so a landing under an overhang is on
       // the ground beneath it rather than on top of the stone.
       const origin = this.originPosition()
-      this.rig.position.y = this.th.heightAt(origin.x, origin.z, origin.y)
-      this.smoothY = this.standY = this.rig.position.y
+      this._landAt(this.th.heightAt(origin.x, origin.z, origin.y))
     }
   }
 
@@ -315,8 +396,7 @@ export class Player {
     if (T.t >= 1) {
       this.travel = null
       this.speed = 0
-      this.smoothY = this.standY = this.th.heightAt(p.x, p.z, p.y)
-      p.y = this.smoothY
+      this._landAt(this.th.heightAt(p.x, p.z, p.y))
     }
   }
 
@@ -347,7 +427,7 @@ export class Player {
     // other key would ask for full lift at zero speed and simply do nothing. On
     // the ground it must NOT count: lift is meaningless there and folding it in
     // would make the ascend key double as a walk key.
-    const drive = this.flying ? Math.min(1, Math.hypot(demand, liftIn)) : demand
+    const drive = this.flying || this.swimming ? Math.min(1, Math.hypot(demand, liftIn)) : demand
 
     const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed * this.scale
     if (drive <= 0) {
@@ -363,6 +443,14 @@ export class Player {
       return
     }
 
+    if (this.swimming) {
+      this._swim(dt, fwdIn, strafeIn, liftIn, input.flyDirection)
+      return
+    }
+
+    // Before the step moves the rig, while the camera's world pose is this frame's.
+    const headUp = head.y - this.rig.position.y
+
     if (this.speed > 0.001) this._tryMove(this.speed * dt, origin, fwdIn, strafeIn, demand)
 
     if (input.unstick) this._unstick(origin)
@@ -377,6 +465,90 @@ export class Player {
     if (this.smoothY === null) this.smoothY = ground
     this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
     this.rig.position.y = this.smoothY
+
+    // Walked (or fell) into water over her head: she floats from here.
+    const level = this._waterAt(origin.x, origin.z)
+    if (level !== null) {
+      const float = this._floatY(level, headUp)
+      if (ground < float - L.swimEnterHyst * this.scale) this._startSwim(headUp, Math.min(this.smoothY, float))
+    }
+  }
+
+  /**
+   * One frame in the water. Along `flyDirection` (the headset's hand) or the
+   * gaze, pitch and all, like flight -- except that afloat, an aim above
+   * swimDiveDeg below level keeps her on the surface at full pace, and nothing
+   * takes her above it. The bed is a floor, a bank she could not mantle from
+   * the water is a wall, and ground under her that reaches where her feet float
+   * stands her up to walk out. At rest she rounds to one of two states --
+   * afloat, or clearly under -- and bobs there; see swimSurfaceBand.
+   */
+  _swim(dt, fwdIn, strafeIn, liftIn, flyDirection = null) {
+    const L = LOCOMOTION
+    const k = this.scale
+    const p = this.rig.position
+    this._swimT += dt
+    let level = this._waterAt(p.x, p.z)
+    let moved = false
+    let onTop = false
+
+    if (this.speed > 0.001 && level !== null) {
+      if (flyDirection) this._fwd.copy(flyDirection)
+      else {
+        this.camera.getWorldQuaternion(this._quat)
+        this._fwd.set(0, 0, -1).applyQuaternion(this._quat)
+      }
+      this.camera.getWorldQuaternion(this._quat)
+      this._right.set(1, 0, 0).applyQuaternion(this._quat)
+      this._right.y = 0
+      if (this._right.lengthSq() > 1e-6) this._right.normalize()
+      this._step.set(0, 0, 0).addScaledVector(this._fwd, fwdIn).addScaledVector(this._right, strafeIn)
+      this._step.y += liftIn
+      const len = this._step.length()
+      const afloat = this.swimY >= this._floatY(level) - 0.01 * k
+      if (len > 1e-6 && afloat && this._step.y / len > -Math.sin((L.swimDiveDeg * Math.PI) / 180)) {
+        this._step.y = 0
+        onTop = true
+      }
+      const n = this._step.length()
+      if (n > 1e-6) {
+        this._step.multiplyScalar((this.speed * dt) / n)
+        const nx = THREE.MathUtils.clamp(p.x + this._step.x, -WORLD_HALF + 32, WORLD_HALF - 32)
+        const nz = THREE.MathUtils.clamp(p.z + this._step.z, -WORLD_HALF + 32, WORLD_HALF - 32)
+        // A mantle out of the water: onto anything within her reach of her
+        // feet, or of the surface by half that.
+        const bank = this.th.heightAt(nx, nz, this.swimY)
+        const wall = bank > Math.max(this.swimY + this.th.reach, level + 0.5 * this.th.reach)
+        const trunk = this.obstacles && !this.obstacles.obstacleAt(p.x, p.z, this._obstacle) &&
+          this.obstacles.obstacleAt(nx, nz, this._obstacle)
+        this.blocked = wall || !!trunk
+        if (!this.blocked) {
+          p.x = nx
+          p.z = nz
+        }
+        this.swimY += this._step.y
+        moved = true
+      }
+    }
+
+    level = this._waterAt(p.x, p.z)
+    const floor = this.th.heightAt(p.x, p.z, this.swimY)
+    if (this.swimY < floor) this.swimY = floor
+    if (level === null || floor >= this._floatY(level)) {
+      this.swimming = false
+      this.smoothY = p.y = this.swimY
+      this.standY = floor
+      return
+    }
+    const float = this._floatY(level)
+    if (this.swimY > float || onTop) this.swimY = float
+    else if (!moved && this.swimY + this._headUp > level - L.swimSurfaceBand * k) {
+      this.swimY += (float - this.swimY) * (1 - Math.exp(-dt / L.swimSettleTau))
+    }
+    this._bobGain += ((moved ? 0 : 1) - this._bobGain) * (1 - Math.exp(-dt / L.swimBobTau))
+    const bob = L.swimBob * k * this._bobGain * Math.sin((2 * Math.PI * this._swimT) / L.swimBobPeriod)
+    this.smoothY = p.y = this.swimY + bob
+    this.standY = floor
   }
 
   // Fly speed at a given locomotion origin, from height above the ground
@@ -627,40 +799,6 @@ export class Player {
     return !this._inStone
   }
 
-  // Symmetric on purpose: blocking steep descents as well as steep ascents is
-  // exactly what guarantees she can leave anywhere she can reach (§4).
-  //
-  // Two baselines, and she is stopped only when BOTH of them say wall.
-  //
-  // The immediate one is the original test and carries the whole of §4's
-  // argument: its probe pair IS her travel pair, so the step that let her in is
-  // bit-identical to the step that lets her back out, and reversibility is a
-  // property of the arithmetic rather than of the terrain. What it is not is a
-  // slope test. `dist` is one frame of travel -- 1.45 m/s at 72 Hz is 2 cm -- so
-  // a 46 cm patch of 42 deg stops her dead where a person would step over it,
-  // and that single fact is what three successive terrain operators were written
-  // to make visible before it was measured. None of them could have: no amount
-  // of sculpting makes a 46 cm feature legible. It was the wrong layer.
-  //
-  // The stride baseline asks what a walker actually asks -- is this still uphill
-  // two paces from now? -- so anything shorter than a stride averages out and a
-  // real cliff does not. Taking the min rather than replacing the immediate test
-  // matters: a lookahead on its own reads the cliff from 1.5 m back and stops
-  // her there, which is an invisible standoff bubble around every wall. This way
-  // she walks right up to the foot of it, and the contour slide above still has
-  // the near test to slide her along.
-  //
-  // The extra sample is only paid on the frames the immediate test already
-  // failed, which are the frames she is not moving anyway.
-  //
-  // EVERY HEIGHT IS ASKED FROM HER FEET, `y` at the near end and the near end's
-  // answer at the far, so a stone over her head is not ground at either. On
-  // stone the probe pair is therefore near-identical rather than bit-identical:
-  // the ground at (x, z) asked from `h1` on the way back can be a stone the way
-  // out could not reach, if one tops out in (y + reach, h1 + reach]. It is
-  // always within the slope rule of where she is, so she is never fenced in --
-  // she can only find herself seated on a slightly different surface coming
-  // back than going. design/04-traversability.md has the argument.
   /**
    * Whether she could WALK the straight line from (x0, z0) to (x1, z1): every
    * step of it passes the slope rule below and none enters a trunk. What the
@@ -702,15 +840,28 @@ export class Player {
   /**
    * The ground at the far end of a step from (x, z), feet at `y`, along (dx,
    * dz) of length `dist` -- or NaN when the slope rule refuses the step.
+   *
+   * ONLY CLIMBING IS REFUSED. Down is always allowed, off a ledge or a cliff
+   * alike, and the damped follower in update() is the fall -- so a pit she
+   * cannot climb out of is a trap now, and §4 says why the world accepts that.
+   *
+   * Two baselines, and a climb is refused only when BOTH say wall. `dist` is
+   * one frame of travel -- 2 cm at 72 Hz -- so on its own a 46 cm patch of 42
+   * deg stops her where a person would step over it; the stride baseline asks
+   * whether it is still uphill two paces on, so anything shorter than a stride
+   * averages out and a real cliff does not. The near test is kept first rather
+   * than replaced, so she walks up to the foot of a wall instead of stopping a
+   * stride short, and the contour slide has it to slide along. Every height is
+   * asked from her feet, so a stone over her head is not ground at either end.
    */
   _walkable(x, z, y, dx, dz, dist) {
     const h0 = this.th.heightAt(x, z, y)
     const h1 = this.th.heightAt(x + dx, z + dz, h0)
-    if (Math.abs(h1 - h0) / dist <= this._maxTan) return h1
+    if ((h1 - h0) / dist <= this._maxTan) return h1
     const stride = LOCOMOTION.stride * this.scale
     const k = stride / dist
     const h2 = this.th.heightAt(x + dx * k, z + dz * k, h0)
-    return Math.abs(h2 - h0) / stride <= this._maxTan ? h1 : NaN
+    return (h2 - h0) / stride <= this._maxTan ? h1 : NaN
   }
 
   _unstick(origin) {

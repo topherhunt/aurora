@@ -4177,9 +4177,7 @@ class RockBed {
    * ride in those columns, so none of them needs recovering from the placement
    * arrays.
    */
-  _spanAt(id, ex, ez) {
-    const e = this.instM
-    const o = id * 16
+  _spanAt(id, ex, ez, e = this.instM, o = id * 16) {
     const c0 = 1 / (e[o] * e[o] + e[o + 1] * e[o + 1] + e[o + 2] * e[o + 2])
     const c1 = 1 / (e[o + 4] * e[o + 4] + e[o + 5] * e[o + 5] + e[o + 6] * e[o + 6])
     const c2 = 1 / (e[o + 8] * e[o + 8] + e[o + 9] * e[o + 9] + e[o + 10] * e[o + 10])
@@ -4838,6 +4836,11 @@ export class Rocks {
   boulder() {
     const shape = this.beds[0].shape
     return { tiers: shape.tiers, measured: shape.measured, material: this.material }
+  }
+
+  /** The boulder() drawn with matrix elements `e`: its stone on the vertical through `ex, ez` metres off its origin, as a shared [bottom, top] in world metres, or null over none. For entrances.js. */
+  boulderSpanAt(e, ex, ez) {
+    return this.beds[0]._spanAt(-1, ex, ez, e, 0) ? span : null
   }
 
   /** The geometry and material a packed rock record is drawn with: the boulder at LOD0 on the stone material. For hands.js. */

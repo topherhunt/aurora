@@ -13,8 +13,8 @@ import { WALK } from '../walk.js'
 // ---------------------------------------------------------------------------
 // THE LEAFKIN VILLAGE ENTRANCES (DESIGN.md §30): a stone arch on the flank of
 // each entrance boulder (rocks.js's `hollow` bed) with a black hole behind it
-// and a screen of two pieces -- boulders, sunken pines, giant stumps -- before
-// it or against the boulder beside it, so it is found only by sidling along
+// and a screen of two pieces -- boulders and sunken pines -- before it or
+// against the boulder beside it, so it is found only by sidling along
 // the face. The layer owns no scatter of its own: every frame it asks the rocks for the
 // resident hollows within RADIUS_M and seats a mouth on each new one, so a
 // site is where its boulder is, on every client, and goes when the boulder
@@ -34,8 +34,8 @@ import { WALK } from '../walk.js'
 // place: an arch is on a wall, and a card spun to her would stand out of it.
 // A rung switch is a plain swap -- a few dozen instances, none nearer than a
 // boulder apart. A screen's stone is the rocks' own boulder on the rocks' own
-// material and ladder, its stump the dead wood's on the props' ladder, and its
-// pine the trees' own (Trees.plant).
+// material and ladder, stone to the trees and ferns as a boulder is (their
+// addStone), and its pine the trees' own (Trees.plant).
 // ---------------------------------------------------------------------------
 
 export const MOUTH_GLB = 'gen-props/cave-mouth.glb'
@@ -69,30 +69,26 @@ export const holeBox = () => [
   Math.min(...HOLE.outline.map((p) => p[1])), Math.max(...HOLE.outline.map((p) => p[1])),
 ]
 
-// The screen: `count` pieces, each a boulder, a sunken pine or a giant stump.
-// The first stands beside the arch on a rolled side, against the boulder (a
-// stone or stump `bite` of its radius into the face, a pine's trunk `pass` out
-// of it), `gap` past the arch's side. The second, `across` of the time, stands
-// so on the other side; otherwise before the arch, its hull `front` metres
-// clear of the mouth point and its centre off the arch's axis by up to `drift`
-// of its cover.
+// The screen: `count` pieces, each a boulder or a sunken pine. The first
+// stands beside the arch on a rolled side, against the boulder (a stone `bite`
+// of its radius into the face, a pine's trunk `pass` out of it), `gap` past
+// the arch's side. The second, `across` of the time, stands so on the other
+// side; otherwise before the arch, its hull `front` metres clear of the mouth
+// point and its centre off the arch's axis by up to `drift` of its cover.
 // A boulder is `size` across, bedded `sink` of its height, turned broadside to
 // the face within `twist` radians; a pine is sunk `sink` metres and scaled so
-// its lowest boughs come to `hem` over the ground, its trunk `pass` past the
-// hull line so she walks under them; a stump is `across` at its trunk, `squat`
-// of its own height to its width, bedded `sink` of its height.
+// its lowest boughs come to `hem` over the ground (below it, so they sweep it),
+// its trunk `pass` past the hull line.
 export const SCREEN = {
-  count: 2, kinds: ['boulder', 'pine', 'stump'], front: [1, 2], drift: 0.1, across: 0.5, bite: 0.4, gap: 0.2, tries: 4,
+  count: 2, kinds: ['boulder', 'pine'], front: [0.3, 0.8], drift: 0.1, across: 0.5, bite: 0.4, gap: 0.2, tries: 8,
   boulder: { size: [5.5, 7.5], sink: 0.25, twist: 0.5 },
-  pine: { sink: [1.5, 2], hem: [0.2, 0.5], pass: 1.2 },
-  stump: { across: [3.4, 4], squat: 0.75, sink: 0.1 },
+  pine: { sink: [2.5, 3], hem: [-0.8, -0.5], pass: 1.2 },
 }
 // A layout is kept only if a walker of her width gets from the mouth point out past every piece over the leafkin's ground (leafkin-ground.js), each piece's column grown by this: her shoulder and the cell's half diagonal.
 const PASS_PAD = WALK.radius + CELL * Math.SQRT1_2
 // A stone steps down the rocks' own ladder at the rocks' own distances per
 // metre of its size (rock.js ROCK_LOD_AT), not at the arch's rungs: those are
-// scaled to a 1.5 m arch and put a 6 m stone on its 20-face tier at 10 m. A
-// stump steps down PROP_STEPS off its own size, likewise.
+// scaled to a 1.5 m arch and put a 6 m stone on its 20-face tier at 10 m.
 const FLANK_LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => k * k)
 const FLANK_LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + ROCK_LOD_HYSTERESIS)) ** 2)
 
@@ -163,19 +159,19 @@ export class Entrances {
   /**
    * @param field  V2Height: heightAt
    * @param water  WaterSurfaces: isSubmerged
-   * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, hollowTintAt
+   * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, boulderSpanAt, hollowTintAt
    * @param opts.bank  mouthBankFrom's answer. Required.
    * @param opts.fixed  a room's own mouths in place of the rocks' hollows: `[{ key, x, z, nx, nz }]`, the face point and its outward normal, seated once.
    * @param opts.ground  LeafkinGround (cell), which every screen is walked over; required unless `fixed`.
-   * @param opts.trees  Trees (plant, unplant, plantShape), booted with `plantRoom` SCREEN_POOL, for the screen's pines; required unless `fixed`.
-   * @param opts.deadwood  deadwoodBankFrom's answer, for the screen's stumps; required unless `fixed`.
+   * @param opts.trees  Trees (plant, unplant, plantShape, addStone, restone), booted with `plantRoom` SCREEN_POOL, for the screen's pines and to stand on its stones; required unless `fixed`.
+   * @param opts.ferns  Ferns, optional: the screen's stones are stone to them as to the trees (addStone, restone).
    */
-  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null, ground = null, trees = null, deadwood = null } = {}) {
+  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null, ground = null, trees = null, ferns = null } = {}) {
     if (!bank || !Array.isArray(bank.tiers)) throw new Error('Entrances: needs the bank from loadMouthBank (or mouthBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Entrances: needs a V2Height with heightAt')
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Entrances: needs WaterSurfaces with isSubmerged')
-    if (!rocks || ['hollowsInto', 'hollowRayAt', 'boulder', 'hollowTintAt'].some((f) => typeof rocks[f] !== 'function')) {
-      throw new Error('Entrances: needs Rocks with hollowsInto, hollowRayAt, boulder and hollowTintAt')
+    if (!rocks || ['hollowsInto', 'hollowRayAt', 'boulder', 'boulderSpanAt', 'hollowTintAt'].some((f) => typeof rocks[f] !== 'function')) {
+      throw new Error('Entrances: needs Rocks with hollowsInto, hollowRayAt, boulder, boulderSpanAt and hollowTintAt')
     }
     this.field = field
     this.water = water
@@ -187,11 +183,12 @@ export class Entrances {
     }
     this.fixed = fixed
     if (fixed === null && (!ground || typeof ground.cell !== 'function')) throw new Error('Entrances: needs the LeafkinGround, to walk each screen')
-    if (fixed === null && (!trees || ['plant', 'unplant', 'plantShape'].some((f) => typeof trees[f] !== 'function'))) throw new Error('Entrances: needs Trees with plant, unplant and plantShape')
-    const snag = deadwood ? deadwood.variants.findIndex((v) => v.kind === 'snag') : -1
-    if (fixed === null && snag < 0) throw new Error('Entrances: needs the dead wood bank, with a stump')
+    if (fixed === null && (!trees || ['plant', 'unplant', 'plantShape', 'addStone', 'restone'].some((f) => typeof trees[f] !== 'function'))) throw new Error('Entrances: needs Trees with plant, unplant, plantShape, addStone and restone')
     this.ground = ground
     this.trees = trees
+    // Whatever stands on and about a screen's stones: told of them here, and asked to look again (restone) as they come and go.
+    this.growth = fixed === null ? [trees, ferns].filter(Boolean) : []
+    for (const g of this.growth) g.addStone(this)
     this._seen = new Uint8Array(0)
     this._queue = new Int32Array(0)
     this.bank = bank
@@ -223,32 +220,20 @@ export class Entrances {
     this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
     for (let i = 0; i < POOL; i++) this.holes.setMatrixAt(i, this._zero)
 
-    // The screen's stones and stumps: the tiers are cloned because PropMeshes
-    // hangs its fade attribute on the geometry it is given, and the rocks' and
-    // the dead wood's own meshes already hold that on these.
+    // The screen's stones: the tiers are cloned because PropMeshes hangs its
+    // fade attribute on the geometry it is given, and the rocks' own meshes
+    // already hold that on these.
     const boulder = rocks.boulder()
     this.boulder = boulder.measured
-    const arena = (tiers, material, name) => {
-      const a = new PropArena(SCREEN_POOL, tiers.map((g) => ({ geometries: [g.clone()] })), new Array(tiers.length).fill(SCREEN_POOL), () => material, name)
-      const free = new Int32Array(SCREEN_POOL)
-      for (let i = 0; i < SCREEN_POOL; i++) {
-        const id = a.addInstance(0)
-        a.setVisibleAt(id, false)
-        free[SCREEN_POOL - 1 - i] = id
-      }
-      return { arena: a, free, freeCount: SCREEN_POOL, tier: new Int8Array(SCREEN_POOL).fill(-1), tris: ladderTris(tiers) }
+    const a = new PropArena(SCREEN_POOL, boulder.tiers.map((g) => ({ geometries: [g.clone()] })), new Array(boulder.tiers.length).fill(SCREEN_POOL), () => boulder.material, 'v2-entrance-stones')
+    const free = new Int32Array(SCREEN_POOL)
+    for (let i = 0; i < SCREEN_POOL; i++) {
+      const id = a.addInstance(0)
+      a.setVisibleAt(id, false)
+      free[SCREEN_POOL - 1 - i] = id
     }
-    this.stones = arena(boulder.tiers, boulder.material, 'v2-entrance-stones')
-    this.flank = this.stones.arena
-    if (snag >= 0) {
-      // The mesh tiers alone: the card's picture is baked by Deadwood.bakeCards, and a stump is culled at its last mesh rung here.
-      this.snag = deadwood.variants[snag]
-      this.stumpMaterial = createGenPropMaterial()
-      this.stumpMaterial.map = deadwood.maps[snag]
-      this.materials.push(this.stumpMaterial)
-      this.stumps = arena(deadwood.tiers.slice(0, -1).map((t) => t.geometries[snag]), this.stumpMaterial, 'v2-entrance-stumps')
-    }
-    this._c = new THREE.Color()
+    this.stones = { arena: a, free, freeCount: SCREEN_POOL, tier: new Int8Array(SCREEN_POOL).fill(-1), tris: ladderTris(boulder.tiers) }
+    this.flank = a
 
     // key -> site, the resident mouths; `memory` keeps a site's `state` past its eviction, for the leafkin's cooldown.
     this.resident = new Map()
@@ -272,7 +257,6 @@ export class Entrances {
     scene.add(this.batch)
     scene.add(this.holes)
     scene.add(this.flank)
-    if (this.stumps) scene.add(this.stumps.arena)
   }
 
   /** Seat a mouth on every resident hollow within the radius. For boot and for a relief edit. */
@@ -326,19 +310,6 @@ export class Entrances {
         if (f.kind === 'pine') continue
         const fx = f.x - camX, fy = 0.5 * (f.y + f.top) - camY, fz = f.z - camZ
         const d2 = fx * fx + fy * fy + fz * fz
-        if (f.kind === 'stump') {
-          const s = this.stumps
-          const fcur = s.tier[f.id]
-          const rung = ladderTier(distAt(f.size, LOD_DEG), PROP_STEPS, RUNGS, Math.sqrt(d2), fcur)
-          const ft = Math.min(rung, s.tris.length - 1)
-          if (rung !== fcur) {
-            s.tier[f.id] = rung
-            s.arena.setVisibleAt(f.id, rung < RUNGS)
-            if (rung < RUNGS) s.arena.setGeometryIdAt(f.id, ft)
-          }
-          if (rung < RUNGS) tris += s.tris[ft]
-          continue
-        }
         const s = this.stones
         const fcur = s.tier[f.id]
         let ft = FLANK_LOD_SQ.length
@@ -375,8 +346,8 @@ export class Entrances {
     }
     for (const [key, site] of this.resident) {
       if (seen.has(key)) continue
-      this._release(site)
       this.resident.delete(key)
+      this._release(site)
     }
   }
 
@@ -530,19 +501,22 @@ export class Entrances {
     const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank: [], flankReach: 0 }
     if (r > 0) this._screen(site, hx, hz)
     this.resident.set(key, site)
+    this._restone(site)
     this.placed++
   }
 
   /**
-   * The screen, rolled off the key (SCREEN). A layout no walker gets out
-   * past is rolled again, SCREEN.tries times in all, then left out.
+   * The screen, rolled off the key (SCREEN). A layout that shuts a way out the
+   * bare mouth had is rolled again, SCREEN.tries times in all, then left out; a
+   * mouth her ground already walls in (its superset stone, leafkin-ground.js)
+   * takes its first roll, having no way out to lose.
    */
   _screen(site, hx, hz) {
     const rand = mulberry32(keyHash(site.key + ':screen') ^ this.seed)
     let pieces = null
     for (let t = 0; t < SCREEN.tries && pieces === null; t++) {
       const plan = this._layout(site, hx, hz, rand)
-      if (this._pathable(site, plan)) pieces = plan
+      if (this._pathable(site, plan) || !this._pathable(site, plan, false)) pieces = plan
     }
     site.screened = pieces !== null
     if (pieces === null) {
@@ -553,24 +527,25 @@ export class Entrances {
     const tint = this.rocks.hollowTintAt(hx, hz, new THREE.Color())
     for (const f of pieces) {
       const ground = this.field.heightAt(f.x, f.z)
-      let id = -1, y = ground, top = ground + f.top, low = ground + f.hem
+      let id = -1, y = ground, top = ground + f.top, low = ground + f.hem, m = null
       if (f.kind === 'pine') {
         this.trees.plant([f.plant])
       } else {
-        const s = f.kind === 'stump' ? this.stumps : this.stones
-        if (s.freeCount === 0) throw new Error(`Entrances: ${f.kind} pool exhausted at ${SCREEN_POOL}`)
+        const s = this.stones
+        if (s.freeCount === 0) throw new Error(`Entrances: stone pool exhausted at ${SCREEN_POOL}`)
         id = s.free[--s.freeCount]
         y = ground - f.sink * f.height
         top = y + f.height
         low = ground
         this._q.setFromAxisAngle(this._up, f.yaw)
-        this._s.set(f.scale, f.scale * f.squat, f.scale)
+        this._s.setScalar(f.scale)
         s.arena.setMatrixAt(id, this._m.compose(this._p.set(f.x, y, f.z), this._q, this._s))
-        s.arena.setColorAt(id, f.kind === 'stump' ? this._c.setScalar(f.tone) : tint)
+        m = Float64Array.from(this._m.elements)
+        s.arena.setColorAt(id, tint)
         s.tier[id] = -1
       }
-      site.flank.push({ id, kind: f.kind, x: f.x, z: f.z, y, r: f.r, top, size: f.size, cover: f.cover, low, plant: f.plant })
-      site.flankReach = Math.max(site.flankReach, Math.hypot(f.x - site.x, f.z - site.z) + f.hull)
+      site.flank.push({ id, kind: f.kind, x: f.x, z: f.z, y, r: f.r, top, size: f.size, cover: f.cover, low, plant: f.plant, m })
+      site.flankReach = Math.max(site.flankReach, Math.hypot(f.x - site.x, f.z - site.z) + Math.max(f.hull, f.size))
     }
   }
 
@@ -617,14 +592,7 @@ export class Entrances {
       const mm = this.boulder
       const scale = roll(SCREEN.boulder.size) / mm.width
       const radius = 0.5 * Math.max(mm.width, mm.depth) * scale
-      return { kind, x: 0, z: 0, yaw: 0, scale, squat: 1, height: mm.height * scale, sink: SCREEN.boulder.sink, hull: radius, r: radius * 0.8, cover: radius * 0.8, hem: 0, top: 0, size: rockLodSize(mm) * scale }
-    }
-    if (kind === 'stump') {
-      // Its roots taper, so it is spaced and met halfway between its trunk and its flare.
-      const v = this.snag
-      const scale = roll(SCREEN.stump.across) / (2 * v.solid)
-      const r = 0.5 * (v.solid + v.radius) * scale
-      return { kind, x: 0, z: 0, yaw: 0, scale, squat: SCREEN.stump.squat, height: v.height * scale * SCREEN.stump.squat, sink: SCREEN.stump.sink, hull: r, r, cover: v.solid * scale, hem: 0, top: 0, size: v.lodSize * scale, tone: 0.85 + rand() * 0.25 }
+      return { kind, x: 0, z: 0, yaw: 0, scale, height: mm.height * scale, sink: SCREEN.boulder.sink, hull: radius, r: radius * 0.8, cover: radius * 0.8, hem: 0, top: 0, size: rockLodSize(mm) * scale }
     }
     if (kind === 'pine') return { kind, x: 0, z: 0, yaw: 0, hull: SCREEN.pine.pass, r: 0, cover: SCREEN.pine.pass, hem: 0, top: 0, size: 0, plant: null }
     throw new Error(`Entrances: no screen piece '${kind}'`)
@@ -646,10 +614,10 @@ export class Entrances {
   /**
    * Whether a walker gets from the mouth point out past every piece: a flood
    * over CELL steps of the leafkin's ground, open as leafkin.js open() has it
-   * (never BLOCKED; anything within FINAL_M of the mouth; never STONE), and
-   * shut within PASS_PAD of each piece's column.
+   * (never BLOCKED; anything within FINAL_M of the mouth; never STONE), and,
+   * when `shut`, within PASS_PAD of each piece's column.
    */
-  _pathable(site, stones) {
+  _pathable(site, stones, shut = true) {
     let reach = 0
     for (const f of stones) reach = Math.max(reach, Math.hypot(f.x - site.x, f.z - site.z) + f.hull)
     const c = Math.ceil(reach / CELL) + 2, n = 2 * c + 1
@@ -666,7 +634,7 @@ export class Entrances {
       if (v === BLOCKED) return false
       if (dx * dx + dz * dz <= FINAL_M * FINAL_M) return true
       if (v === STONE) return false
-      for (const f of stones) {
+      if (shut) for (const f of stones) {
         const pad = f.r + PASS_PAD
         if ((x - f.x) ** 2 + (z - f.z) ** 2 < pad * pad) return false
       }
@@ -706,16 +674,44 @@ export class Entrances {
         this.trees.unplant([f.plant])
         continue
       }
-      const s = f.kind === 'stump' ? this.stumps : this.stones
+      const s = this.stones
       s.arena.setVisibleAt(f.id, false)
       s.tier[f.id] = -1
       s.free[s.freeCount++] = f.id
     }
+    this._restone(site)
     this.placed--
   }
 
-  // -- the screen's stones and stumps to the walker (walk.js addStone); the trees answer for a pine's trunk --
+  /** Ask the trees and ferns to look again over a screen's stones, which have just stood or gone. */
+  _restone(site) {
+    for (const f of site.flank) {
+      if (f.kind === 'pine') continue
+      for (const g of this.growth) g.restone(f.x - f.size, f.z - f.size, f.x + f.size, f.z + f.size)
+    }
+  }
 
+  // -- the screen's stones to the walker (walk.js addStone), the trees and the ferns; the trees answer for a pine's trunk --
+
+  /** Stride 4 from anchor `w` as Rocks.anchorsInto, each stone with its centre in the half-open box; returns the new cursor. */
+  anchorsInto(x0, z0, x1, z1, out, w = 0) {
+    const cap = (out.length / 4) | 0
+    for (const site of this.resident.values()) {
+      if (site.blind) continue
+      for (const f of site.flank) {
+        if (f.kind === 'pine' || f.x < x0 || f.x >= x1 || f.z < z0 || f.z >= z1) continue
+        if (w >= cap) return w
+        out[w * 4] = f.x
+        out[w * 4 + 1] = f.y
+        out[w * 4 + 2] = f.z
+        out[w * 4 + 3] = f.r
+        w++
+      }
+    }
+    return w
+  }
+
+  /** Each stone's own [bottom, top] on the vertical through (x, z), off the rocks' hull as their own rocks answer (Rocks.boulderSpanAt). */
   columnAt(x, z, _minSize, out) {
     const cap = out.length >> 1
     let n = 0
@@ -725,11 +721,10 @@ export class Entrances {
       if (sx * sx + sz * sz > site.flankReach * site.flankReach) continue
       for (const f of site.flank) {
         if (n >= cap) return n
-        if (f.kind === 'pine') continue
-        const dx = x - f.x, dz = z - f.z
-        if (dx * dx + dz * dz > f.r * f.r) continue
-        out[n * 2] = f.y
-        out[n * 2 + 1] = f.top
+        const span = this._spanAt(f, x, z)
+        if (!span) continue
+        out[n * 2] = span[0]
+        out[n * 2 + 1] = span[1]
         n++
       }
     }
@@ -743,12 +738,18 @@ export class Entrances {
       const sx = x - site.x, sz = z - site.z
       if (sx * sx + sz * sz > site.flankReach * site.flankReach) continue
       for (const f of site.flank) {
-        if (f.kind === 'pine') continue
-        const dx = x - f.x, dz = z - f.z
-        if (dx * dx + dz * dz <= f.r * f.r && f.top > top) top = f.top
+        const span = this._spanAt(f, x, z)
+        if (span && span[1] > top) top = span[1]
       }
     }
     return top
+  }
+
+  /** A stone's span through (x, z), or null; `size`, its longest extent, is past its turned box's corners. */
+  _spanAt(f, x, z) {
+    if (f.kind === 'pine') return null
+    const dx = x - f.x, dz = z - f.z
+    return dx * dx + dz * dz < f.size * f.size ? this.rocks.boulderSpanAt(f.m, dx, dz) : null
   }
 
   get stats() {
@@ -768,10 +769,6 @@ export class Entrances {
   dispose() {
     this.batch.dispose()
     this.flank.dispose()
-    if (this.stumps) {
-      this.stumps.arena.dispose()
-      this.stumpMaterial.dispose()
-    }
     this.holes.geometry.dispose()
     this.holeMaterial.dispose()
     for (const s of this.shadows) {

@@ -21,7 +21,6 @@ import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { Entrances, SCREEN_POOL, mouthBankFrom } from '../src/v2/render/entrances.js'
 import { Trees } from '../src/v2/render/trees.js'
-import { deadwoodBankFrom } from '../src/v2/render/deadwood.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
 import { buildTextureArray } from '../src/textures.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
@@ -50,8 +49,7 @@ const rocks = new Rocks(new THREE.Scene(), height, water, layers, buildTextureAr
 const hollowBed = rocks.beds.find((b) => b.cfg.hollow)
 // The screens walked over the field, water and rocks alone: the census counts mouths, not which end of a screen is open.
 const trees = new Trees(new THREE.Scene(), height, water, buildTextureArray(), { seed: SEED, plantRoom: SCREEN_POOL })
-const deadwood = deadwoodBankFrom({ stump: readShippedLadder('stump-rotting'), log: readShippedLadder('log-fallen', { longAxisZ: true }) })
-const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field: height, water, rocks }), trees, deadwood })
+const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field: height, water, rocks }), trees })
 
 const hollows = new Map()
 const sites = new Map()

@@ -63,6 +63,20 @@ const walker = (rocks, x, z, yaw, feet, scale = 1) => {
   rig.updateMatrixWorld(true)
   return player
 }
+// A player on `ground` with no stone, and water at `level` everywhere when given.
+const walkerOn = (ground, x, z, yaw, level) => {
+  const rig = new THREE.Group()
+  const camera = new THREE.PerspectiveCamera()
+  camera.position.y = LOCOMOTION.eyeHeight
+  camera.rotation.y = yaw
+  rig.add(camera)
+  const surface = new WalkSurface(ground, stone([]), trees)
+  if (level !== undefined) surface.setWater(() => level)
+  const player = new Player(rig, camera, surface)
+  player.spawnAt(x, z)
+  rig.updateMatrixWorld(true)
+  return player
+}
 const DT = 1 / 72
 const INPUT = { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true }
 // Walk for `seconds`, returning the frame she was first refused a step, or -1.
@@ -282,6 +296,63 @@ console.log('her size (DESIGN.md §30)')
   const full = walker(stone([]), 0, 0, -Math.PI / 2, undefined, 1)
   walk(full, 4)
   check(Math.abs(full.rig.position.x - LOCOMOTION.maxSpeed * 4) < 0.05, 'at full size, her full pace', `${(full.rig.position.x / 4).toFixed(3)} m/s`)
+}
+
+console.log('going down and swimming (§4, §12)')
+{
+  // A CLIFF five metres down, past any reach: she walks off it, and a teleport
+  // may land at its foot, while the way back up is refused.
+  const cliff = { heightAt: (x) => (x < 10 ? GROUND : GROUND - 5) }
+  const p = walkerOn(cliff, 8, 0, -Math.PI / 2)
+  walk(p, 4)
+  check(p.rig.position.x > 11 && p.standY === GROUND - 5, 'she walks off a ledge taller than her reach',
+    `x = ${p.rig.position.x.toFixed(2)}, feet at ${p.standY}`)
+  check(p.pathClear(8, 0, 12, 0, GROUND) && !p.pathClear(12, 0, 8, 0, GROUND - 5),
+    'a path down the cliff is clear, and the same path up it is not')
+}
+{
+  // A LAKE: a shore at GROUND to x = 10, then six metres of water over the bed.
+  const LEVEL = GROUND - 0.5
+  const lake = { heightAt: (x) => (x < 10 ? GROUND : GROUND - 6) }
+  const p = walkerOn(lake, 8, 0, -Math.PI / 2, LEVEL)
+  let under = 0
+  let everSwam = false
+  for (let f = 0; f < Math.round(5 / DT); f++) {
+    p.update(DT, INPUT)
+    p.rig.updateMatrixWorld(true)
+    if (p.swimming) everSwam = true
+    if (p.swimming && p.headPosition().y < LEVEL) under++
+  }
+  check(everSwam && p.swimming && p.rig.position.x > 12, 'walking in off the shore, she swims', `x = ${p.rig.position.x.toFixed(2)}`)
+  check(under === 0, 'swimming level, her eye never goes under', `${under} frames under`)
+  let lo = Infinity
+  let hi = -Infinity
+  for (let f = 0; f < Math.round(10 / DT); f++) {
+    p.update(DT, { ...INPUT, move: 0 })
+    p.rig.updateMatrixWorld(true)
+    const eye = p.headPosition().y
+    lo = Math.min(lo, eye)
+    hi = Math.max(hi, eye)
+  }
+  check(lo > LEVEL && hi - lo > 0.02, 'at rest she bobs, and the bob never takes her eye under',
+    `eye ${(lo - LEVEL).toFixed(3)} to ${(hi - LEVEL).toFixed(3)} over the surface`)
+  p.camera.rotation.order = 'YXZ'
+  p.camera.rotation.x = -0.8
+  const before = p.rig.position.y
+  walk(p, 2)
+  check(p.rig.position.y < before - 1 && p.headPosition().y < LEVEL, 'aiming down, she dives', `dropped ${(before - p.rig.position.y).toFixed(2)} m`)
+  walk(p, 20)
+  check(p.swimming && p.rig.position.y >= GROUND - 6 - 1e-9, 'and swims along the bed rather than walking on it',
+    `feet ${(p.rig.position.y - (GROUND - 6)).toFixed(2)} m over the bed`)
+  p.swimTo(20, GROUND - 20, 0)
+  check(p.swimming && p.rig.position.y === GROUND - 6, 'a swim teleport under the bed is held on it')
+  p.swimTo(20, GROUND + 5, 0)
+  check(p.swimming && p.headPosition().y > LEVEL, 'and one over the surface is held at it')
+  p.camera.rotation.x = 0
+  p.camera.rotation.y = Math.PI / 2
+  walk(p, 15)
+  check(!p.swimming && p.standY === GROUND && p.rig.position.x < 10, 'swimming back to the shore, she walks out',
+    `x = ${p.rig.position.x.toFixed(2)}, feet at ${p.standY}`)
 }
 
 console.warn = warn

@@ -82,6 +82,21 @@ export class WalkSurface {
     // Rocks' terms and is read on its own into the one span buffer; one with
     // a `deckAt(x, z)` says where its top is a floor she stands level on.
     this.stone = [rocks]
+    this._water = null
+  }
+
+  /**
+   * The water she swims in: `levelAt(x, z)` answers the drawn surface over the
+   * point or null on dry land. A room's walk with none (a house) is all dry.
+   */
+  setWater(levelAt) {
+    if (typeof levelAt !== 'function') throw new Error('WalkSurface.setWater: needs a levelAt(x, z) function')
+    this._water = levelAt
+  }
+
+  /** The water surface over (x, z), or null where there is none. */
+  waterAt(x, z) {
+    return this._water === null ? null : this._water(x, z)
   }
 
   /**

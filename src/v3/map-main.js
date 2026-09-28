@@ -122,6 +122,7 @@ function showStats() {
   const bowls = s.bowls.bodies.map((b) => `${String(Math.round(b.x)).padStart(6)},${String(Math.round(b.z)).padStart(6)}  ${b.km2.toFixed(3)} km2  ${b.deepest.toFixed(0).padStart(3)} m deep at ${b.level.toFixed(0)} m`).join('\n')
   const biomes = BIOMES.map((b, k) => `${b.id.padEnd(8)}${(s.biomes.landShare[k] * 100).toFixed(1).padStart(6)}%`).join('\n')
   const hs = s.hydrology
+  const ba = hs.basins
   const ch = hs.channels
   const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m  leak ${(l.leakKm2 * 100).toFixed(1)} ha  dry ${(l.dryKm2 * 100).toFixed(1)} ha`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
@@ -141,17 +142,23 @@ snow line ${R.doc.snow.base.toFixed(0)} m
 
 <h2>step C -- biomes (${s.biomes.polygons} polygons, ${s.biomes.vertices} vertices, ${(s.biomes.agree * 100).toFixed(1)}% agree)</h2>${biomes}
 
-<h2>step D -- hydrology</h2>channels  ${ch.chains} chains in ${(ch.ms / 1000).toFixed(1)} s, ${ch.km.toFixed(0)} km of centreline, ${ch.samples} samples
+<h2>step D -- hydrology</h2>basins    ${ba.drained} of ${ba.basins} drained in ${ba.ms} ms, the ${ba.kept} deepest kept (${ba.keptKm2.toFixed(2)} km2, ${ba.keptDeepest.toFixed(0)} m deepest), ${ba.stuck} stuck
+rim cuts  ${ba.cuts} over ${ba.roundMean.toFixed(1)} rounds mean (${ba.roundMax} the most), dish ${ba.brushMean.toFixed(0)} m mean / ${ba.brushMax.toFixed(0)} m widest
+drain     ${ba.cutMean.toFixed(1)} m mean over ${ba.cutKm2.toFixed(2)} km2, deepest ${ba.deepest.toFixed(0)} m, ${ba.raised} texels raised
+          ${ba.ponds} ponds solved, ${ba.drowned} cut through to the sea, ${ba.absorbed} swallowed by a kept lake, ${ba.drainedDeepest.toFixed(1)} m left in the wettest drained
+channels  ${ch.chains} chains in ${(ch.ms / 1000).toFixed(1)} s, ${ch.km.toFixed(0)} km of centreline, ${ch.samples} samples
 bends     ${ch.bendMean.toFixed(1)} m mean offset off the flow line, ${ch.bendMax.toFixed(0)} m the most, ${((ch.walled / ch.samples) * 100).toFixed(0)}% of samples pulled back by a wall
-notch     ${ch.notch.toFixed(0)} m the deepest the bed had to cut through a rise to hold its grade
+bed       ${ch.widthMean.toFixed(1)} m wide mean, ${ch.widthMax.toFixed(0)} m the widest, deepest ${(ch.slotMax * 100).toFixed(0)}% of its own width
+flatness  ${(ch.flatShare * 100).toFixed(0)}% of samples on a flat floor (grade ${ch.gradeMean.toFixed(2)} mean over ${CARVE.gradeLen} m, fully steep at ${CARVE.steepGrade})
+notch     ${ch.notch.toFixed(0)} m the deepest the bed had to cut at its centreline
 cut       ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2, deepest ${ch.deepest.toFixed(0)} m, ${ch.raised} texels raised
-bowls     ${ch.bowls} enclosed, ${ch.spared} spared (${ch.held} of them deeper than ${CARVE.hold} m), the rest drained
 cliffs    ${hs.cliffs.km2.toFixed(2)} km2 tabled in ${hs.cliffs.ms} ms, ${hs.cliffs.meanMove.toFixed(1)} m mean lift, ${hs.cliffs.maxMove.toFixed(0)} m the most
           banded, of which the sparse ladder moves about a third: ${hs.cliffs.byBiome.filter((b) => b.cells).map((b) => `${b.id} ${(b.share * 100).toFixed(0)}% of ${b.steep}`).join('   ')}
 silt      ${hs.silt.km2.toFixed(2)} km2 of bowl raised to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m deepest
 rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
+water     ${hs.rivers.widthMean.toFixed(1)} m wide mean, ${hs.rivers.widthMax.toFixed(0)} m the widest, mouths x${hs.rivers.flare.toFixed(2)} their own river's mean
 
-<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} bowls the carve spared, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
+<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} basins the drain kept, ${hs.lakes.km2.toFixed(2)} km2)</h2>${lakes || 'none'}`
 }
 
 function showHover() {

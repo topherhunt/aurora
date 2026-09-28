@@ -473,6 +473,7 @@ export class Ferns {
 
     this.field = field
     this.rocks = rocks
+    this.stones = []
     this.water = water
     this.layers = layers
     this.paths = layers.paths
@@ -812,6 +813,30 @@ export class Ferns {
   }
 
   /**
+   * Stone besides the rocks a fern grows on and about, such as the entrances'
+   * screens: `blockTopAt(x, z)` and `anchorsInto(x0, z0, x1, z1, out, w)`, which
+   * appends at anchor `w` and returns the new cursor. `restone` it where its
+   * stones come and go.
+   */
+  addStone(layer) {
+    if (!layer || typeof layer.blockTopAt !== 'function' || typeof layer.anchorsInto !== 'function') {
+      throw new Error('Ferns.addStone: needs a layer with blockTopAt and anchorsInto')
+    }
+    this.stones.push(layer)
+  }
+
+  /** Regrow every resident tile a stone in the box reaches, at its own level. */
+  restone(x0, z0, x1, z1) {
+    const pad = LUSH.rockReach + LUSH.rockPad
+    for (const [key, tile] of [...this.tiles]) {
+      if ((tile.tx + 1) * TILE < x0 - pad || tile.tx * TILE > x1 + pad || (tile.tz + 1) * TILE < z0 - pad || tile.tz * TILE > z1 + pad) continue
+      this._release(tile)
+      this.tiles.delete(key)
+      this._growTile({ key, tx: tile.tx, tz: tile.tz, q: tile.q })
+    }
+  }
+
+  /**
    * Re-tier near instances, follow the camera, thin or thicken tiles whose
    * distance has changed, and spend the frame's build budget on the queue.
    * Safe to call every frame.
@@ -1045,12 +1070,12 @@ export class Ferns {
     // is resident is what is there.
     const anchors = this._anchors
     let nAnchors = 0
-    if (this.rocks) {
-      const pad = LUSH.rockReach + LUSH.rockPad
-      nAnchors = this.rocks.anchorsInto(tx * TILE - pad, tz * TILE - pad, (tx + 1) * TILE + pad, (tz + 1) * TILE + pad, anchors)
-      if (nAnchors >= LUSH.rockCap) {
-        throw new Error(`Ferns: tile (${tx}, ${tz}) has ${nAnchors}+ boulders in reach, over LUSH.rockCap ${LUSH.rockCap}`)
-      }
+    const pad = LUSH.rockReach + LUSH.rockPad
+    const box = [tx * TILE - pad, tz * TILE - pad, (tx + 1) * TILE + pad, (tz + 1) * TILE + pad]
+    if (this.rocks) nAnchors = this.rocks.anchorsInto(...box, anchors)
+    for (const s of this.stones) nAnchors = s.anchorsInto(...box, anchors, nAnchors)
+    if (nAnchors >= LUSH.rockCap) {
+      throw new Error(`Ferns: tile (${tx}, ${tz}) has ${nAnchors}+ boulders in reach, over LUSH.rockCap ${LUSH.rockCap}`)
     }
 
     // The planted ferns run first, at k below 0: they draw nothing from the
@@ -1095,7 +1120,8 @@ export class Ferns {
       if (!plant && h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
 
       // See ROCK_STAND_MIN and the placement below for what `top` is.
-      const top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+      let top = this.rocks ? this.rocks.blockTopAt(x, z, ROCK_STAND_MIN) : -Infinity
+      for (const s of this.stones) top = Math.max(top, s.blockTopAt(x, z, ROCK_STAND_MIN))
       // Off the road, then THE SPARSE CUT. A candidate past plainCount stands only on lush ground:
       // on a boulder, within rockReach of one's foot, within roadReach of a
       // road's edge, or within shoreReach of water on the dry side (the

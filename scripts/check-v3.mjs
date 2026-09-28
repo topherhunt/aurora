@@ -12,6 +12,7 @@ import { JITTER, TEXELS_PER_NODE, octaveTable, splitOctaves, octaveAt } from '..
 import { FineJitter } from '../src/v3/fine.js'
 import { BIOMES, deserialise, rasterise } from '../src/v3/biomes.js'
 import { LAKES, RIVERS } from '../src/v3/hydrology.js'
+import { BASINS } from '../src/v3/basins.js'
 import { CARVE } from '../src/v3/channels.js'
 import { CLIFFS, table } from '../src/v3/cliffs.js'
 import { NB_DI, NB_DJ } from '../src/sim/world-grid.js'
@@ -97,18 +98,24 @@ export async function run() {
 
   console.log('\n[v3] the water')
   const hs = s.hydrology
+  const ba = hs.basins
   const ch = hs.channels
+  // THE DRAIN IS JUDGED ON DEPTH AND NOTHING ELSE. The jitter leaves hundreds of closed dips a flood would pond, so every basin over `pond` metres has its lowest rim cut with a broad dish until its water is under a metre -- all but the `keep` deepest, which are held to `keepDepth` instead. Like the carve it only ever lowers a texel, so `raised` is a count and not a tolerance. `stuck` is a basin the round cap gave up on, and it must be none of them: a basin left with water in it is water the doc does not draw.
+  check(ba.raised === 0, `the drain never raised a texel (${ba.raised} did)`)
+  check(ba.stuck === 0 && ba.drainedDeepest <= BASINS.pond + 1e-3, `${ba.drained} of ${ba.basins} basins drained to ${ba.drainedDeepest.toFixed(2)} m of the ${BASINS.pond} m asked, none stuck at the ${BASINS.rounds}-round cap`)
+  check(ba.kept === Math.min(BASINS.keep, ba.basins) && ba.bodies === ba.kept && ba.keptDeepest <= BASINS.keepDepth + 1e-3, `the ${ba.kept} deepest kept as ${ba.bodies} bodies over ${ba.keptKm2.toFixed(2)} km2, ${ba.keptDeepest.toFixed(1)} m deep of the ${BASINS.keepDepth} m they are held to`)
+  // The dish is half the pond's width and never under `minBrush`, because a narrow one cuts a slot down the rim where a broad one takes a saddle out of it. So the drain's footprint is wide and shallow -- a couple of km2 at a few metres mean -- and the one deep figure is the rim of the deepest basin it emptied, which is that basin's own depth and cannot be less.
+  check(ba.cutMean > 1 && ba.cutMean < 15 && ba.cutKm2 > 0.5 && ba.cutKm2 < s.landKm2 * 0.3 && ba.brushMean > BASINS.minBrush * 0.5, `the drain cut ${ba.cutMean.toFixed(1)} m mean over ${ba.cutKm2.toFixed(2)} km2 with a ${ba.brushMean.toFixed(0)} m mean dish (widest ${ba.brushMax.toFixed(0)} m), ${ba.deepest.toFixed(0)} m at the deepest`)
   // THE ONE INVARIANT THE WHOLE CARVE RESTS ON. Every write is `elev = min(elev, target)`, so the pass can make no spike, no fin and no needle -- the artifact class a deposition term produces. It is asserted as a count and not as a tolerance because there is no rounding here to forgive.
   check(ch.raised === 0, `the carve never raised a texel (${ch.raised} did)`)
   check(ch.chains > 50 && ch.km > 20 && ch.samples > 5000, `${ch.chains} chains, ${ch.km.toFixed(0)} km of centreline in ${ch.samples} samples`)
   // THE MEANDER, which is the reason the flow network is not carved literally: the priority flood's tree crosses a flat as a straight BFS, and a bed stamped on it is the straight slash through a hillside this pass exists to avoid. The offset is a swirl field the valley clamp scales back where the walls are close, so the mean is tens of metres on open ground and near zero in a gorge -- `notch` counts the samples the clamp bit on, and it must bite on some and not on most.
   check(ch.bendMean > 5 && ch.bendMax > CARVE.meander * 0.5 && ch.walled > 0 && ch.walled < ch.samples * 0.8, `centrelines bend ${ch.bendMean.toFixed(1)} m mean off the flow line, ${ch.bendMax.toFixed(0)} m at the most, ${((ch.walled / ch.samples) * 100).toFixed(0)}% of samples pulled back by a wall`)
   // The cut's footprint is in METRES and not in cells, so it does not move with the grid: measured across the whole field, a run of cut ground is 16 m at the median and 126 m at p99 on the 2 m grid and 16 and 136 m on the 8 m one -- a headwater gully and a trunk valley, both, at either pitch. That is the fork the droplet brush had, closed.
-  // THE DEEPEST CUT IS BOUNDED BY THE REFUSAL TO GOUGE. Notching a bowl's rim cuts it down to the bowl's own floor, so the cut there is the bowl's depth plus the bed's, and a bowl deeper than `hold` is spared instead of drained -- so nothing the carve does can exceed the two together.
-  const gouge = CARVE.hold + CARVE.maxDepth
-  check(ch.cutMean > 0.5 && ch.cutMean < 20 && ch.deepest <= gouge + 1e-6 && ch.notch <= CARVE.hold + 1e-6 && ch.cutKm2 > 0.3 && ch.cutKm2 < s.landKm2 * 0.5, `the carve cut ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${ch.deepest.toFixed(0)} m at the deepest of the ${gouge} m it may gouge, notching ${ch.notch.toFixed(0)} m through a rise at the most`)
-  // A bowl is drained or it is spared, never gouged: one deeper than `hold` keeps its water rather than having a canyon cut out of its rim to let it out.
-  check(ch.spared > 0 && ch.spared < ch.bowls * 0.2 && ch.held <= ch.spared, `${ch.spared} of ${ch.bowls} enclosed bowls spared, ${ch.held} of them deeper than the ${CARVE.hold} m the carve refuses to cut through`)
+  // THE DEEPEST CUT IS BOUNDED BY THE FLANK THE STAMP SIZES FOR IT. `notch` is the cut at the centreline: the bed's own depth plus whatever the monotone forward pass has to hold its level through, and that second part is small because the drain went first and left nothing over a metre to cross. Off the line the flat bed crosses sloping ground, so a texel can be cut deeper than the centreline is -- but not past the `maxRise` of cut the flank is sized for, or the stamp is standing a wall it built no flank for.
+  check(ch.cutMean > 0.5 && ch.cutMean < 20 && ch.notch <= CARVE.maxDepth + 4 && ch.deepest <= CARVE.maxRise + CARVE.maxDepth && ch.cutKm2 > 0.3 && ch.cutKm2 < s.landKm2 * 0.5, `the carve cut ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2 of ${s.landKm2.toFixed(1)}, ${ch.notch.toFixed(0)} m at the centreline of the ${CARVE.maxDepth} m bed, ${ch.deepest.toFixed(0)} m at the deepest texel`)
+  // THE BED IS A CHANNEL AND NOT A SLOT. Width and depth both come from the catchment but through different exponents, so nothing about the two laws keeps them in proportion on their own and the depth is capped at the full width instead: `slotMax` is the largest depth-over-width anywhere on the field, and water deeper than it is wide is a trench. The flat terms have to fire on a real share of the samples too, or the widening and the fine meander are dead code.
+  check(ch.slotMax <= 1 + 1e-6 && ch.widthMean > 3 && ch.widthMax <= CARVE.maxHalf * 2 + 1e-6 && ch.flatShare > 0.08 && ch.flatShare < 0.6, `the bed runs ${ch.widthMean.toFixed(1)} m wide mean (widest ${ch.widthMax.toFixed(0)} m), deepest ${(ch.slotMax * 100).toFixed(0)}% of its own width, ${(ch.flatShare * 100).toFixed(0)}% of samples on a flat floor`)
   check(hs.silt.km2 < s.landKm2 * 0.1, `${hs.silt.km2.toFixed(2)} km2 silted up to its spill, ${hs.silt.mean.toFixed(1)} m mean, ${hs.silt.deepest.toFixed(0)} m at the deepest`)
 
   // The tabling is off by default (generate.js STEPS), so it is judged on an island generated with it switched back on, and the default is asserted to carry none of it. Everything below reads `cliffy` for that reason.
@@ -191,13 +198,17 @@ export async function run() {
     if (size > longest) longest = size
   }
   check(faceCells > 2000 && longest > 60 && faceCells / runs > 3, `faces over 12 m run in bands, not specks: ${faceCells} texels in ${runs} runs, ${(faceCells / runs).toFixed(1)} mean and ${longest} at the longest`)
-  // `keep` bounds what selectLakes picks, but a bowl deeper than CARVE.hold is spared on top of that budget, so the ceiling here is the two together and not `keep` alone.
-  check(hs.lakes.count >= 3 && hs.lakes.count <= LAKES.keep + hs.lakes.held, `${hs.lakes.count} lakes of the ${hs.lakes.spared} bowls the carve spared (${hs.lakes.drained} drained out from under their water afterwards)`)
+  // The lakes are the basins the drain kept and there is no other source of one, so `keep` is the whole ceiling. Some of the kept can still lose their water afterwards, to the outlet notch or to a chain cutting their rim, and those are dropped from the doc rather than drawn dry.
+  check(hs.lakes.count >= 3 && hs.lakes.count <= BASINS.keep && hs.lakes.count === hs.lakes.spared - hs.lakes.drained, `${hs.lakes.count} lakes of the ${hs.lakes.spared} basins the drain kept (${hs.lakes.drained} drained out from under their water afterwards)`)
   check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
   check(hs.lakes.leakKm2 < hs.lakes.km2 * 0.05, `${hs.lakes.km2.toFixed(3)} km2 of lake, ${hs.lakes.leakKm2.toFixed(4)} km2 of water the ellipses would draw beside it`)
   check(hs.lakes.dryKm2 < hs.lakes.km2 * 0.02 && hs.lakes.dryDeepest < 4, `${hs.lakes.dryKm2.toFixed(4)} km2 of lake the ellipses leave dry, ${hs.lakes.dryDeepest.toFixed(1)} m at the deepest`)
   check(hs.rivers.count >= 20 && hs.rivers.km > 10 && hs.rivers.km / s.landKm2 > 1 && hs.rivers.km / s.landKm2 < 6, `${hs.rivers.count} rivers, ${hs.rivers.km.toFixed(1)} km on ${s.landKm2.toFixed(1)} km2 of land, longest ${hs.rivers.longestKm.toFixed(1)} km`)
   check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
+  // A RIVER GROWS DOWNSTREAM, which is `tip` and not the catchment exponent: a chain is walked up its largest donor and so keeps a median 0.84 of its mouth's catchment nearly to its head, and no width law honest enough to keep its exponent near a half can flare on that alone. So the taper carries it, and `flare` -- a mouth over that river's own mean width, averaged over the trunks that reach the sea -- is the number that says whether it did.
+  check(hs.rivers.flare >= 1.5 && hs.rivers.flare <= 2 && hs.rivers.widthMean > 4 && hs.rivers.widthMax <= RIVERS.maxHalf * 2 + 1e-6, `water ${hs.rivers.widthMean.toFixed(1)} m wide mean (widest ${hs.rivers.widthMax.toFixed(0)} m), mouths x${hs.rivers.flare.toFixed(2)} their own river's mean`)
+  // The doc's sheet has to sit INSIDE the bed the carve cut for it, or a river draws water up the side of its own valley. Both laws are a square root of the same catchment with the same `tip`, so the ratio is fixed by their coefficients and holds at every sample rather than on average -- and the caps and floors have to keep it too.
+  check(CARVE.halfAtMin / Math.sqrt(CARVE.minCatchment) > RIVERS.halfAtMin / Math.sqrt(RIVERS.minCatchment) && CARVE.tip === RIVERS.tip && CARVE.maxHalf >= RIVERS.maxHalf && CARVE.minHalf >= RIVERS.minHalf, `the bed stands x${((CARVE.halfAtMin / Math.sqrt(CARVE.minCatchment)) / (RIVERS.halfAtMin / Math.sqrt(RIVERS.minCatchment))).toFixed(2)} the water it carries, at every catchment`)
   // Every river's ground never climbs from source to mouth on the field itself (a source in a lake sits under its own outlet, so that first step is free), its widths are inside the ladder, and its mouth is in the sea, in a lake or on another river.
   const half = ((a.n - 1) * a.cell) / 2
   const groundAt = (x, z) => a.height[Math.round((z + half) / a.cell) * a.n + Math.round((x + half) / a.cell)]
@@ -207,7 +218,7 @@ export async function run() {
   const lakes = a.doc.lakes.filter((l) => l.y > 0)
   for (const r of a.doc.rivers) {
     for (let k = 2; k < r.pts.length; k++) if (groundAt(r.pts[k][0], r.pts[k][1]) > groundAt(r.pts[k - 1][0], r.pts[k - 1][1]) + 0.01) climbs++
-    for (const p of r.pts) if (!(p[2] >= RIVERS.widthAtMin && p[2] <= RIVERS.maxWidth)) widths++
+    for (const p of r.pts) if (!(p[2] >= RIVERS.minHalf && p[2] <= RIVERS.maxHalf)) widths++
     const [mx, mz] = r.pts[r.pts.length - 1]
     const inSea = groundAt(mx, mz) <= 0
     // IN A LAKE MEANS IN ITS WATER, WHICH IS A TEXEL WIDER THAN ITS ELLIPSE. fitLake sizes the ellipse to LAKES.cover of the pool and leaves the shallowest rim outside on purpose, and LAKES.holdDepth is its statement of how deep that rim may be before being drawn as land is a bug. So a mouth standing under a lake's level, no deeper than holdDepth, on that lake's own rim is in the lake: measured, one of these 97 mouths sits at 1.07 of its ellipse's radius under 0.49 m of water, and which mouth lands in the 0.0001 km2 the ellipses leave dry is a coin toss the ladder's amplitudes flip. Asserting the ellipse alone here is asserting the same tolerance twice, once with a hair trigger. A mouth on dry ground stands ABOVE every lake's level and still fails.
@@ -219,7 +230,7 @@ export async function run() {
     if (!(inSea || inLake || onRiver)) mouths++
   }
   check(climbs === 0, `no river climbs between its nodes (${climbs} climbs)`)
-  check(widths === 0, `every river node carries a width in ${RIVERS.widthAtMin}..${RIVERS.maxWidth} m (${widths} outside)`)
+  check(widths === 0, `every river node carries a half-width in ${RIVERS.minHalf}..${RIVERS.maxHalf} m (${widths} outside)`)
   check(mouths === 0, `every mouth is in the sea, in a lake or on another river (${mouths} are not)`)
 
   console.log('\n[v3] the document')

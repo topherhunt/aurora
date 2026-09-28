@@ -72,7 +72,7 @@ import { Player, LOCOMOTION } from '../player.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
-import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, roomKey } from './flaregun.js'
+import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, pressSafety, roomKey } from './flaregun.js'
 import { Flares, fromWire, toWire } from './render/flares.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -1061,10 +1061,7 @@ function applyQuestToggle(key) {
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) {
-    entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
-    if (entrances.stumps) entrances.stumps.arena.visible = questToggles.boulders
-  }
+  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -1554,10 +1551,11 @@ const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
 const gunTarget = new THREE.Vector3()
-/** The trigger on a hand holding the flare gun: a flare off down the barrel, or down `aim` (unit) where given, to the room; a dry click with no charge left. */
+/** The trigger on a hand holding the flare gun, which kicks it in the hand either way (hands.js kick): a flare off down the barrel, or down `aim` (unit) where given, to the room; a dry click on safe or with no charge left. */
 function fireFlare(key, aim = null) {
   const rec = hands.holding(key)
-  if (rec.charges <= 0) {
+  hands.kick(key)
+  if (!rec.armed || rec.charges <= 0) {
     if (ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.25 })
     return
   }
@@ -1579,10 +1577,9 @@ function fireFlare(key, aim = null) {
   questPulse(key, 0.8, 80)
 }
 
-/** A/X or Q: the next colour in the palette for the gun in the hand. */
+/** A/X or Q on the gun in the hand: to safe, or armed with the next colour (flaregun.js pressSafety). */
 function cycleFlareColor(key) {
-  const rec = hands.holding(key)
-  rec.hue = (rec.hue + 1) % PALETTE.length
+  pressSafety(hands.holding(key))
   if (ambience) sound.play('uiPop', { bus: 'near', rate: 1.4, gain: 0.3 })
 }
 
@@ -3379,6 +3376,7 @@ async function buildRoom(room, at) {
   // She stands on the rocks and walks around the trunks, so she is placed only
   // once both are on the ground. See v2/walk.js.
   walk = new WalkSurface(height, rocks, trees, { scale: room.scale })
+  walk.setWater(waterLevelAt)
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)
@@ -3774,7 +3772,7 @@ async function buildRoom(room, at) {
   // the one each screen is walked over.
   await bootStep('entrances')
   const ground = room.village ? null : new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground, trees, deadwood: await banks.deadwood })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground, trees, ferns })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)
@@ -4386,7 +4384,7 @@ const HOTKEYS = [
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds, the flare gun too; the trigger in the headset, and a grip lets go' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds, or fire the flare gun it holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
-      { keys: 'q', what: 'the next colour for the flare gun in the hand, shown in its window; A / X in the headset' },
+      { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
     ],
   },
   {
@@ -4892,19 +4890,28 @@ let swayStrength = 0
  * same tint, applied per surface at no cost at all, and identical in both eyes
  * because it is not a screen-space effect in the first place.
  */
-function applySubmersion(head, elapsedReal, state) {
+/**
+ * The water surface drawn over (x, z) this frame, or null on dry land: what the
+ * eye is under, what she floats on (WalkSurface.setWater) and what the teleport
+ * stops at, so the three cannot disagree about where the waterline is.
+ */
+function waterLevelAt(x, z) {
+  if (waterSurfaces === null) return null
   // `drawn`, because the question here is not the scatter's. The scatter asks
   // where the ground is wet and wants the authored footprint; the eye asks
   // whether it is under the POLYGON, and a river's polygon is widened past its
-  // footprint to bury its edge under the bank. Same 3x3 block and same scan
-  // either way -- the cost that made levelAt careful was one call per scatter
-  // candidate, and this is one call a frame.
-  let level = waterSurfaces === null ? null : waterSurfaces.levelAt(head.x, head.z, true)
+  // footprint to bury its edge under the bank.
+  let level = waterSurfaces.levelAt(x, z, true)
   // A lake is DRAWN water.lap over its level this frame (the vertex stage's
   // lap) and a river is not; the eye is under what is drawn, so a lake wins
   // here where its risen plane stands over the river's.
-  const lake = waterSurfaces === null ? null : waterSurfaces.lakeLevelAt(head.x, head.z)
+  const lake = waterSurfaces.lakeLevelAt(x, z)
   if (lake !== null && (level === null || lake + water.lap > level)) level = lake + water.lap
+  return level
+}
+
+function applySubmersion(head, elapsedReal, state) {
+  const level = waterLevelAt(head.x, head.z)
   // Aboard, her eye is over the lid whatever the level says, and the bilge is dry.
   submerged = level !== null && head.y < level && !(boats && boats.aboard)
   // Kept for the panel, which is the only way to see the two numbers this rule
@@ -5333,10 +5340,16 @@ function questPulse(key, intensity, ms) {
 // the landing's horizontal distance from the rig -- on the flat the lob cannot
 // carry that far anyway, but a lob down a cliff would otherwise carry as far
 // as the cliff is tall -- and the cap is another thing the flight STOPS at,
-// like the ground and a trunk: the arc ends at the reach and the ring drops to
-// the ground under it. So no way of aiming can turn the arc red. Red is only
-// ever the ground refusing her -- a slope past the limiter's, a trunk, a
-// boulder her legs could not climb -- which is a thing she can see and aim off.
+// like the ground, a trunk and the water's surface: the arc ends at the reach
+// and the ring drops to the ground (or the water) under it. So no way of aiming
+// can turn the arc red. Red is only ever the ground refusing her -- a climb
+// past the limiter's, a trunk, a boulder her legs could not get up -- which is
+// a thing she can see and aim off. Anything BELOW her is never refused (§4).
+//
+// IN THE WATER IT IS NOT A LOB. Swimming, the aim is a straight run from the
+// hand (aimSwimTeleport), drawn as a wavering line and flattened onto the
+// surface wherever it would rise above it, and its reach starts from nothing
+// each time the stick is pushed and glides out while it is held.
 const QUEST_TELEPORT_ARM = 0.7
 const QUEST_TELEPORT_FIRE = 0.35
 const TELEPORT_LOB = 6.5
@@ -5347,10 +5360,10 @@ const TELEPORT_RANGE = 6
 // jumps a second, 25-30 m/s, twenty times the walk -- and a hike stops being
 // one. But a flat refusal makes the answer to "may I move?" no, which is the
 // one answer locomotion should never give. So the wait caps the REACH instead:
-// it grows from a notch to the whole of TELEPORT_RANGE over
-// TELEPORT_COOLDOWN_S, a step every TELEPORT_GROW_S, and a release inside the
-// wait always goes -- just not far. Held out through the wait, the arc visibly
-// grows a notch at a time until it is full length.
+// it grows smoothly, every frame, from TELEPORT_MIN_REACH to the whole of
+// TELEPORT_RANGE over TELEPORT_COOLDOWN_S, and a release inside the wait always
+// goes -- just not far. The arc's length is the only sign of the wait: it is
+// the one colour whether or not the reach is full.
 //
 // That caps her speed exactly as the refusal did, and by the same number,
 // because the reach is PROPORTIONAL to the time waited: ten flicks a second
@@ -5359,10 +5372,9 @@ const TELEPORT_RANGE = 6
 // also the rate the peer bodies are paced to cross (avatar-rig.js
 // MAX_TRAVEL_S), so a watcher's copy of her is never more than one jump behind.
 const TELEPORT_COOLDOWN_S = 1
-// The notch the reach grows by. Quantised rather than continuous so the growth
-// reads as steps rather than as a creep, and floored at one notch so an
-// instant re-flick has some arc to aim rather than a zero-length one.
-const TELEPORT_GROW_S = 0.1
+// The least of TELEPORT_RANGE the reach ever is, so an instant re-flick has
+// some arc to aim rather than a zero-length one.
+const TELEPORT_MIN_REACH = 0.1
 // Samples along the flight. 0.04 s at 6.5 m/s is a 26 cm segment, and the ground
 // crossing is bisected between samples, so the landing is exact at that
 // spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
@@ -5370,12 +5382,9 @@ const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
 // A landing is refused where she could not have walked to: a slope past the
 // limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
-// the ONLY thing that turns it red. TELEPORT_WAIT is not a refusal: it says
-// the cooldown still has the reach short of full, and a release on an orange
-// arc goes.
+// the ONLY thing that turns it red.
 const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
-const TELEPORT_WAIT = 0xffb347
 const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 // How far the ring floats over the drawn ground. Enough that a chunk mesh
 // sitting a little proud of the field does not swallow it, not so much that it
@@ -5387,7 +5396,16 @@ let desktopTeleportArmed = false
 // performance.now() ms of the last landing; the reach grows from it. Set a
 // whole cooldown in the past so the first lob of a session is full length.
 let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
-const teleportTarget = { x: 0, y: 0, z: 0, valid: false }
+// performance.now() ms the stick was last pushed to arm; a swim's reach grows from the later of the two.
+let teleportArmedAt = 0
+// `swim`: y is where her EYE goes (Player.swimTo), not her feet.
+const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false }
+// The swim aim: metres between beads, and the waver across the line -- its
+// height, its wavelength along the line, and how fast it runs down it.
+const SWIM_BEAD_M = 0.2
+const SWIM_WAVE_M = 0.06
+const SWIM_WAVELENGTH_M = 0.9
+const SWIM_WAVE_HZ = 1.2
 // The arc and the landing ring, built together on first aim. The arc is a
 // dotted trail -- one instanced bead per sample -- rather than a Line, because
 // WebGL draws every line one pixel wide and a 1 px line at half opacity
@@ -5437,20 +5455,25 @@ function hideTeleport() {
 }
 
 /**
- * How much of TELEPORT_RANGE the cooldown allows right now: 0 to 1, a notch
- * per TELEPORT_GROW_S since the last landing, never less than one notch.
+ * How much of TELEPORT_RANGE the cooldown allows right now, growing with the
+ * time since performance.now() ms `since`: TELEPORT_MIN_REACH to 1.
  */
-function teleportAllowance() {
-  const waited = (performance.now() - teleportFiredAt) / 1000
-  const notches = Math.max(TELEPORT_GROW_S, Math.floor(waited / TELEPORT_GROW_S) * TELEPORT_GROW_S)
-  return Math.min(1, notches / TELEPORT_COOLDOWN_S)
+function teleportAllowance(since) {
+  const waited = (performance.now() - since) / 1000
+  return Math.min(1, Math.max(TELEPORT_MIN_REACH, waited / TELEPORT_COOLDOWN_S))
+}
+
+/** The stick has just been pushed past QUEST_TELEPORT_ARM, or T pressed: the swim's reach restarts from here. */
+function armTeleport() {
+  teleportArmedAt = performance.now()
 }
 
 /** Land the aimed teleport, and let the ambience count it as the walk it stands in for. */
 function fireTeleport() {
   if (!teleportTarget.valid) return
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
-  player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
+  if (teleportTarget.swim) player.swimTo(teleportTarget.x, teleportTarget.y, teleportTarget.z)
+  else player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
   portalBlink = true
   teleportFiredAt = performance.now()
   // The full range, not the allowance: the sound is how far this jump went against a whole one.
@@ -5488,23 +5511,27 @@ function portalTest() {
  * Fly the lob from `origin` along `dir` (unit), write the arc, place the ring
  * where it meets the WALK surface -- the field plus the rock tops, the same
  * thing Player stands on, so the arc lands on a boulder rather than inside it
- * and lands in the same place whether or not the terrain layer is drawn. A
- * trunk in the way stops the arc at the bark with no landing.
+ * and lands in the same place whether or not the terrain layer is drawn -- or
+ * the water over it, where she will float. A trunk in the way stops the arc at
+ * the bark with no landing. Swimming, the aim is aimSwimTeleport's instead.
  *
- * THREE THINGS STOP THE FLIGHT and they are asked as one question: the ground
- * under it, a trunk, and the reach the cooldown allows. Horizontal distance
- * from her grows monotonically along a lob, so the reach has exactly one
- * crossing and the same bisection finds it to the same precision as the
+ * FOUR THINGS STOP THE FLIGHT and they are asked as one question: the ground
+ * under it, the water, a trunk, and the reach the cooldown allows. Horizontal
+ * distance from her grows monotonically along a lob, so the reach has exactly
+ * one crossing and the same bisection finds it to the same precision as the
  * ground's. Stopped at the reach the arc is over open air, so the ring goes on
- * the ground below -- which is then asked the same slope and path questions as
- * any other landing, and may well refuse, since the ground under a lob cut
- * short over a cliff IS the cliff face.
+ * the ground (or the water) below -- which is then asked the same questions as
+ * any other landing.
  */
 function aimTeleport(origin, dir) {
+  if (player.swimming) {
+    aimSwimTeleport(origin, dir)
+    return
+  }
   const { ring, arc } = ensureTeleportGfx()
   const feet = player.originPosition()
   const k = herScale()
-  const reach = TELEPORT_RANGE * k * teleportAllowance()
+  const reach = TELEPORT_RANGE * k * teleportAllowance(teleportFiredAt)
   const vx = dir.x * TELEPORT_LOB * k
   const vy = dir.y * TELEPORT_LOB * k
   const vz = dir.z * TELEPORT_LOB * k
@@ -5514,11 +5541,14 @@ function aimTeleport(origin, dir) {
   // lob flies under an awning or an overhang and only stops IN stone.
   const clear = (t) => {
     const p = at(t)
-    return p.y > walk.field.heightAt(p.x, p.z) && walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
+    const level = waterLevelAt(p.x, p.z)
+    return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) &&
+      walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
       !walk.obstacleAt(p.x, p.z, teleportObstacle) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   let count = 0
   let hit = null
+  let onWater = false
   let stopped = false
   let prevT = 0
   for (let i = 0; i < TELEPORT_SAMPLES; i++) {
@@ -5541,8 +5571,13 @@ function aimTeleport(origin, dir) {
         p.z = end.z
       } else {
         // The surface just crossed: the highest ground at or a hair above the
-        // crossing, never the awning over it.
+        // crossing, never the awning over it -- or the water standing over that.
         hit = { x: end.x, y: walk.heightAt(end.x, end.z, end.y - walk.reach + 0.05 * k), z: end.z }
+        const level = waterLevelAt(hit.x, hit.z)
+        if (level !== null && hit.y < level) {
+          hit.y = level
+          onWater = true
+        }
         // The last bead sits ON the ground, not a sample past it.
         p.x = hit.x
         p.y = hit.y
@@ -5556,19 +5591,19 @@ function aimTeleport(origin, dir) {
   arc.count = count
   arc.instanceMatrix.needsUpdate = true
   arc.visible = true
-  // A landing counts only where she could have walked: on ground the slope
-  // limiter would let her stand on (a cliff face or a boulder's flank is a step
-  // in the walk surface, so it fails this), not inside a trunk, and with a
-  // walkable straight line from her feet to it -- a lob clears a boulder or a
-  // trunk that her legs would not. Reach is not asked here: the flight already
-  // stopped at it, so every landing is one she may take. Orange says the
-  // cooldown still has the arc short of full length, not that she may not go.
-  // Every height is asked from a foot height -- hers at the start, the
-  // landing's at the end -- so stone over either is headroom, not a wall.
-  const standable = hit !== null && walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE &&
+  // A landing counts only where she could have walked: not inside a trunk, with
+  // a walkable straight line from her feet to it -- a lob clears a boulder or a
+  // trunk that her legs would not -- and on ground the slope limiter would let
+  // her stand on, unless it is below her or water, which she may always drop
+  // onto. Reach is not asked here: the flight already stopped at it. Every
+  // height is asked from a foot height -- hers at the start, the landing's at
+  // the end -- so stone over either is headroom, not a wall.
+  const standable = hit !== null &&
+    (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y)
   teleportTarget.valid = standable
-  const colour = !standable ? TELEPORT_NO : reach >= TELEPORT_RANGE * k ? TELEPORT_OK : TELEPORT_WAIT
+  teleportTarget.swim = false
+  const colour = standable ? TELEPORT_OK : TELEPORT_NO
   arc.material.color.setHex(colour)
   ring.material.color.setHex(colour)
   if (hit !== null) {
@@ -5578,13 +5613,94 @@ function aimTeleport(origin, dir) {
     // Over the DRAWN ground where a chunk exists, since that is what would hide
     // it; the walk height is the field, which the chunk mesh sits a few
     // centimetres either side of.
-    const drawn = terrain.groundAt(hit.x, hit.z)
+    const drawn = onWater ? null : terrain.groundAt(hit.x, hit.z)
     const ground = drawn !== null && drawn > hit.y ? drawn : hit.y
     ring.position.set(hit.x, ground + TELEPORT_RING_LIFT * k, hit.z)
     ring.scale.setScalar(k)
-    ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal, hit.y))
+    if (onWater) ring.quaternion.identity()
+    else ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal, hit.y))
   }
   ring.visible = hit !== null
+}
+
+/**
+ * The swimming aim: a straight run from `origin` along `dir` (unit), held under
+ * the water's surface -- where it would rise above, it runs along the surface
+ * instead -- and stopped by the bed, stone, a trunk, dry land or the reach. The
+ * reach grows from the later of the last landing and the stick's push, so it
+ * starts at her hand and glides out while held. Drawn as a line of beads
+ * wavering across it, still at both ends; the ring stands across the line at
+ * its end, which is where her eye goes. Nothing on it can refuse her.
+ */
+function aimSwimTeleport(origin, dir) {
+  const { ring, arc } = ensureTeleportGfx()
+  const k = herScale()
+  const reach = TELEPORT_RANGE * k * teleportAllowance(Math.max(teleportFiredAt, teleportArmedAt))
+  const level0 = waterLevelAt(origin.x, origin.z)
+  const oy = level0 === null ? origin.y : Math.min(origin.y, level0)
+  // Written into `out` and returned: the point `s` metres along, flattened onto the surface, or null out of the water.
+  const at = (s, out) => {
+    out.x = origin.x + dir.x * s
+    out.y = oy + dir.y * s
+    out.z = origin.z + dir.z * s
+    const level = waterLevelAt(out.x, out.z)
+    if (level === null) return null
+    if (out.y > level) out.y = level
+    return out
+  }
+  const probe = { x: 0, y: 0, z: 0 }
+  const clear = (s) => {
+    const p = at(s, probe)
+    return p !== null && p.y > walk.field.heightAt(p.x, p.z) && walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
+      !walk.obstacleAt(p.x, p.z, teleportObstacle)
+  }
+  let len = reach
+  const step = SWIM_BEAD_M * k
+  for (let s = step; s < reach + step; s += step) {
+    const t = Math.min(s, reach)
+    if (clear(t)) continue
+    let lo = t - step
+    let hi = t
+    for (let i = 0; i < 12; i++) {
+      const mid = (lo + hi) * 0.5
+      if (clear(mid)) lo = mid
+      else hi = mid
+    }
+    len = Math.max(0, lo)
+    break
+  }
+  // Across the line: level and square to it, or along world x when she aims straight up or down.
+  teleportRight.set(-dir.z, 0, dir.x)
+  if (teleportRight.lengthSq() < 1e-6) teleportRight.set(1, 0, 0)
+  teleportRight.normalize()
+  const n = Math.min(TELEPORT_SAMPLES, Math.max(2, Math.ceil(len / step) + 1))
+  const phase = (performance.now() / 1000) * SWIM_WAVE_HZ * 2 * Math.PI
+  const p = { x: 0, y: 0, z: 0 }
+  for (let i = 0; i < n; i++) {
+    const s = (len * i) / (n - 1)
+    if (at(s, p) === null) at(0, p)
+    const w = SWIM_WAVE_M * k * Math.sin(Math.PI * i / (n - 1)) * Math.sin((2 * Math.PI * s) / (SWIM_WAVELENGTH_M * k) - phase)
+    arc.setMatrixAt(i, teleportBead.makeScale(k, k, k).setPosition(p.x + teleportRight.x * w, p.y, p.z + teleportRight.z * w))
+  }
+  arc.count = n
+  arc.instanceMatrix.needsUpdate = true
+  arc.visible = true
+  const end = at(len, p) ?? at(0, p)
+  teleportTarget.valid = end !== null
+  teleportTarget.swim = true
+  arc.material.color.setHex(TELEPORT_OK)
+  ring.material.color.setHex(TELEPORT_OK)
+  if (end === null) {
+    ring.visible = false
+    return
+  }
+  teleportTarget.x = end.x
+  teleportTarget.y = end.y
+  teleportTarget.z = end.z
+  ring.position.set(end.x, end.y, end.z)
+  ring.scale.setScalar(k)
+  ring.quaternion.setFromUnitVectors(TELEPORT_UP, dir)
+  ring.visible = true
 }
 
 /**
@@ -5677,10 +5793,13 @@ function readInput() {
       }
     }
 
-    if (player.flying) {
+    // Flying and swimming both go where the pushing hand points.
+    if (player.flying || player.swimming) {
       moveHand.getWorldQuaternion(questTempQuat)
       questFlyDir.set(0, 0, -1).applyQuaternion(questTempQuat).normalize()
       moveInput.flyDirection = questFlyDir
+    }
+    if (player.flying) {
       hideTeleport()
       questTeleportArmed = false
       return
@@ -5695,6 +5814,7 @@ function readInput() {
     moveInput.move = 0
     const push = -moveAxis
     if (push > QUEST_TELEPORT_ARM) {
+      if (!questTeleportArmed) armTeleport()
       questTeleportArmed = true
       questTeleportAim(useRight ? rightHandEl : leftHandEl)
     } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
@@ -5719,6 +5839,7 @@ function readInput() {
   // Not while flying, matching the headset, and the walk keys stay live so the
   // arc can be aimed by walking or dragging the view as well as by the mouse.
   if (on('teleport') && !player.flying) {
+    if (!desktopTeleportArmed) armTeleport()
     desktopTeleportArmed = true
     desktopTeleportAim()
   } else if (desktopTeleportArmed) {

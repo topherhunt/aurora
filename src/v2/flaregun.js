@@ -2,15 +2,17 @@ import THREE from '../three-instance.js'
 
 // ---------------------------------------------------------------------------
 // The flare gun: a thing her hands hold (hands.js kind 'flaregun') that shoots
-// flares (render/flares.js). Its record carries `charges` and `hue`, a
-// PALETTE index, as scalars, so the backpack, the save, a drop and the room
-// all carry them with the gun. Nothing in the world hands one out -- it starts
-// in the backpack (main.js) -- so its source picks nothing and takes nothing,
-// and gives nothing back: a dropped gun lies loose until a hand lifts it.
-// It wears its generated mesh (FLAREGUN_GLB). The round window at the back of
-// the lock shows the colour it will fire as a disc, smaller as the charges run
-// down and gone at none; only on her own held guns. Her own shot flashes her
-// whole view in its colour, washed toward white (ShotFlash).
+// flares (render/flares.js). Its record carries `charges`, `hue` (a PALETTE
+// index, null until first armed) and `armed` as scalars, so the backpack, the
+// save, a drop and the room all carry them with the gun. It starts safe: the
+// trigger only dry-clicks until A/X arms it (see pressSafety). Nothing in the
+// world hands one out -- it starts in the backpack (main.js) -- so its source
+// picks nothing and takes nothing, and gives nothing back: a dropped gun lies
+// loose until a hand lifts it. It wears its generated mesh (FLAREGUN_GLB).
+// The round window at the back of the lock shows the colour it will fire as a
+// disc, smaller as the charges run down and gone at none or on safe; only on
+// her own held guns. Her own shot flashes her whole view in its colour, washed
+// toward white (ShotFlash).
 // ---------------------------------------------------------------------------
 
 export const KIND = 'flaregun'
@@ -68,15 +70,24 @@ export class FlareGuns {
     return { geometry: this.geometry, material: this.material }
   }
 
-  /** A new gun, packed for a backpack slot: every charge, the first colour. */
+  /** A new gun, packed for a backpack slot: every charge, on safe, no colour yet. */
   slot() {
-    return { kind: KIND, name: 'flare gun', size: this.size, scale: [1, 1, 1], color: null, stowable: true, attrs: {}, charges: CHARGES, hue: 0 }
+    return { kind: KIND, name: 'flare gun', size: this.size, scale: [1, 1, 1], color: null, stowable: true, attrs: {}, charges: CHARGES, hue: null, armed: false }
   }
 
   dispose() {
     this.geometry.dispose()
     this.material.map.dispose()
     this.material.dispose()
+  }
+}
+
+/** A/X or Q on a held gun: armed goes to safe; safe arms it with the next colour (the first, on a gun never armed). */
+export function pressSafety(rec) {
+  if (rec.armed) rec.armed = false
+  else {
+    rec.hue = rec.hue === null ? 0 : (rec.hue + 1) % PALETTE.length
+    rec.armed = true
   }
 }
 
@@ -121,7 +132,7 @@ export class GunWindows {
   update(hands) {
     for (const [key, disc] of this.discs) {
       const rec = hands.holding(key)
-      disc.visible = rec !== null && rec.kind === KIND && rec.charges > 0
+      disc.visible = rec !== null && rec.kind === KIND && rec.armed && rec.charges > 0
       if (!disc.visible) continue
       const r = WINDOW_R * Math.sqrt(rec.charges / CHARGES)
       hands.heldFrame(key, _m)

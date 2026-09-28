@@ -11,7 +11,7 @@ import { runHydrology, noHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'f1'
+export const VERSION = 'f2'
 // 4097 texels over the 8192 m box is 2 m a texel, which is the resolution the whole design turns on: the image carries the ladder down to 8 m (four samples to a node, island.js) and the read-time half carries it from there to a quarter of a metre (fine.js). The channel carve is in METRES and does not care -- a trunk is 24 m of bed and an 88 m valley at any cell -- but the image has to hold the shape, and a 24 m bed is 12 texels here against 3 at 8 m.
 export const TEXELS = 4097
 
@@ -59,7 +59,8 @@ export function generate({ seed, n = TEXELS, log = () => {}, jitter = null, tune
   const hs = hydro.stats
   const ch = hs.channels
   const cl = hs.cliffs
-  log(`hydrology      ${ms(tHydro - tBiomes)}  ${ch.chains} chains in ${ms(ch.ms)}, ${ch.km.toFixed(0)} km of centreline bending ${ch.bendMean.toFixed(0)} m mean (most ${ch.bendMax.toFixed(0)} m); cut ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2 (deepest ${ch.deepest.toFixed(0)} m), raised ${ch.raised}; ${ch.spared} of ${ch.bowls} bowls spared (${ch.held} too deep to drain); tabled ${cl.km2.toFixed(2)} km2 in ${ms(cl.ms)}, ${cl.meanMove.toFixed(1)} m mean lift (most ${cl.maxMove.toFixed(0)} m); silted ${hs.silt.km2.toFixed(2)} km2 ${hs.silt.mean.toFixed(1)} m mean; ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2), ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km`)
+  const ba = hs.basins
+  log(`hydrology      ${ms(tHydro - tBiomes)}  drained ${ba.drained} of ${ba.basins} basins in ${ms(ba.ms)} (kept ${ba.kept}, deepest kept ${ba.keptDeepest.toFixed(0)} m), ${ba.cuts} rim cuts over ${ba.roundMean.toFixed(1)} rounds mean (most ${ba.roundMax}, ${ba.stuck} stuck), ${ba.cutMean.toFixed(1)} m mean off ${ba.cutKm2.toFixed(2)} km2; ${ch.chains} chains in ${ms(ch.ms)}, ${ch.km.toFixed(0)} km of centreline bending ${ch.bendMean.toFixed(0)} m mean (most ${ch.bendMax.toFixed(0)} m), ${(ch.flatShare * 100).toFixed(0)}% flat, bed ${ch.widthMean.toFixed(1)} m mean (widest ${ch.widthMax.toFixed(0)} m); cut ${ch.cutMean.toFixed(1)} m mean over ${ch.cutKm2.toFixed(2)} km2 (deepest ${ch.deepest.toFixed(0)} m), raised ${ch.raised}; tabled ${cl.km2.toFixed(2)} km2 in ${ms(cl.ms)}, ${cl.meanMove.toFixed(1)} m mean lift (most ${cl.maxMove.toFixed(0)} m); silted ${hs.silt.km2.toFixed(2)} km2 ${hs.silt.mean.toFixed(1)} m mean; ${hs.lakes.count} lakes of ${hs.lakes.candidates} (${hs.lakes.km2.toFixed(2)} km2), ${hs.rivers.count} rivers ${hs.rivers.km.toFixed(1)} km, water ${hs.rivers.widthMean.toFixed(1)} m mean (widest ${hs.rivers.widthMax.toFixed(0)} m, mouth x${hs.rivers.flare.toFixed(2)} its own mean)`)
 
   const stats = measure(height, n, cell, island)
   // The bowls are the raw field's: what the hydrology had to choose its lakes from and drain.

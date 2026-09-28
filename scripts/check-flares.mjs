@@ -14,8 +14,8 @@
 // pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
-import { Flares, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
-import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, roomKey } from '../src/v2/flaregun.js'
+import { Flares, FLARE, MAX_SPARKS, spanOf, walkOf, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
+import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, pressSafety, roomKey } from '../src/v2/flaregun.js'
 import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
 let failures = 0
@@ -144,11 +144,37 @@ console.log('the rooms')
   check(fromWire(toWire(flare({ room: roomKey('leafkin', { key: 'hollow:-1234.5:-2345.5' }) }))).room.length <= 40, 'the longest mouth key still passes the wire')
 }
 
+console.log('the sparks')
+{
+  check(spanOf(FLARE) === 2 && walkOf(FLARE) === 5, 'the default look walks its own slice and two either side, 5 sparks a fragment', `span ${spanOf(FLARE)}`)
+  let twice = 0, short = 0
+  for (let sparks = 1; sparks <= MAX_SPARKS; sparks++) {
+    for (const gravity of [0, 0.4, 2, 6]) {
+      for (const speed of [0.5, 3.2, 8]) {
+        const p = { ...FLARE, sparks, gravity, speed }
+        if (walkOf(p) > sparks) twice++
+        // Short of every spark, the walk covers the droop's bend and one slice more either side.
+        if (walkOf(p) < sparks && (spanOf(p) - 1) * ((2 * Math.PI) / sparks) < Math.atan(gravity / speed)) short++
+      }
+    }
+  }
+  check(twice === 0 && short === 0, 'no look walks a slice twice, or too few slices to reach a drooping spark', `${twice} twice, ${short} short`)
+  check(throws(() => new Flares(new THREE.Scene()).set({ ...FLARE, sparks: MAX_SPARKS + 1 })) && throws(() => new Flares(new THREE.Scene()).set({ ...FLARE, gain: undefined })), 'a look past MAX_SPARKS, or missing a key, throws')
+}
+
 console.log('the gun')
 {
   const guns = new FlareGuns()
   const slot = guns.slot()
-  check(slot.kind === KIND && slot.charges === CHARGES && slot.hue === 0 && slot.stowable, `a new gun: ${CHARGES} charges, the first colour, stowable`)
+  check(slot.kind === KIND && slot.charges === CHARGES && slot.hue === null && slot.armed === false && slot.stowable, `a new gun: ${CHARGES} charges, on safe with no colour, stowable`)
+  const cycle = { ...slot }
+  const steps = []
+  for (let k = 0; k < 2 * PALETTE.length + 2; k++) {
+    pressSafety(cycle)
+    steps.push(cycle.armed ? cycle.hue : 'safe')
+  }
+  const want = [...PALETTE.keys()].flatMap((h) => [h, 'safe']).concat([0, 'safe'])
+  check(steps.join() === want.join(), 'A/X arms it with the first colour, then safe, then the next colour, round the palette', steps.join())
   check(guns.pickAt() === null && throws(() => guns.take()), 'nothing in the world hands one out')
   check(guns.size > 0.2 && guns.size < 0.4, 'it is pistol-sized', guns.size.toFixed(3))
   check(throws(() => guns.dress(slot)), 'it cannot be dressed before it wears its mesh')
@@ -171,6 +197,7 @@ console.log('the gun')
 
   const over = new THREE.Group()
   const rec = { ...slot }
+  pressSafety(rec)
   const frame = new THREE.Matrix4().makeTranslation(5, 1, 2)
   const hands = {
     holding: (key) => (key === 'right' ? rec : null),
@@ -186,6 +213,10 @@ console.log('the gun')
   rec.hue = 4
   windows.update(hands)
   check(near(r(), WINDOW_R / 2) && disc('right').material.color.getHex() === new THREE.Color().setHex(PALETTE[4]).getHex(), 'a quarter left, half the radius, in the chosen colour', r().toFixed(4))
+  pressSafety(rec)
+  windows.update(hands)
+  check(!disc('right').visible, 'on safe, the disc is gone')
+  pressSafety(rec)
   rec.charges = 0
   windows.update(hands)
   check(!disc('right').visible, 'empty, the disc is gone')

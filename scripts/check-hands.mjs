@@ -18,7 +18,7 @@
 // that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, OVER_CAP, CARRY_MAX, CARRIERS, UNPLACED_Y } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, OVER_CAP, CARRY_MAX, CARRIERS, UNPLACED_Y, KICK_S, KICK_BACK, KICK_FLIP, KICK_GROW } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -174,6 +174,41 @@ const build = () => {
   for (const k of [0, 1.5, 'x']) { try { w.hands.draw('right', k) } catch { threw++ } }
   check(threw === 3, 'and a draw scale outside (0, 1] throws')
   w.hands.draw('right', 1)
+}
+
+// --- the kick: a shot jolts what the hand holds, and it settles ---------------------
+{
+  const w = build()
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  w.at(1, 1.4, 0)
+  w.hands.update(1 / 60, w.head)
+  const frame = () => {
+    const m = w.hands.heldFrame('right', new THREE.Matrix4())
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
+    m.decompose(p, q, s)
+    // The centre, not the origin: the box's origin is (0, -0.1, 0) of it, scaled.
+    return { c: new THREE.Vector3(0, 0.1, 0).applyMatrix4(m), fwd: new THREE.Vector3(0, 0, -1).applyQuaternion(q), s: s.x }
+  }
+  const rest = frame()
+  w.hands.kick('right')
+  w.hands.update(1e-6, w.head)
+  const peak = frame()
+  check(Math.abs(peak.s - rest.s * (1 + KICK_GROW)) < 1e-4, `a kick grows the held thing ${KICK_GROW * 100}%`, `${rest.s.toFixed(4)} -> ${peak.s.toFixed(4)}`)
+  check(Math.abs(peak.c.z - rest.c.z - KICK_BACK * 0.2 * Math.cos(KICK_FLIP)) < 1e-4 && peak.c.z > rest.c.z, 'and pushes it back along its own +Z, its size times KICK_BACK', `dz ${(peak.c.z - rest.c.z).toFixed(4)}`)
+  check(Math.abs(Math.asin(peak.fwd.y) - KICK_FLIP) < 1e-4, 'and flips its -Z end up', `${peak.fwd.y.toFixed(4)}`)
+  w.run(KICK_S / 2)
+  const half = frame()
+  check(half.s > rest.s && half.s < peak.s && half.c.z > rest.c.z && half.c.z < peak.c.z, 'halfway through, it is on its way back')
+  w.run(KICK_S / 2 + 0.02)
+  const after = frame()
+  check(Math.abs(after.s - rest.s) < 1e-9 && after.c.distanceTo(rest.c) < 1e-9 && Math.abs(after.fwd.y) < 1e-9, `by ${KICK_S * 1000} ms it is back where and as big as it was`)
+  const pool = w.hands.pools.get(geo)
+  const drawn = new THREE.Vector3().setFromMatrixScale(new THREE.Matrix4().fromArray(pool.over.mesh.instanceMatrix.array, 0)).x
+  w.hands.kick('right')
+  w.hands.update(1e-6, w.head)
+  const kicked = new THREE.Vector3().setFromMatrixScale(new THREE.Matrix4().fromArray(pool.over.mesh.instanceMatrix.array, 0)).x
+  check(Math.abs(kicked - drawn * (1 + KICK_GROW)) < 1e-4, 'the pool draws the kick, as heldFrame reports it')
 }
 
 // --- the drop: the source first, then the fall, the roll, the stop --------------

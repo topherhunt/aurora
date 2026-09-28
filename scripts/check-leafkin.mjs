@@ -810,7 +810,7 @@ console.log('\nthe real ground')
     mushrooms.syncSnowLine(layers)
     mushrooms.place(x, z)
     const ground = () => new LeafkinGround({ field, water: waterS, trees, rocks, deadwood, mushrooms })
-    const entrances = new Entrances(S(), field, waterS, rocks, { seed: SEED, bank: mouthBank, ground: ground(), trees, deadwood: deadBank })
+    const entrances = new Entrances(S(), field, waterS, rocks, { seed: SEED, bank: mouthBank, ground: ground(), trees })
     entrances.place(x, z)
     return { rocks, deadwood, trees, mushrooms, entrances, ground }
   }

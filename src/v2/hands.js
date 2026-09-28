@@ -106,6 +106,11 @@ const DRIFT_EASE_S = 1.5
 const LEVEL_EPS = 0.05
 // Where a held thing's centre sits in the hand's frame: a little under and ahead of the grip.
 export const HOLD_OFFSET = new THREE.Vector3(0, -0.03, -0.06)
+// A kick (kick()): the seconds it lasts, easing back as the square of the time left; at its peak the held thing is KICK_BACK of its size back along its own +Z, its -Z end flipped up KICK_FLIP radians, and KICK_GROW larger.
+export const KICK_S = 0.25
+export const KICK_BACK = 0.15
+export const KICK_FLIP = 0.2
+export const KICK_GROW = 0.15
 // What a carrier (carry(), the leafkin's arms) holds at most, and how many carriers can be about at once: every resident leafkin (render/leafkin.js MAX) gathers whether or not it is drawn.
 export const CARRY_MAX = 5
 export const CARRIERS = 16
@@ -228,7 +233,7 @@ export class Hands {
   addHand(key, node, { reach = REACH_M } = {}) {
     if (this.hands.has(key)) throw new Error(`Hands.addHand: ${key} twice`)
     if (!node || !node.isObject3D) throw new Error(`Hands.addHand: ${key} needs an Object3D`)
-    this.hands.set(key, { key, node, reach, held: null, inZone: false, draw: 1, lure: { kind: null, x: 0, y: 0, z: 0, by: null } })
+    this.hands.set(key, { key, node, reach, held: null, inZone: false, draw: 1, kick: Infinity, lure: { kind: null, x: 0, y: 0, z: 0, by: null } })
   }
 
   /** The record the hand holds, or null. */
@@ -241,7 +246,7 @@ export class Hands {
     const hand = this._hand(key)
     const item = hand.held
     if (!item) return null
-    const k = hand.draw
+    const k = this._drawn(hand)
     _c.copy(item.off).multiplyScalar(k).applyQuaternion(item.q)
     _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
     _s.fromArray(item.rec.scale).multiplyScalar(k)
@@ -252,6 +257,22 @@ export class Hands {
   wouldStow(key, head) {
     const hand = this._hand(key)
     return hand.held !== null && hand.held.rec.stowable && this._inZone(hand, head)
+  }
+
+  /** A kick on what the hand holds (a shot): see KICK_S. A kick already under way starts over. */
+  kick(key) {
+    this._hand(key).kick = 0
+  }
+
+  /** How far into its kick the hand is, 1 at the peak to 0 when done. */
+  _kicked(hand) {
+    const u = 1 - hand.kick / KICK_S
+    return u > 0 ? u * u : 0
+  }
+
+  /** The scale the hand draws what it holds at this frame: its draw scale, grown by a kick. */
+  _drawn(hand) {
+    return hand.draw * (1 + KICK_GROW * this._kicked(hand))
   }
 
   /** How much smaller than it is the hand draws what it holds: 1 is life size. */
@@ -804,6 +825,12 @@ export class Hands {
       _m.copy(hand.node.matrixWorld)
       _q.setFromRotationMatrix(_m)
       _p.copy(HOLD_OFFSET).applyMatrix4(_m)
+      hand.kick += dt
+      const e = this._kicked(hand)
+      if (e > 0) {
+        _q.multiply(_dq.setFromAxisAngle(_axis.set(1, 0, 0), KICK_FLIP * e))
+        _p.add(_c.set(0, 0, KICK_BACK * item.rec.size * hand.draw * e).applyQuaternion(_q))
+      }
       item.x = _p.x; item.y = _p.y; item.z = _p.z
       item.q.copy(_q)
       const inZone = item.rec.stowable && this._inZone(hand, head)
@@ -1089,7 +1116,7 @@ export class Hands {
   _write(pool) {
     const mine = this._mine
     mine.clear()
-    for (const hand of this.hands.values()) if (hand.held) mine.set(hand.held, hand.draw)
+    for (const hand of this.hands.values()) if (hand.held) mine.set(hand.held, this._drawn(hand))
     this._fill(pool, pool.over, (item) => mine.get(item))
     this._fill(pool, pool, (item) => (mine.has(item) ? undefined : 1))
   }
