@@ -61,6 +61,14 @@ export function liesOn(bed, head, fwd, scale) {
     rise < LIE.rise && rise > -LIE.sink && fwd.y > LIE.faceUp
 }
 
+/** Whether a peer's `head` (at the peer's `scale`) is in `bed`: over its mattress and low over it, whichever way it faces. */
+export function inBed(bed, head, scale) {
+  const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
+  const dx = head.x - bed.x, dz = head.z - bed.z
+  const rise = (head.y - bed.top) / scale
+  return Math.abs(dx * c - dz * s) < bed.wid / 2 && Math.abs(dx * s + dz * c) < bed.len / 2 + LIE.pillowOut && rise < LIE.rise && rise > -LIE.sink
+}
+
 /**
  * Where a load made in a house stands her: on a ring just off `bed`'s outline
  * (a rooms/interior.js spot, room-local with the room's middle at 0, 0),

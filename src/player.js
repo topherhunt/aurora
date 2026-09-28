@@ -122,6 +122,11 @@ const UP = new THREE.Vector3(0, 1, 0)
 // Metres between the samples pathClear takes along a line. Under the smallest
 // padded trunk's diameter (a 3 cm sapling plus WalkSurface's 15 cm pad).
 const PATH_STEP = 0.3
+// Fraction of her pace she sidles along a trunk or a wall she walks straight
+// into, rather than stopping dead at it (_along).
+const SIDLE = 0.3
+// Radians a refused slide along stone is turned away from it before retrying.
+const SLIDE_TURN = Math.PI / 8
 
 export class Player {
   /**
@@ -140,7 +145,11 @@ export class Player {
     this.setGround(terrainHeight)
     this._obstacle = { x: 0, z: 0, r: 0 }
     this._push = { x: 0, z: 0 }
+    this._probe = { x: 0, z: 0, r: 0 }
     this._inStone = null
+    // The side (+1 or -1 along the tangent) she is sidling past an obstacle on,
+    // 0 when she is not; see _along.
+    this._sidle = 0
 
     this.speed = 0
     this.snapArmed = true
@@ -732,21 +741,43 @@ export class Player {
     }
 
     // Stone at head height -- an overhang too low, or a boulder's flank at her
-    // shoulder. Slid along exactly as a trunk is below: the step is projected
-    // onto the tangent of the push direction fits() reports, and a push with no
-    // side to favour stops her. Only ENTERING stone blocks, see _enters.
+    // shoulder. Slid along exactly as a trunk is below: she steps up to the
+    // stone (_contact) and the rest of the step is projected onto the tangent
+    // of the push direction fits() reports (_along); a push with no side to
+    // favour stops her. Only ENTERING stone blocks, see _enters.
+    //
+    // A stone corner can poke in between two of the ring's points, and then
+    // the push is one point's and the tangent drives that point into the face.
+    // So a refused slide is tried again turned away from the stone by SLIDE_TURN
+    // at a time, as far as straight off it -- never backward from where she is
+    // heading, which is a corner she is walking into and where she stops.
+    let sidled = false
     if (this._enters(origin.x + dx, origin.z + dz, y, h1, this._push)) {
-      const tx = -this._push.z
-      const tz = this._push.x
-      const along = tx * dx + tz * dz
-      if (Math.abs(along) < 0.05 * dist) {
+      const px = this._push.x
+      const pz = this._push.z
+      if (px === 0 && pz === 0) {
         this.blocked = true
         return
       }
-      dx = tx * along
-      dz = tz * along
-      h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.abs(along))
-      if (Number.isNaN(h1) || this._enters(origin.x + dx, origin.z + dz, y, h1, null)) {
+      const f = this._contact(origin, y, dx, dz, dist, false)
+      const along = this._along((-pz * dx + px * dz) * (1 - f), dist * (1 - f))
+      sidled = true
+      const s = Math.sign(along)
+      const cx = dx * f
+      const cz = dz * f
+      let ok = false
+      for (let k = 0; k <= 4 && !ok; k++) {
+        const c = Math.cos(k * SLIDE_TURN)
+        const n = Math.sin(k * SLIDE_TURN)
+        const ux = -pz * s * c + px * n
+        const uz = px * s * c + pz * n
+        if (k > 0 && ux * this._fwd.x + uz * this._fwd.z < -1e-6) break
+        dx = cx + ux * Math.abs(along)
+        dz = cz + uz * Math.abs(along)
+        h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.hypot(dx, dz))
+        ok = !Number.isNaN(h1) && !this._enters(origin.x + dx, origin.z + dz, y, h1, null)
+      }
+      if (!ok) {
         this.blocked = true
         return
       }
@@ -756,8 +787,9 @@ export class Player {
     // a tile regrown under her, a spawn on a sapling -- every step out would
     // be refused too, and she would be stuck in a tree. The step is projected
     // onto the bark's tangent, NOT redirected along it at full speed like the
-    // contour slide: walking straight at a tree stops her at it, brushing past
-    // one deflects her round it, and neither reads as being shoved.
+    // contour slide: brushing past a tree deflects her round it, walking
+    // straight at one sidles her slowly round it (_along), and neither reads as
+    // being shoved.
     if (this.obstacles && !this.obstacles.obstacleAt(origin.x, origin.z, this._obstacle)) {
       const ob = this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)
       if (ob) {
@@ -770,14 +802,12 @@ export class Player {
         }
         tx /= tlen
         tz /= tlen
-        const along = tx * dx + tz * dz
-        if (Math.abs(along) < 0.05 * dist) {
-          this.blocked = true
-          return
-        }
-        dx = tx * along
-        dz = tz * along
-        h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.abs(along))
+        const f = this._contact(origin, y, dx, dz, dist, true)
+        const along = this._along((tx * dx + tz * dz) * (1 - f), dist * (1 - f))
+        sidled = true
+        dx = dx * f + tx * along
+        dz = dz * f + tz * along
+        h1 = this._walkable(origin.x, origin.z, y, dx, dz, Math.hypot(dx, dz))
         if (Number.isNaN(h1) || this._enters(origin.x + dx, origin.z + dz, y, h1, null) ||
           this.obstacles.obstacleAt(origin.x + dx, origin.z + dz, this._obstacle)) {
           this.blocked = true
@@ -787,6 +817,7 @@ export class Player {
     }
 
     this.blocked = false
+    if (!sidled) this._sidle = 0
     const nx = THREE.MathUtils.clamp(this.rig.position.x + dx, -WORLD_HALF + 32, WORLD_HALF - 32)
     const nz = THREE.MathUtils.clamp(this.rig.position.z + dz, -WORLD_HALF + 32, WORLD_HALF - 32)
     this.rig.position.x = nx
@@ -795,6 +826,45 @@ export class Player {
     // and what update() asks the next one from -- a mantle onto a ledge is
     // decided here, not by the damped follower.
     this.standY = h1
+  }
+
+  // The fraction of the step (dx, dz) she can take before it is refused -- by
+  // the slope rule, by stone at her head, and with `trunks` by a trunk -- to
+  // within 1/32 of it. A slide is taken from there: projected from where she
+  // stands, a slide leaves her short of the obstacle, the next frame's step
+  // fits whole and the one after slides again, and she judders between the
+  // two headings every frame.
+  _contact(origin, y, dx, dz, dist, trunks) {
+    let lo = 0
+    let hi = 1
+    for (let i = 0; i < 5; i++) {
+      const f = (lo + hi) / 2
+      const x = origin.x + dx * f
+      const z = origin.z + dz * f
+      const h = this._walkable(origin.x, origin.z, y, dx * f, dz * f, dist * f)
+      const ok = !Number.isNaN(h) && !this._enters(x, z, y, h, null) &&
+        !(trunks && this.obstacles.obstacleAt(x, z, this._probe))
+      if (ok) lo = f
+      else hi = f
+    }
+    return lo
+  }
+
+  // The step along an obstacle's unit tangent, given `along`, the blocked
+  // step's projection onto it: that projection, but never under SIDLE of the
+  // step, so walking straight at a trunk or a wall sidles her slowly round it
+  // instead of stopping her. Head-on, the side is the one she leans toward,
+  // and it is LATCHED until the projection outgrows the floor or she walks
+  // clear: a headset's tremor flips the sign of a near-zero projection every
+  // few frames, and unlatched she would dither in place against the bark.
+  _along(along, dist) {
+    const min = SIDLE * dist
+    if (Math.abs(along) >= min) {
+      this._sidle = 0
+      return along
+    }
+    if (this._sidle === 0) this._sidle = along < 0 ? -1 : 1
+    return this._sidle * min
   }
 
   // Whether a step from feet at `y` to (x, z), feet at `h`, would take her INTO

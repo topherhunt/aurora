@@ -11,10 +11,10 @@ export const TOWN = {
   // The import mirror-extends the source past |z| = 3492 (config.js), so towns keep to the real map.
   realZ: 3492,
   count: [8, 25],
-  clearing: { r: 10, rings: [2, 5, 8], width: 5 },
-  road: { width: 4, step: 12, reach: 170, wobble: 1.5, grade: 0.22, past: 12, apart: 60 },
+  clearing: { r: 5, rings: [1.5, 4], width: 3 },
+  road: { width: 2, step: 12, reach: 170, wobble: 1.5, grade: 0.22, past: 12, apart: 60 },
   // A building's rank is its radius plus `cost` per metre of door path, so a door near an existing path beats one nearer the centre with a long walk to it.
-  path: { width: 1.6, max: 24, step: 8, cost: 1.5 },
+  path: { width: 0.8, max: 24, step: 8, cost: 1.5 },
   // Metres between building footprints: base plus per-metre growth past the clearing edge, so the centre packs and the outskirts spread.
   gap: [1.2, 0.08],
   footRange: 3,
@@ -224,7 +224,7 @@ function layoutTown(site, index, all, ctx) {
   while (bearings.length < nRoads) bearings.push(bearings.length ? bearings[0] + Math.PI * (0.6 + rand() * 0.8) : rand() * Math.PI * 2)
   // A road runs out until the ground turns wet, steep or meets an authored road; the bearing swings up to 60 degrees either way to find one that gets clear of the town.
   const growRoad = (bearing) => {
-    const pts = [[cx + Math.cos(bearing) * 6, yC, cz + Math.sin(bearing) * 6], [cx + Math.cos(bearing) * (C.r + 2), yC, cz + Math.sin(bearing) * (C.r + 2)]]
+    const pts = [[cx + Math.cos(bearing) * C.r * 0.6, yC, cz + Math.sin(bearing) * C.r * 0.6], [cx + Math.cos(bearing) * (C.r + 2), yC, cz + Math.sin(bearing) * (C.r + 2)]]
     let heading = bearing
     let px = pts[1][0]
     let pz = pts[1][2]

@@ -51,13 +51,13 @@ const stone = (boxes) => ({
 // eye height, so the locomotion origin is the rig and forward is the camera's.
 // (0, 0, -1) turned by yaw about Y is (-sin, 0, -cos), so -PI/2 faces +x.
 // `feet` puts her at a foot height a spawn would not choose -- under a ledge.
-const walker = (rocks, x, z, yaw, feet, scale = 1) => {
+const walker = (rocks, x, z, yaw, feet, scale = 1, trunks = trees) => {
   const rig = new THREE.Group()
   const camera = new THREE.PerspectiveCamera()
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.y = yaw
   rig.add(camera)
-  const player = new Player(rig, camera, new WalkSurface(field, rocks, trees, { scale }), { scale })
+  const player = new Player(rig, camera, new WalkSurface(field, rocks, trunks, { scale }), { scale })
   player.spawnAt(x, z)
   if (feet !== undefined) player.smoothY = player.standY = rig.position.y = feet
   rig.updateMatrixWorld(true)
@@ -117,21 +117,23 @@ console.log('the capsule')
     'while a teleport or a spawn asked without a foot height still lands on top of it')
 }
 {
-  // A WALL from the ground past her crown. She stops at it, a shoulder short,
-  // and every frame after is a refused step rather than a shove.
+  // A WALL from the ground past her crown, walked into head-on. She comes up a
+  // shoulder short of it and sidles along its face, slowly, never into it.
   const p = walker(stone([[20, 22, -5, 5, GROUND, GROUND + 3]]), 18, 0, -Math.PI / 2)
-  const blockedAt = walk(p, 3)
-  const x = p.rig.position.x
-  check(blockedAt >= 0 && x < 20 && x > 20 - WALK.radius - 0.05,
-    'she stops at a wall a shoulder short of it', `x = ${x.toFixed(2)}, refused from frame ${blockedAt}`)
+  walk(p, 3)
+  const { x, z } = p.rig.position
+  check(x < 20 && x > 20 - WALK.radius - 0.05, 'she comes up at a wall a shoulder short of it', `x = ${x.toFixed(2)}`)
+  check(Math.abs(z) > 0.3 && Math.abs(z) < 1.45 * 3 * 0.5, 'and sidles slowly along it rather than stopping dead', `z = ${z.toFixed(2)}`)
   check(p.standY === GROUND, 'with her feet on the ground, not on the wall')
+  walk(p, 15)
+  check(p.rig.position.x > 23, 'until she is past its end and walks on', `x = ${p.rig.position.x.toFixed(2)}`)
 }
 {
   // A LEDGE at head height: bottom above reach, so not a step, and below her
   // crown, so not a bridge. A bump.
   const p = walker(stone([[20, 22, -5, 5, GROUND + WALK.reach + 0.2, GROUND + WALK.height - 0.2]]), 18, 0, -Math.PI / 2)
   walk(p, 3)
-  check(p.blocked && p.rig.position.x < 20, 'a ledge between her knee and her crown stops her',
+  check(p.rig.position.x < 20, 'a ledge between her knee and her crown stops her',
     `x = ${p.rig.position.x.toFixed(2)}`)
 }
 {
@@ -154,7 +156,7 @@ console.log('the capsule')
   // would have let her straight up a 1.79 m step; reach is the ceiling now.
   const p = walker(stone([[20, 22, -5, 5, GROUND, GROUND + WALK.reach + 0.1]]), 18, 0, -Math.PI / 2)
   walk(p, 3)
-  check(p.blocked && p.standY === GROUND && p.rig.position.x < 20,
+  check(p.standY === GROUND && p.rig.position.x < 20,
     'a face just past reach is a wall, not a step', `x = ${p.rig.position.x.toFixed(2)}`)
 }
 {
@@ -165,6 +167,29 @@ console.log('the capsule')
   walk(p, 6)
   check(p.rig.position.x < 20 && p.rig.position.z < -3,
     'pressed into a wall at an angle she slides along it', `x = ${p.rig.position.x.toFixed(2)}, z = ${p.rig.position.z.toFixed(2)}`)
+}
+{
+  // A CORNER: walls ahead and to the side she sidles toward. Nowhere to go, so
+  // the step is refused rather than pressed into either.
+  const p = walker(stone([[20, 22, -5, 5, GROUND, GROUND + 3], [15, 22, -7, -5, GROUND, GROUND + 3]]), 18, -4, -Math.PI / 2 + 0.2)
+  walk(p, 6)
+  const { x, z } = p.rig.position
+  check(p.blocked && x < 20 && z > -5, 'pointed into a corner she stops in it', `x = ${x.toFixed(2)}, z = ${z.toFixed(2)}`)
+}
+{
+  // A TRUNK dead ahead, a circle of 0.4 m on her line. She sidles round it and
+  // walks on, rather than standing at the bark.
+  const trunk = (x, z, pad, out) => {
+    const r = 0.4 + pad
+    if ((x - 20) ** 2 + z * z >= r * r) return null
+    out.x = 20
+    out.z = 0
+    out.r = r
+    return out
+  }
+  const p = walker(stone([]), 18, 0, -Math.PI / 2, undefined, 1, { trunkAt: trunk })
+  walk(p, 6)
+  check(p.rig.position.x > 21, 'walking straight at a tree she sidles round it', `x = ${p.rig.position.x.toFixed(2)}, z = ${p.rig.position.z.toFixed(2)}`)
 }
 {
   // ALREADY IN STONE. Put under a ledge with her head inside it (a spawn would
@@ -235,7 +260,7 @@ console.log('the capsule')
     `x = ${p.rig.position.x.toFixed(2)}, ${topped} frames on top`)
   p = over([[20, 22, -5, 5, GROUND, GROUND + 3]], 18, 0, -Math.PI / 2)
   walk(p, 3)
-  check(p.blocked && p.rig.position.x < 20 && p.standY === GROUND, 'a tall stump from an added layer is a wall',
+  check(p.rig.position.x < 20 && p.standY === GROUND, 'a tall stump from an added layer is a wall',
     `x = ${p.rig.position.x.toFixed(2)}`)
   p = over([[20, 22, -5, 5, GROUND - 2, GROUND - 0.2]], 18, 0, -Math.PI / 2)
   walk(p, 4)
@@ -277,7 +302,7 @@ console.log('her size (DESIGN.md §30)')
   const p = walker(stone([step]), 18, 0, -Math.PI / 2, undefined, K)
   check(p.rig.scale.x === K && p.th.reach === WALK.reach * K && p.th.radius === WALK.radius * K, 'the rig and the walk surface carry her scale')
   walk(p, 3)
-  check(p.blocked && p.rig.position.x < 20 && p.standY === GROUND, 'a step she could mantle at full size is a wall at half',
+  check(p.rig.position.x < 20 && p.standY === GROUND, 'a step she could mantle at full size is a wall at half',
     `x = ${p.rig.position.x.toFixed(2)}, feet at ${p.standY}`)
   const low = [10, 12, -5, 5, GROUND + (WALK.height + 0.6) * K, GROUND + (WALK.height + 1.6) * K]
   const q = walker(stone([low]), 5, 0, -Math.PI / 2, undefined, K)

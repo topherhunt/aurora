@@ -20,7 +20,7 @@ import { WORLD_SIZE, WORLD_HALF, CHUNK_RES } from '../v2/config.js'
 // nowhere else: at most 16 tiles of the 1024, 1.1 MB of the 64 MB.
 //
 // THE TWO HALVES ARE THE SAME SURFACE AT TWO RESOLUTIONS, which is the whole
-// invariant. `decimate` low-passes and subsamples the CARVED field -- after the
+// invariant. `decimate` low-passes and subsamples the DRAINED field -- after the
 // hydrology, never before -- so a tile and the base agree about where the ground
 // is to within what the filter removed, and what it removed lives at 8 m and
 // below, which is exactly the band the mesh cannot draw outside the disc. Decimate

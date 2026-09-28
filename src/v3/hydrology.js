@@ -1,21 +1,20 @@
 import { priorityFlood, flowDirections, flowAccumulation } from '../sim/hydrology.js'
 import { NB_DI, NB_DJ } from '../sim/world-grid.js'
-import { runChannels } from './channels.js'
 import { drainBasins, BASINS } from './basins.js'
 import { table, CLIFFS, CLIFFS_OFF } from './cliffs.js'
 import { Noise } from '../sim/noise.js'
 
 // ---------------------------------------------------------------------------
-// Step D -- the island drains. Every basin the jitter left is emptied with a broad rim dish except the deepest handful (basins.js); the valley network is then cut into the drained field as channels whose width and depth come from the catchment (channels.js); then what still ponds is read, the kept basins become lakes and the rest is silted up to its spill, the water is routed, and the rivers come off the network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
+// Step D -- the island drains. Every basin the jitter left is emptied with a broad rim dish except the deepest handful (basins.js); what still ponds is then read, the kept basins become lakes, the water is routed, and the rivers come off the flow network as polylines for the v2 doc. Three-free and DOM-free like the rest of src/v3: the gate runs it in node.
+//
+// ONE STEP MOVES THE FIELD AND IT ONLY EVER LOWERS IT: the drain's rim dish. Nothing here raises ground and nothing else here cuts any, so a texel's height is the jitter's own unless the drain took a rim off it. What the drain leaves standing under a metre is left standing -- a puddle the doc does not draw, measured in `stats.puddles` and otherwise untouched. `stats.stranded` is the other thing the drain leaves: water it had counted as a kept lake's that the finished field ponds on its own, below that lake's level, which the lake walk cannot admit either.
 //
 //   1. BASINS. Every enclosed dip more than a metre deep, ranked on depth alone. The deepest BASINS.keep hold their water down to BASINS.keepDepth; the rest are drained by cutting their lowest rim point with a dish half the pond's width across, over and over, each round on the new rim point.
-//   2. CHANNELS. The flow network of the drained field, and a meandering bed cut along each chain of it, wider where the valley is flat and wider again at every confluence. The carve only ever lowers a texel.
-//   3. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). It runs here, after the carve so the tabling cannot be cut back into a slope and before everything else so the lakes, the silt, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
-//   4. LAKES. The basins the drain kept, grown from their deepest cell to the level the flood now stands them at. A lake has no dam: its shore is wherever the ground meets its level, which is why no two of them are the same shape.
-//   5. SILT. Every other ponded cell is raised to its water's level: what the drain left under a metre, and a bench the tabling closed off. What is left of a lake's bowl above its pool is silted the same way.
-//   6. ROUTE. Priority flood, D8 steepest descent, accumulation in cells.
-//   7. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a half-width off the catchment, the valley's flatness and a noise, source to mouth.
-//   8. THE DOC. Each lake is an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it -- the ellipse bounds the query, the ground decides the shore.
+//   2. CLIFFS. Bands of the steep ground are snapped onto a ladder of benches, standing their slope up into risers (cliffs.js). Off by default (generate.js STEPS), and the one thing in step D that lifts a texel when it is on. It runs before everything else so the lakes, the route and the rivers are all solved on the shape that will be drawn. The field after this is the island's ground.
+//   3. LAKES. The basins the drain kept, grown from their deepest cell to the level the flood now stands them at. A lake has no dam: its shore is wherever the ground meets its level, which is why no two of them are the same shape.
+//   4. ROUTE. Priority flood, D8 steepest descent, accumulation in cells. What ponds outside the lakes is measured on the way past and left where it is.
+//   5. THE LAKES AS ELLIPSES. Each lake goes to the doc as an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it -- the ellipse bounds the query, the ground decides the shore.
+//   6. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a half-width off the catchment, the valley's flatness and a noise, source to mouth. The polyline and its widths are all that go to the doc: v2 cuts the bed at render time (§2 paths.js carveRivers), so the valley a river runs in is v2's and not this file's.
 // ---------------------------------------------------------------------------
 
 export const LAKES = {
@@ -29,7 +28,7 @@ export const LAKES = {
   splitMin: 40,       // pool cells a part must keep for the cut to be worth making
 }
 
-// The drawn water, and it is deliberately narrower than the bed the carve cut for it: at a given cell CARVE puts its flat bed about a third wider again than this, so the sheet sits inside the channel instead of lapping at the banks. Same shape of law as CARVE's for that reason -- catchment, flatness, wobble -- with the same knobs meaning the same things.
+// The drawn water: how wide the sheet in the v2 doc is at every node of every river. The bed under it is not cut here -- v2 solves the river's level and cuts the channel to it at render time -- so these are the only widths on the island and nothing has to be kept in step with them.
 export const RIVERS = {
   minCatchment: 5e4,   // square metres draining through a cell before it is a river
   halfAtMin: 2.4,      // metres of water either side of the line at minCatchment. A HALF-width, as the v2 doc's widths are
@@ -38,7 +37,7 @@ export const RIVERS = {
   minHalf: 0.5,        // metres. An absolute floor, not a fraction of halfAtMin, or it would undo `tip`
   tip: 0.35,           // the share of its mouth's width a river has at its source, easing to 1 at the mouth. This, not the exponent, is what puts a mouth half again as wide as the river's own average: the catchment along a trunk sits at a median 0.84 of its mouth's, so a pure catchment law gives a flare of 1.16 and an exponent big enough to fix that is no longer a width law
   flatWiden: 0.9,      // how much of itself again the water gains where the valley floor is flat, so a river spreads on a floodplain and runs narrow through a gorge
-  steepGrade: 0.25,    // the longitudinal grade at which a reach counts as fully steep. CARVE's value, and for the same reason: it is measured against this terrain, whose median channel grade is 0.275
+  steepGrade: 0.25,    // the longitudinal grade at which a reach counts as fully steep. Measured against this terrain, whose median channel grade is 0.275
   gradeLen: 140,       // metres of arc the grade is measured over
   wobble: 0.22,        // the share of its width a reach wanders by along the line, so no river holds one width for long
   wobbleScale: 80,     // metres over which that wander turns
@@ -50,7 +49,7 @@ export const RIVERS = {
 /**
  * `runHydrology(height, n, cell, ground, seed, cliffs = true)` -> { height, lakes, rivers, stats }
  *
- * `height` in is the raw field, `ground` the class grid the tabling reads its bands from, `seed` what the meander swirls by; `height` out is a new array, carved and silted. `lakes` and `rivers` are doc records without ids. `cliffs` false runs step 2 with every class's share at zero, which moves nothing.
+ * `height` in is the raw field, `ground` the class grid the tabling reads its bands from, `seed` what the rivers' width noise turns on; `height` out is a new array, drained. `lakes` and `rivers` are doc records without ids. `cliffs` false runs step 2 with every class's share at zero, which moves nothing.
  */
 export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   if (ground.length !== height.length) throw new Error(`runHydrology: ground has ${ground.length} texels, the field ${height.length}`)
@@ -67,18 +66,14 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   const emptied = drainBasins(elev, sea, n, cell, BASINS)
   stats.basins = emptied.stats
 
-  // --- 2. channels ------------------------------------------------------------
-  const carved = runChannels(elev, sea, n, cell, seed, emptied.spare, emptied.surface)
-  stats.channels = carved.stats
-
-  // --- 3. cliffs --------------------------------------------------------------
+  // --- 2. cliffs --------------------------------------------------------------
   const t1 = Date.now()
   stats.cliffs = table(elev, sea, ground, n, cell, seed, cliffs ? CLIFFS : CLIFFS_OFF)
   stats.cliffs.ms = Date.now() - t1
 
-  // --- 4. lakes ---------------------------------------------------------------
-  // The drain already chose which basins keep their water; this reads what the carve, the tabling and the notched outlets left them standing at. A body is every cell the flood wets round the kept basin's deepest cell, up to and including the new spill, at the spill's level, so the river out of it leaves from the water and not from a step above it. A basin a neighbouring valley happened to open on its way past is no longer a lake and is counted as drained.
-  let flood = priorityFlood(elev, n)
+  // --- 3. lakes ---------------------------------------------------------------
+  // The drain already chose which basins keep their water; this reads what its rim cuts and the tabling left them standing at. A body is every cell the flood wets round the kept basin's deepest cell, up to and including the new spill, at the spill's level, so the river out of it leaves from the water and not from a step above it. A basin a neighbouring valley happened to open on its way past is no longer a lake and is counted as drained.
+  const flood = priorityFlood(elev, n)
   for (let c = 0; c < size; c++) if (flood.filled[c] <= 0) sea[c] = 1
   const filledLand = Float32Array.from(flood.filled)
   for (let c = 0; c < size; c++) if (sea[c]) filledLand[c] = elev[c]
@@ -112,40 +107,45 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
     kept.push({ cells, level, pool: poolOf(cells, elev, level, maxPoolCells) })
   }
 
-  // --- 5. silt ----------------------------------------------------------------
-  let siltCells = 0
-  let siltSum = 0
-  let siltDeepest = 0
+  // --- 4. route ---------------------------------------------------------------
+  // What ponds outside the drawn lakes, MEASURED AND LEFT WHERE IT IS, in the two kinds it comes in.
+  //
+  // `puddles` is ordinary ground: the shallow remainder the drain stopped at, under BASINS.pond by its own contract, and a hollow with no water drawn in it is what a dry hollow looks like.
+  // `stranded` is ground the drain marked as a kept lake's own water and the field no longer ponds with that lake -- a lobe a dish cut off from it, standing at its own level a metre or two below the lake's, which the body walk above cannot admit and the doc therefore draws nothing in. It is the same fault as a lake with a bar across one arm: a dish cutting a rim near a kept lake does not know where that lake's waterline is. Measured, not hidden, until that is fixed in the dish.
+  let pondCells = 0
+  let pondSum = 0
+  let pondDeepest = 0
+  let lostCells = 0
+  let lostDeepest = 0
   for (let c = 0; c < size; c++) {
     if (sea[c] || wet[c]) continue
     const d = filledLand[c] - elev[c]
     if (d <= 0) continue
-    siltCells++
-    siltSum += d
-    if (d > siltDeepest) siltDeepest = d
-    elev[c] = filledLand[c]
+    if (emptied.spare[c]) {
+      lostCells++
+      if (d > lostDeepest) lostDeepest = d
+      continue
+    }
+    pondCells++
+    pondSum += d
+    if (d > pondDeepest) pondDeepest = d
   }
-  stats.silt = { cells: siltCells, km2: (siltCells * cellArea) / 1e6, mean: siltCells ? siltSum / siltCells : 0, deepest: siltDeepest }
+  stats.puddles = { cells: pondCells, km2: (pondCells * cellArea) / 1e6, mean: pondCells ? pondSum / pondCells : 0, deepest: pondDeepest }
+  stats.stranded = { cells: lostCells, km2: (lostCells * cellArea) / 1e6, deepest: lostDeepest }
 
-  // --- 6. route ---------------------------------------------------------------
-  flood = priorityFlood(elev, n)
+  // Nothing has moved the field since the flood above, so that flood is the route's too: one priority flood for the island.
   const recv = flowDirections(flood.filled, flood.tree, n)
   // A lake drains through its spill and nowhere else. Steepest descent off the flat would let the cells beside the spill step straight over the rim into the ground falling away past it, and each such step is a source, so one lake would let out three or four rivers a few cells apart; the flood's tree leads every lake cell to the spill.
   for (let c = 0; c < size; c++) if (wet[c]) recv[c] = flood.tree[c]
   const acc = flowAccumulation(recv, flood.order, size)
-  // Nothing but the lakes may pond now: the silt raised every other cell to its water.
-  for (let c = 0; c < size; c++) {
-    if (sea[c] || wet[c]) continue
-    if (flood.filled[c] - elev[c] > 1e-3) throw new Error(`runHydrology: ${(flood.filled[c] - elev[c]).toFixed(2)} m of water still stands outside the lakes at ${((c % n) * cell - half).toFixed(0)},${(((c / n) | 0) * cell - half).toFixed(0)}`)
-  }
 
-  // --- 7. the lakes as records ------------------------------------------------
+  // --- 5. the lakes as ellipses -----------------------------------------------
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
   lakes.sort((a, b) => b.km2 - a.km2)
   const lakeRecs = lakes.flatMap((l) => l.recs)
   stats.lakes = { candidates: stats.basins.basins, spared: emptied.lakes.length, drained, count: lakes.length, records: lakeRecs.length, km2: lakes.reduce((s, l) => s + l.km2, 0), leakKm2: lakes.reduce((s, l) => s + l.leakKm2, 0), dryKm2: lakes.reduce((s, l) => s + l.dryKm2, 0), dryDeepest: lakes.reduce((s, l) => Math.max(s, l.dryDeepest), 0), bodies: lakes.map(({ recs, ...rest }) => rest) }
 
-  // --- 8. rivers --------------------------------------------------------------
+  // --- 6. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
   let riverCells = 0
   for (let c = 0; c < size; c++) {
@@ -193,10 +193,10 @@ export function noHydrology(height) {
     lakes: [],
     rivers: [],
     stats: {
-      basins: { basins: 0, kept: 0, bodies: 0, drained: 0, ponds: 0, stuck: 0, cuts: 0, roundMean: 0, roundMax: 0, brushMean: 0, keptKm2: 0, keptDeepest: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, ms: 0 },
-      channels: { chains: 0, samples: 0, cells: 0, km: 0, bendMean: 0, bendMax: 0, walled: 0, widthMean: 0, widthMax: 0, slotMax: 0, flatShare: 0, gradeMean: 0, notch: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, ms: 0 },
+      basins: { basins: 0, kept: 0, bodies: 0, drained: 0, drainedDeepest: 0, drowned: 0, absorbed: 0, ponds: 0, stuck: 0, cuts: 0, roundMean: 0, roundMax: 0, brushMean: 0, brushMax: 0, keptKm2: 0, keptDeepest: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, sweeps: 0, late: 0, left: 0, ms: 0 },
       cliffs: { cells: 0, km2: 0, meanMove: 0, maxMove: 0, ms: 0, byBiome: [] },
-      silt: { cells: 0, km2: 0, mean: 0, deepest: 0 },
+      puddles: { cells: 0, km2: 0, mean: 0, deepest: 0 },
+      stranded: { cells: 0, km2: 0, deepest: 0 },
       lakes: { candidates: 0, spared: 0, drained: 0, count: 0, records: 0, km2: 0, leakKm2: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
       rivers: { count: 0, cells: 0, km: 0, longestKm: 0, intoSea: 0, intoLake: 0, fromLake: 0, widthMean: 0, widthMax: 0, flare: 0 },
     },

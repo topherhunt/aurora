@@ -9,15 +9,17 @@ const TOL = 1e-3
 //   THE ONLY THING A BASIN IS JUDGED ON IS HOW DEEP IT IS. The `keep` deepest keep their water and every other basin is drained until under `pond` metres stands in it. Not shape, not roundness, not the widest disc that fits inside it -- a lake picked for its roundness is a round lake, and the shapes the terrain actually offers are the interesting ones.
 //   A KEPT BASIN IS STILL DRAINED, down to `keepDepth`. Left alone the deepest basins on the island flood to their spills and put a whole biome under water; held to fifty metres they are lakes in a valley rather than the valley.
 //   THE RIM IS CUT WITH A BROAD DISH AND NOTHING ELSE. Find the pond's lowest rim point, lower it by `drop` under a dish of radius half the pond's width that eases back into the ground at its edge, then solve the pond again -- new level, new rim point, usually somewhere else -- and repeat. The cut per round is `max(elev - drop * (1 - smoothstep), want)`, so its depth tapers to nothing at the dish's edge (no step) and it stops at the level this round is aiming for (the floor is not dug out from under the water). The union of a dozen overlapping dishes walking down and inward is a valley, which is what a basin that has drained looks like. Carving a line from the floor to a point past the rim is what it does not look like.
-//   IT ONLY EVER LOWERS A TEXEL, like the carve after it. `elev = min(elev, target)` everywhere, so no round can stand a spike or a fin, and "the drain never raised a texel" is a one-line invariant over sixteen million cells.
-//   ONE FLOOD, THEN LOCAL WORK. The global priority flood is 3.7 s on 4097 square and there is no budget to repeat it per round, so `esc` -- the level at which water on a cell gets away to the sea -- is taken from it once and then kept true by hand: a pond that drains has its cells written down to their ground, a pond that is kept to its surface. Basins are worked lowest spill first, so whatever a basin spills into has already been settled. `solvePond` then grows from a seed over its lowest frontier cell, raising the level to whatever it has had to admit, and stops at the first cell under that level whose `esc` is lower -- the ground the water gets away over. That is a few thousand cells per round instead of sixteen million.
+//   IT ONLY EVER LOWERS A TEXEL. `elev = min(elev, target)` everywhere, so no round can stand a spike or a fin, and "the drain never raised a texel" is a one-line invariant over sixteen million cells. It is also the only thing in step D that moves the field at all: nothing anywhere fills a hollow in, so a hollow this pass leaves is a hollow the island has.
+//   ONE FLOOD PER SWEEP, THEN LOCAL WORK. The global priority flood is 3.7 s on 4097 square and there is no budget to repeat it per round, so `esc` -- the level at which water on a cell gets away to the sea -- is taken from it once and then kept true by hand: a pond that drains has its cells written down to their ground, a pond that is kept to its surface. Basins are worked lowest spill first, so whatever a basin spills into has already been settled. `solvePond` then grows from a seed over its lowest frontier cell, raising the level to whatever it has had to admit, and stops at the first cell under that level whose `esc` is lower -- the ground the water gets away over. That is a few thousand cells per round instead of sixteen million.
+//   A DISH CAN DIG A NEW BASIN, SO THE SWEEP REPEATS. The dish is a disc up to 320 m across dropped on a rim point, and most of that disc is ground no pond ever covered -- ground the sweep's `esc` was read for and never re-read. Cut a saddle out of a ridge and the ground just outside it can end up lower than the ground beyond, which is a dip that was not there when the basins were enumerated: on seed 20260824 at 4097 the first sweep leaves 48 of them over a metre deep, the deepest of them tens of metres. So the field is re-flooded and swept again until a sweep finds nothing, up to `sweeps`. Only the first sweep may keep a basin: the lakes are chosen from the island the jitter made, never from a hole this pass dug.
 //
 // Heights are metres. Three-free and DOM-free like the rest of src/v3.
 // ---------------------------------------------------------------------------
 
 export const BASINS = {
   keep: 20,          // the deepest basins that keep their water. Everything else is emptied
-  pond: 1,           // metres; a basin is drained until less than this stands in it, and less than this was never a basin. What is left is the silt step's
+  pond: 1,           // metres; a basin is drained until less than this stands in it, and less than this was never a basin. What is left under it stays where it is -- a hollow with no water drawn in it
+  sweeps: 5,         // enumerate-and-drain passes over the field. One is the island's own basins, the rest are the dips the dishes dug, and each pass costs a global re-flood. They run out fast: at 4097 on seed 20260824 the island has 585 basins, the dishes leave 48 between them, and the third sweep finds nothing
   keepDepth: 50,     // metres a kept basin may hold. A deeper one is drained down to this, so the island's biggest hollows are lakes in a valley and not the valley
   steps: 8,          // rounds the excess is meant to come off over, so each round's drop is a fraction of what is left rather than a fixed step
   minStep: 1.5,      // metres; never less than this in a round, so a shallow basin is done in one or two rather than creeping
@@ -30,7 +32,7 @@ export const BASINS = {
 /**
  * `drainBasins(elev, sea, n, cell, opts)` -> { lakes, spare, surface, stats }
  *
- * Works on `elev` in place and may widen `sea` (a pocket the flood fills to the waterline is the sea's). `lakes` is the basins that kept their water, each `{ seed, level, depth, cells }` with `seed` the deepest cell; `spare` marks those cells and `surface` holds their level, which is what the carve after this reads to leave them alone. Every other basin is left holding under `opts.pond` metres.
+ * Works on `elev` in place and may widen `sea` (a pocket the flood fills to the waterline is the sea's). `lakes` is the basins that kept their water, each `{ seed, level, depth, cells }` with `seed` the deepest cell; `spare` marks those cells and `surface` holds their level, which is what keeps a later sweep off them. Every other basin is left holding under `opts.pond` metres, and so is every dip the dishes dug on the way.
  */
 export function drainBasins(elev, sea, n, cell, opts = BASINS) {
   const O = opts
@@ -47,48 +49,9 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
   const esc = Float32Array.from(flood.filled)
   for (let c = 0; c < size; c++) if (sea[c]) esc[c] = elev[c]
 
-  // --- the basins ---------------------------------------------------------------
-  // Connected components of standing water on land, of which the ones more than `pond` metres deep are the basins. The margin is in the component however shallow it is: a basin whose middle is pinched by a saddle under a metre of water is still ONE basin, and splitting it there would mark the deep half for keeping and the shallow half for a drain it cannot have -- the two share a water table, so draining one means draining the other.
+  // --- the drain ----------------------------------------------------------------
   const seen = new Uint8Array(size)
   const scan = new Int32Array(size)
-  const basins = []
-  for (let c0 = 0; c0 < size; c0++) {
-    if (seen[c0] || sea[c0] || esc[c0] - elev[c0] <= TOL) continue
-    let top = 0
-    scan[top++] = c0
-    seen[c0] = 1
-    const cells = []
-    let depth = 0
-    let level = -Infinity
-    while (top > 0) {
-      const c = scan[--top]
-      cells.push(c)
-      const d = esc[c] - elev[c]
-      if (d > depth) depth = d
-      if (esc[c] > level) level = esc[c]
-      const ci = c % n
-      const cj = (c / n) | 0
-      for (let k = 0; k < 8; k++) {
-        const ni = ci + NB_DI[k]
-        const nj = cj + NB_DJ[k]
-        if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
-        const nn = nj * n + ni
-        if (seen[nn] || sea[nn] || esc[nn] - elev[nn] <= TOL) continue
-        seen[nn] = 1
-        scan[top++] = nn
-      }
-    }
-    if (depth > O.pond) basins.push({ cells, depth, level })
-  }
-
-  // Deepest first, and the first `keep` of them hold their water. Depth and nothing else.
-  const byDepth = basins.slice().sort((a, b) => b.depth - a.depth)
-  for (let k = 0; k < byDepth.length; k++) byDepth[k].keep = k < O.keep
-  const keptBasins = Math.min(O.keep, basins.length)
-  // Worked lowest spill first, so a basin that spills into another meets it already settled and reads a true `esc` there.
-  const order = basins.slice().sort((a, b) => a.level - b.level)
-
-  // --- the drain ----------------------------------------------------------------
   const done = new Uint8Array(size)
   const spare = new Uint8Array(size)
   const surface = new Float32Array(size)
@@ -106,6 +69,46 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
   let drowned = 0
   let absorbed = 0
   let drainedDeepest = 0
+  let late = 0
+
+  /**
+   * The basins standing on the field right now: connected components of water over `pond` metres deep somewhere in them, read off `esc`. A kept lake is not one -- its cells are `spare` and the water in them is meant to be there.
+   *
+   * The shallow margin of a component is in it however shallow it is: a basin whose middle is pinched by a saddle under a metre of water is still ONE basin, and splitting it there would mark the deep half for keeping and the shallow half for a drain it cannot have -- the two share a water table, so draining one means draining the other.
+   */
+  function findBasins() {
+    seen.fill(0)
+    const out = []
+    for (let c0 = 0; c0 < size; c0++) {
+      if (seen[c0] || sea[c0] || spare[c0] || esc[c0] - elev[c0] <= TOL) continue
+      let top = 0
+      scan[top++] = c0
+      seen[c0] = 1
+      const cells = []
+      let depth = 0
+      let level = -Infinity
+      while (top > 0) {
+        const c = scan[--top]
+        cells.push(c)
+        const d = esc[c] - elev[c]
+        if (d > depth) depth = d
+        if (esc[c] > level) level = esc[c]
+        const ci = c % n
+        const cj = (c / n) | 0
+        for (let k = 0; k < 8; k++) {
+          const ni = ci + NB_DI[k]
+          const nj = cj + NB_DJ[k]
+          if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+          const nn = nj * n + ni
+          if (seen[nn] || sea[nn] || spare[nn] || esc[nn] - elev[nn] <= TOL) continue
+          seen[nn] = 1
+          scan[top++] = nn
+        }
+      }
+      if (depth > O.pond) out.push({ cells, depth, level })
+    }
+    return out
+  }
 
   /** The pond a seed sits in and the level its water stands at. Grows over the lowest frontier cell each time, raising `level` to whatever it has had to admit, and stops at the first cell under that level that already gets away lower -- the ground the water leaves over. `spill` is the cell that last raised the level, which is the pond's lowest rim point. Every cell it admits is pushed onto `touched`, which is how the drain knows afterwards which ground this pond was responsible for: the pond shrinks as its level falls, so the cells that fall dry on the way are in no later round's region and would otherwise each be re-seeded as a pond of its own. */
   function solvePond(seed, touched) {
@@ -172,76 +175,111 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
     }
   }
 
-  for (const b of order) {
-    const target = b.keep ? O.keepDepth : 0
-    const stop = b.keep ? O.keepDepth : O.pond
-    // Seeded from the lowest cell of the basin upward: each pass drains the pond round the lowest cell that is still wet, so a basin that splits into lobes as its level falls has every lobe drained in turn.
-    const foot = Array.from(b.cells).sort((x, y) => elev[x] - elev[y])
-    for (const s of foot) {
-      if (done[s]) continue
-      ponds++
-      let round = 0
-      const touched = []
-      for (;;) {
-        const p = solvePond(s, touched)
-        const deep = p.level - p.floor
-        // Water standing at or under the waterline is the ocean's, whatever the drain was going to do with it: a round that cuts a coastal basin's outlet below zero has joined it to the sea, and v2's ocean plane will draw it. Cutting on is pointless -- the dish skips sea cells, so the outlet cannot be taken any lower.
-        if (p.level <= 0) {
-          for (const c of touched) {
-            done[c] = 1
-            esc[c] = elev[c]
-          }
-          for (const c of p.wet) sea[c] = 1
-          done[s] = 1
-          drowned++
-          break
-        }
-        // The pond has run into a kept lake: its rim point is water the drain has already settled, so there is nothing to cut (the dish skips spare cells) and nothing to drain -- whatever lies under that surface is the lake's bottom. Two basins the flood read as separate can end up one body, because a cut made for a third basin joined them.
-        if (spare[p.spill]) {
-          const lvl = surface[p.spill]
-          for (const c of touched) {
-            done[c] = 1
-            if (elev[c] < lvl - TOL) {
-              spare[c] = 1
-              surface[c] = lvl
-              esc[c] = lvl
-            } else esc[c] = elev[c]
-          }
-          done[s] = 1
-          absorbed++
-          break
-        }
-        if (deep <= stop + TOL || round >= O.rounds) {
-          if (deep > stop + TOL) stuck++
-          if (target === 0 && deep > drainedDeepest) drainedDeepest = deep
-          // Everything the pond ever covered is settled, dry first: ground that fell dry as the level dropped now sheds its water into the pond, so it escapes at its own elevation. Then the cells still under water, whose escape is the surface if the basin is keeping it.
-          for (const c of touched) {
-            done[c] = 1
-            esc[c] = elev[c]
-          }
-          for (const c of p.wet) {
-            esc[c] = target > 0 ? p.level : elev[c]
-            if (target > 0) {
-              spare[c] = 1
-              surface[c] = p.level
+  /** Drain the given basins, lowest spill first so a basin that spills into another meets it already settled and reads a true `esc` there. A basin with no `keep` flag is emptied. */
+  function drain(basins) {
+    for (const b of basins.slice().sort((x, y) => x.level - y.level)) {
+      const target = b.keep ? O.keepDepth : 0
+      const stop = b.keep ? O.keepDepth : O.pond
+      // Seeded from the lowest cell of the basin upward: each pass drains the pond round the lowest cell that is still wet, so a basin that splits into lobes as its level falls has every lobe drained in turn.
+      const foot = Array.from(b.cells).sort((x, y) => elev[x] - elev[y])
+      for (const s of foot) {
+        if (done[s]) continue
+        ponds++
+        let round = 0
+        const touched = []
+        for (;;) {
+          const p = solvePond(s, touched)
+          const deep = p.level - p.floor
+          // Water standing at or under the waterline is the ocean's, whatever the drain was going to do with it: a round that cuts a coastal basin's outlet below zero has joined it to the sea, and v2's ocean plane will draw it. Cutting on is pointless -- the dish skips sea cells, so the outlet cannot be taken any lower.
+          if (p.level <= 0) {
+            for (const c of touched) {
+              done[c] = 1
+              esc[c] = elev[c]
             }
+            for (const c of p.wet) sea[c] = 1
+            done[s] = 1
+            drowned++
+            break
           }
-          done[s] = 1
-          if (target > 0 && deep > O.pond) lakes.push({ seed: p.floorCell, level: p.level, depth: deep, cells: p.wet })
-          break
+          // The pond has run into a kept lake: its rim point is water the drain has already settled, so there is nothing to cut (the dish skips spare cells) and nothing to drain -- whatever lies under that surface is the lake's bottom. Two basins the flood read as separate can end up one body, because a cut made for a third basin joined them.
+          if (spare[p.spill]) {
+            const lvl = surface[p.spill]
+            for (const c of touched) {
+              done[c] = 1
+              if (elev[c] < lvl - TOL) {
+                spare[c] = 1
+                surface[c] = lvl
+                esc[c] = lvl
+              } else esc[c] = elev[c]
+            }
+            done[s] = 1
+            absorbed++
+            break
+          }
+          if (deep <= stop + TOL || round >= O.rounds) {
+            if (deep > stop + TOL) stuck++
+            if (target === 0 && deep > drainedDeepest) drainedDeepest = deep
+            // Everything the pond ever covered is settled, dry first: ground that fell dry as the level dropped now sheds its water into the pond, so it escapes at its own elevation. Then the cells still under water, whose escape is the surface if the basin is keeping it.
+            for (const c of touched) {
+              done[c] = 1
+              esc[c] = elev[c]
+            }
+            for (const c of p.wet) {
+              esc[c] = target > 0 ? p.level : elev[c]
+              if (target > 0) {
+                spare[c] = 1
+                surface[c] = p.level
+              }
+            }
+            done[s] = 1
+            if (target > 0 && deep > O.pond) lakes.push({ seed: p.floorCell, level: p.level, depth: deep, cells: p.wet })
+            break
+          }
+          const drop = Math.max(O.minStep, (deep - target) / O.steps)
+          const width = 2 * Math.sqrt((p.wet.length * cellArea) / Math.PI)
+          const R = Math.min(O.maxBrush, Math.max(O.minBrush, O.brush * width))
+          cutRim(p.spill, drop, R)
+          brushSum += R
+          if (R > brushMax) brushMax = R
+          cuts++
+          round++
         }
-        const drop = Math.max(O.minStep, (deep - target) / O.steps)
-        const width = 2 * Math.sqrt((p.wet.length * cellArea) / Math.PI)
-        const R = Math.min(O.maxBrush, Math.max(O.minBrush, O.brush * width))
-        cutRim(p.spill, drop, R)
-        brushSum += R
-        if (R > brushMax) brushMax = R
-        cuts++
-        round++
+        roundSum += round
+        if (round > roundMax) roundMax = round
       }
-      roundSum += round
-      if (round > roundMax) roundMax = round
     }
+  }
+
+  // The island's own basins, ranked on depth and nothing else: the `keep` deepest hold their water, every other one is emptied.
+  const basins = findBasins()
+  const byDepth = basins.slice().sort((a, b) => b.depth - a.depth)
+  for (let k = 0; k < byDepth.length; k++) byDepth[k].keep = k < O.keep
+  const keptBasins = Math.min(O.keep, basins.length)
+  drain(basins)
+
+  // Then the dips the dishes dug. Each sweep re-floods, forgets which cells it had settled everywhere but the lakes, and drains whatever now stands over `pond` -- none of which may keep its water. `left` is what the last sweep still found: nothing, unless the cap cut the sweeps short.
+  let sweeps = 1
+  let left = 0
+  for (;;) {
+    const again = priorityFlood(elev, n)
+    for (let c = 0; c < size; c++) {
+      if (sea[c]) {
+        esc[c] = elev[c]
+        continue
+      }
+      if (spare[c]) {
+        esc[c] = surface[c]
+        continue
+      }
+      esc[c] = again.filled[c]
+      done[c] = 0
+    }
+    const more = findBasins()
+    left = more.reduce((d, b) => Math.max(d, b.depth), 0)
+    if (!more.length || sweeps >= O.sweeps) break
+    sweeps++
+    late += more.length
+    drain(more)
   }
 
   let cutCells = 0
@@ -266,6 +304,9 @@ export function drainBasins(elev, sea, n, cell, opts = BASINS) {
       kept: keptBasins,
       bodies: lakes.length,
       drained: basins.length - keptBasins,
+      sweeps,
+      late,
+      left,
       ponds,
       stuck,
       drowned,

@@ -18,7 +18,7 @@ Every save is made waking, so in a house. The save stores which house and which 
 
 `Sleep` runs awake -> lying -> closing -> asleep -> opening -> awake:
 
-- **Lying** starts when she is in a bed.
+- **Lying** starts when she is in a bed that is free: no leafkin resident at its activity there (lying down, asleep or getting up), and no peer's head over its mattress and under 1 m of the peer's height over it (`inBed`). A bed taken once she lies in it does not put her out.
   - In the headset: her head within the bed's width over its pillow end, less than 1 m of her height over the mattress and not more than 0.3 m under it, and looking up (forward.y > 0.7).
   - On a desktop, a click on the bed within 3 of her metres lays her in it: head on the pillow, looking up past her feet. Her standing pose is kept to give back.
 - **Closing:** after 5 s still (the head drifting under 0.15 of her metres and turning under 20 degrees), the lids close over 2.5 s. They are two curved edges meeting across the view's middle, in the veil's shader.

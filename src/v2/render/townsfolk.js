@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
-import { Hearth } from './hearth.js'
+import { HEARTH, Hearth } from './hearth.js'
 import { LOD_FADE_S, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
@@ -35,8 +35,8 @@ export const TOWNSFOLK = {
   // Metres past a town's radius it comes alive at, and is let go past.
   live: [250, 330],
   // The walk round the clearing, inside its edge, that the paths and roads join.
-  ring: { r: 9, nodes: 14 },
-  lane: 0.35,
+  ring: { r: 4, nodes: 10 },
+  lane: 0.2,
   node: 0.35,
   sitNear: 0.05,
   inside: [20, 90],
@@ -45,8 +45,8 @@ export const TOWNSFOLK = {
   homing: 60,
   talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
   errands: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3]],
-  // Her within `m`: they stop, face her and gesture for `s`, then catch up with themselves at `catchUp` times the pace; `cool` seconds before the same one greets again.
-  greet: { m: 3, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.3], ['beckon', 0.2], ['idle', 0.5]] },
+  // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
+  greet: { m: 2, ignore: 0.5, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.12], ['beckon', 0.08], ['idle', 0.8]] },
 }
 
 export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', ...TALKS]
@@ -569,6 +569,11 @@ export class Townsfolk {
     this.loaded = true
   }
 
+  /** Every town's campfire flame, woken or not, for ambience.js: the clearing is flattened to `town.y`. */
+  get fires() {
+    return this.towns.map((t) => ({ x: t.x, y: t.y + HEARTH.fire.lift * this.hearthScale, z: t.z }))
+  }
+
   get stats() {
     let people = 0, shown = 0
     for (const { life } of this.alive.values()) {
@@ -639,9 +644,12 @@ export class Townsfolk {
     const sx = c.px + (c.x - c.px) * a, sy = c.py + (c.y - c.py) * a, sz = c.pz + (c.z - c.pz) * a
     const G = TOWNSFOLK.greet
     if (c.greet === null && !c.lag && !c.hidden && seconds >= c.cool && (c.state === 'walk' || c.state === 'stand' || c.state === 'talk') && Math.hypot(pose.x - feet.x, pose.z - feet.z) < G.m) {
-      c.greet = { until: seconds + between(Math.random, G.s), at: seconds, clip: pick(Math.random, G.clips) }
-      c.gcue++
-      this.greets++
+      c.cool = seconds + G.cool
+      if (Math.random() >= G.ignore) {
+        c.greet = { until: seconds + between(Math.random, G.s), at: seconds, clip: pick(Math.random, G.clips) }
+        c.gcue++
+        this.greets++
+      }
     }
     if (c.greet !== null) {
       const want = Math.atan2(-(feet.z - pose.z), feet.x - pose.x), s = swing(pose.heading, want)

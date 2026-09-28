@@ -3093,7 +3093,7 @@ class RockBed {
       const scale = this._scaleAt(x, z, h, snowLine, env, this._sizeRoll(scaleRoll))
       if (this.shapeLod * scale < minSize) continue
       if (this.layers.paths !== undefined) {
-        const road = this.layers.paths.nearest(x, z, 'road')
+        const road = this.layers.paths.nearest(x, z, 'road', true)
         if (road !== null && road.dist < road.halfWidth + this._turnedBox(rollRoll, scale).span * 0.5 + ROAD_CLEARANCE) continue
       }
       out.push(x, z, this.hull.radius * scale)
@@ -3319,7 +3319,7 @@ class RockBed {
 
       // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it.
       if (this.layers.paths !== undefined) {
-        const road = this.layers.paths.nearest(x, z, 'road')
+        const road = this.layers.paths.nearest(x, z, 'road', true)
         if (road !== null && road.dist < road.halfWidth + span * 0.5 + ROAD_CLEARANCE) {
           this.rejected.road++
           continue

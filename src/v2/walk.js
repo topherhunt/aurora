@@ -18,8 +18,8 @@
 // takes as ground only what she could step up onto; stone above that is over
 // her head, and fits() is what says whether it is far enough over. That is
 // what lets her walk under an overhang that the topmost-surface answer read as
-// a wall, and it is the whole of the capsule: five vertical lines, hers and
-// four at her shoulder, against the same triangles the props are seated on.
+// a wall, and it is the whole of the capsule: nine vertical lines, hers and
+// eight at her shoulder, against the same triangles the props are seated on.
 // The field itself cannot overhang and the trunks run ground to canopy, so the
 // altitude only ever matters for stone.
 
@@ -47,7 +47,7 @@ export const WALK = {
   // Metres above her feet that stone may not intrude below. Her crown, with a
   // hand's clearance; the headset's real height is not consulted.
   height: 1.9,
-  // Her shoulder. Where the four ring columns of fits() are dropped.
+  // Her shoulder. Where the RING columns of fits() are dropped.
   radius: 0.3,
 }
 
@@ -56,7 +56,12 @@ export const WALK = {
 // truncated by Rocks.columnAt and treated here as blocked, never as clear.
 const SPAN_CAP = 8
 const spans = new Float64Array(SPAN_CAP * 2)
-const RING = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+// Her shoulder, as the vertical lines fits() drops round her. The slide Player
+// takes along stone is the tangent of the push these points give, so they must
+// be the shape that collides too: a push read off a finer ring than the one
+// that collides points her into a notch of the coarse one, and she stops dead
+// at every corner. Four points (a plus) stair-step round a curved wall.
+const RING = Array.from({ length: 8 }, (_, k) => [Math.cos((k * Math.PI) / 4), Math.sin((k * Math.PI) / 4)])
 
 export class WalkSurface {
   /**
@@ -144,13 +149,13 @@ export class WalkSurface {
   /**
    * Whether her capsule fits standing at (x, z) with her feet at `standY`: no
    * stone crosses the head volume (standY + reach, standY + height) on her own
-   * vertical line or on the four at her shoulder. A stone topping out inside
+   * vertical line or on the RING at her shoulder. A stone topping out inside
    * `reach` is a step beside her and does not count, whatever its height.
    *
    * When it does not fit, `out` gets the plan direction AWAY from the stone as a
-   * unit vector -- the mean of the clear side -- for the caller to slide along,
-   * or zero when it is her own line that is blocked and there is no side to
-   * favour. Untouched when she fits.
+   * unit vector -- opposite the mean of the RING points in stone -- for the
+   * caller to slide along, or zero when it is her own line that is blocked and
+   * there is no side to favour. Untouched when she fits.
    */
   fits(x, z, standY, out) {
     const lo = standY + this.reach
@@ -163,17 +168,15 @@ export class WalkSurface {
     let pz = 0
     let hit = 0
     for (let k = 0; k < RING.length; k++) {
-      const rx = RING[k][0] * this.radius
-      const rz = RING[k][1] * this.radius
-      if (!this._crossed(x + rx, z + rz, lo, hi)) continue
+      if (!this._crossed(x + RING[k][0] * this.radius, z + RING[k][1] * this.radius, lo, hi)) continue
       hit++
-      px -= rx
-      pz -= rz
+      px -= RING[k][0]
+      pz -= RING[k][1]
     }
     if (hit === 0) return true
     if (out) {
       const len = Math.hypot(px, pz)
-      // Opposite ring points both hit: she is in a slot with no side to favour.
+      // Stone all round, or on opposite sides: a slot with no side to favour.
       out.x = len > 1e-9 ? px / len : 0
       out.z = len > 1e-9 ? pz / len : 0
     }

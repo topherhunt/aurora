@@ -100,7 +100,7 @@ import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
-import { BED_REACH_M, Health, MAX_HP, Sleep, besideBed, fallDamage, hoursToBoundary, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
+import { BED_REACH_M, Health, MAX_HP, Sleep, besideBed, fallDamage, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 
 // First, before anything below can warn: a copy of every warning and error goes
@@ -904,11 +904,17 @@ const vitalsHold = () => health.dead || deskBed !== null || sleep.state === 'clo
 
 const roomBeds = (room) => room.spots.filter((b) => b.kind === 'bed')
 
-/** The beds of the house she is in, in world metres, as vitals.js takes them, each with its index `i` among the room's beds; none outdoors. */
+/** The beds of the house she is in, in world metres, as vitals.js takes them, each with its index `i` among the room's beds and whether it is `free` of a leafkin on it and a peer in it; none outdoors. */
 function worldBeds() {
   if (!indoors) return []
   const o = indoors.view.group.position
-  return roomBeds(indoors.room).map((b, i) => ({ x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid, i }))
+  const peers = [...netplay.peers.values()]
+  return roomBeds(indoors.room).map((b, i) => {
+    const bed = { x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid, i }
+    bed.free = !indoors.residents.all.some((r) => r.spot === b && r.state === 'act') &&
+      !peers.some((p) => inBed(bed, { x: p.pose[0], y: p.pose[1], z: p.pose[2] }, p.scale === undefined ? 1 : p.scale))
+    return bed
+  })
 }
 
 /** A desktop click's lie-down: her head over the pillow, looking up past her feet. */
@@ -984,7 +990,7 @@ function stepHud(dt) {
 function stepVitals(dt, now) {
   camera.getWorldPosition(vitalsHead)
   camera.getWorldDirection(vitalsFwd)
-  const bed = health.dead ? -1 : renderer.xr.isPresenting ? worldBeds().findIndex((b) => liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed === null ? -1 : deskBed.bed
+  const bed = health.dead ? -1 : renderer.xr.isPresenting ? worldBeds().findIndex((b) => (b.free || sleep.state !== 'awake') && liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed === null ? -1 : deskBed.bed
   const lying = bed >= 0
   const event = sleep.update(dt, { lying, press: vitalsPress, head: vitalsHead, fwd: vitalsFwd, scale: herScale() })
   vitalsPress = false
@@ -1998,7 +2004,7 @@ function buildQuestPanel() {
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
     const reach = BED_REACH_M * herScale()
-    const bed = sleep.state === 'awake' ? worldBeds().find((b) => (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
+    const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
     if (bed) { lieDown(bed); return }
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
@@ -3201,6 +3207,7 @@ async function openHouse(e) {
 async function leaveHouse() {
   doorBusy = true
   if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
+  makeBlackout()
   ready = false
   await fade(1)
   const { e, back } = indoors
@@ -4042,8 +4049,8 @@ async function buildRoom(room, at) {
       waves: !room.village,
       // A violin through the wall of half a village's houses.
       fiddlers: room.village ? roomProps.fiddlers() : [],
-      // The crackle of the clearing's hearth, and a soft one from every torch while they are lit.
-      campfires: hearth ? [hearth.fire] : [],
+      // The crackle of the clearing's hearth or of every town's, and a soft one from every torch while they are lit.
+      campfires: hearth ? [hearth.fire] : townsfolk ? townsfolk.fires : [],
       torches: lamps ? { at: lamps.lamps.map((l) => ({ x: l.x, y: l.flameY, z: l.z })), lit: () => lamps.lit } : null,
     })
     window.v2ambience = ambience

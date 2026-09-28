@@ -148,8 +148,16 @@ check(threw, 'addGenerated refuses a non-generated id')
 
 // Every building's box is flattened: the live field is level with the pad at its centre.
 let padWorst = 0
-for (const t of towns) for (const b of t.buildings) padWorst = Math.max(padWorst, Math.abs(layers.paths.nearest(b.box.x, b.box.z, 'road').y - b.y))
+for (const t of towns) for (const b of t.buildings) padWorst = Math.max(padWorst, Math.abs(layers.paths.nearest(b.box.x, b.box.z, 'road', true).y - b.y))
 check(padWorst < 0.05, 'the road under each building centre is at its pad height', `worst ${padWorst.toFixed(3)} m`)
+// The ground cover sees no pad: a point just outside a house's wall is open ground, not road.
+let padSeen = 0
+for (const t of towns) for (const b of t.buildings) {
+  const d = b.box.hx + 0.6, x = b.box.x - b.box.c * d, z = b.box.z + b.box.s * d
+  const r = layers.paths.nearest(x, z, 'road')
+  if (r !== null && r.id === `${b.id}-pad`) padSeen++
+}
+check(padSeen === 0, 'the ground cover grows over a building\'s pad', `${padSeen} pads seen`)
 
 // A pad flattens but is not painted: just behind each building, out of reach of every painted road, is flat and not dirt.
 const painted = records.filter((r) => r.dirt !== false)
@@ -209,7 +217,7 @@ check(layer.nearBuildingAt(b0.x + 15, b0.z, 20) && !layer.nearBuildingAt(t.x + t
 
 // --- the hearth, grown to a human seat ---
 const texArray = buildTextureArray()
-const S = 2.3
+const S = 1.3
 const hearth = new Hearth(scene, field, { bank: buildRockBank(), at: t, textures: texArray, seed: 5, patch: (m) => m, scale: S })
 const st = hearth.stools[0]
 const sx = hearth.x + st.x * S, sz = hearth.z + st.z * S
@@ -232,7 +240,7 @@ check(unreached.length === 0, 'every door is reachable from the clearing', unrea
 const durations = Object.fromEntries(['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', ...TALKS].map((c) => [c, c === 'sit' ? 4 : 2]))
 const bodies = TOWNSFOLK.bodies.map(() => ({ heightM: 1.7, height: 1, gait: { walk: 0.632 }, wheelbase: 0.474, sitY: SEAT_M * S / 1.7, durations }))
 const seats = Array.from({ length: 6 }, (_, k) => {
-  const x = t.x + Math.cos(k) * 4, z = t.z + Math.sin(k) * 4
+  const x = t.x + Math.cos(k) * 1.7 * S, z = t.z + Math.sin(k) * 1.7 * S
   return { x, z, top: field.heightAt(x, z) + SEAT_M * S, r: 0.4, lookX: t.x, lookZ: t.z }
 })
 const heightAt = (x, z) => field.heightAt(x, z)

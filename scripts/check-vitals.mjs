@@ -10,7 +10,7 @@ import { Player, LOCOMOTION } from '../src/player.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { rollInterior } from '../src/v2/rooms/interior.js'
 import { celestial, CLOCK } from '../src/clock.js'
-import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, fallDamage, hoursToBoundary, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
+import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, fallDamage, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -136,6 +136,9 @@ console.log('the bed')
   check(!liesOn(bed, pillow, { x: s, y: 0, z: c }, scale), 'face level is not')
   check(!liesOn(bed, at(-bed.len / 2 + 0.2, 0.15), up, scale), 'her head at its foot is not')
   check(!liesOn(bed, at(bed.len / 2 - 0.2, LOCOMOTION.eyeHeight * scale), up, scale), 'standing on it looking up is not')
+  check(inBed(bed, pillow, scale) && inBed(bed, at(-bed.len / 2 + 0.2, 0.15), scale), 'a peer with its head low over the mattress, either end, is in it')
+  const side = { x: pillow.x + (bed.wid / 2 + 0.3) * c, y: bed.top - 0.2 + LOCOMOTION.eyeHeight * scale, z: pillow.z - (bed.wid / 2 + 0.3) * s }
+  check(!inBed(bed, side, scale) && !inBed(bed, at(0, LOCOMOTION.eyeHeight * scale), scale), 'a peer standing beside it or on it is not')
   const eye = at(-bed.len / 2 - 0.6, LOCOMOTION.eyeHeight * scale)
   const foot = at(-bed.len / 2 + 0.1, 0)
   const toward = new THREE.Vector3(foot.x - eye.x, foot.y - eye.y, foot.z - eye.z).normalize()
