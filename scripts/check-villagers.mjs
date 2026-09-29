@@ -33,7 +33,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, dijkstra, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { keyOf as frogKey } from '../src/v2/render/frogs.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
@@ -44,6 +44,7 @@ import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
+import { Trust } from '../src/v2/trust.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -163,6 +164,10 @@ function fakeHands() {
     return { count: () => n, add: () => { n++ }, clear: () => { n = 0 }, place: say('place'), grip: say('grip'), scatter: say('scatter'), release: () => { h.carriers--; h.log.push(['release', owner]) } }
   }
   h.lift = (item) => { h.loose.splice(h.loose.indexOf(item), 1); h.lifted.push(item) }
+  // Her hands: the mushrooms she holds, as hands.js lures has them, and those a villager took.
+  h.held = []
+  h.eaten = []
+  h.eatLure = (lure) => { const i = h.held.indexOf(lure); if (i < 0) return false; h.held.splice(i, 1); h.eaten.push(lure); return true }
   return h
 }
 const T0 = 1000
@@ -171,11 +176,11 @@ const FAR = { x: 400, y: 100, z: 400 }
 const JAM_S = 1
 const head = (feet) => ({ x: feet.x, y: feet.y + 1.6, z: feet.z })
 /** Frames at `hz` from `t` for `seconds`, her feet at `feet`; `each(t)` after every frame, and the voices are dropped on the floor when there is none to hear them. Returns the time reached. */
-function run(v, t, seconds, feet, each = null, hz = 60) {
+function run(v, t, seconds, feet, each = null, hz = 60, lures = undefined, trusts = undefined) {
   const frames = Math.round(seconds * hz)
   for (let i = 0; i < frames; i++) {
     t += 1 / hz
-    v.update(feet, head(feet), t, 1 / hz)
+    v.update(feet, head(feet), t, 1 / hz, undefined, lures, trusts)
     if (each) each(t); else v.voices([])
   }
   return t
@@ -618,6 +623,144 @@ console.log('\na frog after a hob')
   let threw = false
   try { w.apply([`${w.wire}zz:g1`, t, 0, 0, 0, 0, 0, 'frog', 'b', 0, 1, 2]) } catch { threw = true }
   check(threw, 'a frog event naming no frog is refused')
+}
+
+// --- her mushroom, and trust ------------------------------------------------------------
+/** Where she stands to meet `c`: a road node `lo` to `hi` metres off it, or null. */
+function standOff(v, c, lo, hi) {
+  const n = v.graph.nodes.find((o) => o.road !== 'door' && Math.hypot(o.x - c.x, o.z - c.z) >= lo && Math.hypot(o.x - c.x, o.z - c.z) <= hi)
+  return n ? { x: n.x, y: walk.heightAt(n.x, n.z), z: n.z } : null
+}
+const outFor = (v, lo, hi) => v.all.find((o) => !o.hidden && o.state === 'walk' && o.then !== 'enter' && standOff(v, o, lo, hi) !== null)
+const sameState = (a, b) => a.all.every((c, i) => { const o = b.all[i]; return c.x === o.x && c.z === o.z && c.heading === o.heading && c.state === o.state && c.hidden === o.hidden && c.feast === o.feast && c.rs === o.rs })
+
+console.log('\nher mushroom')
+{
+  const hands = fakeHands()
+  const v = make(hands)
+  // Her client's trust: whom she fed trusts her from the next frame (main.js syncTrust).
+  const trusted = new Set(), won = []
+  const trusts = (id) => trusted.has(id)
+  const befriend = () => { for (const id of v.befriended([])) { won.push(id); trusted.add(id) } }
+  let t = run(v, T0, 120, FAR)
+  const c = outFor(v, 4, 6)
+  const feet = standOff(v, c, 4, 6)
+  const lure = { kind: 'mushroom', x: feet.x, y: feet.y + 1.1, z: feet.z, by: null }
+  hands.held.push(lure)
+  const phases = new Set(), clips = new Set(), heard = []
+  let fled = 0, near = Infinity
+  t = run(v, t, 45, feet, () => {
+    if (c.state === 'court') { phases.add(c.phase); clips.add(c.clip) }
+    near = Math.min(near, Math.hypot(c.x - feet.x, c.z - feet.z))
+    for (const o of v.all) if (o.state === 'flee' || o.state === 'startle') fled++
+    for (const s of v.voices([])) if (Math.hypot(s.x - c.x, s.z - c.z) < 0.5) heard.push(s.sound)
+    befriend()
+  }, 60, hands.held, trusts)
+  check(heard[0] === 'leafkinSqueal' && phases.has('creep'), 'a villager near her with a mushroom in her hand squeals and comes to her', `${heard.slice(0, 4).join(' ')}; ${[...phases].join(' ')}`)
+  check(phases.has('pause') && clips.has('walk') && (clips.has('beckon') || clips.has('wave')), 'creeping, stopping to beckon', [...clips].join(' '))
+  check(c.state === 'court' && near < 1.5, 'and stands before her while she holds it', `${c.state}/${c.phase}, ${near.toFixed(2)} m`)
+  check(heard.some((s) => s.startsWith('leafkinChatter')), 'chattering at her now and then', heard.join(' '))
+  check(fled === 0 && v.stats.startles === 0, 'nobody is startled while she holds one, though she stands among them', `${fled} frames fleeing`)
+
+  // Held out over it: taken, and eaten at home.
+  const home = []
+  let fedHome = false
+  lure.x = c.pose.x; lure.y = c.pose.y + c.size * 0.7; lure.z = c.pose.z
+  t = run(v, t, 40, feet, () => {
+    if (c.state === 'inside' && c.feast) fedHome = true
+    for (const s of v.voices([])) if (Math.hypot(s.x - c.x, s.z - c.z) < 0.5) home.push(s.sound)
+    befriend()
+  }, 60, hands.held, trusts)
+  check(hands.eaten.length === 1 && hands.held.length === 0 && v.stats.offers === 1, 'held out over it, her mushroom leaves her hand for its', `${hands.eaten.length} eaten, ${v.stats.offers} offers`)
+  check(won.length === 1 && won[0] === c.id, 'and she has won it over: befriended names it, once', JSON.stringify(won))
+  check(home[0] === 'leafkinSqueal' && home.some((s) => s.startsWith('leafkinChatter')) && fedHome, 'it squeals, and runs home chattering to eat it', home.slice(0, 6).join(' '))
+  check(v.stats.states.court === 0, `with nothing in her hand, nobody courts her past COURT_S (${COURT_S} s)`, JSON.stringify(v.stats.states))
+  check(LURE_M > GREET_M && FRIEND_M > GREET_M, 'a mushroom is seen from farther than a friend comes, and a whole village\'s friend farther still')
+}
+
+console.log('\ntrust')
+{
+  const v = make(fakeHands())
+  let t = run(v, T0, 120, FAR)
+  const c = outFor(v, 3, GREET_M - 1)
+  const feet = standOff(v, c, 3, GREET_M - 1)
+  const trusts = (id) => id === c.id
+  const clips = new Set(), heard = []
+  let near = Infinity, fled = false, left = null, greetedAt = null
+  t = run(v, t, 30, feet, (now) => {
+    if (c.state === 'greet') { greetedAt ??= now; clips.add(c.clip); near = Math.min(near, Math.hypot(c.x - feet.x, c.z - feet.z)) }
+    if (greetedAt !== null && c.state !== 'greet' && left === null) left = now - greetedAt
+    if (c.state === 'flee' || c.state === 'startle') fled = true
+    for (const s of v.voices([])) if (Math.hypot(s.x - c.x, s.z - c.z) < 0.5) heard.push(s.sound)
+  }, 60, [], trusts)
+  check(greetedAt !== null && near < 1.5 && !fled, 'one that trusts her comes up to her, and never runs', `${near.toFixed(2)} m, fled ${fled}`)
+  check(clips.has('beckon') || clips.has('wave'), 'and beckons to her', [...clips].join(' '))
+  check(left !== null && left > GREET_S[0] && left < GREET_S[1] + 10, 'and, answered by nothing, goes on its way', `after ${left?.toFixed(1)} s`)
+  t = run(v, t, GREET_COOL_S - 40, feet, null, 60, [], trusts)
+  check(v.stats.greets === 1, `not greeting her again for GREET_COOL_S (${GREET_COOL_S} s)`, `${v.stats.greets} greets`)
+
+  // The whole village's friend: seen from farther, greeted gladder.
+  const w = make(fakeHands())
+  let u = run(w, T0, 120, FAR)
+  const d = outFor(w, GREET_M + 2, FRIEND_M - 1)
+  const far = standOff(w, d, GREET_M + 2, FRIEND_M - 1)
+  const first = []
+  u = run(w, u, 15, far, () => { for (const s of w.voices([])) if (Math.hypot(s.x - d.x, s.z - d.z) < 0.5) first.push(s.sound) }, 60, [], () => true)
+  const hails = [...w.log.values()].flat().filter((e) => e.kind === 'hail')
+  check(hails.some((e) => e.ids.includes(d.id)) && first[0] === 'leafkinSqueal' && first.some((s) => s.startsWith('leafkinChatter')), 'trusted by all the village, she is hailed from farther, with a squeal and chatter', `${hails.length} hails; ${first.slice(0, 3).join(' ')}`)
+}
+
+{
+  const her = new Trust(), peer = new Trust()
+  const firsts = [her.grant(7, 3), her.grant(7, 3)]
+  for (let id = 0; id < 70; id++) her.grant(9, id)
+  const batches = []
+  her.flush((batch) => { batches.push(batch.length); return batches.length < 2 })
+  const kept = her.unsent.length
+  her.flush(() => true)
+  check(firsts[0] && !firsts[1] && batches.join() === '64,7' && kept === 7 && her.unsent.length === 0, 'trust is granted once, and told the room in batches of 64, a refused batch kept for the next', `${batches.join()}, ${kept} kept`)
+  peer.merge([[...her.known.values()][0]])
+  const back = new Trust()
+  back.load(JSON.parse(JSON.stringify(her.save())))
+  check(peer.trusts(7, 3, her.player) && !peer.trusts(7, 3) && back.player === her.player && back.count(9, 70) === 70 && back.unsent.length === 71, 'another client learns whom it trusts, and a saved game brings her trust back, all of it owed the room again')
+  back.clear()
+  check(!back.trusts(7, 3) && back.trusts(7, 3, her.player), 'a new game is a new player nobody trusts, the room\'s trust kept')
+  let threw = false
+  try { back.merge([['k3x', 256, 'abc123def456']]) } catch { threw = true }
+  check(threw, 'a malformed entry is refused')
+}
+
+console.log('\nher mushroom, in the room')
+{
+  const hands = fakeHands()
+  const A = make(hands), B = make()
+  const wire = []
+  let t = T0
+  const step = (seconds, feet) => {
+    for (let i = 0; i < seconds * 60; i++) {
+      t += 1 / 60
+      A.update(feet, head(feet), t, 1 / 60, undefined, hands.held)
+      B.update(FAR, head(FAR), t, 1 / 60)
+      A.voices([]); B.voices([])
+      for (const a of A.pending([])) wire.push({ at: t + 0.3, a: [...a.slice(0, 8), 'a', ...a.slice(9)] })
+      for (let k = wire.length - 1; k >= 0; k--) if (wire[k].at <= t) { B.apply(wire[k].a); wire.splice(k, 1) }
+    }
+  }
+  step(120, FAR)
+  const c = outFor(A, 4, 6)
+  const feet = standOff(A, c, 4, 6)
+  const lure = { kind: 'mushroom', x: feet.x, y: feet.y + 1.1, z: feet.z, by: null }
+  hands.held.push(lure)
+  step(20, feet)
+  lure.x = c.pose.x; lure.y = c.pose.y + c.size * 0.7; lure.z = c.pose.z
+  step(5, feet)
+  const fed = B.all[c.id].feast || B.all[c.id].state === 'inside'
+  step(10, FAR)
+  const kinds = new Set([...B.log.values()].flat().map((e) => e.kind))
+  check(kinds.has('lure') && kinds.has('offer') && fed && sameState(A, B), 'another client hears her lure and her offer, and steps the same court and the same run home', `${[...kinds].join(' ')}, fed ${fed}, rewinds ${B.stats.rewinds}`)
+  let threw = false
+  try { B.apply([`${B.wire}zz:o1`, t, 0, 0, 0, 0, 0, 'offer', 'a', 99]) } catch { threw = true }
+  check(threw, 'an offer to a villager this village has not is refused')
 }
 
 // --- the room ------------------------------------------------------------------------

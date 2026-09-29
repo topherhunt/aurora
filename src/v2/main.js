@@ -54,6 +54,7 @@ import { Snowmen } from './render/snowmen.js'
 import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
+import { Trust } from './trust.js'
 import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
@@ -767,6 +768,8 @@ const BACKPACK_PHOTO_PX = 192
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
+// Which villagers trust which player, she among them as `trust.player` (trust.js).
+const trust = new Trust()
 
 function saveGame() {
   // The rig only ever turns about Y (snap turns, recenter), so its quaternion
@@ -787,6 +790,8 @@ function saveGame() {
     door: cameInBy,
     // Every flare hers or a peer's, in every room, as flares.js toWire has them.
     flares: flares.save(),
+    // Her player id, and every villager's trust she knows of.
+    trust: trust.save(),
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -812,6 +817,8 @@ function applySave(doc) {
   // A save from before the flare gun has no `flares`, and no gun: she is given one.
   if (doc.flares === undefined) giveFlareGun()
   else flares.load(doc.flares)
+  // A save from before trust has none: she stays the player she booted as.
+  if (doc.trust !== undefined) trust.load(doc.trust)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -888,6 +895,7 @@ function newGame() {
   }
   backpack.fill(null)
   flares.clear()
+  trust.clear()
   giveFlareGun()
   paintBackpack()
   player.teleportTo(SPAWN.x, SPAWN.z)
@@ -957,6 +965,8 @@ function harm(n, why) {
   if (n <= 0 || health.dead) return
   const died = health.harm(n)
   console.log(`[vitals] ${why}: -${n} HP, ${health.hp} left`)
+  vitalsHud.flash()
+  if (ambience) sound.play('thud', { bus: 'near', rate: THREE.MathUtils.randFloat(0.9, 1.1), gain: 0.9 })
   if (!died) return
   freeMouse()
   const xr = renderer.xr.isPresenting
@@ -1734,6 +1744,17 @@ function holdsGun(key) {
   return rec !== null && rec.kind === FLAREGUN
 }
 
+/** Her onto the strider `find(layer)` answers: a wild one that trusts her, else a town's tied one lent to her for the ride. */
+function mountStrider(find) {
+  if (!wildStriders || !wildStriders.loaded || wildStriders.riding) return false
+  const wild = find(wildStriders)
+  if (wild) { wildStriders.mount(wild, player); return true }
+  const tied = townsfolk && townsfolk.striders ? find(townsfolk) : null
+  if (!tied) return false
+  wildStriders.borrow(townsfolk.lend(tied), player)
+  return true
+}
+
 const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
@@ -1781,6 +1802,22 @@ function drainFlares() {
     if (d < FLARE_HEARD_M) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
   }
   netplay.flares.length = 0
+}
+
+const trustsHer = (id) => trust.trusts(villagers.seed, id)
+const befriended = []
+let trustWelcomes = 0
+
+/** The villagers she fed this frame trusting her, the room's trust learned, and hers told to the relay -- all of it again when it welcomes her. */
+function syncTrust() {
+  befriended.length = 0
+  if (villagers) {
+    for (const id of villagers.befriended(befriended)) if (trust.grant(villagers.seed, id)) console.log(`[v2] villager ${id} trusts her now: ${trust.count(villagers.seed, villagers.all.length)} of ${villagers.all.length}`)
+  }
+  trust.merge(netplay.trust)
+  netplay.trust.length = 0
+  if (netplay.welcomes !== trustWelcomes) { trustWelcomes = netplay.welcomes; trust.resend() }
+  trust.flush((batch) => netplay.sendTrust(batch))
 }
 
 function buildSettingsView() {
@@ -1984,9 +2021,9 @@ function buildQuestPanel() {
       if (!hands) return
       const key = el === leftHandEl ? 'left' : 'right'
       // A finger on a friendly strider's back, from its side, puts her on it.
-      const mount = wildStriders && !wildStriders.riding ? wildStriders.mountableAt(hands.pointOf(key, new THREE.Vector3()), handsHead()) : null
-      if (mount) wildStriders.mount(mount, player)
-      else if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
+      const finger = hands.pointOf(key, new THREE.Vector3())
+      if (mountStrider((layer) => layer.mountableAt(finger, handsHead()))) return
+      if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
       else if (hands.press(key, handsHead()) === 'pick') playPick()
     })
   }
@@ -2031,9 +2068,8 @@ function buildQuestPanel() {
     const reach = BED_REACH_M * herScale()
     const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
     if (bed) { lieDown(bed); return }
-    const mount = wildStriders && !wildStriders.riding ? wildStriders.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) : null
-    if (mount) wildStriders.mount(mount, player)
-    else if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
+    if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
+    if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -2616,6 +2652,8 @@ let towns = null
 let townsfolk = null
 // The unsaddled striders of the open overworld, and her ride on one (render/wild-striders.js); null in a village.
 let wildStriders = null
+// The striders that trust her and how much feeding has grown them, by key, the wild ones' and the towns' alike; kept across rooms for the session.
+const striderBond = { trusted: new Set(), grown: new Map() }
 let roadPlan = null
 let signposts = null
 let bridges = null
@@ -3675,10 +3713,11 @@ async function buildRoom(room, at) {
   if (towns) {
     walk.addStone(towns)
     const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies.length }) : null
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
+    walk.addBody(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
   }
   if (bridges) walk.addStone(bridges)
@@ -3973,8 +4012,9 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure) })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key) })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
+    walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
   }
   // The room's creatures over the relay (creature-net.js): a lured animal's
@@ -4690,7 +4730,7 @@ const HOTKEYS = [
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds, the flare gun too; the trigger in the headset, and a grip lets go' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds, or fire the flare gun it holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
-      { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X in the headset' },
+      { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
     ],
   },
@@ -6120,7 +6160,7 @@ function readInput() {
       for (const hand of ['left', 'right']) {
         if (st[hand].buttons.GRIP?.justPressed) hands.drop(hand, handsHead())
         if (st[hand].buttons.PRIMARY?.justPressed && holdsGun(hand)) cycleFlareColor(hand)
-        else if (st[hand].buttons.PRIMARY?.justPressed && wildStriders && wildStriders.riding) wildStriders.dismount(player)
+        else if (st[hand].buttons.PRIMARY?.justPressed && hands.holding(hand) === null && wildStriders && wildStriders.riding) wildStriders.dismount(player)
       }
     }
     // On a strider the harder-pushed stick nudges it whole: forward and back, and sideways to steer.
@@ -6567,7 +6607,7 @@ function tick() {
   if (signposts) signposts.update(headTmp)
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
-  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024)
+  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('trees')
@@ -6653,7 +6693,7 @@ function tick() {
   if (villagers) stepAnimal('leafkin', () => {
     frogChases.length = 0
     frogs.chasers(frogChases)
-    villagers.update(player.originPosition(), headTmp, clock.seconds, dt, frogChases)
+    villagers.update(player.originPosition(), headTmp, clock.seconds, dt, frogChases, lures, trustsHer)
     hobs.update(headTmp, clock.seconds, dt, frogChases)
   })
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
@@ -6669,6 +6709,7 @@ function tick() {
   gunWindows.update(hands)
   shotFlash.update(dt, headTmp)
   drainFlares()
+  syncTrust()
   flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()

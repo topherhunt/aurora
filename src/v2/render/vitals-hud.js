@@ -13,6 +13,8 @@ const SAVED_S = 3
 const SAVED_FADE_S = 0.6
 // The heartbeat's period at half health and at death.
 const BEAT_S = [1.3, 0.75]
+// Seconds a blow's red flash takes to fade.
+const FLASH_S = 0.35
 
 const veilVert = /* glsl */ `
 varying vec3 vDir;
@@ -28,12 +30,13 @@ uniform float uHurt;
 uniform float uPulse;
 uniform float uLid;
 uniform float uBlack;
+uniform float uFlash;
 varying vec3 vDir;
 void main() {
   vec3 d = normalize(vDir);
   vec2 s = d.xy / max(-d.z, 0.05);
   float edge = smoothstep(0.1, 1.1, length(s));
-  float red = uHurt * (0.25 + 0.5 * edge) * (0.75 + 0.25 * uPulse);
+  float red = min(1.0, uHurt * (0.25 + 0.5 * edge) * (0.75 + 0.25 * uPulse) + uFlash * (0.35 + 0.25 * edge));
   float open = (1.0 - uLid) * 1.25 * (1.0 - 0.18 * s.x * s.x);
   float lids = max(smoothstep(open - 0.12, open, abs(s.y)), smoothstep(0.85, 1.0, uLid)) * step(0.001, uLid);
   float black = max(lids, uBlack);
@@ -114,7 +117,7 @@ export class VitalsHud {
     this.veil = overlay(new THREE.Mesh(
       new THREE.SphereGeometry(0.9, 24, 16),
       new THREE.ShaderMaterial({
-        uniforms: { uHurt: { value: 0 }, uPulse: { value: 0 }, uLid: { value: 0 }, uBlack: { value: 0 } },
+        uniforms: { uHurt: { value: 0 }, uPulse: { value: 0 }, uLid: { value: 0 }, uBlack: { value: 0 }, uFlash: { value: 0 } },
         vertexShader: veilVert, fragmentShader: veilFrag,
         side: THREE.BackSide, transparent: true, depthTest: false, depthWrite: false,
       }),
@@ -143,6 +146,12 @@ export class VitalsHud {
     this.savedT = -1
     this.beatT = 0
     this.pulse = 0
+    this.flashT = 0
+  }
+
+  /** A blow: the view flashes red and fades back over FLASH_S. */
+  flash() {
+    this.flashT = FLASH_S
   }
 
   /** The donut in the bottom-left: of the desktop's frustum, or at a fixed glance down and left in the headset. */
@@ -202,7 +211,9 @@ export class VitalsHud {
     u.uPulse.value = this.pulse
     u.uLid.value = lid
     u.uBlack.value = this.black
-    this.veil.visible = hurt > 0 || lid > 0 || this.black > 0
+    this.flashT = Math.max(0, this.flashT - dt)
+    u.uFlash.value = this.flashT / FLASH_S
+    this.veil.visible = hurt > 0 || lid > 0 || this.black > 0 || this.flashT > 0
 
     const d = this.donut.material.uniforms
     d.uFrac.value = hp / max

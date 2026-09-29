@@ -5,7 +5,7 @@
 // `spots`) to the next: eating at the table, thinking in the reading chair,
 // busy at the kitchen, gazing out of a window, a pair talking on the walk
 // round the table, wandering it, and up the stairs to lie down and sleep.
-// One home from a forager's gift (villagers.js `feast`) sits and eats it first, squealing.
+// One home with a mushroom -- a forager's gift, one it found, or hers (villagers.js `feast`) -- sits and eats it first, squealing.
 // They walk the ring round the table and the stairs' `climb`, never probed:
 // the roll keeps both clear. Local to this client and stepped by the frame.
 // ---------------------------------------------------------------------------

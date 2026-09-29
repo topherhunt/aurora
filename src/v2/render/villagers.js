@@ -55,6 +55,13 @@
 //            gathers it up and walks it to the nearest water (_shore),
 //            chattering, throws it THROW_M out, watches, and goes on. An
 //            event like a find; `claims` hands the frog to frogs.js.
+//   court    her with a mushroom in hand within LURE_M: it squeals and creeps
+//            to her, beckoning; held out over it, the mushroom is its, and it
+//            runs home chattering to eat it, and trusts her from then on.
+//   greet    one that trusts her, free within GREET_M (FRIEND_M, gladder,
+//            once all do): it comes, beckons and chatters GREET_S, goes on.
+//            Her client alone knows her hands and her trust (trust.js), so
+//            lures, offers and greetings are events like a startle.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -144,7 +151,27 @@ const THROW_CUT = 1
 const THROW_AT = 0.55
 const FROG_WATCH_S = 1.5
 const SHORE_BEARINGS = 24
+// A mushroom in her hand within LURE_M: a squeal, and it creeps to her CREEP_S at a time, pausing PAUSE_S to beckon, to stop COURT_STOP_M short of her feet (off the road where she stands within COURT_ROAD_M of it). Her client keeps it coming every LURE_EVERY_S or when she moves REPLAN_M; COURT_S after the last it goes on its way. A mushroom held within OFFER_M of its body or fist, under OFFER_UP of its size, is taken.
+export const LURE_M = 8
+export const LURE_EVERY_S = 3
+export const COURT_S = 7
+const CREEP_S = [1, 2.5]
+const PAUSE_S = [1.2, 2.5]
+const COURT_STOP_M = 0.9
+const COURT_ROAD_M = 5
+const REPLAN_M = 0.75
+export const OFFER_M = 0.5
+const OFFER_UP = 1.6
+// One that trusts her (trust.js), free and within GREET_M -- FRIEND_M once the whole village does, and gladder -- walks up, beckons and chatters GREET_S, and goes on; not again for GREET_COOL_S. Standing for her, a gesture every FUSS_S.
+export const GREET_M = 5
+export const FRIEND_M = 12
+export const GREET_S = [6, 10]
+export const GREET_COOL_S = 75
+const FUSS_S = [2, 4]
 const NO_CHASES = []
+const NO_LURES = []
+const NOBODY = () => false
+const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h' }
 // Ticks between looks for someone to talk to, or to call for a mushroom.
 const MEET_TICKS = 10
 // Seconds before a chapter's turn that everyone makes for home, so the turn finds them indoors.
@@ -155,7 +182,7 @@ const SNAPS = 30
 // A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
 const MAX_NAMED = 15
 // A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt']
+const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'glad', 'greeted', 'warm']
 // Salts the chapter's forage roll off the villagers' own.
 const FORAGE_SALT = 0xf0a6e
 
@@ -169,9 +196,12 @@ function roll(c) {
 }
 
 export const TALKS = ['talk-gesture', 'talk-point', 'talk-nod', 'talk-shrug']
-export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', 'recoil', 'gather', 'threaten', ...TALKS]
+export const BECKONS = ['beckon', 'beckon', 'wave', 'talk-gesture', 'talk-point']
+export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', 'recoil', 'gather', 'threaten', 'beckon', 'wave', ...TALKS]
+// The standing gestures, each ending on the idle (_step).
+const GESTURES = new Set(['beckon', 'wave', ...TALKS])
 // The clips whose feet stay put (puppet.js FootIK). A sit is not among them: the solver drops the root onto the ground under the feet, which is the one thing that would pull a seated body off its stool.
-export const PLANTED = new Set(['idle', ...TALKS])
+export const PLANTED = new Set(['idle', ...GESTURES])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const sameFrog = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2]
@@ -446,7 +476,7 @@ export class Villagers {
         x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0,
         // The frame's pose, what the puppet and the ear are given.
         pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1 },
-        // inside, walk, stand, gaze, sit, talk, startle, flee, away, give or pick; inside or away, it is drawn by nobody.
+        // inside, walk, stand, gaze, sit, talk, startle, flee, away, give, pick, frog, court or greet; inside or away, it is drawn by nobody.
         state: 'inside', hidden: true,
         // The node it stands at or is making for, the route on from it (`{ x, z, node }`, node -1 off the road), the point of it it is on, and what the route's end is for: stand, gaze, sit, enter, hide, errand, leave, take, pick.
         at: 0, route: [], wp: 0, then: 'stand',
@@ -460,6 +490,8 @@ export class Villagers {
         trip: '', bundle: 0, saw: false, fed: false, feast: false, carrier: null,
         // The frog it is seeing to, `[tx, tz, index]` (frogs.js keyOf), the bank it walks it to and the water it throws it at, `{ ex, ez, wx, wz }`, and the second it let go; and its hold as frogs.js reads it.
         frog: null, toss: null, tossAt: null, claim: { phase: 'wait', x: 0, y: 0, z: 0, heading: 0, t0: 0, from: { x: 0, y: 0, z: 0 }, to: { x: 0, z: 0 } },
+        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, whether it chatters home with her mushroom, till it greets her again, and whether the greeting is a friend's.
+        lapse: 0, glad: false, greeted: 0, warm: false,
         lod: LOD_TIERS, puppet: null,
         ...easeFields(),
       }
@@ -499,6 +531,10 @@ export class Villagers {
     this.hushed = new Map()
     // The loose mushrooms this client has raised a find for.
     this.sought = new WeakSet()
+    // Her mushrooms in hand this frame (hands.js lures, hers alone), whether villager `id` trusts her, and whom she has fed since befriended() last drained them.
+    this.held = []
+    this.trusts = NOBODY
+    this.won = []
     this.hearsOwn = true
     // The frogs chasing hobs this frame (frogs.js chasers), and the villagers' holds on frogs by frog key, for frogs.js.
     this.chases = NO_CHASES
@@ -507,6 +543,8 @@ export class Villagers {
     this.talks = 0
     this.gifts = 0
     this.startles = 0
+    this.offers = 0
+    this.greets = 0
 
     if (asset) {
       this.setAsset(asset)
@@ -559,9 +597,9 @@ export class Villagers {
   }
 
   get stats() {
-    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0, frog: 0 }
+    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0, frog: 0, court: 0, greet: 0 }
     for (const c of this.all) states[c.state]++
-    return { count: this.all.length, states, forager: this.forager, gifts: this.gifts, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
+    return { count: this.all.length, states, forager: this.forager, gifts: this.gifts, offers: this.offers, greets: this.greets, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
 
   /** Every villager drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -620,7 +658,7 @@ export class Villagers {
 
   /** The step's clip has run out: extended in place, a talk gesture ending on the idle, a sit's cut ending its phase. */
   _step(c) {
-    if (c.state === 'talk' && c.clip !== 'idle') { this._play(c, 'idle', STEP_S); return }
+    if (GESTURES.has(c.clip)) { this._play(c, 'idle', STEP_S); return }
     if (c.state === 'sit' && c.phase === 'down') { this._phase(c, 'hold'); return }
     if (c.state === 'sit' && c.phase === 'up') { this._rise(c); return }
     c.left = c.dur = STEP_S
@@ -652,7 +690,8 @@ export class Villagers {
       c.then = 'stand'
       c.trip = c.id === this.forager ? 'out' : ''
       c.bundle = 0
-      c.saw = c.fed = c.feast = false
+      c.saw = c.fed = c.feast = c.glad = c.warm = false
+      c.lapse = c.greeted = 0
       c.frog = c.toss = c.tossAt = null
       if (c.seat !== null) this._leaveSeat(c)
       this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1])
@@ -681,7 +720,7 @@ export class Villagers {
   /** Out of the door and off on an errand, once nobody stands in it. */
   _exit(c) {
     c.hidden = false
-    c.feast = false
+    c.feast = c.glad = false
     this._voice(c, 'door', 'door')
     this._errand(c)
   }
@@ -813,6 +852,15 @@ export class Villagers {
       case 'leave': this._away(c); break
       case 'take': if (c.partner === null) this._errand(c); else this._stand(c, GIVE_S); break
       case 'pick': c.state = 'pick'; c.hold = this.durations.gather / c.pace; this._play(c, 'gather', c.hold); break
+      case 'court':
+      case 'greet':
+        c.state = c.then
+        c.phase = 'wait'
+        if (c.state === 'greet') c.hold = between(c.rand, GREET_S)
+        c.aim = this._toward(c, c.fx, c.fz)
+        c.voice = Math.min(c.voice, 0.3)
+        this._play(c, 'idle', STEP_S)
+        break
       case 'grab':
         c.state = 'frog'
         c.phase = 'grab'
@@ -936,17 +984,17 @@ export class Villagers {
     if (this.voicing) this.gifts++
   }
 
-  /** The event of `kind` ('startle' or 'find') naming `c` on the tick being stepped, or null. */
+  /** The event of `kind` (PREFIX's) naming `c` on the tick being stepped, or null. */
   _eventOf(c, kind) {
     const events = this.log.get(this.tick)
     if (events) for (const e of events) if (e.kind === kind && e.ids.includes(c.id)) return e
     return null
   }
 
-  /** This client's event of `kind` naming `ids` on `tick`, at (x, y, z) -- her feet for a startle, the mushroom for a find, the frog for a frog, whose `[tx, tz, index]` is `frog`: logged, and owed to the room. */
+  /** This client's event of `kind` naming `ids` on `tick`, at (x, y, z) -- her feet for a startle, lure or greeting, the mushroom for a find or an offer, the frog for a frog, whose `[tx, tz, index]` is `frog`: logged, and owed to the room. */
   _raise(kind, x, y, z, ids, tick, frog = null) {
     const fx = snap(x), fy = snap(y), fz = snap(z)
-    const key = `${this.wire}${tick.toString(36)}:${kind === 'find' ? 'f' : kind === 'frog' ? 'g' : ''}${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids, ...(frog ?? [])).toString(36)}`
+    const key = `${this.wire}${tick.toString(36)}:${PREFIX[kind]}${hash32(Math.round(fx * 1000), Math.round(fz * 1000), ...ids, ...(frog ?? [])).toString(36)}`
     const e = this._log({ key, kind, tick, fx, fy, fz, ids, frog, by: null, done: false })
     this.outbox.push([key, tick / TICK_HZ, fx, fy, fz, 0, 0, kind, null, ...ids, ...(frog ?? [])])
     return e
@@ -986,7 +1034,7 @@ export class Villagers {
     if (!carrying) { this._flee(c); return }
     c.bundle = 0
     c.trip = ''
-    c.feast = false
+    c.feast = c.glad = false
     c.state = 'startle'
     c.hold = STARTLE_S
     c.aim = this._toward(c, e.fx, e.fz)
@@ -1200,6 +1248,186 @@ export class Villagers {
     return cl
   }
 
+  /** Free to come to her mushroom: free to go after one, or already courting or greeting her. */
+  _courtable(c) {
+    return this._findable(c) || ((c.state === 'court' || c.state === 'greet') && !this.homing)
+  }
+
+  /** Free to take her mushroom: out, nothing in its arms, and not running, hurt or seated. */
+  _takes(c) {
+    return !c.hidden && !this._carrying(c) && c.frog === null && c.trip === '' && c.state !== 'flee' && c.state !== 'startle' && c.state !== 'pick' && c.state !== 'sit'
+  }
+
+  /** Her lure: a squeal the first time, and a creep toward her feet, planned again when she has moved REPLAN_M. */
+  _court(c, e) {
+    const fresh = c.state !== 'court'
+    c.lapse = COURT_S
+    if (!fresh && Math.hypot(e.fx - c.fx, e.fz - c.fz) < REPLAN_M) return
+    if (fresh) {
+      if (c.state === 'greet') c.phase = ''
+      this._voice(c, 'leafkinSqueal')
+      c.voice = between(c.rand, FUSS_S)
+    }
+    c.fx = e.fx
+    c.fz = e.fz
+    this._toHer(c, 'court')
+    if (c.state === 'walk') this._creep(c)
+  }
+
+  _creep(c) {
+    c.state = 'court'
+    c.phase = 'creep'
+    c.hold = between(c.rand, CREEP_S)
+    this._play(c, 'walk', STEP_S)
+  }
+
+  /** A route to COURT_STOP_M short of her feet (fx, fz): off the road from the node nearest her where she stands within COURT_ROAD_M of it and that spot is dry, else to the node; straight there from where it stands when that is nearer than the node. Standing there already, it arrives. */
+  _toHer(c, then) {
+    if (Math.hypot(c.x - c.fx, c.z - c.fz) <= COURT_STOP_M + NODE_M) {
+      c.route.length = 0
+      c.wp = 0
+      c.then = then
+      this._arrive(c)
+      return
+    }
+    const [node, far] = this._nodeNear(c.fx, c.fz)
+    const n = this.graph.nodes[node]
+    let spot = null
+    if (far > COURT_STOP_M && far <= COURT_ROAD_M) {
+      const k = COURT_STOP_M / far
+      spot = { x: c.fx + (n.x - c.fx) * k, z: c.fz + (n.z - c.fz) * k }
+      if (this.seat(spot.x, spot.z) === null) spot = null
+    }
+    if (spot !== null && Math.hypot(c.x - spot.x, c.z - spot.z) < Math.hypot(n.x - spot.x, n.z - spot.z)) {
+      this._leaveSeat(c)
+      c.partner = null
+      // From where it stands, so the walk has a leg to keep its lane on (_off).
+      c.route = [{ x: c.x, z: c.z, node: -1 }, { x: spot.x, z: spot.z, node: -1 }]
+      c.wp = 0
+      c.then = then
+      c.state = 'walk'
+      this._play(c, 'walk', STEP_S)
+      return
+    }
+    this._go(c, node, then, spot === null ? [] : [spot])
+    // She on the road, the node is underfoot: cut the route COURT_STOP_M short, or it stands under the mushroom at her side and takes it unoffered.
+    const r = c.route
+    while (r.length > 0 && Math.hypot(r.at(-1).x - c.fx, r.at(-1).z - c.fz) < COURT_STOP_M) {
+      const p = r.length > 1 ? r.at(-2) : c
+      const d = Math.hypot(p.x - c.fx, p.z - c.fz)
+      if (d <= COURT_STOP_M) { r.pop(); continue }
+      const k = COURT_STOP_M / d
+      r[r.length - 1] = { x: c.fx + (p.x - c.fx) * k, z: c.fz + (p.z - c.fz) * k, node: -1 }
+      break
+    }
+    if (c.state === 'walk' && r.length === 0) this._arrive(c)
+  }
+
+  /** Creeping, a stop to beckon every CREEP_S; stopped or arrived, it fusses at her till the lure lapses. */
+  _tickCourt(c, dt) {
+    c.lapse -= dt
+    if (c.lapse <= 0 || this.homing) { c.phase = ''; this._errand(c); return }
+    if (c.phase === 'creep') {
+      c.hold -= dt
+      this._follow(c, dt, TURN_RATE)
+      if (c.state !== 'court' || c.phase !== 'creep' || c.hold > 0) return
+      c.phase = 'pause'
+      c.hold = between(c.rand, PAUSE_S)
+      c.aim = this._toward(c, c.fx, c.fz)
+      c.voice = 0
+    }
+    this._turn(c, dt)
+    this._fuss(c, dt)
+    if (c.phase === 'pause') {
+      c.hold -= dt
+      if (c.hold <= 0) this._creep(c)
+    }
+  }
+
+  /** A trusted one's greeting: over to her at its gait (a friend's at a run, with a squeal), to fuss at her GREET_S. */
+  _greet(c, e) {
+    c.greeted = GREET_COOL_S
+    c.warm = e.kind === 'hail'
+    c.fx = e.fx
+    c.fz = e.fz
+    c.voice = 0
+    if (this.voicing) this.greets++
+    if (c.warm) this._voice(c, 'leafkinSqueal')
+    this._toHer(c, 'greet')
+    if (c.state !== 'walk') return
+    c.state = 'greet'
+    c.phase = 'come'
+    if (c.warm) this._play(c, 'run', STEP_S)
+  }
+
+  _tickGreet(c, dt) {
+    if (this.homing) { c.phase = ''; this._errand(c); return }
+    if (c.phase === 'come') { this._follow(c, dt, TURN_RATE); return }
+    c.hold -= dt
+    this._turn(c, dt)
+    this._fuss(c, dt)
+    if (c.hold <= 0) { c.phase = ''; this._errand(c) }
+  }
+
+  /** Standing for her: every FUSS_S a beckon, a wave or a talk gesture, and a word with half of them (most, a friend's). */
+  _fuss(c, dt) {
+    c.voice -= dt
+    if (c.voice > 0) return
+    c.voice = between(c.rand, FUSS_S)
+    if (c.rand() < (c.warm ? 0.8 : 0.5)) this._voice(c, this._chatter(c))
+    const g = BECKONS[(c.rand() * BECKONS.length) | 0]
+    this._play(c, g, this.durations[g] / c.pace)
+  }
+
+  /** Her mushroom into its fist: a squeal, and home at a run chattering, to eat it (residents.js `feast`). */
+  _accept(c) {
+    if (c.state === 'talk') this._untalk(c)
+    for (const o of this.all) if (o.partner === c) o.partner = null
+    c.feast = c.glad = true
+    c.phase = ''
+    c.voice = between(c.rand, CHATTER_S) / 2
+    if (this.voicing) this.offers++
+    this._voice(c, 'leafkinSqueal')
+    this._go(c, c.home, 'enter')
+  }
+
+  /** Her mushrooms in hand: a lure to each villager free to come within LURE_M (again, for one courting, every LURE_EVERY_S or when she has moved), and an offer to the one it is held over. Empty-handed, a greeting to each that trusts her. Raised for `tick`. */
+  _seeHer(t, tick) {
+    const f = this.feet
+    if (this.held.length > 0) {
+      for (let i = this.held.length - 1; i >= 0; i--) {
+        const lure = this.held[i]
+        const c = this.all.find((o) => (o.state === 'court' || o.state === 'greet') && this._takes(o) && !this._owed(o.id, t, 'offer') && this._under(o, lure))
+        if (c === undefined) continue
+        this._raise('offer', lure.x, lure.y, lure.z, [c.id], tick)
+        if (!this.hands.eatLure(lure)) throw new Error('Villagers: her mushroom was offered from no hand of hers')
+        this.held.splice(i, 1)
+        this.won.push(c.id)
+      }
+      if (t % MEET_TICKS !== 0 || this.held.length === 0) return
+      const ids = []
+      for (const c of this.all) {
+        if (Math.hypot(c.x - f.x, c.z - f.z) >= LURE_M || !this._courtable(c) || this._owed(c.id, t)) continue
+        if (c.state !== 'court' || c.lapse < COURT_S - LURE_EVERY_S || Math.hypot(c.fx - f.x, c.fz - f.z) >= REPLAN_M) ids.push(c.id)
+      }
+      if (ids.length > 0) this._raise('lure', f.x, f.y, f.z, ids.slice(0, MAX_NAMED), tick)
+      return
+    }
+    if (t % MEET_TICKS !== 0) return
+    const friend = this.all.every((c) => this.trusts(c.id))
+    const ids = []
+    for (const c of this.all) if (this.trusts(c.id) && c.greeted <= 0 && this._findable(c) && Math.hypot(c.x - f.x, c.z - f.z) < (friend ? FRIEND_M : GREET_M) && !this._owed(c.id, t)) ids.push(c.id)
+    if (ids.length > 0) this._raise(friend ? 'hail' : 'greet', f.x, f.y, f.z, ids.slice(0, MAX_NAMED), tick)
+  }
+
+  /** Whether `lure` is held over its body or its fist as drawn this frame: within OFFER_M across, and between its feet and OFFER_UP of its size. */
+  _under(c, lure) {
+    const p = c.pose
+    if (lure.y < p.y || lure.y > p.y + c.size * OFFER_UP) return false
+    if (Math.hypot(lure.x - p.x, lure.z - p.z) <= OFFER_M) return true
+    return c.puppet !== null && gripAt(c.puppet, _grip) && Math.hypot(lure.x - _grip.x, lure.z - _grip.z) <= OFFER_M
+  }
+
   /** Ease the heading toward the aim, and report the cosine of the swing still owed, so a body half turned makes half a step. */
   _turn(c, dt, rate = TURN_RATE) {
     const s = swing(c.heading, c.aim)
@@ -1376,6 +1604,8 @@ export class Villagers {
       const e = this._eventOf(c, 'startle')
       if (e) this._startle(c, e)
     }
+    c.greeted = Math.max(0, c.greeted - dt)
+    if (this._takes(c) && this._eventOf(c, 'offer')) this._accept(c)
     if (this._findable(c)) {
       const e = this._eventOf(c, 'find')
       if (e) this._find(c, e)
@@ -1384,7 +1614,15 @@ export class Villagers {
       const e = this._eventOf(c, 'frog')
       if (e && !this._frogHeld(e.frog)) this._scold(c, e)
     }
-    if (c.frog !== null && c.phase !== 'cry') {
+    if (this._courtable(c)) {
+      const e = this._eventOf(c, 'lure')
+      if (e) this._court(c, e)
+    }
+    if (this._findable(c) && c.greeted <= 0) {
+      const e = this._eventOf(c, 'greet') ?? this._eventOf(c, 'hail')
+      if (e) this._greet(c, e)
+    }
+    if ((c.frog !== null && c.phase !== 'cry') || c.glad) {
       c.voice -= dt
       if (c.voice <= 0) { c.voice = between(c.rand, CHATTER_S); this._voice(c, this._chatter(c)) }
     }
@@ -1467,6 +1705,8 @@ export class Villagers {
         break
       case 'pick': this._tickPick(c, dt); break
       case 'frog': this._tickFrog(c, dt); break
+      case 'court': this._tickCourt(c, dt); break
+      case 'greet': this._tickGreet(c, dt); break
       case 'flee':
         c.voice -= dt
         if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
@@ -1517,11 +1757,16 @@ export class Villagers {
    * for the puppets. The first frame places everyone at the chapter's start
    * and replays it in one go, as does a clock skip past a chapter; a shorter
    * skip is caught up in one frame too, silent. A startle heard late is
-   * stepped again from the last state kept before it.
+   * stepped again from the last state kept before it. `lures` are this
+   * frame's (hands.js lures), and `trusts(id)` whether villager `id` trusts
+   * her (trust.js).
    */
-  update(feet, head, seconds, dt, chases = NO_CHASES) {
+  update(feet, head, seconds, dt, chases = NO_CHASES, lures = NO_LURES, trusts = NOBODY) {
     if (!this.loaded) return
     this.chases = chases
+    this.trusts = trusts
+    this.held.length = 0
+    if (this.hands) for (const l of lures) if (l.by === null && l.kind === 'mushroom') this.held.push(l)
     this.frame++
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z
@@ -1559,9 +1804,11 @@ export class Villagers {
     this.voicing = t > this.live
     this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
     if (this.voicing && t > target - SILENT_TICKS) {
+      // A mushroom in her hand startles nobody, nor do her feet anyone that trusts her or is coming to her.
       const ids = []
-      for (const c of this.all) if (this._startlable(c) && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
+      if (this.held.length === 0) for (const c of this.all) if (this._startlable(c) && !this.trusts(c.id) && c.state !== 'court' && c.state !== 'greet' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
       if (ids.length > 0) this._flinch(this._raise('startle', this.feet.x, this.feet.y, this.feet.z, ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
+      this._seeHer(t, t + LEAD_TICKS)
       if (this.hands && t % MEET_TICKS === 0) this._seek(t + LEAD_TICKS)
       if (t % MEET_TICKS === 0) this._seeFrogs(t + LEAD_TICKS)
     }
@@ -1631,9 +1878,16 @@ export class Villagers {
     return into
   }
 
-  /** Someone's startle, find or frog: logged, and stepped again from before it if this client is past it. Another village's, one before the chapter or one already logged is let go. */
+  /** The villagers she has fed since the last call, by id, drained: each trusts her now (trust.js). */
+  befriended(into) {
+    for (const id of this.won) into.push(id)
+    this.won.length = 0
+    return into
+  }
+
+  /** Someone's event of a PREFIX kind: logged, and stepped again from before it if this client is past it. Another village's, one before the chapter or one already logged is let go. */
   apply(a) {
-    if (typeof a[0] !== 'string' || !a[0].startsWith(this.wire) || (a[7] !== 'startle' && a[7] !== 'find' && a[7] !== 'frog')) return
+    if (typeof a[0] !== 'string' || !a[0].startsWith(this.wire) || !Object.hasOwn(PREFIX, a[7])) return
     const tick = Math.round(a[1] * TICK_HZ)
     const ids = a[7] === 'frog' ? a.slice(9, 10) : a.slice(9)
     const frog = a[7] === 'frog' ? a.slice(10) : null

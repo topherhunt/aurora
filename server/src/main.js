@@ -26,7 +26,8 @@ function roomFor(name) {
     // `loose`, `gone`, `taken` and `rev`: the things in the room, see applyThing.
     // `anchors`, `lured` and `crev`: the creatures someone is interacting with, see applyCreature.
     // `flares` and `frev`: the flares shot in the room, see applyFlare.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0 }
+    // `trust` and `trev`: which villager trusts which player, see applyTrust.
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, trust: new Map(), trev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -88,6 +89,35 @@ function flaresFor(room, client, now) {
   const out = []
   for (const e of room.flares) if (e.rev > client.seenFrev && e.by !== client.id) out.push([...e.data, now - e.at])
   client.seenFrev = room.frev
+  return out.length ? out : null
+}
+
+// TRUST (src/v2/trust.js): [village, villager, player], a villager of a
+// village trusting a player, kept for the room's life (TRUST_CAP deep) and
+// told to every other client once; each client sends its own saved ones again
+// on every welcome, so a restarted relay learns them back.
+const TRUST_CAP = 4096
+const TRUST_BATCH = 64
+function validTrust(t) {
+  return Array.isArray(t) && t.length === 3 && typeof t[0] === 'string' && /^[0-9a-z]{1,8}$/.test(t[0]) &&
+    Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 256 && typeof t[2] === 'string' && /^[0-9a-z]{6,16}$/.test(t[2])
+}
+
+function applyTrust(room, client, list) {
+  for (const t of list) {
+    const key = t.join(' ')
+    if (room.trust.has(key)) continue
+    room.trust.set(key, { data: t, rev: ++room.trev, by: client.id })
+    if (room.trust.size > TRUST_CAP) room.trust.delete(room.trust.keys().next().value)
+  }
+}
+
+/** The trust this client has not been told, none of it its own; null when there is none. */
+function trustFor(room, client) {
+  if (client.seenTrev === room.trev) return null
+  const out = []
+  for (const e of room.trust.values()) if (e.rev > client.seenTrev && e.by !== client.id) out.push(e.data)
+  client.seenTrev = room.trev
   return out.length ? out : null
 }
 
@@ -349,6 +379,8 @@ wss.on('connection', (ws, request) => {
     seenCrev: 0,
     // How far through the room's flares it has been told.
     seenFrev: 0,
+    // How far through the room's trust it has been told.
+    seenTrev: 0,
     // Who it is in this relay's log, and the diag lines it has said.
     tag: '',
     diags: 0,
@@ -393,6 +425,13 @@ wss.on('connection', (ws, request) => {
     if (message && message.type === 'flare') {
       if (validFlare(message.flare)) {
         applyFlare(room, client, message.flare, now)
+        client.lastSeen = now
+      }
+      return
+    }
+    if (message && message.type === 'trust') {
+      if (Array.isArray(message.trust) && message.trust.length <= TRUST_BATCH && message.trust.every(validTrust)) {
+        applyTrust(room, client, message.trust)
         client.lastSeen = now
       }
       return
@@ -452,7 +491,7 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things, the creatures and the flares ride only when something changed since this client last heard.
+      // The things, the creatures, the flares and the trust ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
@@ -460,6 +499,8 @@ setInterval(() => {
       if (creatures) snapshot.creatures = creatures
       const flares = flaresFor(room, client, now)
       if (flares) snapshot.flares = flares
+      const trust = trustFor(room, client)
+      if (trust) snapshot.trust = trust
       send(client, snapshot)
     }
   }

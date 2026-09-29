@@ -25,7 +25,7 @@ export const TOWN = {
   stepsMax: 4,
   tries: 90,
   // Hitching rails, `count` a town: along a house front beside its door, `out` m past its box, the first tether `first` m to one side of the door and the rest `spacing` apart. A strider's origin stands `stand` m past the rail facing it, its rump `rump` m further and its flank `half` m to each side. The ground under one may fall `rise` m.
-  posts: { count: 3, tethers: 3, out: 1.2, first: 2.2, spacing: 2.1, stand: 1.0, rump: 1.2, half: 0.8, rise: 0.8, apart: 12 },
+  posts: { count: 3, tethers: 3, out: 1.2, first: 3.0, spacing: 3.1, stand: 1.5, rump: 1.8, half: 1.2, rise: 0.8, apart: 12 },
 }
 
 // A lateral offset along a way, s metres from its start: a sine per wave, wavelength and phase rolled.

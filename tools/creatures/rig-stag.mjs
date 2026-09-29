@@ -4,11 +4,10 @@
  *   node tools/creatures/rig-stag.mjs            writes rig-fixed.glb and rig-map.json
  *   node tools/creatures/rig-stag.mjs --probe    prints what it found, writes nothing
  *
- * Tripo's quadruped rig bound this stag on legs it could barely fold, and the
- * foreleg's joints sat off the real elbow and knee, so a walk bent the cannon.
- * Every joint here is STATED, read off orthographic renders as rig-strider.mjs
- * does. Each leg is three bones in one vertical plane (one x), so the IK's hinge
- * is a clean lateral axis; the hoof rides rigid on the cannon.
+ * Every joint is STATED, read off orthographic renders as rig-strider.mjs does,
+ * at the real elbow, carpus, stifle and hock. Each leg is three bones in one
+ * vertical plane (one x), so the IK's hinge is a clean lateral axis; the hoof
+ * rides rigid on the cannon.
  */
 
 import fs from 'node:fs'
@@ -30,9 +29,9 @@ const SHIFT_X = 0.0062
 const BODY = [
   { name: 'Hips', parent: null, at: [0, 0.5, 0.3], tip: [0, 0.51, 0.12] },
   { name: 'Spine', parent: 'Hips', at: [0, 0.51, 0.12] },
-  { name: 'Chest', parent: 'Spine', at: [0, 0.52, -0.08], tip: [0, 0.53, -0.18] },
-  { name: 'Neck', parent: 'Chest', at: [0, 0.55, -0.18] },
-  { name: 'Neck1', parent: 'Neck', at: [0, 0.63, -0.24] },
+  { name: 'Chest', parent: 'Spine', at: [0, 0.52, -0.04], tip: [0, 0.5, -0.14] },
+  { name: 'Neck', parent: 'Chest', at: [0, 0.5, -0.14] },
+  { name: 'Neck1', parent: 'Neck', at: [0, 0.61, -0.225] },
   { name: 'Head', parent: 'Neck1', at: [0, 0.72, -0.28], tip: [0, 0.66, -0.41] },
   { name: 'Tail', parent: 'Hips', at: [0, 0.54, 0.41] },
   { name: 'Tail1', parent: 'Tail', at: [0, 0.46, 0.42], tip: [0, 0.34, 0.42] },
@@ -48,6 +47,9 @@ const LEGS = [
   { id: 'hindLeft', tag: 'HL', attach: 'Hips', parts: ['Hip', 'Stifle', 'Hock', 'Foot'], x: -0.088, yz: [[0.49, 0.32], [0.36, 0.235], [0.255, 0.35], [0.025, 0.325]] },
   { id: 'hindRight', tag: 'HR', attach: 'Hips', parts: ['Hip', 'Stifle', 'Hock', 'Foot'], x: 0.075, yz: [[0.49, 0.35], [0.36, 0.27], [0.255, 0.385], [0.025, 0.365]] },
 ]
+
+/** How readily each carpus takes an IK turn (gait.mjs `limbSetup`): the elbow lowers the chest, the carpus only lifts the hoof. */
+const CARPUS_GIVE = 0.15
 
 /**
  * Where a vertex stops being body: a height fade from LEG_FULL up to the leg's
@@ -150,6 +152,7 @@ function buildMap(joints, existing) {
       foot: legJoint(leg, 3),
       chain: leg.parts.map((_, i) => legJoint(leg, i)),
       attach: leg.attach,
+      ...(leg.attach === 'Chest' ? { give: { [legJoint(leg, 2)]: CARPUS_GIVE } } : {}),
       restFoot: foot.map(r6),
       station: { fore: r6(-(foot[2] - centre[2])), lat: r6(-(foot[0] - centre[0])) },
     }
@@ -163,7 +166,8 @@ function buildMap(joints, existing) {
     height: r6(height),
     wheelbase: r6(Math.max(...fore) - Math.min(...fore)),
     spine: ['Hips', 'Spine', 'Chest'],
-    head: ['Neck', 'Neck1', 'Head'],
+    // Head stays out of the pitch chain: bend() hands the tip the full angle, and on this short neck a three-joint chain folds the muzzle under the chest before it reaches grass.
+    head: ['Neck', 'Neck1'],
     tail: ['Tail', 'Tail1'],
     legs,
     unclaimed: [],

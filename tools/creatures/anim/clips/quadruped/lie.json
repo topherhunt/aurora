@@ -1,48 +1,46 @@
 {
   "kind": "pose",
-  "note": "Folds down into a sphinx -- chest on the ground, forelegs stretched ahead, hind legs tucked out to the sides -- holds, and gets up. Same shape as the sit: the hold is a flat pair of keys so a game can cut it into down / rest / up.",
+  "note": "For any quadruped. Folds down the way a deer, dog or cat lies: forelegs first, each folded at elbow and carpus with the hoof or paw tucked back under the chest, then the hind end, the hind feet stepping forward; chest and belly on the ground, hind legs folded out to one side each. Holds, then rises hind end first. The hold is a flat pair of keys so a game can cut it into down / rest / up. `under` sets each forefoot against its shoulder whatever stance the mesh was modelled in, and `ground` brings a hind foot joint that is really an ankle (a hare's) down to the floor.",
   "samples": 52,
-  "limits": { "hipLimit": 1.6, "fold": 2.3 },
+  "limits": { "hipLimit": 1.6, "fold": 2.9, "give": false },
   "keys": [
     { "t": 0.0, "pose": { "tail": { "pitch": 0.9 } } },
-    { "t": 0.7, "pose": {
-      "root": { "lift": -0.14 },
-      "spine": { "pitch": -0.1 },
-      "head": { "pitch": 0.16 },
-      "tail": { "pitch": 1.0 },
+    { "t": 0.8, "pose": {
+      "root": { "lift": -0.16, "pitch": 0.15 },
+      "head": { "pitch": 0.25 },
+      "tail": { "pitch": 1.1 },
       "legs": {
-        "frontLeft": { "fore": 0.06 }, "frontRight": { "fore": 0.06 },
-        "hindLeft": { "fore": 0.16 }, "hindRight": { "fore": 0.16 }
+        "frontLeft": { "under": 1, "fore": -0.1, "lift": 0.05 }, "frontRight": { "under": 1, "fore": -0.1, "lift": 0.05 },
+        "hindLeft": { "fore": 0.08, "lift": 0.02, "ground": 0.3 }, "hindRight": { "fore": 0.08, "lift": 0.02, "ground": 0.3 }
       }
     } },
-    { "t": 1.7, "pose": {
-      "root": { "lift": -0.4, "fore": -0.02 },
-      "spine": { "pitch": -0.18 },
-      "head": { "pitch": 0.3 },
+    { "t": 1.8, "pose": {
+      "root": { "lift": -0.42 },
+      "spine": { "pitch": 0.05 },
+      "head": { "pitch": 0.2 },
       "tail": { "pitch": 1.5, "yaw": 0.7 },
       "legs": {
-        "frontLeft": { "fore": 0.26, "lat": 0.03 }, "frontRight": { "fore": 0.26, "lat": -0.03 },
-        "hindLeft": { "fore": 0.36, "lat": 0.12 }, "hindRight": { "fore": 0.36, "lat": -0.12 }
+        "frontLeft": { "under": 1, "fore": -0.18, "lift": 0.01 }, "frontRight": { "under": 1, "fore": -0.18, "lift": 0.01 },
+        "hindLeft": { "fore": 0.3, "lat": 0.12, "ground": 1 }, "hindRight": { "fore": 0.3, "lat": -0.12, "ground": 1 }
       }
     } },
     { "t": 3.6, "pose": {
-      "root": { "lift": -0.4, "fore": -0.02 },
-      "spine": { "pitch": -0.18 },
-      "head": { "pitch": 0.24, "yaw": -0.16 },
+      "root": { "lift": -0.42 },
+      "spine": { "pitch": 0.05 },
+      "head": { "pitch": 0.2 },
       "tail": { "pitch": 1.5, "yaw": 0.7 },
       "legs": {
-        "frontLeft": { "fore": 0.26, "lat": 0.03 }, "frontRight": { "fore": 0.26, "lat": -0.03 },
-        "hindLeft": { "fore": 0.36, "lat": 0.12 }, "hindRight": { "fore": 0.36, "lat": -0.12 }
+        "frontLeft": { "under": 1, "fore": -0.18, "lift": 0.01 }, "frontRight": { "under": 1, "fore": -0.18, "lift": 0.01 },
+        "hindLeft": { "fore": 0.3, "lat": 0.12, "ground": 1 }, "hindRight": { "fore": 0.3, "lat": -0.12, "ground": 1 }
       }
     } },
-    { "t": 4.6, "pose": {
-      "root": { "lift": -0.14 },
-      "spine": { "pitch": -0.1 },
-      "head": { "pitch": 0.16 },
-      "tail": { "pitch": 1.0 },
+    { "t": 4.5, "pose": {
+      "root": { "lift": -0.16, "pitch": 0.15 },
+      "head": { "pitch": 0.25 },
+      "tail": { "pitch": 1.1 },
       "legs": {
-        "frontLeft": { "fore": 0.06 }, "frontRight": { "fore": 0.06 },
-        "hindLeft": { "fore": 0.16 }, "hindRight": { "fore": 0.16 }
+        "frontLeft": { "under": 1, "fore": -0.1, "lift": 0.05 }, "frontRight": { "under": 1, "fore": -0.1, "lift": 0.05 },
+        "hindLeft": { "fore": 0.08, "lift": 0.02, "ground": 0.3 }, "hindRight": { "fore": 0.08, "lift": 0.02, "ground": 0.3 }
       }
     } },
     { "t": 5.2, "pose": { "tail": { "pitch": 0.9 } } }

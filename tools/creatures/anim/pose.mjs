@@ -26,6 +26,14 @@
  *          left, right, both  per-arm handles for a jointed arm, see arm.mjs;
  *                             `both` is added to each side
  *   legs   <legId>: { fore, lat, lift, pitch }  foot target offset, paw tilt
+ *          under              0..1, unscaled: slides the base the offsets are
+ *                             measured from, fore-aft, from the rest foot to
+ *                             under the leg's top joint. A fold-down places the
+ *                             foot against the shoulder; a mesh standing
+ *                             mid-stride would otherwise fold each leg differently
+ *          ground             0..1, unscaled: lowers that base to the rig's ground.
+ *                             A no-op where the foot joint is a hoof; a hare's
+ *                             hind foot joint is its ankle, 16cm up
  *
  * `crouch` drops the body by a fraction of height on every key, as a gait's
  * does, so a pose clip stands at the same height as the idle it cuts from.
@@ -44,7 +52,7 @@
  * hare's short thick tail turns inside out at the base.
  */
 
-import { add, loadSkeleton, qAxisAngle, qMul, qRotate, scale, sub } from './skeleton.mjs'
+import { add, dot, loadSkeleton, qAxisAngle, qMul, qRotate, scale, sub } from './skeleton.mjs'
 import { armsOf, bend, contactOf, limbSetup, pairsOf, poser, seed, solveLimb } from './gait.mjs'
 import { ARM_HANDLES, poseArm } from './arm.mjs'
 
@@ -173,19 +181,22 @@ export function poseClip(rigFile, map, rawSpec) {
 
     const feet = []
     for (const leg of legs) {
-      const target = add(add(add(leg.restFoot,
+      const under = sample(keys, t, (k) => ((k.pose.legs ?? {})[leg.id] ?? ZERO).under ?? 0)
+      const drop = sample(keys, t, (k) => ((k.pose.legs ?? {})[leg.id] ?? ZERO).ground ?? 0) * (map.ground - leg.restFoot[1])
+      const base = add(add(leg.restFoot, scale(fwd, under * dot(sub(skel.pos(leg.hip), leg.restFoot), fwd))), scale(up, drop))
+      const target = add(add(add(base,
         scale(fwd, legAt(t, leg.id, 'fore') * map.wheelbase)),
         scale(lat, legAt(t, leg.id, 'lat') * map.wheelbase)),
         scale(up, legAt(t, leg.id, 'lift') * map.height))
       solveLimb(pose, leg, target, { ...limits, pitch: legAt(t, leg.id, 'pitch'), pitchAxis: lat })
       // A pose clip has no swing, so every foot is load-bearing unless the spec
-      // deliberately lifted it. Measured against the leg's OWN rest foot, not a
-      // single ground plane: `ground` is the lowest joint in the rig, while a
-      // foot joint sits wherever the rigger put it -- the hare's hind pair are
-      // ankles 16cm up -- so against one plane a leg reads permanently airborne
-      // and drops out of the slide check entirely.
-      const planted = !unweighted.has(leg.id) && target[1] - leg.restFoot[1] < 1e-4
-      feet.push({ id: leg.id, target, planted, actual: pose.pos(leg.foot), contact: contactOf(pose, leg) })
+      // deliberately lifted it. Measured against the leg's OWN rest foot, lowered
+      // only by the spec's `ground`, not a single ground plane: `map.ground` is
+      // the lowest joint in the rig, while a foot joint sits wherever the rigger
+      // put it -- the hare's hind pair are ankles 16cm up -- so against one plane
+      // a leg reads permanently airborne and drops out of the slide check.
+      const planted = !unweighted.has(leg.id) && target[1] - leg.restFoot[1] - drop < 1e-4
+      feet.push({ id: leg.id, target, planted, actual: pose.pos(leg.foot), contact: contactOf(pose, leg), floor: leg.restContact[1] + drop })
     }
 
     for (const [j, q] of pose.posed()) {

@@ -6,7 +6,8 @@ import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth, hearthKit } from './hearth.js'
 import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
-import { Striders, loadStriderGlb, mountFields } from './striders.js'
+import { fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize } from './striders.js'
+import { touchesSaddle, WILD } from './wild-striders.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
 
 // The towns' people (DESIGN.md §32): a campfire and stools in each clearing (hearth.js, grown to a human seat), and townsfolk walking the town's ways between the doors, the fire and the roads, stopping to chat, and turning to greet her. Each town's day is a deterministic sim over the room's clock, replayed from its chapter's start when the town comes alive; the greeting is this client's alone.
@@ -58,11 +59,11 @@ export const TOWNSFOLK = {
   talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
   errands: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
   // The striders at the rails: spare mounts past a tether each for the chapter's arrivals, and guests to ride or walk them in; the share of tethers filled at a chapter's start; seconds tied between fidgets, at the knot, and in the hop up or down; the rein a led one keeps; the wander legs of a lead, and no lead within `clear` s of a departure's fetch or `late` s of the chapter's end. A departer fetches its strider `slack` s ahead of its own worst walk and ride to the port at `walk` m/s afoot.
-  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [8, 30], untie: 2.5, hop: 1, rein: 2, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
+  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [8, 30], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
   // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
   greet: { m: 2, ignore: 0.5, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.12], ['beckon', 0.08], ['idle', 0.8]] },
-  // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; metres a hop up or down rises over the straight line.
-  road: { m: 300, every: 0.5 },
+  // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
+  road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
 }
 
@@ -956,8 +957,10 @@ export class Townsfolk {
    * @param opts.patch     (material, cacheKey) => material, the lighting patch
    * @param opts.seed      the world's seed
    * @param opts.journeys  journeys.js Journeys over the roads, if any: the striders at the rails and the travellers
+   * @param opts.bond      wild-striders.js's { trusted, grown }: a tied strider fed a fish trusts her, as a wild one does
+   * @param opts.eat       (lure) => true once her hand holding it has lost it
    */
-  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null } = {}) {
+  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false } = {}) {
     if (!Array.isArray(towns)) throw new Error('Townsfolk: needs the towns')
     if (!walk || typeof walk.heightAt !== 'function') throw new Error('Townsfolk: needs the WalkSurface')
     if (typeof patch !== 'function') throw new Error('Townsfolk: needs the lighting patch')
@@ -965,6 +968,11 @@ export class Townsfolk {
     this.towns = towns
     this.walk = walk
     this.journeys = journeys
+    this.bond = bond
+    this.eat = eat
+    // Keys of the tied striders she rides (WildStriders.borrow), hidden at their rails meanwhile.
+    this.lent = new Set()
+    this.treats = 0
     // Every town's hearth draws this one, built at boot on level ground (hearth.js hearthKit).
     this.kit = hearthKit(bank, hash32(seed, 0x4ea7), () => 0, textures, patch, { decimate: false })
     this.hearthOpts = { field, bank, textures, patch, kit: this.kit }
@@ -1068,7 +1076,7 @@ export class Townsfolk {
     const J = this.striders ? { journeys: this.journeys, strider: this.striders.sim } : {}
     const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), ...J })
     for (const c of life.all) this._entity(c)
-    for (const m of life.mounts) Object.assign(m, mountFields())
+    for (const m of life.mounts) Object.assign(m, mountFields(1), { key: `town:${i}:${m.id}`, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
     this.alive.set(i, { life, hearth, rails: this.striders ? this.striders.rails(town) : null })
   }
 
@@ -1090,7 +1098,7 @@ export class Townsfolk {
   }
 
   /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders. */
-  update(feet, head, seconds, dt, t) {
+  update(feet, head, seconds, dt, t, lures = []) {
     if (!this.loaded) return
     this.frame++
     const [wake, sleep] = TOWNSFOLK.live
@@ -1114,6 +1122,7 @@ export class Townsfolk {
       }
       for (const m of life.mounts) {
         if (!m.active && !m.puppet) continue
+        this._feed(m, dt, lures)
         this._poseMount(m, life.alpha)
         m.dist = Math.hypot(m.pose.x - head.x, m.pose.y - head.y, m.pose.z - head.z)
         mounts.push(m)
@@ -1140,10 +1149,36 @@ export class Townsfolk {
     pose.y = m.py + (m.y - m.py) * a
     pose.z = m.pz + (m.z - m.pz) * a
     pose.heading = m.ph + swing(m.ph, m.heading) * a
-    pose.clip = m.clip
-    pose.speed = m.speed
-    pose.cue = m.cue
-    m.gone = !m.active
+    pose.size = m.base * (this.bond.grown.get(m.key) ?? 1)
+    pose.clip = m.treat ? 'peck' : m.clip
+    pose.speed = m.treat ? 0 : m.speed
+    pose.cue = m.treat ? -1 - m.treat.cue : m.cue
+    m.gone = !m.active || (m.state === 'tied' && this.lent.has(m.key))
+  }
+
+  /** A tied strider eating the fish she holds to its beak, over the sim's clip: it trusts her after, or if it did, grows. */
+  _feed(m, dt, lures) {
+    const S = this.striders, F = WILD.fish
+    if (m.treat && m.state !== 'tied') m.treat = null
+    if (m.treat) {
+      const t = m.treat
+      t.t += dt
+      if (!t.hit && t.t >= F.eat) {
+        t.hit = true
+        if (!this.eat(t.lure)) { m.treat = null; return }
+        S.say('striderChirp1', m.pose, 1.15, 1)
+      }
+      if (t.t >= S.asset.clips.find((c) => c.name === 'peck').duration) {
+        if (this.bond.trusted.has(m.key)) this.bond.grown.set(m.key, (this.bond.grown.get(m.key) ?? 1) * STRIDER.size.fed)
+        else this.bond.trusted.add(m.key)
+        S.say('striderChirp2', m.pose, 1.25, 1)
+        m.treat = null
+      }
+      return
+    }
+    if (m.state !== 'tied' || !m.puppet || m.gone || !S.head(m, _head)) return
+    const lure = lures.find((l) => l.by === null && l.kind === 'fish' && _head.distanceTo(_hand.set(l.x, l.y, l.z)) < F.bite)
+    if (lure) m.treat = { t: 0, hit: false, lure, cue: ++this.treats }
   }
 
   /**
@@ -1169,14 +1204,28 @@ export class Townsfolk {
       for (const [key, r] of this.road) if (!keep.has(key)) this._drop(key, r)
     }
     for (const [key, r] of this.road) {
-      const { j, k, c, m } = r
+      const { j, k, c } = r
       const src = this.alive.get(j.from)
       if (seconds >= j.t1 || seconds < j.t0) { this._drop(key, r); continue }
       c.hidden = src !== undefined && (!src.life.caught || src.life.holding.has(j.id))
-      const pose = c.pose, at = J.at(j, k, seconds, r.at)
-      pose.x = at.x
-      pose.z = at.z
-      pose.y = this.walk.heightAt(at.x, at.z, r.fresh ? -Infinity : pose.y)
+      J.at(j, k, seconds, r.at)
+    }
+    for (const r of this.road.values()) {
+      const { c, m } = r, pose = c.pose, at = r.at
+      // Out to its own side (JOURNEYS.lane's) past another journey's traveller ahead, both reckoned on their lanes, so neither passes through the other.
+      const sx = -Math.sin(at.heading), sz = -Math.cos(at.heading), mine = this._roadR(r)
+      let want = 0
+      for (const o of this.road.values()) {
+        if (o.j === r.j || o.c.hidden) continue
+        const dx = o.at.x - at.x, dz = o.at.z - at.z, ahead = dx * Math.cos(at.heading) - dz * Math.sin(at.heading)
+        if (ahead <= 0 || ahead > R.ahead) continue
+        const lat = dx * sx + dz * sz, clear = mine + this._roadR(o)
+        if (Math.abs(lat) < clear) want = Math.max(want, lat + clear)
+      }
+      r.side = r.fresh ? want : r.side + (want - r.side) * Math.min(1, dt / R.ease)
+      pose.x = at.x + sx * r.side
+      pose.z = at.z + sz * r.side
+      pose.y = this.walk.heightAt(pose.x, pose.z, r.fresh ? -Infinity : pose.y)
       const s = swing(pose.heading, at.heading)
       pose.heading = r.fresh ? at.heading : pose.heading + Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       r.fresh = false
@@ -1198,12 +1247,15 @@ export class Townsfolk {
     Object.assign(c.pose, { clip: j.ride ? 'ride' : 'walk', speed: j.speed, cue: 0, from: -1, scale: 1, hop: j.ride ? 1 : 0 })
     let m = null
     if (j.ride) {
-      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c }, mountFields())
+      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296)))
       Object.assign(m.pose, { clip: 'walk', speed: j.speed })
       c.mount = m
     }
-    return { j, k, c, m, at: {}, fresh: true }
+    return { j, k, c, m, at: {}, fresh: true, side: 0 }
   }
+
+  /** A traveller's half-width on the road: its strider's if it rides. */
+  _roadR(r) { return r.m ? 0.2 * this.striders.asset.sizeM * r.m.pose.size : TOWNSFOLK.road.person }
 
   _drop(key, r) {
     this._release(r.c)
@@ -1325,6 +1377,53 @@ export class Townsfolk {
     if (by === null || !by.puppet) return
     const p = by.puppet
     S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head)
+  }
+
+  // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------
+
+  _mountable(m, head) {
+    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && this.bond.trusted.has(m.key) && fromSide(m.pose, head)
+  }
+
+  /** The tied strider trusting her whose back `hand` touches from the side, or null. */
+  mountableAt(hand, head) {
+    for (const { life } of this.alive.values()) for (const m of life.mounts) {
+      if (m.dist < 3 * m.pose.size && this._mountable(m, head) && touchesSaddle(this.striders.saddle(m, _hand), hand)) return m
+    }
+    return null
+  }
+
+  /** The tied strider trusting her whose back a ray from `origin` along unit `dir` passes over within `far`, from the side, or null. */
+  mountableOnRay(origin, dir, far, head) {
+    for (const { life } of this.alive.values()) for (const m of life.mounts) {
+      if (m.dist > far + 2 || !this._mountable(m, head)) continue
+      const along = this.striders.saddle(m, _hand).sub(origin).dot(dir)
+      if (along > 0 && along < far && _hand.addScaledVector(dir, -along).length() < WILD.ray) return m
+    }
+    return null
+  }
+
+  /** `m` hidden at its rail while she rides it; what WildStriders.borrow needs of it. */
+  lend(m) {
+    this.lent.add(m.key)
+    m.gone = true
+    return { key: m.key, pose: m.pose, size: m.pose.size }
+  }
+
+  unlend(key) {
+    if (!this.lent.delete(key)) throw new Error(`Townsfolk: ${key} was not lent`)
+  }
+
+  // -- bodies to the walker (walk.js addBody): the striders drawn at the rails and on the roads --
+
+  bodyAt(x, z, pad, out, skip) {
+    if (!this.striders || !this.loaded) return null
+    for (const { life } of this.alive.values()) {
+      if (!life.caught) continue
+      for (const m of life.mounts) if (m !== skip && m.active && !m.gone && this.striders.bodyAt(m, x, z, pad, out)) return out
+    }
+    for (const { m } of this.road.values()) if (m && m !== skip && !m.gone && this.striders.bodyAt(m, x, z, pad, out)) return out
+    return null
   }
 
   // -- stone to the walker (walk.js addStone): the alive towns' fire rings and stools ------

@@ -87,6 +87,8 @@ export class WalkSurface {
     // Rocks' terms and is read on its own into the one span buffer; one with
     // a `deckAt(x, z)` says where its top is a floor she stands level on.
     this.stone = [rocks]
+    // Layers of bodies that stand in her way as a trunk does (addBody).
+    this.bodies = []
     this._water = null
   }
 
@@ -113,6 +115,18 @@ export class WalkSurface {
       throw new Error('WalkSurface.addStone: needs a layer with columnAt and blockTopAt')
     }
     this.stone.push(layer)
+  }
+
+  /** Another layer whose bodies are trunks to her: `bodyAt(x, z, pad, out, skip)` answers as obstacleAt, never for `skip`. */
+  addBody(layer) {
+    if (!layer || typeof layer.bodyAt !== 'function') throw new Error('WalkSurface.addBody: needs a layer with bodyAt')
+    this.bodies.push(layer)
+  }
+
+  removeBody(layer) {
+    const i = this.bodies.indexOf(layer)
+    if (i < 0) throw new Error('WalkSurface.removeBody: not a body layer of this walk')
+    this.bodies.splice(i, 1)
   }
 
   /**
@@ -240,10 +254,13 @@ export class WalkSurface {
   }
 
   /**
-   * The tree trunk standing on (x, z) as its padded footprint {x, z, r}, or
-   * null. Player slides around it; the teleport arc stops at it.
+   * The tree trunk or body (addBody) standing on (x, z) as its padded footprint
+   * {x, z, r}, or null; a body that is `skip` is passed over. Player slides
+   * around it; the teleport arc stops at it.
    */
-  obstacleAt(x, z, out) {
-    return this.trees.trunkAt(x, z, this.trunkPad, out)
+  obstacleAt(x, z, out, skip = null) {
+    if (this.trees.trunkAt(x, z, this.trunkPad, out)) return out
+    for (const layer of this.bodies) if (layer.bodyAt(x, z, this.trunkPad, out, skip)) return out
+    return null
   }
 }

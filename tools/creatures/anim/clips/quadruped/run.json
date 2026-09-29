@@ -1,5 +1,5 @@
 {
-  "note": "Transverse gallop: both hind feet land close together, then both front, then a suspension. The back flexes once per stride and the body rises once, which is why bobFreq drops to 1 here.",
+  "note": "For deer, foxes and other long-legged runners; a hare runs with `bound`. Transverse gallop: the hind feet land one after the other, then the front feet one after the other, then a suspension. Each pair is split by a fifth of the cycle so the legs read as alternating, not paired as in a bound. The back flexes once per stride and the body rises once, which is why bobFreq drops to 1 here.",
   "duration": 0.38,
   "samples": 24,
   "stride": 0.7,
@@ -9,9 +9,9 @@
   "toeOff": 0.5,
   "phases": {
     "hindLeft": 0,
-    "hindRight": 0.12,
-    "frontLeft": 0.46,
-    "frontRight": 0.58
+    "hindRight": 0.2,
+    "frontLeft": 0.5,
+    "frontRight": 0.7
   },
   "bodyBob": 0.02,
   "bobFreq": 1,

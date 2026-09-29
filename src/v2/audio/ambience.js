@@ -85,6 +85,8 @@ export const SOUNDS = {
   striderChirp2: 'sounds/strider-chirp-2.mp3',
   striderFlutter: 'sounds/strider-flutter.mp3',
   striderWhine: 'sounds/strider-whine.mp3',
+  // Her hurt by a blow or a fall (main.js harm).
+  thud: 'sounds/interact-thud.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   frogBoing: 'sounds/animal-frog-boing.mp3',
@@ -131,7 +133,7 @@ export const RATE = [0.9, 1.1]
  * diagonal pairs) are one beat. The gate holds these to the clip files.
  */
 export const FOOTFALLS = {
-  quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58], hop: [0, 0.4], bound: [0, 0.52] },
+  quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.2, 0.5, 0.7], hop: [0, 0.4], bound: [0, 0.52] },
   human: { walk: [0, 0.5], run: [0, 0.5], 'run-carry': [0, 0.5] },
   wyvern: { walk: [0, 0.5], run: [0, 0.5] },
   bird: { walk: [0, 0.5], run: [0, 0.5] },

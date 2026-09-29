@@ -18,9 +18,15 @@ export const STRIDER = {
   // Seconds between a drawn strider's chirps; its flutter is on each fidget.
   call: [25, 70],
   said: 32,
+  // Each strider is `mean` times the shipped body, spread over `vary` of that, and grows by `fed` a fish once tame.
+  size: { mean: 1.5, vary: [0.85, 1.2], fed: 1.05 },
 }
 
+/** A strider's size against the shipped body, from `u` in 0..1. */
+export const striderSize = (u) => STRIDER.size.mean * (STRIDER.size.vary[0] + (STRIDER.size.vary[1] - STRIDER.size.vary[0]) * u)
+
 const PLANTED = new Set(['idle'])
+const clamp = THREE.MathUtils.clamp
 const UP = new THREE.Vector3(0, 1, 0)
 const X = new THREE.Vector3(1, 0, 0)
 const _q = new THREE.Quaternion()
@@ -28,15 +34,22 @@ const _v = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _m = new THREE.Matrix4()
 
-/** What this layer keeps on a mount the sim or the road hands it. */
-export function mountFields() {
+/** What this layer keeps on a mount the sim or the road hands it, `size` times the shipped body (striderSize). */
+export function mountFields(size) {
+  if (!(size > 0)) throw new Error(`mountFields: a strider's size must be positive, not ${size}`)
   const [lo, hi] = STRIDER.call
-  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, speed: 0, clip: 'idle', cue: 0 }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
+  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0 }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
 }
 
 /** A body's matrix from its pose: at x, y, z, turned `heading` about the up, scaled `k`. */
 export function poseMatrix(pose, k, out) {
   return out.compose(_v.set(pose.x, pose.y, pose.z), _q.setFromAxisAngle(UP, pose.heading), _s.setScalar(k))
+}
+
+/** Whether `head` is more to the side of a body at `pose` than before or behind it: where a rider mounts from. */
+export function fromSide(pose, head) {
+  const c = Math.cos(pose.heading), s = Math.sin(pose.heading), dx = head.x - pose.x, dz = head.z - pose.z
+  return Math.abs(-dx * s - dz * c) > Math.abs(dx * c - dz * s)
 }
 
 /**
@@ -166,9 +179,9 @@ export class Striders {
    * the sim, and the rest this layer's (mountFields).
    */
   draw(m, dt) {
-    const pose = m.pose, k = this.k
+    const pose = m.pose, k = this.k * pose.size
     pose.k = k
-    m.lod = critterTier(this.asset.sizeM, m.dist, m.lod, LOD_RUNGS)
+    m.lod = critterTier(this.asset.sizeM * pose.size, m.dist, m.lod, LOD_RUNGS)
     const want = m.gone || m.lod === LOD_RUNGS || this.rank++ >= STRIDER.puppets ? -1 : m.lod
     if (want !== -1 && !m.puppet) {
       const p = this.free.pop()
@@ -181,15 +194,16 @@ export class Striders {
     if (!p) return
     p.show(want, lodFadeS())
     const gait = this.asset.gait[pose.clip]
-    p.mixer.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
     p.play(pose.clip, pose.cue)
+    // On the clip's own action, not the mixer: the mixer's clock also times the fade between clips, which run backward never ends.
+    p.current.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
     groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
     p.step(dt)
     poseMatrix(pose, k, p.group.matrix)
     p.group.matrixWorldNeedsUpdate = true
     if (p.done) { this.release(m); return }
     if (want === -1) return
-    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM, clip: pose.clip, cycle: p.actions.get(pose.clip).getClip().duration / Math.abs(p.mixer.timeScale), speed: Math.abs(pose.speed) })
+    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: p.current.getClip().duration / Math.abs(p.current.timeScale), speed: Math.abs(pose.speed) })
     this.treading.push(m.tread)
     if (pose.clip === 'fidget' && m.heard !== pose.cue) this.say('striderFlutter', pose)
     m.heard = pose.cue
@@ -210,8 +224,8 @@ export class Striders {
   }
 
   /** `sound` from the head of a body at `pose`, played at `rate` and `gain` (audio/ambience.js voiced). */
-  say(sound, { x, y, z }, rate = 1, gain = 1) {
-    if (this.said.length < STRIDER.said) this.said.push({ sound, x, y: y + 0.6 * this.asset.sizeM * this.asset.height / this.asset.span, z, rate, gain })
+  say(sound, { x, y, z, size }, rate = 1, gain = 1) {
+    if (this.said.length < STRIDER.said) this.said.push({ sound, x, y: y + 0.6 * this.k * size * this.asset.height, z, rate, gain })
   }
 
   release(m) {
@@ -226,7 +240,26 @@ export class Striders {
   saddle(m, out) {
     const s = this.asset.saddle
     if (m.puppet) return out.copy(s.seat).applyMatrix4(m.puppet.skeleton.bones[s.hips].matrixWorld).applyMatrix4(m.puppet.group.matrix)
-    return out.copy(s.rest).applyMatrix4(poseMatrix(m.pose, this.k, _m))
+    return out.copy(s.rest).applyMatrix4(poseMatrix(m.pose, this.k * m.pose.size, _m))
+  }
+
+  /**
+   * Whether (x, z) is within `pad` of `m`'s body, a capsule along its heading;
+   * if so the nearest point of its axis and the capsule's radius and pad into
+   * `out` {x, z, r}, as WalkSurface.obstacleAt answers.
+   */
+  bodyAt(m, x, z, pad, out) {
+    const p = m.pose, L = this.asset.sizeM * p.size, half = 0.25 * L, r = 0.2 * L + pad
+    const dx = x - p.x, dz = z - p.z
+    if (dx * dx + dz * dz > (half + r) * (half + r)) return null
+    const c = Math.cos(p.heading), s = -Math.sin(p.heading)
+    const u = clamp(dx * c + dz * s, -half, half)
+    const ax = p.x + c * u, az = p.z + s * u
+    if ((x - ax) ** 2 + (z - az) ** 2 > r * r) return null
+    out.x = ax
+    out.z = az
+    out.r = r
+    return out
   }
 
   /** Its head in the world, into `out`, or false with no puppet to read it off. */

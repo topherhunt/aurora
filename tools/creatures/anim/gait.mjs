@@ -133,7 +133,10 @@ const STRAIGHT = 0.35
  *
  * `hinge[i]` is joint i's bend axis in its OWN frame, so it rides along when the
  * spine bends or the hip swings. `restBend[i]` is how far it is already bent,
- * which sets how far it is allowed to straighten back out.
+ * which sets how far it is allowed to straighten back out. `give[i]` scales each
+ * turn CCD asks of the joint, from the map's `give: { <joint>: 0..1 }`: a stiff
+ * joint still folds when nothing else reaches, but the others take a length
+ * change first -- a deer lowers its chest at the elbow, never the carpus.
  */
 export function limbSetup(skel, legMap, byName) {
   const chain = legMap.chain.map((n) => {
@@ -145,6 +148,7 @@ export function limbSetup(skel, legMap, byName) {
 
   const P = chain.map(skel.pos)
   const hinge = [], restBend = []
+  const give = legMap.chain.map((n) => legMap.give?.[n] ?? 1)
   for (let i = 1; i < chain.length - 1; i++) {
     const a = sub(P[i], P[i - 1]), b = sub(P[i + 1], P[i])
     if (len(a) < 1e-6 || len(b) < 1e-6) throw new Error(`leg ${legMap.id} has a zero-length bone at ${skel.name(chain[i])}`)
@@ -193,7 +197,7 @@ export function limbSetup(skel, legMap, byName) {
   }
   const restContact = toe === null ? restFoot : skel.pos(toe)
   return {
-    id: legMap.id, chain, hip, foot, hinge, restBend, parent, parentIsJoint, reach,
+    id: legMap.id, chain, hip, foot, hinge, restBend, give, parent, parentIsJoint, reach,
     restFoot, toe, restContact, toeArm: sub(restFoot, restContact),
     footRest: decompose(skel.world(foot)).rotation,
     restDirLocal: qRotate(qConj(parentRot), norm(sub(restFoot, P[0]))),
@@ -229,11 +233,13 @@ export function pivotOnToe(leg, target, pitch, axis) {
  *
  * `pitch` tilts the paw about `pitchAxis` once the leg is placed -- the body's
  * lateral axis, for toe-off and heel strike. `fold`/`straighten`/`hipLimit`
- * override the walking joint limits for a pose that needs more range.
+ * override the walking joint limits for a pose that needs more range, and
+ * `give: false` turns every joint freely: a fold-down must fold the carpus as
+ * far as the elbow, and a stiff carpus sends the elbow up past the shoulder.
  */
 export function solveLimb(pose, limb, target, {
   iterations = 240, pitch = 0, pitchAxis = null,
-  fold = FOLD_LIMIT, straighten = STRAIGHTEN, hipLimit = HIP_LIMIT,
+  fold = FOLD_LIMIT, straighten = STRAIGHTEN, hipLimit = HIP_LIMIT, give = true,
 } = {}) {
   const { chain, foot } = limb
   const applied = new Array(chain.length).fill(0)
@@ -275,7 +281,7 @@ export function solveLimb(pose, limb, target, {
       const axis = qRotate(pose.rotation(j), limb.hinge[i])
       const a = projectPerp(cur, axis), b = projectPerp(want, axis)
       if (len(a) < 1e-9 || len(b) < 1e-9) continue
-      let wanted = signedAngle(norm(a), norm(b), axis)
+      let wanted = signedAngle(norm(a), norm(b), axis) * (give ? limb.give[i] : 1)
       // A hinge at its straight stop while the foot overshoots the target is a
       // leg too long for where it is going, and CCD cannot see it: the foot
       // and target sit nearly in line from here, so it asks for no turn, or for
@@ -609,8 +615,10 @@ export function diagnose(solved) {
   // half a metre up, on the fen dragon -- so "how far off the floor" is not a
   // question the joint can answer, while "did this foot leave the height it
   // plants at" is, on any rig. Read at the toe where the map names one: a
-  // toe-off lifts the ankle by design and the toe is what must not move.
+  // toe-off lifts the ankle by design and the toe is what must not move. A pose
+  // foot carries its own `floor` when the spec lowered it on purpose.
   const restY = new Map(solved.legs.map((l) => [l.id, l.restContact[1]]))
+  const floorOf = (f) => f.floor ?? restY.get(f.id)
 
   // Stance and swing residuals are different facts. A stance foot that misses
   // its target is skating; a swing foot that misses one just did not lift as far
@@ -622,9 +630,9 @@ export function diagnose(solved) {
       const miss = len(sub(f.actual, f.target))
       if (f.planted) ikStance = Math.max(ikStance, miss)
       else ikSwing = Math.max(ikSwing, miss)
-      sunk = Math.max(sunk, restY.get(f.id) - f.contact[1])
+      sunk = Math.max(sunk, floorOf(f) - f.contact[1])
       if (!f.planted) continue
-      stanceFloat = Math.max(stanceFloat, f.contact[1] - restY.get(f.id))
+      stanceFloat = Math.max(stanceFloat, f.contact[1] - floorOf(f))
       // Undo the ground's motion, so a correctly planted foot holds still.
       if (!settled.has(f.id)) settled.set(f.id, [])
       settled.get(f.id).push({ i, p: add(f.contact, scale(fwd, speed * times[i])) })

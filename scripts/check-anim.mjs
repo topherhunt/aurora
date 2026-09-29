@@ -531,6 +531,24 @@ console.log('\na keyframed pose')
   const sunk = poseClip(FIXTURE, { ...MAP, ground: MAP.ground - 0.1 }, SIT)
   check(sunk.frames[sunk.frames.length - 1].feet.every((f) => f.planted),
     'a foot above the rig\'s lowest joint is still load-bearing, not airborne')
+  // `ground` asks for exactly that foot to come down to the lowest joint, as a
+  // lying hare's ankle does; sink then reads from the new floor, not the old.
+  const grounded = { ...SIT, keys: SIT.keys.map((k) => ({ ...k, pose: { ...k.pose, legs: { ...k.pose.legs, hindLeft: { ...k.pose.legs?.hindLeft, ground: 1 } } } })) }
+  const down = poseClip(FIXTURE, { ...MAP, ground: MAP.ground - 0.1 }, grounded)
+  const hl = down.frames.at(-1).feet.find((f) => f.id === 'hindLeft')
+  check(Math.abs(hl.actual[1] - (MAP.ground - 0.1)) < 1e-3 && hl.planted && diagnose(down).penetration < 1e-3,
+    'a foot the spec grounds comes down to the lowest joint and stands there without reading as sunk',
+    `${mm(hl.actual[1] - (MAP.ground - 0.1))} off, sink ${mm(diagnose(down).penetration)}`)
+
+  // `under` measures from beneath the leg's top joint, so a fold-down tucks both
+  // forefeet alike even when the mesh was modelled mid-stride.
+  const tucked = poseClip(FIXTURE, MAP, { kind: 'pose', samples: 4, keys: [0, 1].map((t) => ({ t, pose: { legs: { hindLeft: { under: t } } } })) })
+  const hip = tucked.skel.pos(tucked.legs.find((l) => l.id === 'hindLeft').hip)
+  const along = (p) => p[0] * MAP.frame.forward[0] + p[2] * MAP.frame.forward[2]
+  const tuck = tucked.frames.map((fr) => along(fr.feet.find((f) => f.id === 'hindLeft').target) - along(hip))
+  check(Math.abs(tuck.at(-1)) < 1e-9 && Math.abs(tuck[0]) > 0.03,
+    'under: 1 moves a foot target from its rest foot to directly beneath its top joint, fore and aft',
+    `${mm(tuck[0])} -> ${mm(tuck.at(-1))}`)
 
   // A digging forepaw rakes backwards at its own rest height, so by geometry it
   // is planted -- but it carries nothing, and scoring it as stance reports the
