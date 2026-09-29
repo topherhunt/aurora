@@ -15,7 +15,7 @@ import { LAKES, RIVERS } from '../src/v3/hydrology.js'
 import { BASINS } from '../src/v3/basins.js'
 import { CLIFFS, table } from '../src/v3/cliffs.js'
 import { NB_DI, NB_DJ } from '../src/sim/world-grid.js'
-import { footprint } from '../src/v2/layers/water-bodies.js'
+import { inRing } from '../src/sim/rings.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
@@ -101,8 +101,10 @@ export async function run() {
   // THE DRAIN IS JUDGED ON DEPTH AND NOTHING ELSE. The jitter leaves hundreds of closed dips a flood would pond, so every basin over `pond` metres has its lowest rim cut with a broad dish until its water is under a metre -- all but the `keep` deepest, which are held to `keepDepth` instead. Like the carve it only ever lowers a texel, so `raised` is a count and not a tolerance. `stuck` is a basin the round cap gave up on, and it must be none of them: a basin left with water in it is water the doc does not draw.
   check(ba.raised === 0, `the drain never raised a texel (${ba.raised} did)`)
   check(ba.stuck === 0 && ba.drainedDeepest <= BASINS.pond + 1e-3, `${ba.drained} of ${ba.basins} basins drained to ${ba.drainedDeepest.toFixed(2)} m of the ${BASINS.pond} m asked, none stuck at the ${BASINS.rounds}-round cap`)
-  // A kept basin can still be emptied by a dish cut for one of its neighbours -- erosion has collateral effects and the drain does not protect a lake from them -- so `lost` is allowed, and it is the count of kept basins that no longer hold water. `perched` is the other way a deep basin leaves the set: the land within `keepRim` of its water falls `keepDrop` below that water, so it is a pit on a hillside rather than a lake, and it is drained with nothing promoted in its place. What is asserted is that every basin not in one of those two classes came back as a body: a lake the sweeps stopped tracking would be water the doc draws at a level the ground no longer holds.
-  check(ba.kept === Math.min(BASINS.keep, ba.basins) && ba.bodies === ba.kept - ba.lost - ba.perched && ba.lost <= 2 && ba.keptDeepest <= BASINS.keepDepth + 1e-3, `the ${ba.kept} deepest kept as ${ba.bodies} bodies over ${ba.keptKm2.toFixed(2)} km2 (${ba.lost} emptied by a neighbour's dish, ${ba.perched} drained as perched), ${ba.keptDeepest.toFixed(1)} m deep of the ${BASINS.keepDepth} m they are held to`)
+  // A kept basin can still be emptied by a dish cut for one of its neighbours -- erosion has collateral effects and the drain does not protect a lake from them -- so `lost` is allowed. `perched` is the other way a deep basin leaves the set: the land within `keepRim` of its water falls `keepDrop` below that water, so it is a pit on a hillside rather than a lake, and it is drained with nothing promoted in its place. What is asserted is that no kept basin went untracked: a lake the sweeps stopped following would be water the doc draws at a level the ground no longer holds.
+  //
+  // `lost` COUNTS RECORDS AND NOT BASINS, which is why this is a range and not an equality. A kept basin that falls into lobes as its level drops is drained lobe by lobe and each lobe still over `pond` deep is recorded, so a dish can empty one of them without the basin losing its water: on seed 20260824 at 4097 the drop is a three-texel puddle 2.07 m deep and its basin comes back as a lake regardless. Each kept basin holding one body is the normal case and the upper bound here.
+  check(ba.kept === Math.min(BASINS.keep, ba.basins) && ba.bodies <= ba.kept && ba.bodies + ba.lost + ba.perched >= ba.kept && ba.lost <= 2 && ba.keptDeepest <= BASINS.keepDepth + 1e-3, `the ${ba.kept} deepest kept as ${ba.bodies} bodies over ${ba.keptKm2.toFixed(2)} km2 (${ba.lost} records emptied by a neighbour's dish, ${ba.perched} drained as perched), ${ba.keptDeepest.toFixed(1)} m deep of the ${BASINS.keepDepth} m they are held to`)
   // The dish is half the pond's width and never under `minBrush`, because a narrow one cuts a slot down the rim where a broad one takes a saddle out of it. So the drain's footprint is wide and shallow -- a couple of km2 at a few metres mean -- and the one deep figure is the rim of the deepest basin it emptied, which is that basin's own depth and cannot be less.
   check(ba.cutMean > 1 && ba.cutMean < 15 && ba.cutKm2 > 0.5 && ba.cutKm2 < s.landKm2 * 0.3 && ba.brushMean > BASINS.minBrush * 0.5, `the drain cut ${ba.cutMean.toFixed(1)} m mean over ${ba.cutKm2.toFixed(2)} km2 with a ${ba.brushMean.toFixed(0)} m mean dish (widest ${ba.brushMax.toFixed(0)} m), ${ba.deepest.toFixed(0)} m at the deepest`)
   // WHAT THE DRAIN LEAVES IS LEFT LYING WHERE IT IS. No step of the hydrology raises a texel, so water the drain stopped short of still stands in its hollow with nothing drawn in it. On ordinary ground that is the drain's own threshold and the sweeps are what hold it there: a dish digs dips outside the pond it was cutting for, so the field is re-flooded and swept until an enumeration comes up empty, and anything deeper than `pond` left standing means a sweep ran out.
@@ -193,10 +195,30 @@ export async function run() {
   check(faceCells > 2000 && longest > 60 && faceCells / runs > 3, `faces over 12 m run in bands, not specks: ${faceCells} texels in ${runs} runs, ${(faceCells / runs).toFixed(1)} mean and ${longest} at the longest`)
   // The lakes are the basins the drain kept and there is no other source of one, so `keep` is the whole ceiling. Some of the kept can still lose their water afterwards, to the outlet notch or to a chain cutting their rim, and those are dropped from the doc rather than drawn dry.
   check(hs.lakes.count >= 3 && hs.lakes.count <= BASINS.keep && hs.lakes.count === hs.lakes.spared - hs.lakes.drained, `${hs.lakes.count} lakes of the ${hs.lakes.spared} basins the drain kept (${hs.lakes.drained} drained out from under their water afterwards)`)
-  check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.rx < 1000 && l.rz < 1000), `every lake stands above the sea, ${LAKES.minDepth} m or deeper, inside a kilometre: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
-  // A FIT IS JUDGED ON DEPTH AND NOT ON AREA, IN BOTH DIRECTIONS. v2 draws water wherever the ground inside a record lies under the record's level, so an ellipse overhanging the valley beside its lake draws a sheet standing on the hillside -- a 100 m2 sliver 70 m deep is a wall of water and almost nothing by area, which is how an area bound let it through -- and an ellipse pulled in off its own bed leaves a hollow of the lake drawn as ground. Splitting a forked pool along the ellipse's major axis buys both at once, up to `splitMax` at the one level; past that the two wrongs are traded off against each other by depth, so what is asserted is that neither is more than a few metres anywhere on the island.
-  check(hs.lakes.leakDeepest <= 2 && hs.lakes.records >= hs.lakes.count && hs.lakes.records <= hs.lakes.count * LAKES.splitMax, `${hs.lakes.km2.toFixed(3)} km2 of lake in ${hs.lakes.records} ellipses, spilling ${hs.lakes.leakDeepest.toFixed(2)} m at the worst of them (${LAKES.spill} m is what the fit shrinks to reach) over ${hs.lakes.leakKm2.toFixed(4)} km2`)
-  check(hs.lakes.dryKm2 < hs.lakes.km2 * 0.02 && hs.lakes.dryDeepest <= 5, `${hs.lakes.dryKm2.toFixed(4)} km2 of lake the ellipses leave dry, ${hs.lakes.dryDeepest.toFixed(1)} m at the deepest`)
+  check(hs.lakes.bodies.every((l) => l.level > 0 && l.deepest >= LAKES.minDepth && l.km2 > 0), `every lake stands above the sea and is ${LAKES.minDepth} m or deeper: levels ${hs.lakes.bodies.map((l) => l.level.toFixed(0)).join(', ')} m`)
+  // A LAKE IS ITS OWN SHORE, so there is no fit to be wrong about: the ring is the contour round the texels the flood wetted, and v2 triangulates it and reads no ground of its own. What is left to assert is what the simplification cost -- `offKm2`, the texels the ring puts on the dry side of the waterline or the wet side of the bank -- and that is a length times `tolerance` and so lands on the shore and nowhere else. One record per body, one outer ring per record, and nothing an island (a negative-area hole) is not.
+  check(hs.lakes.records === hs.lakes.count && hs.lakes.offKm2 < hs.lakes.km2 * 0.03, `${hs.lakes.km2.toFixed(3)} km2 of lake as ${hs.lakes.records} rings, ${hs.lakes.vertices} shore vertices round ${hs.lakes.islands} islands, ${hs.lakes.offKm2.toFixed(4)} km2 of texel on the wrong side of the waterline`)
+  // THE SHORE IS CUT FINER WHERE IT IS COMPLICATED AND NO COARSER THAN `spacing` ANYWHERE. The simplification keeps a vertex wherever the waterline leaves the chord by `tolerance`, and every segment that survives it is then split to at most `spacing` -- so the longest segment on the island is the bound itself, and a mean well under it is the crooked bank asking for more.
+  const ringSegs = []
+  const ringOuters = []
+  for (const l of a.doc.lakes) {
+    if (l.ring === undefined) continue
+    let outers = 0
+    for (const c of l.ring) {
+      let area = 0
+      for (let i = 0, m = c.length; i < m; i += 2) {
+        const j = (i + 2) % m
+        area += c[i] * c[j + 1] - c[j] * c[i + 1]
+        ringSegs.push(Math.hypot(c[j] - c[i], c[j + 1] - c[i + 1]))
+      }
+      if (area > 0) outers++
+    }
+    if (outers !== 1) outers = -1
+    ringOuters.push(outers)
+  }
+  const segMax = Math.max(...ringSegs)
+  const segMean = ringSegs.reduce((t, d) => t + d, 0) / ringSegs.length
+  check(ringOuters.length === hs.lakes.count && ringOuters.every((o) => o === 1) && segMax <= LAKES.spacing + 1e-6, `every lake carries one outer shore and ${ringSegs.length} segments of at most ${LAKES.spacing} m: ${segMax.toFixed(2)} m at the longest, ${segMean.toFixed(2)} m mean`)
   check(hs.rivers.count >= 20 && hs.rivers.km > 10 && hs.rivers.km / s.landKm2 > 1 && hs.rivers.km / s.landKm2 < 6, `${hs.rivers.count} rivers, ${hs.rivers.km.toFixed(1)} km on ${s.landKm2.toFixed(1)} km2 of land, longest ${hs.rivers.longestKm.toFixed(1)} km`)
   check(hs.rivers.intoSea + hs.rivers.intoLake + hs.rivers.fromLake > 0 && hs.rivers.intoSea >= 5 && hs.rivers.fromLake <= hs.lakes.count, `${hs.rivers.intoSea} reach the sea, ${hs.rivers.intoLake} a lake, ${hs.rivers.fromLake} leave one`)
   // TWO CHANNELS A FEW TEXELS APART ARE ONE RIVER. D8 gives every cell one receiver, so without the join a tributary runs a hundred metres beside its own trunk over a divide no higher than the water, and v2 cuts a bed under each polyline: two trenches with a wall between them. The gap is what says the pass is doing that and not reaching across country -- it is a mean over the edges it drew and cannot exceed `joinReach`.
@@ -204,42 +226,101 @@ export async function run() {
   // A RIVER GROWS DOWNSTREAM, which is `tip` and not the catchment exponent: a chain is walked up its largest donor and so keeps a median 0.84 of its mouth's catchment nearly to its head, and no width law honest enough to keep its exponent near a half can flare on that alone. So the taper carries it, and `flare` -- a mouth over that river's own mean width, averaged over the trunks that reach the sea -- is the number that says whether it did.
   check(hs.rivers.flare >= 1.5 && hs.rivers.flare <= 2 && hs.rivers.widthMean > 4 && hs.rivers.widthMax <= RIVERS.maxHalf * 2 + 1e-6, `water ${hs.rivers.widthMean.toFixed(1)} m wide mean (widest ${hs.rivers.widthMax.toFixed(0)} m), mouths x${hs.rivers.flare.toFixed(2)} their own river's mean`)
   // A RIVER FALLS FROM SOURCE TO MOUTH ON THE FIELD ITSELF, EXCEPT ACROSS WATER THAT IS STANDING IN IT. The route is D8 on the FLOODED surface, so over a hollow the drain left the surface is level while the ground under it rises, and the path climbs by at most what is standing there -- `BASINS.pond`, which is the drain's whole contract. Nothing carves that hollow out afterwards (v2 cuts the bed at render time from the polyline), so the bound is the assertion: a climb past it is a river running uphill on dry ground. A source in a lake sits under its own outlet, so that first step is free.
+  //
+  // THE MEANDERS MAKE THIS A TEST OF THE PAIR AND NOT OF THE ROUTE. The drawn line stands off the channel, so a bound on how far each node may stand above its own channel cell says nothing about two neighbours pushed opposite ways; the pair-wise pass `descend` runs over the simplified line is what holds this. The one node it lets go is a tributary's last, which IS the trunk's own node and carries the trunk's offset so the two lines meet -- v2 pins that node to the trunk's water, so the ground under it is nobody's bed. It is bounded separately, by the relief a bend is allowed to stand off its channel in the first place.
   const half = ((a.n - 1) * a.cell) / 2
   const groundAt = (x, z) => a.height[Math.round((z + half) / a.cell) * a.n + Math.round((x + half) / a.cell)]
   let climbs = 0
   let worstClimb = 0
+  let worstJoin = 0
   let widths = 0
   let mouths = 0
+  let spoutSum = 0
+  let spouts = 0
+  let flareSum = 0
+  let flared = 0
   const lakes = a.doc.lakes.filter((l) => l.y > 0)
+  // Walking from one end of a polyline inward, the first node more than `flareLen` of arc from it.
+  const pastFlare = (pts, from) => {
+    const step = from === 0 ? 1 : -1
+    let arc = 0
+    for (let k = from + step; k >= 0 && k < pts.length; k += step) {
+      arc += Math.hypot(pts[k][0] - pts[k - step][0], pts[k][1] - pts[k - step][1])
+      if (arc > RIVERS.flareLen) return k
+    }
+    return -1
+  }
+  const inLakeRing = (l, x, z) => inRing(l.ring[0], x, z) && !l.ring.some((c, k) => k > 0 && inRing(c, x, z))
+  // Distance from a point to a lake's outer shore, however the point lies to it.
+  const ringGap = (l, x, z) => {
+    const c = l.ring[0]
+    let best = Infinity
+    for (let i = 0, m = c.length; i < m; i += 2) {
+      const j = (i + 2) % m
+      const dx = c[j] - c[i]
+      const dz = c[j + 1] - c[i + 1]
+      const len2 = dx * dx + dz * dz
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - c[i]) * dx + (z - c[i + 1]) * dz) / len2))
+      const d = Math.hypot(x - c[i] - dx * t, z - c[i + 1] - dz * t)
+      if (d < best) best = d
+    }
+    return best
+  }
   for (const r of a.doc.rivers) {
-    for (let k = 2; k < r.pts.length; k++) {
+    for (const p of r.pts) if (!(p[2] >= RIVERS.minHalf && p[2] <= RIVERS.maxHalf)) widths++
+    const [mx, mz] = r.pts[r.pts.length - 1]
+    const inSea = groundAt(mx, mz) <= 0
+    // IN A LAKE MEANS INSIDE ITS BAKED SHORE, OR ON IT. The ring is the waterline itself, so there is no fit to leave a margin for; what is left is the half-texel the contour stands off the cell centres it was traced from and the `tolerance` the simplification may move it by. A mouth inside the ring is in the water; one within a texel of the ring standing under the lake's level is on the shore the ring rounded off. A mouth on dry ground stands ABOVE every lake's level and still fails.
+    const inLake = lakes.some((l) => inLakeRing(l, mx, mz) || (l.y - groundAt(mx, mz) > 0 && ringGap(l, mx, mz) <= a.cell))
+    const onRiver = a.doc.rivers.some((o) => o !== r && o.pts.some(([x, z]) => Math.hypot(x - mx, z - mz) < a.cell))
+    if (!(inSea || inLake || onRiver)) mouths++
+    const onTrunk = !inSea && !inLake && onRiver
+    for (let k = 2; k < r.pts.length - (onTrunk ? 1 : 0); k++) {
       const rise = groundAt(r.pts[k][0], r.pts[k][1]) - groundAt(r.pts[k - 1][0], r.pts[k - 1][1])
       if (rise > 0.01) {
         climbs++
         if (rise > worstClimb) worstClimb = rise
       }
     }
-    for (const p of r.pts) if (!(p[2] >= RIVERS.minHalf && p[2] <= RIVERS.maxHalf)) widths++
-    const [mx, mz] = r.pts[r.pts.length - 1]
-    const inSea = groundAt(mx, mz) <= 0
-    // IN A LAKE MEANS IN ITS WATER, WHICH IS A TEXEL WIDER THAN ITS ELLIPSE. fitLake sizes the ellipse to LAKES.cover of the pool and leaves the shallowest rim outside on purpose, and LAKES.holdDepth is its statement of how deep that rim may be before being drawn as land is a bug. So a mouth standing under a lake's level, no deeper than holdDepth, on that lake's own rim is in the lake: measured, one of these 97 mouths sits at 1.07 of its ellipse's radius under 0.49 m of water, and which mouth lands in the 0.0001 km2 the ellipses leave dry is a coin toss the ladder's amplitudes flip. Asserting the ellipse alone here is asserting the same tolerance twice, once with a hair trigger. A mouth on dry ground stands ABOVE every lake's level and still fails.
-    const inLake = lakes.some((l) => {
-      const under = l.y - groundAt(mx, mz)
-      return footprint(l, mx, mz) > 0 || (under > 0 && under <= LAKES.holdDepth && footprint({ ...l, rx: l.rx * 1.2, rz: l.rz * 1.2 }, mx, mz) > 0)
-    })
-    const onRiver = a.doc.rivers.some((o) => o !== r && o.pts.some(([x, z]) => Math.hypot(x - mx, z - mz) < a.cell))
-    if (!(inSea || inLake || onRiver)) mouths++
+    if (onTrunk && r.pts.length > 2) {
+      const e = r.pts.length - 1
+      const rise = groundAt(mx, mz) - groundAt(r.pts[e - 1][0], r.pts[e - 1][1])
+      if (rise > worstJoin) worstJoin = rise
+    }
+    // Each end against the reach just past where its own flare has eased out, so the taper's slow trend is nearly cancelled and what is left is the flare.
+    if (lakes.some((l) => inLakeRing(l, r.pts[0][0], r.pts[0][1]))) {
+      const k = pastFlare(r.pts, 0)
+      if (k > 0) {
+        spoutSum += r.pts[0][2] / r.pts[k][2]
+        spouts++
+      }
+    }
+    if (inSea || inLake) {
+      const k = pastFlare(r.pts, r.pts.length - 1)
+      if (k >= 0) {
+        flareSum += r.pts[r.pts.length - 1][2] / r.pts[k][2]
+        flared++
+      }
+    }
   }
-  check(worstClimb <= BASINS.pond + 1e-3, `no river climbs past the ${BASINS.pond} m the drain leaves standing: ${climbs} of its nodes climb at all, the worst by ${worstClimb.toFixed(2)} m`)
+  check(worstClimb <= BASINS.pond + 1e-3 && worstJoin <= RIVERS.meanderClimb + 1e-3, `no river climbs past the ${BASINS.pond} m the drain leaves standing: ${climbs} of its nodes climb at all, the worst by ${worstClimb.toFixed(2)} m, and a tributary meets its trunk ${worstJoin.toFixed(2)} m up of the ${RIVERS.meanderClimb} m a bend may stand off its channel`)
   check(widths === 0, `every river node carries a half-width in ${RIVERS.minHalf}..${RIVERS.maxHalf} m (${widths} outside)`)
   check(mouths === 0, `every mouth is in the sea, in a lake or on another river (${mouths} are not)`)
-  // AND A SOURCE OUT OF A LAKE IS ON THE WATER THE DOC DRAWS. Wet is not drawn: a cell at exactly the lake's level is one the flood wets and the renderer leaves dry, so a river beginning there begins a few metres short of the sheet with a strip of ground between the two. The sources are counted the way the renderer reads them -- inside an ellipse with the ground strictly under that record's level -- and there has to be one for every river the trace called lake-fed. No tolerance here, unlike the mouths above: the walk in chooses the cell and can always choose a drawn one where the lake draws anything at all.
+  // BOTH ENDS OPEN OUT WHERE THEY MEET STANDING WATER, and the two need different shares because the taper runs with the mouth and against the source: `tip` makes a source the narrowest point of its river, so `spout` has to overcome that before the outlet of a lake reads as water leaving a lake. Read off the shipped record, where the decimetre rounding is already in. The mean is the assertion and not the worst of them: a source with a tributary joining thirty metres below it is legitimately narrower than that reach whatever its flare.
+  check(spouts === hs.rivers.fromLake && spoutSum / spouts > 1.1 && flareSum / flared > 1.15, `a source out of a lake stands x${(spoutSum / spouts).toFixed(2)} the reach ${RIVERS.flareLen} m below it (${spouts} of them) and a mouth x${(flareSum / flared).toFixed(2)} the reach above it (${flared})`)
+  // THE WIDTH WAVERS AND THE LINE WANDERS. `waverMax` is the wobble at its bound -- the share of its own width a reach may vary by along the line, measured off the term that did it rather than off the profile, where the catchment's trend and the flares would swamp it. `sinuosity` is the drawn length over the chord and `bend` is how far the line was moved off the steepest descent D8 actually walked; the apex of every bend is pinned against the simplification, or `tolerance` would straighten out exactly the bends this adds. Each number falls to nothing with its own knob at zero: at 1025 meander=0 takes sinuosity from 1.189 to 1.145 and bend to 0, wobble=0 takes waverMax to 0.
+  check(hs.rivers.waverMax <= RIVERS.wobble + 1e-6 && hs.rivers.waver > RIVERS.wobble * 0.2 && hs.rivers.sinuosity > 1.15 && hs.rivers.bend > RIVERS.tolerance * 0.5, `banks waver ${(hs.rivers.waver * 100).toFixed(1)}% of their width and up to ${(hs.rivers.waverMax * 100).toFixed(0)}% of the ${(RIVERS.wobble * 100).toFixed(0)}% allowed; the line runs x${hs.rivers.sinuosity.toFixed(3)} its chord, ${hs.rivers.bend.toFixed(1)} m off the descent at the mean and ${hs.rivers.bendMax.toFixed(0)} m at the most`)
+  // AND A SOURCE OUT OF A LAKE IS INSIDE THE WATER THE DOC DRAWS, AT THE SURFACE IT DRAWS IT AT. The ring is the sheet, so being inside it is being on the water however the ground lies -- and the level is the other half of it: the source is the cell the lake spills over, which stands EXACTLY at the surface, and one chosen deeper in the water would have v2 gouge a channel down through the lake bed to reach it, since paths.js cuts a bed under every node it is handed. No tolerance on either count: the outlet is a cell the flood named and there is always one.
   let onWater = 0
+  let sunk = 0
   for (const r of a.doc.rivers) {
     const [sx, sz] = r.pts[0]
-    if (lakes.some((l) => groundAt(sx, sz) < l.y && footprint(l, sx, sz) > 0)) onWater++
+    const own = lakes.find((l) => inLakeRing(l, sx, sz))
+    if (own === undefined) continue
+    onWater++
+    if (own.y - groundAt(sx, sz) > 0.05) sunk++
   }
-  check(onWater === hs.rivers.fromLake, `all ${hs.rivers.fromLake} rivers leaving a lake start on the water the doc draws (${onWater} do)`)
+  check(onWater === hs.rivers.fromLake && sunk === 0, `all ${hs.rivers.fromLake} rivers leaving a lake start inside its shore (${onWater} do), on its surface and not cut into its bed (${sunk} start under the water)`)
 
   console.log('\n[v3] the document')
   const layers = Layers.deserialize(a.doc)

@@ -80,6 +80,10 @@ export const SOUNDS = {
   panting: 'sounds/npc-leafkin-panting.mp3',
   // A hob weevil's cry (render/hobs.js).
   hobCry: 'sounds/animal-hob-weevil-cry.mp3',
+  // A frost strider's calls at its rail and on the road (render/townsfolk.js), and the flutter of its fidget.
+  striderChirp1: 'sounds/strider-chirp-1.mp3',
+  striderChirp2: 'sounds/strider-chirp-2.mp3',
+  striderFlutter: 'sounds/strider-flutter.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   frogBoing: 'sounds/animal-frog-boing.mp3',
@@ -129,6 +133,7 @@ export const FOOTFALLS = {
   quadruped: { walk: [0, 0.25, 0.5, 0.75], trot: [0, 0.5], run: [0, 0.12, 0.46, 0.58], hop: [0, 0.4], bound: [0, 0.52] },
   human: { walk: [0, 0.5], run: [0, 0.5], 'run-carry': [0, 0.5] },
   wyvern: { walk: [0, 0.5], run: [0, 0.5] },
+  bird: { walk: [0, 0.5], run: [0, 0.5] },
 }
 
 /**
@@ -159,6 +164,8 @@ export const RULES = {
   stroke: { interval: [2, 6], gain: [0.4, 0.7], splash: [0.3, 0.5] },
   // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  // A strider's feet on the same clock, the large animal's step: at `level` and rate 1 for a `size`-metre body at `near` m.
+  stride: { reach: 40, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
   foxYip: { reach: 40, near: 4, level: 0.7, every: [40, 120], gain: [0.7, 1.0] },
   // A stag within `reach` grunts every `every` seconds, the same way. The clip is mastered 21 dB hotter than the yip, which is why the level is low.
@@ -171,6 +178,8 @@ export const RULES = {
   villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
+  // A strider's chirp or fidget flutter, heard across a town's rails.
+  striderCall: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.8, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
   door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
@@ -221,7 +230,7 @@ export class Ambience {
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
    * @param voiced    the layers whose one-shots are heard, each { layer, rule, bus }: layer.voices(into) drains them, `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door); `bus` 'near' keeps them out of the house's walls (a leafkin at home), else `air`.
-   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, bus }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, and `bus` is as a voiced layer's.
+   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, bus, sound, rule }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, `bus` is as a voiced layer's, and `sound` and `rule` their step (footfall and RULES.footfall unless named).
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
    * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
@@ -245,6 +254,7 @@ export class Ambience {
     for (const h of herds) {
       if (!h.layer || typeof h.layer.bodies !== 'function') throw new Error('Ambience: a herd needs a layer with bodies()')
       if (!FOOTFALLS[h.clips]) throw new Error(`Ambience: no footfalls for a ${h.clips} clip library`)
+      if (h.sound !== undefined && (!SOUNDS[h.sound] || !RULES[h.rule]?.deep)) throw new Error(`Ambience: a herd's step ${h.sound} needs a sound and a footfall rule, not ${h.rule}`)
       for (const rule of Object.values(h.calls ?? {})) if (!RULES[rule]?.every) throw new Error(`Ambience: no call rule named ${rule}`)
     }
     for (const l of crawlers) if (!l || typeof l.bodies !== 'function') throw new Error('Ambience: a crawler layer needs bodies()')
@@ -567,8 +577,9 @@ export class Ambience {
    * within reach. A body not listed within reach this frame is gone from here.
    */
   _herds(dt, head) {
-    const F = RULES.footfall
     for (const h of this.herds) {
+      const { sound = 'footfall', rule = 'footfall' } = h
+      const F = RULES[rule]
       const table = FOOTFALLS[h.clips]
       const listed = this.listed
       listed.length = 0
@@ -600,7 +611,7 @@ export class Ambience {
           const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d))
           const rate = Math.pow(F.size / c.size, F.deep)
           while (f.phase >= f.at) {
-            this.fire('footfall', { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus })
+            this.fire(sound, { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus })
             if (++f.beat === beats.length) {
               f.beat = 0
               f.phase -= 1

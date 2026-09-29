@@ -23,14 +23,13 @@ import { validate } from '../src/v2/layers/doc.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
 import { CRITTER_GLB, LOD_RUNGS } from '../src/v2/render/critters.js'
-import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
+import { HOUSE_BOUNDS, RoomProps } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { Villagers } from '../src/v2/render/villagers.js'
 import { BABY, CLIPS, CRY_S, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, SQUEAL_S, TINTS, YARD_R } from '../src/v2/render/hobs.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
-import { readShippedLadder } from './lib/gen-prop-node.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -41,13 +40,12 @@ const check = (ok, label, detail = '') => {
 
 // --- the village ------------------------------------------------------------------
 const KEY = 'hollow:160.0:-356.0'
-const houseBank = propBankFrom(readShippedLadder('house-leafkin'))
-const spec = rollVillage(keyHash(KEY), houseBank.bounds)
+const spec = rollVillage(keyHash(KEY), HOUSE_BOUNDS)
 const shell = new Shell(new THREE.Scene(), buildRockBank(), buildTextureArray(), spec.shell)
-const room = buildVillage({ spec, shell, house: houseBank.bounds })
+const room = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
 const layers = Layers.deserialize(validate(room.doc))
 const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
-const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
+const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: buildTextureArray(), glowMap: new THREE.Texture(), patch: (m) => m })
 const walk = new WalkSurface(field, shell, { trunkAt: () => null })
 walk.addStone(roomProps)
 const water = { isSubmerged: (x, z, y) => y < room.lake.y }

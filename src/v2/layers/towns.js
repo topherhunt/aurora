@@ -24,6 +24,8 @@ export const TOWN = {
   // The most treads a door's steps may take down to the ground, each TREAD deep and RISER high (parts.js steps); the plan's box reserves room for them.
   stepsMax: 4,
   tries: 90,
+  // Hitching rails, `count` a town: along a house front beside its door, `out` m past its box, the first tether `first` m to one side of the door and the rest `spacing` apart. A strider's origin stands `stand` m past the rail facing it, its rump `rump` m further and its flank `half` m to each side. The ground under one may fall `rise` m.
+  posts: { count: 3, tethers: 3, out: 1.2, first: 2.2, spacing: 2.1, stand: 1.0, rump: 1.2, half: 0.8, rise: 0.8, apart: 12 },
 }
 
 // A lateral offset along a way, s metres from its start: a sine per wave, wavelength and phase rolled.
@@ -188,6 +190,58 @@ function nearestOnSegment(ax, az, bx, bz, x, z) {
   const px = ax + ex * t
   const pz = az + ez * t
   return [px, pz, t, Math.hypot(x - px, z - pz)]
+}
+
+// A town's hitching rails (TOWN.posts): the house nearest the clearing's, then the farthest out, each rail along a house front beside its door (or, failing those, centred on its back or a side), clear of the clearing, the other houses and every way, on ground dry and level enough. A post is its rail's ends, its box, and per tether where the strider stands and faces, the knot on the rail, where a hand stands beside it (`stand`), and the rump line it is reached along (`reach`; `gate` is the first tether's).
+function planPosts({ cx, cz, clearingR, buildings, roads, paths, ground, wet }) {
+  const P = TOWN.posts
+  const cands = []
+  buildings.forEach((b, i) => {
+    const [ldx] = toLocal(b.box, b.door[0], b.door[1])
+    // Each face as a frame whose +z points out of it: the front, back and two sides, turned a quarter at a time.
+    const faces = [[0, b.box.hz, [1, -1].map((side) => [side, (k) => ldx + side * (P.first + k * P.spacing)])]]
+    for (const [q, depth] of [[2, b.box.hz], [1, b.box.hx], [3, b.box.hx]]) faces.push([q, depth, [[1, (k) => (k - (P.tethers - 1) / 2) * P.spacing]]])
+    for (const [q, depth, sides] of faces) for (const [side, lat] of sides) {
+      const yaw = Math.atan2(b.box.s, b.box.c) + (q * Math.PI) / 2
+      const box = { x: b.box.x, z: b.box.z, c: Math.cos(yaw), s: Math.sin(yaw) }
+      const at = (lx, lz) => [box.x + lx * box.c + lz * box.s, box.z - lx * box.s + lz * box.c]
+      const rail = depth + P.out
+      const mid = lat((P.tethers - 1) / 2)
+      const near = rail - 0.2
+      const far = rail + P.stand + P.rump
+      const [x, z] = at(mid, (near + far) / 2)
+      const foot = { x, z, c: box.c, s: box.s, hx: ((P.tethers - 1) * P.spacing) / 2 + P.half, hz: (far - near) / 2 }
+      if (pointBoxDist(foot, cx, cz) < clearingR + 1) continue
+      if (buildings.some((o) => boxesOverlap(foot, o.box, 0.3))) continue
+      const hits = (pts, pad) => pts.some((p, k) => k > 0 && segmentHitsBox(foot, pts[k - 1][0], pts[k - 1][2], p[0], p[2], pad))
+      if (roads.some((pts) => hits(pts, TOWN.road.width / 2 / SWELL_MIN + 0.5)) || paths.some((p) => hits(p.pts, TOWN.path.width / 2 / SWELL_MIN + 0.3))) continue
+      const spots = [at(lat(-0.5), rail), at(lat(P.tethers - 0.5), rail), ...Array.from({ length: P.tethers }, (_, k) => at(lat(k), rail + P.stand))]
+      const hs = spots.map(([sx, sz]) => ground(sx, sz))
+      if (spots.some(([sx, sz], k) => wet(sx, sz, hs[k])) || Math.max(...hs) - Math.min(...hs) > P.rise) continue
+      const heading = Math.atan2(box.c, -box.s)
+      const tethers = Array.from({ length: P.tethers }, (_, k) => {
+        const [tx, tz] = at(lat(k), rail + P.stand)
+        const [kx, kz] = at(lat(k), rail)
+        const [sx, sz] = at(lat(k) - (side * P.spacing) / 2, rail + P.stand)
+        const [rx, rz] = at(lat(k) - (side * P.spacing) / 2, far + 0.6)
+        return { x: tx, z: tz, heading, knot: [kx, kz], stand: [sx, sz], reach: [rx, rz] }
+      })
+      const [ax, az] = at(lat(-0.5), rail)
+      const [bx, bz] = at(lat(P.tethers - 0.5), rail)
+      cands.push({ building: i, front: q === 0, r: Math.hypot(x - cx, z - cz), box: foot, rail: [[ax, az], [bx, bz]], gate: tethers[0].reach, tethers })
+    }
+  })
+  const posts = []
+  const take = (p) => {
+    if (posts.length >= P.count || posts.some((o) => o.building === p.building || boxesOverlap(o.box, p.box, P.apart))) return
+    posts.push(p)
+  }
+  const byR = (list) => list.sort((p, q) => p.r - q.r)
+  const fronts = byR(cands.filter((p) => p.front))
+  const backs = byR(cands.filter((p) => !p.front))
+  for (const p of [fronts[0], backs[0]]) if (p && posts.length === 0) take(p)
+  for (const list of [fronts, backs]) for (let k = list.length - 1; k >= 0; k--) take(list[k])
+  return posts.map(({ front, r, ...post }) => post)
 }
 
 // --- one town ------------------------------------------------------------------
@@ -449,6 +503,8 @@ function layoutTown(site, index, all, ctx) {
     pts.length = Math.min(pts.length, keep + 1)
   }
 
+  const posts = planPosts({ cx, cz, clearingR: C.r, buildings, roads, paths, ground, wet })
+
   const records = []
   C.rings.forEach((rr, j) => {
     const pts = []
@@ -462,21 +518,21 @@ function layoutTown(site, index, all, ctx) {
   roads.forEach((pts, j) => records.push({ id: `${id}-road${j}`, pts: pts.map(([x, y, z]) => [x, y, z, R.width]) }))
   paths.forEach((p) => records.push({ id: p.id, feather: 3, pts: p.pts.map(([x, y, z]) => [x, y, z, TOWN.path.width]) }))
 
-  return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, roads, paths, records }
+  return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, roads, paths, posts, records }
 }
 
-// Whether (x, z) is within `pad` (plus a metre) of a building's box: what keeps the trees and rocks out of the buildings. The clearing and paths are roads, which they keep off already.
+// Whether (x, z) is within `pad` (plus a metre) of a building's or a hitching post's box: what keeps the trees and rocks out of them. The clearing and paths are roads, which they keep off already.
 export function townsOccupyAt(towns, x, z, pad) {
   for (const t of towns) {
     const dx = x - t.x
     const dz = z - t.z
     if (dx * dx + dz * dz > (t.radius + 20) ** 2) continue
-    for (const b of t.buildings) {
-      const bx = x - b.box.x
-      const bz = z - b.box.z
-      const lx = bx * b.box.c - bz * b.box.s
-      const lz = bx * b.box.s + bz * b.box.c
-      if (Math.abs(lx) < b.box.hx + pad + 1 && Math.abs(lz) < b.box.hz + pad + 1) return true
+    for (const { box } of [...t.buildings, ...t.posts]) {
+      const bx = x - box.x
+      const bz = z - box.z
+      const lx = bx * box.c - bz * box.s
+      const lz = bx * box.s + bz * box.c
+      if (Math.abs(lx) < box.hx + pad + 1 && Math.abs(lz) < box.hz + pad + 1) return true
     }
   }
   return false

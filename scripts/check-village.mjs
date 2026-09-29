@@ -47,7 +47,7 @@ import { DENSITY as TREE_DENSITY, Trees } from '../src/v2/render/trees.js'
 import { treeVariants } from '../src/props/tree-bank.js'
 import { forestKeepAt } from '../src/v2/layers/forest.js'
 import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/render/entrances.js'
-import { DOOR, ROOF, RoomProps, WINDOWS, propBankFrom } from '../src/v2/render/room-props.js'
+import { DOOR, HOUSE_BOUNDS, ROOF, RoomProps } from '../src/v2/render/room-props.js'
 import { Boulders } from '../src/v2/render/boulders.js'
 import { CELL as SHELL_CELL, GRAIN, Shell } from '../src/v2/render/shell.js'
 import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
@@ -96,7 +96,6 @@ const LAMPS_NEAR_M = 7
 const LAMPS_GAP_M = 20
 // The trunk's first lamp (LAMPS.exit) steps in from the arrival until it stands LAMPS.wall clear of the stone, a verge off the road: the arrival is in the mouth, up to 2 m into the wall, so it is found within this of her.
 const EXIT_LAMP_M = 6
-const HOUSE = 'house-leafkin'
 // main.js HOUSE_DOOR's reach at a house's door outside.
 const HOUSE_DOOR = { walk: 0.5, side: 0.4, rise: 0.6 }
 // The seeds gated: real entrance keys from the shipped overworld (probe-villages.mjs), hashed the way main.js villageSeed hashes them.
@@ -104,7 +103,6 @@ const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:19
 
 const texArray = buildTextureArray()
 const bank = buildRockBank()
-const houseBank = propBankFrom(readShippedLadder(HOUSE))
 const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
 const overworld = new V2Height({
   heightmap: await Heightmap.read({ path: 'public/world/height.png', metaPath: 'public/world/height.json' }),
@@ -114,10 +112,10 @@ const overworld = new V2Height({
 
 /** One seed's build: the shell on its roll, the room, and the field the walker reads. */
 function build(seed) {
-  const spec = rollVillage(seed, houseBank.bounds)
+  const spec = rollVillage(seed, HOUSE_BOUNDS)
   const shell = new Shell(new THREE.Scene(), bank, texArray, spec.shell)
   const t0 = performance.now()
-  const room = buildVillage({ spec, shell, house: houseBank.bounds })
+  const room = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
   const buildMs = performance.now() - t0
   const layers = Layers.deserialize(validate(room.doc))
   const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
@@ -130,12 +128,12 @@ const builds = KEYS.map((key) => build(keyHash(key)))
 {
   const { room, spec, shell } = builds[0]
   check(builds.every((b) => b.buildMs < BUILD_MS), `every village builds in under ${BUILD_MS} ms`, `${builds.map((b) => b.buildMs.toFixed(0)).join(' ')} ms`)
-  const again = buildVillage({ spec, shell, house: houseBank.bounds })
+  const again = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
   const a = room.heightmap.field, b = again.heightmap.field
   let same = a.length === b.length
   for (let i = 0; same && i < a.length; i++) same = a[i] === b[i]
   check(same && JSON.stringify(again.doc) === JSON.stringify(room.doc) && JSON.stringify(again.props) === JSON.stringify(room.props), 'the build is deterministic')
-  check(JSON.stringify(rollVillage(spec.seed, houseBank.bounds)) === JSON.stringify(spec), 'the roll is deterministic')
+  check(JSON.stringify(rollVillage(spec.seed, HOUSE_BOUNDS)) === JSON.stringify(spec), 'the roll is deterministic')
   check(room.heightmap.texelSize === 8 && room.heightmap.width === TEXELS, 'the room keeps the overworld pitch', `${room.heightmap.texelSize} m a texel`)
   // The tile repeats: the texel a tile over is the same texel.
   let seams = 0
@@ -321,7 +319,7 @@ console.log('\nthe water')
 
 // --- the roads ----------------------------------------------------------------
 console.log('\nthe roads')
-const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
+const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: texArray, glowMap: new THREE.Texture(), patch: (m) => m })
 const roads = doc.roads
 const trunk = roads.find((r) => r.id === 'd1'), loop = roads.find((r) => r.id === 'd2'), ring = roads.find((r) => r.id === 'd3'), spur = roads.find((r) => r.id === 'd4')
 const pads = roads.filter((r) => r.id.startsWith('pad-'))
@@ -470,24 +468,16 @@ console.log('\nthe huts')
   let far = c.r + 40
   while (roomProps.props.some((h) => Math.hypot(h.x - (c.x + far), h.z - c.z) < h.r + 0.1)) far += 1
   check(roomProps.occupiesAt(c.x, c.z, 0) && roomProps.occupiesAt(c.x + c.r - 0.1, c.z, 0) && !roomProps.occupiesAt(c.x + far, c.z, 0), 'the clearing is the wood\'s occupier')
-  // The mirror: each house is the pick or its mirror as the spec rolled, and every window sits at WINDOWS' place in the pick's frame, its z flipped on a mirrored house.
-  check(roomProps.props.every((h, k) => h.mirror === (room.props[k].mirror ? -1 : 1)), 'every house is mirrored as its roll says', `${roomProps.props.filter((h) => h.mirror < 0).length} of ${roomProps.props.length} mirrored`)
-  const windows = roomProps.windows()
-  let offPane = 0
-  roomProps.props.forEach((h, k) => {
-    const cs = Math.cos(h.yaw), sn = Math.sin(h.yaw)
-    WINDOWS.forEach((w, i) => {
-      const v = windows[k * WINDOWS.length + i]
-      const rx = (v.x - h.x) / h.scale, rz = (v.z - h.z) / h.scale
-      const px = rx * cs - rz * sn, pz = (rx * sn + rz * cs) * h.mirror
-      if (Math.abs(px - w.x) > 1e-6 || Math.abs(pz - w.z) > 1e-6 || Math.abs(v.y - h.y - w.y * h.scale) > 1e-6) offPane++
-    })
-  })
-  check(offPane === 0, 'every window is where the pick puts it, turned, scaled and mirrored with its house', `${offPane} off`)
-  check(roomProps.materials.length === 2 && roomProps.materials.every((m) => m.side === THREE.DoubleSide), 'the houses draw both faces, the pick\'s and the mirror\'s')
-  // The walker's house (room-props.js columnTable): the trunk is a column from the ground to the roof, the roof's highest point stands at the house's top, a root round the trunk is a step she takes, under the door's awning there is air, and past the box there is nothing.
+  // Every window sits on its own house's wall, below its top, facing out of it.
+  let offWall = 0
+  for (const h of roomProps.props) for (const w of h.windows) {
+    const rx = w.x - h.x, rz = w.z - h.z, r = Math.hypot(rx, rz)
+    if (r < h.trunk * 0.6 || r > h.reach || w.y < h.y || w.y > h.top || (rx * w.dx + rz * w.dz) / r < 0.5) offWall++
+  }
+  check(offWall === 0, 'every window sits on its house\'s wall below its top, facing out', `${offWall} off`)
+  // The walker's house (room-props.js columnTable): the trunk is a column from the ground to the roof, the roof's highest point stands at the house's top, a root round the trunk is a step she takes, the door's top step is at its landing, and past the box there is nothing.
   const col = new Float32Array(16)
-  let trunkOpen = 0, roofLow = 0, rootless = 0, awningless = 0, pastBox = 0
+  let trunkOpen = 0, roofLow = 0, rootless = 0, stepless = 0, pastBox = 0
   for (const h of roomProps.props) {
     const core = coreOf(h), height = h.top - h.y
     const n = roomProps.columnAt(h.x, h.z, 0, col)
@@ -501,23 +491,25 @@ console.log('\nthe huts')
       const a = (q / 16) * Math.PI * 2
       for (const f of [0.55, 0.65, 0.75, 0.85, 0.95]) {
         const m = roomProps.columnAt(h.x + Math.cos(a) * f * h.r, h.z + Math.sin(a) * f * h.r, 0, col)
-        if (m === 1 && col[0] - h.y < 0.3 && col[1] - h.y > 0.05 && col[1] - h.y <= WALK.reach) roots++
+        // The eave may overhang a root with her head's room between them.
+        if ((m === 1 || col[2] - col[1] >= WALK.height) && col[0] - h.y < 0.3 && col[1] - h.y > 0.05 && col[1] - h.y <= WALK.reach) roots++
       }
       // Past the box's corner (r√2), where no neighbour's box reaches either.
       const px = h.x + Math.cos(a) * 1.45 * h.r, pz = h.z + Math.sin(a) * 1.45 * h.r
       if (roomProps.props.some((o) => o !== h && Math.hypot(o.x - px, o.z - pz) < 1.45 * o.r)) continue
-      if (roomProps.columnAt(px, pz, 0, col) > 0) past++
+      // A root's tip may run on under the ground; only what stands out of it is something to walk on.
+      const m = roomProps.columnAt(px, pz, 0, col)
+      if (m > 0 && col[m * 2 - 1] > field.heightAt(px, pz)) past++
     }
     if (roots === 0) rootless++
     if (past > 0) pastBox++
-    const dx = Math.cos(h.yaw), dz = -Math.sin(h.yaw)
-    const m = roomProps.columnAt(h.x + dx * 0.8 * h.r, h.z + dz * 0.8 * h.r, 0, col)
-    if (m === 0 || col[0] - h.y < height * 0.35) awningless++
+    const d = h.door, s = roomProps.columnAt(d.x + d.dx * 0.3, d.z + d.dz * 0.3, 0, col)
+    if (s === 0 || Math.abs(col[1] - h.y - d.landing) > 0.15) stepless++
   }
   check(trunkOpen === 0, 'every trunk is a column from the ground to over half its height', `${trunkOpen} open`)
   check(roofLow === 0, 'every roof\'s highest point stands within a tenth of its height of the house\'s top', `${roofLow} low`)
   check(rootless === 0, `every house has roots round it she can step onto, under ${WALK.reach} m`, `${rootless} without`)
-  check(awningless === 0, 'under every door\'s awning there is air to over a third of the house', `${awningless} without`)
+  check(stepless === 0, 'every door\'s top step stands at its landing', `${stepless} without`)
   check(pastBox === 0, 'past the box there is nothing to walk on', `${pastBox} houses reach past it`)
 }
 
@@ -785,7 +777,7 @@ console.log('\nthe lamps')
     const l = lamps[i]
     for (let j = 0; j < i; j++) if (Math.hypot(l.x - lamps[j].x, l.z - lamps[j].z) < LAMPS.apart - 0.01) close++
     if (nearRoad(l.x, l.z) < 0.25) onRoad++
-    if (roomProps.props.some((h) => Math.hypot(l.x - h.x, l.z - h.z) < h.r)) inHouse++
+    if (roomProps.props.some((h) => Math.hypot(l.x - h.x, l.z - h.z) < h.r * DOOR.wall)) inHouse++
     if (heightAt(l.x, l.z) <= lake.y) wet++
     if (Math.hypot(l.x, l.z) > rimAt(l.x, l.z) - LAMPS.wall) inStone++
   }
@@ -844,8 +836,8 @@ console.log('\nthe lamps')
   check(dimFoot === 0, 'the lamp map is bright at every foot', `${dimFoot} dim feet`)
   check(litPast === 0 && darkNear === 0, `the lamp map is lit within ${LAMP.reach} m of a lamp and dark past every emitter's reach`, `${litPast} texels lit past the reach, ${darkNear} dark within it`)
   // Every window lights the ground a step out of its wall over the same bake with the windows' gain off (the same emitters, so the same frame and texel grid); that the light is a cone is pinned once below on a bake of one window.
-  check(windows.length === roomProps.props.length * WINDOWS.length, `every hut has ${WINDOWS.length} windows`, `${windows.length} windows`)
-  check(WINDOWS.every((w) => Math.abs(Math.hypot(w.nx, w.nz) - 1) < 0.05), 'every window faces a unit way out along the ground', WINDOWS.map((w) => Math.hypot(w.nx, w.nz).toFixed(2)).join(' '))
+  check(roomProps.props.every((h) => h.windows.length > 0) && windows.length === roomProps.props.reduce((n, h) => n + h.windows.length, 0), 'every hut has windows, and all of them light the map', `${windows.length} windows`)
+  check(windows.every((w) => Math.abs(Math.hypot(w.dx, w.dz) - 1) < 0.05), 'every window faces a unit way out along the ground', windows.map((w) => Math.hypot(w.dx, w.dz).toFixed(2)).join(' '))
   const windowGain = LAMP.window.gain
   LAMP.window.gain = 0
   const dark = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps, windows, seed, patch: (m) => m })
@@ -868,9 +860,10 @@ console.log('\nthe lamps')
   check(dayGlow === 0 && dayBreath === 0 && !dayFlames, 'by day the glow and the breath are nothing and the flames are hidden', `glow ${dayGlow.toFixed(2)} flames ${dayFlames}`)
   check([g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1) && layer.breath > 0.55 && layer.flames.group.visible && nightFlame.x === g.x && nightFlame.z === g.z, 'by night every group glows and the flames burn on the same glow', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)} breath ${layer.breath.toFixed(2)} flames ${layer.flames.group.visible}`)
   roomProps.setGlow(0)
-  const dayWindow = roomProps.material.uGlowOn.value
+  const dayWindow = roomProps.glowMaterial.color.r
   roomProps.setGlow(layer.breath)
-  check(dayWindow === 0 && roomProps.material.uGlowOn.value === layer.breath && roomProps.material.uGlow.value.r > 1, 'the panes shade like the wall by day and burn unlit on the breath by night', `on ${dayWindow} / ${roomProps.material.uGlowOn.value.toFixed(2)} gain ${roomProps.material.uGlow.value.r.toFixed(2)}`)
+  const nightWindow = roomProps.glowMaterial.color.r
+  check(dayWindow < 0.5 && nightWindow > 1, 'the panes shade like the wall by day and burn unlit on the breath by night', `red ${dayWindow.toFixed(2)} by day, ${nightWindow.toFixed(2)} by night`)
   const walk = new WalkSurface(field, shell, { trunkAt: () => null })
   walk.addStone(layer)
   const l0 = layer.lamps[0]
@@ -936,7 +929,7 @@ console.log('\nthe stools')
 // --- the boot -----------------------------------------------------------------
 console.log('\nthe boot')
 {
-  const { room, layers, field, shell } = builds[builds.length - 1]
+  const { room, spec, layers, field, shell } = builds[builds.length - 1]
   const heightAt = (x, z) => field.heightAt(x, z)
   const wet = (x, z) => { const l = layers.waterLevelAt(x, z); return l !== null && heightAt(x, z) < l }
   const water = {
@@ -944,7 +937,7 @@ console.log('\nthe boot')
     isSubmerged: (x, z, g) => { const l = layers.waterLevelAt(x, z); return l !== null && g < l },
     shoreDistAt: (x, z, reach) => reach,
   }
-  const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
+  const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: texArray, glowMap: new THREE.Texture(), patch: (m) => m })
   const scene = new THREE.Scene()
   const rocks = new Rocks(scene, field, water, layers, texArray, { seed: SEED, hollows: false, bank })
   check(rocks.bank === bank, 'the rocks share the shell\'s bank')

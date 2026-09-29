@@ -17,8 +17,10 @@ import { TOWN_BANDS, Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { Hearth, hearthKit } from '../src/v2/render/hearth.js'
-import { TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
-import { SEAT_M, TALKS } from '../src/v2/render/villagers.js'
+import { CLIPS, TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
+import { Journeys } from '../src/v2/render/journeys.js'
+import { planRoads } from '../src/v2/layers/roads.js'
+import { SEAT_M } from '../src/v2/render/villagers.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -284,7 +286,7 @@ for (const town of towns) {
 }
 check(unreached.length === 0, 'every door is reachable from the clearing', unreached.join(', '))
 // Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.
-const durations = Object.fromEntries(['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', ...TALKS].map((c) => [c, c === 'sit' ? 4 : 2]))
+const durations = Object.fromEntries(CLIPS.map((c) => [c, c === 'sit' ? 4 : 2]))
 const bodies = TOWNSFOLK.bodies.map(() => ({ heightM: 1.7, height: 1, gait: { walk: 0.632 }, wheelbase: 0.474, sitY: SEAT_M * S / 1.7, durations }))
 const seats = Array.from({ length: 6 }, (_, k) => {
   const x = t.x + Math.cos(k) * 1.7 * S, z = t.z + Math.sin(k) * 1.7 * S
@@ -310,7 +312,7 @@ for (let s = 0; s < 400; s += 2) {
   a.advance(T0 + s)
   for (const c of a.all) {
     if (c.state in seen) seen[c.state]++
-    if (c.state === 'walk' && c.then !== 'sit' && c.then !== 'errand' && !(c.wp === 0 && c.route[0].node === c.at) && wayDist(c.x, c.z) > TOWNSFOLK.lane + 0.3) offWay++
+    if (c.state === 'walk' && c.then !== 'sit' && c.job === null && c.then !== 'errand' && !(c.wp === 0 && c.route[0].node === c.at) && wayDist(c.x, c.z) > TOWNSFOLK.lane + 0.3) offWay++
   }
 }
 check(seen.walk > 0 && seen.sit > 0 && seen.talk > 0 && seen.stand > 0, 'townsfolk walk, stand, sit at the fire and stop to talk', JSON.stringify(seen))
@@ -323,6 +325,57 @@ let frames = 0
 while (!late.caught) { late.advance(T0 + 398, TOWNSFOLK.replay); frames++ }
 check(frames > 1 && a.all.every((c, i) => c.x === late.all[i].x && c.z === late.all[i].z && c.state === late.all[i].state), 'a town woken late catches up over several frames to the same day', `${frames} frames`)
 check(new Set(a.all.map((c) => c.seat).filter(Boolean)).size === a.all.filter((c) => c.seat).length, 'no two townsfolk hold one stool')
+
+// --- the striders at the rails, and the travellers leaving and arriving ---
+check(towns.every((town) => town.posts.length >= 3 && town.posts.every((p) => p.tethers.length > 0)), 'every town has at least 3 hitching posts, each with a tether')
+const roadPlan = planRoads({ towns, ground, surface, layers, seed: SEED })
+const journeys = new Journeys(towns, roadPlan, { seed: SEED, bodies: TOWNSFOLK.bodies.length })
+const strider = { walk: 1.06, fidget: 2 }
+const tally = { departs: 0, late: 0, worstLate: 0, walkouts: 0, arrivals: 0, stuck: [], leads: 0, fidgets: 0, maxTied: 0, errors: [] }
+for (let ti = 0; ti < towns.length; ti++) {
+  const town = towns[ti]
+  const tSeats = Array.from({ length: 6 }, (_, k) => {
+    const x = town.x + Math.cos(k) * 1.7 * S, z = town.z + Math.sin(k) * 1.7 * S
+    return { x, z, top: field.heightAt(x, z) + SEAT_M * S, r: 0.4, lookX: town.x, lookZ: town.z }
+  })
+  const L = new TownLife(town, { index: ti, seed: SEED, bodies, seats: tSeats, heightAt, journeys, strider })
+  const jobs = new Map()
+  try {
+    for (let s = T0; s < T0 + 2 * 600; s += 1) {
+      const turn = L.turnTick
+      L.advance(s)
+      if (L.tick === turn - 1) for (const c of L.all) if (c.job !== null) tally.stuck.push(`${town.id} ${c.job.kind}:${c.job.step}`)
+      for (const c of L.all) {
+        if (c.job !== null) {
+          if (!jobs.has(c)) { jobs.set(c, c.job); if (c.job.kind === 'lead') tally.leads++ }
+          continue
+        }
+        const job = jobs.get(c)
+        if (!job) continue
+        jobs.delete(c)
+        if (job.kind === 'depart' || job.kind === 'walkout') {
+          const over = L.tick / 20 - job.j.t0
+          tally[job.kind === 'depart' ? 'departs' : 'walkouts']++
+          // Sampled each second, so up to a second over is on time.
+          if (over > 1.5) { tally.late++; tally.worstLate = Math.max(tally.worstLate, over) }
+        } else if (job.kind === 'ridein' || job.kind === 'walkin') tally.arrivals++
+      }
+      tally.maxTied = Math.max(tally.maxTied, L.stats.mounts.tied / L.tethers.length)
+      tally.fidgets += L.mounts.filter((m) => m.active && m.clip === 'fidget').length
+    }
+  } catch (e) { tally.errors.push(`${town.id}: ${e.message}`) }
+}
+check(tally.errors.length === 0, 'every town runs two chapters of striders and travellers without an invariant breaking', tally.errors.slice(0, 2).join(' | '))
+check(tally.departs > 0 && tally.walkouts > 0 && tally.arrivals > 0 && tally.leads > 0, 'townsfolk ride and walk out, arrive, and lead striders between the rails', JSON.stringify({ departs: tally.departs, walkouts: tally.walkouts, arrivals: tally.arrivals, leads: tally.leads }))
+check(tally.late === 0, 'every traveller leaving reaches the port end by its journey\'s t0', `${tally.late} late, worst ${tally.worstLate.toFixed(1)} s`)
+check(tally.stuck.length === 0, 'every job is done by the chapter\'s turn', tally.stuck.slice(0, 4).join(', '))
+const withJ = () => new TownLife(t, { index: 0, seed: SEED, bodies, seats, heightAt, journeys, strider })
+const watched = withJ(), jumped = withJ()
+for (let s = 0; s <= 590; s += 2) watched.advance(T0 + s)
+jumped.advance(T0 + 590)
+const same = (p, q) => p.x === q.x && p.z === q.z && p.state === q.state
+check(watched.all.every((c, i) => same(c, jumped.all[i])) && watched.mounts.every((m, i) => same(m, jumped.mounts[i])), 'a town with striders woken late replays to the same day as one watched throughout', JSON.stringify(watched.stats.mounts))
+check(tally.fidgets > 0 && tally.maxTied <= 1, 'tied striders fidget, never more than a tether each', `max ${(tally.maxTied * 100).toFixed(0)}% of tethers`)
 
 if (failures) {
   console.error(`\n${failures} town check(s) failed`)

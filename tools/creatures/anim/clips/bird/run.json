@@ -18,6 +18,8 @@
   "headPitch": 0.3,
   "headBob": 0.02,
   "wingSpread": 0.1,
+  "wingSweep": 1.2,
+  "wingTuck": -0.5,
   "wingBeat": 0.08,
   "wingFreq": 2
 }

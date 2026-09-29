@@ -141,6 +141,15 @@ export function validate(json) {
     if (l.shape !== undefined && l.shape !== 0 && l.shape !== 1) fail(`lakes[${i}].shape`, 'must be 0 (ellipse) or 1 (rectangle)', l.shape)
     if (l.carve !== undefined && l.carve !== 0 && l.carve !== 1 && typeof l.carve !== 'boolean') fail(`lakes[${i}].carve`, 'must be 0, 1 or a boolean', l.carve)
     if (l.depth !== undefined) positive(l.depth, `lakes[${i}].depth`)
+    // A baked shore: the outer contour then its islands, each a flat [x, z, ...] closed by wrapping. LakeSet.ringsOf holds the winding; here it is only the shape of the data.
+    if (l.ring !== undefined) {
+      if (!Array.isArray(l.ring) || l.ring.length === 0) fail(`lakes[${i}].ring`, 'must be a non-empty array of contours', l.ring)
+      for (let k = 0; k < l.ring.length; k++) {
+        const c = l.ring[k]
+        if (!Array.isArray(c) || c.length < 6 || c.length % 2 !== 0) fail(`lakes[${i}].ring[${k}]`, 'must be an even count of at least 6 coordinates', c)
+        for (let v = 0; v < c.length; v++) num(c[v], `lakes[${i}].ring[${k}][${v}]`)
+      }
+    }
   }
 
   array(json.rivers, 'rivers')

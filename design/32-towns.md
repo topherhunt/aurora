@@ -11,6 +11,9 @@ The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing
 | generated roads in the document | `doc.js` `GENERATED_ID`, `serialize({ authored })`; `layers.js` `addGenerated` |
 | boot | `main.js`, straight after `height.setLayers(layers)` (overworld only) |
 | hearth and townsfolk | `src/v2/render/townsfolk.js` `Townsfolk`, `TownLife`, `townGraph`, `TOWNSFOLK`; `hearth.js` (`scale`) |
+| hitching rails (three-free) | `towns.js` `planPosts`, `TOWN.posts` |
+| road travellers (three-free) | `src/v2/render/journeys.js` `Journeys`, `JOURNEYS` |
+| strider puppets, rails, reins, calls | `src/v2/render/striders.js` `Striders`, `STRIDER` |
 | gate | `scripts/check-towns.mjs`; eyes: `tmp/townshot-drive.mjs`, `tmp/folkshot-drive.mjs` |
 
 ## Siting
@@ -47,7 +50,7 @@ A standing town costs 2 draws per eye (its merged mesh, plus the far pool that e
 
 ## Hearth and townsfolk
 
-Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. Every town draws one `hearthKit` built at boot on level ground (the clearing is flat to 5 mm under its ring roads), without the decimated tier: decimateHearth costs about 200 ms to save under 300 triangles. A hearth and its flame are hidden past 220 times their height, about 5 px. `hipSeat` measures that underside as the idle-sit hip joints less 0.05 of the body height. villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
+Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. Every town draws one `hearthKit` built at boot on level ground (the clearing is flat to 5 mm under its ring roads), without the decimated tier: decimateHearth costs about 200 ms to save under 300 triangles. A hearth and its flame are hidden past 220 times their height, about 5 px. `underside` measures it from a clip's first frame as the hip joints' mean less a thigh's half-depth (it also seats riders from the `ride` clip). villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
 
 Townsfolk come from `farmer`, `shepherd` and `woodcutter`, dealt in turn, with 1 per hut or cottage and 2 per longhouse or inn. `townGraph` builds each town's ways as a graph: a 10-node ring at 4 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start, `TOWNSFOLK.replay` (400) ticks a frame shared by the towns still catching up, so a full chapter takes up to 30 frames. Its people are not drawn until it is caught up. It reads heights only on the last two ticks. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.2 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
 
@@ -57,8 +60,17 @@ Every town's fire crackles through ambience.js's campfire rule, a loop per town 
 
 The pool is 4 puppets per body, so at most 12 townsfolk draws per eye, plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 4 people who want one. A farther holder fades out to free its puppet.
 
+## Striders and the road
+
+Each town has 3 hitching rails of 3 tethers (`planPosts`): one at the house nearest the clearing, then the farthest out, each along a house front beside its door. They are clear of the ways and at least 12 m apart. A rail is posts plus a bar, merged into one mesh per live town, with no collider.
+
+`Journeys` gives each town's chapter 2 departure slots, each filled with chance 0.5. A filled slot is a rider (0.55) or a party of 1-3 on foot, bound for a town the roads reach from one of its ports within 2400 m without passing another town's. It is deterministic from SEED, so every client and both towns agree. A journey leaves the port end at t0 and reaches the destination's at t1, riding at 1.25 m/s or walking at 1.05 m/s. Anyone met on the road is therefore always heading somewhere real and arrives there. `_plan` fills a share of the tethers at the chapter's start: enough that every departing rider finds a strider, and few enough that every arriving rider finds a free tether. It throws if no count fits. A departing rider leaves its errand in time to fetch a strider, untie it, hop up and ride to the port by t0. An arrival appears at the port at t1, rides to a free tether, hops down, ties up and walks off as a guest in the journey member's body. An errand may instead `lead` a free strider on its rein for a leg or two and tie it at another rail. No lead starts near a departure's fetch or late in the chapter.
+
+`Striders` draws at most 8 puppets, nearest first. Tied striders idle and fidget (a flutter on each fidget) and chirp every 25-70 s. Walking ones tread through ambience's `stride` rule. A rider sits the `ride` clip's underside on the saddle (the lowest midline crest between the Hips and Chest bones) and arcs 0.4 m over the hop. Reins are 1 px sagging lines from the knot, or from the leader's or rider's right wrist, to the strider's head. Within 300 m, `_road` draws every journey on the road that its source town isn't still holding.
+
 ## Open
 
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
 - Market stalls, fences and livestock. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
+- Rails have no collider, travellers pass through the player and each other, and the reins are barely visible at 1 px.

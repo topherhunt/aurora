@@ -3,112 +3,15 @@
   "note": "Pecking at the ground ahead: a look down, two quick strikes a little apart, a toss of the head to swallow, and back up. Feet stay planted; the body tips forward over them for each strike.",
   "samples": 44,
   "crouch": 0.03,
-  "limits": {
-    "hipLimit": 1.3,
-    "fold": 2.2
-  },
+  "limits": { "hipLimit": 1.3, "fold": 2.2 },
   "keys": [
-    {
-      "t": 0.0,
-      "pose": {}
-    },
-    {
-      "t": 0.4,
-      "pose": {
-        "root": {
-          "pitch": 0.1
-        },
-        "spine": {
-          "pitch": 0.1
-        },
-        "head": {
-          "pitch": 0.4,
-          "yaw": 0.12
-        }
-      }
-    },
-    {
-      "t": 0.6,
-      "pose": {
-        "root": {
-          "lift": -0.06,
-          "fore": 0.03,
-          "pitch": 0.5
-        },
-        "spine": {
-          "pitch": 0.3
-        },
-        "head": {
-          "pitch": 0.75,
-          "yaw": 0.1
-        },
-        "tail": {
-          "pitch": -0.1
-        }
-      }
-    },
-    {
-      "t": 0.78,
-      "pose": {
-        "root": {
-          "lift": -0.03,
-          "pitch": 0.3
-        },
-        "spine": {
-          "pitch": 0.2
-        },
-        "head": {
-          "pitch": 0.45,
-          "yaw": -0.05
-        },
-        "tail": {
-          "pitch": -0.05
-        }
-      }
-    },
-    {
-      "t": 0.98,
-      "pose": {
-        "root": {
-          "lift": -0.06,
-          "fore": 0.03,
-          "pitch": 0.5
-        },
-        "spine": {
-          "pitch": 0.3
-        },
-        "head": {
-          "pitch": 0.75,
-          "yaw": -0.12
-        },
-        "tail": {
-          "pitch": -0.1
-        }
-      }
-    },
-    {
-      "t": 1.3,
-      "pose": {
-        "spine": {
-          "pitch": 0.05
-        },
-        "head": {
-          "pitch": -0.25,
-          "yaw": -0.05
-        }
-      }
-    },
-    {
-      "t": 1.5,
-      "pose": {
-        "head": {
-          "pitch": -0.1
-        }
-      }
-    },
-    {
-      "t": 1.9,
-      "pose": {}
-    }
+    { "t": 0.0, "pose": { "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 0.4, "pose": { "root": { "pitch": 0.1 }, "spine": { "pitch": 0.1 }, "head": { "pitch": 0.4, "yaw": 0.12 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 0.6, "pose": { "root": { "lift": -0.06, "fore": 0.03, "pitch": 0.5 }, "spine": { "pitch": 0.3 }, "head": { "pitch": 0.75, "yaw": 0.1 }, "tail": { "pitch": -0.1 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 0.78, "pose": { "root": { "lift": -0.03, "pitch": 0.3 }, "spine": { "pitch": 0.2 }, "head": { "pitch": 0.45, "yaw": -0.05 }, "tail": { "pitch": -0.05 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 0.98, "pose": { "root": { "lift": -0.06, "fore": 0.03, "pitch": 0.5 }, "spine": { "pitch": 0.3 }, "head": { "pitch": 0.75, "yaw": -0.12 }, "tail": { "pitch": -0.1 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 1.3, "pose": { "spine": { "pitch": 0.05 }, "head": { "pitch": -0.25, "yaw": -0.05 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 1.5, "pose": { "head": { "pitch": -0.1 }, "wings": { "sweep": 1.5, "tuck": -0.9 } } },
+    { "t": 1.9, "pose": { "wings": { "sweep": 1.5, "tuck": -0.9 } } }
   ]
 }

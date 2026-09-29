@@ -1,0 +1,15 @@
+{
+  "kind": "pose",
+  "loops": false,
+  "chainsTo": "sleep",
+  "note": "From lie's hold into sleep: the head lifts clear, swings round over the shoulder and settles on the back while the tail sweeps in and the wings tuck tighter. One way; uncurl is the way back.",
+  "samples": 24,
+  "crouch": 0.03,
+  "limits": { "hipLimit": 1.7, "fold": 2.8 },
+  "keys": [
+    { "t": 0.0, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "head": { "pitch": 0.35 }, "wings": { "sweep": 1.6, "tuck": -1.0 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
+    { "t": 0.6, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } }, "spine": { "yaw": 0.05 }, "head": { "pitch": 0.05, "yaw": 1.1 }, "tail": { "yaw": 0.12 }, "wings": { "sweep": 1.63, "tuck": -1.03 } } },
+    { "t": 1.2, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } }, "spine": { "yaw": 0.12 }, "head": { "pitch": 0.35, "yaw": 2.2 }, "tail": { "yaw": 0.32 }, "wings": { "sweep": 1.68, "tuck": -1.08 } } },
+    { "t": 1.7, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "spine": { "yaw": 0.15 }, "head": { "pitch": 0.7, "yaw": 2.6 }, "tail": { "yaw": 0.4 }, "wings": { "sweep": 1.7, "tuck": -1.1 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } }
+  ]
+}

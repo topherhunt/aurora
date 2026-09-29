@@ -984,8 +984,9 @@ function frameModel(force = false) {
   return span
 }
 
-async function showModel(which) {
+async function showModel(pick) {
   const id = currentId()
+  const [which, variant] = pick.split('#')
   const file = which === 'mesh' ? assets.mesh : which === 'rig' ? 'rig.glb' : which
   if (!file) throw new Error('no working mesh on disk -- generate one, or pick a mesh candidate')
   const url = `/tools/creatures/work/${encodeURIComponent(id)}/${file}?t=${Date.now()}`
@@ -1000,7 +1001,11 @@ async function showModel(which) {
   model.traverse((o) => {
     if (!o.isMesh) return
     const g = o.geometry
-    tris += (g.index ? g.index.count : g.attributes.position.count) / 3
+    if (variant === 'bare') {
+      if (!(g.index?.count > assets.tackFrom)) throw new Error(`${file} has no tack past index ${assets.tackFrom} -- rerun the rig`)
+      g.setDrawRange(0, assets.tackFrom)
+    }
+    tris += Math.min(g.drawRange.count, g.index ? g.index.count : g.attributes.position.count) / 3
     if (!found && o.material?.map?.image) found = o.material.map
     o.material.wireframe = $('showWire').checked
   })
@@ -1652,6 +1657,10 @@ function renderClipSelect() {
   if (assets.rig) options.push(['rig.glb', 'rig (bind pose)'])
   if (assets.rigFixed) options.push(['rig-fixed.glb', 'rig (renamed in rig-edit)'])
   for (const a of assets.anims) options.push([a, a.replace(/^anim-|\.glb$/g, '')])
+  // `#bare` draws only the indices before tackFrom: the wild variant, tack dropped.
+  if (assets.tackFrom) {
+    for (const [value, text] of options.filter(([v]) => v === 'rig-fixed.glb' || assets.anims.includes(v))) options.push([`${value}#bare`, `${text} (no tack)`])
+  }
   for (const [value, text] of options) {
     const o = document.createElement('option')
     o.value = value

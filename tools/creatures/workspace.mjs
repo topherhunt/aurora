@@ -510,7 +510,9 @@ export function assets(id) {
   // vocabulary on it. It is what Blender should import, when it exists.
   // `blend` is the animatable rig: the same skeleton with its bones connected,
   // its widget spheres hidden and Auto IK on -- none of which glTF can carry.
-  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), rigFixed: has('rig-fixed.glb'), blend: has('rig.blend'), anims, lods, meshCount: (state.meshes ?? []).length, state }
+  // `tackFrom` is the index count past which the rig draws removable tack.
+  const tackFrom = has('rig-map.json') ? JSON.parse(fs.readFileSync(path.join(dir, 'rig-map.json'), 'utf8')).tackFrom ?? null : null
+  return { source: has('source.png'), mesh: workingMesh(dir), rig: has('rig.glb'), rigFixed: has('rig-fixed.glb'), blend: has('rig.blend'), anims, lods, tackFrom, meshCount: (state.meshes ?? []).length, state }
 }
 
 // --- the asset index --------------------------------------------------------

@@ -227,7 +227,7 @@ export function readAccessor(json, bin, index) {
   return out
 }
 
-function writeAccessor(json, bin, index, values) {
+export function writeAccessor(json, bin, index, values) {
   const { acc, comp, items, base, stride } = layoutOf(json, index)
   const dv = new DataView(bin.buffer, bin.byteOffset, bin.byteLength)
   for (let i = 0; i < acc.count; i++) {

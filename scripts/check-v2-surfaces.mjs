@@ -287,6 +287,38 @@ export async function run() {
     }
     check(traceShore({ ...lake, y: 50 }, field).vertices === 0, 'a lake sunk wholly under its ground draws nothing')
 
+    // A BAKED SHORE IS THE RECORD'S OWN, AND THE FIELD IS NOT CONSULTED AT ALL. v3's lakes come this way (§D.5 hydrology.js): the ring is the waterline the flood actually stood at, so re-contouring it here against v2's own field would move the bank off the water it was traced from and take the island with it. A square with a triangular island in it, whose two areas are exact, so the sheet's area is arithmetic and not the tracer's.
+    {
+      const outer = [-100, -100, 100, -100, 100, 100, -100, 100]
+      const island = [20, -20, 20, 20, 60, 20, 60, -20]
+      const baked = { ...lake, id: 'baked', ring: [outer, island] }
+      const reads = field.reads
+      const rs = traceShore(baked, field)
+      check(field.reads === reads && rs.samples === 0, 'a baked shore reads no height at all', `${field.reads - reads} reads`)
+      check(rs.polygons.length === 1 && rs.slabs.length === 0 && rs.polygons[0].outer === outer && rs.polygons[0].holes.length === 1 && rs.polygons[0].holes[0] === island, 'and is handed back vertex for vertex, islands as holes', `${rs.polygons.length} rings, ${rs.polygons[0].holes.length} holes`)
+      check(rs.vertices === 8, 'the vertex count is the two rings\'', `${rs.vertices} vertices`)
+      const baker = lakeVertices(rs, baked.y)
+      let sheet = 0
+      let up = true
+      for (const twice of triAreas(baker)) {
+        up &&= twice < 0
+        sheet -= twice
+      }
+      let flat = true
+      for (let i = 1; i < baker.positions.length; i += 3) flat &&= baker.positions[i] === baked.y
+      check(up && flat && Math.abs(sheet / 2 - (200 * 200 - 40 * 40)) < 1e-6, 'and ear-clips to a flat sheet at the lake\'s level, the square less its island', `${(sheet / 2).toFixed(0)} vs ${200 * 200 - 40 * 40} m^2`)
+      const threw = (fn) => {
+        try {
+          fn()
+          return false
+        } catch {
+          return true
+        }
+      }
+      check(threw(() => traceShore({ ...baked, ring: [island] }, field)), 'a ring wound with the water on the right throws')
+      check(threw(() => traceShore({ ...baked, ring: [outer, [200, -20, 200, 20, 240, 20, 240, -20]] }, field)), 'and so does an island outside its ring')
+    }
+
     // The cache: WaterSurfaces keeps a shore across rebuilds and re-traces only the lakes a rect touches or whose record changed.
     {
       const layers = new Layers({ v: 1, snow: { base: 100, band: 40, points: [] }, lakes: [lake], rivers: [], roads: [] })
@@ -303,6 +335,14 @@ export async function run() {
       ws.rebuild({ minX: 1000, minZ: 1000, maxX: 1100, maxZ: 1100 })
       check(ws.meshes.get('bowl').userData.shore !== second, 'and so does a change to the record, whatever the rect')
       check(ws.meshes.get('bowl').geometry.getAttribute('position').count === ws.meshes.get('bowl').userData.shore.vertices, 'the mesh carries one position per traced vertex')
+      // A RING IS NOT IN THE CACHE KEY, so a lake whose shore is re-baked with every scalar unchanged has to be caught by the identity of the contours themselves. Uncaught, a v3 lake reshaped by a regenerate keeps the sheet of the one before it.
+      const square = [-60, -60, 60, -60, 60, 60, -60, 60]
+      layers.lakes.add({ id: 'baked', x: 0, z: 0, y: LEVEL, rx: 60, rz: 60, rot: 0, shape: 0, carve: 0, depth: 8, ring: [square] })
+      ws.rebuild()
+      const third = ws.meshes.get('baked').userData.shore
+      layers.lakes.update('baked', { ring: [[-50, -50, 50, -50, 50, 50, -50, 50]] })
+      ws.rebuild({ minX: 1000, minZ: 1000, maxX: 1100, maxZ: 1100 })
+      check(ws.meshes.get('baked').userData.shore !== third && ws.meshes.get('baked').userData.shore.polygons[0].area / 2 === 100 * 100, 'a re-baked ring re-traces the lake though every scalar on the record holds', `${(ws.meshes.get('baked').userData.shore.polygons[0].area / 2).toFixed(0)} m^2`)
       ws.dispose()
     }
   }

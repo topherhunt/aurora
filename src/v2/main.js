@@ -7,7 +7,8 @@ import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { planTowns, townsOccupyAt } from './layers/towns.js'
 import { Towns } from './render/towns.js'
-import { Townsfolk } from './render/townsfolk.js'
+import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
+import { Journeys } from './render/journeys.js'
 import { nameTowns } from './layers/names.js'
 import { planRoads } from './layers/roads.js'
 import { Signposts } from './render/signposts.js'
@@ -56,7 +57,7 @@ import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, SCREEN_POOL, loadMouthBank } from './render/entrances.js'
-import { RoomProps, loadHouseBank } from './render/room-props.js'
+import { HOUSE_BOUNDS, RoomProps } from './render/room-props.js'
 import { InteriorView, loadInteriorTextures } from './render/interior.js'
 import { Residents } from './render/residents.js'
 import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js'
@@ -3358,7 +3359,6 @@ async function buildRoom(room, at) {
     carrots: loadCarrotsBank(),
     rowboats: loadRowboatsBank(),
     mouth: loadMouthBank(),
-    house: room.village ? loadHouseBank() : null,
     lamp: room.village ? loadLampBank() : null,
   }
   let heightmap
@@ -3368,11 +3368,10 @@ async function buildRoom(room, at) {
     bootSay('building the village ...')
     await bootStep('village')
     bank = buildRockBank()
-    const house = (await banks.house).bounds
-    const spec = rollVillage(villageSeed(), house)
+    const spec = rollVillage(villageSeed(), HOUSE_BOUNDS)
     shell = new Shell(scene, bank, propTextures, spec.shell)
     lighting.patch(shell.material, { mode: 'vertex', cacheKey: 'v2-shell' })
-    roomSpec = buildVillage({ spec, shell, house })
+    roomSpec = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
     heightmap = roomSpec.heightmap
   } else {
     bootSay(`loading <b>${room.height}</b> ...`)
@@ -3555,8 +3554,8 @@ async function buildRoom(room, at) {
   // the way they keep off the dead wood.
   if (room.village) {
     await bootStep('huts')
-    roomProps = new RoomProps(scene, height, { bank: await banks.house, props: roomSpec.props, clearing: roomSpec.clearing })
-    for (const m of roomProps.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+    const glowMap = new THREE.TextureLoader().load('/interiors/window.webp')
+    roomProps = new RoomProps(scene, height, { props: roomSpec.props, clearing: roomSpec.clearing, seed: villageSeed(), textures: propTextures, glowMap, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     // The carrots the houses' roots stand over, dropped now that the houses are built: only they know where the pick's mesh reaches.
     const sown = plots.reduce((n, p) => n + p.spots.length, 0)
     plots = weedGardens(plots, roomProps)
@@ -3665,8 +3664,10 @@ async function buildRoom(room, at) {
   if (roomProps) walk.addStone(roomProps)
   if (towns) {
     walk.addStone(towns)
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies.length }) : null
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
+    if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
   }
@@ -4105,8 +4106,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }],
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -6523,7 +6524,6 @@ function tick() {
     rocks.update(headTmp.x, headTmp.y, headTmp.z)
     // After the rocks: a mouth follows its boulder's residency.
     if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
-    if (roomProps) roomProps.update(headTmp.x, headTmp.y, headTmp.z)
     if (boulders) boulders.update(headTmp.x, headTmp.y, headTmp.z)
   }
   spikes.lap('rocks')

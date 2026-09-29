@@ -28,7 +28,7 @@ import { buildTextureArray } from '../src/textures.js'
 import { SOUNDS } from '../src/v2/audio/ambience.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
-import { RoomProps, propBankFrom } from '../src/v2/render/room-props.js'
+import { HOUSE_BOUNDS, RoomProps } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
@@ -42,7 +42,7 @@ import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
 import { CARRY_MAX } from '../src/v2/hands.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
-import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
+import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 
 let failures = 0
@@ -54,13 +54,12 @@ const swing = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a))
 
 // --- the village ------------------------------------------------------------------
 const KEY = 'hollow:160.0:-356.0'
-const houseBank = propBankFrom(readShippedLadder('house-leafkin'))
-const spec = rollVillage(keyHash(KEY), houseBank.bounds)
+const spec = rollVillage(keyHash(KEY), HOUSE_BOUNDS)
 const shell = new Shell(new THREE.Scene(), buildRockBank(), buildTextureArray(), spec.shell)
-const room = buildVillage({ spec, shell, house: houseBank.bounds })
+const room = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
 const layers = Layers.deserialize(validate(room.doc))
 const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
-const roomProps = new RoomProps(new THREE.Scene(), field, { bank: houseBank, props: room.props, clearing: room.clearing })
+const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: buildTextureArray(), glowMap: new THREE.Texture(), patch: (m) => m })
 const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
 const lamps = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps: room.lamps, seed: 1, patch: (m) => m })
 const walk = new WalkSurface(field, shell, { trunkAt: () => null })
@@ -369,12 +368,13 @@ console.log('\nin each other\'s way')
 // --- through the door ----------------------------------------------------------------
 console.log('\nthrough the door')
 {
-  // One villager sent home from its door node with her 6 m off, the rest kept indoors.
+  // One villager sent home from 2 m out past its door node, so her puppet has faded in before she reaches the sill, with her 6 m off, the rest kept indoors.
   const v = make()
   v.update(FAR, head(FAR), T0, 1 / 60)
   for (const c of v.all) c.hold = 1e9
   const c = v.all[0], door = v.graph.nodes[c.home]
-  c.hidden = false; c.x = c.px = door.x; c.z = c.pz = door.z; c.talked = 1e9; c.at = c.home
+  const ox = door.x - door.sill.x, oz = door.z - door.sill.z, ol = Math.hypot(ox, oz)
+  c.hidden = false; c.x = c.px = door.x + (ox / ol) * 2; c.z = c.pz = door.z + (oz / ol) * 2; c.talked = 1e9; c.at = c.home
   v._go(c, c.home, 'enter')
   const feet = { x: door.x + 6, y: walk.heightAt(door.x + 6, door.z), z: door.z }
   let hidAt = null, goneAt = null, drawnAt = null

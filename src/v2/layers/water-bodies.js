@@ -11,6 +11,7 @@
 import { clamp01, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { UniformGrid } from './grid.js'
+import { ringArea, inRing, ringBox } from '../../sim/rings.js'
 
 export const SHAPE_ELLIPSE = 0
 export const SHAPE_RECT = 1
@@ -55,6 +56,14 @@ function unionRect(a, b) {
 
 // 0..1: 1 well inside, feathering to 0 at the rim. The query point is rotated INTO the lake's frame (the inverse of the lake's own rotation) so the shape test is always axis-aligned and the rectangle case stays two comparisons.
 export function footprint(lake, x, z) {
+  // A BAKED RING IS THE LAKE'S EDGE, so there is nothing to feather: the generator traced the shore texel by texel and a ramp inward from it would only put the water's level in doubt over the last few metres of real shore. Inside or out, and the box rejects nearly every query before the ring is walked.
+  if (lake.ring) {
+    const b = lake.box
+    if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) return 0
+    if (!inRing(lake.ring[0], x, z)) return 0
+    for (let i = 1; i < lake.ring.length; i++) if (inRing(lake.ring[i], x, z)) return 0
+    return 1
+  }
   const dx = x - lake.x
   const dz = z - lake.z
   const c = Math.cos(lake.rot)
@@ -68,13 +77,28 @@ export function footprint(lake, x, z) {
   return smoothstep(1, FEATHER_START, q)
 }
 
-// World-space half-extents of the rotated box. Used for the spatial index and for dirty rects; conservative for an ellipse, exact for a rectangle.
+// World-space half-extents of the rotated box. Used for the spatial index and for dirty rects; conservative for an ellipse, exact for a rectangle, and exact for a baked ring, whose box is measured off its own vertices when the record is read.
 export function lakeBox(lake) {
+  if (lake.box) return lake.box
   const c = Math.abs(Math.cos(lake.rot))
   const s = Math.abs(Math.sin(lake.rot))
   const hx = c * lake.rx + s * lake.rz
   const hz = s * lake.rx + c * lake.rz
   return { minX: lake.x - hx, minZ: lake.z - hz, maxX: lake.x + hx, maxZ: lake.z + hz }
+}
+
+/**
+ * A BAKED SHORE, VALIDATED ONCE ON THE WAY IN. `ring` is the outer shore followed by its islands, each a flat [x, z, ...] with no repeated last point, the outer wound counter-clockwise and every island the other way -- the water on the left, as v2's own tracer winds what it contours. A lake with a ring needs no shape and gets no feather: it is the region its rings enclose.
+ */
+function ringsOf(ring, where) {
+  if (!Array.isArray(ring) || ring.length === 0) throw new Error(`${where}: ring must be a non-empty array of contours`)
+  return ring.map((pts, i) => {
+    if (!Array.isArray(pts) || pts.length < 6 || pts.length % 2 !== 0) throw new Error(`${where}: ring ${i} needs an even count of at least 6 coordinates, got ${Array.isArray(pts) ? pts.length : JSON.stringify(pts)}`)
+    for (const v of pts) if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`${where}: ring ${i} has a non-finite coordinate (${JSON.stringify(v)})`)
+    const area = ringArea(pts)
+    if (i === 0 ? !(area > 0) : !(area < 0)) throw new Error(`${where}: ring ${i} is wound the wrong way (twice its area is ${area}); the outer shore runs counter-clockwise and its islands clockwise`)
+    return pts
+  })
 }
 
 function normalise(rec, where) {
@@ -87,8 +111,13 @@ function normalise(rec, where) {
   if (typeof rec.id !== 'string' || rec.id.length === 0) throw new Error(`${where}: id must be a non-empty string, got ${JSON.stringify(rec.id)}`)
   const shape = rec.shape === undefined ? SHAPE_ELLIPSE : rec.shape
   if (shape !== SHAPE_ELLIPSE && shape !== SHAPE_RECT) throw new Error(`${where}: shape must be 0 (ellipse) or 1 (rectangle), got ${JSON.stringify(rec.shape)}`)
+  // `null` is what a normalised record without a ring carries, so a record that has already been through here can be patched and normalised again. An empty array or anything else still throws.
+  const ring = rec.ring === undefined || rec.ring === null ? null : ringsOf(rec.ring, where)
   return {
     id: rec.id,
+    ring,
+    // Measured once, here: the ring is the footprint and every query against it starts by rejecting on this.
+    box: ring === null ? null : ringBox(ring),
     x: need('x'),
     z: need('z'),
     y: need('y'),
@@ -236,7 +265,9 @@ export class LakeSet {
   toJSON() {
     const out = []
     for (const l of this.lakes.values()) {
-      out.push({ id: l.id, x: l.x, z: l.z, y: l.y, rx: l.rx, rz: l.rz, rot: l.rot, shape: l.shape, carve: l.carve ? 1 : 0, depth: l.depth })
+      const rec = { id: l.id, x: l.x, z: l.z, y: l.y, rx: l.rx, rz: l.rz, rot: l.rot, shape: l.shape, carve: l.carve ? 1 : 0, depth: l.depth }
+      if (l.ring) rec.ring = l.ring
+      out.push(rec)
     }
     return out
   }

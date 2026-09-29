@@ -1,111 +1,94 @@
 import THREE from '../../three-instance.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
-import { GEN_PROP_LODS, PROP_STEPS, createGenPropMaterial, ladderTris, loadGenProp } from './gen-props.js'
-import { LOD_DEG, distAt, ladderTier } from './critters.js'
-import { PropArena } from './prop-arena.js'
+import { mulberry32 } from '../../sim/mathx.js'
+import { createPropMaterial } from '../../material.js'
+import { LAYER } from '../../textures.js'
+import { buildHouse, rollHouse } from './house-exterior.js'
 
 // ---------------------------------------------------------------------------
-// A ROOM'S OWN PROPS (DESIGN.md §30): the huts of a leafkin village, seated
-// where the room file says rather than scattered. One shipped ladder, a few
-// dozen instances at most, each `height` metres tall on the ground at its
-// point, facing `yaw`, half of them the pick's mirror image; re-runged by
-// distance on the props' steps with the shipped T3 in the card's place, like
-// the entrances' arch. Every one is stone to the walker in the pick's own
-// shape (a column table off its finest tier), so she walks up the roots,
-// round the trunk and under the eaves, and onto a roof only where its eave
-// stands within her reach. Its windows glow from inside (gen-props.js
-// addGlow) at WINDOWS, shaded like the wall by day and amber after dark on
-// the lamps' breath, and each throws a cone of light out of the wall through
-// the lamp map (lamps.js).
+// A ROOM'S OWN PROPS (DESIGN.md §30, design/36-leafkin-houses.md): the huts of
+// a leafkin village, seated where the room file says. Each is its own house,
+// rolled from the glade's seed and built on entry (house-exterior.js), and all
+// of them merge into one mesh in the prop material, drawn whole at every
+// distance, with their window glass a second. Every one is stone to the walker
+// in its own shape (a column table), so she walks up the roots, round the
+// trunk and under the eaves. Its windows glow like the wall by day and amber
+// after dark on the lamps' breath, and each throws a cone of light out of the
+// wall through the lamp map (lamps.js).
 // ---------------------------------------------------------------------------
 
-export const HOUSE_GLB = 'gen-props/house-leafkin.glb'
-// Shipped tiers drawn, in rung order, on PROP_STEPS.
-export const TIERS = [0, 2, 3]
-// The pick's door, in its own frame and unit: it faces +X at yaw 0, its middle
-// `z` across (the panel's, off the shipped mesh). The trunk's wall stands `wall`
-// of the box's half-width out; the roots and the eaves reach the rest (village.js
-// HUTS packs the trunks). Two steps up, the landing stands `landing` high, the
-// villagers' `sill` on it; her capsule stops against the door's `face`, and she
-// comes back out `back` further out, on the landing's lip.
-export const DOOR = { z: 0.085, wall: 0.7, sill: 0.235, face: 0.17, back: 0.08, landing: 0.071 }
-// The windows, in the shipped pick's frame (its raw vertices over their feet,
-// Tripo's node yaw dropped by ship.mjs), placed in the /gen-prop viewer's glow
-// points table: r the disc each lights and (nx, nz) the way the pane faces.
-// A mirrored house's are these with z and nz negated.
-export const WINDOWS = [
-  { x: 0.038, y: 0.3, z: -0.138, r: 0.07, nx: 0.472, nz: -0.882 },
-  { x: -0.136, y: 0.706, z: -0.097, r: 0.025, nx: 0.99, nz: 0.142 },
-]
-// After dark the pane's own colour is drawn unlit (gen-props.js addGlow) times this tint at this gain.
-export const GLOW = { color: [1, 0.62, 0.28], night: 1.6 }
-const POOL = 32
-// Which of the pick's columns are roof enough to grow something on (roofSpots).
-// The topmost span's top must stand over `high` of the pick's height (not a
-// root's back, the landing or the step), that span must be over `thick` cells
-// through (the awning is one cloth, closed a cell thick by columnTable), its
-// four neighbours must be roof within `step` cells of it (so the seat is not
-// the last cell of an eave, nor astride the ridge) and the slope they read must
-// be under `tilt` degrees. Seats stand `apart` of the house's own radius from
-// each other, so they scale with the house.
-export const ROOF = { high: 0.5, thick: 1.5, step: 2, tilt: 45, apart: 0.3 }
-// The column table's cell, in the pick's unit: 0.24 m at the tallest house.
+// The house's box for village siting (village.js HUTS), as a fraction of its height: `r` is its half-width. Its trunk stands `DOOR.wall` of that out; its roots and eaves reach the rest.
+export const HOUSE_BOUNDS = { halfX: 0.6, halfZ: 0.6, height: 1 }
+export const DOOR = { wall: 0.7 }
+// The glass by day, shaded near the wall's own colour, and after dark this tint at this gain.
+export const GLOW = { day: [0x6a / 255, 0x5a / 255, 0x44 / 255], color: [1, 0.62, 0.28], night: 1.6 }
+// Which of a house's columns are roof enough to grow something on (roofSpots): the topmost span's top stands over `high` of the house's height, inside its eave (not the awning), its four neighbours are roof within `step` cells of it and the slope they read is under `tilt` degrees. Seats stand `apart` of the house's radius from each other.
+export const ROOF = { high: 0.5, step: 2, tilt: 60, apart: 0.25 }
+// The column table's cell, in the house's own unit (its height): 0.24 m at the tallest house.
 const CELL = 1 / 40
-// Crossings one column may hold; the walker takes at most walk.js SPAN_CAP spans.
+// Crossings one column may hold; the walker takes at most walk.js SPAN_CAP spans. A column crossing more is inside the carving (a crown's shards, a tower's walls): stone from its lowest crossing to its highest.
 const CROSS_CAP = 12
 const CROSS_EPS = 1e-3
 // The posts (columnTable): faces whose normal's y is under `steep` of its length, climbing from `foot` cells to `tall` cells over the ground.
 const POST = { steep: 0.5, foot: 2, tall: 8 }
+// Layers the walker passes through: the ivy's leaf cards, and the shelf fungi and the ironwork's grit.
+const SOFT = new Set([LAYER.IVY_LEAF, LAYER.ROCK_BUMP])
+// Out from the door's face: where a villager's walk to the door ends past the lowest step, and the sill on the top step, where a villager stops and she stands coming back out. The door's own face is its frame's stone to the walker, a post as tall as the door.
+const DOOR_OUT = 0.3, SILL = 0.3
+// The stump to the walker (wallOutline): per bearing, the wall's least radius `lo`..`hi` metres over the ground, where her shoulders meet it. A vertical wall crosses no column and its flare is too shallow for a post to climb, so without this she walks through the bark into the hollow.
+const WALL = { bins: 32, lo: 0.8, hi: 1.9 }
 
-/** The point `u` out along house `h`'s line `z` across, in the pick's unit, in the world: `{ x, z }`. */
-function doorAt(h, u, z) {
-  const c = Math.cos(h.yaw), sn = Math.sin(h.yaw), w = z * h.mirror
-  return { x: h.x + (u * c + w * sn) * h.scale, z: h.z + (-u * sn + w * c) * h.scale }
-}
-
-/** The bank from a shipped ladder (loadGenProp): the drawn tiers, each with its mirror image, the pick's box, and its column table. */
-export function propBankFrom(ladder) {
-  if (!ladder || ladder.geometries.length !== GEN_PROP_LODS + 1) {
-    throw new Error(`RoomProps: the ladder has ${ladder?.geometries?.length ?? 0} tiers, expected ${GEN_PROP_LODS + 1}`)
+/** House-space `geo`'s wall radius in metres at WALL.bins bearings round +Y, bin 0 at +X, from its solid vertices WALL's band over `ground` (the floor's depth under it). */
+function wallOutline(geo, ground) {
+  const pos = geo.attributes.position.array, layer = geo.attributes.texLayer.array
+  const r = new Float32Array(WALL.bins).fill(Infinity)
+  for (let v = 0; v < pos.length / 3; v++) {
+    const y = pos[v * 3 + 1] - ground
+    if (y < WALL.lo || y > WALL.hi || SOFT.has(layer[v])) continue
+    const x = pos[v * 3], z = pos[v * 3 + 2], b = Math.round(((Math.atan2(z, x) / (2 * Math.PI)) + 1) * WALL.bins) % WALL.bins
+    r[b] = Math.min(r[b], Math.hypot(x, z))
   }
-  const geometries = TIERS.map((t) => ladder.geometries[t])
-  return { tiers: geometries.map((g) => ({ geometries: [g, mirrored(g)] })), tris: ladderTris(geometries), bounds: ladder.bounds, map: ladder.map, table: columnTable(geometries[0]) }
-}
-
-/** The geometry's mirror image across z = 0: z negated on every vertex and normal, the winding turned so the front face stays the front (a negative scale on the instance would flip it). */
-function mirrored(geo) {
-  const g = geo.clone()
-  const pos = g.attributes.position.array
-  for (let i = 2; i < pos.length; i += 3) pos[i] = -pos[i]
-  const nrm = g.attributes.normal.array
-  for (let i = 2; i < nrm.length; i += 3) nrm[i] = -nrm[i]
-  const idx = g.index.array
-  for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t }
-  g.computeBoundingBox()
-  g.computeBoundingSphere()
-  return g
+  // A bearing with no vertex in the band is the doorway (its leaf is one quad): the outline across it is drawn between the jambs.
+  const held = [...r.keys()].filter((b) => r[b] !== Infinity)
+  if (held.length < WALL.bins * 0.75) throw new Error(`RoomProps: a house has wall at shoulder height on only ${held.length} of ${WALL.bins} bearings`)
+  const out = r.slice()
+  for (let b = 0; b < WALL.bins; b++) {
+    if (r[b] !== Infinity) continue
+    let lo = 1, hi = 1
+    while (r[(b - lo + WALL.bins) % WALL.bins] === Infinity) lo++
+    while (r[(b + hi) % WALL.bins] === Infinity) hi++
+    out[b] = (r[(b - lo + WALL.bins) % WALL.bins] * hi + r[(b + hi) % WALL.bins] * lo) / (lo + hi)
+  }
+  return out
 }
 
 /**
- * The pick's column table (the shape of Shell._table): over its plan at CELL,
- * per cell the spans of stone on the vertical line through its centre, in the
- * pick's unit, lowest first. A face looking down is the underside of stone and
- * a face looking up its top, read from the bottom up: an underside opens a
- * span, the next top closes it, and a top met with no underside open is a
- * cloth a cell thick (the awning and the roof's skirt have faces looking up
- * alone). Closing that top from the crossing under it instead stood a wall
- * from the porch's step to the awning. So a root is stone from the ground to
- * its back, and the eaves and the awning are stone with open air under them.
+ * The column table of `geo`'s solid faces, divided by `unit` (the shape of
+ * Shell._table): over its plan at CELL, per cell the spans of stone on the
+ * vertical line through its centre, lowest first. A face looking down is the
+ * underside of stone and a face looking up its top, read from the bottom up:
+ * an underside opens a span, the next top closes it, and a top met with no
+ * underside open is a cloth a cell thick (the roof and the awning are single
+ * sheets). Closing that top from the crossing under it instead would stand a
+ * wall from the step to the awning. With `wall` ({ r: wallOutline, top, door }
+ * in metres), every cell inside the outline is stone from the floor to `top`,
+ * and no post stands on the stoop before `door` (buildHouse's), whose cells
+ * also take in the door's face.
  */
-export function columnTable(geo) {
-  geo.computeBoundingBox()
-  const bb = geo.boundingBox
-  const x0 = bb.min.x - CELL, z0 = bb.min.z - CELL
-  const nx = Math.ceil((bb.max.x - bb.min.x) / CELL) + 3, nz = Math.ceil((bb.max.z - bb.min.z) / CELL) + 3
+export function columnTable(geo, unit = 1, wall = null) {
+  const src = geo.attributes.position.array, layer = geo.attributes.texLayer.array, all = geo.index.array
+  const pos = new Float32Array(src.length)
+  for (let i = 0; i < src.length; i++) pos[i] = src[i] / unit
+  const idx = all.filter((_, t) => !SOFT.has(layer[all[t - (t % 3)]]))
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+  for (const v of idx) { const x = pos[v * 3], z = pos[v * 3 + 2]; minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z) }
+  const x0 = minX - CELL, z0 = minZ - CELL
+  const nx = Math.ceil((maxX - minX) / CELL) + 3, nz = Math.ceil((maxZ - minZ) / CELL) + 3
   const cross = new Float32Array(nx * nz * CROSS_CAP)
   const up = new Int8Array(nx * nz * CROSS_CAP)
   const count = new Uint8Array(nx * nz)
-  const pos = geo.attributes.position.array, idx = geo.index.array
+  const loY = new Float32Array(nx * nz).fill(Infinity), hiY = new Float32Array(nx * nz).fill(-Infinity), over = new Uint8Array(nx * nz)
   for (let t = 0; t < idx.length; t += 3) {
     const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
     const ax = pos[a], ay = pos[a + 1], az = pos[a + 2]
@@ -126,10 +109,11 @@ export function columnTable(geo) {
         if (wa < 0 || wb < 0 || wc < 0) continue
         const y = wa * ay + wb * by + wc * cy
         const k = j * nx + i, n = count[k]
+        loY[k] = Math.min(loY[k], y); hiY[k] = Math.max(hiY[k], y)
         let dup = false
         for (let q = 0; q < n && !dup; q++) dup = Math.abs(cross[k * CROSS_CAP + q] - y) < CROSS_EPS
         if (dup) continue
-        if (n >= CROSS_CAP) throw new Error(`RoomProps: ${CROSS_CAP} crossings on the column at ${px.toFixed(2)}, ${pz.toFixed(2)}`)
+        if (n >= CROSS_CAP) { over[k] = 1; continue }
         cross[k * CROSS_CAP + n] = y
         up[k * CROSS_CAP + n] = det < 0 ? 1 : -1
         count[k] = n + 1
@@ -143,6 +127,7 @@ export function columnTable(geo) {
     const n = count[k]
     if (n === 0) continue
     const base = k * CROSS_CAP
+    if (over[k]) { cross[base] = loY[k]; cross[base + 1] = hiY[k]; spans[k] = 1; continue }
     for (let q = 0; q < n; q++) order[q] = q
     const o = order.subarray(0, n)
     o.sort((p, q) => cross[base + p] - cross[base + q])
@@ -154,7 +139,7 @@ export function columnTable(geo) {
     }
     spans[k] = m
   }
-  // The posts: a vertical line through a pole thinner than a cell crosses none of its faces. Its steep faces, taken lowest first, climb each cell their plan touches from within `foot` cells of the ground for as long as each starts under the reach so far; a climb `tall` cells high is stone from the ground to its top.
+  // The posts: a vertical line through a wall or a pole crosses none of its faces. Its steep faces, taken lowest first, climb each cell whose centre lies within half a cell of their plan from within `foot` cells of the ground for as long as each starts under the reach so far; a climb `tall` cells high is stone from the ground to its top.
   const steep = []
   for (let t = 0; t < idx.length; t += 3) {
     const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
@@ -167,18 +152,45 @@ export function columnTable(geo) {
   const low = (t) => Math.min(pos[idx[t] * 3 + 1], pos[idx[t + 1] * 3 + 1], pos[idx[t + 2] * 3 + 1])
   steep.sort((p, q) => low(p) - low(q))
   const reach = new Float32Array(nx * nz).fill(POST.foot * CELL)
+  if (wall) {
+    const d = wall.door, n = Math.hypot(d.n[0], d.n[2]), dx = d.n[0] / n, dz = d.n[2] / n
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+      const rx = (x0 + (i + 0.5) * CELL) * unit - d.p[0], rz = (z0 + (j + 0.5) * CELL) * unit - d.p[2], o = rx * dx + rz * dz
+      if (o > 0 && o < d.steps && Math.abs(rz * dx - rx * dz) < d.w / 2) reach[j * nx + i] = -Infinity
+    }
+  }
   for (const t of steep) {
     const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3
     const lo = low(t), hi = Math.max(pos[a + 1], pos[b + 1], pos[c + 1])
     const i0 = Math.max(0, Math.floor((Math.min(pos[a], pos[b], pos[c]) - x0) / CELL)), i1 = Math.min(nx - 1, Math.floor((Math.max(pos[a], pos[b], pos[c]) - x0) / CELL))
     const j0 = Math.max(0, Math.floor((Math.min(pos[a + 2], pos[b + 2], pos[c + 2]) - z0) / CELL)), j1 = Math.min(nz - 1, Math.floor((Math.max(pos[a + 2], pos[b + 2], pos[c + 2]) - z0) / CELL))
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (lo <= reach[j * nx + i] && hi > reach[j * nx + i]) reach[j * nx + i] = hi
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (!(lo <= reach[j * nx + i] && hi > reach[j * nx + i])) continue
+      const px = x0 + (i + 0.5) * CELL, pz = z0 + (j + 0.5) * CELL
+      if (Math.min(planDist(px, pz, pos[a], pos[a + 2], pos[b], pos[b + 2]), planDist(px, pz, pos[b], pos[b + 2], pos[c], pos[c + 2]), planDist(px, pz, pos[c], pos[c + 2], pos[a], pos[a + 2])) > CELL / 2) continue
+      reach[j * nx + i] = hi
+    }
   }
   for (let k = 0; k < nx * nz; k++) if (reach[k] >= POST.tall * CELL) spans[k] = mergeSpan(cross, k * CROSS_CAP, spans[k], 0, reach[k])
+  if (wall) {
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+      const x = x0 + (i + 0.5) * CELL, z = z0 + (j + 0.5) * CELL
+      const f = ((Math.atan2(z, x) / (2 * Math.PI)) + 1) * WALL.bins, b = Math.floor(f) % WALL.bins, t = f - Math.floor(f)
+      const r = (wall.r[b] * (1 - t) + wall.r[(b + 1) % WALL.bins] * t) / unit
+      if (x * x + z * z < r * r) spans[j * nx + i] = mergeSpan(cross, (j * nx + i) * CROSS_CAP, spans[j * nx + i], 0, wall.top / unit)
+    }
+  }
   return { x0, z0, nx, nz, cross, spans }
 }
 
-/** The `n` spans at `base` with [lo, hi] made stone too, overlapping ones merged, lowest first: how many now. */
+/** The plan distance from (px, pz) to the segment (ax, az)-(bx, bz). */
+function planDist(px, pz, ax, az, bx, bz) {
+  const ux = bx - ax, uz = bz - az, len2 = ux * ux + uz * uz
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * ux + (pz - az) * uz) / len2)) : 0
+  return Math.hypot(px - ax - ux * t, pz - az - uz * t)
+}
+
+/** The `n` spans at `base` with [lo, hi] made stone too, overlapping ones merged, lowest first: how many now. Past CROSS_CAP's spans the column is stone from its lowest to its highest, as columnTable's overflow is. */
 function mergeSpan(cross, base, n, lo, hi) {
   const out = []
   for (let q = 0; q < n; q++) {
@@ -188,149 +200,120 @@ function mergeSpan(cross, base, n, lo, hi) {
   }
   out.push([lo, hi])
   out.sort((p, q) => p[0] - q[0])
-  if (out.length > CROSS_CAP / 2) throw new Error(`RoomProps: ${out.length} spans on one column`)
+  if (out.length > CROSS_CAP / 2) out.splice(0, out.length, [out[0][0], Math.max(...out.map((s) => s[1]))])
   for (let q = 0; q < out.length; q++) { cross[base + q * 2] = out[q][0]; cross[base + q * 2 + 1] = out[q][1] }
   return out.length
-}
-
-export async function loadHouseBank() {
-  return propBankFrom(await loadGenProp(HOUSE_GLB))
 }
 
 export class RoomProps {
   /**
    * @param field  V2Height: heightAt
-   * @param opts.bank  propBankFrom's answer. Required.
-   * @param opts.props  `[{ x, z, yaw, height, mirror }]`, metres and radians. Required.
+   * @param opts.props  `[{ x, z, yaw, height, fiddle, sink }]`, metres and radians. Required.
    * @param opts.clearing  `{ x, z, r }`: the disc the wood keeps off, with the huts. Required.
+   * @param opts.seed  the glade's seed; house k is rolled off it. Required.
+   * @param opts.textures  the prop atlas (DataArrayTexture). Required.
+   * @param opts.glowMap  the window glass's texture, owned from here on. Required.
+   * @param opts.patch  (material, cacheKey) => material, the lighting patch. Required.
    */
-  constructor(scene, field, { bank = null, props = null, clearing = null } = {}) {
-    if (!bank || !Array.isArray(bank.tiers) || !bank.table) throw new Error('RoomProps: needs the bank from loadHouseBank (or propBankFrom)')
+  constructor(scene, field, { props = null, clearing = null, seed = null, textures = null, glowMap = null, patch = null } = {}) {
     if (!field || typeof field.heightAt !== 'function') throw new Error('RoomProps: needs a V2Height with heightAt')
-    if (!Array.isArray(props) || props.some((p) => ![p.x, p.z, p.yaw, p.height].every(Number.isFinite) || !(p.height > 0) || !(p.sink >= 0) || typeof p.mirror !== 'boolean' || typeof p.fiddle !== 'boolean')) {
-      throw new Error('RoomProps: `props` is a list of { x, z, yaw, height, mirror, fiddle, sink }')
+    if (!Array.isArray(props) || props.some((p) => ![p.x, p.z, p.yaw, p.height].every(Number.isFinite) || !(p.height > 0) || !(p.sink >= 0) || typeof p.fiddle !== 'boolean')) {
+      throw new Error('RoomProps: `props` is a list of { x, z, yaw, height, fiddle, sink }')
     }
-    if (props.length > POOL) throw new Error(`RoomProps: ${props.length} props, the pool holds ${POOL}`)
     if (!clearing || ![clearing.x, clearing.z, clearing.r].every(Number.isFinite) || !(clearing.r > 0)) throw new Error('RoomProps: `clearing` is { x, z, r }')
+    if (!Number.isInteger(seed)) throw new Error('RoomProps: needs the glade\'s integer seed')
+    if (!textures || !textures.image) throw new Error('RoomProps: needs the prop atlas')
+    if (!glowMap || !glowMap.isTexture) throw new Error('RoomProps: needs the window glass texture')
+    if (typeof patch !== 'function') throw new Error('RoomProps: needs the lighting patch')
     this.clearing = { ...clearing }
     this.field = field
-    this.bank = bank
-    // One material a variant, the mirrored one's glow points mirrored with it (addGlow keys on the pick's own frame), one program between them. Both sides drawn until the mesh's holes are closed: the roof shows through them from above.
-    this.materials = [WINDOWS, WINDOWS.map((w) => ({ ...w, z: -w.z }))].map((glow) => {
-      const m = createGenPropMaterial({ glow })
-      m.map = bank.map
-      m.side = THREE.DoubleSide
-      m.uGlow.value.setRGB(GLOW.color[0] * GLOW.night, GLOW.color[1] * GLOW.night, GLOW.color[2] * GLOW.night)
-      return m
-    })
-    this.material = this.materials[0]
-    this.setGlow(0)
-    this.batch = new PropArena(POOL, bank.tiers, new Array(bank.tiers.length).fill(POOL), (t, v) => this.materials[v], 'v2-room-props')
-    this.tierAt = new Int8Array(POOL).fill(-1)
-    // Per prop: its floor's point, its yaw, its scale, `sink`, `mirror` -1 where it is the mirror image, its box's radius, its top and whether a fiddle plays inside. `y` is the floor, the ground under the house less its `sink`; the ground itself is `y + sink`.
-    this.props = []
-    this.tris = 0
     this._cross = new Float32Array(CROSS_CAP)
-    const m = new THREE.Matrix4()
-    const p = new THREE.Vector3()
-    const q = new THREE.Quaternion()
-    const s = new THREE.Vector3()
-    const up = new THREE.Vector3(0, 1, 0)
-    const b = bank.bounds
-    for (const { x, z, yaw, height, mirror, fiddle, sink } of props) {
-      const scale = height / b.height
-      // Set `sink` metres into its own ground (village.js HUTS.sink). The pick's
-      // floor sits at its origin, so this one y carries the whole house down with
-      // it: its walk spans, its roof seats, its windows and its top.
+    const rand = mulberry32(seed)
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1)
+    const solid = [], glass = []
+    // Per prop: its floor's point, its yaw, its height (`scale`, the table's unit), `sink`, its siting radius `r`, the plan radius its mesh reaches, its top, its door, its windows, its eave and trunk radii, and whether a fiddle plays inside. `y` is the floor, the ground under the house less its `sink`.
+    this.props = props.map(({ x, z, yaw, height, fiddle, sink }) => {
+      const built = buildHouse(rollHouse(Math.floor(rand() * 2 ** 31), height))
+      const table = columnTable(built.geometry, height, { r: wallOutline(built.geometry, sink), top: built.trunk.top, door: built.door })
       const y = field.heightAt(x, z) - sink
-      const id = this.batch.addInstance(mirror ? 1 : 0)
-      this.batch.setVisibleAt(id, false)
-      q.setFromAxisAngle(up, yaw)
-      this.batch.setMatrixAt(id, m.compose(p.set(x, y, z), q, s.setScalar(scale)))
-      this.props.push({ id, x, y, z, yaw, scale, sink, mirror: mirror ? -1 : 1, r: Math.min(b.halfX, b.halfZ) * scale, top: y + height, size: b.lodSize * scale, base: distAt(b.lodSize * scale, LOD_DEG), fiddle })
-    }
-    scene.add(this.batch)
-  }
-
-  /** Where each prop's door is, on the ground a step out from its wall, and its sill atop the steps: `[{ x, z, sill: { x, z } }]`. On the pick's axis, where village.js ends its roads, not DOOR.z: the villagers' and hobs' walks were tuned on it. */
-  doors() {
-    return this.props.map((h) => {
-      const out = doorAt(h, (h.r * DOOR.wall + 0.5) / h.scale, 0)
-      return { x: out.x, z: out.z, sill: doorAt(h, DOOR.sill, 0) }
+      m.compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(up, yaw), one)
+      solid.push(built.geometry.applyMatrix4(m))
+      glass.push(built.glow.applyMatrix4(m))
+      const c = Math.cos(yaw), sn = Math.sin(yaw)
+      const at = (p) => ({ x: x + p[0] * c + p[2] * sn, y: y + p[1], z: z - p[0] * sn + p[2] * c })
+      const way = (n) => { const len = Math.hypot(n[0], n[2]); return { dx: (n[0] * c + n[2] * sn) / len, dz: (-n[0] * sn + n[2] * c) / len } }
+      const d = built.door
+      return {
+        x, y, z, yaw, height, scale: height, sink, fiddle, table,
+        r: HOUSE_BOUNDS.halfX * height, reach: built.reach, top: y + built.top,
+        eave: built.eave.r, trunk: built.trunk.r,
+        door: { ...at(d.p), ...way(d.n), sill: d.sill, steps: d.steps, landing: d.landing },
+        windows: built.windows.map((w) => ({ ...at(w.p), ...way(w.n) })),
+      }
     })
+    this.material = patch(createPropMaterial(textures, { vertexColors: true }), 'v2-houses')
+    this.geometry = mergeGeometries(solid, false)
+    this.glowGeometry = mergeGeometries(glass, false)
+    for (const g of [...solid, ...glass]) g.dispose()
+    glowMap.colorSpace = THREE.SRGBColorSpace
+    this.glowMaterial = new THREE.MeshBasicMaterial({ map: glowMap })
+    this.setGlow(0)
+    this.mesh = new THREE.Mesh(this.geometry, this.material)
+    this.mesh.name = 'v2-houses'
+    this.glowMesh = new THREE.Mesh(this.glowGeometry, this.glowMaterial)
+    this.glowMesh.name = 'v2-house-glass'
+    scene.add(this.mesh, this.glowMesh)
   }
 
-  /** Each house's doorway, on the face of its door at its landing's height `y`, with the way out and the house's height, for going inside, and where she stands on the landing coming back out: `[{ k, x, y, z, nx, nz, height, back: { x, y, z } }]`. */
+  /** Where each prop's door is, on the ground past its steps, and its sill on the top step: `[{ x, z, sill: { x, z } }]`. */
+  doors() {
+    return this.props.map(({ door: d }) => ({
+      x: d.x + d.dx * (d.steps + DOOR_OUT), z: d.z + d.dz * (d.steps + DOOR_OUT),
+      sill: { x: d.x + d.dx * SILL, z: d.z + d.dz * SILL },
+    }))
+  }
+
+  /** Each house's doorway, on the face of its door at its sill's height `y`, with the way out and the house's height, for going inside, and where she stands on the top step coming back out: `[{ k, x, y, z, nx, nz, height, back: { x, y, z } }]`. */
   entries() {
     return this.props.map((h, k) => {
-      const face = doorAt(h, DOOR.face, DOOR.z), back = doorAt(h, DOOR.face + DOOR.back, DOOR.z), y = h.y + DOOR.landing * h.scale
-      return { k, x: face.x, y, z: face.z, nx: Math.cos(h.yaw), nz: -Math.sin(h.yaw), height: h.top - h.y, back: { ...back, y } }
+      const d = h.door, y = h.y + d.sill
+      return { k, x: d.x, y, z: d.z, nx: d.dx, nz: d.dz, height: h.height, back: { x: d.x + d.dx * SILL, y: h.y + d.landing, z: d.z + d.dz * SILL } }
     })
   }
 
   /** The houses with a fiddler inside, each its floor and its trunk's radius: `[{ x, y, z, r }]`, for the ambience. */
   fiddlers() {
-    return this.props.filter((h) => h.fiddle).map((h) => ({ x: h.x, y: h.y, z: h.z, r: h.r * DOOR.wall }))
+    return this.props.filter((h) => h.fiddle).map((h) => ({ x: h.x, y: h.y, z: h.z, r: h.trunk }))
   }
 
   /** Every window in the world, with the way it faces out of the wall: `[{ x, y, z, dx, dz }]`, for the lamp map. */
   windows() {
-    const out = []
-    for (const h of this.props) {
-      const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
-      for (const w of WINDOWS) {
-        const wz = w.z * h.mirror, wnz = w.nz * h.mirror
-        const x = w.x * c + wz * sn, z = -w.x * sn + wz * c
-        const dx = w.nx * c + wnz * sn, dz = -w.nx * sn + wnz * c
-        const len = Math.hypot(dx, dz)
-        if (!(len > 1e-3)) throw new Error('RoomProps: a window facing straight up or down lights no ground')
-        out.push({ x: h.x + x * h.scale, y: h.y + w.y * h.scale, z: h.z + z * h.scale, dx: dx / len, dz: dz / len })
-      }
-    }
-    return out
+    return this.props.flatMap((h) => h.windows.map((w) => ({ ...w })))
   }
 
   /** How unlit the panes are this frame: `breath` the lamps' mean glow, 0 by day (Lamps.breath), when they shade like the wall. */
   setGlow(breath) {
-    for (const m of this.materials) m.uGlowOn.value = breath
-  }
-
-  /** Re-rung every prop by its distance. */
-  update(camX, camY, camZ) {
-    let tris = 0
-    for (const h of this.props) {
-      const ex = h.x - camX, ey = h.y + (h.top - h.y) / 2 - camY, ez = h.z - camZ
-      const cur = this.tierAt[h.id]
-      const tier = ladderTier(h.base, PROP_STEPS, TIERS.length, Math.sqrt(ex * ex + ey * ey + ez * ez), cur)
-      if (tier !== cur) {
-        this.tierAt[h.id] = tier
-        const drawn = tier < TIERS.length
-        this.batch.setVisibleAt(h.id, drawn)
-        if (drawn) this.batch.setGeometryIdAt(h.id, tier * 2 + (h.mirror < 0 ? 1 : 0))
-      }
-      if (tier < TIERS.length) tris += this.bank.tris[tier]
-    }
-    this.tris = tris
+    const k = (i) => GLOW.day[i] + (GLOW.color[i] * GLOW.night - GLOW.day[i]) * breath
+    this.glowMaterial.color.setRGB(k(0), k(1), k(2))
   }
 
   /**
    * Up to `count` seats for something growing on prop `i`'s roof, in world
-   * metres: `[{ x, y, z }]`, each on the roof's own skin. ROOF says which of the
-   * pick's columns are roof at all; the seats are drawn from those off `rand`
-   * (the village's own roll, so a seed's roofs are its own), each ROOF.apart of
-   * the house's radius clear of the ones before it. A roof with no room left
-   * seats fewer than asked -- the small houses' are barely a square metre.
+   * metres: `[{ x, y, z }]`, each on the roof's own skin. ROOF says which of its
+   * columns are roof at all; the seats are drawn from those off `rand` (the
+   * village's own roll, so a seed's roofs are its own), each ROOF.apart of the
+   * house's radius clear of the ones before it. A roof with no room left seats
+   * fewer than asked.
    */
   roofSpots(i, count, rand) {
     const h = this.props[i]
     if (!h) throw new Error(`RoomProps: no prop ${i} to sit on`)
-    const cells = this._roofCells()
+    const cells = this._roofCells(h)
     const c = Math.cos(h.yaw), sn = Math.sin(h.yaw), apart = h.r * ROOF.apart
     const out = []
     for (let t = 0; t < count * 8 && out.length < count; t++) {
       const cell = cells[Math.floor(rand() * cells.length)]
-      // The pick's frame back to the world: _spansAt's turn and mirror, undone.
-      const a = cell.x * h.scale, b = cell.z * h.mirror * h.scale
+      const a = cell.x * h.scale, b = cell.z * h.scale
       const x = h.x + a * c + b * sn, z = h.z - a * sn + b * c
       if (out.some((p) => Math.hypot(p.x - x, p.z - z) < apart)) continue
       out.push({ x, y: h.y + cell.y * h.scale, z })
@@ -338,39 +321,39 @@ export class RoomProps {
     return out
   }
 
-  /** The pick's roof cells (ROOF) in its own frame, `[{ x, y, z }]` at their centres: one table between every house, so one answer. */
-  _roofCells() {
-    if (this._roof) return this._roof
-    const g = this.bank.table
-    const high = ROOF.high * this.bank.bounds.height, tilt = Math.tan((ROOF.tilt * Math.PI) / 180)
+  /** House `h`'s roof cells (ROOF) in its own frame and unit, `[{ x, y, z }]` at their centres. */
+  _roofCells(h) {
+    if (h.roof) return h.roof
+    const g = h.table
+    const tilt = Math.tan((ROOF.tilt * Math.PI) / 180), eave = h.eave / h.scale, high = (ROOF.high * (h.top - h.y)) / h.scale
     const topAt = (ii, jj) => {
       if (ii < 0 || jj < 0 || ii >= g.nx || jj >= g.nz) return null
       const k = jj * g.nx + ii, n = g.spans[k]
-      return n === 0 ? null : { top: g.cross[k * CROSS_CAP + n * 2 - 1], bot: g.cross[k * CROSS_CAP + n * 2 - 2] }
+      return n === 0 ? null : g.cross[k * CROSS_CAP + n * 2 - 1]
     }
     const out = []
     for (let j = 0; j < g.nz; j++) {
       for (let i = 0; i < g.nx; i++) {
-        const cell = topAt(i, j)
-        if (!cell || cell.top < high || cell.top - cell.bot < ROOF.thick * CELL) continue
+        const top = topAt(i, j), x = g.x0 + (i + 0.5) * CELL, z = g.z0 + (j + 0.5) * CELL
+        if (top === null || top < high || Math.hypot(x, z) > eave) continue
         const w = topAt(i - 1, j), e = topAt(i + 1, j), s = topAt(i, j - 1), n = topAt(i, j + 1)
-        if (![w, e, s, n].every((q) => q && Math.abs(q.top - cell.top) <= ROOF.step * CELL)) continue
-        if (Math.hypot(e.top - w.top, n.top - s.top) / (2 * CELL) > tilt) continue
-        out.push({ x: g.x0 + (i + 0.5) * CELL, y: cell.top, z: g.z0 + (j + 0.5) * CELL })
+        if (![w, e, s, n].every((q) => q !== null && Math.abs(q - top) <= ROOF.step * CELL)) continue
+        if (Math.hypot(e - w, n - s) / (2 * CELL) > tilt) continue
+        out.push({ x, y: top, z })
       }
     }
-    if (out.length === 0) throw new Error('RoomProps: the pick has no roof flat enough to seat a fern')
-    this._roof = out
+    if (out.length === 0) throw new Error('RoomProps: a house has no roof flat enough to seat a fern')
+    h.roof = out
     return out
   }
 
-  /** Whether (x, z) is within `pad` of the clearing or a hut's box: the trees' `deadwood` contract, so the wood stops at the village. */
+  /** Whether (x, z) is within `pad` of the clearing or a hut's reach: the trees' `deadwood` contract, so the wood stops at the village. */
   occupiesAt(x, z, pad) {
     const c = this.clearing
     const cx = x - c.x, cz = z - c.z, cr = c.r + pad
     if (cx * cx + cz * cz < cr * cr) return true
     for (const h of this.props) {
-      const dx = x - h.x, dz = z - h.z, r = h.r + pad
+      const dx = x - h.x, dz = z - h.z, r = h.reach + pad
       if (dx * dx + dz * dz < r * r) return true
     }
     return false
@@ -381,15 +364,15 @@ export class RoomProps {
   /**
    * The prop's spans of stone on the vertical line through (x, z), in metres,
    * into `out` from span `at` up to `cap` spans in all: how many. The table is
-   * read in the pick's frame -- the point turned back by the yaw, scaled to the
-   * unit, mirrored where the house is -- bilinearly where the four cells about
-   * it hold as many spans as each other, the nearest cell's where they do not.
+   * read in the house's frame -- the point turned back by the yaw, over its
+   * height -- bilinearly where the four cells about it hold as many spans as
+   * each other, the nearest cell's where they do not.
    */
   _spansAt(h, x, z, out, at, cap) {
     const c = Math.cos(h.yaw), sn = Math.sin(h.yaw)
     const wx = x - h.x, wz = z - h.z
-    const px = (wx * c - wz * sn) / h.scale, pz = ((wx * sn + wz * c) / h.scale) * h.mirror
-    const g = this.bank.table, cross = g.cross, spans = g.spans
+    const px = (wx * c - wz * sn) / h.scale, pz = (wx * sn + wz * c) / h.scale
+    const g = h.table, cross = g.cross, spans = g.spans
     const fx = (px - g.x0) / CELL - 0.5, fz = (pz - g.z0) / CELL - 0.5
     const i = Math.floor(fx), j = Math.floor(fz)
     const spansAt = (ii, jj) => (ii < 0 || jj < 0 || ii >= g.nx || jj >= g.nz ? -1 : spans[jj * g.nx + ii])
@@ -417,8 +400,7 @@ export class RoomProps {
     for (const h of this.props) {
       if (n >= cap) break
       const dx = x - h.x, dz = z - h.z
-      // The box's corner reaches root 2 of its half-width.
-      if (dx * dx + dz * dz > h.r * h.r * 2) continue
+      if (dx * dx + dz * dz > h.reach * h.reach) continue
       n += this._spansAt(h, x, z, out, n, cap)
     }
     return n
@@ -430,7 +412,7 @@ export class RoomProps {
     const c = this._cross
     for (const h of this.props) {
       const dx = x - h.x, dz = z - h.z
-      if (dx * dx + dz * dz > h.r * h.r * 2) continue
+      if (dx * dx + dz * dz > h.reach * h.reach) continue
       const n = this._spansAt(h, x, z, c, 0, CROSS_CAP >> 1)
       if (n > 0 && c[n * 2 - 1] > top) top = c[n * 2 - 1]
     }
@@ -438,31 +420,35 @@ export class RoomProps {
   }
 
   /**
-   * Whether any prop's mesh stands over (x, z), or over a point within `pad` of
-   * it: a roof, a wall, a step, a root. The columns are read at the point and at
+   * Whether any prop's mesh stands out of the ground over (x, z), or over a
+   * point within `pad` of it: a roof, a wall, a step, a root (a root's tip runs
+   * on under the grass, and that is not over it). The columns are read at the point and at
    * four round it, which is what `pad` buys -- a root arching over a gap thinner
    * than the grid (CELL) is missed either way, and the gardens (village.js
    * weedGardens) only need the rows to miss the wood, not the shadow of it.
    */
   rootedAt(x, z, pad = 0) {
-    if (this.blockTopAt(x, z) > -Infinity) return true
+    const over = (px, pz) => this.blockTopAt(px, pz) > this.field.heightAt(px, pz)
+    if (over(x, z)) return true
     if (!(pad > 0)) return false
     for (let k = 0; k < 4; k++) {
       const a = (k * Math.PI) / 2
-      if (this.blockTopAt(x + Math.cos(a) * pad, z + Math.sin(a) * pad) > -Infinity) return true
+      if (over(x + Math.cos(a) * pad, z + Math.sin(a) * pad)) return true
     }
     return false
   }
 
   get stats() {
-    return { placed: this.props.length, tris: this.tris, pool: POOL }
+    return { placed: this.props.length, tris: this.geometry.index.count / 3 }
   }
 
   dispose() {
-    this.batch.parent?.remove(this.batch)
-    this.batch.dispose()
-    if (this.material.map) this.material.map.dispose()
-    for (const m of this.materials) m.dispose()
-    for (const t of this.bank.tiers) for (const g of t.geometries) g.dispose()
+    this.mesh.parent?.remove(this.mesh)
+    this.glowMesh.parent?.remove(this.glowMesh)
+    this.geometry.dispose()
+    this.glowGeometry.dispose()
+    this.material.dispose()
+    this.glowMaterial.map.dispose()
+    this.glowMaterial.dispose()
   }
 }

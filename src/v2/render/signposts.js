@@ -43,11 +43,11 @@ function nameAtlas(names) {
 }
 
 // Plain arrays for one mesh in the prop layout.
-function propArrays() {
+export function propArrays() {
   return { position: [], normal: [], uvProj: [], texLayer: [], color: [], index: [] }
 }
 
-function addGeometry(out, g, m, layer, tint) {
+export function addGeometry(out, g, m, layer, tint) {
   const p = g.getAttribute('position')
   const n = g.getAttribute('normal')
   const base = out.position.length / 3
@@ -69,7 +69,7 @@ function addGeometry(out, g, m, layer, tint) {
   for (const k of idx) out.index.push(base + k)
 }
 
-function toGeometry(a) {
+export function toGeometry(a) {
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(a.position, 3))
   g.setAttribute('normal', new THREE.Float32BufferAttribute(a.normal, 3))

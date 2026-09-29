@@ -11,6 +11,9 @@
 // ---------------------------------------------------------------------------
 import { WORLD_HALF } from '../config.js'
 import { SHAPE_RECT, lakeBox } from '../layers/water-bodies.js'
+import { ringArea, inRing, simplifyRing, spaced } from '../../sim/rings.js'
+
+export { ringArea, inRing }
 
 // Metres of ground over every polygon edge.
 export const SHORE_BURY = 1.5
@@ -44,6 +47,8 @@ export function traceShore(lake, field, opts = {}) {
   }
   if (!(lake.rx > 0) || !(lake.rz > 0)) throw new Error(`traceShore: lake ${lake.id} needs positive half-extents, got ${lake.rx} x ${lake.rz}`)
   if (lake.shape !== 0 && lake.shape !== 1) throw new Error(`traceShore: lake ${lake.id} has shape ${lake.shape}, expected 0 (ellipse) or 1 (rectangle)`)
+  // A BAKED SHORE IS DRAWN AS IT WAS BAKED. The generator that flooded the lake knows exactly which texels its water covers; contouring the field again here can only disagree with it, and every way it disagrees is visible -- a sheet over a dip the lake does not reach, a bar across an arm, a bay left dry. So a record that carries its own ring is triangulated straight from it and reads no ground at all.
+  if (lake.ring) return ringShore(lake)
   if (!field || typeof field.heightAt !== 'function') throw new Error('traceShore: needs a field with heightAt(x, z, cell)')
 
   const box = lakeBox(lake)
@@ -233,75 +238,21 @@ export function traceShore(lake, field, opts = {}) {
   return { polygons, slabs, vertices, samples: values.size }
 }
 
-/** Twice the signed area of a flat XZ ring: positive counter-clockwise in (x, z). */
-export function ringArea(pts) {
-  let a = 0
-  for (let i = 0, n = pts.length; i < n; i += 2) {
-    const j = (i + 2) % n
-    a += pts[i] * pts[j + 1] - pts[j] * pts[i + 1]
+/** A baked shore: the record's own rings, outer first and every other one an island in it, wound as the tracer above winds its own. Nothing is simplified or re-spaced -- the generator did both -- so this is the ring the doc carries, vertex for vertex. */
+function ringShore(lake) {
+  const rings = lake.ring
+  if (!Array.isArray(rings) || rings.length === 0) throw new Error(`traceShore: lake ${lake.id} has an empty ring`)
+  const outer = rings[0]
+  const area = ringArea(outer)
+  if (!(area > 0)) throw new Error(`traceShore: lake ${lake.id}'s ring is wound clockwise (area ${area / 2}); the water goes on the left`)
+  const holes = []
+  for (let i = 1; i < rings.length; i++) {
+    const h = rings[i]
+    if (ringArea(h) >= 0) throw new Error(`traceShore: lake ${lake.id}'s island ${i} is wound with the water on the right`)
+    if (!inRing(outer, h[0], h[1])) throw new Error(`traceShore: lake ${lake.id}'s island ${i} lies outside its ring`)
+    holes.push(h)
   }
-  return a
-}
-
-/** Even-odd point-in-ring on a flat XZ ring. */
-export function inRing(pts, x, z) {
-  let inside = false
-  for (let i = 0, n = pts.length, j = n - 2; i < n; j = i, i += 2) {
-    const xi = pts[i], zi = pts[i + 1], xj = pts[j], zj = pts[j + 1]
-    if (zi > z !== zj > z && x < xi + ((z - zi) * (xj - xi)) / (zj - zi)) inside = !inside
-  }
-  return inside
-}
-
-// Douglas-Peucker on a closed ring: anchored at its first point and the point farthest from it, each half simplified as an open line.
-function simplifyRing(pts, tolerance) {
-  const n = pts.length / 2
-  if (n < 3) return []
-  let far = 0, farD = -1
-  for (let i = 1; i < n; i++) {
-    const d = (pts[i * 2] - pts[0]) ** 2 + (pts[i * 2 + 1] - pts[1]) ** 2
-    if (d > farD) {
-      farD = d
-      far = i
-    }
-  }
-  const keep = new Uint8Array(n)
-  keep[0] = 1
-  keep[far] = 1
-  const stack = [0, far, far, n]
-  while (stack.length > 0) {
-    const j = stack.pop(), i = stack.pop()
-    const ax = pts[i * 2], az = pts[i * 2 + 1]
-    const bx = pts[(j % n) * 2], bz = pts[(j % n) * 2 + 1]
-    const dx = bx - ax, dz = bz - az
-    const len2 = dx * dx + dz * dz
-    let worst = -1, worstD = tolerance * tolerance
-    for (let k = i + 1; k < j; k++) {
-      const px = pts[k * 2] - ax, pz = pts[k * 2 + 1] - az
-      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (px * dx + pz * dz) / len2))
-      const d = (px - dx * t) ** 2 + (pz - dz * t) ** 2
-      if (d > worstD) {
-        worstD = d
-        worst = k
-      }
-    }
-    if (worst < 0) continue
-    keep[worst] = 1
-    stack.push(i, worst, worst, j)
-  }
-  const out = []
-  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[i * 2], pts[i * 2 + 1])
-  return out
-}
-
-// Split every edge longer than `spacing` evenly.
-function spaced(pts, spacing) {
-  const out = []
-  for (let i = 0, n = pts.length; i < n; i += 2) {
-    const j = (i + 2) % n
-    const ax = pts[i], az = pts[i + 1], bx = pts[j], bz = pts[j + 1]
-    const parts = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / spacing))
-    for (let k = 0; k < parts; k++) out.push(ax + ((bx - ax) * k) / parts, az + ((bz - az) * k) / parts)
-  }
-  return out
+  let vertices = outer.length / 2
+  for (const h of holes) vertices += h.length / 2
+  return { polygons: [{ outer, holes, area }], slabs: [], vertices, samples: 0 }
 }

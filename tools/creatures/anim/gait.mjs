@@ -390,7 +390,8 @@ const DEFAULTS = {
   // taking one amplitude, because an animator thinks "beat the wings", not
   // "roll the left one +0.6 and the right one -0.6". The map's `side` carries
   // the sign, so a spec never has to know which way round the rig is built.
-  wingSpread: 0, wingSweep: 0, wingBeat: 0, wingTwist: 0, wingFreq: 1,
+  // `wingTuck` is pose.mjs's `tuck`: a roll about forward after the sweep.
+  wingSpread: 0, wingSweep: 0, wingTuck: 0, wingBeat: 0, wingTwist: 0, wingFreq: 1,
   armPitch: 0, armSpread: 0, armSwing: 0,
   // A jointed arm (see arm.mjs) takes its carriage at the shoulder and elbow
   // instead of along the chain, and swings against the leg on its own side:
@@ -533,6 +534,7 @@ export function solveClip(rigFile, map, rawSpec) {
     for (const w of wings) {
       bend(pose, w.chain, fwd, spec.wingSpread * w.side)
       bend(pose, w.chain, up, spec.wingSweep * w.side)
+      bend(pose, w.chain, fwd, spec.wingTuck * w.side)
       wave(w.chain, spec.wingBeat * w.side, fwd, spec.wingFreq, 0.7)
       wave(w.chain, spec.wingTwist, lat, spec.wingFreq, 0.5, Math.PI / 2)
     }

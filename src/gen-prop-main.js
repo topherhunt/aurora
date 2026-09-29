@@ -24,7 +24,7 @@ import { cullTripoBackfaces } from './tripo-culling.js'
 import { TEX_SIZE } from './textures.js'
 import { SUPERSAMPLE, BAKE_ROCK_BOUNCE, impostorCardExtents, downsample, dilate } from './props/impostor.js'
 import { addGlow } from './v2/render/gen-props.js'
-import { GLOW, WINDOWS } from './v2/render/room-props.js'
+import { GLOW } from './v2/render/room-props.js'
 
 const $ = (id) => document.getElementById(id)
 const status = $('status')
@@ -681,7 +681,13 @@ $('rotateLight').addEventListener('change', () => { orbit.enableRotate = !$('rot
 // and previewed on the pick. A click that did not drag adds a point where its
 // ray lands, the table moves or drops one, and every change rebuilds the
 // pick's materials: addGlow bakes the count into the program.
-const GLOW_SEED = { 'house-leafkin': WINDOWS }
+// The shipped house-leafkin pick's windows, in its own frame: r the disc each lights.
+const GLOW_SEED = {
+  'house-leafkin': [
+    { x: 0.038, y: 0.3, z: -0.138, r: 0.07, nx: 0.472, nz: -0.882 },
+    { x: -0.136, y: 0.706, z: -0.097, r: 0.025, nx: 0.99, nz: 0.142 },
+  ],
+}
 let glowPoints = []
 let glowFor = null // the prop the list belongs to
 const CLICK_PX = 4

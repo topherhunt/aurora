@@ -13,17 +13,15 @@ import { validate } from '../src/v2/layers/doc.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
 import { Shell } from '../src/v2/render/shell.js'
-import { propBankFrom } from '../src/v2/render/room-props.js'
+import { HOUSE_BOUNDS } from '../src/v2/render/room-props.js'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 import { PLACEMENT, forestKeepAt } from '../src/v2/layers/forest.js'
 import { keyHash } from '../src/sim/score.js'
-import { readShippedLadder } from './lib/gen-prop-node.mjs'
 
 const KEY = process.argv[2] ?? 'hollow:160.0:-356.0'
-const houseBank = propBankFrom(readShippedLadder('house-leafkin'))
-const spec = rollVillage(keyHash(KEY), houseBank.bounds)
+const spec = rollVillage(keyHash(KEY), HOUSE_BOUNDS)
 const shell = new Shell(new THREE.Scene(), buildRockBank(), buildTextureArray(), spec.shell)
-const room = buildVillage({ spec, shell, house: houseBank.bounds })
+const room = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
 const layers = Layers.deserialize(validate(room.doc))
 const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
 

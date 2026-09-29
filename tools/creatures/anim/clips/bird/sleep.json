@@ -1,12 +1,13 @@
 {
   "kind": "pose",
+  "chainsTo": "uncurl",
   "note": "Asleep at lie's hold pose, curled: the neck turned right round so the head rests on the back behind the wing, the tail swept in, slow breathing in the chest. Every key keeps lie's root, leg and limit numbers so the two cut together.",
   "samples": 32,
   "crouch": 0.03,
   "limits": { "hipLimit": 1.7, "fold": 2.8 },
   "keys": [
-    { "t": 0.0, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "spine": { "yaw": 0.15 }, "head": { "pitch": 0.7, "yaw": 2.6 }, "tail": { "yaw": 0.4 }, "wings": { "spread": -0.2, "sweep": 0.25 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
-    { "t": 1.6, "pose": { "root": { "lift": -0.35, "fore": -0.04 }, "spine": { "yaw": 0.15, "pitch": -0.03 }, "head": { "pitch": 0.72, "yaw": 2.62 }, "tail": { "yaw": 0.42 }, "wings": { "spread": -0.17, "sweep": 0.25 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
-    { "t": 3.2, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "spine": { "yaw": 0.15 }, "head": { "pitch": 0.7, "yaw": 2.6 }, "tail": { "yaw": 0.4 }, "wings": { "spread": -0.2, "sweep": 0.25 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } }
+    { "t": 0.0, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "spine": { "yaw": 0.15 }, "head": { "pitch": 0.7, "yaw": 2.6 }, "tail": { "yaw": 0.4 }, "wings": { "sweep": 1.7, "tuck": -1.1 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
+    { "t": 1.6, "pose": { "root": { "lift": -0.35, "fore": -0.04 }, "spine": { "yaw": 0.15, "pitch": -0.03 }, "head": { "pitch": 0.72, "yaw": 2.62 }, "tail": { "yaw": 0.42 }, "wings": { "sweep": 1.7, "tuck": -1.05 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
+    { "t": 3.2, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "spine": { "yaw": 0.15 }, "head": { "pitch": 0.7, "yaw": 2.6 }, "tail": { "yaw": 0.4 }, "wings": { "sweep": 1.7, "tuck": -1.1 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } }
   ]
 }

@@ -14,6 +14,8 @@
   "tailSway": 0.06,
   "headBob": 0.02,
   "headYaw": 0.25,
+  "wingSweep": 1.5,
+  "wingTuck": -0.9,
   "wingBeat": 0.02,
   "wingFreq": 2
 }

@@ -41,12 +41,17 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
   - Procedurally generate leafkin houses' exteriors, Taking inspiration from the original art, concept art, and taking inspiration from the way that the interiors were built. Each one should be procedurally generated with various decorations and windows and varying shapes and proportions. And then they will all be merged into one mesh when you enter the Leafkin Glade. since there's few enough houses that you don't need multiple.
 - [ ] Human villages
+  - [ ] You sometimes find NPCs walking the roads between villages.
+  - [ ] Buildings: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc.
   - [ ] Farmland. Crops, livestock.
-  - [ ] Stables w horses. You can "borrow" a horse to get around the countryside faster.
+  - [ ] Stables w striders. You can "borrow" a strider to get around the countryside faster.
   - [ ] Walls & guardposts ringing the town
   - [ ] Well near the center. Yes you can drop down it, but it will nearly kill you, and there's no way to climb back out, instead you need to wander through the sewers.
   - [ ] Human NPC chatter audio samples.
-  - [ ] You sometimes find NPCs walking the roads between villages.
+  - [ ] Door opening audio when NPCs enter or exit a home. Also, they should need to walk up to the door itself, rather than just touch the outer hull of the awning.
+  - [ ] NPC behavior
+  - [ ] Redo the netplay-sync system to be lighter-weight
+    - Currently each NPC has pseudorandom deterministic behavior based on starting each "chapter" at a specific time at a specific place (eg in their home). When you get within placement distance, the CPU needs to simulate everything each NPC has done since they started the "chapter" up to this moment, so both human players will see the NPC doing the same thing at the same moment. That's 
   - [ ] NPC conversation system
     - A simple menu of topics, each of which leads to procedurally-generated dialog trees.
     - Simple topics first

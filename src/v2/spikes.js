@@ -1,4 +1,4 @@
-// Temporary long-frame logger (window.v2spikes). tick() calls begin() first and lap(name) after each stage; tock() laps 'render' on entry and calls end() on exit. A frame interval over SPIKES.ms warns the previous frame's stages, slowest first, and log-ship posts the warning to tmp/client-log.txt. `between` is tock's end to the next tick: A-Frame's systems and later tocks, worker replies, timers, GC, and the browser waiting on the GPU. `longtask` is how much of `between` Chrome saw as main-thread tasks over 50 ms; a long `between` with none is the browser or GPU, not script. Long-task entries arrive late, so a spike is reported SPIKES.wait ms after it.
+// Temporary long-frame logger (window.v2spikes). tick() calls begin() first and lap(name) after each stage; tock() laps 'render' on entry and calls end() on exit. A frame interval over SPIKES.ms warns the previous frame's stages, slowest first, and log-ship posts the warning to tmp/client-log.txt. `between` is tock's end to the next tick: A-Frame's systems and later tocks, worker replies, timers, GC, and the browser waiting on the GPU. `longtask` is how much of `between` Chrome saw as main-thread tasks over 50 ms; a long `between` with none is shorter tasks, or the browser or GPU waiting. `at` is seconds since page load, to tell boot from flight. Long-task entries arrive late, so a spike is reported SPIKES.wait ms after it.
 export const SPIKES = { ms: 25, floor: 0.3, keep: 100, wait: 500 }
 
 export class Spikes {
@@ -59,7 +59,7 @@ export class Spikes {
       parts.push(['longtask', long])
     }
     parts.sort((a, b) => b[1] - a[1])
-    const line = `spike ${raw.toFixed(1)} ms: ${parts.map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ')}`
+    const line = `spike ${raw.toFixed(1)} ms at ${(to / 1000).toFixed(1)}s: ${parts.map(([k, v]) => `${k} ${v.toFixed(1)}`).join(', ')}`
     this.recent.push(line)
     if (this.recent.length > SPIKES.keep) this.recent.shift()
     console.warn(line)

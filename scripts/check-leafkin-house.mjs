@@ -49,6 +49,9 @@ const winOff = built.filter(({ h }) => h.windows.some((w) => {
   return w.p[1] < 0.6 || w.p[1] > h.eave.y || r < h.trunk.r * 0.6 || Math.abs(Math.hypot(w.n[0], w.n[2]) - 1) > 0.1
 }))
 check(!winOff.length, 'every window sits on the trunk wall below the eave, facing out', winOff.map((x) => x.s).join(' '))
+// The builder spaces frames by the trunk's bare radius, so the built wall's noise gets 10 cm of slack.
+const crowded = built.filter(({ h }) => h.windows.some((a, i) => h.windows.slice(i + 1).some((b) => Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1], a.p[2] - b.p[2]) - a.r - b.r - 0.2 < 0.9)))
+check(!crowded.length, 'window frames stand at least 1 m apart', crowded.map((x) => x.s).join(' '))
 const tall = built.filter(({ spec, h }) => Math.abs(h.top - spec.height) > 0.8)
 check(!tall.length, 'the roof tip lands near the rolled height', tall.map((x) => `${x.s}:${x.h.top.toFixed(2)}/${x.spec.height.toFixed(2)}`).join(' '))
 

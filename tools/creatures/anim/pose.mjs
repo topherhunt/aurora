@@ -19,6 +19,9 @@
  *   head   pitch, yaw, roll   radians, spread along the neck
  *   tail   pitch, yaw, curl   radians, spread along the tail
  *   wings  spread, sweep      radians, mirrored across the pair
+ *          tuck               radians, turned about forward AFTER the sweep: rolls a
+ *                             wing swept back flat against the flank, which
+ *                             spread cannot, being applied before it
  *   arms   pitch, spread      radians, mirrored across the pair
  *          left, right, both  per-arm handles for a jointed arm, see arm.mjs;
  *                             `both` is added to each side
@@ -155,6 +158,7 @@ export function poseClip(rigFile, map, rawSpec) {
     for (const w of wings) {
       bend(pose, w.chain, fwd, at(t, 'wings', 'spread') * w.side)
       bend(pose, w.chain, up, at(t, 'wings', 'sweep') * w.side)
+      bend(pose, w.chain, fwd, at(t, 'wings', 'tuck') * w.side)
     }
     for (const a of arms.plain) {
       bend(pose, a.chain, lat, at(t, 'arms', 'pitch'))

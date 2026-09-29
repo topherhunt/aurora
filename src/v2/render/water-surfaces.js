@@ -90,7 +90,7 @@ export class WaterSurfaces {
     for (const lake of lakes.values()) {
       const key = shoreKey(lake)
       const kept = this.shores.get(lake.id)
-      if (kept !== undefined && kept.key === key && rect !== null && !touches(rect, lakeBox(lake))) continue
+      if (kept !== undefined && kept.key === key && kept.ring === lake.ring && rect !== null && !touches(rect, lakeBox(lake))) continue
       this.shores.delete(lake.id)
     }
     for (const lake of lakes.values()) this.buildLake(lake)
@@ -153,7 +153,7 @@ export class WaterSurfaces {
   buildLake(lake) {
     let kept = this.shores.get(lake.id)
     if (kept === undefined) {
-      kept = { key: shoreKey(lake), shore: traceShore(lake, this.field) }
+      kept = { key: shoreKey(lake), ring: lake.ring, shore: traceShore(lake, this.field) }
       this.shores.set(lake.id, kept)
     }
     const { positions, indices, triangles, vertices } = lakeVertices(kept.shore, lake.y)
@@ -647,6 +647,7 @@ export class WaterSurfaces {
 }
 
 // What a lake's traced shore depends on besides the ground: the record itself.
+// The scalars a shore depends on. A BAKED RING IS NOT IN HERE: it is compared by identity beside this key, because LakeSet builds a fresh array of contours every time a record is read or patched, and hashing a few thousand vertices on every rebuild to reach the same answer is work for nothing -- while a hash short enough to be cheap is a hash that can collide and serve a stale shore.
 function shoreKey(lake) {
   return `${lake.x},${lake.z},${lake.y},${lake.rx},${lake.rz},${lake.rot},${lake.shape},${lake.carve ? 1 : 0},${lake.depth}`
 }

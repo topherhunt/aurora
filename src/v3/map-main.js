@@ -122,7 +122,7 @@ function showStats() {
   const biomes = BIOMES.map((b, k) => `${b.id.padEnd(8)}${(s.biomes.landShare[k] * 100).toFixed(1).padStart(6)}%`).join('\n')
   const hs = s.hydrology
   const ba = hs.basins
-  const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${(l.rx * 2).toFixed(0)}x${(l.rz * 2).toFixed(0)} m${l.parts > 1 ? ` +${l.parts - 1}` : '   '}  leak ${(l.leakKm2 * 100).toFixed(1)} ha at ${l.leakDeep.toFixed(1)} m  dry ${(l.dryKm2 * 100).toFixed(1)} ha`).join('\n')
+  const lakes = hs.lakes.bodies.map((l) => `${String(Math.round(l.x)).padStart(6)},${String(Math.round(l.z)).padStart(6)}  ${l.km2.toFixed(3)} km2  ${l.deepest.toFixed(0).padStart(3)} m deep at ${l.level.toFixed(1)} m  ${String(l.vertices).padStart(4)} shore vertices / ${l.islands} islands, longest segment ${l.spanMax.toFixed(1)} m  off the waterline ${(l.offKm2 * 100).toFixed(2)} ha`).join('\n')
   elStats.innerHTML = `<h2>world</h2>seed ${R.seed}   ${R.n}^2 @ ${R.cell.toFixed(1)} m   algorithm ${R.v}
 ${(WORLD_SIZE / 1000).toFixed(2)} km across   ${R.ms.toFixed(0)} ms
 elevation ${s.min.toFixed(0)} .. ${s.max.toFixed(0)} m
@@ -152,7 +152,7 @@ stranded  ${hs.stranded.cells} cells (${hs.stranded.km2.toFixed(3)} km2, ${hs.st
 rivers    ${hs.rivers.count}, ${hs.rivers.km.toFixed(1)} km (${(hs.rivers.km / s.landKm2).toFixed(1)} km/km2), longest ${hs.rivers.longestKm.toFixed(1)} km, ${hs.rivers.intoSea} into the sea, ${hs.rivers.intoLake} into a lake, ${hs.rivers.fromLake} out of one
 water     ${hs.rivers.widthMean.toFixed(1)} m wide mean, ${hs.rivers.widthMax.toFixed(0)} m the widest, mouths x${hs.rivers.flare.toFixed(2)} their own river's mean
 
-<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} basins the drain kept, ${hs.lakes.km2.toFixed(2)} km2 in ${hs.lakes.records} ellipses)</h2>${lakes || 'none'}`
+<h2>lakes (${hs.lakes.count} of the ${hs.lakes.spared} basins the drain kept, ${hs.lakes.km2.toFixed(2)} km2 as ${hs.lakes.records} baked rings)</h2>${lakes || 'none'}`
 }
 
 function showHover() {
