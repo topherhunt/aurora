@@ -1,0 +1,20 @@
+{
+  "note": "Two-legged walk for a ridden bird: feet half a cycle apart with a double-support window, and the body bob kept small because a rider sits on it. The head bobs on each footfall, as a ground bird's does.",
+  "duration": 0.9,
+  "samples": 26,
+  "stride": 0.8,
+  "stepHeight": 0.06,
+  "duty": 0.62,
+  "crouch": 0.04,
+  "toeOff": 0.3,
+  "phases": { "hindLeft": 0, "hindRight": 0.5 },
+  "bodyBob": 0.008,
+  "bobFreq": 2,
+  "bodySway": 0.012,
+  "spineYaw": 0.04,
+  "spineRoll": 0.02,
+  "tailSway": 0.12,
+  "headBob": 0.03,
+  "wingBeat": 0.03,
+  "wingFreq": 2
+}

@@ -14,7 +14,7 @@ import { Noise } from '../sim/noise.js'
 //   3. LAKES. The basins the drain kept, grown from their deepest cell to the level the flood now stands them at. A lake has no dam: its shore is wherever the ground meets its level, which is why no two of them are the same shape.
 //   4. ROUTE. Priority flood, D8 steepest descent, accumulation in cells. What ponds outside the lakes is measured on the way past and left where it is.
 //   5. THE LAKES AS ELLIPSES. Each lake goes to the doc as an uncarved ellipse fitted to its pool at its level, so v2 draws water wherever the ground inside the ellipse lies under it -- the ellipse bounds the query, the ground decides the shore.
-//   6. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a half-width off the catchment, the valley's flatness and a noise, source to mouth. The polyline and its widths are all that go to the doc: v2 cuts the bed at render time (§2 paths.js carveRivers), so the valley a river runs in is v2's and not this file's.
+//   6. RIVERS. A cell with RIVERS.minCatchment of catchment, above the sea and outside a lake, is a river cell. Where two of them come within RIVERS.joinReach with no wall between, the one carrying less water drains into the one carrying more, so two channels a few texels apart become one river at the point they first came near. The network is walked from every mouth up its largest donor to a source, the other donors becoming tributaries whose last point is the trunk cell they join; a source fed by a lake starts inside it. Cell centres are simplified to RIVERS.tolerance and written with a half-width off the catchment, the valley's flatness and a noise, source to mouth. The polyline and its widths are all that go to the doc: v2 cuts the bed at render time (§2 paths.js carveRivers), so the valley a river runs in is v2's and not this file's.
 // ---------------------------------------------------------------------------
 
 export const LAKES = {
@@ -43,6 +43,11 @@ export const RIVERS = {
   wobble: 0.22,        // the share of its width a reach wanders by along the line, so no river holds one width for long
   wobbleScale: 80,     // metres over which that wander turns
   minLength: 60,       // metres; a shorter tributary with nothing feeding it is not drawn
+  joinReach: 20,       // metres within which two rivers are near enough to be one and the smaller is turned into the bigger
+  joinWall: 3,         // metres the ground between the two may stand above the higher of them. Over this they are two valleys and not two channels of one, however close they run
+  joinBend: 2.5,       // how many times the gap between two cells the water's own way from one to the other may be before they stop being the same channel round a bend and count as two rivers side by side
+  lakeEntry: 8,        // metres a river's first node must lie inside the DRAWN edge of the lake it leaves, so v2's bed carve begins under the water and blends out of it instead of starting short of the shore
+  lakeWalk: 60,        // metres of lake that first node may be looked for over. Past this the arm the river leaves by is not drawn at all and the river starts at the waterline, as it would with no rule here
   tolerance: 5,        // Douglas-Peucker on the cell centres, metres
   pinDrop: 3,          // metres of fall between one cell and the next that keeps both as nodes through it, so a cliff's lip and foot survive in plan
 }
@@ -138,7 +143,7 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
   const recv = flowDirections(flood.filled, flood.tree, n)
   // A lake drains through its spill and nowhere else. Steepest descent off the flat would let the cells beside the spill step straight over the rim into the ground falling away past it, and each such step is a source, so one lake would let out three or four rivers a few cells apart; the flood's tree leads every lake cell to the spill.
   for (let c = 0; c < size; c++) if (wet[c]) recv[c] = flood.tree[c]
-  const acc = flowAccumulation(recv, flood.order, size)
+  let acc = flowAccumulation(recv, flood.order, size)
 
   // --- 5. the lakes as ellipses -----------------------------------------------
   const lakes = kept.map((b) => fitLake(b, elev, n, cell, half))
@@ -148,14 +153,21 @@ export function runHydrology(height, n, cell, ground, seed, cliffs = true) {
 
   // --- 6. rivers --------------------------------------------------------------
   const river = new Uint8Array(size)
-  let riverCells = 0
-  for (let c = 0; c < size; c++) {
-    if (!sea[c] && !wet[c] && acc[c] * cellArea >= RIVERS.minCatchment) {
-      river[c] = 1
-      riverCells++
+  // The marking is read off the route twice, because the join below changes where the water goes: a line the join emptied falls under the catchment and is no longer a river at all.
+  const markRivers = () => {
+    let cells = 0
+    for (let c = 0; c < size; c++) {
+      const r = !sea[c] && !wet[c] && acc[c] * cellArea >= RIVERS.minCatchment ? 1 : 0
+      river[c] = r
+      cells += r
     }
+    return cells
   }
-  const rivers = traceRivers(river, recv, acc, wet, elev, n, cell, half, seed)
+  markRivers()
+  stats.joins = joinRivers(river, recv, acc, flood.order, wet, sea, elev, n, cell)
+  if (stats.joins.joined) acc = flowAccumulation(recv, flood.order, size)
+  const riverCells = markRivers()
+  const rivers = traceRivers(river, recv, acc, wet, drawnWater(lakeRecs, elev, n, cell, half), elev, n, cell, half, seed)
   let km = 0
   let longest = 0
   let wSum = 0
@@ -194,11 +206,12 @@ export function noHydrology(height) {
     lakes: [],
     rivers: [],
     stats: {
-      basins: { basins: 0, kept: 0, bodies: 0, drained: 0, drainedDeepest: 0, drowned: 0, absorbed: 0, ponds: 0, stuck: 0, cuts: 0, roundMean: 0, roundMax: 0, brushMean: 0, brushMax: 0, keptKm2: 0, keptDeepest: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, sweeps: 0, late: 0, left: 0, ms: 0 },
+      basins: { basins: 0, kept: 0, bodies: 0, drained: 0, drainedDeepest: 0, drowned: 0, absorbed: 0, lost: 0, perched: 0, ponds: 0, stuck: 0, cuts: 0, roundMean: 0, roundMax: 0, brushMean: 0, brushMax: 0, keptKm2: 0, keptDeepest: 0, cutCells: 0, cutKm2: 0, cutMean: 0, deepest: 0, raised: 0, sweeps: 0, late: 0, left: 0, ms: 0 },
       cliffs: { cells: 0, km2: 0, meanMove: 0, maxMove: 0, ms: 0, byBiome: [] },
       puddles: { cells: 0, km2: 0, mean: 0, deepest: 0 },
       stranded: { cells: 0, km2: 0, deepest: 0 },
       lakes: { candidates: 0, spared: 0, drained: 0, count: 0, records: 0, km2: 0, leakKm2: 0, leakDeepest: 0, dryKm2: 0, dryDeepest: 0, bodies: [] },
+      joins: { joined: 0, gapMean: 0 },
       rivers: { count: 0, cells: 0, km: 0, longestKm: 0, intoSea: 0, intoLake: 0, fromLake: 0, widthMean: 0, widthMax: 0, flare: 0 },
     },
   }
@@ -343,6 +356,32 @@ function fitLake(body, elev, n, cell, half) {
   }
 }
 
+/**
+ * The texels v2 actually draws lake water on: inside a record's ellipse with the ground STRICTLY under that record's level. It is read off the finished records and not off the flooded bodies, because the fitting shrinks an ellipse back off water it would otherwise draw on the hillside, and a cell the record misses is dry ground however wet the body was. A cell exactly at the waterline is not drawn either, which is why a river that steps a single cell into a lake still begins off the water.
+ */
+function drawnWater(recs, elev, n, cell, half) {
+  const drawn = new Uint8Array(n * n)
+  for (const l of recs) {
+    const cr = Math.cos(l.rot)
+    const sr = Math.sin(l.rot)
+    const mx = (l.x + half) / cell
+    const mz = (l.z + half) / cell
+    const a = l.rx / cell
+    const b = l.rz / cell
+    const reach = Math.ceil(Math.max(a, b)) + 1
+    for (let j = Math.max(0, Math.floor(mz - reach)); j <= Math.min(n - 1, Math.ceil(mz + reach)); j++) {
+      for (let i = Math.max(0, Math.floor(mx - reach)); i <= Math.min(n - 1, Math.ceil(mx + reach)); i++) {
+        const c = j * n + i
+        if (drawn[c] || elev[c] >= l.y) continue
+        const u = (cr * (i - mx) + sr * (j - mz)) / a
+        const v = (-sr * (i - mx) + cr * (j - mz)) / b
+        if (u * u + v * v < 1) drawn[c] = 1
+      }
+    }
+  }
+  return drawn
+}
+
 /** Is cell `c` inside the fitted part `q`? */
 function inEllipse(q, c, n) {
   const dx = (c % n) - q.mx
@@ -437,9 +476,122 @@ function dropped(q, parts, elev, n, level) {
 }
 
 /**
- * The river polylines. Donors are gathered per cell; every mouth (a river cell whose receiver is not one) is walked up its largest donor to a source, and each other donor met on the way is the mouth of a tributary, walked the same way. A river ends one cell past its mouth -- in the sea, in a lake, or on the trunk cell it joins -- and begins one cell early when its source is fed by a lake, so v2 pins its level to the water at either end.
+ * TWO RIVERS THAT COME NEAR EACH OTHER ARE ONE RIVER. D8 hands every cell a single receiver, so two channels can run a handful of texels apart either side of a divide no higher than the water and never meet -- and since v2 cuts a bed under each polyline, what gets drawn is two trenches with a thin wall between them. So every river cell looks for a cell of MORE catchment within `joinReach` and drains straight into it. The line below that new junction then carries nothing of its own, falls under `minCatchment` and stops being a river: the two become one where they first came near.
+ *
+ * Three things disqualify a neighbour. Ground between the two standing more than `joinWall` above the higher of them means two valleys rather than two channels of one, however close they run. Water or sea on the line between them means the join would run a river through a lake. And a cell the water already reaches by a way no more than `joinBend` times as long as the gap is this same channel round a bend rather than another river -- without which every straight reach would short-circuit itself and be cut to every tenth cell. A tributary that has run a hundred metres alongside its trunk fails none of the three: its water's way to the trunk cell beside it is the whole of that run.
+ *
+ * No edge drawn here can close a loop: `acc` never falls downstream, an edge is only ever drawn towards STRICTLY more of it, and the receiver must come earlier in the flood's own order, which is also the order the accumulation after this reads the cells in and where a receiver visited before its donor would lose that donor's water.
  */
-function traceRivers(river, recv, acc, wet, elev, n, cell, half, seed) {
+function joinRivers(river, recv, acc, order, wet, sea, elev, n, cell) {
+  const size = n * n
+  const rank = new Int32Array(size)
+  for (let k = 0; k < size; k++) rank[order[k]] = k
+  const steps = Math.max(1, Math.round(RIVERS.joinReach / cell))
+  const path = new Map()
+  let joined = 0
+  let gapSum = 0
+  for (let c = 0; c < size; c++) {
+    if (!river[c]) continue
+    const ci = c % n
+    const cj = (c / n) | 0
+    // The water's own way down from here, as far as any cell in reach could need it. A cell on it is measured against its own gap below.
+    path.clear()
+    let run = 0
+    for (let p = c; ;) {
+      const q = recv[p]
+      if (q < 0) break
+      run += Math.hypot((q % n) - (p % n), ((q / n) | 0) - ((p / n) | 0)) * cell
+      if (run > RIVERS.joinBend * RIVERS.joinReach) break
+      path.set(q, run)
+      p = q
+    }
+    let best = -1
+    let bestGap = Infinity
+    for (let dj = -steps; dj <= steps; dj++) {
+      for (let di = -steps; di <= steps; di++) {
+        const ni = ci + di
+        const nj = cj + dj
+        if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+        const d = nj * n + ni
+        if (!river[d] || acc[d] <= acc[c] || rank[d] >= rank[c]) continue
+        const gap = Math.hypot(di, dj) * cell
+        if (gap > RIVERS.joinReach || gap >= bestGap) continue
+        if (path.has(d) && path.get(d) <= RIVERS.joinBend * gap) continue
+        if (!clearBetween(c, d, wet, sea, elev, n, RIVERS.joinWall)) continue
+        best = d
+        bestGap = gap
+      }
+    }
+    if (best < 0 || best === recv[c]) continue
+    recv[c] = best
+    joined++
+    gapSum += bestGap
+  }
+  return { joined, gapMean: joined ? gapSum / joined : 0 }
+}
+
+/** Is the ground between two cells low enough and dry enough for them to be one channel? Walks the straight line a texel at a time and fails on any interior cell that is water, sea, or standing more than `wall` above the higher end. */
+function clearBetween(a, b, wet, sea, elev, n, wall) {
+  const ai = a % n
+  const aj = (a / n) | 0
+  const bi = b % n
+  const bj = (b / n) | 0
+  const hops = Math.max(Math.abs(bi - ai), Math.abs(bj - aj))
+  const top = Math.max(elev[a], elev[b]) + wall
+  for (let k = 1; k < hops; k++) {
+    const q = Math.round(aj + ((bj - aj) * k) / hops) * n + Math.round(ai + ((bi - ai) * k) / hops)
+    if (wet[q] || sea[q] || elev[q] > top) return false
+  }
+  return true
+}
+
+/**
+ * WHERE A RIVER LEAVING A LAKE BEGINS. The source's own wet neighbour sits on the waterline: `wet` takes a cell at exactly the lake's level, and that cell is not one the lake is drawn on, which needs the ground strictly under the level and the cell inside the fitted ellipse the fitting has shrunk back. A first node there leaves the two sheets a few metres apart with dry ground between them.
+ *
+ * So the walk carries on INTO the lake, up the flood tree by the wettest cell draining into the one it is at -- which is the lake's main inflow and so its open water rather than a shallow arm -- and stops at the first cell lying `lakeEntry` clear of the drawn edge on every side. The river's first leg is then a chord of open water: v2 pins it to the lake's level and cuts its bed under the surface, so the channel blends out of the lake instead of starting short of it.
+ *
+ * Where `lakeWalk` of lake turns up no cell that clear of the edge, the first DRAWN cell on the walk will do: a node just inside the sheet still touches it, and a narrow arm is never `lakeEntry` from its own banks. Returns -1 for a source no lake feeds, and the waterline cell as before where the walk draws nothing at all.
+ */
+function lakeEntryOf(src, recv, acc, wet, drawn, n, cell) {
+  const wettestInto = (p) => {
+    let best = -1
+    for (let k = 0; k < 8; k++) {
+      const ni = (p % n) + NB_DI[k]
+      const nj = ((p / n) | 0) + NB_DJ[k]
+      if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
+      const nn = nj * n + ni
+      if (recv[nn] === p && wet[nn] && (best < 0 || acc[nn] > acc[best])) best = nn
+    }
+    return best
+  }
+  const edge = Math.max(1, Math.round(RIVERS.lakeEntry / cell))
+  const wellIn = (c) => {
+    const ci = c % n
+    const cj = (c / n) | 0
+    if (ci < edge || cj < edge || ci >= n - edge || cj >= n - edge) return false
+    for (let dj = -edge; dj <= edge; dj++) for (let di = -edge; di <= edge; di++) if (!drawn[(cj + dj) * n + ci + di]) return false
+    return true
+  }
+  const first = wettestInto(src)
+  if (first < 0) return -1
+  let p = first
+  let walked = 0
+  let edged = -1
+  while (walked <= RIVERS.lakeWalk) {
+    if (wellIn(p)) return p
+    if (edged < 0 && drawn[p]) edged = p
+    const q = wettestInto(p)
+    if (q < 0) break
+    walked += Math.hypot((q % n) - (p % n), ((q / n) | 0) - ((p / n) | 0)) * cell
+    p = q
+  }
+  return edged >= 0 ? edged : first
+}
+
+/**
+ * The river polylines. Donors are gathered per cell; every mouth (a river cell whose receiver is not one) is walked up its largest donor to a source, and each other donor met on the way is the mouth of a tributary, walked the same way. A river ends one cell past its mouth -- in the sea, in a lake, or on the trunk cell it joins -- and begins inside the lake that feeds it (`lakeEntryOf`), so v2 pins its level to the water at either end.
+ */
+function traceRivers(river, recv, acc, wet, drawn, elev, n, cell, half, seed) {
   const size = n * n
   const wobN = new Noise((seed * 7 + 971) | 0)
   const start = new Int32Array(size + 1)
@@ -479,18 +631,8 @@ function traceRivers(river, recv, acc, wet, elev, n, cell, half, seed) {
       c = best
     }
     cells.reverse()
-    // A source fed by a lake: the wettest neighbour draining into it, so the river begins on the water.
     const src = cells[0]
-    let fromLake = -1
-    const si = src % n
-    const sj = (src / n) | 0
-    for (let k = 0; k < 8; k++) {
-      const ni = si + NB_DI[k]
-      const nj = sj + NB_DJ[k]
-      if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
-      const nn = nj * n + ni
-      if (recv[nn] === src && wet[nn] && (fromLake < 0 || acc[nn] > acc[fromLake])) fromLake = nn
-    }
+    const fromLake = lakeEntryOf(src, recv, acc, wet, drawn, n, cell)
     let km = 0
     for (let k = 1; k < cells.length; k++) km += Math.hypot((cells[k] % n) - (cells[k - 1] % n), ((cells[k] / n) | 0) - ((cells[k - 1] / n) | 0)) * cell
     // A stub joining a trunk with nothing of its own is not drawn; one with branches is, or they would end on nothing.

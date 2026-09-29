@@ -1,4 +1,4 @@
-// The towns' buildings (DESIGN.md §32), laid out by layers/towns.js. Near a town, its buildings are ONE merged mesh at each one's own tier (detail 2 within near, detail 1 within mid); from mid out to `far`, every building is a 14-triangle box-and-gable in ONE InstancedMesh, tinted per instance, and past `far` none is drawn. So the town the player stands in costs one draw call, and every distant town together costs one more.
+// The towns' buildings (DESIGN.md §32), laid out by layers/towns.js. A town swaps tier whole, by the distance to its edge: near it is ONE merged mesh (detail 2 within near, detail 1 within mid), each tier merged once and cached until evict; from mid out to `far`, its buildings are 14-triangle box-and-gables in ONE InstancedMesh shared by every town, tinted per instance, and past `far` none is drawn. So the town the player stands in costs one draw call, and every distant town together costs one more.
 import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
@@ -7,7 +7,7 @@ import { roofHeightAt } from '../../buildings/plan.js'
 import { townsOccupyAt } from '../layers/towns.js'
 
 export const TOWN_BANDS = { near: 60, mid: 140, far: 1500, hysteresis: 4, prebuild: 300, evict: 420 }
-// Frame budget for building geometry: detail-2 builds run 3-4 ms on desktop and several times that on the Quest, so no more than one of those a frame.
+// Frame budget for building geometry: a detail-2 building runs about 1.6 ms on desktop and several times that on the Quest, so no more than one of those a frame.
 const BUILD_MS = 4
 
 // The distant box's colours. They MULTIPLY the far box's PLASTER texture (linear mean about 0.47, 0.43, 0.34), so each is the detail-1 building's area-weighted linear albedo (texture mean times vertex colour) divided by that mean, not the colour it reads as. A tint picked by eye comes out about twice as bright as the house it swaps for.
@@ -82,11 +82,45 @@ function placedArrays(b, town, detail) {
   return out
 }
 
+// One geometry from a town's placed buildings at one tier.
+function mergeParts(parts) {
+  let verts = 0
+  let idx = 0
+  for (const p of parts) {
+    verts += p.position.length / 3
+    idx += p.index.length
+  }
+  const g = new THREE.BufferGeometry()
+  for (const [name, size] of ATTRS) {
+    const arr = new Float32Array(verts * size)
+    let o = 0
+    for (const p of parts) {
+      arr.set(p[name], o)
+      o += p[name].length
+    }
+    g.setAttribute(name, new THREE.BufferAttribute(arr, size))
+  }
+  const index = verts > 65535 ? new Uint32Array(idx) : new Uint16Array(idx)
+  let o = 0
+  let base = 0
+  for (const p of parts) {
+    for (let i = 0; i < p.index.length; i++) index[o + i] = p.index[i] + base
+    o += p.index.length
+    base += p.position.length / 3
+  }
+  g.setIndex(new THREE.BufferAttribute(index, 1))
+  g.computeBoundingSphere()
+  g.userData.tris = idx / 3
+  return g
+}
+
 export class Towns {
   constructor(scene, { towns, textures, patch }) {
     this.scene = scene
     this.towns = towns
-    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t, tier: 0, want: 0, farShown: false, geo: [null, null, null], masses: [] })))
+    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t })))
+    // Per town: the tier shown and wanted, each tier's merged geometry once built, the placed buildings of a tier still being built, and its far boxes.
+    this.sites = towns.map((town) => ({ town, tier: 0, want: 0, farShown: false, geo: [null, null, null], parts: [null, [], []], mesh: null, masses: [] }))
 
     this.material = createPropMaterial(textures, { vertexColors: true })
     this.material.side = THREE.FrontSide
@@ -116,7 +150,7 @@ export class Towns {
     this.far.name = 'town-far'
     const m = new THREE.Matrix4()
     const tmp = new THREE.Matrix4()
-    for (const b of this.buildings) {
+    for (const [i, town] of towns.entries()) for (const b of town.buildings) {
       const base = b.y + b.plan.plinthBottom
       for (const ms of b.plan.masses) {
         const top = b.y + (ms.roof.kind === 'lean' ? ms.roof.highY : ms.roof.ridgeY)
@@ -127,15 +161,13 @@ export class Towns {
         if (ms.ridgeAxis === 'z') m.multiply(tmp.makeRotationY(Math.PI / 2))
         m.multiply(tmp.makeScale(along, top - base, across))
         const r = ROOF_TINT[b.plan.roofKind]
-        b.masses.push({ matrix: m.clone(), roof: new THREE.Color(r[0], r[1], r[2]), wall: WALL_TINT[b.plan.style] })
+        this.sites[i].masses.push({ matrix: m.clone(), roof: new THREE.Color(r[0], r[1], r[2]), wall: WALL_TINT[b.plan.style] })
       }
     }
     this.far.count = 0
     this.far.setColorAt(0, new THREE.Color())
     scene.add(this.far)
 
-    // One merged mesh per town, created when the town first has a building near enough.
-    this.near = new Map()
     this.grid = new Map()
     for (const b of this.buildings) {
       const r = Math.hypot(b.box.hx, b.box.hz)
@@ -147,53 +179,87 @@ export class Towns {
         }
       }
     }
-    this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, farShown: 0, nearTris: 0, builds: 0, buildMs: 0 }
+    this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, farShown: 0, nearTris: 0, builds: 0, buildMs: 0, merges: 0 }
   }
 
-  // Tiers by distance from (x, z), geometry built under the frame budget, and each town whose tiers changed merged again.
+  // Each town's tier by the distance from (x, z) to its edge, its tiers' buildings placed under the frame budget, and a tier shown only once all of it is merged.
   update(x, z) {
     const B = TOWN_BANDS
+    const H = B.hysteresis
     const t0 = performance.now()
-    const dirty = new Set()
-    let farDirty = false
     let heavy = false
-    for (const b of this.buildings) {
-      const d = Math.hypot(b.x - x, b.z - z)
-      const H = B.hysteresis
-      b.want = d < B.near + (b.want === 2 ? H : -H) ? 2 : d < B.mid + (b.want > 0 ? H : -H) ? 1 : 0
-      if (d > B.evict) b.geo[1] = b.geo[2] = null
-      else if (b.geo[1] === null && d < B.prebuild && performance.now() - t0 < BUILD_MS) this._build(b, 1)
-      let tier = b.want
-      if (tier === 2 && b.geo[2] === null) {
-        if (!heavy && performance.now() - t0 < BUILD_MS) {
-          this._build(b, 2)
-          heavy = true
-        } else tier = 1
-      }
-      if (tier === 1 && b.geo[1] === null) {
-        if (performance.now() - t0 < BUILD_MS) this._build(b, 1)
-        else tier = b.tier === 2 && b.geo[2] !== null ? 2 : 0
-      }
-      if (tier !== b.tier) {
-        b.tier = tier
-        dirty.add(b.town)
-      }
-      const shown = tier === 0 && d < B.far + (b.farShown ? H : -H)
-      if (shown !== b.farShown) {
-        b.farShown = shown
+    let farDirty = false
+    for (const s of this.sites) {
+      const d = Math.max(0, Math.hypot(s.town.x - x, s.town.z - z) - s.town.radius)
+      s.want = d < B.near + (s.want === 2 ? H : -H) ? 2 : d < B.mid + (s.want > 0 ? H : -H) ? 1 : 0
+      if (d > B.evict) this._evict(s)
+      else if (s.geo[1] === null && d < B.prebuild) heavy = this._grow(s, 1, t0, heavy)
+      else if (s.geo[2] === null && s.want > 0) heavy = this._grow(s, 2, t0, heavy)
+      const tier = s.want === 2 && s.geo[2] !== null ? 2 : s.want > 0 && s.geo[1] !== null ? 1 : 0
+      if (tier !== s.tier) this._show(s, tier)
+      const shown = tier === 0 && d < B.far + (s.farShown ? H : -H)
+      if (shown !== s.farShown) {
+        s.farShown = shown
         farDirty = true
       }
     }
-    for (const t of dirty) this._merge(t)
     if (farDirty) this._packFar()
   }
 
-  // The far boxes of every building showing one, packed to the front of the instance buffers.
+  // Places the town's next buildings at `detail` while the budget lasts (detail 2: one a frame across all towns), and merges the tier once the last is placed. Returns whether a detail-2 building was placed this frame.
+  _grow(s, detail, t0, heavy) {
+    const parts = s.parts[detail]
+    const list = s.town.buildings
+    while (parts.length < list.length && performance.now() - t0 < BUILD_MS) {
+      if (detail === 2) {
+        if (heavy) break
+        heavy = true
+      }
+      const t1 = performance.now()
+      parts.push(placedArrays(list[parts.length], s.town, detail))
+      this.stats.builds++
+      this.stats.buildMs += performance.now() - t1
+    }
+    if (parts.length === list.length) {
+      s.geo[detail] = mergeParts(parts)
+      s.parts[detail] = []
+      this.stats.merges++
+    }
+    return heavy
+  }
+
+  _show(s, tier) {
+    if (s.tier > 0) this.stats.nearTris -= s.mesh.geometry.userData.tris
+    s.tier = tier
+    if (tier === 0) {
+      this.scene.remove(s.mesh)
+      return
+    }
+    if (s.mesh === null) {
+      s.mesh = new THREE.Mesh(s.geo[tier], this.material)
+      s.mesh.name = `town-near-${s.town.id}`
+      s.mesh.position.set(s.town.x, 0, s.town.z)
+    }
+    s.mesh.geometry = s.geo[tier]
+    if (s.mesh.parent === null) this.scene.add(s.mesh)
+    this.stats.nearTris += s.geo[tier].userData.tris
+  }
+
+  // Past evict, which lies outside mid, so the town is already drawn far.
+  _evict(s) {
+    for (const detail of [1, 2]) {
+      if (s.geo[detail] !== null) s.geo[detail].dispose()
+      s.geo[detail] = null
+      s.parts[detail] = []
+    }
+  }
+
+  // The far boxes of every town showing them, packed to the front of the instance buffers. A town-level change is rare enough that rewriting about 1500 instances beats tracking slots.
   _packFar() {
     let k = 0
-    for (const b of this.buildings) {
-      if (!b.farShown) continue
-      for (const ms of b.masses) {
+    for (const s of this.sites) {
+      if (!s.farShown) continue
+      for (const ms of s.masses) {
         this.far.setMatrixAt(k, ms.matrix)
         this.far.setColorAt(k, ms.roof)
         this.wallTint.set(ms.wall, k * 3)
@@ -205,64 +271,6 @@ export class Towns {
     this.far.instanceColor.needsUpdate = true
     this.far.geometry.getAttribute('aWallTint').needsUpdate = true
     this.stats.farShown = k
-  }
-
-  _build(b, detail) {
-    const t0 = performance.now()
-    b.geo[detail] = placedArrays(b, b.town, detail)
-    this.stats.builds++
-    this.stats.buildMs += performance.now() - t0
-  }
-
-  _merge(town) {
-    const parts = this.buildings.filter((b) => b.town === town && b.tier > 0).map((b) => b.geo[b.tier])
-    let mesh = this.near.get(town)
-    if (mesh) {
-      this.stats.nearTris -= mesh.userData.tris
-      mesh.geometry.dispose()
-    }
-    if (parts.length === 0) {
-      if (mesh) {
-        this.scene.remove(mesh)
-        this.near.delete(town)
-      }
-      return
-    }
-    let verts = 0
-    let idx = 0
-    for (const p of parts) {
-      verts += p.position.length / 3
-      idx += p.index.length
-    }
-    const g = new THREE.BufferGeometry()
-    for (const [name, size] of ATTRS) {
-      const arr = new Float32Array(verts * size)
-      let o = 0
-      for (const p of parts) {
-        arr.set(p[name], o)
-        o += p[name].length
-      }
-      g.setAttribute(name, new THREE.BufferAttribute(arr, size))
-    }
-    const index = verts > 65535 ? new Uint32Array(idx) : new Uint16Array(idx)
-    let o = 0
-    let base = 0
-    for (const p of parts) {
-      for (let i = 0; i < p.index.length; i++) index[o + i] = p.index[i] + base
-      o += p.index.length
-      base += p.position.length / 3
-    }
-    g.setIndex(new THREE.BufferAttribute(index, 1))
-    g.computeBoundingSphere()
-    if (!mesh) {
-      mesh = new THREE.Mesh(g, this.material)
-      mesh.name = `town-near-${town.id}`
-      mesh.position.set(town.x, 0, town.z)
-      this.scene.add(mesh)
-      this.near.set(town, mesh)
-    } else mesh.geometry = g
-    mesh.userData.tris = idx / 3
-    this.stats.nearTris += idx / 3
   }
 
   _cellAt(x, z) {
@@ -322,11 +330,10 @@ export class Towns {
   }
 
   dispose() {
-    for (const mesh of this.near.values()) {
-      this.scene.remove(mesh)
-      mesh.geometry.dispose()
+    for (const s of this.sites) {
+      if (s.mesh !== null) this.scene.remove(s.mesh)
+      this._evict(s)
     }
-    this.near.clear()
     this.scene.remove(this.far)
     this.far.geometry.dispose()
     this.material.dispose()

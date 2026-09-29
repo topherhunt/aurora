@@ -1,0 +1,15 @@
+{
+  "kind": "pose",
+  "note": "Folds all the way down onto its belly, legs tucked beneath, neck settled low, holds, and gets up. Same shape as the sit; sleep holds this pose.",
+  "samples": 56,
+  "crouch": 0.03,
+  "limits": { "hipLimit": 1.7, "fold": 2.8 },
+  "keys": [
+    { "t": 0.0, "pose": {} },
+    { "t": 0.8, "pose": { "root": { "lift": -0.12, "pitch": 0.05 }, "head": { "pitch": 0.15 }, "legs": { "hindLeft": { "fore": 0.06 }, "hindRight": { "fore": 0.06 } } } },
+    { "t": 1.9, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "head": { "pitch": 0.35 }, "wings": { "spread": -0.15, "sweep": 0.15 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
+    { "t": 3.9, "pose": { "root": { "lift": -0.36, "fore": -0.04 }, "head": { "pitch": 0.3, "yaw": -0.2 }, "wings": { "spread": -0.15, "sweep": 0.15 }, "legs": { "hindLeft": { "fore": 0.14, "lat": 0.03 }, "hindRight": { "fore": 0.14, "lat": -0.03 } } } },
+    { "t": 5.0, "pose": { "root": { "lift": -0.12, "pitch": 0.05 }, "head": { "pitch": 0.15 }, "legs": { "hindLeft": { "fore": 0.06 }, "hindRight": { "fore": 0.06 } } } },
+    { "t": 5.7, "pose": {} }
+  ]
+}

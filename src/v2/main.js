@@ -25,6 +25,7 @@ import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip } from './log-ship.js'
+import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY } from './render/trees.js'
 import { Ferns } from './render/ferns.js'
 import { Boulders } from './render/boulders.js'
@@ -1078,6 +1079,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'terrain', text: 'terrain & LOD' },
   // The drawn triangulation, green at 8 m cells and coarser, blue finer. Independent of the row above: the mesh keeps streaming while either is on. See terrain/wire.js.
   { key: 'terrainWire', text: 'terrain wireframe' },
+  // The road network as blue lines drawn over everything, readable from a flight; see buildRoadLines.
+  { key: 'roadLines', text: 'road network lines' },
   { key: 'trees', text: 'trees' },
   { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
@@ -1171,6 +1174,7 @@ function applyQuestToggle(key) {
   switch (key) {
     case 'terrain': terrain.batch.visible = enabled; break
     case 'terrainWire': terrainWire.visible = enabled; break
+    case 'roadLines': if (roadLines) roadLines.visible = enabled; break
     case 'trees': trees.batch.visible = enabled; break
     // Both rows read "the world as it ships" as ON, so the toggle is what gets
     // REMOVED -- the same polarity as `wind`.
@@ -2605,6 +2609,28 @@ let townsfolk = null
 let roadPlan = null
 let signposts = null
 let bridges = null
+let roadLines = null
+// Every laid way and bridge of the road plan as blue line segments 2 m over the road, each used stub carried on to its town's centre, and a dot on each centre, drawn without depth test or fog so the whole web reads from any height.
+function buildRoadLines(plan, towns) {
+  const v = []
+  const run = (pts) => { for (let k = 1; k < pts.length; k++) v.push(pts[k - 1][0], pts[k - 1][1] + 2, pts[k - 1][2], pts[k][0], pts[k][1] + 2, pts[k][2]) }
+  for (const w of plan.ways) if (w.pts) run(w.pts)
+  for (const b of plan.bridges) run(b.ends)
+  for (const n of plan.nodes) if (n.port && n.ways.length > 0) { const t = towns[n.town]; run([[t.x, t.y, t.z], ...t.roads[n.port.stub]]) }
+  const style = { color: 0x2f7bff, depthTest: false, depthWrite: false, fog: false, transparent: true }
+  const lineGeo = new THREE.BufferGeometry()
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3))
+  const dotGeo = new THREE.BufferGeometry()
+  dotGeo.setAttribute('position', new THREE.Float32BufferAttribute(towns.flatMap((t) => [t.x, t.y + 2, t.z]), 3))
+  const group = new THREE.Group()
+  group.name = 'road-lines'
+  for (const part of [new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial(style)), new THREE.Points(dotGeo, new THREE.PointsMaterial({ ...style, size: 8, sizeAttenuation: false }))]) {
+    part.renderOrder = 999
+    part.frustumCulled = false
+    group.add(part)
+  }
+  return group
+}
 let lamps = null
 let hearth = null
 let stools = null
@@ -2668,7 +2694,7 @@ const questToggles = {
   water: true, reflections: true, aurora: true, clouds: true, precip: true, sound: true,
   // Off until the summit wreaths are redone; the menu row still turns them on.
   wreaths: false,
-  critterTint: false, mirror: false, terrainWire: false,
+  critterTint: false, mirror: false, terrainWire: false, roadLines: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
   teleport: true,
@@ -3101,6 +3127,7 @@ function disposeRoom() {
   if (townsfolk) { townsfolk.dispose(); townsfolk = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
+  if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
   townPlan = null
   roadPlan = null
   closeHouse()
@@ -3569,9 +3596,12 @@ async function buildRoom(room, at) {
     const patch = (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey })
     signposts = new Signposts(scene, { signs: roadPlan.signs, names: townPlan.towns.map((t) => t.name), field: height, textures: propTextures, patch })
     signposts.update(spawn.x, spawn.z)
-    bridges = new Bridges(scene, { bridges: roadPlan.bridges, stone: await loadStoneBridge(), textures: propTextures, patch })
-    bridges.update(spawn.x, spawn.z)
-    window.v2roads = { plan: roadPlan, signposts, bridges } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
+    bridges = new Bridges(scene, { bridges: roadPlan.bridges, stone: await loadStoneBridge(), textures: propTextures, patch, water: waterSurfaces })
+    bridges.update(spawn)
+    roadLines = buildRoadLines(roadPlan, townPlan.towns)
+    roadLines.visible = questToggles.roadLines
+    scene.add(roadLines)
+    window.v2roads = { plan: roadPlan, signposts, bridges, lines: roadLines } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
   }
 
   // Trees. The atlas was built up ahead of the terrain, because the terrain
@@ -5409,6 +5439,8 @@ const airHook = {
 // --- frame loop -------------------------------------------------------------
 
 let last = performance.now()
+const spikes = new Spikes()
+window.v2spikes = spikes // console: `v2spikes.recent`
 let frames = 0
 let acc = 0
 let avgMs = 0
@@ -6362,6 +6394,7 @@ function tick() {
   const now = performance.now()
   const raw = now - last
   last = now
+  spikes.begin(now, raw)
   // Clamp dt so a tab-switch or a GC pause cannot teleport her across a valley.
   const dt = Math.min(0.1, raw / 1000)
   fadeStep(dt * 1000)
@@ -6437,6 +6470,7 @@ function tick() {
   }
   if (boats) boats.settle()
   portalTest()
+  spikes.lap('player')
   // A mouth she stepped into has just torn the room down under this frame.
   if (!ready) return
 
@@ -6462,12 +6496,14 @@ function tick() {
   netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null, player.originPosition().y)
   if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale() })
   netplay.update(now)
+  spikes.lap('net')
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
   // yaw is what stops two thirds of the slot pool going to terrain behind her.
   if (questToggles.terrain || questToggles.terrainWire) {
     terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
     terrainWire.update()
   }
+  spikes.lap('terrain')
   // Rocks first, and it is the same hard ordering the construction has: the tree,
   // fern, grass and litter scatters all ask the stone where it is before they
   // place anything, so a tile of stone has to be grown before the tile of wood
@@ -6490,18 +6526,24 @@ function tick() {
     if (roomProps) roomProps.update(headTmp.x, headTmp.y, headTmp.z)
     if (boulders) boulders.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  spikes.lap('rocks')
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
   if (towns) towns.update(headTmp.x, headTmp.z)
-  if (signposts) signposts.update(headTmp.x, headTmp.z)
-  if (bridges) bridges.update(headTmp.x, headTmp.z)
+  spikes.lap('towns')
+  if (signposts) signposts.update(headTmp)
+  spikes.lap('signposts')
+  if (bridges) bridges.update(headTmp)
   if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024)
+  spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('trees')
   if (questToggles.ferns) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
     carrots.update(headTmp.x, headTmp.y, headTmp.z)
   }
   if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('ferns+grass')
   // Three layers on one `litter` row, hidden AND frozen together -- see the row's
   // own note for why they share a button. Cheap per frame standing still, which is
   // what "the cheapest layers in the world" was measured at; all three are tiled
@@ -6518,6 +6560,7 @@ function tick() {
   // The rowboats sit on the water row: moored where they were placed, so this
   // is the rim sweep and the mesh-to-card step alone.
   if (questToggles.water) rowboats.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('litter')
   // The animals are simulations as well as scatters, so they take dt. Each is
   // frozen with its row, and all of them with the `animals` row.
   //
@@ -6585,6 +6628,7 @@ function tick() {
     dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
   })
   bankAnimalMs(dt)
+  spikes.lap('animals')
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
@@ -6596,6 +6640,7 @@ function tick() {
   handsNet.update()
   // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.
   creatureNet.update()
+  spikes.lap('hands+net')
 
   // Wall-clock time, anchored by the relay when there is one, so every headset
   // in the room reads the same hour off Date.now() with nothing sent per frame.
@@ -6629,6 +6674,7 @@ function tick() {
   // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.
   precip.update(dt, headTmp, state, height.snowLineAt(headTmp.x, headTmp.z), submerged)
   updateAmbience(dt, state)
+  spikes.lap('sky+ambience')
 
   // BEFORE the render, and it must be the only caller of markers.update(): the
   // handles are scaled to hold a constant angular size, so a second call with a
@@ -6658,6 +6704,7 @@ function tick() {
   // BEFORE the main render, and that ordering is load-bearing: both probes bind
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
+  spikes.lap('editor+panel')
   if (questToggles.reflections) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
@@ -6667,6 +6714,7 @@ function tick() {
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
   if (questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  spikes.lap('probes')
 
   // A-Frame renders the scene itself after every registered component's tick()
   // runs (see the `v2-quest-tick` component below) -- a renderer.render here
@@ -6707,6 +6755,7 @@ AFRAME.registerComponent('v2-quest-tick', {
   // After A-Frame's renderer.render, so this is the main pass and not the last
   // offscreen one -- see mainRender. The overlay pass goes after the copy.
   tock: () => {
+    spikes.lap('render')
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
     renderOverlay()

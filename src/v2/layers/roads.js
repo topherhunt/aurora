@@ -17,8 +17,22 @@ export const ROAD = {
   valley: { r: 200, depth: 40, k: 0.7 },
   // Travel along a road already laid costs this fraction, so later roads join earlier ones and fork off them.
   reuse: 0.45,
-  // A neighbouring pair of towns already joined by road within detour[0] times their distance apart gets no road of its own, nor one that would wind past detour[1] times it unless nothing joins them yet.
-  detour: [1.5, 2.5],
+  // A road leaves or joins another at `angle` or wider, read `cells` cells out, and never within `cells` of a fork. Off the road, a cell within `apart.cells` of one costs `apart.cost` times more, so roads keep apart rather than run side by side.
+  fork: { angle: Math.PI / 3, cells: 4 },
+  apart: { cells: 2, cost: 2 },
+  // The laid road stands no more than `cut` m under the ground nor `fill` over it.
+  cut: 2,
+  fill: 2,
+  // Each town tries a road to its `near.k` nearest within `near.r` m. A pair already joined within `detour` times their distance apart (through towns' streets too) gets none, nor one that saves under `gain` of the way round.
+  detour: 1.6,
+  gain: 0.25,
+  near: { k: 4, r: 2000 },
+  // A pair's route winding past `over` times their distance apart, or back along the way round, is raced by one that climbs costed at `grade`, feels no valley pull and takes road already laid at `reuse`; the shorter is laid.
+  direct: { over: 2, grade: 0.14, reuse: 0.8 },
+  // Every `step` cells along the roads, a link of at most `reach` m is tried to web `min` m or more away that is `detour` times further round by road and `save` m further, the biggest saving first. A way still longer than `every` gets waymark posts evenly along it.
+  link: { every: 500, step: 12, min: 80, detour: 2, save: 500, reach: 900, budget: 2 },
+  // A way whose ends are joined within `prune` times its length without it is taken up.
+  prune: 1.3,
   // Metres of dry ground kept between a road's cells and a river's bank band, or any other water.
   riverPad: 6,
   // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale no more than scale[1]. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel a new bridge costs; one already built costs only its length.
@@ -26,7 +40,7 @@ export const ROAD = {
   // The laid road: control points every `spacing` m after `smooth` passes of neighbour averaging, then meandered like the town roads, the sway fading in over `envelope` m from each end.
   spacing: 12,
   smooth: 8,
-  waves: [[60, 130, 0.0012, 5], [150, 320, 0.0006, 12]],
+  waves: [[48, 104, 0.00225, 6], [120, 256, 0.0011, 14.4]],
   envelope: 30,
   ySigma: 12,
   maxGrade: 0.18,
@@ -113,6 +127,7 @@ function buildGrid(ground, layers, towns) {
   }
   const R = Math.round(ROAD.valley.r / ROAD.cell)
   const mul = new Float32Array(N * N)
+  const val = new Float32Array(N * N)
   for (let j = 0; j < N; j++) {
     const j0 = Math.max(0, j - R)
     const j1 = Math.min(N, j + R + 1)
@@ -124,10 +139,11 @@ function buildGrid(ground, layers, towns) {
       const gx = (H[j * N + Math.min(N - 1, i + 1)] - H[j * N + Math.max(0, i - 1)]) / (2 * ROAD.cell)
       const gz = (H[Math.min(N - 1, j + 1) * N + i] - H[Math.max(0, j - 1) * N + i]) / (2 * ROAD.cell)
       const v = Math.max(-0.5, Math.min(1, (H[c] - mean) / ROAD.valley.depth))
-      mul[c] = 1 + (Math.hypot(gx, gz) / ROAD.slope) ** 2 + ROAD.valley.k * v
+      val[c] = ROAD.valley.k * v
+      mul[c] = 1 + (Math.hypot(gx, gz) / ROAD.slope) ** 2 + val[c]
     }
   }
-  return { H, blocked, mul }
+  return { H, blocked, mul, val }
 }
 
 // Where each river can be bridged: square across a straight reach, both tips dry and over the water, the approaches gentle, nothing but this river under the deck.
@@ -193,15 +209,22 @@ function findCrossings(layers, surface, blocked) {
   return out
 }
 
-// Relative-neighbourhood pairs: a and b are linked unless some third town is nearer to both than they are to each other.
+// The pairs a road is tried between, shortest first: each town's `near.k` nearest within `near.r` m, and the relative-neighbourhood pairs (no third town nearer to both) that hold the web together.
 function neighbourPairs(towns) {
   const d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z)
+  const keys = new Set()
   const pairs = []
+  const add = (a, b) => {
+    const key = Math.min(a, b) * towns.length + Math.max(a, b)
+    if (keys.has(key)) return
+    keys.add(key)
+    pairs.push({ a, b, len: d(towns[a], towns[b]) })
+  }
   for (let a = 0; a < towns.length; a++) {
+    towns.map((t, b) => [b, d(towns[a], t)]).filter(([b, ab]) => b !== a && ab < ROAD.near.r).sort((p, q) => p[1] - q[1]).slice(0, ROAD.near.k).forEach(([b]) => add(a, b))
     for (let b = a + 1; b < towns.length; b++) {
       const ab = d(towns[a], towns[b])
-      if (towns.some((t, c) => c !== a && c !== b && Math.max(d(towns[a], t), d(towns[b], t)) < ab)) continue
-      pairs.push({ a, b, len: ab })
+      if (!towns.some((t, c) => c !== a && c !== b && Math.max(d(towns[a], t), d(towns[b], t)) < ab)) add(a, b)
     }
   }
   return pairs.sort((p, q) => p.len - q.len)
@@ -211,13 +234,15 @@ function neighbourPairs(towns) {
  * The road network. `ground` is the raw heightmap (the route's grid), `surface` the live field with the towns' roads in it (the laid roads' heights). Returns { records, ways, nodes, bridges, signs } -- the records ready for Layers.addGenerated.
  */
 export function planRoads({ towns, ground, surface, layers, seed }) {
-  const { H, blocked, mul } = buildGrid(ground, layers, towns)
+  const { H, blocked, mul, val } = buildGrid(ground, layers, towns)
   const crossings = findCrossings(layers, surface, blocked)
   const crossAt = new Map()
+  const crossCell = new Uint8Array(N * N)
   crossings.forEach((X, i) => {
     for (const c of X.cells) {
       if (!crossAt.has(c)) crossAt.set(c, [])
       crossAt.get(c).push(i)
+      crossCell[c] = 1
     }
   })
 
@@ -227,12 +252,32 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
   const nodeAt = new Map()
   const owner = new Int32Array(N * N).fill(-1)
   const ownerIdx = new Int32Array(N * N)
-  const onNet = (c) => owner[c] >= 0 || nodeAt.has(c)
+  const net = new Uint8Array(N * N)
+  const onNet = (c) => net[c] === 1
+  // Road cells binned BIN cells square, so a search for nearby road walks a few bins rather than every cell; `near` is each cell's distance in cells to the nearest road, up to ROAD.apart.cells.
+  const BIN = 16
+  const NB = Math.ceil(N / BIN)
+  const bins = Array.from({ length: NB * NB }, () => [])
+  const near = new Uint8Array(N * N).fill(255)
+  const markNet = (c) => {
+    if (net[c] === 1) return
+    net[c] = 1
+    const i = c % N
+    const j = (c - i) / N
+    bins[Math.floor(j / BIN) * NB + Math.floor(i / BIN)].push(c)
+    const R = ROAD.apart.cells
+    for (let dj = -R; dj <= R; dj++) for (let di = -R; di <= R; di++) {
+      if (i + di < 0 || i + di >= N || j + dj < 0 || j + dj >= N) continue
+      const n = c + dj * N + di
+      near[n] = Math.min(near[n], Math.max(Math.abs(di), Math.abs(dj)))
+    }
+  }
   const newNode = (c, props) => {
     const node = { id: nodes.length, cell: c, x: cx(c), z: cz(c), ways: [], town: -1, port: null, bank: null, ...props }
     nodes.push(node)
     nodeAt.set(c, node.id)
     owner[c] = -1
+    markNet(c)
     return node.id
   }
   const addWay = (cells, a, b, crossing = -1) => {
@@ -240,7 +285,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     ways.push(w)
     nodes[a].ways.push(w.id)
     nodes[b].ways.push(w.id)
-    if (crossing < 0) for (let k = 1; k < cells.length - 1; k++) { owner[cells[k]] = w.id; ownerIdx[cells[k]] = k }
+    if (crossing < 0) for (let k = 1; k < cells.length - 1; k++) { owner[cells[k]] = w.id; ownerIdx[cells[k]] = k; markNet(cells[k]) }
     return w.id
   }
   // The node at cell c, splitting the way through it when there is none.
@@ -276,6 +321,29 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       if (ia >= 0 && ib >= 0 && Math.abs(ia - ib) === 1) return true
     }
     return false
+  }
+  // Whether a road may leave road cell m heading (vx, vz): at least fork.angle off every road already leaving m, and m not so near a way's end that the fork would crowd another.
+  const cosFork = Math.cos(ROAD.fork.angle)
+  const K = ROAD.fork.cells
+  const openAt = (m, vx, vz) => {
+    const out = []
+    const along = (w, k, step) => { const o = w.cells[Math.max(0, Math.min(w.cells.length - 1, k + step))]; out.push([cx(o) - cx(m), cz(o) - cz(m)]) }
+    if (nodeAt.has(m)) {
+      const node = nodes[nodeAt.get(m)]
+      for (const id of node.ways) {
+        const w = ways[id]
+        if (w.crossing >= 0) { const o = nodes[w.a === node.id ? w.b : w.a]; out.push([o.x - node.x, o.z - node.z]) } else along(w, w.a === node.id ? 0 : w.cells.length - 1, w.a === node.id ? K : -K)
+      }
+      if (node.port) { const stub = towns[node.town].roads[node.port.stub]; const p = stub.at(-3) ?? stub[0]; out.push([p[0] - node.x, p[2] - node.z]) }
+    } else {
+      const w = ways[owner[m]]
+      const k = ownerIdx[m]
+      if (Math.min(k, w.cells.length - 1 - k) < K) return false
+      along(w, k, K)
+      along(w, k, -K)
+    }
+    const l = Math.hypot(vx, vz)
+    return out.every(([ox, oz]) => (ox * vx + oz * vz) / (Math.hypot(ox, oz) * l) <= cosFork)
   }
   const bankNode = (X, s) => {
     const c = X.cells[s]
@@ -313,30 +381,43 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
   const jump = new Int32Array(N * N)
   const stamp = new Int32Array(N * N)
   const done = new Int32Array(N * N)
+  // Along the path to each cell: how many cells it has run off the network (fork.cells after a bridge), and the road cell it left.
+  const off = new Int32Array(N * N)
+  const left = new Int32Array(N * N)
   let sid = 0
-  // Cheapest way from any source cell to a cell isGoal accepts, inside box; the goal points steer the search. Returns { path, jumps } or null.
-  const search = (sources, isGoal, goalPts, box) => {
+  // Cheapest way from any source cell to a cell isGoal accepts, inside box; the goal points steer the search. `offNet` reaches network cells but walks on from none but the sources. `direct` costs steps as ROAD.direct. Nothing costing past `budget` is reached. The path runs along ways, leaves and joins them by openAt, and never steps between two diagonal road cells. Returns trace(goal), or null; with no goal found, every cell reached stays traceable until the next search.
+  const search = (sources, isGoal, goalPts, box, offNet = false, direct = false, budget = Infinity) => {
+    const gradeK = direct ? ROAD.direct.grade : ROAD.grade
+    const reuse = direct ? ROAD.direct.reuse : ROAD.reuse
     sid++
     const heap = new Heap(4096)
+    const hk = goalPts.length === 0 ? 0 : direct ? reuse : 0.6
     const heur = (c) => {
+      if (hk === 0) return 0
+      const x = cx(c)
+      const z = cz(c)
       let best = Infinity
-      for (const [x, z] of goalPts) best = Math.min(best, Math.hypot(cx(c) - x, cz(c) - z))
-      return goalPts.length ? best * 0.6 : 0
+      for (const p of goalPts) best = Math.min(best, (x - p[0]) ** 2 + (z - p[1]) ** 2)
+      return Math.sqrt(best) * hk
     }
     for (const s of sources) {
       g[s] = 0
       came[s] = -1
       jump[s] = -1
+      off[s] = 0
+      left[s] = -1
       stamp[s] = sid
       heap.push(heur(s), s)
     }
-    const relax = (c, n, cost, j) => {
+    const relax = (c, n, cost, j, o, l) => {
       const gn = g[c] + cost
-      if (stamp[n] === sid && gn >= g[n]) return
+      if (gn > budget || (stamp[n] === sid && gn >= g[n])) return
       stamp[n] = sid
       g[n] = gn
       came[n] = c
       jump[n] = j
+      off[n] = o
+      left[n] = l
       heap.push(gn + heur(n), n)
     }
     let goal = -1
@@ -345,6 +426,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       if (done[c] === sid) continue
       done[c] = sid
       if (isGoal(c)) { goal = c; break }
+      if (offNet && came[c] !== -1 && onNet(c)) continue
       const i = c % N
       const j = (c - i) / N
       for (let dj = -1; dj <= 1; dj++) {
@@ -359,28 +441,54 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
           const d = di !== 0 && dj !== 0 ? ROAD.cell * SQRT2 : ROAD.cell
           const grade = Math.abs(H[n] - H[c]) / d
           if (grade > ROAD.steep) continue
-          let cost = d * 0.5 * (mul[c] + mul[n]) * (1 + (grade / ROAD.grade) ** 2)
-          if (onNet(n) && onNet(c)) cost *= ROAD.reuse
-          relax(c, n, cost, -1)
+          const cOn = net[c] === 1
+          const nOn = net[n] === 1
+          if (di !== 0 && dj !== 0 && !(cOn && nOn) && net[c + di] === 1 && net[c + dj * N] === 1) continue
+          const m = direct ? mul[c] + mul[n] - val[c] - val[n] : mul[c] + mul[n]
+          let cost = d * 0.5 * m * (1 + (grade / gradeK) ** 2)
+          let o = 0
+          let l = -1
+          if (cOn && nOn) {
+            if (!alongWay(c, n)) continue
+            cost *= reuse
+          } else if (!nOn) {
+            o = cOn ? 1 : off[c] + 1
+            l = cOn ? c : left[c]
+            if (o === K && l >= 0 && !openAt(l, cx(n) - cx(l), cz(n) - cz(l))) continue
+            if (near[n] <= ROAD.apart.cells) cost *= ROAD.apart.cost
+          } else {
+            if (off[c] < K) continue
+            let back = c
+            for (let t = 1; t < K; t++) back = came[back]
+            if (!openAt(n, cx(back) - cx(n), cz(back) - cz(n))) continue
+          }
+          relax(c, n, cost, -1, o, l)
         }
       }
-      const xs = crossAt.get(c)
-      if (xs !== undefined) {
-        for (const xi of xs) {
+      if (crossCell[c] === 1) {
+        for (const xi of crossAt.get(c)) {
           const X = crossings[xi]
           const n = X.cells[0] === c ? X.cells[1] : X.cells[0]
           if (done[n] === sid) continue
-          relax(c, n, 2 * X.endD + (X.way >= 0 ? 0 : ROAD.cross.penalty), xi)
+          relax(c, n, 2 * X.endD + (X.way >= 0 ? 0 : ROAD.cross.penalty), xi, K, -1)
         }
       }
     }
-    if (goal < 0) return null
+    return goal < 0 ? null : trace(goal)
+  }
+  const trace = (goal) => {
     const path = []
     const jumps = []
     for (let c = goal; c !== -1; c = came[c]) { path.push(c); jumps.push(jump[c]) }
     path.reverse()
     jumps.reverse()
     return { path, jumps }
+  }
+  const reached = (c) => stamp[c] === sid
+  const walkOf = (path) => {
+    let m = 0
+    for (let k = 1; k < path.length; k++) m += Math.hypot(cx(path[k]) - cx(path[k - 1]), cz(path[k]) - cz(path[k - 1]))
+    return m
   }
   const boxAround = (pts, pad) => {
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
@@ -424,6 +532,13 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
 
   const portsOf = (ti) => ports.filter((id) => nodes[id].town === ti)
   const wayLen = (w) => (w.crossing >= 0 ? 2 * crossings[w.crossing].endD : (w.cells.length - 1) * ROAD.cell * 1.1)
+  // A node's neighbours over the network as [node, metres, way]: along each way, and from a port through its town's centre to the town's other ports (way -1).
+  const toCentre = (n) => Math.hypot(n.x - towns[n.town].x, n.z - towns[n.town].z)
+  const steps = (u) => {
+    const out = nodes[u].ways.map((wid) => { const w = ways[wid]; return [w.a === u ? w.b : w.a, wayLen(w), wid] })
+    if (nodes[u].port) for (const v of portsOf(nodes[u].town)) if (v !== u) out.push([v, toCentre(nodes[u]) + toCentre(nodes[v]), -1])
+    return out
+  }
   // Road distance between two sets of nodes over the network laid so far.
   const netDist = (from, to) => {
     const dist = new Map(from.map((id) => [id, 0]))
@@ -437,10 +552,8 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       if (seen.has(u)) continue
       if (goal.has(u)) return f
       seen.add(u)
-      for (const wid of nodes[u].ways) {
-        const w = ways[wid]
-        const v = w.a === u ? w.b : w.a
-        const d = f + wayLen(w)
+      for (const [v, l] of steps(u)) {
+        const d = f + l
         if (d < (dist.get(v) ?? Infinity)) { dist.set(v, d); heap.push(d, v) }
       }
     }
@@ -452,23 +565,28 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     const pb = portsOf(b)
     if (pa.length === 0 || pb.length === 0) continue
     const known = netDist(pa, pb)
-    if (known < ROAD.detour[0] * len) continue
+    if (known < ROAD.detour * len) continue
     const goals = new Set(pb.map((id) => nodes[id].cell))
     const goalPts = pb.map((id) => [cx(nodes[id].cell), cz(nodes[id].cell)])
     const ends = [...pa, ...pb].map((id) => [cx(nodes[id].cell), cz(nodes[id].cell)])
-    let found = null
-    for (const pad of [Math.max(300, len * 0.5), Math.max(900, len * 1.2)]) {
-      found = search(pa.map((id) => nodes[id].cell), (c) => goals.has(c), goalPts, boxAround(ends, pad))
-      if (found !== null) break
+    const find = (direct) => {
+      for (const pad of [Math.max(300, len * 0.5), Math.max(900, len * 1.2)]) {
+        const found = search(pa.map((id) => nodes[id].cell), (c) => goals.has(c), goalPts, boxAround(ends, pad), false, direct)
+        if (found !== null) return found
+      }
+      return null
     }
+    let found = find(false)
     if (found === null) {
       if (known === Infinity) failed.push(`${towns[a].id}-${towns[b].id}`)
       continue
     }
-    const { path } = found
-    let walked = 0
-    for (let k = 1; k < path.length; k++) walked += Math.hypot(cx(path[k]) - cx(path[k - 1]), cz(path[k]) - cz(path[k - 1]))
-    if (known === Infinity || walked < ROAD.detour[1] * len) commit(found)
+    // A route that winds far round, or back along the long way already laid, races a direct one.
+    if (walkOf(found.path) > ROAD.direct.over * len || walkOf(found.path) >= (1 - ROAD.gain) * known) {
+      const direct = find(true)
+      if (direct !== null && walkOf(direct.path) < walkOf(found.path)) found = direct
+    }
+    if (walkOf(found.path) < (1 - ROAD.gain) * known) commit(found)
   }
   // A stub nothing used yet runs to the nearest road more than 200 m past its own town, or to another town.
   for (const id of ports) {
@@ -481,13 +599,133 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     if (found === null) failed.push(`${t.id} stub ${port.port.stub}`)
     else commit(found)
   }
+  const cellM = ROAD.cell * 1.1
+  const distFrom = (seeds, skip = null) => {
+    const D = new Float64Array(nodes.length).fill(Infinity)
+    const heap = new Heap(64)
+    for (const [id, d] of seeds) if (d < D[id]) { D[id] = d; heap.push(d, id) }
+    while (heap.n > 0) {
+      const f = heap.f[0]
+      const u = heap.pop()
+      if (f > D[u]) continue
+      for (const [v, l, wid] of steps(u)) if (wid !== skip && f + l < D[v]) { D[v] = f + l; heap.push(D[v], v) }
+    }
+    return D
+  }
+  // Links: from a road cell, a road of at most link.reach m to web link.detour times further round by road than it walks and link.save m further. With `lay` false, the most any link from it could save (the straight distance standing in for the walk); with it, whether one was laid.
+  const linkFrom = (src, lay) => {
+    const sx = cx(src)
+    const sz = cz(src)
+    const w = nodeAt.has(src) ? null : ways[owner[src]]
+    const i = ownerIdx[src]
+    const D = w === null ? distFrom([[nodeAt.get(src), 0]]) : distFrom([[w.a, i * cellM], [w.b, (w.cells.length - 1 - i) * cellM]])
+    const netTo = (c) => {
+      if (nodeAt.has(c)) return D[nodeAt.get(c)]
+      const o = ways[owner[c]]
+      const k = ownerIdx[c]
+      if (o === w) return Math.abs(k - i) * cellM
+      return Math.min(D[o.a] + k * cellM, D[o.b] + (o.cells.length - 1 - k) * cellM)
+    }
+    const box = boxAround([[sx, sz]], ROAD.link.reach)
+    if (lay) search([src], () => false, [], box, true, true, ROAD.link.budget * ROAD.link.reach)
+    let most = 0
+    const cands = []
+    for (let bj = Math.floor(box.j0 / BIN); bj <= Math.floor(box.j1 / BIN); bj++) {
+      for (let bi = Math.floor(box.i0 / BIN); bi <= Math.floor(box.i1 / BIN); bi++) for (const c of bins[bj * NB + bi]) {
+        if (c === src || (lay && !reached(c))) continue
+        // A split this near a way's end leaves a stub too short to ease between its ends' heights.
+        if (!nodeAt.has(c) && Math.min(ownerIdx[c], ways[owner[c]].cells.length - 1 - ownerIdx[c]) < 4) continue
+        const d = Math.hypot(cx(c) - sx, cz(c) - sz)
+        if (d < ROAD.link.min || d > ROAD.link.reach) continue
+        const round = netTo(c)
+        if (round < Infinity && round > ROAD.link.detour * d && round - d > ROAD.link.save) { most = Math.max(most, round - d); cands.push(c) }
+      }
+    }
+    if (!lay) return most
+    // Cheapest first; the first whose walked link is short enough and saves enough is laid.
+    cands.sort((p, q) => g[p] - g[q])
+    for (const c of cands) {
+      const found = trace(c)
+      const walked = walkOf(found.path)
+      if (walked > ROAD.link.reach || netTo(c) < ROAD.link.detour * walked || netTo(c) - walked < ROAD.link.save) continue
+      commit(found)
+      return true
+    }
+    return false
+  }
+  // Every link.step cells along each way, the biggest possible saving tried first. Laying roads only shortens the way round, so a stale bound is an overestimate: one no longer the biggest when refreshed goes back in the queue.
+  const queue = new Heap(1024)
+  for (const w of ways) {
+    if (w.crossing >= 0) continue
+    for (let k = ROAD.link.step >> 1; k < w.cells.length - 4; k += ROAD.link.step) {
+      const most = linkFrom(w.cells[k], false)
+      if (most > 0) queue.push(-most, w.cells[k])
+    }
+  }
+  while (queue.n > 0) {
+    const c = queue.pop()
+    const most = linkFrom(c, false)
+    if (most === 0) continue
+    if (queue.n > 0 && most < -queue.f[0]) queue.push(-most, c)
+    else linkFrom(c, true)
+  }
+  // Pruning: a way whose ends are joined within `prune` times its length without it goes, the most redundant first, so no road runs beside another. A way a port or a bridge hangs by stays.
+  const alt = (w) => distFrom([[w.a, 0]], w.id)[w.b] / wayLen(w)
+  const keeps = (w) => w.crossing >= 0 || [w.a, w.b].some((id) => nodes[id].bank !== null || (nodes[id].port && nodes[id].ways.length === 1))
+  const drop = (w) => {
+    w.dead = true
+    for (const id of [w.a, w.b]) nodes[id].ways = nodes[id].ways.filter((x) => x !== w.id)
+  }
+  for (const w of ways.filter((w) => !keeps(w)).map((w) => [w, alt(w)]).sort((p, q) => p[1] - q[1]).map(([w]) => w)) {
+    if (!w.dead && !keeps(w) && alt(w) < ROAD.prune) drop(w)
+  }
+  // A fork left with one way is a dead end, and goes; one left with two joins them into one way.
+  for (let changed = true; changed;) {
+    changed = false
+    for (const n of nodes) {
+      if (n.port || n.bank !== null) continue
+      if (n.ways.length === 1) { drop(ways[n.ways[0]]); changed = true; continue }
+      if (n.ways.length !== 2) continue
+      const [w1, w2] = n.ways.map((id) => ways[id])
+      const o1 = w1.a === n.id ? w1.b : w1.a
+      const o2 = w2.a === n.id ? w2.b : w2.a
+      if (w1.crossing >= 0 || w2.crossing >= 0 || o1 === o2) continue
+      w1.cells = [...(w1.b === n.id ? w1.cells : w1.cells.reverse()), ...(w2.a === n.id ? w2.cells : w2.cells.reverse()).slice(1)]
+      w1.a = o1
+      w1.b = o2
+      w2.dead = true
+      nodes[o2].ways = nodes[o2].ways.map((x) => (x === w2.id ? w1.id : x))
+      n.ways = []
+      changed = true
+    }
+  }
+  const live = ways.filter((w) => !w.dead)
 
   // --- geometry ---------------------------------------------------------------
   const cellBlocked = (x, z) => {
     const c = cellOf(x, z)
     return c < 0 || blocked[c] !== 0
   }
-  const nodeY = (node) => (node.port ? node.port.end[1] : surface(node.x, node.z))
+  // A fork takes the ground's height, then gives way until no road from it averages steeper than 0.8 maxGrade over its cells (the smoothed road runs shorter), which the relax below could not flatten between pinned ends. Ports and banks hold.
+  const nodeYs = nodes.map((n) => (n.port ? n.port.end[1] : surface(n.x, n.z)))
+  const free = (n) => (n.port || n.bank !== null ? 0 : 1)
+  for (let it = 0; it < 500; it++) {
+    let moved = false
+    for (const w of live) {
+      const fa = free(nodes[w.a])
+      const fb = free(nodes[w.b])
+      if (w.crossing >= 0 || fa + fb === 0) continue
+      const lim = 0.8 * ROAD.maxGrade * walkOf(w.cells)
+      const d = nodeYs[w.b] - nodeYs[w.a]
+      if (Math.abs(d) <= lim + 1e-3) continue
+      const fix = (Math.abs(d) - lim) * Math.sign(d)
+      nodeYs[w.a] += (fix * fa) / (fa + fb)
+      nodeYs[w.b] -= (fix * fb) / (fa + fb)
+      moved = true
+    }
+    if (!moved) break
+  }
+  const nodeY = (node) => nodeYs[node.id]
   // A bank node's outward normal, away from its river.
   const outward = (node) => {
     const X = crossings[node.bank.crossing]
@@ -496,7 +734,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
   }
   const records = []
   const roadId = () => `road${records.length}`
-  for (const w of ways) {
+  for (const w of live) {
     if (w.crossing >= 0) continue
     const A = nodes[w.a]
     const B = nodes[w.b]
@@ -504,6 +742,13 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     let pts = w.cells.map((c) => [cx(c), cz(c), false])
     pts[0] = [A.x, A.z, true]
     pts[pts.length - 1] = [B.x, B.z, true]
+    // The cell fork.cells out from each end is where openAt read the fork's angle, so the road runs straight to it, unswayed; a way shorter than that runs straight between its ends.
+    const last = pts.length - 1
+    const ia = Math.min(K, last)
+    const ib = Math.max(0, last - K)
+    if (!A.bank && ia < last) pts[ia] = [pts[ia][0], pts[ia][1], true, 'a']
+    if (!B.bank && ib > 0) pts[ib] = [pts[ib][0], pts[ib][1], true, 'b']
+    pts = pts.filter((_, k) => k === 0 || k === last || ((A.bank || k >= ia) && (B.bank || k <= ib)))
     for (const [node, atStart] of [[A, true], [B, false]]) {
       if (!node.bank) continue
       const [ox, oz] = outward(node)
@@ -520,7 +765,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       const [ax, az] = pts[k - 1]
       const [bx, bz, pin] = pts[k]
       const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / (ROAD.cell / 2)))
-      for (let i = 1; i <= n; i++) dense.push([ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n, i === n && pin])
+      for (let i = 1; i <= n; i++) dense.push([ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n, i === n && pin, i === n ? pts[k][3] : undefined])
     }
     for (let it = 0; it < ROAD.smooth; it++) {
       for (let k = 1; k < dense.length - 1; k++) {
@@ -547,9 +792,11 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     const arc = [0]
     for (let k = 1; k < out.length; k++) arc.push(arc[k - 1] + Math.hypot(out[k][0] - out[k - 1][0], out[k][1] - out[k - 1][1]))
     const pinArcs = arc.filter((_, k) => out[k][2])
+    const legA = arc.find((_, k) => out[k][3] === 'a') ?? -1
+    const legB = arc.find((_, k) => out[k][3] === 'b') ?? Infinity
     const laid = out.map((p, k) => {
-      if (p[2]) return [p[0], p[1]]
       const s = arc[k]
+      if (p[2] || s < legA || s > legB) return [p[0], p[1]]
       const env = smoothstep(0, 1, Math.min(...pinArcs.map((a) => Math.abs(s - a))) / ROAD.envelope)
       const tx = out[k + 1][0] - out[k - 1][0]
       const tz = out[k + 1][1] - out[k - 1][1]
@@ -635,8 +882,8 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     while (k < pts.length - 1 && Math.hypot(pts[k][0] - node.x, pts[k][2] - node.z) < 15) k++
     return Math.atan2(pts[k][2] - node.z, pts[k][0] - node.x)
   }
-  // Shortest road distance from a node to every town, and the way it first takes.
-  const reach = (from) => {
+  // Shortest road distance from a node to every town but its own (unless `own`), and the way it first takes.
+  const reach = (from, own = false) => {
     const dist = new Float64Array(nodes.length).fill(Infinity)
     const first = new Int32Array(nodes.length).fill(-1)
     const heap = new Heap(64)
@@ -660,7 +907,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     }
     const best = new Map()
     nodes.forEach((n) => {
-      if (n.town < 0 || n.town === from.town || dist[n.id] === Infinity) return
+      if (n.town < 0 || (n.town === from.town && !own) || dist[n.id] === Infinity) return
       const b = best.get(n.town)
       if (b === undefined || dist[n.id] < b.dist) best.set(n.town, { town: n.town, dist: dist[n.id], way: first[n.id] })
     })
@@ -709,5 +956,54 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       boards: picked.map((t) => ({ town: t.town, dist: t.dist, angle: dirs.find((d) => d.way === t.way).a })),
     })
   }
-  return { records, ways, nodes, bridges, signs, crossings, failed }
+  // Waymarks: a way longer than link.every gets posts evenly along it, on alternating verges, naming the nearest town each way and then the nearest overall.
+  for (const w of live) {
+    if (!w.pts || w.length <= ROAD.link.every) continue
+    const count = Math.ceil(w.length / ROAD.link.every) - 1
+    const ra = reach(nodes[w.a], true)
+    const rb = reach(nodes[w.b], true)
+    const arc = [0]
+    for (let k = 1; k < w.pts.length; k++) arc.push(arc[k - 1] + Math.hypot(w.pts[k][0] - w.pts[k - 1][0], w.pts[k][2] - w.pts[k - 1][2]))
+    const r = mulberry32(hash32(seed, 3583, w.cells[0], w.cells.at(-1)))
+    for (let m = 1; m <= count; m++) {
+      const s = (arc.at(-1) * m) / (count + 1)
+      let k = 1
+      while (k < w.pts.length - 1 && arc[k] < s) k++
+      const [ax, ay, az] = w.pts[k - 1]
+      const [bx, by, bz] = w.pts[k]
+      const f = (s - arc[k - 1]) / (arc[k] - arc[k - 1])
+      const px = ax + (bx - ax) * f
+      const py = ay + (by - ay) * f
+      const pz = az + (bz - az) * f
+      const fwd = Math.atan2(bz - az, bx - ax)
+      const dests = new Map()
+      for (const [R, extra, angle] of [[ra, s, fwd + Math.PI], [rb, arc.at(-1) - s, fwd]]) {
+        for (const t of R) {
+          const b = dests.get(t.town)
+          if (b === undefined || t.dist + extra < b.dist) dests.set(t.town, { town: t.town, dist: t.dist + extra, angle })
+        }
+      }
+      const sorted = [...dests.values()].sort((p, q) => p.dist - q.dist)
+      const want = ROAD.sign.boards[0] + Math.floor(r() * (ROAD.sign.boards[1] - ROAD.sign.boards[0] + 1))
+      const picked = [fwd + Math.PI, fwd].map((a) => sorted.find((t) => t.angle === a)).filter((t) => t !== undefined)
+      for (const t of sorted) {
+        if (picked.length >= want) break
+        if (!picked.includes(t)) picked.push(t)
+      }
+      picked.sort((p, q) => p.dist - q.dist)
+      const side = fwd + (m % 2 === 0 ? 0.5 : -0.5) * Math.PI
+      const tx = px + Math.cos(side) * (ROAD.sign.offset + 1)
+      const tz = pz + Math.sin(side) * (ROAD.sign.offset + 1)
+      records.push({ id: roadId(), feather: 1, pts: [[px, py, pz, ROAD.width], [tx, surface(tx, tz), tz, ROAD.sign.spur]] })
+      signs.push({
+        node: -1,
+        way: w.id,
+        x: px + Math.cos(side) * ROAD.sign.offset,
+        z: pz + Math.sin(side) * ROAD.sign.offset,
+        seed: hash32(seed, 3589, w.cells[0], m),
+        boards: picked.map((t) => ({ town: t.town, dist: t.dist, angle: t.angle })),
+      })
+    }
+  }
+  return { records, ways: live, nodes, bridges, signs, crossings, failed }
 }

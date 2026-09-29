@@ -1,0 +1,15 @@
+{
+  "kind": "pose",
+  "note": "Drops back onto its hocks with the chest held up and the head alert, holds, and rises. The hold is a flat pair of keys so a game can cut it into sit-down / sit-idle / stand-up.",
+  "samples": 46,
+  "crouch": 0.03,
+  "limits": { "hipLimit": 1.5, "fold": 2.6 },
+  "keys": [
+    { "t": 0.0, "pose": {} },
+    { "t": 0.6, "pose": { "root": { "lift": -0.08, "pitch": -0.06 }, "head": { "pitch": 0.1 }, "legs": { "hindLeft": { "fore": 0.05 }, "hindRight": { "fore": 0.05 } } } },
+    { "t": 1.5, "pose": { "root": { "lift": -0.26, "fore": -0.05, "pitch": -0.18 }, "head": { "pitch": -0.1 }, "tail": { "pitch": -0.15 }, "legs": { "hindLeft": { "fore": 0.12, "lat": 0.02 }, "hindRight": { "fore": 0.12, "lat": -0.02 } } } },
+    { "t": 3.2, "pose": { "root": { "lift": -0.26, "fore": -0.05, "pitch": -0.18 }, "head": { "pitch": -0.05, "yaw": 0.2 }, "tail": { "pitch": -0.15 }, "legs": { "hindLeft": { "fore": 0.12, "lat": 0.02 }, "hindRight": { "fore": 0.12, "lat": -0.02 } } } },
+    { "t": 4.1, "pose": { "root": { "lift": -0.08, "pitch": -0.06 }, "head": { "pitch": 0.1 }, "legs": { "hindLeft": { "fore": 0.05 }, "hindRight": { "fore": 0.05 } } } },
+    { "t": 4.7, "pose": {} }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "note": "Standing on both planted feet, breathing, the head turning to look about. Never quite still: a mount that shifts under its rider.",
+  "duration": 4,
+  "samples": 40,
+  "stride": 0,
+  "duty": 1,
+  "stepHeight": 0,
+  "toeOff": 0,
+  "crouch": 0.03,
+  "phases": { "hindLeft": 0, "hindRight": 0 },
+  "bodyBob": 0.004,
+  "bobFreq": 2,
+  "bodySway": 0.006,
+  "tailSway": 0.06,
+  "headBob": 0.02,
+  "headYaw": 0.25,
+  "wingBeat": 0.02,
+  "wingFreq": 2
+}

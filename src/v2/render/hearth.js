@@ -16,9 +16,9 @@ import { SEAT_M } from './villagers.js'
 // day and night; a stool is a nonagon of pine bark with its corners jittered
 // so no two are the same block. One merged mesh in the prop layout, drawn
 // whole inside HEARTH.lod[0] metres, decimated to a third past it and a spun
-// card of one photograph past HEARTH.lod[1], the flame at every distance. The
-// fire ring and every stool are stone to the walker, and the wood keeps off
-// the whole place.
+// card of one photograph past HEARTH.lod[1], and nothing, flame included,
+// past HEARTH.hide. The fire ring and every stool are stone to the walker, and
+// the wood keeps off the whole place.
 // ---------------------------------------------------------------------------
 
 export const HEARTH = {
@@ -35,6 +35,8 @@ export const HEARTH = {
   hysteresis: 0.9,
   // The decimated tier's triangles as a fraction of the whole's.
   decimate: 1 / 3,
+  // Hidden past this many times its height, flame included: 5 px at a Quest 2's roughly 1100 px per radian.
+  hide: 220,
 }
 
 /** The seed the card's photograph is taken at: one picture for every village's hearth. */
@@ -278,6 +280,27 @@ export function decimateHearth(geometry, fraction) {
   return geo
 }
 
+/**
+ * Everything a hearth draws and stands on, built about (0, 0) on `groundAt`:
+ * the ring and stools, both tiers and the material. `hearthKit(..., () => 0)`
+ * built once serves every hearth on level ground (a town's clearing is flat to
+ * 5 mm under its ring roads); such a shared kit is disposed by its owner, never
+ * by the hearths drawing it. `decimate` false draws the whole mesh at the middle
+ * rung too: decimateHearth takes about 200 ms to save under 300 triangles.
+ */
+export function hearthKit(bank, seed, groundAt, textures, patch, { decimate = true } = {}) {
+  const built = buildHearth(bank, seed, groundAt)
+  const tiers = [built.geometry, decimate ? decimateHearth(built.geometry, HEARTH.decimate) : built.geometry]
+  const material = patch(createPropMaterial(textures, { side: THREE.FrontSide, bump: true, vertexColors: true }), 'v2-hearth')
+  return {
+    ring: built.ring, stools: built.stools, extent: built.extent, tiers, material,
+    dispose() {
+      for (const g of new Set(tiers)) g.dispose()
+      material.dispose()
+    },
+  }
+}
+
 export class Hearth {
   /**
    * @param field  V2Height: heightAt, the ground it sits on
@@ -286,8 +309,9 @@ export class Hearth {
    * @param opts.textures  the prop atlas (DataArrayTexture). Required.
    * @param opts.patch  (material, cacheKey) => material, the lighting patch. Required.
    * @param opts.scale  the whole place grown about its centre: 1 for leafkin, more for the towns' people. Everything this class hands out is in the world's metres.
+   * @param opts.kit  a shared hearthKit built on level ground, drawn instead of one built on the real ground here.
    */
-  constructor(scene, field, { bank = null, at = null, textures = null, seed = 1, patch = null, scale = 1 } = {}) {
+  constructor(scene, field, { bank = null, at = null, textures = null, seed = 1, patch = null, scale = 1, kit = null } = {}) {
     if (!field || typeof field.heightAt !== 'function') throw new Error('Hearth: needs a V2Height with heightAt')
     if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.z)) throw new Error('Hearth: `at` is { x, z }')
     if (!textures || !textures.image || !(textures.image.depth > LAYER.IMPOSTOR_HEARTH)) throw new Error('Hearth: needs the prop atlas')
@@ -298,13 +322,16 @@ export class Hearth {
     this.z = at.z
     this.y = field.heightAt(at.x, at.z)
     // Built about the origin on the real ground under it, so the mesh's own bounds hold it and the card spins about the fire.
-    const built = buildHearth(bank, seed, (x, z) => (field.heightAt(this.x + x * scale, this.z + z * scale) - this.y) / scale)
-    this.ring = built.ring
-    this.stools = built.stools
-    this.extent = built.extent
-    this.material = patch(createPropMaterial(textures, { side: THREE.FrontSide, bump: true, vertexColors: true }), 'v2-hearth')
-    this.cardMaterial = patch(createPropMaterial(textures, { side: THREE.DoubleSide, billboardLayers: [LAYER.IMPOSTOR_HEARTH] }), 'v2-hearth-card')
-    this.tiers = [built.geometry, decimateHearth(built.geometry, HEARTH.decimate)]
+    this.shared = kit !== null
+    this.kit = kit || hearthKit(bank, seed, (x, z) => (field.heightAt(this.x + x * scale, this.z + z * scale) - this.y) / scale, textures, patch)
+    this.ring = this.kit.ring
+    this.stools = this.kit.stools
+    this.extent = this.kit.extent
+    this.tall = Math.max(this.extent.height, HEARTH.fire.lift + CAMPFIRE.height) * scale
+    this.material = this.kit.material
+    this.cardMaterial = null
+    this.patch = patch
+    this.tiers = this.kit.tiers
     this.tris = this.tiers.map((g) => g.index.count / 3)
     this.group = new THREE.Group()
     this.group.position.set(this.x, this.y, this.z)
@@ -319,6 +346,7 @@ export class Hearth {
     // The card's quad comes with its photograph (bakeCard); until then the far rung draws the decimated tier.
     this.card = null
     this.tier = 0
+    this.shown = true
     // The flame's shader reads its instance origin as world space, so it hangs off the scene, not the group.
     this.flames = new Flames(1, CAMPFIRE, { seed })
     this.flames.place(0, this.x, this.y + HEARTH.fire.lift * scale, this.z, { height: CAMPFIRE.height * scale, radius: CAMPFIRE.radius * scale, group: 0 })
@@ -340,6 +368,7 @@ export class Hearth {
       width: subject.extent.width, height: subject.extent.height, unlit: true, vertexColors: true,
     })
     subject.geometry.dispose()
+    if (!this.cardMaterial) this.cardMaterial = this.patch(createPropMaterial(this.textures, { side: THREE.DoubleSide, billboardLayers: [LAYER.IMPOSTOR_HEARTH] }), 'v2-hearth-card')
     if (this.card) { this.group.remove(this.card); this.card.geometry.dispose() }
     this.card = new THREE.Mesh(buildImpostorCard(shot.width, shot.height, LAYER.IMPOSTOR_HEARTH, 1, { upNormal: true, sink: shot.sink }), this.cardMaterial)
     this.card.name = 'v2-hearth-card'
@@ -359,7 +388,15 @@ export class Hearth {
   /** Once a frame: the rung by the eye's distance, and the flame's clock in seconds. */
   update(camX, camY, camZ, t) {
     const dx = this.x - camX, dy = this.y + (this.extent.height * this.scale) / 2 - camY, dz = this.z - camZ
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) / this.scale
+    const dm = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    const shown = dm < this.tall * HEARTH.hide * (this.shown ? 1 : HEARTH.hysteresis)
+    if (shown !== this.shown) {
+      this.shown = shown
+      this.group.visible = shown
+      this.flames.group.visible = shown
+    }
+    if (!shown) return
+    const d = dm / this.scale
     let tier = this.tier
     const [mid, far] = HEARTH.lod
     if (tier < 2 && d > far) tier = 2
@@ -420,10 +457,9 @@ export class Hearth {
   dispose() {
     this.group.parent?.remove(this.group)
     this.flames.group.parent?.remove(this.flames.group)
-    for (const g of this.tiers) g.dispose()
+    if (!this.shared) this.kit.dispose()
     if (this.card) this.card.geometry.dispose()
-    this.material.dispose()
-    this.cardMaterial.dispose()
+    if (this.cardMaterial) this.cardMaterial.dispose()
     this.flames.dispose()
   }
 }

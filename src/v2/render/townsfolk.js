@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
-import { HEARTH, Hearth } from './hearth.js'
+import { HEARTH, Hearth, hearthKit } from './hearth.js'
 import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
@@ -34,6 +34,8 @@ export const TOWNSFOLK = {
   pace: [0.85, 1.15],
   // Metres past a town's radius it comes alive at, and is let go past.
   live: [250, 330],
+  // Ticks of replay a frame, shared by the towns still catching up; a full chapter is 12000.
+  replay: 400,
   // The walk round the clearing, inside its edge, that the paths and roads join.
   ring: { r: 4, nodes: 10 },
   lane: 0.2,
@@ -185,13 +187,16 @@ export class TownLife {
     this.grounded = true
     this.alpha = 0
     this.talks = 0
+    this.caught = false
   }
 
-  /** Stepped to the room clock's `seconds`: placed and replayed from its chapter's start on the first call or past a chapter's skip. */
-  advance(seconds) {
+  /** Stepped toward the room clock's `seconds`, at most `budget` ticks: placed and replayed from its chapter's start on the first call or past a chapter's skip. `caught` says whether it got there; returns the ticks stepped. */
+  advance(seconds, budget = Infinity) {
     const tick = tickOf(seconds)
     if (this.tick === null || tick - this.tick > CHAPTER_S * TICK_HZ) this._placeAll(seconds)
-    for (let t = this.tick + 1; t <= tick; t++) {
+    const from = this.tick
+    const end = Math.min(tick, from + budget)
+    for (let t = from + 1; t <= end; t++) {
       if (t >= this.turnTick) { this._placeAll(t / TICK_HZ); continue }
       this.tick = t
       this.homing = t >= this.turnTick - TOWNSFOLK.homing * TICK_HZ
@@ -199,7 +204,9 @@ export class TownLife {
       this.grounded = t >= tick - 1
       for (const c of this.all) this._tick(c, t)
     }
+    this.caught = end === tick
     this.alpha = Math.min(1, Math.max(0, (seconds - this.tick * TICK_S) * TICK_HZ))
+    return end - from
   }
 
   get stats() {
@@ -508,7 +515,9 @@ export class Townsfolk {
     this.scene = scene
     this.towns = towns
     this.walk = walk
-    this.hearthOpts = { field, bank, textures, patch }
+    // Every town's hearth draws this one, built at boot on level ground (hearth.js hearthKit).
+    this.kit = hearthKit(bank, hash32(seed, 0x4ea7), () => 0, textures, patch, { decimate: false })
+    this.hearthOpts = { field, bank, textures, patch, kit: this.kit }
     this.seed = seed
     this.batch = new THREE.Group()
     this.batch.name = 'v2-townsfolk'
@@ -608,7 +617,7 @@ export class Townsfolk {
     c.puppet = null
   }
 
-  /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock, and its people drawn nearest first. */
+  /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), and its people drawn nearest first. */
   update(feet, head, seconds, dt, t) {
     if (!this.loaded) return
     this.frame++
@@ -619,9 +628,12 @@ export class Townsfolk {
       else if (this.alive.has(i) && d > sleep) this._sleep(i)
     })
     const drawn = []
+    let budget = TOWNSFOLK.replay
     for (const { life, hearth } of this.alive.values()) {
       hearth.update(head.x, head.y, head.z, t)
-      life.advance(seconds)
+      if (life.caught) life.advance(seconds)
+      else budget -= life.advance(seconds, budget)
+      if (!life.caught) continue
       for (const c of life.all) {
         if (c.hidden && !c.puppet && !c.greet && !c.lag) continue
         this._pose(c, life.alpha, feet, seconds, dt)
@@ -737,5 +749,6 @@ export class Townsfolk {
     for (const i of [...this.alive.keys()]) this._sleep(i)
     this.batch.removeFromParent()
     for (const m of this.materials) m.dispose()
+    this.kit.dispose()
   }
 }

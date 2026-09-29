@@ -1,10 +1,10 @@
-// The signposts at the road forks (DESIGN.md §35): a hewn post propped in a cairn, with an arrow board for each town it names. Post and cairn are prop material; the boards read their names off one canvas atlas, dark brown on wood, legible from both sides. A post is built when the player comes within `near` and dropped past `far`, so only the few nearby cost anything.
+// The signposts at the road forks (DESIGN.md §35): a hewn post propped in a cairn, with an arrow board for each town it names. Post and cairn are prop material; the boards read their names off one canvas atlas, dark brown on wood, legible from both sides. A post is built when the eye comes within `near` of its foot, in 3D, and dropped past `far`: from the air, even the one under her is not built.
 import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { mulberry32 } from '../../sim/mathx.js'
 
-export const SIGN = { near: 250, far: 300, post: { h: 2.6, w: 0.14 }, board: { len: 1.3, h: 0.24, t: 0.045, tip: 0.2, gap: 0.3, top: 2.35 }, cairn: { stones: 11, r: 0.42 } }
+export const SIGN = { near: 60, far: 70, post: { h: 2.6, w: 0.14 }, board: { len: 1.3, h: 0.24, t: 0.045, tip: 0.2, gap: 0.3, top: 2.35 }, cairn: { stones: 11, r: 0.42 } }
 const CELL = { w: 320, h: 60, cols: 4 }
 const WOOD = '#9c7446'
 const INK = '#3b2412'
@@ -118,7 +118,7 @@ export class Signposts {
   /** `signs` from planRoads, `names` the towns' names by town index, `field.heightAt` for the ground. */
   constructor(scene, { signs, names, field, textures, patch }) {
     this.scene = scene
-    this.signs = signs.map((s) => ({ ...s, group: null }))
+    this.signs = signs.map((s) => ({ ...s, y: null, group: null }))
     this.field = field
     this.material = createPropMaterial(textures, { vertexColors: true })
     this.material.side = THREE.FrontSide
@@ -133,9 +133,8 @@ export class Signposts {
 
   _build(s) {
     const rand = mulberry32(s.seed)
-    const y = this.field.heightAt(s.x, s.z)
     const group = new THREE.Group()
-    group.position.set(s.x, y, s.z)
+    group.position.set(s.x, s.y, s.z)
     const prop = propArrays()
     const m = new THREE.Matrix4()
     const q = new THREE.Quaternion()
@@ -184,10 +183,14 @@ export class Signposts {
     s.group = null
   }
 
-  update(x, z) {
+  update(eye) {
     let shown = 0
     for (const s of this.signs) {
-      const d = Math.hypot(s.x - x, s.z - z)
+      const dx = s.x - eye.x
+      const dz = s.z - eye.z
+      if (s.group === null && dx * dx + dz * dz > SIGN.near * SIGN.near) continue
+      if (s.y === null) s.y = this.field.heightAt(s.x, s.z)
+      const d = Math.hypot(dx, s.y - eye.y, dz)
       if (s.group === null && d < SIGN.near) this._build(s)
       else if (s.group !== null && d > SIGN.far) this._drop(s)
       if (s.group !== null) shown++

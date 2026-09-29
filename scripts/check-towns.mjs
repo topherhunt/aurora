@@ -16,7 +16,7 @@ import { TOWN, planTowns, boxesOverlap } from '../src/v2/layers/towns.js'
 import { TOWN_BANDS, Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
-import { Hearth } from '../src/v2/render/hearth.js'
+import { Hearth, hearthKit } from '../src/v2/render/hearth.js'
 import { TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
 import { SEAT_M, TALKS } from '../src/v2/render/villagers.js'
 
@@ -229,9 +229,12 @@ layer.update(t.x, t.z)
 for (let i = 0; i < 400; i++) layer.update(t.x, t.z)
 const near = scene.children.filter((o) => o.isMesh && !o.isInstancedMesh)
 check(near.length === 1, 'standing in a town draws it as one merged mesh', `${near.length} meshes`)
-check(layer.buildings.every((b) => b.town !== t || !b.farShown), 'a town drawn near hides its far boxes')
-const farMasses = layer.buildings.filter((b) => b.farShown).reduce((n, b) => n + b.masses.length, 0)
-const farOut = layer.buildings.filter((b) => b.farShown && Math.hypot(b.x - t.x, b.z - t.z) > TOWN_BANDS.far + TOWN_BANDS.hysteresis).length
+const site = layer.sites.find((s) => s.town === t)
+check(site.tier === 2 && !site.farShown, 'a town drawn near hides its far boxes', `tier ${site.tier}`)
+const built = layer.sites.reduce((n, s) => n + (s.geo[1] !== null) + (s.geo[2] !== null), 0)
+check(layer.stats.merges === built && near[0].geometry.userData.tris === site.geo[2].userData.tris, 'each town tier is merged once and drawn whole', `${layer.stats.merges} merges for ${built} tiers`)
+const farMasses = layer.sites.filter((s) => s.farShown).reduce((n, s) => n + s.masses.length, 0)
+const farOut = layer.sites.filter((s) => s.farShown && Math.hypot(s.town.x - t.x, s.town.z - t.z) - s.town.radius > TOWN_BANDS.far + TOWN_BANDS.hysteresis).length
 check(layer.far.count === farMasses && farOut === 0 && farMasses < massCount / 2, `the far boxes are packed and stop at ${TOWN_BANDS.far} m`, `${layer.far.count} of ${massCount} drawn`)
 
 const b0 = t.buildings[0]
@@ -253,6 +256,21 @@ const sx = hearth.x + st.x * S, sz = hearth.z + st.z * S
 check(Math.abs(hearth.blockTopAt(sx, sz) - field.heightAt(sx, sz) - SEAT_M * S) < 0.1, 'a grown stool\'s top stands SEAT_M times the scale over its ground', `${(hearth.blockTopAt(sx, sz) - field.heightAt(sx, sz)).toFixed(2)} m`)
 check(hearth.occupiesAt(hearth.x + 1.7 * S, hearth.z, 0) && !hearth.occupiesAt(hearth.x + TOWN.clearing.r, hearth.z, 0), 'the grown hearth fills the clearing\'s middle, not its edge')
 hearth.dispose()
+const kit = hearthKit(buildRockBank(), 7, () => 0, texArray, (m) => m, { decimate: false })
+const [k0, k1] = [t, towns[1]].map((at) => new Hearth(scene, field, { at, textures: texArray, patch: (m) => m, scale: S, kit }))
+const kx = k0.x + k0.stools[0].x * S, kz = k0.z + k0.stools[0].z * S
+const kSeat = k0.blockTopAt(kx, kz) - field.heightAt(kx, kz)
+check(k0.meshes[0].geometry === k1.meshes[0].geometry && Math.abs(kSeat - SEAT_M * S) < 0.1, 'every town\'s hearth draws one kit built level, its stools a seat high over the clearing', `${kSeat.toFixed(2)} m`)
+k0.update(k0.x, k0.y + 1.6, k0.z + 100, 0)
+const shownNear = k0.group.visible && k0.flames.group.visible
+k0.update(k0.x, k0.y + 1.6, k0.z + 400, 0)
+check(shownNear && !k0.group.visible && !k0.flames.group.visible, 'a hearth and its flame are drawn at 100 m and not at 400 m')
+let kitFreed = 0
+for (const r of [...kit.tiers, kit.material]) r.addEventListener('dispose', () => kitFreed++)
+k0.dispose()
+k1.dispose()
+check(kitFreed === 0, 'a hearth leaves the shared kit to its owner', `${kitFreed} freed`)
+kit.dispose()
 
 // --- the townsfolk's ways and day ---
 const unreached = []
@@ -300,6 +318,10 @@ check(offWay === 0, 'a walker keeps to its lane on the town\'s ways', `${offWay}
 const b = life()
 b.advance(T0 + 398)
 check(a.all.every((c, i) => c.x === b.all[i].x && c.z === b.all[i].z && c.state === b.all[i].state), 'a town woken late replays to the same day as one watched throughout')
+const late = life()
+let frames = 0
+while (!late.caught) { late.advance(T0 + 398, TOWNSFOLK.replay); frames++ }
+check(frames > 1 && a.all.every((c, i) => c.x === late.all[i].x && c.z === late.all[i].z && c.state === late.all[i].state), 'a town woken late catches up over several frames to the same day', `${frames} frames`)
 check(new Set(a.all.map((c) => c.seat).filter(Boolean)).size === a.all.filter((c) => c.seat).length, 'no two townsfolk hold one stool')
 
 if (failures) {

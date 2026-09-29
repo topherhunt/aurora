@@ -3,15 +3,16 @@ import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { stoneBridgeDeckAt } from '../../bridges/stone-bridge.js'
 
-export const BRIDGE_BANDS = { lod0: 70, lod1: 260, far: 3000 }
+export const BRIDGE_BANDS = { lod0: 70, lod1: 260, far: 1500 }
 // Parapet height over the deck (bridge.js BRIDGE_DEFAULTS.wallH), and how deep a span of deck the walker is given under its top.
 const WALL_H = 0.8
 const DECK_T = 0.8
 
 export class Bridges {
-  /** `bridges` from planRoads; `stone` is loadStoneBridge()'s { lods, meta }. */
-  constructor(scene, { bridges, stone, textures, patch }) {
+  /** `bridges` from planRoads; `stone` is loadStoneBridge()'s { lods, meta }; `water` the WaterSurfaces whose river lift the drawn bridge rides. */
+  constructor(scene, { bridges, stone, textures, patch, water }) {
     this.scene = scene
+    this.water = water
     this.meta = stone.meta
     this.lods = stone.lods
     this.material = createPropMaterial(textures, { vertexColors: true })
@@ -30,10 +31,12 @@ export class Bridges {
     this.stats = { bridges: bridges.length }
   }
 
-  update(x, z) {
+  // The drawn mesh rises with its river's far-terrain lift (river-raise.js) so the water never swallows it from the air; the walk layer keeps the true height.
+  update(eye) {
     for (const it of this.items) {
-      const d = Math.hypot(it.x - x, it.z - z)
+      const d = Math.hypot(it.x - eye.x, it.z - eye.z)
       const lod = d < BRIDGE_BANDS.lod0 ? 0 : d < BRIDGE_BANDS.lod1 ? 1 : d < BRIDGE_BANDS.far ? 2 : -1
+      if (lod >= 0) it.mesh.position.y = it.y + this.water.riverLiftAt(it.river, it.x, it.z, eye)
       if (lod === it.lod) continue
       it.lod = lod
       it.mesh.visible = lod >= 0

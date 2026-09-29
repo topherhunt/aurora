@@ -3,7 +3,8 @@ import { footprint, lakeBox, SHAPE_RECT } from '../layers/water-bodies.js'
 import { RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../layers/paths.js'
 import { traceShore } from './shoreline.js'
 import { ribbonVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from './ribbon.js'
-import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH } from './river-raise.js'
+import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH, RAISE_EYE, RAISE_EYE_LIFT, RAISE_SLOPE } from './river-raise.js'
+import { smoothstep } from '../../sim/mathx.js'
 import { unpackKey } from '../terrain/quadtree-v2.js'
 
 /**
@@ -305,6 +306,36 @@ export class WaterSurfaces {
       if (changed || moved) rewritten++
     }
     return rewritten
+  }
+
+  /**
+   * The lift src/water.js's vertex stage draws river `id` at, for the eye at `eye`, taken at the ribbon sample nearest (x, z) and the higher of its two banks: what a mesh set over the river adds to rise with it. Must match the shader's sum.
+   */
+  riverLiftAt(id, x, z, eye) {
+    const mesh = this.meshes.get(id)
+    if (mesh === undefined || mesh.userData.kind !== 'river') throw new Error(`WaterSurfaces.riverLiftAt: no river ${id}`)
+    const { position, aRaise, aRung } = mesh.geometry.attributes
+    const near = mesh.userData.near ?? (mesh.userData.near = new Map())
+    const key = `${x},${z}`
+    if (!near.has(key)) {
+      let best = 0
+      for (let v = 0; v < position.count; v += 2) if (Math.hypot(position.getX(v) - x, position.getZ(v) - z) < Math.hypot(position.getX(best) - x, position.getZ(best) - z)) best = v
+      near.set(key, best)
+    }
+    const v0 = near.get(key)
+    const raise = aRaise.data.array
+    const R = RAISE_RUNGS.length
+    let top = 0
+    for (const v of [v0, v0 + 1]) {
+      const rung = aRung.array[v]
+      const vx = position.getX(v)
+      const vz = position.getZ(v)
+      const plan = Math.hypot(eye.x - vx, eye.z - vz)
+      let lift = rung > 0 ? raise[v * R + rung - 1] : 0
+      lift = Math.max(lift, RAISE_EYE_LIFT * smoothstep(RAISE_EYE[0], RAISE_EYE[1], plan))
+      top = Math.max(top, lift * smoothstep(RAISE_SLOPE[0], RAISE_SLOPE[1], (eye.y - position.getY(v)) / Math.max(1, plan)))
+    }
+    return top
   }
 
   /**

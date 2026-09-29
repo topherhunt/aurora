@@ -34,12 +34,12 @@ Generated roads ride every document the workers, the editor and the undo stack s
 
 ## Drawing
 
-Quest 2 has no multiview, so every draw call is paid twice. Towns use one merged mesh per nearby town and one shared instanced mesh for all distant buildings:
+Quest 2 has no multiview, so every draw call is paid twice. Towns use one merged mesh per nearby town and one shared instanced mesh for all distant buildings. A town swaps tier whole, by the distance to its edge (centre distance less `radius`, with 4 m hysteresis):
 
-- **Near** (under 140 m to a building, with 4 m hysteresis): each town is one merged Mesh, re-merged when a building changes tier. Detail 2 inside 60 m, detail 1 inside 140 m. Detail-1 geometry is prebuilt within 300 m and evicted past 420 m. Detail-2 builds are capped at one per frame, within a 4 ms budget.
-- **Far**: one `town-far` InstancedMesh with an instance per building mass. It is a 14-triangle box with a gable roof. `instanceColor` carries the roof tint (`ROOF_TINT`) and the instanced `aWallTint` the wall tint (`WALL_TINT`). Each change of tier or of the 1500 m cap repacks the shown instances to the front and sets `count`. That rewrites the matrix and colour buffers, with no geometry rebuilt.
+- **Near**: each town is one Mesh, detail 2 inside 60 m and detail 1 inside 140 m. Each tier's buildings are placed a few a frame within a 4 ms budget (detail 2: one building a frame across all towns), merged once when the last is placed, and cached on the town. Detail 1 starts within 300 m, detail 2 within 140 m; both are dropped past 420 m. A tier is shown only once merged; until then the town draws the tier below, or its far boxes. A swap only reassigns the mesh's geometry.
+- **Far**: one `town-far` InstancedMesh with an instance per building mass. It is a 14-triangle box with a gable roof. `instanceColor` carries the roof tint (`ROOF_TINT`) and the instanced `aWallTint` the wall tint (`WALL_TINT`). A town at tier 0 within 1500 m shows its boxes. Each change repacks the shown instances (about 1500 at most) to the front and sets `count`, rewriting the matrix and colour buffers with no geometry rebuilt.
 
-A standing town costs 2 draws per eye (its merged mesh, plus the far pool that every town shares) and about 44k triangles at the centre of a 17-building town.
+A standing town costs 2 draws per eye (its merged mesh, plus the far pool that every town shares). Detail 2 is 26-30k triangles for a 20-building town; placing it costs about 1.6 ms a building on desktop.
 
 ## Walking and trees
 
@@ -47,9 +47,9 @@ A standing town costs 2 draws per eye (its merged mesh, plus the far pool that e
 
 ## Hearth and townsfolk
 
-Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. `hipSeat` measures that underside as the idle-sit hip joints less 0.05 of the body height. villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
+Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. Every town draws one `hearthKit` built at boot on level ground (the clearing is flat to 5 mm under its ring roads), without the decimated tier: decimateHearth costs about 200 ms to save under 300 triangles. A hearth and its flame are hidden past 220 times their height, about 5 px. `hipSeat` measures that underside as the idle-sit hip joints less 0.05 of the body height. villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
 
-Townsfolk come from `farmer`, `shepherd` and `woodcutter`, dealt in turn, with 1 per hut or cottage and 2 per longhouse or inn. `townGraph` builds each town's ways as a graph: a 10-node ring at 4 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start. It reads heights only on the last two ticks, about 17 ms in node for a full wake. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.2 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
+Townsfolk come from `farmer`, `shepherd` and `woodcutter`, dealt in turn, with 1 per hut or cottage and 2 per longhouse or inn. `townGraph` builds each town's ways as a graph: a 10-node ring at 4 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start, `TOWNSFOLK.replay` (400) ticks a frame shared by the towns still catching up, so a full chapter takes up to 30 frames. Its people are not drawn until it is caught up. It reads heights only on the last two ticks. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.2 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
 
 The greeting is this client's alone. When she comes within 2 m of someone walking, standing or talking, half the time they carry on. Otherwise they stop, turn to her, and wave (0.12), beckon (0.08) or just look (0.8) for 2.5-4 s, so about one meeting in ten gets a gesture. They then walk straight back to where the sim has them at 1.5x pace. The cooldown is 20 s either way.
 

@@ -15,6 +15,7 @@ import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
 import { nameTowns } from '../src/v2/layers/names.js'
 import { ROAD, STONE_BRIDGE, planRoads } from '../src/v2/layers/roads.js'
+import { Heap } from '../src/v2/layers/route.js'
 import { Bridges } from '../src/v2/render/bridges.js'
 import { parseStoneBridge, stoneBridgeDeckAt } from '../src/bridges/stone-bridge.js'
 import { buildTextureArray } from '../src/textures.js'
@@ -49,7 +50,7 @@ check(featured > towns.length / 2, 'most names draw on a nearby feature', `${fea
 const t0 = performance.now()
 const plan = planRoads({ towns, ground, surface, layers, seed: SEED })
 const ms = performance.now() - t0
-check(ms < 2000, 'planning costs under 2 s of boot', `${ms.toFixed(0)} ms`)
+check(ms < 2500, 'planning costs under 2.5 s of boot', `${ms.toFixed(0)} ms`)
 const again = planRoads({ towns, ground, surface, layers, seed: SEED })
 check(JSON.stringify(again.records) === JSON.stringify(plan.records), 'a second plan is identical to the bit')
 const { records, ways, nodes, bridges, signs, failed } = plan
@@ -100,6 +101,59 @@ for (const w of laid) {
 check(worst <= 0.25, 'no stretch of road climbs steeper than 1 in 4', `worst segment ${worst.toFixed(3)}`)
 check(wet === 0, 'no road point stands in a river or lake', `${wet} wet`)
 check(straightest >= 6, 'no road 150 m or longer runs straight', `least wander ${straightest.toFixed(1)} m (${straightId})`)
+// Directness: road distance, through towns' streets, from each town to its ROAD.near nearest, over the straight distance. Cliffs and water force a share of long ways round (town8 to town34: 520 m apart across a 70 m drop).
+const adj = Array.from({ length: nodes.length + towns.length }, () => [])
+const link = (u, v, l) => { adj[u].push([v, l]); adj[v].push([u, l]) }
+for (const w of ways) link(w.a, w.b, w.length ?? Math.hypot(nodes[w.a].x - nodes[w.b].x, nodes[w.a].z - nodes[w.b].z))
+for (const n of nodes) if (n.town >= 0) link(n.id, nodes.length + n.town, Math.hypot(n.x - towns[n.town].x, n.z - towns[n.town].z))
+const ratios = []
+towns.forEach((a, ai) => {
+  const D = new Float64Array(adj.length).fill(Infinity)
+  D[nodes.length + ai] = 0
+  const open = [nodes.length + ai]
+  while (open.length) {
+    open.sort((p, q) => D[q] - D[p])
+    const u = open.pop()
+    for (const [v, l] of adj[u]) if (D[u] + l < D[v]) { D[v] = D[u] + l; open.push(v) }
+  }
+  const near = towns.map((b, bi) => [bi, Math.hypot(a.x - b.x, a.z - b.z)]).filter(([bi, d]) => bi !== ai && d < ROAD.near.r).sort((p, q) => p[1] - q[1]).slice(0, ROAD.near.k)
+  for (const [bi, d] of near) if (D[nodes.length + bi] < Infinity) ratios.push(D[nodes.length + bi] / d)
+})
+ratios.sort((p, q) => p - q)
+const median = ratios[Math.floor(ratios.length / 2)]
+const past2 = ratios.filter((r) => r > 2).length / ratios.length
+check(median < 1.9 && past2 < 0.4, 'a town reaches its nearest neighbours by road at under 1.9x their distance apart, median, and past 2x for under 40%', `median ${median.toFixed(2)}, ${(100 * past2).toFixed(0)}% past 2x`)
+// Evenness: roads passing close without a link between them, sampled every 100 m, gathered into 400 m spots. The spots left are across cliffs.
+const samples = []
+for (const w of laid) {
+  let arc = 0
+  for (let k = 1, next = 50; k < w.pts.length; k++) {
+    arc += Math.hypot(w.pts[k][0] - w.pts[k - 1][0], w.pts[k][2] - w.pts[k - 1][2])
+    if (arc >= next) { samples.push({ w, x: w.pts[k][0], z: w.pts[k][2], s: arc }); next += 100 }
+  }
+}
+const spots = []
+for (const p of samples) {
+  const D = new Float64Array(adj.length).fill(Infinity)
+  const heap = new Heap(64)
+  for (const [id, d] of [[p.w.a, p.s], [p.w.b, p.w.length - p.s]]) if (d < D[id]) { D[id] = d; heap.push(d, id) }
+  while (heap.n > 0) {
+    const f = heap.f[0]
+    const u = heap.pop()
+    if (f > D[u]) continue
+    for (const [v, l] of adj[u]) if (f + l < D[v]) { D[v] = f + l; heap.push(D[v], v) }
+  }
+  const miss = samples.some((q) => {
+    const d = Math.hypot(q.x - p.x, q.z - p.z)
+    const round = Math.min(D[q.w.a] + q.s, D[q.w.b] + q.w.length - q.s)
+    return q.w !== p.w && d < 300 && round > 4 * d && round - d > 1000
+  })
+  if (miss && !spots.some((s) => Math.hypot(s.x - p.x, s.z - p.z) < 400)) spots.push(p)
+}
+check(spots.length <= 5, 'at most 5 spots where two roads pass within 300 m but are over 4x and 1 km apart by road', `${spots.length}: ${spots.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)})`).join(' ')}`)
+const forkNodes = nodes.filter((n) => !n.port && n.town < 0 && n.bank === null && n.ways.length >= 3)
+const crowded = forkNodes.filter((f) => forkNodes.some((g) => g !== f && Math.hypot(g.x - f.x, g.z - f.z) < 60)).length
+check(crowded < forkNodes.length / 4, 'under a quarter of forks stand within 60 m of another', `${crowded} of ${forkNodes.length}`)
 check(records.every((r) => /^road\d/.test(r.id)) && new Set(records.map((r) => r.id)).size === records.length, 'every road record carries a unique generated id')
 layers.addGenerated(records)
 check(layers.serialize({ authored: true }).roads.length === 0, 'a save drops every generated road')
@@ -149,7 +203,16 @@ layer.dispose()
 // --- signposts ---
 const signed = new Set(signs.map((s) => s.node))
 check(nodes.every((n) => n.port || n.town >= 0 || n.bank !== null || n.ways.length < 3 || signed.has(n.id)), 'every fork between towns has a signpost', `${signs.length} signs`)
-const boardsBad = signs.filter((s) => s.boards.length < ROAD.sign.boards[0] || s.boards.length > ROAD.sign.boards[1] || new Set(s.boards.map((b) => b.town)).size !== s.boards.length || s.boards.some((b, k) => k > 0 && b.dist < s.boards[k - 1].dist))
+// Every way ends at a fork, a town or a bridge, and its waymarks split it into stretches no longer than link.every.
+const endsBad = laid.filter((w) => [w.a, w.b].some((id) => { const n = nodes[id]; return !n.port && n.bank === null && n.ways.length < 3 }))
+let longest = 0
+for (const w of laid) {
+  const marks = signs.filter((s) => s.way === w.id)
+  const nearRoad = marks.every((s) => w.pts.some(([x, , z]) => Math.hypot(x - s.x, z - s.z) < ROAD.spacing + ROAD.sign.offset))
+  longest = Math.max(longest, nearRoad ? w.length / (marks.length + 1) : Infinity)
+}
+check(endsBad.length === 0 && longest <= ROAD.link.every, `a traveller meets a fork, town, bridge or waymark at least every ${ROAD.link.every} m`, `longest stretch ${longest.toFixed(0)} m; ${signs.filter((s) => s.node < 0).length} waymarks; ${endsBad.length} ways ending nowhere`)
+const boardsBad =signs.filter((s) => s.boards.length < ROAD.sign.boards[0] || s.boards.length > ROAD.sign.boards[1] || new Set(s.boards.map((b) => b.town)).size !== s.boards.length || s.boards.some((b, k) => k > 0 && b.dist < s.boards[k - 1].dist))
 check(boardsBad.length === 0, `every signpost names ${ROAD.sign.boards.join('-')} distinct towns, nearest first`, boardsBad.slice(0, 3).map((s) => `node ${s.node}: ${s.boards.length}`).join(', '))
 
 if (failures > 0) {

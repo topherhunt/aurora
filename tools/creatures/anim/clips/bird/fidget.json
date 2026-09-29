@@ -1,0 +1,20 @@
+{
+  "kind": "pose",
+  "note": "Restless standing: weight rocks onto one foot, the other shuffles a half-step forward, then the pair shuffle back to where they started, with a toss of the head and a flick of the wings between. Loops on the rest stance.",
+  "samples": 40,
+  "crouch": 0.03,
+  "keys": [
+    { "t": 0.0, "pose": {} },
+    { "t": 0.35, "pose": { "root": { "lat": 0.06 }, "head": { "yaw": 0.15 }, "tail": { "yaw": -0.1 } } },
+    { "t": 0.6, "pose": { "root": { "lat": 0.07 }, "head": { "yaw": 0.2, "pitch": -0.1 }, "legs": { "hindRight": { "fore": 0.1, "lift": 0.07 } } } },
+    { "t": 0.85, "pose": { "root": { "lat": 0.03, "fore": 0.04 }, "head": { "yaw": 0.1 }, "legs": { "hindRight": { "fore": 0.16 } } } },
+    { "t": 1.15, "pose": { "root": { "lat": -0.06, "fore": 0.06 }, "head": { "yaw": -0.25, "pitch": 0.1 }, "tail": { "yaw": 0.12 }, "wings": { "spread": 0.25 }, "legs": { "hindRight": { "fore": 0.16 } } } },
+    { "t": 1.4, "pose": { "root": { "lat": -0.07, "fore": 0.05 }, "head": { "yaw": -0.3 }, "tail": { "yaw": 0.1 }, "legs": { "hindRight": { "fore": 0.16 }, "hindLeft": { "fore": 0.06, "lift": 0.07 } } } },
+    { "t": 1.7, "pose": { "root": { "lat": -0.02, "fore": 0.03 }, "head": { "yaw": -0.1, "pitch": -0.05 }, "legs": { "hindRight": { "fore": 0.16 }, "hindLeft": { "fore": -0.02 } } } },
+    { "t": 2.1, "pose": { "root": { "lat": -0.06 }, "head": { "yaw": 0.05 }, "legs": { "hindRight": { "fore": 0.16 }, "hindLeft": { "fore": -0.02 } } } },
+    { "t": 2.35, "pose": { "root": { "lat": -0.07 }, "legs": { "hindRight": { "fore": 0.07, "lift": 0.07 }, "hindLeft": { "fore": -0.02 } } } },
+    { "t": 2.6, "pose": { "root": { "lat": 0.0 }, "head": { "yaw": 0.1 }, "tail": { "yaw": -0.06 }, "legs": { "hindLeft": { "fore": -0.02 } } } },
+    { "t": 2.85, "pose": { "root": { "lat": 0.05 }, "legs": { "hindLeft": { "fore": 0.0, "lift": 0.06 } } } },
+    { "t": 3.2, "pose": {} }
+  ]
+}

@@ -26,6 +26,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- [ ] Terrorbirds should roam around in the wild. If it sees you (6m), it turns to face you, makes wary muttering clucking noises, and backs away slowly.) If you get too close to it (3m), it screeches at you, attacks you once, and runs away. But if you approach it with a fish in your hand, then it meekly sits down with a whimpering noise, follows your fish with its head, and if you hold the fish up near its head, eats the fish and then follows you around happily like a puppy. Then you can ride it.
+  - [ ] That means we need a separate version of the model that doesn't have a saddle on. Maybe use Tripo's segmenter AI to split off the saddle? Does that "fill in" the holes left behind in the main mesh?
 - [ ] Leafkin
   - [x] Meaning, we need an inventory system.
   - [x] Leafkin actually take mushrooms, carry them in their hands and against their chest, and if startled will drop them all on the ground.
@@ -42,6 +44,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Farmland. Crops, livestock.
   - [ ] Stables w horses. You can "borrow" a horse to get around the countryside faster.
   - [ ] Walls & guardposts ringing the town
+  - [ ] Well near the center. Yes you can drop down it, but it will nearly kill you, and there's no way to climb back out, instead you need to wander through the sewers.
   - [ ] Human NPC chatter audio samples.
   - [ ] You sometimes find NPCs walking the roads between villages.
   - [ ] NPC conversation system
@@ -54,8 +57,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
       - Where is...
         - the village elder?
         - the potionmaster?
+        - Where am I? (If you're in a village, they will talk about the village and the landscape. If you're meeting a person on a road outside of a village, they'll describe the landscape, point the way to the nearest village, and mention or warn you about any local geographic features.
         - the nearest village? (only when talking to an NPC and you're not in a village)
-        - <village>
+        - your house?
       - Follow me!
 - [ ] Castles
 - [ ] terrain-v3

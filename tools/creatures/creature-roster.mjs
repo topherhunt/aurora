@@ -321,6 +321,30 @@ const ANIMALS = [
       'the snout. Two big round glossy black compound eyes with no pupils and a faint green glow deep inside ' +
       'them. Gentle, stubby and endearing, with something quietly eerie in the blank staring eyes',
   },
+  {
+    id: 'frost-strider',
+    label: 'Frost Strider',
+    rigType: 'avian',
+    // Beak to tail. The saddle sits about 1.1 m up so a rider's eye clears
+    // standing height by only half a metre, under the low branches.
+    sizeM: 2.2,
+    // A riding bird: the harness is wanted here, unlike the weevil. The build is
+    // carried by the legs and the stance, not by naming a species, so the
+    // colours and the skull stay free.
+    description:
+      'a domesticated flightless riding bird of the far north, a compact prehistoric predator bird about the ' +
+      'height of a pony at the back, its heavy body carried level and horizontal over two long powerful legs ' +
+      'set well apart, thick scaled shins feathered down to the ankle like a ptarmigan and broad three-toed ' +
+      'feet with blunt dark claws planted flat. Dense shaggy cold-weather plumage, slate-grey and smoke-brown ' +
+      'over the back fading to frost-white on the throat and belly, with faint darker barring on the flanks ' +
+      'and a short stiff fan of tail feathers held out level behind it. Small stubby vestigial wings held ' +
+      'slightly out from the body. A large head on a short muscular neck, a deep hooked beak of dark ' +
+      'horn-grey, a low ruff of feathers at the nape, and calm alert amber eyes. On its back just behind the ' +
+      'wings sits a low worn leather riding saddle over a folded wool saddle blanket dyed faded madder-red with ' +
+      'a woven Norse knotwork border, fastened by a girth strap around the chest, and a simple rope halter ' +
+      'around the base of the beak with slack reins looped back to the saddle. Sturdy, patient and tame, with ' +
+      'the lean menace of a hunter still in the hooked beak. No rider',
+  },
 ]
 
 // --- the village -------------------------------------------------------------
