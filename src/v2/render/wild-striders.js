@@ -25,20 +25,22 @@ export const WILD = {
   // A hand within `reach` m of its saddle across the ground and up to `below` m under it (a big one's back is over her head), her head more to its side than its front or back, mounts; a desk click ray passes within `ray`.
   reach: 0.8, below: 1.0, ray: 0.5,
   ride: {
-    // The stick past `push` asks it to walk, past `gallop` to run, under -`push` to back; it answers after `delay` s at `pace` times the speed asked.
-    push: 0.15, gallop: 0.7, delay: [0.35, 1.0], pace: [0.85, 1.15],
+    // The stick past `push` asks it to walk, past `gallop` to run, under -`push` to back; it answers after `delay` s (`backDelay` backing) at `pace` times the speed asked.
+    push: 0.15, gallop: 0.7, delay: [0.35, 1.0], backDelay: [0.15, 0.3], pace: [0.85, 1.15],
     // m/s for a strider of the mean size, and in proportion to its size: a walk across the walking band of the stick, a run across the running band, and backing.
-    walk: [1.4, 2.6], run: [13, 22], back: -0.7,
-    // Seconds to reach the speed asked, and to slow; the run clip plays past `runAt` m/s, its legs no faster than its run's cadence to the `stride` power of the speed past it.
-    up: 1.4, down: 0.6, runAt: 3.2, stride: 0.6,
-    // It veers round a trunk or body `look` s ahead, at least `near` m, turning at most `dodge` rad/s.
-    look: 0.5, near: 1.5, dodge: 1.5,
-    // The neck swings `neck` rad at full steer over `neckTau` s and leans `lean` of that; the body follows at speed/`radius`, at most `spin` rad/s.
-    neck: 0.6, neckTau: 0.25, lean: 0.25, radius: 3, spin: 0.9,
+    walk: [1.4, 2.6], run: [13, 22], back: -1.6,
+    // Its pull toward the speed asked closes the gap over `up` s speeding (`backUp` backing) and `down` s slowing, capped at `accel` / `brake` m/s² (times its size over the mean) and eased in over a quarter of that time (any slower rings past the speed asked), so a gallop builds for several seconds.
+    up: 1.4, backUp: 0.4, down: 0.6, accel: 3.5, brake: 8,
+    // The run clip plays past `runAt` m/s, its legs no faster than its run's cadence to the `stride` power of the speed past it.
+    runAt: 3.2, stride: 0.6,
+    // It veers round a trunk or body `look` s ahead, at least `near` m, turning at most `dodge` rad/s; a step that is not open slides off by the first of `slide` rad each way that is.
+    look: 0.5, near: 1.5, dodge: 1.5, slide: [0.35, 0.7, 1.05],
+    // Its footing: it steps up onto anything under `step` m (times its size: terrain grain, a pebble, a road's edge), up a slope to `climb` degrees, and down at most `drop` m plus its stride.
+    step: 0.3, climb: 50, drop: 1.0,
+    // The neck swings `neck` rad at full steer over `neckTau` s and leans `lean` of that; the body follows at speed/`radius` but at least `pivot` rad/s standing, at most `spin` rad/s.
+    neck: 0.6, neckTau: 0.25, lean: 0.25, radius: 3, pivot: 0.7, spin: 0.9,
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
-    // Backing, it balks every `balk` s for `balkS` s.
-    balk: [2, 4], balkS: 1.4,
   },
 }
 
@@ -604,7 +606,7 @@ export class WildStriders {
     this._set(m, 'idle', 0, true)
     const R = WILD.ride
     this._seat(m, _v)
-    m.ride = { want: 'stop', goal: 'stop', wait: 0, pace: 1, v: 0, neck: 0, balk: between(R.balk), balking: 0, y: _v.y, bob: 0, phase: 0, x: m.pose.x, z: m.pose.z, lastY: _v.y }
+    m.ride = { want: 'stop', goal: 'stop', wait: 0, pace: 1, v: 0, a: 0, neck: 0, y: _v.y, bob: 0, phase: 0, x: m.pose.x, z: m.pose.z, lastY: _v.y }
     player.mountAt(_v.x, _v.y + R.eye * player.scale, _v.z, m.pose.heading)
     this._chirp(m, 1.05, 0.8)
   }
@@ -641,7 +643,7 @@ export class WildStriders {
     const want = push > R.push ? (push > R.gallop ? 'run' : 'walk') : push < -R.push ? 'back' : 'stop'
     if (want !== r.want) {
       r.want = want
-      r.wait = want === 'stop' ? 0 : between(R.delay) * (r.goal === 'walk' && want === 'run' ? 0.5 : 1)
+      r.wait = want === 'stop' ? 0 : want === 'back' ? between(R.backDelay) : between(R.delay) * (r.goal === 'walk' && want === 'run' ? 0.5 : 1)
       r.pace = between(R.pace)
     }
     if (r.goal !== r.want && (r.wait -= dt) <= 0) {
@@ -653,20 +655,15 @@ export class WildStriders {
     const band = (lo, hi, [a, b]) => a + (b - a) * clamp((push - lo) / (hi - lo), 0, 1)
     let target = r.goal === 'walk' ? band(R.push, R.gallop, R.walk) : r.goal === 'run' ? band(R.gallop, 1, R.run) : r.goal === 'back' ? R.back : 0
     target *= big * (r.goal === 'back' ? 1 : r.pace)
-    if (r.goal === 'back' && r.v <= 0) {
-      if (r.balking > 0) { r.balking -= dt; target = 0 } else if ((r.balk -= dt) <= 0) {
-        r.balk = between(R.balk)
-        r.balking = R.balkS
-        this._set(m, 'fidget', 0, true)
-        if (Math.random() < 0.5) this._say(m, 'striderWhine', between([0.9, 1.1]), 0.6)
-        else this._chirp(m, between([0.5, 0.6]), 0.5)
-      }
-    } else r.balking = 0
-    r.v += (target - r.v) * ease(Math.abs(target) > Math.abs(r.v) ? R.up : R.down, dt)
-    if (Math.abs(r.v) < 0.02 && target === 0) r.v = 0
-    // The neck leads: it swings toward the stick, and the body turns after it only while moving.
+    // Speed follows an acceleration that is itself eased, so it pulls away gently rather than lurching.
+    const speeding = Math.abs(target) > Math.abs(r.v)
+    const tau = speeding ? (r.goal === 'back' ? R.backUp : R.up) : R.down
+    r.a += (clamp((target - r.v) / tau, -R.brake * big, R.accel * big) - r.a) * ease(tau / 4, dt)
+    r.v += r.a * dt
+    if (Math.abs(r.v) < 0.02 && target === 0) r.v = r.a = 0
+    // The neck leads: it swings toward the stick, and the body turns after it, slowly on the spot.
     r.neck += (-steer * R.neck - r.neck) * ease(R.neckTau, dt)
-    const spin = clamp((r.neck / R.neck) * r.v / R.radius, -R.spin, R.spin)
+    const spin = clamp((r.neck / R.neck) * Math.max(Math.abs(r.v) / R.radius, R.pivot) * Math.sign(r.v || 1), -R.spin, R.spin)
     const h0 = p.heading
     p.heading = wrap(p.heading + spin * dt)
     if (r.v > 0) {
@@ -676,16 +673,14 @@ export class WildStriders {
         if (off !== undefined) p.heading = wrap(p.heading + Math.sign(off) * R.dodge * dt)
       }
     }
-    if (r.v !== 0 && !this._move(m, r.v, dt)) r.v = 0
+    if (r.v !== 0 && !this._rideStep(m, r.v * dt, dt)) r.v = r.a = 0
     m.want.yaw = r.neck
     m.want.roll = -r.neck * R.lean
     m.want.pitch = 0
-    if (r.balking <= 0) {
-      const nat = this.runV * p.size
-      if (r.v === 0) this._set(m, 'idle', 0)
-      else if (r.v <= R.runAt * big) this._set(m, 'walk', r.v)
-      else this._set(m, 'run', r.v > nat ? nat * (r.v / nat) ** R.stride : r.v)
-    }
+    const nat = this.runV * p.size
+    if (r.v === 0) this._set(m, Math.abs(spin) > 0.05 ? 'walk' : 'idle', Math.abs(spin) > 0.05 ? 0.3 * this.walkV * p.size : 0)
+    else if (r.v <= R.runAt * big) this._set(m, 'walk', r.v)
+    else this._set(m, 'run', r.v > nat ? nat * (r.v / nat) ** R.stride : r.v)
     // Her seat: its height followed smoothly, and faster the faster it goes, with a gentle bob on each footfall.
     this._seat(m, _v)
     r.y += (_v.y - r.y) * ease(R.lift / (1 + Math.abs(r.v) / 5), dt)
@@ -698,6 +693,34 @@ export class WildStriders {
     player.carry(p.x - r.x, dy, p.z - r.z, wrap(p.heading - h0), p.x, p.z)
     r.x = p.x
     r.z = p.z
+  }
+
+  /** Carries ridden `m` `d` m along its heading, or slid off it by up to R.slide where straight on is not open, turning a little toward the way it went; false where no way is open. */
+  _rideStep(m, d, dt) {
+    const R = WILD.ride, p = m.pose
+    for (const o of [0, ...R.slide.flatMap((a) => [a, -a])]) {
+      const h = p.heading + o, dd = d * Math.cos(o)
+      const x = p.x + Math.cos(h) * dd, z = p.z - Math.sin(h) * dd
+      if (!this._footing(m, x, z, Math.abs(dd))) continue
+      p.x = x
+      p.z = z
+      p.y = this.walk.heightAt(x, z, p.y)
+      if (o !== 0) p.heading = wrap(p.heading + Math.sign(o) * Math.min(Math.abs(o), R.dodge * dt))
+      return true
+    }
+    return false
+  }
+
+  /** Whether ridden `m` can put a stride of `d` m down on (x, z): not deep water, a trunk or body, a ledge over R.step, a slope past R.climb, or a drop. The grain of the terrain is under R.step, so it never stops it. */
+  _footing(m, x, z, d) {
+    const W = this.walk, R = WILD.ride, p = m.pose
+    const g = W.heightAt(x, z, p.y), level = W.waterAt(x, z)
+    if (level !== null && level - g > 0.5) return false
+    if (W.obstacleAt(x, z, _trunk, m)) return false
+    const up = g - p.y
+    if (up > R.step * p.size + d) return false
+    if (up > 0.02 && W.slopeAt(x, z, undefined, g) > (R.climb * Math.PI) / 180) return false
+    return -up <= R.drop * p.size + 1.5 * d
   }
 
   /** Whether the way `L` m ahead of `m` along `heading` is clear of trunks and other bodies. */

@@ -151,7 +151,7 @@ const THROW_CUT = 1
 const THROW_AT = 0.55
 const FROG_WATCH_S = 1.5
 const SHORE_BEARINGS = 24
-// A mushroom in her hand within LURE_M: a squeal, and it creeps to her CREEP_S at a time, pausing PAUSE_S to beckon, to stop COURT_STOP_M short of her feet (off the road where she stands within COURT_ROAD_M of it). Her client keeps it coming every LURE_EVERY_S or when she moves REPLAN_M; COURT_S after the last it goes on its way. A mushroom held within OFFER_M of its body or fist, under OFFER_UP of its size, is taken.
+// A mushroom in her hand within LURE_M: a squeal, and it creeps to her CREEP_S at a time, pausing PAUSE_S to beckon, to stop COURT_STOP_M short of her feet (off the road where she stands within COURT_ROAD_M of it). Her client keeps it coming every LURE_EVERY_S or when she moves REPLAN_M; COURT_S after the last it watches her WATCH_S and goes on its way, and her feet frighten it no more till CALM_S after her hand empties. A mushroom held within OFFER_M of its body or fist, under OFFER_UP of its size, is taken.
 export const LURE_M = 8
 export const LURE_EVERY_S = 3
 export const COURT_S = 7
@@ -160,6 +160,8 @@ const PAUSE_S = [1.2, 2.5]
 const COURT_STOP_M = 0.9
 const COURT_ROAD_M = 5
 const REPLAN_M = 0.75
+const WATCH_S = [3, 6]
+export const CALM_S = 60
 export const OFFER_M = 0.5
 const OFFER_UP = 1.6
 // One that trusts her (trust.js), free and within GREET_M -- FRIEND_M once the whole village does, and gladder -- walks up, beckons and chatters GREET_S, and goes on; not again for GREET_COOL_S. Standing for her, a gesture every FUSS_S.
@@ -182,7 +184,7 @@ const SNAPS = 30
 // A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
 const MAX_NAMED = 15
 // A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'glad', 'greeted', 'warm']
+const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'calm', 'glad', 'greeted', 'warm']
 // Salts the chapter's forage roll off the villagers' own.
 const FORAGE_SALT = 0xf0a6e
 
@@ -490,8 +492,8 @@ export class Villagers {
         trip: '', bundle: 0, saw: false, fed: false, feast: false, carrier: null,
         // The frog it is seeing to, `[tx, tz, index]` (frogs.js keyOf), the bank it walks it to and the water it throws it at, `{ ex, ez, wx, wz }`, and the second it let go; and its hold as frogs.js reads it.
         frog: null, toss: null, tossAt: null, claim: { phase: 'wait', x: 0, y: 0, z: 0, heading: 0, t0: 0, from: { x: 0, y: 0, z: 0 }, to: { x: 0, z: 0 } },
-        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, whether it chatters home with her mushroom, till it greets her again, and whether the greeting is a friend's.
-        lapse: 0, glad: false, greeted: 0, warm: false,
+        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, till she can frighten it again, whether it chatters home with her mushroom, till it greets her again, and whether the greeting is a friend's.
+        lapse: 0, calm: 0, glad: false, greeted: 0, warm: false,
         lod: LOD_TIERS, puppet: null,
         ...easeFields(),
       }
@@ -691,7 +693,7 @@ export class Villagers {
       c.trip = c.id === this.forager ? 'out' : ''
       c.bundle = 0
       c.saw = c.fed = c.feast = c.glad = c.warm = false
-      c.lapse = c.greeted = 0
+      c.lapse = c.calm = c.greeted = 0
       c.frog = c.toss = c.tossAt = null
       if (c.seat !== null) this._leaveSeat(c)
       this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1])
@@ -1260,8 +1262,10 @@ export class Villagers {
 
   /** Her lure: a squeal the first time, and a creep toward her feet, planned again when she has moved REPLAN_M. */
   _court(c, e) {
-    const fresh = c.state !== 'court'
+    const fresh = c.state !== 'court' || c.phase === 'watch'
     c.lapse = COURT_S
+    // CALM_S from her hand emptying: the last lure may be a lure's gap before.
+    c.calm = CALM_S + LURE_EVERY_S + MEET_TICKS * TICK_S
     if (!fresh && Math.hypot(e.fx - c.fx, e.fz - c.fz) < REPLAN_M) return
     if (fresh) {
       if (c.state === 'greet') c.phase = ''
@@ -1323,10 +1327,25 @@ export class Villagers {
     if (c.state === 'walk' && r.length === 0) this._arrive(c)
   }
 
-  /** Creeping, a stop to beckon every CREEP_S; stopped or arrived, it fusses at her till the lure lapses. */
+  /** Creeping, a stop to beckon every CREEP_S; stopped or arrived, it fusses at her till the lure lapses, then watches her WATCH_S. */
   _tickCourt(c, dt) {
     c.lapse -= dt
-    if (c.lapse <= 0 || this.homing) { c.phase = ''; this._errand(c); return }
+    if (this.homing) { c.phase = ''; this._errand(c); return }
+    if (c.phase === 'watch') {
+      c.hold -= dt
+      this._turn(c, dt)
+      if (c.hold <= 0) { c.phase = ''; this._errand(c) }
+      return
+    }
+    if (c.lapse <= 0) {
+      c.phase = 'watch'
+      c.hold = between(c.rand, WATCH_S)
+      c.route.length = 0
+      c.wp = 0
+      c.aim = this._toward(c, c.fx, c.fz)
+      this._play(c, 'idle', STEP_S)
+      return
+    }
     if (c.phase === 'creep') {
       c.hold -= dt
       this._follow(c, dt, TURN_RATE)
@@ -1605,6 +1624,7 @@ export class Villagers {
       if (e) this._startle(c, e)
     }
     c.greeted = Math.max(0, c.greeted - dt)
+    c.calm = Math.max(0, c.calm - dt)
     if (this._takes(c) && this._eventOf(c, 'offer')) this._accept(c)
     if (this._findable(c)) {
       const e = this._eventOf(c, 'find')
@@ -1804,9 +1824,9 @@ export class Villagers {
     this.voicing = t > this.live
     this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
     if (this.voicing && t > target - SILENT_TICKS) {
-      // A mushroom in her hand startles nobody, nor do her feet anyone that trusts her or is coming to her.
+      // A mushroom in her hand startles nobody, nor do her feet anyone that trusts her, is coming to her, or was lured within CALM_S of now.
       const ids = []
-      if (this.held.length === 0) for (const c of this.all) if (this._startlable(c) && !this.trusts(c.id) && c.state !== 'court' && c.state !== 'greet' && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
+      if (this.held.length === 0) for (const c of this.all) if (this._startlable(c) && !this.trusts(c.id) && c.state !== 'court' && c.state !== 'greet' && c.calm <= 0 && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
       if (ids.length > 0) this._flinch(this._raise('startle', this.feet.x, this.feet.y, this.feet.z, ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
       this._seeHer(t, t + LEAD_TICKS)
       if (this.hands && t % MEET_TICKS === 0) this._seek(t + LEAD_TICKS)

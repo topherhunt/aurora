@@ -61,6 +61,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
         - your house?
       - Follow me!
 - [ ] Castles
+- [ ] SOTC
+  - Behemoths which stalk the land. You can chase after them, but on foot it's almost impossible to catch them; you need a strider. With a strider, ride up to one of their feet and grab on to the rungs going up it. And from then on you're in climbing mode -- riding along with this beast.
 - [ ] terrain-v3
   - [ ] Simpler approach to hydrology:
     - [x] Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)

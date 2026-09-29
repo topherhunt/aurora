@@ -33,7 +33,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, dijkstra, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { keyOf as frogKey } from '../src/v2/render/frogs.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
@@ -676,6 +676,30 @@ console.log('\nher mushroom')
   check(home[0] === 'leafkinSqueal' && home.some((s) => s.startsWith('leafkinChatter')) && fedHome, 'it squeals, and runs home chattering to eat it', home.slice(0, 6).join(' '))
   check(v.stats.states.court === 0, `with nothing in her hand, nobody courts her past COURT_S (${COURT_S} s)`, JSON.stringify(v.stats.states))
   check(LURE_M > GREET_M && FRIEND_M > GREET_M, 'a mushroom is seen from farther than a friend comes, and a whole village\'s friend farther still')
+}
+
+{
+  // Courted but given nothing: it watches her, goes on, and her feet beside it frighten it no sooner than CALM_S after her hand empties.
+  const hands = fakeHands()
+  const v = make(hands)
+  let t = run(v, T0, 120, FAR)
+  const c = outFor(v, 4, 6)
+  const feet = standOff(v, c, 4, 6)
+  hands.held.push({ kind: 'mushroom', x: feet.x, y: feet.y + 1.1, z: feet.z, by: null })
+  t = run(v, t, 15, feet, null, 60, hands.held)
+  const courted = c.state === 'court'
+  hands.held.length = 0
+  const emptied = t
+  const phases = [], beside = () => (c.hidden ? FAR : { x: c.x + 1, y: c.y, z: c.z })
+  let frightAt = null
+  while (frightAt === null && t < emptied + CALM_S + 120) {
+    t = run(v, t, 0.5, beside(), () => {
+      if (c.state === 'court' && phases.at(-1) !== c.phase) phases.push(c.phase)
+      if (c.state === 'flee' || c.state === 'startle') frightAt ??= t
+    }, 60, [])
+  }
+  check(courted && phases.includes('watch') && phases.at(-1) === 'watch', 'courted and given nothing, it watches her a while and goes on its way', phases.join(' '))
+  check(frightAt !== null && frightAt - emptied >= CALM_S, `and though she dogs it, her feet frighten it again only CALM_S (${CALM_S} s) after`, frightAt === null ? 'never' : `after ${(frightAt - emptied).toFixed(1)} s`)
 }
 
 console.log('\ntrust')
