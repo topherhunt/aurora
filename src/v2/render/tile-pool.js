@@ -83,3 +83,43 @@ export function poolBound(tile, span, evictSq, headroom, perTileAt) {
   }
   return Math.ceil(bound * headroom)
 }
+
+// How far the eye stands above the highest ground within `reach` of it, floored to LIFT_STEP. A ground bed adds its square to every horizontal tile distance, so from the air it holds only tiles whose ground is within its radius in 3D, and none at all above it. The rim already hides by 3D distance, so this drops only instances nothing would draw. The highest ground, not the ground underfoot: a ridge beside a valley is nearer than the valley floor.
+//
+// The max is memoised per LIFT_CELL cell, from heightAt on a LIFT_SAMPLE grid plus LIFT_PAD, and shared by every bed on the same field. It is dropped whenever the surface can have moved: a new `ground` (relief, erosion, a sculpt stroke), a new layers document or a layers edit, or setFlat.
+export const LIFT_STEP = 2
+const LIFT_CELL = 64
+const LIFT_SAMPLE = 8
+const LIFT_PAD = 4
+const liftCaches = new WeakMap()
+
+export function eyeLift(field, x, y, z, reach) {
+  let c = liftCaches.get(field)
+  // The gates' stub fields have no layers and never change.
+  const epoch = field.layers === undefined ? 0 : field.layers.epoch
+  if (!c || c.ground !== field.ground || c.layers !== field.layers || c.epoch !== epoch || c.flatY !== field.flatY) {
+    c = { ground: field.ground, layers: field.layers, epoch, flatY: field.flatY, max: new Map() }
+    liftCaches.set(field, c)
+  }
+  const i0 = Math.floor((x - reach) / LIFT_CELL)
+  const i1 = Math.floor((x + reach) / LIFT_CELL)
+  const j0 = Math.floor((z - reach) / LIFT_CELL)
+  const j1 = Math.floor((z + reach) / LIFT_CELL)
+  let top = -Infinity
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const key = i * 0x10000 + j
+      let m = c.max.get(key)
+      if (m === undefined) {
+        m = -Infinity
+        for (let v = 0; v <= LIFT_CELL; v += LIFT_SAMPLE) {
+          for (let u = 0; u <= LIFT_CELL; u += LIFT_SAMPLE) m = Math.max(m, field.heightAt(i * LIFT_CELL + u, j * LIFT_CELL + v))
+        }
+        m += LIFT_PAD
+        c.max.set(key, m)
+      }
+      if (m > top) top = m
+    }
+  }
+  return y <= top ? 0 : Math.floor((y - top) / LIFT_STEP) * LIFT_STEP
+}

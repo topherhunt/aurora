@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, levelFor, tileOutOfBounds } from './tile-pool.js'
+import { QUANT, eyeLift, levelFor, tileOutOfBounds } from './tile-pool.js'
 
 import { buildRock } from '../../props/rock.js'
 import { rockParams, TINTS, TINT_GAIN, ENV_TINTS } from '../../props/rock-bank.js'
@@ -373,6 +373,8 @@ export class Litter {
     // A tile a road crosses lives to the far radius; any other to the near one.
     this.evictSq = (RADIUS + TILE * 1.5) ** 2
     this.roadEvictSq = (reach + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.roadEvictSq)
+    this.lift2 = 0
     this.maxSlopeTan = Math.tan((MAX_SLOPE_DEG * Math.PI) / 180)
     this.minNy = Math.cos((MAX_SLOPE_DEG * Math.PI) / 180)
 
@@ -597,7 +599,8 @@ export class Litter {
    * inside a quarter of a second.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
+    const lift2 = this.lift2
 
     const t0 = performance.now()
     while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) this._growTile(this.queue.pop())
@@ -622,8 +625,8 @@ export class Litter {
 
       const nx = Math.max(t.tx * tile, Math.min(camX, (t.tx + 1) * tile))
       const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
-      const near = ((t.tx + 0.5) * tile - camX) ** 2 + ((t.tz + 0.5) * tile - camZ) ** 2 <= this.radiusSq
+      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
+      const near = ((t.tx + 0.5) * tile - camX) ** 2 + ((t.tz + 0.5) * tile - camZ) ** 2 + lift2 <= this.radiusSq
 
       const q = t.q
       const thicken = near2 < this.loSq[q]
@@ -639,18 +642,19 @@ export class Litter {
     this.tris = (this.placed - hidden) * this.pebbleTris
   }
 
-  _reseat(cx, cz) {
+  _reseat(cx, cz, lift2 = 0) {
     const tile = this.tile
     const tx = Math.floor(cx / tile)
     const tz = Math.floor(cz / tile)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, t] of this.tiles) {
       const dx = (t.tx + 0.5) * tile - cx
       const dz = (t.tz + 0.5) * tile - cz
-      if (dx * dx + dz * dz > (t.road ? this.roadEvictSq : this.evictSq)) {
+      if (dx * dx + dz * dz + lift2 > (t.road ? this.roadEvictSq : this.evictSq)) {
         this._release(t)
         this.tiles.delete(key)
       }
@@ -665,7 +669,7 @@ export class Litter {
         const gz = tz + iz
         const dcx = (gx + 0.5) * tile - cx
         const dcz = (gz + 0.5) * tile - cz
-        const d2 = dcx * dcx + dcz * dcz
+        const d2 = dcx * dcx + dcz * dcz + lift2
         if (d2 > this.roadRadiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, tile)) continue
         const key = gx * 0x10000 + gz
@@ -675,7 +679,7 @@ export class Litter {
         if (!near && !this.paths.overlaps(gx * tile, gz * tile, (gx + 1) * tile, (gz + 1) * tile)) continue
         const nx = Math.max(gx * tile, Math.min(cx, (gx + 1) * tile))
         const nz = Math.max(gz * tile, Math.min(cz, (gz + 1) * tile))
-        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2), near })
+        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2), near })
       }
     }
     this.queue.sort((a, b) => b.d2 - a.d2)

@@ -266,6 +266,76 @@ for (const name of ['litter', 'deadwood', 'mushrooms']) {
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n3. a ground bed holds nothing from the air, and grows back on descent\n')
+
+// eyeLift joins the eye's height over the ground to every tile distance, so
+// above a bed's reach no tile is resident and nothing is placed, however far
+// the camera flies. 500 m is the flight the stutter was measured on.
+for (const name of ['grass', 'ferns', 'litter', 'deadwood', 'mushrooms']) {
+  const bed = MAKE[name]()
+  bed.place(0, 0)
+  // Mushrooms stand only on anchors, and this world has none: their tiles are the evidence.
+  const booted = bed.placed
+  const up = GROUND + Math.max(500, Math.sqrt(bed.evictSq) + 10)
+  let t = 0
+  let x = 0
+  let held = 0
+  for (let i = 0; i < 200; i++) {
+    t += 1 / 72
+    setPropClock(t)
+    x += 5
+    bed.update(x, up, 0)
+    if (i >= 50) held = Math.max(held, bed.tiles.size + bed.placed)
+  }
+  check(held === 0, `${name}: ${(up - GROUND).toFixed(0)} m up, no tile is resident and nothing is placed`, `peak ${held}`)
+  for (let i = 0; i < 300; i++) { t += 1 / 72; setPropClock(t); bed.update(x, EYE, 0) }
+  check(bed.tiles.size > 0 && (bed.placed > 0 || booted === 0), `${name}: back on the ground, the bed grows again`, `${bed.tiles.size} tiles, ${bed.placed} placed`)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n4. a speed-up pulls buckets forward only within the walk budget\n')
+
+// Every frame of an acceleration grows the rim's `need` past every bucket's, so
+// an unbudgeted walk takes the whole resident set each frame. With the budget
+// at zero only the turn bucket walks, and the turn alone still reaches every
+// bucket within RIM_PHASES frames once the camera is moving. The ramp stays
+// under a metre a frame so the near-margin guard, never deferred, stays quiet.
+const accelerate = (name, budget) => {
+  const bed = MAKE[name]()
+  bed.walkBudgetMs = budget
+  bed.place(0, 0)
+  let t = 0
+  for (let i = 0; i < 120; i++) { t += 1 / 72; setPropClock(t); bed.update(0, EYE, 0) }
+  const beds = subBeds(bed)
+  const last = beds.map(() => new Array(8).fill(0))
+  let x = 0
+  let widest = 0
+  let stalest = 0
+  for (let f = 1; f <= 60; f++) {
+    x += f / 60
+    t += 1 / 72
+    setPropClock(t)
+    bed.update(x, EYE, 0)
+    beds.forEach((b, j) => {
+      let walked = 0
+      for (let p = 0; p < b.bucketX.length; p++) {
+        if (b.bucketX[p] === x) { walked++; last[j][p] = f }
+        if (f > 20) stalest = Math.max(stalest, f - last[j][p])
+      }
+      widest = Math.max(widest, walked)
+    })
+  }
+  return { widest, stalest }
+}
+for (const name of ['trees', 'rocks']) {
+  const off = accelerate(name, 0)
+  check(off.widest === 1 && off.stalest < 8, `${name}: with no walk budget, one bucket a frame and none staler than its turn`,
+    `widest ${off.widest}, stalest ${off.stalest} frames`)
+  const on = accelerate(name, Infinity)
+  check(on.widest === 8, `${name}: with an open budget, a speed-up frame still walks every bucket`, `widest ${on.widest}`)
+}
+
+// ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all scatter pool checks passed' : `${failures} FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

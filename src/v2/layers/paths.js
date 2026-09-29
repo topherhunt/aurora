@@ -207,6 +207,8 @@ function normalise(rec, where) {
 const HIT_A = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_B = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 const HIT_C = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
+// _roadAt's answer, kept for the next ask at the same point: heightAt asks once for the flatten weight and again for the smooth.
+const HIT_ROAD = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
 // _trunkAt's answer. Module-level like the HITs: the pin walk asks it per sample.
 const TRUNK = { inset: 0, level: 0, over: 0 }
 
@@ -229,6 +231,9 @@ export class PathSet {
     this._pathList = []
     this._segCount = 0
     this._indexDirty = true
+    this._roadX = NaN
+    this._roadZ = NaN
+    this._roadHit = false
     this._dirty = null
     this._terrain = null
     this._solving = false
@@ -439,6 +444,7 @@ export class PathSet {
     if (this._solving) return
     if (!this._indexDirty) return
     this._indexDirty = false
+    this._roadX = NaN
     this.grid.clear()
     this._pathList = []
     let total = 0
@@ -807,6 +813,16 @@ export class PathSet {
     return true
   }
 
+  // The nearest road into HIT_ROAD, or false. Remembers the last point, so flattenAt and smoothRoads at one vertex scan the bucket once.
+  _roadAt(x, z) {
+    this._ensureIndex()
+    if (x === this._roadX && z === this._roadZ) return this._roadHit
+    this._roadHit = this._nearestInto(x, z, 'road', HIT_ROAD)
+    this._roadX = x
+    this._roadZ = z
+    return this._roadHit
+  }
+
   nearest(x, z, kind = null) {
     if (!this._nearestInto(x, z, kind, HIT_A)) return null
     return { dist: HIT_A.dist, y: HIT_A.y, halfWidth: HIT_A.halfWidth, id: HIT_A.id, kind: HIT_A.kind }
@@ -902,15 +918,15 @@ export class PathSet {
 
   // Road smooth. Runs LAST in Layers.carve so a road crossing a river reads as a causeway rather than dipping into the channel.
   smoothRoads(x, z, h) {
-    if (!this._nearestInto(x, z, 'road', HIT_B)) return h
-    const d = HIT_B.dist
-    const hw = HIT_B.halfWidth
-    if (d <= hw) return HIT_B.y
-    const feather = HIT_B.rec.feather
+    if (!this._roadAt(x, z)) return h
+    const d = HIT_ROAD.dist
+    const hw = HIT_ROAD.halfWidth
+    if (d <= hw) return HIT_ROAD.y
+    const feather = HIT_ROAD.rec.feather
     if (feather <= 0 || d >= hw + feather) return h
     // Smoothstep, not a linear ramp: a linear shoulder leaves a slope discontinuity where it meets the flat carriageway, and that crease catches the light along the entire length of the road.
     const s = smoothstep(0, 1, (d - hw) / feather)
-    return HIT_B.y + (h - HIT_B.y) * s
+    return HIT_ROAD.y + (h - HIT_ROAD.y) * s
   }
 
   // Water surface elevation of the river at (x, z), or null for dry land. The solved level of the nearest sample, inside the half-width only: the bank band is shaped by the river but is not in it. At a junction the higher of the two surfaces is the one the player sees.
@@ -960,10 +976,11 @@ export class PathSet {
       const g = PathSet.channelProfile(HIT_B.dist / HIT_B.halfWidth)
       if (g > f) f = g
     }
-    if (this._nearestInto(x, z, 'road', HIT_B, null, roadReach !== null)) {
-      const hw = HIT_B.halfWidth
-      const reach = roadReach === null ? HIT_B.rec.feather : roadReach
-      const r = HIT_B.dist <= hw ? 1 : reach <= 0 ? 0 : smoothstep(1, 0, (HIT_B.dist - hw) / reach)
+    const hit = roadReach === null ? HIT_ROAD : HIT_B
+    if (roadReach === null ? this._roadAt(x, z) : this._nearestInto(x, z, 'road', HIT_B, null, true)) {
+      const hw = hit.halfWidth
+      const reach = roadReach === null ? hit.rec.feather : roadReach
+      const r = hit.dist <= hw ? 1 : reach <= 0 ? 0 : smoothstep(1, 0, (hit.dist - hw) / reach)
       if (r > f) f = r
     }
     return clamp01(f)

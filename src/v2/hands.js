@@ -313,6 +313,19 @@ export class Hands {
     return into
   }
 
+  /** Where her hand `key` is in the world, into `out`. */
+  pointOf(key, out) { return out.copy(this._point(this._hand(key))) }
+
+  /** Her hand holding `lure` (one lures() handed out) loses the thing to a creature that ate it; false if no hand of hers holds it. */
+  eatLure(lure) {
+    for (const hand of this.hands.values()) {
+      if (hand.lure !== lure || !hand.held) continue
+      this._unhold(hand)
+      return true
+    }
+    return false
+  }
+
   _hand(key) {
     const hand = this.hands.get(key)
     if (!hand) throw new Error(`Hands: no hand ${key}`)

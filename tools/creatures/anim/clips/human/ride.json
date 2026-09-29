@@ -1,31 +1,200 @@
 {
   "kind": "pose",
-  "note": "Seated astride a mount, looping: hips dropped to the saddle, knees splayed round the barrel and bent with the feet hanging a little forward, hands low in front on the rein, a slow rock with the mount's step. The world hangs the rider by the posed hips (render/striders.js), so the feet float wherever the straddle leaves them.",
+  "note": "Seated astride a mount, looping: hips dropped to the saddle, knees splayed round the barrel and bent with the feet hanging a little forward, hands low in front on the rein, the hips and shoulders rolling against each other with the mount's step and the head glancing about. The world hangs the rider by the posed hips (render/striders.js), so the feet float wherever the straddle leaves them.",
   "samples": 32,
   "crouch": 0.045,
-  "unweighted": ["legLeft", "legRight"],
-  "limits": { "hipLimit": 1.7, "fold": 2.4 },
+  "unweighted": [
+    "legLeft",
+    "legRight"
+  ],
+  "limits": {
+    "hipLimit": 1.7,
+    "fold": 2.4
+  },
   "keys": [
-    { "t": 0.0, "pose": {
-      "root": { "lift": -0.1 },
-      "spine": { "pitch": 0.08 },
-      "head": { "pitch": -0.06 },
-      "arms": { "both": { "raise": 0.45, "elbow": 1.1, "spread": 0.12, "twist": 0.4 } },
-      "legs": { "legLeft": { "fore": 0.12, "lat": 0.36, "lift": 0 }, "legRight": { "fore": 0.12, "lat": -0.36, "lift": 0 } }
-    } },
-    { "t": 1.2, "pose": {
-      "root": { "lift": -0.095, "pitch": 0.03 },
-      "spine": { "pitch": 0.05 },
-      "head": { "pitch": -0.04, "yaw": 0.1 },
-      "arms": { "both": { "raise": 0.42, "elbow": 1.05, "spread": 0.12, "twist": 0.4 } },
-      "legs": { "legLeft": { "fore": 0.1, "lat": 0.36, "lift": 0.005 }, "legRight": { "fore": 0.1, "lat": -0.36, "lift": 0.005 } }
-    } },
-    { "t": 2.4, "pose": {
-      "root": { "lift": -0.1 },
-      "spine": { "pitch": 0.08 },
-      "head": { "pitch": -0.06 },
-      "arms": { "both": { "raise": 0.45, "elbow": 1.1, "spread": 0.12, "twist": 0.4 } },
-      "legs": { "legLeft": { "fore": 0.12, "lat": 0.36, "lift": 0 }, "legRight": { "fore": 0.12, "lat": -0.36, "lift": 0 } }
-    } }
+    {
+      "t": 0.0,
+      "pose": {
+        "root": {
+          "lift": -0.1
+        },
+        "spine": {
+          "pitch": 0.08
+        },
+        "head": {
+          "pitch": -0.06
+        },
+        "arms": {
+          "both": {
+            "raise": 0.45,
+            "elbow": 1.1,
+            "spread": 0.12,
+            "twist": 0.4
+          }
+        },
+        "legs": {
+          "legLeft": {
+            "fore": 0.12,
+            "lat": 0.36,
+            "lift": 0
+          },
+          "legRight": {
+            "fore": 0.12,
+            "lat": -0.36,
+            "lift": 0
+          }
+        }
+      }
+    },
+    {
+      "t": 0.6,
+      "pose": {
+        "root": {
+          "lift": -0.097,
+          "pitch": 0.015,
+          "roll": 0.025
+        },
+        "spine": {
+          "pitch": 0.065,
+          "roll": -0.035,
+          "yaw": 0.03
+        },
+        "head": {
+          "pitch": -0.05,
+          "yaw": 0.12,
+          "roll": 0.02
+        },
+        "arms": {
+          "both": {
+            "raise": 0.44,
+            "elbow": 1.08,
+            "spread": 0.12,
+            "twist": 0.4
+          }
+        },
+        "legs": {
+          "legLeft": {
+            "fore": 0.11,
+            "lat": 0.36,
+            "lift": 0.003
+          },
+          "legRight": {
+            "fore": 0.11,
+            "lat": -0.36,
+            "lift": 0.003
+          }
+        }
+      }
+    },
+    {
+      "t": 1.2,
+      "pose": {
+        "root": {
+          "lift": -0.095,
+          "pitch": 0.03
+        },
+        "spine": {
+          "pitch": 0.05
+        },
+        "head": {
+          "pitch": -0.04,
+          "yaw": 0.1
+        },
+        "arms": {
+          "both": {
+            "raise": 0.42,
+            "elbow": 1.05,
+            "spread": 0.12,
+            "twist": 0.4
+          }
+        },
+        "legs": {
+          "legLeft": {
+            "fore": 0.1,
+            "lat": 0.36,
+            "lift": 0.005
+          },
+          "legRight": {
+            "fore": 0.1,
+            "lat": -0.36,
+            "lift": 0.005
+          }
+        }
+      }
+    },
+    {
+      "t": 1.8,
+      "pose": {
+        "root": {
+          "lift": -0.097,
+          "pitch": 0.015,
+          "roll": -0.025
+        },
+        "spine": {
+          "pitch": 0.065,
+          "roll": 0.035,
+          "yaw": -0.03
+        },
+        "head": {
+          "pitch": -0.05,
+          "yaw": -0.04,
+          "roll": -0.02
+        },
+        "arms": {
+          "both": {
+            "raise": 0.44,
+            "elbow": 1.08,
+            "spread": 0.12,
+            "twist": 0.4
+          }
+        },
+        "legs": {
+          "legLeft": {
+            "fore": 0.11,
+            "lat": 0.36,
+            "lift": 0.003
+          },
+          "legRight": {
+            "fore": 0.11,
+            "lat": -0.36,
+            "lift": 0.003
+          }
+        }
+      }
+    },
+    {
+      "t": 2.4,
+      "pose": {
+        "root": {
+          "lift": -0.1
+        },
+        "spine": {
+          "pitch": 0.08
+        },
+        "head": {
+          "pitch": -0.06
+        },
+        "arms": {
+          "both": {
+            "raise": 0.45,
+            "elbow": 1.1,
+            "spread": 0.12,
+            "twist": 0.4
+          }
+        },
+        "legs": {
+          "legLeft": {
+            "fore": 0.12,
+            "lat": 0.36,
+            "lift": 0
+          },
+          "legRight": {
+            "fore": 0.12,
+            "lat": -0.36,
+            "lift": 0
+          }
+        }
+      }
+    }
   ]
 }

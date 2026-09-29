@@ -320,6 +320,38 @@ export class Player {
     this.blocked = false
   }
 
+  // Onto a mount's back (v2/render/wild-striders.js): turned about her head to face `heading` (the creatures' convention, forward (cos, -sin)), then moved so her head is at (x, eyeY, z). update() is not called while she rides; carry() moves her.
+  mountAt(x, eyeY, z, heading) {
+    this.travel = null
+    this.flying = this.swimming = false
+    this.speed = 0
+    this.fell = 0
+    this._fallTop = null
+    const head = this.headPosition().clone()
+    this._q.setFromAxisAngle(UP, Math.atan2(Math.cos(heading), -Math.sin(heading)) - this.headYaw())
+    this.rig.position.sub(head).applyQuaternion(this._q).add(head)
+    this.rig.quaternion.premultiply(this._q)
+    this.rig.position.x += x - head.x
+    this.rig.position.y += eyeY - head.y
+    this.rig.position.z += z - head.z
+  }
+
+  // Carried by her mount: moved by (dx, dy, dz), then turned `turn` about the vertical through (px, pz), her own pose in the play space untouched.
+  carry(dx, dy, dz, turn, px, pz) {
+    const p = this.rig.position
+    p.x += dx
+    p.y += dy
+    p.z += dz
+    this._q.setFromAxisAngle(UP, turn)
+    p.x -= px
+    p.z -= pz
+    p.applyQuaternion(this._q)
+    p.x += px
+    p.z += pz
+    this.rig.quaternion.premultiply(this._q)
+    this.fell = 0
+  }
+
   // Desktop only. Leaves her at her current altitude on entry so the view does
   // not jump, and drops her back onto the ground on exit.
   setFlying(on) {

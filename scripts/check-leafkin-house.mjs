@@ -52,8 +52,9 @@ check(!winOff.length, 'every window sits on the trunk wall below the eave, facin
 // The builder spaces frames by the trunk's bare radius, so the built wall's noise gets 10 cm of slack.
 const crowded = built.filter(({ h }) => h.windows.some((a, i) => h.windows.slice(i + 1).some((b) => Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1], a.p[2] - b.p[2]) - a.r - b.r - 0.2 < 0.9)))
 check(!crowded.length, 'window frames stand at least 1 m apart', crowded.map((x) => x.s).join(' '))
-const tall = built.filter(({ spec, h }) => Math.abs(h.top - spec.height) > 0.8)
-check(!tall.length, 'the roof tip lands near the rolled height', tall.map((x) => `${x.s}:${x.h.top.toFixed(2)}/${x.spec.height.toFixed(2)}`).join(' '))
+// `rise` lowers the apex; the rolled height is only the ceiling (spires may poke past it).
+const tall = built.filter(({ spec, h }) => { const H = spec.height, yT = spec.trunk * H; return h.top - H > 0.8 || h.top < yT + spec.rise * (H - yT) - 0.8 })
+check(!tall.length, 'the top lands between the rolled roof apex and the rolled height', tall.map((x) => `${x.s}:${x.h.top.toFixed(2)}/${x.spec.height.toFixed(2)}`).join(' '))
 
 for (const [key, kinds] of Object.entries(HOUSE_KINDS)) {
   const seen = new Set(built.map(({ spec }) => spec[key]))

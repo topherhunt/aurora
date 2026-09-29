@@ -14,7 +14,8 @@ The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing
 | hitching rails (three-free) | `towns.js` `planPosts`, `TOWN.posts` |
 | road travellers (three-free) | `src/v2/render/journeys.js` `Journeys`, `JOURNEYS` |
 | strider puppets, rails, reins, calls | `src/v2/render/striders.js` `Striders`, `STRIDER` |
-| gate | `scripts/check-towns.mjs`; eyes: `tmp/townshot-drive.mjs`, `tmp/folkshot-drive.mjs` |
+| wild striders and her ride | `src/v2/render/wild-striders.js` `WildStriders`, `WILD`; `player.js` `mountAt`, `carry` |
+| gate | `scripts/check-towns.mjs`; eyes: `tmp/townshot-drive.mjs`, `tmp/folkshot-drive.mjs`, `tmp/wildshot-drive.mjs` |
 
 ## Siting
 
@@ -66,11 +67,19 @@ Each town has 3 hitching rails of 3 tethers (`planPosts`): one at the house near
 
 `Journeys` gives each town's chapter 2 departure slots, each filled with chance 0.5. A filled slot is a rider (0.55) or a party of 1-3 on foot, bound for a town the roads reach from one of its ports within 2400 m without passing another town's. It is deterministic from SEED, so every client and both towns agree. A journey leaves the port end at t0 and reaches the destination's at t1, riding at 1.25 m/s or walking at 1.05 m/s. Anyone met on the road is therefore always heading somewhere real and arrives there. `_plan` fills a share of the tethers at the chapter's start: enough that every departing rider finds a strider, and few enough that every arriving rider finds a free tether. It throws if no count fits. A departing rider leaves its errand in time to fetch a strider, untie it, hop up and ride to the port by t0. An arrival appears at the port at t1, rides to a free tether, hops down, ties up and walks off as a guest in the journey member's body. An errand may instead `lead` a free strider on its rein for a leg or two and tie it at another rail. No lead starts near a departure's fetch or late in the chapter.
 
-`Striders` draws at most 8 puppets, nearest first. Tied striders idle and fidget (a flutter on each fidget) and chirp every 25-70 s. Walking ones tread through ambience's `stride` rule. A rider sits the `ride` clip's underside on the saddle (the lowest midline crest between the Hips and Chest bones) and arcs 0.4 m over the hop. Reins are 1 px sagging lines from the knot, or from the leader's or rider's right wrist, to the strider's head. Within 300 m, `_road` draws every journey on the road that its source town isn't still holding.
+`Striders` draws at most 8 puppets, nearest first. Tied striders idle and fidget (a flutter on each fidget) and chirp every 25-70 s. Walking ones tread through ambience's `stride` rule. A rider sits the `ride` clip's underside on the saddle (the lowest midline crest of the back between the Hips and Chest bones) and arcs 0.4 m over the hop, and plays `ride-idle` while its mount stands. Reins are 1 px sagging lines from the knot, or from the leader's or rider's right wrist, to the strider's head. Within 300 m, `_road` draws every journey on the road that its source town isn't still holding.
 
-## Open
+## Wild striders and her ride
+
+Out of the villages the overworld has unsaddled striders: the same GLB (one shared load, `loadStriderGlb`) drawn only to its tier's `tackFrom` index count, with the saddle measured on the bare body. Each 128 m tile has a home with chance 0.6 (dry, slope under 0.4, 20 m from any building), spawned within 120 m of her and let go past 150 m. A let-go home is not respawned until she has been out of range of it. They wander within 12 m of home: walk, peck (a coo now and then), fidget, idle. A `HeadTurn` solver on the head chain turns the neck to look (yaw, pitch, roll shared 0.4 / 0.35 / 0.25 down Neck, Neck1, Head).
+
+The states (`_step`): within 6 m a calm one turns wary, faces her, mutters and backs off at 0.5 m/s until she is 8 m off. Within 3 m it attacks once (10 HP at the lunge, 0.66 s in, if she is within 3.8 m), then flees for 6 s or 40 m. One that has struck her once flees instead the next time she comes within 3 m. A fish held within 6 m makes it meek: it sits (the sit clip's flat hold looped), whimpers and tracks the fish. When its head comes within 0.6 m of the fish it eats it (`hands.eatLure`), trusts her for good (`trusted`, by home key) and follows: idle within 2.5 m, walking past 4 m, running past 10 m, and giving up past 60 m. After boot, one spawn in ten is a panicked runner at 7 m/s, aimed 4-18 m to one side of her and chirping frantically until it is out of range.
+
+She mounts a trusted, calm or following strider by touching its saddle point (0.5 m, trigger) or clicking within 0.5 m of it along the ray, from its side (the lateral offset of her head beats the longitudinal one). `player.mountAt` seats her eye 0.75 m (scaled) over the saddle, facing its way. While she rides, `ride()` replaces `player.update` and `carry` moves her rig with the body. The stick's push picks a gait band (stop under 0.15, walk to 0.7, run past), which it takes up after a random 0.35-1.0 s, at a random 0.85-1.15 pace. It eases up with tau 1 s and down with tau 0.6 s, and switches to the run clip past 2.4 m/s. Steering swings the neck first (up to 0.6 rad, tau 0.25 s), and the body turns after it at neck share × v / 3 m, capped at 0.9 rad/s, so it cannot turn standing. Pulling back backs it at 0.5 m/s with a balk every 2-4 s (fidget and a whine or chirp). Her seat height follows at tau 0.35 s with a 3.5 cm bob on the gait's footfalls. A (either hand) or Space puts her down on its right, left or behind, wherever is dry and clear of a trunk. Teleporting is off while she rides; a flight or a revive lets go of the ride.
+
 
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
 - Market stalls, fences and livestock. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
 - Rails have no collider, travellers pass through the player and each other, and the reins are barely visible at 1 px.
+- Wild striders are not netplayed (peers see a rider standing), pass through rocks and buildings when panicked, and speak with the tack striders' pitched chirp, whine and flutter.

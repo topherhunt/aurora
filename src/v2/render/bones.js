@@ -1,6 +1,6 @@
 import THREE from '../../three-instance.js'
 
-import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
+import { boundedRadius, eyeLift, tileOutOfBounds } from './tile-pool.js'
 
 import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
@@ -215,6 +215,8 @@ export class Bones {
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
 
     // One instance per tile the eviction disc can hold, counted on the grid.
     let bound = 0
@@ -395,7 +397,7 @@ export class Bones {
    * hidden a find, or is about to; it stays a card meanwhile.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
     const now = getPropClock()
     this._sweepFades(now)
     const cardTier = this.cardTier
@@ -425,19 +427,20 @@ export class Bones {
     this.tris = tris + this.fadeTris
   }
 
-  /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing only. */
-  _reseat(cx, cz) {
+  /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing or eyeLift step only. */
+  _reseat(cx, cz, lift2 = 0) {
     if (this.none) return
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
       }
@@ -450,7 +453,7 @@ export class Bones {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.radiusSq) continue
+        if (dcx * dcx + dcz * dcz + lift2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue

@@ -80,10 +80,11 @@ export const SOUNDS = {
   panting: 'sounds/npc-leafkin-panting.mp3',
   // A hob weevil's cry (render/hobs.js).
   hobCry: 'sounds/animal-hob-weevil-cry.mp3',
-  // A frost strider's calls at its rail and on the road (render/townsfolk.js), and the flutter of its fidget.
+  // A frost strider's calls (render/striders.js, wild-striders.js), the flutter of its fidget, and its whine.
   striderChirp1: 'sounds/strider-chirp-1.mp3',
   striderChirp2: 'sounds/strider-chirp-2.mp3',
   striderFlutter: 'sounds/strider-flutter.mp3',
+  striderWhine: 'sounds/strider-whine.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   frogBoing: 'sounds/animal-frog-boing.mp3',
@@ -229,7 +230,7 @@ export class Ambience {
   /**
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
-   * @param voiced    the layers whose one-shots are heard, each { layer, rule, bus }: layer.voices(into) drains them, `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door); `bus` 'near' keeps them out of the house's walls (a leafkin at home), else `air`.
+   * @param voiced    the layers whose one-shots are heard, each { layer, rule, bus }: layer.voices(into) drains them (a one-shot's optional `rate` and `gain` scale its roll), `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door); `bus` 'near' keeps them out of the house's walls (a leafkin at home), else `air`.
    * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, bus, sound, rule }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, `bus` is as a voiced layer's, and `sound` and `rule` their step (footfall and RULES.footfall unless named).
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
@@ -798,7 +799,7 @@ export class Ambience {
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
         const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)
-        this.fire(v.sound, { rate: this.rate(), gain: level * this.between(...V.gain), at: { x: v.x, y: v.y, z: v.z }, bus })
+        this.fire(v.sound, { rate: this.rate() * (v.rate === undefined ? 1 : v.rate), gain: level * this.between(...V.gain) * (v.gain === undefined ? 1 : v.gain), at: { x: v.x, y: v.y, z: v.z }, bus })
       }
     }
   }

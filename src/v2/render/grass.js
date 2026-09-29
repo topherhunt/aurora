@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   buildGrassBank, bakeGrassImpostor, grassBillboardLayers, GRASS_BASE,
@@ -1183,6 +1183,8 @@ export class Grass {
     // Evict only once a tile is well outside the radius, so a player pacing back
     // and forth across one line does not rebuild the same row every crossing.
     this.evictSq = (radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
     this.nearSq = ((bands.length ? bands[bands.length - 1] : 0) + NEAR_MARGIN) ** 2
 
     // Keep-fraction per quantised level: loSq[q] is the squared distance at
@@ -1525,7 +1527,8 @@ export class Grass {
    * Safe to call every frame.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
+    const lift2 = this.lift2
 
     const t0 = performance.now()
     // A THIN IS NOT BUILD WORK AND MUST NOT BE STARVED BY IT. The budgeted loop
@@ -1586,7 +1589,7 @@ export class Grass {
 
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
 
       // Thicken IMMEDIATELY when the tile needs more grass -- being late there
       // is a visible bald patch opening in front of the player -- but thin only
@@ -1765,13 +1768,14 @@ export class Grass {
   /**
    * Bring the visible tile set in line with the camera: thin what the camera has
    * left behind, queue what is missing, evict what has fallen out. Returns
-   * immediately unless the camera has actually changed tile, which is what makes
-   * it safe to call every frame.
+   * immediately unless the camera has changed tile or eyeLift step, which is
+   * what makes it safe to call every frame. `lift2` joins every distance.
    */
-  _reseat(cx, cz) {
+  _reseat(cx, cz, lift2 = 0) {
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     // More than one tile of travel between two crossings is not walking: it is a
     // teleport, a `place` after the ground moved, or a hitch long enough to be
     // one. What makes the distinction worth drawing is that the rim's state --
@@ -1786,7 +1790,7 @@ export class Grass {
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
         continue
@@ -1806,7 +1810,7 @@ export class Grass {
       // boundary is not cut and regrown by one step across a tile line.
       const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
-      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2)
       if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q, force: jumped })
     }
 
@@ -1823,7 +1827,7 @@ export class Grass {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        const d2 = dcx * dcx + dcz * dcz
+        const d2 = dcx * dcx + dcz * dcz + lift2
         if (d2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
@@ -1835,7 +1839,7 @@ export class Grass {
           tx: gx,
           tz: gz,
           d2,
-          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2),
+          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2),
         })
       }
     }

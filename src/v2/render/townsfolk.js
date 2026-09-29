@@ -66,7 +66,7 @@ export const TOWNSFOLK = {
   leap: 0.4,
 }
 
-export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', ...TALKS]
+export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', ...TALKS]
 
 const LOD_TIERS = LOD_RUNGS
 const STEP_S = 2
@@ -429,7 +429,7 @@ export class TownLife {
   }
 
   /** Stood where it is, or sat in the saddle. */
-  _still(c) { this._play(c, c.mount ? 'ride' : 'idle', STEP_S) }
+  _still(c) { this._play(c, c.mount ? 'ride-idle' : 'idle', STEP_S) }
 
   _step(c) {
     if (c.state === 'talk' && c.clip !== 'idle') { this._play(c, 'idle', STEP_S); return }

@@ -51,6 +51,7 @@ const check = (ok, label, detail = '') => {
 // tiles on the mesh rings.
 const GROUND = 60
 const field = {
+  heightAt: () => GROUND,
   heightAndSlopeAt: () => ({ h: GROUND, tan: 0 }),
   snowLineAt: () => 9999,
   bands: { altLo: 0, altSpan: 900 },
@@ -396,7 +397,7 @@ console.log('\n6. the ferns a room plants\n')
   // fern would take -- too steep, over the snow, under water -- is the test:
   // the plant stands on it anyway, because the room has already decided.
   taken.clear()
-  const steep = { heightAndSlopeAt: () => ({ h: GROUND, tan: 4 }), snowLineAt: () => GROUND - 50, bands: field.bands }
+  const steep = { heightAt: () => GROUND, heightAndSlopeAt: () => ({ h: GROUND, tan: 4 }), snowLineAt: () => GROUND - 50, bands: field.bands }
   const flood = { isSubmerged: () => true, levelAt: () => GROUND + 5, shoreDistAt: () => 0 }
   const plants = [{ x: 3.5, z: 4.25, scale: 1.1 }, { x: -6.5, z: 2.5, scale: 2, y: GROUND + 7 }, { x: 40.5, z: -18.5, scale: 0.9 }]
   const { sink } = FERN_TUNING.PLACEMENT

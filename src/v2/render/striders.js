@@ -43,9 +43,11 @@ export function poseMatrix(pose, k, out) {
  * The saddle, as the lowest crest of the back's midline between the hips and
  * chest joints in the bind frame, carried on the hips bone (`seat`) so a posed
  * body's saddle is hips.matrixWorld times it; `rest` is it on the idle's
- * first frame in creature units, for a body drawn without a puppet.
+ * first frame in creature units, for a body drawn without a puppet. Only the
+ * first `verts` vertices are read, so a bare body (wild-striders.js) is
+ * measured without its tack.
  */
-function saddleOf(url, asset) {
+export function saddleOf(url, asset, verts = Infinity) {
   const { bones, boneInverses } = asset.skeleton
   const index = (name) => {
     const i = bones.findIndex((b) => b.name === THREE.PropertyBinding.sanitizeNodeName(name))
@@ -57,15 +59,16 @@ function saddleOf(url, asset) {
   const z0 = Math.min(bindZ(hips), bindZ(chest)), z1 = Math.max(bindZ(hips), bindZ(chest))
   const pos = asset.tiers[0].getAttribute('position')
   const tops = new Map()
-  for (let i = 0; i < pos.count; i++) {
+  for (let i = 0; i < Math.min(pos.count, verts); i++) {
     const z = pos.getZ(i)
-    if (Math.abs(pos.getX(i)) > 0.05 || z < z0 || z > z1) continue
+    // The belly is skipped: a row with no back vertex on the midline would otherwise crest at it.
+    if (Math.abs(pos.getX(i)) > 0.05 || z < z0 || z > z1 || pos.getY(i) < 0.4 * asset.height) continue
     const k = Math.round(z * 25), top = tops.get(k)
     if (top === undefined || pos.getY(i) > top) tops.set(k, pos.getY(i))
   }
   let best = null
   for (const [k, y] of tops) if (best === null || y < best.y) best = { y, z: k / 25 }
-  if (best === null || !(best.y > 0.4 * asset.height && best.y < asset.height)) throw new Error(`${url}: the saddle measures ${best && best.y} on a body ${asset.height} tall`)
+  if (best === null || !(best.y < asset.height)) throw new Error(`${url}: the saddle measures ${best && best.y} on a body ${asset.height} tall`)
   const seat = new THREE.Vector3(0, best.y, best.z).applyMatrix4(boneInverses[hips])
   const copies = new Map()
   const rig = cloneBones(asset.root, copies)
@@ -77,7 +80,18 @@ function saddleOf(url, asset) {
   return { hips, head, seat, rest }
 }
 
-export async function loadStriderGlb(url = STRIDER.url) {
+/**
+ * One load per url, shared by the town and wild layers: two loads of one GLB
+ * racing through A-Frame's image cache leave the second texture with no image,
+ * which draws the body black.
+ */
+export function loadStriderGlb(url = STRIDER.url) {
+  if (!loads.has(url)) loads.set(url, loadStrider(url))
+  return loads.get(url)
+}
+const loads = new Map()
+
+async function loadStrider(url) {
   const asset = await loadSkinnedAsset(url, { tiers: LOD_RUNGS, clips: STRIDER.clips, extras: 'bird' })
   const x = asset.extras
   if (!(x.span > 0) || !(x.sizeM > 0) || !(x.height > 0) || !(x.gait && x.gait.walk > 0 && x.gait.run > 0)) throw new Error(`${url}: no span, size, height or gaits in its bird extras -- re-ship it`)
@@ -175,14 +189,14 @@ export class Striders {
     p.group.matrixWorldNeedsUpdate = true
     if (p.done) { this.release(m); return }
     if (want === -1) return
-    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM, clip: pose.clip, cycle: p.actions.get(pose.clip).getClip().duration / p.mixer.timeScale, speed: pose.speed })
+    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM, clip: pose.clip, cycle: p.actions.get(pose.clip).getClip().duration / Math.abs(p.mixer.timeScale), speed: Math.abs(pose.speed) })
     this.treading.push(m.tread)
-    if (pose.clip === 'fidget' && m.heard !== pose.cue) this._say('striderFlutter', pose)
+    if (pose.clip === 'fidget' && m.heard !== pose.cue) this.say('striderFlutter', pose)
     m.heard = pose.cue
     if ((m.call -= dt) <= 0) {
       const [lo, hi] = STRIDER.call
       m.call = lo + (hi - lo) * Math.random()
-      this._say(Math.random() < 0.5 ? 'striderChirp1' : 'striderChirp2', pose)
+      this.say(Math.random() < 0.5 ? 'striderChirp1' : 'striderChirp2', pose)
     }
   }
 
@@ -195,8 +209,9 @@ export class Striders {
     this.said.length = 0
   }
 
-  _say(sound, { x, y, z }) {
-    if (this.said.length < STRIDER.said) this.said.push({ sound, x, y: y + 0.6 * this.asset.sizeM * this.asset.height / this.asset.span, z })
+  /** `sound` from the head of a body at `pose`, played at `rate` and `gain` (audio/ambience.js voiced). */
+  say(sound, { x, y, z }, rate = 1, gain = 1) {
+    if (this.said.length < STRIDER.said) this.said.push({ sound, x, y: y + 0.6 * this.asset.sizeM * this.asset.height / this.asset.span, z, rate, gain })
   }
 
   release(m) {

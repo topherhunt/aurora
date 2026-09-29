@@ -3649,6 +3649,8 @@ console.log('\nscatter')
   {
     setPropClock(0)
     const r = build(cliff)
+    // Every swap the 9 m step causes starts on its one update, not over the next few frames.
+    r.walkBudgetMs = Infinity
     r.place(600, 600)
     r.update(600, 61.6, 600, 50)
 

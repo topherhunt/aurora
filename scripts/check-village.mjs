@@ -503,8 +503,11 @@ console.log('\nthe huts')
     }
     if (roots === 0) rootless++
     if (past > 0) pastBox++
+    // The step is the highest span under head height: a root tip may run on buried beneath it, and the eave overhead.
     const d = h.door, s = roomProps.columnAt(d.x + d.dx * 0.3, d.z + d.dz * 0.3, 0, col)
-    if (s === 0 || Math.abs(col[1] - h.y - d.landing) > 0.15) stepless++
+    let k = s - 1
+    while (k > 0 && col[k * 2 + 1] - h.y > d.landing + 0.5) k--
+    if (s === 0 || Math.abs(col[k * 2 + 1] - h.y - d.landing) > 0.15) stepless++
   }
   check(trunkOpen === 0, 'every trunk is a column from the ground to over half its height', `${trunkOpen} open`)
   check(roofLow === 0, 'every roof\'s highest point stands within a tenth of its height of the house\'s top', `${roofLow} low`)

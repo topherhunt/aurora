@@ -8,6 +8,7 @@ import { Layers } from './layers/layers.js'
 import { planTowns, townsOccupyAt } from './layers/towns.js'
 import { Towns } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
+import { WildStriders } from './render/wild-striders.js'
 import { Journeys } from './render/journeys.js'
 import { nameTowns } from './layers/names.js'
 import { planRoads } from './layers/roads.js'
@@ -966,6 +967,7 @@ function harm(n, why) {
 async function revive(doc) {
   reviving = true
   closeHouse()
+  if (wildStriders) wildStriders.letGo()
   const room = doc === null ? ROOMS.overworld : ROOMS[doc.room]
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${doc.room}`)
   if (room.village && doc.door?.key === undefined) throw new Error('v2: the save is in a village with no door')
@@ -1981,7 +1983,10 @@ function buildQuestPanel() {
       }
       if (!hands) return
       const key = el === leftHandEl ? 'left' : 'right'
-      if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
+      // A finger on a friendly strider's back, from its side, puts her on it.
+      const mount = wildStriders && !wildStriders.riding ? wildStriders.mountableAt(hands.pointOf(key, new THREE.Vector3()), handsHead()) : null
+      if (mount) wildStriders.mount(mount, player)
+      else if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
       else if (hands.press(key, handsHead()) === 'pick') playPick()
     })
   }
@@ -2026,7 +2031,9 @@ function buildQuestPanel() {
     const reach = BED_REACH_M * herScale()
     const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
     if (bed) { lieDown(bed); return }
-    if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
+    const mount = wildStriders && !wildStriders.riding ? wildStriders.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) : null
+    if (mount) wildStriders.mount(mount, player)
+    else if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -2607,6 +2614,8 @@ let roomProps = null
 let townPlan = null
 let towns = null
 let townsfolk = null
+// The unsaddled striders of the open overworld, and her ride on one (render/wild-striders.js); null in a village.
+let wildStriders = null
 let roadPlan = null
 let signposts = null
 let bridges = null
@@ -3126,6 +3135,7 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   if (towns) { towns.dispose(); towns = null }
   if (townsfolk) { townsfolk.dispose(); townsfolk = null }
+  if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
   if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
@@ -3962,6 +3972,11 @@ async function buildRoom(room, at) {
     console.log(`[v2] wildlife ${JSON.stringify(wildlife.stats.alive)} on ${wildlife.stats.tiles} tiles`)
   })
   window.v2wildlife = wildlife
+  if (!room.village) {
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure) })
+    for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
+    window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
+  }
   // The room's creatures over the relay (creature-net.js): a lured animal's
   // anchors out, everyone else's in, routed to its layer by the key's first word.
   creatureNet = new CreatureNet(netplay, clock, [{ layer: wildlife, prefixes: ['st', 'fx', 'hr'] }])
@@ -4106,8 +4121,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -4675,6 +4690,7 @@ const HOTKEYS = [
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds, the flare gun too; the trigger in the headset, and a grip lets go' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds, or fire the flare gun it holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
+      { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
     ],
   },
@@ -4975,7 +4991,10 @@ addEventListener('keydown', (e) => {
       buildGrass(next, headTmp.x, headTmp.z)
     }
   }
-  if (fresh.includes('flyUp')) onSpacePress(e.timeStamp)
+  if (fresh.includes('flyUp')) {
+    if (wildStriders && wildStriders.riding) wildStriders.dismount(player)
+    else onSpacePress(e.timeStamp)
+  }
   // triDeg is a size budget, so finer means smaller. Stepped multiplicatively
   // because the perceptual distance from 1.0 to 1.2 degrees is nothing like the
   // distance from 0.4 to 0.6.
@@ -5475,7 +5494,8 @@ let shownError = ''
 // read live from tick(), info holds whichever pass ran last: the aurora's one
 // quad, 2 tris and 1 call. Both stats panels read this copy instead.
 const mainRender = { triangles: 0, calls: 0 }
-const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null }
+// `ride` is the raw stick while she rides a strider: push forward +, steer right +.
+const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null, ride: { push: 0, steer: 0 } }
 const headTmp = new THREE.Vector3()
 // The things in her hands this frame, as the creature layers read them (hands.js lures).
 const lures = []
@@ -6053,7 +6073,7 @@ function readInput() {
         if (pressed('PRIMARY')) reviveFrom(true)
         else if (pressed('SECONDARY')) reviveFrom(false)
       } else if (['left', 'right'].some((hand) => Object.values(st[hand].buttons).some((b) => b.justPressed))) vitalsPress = true
-      Object.assign(moveInput, { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null })
+      Object.assign(moveInput, { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null, ride: { push: 0, steer: 0 } })
       return
     }
     const lx = st.left.axes[0]
@@ -6100,7 +6120,16 @@ function readInput() {
       for (const hand of ['left', 'right']) {
         if (st[hand].buttons.GRIP?.justPressed) hands.drop(hand, handsHead())
         if (st[hand].buttons.PRIMARY?.justPressed && holdsGun(hand)) cycleFlareColor(hand)
+        else if (st[hand].buttons.PRIMARY?.justPressed && wildStriders && wildStriders.riding) wildStriders.dismount(player)
       }
+    }
+    // On a strider the harder-pushed stick nudges it whole: forward and back, and sideways to steer.
+    if (wildStriders && wildStriders.riding) {
+      const [x, y] = Math.hypot(rx, ry) > Math.hypot(lx, ly) ? [rx, ry] : [lx, ly]
+      moveInput.ride = { push: -y, steer: x }
+      hideTeleport()
+      questTeleportArmed = false
+      return
     }
 
     // Flying and swimming both go where the pushing hand points.
@@ -6135,6 +6164,7 @@ function readInput() {
     return
   }
   moveInput.move = (on('forward') ? 1 : 0) - (on('back') ? 1 : 0)
+  moveInput.ride = { push: on('forward') ? (on('flyDown') ? 1 : 0.5) : on('back') ? -1 : 0, steer: (on('right') || on('turnRight') ? 1 : 0) - (on('left') || on('turnLeft') ? 1 : 0) }
   moveInput.strafe = (on('right') ? 1 : 0) - (on('left') ? 1 : 0)
   moveInput.lift = (on('flyUp') ? 1 : 0) - (on('flyDown') ? 1 : 0)
   moveInput.instant = true
@@ -6148,7 +6178,7 @@ function readInput() {
   // T held aims the same lob the headset throws, off the cursor; release goes.
   // Not while flying, matching the headset, and the walk keys stay live so the
   // arc can be aimed by walking or dragging the view as well as by the mouse.
-  if (on('teleport') && !player.flying) {
+  if (on('teleport') && !player.flying && !(wildStriders && wildStriders.riding)) {
     if (!desktopTeleportArmed) armTeleport()
     desktopTeleportArmed = true
     desktopTeleportAim()
@@ -6466,7 +6496,10 @@ function tick() {
   stepVitals(dt, now)
   portalFrom.copy(player.originPosition())
   if (!vitalsHold()) {
-    player.update(dt, moveInput)
+    // On a strider's back the sticks nudge it and it carries her, in place of her own walk; a flight takes her off it.
+    if (wildStriders && wildStriders.riding && (player.travel || player.flying)) wildStriders.letGo()
+    if (wildStriders && wildStriders.riding) wildStriders.ride(dt, moveInput.ride, player)
+    else player.update(dt, moveInput)
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
   }
   if (boats) boats.settle()
@@ -6611,6 +6644,7 @@ function tick() {
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
+  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.

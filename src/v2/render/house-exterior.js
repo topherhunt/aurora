@@ -26,7 +26,7 @@ const MAT = {
   // Not LAYER.IRON: that is a decal sheet of alpha islands, and box-projected onto a band it cuts the band into dots.
   iron: mat(LAYER.ROCK_BUMP, [0.5, 0.45, 0.4]),
   leaf: mat(LAYER.ROOF_LEAF, [0.42, 0.41, 0.35]),
-  shake: mat(LAYER.SHINGLE, [1.05, 0.95, 0.85]),
+  shake: mat(LAYER.SHINGLE, [0.84, 0.76, 0.68]),
   thatch: mat(LAYER.THATCH, [1.0, 0.95, 0.85]),
   straw: mat(LAYER.THATCH, [1.15, 1.05, 0.8]),
   rope: mat(LAYER.TIMBER_BEAM, [0.9, 0.78, 0.55]),
@@ -40,8 +40,8 @@ const MAT = {
   bead: mat(LAYER.PLASTER, [1.0, 0.86, 0.62]),
   glow: mat(0, [1, 1, 1]),
 }
-// Shelf fungi wear ROCK_BUMP, a grey grit that averages ~0.5, so their tints run about double.
-const SHELF = [[2.1, 1.45, 0.8], [1.9, 0.95, 0.55], [2.1, 1.95, 1.6], [1.45, 1.2, 0.95], [1.1, 0.75, 0.5]]
+// Shelf fungi wear ROCK_BUMP, a grey grit that averages ~0.5, so their tints run above 1.
+const SHELF = [[1.37, 0.94, 0.52], [1.23, 0.62, 0.36], [1.37, 1.27, 1.04], [0.94, 0.78, 0.62], [0.72, 0.49, 0.33]]
 const CAPS = [[1.25, 0.3, 0.22], [0.95, 0.62, 0.38], [1.15, 1.05, 0.9], [0.85, 0.4, 0.3]]
 const DAMP = [0.55, 0.68, 0.42]
 
@@ -63,9 +63,9 @@ export function rollHouse(seed, height = 6) {
     trunk: r(0.44, 0.56), // trunk top, where the roof sits, as a fraction of height
     taper: r(-0.02, 0.22),
     belly: r(-0.04, 0.12),
-    flare: r(0.03, 0.1), // uniform swell at the ground; the lobes carry the splay
+    flare: r(0, 0.05), // uniform swell at the ground; the lobes carry the splay
     lobes: 5 + Math.floor(rng() * 5),
-    lobeReach: r(0.45, 0.85), // how far a buttress lobe juts at the ground, as a fraction of the trunk radius
+    lobeReach: r(0.7, 1.1), // how far a buttress lobe juts at the ground, as a fraction of the trunk radius
     lean: rng() < 0.6 ? r(0.01, 0.06) : 0,
     leanDir: r(0, TAU),
     spires: pickW(rng, [0, 1, 2, 3], [2, 3, 3, 2]),
@@ -88,6 +88,7 @@ export function rollHouse(seed, height = 6) {
     chimney: pickW(rng, HOUSE_KINDS.chimney, [4, 3, 3]),
     awning: pickW(rng, HOUSE_KINDS.awning, [4, 3, 2]),
     decor: r(0.45, 1),
+    rise: r(0.5, 1), // roof apex above the trunk top, as a fraction of the way to the full height
     jitter: 1,
   }
 }
@@ -327,7 +328,7 @@ export function buildHouse(o) {
 
   // --- the roof mound (§Roof): an eave [r, y] per angle, and roofAt(θ, u) from the eave (u 0) to the apex (u 1)
   const rr = rngFor(3)
-  const rT = baseR(yT) * 1.08 + 0.05, yA = H, k = o.swell
+  const rT = baseR(yT) * 1.08 + 0.05, yA = yT + o.rise * (H - yT), k = o.swell
   const tiltDir = rr() * TAU, tilt = o.tilt * Math.sqrt(H / 6)
   const bend = mul(radial(o.leanDir + 1.3), o.bend * H)
   const clearY = yT + 0.12 + o.lump * (yA - yT) * 0.5
@@ -395,7 +396,7 @@ export function buildHouse(o) {
   const flank = doorHa + 0.35 + lerp(0.05, 0.25, lay())
   const lobeA = [flank, -flank]
   for (let n = 2; n < o.lobes; n++) lobeA.push(lerp(flank + 0.5, TAU - flank - 0.5, (n - 1.5 + (lay() - 0.5) * 0.6) / (o.lobes - 2)))
-  const lobes = lobeA.map((a) => ({ a, amp: o.lobeReach * lerp(0.85, 1.15, lay()), w: lerp(0.2, 0.34, lay()), h: lerp(0.5, 1.1, lay()) * Math.sqrt(R0 / 2), tw: jit(lay, 0.25) }))
+  const lobes = lobeA.map((a) => ({ a, amp: o.lobeReach * lerp(0.85, 1.15, lay()), w: lerp(0.16, 0.27, lay()), h: lerp(0.5, 1.1, lay()) * Math.sqrt(R0 / 2), tw: jit(lay, 0.25) }))
 
   // --- the wall: one function every fixture reads, so nothing floats or sinks
   const calm = (th, y) => {
@@ -463,11 +464,12 @@ export function buildHouse(o) {
   const roofTris0 = m.idx.length
   const skinMat = MAT[o.skin], roofTile = TILE[skinMat.layer]
   const slant = Math.hypot(rT + o.overhang, yA - yT)
-  // Unrolled about the apex: the true slope distance down from it, laid out at the point's own bearing, so the texture neither shears nor seams anywhere round the mound.
+  // Radial about the apex: v is the true slope distance down from it, u the bearing in a whole number of repeats (so the seam closes), true to scale 60% of the way down. Every course then laps downhill at every bearing. ROOF_LEAF laps toward +v; the kit's shake and thatch run v up the slope (tiles.js tileThatch).
+  const around = Math.max(4, Math.round((TAU * 0.6 * (rT + o.overhang)) / roofTile)), downV = o.skin === 'leaf' ? 1 : -1
   const roofUV = (th, u) => {
     let s = 0, q = roofAt(th, 1)
     for (let n = 1; n <= 8; n++) { const p = roofAt(th, 1 - ((1 - u) * n) / 8); s += Math.hypot(...sub(p, q)); q = p }
-    return [(s * Math.cos(th)) / roofTile, (s * Math.sin(th)) / roofTile]
+    return [(th * around) / TAU, (downV * s) / roofTile]
   }
   const roofHint = (th) => [Math.cos(th), 1, Math.sin(th)]
   const NS = 14, NF = 4 * NS, U = [0.03, 0.2, 0.38, 0.55, 0.7, 0.85, 1]
@@ -515,11 +517,14 @@ export function buildHouse(o) {
       win.y = roofY(th, rc + rad) + 0.3 + win.r
       for (let i = S / 4 - 2; i <= S / 4 + 2; i++) tops[i] = Math.max(tops[i], win.y + win.r + 0.25 + sp() * 0.15)
     }
-    const sec = Array.from({ length: S }, (_, i) => { const a = (TAU * i) / S; return [Math.cos(a) * elong, Math.sin(a), 1 + 0.22 * nSpire(Math.cos(a) * 1.5 + idx * 9, 0, Math.sin(a) * 1.5)] })
+    // The tower window's five columns take their centre's bulge and no splinter, so no noisy corner pokes through the glass.
+    const flat = (i) => (win ? Math.max(0, 1 - Math.max(0, Math.abs(i - S / 4) - 2) / 2) : 0)
+    const nSec = (a) => 1 + 0.22 * nSpire(Math.cos(a) * 1.5 + idx * 9, 0, Math.sin(a) * 1.5)
+    const sec = Array.from({ length: S }, (_, i) => { const a = (TAU * i) / S; return [Math.cos(a) * elong, Math.sin(a), lerp(nSec(a), nSec(Math.PI / 2), flat(i))] })
     // A point of column i at height y, `s` of the way out from the axis; the top fifth splinters.
     const at = (i, y, s) => {
-      const t = (y - y0) / (top0 - y0), [cx, cz, f] = sec[i]
-      const r = rad * f * s * (1 - (tower ? 0.08 : 0.15) * t) * (1 + 0.3 * Math.pow(Math.min(1, t), 4) * jit(sp, 1))
+      const t = (y - y0) / (top0 - y0), [cx, cz, f] = sec[i], split = jit(sp, 1) * (flat(i) === 1 ? 0 : 1)
+      const r = rad * f * s * (1 - (tower ? 0.08 : 0.15) * t) * (1 + 0.3 * Math.pow(Math.min(1, t), 4) * split)
       return add(add(add(lean(y), out, rc + rad * 0.3 * t * t), [0, y, 0]), add(mul(tan, cx * r), out, cz * r))
     }
     const hint = (i, s) => mul(add(mul(tan, sec[i][0]), out, sec[i][1]), s)
@@ -538,8 +543,11 @@ export function buildHouse(o) {
     m.grid(S, 1, (i, j) => [j ? inner[ni][i] : outer[nj][i], [0, 1, 0]], MAT.wood, { wrap: true })
     const floor = inner[0].map((p) => m.v(p, [0, 1, 0], MAT.dark)), c = m.v(add(add(lean(yF), out, rc), [0, yF, 0]), [0, 1, 0], MAT.dark)
     for (let i = 0; i < S; i++) m.tri(c, floor[i], floor[(i + 1) % S])
+    // The wall leans out as it climbs, so the flat frame stands in front of every vertex beside and above its foot.
     const foot = at(S / 4, win.y - win.r, 1)
-    glazed(basis(add(foot, out, 0.015), out), -0.12, { kind: 'circle', r: win.r, pot: false })
+    let proud = 0
+    for (let i = S / 4 - 2; i <= S / 4 + 2; i++) for (const row of outer) if (Math.abs(row[i][1] - win.y) < win.r + 0.35) proud = Math.max(proud, dot(sub(row[i], foot), out))
+    glazed(basis(add(foot, out, proud + 0.015), out), -0.12 - proud, { kind: 'circle', r: win.r, pot: false })
   })
 
   // --- door, jamb, steps, knocker
@@ -624,20 +632,24 @@ export function buildHouse(o) {
   if (chimTh !== null) {
     const out = radial(chimTh), [cR, cY] = eave(chimTh)
     if (o.chimney === 'stone') {
-      // Plumb, standing off the wall where it is widest below the eave so no block hangs in the air.
-      let dist = 0
-      for (let y = 0.3; y < cY; y += 0.3) dist = Math.max(dist, dot(wallPt(chimTh, y), out))
-      const topY = Math.max(cY + 0.9, roofY(chimTh, dist + 0.15) + 0.6)
-      let y = -0.15
-      while (y < topY) {
-        const hh = lerp(0.11, 0.16, ch()), hs = lerp(0.32, 0.25, y / topY)
-        const F = basis(add(mul(out, dist + hs * 0.4), [0, y + hh, 0]), out)
-        block(m, ch, tip(F, 'ay', jit(ch, 0.125)), [hs, hh, hs * lerp(0.9, 1.1, ch())], MAT.stone, { crook: 0.025 })
-        y += hh * 2 - 0.01
-      }
-      const capF = basis(add(mul(out, dist + 0.25 * 0.4), [0, y + 0.04, 0]), out)
-      block(m, ch, capF, [0.33, 0.04, 0.33], MAT.stone, { crook: 0.02 })
-      if (ch() < 0.45) hangLantern(put(capF, 0, 0.04, 0), 0.8)
+      // One hollow octagonal stack, plumb and sunk a third of its width into the trunk where the trunk is narrowest below the eave, so it is embedded all the way up. Each course is a ring bulged, drifted, twisted, tipped and jittered off the last; the top rolls over a lip into a short dark flue.
+      let dist = Infinity
+      for (let y = 0.3; y < cY; y += 0.3) dist = Math.min(dist, dot(wallPt(chimTh, y), out))
+      const R = 0.3, c0 = mul(out, dist + R * 0.35), topY = Math.max(cY + 0.9, roofY(chimTh, dist - R * 0.65) + 0.5)
+      const S = 8, yb = -0.15, nj = Math.max(4, Math.round((topY - yb) / 0.28)), wraps = Math.max(1, Math.round((TAU * R) / TILE[LAYER.STONE]))
+      let drift = [0, 0, 0]
+      const rings = Array.from({ length: nj + 1 }, (_, j) => {
+        drift = add(mul(drift, 0.6), [jit(ch, 0.05), 0, jit(ch, 0.05)])
+        const y = yb + ((topY - yb) * j) / nj, r = R * lerp(1, 0.82, j / nj) * (j < nj ? lerp(0.9, 1.1, ch()) : 1), tw = jit(ch, 0.25), tipA = jit(ch, 0.06), tipD = ch() * TAU
+        return { c: add(add(c0, drift), [0, y, 0]), r, pts: Array.from({ length: S }, (_, i) => { const a = (TAU * i) / S + tw; return [a, r * (1 + jit(ch, 0.12)), (j && j < nj ? jit(ch, 0.04) : 0) + tipA * Math.cos(a - tipD)] }) }
+      })
+      const top = rings[nj], lip = [[0.9, 0.06, 0], [0.72, 0.02, -1], [0.72, -0.4, -1]]
+      const rows = [...rings.map((g) => (i) => { const [a, r, dy] = g.pts[i]; return [add(g.c, [Math.cos(a) * r, dy, Math.sin(a) * r]), [Math.cos(a), 0, Math.sin(a)]] }),
+        ...lip.map(([k, dy, h]) => (i) => { const [a, r, tdy] = top.pts[i]; return [add(top.c, [Math.cos(a) * r * k, dy + tdy, Math.sin(a) * r * k]), h ? [Math.cos(a) * h, 0, Math.sin(a) * h] : [0, 1, 0]] })]
+      m.grid(S, rows.length - 1, (i, j) => rows[j](i % S), MAT.stone, { wrap: true, uv: (i, j) => [(i / S) * wraps, rows[j](i % S)[0][1] / TILE[LAYER.STONE]] })
+      const flue = add(top.c, [0, -0.4, 0]), floor = top.pts.map(([a, r]) => m.v(add(flue, [Math.cos(a) * r * 0.72, 0, Math.sin(a) * r * 0.72]), [0, 1, 0], MAT.dark)), fc = m.v(flue, [0, 1, 0], MAT.dark)
+      for (let i = 0; i < S; i++) m.tri(fc, floor[i], floor[(i + 1) % S])
+      if (ch() < 0.45) hangLantern(add(add(top.c, out, top.r * 0.81), [0, 0.06, 0]), 0.8)
     } else {
       const y0 = Math.min(yT * 0.65, cY - 0.4), reach = cR - rT + 0.45, topY = Math.max(cY + 0.8, roofY(chimTh, rT) + 0.7)
       const base = wallPt(chimTh, y0, -0.1), elbow = wallPt(chimTh, y0 + 0.1, reach), up = add(elbow, [0, topY - y0, 0])

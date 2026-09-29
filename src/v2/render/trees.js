@@ -418,6 +418,10 @@ export const TRUNK_STRIDE = 8
 // 400 m, which is invisible. A whole-disc rebuild in one frame is not.
 const BUILD_BUDGET_MS = 2.0
 
+// Milliseconds per frame for buckets the rim's `need` pulls forward off their
+// turn; see STILL_M.
+const WALK_BUDGET_MS = 1.0
+
 // Only instances in tiles this close are re-tiered every frame. Everything
 // beyond the last mesh band is a billboard and cannot change tier, so walking
 // 14,000 instances a frame to re-derive that would be pure waste. The margin is
@@ -467,13 +471,15 @@ const PLACEMENT_CELL = 4.0
 // for. Standing still, the walk costs eight distance compares a frame.
 //
 // Two things pull a bucket forward off its turn. The rim's `need` growing past
-// what the bucket was walked at -- a teleport or a hard acceleration -- is the
-// rim's own forcing rule, kept at bucket granularity, and it walks every bucket
-// on a jump frame. And the camera covering NEAR_MARGIN since the bucket's last
-// walk, which is the guarantee the near set's margin was sized to: a tile joins
-// it before any tree inside can need a mesh tier. The first fires once per
-// acceleration at any speed, the second only past ~300 m/s or on a jump longer
-// than the margin.
+// what the bucket was walked at -- a hard acceleration -- is the rim's own
+// forcing rule, kept at bucket granularity. It fires on every frame of a
+// speed-up, so those walks share WALK_BUDGET_MS, stalest bucket first, and a
+// bucket left over waits for a later frame or its own turn: never staler than
+// the RIM_PHASES frames the slack is sized for. And the camera covering
+// NEAR_MARGIN since the bucket's last walk, which is the guarantee the near
+// set's margin was sized to: a tile joins it before any tree inside can need a
+// mesh tier. That one is never deferred, and fires only past ~300 m/s or on a
+// jump longer than the margin.
 //
 // The cadence knob is RIM_PHASES itself: fewer phases walk more tiles a frame
 // and shrink the slack the rim holds against the wait; more do the reverse.
@@ -637,10 +643,11 @@ export class Trees {
     if (ground && typeof ground.groundAt !== 'function') {
       throw new Error('Trees: `ground` was given but has no groundAt -- pass the TerrainV2 or nothing')
     }
-    // The tile walk asks groundKeyAt only when this has ticked; a ground without
-    // it would silently never re-seat a tree on a re-split chunk.
-    if (ground && typeof ground.groundVersion !== 'number') {
-      throw new Error('Trees: `ground` has no groundVersion -- pass the TerrainV2 or nothing')
+    // The tile walk asks groundKeyAt only where groundChangedSince says the
+    // version has ticked; a ground without them would silently never re-seat a
+    // tree on a re-split chunk.
+    if (ground && (typeof ground.groundVersion !== 'number' || typeof ground.groundChangedSince !== 'function')) {
+      throw new Error('Trees: `ground` has no groundVersion/groundChangedSince -- pass the TerrainV2 or nothing')
     }
     // Optional on the same terms as `ground`, and for the same reason: the probes
     // under tmp/ have no rock scatter to hand. Without it a trunk that lands
@@ -933,6 +940,7 @@ export class Trees {
     this.bucketZ = new Float64Array(RIM_PHASES)
     this.bucketNeed = new Float32Array(RIM_PHASES)
     this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
+    this.walkBudgetMs = WALK_BUDGET_MS
     // Set by anything that moves the near boundary under every tile at once, so
     // the next update walks all of them rather than waiting out the phases.
     this.walkAll = true
@@ -1256,6 +1264,7 @@ export class Trees {
     const t0 = performance.now()
     this._reseat(cx, cz)
     while (this.queue.length) this._growTile(this.queue.pop())
+    this.walkAll = true
     this.placeMs = performance.now() - t0
     return this.placed
   }
@@ -1401,15 +1410,18 @@ export class Trees {
     const gver = ground ? ground.groundVersion : 0
     const need = this.rim.need
     const turn = this.rim.phase
-    for (let p = 0; p < RIM_PHASES; p++) {
+    const tWalk = performance.now()
+    // From the bucket after the turn, which was walked longest ago, round to the turn itself.
+    for (let i = 1; i <= RIM_PHASES; i++) {
+      const p = (turn + i) % RIM_PHASES
       const mx = camX - this.bucketX[p]
       const my = camY - this.bucketY[p]
       const mz = camZ - this.bucketZ[p]
       const moved2 = mx * mx + my * my + mz * mz
       const walk = this.walkAll
         || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
-        || need > this.bucketNeed[p]
         || moved2 >= NEAR_MARGIN * NEAR_MARGIN
+        || (need > this.bucketNeed[p] && performance.now() - tWalk < this.walkBudgetMs)
       if (!walk) continue
       this.bucketX[p] = camX
       this.bucketY[p] = camY
@@ -1505,14 +1517,17 @@ export class Trees {
    * off the due list -- see STILL_M for when a bucket is walked.
    */
   _walkTile(tile, camX, camY, camZ, gver) {
-    // The chunk under the tile's centre, re-asked only when the terrain's
-    // render set has changed since this tile last asked. A tree follows the
-    // chunk it stands on when that re-splits, but not the same frame: the
+    // The chunk under the tile's centre, re-asked only when a chunk over it has
+    // entered or left the render set since this tile last asked. A tree follows
+    // the chunk it stands on when that re-splits, but not the same frame: the
     // ground beneath it just changed shape too, and the tree is by construction
     // far enough away for its chunk to be coarse.
     if (this.ground && tile.gver !== gver) {
+      const cx = (tile.tx + 0.5) * TILE
+      const cz = (tile.tz + 0.5) * TILE
+      const changed = this.ground.groundChangedSince(cx, cz, tile.gver)
       tile.gver = gver
-      const gkey = this.ground.groundKeyAt((tile.tx + 0.5) * TILE, (tile.tz + 0.5) * TILE)
+      const gkey = changed ? this.ground.groundKeyAt(cx, cz) : tile.gkey
       if (gkey !== tile.gkey) {
         tile.gkey = gkey
         this._reground(tile)

@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
@@ -567,6 +567,9 @@ export class Deadwood {
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.radiusSq = this.radius * this.radius
     this.evictSq = (this.radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
+    this.scanLift2 = 0
 
     // The tile ladder (tile-pool.js) quantises distance up from the smallest
     // piece's own FULL_STEP reach: a level keeps the pieces whose stored rank is
@@ -1164,7 +1167,8 @@ export class Deadwood {
    * Safe to call every frame.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
+    const lift2 = this.lift2
 
     const t0 = performance.now()
     while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
@@ -1182,16 +1186,17 @@ export class Deadwood {
     let tris = 0
     let nearCount = 0
     this.rim.beginFrame(camX, camY, camZ)
-    const scan = this.scanX === null || (camX - this.scanX) ** 2 + (camZ - this.scanZ) ** 2 >= SCAN_STEP_SQ
+    const scan = this.scanX === null || lift2 !== this.scanLift2 || (camX - this.scanX) ** 2 + (camZ - this.scanZ) ** 2 >= SCAN_STEP_SQ
     if (scan) {
       this.scanX = camX
       this.scanZ = camZ
+      this.scanLift2 = lift2
     }
     for (const tile of this.tiles.values()) {
       if (scan) {
         const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
         const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-        const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+        const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
         const q = tile.q
         const thicken = near2 < this.loSq[q]
         const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
@@ -1272,17 +1277,18 @@ export class Deadwood {
   }
 
   /** Queue what has come into range, evict what has fallen out. See ferns.js. */
-  _reseat(cx, cz) {
+  _reseat(cx, cz, lift2 = 0) {
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
       }
@@ -1302,7 +1308,7 @@ export class Deadwood {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        const d2 = dcx * dcx + dcz * dcz
+        const d2 = dcx * dcx + dcz * dcz + lift2
         if (d2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
@@ -1314,7 +1320,7 @@ export class Deadwood {
           tx: gx,
           tz: gz,
           d2,
-          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2),
+          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2),
         })
       }
     }

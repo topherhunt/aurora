@@ -20,6 +20,8 @@ import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { RIVER_WIDEN, RIVER_WIDEN_FRAC } from '../src/v2/layers/paths.js'
+import { ribbonVertices } from '../src/v2/render/ribbon.js'
 import { decodePng } from '../src/v2/height/png.js'
 
 let failures = 0
@@ -308,7 +310,7 @@ export async function run() {
   check(mouths === 0, `every mouth is in the sea, in a lake or on another river (${mouths} are not)`)
   // BOTH ENDS OPEN OUT WHERE THEY MEET STANDING WATER, and the two need different shares because the taper runs with the mouth and against the source: `tip` makes a source the narrowest point of its river, so `spout` has to overcome that before the outlet of a lake reads as water leaving a lake. Read off the shipped record, where the decimetre rounding is already in. The mean is the assertion and not the worst of them: a source with a tributary joining thirty metres below it is legitimately narrower than that reach whatever its flare.
   check(spouts === hs.rivers.fromLake && spoutSum / spouts > 1.1 && flareSum / flared > 1.15, `a source out of a lake stands x${(spoutSum / spouts).toFixed(2)} the reach ${RIVERS.flareLen} m below it (${spouts} of them) and a mouth x${(flareSum / flared).toFixed(2)} the reach above it (${flared})`)
-  // THE WIDTH WAVERS AND THE LINE WANDERS. `waverMax` is the wobble at its bound -- the share of its own width a reach may vary by along the line, measured off the term that did it rather than off the profile, where the catchment's trend and the flares would swamp it. `sinuosity` is the drawn length over the chord and `bend` is how far the line was moved off the steepest descent D8 actually walked; the apex of every bend is pinned against the simplification, or `tolerance` would straighten out exactly the bends this adds. Each number falls to nothing with its own knob at zero: at 1025 meander=0 takes sinuosity from 1.189 to 1.145 and bend to 0, wobble=0 takes waverMax to 0.
+  // THE WIDTH WAVERS AND THE LINE WANDERS. `waverMax` is the wobble at its bound -- the share of its own width a reach may vary by along the line, measured off the term that did it rather than off the profile, where the catchment's trend and the flares would swamp it. `sinuosity` is the drawn length over the chord and `bend` is how far the line was moved off the steepest descent D8 actually walked; the apex of every bend is pinned against the simplification, or `tolerance` would straighten out exactly the bends this adds. Each number falls to nothing with its own knob at zero: at 1025 meander=0 takes sinuosity from 1.165 to 1.145 and bend to 0, wobble=0 takes waverMax to 0. The sinuosity floor sits just under what the meanders now give, and honestly so: a line that doubles back on itself counts the doubling as its own length, so before `limitBends` this read 1.188 with cusps in it (see the ribbon check below) and 1.152 without them.
   check(hs.rivers.waverMax <= RIVERS.wobble + 1e-6 && hs.rivers.waver > RIVERS.wobble * 0.2 && hs.rivers.sinuosity > 1.15 && hs.rivers.bend > RIVERS.tolerance * 0.5, `banks waver ${(hs.rivers.waver * 100).toFixed(1)}% of their width and up to ${(hs.rivers.waverMax * 100).toFixed(0)}% of the ${(RIVERS.wobble * 100).toFixed(0)}% allowed; the line runs x${hs.rivers.sinuosity.toFixed(3)} its chord, ${hs.rivers.bend.toFixed(1)} m off the descent at the mean and ${hs.rivers.bendMax.toFixed(0)} m at the most`)
   // AND A SOURCE OUT OF A LAKE IS INSIDE THE WATER THE DOC DRAWS, AT THE SURFACE IT DRAWS IT AT. The ring is the sheet, so being inside it is being on the water however the ground lies -- and the level is the other half of it: the source is the cell the lake spills over, which stands EXACTLY at the surface, and one chosen deeper in the water would have v2 gouge a channel down through the lake bed to reach it, since paths.js cuts a bed under every node it is handed. No tolerance on either count: the outlet is a cell the flood named and there is always one.
   let onWater = 0
@@ -364,6 +366,33 @@ export async function run() {
   check(bare.calibration !== null && bare.calibration.imageShare > 0.2 && bare.calibration.imageShare < 1, `and the bare 2 m import is a terrain, not resampling noise: it carries ${(bare.calibration.imageShare * 100).toFixed(0)}% of the sub-texel roughness the power law extrapolates`)
   const at = height.heightAt(s.summit.x, s.summit.z)
   check(Math.abs(at - s.summit.h) < 5, `V2Height at the summit reads ${at.toFixed(1)} m`)
+  // AND EVERY RIVER THE DOC SHIPS CAN BE BUILT AS A RIBBON, which is what /terrain-v3 does with it three lines into meshing (WaterSurfaces.buildRiver). `ribbonVertices` miters the banks and then asserts no triangle inverted: it narrows a corner and collapses a fold, but a polyline that reverses on itself is a cusp it throws on, and a doc with one in it takes the route down at boot.
+  //
+  // THE TURN IS THE ASSERTION AND THE THROW IS ONLY ITS WORST CASE. Whether a given cusp trips the miter depends on the width there and on where v2's router happened to put its samples, so a doc full of hairpins can build here and throw on a machine that resampled differently. Under 90 degrees the drawn step still has a component along the step before it, which is what 'the line advances' means; past 90 it has begun to come back. The bound belongs on the BAKED samples rather than the record, because the bake is what the ribbon sees, and it is the channel's own line that sets the floor: with `meander` at 0 the sharpest baked turn on this island is 47 degrees, so anything near a reversal is the offset moving faster than the line it is hung on.
+  let ribbons = 0
+  let worstTurn = 0
+  let cusp = null
+  for (const river of layers.paths.paths.values()) {
+    const samples = layers.paths.drawnSamples(river.id)
+    for (let i = 4; i + 8 < samples.length; i += 4) {
+      const ax = samples[i] - samples[i - 4]
+      const az = samples[i + 2] - samples[i - 2]
+      const bx = samples[i + 4] - samples[i]
+      const bz = samples[i + 6] - samples[i + 2]
+      const la = Math.hypot(ax, az)
+      const lb = Math.hypot(bx, bz)
+      if (la < 1e-6 || lb < 1e-6) continue
+      const turn = (Math.acos(Math.max(-1, Math.min(1, (ax * bx + az * bz) / (la * lb)))) * 180) / Math.PI
+      if (turn > worstTurn) worstTurn = turn
+    }
+    try {
+      ribbonVertices(samples, { widen: RIVER_WIDEN, widenFrac: RIVER_WIDEN_FRAC })
+      ribbons++
+    } catch (e) {
+      if (cusp === null) cusp = `${river.id}: ${e.message}`
+    }
+  }
+  check(ribbons === layers.paths.paths.size && worstTurn < 90, `all ${layers.paths.paths.size} rivers build a mitered ribbon and no drawn step turns back on the one before it: sharpest turn ${worstTurn.toFixed(0)} deg${cusp === null ? '' : ` -- ${cusp}`}`)
   const bands = height.bands
   check(bands.max === s.max, `bands ${bands.min.toFixed(0)}..${bands.max.toFixed(0)} m`)
 

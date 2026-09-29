@@ -41,6 +41,7 @@ export const RIVERS = {
   meanderScale: 130,   // metres of arc the main bend turns over, with a second octave at a third of it for the small ones
   meanderClimb: 1.5,   // metres of relief the offset line may stand off the channel it came from, either way. THIS IS WHAT PUTS THE CURVES ON THE FLATS: on a floodplain the ground beside the channel is level with it and the bend runs to its full amplitude, in a gorge the wall stops it within a metre or two, and no separate flatness term is needed. That a bend may not sit far BELOW its channel either is the same rule read the other way -- a node drawn down into a side hollow is one the node after it has to climb out of (`descend`)
   meanderEnds: 40,     // metres of arc at each end over which the offset eases to nothing, so a source stays in its lake and a mouth on the water or the trunk it joins
+  bendRate: 0.5,       // metres the offset may change per metre of channel (`limitBends`). UNDER 1 THE LINE CANNOT FOLD BACK ON ITSELF: the drawn step is the channel's step plus the change in offset, so at 1 the two cancel and the river is drawn standing still. Half of it leaves every drawn step within 30 degrees of the channel it came from, which is what stops a D8 heading swinging 45 degrees in one cell from swinging the whole amplitude with it
   flare: 0.2,          // how much of itself again the water gains at a mouth entering standing water. It stands ON TOP of the taper, which already puts a mouth 1.6 times the river's own mean, so this is what takes it to the 1.86 measured
   spout: 0.5,          // the same at a source leaving a lake, where the taper is pulling the other way: `tip` makes a source the narrowest point of its river, and the outlet of a lake is as wide as the lake lets it be rather than a trickle, so this end needs the bigger share to come out wider than the reach below it. A source no lake feeds keeps its tiny tip
   flareLen: 30,        // metres of arc either flare eases out over
@@ -615,11 +616,16 @@ function arcOf(cells, n, cell) {
  * Three things hold it down:
  * - THE VALLEY. The offset is cut back by whatever fraction keeps the ground under it within RIVERS.meanderClimb of the channel it came from, so a floodplain lets the bend run and a gorge wall stops it dead. This is the whole of 'more curvature on flat terrain': no flatness term, just the ground refusing to be climbed. Water is refused outright -- a bend does not reach into a lake.
  * - THE ENDS. The offset eases to nothing over RIVERS.meanderEnds at the source, so a river still leaves its lake at the outlet, and at a mouth in standing water; at a mouth on a trunk it eases to the offset that trunk cell already has instead, so the tributary meets the line the trunk is actually drawn along.
+ * - THE RATE (`limitBends`). The line may leave its channel no faster than it runs down it, which is what keeps it from folding back on itself.
  * - THE NOISE IS SAMPLED IN WORLD SPACE, not along the arc. Two chains crossing the same cell then want the same offset, which is what keeps a junction from kinking; `bends` pins it exactly, first chain to claim a cell winning.
  */
 function bendsOf(cells, arc, widths, elev, wet, n, cell, half, bendN, bends, tail) {
   const K = cells.length
-  const out = new Float64Array(K * 2)
+  // The chain's own cells, and after them the cell its mouth joins: the point drawn there is the trunk's own, so the last leg has to obey the rate too.
+  const M = tail >= 0 ? K + 1 : K
+  const out = new Float64Array(M * 2)
+  const fixed = new Uint8Array(M)
+  const ds = new Float64Array(M)
   const S = arc[K - 1]
   const L = RIVERS.meanderScale
   const tailOff = bends.get(tail)
@@ -633,10 +639,12 @@ function bendsOf(cells, arc, widths, elev, wet, n, cell, half, bendN, bends, tai
   }
   for (let k = 0; k < K; k++) {
     const c = cells[k]
+    if (k > 0) ds[k] = arc[k] - arc[k - 1]
     const had = bends.get(c)
     if (had !== undefined) {
       out[k * 2] = had[0]
       out[k * 2 + 1] = had[1]
+      fixed[k] = 1
       continue
     }
     const a = cells[Math.max(0, k - 1)]
@@ -668,11 +676,45 @@ function bendsOf(cells, arc, widths, elev, wet, n, cell, half, bendN, bends, tai
       dx = -tz * amp + ex * (1 - wEnd)
       dz = tx * amp + ez * (1 - wEnd)
     }
-    bends.set(c, [dx, dz])
     out[k * 2] = dx
     out[k * 2 + 1] = dz
   }
+  if (M > K) {
+    out[K * 2] = ex
+    out[K * 2 + 1] = ez
+    fixed[K] = 1
+    ds[K] = Math.hypot((tail % n) - (cells[K - 1] % n), ((tail / n) | 0) - ((cells[K - 1] / n) | 0)) * cell
+  }
+  limitBends(out, fixed, ds, M)
+  for (let k = 0; k < K; k++) if (!fixed[k]) bends.set(cells[k], [out[k * 2], out[k * 2 + 1]])
   return out
+}
+
+/**
+ * THE DRAWN LINE MAY NOT LEAVE ITS CHANNEL FASTER THAN IT RUNS DOWN IT.
+ *
+ * One cell to the next the channel advances 2 m, or 2.83 on a diagonal, while the offset hung off it can change by far more: the noise is slow, but the offset is PERPENDICULAR to a D8 heading, and that heading swings 45 degrees between two cells with as much as thirty metres of amplitude on the end of it -- so the offset vector sweeps twenty metres while the channel advances two. At a mouth the same thing happens in one step as the offset blends into the trunk's. The step that gets DRAWN is the channel's step plus the change in offset, so once the offset outruns the channel the drawn step points back up the line: the river folds on itself, and v2's ribbon throws on the cusp rather than miter it (§2 render/ribbon.js).
+ *
+ * Held to RIVERS.bendRate of the channel's own step the drawn step keeps a component along it and the line always advances. The bound is on the offset VECTOR and says nothing about where the offset came from, so it covers the heading, the noise and the junction blend alike. Sweeps alternate direction so that neither end of a reach drags the whole of it, and a cell another chain already drew is an ANCHOR the sweeps may not move -- it is the node that chain is drawn through, and a tributary has to meet it exactly.
+ */
+function limitBends(out, fixed, ds, M) {
+  const pull = (k, from) => {
+    const cap = ds[Math.max(k, from)] * RIVERS.bendRate
+    const dx = out[k * 2] - out[from * 2]
+    const dz = out[k * 2 + 1] - out[from * 2 + 1]
+    const d = Math.hypot(dx, dz)
+    if (d <= cap || fixed[k]) return 0
+    out[k * 2] = out[from * 2] + (dx * cap) / d
+    out[k * 2 + 1] = out[from * 2 + 1] + (dz * cap) / d
+    return d - cap
+  }
+  // Each sweep only ever shortens a gap, so this converges; the cap is there for the one case it cannot satisfy, two anchors a single step apart with the trunk's own offset between them.
+  for (let sweep = 0; sweep < 8; sweep++) {
+    let moved = 0
+    for (let k = 1; k < M; k++) moved += pull(k, k - 1)
+    for (let k = M - 2; k >= 0; k--) moved += pull(k, k + 1)
+    if (moved === 0) break
+  }
 }
 
 /**

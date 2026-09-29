@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'
@@ -415,7 +415,7 @@ function triangleCount(geo) {
 export class Ferns {
   /**
    * @param scene         THREE.Scene to add the three ring meshes to.
-   * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
+   * @param field         V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt and bands.
    * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
    * @param layers        Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param textureArray  The shared prop atlas from buildTextureArray().
@@ -430,8 +430,8 @@ export class Ferns {
     textureArray,
     { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [] } = {}
   ) {
-    if (!field || typeof field.heightAndSlopeAt !== 'function') {
-      throw new Error('Ferns: needs a V2Height with heightAndSlopeAt')
+    if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
+      throw new Error('Ferns: needs a V2Height with heightAt and heightAndSlopeAt')
     }
     if (typeof field.snowLineAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with snowLineAt')
@@ -496,6 +496,8 @@ export class Ferns {
     // Evict only once a tile is well outside the radius, so a player pacing back
     // and forth across one line does not rebuild the same row every crossing.
     this.evictSq = (radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
     this.nearSq = (LOD_BANDS[LOD_BANDS.length - 1] + NEAR_MARGIN) ** 2
 
     // Keep-fraction per quantised level, and the squared distance at which each
@@ -842,7 +844,8 @@ export class Ferns {
    * Safe to call every frame.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
+    const lift2 = this.lift2
 
     const t0 = performance.now()
     while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
@@ -863,7 +866,7 @@ export class Ferns {
     for (const tile of this.tiles.values()) {
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
 
       // Thicken IMMEDIATELY when the tile needs more ferns -- being late there
       // is a visible bald patch opening in front of the player -- but thin only
@@ -940,20 +943,21 @@ export class Ferns {
   /**
    * Bring the resident tile set in line with the camera: thin what the camera
    * has left behind, queue what is missing, evict what has fallen out. Returns
-   * immediately unless the camera has actually changed tile, which is what makes
-   * it safe to call every frame.
+   * immediately unless the camera has changed tile or eyeLift step, which is
+   * what makes it safe to call every frame. `lift2` joins every distance.
    */
-  _reseat(cx, cz) {
+  _reseat(cx, cz, lift2 = 0) {
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
         continue
@@ -975,7 +979,7 @@ export class Ferns {
       // boundary is not cut and regrown by one step across a tile line.
       const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
-      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2)
       if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q })
     }
 
@@ -992,7 +996,7 @@ export class Ferns {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        const d2 = dcx * dcx + dcz * dcz
+        const d2 = dcx * dcx + dcz * dcz + lift2
         if (d2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
@@ -1004,7 +1008,7 @@ export class Ferns {
           tx: gx,
           tz: gz,
           d2,
-          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2),
+          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2),
         })
       }
     }

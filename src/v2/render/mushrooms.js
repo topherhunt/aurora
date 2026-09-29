@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import {
   buildMushroomBank,
@@ -222,7 +222,7 @@ function triangleCount(geo) {
  * The mushroom layer.
  *
  * @param scene         THREE.Scene to add the arena's Group to.
- * @param field         V2Height. Needs heightAndSlopeAt, snowLineAt and bands.
+ * @param field         V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt and bands.
  * @param water         WaterSurfaces. Needs isSubmerged.
  * @param layers        Layers. Needs `paths`, `snow.band` and dirtAt.
  * @param textureArray  The shared prop atlas from buildTextureArray().
@@ -245,8 +245,8 @@ export class Mushrooms {
     anchors,
     { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false, bounds = null } = {}
   ) {
-    if (typeof field.heightAndSlopeAt !== 'function') {
-      throw new Error('Mushrooms: field needs heightAndSlopeAt')
+    if (typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') {
+      throw new Error('Mushrooms: field needs heightAt and heightAndSlopeAt')
     }
     if (typeof field.snowLineAt !== 'function') throw new Error('Mushrooms: field needs snowLineAt')
     if (typeof water.isSubmerged !== 'function') throw new Error('Mushrooms: water needs isSubmerged')
@@ -293,6 +293,8 @@ export class Mushrooms {
     this.tileSpan = Math.ceil(radius / TILE) + 1
     this.radiusSq = radius * radius
     this.evictSq = (radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
 
     this.maxQ = Math.max(1, Math.ceil(Math.log2(Math.sqrt(this.evictSq) / fullRadius) * QUANT))
     this.uAt = new Float32Array(this.maxQ + 1)
@@ -531,7 +533,8 @@ export class Mushrooms {
    * own update in the same frame.
    */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
+    const lift2 = this.lift2
 
     const t0 = performance.now()
     while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
@@ -548,7 +551,7 @@ export class Mushrooms {
     for (const tile of this.tiles.values()) {
       const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+      const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
 
       const q = tile.q
       const thicken = near2 < this.loSq[q]
@@ -635,20 +638,21 @@ export class Mushrooms {
 
   /**
    * Follow the camera: evict what has fallen out, queue what has come in.
-   * Returns immediately unless the camera has actually changed tile.
+   * Returns immediately unless the camera has changed tile or eyeLift step.
    */
-  _reseat(cx, cz) {
+  _reseat(cx, cz, lift2 = 0) {
     if (this.none) return
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
       }
@@ -663,7 +667,7 @@ export class Mushrooms {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        const d2 = dcx * dcx + dcz * dcz
+        const d2 = dcx * dcx + dcz * dcz + lift2
         if (d2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
@@ -675,7 +679,7 @@ export class Mushrooms {
           tx: gx,
           tz: gz,
           d2,
-          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2),
+          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2 + lift2),
         })
       }
     }

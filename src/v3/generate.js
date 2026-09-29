@@ -11,7 +11,7 @@ import { runHydrology, noHydrology } from './hydrology.js'
 // VERSION is the cache key's other half: bump it whenever a change to any stage would produce a different field for the same seed, or every client keeps drawing the island it generated last week.
 // ---------------------------------------------------------------------------
 
-export const VERSION = 'f7'
+export const VERSION = 'f8'
 // 4097 texels over the 8192 m box is 2 m a texel, which is the resolution the whole design turns on: the image carries the ladder down to 8 m (four samples to a node, island.js) and the read-time half carries it from there to a quarter of a metre (fine.js). The drain's rim dish is in METRES and does not care which grid it lands on -- 40 to 320 m across at any cell -- but the image has to hold the saddle it leaves, and a 40 m dish is 20 texels here against 5 at 8 m.
 export const TEXELS = 4097
 

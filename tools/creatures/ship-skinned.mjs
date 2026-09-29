@@ -186,14 +186,19 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
   // exactly what the fox's was. skin-ladder.mjs carries JOINTS_0 and WEIGHTS_0
   // through; nothing else about the rig changes.
   const jointsAttr = readAccessor(base.json, base.bin, prim.attributes.JOINTS_0)
-  const tiers = skinnedLadder({
+  const whole = {
     positions: readAccessor(base.json, base.bin, prim.attributes.POSITION),
     normals: readAccessor(base.json, base.bin, prim.attributes.NORMAL),
     uvs: readAccessor(base.json, base.bin, prim.attributes.TEXCOORD_0),
     indices: readAccessor(base.json, base.bin, prim.indices),
     joints: jointsAttr,
     weights: readAccessor(base.json, base.bin, prim.attributes.WEIGHTS_0),
-  })
+  }
+  // A rig with removable tack (the map's `tackFrom`, an index count) decimates the body and the tack apart, so every tier still draws bare over its first `tackFrom` indices.
+  const tack = map.tackFrom ?? null
+  if (tack !== null && !(tack > 0 && tack < whole.indices.length && tack % 3 === 0)) throw new Error(`${id}: tackFrom ${tack} does not split ${whole.indices.length} indices`)
+  const tiers = tack === null ? skinnedLadder(whole)
+    : zipTiers(skinnedLadder(partOf(whole, 0, tack)), skinnedLadder(partOf(whole, tack, whole.indices.length)))
   // The tiers take the nodes below the joints, so the skeleton starts past them.
   const { nodes, index, byName, root, rootName, lifted } = skeletonNodes(base.file, base.json, frame, tiers.length)
 
@@ -320,6 +325,7 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
           spine: carried(id, 'spine', map.spine ?? [], byName),
           head: carried(id, 'head', map.head ?? [], byName),
           tail: carried(id, 'tail', map.tail ?? [], byName),
+          ...(tack === null ? {} : { tackFrom: tiers.map((t) => t.tackFrom) }),
         },
       },
     }],
@@ -343,6 +349,40 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
 function carried(id, what, chain, byName) {
   for (const name of chain) if (!byName.has(name)) throw new Error(`${id}: ${what} names joint ${name}, which the skeleton does not carry`)
   return chain
+}
+
+/** The triangles in indices [from, to) with only the vertices they use, renumbered. */
+function partOf(mesh, from, to) {
+  const remap = new Map()
+  const indices = []
+  for (let i = from; i < to; i++) {
+    const v = mesh.indices[i]
+    if (!remap.has(v)) remap.set(v, remap.size)
+    indices.push(remap.get(v))
+  }
+  const pick = (arr, k) => {
+    const out = new arr.constructor(remap.size * k)
+    for (const [v, n] of remap) for (let j = 0; j < k; j++) out[n * k + j] = arr[v * k + j]
+    return out
+  }
+  return {
+    positions: pick(mesh.positions, 3), normals: pick(mesh.normals, 3), uvs: pick(mesh.uvs, 2),
+    indices: Uint32Array.from(indices), joints: pick(mesh.joints, 4), weights: pick(mesh.weights, 4),
+  }
+}
+
+/** Two ladders tier by tier as one, `a`'s triangles first; each tier's `tackFrom` is where `b`'s start. */
+function zipTiers(a, b) {
+  const cat = (x, y, T = Float32Array) => { const out = new T(x.length + y.length); out.set(x); out.set(y, x.length); return out }
+  return a.map((ta, k) => {
+    const tb = b[k], offset = ta.positions.length / 3
+    return {
+      positions: cat(ta.positions, tb.positions), normals: cat(ta.normals, tb.normals), uvs: cat(ta.uvs, tb.uvs),
+      indices: cat(ta.indices, Array.from(tb.indices, (v) => v + offset), Uint32Array),
+      joints: cat(ta.joints, tb.joints, ta.joints.constructor), weights: cat(ta.weights, tb.weights),
+      stats: ta.stats, tackFrom: ta.indices.length,
+    }
+  })
 }
 
 /** A flat [x, y, z, ...] run through `fn`, three at a time. */

@@ -31,10 +31,9 @@
       #buttons button { flex: 1 1 auto; padding: 4px 6px; }
       #stage { flex: 1 1 auto; position: relative; min-width: 0; }
       #hint { position: absolute; left: 10px; top: 10px; color: var(--dim); pointer-events: none; }
-      #stats { position: absolute; right: 10px; top: 10px; pointer-events: none; padding: 6px 10px; background: var(--panel); border: 1px solid var(--edge); border-radius: 3px; }
-      table { border-collapse: collapse; }
-      td { padding: 0 0 0 10px; }
-      td:first-child { padding: 0; color: var(--dim); }
+      table { border-collapse: collapse; width: 100%; }
+      td { padding: 0 0 0 10px; overflow-wrap: anywhere; }
+      td:first-child { padding: 0; color: var(--dim); white-space: nowrap; vertical-align: top; }
       td.n { text-align: right; font-variant-numeric: tabular-nums; }
     </style>
   </head>
@@ -50,6 +49,7 @@
           <input type="number" id="seed" class="qa-seed" value="1" min="0" step="1" />
           <button id="reroll" class="qa-reroll">reroll</button>
         </div>
+        <table id="statsTable" class="qa-stats"></table>
         <div id="kinds"></div>
         <div id="sliders"></div>
       </div>
@@ -65,7 +65,6 @@
     </div>
     <div id="stage">
       <div id="hint">drag to orbit &middot; scroll to zoom &middot; right-drag to pan</div>
-      <div id="stats"><table id="statsTable" class="qa-stats"></table></div>
     </div>
     <script type="module" src="/src/gen-leafkin-house-main.js"></script>
   </body>

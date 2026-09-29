@@ -1,6 +1,6 @@
 import THREE from '../../three-instance.js'
 
-import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
+import { boundedRadius, eyeLift, tileOutOfBounds } from './tile-pool.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 import { createGenPropMaterial, propCull } from './gen-props.js'
@@ -212,7 +212,7 @@ export async function loadCarrotsBank() {
 export class Carrots {
   /**
    * @param scene    THREE.Scene to add the arena's Group to.
-   * @param field    V2Height. Needs heightAndSlopeAt, snowLineAt, bands.
+   * @param field    V2Height. Needs heightAt, heightAndSlopeAt, snowLineAt, bands.
    * @param water    WaterSurfaces. Needs isSubmerged.
    * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
@@ -221,8 +221,8 @@ export class Carrots {
    */
   constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [] } = {}) {
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
-    if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
-      throw new Error('Carrots: needs a V2Height with heightAndSlopeAt and snowLineAt')
+    if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
+      throw new Error('Carrots: needs a V2Height with heightAt, heightAndSlopeAt and snowLineAt')
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Carrots: needs WaterSurfaces with isSubmerged')
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') throw new Error('Carrots: needs Layers with a PathSet')
@@ -245,6 +245,8 @@ export class Carrots {
     this.radiusSq = this.radius * this.radius
     this.tileSpan = Math.ceil(this.radius / TILE) + 1
     this.evictSq = (this.radius + TILE * 1.5) ** 2
+    this.evictR = Math.sqrt(this.evictSq)
+    this.lift2 = 0
 
     // The village's garden plots (rooms/village.js gardenSpots), binned onto the
     // same grid so residency, eviction and the rim own their carrots like any
@@ -338,7 +340,7 @@ export class Carrots {
 
   /** Follow the camera and sweep the rim. Every resident carrot every frame: a few hundred at most. */
   update(camX, camY, camZ) {
-    this._reseat(camX, camZ)
+    this._reseat(camX, camZ, eyeLift(this.field, camX, camY, camZ, this.evictR) ** 2)
     let tris = 0
     this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
@@ -352,18 +354,19 @@ export class Carrots {
     this.tris = tris
   }
 
-  /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing only. */
-  _reseat(cx, cz) {
+  /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing or eyeLift step only. */
+  _reseat(cx, cz, lift2 = 0) {
     const tx = Math.floor(cx / TILE)
     const tz = Math.floor(cz / TILE)
-    if (tx === this.camTileX && tz === this.camTileZ) return
+    if (tx === this.camTileX && tz === this.camTileZ && lift2 === this.lift2) return
+    this.lift2 = lift2
     this.camTileX = tx
     this.camTileZ = tz
 
     for (const [key, tile] of this.tiles) {
       const dx = (tile.tx + 0.5) * TILE - cx
       const dz = (tile.tz + 0.5) * TILE - cz
-      if (dx * dx + dz * dz > this.evictSq) {
+      if (dx * dx + dz * dz + lift2 > this.evictSq) {
         this._release(tile)
         this.tiles.delete(key)
       }
@@ -376,7 +379,7 @@ export class Carrots {
         const gz = tz + iz
         const dcx = (gx + 0.5) * TILE - cx
         const dcz = (gz + 0.5) * TILE - cz
-        if (dcx * dcx + dcz * dcz > this.radiusSq) continue
+        if (dcx * dcx + dcz * dcz + lift2 > this.radiusSq) continue
         if (tileOutOfBounds(this.bounds, gx, gz, TILE)) continue
         const key = gx * 0x10000 + gz
         if (this.tiles.has(key)) continue

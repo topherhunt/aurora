@@ -6,9 +6,8 @@
 //
 // ship-skinned.mjs does the work; this file says the plan is `bird`, that `walk`
 // and `run` are the gaits that ship with a speed, and that the world reads the
-// extras under `bird`. The ladder is decimated over the whole mesh, tack and
-// all, so the rig map's `tackFrom` does not survive into the tiers: a shipped
-// strider is always a saddled one.
+// extras under `bird`. The rig map's `tackFrom` ships as `bird.tackFrom`, one
+// index count per tier: drawing only that far draws the strider bare.
 // ---------------------------------------------------------------------------
 
 import { fileURLToPath } from 'node:url'

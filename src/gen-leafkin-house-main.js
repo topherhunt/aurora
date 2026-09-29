@@ -7,7 +7,7 @@ import { grassTexture } from './preview-stage.js'
 import { HOUSE_KINDS, buildHouse, rollHouse } from './v2/render/house-exterior.js'
 
 const SLIDERS = [
-  ['height', 3.5, 9.5, 0.05, 'ground to roof tip. The village rolls 3.75-9.4; reroll keeps it'],
+  ['height', 3.5, 9.5, 0.05, 'ground to the tallest roof tip; rise sets the actual apex. The village rolls 3.75-9.4; reroll keeps it'],
   ['girth', 0.2, 0.4, 0.005, 'trunk radius at the floor, as a fraction of height'],
   ['trunk', 0.4, 0.7, 0.005, 'trunk top, where the roof sits, as a fraction of height'],
   ['taper', -0.1, 0.3, 0.005, 'how much narrower the trunk is at the top'],
@@ -15,7 +15,7 @@ const SLIDERS = [
   ['flare', 0, 0.3, 0.01, 'how far the trunk swells out at the ground between the lobes'],
   ['lean', 0, 0.1, 0.002, 'the whole house leans, curving up the trunk'],
   ['lobes', 2, 10, 1, 'buttress lobes at the trunk foot; the first two flank the door'],
-  ['lobeReach', 0, 1, 0.01, 'how far a lobe juts at the ground, as a fraction of the trunk radius'],
+  ['lobeReach', 0, 1.4, 0.01, 'how far a lobe juts at the ground, as a fraction of the trunk radius'],
   ['spires', 0, 4, 1, 'splintered shards of the stump through the roof; with crown tower, the first is a hollow tower'],
   ['spireH', 0, 0.3, 0.005, 'how far the spires rise above the roof, as a fraction of height'],
   ['windows', 0, 5, 1, 'round and arched windows on the trunk'],
@@ -25,6 +25,7 @@ const SLIDERS = [
   ['sill', 0.1, 0.45, 0.01, 'door sill above the ground; the steps make it up'],
   ['overhang', 0, 0.8, 0.01, 'eave overhang past the trunk'],
   ['droop', 0, 0.5, 0.01, 'eave drop below the trunk top'],
+  ['rise', 0.3, 1, 0.01, 'roof apex above the trunk top, as a fraction of the way to the full height'],
   ['swell', 0.8, 2.8, 0.01, 'roof profile: near 1 a cone, past 2 a dome'],
   ['lump', 0, 0.35, 0.005, 'lumpiness of the roof mound'],
   ['tilt', 0, 0.4, 0.005, 'how lopsided the eave line runs'],

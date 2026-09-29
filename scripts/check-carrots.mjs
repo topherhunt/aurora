@@ -31,6 +31,7 @@ const bank = () => {
 const DRY = { isSubmerged: () => false }
 const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, dirtAt: () => 0 }
 const flatField = (h) => ({
+  heightAt: () => h,
   heightAndSlopeAt: () => ({ h, tan: 0 }),
   snowLineAt: () => 900,
   bands: { altLo: 0, altSpan: 100 },

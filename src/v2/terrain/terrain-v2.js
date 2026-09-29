@@ -133,6 +133,10 @@ const WORKER_QUEUE_DEPTH = 24
 const GRID_SIDE = CHUNK_RES + 1
 const GRID_VERTS = GRID_SIDE * GRID_SIDE
 
+// groundChangedSince's grid: 128 x 128 cells of 64 m, each holding the groundVersion at which a chunk over it last entered or left the drawn set.
+const STAMP_DEPTH = 7
+const STAMP_SPAN = 1 << STAMP_DEPTH
+
 export class TerrainV2 {
   /**
    * @param scene         THREE.Scene to add the single BatchedMesh to.
@@ -284,9 +288,9 @@ export class TerrainV2 {
     this._render = new Set() // keys that should be visible right now
     this._standIns = new Set() // the subset of _render standing in for a miss
     // Bumped whenever groundKeyAt's answer can have changed anywhere: the render
-    // set moving, or a drawn chunk losing its slot. A scatter that re-checks its
-    // tiles' chunk keys compares against this and asks nothing while it holds.
+    // set moving, or a drawn chunk losing its slot. _groundStamp says where.
     this.groundVersion = 0
+    this._groundStamp = new Uint32Array(STAMP_SPAN * STAMP_SPAN)
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
     // Always a real object so nothing downstream has to guard for its absence.
@@ -621,13 +625,14 @@ export class TerrainV2 {
         entry.visible = false
         this._free.push(entry.slot)
         entry.slot = null
-        this.groundVersion++
+        this._groundChanged(key)
       }
       this.cache.delete(key)
     }
     // Both are recomputed from scratch by the next selection pass, and the held
     // entries are found again there by _isDrawable, which asks for a slot rather
     // than for a state.
+    for (const key of this._render) this._groundChanged(key)
     this._render.clear()
     this._standIns.clear()
     this._editPending.clear()
@@ -908,7 +913,7 @@ export class TerrainV2 {
       entry.visible = false
       this._free.push(entry.slot)
       entry.slot = null
-      this.groundVersion++
+      this._groundChanged(key)
     }
     this._render.delete(key)
     this._standIns.delete(key)
@@ -1084,12 +1089,11 @@ export class TerrainV2 {
     }
 
     this.queue = queue
-    // Only a set that actually differs counts as a change: this pass runs at
+    // Only the keys that entered or left count as a change: this pass runs at
     // 12 Hz with nothing moving, and a version that ticked on every pass would
     // have every scatter re-checking every tile for the same answer.
-    let same = render.size === this._render.size
-    if (same) for (const key of render) if (!this._render.has(key)) { same = false; break }
-    if (!same) this.groundVersion++
+    for (const key of render) if (!this._render.has(key)) this._groundChanged(key)
+    for (const key of this._render) if (!render.has(key)) this._groundChanged(key)
     this._render = render
     this._standIns = standIns
     this.stats.desired = desired.length
@@ -1118,6 +1122,30 @@ export class TerrainV2 {
       if (entry && entry.slot) return key
     }
     return null
+  }
+
+  // Whether groundKeyAt(x, z) may have changed since groundVersion was `version`. One array read, so a scatter can ask it of every tile a frame and call groundKeyAt only where this says yes.
+  groundChangedSince(x, z, version) {
+    const u = x + WORLD_HALF
+    const v = z + WORLD_HALF
+    if (u < 0 || v < 0 || u >= WORLD_SIZE || v >= WORLD_SIZE) return false
+    const cx = ((u / WORLD_SIZE) * STAMP_SPAN) | 0
+    const cz = ((v / WORLD_SIZE) * STAMP_SPAN) | 0
+    return this._groundStamp[cz * STAMP_SPAN + cx] > version
+  }
+
+  // Every change to what groundKeyAt answers comes through here: a key entering or leaving _render, or a drawn chunk losing its slot.
+  _groundChanged(key) {
+    const version = ++this.groundVersion
+    const { depth, ix, iz } = unpackKey(key)
+    const stamp = this._groundStamp
+    if (depth >= STAMP_DEPTH) {
+      const s = depth - STAMP_DEPTH
+      stamp[(iz >> s) * STAMP_SPAN + (ix >> s)] = version
+      return
+    }
+    const s = STAMP_DEPTH - depth
+    for (let z = iz << s; z < (iz + 1) << s; z++) stamp.fill(version, z * STAMP_SPAN + (ix << s), z * STAMP_SPAN + ((ix + 1) << s))
   }
 
   /**

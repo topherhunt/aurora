@@ -1102,6 +1102,7 @@ const FACADE_GAIN = ROCK_TILE_MEAN.map((m) => 1 / m)
 // world-LOD view and this walk cannot disagree on it.
 const LOD_HYSTERESIS = ROCK_LOD_HYSTERESIS
 const BUILD_BUDGET_MS = 1.5
+const WALK_BUDGET_MS = 1.0
 const PLACEMENT_CELL = 4.0
 
 // A `deep` bed's forest scan (see the hollow bed): the tile sampled every
@@ -1121,7 +1122,8 @@ const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7, roll: 1 }
 // 890 m it is most of the bill (2.4 ms standing still on the headset, over
 // ~9,000 resident tiles), so it waits for its bucket's turn like the rest. A
 // rock's tier swap can therefore land up to RIM_PHASES frames late and only
-// while the camera is moving, which the cross-dissolve already covers.
+// while the camera is moving, which the cross-dissolve already covers. The
+// walk budget is WALK_BUDGET_MS split across the beds, like the build budget.
 const STILL_M = RIM_SLACK_MIN
 
 // How hard a `fitSlope` bed cuts a plate that hangs off its face, per attempt.
@@ -2007,9 +2009,9 @@ class RockBed {
     this.bucketZ = new Float64Array(RIM_PHASES)
     this.bucketNeed = new Float32Array(RIM_PHASES)
     this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
-    // The first update walks every tile; nothing after construction moves every
-    // tile's answer at once (a reseat evicts and grows, and what survives it is
-    // walked on its turn).
+    // The first update walks every tile, as does the one after a `place`: that is
+    // a jump, on a frame already spent rebuilding. A budgeted reseat evicts and
+    // grows, and what survives it is walked on its turn.
     this.walkAll = true
 
     // Instances drawn on each rung, as running totals because the tiles are not
@@ -2689,11 +2691,12 @@ class RockBed {
     // when something wants the bed complete, not when something is flying over it.
     this._reseat(cx, this.field.heightAt(cx, cz), cz)
     while (this.queue.length) this._growTile(this.queue.pop())
+    this.walkAll = true
     this.placeMs = performance.now() - t0
     return this.placed
   }
 
-  update(camX, camY, camZ, budgetMs) {
+  update(camX, camY, camZ, budgetMs, walkMs) {
     this._reseat(camX, camY, camZ)
 
     const t0 = performance.now()
@@ -2713,15 +2716,17 @@ class RockBed {
     // Instances the per-rock ladder walks THIS frame -- the O(instances) part of
     // the bill, which the resident-tile count alone does not show.
     this.walked = 0
-    for (let p = 0; p < RIM_PHASES; p++) {
+    const tWalk = performance.now()
+    for (let i = 1; i <= RIM_PHASES; i++) {
+      const p = (turn + i) % RIM_PHASES
       const mx = camX - this.bucketX[p]
       const my = camY - this.bucketY[p]
       const mz = camZ - this.bucketZ[p]
       const moved2 = mx * mx + my * my + mz * mz
       const walk = this.walkAll
         || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
-        || need > this.bucketNeed[p]
         || moved2 >= this.nearMargin * this.nearMargin
+        || (need > this.bucketNeed[p] && performance.now() - tWalk < walkMs)
       if (!walk) continue
       this.bucketX[p] = camX
       this.bucketY[p] = camY
@@ -2758,12 +2763,15 @@ class RockBed {
    */
   _walkTile(t, camX, camY, camZ, gver, now) {
     const tile = this.tile
-    // The chunk under the tile's centre, re-asked only when the terrain's
-    // render set has changed since this tile last asked. A rock follows the
-    // chunk it stands on when that re-splits.
+    // The chunk under the tile's centre, re-asked only when a chunk over it has
+    // entered or left the render set since this tile last asked. A rock follows
+    // the chunk it stands on when that re-splits.
     if (this.ground && t.gver !== gver) {
+      const cx = (t.tx + 0.5) * tile
+      const cz = (t.tz + 0.5) * tile
+      const changed = this.ground.groundChangedSince(cx, cz, t.gver)
       t.gver = gver
-      const gkey = this.ground.groundKeyAt((t.tx + 0.5) * tile, (t.tz + 0.5) * tile)
+      const gkey = changed ? this.ground.groundKeyAt(cx, cz) : t.gkey
       if (gkey !== t.gkey) {
         t.gkey = gkey
         this._reground(t)
@@ -4540,6 +4548,7 @@ export class Rocks {
 
     this.buildMs = performance.now() - t0
     this.placeMs = 0
+    this.walkBudgetMs = WALK_BUDGET_MS
     this.updateMs = 0
   }
 
@@ -4561,7 +4570,8 @@ export class Rocks {
   update(camX, camY, camZ) {
     const tStart = performance.now()
     const slice = BUILD_BUDGET_MS / this.beds.length
-    for (const bed of this.beds) bed.update(camX, camY, camZ, slice)
+    const walkSlice = this.walkBudgetMs / this.beds.length
+    for (const bed of this.beds) bed.update(camX, camY, camZ, slice, walkSlice)
     // The whole of this call, smoothed over ~20 frames: the layer's main-thread
     // bill, which the headset cannot otherwise separate from its draw cost.
     this.updateMs += (performance.now() - tStart - this.updateMs) * 0.05
