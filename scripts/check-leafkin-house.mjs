@@ -33,7 +33,9 @@ const nonFinite = built.filter(({ h }) => !finite(h.geometry) || !finite(h.glow)
 check(!nonFinite.length, 'every attribute is finite', nonFinite.map((x) => x.s).join(' '))
 
 const tris = built.map(({ h }) => h.stats.triangles)
-check(Math.max(...tris) <= 20000, 'every house is under 20k triangles', `${Math.min(...tris)}..${Math.max(...tris)}`)
+check(Math.max(...tris) <= 8000, 'every house is under 8k triangles', `${Math.min(...tris)}..${Math.max(...tris)}`)
+const roofs = built.map(({ h }) => h.stats.roofTriangles)
+check(Math.max(...roofs) <= 250, 'every roof cap is under 250 triangles', `${Math.min(...roofs)}..${Math.max(...roofs)}`)
 const ms = built.map(({ h }) => h.stats.ms).sort((x, y) => x - y)
 check(ms[Math.floor(ms.length / 2)] < 12, 'the median house builds in under 12 ms on this machine', `median ${ms[Math.floor(ms.length / 2)].toFixed(1)} ms, worst ${ms[ms.length - 1].toFixed(1)} ms`)
 
@@ -56,7 +58,7 @@ for (const [key, kinds] of Object.entries(HOUSE_KINDS)) {
 }
 for (const [key, kinds] of Object.entries(HOUSE_KINDS)) for (const k of kinds) {
   const h = buildHouse({ ...rollHouse(3, 5), [key]: k })
-  check(h.stats.triangles > 2000 && finite(h.geometry), `${key} ${k} builds`, `${h.stats.triangles} tris`)
+  check(h.stats.triangles > 1000 && finite(h.geometry), `${key} ${k} builds`, `${h.stats.triangles} tris`)
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall leafkin house checks pass')

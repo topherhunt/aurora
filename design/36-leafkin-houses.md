@@ -6,27 +6,46 @@ Unlike the village houses, which draw on a fixed baked pool, every leafkin house
 
 ## Shape
 
-A house is a hollow stump capped with a roof. `rollHouse(seed, height)` returns a flat spec object. It holds every choice the builder makes, and `buildHouse(spec)` reads nothing else. The bench sliders edit that object directly, and "copy spec" exports it.
+A house is a hollow stump capped with one lumpy roof mound. `rollHouse(seed, height)` returns a flat spec object. It holds every choice the builder makes, and `buildHouse(spec)` reads nothing else. The bench sliders edit that object directly, and "copy spec" exports it.
 
-- **Trunk.** A lathe whose radius is `wallR(θ, y)`. It combines:
+- **Trunk.** A grid whose radius is `wallR(θ, y)`. It combines:
   - a taper and a belly;
-  - a ground flare, reduced at the door;
-  - root lobes;
+  - a ground flare;
+  - 2-9 buttress lobes: gaussian in angle, twisting and dying away up the trunk, and still widening below ground so the feet read as roots. The first two flank the door;
   - value noise, calmed near every opening.
 
-  `lean` tilts the whole trunk. `girth` 0.31-0.39 and `trunk` 0.44-0.56 are fractions of `height`, matching the village rule that a house is as wide as it is tall.
-- **Roof.** Kinds are `cone`, `dome` and `tiers`; skins are `leaf`, `shake` and `thatch`. The roof is built as coursed sawtooth strips with scalloped, jittered lips. The eave height is solved so the roof clears the trunk top where it crosses the wall, and the tip lands within 0.8 m of `height`. The roof ends in a finial stalk.
-- **Spires.** These are broken shards of the stump rim, pushed out through the roof. `roofY` takes the highest roof tier above the wall, so a shard always clears it.
+  The door and the windows calm the flare and the lobes, or their frames would tip skyward. `lean` tilts the whole trunk. `girth` 0.29-0.36 and `trunk` 0.44-0.56 are fractions of `height`, matching the village rule that a house is as wide as it is tall.
+- **Roof.** One mound, `roofAt(θ, u)` from the eave (u 0) to the apex (u 1). `swell` sets the profile from cone (~1) to dome (>2). `lump` adds noise to its radius and height, `tilt` makes the eave line lopsided, and `bend` bends the tip over. The eave never rises above the trunk top; where the mound then could not clear the wall, the eave reaches wider instead. The mesh is 14 columns × 5 rows, then a 28-column ring whose lip drops by jittered amounts for the frayed edge: 224 triangles, and the gate caps it at 250. Its v coordinate is the true slope distance, so a dome's eave doesn't smear. Skins are `leaf` (half the rolls), `shake` and `thatch`.
+- **Crown.** 0-3 pieces of the stump's shell carried up through the roof. Each is a rounded, noisy section whose top row splinters into dips and spikes. `crown: 'tower'` makes the first one a wide hollow tower, with an inner wall, a dark floor and a round window facing out.
 - **Openings.** The layout order is:
-  1. The door sits at θ = 0 (+X). Its kinds are `arch`, `round` and `pointed`, and it has a rim, steps and a knocker.
-  2. The chimney comes next: `stone` (a plumb stack) or `pipe` (a banded clay tube with a hat).
-  3. 1-4 windows go on the wall that is still free. Each has an optional mullion, sill, hood or straw rays.
-  4. Spires and roots take the rest; the first two roots flank the door.
+  1. The door sits at θ = 0 (+X). Its kinds are `arch`, `round` and `pointed`, and it has steps and a knocker.
+  2. `transom: 'round'` puts a small round window above the door's awning, if it fits below the eave.
+  3. The chimney comes next: `stone` (a plumb stack) or `pipe` (a banded clay tube with a hat).
+  4. 1-4 windows go on the wall that is still free. They are round (no sill or hood) or arched (optional mullion, sill and hood). Any of them may hang a flowerpot beside it.
+  5. The crown takes the rest.
 
-  Every opening is a flat, tilted frame standing proud of the wall.
-- **Decor.** `round(decor × 9)` picks from a pool: fungi, mushrooms, pinecones, a woodpile, a pot, straw, a garland, a vine, a door lantern and stones on the roof.
+  Every opening is a flat, tilted frame standing proud of the wall. Its outline is skewed a few degrees, and its jamb (`rim`) has a jittered width, flares where it meets the wall, and has every vertex jittered. Awnings always hang crooked: `leaf` is a rolled, jittered sheet, and `hood` is a flared, jittered board on brackets. The glass uses the interior's honeycomb `interiors/window.webp`.
+- **Decor.** `round(decor × 14)` picks from a pool:
+  - shelf fungi (weighted ×3);
+  - mushrooms at the lobes;
+  - pinecones;
+  - a woodpile;
+  - a pot;
+  - straw;
+  - a garland;
+  - knotted climbing vines with branches;
+  - vines and ropes hanging from the eave;
+  - a door lantern;
+  - stones on the roof.
+
+  Vines carry `IVY_LEAF` quads.
 
 Each subsystem draws from its own `rngFor(tag)` stream. Changing the window count therefore never reshuffles the roof.
+
+**Texture layers.** `ROOF_LEAF` and `IVY_LEAF` in `src/textures.js` come from `tools/buildings/leafkin-textures.mjs`:
+
+- `ROOF_LEAF` is a FLUX Klein photo, centre-cropped, made seamless with `tools/tileable.sh`, then shipped at 128 px.
+- `IVY_LEAF` is a five-lobed leaf drawn in code on alpha. It is 128 px because the texture array needs that size.
 
 ## Contract
 
@@ -34,19 +53,19 @@ Each subsystem draws from its own `rngFor(tag)` stream. Changing the window coun
 
 - `geometry`: attributes `position`, `normal`, `color`, `uvProj` and `texLayer` in `createPropMaterial`'s layout, using the prop texture array's layers.
 - `glow`: window and lantern glass, with `position`, `normal` and `uv` only. It needs its own material, so it is a second draw call.
-- `door {p, n, w, h, sill}` and `windows [{p, n, r}]`, in house space after the warp. These are for the interior and for walker routing.
+- `door {p, n, w, h, sill}` and `windows [{p, n, r}]`, in house space after the warp. `windows` includes the transom but not a tower's window. These are for the interior and for walker routing.
 - `lights [{kind, p}]`.
-- `trunk {r, top}`, `eave {r, y}`, `reach` (the footprint radius) and `top`.
-- `stats`.
+- `trunk {r, top}`, `eave {r, y}` (mean radius, highest point), `reach` (the footprint radius) and `top`.
+- `stats`, including `roofTriangles`.
 
 ## Budget
 
-Triangles run 4.4k-16.7k per house across village heights 3.75-9.4 m; the gate caps them at 20k.
+Triangles run 3.0k-7.4k per house across village heights 3.75-9.4 m. The gate caps them at 8k.
 
-Build time is about 4.6 ms average in node on an M-series Mac and about 10 ms in the browser bench. A Quest 2 is likely 3-5× slower. Phase 2 should therefore build one house per frame rather than all of them in one frame.
+Median build time is about 1.8 ms in node on an M-series Mac. A Quest 2 is likely 3-5× slower. That is cheap enough to build a whole glade on entry, though one house per frame stays the safe default.
 
 ## Phase 2 (after the design is locked)
 
 - Replace `HOUSE_GLB` (`gen-props/house-leafkin.glb`, loaded in `src/v2/render/room-props.js`, §30) with one `buildHouse` per hut seed, then merge the results.
-- Walker collision comes from `columnTable(geometry)` in the same file. Check that it copes with the roof overhang and the roots.
+- Walker collision comes from `columnTable(geometry)` in the same file. Check that it copes with the roof overhang and the lobes.
 - Match the interior's window positions to `windows`, and its door to `door`.

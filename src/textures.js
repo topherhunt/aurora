@@ -470,8 +470,14 @@ export const LAYER = {
   MAT_ASPEN: 106,
   MAT_BIRCH: 107,
   MAT_PINE_ALPHA: 108,
+
+  // The leafkin house exterior (design/36-leafkin-houses.md), both made by
+  // tools/buildings/leafkin-textures.mjs: a tiled leaf-shingle roof, and one ivy
+  // leaf cut out on alpha for the vines.
+  ROOF_LEAF: 109,
+  IVY_LEAF: 110,
 }
-export const LAYER_COUNT = 109
+export const LAYER_COUNT = 111
 
 // --- which layers snow settles on (src/material.js, uSnow) -------------------
 //
@@ -781,6 +787,8 @@ export const IMAGE_LAYERS = {
   [LAYER.MAT_ASPEN]: 'trees/mat_aspen_128.png',
   [LAYER.MAT_BIRCH]: 'trees/mat_birch.png',
   [LAYER.MAT_PINE_ALPHA]: 'trees/mat_pine_128-alpha.png',
+  [LAYER.ROOF_LEAF]: 'buildings/roof_leaf.png',
+  [LAYER.IVY_LEAF]: 'buildings/ivy_leaf.png',
   // Cut from EZ-Tree's grass.glb by tools/trees/layers.py, which also copies it
   // here. IMPOSTOR_GRASS is deliberately absent: it is baked at load from this
   // one (grass-bank.js), the same way the tree and fern cards are.

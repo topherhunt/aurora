@@ -6759,6 +6759,7 @@ AFRAME.registerComponent('v2-quest-tick', {
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
     renderOverlay()
+    spikes.end()
   },
 })
 sceneEl.setAttribute('v2-quest-tick', '')

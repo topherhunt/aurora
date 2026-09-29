@@ -206,15 +206,16 @@ const patch = (m) => m
   const [mid, far] = HEARTH.lod
   const eye = (d) => h.update(at.x + d, y + 1.6, at.z, 0)
   eye(5); check(h.tier === 0 && h.meshes[0].visible && !h.meshes[1].visible, 'the whole mesh inside 15 m')
-  eye(mid + 1); check(h.tier === 1 && !h.meshes[0].visible && h.meshes[1].visible, 'the decimated tier past 15 m')
-  eye(mid - 0.5); check(h.tier === 1, 'the decimated tier holds just inside 15 m')
+  eye(mid + 1); check(h.tier === 1 && !h.meshes[0].visible && h.meshes[1].visible, 'the mid rung past 15 m')
+  eye(mid - 0.5); check(h.tier === 1, 'the mid rung holds just inside 15 m')
   eye(mid * HEARTH.hysteresis - 0.5); check(h.tier === 0, 'the whole mesh back under the hysteresis')
-  eye(far + 1); check(h.tier === 2 && h.meshes[1].visible && !h.meshes[0].visible, 'the far rung past 30 m draws the decimated tier until the card is baked')
+  eye(far + 1); check(h.tier === 2 && h.meshes[1].visible && !h.meshes[0].visible, 'the far rung past 30 m draws the mid rung until the card is baked')
   check(h.card === null && h.stats.tris === h.tris[1], 'no card before the bake', `${h.stats.tris} tris`)
   eye(far * HEARTH.hysteresis + 0.5); check(h.tier === 2, 'the far rung holds inside 30 m')
-  eye(far * HEARTH.hysteresis - 0.5); check(h.tier === 1, 'the decimated tier back under the hysteresis')
+  eye(far * HEARTH.hysteresis - 0.5); check(h.tier === 1, 'the mid rung back under the hysteresis')
   eye(1); check(h.tier === 0, 'the whole mesh up close from the far rung')
-  check(h.tris[0] > h.tris[1] * 2, 'the tiers descend', `${h.tris.join(' > ')}`)
+  // decimateHearth costs about 200 ms a village entry to save under 300 triangles.
+  check(h.tiers[0] === h.tiers[1], 'the mid rung draws the whole mesh, undecimated', `${h.tris.join(' / ')} tris`)
 
   // Stone to the walker.
   const out = new Float64Array(8)

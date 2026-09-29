@@ -24,19 +24,19 @@ export class Bridges {
       mesh.rotation.y = b.yaw
       mesh.scale.set(...b.scale)
       mesh.visible = false
-      mesh.name = `bridge-${b.river}`
+      mesh.name = `bridge-${b.river ?? 'lake'}`
       scene.add(mesh)
       return { ...b, mesh, lod: -1, cos: Math.cos(b.yaw), sin: Math.sin(b.yaw), reach: Math.max(Math.abs(this.meta.xa), this.meta.xb) * b.scale[0] + this.meta.halfWidth * b.scale[2] }
     })
     this.stats = { bridges: bridges.length }
   }
 
-  // The drawn mesh rises with its river's far-terrain lift (river-raise.js) so the water never swallows it from the air; the walk layer keeps the true height.
+  // A river's drawn span rises with its far-terrain lift (river-raise.js) so the water never swallows it from the air; lakes have no lift. The walk layer keeps the true height.
   update(eye) {
     for (const it of this.items) {
       const d = Math.hypot(it.x - eye.x, it.z - eye.z)
       const lod = d < BRIDGE_BANDS.lod0 ? 0 : d < BRIDGE_BANDS.lod1 ? 1 : d < BRIDGE_BANDS.far ? 2 : -1
-      if (lod >= 0) it.mesh.position.y = it.y + this.water.riverLiftAt(it.river, it.x, it.z, eye)
+      if (lod >= 0) it.mesh.position.y = it.y + (it.river === null ? 0 : this.water.riverLiftAt(it.river, it.x, it.z, eye))
       if (lod === it.lod) continue
       it.lod = lod
       it.mesh.visible = lod >= 0

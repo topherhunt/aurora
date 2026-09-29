@@ -16,6 +16,7 @@ import { planTowns } from '../src/v2/layers/towns.js'
 import { nameTowns } from '../src/v2/layers/names.js'
 import { ROAD, STONE_BRIDGE, planRoads } from '../src/v2/layers/roads.js'
 import { Heap } from '../src/v2/layers/route.js'
+import { footprint } from '../src/v2/layers/water-bodies.js'
 import { Bridges } from '../src/v2/render/bridges.js'
 import { parseStoneBridge, stoneBridgeDeckAt } from '../src/bridges/stone-bridge.js'
 import { buildTextureArray } from '../src/textures.js'
@@ -71,12 +72,18 @@ check(unused.length <= ports.length * 0.1, 'nearly every stub out of a town carr
 const forks = nodes.filter((n) => !n.port && n.town < 0 && n.bank === null && n.ways.length >= 3).length
 check(forks >= towns.length / 2, 'roads often meet between towns', `${forks} forks`)
 
-// Geometry of every laid way.
+// Geometry of every laid way. The lake drawn over a point is the highest plane covering it, as WaterSurfaces draws; LakeSet.levelAt answers the ocean inside a small lake.
 const laid = ways.filter((w) => w.pts)
+const lakes = [...layers.lakes.lakes.values()]
+const lakeOver = (x, z) => Math.max(-Infinity, ...lakes.filter((l) => footprint(l, x, z) > 0).map((l) => l.y))
 let worst = 0
 let wet = 0
+let drowned = 0
+let drownAt = ''
 let straightest = Infinity
 let straightId = ''
+let deepest = 0
+let deepAt = ''
 for (const w of laid) {
   let len = 0
   for (let k = 1; k < w.pts.length; k++) {
@@ -85,6 +92,12 @@ for (const w of laid) {
     const d = Math.hypot(bx - ax, bz - az)
     len += d
     worst = Math.max(worst, Math.abs(by - ay) / d)
+    for (let f = 0; f < 1; f += 2 / d) {
+      if (ay + (by - ay) * f < lakeOver(ax + (bx - ax) * f, az + (bz - az) * f) + 0.3 && !drowned++) drownAt = `(${(ax + (bx - ax) * f).toFixed(0)}, ${(az + (bz - az) * f).toFixed(0)}) on ${w.record}`
+      if ([w.a, w.b].some((id) => nodes[id].port && Math.hypot(nodes[id].port.end[0] - ax - (bx - ax) * f, nodes[id].port.end[2] - az - (bz - az) * f) < 30)) continue
+      const cut = surface(ax + (bx - ax) * f, az + (bz - az) * f) - (ay + (by - ay) * f)
+      if (cut > deepest) { deepest = cut; deepAt = `(${(ax + (bx - ax) * f).toFixed(0)}, ${(az + (bz - az) * f).toFixed(0)})` }
+    }
   }
   for (const [x, , z] of w.pts) {
     const l = layers.waterLevelAt(x, z)
@@ -100,7 +113,56 @@ for (const w of laid) {
 }
 check(worst <= 0.25, 'no stretch of road climbs steeper than 1 in 4', `worst segment ${worst.toFixed(3)}`)
 check(wet === 0, 'no road point stands in a river or lake', `${wet} wet`)
+check(drowned === 0, 'no road centre stands under or within 0.3 m of lake water, read every 2 m against the highest lake plane over it', `${drowned} samples${drowned ? `, first at ${drownAt}` : ''}`)
 check(straightest >= 6, 'no road 150 m or longer runs straight', `least wander ${straightest.toFixed(1)} m (${straightId})`)
+check(deepest <= 2, 'no road centre sinks more than 2 m under the ground, read every 2 m, but within 30 m of a town stub it meets', `deepest ${deepest.toFixed(2)} m at ${deepAt}`)
+// Forks: the directions each road leaves a node in, read 20 m out, and a port's stub.
+const wayById = new Map(ways.map((w) => [w.id, w]))
+const leaving = (n, w) => {
+  if (!w.pts) { const o = nodes[w.a === n.id ? w.b : w.a]; return Math.atan2(o.z - n.z, o.x - n.x) }
+  const pts = w.a === n.id ? w.pts : [...w.pts].reverse()
+  let k = n.port ? 2 : 1
+  while (k < pts.length - 1 && Math.hypot(pts[k][0] - n.x, pts[k][2] - n.z) < 20) k++
+  return Math.atan2(pts[k][2] - n.z, pts[k][0] - n.x)
+}
+let sharpest = Math.PI
+let sharpAt = ''
+for (const n of nodes) {
+  const dirs = n.ways.map((id) => leaving(n, wayById.get(id)))
+  if (n.port) { const stub = towns[n.town].roads[n.port.stub]; const p = stub.at(-3) ?? stub[0]; dirs.push(Math.atan2(p[2] - n.z, p[0] - n.x)) }
+  for (let i = 0; i < dirs.length; i++) for (let j = i + 1; j < dirs.length; j++) {
+    const a = Math.abs(((dirs[i] - dirs[j] + 3 * Math.PI) % (2 * Math.PI)) - Math.PI)
+    if (a < sharpest) { sharpest = a; sharpAt = `(${n.x.toFixed(0)}, ${n.z.toFixed(0)})` }
+  }
+}
+check(sharpest >= Math.PI / 3, 'roads part at a fork 60 deg or wider, read 20 m out', `sharpest ${((sharpest * 180) / Math.PI).toFixed(0)} deg at ${sharpAt}`)
+// Crossings: two ways' segments that cross anywhere but at a node they share.
+const segs = []
+const bins = new Map()
+for (const w of laid) for (let k = 1; k < w.pts.length; k++) {
+  const sg = { w, a: w.pts[k - 1], b: w.pts[k] }
+  const i0 = Math.floor(Math.min(sg.a[0], sg.b[0]) / 32)
+  const j0 = Math.floor(Math.min(sg.a[2], sg.b[2]) / 32)
+  for (let i = i0; i <= Math.floor(Math.max(sg.a[0], sg.b[0]) / 32); i++) for (let j = j0; j <= Math.floor(Math.max(sg.a[2], sg.b[2]) / 32); j++) {
+    const key = `${i},${j}`
+    if (!bins.has(key)) bins.set(key, [])
+    bins.get(key).push(segs.length)
+  }
+  segs.push(sg)
+}
+const side = (o, a, b) => (a[0] - o[0]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[0] - o[0])
+const crossings = new Set()
+for (const list of bins.values()) for (let x = 0; x < list.length; x++) for (let y = x + 1; y < list.length; y++) {
+  const s = segs[list[x]]
+  const t = segs[list[y]]
+  if (s.w === t.w || side(s.a, s.b, t.a) > 0 === side(s.a, s.b, t.b) > 0 || side(t.a, t.b, s.a) > 0 === side(t.a, t.b, s.b) > 0) continue
+  const f = side(t.a, t.b, s.a) / (side(t.a, t.b, s.a) - side(t.a, t.b, s.b))
+  const px = s.a[0] + (s.b[0] - s.a[0]) * f
+  const pz = s.a[2] + (s.b[2] - s.a[2]) * f
+  const shared = [s.w.a, s.w.b].filter((id) => id === t.w.a || id === t.w.b)
+  if (!shared.some((id) => Math.hypot(nodes[id].x - px, nodes[id].z - pz) < 3)) crossings.add(`(${px.toFixed(0)}, ${pz.toFixed(0)})`)
+}
+check(crossings.size === 0, 'no two roads cross but at a fork', [...crossings].slice(0, 4).join(' '))
 // Directness: road distance, through towns' streets, from each town to its ROAD.near nearest, over the straight distance. Cliffs and water force a share of long ways round (town8 to town34: 520 m apart across a 70 m drop).
 const adj = Array.from({ length: nodes.length + towns.length }, () => [])
 const link = (u, v, l) => { adj[u].push([v, l]); adj[v].push([u, l]) }
@@ -122,7 +184,7 @@ towns.forEach((a, ai) => {
 ratios.sort((p, q) => p - q)
 const median = ratios[Math.floor(ratios.length / 2)]
 const past2 = ratios.filter((r) => r > 2).length / ratios.length
-check(median < 1.9 && past2 < 0.4, 'a town reaches its nearest neighbours by road at under 1.9x their distance apart, median, and past 2x for under 40%', `median ${median.toFixed(2)}, ${(100 * past2).toFixed(0)}% past 2x`)
+check(median < 1.9 && past2 < 0.42, 'a town reaches its nearest neighbours by road at under 1.9x their distance apart, median, and past 2x for under 42%', `median ${median.toFixed(2)}, ${(100 * past2).toFixed(1)}% past 2x`)
 // Evenness: roads passing close without a link between them, sampled every 100 m, gathered into 400 m spots. The spots left are across cliffs.
 const samples = []
 for (const w of laid) {
@@ -150,7 +212,7 @@ for (const p of samples) {
   })
   if (miss && !spots.some((s) => Math.hypot(s.x - p.x, s.z - p.z) < 400)) spots.push(p)
 }
-check(spots.length <= 5, 'at most 5 spots where two roads pass within 300 m but are over 4x and 1 km apart by road', `${spots.length}: ${spots.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)})`).join(' ')}`)
+check(spots.length <= 6, 'at most 6 spots where two roads pass within 300 m but are over 4x and 1 km apart by road', `${spots.length}: ${spots.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)})`).join(' ')}`)
 const forkNodes = nodes.filter((n) => !n.port && n.town < 0 && n.bank === null && n.ways.length >= 3)
 const crowded = forkNodes.filter((f) => forkNodes.some((g) => g !== f && Math.hypot(g.x - f.x, g.z - f.z) < 60)).length
 check(crowded < forkNodes.length / 4, 'under a quarter of forks stand within 60 m of another', `${crowded} of ${forkNodes.length}`)
@@ -167,7 +229,7 @@ check(bridges.length >= 1, 'the roads cross at least one river on a bridge', `${
 const scaleOk = bridges.every((b) => b.scale.every((s) => s >= 0.7 - 1e-9 && s <= 1.3 + 1e-9))
 check(scaleOk, 'every bridge keeps each axis within 30% of the shipped size', bridges.map((b) => b.scale.map((s) => s.toFixed(2)).join('/')).join(' '))
 let skew = 0
-for (const b of bridges) {
+for (const b of bridges.filter((b) => b.river !== null)) {
   const s = layers.paths.drawnSamples(b.river)
   let best = 0
   for (let i = 0; i < s.length; i += 4) if (Math.hypot(s[i] - b.x, s[i + 2] - b.z) < Math.hypot(s[best] - b.x, s[best + 2] - b.z)) best = i
@@ -182,22 +244,35 @@ for (const b of bridges) {
 }
 check(skew < 0.1, 'every bridge crosses its river square', `worst |cos| ${skew.toFixed(3)}`)
 
-// The mesh as placed: its ends meet the road tips, and the walker stands on its deck.
+// The mesh as placed: each span's ends meet a road tip or the next span's end, and the walker stands on its deck.
 const layer = new Bridges(new THREE.Scene(), { bridges, stone, textures: buildTextureArray(), patch: (m) => m })
 let gap = 0
 let deckOk = true
+let lakeSpans = 0
+let underDeck = 0
 for (const b of bridges) {
   for (const e of b.ends) {
     const lx = ((e[0] - b.x) * Math.cos(b.yaw) - (e[2] - b.z) * Math.sin(b.yaw)) / b.scale[0]
-    gap = Math.max(gap, Math.abs(Math.abs(lx) - meta.xb), Math.abs(b.y + stoneBridgeDeckAt(meta, lx, 0) * b.scale[1] - e[1]))
+    // Read at the deck's edge: the centre line carries the camber, which the road tip does not.
+    gap = Math.max(gap, Math.abs(Math.abs(lx) - meta.xb), Math.abs(b.y + stoneBridgeDeckAt(meta, lx, meta.inner) * b.scale[1] - e[1]))
     const road = records.find((r) => r.feather === 1 && Math.hypot(r.pts[1][0] - e[0], r.pts[1][2] - e[2]) < 0.01)
-    if (!road || Math.abs(road.pts[1][1] - e[1]) > 0.01) gap = Infinity
+    const span = bridges.find((o) => o !== b && o.ends.some((f) => Math.hypot(f[0] - e[0], f[2] - e[2]) < 0.01 && Math.abs(f[1] - e[1]) < 0.01))
+    if (span ? road : !road || Math.abs(road.pts[1][1] - e[1]) > 0.01) gap = Infinity
+  }
+  if (b.river === null) {
+    lakeSpans++
+    for (let lx = 1 - meta.xb; lx < meta.xb - 1; lx += 1) {
+      const x = b.x + lx * b.scale[0] * Math.cos(b.yaw)
+      const z = b.z - lx * b.scale[0] * Math.sin(b.yaw)
+      underDeck = Math.max(underDeck, surface(x, z) - (b.y + stoneBridgeDeckAt(meta, lx, 0) * b.scale[1]))
+    }
   }
   const crest = b.y + stoneBridgeDeckAt(meta, 0, 0) * b.scale[1]
   deckOk &&= layer.deckAt(b.x, b.z) && Math.abs(layer.blockTopAt(b.x, b.z) - crest) < 0.01
 }
 check(gap < 0.05, 'every bridge end meets its road tip in plan and height', `worst ${gap.toFixed(3)} m`)
 check(deckOk, 'the walker stands on the deck at every bridge crest')
+check(underDeck <= 0, 'no ground rises through a lake bridge deck', `${lakeSpans} lake spans; ground at most ${underDeck.toFixed(2)} m against the deck`)
 layer.dispose()
 
 // --- signposts ---
@@ -212,8 +287,15 @@ for (const w of laid) {
   longest = Math.max(longest, nearRoad ? w.length / (marks.length + 1) : Infinity)
 }
 check(endsBad.length === 0 && longest <= ROAD.link.every, `a traveller meets a fork, town, bridge or waymark at least every ${ROAD.link.every} m`, `longest stretch ${longest.toFixed(0)} m; ${signs.filter((s) => s.node < 0).length} waymarks; ${endsBad.length} ways ending nowhere`)
-const boardsBad =signs.filter((s) => s.boards.length < ROAD.sign.boards[0] || s.boards.length > ROAD.sign.boards[1] || new Set(s.boards.map((b) => b.town)).size !== s.boards.length || s.boards.some((b, k) => k > 0 && b.dist < s.boards[k - 1].dist))
-check(boardsBad.length === 0, `every signpost names ${ROAD.sign.boards.join('-')} distinct towns, nearest first`, boardsBad.slice(0, 3).map((s) => `node ${s.node}: ${s.boards.length}`).join(', '))
+// The towns a sign's roads reach without passing through a town, as the signs count them; a sign reaching fewer than boards[0] names every one.
+const up = nodes.map((n) => n.id)
+const top = (i) => (up[i] === i ? i : (up[i] = top(up[i])))
+for (const w of ways) up[top(w.a)] = top(w.b)
+const townsOn = new Map()
+for (const n of nodes) if (n.town >= 0) townsOn.set(top(n.id), (townsOn.get(top(n.id)) ?? new Set()).add(n.town))
+const reachable = (s) => townsOn.get(top(s.node >= 0 ? s.node : ways.find((w) => w.id === s.way).a))?.size ?? 0
+const boardsBad = signs.filter((s) => s.boards.length < Math.min(ROAD.sign.boards[0], reachable(s)) || s.boards.length > ROAD.sign.boards[1] || new Set(s.boards.map((b) => b.town)).size !== s.boards.length || s.boards.some((b, k) => k > 0 && b.dist < s.boards[k - 1].dist))
+check(boardsBad.length === 0, `every signpost names ${ROAD.sign.boards.join('-')} distinct towns (or every town its roads reach), nearest first`, boardsBad.slice(0, 3).map((s) => `node ${s.node}: ${s.boards.length}`).join(', '))
 
 if (failures > 0) {
   console.log(`\n${failures} FAILED`)

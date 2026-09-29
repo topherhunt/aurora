@@ -14,8 +14,9 @@ const SLIDERS = [
   ['belly', -0.1, 0.2, 0.005, 'bulge at mid height'],
   ['flare', 0, 0.5, 0.01, 'how far the trunk swells out at the ground'],
   ['lean', 0, 0.1, 0.002, 'the whole house leans, curving up the trunk'],
-  ['roots', 2, 9, 1, 'buttress roots; the first two flank the door'],
-  ['spires', 0, 4, 1, 'splintered shell spires rising through the roof'],
+  ['lobes', 2, 9, 1, 'buttress lobes at the trunk foot; the first two flank the door'],
+  ['lobeReach', 0, 1, 0.01, 'how far a lobe juts at the ground, as a fraction of the trunk radius'],
+  ['spires', 0, 4, 1, 'splintered shards of the stump through the roof; with crown tower, the first is a hollow tower'],
   ['spireH', 0, 0.3, 0.005, 'how far the spires rise above the roof, as a fraction of height'],
   ['windows', 0, 5, 1, 'round and arched windows on the trunk'],
   ['winSize', 0.15, 0.45, 0.005, 'window radius, metres'],
@@ -24,7 +25,9 @@ const SLIDERS = [
   ['sill', 0.1, 0.45, 0.01, 'door sill above the ground; the steps make it up'],
   ['overhang', 0, 0.8, 0.01, 'eave overhang past the trunk'],
   ['droop', 0, 0.5, 0.01, 'eave drop below the trunk top'],
-  ['concave', 0, 0.9, 0.01, "witch's-hat sag of a cone roof"],
+  ['swell', 0.8, 2.8, 0.01, 'roof profile: near 1 a cone, past 2 a dome'],
+  ['lump', 0, 0.35, 0.005, 'lumpiness of the roof mound'],
+  ['tilt', 0, 0.4, 0.005, 'how lopsided the eave line runs'],
   ['bend', 0, 0.15, 0.002, 'roof tip bent over, as a fraction of height'],
   ['decor', 0, 1, 0.01, 'how much clutter: fungi, mushrooms, woodpiles, garlands, vines, lanterns'],
   ['jitter', 0, 2.5, 0.05, 'the smooth warp over everything. 0 is the drafted house'],
@@ -66,29 +69,9 @@ const textureArray = buildTextureArray()
 const material = createPropMaterial(textureArray, { vertexColors: true })
 loadImageLayers(textureArray).then(() => { window.__shot = true }).catch((e) => console.error('leafkin house bench: image layers', e))
 
-/** Honeycomb leading over amber, the look of the interior's windows from outside. */
-function honeycomb() {
-  const c = document.createElement('canvas')
-  c.width = c.height = 128
-  const x = c.getContext('2d')
-  x.fillStyle = '#ffd08a'
-  x.fillRect(0, 0, 128, 128)
-  x.strokeStyle = '#3a2a18'
-  x.lineWidth = 5
-  const s = 128 / 6
-  for (let row = -1; row < 8; row++) for (let col = -1; col < 5; col++) {
-    const cx = col * s * 1.5 * 1.155 + (row % 2 ? s * 0.866 : 0), cy = row * s
-    x.beginPath()
-    for (let k = 0; k <= 6; k++) { const a = (k / 6) * Math.PI * 2; x.lineTo(cx + Math.cos(a) * s * 0.58, cy + Math.sin(a) * s * 0.58) }
-    x.stroke()
-  }
-  const t = new THREE.CanvasTexture(c)
-  t.colorSpace = THREE.SRGBColorSpace
-  t.wrapS = t.wrapT = THREE.RepeatWrapping
-  t.repeat.set(1.5, 1.5)
-  return t
-}
-const glowMat = new THREE.MeshBasicMaterial({ map: honeycomb(), color: 0x6a5a44 })
+const glowMap = new THREE.TextureLoader().load('/interiors/window.webp')
+glowMap.colorSpace = THREE.SRGBColorSpace
+const glowMat = new THREE.MeshBasicMaterial({ map: glowMap, color: 0x6a5a44 })
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ map: grassTexture(renderer) }))
 ground.material.map.repeat.set(60, 60)
@@ -196,7 +179,7 @@ function renderStats() {
   } else {
     const b = current.built
     rows = [
-      ['roof', `${spec.roof}, ${spec.skin}`],
+      ['roof', `${spec.skin}, ${spec.crown}`],
       ['door', `${spec.doorShape} ${b.door.w.toFixed(2)} x ${b.door.h.toFixed(2)} m`],
       ['chimney', spec.chimney],
       ['awning', spec.awning],
@@ -206,6 +189,7 @@ function renderStats() {
       ['reach', `${b.reach.toFixed(2)} m`],
       ['top', `${b.top.toFixed(2)} m`],
       ['triangles', b.stats.triangles.toLocaleString()],
+      ['roof tris', b.stats.roofTriangles.toLocaleString()],
       ['glass tris', b.stats.glowTriangles.toLocaleString()],
       ['vertices', b.stats.vertices.toLocaleString()],
       ['build', `${b.stats.ms.toFixed(1)} ms`],

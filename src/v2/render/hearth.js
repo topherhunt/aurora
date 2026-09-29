@@ -15,8 +15,8 @@ import { SEAT_M } from './villagers.js'
 // fashion, and one flame (fire.js, the CAMPFIRE knobs) burning in the middle
 // day and night; a stool is a nonagon of pine bark with its corners jittered
 // so no two are the same block. One merged mesh in the prop layout, drawn
-// whole inside HEARTH.lod[0] metres, decimated to a third past it and a spun
-// card of one photograph past HEARTH.lod[1], and nothing, flame included,
+// whole inside HEARTH.lod[1] metres (hearthKit: no decimated middle rung), a
+// spun card of one photograph past it, and nothing, flame included,
 // past HEARTH.hide. The fire ring and every stool are stone to the walker, and
 // the wood keeps off the whole place.
 // ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ export class Hearth {
     this.y = field.heightAt(at.x, at.z)
     // Built about the origin on the real ground under it, so the mesh's own bounds hold it and the card spins about the fire.
     this.shared = kit !== null
-    this.kit = kit || hearthKit(bank, seed, (x, z) => (field.heightAt(this.x + x * scale, this.z + z * scale) - this.y) / scale, textures, patch)
+    this.kit = kit || hearthKit(bank, seed, (x, z) => (field.heightAt(this.x + x * scale, this.z + z * scale) - this.y) / scale, textures, patch, { decimate: false })
     this.ring = this.kit.ring
     this.stools = this.kit.stools
     this.extent = this.kit.extent

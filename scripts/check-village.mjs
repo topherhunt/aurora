@@ -10,7 +10,7 @@
 // that the lake is no circle and every river winds down and ends under it,
 // that the loop, the trunk and every branch hold their grade and never run
 // straight, that the ring passes every ring house's door and a branch ends at
-// every outlying one's, that no cobble shows past a hut's walls, that each hut
+// every outlying one's, the clearing within a metre of level, that no cobble shows past a hut's walls, that each hut
 // stands level on dry ground with the wood kept off the clearing and nothing
 // else, that what grows on and against a house stands on its own offer -- the
 // crown at its point, the ferns on the roof's own mesh, the rest touching the
@@ -59,7 +59,7 @@ import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
 import {
-  ARRIVE_M, CLEARING, DECOR, DROP, EXIT, FLOOR, GARDEN, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIM_WOOD, RIVER, ROAD_GRADE, ROAD_WIDTH, STOOLS, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
+  ARRIVE_M, CLEARING, CLEARING_RELIEF_M, DECOR, DROP, EXIT, FLOOR, GARDEN, GREAT_HUT, HER_SCALE, HUTS, JUNCTION_M, LAKE, LAMPS, OUTLYING, PAST, RIM_WOOD, RIVER, ROAD_GRADE, ROAD_WIDTH, STOOLS, STRAIGHT_M, TEXELS, TILE_TEXELS, WOOD,
   buildVillage, closestNodes, gardenSpots, longestStraight, roadsCross, rollVillage, roofFerns, sharpestTurn, sinuosity, weedGardens,
 } from '../src/v2/rooms/village.js'
 
@@ -330,7 +330,7 @@ const ringCount = room.spec.huts.length, outCount = room.spec.outlying.length
 const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d${5 + i}`))
 {
   check(trunk && loop && ring && spur && branches.every(Boolean) && roads.length === 4 + outCount + pads.length, 'a trunk, a loop, a ring, a spur, a branch an outlying house and the pads', `${roads.length} roads, ${outCount} branches`)
-  check(pads.length === HUTS.pads.length * room.props.length + 1 && pads.some((r) => r.id === 'pad-exit'), 'the pads under every hut and before the exit, and no other', `${pads.length} pads, ${room.props.length} huts`)
+  check(pads.length === HUTS.pads.length * room.props.length + 3 && ['pad-exit', 'pad-clearing-0', 'pad-clearing-1'].every((id) => pads.some((r) => r.id === id)), 'the pads under every hut, before the exit and in the clearing, and no other', `${pads.length} pads, ${room.props.length} huts`)
   for (const r of [trunk, loop, ...branches]) {
     const s = new Spline(r.pts).flatten(1)
     let worst = 0, wetSamples = 0, off = 0, low = Infinity
@@ -388,6 +388,13 @@ const branches = room.spec.outlying.map((_, i) => roads.find((r) => r.id === `d$
   const ringRound = ring.pts.every((p) => Math.abs(Math.hypot(p[0] - c.x, p[2] - c.z) - c.r) < 0.01)
   check(ringLevel && ringRound && ring.pts[0][1] >= lake.y + CLEARING.dry, 'the ring is level round the clearing, over the lake', `${ring.pts[0][1].toFixed(1)} m, ${(ring.pts[0][1] - lake.y).toFixed(1)} over the water`)
   check(Math.abs(c.r - CLEARING.r) < 1e-9, 'the clearing is ten metres across', `r ${c.r}`)
+  let low = Infinity, high = -Infinity
+  for (let x = -c.r; x <= c.r; x += 0.25) for (let z = -c.r; z <= c.r; z += 0.25) {
+    if (Math.hypot(x, z) > c.r) continue
+    const h = heightAt(c.x + x, c.z + z)
+    low = Math.min(low, h); high = Math.max(high, h)
+  }
+  check(high - low <= CLEARING_RELIEF_M, `the clearing stands within ${CLEARING_RELIEF_M} m of level, ring included`, `${(high - low).toFixed(2)} m, ${(low - ring.pts[0][1]).toFixed(2)} to +${(high - ring.pts[0][1]).toFixed(2)} off the ring`)
   // The houses stand CLEARING.wall clear of the stone: in a bowl this size the clearing itself stands where the wall lets it.
   const nearWall = roomProps.props.slice(0, ringCount).filter((h) => Math.hypot(h.x, h.z) + h.r + CLEARING.wall > rimAt(h.x, h.z)).length
   check(nearWall === 0, 'every ring house stands clear of the wall', `${nearWall} against it`)
