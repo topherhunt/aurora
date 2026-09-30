@@ -28,8 +28,10 @@ import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip } from './log-ship.js'
 import { Spikes } from './spikes.js'
-import { Trees, DENSITY as TREE_DENSITY } from './render/trees.js'
-import { Ferns } from './render/ferns.js'
+import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
+import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
+import { Wildfire, TORCH_CAP } from './render/wildfire.js'
+import { flicker as flameFlicker } from './render/fire.js'
 import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -37,6 +39,7 @@ import { createPlainTerrainMaterial } from '../terrain/terrain-material.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
+import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
@@ -86,6 +89,7 @@ import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
 import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, pressSafety, roomKey } from './flaregun.js'
 import { Flares, fromWire, toWire } from './render/flares.js'
+import { Flints, KIND as FLINT, SPARK, SPARK_CAP, SPARK_M, SPARK_S, STRIKE, clickBuffer, sparkColor, strikeCatches } from './flint.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
 import { Sky } from '../sky.js'
@@ -96,7 +100,7 @@ import { Stars } from '../stars.js'
 import { SkyAurora } from './render/aurora.js'
 import { Water, WATER, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK, WEATHER, daynessOfElev } from '../clock.js'
-import { WorldLighting } from '../lighting.js'
+import { WorldLighting, TORCHES } from '../lighting.js'
 import { SkyProbe, PROBE } from '../sky-probe.js'
 import { SKY_GLSL } from '../sky-glsl.js'
 import { Wreaths } from './render/wreaths.js'
@@ -106,6 +110,7 @@ import { Input } from '../input.js'
 import { Netplay } from '../net.js'
 import { popLog } from './render/net-ease.js'
 import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
+import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
@@ -790,6 +795,8 @@ function saveGame() {
     door: cameInBy,
     // Every flare hers or a peer's, in every room, as flares.js toWire has them.
     flares: flares.save(),
+    // A save with this has had its flint & steel given; one without is given one on load.
+    flint: true,
     // Her player id, and every villager's trust she knows of.
     trust: trust.save(),
   }
@@ -817,6 +824,7 @@ function applySave(doc) {
   // A save from before the flare gun has no `flares`, and no gun: she is given one.
   if (doc.flares === undefined) giveFlareGun()
   else flares.load(doc.flares)
+  if (doc.flint === undefined) giveFlint()
   // A save from before trust has none: she stays the player she booted as.
   if (doc.trust !== undefined) trust.load(doc.trust)
 }
@@ -831,6 +839,19 @@ function giveFlareGun() {
   const free = backpack.indexOf(null)
   if (free < 0) { console.warn('[v2] no free backpack slot for the flare gun'); return }
   backpack[free] = flareGuns.slot()
+  paintBackpack()
+}
+
+/** A new flint & steel into the first free backpack slot, unless she has one in the backpack or a hand already. */
+function giveFlint() {
+  if (backpack.some((s) => s !== null && s.kind === FLINT)) return
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec !== null && rec.kind === FLINT) return
+  }
+  const free = backpack.indexOf(null)
+  if (free < 0) { console.warn('[v2] no free backpack slot for the flint & steel'); return }
+  backpack[free] = flints.slot()
   paintBackpack()
 }
 
@@ -890,13 +911,14 @@ function newGame() {
   restoreHour(CLOCK.startHour)
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
-    if (rec !== null && rec.kind === FLAREGUN) hands.put(key)
+    if (rec !== null && (rec.kind === FLAREGUN || rec.kind === FLINT)) hands.put(key)
     else hands.drop(key, handsHead())
   }
   backpack.fill(null)
   flares.clear()
   trust.clear()
   giveFlareGun()
+  giveFlint()
   paintBackpack()
   player.teleportTo(SPAWN.x, SPAWN.z)
   rig.rotation.set(0, 0, 0)
@@ -1209,6 +1231,7 @@ function applyQuestToggle(key) {
       litter.batch.visible = enabled
       mushrooms.batch.visible = enabled
       deadwood.batch.visible = enabled
+      sticks.batch.visible = enabled
       bones.batch.visible = enabled
       break
     // Back on, every animal layer is put down fresh at her feet: the ground
@@ -1738,6 +1761,12 @@ function playPick() {
   if (ambience) sound.play('uiPop', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
+/** Whether the hand holds the flint & steel. */
+function holdsFlint(key) {
+  const rec = hands.holding(key)
+  return rec !== null && rec.kind === FLINT
+}
+
 /** Whether the hand holds a flare gun. */
 function holdsGun(key) {
   const rec = hands.holding(key)
@@ -1783,6 +1812,94 @@ function fireFlare(key, aim = null) {
   netplay.sendFlare(toWire(f))
   if (ambience) sound.play('flaregun', { bus: 'near', rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
   questPulse(key, 0.8, 80)
+}
+
+const flintFrame = new THREE.Matrix4()
+const flintAt = new THREE.Vector3()
+const treeBuf = new Float32Array(TRUNK_STRIDE * 16)
+const fernBuf = new Float32Array(FERN_PERCH_STRIDE * 16)
+const fireNow = () => performance.now() / 1000
+// Metres from a spark to a held stick's tip that lights it as a torch.
+const TORCH_LIGHT_M = 0.15
+
+/** The trees, ferns and ground sticks within r metres of a point, as wildfire.js's flammables. */
+function flammablesNear(x, y, z, r) {
+  const out = []
+  const box = [x - r, z - r, x + r, z + r]
+  for (let i = 0, n = trees.trunksInto(...box, treeBuf); i < n; i++) {
+    const o = i * TRUNK_STRIDE
+    const tx = treeBuf[o], tz = treeBuf[o + 2]
+    out.push({ key: `tree:${tx.toFixed(2)},${tz.toFixed(2)}`, kind: 'tree', x: tx, y: treeBuf[o + 1], z: tz, radius: treeBuf[o + 3], height: trees.unitHeight[treeBuf[o + 6]] * treeBuf[o + 4] * treeBuf[o + 7], char: () => trees.char(tx, tz) })
+  }
+  for (let i = 0, n = ferns.perchesInto(...box, fernBuf); i < n; i++) {
+    const o = i * FERN_PERCH_STRIDE
+    const id = fernBuf[o + 4]
+    out.push({ key: `fern:${fernBuf[o].toFixed(2)},${fernBuf[o + 2].toFixed(2)}`, kind: 'fern', x: fernBuf[o], y: fernBuf[o + 1], z: fernBuf[o + 2], radius: fernBuf[o + 3], height: fernBuf[o + 3] * 0.8, char: () => ferns.char(id) })
+  }
+  return out.concat(sticks.flammablesNear(x, z, r))
+}
+
+const holdsStick = (key) => hands.holding(key)?.kind === STICK
+const flintInPack = () => backpack.some((s) => s !== null && s.kind === FLINT)
+
+/** A held, unlit stick whose tip is within TORCH_LIGHT_M of (x, y, z) becomes a torch. */
+function lightTorchNear(x, y, z) {
+  for (const key of HAND_KEYS) {
+    const rec = hands.holding(key)
+    if (rec === null || rec.kind !== STICK || rec.lit) continue
+    hands.heldFrame(key, flintFrame)
+    flintAt.copy(STICK_TIP).applyMatrix4(flintFrame)
+    if (Math.hypot(flintAt.x - x, flintAt.y - y, flintAt.z - z) > TORCH_LIGHT_M) continue
+    rec.lit = true
+    hands.rehold(key)
+  }
+}
+
+/**
+ * The trigger on a hand holding the flint & steel, or (`fromPack`) a click with a stick in the hand and the flint in the backpack, the one-handed desktop's way to light a torch: it kicks and clicks either way; unless she is under water, or the rain puts it out, it strikes a spark at the flint's tip (the stick's, from the pack) that lights a flammable or a held stick by it.
+ */
+function strikeFlint(key, fromPack = false) {
+  hands.kick(key)
+  if (ambience) sound.play('flintClick', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7 })
+  questPulse(key, 0.4, 30)
+  hands.heldFrame(key, flintFrame)
+  flintAt.copy(fromPack ? STICK_TIP : STRIKE).applyMatrix4(flintFrame)
+  if (waterSurfaces.isSubmerged(flintAt.x, flintAt.z, flintAt.y)) return
+  const raining = precip.intensity > 0.05 && flintAt.y < height.snowLineAt(flintAt.x, flintAt.z)
+  if (!strikeCatches(raining, Math.random())) return
+  sparks.add({
+    id: Math.random().toString(36).slice(2, 12), room: sparks.room,
+    ox: flintAt.x, oy: flintAt.y, oz: flintAt.z, tx: flintAt.x, ty: flintAt.y, tz: flintAt.z,
+    color: sparkColor(Math.random()), seed: Math.random(),
+  }, 0)
+  wildfire.spark(flintAt.x, flintAt.y, flintAt.z, fireNow())
+  lightTorchNear(flintAt.x, flintAt.y, flintAt.z)
+}
+
+const litTipList = []
+const torchSorted = []
+/** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches fed to the lighting. */
+function updateFire(dt) {
+  const now = fireNow()
+  for (const a of netplay.flames) {
+    const left = a[5] - a[6] / 1000
+    if (a[1] === flares.room && left > 0.5) wildfire.remote(a[2], a[3], a[4], left, now)
+  }
+  netplay.flames.length = 0
+  hands.litTips(STICK_TIP, litTipList)
+  for (const t of litTipList) {
+    if (t.hand === null || !waterSurfaces.isSubmerged(t.x, t.z, t.y)) continue
+    hands.holding(t.hand).lit = false
+    hands.rehold(t.hand)
+  }
+  hands.litTips(STICK_TIP, litTipList)
+  const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1 }))
+  wildfire.update(dt, now, tips.slice(0, TORCH_CAP))
+  player.headPosition(headTmp)
+  torchSorted.length = 0
+  for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  torchSorted.sort((a, b) => a.d - b.d)
+  lighting.setTorches(torchSorted.slice(0, TORCHES))
 }
 
 /** A/X or Q on the gun in the hand: to safe, or armed with the next colour (flaregun.js pressSafety). */
@@ -2024,6 +2141,7 @@ function buildQuestPanel() {
       const finger = hands.pointOf(key, new THREE.Vector3())
       if (mountStrider((layer) => layer.mountableAt(finger, handsHead()))) return
       if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
+      else if (holdsFlint(key) && !hands.wouldStow(key, handsHead())) strikeFlint(key)
       else if (hands.press(key, handsHead()) === 'pick') playPick()
     })
   }
@@ -2070,6 +2188,8 @@ function buildQuestPanel() {
     if (bed) { lieDown(bed); return }
     if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
+    else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
+    else if (holdsStick('desk') && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -2491,7 +2611,24 @@ function updateQuestStats() {
       ['EYE ', '#7f95b4'], [`${(eyeY - player.originPosition().y).toFixed(2)}`.padEnd(6), '#cfe3ff'],
       ['WATER ', '#7f95b4'], [(waterY === null ? '-' : (eyeY - waterY).toFixed(2)).padEnd(6), submerged ? '#7fd7ff' : '#cfe3ff'],
     ],
+    // Her body as a peer draws it, off the body double (avatar-rig.js): `wear` the eye height it measured of her, `own` the
+    // villager's standing eyes at its own size, `fit` the scale between them (amber when clamped), then what the pose still
+    // takes up -- the neck's stretch, the hips' crouch and the waist's lean. A standing wearer should read about 0 on all three.
+    bodyRow(peerAvatars.double?.body),
   ])
+}
+
+function bodyRow(body) {
+  if (!body) return [['body ', '#7f95b4'], ['show the body double'.padEnd(20), '#5c6b7d']]
+  const clamped = body.fitTo() === FIT_MIN || body.fitTo() === FIT_MAX
+  return [
+    ['body wear ', '#7f95b4'], [(Number.isNaN(body.wearerEye) ? '-' : body.wearerEye.toFixed(2)).padEnd(5), '#cfe3ff'],
+    ['own ', '#7f95b4'], [(EYE_LINE * body.height * body.kOwn).toFixed(2).padEnd(5), '#cfe3ff'],
+    ['fit ', '#7f95b4'], [body.fit.toFixed(2).padEnd(5), clamped ? '#ffd27a' : '#8fd48f'],
+    ['neck ', '#7f95b4'], [`${body.stretch >= 0 ? '+' : ''}${body.stretch.toFixed(2)}`.padEnd(6), '#cfe3ff'],
+    ['crouch ', '#7f95b4'], [body.crouch.toFixed(2).padEnd(5), body.crouch > 0.02 ? '#ffd27a' : '#cfe3ff'],
+    ['lean ', '#7f95b4'], [`${Math.round((body.lean * 180) / Math.PI)}deg`.padEnd(6), body.lean > 0.02 ? '#ffd27a' : '#cfe3ff'],
+  ]
 }
 
 const input = new Input(renderer)
@@ -2605,6 +2742,8 @@ let rocks = null
 let litter = null
 let mushrooms = null
 let deadwood = null
+let sticks = null
+let wildfire = null
 let bones = null
 let carrots = null
 let fish = null
@@ -2637,6 +2776,8 @@ const DESK_CLICK_M = 2
 // The flare gun (flaregun.js): its source, registered with every room's hands; every room's flares, drawn in the room she is in (render/flares.js), built at boot and never torn down; and the peers' shots heard within FLARE_HEARD_M, every shot's sound slowed to FLARE_RATE, then rolled like any other.
 const flareGuns = new FlareGuns()
 let flares = null
+let sparks = null
+const flints = new Flints()
 const FLARE_HEARD_M = 1000
 const FLARE_RATE = 0.8
 let roosts = null
@@ -2999,7 +3140,7 @@ async function bootWorld() {
   // until the first gesture; see unlockSound.
   sound = new SoundEngine()
   soundReady = sound.load(SOUNDS).then(
-    () => { sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
+    () => { sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); sound.buffers.set('flintClick', clickBuffer(sound.ctx)); console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },
   )
 
@@ -3007,6 +3148,7 @@ async function bootWorld() {
   // placed -- so it is read HERE and not applied after the fact, or the forest
   // would be planted around the room's spawn and she would be standing outside it.
   flares = new Flares(scene)
+  sparks = new Flares(scene, { look: SPARK, cap: SPARK_CAP, fadeS: SPARK_S, size: SPARK_M })
   let saved = readSave()
   let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
@@ -3081,7 +3223,7 @@ async function bootWorld() {
     if (saved.house) await intoSavedHouse(saved.house)
     console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}${saved.house ? `, house ${saved.house.k}` : ''}`)
   }
-  else giveFlareGun()
+  else { giveFlareGun(); giveFlint() }
   logSceneCensus()
 
   ready = true
@@ -3182,11 +3324,11 @@ function disposeRoom() {
   closeHouse()
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, waterSurfaces, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, waterSurfaces, terrainWire, terrain,
   ]) gone(layer)
   lighting.clearLamps()
   leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
@@ -3391,6 +3533,7 @@ async function buildRoom(room, at) {
   const build = ++roomBuild
   currentRoom = room
   flares.setRoom(roomKey(room.id, room.village ? cameInBy : null))
+  sparks.setRoom(flares.room)
   bootSteps.length = 0
   // ONE SEED FOR EVERY ROOM: the terrain worker seeds its own V2Height from the
   // shared constant (terrain/worker.js), so a room seeded otherwise would draw
@@ -3587,6 +3730,14 @@ async function buildRoom(room, at) {
   // material switch, not a program switch.
   for (const m of deadwood.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   deadwood.place(spawn.x, spawn.z)
+  // Loose sticks, every elevation; a village lays none (render/sticks.js).
+  sticks = new Sticks(scene, height, waterSurfaces, (await loadInteriorTextures()).grain, { seed, none: !!room.village })
+  for (const m of sticks.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-sticks' })
+  sticks.place(spawn.x, spawn.z)
+  wildfire = new Wildfire(scene, flammablesNear)
+  window.v2sticks = sticks
+  window.v2wildfire = wildfire
+  wildfire.onLight = (f, life) => netplay.sendFlame([Math.random().toString(36).slice(2, 12), flares.room, f.x, f.y, f.z, life])
   // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
   deadwood.bakeCards(renderer)
   const ds = deadwood.stats
@@ -4012,7 +4163,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key) })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -4042,6 +4193,7 @@ async function buildRoom(room, at) {
     console.log(`[v2] snowmen ${snowmen.stats.alive} on ${snowmen.stats.tiles} tiles`)
   })
   creatureNet.add(snowmen, ['sn'])
+  if (wildStriders) creatureNet.add(wildStriders, ['ws'])
   window.v2snowmen = snowmen
 
   // Her hands (hands.js): what a controller takes from the beds, the ground
@@ -4056,6 +4208,8 @@ async function buildRoom(room, at) {
     stow: (rec) => {
       const slot = backpack.indexOf(null)
       if (slot < 0) return false
+      // A stowed torch goes out.
+      rec.lit = false
       backpack[slot] = hands.pack(rec)
       paintBackpack()
       playStow()
@@ -4078,6 +4232,8 @@ async function buildRoom(room, at) {
   hands.addSource(bones, bones.kinds)
   hands.addSource(rocks, 'rock')
   hands.addSource(flareGuns, FLAREGUN)
+  hands.addSource(flints, FLINT)
+  hands.addSource(sticks, STICK)
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   deskHand = new THREE.Group()
@@ -4174,6 +4330,7 @@ async function buildRoom(room, at) {
       fiddlers: room.village ? roomProps.fiddlers() : [],
       // The crackle of the clearing's hearth or of every town's, and a soft one from every torch while they are lit.
       campfires: hearth ? [hearth.fire] : townsfolk ? townsfolk.fires : [],
+      blaze: () => (wildfire ? wildfire.list.concat(litTipList) : litTipList),
       torches: lamps ? { at: lamps.lamps.map((l) => ({ x: l.x, y: l.flameY, z: l.z })), lit: () => lamps.lit } : null,
     })
     window.v2ambience = ambience
@@ -4214,6 +4371,7 @@ async function buildRoom(room, at) {
   water.setCubeReflections(questToggles.reflections)
   aurora.mesh.visible = questToggles.aurora
   litter.batch.visible = questToggles.litter
+  sticks.batch.visible = questToggles.litter
   mushrooms.batch.visible = questToggles.litter
   deadwood.batch.visible = questToggles.litter
   bones.batch.visible = questToggles.litter
@@ -4400,6 +4558,7 @@ function replacePropsOnMovedGround(cx, cz) {
   // First: the trees keep off it, and the plans it answers them from were
   // tested on the old ground.
   if (deadwood) deadwood.place(cx, cz)
+  if (sticks) sticks.reground()
   if (trees) {
     trees.syncSnowLine(layers)
     trees.place(cx, cz)
@@ -4686,6 +4845,7 @@ const CODE_ACTIONS = {
   ShiftRight: 'flyDown',
   KeyT: 'teleport',
   KeyG: 'grab',
+  KeyE: 'drop',
   KeyV: 'stow',
   KeyQ: 'flareColor',
   KeyN: 'timeSkip',
@@ -4727,8 +4887,9 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and let go of what it holds, the flare gun too; the trigger in the headset, and a grip lets go' },
-      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, and let go of what the hand holds, or fire the flare gun it holds; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
+      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'e', what: 'let go of what the hand holds, where the hand is (a click no longer does)' },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
@@ -4770,7 +4931,8 @@ const HOTKEYS = [
 ]
 
 const actionsFor = (e) => {
-  const a = KEY_ACTIONS[e.key.length === 1 ? e.key.toLowerCase() : e.key]
+  // Physical E drops; the character 'e' (Dvorak's D position) still strafes, so it is looked up by code only there.
+  const a = e.code === 'KeyE' ? undefined : KEY_ACTIONS[e.key.length === 1 ? e.key.toLowerCase() : e.key]
   const b = CODE_ACTIONS[e.code]
   if (a && b && a !== b) return [a, b]
   return a ? [a] : b ? [b] : []
@@ -5018,6 +5180,7 @@ addEventListener('keydown', (e) => {
 
   if (fresh.includes('timeSkip')) skipTime()
   if (fresh.includes('grab') && hands && hands.press('desk', handsHead()) === 'pick') playPick()
+  if (fresh.includes('drop') && hands) hands.drop('desk', handsHead())
   if (fresh.includes('stow') && hands) hands.stowPress('desk')
   if (fresh.includes('flareColor') && hands && holdsGun('desk')) cycleFlareColor('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
@@ -5574,8 +5737,7 @@ function peerHeadsNow() {
 //   either stick  click   recentre
 //   B / Y             recall the toggle panel to where you are standing
 //   A / X             the next flare colour, on a hand holding the flare gun
-//   grips             drop what that hand holds, anywhere -- the trigger fires a
-//                     held flare gun, so this is how one is let go
+//   grips             drop what that hand holds, anywhere -- the only way to let go
 //
 // A grip is the button a hand presses by accident just holding a controller, so
 // it carries only a drop, which costs a stoop to undo; nothing that moves the
@@ -5736,6 +5898,8 @@ const TELEPORT_COOLDOWN_S = 1
 // The least of TELEPORT_RANGE the reach ever is, so an instant re-flick has
 // some arc to aim rather than a zero-length one.
 const TELEPORT_MIN_REACH = 0.1
+// Riding, the reach grows over this from the later of the last hop and the stick's push, so a flick hops short and a held stick shows the ring going out.
+const RIDE_GROW_S = 0.8
 // Samples along the flight. 0.04 s at 6.5 m/s is a 26 cm segment, and the ground
 // crossing is bisected between samples, so the landing is exact at that
 // spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
@@ -5753,6 +5917,8 @@ const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 const TELEPORT_RING_LIFT = 0.06
 const TELEPORT_UP = new THREE.Vector3(0, 1, 0)
 let questTeleportArmed = false
+// A side flick on a strider snaps it round once, then waits for the stick to come back (LOCOMOTION.snapExit).
+let rideSnapArmed = true
 let desktopTeleportArmed = false
 // performance.now() ms of the last landing; the reach grows from it. Set a
 // whole cooldown in the past so the first lob of a session is full length.
@@ -5760,7 +5926,7 @@ let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
 // performance.now() ms the stick was last pushed to arm; a swim's reach grows from the later of the two.
 let teleportArmedAt = 0
 // `swim`: y is where her EYE goes (Player.swimTo), not her feet.
-const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false }
+const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false, reach: 0 }
 // The swim aim: metres between beads, and the waver across the line -- its
 // height, its wavelength along the line, and how fast it runs down it.
 const SWIM_BEAD_M = 0.2
@@ -5819,9 +5985,9 @@ function hideTeleport() {
  * How much of TELEPORT_RANGE the cooldown allows right now, growing with the
  * time since performance.now() ms `since`: TELEPORT_MIN_REACH to 1.
  */
-function teleportAllowance(since) {
+function teleportAllowance(since, over = TELEPORT_COOLDOWN_S) {
   const waited = (performance.now() - since) / 1000
-  return Math.min(1, Math.max(TELEPORT_MIN_REACH, waited / TELEPORT_COOLDOWN_S))
+  return Math.min(1, Math.max(TELEPORT_MIN_REACH, waited / over))
 }
 
 /** The stick has just been pushed past QUEST_TELEPORT_ARM, or T pressed: the swim's reach restarts from here. */
@@ -5832,6 +5998,12 @@ function armTeleport() {
 /** Land the aimed teleport, and let the ambience count it as the walk it stands in for. */
 function fireTeleport() {
   if (!teleportTarget.valid) return
+  if (wildStriders && wildStriders.riding) {
+    wildStriders.hop(teleportTarget.x, teleportTarget.y, teleportTarget.z, teleportTarget.reach, player)
+    portalBlink = true
+    teleportFiredAt = performance.now()
+    return
+  }
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
   if (teleportTarget.swim) player.swimTo(teleportTarget.x, teleportTarget.y, teleportTarget.z)
   else player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
@@ -5890,12 +6062,18 @@ function aimTeleport(origin, dir) {
     return
   }
   const { ring, arc } = ensureTeleportGfx()
-  const feet = player.originPosition()
+  // Riding, the strider hops: the lob is her walking one scaled by its reach (the throw's speed and every sample's time by its root, under the same gravity), grown from the stick's push, from the strider's feet, past its own body.
+  const mount = wildStriders && wildStriders.riding ? wildStriders.ridden : null
+  const feet = mount ? mount.pose : player.originPosition()
   const k = herScale()
-  const reach = TELEPORT_RANGE * k * teleportAllowance(teleportFiredAt)
-  const vx = dir.x * TELEPORT_LOB * k
-  const vy = dir.y * TELEPORT_LOB * k
-  const vz = dir.z * TELEPORT_LOB * k
+  const scale = mount ? wildStriders.hopReach : 1
+  const full = TELEPORT_RANGE * k * scale
+  const reach = full * (mount ? teleportAllowance(Math.max(teleportFiredAt, teleportArmedAt), RIDE_GROW_S) : teleportAllowance(teleportFiredAt))
+  const lob = Math.sqrt(scale)
+  const vx = dir.x * TELEPORT_LOB * k * lob
+  const vy = dir.y * TELEPORT_LOB * k * lob
+  const vz = dir.z * TELEPORT_LOB * k * lob
+  const stepS = TELEPORT_STEP_S * lob
   const gravity = TELEPORT_GRAVITY * k
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
   // Stone is asked as spans on the line, not as its topmost surface, so the
@@ -5905,7 +6083,7 @@ function aimTeleport(origin, dir) {
     const level = waterLevelAt(p.x, p.z)
     return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) &&
       walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
-      !walk.obstacleAt(p.x, p.z, teleportObstacle) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
+      !walk.obstacleAt(p.x, p.z, teleportObstacle, mount) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   let count = 0
   let hit = null
@@ -5913,7 +6091,7 @@ function aimTeleport(origin, dir) {
   let stopped = false
   let prevT = 0
   for (let i = 0; i < TELEPORT_SAMPLES; i++) {
-    const t = i * TELEPORT_STEP_S
+    const t = i * stepS
     const p = at(t)
     if (i > 0 && !clear(t)) {
       let lo = prevT
@@ -5925,7 +6103,7 @@ function aimTeleport(origin, dir) {
       }
       const end = at(hi)
       stopped = true
-      if (walk.obstacleAt(end.x, end.z, teleportObstacle)) {
+      if (walk.obstacleAt(end.x, end.z, teleportObstacle, mount)) {
         // Bark: the last bead sits on the trunk, nothing to land on.
         p.x = end.x
         p.y = end.y
@@ -5959,10 +6137,11 @@ function aimTeleport(origin, dir) {
   // onto. Reach is not asked here: the flight already stopped at it. Every
   // height is asked from a foot height -- hers at the start, the landing's at
   // the end -- so stone over either is headroom, not a wall.
-  const standable = hit !== null &&
+  const standable = hit !== null && (mount ? !onWater && wildStriders.hopOpen(hit.x, hit.z) :
     (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
-    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y)
+    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y))
   teleportTarget.valid = standable
+  teleportTarget.reach = full
   teleportTarget.swim = false
   const colour = standable ? TELEPORT_OK : TELEPORT_NO
   arc.material.color.setHex(colour)
@@ -6163,12 +6342,30 @@ function readInput() {
         else if (st[hand].buttons.PRIMARY?.justPressed && hands.holding(hand) === null && wildStriders && wildStriders.riding) wildStriders.dismount(player)
       }
     }
-    // On a strider the harder-pushed stick nudges it whole: forward and back, and sideways to steer.
+    // On a strider a flick to the side snaps it and her round by LOCOMOTION.snapDeg; a push lobs where it hops (fireTeleport) with teleport on, and with it off nudges it forward and back.
     if (wildStriders && wildStriders.riding) {
-      const [x, y] = Math.hypot(rx, ry) > Math.hypot(lx, ly) ? [rx, ry] : [lx, ly]
-      moveInput.ride = { push: -y, steer: x }
-      hideTeleport()
-      questTeleportArmed = false
+      const turn = moveInput.turn
+      if (rideSnapArmed && Math.abs(turn) > LOCOMOTION.snapEnter) {
+        rideSnapArmed = false
+        wildStriders.snap((-Math.sign(turn) * LOCOMOTION.snapDeg * Math.PI) / 180, player)
+      } else if (Math.abs(turn) < LOCOMOTION.snapExit) rideSnapArmed = true
+      const push = -moveAxis
+      if (!questToggles.teleport) {
+        moveInput.ride = { push, steer: 0 }
+        hideTeleport()
+        questTeleportArmed = false
+        return
+      }
+      moveInput.ride = null
+      if (push > QUEST_TELEPORT_ARM) {
+        if (!questTeleportArmed) armTeleport()
+        questTeleportArmed = true
+        questTeleportAim(useRight ? rightHandEl : leftHandEl)
+      } else if (questTeleportArmed && push < QUEST_TELEPORT_FIRE) {
+        questTeleportArmed = false
+        fireTeleport()
+        hideTeleport()
+      }
       return
     }
 
@@ -6218,7 +6415,7 @@ function readInput() {
   // T held aims the same lob the headset throws, off the cursor; release goes.
   // Not while flying, matching the headset, and the walk keys stay live so the
   // arc can be aimed by walking or dragging the view as well as by the mouse.
-  if (on('teleport') && !player.flying && !(wildStriders && wildStriders.riding)) {
+  if (on('teleport') && !player.flying) {
     if (!desktopTeleportArmed) armTeleport()
     desktopTeleportArmed = true
     desktopTeleportAim()
@@ -6538,8 +6735,10 @@ function tick() {
   if (!vitalsHold()) {
     // On a strider's back the sticks nudge it and it carries her, in place of her own walk; a flight takes her off it.
     if (wildStriders && wildStriders.riding && (player.travel || player.flying)) wildStriders.letGo()
-    if (wildStriders && wildStriders.riding) wildStriders.ride(dt, moveInput.ride, player)
-    else player.update(dt, moveInput)
+    if (wildStriders && wildStriders.riding) {
+      if (moveInput.ride) wildStriders.ride(dt, moveInput.ride, player)
+      else wildStriders.sit(dt, player)
+    } else player.update(dt, moveInput)
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
   }
   if (boats) boats.settle()
@@ -6567,8 +6766,11 @@ function tick() {
 
   player.headPosition(headTmp)
   const [pose, poseHands] = currentPose()
-  netplay.sendPose(pose, poseHands, now, boats ? boats.netState() : null, player.originPosition().y)
-  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale() })
+  const boatNet = boats ? boats.netState() : null
+  const foot = player.originPosition().y
+  netplay.sendPose(pose, poseHands, now, boatNet, foot)
+  // The mirror frame turns and slides in the plane only, so her feet are told to the double at their own height, as to a peer.
+  if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale(), foot, aboard: boatNet?.aboard })
   netplay.update(now)
   spikes.lap('net')
   // Altitude and gaze both feed the split rule: y makes the range term 3D and
@@ -6628,6 +6830,7 @@ function tick() {
     // re-place are: a clump follows the anchors, so it wants them stepped first.
     mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+    sticks.update(headTmp.x, headTmp.y, headTmp.z)
     bones.update(headTmp.x, headTmp.y, headTmp.z)
   }
   // The rowboats sit on the water row: moored where they were placed, so this
@@ -6684,7 +6887,7 @@ function tick() {
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
-  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures))
+  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
@@ -6711,6 +6914,8 @@ function tick() {
   drainFlares()
   syncTrust()
   flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
+  sparks.update(dt, flarePx.y)
+  updateFire(dt)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
   // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.
@@ -6804,7 +7009,8 @@ function tick() {
 // `over`, a group outside the scene, rendered here as a pass of its own with
 // the depth cleared, so it is never behind the menu (which has no depth) nor a
 // wall she stands against. Her shot's flash is drawn in it last, over them. Its lights are this frame's sun and sky copied, and
-// the scene's own fog, so the pool materials keep the one program.
+// the scene's own fog, so the pool materials keep the one program. Her own hands go into its depth first, colour off, so the
+// fingers in front of a held thing hide it; without them the cleared depth puts every held thing over the hand holding it.
 const overlay = new THREE.Scene()
 overlay.fog = scene.fog
 const overSun = new THREE.DirectionalLight()
@@ -6813,9 +7019,30 @@ overlay.add(overSun, overHemi)
 const gunWindows = new GunWindows(overlay, HAND_KEYS)
 const shotFlash = new ShotFlash(overlay)
 const flarePx = new THREE.Vector2()
+// Her hand under each grip (questHands) as a depth-only stand-in in the overlay, placed at the hand's world matrix of the main pass.
+const overHands = new Map()
+function placeOverHands() {
+  for (const [el, hand] of questHands) {
+    let proxy = overHands.get(el)
+    if (!proxy) {
+      proxy = new THREE.Mesh(hand.geometry, new THREE.MeshBasicMaterial({ colorWrite: false, side: hand.material.side }))
+      proxy.name = `${hand.name}-depth`
+      proxy.matrixAutoUpdate = false
+      proxy.matrixWorldAutoUpdate = false
+      proxy.renderOrder = -1
+      overlay.add(proxy)
+      overHands.set(el, proxy)
+    }
+    let shown = true
+    for (let o = hand; o && shown; o = o.parent) shown = o.visible
+    proxy.visible = shown
+    if (shown) proxy.matrixWorld.copy(hand.matrixWorld)
+  }
+}
 function renderOverlay() {
   if (!hands || (!hands.over.children.some((m) => m.count > 0) && !shotFlash.mesh.visible)) return
   if (hands.over.parent !== overlay) overlay.add(hands.over)
+  placeOverHands()
   overSun.position.copy(sun.position); overSun.color.copy(sun.color); overSun.intensity = sun.intensity
   overHemi.color.copy(hemi.color); overHemi.groundColor.copy(hemi.groundColor); overHemi.intensity = hemi.intensity
   const autoClear = renderer.autoClear

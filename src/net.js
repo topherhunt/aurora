@@ -95,6 +95,8 @@ export class Netplay {
     this.creatures = []
     // The flares peers have shot since the last drain, `[...flare, ageMs]` each (v2/render/flares.js fromWire).
     this.flares = []
+    // The flames peers have lit since the last drain, `[id, room, x, y, z, lifeS, ageMs]` each (v2/render/wildfire.js).
+    this.flames = []
     // The trust peers have told since the last drain, `[village, villager, player]` each (v2/trust.js).
     this.trust = []
     this.connect()
@@ -131,6 +133,7 @@ export class Netplay {
       if (message.things && typeof message.things === 'object') this.things.push(message.things)
       if (message.creatures && typeof message.creatures === 'object') this.creatures.push(message.creatures)
       if (Array.isArray(message.flares)) this.flares.push(...message.flares)
+      if (Array.isArray(message.flames)) this.flames.push(...message.flames)
       if (Array.isArray(message.trust)) this.trust.push(...message.trust)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours, offsetMs: this.offsetMs }
@@ -190,6 +193,13 @@ export class Netplay {
   sendLured(set) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
     this.socket.send(JSON.stringify({ version: 1, type: 'lured', set }))
+    return true
+  }
+
+  // A flame she lit, `[id, room, x, y, z, lifeS]` (v2/render/wildfire.js). False when there is no relay to tell.
+  sendFlame(flame) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'flame', flame }))
     return true
   }
 

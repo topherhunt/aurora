@@ -30,7 +30,7 @@ export const LAMP = {
   flame: 0.35,
   // Metres a lamp's light reaches along the ground, and its gain at the foot.
   reach: 9,
-  gain: 0.6,
+  gain: 0.3,
   // A window's light: how far it reaches, its gain against a lamp's, and how tightly it is coned out of the wall.
   window: { reach: 6, gain: 0.5, cone: 2 },
   // The lamp map's texel, metres, and the margin it runs past the last lamp.

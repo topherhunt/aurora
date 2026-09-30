@@ -1412,6 +1412,29 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(threw === 1, 'a campfire without a height throws')
 }
 {
+  // The blaze (wildfire flames and carried torches): one loop, off with no flame, louder with more of them, placed at the nearest.
+  {
+    const B = RULES.blaze
+    const engine = fakeEngine(), sense = scripted()
+    sense.s.aboveSnow = -300
+    let flames = []
+    const amb = new Ambience({ engine, sense, rand: mulberry32(15), blaze: () => flames })
+    const loop = amb.loops.blaze
+    const head = { x: 0, y: GROUND + 1, z: 0 }
+    run(amb, 1, { head })
+    check(!loop.active, 'no flames, no blaze')
+    flames = [{ x: 5, y: GROUND + 1, z: 0 }]
+    run(amb, 1, { head })
+    const one = loop.level
+    check(loop.active && one > 0 && loop.at.x === 5, 'a flame in reach starts the blaze, placed at it', `level ${one?.toFixed(3)}`)
+    flames = [{ x: 5, y: GROUND + 1, z: 0 }, { x: 5, y: GROUND + 1, z: 1 }, { x: 4, y: GROUND + 1, z: 0 }, { x: 6, y: GROUND + 1, z: 0 }]
+    run(amb, 1, { head })
+    check(loop.level > one && loop.level <= B.level * B.cap + 1e-9, 'more flames are louder, to a cap', `level ${loop.level?.toFixed(3)}`)
+    flames = [{ x: B.reach + 5, y: GROUND + 1, z: 0 }]
+    run(amb, 1, { head })
+    check(!loop.active, 'a flame out of reach is silent')
+  }
+
   // A torch: a muffled loop over the same takes, off by day however near, on and scaled by how lit the torches are after dark, quieter and shorter-reached than a campfire.
   const T = RULES.torch, C = RULES.campfire
   check(T.level < C.level / 2 && T.reach < C.reach, 'a torch is quieter and closer than a campfire')

@@ -28,12 +28,12 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - [x] Terrorbirds should roam around in the wild. If it sees you (6m), it turns to face you, makes wary muttering clucking noises, and backs away slowly.) If you get too close to it (3m), it screeches at you, attacks you once, and runs away. But if you approach it with a fish in your hand, then it meekly sits down with a whimpering noise, follows your fish with its head, and if you hold the fish up near its head, eats the fish and then follows you around happily like a puppy. Then you can ride it.
   - [x] That means we need a separate version of the model that doesn't have a saddle on. Maybe use Tripo's segmenter AI to split off the saddle? Does that "fill in" the holes left behind in the main mesh?
+- [x] Bug: When in multiplayer, when the two of us enter a separate room together, such as the Leafkin Glade, I think the person who appears second doesn't see the person who appears first, but vice versa is not true. So Claire and I went in together, and Claire could see me the whole time. We were traveling around together, and she could identify where I was and what position I was in, but I could not see her. and that stayed even when we went into Leafkin houses inside the glade. 
 - [ ] Leafkin
   - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
   - [ ] Leafkin glades hold puzzles:
     - Each glade has an assigned song.
   - [ ] A giant deer-skull, either a house, or on top of of a house?
-  - Leafkin hobby: catching frogs (frogs run away from them) and carrying them around and putting them beside their home.
 - [ ] Human villages
   - [ ] You sometimes find NPCs walking the roads between villages.
   - [ ] Buildings: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc.

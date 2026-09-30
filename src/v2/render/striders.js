@@ -20,6 +20,8 @@ export const STRIDER = {
   said: 32,
   // Each strider is `mean` times the shipped body, spread over `vary` of that, and grows by `fed` a fish once tame.
   size: { mean: 1.5, vary: [0.85, 1.2], fed: 1.05 },
+  // A fish within `bite` m times its size of the middle of its head, beak and all, is at its mouth.
+  bite: 0.4,
 }
 
 /** A strider's size against the shipped body, from `u` in 0..1. */
@@ -33,6 +35,22 @@ const _q = new THREE.Quaternion()
 const _v = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _m = new THREE.Matrix4()
+
+/** The middle of the bind-pose vertices mostly skinned to bone `hi`, in that bone's frame: the head bone sits at the neck, half a metre behind the beak. */
+function headMiddle(mesh, hi, inverse) {
+  const pos = mesh.geometry.attributes.position, idx = mesh.geometry.attributes.skinIndex, wt = mesh.geometry.attributes.skinWeight
+  const sum = new THREE.Vector3(), v = new THREE.Vector3()
+  let n = 0
+  for (let i = 0; i < pos.count; i++) {
+    let w = 0
+    for (let k = 0; k < 4; k++) if (idx.getComponent(i, k) === hi) w += wt.getComponent(i, k)
+    if (w < 0.5) continue
+    sum.add(v.fromBufferAttribute(pos, i))
+    n++
+  }
+  if (n === 0) throw new Error(`striders: no vertex is skinned to head bone ${hi}`)
+  return sum.divideScalar(n).applyMatrix4(mesh.bindMatrix).applyMatrix4(inverse)
+}
 
 /** What this layer keeps on a mount the sim or the road hands it, `size` times the shipped body (striderSize). */
 export function mountFields(size) {
@@ -267,6 +285,16 @@ export class Striders {
     if (!m.puppet) return false
     out.setFromMatrixPosition(m.puppet.skeleton.bones[this.asset.saddle.head].matrixWorld).applyMatrix4(m.puppet.group.matrix)
     return true
+  }
+
+  /** Whether (x, y, z) is at `m`'s mouth (STRIDER.bite, times `slack`); false with no puppet. */
+  bites(m, x, y, z, slack = 1) {
+    const P = m.puppet
+    if (!P) return false
+    const hi = this.asset.saddle.head
+    if (!this.mouth) this.mouth = headMiddle(P.meshes[0], hi, P.skeleton.boneInverses[hi])
+    _v.copy(this.mouth).applyMatrix4(P.skeleton.bones[hi].matrixWorld).applyMatrix4(P.group.matrix)
+    return _v.distanceToSquared(_s.set(x, y, z)) < (STRIDER.bite * m.pose.size * slack) ** 2
   }
 
   /** A rein from `a` to `b`, sagging. */

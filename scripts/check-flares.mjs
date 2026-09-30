@@ -120,7 +120,7 @@ console.log('the layer')
   check(flares.aPos.array[0] === 40 && flares.aPos.array[1] === 90 && flares.aSize.array[0] === REST_M, 'arrived, it hangs at its target at rest size')
   flares.add(flare({ id: 'late1' }), 5)
   flares.update(0, 1000)
-  check(flares.aSize.array[2] === REST_M, 'a peer\'s flare that arrived before she joined hangs at rest size at once')
+  check(flares.aSize.array[3] === REST_M, 'a peer\'s flare that arrived before she joined hangs at rest size at once')
 
   for (let i = 0; i < CAP + 5; i++) flares.add(flare({ id: `n${i}` }), 0)
   check(flares.list.length === CAP && flares.list[0].id === 'n5', `past ${CAP} the oldest are forgotten`, flares.list[0].id)

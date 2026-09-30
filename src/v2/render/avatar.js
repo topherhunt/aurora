@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { LOD_RUNGS, critterTier, loadCritterGlb } from './critters.js'
+import { LOD_HYSTERESIS, LOD_RUNGS, critterTier, loadCritterGlb } from './critters.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { VrBody } from './avatar-rig.js'
@@ -12,6 +12,17 @@ const ROSTER_URL = 'creatures/avatars.json'
 const MODEL_URL = (id) => `creatures/${id}.glb`
 // Seconds a body takes to cross from idle to walking and back.
 const FADE_S = 0.25
+// How far a peer is drawn at all. The wildlife's ladder would drop a villager at ~60 m; a friend flying off should
+// stay a speck to follow, so the last rung holds out to here instead.
+export const PEER_DRAW_M = 120
+
+/** A peer's rung: the wildlife's ladder, with its last rung reaching PEER_DRAW_M, hysteresis as critterTier's. */
+export function peerTier(size, dist, prev) {
+  const rung = critterTier(size, dist, prev)
+  if (rung < LOD_RUNGS) return rung
+  const edge = PEER_DRAW_M * (prev === LOD_RUNGS - 1 ? 1 + LOD_HYSTERESIS : prev === LOD_RUNGS ? 1 - LOD_HYSTERESIS : 1)
+  return dist <= edge ? LOD_RUNGS - 1 : LOD_RUNGS
+}
 
 // ---------------------------------------------------------------------------
 // Her own hand while the menu is closed, hung from the grip pose. A peer's
@@ -131,10 +142,19 @@ export class PeerAvatars {
     this.walk = null
   }
 
-  /** The ground the bodies stand on (v2/walk.js WalkSurface), once it is built; until then no body is dressed. */
+  /**
+   * The ground the bodies stand on (v2/walk.js WalkSurface), once it is built; until then no body is dressed.
+   * A room swap hands every standing body the new one: a body left on the last room's surface plants its feet on that
+   * room's ground under this room's coordinates, and the IK hoists the whole body by the difference -- out of sight.
+   */
   ground(walk) {
     if (typeof walk?.heightAt !== 'function') throw new Error('PeerAvatars.ground needs a walk surface')
     this.walk = walk
+    for (const peer of [...this.peers.values(), this.double]) {
+      if (!peer?.body) continue
+      peer.body.walk = walk
+      peer.body.placed = false
+    }
   }
 
   /** One villager's shipped body, fetched once per session, with the one settled material every body of it draws through. */
@@ -269,10 +289,10 @@ export class PeerAvatars {
     const dt = Math.min(0.1, Math.max(0, (now - peer.at) / 1000))
     peer.at = now
     if (!peer.body) return
-    // Its rung by its head's distance from her, as the wildlife's; gone once the relay has lost it.
+    // Its rung by its head's distance from her; gone once the relay has lost it.
     this.camera.getWorldPosition(_eye)
     const dist = Math.hypot(pose[0] - _eye.x, pose[1] - _eye.y, pose[2] - _eye.z)
-    const rung = alpha > 0 ? critterTier(peer.heightM, dist, peer.tier) : LOD_RUNGS
+    const rung = alpha > 0 ? peerTier(peer.heightM * peer.body.fit, dist, peer.tier) : LOD_RUNGS
     peer.tier = rung
     peer.puppet.show(rung === LOD_RUNGS ? -1 : rung)
     // Out of sight and faded, nothing is stepped; it stands afresh where its head is when it comes back.
@@ -280,7 +300,7 @@ export class PeerAvatars {
       peer.body.placed = false
       return
     }
-    peer.body.drive(pose, hands, dt, state.foot)
+    peer.body.drive(pose, hands, dt, state.foot, !!state.aboard)
   }
 
   /**

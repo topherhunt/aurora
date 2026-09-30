@@ -41,7 +41,18 @@
 //   higher over the ground than a standing body's eyes by more than FLY_M is
 //   ALOFT -- she is flying, or the ground is a lake bed under a boat's sole
 //   that the walk surface's ceiling rule can never lift the body onto -- and
-//   the body is carried under its head, feet loose, until ground comes up.
+//   the body is carried under its head, feet loose, until ground comes up. So
+//   is a body whose told feet, not aboard, are over the ground by more than
+//   FLY_M -- in flight -- or over water by more than AFLOAT_M -- swimming.
+//   Planted there, each foot would reach for the ground as far as the leg
+//   folds and the root would drop with it, sinking the head half a metre.
+//
+//   THE BODY IS SIZED TO ITS WEARER. Standing on told feet, the headset's
+//   height over them is sampled every FIT_EVERY_S over the last FIT_WINDOW
+//   samples, and the body is scaled, within FIT_MIN..FIT_MAX, until its
+//   standing eyes are at the FIT_PCT percentile of them: a wearer taller or
+//   shorter than the villager is neither held under a stretched neck nor
+//   hunched in a permanent crouch, while a duck of a few seconds stays a crouch.
 //
 //   THE BODY'S YAW follows the head's with a deadzone: the neck twists up to
 //   YAW_SLACK before the body turns under it, and once turning it turns until
@@ -74,8 +85,20 @@ export const EYE_LINE = 0.93
 export const TELEPORT_M = 1
 // A head higher over the ground than the standing eyes by more than this is in the air, and the body hangs under it. Wider than
 // any headset stood taller than its avatar, narrower than the walk surface's reach, so a body the ceiling rule holds under a
-// boat's sole is always lifted.
+// boat's sole is always lifted. Told feet this far over dry ground are in the air too, well under player.js flyClearance; a
+// stance leaned past the rim of a boulder taller than this reads as air as well, and hangs rather than stands.
 export const FLY_M = 0.75
+// Told feet over water this far over its bed are afloat (player.js swimEnterHyst): nearer, the plant's reach for the bed is within the neck's slack.
+export const AFLOAT_M = 0.1
+// The wearer's eye height: a sample every FIT_EVERY_S, the FIT_PCT percentile of the last FIT_WINDOW (a minute) once FIT_SAMPLES
+// are in, the scale off the villager's own within FIT_MIN..FIT_MAX -- a headset past FIT_MAX is already ALOFT by FLY_M -- eased over FIT_TAU_S.
+export const FIT_EVERY_S = 0.5
+export const FIT_WINDOW = 120
+export const FIT_PCT = 0.9
+export const FIT_SAMPLES = 4
+export const FIT_MIN = 0.8
+export const FIT_MAX = 1.25
+const FIT_TAU_S = 1.5
 // A crouch folds a leg to no shorter than this fraction of its rest length, and bends the waist forward no further than LEAN_MAX.
 export const CROUCH_FOLD = 0.35
 export const LEAN_MAX = (40 * Math.PI) / 180
@@ -164,10 +187,19 @@ export class VrBody {
     if (!asset.head?.length) throw new Error('VrBody: the asset names no head chain -- re-ship it')
     if (!asset.spine?.length) throw new Error('VrBody: the asset names no spine -- re-ship it')
     if (!puppet.ik) throw new Error('VrBody: the asset names no legs -- re-ship it')
-    if (typeof walk?.heightAt !== 'function') throw new Error('VrBody needs the walk surface, for the ground under its feet')
+    if (typeof walk?.heightAt !== 'function' || typeof walk.waterAt !== 'function') throw new Error('VrBody needs the walk surface, for the ground and the water under its feet')
     if (asset.arms?.length !== 2 || !asset.arms.some((a) => a.side === 1) || !asset.arms.some((a) => a.side === -1)) throw new Error('VrBody: the asset does not name a left and a right arm -- re-ship it')
     this.puppet = puppet
+    // `k` is the villager's own scale times `fit`, the wearer's; `wearerEye` is NaN until FIT_SAMPLES are in.
+    this.kOwn = k
     this.k = k
+    this.fit = 1
+    this.wearerEye = NaN
+    this.eyeSamples = new Float32Array(FIT_WINDOW)
+    this.eyeSorted = new Float32Array(FIT_WINDOW)
+    this.eyeCount = 0
+    this.eyeNext = 0
+    this.sampleIn = 0
     this.walk = walk
     this.gait = asset.gait
     this.height = asset.height
@@ -251,6 +283,8 @@ export class VrBody {
     this.hold = 0
     this.crouch = 0
     this.lean = 0
+    // Metres the last solve stretched the neck, signed: what the debug HUD reads beside the crouch.
+    this.stretch = 0
     this.body = new THREE.Matrix4()
     this.bodyInv = new THREE.Matrix4()
     puppet.solver = this
@@ -259,6 +293,28 @@ export class VrBody {
   /** Metres a second the body walks at, and runs at. */
   get walkSpeed() { return this.gait.walk * this.k }
   get runSpeed() { return this.gait.run * this.k }
+
+  /** One headset-over-feet height, taken if FIT_EVERY_S has passed since the last; `wearerEye` is re-read off the window. */
+  sampleEye(h, dt) {
+    this.sampleIn -= dt
+    if (this.sampleIn > 0) return
+    this.sampleIn += FIT_EVERY_S
+    if (this.sampleIn <= 0) this.sampleIn = FIT_EVERY_S
+    this.eyeSamples[this.eyeNext] = h
+    this.eyeNext = (this.eyeNext + 1) % FIT_WINDOW
+    this.eyeCount = Math.min(FIT_WINDOW, this.eyeCount + 1)
+    if (this.eyeCount < FIT_SAMPLES) return
+    const sorted = this.eyeSorted.subarray(0, this.eyeCount)
+    sorted.set(this.eyeSamples.subarray(0, this.eyeCount))
+    sorted.sort()
+    this.wearerEye = sorted[Math.floor(FIT_PCT * (this.eyeCount - 1))]
+  }
+
+  /** The scale off the villager's own that puts its standing eyes at the wearer's. */
+  fitTo() {
+    if (Number.isNaN(this.wearerEye)) return 1
+    return Math.max(FIT_MIN, Math.min(FIT_MAX, this.wearerEye / (EYE_LINE * this.height * this.kOwn)))
+  }
 
   /**
    * One frame off one pose: the 21 floats of net.js (head, left grip, right
@@ -272,17 +328,22 @@ export class VrBody {
    * guess is worth centimetres where heightAt is a cliff at a gunwale and a
    * rock's rim, so a few centimetres over an edge drops the body the height of
    * the step, and WALK.reach can leave it there. Only the mirror double and a
-   * peer too old to send its feet take that path now.
+   * peer too old to send its feet take that path now. `aboard` says the told
+   * feet are on a boat's deck, never afloat however deep the lake under it.
    */
-  drive(pose, hands, dt, foot = null) {
+  drive(pose, hands, dt, foot = null, aboard = false) {
     const hx = pose[0], hy = pose[1], hz = pose[2]
     _quat.set(pose[3], pose[4], pose[5], pose[6])
     _a.set(0, 0, -1).applyQuaternion(_quat)
     // Looking straight up or down leaves no gaze to face; the last heading holds.
     if (Math.hypot(_a.x, _a.z) > 0.25) this.headYaw = yawTo(_a.x, _a.z)
     const headYaw = this.headYaw
-    const eye = EYE_LINE * this.height * this.k
     const told = Number.isFinite(foot)
+    // Sampled off last frame's stance: standing on told feet, not on a boat, not in the air, not on a trip.
+    if (told && !aboard && this.placed && !this.aloft && !this.gliding) this.sampleEye(hy - foot, dt)
+    this.fit += (this.fitTo() - this.fit) * (1 - Math.exp(-dt / FIT_TAU_S))
+    this.k = this.kOwn * this.fit
+    const eye = EYE_LINE * this.height * this.k
 
     // Where the body would stand with its neck under the head -- the neck as the crouch's lean carries it forward,
     // since a head that goes forward as she bends is the lean, not a step. A body not yet placed stands there at once, facing as she does.
@@ -318,7 +379,9 @@ export class VrBody {
     // up under it. On a trip the ground under the HEAD decides, read as a body stood there would, so a teleport up a hill is
     // still walked and a flight is never walked after.
     const ground = told ? foot : this.walk.heightAt(standX, standZ, this.y)
-    this.aloft = hy - (this.gliding && !told ? this.walk.heightAt(underX, underZ, hy - eye) : ground) > eye + FLY_M
+    const gap = told && !aboard ? foot - this.walk.heightAt(standX, standZ, foot) : 0
+    const loose = gap > FLY_M || (gap > AFLOAT_M && this.walk.waterAt(standX, standZ) !== null)
+    this.aloft = loose || hy - (this.gliding && !told ? this.walk.heightAt(underX, underZ, hy - eye) : ground) > eye + FLY_M
     if (this.aloft) this.gliding = false
     let faceYaw = headYaw
     let facingTravel = false
@@ -449,6 +512,7 @@ export class VrBody {
 
   /** Over the pose the mixer just wrote, and the feet: the waist bent to the crouch, the head to the headset, each held arm's wrist to its grip. */
   solve() {
+    this.stretch = 0
     if (this.hold <= 0 && this.lean <= 0 && this.arms.every((a) => a.w <= 0)) return
     this.compose()
     for (const h of this.head) h.saved.copy(h.bone.quaternion)
@@ -481,6 +545,7 @@ export class VrBody {
     _t.subVectors(this.headAt, _t)
     const slack = HEAD_SLACK_M / this.k
     _t.set(0, Math.max(-slack, Math.min(slack, _t.y)) * w, 0)
+    this.stretch = _t.y * this.k
     if (neck.par >= 0) _t.applyQuaternion(_q.copy(this.quat[neck.par]).invert())
     neck.bone.position.add(_t)
     neck.bone.updateMatrix()

@@ -104,7 +104,7 @@ export function sizeAt(age) {
 const VERT = /* glsl */ `
   attribute vec3 aPos;
   attribute vec3 aColor;
-  attribute vec2 aSize;
+  attribute vec3 aSize;
   uniform float uPx;
   uniform float uReach;
   varying vec2 vP;
@@ -128,7 +128,7 @@ const VERT = /* glsl */ `
     vColor = aColor;
     vSeed = aSize.y;
     vNear = 1.0 - smoothstep( ${(NEAR_M * 0.8).toFixed(1)}, ${NEAR_M.toFixed(1)}, dist );
-    vFade = 1.0 - smoothstep( ${(FAR_M - FADE_M).toFixed(1)}, ${FAR_M.toFixed(1)}, dist );
+    vFade = aSize.z * ( 1.0 - smoothstep( ${(FAR_M - FADE_M).toFixed(1)}, ${FAR_M.toFixed(1)}, dist ) );
   }
 `
 
@@ -230,7 +230,14 @@ const _v = new THREE.Vector3()
 const _c = new THREE.Color()
 
 export class Flares {
-  constructor(scene) {
+  /**
+   * @param opts  `look` a FLARE-shaped look (default FLARE); `cap` the most drawn; with `fadeS` and `size` every flare is a
+   *              brief spark: `size` metres across at its origin, fading out over `fadeS` seconds and then dropped.
+   */
+  constructor(scene, { look = FLARE, cap = CAP, fadeS = null, size = null } = {}) {
+    this.cap = cap
+    this.fadeS = fadeS
+    this.sparkSize = size
     this.material = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -252,13 +259,13 @@ export class Flares {
     geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3))
     geo.setIndex([0, 1, 2, 0, 2, 3])
     const attr = (size) => {
-      const a = new THREE.InstancedBufferAttribute(new Float32Array(CAP * size), size)
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(cap * size), size)
       a.setUsage(THREE.DynamicDrawUsage)
       return a
     }
     this.aPos = attr(3)
     this.aColor = attr(3)
-    this.aSize = attr(2)
+    this.aSize = attr(3)
     geo.setAttribute('aPos', this.aPos)
     geo.setAttribute('aColor', this.aColor)
     geo.setAttribute('aSize', this.aSize)
@@ -271,7 +278,7 @@ export class Flares {
     this.list = []
     this.room = null
     this.now = 0
-    this.set(FLARE)
+    this.set(look)
   }
 
   /** A look, every key of FLARE (see it), into the shader. */
@@ -292,7 +299,7 @@ export class Flares {
     if (!(age >= 0)) throw new Error(`Flares.add: age ${age}`)
     if (this.list.some((g) => g.id === f.id)) return false
     this.list.push({ ...f, born: this.now - age })
-    while (this.list.length > CAP) this.list.shift()
+    while (this.list.length > this.cap) this.list.shift()
     return true
   }
 
@@ -321,15 +328,25 @@ export class Flares {
     this.material.uniforms.uTime.value = this.now % 1000
     this.material.uniforms.uPx.value = px
     let n = 0
+    if (this.fadeS !== null) this.list = this.list.filter((f) => this.now - f.born < this.fadeS)
     for (const f of this.list) {
       if (f.room !== this.room) continue
       const age = this.now - f.born
-      if (age < FLIGHT_S) flightAt(f, age / FLIGHT_S, _v)
-      else _v.set(f.tx, f.ty, f.tz)
+      let size = 1
+      if (this.fadeS !== null) {
+        _v.set(f.ox, f.oy, f.oz)
+        size = this.sparkSize
+        this.aSize.array[n * 3 + 2] = 1 - age / this.fadeS
+      } else {
+        if (age < FLIGHT_S) flightAt(f, age / FLIGHT_S, _v)
+        else _v.set(f.tx, f.ty, f.tz)
+        size = sizeAt(age)
+        this.aSize.array[n * 3 + 2] = 1
+      }
       _v.toArray(this.aPos.array, n * 3)
       _c.setHex(f.color).toArray(this.aColor.array, n * 3)
-      this.aSize.array[n * 2] = sizeAt(age)
-      this.aSize.array[n * 2 + 1] = f.seed
+      this.aSize.array[n * 3] = size
+      this.aSize.array[n * 3 + 1] = f.seed
       n++
     }
     this.aPos.needsUpdate = this.aColor.needsUpdate = this.aSize.needsUpdate = true

@@ -117,7 +117,7 @@ const ME = 'aabbccdd-1111-2222-3333-444444444444'
   w.hands.press('right', w.head)
   w.run(0.05)
   check(w.net.sent.length === 0 && w.hn.stats.queued === 2, 'before the welcome nothing leaves: the hold and the take wait', `${w.hn.stats.queued} queued`)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   w.run(ROLL_MAX_S + 1)
   // The welcome: the queue is rebuilt from what is true -- an empty hand, the loose thing named now, the taken entry.
   w.net.welcome(ME)
@@ -137,7 +137,7 @@ const ME = 'aabbccdd-1111-2222-3333-444444444444'
   check(w.net.sent.length === 2 && w.net.sent[0].type === 'hold' && w.net.sent[0].hand === 1 && slotOf(w.net.sent[0]).kind === 'mushroom' && w.net.sent[1].type === 'take' && w.net.sent[1].list[0][1] === 3, 'a take from a bed is a hold and a take entry, once', w.net.sent.map((m) => m.type).join(','))
   check(slotOf(w.net.sent[0]).color[0] === 0.123, 'the slot\'s numbers are rounded for the wire', `${slotOf(w.net.sent[0]).color[0]}`)
   w.net.sent.length = 0
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   w.run(0.05)
   check(w.net.sent.length === 2 && w.net.sent[0].type === 'hold' && w.net.sent[0].slot === null && w.net.sent[1].type === 'loose' && w.net.sent[1].id === 'aabbccdd-1' && w.net.sent[1].state === 2, 'a drop is a hold of nothing and a loose thing in motion', w.net.sent.map((m) => m.type).join(','))
   w.net.sent.length = 0

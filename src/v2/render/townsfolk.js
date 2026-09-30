@@ -65,6 +65,8 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
+  // A tied strider that does not trust her, her head within `m` m and no fish of hers in reach: it shrieks and runs off `run` m at `pace` of its run, stands `wait` s, walks back to its rail, and will not again for `cool` s.
+  shy: { m: 3, run: [3, 10], pace: 0.7, wait: [3, 6], cool: 5 },
 }
 
 export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', ...TALKS]
@@ -946,6 +948,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _hand = new THREE.Vector3()
 const _head = new THREE.Vector3()
+const _shyOut = { x: 0, z: 0, r: 0 }
 
 export class Townsfolk {
   /**
@@ -1124,6 +1127,7 @@ export class Townsfolk {
         if (!m.active && !m.puppet) continue
         this._feed(m, dt, lures)
         this._poseMount(m, life.alpha)
+        this._shy(m, dt, head, seconds, lures)
         m.dist = Math.hypot(m.pose.x - head.x, m.pose.y - head.y, m.pose.z - head.z)
         mounts.push(m)
       }
@@ -1156,6 +1160,59 @@ export class Townsfolk {
     m.gone = !m.active || (m.state === 'tied' && this.lent.has(m.key))
   }
 
+  /** A tied strider startled by her (TOWNSFOLK.shy): run off from the rail, stood, and walked back, drawn over the sim's pose, which it rejoins. */
+  _shy(m, dt, head, seconds, lures) {
+    const Y = TOWNSFOLK.shy, p = m.pose, S = this.striders
+    if (m.shy && (m.state !== 'tied' || m.gone)) m.shy = null
+    if (!m.shy) {
+      if (m.state !== 'tied' || m.gone || m.treat || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
+      if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
+      const away = Math.atan2(p.z - head.z, p.x - head.x), far = Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random()
+      let tx = p.x, tz = p.z
+      for (let d = 0.5; d <= far; d += 0.5) {
+        const x = p.x + Math.cos(away) * d, z = p.z + Math.sin(away) * d, level = this.walk.waterAt(x, z)
+        if (this.walk.obstacleAt(x, z, _shyOut, m) || (level !== null && level > this.walk.heightAt(x, z, p.y))) break
+        tx = x
+        tz = z
+      }
+      m.shy = { phase: 'run', x: p.x, z: p.z, h: p.heading, tx, tz, t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), cue: -1 - ++this.treats }
+      S.say('striderChirp1', p, 1.6, 1)
+      S.say('striderWhine', p, 1.3, 0.8)
+    }
+    const s = m.shy, walkV = S.asset.gait.walk * S.k * p.size, runV = Y.pace * S.asset.gait.run * S.k * p.size
+    const next = (phase) => { s.phase = phase; s.t = 0; s.cue = -1 - ++this.treats }
+    const go = (x, z, v) => {
+      const dx = x - s.x, dz = z - s.z, d = Math.hypot(dx, dz)
+      s.h += clamp(swing(s.h, Math.atan2(-dz, dx)), -6 * dt, 6 * dt)
+      const step = Math.min(d, v * dt)
+      if (d > 1e-3) { s.x += (dx / d) * step; s.z += (dz / d) * step }
+      return d - step < 0.05
+    }
+    s.t += dt
+    let clip = 'idle', speed = 0
+    if (s.phase === 'run') {
+      clip = 'run'; speed = runV
+      if (go(s.tx, s.tz, runV)) next('wait')
+    } else if (s.phase === 'wait') {
+      if (s.t > s.wait) next('back')
+    } else if (s.phase === 'back') {
+      clip = 'walk'; speed = walkV
+      if (go(p.x, p.z, walkV)) next('turn')
+    } else {
+      const left = swing(s.h, p.heading)
+      s.h += clamp(left, -2 * dt, 2 * dt)
+      clip = 'walk'; speed = 0.4 * walkV
+      if (Math.abs(left) < 0.05) { m.shy = null; m.shyAt = seconds + Y.cool; return }
+    }
+    p.x = s.x
+    p.z = s.z
+    p.y = this.walk.heightAt(s.x, s.z, p.y)
+    p.heading = s.h
+    p.clip = clip
+    p.speed = speed
+    p.cue = s.cue
+  }
+
   /** A tied strider eating the fish she holds to its beak, over the sim's clip: it trusts her after, or if it did, grows. */
   _feed(m, dt, lures) {
     const S = this.striders, F = WILD.fish
@@ -1176,8 +1233,8 @@ export class Townsfolk {
       }
       return
     }
-    if (m.state !== 'tied' || !m.puppet || m.gone || !S.head(m, _head)) return
-    const lure = lures.find((l) => l.by === null && l.kind === 'fish' && _head.distanceTo(_hand.set(l.x, l.y, l.z)) < F.bite)
+    if (m.state !== 'tied' || m.gone || m.shy) return
+    const lure = lures.find((l) => l.by === null && l.kind === 'fish' && S.bites(m, l.x, l.y, l.z))
     if (lure) m.treat = { t: 0, hit: false, lure, cue: ++this.treats }
   }
 
@@ -1367,7 +1424,7 @@ export class Townsfolk {
   /** A strider's rein: to the rail's knot tied, else to the right hand of whoever leads or rides it. */
   _rein(m) {
     const S = this.striders
-    if (m.gone || !S.head(m, _head)) return
+    if (m.gone || m.shy || !S.head(m, _head)) return
     if (m.state === 'tied') {
       const [x, z] = m.tether.knot
       S.rein(_hand.set(x, S.barY(x, z), z), _head)
@@ -1382,7 +1439,7 @@ export class Townsfolk {
   // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------
 
   _mountable(m, head) {
-    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && this.bond.trusted.has(m.key) && fromSide(m.pose, head)
+    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && !m.shy && this.bond.trusted.has(m.key) && fromSide(m.pose, head)
   }
 
   /** The tied strider trusting her whose back `hand` touches from the side, or null. */
@@ -1407,7 +1464,18 @@ export class Townsfolk {
   lend(m) {
     this.lent.add(m.key)
     m.gone = true
+    m.shy = null
     return { key: m.key, pose: m.pose, size: m.pose.size }
+  }
+
+  /** The tied strider under bond key `key` lent (lend) for a peer riding it, or null where its town is not alive and caught up here. */
+  lendKey(key) {
+    if (this.lent.has(key)) return null
+    for (const { life } of this.alive.values()) {
+      if (!life.caught) continue
+      for (const m of life.mounts) if (m.key === key && m.active && m.state === 'tied') return this.lend(m)
+    }
+    return null
   }
 
   unlend(key) {

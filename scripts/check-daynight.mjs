@@ -751,13 +751,14 @@ console.log('\n--- the live shaders link --------------------------------------'
   // occlusion floor were then halved; luma 6 is about where an sRGB display
   // stops being distinguishable from black, and a 4%-albedo tree trunk sitting
   // just above it is right -- a trunk at night IS a silhouette.
-  check(darkest >= 4, 'nothing in the world reads as pure black at night',
+  // Night is dark on purpose now (design/37-fire.md): a trunk may read pure black, and only a torch or a lamp shows what the moon does not. Ground the moon reaches is held below.
+  check(darkest <= 4, 'a shaded trunk or rock can read black at night, for the torch to be worth having',
     `darkest is ${darkestName} at luma ${darkest}`)
   // But what she WALKS ON is a different promise and gets its own floor. The
   // ground can be dark; it cannot be unreadable, or the night stops being
   // atmospheric and starts being a navigation failure.
   const groundWorst = Math.min(...GROUND.map((s) => lumaAt(night, s)))
-  check(groundWorst >= 10, 'and the ground she walks on stays readable', `worst ground luma ${groundWorst}`)
+  check(groundWorst >= 4, 'and the ground she walks on is never quite gone', `worst ground luma ${groundWorst}`)
   // And the other end: night must not be a grey wash. Snow well above rock is
   // what makes it read as moonlight rather than as ambient turned up. The
   // ratio is 4 rather than 2.5 because halving the additive lift -- which adds
@@ -868,7 +869,7 @@ console.log('\n--- the live shaders link --------------------------------------'
   // floor at 8 with the moon on the far side of the ridge is not a bug, it is
   // the request: dark enough that she navigates by the skyline and the aurora
   // rather than by the ground, and not so dark that the ground is gone.
-  check(worstDark >= 6, 'and ground it does not reach is dark without being gone',
+  check(worstDark >= 4, 'and ground it does not reach is dark without being gone',
     `worst shaded ground luma ${worstDark}`)
 
   // =========================================================================

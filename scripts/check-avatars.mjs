@@ -29,10 +29,11 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, WALK_MAX_RATE, SNAP_HEIGHTS, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M,
+  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, WALK_MAX_RATE, SNAP_HEIGHTS, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M, FIT_MIN,
 } from '../src/v2/render/avatar-rig.js'
 import { WALK } from '../src/v2/walk.js'
-import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PeerAvatars, handGeometry, ownHand } from '../src/v2/render/avatar.js'
+import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PEER_DRAW_M, PeerAvatars, handGeometry, ownHand, peerTier } from '../src/v2/render/avatar.js'
+import { LOD_RUNGS, LOD_HYSTERESIS, critterTier, cullRange } from '../src/v2/render/critters.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -121,13 +122,13 @@ function makeAsset(s) {
 
 const DT = 1 / 60
 const UP = new THREE.Vector3(0, 1, 0)
-// The ground: flat at `level` unless a stub is given.
+// The ground: flat at 0 unless a stub is given, and dry unless the stub has a waterAt.
 function makeBody(s, stature, walk = { heightAt: () => 0 }) {
   const asset = makeAsset(s)
   const plain = makeSettledMaterial(`check-${s.id}`)
   const puppet = new Puppet(asset, makePuppetMaterials(`check-${s.id}`, plain))
   const k = stature / asset.height
-  const body = new VrBody(puppet, asset, k, walk)
+  const body = new VrBody(puppet, asset, k, { waterAt: () => null, ...walk })
   puppet.show(0)
   const bone = (name) => puppet.bones.find((b) => b.name === name)
   // A joint's world position and orientation, through the body's frame.
@@ -155,7 +156,7 @@ const poseOf = (head, headQuat, grips) => [
   head.x, head.y, head.z, headQuat.x, headQuat.y, headQuat.z, headQuat.w,
   ...grips.flatMap((g) => [g.pos.x, g.pos.y, g.pos.z, g.quat.x, g.quat.y, g.quat.z, g.quat.w]),
 ]
-const run = (b, pose, hands, seconds, foot = null) => { for (let t = 0; t < seconds; t += DT) b.body.drive(pose, hands, DT, foot) }
+const run = (b, pose, hands, seconds, foot = null, aboard = false) => { for (let t = 0; t < seconds; t += DT) b.body.drive(pose, hands, DT, foot, aboard) }
 
 // --- at rest: the hands on the grips, the head where the headset is ---------------------
 for (const s of shipped.filter((s) => VILLAGERS.includes(s.id))) {
@@ -320,6 +321,22 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(!body.gliding && Math.abs(body.x + 5) < 1e-6 && Math.abs(body.z - 4) < 1e-6 && Math.abs(body.yaw - 2) < 1e-6, 'un-placed, it stands where the head is at once, facing as it does')
 }
 
+// --- a room swap: every standing body is handed the new room's ground ------------------
+{
+  // Dressed in the overworld, whose ground under the glade's coordinates is 40 m up; she stands on the glade's floor at 0.
+  const b = makeBody(fisher, stature, { heightAt: () => 40 })
+  const rest = restOf(b, 0, 0, 0)
+  const pose = poseOf(rest.head, rest.headQuat, rest.grips)
+  const hipY = () => b.at(b.puppet.ik.legs[0].A.name).y
+  run(b, pose, [true, true], 1, 0)
+  const hoisted = hipY() - rest.head.y
+  check(hoisted > 5, 'on the last room\'s ground, a body the relay stands at 0 is hoisted metres over its own head', `hips ${hoisted.toFixed(2)} m over the headset`)
+  const peers = { peers: new Map([['p', { body: b.body }]]), double: null }
+  PeerAvatars.prototype.ground.call(peers, { heightAt: () => 0, waterAt: () => null })
+  run(b, pose, [true, true], 1, 0)
+  check(hipY() < rest.head.y, 'ground() hands it the new room\'s, and its hips come back down under its head', `hips ${(hipY() - rest.head.y).toFixed(2)} m over the headset`)
+}
+
 // --- the ground: the body stands on it, and a headset lowered crouches it ---------------
 {
   const b = makeBody(fisher, stature, { heightAt: (x, z) => (x > 5 ? 2 : 0) })
@@ -439,13 +456,13 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
     if (Math.abs(x) > 0.5) return BED
     return y === undefined || y + WALK.reach >= SOLE ? SOLE : BED
   } }
-  // Seated on a thwart: the sender's headset well under the villager's standing eye line, which is the shape that sinks.
+  // Seated on a thwart, aboard as the wire says with every told foot on a boat: the sender's headset well under the villager's standing eye line, which is the shape that sinks.
   const b = makeBody(fisher, stature, walk)
   const rest = restOf(b, 0, 0, 0)
   const seated = (x) => poseOf(new THREE.Vector3(x, SOLE + 0.95, 0), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setX(g.pos.x + x).setY(SOLE + 0.45), quat: g.quat })))
-  run(b, seated(0), [true, true], 2, SOLE)
+  run(b, seated(0), [true, true], 2, SOLE, true)
   check(b.body.y === SOLE && !b.body.aloft, 'a peer that sends its feet stands on them, seated amidships', `y ${b.body.y}`)
-  run(b, seated(0.5), [true, true], 3, SOLE)
+  run(b, seated(0.5), [true, true], 3, SOLE, true)
   check(b.body.y === SOLE && !b.body.aloft, 'and still stands on them carried to the bow, where its guessed-at feet are over the side', `y ${b.body.y}`)
   check(Math.min(...b.body.dys) > -1, 'and neither leg reaches for the bed the foot beside it samples', `dys ${b.body.dys.map((d) => d.toFixed(2)).join(' ')}`)
   // The same trip with nothing told, which is what the wire used to carry: the body drops through the boards.
@@ -455,6 +472,76 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   run(c, seated(0.5), [true, true], 3)
   check(amidships === SOLE && c.body.y < SOLE - 0.3, 'guessing at the ground instead, the same peer drops through the boards at the bow',
     `amidships ${amidships.toFixed(2)} -> bow ${c.body.y.toFixed(2)}`)
+}
+{
+  // A swimmer: a lake at 0 over a bed 2 m down, her feet told where they float, her eyes over the surface.
+  const walk = { heightAt: () => -2, waterAt: () => 0 }
+  const b = makeBody(fisher, stature, walk)
+  const eye = EYE_LINE * b.asset.height * b.k
+  const rest = restOf(b, 0, 0, 0)
+  const HY = 0.25
+  const afloat = poseOf(new THREE.Vector3(0, HY, 0), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y - rest.head.y + HY), quat: g.quat })))
+  run(b, afloat, [true, true], 1, HY - 1.6)
+  const eyeAt = b.at(sane(fisher.biped.head[0])).y + (EYE_LINE * fisher.biped.height - rest.neck.y / b.k) * b.k
+  check(b.body.aloft && !b.puppet.planted && Math.abs(b.body.y - (HY - eye)) < 1e-6, 'a swimmer\'s body hangs under its head, feet loose, never planted on the lake bed', `y ${b.body.y.toFixed(3)} planted ${b.puppet.planted}`)
+  check(Math.abs(eyeAt - HY) < 0.05, 'and its eyes are at the headset, over the water', `eyes ${eyeAt.toFixed(3)} headset ${HY}`)
+  // Aboard a boat on the same lake, told feet over the side are still the deck.
+  const c = makeBody(fisher, stature, walk)
+  run(c, afloat, [true, true], 1, HY - 1.6, true)
+  check(!c.body.aloft && c.body.y === HY - 1.6, 'aboard a boat on it, the same told feet are stood on', `y ${c.body.y}`)
+}
+{
+  // A flyer over dry land, her feet told 2 m up (player.js flyClearance): the body hangs from her head, not from the ground.
+  const b = makeBody(fisher, stature)
+  const eye = EYE_LINE * b.asset.height * b.k
+  const rest = restOf(b, 0, 0, 0)
+  const HY = 3.6
+  const flying = poseOf(new THREE.Vector3(0, HY, 0), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y - rest.head.y + HY), quat: g.quat })))
+  run(b, flying, [true, true], 1, 2)
+  const eyeAt = b.at(sane(fisher.biped.head[0])).y + (EYE_LINE * fisher.biped.height - rest.neck.y / b.k) * b.k
+  check(b.body.aloft && !b.puppet.planted && Math.abs(b.body.y - (HY - eye)) < 1e-6, `told feet more than ${FLY_M} m over dry ground hang the body under its head, feet loose`, `y ${b.body.y.toFixed(3)} planted ${b.puppet.planted}`)
+  check(Math.abs(eyeAt - HY) < 0.05, 'and its eyes are at the headset', `eyes ${eyeAt.toFixed(3)} headset ${HY}`)
+}
+
+// --- the wearer's size: a body is scaled until its standing eyes are the wearer's ------
+{
+  const stand = (b, rest, dy) => poseOf(rest.head.clone().setY(rest.head.y + dy), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setY(g.pos.y + dy), quat: g.quat })))
+  // The eyes as drawn: the neck joint plus the rest eye line over it, at the body's live scale.
+  const eyesOf = (b, rest) => b.at(sane(fisher.biped.head[0])).y + (EYE_LINE * fisher.biped.height - rest.neck.y / b.k) * b.body.k
+  for (const [what, dy] of [['taller', 0.12], ['shorter', -0.25]]) {
+    const b = makeBody(fisher, stature)
+    const rest = restOf(b, 0, 0, 0)
+    const own = rest.head.y
+    run(b, stand(b, rest, dy), [true, true], 8, 0)
+    const { body } = b
+    check(Math.abs(body.wearerEye - (own + dy)) < 1e-3 && Math.abs(body.fit - (own + dy) / own) < 0.01, `a wearer ${Math.abs(dy * 100)} cm ${what} than the villager's eye line is measured, and the body scaled to it`, `wearer ${body.wearerEye.toFixed(3)} fit ${body.fit.toFixed(3)}`)
+    check(body.crouch === 0 && body.lean === 0 && Math.abs(eyesOf(b, rest) - (own + dy)) < 0.02, 'standing straight, neither crouched nor leaning, its eyes at the headset', `crouch ${body.crouch.toFixed(3)} lean ${body.lean.toFixed(3)} eyes ${eyesOf(b, rest).toFixed(3)} headset ${(own + dy).toFixed(3)}`)
+    if (dy > 0) {
+      // A duck to a mushroom after that: a crouch, not a shrink.
+      const fit = body.fit
+      run(b, stand(b, rest, dy - 0.6), [true, true], 3, 0)
+      check(Math.abs(body.fit - fit) < 0.005 && body.crouch > 0.05, 'a three-second duck crouches it and leaves its size alone', `fit ${fit.toFixed(3)} -> ${body.fit.toFixed(3)} crouch ${body.crouch.toFixed(3)}`)
+    }
+  }
+  const b = makeBody(fisher, stature)
+  const rest = restOf(b, 0, 0, 0)
+  run(b, stand(b, rest, -0.5 * rest.head.y), [true, true], 8, 0)
+  check(b.body.fitTo() === FIT_MIN && Math.abs(b.body.fit - FIT_MIN) < 0.01, `a headset at half the eye line shrinks it no further than ${FIT_MIN}`, `fit ${b.body.fit.toFixed(3)}`)
+  // Feet not told, or told aboard a boat, are no measure of a wearer's height.
+  const c = makeBody(fisher, stature)
+  run(c, stand(c, rest, 0.12), [true, true], 4)
+  run(c, stand(c, rest, 0.12), [true, true], 4, 0, true)
+  check(c.body.fit === 1 && Number.isNaN(c.body.wearerEye), 'without told feet, or aboard, the body keeps the villager\'s own size', `fit ${c.body.fit}`)
+}
+
+// --- how far a peer is drawn ------------------------------------------------------------
+console.log('\nhow far a peer is drawn')
+{
+  const size = 1.7, last = LOD_RUNGS - 1
+  check(peerTier(size, 100, -1) === last && peerTier(size, 100, LOD_RUNGS) === last, 'a peer 100 m off is drawn on the last rung, coming into range or already there', `wildlife cull ${cullRange(size).toFixed(1)} m`)
+  check(peerTier(size, 3, -1) === critterTier(size, 3, -1) && peerTier(size, 20, -1) === critterTier(size, 20, -1), 'nearer, the ladder is the wildlife\'s')
+  check(peerTier(size, PEER_DRAW_M * (1 + LOD_HYSTERESIS / 2), last) === last && peerTier(size, PEER_DRAW_M * (1 + LOD_HYSTERESIS * 1.5), last) === LOD_RUNGS, 'past PEER_DRAW_M it goes, once it is clear of the hysteresis')
+  check(peerTier(size, PEER_DRAW_M * (1 - LOD_HYSTERESIS / 2), LOD_RUNGS) === LOD_RUNGS && peerTier(size, PEER_DRAW_M * (1 - LOD_HYSTERESIS * 1.5), LOD_RUNGS) === last, 'and comes back only once well inside it')
 }
 
 // --- release --------------------------------------------------------------------------

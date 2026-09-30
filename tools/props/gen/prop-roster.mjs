@@ -322,6 +322,21 @@ export const PROPS = [
       'One chunky readable silhouette: the grip, the canister barrel and the button and window on top each ' +
       'clearly separate. The window is a flat dark disc facing straight up.',
   },
+  {
+    id: 'flint',
+    label: 'Flint & Steel',
+    category: 'other',
+    // Held in her hand (flint.js): the striking edge points along the hand's -Z, and the spark leaves STRIKE metres in front of the origin. Until a pick is approved the world draws flint.js's boxes.
+    sizeM: 0.1,
+    aspectRatio: '4:3',
+    description:
+      'a fire-starting kit seen from the side: a palm-sized curved bar of dark forged steel, a flattened ' +
+      'C-shaped striker with a thumb loop, held against a chunky knapped flint the colour of wet slate, its broken ' +
+      'edge glinting pale, the two bound together at one end by a short wrap of tarred twine, a few nicks and ' +
+      'sparks-scars worn into the steel',
+    styleNote:
+      'One chunky readable silhouette: the steel loop and the flint lump clearly separate, the flint edge pointing right.',
+  },
 ]
 
 export const propById = (id) => PROPS.find((p) => p.id === id) ?? null

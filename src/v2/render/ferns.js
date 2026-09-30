@@ -736,6 +736,14 @@ export class Ferns {
     return Math.min(this.fullRadius * Math.pow(u, -1 / FALLOFF), this.radius)
   }
 
+  /** Blacken fern `id` (a perchesInto id) to soot: the card's tint, and the ring slot it borrows while it draws as a mesh. */
+  char(id) {
+    this._c.setRGB(0.015, 0.014, 0.012)
+    this.cards.setColorAt(id, this._c)
+    const tier = this.tierAt[id]
+    if (tier >= 0 && tier < this.ringCount) this.rings[tier].mesh.setColorAt(this.slotAt[id], this._c)
+  }
+
   /**
    * Every resident fern with its origin in the half-open box, written to `out`
    * at FERN_PERCH_STRIDE as [x, seat y, z, radius, id]: the radius is half the

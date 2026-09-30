@@ -1804,6 +1804,19 @@ export class Trees {
     return n
   }
 
+  /** Blacken the tree standing at (x, z) to soot, in every tier alike (the tint is per instance). False when none stands there: its tile has regrown since it was found. */
+  char(x, z) {
+    const tile = this.tiles.get(Math.floor(x / TILE) * 0x10000 + Math.floor(z / TILE))
+    if (!tile) return false
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (Math.abs(this.instX[id] - x) > 1e-3 || Math.abs(this.instZ[id] - z) > 1e-3) continue
+      this.batch.setColorAt(id, this._c.setRGB(0.015, 0.013, 0.012))
+      return true
+    }
+    return false
+  }
+
   /**
    * The trunk whose footprint, widened by `pad` metres, covers (x, z): its axis
    * and that padded radius written into `out` as {x, z, r}, or null when the

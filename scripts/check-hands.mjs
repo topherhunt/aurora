@@ -134,7 +134,7 @@ const build = () => {
   w.at(0, 0.3, 0)
   check(w.hands.press('right', w.head) === 'pick' && w.src.taken.length === 1 && w.src.taken[0].kind === 'mushroom', 'within reach the nearest thing is taken')
   check(w.hands.holding('right')?.kind === 'mushroom' && w.hands.stats.held === 1, 'and the hand holds its record')
-  check(w.hands.press('right', w.head) === 'drop' && w.hands.holding('right') === null, 'a second press lets it go')
+  check(w.hands.drop('right', w.head) === 'drop' && w.hands.holding('right') === null, 'the grip lets it go')
   // The size caps are one, so whatever is lifted would stow; the 1.5 m crab is lifted, and its source alone says it does not stow. A 2.5 m one is never offered.
   w.at(4, 0.7, 0)
   check(STOW_MAX_M === GRAB_MAX_M && w.hands.press('right', w.head) === 'pick' && w.hands.holding('right').size === 1.5 && w.hands.holding('right').stowable === false, `a ${1.5} m crab is lifted, and its source's word on stowing is kept`, `GRAB_MAX ${GRAB_MAX_M} STOW_MAX ${STOW_MAX_M}`)
@@ -218,7 +218,7 @@ const build = () => {
   w.hands.press('right', w.head)
   w.at(10, 1.5, 0)
   w.hands.update(1 / 60, w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   check(w.src.releases.length === 1 && Math.abs(w.src.releases[0].x - 10) < 1e-6 && w.src.releases[0].head.yaw === 0, 'the source is offered the thing at the hand first')
   check(w.hands.loose.length === 1 && w.hands.loose[0].state === 'fall', 'refused, it is loose and falling')
   const item = w.hands.loose[0]
@@ -262,7 +262,7 @@ const build = () => {
   check(w.hands.press('right', w.head) === 'pick' && w.hands.holding('right') === item.rec && w.hands.loose.length === 0 && w.src.taken.length === asked && w.hands.stats.taken === 2, 'a dropped thing is picked up again, the bed not asked')
   w.hands.update(1 / 60, w.head)
   check(w.hands.pools.get(geo).over.mesh.count === 1 && w.hands.pools.get(geo).mesh.count === 0 && item.state === 'held', 'and drawn once, at the hand, on the over mesh')
-  check(w.hands.press('right', w.head) === 'drop' && w.hands.loose.length === 1 && w.hands.loose[0] === item && item.state === 'fall', 'and dropped again')
+  check(w.hands.drop('right', w.head) === 'drop' && w.hands.loose.length === 1 && w.hands.loose[0] === item && item.state === 'fall', 'and dropped again')
   const slopeRun = Math.hypot(item.x - x1, item.z - z1)
   // Flat ground: the kick alone, half a metre at least, and the roll stops early. Several drops, since the heading and the kick are rolled.
   const runs = []
@@ -273,7 +273,7 @@ const build = () => {
     f.hands.press('right', f.head)
     f.at(-5, 1, 0)
     f.hands.update(1 / 60, f.head)
-    f.hands.press('right', f.head)
+    f.hands.drop('right', f.head)
     f.run(3)
     const it = f.hands.loose[0]
     runs.push({ state: it.state, d: Math.hypot(it.x + 5, it.z), a: Math.atan2(it.z, it.x + 5) })
@@ -296,10 +296,11 @@ const build = () => {
   check(bad, 'a ray without a reach throws')
   check(w.hands.pressRay('right', origin, dir, 1.2, w.head) === null && w.src.taken.length === 0, 'nothing within reach along the ray: nothing taken', `${w.src.taken.length}`)
   check(w.hands.pressRay('right', origin, dir, 2, w.head) === 'pick' && w.src.taken[0].x === 1.5, `the first thing whose surface is within RAY_STEP ${RAY_STEP} of the ray is taken, not one beside it`, `took x ${w.src.taken[0]?.x} z ${w.src.taken[0]?.z}`)
-  check(w.hands.pressRay('right', origin, dir, 2, w.head) === 'drop' && w.hands.loose.length === 1, 'a full hand drops what it holds instead')
+  check(w.hands.pressRay('right', origin, dir, 2, w.head) === null && w.hands.loose.length === 0 && w.hands.holding('right') !== null, 'a click with a full hand drops nothing')
+  check(w.hands.drop('right', w.head) === 'drop' && w.hands.loose.length === 1, 'the drop lets it go')
   w.run(2)
   check(w.hands.pressRay('right', origin, dir, 4, w.head) === 'pick' && w.src.taken.length === 2 && w.src.taken[1].x === 3, 'and the reach goes as far as it is told', `took x ${w.src.taken[1]?.x}`)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   w.run(3)
   const loose = w.hands.loose.find((it) => it.state === 'still')
   const asked = w.src.taken.length
@@ -312,7 +313,7 @@ const build = () => {
   w.src.takeBack = (rec) => rec.kind === 'crab'
   w.at(4, 0.7, 0)
   w.hands.press('right', w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   check(w.hands.loose.length === 0 && w.hands.pools.get(geo).items.length === 0, 'a crab let go of is the layer\'s again, not loose here')
   check(w.thuds.length === 0, 'taken at the hand, it never met the ground: no thud', `${w.thuds.length}`)
   w.hands.update(1 / 60, w.head)
@@ -327,7 +328,7 @@ const build = () => {
   w.hands.press('right', w.head)
   w.at(35, LEVEL + 2, 0)
   w.hands.update(1 / 60, w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   check(w.hands.loose.length === 1 && w.src.releases.length === 1, 'over the lake the fish is refused in the air and falls')
   w.run(1)
   check(w.hands.loose.length === 0 && w.src.releases.length === 2 && w.src.releases[1].y <= LEVEL && w.src.releases[1].y > LEVEL - 0.3, 'and taken back as it meets the surface', `offered at y ${w.src.releases[1]?.y.toFixed(3)} level ${LEVEL}`)
@@ -337,7 +338,7 @@ const build = () => {
   b.hands.press('right', b.head)
   b.at(-3, 1.2, 0)
   b.hands.update(1 / 60, b.head)
-  b.hands.press('right', b.head)
+  b.hands.drop('right', b.head)
   b.run(1)
   const fish = b.hands.loose[0]
   check(fish && fish.state === 'flap', 'on dry ground it lands flapping', `state ${fish?.state}`)
@@ -362,7 +363,7 @@ const build = () => {
   w.hands.press('right', w.head)
   w.at(40, LEVEL + 1.5, 0)
   w.hands.update(1 / 60, w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   const m = w.hands.loose[0]
   w.run(0.8)
   check(m.state === 'float' && w.src.releases.length === 2 && w.src.releases[1].y <= LEVEL, 'over the lake a mushroom is offered back at the surface and, refused, floats', `state ${m.state}`)
@@ -390,7 +391,7 @@ const build = () => {
   // Let go under the water: it rises to the line, slowly.
   w.at(40, LEVEL - 1.5, 0)
   w.hands.update(1 / 60, w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   w.run(0.5)
   const deep = m.y
   check(m.state === 'float' && deep < LEVEL - 1 && deep > LEVEL - 1.5, 'let go under the water it floats up', `y ${deep.toFixed(2)} after 0.5 s`)
@@ -410,7 +411,7 @@ const build = () => {
   c.hands.press('right', c.head)
   c.at(35, LEVEL + 1, 0)
   c.hands.update(1 / 60, c.head)
-  c.hands.press('right', c.head)
+  c.hands.drop('right', c.head)
   c.run(3)
   const crab = c.hands.loose[0]
   check(crab.state !== 'float' && Math.abs(crab.y - (groundAt(crab.x) + crab.r)) < 1e-6 && c.thuds.length === 1 && c.thuds[0].y < LEVEL, 'a crab refused at the surface sinks to the bed, and is heard there', `state ${crab.state} y ${crab.y.toFixed(2)} thuds ${c.thuds.length}`)
@@ -484,7 +485,7 @@ const build = () => {
   w.hands.update(1 / 60, w.head)
   // Six: the re-entry before the stow and the fish on its way in, above.
   check(w.pulses.length === 6, 'a crab its source calls unstowable does not buzz in the zone', `${w.pulses.length}`)
-  check(w.hands.press('right', w.head) === 'drop' && w.pack.length === 2 && w.hands.loose.length === 1, 'and the trigger there drops it')
+  check(w.hands.drop('right', w.head) === 'drop' && w.pack.length === 2 && w.hands.loose.length === 1, 'and the grip there drops it')
 }
 
 // --- the packed slot, and its way back into a hand ----------------------------------
@@ -607,7 +608,7 @@ const build = () => {
   for (let i = 0; i < LOOSE_MAX + 5; i++) {
     w.at(-10 - i, 0.3, 0)
     w.hands.press('right', w.head)
-    w.hands.press('right', w.head)
+    w.hands.drop('right', w.head)
   }
   w.hands.update(1 / 60, w.head)
   const pool = w.hands.pools.get(geo)
@@ -626,7 +627,7 @@ const build = () => {
   w.hands.press('right', w.head)
   check(events.length === 1 && events[0].type === 'hold' && events[0].hand === 'right' && events[0].slot?.kind === 'mushroom' && !('geometry' in events[0].slot), 'a take is one hold event with the packed slot')
   events.length = 0
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   check(events.length === 2 && events[0].type === 'hold' && events[0].slot === null && events[1].type === 'loose' && events[1].id === '0123abcd-0' && events[1].state === 2 && events[1].pose.length === 7, 'a drop is a hold of nothing and one loose thing in motion, under the tag and a count', JSON.stringify(events.map((e) => e.type)))
   events.length = 0
   w.run(0.5)
@@ -643,7 +644,7 @@ const build = () => {
   w.hands.press('right', w.head)
   check(events.length === 2 && events[0].type === 'lift' && events[0].id === '0123abcd-0' && events[1].type === 'hold', 'taking it back is a lift then a hold', JSON.stringify(events.map((e) => e.type)))
   events.length = 0
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   check(events[1]?.type === 'loose' && events[1].id === '0123abcd-1', 'dropped again it is a new thing to the room', events[1]?.id)
   // Stowed from the hand: a hold of nothing; given from the backpack: a hold.
   w.run(ROLL_MAX_S + 1)
@@ -663,7 +664,7 @@ const build = () => {
   h2.hands.sync = (e) => e2.push(e)
   h2.at(0, 0.3, 0)
   h2.hands.press('right', h2.head)
-  h2.hands.press('right', h2.head)
+  h2.hands.drop('right', h2.head)
   h2.run(ROLL_MAX_S + 1)
   check(e2.every((e) => e.type === 'hold') && h2.hands.loose[0].netId === null, 'before the relay names her a drop is a hold alone')
   let noTag = false
@@ -702,7 +703,7 @@ const build = () => {
   // Hers is hers: a peer's word on one of her own things is ignored while it is hers to settle.
   w.at(0, 0.3, 0)
   w.hands.press('right', w.head)
-  w.hands.press('right', w.head)
+  w.hands.drop('right', w.head)
   const mine = w.hands.loose[2]
   check(mine.mine && w.hands.netLoose(mine.netId, slot, [9, 9, 9, 0, 0, 0, 1], 0) === true && mine.state === 'fall', 'a peer cannot move what she has just let go')
   // Lifted by a peer: gone from here; an unknown id is nothing.
@@ -827,6 +828,35 @@ const build = () => {
   at(0, 0.9, -ZONE.within * K + 0.1)
   hands.update(1 / 60, head)
   check(pulses.length === 1 && hands.hands.get('right').inZone, 'and inside it the hand buzzes')
+  // Her hand hangs under the rig, which Player scales to her size: the thing in it is turned by the hand, never scaled by the rig.
+  hands.drop('right', head)
+  src.things.push(thing('mushroom', 20, 0, 0, 0.2))
+  const rig = new THREE.Group()
+  rig.scale.setScalar(K)
+  rig.position.set(20, 0, 0)
+  scene.add(rig)
+  rig.add(node)
+  node.position.set(0, (0.1 + REACH_M * K - 0.02) / K, 0)
+  node.updateMatrixWorld(true)
+  check(hands.press('right', head) === 'pick', 'a hand under the rig takes a mushroom')
+  node.quaternion.setFromEuler(new THREE.Euler(0.7, -1.1, 0.4))
+  node.updateMatrixWorld(true)
+  hands.update(1 / 60, head)
+  const pool = hands.pools.get(geo)
+  const m = new THREE.Matrix4().fromArray(pool.over.mesh.instanceMatrix.array, 0)
+  const cols = [0, 1, 2].map((i) => new THREE.Vector3().setFromMatrixColumn(m, i))
+  const lens = cols.map((c) => c.length())
+  check(lens.every((l) => Math.abs(l - 0.2) < 1e-6) && Math.abs(cols[0].dot(cols[1])) < 1e-6 && Math.abs(cols[1].dot(cols[2])) < 1e-6 && Math.abs(cols[0].dot(cols[2])) < 1e-6, 'held under a rig at half size and turned, the thing is only turned: its own size along every axis, the axes square', lens.map((l) => l.toFixed(4)).join(' '))
+  check(new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(node.matrixWorld)).angleTo(hands.hands.get('right').held.q) < 1e-6, 'and turned as the hand is')
+  // A source that never reads maxSize is held to the cap all the same.
+  const deaf = new Source([thing('fish', 9, 0, 0, 1.5)])
+  deaf.pickAt = function (x, y, z, reach) { return Source.prototype.pickAt.call(this, x, y, z, reach, Infinity) }
+  hands.addSource(deaf, 'fish')
+  hands.drop('right', head)
+  rig.remove(node)
+  scene.add(node)
+  at(9, 0.3, 0)
+  check(hands.press('right', head) === null && deaf.taken.length === 0, 'a source that offers a thing past her lift cap is refused by the hands themselves')
 }
 
 console.log(failures === 0 ? 'check-hands: all passed' : `check-hands: ${failures} FAILED`)

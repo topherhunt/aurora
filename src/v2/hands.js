@@ -84,6 +84,9 @@ export const ROLL_KICK = [0.95, 1.3]
 const ROLL_LEAN = 6
 // A thing on the ground is a ball of this fraction of its size, for the contact and the roll.
 const BALL = 0.4
+// A kind whose source says `lies` (a stick) is let go level, lands flat on a ball of this fraction of its size and slides rather than rolls, at this fraction of a roll's speed.
+const LIE_BALL = 0.04
+const LIE_SLIDE = 0.3
 // A beached fish: the tail's beats a second and its swing as a fraction of the length at full strength; a jerk of the body every so often, a turn of up to this and a hop of this speed.
 const FLAP_HZ = 6
 const FLAP_AMP = 0.15
@@ -139,6 +142,7 @@ const STUDIO_MARGIN = 1.08
 
 const _p = new THREE.Vector3()
 const _c = new THREE.Vector3()
+const _v = new THREE.Vector3()
 const _axis = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _dq = new THREE.Quaternion()
@@ -184,6 +188,8 @@ export class Hands {
     this.sources = []
     // kind -> the source that hands it out and dresses it.
     this.byKind = new Map()
+    // The kinds that lie flat on the ground when let go (see LIE_BALL).
+    this.lying = new Set()
     this.hands = new Map()
     // The things let go of and not taken back, oldest first.
     this.loose = []
@@ -225,7 +231,10 @@ export class Hands {
     const list = typeof kinds === 'string' ? [kinds] : kinds
     if (!Array.isArray(list) || list.length === 0 || list.some((k) => typeof k !== 'string' || k === '')) throw new Error('Hands.addSource: a source names the kind or kinds it hands out')
     for (const kind of list) if (this.byKind.has(kind)) throw new Error(`Hands.addSource: two sources hand out a ${kind}`)
-    for (const kind of list) this.byKind.set(kind, src)
+    for (const kind of list) {
+      this.byKind.set(kind, src)
+      if (src.lies === true) this.lying.add(kind)
+    }
     this.sources.push(src)
   }
 
@@ -251,6 +260,32 @@ export class Hands {
     _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
     _s.fromArray(item.rec.scale).multiplyScalar(k)
     return out.compose(_p, item.q, _s)
+  }
+
+  /** Tells the room what the hand holds again: its record changed in place (a stick lit). */
+  rehold(key) {
+    const hand = this._hand(key)
+    if (!hand.held) throw new Error(`Hands.rehold: ${key} holds nothing`)
+    this._emit({ type: 'hold', hand: key, slot: this.pack(hand.held.rec) })
+  }
+
+  /**
+   * Every lit thing in the room -- hers in a hand, loose, a peer's -- as `{ rec, x, y, z, hand, id }`, the point `tip` (in the thing's own
+   * frame, at unit scale) carried to the world; `hand` is the key of one she holds, `id` the netId of a loose one or the peer's id.
+   */
+  litTips(tip, out) {
+    out.length = 0
+    const at = (item, k, extra) => {
+      _c.copy(item.off).multiplyScalar(k).applyQuaternion(item.q)
+      _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
+      _s.fromArray(item.rec.scale).multiplyScalar(k)
+      _v.copy(tip).multiply(_s).applyQuaternion(item.q).add(_p)
+      out.push({ rec: item.rec, x: _v.x, y: _v.y, z: _v.z, hand: null, id: null, ...extra })
+    }
+    for (const hand of this.hands.values()) if (hand.held?.rec.lit) at(hand.held, this._drawn(hand), { hand: hand.key })
+    for (const item of this.loose) if (item.rec.lit) at(item, 1, { id: item.netId })
+    for (const [peer, held] of this.peerHeld) for (const entry of held) if (entry?.item && entry.item.rec.lit && entry.item.y !== UNPLACED_Y) at(entry.item, 1, { id: peer })
+    return out
   }
 
   /** Whether a press on this hand would stow what it holds rather than let it go. */
@@ -336,9 +371,9 @@ export class Hands {
    * The trigger on one hand. `head` is {x, y, z, yaw}: her head and the
    * bearing it faces. Empty, the hand takes the nearest thing in reach; full,
    * it stows the thing when the hand is in the backpack zone and the thing
-   * fits, and lets it go anywhere else. Returns what happened -- 'pick',
-   * 'drop', 'stow', 'full' (the backpack had no room; still held) -- or null
-   * when there was nothing to take.
+   * fits, and otherwise does nothing -- letting go is drop(). Returns what
+   * happened -- 'pick', 'stow', 'full' (the backpack had no room; still held)
+   * -- or null when there was nothing to take or stow.
    */
   press(key, head) {
     const hand = this._hand(key)
@@ -350,9 +385,7 @@ export class Hands {
         this.stowed++
         return 'stow'
       }
-      this._drop(hand, head)
-      this.dropped++
-      return 'drop'
+      return null
     }
     const p = this._point(hand)
     const best = this._nearestAt(p.x, p.y, p.z, hand.reach * this.scale)
@@ -361,7 +394,7 @@ export class Hands {
     return 'pick'
   }
 
-  /** A full hand lets go where it is, wherever it is -- press would stow in the backpack zone. Returns 'drop', or null with nothing held. */
+  /** A full hand lets go where it is, wherever it is -- the grip and the desktop's E. Returns 'drop', or null with nothing held. */
   drop(key, head) {
     const hand = this._hand(key)
     if (!hand.held) return null
@@ -454,10 +487,10 @@ export class Hands {
   }
 
   /**
-   * The desktop's click: a full hand lets go as press does; an empty one
+   * The desktop's click: a full hand does what press does; an empty one
    * takes the first thing along the ray from `origin` (a Vector3) down `dir`
    * (a unit Vector3) within `maxDist` metres, probed a RAY_STEP at a time.
-   * Returns 'pick', 'drop' or null.
+   * Returns 'pick', 'stow', 'full' or null.
    */
   pressRay(key, origin, dir, maxDist, head) {
     const hand = this._hand(key)
@@ -661,13 +694,17 @@ export class Hands {
   /** The nearest thing within `reach` of a point: a source's hit, or a loose thing lying where it was dropped, `{ loose }`. */
   _nearestAt(x, y, z, reach) {
     let best = null
+    const cap = GRAB_MAX_M * this.scale
     for (const src of this.sources) {
-      const hit = src.pickAt(x, y, z, reach, GRAB_MAX_M * this.scale)
-      if (hit && (!best || hit.dist < best.hit.dist)) best = { src, hit }
+      const hit = src.pickAt(x, y, z, reach, cap)
+      if (!hit) continue
+      if (!Number.isFinite(hit.size)) throw new Error(`Hands: a ${src.constructor.name} hit has no size to hold to the lift cap`)
+      // Checked here too: not every source reads maxSize.
+      if (hit.size < cap && (!best || hit.dist < best.hit.dist)) best = { src, hit }
     }
     for (const item of this.loose) {
       const d = Math.max(0, Math.hypot(item.x - x, item.y - y, item.z - z) - item.rec.size / 2)
-      if (d < reach && (!best || d < best.hit.dist)) best = { loose: item, hit: { dist: d } }
+      if (d < reach && item.rec.size < cap && (!best || d < best.hit.dist)) best = { loose: item, hit: { dist: d } }
     }
     return best
   }
@@ -751,7 +788,7 @@ export class Hands {
       rec, src, pool, attrs,
       // The ball's centre, its rotation, and the offset from the geometry's origin to its centre, scaled: what the pose is applied to.
       x: 0, y: 0, z: 0, q: new THREE.Quaternion(), off: new THREE.Vector3(pool.centre.x * rec.scale[0], pool.centre.y * rec.scale[1], pool.centre.z * rec.scale[2]),
-      r: rec.size * BALL,
+      r: rec.size * (this.lying.has(rec.kind) ? LIE_BALL : BALL),
       state: 'held', vx: 0, vy: 0, vz: 0, t: 0, tried: false, jerk: 0,
       // Afloat: the bob's phase, the turn, the drift it is easing toward and how long that heading has left.
       phase: 0, spin: 0, ax: 0, az: 0, tack: 0,
@@ -799,8 +836,11 @@ export class Hands {
     this._emit({ type: 'hold', hand: hand.key, slot: null })
     if (this._giveBack(item, cx, cy, cz, head)) return
     item.x = cx; item.y = cy; item.z = cz
-    // Held level; let go level.
-    item.q.identity()
+    // Held level; let go level -- or, for a thing that lies, turned flat about the way it pointed.
+    if (this.lying.has(item.rec.kind)) {
+      _c.set(0, 0, -1).applyQuaternion(item.q)
+      item.q.setFromAxisAngle(_axis.set(0, 1, 0), Math.atan2(-_c.x, -_c.z))
+    } else item.q.identity()
     item.vx = item.vy = item.vz = 0
     item.state = 'fall'
     item.t = 0
@@ -843,7 +883,9 @@ export class Hands {
       const item = hand.held
       hand.node.updateWorldMatrix(true, false)
       _m.copy(hand.node.matrixWorld)
-      _q.setFromRotationMatrix(_m)
+      // Decomposed, not setFromRotationMatrix: the hand hangs under her rig, scaled to her size, and a scaled matrix read as a
+      // rotation is a quaternion off unit length, which draws the thing stretched differently at every angle of the hand.
+      _m.decompose(_v, _q, _s)
       _p.copy(HOLD_OFFSET).applyMatrix4(_m)
       hand.kick += dt
       const e = this._kicked(hand)
@@ -912,7 +954,8 @@ export class Hands {
       let dx = Math.cos(a) + n.x * ROLL_LEAN, dz = Math.sin(a) + n.z * ROLL_LEAN
       const l = Math.hypot(dx, dz)
       dx /= l; dz /= l
-      const kick = between(this.rand, ROLL_KICK)
+      const lies = this.lying.has(item.rec.kind)
+      const kick = between(this.rand, ROLL_KICK) * (lies ? LIE_SLIDE : 1)
       item.vx = dx * kick
       item.vz = dz * kick
       return true
@@ -938,7 +981,7 @@ export class Hands {
       item.x += item.vx * dt
       item.z += item.vz * dt
       item.y = this.walk.heightAt(item.x, item.z, item.y) + item.r
-      if (speed > 1e-4) {
+      if (speed > 1e-4 && !this.lying.has(item.rec.kind)) {
         // Turned forward about the axis across the travel, up x v, by the arc the ball rolled: its top goes the way it is going.
         _axis.set(item.vz, 0, -item.vx).normalize()
         _dq.setFromAxisAngle(_axis, (speed * dt) / item.r)

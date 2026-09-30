@@ -26,8 +26,9 @@ function roomFor(name) {
     // `loose`, `gone`, `taken` and `rev`: the things in the room, see applyThing.
     // `anchors`, `lured` and `crev`: the creatures someone is interacting with, see applyCreature.
     // `flares` and `frev`: the flares shot in the room, see applyFlare.
+    // `flames` and `mrev`: the flames lit on trees, ferns and sticks, see applyFlame.
     // `trust` and `trev`: which villager trusts which player, see applyTrust.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, trust: new Map(), trev: 0 }
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -89,6 +90,27 @@ function flaresFor(room, client, now) {
   const out = []
   for (const e of room.flares) if (e.rev > client.seenFrev && e.by !== client.id) out.push([...e.data, now - e.at])
   client.seenFrev = room.frev
+  return out.length ? out : null
+}
+
+// FLAMES (v2/render/wildfire.js): [id, room, x, y, z, lifeS], one lit on a tree, fern or ground stick, kept FLAME_CAP deep and sent once to every other client with its age in ms. A flame is a pure function of where and when, so each client burns its copy alone; only the lighting client spreads it.
+const FLAME_CAP = 64
+function validFlame(f) {
+  return Array.isArray(f) && f.length === 6 && typeof f[0] === 'string' && /^[0-9a-z]{1,16}$/.test(f[0]) &&
+    typeof f[1] === 'string' && /^[a-z0-9:.-]{1,40}$/.test(f[1]) && f.slice(2).every((n) => Number.isFinite(n)) && f[5] > 0 && f[5] <= 60
+}
+
+function applyFlame(room, client, flame, now) {
+  if (room.flames.some((e) => e.data[0] === flame[0])) return
+  room.flames.push({ data: flame, at: now, rev: ++room.mrev, by: client.id })
+  if (room.flames.length > FLAME_CAP) room.flames.shift()
+}
+
+/** The flames lit since this client last heard, none its own, each with its age in ms; null when there are none. */
+function flamesFor(room, client, now) {
+  const out = []
+  for (const e of room.flames) if (e.rev > client.seenMrev && e.by !== client.id && now - e.at < e.data[5] * 1000) out.push([...e.data, now - e.at])
+  client.seenMrev = room.mrev
   return out.length ? out : null
 }
 
@@ -379,6 +401,8 @@ wss.on('connection', (ws, request) => {
     seenCrev: 0,
     // How far through the room's flares it has been told.
     seenFrev: 0,
+    // How far through the room's flames it has been told.
+    seenMrev: 0,
     // How far through the room's trust it has been told.
     seenTrev: 0,
     // Who it is in this relay's log, and the diag lines it has said.
@@ -425,6 +449,13 @@ wss.on('connection', (ws, request) => {
     if (message && message.type === 'flare') {
       if (validFlare(message.flare)) {
         applyFlare(room, client, message.flare, now)
+        client.lastSeen = now
+      }
+      return
+    }
+    if (message && message.type === 'flame') {
+      if (validFlame(message.flame)) {
+        applyFlame(room, client, message.flame, now)
         client.lastSeen = now
       }
       return
@@ -491,7 +522,7 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things, the creatures, the flares and the trust ride only when something changed since this client last heard.
+      // The things, the creatures, the flares, the flames and the trust ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
@@ -499,6 +530,8 @@ setInterval(() => {
       if (creatures) snapshot.creatures = creatures
       const flares = flaresFor(room, client, now)
       if (flares) snapshot.flares = flares
+      const flames = flamesFor(room, client, now)
+      if (flames) snapshot.flames = flames
       const trust = trustFor(room, client)
       if (trust) snapshot.trust = trust
       send(client, snapshot)

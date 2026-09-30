@@ -97,10 +97,12 @@ export const LOCOMOTION = {
   travelEase: 0.15, // fraction of the trip spent rising, and again descending
 
   // --- swimming: where the water is over her head (§12) --------------------
-  // Afloat, her eye rides this far over the drawn surface. The margin over the
-  // lap (WATER.lapHeight 0.08) plus the bob is what keeps a floating head from
-  // dipping under and flickering the whole submersion effect.
-  swimEyeClear: 0.15,
+  // Afloat, her eye rides this far over the drawn surface: head and the tops
+  // of the shoulders out, as a peer sees her body hung under her head
+  // (avatar-rig.js). The margin over the lap (WATER.lapHeight 0.08) plus the
+  // bob is what keeps a floating head from dipping under and flickering the
+  // whole submersion effect.
+  swimEyeClear: 0.28,
   // At rest with her eye less than this under the surface, she rises to float;
   // deeper, she hangs where she is. Wider than the bob plus the lap, so a
   // resting swimmer is always clearly under or clearly afloat.

@@ -488,6 +488,26 @@ const LAMP_GLSL = /* glsl */ `
   }
 `
 
+// TORCHES are the one dynamic light: up to TORCHES of them, each a point that moves, so they are uniforms and not the lamp map's bake. Like a lamp's the light multiplies the surface's own colour and ignores its normal; it fades to nothing at TORCH_REACH metres, as the square of the distance left. A slot with no strength is skipped, so a world with none lit pays only the loop's test.
+export const TORCHES = 4
+export const TORCH_REACH = 15
+const TORCH_GLSL = /* glsl */ `
+  // xyz the flame, w its strength (0 = out).
+  uniform vec4 uTorch[${TORCHES}];
+  uniform vec3 uTorchColor;
+
+  vec3 wlTorch( vec3 p ) {
+    vec3 sum = vec3( 0.0 );
+    for ( int i = 0; i < ${TORCHES}; i++ ) {
+      float s = uTorch[ i ].w;
+      if ( s <= 0.0 ) continue;
+      float k = clamp( 1.0 - length( p - uTorch[ i ].xyz ) / ${TORCH_REACH.toFixed(1)}, 0.0, 1.0 );
+      sum += uTorchColor * ( s * k * k );
+    }
+    return sum;
+  }
+`
+
 export class WorldLighting {
   constructor() {
     this.ready = false
@@ -541,6 +561,9 @@ export class WorldLighting {
       uLampY: { value: new THREE.Vector2(0, 1) },
       uLampColor: { value: new THREE.Color(0, 0, 0) },
       uLampGlow: { value: new THREE.Vector3(0, 0, 0) },
+      // The torches (TORCH_GLSL): each a point and a strength, and the warm colour they share, linear.
+      uTorch: { value: Array.from({ length: TORCHES }, () => new THREE.Vector4(0, 0, 0, 0)) },
+      uTorchColor: { value: new THREE.Color(1.0, 0.42, 0.12) },
     }
 
     this.horizonTex = null
@@ -609,6 +632,16 @@ export class WorldLighting {
     this.uniforms.uLampY.value.set(y0, span)
     this.uniforms.uLampColor.value.copy(color)
     this.recompile()
+  }
+
+  /** The torches' light this frame: up to TORCHES of `{ x, y, z, strength }`, the rest put out. Not a recompile. */
+  setTorches(list) {
+    const slots = this.uniforms.uTorch.value
+    for (let i = 0; i < TORCHES; i++) {
+      const t = list[i]
+      if (t) slots[i].set(t.x, t.y, t.z, t.strength)
+      else slots[i].w = 0
+    }
   }
 
   clearLamps() {
@@ -832,7 +865,7 @@ export class WorldLighting {
       if (mode === 'fragment') {
         if (!worldPosVarying) throw new Error('patch: fragment mode needs worldPosVarying')
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}${lamps ? LAMP_GLSL : ''}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}${lamps ? LAMP_GLSL : ''}${TORCH_GLSL}`)
           .replace(
             '#include <lights_fragment_end>',
             `#include <lights_fragment_end>
@@ -842,7 +875,8 @@ export class WorldLighting {
               NEAR_GLSL(`${worldPosVarying}.xyz`),
               liftU
             )}
-            ${lamps ? `reflectedLight.directDiffuse += diffuseColor.rgb * wlLamp( ${worldPosVarying}.xyz );` : ''}`
+            ${lamps ? `reflectedLight.directDiffuse += diffuseColor.rgb * wlLamp( ${worldPosVarying}.xyz );` : ''}
+            reflectedLight.directDiffuse += diffuseColor.rgb * wlTorch( ${worldPosVarying}.xyz );`
           )
           // Caustics ahead of the aerial mix, in the same slot, so the murk
           // gets the last word on a bed at range.
@@ -862,9 +896,9 @@ export class WorldLighting {
         // in the program she is under water for.
         const bed = caustics ? '\nvarying vec3 vWlBed;' : ''
         // The lamps' light at the vertex, a varying only while a room has lamps.
-        const lamp = lamps ? '\nvarying vec3 vWlLamp;' : ''
+        const lamp = (lamps ? '\nvarying vec3 vWlLamp;' : '') + '\nvarying vec3 vWlTorch;'
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}${lamp}${lamps ? LAMP_GLSL : ''}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}${lamp}${lamps ? LAMP_GLSL : ''}${TORCH_GLSL}`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
@@ -874,7 +908,8 @@ export class WorldLighting {
                              ${NEAR_GLSL('wlWorld')} );`
               : `vWlNear = ${NEAR_GLSL('wlWorld')};`}
             ${caustics ? 'vWlBed = wlWorld;' : ''}
-            ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}`
+            ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}
+            vWlTorch = wlTorch( wlWorld );`
           )
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}`)
@@ -887,7 +922,8 @@ export class WorldLighting {
               maps ? 'vWlShade.z' : 'vWlNear',
               liftU
             )}
-            ${lamps ? 'reflectedLight.directDiffuse += diffuseColor.rgb * vWlLamp;' : ''}`
+            ${lamps ? 'reflectedLight.directDiffuse += diffuseColor.rgb * vWlLamp;' : ''}
+            reflectedLight.directDiffuse += diffuseColor.rgb * vWlTorch;`
           )
           // Same slot and same order as the fragment path: the net goes on
           // before the murk gets the last word.

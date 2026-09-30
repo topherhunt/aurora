@@ -220,6 +220,8 @@ export const RULES = {
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 8, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
+  // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`.
+  blaze: { reach: 25, near: 1.5, edge: 5, level: 0.3, cap: 1.6, gain: [0.8, 1.0] },
   // A torch (lamps.js, the room's lamps, a wick in a dish): the campfire's takes again, a loop a torch placed at its flame, quieter and low-passed at `cutoff` Hz so the pops are gone and a soft crackle is left, the level scaled by how lit the torches are (0..1, off by day) and by her distance as a campfire's.
   torch: { reach: 4, near: 0.8, edge: 1.5, level: 0.08, cutoff: 1800, gain: [0.8, 1.0] },
   // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
@@ -244,7 +246,7 @@ export class Ambience {
    * @param campfires the fires burning, if any: `[{ x, y, z }]`, each its flame (RULES.campfire).
    * @param torches   the room's torches, if any: `{ at: [{ x, y, z }], lit }`, each flame's position and lit() how lit they all are now, 0..1 (RULES.torch).
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null, blaze = () => [] }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const v of voiced) {
       if (!v?.layer || typeof v.layer.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
@@ -337,6 +339,9 @@ export class Ambience {
       this.loops[`torch${i}`].setCutoff(RULES.torch.cutoff)
       return { key: `torch${i}`, x: f.x, y: f.y, z: f.z }
     })
+    this.blaze = blaze
+    this.loops.blaze = engine.loop(CAMPFIRES, { directional: true, gain: RULES.blaze.gain })
+    this.blazeAt = { x: 0, y: 0, z: 0 }
     this.leavesOn = false
     this.windOn = false
     this.rainOn = false
@@ -462,6 +467,7 @@ export class Ambience {
     this._loops(head, s, cover, precip)
     this._fiddlers(dt, head, indoors)
     this._campfires(head)
+    this._blaze(head)
     this._torches(head)
     this._crawl(head)
     this._fish(head)
@@ -954,6 +960,20 @@ export class Ambience {
       const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
       this._loop(f.key, d < C.reach, C.level * Math.min(1, C.near / Math.max(d, 1e-3)) * (1 - smoothstep(C.reach - C.edge, C.reach, d)), f)
     }
+  }
+
+  /** The blaze's loop: every flame `blaze()` lists adds its share by distance, placed at the nearest. */
+  _blaze(head) {
+    const B = RULES.blaze
+    let sum = 0
+    let nearest = Infinity
+    for (const f of this.blaze()) {
+      const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
+      if (d >= B.reach) continue
+      sum += Math.min(1, B.near / Math.max(d, 1e-3)) * (1 - smoothstep(B.reach - B.edge, B.reach, d))
+      if (d < nearest) { nearest = d; this.blazeAt.x = f.x; this.blazeAt.y = f.y; this.blazeAt.z = f.z }
+    }
+    this._loop('blaze', sum > 0, B.level * Math.min(B.cap, Math.sqrt(sum)), this.blazeAt)
   }
 
   /** Each torch's loop by her distance to its flame and how lit the torches are: level by RULES.torch, placed at the flame, off unlit. */
