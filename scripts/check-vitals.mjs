@@ -126,7 +126,7 @@ console.log('the bed')
 {
   const room = rollInterior({ seed: 1000, index: 2, height: 5 })
   const spot = room.spots.find((s) => s.kind === 'bed')
-  const bed = { x: spot.x, z: spot.z, top: spot.top, yaw: spot.yaw, len: spot.len, wid: spot.wid }
+  const bed = { x: spot.x, z: spot.z, top: spot.top, floor: spot.floor, yaw: spot.yaw, len: spot.len, wid: spot.wid }
   const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
   const at = (along, rise) => ({ x: bed.x + along * s, y: bed.top + rise, z: bed.z + along * c })
   const up = { x: 0, y: 1, z: 0 }

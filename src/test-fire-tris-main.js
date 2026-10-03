@@ -1,6 +1,6 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { TriFlames, TRI_FIRE, shardsAt, lodFor } from './v2/render/fire-tris.js'
+import { TriFlames, TRI_FIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, shardsAt, lodFor } from './v2/render/fire-tris.js'
 import { flicker } from './v2/render/fire.js'
 
 // ---------------------------------------------------------------------------
@@ -9,8 +9,8 @@ import { flicker } from './v2/render/fire.js'
 
 // [section | null, key, min, max, step, help]
 const SLIDERS = [
-  ['scale', 'height', 0.1, 2.0, 0.01, 'metres, the flame from its foot to where a shard dies'],
-  [null, 'radius', 0.03, 1.0, 0.01, 'metres, the radius of the foot the shards are born across'],
+  ['scale', 'height', 0.02, 2.0, 0.005, 'metres, the flame from its foot to where a shard dies'],
+  [null, 'radius', 0.005, 1.0, 0.005, 'metres, the radius of the foot the shards are born across'],
   ['shards', 'shards', 4, 512, 1, 'shards in the nearest LOD; this is the look'],
   [null, 'size', 0.05, 0.6, 0.005, "a shard's size as a fraction of the flame's height"],
   [null, 'sizeVar', 0.0, 1.0, 0.01, 'how much the size varies shard to shard'],
@@ -27,7 +27,13 @@ const SLIDERS = [
   [null, 'flicker', 0.0, 1.0, 0.01, 'how much of the three-group flicker reaches the brightness; 0 is steady'],
   ['look', 'cool', 0.3, 2.0, 0.01, "exponent on a shard's age for its colour; below 1 it cools sooner, so more of the flame is orange and red"],
   [null, 'jitter', 0.0, 1.0, 0.01, "how far each shard's colour is shifted along the ramp from its own age"],
+  [null, 'duty', 0.02, 1.0, 0.01, 'the share of its lifetimes a shard exists: below 1 they are occasional flecks'],
+  [null, 'lift', 0.0, 1.0, 0.01, 'how far up the flame a shard is born, as a fraction of its height'],
   [null, 'gain', 0.1, 3.0, 0.05, 'brightness, linear, before the flicker'],
+  ['core', 'coreSize', 0.0, 0.5, 0.005, 'the solid diamond core: its width as a fraction of the flame height; 0 is no core'],
+  [null, 'coreHeight', 0.2, 1.2, 0.01, "the core's height as a fraction of the flame height"],
+  [null, 'coreJump', 0.0, 1.0, 0.01, "how far the core's tip jumps about, as a fraction of its height"],
+  [null, 'coreHz', 0.5, 20, 0.1, 'core flicker rate, radians per second'],
   ['lod', 'lod', -1, 3, 1, '-1 follows the distance to the camera; 0 to 3 force one level'],
   [null, 'lodKeep', 0.2, 0.9, 0.01, 'the share of shards each further level keeps'],
   [null, 'boost', 0.0, 1.0, 0.01, "exponent on how much larger a thinner level's shards are drawn; 0.5 holds their total area"],
@@ -45,14 +51,17 @@ const COLORS = [
   ['birthColor', 'a shard as it is born'],
   ['midColor', 'the middle of its life'],
   ['deathColor', 'the last of it, as it shrinks away'],
+  ['coreLowColor', "the core's foot"],
+  ['coreHighColor', "the core's tip"],
 ]
 
 const BENCH = { flicker: 0.0, lod: 0, lodTint: 0, count: 1, spacing: 1.45, glowReach: 4.9, glowGain: 0.35, bg: 0.0, context: 'post' }
 
 const PRESETS = {
-  lamp: { ...TRI_FIRE, ...BENCH },
-  torch: { ...TRI_FIRE, ...BENCH, height: 0.45, radius: 0.09, shards: 64, gain: 1.2, sway: 0.3, glowReach: 5, glowGain: 0.7, context: 'torch' },
-  campfire: { ...TRI_FIRE, ...BENCH, height: 0.9, radius: 0.35, shards: 128, size: 0.2, rate: 0.9, wobble: 0.6, sway: 0.4, glowReach: 9, glowGain: 1.2, context: 'campfire' },
+  lamp: { ...TRI_LAMP, ...BENCH },
+  torch: { ...TRI_TORCH, ...BENCH, glowReach: 5, glowGain: 0.7, context: 'torch' },
+  campfire: { ...TRI_FIRE, ...BENCH, glowReach: 9, glowGain: 1.2, context: 'campfire' },
+  candle: { ...TRI_CANDLE, ...BENCH, glowReach: 2, glowGain: 0.3, context: 'candle' },
 }
 
 const url = new URL(location.href)
@@ -113,6 +122,7 @@ const feet = Array.from({ length: CAPACITY }, (_, i) => ({ phase: rand() * Math.
 const WOOD = new THREE.MeshLambertMaterial({ color: 0x2a1c10 })
 const HIDE = new THREE.MeshLambertMaterial({ color: 0x3a2a1a, side: THREE.DoubleSide })
 const STONE = new THREE.MeshLambertMaterial({ color: 0x3a3a3c })
+const WAX = new THREE.MeshLambertMaterial({ color: 0xf0e4c4, emissive: 0xa89a78 })
 const WALL = new THREE.MeshLambertMaterial({ color: 0x2c2a26 })
 const context = new THREE.Group()
 scene.add(context)
@@ -127,6 +137,11 @@ function buildContext(kind, flameY) {
     const hood = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.16, 7, 1, true), HIDE)
     hood.position.y = flameY + params.height * 1.35 + 0.08
     context.add(post, dish, hood)
+  } else if (kind === 'candle') {
+    // A five-sided stick whose top face is the flame's foot.
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, flameY, 5), WAX)
+    stick.position.y = flameY / 2
+    context.add(stick)
   } else if (kind === 'torch') {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 0.4), WALL)
     wall.position.set(0, 1.5, -0.45)
@@ -160,7 +175,7 @@ const TINTS = [[1, 1, 1], [0.35, 1, 0.35], [0.35, 0.55, 1], [1, 0.35, 1]]
 
 function layout() {
   const kind = params.context
-  const flameY = kind === 'post' ? 1.62 : kind === 'torch' ? 1.7 : 0.18
+  const flameY = kind === 'post' ? 1.62 : kind === 'torch' ? 1.7 : kind === 'candle' ? 0.2 : 0.18
   const count = Math.round(params.count)
   const x0 = -((count - 1) * params.spacing) / 2
   flames.set(params)
@@ -185,7 +200,7 @@ function layout() {
     buildContext(kind, flameY)
     context.userData.kind = kind
     controls.target.set(0, flameY + params.height * 0.5, 0)
-    const d = Math.max(1.0, params.height * 3)
+    const d = Math.max(0.25, params.height * 3)
     camera.position.set(d * 0.5, flameY + params.height * 0.5 + d * 0.15, d)
   }
   const bg = params.bg
@@ -209,7 +224,7 @@ for (const [section, key, min, max, step, help] of SLIDERS) {
   const out = row.querySelector('.v')
   const show = () => {
     input.value = params[key]
-    out.textContent = key === 'lod' && params[key] < 0 ? 'auto' : step >= 1 ? Math.round(params[key]) : Number(params[key]).toFixed(2)
+    out.textContent = key === 'lod' && params[key] < 0 ? 'auto' : step >= 1 ? Math.round(params[key]) : Number(params[key]).toFixed(step < 0.01 ? 3 : 2)
   }
   readouts[key] = show
   input.addEventListener('input', () => {

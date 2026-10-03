@@ -1196,8 +1196,8 @@ export class Townsfolk {
       const last = s.crumbs.at(-1) ?? { x: p.x, z: p.z }
       p.x = s.x; p.z = s.z; p.y = s.y; p.heading = s.h
       s.h += clamp(swing(s.h, dashAim(this.walk, m, Math.atan2(-(s.z - head.z), s.x - head.x), runV, dt, this.crowd)), -2 * WILD.turn * dt, 2 * WILD.turn * dt)
-      const d = runV * dt, x = s.x + Math.cos(s.h) * d, z = s.z - Math.sin(s.h) * d, level = this.walk.waterAt(x, z)
-      if ((s.left -= d) <= 0 || walled(this.walk, m, x, z, s.y, this.crowd) || (level !== null && level > this.walk.heightAt(x, z, s.y))) next('wait')
+      const d = runV * dt, x = s.x + Math.cos(s.h) * d, z = s.z - Math.sin(s.h) * d
+      if ((s.left -= d) <= 0 || walled(this.walk, m, x, z, s.y, this.crowd)) next('wait')
       else {
         clip = 'run'; speed = runV
         if (Math.hypot(x - last.x, z - last.z) > Y.crumb) s.crumbs.push({ x: s.x, z: s.z })
@@ -1224,14 +1224,20 @@ export class Townsfolk {
     p.cue = s.cue
   }
 
-  /** Its pose (the sim's), if it is drawn, eased off a strider's body or trunk it stands in (walk.obstacleAt), but not the strider it rides or tends on a job, nor while it sits or is in the saddle. */
+  /** Its pose (the sim's), if it is drawn, eased off a strider's body or trunk it stands in (walk.obstacleAt), but not the strider it rides or tends on a job, nor while it sits or is in the saddle. It is put out across its heading, so one walking into a body goes round it rather than being held at the near edge and popping to the far one. */
   _shove(c, dt) {
     if (!c.puppet) return
     const pose = c.pose, s = c.shove, own = c.mount || (c.job ? c.job.mount : null)
     let tx = 0, tz = 0
     if (pose.hop === 0 && c.state !== 'sit' && this.walk.obstacleAt(pose.x, pose.z, _shoveOut, own)) {
-      const dx = pose.x - _shoveOut.x, dz = pose.z - _shoveOut.z, d = Math.hypot(dx, dz)
-      if (d > 1e-3) { tx = (dx / d) * (_shoveOut.r - d); tz = (dz / d) * (_shoveOut.r - d) } else tx = _shoveOut.r
+      const fx = Math.cos(pose.heading), fz = -Math.sin(pose.heading), r = _shoveOut.r
+      const dx = pose.x - _shoveOut.x, dz = pose.z - _shoveOut.z, along = dx * fx + dz * fz
+      // Across: its own side of the centre, or dead on, the side it is already put out to.
+      let lat = dz * fx - dx * fz
+      if (Math.abs(lat) < 1e-3) lat = s.z * fx - s.x * fz < 0 ? -1e-3 : 1e-3
+      const out = Math.sqrt(Math.max(0, r * r - along * along)) - Math.abs(lat), side = Math.sign(lat)
+      tx = -fz * side * out
+      tz = fx * side * out
     }
     const f = 1 - Math.exp(-dt / TOWNSFOLK.shove)
     s.x += (tx - s.x) * f
@@ -1319,6 +1325,7 @@ export class Townsfolk {
       pose.x = at.x + sx * r.side
       pose.z = at.z + sz * r.side
       pose.y = this.walk.heightAt(pose.x, pose.z, r.fresh ? -Infinity : pose.y)
+      this._shove(c, dt)
       const s = swing(pose.heading, at.heading)
       pose.heading = r.fresh ? at.heading : pose.heading + Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       r.fresh = false
@@ -1461,7 +1468,7 @@ export class Townsfolk {
   /** A strider's rein: to the rail's knot tied, else to the right hand of whoever leads or rides it. */
   _rein(m) {
     const S = this.striders
-    if (m.gone || m.shy || !S.head(m, _head)) return
+    if (m.gone || m.shy || !S.jowl(m, _head)) return
     if (m.state === 'tied') {
       const [x, z] = m.tether.knot
       S.rein(_hand.set(x, S.barY(x, z), z), _head)
@@ -1470,7 +1477,7 @@ export class Townsfolk {
     const by = m.state === 'led' ? m.leader : m.state === 'ridden' ? m.rider : null
     if (by === null || !by.puppet) return
     const p = by.puppet
-    S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head, m.state === 'led')
+    S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head)
   }
 
   // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------

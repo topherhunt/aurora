@@ -20,7 +20,7 @@ import { LAYER, buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { HEARTH, Hearth, buildHearth, decimateHearth, feetGround } from '../src/v2/render/hearth.js'
 import { SEAT_M } from '../src/v2/render/villagers.js'
-import { CAMPFIRE } from '../src/v2/render/fire.js'
+import { TRI_CAMPFIRE } from '../src/v2/render/fire-tris.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -180,12 +180,13 @@ const patch = (m) => m
   const y = field.heightAt(at.x, at.z)
   check(Math.abs(h.group.position.x - at.x) < 1e-9 && Math.abs(h.group.position.z - at.z) < 1e-9 && Math.abs(h.group.position.y - y) < 1e-9, 'the hearth stands at the clearing\'s centre on its ground')
   check(scene.children.includes(h.group) && scene.children.includes(h.flames.group), 'the mesh and the flame are in the scene')
-  const im = h.flames.mesh.instanceMatrix.array
+  h.update(at.x + 3, y + 1.6, at.z, 0)
+  const im = h.flames.levels.find((l) => l.mesh.count === 1).mesh.instanceMatrix.array
   check(Math.abs(im[12] - at.x) < 1e-4 && Math.abs(im[13] - (y + HEARTH.fire.lift)) < 1e-4 && Math.abs(im[14] - at.z) < 1e-4, 'the flame burns at the fire\'s foot in world space', `${im[12].toFixed(2)}, ${im[13].toFixed(2)}, ${im[14].toFixed(2)}`)
-  check(Math.abs(im[5] - CAMPFIRE.height) < 1e-6, 'the flame is the campfire\'s height', `${im[5].toFixed(2)}`)
+  check(Math.abs(im[5] - TRI_CAMPFIRE.height) < 1e-6, 'the flame is the campfire\'s height', `${im[5].toFixed(2)}`)
   {
     // The bench's locked `flicker: 0`: the glow the flame rides is a steady 1 at every instant, not the lamps' breathing.
-    const u = h.flames.material.uniforms.uGlow.value
+    const u = h.flames.shared.uGlow.value
     let steady = true
     for (const t of [0, 0.37, 1.9, 7.25, 100.1]) { h.update(at.x + 3, y + 1.6, at.z, t); if (u.x !== 1 || u.y !== 1 || u.z !== 1) steady = false }
     check(steady, 'the flame burns on a steady glow of 1, the bench\'s flicker 0', `${u.x} ${u.y} ${u.z}`)

@@ -7,7 +7,7 @@ import { keyHash } from '../../sim/score.js'
 import { PropArena } from './prop-arena.js'
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
 import { BLOCKED, CELL, STONE } from './leafkin-ground.js'
-import { FINAL_M } from './leafkin.js'
+import { FINAL_M, OUT_FAR_M } from './leafkin.js'
 import { WALK } from '../walk.js'
 
 // ---------------------------------------------------------------------------
@@ -84,8 +84,9 @@ export const SCREEN = {
   boulder: { size: [5.5, 7.5], sink: 0.25, twist: 0.5 },
   pine: { sink: [2.5, 3], hem: [-0.8, -0.5], pass: 1.2 },
 }
-// A layout is kept only if a walker of her width gets from the mouth point out past every piece over the leafkin's ground (leafkin-ground.js), each piece's column grown by this: her shoulder and the cell's half diagonal.
+// A layout is kept only if a walker of her width still gets from the mouth point out to OUT_FAR_M over the leafkin's ground (leafkin-ground.js), each piece's column grown by this: her shoulder and the cell's half diagonal.
 const PASS_PAD = WALK.radius + CELL * Math.SQRT1_2
+const NO_STONES = []
 // A stone steps down the rocks' own ladder at the rocks' own distances per
 // metre of its size (rock.js ROCK_LOD_AT), not at the arch's rungs: those are
 // scaled to a 1.5 m arch and put a 6 m stone on its 20-face tier at 10 m.
@@ -251,7 +252,7 @@ export class Entrances {
 
     this.placed = 0
     this.tris = 0
-    this.rejected = { face: 0, wall: 0, level: 0, water: 0, bulge: 0, none: 0, screen: 0 }
+    this.rejected = { face: 0, wall: 0, level: 0, water: 0, bulge: 0, sealed: 0, none: 0, screen: 0 }
     this.placeMs = 0
 
     scene.add(this.batch)
@@ -409,6 +410,8 @@ export class Entrances {
       if (rocks.hollowRayAt(mx, my + PROBE.eye + PROBE.wall, mz, -nx, 0, -nz, wallReach() + bulge, hit) === Infinity) { this.rejected.wall++; continue }
       if (Math.abs(floor - g) > PROBE.level || Math.abs(my - g) > PROBE.level) { this.rejected.level++; continue }
       if (this.water.isSubmerged(mx, mz, my)) { this.rejected.water++; continue }
+      // Sealed: no way out over the leafkin's ground as far as its leafkin is placed out (leafkin.js _emerge), so none could come home.
+      if (!this._pathable(mx, mz, NO_STONES, OUT_FAR_M)) { this.rejected.sealed++; continue }
       this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge)
       return
     }
@@ -505,18 +508,13 @@ export class Entrances {
     this.placed++
   }
 
-  /**
-   * The screen, rolled off the key (SCREEN). A layout that shuts a way out the
-   * bare mouth had is rolled again, SCREEN.tries times in all, then left out; a
-   * mouth her ground already walls in (its superset stone, leafkin-ground.js)
-   * takes its first roll, having no way out to lose.
-   */
+  /** The screen, rolled off the key (SCREEN). A layout that shuts the mouth's way out is rolled again, SCREEN.tries times in all, then left out. */
   _screen(site, hx, hz) {
     const rand = mulberry32(keyHash(site.key + ':screen') ^ this.seed)
     let pieces = null
     for (let t = 0; t < SCREEN.tries && pieces === null; t++) {
       const plan = this._layout(site, hx, hz, rand)
-      if (this._pathable(site, plan) || !this._pathable(site, plan, false)) pieces = plan
+      if (this._pathable(site.x, site.z, plan, OUT_FAR_M)) pieces = plan
     }
     site.screened = pieces !== null
     if (pieces === null) {
@@ -612,50 +610,55 @@ export class Entrances {
   }
 
   /**
-   * Whether a walker gets from the mouth point out past every piece: a flood
-   * over CELL steps of the leafkin's ground, open as leafkin.js open() has it
-   * (never BLOCKED; anything within FINAL_M of the mouth; never STONE), and,
-   * when `shut`, within PASS_PAD of each piece's column.
+   * Whether a walker gets from the mouth point (x0, z0) `reach` metres out: a
+   * search over the leafkin's ground on its own CELL grid, open as leafkin.js
+   * open() has it (never BLOCKED; anything within FINAL_M of the mouth; never
+   * STONE) and clear of each of `stones` by its column and PASS_PAD.
+   * Four-connected, so no corner the leafkin's walk refuses is cut. Depth
+   * first, the most outward step taken first: open ground is crossed in a
+   * straight run, and a pocket is searched whole before it is called sealed.
    */
-  _pathable(site, stones, shut = true) {
-    let reach = 0
-    for (const f of stones) reach = Math.max(reach, Math.hypot(f.x - site.x, f.z - site.z) + f.hull)
-    const c = Math.ceil(reach / CELL) + 2, n = 2 * c + 1
+  _pathable(x0, z0, stones, reach) {
+    const c = Math.ceil(reach / CELL) + 1, n = 2 * c + 1
+    const ox = Math.round(x0 / CELL) * CELL, oz = Math.round(z0 / CELL) * CELL
     if (this._seen.length < n * n) {
       this._seen = new Uint8Array(n * n)
       this._queue = new Int32Array(n * n)
     }
-    const seen = this._seen, queue = this._queue
+    const seen = this._seen, stack = this._queue
     seen.fill(0, 0, n * n)
     const passable = (i, j) => {
-      const dx = (i - c) * CELL, dz = (j - c) * CELL
-      const x = site.x + dx, z = site.z + dz
+      const x = ox + (i - c) * CELL, z = oz + (j - c) * CELL
       const v = this.ground.cell(x, z)
       if (v === BLOCKED) return false
-      if (dx * dx + dz * dz <= FINAL_M * FINAL_M) return true
+      if ((x - x0) ** 2 + (z - z0) ** 2 <= FINAL_M * FINAL_M) return true
       if (v === STONE) return false
-      if (shut) for (const f of stones) {
+      for (const f of stones) {
         const pad = f.r + PASS_PAD
         if ((x - f.x) ** 2 + (z - f.z) ** 2 < pad * pad) return false
       }
       return true
     }
     if (!passable(c, c)) return false
-    const goal = (reach + CELL) * (reach + CELL)
-    let head = 0, tail = 0
-    queue[tail++] = c * n + c
+    const goal = reach * reach
+    const steps = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+    let top = 0
+    stack[top++] = c * n + c
     seen[c * n + c] = 1
-    while (head < tail) {
-      const k = queue[head++]
+    while (top > 0) {
+      const k = stack[--top]
       const i = k % n, j = (k - i) / n
-      if (((i - c) ** 2 + (j - c) ** 2) * CELL * CELL >= goal) return true
-      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const u = (ox + (i - c) * CELL - x0), w = (oz + (j - c) * CELL - z0)
+      if (u * u + w * w >= goal) return true
+      // Pushed least outward first, so the most outward is popped next.
+      steps.sort((a, b) => (a[0] * u + a[1] * w) - (b[0] * u + b[1] * w))
+      for (const [di, dj] of steps) {
         const ii = i + di, jj = j + dj
         if (ii < 0 || jj < 0 || ii >= n || jj >= n) continue
         const kk = jj * n + ii
         if (seen[kk]) continue
         seen[kk] = 1
-        if (passable(ii, jj)) queue[tail++] = kk
+        if (passable(ii, jj)) stack[top++] = kk
       }
     }
     return false

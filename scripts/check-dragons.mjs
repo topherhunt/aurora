@@ -38,6 +38,7 @@ import {
   WAY, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf,
   HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
   LURES, LURE, LURE_FORGET, MENACE_RUN, MENACE, ANCHOR_S, ANCHOR_STALE_S,
+  SPOT_M, EYE_M, EYE_P, CIRCLE_M, LAND_SHORT, SPOT_S, CHARGE_MPS, BITE_M, HURT_M, BITE_HP, BITE_AT_S, CHOMP_S, GROWL_S, GIVE_UP_M, SPURN_S, AGGRO_ANCHOR_S, HER as HER_ID,
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
@@ -512,7 +513,12 @@ function makeHerd(stags) {
 const stag = (x, z, y = GROUND, key = 'st:0,0:0') => ({ key, spawn: {}, x, y, z, k: 0.5, killed: [], size: 2, lod: 0, seized: 0, carried: 0, lain: null, lainFrames: 0, shown: null, shownFrames: 0, drops: [], at: new THREE.Vector3(), up: new THREE.Vector3() })
 const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into }, siteAt: (tx, tz) => sites.find((s) => s.tx === tx && s.tz === tz) ?? null })
 const dry = { isSubmerged: () => false }
-const dragonsOn = (field, sites, herd, seed = 3, water = dry) => new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, asset: makeAsset() })
+// Its bites are logged on it: `hurt` her [n, why], `frights` a strider's [key, x, z].
+const dragonsOn = (field, sites, herd, seed = 3, water = dry) => {
+  const hurt = [], frights = []
+  const d = new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
+  return Object.assign(d, { hurt, frights })
+}
 const DT = 1 / 60
 const HER = { x: 5, y: GROUND + 1.6, z: 5 }
 
@@ -523,6 +529,7 @@ console.log('\ndragons')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: {}, asset: makeAsset() }); return false } catch (e) { return /roster, spawnAt, poseAt, kill, carry and drop/.test(e.message) } })(), 'a wildlife without the hunt\'s verbs is refused by name')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: {}, wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /sites/.test(e.message) } })(), 'so is a roost layer with no sites()')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /isSubmerged/.test(e.message) } })(), 'and a world with no water to ask, since a dragon must not alight in a lake')
+  check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), water: dry, asset: makeAsset() }); return false } catch (e) { return /harm\(n, why\)/.test(e.message) } })(), 'and one with no harm or fright, since its bite must land on someone')
 
   const d = dragonsOn(flat, [], makeHerd([]))
   const fly = measureFly(makeAsset())
@@ -1143,6 +1150,172 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   A.dispose(); B.dispose(); C.dispose(); D.dispose()
 }
 
+// --- aggro on the ground: spotted near the nest, it turns, roars, charges, chomps her, growls, and gives her up far off ----
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(79)
+  const d = dragonsOn(flat, [site], makeHerd([]), 5)
+  d.plan = restPlan(d)
+  let now = chapterOf(1000, keyOf(site)).start
+  const her = { x: SPOT_M + 5, y: GROUND, z: 0, open: false }
+  const quarry = { her, striders: [] }
+  let turned = 0
+  const frame = () => { now += DT; const tick = dr.rec.tick; d.update(her.x, her.y + 1.6, her.z, now, [], quarry); if (dr.rec.tick !== tick) turned = Math.max(turned, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S) }
+  const run = (s, seen) => { for (let i = 0; i < s * 60; i++) { frame(); if (seen) seen() } }
+  const until = (ok, s) => { for (let i = 0; i < s * 60 && !ok(); i++) frame(); return ok() }
+  d.update(her.x, her.y + 1.6, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  const snout = () => Math.hypot(her.x - dr.x - Math.cos(dr.heading) * EAT_REACH * dr.k, her.z - dr.z + Math.sin(dr.heading) * EAT_REACH * dr.k)
+  run(2)
+  check(dr.state === 'roost' && dr.live === null && dr.roarCue === 0, `her ${SPOT_M + 5} m off the resting dragon, it does not spot her`)
+  her.x = SPOT_M - 1
+  until(() => dr.live !== null, 1)
+  check(dr.state === 'aggro' && dr.live.phase === 'spot' && dr.live.prey === HER_ID && dr.live.by === null && dr.clip === 'alert' && dr.roarCue === 1, `her ${SPOT_M - 1} m off, it spots her: live, aggro, alert, one roar, this client steering`, `state ${dr.state}, phase ${dr.live?.phase}, roars ${dr.roarCue}`)
+  until(() => dr.live.phase !== 'spot', SPOT_S + 0.1)
+  const rate = CHARGE_MPS / (wyvern.gait.walk * dr.k)
+  check(dr.live.phase === 'charge' && dr.clip === 'walk' && Math.abs(dr.rate - rate) < 1e-9 && Math.abs(dr.cycle - d.durations.walk / rate) < 1e-9, `SPOT_S ${SPOT_S} s later it charges, the walk sped to CHARGE_MPS`, `rate ${fmt(dr.rate)}`)
+  let top = 0
+  const x0 = dr.x
+  until(() => { top = Math.max(top, dr.speed); return dr.live.phase === 'chomp' }, 8)
+  check(top > 0.9 * CHARGE_MPS && top <= CHARGE_MPS + 1e-9 && dr.x > x0 + 1, `it charges at her at CHARGE_MPS ${CHARGE_MPS} m/s`, `top ${fmt(top)} m/s, ${fmt(dr.x - x0)} m east`)
+  check(dr.live.phase === 'chomp' && dr.clip === 'eat' && snout() <= BITE_M + 0.1, `and chomps once its snout is within BITE_M ${BITE_M} m of her`, `${fmt(snout())} m`)
+  check(turned <= WALK_TURN_RATE + 1e-6, `never turning faster than WALK_TURN_RATE ${WALK_TURN_RATE}`, `${fmt(turned)} rad/s`)
+  run(BITE_AT_S + 0.1)
+  check(d.hurt.length === 1 && d.hurt[0][0] === BITE_HP, `BITE_AT_S ${BITE_AT_S} s in, the bite hurts her ${BITE_HP} HP`, JSON.stringify(d.hurt))
+  until(() => dr.live.phase !== 'chomp', CHOMP_S)
+  check(dr.live.phase === 'growl' && dr.growlCue === 1 && dr.clip === 'alert' && dr.speed < 0.05, 'then it stands and growls', `phase ${dr.live.phase}, growls ${dr.growlCue}`)
+  until(() => dr.live.phase !== 'growl', GROWL_S + 0.1)
+  check(dr.live.phase === 'chomp', `GROWL_S ${GROWL_S} s on, her still in reach, it chomps again`, dr.live.phase)
+  // Stepped back past HURT_M as the jaws come: the chomp misses, and the growl over, it charges again.
+  const r = snout()
+  her.x += HURT_M + 0.5 - r
+  until(() => dr.live.phase === 'growl', CHOMP_S + 0.1)
+  check(d.hurt.length === 1, `with her ${fmt(snout())} m from its snout, past HURT_M ${HURT_M} m, the chomp misses`, `${d.hurt.length} bites`)
+  until(() => dr.live.phase !== 'growl', GROWL_S + 0.1)
+  check(dr.live.phase === 'charge', 'and past BITE_M it charges again', dr.live.phase)
+  const anchors = d.pending()
+  check(anchors.length > 0 && anchors.every((a) => a[7] === 'aggro' && a[8] === null && typeof a[10] === 'string') && anchors.every((a, i) => i === 0 || a[1] - anchors[i - 1][1] >= AGGRO_ANCHOR_S - 1e-9 || a[10] !== anchors[i - 1][10]), `it owes the room an aggro anchor every AGGRO_ANCHOR_S ${AGGRO_ANCHOR_S} s and on each phase, carrying the phase`, `${anchors.length} anchors`)
+  // She runs off at half again its charge: it pursues, losing ground, and past GIVE_UP_M gives her up and flies home.
+  let gained = 0
+  until(() => { her.x += 1.5 * CHARGE_MPS * DT; gained = Math.max(gained, dr.speed); return dr.live === null }, 60)
+  check(gained > 0.9 * CHARGE_MPS && dr.state === 'rejoin' && dr.clip === 'fly' && Math.hypot(her.x - dr.x, her.z - dr.z) > GIVE_UP_M && Math.hypot(her.x - dr.x, her.z - dr.z) < GIVE_UP_M + 1, `she outruns it; once she is GIVE_UP_M ${GIVE_UP_M} m off it gives up and flies home on its rejoin`, `state ${dr.state}, ${fmt(Math.hypot(her.x - dr.x, her.z - dr.z))} m`)
+  const rj = d.pending().filter((a) => a[7] === 'rejoin')
+  check(rj.length === 1, 'owing the room its rejoin anchor', `${rj.length} rejoins`)
+  Object.assign(her, { x: dr.x + 5, z: dr.z, open: true })
+  d.quarry = quarry
+  const spurnedFor = dr.spurned - now
+  check(Math.abs(spurnedFor - SPURN_S) < TICK_S && d._spot(dr, now) === null && d._eye(dr, now) === null, `and for SPURN_S ${SPURN_S} s it spots nobody, her 5 m off in the open notwithstanding`, `spurned ${fmt(spurnedFor)} s`)
+  d.dispose()
+}
+
+// --- aggro in the air: eyed in the open, it roars, swoops a circle, lands with a thud and charges ----
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(80)
+  const d = dragonsOn(flat, [site], makeHerd([]), 5)
+  // A rest, then a leg cruising 50 m up out east past where she stands, far enough to fly the whole check.
+  d.plan = (key) => {
+    const dr = d.byKey.get(key)
+    const to = { x: 3000, y: GROUND + 50, z: 0, heading: 0, speed: PATROL_MPS * LOITER_PACE }
+    const leg = d._legPhrase(dr.home, to, PATROL_MPS, 'patrol')
+    return [{ kind: 'rest', dur: 1, from: dr.home, to: dr.home, at: dr.site, meal: false }, leg, { kind: 'rest', dur: 300, from: to, to: dr.home, at: dr.site, meal: false }]
+  }
+  let now = chapterOf(1000, keyOf(site)).start
+  const her = { x: 400, y: GROUND, z: 20, open: false }
+  const striders = []
+  const quarry = { her, striders }
+  const frame = () => { now += DT; d.update(her.x, her.y + 1.6, her.z, now, [], quarry) }
+  const until = (ok, s) => { for (let i = 0; i < s * 60 && !ok(); i++) frame(); return ok() }
+  d.update(her.x, her.y + 1.6, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  let rolls = 0
+  d.random = () => { rolls++; return 0 }
+  until(() => dr.x > her.x + EYE_M, 120)
+  check(dr.live === null && rolls === 0, `flying over her under the trees, it never so much as rolls to eye her`, `${rolls} rolls`)
+  // Around again, in the open, the dice against her: one roll the whole pass.
+  her.open = true
+  her.x = dr.x + 200
+  d.random = () => { rolls++; return EYE_P + 0.01 }
+  until(() => dr.x > her.x + EYE_M, 60)
+  check(dr.live === null && rolls === 1, `in the open, it rolls once as she comes within EYE_M ${EYE_M} m, and at ${EYE_P + 0.01} passes her by`, `${rolls} rolls`)
+  her.x = dr.x + 200
+  d.random = () => EYE_P - 0.01
+  until(() => dr.live !== null, 60)
+  const roars = dr.roarCue
+  check(dr.state === 'aggro' && dr.live.phase === 'swoop' && dr.clip === 'fly' && Math.hypot(her.x - dr.x, her.z - dr.z) <= EYE_M && dr.live.cx === her.x && roars === 1, `at ${EYE_P - 0.01} it eyes her within ${EYE_M} m, roars and swoops`, `phase ${dr.live?.phase}, roars ${roars}`)
+  let lowest = Infinity, widest = 0, circled = 0
+  // Its last half turn, once it has flown in onto the circle from wherever it eyed her.
+  until(() => { if (dr.live.phase === 'swoop') { lowest = Math.min(lowest, dr.y); if (dr.live.swept > Math.PI) widest = Math.max(widest, Math.abs(Math.hypot(dr.x - dr.live.cx, dr.z - dr.live.cz) - CIRCLE_M)); circled = dr.live.swept }; return dr.live.phase !== 'swoop' }, 40)
+  check(dr.live.phase === 'land' && circled >= 2 * Math.PI - 0.05 && widest < 8 && lowest > GROUND + 5, `it circles where it saw her once round, about CIRCLE_M ${CIRCLE_M} m out, before it comes down`, `swept ${fmt(circled)} rad, off the circle by ${fmt(widest)} m at worst, lowest ${fmt(lowest - GROUND)} m up`)
+  const thuds = dr.thudCue
+  until(() => dr.live.phase !== 'land', 25)
+  check(dr.live.phase === 'spot' && dr.thudCue === thuds + 1 && dr.roarCue === roars && dr.clip === 'alert' && dr.y - GROUND < 4 && Math.abs(Math.hypot(her.x - dr.x, her.z - dr.z) - LAND_SHORT) < 6, `it lands about LAND_SHORT ${LAND_SHORT} m short of her with a thud, no second roar, and stands to find her`, `${fmt(Math.hypot(her.x - dr.x, her.z - dr.z))} m off, ${fmt(dr.y - GROUND)} m up`)
+  until(() => dr.live.phase !== 'spot', SPOT_S + 0.1)
+  check(dr.live.phase === 'charge', 'then charges her', dr.live.phase)
+  // A strider in sight of the chase: it turns on the strider, which bolts, and charges after it.
+  striders.push({ key: 'ws:1', x: dr.x - 10, y: GROUND, z: dr.z })
+  until(() => dr.live.prey !== HER_ID, 1)
+  check(dr.live.prey === 'ws:1' && dr.live.phase === 'spot' && dr.roarCue === roars + 1 && d.frights.length === 1 && d.frights[0][0] === 'ws:1', `a strider within SPOT_M ${SPOT_M} m of the chase: it loses interest in her, roars at the strider and sends it bolting`, JSON.stringify(d.frights))
+  until(() => dr.live.phase !== 'spot', SPOT_S + 0.1)
+  check(dr.live.phase === 'charge' && d.frights.length === 2, 'and charges after it, the strider bolting again from the charge', `${d.frights.length} frights`)
+  striders.length = 0
+  frame(); frame(); frame()
+  check(dr.live === null && dr.state === 'rejoin', 'the strider gone from its sight, it gives up', dr.state)
+  // A strider flown over at STRIDER_P's odds: swooped on just the same.
+  her.x = -5000
+  striders.push({ key: 'ws:2', x: 0, y: GROUND, z: 0 })
+  dr.spurned = now
+  const D2 = dragonsOn(flat, [site], makeHerd([]), 5)
+  D2.plan = d.plan
+  D2.random = () => 0
+  let t2 = chapterOf(1000, keyOf(site)).start
+  D2.update(0, GROUND, 0, t2)
+  const d2 = D2.byKey.get(keyOf(site))
+  striders[0].x = 400
+  for (let i = 0; i < 60 * 60 && d2.live === null; i++) { t2 += DT; D2.update(0, GROUND, 0, t2, [], { her: null, striders }) }
+  check(d2.live && d2.live.prey === 'ws:2' && d2.live.phase === 'swoop', 'a flying dragon eyes a strider within EYE_M and swoops on it', d2.live?.prey)
+  D2.dispose()
+  d.dispose()
+}
+
+// --- aggro across the room: the quarry's client steers, a peer trails its anchors ----
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(79)
+  const born = () => { const dd = dragonsOn(flat, [site], makeHerd([]), 5); dd.plan = restPlan(dd); return dd }
+  const A = born(), B = born()
+  let now = chapterOf(1000, keyOf(site)).start
+  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: false }
+  A.update(her.x, her.y, her.z, now)
+  B.update(her.x, her.y, her.z, now)
+  const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
+  let worst = 0, sent = 0
+  for (let i = 0; i < 6 * 60; i++) {
+    now += DT
+    her.x += 0.5 * CHARGE_MPS * DT
+    A.update(her.x, her.y, her.z, now, [], { her, striders: [] })
+    B.update(her.x, her.y, her.z, now)
+    for (const an of A.pending()) { const s = an.slice(); s[8] = 'peerA'; B.apply(s, now); sent++ }
+    if (i > 60) worst = Math.max(worst, Math.hypot(a.x - b.x, a.z - b.z))
+  }
+  check(b.state === 'aggro' && b.live.by === 'peerA' && b.live.phase === a.live.phase && b.clip === a.clip && B.pending().length === 0 && b.roarCue === 1, 'a peer\'s client puts its dragon on the chase from the anchors, in the same phase and clip, roaring once, owing nothing', `B ${b.state} ${b.live?.phase}, A ${a.live?.phase}`)
+  check(worst < 1.5, 'and trails the steering client\'s dragon within a metre and a half', `${fmt(worst)} m at worst, ${sent} anchors`)
+  const mine = born()
+  mine.update(her.x, her.y, her.z, now - 0.5)
+  const m = mine.byKey.get(keyOf(site))
+  for (let t = now - 0.5 + DT; t <= now; t += DT) mine.update(her.x, her.y, her.z, t, [], { her: { ...her, x: m.x + 5 }, striders: [] })
+  const theirs = A._anchor(a, now, 'aggro'); theirs[8] = 'peerA'
+  mine.apply(theirs, now)
+  check(m.live && m.live.by === null, 'a client steering its own chase of the dragon keeps it, a peer\'s aggro anchor notwithstanding')
+  // The steering client gives up: the rejoin anchor puts the peer's dragon on the same rejoin.
+  her.x = a.x + GIVE_UP_M + 1
+  for (let i = 0; i < 10 && a.live !== null; i++) { now += DT; A.update(her.x, her.y, her.z, now, [], { her, striders: [] }) }
+  const rj = A.pending().filter((an) => an[7] === 'rejoin')[0].slice(); rj[8] = 'peerA'
+  B.apply(rj, now)
+  check(a.state === 'rejoin' && b.state === 'rejoin' && b.live === null && b.rejoin.start === a.rejoin.start, 'and its rejoin anchor puts the peer\'s dragon on the same rejoin home')
+  A.dispose(); B.dispose(); mine.dispose()
+}
+
 // --- a relief edit under a flying dragon --------------------------------------------------
 {
   const flat = flatField(GROUND)
@@ -1257,7 +1430,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const flat = flatField(GROUND)
   const sites = [{ key: 1, tx: 1, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
   const roosts = roostOf(sites)
-  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, asset: makeAsset() })
+  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, harm: () => {}, fright: () => {}, asset: makeAsset() })
   let now = chapterOf(1000, keyOf(sites[0])).start
   const step = () => { now += DT; d.update(HER.x, HER.y, HER.z, now) }
   step()

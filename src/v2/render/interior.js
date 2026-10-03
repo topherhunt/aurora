@@ -2,6 +2,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
+import { TriFlames, TRI_CANDLE } from './fire-tris.js'
 import { FILLET, HAMPER_H, STOOL_H, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
 
 const TAU = 2 * Math.PI
@@ -383,7 +384,7 @@ function kit(rng) {
 }
 
 /**
- * The meshes for `room`, set at (ox, oy, oz); its potted mushrooms are drawn from `mushrooms`, the island's own bank and material. `update(t, dayness)` flickers the candles and brings the windows up with the day.
+ * The meshes for `room`, set at (ox, oy, oz); its potted mushrooms are drawn from `mushrooms`, the island's own bank and material. `update(t, dayness, eye)` flickers the candles (their LODs measured from `eye`) and brings the windows up with the day.
  */
 export class InteriorView {
   constructor(room, tex, ox, oy, oz, mushrooms) {
@@ -429,16 +430,16 @@ export class InteriorView {
     for (const w of out.water) this.group.add(buildWater(room, w, tops, this.uniforms, this.uTime))
     this.shroomMeshes = buildShrooms(out.shrooms, mushrooms)
     for (const mesh of this.shroomMeshes) this.group.add(mesh)
-    this.flames = buildFlames(room.candles)
+    this.flames = buildFlames(room.candles, ox, oy, oz)
     this.group.add(this.flames.group)
   }
 
-  update(t, dayness) {
+  update(t, dayness, eye) {
     const f = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
     this.uniforms.uFlicker.value = f
     this.uniforms.uDay.value = dayness
     this.uTime.value = t
-    this.flames.update(t, f)
+    this.flames.update(t, f, eye)
   }
 
   dispose() {
@@ -860,16 +861,13 @@ function glowTexture() {
   return t
 }
 
-function buildFlames(candles) {
+// The flames are triangle flames (fire-tris.js) in world space, so they are placed at the room's anchor; the halo behind each is a soft additive sprite.
+function buildFlames(candles, ox, oy, oz) {
   const group = new THREE.Group()
-  const m = new Mesher()
-  const K = kit(mulberry32(candles.length + 1))
-  for (const c of candles) K.lathe(m, frame(c.x, c.y - 0.03, c.z), [[0, 0], [0.012, 0.012], [0.009, 0.035], [0, 0.06]], [1, 1, 1], { segs: 6, flat: true })
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
-  g.setIndex(m.idx)
-  const flameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.78, 0.4), fog: false })
-  group.add(new THREE.Mesh(g, flameMat))
+  const flames = new TriFlames(candles.length, TRI_CANDLE, { seed: candles.length + 1 })
+  // A candle's `y` is 3.5 cm over its wax's shoulder; the flame's foot rests on the wax.
+  candles.forEach((c, i) => flames.place(i, ox + c.x, oy + c.y - 0.02, oz + c.z, { height: TRI_CANDLE.height, radius: TRI_CANDLE.radius, phase: i * 2.1, group: i % 3 }))
+  group.add(flames.group)
   const hp = new THREE.BufferGeometry()
   hp.setAttribute('position', new THREE.Float32BufferAttribute(candles.flatMap((c) => [c.x, c.y, c.z]), 3))
   const glowMap = glowTexture()
@@ -879,11 +877,11 @@ function buildFlames(candles) {
   group.add(halos)
   return {
     group,
-    update(t, f) {
+    update(t, f, eye) {
       haloMat.size = 0.35 * (0.85 + 0.3 * (f - 0.9) * 5)
-      flameMat.color.setRGB(f, 0.78 * f, 0.4 * f)
+      flames.update(t, [f, f, f], eye)
     },
-    dispose() { glowMap.dispose() },
+    dispose() { flames.dispose(); glowMap.dispose() },
   }
 }
 
@@ -1502,3 +1500,6 @@ const ITEMS = {
     candleOn(M, K, it.x, it.y, it.z, 0.1, IRON)
   },
 }
+
+// The kit and palette render/town-interior.js builds from.
+export { Mesher, kit, frame, put, turn, tip, rgb, tone, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, DARK, MUTED, add, sub, norm, cross }

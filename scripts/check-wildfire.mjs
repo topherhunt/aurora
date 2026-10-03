@@ -15,7 +15,7 @@ const check = (ok, label, detail = '') => {
 const scene = { add() {} }
 const stub = () => {
   const placed = []
-  return { placed, group: null, mesh: { count: 0 }, place: (i, x, y, z, o) => { placed[i] = { x, y, z, ...o } }, update() {}, dispose() {} }
+  return { placed, group: null, count: 0, place: (i, x, y, z, o) => { placed[i] = { x, y, z, ...o } }, update() {}, dispose() {} }
 }
 let charred
 const tree = (x, z, extra = {}) => ({ key: `tree:${x},${z}`, kind: 'tree', x, y: 0, z, radius: 0.3, height: 6, char: () => { charred.push(`tree:${x},${z}`) }, ...extra })
@@ -42,7 +42,7 @@ console.log('dimming')
   w.update(0.016, die - FADE_S / 2, [])
   check(flames.placed[0].height < risen && flames.placed[0].height > 0, 'a dying flame has shrunk but burns')
   w.update(0.016, die + 0.1, [])
-  check(w.count === 0 && flames.mesh.count === 0, 'the flame is gone after its life and the draw count follows')
+  check(w.count === 0 && flames.count === 0, 'the flame is gone after its life and the draw count follows')
   check(levelAt({ born: 0, die: 10 }, 0) === 0 && levelAt({ born: 0, die: 10 }, 5) === 1, 'a flame rises in from nothing')
 }
 
@@ -95,7 +95,7 @@ console.log('torches')
 {
   const { w, flames } = make([])
   w.update(0.016, 0, [{ x: 1, y: 2, z: 3, phase: 0 }, { x: 4, y: 5, z: 6, phase: 1 }])
-  check(flames.mesh.count === 2 && flames.placed[1].x === 4, 'a torch tip is drawn as a flame')
+  check(flames.count === 2 && flames.placed[1].x === 4, 'a torch tip is drawn as a flame')
   let threw = false
   try { w.update(0.016, 0, Array.from({ length: 9 }, () => ({ x: 0, y: 0, z: 0, phase: 0 }))) } catch { threw = true }
   check(threw, 'more torches than slots is refused, not dropped')

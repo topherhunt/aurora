@@ -1,8 +1,8 @@
-import { Flames, FIRE } from './fire.js'
+import { TriFlames, TRI_TORCH } from './fire-tris.js'
 
 // ---------------------------------------------------------------------------
 // WILDFIRE: the flames a spark leaves on a tree, a fern or a ground stick, and
-// the torches' flames, all in ONE Flames draw. design/37-fire.md has the rules;
+// the torches' flames, all in one TriFlames draw. design/37-fire.md has the rules;
 // the short of them:
 //
 //   a flame dies 5-10 s after it is lit, dimming over its last FADE_S;
@@ -42,9 +42,9 @@ export class Wildfire {
   /**
    * @param near   (x, y, z, r) -> flammables, see the header
    * @param rng    () -> [0, 1), for the lifetimes and the spread
-   * @param flames the draw, or null for a headless gate: { place(i, x, y, z, opts), update(t, glow), mesh, group }
+   * @param flames the draw, or null for a headless gate: { place(i, x, y, z, opts), update(t, glow, eye), count, group }
    */
-  constructor(scene, near, { rng = Math.random, flames = new Flames(CAP + TORCH_CAP, FIRE) } = {}) {
+  constructor(scene, near, { rng = Math.random, flames = new TriFlames(CAP + TORCH_CAP, TRI_TORCH) } = {}) {
     this.near = near
     this.rng = rng
     this.flames = flames
@@ -119,8 +119,8 @@ export class Wildfire {
     return best
   }
 
-  /** One frame. `tips` are the lit torches' flame points { x, y, z, phase }. Burns down, spreads once a SPREAD_STEP_S, then writes every flame to the draw. */
-  update(dt, now, tips) {
+  /** One frame. `tips` are the lit torches' flame points { x, y, z, phase }; `eye` is the head, which the flames' LODs are measured from. Burns down, spreads once a SPREAD_STEP_S, then writes every flame to the draw. */
+  update(dt, now, tips, eye) {
     this.list = this.list.filter((f) => f.die > now)
     for (const k of this.lit.keys()) if (this.onObject(k) === 0) this.lit.delete(k)
     this._touch(dt, now, tips)
@@ -137,8 +137,8 @@ export class Wildfire {
     }
     if (tips.length > TORCH_CAP) throw new Error(`Wildfire: ${tips.length} torches past TORCH_CAP ${TORCH_CAP}`)
     for (const t of tips) this.flames.place(n++, t.x, t.y, t.z, { height: TORCH.height, radius: TORCH.radius, phase: t.phase })
-    if (this.flames.mesh) this.flames.mesh.count = n
-    this.flames.update(now, [1, 1, 1])
+    this.flames.count = n
+    this.flames.update(now, [1, 1, 1], eye)
   }
 
   _touch(dt, now, tips) {

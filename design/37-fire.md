@@ -18,27 +18,28 @@ On the one-handed desktop a torch cannot be lit with a flint in one hand and a s
 
 ## Flames
 
-`Wildfire` owns the flames and draws them, and the torches' flames, in one `Flames` call. What burns is asked of a `near` lookup (trees, ferns, ground sticks).
+`Wildfire` owns the flames and draws them, and the torches' flames, in one `TriFlames` draw. What burns is asked of a `near` lookup (trees, ferns, ground sticks).
 
 - A spark within `LIGHT_M` (0.3 m) of a flammable lights a flame there. It lives 5-10 s and dims over its last 1.5 s. The same object can be lit again.
 - The third flame on one object makes every flame on it big, holds them to 20 s from then, and chars the object once (`Trees.char`, `Ferns.char` set the per-instance tint to soot). A tile that regrows forgets the char.
 - Each second a flame has a 12% chance of lighting another flame on a flammable within 1 m.
 - A flame is a function of where and when. The lighting machine sends `[id, room, x, y, z, lifeS]`; the relay keeps `FLAME_CAP` and forwards each once with its age; a peer burns its copy and never spreads it, so flames do not double.
-- Every card that turns to face the player (flames, trees' cards, critters, gen-props, wreaths) turns toward the head, not the eye being drawn, through `src/head-eye.js`; `main.js` sets it once a frame. In a headset `cameraPosition` is per-eye, so a card turned toward it doubles up close. New billboard shaders take `HEAD_EYE_DECL` / `bindHeadEye` / `HEAD_EYE_GLSL`; `check-flames` and `check-shaders` pin it.
-- The flame fragment shader is cheap on a tile GPU: it `discard`s an emptied fragment, runs the mask in `mediump` and keeps the clock and noise coordinates `highp`. The card hull is already near the tightest that never clips the noise, so it was left alone.
+- Every card that turns to face the player (trees' cards, critters, gen-props, wreaths) turns toward the head, not the eye being drawn, through `src/head-eye.js`; `main.js` sets it once a frame. In a headset `cameraPosition` is per-eye, so a card turned toward it doubles up close. New billboard shaders take `HEAD_EYE_DECL` / `bindHeadEye` / `HEAD_EYE_GLSL`; `check-flames` and `check-shaders` pin it.
 - The campfire loop (`RULES.blaze`) is one loop at the nearest flame. One flame in the hand is faint (level 0.0375); each flame in reach adds its share and the level grows with the square root of the sum, to 8x at a blaze of dozens.
 
 ## Torches
 
 A held stick whose tip is within 15 cm of a spark is `rec.lit = true`, re-announced through `hands.rehold`; the flag replicates in the slot, so a peer sees the lit stick in the hand. It has one permanent flame at the tip and lights the world through `uTorch` (`TORCH_GLSL`): warm, flickering, fading out at 15 m, the four nearest torches. Stowing or submerging puts it out; dropped lit, it keeps burning. Torch light casts no shadow yet (a roadmap item). A torch's tip held within `TOUCH_M` (12 cm) of a tree, fern or ground stick for `IGNITE_S` (2 s) lights a flame on it exactly as a spark does, and again every 2 s it stays, so a torch left against a tree burns it big and black. The check runs at 10 Hz.
 
-## Triangle flames (prototype)
+## Triangle flames
 
-`src/v2/render/fire-tris.js` (`TriFlames`) is the candidate replacement for the card flame: each flame is a cloud of opaque flat-coloured triangles that rise, tumble, shift yellow to red and shrink to nothing. No blend, no texture, no discard, so the cost is covered pixels plus the vertex shader, and early depth rejection stays on. Every shard is a pure function of the clock and a static per-vertex seed; the CPU writes only the instance matrices. Real 3D shards have per-eye parallax, so no billboard and no head-centre aiming.
+`src/v2/render/fire-tris.js` (`TriFlames`) draws every flame in the world: the hearth's campfire (`TRI_CAMPFIRE`), the lamps (`TRI_LAMP`), and wildfire's tree fires and torches (`TRI_TORCH`, one draw). `TRI_CANDLE` is the house-candle look: `InteriorView` places one flame per candle at the room anchor plus the candle's local position (`TriFlames` reads instance origins as world space) and keeps the additive halo sprites behind them. The card shader in `fire.js` is now only the `/test-fire` bench's.
 
-LOD is four `InstancedMesh`es, level k holding the first `shards * lodKeep^k` shards of one master list (so a level is a subset of the one above), thinner levels drawn larger by `boost`. `update(t, glow, eye)` buckets flames by distance at `lodNear * lodStep^k`. Close flames use the same system at full count; there is no shader flame for them.
+A flame is a cloud of opaque flat-coloured triangles that rise, tumble about the vertical, shift yellow to red and shrink to nothing. No blend, no texture, no discard, so the cost is covered pixels plus the vertex shader, and early depth rejection stays on. Every shard is a pure function of the clock and a static per-vertex seed; the CPU writes only the instance matrices. Shards are real 3D geometry in a random baked orientation, so they have per-eye parallax and need no billboard or head-centre aiming.
 
-The bench is `/test-fire-tris.html` (`?preset=lamp|torch|campfire`, numeric query params override a knob): sliders for every `TRI_FIRE` knob, `lod` (-1 auto, 0-3 pinned), `lodTint` to colour the levels, and a copy button that emits the tuned `TRI_FIRE`. Gate: `check-fire-tris`. Not yet wired into `wildfire.js`, no LOD hysteresis, and nothing is measured on a Quest: tiny-triangle quad overhead and MSAA edge cost are the risks to check on-device.
+LOD is four `InstancedMesh`es, level k holding the first `shards * lodKeep^k` shards of one master list (so a level is a subset of the one above), thinner levels drawn larger by `boost`. `lodKeep` is 0.25: the campfire's 512 shards fall to 128, 32, 8. `update(t, glow, eye)` buckets flames by distance at `lodNear * lodStep^k`; callers pass the head. The smaller looks keep the campfire's motion and colour and spend fewer shards (torch 192, lamp 96). The candle is a solid core plus occasional flecks: `coreSize > 0` adds a six-faced diamond per flame (one extra `InstancedMesh` per level sharing its matrices and `aFlame`) whose tip jumps and whose ring breathes, and `duty` < 1 with `lift` makes the shards rare flecks, every one born at height `lift` (the core's centre, 0.375 for the candle) regardless of its reach. Only the candle sets them; the core is cheap enough to draw at every level.
+
+The bench is `/test-fire-tris.html` (`?preset=lamp|torch|campfire|candle`, numeric query params override a knob): a slider per `TRI_FIRE` knob, `lod` (-1 auto, 0-3 pinned), `lodTint` to colour the levels, and a copy button that emits the tuned params. Gate: `check-fire-tris`. No LOD hysteresis yet, and nothing is measured on a Quest: tiny-triangle quad overhead, MSAA edge cost and overdraw in a dense blaze are the risks to check on-device.
 
 ## Night
 

@@ -52,7 +52,7 @@ export const SIZE_M = 1
 export const SIZE_VAR = 0.15
 // The disc about the mouth it roams, and a new target every so often.
 export const ROAM_M = 150
-// It is placed out in its wood, never at the mouth: on the first open spot of OUT_TRIES rolled between OUT_M and OUT_FAR_M from it. OUT_M is past the cull of the largest leafkin, so one standing at the mouth never sees it appear.
+// It is placed out in its wood, never at the mouth: on the first of OUT_TRIES spots rolled between OUT_M and OUT_FAR_M from it whose flight home plans (a mouth with no way out that far is never seated: entrances.js _seat). OUT_M is past the cull of the largest leafkin, so one standing at the mouth never sees it appear.
 export const OUT_M = 50
 export const OUT_FAR_M = 100
 const OUT_TRIES = 64
@@ -89,11 +89,13 @@ const AHEAD = 0.75
 const DETOUR = [Math.PI / 2, (5 * Math.PI) / 6]
 const DETOUR_S = 1
 const REFUSALS = 10
-// A flight's path home: the grid it is planned on (the ground's), the cells A* may open before it settles for the one nearest home (PLAN_GROW times more after a plan that gets it no nearer, as in a pocket beside a mouth's screen, to PLAN_MAX), how near a waypoint counts as reached, how many waypoints ahead a clear line is looked for, a probe every this far along it, the weave about the line (the WOBBLE_* walk, scaled), and the ticks a refused step waits before the path is planned again.
+// A flight's path home: the grid it is planned on (the ground's), the cells A* may open before it settles for the one nearest home (PLAN_GROW times more after a plan that gets it no nearer, as in a pocket beside a mouth's screen, to PLAN_MAX; past that it stands and searches SEARCH_CELLS a tick, to SEARCH_MAX, for the way out of a basin that big), how near a waypoint counts as reached, how many waypoints ahead a clear line is looked for, a probe every this far along it, the weave about the line (the WOBBLE_* walk, scaled), and the ticks a refused step waits before the path is planned again.
 const CELL = 0.5
 const PLAN_OPEN = 800
 const PLAN_GROW = 4
 const PLAN_MAX = PLAN_OPEN * PLAN_GROW * PLAN_GROW
+const SEARCH_CELLS = PLAN_OPEN * 2
+const SEARCH_MAX = PLAN_MAX * PLAN_GROW ** 3
 const WAYPOINT_M = 0.4
 const LOOKAHEAD = 8
 const LINE_STEP = 0.1
@@ -115,7 +117,7 @@ const FADE_S = 0.25
 // State kept every SNAP_TICKS, SNAPS deep, for an anchor heard late to roll back to; one older than that replays the chapter.
 const SNAP_TICKS = 20
 const SNAPS = 30
-const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'budget', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
+const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'budget', 'sought', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
 
 export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
 // The clips whose feet stay put (puppet.js FootIK): a recoil steps back, a gait walks.
@@ -154,6 +156,11 @@ const STEPS8 = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2]
  * start cell -- none where nothing opened.
  */
 export function planPath(open, cells, ox, oz, sx, sz, gx, gz, near, budget) {
+  return planSteps(open, cells, ox, oz, sx, sz, gx, gz, near, budget, 0).next().value
+}
+
+/** planPath, yielding after every `chunk` cells opened (none at 0) so a search can be spread over ticks. */
+export function* planSteps(open, cells, ox, oz, sx, sz, gx, gz, near, budget, chunk) {
   const pass = (i, j) => {
     const k = cellKey(i, j)
     let v = cells.get(k)
@@ -210,6 +217,7 @@ export function planPath(open, cells, ox, oz, sx, sz, gx, gz, near, budget) {
     if (closed.has(k)) continue
     closed.add(k)
     opened++
+    if (chunk > 0 && opened % chunk === 0) yield
     const i = Math.floor(k / 2048) - 1024, j = (k % 2048) - 1024
     if (Math.hypot(ox + i * CELL - gx, oz + j * CELL - gz) <= near) { goalK = k; break }
     const h = octile(i, j)
@@ -288,8 +296,8 @@ export class Leafkin {
         tx: 0, tz: 0, retarget: 0, curve: 0, arc: 0, detour: 0, refused: 0,
         // The flight's weave.
         wob: 0, wobv: 0,
-        // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over (pure, so never rolled back), the tick it was last planned on, and the cells its next plan may open.
-        path: [], wp: 0, cells: new Map(), planned: -1, budget: PLAN_OPEN,
+        // The flight's path home: its waypoints, the one it is making for, the cells' passability as planned over (pure, so never rolled back), the tick it was last planned on, the cells its next plan may open, and the tick a search past PLAN_MAX began (-1 none) and that search (pure, so never rolled back).
+        path: [], wp: 0, cells: new Map(), planned: -1, budget: PLAN_OPEN, sought: -1, search: null,
         // The cap it is going for, seconds left before it gives the cap up, whether this gather has taken it, the caps gone this chapter (flat x, z: its own takes, her picks and the caps it gave up), and the bundle: caps carried, and the carrier drawing them.
         cx: 0, cz: 0, chase: 0, took: false, eaten: [], bundle: 0, carrier: null,
         // Seconds the recoil has left, and to the next call or pant, and whether the last was a pant.
@@ -423,6 +431,7 @@ export class Leafkin {
     c.live = -1
     c.rewind = Infinity
     c.cells.clear()
+    c.search = null
     c.lod = LOD_TIERS
     c.puppet = null
     c.cue = 0
@@ -461,7 +470,7 @@ export class Leafkin {
     this._snap(c)
   }
 
-  /** Out in its wood: an open spot rolled uniformly over the ring OUT_M to OUT_FAR_M about the mouth, facing a rolled way. */
+  /** Out in its wood: a spot rolled uniformly over the ring OUT_M to OUT_FAR_M about the mouth whose cell is open and whose flight home plans at PLAN_MAX, facing a rolled way. */
   _emerge(c) {
     const site = c.site
     let i = 0
@@ -470,9 +479,9 @@ export class Leafkin {
       const a = c.rand() * Math.PI * 2
       c.x = c.px = site.x + r * Math.cos(a)
       c.z = c.pz = site.z + r * Math.sin(a)
-      if (this.open(site, c.x, c.z)) break
+      if (this._cellOpen(site, c.x, c.z) && this._homeward(c, PLAN_MAX)) break
     }
-    if (i === OUT_TRIES) throw new Error(`Leafkin: no open ground ${OUT_M}-${OUT_FAR_M} m from ${site.key} in ${OUT_TRIES} tries`)
+    if (i === OUT_TRIES) throw new Error(`Leafkin: no ground ${OUT_M}-${OUT_FAR_M} m from ${site.key} with a way home in ${OUT_TRIES} tries`)
     c.heading = c.ph = c.aim = c.rand() * Math.PI * 2
     c.wob = c.wobv = 0
     c.squeal = 0
@@ -580,6 +589,7 @@ export class Leafkin {
     c.wp = 0
     c.planned = -1
     c.budget = PLAN_OPEN
+    c.sought = -1
     c.refused = 0
     c.wob = 0; c.wobv = 0
     c.voice = between(c.rand, calm ? CHATTER_S : WHIMPER_S)
@@ -618,20 +628,47 @@ export class Leafkin {
     return !this.open(c.site, c.x + Math.cos(heading) * ahead, c.z - Math.sin(heading) * ahead)
   }
 
-  /** A step along the heading at the gait, after the probe `ahead` of it: refused, it turns off instead. */
+  /** A step along the heading at the gait, after the probe `ahead` of it: refused by the probe or the walk, it turns off instead. */
   _advance(c, dt, ahead = c.size * AHEAD) {
     c.detour = Math.max(0, c.detour - dt)
-    if (this._blocked(c, c.heading, ahead)) {
-      c.refused++
-      c.detour = DETOUR_S
-      c.aim = c.heading + (c.rand() < 0.5 ? 1 : -1) * between(c.rand, DETOUR)
-      this._turn(c, dt)
-      return
+    if (!this._blocked(c, c.heading, ahead)) {
+      const heading = c.heading
+      if (this._move(c, c.speed * dt * this._turn(c, dt))) { c.refused = 0; return }
+      c.heading = heading
     }
-    c.refused = 0
-    const d = c.speed * dt * this._turn(c, dt)
-    c.x += Math.cos(c.heading) * d
-    c.z -= Math.sin(c.heading) * d
+    c.refused++
+    c.detour = DETOUR_S
+    c.aim = c.heading + (c.rand() < 0.5 ? 1 : -1) * between(c.rand, DETOUR)
+    this._turn(c, dt)
+  }
+
+  /** Whether the CELL holding (x, z) is open, asked at its centre as planPath asks it. */
+  _cellOpen(site, x, z) {
+    return this.open(site, Math.round(x / CELL) * CELL, Math.round(z / CELL) * CELL)
+  }
+
+  /**
+   * THE WALK, roaming, gathering and fleeing alike: a step under a CELL from
+   * (x0, z0) to (x1, z1) is taken only if planPath could take it -- into an
+   * open cell, and across a cell's corner only with both cells beside it open.
+   * A step the plan refuses and the walk allows lets a roam slip into a pocket
+   * no flight plans out of, and it runs at the wall for good.
+   */
+  _walks(site, x0, z0, x1, z1) {
+    const i0 = Math.round(x0 / CELL), j0 = Math.round(z0 / CELL), i1 = Math.round(x1 / CELL), j1 = Math.round(z1 / CELL)
+    if (i1 === i0 && j1 === j0) return true
+    const at = (i, j) => this.open(site, i * CELL, j * CELL)
+    if (!at(i1, j1)) return false
+    return i1 === i0 || j1 === j0 || (at(i1, j0) && at(i0, j1))
+  }
+
+  /** `d` along the heading, if the walk takes it. */
+  _move(c, d) {
+    const x = c.x + Math.cos(c.heading) * d, z = c.z - Math.sin(c.heading) * d
+    if (!this._walks(c.site, c.x, c.z, x, z)) return false
+    c.x = x
+    c.z = z
+    return true
   }
 
   _tickRoam(c, tick, dt) {
@@ -711,7 +748,8 @@ export class Leafkin {
       const d = c.speed * dt * this._turn(c, dt, FLEE_TURN)
       c.x += Math.cos(c.heading) * d
       c.z -= Math.sin(c.heading) * d
-    } else {
+    } else if (c.sought >= 0) this._search(c, tick)
+    else {
       // Along the planned path, weaving about it; a step onto ground it cannot stand on is refused, and REPLAN_TICKS of those plan the path again from here.
       if (c.wp >= c.path.length && (c.planned < 0 || tick - c.planned >= REPLAN_TICKS)) this._plan(c, tick)
       // The path run out, or none found: straight at the mouth point.
@@ -723,9 +761,8 @@ export class Leafkin {
       c.wobv += ((c.rand() * 2 - 1) * WOBBLE_DRIVE - c.wobv * WOBBLE_W - c.wob * WOBBLE_W * WOBBLE_W) * dt
       c.wob = clamp(c.wob + c.wobv * dt, -WOBBLE_MAX, WOBBLE_MAX)
       c.aim = this._toward(c, wx, wz) + c.wob * (FLEE_WOBBLE / WOBBLE_MAX)
-      const d = c.speed * dt * this._turn(c, dt, FLEE_TURN)
-      const nx = c.x + Math.cos(c.heading) * d, nz = c.z - Math.sin(c.heading) * d
-      if (this.open(site, nx, nz)) { c.x = nx; c.z = nz; c.refused = 0 } else {
+      if (this._move(c, c.speed * dt * this._turn(c, dt, FLEE_TURN))) c.refused = 0
+      else {
         c.wob = 0; c.wobv = 0
         if (++c.refused >= REPLAN_TICKS && tick - c.planned >= REPLAN_TICKS) this._plan(c, tick)
       }
@@ -741,13 +778,51 @@ export class Leafkin {
   _plan(c, tick) {
     const site = c.site
     c.path = planPath((x, z) => this.open(site, x, z), c.cells, Math.round(site.x / CELL) * CELL, Math.round(site.z / CELL) * CELL, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, c.budget)
-    if (c.path.length === 0) c.budget = Math.min(c.budget * PLAN_GROW, PLAN_MAX)
+    if (c.path.length === 0 && c.budget === PLAN_MAX) {
+      c.sought = tick
+      this._play(c, 'idle', STEP_S)
+    } else if (c.path.length === 0) c.budget = Math.min(c.budget * PLAN_GROW, PLAN_MAX)
     c.wp = 0
     c.planned = tick
     c.refused = 0
   }
 
-  /** The furthest of the next LOOKAHEAD waypoints it can run straight at, probed every LINE_STEP along the line; the next one when none. */
+  /**
+   * Standing, the plan's search past PLAN_MAX: SEARCH_CELLS of it a tick, its
+   * path taken on the tick that work runs out. The search is kept off the
+   * snapshots, so a replay of these ticks finds the same path on the same tick
+   * without searching again -- a search begun on another tick or spot is new.
+   */
+  _search(c, tick) {
+    const site = c.site
+    let s = c.search
+    if (!s || s.from !== c.sought || s.x !== c.x || s.z !== c.z) {
+      const steps = planSteps((x, z) => this.open(site, x, z), c.cells, Math.round(site.x / CELL) * CELL, Math.round(site.z / CELL) * CELL, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, SEARCH_MAX, SEARCH_CELLS)
+      s = c.search = { from: c.sought, x: c.x, z: c.z, steps, ticks: 0, path: null }
+    }
+    const ticks = tick - c.sought
+    while (s.path === null && s.ticks <= ticks) {
+      const r = s.steps.next()
+      if (r.done) s.path = r.value
+      else s.ticks++
+    }
+    if (s.path === null || s.ticks > ticks) return
+    c.path = s.path
+    c.wp = 0
+    c.planned = tick
+    c.sought = -1
+    this._play(c, c.state === 'home' && c.bundle > 0 ? 'run-carry' : 'run', STEP_S)
+  }
+
+  /** Whether a plan from where it stands, opening at most `budget` cells, ends at home. */
+  _homeward(c, budget) {
+    const site = c.site
+    const path = planPath((x, z) => this.open(site, x, z), c.cells, Math.round(site.x / CELL) * CELL, Math.round(site.z / CELL) * CELL, c.x, c.z, site.x, site.z, FINAL_M - WAYPOINT_M, budget)
+    const end = path[path.length - 1]
+    return end !== undefined && Math.hypot(end[0] - site.x, end[1] - site.z) <= FINAL_M - WAYPOINT_M
+  }
+
+  /** The furthest of the next LOOKAHEAD waypoints it can run straight at, the walk tried every LINE_STEP along the line; the next one when none. */
   _lookahead(c) {
     const last = Math.min(c.path.length - 1, c.wp + LOOKAHEAD)
     for (let k = last; k > c.wp + 1; k--) {
@@ -755,7 +830,7 @@ export class Leafkin {
       const dx = wx - c.x, dz = wz - c.z
       const n = Math.ceil(Math.hypot(dx, dz) / LINE_STEP)
       let clear = true
-      for (let i = 1; i <= n && clear; i++) clear = this.open(c.site, c.x + (dx * i) / n, c.z + (dz * i) / n)
+      for (let i = 1; i <= n && clear; i++) clear = this._walks(c.site, c.x + (dx * (i - 1)) / n, c.z + (dz * (i - 1)) / n, c.x + (dx * i) / n, c.z + (dz * i) / n)
       if (clear) return k
     }
     return c.wp + 1

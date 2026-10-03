@@ -54,7 +54,7 @@ import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/rend
 import { Stools } from '../src/v2/render/stools.js'
 import { HEARTH, feetGround } from '../src/v2/render/hearth.js'
 import { SEAT_M } from '../src/v2/render/villagers.js'
-import { FIRE } from '../src/v2/render/fire.js'
+import { TRI_LAMP } from '../src/v2/render/fire-tris.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { keyHash } from '../src/sim/score.js'
 import { GEN_PROPS_DIR, readShippedAsset, readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -806,19 +806,19 @@ console.log('\nthe lamps')
   const windows = roomProps.windows()
   const layer = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps, windows, seed, patch: (m) => m })
   const postH = layer.scale * layer.bank.bounds.height
-  check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length && layer.flames.mesh.count === lamps.length, `${LAMP.height} m posts, one a lamp, a flame in every dish`, `${postH.toFixed(2)} m, ${layer.posts.count} posts, ${layer.flames.mesh.count} flames`)
+  check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length && layer.flames.count === lamps.length, `${LAMP.height} m posts, one a lamp, a flame in every dish`, `${postH.toFixed(2)} m, ${layer.posts.count} posts, ${layer.flames.count} flames`)
   check(layer.postMaterial.side === THREE.DoubleSide, 'a post shows both faces: the dish and the hood are open shells', `side ${layer.postMaterial.side}`)
-  const flameM = new THREE.Matrix4(), flameP = new THREE.Vector3(), flameS = new THREE.Vector3()
+  const flameP = new THREE.Vector3(), flameS = new THREE.Vector3()
   let inDish = 0, wick = 0
   layer.lamps.forEach((l, i) => {
-    layer.flames.mesh.getMatrixAt(i, flameM)
-    flameP.setFromMatrixPosition(flameM)
-    flameS.setFromMatrixScale(flameM)
+    const at = layer.flames.at[i]
+    flameP.set(at.x, at.y, at.z)
+    flameS.set(at.radius, at.height, at.radius)
     if (Math.abs(flameP.x - l.x) < 1e-3 && Math.abs(flameP.z - l.z) < 1e-3 && Math.abs(flameP.y - (l.y + LAMP.height * LAMP.bowl)) < 1e-3) inDish++
-    if (Math.abs(flameS.y - FIRE.height * LAMP.flame) < 1e-3 && Math.abs(flameS.x - FIRE.radius * LAMP.flame) < 1e-3) wick++
+    if (Math.abs(flameS.y - TRI_LAMP.height * LAMP.flame) < 1e-3 && Math.abs(flameS.x - TRI_LAMP.radius * LAMP.flame) < 1e-3) wick++
   })
   check(inDish === lamps.length, `every flame stands in its dish, ${LAMP.bowl} of the way up the post`, `${inDish} of ${lamps.length}`)
-  check(wick === lamps.length, `every flame is ${LAMP.flame} of the hearth's size`, `${wick} of ${lamps.length} at ${(FIRE.height * LAMP.flame).toFixed(2)} m`)
+  check(wick === lamps.length, `every flame is ${LAMP.flame} of the hearth's size`, `${wick} of ${lamps.length} at ${(TRI_LAMP.height * LAMP.flame).toFixed(2)} m`)
   const { tex, frame } = layer.map
   const texel = (x, z) => {
     const i = Math.min(tex.image.width - 1, Math.max(0, Math.floor((x - frame.x0) / LAMP.texel))), j = Math.min(tex.image.height - 1, Math.max(0, Math.floor((z - frame.z0) / LAMP.texel)))
@@ -856,10 +856,10 @@ console.log('\nthe lamps')
   for (const w of windows) if (texel(w.x + w.dx * 2, w.z + w.dz * 2) > darkTexel(w.x + w.dx * 2, w.z + w.dz * 2)) outLit++
   dark.dispose()
   check(outLit === windows.length, 'every window lights the ground a step out of its wall', `${outLit} of ${windows.length}`)
-  layer.update(3, 1)
+  layer.update(3, 1, { x: 0, y: 0, z: 0 })
   const dayGlow = layer.glow.length(), dayBreath = layer.breath, dayFlames = layer.flames.group.visible
-  layer.update(3, 0)
-  const g = layer.glow, nightFlame = layer.flames.material.uniforms.uGlow.value
+  layer.update(3, 0, { x: 0, y: 0, z: 0 })
+  const g = layer.glow, nightFlame = layer.flames.shared.uGlow.value
   check(dayGlow === 0 && dayBreath === 0 && !dayFlames, 'by day the glow and the breath are nothing and the flames are hidden', `glow ${dayGlow.toFixed(2)} flames ${dayFlames}`)
   check([g.x, g.y, g.z].every((v) => v > 0.55 && v < 1.1) && layer.breath > 0.55 && layer.flames.group.visible && nightFlame.x === g.x && nightFlame.z === g.z, 'by night every group glows and the flames burn on the same glow', `glow ${g.x.toFixed(2)} ${g.y.toFixed(2)} ${g.z.toFixed(2)} breath ${layer.breath.toFixed(2)} flames ${layer.flames.group.visible}`)
   roomProps.setGlow(0)

@@ -72,6 +72,14 @@
 // the other arrives; an anchor older than ANCHOR_STALE_S with no hand in sight
 // ends the lure here.
 //
+// IT CHASES HER, AND STRIDERS, live the same way (`aggro`). Resting, it spots
+// her near; flying, it may eye her in the open or a strider, swoop a circle
+// and land with a thud. Down, it turns on its quarry, charges, chomps, growls
+// and goes again, a bite on her hurting her (harm) and one on a strider
+// sending it bolting (fright), until the quarry is too far off and it flies
+// home on a rejoin. The quarry's client steers it and anchors every
+// AGGRO_ANCHOR_S and each phase; peers trail the anchors. Numbers: SPOT_M on.
+//
 // IT TURNS, PITCHES AND BANKS, none of them faster than a rate: heading closes
 // on the bearing at TURN_RATE, pitch on the climb angle at PITCH_RATE, and roll
 // leans into the turn by BANK of the swing. A cruise meanders: the bearing and
@@ -227,6 +235,32 @@ export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
 
+// Aggression, in metres and seconds, every distance across the ground: a grounded dragon spots her within SPOT_M; a flying one eyes her in the open, or a strider, within EYE_M at EYE_P or STRIDER_P an encounter, circles CIRCLE_M round where it saw the quarry CIRCLE_AGL over it (one turn, at most CIRCLE_S), and lands LAND_SHORT short of it (at most AGGRO_LAND_S). Down, it stands SPOT_S facing the quarry, charges at CHARGE_MPS, chomps with its snout (EAT_REACH ahead) within BITE_M, the bite BITE_AT_S into the CHOMP_S chomp hurting BITE_HP within HURT_M, growls GROWL_S, and gives up past GIVE_UP_M, eyeing nobody for SPURN_S. A chase after her turns on any strider within SPOT_M.
+export const SPOT_M = 20
+export const EYE_M = 50
+export const EYE_P = 0.5
+export const STRIDER_P = 0.25
+export const CIRCLE_M = 30
+export const CIRCLE_AGL = 20
+export const CIRCLE_S = 25
+export const LAND_SHORT = 15
+export const AGGRO_LAND_S = 20
+export const SPOT_S = 1.2
+export const CHARGE_MPS = 4
+export const BITE_M = 5
+export const HURT_M = 6
+export const BITE_HP = 30
+export const BITE_AT_S = 0.7
+export const CHOMP_S = 1.4
+export const GROWL_S = 1
+export const GIVE_UP_M = 50
+export const SPURN_S = 30
+// Seconds between an aggro dragon's anchors: it turns and charges faster than a menace stomps.
+export const AGGRO_ANCHOR_S = 0.5
+export const HER = 'her'
+const AGGRO_CLIP = { swoop: 'fly', land: 'fly', spot: 'alert', charge: 'walk', chomp: 'eat', growl: 'alert' }
+const NO_QUARRY = { her: null, striders: [] }
+
 const roll = (rand, [lo, hi]) => lerp(lo, hi, rand())
 // The heading that carries the body from a to b: +X forward, a positive heading toward -Z.
 const bearing = (a, b) => Math.atan2(-(b.z - a.z), b.x - a.x)
@@ -343,13 +377,19 @@ export class Dragons {
    * @param roosts    Roosts: sites(), siteAt(tx, tz)
    * @param wildlife  Wildlife: roster, spawnAt, poseAt, kill, carry, drop; its `hunter` is set here (strikeOn)
    */
-  constructor(scene, field, { seed = 1, roosts, wildlife, water, asset = null } = {}) {
+  constructor(scene, field, { seed = 1, roosts, wildlife, water, harm, fright, asset = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') throw new Error('Dragons needs a height field with heightAt and heightAndSlopeAt')
     if (!roosts || typeof roosts.sites !== 'function' || typeof roosts.siteAt !== 'function') throw new Error('Dragons needs the Roosts, for sites and siteAt')
     if (!wildlife || ['roster', 'spawnAt', 'poseAt', 'kill', 'carry', 'drop'].some((f) => typeof wildlife[f] !== 'function')) {
       throw new Error('Dragons needs the Wildlife, for roster, spawnAt, poseAt, kill, carry and drop')
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Dragons needs the WaterSurfaces, for isSubmerged, so no dragon alights in a lake')
+    if (typeof harm !== 'function' || typeof fright !== 'function') throw new Error('Dragons needs harm(n, why) for a bite on her and fright(key, x, z) for one on a strider')
+    this.harm = harm
+    this.fright = fright
+    // Whether an encounter is eyed: a field so a gate can load the dice. Rolled on the quarry's own client only, which then owes the room the chase.
+    this.random = Math.random
+    this.quarry = NO_QUARRY
     this.field = field
     this.roosts = roosts
     this.wildlife = wildlife
@@ -398,10 +438,10 @@ export class Dragons {
         // The ground it is on or landing on -- its nest site, or a visited spot -- the rest steps queued on it, the step under way, where that step walks to and faces, whether the rest is walking back to its centre for the end, whether a landing has handed over to the settle; the kill's fixed place on the nest floor, off its centre.
         dest: null, queue: [], rest: 'idle', wayU: 0, wayV: 0, face: null, homing: false, down: false, cargoU: 0, cargoV: 0, cargoYaw: 0,
         cargo: null,
-        // The hands.js lure it is stomping after.
-        lure: null,
-        // The clip playing, how long the rest step holds it, and the clip's own length, for the ear's wingbeat clock; `cue` counts steps, as the wildlife's does.
-        clip: 'idle', cue: 0, left: 0, cycle: 0,
+        // The hands.js lure it is stomping after; the quarry ids eyed this encounter (_eye), each to the tick it was last in sight; the world time it may eye again.
+        lure: null, eyed: new Map(), spurned: 0,
+        // The clip playing, its playback rate, how long the rest step holds it, and one cycle of it in seconds, for the ear's clocks; `cue` counts steps, as the wildlife's does; the ear's cues for an aggro dragon's roar, its thud down and its growl.
+        clip: 'idle', rate: 1, cue: 0, left: 0, cycle: 0, roarCue: 0, thudCue: 0, growlCue: 0,
         size: 1, k: 1, lodSize: 1,
         lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1,
       })
@@ -1009,11 +1049,12 @@ export class Dragons {
   }
 
   /** A new clip on the dragon, from its start. */
-  _play(d, clip, hold) {
+  _play(d, clip, hold, rate = 1) {
     d.clip = clip
+    d.rate = rate
     d.cue++
     d.left = hold
-    d.cycle = this.durations[clip]
+    d.cycle = this.durations[clip] / rate
   }
 
   /** A rest step rolled by REST_ODDS from the phrase's dice; homing, only idles. A walk is two or three points round the ring from the body's own bearing about the centre, the first returned and the rest queued, so it goes some way round rather than shuffling one step. */
@@ -1228,6 +1269,11 @@ export class Dragons {
     } else if (d.clip !== 'eat') {
       this._play(d, 'eat', Infinity)
     }
+    this._tread(d, dt, want)
+  }
+
+  /** One tick off the score on the ground: speed closing on `want` at STRIDE_ACCEL, the body along its heading, levelling, onto the ground -- or the nest's plane while over the nest. */
+  _tread(d, dt, want) {
     d.speed += clamp(want - d.speed, -STRIDE_ACCEL * d.k * dt, STRIDE_ACCEL * d.k * dt)
     d.x += Math.cos(d.heading) * d.speed * dt
     d.z -= Math.sin(d.heading) * d.speed * dt
@@ -1269,9 +1315,181 @@ export class Dragons {
     }
   }
 
-  /** This dragon's anchor at `now`: what any client needs to resume it. */
+  /** The quarry `id` -- HER, or a strider's key -- in this.quarry this tick, `{ x, y, z }`, or null when it is not there. */
+  _quarryAt(id) {
+    if (id === HER) return this.quarry.her
+    for (const s of this.quarry.striders) if (s.key === id) return s
+    return null
+  }
+
+  /** HER if this grounded dragon spots her, else null. */
+  _spot(d, now) {
+    const her = this.quarry.her
+    return her !== null && now >= d.spurned && Math.hypot(her.x - d.x, her.z - d.z) <= SPOT_M ? HER : null
+  }
+
+  /** Whether quarry `s` within EYE_M is eyed at odds `p`: rolled the first tick of an encounter only. */
+  _sighted(d, id, s, p, now) {
+    if (Math.hypot(s.x - d.x, s.z - d.z) > EYE_M) return false
+    const fresh = !d.eyed.has(id)
+    d.eyed.set(id, now)
+    return fresh && this.random() < p
+  }
+
+  /** The quarry this flying dragon eyes this tick, or null: her in the open at EYE_P, a strider at STRIDER_P, each rolled once an encounter. Never with a kill in its talons. */
+  _eye(d, now) {
+    const eyed = d.eyed
+    if (now < d.spurned || d.cargo) { eyed.clear(); return null }
+    const her = this.quarry.her
+    let prey = her !== null && her.open && this._sighted(d, HER, her, EYE_P, now) ? HER : null
+    for (const s of this.quarry.striders) if (this._sighted(d, s.key, s, STRIDER_P, now) && prey === null) prey = s.key
+    for (const [id, at] of eyed) if (at !== now) eyed.delete(id)
+    return prey
+  }
+
+  /** Off the score and after quarry `prey` from `phase`, live: the kill, if any, let go. `by` is the quarry's client, null for this client, which then steers the chase and owes the room its anchors; a peer's chase carries no quarry. */
+  _aggro(d, prey, by, now, phase) {
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.state = 'aggro'
+    d.live = { mode: 'aggro', by, anchor: null, sendAt: now, prey, phase: null, since: now, cx: 0, cz: 0, last: 0, swept: 0, tx: 0, ty: 0, tz: 0, bit: false }
+    d.rejoin = null
+    d.lure = null
+    d.queue.length = 0
+    d.rest = 'idle'
+    d.face = null
+    this._phase(d, phase, now)
+  }
+
+  /** The chase into `phase`: its clip (the charge's walk sped up to CHARGE_MPS), the ear's cue -- a roar on the swoop and on a spot from the ground, the thud on a spot from a landing, a growl -- and an anchor owed now. */
+  _phase(d, phase, now) {
+    const live = d.live
+    const was = live.phase
+    const clip = AGGRO_CLIP[phase]
+    if (clip === undefined) throw new Error(`Dragons: no aggro phase ${phase}`)
+    live.phase = phase
+    live.since = now
+    live.sendAt = now
+    live.bit = false
+    if (phase === 'swoop' || (phase === 'spot' && was !== 'land')) d.roarCue++
+    if (phase === 'spot' && was === 'land') d.thudCue++
+    if (phase === 'growl') d.growlCue++
+    const rate = phase === 'charge' ? CHARGE_MPS / (this.asset.gait.walk * d.k) : 1
+    if (d.clip !== clip || d.rate !== rate) this._play(d, clip, Infinity, rate)
+  }
+
+  /** The bite landing on quarry `id`: her hurt, or the strider sent bolting from the dragon. */
+  _bite(d, id) {
+    if (id === HER) this.harm(BITE_HP, 'a fen dragon')
+    else this.fright(id, d.x, d.z)
+  }
+
+  /**
+   * One tick of a chase. A peer's follows its anchors (_trail); this client's
+   * gives up -- spurned for SPURN_S -- with the quarry gone or GIVE_UP_M off
+   * (off the circle's centre while in the air), and otherwise plays its phase:
+   * the swoop circling the centre, the landing gliding onto its touchdown, and
+   * on the ground turning on the quarry at WALK_TURN_RATE and stepping as
+   * _phase's doc says, a chase after her turning on any strider within SPOT_M.
+   */
+  _stepAggro(d, k, now) {
+    const live = d.live
+    if (live.by !== null) { this._trail(d, now); return }
+    const q = this._quarryAt(live.prey)
+    const air = live.phase === 'swoop' || live.phase === 'land'
+    if (q === null || Math.hypot(q.x - (air ? live.cx : d.x), q.z - (air ? live.cz : d.z)) > GIVE_UP_M) {
+      d.spurned = now + SPURN_S
+      d.eyed.clear()
+      this._unlive(d, now)
+      return
+    }
+    const held = now - live.since
+    if (live.phase === 'swoop') {
+      this._probe(d, k)
+      const a = Math.atan2(d.z - live.cz, d.x - live.cx)
+      live.swept += Math.abs(swing(live.last, a))
+      live.last = a
+      this._fly(d, TICK_S, live.cx + Math.cos(a + 0.5) * CIRCLE_M, Math.max(q.y + CIRCLE_AGL, this._floor(d)), live.cz + Math.sin(a + 0.5) * CIRCLE_M, PATROL_MPS, PITCH_MAX, LAND_TURN_RATE)
+      if (live.swept >= 2 * Math.PI || held >= CIRCLE_S) {
+        const r = Math.max(Math.hypot(d.x - q.x, d.z - q.z), 1e-6)
+        live.tx = q.x + ((d.x - q.x) / r) * LAND_SHORT
+        live.tz = q.z + ((d.z - q.z) / r) * LAND_SHORT
+        live.ty = this.field.heightAt(live.tx, live.tz)
+        this._phase(d, 'land', now)
+      }
+    } else if (live.phase === 'land') {
+      this._probe(d, k)
+      if (this._fly(d, TICK_S, live.tx, live.ty, live.tz, LAND_MPS, DIVE_PITCH, LAND_TURN_RATE) < LAND_SNAP_M || held >= AGGRO_LAND_S) this._phase(d, 'spot', now)
+    } else {
+      if (live.prey === HER) {
+        for (const s of this.quarry.striders) {
+          if (Math.hypot(s.x - d.x, s.z - d.z) > SPOT_M) continue
+          live.prey = s.key
+          this.fright(s.key, d.x, d.z)
+          this._phase(d, 'spot', now)
+          return
+        }
+      }
+      const sw = swing(d.heading, bearing(d, q))
+      d.heading += clamp(sw, -WALK_TURN_RATE * TICK_S, WALK_TURN_RATE * TICK_S)
+      const reach = EAT_REACH * d.k
+      const snout = Math.hypot(q.x - d.x - Math.cos(d.heading) * reach, q.z - d.z + Math.sin(d.heading) * reach)
+      const facing = Math.abs(sw) < 0.5
+      let want = 0
+      if (live.phase === 'spot') {
+        if (held >= SPOT_S) {
+          this._phase(d, 'charge', now)
+          if (live.prey !== HER) this.fright(live.prey, d.x, d.z)
+        }
+      } else if (live.phase === 'charge') {
+        if (snout <= BITE_M && facing) this._phase(d, 'chomp', now)
+        else want = CHARGE_MPS * (Math.abs(sw) > 1 ? 0.3 : 1)
+      } else if (live.phase === 'chomp') {
+        if (!live.bit && held >= BITE_AT_S) {
+          live.bit = true
+          if (snout <= HURT_M) this._bite(d, live.prey)
+        }
+        if (held >= CHOMP_S) this._phase(d, 'growl', now)
+      } else if (held >= GROWL_S) {
+        this._phase(d, snout <= BITE_M && facing ? 'chomp' : 'charge', now)
+      }
+      this._tread(d, TICK_S, want)
+    }
+    if (now >= live.sendAt) {
+      this.outbox.push(this._anchor(d, now, 'aggro'))
+      live.sendAt = now + AGGRO_ANCHOR_S
+    }
+  }
+
+  /** One tick of a peer's chase: the anchor's phase played, the body carried along the anchor's heading at its speed -- on the ground, eased since the anchor as the authority's stride eases, onto the charge or to a stand -- turned onto its heading at the authority's turn rate, and pulled over CORRECT_S onto the anchor run on to now. A stale anchor ends the chase here. */
+  _trail(d, now) {
+    const a = d.live.anchor
+    if (now - a[1] >= ANCHOR_STALE_S) { this._unlive(d, now); return }
+    const [, T, ax, ay, az, ah, , , , v, phase] = a
+    if (phase !== d.live.phase) this._phase(d, phase, now)
+    const f = Math.min(1, TICK_S / CORRECT_S)
+    const t = now - T
+    const air = phase === 'swoop' || phase === 'land'
+    const want = air ? v : phase === 'charge' ? CHARGE_MPS : 0
+    const acc = STRIDE_ACCEL * d.k
+    const eased = Math.min(t, Math.abs(want - v) / acc)
+    d.speed = v + clamp(want - v, -acc * t, acc * t)
+    const run = ((v + d.speed) / 2) * eased + d.speed * (t - eased)
+    const turn = (air ? LAND_TURN_RATE : WALK_TURN_RATE) * TICK_S
+    d.heading += clamp(swing(d.heading, ah), -turn, turn)
+    d.x += Math.cos(d.heading) * d.speed * TICK_S
+    d.z -= Math.sin(d.heading) * d.speed * TICK_S
+    d.x += (ax + Math.cos(ah) * run - d.x) * f
+    d.y += (ay - d.y) * f
+    d.z += (az - Math.sin(ah) * run - d.z) * f
+    d.pitch -= clamp(d.pitch, -PITCH_RATE * TICK_S, PITCH_RATE * TICK_S)
+    d.roll -= clamp(d.roll, -ROLL_RATE * TICK_S, ROLL_RATE * TICK_S)
+  }
+
+  /** This dragon's anchor at `now`: what any client needs to resume it, a chase's phase last. */
   _anchor(d, now, mode) {
-    return [d.key, now, d.x, d.y, d.z, d.heading, -1, mode, null, d.speed]
+    const a = [d.key, now, d.x, d.y, d.z, d.heading, -1, mode, null, d.speed]
+    if (mode === 'aggro') a.push(d.live.phase)
+    return a
   }
 
   /** The body put at an anchor's pose: level, at the anchor's speed. */
@@ -1310,6 +1528,10 @@ export class Dragons {
       d.rec.tick = tickOf(now)
       this._menace(d, null, by, now)
       d.live.anchor = anchor
+    } else if (mode === 'aggro') {
+      d.rec.tick = tickOf(now)
+      this._aggro(d, null, by, now, anchor[10])
+      d.live.anchor = anchor
     } else if (mode === 'rejoin') {
       d.rec.tick = tickOf(T)
       this._startRejoin(d, T)
@@ -1320,7 +1542,7 @@ export class Dragons {
 
   /**
    * An anchor heard from the room, `[key, T, x, y, z, heading, phraseIndex,
-   * mode, by, speed]`, `by` the client it came from (null for this client's own, which
+   * mode, by, speed]` and an aggro anchor's phase, `by` the client it came from (null for this client's own, which
    * is ignored). Kept for a dragon not yet born; on one that is, a live anchor
    * puts it live or nudges it, a rejoin anchor puts it on that rejoin from the
    * anchor's time.
@@ -1333,7 +1555,13 @@ export class Dragons {
     const d = this.byKey.get(key)
     if (!d) return
     if (mode === 'menace') {
-      if (!d.live) this._menace(d, null, by, now)
+      if (!d.live || d.live.mode !== 'menace') this._menace(d, null, by, now)
+      d.live.anchor = anchor
+      d.live.by = by
+    } else if (mode === 'aggro') {
+      // A chase this client steers keeps its own quarry: two clients' chases of one dragon each play out at home.
+      if (d.live && d.live.mode === 'aggro' && d.live.by === null) return
+      if (!d.live || d.live.mode !== 'aggro') this._aggro(d, null, by, now, anchor[10])
       d.live.anchor = anchor
       d.live.by = by
     } else if (mode === 'rejoin') {
@@ -1358,7 +1586,11 @@ export class Dragons {
   _step(d, k) {
     const now = k * TICK_S
     d.px = d.x; d.py = d.y; d.pz = d.z; d.pheading = d.heading; d.ppitch = d.pitch; d.proll = d.roll
-    if (d.live) { this._stepLive(d, now); return }
+    if (d.live) {
+      if (d.live.mode === 'aggro') this._stepAggro(d, k, now)
+      else this._stepLive(d, now)
+      return
+    }
     if (k >= d.phraseEndTick) {
       this._snap(d, d.phrase.to)
       // The boundary tick may fall an ulp short of the end: the next phrase is looked up at the end itself.
@@ -1370,10 +1602,24 @@ export class Dragons {
       case 'rest': {
         const lure = this._lure(d)
         if (lure !== null) { this._menace(d, lure, lure.by ?? null, now); return }
+        const prey = this._spot(d, now)
+        if (prey !== null) { this._aggro(d, prey, null, now, 'spot'); return }
         this._stepRest(d, elapsed)
         break
       }
-      case 'fly': this._stepFly(d, k, now, elapsed); break
+      case 'fly': {
+        const prey = this._eye(d, now)
+        if (prey !== null) {
+          const q = this._quarryAt(prey)
+          this._aggro(d, prey, null, now, 'swoop')
+          d.live.cx = q.x
+          d.live.cz = q.z
+          d.live.last = Math.atan2(d.z - q.z, d.x - q.x)
+          return
+        }
+        this._stepFly(d, k, now, elapsed)
+        break
+      }
       case 'stoop': this._stepStoop(d); break
       case 'land': this._stepLand(d); break
       default: throw new Error(`Dragons: no phrase kind ${ph.kind}`)
@@ -1469,6 +1715,8 @@ export class Dragons {
     if (!puppet) return
     puppet.show(tier)
     puppet.play(d.clip, d.cue)
+    // A pooled puppet's actions keep whatever rate they were last given.
+    puppet.actions.get(d.clip).timeScale = d.rate
     puppet.solver.steer(_heading, _pitch)
     puppet.step(dt)
     puppet.group.matrix.copy(_mat)
@@ -1479,9 +1727,11 @@ export class Dragons {
    * One frame at world time `now` (clock.js WorldClock.seconds): a dragon for
    * every resident roost, stepped to now and drawn; the dragons of roosts that
    * went, retired. `lures`: hands.js lures() this frame, each `{ kind, x, y,
-   * z, by }`, a fish among them menaced.
+   * z, by }`, a fish among them menaced. `quarry`: what this client's dragons
+   * may chase -- `her` `{ x, y, z, open }` (open: no tree within 5 m) or null,
+   * and `striders`, this client's own `[{ key, x, y, z }]`.
    */
-  update(hx, hy, hz, now, lures = NO_LURES) {
+  update(hx, hy, hz, now, lures = NO_LURES, quarry = NO_QUARRY) {
     if (!this.loaded) return
     if (!Number.isFinite(now)) throw new Error(`Dragons.update: world time ${now}`)
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
@@ -1491,6 +1741,7 @@ export class Dragons {
     this.replayed = 0
     this.behind = 0
     this.lures = lures
+    this.quarry = quarry
 
     for (let i = this.fading.length - 1; i >= 0; i--) {
       const p = this.fading[i]

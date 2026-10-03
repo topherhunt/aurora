@@ -401,7 +401,7 @@ export function rollInterior({ seed, index, height }) {
       const u = range(-0.05, 0.22) * bedLen, v = range(-0.3, 0.3) * bedWid
       items.push({ kind: 'plush', x: p.x + u * s + v * c, z: p.z + u * c - v * s, y: top + 0.04, yaw: range(0, TAU), size: range(0.1, 0.15), hue: range(0, 1), shape: Math.floor(rng() * 3) })
     }
-    spots.push({ kind: 'bed', x: p.x, z: p.z, top, yaw: along, len: bedLen, wid: bedWid, lookX: s, lookZ: c, level: bedUp ? 1 : 0 })
+    spots.push({ kind: 'bed', x: p.x, z: p.z, top, floor: y, yaw: along, len: bedLen, wid: bedWid, lookX: s, lookZ: c, level: bedUp ? 1 : 0 })
     // Where its sleeper gets up: past its foot.
     if (!bedUp) take(p.x - s * (bedLen / 2 + 0.25), p.z - c * (bedLen / 2 + 0.25), 0.22)
   }

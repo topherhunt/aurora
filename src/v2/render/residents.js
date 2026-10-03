@@ -47,7 +47,7 @@ const _scl = new THREE.Vector3()
 const _grip = new THREE.Vector3()
 
 /** A puppet material lit by `light` (a vec3 uniform) instead of the world's sun: the room's candles and windows reach no further than its own shell. */
-function roomLit(m, light) {
+export function roomLit(m, light) {
   const prev = m.onBeforeCompile
   m.onBeforeCompile = (shader, renderer) => {
     prev.call(m, shader, renderer)

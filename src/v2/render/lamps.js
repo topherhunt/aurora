@@ -3,7 +3,8 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { FLAME_HOT } from '../../village/shapes.js'
 import { createGenPropMaterial, ladderBounds, ladderGeometries } from './gen-props.js'
 import { loadCritterGlb } from './critters.js'
-import { FIRE, Flames, flicker } from './fire.js'
+import { flicker } from './fire.js'
+import { TRI_LAMP, TriFlames } from './fire-tris.js'
 
 // The village's lamp-posts (DESIGN.md §30): the shipped lamp-post pick (an
 // open clay dish under a hide hood) wherever the build put one (rooms/village.js
@@ -26,7 +27,7 @@ export const LAMP = {
   radius: 0.049,
   // Where the dish's floor is, as a fraction of the post's height: the flame's foot, and the light's height in the map.
   bowl: 0.765,
-  // The dish's flame against FIRE's size, which /test-fire tunes for a hearth: a lamp's is a wick's, at the post's seven tenths.
+  // The dish's flame against TRI_LAMP's size: a lamp's is a wick's, at the post's seven tenths.
   flame: 0.35,
   // Metres a lamp's light reaches along the ground, and its gain at the foot.
   reach: 9,
@@ -89,8 +90,8 @@ export class Lamps {
     this.posts.instanceMatrix.needsUpdate = true
     this.posts.frustumCulled = false
     // One flame in every dish, all in one draw, shown only while lit.
-    this.flames = new Flames(n, FIRE, { seed })
-    this.lamps.forEach((l, i) => this.flames.place(i, l.x, l.flameY, l.z, { height: FIRE.height * LAMP.flame, radius: FIRE.radius * LAMP.flame, phase: l.phase, group: l.group }))
+    this.flames = new TriFlames(n, TRI_LAMP, { seed })
+    this.lamps.forEach((l, i) => this.flames.place(i, l.x, l.flameY, l.z, { height: TRI_LAMP.height * LAMP.flame, radius: TRI_LAMP.radius * LAMP.flame, phase: l.phase, group: l.group }))
     this.flames.group.visible = false
     this.group = new THREE.Group()
     this.group.add(this.posts, this.flames.group)
@@ -159,15 +160,15 @@ export class Lamps {
   /**
    * Once a frame: the flames flicker by `t` seconds and are out by day
    * (`dayness`, clock.js). Leaves `glow` for the lighting's uLampGlow and
-   * `breath` for the windows; the flames burn here.
+   * `breath` for the windows; the flames burn here, their LODs measured from `eye`.
    */
-  update(t, dayness) {
+  update(t, dayness, eye) {
     const [on, off] = LAMP.lit
     this.lit = 1 - Math.max(0, Math.min(1, (dayness - on) / (off - on)))
     for (let g = 0; g < 3; g++) this.glow.setComponent(g, this.lit * flicker(t, g * 2.1))
     this.breath = (this.glow.x + this.glow.y + this.glow.z) / 3
     this.flames.group.visible = this.lit > 0
-    this.flames.update(t, [this.glow.x, this.glow.y, this.glow.z])
+    this.flames.update(t, [this.glow.x, this.glow.y, this.glow.z], eye)
   }
 
   /** Whether (x, z) is within `pad` of a post: the trees' `deadwood` contract. */

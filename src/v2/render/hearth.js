@@ -5,14 +5,14 @@ import { createPropMaterial } from '../../material.js'
 import { TINT_GAIN } from '../../props/rock-bank.js'
 import { decimate } from '../../mesh/decimate.js'
 import { bakeImpostor, buildImpostorCard } from '../../props/impostor.js'
-import { CAMPFIRE, Flames } from './fire.js'
+import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
 import { SEAT_M } from './villagers.js'
 
 // ---------------------------------------------------------------------------
 // A VILLAGE'S GATHERING PLACE (DESIGN.md §30): a campfire at the centre of the
 // clearing and a ring of stools round it. The fire is a ring of seven of the
 // bank's T20 boulders with six pentagon logs leaning in over it, teepee
-// fashion, and one flame (fire.js, the CAMPFIRE knobs) burning in the middle
+// fashion, and one flame (fire-tris.js, the TRI_CAMPFIRE knobs) burning in the middle
 // day and night; a stool is a nonagon of pine bark with its corners jittered
 // so no two are the same block. One merged mesh in the prop layout, drawn
 // whole inside HEARTH.lod[1] metres (hearthKit: no decimated middle rung), a
@@ -327,7 +327,7 @@ export class Hearth {
     this.ring = this.kit.ring
     this.stools = this.kit.stools
     this.extent = this.kit.extent
-    this.tall = Math.max(this.extent.height, HEARTH.fire.lift + CAMPFIRE.height) * scale
+    this.tall = Math.max(this.extent.height, HEARTH.fire.lift + TRI_CAMPFIRE.height) * scale
     this.material = this.kit.material
     this.cardMaterial = null
     this.patch = patch
@@ -348,8 +348,9 @@ export class Hearth {
     this.tier = 0
     this.shown = true
     // The flame's shader reads its instance origin as world space, so it hangs off the scene, not the group.
-    this.flames = new Flames(1, CAMPFIRE, { seed })
-    this.flames.place(0, this.x, this.y + HEARTH.fire.lift * scale, this.z, { height: CAMPFIRE.height * scale, radius: CAMPFIRE.radius * scale, group: 0 })
+    this.flames = new TriFlames(1, TRI_CAMPFIRE, { seed })
+    this.eye = { x: 0, y: 0, z: 0 }
+    this.flames.place(0, this.x, this.y + HEARTH.fire.lift * scale, this.z, { height: TRI_CAMPFIRE.height * scale, radius: TRI_CAMPFIRE.radius * scale, group: 0 })
     scene.add(this.flames.group)
     scene.add(this.group)
     this.textures = textures
@@ -405,7 +406,7 @@ export class Hearth {
     else if (tier === 1 && d < mid * HEARTH.hysteresis) tier = 0
     if (tier !== this.tier) this._show(tier)
     // A steady glow of 1: the campfire was locked on /test-fire with `flicker` 0, and the lamps' breathing curve would pulse its height by a fifth.
-    this.flames.update(t, STEADY)
+    this.flames.update(t, STEADY, Object.assign(this.eye, { x: camX, y: camY, z: camZ }))
   }
 
   /** Whether (x, z) is within `pad` of the gathering place: the trees' `deadwood` contract. */

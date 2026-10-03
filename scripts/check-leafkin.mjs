@@ -296,7 +296,18 @@ console.log('\nthe chapter')
   const n = make({ ground: none })
   let threw = null
   try { n.update(NEAR, head(NEAR), START + 1 / 60, 1 / 60) } catch (e) { threw = e.message }
-  check(threw?.includes('no open ground'), 'with no open ground about the mouth, the chapter throws', threw ?? 'no throw')
+  check(threw?.includes('with a way home'), 'with no open ground about the mouth, the chapter throws', threw ?? 'no throw')
+  // A wall across its wood, the far side open but no way home from it: never placed there.
+  const cut = new Ground()
+  cut.cell = (x) => (Math.abs(x - 60) < 0.6 ? BLOCKED : OPEN)
+  const sides = []
+  for (let k = 0; k < 40; k++) {
+    const h = make({ ground: cut })
+    h.update(NEAR, head(NEAR), START + k * CHAPTER_S + 1 / 60, 1 / 60)
+    sides.push(one(h).x)
+    h.dispose()
+  }
+  check(sides.every((x) => x < 60), 'over 40 chapters it is never placed past a wall it has no way home round', `${sides.filter((x) => x >= 60).length} past it`)
   // Met two minutes in: replayed CATCH_UP_TICKS a frame from the chapter's start, undrawn and unheard, then the same leafkin as one stepped from its start.
   const a = make()
   let ta = meet(a, NEAR, START)
@@ -343,6 +354,24 @@ console.log('\nthe chapter')
   w.entrances.list.length = 0
   w.update(NEAR, head(NEAR), (t += 1 / 60), 1 / 60)
   check(w.byKey.size === 0 && w.free.length === MAX, 'its site evicted, the slot is back')
+  w.dispose()
+}
+
+// --- the walk -----------------------------------------------------------------------
+// A wall one cell thick on the diagonal, its cells touching only at their corners: planPath never cuts a corner, so a roam must not either, or it slips into ground no flight plans out of.
+console.log('\nthe walk')
+{
+  const K = 170
+  const diag = new Ground()
+  diag.cell = (x, z) => (Math.round(x / CELL) - Math.round(z / CELL) === K ? BLOCKED : OPEN)
+  const w = make({ ground: diag })
+  let crossed = 0, met = 0
+  run(w, START, 900, NEAR, (c) => {
+    const s = Math.round(c.x / CELL) - Math.round(c.z / CELL)
+    if (s >= K) crossed++
+    if (s >= K - 2) met++
+  }, 20)
+  check(met > 0 && crossed === 0, 'roaming 900 s about a wall one cell thick on the diagonal, it meets it and never steps through a corner of it', `${met} ticks against it, ${crossed} past it`)
   w.dispose()
 }
 
@@ -533,13 +562,15 @@ console.log('\nthe startle')
 
 // --- the slide round a wall --------------------------------------------------------
 console.log('\nthe wall')
-for (const [name, walls, x0, feet, clear] of [
+for (const [name, walls, x0, feet, clear, secs = 60] of [
   // A wall of trunks across the line home: round it, never through it.
   ['wall', [[10, -6, 10, 6]], 20, { x: 22, y: GROUND, z: 0 }, (c) => Math.abs(c.z) > 6],
   // A pocket open only AWAY from the mouth, a U 6 m deep and 4 m wide: out the wrong way first.
   ['pocket', [[20, -2, 20, 2], [20, -2, 26, -2], [20, 2, 26, 2]], 22, { x: 23, y: GROUND, z: 0 }, (c) => c.x > 26.5],
   // One too big for PLAN_OPEN to flood, 20 m deep and 16 wide, as beside a mouth's screen: planned again on a bigger budget.
   ['deep pocket', [[20, -8, 20, 8], [20, -8, 40, -8], [20, 8, 40, 8]], 22, { x: 23, y: GROUND, z: 0 }, (c) => c.x > 40.5],
+  // A basin too big for PLAN_MAX, 70 m deep and 60 wide: it stands and searches on.
+  ['basin', [[20, -30, 20, 30], [20, -30, 90, -30], [20, 30, 90, 30]], 22, { x: 23, y: GROUND, z: 0 }, (c) => c.x > 90.5, 240],
 ]) {
   const ground = new Ground()
   ground.walls = walls
@@ -548,12 +579,12 @@ for (const [name, walls, x0, feet, clear] of [
   const c = one(w)
   c.x = c.px = x0; c.z = c.pz = 0
   let gone = null, round = false, through = 0
-  t = run(w, t, 60, feet, (c, now) => {
+  t = run(w, t, secs, feet, (c, now) => {
     if (c.state === 'inside') { if (gone === null) gone = now; return }
     if (clear(c)) round = true
     if (inWall(walls, c.x, c.z)) through++
   })
-  check(gone !== null && round && through === 0, `out of a ${name} of trunks it gets home, round its end and never through a trunk`, gone ? `${fmt(gone - t + 60)} s, ${through} frames in a trunk` : 'never')
+  check(gone !== null && round && through === 0, `out of a ${name} of trunks it gets home, round its end and never through a trunk`, gone ? `${fmt(gone - t + secs)} s, ${through} frames in a trunk` : 'never')
   w.dispose()
 }
 

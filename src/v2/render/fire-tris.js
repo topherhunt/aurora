@@ -2,47 +2,69 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
-// TRIANGLE FLAMES: a flame is a cloud of opaque flat-coloured triangles that are born at the foot, rise, tilt and tumble about the vertical, shift from yellow through orange to red, and shrink to nothing at the top. Nothing is blended and nothing is sampled: the fragment shader writes one varying, so the cost is the triangles' covered pixels and the vertex shader, and an opaque draw with no discard keeps the GPU's early depth rejection.
+// TRIANGLE FLAMES, the world's flame renderer (campfire, torches, lamps, tree fires; design/37-fire.md): a flame is a cloud of opaque flat-coloured triangles that are born at the foot, rise, tilt and tumble about the vertical, shift from yellow through orange to red, and shrink to nothing at the top. Nothing is blended and nothing is sampled: the fragment shader writes one varying, so the cost is the triangles' covered pixels and the vertex shader, and an opaque draw with no discard keeps the GPU's early depth rejection.
 //
 // Every shard is a pure function of the clock and its own static seed (vertex attribute `aSeed`), so there is no per-frame CPU work beyond the instance matrices. A shard's cycle is `fract(clock + seed)`; the cycle index re-rolls its spawn point, so the flame does not repeat itself.
 //
 // LOD is a separate InstancedMesh per level, each the first N shards of one master list, so a lower level is a subset of the one above it and a flame changing level does not reshuffle. Fewer shards are each drawn larger (`boost`) to hold the silhouette. `update` buckets the flames by distance to the eye. Real 3D shards have per-eye parallax, so there is no billboard and no head-centre aiming.
 // ---------------------------------------------------------------------------
 
-// Lamp-scale defaults. The bench (/test-fire-tris) edits a copy and hands it back through `TriFlames.set`.
+// The campfire's locked look, and the base the bench and the other looks start from. The bench (/test-fire-tris) edits a copy and hands it back through `TriFlames.set`.
 export const TRI_FIRE = {
-  // Metres, as the card flame: the flame's height and the radius of its foot.
-  height: 0.32,
-  radius: 0.1,
+  // Metres: the flame's height and the radius of its foot (a bench default; `place` sets each flame's own).
+  height: 0.9,
+  radius: 0.35,
   // Shards in the nearest LOD, the factor each further LOD keeps of the one before, and the exponent on how much larger the shards of a thinner LOD are drawn (0.5 holds their total area).
-  shards: 48,
-  lodKeep: 0.5,
+  shards: 512,
+  lodKeep: 0.25,
   boost: 0.5,
   // Metres to the first LOD boundary and the factor between boundaries.
   lodNear: 2.5,
   lodStep: 2.2,
   // Lifetimes per second; the exponent on the climb (above 1 a shard accelerates); how far it is pulled toward the axis by the top; the foot's spread as a fraction of `radius`.
-  rate: 1.1,
-  rise: 1.0,
-  taper: 0.8,
-  spread: 1.0,
+  rate: 1,
+  rise: 1,
+  taper: 0.49,
+  spread: 0.89,
   // A shard's size as a fraction of the flame's height; the exponent on how fast it shrinks over its life; how much taller than wide (1 is a plain triangle); how much the size varies shard to shard.
-  size: 0.26,
-  shrink: 1.2,
-  sliver: 2.2,
-  sizeVar: 0.8,
+  size: 0.125,
+  shrink: 1.6,
+  sliver: 1.65,
+  sizeVar: 1,
   // Sideways wander growing with height, in radii, and its rate; the whole flame's lean at the top, in radii; the tumble about the vertical, turns per second.
-  wobble: 0.6,
-  wobbleHz: 4.0,
-  sway: 0.25,
-  spin: 1.5,
+  wobble: 0.39,
+  wobbleHz: 4,
+  sway: 0.4,
+  spin: 2.8,
   // The exponent on a shard's age for its colour (below 1 it cools sooner, so more of the flame is orange and red); how far each shard's colour is shifted along the ramp, 0 to 1; the brightness. Linear RGB: the newborn shard, the middle of its life, the last of it.
   cool: 0.6,
-  jitter: 0.35,
-  gain: 1.0,
-  birthColor: [1.0, 0.85, 0.3],
-  midColor: [1.0, 0.4, 0.04],
-  deathColor: [0.55, 0.06, 0.0],
+  jitter: 0.72,
+  gain: 1.3,
+  // The fraction of its lifetimes a shard exists (1 is always, below 1 it is an occasional fleck); the height it is born at as a fraction of the flame's, the same for every shard.
+  duty: 1,
+  lift: 0,
+  // The solid core, a six-faced diamond that is always there: its width and height as fractions of the flame's height (width 0 is no core), how far its tip jumps as a fraction of its height, and the flicker rate in radians per second.
+  coreSize: 0,
+  coreHeight: 0.75,
+  coreJump: 0.25,
+  coreHz: 7,
+  birthColor: [1, 0.85, 0.3],
+  midColor: [1, 0.4, 0.04],
+  deathColor: [0.55, 0.06, 0],
+  // The core's colour at its foot and at its tip.
+  coreLowColor: [1, 0.85, 0.35],
+  coreHighColor: [1, 0.4, 0.05],
+}
+
+export const TRI_CAMPFIRE = TRI_FIRE
+
+// The smaller flames keep the campfire's motion and colour and spend fewer shards, each drawn larger against its flame so the silhouette still fills in. The torch and the lamp are tuned by eye on the bench; the candle is a solid core with the odd fleck rising off it.
+export const TRI_TORCH = { ...TRI_FIRE, height: 0.45, radius: 0.09, shards: 192, size: 0.17, sway: 0.3, gain: 1.4 }
+export const TRI_LAMP = { ...TRI_FIRE, height: 0.32, radius: 0.1, shards: 96, size: 0.19, sway: 0.25, wobble: 0.45, gain: 1.2 }
+export const TRI_CANDLE = {
+  ...TRI_FIRE, height: 0.06, radius: 0.012, shards: 12, lodNear: 1, size: 0.24, sizeVar: 0.6, sliver: 1.5, taper: 0.3, spread: 0.3, rate: 1.65, shrink: 1.2,
+  wobble: 0.3, wobbleHz: 5, sway: 0.15, spin: 3, jitter: 0.4, gain: 1.3, duty: 0.2, lift: 0.375,
+  coreSize: 0.17, coreHeight: 0.75, coreJump: 0.25, coreHz: 7,
 }
 
 export const TRI_LOD_COUNT = 4
@@ -93,13 +115,26 @@ function buildGeometry(shards, flame) {
   return g
 }
 
+const CORE_TRIS = 6
+
+function buildCoreGeometry(flame) {
+  const T = [0, 1, 0], B = [0, 0, 0]
+  const E = [0, 1, 2].map((i) => [Math.cos((i * 2 * Math.PI) / 3), 0.3, Math.sin((i * 2 * Math.PI) / 3)])
+  const tris = []
+  for (let i = 0; i < 3; i++) tris.push(T, E[i], E[(i + 1) % 3], B, E[(i + 1) % 3], E[i])
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(tris.flat()), 3))
+  g.setAttribute('aFlame', flame)
+  return g
+}
+
 const VERT = /* glsl */ `
   attribute vec4 aSeed;
   // Per instance: flicker phase, flicker group.
   attribute vec3 aFlame;
   uniform highp float uTime;
   uniform float uRate, uRise, uTaper, uSpread, uSize, uShrink, uSliver, uSizeVar, uBoost;
-  uniform float uWobble, uWobbleHz, uSway, uSpin, uCool, uJitter, uGain;
+  uniform float uWobble, uWobbleHz, uSway, uSpin, uCool, uJitter, uGain, uDuty, uLift;
   uniform vec3 uGlow, uBirth, uMid, uDeath, uTint;
   varying vec3 vColor;
 
@@ -116,13 +151,14 @@ const VERT = /* glsl */ `
     float ang = ( aSeed.z + cyc * 0.61803 ) * 6.2831853 + aFlame.x;
     float rad = sqrt( fract( aSeed.y + cyc * 0.38197 ) ) * uSpread * sx * ( 1.0 - uTaper * u );
     float reach = 0.6 + 0.8 * aSeed.w;
-    float h = pow( u, uRise ) * reach;
+    float h = uLift + ( 1.0 - uLift ) * pow( u, uRise ) * reach;
+    float on = step( fract( aSeed.y * 13.7 + aSeed.z * 5.1 + cyc * 0.7548777 ), uDuty );
 
     float wob = uWobble * sx * u * sin( uTime * uWobbleHz + aSeed.z * 40.0 + aFlame.x );
     float lean = uSway * sx * u * u;
     vec2 lat = vec2( cos( ang ), sin( ang ) ) * rad + vec2( wob + lean * sin( uTime * 1.7 + aFlame.x ), lean * cos( uTime * 1.3 + aFlame.x * 2.0 ) );
 
-    float s = uSize * uBoost * sy * smoothstep( 0.0, 0.1, u ) * pow( max( 1.0 - u, 0.0 ), uShrink ) * ( 1.0 - uSizeVar + 2.0 * uSizeVar * aSeed.w );
+    float s = uSize * uBoost * sy * smoothstep( 0.0, 0.1, u ) * pow( max( 1.0 - u, 0.0 ), uShrink ) * ( 1.0 - uSizeVar + 2.0 * uSizeVar * aSeed.w ) * on;
     vec3 p = position;
     p.y *= uSliver;
     float sp = aSeed.z * 6.2831853 + uTime * uSpin * ( aSeed.w - 0.5 ) * 2.0;
@@ -134,6 +170,31 @@ const VERT = /* glsl */ `
     float cu = clamp( pow( u, uCool ) + ( aSeed.w - 0.5 ) * uJitter, 0.0, 1.0 );
     vec3 col = mix( mix( uBirth, uMid, clamp( cu * 2.0, 0.0, 1.0 ) ), uDeath, clamp( cu * 2.0 - 1.0, 0.0, 1.0 ) );
     vColor = col * ( uGain * glow ) * uTint;
+  }
+`
+
+// The core: five points (foot, tip, a ring of three at 0.3 of the way up) as six faces. The tip jumps about, the ring breathes.
+const CORE_VERT = /* glsl */ `
+  attribute vec3 aFlame;
+  uniform highp float uTime;
+  uniform float uCoreSize, uCoreHeight, uCoreJump, uCoreHz, uGain;
+  uniform vec3 uGlow, uCoreLow, uCoreHigh, uTint;
+  varying vec3 vColor;
+
+  void main() {
+    vec3 origin = instanceMatrix[3].xyz;
+    float sy = length( instanceMatrix[1].xyz );
+    float g = aFlame.y;
+    float glow = dot( uGlow, vec3( g < 0.5, abs( g - 1.0 ) < 0.5, g > 1.5 ) );
+    float ph = aFlame.x;
+    highp float t = uTime * uCoreHz;
+    float top = step( 0.99, position.y );
+    float wid = uCoreSize * sy * ( 1.0 + 0.15 * sin( t * 0.9 + position.x * 5.0 + ph ) );
+    float hgt = uCoreHeight * sy * ( 1.0 + uCoreJump * ( 0.6 * sin( t + ph ) + 0.4 * sin( t * 2.7 + ph * 2.0 + 1.0 ) ) );
+    vec2 lean = vec2( sin( t * 1.3 + ph ), cos( t * 1.9 + ph * 1.4 ) ) * uCoreJump * wid * top;
+    vec3 p = vec3( position.x * wid + lean.x, position.y * hgt, position.z * wid + lean.y );
+    gl_Position = projectionMatrix * viewMatrix * vec4( origin + p, 1.0 );
+    vColor = mix( uCoreLow, uCoreHigh, position.y ) * ( uGain * glow ) * uTint;
   }
 `
 
@@ -149,8 +210,9 @@ const FRAG = /* glsl */ `
 const KNOBS = {
   rate: 'uRate', rise: 'uRise', taper: 'uTaper', spread: 'uSpread', size: 'uSize', shrink: 'uShrink', sliver: 'uSliver', sizeVar: 'uSizeVar',
   wobble: 'uWobble', wobbleHz: 'uWobbleHz', sway: 'uSway', spin: 'uSpin', cool: 'uCool', jitter: 'uJitter', gain: 'uGain',
+  duty: 'uDuty', lift: 'uLift', coreSize: 'uCoreSize', coreHeight: 'uCoreHeight', coreJump: 'uCoreJump', coreHz: 'uCoreHz',
 }
-const COLORS = { birthColor: 'uBirth', midColor: 'uMid', deathColor: 'uDeath' }
+const COLORS = { birthColor: 'uBirth', midColor: 'uMid', deathColor: 'uDeath', coreLowColor: 'uCoreLow', coreHighColor: 'uCoreHigh' }
 
 export class TriFlames {
   /**
@@ -172,6 +234,8 @@ export class TriFlames {
       uBirth: { value: new THREE.Color() },
       uMid: { value: new THREE.Color() },
       uDeath: { value: new THREE.Color() },
+      uCoreLow: { value: new THREE.Color() },
+      uCoreHigh: { value: new THREE.Color() },
     }
     for (const u of Object.values(KNOBS)) this.shared[u] = { value: 1 }
     // Per-flame placement, kept so `update` can bucket by distance.
@@ -214,15 +278,22 @@ export class TriFlames {
       mesh.count = 0
       mesh.frustumCulled = false
       this.group.add(mesh)
-      return { shards: n, mesh, material }
+      // The core draws the level's flames in the level's slots: it shares the matrices and the attribute.
+      const coreMaterial = new THREE.ShaderMaterial({ vertexShader: CORE_VERT, fragmentShader: FRAG, uniforms: { ...this.shared, uTint: material.uniforms.uTint }, side: THREE.DoubleSide, fog: false })
+      const core = new THREE.InstancedMesh(buildCoreGeometry(flame), coreMaterial, this.capacity)
+      core.instanceMatrix = mesh.instanceMatrix
+      core.count = 0
+      core.frustumCulled = false
+      this.group.add(core)
+      return { shards: n, mesh, material, core, coreMaterial }
     })
   }
 
   _drop(l) {
-    this.group.remove(l.mesh)
-    l.mesh.geometry.dispose()
-    l.mesh.dispose()
+    this.group.remove(l.mesh, l.core)
+    for (const m of [l.mesh, l.core]) { m.geometry.dispose(); m.dispose() }
     l.material.dispose()
+    l.coreMaterial.dispose()
   }
 
   /** Place flame `i`: its foot, its height and foot radius in metres, its phase and flicker group. */
@@ -234,9 +305,10 @@ export class TriFlames {
 
   /** Once a frame: the clock in seconds, each group's glow, and the eye the LODs are measured from. Returns the LOD of flame 0 (for the bench's readout). */
   update(t, glow, eye) {
+    if (!eye) throw new Error('TriFlames: update needs the eye the LODs are measured from')
     this.shared.uTime.value = t
     this.shared.uGlow.value.set(glow[0], glow[1], glow[2])
-    for (const l of this.levels) l.mesh.count = 0
+    for (const l of this.levels) l.mesh.count = l.core.count = 0
     const lods = new Array(this.count)
     for (let i = 0; i < this.count; i++) {
       const f = this.at[i]
@@ -248,7 +320,9 @@ export class TriFlames {
       mesh.geometry.getAttribute('aFlame').setXYZ(n, f.phase, f.group, 0)
       lods[i] = k
     }
+    const solid = this.shared.uCoreSize.value > 0
     for (const l of this.levels) {
+      if (solid) l.core.count = l.mesh.count
       l.mesh.instanceMatrix.needsUpdate = true
       l.mesh.geometry.getAttribute('aFlame').needsUpdate = true
     }
@@ -257,7 +331,8 @@ export class TriFlames {
 
   /** Triangles the flames draw this frame. */
   triangles() {
-    return this.levels.reduce((n, l) => n + l.mesh.count * l.shards, 0)
+    const core = this.shared.uCoreSize.value > 0 ? CORE_TRIS : 0
+    return this.levels.reduce((n, l) => n + l.mesh.count * (l.shards + core), 0)
   }
 
   dispose() {

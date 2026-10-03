@@ -21,6 +21,7 @@ import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
 import { Trees } from '../src/v2/render/trees.js'
 import { Ferns } from '../src/v2/render/ferns.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
+import { OUT_FAR_M } from '../src/v2/render/leafkin.js'
 import { LOCOMOTION, Player } from '../src/player.js'
 import { buildTextureArray } from '../src/textures.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -315,18 +316,24 @@ console.log('\nthe face')
   console.warn = warn
   check(reached === rows.length, `at the face, her feet come within PORTAL.walk ${PORTAL.walk} m of the hole`, `${reached}/${rows.length}`)
   check(stayed === rows.length, 'on the ground the whole way', `${stayed}/${rows.length}`)
-  // Ground walled in past FINAL_M: a screen has no way out to shut, so every mouth takes one.
-  const bareTrees = new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, plantRoom: SCREEN_POOL })
-  const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell: () => STONE }, trees: bareTrees })
-  shut.place(-900, -900)
-  const penned = shut.sites()
-  check(penned.length === rows.length && penned.every((s) => s.screened && s.flank.length === SCREEN.count) && shut.rejected.screen === 0,
-    'on ground a walker never gets out of, every mouth is still screened, none refused', `${penned.filter((s) => s.screened).length}/${penned.length}`)
+  // Ground walled in past FINAL_M, or open only OUT_FAR_M / 2 about one mouth (any face of its boulder): no leafkin could come home, so the mouth is not seated.
+  const bareTrees = () => new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, plantRoom: SCREEN_POOL })
+  const sealed = (cell) => {
+    const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell }, trees: bareTrees() })
+    shut.place(-900, -900)
+    return shut
+  }
+  const s0 = rows[0]
+  const penned = sealed(() => STONE)
+  const pocket = sealed((x, z) => (Math.hypot(x - s0.x, z - s0.z) < OUT_FAR_M / 2 ? OPEN : STONE))
+  check(penned.sites().length === 0 && penned.rejected.sealed > 0 && !pocket.sites().some((s) => s.key === s0.key) && pocket.rejected.sealed > 0,
+    `on ground a walker never gets out of, or out of only ${OUT_FAR_M / 2} m about the mouth, it is not seated`, `walled ${penned.sites().length} seated; the pocket's own ${pocket.sites().some((s) => s.key === s0.key) ? 'seated' : 'not seated'}`)
   // The one way out a 1 m corridor straight off the mouth: open bare, shut by a boulder standing in it, so such a layout is rolled again.
-  const s0 = penned[0]
+  const shut = penned
   shut.ground = { cell: (x, z) => (Math.abs((x - s0.x) * -s0.nz + (z - s0.z) * s0.nx) < 0.5 && (x - s0.x) * s0.nx + (z - s0.z) * s0.nz > -0.5 ? 0 : STONE) }
   const plug = [{ x: s0.x + s0.nx * 4, z: s0.z + s0.nz * 4, r: 1, hull: 2 }]
-  check(shut._pathable(s0, plug, false) && !shut._pathable(s0, plug), 'a piece across the only way out shuts a mouth that was open bare', `bare ${shut._pathable(s0, plug, false)}, screened ${shut._pathable(s0, plug)}`)
+  const bare = shut._pathable(s0.x, s0.z, [], OUT_FAR_M), plugged = shut._pathable(s0.x, s0.z, plug, OUT_FAR_M)
+  check(bare && !plugged, 'a piece across the only way out shuts a mouth that was open bare', `bare ${bare}, screened ${plugged}`)
   // Released, a site's pines leave the trees.
   for (const site of [...e.resident.values()]) e._release(site)
   check(trees.loosePlanted === 0, 'and a released site unplants its pines', `${trees.loosePlanted} left`)

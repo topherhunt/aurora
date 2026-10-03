@@ -47,9 +47,9 @@ export function hoursToBoundary(hour, lat = CLOCK.latitude, dec = CLOCK.declinat
 // The relay grants it only once every client's pose says it sleeps, so the leader asks again until the room's clock moves.
 export const leadsSleep = (selfId, peerIds) => [...peerIds].every((id) => selfId < id)
 
-// A bed as she lies in it (rooms/interior.js spot 'bed', in world metres): her
+// A bed as she lies in it (a rooms/interior.js or rooms/town-interior.js spot 'bed', in world metres): her
 // head over the pillow end, low over the mattress, face up. `bed` is { x, z,
-// top, yaw, len, wid }; `head` and `fwd` are world vectors; `scale` is hers.
+// top, floor, yaw, len, wid }; `head` and `fwd` are world vectors; `scale` is hers.
 export const LIE = { pillowIn: 0.5, pillowOut: 0.1, rise: 1.0, sink: 0.3, faceUp: 0.7 }
 export function liesOn(bed, head, fwd, scale) {
   const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
@@ -73,8 +73,8 @@ export function inBed(bed, head, scale) {
 export function feetOnBed(bed, feet, margin) {
   const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
   const dx = feet.x - bed.x, dz = feet.z - bed.z
-  const rise = feet.y - (bed.top - 0.2)
-  return Math.abs(dx * c - dz * s) < bed.wid / 2 + margin && Math.abs(dx * s + dz * c) < bed.len / 2 + margin && rise > -0.15 && rise < 0.5
+  const rise = feet.y - bed.floor
+  return Math.abs(dx * c - dz * s) < bed.wid / 2 + margin && Math.abs(dx * s + dz * c) < bed.len / 2 + margin && rise > -0.15 && rise < bed.top - bed.floor + 0.3
 }
 
 /**
@@ -88,7 +88,7 @@ export function feetOnBed(bed, feet, margin) {
 export function besideBed(bed, walk, o = { x: 0, y: 0, z: 0 }) {
   const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
   const inward = bed.x * c - bed.z * s > 0 ? -1 : 1
-  const floor = o.y + bed.top - 0.2
+  const floor = o.y + bed.floor
   const ring = []
   for (const gap of [walk.radius + 0.03, walk.radius + 0.2]) {
     const hw = bed.wid / 2 + gap, hl = bed.len / 2 + gap
@@ -110,7 +110,7 @@ export const BED_REACH_M = 3
 export function rayHitsBed(bed, o, d) {
   const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
   const ox = o.x - bed.x, oz = o.z - bed.z
-  const lo = [ -bed.wid / 2, bed.top - 0.2, -bed.len / 2 ], hi = [ bed.wid / 2, bed.top + 0.1, bed.len / 2 ]
+  const lo = [ -bed.wid / 2, bed.floor, -bed.len / 2 ], hi = [ bed.wid / 2, bed.top + 0.1, bed.len / 2 ]
   const p = [ox * c - oz * s, o.y, ox * s + oz * c], v = [d.x * c - d.z * s, d.y, d.x * s + d.z * c]
   let near = 0, far = Infinity
   for (let i = 0; i < 3; i++) {

@@ -67,6 +67,9 @@ import { HOUSE_BOUNDS, RoomProps } from './render/room-props.js'
 import { InteriorView, loadInteriorTextures } from './render/interior.js'
 import { Residents } from './render/residents.js'
 import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js'
+import { TownInteriorView } from './render/town-interior.js'
+import { TownResidents } from './render/town-residents.js'
+import { TownInteriorStone, rollTownInterior } from './rooms/town-interior.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
@@ -785,7 +788,7 @@ function saveGame() {
     // Her feet; in a house, the landing before its door, which the room is built around. `y` keeps a load under an awning from the roof.
     x: indoors ? indoors.back.x : rig.position.x, y: indoors ? indoors.back.y : player.standY, z: indoors ? indoors.back.z : rig.position.z,
     // In a house, which one and which of its beds she slept in: a load opens it again (it is rolled, not saved) and stands her beside that bed.
-    house: indoors ? { k: indoors.e.k, bed: sleptIn } : null,
+    house: indoors ? { ...(indoors.town ? { town: indoors.town } : { k: indoors.e.k }), bed: sleptIn } : null,
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
@@ -961,7 +964,7 @@ function worldBeds() {
   const o = indoors.view.group.position
   const peers = [...netplay.peers.values()]
   return roomBeds(indoors.room).map((b, i) => {
-    const bed = { x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, yaw: b.yaw, len: b.len, wid: b.wid, i }
+    const bed = { x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, floor: o.y + b.floor, yaw: b.yaw, len: b.len, wid: b.wid, i }
     bed.free = !indoors.residents.all.some((r) => r.spot === b && r.state === 'act') &&
       !peers.some((p) => inBed(bed, { x: p.pose[0], y: p.pose[1], z: p.pose[2] }, p.scale === undefined ? 1 : p.scale))
     return bed
@@ -1015,7 +1018,7 @@ function getUp() {
     const o = indoors.view.group.position
     const bed = roomBeds(indoors.room)[laid.bed]
     const at = besideBed(bed, walk, o)
-    player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.top - 0.2)
+    player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
     faceAlong(-at.fx, -at.fz)
   } else rig.position.copy(laid.pos)
   const slept = laid.upAt !== null
@@ -1942,7 +1945,7 @@ function updateFire(dt) {
   }
   hands.litTips(STICK_TIP, litTipList)
   const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1 }))
-  wildfire.update(dt, now, tips.slice(0, TORCH_CAP))
+  wildfire.update(dt, now, tips.slice(0, TORCH_CAP), headTmp)
   player.headPosition(headTmp)
   torchSorted.length = 0
   for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
@@ -2816,6 +2819,12 @@ const HAND_KEYS = ['left', 'right', 'desk']
 // shows partly off screen, as if carried near her face by a hand out of frame.
 let deskHand = null
 const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
+// Her rein riding (WildStriders hand): in the headset the left hand, as a rider holds it, unless only the right is empty; on the desktop the desk hand.
+function reinHand(out) {
+  if (!renderer.xr.isPresenting) return deskHand.getWorldPosition(out)
+  const left = hands.holding('left') === null || hands.holding('right') !== null
+  return (left ? leftGrip : rightGrip).getWorldPosition(out)
+}
 // Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size: a fern is shown a third its size, like a thing carried near the face.
 const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
@@ -2884,15 +2893,16 @@ const portalFrom = new THREE.Vector3()
 const portalSites = []
 let portalBlink = false
 let portalIn = null
-// The house she has gone into (design/30-leafkin.md, Interiors), or null: its entry (RoomProps.entries), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the village walk its own stands in for while she is in.
+// The house she has gone into (design/30-leafkin.md, Interiors; design/38-town-interiors.md), or null: its entry (RoomProps.entries, or townDoor's with `town` { t, i }), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the walk its own stands in for while she is in.
 let indoors = null
-/** A point in the house's room (or, with `dir`, a direction) onto the house in the village, for the ear (updateAmbience): the room's door onto its doorway, the room's +x (in at the door) onto the doorway's inward. */
+/** A point in the house's room (or, with `dir`, a direction) onto the house outside, for the ear (updateAmbience): the room's door onto its doorway, the door's outward inside onto its outward outside. */
 function houseOut(p, into, dir = false) {
   const { e, door } = indoors
   const qx = dir ? p.x : p.x - door.x, qy = dir ? p.y : p.y - door.y, qz = dir ? p.z : p.z - door.z
-  into.x = (dir ? 0 : e.x) - qx * e.nx + qz * e.nz
+  const a = qx * door.nx + qz * door.nz, b = qz * door.nx - qx * door.nz
+  into.x = (dir ? 0 : e.x) + a * e.nx - b * e.nz
   into.y = (dir ? 0 : e.y) + qy
-  into.z = (dir ? 0 : e.z) - qx * e.nz - qz * e.nx
+  into.z = (dir ? 0 : e.z) + a * e.nz + b * e.nx
   return into
 }
 const heardAt = (p) => (indoors ? houseOut(p, p) : p)
@@ -3442,16 +3452,16 @@ function makeBlackout() {
  * Into house `e` (RoomProps.entries) under the fade, inside its door. The
  * village goes on around it unseen.
  */
-async function enterHouse(e) {
+async function enterHouse(open) {
   doorBusy = true
   if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
   makeBlackout()
   ready = false
   await fade(1)
-  await openHouse(e)
+  await open()
   const o = indoors.view.group.position
   player.teleportTo(o.x + indoors.room.doorIn.x, o.z + indoors.room.doorIn.z)
-  faceAlong(1, 0)
+  faceAlong(-indoors.door.nx, -indoors.door.nz)
   ready = true
   await fade(0)
   doorBusy = false
@@ -3459,13 +3469,18 @@ async function enterHouse(e) {
 
 /** A saved game's house open again, and her beside the bed she slept in, facing away from it as if just up. */
 async function intoSavedHouse(house) {
-  await villagers.ready
-  await openHouse(roomProps.entries()[house.k])
+  if (house.town) {
+    await townsfolk.ready
+    await openTownHouse(house.town.t, house.town.i)
+  } else {
+    await villagers.ready
+    await openHouse(roomProps.entries()[house.k])
+  }
   const o = indoors.view.group.position
   const bed = roomBeds(indoors.room)[house.bed]
   if (!bed) throw new Error(`v2: the save's house ${house.k} has no bed ${house.bed}`)
   const at = besideBed(bed, walk, o)
-  player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.top - 0.2)
+  player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
   faceAlong(-at.fx, -at.fz)
 }
 
@@ -3488,6 +3503,40 @@ async function openHouse(e) {
   walk = window.v2walk = inner
   player.setGround(inner)
   console.log(`[v2] house ${e.k}: ${room.items.length} things, ${room.windows.length} windows, ${room.loft ? 'a loft' : 'no loft'}, ${residents.all.length} at home`)
+}
+
+/** Town `t`'s building `i` (design/38-town-interiors.md): its door face outside as an entry, its outward normal and the step before it. */
+function townDoor(t, i) {
+  const b = townPlan.towns[t].buildings[i], d = b.plan.door
+  const c = Math.cos(b.yaw), s = Math.sin(b.yaw)
+  const x = b.x + d.x * c + d.z * s, z = b.z - d.x * s + d.z * c, y = b.y + b.plan.floorY
+  return { x, y, z, nx: s, nz: c, back: { x: x + s * 0.8, y, z: z + c * 0.8 } }
+}
+
+/** The townsfolk of town `t`'s building `i` indoors now, by id; none while the town sleeps. */
+function townInside(t, i) {
+  const alive = townsfolk.alive.get(t)
+  if (!alive) return new Map()
+  const home = alive.life.graph.doors[i]
+  return new Map(alive.life.all.filter((c) => c.home === home && c.state === 'inside').map((c) => [c.id, c]))
+}
+
+/** Town `t`'s building `i` rolled at twice its size, set down 250 m over it on its own floor, its folk in and her walk swapped for its own; where she stands in it is the caller's. */
+async function openTownHouse(t, i) {
+  const b = townPlan.towns[t].buildings[i]
+  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan })
+  const ox = b.x, oy = b.y + 250, oz = b.z
+  const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
+  scene.add(view.group)
+  const inner = new WalkSurface(flatField(oy), new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
+  const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
+  const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz })
+  const e = townDoor(t, i)
+  indoors = { town: { t, i }, e, back: e.back, room, view, residents, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, outside: walk }
+  if (sound) sound.setIndoors(true)
+  walk = window.v2walk = inner
+  player.setGround(inner)
+  console.log(`[v2] town ${t} ${b.kind} ${i}: ${room.items.length} things, ${room.rooms.length} rooms, ${room.windows.length} windows, ${room.upper ? 'two floors' : 'one floor'}, ${residents.all.length} at home`)
 }
 
 /** Back out of the house she is in, onto its landing before the door (not the awning over it), facing away from it. */
@@ -3517,9 +3566,10 @@ function closeHouse() {
   indoors = null
 }
 
-/** After the step, in a village: the house door her feet just went through, in or out. True when one did. */
+/** After the step, in a village or by a town: the house door her feet just went through, in or out. True when one did. */
 function houseTest(blink) {
-  if (doorBusy || EDITOR_MODE || !currentRoom.village || !roomProps || !villagers?.loaded) return false
+  const village = currentRoom.village && roomProps && villagers?.loaded
+  if (doorBusy || EDITOR_MODE || !(indoors || village || (townsfolk && townsfolk.loaded))) return false
   const feet = player.originPosition()
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)
@@ -3534,16 +3584,29 @@ function houseTest(blink) {
     leaveHouse().catch(reportRuntimeError)
     return true
   }
-  for (const e of roomProps.entries()) {
-    if (Math.abs(feet.y - e.y) > HOUSE_DOOR.rise || !through(e.x, e.z, e.nx, e.nz, 1)) continue
-    enterHouse(e).catch(reportRuntimeError)
-    return true
+  if (village) {
+    for (const e of roomProps.entries()) {
+      if (Math.abs(feet.y - e.y) > HOUSE_DOOR.rise || !through(e.x, e.z, e.nx, e.nz, 1)) continue
+      enterHouse(() => openHouse(e)).catch(reportRuntimeError)
+      return true
+    }
+    return false
+  }
+  for (const t of townsfolk.alive.keys()) {
+    const town = townPlan.towns[t]
+    if (Math.hypot(feet.x - town.x, feet.z - town.z) > town.radius + 10) continue
+    for (let i = 0; i < town.buildings.length; i++) {
+      const e = townDoor(t, i)
+      if (Math.abs(feet.y - e.y) > HOUSE_DOOR.rise || !through(e.x, e.z, e.nx, e.nz, 1)) continue
+      enterHouse(() => openTownHouse(t, i)).catch(reportRuntimeError)
+      return true
+    }
   }
   return false
 }
 
-// A house by its index from the console: `v2house(3)` in, `v2house(null)` out.
-window.v2house = (k) => (k === null ? leaveHouse() : enterHouse(roomProps.entries()[k]))
+// A house by its index from the console: `v2house(3)` in a village's, `v2house(0, 2)` town 0's building 2, `v2house(null)` out.
+window.v2house = (k, i) => (k === null ? leaveHouse() : enterHouse(i === undefined ? () => openHouse(roomProps.entries()[k]) : () => openTownHouse(k, i)))
 
 // The swap without the walk: `v2enter()` into the glade by the mouth she last
 // came in by (or a named door key), `v2enter(null)` back out. What the console
@@ -4211,7 +4274,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -4307,7 +4370,7 @@ async function buildRoom(room, at) {
     console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
     window.v2roosts = roosts
     hands.addSource(roosts, 'egg')
-    dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces })
+    dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
     for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
     dragons.ready.then(() => {
       if (build !== roomBuild) return
@@ -5753,6 +5816,24 @@ const lures = []
 // Hers and the hobs, for the frogs; and the frogs chasing a hob, for the villagers and the hobs (render/frogs.js chasers).
 const frogLures = []
 const frogChases = []
+// What this client's dragons may chase this frame (dragons.js update): her feet, `open` with no trunk within OPEN_M, unless she is dead or indoors; and her own wild striders.
+const OPEN_M = 5
+const trunksNear = new Float32Array(4 * 64)
+const quarry = { her: null, striders: [] }
+const herQuarry = { x: 0, y: 0, z: 0, open: false }
+function dragonQuarry() {
+  quarry.her = null
+  quarry.striders.length = 0
+  if (wildStriders) wildStriders.prey(quarry.striders)
+  if (health.dead || indoors) return quarry
+  const feet = player.originPosition()
+  herQuarry.x = feet.x; herQuarry.y = feet.y; herQuarry.z = feet.z
+  herQuarry.open = true
+  const n = trees.anchorsInto(feet.x - OPEN_M, feet.z - OPEN_M, feet.x + OPEN_M, feet.z + OPEN_M, trunksNear)
+  for (let i = 0; i < n; i++) if (Math.hypot(trunksNear[4 * i] - feet.x, trunksNear[4 * i + 2] - feet.z) <= OPEN_M) herQuarry.open = false
+  quarry.her = herQuarry
+  return quarry
+}
 // The peers' heads this frame, `{ x, y, z, foot, by }` with `by` the peer's client id, as the snowmen read them (render/snowmen.js) and the spiders flee them (render/spiders.js): a pool, so a frame allocates nothing. `foot` is where that peer says its feet are, and is NaN for a peer that sends no foot -- one whose body is known by its head alone.
 const peerHeads = []
 const peerHeadPool = []
@@ -6953,7 +7034,7 @@ function tick() {
   // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
   if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
-    dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
+    dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, dragonQuarry())
   })
   bankAnimalMs(dt)
   spikes.lap('animals')
@@ -6984,7 +7065,7 @@ function tick() {
   // means restating this hour's palette. See airHook.
   const state = clock.state()
   // A wreath she is inside is culled, and the air thickens in its place (§10). Under a roof there is no cloud and no weather.
-  if (currentRoom.village) { state.cover = 0; state.precip = 0 }
+  if (currentRoom.village || indoors) { state.cover = 0; state.precip = 0 }
   if (wreaths) wreaths.visible = questToggles.wreaths && !currentRoom.village
   if (wreaths && wreaths.visible) {
     state.hazeDensity *= wreaths.hazeGain(headTmp)
@@ -6993,13 +7074,13 @@ function tick() {
   dayness = daynessOf(state)
   // The lamps light after dark on the room's clock; their flicker is real time, this frame's glow into the lighting and the huts' windows.
   if (lamps) {
-    lamps.update((now / 1000) % 1024, dayness)
+    lamps.update((now / 1000) % 1024, dayness, headTmp)
     lighting.uniforms.uLampGlow.value.copy(lamps.glow)
     roomProps.setGlow(lamps.breath)
   }
   if (indoors) {
-    indoors.view.update((now / 1000) % 1024, dayness)
-    indoors.residents.sync(new Map(villagers.all.filter((c) => c.home === villagers.graph.doorNodes[indoors.e.k] && c.state === 'inside').map((c) => [c.id, c])))
+    indoors.view.update((now / 1000) % 1024, dayness, headTmp)
+    indoors.residents.sync(indoors.town ? townInside(indoors.town.t, indoors.town.i) : new Map(villagers.all.filter((c) => c.home === villagers.graph.doorNodes[indoors.e.k] && c.state === 'inside').map((c) => [c.id, c])))
     indoors.residents.update(dt, indoors.view)
   }
   applySky(state, headTmp, now / 1000)

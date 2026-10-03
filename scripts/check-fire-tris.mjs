@@ -4,7 +4,7 @@
 //
 // What can go wrong without throwing: a LOD level that shares another level's per-instance attribute (flames flicker in each other's phase); a thinner level that is not a subset of the one above (a flame reshuffles when it changes level); a fragment shader that gained a discard or a texture fetch (the whole cost model of opaque triangles); a flame count that outruns the buffers.
 
-import { TriFlames, TRI_FIRE, TRI_LOD_COUNT, shardsAt, lodFor } from '../src/v2/render/fire-tris.js'
+import { TriFlames, TRI_FIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, TRI_LOD_COUNT, shardsAt, lodFor } from '../src/v2/render/fire-tris.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -16,7 +16,7 @@ const throws = (fn) => { try { fn() } catch { return true } return false }
 console.log('the levels')
 {
   const counts = Array.from({ length: TRI_LOD_COUNT }, (_, k) => shardsAt(TRI_FIRE, k))
-  check(counts.join() === '48,24,12,6', 'each level keeps lodKeep of the one before', counts.join())
+  check(counts.join() === '512,128,32,8', 'each level keeps lodKeep of the one before', counts.join())
   check(shardsAt({ ...TRI_FIRE, shards: 4 }, 3) === 3, 'a level never drops under 3 shards')
   const p = TRI_FIRE
   check(lodFor(p, 0) === 0 && lodFor(p, p.lodNear - 0.01) === 0 && lodFor(p, p.lodNear) === 1, 'the first boundary is lodNear')
@@ -45,8 +45,18 @@ console.log('the meshes')
   f.set({ ...TRI_FIRE, boost: 0.8 })
   check(f.levels.every((l, k) => l.mesh === before[k]), 'a knob that does not change the counts keeps the meshes')
   f.set({ ...TRI_FIRE, shards: 96 })
-  check(f.levels[0].shards === 96 && f.group.children.length === TRI_LOD_COUNT, 'a new shard count rebuilds the levels without leaking the old ones')
+  check(f.levels[0].shards === 96 && f.group.children.length === TRI_LOD_COUNT * 2, 'a new shard count rebuilds the levels without leaking the old ones')
   check(throws(() => f.set({ ...TRI_FIRE, size: NaN })), 'a non-finite knob throws')
+}
+
+console.log('the looks')
+{
+  for (const [name, p] of [['campfire', TRI_FIRE], ['torch', TRI_TORCH], ['lamp', TRI_LAMP], ['candle', TRI_CANDLE]]) {
+    const f = new TriFlames(1, p)
+    const n = f.levels.map((l) => l.shards)
+    check(n.every((c, k) => k === 0 || c === Math.max(3, Math.round(n[0] * 0.25 ** k))), `${name}: each level is a quarter of the one above`, n.join())
+  }
+  check(TRI_FIRE.shards === 512 && TRI_TORCH.shards < TRI_FIRE.shards && TRI_LAMP.shards < TRI_TORCH.shards && TRI_CANDLE.shards < TRI_LAMP.shards, 'the smaller the flame the fewer the shards')
 }
 
 console.log('the buckets')
@@ -58,10 +68,11 @@ console.log('the buckets')
   const lods = f.update(1, [1, 1, 1], eye)
   check(lods.join() === '0,1,2,3', 'flames bucket by distance', lods.join())
   check(f.levels.map((l) => l.mesh.count).join() === '1,1,1,1', 'each mesh draws only its flames')
-  check(f.triangles() === 48 + 24 + 12 + 6, 'triangles() sums count x shards over the levels', String(f.triangles()))
+  check(f.triangles() === 512 + 128 + 32 + 8, 'triangles() sums count x shards over the levels', String(f.triangles()))
   f.forceLod = 2
   check(f.update(1, [1, 1, 1], eye).join() === '2,2,2,2' && f.levels[2].mesh.count === 4, 'forceLod pins every flame to one level')
   check(throws(() => f.place(4, 0, 0, 0, { height: 1, radius: 1 })), 'placing past the capacity throws')
+  check(throws(() => f.update(1, [1, 1, 1])), 'update without an eye throws')
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

@@ -201,6 +201,8 @@ export const RULES = {
   growl: { reach: 25, near: 3, level: 0.5, rate: [0.8, 1.05], pause: [0.5, 3], gain: [0.6, 1.0] },
   // A dragon walking on the ground within `reach` lands a tread on each beat of its gait (FOOTFALLS.wyvern), within `jitter` of a cycle of the beat: `level` up to `near` off, falling as near/distance.
   tread: { reach: 60, near: 4, level: 0.7, jitter: 0.05, gain: [0.7, 1.0] },
+  // A dragon landing to chase (dragons.js `aggro`) comes down with the tread slowed to `rate` and sent `echo` into the valley echo, heard within `reach`.
+  stamp: { reach: 100, near: 10, level: 1.0, rate: 0.55, echo: 0.9, gain: [0.8, 1.0] },
   // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field, and given its metres as the engine's far treatment, so it is dull and washed the way a slide across the scree is...
   rockslideNear: { interval: [20, 60], gain: [0.025, 0.075], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
@@ -663,7 +665,7 @@ export class Ambience {
    */
   _dragons(dt, head, now) {
     if (!this.dragons) return
-    const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl, T = RULES.tread
+    const W = RULES.wingbeat, R = RULES.roar, G = RULES.growl, T = RULES.tread, S = RULES.stamp
     const listed = this.listed
     listed.length = 0
     this.dragons.bodies(listed)
@@ -672,18 +674,32 @@ export class Ambience {
       const flying = c.clip === 'fly'
       const beating = flying && d <= W.reach
       const menacing = c.state === 'menace'
-      const roaring = (flying || menacing) && d <= R.reach
+      // A chase is heard on its cues alone: its roars, its landing, its growls.
+      const chasing = c.state === 'aggro' && d <= R.reach
+      const roaring = (flying || menacing) && !chasing && d <= R.reach
       const growling = c.state === 'roost' && d <= G.reach
       const beats = FOOTFALLS.wyvern[c.clip]
       const treading = beats !== undefined && c.speed > 0 && d <= T.reach
-      if (!beating && !roaring && !growling && !treading) continue
+      if (!beating && !roaring && !growling && !treading && !chasing) continue
       let f = this.wings.get(c)
       if (!f) {
-        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.menace), roarAt: null, menacing: false, growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0 }
+        f = { beating: false, phase: 0, at: 0, roar: this.between(...R.menace), roarAt: null, menacing: false, growling: false, growl: 0, gait: null, step: 0, beat: 0, land: 0, seen: 0, roarCue: c.roarCue, thudCue: c.thudCue, growlCue: c.growlCue }
         this.wings.set(c, f)
       }
       f.seen = this.frame
       const at = { x: c.x, y: c.y, z: c.z }
+      if (f.roarCue !== c.roarCue) {
+        f.roarCue = c.roarCue
+        this._roar(d, at)
+      }
+      if (f.thudCue !== c.thudCue) {
+        f.thudCue = c.thudCue
+        if (d <= S.reach) this.fire('tread', { rate: S.rate, gain: S.level * (S.near / Math.max(S.near, d)) * this.between(...S.gain), at, distance: d, echo: S.echo })
+      }
+      if (f.growlCue !== c.growlCue) {
+        f.growlCue = c.growlCue
+        if (d <= G.reach) this.fire('growl', { rate: this.between(...G.rate), gain: G.level * (G.near / Math.max(G.near, d)) * this.between(...G.gain), at, distance: d })
+      }
       if (treading) {
         if (!(c.cycle > 0)) throw new Error(`Ambience: a dragon walking a ${c.clip} cycle of ${c.cycle} s`)
         if (f.gait !== c.clip) {
@@ -738,10 +754,7 @@ export class Ambience {
           if (f.roarAt !== null && f.roarAt !== index) sounds = true
           f.roarAt = index
         }
-        if (sounds) {
-          const level = R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * clamp((R.reach - d) / R.edge, 0, 1)
-          this.fire('roar', { rate: this.rate(), gain: level * this.between(...R.gain), at, distance: d, echo: R.echo })
-        }
+        if (sounds) this._roar(d, at)
       } else {
         // Out of earshot: the next roar it is near for is heard as it lands, not the backlog.
         f.roarAt = null
@@ -762,6 +775,13 @@ export class Ambience {
       }
     }
     for (const [c, f] of this.wings) if (f.seen !== this.frame) this.wings.delete(c)
+  }
+
+  /** A dragon's roar from `at`, `d` metres off, by RULES.roar. */
+  _roar(d, at) {
+    const R = RULES.roar
+    const level = R.level * Math.pow(R.near / Math.max(R.near, d), R.roll) * clamp((R.reach - d) / R.edge, 0, 1)
+    this.fire('roar', { rate: this.rate(), gain: level * this.between(...R.gain), at, distance: d, echo: R.echo })
   }
 
   /**
