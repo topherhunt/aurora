@@ -208,11 +208,11 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const right = body.arms[1]
   check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
   // Where a peer's hand is, for the thing drawn in it (hands-net.js): each wrist as last drawn, and nothing while no body stands.
-  const peers = { peers: new Map([['p', { body }]]) }
+  const peers = { peers: new Map([['p', { body, puppet: b.puppet }]]) }
   const pos = new THREE.Vector3(), quat = new THREE.Quaternion()
-  // The puppet's group stands outside a scene here, so its frame is applied by hand as `at` does.
-  const wrists = body.arms.map((arm, i) => PeerAvatars.prototype.handAt.call(peers, 'p', i, pos, quat) && pos.applyMatrix4(b.puppet.group.matrix).distanceTo(b.at(arm.W.bone.name)) < 1e-9)
-  check(wrists.every(Boolean), 'handAt gives each wrist where the body last drew it, the left as side 0')
+  const placedAway = b.puppet.group.matrix.elements[12] !== 0 || b.puppet.group.matrix.elements[14] !== 0 || b.puppet.group.matrix.elements[0] !== 1
+  const wrists = body.arms.map((arm, i) => PeerAvatars.prototype.handAt.call(peers, 'p', i, pos, quat) && pos.distanceTo(b.at(arm.W.bone.name)) < 1e-9)
+  check(placedAway && wrists.every(Boolean), 'handAt gives each wrist in world space where the body last drew it, the left as side 0 -- the group\'s frame applied, since the rig hangs under nothing', `group off identity: ${placedAway}`)
   const was = body.placed
   body.placed = false
   check(PeerAvatars.prototype.handAt.call(peers, 'p', 1, pos, quat) === false && PeerAvatars.prototype.handAt.call(peers, 'q', 1, pos, quat) === false, 'and is false for a body not standing or a peer unknown')
@@ -472,6 +472,21 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   run(c, seated(0.5), [true, true], 3)
   check(amidships === SOLE && c.body.y < SOLE - 0.3, 'guessing at the ground instead, the same peer drops through the boards at the bow',
     `amidships ${amidships.toFixed(2)} -> bow ${c.body.y.toFixed(2)}`)
+}
+{
+  // A teleport down a hillside: the told feet are at the far end from the first frame, but the body walks the slope between.
+  const slope = (x) => -0.5 * x
+  const b = makeBody(fisher, stature, { heightAt: (x) => slope(x) })
+  const rest = restOf(b, 0, 0, 0)
+  const at = (x) => poseOf(rest.head.clone().setX(rest.head.x + x).setY(rest.head.y + slope(x)), rest.headQuat, rest.grips.map((g) => ({ pos: g.pos.clone().setX(g.pos.x + x).setY(g.pos.y + slope(x)), quat: g.quat })))
+  run(b, at(0), [true, true], 1, 0)
+  let worst = 0
+  b.body.drive(at(5), [true, true], DT, slope(5))
+  for (let t = 0; t < MAX_TRAVEL_S && b.body.gliding; t += DT) {
+    worst = Math.max(worst, Math.abs(b.body.y - slope(b.body.x)))
+    b.body.drive(at(5), [true, true], DT, slope(5))
+  }
+  check(worst < 0.05, 'a teleport down a hillside is walked on the slope, not sunk to the told feet at the far end', `worst ${(worst * 100).toFixed(1)} cm off the slope`)
 }
 {
   // A swimmer: a lake at 0 over a bed 2 m down, her feet told where they float, her eyes over the surface.

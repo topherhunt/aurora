@@ -20,7 +20,7 @@ const stub = () => {
 let charred
 const tree = (x, z, extra = {}) => ({ key: `tree:${x},${z}`, kind: 'tree', x, y: 0, z, radius: 0.3, height: 6, char: () => { charred.push(`tree:${x},${z}`) }, ...extra })
 const world = (objs) => (x, y, z, r) => objs.filter((o) => Math.hypot(o.x - x, o.z - z) < r + o.radius + 0.01)
-const make = (objs, rng = () => 0.99) => { charred = []; const flames = stub(); return { w: new Wildfire(scene, world(objs), { rng, flames }), flames } }
+const make = (objs, rng = () => 0.99) => { charred = []; const flames = stub(); const torches = stub(); return { w: new Wildfire(scene, world(objs), { rng, flames, torches }), flames, torches } }
 
 console.log('lighting')
 {
@@ -93,9 +93,9 @@ console.log('a peer\'s flame')
 
 console.log('torches')
 {
-  const { w, flames } = make([])
+  const { w, flames, torches } = make([])
   w.update(0.016, 0, [{ x: 1, y: 2, z: 3, phase: 0 }, { x: 4, y: 5, z: 6, phase: 1 }])
-  check(flames.count === 2 && flames.placed[1].x === 4, 'a torch tip is drawn as a flame')
+  check(torches.count === 2 && torches.placed[1].x === 4 && flames.count === 0, 'a torch tip is drawn as a flame in the torches\' own draw')
   let threw = false
   try { w.update(0.016, 0, Array.from({ length: 9 }, () => ({ x: 0, y: 0, z: 0, phase: 0 }))) } catch { threw = true }
   check(threw, 'more torches than slots is refused, not dropped')

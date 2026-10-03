@@ -71,16 +71,19 @@ function wallOutline(geo, ground) {
  * an underside opens a span, the next top closes it, and a top met with no
  * underside open is a cloth a cell thick (the roof and the awning are single
  * sheets). Closing that top from the crossing under it instead would stand a
- * wall from the step to the awning. With `wall` ({ r: wallOutline, top, door }
- * in metres), every cell inside the outline is stone from the floor to `top`,
- * and no post stands on the stoop before `door` (buildHouse's), whose cells
- * also take in the door's face.
+ * wall from the step to the awning. With `wall` ({ r: wallOutline, top, door,
+ * soft } in metres), every cell inside the outline is stone from the floor to
+ * `top`, no post stands on the stoop before `door` (buildHouse's), whose cells
+ * also take in the door's face, and the `soft` run of the index (the awning)
+ * is passed through: its sagging tip is within a step of the road, and as stone
+ * it is a ramp walked up onto the hood over the door.
  */
 export function columnTable(geo, unit = 1, wall = null) {
   const src = geo.attributes.position.array, layer = geo.attributes.texLayer.array, all = geo.index.array
   const pos = new Float32Array(src.length)
   for (let i = 0; i < src.length; i++) pos[i] = src[i] / unit
-  const idx = all.filter((_, t) => !SOFT.has(layer[all[t - (t % 3)]]))
+  const [soft0, soft1] = wall === null ? [0, 0] : wall.soft
+  const idx = all.filter((_, t) => !SOFT.has(layer[all[t - (t % 3)]]) && !(t >= soft0 && t < soft1))
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
   for (const v of idx) { const x = pos[v * 3], z = pos[v * 3 + 2]; minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z) }
   const x0 = minX - CELL, z0 = minZ - CELL
@@ -234,7 +237,7 @@ export class RoomProps {
     // Per prop: its floor's point, its yaw, its height (`scale`, the table's unit), `sink`, its siting radius `r`, the plan radius its mesh reaches, its top, its door, its windows, its eave and trunk radii, and whether a fiddle plays inside. `y` is the floor, the ground under the house less its `sink`.
     this.props = props.map(({ x, z, yaw, height, fiddle, sink }) => {
       const built = buildHouse(rollHouse(Math.floor(rand() * 2 ** 31), height))
-      const table = columnTable(built.geometry, height, { r: wallOutline(built.geometry, sink), top: built.trunk.top, door: built.door })
+      const table = columnTable(built.geometry, height, { r: wallOutline(built.geometry, sink), top: built.trunk.top, door: built.door, soft: built.awning })
       const y = field.heightAt(x, z) - sink
       m.compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(up, yaw), one)
       solid.push(built.geometry.applyMatrix4(m))

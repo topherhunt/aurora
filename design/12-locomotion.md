@@ -14,6 +14,7 @@ She is a first-time-ish VR user. Comfort outranks capability.
 - **Water is swum, never walked** (§11): the look (the hand in VR) steers, at walking pace.
 - **'A' toggles teleport mode** for covering distance. On land, a lob whose reach grows back over a 1 s cooldown after each landing, continuously per frame from a tenth of full; the arc is always blue, red only for a landing she could not stand on. Swimming, a straight wavering line where she points instead, held under the surface, whose reach restarts from near her each time the stick is pushed and glides out while held.
 - **Recenter** binding (long-press a face button)
+- **Seated play is never penalised.** With the menu's `Height: Standard` (the default), `src/v2/eye-level.js` lifts the XR reference space until the 90th percentile of the last minute's level-gaze headset heights reads 1.6 m, easing at 15 cm/s. So no mechanic may ask her to crouch or bend: an empty hand's trigger that reaches nothing takes along its pointer, up to 2 m. Gate: `check-eye-level`.
 - **Unstick** binding (§4)
 
 ### Desktop-only survey controls

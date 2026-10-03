@@ -8,11 +8,11 @@ Any town building (§32) can be entered by its door. `rollTownInterior({ seed, i
 
 - **Scale.** Every mass is the outside's at `S` = 1.5 on the ground, inset by the 0.15 m wall. Room-local metres: building-local × S, unrotated, y 0 the ground floor, the front door in the main mass's +Z wall. The roof's underside is the outside roof scaled up (`townCeilingAt`).
 - **Masses.** Wings and outshuts meet the main across a board junction wall with one doorway (`DOORWAY` 1.1 × 2.2). A mass meeting the main on an unknown side, or over less than a doorway plus 0.6 m, throws.
-- **Windows** stand where the plan has them (outshut windows are dropped), 1.1 m wide, never in a junction or beside the door. An upper floor's gables with no window get one high up, so an upstairs room is never lit only by candles.
+- **Windows** are placed per room after the partitions, on its outside walls: one per ~5 m of open (non-junction) wall, 1.1 m wide, never in a junction, beside the door, or before a solid. Upstairs they sit high under the eave and every gable room gets one; a room under only the eave slope may go without. Under 2% of rooms are windowless. The exterior does not show them.
 - **Hearth.** On the chimney's gable if it fits (then the other gable, then the back), 1.9 × 0.75, clear of the door and the junction doorways. Its room is the kitchen, or the hall if they are the same room.
 - **Upper floor.** Only under the main roof, when the eave clears `U` + 1.2 and the ridge `U` + 2.6 over at least 30 m² (huts 70% of the time). `U` = clamp(S × wallH / 2, 2.8, 4.2), in 0.2 m rises.
 - **Stair.** Flat slat treads (`STAIR` run 0.26, width 0.95) along a main wall, preferring back, then gables, then front. A run is taken only if every tread from the first one she must clear (`th`) has `HEAD` 2.0 under the roof, the landing above has headroom, it misses windows and keeps, and it stays 0.7 m off the hearth body (a landing between the chimney and a wall is shut in otherwise). The hole opens 0.4 m short of tread `th`, or her capsule on that tread meets the slab edge. Rails guard the hole. With no run that fits, the house has one floor.
-- **Partitions.** Board walls across the main's width, each with a doorway placed where it has headroom and misses the keeps, rooms at least 3 m wide. Ground: none under 7 m, maybe one under 8.5 m, else up to 3. Upper: none under 9 m, else up to 2.
+- **Partitions.** Board walls that halve a room until it is small: ground rooms (main, wings and outshuts) while over 30 m², the long side first; upstairs across the main while over 5.6 m long. A cut leaves each side 2.4 m, the door's side 3.4 m (room for the hall table), and is refused if it would leave a glazable half with no outside wall for glass, cross a keep or end at a window. Its doorway goes where it has headroom; the cut is rolled back unless both halves stay reachable. A ground cut under an upper floor stops at the slab. Rooms average about 26 m².
 - **Room kinds.** The door's room is the `hall`, the hearth's the `kitchen`. Upstairs rooms are bedrooms (80%) or workrooms. Outshuts are stores or workrooms; wings and other ground rooms are parlours, workrooms or bedrooms. Some room is always made a bedroom when one can be.
 - **Surfaces.** The floor is `plank` (55%) or `flag`; the walls `boards` (60%) or `panel`, each with a random hue and tone.
 
@@ -29,8 +29,9 @@ Order, so the scarce things get floor first:
 1. Bedrooms: one bed, or two in a room over 16 m² (55%). A bed's head goes to a wall with 2.5 m of run, with at least one clear side to stand in that has her headroom under an eave (`stands`, the sides and then the foot); a chest at the foot, a stool and candle by the pillow, maybe a rug.
 2. The hall. A house whose bedrooms took no bed sleeps here. Dining is a long table in the middle (`table`), sized down through fallbacks: shorter, no end chairs, a narrow table with a 0.4 m walkway (a 3.3 m hall), a chair a side; along the long axis then across it. Failing the hall, it eats at a table in the widest other ground room (stores excepted), and failing that at a `board` against the wall with two chairs. A hall that sleeps tries dine-then-bed, bed-then-dine, then bed-then-board, since a centred table can leave no 2.5 m wall run. Inns add one or two more tables. Then a plate dresser, shelves, maybe an armchair, and the kitchen's things if the hearth is here.
 3. No bed yet: one in the largest room with a wall for it, then a 1.9 m cot with its foot to the far wall (a small hut's outshut), or the roll throws. A bed's first stand is held as an anchor.
-4. The rest: kitchen (hearth cook spot, worktable with its own cook spot, barrels, sacks, shelves); parlour (corner armchair with a stool and candle, a rocker, rug, shelf, bookcase, chest); workroom (desk with parchment, scrolls, inkpot, books and a reading chair, bookcases, a scroll chest or bin); store (barrels, crates, sacks).
-5. A room with no candle gets a sconce, or the roll throws.
+4. The rest: kitchen (hearth cook spot, a logpile and a chair or armchair each side of the fire facing it, worktable with its own cook spot, barrels, sacks, shelves); parlour (corner armchair with a stool and candle, a rocker, rug, shelf, bookcase, chest); workroom (desk with parchment, scrolls, inkpot, books and a reading chair, bookcases, a scroll chest or bin); store (barrels, crates, sacks).
+5. Every room: one or two seats (55% two), a wall chair (40% with a side table) or a loose chair facing the middle; then filled to ~0.25 pieces per m² from its kind's `EXTRA` list (side tables, baskets, peg rails, chests, presses, crates, ...).
+6. A room with no candle gets a sconce, else a candle on some table, chest or barrel in it (`perch`), or the roll throws.
 
 Then a `gaze` spot before each window and a `talk` pair in the hall. A spot's stand is the first of its `stands` the final grid reaches; spots whose stand it does not reach are dropped.
 
@@ -40,7 +41,7 @@ Then a `gaze` spot before each window and a `talk` pair in the hall. A spot's st
 
 ## Light
 
-A per-vertex bake (`SHADE` in the renderer; vertices every 0.25 m so candle pools resolve) that stops at walls. A room's fill is `amb` scaled by its glass, falling to `dark` of that with no window; a brighter neighbour bleeds `bleed` through a doorway. Candles and the hearth fall off exponentially and saturate at `cap`. A doorway re-emits `door` of what reaches it into the next room, which is what makes closed-off rooms darker than the open leafkin interiors. Windows are the leafkin spill-and-beam. Under tables and beds the fill falls to `under`.
+A per-vertex bake (`SHADE` in the renderer; vertices every 0.25 m so candle pools resolve) that stops at walls. A room's fill is `amb` scaled by its glass, falling to `dark` of that with no window; a brighter neighbour bleeds `bleed` through a doorway. Candles and the hearth fall off exponentially and saturate at `cap`. A doorway re-emits `door` of what reaches it into the next room, which is what makes closed-off rooms darker than the open leafkin interiors. Windows are the leafkin spill-and-beam. Under tables and beds the fill falls to `under`. The hearth plays the campfire loop (`ambience.js`, reach 8 m) while she is inside.
 
 ## Residents
 
@@ -50,8 +51,8 @@ She sleeps in any `bed` spot, as in a leafkin bed (`roomBeds` in `main.js`); a s
 
 ## Gate
 
-`check-town-interiors.mjs` rolls 24 seeds of every building kind. It checks that each rolls, deterministically; the main room is the outside at `S`; the hall and kitchen are downstairs; every room has a light, the house a bed, a table with seats and a cook spot; beds are mostly upstairs in two-floor houses; workrooms have their papers. It then floods her walk by `player.js`'s step rule (only a climb is refused, and only when the 1.5 m stride baseline is also over 50°) from inside the door: she lands on the floor, never leaves the plan, reaches every spot and the stair top, and `navRoute` joins the door to every spot.
+`check-town-interiors.mjs` rolls 24 seeds of every building kind. It checks that each rolls, deterministically; the main room is the outside at `S`; the hall and kitchen are downstairs; every room has a light, the house a bed, a table with seats and a cook spot; beds are mostly upstairs in two-floor houses; workrooms have their papers; every upstairs gable room has a window, at most 2% of rooms none; at most 5% of rooms have no seat; the mean room is under 35 m². It then floods her walk by `player.js`'s step rule (only a climb is refused, and only when the 1.5 m stride baseline is also over 50°) from inside the door: she lands on the floor, never leaves the plan, reaches every spot and the stair top, and `navRoute` joins the door to every spot.
 
 ## Open
 
-- About 89k vertices per house, mostly the per-0.25 m tessellation the bake needs. Unmeasured on the Quest.
+- About 100k vertices per house, mostly the per-0.25 m tessellation the bake needs. Unmeasured on the Quest.

@@ -284,24 +284,24 @@ function rafters(M, room, r, roof, tint) {
   }
 }
 
-/** A board partition along z at `p.x`, its doorway cut and framed. */
+/** A board partition along `p.axis` at `p.at`, from p.lo to p.hi, its doorway cut and framed. */
 function partition(M, room, p, tint, timber) {
-  const hw = PART / 2, top = (u) => (p.y1 < 1e2 ? p.y1 : townCeilingAt(room, p.x, u) + 0.1)
+  const hw = PART / 2, along = p.axis === 'x'
+  const top = (u) => (p.y1 < 1e2 ? p.y1 : (along ? townCeilingAt(room, u, p.at) : townCeilingAt(room, p.at, u)) + 0.1)
   const hole = { u0: p.gap[0], u1: p.gap[1], y0: p.y0, y1: p.y0 + DOORWAY.h }
-  const left = { axis: 'z', at: p.x - hw, ix: -1, iz: 0 }, right = { axis: 'z', at: p.x + hw, ix: 1, iz: 0 }
-  wallFace(M.wall, left, 0, p.z0, p.z1, p.y0, top, [hole], [], tint)
-  wallFace(M.wall, right, 0, p.z0, p.z1, p.y0, top, [hole], [], tint)
-  reveal(M.wall, left, hole, PART, tint, { sill: false })
-  frameAround(M, left, { ...hole, depth: PART }, timber)
+  const face = (s) => ({ axis: p.axis, at: p.at + s * hw, ix: along ? 0 : s, iz: along ? s : 0 })
+  wallFace(M.wall, face(-1), 0, p.lo, p.hi, p.y0, top, [hole], [], tint)
+  wallFace(M.wall, face(1), 0, p.lo, p.hi, p.y0, top, [hole], [], tint)
+  reveal(M.wall, face(-1), hole, PART, tint, { sill: false })
+  frameAround(M, face(-1), { ...hole, depth: PART }, timber)
 }
 
-/** A plain timber frame round a doorway `h` in the wall along `L`, proud of both faces. */
-function frameAround(M, L, h, tint) {
-  const depth = h.depth || T
-  for (const d of [0.02, -depth - 0.02]) {
+/** A plain timber frame round a doorway `h` in the wall along `L`, proud of each face at depth `ds` (both faces by default). The posts stop short of the head's top so the two tops are not coplanar. */
+function frameAround(M, L, h, tint, ds = [0.02, -(h.depth || T) - 0.02]) {
+  for (const d of ds) {
     const at = (u, y) => { const p = pt(L, u, d); return [p.x, y, p.z] }
-    beam(M.grain, at(h.u0 - 0.05, h.y0), at(h.u0 - 0.05, h.y1 + 0.1), 0.05, 0.025, tint, L.axis === 'x' ? [0, 0, 1] : [1, 0, 0])
-    beam(M.grain, at(h.u1 + 0.05, h.y0), at(h.u1 + 0.05, h.y1 + 0.1), 0.05, 0.025, tint, L.axis === 'x' ? [0, 0, 1] : [1, 0, 0])
+    beam(M.grain, at(h.u0 - 0.05, h.y0), at(h.u0 - 0.05, h.y1 + 0.09), 0.05, 0.025, tint, L.axis === 'x' ? [0, 0, 1] : [1, 0, 0])
+    beam(M.grain, at(h.u1 + 0.05, h.y0), at(h.u1 + 0.05, h.y1 + 0.09), 0.05, 0.025, tint, L.axis === 'x' ? [0, 0, 1] : [1, 0, 0])
     beam(M.grain, at(h.u0 - 0.1, h.y1 + 0.05), at(h.u1 + 0.1, h.y1 + 0.05), 0.025, 0.05, tint)
   }
 }
@@ -312,12 +312,13 @@ function windowPane(M, K, L, h, timber) {
   const n = inward(L)
   const ids = [[h.u0, h.y0], [h.u1, h.y0], [h.u1, h.y1], [h.u0, h.y1]].map(([u, y]) => M.window.v(at(u, y, -T + 0.03), n, [u / LEAD_M, y / LEAD_M], rgb(0.2, 0.12, 0.85)))
   M.window.quad(...ids)
-  // Mullion and transom.
+  // Mullion and transom, the transom a hair thinner so their faces at the crossing are not coplanar.
   const mu = (h.u0 + h.u1) / 2, my = h.y0 + (h.y1 - h.y0) * 0.62
   beam(M.grain, at(mu, h.y0, -T + 0.06), at(mu, h.y1, -T + 0.06), 0.03, 0.035, timber, L.axis === 'x' ? [0, 0, 1] : [1, 0, 0])
-  beam(M.grain, at(h.u0, my, -T + 0.06), at(h.u1, my, -T + 0.06), 0.03, 0.035, timber)
-  beam(M.grain, at(h.u0 - 0.1, h.y0 - 0.03, 0.06), at(h.u1 + 0.1, h.y0 - 0.03, 0.06), 0.03, 0.12, timber, n)
-  frameAround(M, L, { ...h, y0: h.y0 - 0.06, depth: -0.04 }, timber)
+  beam(M.grain, at(h.u0, my, -T + 0.06), at(h.u1, my, -T + 0.06), 0.026, 0.035, timber)
+  // The sill board stands 1 cm proud of the reveal's sill, which would otherwise z-fight its top.
+  beam(M.grain, at(h.u0 - 0.1, h.y0 - 0.02, 0.06), at(h.u1 + 0.1, h.y0 - 0.02, 0.06), 0.03, 0.12, timber, n)
+  frameAround(M, L, { ...h, y0: h.y0 - 0.06 }, timber, [0.02])
 }
 
 /** The front door, shut in the outer face of its reveal: boards on ledges, strap hinges and a ring. */
@@ -594,7 +595,7 @@ const ITEMS = {
     for (let i = 0; i < n; i++) {
       const x0 = -it.hx + (2 * it.hx * i) / n, x1 = -it.hx + (2 * it.hx * (i + 1)) / n
       const r = { x0: it.x + x0, x1: it.x + x1, z0: it.z - it.hz, z1: it.z + it.hz }
-      sheet(M.linen, r, () => it.y + 0.006, 1, i % 2 ? band : base, 0.5)
+      sheet(M.linen, r, () => it.y + 0.015, 1, i % 2 ? band : base, 0.5)
     }
   },
   dresser(it, M, K) {
@@ -740,6 +741,43 @@ const ITEMS = {
       }
       hewn(M.grain, K, G, [-s, it.s - 0.025, -s], [s, it.s, s], WOOD(it.hue, -0.04), 0.003)
     }
+  },
+  sidetable(it, M, K) {
+    const F = F0(it), tint = WOOD(it.hue, -0.05), T = it.top, h = it.hx
+    hewn(M.grain, K, F, [-h, T - 0.035, -h], [h, T, h], tint, 0.004)
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) leg(M, K, F, sx * (h - 0.05), sz * (h - 0.05), T - 0.035, 0.022, tint)
+    hewn(M.grain, K, F, [-h + 0.03, 0.14, -h + 0.03], [h - 0.03, 0.165, h - 0.03], tint, 0.003)
+  },
+  basket(it, M, K, room, rng) {
+    const F = F0(it), r = it.r, h = it.top
+    K.lathe(M.grain, F, [[0, 0.01], [r * 0.8, 0.01], [r * 0.85, 0], [r, h], [r * 0.94, h], [r * 0.78, 0.03], [0, 0.03]], WICKER, { segs: 18, lobes: [12, 0.025], uvM: 0.15 })
+    K.tube(M.grain, Array.from({ length: 7 }, (_, k) => { const q = (k / 6) * Math.PI; return put(F, Math.cos(q) * r * 0.92, h + Math.sin(q) * r * 0.9, 0) }), Array(7).fill(0.012), WICKER, { segs: 5 })
+    for (let k = 0; k < 5; k++) {
+      const q = (k / 5) * TAU + K.j(0.4), c = [Math.cos(q) * r * 0.45, h - 0.03, Math.sin(q) * r * 0.45]
+      if (it.load === 'apples') K.blob(M.linen, F, c, 0.04, 0.038, 0.04, FRUIT[Math.floor(rng() * FRUIT.length)], { segs: 10, rows: 6 })
+      else if (it.load === 'wool') K.blob(M.linen, F, c, 0.06, 0.055, 0.06, WOOL((it.hue + k * 0.13) % 1), { rough: 0.06 })
+      else if (k < 3) K.box(M.linen, tip({ ...F, ...xyz(put(F, 0, h - 0.04 + k * 0.035, 0)) }, 'ay', K.j(0.5)), 0, 0, 0, r * 0.6, 0.016, r * 0.45, k === 1 ? WOOL(it.hue) : CREAM, { round: 0.6, uvM: 0.3 })
+    }
+  },
+  logpile(it, M, K) {
+    const F = F0(it), r = 0.055, bark = rgb(0.07, 0.3, 0.2 + it.hue * 0.06)
+    for (const [row, n] of [[0, 3], [1, 2], [2, 1]]) for (let i = 0; i < n; i++) {
+      const z = (i - (n - 1) / 2) * 2 * r + K.j(0.01), y = r + row * r * 1.75, l = it.hx - K.j(0.06) - 0.03
+      K.tube(M.grain, [put(F, -l, y, z), put(F, l, y + K.j(0.01), z + K.j(0.02))], [r + K.j(0.01), r + K.j(0.01)], bark, { segs: 8 })
+    }
+  },
+  pegrail(it, M, K) {
+    const F = F0(it), tint = WOOD(it.hue, -0.06)
+    hewn(M.grain, K, F, [-it.hx, -0.05, 0], [it.hx, 0.05, 0.025], tint, 0.002)
+    it.hang.forEach((h, i) => {
+      const x = -it.hx + 0.125 + i * 0.25
+      K.rod(M.grain, put(F, x, 0, 0.025), put(F, x, 0.03, 0.11), 0.012, 0.01, tint)
+      if (h === 'cloak') K.blob(M.linen, F, [x, -0.42, 0.07], 0.16, 0.45, 0.06, WOOL((it.hue + i * 0.29) % 1), { rough: 0.05 })
+      else if (h === 'bag') {
+        K.blob(M.linen, F, [x, -0.25, 0.08], 0.1, 0.13, 0.07, BURLAP((it.hue + i * 0.17) % 1), { rough: 0.06 })
+        K.tube(M.linen, [put(F, x - 0.07, -0.15, 0.08), put(F, x, 0.03, 0.1), put(F, x + 0.07, -0.15, 0.08)], [0.008, 0.008, 0.008], BURLAP(it.hue), { segs: 5 })
+      }
+    })
   },
   bed(it, M, K, room, rng) {
     const F = F0(it), tint = WOOD(it.hue, -0.07), hw = it.wid / 2, hl = it.len / 2, T = it.top

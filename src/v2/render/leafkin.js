@@ -650,16 +650,24 @@ export class Leafkin {
   /**
    * THE WALK, roaming, gathering and fleeing alike: a step under a CELL from
    * (x0, z0) to (x1, z1) is taken only if planPath could take it -- into an
-   * open cell, and across a cell's corner only with both cells beside it open.
-   * A step the plan refuses and the walk allows lets a roam slip into a pocket
-   * no flight plans out of, and it runs at the wall for good.
+   * open cell, and to a diagonal one only through an open cell the segment
+   * crosses on the way (two straight steps of the plan's). A step the plan
+   * refuses and the walk allows lets a roam slip into a pocket no flight plans
+   * out of. Demanding both cells beside a diagonal, as planPath does, refuses
+   * a step that crosses only the open one, and a flight that skirts a corner
+   * so runs in place for good.
    */
   _walks(site, x0, z0, x1, z1) {
     const i0 = Math.round(x0 / CELL), j0 = Math.round(z0 / CELL), i1 = Math.round(x1 / CELL), j1 = Math.round(z1 / CELL)
     if (i1 === i0 && j1 === j0) return true
     const at = (i, j) => this.open(site, i * CELL, j * CELL)
     if (!at(i1, j1)) return false
-    return i1 === i0 || j1 === j0 || (at(i1, j0) && at(i0, j1))
+    if (i1 === i0 || j1 === j0) return true
+    // Where along the step it crosses into column i1 and into row j1: the earlier crossing names the cell between.
+    const ti = (((i0 + i1) / 2) * CELL - x0) / (x1 - x0), tj = (((j0 + j1) / 2) * CELL - z0) / (z1 - z0)
+    if (ti < tj) return at(i1, j0)
+    if (tj < ti) return at(i0, j1)
+    return at(i1, j0) && at(i0, j1)
   }
 
   /** `d` along the heading, if the walk takes it. */
@@ -750,7 +758,7 @@ export class Leafkin {
       c.z -= Math.sin(c.heading) * d
     } else if (c.sought >= 0) this._search(c, tick)
     else {
-      // Along the planned path, weaving about it; a step onto ground it cannot stand on is refused, and REPLAN_TICKS of those plan the path again from here.
+      // Along the planned path, weaving about it; a step the walk refuses sends it back to a waypoint it can run straight at (the weave or the turn carried it off the line it chose), and REPLAN_TICKS of them plan the path again from here.
       if (c.wp >= c.path.length && (c.planned < 0 || tick - c.planned >= REPLAN_TICKS)) this._plan(c, tick)
       // The path run out, or none found: straight at the mouth point.
       let wx = site.x, wz = site.z
@@ -764,6 +772,7 @@ export class Leafkin {
       if (this._move(c, c.speed * dt * this._turn(c, dt, FLEE_TURN))) c.refused = 0
       else {
         c.wob = 0; c.wobv = 0
+        if (c.wp < c.path.length) c.wp = this._fallback(c)
         if (++c.refused >= REPLAN_TICKS && tick - c.planned >= REPLAN_TICKS) this._plan(c, tick)
       }
     }
@@ -822,18 +831,31 @@ export class Leafkin {
     return end !== undefined && Math.hypot(end[0] - site.x, end[1] - site.z) <= FINAL_M - WAYPOINT_M
   }
 
-  /** The furthest of the next LOOKAHEAD waypoints it can run straight at, the walk tried every LINE_STEP along the line; the next one when none. */
+  /**
+   * The furthest of the next LOOKAHEAD waypoints it can run straight at. When
+   * none is, it keeps making for the one it is on: WAYPOINT_M reaches past a
+   * cell's corner, so "reached" can still be outside that cell, where the line
+   * on cuts a blocked corner the walk refuses -- and every replan from there
+   * skips the same waypoint.
+   */
   _lookahead(c) {
-    const last = Math.min(c.path.length - 1, c.wp + LOOKAHEAD)
-    for (let k = last; k > c.wp + 1; k--) {
-      const [wx, wz] = c.path[k]
-      const dx = wx - c.x, dz = wz - c.z
-      const n = Math.ceil(Math.hypot(dx, dz) / LINE_STEP)
-      let clear = true
-      for (let i = 1; i <= n && clear; i++) clear = this._walks(c.site, c.x + (dx * (i - 1)) / n, c.z + (dz * (i - 1)) / n, c.x + (dx * i) / n, c.z + (dz * i) / n)
-      if (clear) return k
-    }
-    return c.wp + 1
+    for (let k = Math.min(c.path.length - 1, c.wp + LOOKAHEAD); k > c.wp; k--) if (this._straight(c, k)) return k
+    return c.wp < c.path.length - 1 ? c.wp : c.wp + 1
+  }
+
+  /** The furthest waypoint up to the one it is making for, back to LOOKAHEAD before it, that it can run straight at; the one it is making for when none. */
+  _fallback(c) {
+    for (let k = c.wp; k >= Math.max(0, c.wp - LOOKAHEAD); k--) if (this._straight(c, k)) return k
+    return c.wp
+  }
+
+  /** Whether the walk takes the line from where it stands to waypoint `k`, tried every LINE_STEP. */
+  _straight(c, k) {
+    const [wx, wz] = c.path[k]
+    const dx = wx - c.x, dz = wz - c.z
+    const n = Math.ceil(Math.hypot(dx, dz) / LINE_STEP)
+    for (let i = 1; i <= n; i++) if (!this._walks(c.site, c.x + (dx * (i - 1)) / n, c.z + (dz * (i - 1)) / n, c.x + (dx * i) / n, c.z + (dz * i) / n)) return false
+    return true
   }
 
   /**

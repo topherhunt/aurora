@@ -169,6 +169,8 @@ export const RULES = {
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A strider's feet on the same clock, the large animal's step: at `level` and rate 1 for a `size`-metre body at `near` m.
   stride: { reach: 40, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  // A snowman's: the same tread deeper and louder, carrying farther, so a 2-6 m body thuds where a strider steps.
+  thud: { reach: 60, near: 3, size: 1.2, level: 0.8, max: 1, deep: 0.8, jitter: 0.1, gain: [0.8, 1.0] },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
   foxYip: { reach: 40, near: 4, level: 0.7, every: [40, 120], gain: [0.7, 1.0] },
   // A stag within `reach` grunts every `every` seconds, the same way. The clip is mastered 21 dB hotter than the yip, which is why the level is low.
@@ -246,9 +248,10 @@ export class Ambience {
    * @param waves     false where the water is a pond too small for a wave to break on its shore (a village's lake): the lapping bed loops and the wave one-shot never fires.
    * @param fiddlers  the houses with a violin playing inside, if any: `[{ x, y, z, r }]`, each its floor and its trunk's radius (RULES.fiddle).
    * @param campfires the fires burning, if any: `[{ x, y, z }]`, each its flame (RULES.campfire).
+   * @param hearth    the flame of the hearth in the house she is in, `{ x, y, z }` or null, heard as a campfire.
    * @param torches   the room's torches, if any: `{ at: [{ x, y, z }], lit }`, each flame's position and lit() how lit they all are now, 0..1 (RULES.torch).
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null, blaze = () => [] }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null, blaze = () => [], hearth = () => null }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const v of voiced) {
       if (!v?.layer || typeof v.layer.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
@@ -343,6 +346,9 @@ export class Ambience {
     })
     this.blaze = blaze
     this.loops.blaze = engine.loop(CAMPFIRES, { directional: true, gain: RULES.blaze.gain })
+    // On the near bus: it burns in the room she is in, not through the walls.
+    this.hearth = hearth
+    this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
     this.blazeAt = { x: 0, y: 0, z: 0 }
     this.leavesOn = false
     this.windOn = false
@@ -976,10 +982,12 @@ export class Ambience {
   /** Each campfire's loop by her distance to its flame: level by RULES.campfire, placed at the flame. */
   _campfires(head) {
     const C = RULES.campfire
-    for (const f of this.campfires) {
-      const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
-      this._loop(f.key, d < C.reach, C.level * Math.min(1, C.near / Math.max(d, 1e-3)) * (1 - smoothstep(C.reach - C.edge, C.reach, d)), f)
+    const heard = (key, f) => {
+      const d = f ? Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z) : Infinity
+      this._loop(key, d < C.reach, C.level * Math.min(1, C.near / Math.max(d, 1e-3)) * (1 - smoothstep(C.reach - C.edge, C.reach, d)), f)
     }
+    for (const f of this.campfires) heard(f.key, f)
+    heard('hearth', this.hearth())
   }
 
   /** The blaze's loop: every flame `blaze()` lists adds its share by distance, placed at the nearest. */

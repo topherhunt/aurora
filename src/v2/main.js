@@ -9,7 +9,7 @@ import { Layers } from './layers/layers.js'
 import { planTowns, townsOccupyAt } from './layers/towns.js'
 import { Towns } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
-import { WildStriders } from './render/wild-striders.js'
+import { WILD, WildStriders } from './render/wild-striders.js'
 import { Journeys } from './render/journeys.js'
 import { nameTowns } from './layers/names.js'
 import { planRoads } from './layers/roads.js'
@@ -33,6 +33,7 @@ import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
 import { Wildfire, TORCH_CAP } from './render/wildfire.js'
 import { flicker as flameFlicker } from './render/fire.js'
+import { TriFlames } from './render/fire-tris.js'
 import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -88,6 +89,7 @@ import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripT
 // sim/terrain-height.js and sim/phase-a.js -- and scripts/check-v2.mjs fails
 // the build if it ever does.
 import { Player, LOCOMOTION } from '../player.js'
+import { EyeLevel } from './eye-level.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
@@ -506,6 +508,10 @@ if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: 
 sceneEl.systems.light.data.defaultLightsEnabled = false
 sceneEl.systems.light.removeDefaultLights()
 renderer = sceneEl.renderer
+// `?fbscale=0.7` renders the XR eye buffers at that fraction of the headset's default size, the fill-rate A/B: fps that rises with it was GPU-bound. Read by three at session start, so it holds for the whole session. The debug panel's FB cell shows it.
+const FB_SCALE = Number(new URLSearchParams(location.search).get('fbscale') ?? 1)
+if (!(FB_SCALE > 0 && FB_SCALE <= 2)) throw new Error(`?fbscale must be a number in (0, 2], got ${new URLSearchParams(location.search).get('fbscale')}`)
+renderer.xr.setFramebufferScaleFactor(FB_SCALE)
 scene = sceneEl.object3D
 camera = sceneEl.camera
 // The mouse-drag look handler assigns rotation.x/y directly (not via
@@ -1009,20 +1015,26 @@ function lieDown(bed, beside) {
   rig.quaternion.premultiply(layTurn)
 }
 
-/** Out of the bed she was laid in, onto her feet; saved if she slept. */
-function getUp() {
+/** Her head and rig given back the standing pose lieDown took from them, and out of the bed. */
+function unlay() {
   rig.quaternion.copy(laid.quat)
   camera.position.y = laid.camY
   camera.rotation.copy(laid.camRot)
-  if (laid.beside) {
+  laid = null
+}
+
+/** Out of the bed she was laid in, onto her feet; saved if she slept. */
+function getUp() {
+  const { bed: i, beside, pos, upAt } = laid
+  unlay()
+  if (beside) {
     const o = indoors.view.group.position
-    const bed = roomBeds(indoors.room)[laid.bed]
+    const bed = roomBeds(indoors.room)[i]
     const at = besideBed(bed, walk, o)
     player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
     faceAlong(-at.fx, -at.fz)
-  } else rig.position.copy(laid.pos)
-  const slept = laid.upAt !== null
-  laid = null
+  } else rig.position.copy(pos)
+  const slept = upAt !== null
   feetWereOnBed = true
   if (slept) { saveGame(); vitalsHud.showSaved() }
 }
@@ -1042,6 +1054,7 @@ function harm(n, why) {
 /** Back from death under the black: into the saved game's room and place, or a new game's. */
 async function revive(doc) {
   reviving = true
+  if (laid !== null) unlay()
   closeHouse()
   if (wildStriders) wildStriders.letGo()
   const room = doc === null ? ROOMS.overworld : ROOMS[doc.room]
@@ -1148,6 +1161,8 @@ const QUEST_SETTING_ROWS = [
   // desktop walks on WASD and lobs the arc off the T key.
   { key: 'teleport', text: 'Move', on: 'Teleport', off: 'Walk' },
   { key: 'sound', text: 'Sound', on: 'On', off: 'Off' },
+  // Standing: every wearer's eye at one height, so a seated one is not penalised (eye-level.js).
+  { key: 'standHeight', text: 'Height', on: 'Standard', off: 'Real' },
 ]
 
 // --- debug ---------------------------------------------------------------------
@@ -1221,6 +1236,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'clouds', text: 'sky clouds' },
   { key: 'wreaths', text: 'summit clouds' },
   { key: 'precip', text: 'rain and snow' },
+  // Every TriFlames anywhere (lamps, hearths, candles and their halos, town fires, wildfire, torches): the flames' draw only, not the light they bake onto things.
+  { key: 'fire', text: 'all flames' },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   // How often the sky map is rebuilt; the dome blends the three newest. See MAP_INTERVALS in render/aurora.js.
   { key: 'auroraRate', text: 'aurora map >', action: () => cycleAuroraInterval(), value: () => `${aurora.interval}s` },
@@ -1323,9 +1340,14 @@ function applyQuestToggle(key) {
     case 'clouds': sky.clouds = enabled; break
     case 'wreaths': if (wreaths) wreaths.visible = enabled; break
     case 'precip': precip.enabled = enabled; break
+    case 'fire': TriFlames.shown = enabled; break
     // The master fader, not the rules: the ambience keeps sensing and firing so
     // it is where it should be the moment the row goes back on.
     case 'sound': if (sound) sound.setMuted(!enabled); break
+    case 'standHeight':
+      if (!enabled && eyeLevel.applied !== 0 && player) player.liftXR(renderer, -eyeLevel.applied)
+      eyeLevel.reset()
+      break
   }
 }
 
@@ -1980,7 +2002,9 @@ let trustWelcomes = 0
 function syncTrust() {
   befriended.length = 0
   if (villagers) {
-    for (const id of villagers.befriended(befriended)) if (trust.grant(villagers.seed, id)) console.log(`[v2] villager ${id} trusts her now: ${trust.count(villagers.seed, villagers.all.length)} of ${villagers.all.length}`)
+    villagers.befriended(befriended)
+    if (indoors && !indoors.town) indoors.residents.befriended(befriended)
+    for (const id of befriended) if (trust.grant(villagers.seed, id)) console.log(`[v2] villager ${id} trusts her now: ${trust.count(villagers.seed, villagers.all.length)} of ${villagers.all.length}`)
   }
   trust.merge(netplay.trust)
   netplay.trust.length = 0
@@ -2193,7 +2217,17 @@ function buildQuestPanel() {
       if (mountStrider((layer) => layer.mountableAt(finger, handsHead()))) return
       if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
       else if (holdsFlint(key) && !hands.wouldStow(key, handsHead())) strikeFlint(key)
-      else if (hands.press(key, handsHead()) === 'pick') playPick()
+      else {
+        const empty = hands.holding(key) === null
+        let got = hands.press(key, handsHead())
+        // A hand that reaches nothing takes along its pointer, so nothing asks her to bend or crouch (eye-level.js).
+        if (got === null && empty && el.components.raycaster) {
+          const rc = el.components.raycaster
+          rc.updateOriginDirection()
+          got = hands.pressRay(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead())
+        }
+        if (got === 'pick') playPick()
+      }
     })
   }
 
@@ -2561,7 +2595,11 @@ function updateQuestStats() {
       ['GEO ', '#7f95b4'], [String(info.memory.geometries).padEnd(6), '#b39ddb'],
       ['TEX ', '#7f95b4'], [String(info.memory.textures).padEnd(6), '#b39ddb'],
       ['PROG ', '#7f95b4'], [String(renderer.info.programs?.length ?? 0).padEnd(5), '#b39ddb'],
-      ['MDRAW ', '#7f95b4'], [hasMultiDraw() ? 'yes' : 'NO', hasMultiDraw() ? '#8fd48f' : '#ff6b6b'],
+      ['MDRAW ', '#7f95b4'], [(hasMultiDraw() ? 'yes' : 'NO').padEnd(4), hasMultiDraw() ? '#8fd48f' : '#ff6b6b'],
+      // Main-thread ms of the frame's MS: see cpuTime.
+      ['JS ', '#7f95b4'], [cpuTime.jsMs.toFixed(1).padEnd(6), '#ffd27a'],
+      ['REND ', '#7f95b4'], [cpuTime.renderMs.toFixed(1).padEnd(6), '#ffd27a'],
+      ['FB ', '#7f95b4'], [String(FB_SCALE), FB_SCALE === 1 ? '#cfe3ff' : '#ffd27a'],
     ],
     [
       ['terrain res ', '#7f95b4'], [String(st.slots).padEnd(6), '#cfe3ff'],
@@ -2688,8 +2726,11 @@ const room = new URLSearchParams(location.search).get('room') || 'default'
 const netplay = new Netplay({
   room,
   url: import.meta.env.VITE_WS_URL || undefined,
-  // A peer aboard a live boat is drawn where in the hull it says it stands, not where its late pose puts it.
-  onState: (peers) => peerAvatars.apply(boats ? boats.anchorPeers(peers) : peers),
+  // A peer aboard a live boat is drawn where in the hull it says it stands, not where its late pose puts it; one riding a strider after a hop, on its back on the way.
+  onState: (peers) => {
+    const aboard = boats ? boats.anchorPeers(peers) : peers
+    peerAvatars.apply(wildStriders ? wildStriders.anchorRiders(aboard) : aboard)
+  },
 })
 popLog.send = (line) => netplay.diag(line)
 // A villager drawn at random on every load; the pick rides with each pose so
@@ -2938,14 +2979,16 @@ let ready = false
 const questToggles = {
   terrain: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, fireflies: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
-  water: true, reflections: true, aurora: true, clouds: true, precip: true, sound: true,
+  water: true, reflections: true, aurora: true, clouds: true, precip: true, fire: true, sound: true,
   // Off until the summit wreaths are redone; the menu row still turns them on.
   wreaths: false,
   critterTint: false, mirror: false, terrainWire: false, roadLines: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
-  teleport: true,
+  teleport: true, standHeight: true,
 }
+const eyeLevel = new EyeLevel()
+const _eyeDir = new THREE.Vector3()
 
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
@@ -3482,6 +3525,8 @@ async function intoSavedHouse(house) {
   const at = besideBed(bed, walk, o)
   player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
   faceAlong(-at.fx, -at.fz)
+  // As getUp leaves her: beside the bed is within its reach, and must not lay her straight back in it.
+  feetWereOnBed = true
 }
 
 /** House `e`'s room rolled off the village's seed, set down past the village's disc on its own floor above whatever ground is there, its residents in and her walk swapped for its own; where she stands in it is the caller's. */
@@ -3841,12 +3886,7 @@ async function buildRoom(room, at) {
   // material switch, not a program switch.
   for (const m of deadwood.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   deadwood.place(spawn.x, spawn.z)
-  // Loose sticks, every elevation; a village lays none (render/sticks.js).
-  sticks = new Sticks(scene, height, waterSurfaces, (await loadInteriorTextures()).grain, { seed, none: !!room.village })
-  for (const m of sticks.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-sticks' })
-  sticks.place(spawn.x, spawn.z)
   wildfire = new Wildfire(scene, flammablesNear)
-  window.v2sticks = sticks
   window.v2wildfire = wildfire
   wildfire.onLight = (f, life) => netplay.sendFlame([Math.random().toString(36).slice(2, 12), flares.room, f.x, f.y, f.z, life])
   // The far cards are photographed off the loaded picks; until this runs distant dead wood is not drawn.
@@ -3958,6 +3998,11 @@ async function buildRoom(room, at) {
   // So a tree and the ground it stands on cross the snow line together.
   trees.syncSnowLine(layers)
   trees.place(spawn.x, spawn.z)
+  // Loose sticks under the trees; a village lays none (render/sticks.js).
+  sticks = new Sticks(scene, height, waterSurfaces, (await loadInteriorTextures()).grain, { seed, none: !!room.village, trees })
+  for (const m of sticks.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-sticks' })
+  sticks.place(spawn.x, spawn.z)
+  window.v2sticks = sticks
   const ts = trees.stats
   console.log(
     `[v2] trees ${ts.placed} placed over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
@@ -4305,6 +4350,7 @@ async function buildRoom(room, at) {
   })
   creatureNet.add(snowmen, ['sn'])
   if (wildStriders) creatureNet.add(wildStriders, ['ws'])
+  if (townsfolk) creatureNet.add(townsfolk, ['ts'])
   window.v2snowmen = snowmen
 
   // Her hands (hands.js): what a controller takes from the beds, the ground
@@ -4428,7 +4474,7 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
       voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
@@ -4442,6 +4488,11 @@ async function buildRoom(room, at) {
       // The crackle of the clearing's hearth or of every town's, and a soft one from every torch while they are lit.
       campfires: hearth ? [hearth.fire] : townsfolk ? townsfolk.fires : [],
       blaze: () => (wildfire ? wildfire.list.concat(litTipList) : litTipList),
+      hearth: () => {
+        if (!indoors || !indoors.town) return null
+        const o = indoors.view.group.position, f = indoors.room.hearth.fire
+        return houseOut({ x: o.x + f.x, y: o.y + f.y, z: o.z + f.z }, {})
+      },
       torches: lamps ? { at: lamps.lamps.map((l) => ({ x: l.x, y: l.flameY, z: l.z })), lit: () => lamps.lit } : null,
     })
     window.v2ambience = ambience
@@ -5808,6 +5859,17 @@ let shownError = ''
 // read live from tick(), info holds whichever pass ran last: the aurora's one
 // quad, 2 tris and 1 call. Both stats panels read this copy instead.
 const mainRender = { triangles: 0, calls: 0 }
+// Main-thread ms a frame, meaned over CPU_FRAMES: `jsMs` is tick() (every layer's step), `renderMs` from tick()'s end to tock() (A-Frame's other ticks and renderer.render's CPU side). A frame MS well over their sum is waiting on the GPU. A GPU backlog can also stall inside renderer.render, so a large `renderMs` beside a small `jsMs` does not by itself say CPU.
+const CPU_FRAMES = 30
+const cpuTime = { tickAt: 0, tickEnd: 0, js: 0, render: 0, n: 0, jsMs: 0, renderMs: 0 }
+function bankCpuTime() {
+  cpuTime.js += cpuTime.tickEnd - cpuTime.tickAt
+  cpuTime.render += performance.now() - cpuTime.tickEnd
+  if (++cpuTime.n < CPU_FRAMES) return
+  cpuTime.jsMs = cpuTime.js / cpuTime.n
+  cpuTime.renderMs = cpuTime.render / cpuTime.n
+  cpuTime.js = cpuTime.render = cpuTime.n = 0
+}
 // `ride` is the raw stick while she rides a strider: push forward +, steer right +.
 const moveInput = { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null, ride: { push: 0, steer: 0 } }
 const headTmp = new THREE.Vector3()
@@ -6038,7 +6100,7 @@ const TELEPORT_SAMPLES = 40
 // A landing is refused where she could not have walked to: a slope past the
 // limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
 // the ONLY thing that turns it red. A landing far enough below her to cost
-// health (fallDamage) is allowed but turns TELEPORT_HURT.
+// health (fallDamage) is allowed but turns TELEPORT_HURT, as does a strider's leap past WILD.hop.cap, with no ring.
 const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
 const TELEPORT_HURT = 0xffa030
@@ -6057,8 +6119,8 @@ let desktopTeleportArmed = false
 let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
 // performance.now() ms the stick was last pushed to arm; a swim's reach grows from the later of the two.
 let teleportArmedAt = 0
-// `swim`: y is where her EYE goes (Player.swimTo), not her feet. `fell`: the drop to a dry walking landing, in her metres.
-const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false, reach: 0, fell: 0 }
+// `swim`: y is where her EYE goes (Player.swimTo), not her feet. `fell`: the drop to a dry walking landing, in her metres. `leap`: riding, (x, y, z) is in the air past WILD.hop.cap, where her strider leaps to and falls.
+const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false, reach: 0, fell: 0, leap: false }
 // The swim aim: metres between beads, and the waver across the line -- its
 // height, its wavelength along the line, and how fast it runs down it.
 const SWIM_BEAD_M = 0.2
@@ -6131,7 +6193,7 @@ function armTeleport() {
 function fireTeleport() {
   if (!teleportTarget.valid) return
   if (wildStriders && wildStriders.riding) {
-    wildStriders.hop(teleportTarget.x, teleportTarget.y, teleportTarget.z, teleportTarget.reach, player)
+    wildStriders.hop(teleportTarget.x, teleportTarget.y, teleportTarget.z, teleportTarget.reach, player, teleportTarget.leap)
     portalBlink = true
     teleportFiredAt = performance.now()
     return
@@ -6210,19 +6272,22 @@ function aimTeleport(origin, dir) {
   const vz = dir.z * TELEPORT_LOB * k * lob
   const stepS = TELEPORT_STEP_S * lob
   const gravity = TELEPORT_GRAVITY * k
+  // Riding, the lob stops WILD.hop.cap under the strider's feet: past that it is a leap.
+  const floor = mount ? feet.y - WILD.hop.cap * k : -Infinity
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
   // Stone is asked as spans on the line, not as its topmost surface, so the
   // lob flies under an awning or an overhang and only stops IN stone.
   const clear = (t) => {
     const p = at(t)
     const level = waterLevelAt(p.x, p.z)
-    return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) &&
+    return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) && p.y >= floor &&
       walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
       !walk.obstacleAt(p.x, p.z, teleportObstacle, mount) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   let count = 0
   let hit = null
   let onWater = false
+  let leap = null
   let stopped = false
   let prevT = 0
   for (let i = 0; i < TELEPORT_SAMPLES; i++) {
@@ -6252,10 +6317,13 @@ function aimTeleport(origin, dir) {
           hit.y = level
           onWater = true
         }
-        // The last bead sits ON the ground, not a sample past it.
-        p.x = hit.x
-        p.y = hit.y
-        p.z = hit.z
+        // The last bead sits ON the ground, not a sample past it -- or in the air, a leap.
+        if (hit.y < floor) leap = end
+        else {
+          p.x = hit.x
+          p.y = hit.y
+          p.z = hit.z
+        }
       }
     }
     arc.setMatrixAt(count++, teleportBead.makeScale(k, k, k).setPosition(p.x, p.y, p.z))
@@ -6280,12 +6348,17 @@ function aimTeleport(origin, dir) {
   teleportTarget.valid = standable
   teleportTarget.reach = full
   teleportTarget.swim = false
+  teleportTarget.leap = leap !== null
   // Into water, or as a strider's hop, the drop is free.
   teleportTarget.fell = hit === null || onWater || mount ? 0 : Math.max(0, feet.y - hit.y) / k
-  const colour = !standable ? TELEPORT_NO : fallDamage(teleportTarget.fell) > 0 ? TELEPORT_HURT : TELEPORT_OK
+  const colour = !standable ? TELEPORT_NO : leap || fallDamage(teleportTarget.fell) > 0 ? TELEPORT_HURT : TELEPORT_OK
   arc.material.color.setHex(colour)
   ring.material.color.setHex(colour)
-  if (hit !== null) {
+  if (leap) {
+    teleportTarget.x = leap.x
+    teleportTarget.y = leap.y
+    teleportTarget.z = leap.z
+  } else if (hit !== null) {
     teleportTarget.x = hit.x
     teleportTarget.z = hit.z
     teleportTarget.y = hit.y
@@ -6299,7 +6372,7 @@ function aimTeleport(origin, dir) {
     if (onWater) ring.quaternion.identity()
     else ring.quaternion.setFromUnitVectors(TELEPORT_UP, walk.normalAt(hit.x, hit.z, 0.35, teleportNormal, hit.y))
   }
-  ring.visible = hit !== null
+  ring.visible = hit !== null && !leap
 }
 
 /**
@@ -6415,7 +6488,7 @@ function desktopTeleportAim() {
   aimTeleport(teleportOrigin, teleportDir)
 }
 
-function readInput() {
+function readInput(dt) {
   const st = input.update()
   questInputSource = st.connected > 0 ? 'xr' : 'none'
   // Only when the direct poll came up empty: when it works it is the shorter
@@ -6474,6 +6547,11 @@ function readInput() {
     // Mirrored; see the banner.
     if (st.left.buttons.SECONDARY?.justPressed || st.right.buttons.SECONDARY?.justPressed) toggleQuestPanel()
     if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
+    if (questToggles.standHeight && renderer.xr.isPresenting) {
+      const eyeY = (camera.getWorldPosition(_eyeDir).y - rig.position.y) / rig.scale.y
+      const lift = eyeLevel.update(dt, eyeY, Math.asin(Math.max(-1, Math.min(1, camera.getWorldDirection(_eyeDir).y))))
+      if (lift !== 0) player.liftXR(renderer, lift)
+    }
     if (hands) {
       for (const hand of ['left', 'right']) {
         if (st[hand].buttons.GRIP?.justPressed) hands.drop(hand, handsHead())
@@ -6849,7 +6927,7 @@ function tick() {
 
   if (!ready) return
 
-  readInput()
+  readInput(dt)
 
   // THE CURRENT, applied BEFORE the mover rather than after it. Everything that
   // keeps her out of the ground and inside the world runs in player.update, and
@@ -7023,8 +7101,8 @@ function tick() {
   stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, dayness))
   // The fireflies exist only after dark, off the same scalar.
   stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go.
-  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, player.originPosition().y, peerHeadsNow()))
+  // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
   if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
@@ -7089,7 +7167,7 @@ function tick() {
   if (indoors) {
     indoors.view.update((now / 1000) % 1024, dayness, headTmp)
     indoors.residents.sync(indoors.town ? townInside(indoors.town.t, indoors.town.i) : new Map(villagers.all.filter((c) => c.home === villagers.graph.doorNodes[indoors.e.k] && c.state === 'inside').map((c) => [c.id, c])))
-    indoors.residents.update(dt, indoors.view)
+    indoors.residents.update(dt, indoors.view, player.originPosition(), lures, trustsHer)
   }
   applySky(state, headTmp, now / 1000)
   // Snow above the line, rain below, sleet across it (§10); after applySky, which is where this frame's `submerged` is decided, and none under water.
@@ -7181,11 +7259,16 @@ function renderOverlay() {
 }
 
 AFRAME.registerComponent('v2-quest-tick', {
-  tick: () => tick(),
+  tick: () => {
+    cpuTime.tickAt = performance.now()
+    tick()
+    cpuTime.tickEnd = performance.now()
+  },
   // After A-Frame's renderer.render, so this is the main pass and not the last
   // offscreen one -- see mainRender. The overlay pass goes after the copy.
   tock: () => {
     spikes.lap('render')
+    bankCpuTime()
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
     renderOverlay()
@@ -7219,6 +7302,7 @@ renderer.xr.addEventListener('sessionstart', () => {
   camera.rotation.set(0, 0, 0)
 })
 renderer.xr.addEventListener('sessionend', () => {
+  eyeLevel.reset()
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.copy(desktopRotation)
 })

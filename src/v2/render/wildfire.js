@@ -1,4 +1,4 @@
-import { TriFlames, TRI_TORCH } from './fire-tris.js'
+import { TriFlames, TRI_WILDFIRE, TRI_TORCH } from './fire-tris.js'
 
 // ---------------------------------------------------------------------------
 // WILDFIRE: the flames a spark leaves on a tree, a fern or a ground stick, and
@@ -42,13 +42,15 @@ export class Wildfire {
   /**
    * @param near   (x, y, z, r) -> flammables, see the header
    * @param rng    () -> [0, 1), for the lifetimes and the spread
-   * @param flames the draw, or null for a headless gate: { place(i, x, y, z, opts), update(t, glow, eye), count, group }
+   * @param flames  the objects' flames' draw: { place(i, x, y, z, opts), update(t, glow, eye), count, group }
+   * @param torches the torch tips' draw, a candle-style core: the same shape
    */
-  constructor(scene, near, { rng = Math.random, flames = new TriFlames(CAP + TORCH_CAP, TRI_TORCH) } = {}) {
+  constructor(scene, near, { rng = Math.random, flames = new TriFlames(CAP, TRI_WILDFIRE), torches = new TriFlames(TORCH_CAP, TRI_TORCH) } = {}) {
     this.near = near
     this.rng = rng
     this.flames = flames
-    if (flames.group) scene.add(flames.group)
+    this.torches = torches
+    for (const d of [flames, torches]) if (d.group) scene.add(d.group)
     this.list = []
     this.step = 0
     // Called with each flame this machine lights (a spark's, a spread's); the net sends it.
@@ -135,10 +137,12 @@ export class Wildfire {
       const k = (f.big ? BIG_GROW : 1) * level
       this.flames.place(n++, f.x, f.y, f.z, { height: FLAME.height * k, radius: FLAME.radius * k, phase: f.phase })
     }
-    if (tips.length > TORCH_CAP) throw new Error(`Wildfire: ${tips.length} torches past TORCH_CAP ${TORCH_CAP}`)
-    for (const t of tips) this.flames.place(n++, t.x, t.y, t.z, { height: TORCH.height, radius: TORCH.radius, phase: t.phase })
     this.flames.count = n
     this.flames.update(now, [1, 1, 1], eye)
+    if (tips.length > TORCH_CAP) throw new Error(`Wildfire: ${tips.length} torches past TORCH_CAP ${TORCH_CAP}`)
+    tips.forEach((t, i) => this.torches.place(i, t.x, t.y, t.z, { height: TORCH.height, radius: TORCH.radius, phase: t.phase }))
+    this.torches.count = tips.length
+    this.torches.update(now, [1, 1, 1], eye)
   }
 
   _touch(dt, now, tips) {

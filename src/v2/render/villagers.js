@@ -157,19 +157,19 @@ export const LURE_EVERY_S = 3
 export const COURT_S = 7
 const CREEP_S = [1, 2.5]
 const PAUSE_S = [1.2, 2.5]
-const COURT_STOP_M = 0.9
+export const COURT_STOP_M = 0.9
 const COURT_ROAD_M = 5
-const REPLAN_M = 0.75
+export const REPLAN_M = 0.75
 const WATCH_S = [3, 6]
 export const CALM_S = 60
 export const OFFER_M = 0.5
-const OFFER_UP = 1.6
+export const OFFER_UP = 1.6
 // One that trusts her (trust.js), free and within GREET_M -- FRIEND_M once the whole village does, and gladder -- walks up, beckons and chatters GREET_S, and goes on; not again for GREET_COOL_S. Standing for her, a gesture every FUSS_S.
 export const GREET_M = 5
 export const FRIEND_M = 12
 export const GREET_S = [6, 10]
 export const GREET_COOL_S = 75
-const FUSS_S = [2, 4]
+export const FUSS_S = [2, 4]
 const NO_CHASES = []
 const NO_LURES = []
 const NOBODY = () => false

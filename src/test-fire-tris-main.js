@@ -1,6 +1,6 @@
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { TriFlames, TRI_FIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, shardsAt, lodFor } from './v2/render/fire-tris.js'
+import { TriFlames, TRI_FIRE, TRI_WILDFIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, shardsAt, lodFor } from './v2/render/fire-tris.js'
 import { flicker } from './v2/render/fire.js'
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,7 @@ const BENCH = { flicker: 0.0, lod: 0, lodTint: 0, count: 1, spacing: 1.45, glowR
 const PRESETS = {
   lamp: { ...TRI_LAMP, ...BENCH },
   torch: { ...TRI_TORCH, ...BENCH, glowReach: 5, glowGain: 0.7, context: 'torch' },
+  wildfire: { ...TRI_WILDFIRE, ...BENCH, glowReach: 5, glowGain: 0.7 },
   campfire: { ...TRI_FIRE, ...BENCH, glowReach: 9, glowGain: 1.2, context: 'campfire' },
   candle: { ...TRI_CANDLE, ...BENCH, glowReach: 2, glowGain: 0.3, context: 'candle' },
 }

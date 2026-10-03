@@ -4,7 +4,7 @@
 //
 // What can go wrong without throwing: a LOD level that shares another level's per-instance attribute (flames flicker in each other's phase); a thinner level that is not a subset of the one above (a flame reshuffles when it changes level); a fragment shader that gained a discard or a texture fetch (the whole cost model of opaque triangles); a flame count that outruns the buffers.
 
-import { TriFlames, TRI_FIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, TRI_LOD_COUNT, shardsAt, lodFor } from '../src/v2/render/fire-tris.js'
+import { TriFlames, TRI_FIRE, TRI_WILDFIRE, TRI_TORCH, TRI_LAMP, TRI_CANDLE, TRI_LOD_COUNT, shardsAt, lodFor } from '../src/v2/render/fire-tris.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -51,12 +51,13 @@ console.log('the meshes')
 
 console.log('the looks')
 {
-  for (const [name, p] of [['campfire', TRI_FIRE], ['torch', TRI_TORCH], ['lamp', TRI_LAMP], ['candle', TRI_CANDLE]]) {
+  for (const [name, p] of [['campfire', TRI_FIRE], ['wildfire', TRI_WILDFIRE], ['torch', TRI_TORCH], ['lamp', TRI_LAMP], ['candle', TRI_CANDLE]]) {
     const f = new TriFlames(1, p)
     const n = f.levels.map((l) => l.shards)
     check(n.every((c, k) => k === 0 || c === Math.max(3, Math.round(n[0] * 0.25 ** k))), `${name}: each level is a quarter of the one above`, n.join())
   }
-  check(TRI_FIRE.shards === 512 && TRI_TORCH.shards < TRI_FIRE.shards && TRI_LAMP.shards < TRI_TORCH.shards && TRI_CANDLE.shards < TRI_LAMP.shards, 'the smaller the flame the fewer the shards')
+  check(TRI_FIRE.shards === 512 && TRI_WILDFIRE.shards < TRI_FIRE.shards && TRI_LAMP.shards < TRI_WILDFIRE.shards && TRI_CANDLE.shards < TRI_LAMP.shards, 'the smaller the flame the fewer the shards')
+  check(TRI_TORCH.coreSize > 0 && TRI_TORCH.duty < 1 && TRI_CANDLE.shards < TRI_TORCH.shards && TRI_TORCH.shards < TRI_LAMP.shards, 'the torch is a candle-style core with occasional flecks, between the candle and the lamp')
 }
 
 console.log('the buckets')
@@ -73,6 +74,11 @@ console.log('the buckets')
   check(f.update(1, [1, 1, 1], eye).join() === '2,2,2,2' && f.levels[2].mesh.count === 4, 'forceLod pins every flame to one level')
   check(throws(() => f.place(4, 0, 0, 0, { height: 1, radius: 1 })), 'placing past the capacity throws')
   check(throws(() => f.update(1, [1, 1, 1])), 'update without an eye throws')
+  TriFlames.shown = false
+  f.update(1, [1, 1, 1], eye)
+  check(f.levels.every((l) => l.mesh.count === 0 && l.core.count === 0) && f.triangles() === 0, 'the fire row off draws no flame and no core')
+  TriFlames.shown = true
+  check(f.update(1, [1, 1, 1], eye).length === 4 && f.levels[2].mesh.count === 4, 'back on, the flames draw again')
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

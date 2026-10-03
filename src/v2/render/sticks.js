@@ -1,12 +1,14 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { TILE as TREE_TILE } from './trees.js'
 
 // ---------------------------------------------------------------------------
-// STICKS: dead twigs lying on the ground at every elevation, each one pickable,
-// stowable and -- held, with its tip lit -- a torch (fire.js's Wildfire). A near
-// scatter: cells of CELL_M each roll their sticks from a hash of the seed and
-// the cell, so a stick is a pure function of where it lies and `taken` (the
+// STICKS: dead twigs lying under the trees, each one pickable, stowable and --
+// held, with its tip lit -- a torch (fire.js's Wildfire). A near scatter: cells
+// of CELL_M each roll their sticks from a hash of the seed and the cell, and a
+// stick stands only within NEAR_TRUNK_M of a trunk as Trees.pureTrunksInto
+// gives them, so a stick is a pure function of where it lies and `taken` (the
 // registry every bed asks) stops a picked one growing back. Cells come and go
 // with her, a few a frame; one InstancedMesh draws them all.
 //
@@ -84,13 +86,17 @@ export function buildStickGeometry(seed = 7) {
   return geo
 }
 
-// Cells are CELL_M square. A cell's sticks: BASE_PER_M2 candidates a square metre, times a clumping factor that runs 0..CLUMP_MAX over CLUMP_CELLS cells, so sticks lie in drifts with bare ground between.
+// Cells are CELL_M square. A cell's sticks: BASE_PER_M2 candidates a square metre, times a clumping factor that runs 0..CLUMP_MAX over CLUMP_CELLS cells, so sticks lie in drifts with bare ground between. A candidate stands only between half a stick and NEAR_TRUNK_M out from a trunk's bark.
 export const CELL_M = 4
-const BASE_PER_M2 = 0.03
+const BASE_PER_M2 = 0.06
 const CLUMP_CELLS = 3
 const CLUMP_MAX = 3
+export const NEAR_TRUNK_M = 3
+const TRUNK_MAX_M = 2
+// Trees' trunk tiles held for the cells; cleared whole past this many.
+const TRUNK_TILES_CAP = 32
 // The scatter reaches this far; cells are made at most CELLS_PER_FRAME at a time, nearest first.
-export const REACH_M = 40
+export const REACH_M = 10
 const CELLS_PER_FRAME = 3
 export const CAP = 512
 // Stick scale per instance, and how far it is sunk into the ground, as a fraction of its radius.
@@ -118,11 +124,16 @@ export class Sticks {
    * @param ground  `{ heightAt(x, z) }`, the walkable ground
    * @param water   `{ levelAt(x, z, any) }`, null where dry; no stick lies under a lake
    * @param map     the grain texture (repeating, sRGB)
+   * @param trees   Trees: pureTrunksInto, the trunks a stick must lie near
    * @param none    lay none (a village)
    */
-  constructor(scene, ground, water, map, { seed = 1, none = false, cap = CAP, radius = REACH_M } = {}) {
+  constructor(scene, ground, water, map, { seed = 1, none = false, cap = CAP, radius = REACH_M, trees = null } = {}) {
+    if (!none && (trees === null || typeof trees.pureTrunksInto !== 'function')) throw new Error('Sticks: the trees need pureTrunksInto')
     this.ground = ground
     this.water = water
+    this.trees = trees
+    // Trees tile key -> [x, z, trunk radius, ...].
+    this.trunkTiles = new Map()
     this.seed = seed >>> 0
     this.none = none
     this.radius = radius
@@ -200,11 +211,13 @@ export class Sticks {
     const want = BASE_PER_M2 * CELL_M * CELL_M * CLUMP_MAX * n * n
     const rand = mulberry32(hash(this.seed, cx, cz))
     const count = Math.floor(want + rand())
+    const trunks = count > 0 ? this._trunksNear(cx, cz) : []
     for (let i = 0; i < count; i++) {
       // Every candidate draws the same randoms whether or not it survives, so one refusal never reshuffles the rest.
       const x = (cx + rand()) * CELL_M, z = (cz + rand()) * CELL_M
       const a = rand() * Math.PI * 2
       const k = SCALE[0] + rand() * (SCALE[1] - SCALE[0])
+      if (!this._underTree(trunks, x, z)) continue
       if (taken.has(KIND, x, z)) continue
       if (this.water.isSubmerged(x, z, this.ground.heightAt(x, z))) continue
       const id = this._take()
@@ -215,6 +228,37 @@ export class Sticks {
     }
     this.batch.count = this.high
     this.batch.instanceMatrix.needsUpdate = true
+  }
+
+  /** The [x, z, r] trunks of every Trees tile within NEAR_TRUNK_M (plus the widest trunk) of cell (cx, cz). */
+  _trunksNear(cx, cz) {
+    const pad = NEAR_TRUNK_M + TRUNK_MAX_M
+    const out = []
+    for (let tx = Math.floor((cx * CELL_M - pad) / TREE_TILE); tx <= Math.floor(((cx + 1) * CELL_M + pad) / TREE_TILE); tx++) {
+      for (let tz = Math.floor((cz * CELL_M - pad) / TREE_TILE); tz <= Math.floor(((cz + 1) * CELL_M + pad) / TREE_TILE); tz++) {
+        const key = `${tx},${tz}`
+        let t = this.trunkTiles.get(key)
+        if (t === undefined) {
+          if (this.trunkTiles.size >= TRUNK_TILES_CAP) this.trunkTiles.clear()
+          t = this.trees.pureTrunksInto(tx, tz, [])
+          for (let i = 2; i < t.length; i += 3) if (t[i] > TRUNK_MAX_M) throw new Error(`Sticks: a trunk of ${t[i].toFixed(2)} m past TRUNK_MAX_M`)
+          this.trunkTiles.set(key, t)
+        }
+        for (let i = 0; i < t.length; i++) out.push(t[i])
+      }
+    }
+    return out
+  }
+
+  /** Whether (x, z) lies clear of a trunk's bark by half a stick and within NEAR_TRUNK_M of it. */
+  _underTree(trunks, x, z) {
+    let near = false
+    for (let i = 0; i < trunks.length; i += 3) {
+      const out = Math.hypot(x - trunks[i], z - trunks[i + 1]) - trunks[i + 2]
+      if (out < LENGTH_M / 2) return false
+      if (out <= NEAR_TRUNK_M) near = true
+    }
+    return near
   }
 
   _drop(key) {

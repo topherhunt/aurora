@@ -58,8 +58,13 @@ export const TRI_FIRE = {
 
 export const TRI_CAMPFIRE = TRI_FIRE
 
-// The smaller flames keep the campfire's motion and colour and spend fewer shards, each drawn larger against its flame so the silhouette still fills in. The torch and the lamp are tuned by eye on the bench; the candle is a solid core with the odd fleck rising off it.
-export const TRI_TORCH = { ...TRI_FIRE, height: 0.45, radius: 0.09, shards: 192, size: 0.17, sway: 0.3, gain: 1.4 }
+// The smaller flames keep the campfire's motion and colour and spend fewer shards, each drawn larger against its flame so the silhouette still fills in. The wildfire and the lamp are tuned by eye on the bench; the candle and the torch are a solid core with the odd fleck rising off it.
+export const TRI_WILDFIRE = { ...TRI_FIRE, height: 0.45, radius: 0.09, shards: 192, size: 0.17, sway: 0.3, gain: 1.4 }
+export const TRI_TORCH = {
+  ...TRI_FIRE, height: 0.24, radius: 0.07, shards: 32, size: 0.2, sizeVar: 0.6, sliver: 1.5, taper: 0.35, spread: 0.4, rate: 1.4, shrink: 1.2,
+  wobble: 0.3, wobbleHz: 4, sway: 0.2, spin: 3, jitter: 0.45, gain: 1.4, duty: 0.25, lift: 0.4,
+  coreSize: 0.3, coreHeight: 0.8, coreJump: 0.2, coreHz: 6,
+}
 export const TRI_LAMP = { ...TRI_FIRE, height: 0.32, radius: 0.1, shards: 96, size: 0.19, sway: 0.25, wobble: 0.45, gain: 1.2 }
 export const TRI_CANDLE = {
   ...TRI_FIRE, height: 0.06, radius: 0.012, shards: 12, lodNear: 1, size: 0.24, sizeVar: 0.6, sliver: 1.5, taper: 0.3, spread: 0.3, rate: 1.65, shrink: 1.2,
@@ -215,6 +220,9 @@ const KNOBS = {
 const COLORS = { birthColor: 'uBirth', midColor: 'uMid', deathColor: 'uDeath', coreLowColor: 'uCoreLow', coreHighColor: 'uCoreHigh' }
 
 export class TriFlames {
+  /** The debug panel's `fire` row: false draws no flame of any kind anywhere and skips their placement. */
+  static shown = true
+
   /**
    * @param capacity  the most flames
    * @param params    a TRI_FIRE-shaped object
@@ -309,6 +317,7 @@ export class TriFlames {
     this.shared.uTime.value = t
     this.shared.uGlow.value.set(glow[0], glow[1], glow[2])
     for (const l of this.levels) l.mesh.count = l.core.count = 0
+    if (!TriFlames.shown) return []
     const lods = new Array(this.count)
     for (let i = 0; i < this.count; i++) {
       const f = this.at[i]

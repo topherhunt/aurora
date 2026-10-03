@@ -52,6 +52,7 @@ console.log('\n=== vitals checks ===\n')
 
 console.log('falling')
 check(fallDamage(FALL.safeM) === 0 && fallDamage(9) === 50 && fallDamage(14) === MAX_HP, 'a fall costs nothing to 4 m and 10 HP a metre past it', `9 m: ${fallDamage(9)}, 14 m: ${fallDamage(14)}`)
+check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fallDamage(12, FALL.riddenM) === 40, 'on a strider a fall is free to twice that, 8 m', `12 m: ${fallDamage(12, FALL.riddenM)}`)
 {
   const { p, fell } = walkOff(cliff(9))
   check(p.standY === GROUND - 9 && Math.abs(fell - 9) < 1e-6, 'walking off a 9 m cliff is a fall of 9 m', `fell ${fell.toFixed(3)}, feet at ${p.standY}`)

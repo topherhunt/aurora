@@ -153,7 +153,8 @@ export function rollTownInterior({ seed, index, plan }) {
     const w = 1.1
     if (L.hi - L.lo < w + 0.6 || y1 - y0 < 0.55) return false
     u = clamp(u, L.lo + w / 2 + 0.3, L.hi - w / 2 - 0.3)
-    if (inJunction(L, u)) return false
+    // Upstairs, a window may stand over a junction where the wing's roof is below it.
+    if (inJunction(L, u) && (level === 0 || cells.some((c) => { const q = pt(L, u, -0.6); return c.role !== 'main' && within(grow(c.r, 0.3), q.x, q.z) && roofAt(clamp(q.x, c.r.x0, c.r.x1), clamp(q.z, c.r.z0, c.r.z1)) + CEIL_GAP + 0.3 > y0 }))) return false
     if (level === 0 && onLine(L, LM.front) && Math.abs(u - dx) < DOOR.w / 2 + w / 2 + 0.25) return false
     if (windows.some((o) => o.level === level && onLine(o, L) && Math.abs(o.u - u) < w + 0.3)) return false
     const p = pt(L, u, 0)
@@ -284,112 +285,20 @@ export function rollTownInterior({ seed, index, plan }) {
       const face = pt(L, clamp(u, L.lo, L.hi), 0.05)
       addWindow(M, L, u, 1, U + 0.65, Math.min(U + 1.75, roofAt(face.x, face.z) - 0.25))
     }
-    // A window high in each open gable: an upstairs room the outside shows no window for is lit by one the gable could have.
-    for (const name of ['west', 'east']) {
-      const L = MAIN[name]
-      if (windows.some((w) => w.level === 1 && onLine(w, L)) || junctions.some((j) => j.line === name)) continue
-      for (const off of [0, 1.2, -1.2, 2.2, -2.2]) {
-        const u = midZ + off
-        if (hearth.line === name && Math.abs(u - hearth.u) < 1.7) continue
-        if (stair.line === name && within(grow(stair.hole, 1.0), pt(L, u, 0.3).x, pt(L, u, 0.3).z)) continue
-        const face = pt(L, u, 0.05)
-        if (addWindow(M, L, u, 1, U + 0.8, Math.min(U + 1.9, roofAt(face.x, face.z) - 0.3))) break
-      }
-    }
     // The chimney rises through the upper floor.
     hung[1].push(strip(MAIN[hearth.line], hearth.u - 1.1, hearth.u + 1.1, 0, 0.5))
   }
 
-  // --- partitions across the main, ground and upper ---------------------------
-  const partitions = []
-  const width = M.x1 - M.x0
-  const split = (level, want) => {
-    const f = level ? U : 0
-    const blocks = [...keeps[level], hearth.body]
-    if (stair) blocks.push(level ? grow(stair.hole, 0.3) : grow(rect(Math.min(...stair.treads.map((t) => t.x0)), Math.max(...stair.treads.map((t) => t.x1)), Math.min(...stair.treads.map((t) => t.z0)), Math.max(...stair.treads.map((t) => t.z1))), 0.3))
-    for (let k = want; k > 0; k--) {
-      for (let tries = 0; tries < 80; tries++) {
-        const ps = []
-        for (let i = 0; i < k; i++) ps.push(M.x0 + (width * (i + 1)) / (k + 1) + range(-1.2, 1.2))
-        ps.sort((a, b) => a - b)
-        if ([M.x0, ...ps, M.x1].some((p, i, all) => i > 0 && p - all[i - 1] < 3)) continue
-        const out = []
-        for (const p of ps) {
-          const wall = rect(p - PART / 2 - 0.15, p + PART / 2 + 0.15, M.z0, M.z1)
-          if (blocks.some((b) => hit(b, wall))) break
-          if (windows.some((w) => w.level === level && w.axis === 'x' && Math.abs(w.u - p) < w.w / 2 + 0.25)) break
-          const zs = []
-          for (let z = M.z0 + DOORWAY.w / 2 + 0.35; z <= M.z1 - DOORWAY.w / 2 - 0.35; z += 0.1) {
-            const k2 = rect(p - 1.0, p + 1.0, z - DOORWAY.w / 2 - 0.15, z + DOORWAY.w / 2 + 0.15)
-            if (blocks.some((b) => hit(b, k2))) continue
-            if (roofAt(p, z - DOORWAY.w / 2) < f + DOORWAY.h + 0.15 || roofAt(p, z + DOORWAY.w / 2) < f + DOORWAY.h + 0.15) continue
-            zs.push(z)
-          }
-          if (zs.length === 0) break
-          out.push({ p, z: pick(zs) })
-        }
-        if (out.length === k) return out
-      }
-    }
-    return []
-  }
-  for (const level of upper ? [0, 1] : [0]) {
-    const f = level ? U : 0
-    const want = level === 0 ? (width < 7 ? 0 : width < 8.5 ? (chance(0.5) ? 1 : 0) : Math.min(3, Math.floor(width / 6.5))) : width < 9 ? 0 : Math.min(2, Math.floor(width / 7.5))
-    for (const { p, z } of split(level, want)) {
-      const gap = [z - DOORWAY.w / 2, z + DOORWAY.w / 2]
-      const top = level === 0 && upper ? U - SLAB : 1e3
-      const a = rect(p - PART / 2, p + PART / 2, M.z0, gap[0]), b = rect(p - PART / 2, p + PART / 2, gap[1], M.z1), lintel = rect(p - PART / 2, p + PART / 2, gap[0], gap[1])
-      solids.push(box(a, f, top, 'wall'), box(b, f, top, 'wall'), box(lintel, f + DOORWAY.h, top, 'wall'))
-      partitions.push({ level, x: p, z0: M.z0, z1: M.z1, gap, y0: f, y1: top })
-      keeps[level].push(rect(p - 1.0, p + 1.0, gap[0] - 0.15, gap[1] + 0.15))
-      anchors[level].push({ x: p - 0.6, z }, { x: p + 0.6, z })
-    }
-  }
-
-  // --- rooms and what each is for ----------------------------------------------
+  // --- the rooms, one a cell and floor until the partitions cut them ------------
   const rooms = []
   const addRoom = (level, r, role) => rooms.push({ id: rooms.length, level, floor: level ? U : 0, rect: r, role, kind: null })
-  for (const level of upper ? [0, 1] : [0]) {
-    const xs = partitions.filter((p) => p.level === level).map((p) => p.x).sort((a, b) => a - b)
-    const edges = [M.x0, ...xs, M.x1]
-    for (let i = 0; i + 1 < edges.length; i++) addRoom(level, rect(i === 0 ? M.x0 : edges[i] + PART / 2, i + 2 === edges.length ? M.x1 : edges[i + 1] - PART / 2, M.z0, M.z1), 'main')
-  }
+  for (const level of upper ? [0, 1] : [0]) addRoom(level, { ...M }, 'main')
   for (const c of cells) if (c.role !== 'main') addRoom(0, c.r, c.role)
   const roomAt = (level, x, z) => {
     const r = townRoomAt({ rooms }, level, x, z)
     if (!r) throw new Error(`rollTownInterior: no room at (${x.toFixed(2)}, ${z.toFixed(2)}) on level ${level}`)
     return r
   }
-  const hall = roomAt(0, doorIn.x, doorIn.z)
-  const kitchen = roomAt(0, hearth.cook.x, hearth.cook.z)
-  hall.kind = 'hall'
-  kitchen.kind = kitchen === hall ? 'hall' : 'kitchen'
-  hall.hearth = kitchen === hall
-  kitchen.hearth = true
-  for (const r of rooms) {
-    if (r.kind) continue
-    if (r.level === 1) r.kind = chance(0.8) ? 'bedroom' : 'workroom'
-    else if (r.role === 'outshut') r.kind = chance(0.6) ? 'store' : 'workroom'
-    else if (r.role === 'wing') r.kind = upper ? pick(['parlour', 'workroom', 'parlour', 'bedroom']) : pick(['bedroom', 'bedroom', 'workroom', 'parlour'])
-    else r.kind = upper ? pick(['parlour', 'workroom', 'parlour']) : pick(['bedroom', 'parlour', 'workroom'])
-  }
-  if (!rooms.some((r) => r.kind === 'bedroom')) {
-    const spare = rooms.find((r) => r.level === 1) || rooms.find((r) => r.kind !== 'hall' && r.kind !== 'kitchen')
-    if (spare) spare.kind = 'bedroom'
-  }
-  hearth.room = kitchen.id
-
-  const doorways = []
-  for (const j of junctions) {
-    const b = j.band, alongX = j.side === 'back'
-    doorways.push({ level: 0, y0: 0, y1: DOORWAY.h, a: roomAt(0, j.near.x, j.near.z).id, b: roomAt(0, j.far.x, j.far.z).id, ...(alongX ? rect(j.gap[0], j.gap[1], b.z0, b.z1) : rect(b.x0, b.x1, j.gap[0], j.gap[1])) })
-  }
-  for (const p of partitions) {
-    const zc = (p.gap[0] + p.gap[1]) / 2
-    doorways.push({ level: p.level, y0: p.y0, y1: p.y0 + DOORWAY.h, a: roomAt(p.level, p.x - 0.4, zc).id, b: roomAt(p.level, p.x + 0.4, zc).id, ...rect(p.x - PART / 2, p.x + PART / 2, p.gap[0], p.gap[1]) })
-  }
-  for (const w of windows) w.room = roomAt(w.level, w.x - w.nx * 0.3, w.z - w.nz * 0.3).id
 
   // --- the floor as rasters, one per level ---------------------------------------
   const floorRects = [[M, ...cells.slice(1).map((c) => c.r), ...junctions.map((j) => j.band)], upper ? [M] : []]
@@ -433,7 +342,6 @@ export function rollTownInterior({ seed, index, plan }) {
     for (const r of keeps[level]) mark(level, r, KEEP)
     for (const r of hung[level]) mark(level, r, HUNG)
   }
-  for (const w of windows) mark(w.level, strip({ axis: w.axis, at: w.at, ix: -w.nx, iz: -w.nz }, w.u - w.w / 2 - 0.1, w.u + w.w / 2 + 0.1, 0, 0.7), WIN)
 
   /** Level `level`'s walking grid: 1 where a body fits clear of stone under headroom. */
   const walkable = (level) => {
@@ -476,6 +384,132 @@ export function rollTownInterior({ seed, index, plan }) {
     })
   }
   for (const level of levels) if (!reaches(level)) throw new Error(`rollTownInterior: house ${index}'s level ${level} is cut in two before it is furnished`)
+
+  // --- partitions: board walls cutting a room in two, each with a doorway ---------
+  const partitions = []
+  const area = (r) => (r.x1 - r.x0) * (r.z1 - r.z0)
+  // The walls of rect `R` on `level` that are its mass's outside walls, and whether a window could stand at `u` along one.
+  const outside = (level, R) => {
+    const c = level === 1 ? cells[0] : cells.find((c) => within(c.r, (R.x0 + R.x1) / 2, (R.z0 + R.z1) / 2))
+    const outer = lines(c.r)
+    return { c, edges: Object.values(lines(R)).filter((e) => Math.abs(e.at - outer[e.name].at) < 0.01) }
+  }
+  const glassAt = (level, e, u) => u >= e.lo + 0.85 && u <= e.hi - 0.85 && !inJunction(e, u) && !(level === 0 && onLine(e, LM.front) && Math.abs(u - dx) < DOOR.w / 2 + 0.8) && clear(level, strip(e, u - 0.65, u + 0.65, CELL, 0.5), SOLID | HUNG)
+  const glazable = (level, R) => outside(level, R).edges.some((e) => windows.some((w) => w.level === level && onLine(w, e) && w.u > e.lo && w.u < e.hi) || Array.from({ length: Math.floor((e.hi - e.lo) / 0.1) }, (_, i) => e.lo + i * 0.1).some((u) => glassAt(level, e, u)))
+  const cut = (rm, axis, q) => {
+    const level = rm.level, f = rm.floor, R = rm.rect
+    const L = { axis, at: q, ix: +(axis === 'z'), iz: +(axis === 'x') }
+    const [lo, hi] = axis === 'x' ? [R.x0, R.x1] : [R.z0, R.z1]
+    const wall = (u0, u1, d) => strip(L, u0, u1, -d, d)
+    const A = axis === 'x' ? { ...R, z1: q - PART / 2 } : { ...R, x1: q - PART / 2 }
+    const B = axis === 'x' ? { ...R, z0: q + PART / 2 } : { ...R, x0: q + PART / 2 }
+    // The hall keeps the width for its table.
+    if ([A, B].some((h) => within(h, doorIn.x, doorIn.z) && Math.min(h.x1 - h.x0, h.z1 - h.z0) < 3.4)) return false
+    if (glazable(level, R) && !(glazable(level, A) && glazable(level, B))) return false
+    if (!clear(level, wall(lo + 0.15, hi - 0.15, PART / 2 + 0.15), SOLID | KEEP)) return false
+    // A wall meeting the outside wall beside a window.
+    if (windows.some((w) => w.level === level && w.axis !== axis && (Math.abs(w.at - lo) < 0.01 || Math.abs(w.at - hi) < 0.01) && Math.abs(w.u - q) < w.w / 2 + 0.25)) return false
+    const us = []
+    for (let u = lo + 0.9; u <= hi - 0.9; u += 0.1) {
+      if (!clear(level, wall(u - 0.7, u + 0.7, 1.0), SOLID)) continue
+      const a = pt(L, u - DOORWAY.w / 2, 0), b = pt(L, u + DOORWAY.w / 2, 0)
+      if (Math.min(levelCeilingAt(room, level, a.x, a.z), levelCeilingAt(room, level, b.x, b.z)) < f + DOORWAY.h + 0.15) continue
+      us.push(u)
+    }
+    if (!us.length) return false
+    const u = pick(us), gap = [u - DOORWAY.w / 2, u + DOORWAY.w / 2]
+    const top = level === 0 && upper && rm.role === 'main' ? U - SLAB : 1e3
+    const ns = solids.length, na = anchors[level].length, g = grids[level].slice()
+    for (const [a, b, y0] of [[lo, gap[0], f], [gap[1], hi, f], [gap[0], gap[1], f + DOORWAY.h]]) { const s = box(wall(a, b, PART / 2), y0, top, 'wall'); solids.push(s); rasterSolid(s) }
+    mark(level, wall(gap[0] - 0.15, gap[1] + 0.15, 1.0), KEEP)
+    anchors[level].push(pt(L, u, -0.6), pt(L, u, 0.6))
+    const seen = reaches(level) && flood(walkable(level), anchors[level][0])
+    const count = (r) => { let n = 0; over(r, (c) => { n += seen[c] }); return n }
+    if (!seen || count(A) < 200 || count(B) < 200) {
+      solids.length = ns; anchors[level].length = na; grids[level].set(g)
+      return false
+    }
+    partitions.push({ level, axis, at: q, lo, hi, gap, y0: f, y1: top })
+    rm.rect = A
+    rooms.push({ ...rm, id: rooms.length, rect: B })
+    return true
+  }
+  // Rooms of about 15 to 30 m²; upstairs, cut only across the ridge, so each room keeps a stretch of gable or full-height wall.
+  for (let i = 0; i < rooms.length; i++) {
+    const rm = rooms[i]
+    for (;;) {
+      const R = rm.rect, wx = R.x1 - R.x0, wz = R.z1 - R.z0
+      const axes = rm.level === 1 ? (wx >= 5.6 ? ['z'] : []) : area(R) >= 30 ? (wx >= wz ? ['z', 'x'] : ['x', 'z']) : []
+      let done = false
+      for (const axis of axes) {
+        const [a0, a1] = axis === 'z' ? [R.x0, R.x1] : [R.z0, R.z1], mid = (a0 + a1) / 2
+        const qs = []
+        for (let q = a0 + 2.4 + PART / 2; q <= a1 - 2.4 - PART / 2; q += 0.1) qs.push({ q, s: Math.abs(q - mid) + range(0, 0.6) })
+        qs.sort((a, b) => a.s - b.s)
+        if (qs.slice(0, 40).some(({ q }) => cut(rm, axis, q))) { done = true; break }
+      }
+      if (!done) break
+    }
+  }
+
+  // --- what each room is for, and the doorways between them ------------------------
+  const hall = roomAt(0, doorIn.x, doorIn.z)
+  const kitchen = roomAt(0, hearth.cook.x, hearth.cook.z)
+  hall.kind = 'hall'
+  kitchen.kind = kitchen === hall ? 'hall' : 'kitchen'
+  hall.hearth = kitchen === hall
+  kitchen.hearth = true
+  for (const r of rooms) {
+    if (r.kind) continue
+    if (r.level === 1) r.kind = chance(0.8) ? 'bedroom' : 'workroom'
+    else if (r.role === 'outshut') r.kind = chance(0.6) ? 'store' : 'workroom'
+    else if (r.role === 'wing') r.kind = upper ? pick(['parlour', 'workroom', 'parlour', 'bedroom']) : pick(['bedroom', 'bedroom', 'workroom', 'parlour'])
+    else r.kind = upper ? pick(['parlour', 'workroom', 'parlour']) : pick(['bedroom', 'parlour', 'workroom'])
+  }
+  if (!rooms.some((r) => r.kind === 'bedroom')) {
+    const spare = rooms.find((r) => r.level === 1) || rooms.find((r) => r.kind !== 'hall' && r.kind !== 'kitchen')
+    if (spare) spare.kind = 'bedroom'
+  }
+  hearth.room = kitchen.id
+
+  const doorways = []
+  for (const j of junctions) {
+    const b = j.band, alongX = j.side === 'back'
+    doorways.push({ level: 0, y0: 0, y1: DOORWAY.h, a: roomAt(0, j.near.x, j.near.z).id, b: roomAt(0, j.far.x, j.far.z).id, ...(alongX ? rect(j.gap[0], j.gap[1], b.z0, b.z1) : rect(b.x0, b.x1, j.gap[0], j.gap[1])) })
+  }
+  for (const p of partitions) {
+    const L = { axis: p.axis, at: p.at, ix: +(p.axis === 'z'), iz: +(p.axis === 'x') }, c = (p.gap[0] + p.gap[1]) / 2
+    const a = pt(L, c, -0.4), b = pt(L, c, 0.4)
+    doorways.push({ level: p.level, y0: p.y0, y1: p.y0 + DOORWAY.h, a: roomAt(p.level, a.x, a.z).id, b: roomAt(p.level, b.x, b.z).id, ...strip(L, p.gap[0], p.gap[1], -PART / 2, PART / 2) })
+  }
+
+  // --- more windows, so few rooms are lit by candles alone; upstairs the gable rooms first ---
+  for (const rm of rooms) {
+    const { c, edges } = outside(rm.level, rm.rect)
+    if (rm.level === 1) edges.sort((a, b) => (a.axis === 'z' ? 0 : 1) - (b.axis === 'z' ? 0 : 1))
+    let open = 0
+    for (const e of edges) for (let u = e.lo + 0.05; u < e.hi; u += 0.1) if (!inJunction(e, u)) open += 0.1
+    const want = Math.max(1, Math.round(open / 5))
+    const has = (e) => windows.filter((w) => w.level === rm.level && within(grow(rm.rect, 0.05), w.x, w.z) && (!e || onLine(w, e))).length
+    for (const e of edges) {
+      const len = e.hi - e.lo, n = Math.max(1, Math.round(len / 4))
+      for (let i = 0; i < n; i++) {
+        if (has() >= want && !(rm.level === 1 && e.axis === 'z' && has(e) === 0)) break
+        const base = e.lo + (len * (i + 0.5)) / n
+        for (const o of [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2]) {
+          const u = base + o
+          if (!glassAt(rm.level, e, u)) continue
+          const face = pt(e, u, 0.05), roof = levelCeilingAt(room, rm.level, face.x, face.z)
+          const [y0, y1] = rm.level === 1 ? (() => { const y1 = Math.min(U + 1.75, roof - 0.25); return [Math.max(U + 0.45, y1 - 1.1), y1] })() : [0.85, Math.min(2.3, roof - 0.3)]
+          if (addWindow(c.r, e, u, rm.level, y0, y1)) break
+        }
+      }
+    }
+  }
+  for (const w of windows) {
+    w.room = roomAt(w.level, w.x - w.nx * 0.3, w.z - w.nz * 0.3).id
+    mark(w.level, strip({ axis: w.axis, at: w.at, ix: -w.nx, iz: -w.nz }, w.u - w.w / 2 - 0.1, w.u + w.w / 2 + 0.1, 0, 0.7), WIN)
+  }
   // Each room's reachable cell nearest its middle joins the anchors, met within a table's walkway of it, so no furniture walls a room off from the door or the stair.
   for (const level of levels) {
     const seen = flood(walkable(level), anchors[level][0])
@@ -624,8 +658,8 @@ export function rollTownInterior({ seed, index, plan }) {
       for (let t = 0; t < 12; t++) {
         const u = range(e.lo + 0.4, e.hi - 0.4), band = strip(e, u - 0.2, u + 0.2, 0, 0.4)
         if (!clear(rm.level, band, WIN | HUNG | KEEP)) continue
-        const y = rm.floor + 1.75, at = pt(e, u, 0.12)
-        if (levelCeilingAt(room, rm.level, at.x, at.z) < y + 0.5) continue
+        const at = pt(e, u, 0.12), y = Math.min(rm.floor + 1.75, levelCeilingAt(room, rm.level, at.x, at.z) - 0.5)
+        if (y < rm.floor + 1.1) continue
         items.push({ kind: 'sconce', x: at.x, y, z: at.z, yaw: e.yaw, room: rm.id })
         candles.push({ x: at.x, y: y + 0.24, z: at.z, i: 0.9, room: rm.id, level: rm.level })
         mark(rm.level, band, HUNG)
@@ -638,6 +672,8 @@ export function rollTownInterior({ seed, index, plan }) {
     const R = rm.rect
     const r = rect(clamp(x - hx, R.x0 + 0.3, R.x1), clamp(x + hx, R.x0, R.x1 - 0.3), clamp(z - hz, R.z0 + 0.3, R.z1), clamp(z + hz, R.z0, R.z1 - 0.3))
     if (r.x1 - r.x0 < 0.8 || r.z1 - r.z0 < 0.8) return
+    // Two rugs on one floor would lie in one plane and z-fight.
+    if (items.some((o) => o.kind === 'rug' && o.y === rm.floor && Math.abs(o.x - (r.x0 + r.x1) / 2) < o.hx + (r.x1 - r.x0) / 2 && Math.abs(o.z - (r.z0 + r.z1) / 2) < o.hz + (r.z1 - r.z0) / 2)) return
     items.push({ kind: 'rug', x: (r.x0 + r.x1) / 2, y: rm.floor, z: (r.z0 + r.z1) / 2, hx: (r.x1 - r.x0) / 2, hz: (r.z1 - r.z0) / 2, hue: rng(), stripes: 2 + Math.floor(rng() * 4), room: rm.id })
   }
 
@@ -775,6 +811,123 @@ export function rollTownInterior({ seed, index, plan }) {
     return false
   }
 
+  /** A chair or armchair either side of the hearth, turned to the fire, and a log pile beside it. */
+  const fireside = (rm) => {
+    const L = MAIN[hearth.line]
+    for (const s of shuffle([1, -1])) {
+      const p = pt(L, hearth.u + s * (HEARTH.w / 2 + 0.35), 0.3), r = footprint(p.x, p.z, L.yaw, 0.32, 0.2)
+      if (clear(0, grow(r, 0.02), SOLID | KEEP) && tx(0, () => put(rm, { kind: 'logpile', x: p.x, z: p.z, yaw: L.yaw, hx: 0.32, hz: 0.2, top: 0.4, hue: rng() }, r, 0.4))) break
+    }
+    for (const s of [1, -1]) {
+      const arm = chance(0.5), half = arm ? 0.45 : 0.22
+      for (let t = 0; t < 10; t++) {
+        const u = hearth.u + s * (HEARTH.w / 2 + 0.15 + half + range(0, 0.4)), d = half + 0.4 + range(0.1, 0.6)
+        // She stands to sit from the room side: between the chair and the fire is within a body of the hearth.
+        const c = pt(L, u, d), stand = pt(L, u, d + half + 0.5)
+        const f = hearth.fire, n = Math.hypot(f.x - c.x, f.z - c.z), look = [(f.x - c.x) / n, (f.z - c.z) / n]
+        const r = rect(c.x - half, c.x + half, c.z - half, c.z + half)
+        if (!clear(0, r, SOLID | KEEP) || !within(rm.rect, c.x, c.z)) continue
+        const item = arm ? { kind: 'armchair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: half, hz: half, top: 0.45, hue: rng() } : { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.6) ? rng() : null, hue: rng() }
+        if (tx(0, () => { put(rm, item, r, item.top); seat(rm, c.x, c.z, item.top, look, stand) })) break
+      }
+    }
+  }
+  /** Things on a side table's top: a basin and jug at a washstand, else a candlestick and a jug or books. */
+  const dress = (rm, it, wash) => {
+    const y = rm.floor + it.top, at = (s) => ({ x: it.x + s * Math.cos(it.yaw), z: it.z - s * Math.sin(it.yaw) })
+    if (wash) { thing(rm, 'bowl', it.x, y, it.z); const p = at(0.14); thing(rm, 'jug', p.x, y, p.z); return }
+    if (chance(0.5)) { const p = at(-0.1); candle(rm, p.x, y, p.z, 'stick', 0.7) }
+    const p = at(0.1)
+    thing(rm, pick(['jug', 'books', 'bowl', 'mug']), p.x, y, p.z, { n: 2 + Math.floor(rng() * 2) })
+  }
+  const sidetable = (rm, wash = false) => {
+    const got = standing(rm, 'sidetable', 0.25, 0.25, wash ? 0.8 : 0.62, {}, { front: 0.5 })
+    if (got) dress(rm, got.item, wash)
+    return !!got
+  }
+  /** A chair against a wall, facing into the room, sometimes with a side table beside it. */
+  const wallChair = (rm) => {
+    let got = null
+    const ok = tx(rm.level, () => {
+      got = standing(rm, 'chair', 0.22, 0.22, 0.46, { cushion: chance(0.5) ? rng() : null }, { front: 0.6 })
+      if (!got) return false
+      seat(rm, got.c.x, got.c.z, 0.46, [got.c.e.ix, got.c.e.iz], pt(got.c.e, got.c.u, 0.96))
+    })
+    if (ok && chance(0.4)) {
+      const { e, u } = got.c
+      for (const s of shuffle([0.55, -0.55])) {
+        const p = pt(e, u + s, 0.27), r = footprint(p.x, p.z, e.yaw, 0.25, 0.25), it = { kind: 'sidetable', x: p.x, z: p.z, yaw: e.yaw, hx: 0.25, hz: 0.25, top: 0.62, hue: rng() }
+        if (clear(rm.level, strip(e, u + s - 0.25, u + s + 0.25, CELL, 0.52), SOLID | KEEP) && tx(rm.level, () => put(rm, it, r, it.top))) { dress(rm, it, false); break }
+      }
+    }
+    return ok
+  }
+  /** A chair standing free, turned to the room's middle, for a room whose walls are taken or under the eaves. */
+  const looseChair = (rm) => {
+    const R = rm.rect, mx = (R.x0 + R.x1) / 2, mz = (R.z0 + R.z1) / 2
+    for (let t = 0; t < 30; t++) {
+      const x = range(R.x0 + 0.3, R.x1 - 0.3), z = range(R.z0 + 0.3, R.z1 - 0.3), n = Math.hypot(mx - x, mz - z)
+      if (n < 0.5) continue
+      const look = [(mx - x) / n, (mz - z) / n], r = rect(x - 0.22, x + 0.22, z - 0.22, z + 0.22), stand = { x: x + look[0] * 0.6, z: z + look[1] * 0.6 }
+      if (!clear(rm.level, grow(r, 0.05), SOLID | KEEP) || ceilOver(rm, r) < 1.0 || levelCeilingAt(room, rm.level, stand.x, stand.z) - rm.floor < HEAD) continue
+      const item = { kind: 'chair', x, z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }
+      if (tx(rm.level, () => { put(rm, item, r, 0.46); seat(rm, x, z, 0.46, look, stand) })) return true
+    }
+    return false
+  }
+  const wallBench = (rm) => tx(rm.level, () => {
+    const got = standing(rm, 'bench', range(0.5, 0.7), 0.17, 0.46, {}, { front: 0.6 })
+    if (!got) return false
+    seat(rm, got.c.x, got.c.z, 0.46, [got.c.e.ix, got.c.e.iz], pt(got.c.e, got.c.u, 0.9))
+  })
+  /** Pegs on a board along a wall, a cloak or a bag on some. */
+  const pegrail = (rm) => {
+    const hx = range(0.4, 0.6)
+    for (const e of shuffle(edgesOf(rm))) {
+      for (let t = 0; t < 10; t++) {
+        const u = range(e.lo + hx + 0.2, e.hi - hx - 0.2), band = strip(e, u - hx, u + hx, 0, 0.4), at = pt(e, u, 0)
+        const y = rm.floor + 1.55
+        if (!(e.hi - e.lo > 2 * hx + 0.4) || !clear(rm.level, band, WIN | HUNG | KEEP) || levelCeilingAt(room, rm.level, at.x, at.z) < y + 0.4) continue
+        const hang = Array.from({ length: Math.floor((2 * hx) / 0.25) }, () => (chance(0.3) ? 'cloak' : chance(0.25) ? 'bag' : null))
+        items.push({ kind: 'pegrail', x: at.x, y, z: at.z, yaw: e.yaw, hx, hang, hue: rng(), room: rm.id })
+        mark(rm.level, band, HUNG)
+        return true
+      }
+    }
+    return false
+  }
+  const SEATS = ['chair', 'armchair', 'rocker', 'bench']
+  const seats = (rm) => items.filter((it) => it.room === rm.id && SEATS.includes(it.kind)).length
+  const SMALL = ['candle', 'plate', 'mug', 'bowl', 'jug', 'loaf', 'fruitbowl', 'parchment', 'scroll', 'inkpot', 'books', 'rug', 'pot', 'jar', 'crock', 'cabbage', 'board']
+  const EXTRA = {
+    hall: ['sidetable', 'basket', 'pegrail', 'chest', 'bench', 'barrel'],
+    kitchen: ['basket', 'sack', 'barrel', 'crate', 'pegrail', 'stool'],
+    parlour: ['sidetable', 'basket', 'chest', 'pegrail', 'bookcase'],
+    workroom: ['crate', 'chest', 'basket', 'sidetable', 'scrollbin'],
+    store: ['barrel', 'crate', 'sack', 'basket'],
+    bedroom: ['washstand', 'chest', 'basket', 'pegrail', 'press'],
+  }
+  const ADD = {
+    sidetable: (rm) => sidetable(rm),
+    washstand: (rm) => sidetable(rm, true),
+    basket: (rm) => tucked(rm, 'basket', 0.2, 0.3, { load: pick(['wool', 'apples', 'linen']) }),
+    pegrail,
+    chest: (rm) => standing(rm, 'chest', 0.45, 0.26, 0.5, {}, { front: 0.5 }),
+    bench: wallBench,
+    barrel: (rm) => tucked(rm, 'barrel', 0.3, 0.9),
+    sack: (rm) => tucked(rm, 'sack', 0.25, 0.5),
+    crate: (rm) => { const s = range(0.42, 0.55); return tucked(rm, 'crate', s / 2, s, { s, stack: 1 }) },
+    stool: (rm) => loose(rm, 'stool', 0.18, 0.45),
+    bookcase: (rm) => standing(rm, 'bookcase', 0.5, 0.18, 2.0, {}, { front: 0.7 }),
+    scrollbin: (rm) => tucked(rm, 'scrollbin', 0.24, 0.6),
+    press: (rm) => standing(rm, 'press', 0.6, 0.3, 1.95, {}, { front: 0.7 }),
+  }
+  /** More of what the room is for, until it holds about a piece to every 4 m². */
+  const fill = (rm) => {
+    const want = Math.ceil(area(rm.rect) * 0.25)
+    for (let t = 0; t < 10 && items.filter((it) => it.room === rm.id && !SMALL.includes(it.kind)).length < want; t++) ADD[pick(EXTRA[rm.kind])](rm)
+  }
+
   const furnish = {
     hall(rm) {
       const many = plan.kind === 'inn'
@@ -793,6 +946,7 @@ export function rollTownInterior({ seed, index, plan }) {
     kitchen(rm, shared = false) {
       spots.push({ kind: 'cook', x: hearth.fire.x, z: hearth.fire.z, standX: hearth.cook.x, standZ: hearth.cook.z, lookX: -hearth.ix, lookZ: -hearth.iz, level: 0, room: rm.id })
       hold(0, hearth.cook)
+      fireside(rm)
       worktable(rm)
       const barrels = shared ? 1 : 1 + Math.floor(rng() * 3)
       for (let i = 0; i < barrels; i++) tucked(rm, 'barrel', 0.3, 0.9)
@@ -862,7 +1016,20 @@ export function rollTownInterior({ seed, index, plan }) {
     if (!rooms.slice().sort((a, b) => area(b) - area(a)).some((r) => bed(r, 1) || bed(r, 1, true))) throw new Error(`rollTownInterior: house ${index} has no wall for a bed`)
   }
   for (const rm of rooms) if (rm.kind !== 'bedroom' && rm !== hall) furnish[rm.kind](rm)
-  for (const rm of rooms) if (!candles.some((c) => c.room === rm.id) && !sconce(rm)) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} has no light and no wall for a sconce`)
+  // A chair or two in every room, against a wall or loose facing its middle, then the room filled out.
+  for (const rm of rooms) {
+    const want = chance(0.55) ? 2 : 1
+    while (seats(rm) < want && (wallChair(rm) || looseChair(rm)));
+    fill(rm)
+  }
+  // A room whose walls are all taken gets a candlestick on whatever stands in it.
+  const perch = (rm) => {
+    const it = items.find((it) => it.room === rm.id && ['dresser', 'chest', 'press', 'sidetable', 'worktable', 'barrel', 'crate'].includes(it.kind))
+    if (!it) return false
+    candle(rm, it.x, rm.floor + it.top, it.z, 'stick', 0.8)
+    return true
+  }
+  for (const rm of rooms) if (!candles.some((c) => c.room === rm.id) && !sconce(rm) && !perch(rm)) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} has no light, no wall for a sconce and nothing to stand a candle on`)
 
   // Before each window, a place to stand and look out; a pair to talk in the hall.
   for (const w of windows) {

@@ -1,8 +1,8 @@
-// Which villager trusts which player (design/30-leafkin.md, Trust): `[village,
-// villager, player]` entries, the village its seed in base 36, the player the
-// id her saved game carries. Kept in the save, told to the room, and taught to
-// every client in it, so a villager fed by anyone remembers them on every
-// client. The sim never reads it: her client alone decides whom to greet.
+// Which villagers trust the players (design/30-leafkin.md, Trust): `[village,
+// villager, player]` entries, the village its seed in base 36, the player who
+// fed it the id their saved game carries. Kept in the save, told to the room,
+// and taught to every client in it; a villager fed by anyone trusts every
+// player. The sim never reads it: each client alone decides whom to greet.
 
 export const PLAYER_LEN = 12
 // server/src/main.js TRUST_BATCH.
@@ -25,6 +25,8 @@ export class Trust {
   constructor(player = newPlayer()) {
     this.player = player
     this.known = new Map()
+    // `village villager` of every entry, whoever fed it.
+    this.friends = new Set()
     // Entries of hers the room has yet to hear.
     this.unsent = []
   }
@@ -34,6 +36,7 @@ export class Trust {
     const key = t.join(' ')
     if (this.known.has(key)) return false
     this.known.set(key, t)
+    this.friends.add(`${t[0]} ${t[1]}`)
     return true
   }
 
@@ -45,11 +48,12 @@ export class Trust {
     return true
   }
 
-  trusts(seed, id, player = this.player) {
-    return this.known.has(`${village36(seed)} ${id} ${player}`)
+  /** Whether villager `id` of the village seeded `seed` trusts the players: anyone has fed it. */
+  trusts(seed, id) {
+    return this.friends.has(`${village36(seed)} ${id}`)
   }
 
-  /** How many of the village's `count` villagers trust her. */
+  /** How many of the village's `count` villagers trust the players. */
   count(seed, count) {
     let n = 0
     for (let id = 0; id < count; id++) if (this.trusts(seed, id)) n++
@@ -87,8 +91,11 @@ export class Trust {
     this.resend()
   }
 
-  /** A new game: a new player nobody trusts yet. What the room taught of others is kept. */
+  /** A new game: a new player, her old self's trust forgotten. What the room taught of others is kept. */
   clear() {
+    for (const [key, t] of this.known) if (t[2] === this.player) this.known.delete(key)
+    this.friends.clear()
+    for (const t of this.known.values()) this.friends.add(`${t[0]} ${t[1]}`)
     this.player = newPlayer()
     this.unsent.length = 0
   }

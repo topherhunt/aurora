@@ -5,7 +5,8 @@ import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth, hearthKit } from './hearth.js'
 import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { loadBipedGlb } from './snowmen.js'
+import { snap } from '../creature-net.js'
+import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
 import { dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
@@ -59,7 +60,7 @@ export const TOWNSFOLK = {
   talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
   errands: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
   // The striders at the rails: spare mounts past a tether each for the chapter's arrivals, and guests to ride or walk them in; the share of tethers filled at a chapter's start; seconds tied between fidgets, at the knot, and in the hop up or down; the rein a led one keeps; the wander legs of a lead, and no lead within `clear` s of a departure's fetch or `late` s of the chapter's end. A departer fetches its strider `slack` s ahead of its own worst walk and ride to the port at `walk` m/s afoot.
-  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [8, 30], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
+  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [16, 60], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
   // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
   greet: { m: 2, ignore: 0.5, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.12], ['beckon', 0.08], ['idle', 0.8]] },
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
@@ -67,6 +68,8 @@ export const TOWNSFOLK = {
   leap: 0.4,
   // A tied strider that does not trust her startles as a tame wild one does (WILD.shy), and then stands `wait` s and walks back to its rail the way it ran, by the points it dropped every `crumb` m.
   shy: { ...WILD.shy, wait: [3, 6], crumb: 0.5 },
+  // Metres a peer's startled copy is put straight to its owner's anchor rather than eased there.
+  shySnap: 2,
   // A townsperson is `girth` m round to a running strider (folkAt), and eases off a strider's body it stands in over `shove` s.
   girth: 0.3, shove: 0.2,
   // Metres past its radius a town's striders can be: a shied one's run and a body's length.
@@ -78,6 +81,9 @@ export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride
 const LOD_TIERS = LOD_RUNGS
 const STEP_S = 2
 const ROSTER_URL = 'creatures/avatars.json'
+// A tied strider's startle on the wire: `ts:` and its key past `town:`, in one of its phases.
+const SHY_WIRE = 'ts:'
+const SHY_PHASES = ['run', 'wait', 'back', 'turn']
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const pick = (rand, pairs) => {
@@ -981,6 +987,8 @@ export class Townsfolk {
     // Keys of the tied striders she rides (WildStriders.borrow), hidden at their rails meanwhile.
     this.lent = new Set()
     this.treats = 0
+    this.now = 0
+    this.outbox = []
     // Every town's hearth draws this one, built at boot on level ground (hearth.js hearthKit).
     this.kit = hearthKit(bank, hash32(seed, 0x4ea7), () => 0, textures, patch, { decimate: false })
     this.hearthOpts = { field, bank, textures, patch, kit: this.kit }
@@ -1110,6 +1118,7 @@ export class Townsfolk {
   /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders. */
   update(feet, head, seconds, dt, t, lures = []) {
     if (!this.loaded) return
+    this.now = seconds
     this.frame++
     const [wake, sleep] = TOWNSFOLK.live
     this.towns.forEach((town, i) => {
@@ -1169,19 +1178,21 @@ export class Townsfolk {
     m.gone = !m.active || (m.state === 'tied' && this.lent.has(m.key))
   }
 
-  /** A tied strider startled by her (TOWNSFOLK.shy): run off from the rail, stood, and walked back the way it ran, drawn over the sim's pose, which it rejoins. */
+  /** A tied strider startled by her (TOWNSFOLK.shy), or by a peer's player as their anchors have it (apply): run off from the rail, stood, and walked back the way it ran, drawn over the sim's pose, which it rejoins. */
   _shy(m, dt, head, seconds, lures) {
     const Y = TOWNSFOLK.shy, p = m.pose, S = this.striders
-    if (m.shy && (m.state !== 'tied' || m.gone)) m.shy = null
+    if (m.shy && (m.state !== 'tied' || m.gone)) {
+      if (m.shy.by === null) this._oweShy(m, 'rejoin')
+      m.shy = null
+    }
     if (!m.shy) {
       if (m.state !== 'tied' || m.gone || m.treat || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
       if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
-      m.shy = { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), crumbs: [], t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), cue: -1 - ++this.treats }
-      S.say('striderChirp1', p, 1.6, 1)
-      S.say('striderWhine', p, 1.3, 0.8)
+      this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
+      this._oweShy(m, 'run')
     }
-    const s = m.shy, walkV = S.asset.gait.walk * S.k * p.size, runV = Y.pace * S.asset.gait.run * S.k * p.size
-    const next = (phase) => { s.phase = phase; s.t = 0; s.cue = -1 - ++this.treats }
+    const s = m.shy, mine = s.by === null, walkV = S.asset.gait.walk * S.k * p.size, runV = Y.pace * S.asset.gait.run * S.k * p.size
+    const next = (phase) => { s.phase = phase; s.t = 0; s.cue = -1 - ++this.treats; if (mine) this._oweShy(m, phase) }
     const go = (x, z, v) => {
       const dx = x - s.x, dz = z - s.z, d = Math.hypot(dx, dz)
       s.h += clamp(swing(s.h, Math.atan2(-dz, dx)), -6 * dt, 6 * dt)
@@ -1189,13 +1200,19 @@ export class Townsfolk {
       if (d > 1e-3) { s.x += (dx / d) * step; s.z += (dz / d) * step }
       return d - step < 0.05
     }
+    // A peer's copy wears off what its owner's last anchor put it out by.
+    const f = 1 - Math.exp(-dt / (CORRECT_S / 3))
+    s.x += s.ex * f; s.z += s.ez * f; s.h += s.eh * f
+    s.ex -= s.ex * f; s.ez -= s.ez * f; s.eh -= s.eh * f
     s.t += dt
     let clip = 'idle', speed = 0
     if (s.phase === 'run') {
       // dashAim and walled read the body from m.pose: the rail's (the sim's) until it is set to the shied one here.
       const last = s.crumbs.at(-1) ?? { x: p.x, z: p.z }
       p.x = s.x; p.z = s.z; p.y = s.y; p.heading = s.h
-      s.h += clamp(swing(s.h, dashAim(this.walk, m, Math.atan2(-(s.z - head.z), s.x - head.x), runV, dt, this.crowd)), -2 * WILD.turn * dt, 2 * WILD.turn * dt)
+      // Away from her; a peer's copy away from where its owner last had their player.
+      if (mine) s.aim = Math.atan2(-(s.z - head.z), s.x - head.x)
+      s.h += clamp(swing(s.h, dashAim(this.walk, m, s.aim, runV, dt, this.crowd)), -2 * WILD.turn * dt, 2 * WILD.turn * dt)
       const d = runV * dt, x = s.x + Math.cos(s.h) * d, z = s.z - Math.sin(s.h) * d
       if ((s.left -= d) <= 0 || walled(this.walk, m, x, z, s.y, this.crowd)) next('wait')
       else {
@@ -1213,8 +1230,13 @@ export class Townsfolk {
       const left = swing(s.h, p.heading)
       s.h += clamp(left, -2 * dt, 2 * dt)
       clip = 'walk'; speed = 0.4 * walkV
-      if (Math.abs(left) < 0.05) { m.shy = null; m.shyAt = seconds + Y.cool; return }
+      if (Math.abs(left) < 0.05) {
+        if (mine) this._oweShy(m, 'rejoin')
+        this._calm(m, seconds)
+        return
+      }
     }
+    if (mine && seconds >= s.sendAt) this._oweShy(m, s.phase)
     p.x = s.x
     p.z = s.z
     p.y = s.y = this.walk.heightAt(s.x, s.z, s.y)
@@ -1222,6 +1244,86 @@ export class Townsfolk {
     p.clip = clip
     p.speed = speed
     p.cue = s.cue
+  }
+
+  /** `m` startled as `s` has it (_shy's fields), crying out. */
+  _startle(m, s) {
+    m.shy = { ...s, crumbs: [], cue: -1 - ++this.treats, ex: 0, ez: 0, eh: 0, sendAt: 0 }
+    this.striders.say('striderChirp1', m.pose, 1.6, 1)
+    this.striders.say('striderWhine', m.pose, 1.3, 0.8)
+  }
+
+  /** `m` back at its rail, its startle done and not taken up again from a late anchor. */
+  _calm(m, seconds) {
+    m.shyDone = m.shy.since
+    m.shy = null
+    m.shyAt = seconds + TOWNSFOLK.shy.cool
+  }
+
+  // -- the room: a startle's anchors (creature-net.js) -------------------------
+
+  /** Its startle's anchor owed the room now, in `mode` (a phase, or rejoin once it is back at its rail). */
+  _oweShy(m, mode) {
+    const s = m.shy
+    this.outbox.push([SHY_WIRE + m.key.slice('town:'.length), snap(this.now), snap(s.x), snap(s.y), snap(s.z), snap(s.h), -1, mode, null, snap(s.since), snap(s.left), snap(s.wait), snap(s.t), snap(s.aim)])
+    // Alone in the room nothing drains it: only the latest few could matter.
+    if (this.outbox.length > 64) this.outbox.shift()
+    s.sendAt = this.now + ANCHOR_S
+  }
+
+  /**
+   * A startle's anchor heard from the room, `[key, T, x, y, z, heading, -1,
+   * mode, by, since, left, wait, t, aim]`: a tied strider here startled as
+   * that peer's has it, or put out to it, its run away along `aim`; a rejoin
+   * puts it back at its rail. One startled here keeps its own unless the
+   * peer's startled first (`since`).
+   */
+  apply(anchor, now) {
+    const [wire, T, x, y, z, h, , mode, by, since, left, wait, t, aim] = anchor
+    if (by === null) return
+    if (![T, x, y, z, h, since, left, wait, t, aim].every(Number.isFinite)) throw new Error(`Townsfolk: a startle anchor with a missing field: ${JSON.stringify(anchor)}`)
+    if (mode !== 'rejoin' && !SHY_PHASES.includes(mode)) throw new Error(`Townsfolk: no startle phase ${mode}`)
+    if (now - T > ANCHOR_STALE_S) return
+    const m = this._mountKey('town:' + wire.slice(SHY_WIRE.length))
+    if (!m || since <= (m.shyDone ?? -Infinity)) return
+    const s = m.shy
+    if (s && s.by === null && !(since < s.since)) return
+    if (mode === 'rejoin') {
+      if (s) this._calm(m, now)
+      return
+    }
+    const late = Math.max(0, now - T)
+    if (!s || s.since !== since) {
+      if (m.state !== 'tied' || m.gone || m.treat || !m.puppet) return
+      this._startle(m, { phase: mode, x, y, z, h, left, wait, t: t + late, since, by, aim })
+      return
+    }
+    s.by = by
+    s.aim = aim
+    s.left = left
+    if (s.phase !== mode) { s.phase = mode; s.t = t + late; s.cue = -1 - ++this.treats }
+    if (Math.hypot(x - s.x, z - s.z) > TOWNSFOLK.shySnap) {
+      s.x = x; s.y = y; s.z = z; s.h = h
+      s.ex = s.ez = s.eh = 0
+    } else {
+      s.ex = x - s.x; s.ez = z - s.z; s.eh = swing(s.h, h)
+    }
+  }
+
+  /** The startle anchors this client owes the room since the last call, moved into `into`. */
+  pending(into = []) {
+    for (const a of this.outbox) into.push(a)
+    this.outbox.length = 0
+    return into
+  }
+
+  /** The tied strider keyed `key` in a town alive and caught up here, or null. */
+  _mountKey(key) {
+    for (const { life } of this.alive.values()) {
+      if (!life.caught) continue
+      for (const m of life.mounts) if (m.key === key) return m
+    }
+    return null
   }
 
   /** Its pose (the sim's), if it is drawn, eased off a strider's body or trunk it stands in (walk.obstacleAt), but not the strider it rides or tends on a job, nor while it sits or is in the saddle. It is put out across its heading, so one walking into a body goes round it rather than being held at the near edge and popping to the far one. */

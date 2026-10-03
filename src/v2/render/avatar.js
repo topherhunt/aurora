@@ -116,6 +116,7 @@ async function loadRoster() {
 
 const _eye = new THREE.Vector3()
 const _bs = new THREE.Vector3()
+const _wm = new THREE.Matrix4()
 
 /**
  * Every other player in the room as a villager body (avatar-rig.js VrBody over
@@ -311,7 +312,8 @@ export class PeerAvatars {
   handAt(id, side, pos, quat) {
     const peer = this.peers.get(id)
     if (!peer?.body?.placed) return false
-    peer.body.arms[side].W.bone.matrixWorld.decompose(pos, quat, _bs)
+    // The rig hangs under nothing (puppet.js): a bone's matrixWorld is body space, and the group's matrix is what places it.
+    _wm.multiplyMatrices(peer.puppet.group.matrix, peer.body.arms[side].W.bone.matrixWorld).decompose(pos, quat, _bs)
     return true
   }
 

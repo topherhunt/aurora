@@ -567,6 +567,7 @@ export function buildHouse(o) {
   pebble(m, dr, kn, [0.025, 0.02, 0.025], MAT.iron)
 
   // --- awning, always hung crooked
+  const awning0 = m.idx.length
   const aw = rngFor(6)
   const crook = (aw() < 0.5 ? -1 : 1) * lerp(0.06, 0.15, aw())
   if (o.awning === 'leaf') {
@@ -596,6 +597,7 @@ export function buildHouse(o) {
     // The bracket's end ring stays under the board's jittered underside: half-thickness, jitter, ring radius.
     for (const s of [-1, 1]) tube(m, [put(D.F, -0.02, doorH - 0.15 + jit(aw, 0.05), s * (doorW / 2 + 0.12)), put(Fh, d * 0.65, -0.035 - 0.01 - 0.025, s * (doorW / 2 + 0.12))], [0.03, 0.025], MAT.stick, { sides: 5 })
   }
+  const awning1 = m.idx.length
 
   // --- windows: honeycomb glass in a rough frame; only an arch takes a sill
   const windowsOut = []
@@ -847,6 +849,8 @@ export function buildHouse(o) {
   return {
     geometry, glow, decor,
     door: { p: warp(D.F.o), n: D.F.ax, w: doorW, h: doorH, sill, steps: stepsOut, landing },
+    // The awning's run of `geometry.index`, sticks and brackets with it.
+    awning: [awning0, awning1],
     windows: windowsOut.map((w) => ({ ...w, p: warp(w.p) })),
     lights: lights.map((l) => ({ ...l, p: warp(l.p) })),
     trunk: { r: R0, top: yT }, eave: { r: eaves.reduce((s, e) => s + e[0], 0) / 16, y: Math.max(...eaves.map((e) => e[1])) },

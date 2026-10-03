@@ -8,6 +8,10 @@
 // One home with a mushroom -- a forager's gift, one it found, or hers (villagers.js `feast`) -- sits and eats it first, squealing.
 // They walk the ring round the table and the stairs' `climb`, never probed:
 // the roll keeps both clear. Local to this client and stepped by the frame.
+// One that does not trust the players (trust.js), awake and not eating, cowers
+// facing her, whimpering, while she stands within COWER_M; a mushroom in her
+// hand draws it to her round the ring instead, and held over it is taken and
+// trusted as the glade's are (villagers.js `court`).
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -16,10 +20,15 @@ import { hash32 } from '../../sim/score.js'
 import { CARRIERS } from '../hands.js'
 import { CARRY_SPAN } from './leafkin.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { PACE, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt } from './villagers.js'
+import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, WHIMPER_S, gripAt } from './villagers.js'
 
-// The house's own leafkin, beyond its villagers indoors: up to this many.
+// The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
 export const HOMEBODIES = 2
+export const HOMEBODY_ID = 128
+export const homebodyId = (house, i) => HOMEBODY_ID + house * HOMEBODIES + i
+// Her within this of one that does not trust her, it cowers; past COWER_OFF_M it goes back to what it was about.
+export const COWER_M = 2
+const COWER_OFF_M = 2.5
 // The lie clip's hold between its lying back and its sitting up (tools/creatures/anim/clips/human/lie.json), and how far it shuffles up the bed as it lies.
 const LIE_CUT = [1.7, 3.7]
 const LIE_SLIDE = 0.4
@@ -86,14 +95,17 @@ export class Residents {
     this.materials = [this.plain]
     this.rand = mulberry32(hash32(seed, room.index, 0x1d2))
     this.calls = []
+    // Who has taken her mushroom since befriended() last drained them, by trust id.
+    this.won = []
     // Each spot's resident, and the climb's heights: its foot on the floor, each tread's top, the loft.
     this.taken = new Map()
     const treads = room.stairs.map((s) => s.top).reverse()
     this.climbY = room.climb.map((p, i) => (i === 0 ? 0 : i === room.climb.length - 1 ? room.loft.y : treads[i - 1]))
     this.all = []
+    if (who.some((w) => w.id >= HOMEBODY_ID) || homebodyId(room.index, HOMEBODIES - 1) > 255) throw new Error(`Residents: house ${room.index}'s trust ids overrun HOMEBODY_ID or 255`)
     for (const w of who) this._add(w.id, w.size, w.pace, false, w.feast)
     const homebodies = Math.floor(this.rand() * (HOMEBODIES + 1))
-    for (let i = 0; i < homebodies; i++) this._add(`home:${i}`, SIZE_M * (1 + SIZE_VAR * (2 * this.rand() - 1)), between(this.rand, PACE), false)
+    for (let i = 0; i < homebodies; i++) this._add(homebodyId(room.index, i), SIZE_M * (1 + SIZE_VAR * (2 * this.rand() - 1)), between(this.rand, PACE), false)
     // Two at home at once are likelier talking than not.
     if (this.all.length >= 2 && this.rand() < 0.5) this._talk(this.all[0], this.all[1], true)
     for (const r of this.all) if (!r.spot) this._choose(r, true)
@@ -101,7 +113,7 @@ export class Residents {
 
   /** The villagers indoors now, by id: one come in walks in at the door, one gone out walks to it and is gone. */
   sync(inside) {
-    for (const r of this.all) if (typeof r.id === 'number' && !inside.has(r.id) && r.state !== 'leave') this._leave(r)
+    for (const r of this.all) if (r.id < HOMEBODY_ID && !inside.has(r.id) && r.state !== 'leave') this._leave(r)
     for (const [id, c] of inside) if (!this.all.some((r) => r.id === id)) this._add(id, c.size, c.pace, true, c.feast)
   }
 
@@ -117,6 +129,7 @@ export class Residents {
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, feast, carrier: null,
+      calm: 0, voice: 0, panted: false, hx: 0, hz: 0, planX: 0, planZ: 0,
       mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
@@ -170,6 +183,12 @@ export class Residents {
     b.partner = a
     this._goTo(a, pair[0], now)
     this._goTo(b, pair[1], now)
+  }
+
+  /** Off its spot and out of its talk. */
+  _drop(r) {
+    if (r.partner) { r.partner.partner = null; r.partner = null }
+    this._release(r)
   }
 
   _release(r) {
@@ -285,8 +304,7 @@ export class Residents {
       case 'up': break
       default: throw new Error(`Residents: no phase ${r.phase}`)
     }
-    if (r.partner) { r.partner.partner = null; r.partner = null }
-    this._release(r)
+    this._drop(r)
     this._choose(r, false)
   }
 
@@ -299,13 +317,101 @@ export class Residents {
     r.state = 'leave'
   }
 
-  update(dt, view) {
+  /**
+   * Her feet in the world, her held things (hands.js lures) and `trusts(id)`
+   * whether resident `id` trusts the players (trust.js): who cowers from her,
+   * who comes to her mushroom, and who takes it.
+   */
+  _her(dt, feet, lures, trusts) {
+    const g = this.group.position
+    const fx = feet.x - g.x, fy = feet.y - g.y, fz = feet.z - g.z
+    const herLevel = this.room.loft && fy > this.room.loft.y / 2 ? 1 : 0
+    const held = this.hands === null ? [] : lures.filter((l) => l.by === null && l.kind === 'mushroom')
+    for (const r of this.all) {
+      r.calm = Math.max(0, r.calm - dt)
+      r.hx = fx; r.hz = fz
+      const fearing = r.state === 'cower' || r.state === 'court'
+      if (trusts(r.id)) { if (fearing) this._choose(r, false); continue }
+      const lure = r.state === 'court' ? held.find((l) => this._under(r, l)) : undefined
+      if (lure !== undefined) {
+        if (!this.hands.eatLure(lure)) throw new Error('Residents: her mushroom was offered from no hand of hers')
+        held.splice(held.indexOf(lure), 1)
+        this.won.push(r.id)
+        r.feast = true
+        r.calm = CALM_S
+        this._say(r, 'leafkinSqueal')
+        this._choose(r, false)
+        continue
+      }
+      if (r.feast || r.state === 'leave' || r.state === 'gone') continue
+      const d = Math.hypot(r.x - fx, r.y - fy, r.z - fz)
+      const want = held.length > 0
+        ? (d < LURE_M && r.level === 0 && herLevel === 0 ? 'court' : null)
+        : r.calm <= 0 && d < (r.state === 'cower' ? COWER_OFF_M : COWER_M) ? 'cower' : null
+      if (want === r.state) {
+        if (want === 'court' && Math.hypot(r.planX - fx, r.planZ - fz) >= REPLAN_M) this._court(r, false)
+        continue
+      }
+      if (want === null) {
+        if (r.state === 'court') r.calm = CALM_S
+        if (fearing) this._choose(r, false)
+        continue
+      }
+      if (r.state === 'act' && r.phase === 'hold' && !r.feast) { r.hold = 0; r.left = 0; continue }
+      if (!(fearing || r.state === 'walk' || (r.state === 'act' && (r.phase === 'stand' || r.phase === 'busy' || r.phase === 'talk')))) continue
+      this._drop(r)
+      if (want === 'court') this._court(r, true)
+      else { r.state = 'cower'; r.route = []; r.voice = 0; r.panted = true; this._play(r, 'cower', this.durations.cower) }
+    }
+  }
+
+  /** To her round the ring, to stand COURT_STOP_M short of her feet toward the nearest ring point no nearer her than that; a squeal if `fresh`. */
+  _court(r, fresh) {
+    const her = { x: r.hx, z: r.hz }
+    let ring = null, off = Infinity
+    for (const p of this.room.ringPts) {
+      const d = Math.hypot(p.x - her.x, p.z - her.z)
+      if (d >= COURT_STOP_M && d < off) { ring = p; off = d }
+    }
+    if (ring === null) throw new Error(`Residents: house ${this.room.index}'s ring lies within ${COURT_STOP_M} m of her`)
+    const k = COURT_STOP_M / off
+    this._goTo(r, { kind: 'wander', x: her.x + (ring.x - her.x) * k, z: her.z + (ring.z - her.z) * k, lookX: her.x - ring.x, lookZ: her.z - ring.z, level: 0 }, false)
+    r.state = 'court'
+    r.phase = 'go'
+    r.planX = her.x; r.planZ = her.z
+    if (fresh) this._say(r, 'leafkinSqueal')
+  }
+
+  /** Whether `lure` is held over its body or its fist: within OFFER_M across, and between its feet and OFFER_UP of its size (villagers.js _under). */
+  _under(r, lure) {
+    const g = this.group.position
+    const x = lure.x - g.x, y = lure.y - g.y, z = lure.z - g.z
+    if (y < r.y || y > r.y + r.size * OFFER_UP) return false
+    if (Math.hypot(x - r.x, z - r.z) <= OFFER_M) return true
+    return gripAt(r.puppet, _grip) && Math.hypot(x - _grip.x, z - _grip.z) <= OFFER_M
+  }
+
+  /** A call from its chest. */
+  _say(r, sound) {
+    const g = this.group.position
+    this.calls.push({ sound, x: g.x + r.x, y: g.y + r.y + r.size * CHEST, z: g.z + r.z })
+  }
+
+  /** Whom she has fed since the last call, by trust id, drained: each trusts the players now (trust.js). */
+  befriended(into) {
+    for (const id of this.won) into.push(id)
+    this.won.length = 0
+    return into
+  }
+
+  update(dt, view, feet, lures, trusts) {
+    this._her(dt, feet, lures, trusts)
     const u = view.uniforms
     const k = LIGHT.amb * u.uAmb.value + LIGHT.candle * u.uCandle.value * u.uFlicker.value + LIGHT.win * u.uWin.value * (0.15 + 0.85 * u.uDay.value)
     this.light.value.set(LIGHT.tint.r * k, LIGHT.tint.g * k, LIGHT.tint.b * k)
     for (const r of this.all.slice()) {
       this._step(r, dt)
-      if (r.state === 'gone' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
+      if (r.state === 'gone' || r.state === 'cower' || r.state === 'court' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
       r.mutter -= r.phase === 'talk' ? dt * 3 : dt
       if (r.mutter > 0) continue
       const eating = r.feast && r.phase === 'hold'
@@ -319,7 +425,7 @@ export class Residents {
   bodies(into) {
     const g = this.group.position
     for (const r of this.all) {
-      if (r.state !== 'walk' && r.state !== 'leave') continue
+      if (r.state !== 'walk' && r.state !== 'leave' && !(r.state === 'court' && r.route.length > 0)) continue
       Object.assign(r.body, { x: g.x + r.x, y: g.y + r.y, z: g.z + r.z, speed: this.asset.gait.walk * r.k * r.pace })
       into.push(r.body)
     }
@@ -334,7 +440,7 @@ export class Residents {
   }
 
   _step(r, dt) {
-    if (r.state === 'walk' || r.state === 'leave') {
+    if (r.state === 'walk' || r.state === 'leave' || (r.state === 'court' && r.route.length > 0)) {
       const p = r.route[0]
       const dx = p.x - r.x, dz = p.z - r.z, d = Math.hypot(dx, dz)
       const v = this.asset.gait.walk * r.k * r.pace
@@ -343,6 +449,7 @@ export class Residents {
         r.route.shift()
         if (r.route.length === 0) {
           if (r.state === 'leave') { r.puppet.show(-1, FADE_S); r.state = 'gone' }
+          else if (r.state === 'court') { r.phase = 'wait'; r.voice = 0.5; this._play(r, 'idle', Infinity) }
           else { r.heading = this._stand(r, r.spot).heading; this._begin(r, false) }
         }
       } else {
@@ -365,6 +472,24 @@ export class Residents {
       else if (r.phase === 'lie') r.slide = LIE_SLIDE * t
       else if (r.phase === 'rise') r.slide = LIE_SLIDE * (1 - t)
       if (r.left <= 0) this._next(r)
+    } else if (r.state === 'cower' || r.state === 'court') {
+      // Facing her: a cower whimpering and panting by turns, a court beckoning, chattering half the time.
+      const want = Math.atan2(r.hx - r.x, r.hz - r.z)
+      r.heading += Math.atan2(Math.sin(want - r.heading), Math.cos(want - r.heading)) * Math.min(1, TURN_RATE * dt)
+      r.voice -= dt
+      r.left -= dt
+      if (r.state === 'cower') {
+        if (r.voice <= 0) { r.voice = between(this.rand, WHIMPER_S); r.panted = !r.panted; this._say(r, r.panted ? 'panting' : 'leafkinWhimper') }
+        if (r.left <= 0) { const c = this.rand() < 0.25 ? 'recoil' : 'cower'; this._play(r, c, this.durations[c]) }
+      } else {
+        if (r.voice <= 0) {
+          r.voice = between(this.rand, FUSS_S)
+          if (this.rand() < 0.5) this._say(r, `leafkinChatter${1 + Math.floor(this.rand() * CHATTERS)}`)
+          const b = BECKONS[Math.floor(this.rand() * BECKONS.length)]
+          this._play(r, b, this.durations[b])
+        }
+        if (r.left <= 0) this._play(r, 'idle', Infinity)
+      }
     } else if (r.state === 'gone') {
       r.puppet.step(dt)
       if (r.puppet.done) {

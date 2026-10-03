@@ -980,6 +980,18 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(mine.some((p) => p.name === 'footfall') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined), 'a layer given the near bus mutters and steps on it; one not given it stays on air', `${mine.length} near, ${theirs.length} air`)
 }
 {
+  // A snowman's feet beside a strider's, each as main.js herds them, the same distance off: the tread, deeper and louder.
+  const at = (size, z) => ({ x: HEAD.x + 10, y: HEAD.y, z: HEAD.z + z, size, clip: 'walk', cycle: 1, speed: 1 })
+  const snowman = at(2, 0.1), strider = at(2.2, -0.1)
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(36), herds: [{ layer: { bodies: (into) => { into.push(snowman); return into } }, clips: 'human', sound: 'tread', rule: 'thud' }, { layer: { bodies: (into) => { into.push(strider); return into } }, clips: 'bird', sound: 'tread', rule: 'stride' }] })
+  run(amb, 10, {})
+  const of = (z) => engine.plays.filter((p) => p.name === 'tread' && Math.sign(p.at.z - HEAD.z) === Math.sign(z))
+  const thuds = of(1), strides = of(-1)
+  const most = (ps, k) => Math.max(...ps.map((p) => p[k])), least = (ps, k) => Math.min(...ps.map((p) => p[k]))
+  check(thuds.length > 0 && strides.length > 0 && least(thuds, 'gain') > most(strides, 'gain') && most(thuds, 'rate') < least(strides, 'rate'), 'the smallest snowman treads louder and deeper than a strider', `${thuds.length} thuds, ${strides.length} strides`)
+}
+{
   // A villager's door, said on the villagers' layer under its own rule: heard past their voices' reach and not past its own.
   const D = RULES.door
   const said = []

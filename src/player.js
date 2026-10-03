@@ -1006,6 +1006,15 @@ export class Player {
     console.warn('unstick found no walkable cell within 80 m')
   }
 
+  // Raises her headset and hands `d` of her metres over the floor the headset
+  // reports, the rig and so her feet staying where they are (v2/eye-level.js).
+  liftXR(renderer, d) {
+    const base = renderer.xr.getReferenceSpace()
+    if (!base) return false
+    renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform({ x: 0, y: -d, z: 0 })))
+    return true
+  }
+
   // Zero the accumulated roomscale offset without moving her in the world:
   // shift the XR reference space so the head becomes its origin, then shift the
   // rig by the same amount so her view does not jump.

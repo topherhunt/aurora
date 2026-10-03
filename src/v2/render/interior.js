@@ -879,6 +879,7 @@ function buildFlames(candles, ox, oy, oz) {
     group,
     update(t, f, eye) {
       haloMat.size = 0.35 * (0.85 + 0.3 * (f - 0.9) * 5)
+      halos.visible = TriFlames.shown
       flames.update(t, [f, f, f], eye)
     },
     dispose() { flames.dispose(); glowMap.dispose() },

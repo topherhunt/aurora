@@ -54,6 +54,16 @@ every('a table with seats, and a hearth to cook at', (r) => r.items.some((it) =>
   const work = houses.filter((r) => r.rooms.some((rm) => rm.kind === 'workroom'))
   check(work.length > 0 && work.every((r) => r.items.some((it) => ['parchment', 'scroll', 'bookcase', 'books', 'desk'].includes(it.kind))), `a workroom has its parchment, scrolls or books (${work.length} houses have one)`)
 }
+every('every upstairs gable room has a window', (r) => r.rooms.every((rm) => rm.level === 0 || (Math.abs(rm.rect.x0 - r.M.x0) > 0.01 && Math.abs(rm.rect.x1 - r.M.x1) > 0.01) || r.windows.some((w) => w.room === rm.id)))
+{
+  const rooms = houses.flatMap((r) => r.rooms.map((rm) => ({ r, rm })))
+  const dark = rooms.filter(({ r, rm }) => !r.windows.some((w) => w.room === rm.id)).length
+  const seatless = rooms.filter(({ r, rm }) => !r.items.some((it) => it.room === rm.id && ['chair', 'armchair', 'rocker', 'bench'].includes(it.kind))).length
+  const area = rooms.reduce((n, { rm }) => n + (rm.rect.x1 - rm.rect.x0) * (rm.rect.z1 - rm.rect.z0), 0) / rooms.length
+  check(dark <= rooms.length * 0.02, `hardly a room is windowless (${dark} of ${rooms.length})`)
+  check(seatless <= rooms.length * 0.05, `nearly every room has a seat (${seatless} of ${rooms.length} have none)`)
+  check(area < 35, `rooms are partitioned small (mean ${area.toFixed(1)} m²)`)
+}
 
 // Her walk over the stone, by player.js's step rules at world scale, flooded over a CELL grid from inside the door.
 const CELL = 0.1

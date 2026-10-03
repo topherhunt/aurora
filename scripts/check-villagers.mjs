@@ -33,17 +33,19 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, dijkstra, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, BECKONS, COURT_STOP_M, dijkstra, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { keyOf as frogKey } from '../src/v2/render/frogs.js'
-import { WALK, WalkSurface } from '../src/v2/walk.js'
+import { WalkSurface } from '../src/v2/walk.js'
 import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
-import { CARRY_MAX } from '../src/v2/hands.js'
+import { CARRIERS, CARRY_MAX } from '../src/v2/hands.js'
+import { rollInterior } from '../src/v2/rooms/interior.js'
+import { Residents } from '../src/v2/render/residents.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
-import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
+import { HER_SCALE, buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 import { Trust } from '../src/v2/trust.js'
 
 let failures = 0
@@ -63,7 +65,10 @@ const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, reli
 const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: buildTextureArray(), glowMap: new THREE.Texture(), patch: (m) => m })
 const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
 const lamps = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps: room.lamps, seed: 1, patch: (m) => m })
-const walk = new WalkSurface(field, shell, { trunkAt: () => null })
+// At her size in a village, as main.js builds the walk the villagers stand on.
+const walk = new WalkSurface(field, shell, { trunkAt: () => null }, { scale: HER_SCALE })
+// The most a villager stands over the field: a stool's sitter is set down by its seat, and the landing is sunk under the road.
+const PERCH_M = 0.5
 walk.addStone(roomProps)
 walk.addStone(lamps)
 // The seats: the hearth's stools about the clearing's centre (its geometry alone, the way main.js reads Hearth.stools) and the room's scattered ones.
@@ -272,7 +277,7 @@ console.log('\na day with her far off')
       // Held up: no headway with someone within a metre (alone, it is only turning).
       if (c.state === 'walk' && v.all.some((o) => o !== c && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < 1)) blocked = Math.max(blocked, c.stall)
       if (v.seat(c.x, c.z) === null) unseat++
-      if (c.y - field.heightAt(c.x, c.z) > WALK.reach) vaulted++
+      if (c.y - field.heightAt(c.x, c.z) > PERCH_M) vaulted++
       if (c.state === 'walk' && (c.clip !== (c.runner || v.homing || c.trip !== '' || c.then === 'take' ? 'run' : 'walk') || Math.abs(c.speed - v.asset.gait[c.clip] * c.k * c.pace) > 1e-9)) badClip++
       if ((c.state === 'stand' || c.state === 'gaze') && (c.clip !== 'idle' || c.speed !== 0)) badClip++
       if (c.state === 'talk' && (!CLIPS.includes(c.clip) || c.speed !== 0)) badClip++
@@ -325,7 +330,7 @@ console.log('\na day with her far off')
   check(sitClip === 0, 'a sitter idles while it turns, sits on the sit clip\'s first cut, holds on idle-sit and rises on the clip from its second cut, still', `${sitClip}`)
   check(v.seats.every((s) => s.by === null || (!s.by.hidden && (s.by.state === 'sit' || s.by.state === 'walk'))), 'at the day\'s end every seat is free or held by one on it or on its way')
   check(unseat === 0, 'every step is on dry ground')
-  check(vaulted === 0, `nobody stands over ${WALK.reach} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
+  check(vaulted === 0, `nobody stands over ${PERCH_M} m above the ground: under a house's awning, not on it`, `${vaulted} ticks up`)
   check(entries >= 2 && exits + out0 + 1 >= v.all.length, 'houses are entered and left', `${entries} entries, ${exits} exits, ${out0 + 1} out at the first frame`)
   check(stoop === 0, 'each goes in and comes out at the top of its steps, not at their foot', `${stoop} at the foot`)
   check(badClip === 0, 'a walker walks at its pace, a runner, one homing or one foraging runs, a stander idles, a talker gestures or idles, none of them moving')
@@ -746,9 +751,13 @@ console.log('\ntrust')
   peer.merge([[...her.known.values()][0]])
   const back = new Trust()
   back.load(JSON.parse(JSON.stringify(her.save())))
-  check(peer.trusts(7, 3, her.player) && !peer.trusts(7, 3) && back.player === her.player && back.count(9, 70) === 70 && back.unsent.length === 71, 'another client learns whom it trusts, and a saved game brings her trust back, all of it owed the room again')
+  check(peer.trusts(7, 3) && !peer.trusts(7, 4) && back.player === her.player && back.count(9, 70) === 70 && back.unsent.length === 71, 'a villager she fed trusts another client\'s player too, and a saved game brings her trust back, all of it owed the room again')
+  const other = new Trust()
+  other.grant(7, 4)
+  back.merge([...other.known.values()])
+  const was = back.player
   back.clear()
-  check(!back.trusts(7, 3) && back.trusts(7, 3, her.player), 'a new game is a new player nobody trusts, the room\'s trust kept')
+  check(back.player !== was && !back.trusts(7, 3) && back.count(9, 70) === 0 && back.trusts(7, 4), 'a new game is a new player, what her old self fed forgotten, what the room fed still trusting')
   let threw = false
   try { back.merge([['k3x', 256, 'abc123def456']]) } catch { threw = true }
   check(threw, 'a malformed entry is refused')
@@ -874,6 +883,55 @@ console.log('\nthe room')
   let threw = false
   try { B.v.apply([`${B.v.wire}zz:1`, t, 0, 0, 0, 0, 0, 'startle', 'b', 99]) } catch { threw = true }
   check(threw, 'a startle naming a villager this village has not is refused')
+}
+
+console.log('\nat home')
+{
+  const room = rollInterior({ seed: spec.seed, index: 0, height: 5 })
+  const sitY = make().sitY
+  const view = { uniforms: Object.fromEntries(['uAmb', 'uCandle', 'uFlicker', 'uWin', 'uDay'].map((k) => [k, { value: 1 }])) }
+  const at = (trusts) => {
+    const hands = fakeHands()
+    // No carrier free, so a feast never asks the stand-in for the fist it lacks.
+    hands.carriers = CARRIERS
+    const res = new Residents(new THREE.Scene(), room, { asset: makeAsset(), sitY, who: [{ id: 3, size: 1, pace: 1, feast: false }], seed: spec.seed, ox: 0, oy: 0, oz: 0, hands, mushrooms: { record: () => ({ kind: 'mushroom' }) } })
+    return { res, hands, trusts, feet: { x: 400, y: 0, z: 400 }, lures: [], heard: [], clips: new Set() }
+  }
+  const run = (h, s) => {
+    for (let i = 0; i < s * 60; i++) {
+      h.res.update(1 / 60, view, h.feet, h.lures, h.trusts)
+      for (const v of h.res.voices([])) h.heard.push(v.sound)
+      for (const r of h.res.all) h.clips.add(r.clip)
+    }
+  }
+  const wary = at(() => false), fond = at(() => true)
+  for (const h of [wary, fond]) run(h, 1)
+  const r = wary.res.all.find((o) => o.id === 3)
+  const near = (h) => { const o = h.res.all.find((q) => q.id === 3); h.feet = { x: o.x + 1.2, y: o.y, z: o.z } }
+  near(wary); near(fond)
+  wary.heard.length = 0
+  for (const h of [wary, fond]) run(h, 8)
+  const facing = Math.cos(Math.atan2(wary.feet.x - r.x, wary.feet.z - r.z) - r.heading)
+  check(r.state === 'cower' && wary.clips.has('cower') && facing > 0.9 && wary.heard.includes('leafkinWhimper') && wary.heard.includes('panting') && wary.heard.every((s) => SOUNDS[s] !== undefined), 'one that does not trust her, her within COWER_M, cowers facing her, whimpering and panting by turns', `${r.state}, facing ${facing.toFixed(2)}; ${wary.heard.join(' ')}`)
+  check(fond.res.all.every((o) => o.state !== 'cower'), 'one that trusts the players goes on about its home beside her')
+  wary.feet = { x: 400, y: 0, z: 400 }
+  run(wary, 1)
+  check(r.state !== 'cower', 'her gone past COWER_OFF_M, it goes back to its home', r.state)
+
+  // A mushroom in her hand, her on the ring's far side from it.
+  const g = room.ringPts.reduce((a, p) => (Math.hypot(p.x - r.x, p.z - r.z) > Math.hypot(a.x - r.x, a.z - r.z) ? p : a))
+  wary.feet = { x: g.x, y: 0, z: g.z }
+  const lure = { kind: 'mushroom', by: null, x: g.x, y: 1, z: g.z }
+  wary.lures = [lure]
+  wary.hands.held = [lure]
+  wary.heard.length = 0
+  wary.clips.clear()
+  run(wary, 15)
+  const gap = Math.hypot(r.x - g.x, r.z - g.z)
+  check(r.state === 'court' && r.phase === 'wait' && Math.abs(gap - COURT_STOP_M) < 0.05 && wary.heard[0] === 'leafkinSqueal' && [...wary.clips].some((c) => BECKONS.includes(c)), 'a mushroom in her hand draws it round the ring with a squeal, to stand beckoning COURT_STOP_M short of her', `${r.state} ${r.phase}, ${gap.toFixed(2)} m; ${wary.heard.slice(0, 3).join(' ')}`)
+  Object.assign(lure, { x: r.x, y: r.y + r.size * 0.5, z: r.z })
+  run(wary, 1 / 60)
+  check(wary.hands.eaten[0] === lure && wary.res.befriended([]).join() === '3' && wary.res.befriended([]).length === 0 && r.feast && r.state === 'walk', 'held over it, her mushroom is taken to eat, its taker named once by befriended')
 }
 
 console.log(failures === 0 ? '\nall ok' : `\n${failures} failing`)

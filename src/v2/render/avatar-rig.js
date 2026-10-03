@@ -415,9 +415,10 @@ export class VrBody {
     if (facingTravel || Math.abs(twist) > YAW_SLACK) this.turning = true
     else if (Math.abs(twist) < YAW_SETTLE) this.turning = false
     if (this.turning) this.yaw = wrap(this.yaw + twist * (1 - Math.exp(-dt / TURN_TAU_S)))
-    // Under its head in the air, else on the ground the sender stands on, or without one the ground it walks over on a
-    // trip and the ground it stands upright on off one, read from where it last stood so stone over its head is not ground.
-    const stood = told ? foot : this.walk.heightAt(this.gliding ? this.x : standX, this.gliding ? this.z : standZ, this.y)
+    // Under its head in the air; on a trip the ground it walks over, since told feet are already at the far end and a
+    // teleport down a hill would sink it into the slope for the whole walk; else the ground the sender stands on, or
+    // without one the ground it stands upright on. Read from where it last stood so stone over its head is not ground.
+    const stood = this.gliding ? this.walk.heightAt(this.x, this.z, this.y) : told ? foot : this.walk.heightAt(standX, standZ, this.y)
     this.y = this.aloft ? hy - eye : stood
 
     // The head and arms hold their targets while the body is near enough to reach them.

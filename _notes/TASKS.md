@@ -26,32 +26,38 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- [ ] Working on these, to reivew:
+  - [ ] Torches don't look good: try the same "core flame triangles" as what candles use, with only occasional flickers upward?
+  - [ ] When another player is running, don't despawn whatever they're holding in their hand (including a torch).
+  - [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
+  - [ ] When 2 players are sitting on striders near each other, each player sees their own strider feather-ruffling near constantly while the other sits in a calm idle animation.
+  - [ ] When riding a strider, in VR teleport mode, the strider should walk or run to its new location rather than just blink there.
+  - [ ] When 2 players are in VR and teleporting on-foot down a mountain, player A will often see player B "sink into" the hillside and then run to their target location. As if person A's client is averse to keeping player B "walking as ground level".
+  - [ ] Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
+  - [ ] Fix bug: if you load game in a bed, your head position is displaced.
+  - [ ] Fix bug: Leafkin jump up the walls of their houses
+  - [ ] Fix bug: Claire got an error about "spiders" and "leg position" when she got into a villager bed and tried to fall asleep there (or maybe when she tried to get out of the bed).
+  - [ ] Fix bug: some leafkin houses have too low awnings meaning you can't get access to the door. Lower capsule size maybe, or tighten awning boundary collision checks, or check doorway awning heights?
+  - [ ] Leafkin in houses, if they don't trust you yet, should cower and whimper if you come within 2m, unless you're holding a mushroom, in which case they should act the same way leafkin do outside of houses in their glade.
+  - [ ] Leafkin trust should be for "any player", not player-specific. It's more fun that way, and less tedium: you and a friend can coordinate to go around and win the trust of a whole village all at once.
+  - [ ] Falling a long way with a Strider is always possible, but might kill you both. Damage height limit should be double what it is when on foot. Currently any amount of doable teleport-down distance will cause no damage, whereas extreme drops (say 30m?+) are red / inaccessible. That should never be inaccessible. Maybe do this by setting a max "teleport-lob descent distance" of 3m or 4m or whatever the limit is, and if you'd actually fall by more than that (meaning it would cause damage) the line becomes orange and the circle *disappears* signalling "we don't know where you'll land". And if you make the jump anyway, you teleport into the mid-air at that position & altitude, and animate falling until you hit your landing and take on however much damage.
+  - [ ] Snowmen should have heavy thudding footsteps, similar to the Striders but a bit deeper and louder.
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
   - [ ] Too many skeletal meshes? Bake everything down to vertex shader animations and use InstancedMeshes? (this also gives us color tinting for free)
   - [ ] What needs simplifying? Fire? Grass? ...
-  - [ ] 
-- [ ] Torches don't look good: try the same "core flame triangles" as what candles use, with only occasional flickers upward?
-- [ ] When another player is running, don't despawn whatever they're holding in their hand (including a torch).
-- [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
-- [ ] When 2 players are sitting on striders near each other, each player sees their own strider feather-ruffling near constantly while the other sits in a calm idle animation.
-- [ ] When riding a strider, in VR teleport mode, the strider should walk or run to its new location rather than just blink there.
-- [ ] When 2 players are in VR and teleporting on-foot down a mountain, player A will often see player B "sink into" the hillside and then run to their target location. As if person A's client is averse to keeping player B "walking as ground level".
-- [ ] Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
-- [ ] Fix bug: if you load game in a bed, your head position is displaced.
-- [ ] Fix bug: Leafkin jump up the walls of their houses
-- [ ] Fix bug: Claire got an error about "spiders" and "leg position" when she got into a villager bed and tried to fall asleep there (or maybe when she tried to get out of the bed).
-- [ ] Fix bug: some leafkin houses have too low awnings meaning you can't get access to the door. Lower capsule size maybe, or tighten awning boundary collision checks, or check doorway awning heights?
-- [ ] Leafkin in houses who don't trust you should cower and whimper if you come within 2m, unless you're holding a mushroom, in which case they should act the same way leafkin do outside of houses in their glade
-- [ ] Falling a long way with a Strider is always possible, but might kill you both.
+- [ ] 
 - [ ] 
 - [ ] Human villages
-  - [ ] Buildings: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc.
+  - [ ] Human village, building exteriors: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc. Carefully monitor tri budget.
   - [ ] Farmland. Crops, livestock.
-  - [ ] Stables w striders. You can "borrow" a strider to get around the countryside faster.
+  - [ ] Stables w striders.
   - [ ] Walls & guardposts ringing the town
   - [ ] Well near the center. Yes you can drop down it, but it will nearly kill you, and there's no way to climb back out, instead you need to wander through the sewers.
   - [ ] Human NPC chatter audio samples.
-  - [ ] Door opening audio when NPCs enter or exit a home. Also, they should need to walk up to the door itself, rather than just touch the outer hull of the awning.
+  - [ ] Door opening audio when NPCs or players enter or exit a home. Also, they should need to walk up to the door itself, rather than just touch the outer hull of the awning.
+  - [ ] Human villages usually have a blacksmith. The blacksmith will trade you a sword for certain sufficiently valuable items and/or for doing certain favors/quests for them.
+  - [ ] Human villages. If you do a favor for the potionmaker, he'll thank you by giving you a flare gun. Flare guns shoot out permanent flares which hover and shimmer in the air forever -- but you only have 10 charges. If you run out, you'll need to do another potionmaker another favor. and other human NPCs have similar such quest lines.
+  - [ ] another human villager quest is that there's a person who says that they've always dreamed of having a pet deer. And if you figure out a way to lead a wild deer into their fenced yard and close the gate, then they will be over the moon about it and will give you something cool as a reward. Same with pet foxes and pet rabbits and pet frogs (maybe multiple in the latter case). Deer and rabbits can be led by holding a carrot. Foxes can be led by holding a chicken egg. (Oh yeah!! Villages are full of chickens!) Frogs and fish can be led by holding a butterfly or a spider. Again, this sort of information can be gleaned by talking to human NPCs who bring it up in a natural way, like mentioning that they did a certain thing, but sometimes it can be hard to distinguish between truth and tall tales.
   - [ ] NPC behavior
   - [ ] Redo the netplay-sync system to be lighter-weight
     - Currently each NPC has pseudorandom deterministic behavior based on starting each "chapter" at a specific time at a specific place (eg in their home). When you get within placement distance, the CPU needs to simulate everything each NPC has done since they started the "chapter" up to this moment, so both human players will see the NPC doing the same thing at the same moment. That's
@@ -86,12 +92,10 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Use Eleven Labs for better sound effects.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
-- [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
-- [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
-- [ ] Human villages usually have a blacksmith. The blacksmith will trade you a sword for certain sufficiently valuable items and/or for doing certain favors/quests for them.
-- [ ] Human villages. If you do a favor for the potionmaker, he'll thank you by giving you a flare gun. Flare guns shoot out permanent flares which hover and shimmer in the air forever -- but you only have 10 charges. If you run out, you'll need to do another potionmaker another favor. and other human NPCs have similar such quest lines.
-- [ ] another human villager quest is that there's a person who says that they've always dreamed of having a pet deer. And if you figure out a way to lead a wild deer into their fenced yard and close the gate, then they will be over the moon about it and will give you something cool as a reward. Same with pet foxes and pet rabbits and pet frogs (maybe multiple in the latter case). Deer and rabbits can be led by holding a carrot. Foxes can be led by holding a chicken egg. (Oh yeah!! Villages are full of chickens!) Frogs and fish can be led by holding a butterfly or a spider. Again, this sort of information can be gleaned by talking to human NPCs who bring it up in a natural way, like mentioning that they did a certain thing, but sometimes it can be hard to distinguish between truth and tall tales.
-- \[ \]
+- [ ] Snowpeak quest:
+  - [ ] the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
+  - [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
+- [ ] 
 - [ ] Adjust the terrain to be more jagged:
   - Peaks need more jaggedness.
   - sheer cliffs: lips at tops & bottoms of many cliffs, rather than rounding (ie steep angles tend steeper)
@@ -99,10 +103,6 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Rivers:
   - [x] Tributaries that fold in, should never be fully coplanar.
   - Keep the height even until it risks breaking above the landscape level, then drop down in an abrupt cascade. Have foam spraying up (white camera-rotated circles, dithering to fade out slowly).
-- [ ] Creatures' states should sync up between different players in the same room. How to do this, performantly?
-  - creature behavior is random but deterministic if given the same inputs
-  - any interaction events caused by one player are broadcast to the other, so the creature state can be replayed based on that....?
-- 
 - [ ] Skeleton creatures roaming around at night. During the day they're just bone piles.
 - [ ] Procedural villages. A couple big buildings in the center, surrounded by progressively smaller and humbler buildings as you go outward. A market square with stalls of various goods for sale. Various trade workshops with realistic props and people doing their work there. NPCs walk around town doing their business, walking into and out of buildings and talking to each other.
 - \[ \]

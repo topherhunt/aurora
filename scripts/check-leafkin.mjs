@@ -936,6 +936,33 @@ console.log('\nthe real ground')
   check(apart === 0 && path > 30, 'two clients grown about different spots step the site\'s leafkin the same, frame by frame, a minute of its roam after the join', `${apart} of ${frames} apart, ${fmt(path)} m run, ${ca.eaten.length / 2} caps gone`)
   check(joinMs < 1000, 'a join replays 400 s over the real ground in well under a second of frames', `400 s stepped in ${steppedMs.toFixed(0)} ms, replayed cold in ${joinFrames} frames and ${joinMs.toFixed(0)} ms`)
   A.dispose(); B.dispose()
+
+  // Startled out in the real wood, it runs home: never running in place more than a quarter second (a step the walk refuses, repeated), as it did skirting a trunk's corner.
+  const flights = []
+  for (const at of [30, 127, 224, 321]) {
+    const w = make2(w0, g)
+    let ft = meet(w, feet, s0 + at)
+    const c = w.byKey.get(site.key)
+    if (c.state !== 'roam' && c.state !== 'gather') { w.dispose(); continue }
+    let her = feet
+    for (let i = 0; i < 100 && c.state !== 'startle'; i++) {
+      her = { x: c.x + 1, y: field.heightAndSlopeAt(c.x + 1, c.z).h, z: c.z }
+      w.update(her, head(her), (ft += TICK_S), TICK_S)
+    }
+    her = { x: c.x + 15, y: field.heightAndSlopeAt(c.x + 15, c.z).h, z: c.z }
+    const from = Math.hypot(c.x - site.x, c.z - site.z)
+    let ticks = 0, still = 0, longest = 0
+    while (c.state !== 'inside' && ticks < 90 * TICK_HZ) {
+      const x = c.x, z = c.z
+      w.update(her, head(her), (ft += TICK_S), TICK_S)
+      ticks++
+      still = (c.state === 'flee' || c.state === 'home') && c.speed > 0 && x === c.x && z === c.z ? still + 1 : 0
+      longest = Math.max(longest, still)
+    }
+    flights.push({ from, home: c.state === 'inside', s: ticks / TICK_HZ, longest })
+    w.dispose()
+  }
+  check(flights.length >= 3 && flights.every((f) => f.home && f.longest <= 5), 'startled in the real wood, it runs home without running in place', flights.map((f) => `${fmt(f.from)} m: ${f.home ? `home in ${fmt(f.s)} s` : 'NOT HOME'}, longest still ${f.longest} ticks`).join('; '))
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall leafkin checks passed')
