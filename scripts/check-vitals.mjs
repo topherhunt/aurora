@@ -7,10 +7,10 @@
 import * as THREE from 'three'
 
 import { Player, LOCOMOTION } from '../src/player.js'
-import { WalkSurface } from '../src/v2/walk.js'
-import { rollInterior } from '../src/v2/rooms/interior.js'
+import { WALK, WalkSurface } from '../src/v2/walk.js'
+import { InteriorStone, flatField, rollInterior } from '../src/v2/rooms/interior.js'
 import { celestial, CLOCK } from '../src/clock.js'
-import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, fallDamage, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
+import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -145,6 +145,30 @@ console.log('the bed')
   const t = rayHitsBed(bed, eye, toward)
   check(t !== null && t < BED_REACH_M * scale, 'a click from its foot at the bed lands on it, in reach', `at ${t}`)
   check(rayHitsBed(bed, eye, { x: -toward.x, y: toward.y, z: -toward.z }) === null, 'a click away from it misses')
+
+  const margin = WALK.radius * scale + 0.05
+  check(feetOnBed(bed, at(0, 0.04), 0), 'feet on its mattress are on it')
+  check(!feetOnBed(bed, at(0, -1.5), margin), 'feet on a floor well under it are not')
+  // Walked at from beside it by the same Player.update the headset runs, on the house's own stone.
+  const walk = new WalkSurface(flatField(0), new InteriorStone(room, 0, 0, 0), trees, { scale })
+  const rig = new THREE.Group()
+  const camera = new THREE.PerspectiveCamera()
+  camera.position.y = LOCOMOTION.eyeHeight
+  rig.add(camera)
+  rig.scale.setScalar(scale)
+  const p = new Player(rig, camera, walk, { scale })
+  const by = besideBed(spot, walk)
+  p.spawnAt(by.x - by.fx, by.z - by.fz, spot.top - 0.2)
+  check(!feetOnBed(bed, rig.position, margin), 'standing back from it, she is not on it', `${rig.position.x.toFixed(2)}, ${rig.position.z.toFixed(2)}`)
+  camera.rotation.y = Math.atan2(-by.fx, -by.fz)
+  rig.updateMatrixWorld(true)
+  let reached = false
+  for (let f = 0; f < Math.round(3 / DT) && !reached; f++) {
+    p.update(DT, INPUT)
+    rig.updateMatrixWorld(true)
+    reached = feetOnBed(bed, rig.position, margin)
+  }
+  check(reached, 'walking at it puts her feet on it', `${rig.position.x.toFixed(2)}, ${rig.position.y.toFixed(2)}, ${rig.position.z.toFixed(2)}`)
 }
 
 console.log('sleep')

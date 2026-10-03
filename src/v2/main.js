@@ -115,7 +115,7 @@ import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
-import { BED_REACH_M, Health, MAX_HP, Sleep, besideBed, fallDamage, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
+import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 
 // First, before anything below can warn: a copy of every warning and error goes
@@ -724,8 +724,8 @@ function probeVantage(head, out) {
 let questPanelGroup = null
 // The pointer: one line and one dot, on ONE hand -- the hand whose button was
 // pressed most recently, so the B or Y that opened the menu, then whichever
-// trigger is pulled -- and only while the menu is open. Closed, the pointer
-// and the controller models go away and she sees her hands instead.
+// trigger is pulled -- and only while the menu is open. She sees her own hands
+// either way, never the controller models.
 let questPointerHand = null
 let questPointer = null
 // Her own hand under each grip: the shipped hand mesh (avatar.js), loaded before the panel is built.
@@ -934,8 +934,10 @@ function newGame() {
 const health = new Health()
 const sleep = new Sleep()
 let vitalsHud = null
-// On a desktop, the bed a click laid her in and the standing pose to give back; null when she is not in one.
-let deskBed = null
+// The bed she was laid in (by a click, or by walking or teleporting onto it), the standing pose to give back, whether to stand her `beside` the bed instead, and `upAt` (ms) once she has woken, when she stands. Null when she is not laid in one.
+let laid = null
+// Whether her feet were on a bed last frame: stepping onto one lays her in it, standing up by it does not.
+let feetWereOnBed = false
 // Which of the house's beds (worldBeds' `i`) she last fell asleep in: the save stands her beside it.
 let sleptIn = null
 // A key, click or button this frame, taken by sleep rather than by the world.
@@ -948,8 +950,8 @@ const vitalsHead = new THREE.Vector3()
 const vitalsFwd = new THREE.Vector3()
 const deathButtons = document.createElement('div')
 
-/** Whether sleep or death has her, and the world's controls stand down: lying is her own body in the headset, and only a click's lie-down holds a desktop. */
-const vitalsHold = () => health.dead || deskBed !== null || sleep.state === 'closing' || sleep.state === 'asleep'
+/** Whether sleep or death has her, and the world's controls stand down: laid in a bed, or lying there in her own body in the headset once the lids start closing. */
+const vitalsHold = () => health.dead || laid !== null || sleep.state === 'closing' || sleep.state === 'asleep'
 
 const roomBeds = (room) => room.spots.filter((b) => b.kind === 'bed')
 
@@ -966,22 +968,60 @@ function worldBeds() {
   })
 }
 
-/** A desktop click's lie-down: her head over the pillow, looking up past her feet. */
-function lieDown(bed) {
-  deskBed = { bed: bed.i, pos: rig.position.clone(), quat: rig.quaternion.clone(), camY: camera.position.y, camRot: camera.rotation.clone() }
+const layFrom = new THREE.Matrix4()
+const layTo = new THREE.Matrix4()
+const layTurn = new THREE.Quaternion()
+const layAxis = [new THREE.Vector3(), new THREE.Vector3(0, 1, 0), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]
+
+/**
+ * Lays her in `bed`, her head over the pillow. On a desktop the camera looks up
+ * past her feet. In the headset the rig turns about her head so the way she
+ * was looking is straight up and the top of her view is toward the pillow; her
+ * real head still moves the view from there. `beside`: she gets up beside the
+ * bed rather than back where she was.
+ */
+function lieDown(bed, beside) {
+  laid = { bed: bed.i, beside, upAt: null, pos: rig.position.clone(), quat: rig.quaternion.clone(), camY: camera.position.y, camRot: camera.rotation.clone() }
   const k = bed.len / 2 - 0.25
-  rig.position.set(bed.x + k * Math.sin(bed.yaw), bed.top, bed.z + k * Math.cos(bed.yaw))
-  rig.rotation.set(0, 0, 0)
-  camera.position.y = 0.2 / herScale()
-  camera.rotation.set(Math.PI / 2.2, bed.yaw, 0)
+  const px = bed.x + k * Math.sin(bed.yaw), pz = bed.z + k * Math.cos(bed.yaw)
+  if (!renderer.xr.isPresenting) {
+    rig.position.set(px, bed.top, pz)
+    rig.rotation.set(0, 0, 0)
+    camera.position.y = 0.2 / herScale()
+    camera.rotation.set(Math.PI / 2.2, bed.yaw, 0)
+    return
+  }
+  // Her level gaze, up and right onto up, the pillow and their right: as `makeBasis(right, up, back)` both.
+  const [fwd, up, right, pillow, pillowRight, back] = layAxis
+  const yaw = player.headYaw()
+  fwd.set(Math.sin(yaw), 0, Math.cos(yaw))
+  right.crossVectors(fwd, up)
+  pillow.set(Math.sin(bed.yaw), 0, Math.cos(bed.yaw))
+  pillowRight.crossVectors(up, pillow)
+  layFrom.makeBasis(right, up, back.copy(fwd).negate())
+  layTo.makeBasis(pillowRight, pillow, back.copy(up).negate())
+  layTurn.setFromRotationMatrix(layTo.multiply(layFrom.transpose()))
+  const head = player.headPosition()
+  rig.position.sub(head).applyQuaternion(layTurn).add(head.set(px, bed.top + 0.2, pz))
+  rig.quaternion.premultiply(layTurn)
 }
 
+/** Out of the bed she was laid in, onto her feet; saved if she slept. */
 function getUp() {
-  rig.position.copy(deskBed.pos)
-  rig.quaternion.copy(deskBed.quat)
-  camera.position.y = deskBed.camY
-  camera.rotation.copy(deskBed.camRot)
-  deskBed = null
+  rig.quaternion.copy(laid.quat)
+  camera.position.y = laid.camY
+  camera.rotation.copy(laid.camRot)
+  if (laid.beside) {
+    const o = indoors.view.group.position
+    const bed = roomBeds(indoors.room)[laid.bed]
+    const at = besideBed(bed, walk, o)
+    player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.top - 0.2)
+    faceAlong(-at.fx, -at.fz)
+  } else rig.position.copy(laid.pos)
+  const slept = laid.upAt !== null
+  laid = null
+  feetWereOnBed = true
+  if (slept) { saveGame(); vitalsHud.showSaved() }
 }
 
 function harm(n, why) {
@@ -1042,17 +1082,24 @@ function stepHud(dt) {
 function stepVitals(dt, now) {
   camera.getWorldPosition(vitalsHead)
   camera.getWorldDirection(vitalsFwd)
-  const bed = health.dead ? -1 : renderer.xr.isPresenting ? worldBeds().findIndex((b) => (b.free || sleep.state !== 'awake') && liesOn(b, vitalsHead, vitalsFwd, herScale())) : deskBed === null ? -1 : deskBed.bed
+  if (laid !== null && laid.upAt !== null && (vitalsPress || now >= laid.upAt)) { getUp(); vitalsPress = false }
+  if (laid === null && !health.dead && indoors && sleep.state === 'awake' && !player.flying) {
+    const on = worldBeds().find((b) => feetOnBed(b, rig.position, walk.radius + 0.05))
+    if (on && on.free && !feetWereOnBed) lieDown(on, true)
+    feetWereOnBed = on !== undefined
+  }
+  // Laid in a bed, she lies there until she wakes; in the headset otherwise, while her own body lies in one.
+  const bed = health.dead ? -1 : laid !== null ? (laid.upAt === null ? laid.bed : -1) :
+    renderer.xr.isPresenting ? worldBeds().findIndex((b) => (b.free || sleep.state !== 'awake') && liesOn(b, vitalsHead, vitalsFwd, herScale())) : -1
   const lying = bed >= 0
   const event = sleep.update(dt, { lying, press: vitalsPress, head: vitalsHead, fwd: vitalsFwd, scale: herScale() })
   vitalsPress = false
-  if (event === 'up' && deskBed) getUp()
+  if (event === 'up' && laid) getUp()
   if (event === 'asleep') { sleptIn = bed; console.log(`[vitals] asleep at ${clock.clockText}`) }
   if (event === 'woke') {
-    if (deskBed) getUp()
     health.heal()
-    saveGame()
-    vitalsHud.showSaved()
+    if (laid) laid.upAt = now + (SLEEP.openS + SLEEP.upS) * 1000
+    else { saveGame(); vitalsHud.showSaved() }
   }
 
   netplay.asleep = sleep.asleep
@@ -1083,7 +1130,7 @@ for (const [cls, text, load] of [['qa-death-load', 'Load saved game', true], ['q
 }
 document.body.appendChild(deathButtons)
 // From the console: `v2vitals.harm(60)`, `v2vitals.lie()` into the house's bed, `v2vitals.load()` as the menu's Load, `v2vitals.beds()` the house's.
-window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () => lieDown(worldBeds()[0]), wake: () => { vitalsPress = true }, load: () => loadGame(), beds: worldBeds }
+window.v2vitals = { health, sleep, harm: (n) => harm(n, 'the console'), lie: () => lieDown(worldBeds()[0], true), wake: () => { vitalsPress = true }, load: () => loadGame(), beds: worldBeds }
 
 // A row is `{ key, text }` and one of three shapes: a toggle on questToggles
 // (with optional `on`/`off` state names), an action, or an action with a
@@ -2186,7 +2233,7 @@ function buildQuestPanel() {
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
     const reach = BED_REACH_M * herScale()
     const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
-    if (bed) { lieDown(bed); return }
+    if (bed) { lieDown(bed, false); return }
     if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
@@ -2237,9 +2284,10 @@ function questPointerEl() {
 function updateQuestPointer() {
   const open = questPanelGroup.visible
   for (const el of [leftHandEl, rightHandEl]) {
+    // The controller model is never drawn: it loads only to set the pointer's origin and direction.
     const model = el.getObject3D('mesh')
-    if (model) model.visible = open
-    questHands.get(el).visible = !open && questHandConnected(el)
+    if (model) model.visible = false
+    questHands.get(el).visible = questHandConnected(el)
   }
   const p = questPointer
   const el = open ? questPointerEl() : null
@@ -2350,8 +2398,7 @@ function toggleQuestPanel() {
   // The stats are drawn only while the debug view is up, and a slot whose
   // source had not landed its asset when it was filled is photographed now.
   if (open) { updateQuestStats(); paintBackpack() }
-  // Either way the pointer, the dot, the controller models and her hands
-  // follow the menu's state this frame rather than next: a red dot hanging in
+  // Either way the pointer and the dot follow the menu's state this frame rather than next: a red dot hanging in
   // mid air pointing at a menu that is no longer there reads as a bug.
   updateQuestPointer()
 }
@@ -4164,7 +4211,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -6140,7 +6187,9 @@ function aimTeleport(origin, dir) {
   // the end -- so stone over either is headroom, not a wall.
   const standable = hit !== null && (mount ? !onWater && wildStriders.hopOpen(hit.x, hit.z) :
     (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
-    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y))
+    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y) ||
+    // A free bed is a landing even where its edge is too steep a step: it lays her in it (stepVitals).
+    worldBeds().some((b) => b.free && feetOnBed(b, hit, 0)))
   teleportTarget.valid = standable
   teleportTarget.reach = full
   teleportTarget.swim = false

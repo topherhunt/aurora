@@ -14,8 +14,10 @@ export const STRIDER = {
   puppets: 8,
   // A rail's posts and bar in metres: the bar `h` over the ground, the posts sunk `sink` into it.
   rail: { h: 1.0, post: 0.12, bar: 0.07, sink: 0.3 },
-  // The most reins drawn, the points along each, and its droop mid-span per metre of it, at most `max`.
+  // The most reins drawn, the points along each, and its droop mid-span per metre of it, at most `max`. A led one is 2 px wide, the rest 1.
   rein: { most: 48, points: 8, droop: 0.12, max: 0.35 },
+  // Running off or at her it is never quite straight: its aim wanders up to `wobble` rad, rolled afresh every `every` m, and veers by the first of `veer` rad each way that clears the way `look` s (at least `near` m times its size) ahead (clearAhead). Stone standing `wall` m over both the ground and its feet is a wall to it.
+  dash: { wobble: 0.2, every: [0.7, 1.5], look: 0.4, near: 1.2, veer: [0.4, 0.8, 1.2], wall: 0.5 },
   // Seconds between a drawn strider's chirps; its flutter and shake (strider-shake.js) are on each fidget.
   call: [25, 70],
   said: 32,
@@ -29,6 +31,10 @@ export const STRIDER = {
 export const striderSize = (u) => STRIDER.size.mean * (STRIDER.size.vary[0] + (STRIDER.size.vary[1] - STRIDER.size.vary[0]) * u)
 
 const PLANTED = new Set(['idle'])
+const between = ([lo, hi]) => lo + (hi - lo) * Math.random()
+const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+const _wall = { x: 0, z: 0, r: 0 }
+const _vp = new THREE.Vector4()
 const clamp = THREE.MathUtils.clamp
 const UP = new THREE.Vector3(0, 1, 0)
 const X = new THREE.Vector3(1, 0, 0)
@@ -53,11 +59,53 @@ function headMiddle(mesh, hi, inverse) {
   return sum.divideScalar(n).applyMatrix4(mesh.bindMatrix).applyMatrix4(inverse)
 }
 
+/** Whether (x, z) shuts the way of a strider `m` standing at height `y`: a trunk or another body (walk.obstacleAt), a townsperson within half its size in metres (`crowd(x, z, pad)`, Townsfolk.folkAt), or stone (STRIDER.dash.wall). */
+export function walled(walk, m, x, z, y, crowd = null) {
+  if (walk.obstacleAt(x, z, _wall, m) || (crowd && crowd(x, z, 0.5 * m.pose.size))) return true
+  const top = walk.heightAt(x, z), w = STRIDER.dash.wall
+  return top - y > w && top - walk.heightAt(x, z, -Infinity) > w
+}
+
+/** Whether the way `L` m ahead of strider `m` along `heading` is open, at half way and at the end (walled). */
+export function clearAhead(walk, m, heading, L, crowd = null) {
+  const p = m.pose, c = Math.cos(heading), s = Math.sin(heading)
+  return !walled(walk, m, p.x + c * L * 0.5, p.z - s * L * 0.5, p.y, crowd) && !walled(walk, m, p.x + c * L, p.z - s * L, p.y, crowd)
+}
+
+/** The heading a strider `m` running at `v` m/s toward `want` takes this frame (STRIDER.dash): wobbled, and veered round what is ahead toward the side it already leans. Its wobble is kept on `m.dash`. */
+export function dashAim(walk, m, want, v, dt, crowd = null) {
+  const D = STRIDER.dash, p = m.pose, d = m.dash
+  if ((d.left -= v * dt) <= 0) { d.left = between(D.every); d.wob = between([-D.wobble, D.wobble]) }
+  const h = want + d.wob, L = Math.max(D.near * p.size, v * D.look)
+  if (clearAhead(walk, m, h, L, crowd)) return h
+  const side = Math.sign(wrap(p.heading - h)) || 1
+  for (const a of D.veer) for (const o of [a * side, -a * side]) if (clearAhead(walk, m, h + o, L, crowd)) return h + o
+  return h
+}
+
+/** A rein line drawn shifted (dx, dy) px on screen, so copies of one buffer side by side draw it wider. */
+function reinLine(geo, dx, dy) {
+  const mat = new THREE.LineBasicMaterial({ color: 0x2e1c10 }), px = { value: new THREE.Vector2() }
+  if (dx || dy) {
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.reinPx = px
+      shader.vertexShader = 'uniform vec2 reinPx;\n' + shader.vertexShader.replace('#include <fog_vertex>', `#include <fog_vertex>\n\tgl_Position.xy += vec2(${dx.toFixed(1)}, ${dy.toFixed(1)}) * reinPx * gl_Position.w;`)
+    }
+    mat.customProgramCacheKey = () => `v2-rein-${dx}-${dy}`
+  }
+  const line = new THREE.LineSegments(geo, mat)
+  // A pixel in clip space, for the viewport being drawn (each eye's, in the headset).
+  line.onBeforeRender = (renderer) => { renderer.getCurrentViewport(_vp); px.value.set(2 / _vp.z, 2 / _vp.w) }
+  line.frustumCulled = false
+  line.name = 'v2-strider-reins'
+  return line
+}
+
 /** What this layer keeps on a mount the sim or the road hands it, `size` times the shipped body (striderSize). */
 export function mountFields(size) {
   if (!(size > 0)) throw new Error(`mountFields: a strider's size must be positive, not ${size}`)
   const [lo, hi] = STRIDER.call
-  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0 }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
+  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0 }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
 }
 
 /** A body's matrix from its pose: at x, y, z, turned `heading` about the up, scaled `k`. */
@@ -149,16 +197,16 @@ export class Striders {
     this.k = 0
     this.railMaterial = patch(createPropMaterial(textures, { side: THREE.FrontSide, vertexColors: true }), 'v2-strider-rail')
     this.box = new THREE.BoxGeometry(1, 1, 1)
+    // Thin and led reins: each a buffer, the led one's drawn three times a pixel apart.
     const R = STRIDER.rein
-    this.reinPos = new Float32Array(R.most * (R.points - 1) * 6)
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(this.reinPos, 3).setUsage(THREE.DynamicDrawUsage))
-    geo.setDrawRange(0, 0)
-    this.reins = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x2e1c10 }))
-    this.reins.frustumCulled = false
-    this.reins.name = 'v2-strider-reins'
-    scene.add(this.reins)
-    this.nReins = 0
+    this.reins = [[[0, 0]], [[0, 0], [1, 0], [0, 1]]].map((shifts) => {
+      const pos = new Float32Array(R.most * (R.points - 1) * 6), geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
+      geo.setDrawRange(0, 0)
+      const lines = shifts.map(([dx, dy]) => reinLine(geo, dx, dy))
+      for (const l of lines) scene.add(l)
+      return { pos, geo, lines, n: 0 }
+    })
     // The frame's walking bodies for the ear, and the calls not yet heard (audio/ambience.js herds and voiced).
     this.treading = []
     this.said = []
@@ -190,7 +238,7 @@ export class Striders {
   begin() {
     this.frame++
     this.rank = 0
-    this.nReins = 0
+    for (const r of this.reins) r.n = 0
     this.treading.length = 0
   }
 
@@ -303,12 +351,12 @@ export class Striders {
     return _v.distanceToSquared(_s.set(x, y, z)) < (STRIDER.bite * m.pose.size * slack) ** 2
   }
 
-  /** A rein from `a` to `b`, sagging. */
-  rein(a, b) {
-    const R = STRIDER.rein
-    if (this.nReins >= R.most) return
-    const droop = Math.min(R.max, R.droop * a.distanceTo(b)), pos = this.reinPos
-    let o = this.nReins++ * (R.points - 1) * 6
+  /** A rein from `a` to `b`, sagging; `led` draws it wide. */
+  rein(a, b, led = false) {
+    const R = STRIDER.rein, r = this.reins[led ? 1 : 0]
+    if (r.n >= R.most) return
+    const droop = Math.min(R.max, R.droop * a.distanceTo(b)), pos = r.pos
+    let o = r.n++ * (R.points - 1) * 6
     for (let i = 0; i < R.points - 1; i++) {
       for (const u of [i / (R.points - 1), (i + 1) / (R.points - 1)]) {
         pos[o++] = a.x + (b.x - a.x) * u
@@ -320,9 +368,10 @@ export class Striders {
 
   /** The frame's reins to the GPU. */
   end() {
-    const geo = this.reins.geometry
-    geo.setDrawRange(0, this.nReins * (STRIDER.rein.points - 1) * 2)
-    geo.getAttribute('position').needsUpdate = true
+    for (const { geo, n } of this.reins) {
+      geo.setDrawRange(0, n * (STRIDER.rein.points - 1) * 2)
+      geo.getAttribute('position').needsUpdate = true
+    }
   }
 
   /** The height of a rail's bar over (x, z). */
@@ -362,9 +411,10 @@ export class Striders {
   dispose() {
     for (const p of this.puppets) this.batch.remove(p.group)
     this.batch.removeFromParent()
-    this.reins.removeFromParent()
-    this.reins.geometry.dispose()
-    this.reins.material.dispose()
+    for (const { geo, lines } of this.reins) {
+      for (const l of lines) { l.removeFromParent(); l.material.dispose() }
+      geo.dispose()
+    }
     this.box.dispose()
     this.railMaterial.dispose()
     for (const m of this.materials) m.dispose()

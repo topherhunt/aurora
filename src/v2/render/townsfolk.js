@@ -6,7 +6,7 @@ import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth, hearthKit } from './hearth.js'
 import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { loadBipedGlb } from './snowmen.js'
-import { fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize } from './striders.js'
+import { dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
 
@@ -65,8 +65,12 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
-  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy), and then stands `wait` s and walks back to its rail.
-  shy: { ...WILD.shy, wait: [3, 6] },
+  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy), and then stands `wait` s and walks back to its rail the way it ran, by the points it dropped every `crumb` m.
+  shy: { ...WILD.shy, wait: [3, 6], crumb: 0.5 },
+  // A townsperson is `girth` m round to a running strider (folkAt), and eases off a strider's body it stands in over `shove` s.
+  girth: 0.3, shove: 0.2,
+  // Metres past its radius a town's striders can be: a shied one's run and a body's length.
+  reach: 20,
 }
 
 export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', ...TALKS]
@@ -948,7 +952,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _hand = new THREE.Vector3()
 const _head = new THREE.Vector3()
-const _shyOut = { x: 0, z: 0, r: 0 }
+const _shoveOut = { x: 0, z: 0, r: 0 }
 
 export class Townsfolk {
   /**
@@ -970,6 +974,7 @@ export class Townsfolk {
     this.scene = scene
     this.towns = towns
     this.walk = walk
+    this.crowd = (x, z, pad) => this.folkAt(x, z, pad)
     this.journeys = journeys
     this.bond = bond
     this.eat = eat
@@ -1007,6 +1012,8 @@ export class Townsfolk {
     this.ids = 0
     this.frame = 0
     this.starved = 0
+    // The townsfolk drawn last frame, at most TOWNSFOLK.puppets a body: all that folkAt and the shove look at.
+    this.shown = []
     this.ranks = new Array(TOWNSFOLK.bodies.length).fill(0)
     this.greets = 0
     this.loaded = false
@@ -1068,7 +1075,7 @@ export class Townsfolk {
   }
 
   _entity(c) {
-    return Object.assign(c, { pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0 })
+    return Object.assign(c, { pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
   }
 
   _wake(i) {
@@ -1141,6 +1148,8 @@ export class Townsfolk {
     drawn.sort((a, b) => a.dist - b.dist)
     this.ranks.fill(0)
     for (const c of drawn) this._draw(c, dt)
+    this.shown.length = 0
+    for (const c of drawn) if (c.puppet) this.shown.push(c)
     if (this.striders) {
       for (const m of mounts) this._rein(m)
       this.striders.end()
@@ -1160,22 +1169,14 @@ export class Townsfolk {
     m.gone = !m.active || (m.state === 'tied' && this.lent.has(m.key))
   }
 
-  /** A tied strider startled by her (TOWNSFOLK.shy): run off from the rail, stood, and walked back, drawn over the sim's pose, which it rejoins. */
+  /** A tied strider startled by her (TOWNSFOLK.shy): run off from the rail, stood, and walked back the way it ran, drawn over the sim's pose, which it rejoins. */
   _shy(m, dt, head, seconds, lures) {
     const Y = TOWNSFOLK.shy, p = m.pose, S = this.striders
     if (m.shy && (m.state !== 'tied' || m.gone)) m.shy = null
     if (!m.shy) {
       if (m.state !== 'tied' || m.gone || m.treat || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
       if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
-      const away = Math.atan2(p.z - head.z, p.x - head.x), far = Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random()
-      let tx = p.x, tz = p.z
-      for (let d = 0.5; d <= far; d += 0.5) {
-        const x = p.x + Math.cos(away) * d, z = p.z + Math.sin(away) * d, level = this.walk.waterAt(x, z)
-        if (this.walk.obstacleAt(x, z, _shyOut, m) || (level !== null && level > this.walk.heightAt(x, z, p.y))) break
-        tx = x
-        tz = z
-      }
-      m.shy = { phase: 'run', x: p.x, z: p.z, h: p.heading, tx, tz, t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), cue: -1 - ++this.treats }
+      m.shy = { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), crumbs: [], t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), cue: -1 - ++this.treats }
       S.say('striderChirp1', p, 1.6, 1)
       S.say('striderWhine', p, 1.3, 0.8)
     }
@@ -1191,13 +1192,23 @@ export class Townsfolk {
     s.t += dt
     let clip = 'idle', speed = 0
     if (s.phase === 'run') {
-      clip = 'run'; speed = runV
-      if (go(s.tx, s.tz, runV)) next('wait')
+      // dashAim and walled read the body from m.pose: the rail's (the sim's) until it is set to the shied one here.
+      const last = s.crumbs.at(-1) ?? { x: p.x, z: p.z }
+      p.x = s.x; p.z = s.z; p.y = s.y; p.heading = s.h
+      s.h += clamp(swing(s.h, dashAim(this.walk, m, Math.atan2(-(s.z - head.z), s.x - head.x), runV, dt, this.crowd)), -2 * WILD.turn * dt, 2 * WILD.turn * dt)
+      const d = runV * dt, x = s.x + Math.cos(s.h) * d, z = s.z - Math.sin(s.h) * d, level = this.walk.waterAt(x, z)
+      if ((s.left -= d) <= 0 || walled(this.walk, m, x, z, s.y, this.crowd) || (level !== null && level > this.walk.heightAt(x, z, s.y))) next('wait')
+      else {
+        clip = 'run'; speed = runV
+        if (Math.hypot(x - last.x, z - last.z) > Y.crumb) s.crumbs.push({ x: s.x, z: s.z })
+        s.x = x; s.z = z; s.y = this.walk.heightAt(x, z, s.y)
+      }
     } else if (s.phase === 'wait') {
       if (s.t > s.wait) next('back')
     } else if (s.phase === 'back') {
       clip = 'walk'; speed = walkV
-      if (go(p.x, p.z, walkV)) next('turn')
+      const to = s.crumbs.at(-1) ?? p
+      if (go(to.x, to.z, walkV) && !s.crumbs.pop()) next('turn')
     } else {
       const left = swing(s.h, p.heading)
       s.h += clamp(left, -2 * dt, 2 * dt)
@@ -1206,11 +1217,36 @@ export class Townsfolk {
     }
     p.x = s.x
     p.z = s.z
-    p.y = this.walk.heightAt(s.x, s.z, p.y)
+    p.y = s.y = this.walk.heightAt(s.x, s.z, s.y)
     p.heading = s.h
     p.clip = clip
     p.speed = speed
     p.cue = s.cue
+  }
+
+  /** Its pose (the sim's), if it is drawn, eased off a strider's body or trunk it stands in (walk.obstacleAt), but not the strider it rides or tends on a job, nor while it sits or is in the saddle. */
+  _shove(c, dt) {
+    if (!c.puppet) return
+    const pose = c.pose, s = c.shove, own = c.mount || (c.job ? c.job.mount : null)
+    let tx = 0, tz = 0
+    if (pose.hop === 0 && c.state !== 'sit' && this.walk.obstacleAt(pose.x, pose.z, _shoveOut, own)) {
+      const dx = pose.x - _shoveOut.x, dz = pose.z - _shoveOut.z, d = Math.hypot(dx, dz)
+      if (d > 1e-3) { tx = (dx / d) * (_shoveOut.r - d); tz = (dz / d) * (_shoveOut.r - d) } else tx = _shoveOut.r
+    }
+    const f = 1 - Math.exp(-dt / TOWNSFOLK.shove)
+    s.x += (tx - s.x) * f
+    s.z += (tz - s.z) * f
+    if (Math.abs(s.x) + Math.abs(s.z) < 1e-4) return
+    pose.x += s.x
+    pose.z += s.z
+    pose.y = this.walk.heightAt(pose.x, pose.z, pose.y)
+  }
+
+  /** Whether a drawn townsperson afoot stands within `pad` m more than TOWNSFOLK.girth of (x, z): what a running strider steers round (striders.js walled). */
+  folkAt(x, z, pad) {
+    const r = TOWNSFOLK.girth + pad
+    for (const c of this.shown) if (c.pose.hop === 0 && Math.abs(c.pose.x - x) < r && Math.abs(c.pose.z - z) < r && Math.hypot(c.pose.x - x, c.pose.z - z) < r) return true
+    return false
   }
 
   /** A tied strider eating the fish she holds to its beak, over the sim's clip: it trusts her after, or if it did, grows. */
@@ -1370,6 +1406,7 @@ export class Townsfolk {
       c.lag = false
     }
     pose.x = sx; pose.y = sy; pose.z = sz
+    this._shove(c, dt)
     pose.heading = c.ph + swing(c.ph, c.heading) * a
     pose.clip = c.clip
     pose.speed = c.speed
@@ -1433,7 +1470,7 @@ export class Townsfolk {
     const by = m.state === 'led' ? m.leader : m.state === 'ridden' ? m.rider : null
     if (by === null || !by.puppet) return
     const p = by.puppet
-    S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head)
+    S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head, m.state === 'led')
   }
 
   // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------
@@ -1486,8 +1523,9 @@ export class Townsfolk {
 
   bodyAt(x, z, pad, out, skip) {
     if (!this.striders || !this.loaded) return null
-    for (const { life } of this.alive.values()) {
-      if (!life.caught) continue
+    for (const [i, { life }] of this.alive) {
+      const town = this.towns[i]
+      if (!life.caught || Math.abs(town.x - x) > town.radius + TOWNSFOLK.reach || Math.abs(town.z - z) > town.radius + TOWNSFOLK.reach) continue
       for (const m of life.mounts) if (m !== skip && m.active && !m.gone && this.striders.bodyAt(m, x, z, pad, out)) return out
     }
     for (const { m } of this.road.values()) if (m && m !== skip && !m.gone && this.striders.bodyAt(m, x, z, pad, out)) return out

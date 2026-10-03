@@ -19,14 +19,14 @@ Every save is made waking, so in a house. The save stores which house and which 
 `Sleep` runs awake -> lying -> closing -> asleep -> opening -> awake:
 
 - **Lying** starts when she is in a bed that is free: no leafkin resident at its activity there (lying down, asleep or getting up), and no peer's head over its mattress and under 1 m of the peer's height over it (`inBed`). A bed taken once she lies in it does not put her out.
-  - In the headset: her head within the bed's width over its pillow end, less than 1 m of her height over the mattress and not more than 0.3 m under it, and looking up (forward.y > 0.7).
-  - On a desktop, a click on the bed within 3 of her metres lays her in it: head on the pillow, looking up past her feet. Her standing pose is kept to give back.
+  - **Laid in it:** walking or teleporting onto it lays her in it, as does a click on it within 3 of her metres on a desktop. Her feet are on it (`feetOnBed`) from within her walk radius plus 0.05 m of its outline, so bumping its side counts, and only on the frame they arrive, so standing up beside it does not lay her down again. A teleport may land on a free bed even where its edge is too steep a step. Her head goes over the pillow. On a desktop the camera looks up past her feet. In the headset the rig turns about her head so her level gaze is straight up and the top of her view is toward the pillow, and her real head still moves the view from there.
+  - **In her own body, in the headset:** her head within the bed's width over its pillow end, less than 1 m of her height over the mattress and not more than 0.3 m under it, and looking up (forward.y > 0.7).
 - **Closing:** after 5 s still (the head drifting under 0.15 of her metres and turning under 20 degrees), the lids close over 2.5 s. They are two curved edges meeting across the view's middle, in the veil's shader.
-- **Getting up** before she sleeps (moving out of the bed, a key or click on a desktop, a button in the headset once the lids start closing) opens the lids again.
+- **Getting up** before she sleeps (a key, click or button while laid in a bed; moving out of the bed or a button once the lids start closing, in her own body) opens the lids again.
 - **Asleep:** the view is black until any button, or in the headset a sit-up (the head rising or falling by 0.25 of her metres) or a turn of more than 35 degrees.
-- **Waking:** she is back on her feet under the black, healed, and the game saves. The lids open over 1.5 s and "Game saved" shows for 3 s. This is the only save: the menu has Load and New game, no Save.
+- **Waking:** she is healed and the lids open over 1.5 s. In her own body the game saves then. Laid in a bed, she lies awake 2 s more (`SLEEP.upS`), or until a press, then stands beside the bed (`besideBed`) facing away, or where a click took her from, and the game saves. "Game saved" shows for 3 s. This is the only save: the menu has Load and New game, no Save.
 
-While sleep or death holds her (asleep, lids closing, laid in a bed on a desktop, or dead), the world's controls stand down. Every press goes to waking her or to the death card.
+While sleep or death holds her (laid in a bed, lids closing, asleep, or dead), the world's controls stand down. Every press goes to waking her or to the death card.
 
 ## A room that all sleeps
 

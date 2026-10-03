@@ -69,6 +69,14 @@ export function inBed(bed, head, scale) {
   return Math.abs(dx * c - dz * s) < bed.wid / 2 && Math.abs(dx * s + dz * c) < bed.len / 2 + LIE.pillowOut && rise < LIE.rise && rise > -LIE.sink
 }
 
+/** Whether her `feet` (world) are on `bed`: within `margin` of its outline, from its floor to a little over its mattress. Walking or teleporting there lays her in it. */
+export function feetOnBed(bed, feet, margin) {
+  const s = Math.sin(bed.yaw), c = Math.cos(bed.yaw)
+  const dx = feet.x - bed.x, dz = feet.z - bed.z
+  const rise = feet.y - (bed.top - 0.2)
+  return Math.abs(dx * c - dz * s) < bed.wid / 2 + margin && Math.abs(dx * s + dz * c) < bed.len / 2 + margin && rise > -0.15 && rise < 0.5
+}
+
 /**
  * Where a load made in a house stands her: on a ring just off `bed`'s outline
  * (a rooms/interior.js spot, room-local with the room's middle at 0, 0),
@@ -116,8 +124,9 @@ export function rayHitsBed(bed, o, d) {
 
 // awake -> lying (in bed, the stillness counting) -> closing (the lids coming
 // down) -> asleep (black until she stirs) -> opening -> awake. Getting up from
-// lying or closing is back to awake with the lids going up.
-export const SLEEP = { stillS: 5, closeS: 2.5, openS: 1.5, driftM: 0.15, turnDeg: 20, wakeM: 0.25, wakeDeg: 35 }
+// lying or closing is back to awake with the lids going up. `upS` is how long
+// one laid in a bed lies awake once her lids are open before she stands.
+export const SLEEP = { stillS: 5, closeS: 2.5, openS: 1.5, driftM: 0.15, turnDeg: 20, wakeM: 0.25, wakeDeg: 35, upS: 2 }
 
 export class Sleep {
   constructor() {

@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { CHAPTER_S, hash32, keyHash, swing } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S } from './snowmen.js'
-import { fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
+import { clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -38,7 +38,7 @@ export const WILD = {
     up: 1.4, backUp: 0.4, down: 0.6, accel: 3.5, brake: 8,
     // The run clip plays past `runAt` m/s, its legs no faster than its run's cadence to the `stride` power of the speed past it.
     runAt: 3.2, stride: 0.6,
-    // It veers round a trunk or body `look` s ahead, at least `near` m, turning at most `dodge` rad/s; a step that is not open slides off by the first of `slide` rad each way that is.
+    // It veers round what shuts the way (clearAhead) `look` s ahead, at least `near` m, turning at most `dodge` rad/s; a step that is not open slides off by the first of `slide` rad each way that is.
     look: 0.5, near: 1.5, dodge: 1.5, slide: [0.35, 0.7, 1.05],
     // Its footing: it steps up onto anything under `step` m (times its size: terrain grain, a pebble, a road's edge), up a slope to `climb` degrees, and down at most `drop` m plus its stride.
     step: 0.3, climb: 50, drop: 1.0,
@@ -142,9 +142,10 @@ export class WildStriders {
    * @param opts.returned  (key) => a town's strider lent to her (borrow) gone from this layer
    * @param opts.lend      (key) => the town's strider under that key lent as for borrow, for a peer riding it, or null where its town is not awake here
    */
-  constructor(scene, { walk, textures, patch, avoid = null, harm, eat, bond, returned, lend = () => null }) {
+  constructor(scene, { walk, textures, patch, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null }) {
     this.walk = walk
     this.avoid = avoid
+    this.crowd = crowd
     this.harm = harm
     this.eat = eat
     this.bond = bond
@@ -256,7 +257,7 @@ export class WildStriders {
     const h = keyHash(key)
     const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1)), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
-      state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity,
+      state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity, aim: 0,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
     })
     const p = m.pose
@@ -383,6 +384,7 @@ export class WildStriders {
       m.seg = null
       this._set(m, 'idle', 0, true)
     } else if (state === 'panic') {
+      m.aim = p.heading
       this._set(m, 'run', WILD.panic.pace * this.runV * p.size)
     } else if (state === 'shy') {
       m.run = between(WILD.shy.run)
@@ -459,10 +461,10 @@ export class WildStriders {
   }
 
   /** Moves along its heading by `v` m/s (backward when negative); false where the step is not open. */
-  _move(m, v, dt, free = false) {
+  _move(m, v, dt) {
     const p = m.pose, d = v * dt
     const x = p.x + Math.cos(p.heading) * d, z = p.z - Math.sin(p.heading) * d
-    if (!free && !this._open(m, x, z, Math.abs(d))) return false
+    if (!this._open(m, x, z, Math.abs(d))) return false
     p.x = x
     p.z = z
     p.y = this.walk.heightAt(x, z, p.y)
@@ -482,7 +484,7 @@ export class WildStriders {
     const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this._tamed(m.key)
     switch (m.state) {
       case 'panic': {
-        this._move(m, W.panic.pace * this.runV * p.size, dt, true)
+        if (!this._dash(m, m.aim, W.panic.pace * this.runV * p.size, dt, W.turn)) m.aim = wrap(m.aim + (Math.random() < 0.5 ? 1 : -1))
         if ((m.voice -= dt) <= 0) { m.voice = between(W.panic.call); this._chirp(m, between([1.3, 1.7]), 1) }
         return
       }
@@ -517,9 +519,8 @@ export class WildStriders {
       }
       case 'charge': {
         const C = W.charge, v = C.pace * this.runV * p.size
-        this._turn(m, face, dt, W.turn * 2)
         this._lookAt(m, head.x, head.y, head.z)
-        const moved = this._move(m, v, dt)
+        const moved = this._dash(m, face, v, dt, W.turn * 2)
         this._set(m, moved ? 'run' : 'idle', moved ? v : 0)
         if (mine && (near < C.close * p.size || m.t > C.s || !moved)) this._enter(m, 'attack')
         return
@@ -535,17 +536,15 @@ export class WildStriders {
       }
       case 'flee': {
         const v = this.runV * p.size
-        this._turn(m, face + Math.PI, dt, W.turn * 1.5)
-        if (!this._move(m, v, dt)) p.heading = wrap(p.heading + (Math.random() < 0.5 ? 1 : -1))
+        if (!this._dash(m, face + Math.PI, v, dt, W.turn * 1.5)) p.heading = wrap(p.heading + (Math.random() < 0.5 ? 1 : -1))
         this._set(m, 'run', v)
         if (mine && (m.t > W.flee.s || near > W.flee.m)) this._enter(m, 'calm')
         return
       }
       case 'shy': {
-        // Straight away from her until it has run its way or the way is shut, then calm where it stopped.
+        // Away from her until it has run its way or the way is shut, then calm where it stopped.
         const v = WILD.shy.pace * this.runV * p.size
-        this._turn(m, face + Math.PI, dt, W.turn * 2)
-        const moved = (m.run -= v * dt) > 0 && this._move(m, v, dt)
+        const moved = (m.run -= v * dt) > 0 && this._dash(m, face + Math.PI, v, dt, W.turn * 2)
         this._set(m, moved ? 'run' : 'idle', moved ? v : 0)
         if (mine && !moved) { m.shyAt = this.now + W.shy.cool; this._enter(m, 'calm') }
         return
@@ -728,6 +727,12 @@ export class WildStriders {
     m.seg = cue
     this._set(m, act, 0, true)
     if (act === 'peck' && Math.random() < 0.3) this._chirp(m, between([0.75, 0.85]), 0.6)
+  }
+
+  /** Runs at `v` m/s toward `want` at most `rate` rad/s, never quite straight and veering round what is ahead (dashAim), slid off its heading where that is not open; false where no way is. */
+  _dash(m, want, v, dt, rate) {
+    this._turn(m, dashAim(this.walk, m, want, v, dt, this.crowd), dt, rate)
+    return this._slide(m, v * dt)
   }
 
   /** Moves a walking body `d` m along its heading, or slid off it by up to WILD.ride.slide where that is not open; false where no way is. */
@@ -940,8 +945,8 @@ export class WildStriders {
     p.heading = wrap(p.heading + spin * dt)
     if (r.v > 0) {
       const L = clamp(r.v * R.look, R.near, 10)
-      if (!this._clear(m, p.heading, L)) {
-        const off = [0.3, -0.3, 0.6, -0.6, 0.9, -0.9].find((o) => this._clear(m, p.heading + o, L))
+      if (!clearAhead(this.walk, m, p.heading, L, this.crowd)) {
+        const off = [0.3, -0.3, 0.6, -0.6, 0.9, -0.9].find((o) => clearAhead(this.walk, m, p.heading + o, L, this.crowd))
         if (off !== undefined) p.heading = wrap(p.heading + Math.sign(off) * R.dodge * dt)
       }
     }
@@ -1114,12 +1119,6 @@ export class WildStriders {
     if (up > R.step * p.size + d) return false
     if (up > 0.02 && W.slopeAt(x, z, undefined, g) > (R.climb * Math.PI) / 180) return false
     return -up <= R.drop * p.size + 1.5 * d
-  }
-
-  /** Whether the way `L` m ahead of `m` along `heading` is clear of trunks and other bodies. */
-  _clear(m, heading, L) {
-    const p = m.pose, c = Math.cos(heading), s = Math.sin(heading)
-    return !this.walk.obstacleAt(p.x + c * L * 0.5, p.z - s * L * 0.5, _trunk, m) && !this.walk.obstacleAt(p.x + c * L, p.z - s * L, _trunk, m)
   }
 
   /** The striders walking this frame, for the ear (audio/ambience.js herds). */

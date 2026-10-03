@@ -32,6 +32,14 @@ On the one-handed desktop a torch cannot be lit with a flint in one hand and a s
 
 A held stick whose tip is within 15 cm of a spark is `rec.lit = true`, re-announced through `hands.rehold`; the flag replicates in the slot, so a peer sees the lit stick in the hand. It has one permanent flame at the tip and lights the world through `uTorch` (`TORCH_GLSL`): warm, flickering, fading out at 15 m, the four nearest torches. Stowing or submerging puts it out; dropped lit, it keeps burning. Torch light casts no shadow yet (a roadmap item). A torch's tip held within `TOUCH_M` (12 cm) of a tree, fern or ground stick for `IGNITE_S` (2 s) lights a flame on it exactly as a spark does, and again every 2 s it stays, so a torch left against a tree burns it big and black. The check runs at 10 Hz.
 
+## Triangle flames (prototype)
+
+`src/v2/render/fire-tris.js` (`TriFlames`) is the candidate replacement for the card flame: each flame is a cloud of opaque flat-coloured triangles that rise, tumble, shift yellow to red and shrink to nothing. No blend, no texture, no discard, so the cost is covered pixels plus the vertex shader, and early depth rejection stays on. Every shard is a pure function of the clock and a static per-vertex seed; the CPU writes only the instance matrices. Real 3D shards have per-eye parallax, so no billboard and no head-centre aiming.
+
+LOD is four `InstancedMesh`es, level k holding the first `shards * lodKeep^k` shards of one master list (so a level is a subset of the one above), thinner levels drawn larger by `boost`. `update(t, glow, eye)` buckets flames by distance at `lodNear * lodStep^k`. Close flames use the same system at full count; there is no shader flame for them.
+
+The bench is `/test-fire-tris.html` (`?preset=lamp|torch|campfire`, numeric query params override a knob): sliders for every `TRI_FIRE` knob, `lod` (-1 auto, 0-3 pinned), `lodTint` to colour the levels, and a copy button that emits the tuned `TRI_FIRE`. Gate: `check-fire-tris`. Not yet wired into `wildfire.js`, no LOD hysteresis, and nothing is measured on a Quest: tiny-triangle quad overhead and MSAA edge cost are the risks to check on-device.
+
 ## Night
 
 The night rows of `clock.js` (-12 deg and below) carry a third of the additive glow, a fifth of the occlusion floor and about half the hemisphere light, so a shaded trunk can read pure black; ground the moon reaches is untouched. Lamp and window light is halved (`LAMP.gain`). The daynight gate now asks for a trunk that can go black and a floor of luma 4 on ground the moon misses.
