@@ -4,6 +4,7 @@ import { LAYER } from '../../textures.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { lodFadeS, Puppet, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
+import { StriderShake } from './strider-shake.js'
 
 // The towns' frost striders (DESIGN.md §32): their puppets, the hitching rails they stand at, and the reins. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
 
@@ -15,7 +16,7 @@ export const STRIDER = {
   rail: { h: 1.0, post: 0.12, bar: 0.07, sink: 0.3 },
   // The most reins drawn, the points along each, and its droop mid-span per metre of it, at most `max`.
   rein: { most: 48, points: 8, droop: 0.12, max: 0.35 },
-  // Seconds between a drawn strider's chirps; its flutter is on each fidget.
+  // Seconds between a drawn strider's chirps; its flutter and shake (strider-shake.js) are on each fidget.
   call: [25, 70],
   said: 32,
   // Each strider is `mean` times the shipped body, spread over `vary` of that, and grows by `fed` a fish once tame.
@@ -173,7 +174,9 @@ export class Striders {
     this.plain.needsUpdate = true
     for (const mats of this.mats) {
       for (const m of [mats.in, mats.out]) { m.map = asset.map; m.needsUpdate = true }
-      this.puppets.push(new Puppet(asset, mats, { clipFade: 0.3 }))
+      const p = new Puppet(asset, mats, { clipFade: 0.3 })
+      p.solver = new StriderShake(p, asset)
+      this.puppets.push(p)
     }
     this.free = this.puppets.slice()
   }
@@ -223,7 +226,10 @@ export class Striders {
     if (want === -1) return
     Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: p.current.getClip().duration / Math.abs(p.current.timeScale), speed: Math.abs(pose.speed) })
     this.treading.push(m.tread)
-    if (pose.clip === 'fidget' && m.heard !== pose.cue) this.say('striderFlutter', pose)
+    if (pose.clip === 'fidget' && m.heard !== pose.cue) {
+      this.say('striderFlutter', pose)
+      p.solver.start()
+    }
     m.heard = pose.cue
     if ((m.call -= dt) <= 0) {
       const [lo, hi] = STRIDER.call

@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { TEX_SIZE } from '../../textures.js'
 import { FADE_FRAGMENT, IGN_GLSL } from '../../material.js'
@@ -363,7 +364,7 @@ export const billboardVertex = (mixed) => /* glsl */ `
     bbAxis = modelMatrix * bbAxis;
     vec2 bbA = normalize( vec2( bbAxis.x, bbAxis.z ) );
     // Degenerate only with her exactly on the axis, where any facing is right.
-    vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
+    vec2 bbTo = ${HEAD_EYE_GLSL}.xz - bbOrigin.xz;
     float bbLen = length( bbTo );
     vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
     // Screen-right in world XZ, then the rotation taking the instance's yaw onto it: bbR * conj(bbA).
@@ -408,9 +409,10 @@ export function createCritterCardMaterial(label, { billboard = false, fade = fal
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
   material.onBeforeCompile = (shader) => {
     if (hue) hueVary(shader)
+    if (billboard) bindHeadEye(shader.uniforms)
     if (billboard || fade) {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}`)
+        .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}\n${billboard ? HEAD_EYE_DECL : ''}`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? BILLBOARD_VERTEX : ''}\n${fade ? 'vPropFade = aCardFade;' : ''}`)
     }
     // three flips a double-sided normal toward the viewer; twice is the identity, and the authored up-normal lights both faces alike.

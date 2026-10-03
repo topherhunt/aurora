@@ -1,5 +1,6 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 
 // ---------------------------------------------------------------------------
 // FLAMES: one additive ShaderMaterial on one InstancedMesh of upright cards,
@@ -25,8 +26,8 @@ import { mulberry32 } from '../../sim/mathx.js'
 // of one tileable 64 px tile that carries two independent fbm fields in R and
 // G, generated once at construction (buildNoiseTexture).
 //
-// The billboard turns about Y only, toward the eye, so the flame stays upright
-// and each eye of a stereo pair turns it a little differently. A campfire that
+// The billboard turns about Y only, toward the head (head-eye.js), so the flame stays upright
+// and both eyes of a stereo pair see the same card. A campfire that
 // is looked down on wants `sheets` 2 or 3: fixed cards at k * pi / sheets about
 // the instance's own yaw, not billboarded, each with its own phase.
 // ---------------------------------------------------------------------------
@@ -138,6 +139,7 @@ const VERT = /* glsl */ `
   // Per instance: flicker phase, flicker group, yaw.
   attribute vec3 aFlame;
   uniform float uSheets;
+  ${HEAD_EYE_DECL}
   // Each group's flicker this frame.
   uniform vec3 uGlow;
   varying vec2 vP;
@@ -150,7 +152,7 @@ const VERT = /* glsl */ `
     float sy = length( instanceMatrix[1].xyz );
     vec3 right;
     if ( uSheets < 1.5 ) {
-      vec3 to = cameraPosition - origin;
+      vec3 to = ${HEAD_EYE_GLSL} - origin;
       to.y = 0.0;
       vec3 fwd = normalize( to + vec3( 0.0, 0.0, 1e-4 ) );
       right = vec3( fwd.z, 0.0, -fwd.x );
@@ -168,12 +170,15 @@ const VERT = /* glsl */ `
   }
 `
 
+// MEDIUMP: the mask and the ramp are arithmetic on 0..1 values that an 8-bit output cannot tell from fp32, and half precision doubles the ALU rate on Adreno. The clock and the noise coordinates stay HIGHP: the scroll runs on a clock that is hours old, and a half-float fetch coordinate would step it.
 const FRAG = /* glsl */ `
+  precision mediump float;
   uniform sampler2D uNoise;
-  uniform float uTime, uSpeed, uStretch, uTurb, uCut, uSway, uWidth, uEdge, uCore, uGain;
+  uniform highp float uTime;
+  uniform float uSpeed, uStretch, uTurb, uCut, uSway, uWidth, uEdge, uCore, uGain;
   uniform vec3 uEdgeColor, uTipColor, uHotColor, uCoreColor;
   varying vec2 vP;
-  varying float vPhase;
+  varying highp float vPhase;
   varying float vGlow;
 
   // The still flame's half-width: a teardrop, widest (uWidth) a third of the way up, a point at the top. 2.1 is the reciprocal of the curve's peak.
@@ -183,14 +188,16 @@ const FRAG = /* glsl */ `
   }
 
   void main() {
-    float t = uTime * uSpeed;
+    highp float t = uTime * uSpeed;
     vec2 p = vP;
     float rise = clamp( p.y, 0.0, 1.0 );
     // The whole flame leans, most at the tip.
     p.x -= uSway * rise * rise * sin( t * 0.9 + vPhase );
     // Two octaves scrolling upward, the finer one faster; each fetch is two independent fields. The x frequency is what gives the two sides of the outline different noise -- lower and they wobble together as a strip.
-    vec2 n1 = texture2D( uNoise, vec2( p.x * 0.6 + vPhase * 0.13, p.y * uStretch - t * 0.5 ) ).rg - 0.5;
-    vec2 n2 = texture2D( uNoise, vec2( p.x * 1.3 + 0.41 + vPhase * 0.07, p.y * uStretch * 2.3 - t * 0.9 ) ).rg - 0.5;
+    highp vec2 c1 = vec2( p.x * 0.6 + vPhase * 0.13, p.y * uStretch - t * 0.5 );
+    highp vec2 c2 = vec2( p.x * 1.3 + 0.41 + vPhase * 0.07, p.y * uStretch * 2.3 - t * 0.9 );
+    vec2 n1 = texture2D( uNoise, c1 ).rg - 0.5;
+    vec2 n2 = texture2D( uNoise, c2 ).rg - 0.5;
     vec2 n = n1 + 0.5 * n2;
     // The base barely moves; the tip is where the outline goes, and it keeps growing into the overhang.
     float amp = 0.15 + 0.85 * p.y;
@@ -205,10 +212,7 @@ const FRAG = /* glsl */ `
     v *= smoothstep( 0.0, 0.04, hw );
     // The foot is pinched shut whatever the noise says, and a lifted tongue fades out across the overhang, so neither edge of the card ever shows.
     v *= smoothstep( 0.0, 0.1, p.y ) * ( 1.0 - smoothstep( 1.0, ${(1 + OVERHANG).toFixed(2)}, p.y ) );
-    if ( v <= 0.0 ) {
-      gl_FragColor = vec4( 0.0 );
-      return;
-    }
+    if ( v <= 0.0 ) discard;
     // Outline to axis: rim, tongue, body, then the core only in the lower half.
     vec3 c = mix( uEdgeColor, uTipColor, smoothstep( 0.0, 0.35, v ) );
     c = mix( c, uHotColor, smoothstep( 0.3, uCore, v ) );
@@ -259,6 +263,7 @@ export class Flames {
       depthWrite: false,
       fog: false,
     })
+    bindHeadEye(this.material.uniforms)
     this.sheets = 0
     this.mesh = null
     this.flame = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3)

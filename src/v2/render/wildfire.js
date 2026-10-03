@@ -10,6 +10,7 @@ import { Flames, FIRE } from './fire.js'
 //   object, and holds them to BIG_LIFE_S from then;
 //   each second a flame has SPREAD_ODDS of lighting another flame on a
 //   flammable within SPREAD_M of it;
+//   a torch's tip held within TOUCH_M of a flammable for IGNITE_S lights a flame on it, again each IGNITE_S it stays;
 //   a flame is a pure function of where and when, so a peer's copy (`remote`)
 //   burns the same and only the lighting machine spreads it.
 //
@@ -26,6 +27,9 @@ export const SPREAD_M = 1
 export const SPREAD_ODDS = 0.12
 export const SPREAD_STEP_S = 1
 export const LIGHT_M = 0.3
+export const TOUCH_M = 0.12
+export const IGNITE_S = 2
+const TOUCH_STEP_S = 0.1
 export const CAP = 48
 export const TORCH_CAP = 8
 export const FLAME = { height: 0.3, radius: 0.09 }
@@ -50,6 +54,9 @@ export class Wildfire {
     // Called with each flame this machine lights (a spark's, a spread's); the net sends it.
     this.onLight = null
     this.lit = new Map()
+    // Seconds each object has had a torch tip in touch, by key.
+    this.touching = new Map()
+    this.touchStep = 0
   }
 
   get count() { return this.list.length }
@@ -116,6 +123,7 @@ export class Wildfire {
   update(dt, now, tips) {
     this.list = this.list.filter((f) => f.die > now)
     for (const k of this.lit.keys()) if (this.onObject(k) === 0) this.lit.delete(k)
+    this._touch(dt, now, tips)
     this.step += dt
     while (this.step >= SPREAD_STEP_S) {
       this.step -= SPREAD_STEP_S
@@ -131,6 +139,24 @@ export class Wildfire {
     for (const t of tips) this.flames.place(n++, t.x, t.y, t.z, { height: TORCH.height, radius: TORCH.radius, phase: t.phase })
     if (this.flames.mesh) this.flames.mesh.count = n
     this.flames.update(now, [1, 1, 1])
+  }
+
+  _touch(dt, now, tips) {
+    this.touchStep += dt
+    if (this.touchStep < TOUCH_STEP_S) return
+    const held = this.touchStep
+    this.touchStep = 0
+    const seen = new Set()
+    for (const t of tips) {
+      const hit = this._nearest(t.x, t.y, t.z, TOUCH_M)
+      if (!hit) continue
+      seen.add(hit.key)
+      const sum = (this.touching.get(hit.key) ?? 0) + held
+      if (sum < IGNITE_S) { this.touching.set(hit.key, sum); continue }
+      this.touching.set(hit.key, 0)
+      this.spark(t.x, t.y, t.z, now)
+    }
+    for (const k of this.touching.keys()) if (!seen.has(k)) this.touching.delete(k)
   }
 
   _spread(now) {

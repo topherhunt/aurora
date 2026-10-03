@@ -4,7 +4,7 @@
 //
 // What can go wrong without throwing: a spark in open air that lights nothing versus one on a tree that does not; a flame that never dies; a third flame that does not char the tree, or chars it again on the fourth; flames that spread from a peer's copy and double on every machine; a torch that burns past the slot cap.
 
-import { Wildfire, LIFE_S, BIG_LIFE_S, BIG_GROW, FADE_S, SPREAD_STEP_S, levelAt } from '../src/v2/render/wildfire.js'
+import { Wildfire, IGNITE_S, LIFE_S, BIG_LIFE_S, BIG_GROW, FADE_S, SPREAD_STEP_S, levelAt } from '../src/v2/render/wildfire.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -99,6 +99,42 @@ console.log('torches')
   let threw = false
   try { w.update(0.016, 0, Array.from({ length: 9 }, () => ({ x: 0, y: 0, z: 0, phase: 0 }))) } catch { threw = true }
   check(threw, 'more torches than slots is refused, not dropped')
+}
+
+console.log('a torch held to a flammable')
+{
+  const run = (w, tip, seconds, t0 = 0) => {
+    let t = t0
+    for (let i = 0; i < seconds * 60; i++) { t += 1 / 60; w.update(1 / 60, t, tip ? [tip] : []) }
+    return t
+  }
+  const onTrunk = { x: 0.35, y: 1, z: 0, phase: 0 }
+  const lit = (w) => w.list.filter((f) => f.target).length
+
+  const a = make([tree(0, 0)])
+  run(a.w, onTrunk, IGNITE_S - 0.5)
+  check(lit(a.w) === 0, 'a tip in touch under two seconds lights nothing')
+  run(a.w, onTrunk, 1, IGNITE_S - 0.5)
+  check(lit(a.w) === 1, 'a tip held in touch for two seconds lights the tree')
+
+  const b = make([tree(0, 0)])
+  const t = run(b.w, onTrunk, IGNITE_S - 0.5)
+  const t2 = run(b.w, { x: 3, y: 1, z: 0, phase: 0 }, 0.3, t)
+  run(b.w, onTrunk, IGNITE_S - 0.5, t2)
+  check(lit(b.w) === 0, 'pulling the tip away resets the wait')
+
+  const far = make([tree(0, 0)])
+  run(far.w, { x: 0.6, y: 1, z: 0, phase: 0 }, IGNITE_S * 2)
+  check(lit(far.w) === 0, 'a tip a hand\'s width off the bark is not in touch')
+
+  const c = make([tree(0, 0)])
+  run(c.w, onTrunk, IGNITE_S * 2 + 0.5)
+  check(lit(c.w) === 2, 'a tip left in touch lights another flame every two seconds')
+  const sent = []
+  const d = make([tree(0, 0)])
+  d.w.onLight = (f) => sent.push(f)
+  run(d.w, onTrunk, IGNITE_S + 0.5)
+  check(sent.length === 1 && sent[0].local, 'a torch-lit flame is reported for the net')
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

@@ -1,5 +1,6 @@
 import THREE from './three-instance.js'
 import { LAYER, SNOW_LAYERS, SNOW_CARD_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS } from './textures.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from './head-eye.js'
 
 // ---------------------------------------------------------------------------
 // Snow, and moss, which is snow upside down.
@@ -1233,7 +1234,7 @@ function propCardMask(layerCount) {
 function billboardGrowVertex({ from, to, scale, sink, top }) {
   return /* glsl */ `
       float bbT = smoothstep( ${from.toFixed(3)}, ${to.toFixed(3)},
-        distance( cameraPosition, bbOrigin.xyz ) );
+        distance( ${HEAD_EYE_GLSL}, bbOrigin.xyz ) );
       float bbG = 1.0 + ${(scale - 1).toFixed(4)} * bbT;
       // The buried FRACTION at this point on the ramp, and the height scale that
       // leaves bbG times the card standing once that fraction is taken off.
@@ -1307,13 +1308,13 @@ function billboardVertex(grow, spin = true, tilt = null) {
   // in the xy plane and local +Z is what the spin will turn toward the eye.
   const tiltBody = tilt ? /* glsl */ `
       float bbTilt = step( ${tilt.layers[0].toFixed(1)} - 0.5, propLayer ) * step( propLayer, ${tilt.layers[1].toFixed(1)} + 0.5 );
-      float bbPitch = atan( bbOrigin.y - cameraPosition.y, bbLen ) * ${tilt.amount.toFixed(3)} * bbTilt;
+      float bbPitch = atan( bbOrigin.y - ${HEAD_EYE_GLSL}.y, bbLen ) * ${tilt.amount.toFixed(3)} * bbTilt;
       vec2 bbPC = vec2( cos( bbPitch ), sin( bbPitch ) );
       transformed.yz = vec2( transformed.y * bbPC.x - transformed.z * bbPC.y, transformed.y * bbPC.y + transformed.z * bbPC.x );` : ''
   const spinBody = /* glsl */ `
       // Face: the horizontal direction from the plant to the eye. Degenerate
       // only when the camera is exactly on the axis, where any answer is right.
-      vec2 bbTo = cameraPosition.xz - bbOrigin.xz;
+      vec2 bbTo = ${HEAD_EYE_GLSL}.xz - bbOrigin.xz;
       float bbLen = length( bbTo );
       vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
 ${tiltBody}
@@ -2628,7 +2629,10 @@ export function createPropMaterial(
       shader.uniforms.uBumpScale = bumpScale
       shader.uniforms.uBumpTile = bumpTile
     }
-    if (billboards) shader.uniforms.uBillboardLayers = { value: billboards }
+    if (billboards) {
+      shader.uniforms.uBillboardLayers = { value: billboards }
+      bindHeadEye(shader.uniforms)
+    }
     if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
       shader.uniforms.uWindStrength = windStrength
@@ -2671,7 +2675,8 @@ export function createPropMaterial(
         ${seasons ? SEASONS_VERTEX_COMMON : ''}
         uniform float uPropClock;
         varying float vPropFade;
-        ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];` : ''}
+        ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];
+        ${HEAD_EYE_DECL}` : ''}
         ${windSpec && windCompiled ? `uniform vec2 uWindDir;
         uniform float uWindStrength;` : ''}
         ${stripTiling ? `varying float vStripSeed;

@@ -23,6 +23,7 @@
 // closing in through hazeGain() instead.
 
 import THREE from '../../three-instance.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { mulberry32 } from '../../sim/mathx.js'
 
 export const CULL_M = 500
@@ -171,12 +172,13 @@ export class Wreaths {
     const u = this.uniforms
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, u)
+      bindHeadEye(shader.uniforms)
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\n${VERTEX_GLSL}`)
+        .replace('#include <common>', `#include <common>\n${HEAD_EYE_DECL}\n${VERTEX_GLSL}`)
         // The card turns about its axis to face her; its normal leans up and
         // toward her, so a cloud between her and the sun is the darker one.
         .replace('#include <beginnormal_vertex>', `
-          vec3 toCam = cameraPosition - aCenter;
+          vec3 toCam = ${HEAD_EYE_GLSL} - aCenter;
           vec3 bbFace = normalize( vec3( toCam.x, 0.0, toCam.z ) + vec3( 1e-4, 0.0, 0.0 ) );
           vec3 bbRight = vec3( bbFace.z, 0.0, -bbFace.x );
           vec3 objectNormal = normalize( bbFace + vec3( 0.0, 1.0, 0.0 ) );`)

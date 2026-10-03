@@ -1,4 +1,5 @@
 import THREE from '../three-instance.js'
+import { setHeadEye } from '../head-eye.js'
 
 import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
 import { Heightmap } from './height/heightmap.js'
@@ -6765,6 +6766,7 @@ function tick() {
   if (grass && grass.style === 'blades') grass.material.userData.uniforms.uTime.value = now / 1000
 
   player.headPosition(headTmp)
+  setHeadEye(headTmp.x, headTmp.y, headTmp.z)
   const [pose, poseHands] = currentPose()
   const boatNet = boats ? boats.netState() : null
   const foot = player.originPosition().y
@@ -6909,6 +6911,7 @@ function tick() {
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
+  placeHeld()
   gunWindows.update(hands)
   shotFlash.update(dt, headTmp)
   drainFlares()
@@ -7005,44 +7008,31 @@ function tick() {
 // renderer.setAnimationLoop -- see quest-main.js's header for why calling
 // setAnimationLoop here would silently stop laser-controls (and any other
 // A-Frame component) from ticking at all.
-// WHAT HER HANDS HOLD DRAWS OVER THE FINISHED FRAME: hands.js keeps it in
-// `over`, a group outside the scene, rendered here as a pass of its own with
-// the depth cleared, so it is never behind the menu (which has no depth) nor a
-// wall she stands against. Her shot's flash is drawn in it last, over them. Its lights are this frame's sun and sky copied, and
-// the scene's own fog, so the pool materials keep the one program. Her own hands go into its depth first, colour off, so the
-// fingers in front of a held thing hide it; without them the cleared depth puts every held thing over the hand holding it.
+// WHAT HER HANDS HOLD (hands.js `over`, and the flare gun's window on it) is `heldLayer`. With the menu closed it is in the scene,
+// so her hands, each other and the world hide it like anything else. With the menu open it moves to `overlay`, drawn here
+// after the frame with the depth cleared, so the menu (which has no depth) does not cover it; the pass runs only then.
+// The overlay's lights are this frame's sun and sky copied, and the scene's own fog, so the pool materials keep the one program.
+const heldLayer = new THREE.Group()
+heldLayer.name = 'v2-held'
+scene.add(heldLayer)
+worldProbe.exclude(heldLayer)
 const overlay = new THREE.Scene()
 overlay.fog = scene.fog
 const overSun = new THREE.DirectionalLight()
 const overHemi = new THREE.HemisphereLight()
 overlay.add(overSun, overHemi)
-const gunWindows = new GunWindows(overlay, HAND_KEYS)
-const shotFlash = new ShotFlash(overlay)
+const gunWindows = new GunWindows(heldLayer, HAND_KEYS)
+const shotFlash = new ShotFlash(scene)
+worldProbe.exclude(shotFlash.mesh)
 const flarePx = new THREE.Vector2()
-// Her hand under each grip (questHands) as a depth-only stand-in in the overlay, placed at the hand's world matrix of the main pass.
-const overHands = new Map()
-function placeOverHands() {
-  for (const [el, hand] of questHands) {
-    let proxy = overHands.get(el)
-    if (!proxy) {
-      proxy = new THREE.Mesh(hand.geometry, new THREE.MeshBasicMaterial({ colorWrite: false, side: hand.material.side }))
-      proxy.name = `${hand.name}-depth`
-      proxy.matrixAutoUpdate = false
-      proxy.matrixWorldAutoUpdate = false
-      proxy.renderOrder = -1
-      overlay.add(proxy)
-      overHands.set(el, proxy)
-    }
-    let shown = true
-    for (let o = hand; o && shown; o = o.parent) shown = o.visible
-    proxy.visible = shown
-    if (shown) proxy.matrixWorld.copy(hand.matrixWorld)
-  }
+/** Before the frame: what her hands hold into the world, or over it while the menu is open. */
+function placeHeld() {
+  if (hands.over.parent !== heldLayer) heldLayer.add(hands.over)
+  const parent = questPanelGroup.visible ? overlay : scene
+  if (heldLayer.parent !== parent) parent.add(heldLayer)
 }
 function renderOverlay() {
-  if (!hands || (!hands.over.children.some((m) => m.count > 0) && !shotFlash.mesh.visible)) return
-  if (hands.over.parent !== overlay) overlay.add(hands.over)
-  placeOverHands()
+  if (!hands || heldLayer.parent !== overlay || !hands.over.children.some((m) => m.count > 0)) return
   overSun.position.copy(sun.position); overSun.color.copy(sun.color); overSun.intensity = sun.intensity
   overHemi.color.copy(hemi.color); overHemi.groundColor.copy(hemi.groundColor); overHemi.intensity = hemi.intensity
   const autoClear = renderer.autoClear

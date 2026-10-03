@@ -24,11 +24,13 @@ On the one-handed desktop a torch cannot be lit with a flint in one hand and a s
 - The third flame on one object makes every flame on it big, holds them to 20 s from then, and chars the object once (`Trees.char`, `Ferns.char` set the per-instance tint to soot). A tile that regrows forgets the char.
 - Each second a flame has a 12% chance of lighting another flame on a flammable within 1 m.
 - A flame is a function of where and when. The lighting machine sends `[id, room, x, y, z, lifeS]`; the relay keeps `FLAME_CAP` and forwards each once with its age; a peer burns its copy and never spreads it, so flames do not double.
-- The campfire loop (`RULES.blaze`) is one loop at the nearest flame, louder with more flames.
+- Every card that turns to face the player (flames, trees' cards, critters, gen-props, wreaths) turns toward the head, not the eye being drawn, through `src/head-eye.js`; `main.js` sets it once a frame. In a headset `cameraPosition` is per-eye, so a card turned toward it doubles up close. New billboard shaders take `HEAD_EYE_DECL` / `bindHeadEye` / `HEAD_EYE_GLSL`; `check-flames` and `check-shaders` pin it.
+- The flame fragment shader is cheap on a tile GPU: it `discard`s an emptied fragment, runs the mask in `mediump` and keeps the clock and noise coordinates `highp`. The card hull is already near the tightest that never clips the noise, so it was left alone.
+- The campfire loop (`RULES.blaze`) is one loop at the nearest flame. One flame in the hand is faint (level 0.0375); each flame in reach adds its share and the level grows with the square root of the sum, to 8x at a blaze of dozens.
 
 ## Torches
 
-A held stick whose tip is within 15 cm of a spark is `rec.lit = true`, re-announced through `hands.rehold`; the flag replicates in the slot, so a peer sees the lit stick in the hand. It has one permanent flame at the tip and lights the world through `uTorch` (`TORCH_GLSL`): warm, flickering, fading out at 15 m, the four nearest torches. Stowing or submerging puts it out; dropped lit, it keeps burning. Torch light casts no shadow yet (a roadmap item). A torch does not set flammables alight.
+A held stick whose tip is within 15 cm of a spark is `rec.lit = true`, re-announced through `hands.rehold`; the flag replicates in the slot, so a peer sees the lit stick in the hand. It has one permanent flame at the tip and lights the world through `uTorch` (`TORCH_GLSL`): warm, flickering, fading out at 15 m, the four nearest torches. Stowing or submerging puts it out; dropped lit, it keeps burning. Torch light casts no shadow yet (a roadmap item). A torch's tip held within `TOUCH_M` (12 cm) of a tree, fern or ground stick for `IGNITE_S` (2 s) lights a flame on it exactly as a spark does, and again every 2 s it stays, so a torch left against a tree burns it big and black. The check runs at 10 Hz.
 
 ## Night
 

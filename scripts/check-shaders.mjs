@@ -455,7 +455,7 @@ const PROP_VARIANTS = [
     {
       vert: [...PROP_MARKS.vert, 'attribute float hem;', 'vHem = hem;', 'aPropFade',
         'attribute float aLayerShift;', 'float propLayer = texLayer + aLayerShift;',
-        'float bbTilt = step( 1.0 - 0.5, propLayer ) * step( propLayer, 2.0 + 0.5 );', 'atan( bbOrigin.y - cameraPosition.y, bbLen ) * 0.500 * bbTilt'],
+        'float bbTilt = step( 1.0 - 0.5, propLayer ) * step( propLayer, 2.0 + 0.5 );', 'atan( bbOrigin.y - ( uHeadEyeOn > 0.5 ? uHeadEye : cameraPosition ).y, bbLen ) * 0.500 * bbTilt'],
       frag: [...PROP_MARKS.frag, 'varying float vHem;', 'hemTooth(', 'if ( vHem >'],
     },
   ],
@@ -1065,7 +1065,7 @@ for (const [label, opts, defines] of [
   if (!vert.includes('float fadeSlot = aPropFade')) MISSING_MARKS.push(`${label} vert: the instanced fade slot`)
   if (!frag.includes('abs( vPropFade ) <= fadeT ) discard')) MISSING_MARKS.push(`${label} frag: the dither`)
   if (!!opts.card !== frag.includes('vec3 cnUp = normalize( ( viewMatrix')) MISSING_MARKS.push(`${label} frag: the card normal ${opts.card ? 'missing' : 'on a mesh'}`)
-  if (!!opts.billboard !== vert.includes('vec2 bbTo = cameraPosition.xz')) MISSING_MARKS.push(`${label} vert: the spin ${opts.billboard ? 'missing' : 'on a flat card'}`)
+  if (!!opts.billboard !== vert.includes('vec2 bbTo = ( uHeadEyeOn > 0.5 ? uHeadEye : cameraPosition ).xz')) MISSING_MARKS.push(`${label} vert: the spin ${opts.billboard ? 'missing' : 'on a flat card'}`)
   // The glow reads the pre-instance `position`, so one list of points lights every instance, and draws the pane unlit by uGlowOn -- its albedo times uGlow in the lit colour's place -- so its dark bars stay dark.
   if (!!opts.glow !== (vert.includes('vGlowPos = position;') && frag.includes(`uniform vec4 uGlowPts[${opts.glow?.length}];`) && frag.includes('outgoingLight = mix( outgoingLight, diffuseColor.rgb * uGlow, min( glowMask, 1.0 ) * uGlowOn );'))) MISSING_MARKS.push(`${label}: the glow ${opts.glow ? 'missing' : 'on an unlit prop'}`)
 }

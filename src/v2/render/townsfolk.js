@@ -65,8 +65,8 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
-  // A tied strider that does not trust her, her head within `m` m and no fish of hers in reach: it shrieks and runs off `run` m at `pace` of its run, stands `wait` s, walks back to its rail, and will not again for `cool` s.
-  shy: { m: 3, run: [3, 10], pace: 0.7, wait: [3, 6], cool: 5 },
+  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy), and then stands `wait` s and walks back to its rail.
+  shy: { ...WILD.shy, wait: [3, 6] },
 }
 
 export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', ...TALKS]

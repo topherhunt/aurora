@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { HEAD_EYE_DECL, bindHeadEye } from '../../head-eye.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
 import { LOD_DEG, SPIN_ATTRIBUTE, billboardVertex, critterLodUrl, distAt, loadCritterGlb } from './critters.js'
 
@@ -228,6 +229,7 @@ export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard
   material.onBeforeCompile = (shader) => {
     // By reference, so the one clock drives every program.
     shader.uniforms.uPropClock = propClockUniform()
+    if (billboard) bindHeadEye(shader.uniforms)
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -236,7 +238,8 @@ export function createGenPropMaterial({ tint = 0xffffff, card = false, billboard
         attribute float aPropFade;
         uniform float uPropClock;
         varying float vPropFade;
-        ${mixed ? SPIN_ATTRIBUTE : ''}`
+        ${mixed ? SPIN_ATTRIBUTE : ''}
+        ${billboard ? HEAD_EYE_DECL : ''}`
       )
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? billboardVertex(mixed) : ''}\n${FADE_VERTEX}`)
     shader.fragmentShader = shader.fragmentShader

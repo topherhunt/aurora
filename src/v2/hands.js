@@ -13,8 +13,8 @@ import THREE from '../three-instance.js'
 // thing she reached for, pixel for pixel. Held and loose things are drawn here,
 // one InstancedMesh per geometry (a POOL), rewritten every frame. What HER
 // hands hold is drawn from a second mesh per pool under `over`, a group that
-// is not in the scene: main.js renders it in a pass of its own over the
-// finished frame, so a thing in her hand is never behind the menu or a wall.
+// main.js places: in the world with the menu closed, over the finished frame
+// with it open, so the menu never covers a thing in her hand.
 // A hand may draw what it holds smaller than it is (`draw`), for the desktop
 // corner; the thing itself, its size and its lure, are unchanged.
 //
