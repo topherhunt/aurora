@@ -26,16 +26,25 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [x] Terrorbirds should roam around in the wild. If it sees you (6m), it turns to face you, makes wary muttering clucking noises, and backs away slowly.) If you get too close to it (3m), it screeches at you, attacks you once, and runs away. But if you approach it with a fish in your hand, then it meekly sits down with a whimpering noise, follows your fish with its head, and if you hold the fish up near its head, eats the fish and then follows you around happily like a puppy. Then you can ride it.
-  - [x] That means we need a separate version of the model that doesn't have a saddle on. Maybe use Tripo's segmenter AI to split off the saddle? Does that "fill in" the holes left behind in the main mesh?
-- [x] Bug: When in multiplayer, when the two of us enter a separate room together, such as the Leafkin Glade, I think the person who appears second doesn't see the person who appears first, but vice versa is not true. So Claire and I went in together, and Claire could see me the whole time. We were traveling around together, and she could identify where I was and what position I was in, but I could not see her. and that stayed even when we went into Leafkin houses inside the glade. 
-- [ ] Leafkin
-  - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
-  - [ ] Leafkin glades hold puzzles:
-    - Each glade has an assigned song.
-  - [ ] A giant deer-skull, either a house, or on top of of a house?
+- [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
+  - [ ] Too many skeletal meshes? Bake everything down to vertex shader animations and use InstancedMeshes? (this also gives us color tinting for free)
+  - [ ] What needs simplifying? Fire? Grass? ...
+  - [ ] 
+- [ ] Torches don't look good: try the same "core flame triangles" as what candles use, with only occasional flickers upward?
+- [ ] When another player is running, don't despawn whatever they're holding in their hand (including a torch).
+- [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
+- [ ] When 2 players are sitting on striders near each other, each player sees their own strider feather-ruffling near constantly while the other sits in a calm idle animation.
+- [ ] When riding a strider, in VR teleport mode, the strider should walk or run to its new location rather than just blink there.
+- [ ] When 2 players are in VR and teleporting on-foot down a mountain, player A will often see player B "sink into" the hillside and then run to their target location. As if person A's client is averse to keeping player B "walking as ground level".
+- [ ] Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
+- [ ] Fix bug: if you load game in a bed, your head position is displaced.
+- [ ] Fix bug: Leafkin jump up the walls of their houses
+- [ ] Fix bug: Claire got an error about "spiders" and "leg position" when she got into a villager bed and tried to fall asleep there (or maybe when she tried to get out of the bed).
+- [ ] Fix bug: some leafkin houses have too low awnings meaning you can't get access to the door. Lower capsule size maybe, or tighten awning boundary collision checks, or check doorway awning heights?
+- [ ] Leafkin in houses who don't trust you should cower and whimper if you come within 2m, unless you're holding a mushroom, in which case they should act the same way leafkin do outside of houses in their glade
+- [ ] Falling a long way with a Strider is always possible, but might kill you both.
+- [ ] 
 - [ ] Human villages
-  - [ ] You sometimes find NPCs walking the roads between villages.
   - [ ] Buildings: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc.
   - [ ] Farmland. Crops, livestock.
   - [ ] Stables w striders. You can "borrow" a strider to get around the countryside faster.
@@ -45,7 +54,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Door opening audio when NPCs enter or exit a home. Also, they should need to walk up to the door itself, rather than just touch the outer hull of the awning.
   - [ ] NPC behavior
   - [ ] Redo the netplay-sync system to be lighter-weight
-    - Currently each NPC has pseudorandom deterministic behavior based on starting each "chapter" at a specific time at a specific place (eg in their home). When you get within placement distance, the CPU needs to simulate everything each NPC has done since they started the "chapter" up to this moment, so both human players will see the NPC doing the same thing at the same moment. That's 
+    - Currently each NPC has pseudorandom deterministic behavior based on starting each "chapter" at a specific time at a specific place (eg in their home). When you get within placement distance, the CPU needs to simulate everything each NPC has done since they started the "chapter" up to this moment, so both human players will see the NPC doing the same thing at the same moment. That's
   - [ ] NPC conversation system
     - A simple menu of topics, each of which leads to procedurally-generated dialog trees.
     - Simple topics first
@@ -61,6 +70,11 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
         - your house?
       - Follow me!
 - [ ] Castles
+- [ ] Leafkin
+  - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
+  - [ ] Leafkin glades hold puzzles:
+    - Each glade has an assigned song.
+  - [ ] A giant deer-skull, either a house, or on top of of a house?
 - [ ] SOTC
   - Behemoths which stalk the land. You can chase after them, but on foot it's almost impossible to catch them; you need a strider. With a strider, ride up to one of their feet and grab on to the rungs going up it. And from then on you're in climbing mode -- riding along with this beast.
 - [ ] terrain-v3
@@ -68,13 +82,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - [x] Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
     - [x] Gaah it doesn't work. Maybe random jittering doesn't work with hydrology.
   - IF we take that simpler approach to the hydrology, then, maybe we only need to store coarser elevation map (8m / texel) and smaller-scale detail can be procedurally generated just-in-time?
-- [ ] Disable dither-fade for LOD swaps, pop-in, culls when you're in VR in teleport mode, ONLY for objects closer than 100m away.
 - [ ] Try fully mechanics / IK based dragon walk and fly motion.
 - [ ] Use Eleven Labs for better sound effects.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
 - [ ] Snowpeak quest: the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
 - [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
+- [ ] Human villages usually have a blacksmith. The blacksmith will trade you a sword for certain sufficiently valuable items and/or for doing certain favors/quests for them.
 - [ ] Human villages. If you do a favor for the potionmaker, he'll thank you by giving you a flare gun. Flare guns shoot out permanent flares which hover and shimmer in the air forever -- but you only have 10 charges. If you run out, you'll need to do another potionmaker another favor. and other human NPCs have similar such quest lines.
 - [ ] another human villager quest is that there's a person who says that they've always dreamed of having a pet deer. And if you figure out a way to lead a wild deer into their fenced yard and close the gate, then they will be over the moon about it and will give you something cool as a reward. Same with pet foxes and pet rabbits and pet frogs (maybe multiple in the latter case). Deer and rabbits can be led by holding a carrot. Foxes can be led by holding a chicken egg. (Oh yeah!! Villages are full of chickens!) Frogs and fish can be led by holding a butterfly or a spider. Again, this sort of information can be gleaned by talking to human NPCs who bring it up in a natural way, like mentioning that they did a certain thing, but sometimes it can be hard to distinguish between truth and tall tales.
 - \[ \]

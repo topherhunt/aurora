@@ -2,7 +2,7 @@
 //
 //   node scripts/check-town-interiors.mjs
 //
-// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at twice the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
+// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
 
 import { planBuilding, KINDS } from '../src/buildings/plan.js'
 import { flatField } from '../src/v2/rooms/interior.js'
@@ -36,7 +36,7 @@ const every = (what, pred) => {
   const r = houses[5], again = rollTownInterior({ seed: 4242, index: r.index, plan: r.plan })
   check(JSON.stringify(again.items) === JSON.stringify(r.items), 'a house rolls the same room twice')
 }
-every('the main room is the outside\'s main mass at twice the size', (r) => {
+every(`the main room is the outside's main mass at ${S} times the size`, (r) => {
   const m = r.plan.masses.find((q) => q.role === 'main')
   return Math.abs(r.M.x1 - r.M.x0 - (S * m.w - 0.3)) < 0.01 && Math.abs(r.M.z1 - r.M.z0 - (S * m.d - 0.3)) < 0.01
 })

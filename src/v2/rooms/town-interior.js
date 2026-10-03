@@ -3,7 +3,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { roofHeightAt } from '../../buildings/plan.js'
 
-export const S = 2
+export const S = 1.5
 // The outer wall's thickness inside the scaled shell, and a partition's.
 const T = 0.15
 export const PART = 0.12
@@ -243,7 +243,8 @@ export function rollTownInterior({ seed, index, plan }) {
           const uc = u0 + dir * (t - 0.5) * STAIR.run
           for (const d of [0.1, STAIR.w - 0.1]) { const p = pt(L, uc, d); if (roofAt(p.x, p.z) < t * rise + HEAD) ok = false }
         }
-        for (const d of [0.1, STAIR.w - 0.1]) { const p = pt(L, u0 + dir * (len + 0.5), d); if (roofAt(p.x, p.z) < U + HEAD) ok = false }
+        // At `top`, where she steps off and the upper floor's reach starts.
+        for (const d of [0.1, STAIR.w - 0.1]) { const p = pt(L, u0 + dir * (len + 0.6), d); if (roofAt(p.x, p.z) < U + HEAD) ok = false }
         if (!ok) continue
         const score = { back: 0, east: 1, west: 1, front: 2 }[name] + rng() * 0.8
         if (best === null || score < best.score) best = { name, L, dir, u0, score }
@@ -739,10 +740,10 @@ export function rollTownInterior({ seed, index, plan }) {
     if (chance(0.6)) { const p = pt(c.e, c.u + item.hx - 0.12, 0.2); candle(rm, p.x, y, p.z, 'dish', 0.7) }
   }
 
-  /** A bed head to a wall of `rm`, kept clear down one side; its spot's `stands` are every side that was clear, then the foot, for the reach test to choose from. */
-  const bed = (rm, b) => {
-    const wid = b === 0 && chance(0.5) ? 1.45 : 1.0, len = 2.05, top = 0.55
-    const cands = shuffle(atWall(rm, wid / 2, len / 2, { front: 0.5 })).filter((c) => ceilOver(rm, c.r) >= 1.4)
+  /** A bed head to a wall of `rm`, kept clear down one side and past its foot (a `cot` is shorter, its foot to the far wall); its spot's `stands` are every side that was clear, then the foot, for the reach test to choose from. */
+  const bed = (rm, b, cot = false) => {
+    const wid = b === 0 && !cot && chance(0.5) ? 1.45 : 1.0, len = cot ? 1.9 : 2.05, top = 0.55, front = cot ? 0 : 0.5
+    const cands = shuffle(atWall(rm, wid / 2, len / 2, { front })).filter((c) => ceilOver(rm, c.r) >= 1.4)
     for (const c of cands.slice(0, 16)) {
       const pillow = [c.e.ix * -1, c.e.iz * -1], acr = [pillow[1], -pillow[0]]
       const sides = shuffle([1, -1]).map((s) => {
@@ -751,7 +752,7 @@ export function rollTownInterior({ seed, index, plan }) {
       }).filter((sd) => clear(rm.level, sd.keep, SOLID))
       // Under an eave a side can be too low to stand in: some stand must have her headroom, and a side that has it is the one kept clear.
       const tall = (p) => levelCeilingAt(room, rm.level, p.x, p.z) - rm.floor >= HEAD
-      const stands = [...sides.map((d) => d.mid), { x: c.x - pillow[0] * (len / 2 + 0.9), z: c.z - pillow[1] * (len / 2 + 0.9) }].filter(tall)
+      const stands = [...sides.map((d) => d.mid), { x: c.x - pillow[0] * (len / 2 + 0.9), z: c.z - pillow[1] * (len / 2 + 0.9) }].filter((p) => within(rm.rect, p.x, p.z) && tall(p))
       if (sides.length === 0 || stands.length === 0) continue
       const sd = sides.find((d) => tall(d.mid)) || sides[0]
       const yaw = c.yaw + Math.PI
@@ -760,6 +761,7 @@ export function rollTownInterior({ seed, index, plan }) {
       const ok = tx(rm.level, () => {
         put(rm, item, c.r, top, { keep: sd.keep })
         spots.push({ kind: 'bed', x: c.x, z: c.z, top: rm.floor + top, floor: rm.floor, yaw, len, wid, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), standX: sd.mid.x, standZ: sd.mid.z, stands, level: rm.level, room: rm.id })
+        hold(rm.level, { ...stands[0], r: 0.3 })
       })
       if (!ok) continue
       const fr = footprint(foot.x, foot.z, c.yaw, Math.min(0.45, wid / 2 - 0.05), 0.24)
@@ -779,8 +781,8 @@ export function rollTownInterior({ seed, index, plan }) {
       // A hall too narrow for a table eats in the widest other room downstairs, or failing that at a board against its wall.
       const short = (r) => Math.min(r.rect.x1 - r.rect.x0, r.rect.z1 - r.rect.z0)
       const dine = () => !!table(rm, many ? 0.13 : 0.2) || rooms.filter((r) => r.level === 0 && r !== rm && r.kind !== 'store').sort((a, b) => short(b) - short(a)).some((r) => table(r, 0.2)) || board(rm)
-      // A bed takes a 2.5 m run off a wall that a board in the middle can leave none of, so a hall that sleeps tries both orders.
-      if (!rm.sleeps || !(tx(0, () => dine() && bed(rm, 1)) || tx(0, () => bed(rm, 1) && dine()))) dine()
+      // A bed takes a 2.5 m run off a wall that a table in the middle can leave none of, so a hall that sleeps tries both orders, then a board against the wall.
+      if (!rm.sleeps || !(tx(0, () => dine() && bed(rm, 1)) || tx(0, () => bed(rm, 1) && dine()) || tx(0, () => bed(rm, 1) && board(rm)))) dine()
       if (many) { table(rm, 0.13); if (chance(0.5)) table(rm, 0.12) }
       standing(rm, 'dresser', range(0.6, 0.8), 0.26, range(1.8, 2.0), { load: 'plates' }, { front: 0.8 })
       shelf(rm)
@@ -851,13 +853,13 @@ export function rollTownInterior({ seed, index, plan }) {
       if (chance(0.4)) shelf(rm)
     },
   }
-  // Bedrooms first, so their beds have the walls, then the hall so its board has the floor; a house with no bedroom sleeps in its hall, or failing that in the biggest room before it is furnished.
-  const bedrooms = rooms.filter((rm) => rm.kind === 'bedroom')
-  hall.sleeps = bedrooms.length === 0
-  for (const rm of [...bedrooms, hall]) furnish[rm.kind](rm)
+  // Bedrooms first, so their beds have the walls, then the hall so its board has the floor; a house whose bedrooms took no bed sleeps in its hall, or failing that in the biggest room.
+  for (const rm of rooms) if (rm.kind === 'bedroom') furnish.bedroom(rm)
+  hall.sleeps = !items.some((it) => it.kind === 'bed')
+  furnish.hall(hall)
   if (!items.some((it) => it.kind === 'bed')) {
     const area = (r) => (r.rect.x1 - r.rect.x0) * (r.rect.z1 - r.rect.z0)
-    if (!rooms.slice().sort((a, b) => area(b) - area(a)).some((r) => bed(r, 1))) throw new Error(`rollTownInterior: house ${index} has no wall for a bed`)
+    if (!rooms.slice().sort((a, b) => area(b) - area(a)).some((r) => bed(r, 1) || bed(r, 1, true))) throw new Error(`rollTownInterior: house ${index} has no wall for a bed`)
   }
   for (const rm of rooms) if (rm.kind !== 'bedroom' && rm !== hall) furnish[rm.kind](rm)
   for (const rm of rooms) if (!candles.some((c) => c.room === rm.id) && !sconce(rm)) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} has no light and no wall for a sconce`)

@@ -6,7 +6,7 @@ Any town building (§32) can be entered by its door. `rollTownInterior({ seed, i
 
 ## Plan
 
-- **Scale.** Every mass is the outside's at `S` = 2 on the ground, inset by the 0.15 m wall. Room-local metres: building-local × S, unrotated, y 0 the ground floor, the front door in the main mass's +Z wall. The roof's underside is the outside roof scaled up (`townCeilingAt`).
+- **Scale.** Every mass is the outside's at `S` = 1.5 on the ground, inset by the 0.15 m wall. Room-local metres: building-local × S, unrotated, y 0 the ground floor, the front door in the main mass's +Z wall. The roof's underside is the outside roof scaled up (`townCeilingAt`).
 - **Masses.** Wings and outshuts meet the main across a board junction wall with one doorway (`DOORWAY` 1.1 × 2.2). A mass meeting the main on an unknown side, or over less than a doorway plus 0.6 m, throws.
 - **Windows** stand where the plan has them (outshut windows are dropped), 1.1 m wide, never in a junction or beside the door. An upper floor's gables with no window get one high up, so an upstairs room is never lit only by candles.
 - **Hearth.** On the chimney's gable if it fits (then the other gable, then the back), 1.9 × 0.75, clear of the door and the junction doorways. Its room is the kitchen, or the hall if they are the same room.
@@ -27,8 +27,8 @@ The invariant is that every place a resident goes stays reachable. `anchors[leve
 Order, so the scarce things get floor first:
 
 1. Bedrooms: one bed, or two in a room over 16 m² (55%). A bed's head goes to a wall with 2.5 m of run, with at least one clear side to stand in that has her headroom under an eave (`stands`, the sides and then the foot); a chest at the foot, a stool and candle by the pillow, maybe a rug.
-2. The hall. Dining is a long table in the middle (`table`), sized down through fallbacks: shorter, no end chairs, a narrow table with a 0.4 m walkway (a 3.3 m hall), a chair a side; along the long axis then across it. Failing the hall, it eats at a table in the widest other ground room (stores excepted), and failing that at a `board` against the wall with two chairs. A hall that sleeps (no bedroom) tries dine-then-bed and bed-then-dine, since a centred table can leave no 2.5 m wall run. Inns add one or two more tables. Then a plate dresser, shelves, maybe an armchair, and the kitchen's things if the hearth is here.
-3. No bed yet: one in the largest room with a wall for it, or the roll throws.
+2. The hall. A house whose bedrooms took no bed sleeps here. Dining is a long table in the middle (`table`), sized down through fallbacks: shorter, no end chairs, a narrow table with a 0.4 m walkway (a 3.3 m hall), a chair a side; along the long axis then across it. Failing the hall, it eats at a table in the widest other ground room (stores excepted), and failing that at a `board` against the wall with two chairs. A hall that sleeps tries dine-then-bed, bed-then-dine, then bed-then-board, since a centred table can leave no 2.5 m wall run. Inns add one or two more tables. Then a plate dresser, shelves, maybe an armchair, and the kitchen's things if the hearth is here.
+3. No bed yet: one in the largest room with a wall for it, then a 1.9 m cot with its foot to the far wall (a small hut's outshut), or the roll throws. A bed's first stand is held as an anchor.
 4. The rest: kitchen (hearth cook spot, worktable with its own cook spot, barrels, sacks, shelves); parlour (corner armchair with a stool and candle, a rocker, rug, shelf, bookcase, chest); workroom (desk with parchment, scrolls, inkpot, books and a reading chair, bookcases, a scroll chest or bin); store (barrels, crates, sacks).
 5. A room with no candle gets a sconce, or the roll throws.
 
@@ -50,7 +50,7 @@ She sleeps in any `bed` spot, as in a leafkin bed (`roomBeds` in `main.js`); a s
 
 ## Gate
 
-`check-town-interiors.mjs` rolls 24 seeds of every building kind. It checks that each rolls, deterministically; the main room is twice the outside; the hall and kitchen are downstairs; every room has a light, the house a bed, a table with seats and a cook spot; beds are mostly upstairs in two-floor houses; workrooms have their papers. It then floods her walk by `player.js`'s step rule (only a climb is refused, and only when the 1.5 m stride baseline is also over 50°) from inside the door: she lands on the floor, never leaves the plan, reaches every spot and the stair top, and `navRoute` joins the door to every spot.
+`check-town-interiors.mjs` rolls 24 seeds of every building kind. It checks that each rolls, deterministically; the main room is the outside at `S`; the hall and kitchen are downstairs; every room has a light, the house a bed, a table with seats and a cook spot; beds are mostly upstairs in two-floor houses; workrooms have their papers. It then floods her walk by `player.js`'s step rule (only a climb is refused, and only when the 1.5 m stride baseline is also over 50°) from inside the door: she lands on the floor, never leaves the plan, reaches every spot and the stair top, and `navRoute` joins the door to every spot.
 
 ## Open
 

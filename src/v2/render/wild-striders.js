@@ -163,6 +163,7 @@ export class WildStriders {
     this.outbox = []
     // Keys tamed by any player in the room, as its anchors say (_owe); hers are bond.trusted besides.
     this.tamed = new Set()
+    this.warned = false
     this.inner = new Striders(scene, { walk, textures, patch })
     this.materials = this.inner.materials
     this.live = new Map()
@@ -263,6 +264,8 @@ export class WildStriders {
     const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1)), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
       state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity, aim: 0,
+      // Room time this client took it live from calm (apply's tie-break), and (a peer's ridden copy) until its relayed shake ends.
+      since: 0, shake: 0,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
       // Afloat (WILD.ride.swim): the bob's clock, and seconds to the next splash and swoosh.
       float: { t: 0, splash: between(WILD.ride.swim.splash), swoosh: 0 },
@@ -283,8 +286,6 @@ export class WildStriders {
     } else this._plot(m)
     this._calmAt(m, this.now, _calm)
     p.x = _calm.x; p.z = _calm.z; p.y = this.walk.heightAt(p.x, p.z); p.heading = _calm.heading
-    // Homed where it was left afloat.
-    if (this._deep(m, p.x, p.z)) { this._enter(m, 'swim'); return }
     if (this.booted && Math.random() < WILD.panic.chance) {
       // Aimed at a point beside her, and on past it until it is out of range.
       const miss = between(WILD.panic.miss) * (Math.random() < 0.5 ? -1 : 1), to = Math.atan2(-(z - p.z), x - p.x)
@@ -294,6 +295,8 @@ export class WildStriders {
   }
 
   _drop(m, stillHome) {
+    // Live here and gone out of range (a panicked runner, a swimmer left adrift): the room calms it where it went rather than where its last anchor was.
+    if (m.by === null && m.state !== 'calm') this._owe(m, 'rejoin')
     this.inner.release(m)
     this.live.delete(m.key)
     if (m.tack) this.returned(m.key)
@@ -367,9 +370,10 @@ export class WildStriders {
     S.end()
   }
 
-  /** Into `state`; one of this client's gone live owes the room its anchor now, and gone calm again its rejoin. */
-  _enter(m, state) {
+  /** Into `state`, a panic or swim headed for `aim`; one of this client's gone live owes the room its anchor now, and gone calm again its rejoin. */
+  _enter(m, state, aim = m.pose.heading) {
     const was = m.state
+    if (m.by === null && was === 'calm' && state !== 'calm') m.since = this.now
     m.state = state
     m.t = 0
     m.hit = false
@@ -396,16 +400,18 @@ export class WildStriders {
       m.seg = null
       this._set(m, 'idle', 0, true)
     } else if (state === 'panic') {
-      m.aim = p.heading
+      m.aim = aim
       this._set(m, 'run', WILD.panic.pace * this.runV * p.size)
     } else if (state === 'swim') {
       const S = WILD.ride.swim
-      m.aim = p.heading
+      m.aim = aim
       m.voice = between(S.wander)
-      m.run = between(S.adrift)
+      // A peer's copy never makes for the shore itself: the anchors' error carries it out after the owner's.
+      m.run = m.by === null ? between(S.adrift) : Infinity
       this._set(m, 'idle', 0, true)
     } else if (state === 'shy') {
-      m.run = between(WILD.shy.run)
+      // A peer's copy runs on till the owner's rejoin stops it, rather than stopping short on its own roll.
+      m.run = m.by === null ? between(WILD.shy.run) : Infinity
       this._set(m, 'run', WILD.shy.pace * this.runV * p.size)
       this._say(m, 'striderChirp1', 1.6, 1)
       this._say(m, 'striderWhine', 1.3, 0.8)
@@ -502,7 +508,8 @@ export class WildStriders {
     const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this._tamed(m.key)
     switch (m.state) {
       case 'panic': {
-        if (!this._dash(m, m.aim, W.panic.pace * this.runV * p.size, dt, W.turn)) m.aim = wrap(m.aim + (Math.random() < 0.5 ? 1 : -1))
+        // Its aim is the owner's roll, which a peer's copy takes from the anchors (_fromAnchor).
+        if (!this._dash(m, m.aim, W.panic.pace * this.runV * p.size, dt, W.turn) && mine) m.aim = wrap(m.aim + (Math.random() < 0.5 ? 1 : -1))
         if ((m.voice -= dt) <= 0) { m.voice = between(W.panic.call); this._chirp(m, between([1.3, 1.7]), 1) }
         return
       }
@@ -608,14 +615,15 @@ export class WildStriders {
           this._set(m, 'fidget', 0, true)
           return
         }
-        if ((m.voice -= dt) <= 0) { m.voice = between(S.wander); m.aim = (m.run <= 0 ? this._shore(m) : null) ?? wrap(p.heading + between([-S.veer, S.veer])) }
+        // The aim is the owner's (a peer's copy takes it from the anchors).
+        if (mine && (m.voice -= dt) <= 0) { m.voice = between(S.wander); m.aim = (m.run <= 0 ? this._shore(m) : null) ?? wrap(p.heading + between([-S.veer, S.veer])) }
         this._turn(m, m.aim, dt, W.turn * 0.4)
         const v = (S.drift * p.size) / STRIDER.size.mean, x = p.x + Math.cos(p.heading) * v * dt, z = p.z - Math.sin(p.heading) * v * dt
         const open = (m.run -= dt) <= 0 || this._deep(m, x, z)
         if (open && !this.walk.obstacleAt(x, z, _trunk, m)) { p.x = x; p.z = z; p.speed = v }
         else {
           p.speed = 0
-          if (Math.abs(wrap(m.aim - p.heading)) < 1) { m.aim = wrap(p.heading + Math.PI); m.voice = between(S.wander) + Math.PI / (W.turn * 0.4) }
+          if (mine && Math.abs(wrap(m.aim - p.heading)) < 1) { m.aim = wrap(p.heading + Math.PI); m.voice = between(S.wander) + Math.PI / (W.turn * 0.4) }
         }
         this._bob(m, dt, level, p.speed)
         return
@@ -663,18 +671,23 @@ export class WildStriders {
     this._step(m, dt, head, _s, null)
   }
 
-  /** One a peer rides, its seat kept under their relayed head, walking or running as fast as they go. */
+  /** One a peer rides, its seat kept under their relayed head, turned the way it is carried (backing, the other way) and walking or running as fast; shaking while its anchor says (_fromAnchor). */
   _carried(m, head, dt) {
     const p = m.pose, R = WILD.ride, big = p.size / STRIDER.size.mean
     this._seat(m, _v)
-    const dx = head.x - _v.x, dz = head.z - _v.z
+    const dx = head.x - _v.x, dz = head.z - _v.z, d = Math.hypot(dx, dz), way = Math.atan2(-dz, dx)
+    const back = d > 1e-4 && Math.abs(swing(p.heading, way)) > Math.PI / 2
     p.x += dx
     p.z += dz
     p.y = this.walk.heightAt(p.x, p.z, p.y)
-    m.v += (Math.hypot(dx, dz) / Math.max(dt, 1e-3) - m.v) * ease(0.25, dt)
+    m.v += ((back ? -d : d) / Math.max(dt, 1e-3) - m.v) * ease(0.25, dt)
+    if (Math.abs(m.v) > 0.3) p.heading = wrap(p.heading + swing(p.heading, back ? way + Math.PI : way) * ease(0.3, dt))
     p.swim = this._deep(m, p.x, p.z, p.y)
-    if (p.swim) { this._bob(m, dt, this.walk.waterAt(p.x, p.z), m.v); this._set(m, 'idle', m.v) }
-    else if (m.v < 0.3) this._set(m, 'idle', 0)
+    if (p.swim) this._bob(m, dt, this.walk.waterAt(p.x, p.z), m.v)
+    if (this.now < m.shake) {
+      // Shaking.
+    } else if (p.swim) this._set(m, 'idle', m.v)
+    else if (Math.abs(m.v) < 0.3) this._set(m, 'idle', 0)
     else if (m.v <= R.runAt * big) this._set(m, 'walk', m.v)
     else this._set(m, 'run', m.v)
     m.want.yaw = m.want.pitch = m.want.roll = 0
@@ -716,9 +729,16 @@ export class WildStriders {
     m.posts = posts
   }
 
-  /** It calm at `home` (to the millimetre the wire carries), its spots plotted about it. */
+  /** It calm at `home` (to the millimetre the wire carries), or calmed in the water (a rider or swimmer's client gone) on the nearest dry ground clear of trunks within 30 m, the same on every client; its spots plotted about it. */
   _rehome(m, x, z) {
-    m.home = { x: snap(x), z: snap(z) }
+    let hx = snap(x), hz = snap(z)
+    for (let d = 2; d <= 30 && !this._dry(hx, hz); d += 2) {
+      for (let i = 0; i < 16; i++) {
+        const h = (i / 16) * 2 * Math.PI, px = snap(x) + Math.cos(h) * d, pz = snap(z) - Math.sin(h) * d
+        if (this._dry(px, pz) && !this.walk.trees.trunkAt(px, pz, this.walk.trunkPad, _trunk)) { hx = snap(px); hz = snap(pz); break }
+      }
+    }
+    m.home = { x: hx, z: hz }
     this._plot(m)
   }
 
@@ -805,7 +825,8 @@ export class WildStriders {
   /** Its anchor owed the room now, in `mode`, and kept as the room's latest for it. */
   _owe(m, mode) {
     const p = m.pose
-    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this._tamed(m.key) ? 1 : 0]
+    const shake = m === this.ridden ? Math.max(0, m.ride.fid) : 0
+    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this._tamed(m.key) ? 1 : 0, snap(m.aim), snap(m.since), snap(shake)]
     this.outbox.push(a)
     // Alone in the room nothing drains it: only the latest few could matter.
     if (this.outbox.length > 64) this.outbox.shift()
@@ -815,16 +836,22 @@ export class WildStriders {
 
   /**
    * An anchor heard from the room, `[key, T, x, y, z, heading, -1, mode, by,
-   * size, t, tamed]`. A live one puts the body live on that peer's player where the
-   * anchor has it (a town's strider a peer rides lent here first); a rejoin
-   * calms it where the anchor had it. One live on this client, or ridden by
-   * her, keeps its own.
+   * size, t, tamed, aim, since, shake]`. A live one puts the body live on that
+   * peer's player where the anchor has it (a town's strider a peer rides lent
+   * here first); a rejoin calms it where the anchor had it. One ridden by her
+   * keeps its own; so does one live on this client, unless the peer took it
+   * live first (`since`, both clients having taken it at once) or rides it.
    */
   apply(anchor, now) {
     const [wire, T, , , , , , mode, by] = anchor
     if (by === null) return
     if (!Number.isFinite(T)) throw new Error(`WildStriders: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (mode !== 'rejoin' && !LIVE.includes(mode)) throw new Error(`WildStriders: no anchor mode ${mode}`)
+    if (!(Number.isFinite(anchor[12]) && Number.isFinite(anchor[13]) && Number.isFinite(anchor[14]))) {
+      // From a build before aim, since and shake: the relay keeps those a chapter past a deploy, and a throw here would repeat every frame.
+      if (!this.warned) { this.warned = true; console.warn(`[net] a strider anchor from an older build, dropped: ${JSON.stringify(anchor)}`) }
+      return
+    }
     const key = wire.slice(WIRE.length)
     this.anchors.set(key, anchor)
     if (anchor[11] === 1) this.tamed.add(key)
@@ -838,7 +865,8 @@ export class WildStriders {
         m.pose.heading = lent.pose.heading
       }
     }
-    if (!m || m === this.ridden || (m.by === null && m.state !== 'calm')) return
+    if (!m || m === this.ridden) return
+    if (m.by === null && m.state !== 'calm' && (mode === 'rejoin' || (mode !== 'ridden' && !(anchor[13] < m.since)))) return
     if (mode === 'rejoin') this._calmFrom(m, anchor)
     else this._fromAnchor(m, anchor)
   }
@@ -859,6 +887,12 @@ export class WildStriders {
     if (fresh || m.state !== a[7]) {
       this._enter(m, a[7])
       m.t = a[10] + Math.max(0, this.now - a[1])
+    }
+    m.aim = a[12]
+    m.since = a[13]
+    if (a[14] > 0) {
+      if (this.now >= m.shake) this._set(m, 'fidget', 0, true)
+      m.shake = a[1] + a[14]
     }
     if (fresh || Math.hypot(a[2] - p.x, a[4] - p.z) > WILD.snap) {
       p.x = a[2]; p.y = a[3]; p.z = a[4]; p.heading = a[5]
@@ -882,6 +916,9 @@ export class WildStriders {
     m.want.yaw = m.want.pitch = m.want.roll = 0
     this._set(m, 'idle', 0, true)
     this._rehome(m, a[2], a[4])
+    // Calmed afloat, it is put ashore at its home rather than walked there along the bottom.
+    const p = m.pose
+    if (this._deep(m, p.x, p.z)) { p.x = m.home.x; p.z = m.home.z; p.y = this.walk.heightAt(p.x, p.z) }
   }
 
   // -- riding ------------------------------------------------------------------
@@ -909,8 +946,7 @@ export class WildStriders {
   fright(key, x, z) {
     const m = this.live.get(key)
     if (!m || m.by !== null || m === this.ridden) throw new Error(`WildStriders.fright: ${key} is not a strider this client may send bolting`)
-    this._enter(m, 'panic')
-    m.aim = Math.atan2(z - m.pose.z, m.pose.x - x)
+    this._enter(m, 'panic', Math.atan2(z - m.pose.z, m.pose.x - x))
   }
 
   /** The friendly strider whose back `hand` touches from the side, or null. */
@@ -934,6 +970,7 @@ export class WildStriders {
   /** Her onto `m`'s back, facing its way. */
   mount(m, player) {
     this.ridden = m
+    if (m.state === 'calm') m.since = this.now
     m.state = 'ridden'
     m.want.yaw = m.want.pitch = m.want.roll = 0
     this._set(m, 'idle', 0, true)
@@ -948,6 +985,7 @@ export class WildStriders {
       swim: m.pose.swim, wet: m.pose.swim, willing: m.pose.swim, coax: 0, need: between(R.swim.coax), squawk: 0, balk: 0,
     }
     player.mountAt(_v.x, _v.y + R.eye * player.scale, _v.z, m.pose.heading)
+    this._owe(m, 'ridden')
     this._chirp(m, 1.05, 0.8)
   }
 
@@ -1110,10 +1148,11 @@ export class WildStriders {
     return null
   }
 
-  /** Ridden `m` stands and plays the fidget: a flutter and a feather shake (striders.js). */
+  /** Ridden `m` stands and plays the fidget: a flutter and a feather shake (striders.js), told the room at once. */
   _shake(m) {
     m.ride.fid = this.dur.fidget
     this._set(m, 'fidget', 0, true)
+    this._owe(m, 'ridden')
   }
 
   // -- the headset's ride: hops where she lobs (main.js aimTeleport) --------------
@@ -1216,8 +1255,7 @@ export class WildStriders {
       }
     } else if ((r.fidget -= dt) <= 0) {
       r.fidget = between(H.fidget)
-      r.fid = this.dur.fidget
-      this._set(m, 'fidget', 0, true)
+      this._shake(m)
       const a = Math.random() * 2 * Math.PI
       r.off.x = Math.cos(a) * H.shift
       r.off.z = Math.sin(a) * H.shift
