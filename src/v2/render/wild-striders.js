@@ -48,8 +48,8 @@ export const WILD = {
     swing: 1.2, heave: 0.15,
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
-    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface: it swims at most `speed` m/s (`back` backing), bobs `duck` m every `paddle` s and splashes every `splash` s. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes.
-    swim: { draft: 0.5, speed: 0.7, back: -0.4, duck: 0.04, paddle: 1.6, splash: [1.5, 4], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6] },
+    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface: it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), bobs `duck` m every `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
+    swim: { draft: 0.5, speed: 1.4, stroke: [0.35, 1], back: -0.8, duck: 0.08, paddle: 0.8, splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
   },
   // In the headset it hops where she lobs (main.js aimTeleport): `reach` times her walking lob, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
   hop: { reach: 2, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, tread: [0.5, 1.4], cluck: 0.35, fidget: [3, 8], shift: 0.03, sway: 0.04 },
@@ -58,7 +58,7 @@ export const WILD = {
 const MORE_CLIPS = ['peck', 'sit', 'attack']
 const WIRE = 'ws:'
 // The live states a client anchors to the room; `rejoin` is one gone calm there.
-const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'ridden', 'panic', 'shy']
+const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'ridden', 'panic', 'shy', 'swim']
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
 const ACTS = [['peck', 0.45], ['idle', 0.35], ['fidget', 0.2]]
 const _calm = { x: 0, z: 0, heading: 0, speed: 0, act: 'idle', seg: 0 }
@@ -92,7 +92,7 @@ function hash01(a, b, c) {
  * A puppet's neck turned on top of its clip: `look` yaw (left +), pitch (up +)
  * and roll in radians, spread along the head chain and applied about the
  * creature's own axes (it faces +X, up +Y), on Puppet's solver contract,
- * chained after the shake (strider-shake.js `then`).
+ * chained after the paddle (striders.js setAsset).
  */
 class HeadTurn {
   constructor(puppet, chain) {
@@ -206,7 +206,7 @@ export class WildStriders {
       if (i < 0) throw new Error(`WildStriders: no bone named ${name}`)
       return i
     })
-    for (const p of this.inner.puppets) p.solver.then = new HeadTurn(p, chain)
+    for (const p of this.inner.puppets) p.paddle.then = new HeadTurn(p, chain)
     const d = (name) => asset.clips.find((c) => c.name === name).duration
     this.dur = { attack: d('attack'), peck: d('peck'), fidget: d('fidget'), sit: d('sit') }
     // At the shipped size; a body's are these times its size.
@@ -264,6 +264,8 @@ export class WildStriders {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
       state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity, aim: 0,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
+      // Afloat (WILD.ride.swim): the bob's clock, and seconds to the next splash and swoosh.
+      float: { t: 0, splash: between(WILD.ride.swim.splash), swoosh: 0 },
     })
     const p = m.pose
     p.x = home.x; p.z = home.z; p.y = this.walk.heightAt(home.x, home.z)
@@ -281,6 +283,8 @@ export class WildStriders {
     } else this._plot(m)
     this._calmAt(m, this.now, _calm)
     p.x = _calm.x; p.z = _calm.z; p.y = this.walk.heightAt(p.x, p.z); p.heading = _calm.heading
+    // Homed where it was left afloat.
+    if (this._deep(m, p.x, p.z)) { this._enter(m, 'swim'); return }
     if (this.booted && Math.random() < WILD.panic.chance) {
       // Aimed at a point beside her, and on past it until it is out of range.
       const miss = between(WILD.panic.miss) * (Math.random() < 0.5 ? -1 : 1), to = Math.atan2(-(z - p.z), x - p.x)
@@ -352,7 +356,7 @@ export class WildStriders {
         p.meshes.forEach((mesh, i) => { mesh.geometry = tiers[i] })
         p.tack = m.tack
       }
-      Object.assign(p.solver.then.look, m.look)
+      Object.assign(p.paddle.then.look, m.look)
       if (m.pose.clip === 'sit') {
         const a = p.actions.get('sit'), [lo, hi] = WILD.fish.hold
         if (m.state === 'meek' && a.time > hi) a.time = lo
@@ -373,6 +377,7 @@ export class WildStriders {
     m.voice = 0
     m.want.yaw = m.want.pitch = m.want.roll = 0
     const p = m.pose
+    p.swim = state === 'swim'
     if (state === 'charge') {
       this._set(m, 'run', WILD.charge.pace * this.runV * p.size)
       this._say(m, 'striderChirp1', 1.5, 1)
@@ -393,6 +398,12 @@ export class WildStriders {
     } else if (state === 'panic') {
       m.aim = p.heading
       this._set(m, 'run', WILD.panic.pace * this.runV * p.size)
+    } else if (state === 'swim') {
+      const S = WILD.ride.swim
+      m.aim = p.heading
+      m.voice = between(S.wander)
+      m.run = between(S.adrift)
+      this._set(m, 'idle', 0, true)
     } else if (state === 'shy') {
       m.run = between(WILD.shy.run)
       this._set(m, 'run', WILD.shy.pace * this.runV * p.size)
@@ -582,6 +593,33 @@ export class WildStriders {
         }
         return
       }
+      case 'swim': {
+        // Adrift: paddling slowly on a heading that wanders and turns back off the shore till m.run is up, then for the nearest shore and out onto it, where it shakes (hit) and calms.
+        if (m.hit) {
+          if (mine && m.t >= this.dur.fidget) this._enter(m, 'calm')
+          return
+        }
+        const S = W.ride.swim, g = this.walk.heightAt(p.x, p.z, p.y), level = this.walk.waterAt(p.x, p.z)
+        if (!this._deep(m, p.x, p.z, g, level)) {
+          m.hit = true
+          m.t = 0
+          p.y = g
+          p.swim = false
+          this._set(m, 'fidget', 0, true)
+          return
+        }
+        if ((m.voice -= dt) <= 0) { m.voice = between(S.wander); m.aim = (m.run <= 0 ? this._shore(m) : null) ?? wrap(p.heading + between([-S.veer, S.veer])) }
+        this._turn(m, m.aim, dt, W.turn * 0.4)
+        const v = (S.drift * p.size) / STRIDER.size.mean, x = p.x + Math.cos(p.heading) * v * dt, z = p.z - Math.sin(p.heading) * v * dt
+        const open = (m.run -= dt) <= 0 || this._deep(m, x, z)
+        if (open && !this.walk.obstacleAt(x, z, _trunk, m)) { p.x = x; p.z = z; p.speed = v }
+        else {
+          p.speed = 0
+          if (Math.abs(wrap(m.aim - p.heading)) < 1) { m.aim = wrap(p.heading + Math.PI); m.voice = between(S.wander) + Math.PI / (W.turn * 0.4) }
+        }
+        this._bob(m, dt, level, p.speed)
+        return
+      }
       case 'follow': {
         const F = W.follow, d = Math.hypot(feet.x - p.x, feet.z - p.z)
         if (mine && d > F.lose) { this._enter(m, 'calm'); return }
@@ -634,7 +672,9 @@ export class WildStriders {
     p.z += dz
     p.y = this.walk.heightAt(p.x, p.z, p.y)
     m.v += (Math.hypot(dx, dz) / Math.max(dt, 1e-3) - m.v) * ease(0.25, dt)
-    if (m.v < 0.3) this._set(m, 'idle', 0)
+    p.swim = this._deep(m, p.x, p.z, p.y)
+    if (p.swim) { this._bob(m, dt, this.walk.waterAt(p.x, p.z), m.v); this._set(m, 'idle', m.v) }
+    else if (m.v < 0.3) this._set(m, 'idle', 0)
     else if (m.v <= R.runAt * big) this._set(m, 'walk', m.v)
     else this._set(m, 'run', m.v)
     m.want.yaw = m.want.pitch = m.want.roll = 0
@@ -838,6 +878,7 @@ export class WildStriders {
     m.state = 'calm'
     m.t = 0
     m.seg = null
+    m.pose.swim = false
     m.want.yaw = m.want.pitch = m.want.roll = 0
     this._set(m, 'idle', 0, true)
     this._rehome(m, a[2], a[4])
@@ -849,7 +890,7 @@ export class WildStriders {
   _seat(m, out) { return out.copy(this._saddle(m).rest).applyMatrix4(poseMatrix(m.pose, this.k * m.pose.size, _m)) }
 
   _mountable(m, head) {
-    return m !== this.ridden && m.by === null && this.bond.trusted.has(m.key) && ['calm', 'follow'].includes(m.state) && fromSide(m.pose, head)
+    return m !== this.ridden && m.by === null && this.bond.trusted.has(m.key) && ['calm', 'follow', 'swim'].includes(m.state) && fromSide(m.pose, head)
   }
 
   /** WalkSurface's body layer (walk.addBody): a live strider's body at (x, z) within `pad`, never `skip`'s. */
@@ -858,9 +899,9 @@ export class WildStriders {
     return null
   }
 
-  /** This client's striders a dragon may chase (dragons.js quarry), into `into`: `{ key, x, y, z }`, never her mount. */
+  /** This client's striders a dragon may chase (dragons.js quarry), into `into`: `{ key, x, y, z }`, never her mount or one adrift. */
   prey(into) {
-    for (const m of this.live.values()) if (m.by === null && m !== this.ridden) into.push({ key: m.key, x: m.pose.x, y: m.pose.y, z: m.pose.z })
+    for (const m of this.live.values()) if (m.by === null && m !== this.ridden && m.state !== 'swim') into.push({ key: m.key, x: m.pose.x, y: m.pose.y, z: m.pose.z })
     return into
   }
 
@@ -903,26 +944,24 @@ export class WildStriders {
       want: 'stop', goal: 'stop', wait: 0, pace: 1, v: 0, a: 0, neck: 0, y: _v.y, bob: 0, phase: 0, lastY: _v.y, turn: 0, w: 0, lead: 0,
       // The headset's hops: the momentum `gain`, the last hop's way, seconds standing, treading and to the next fidget, and the spot the fidget sways about.
       gain: 1, last: null, still: 0, tread: 0, fidget: between(WILD.hop.fidget), fid: 0, base: { x: m.pose.x, z: m.pose.z, h: m.pose.heading }, off: { x: 0, z: 0, h: 0 },
-      // Water (R.swim): afloat, been afloat since it was last dry, willing to go in, seconds coaxed of the `need`, and to the next squawk, splash, and end of a balk; the bob's clock.
-      swim: false, wet: false, willing: false, coax: 0, need: between(R.swim.coax), squawk: 0, splash: between(R.swim.splash), balk: 0, paddle: 0,
+      // Water (R.swim): afloat, been afloat since it was last dry, willing to go in, seconds coaxed of the `need`, and to the next squawk and end of a balk.
+      swim: m.pose.swim, wet: m.pose.swim, willing: m.pose.swim, coax: 0, need: between(R.swim.coax), squawk: 0, balk: 0,
     }
     player.mountAt(_v.x, _v.y + R.eye * player.scale, _v.z, m.pose.heading)
     this._chirp(m, 1.05, 0.8)
   }
 
-  /** Her down on the ground beside it, it calm and trusting her; swimming, only beside dry ground. */
+  /** Her down beside it, it trusting her: on the ground and it calm, or afloat (teleportTo puts her on the surface) and it adrift. */
   dismount(player) {
     const m = this.ridden
     if (!m) return
-    const p = m.pose, c = Math.cos(p.heading), s = Math.sin(p.heading)
+    const p = m.pose, c = Math.cos(p.heading), s = Math.sin(p.heading), wet = m.ride.swim
     const side = 0.6 * this.inner.asset.width * this.k * p.size + 0.5, aft = 0.8 * this.inner.asset.sizeM * p.size
     const spots = [[-s * -side, -c * -side], [-s * side, -c * side], [-c * aft, s * aft]]
-    let spot = spots.find(([dx, dz]) => this._dry(p.x + dx, p.z + dz) && !this.walk.obstacleAt(p.x + dx, p.z + dz, _trunk, m))
-    if (!spot && m.ride.swim) return
-    spot ??= spots[0]
+    const spot = spots.find(([dx, dz]) => (wet || this._dry(p.x + dx, p.z + dz)) && !this.walk.obstacleAt(p.x + dx, p.z + dz, _trunk, m)) ?? spots[0]
     this.ridden = null
     player.teleportTo(p.x + spot[0], p.z + spot[1], p.y)
-    this._enter(m, 'calm')
+    this._enter(m, wet ? 'swim' : 'calm')
     this._chirp(m, 0.9, 0.7)
   }
 
@@ -931,7 +970,7 @@ export class WildStriders {
     if (!this.ridden) return
     const m = this.ridden
     this.ridden = null
-    this._enter(m, 'calm')
+    this._enter(m, m.ride.swim ? 'swim' : 'calm')
   }
 
   /**
@@ -959,7 +998,7 @@ export class WildStriders {
     target *= big * (r.goal === 'back' ? 1 : r.pace)
     const S = R.swim
     const edge = Math.max(1.2, 0.6 + r.v * R.look) * big
-    if (r.swim) target = clamp(target, S.back * big, S.speed * big)
+    if (r.swim) target = (r.goal === 'back' ? S.back : r.goal === 'stop' ? 0 : band(R.push, 1, S.stroke) * S.speed) * big
     else if (!r.willing && target > 0 && this._deep(m, p.x + Math.cos(p.heading) * edge, p.z - Math.sin(p.heading) * edge)) {
       target = 0
       if ((r.coax += dt) >= r.need) { r.willing = true; this._chirp(m, between([0.8, 0.9]), 0.9) }
@@ -1003,7 +1042,8 @@ export class WildStriders {
     const turning = Math.abs(spin) > 0.05 || r.w !== 0
     if (r.fid > 0) {
       // Shaking.
-    } else if (r.v === 0) this._set(m, turning ? 'walk' : 'idle', turning ? 0.3 * this.walkV * p.size : 0)
+    } else if (r.swim) this._set(m, 'idle', r.v)
+    else if (r.v === 0) this._set(m, turning ? 'walk' : 'idle', turning ? 0.3 * this.walkV * p.size : 0)
     else if (r.v <= R.runAt * big) this._set(m, 'walk', r.v)
     else this._set(m, 'run', r.v > nat ? nat * (r.v / nat) ** R.stride : r.v)
     // Her seat: its height followed smoothly, and faster the faster it goes, with a gentle bob on each footfall.
@@ -1024,28 +1064,50 @@ export class WildStriders {
     return level !== null && level - g > (WILD.ride.swim.draft * m.pose.size) / STRIDER.size.mean
   }
 
-  /** Ridden `m` afloat where the water is deep, bobbing and now and then splashing, else on the ground; back on dry ground after swimming it shakes and must be coaxed in again. */
+  /** Ridden `m` afloat where the water is deep (_bob), else on the ground; back on dry ground after swimming it shakes and must be coaxed in again. */
   _float(m, dt) {
-    const S = WILD.ride.swim, r = m.ride, p = m.pose, W = this.walk, big = p.size / STRIDER.size.mean
+    const r = m.ride, p = m.pose, W = this.walk
     const g = W.heightAt(p.x, p.z, p.y), level = W.waterAt(p.x, p.z)
-    r.swim = this._deep(m, p.x, p.z, g, level)
-    if (!r.swim) {
-      p.y = g
-      if (r.wet && this._dry(p.x, p.z)) {
-        r.wet = r.willing = false
-        r.coax = 0
-        r.need = between(S.coax)
-        this._shake(m)
-      }
+    r.swim = p.swim = this._deep(m, p.x, p.z, g, level)
+    if (r.swim) {
+      r.wet = true
+      this._bob(m, dt, level, r.v)
       return
     }
-    r.wet = true
-    r.paddle += dt
-    p.y = level - S.draft * big + S.duck * big * Math.sin((2 * Math.PI * r.paddle) / S.paddle)
-    if ((r.splash -= dt) <= 0) {
-      r.splash = between(S.splash)
+    p.y = g
+    if (r.wet && this._dry(p.x, p.z)) {
+      r.wet = r.willing = false
+      r.coax = 0
+      r.need = between(WILD.ride.swim.coax)
+      this._shake(m)
+    }
+  }
+
+  /** `m` afloat on water at `level`, swimming `v` m/s: bobbing, now and then splashing, and swooshing under way. */
+  _bob(m, dt, level, v) {
+    const S = WILD.ride.swim, f = m.float, p = m.pose, big = p.size / STRIDER.size.mean
+    f.t += dt
+    p.y = level - S.draft * big + S.duck * big * Math.sin((2 * Math.PI * f.t) / S.paddle)
+    if ((f.splash -= dt) <= 0) {
+      f.splash = between(S.splash)
       this._say(m, 'splash', between([0.8, 1.2]), 0.6)
     }
+    if (Math.abs(v) > 0.1 && (f.swoosh -= dt) <= 0) {
+      f.swoosh = between(S.swoosh)
+      this._say(m, 'swoosh', between([1.0, 1.3]), 0.9)
+    }
+  }
+
+  /** The heading from adrift `m` to the nearest water too shallow to float it within 30 m, or null. */
+  _shore(m) {
+    const p = m.pose
+    for (let d = 2; d <= 30; d += 2) {
+      for (let i = 0; i < 16; i++) {
+        const h = (i / 16) * 2 * Math.PI, x = p.x + Math.cos(h) * d, z = p.z - Math.sin(h) * d
+        if (!this._deep(m, x, z) && !this.walk.obstacleAt(x, z, _trunk, m)) return h
+      }
+    }
+    return null
   }
 
   /** Ridden `m` stands and plays the fidget: a flutter and a feather shake (striders.js). */
@@ -1059,17 +1121,22 @@ export class WildStriders {
   /** What her lob reaches riding, times her walking one: WILD.hop.reach grown by her momentum. */
   get hopReach() { return WILD.hop.reach * this.ridden.ride.gain }
 
-  /** Whether her ride may hop to (x, z): a landing it can stand on, and no deep water or trunk on the straight way there. */
+  /** Whether her ride may hop to (x, z): no trunk on the straight way there, and either a landing it can stand on with no deep water on the way, or into deep water it stays in to the landing. */
   hopOpen(x, z) {
     const m = this.ridden, p = m.pose, W = this.walk
     const d = Math.hypot(x - p.x, z - p.z), n = Math.ceil(d)
+    let wet = false
     for (let i = 1; i <= n; i++) {
       const px = p.x + (x - p.x) * i / n, pz = p.z + (z - p.z) * i / n
-      const level = W.waterAt(px, pz)
-      if ((level !== null && level - W.heightAt(px, pz, p.y) > 0.5) || W.obstacleAt(px, pz, _trunk, m)) return false
+      if (W.obstacleAt(px, pz, _trunk, m)) return false
+      if (this._deep(m, px, pz)) wet = true
+      else if (wet) return false
     }
-    return W.slopeAt(x, z) <= (WILD.ride.climb * Math.PI) / 180
+    return wet || W.slopeAt(x, z) <= (WILD.ride.climb * Math.PI) / 180
   }
+
+  /** Whether her ride is afloat: the headset's teleport riding glides it there (main.js). */
+  get afloat() { return this.ridden !== null && this.ridden.ride.swim }
 
   /**
    * Her ride hopped to (x, y, z), `reach` m the most her lob could have gone:
@@ -1092,6 +1159,9 @@ export class WildStriders {
     p.z = z
     p.y = this.walk.heightAt(x, z, y)
     p.heading = way
+    const was = r.swim
+    this._float(m, 0)
+    if (r.swim && !was) this._say(m, 'splash', between([0.7, 0.9]), 1)
     r.off.x = r.off.z = r.off.h = 0
     Object.assign(r.base, { x, z, h: way })
     r.tread = H.tread[0] + (H.tread[1] - H.tread[0]) * clamp(d / reach, 0, 1)
@@ -1162,7 +1232,10 @@ export class WildStriders {
     const e = ease(0.4, dt), bx = r.base.x + r.off.x, bz = r.base.z + r.off.z
     p.x += (bx - p.x) * e
     p.z += (bz - p.z) * e
+    // Mounted afloat it stays afloat: the hops (hopOpen) never cross deep water.
     p.y = this.walk.heightAt(p.x, p.z, p.y)
+    p.swim = this._deep(m, p.x, p.z, p.y)
+    if (p.swim) this._bob(m, dt, this.walk.waterAt(p.x, p.z), 0)
     p.heading = wrap(p.heading + swing(p.heading, r.base.h + r.off.h) * e)
     // A fidget's dip in her seat, over the clip.
     const dip = r.fid > 0 ? -H.shift * Math.sin((Math.PI * r.fid) / this.dur.fidget) : 0

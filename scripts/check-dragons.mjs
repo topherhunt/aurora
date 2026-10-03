@@ -1157,7 +1157,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const d = dragonsOn(flat, [site], makeHerd([]), 5)
   d.plan = restPlan(d)
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: SPOT_M + 5, y: GROUND, z: 0, open: false }
+  const her = { x: SPOT_M + 5, y: GROUND, z: 0, open: false, dead: false }
   const quarry = { her, striders: [] }
   let turned = 0
   const frame = () => { now += DT; const tick = dr.rec.tick; d.update(her.x, her.y + 1.6, her.z, now, [], quarry); if (dr.rec.tick !== tick) turned = Math.max(turned, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S) }
@@ -1208,6 +1208,35 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.dispose()
 }
 
+// --- aggro on her body: dead, she is fed on, chomp after chomp, a strider by notwithstanding; revived far off, it gives up ----
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(79)
+  const d = dragonsOn(flat, [site], makeHerd([]), 5)
+  d.plan = restPlan(d)
+  let now = chapterOf(1000, keyOf(site)).start
+  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: true, dead: false }
+  const striders = []
+  const quarry = { her, striders }
+  const frame = () => { now += DT; d.update(her.x, her.y + 1.6, her.z, now, [], quarry) }
+  const until = (ok, s) => { for (let i = 0; i < s * 60 && !ok(); i++) frame(); return ok() }
+  d.update(her.x, her.y + 1.6, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  until(() => dr.live !== null && dr.live.phase === 'chomp', 10)
+  her.dead = true
+  striders.push({ key: 'ws:1', x: dr.x - 10, y: GROUND, z: dr.z })
+  const growls = dr.growlCue
+  let left = false
+  for (let i = 0; i < 4 * CHOMP_S * 60; i++) { frame(); if (dr.live === null || dr.live.phase !== 'chomp' || dr.clip !== 'eat') left = true }
+  check(!left && dr.live.prey === HER_ID && dr.growlCue === growls && d.frights.length === 0 && d.hurt.length === 0, `dead, she is fed on: ${4 * CHOMP_S} s of the eat clip without a growl, a bite owed to harm, or a look at the strider 10 m off`, `phase ${dr.live?.phase}, clip ${dr.clip}, ${d.hurt.length} bites, ${d.frights.length} frights`)
+  check(d._spot(dr, now) === null && d._eye(dr, now) === null, 'and her body, close by and in the open, starts no chase of its own')
+  her.dead = false
+  her.x += 2 * GIVE_UP_M
+  until(() => dr.live === null, 1)
+  check(dr.state === 'rejoin', `revived ${2 * GIVE_UP_M} m off, it gives her up`, dr.state)
+  d.dispose()
+}
+
 // --- aggro in the air: eyed in the open, it roars, swoops a circle, lands with a thud and charges ----
 {
   const flat = flatField(GROUND)
@@ -1221,7 +1250,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
     return [{ kind: 'rest', dur: 1, from: dr.home, to: dr.home, at: dr.site, meal: false }, leg, { kind: 'rest', dur: 300, from: to, to: dr.home, at: dr.site, meal: false }]
   }
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: 400, y: GROUND, z: 20, open: false }
+  const her = { x: 400, y: GROUND, z: 20, open: false, dead: false }
   const striders = []
   const quarry = { her, striders }
   const frame = () => { now += DT; d.update(her.x, her.y + 1.6, her.z, now, [], quarry) }
@@ -1285,7 +1314,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const born = () => { const dd = dragonsOn(flat, [site], makeHerd([]), 5); dd.plan = restPlan(dd); return dd }
   const A = born(), B = born()
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: false }
+  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: false, dead: false }
   A.update(her.x, her.y, her.z, now)
   B.update(her.x, her.y, her.z, now)
   const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))

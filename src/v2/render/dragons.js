@@ -76,7 +76,8 @@
 // her near; flying, it may eye her in the open or a strider, swoop a circle
 // and land with a thud. Down, it turns on its quarry, charges, chomps, growls
 // and goes again, a bite on her hurting her (harm) and one on a strider
-// sending it bolting (fright), until the quarry is too far off and it flies
+// sending it bolting (fright); her body dead, it feeds on it, chomping on
+// without a growl or a glance at a strider, until the quarry is too far off and it flies
 // home on a rejoin. The quarry's client steers it and anchors every
 // AGGRO_ANCHOR_S and each phase; peers trail the anchors. Numbers: SPOT_M on.
 //
@@ -1325,7 +1326,7 @@ export class Dragons {
   /** HER if this grounded dragon spots her, else null. */
   _spot(d, now) {
     const her = this.quarry.her
-    return her !== null && now >= d.spurned && Math.hypot(her.x - d.x, her.z - d.z) <= SPOT_M ? HER : null
+    return her !== null && !her.dead && now >= d.spurned && Math.hypot(her.x - d.x, her.z - d.z) <= SPOT_M ? HER : null
   }
 
   /** Whether quarry `s` within EYE_M is eyed at odds `p`: rolled the first tick of an encounter only. */
@@ -1341,7 +1342,7 @@ export class Dragons {
     const eyed = d.eyed
     if (now < d.spurned || d.cargo) { eyed.clear(); return null }
     const her = this.quarry.her
-    let prey = her !== null && her.open && this._sighted(d, HER, her, EYE_P, now) ? HER : null
+    let prey = her !== null && !her.dead && her.open && this._sighted(d, HER, her, EYE_P, now) ? HER : null
     for (const s of this.quarry.striders) if (this._sighted(d, s.key, s, STRIDER_P, now) && prey === null) prey = s.key
     for (const [id, at] of eyed) if (at !== now) eyed.delete(id)
     return prey
@@ -1420,7 +1421,8 @@ export class Dragons {
       this._probe(d, k)
       if (this._fly(d, TICK_S, live.tx, live.ty, live.tz, LAND_MPS, DIVE_PITCH, LAND_TURN_RATE) < LAND_SNAP_M || held >= AGGRO_LAND_S) this._phase(d, 'spot', now)
     } else {
-      if (live.prey === HER) {
+      const feeding = live.prey === HER && q.dead
+      if (live.prey === HER && !feeding) {
         for (const s of this.quarry.striders) {
           if (Math.hypot(s.x - d.x, s.z - d.z) > SPOT_M) continue
           live.prey = s.key
@@ -1446,9 +1448,9 @@ export class Dragons {
       } else if (live.phase === 'chomp') {
         if (!live.bit && held >= BITE_AT_S) {
           live.bit = true
-          if (snout <= HURT_M) this._bite(d, live.prey)
+          if (snout <= HURT_M && !feeding) this._bite(d, live.prey)
         }
-        if (held >= CHOMP_S) this._phase(d, 'growl', now)
+        if (held >= CHOMP_S && !feeding) this._phase(d, 'growl', now)
       } else if (held >= GROWL_S) {
         this._phase(d, snout <= BITE_M && facing ? 'chomp' : 'charge', now)
       }
@@ -1728,7 +1730,7 @@ export class Dragons {
    * every resident roost, stepped to now and drawn; the dragons of roosts that
    * went, retired. `lures`: hands.js lures() this frame, each `{ kind, x, y,
    * z, by }`, a fish among them menaced. `quarry`: what this client's dragons
-   * may chase -- `her` `{ x, y, z, open }` (open: no tree within 5 m) or null,
+   * may chase -- `her` `{ x, y, z, open, dead }` (open: no tree within 5 m; dead: a body a chase feeds on and none starts on) or null,
    * and `striders`, this client's own `[{ key, x, y, z }]`.
    */
   update(hx, hy, hz, now, lures = NO_LURES, quarry = NO_QUARRY) {

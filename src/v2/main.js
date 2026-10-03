@@ -5816,18 +5816,19 @@ const lures = []
 // Hers and the hobs, for the frogs; and the frogs chasing a hob, for the villagers and the hobs (render/frogs.js chasers).
 const frogLures = []
 const frogChases = []
-// What this client's dragons may chase this frame (dragons.js update): her feet, `open` with no trunk within OPEN_M, unless she is dead or indoors; and her own wild striders.
+// What this client's dragons may chase this frame (dragons.js update): her feet unless she is indoors, `open` with no trunk within OPEN_M, `dead` a body to feed on; and her own wild striders.
 const OPEN_M = 5
 const trunksNear = new Float32Array(4 * 64)
 const quarry = { her: null, striders: [] }
-const herQuarry = { x: 0, y: 0, z: 0, open: false }
+const herQuarry = { x: 0, y: 0, z: 0, open: false, dead: false }
 function dragonQuarry() {
   quarry.her = null
   quarry.striders.length = 0
   if (wildStriders) wildStriders.prey(quarry.striders)
-  if (health.dead || indoors) return quarry
+  if (indoors) return quarry
   const feet = player.originPosition()
   herQuarry.x = feet.x; herQuarry.y = feet.y; herQuarry.z = feet.z
+  herQuarry.dead = health.dead
   herQuarry.open = true
   const n = trees.anchorsInto(feet.x - OPEN_M, feet.z - OPEN_M, feet.x + OPEN_M, feet.z + OPEN_M, trunksNear)
   for (let i = 0; i < n; i++) if (Math.hypot(trunksNear[4 * i] - feet.x, trunksNear[4 * i + 2] - feet.z) <= OPEN_M) herQuarry.open = false
@@ -6036,9 +6037,11 @@ const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
 // A landing is refused where she could not have walked to: a slope past the
 // limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
-// the ONLY thing that turns it red.
+// the ONLY thing that turns it red. A landing far enough below her to cost
+// health (fallDamage) is allowed but turns TELEPORT_HURT.
 const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
+const TELEPORT_HURT = 0xffa030
 const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
 // How far the ring floats over the drawn ground. Enough that a chunk mesh
 // sitting a little proud of the field does not swallow it, not so much that it
@@ -6054,8 +6057,8 @@ let desktopTeleportArmed = false
 let teleportFiredAt = -TELEPORT_COOLDOWN_S * 1000
 // performance.now() ms the stick was last pushed to arm; a swim's reach grows from the later of the two.
 let teleportArmedAt = 0
-// `swim`: y is where her EYE goes (Player.swimTo), not her feet.
-const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false, reach: 0 }
+// `swim`: y is where her EYE goes (Player.swimTo), not her feet. `fell`: the drop to a dry walking landing, in her metres.
+const teleportTarget = { x: 0, y: 0, z: 0, valid: false, swim: false, reach: 0, fell: 0 }
 // The swim aim: metres between beads, and the waver across the line -- its
 // height, its wavelength along the line, and how fast it runs down it.
 const SWIM_BEAD_M = 0.2
@@ -6135,7 +6138,10 @@ function fireTeleport() {
   }
   const dist = Math.hypot(teleportTarget.x - player.rig.position.x, teleportTarget.z - player.rig.position.z)
   if (teleportTarget.swim) player.swimTo(teleportTarget.x, teleportTarget.y, teleportTarget.z)
-  else player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
+  else {
+    player.teleportTo(teleportTarget.x, teleportTarget.z, teleportTarget.y)
+    harm(fallDamage(teleportTarget.fell), `a teleport drop of ${teleportTarget.fell.toFixed(1)} m`)
+  }
   portalBlink = true
   teleportFiredAt = performance.now()
   // The full range, not the allowance: the sound is how far this jump went against a whole one.
@@ -6266,7 +6272,7 @@ function aimTeleport(origin, dir) {
   // onto. Reach is not asked here: the flight already stopped at it. Every
   // height is asked from a foot height -- hers at the start, the landing's at
   // the end -- so stone over either is headroom, not a wall.
-  const standable = hit !== null && (mount ? !onWater && wildStriders.hopOpen(hit.x, hit.z) :
+  const standable = hit !== null && (mount ? wildStriders.hopOpen(hit.x, hit.z) :
     (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y) ||
     // A free bed is a landing even where its edge is too steep a step: it lays her in it (stepVitals).
@@ -6274,7 +6280,9 @@ function aimTeleport(origin, dir) {
   teleportTarget.valid = standable
   teleportTarget.reach = full
   teleportTarget.swim = false
-  const colour = standable ? TELEPORT_OK : TELEPORT_NO
+  // Into water, or as a strider's hop, the drop is free.
+  teleportTarget.fell = hit === null || onWater || mount ? 0 : Math.max(0, feet.y - hit.y) / k
+  const colour = !standable ? TELEPORT_NO : fallDamage(teleportTarget.fell) > 0 ? TELEPORT_HURT : TELEPORT_OK
   arc.material.color.setHex(colour)
   ring.material.color.setHex(colour)
   if (hit !== null) {
@@ -6473,7 +6481,7 @@ function readInput() {
         else if (st[hand].buttons.PRIMARY?.justPressed && hands.holding(hand) === null && wildStriders && wildStriders.riding) wildStriders.dismount(player)
       }
     }
-    // On a strider a flick to the side snaps it and her round by LOCOMOTION.snapDeg; a push lobs where it hops (fireTeleport) with teleport on, and with it off nudges it forward and back.
+    // On a strider a flick to the side snaps it and her round by LOCOMOTION.snapDeg; a push lobs where it hops (fireTeleport) with teleport on, and with it off or afloat (as in a boat) nudges it forward and back.
     if (wildStriders && wildStriders.riding) {
       const turn = moveInput.turn
       if (rideSnapArmed && Math.abs(turn) > LOCOMOTION.snapEnter) {
@@ -6481,7 +6489,7 @@ function readInput() {
         wildStriders.snap((-Math.sign(turn) * LOCOMOTION.snapDeg * Math.PI) / 180, player)
       } else if (Math.abs(turn) < LOCOMOTION.snapExit) rideSnapArmed = true
       const push = -moveAxis
-      if (!questToggles.teleport) {
+      if (!questToggles.teleport || wildStriders.afloat) {
         moveInput.ride = { push, steer: 0 }
         hideTeleport()
         questTeleportArmed = false

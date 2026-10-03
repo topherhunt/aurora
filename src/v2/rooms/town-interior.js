@@ -235,7 +235,8 @@ export function rollTownInterior({ seed, index, plan }) {
         const uA = u0 - dir * 1.0, uE = u0 + dir * (len + 1.0)
         if (Math.min(uA, uE) < L.lo || Math.max(uA, uE) > L.hi) continue
         const whole = strip(L, uA, uE, 0, STAIR.w + 0.3)
-        if (keeps[0].some((k) => hit(k, whole)) || hit(hearth.body, whole)) continue
+        // A body's width clear of the hearth, or a landing between the chimney and the wall is shut in.
+        if (keeps[0].some((k) => hit(k, whole)) || hit(grow(hearth.body, 0.7), whole)) continue
         if (windows.some((w) => w.level === 0 && onLine(w, L) && Math.abs(w.u - (uA + uE) / 2) < Math.abs(uE - uA) / 2 + w.w / 2)) continue
         let ok = true
         for (let t = th; t <= n && ok; t++) {
@@ -461,20 +462,51 @@ export function rollTownInterior({ seed, index, plan }) {
     }
     return seen
   }
+  // An anchor with `r` is met by any reached cell within r of it.
   const reaches = (level) => {
     const seen = flood(walkable(level), anchors[level][0])
-    return anchors[level].every((a) => seen[cellOf(a.x, a.z)] === 1)
+    return anchors[level].every((a) => {
+      if (!a.r) return seen[cellOf(a.x, a.z)] === 1
+      const n = Math.ceil(a.r / CELL), i0 = Math.floor((a.x - X0) / CELL), k0 = Math.floor((a.z - Z0) / CELL)
+      for (let k = Math.max(0, k0 - n); k <= Math.min(nz - 1, k0 + n); k++) for (let i = Math.max(0, i0 - n); i <= Math.min(nx - 1, i0 + n); i++) {
+        if (seen[k * nx + i] && Math.hypot(i - i0, k - k0) * CELL <= a.r) return true
+      }
+      return false
+    })
   }
   for (const level of levels) if (!reaches(level)) throw new Error(`rollTownInterior: house ${index}'s level ${level} is cut in two before it is furnished`)
+  // Each room's reachable cell nearest its middle joins the anchors, met within a table's walkway of it, so no furniture walls a room off from the door or the stair.
+  for (const level of levels) {
+    const seen = flood(walkable(level), anchors[level][0])
+    for (const rm of rooms.filter((r) => r.level === level)) {
+      const cx = (rm.rect.x0 + rm.rect.x1) / 2, cz = (rm.rect.z0 + rm.rect.z1) / 2
+      let best = null, bd = Infinity
+      for (let c = 0; c < nx * nz; c++) {
+        if (!seen[c]) continue
+        const x = X0 + ((c % nx) + 0.5) * CELL, z = Z0 + (Math.floor(c / nx) + 0.5) * CELL, d = Math.hypot(x - cx, z - cz)
+        if (d < bd && within(rm.rect, x, z)) { bd = d; best = { x, z, r: 1.8 } }
+      }
+      if (!best) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} cannot be walked into`)
+      anchors[level].push(best)
+    }
+  }
 
   // --- furnishing ------------------------------------------------------------------
   const items = [], candles = [], spots = []
+  let depth = 0
   const tx = (level, fn) => {
-    const g = grids[level].slice(), ni = items.length, ns = solids.length, nc = candles.length, np = spots.length
-    if (fn() !== false && reaches(level)) return true
+    const g = grids[level].slice(), ni = items.length, ns = solids.length, nc = candles.length, np = spots.length, na = anchors[level].length
+    depth++
+    const ok = fn() !== false && reaches(level)
+    depth--
+    if (ok) return true
     grids[level].set(g)
-    items.length = ni; solids.length = ns; candles.length = nc; spots.length = np
+    items.length = ni; solids.length = ns; candles.length = nc; spots.length = np; anchors[level].length = na
     return false
+  }
+  // A place a resident goes stays reachable from then on: inside a tx the tx's own reach test takes it or rolls it back; outside, only one she can reach now is held.
+  const hold = (level, p) => {
+    if (depth > 0 || flood(walkable(level), anchors[level][0])[cellOf(p.x, p.z)] === 1) anchors[level].push(p)
   }
   // Something standing on the floor: drawn as `item`, stone over `r` to `top` above the floor, floor kept clear over `keep`, its wall band hung if tall.
   const put = (rm, item, r, top, { keep = null, band = null } = {}) => {
@@ -494,7 +526,10 @@ export function rollTownInterior({ seed, index, plan }) {
     items.push({ kind: 'candle', x, y, z, h, holder, room: rm.id })
     candles.push({ x, y: y + h + (holder === 'stick' ? 0.2 : 0.04), z, i, room: rm.id, level: rm.level })
   }
-  const seat = (rm, x, z, top, look, stand, kind = 'seat') => spots.push({ kind, x, z, top: rm.floor + top, r: 0.22, lookX: look[0], lookZ: look[1], standX: stand.x, standZ: stand.z, level: rm.level, room: rm.id })
+  const seat = (rm, x, z, top, look, stand, kind = 'seat') => {
+    spots.push({ kind, x, z, top: rm.floor + top, r: 0.22, lookX: look[0], lookZ: look[1], standX: stand.x, standZ: stand.z, level: rm.level, room: rm.id })
+    hold(rm.level, stand)
+  }
   const edgesOf = (rm) => Object.values(lines(rm.rect))
 
   /** Places along `rm`'s walls for something `hx` wide and `hz` deep with its back to the wall, kept clear `front` before it. */
@@ -504,7 +539,8 @@ export function rollTownInterior({ seed, index, plan }) {
     for (const e of edgesOf(rm)) {
       for (let u = e.lo + hx + 0.05; u <= e.hi - hx - 0.05; u += 0.1) {
         const c = pt(e, u, hz + gap), r = footprint(c.x, c.z, e.yaw, hx, hz)
-        if (!clear(rm.level, r, mask)) continue
+        // Tested from a cell off the wall: a wall falling mid-cell rasters the cell it straddles solid, which would shut the whole wall.
+        if (!clear(rm.level, strip(e, u - hx, u + hx, CELL, 2 * hz + gap), mask)) continue
         const fr = front > 0 ? strip(e, u - hx, u + hx, 2 * hz + gap, 2 * hz + gap + front) : null
         if (fr && !clear(rm.level, fr, SOLID)) continue
         out.push({ x: c.x, z: c.z, yaw: e.yaw, r, front: fr, e, u, band: strip(e, u - hx, u + hx, 0, 0.5) })
@@ -606,23 +642,28 @@ export function rollTownInterior({ seed, index, plan }) {
 
   /** A long table in the middle of `rm`, with chairs or benches down its sides, a place laid at each seat. */
   const table = (rm, share) => {
-    const R = rm.rect, wx = R.x1 - R.x0, wz = R.z1 - R.z0, along = wx >= wz ? 'x' : 'z'
-    const want = clamp(Math.max(wx, wz) * share, 0.75, 1.4), hw = range(0.42, 0.5), endsWanted = chance(0.6)
-    const yaw = along === 'x' ? 0 : Math.PI / 2
-    // The biggest table that fits: shorter, then without its end chairs.
+    const R = rm.rect, wx = R.x1 - R.x0, wz = R.z1 - R.z0
+    const want = clamp(Math.max(wx, wz) * share, 0.75, 1.4), endsWanted = chance(0.6)
+    let hw = range(0.42, 0.5), along
+    // The biggest table that fits, down the room then across it: shorter, then without its end chairs, then narrow with a tight walkway (a 3.3 m hall), then a chair a side (a hall crossed by doorways).
     let hl, ends, gx, gz, cands = []
-    for (const [scale, e] of [[1, endsWanted], [0.8, endsWanted], [0.8, false], [0.6, false]]) {
-      hl = Math.max(0.6, want * scale)
-      ends = e
-      const gl = hl + (ends ? 0.75 : 0.15), gw = hw + 0.8
-      ;[gx, gz] = along === 'x' ? [gl, gw] : [gw, gl]
-      for (let x = R.x0 + gx + 0.6; x <= R.x1 - gx - 0.6; x += 0.15) for (let z = R.z0 + gz + 0.6; z <= R.z1 - gz - 0.6; z += 0.15) {
-        if (!clear(rm.level, rect(x - gx - 0.6, x + gx + 0.6, z - gz - 0.6, z + gz + 0.6), SOLID) || !clear(rm.level, rect(x - gx, x + gx, z - gz, z + gz), KEEP)) continue
-        cands.push({ x, z, score: Math.hypot(x - (R.x0 + R.x1) / 2, z - (R.z0 + R.z1) / 2) + rng() * 0.8 })
+    for (const [scale, e, m, w, least] of [[1, endsWanted, 0.6, hw, 0.6], [0.8, endsWanted, 0.6, hw, 0.6], [0.8, false, 0.6, hw, 0.6], [0.6, false, 0.6, hw, 0.6], [0.6, false, 0.4, 0.4, 0.6], [0, false, 0.4, 0.4, 0.42]]) {
+      for (along of wx >= wz ? ['x', 'z'] : ['z', 'x']) {
+        hl = Math.max(least, want * scale)
+        ends = e
+        hw = w
+        const gl = hl + (ends ? 0.75 : 0.15), gw = hw + 0.8
+        ;[gx, gz] = along === 'x' ? [gl, gw] : [gw, gl]
+        for (let x = R.x0 + gx + m; x <= R.x1 - gx - m + 1e-6; x += 0.15) for (let z = R.z0 + gz + m; z <= R.z1 - gz - m + 1e-6; z += 0.15) {
+          if (!clear(rm.level, rect(x - gx - m, x + gx + m, z - gz - m, z + gz + m), SOLID) || !clear(rm.level, rect(x - gx, x + gx, z - gz, z + gz), KEEP)) continue
+          cands.push({ x, z, score: Math.hypot(x - (R.x0 + R.x1) / 2, z - (R.z0 + R.z1) / 2) + rng() * 0.8 })
+        }
+        if (cands.length) break
       }
       if (cands.length) break
     }
     cands.sort((a, b) => a.score - b.score)
+    const yaw = along === 'x' ? 0 : Math.PI / 2
     const ax = along === 'x' ? [1, 0] : [0, 1], side = along === 'x' ? [0, 1] : [1, 0]
     const top = 0.78, y = rm.floor + top
     for (const at of cands.slice(0, 6)) {
@@ -640,7 +681,7 @@ export function rollTownInterior({ seed, index, plan }) {
             const u = -hl + (2 * hl * (i + 0.5)) / k
             const c = { x: at.x + ax[0] * u + side[0] * s * (hw + 0.3), z: at.z + ax[1] * u + side[1] * s * (hw + 0.3) }
             if (!bench) put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
-            seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * 0.65, z: c.z - look[1] * 0.65 })
+            seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * 0.55, z: c.z - look[1] * 0.55 })
             const p = { x: at.x + ax[0] * u + side[0] * s * (hw - 0.2), z: at.z + ax[1] * u + side[1] * s * (hw - 0.2) }
             if (chance(0.8)) thing(rm, 'plate', p.x, y, p.z)
             if (chance(0.5)) thing(rm, pick(['mug', 'bowl', 'mug']), p.x + ax[0] * 0.2, y, p.z + ax[1] * 0.2)
@@ -651,7 +692,7 @@ export function rollTownInterior({ seed, index, plan }) {
           const look = [-ax[0] * s, -ax[1] * s]
           const c = { x: at.x + ax[0] * s * (hl + 0.32), z: at.z + ax[1] * s * (hl + 0.32) }
           put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, arms: chance(0.4), hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
-          seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * 0.65, z: c.z - look[1] * 0.65 })
+          seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * 0.55, z: c.z - look[1] * 0.55 })
         }
         if (chance(0.75)) thing(rm, 'fruitbowl', at.x, y, at.z, { n: 4 + Math.floor(rng() * 5) })
         const sticks = hl > 1.05 ? [-0.55, 0.55] : [chance(0.5) ? -0.45 : 0.45]
@@ -666,11 +707,29 @@ export function rollTownInterior({ seed, index, plan }) {
     return null
   }
 
+  /** A board against a wall with two chairs on its open side, for a room with no floor in the middle to spare. */
+  const board = (rm) => {
+    const got = standing(rm, 'table', 0.6, 0.4, 0.78, { legs: 'post' }, { front: 1.3 })
+    if (!got) return false
+    const { c } = got, look = [-c.e.ix, -c.e.iz], y = rm.floor + 0.78
+    for (const s of [-0.3, 0.3]) {
+      const ch = pt(c.e, c.u + s, 0.82 + 0.32), p = pt(c.e, c.u + s, 0.6)
+      put(rm, { kind: 'chair', x: ch.x, z: ch.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }, rect(ch.x - 0.22, ch.x + 0.22, ch.z - 0.22, ch.z + 0.22), 0.46)
+      seat(rm, ch.x, ch.z, 0.46, look, { x: ch.x - look[0] * 0.65, z: ch.z - look[1] * 0.65 })
+      thing(rm, 'plate', p.x, y, p.z)
+    }
+    { const p = pt(c.e, c.u, 0.25); candle(rm, p.x, y, p.z, 'stick', 0.75) }
+    if (chance(0.6)) { const p = pt(c.e, c.u - 0.45, 0.3); thing(rm, 'fruitbowl', p.x, y, p.z, { n: 3 + Math.floor(rng() * 4) }) }
+    return true
+  }
+
   const worktable = (rm) => {
     const got = standing(rm, 'worktable', range(0.7, 0.95), 0.36, 0.86, {}, { front: 1.0 })
     if (!got) return
     const { item, c } = got
-    spots.push({ kind: 'cook', x: c.x, z: c.z, standX: pt(c.e, c.u, 0.72 + 0.5).x, standZ: pt(c.e, c.u, 0.72 + 0.5).z, lookX: -c.e.ix, lookZ: -c.e.iz, level: rm.level, room: rm.id })
+    const stand = pt(c.e, c.u, 0.72 + 0.5)
+    spots.push({ kind: 'cook', x: c.x, z: c.z, standX: stand.x, standZ: stand.z, lookX: -c.e.ix, lookZ: -c.e.iz, level: rm.level, room: rm.id })
+    hold(rm.level, stand)
     solids[solids.length - 1].y1 = rm.floor + BLOCK
     const y = rm.floor + item.top
     for (let s = -item.hx + 0.18; s < item.hx - 0.12; s += range(0.25, 0.4)) {
@@ -680,12 +739,49 @@ export function rollTownInterior({ seed, index, plan }) {
     if (chance(0.6)) { const p = pt(c.e, c.u + item.hx - 0.12, 0.2); candle(rm, p.x, y, p.z, 'dish', 0.7) }
   }
 
+  /** A bed head to a wall of `rm`, kept clear down one side; its spot's `stands` are every side that was clear, then the foot, for the reach test to choose from. */
+  const bed = (rm, b) => {
+    const wid = b === 0 && chance(0.5) ? 1.45 : 1.0, len = 2.05, top = 0.55
+    const cands = shuffle(atWall(rm, wid / 2, len / 2, { front: 0.5 })).filter((c) => ceilOver(rm, c.r) >= 1.4)
+    for (const c of cands.slice(0, 16)) {
+      const pillow = [c.e.ix * -1, c.e.iz * -1], acr = [pillow[1], -pillow[0]]
+      const sides = shuffle([1, -1]).map((s) => {
+        const mid = { x: c.x + acr[0] * s * (wid / 2 + 0.45), z: c.z + acr[1] * s * (wid / 2 + 0.45) }
+        return { s, mid, keep: footprint(mid.x, mid.z, c.yaw, 0.35, len / 2 - 0.2) }
+      }).filter((sd) => clear(rm.level, sd.keep, SOLID))
+      // Under an eave a side can be too low to stand in: some stand must have her headroom, and a side that has it is the one kept clear.
+      const tall = (p) => levelCeilingAt(room, rm.level, p.x, p.z) - rm.floor >= HEAD
+      const stands = [...sides.map((d) => d.mid), { x: c.x - pillow[0] * (len / 2 + 0.9), z: c.z - pillow[1] * (len / 2 + 0.9) }].filter(tall)
+      if (sides.length === 0 || stands.length === 0) continue
+      const sd = sides.find((d) => tall(d.mid)) || sides[0]
+      const yaw = c.yaw + Math.PI
+      const foot = { x: c.x - pillow[0] * (len / 2 + 0.3), z: c.z - pillow[1] * (len / 2 + 0.3) }
+      const item = { kind: 'bed', x: c.x, z: c.z, yaw, len, wid, top, blanket: rng(), pillows: wid > 1.2 ? 2 : 1, posts: chance(0.3), hue: rng() }
+      const ok = tx(rm.level, () => {
+        put(rm, item, c.r, top, { keep: sd.keep })
+        spots.push({ kind: 'bed', x: c.x, z: c.z, top: rm.floor + top, floor: rm.floor, yaw, len, wid, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), standX: sd.mid.x, standZ: sd.mid.z, stands, level: rm.level, room: rm.id })
+      })
+      if (!ok) continue
+      const fr = footprint(foot.x, foot.z, c.yaw, Math.min(0.45, wid / 2 - 0.05), 0.24)
+      if (clear(rm.level, fr, SOLID | KEEP) && ceilOver(rm, fr) > 0.9) tx(rm.level, () => put(rm, { kind: 'chest', x: foot.x, z: foot.z, yaw: c.yaw + Math.PI, hx: Math.min(0.45, wid / 2 - 0.05), hz: 0.24, top: 0.5, hue: rng() }, fr, 0.5))
+      const st = { x: c.x - acr[0] * sd.s * (wid / 2 + 0.28) + pillow[0] * (len / 2 - 0.3), z: c.z - acr[1] * sd.s * (wid / 2 + 0.28) + pillow[1] * (len / 2 - 0.3) }
+      const sr = rect(st.x - 0.18, st.x + 0.18, st.z - 0.18, st.z + 0.18)
+      if (clear(rm.level, sr, SOLID | KEEP) && ceilOver(rm, sr) > 1.0 && tx(rm.level, () => put(rm, { kind: 'stool', x: st.x, z: st.z, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, sr, 0.5))) candle(rm, st.x, rm.floor + 0.5, st.z, 'dish', 0.7)
+      if (chance(0.5)) rug(rm, sd.mid.x, sd.mid.z, Math.abs(acr[0]) > 0.5 ? 0.45 : 0.8, Math.abs(acr[0]) > 0.5 ? 0.8 : 0.45)
+      return true
+    }
+    return false
+  }
+
   const furnish = {
     hall(rm) {
       const many = plan.kind === 'inn'
-      table(rm, many ? 0.13 : 0.2)
+      // A hall too narrow for a table eats in the widest other room downstairs, or failing that at a board against its wall.
+      const short = (r) => Math.min(r.rect.x1 - r.rect.x0, r.rect.z1 - r.rect.z0)
+      const dine = () => !!table(rm, many ? 0.13 : 0.2) || rooms.filter((r) => r.level === 0 && r !== rm && r.kind !== 'store').sort((a, b) => short(b) - short(a)).some((r) => table(r, 0.2)) || board(rm)
+      // A bed takes a 2.5 m run off a wall that a board in the middle can leave none of, so a hall that sleeps tries both orders.
+      if (!rm.sleeps || !(tx(0, () => dine() && bed(rm, 1)) || tx(0, () => bed(rm, 1) && dine()))) dine()
       if (many) { table(rm, 0.13); if (chance(0.5)) table(rm, 0.12) }
-      if (rm.sleeps) furnish.bedroom(rm, 1)
       standing(rm, 'dresser', range(0.6, 0.8), 0.26, range(1.8, 2.0), { load: 'plates' }, { front: 0.8 })
       shelf(rm)
       if (chance(0.5)) shelf(rm)
@@ -694,6 +790,7 @@ export function rollTownInterior({ seed, index, plan }) {
     },
     kitchen(rm, shared = false) {
       spots.push({ kind: 'cook', x: hearth.fire.x, z: hearth.fire.z, standX: hearth.cook.x, standZ: hearth.cook.z, lookX: -hearth.ix, lookZ: -hearth.iz, level: 0, room: rm.id })
+      hold(0, hearth.cook)
       worktable(rm)
       const barrels = shared ? 1 : 1 + Math.floor(rng() * 3)
       for (let i = 0; i < barrels; i++) tucked(rm, 'barrel', 0.3, 0.9)
@@ -749,45 +846,20 @@ export function rollTownInterior({ seed, index, plan }) {
     bedroom(rm, most = 2) {
       const area = (rm.rect.x1 - rm.rect.x0) * (rm.rect.z1 - rm.rect.z0)
       const n = Math.min(most, area > 16 && chance(0.55) ? 2 : 1)
-      for (let b = 0; b < n; b++) {
-        const wid = b === 0 && chance(0.5) ? 1.45 : 1.0, len = 2.05, top = 0.55
-        const cands = shuffle(atWall(rm, wid / 2, len / 2, { front: 0.5 })).filter((c) => ceilOver(rm, c.r) >= 1.4)
-        let placed = false
-        for (const c of cands.slice(0, 16)) {
-          const pillow = [c.e.ix * -1, c.e.iz * -1], acr = [pillow[1], -pillow[0]]
-          const sides = shuffle([1, -1]).map((s) => {
-            const mid = { x: c.x + acr[0] * s * (wid / 2 + 0.45), z: c.z + acr[1] * s * (wid / 2 + 0.45) }
-            return { s, mid, keep: footprint(mid.x, mid.z, c.yaw, 0.35, len / 2 - 0.2) }
-          }).filter((sd) => clear(rm.level, sd.keep, SOLID))
-          if (sides.length === 0) continue
-          const sd = sides[0]
-          const yaw = c.yaw + Math.PI
-          const item = { kind: 'bed', x: c.x, z: c.z, yaw, len, wid, top, blanket: rng(), pillows: wid > 1.2 ? 2 : 1, posts: chance(0.3), hue: rng() }
-          const ok = tx(rm.level, () => {
-            put(rm, item, c.r, top, { keep: sd.keep })
-            spots.push({ kind: 'bed', x: c.x, z: c.z, top: rm.floor + top, floor: rm.floor, yaw, len, wid, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), standX: sd.mid.x, standZ: sd.mid.z, level: rm.level, room: rm.id })
-          })
-          if (!ok) continue
-          placed = true
-          const foot = { x: c.x - pillow[0] * (len / 2 + 0.3), z: c.z - pillow[1] * (len / 2 + 0.3) }
-          const fr = footprint(foot.x, foot.z, c.yaw, Math.min(0.45, wid / 2 - 0.05), 0.24)
-          if (clear(rm.level, fr, SOLID | KEEP) && ceilOver(rm, fr) > 0.9) tx(rm.level, () => put(rm, { kind: 'chest', x: foot.x, z: foot.z, yaw: c.yaw + Math.PI, hx: Math.min(0.45, wid / 2 - 0.05), hz: 0.24, top: 0.5, hue: rng() }, fr, 0.5))
-          const st = { x: c.x - acr[0] * sd.s * (wid / 2 + 0.28) + pillow[0] * (len / 2 - 0.3), z: c.z - acr[1] * sd.s * (wid / 2 + 0.28) + pillow[1] * (len / 2 - 0.3) }
-          const sr = rect(st.x - 0.18, st.x + 0.18, st.z - 0.18, st.z + 0.18)
-          if (clear(rm.level, sr, SOLID | KEEP) && ceilOver(rm, sr) > 1.0 && tx(rm.level, () => put(rm, { kind: 'stool', x: st.x, z: st.z, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, sr, 0.5))) candle(rm, st.x, rm.floor + 0.5, st.z, 'dish', 0.7)
-          if (chance(0.5)) rug(rm, sd.mid.x, sd.mid.z, Math.abs(acr[0]) > 0.5 ? 0.45 : 0.8, Math.abs(acr[0]) > 0.5 ? 0.8 : 0.45)
-          break
-        }
-        if (!placed) break
-      }
+      for (let b = 0; b < n; b++) if (!bed(rm, b)) break
       if (chance(0.45)) standing(rm, 'press', 0.6, 0.3, 1.95, {}, { front: 0.7 })
       if (chance(0.4)) shelf(rm)
     },
   }
-  // Bedrooms first, so their beds have the walls; a house with none sleeps in its hall, after the table.
+  // Bedrooms first, so their beds have the walls, then the hall so its board has the floor; a house with no bedroom sleeps in its hall, or failing that in the biggest room before it is furnished.
   const bedrooms = rooms.filter((rm) => rm.kind === 'bedroom')
   hall.sleeps = bedrooms.length === 0
-  for (const rm of [...bedrooms, ...rooms.filter((rm) => rm.kind !== 'bedroom')]) furnish[rm.kind](rm)
+  for (const rm of [...bedrooms, hall]) furnish[rm.kind](rm)
+  if (!items.some((it) => it.kind === 'bed')) {
+    const area = (r) => (r.rect.x1 - r.rect.x0) * (r.rect.z1 - r.rect.z0)
+    if (!rooms.slice().sort((a, b) => area(b) - area(a)).some((r) => bed(r, 1))) throw new Error(`rollTownInterior: house ${index} has no wall for a bed`)
+  }
+  for (const rm of rooms) if (rm.kind !== 'bedroom' && rm !== hall) furnish[rm.kind](rm)
   for (const rm of rooms) if (!candles.some((c) => c.room === rm.id) && !sconce(rm)) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} has no light and no wall for a sconce`)
 
   // Before each window, a place to stand and look out; a pair to talk in the hall.
@@ -802,6 +874,12 @@ export function rollTownInterior({ seed, index, plan }) {
   const fine = (level, x, z) => { const c = cellOf(x, z); return c >= 0 && reach[level][c] === 1 }
   const nav = { X0, Z0, nx, nz, cell: CELL, walk, reach, floors }
   room.nav = nav
+  for (const s of spots) {
+    if (!s.stands) continue
+    const at = s.stands.find((p) => fine(s.level, p.x, p.z))
+    if (at) { s.standX = at.x; s.standZ = at.z }
+    delete s.stands
+  }
   const kept = spots.filter((s) => fine(s.level, s.standX, s.standZ))
   for (let t = 0; t < 60; t++) {
     const x = range(hall.rect.x0 + 0.8, hall.rect.x1 - 0.8), z = range(hall.rect.z0 + 0.8, hall.rect.z1 - 0.8), a = range(0, 2 * Math.PI)

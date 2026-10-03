@@ -74,9 +74,10 @@ function flood(room) {
       if (a < 0 || c < 0 || a >= NX || c >= NZ) continue
       const dist = CELL * Math.hypot(di, dk), x = xOf(a), z = zOf(c)
       const h = walk.heightAt(x, z, y)
-      if (Math.abs(h - y) / dist > MAX_TAN) {
+      // player.js _walkable: only a climb is refused, and only when the stride baseline says wall too.
+      if ((h - y) / dist > MAX_TAN) {
         const f = STRIDE / dist
-        if (Math.abs(walk.heightAt(xOf(i) + di * CELL * f, zOf(k) + dk * CELL * f, y) - y) / STRIDE > MAX_TAN) continue
+        if ((walk.heightAt(xOf(i) + di * CELL * f, zOf(k) + dk * CELL * f, y) - y) / STRIDE > MAX_TAN) continue
       }
       if (!walk.fits(x, z, Math.max(y, h), null)) continue
       const got = seen.get(c * NX + a) || []

@@ -34,7 +34,8 @@ export class TownResidents {
   constructor(scene, room, { bodies, who, seed, ox, oy, oz }) {
     if (!bodies) throw new Error('TownResidents: need the townsfolk\'s loaded bodies')
     this.room = room
-    this.bodies = bodies
+    // Not `this.bodies`: that would shadow bodies(into), which ambience calls.
+    this.kinds = bodies
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
     scene.add(this.group)
@@ -65,7 +66,7 @@ export class TownResidents {
   }
 
   _add(id, body, size, pace, atDoor) {
-    const b = this.bodies[body]
+    const b = this.kinds[body]
     const mats = makePuppetMaterials(`town-residents-${body}`, this.plain[body])
     for (const m of [mats.in, mats.out]) roomLit(m, this.light).map = b.asset.map
     this.materials.push(mats.in, mats.out)

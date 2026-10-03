@@ -6,6 +6,7 @@ import { lodFadeS, Puppet, cloneBones, groundFeet, loadSkinnedAsset, makePuppetM
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
 import { Cords } from './cord.js'
 import { StriderShake } from './strider-shake.js'
+import { StriderPaddle } from './strider-paddle.js'
 
 // The towns' frost striders (DESIGN.md §32): their puppets, the hitching rails they stand at, and the reins. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
 
@@ -96,7 +97,7 @@ export function dashAim(walk, m, want, v, dt, crowd = null) {
 export function mountFields(size) {
   if (!(size > 0)) throw new Error(`mountFields: a strider's size must be positive, not ${size}`)
   const [lo, hi] = STRIDER.call
-  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0 }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
+  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0, swim: false }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
 }
 
 /** A body's matrix from its pose: at x, y, z, turned `heading` about the up, scaled `k`. */
@@ -210,7 +211,10 @@ export class Striders {
     for (const mats of this.mats) {
       for (const m of [mats.in, mats.out]) { m.map = asset.map; m.needsUpdate = true }
       const p = new Puppet(asset, mats, { clipFade: 0.3 })
+      // Shake, then paddle, then whatever a layer chains after `paddle.then`.
+      p.paddle = new StriderPaddle(p, asset)
       p.solver = new StriderShake(p, asset)
+      p.solver.then = p.paddle
       this.puppets.push(p)
     }
     this.free = this.puppets.slice()
@@ -231,7 +235,7 @@ export class Striders {
 
   /**
    * One mount's frame, nearest first: `m.pose` is { x, y, z, heading, speed,
-   * clip, cue }, `m.dist` its distance from her, `m.gone` true once it has left
+   * clip, cue, swim }, `m.dist` its distance from her, `m.gone` true once it has left
    * the sim, and the rest this layer's (mountFields).
    */
   draw(m, dt) {
@@ -253,14 +257,17 @@ export class Striders {
     p.play(pose.clip, pose.cue)
     // On the clip's own action, not the mixer: the mixer's clock also times the fade between clips, which run backward never ends.
     p.current.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
-    groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
+    // Afloat its feet paddle (strider-paddle.js) rather than stand.
+    if (pose.swim) p.unplant()
+    else groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
+    p.paddle.set(pose.swim ? 1 : 0, Math.abs(pose.speed) / (this.asset.gait.walk * k))
     p.step(dt)
     poseMatrix(pose, k, p.group.matrix)
     p.group.matrixWorldNeedsUpdate = true
     if (p.done) { this.release(m); return }
     if (want === -1) return
     Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: p.current.getClip().duration / Math.abs(p.current.timeScale), speed: Math.abs(pose.speed) })
-    this.treading.push(m.tread)
+    if (!pose.swim) this.treading.push(m.tread)
     if (pose.clip === 'fidget' && m.heard !== pose.cue) {
       this.say('striderFlutter', pose)
       p.solver.start()
