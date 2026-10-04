@@ -1,18 +1,18 @@
 // The towns' trades (DESIGN.md §32 Trades), three-free: who lives in a town, at most one of each avatar so a name points at one face, and the works their trades stand in. layers/towns.js lays the works out, render/trades.js draws them, townsfolk.js walks the folk through them.
 
 export const TRADES = {
-  // The avatars (public/creatures/<id>.glb), one of each at most to a town. The shipped healer, skald and battlemage stay out until re-rigged: their hip joints sit at knee height, so townsfolk.js `underside` measures their seat below the ground and throws.
+  // The avatars (public/creatures/<id>.glb), one of each at most to a town.
   bodies: [
     'blacksmith', 'alchemist', 'innkeeper', 'farmer', 'shepherd', 'woodcutter', 'hunter', 'miner', 'fisherman', 'herbalist',
-    'thief', 'trapper',
-    'guard', 'shieldmaiden', 'jarlsthane',
+    'thief', 'trapper', 'healer', 'skald',
+    'guard', 'shieldmaiden', 'jarlsthane', 'battlemage',
     'child-villager-2',
   ],
   // Each body's class, which sets its errands (townsfolk.js TOWNSFOLK.errands), how often it takes the road (journeys.js JOURNEYS.road) and its home: travellers lodge at the inn, a child lives with a family, the jarlsthane in the grandest free house.
   roles: {
     blacksmith: 'folk', alchemist: 'folk', innkeeper: 'folk', farmer: 'folk', shepherd: 'folk', woodcutter: 'folk', hunter: 'folk', miner: 'folk', fisherman: 'folk', herbalist: 'folk',
-    thief: 'travel', trapper: 'travel',
-    guard: 'guard', shieldmaiden: 'guard', jarlsthane: 'guard',
+    thief: 'travel', trapper: 'travel', healer: 'travel', skald: 'travel',
+    guard: 'guard', shieldmaiden: 'guard', jarlsthane: 'guard', battlemage: 'guard',
     'child-villager-2': 'child',
   },
   // Folk a town holds: never every body, so a traveller arriving is never a second of anyone.
