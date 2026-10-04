@@ -3,11 +3,10 @@ import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet, solverStub } from './baked-puppet.js'
+import { makePuppet } from './baked-puppet.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
 import { Cords } from './cord.js'
-import { StriderShake } from './strider-shake.js'
-import { StriderPaddle } from './strider-paddle.js'
+import { PADDLE, paddleHz, striderClips } from './strider-clips.js'
 
 // The towns' frost striders (DESIGN.md §32): their puppets, the hitching rails they stand at, and the reins. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
 
@@ -21,7 +20,7 @@ export const STRIDER = {
   rein: { most: 48, points: 12, droop: 0.12, max: 0.35, width: 0.015, px: 2, color: 0x4a2e1a, held: 1.0 },
   // Running off or at her it is never quite straight: its aim wanders up to `wobble` rad, rolled afresh every `every` m, and veers by the first of `veer` rad each way that clears the way `look` s (at least `near` m times its size) ahead (clearAhead). Stone standing `wall` m over both the ground and its feet is a wall to it.
   dash: { wobble: 0.2, every: [0.7, 1.5], look: 0.4, near: 1.2, veer: [0.4, 0.8, 1.2], wall: 0.5 },
-  // Seconds between a drawn strider's chirps; its flutter and shake (strider-shake.js) are on each fidget.
+  // Seconds between a drawn strider's chirps; its flutter is on each fidget, whose clip carries the shake (strider-clips.js).
   call: [25, 70],
   said: 32,
   // Each strider is `mean` times the shipped body, spread over `vary` of that, and grows by `fed` a fish once tame.
@@ -34,6 +33,8 @@ export const STRIDER = {
 export const striderSize = (u) => STRIDER.size.mean * (STRIDER.size.vary[0] + (STRIDER.size.vary[1] - STRIDER.size.vary[0]) * u)
 
 const PLANTED = new Set(['idle'])
+// Afloat it paddles, unless it is shaking off.
+const clipOf = (pose) => (pose.swim && pose.clip !== 'fidget' ? 'paddle' : pose.clip)
 const between = ([lo, hi]) => lo + (hi - lo) * Math.random()
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a))
 const _wall = { x: 0, z: 0, r: 0 }
@@ -170,6 +171,7 @@ async function loadStrider(url) {
   if (!(x.span > 0) || !(x.sizeM > 0) || !(x.height > 0) || !(x.gait && x.gait.walk > 0 && x.gait.run > 0)) throw new Error(`${url}: no span, size, height or gaits in its bird extras -- re-ship it`)
   if (!(x.legs && x.legs.length === 2 && x.spine && x.spine.length >= 2 && x.head && x.head.length > 0)) throw new Error(`${url}: no legs, spine and head named -- re-ship it`)
   const out = { ...asset, ...x }
+  out.clips = striderClips(out)
   return { ...out, saddle: saddleOf(url, out) }
 }
 
@@ -207,16 +209,12 @@ export class Striders {
   setAsset(asset) {
     this.asset = asset
     this.k = asset.sizeM / asset.span
+    this.paddleHz = paddleHz(asset.clips.find((c) => c.name === 'idle'))
     this.plain.map = asset.map
     this.plain.needsUpdate = true
     for (const mats of this.mats) {
       for (const m of [mats.in, mats.out]) { m.map = asset.map; m.needsUpdate = true }
-      const p = makePuppet(asset, mats, { clipFade: 0.3 })
-      // Shake, then paddle, then whatever a layer chains after `paddle.then`.
-      p.paddle = p.baked ? solverStub() : new StriderPaddle(p, asset)
-      p.solver = p.baked ? solverStub() : new StriderShake(p, asset)
-      p.solver.then = p.paddle
-      this.puppets.push(p)
+      this.puppets.push(makePuppet(asset, mats, { clipFade: 0.3 }))
     }
     this.free = this.puppets.slice()
   }
@@ -249,19 +247,20 @@ export class Striders {
       if (!p) { this.starved++; return }
       m.puppet = p
       this.batch.add(p.group)
-      p.play(pose.clip, pose.cue, 0)
+      p.play(clipOf(pose), pose.cue, 0)
     }
     const p = m.puppet
     if (!p) return
     p.show(want, lodFadeS())
-    const gait = this.asset.gait[pose.clip]
-    p.play(pose.clip, pose.cue)
-    // On the clip's own action, not the mixer: the mixer's clock also times the fade between clips, which run backward never ends.
-    p.current.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
-    // Afloat its feet paddle (strider-paddle.js) rather than stand.
+    const clip = clipOf(pose), gait = this.asset.gait[clip]
+    p.play(clip, pose.cue)
+    // On the clip's own action, not the mixer: the mixer's clock also times the fade between clips, which run backward never ends. Afloat the strokes quicken with its speed.
+    if (clip === 'paddle') {
+      const pace = clamp(Math.abs(pose.speed) / (this.asset.gait.walk * k), 0, 1)
+      p.current.timeScale = (PADDLE.hz[0] + (PADDLE.hz[1] - PADDLE.hz[0]) * pace) / this.paddleHz
+    } else p.current.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
     if (pose.swim) p.unplant()
     else groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
-    p.paddle.set(pose.swim ? 1 : 0, Math.abs(pose.speed) / (this.asset.gait.walk * k))
     p.step(dt)
     poseMatrix(pose, k, p.group.matrix)
     p.group.matrixWorldNeedsUpdate = true
@@ -269,10 +268,7 @@ export class Striders {
     if (want === -1) return
     Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: p.current.getClip().duration / Math.abs(p.current.timeScale), speed: Math.abs(pose.speed) })
     if (!pose.swim) this.treading.push(m.tread)
-    if (pose.clip === 'fidget' && m.heard !== pose.cue) {
-      this.say('striderFlutter', pose)
-      p.solver.start()
-    }
+    if (pose.clip === 'fidget' && m.heard !== pose.cue) this.say('striderFlutter', pose)
     m.heard = pose.cue
     if ((m.call -= dt) <= 0) {
       const [lo, hi] = STRIDER.call

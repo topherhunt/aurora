@@ -359,6 +359,61 @@ function clientLog() {
   }
 }
 
+// --- perf traces from the headset (dev only) --------------------------------
+//
+// src/v2/perf-trace.js POSTs one JSON run here; it is written to
+// tmp/traces/<time>.json with the git commit it ran against, and read back with
+// `node scripts/trace-report.mjs`. GET lists the files. Server-chosen names and
+// a body cap, on /__log's argument: the server is on the LAN.
+function perfTraces() {
+  return {
+    name: 'aurora:perf-traces',
+    apply: 'serve',
+    configureServer(server) {
+      const dir = resolve(server.config.root, 'tmp/traces')
+      const git = (args) => new Promise((ok, fail) => execFile('git', args, { cwd: server.config.root }, (e, out) => (e ? fail(e) : ok(out.trim()))))
+      server.middlewares.use('/__trace', (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method === 'GET') {
+          res.end(JSON.stringify(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')).sort() : []))
+          return
+        }
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end(JSON.stringify({ error: 'GET lists, POST a trace' }))
+          return
+        }
+        const chunks = []
+        let bytes = 0
+        req.on('data', (c) => {
+          bytes += c.length
+          if (bytes > 1 << 20) req.destroy(new Error('trace over 1 MB'))
+          chunks.push(c)
+        })
+        req.on('error', (e) => {
+          res.statusCode = 413
+          res.end(JSON.stringify({ error: String(e.message) }))
+        })
+        req.on('end', async () => {
+          try {
+            const trace = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+            if (!Array.isArray(trace.samples)) throw new Error('a trace has a samples array')
+            trace.git = { commit: await git(['rev-parse', '--short', 'HEAD']), dirtyFiles: (await git(['status', '--porcelain'])).split('\n').filter(Boolean).length }
+            trace.peer = req.socket.remoteAddress
+            const id = new Date().toISOString().replace(/[:.]/g, '-')
+            mkdirSync(dir, { recursive: true })
+            writeFileSync(join(dir, `${id}.json`), JSON.stringify(trace, null, 1))
+            res.end(JSON.stringify({ ok: true, id }))
+          } catch (e) {
+            res.statusCode = 400
+            res.end(JSON.stringify({ error: String(e.message) }))
+          }
+        })
+      })
+    },
+  }
+}
+
 // --- the v2 heightmap, written back to disk (dev only) ----------------------
 //
 // The terrain brush (src/v2/height/sculpt.js) is the one editor tool that
@@ -1607,7 +1662,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

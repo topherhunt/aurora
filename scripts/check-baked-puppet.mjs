@@ -9,6 +9,7 @@ import { BakedPuppet, bakedBatches, bakedRoot, flushBaked, makePuppet, puppetMod
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import { TIER_TINTS, setTierTint } from '../src/v2/render/critters.js'
 import { mulberry32 } from '../src/sim/mathx.js'
+import { SHAKE, paddleHz, striderClips } from '../src/v2/render/strider-clips.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -244,6 +245,48 @@ console.log('the colours')
   const reddest = Math.max(...rolls.map((c) => c.r / c.g)), greenest = Math.max(...rolls.map((c) => c.g / c.r))
   check(reddest > 1.5 && greenest > 1.5, 'rolls reach both a red and a green cast', `r/g ${reddest.toFixed(2)}, g/r ${greenest.toFixed(2)}`)
   check(rollTint(mulberry32(3)).equals(rollTint(mulberry32(3))), 'the same seed rolls the same colour')
+}
+
+console.log('the strider clips')
+{
+  // A bird: Hips (root) carrying Chest (Neck, a wing either side, each with a tip), Tail and two three-joint legs. `fidget` turns the Chest only; `idle` turns nothing the paddle does, so a leg joint with no track of its own shows any turn left over from the last sample.
+  const bone = (name, parent, x, y, z) => { const b = new THREE.Bone(); b.name = name; b.position.set(x, y, z); parent?.add(b); return b }
+  const hips = bone('Hips', null, 0, 1, 0), chest = bone('Chest', hips, 0.3, 0.1, 0), neck = bone('Neck', chest, 0.2, 0.3, 0)
+  const wl = bone('WingL', chest, 0, 0, -0.2), wr = bone('WingR', chest, 0, 0, 0.2)
+  bone('WingLTip', wl, 0, 0, -0.3); bone('WingRTip', wr, 0, 0, 0.3); bone('Tail', hips, -0.4, 0, 0)
+  for (const s of ['L', 'R']) { const z = s === 'L' ? -0.15 : 0.15; bone(`Foot${s}`, bone(`Shin${s}`, bone(`Thigh${s}`, hips, 0, -0.1, z), 0, -0.4, 0), 0, -0.4, 0) }
+  hips.updateMatrixWorld(true)
+  const bones = []; hips.traverse((b) => bones.push(b))
+  const skeleton = new THREE.Skeleton(bones, bones.map((b) => b.matrixWorld.clone().invert()))
+  const q = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), a).toArray()
+  const clips = [
+    new THREE.AnimationClip('fidget', 3.2, [new THREE.QuaternionKeyframeTrack('Chest.quaternion', [0, 3.2], [...q(0.2), ...q(0.2)])]),
+    new THREE.AnimationClip('idle', 4, [new THREE.QuaternionKeyframeTrack('Neck.quaternion', [0, 2, 4], [...q(0), ...q(0.1), ...q(0)])]),
+    new THREE.AnimationClip('walk', 0.9, []),
+  ]
+  const bird = { root: hips, skeleton, clips, spine: ['Hips', 'Chest'], head: ['Neck'], tail: ['Tail'], legs: ['L', 'R'].map((s) => ({ id: s, chain: [`Thigh${s}`, `Shin${s}`, `Foot${s}`] })) }
+  const out = striderClips(bird)
+  const named = (n) => out.filter((c) => c.name === n)
+  const fidget = named('fidget')[0], paddle = named('paddle')[0]
+  check(out.length === 4 && named('fidget').length === 1 && named('walk')[0] === clips[2], 'the clips keep every other clip, one fidget, and add a paddle', out.map((c) => c.name).join(' '))
+  check(fidget.duration === 3.2 && paddle.duration === 4, 'the fidget keeps its length and the paddle takes the idle\'s', `${fidget.duration} s, ${paddle.duration} s`)
+  const track = (c, n) => c.tracks.find((t) => t.name === `${n}.quaternion`)
+  const at = (t, i) => new THREE.Quaternion().fromArray(t.values, i * 4)
+  const last = (t) => t.times.length - 1
+  const from = new THREE.Quaternion().fromArray(q(0.2))
+  const chestT = track(fidget, 'Chest'), peak = chestT.times.findIndex((t) => t >= SHAKE.peak)
+  const off = (i) => at(chestT, i).angleTo(from)
+  check(off(0) < 1e-4 && off(last(chestT)) < 1e-3, 'the shake is still at the fidget\'s start, where the flutter sounds, and settled by its end', `${off(0).toFixed(5)}, ${off(last(chestT)).toFixed(5)} rad`)
+  let most = 0
+  for (let i = peak - 15; i <= peak; i++) most = Math.max(most, off(i))
+  check(most > 0.15, 'and the chest rolls through its peak', `${most.toFixed(3)} rad`)
+  const loops = ['ThighL', 'ShinL', 'FootR'].map((n) => { const t = track(paddle, n); return at(t, 0).angleTo(at(t, last(t))) })
+  check(Math.max(...loops) < 1e-3, 'the paddle ends where it starts, so it loops and nothing builds up on a joint with no track of its own', loops.map((a) => a.toFixed(5)).join(' '))
+  const thighs = ['L', 'R'].map((s) => at(track(paddle, `Thigh${s}`), 10))
+  check(Math.abs(paddleHz(clips[1]) - 1.5) < 1e-9 && thighs[0].angleTo(thighs[1]) > 0.5, 'the paddle strokes 6 times over a 4 s idle, the legs half a stroke apart (a quarter stroke in)', `${paddleHz(clips[1])} Hz, legs ${thighs[0].angleTo(thighs[1]).toFixed(2)} rad apart`)
+  check(track(paddle, 'Neck').values.join() === clips[1].tracks[0].values.join(), 'and keeps the idle\'s own track on the bones it leaves alone')
+  const p = new BakedPuppet({ ...asset, root: hips, skeleton, clips: out, legs: bird.legs, tiers: asset.tiers.map((g) => g.clone()) }, mats())
+  check(!throws(() => { p.play('paddle'); p.play('fidget') }), 'a baked body plays both')
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

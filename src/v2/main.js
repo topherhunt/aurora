@@ -27,6 +27,7 @@ import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip, shipLog } from './log-ship.js'
+import { PerfTrace } from './perf-trace.js'
 import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
@@ -1276,6 +1277,8 @@ const QUEST_TOGGLE_ROWS = [
   // How often the sky map is rebuilt; the dome blends the three newest. See MAP_INTERVALS in render/aurora.js.
   { key: 'auroraRate', text: 'aurora map >', action: () => cycleAuroraInterval(), value: () => `${aurora.interval}s` },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
+  // The whole debug grid as a one-press battery, uploaded to the dev server; see perf-trace.js.
+  { key: 'perfTrace', text: 'perf trace', action: () => perfTrace.start(), value: () => `${perfTrace.label()} >` },
   // Holds the weather channel (§10) at one of WEATHER.presets, this client
   // only; peers stay under the room's live sky. See cycleWeather.
   { key: 'weather', text: 'weather >', action: () => cycleWeather(), value: () => weatherLabel() },
@@ -3032,6 +3035,29 @@ const questToggles = {
 }
 const eyeLevel = new EyeLevel()
 const _eyeDir = new THREE.Vector3()
+
+const perfTrace = new PerfTrace({
+  camera,
+  toggles: questToggles,
+  setToggle: (key, on) => { if (questToggles[key] !== on) activateQuestButton(key) },
+  anyPress: () => ['left', 'right'].some((hand) => Object.values(input.state[hand].buttons).some((b) => b.justPressed)),
+  hidePanel: () => { if (questPanelGroup.visible) toggleQuestPanel() },
+  context: () => {
+    const session = renderer.xr.getSession()
+    return {
+      at: { x: Math.round(player.rig.position.x), y: Math.round(player.rig.position.y), z: Math.round(player.rig.position.z) },
+      clock: clock.clockText, weather: weatherLabel(), puppets: puppetMode(), flying: player.flying,
+      xr: renderer.xr.isPresenting, refreshHz: session ? session.frameRate ?? null : null, foveation: renderer.xr.getFoveation(),
+      fbScale: FB_SCALE, multiDraw: hasMultiDraw(), search: location.search, userAgent: navigator.userAgent,
+      toggles: { ...questToggles },
+    }
+  },
+  play: (clip, rate, gain) => { if (ambience) sound.play(clip, { bus: 'near', rate, gain }) },
+  pulse: (intensity, ms) => { questPulse('left', intensity, ms); questPulse('right', intensity, ms) },
+  refresh: () => refreshQuestRow('perfTrace'),
+})
+window.v2perfTrace = perfTrace // console: `v2perfTrace.start()` runs it on the desktop
+const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0 }
 
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
@@ -7633,6 +7659,11 @@ AFRAME.registerComponent('v2-quest-tick', {
     bankCpuTime()
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
+    perfTraceFrame.jsMs = cpuTime.tickEnd - cpuTime.tickAt
+    perfTraceFrame.renderMs = performance.now() - cpuTime.tickEnd
+    perfTraceFrame.calls = mainRender.calls
+    perfTraceFrame.tris = mainRender.triangles
+    perfTrace.frame(perfTraceFrame)
     renderOverlay()
     spikes.end()
   },

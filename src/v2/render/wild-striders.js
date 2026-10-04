@@ -97,8 +97,7 @@ function hash01(a, b, c) {
 /**
  * A puppet's neck turned on top of its clip: `look` yaw (left +), pitch (up +)
  * and roll in radians, spread along the head chain and applied about the
- * creature's own axes (it faces +X, up +Y), on Puppet's solver contract,
- * chained after the paddle (striders.js setAsset).
+ * creature's own axes (it faces +X, up +Y), on Puppet's solver contract.
  */
 class HeadTurn {
   constructor(puppet, chain) {
@@ -213,7 +212,7 @@ export class WildStriders {
       if (i < 0) throw new Error(`WildStriders: no bone named ${name}`)
       return i
     })
-    for (const p of this.inner.puppets) p.paddle.then = p.baked ? solverStub() : new HeadTurn(p, chain)
+    for (const p of this.inner.puppets) p.solver = p.baked ? solverStub() : new HeadTurn(p, chain)
     const d = (name) => asset.clips.find((c) => c.name === name).duration
     this.dur = { attack: d('attack'), peck: d('peck'), fidget: d('fidget'), sit: d('sit') }
     // At the shipped size; a body's are these times its size.
@@ -365,7 +364,7 @@ export class WildStriders {
         p.meshes.forEach((mesh, i) => { mesh.geometry = tiers[i] })
         p.tack = m.tack
       }
-      Object.assign(p.paddle.then.look, m.look)
+      Object.assign(p.solver.look, m.look)
       if (m.pose.clip === 'sit') {
         const a = p.actions.get('sit'), [lo, hi] = WILD.fish.hold
         if (m.state === 'meek' && a.time > hi) a.time = lo
