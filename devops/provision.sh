@@ -24,6 +24,7 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
 fi
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 755 "${REMOTE_DIR}/dist"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 755 "${REMOTE_DIR}/server"
+install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 755 "${REMOTE_DIR}/traces"
 install -d -m 755 "${REGISTRY_DIR}" /etc/caddy/sites
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
@@ -39,6 +40,7 @@ Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=${APP_PORT}
 Environment=ROOM_CAP=8
+Environment=TRACE_DIR=${REMOTE_DIR}/traces
 ExecStart=/usr/bin/node ${REMOTE_DIR}/server/src/main.js
 Restart=on-failure
 RestartSec=2
@@ -65,6 +67,9 @@ ${DOMAIN} {
 		reverse_proxy 127.0.0.1:${APP_PORT}
 	}
 	handle /ws* {
+		reverse_proxy 127.0.0.1:${APP_PORT}
+	}
+	handle /trace {
 		reverse_proxy 127.0.0.1:${APP_PORT}
 	}
 	root * ${REMOTE_DIR}/dist

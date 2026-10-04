@@ -1,4 +1,6 @@
 import http from 'node:http'
+import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 
@@ -14,6 +16,58 @@ const DIAG_MAX = 500
 
 const rooms = new Map()
 let serverTick = 0
+
+// Perf traces POSTed by the headset (src/v2/perf-trace.js), one JSON file each;
+// read them back with `node scripts/fetch-traces.mjs`. Public endpoint, so the
+// body and the directory are both capped.
+const TRACE_DIR = resolve(process.env.TRACE_DIR || join(import.meta.dirname, '../traces'))
+const TRACE_MAX_BYTES = 1 << 20
+const TRACE_MAX_FILES = 500
+const BUILD_FILE = resolve(import.meta.dirname, '../../dist/build.json')
+
+function buildInfo() {
+  try {
+    return JSON.parse(readFileSync(BUILD_FILE, 'utf8'))
+  } catch (err) {
+    console.error(`[trace] no build info at ${BUILD_FILE}: ${err.message}`)
+    return { commit: 'unknown', dirtyFiles: 0 }
+  }
+}
+
+function saveTrace(req, res) {
+  const reply = (status, body) => {
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
+  }
+  const chunks = []
+  let bytes = 0
+  req.on('data', (c) => {
+    bytes += c.length
+    if (bytes > TRACE_MAX_BYTES) {
+      reply(413, { error: 'trace over 1 MB' })
+      req.destroy()
+      return
+    }
+    chunks.push(c)
+  })
+  req.on('end', () => {
+    try {
+      const trace = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (!Array.isArray(trace.samples)) return reply(400, { error: 'a trace has a samples array' })
+      mkdirSync(TRACE_DIR, { recursive: true })
+      if (readdirSync(TRACE_DIR).length >= TRACE_MAX_FILES) return reply(507, { error: 'trace store full' })
+      trace.git = buildInfo()
+      trace.peer = req.headers['x-forwarded-for'] || req.socket.remoteAddress
+      const id = new Date().toISOString().replace(/[:.]/g, '-')
+      writeFileSync(join(TRACE_DIR, `${id}.json`), JSON.stringify(trace, null, 1), { flag: 'wx' })
+      console.log(`[trace] saved ${id} from ${trace.peer}`)
+      reply(200, { ok: true, id })
+    } catch (err) {
+      console.error('[trace] rejected', err)
+      reply(400, { error: String(err.message) })
+    }
+  })
+}
 
 // A room owns the world clock as one anchor and one skip count: every client
 // derives the hour from `anchorMs` locally (WorldClock.tick), so the first
@@ -411,6 +465,10 @@ const httpServer = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     res.end(JSON.stringify({ ok: true, service: 'aurora-relay', rooms: rooms.size }))
+    return
+  }
+  if (req.url === '/trace' && req.method === 'POST') {
+    saveTrace(req, res)
     return
   }
   res.writeHead(404)

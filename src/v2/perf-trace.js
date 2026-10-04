@@ -1,6 +1,7 @@
 // The perf trace: one debug-panel press runs the battery in perf-suite.js --
 // takes groups of layers away, measures each state, drills into the groups that
-// mattered -- and POSTs the result to /__trace (vite.config.js, dev only), so a
+// mattered -- and POSTs the result to /__trace on the dev server (vite.config.js) or /trace on
+// the deployed relay (server/src/main.js), so a
 // headset with no devtools can be profiled by sitting still for a minute.
 // Read the result with `node scripts/trace-report.mjs`.
 //
@@ -13,7 +14,7 @@
 import * as THREE from 'three'
 import { SETTLE_MS, MEASURE_MS, BASELINE_EVERY, DRILL_MIN_MS, MAX_DRILL, GROUPS } from './perf-suite.js'
 
-const ENDPOINT = '/__trace'
+const ENDPOINT = import.meta.env.DEV ? '/__trace' : '/trace'
 // Presses this soon after the start are the press that started it (the trigger is still down).
 const ABORT_GRACE_MS = 1500
 const DONE_SHOWN_MS = 12000

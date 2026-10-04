@@ -4,6 +4,7 @@
 require_host
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ( cd "${REPO_ROOT}" && npm run build )
+( cd "${REPO_ROOT}" && printf '{"commit":"%s","dirtyFiles":%s}\n' "$(git rev-parse --short HEAD)" "$(git status --porcelain | wc -l | tr -d ' ')" > dist/build.json )
 if [ "${DEPLOY_USER}" = root ]; then RSYNC_PATH=rsync; else RSYNC_PATH="sudo rsync"; fi
 rsync -az --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
   "${REPO_ROOT}/dist/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/dist/"

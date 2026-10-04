@@ -33,6 +33,10 @@ registered to another app. `deploy.sh` uses rsync only inside this app's `REMOTE
 `REMOTE_DIR/server`, installs the relay's production dependencies as `SERVICE_USER`, then restarts
 only Aurora's unit.
 
+## Perf traces from the headset
+
+The in-VR perf trace POSTs its result to the relay's `/trace` (Caddy proxies that one path), which writes `REMOTE_DIR/traces/<time>.json` stamped with the deployed commit from `dist/build.json`. After adding this to an existing host, re-run `./devops/provision.sh` once (it adds the Caddy route, the traces directory and `TRACE_DIR`), then `./devops/deploy.sh`. Pull the files down with `./devops/fetch-traces.sh` and read them with `node scripts/trace-report.mjs`.
+
 ## Later netplay work
 
 The relay logs each client's join and leave (address, id's head, user agent) and its diag lines (creature pops, the clock offset) to the unit's journal: `ssh racknerd1 journalctl -u aurora --since today | grep -E 'join|leave|diag'`.
