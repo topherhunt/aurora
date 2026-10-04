@@ -1,5 +1,11 @@
 # Aurora
 
+![Aurora at night](screenshots/screenshot-night.jpg)
+
+![Sunset over the mountains](screenshots/screenshot-sunset.jpg)
+
+![A rainy day](screenshots/screenshot-rainy-day.jpg)
+
 A WebXR snowy mountainscape for the Meta Quest 2. The world is procedurally generated, N64-era low-poly with baked lighting, and meant to be explored on foot at walking pace while the Northern Lights play overhead at night. It also runs in a desktop browser, and that is where most of the development happens.
 
 The world is a roughly 16 km island of mountains, lakes, rivers and forest, with roads linking Nordic-named towns, stone bridges, caves, weather, a day/night cycle, fire, wildlife, villagers, health and sleep, and a small WebSocket relay so a few people can share a world and see each other's avatars and hands. There is no server-side game state: everything is generated at boot from a seed.

@@ -53,9 +53,9 @@ Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat 
 
 `CaveField.at(x, y, z)` is positive in rock, negative in air, roughly metres, in cave-local coordinates. Passages are D-shaped (a half-ellipse vault over a flat floor) swept along each edge's samples; nodes are ellipsoid domes cut by a floor; everything joins by a smooth min. Noise (`noise3.js`, value noise for speed) roughens walls and floors. The mesher and `CaveWalk` build identical fields from the same graph, so they agree to the millimetre.
 
-**Surface nets** on a 0.5 m voxel grid in 16 m chunks (`VOXEL`, `CELLS`, `CHUNK`). A chunk samples one voxel past each face but emits quads only for edges it owns, so seams close without cracks. Per vertex the mesher bakes region colour, a cheap AO, and the glow of every light within reach (§8). Passages end in rounded caps whose floor climbs a metre a metre, so a climb never shelves a terrace.
+**Surface nets** on a voxel grid in 16 m chunks (`LODS`, `CHUNK`). A chunk samples one voxel past each face but emits quads only for edges it owns, so seams close without cracks. Per vertex the mesher bakes region colour, a cheap AO, and the glow of every light within reach (§8). Passages end in rounded caps whose floor climbs a metre a metre, so a climb never shelves a terrace.
 
-**LOD and regions.** Every chunk is meshed twice, at `VOXEL` and `VOXEL_LO` (1 m), one mesh per region. `CaveRoom` draws the near LOD within `HI_M` (10 m), the coarse one out to `CULL_M` (85 m), and only her region and those it touches. The gate holds the triangles drawn from any node under 150k.
+**LOD and regions.** Every chunk is meshed at each of `LODS`, one mesh per region: 0.5 m voxels within 10 m of her (gap to the chunk's box), 1 m to 25 m, 2 m to `CULL_M` (85 m), nothing past it (`drawnLod`, shared by `CaveRoom` and the gate). Only her region and those it touches are drawn. Clear sightlines past 30 m are rare and the black fog hides most of what lies past 25 m, so the thin walls the 2 m tier drops do not show. The gate holds the triangles drawn from any node, counting every direction, under 80k; its systems peak at 43-53k.
 
 **The worker** plans the same cave from `{ seed, entries }` and posts chunks nearest her arrival first, then 'near' once everything within `NEAR_M` is out; `enterCave` waits on 'near'. The main thread also runs `planCave` itself, for the walk and props.
 
@@ -95,7 +95,7 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 - The marks mesh rebuilds whole on every stroke commit; many strokes may hitch.
 - Chalk lumps come back on reload (`taken` is session only); things dropped in a cave are not kept once she leaves.
 - The arch does not collide; she can walk through its stones. Grass and ferns still grow in the notch.
-- The two cave LODs can show cracks where they meet; every chunk's near LOD is held in GPU memory once met.
+- Neighbouring cave LODs can show cracks where they meet; every chunk's finer LODs are held in GPU memory once met.
 - Torch shadows.
 - The chalk relay needs the server redeployed.
 - Not yet felt in a headset: how dark, how lost, VR chalk drawing.

@@ -29,6 +29,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
   - [ ] Run a perf trace, in overworld and in the glen.
 - Fix: Wild striders should not be saddled.
+- Fix: physically turning, while mounted on a strider, should cause it to turn gradually to match your facing direction. Teleporting to the side or back while mounted on a strider should not cause your camera to rotate -- that's disorienting -- instead, strider-mounted teleport motion in a direction that's not forward is massively lower-range, like, down to 10% of your forward range as you get further from the straight-line.
 - (partly fixed) Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
   - [ ] Issue: currently your height adjusts after a cooldown period at a low framerate, and it's nauseating. Make it smoother, at least 30fps please.
   - [ ] Issue: the hands are way below you when you're sitting down. Your hands need to follow your head height (ie your hands and head stay at the correct relative position as what they are in real life) rather than just your head floating up/down and your hands staying put.
