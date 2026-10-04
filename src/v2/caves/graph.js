@@ -11,8 +11,11 @@ import { PALETTES, GLOWS } from './regions.js'
 export const GRADE_MAX = 0.36
 // The fraction of a node's radius (toward the passage) its passage stays flat for: out to where the node's own floor meets its wall, so no step is left at the doorway.
 const FLAT_IN = 0.92
-const SPACING = 26
-const LINK_MAX = 82
+const FLAT_OUT = 0.97
+const SPACING = 15
+const LINK_MAX = 44
+// Rock kept between two nodes' ellipses, so no two floors merge into a step.
+const NODE_GAP = 4
 // Metres of a drop's lip: over her reach, so it cannot be climbed back up.
 export const DROP_MIN = 2.2
 // Headroom a drop's passage keeps above its lip, inside the chamber it opens onto.
@@ -41,15 +44,15 @@ export function buildGraph({ seed, entries }) {
   for (let e = 0; e < entries.length; e++) {
     const { x, z, dx, dz } = entries[e]
     add({ kind: 'mouth', entry: e, x, z, y: 0, rx: 1.4, rz: 1.4, rot: 0, h: 2.7 })
-    throats.push(add({ kind: 'junction', entry: -1, x: x + dx * 18, z: z + dz * 18, y: 0, rx: 3, rz: 3, rot: 0, h: 3.4 }))
+    throats.push(add({ kind: 'junction', entry: -1, x: x + dx * 14, z: z + dz * 14, y: 0, rx: 3, rz: 3, rot: 0, h: 3.4 }))
   }
 
-  // The body: darts in a disc round the throats, at SPACING.
-  const want = Math.min(64, 22 + 12 * entries.length)
+  // The body: darts in a disc round the throats, at SPACING, as many as the disc holds.
   const cx = throats.reduce((s, n) => s + n.x, 0) / throats.length
   const cz = throats.reduce((s, n) => s + n.z, 0) / throats.length
-  const R = 16 * Math.sqrt(want) + 20
-  for (let tries = 0; tries < 4000 && nodes.length < want + 2 * entries.length; tries++) {
+  const R = Math.max(75, 35 + Math.max(...throats.map((n) => Math.hypot(n.x - cx, n.z - cz))))
+  const want = Math.min(150, Math.round((Math.PI * R * R) / 300))
+  for (let tries = 0; tries < 6000 && nodes.length < want + 2 * entries.length; tries++) {
     const a = rand() * Math.PI * 2, r = R * Math.sqrt(rand())
     const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r
     if (nodes.some((n) => Math.hypot(n.x - x, n.z - z) < (n.kind === 'mouth' ? SPACING * 1.4 : SPACING))) continue
@@ -62,8 +65,8 @@ export function buildGraph({ seed, entries }) {
   const byFar = [...body].sort((a, b) => fromMouth(b) - fromMouth(a))
   const caverns = []
   for (const n of byFar) {
-    if (caverns.length >= 1 + Math.floor(want / 26)) break
-    if (fromMouth(n) < 70 || caverns.some((c) => Math.hypot(c.x - n.x, c.z - n.z) < 90)) continue
+    if (caverns.length >= 1 + Math.floor(want / 40)) break
+    if (fromMouth(n) < 55 || caverns.some((c) => Math.hypot(c.x - n.x, c.z - n.z) < 80)) continue
     n.kind = 'cavern'
     n.rx = rr(17, 25); n.rz = rr(14, 21); n.rot = rand() * Math.PI; n.h = rr(30, 48)
     caverns.push(n)
@@ -72,14 +75,18 @@ export function buildGraph({ seed, entries }) {
   for (const c of caverns) for (const n of nodes) if (n !== c && n.kind === 'junction' && !throats.includes(n) && Math.hypot(n.x - c.x, n.z - c.z) < Math.max(c.rx, c.rz) + 8) swallowed.add(n)
   for (const n of body) {
     if (swallowed.has(n) || n.kind !== 'junction') continue
-    if (rand() < 0.5) {
-      n.kind = 'chamber'
-      n.rx = rr(5, 9); n.rz = rr(4, 8); n.rot = rand() * Math.PI; n.h = rr(5, 9)
-    } else {
-      n.rx = n.rz = rr(2.2, 3.2); n.h = rr(3, 4.2)
-    }
+    n.rx = n.rz = rr(2.2, 3.2); n.h = rr(3, 4.2)
   }
   const live = nodes.filter((n) => !swallowed.has(n))
+  // Chambers grow only as far as their neighbours leave room.
+  const room = (n) => Math.min(...live.filter((m) => m !== n).map((m) => Math.hypot(m.x - n.x, m.z - n.z) - Math.max(m.rx, m.rz) - NODE_GAP))
+  for (const n of live) {
+    if (n.kind !== 'junction' || throats.includes(n) || rand() < 0.45) continue
+    const r = Math.min(9, room(n))
+    if (r < 4.5) continue
+    n.kind = 'chamber'
+    n.rx = rr(4.5, r); n.rz = rr(4, Math.min(8, n.rx)); n.rot = rand() * Math.PI; n.h = rr(5, 9)
+  }
   const remap = new Map(live.map((n, i) => [n, i]))
   nodes.length = 0
   for (const n of live) { n.i = remap.get(n); nodes.push(n) }
@@ -111,11 +118,24 @@ export function buildGraph({ seed, entries }) {
     link(m.i, t.i, true)
     up[find(m.i)] = find(t.i)
   }
+  // A tree link may not cross another in plan or graze a node it does not end at: its passage would breach a floor no reroll could clear.
+  const tangles = (a, b) => {
+    const A = nodes[a], B = nodes[b]
+    for (const e of edges) {
+      if (e.a === a || e.a === b || e.b === a || e.b === b) continue
+      if (cross(A, B, nodes[e.a], nodes[e.b])) return true
+    }
+    for (const n of nodes) {
+      if (n.i === a || n.i === b) continue
+      if (segDist(n, A, B) < Math.max(n.rx, n.rz) + 3) return true
+    }
+    return false
+  }
   const extra = []
   for (const c of cands) {
-    if (find(c.a) !== find(c.b)) { up[find(c.a)] = find(c.b); link(c.a, c.b, true) } else extra.push(c)
+    if (find(c.a) !== find(c.b) && !tangles(c.a, c.b)) { up[find(c.a)] = find(c.b); link(c.a, c.b, true) } else extra.push(c)
   }
-  // Anything LINK_MAX left stranded joins its nearest neighbour in the main body.
+  // Anything left stranded joins its nearest neighbour in the main body, untangled if it can be.
   for (;;) {
     const root = find(nodes[0].i)
     const lost = nodes.filter((n) => find(n.i) !== root)
@@ -123,7 +143,7 @@ export function buildGraph({ seed, entries }) {
     let best = null
     for (const n of lost) for (const m of nodes) {
       if (find(m.i) !== root || m.kind === 'mouth' || n.kind === 'mouth') continue
-      const d = Math.hypot(n.x - m.x, n.z - m.z)
+      const d = Math.hypot(n.x - m.x, n.z - m.z) + (tangles(n.i, m.i) ? 1e4 : 0)
       if (best === null || d < best.d) best = { a: n.i, b: m.i, d }
     }
     if (best === null) throw new Error('buildGraph: a stranded node has nothing to join')
@@ -189,7 +209,7 @@ export function buildGraph({ seed, entries }) {
   const regions = []
   for (const s of order) {
     if (nodes[s].region >= 0 || nodes[s].kind === 'mouth') continue
-    const r = { i: regions.length, nodes: [], palette: -1, landmark: -1 }
+    const r = { i: regions.length, nodes: [], palette: -1, landmark: -1, touch: [] }
     regions.push(r)
     const size = 3 + Math.floor(rand() * 6)
     const front = [s]
@@ -217,6 +237,7 @@ export function buildGraph({ seed, entries }) {
     used[r.palette]++
     const big = r.nodes.map((k) => nodes[k]).filter((n) => n.kind !== 'junction').sort((a, b) => b.rx * b.rz - a.rx * a.rz)[0]
     r.landmark = big ? big.i : -1
+    r.touch = [...touch[r.i]]
   }
 
   // Squeezes where a tree passage crosses between regions; rivers along the gentle ones; sumps dipped under water.
@@ -228,13 +249,13 @@ export function buildGraph({ seed, entries }) {
     const run = between(A, B)
     const nearMouth = A.kind === 'mouth' || B.kind === 'mouth' || throats.includes(A) || throats.includes(B)
     if (e.tree && !nearMouth && A.region !== B.region && rand() < 0.5) e.squeeze = true
-    // Deep enough under the lower end that the roof at the dip is a metre under the water, and long enough that the cosine's steepest flank (dip pi / run) stays a swimmer's climb out.
-    const dip = rr(4.2, 5.2) + Math.abs(A.y - B.y) / 2
-    if (e.kind === 'walk' && e.tree && !nearMouth && !e.squeeze && sumps < 3 && (dip * Math.PI) / run <= SUMP_GRADE && Math.abs(A.y - B.y) < 6 && rand() < 0.2) {
+    // Deep enough under the lower end that the roof at the dip is most of a metre under the water, and long enough that the cosine's steepest flank (dip pi / run) stays a swimmer's climb out.
+    const dip = rr(3.6, 4.4) + Math.abs(A.y - B.y) / 2
+    if (e.kind === 'walk' && e.tree && !nearMouth && !e.squeeze && sumps < 3 && (dip * Math.PI) / run <= SUMP_GRADE && Math.abs(A.y - B.y) < 6 && rand() < 0.45) {
       e.kind = 'sump'
       e.sump = { dip, level: Math.min(A.y, B.y) - 0.2 }
       sumps++
-    } else if (e.kind === 'walk' && !nearMouth && run >= 20 && Math.abs(A.y - B.y) / run <= 0.14 && rand() < 0.3) {
+    } else if (e.kind === 'walk' && !nearMouth && run >= 12 && Math.abs(A.y - B.y) / run <= 0.14 && rand() < 0.3) {
       e.river = true
     }
   }
@@ -244,10 +265,10 @@ export function buildGraph({ seed, entries }) {
     if (n.dish > 0) pools.push({ node: n.i, x: n.x, z: n.z, level: n.y - 0.25, r: Math.min(n.rx, n.rz) * (n.kind === 'cavern' ? 0.62 : 0.66), depth: n.dish })
   }
 
-  // Passages that would breach another's floor or a foreign node: a tree passage rerolls its bend, a braid is given up.
+  // Passages that would breach another's floor or a foreign node: a tree passage rerolls its bend, unwandering and unbellied after 8 tries; a braid is given up.
   const built = []
   for (const e of [...edges.filter((q) => q.tree), ...edges.filter((q) => !q.tree)]) {
-    for (let k = 0; k < 8 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand)
+    for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8)
     if (!e.tree && clashes(e, built, nodes)) { e.pts = null; continue }
     built.push(e)
   }
@@ -255,6 +276,7 @@ export function buildGraph({ seed, entries }) {
   edges.forEach((e, i) => { e.i = i })
   for (const e of edges) if (e.kind === 'sump') pools.push({ edge: e.i, level: e.sump.level, depth: e.sump.dip })
   for (const e of edges) if (e.river) rivers.push(e.i)
+  const { lobes, nooks } = lobesAndNooks(nodes, edges, rand)
 
   // Glows: mushroom lights by palette, and by both ends of every sump.
   const glows = []
@@ -267,7 +289,91 @@ export function buildGraph({ seed, entries }) {
     glows.push({ node: n.i, x: n.x + Math.cos(a) * r, z: n.z + Math.sin(a) * r, color: GLOWS[Math.floor(rand() * GLOWS.length)], reach: n.kind === 'cavern' ? 16 : 9 })
   }
 
-  return { nodes, edges, pools, rivers, glows, regions }
+  return { nodes, edges, pools, rivers, glows, regions, lobes, nooks }
+}
+
+/**
+ * Dead ends that make a region read as lobed, none of which the graph's passages know of:
+ * lobes, domes bellied out of a node's wall on its own floor, `{ node, region, x, z, y, rx, rz, rot, h }`;
+ * nooks, crevices running a few metres off a node or a passage and pinching shut, `{ region, pts }` with pts as a passage's.
+ * Either is given up where it would open onto another floor than its own, so neither leaves a step nor joins two passages.
+ */
+function lobesAndNooks(nodes, edges, rand) {
+  const rr = (a, b) => a + (b - a) * rand()
+  const lobes = []
+  const nooks = []
+  const rDir = (n, a) => {
+    const lx = Math.cos(a - n.rot) / n.rx, lz = Math.sin(a - n.rot) / n.rz
+    return 1 / Math.hypot(lx, lz)
+  }
+  // Air at (x, z) over the floor y, `w` round, that would meet a floor other than y: any passage sample, node or lobe off this one's level.
+  const foreign = (x, z, y, top, w, skipNode, skipEdge) => {
+    for (const e of edges) {
+      if (e === skipEdge) continue
+      for (const q of e.pts) {
+        if (Math.abs(q.y - y) < 0.05 && e.a === skipNode) continue
+        if (Math.abs(q.y - y) < 0.05 && e.b === skipNode) continue
+        if (Math.hypot(q.x - x, q.z - z) < w + q.w + 0.8 && y - SILL < q.y + q.h && q.y - SILL < top) return true
+      }
+    }
+    for (const n of nodes) {
+      if (n.i === skipNode) continue
+      if (Math.hypot(n.x - x, n.z - z) < w + Math.max(n.rx, n.rz) + 1.5 && y - SILL < n.y + n.h && n.y - n.dish - SILL < top) return true
+    }
+    for (const l of lobes) {
+      if (Math.abs(l.y - y) < 0.05) continue
+      if (Math.hypot(l.x - x, l.z - z) < w + Math.max(l.rx, l.rz) + 1 && y - SILL < l.y + l.h && l.y - SILL < top) return true
+    }
+    for (const o of nooks) for (const q of o.pts) if (Math.hypot(q.x - x, q.z - z) < w + q.w + 0.6 && y - SILL < q.y + q.h && q.y - SILL < top) return true
+    return false
+  }
+  const crevice = (region, x, z, y, a, len, w0, h0, rise, skipNode, skipEdge, free) => {
+    const pts = []
+    const n = Math.max(3, Math.ceil(len / 1.5))
+    const x0 = x, z0 = z
+    for (let k = 0; k <= n; k++) {
+      const t = k / n
+      const pinch = t < 0.35 ? 0 : ((t - 0.35) / 0.65) ** 1.5
+      const p = { x, z, y: y + rise * t, w: Math.max(0.18, w0 * (1 - 0.82 * pinch)), h: Math.max(0.5, h0 * (1 - 0.75 * pinch)), s: t * len, cut: 0 }
+      if (Math.hypot(x - x0, z - z0) > free && foreign(p.x, p.z, p.y, p.y + p.h, p.w, skipNode, skipEdge)) return null
+      pts.push(p)
+      a += (rand() - 0.5) * 0.6
+      x += Math.cos(a) * (len / n); z += Math.sin(a) * (len / n)
+    }
+    return { region, pts }
+  }
+  for (const n of nodes) {
+    if (n.kind === 'mouth') continue
+    const cavern = n.kind === 'cavern', chamber = n.kind === 'chamber'
+    const nl = cavern ? 4 + Math.floor(rand() * 5) : chamber ? 2 + Math.floor(rand() * 4) : Math.floor(rand() * 3)
+    for (let k = 0; k < nl; k++) {
+      const a = rand() * Math.PI * 2
+      const r = cavern ? rr(3, 7) : chamber ? rr(1.8, 3.5) : rr(1.4, 2.4)
+      const at = rDir(n, a) * rr(0.8, 1.0)
+      const l = { node: n.i, region: n.region, x: n.x + Math.cos(a) * at, z: n.z + Math.sin(a) * at, y: n.y, rx: r, rz: r * rr(0.6, 1), rot: a, h: cavern ? rr(4, 10) : chamber ? rr(2.6, 5) : rr(2.4, 3.4) }
+      if (!foreign(l.x, l.z, l.y, l.y + l.h, r, n.i, null)) lobes.push(l)
+    }
+    const nn = cavern ? 2 + Math.floor(rand() * 4) : chamber ? 1 + Math.floor(rand() * 3) : Math.floor(rand() * 3)
+    for (let k = 0; k < nn; k++) {
+      const a = rand() * Math.PI * 2
+      const at = rDir(n, a)
+      const o = crevice(n.region, n.x + Math.cos(a) * at * 0.7, n.z + Math.sin(a) * at * 0.7, n.y, a, rr(3.5, 8), rr(0.7, 1.1), rr(1.9, 2.6), rr(-0.3, 1.4), n.i, null, at * 0.3 + 0.5)
+      if (o !== null) nooks.push(o)
+    }
+  }
+  for (const e of edges) {
+    if (e.kind !== 'walk') continue
+    const total = e.pts[e.pts.length - 1].s
+    for (let s = rr(4, 9); s < total - 4; s += rr(6, 14)) {
+      const p = e.pts.find((q) => q.s >= s)
+      const i = e.pts.indexOf(p)
+      const q = e.pts[Math.min(i + 1, e.pts.length - 1)], o = e.pts[Math.max(i - 1, 0)]
+      const a = Math.atan2(q.z - o.z, q.x - o.x) + (rand() < 0.5 ? 1 : -1) * (Math.PI / 2 + rr(-0.4, 0.4))
+      const c = crevice(nodes[i < e.pts.length / 2 ? e.a : e.b].region, p.x, p.z, p.y, a, rr(3, 6), Math.min(p.w, rr(0.6, 1)), Math.min(p.h, rr(1.6, 2.4)), rr(-0.2, 1), -1, e, p.w + 0.5)
+      if (c !== null) nooks.push(c)
+    }
+  }
+  return { lobes, nooks }
 }
 
 // Rock under this much between two passages stacked in one plan spot.
@@ -299,6 +405,19 @@ export function clashes(e, built, nodes) {
   return false
 }
 
+// Whether plan segments AB and CD cross.
+function cross(A, B, C, D) {
+  const side = (P, Q, R) => (Q.x - P.x) * (R.z - P.z) - (Q.z - P.z) * (R.x - P.x)
+  return side(A, B, C) * side(A, B, D) < 0 && side(C, D, A) * side(C, D, B) < 0
+}
+
+// Plan distance from node n to segment AB.
+function segDist(n, A, B) {
+  const ex = B.x - A.x, ez = B.z - A.z
+  const u = Math.max(0, Math.min(1, ((n.x - A.x) * ex + (n.z - A.z) * ez) / (ex * ex + ez * ez)))
+  return Math.hypot(n.x - A.x - u * ex, n.z - A.z - u * ez)
+}
+
 // Plan metres of a passage's sloping run between two nodes' flat floors.
 export function between(A, B) {
   const d = Math.hypot(A.x - B.x, A.z - B.z)
@@ -314,11 +433,19 @@ function flatOf(n, x, z) {
   return FLAT_IN / Math.hypot(lx, lz)
 }
 
+// Where p lies in node n's ellipse: 1 on its rim.
+function rhoOf(n, p) {
+  const dx = p.x - n.x, dz = p.z - n.z
+  const c = Math.cos(n.rot), s = Math.sin(n.rot)
+  return Math.hypot((dx * c + dz * s) / n.rx, (dz * c - dx * s) / n.rz)
+}
+
 /**
  * The passage as samples every SAMPLE metres from node a to node b: { x, z, y, w, h }, y the floor, w the half-width, h the height above it.
  * The plan line bends through a rolled midpoint; the floor is flat inside each node, a straight grade between, dipped for a sump and held at the lip for a drop.
  */
-function profile(e, nodes, rand) {
+function profile(e, nodes, rand, plain) {
+  const rr = (a, b) => a + (b - a) * rand()
   const A = nodes[e.a], B = nodes[e.b]
   const dx = B.x - A.x, dz = B.z - A.z
   const d = Math.hypot(dx, dz)
@@ -327,21 +454,51 @@ function profile(e, nodes, rand) {
   const bend = mouth ? 0 : (rand() - 0.5) * 0.5 * d
   const mx = (A.x + B.x) / 2 - (dz / d) * bend, mz = (A.z + B.z) / 2 + (dx / d) * bend
   const n = Math.max(3, Math.ceil(d / SAMPLE))
-  let flatA = flatOf(A, mx, mz), flatB = flatOf(B, mx, mz)
   const yB = e.kind === 'drop' ? B.y + e.drop : B.y
-  const baseW = e.kind === 'drop' || mouth ? 1.2 : 0.95 + rand() * 0.6
+  const baseW = e.kind === 'drop' || mouth ? 1.2 : 0.95 + rand() * 0.5
   const phase = rand() * 10
   const tall = rand() < 0.3 ? 1 : 0
+  // The line wanders off the curve between the nodes' walls, so no passage runs straight.
+  const wander = mouth || plain ? 0 : rr(0.6, 2.4)
+  const wf = rr(0.35, 0.7), wp = rand() * 10
+  const rA = Math.max(A.rx, A.rz), rB = Math.max(B.rx, B.rz)
   const pts = []
   let run = 0
   let px = A.x, pz = A.z
   for (let k = 0; k <= n; k++) {
     const u = k / n
-    const x = (1 - u) * (1 - u) * A.x + 2 * u * (1 - u) * mx + u * u * B.x
-    const z = (1 - u) * (1 - u) * A.z + 2 * u * (1 - u) * mz + u * u * B.z
+    let x = (1 - u) * (1 - u) * A.x + 2 * u * (1 - u) * mx + u * u * B.x
+    let z = (1 - u) * (1 - u) * A.z + 2 * u * (1 - u) * mz + u * u * B.z
+    const tx = 2 * (1 - u) * (mx - A.x) + 2 * u * (B.x - mx), tz = 2 * (1 - u) * (mz - A.z) + 2 * u * (B.z - mz)
+    const tl = Math.hypot(tx, tz)
+    const fade = Math.min(1, Math.max(0, Math.min(u * d - rA, (1 - u) * d - rB) / 4))
+    const off = wander * fade * (Math.sin(u * d * wf + wp) * 0.7 + Math.sin(u * d * wf * 2.3 + wp * 1.7) * 0.3)
+    x -= (tz / tl) * off; z += (tx / tl) * off
     run += Math.hypot(x - px, z - pz)
     px = x; pz = z
     pts.push({ x, z, y: 0, w: 0, h: 0, s: run, cut: 0 })
+  }
+  // The flats end where the line itself clears each node's floor, which the dome holds out to 0.95 of its radius: a line leaving at a slant runs metres along that rim.
+  const leave = (N, list, sOf) => {
+    for (let k = 1; k < list.length; k++) {
+      const ra = rhoOf(N, list[k - 1]), rb = rhoOf(N, list[k])
+      if (rb >= FLAT_OUT) return sOf(list[k - 1]) + (sOf(list[k]) - sOf(list[k - 1])) * Math.max(0, (FLAT_OUT - ra) / (rb - ra))
+    }
+    return sOf(list[list.length - 1])
+  }
+  let flatA = leave(A, pts, (p) => p.s), flatB = leave(B, [...pts].reverse(), (p) => run - p.s)
+  // Cells along the run, each pinched, plain or bellied out, so the passage narrows and opens of a sudden.
+  const cells = []
+  for (let s = 0; s < run + 10;) {
+    const len = rr(3, 8), q = rand()
+    cells.push({ s0: s, s1: s + len, f: mouth || plain || e.kind === 'sump' ? 1 : q < 0.25 ? 0.72 : q < 0.6 ? 1 : q < 0.88 ? 1.55 : 2.1 })
+    s += len
+  }
+  const cellAt = (s) => {
+    const c = cells.find((q) => s < q.s1)
+    const next = cells[cells.indexOf(c) + 1]
+    const t = Math.max(0, Math.min(1, (s - c.s1 + 0.9) / 1.8))
+    return c.f + (next.f - c.f) * t * t * (3 - 2 * t)
   }
   const total = run
   // Close nodes give their flats up in proportion, so the slope always has 6 m to run over.
@@ -358,8 +515,9 @@ function profile(e, nodes, rand) {
     // A river's channel fades out over 3 m before each node's floor, so it never ends in a step.
     p.cut = e.river ? RIVER_DEPTH * Math.min(1, Math.max(0, Math.min(p.s - lo, hi - p.s) / 3)) : 0
     const wave = Math.sin(p.s * 0.21 + phase) * 0.5 + Math.sin(p.s * 0.53 + phase * 2) * 0.3
-    p.w = baseW * (1 + 0.32 * wave)
-    p.h = 2.3 + 0.3 * (wave + 1) + tall * 2.4 * Math.max(0, Math.sin(p.s * 0.09 + phase))
+    const f = cellAt(p.s)
+    p.w = Math.max(0.85, baseW * f * (1 + 0.25 * wave))
+    p.h = Math.max(2.3, (2.3 + 0.3 * (wave + 1)) * (0.75 + 0.4 * f) + tall * 2.4 * Math.max(0, Math.sin(p.s * 0.09 + phase)))
     if (e.squeeze) {
       const mid = 1 - Math.min(1, Math.abs(p.s / total - 0.5) / 0.18)
       p.w = Math.max(0.9, p.w * (1 - 0.45 * mid))
@@ -367,7 +525,7 @@ function profile(e, nodes, rand) {
     }
     if (e.kind === 'sump' && t > 0 && t < 1) {
       p.y -= e.sump.dip * (0.5 - 0.5 * Math.cos(2 * Math.PI * t))
-      p.h = 2.8
+      p.h = 2.3
     }
   }
   pts[0].w = pts[pts.length - 1].w = Math.max(pts[0].w, 1.1)

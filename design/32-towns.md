@@ -34,7 +34,7 @@ A 40 m grid scan keeps points that are dry, under a 0.2 slope underfoot, 150 m f
 
 Clearing rings, door paths and roads are all road records with `town\d` ids. PathSet therefore flattens the ground under them, paints them dirt, cobbles them (litter) and keeps grass, ferns and rocks off them, with no terrain code of its own. PathSet ranks a road by its signed gap past the kerb, not by its centreline, so a narrow door path beside a wide road still wins where it is nearer; `out.dist` is still the centreline distance.
 
-Buildings get no pad: they stand on the live, unflattened field (`surface`, which includes the fractal detail that is up to 1 m off the raw heightmap). The chosen seat is resampled on a 1 m grid, with the clearing ring's feather blended in. The floor sits at the highest sample, the plinth reaches 0.6 m below the lowest, and the door steps drop to the door's ground, with 4 treads reserved in front of the box. Rocks keep off buildings through `keepOut` (`townsOccupyAt`).
+Buildings get no pad: they stand on the live, unflattened field (`surface`, which includes the fractal detail that is up to 1 m off the raw heightmap). The chosen seat is resampled on a 1 m grid, with the clearing ring's feather and each main road's grading (its half-width plus `DEFAULT_ROAD_FEATHER`) blended in, or a graded road lifts the ground through the floor. The floor sits at the highest sample, the plinth reaches 0.6 m below the lowest, and the door steps drop to the door's ground, with 4 treads reserved in front of the box. Rocks keep off buildings through `keepOut` (`townsOccupyAt`).
 
 Generated roads ride every document the workers, the editor and the undo stack see. `serialize({ authored: true })` drops them for saves, because boot regenerates them and a saved copy would stack a second one underneath. So **editing a town road in the editor does not persist**.
 
@@ -61,18 +61,18 @@ The greeting is this client's alone. When she comes within 2 m of someone walkin
 
 Every town's fire crackles through ambience.js's campfire rule, a loop per town placed at the clearing's centre whether or not the town is awake.
 
-The pool is 4 puppets per body, plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 4 people who want one. A farther holder fades out to free its puppet.
+The pool is 2 puppets per body (`TOWNSFOLK.puppets`), plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 2 people who want one. A farther holder fades out to free its puppet.
 
 ## Trades
 
-A town holds at most one of each of the 9 avatars (`TRADES.bodies`), so "Gisela the farmer" names one face, known by her clothes and her work. `castFolk` casts 6-7 folk (`TRADES.folk`), never all 9, so an arriving traveller's body is never a second of anyone already there (a guest only shares one when the town is over-full):
+A town holds at most one of each of the 19 avatars (`TRADES.bodies`), so "Gisela the farmer" names one face, known by her clothes and her work. `castFolk` casts 10-13 folk (`TRADES.folk`), never all 19, so an arriving traveller's body is never a second of anyone already there (a guest only shares one when the town is over-full). Each body has a class (`TRADES.roles`): **folk** (the trades and townspeople), **travel** (healer, skald, thief, trapper), **guard** (guard, shieldmaiden, jarlsthane, battlemage) and **child**. After the trades, every town draws one traveller, one guard and one child before filling the count at random. The class sets the home: travellers lodge at the inn, a child joins a household already lived in, the jarlsthane takes the grandest free house, and the rest take a free house, then share. It also sets the errands (`TOWNSFOLK.errands`: a guard mostly patrols, a traveller sits at the fire and leads striders, a child visits and runs at 1.2x pace) and how often the body takes the road (`JOURNEYS.road`: a traveller 6, folk 1, a guard 0.4, a child never).
 
 - **Smith** (`blacksmith`): the smithy is an open-sided, tile-roofed shed 7 × 5 m with its front on the clearing's edge, an arched forge with its flame in the hood's mouth, 1-2 anvils and a quench tub (`smithyLayout`). The smith lives in the humblest cottage, seated as near the smithy as it will go. No smithy, no smith.
 - **Potion master** (`alchemist`) keeps the first cottage that is not the smith's, with a flask sign; inside, a counter of potions by the door (§38).
-- **Innkeeper** keeps the inn, under a tankard sign.
+- **Innkeeper** keeps the inn, under a tankard sign. Every town has one: its inn-kind building, or the grandest non-hut when it has none. Inside, a taproom of tables round a bar and bedrooms off it (§38).
 - **Farmers** (`farmer`, then `shepherd`): 1 farm, 2 with chance 0.6, on the town's last huts, ringing it past the other buildings. Each is a thatched farmhouse, a fenced field beside it (a 9-13 × 7-10 m quad rolled square, trapezoid or cut-corner, carrot rows 0.8 m apart, a gate on the house's front) and a thatched shed with barrels and sacks.
 - **Woodcutter**: a woodpile with a chopping stump along a side or the back of the house, reached round the front corner.
-- The rest (hunter, miner, fisherman) fill the count with no work of their own.
+- The rest (hunter, miner, fisherman, herbalist and the other classes) fill the count with no work of their own.
 
 Signs are emblems only (anvil, flask, tankard), on a post at the front corner, its board hung toward the clearing. Every work is a footprint kept clear like a building's.
 
@@ -105,7 +105,7 @@ Netplay (`creature-sync.md`, prefix `ws`): calm needs no messages. A strider liv
 
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
-- Market stalls and livestock. A trade per body caps the cast at 9 avatars; more needs new meshes. Grass may grow over the carrot rows. Snow towns get the same farms. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
+- Market stalls and livestock. The cast is capped at the 19 shipped avatars; more needs new meshes. Grass may grow over the carrot rows. Snow towns get the same farms. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
 - Rails have no collider, travellers pass through the player, townsfolk inside a town pass through each other, and only drawn folk (all that show) are avoided by running striders or eased off their bodies.
 - Trust and growth last only the session. A lent strider reappears at its rail if the sim unties it for a traveller. Riders' legs are posed for the shipped strider and may sink into a larger one.
 - Trust, growth and who a strider has charged are per client, so a peer's copy never eats, strikes or trusts. Only a strider's being tamed is shared, by its anchors, and the relay keeps those a chapter, so a player who joins later sees an untouched tamed one as wild. A dash's wobble, a swimmer's bob and the calls are each client's own roll, the first corrected by the anchors; a ridden copy walks or runs a hop rather than treading after it, plays no coax squawks, and its seat follows the rider's head, so it shifts as she leans; spots are plotted against the trunks loaded on each client. Wild striders speak with the tack striders' pitched chirp, whine and flutter.

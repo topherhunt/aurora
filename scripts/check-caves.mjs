@@ -7,8 +7,17 @@
 import { planCave, EXIT_R } from '../src/v2/caves/build.js'
 import { DROP_MIN } from '../src/v2/caves/graph.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
-import { chunkList, meshChunk } from '../src/v2/caves/mesh.js'
+import { chunkList, meshChunk, CHUNK, VOXEL, VOXEL_LO, drawnRegions, chunkGap, HI_M, CULL_M } from '../src/v2/caves/mesh.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
+import { groupSystems, caveEntries, siteMouths, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
+import { readFileSync } from 'node:fs'
+import { SEED } from '../src/v2/config.js'
+import { Heightmap } from '../src/v2/height/heightmap.js'
+import { V2Height } from '../src/v2/height/field.js'
+import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
+import { Layers } from '../src/v2/layers/layers.js'
+import { mouthBankFrom } from '../src/v2/render/entrances.js'
+import { readShippedLadder } from './lib/gen-prop-node.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -21,6 +30,8 @@ const STEP = 0.25
 const STRIDE = 1.5
 // Her feet under the surface afloat.
 const FLOAT = 1.32
+// Cave wall triangles CaveRoom draws at once, wherever she stands.
+const DRAWN_MAX = 150000
 const SYSTEMS = [
   { seed: 11, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }] },
   { seed: 12, entries: [{ x: 0, z: 0, dx: 0, dz: 1 }, { x: 90, z: 140, dx: -0.6, dz: -0.8 }] },
@@ -28,6 +39,8 @@ const SYSTEMS = [
   { seed: 14, entries: [{ x: 0, z: 0, dx: 0.6, dz: 0.8 }] },
   { seed: 15, entries: [{ x: 0, z: 0, dx: -1, dz: 0 }, { x: -150, z: 90, dx: 0.8, dz: -0.6 }] },
   { seed: 16, entries: [{ x: 0, z: 0, dx: 0, dz: -1 }, { x: 100, z: 0, dx: 0, dz: -1 }, { x: 200, z: 0, dx: 0, dz: -1 }, { x: 100, z: -180, dx: 0, dz: 1 }] },
+  // A cliff mouth and a cellar under a house.
+  { seed: 17, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }, { x: 140, z: 70, dx: 0.6, dz: -0.8, cellar: true }] },
 ]
 
 for (const sys of SYSTEMS) {
@@ -128,17 +141,33 @@ for (const sys of SYSTEMS) {
     check(level !== null && roof < level, `${tag}: sump ${e.i} is flooded to the roof at its dip`, `level ${level === null ? 'none' : level.toFixed(1)} roof ${roof.toFixed(1)}`)
   }
 
-  // The mesh: every chunk, timed, within a triangle budget.
+  // The mesh: every chunk at both LODs, timed; then the triangles CaveRoom draws standing at each node, within a budget.
   const t2 = performance.now()
-  let tris = 0, built = 0
+  let tris = 0
+  const chunks = []
   for (const [i, j, k] of chunkList(field)) {
-    const m = meshChunk(field, i, j, k, cave.lights)
-    if (m === null) continue
-    built++
-    tris += m.index.length / 3
+    const c = { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: [new Map(), new Map()] }
+    ;[VOXEL, VOXEL_LO].forEach((voxel, lod) => {
+      const m = meshChunk(field, i, j, k, cave.lights, voxel)
+      if (m === null) return
+      for (let p = 0; p < m.parts.length; p += 3) c.lods[lod].set(m.parts[p], m.parts[p + 2] / 3)
+      if (lod === 0) tris += m.index.length / 3
+    })
+    chunks.push(c)
   }
   const meshMs = performance.now() - t2
-  check(tris < 450000 * sys.entries.length, `${tag}: under 450k triangles a mouth`, `${(tris / 1000).toFixed(0)}k in ${built} chunks, plan ${planMs.toFixed(0)} ms, mesh ${(meshMs / 1000).toFixed(1)} s`)
+  let worst = 0, at = -1
+  for (const n of graph.nodes) {
+    const shown = drawnRegions(graph, n.region)
+    let drawn = 0
+    for (const c of chunks) {
+      const d = chunkGap(c, n.x, n.y + 1.6, n.z)
+      if (d >= CULL_M) continue
+      for (const [r, t] of c.lods[d < HI_M ? 0 : 1]) if (shown.has(r)) drawn += t
+    }
+    if (drawn > worst) { worst = drawn; at = n.i }
+  }
+  check(worst < DRAWN_MAX, `${tag}: under ${DRAWN_MAX / 1000}k triangles drawn from any node`, `${(worst / 1000).toFixed(0)}k at node ${at}, ${(tris / 1000).toFixed(0)}k near-LOD in ${chunks.length} chunks, plan ${planMs.toFixed(0)} ms, mesh ${(meshMs / 1000).toFixed(1)} s`)
   const kinds = {}
   for (const n of graph.nodes) kinds[n.kind] = (kinds[n.kind] || 0) + 1
   console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.rivers.length} rivers) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} lights ${cave.lights.length}`)
@@ -204,11 +233,66 @@ for (const sys of SYSTEMS) {
   }
   const near = wall !== null && onRock(cave.field, wall[0] - wall[3] * 0.02, wall[1], wall[2] - wall[4] * 0.02, 0.05, out)
   check(wall !== null && Math.abs(cave.field.at(wall[0], wall[1], wall[2])) < 0.01 && near && Math.abs(cave.field.at(...out)) < 0.005, 'chalk: a ray from the door meets the wall, and a pen 2 cm off it lands on the rock', wall === null ? 'no wall' : `field ${cave.field.at(...out).toFixed(4)}`)
-  const stroke = new Float32Array(wall === null ? [0, 0, 0] : [wall[0], wall[1], wall[2], wall[0], wall[1] + 0.03, wall[2]])
+  // The wall is lumpy, so a point 3 cm up it is put back on the rock as a pen would.
+  const up = [0, 0, 0]
+  if (wall !== null) onRock(cave.field, wall[0], wall[1] + 0.03, wall[2], 0.05, up)
+  const stroke = new Float32Array(wall === null ? [0, 0, 0] : [wall[0], wall[1], wall[2], ...up])
   const r = ribbons([stroke, stroke.slice(0, 3)], cave.field)
   let off = true
   for (let i = 0; i < r.position.length; i += 3) off &&= cave.field.at(r.position[i], r.position[i + 1], r.position[i + 2]) < -0.002
   check(r.index.length === 12 && r.index.every((i) => i < r.position.length / 3) && off, 'chalk: a stroke and a dab ribbon off the rock on its air side')
+}
+
+{
+  // design/39-caves.md §2: cellars joining the systems leave the cliff systems' ids, seeds and centres (chalk's keys) as they were, and each lands in one system near enough its centre for chalk to pack.
+  const mouths = () => Array.from({ length: 12 }, (_, k) => ({ id: k, x: (k % 4) * 300, z: Math.floor(k / 4) * 280, nx: 1, nz: 0 }))
+  const cellars = Array.from({ length: 40 }, (_, k) => ({ id: k, t: k, i: 0, x: ((k * 137) % 1100) - 50, z: ((k * 89) % 700) - 50, dx: 0, dz: 1 }))
+  const bare = groupSystems(mouths(), 99), full = groupSystems(mouths(), 99, cellars)
+  const same = bare.every((s, k) => full[k].seed === s.seed && full[k].cx === s.cx && full[k].cz === s.cz && JSON.stringify(full[k].mouths) === JSON.stringify(s.mouths))
+  const homes = cellars.map((c) => full.filter((s) => s.cellars.includes(c.id)))
+  const far = cellars.filter((c, k) => homes[k].length === 1 && Math.hypot(homes[k][0].cx - c.x, homes[k][0].cz - c.z) > CELLAR_LINK_M).length
+  const joined = cellars.filter((c, k) => homes[k].length === 1 && homes[k][0].mouths.length > 0).length
+  check(same && homes.every((h) => h.length === 1 && h[0].id === cellars[homes.indexOf(h)].system) && far === 0 && joined > 0 && joined < cellars.length, 'cellars join the systems without moving a cliff system, each in one near its centre', `${joined} of ${cellars.length} share a cliff system`)
+  const e = caveEntries(full.find((s) => s.mouths.length > 0 && s.cellars.length > 0), mouths(), cellars)
+  check(e.findIndex((q) => q.cellar) === e.filter((q) => !q.cellar).length, "a system's doors are its mouths, then its cellars")
+}
+
+{
+  // design/39-caves.md §2 on the shipped world: every mouth's notch levels the floor under its arch and stands a wall behind it, and no system outgrows chalk. Towns are not kept out here, so this sites a superset of the game's mouths.
+  const root = new URL('../public/world/', import.meta.url)
+  const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: new URL('height.json', root) })
+  const layers = Layers.deserialize(JSON.parse(readFileSync(new URL('layers.json', root), 'utf8')))
+  const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
+  field.setLayers(layers)
+  const wet = (x, z) => {
+    const level = layers.waterLevelAt(x, z)
+    return level !== null && field.heightAt(x, z) < level + 0.3
+  }
+  const mouths = siteMouths({ heightmap: hm, field, wet, keepOut: () => false })
+  layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
+  const bank = mouthBankFrom(readShippedLadder('cave-mouth'))
+  const half = (bank.width * MOUTH.scale) / 2, depth = bank.depth * MOUTH.scale
+  check(half + 0.5 <= MOUTH.floorW && depth + 1 <= MOUTH.floorOut, 'the arch stands inside its notch with room to walk round it', `arch ${(half * 2).toFixed(1)} m across and ${depth.toFixed(1)} m out, floor ${MOUTH.floorW * 2} by ${MOUTH.floorOut} m`)
+  let rough = 0, low = 0, worstFloor = 0, worstWall = Infinity, grown = 0, fenced = 0
+  for (const m of mouths) {
+    const at = (s, t) => field.heightAt(m.x - m.nx * s + m.nz * t, m.z - m.nz * s - m.nx * t) - m.y
+    const keeps = (s, t, pad) => layers.clefts.occupiesAt(m.x - m.nx * s + m.nz * t, m.z - m.nz * s - m.nx * t, pad)
+    for (let s = MOUTH.wall - 10.5; s <= MOUTH.wall; s += 0.5) for (const t of [-half, 0, half]) if (!keeps(s, t, 0.3)) grown++
+    if (keeps(-30, 0, 0.3) && !mouths.some((o) => o !== m && Math.hypot(o.x - m.x - m.nx * 30, o.z - m.z - m.nz * 30) < 30)) fenced++
+    let off = 0, top = Infinity
+    for (let s = MOUTH.wall - depth - 0.5; s <= MOUTH.wall + 0.4; s += 0.25) for (let t = -half - 0.3; t <= half + 0.3; t += 0.25) off = Math.max(off, Math.abs(at(s, t) + 0.05))
+    for (let s = MOUTH.wall + 1.2; s <= MOUTH.wall + 3; s += 0.25) for (let t = -half - 0.5; t <= half + 0.5; t += 0.25) top = Math.min(top, at(s, t))
+    if (off > 0.02) rough++
+    if (top < 4) low++
+    worstFloor = Math.max(worstFloor, off)
+    worstWall = Math.min(worstWall, top)
+  }
+  check(mouths.length >= 100 && rough === 0 && low === 0, "every mouth's notch is level under its arch with a wall behind it", `${mouths.length} mouths, floor within ${worstFloor.toFixed(3)} m, wall at least ${worstWall.toFixed(1)} m`)
+  check(grown === 0 && fenced === 0, 'trees and rocks keep off every notch and the approach to its arch, and no further', `${grown} spots refused nothing, ${fenced} mouths kept clear 30 m out`)
+  const systems = groupSystems(mouths, SEED)
+  const span = Math.max(...systems.map((s) => Math.max(...s.mouths.map((i) => Math.hypot(mouths[i].x - s.cx, mouths[i].z - s.cz)))))
+  const biggest = Math.max(...systems.map((s) => s.mouths.length))
+  check(span < 400, "a system's mouths stay well inside chalk's reach of its centre", `${systems.length} systems, the largest ${biggest} mouths, the furthest ${span.toFixed(0)} m out`)
 }
 
 if (failures > 0) {

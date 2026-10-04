@@ -253,7 +253,7 @@ function snapToAxis(v) {
 function armAnatomy(skel, chain, frame) {
   const P = chain.map(skel.pos)
   let s = 0
-  for (; s < P.length - 2; s++) {
+  for (; s < P.length - 3; s++) {
     const d = sub(P[s + 1], P[s])
     if (Math.abs(d[1]) > Math.abs(dot(d, frame.lateral))) break
   }
@@ -352,8 +352,11 @@ function bipedMap(skel, low, ground, height, forwardDeg = null) {
   }))
 
   // The pelvis stays out of the spine: bending it would pivot the whole figure
-  // about a root joint Tripo puts on the ground between the feet.
-  const spine = pathBetween(skel, pelvis, chest).slice(1)
+  // about a root joint Tripo puts on the ground between the feet. So do its
+  // ancestors, which the path climbs through when the legs hang off a sibling
+  // branch of the chest's: they carry the legs too.
+  const below = new Set(skel.ancestors(pelvis))
+  const spine = pathBetween(skel, pelvis, chest).slice(1).filter((j) => !below.has(j))
   const head = pathBetween(skel, chest, skull).slice(1)
   return {
     plan: 'human',

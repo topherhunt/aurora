@@ -193,33 +193,35 @@ export class Entrances {
     this._seen = new Uint8Array(0)
     this._queue = new Int32Array(0)
     this.bank = bank
-    this.maxInstances = POOL
+    // A fixed set is seated whole, so it sizes the pool.
+    const pool = fixed === null ? POOL : Math.max(POOL, fixed.length)
+    this.maxInstances = pool
 
     this.material = createGenPropMaterial()
     this.material.map = bank.map
     this.materials = [this.material]
-    this.batch = new PropArena(POOL, bank.tiers, new Array(bank.tiers.length).fill(POOL), () => this.material, 'v2-entrances')
-    this.free = new Int32Array(POOL)
-    this.freeCount = POOL
-    for (let i = 0; i < POOL; i++) {
+    this.batch = new PropArena(pool, bank.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances')
+    this.free = new Int32Array(pool)
+    this.freeCount = pool
+    for (let i = 0; i < pool; i++) {
       const id = this.batch.addInstance(0)
       this.batch.setVisibleAt(id, false)
-      this.free[POOL - 1 - i] = id
+      this.free[pool - 1 - i] = id
     }
-    this.tierAt = new Int8Array(POOL).fill(-1)
+    this.tierAt = new Int8Array(pool).fill(-1)
 
     // The holes, one instance per arch on the same ids; a hidden one is a zero matrix.
     this.holeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false })
-    this.holes = new THREE.InstancedMesh(holeGeometry(), this.holeMaterial, POOL)
+    this.holes = new THREE.InstancedMesh(holeGeometry(), this.holeMaterial, pool)
     this.holes.name = 'v2-entrance-holes'
     this.holes.frustumCulled = false
     this.holes.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.scene = scene
     this.shadows = []
     this.shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-    this.holeM = new Float32Array(POOL * 16)
+    this.holeM = new Float32Array(pool * 16)
     this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
-    for (let i = 0; i < POOL; i++) this.holes.setMatrixAt(i, this._zero)
+    for (let i = 0; i < pool; i++) this.holes.setMatrixAt(i, this._zero)
 
     // The screen's stones: the tiers are cloned because PropMeshes hangs its
     // fade attribute on the geometry it is given, and the rocks' own meshes
@@ -302,6 +304,7 @@ export class Entrances {
         const drawn = tier < RUNGS
         this.batch.setVisibleAt(i, drawn)
         if (drawn) this.batch.setGeometryIdAt(i, tier)
+        if (site.shadow !== null) site.shadow.visible = drawn
         this.holes.setMatrixAt(i, drawn ? this._m.fromArray(this.holeM, i * 16) : this._zero)
         this.holes.instanceMatrix.needsUpdate = true
       }
@@ -467,17 +470,20 @@ export class Entrances {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     g.setAttribute('color', new THREE.BufferAttribute(col, 4))
     g.setIndex(idx)
+    g.computeBoundingSphere()
     const mesh = new THREE.Mesh(g, this.shadowMaterial)
     mesh.name = 'v2-entrance-shadow'
-    mesh.frustumCulled = false
     mesh.renderOrder = 1
+    // Drawn while its arch is (update).
+    mesh.visible = false
+    site.shadow = mesh
     this.scene.add(mesh)
     this.shadows.push(mesh)
   }
 
   /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. `scale` sizes the arch and its hole together. */
   _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale = 1) {
-    if (this.freeCount === 0) throw new Error(`Entrances: instance pool exhausted at ${POOL}`)
+    if (this.freeCount === 0) throw new Error(`Entrances: instance pool exhausted at ${this.maxInstances}`)
     const id = this.free[--this.freeCount]
     const bank = this.bank
     // The arch's floor at the lower of its two feet, so the higher is bedded and neither floats.
@@ -501,7 +507,7 @@ export class Entrances {
       state = {}
       this.memory.set(key, state)
     }
-    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank: [], flankReach: 0 }
+    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank: [], flankReach: 0, shadow: null }
     if (r > 0) this._screen(site, hx, hz)
     this.resident.set(key, site)
     this._restone(site)
@@ -760,8 +766,8 @@ export class Entrances {
       placed: this.placed,
       blind: this.resident.size - this.placed,
       tris: this.tris,
-      pool: POOL,
-      used: POOL - this.freeCount,
+      pool: this.maxInstances,
+      used: this.maxInstances - this.freeCount,
       radius: this.radius,
       cull: this.cull,
       placeMs: this.placeMs,

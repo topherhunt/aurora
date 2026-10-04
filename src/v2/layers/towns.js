@@ -6,6 +6,7 @@ import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
 import { TRADES, fieldOutline, fieldRows, castFolk } from './trades.js'
+import { DEFAULT_ROAD_FEATHER } from './paths.js'
 
 export const TOWN = {
   // About one town per `tile`, the best-scoring site in each, then the best remaining below the snow up to `target`. A site above the snow is kept with chance `snowKeep`. Score: water within `water` metres (times `waterWeight`: flat sites by water are rare on this map), a cliff (ground ramping through the `cliff.slope` range) within `cliff.r`, a sunk valley, less unevenness.
@@ -247,6 +248,8 @@ function planPosts({ cx, cz, clearingR, buildings, works, roads, paths, ground, 
 
 // --- one town ------------------------------------------------------------------
 
+const GRANDEUR = ['inn', 'longhouse', 'cottage', 'hut']
+
 // The kinds a town of n buildings holds, most prestigious first.
 function roster(n) {
   const inns = n >= 22 ? 2 : n >= 10 ? 1 : 0
@@ -419,10 +422,11 @@ function layoutTown(site, index, all, ctx) {
     }
     return { top, fall: top - low, wet: isWet }
   }
-  // The highest and lowest ground under the same rectangle once seated. The ground's detail moves tens of centimetres between the 3 x 3 the candidates read, so the seat is read every metre; the clearing's rings will blend the ground toward yC over their feather (paths.js smoothRoads), at the widest swell.
+  // The highest and lowest ground under the same rectangle once seated. The ground's detail moves tens of centimetres between the 3 x 3 the candidates read, so the seat is read every metre; the clearing's rings and the main roads will blend the ground toward their own height over their feather (paths.js smoothRoads), at the widest swell. A road climbing past a house lifts the ground under its wall otherwise.
   const seat = (x, z, yaw, x0, x1, z0, z1) => {
     let hi = -Infinity
     let lo = Infinity
+    const hw = R.width / 2 / SWELL_MIN
     for (let lx = x0; lx <= x1 + 0.01; lx += (x1 - x0) / Math.ceil(x1 - x0)) {
       for (let lz = z0; lz <= z1 + 0.01; lz += (z1 - z0) / Math.ceil(z1 - z0)) {
         const [wx, wz] = toWorld(x, z, yaw, lx, lz)
@@ -430,6 +434,16 @@ function layoutTown(site, index, all, ctx) {
         const g = yC + (h - yC) * smoothstep(0, 1, (Math.hypot(wx - cx, wz - cz) - ringEdge) / RING_FEATHER)
         hi = Math.max(hi, h, g)
         lo = Math.min(lo, h, g)
+        for (const pts of roads) {
+          for (let i = 1; i < pts.length; i++) {
+            const [, , t, d] = nearestOnSegment(pts[i - 1][0], pts[i - 1][2], pts[i][0], pts[i][2], wx, wz)
+            if (d >= hw + DEFAULT_ROAD_FEATHER) continue
+            const y = pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t
+            const r = y + (h - y) * smoothstep(0, 1, (d - hw) / DEFAULT_ROAD_FEATHER)
+            hi = Math.max(hi, r)
+            lo = Math.min(lo, r)
+          }
+        }
       }
     }
     return [hi, lo]
@@ -624,18 +638,23 @@ function layoutTown(site, index, all, ctx) {
     farms.push({ home, field: wi })
   }
 
-  // Signs and shop trades: the potion master keeps the grandest cottage, the inns their tankards.
-  const potions = buildings.findIndex((b, i) => b.kind === 'cottage' && i !== smithHome)
-  if (potions >= 0) Object.assign(buildings[potions], { trade: 'potions', sign: 'flask' })
-  buildings.forEach((b) => { if (b.kind === 'inn') Object.assign(b, { trade: 'inn', sign: 'tankard' }) })
+  // Signs and shop trades: the inns hang their tankards (a town whose inn found no room makes its grandest house the inn), the potion master keeps the grandest cottage left.
   if (smithHome !== null) buildings[smithHome].trade = 'smith'
   for (const f of farms) buildings[f.home].trade = 'farm'
+  const inns = buildings.filter((b) => b.kind === 'inn')
+  if (inns.length === 0) {
+    const grand = buildings.filter((b) => b.trade === undefined && b.kind !== 'hut').sort((p, q) => GRANDEUR.indexOf(p.kind) - GRANDEUR.indexOf(q.kind))
+    if (grand.length > 0) inns.push(grand[0])
+  }
+  for (const b of inns) Object.assign(b, { trade: 'inn', sign: 'tankard' })
+  const potions = buildings.findIndex((b) => b.kind === 'cottage' && b.trade === undefined)
+  if (potions >= 0) Object.assign(buildings[potions], { trade: 'potions', sign: 'flask' })
   const folk = castFolk(rand, {
     smithy: smithy === null ? null : { home: smithHome === null ? -1 : smithHome, work: works.indexOf(smithy) },
     potions,
-    inn: buildings.findIndex((b) => b.kind === 'inn'),
+    inn: buildings.findIndex((b) => b.trade === 'inn'),
     farms,
-    free: buildings.map((b, i) => (b.trade === undefined ? i : -1)).filter((i) => i >= 0),
+    free: buildings.map((b, i) => (b.trade === undefined ? i : -1)).filter((i) => i >= 0).sort((p, q) => GRANDEUR.indexOf(buildings[p].kind) - GRANDEUR.indexOf(buildings[q].kind)),
   })
 
   // The woodcutter's woodpile, along a side or the back of their house.

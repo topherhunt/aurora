@@ -2,7 +2,7 @@
 //
 //   node scripts/check-town-interiors.mjs
 //
-// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
+// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; a shop has its counter, an inn a taproom of tables and its bedrooms upstairs; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
 
 import { planBuilding, KINDS } from '../src/buildings/plan.js'
 import { flatField } from '../src/v2/rooms/interior.js'
@@ -30,6 +30,11 @@ for (let s = 1; s <= SEEDS; s++) {
   const plan = planBuilding({ seed: s * 7919 + 1, kind: 'cottage' })
   try { houses.push(rollTownInterior({ seed: 4242, index: 1000 + s, plan, shop: 'potions' })) } catch (e) { threw++; console.log(`  potions ${s}: ${e.message}`) }
 }
+// The inn is an inn-kind building, or the town's grandest when it has none (layers/towns.js).
+for (let s = 1; s <= SEEDS; s++) {
+  const plan = planBuilding({ seed: s * 7919 + 2, kind: s % 3 === 0 ? 'longhouse' : 'inn' })
+  try { houses.push(rollTownInterior({ seed: 4242, index: 2000 + s, plan, shop: 'inn' })) } catch (e) { threw++; console.log(`  inn ${s}: ${e.message}`) }
+}
 console.log(`Town interiors: ${houses.length} houses over ${Object.keys(KINDS).length} kinds`)
 check(threw === 0, `every building rolls (${threw} threw)`)
 const every = (what, pred) => {
@@ -54,7 +59,19 @@ every('a bed to sleep in', (r) => r.spots.some((s) => s.kind === 'bed'))
   check(shops.length === SEEDS && shops.every((r) => r.spots.some((s) => s.kind === 'shop') && r.items.filter((it) => it.kind === 'potion').length >= 4), `a potion master's house has a counter of potions to keep (${shops.length} shops)`)
   const near = far.filter((d) => d < 4.5).length
   check(near >= shops.length * 0.9, `the counter mostly stands near the front door (${near} of ${shops.length} within 4.5 m)`)
-  check(houses.every((r) => (r.shop === 'potions') === r.items.some((it) => it.kind === 'counter')), 'only a potion master has a counter')
+  check(houses.every((r) => (r.shop !== null) === r.items.some((it) => it.kind === 'counter')), 'only a shop has a counter')
+}
+{
+  const inns = houses.filter((r) => r.shop === 'inn')
+  const hall = (r) => r.rooms.find((rm) => rm.kind === 'hall').id
+  const tables = inns.map((r) => r.items.filter((it) => it.kind === 'table' && it.room === hall(r)).length)
+  const rooms = inns.filter((r) => r.upper).map((r) => r.rooms.filter((rm) => rm.level === 1 && rm.kind === 'bedroom').length)
+  const flat = inns.filter((r) => !r.upper)
+  check(flat.every((r) => r.rooms.filter((rm) => rm.kind !== 'store').every((rm) => rm === r.rooms.find((q) => q.kind === 'hall') || rm.kind === 'kitchen' || rm.kind === 'bedroom')), `an inn with no upper floor lets its side rooms (${flat.length} inns)`)
+  check(inns.length === SEEDS && inns.every((r) => r.spots.some((s) => s.kind === 'shop') && r.items.some((it) => it.kind === 'counter' && it.room === hall(r))), `an inn has a bar in its taproom for its keeper (${inns.length} inns)`)
+  const most = tables.slice().sort((a, b) => a - b)[tables.length >> 1]
+  check(Math.min(...tables) >= 3 && most >= 6, `an inn's taproom holds many tables (fewest ${Math.min(...tables)}, median ${most})`)
+  check(Math.min(...rooms) >= 2, `an inn lets several bedrooms upstairs (fewest ${Math.min(...rooms)})`)
 }
 every('a table with seats, and a hearth to cook at', (r) => r.items.some((it) => it.kind === 'table') && r.spots.some((s) => s.kind === 'seat') && r.spots.some((s) => s.kind === 'cook'))
 {
@@ -136,6 +153,28 @@ function flood(room) {
   check(lost.length === 0, `she walks to every resident's place${show(lost)}`)
   check(upstairs.length === 0, `she climbs the stair to the upper floor${show(upstairs)}`)
   check(ways.length === 0, `the residents' ways join the door to every place${show(ways)}`)
+}
+
+{
+  // design/39-caves.md §2: a house with a cellar (never a hut) has its hatch in a ground-floor corner well away from the front door, walked to from it, its other rooms still all reached; check-towns rolls every house the map actually sites one in.
+  const threwC = [], lostC = [], wallsC = [], spotsC = [], nearC = []
+  for (const kind of Object.keys(KINDS).filter((k) => k !== 'hut')) for (let s = 1; s <= SEEDS; s++) {
+    const plan = planBuilding({ seed: s * 7919, kind }), tag = `${kind}/${s}`
+    let r
+    try { r = rollTownInterior({ seed: 4242, index: s, plan, cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
+    const f = flood(r)
+    if (!f.reached(r.cellar.x + r.cellar.nx * 0.3, r.cellar.z + r.cellar.nz * 0.3, 0)) lostC.push(tag)
+    const h = r.cellar.hole, d = Math.hypot((h.x0 + h.x1) / 2 - r.doorIn.x, (h.z0 + h.z1) / 2 - r.doorIn.z)
+    if (d < 4) nearC.push(`${tag} ${d.toFixed(1)} m`)
+    if (f.out > 0) wallsC.push(tag)
+    for (const sp of r.spots) if (!f.reached(sp.standX, sp.standZ, r.nav.floors[sp.level])) { spotsC.push(`${tag} ${sp.kind}`); break }
+  }
+  const show = (list) => (list.length ? ` -- ${list.slice(0, 4).join(', ')}` : '')
+  check(threwC.length === 0, `every building but a hut rolls with a cellar hatch${show(threwC)}`)
+  check(lostC.length === 0, `she walks from the front door into the cellar hatch${show(lostC)}`)
+  check(nearC.length === 0, `the cellar hatch is tucked away from the front door${show(nearC)}`)
+  check(wallsC.length === 0, `a cellar house never lets her out through a wall${show(wallsC)}`)
+  check(spotsC.length === 0, `a cellar house still reaches every resident's place${show(spotsC)}`)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

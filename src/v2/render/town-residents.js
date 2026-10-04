@@ -16,7 +16,8 @@ const LIE_SLIDE = 0.4
 const HOLD_S = { shop: [30, 70], seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], bed: [40, 90], wander: [3, 8], talk: [10, 20] }
 const PICK = [['seat', 0.25], ['read', 0.12], ['cook', 0.2], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.13], ['talk', 0.08]]
 const NEAR_M = 0.05
-const KEEPER = TOWNSFOLK.bodies.indexOf('alchemist')
+// Who keeps a `shop` spot: the potion master's counter, the innkeeper's bar.
+const KEEPERS = ['alchemist', 'innkeeper'].map((b) => TOWNSFOLK.bodies.indexOf(b))
 const FADE_S = 0.25
 const LIGHT = { amb: 0.75, candle: 0.3, win: 0.35, tint: new THREE.Color(1.0, 0.86, 0.7) }
 
@@ -90,10 +91,10 @@ export class TownResidents {
 
   _free(spot) { return !this.taken.has(spot) }
 
-  /** Its next place: the potion master mostly to the counter, else by PICK among the free ones; `now` puts it there already at its hold. */
+  /** Its next place: a keeper (KEEPERS) mostly to its counter, else by PICK among the free ones; `now` puts it there already at its hold. */
   _choose(r, now) {
     const room = this.room
-    if (r.kind === KEEPER && this.rand() < 0.7) {
+    if (KEEPERS.includes(r.kind) && this.rand() < 0.7) {
       const shop = room.spots.find((s) => s.kind === 'shop' && this._free(s))
       if (shop) { this._goTo(r, shop, now); return }
     }

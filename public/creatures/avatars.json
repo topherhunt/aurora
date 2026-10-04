@@ -17,6 +17,10 @@
       "heightM": 1.63
     },
     {
+      "id": "herbalist",
+      "heightM": 1.6
+    },
+    {
       "id": "hunter",
       "heightM": 1.78
     },
@@ -35,6 +39,42 @@
     {
       "id": "woodcutter",
       "heightM": 1.85
+    },
+    {
+      "id": "healer",
+      "heightM": 1.64
+    },
+    {
+      "id": "skald",
+      "heightM": 1.72
+    },
+    {
+      "id": "thief",
+      "heightM": 1.6
+    },
+    {
+      "id": "trapper",
+      "heightM": 1.79
+    },
+    {
+      "id": "battlemage",
+      "heightM": 1.68
+    },
+    {
+      "id": "guard",
+      "heightM": 1.83
+    },
+    {
+      "id": "jarlsthane",
+      "heightM": 1.86
+    },
+    {
+      "id": "shieldmaiden",
+      "heightM": 1.72
+    },
+    {
+      "id": "child-villager-2",
+      "heightM": 1.25
     }
   ]
 }

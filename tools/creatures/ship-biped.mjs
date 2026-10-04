@@ -24,7 +24,12 @@ import { shipSkinned } from './ship-skinned.mjs'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const OUT = path.join(ROOT, 'public/creatures')
 
-export const VILLAGERS = ['alchemist', 'blacksmith', 'farmer', 'fisherman', 'hunter', 'innkeeper', 'miner', 'shepherd', 'woodcutter']
+export const VILLAGERS = [
+  'alchemist', 'blacksmith', 'farmer', 'fisherman', 'herbalist', 'hunter', 'innkeeper', 'miner', 'shepherd', 'woodcutter',
+  'healer', 'skald', 'thief', 'trapper',
+  'battlemage', 'guard', 'jarlsthane', 'shieldmaiden',
+  'child-villager-2',
+]
 export const BIPEDS = ['abominable-snowman', 'leafkin', ...VILLAGERS]
 export const GAITS = ['walk', 'run']
 

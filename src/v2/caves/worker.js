@@ -1,7 +1,7 @@
-// Meshes one cave system off the main thread (design/39-caves.md §4): plans it from { seed, entries }, then posts its chunks nearest `from` first, and 'near' once every chunk within NEAR_M of it is out, so the room round her arrival is ready long before the far caverns.
+// Meshes one cave system off the main thread (design/39-caves.md §4): plans it from { seed, entries }, then posts its chunks nearest `from` first, each at both LODs, and 'near' once every chunk within NEAR_M of it is out, so the room round her arrival is ready long before the far caverns.
 
 import { planCave } from './build.js'
-import { chunkList, meshChunk, CHUNK } from './mesh.js'
+import { chunkList, meshChunk, CHUNK, VOXEL, VOXEL_LO } from './mesh.js'
 
 const NEAR_M = 28
 let job = 0
@@ -26,9 +26,11 @@ self.onmessage = (ev) => {
         self.postMessage({ id, type: 'near' })
       }
       const [i, j, k] = list[n++]
-      const m = meshChunk(cave.field, i, j, k, cave.lights)
-      if (m === null) continue
-      self.postMessage({ id, type: 'chunk', key: `${i},${j},${k}`, ...m }, [m.position.buffer, m.normal.buffer, m.color.buffer, m.glow.buffer, m.index.buffer])
+      for (const [lod, voxel] of [[0, VOXEL], [1, VOXEL_LO]]) {
+        const m = meshChunk(cave.field, i, j, k, cave.lights, voxel)
+        if (m === null) continue
+        self.postMessage({ id, type: 'chunk', key: `${i},${j},${k}`, lod, ...m }, [m.position.buffer, m.normal.buffer, m.color.buffer, m.glow.buffer, m.index.buffer, m.parts.buffer])
+      }
     }
     if (n < list.length) setTimeout(next, 0)
     else {

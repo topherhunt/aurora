@@ -15,9 +15,11 @@ import { TRI_LAMP, TriFlames } from './fire-tris.js'
 // together; the huts' windows go into the same map as cones out of their
 // walls. The post itself is lit by the map like any other surface, and by
 // nothing else: a glow term on the dish blew the pale trunk under it out white.
-// A post is stone to the walker and a trunk keeps off it.
+// A post is stone to the walker and a trunk keeps off it. Past LAMP.lod1 a post
+// draws the pick's first decimated tier, the only one shipped.
 
 export const LAMP_GLB = 'gen-props/lamp-post-leafkin.glb'
+export const LAMP_LOD1_GLB = 'gen-props/lamp-post-leafkin-lod1.glb'
 // The pick is authored with the foot's centre at its origin, and keeps it: the box's centre, which a prop is normally moved to, sits 4 cm off the trunk under the hood's overhang, and the flame stands on the axis.
 export const LAMP_ORIGIN = [0, 0, 0]
 
@@ -25,6 +27,8 @@ export const LAMP = {
   // Metres, the post's height and its trunk's radius: a leafkin's post, seven tenths of the pick's 2 m.
   height: 1.4,
   radius: 0.049,
+  // Metres from the eye past which a post draws the decimated tier.
+  lod1: 6,
   // Where the dish's floor is, as a fraction of the post's height: the flame's foot, and the light's height in the map.
   bowl: 0.765,
   // The dish's flame against TRI_LAMP's size: a lamp's is a wick's, at the post's seven tenths.
@@ -40,14 +44,16 @@ export const LAMP = {
   lit: [0.15, 0.6],
 }
 
-/** The bank from the shipped pick (loadCritterGlb's asset): its geometry in the pick's frame, the colour map, the bounds. */
-export function lampBankFrom(asset) {
-  const [geometry] = ladderGeometries([asset])
-  return { geometry, map: asset.map, bounds: ladderBounds(geometry) }
+/** The bank from the shipped pick and its first tier (loadCritterGlb's assets, the tier in the pick's frame): the two geometries, the pick's colour map, the bounds. */
+export function lampBankFrom(pick, lod1) {
+  const geometries = ladderGeometries([pick, lod1])
+  return { geometries, map: pick.map, bounds: ladderBounds(geometries[0]) }
 }
 
 export async function loadLampBank() {
-  return lampBankFrom(await loadCritterGlb(LAMP_GLB, { origin: LAMP_ORIGIN }))
+  const [pick, lod1] = await Promise.all([LAMP_GLB, LAMP_LOD1_GLB].map((url) => loadCritterGlb(url, { origin: LAMP_ORIGIN })))
+  lod1.map.dispose()
+  return lampBankFrom(pick, lod1)
 }
 
 export class Lamps {
@@ -59,7 +65,7 @@ export class Lamps {
    * @param opts.patch  (material) => material, the lighting patch for the posts. Required.
    */
   constructor(scene, field, { bank = null, lamps = null, windows = [], seed = 1, patch = null } = {}) {
-    if (!bank || !bank.geometry || !bank.bounds) throw new Error('Lamps: needs the bank from loadLampBank (or lampBankFrom)')
+    if (!bank || bank.geometries?.length !== 2 || !bank.bounds) throw new Error('Lamps: needs the bank from loadLampBank (or lampBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Lamps: needs a V2Height with heightAt')
     if (!Array.isArray(lamps) || lamps.some((l) => !Number.isFinite(l.x) || !Number.isFinite(l.z))) throw new Error('Lamps: `lamps` is a list of { x, z }')
     if (!Array.isArray(windows) || windows.some((w) => ![w.x, w.y, w.z, w.dx, w.dz].every(Number.isFinite))) throw new Error('Lamps: `windows` is a list of { x, y, z, dx, dz }')
@@ -79,22 +85,24 @@ export class Lamps {
     // The dish and the hood are open shells: culled, their insides show the sky through the post.
     this.postMaterial.side = THREE.DoubleSide
     const n = Math.max(1, this.lamps.length)
-    // The prop program dissolves an instance whose fade slot is 0, and a post never fades.
-    bank.geometry.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1))
-    this.posts = new THREE.InstancedMesh(bank.geometry, this.postMaterial, n)
-    const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0)
-    this.lamps.forEach((l, i) => {
-      this.posts.setMatrixAt(i, m.compose(p.set(l.x, l.y, l.z), q.setFromAxisAngle(up, l.yaw), s.setScalar(this.scale)))
+    // The pick near and the tier past LAMP.lod1, every post near until the first update. The prop program dissolves an instance whose fade slot is 0, and a post never fades.
+    ;[this.posts, this.postsFar] = bank.geometries.map((geometry) => {
+      geometry.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1))
+      const mesh = new THREE.InstancedMesh(geometry, this.postMaterial, n)
+      mesh.count = 0
+      mesh.frustumCulled = false
+      return mesh
     })
-    this.posts.count = this.lamps.length
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0)
+    this.matrices = this.lamps.map((l) => new THREE.Matrix4().compose(p.set(l.x, l.y, l.z), q.setFromAxisAngle(up, l.yaw), s.setScalar(this.scale)))
+    for (const m of this.matrices) this.posts.setMatrixAt(this.posts.count++, m)
     this.posts.instanceMatrix.needsUpdate = true
-    this.posts.frustumCulled = false
     // One flame in every dish, all in one draw, shown only while lit.
     this.flames = new TriFlames(n, TRI_LAMP, { seed })
     this.lamps.forEach((l, i) => this.flames.place(i, l.x, l.flameY, l.z, { height: TRI_LAMP.height * LAMP.flame, radius: TRI_LAMP.radius * LAMP.flame, phase: l.phase, group: l.group }))
     this.flames.group.visible = false
     this.group = new THREE.Group()
-    this.group.add(this.posts, this.flames.group)
+    this.group.add(this.posts, this.postsFar, this.flames.group)
     scene.add(this.group)
     // How lit the lamps are, 0..1; each group's glow this frame (lighting.js uLampGlow, the flames); and the groups' mean, the breath the windows glow by.
     this.lit = 0
@@ -160,9 +168,15 @@ export class Lamps {
   /**
    * Once a frame: the flames flicker by `t` seconds and are out by day
    * (`dayness`, clock.js). Leaves `glow` for the lighting's uLampGlow and
-   * `breath` for the windows; the flames burn here, their LODs measured from `eye`.
+   * `breath` for the windows; the flames burn here, theirs and the posts' LODs measured from `eye`.
    */
   update(t, dayness, eye) {
+    this.posts.count = this.postsFar.count = 0
+    this.lamps.forEach((l, i) => {
+      const mesh = Math.hypot(l.x - eye.x, l.y - eye.y, l.z - eye.z) > LAMP.lod1 ? this.postsFar : this.posts
+      mesh.setMatrixAt(mesh.count++, this.matrices[i])
+    })
+    this.posts.instanceMatrix.needsUpdate = this.postsFar.instanceMatrix.needsUpdate = true
     const [on, off] = LAMP.lit
     this.lit = 1 - Math.max(0, Math.min(1, (dayness - on) / (off - on)))
     for (let g = 0; g < 3; g++) this.glow.setComponent(g, this.lit * flicker(t, g * 2.1))
@@ -207,8 +221,9 @@ export class Lamps {
   dispose() {
     this.group.parent?.remove(this.group)
     this.posts.dispose()
+    this.postsFar.dispose()
     this.flames.dispose()
-    this.bank.geometry.dispose()
+    for (const geometry of this.bank.geometries) geometry.dispose()
     if (this.bank.map) this.bank.map.dispose()
     this.postMaterial.dispose()
     if (this.map) this.map.tex.dispose()

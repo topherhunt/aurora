@@ -4,6 +4,7 @@
 
 import { mulberry32 } from '../../sim/mathx.js'
 import { PALETTES, GLOWS } from './regions.js'
+import { onRock, rayRock } from './chalk.js'
 
 // A stalagmite this tall is a trunk to her.
 export const MITE_BLOCKS = 1.0
@@ -27,6 +28,10 @@ export function placeProps(graph, field, seed) {
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
   const block = (x, z, r, y0, y1) => out.obstacles.push({ x, z, r: r + 0.3, y0, y1 })
+  // Each region's mushrooms glow one colour: its first glow's, so they match the light on its walls.
+  const regionGlow = graph.regions.map((r) => GLOWS[(r.i * 7 + seed) % GLOWS.length])
+  for (const g of [...graph.glows].reverse()) regionGlow[graph.nodes[g.node].region] = g.color
+  const hit = [0, 0, 0], nrm = [0, 0, 0], at = [0, 0, 0]
 
   // A random spot on node n's floor at normalised radius rho0..rho1.
   const spot = (n, rho0, rho1) => {
@@ -63,17 +68,42 @@ export function placeProps(graph, field, seed) {
     }
 
     // Mushrooms: carpets of small ones, a few huge.
-    const caps = Math.round(area * 0.06 * pal.mush)
+    const caps = Math.round(area * 0.1 * (0.3 + pal.mush))
     for (let k = 0; k < caps; k++) {
       const p = spot(n, 0.5, 0.97)
       if (p === null) continue
       const huge = rand() < 0.18
-      const h = huge ? Math.min(p.roof - p.y - 0.4, rr(1.8, big ? 6 : 3.6)) : rr(0.08, 0.45)
+      const h = huge ? Math.min(p.roof - p.y - 0.4, rr(1.8, big ? 6 : 3.6)) : rr(0.1, 0.5)
       if (huge && (h < 1.5 || !clear(n, p.x, p.z, h * 0.6))) continue
-      const glow = rand() < pal.glow * 0.4 ? GLOWS[Math.floor(rand() * GLOWS.length)] : null
-      out.mush.push({ x: p.x, y: p.y, z: p.z, h, cap: h * rr(0.45, 0.7), lean: rr(-0.15, 0.15), yaw: rand() * 6.28, glow, seed: rand() })
+      const glow = rand() < 0.2 + pal.glow * 0.6 ? regionGlow[n.region] : null
+      out.mush.push({ x: p.x, y: p.y, z: p.z, h, lean: rr(-0.15, 0.15), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: UP })
       if (huge) block(p.x, p.z, Math.max(0.12, h * 0.07), p.y, p.y + h)
       if (glow && huge) out.lights.push({ x: p.x, y: p.y + h, z: p.z, color: glow, reach: 6 + h, power: 0.35 })
+    }
+
+    // Wall clumps: a few small glowing caps standing out of the rock, each lighting its own patch of wall faintly.
+    const clumps = Math.round((1 + area * 0.012) * (0.3 + pal.mush + pal.glow))
+    for (let k = 0; k < clumps; k++) {
+      const a = rand() * Math.PI * 2, y0 = n.y + rr(0.3, 2.6)
+      if (field.at(n.x, y0, n.z) > -0.3) continue
+      if (!rayRock(field, n.x, y0, n.z, Math.cos(a), 0, Math.sin(a), Math.max(n.rx, n.rz) * 1.5 + 2, hit)) continue
+      outward(field, hit, nrm)
+      if (nrm[1] < -0.3) continue
+      const glow = regionGlow[n.region]
+      const t1 = [-nrm[2], 0, nrm[0]]
+      const tl = Math.hypot(t1[0], t1[2])
+      if (tl < 0.2) { t1[0] = 1; t1[2] = 0 } else { t1[0] /= tl; t1[2] /= tl }
+      const t2 = [nrm[1] * t1[2], nrm[2] * t1[0] - nrm[0] * t1[2], -nrm[1] * t1[0]]
+      const count = 3 + Math.floor(rand() * 5)
+      for (let j = 0; j < count; j++) {
+        const u = rr(-0.35, 0.35), v = rr(-0.3, 0.3)
+        const x = hit[0] + nrm[0] * 0.15 + t1[0] * u + t2[0] * v
+        const y = hit[1] + nrm[1] * 0.15 + t1[1] * u + t2[1] * v
+        const z = hit[2] + nrm[2] * 0.15 + t1[2] * u + t2[2] * v
+        if (!onRock(field, x, y, z, 0.5, at)) continue
+        out.mush.push({ x: at[0] - nrm[0] * 0.02, y: at[1] - nrm[1] * 0.02, z: at[2] - nrm[2] * 0.02, h: rr(0.07, 0.24), lean: rr(-0.35, 0.35), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: [nrm[0] * 0.8, nrm[1] * 0.8 + 0.2, nrm[2] * 0.8] })
+      }
+      out.lights.push({ x: hit[0] + nrm[0] * 0.3, y: hit[1] + nrm[1] * 0.3, z: hit[2] + nrm[2] * 0.3, color: glow, reach: 2.8, power: 0.2 })
     }
 
     // Ruins: stacked blocks in columns, some fallen.
@@ -139,8 +169,8 @@ export function placeProps(graph, field, seed) {
       block(at.x, at.z, r0, c.floor, c.roof)
     } else if (kind === 'giant') {
       const h = Math.min(room - 0.6, rr(6, 9))
-      const glow = GLOWS[Math.floor(rand() * GLOWS.length)]
-      out.mush.push({ x: at.x, y: c.floor, z: at.z, h, cap: h * 0.6, lean: rr(-0.1, 0.1), yaw: rand() * 6.28, glow, seed: rand(), giant: true })
+      const glow = regionGlow[r.i]
+      out.mush.push({ x: at.x, y: c.floor, z: at.z, h, lean: rr(-0.1, 0.1), yaw: rand() * 6.28, glow, seed: rand(), giant: true, region: r.i, up: UP })
       block(at.x, at.z, h * 0.08, c.floor, c.floor + h)
       out.lights.push({ x: at.x, y: c.floor + h, z: at.z, color: glow, reach: 18, power: 0.5 })
     } else {
@@ -170,16 +200,28 @@ export function placeProps(graph, field, seed) {
     if (col === null || !clear(n, g.x, g.z, 0.5)) continue
     const h = Math.min(col.roof - col.floor - 0.5, rr(1.2, n.kind === 'cavern' ? 4.5 : 2.6))
     if (h < 0.8) continue
-    out.mush.push({ x: g.x, y: col.floor, z: g.z, h, cap: h * 0.6, lean: rr(-0.12, 0.12), yaw: rand() * 6.28, glow: g.color, seed: rand() })
+    out.mush.push({ x: g.x, y: col.floor, z: g.z, h, lean: rr(-0.12, 0.12), yaw: rand() * 6.28, glow: g.color, seed: rand(), region: n.region, up: UP })
     for (let k = 0; k < 6; k++) {
       const a = rand() * 6.28, d = rr(0.4, 1.6)
-      out.mush.push({ x: g.x + Math.cos(a) * d, y: col.floor, z: g.z + Math.sin(a) * d, h: rr(0.15, 0.6), cap: 0, lean: rr(-0.2, 0.2), yaw: rand() * 6.28, glow: g.color, seed: rand() })
+      out.mush.push({ x: g.x + Math.cos(a) * d, y: col.floor, z: g.z + Math.sin(a) * d, h: rr(0.15, 0.6), lean: rr(-0.2, 0.2), yaw: rand() * 6.28, glow: g.color, seed: rand(), region: n.region, up: UP })
     }
     if (h > MITE_BLOCKS) block(g.x, g.z, h * 0.07, col.floor, col.floor + h)
     out.lights.push({ x: g.x, y: col.floor + h, z: g.z, color: g.color, reach: g.reach, power: 0.45 })
   }
-  for (const m of out.mush) if (m.cap === 0) m.cap = m.h * rr(0.5, 0.8)
   return out
+}
+
+const UP = [0, 1, 0]
+
+// The unit normal out of the rock at p (the field is positive in rock), into `out`.
+function outward(field, p, out) {
+  const e = 0.03
+  out[0] = field.at(p[0] - e, p[1], p[2]) - field.at(p[0] + e, p[1], p[2])
+  out[1] = field.at(p[0], p[1] - e, p[2]) - field.at(p[0], p[1] + e, p[2])
+  out[2] = field.at(p[0], p[1], p[2] - e) - field.at(p[0], p[1], p[2] + e)
+  const l = Math.hypot(out[0], out[1], out[2])
+  if (l < 1e-9) throw new Error('caves/props: no gradient at a wall point')
+  out[0] /= l; out[1] /= l; out[2] /= l
 }
 
 function segDist(x, z, a, b) {

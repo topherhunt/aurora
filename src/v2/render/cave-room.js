@@ -3,10 +3,14 @@
 // The group stands at the cave's world height `oy`; every plan position inside it is cave-local.
 import THREE from '../../three-instance.js'
 import { TORCH_REACH } from '../../lighting.js'
+import { ROCK_TILE_MEAN, LAYER } from '../../textures.js'
+import { buildMushroom } from '../../props/mushroom.js'
+import { mushroomVariants, mushroomParams } from '../../props/mushroom-bank.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { taken } from '../taken.js'
-import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH } from './chalk.js'
+import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
+import { CHUNK, HI_M, CULL_M, drawnRegions, chunkGap } from '../caves/mesh.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
@@ -14,13 +18,24 @@ const GLOW_GAIN = 3.2
 // Fog in the air, and in the water: density per metre, linear colour.
 export const CAVE_AIR = { density: 0.022, color: [0, 0, 0] }
 export const CAVE_MURK = { density: 0.32, color: [0.004, 0.012, 0.014] }
-const CULL_M = 85
+
+// Metres the boulders' stone tile covers on the cave rock.
+const STONE_M = 2.2
 
 const COMMON = /* glsl */ `
 uniform vec4 uTorch[4];
 uniform vec3 uTorchColor;
 uniform float uFogDensity;
 uniform vec3 uFogColor;
+uniform sampler2D uStone;
+// The stone tile triplanar, its own mean divided out, so the albedo it multiplies stays the tint.
+vec3 caveStone(vec3 p, vec3 n) {
+  vec3 w = pow(abs(n), vec3(4.0));
+  w /= w.x + w.y + w.z;
+  vec2 s = vec2(${(1 / STONE_M).toFixed(4)});
+  vec3 t = texture2D(uStone, p.zy * s).rgb * w.x + texture2D(uStone, p.xz * s).rgb * w.y + texture2D(uStone, p.xy * s).rgb * w.z;
+  return mix(vec3(1.0), t / vec3(${ROCK_TILE_MEAN.map((v) => v.toFixed(4)).join(', ')}), 0.85);
+}
 vec3 caveTorch(vec3 p, vec3 n) {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < 4; i++) {
@@ -49,6 +64,9 @@ attribute vec3 iColor;
 attribute vec3 iEmit;
 varying vec3 vEmit;
 #endif
+#ifdef MUSH
+attribute float cap;
+#endif
 void main() {
   vec4 p = vec4(position, 1.0);
   vec3 n = normal;
@@ -58,6 +76,11 @@ void main() {
   vCol = iColor;
   vGlow = vec3(0.0);
   vEmit = iEmit;
+#ifdef MUSH
+  // A mushroom wears its tint and glow on the cap; the stem is pale flesh, lit faintly from above.
+  vCol = mix(vec3(0.2, 0.19, 0.17), iColor, cap);
+  vEmit = iEmit * mix(0.12, 1.0, cap);
+#endif
 #else
   vCol = color.rgb;
   vGlow = glow;
@@ -80,7 +103,12 @@ varying vec3 vEmit;
 void main() {
   vec3 n = normalize(vNrm);
   if (!gl_FrontFacing) n = -n;
-  vec3 c = vCol * (caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)});
+#ifdef STONE
+  vec3 albedo = vCol * caveStone(vPos, n);
+#else
+  vec3 albedo = vCol;
+#endif
+  vec3 c = albedo * (caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)});
 #ifdef INSTANCED
   c += vEmit;
 #endif
@@ -150,8 +178,9 @@ void main() {
 }`
 
 /** The shared uniforms: the torches by reference, the fog per room. */
-function caveUniforms(lighting) {
+function caveUniforms(lighting, stone) {
   return {
+    uStone: { value: stone },
     uTorch: lighting.uniforms.uTorch,
     uTorchColor: lighting.uniforms.uTorchColor,
     uFogDensity: { value: CAVE_AIR.density },
@@ -187,64 +216,93 @@ function dripGeometry(seed, sides, rings, flute) {
   return g
 }
 
-// A mushroom cap: a squashed dome over y 0, radius 1, with a lip.
-function capGeometry() {
-  const g = new THREE.SphereGeometry(1, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.6)
-  const p = g.getAttribute('position')
-  for (let i = 0; i < p.count; i++) p.setY(i, (p.getY(i) - Math.cos(Math.PI * 0.6)) * 0.55 - 0.15)
-  g.computeVertexNormals()
-  return g
+// The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), each with a `cap` attribute (1 on the cap) and its built height.
+function mushroomGeometries(tier) {
+  return mushroomVariants().map((v, i) => {
+    const g = buildMushroom(mushroomParams(v, 0xca7e + i * 101, tier))
+    const layer = g.getAttribute('texLayer').array
+    g.setAttribute('cap', new THREE.BufferAttribute(Float32Array.from(layer, (l) => (l === LAYER.MUSHROOM_CAP ? 1 : 0)), 1))
+    g.deleteAttribute('texLayer')
+    g.deleteAttribute('uvProj')
+    return { geometry: g, height: g.userData.mushroom.height }
+  })
 }
 
 const tmpM = new THREE.Matrix4()
 const tmpQ = new THREE.Quaternion()
+const tmpQ2 = new THREE.Quaternion()
 const tmpE = new THREE.Euler()
 const tmpP = new THREE.Vector3()
 const tmpS = new THREE.Vector3()
 
 export class CaveRoom {
-  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it. */
-  constructor(plan, oy, lighting) {
+  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it, `stone` the boulders' tile (rocks/stone.png, repeating, sRGB). */
+  constructor(plan, oy, lighting, stone) {
+    if (!(stone instanceof THREE.Texture)) throw new Error('CaveRoom: needs the stone tile')
     this.plan = plan
     this.oy = oy
     this.group = new THREE.Group()
     this.group.name = 'cave-room'
     this.group.position.y = oy
-    this.uniforms = caveUniforms(lighting)
-    this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, vertexColors: true })
+    this.uniforms = caveUniforms(lighting, stone)
+    this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { STONE: '' }, vertexColors: true })
     this.propMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '' }, side: THREE.DoubleSide })
+    this.rockMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '' }, side: THREE.DoubleSide })
+    this.mushMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', MUSH: '' }, side: THREE.DoubleSide })
     this.waterMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide })
     this.markMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: MARK_VERT, fragmentShader: MARK_FRAG, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
     this.live = null
+    // key -> { x, y, z (the chunk's centre), lods: [near meshes, coarse meshes] }, a mesh per region.
     this.chunks = new Map()
-    this.disposables = [this.material, this.propMaterial, this.waterMaterial, this.markMaterial]
+    this.region = plan.graph.nodes[plan.doors[0].node].region
+    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.waterMaterial, this.markMaterial]
     this._props(plan.props)
     this._water(plan.waters)
   }
 
-  /** A chunk from the worker: { key, position, normal, color, glow, index }. */
+  /** A chunk from the worker at one LOD: { key, lod, position, normal, color, glow, index, parts }, one mesh per region sharing the buffers. */
   addChunk(m) {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.BufferAttribute(m.position, 3))
-    g.setAttribute('normal', new THREE.BufferAttribute(m.normal, 3))
-    g.setAttribute('color', new THREE.BufferAttribute(m.color, 3))
-    g.setAttribute('glow', new THREE.BufferAttribute(m.glow, 3))
-    g.setIndex(new THREE.BufferAttribute(m.index, 1))
-    g.computeBoundingSphere()
-    const mesh = new THREE.Mesh(g, this.material)
-    mesh.matrixAutoUpdate = false
-    mesh.updateMatrix()
-    this.group.add(mesh)
-    this.chunks.set(m.key, mesh)
-    this.disposables.push(g)
+    const attrs = {
+      position: new THREE.BufferAttribute(m.position, 3), normal: new THREE.BufferAttribute(m.normal, 3),
+      color: new THREE.BufferAttribute(m.color, 3), glow: new THREE.BufferAttribute(m.glow, 3),
+    }
+    const index = new THREE.BufferAttribute(m.index, 1)
+    let sphere = null
+    const meshes = []
+    for (let p = 0; p < m.parts.length; p += 3) {
+      const g = new THREE.BufferGeometry()
+      for (const k in attrs) g.setAttribute(k, attrs[k])
+      g.setIndex(index)
+      g.setDrawRange(m.parts[p + 1], m.parts[p + 2])
+      if (sphere === null) { g.computeBoundingSphere(); sphere = g.boundingSphere } else g.boundingSphere = sphere
+      const mesh = new THREE.Mesh(g, this.material)
+      mesh.matrixAutoUpdate = false
+      mesh.visible = false
+      mesh.updateMatrix()
+      mesh.userData.region = m.parts[p]
+      this.group.add(mesh)
+      this.disposables.push(g)
+      meshes.push(mesh)
+    }
+    const [i, j, k] = m.key.split(',').map(Number)
+    if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: [null, null] })
+    this.chunks.get(m.key).lods[m.lod] = meshes
   }
 
-  // Instanced props: rows of { x, y, z, ... } turned into one InstancedMesh per kind.
-  _instanced(geometry, rows, place) {
+  /** Her region, from the prim nearest her eye; kept while the eye is out of every prim's reach. */
+  _regionAt(x, y, z) {
+    const f = this.plan.field
+    f.at(x, y, z)
+    if (f.owner >= 0) this.region = f.prims[f.owner].region
+    return this.region
+  }
+
+  // Instanced props: rows of { x, y, z, ... } turned into one InstancedMesh per kind, in stone unless given another material.
+  _instanced(geometry, rows, place, material = this.rockMaterial) {
     if (rows.length === 0) { geometry.dispose(); return null }
-    const mesh = new THREE.InstancedMesh(geometry, this.propMaterial, rows.length)
+    const mesh = new THREE.InstancedMesh(geometry, material, rows.length)
     const col = new Float32Array(rows.length * 3), emit = new Float32Array(rows.length * 3)
     rows.forEach((r, i) => {
       const c = place(r, tmpM, i)
@@ -284,18 +342,32 @@ export class CaveRoom {
       return { color: pale }
     })
 
-    // Mushrooms: stems and caps, a glowing one lit from within.
-    const stemColor = [0.2, 0.19, 0.17]
-    this._instanced(new THREE.CylinderGeometry(0.5, 0.7, 1, 7, 1).translate(0, 0.5, 0), props.mush, (m) => {
-      const r = Math.max(0.015, m.h * (m.giant ? 0.08 : 0.06))
-      set(m.x, m.y - 0.05, m.z, m.yaw, m.lean, 0, r * 2, m.h, r * 2)
-      return { color: stemColor, emit: m.glow ? m.glow.map((c) => c * 0.12) : null }
-    })
-    this._instanced(capGeometry(), props.mush, (m) => {
-      const top = new THREE.Vector3(0, m.h, 0).applyEuler(tmpE.set(m.lean, m.yaw, 0, 'YXZ'))
-      set(m.x + top.x, m.y - 0.05 + top.y, m.z + top.z, m.yaw, m.lean * 1.5, 0, m.cap, m.cap * 0.8, m.cap)
-      return m.glow ? { color: [0.05, 0.05, 0.05], emit: m.glow.map((c) => c * (m.giant ? 1.1 : 0.8)) } : { color: [0.16, 0.11, 0.07] }
-    })
+    // Mushrooms: the forest's species grown large, a glowing cap lit from within. One mesh per tier, species and region, so update() shows only her regions' (mushGroups).
+    const tiers = [mushroomGeometries(0), mushroomGeometries(1)]
+    const groups = new Map()
+    for (const m of props.mush) {
+      const tier = m.h < 1 ? 1 : 0
+      const key = `${tier},${Math.floor(m.seed * tiers[tier].length)},${m.region}`
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(m)
+    }
+    this.mushGroups = []
+    for (const [key, rows] of groups) {
+      const [tier, species, region] = key.split(',').map(Number)
+      const { geometry, height } = tiers[tier][species]
+      const mesh = this._instanced(geometry.clone(), rows, (m) => {
+        tmpS.set(...m.up).normalize()
+        tmpQ.setFromUnitVectors(tmpP.set(0, 1, 0), tmpS).multiply(tmpQ2.setFromEuler(tmpE.set(m.lean, m.yaw, 0, 'YXZ')))
+        tmpP.set(m.x, m.y, m.z).addScaledVector(tmpS, -0.04)
+        const k = m.h / height
+        tmpM.compose(tmpP, tmpQ, tmpS.set(k, k, k))
+        return m.glow ? { color: [0.05, 0.05, 0.05], emit: m.glow.map((c) => c * (m.giant ? 1.1 : 0.8)) } : { color: [0.16, 0.11, 0.07] }
+      }, this.mushMaterial)
+      mesh.userData.region = region
+      mesh.visible = false
+      this.mushGroups.push(mesh)
+    }
+    for (const t of tiers) for (const s of t) s.geometry.dispose()
 
     // Ruins: blocks, a lintel spanning its gap.
     this._instanced(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), props.ruins, (b) => {
@@ -303,13 +375,13 @@ export class CaveRoom {
       return { color: [0.13, 0.12, 0.105] }
     })
 
-    // Chalk: pale lumps, the brightest thing her torch finds; one picked up anywhere this session (taken.js) lies nowhere.
+    // Chalk: lumps of the same stone, paler and bluer, to be learnt by eye; one picked up anywhere this session (taken.js) lies nowhere.
     this.chalkRows = props.chalk
     this.chalkGone = props.chalk.map((c) => taken.has(CHALK, c.x, c.z))
     this.chalkMesh = this._instanced(new THREE.DodecahedronGeometry(CHALK_R, 0), props.chalk, (c, m, i) => {
       set(c.x, c.y + 0.04, c.z, c.yaw, 0.3, 0.2, ...CHALK_SQUASH)
       if (this.chalkGone[i]) m.makeScale(0, 0, 0)
-      return { color: [0.75, 0.74, 0.7] }
+      return { color: CHALK_STONE }
     })
 
     // Fish and crabs, moved in update().
@@ -317,13 +389,13 @@ export class CaveRoom {
     this.fish = this._instanced(new THREE.SphereGeometry(1, 6, 4).scale(0.16, 0.06, 0.04), props.fish, (f, m) => {
       m.identity()
       return { color: [0.3, 0.32, 0.3] }
-    })
+    }, this.propMaterial)
     this.crabRows = props.crabs
     this.crabOff = new Float32Array(props.crabs.length)
     this.crabs = this._instanced(new THREE.BoxGeometry(0.16, 0.06, 0.12).translate(0, 0.04, 0), props.crabs, (c) => {
       set(c.x, c.y, c.z, c.yaw, 0, 0, 1, 1, 1)
       return { color: [0.3, 0.1, 0.05] }
-    })
+    }, this.propMaterial)
   }
 
   _water(waters) {
@@ -403,10 +475,18 @@ export class CaveRoom {
     this.uniforms.uFogColor.value.setRGB(...fog.color)
     this.uniforms.uTime.value = t % 1024
     const ly = eye.y - this.oy
-    for (const mesh of this.chunks.values()) {
-      const s = mesh.geometry.boundingSphere
-      mesh.visible = Math.hypot(s.center.x - eye.x, s.center.y - ly, s.center.z - eye.z) < CULL_M + s.radius
+    const shown = drawnRegions(this.plan.graph, this._regionAt(eye.x, ly, eye.z))
+    for (const c of this.chunks.values()) {
+      const d = chunkGap(c, eye.x, ly, eye.z)
+      // The near LOD within HI_M, the coarse one past it; whichever has arrived while the other is still meshing.
+      const want = d < HI_M ? 0 : 1
+      const lod = c.lods[want] !== null ? want : 1 - want
+      for (let l = 0; l < 2; l++) {
+        if (c.lods[l] === null) continue
+        for (const mesh of c.lods[l]) mesh.visible = l === lod && d < CULL_M && shown.has(mesh.userData.region)
+      }
     }
+    for (const mesh of this.mushGroups) mesh.visible = shown.has(mesh.userData.region)
     if (this.fish !== null) {
       this.fishRows.forEach((f, i) => {
         const a = f.phase + (t * f.speed) / Math.max(0.5, f.r)

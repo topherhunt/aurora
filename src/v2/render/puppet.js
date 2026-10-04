@@ -108,7 +108,7 @@ let posePhase = 0
 const POSE_SLACK = 1.6
 
 /** One sphere over every tier's rest bounds, slack enough for any pose the clips reach. */
-function poseSphere(tiers) {
+export function poseSphere(tiers) {
   const box = new THREE.Box3()
   for (const geo of tiers) {
     if (!geo.boundingBox) geo.computeBoundingBox()

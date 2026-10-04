@@ -3,13 +3,13 @@
 // every creature of one look and tier is ONE InstancedMesh draw, skinned in
 // the vertex shader from a per-instance (row, row, blend). No mixer, no bone
 // texture upload, no per-animal draw. Given up against Puppet: foot IK, clip
-// crossfades, and the solvers (tail lag, strider shake, paddle, head turn),
-// which `solverStub` stands in for. design/27-creature-pipeline.md §Baked
+// crossfades, and the solvers (dragon tail lag, wild strider head turn), which
+// `solverStub` stands in for. design/27-creature-pipeline.md §Baked
 // puppets has the layout and the swap.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
-import { Puppet, cloneBones, lodFadeS } from './puppet.js'
+import { Puppet, cloneBones, lodFadeS, poseSphere } from './puppet.js'
 import { TIER_TINTS, tierTintOn } from './critters.js'
 
 // Samples per second of clip, lowered per skeleton until its rows fit MAX_ROWS.
@@ -140,7 +140,7 @@ function bakeVat(asset) {
   texture.minFilter = texture.magFilter = THREE.NearestFilter
   texture.generateMipmaps = false
   texture.needsUpdate = true
-  const v = { texture, uVat: { value: texture }, world, nb, rows, fps, clips, feet, names: src.bones.map((b) => b.name) }
+  const v = { texture, uVat: { value: texture }, world, nb, rows, fps, clips, feet, sphere: poseSphere(asset.tiers), names: src.bones.map((b) => b.name) }
   console.log(`[baked-puppet] ${nb} bones x ${rows} rows at ${fps} fps in ${(performance.now() - t0).toFixed(0)} ms`)
   return v
 }
@@ -348,7 +348,7 @@ function grow(b, cap) {
   const mesh = new THREE.InstancedMesh(b.geometry, b.material, cap)
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   mesh.instanceColor = dyn(cap, 3)
-  // Instances are the layers' to cull (show(-1) past range); the mesh's bounds are one rest body's.
+  // Instances are culled one by one in flushBaked; the mesh's bounds are one rest body's.
   mesh.frustumCulled = false
   mesh.count = 0
   mesh.visible = false
@@ -394,6 +394,24 @@ function drawn(o) {
 
 const live = new Set()
 
+// The camera the bodies are culled against (cullBakedTo); none, every body is drawn.
+let view = null
+// The sphere's growth for a frame's head turn (rad, times its distance) and travel (m). In the headset the flush runs before three poses this frame's eyes, so the test is against the last frame's: three leaves both eyes' union on the camera after each render.
+const CULL_TURN = 0.15, CULL_PAD = 0.5
+const _frustum = new THREE.Frustum()
+const _pv = new THREE.Matrix4()
+const _sphere = new THREE.Sphere()
+const _eye = new THREE.Vector3()
+
+/** Cull each baked body against `camera`'s frustum from now on; null draws every one. */
+export function cullBakedTo(camera) { view = camera }
+
+function inView(p) {
+  _sphere.copy(p.vat.sphere).applyMatrix4(p.group.matrixWorld)
+  _sphere.radius += CULL_PAD + CULL_TURN * _sphere.center.distanceTo(_eye)
+  return _frustum.intersectsSphere(_sphere)
+}
+
 /** Every active baked puppet into its batches. bakedRoot runs this inside the scene's matrix pass; a check script may call it itself. */
 export function flushBaked() {
   for (const b of live) b.n = 0
@@ -405,10 +423,15 @@ export function flushBaked() {
     }
   }
   const tint = tierTintOn()
+  if (view) {
+    _frustum.setFromProjectionMatrix(_pv.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse))
+    _eye.setFromMatrixPosition(view.matrixWorld)
+  }
   for (const p of active) {
     if (p.done) { active.delete(p); continue }
     if (!drawn(p.group)) continue
     p.group.updateWorldMatrix(true, false)
+    if (view && !inView(p)) continue
     const clip = p.current ? p.current._clip : p._rest
     rowsAt(clip, p.current ? p.current.time : 0, _rows)
     const settled = p.fade >= 1

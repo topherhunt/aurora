@@ -4,9 +4,24 @@
 
 import { PALETTES } from './regions.js'
 
+// The near mesh's voxel and the coarse one drawn past the room's HI_M; both tile the same 16 m chunks.
 export const VOXEL = 0.5
-export const CELLS = 32
-export const CHUNK = VOXEL * CELLS
+export const VOXEL_LO = 1
+export const CHUNK = 16
+// CaveRoom draws chunks within CULL_M of her, the near LOD within HI_M, and only her region and those it touches.
+export const HI_M = 10
+export const CULL_M = 85
+
+/** The regions drawn from inside region `r`: it and the regions it touches. */
+export function drawnRegions(graph, r) {
+  return new Set([r, ...graph.regions[r].touch])
+}
+
+/** Metres from (x, y, z) to the nearest point of chunk `c`'s box, `c` holding its centre in x, y, z. */
+export function chunkGap(c, x, y, z) {
+  const h = CHUNK / 2
+  return Math.hypot(Math.max(0, Math.abs(x - c.x) - h), Math.max(0, Math.abs(y - c.y) - h), Math.max(0, Math.abs(z - c.z) - h))
+}
 
 /** The chunk coordinates [i, j, k] worth building: those any prim's box reaches. */
 export function chunkList(field) {
@@ -21,16 +36,16 @@ export function chunkList(field) {
   return [...out].map((s) => s.split(',').map(Number))
 }
 
-const S = CELLS + 3
-const idx = (i, j, k) => ((k + 1) * S + (j + 1)) * S + (i + 1)
-
 /**
- * Meshes chunk [ci, cj, ck]. `lights` are [{ x, y, z, color, reach }] baked into the glow attribute where they can see the wall.
- * Returns null for a chunk with no surface, else { position, normal, color, glow, index } typed arrays.
+ * Meshes chunk [ci, cj, ck] on a grid of `voxel` metres. `lights` are [{ x, y, z, color, reach }] baked into the glow attribute where they can see the wall.
+ * Returns null for a chunk with no surface, else { position, normal, color, glow, index, parts } typed arrays, the triangles grouped by region and `parts` holding [region, first index, index count] for each group.
  */
-export function meshChunk(field, ci, cj, ck, lights) {
+export function meshChunk(field, ci, cj, ck, lights, voxel = VOXEL) {
+  const CELLS = Math.round(CHUNK / voxel)
+  const S = CELLS + 3
+  const idx = (i, j, k) => ((k + 1) * S + (j + 1)) * S + (i + 1)
   const ox = ci * CHUNK, oy = cj * CHUNK, oz = ck * CHUNK
-  const pad = VOXEL * 2
+  const pad = voxel * 2
   const list = field.primsIn(ox - pad, oy - pad, oz - pad, ox + CHUNK + pad, oy + CHUNK + pad, oz + CHUNK + pad)
   if (list.length === 0) return null
   const f = new Float32Array(S * S * S)
@@ -38,7 +53,7 @@ export function meshChunk(field, ci, cj, ck, lights) {
   for (let k = -1; k <= CELLS + 1; k++) {
     for (let j = -1; j <= CELLS + 1; j++) {
       for (let i = -1; i <= CELLS + 1; i++) {
-        const v = field.at(ox + i * VOXEL, oy + j * VOXEL, oz + k * VOXEL, list)
+        const v = field.at(ox + i * voxel, oy + j * voxel, oz + k * voxel, list)
         f[idx(i, j, k)] = v
         if (v < 0) air = true; else rock = true
       }
@@ -75,7 +90,7 @@ export function meshChunk(field, ci, cj, ck, lights) {
           }
         }
         vid[idx(i, j, k)] = pos.length / 3
-        pos.push(ox + (i + sx / n) * VOXEL, oy + (j + sy / n) * VOXEL, oz + (k + sz / n) * VOXEL)
+        pos.push(ox + (i + sx / n) * voxel, oy + (j + sy / n) * voxel, oz + (k + sz / n) * voxel)
       }
     }
   }
@@ -109,6 +124,7 @@ export function meshChunk(field, ci, cj, ck, lights) {
   const normal = new Float32Array(count * 3)
   const color = new Float32Array(count * 3)
   const glow = new Float32Array(count * 3)
+  const regionOf = new Int32Array(count)
   const e = 0.25
   const near = lights.filter((l) => l.x + l.reach > ox && l.x - l.reach < ox + CHUNK && l.y + l.reach > oy && l.y - l.reach < oy + CHUNK && l.z + l.reach > oz && l.z - l.reach < oz + CHUNK)
   for (let v = 0; v < used.length; v++) {
@@ -129,8 +145,9 @@ export function meshChunk(field, ci, cj, ck, lights) {
     const ao = Math.max(0.35, 1 - occ * 0.32)
 
     field.at(x, y, z, list)
-    const prim = field.owner < 0 ? null : field.prims[field.owner]
-    const pal = PALETTES[field.graph.regions[prim === null ? 0 : prim.region].palette]
+    const region = field.owner < 0 ? 0 : field.prims[field.owner].region
+    regionOf[o] = region
+    const pal = PALETTES[field.graph.regions[region].palette]
     const band = Math.sin(y * 1.9 + 2.2 * field.noise.at3(x * 0.15, y * 0.3, z * 0.15))
     const base = ny > 0.65 ? pal.floor : band > 0.55 ? pal.vein : pal.rock
     const grain = 0.85 + 0.3 * (0.5 + 0.5 * field.floorNoise.at2(x * 3.1 + y * 1.7, z * 3.1 - y * 1.3))
@@ -150,7 +167,19 @@ export function meshChunk(field, ci, cj, ck, lights) {
     }
     glow[o * 3] = gr * ao; glow[o * 3 + 1] = gg * ao; glow[o * 3 + 2] = gb * ao
   }
+  // Triangles grouped by their first vertex's region, so the room can draw a region's share of the chunk alone.
+  const byRegion = new Map()
+  for (let t = 0; t < index.length; t += 3) {
+    const r = regionOf[remap[index[t]]]
+    if (!byRegion.has(r)) byRegion.set(r, [])
+    byRegion.get(r).push(t)
+  }
   const out = new (count > 65535 ? Uint32Array : Uint16Array)(index.length)
-  for (let t = 0; t < index.length; t++) out[t] = remap[index[t]]
-  return { position, normal, color, glow, index: out }
+  const parts = new Int32Array(byRegion.size * 3)
+  let w = 0, p = 0
+  for (const [r, tris] of byRegion) {
+    parts[p++] = r; parts[p++] = w; parts[p++] = tris.length * 3
+    for (const t of tris) { out[w++] = remap[index[t]]; out[w++] = remap[index[t + 1]]; out[w++] = remap[index[t + 2]] }
+  }
+  return { position, normal, color, glow, index: out, parts }
 }

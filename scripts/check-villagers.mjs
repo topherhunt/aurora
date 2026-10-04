@@ -27,7 +27,7 @@ import { buildRockBank } from '../src/props/rock-bank.js'
 import { buildTextureArray } from '../src/textures.js'
 import { SOUNDS } from '../src/v2/audio/ambience.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
-import { LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
+import { LAMP_GLB, LAMP_LOD1_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { HOUSE_BOUNDS, RoomProps } from '../src/v2/render/room-props.js'
 import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
@@ -67,7 +67,7 @@ const room = buildVillage({ spec, shell, house: HOUSE_BOUNDS })
 const layers = Layers.deserialize(validate(room.doc))
 const field = new V2Height({ heightmap: room.heightmap, layers, seed: SEED, relief: RELIEF_SHIPPED })
 const roomProps = new RoomProps(new THREE.Scene(), field, { props: room.props, clearing: room.clearing, seed: spec.seed, textures: buildTextureArray(), glowMap: new THREE.Texture(), patch: (m) => m })
-const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
+const lampBank = lampBankFrom(...[LAMP_GLB, LAMP_LOD1_GLB].map((url) => readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(url)), { origin: LAMP_ORIGIN })))
 const lamps = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps: room.lamps, seed: 1, patch: (m) => m })
 // At her size in a village, as main.js builds the walk the villagers stand on.
 const walk = new WalkSurface(field, shell, { trunkAt: () => null }, { scale: HER_SCALE })

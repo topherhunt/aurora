@@ -1,6 +1,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, chapterOf, hash32 } from '../../sim/score.js'
 import { Heap } from '../layers/route.js'
+import { TRADES } from '../layers/trades.js'
 
 // Who is on the roads between towns (DESIGN.md §32), three-free and the same on every client: each town's chapter holds a few departure slots, each maybe a rider or a party on foot bound for a town the roads reach from one of its ports. A journey leaves its town's port end at t0 and reaches the destination's at t1; the towns' sims (townsfolk.js TownLife) hand off at those two points, and the road between is drawn from `at` alone.
 
@@ -13,6 +14,8 @@ export const JOURNEYS = {
   party: [[1, 0.5], [2, 0.3], [3, 0.2]],
   // Trades that keep their townsfolk at home.
   home: ['smith', 'potions', 'inn'],
+  // Each class's weight in the draw for a journey's members (TRADES.roles): travellers are mostly the ones on the road, children never.
+  road: { travel: 6, folk: 1, guard: 0.4, child: 0 },
   // Metres a second along the road: the strider's walk a touch brisk, and a human's.
   speed: { ride: 1.25, foot: 1.05 },
   // Metres between a party's members, and right of the road's middle each keeps to.
@@ -74,7 +77,7 @@ export class Journeys {
       const route = routes[(rand() * routes.length) | 0]
       const ride = rand() < JOURNEYS.rider
       const there = new Set(this.towns[route.to].folk.map((f) => f.body))
-      const free = this.towns[ti].folk.filter((f) => !JOURNEYS.home.includes(f.trade) && !there.has(f.body) && !gone.has(f.body))
+      const free = this.towns[ti].folk.filter((f) => !JOURNEYS.home.includes(f.trade) && !there.has(f.body) && !gone.has(f.body) && JOURNEYS.road[TRADES.roles[f.body]] > 0)
       const n = Math.min(ride ? 1 : pick(rand, JOURNEYS.party), free.length)
       if (n === 0) continue
       const speed = ride ? JOURNEYS.speed.ride : JOURNEYS.speed.foot
@@ -82,7 +85,7 @@ export class Journeys {
       const into = t1 - chapterOf(t1, this.keys[route.to]).start
       if (into < JOURNEYS.settle[0] || into > CHAPTER_S - JOURNEYS.settle[1]) continue
       const members = Array.from({ length: n }, () => {
-        const { body } = free.splice((rand() * free.length) | 0, 1)[0]
+        const { body } = free.splice(free.indexOf(pick(rand, free.map((f) => [f, JOURNEYS.road[TRADES.roles[f.body]]]))), 1)[0]
         gone.add(body)
         return { body: this.bodies.indexOf(body), size: 2 * rand() - 1 }
       })

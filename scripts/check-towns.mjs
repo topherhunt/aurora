@@ -23,6 +23,7 @@ import { Journeys } from '../src/v2/render/journeys.js'
 import { planRoads } from '../src/v2/layers/roads.js'
 import { SEAT_M } from '../src/v2/render/villagers.js'
 import { rollTownInterior } from '../src/v2/rooms/town-interior.js'
+import { siteCellars } from '../src/v2/caves/sites.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -289,7 +290,12 @@ for (const town of towns) {
 check(unreached.length === 0, 'every door is reachable from the clearing', unreached.join(', '))
 
 // --- the trades (DESIGN.md §32 Trades) ---
-check(towns.every((town) => new Set(town.folk.map((f) => f.body)).size === town.folk.length && town.folk.length >= TRADES.folk[0] - 1 && town.folk.every((f) => TRADES.bodies.includes(f.body))), 'every town\'s folk are each a different avatar, 5 to 7 of them', towns.map((town) => town.folk.length).join(' '))
+check(towns.every((town) => new Set(town.folk.map((f) => f.body)).size === town.folk.length && town.folk.length >= TRADES.folk[0] - 1 && town.folk.every((f) => TRADES.bodies.includes(f.body))), `every town's folk are each a different avatar, ${TRADES.folk[0]} to ${TRADES.folk[1]} of them`, towns.map((town) => town.folk.length).join(' '))
+{
+  const classes = towns.map((town) => new Set(town.folk.map((f) => TRADES.roles[f.body])).size)
+  const lodged = towns.every((town) => { const inn = town.buildings.findIndex((b) => b.trade === 'inn'); return inn >= 0 && town.folk.some((f) => f.body === 'innkeeper' && f.home === inn) && town.folk.every((f) => TRADES.roles[f.body] !== 'travel' || f.home === inn) })
+  check(lodged && classes.every((n) => n === new Set(Object.values(TRADES.roles)).size), 'every town keeps an inn and its innkeeper, lodges its travellers there, and holds folk of every class', `classes ${Math.min(...classes)}..${Math.max(...classes)}`)
+}
 const smithies = towns.map((town) => town.works.find((w) => w.kind === 'smithy')).filter(Boolean)
 check(smithies.length >= 0.9 * towns.length && towns.every((town) => {
   const w = town.works.find((o) => o.kind === 'smithy')
@@ -307,12 +313,19 @@ const inner = farms.filter(({ town, home }) => Math.hypot(home.x - town.x, home.
 check(farms.length >= towns.length && inner.length === 0 && farms.every(({ w }) => w.rows.length >= 4), 'farms stand on the outskirts, each field with its carrot rows', `${farms.length} fields, ${inner.length} inward`)
 check(towns.every((town) => town.buildings.some((b) => b.sign === 'flask')), 'every town hangs a potion master\'s sign')
 {
-  const shops = towns.flatMap((town, t) => town.buildings.map((b, i) => ({ b, index: t * 256 + i })).filter(({ b }) => b.trade === 'potions'))
+  // The shop main.js rolls a building's inside as.
+  const shopOf = (b) => (b.trade === 'potions' || b.trade === 'inn' ? b.trade : null)
+  const shops = towns.flatMap((town, t) => town.buildings.map((b, i) => ({ b, index: t * 256 + i })).filter(({ b }) => shopOf(b) !== null))
   // A house that will not roll even as a plain house is check-town-interiors' to answer for.
   const rolls = (b, index, shop) => { try { return rollTownInterior({ seed: SEED, index, plan: b.plan, shop }) } catch { return null } }
   const fine = shops.filter(({ b, index }) => rolls(b, index, null))
-  const bare = fine.filter(({ b, index }) => { const r = rolls(b, index, 'potions'); return !r || !r.spots.some((s) => s.kind === 'shop') })
-  check(bare.length === 0, `every potion master keeps a counter inside (${fine.length} of ${shops.length} shops roll as houses${bare.length ? `; none in ${bare.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
+  const bare = fine.filter(({ b, index }) => { const r = rolls(b, index, shopOf(b)); return !r || !r.spots.some((s) => s.kind === 'shop') })
+  check(bare.length === 0, `every potion master and innkeeper keeps a counter inside (${fine.length} of ${shops.length} shops roll as houses${bare.length ? `; none in ${bare.slice(0, 4).map((x) => `${x.b.trade} ${x.index}`).join(', ')}` : ''})`)
+  // design/39-caves.md §2: main.js does not roll a cellar house until she goes in, so every one sited on this map is rolled here.
+  const cellars = siteCellars(towns, SEED).map((c) => ({ b: towns[c.t].buildings[c.i], index: c.t * 256 + c.i }))
+  const plain = cellars.filter(({ b, index }) => rolls(b, index, shopOf(b)))
+  const shut = plain.filter(({ b, index }) => { try { return !rollTownInterior({ seed: SEED, index, plan: b.plan, shop: shopOf(b), cellar: true }).cellar } catch { return true } })
+  check(cellars.length >= towns.length / 2 && shut.length === 0, `every house sited a cellar fits its hatch (${plain.length} of ${cellars.length} roll as houses${shut.length ? `; not in ${shut.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
 }
 // Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.
 const durations = Object.fromEntries(CLIPS.map((c) => [c, c === 'sit' ? 4 : 2]))

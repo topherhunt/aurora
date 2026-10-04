@@ -26,6 +26,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
+- Run a perf trace, in overworld and in the glen.
+- ~50% of overworld cave entrances should have a road leading to them.
 - [ ] Should be fixed, to review:
   - [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
   - [ ] Torches don't look good: try the same "core flame triangles" as what candles use, with only occasional flickers upward?

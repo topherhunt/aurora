@@ -1,10 +1,22 @@
 // The towns' trades (DESIGN.md §32 Trades), three-free: who lives in a town, at most one of each avatar so a name points at one face, and the works their trades stand in. layers/towns.js lays the works out, render/trades.js draws them, townsfolk.js walks the folk through them.
 
 export const TRADES = {
-  // The avatars (public/creatures/<id>.glb), one of each at most to a town.
-  bodies: ['blacksmith', 'alchemist', 'innkeeper', 'farmer', 'shepherd', 'woodcutter', 'hunter', 'miner', 'fisherman'],
+  // The avatars (public/creatures/<id>.glb), one of each at most to a town. The shipped healer, skald and battlemage stay out until re-rigged: their hip joints sit at knee height, so townsfolk.js `underside` measures their seat below the ground and throws.
+  bodies: [
+    'blacksmith', 'alchemist', 'innkeeper', 'farmer', 'shepherd', 'woodcutter', 'hunter', 'miner', 'fisherman', 'herbalist',
+    'thief', 'trapper',
+    'guard', 'shieldmaiden', 'jarlsthane',
+    'child-villager-2',
+  ],
+  // Each body's class, which sets its errands (townsfolk.js TOWNSFOLK.errands), how often it takes the road (journeys.js JOURNEYS.road) and its home: travellers lodge at the inn, a child lives with a family, the jarlsthane in the grandest free house.
+  roles: {
+    blacksmith: 'folk', alchemist: 'folk', innkeeper: 'folk', farmer: 'folk', shepherd: 'folk', woodcutter: 'folk', hunter: 'folk', miner: 'folk', fisherman: 'folk', herbalist: 'folk',
+    thief: 'travel', trapper: 'travel',
+    guard: 'guard', shieldmaiden: 'guard', jarlsthane: 'guard',
+    'child-villager-2': 'child',
+  },
   // Folk a town holds: never every body, so a traveller arriving is never a second of anyone.
-  folk: [6, 7],
+  folk: [10, 13],
   // Open-sided under a tile roof, its front (+Z) on the clearing's edge; the floor may fall `range` m.
   smithy: { w: 7, d: 5, post: 2.5, rise: 1.5, over: 0.45, range: 1.0, tries: 240 },
   // A second farm with chance `two`. The farmhouse rings the town `out` m past the buildings.
@@ -116,7 +128,7 @@ export function fenceRuns(pts, gate) {
   return runs
 }
 
-/** Who lives in a town: `[{ body, trade, home, work }]`, one of each body at most, `home` a building index and `work` a works index or null. The smith, potion master, innkeeper and farmers take their places when the town has them; the rest fill free houses up to TRADES.folk. A smith whose home found no seat takes a free house. */
+/** Who lives in a town: `[{ body, trade, home, work }]`, one of each body at most, `home` a building index and `work` a works index or null. The smith, potion master, innkeeper and farmers take their places when the town has them; the rest are drawn up to TRADES.folk and housed by their class (TRADES.roles), two to a house once the free houses (`free`, grandest first) run out. A smith whose home found no seat takes a free house. */
 export function castFolk(rand, { smithy, potions, inn, farms, free }) {
   const folk = []
   const houses = [...free]
@@ -132,10 +144,28 @@ export function castFolk(rand, { smithy, potions, inn, farms, free }) {
   // The trades a town lacks leave their bodies out: no smith without a smithy.
   const spare = TRADES.bodies.filter((b) => !cast.has(b) && !['blacksmith', 'alchemist', 'innkeeper', 'farmer'].includes(b))
   const want = TRADES.folk[0] + ((rand() * (TRADES.folk[1] - TRADES.folk[0] + 1)) | 0)
-  while (folk.length < want && spare.length > 0) {
-    const home = house()
-    if (home < 0) break
-    folk.push({ body: spare.splice((rand() * spare.length) | 0, 1)[0], trade: null, home, work: null })
+  // A household to join: a house already lived in, never a shop.
+  const family = () => {
+    const homes = folk.filter((f) => f.trade !== 'potions' && f.trade !== 'inn').map((f) => f.home)
+    return homes.length === 0 ? -1 : homes[(rand() * homes.length) | 0]
+  }
+  // One of each other class first, so every town has its traveller, guard and child; the rest at random.
+  const firsts = ['travel', 'guard', 'child'].map((role) => {
+    const of = spare.filter((b) => TRADES.roles[b] === role)
+    if (of.length === 0) throw new Error(`castFolk: no ${role} among the bodies`)
+    return of[(rand() * of.length) | 0]
+  })
+  for (const b of firsts) spare.splice(spare.indexOf(b), 1)
+  while (folk.length < want && (firsts.length > 0 || spare.length > 0)) {
+    const body = firsts.length > 0 ? firsts.shift() : spare.splice((rand() * spare.length) | 0, 1)[0]
+    const role = TRADES.roles[body]
+    if (role === undefined) throw new Error(`castFolk: ${body} has no role in TRADES.roles`)
+    let home
+    if (role === 'travel' && inn >= 0) home = inn
+    else if (role === 'child') home = family()
+    else if (body === 'jarlsthane' && houses.length > 0) home = houses.shift()
+    else home = houses.length > 0 ? house() : family()
+    add(body, null, home)
   }
   return folk
 }

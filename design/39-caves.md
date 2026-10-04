@@ -2,15 +2,15 @@
 
 Status: built, untested in a headset. Builds on the torch (§37 `uTorch`), the mushroom family (§24), the trust relay pattern (`server/src/main.js` `applyTrust`) and the hands' sources (`hands.js`, `taken.js`).
 
-Cave mouths stand at the feet of cliffs. Walking a couple of metres into one fades her to black and moves her into the mouth's cave **system**: a pitch-dark labyrinth of tunnels, caverns, drops and flooded passages, in regions that each look their own, generated from the system's seed so every peer walks the same cave. Mouths within ~500 m may open onto the same system.
+Cave mouths stand at the feet of cliffs. Walking a couple of metres into one fades her to black and moves her into the mouth's cave **system**: a pitch-dark labyrinth of tunnels, caverns, drops and flooded passages, in regions that each look their own, generated from the system's seed so every peer walks the same cave. Mouths within ~250 m may open onto the same system.
 
 ## 1. Pieces
 
 | piece | job |
 |---|---|
 | `caves/sites.js` | sites the mouths on the overworld (`siteMouths`) and groups them into systems (`groupSystems`) |
-| `layers/clefts.js` | the slot cut into the terrain behind each mouth |
-| `render/cave-mouths.js` | the hood of cliff rock each mouth stands in, and the walk-in test |
+| `layers/clefts.js` | the notch cut into the cliff foot at each mouth, and the keep-off for trees and rocks |
+| `render/cave-mouths.js` | the leafkin arch at each mouth (an `Entrances` in fixed mode), and the walk-in test |
 | `caves/graph.js` | the topology: nodes, passages, drops, sumps, rivers, pools, glows, regions |
 | `caves/field.js` | the signed distance field the graph describes |
 | `caves/props.js`, `caves/regions.js` | what stands in the cave, and each region's look |
@@ -25,16 +25,18 @@ All of `caves/` is pure and node-runnable. main.js wires it (`--- caves` section
 
 ## 2. Mouths in the overworld
 
-**Siting.** Candidates are scanned on the raw 8 m texels for level ground with a face rising at least `RISE_MIN` (11 m) two texels behind it, then refined against the walker's exact height so the hole's floor is the ground under her feet. Water and towns refuse a site. Mouths keep `MOUTH_SPACING` (350 m) apart, at most `MOUTH_CAP` (30). Pairs within `LINK_M` (500 m) join one system with odds `LINK_ODDS` (0.6), by union-find. A system is `{ id, seed, mouths, cx, cz }`; the seed is a uint32 and keys everything about it, chalk included.
+**Siting.** Candidates are scanned on the raw 8 m texels for level ground with a face rising at least `RISE_MIN` (11 m) two texels behind it, then refined against the walker's exact height so the hole's floor is the ground under her feet. Water and towns refuse a site. Mouths keep `MOUTH_SPACING` (160 m) apart, at most `MOUTH_CAP` (160; the shipped world fills it, nearest neighbours a median 250 m apart). Pairs within `LINK_M` (250 m) join one system with odds `LINK_ODDS` (0.6), by union-find; LINK_M keeps the chains short, so a shipped system is at most 5 mouths and 229 m from its centre, well inside chalk's ±655 m (check-caves). A system is `{ id, seed, mouths, cellars, cx, cz }`; the seed is a uint32 and keys everything about it, chalk included.
 
-**The look.** The ground is a height field and cannot overhang, so a mouth is two parts:
+**Cellars.** `siteCellars` gives `CELLAR_ODDS` (0.15) of town houses (never huts), `CELLAR_SPACING` (40 m) apart, a hatch in a corner of the house's ground floor with a stair down into the cave (design/38 Cellar). `groupSystems` runs after the cliff union-find, so cliff systems keep their ids, seeds and centres. Each cellar then joins the nearest system whose centre is within `CELLAR_LINK_M` (250 m, inside chalk's ±655 m packing) on a `LINK_ODDS` coin, or founds a system of its own with no mouths. `caveEntries` orders a system's doors mouths first, then cellars, so door `i >= mouths.length` is a cellar. A cellar's dead end glows warm `LAMPLIGHT` and leads back up into the house, beside the hatch. Chalk drawn in a cliff system before it gained a cellar no longer lines up, because the graph changed.
 
-1. **A hood** (`CaveMouths`): a mesh in the terrain's stippled cliff rung standing `hoodOut` out of the face, with a hole (`holeW` x `holeH`) whose throat darkens to a black cap at `throat`. Seeing one means she can walk in. The hood's walls are what stop her at its sides. It is built in world axes, never rotated, because the stipple reads its plane off the local position.
-2. **A cleft** (`CleftSet`): inside the hood's walls the terrain is pulled down to the mouth's floor, never raised, so the ground never pokes through the hole. Clefts are made at boot like roads and never saved.
+**The look.** The ground is a height field and cannot overhang, so a mouth is two parts, both sized off `MOUTH` (sites.js):
 
-**The portal.** Past `MOUTH.into` (1.6 m) in from the lip, `caveTest` fades her under and boots her at the mouth's door inside, `ARRIVE_IN` (3.5 m) down the passage, facing in. Each mouth node's dead end glows faint daylight (`DAYLIGHT`), so the way out reads from down the passage. Walking within `EXIT_R` of that dead end takes her back out onto the apron before the mouth, facing away from the cliff.
+1. **An arch** (`CaveMouths`): the leafkin villages' stone entrance (`render/entrances.js`, the `cave-mouth` bank) at `MOUTH.scale` (2.2), 3.3 m tall and 4 m across, its black hole about 2.7 m wide. It runs as an `Entrances` in fixed mode, one site per mouth, so it has the same LOD rungs and ground shadow as a village's. Like a village's, it does not collide.
+2. **A notch** (`CleftSet`): in the mouth's frame (s metres in past the foot, t across), a level floor at the mouth's y, cut or filled, `floorW` (3 m) either side and `floorOut` (4.5 m) out from a straight back wall `MOUTH.wall` (1 m) in. The wall rises 5 m half a metre behind that line, so the terrain's 0.5 m cells never climb in front of the hole, and feathers into the cliff behind. The arch stands against it. Clefts are made at boot like roads and never saved. Trees and rocks keep off the floor and a 6 m approach out in front of it (`occupiesAt`), so the arch shows from a way off.
 
-**Where the cave is.** Every system is built at `CAVE_OY` (-2000 m) under the overworld at its plan's own x, z, so a peer in the same cave stands where she does with nothing new on the wire. Underground, every overworld scene child except the rig, hands, peers, flames and the room is hidden each frame; `darkCave` zeroes sun, sky and night lift and turns the fog black.
+**The portal.** With her feet within `MOUTH.reach` (0.8 m) of the hole's plane and `MOUTH.holeW` (1.2 m) of its axis, `caveTest` fades her under and boots her at the mouth's door inside, `ARRIVE_IN` (3.5 m) down the passage, facing in. Each mouth node's dead end glows faint daylight (`DAYLIGHT`), so the way out reads from down the passage. Walking within `EXIT_R` of that dead end takes her back out onto the notch's floor before the arch (`CaveMouths.apron`), facing away from the cliff.
+
+**Where the cave is.** Every system is built at `CAVE_OY` (-2000 m) under the overworld at its plan's own x, z, so a peer in the same cave stands where she does with nothing new on the wire. Underground, the overworld is not stepped (`stepOverworld`), and every overworld scene child except the rig, hands, peers, flames and the room is hidden each frame; `darkCave` zeroes sun, sky and night lift and turns the fog black.
 
 ## 3. The graph
 
@@ -48,7 +50,9 @@ Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat 
 
 `CaveField.at(x, y, z)` is positive in rock, negative in air, roughly metres, in cave-local coordinates. Passages are D-shaped (a half-ellipse vault over a flat floor) swept along each edge's samples; nodes are ellipsoid domes cut by a floor; everything joins by a smooth min. Noise (`noise3.js`, value noise for speed) roughens walls and floors. The mesher and `CaveWalk` build identical fields from the same graph, so they agree to the millimetre.
 
-**Surface nets** on a 0.5 m voxel grid in 16 m chunks (`VOXEL`, `CELLS`, `CHUNK`). A chunk samples one voxel past each face but emits quads only for edges it owns, so seams close without cracks. Per vertex the mesher bakes region colour, a cheap AO, and the glow of every light within reach (§8). The gate budgets 450k triangles a mouth.
+**Surface nets** on a 0.5 m voxel grid in 16 m chunks (`VOXEL`, `CELLS`, `CHUNK`). A chunk samples one voxel past each face but emits quads only for edges it owns, so seams close without cracks. Per vertex the mesher bakes region colour, a cheap AO, and the glow of every light within reach (§8). Passages end in rounded caps whose floor climbs a metre a metre, so a climb never shelves a terrace.
+
+**LOD and regions.** Every chunk is meshed twice, at `VOXEL` and `VOXEL_LO` (1 m), one mesh per region. `CaveRoom` draws the near LOD within `HI_M` (10 m), the coarse one out to `CULL_M` (85 m), and only her region and those it touches. The gate holds the triangles drawn from any node under 150k.
 
 **The worker** plans the same cave from `{ seed, entries }` and posts chunks nearest her arrival first, then 'near' once everything within `NEAR_M` is out; `enterCave` waits on 'near'. The main thread also runs `planCave` itself, for the walk and props.
 
@@ -62,7 +66,7 @@ Pools sit in chambers and caverns with a dish; rivers cut `RIVER_DEPTH` under a 
 
 A region is a connected group of nodes with one of seven `PALETTES` (grey rocky, dusty brown, blue-grey mushroom, pale limestone, old ruin, rust red, green damp): rock, vein and floor albedo in the terrain's range, and densities of dripstone, mushrooms, glow, ruins and rubble. Each region's biggest chamber holds its landmark (pillar, arch, giant mushroom, column, colonnade).
 
-`placeProps` lays stalagmites and stalactites, mushrooms (some huge, a share glowing blue, green or violet from `GLOWS`), blocky ruin columns, chalk lumps, fish and crabs. **Anything she cannot step past** (a stalagmite over `MITE_BLOCKS`, 1 m, a column, a giant stem) is an obstacle in `CaveWalk` and is kept clear of every passage line into its node, so dressing cannot close a route the graph promised.
+`placeProps` lays stalagmites and stalactites, mushrooms (the forest's species from `mushroom-bank.js` grown large, each region's glowing its one colour, and small glowing clumps standing out of the walls), blocky ruin columns, chalk lumps, fish and crabs. **Anything she cannot step past** (a stalagmite over `MITE_BLOCKS`, 1 m, a column, a giant stem) is an obstacle in `CaveWalk` and is kept clear of every passage line into its node, so dressing cannot close a route the graph promised.
 
 ## 7. Walking
 
@@ -70,7 +74,7 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 ## 8. Drawing, light and chalk
 
-**Light.** Pitch dark: the torches (`uTorch`) are the only light that moves. Glowing mushrooms and the mouths' daylight are baked into a per-vertex glow the cave shader adds unlit, so stretches can be walked by glow alone. Torch shadows are not built; the baked AO carries the depth.
+**Light.** Pitch dark: the torches (`uTorch`) are the only light that moves. Glowing mushrooms and the mouths' daylight are baked into a per-vertex glow the cave shader adds unlit, so stretches can be walked by glow alone; a mouth's daylight runs `DAY_M` (11 m) down its passage. Torch shadows are not built; the baked AO carries the depth. The rock wears the boulders' stone tile every `STONE_M` (2.2 m), tinted by its region.
 
 **Chalk lumps** are a hands source (`ChalkStones`, kind `chalk`) over the room's `chalkRows`. Taking one marks it in `taken` (session only).
 
@@ -87,8 +91,8 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 - `planCave` also runs on the main thread at warm-up, a hitch near a mouth.
 - The marks mesh rebuilds whole on every stroke commit; many strokes may hitch.
 - Chalk lumps come back on reload (`taken` is session only); things dropped in a cave are not kept once she leaves.
-- Overworld layers keep updating underground, only hidden.
-- Grass can grow in the hood's mouth; the hood is hard to see at night; cave rock reads as fairly uniform brown under the torch.
+- The arch does not collide; she can walk through its stones. Grass and ferns still grow in the notch.
+- The two cave LODs can show cracks where they meet; every chunk's near LOD is held in GPU memory once met.
 - Torch shadows.
 - The chalk relay needs the server redeployed.
 - Not yet felt in a headset: how dark, how lost, VR chalk drawing.

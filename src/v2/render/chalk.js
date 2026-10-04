@@ -1,21 +1,30 @@
 // Chalk lumps lying in the cave she is in, for her hands (hands.js source, kind 'chalk'). The lumps are the CaveRoom's instances; this finds them, hides the one taken and dresses the one held.
 import THREE from '../../three-instance.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { ROCK_TILE_MEAN } from '../../textures.js'
 
 export const KIND = 'chalk'
 export const RADIUS_M = 0.07
 // The lump's squash, as the room lays it.
 export const SQUASH = [1.3, 0.8, 1]
+// A lump's linear albedo under the stone tile: the cave rock's stone, paler and bluer.
+export const STONE = [0.3, 0.33, 0.4]
 
 export class ChalkStones {
   constructor() {
     this.geometry = new THREE.DodecahedronGeometry(RADIUS_M, 0).scale(...SQUASH)
-    this.material = new THREE.MeshLambertMaterial({ color: 0xc8c4b8 })
+    this.material = new THREE.MeshLambertMaterial({ color: new THREE.Color(...STONE.map((c, k) => c / ROCK_TILE_MEAN[k])) })
     // The CaveRoom whose lumps lie here, or null above ground.
     this.room = null
   }
 
   get materials() { return [this.material] }
+
+  /** The stone tile (rocks/stone.png) the held lump wears, as the cave rock does. */
+  setStone(tex) {
+    this.material.map = tex
+    this.material.needsUpdate = true
+  }
 
   setRoom(room) {
     this.room = room

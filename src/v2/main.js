@@ -34,7 +34,7 @@ import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
 import { Wildfire, TORCH_CAP } from './render/wildfire.js'
 import { flicker as flameFlicker } from './render/fire.js'
 import { TriFlames } from './render/fire-tris.js'
-import { bakedRoot, puppetMode, setPuppetMode } from './render/baked-puppet.js'
+import { bakedRoot, cullBakedTo, puppetMode, setPuppetMode } from './render/baked-puppet.js'
 import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -62,7 +62,7 @@ import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Trust } from './trust.js'
 import { Hobs } from './render/hobs.js'
-import { Roosts, loadEggBank, loadRoostMaps } from './render/roosts.js'
+import { Roosts, loadEggBank, loadRoostMaps, MAPS as ROOST_MAPS } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, SCREEN_POOL, loadMouthBank } from './render/entrances.js'
 import { HOUSE_BOUNDS, RoomProps } from './render/room-props.js'
@@ -71,7 +71,7 @@ import { Residents } from './render/residents.js'
 import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js'
 import { TownInteriorView } from './render/town-interior.js'
 import { TownResidents } from './render/town-residents.js'
-import { TownInteriorStone, rollTownInterior } from './rooms/town-interior.js'
+import { TownInteriorStone, grow, rollTownInterior, within } from './rooms/town-interior.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
@@ -123,7 +123,7 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
-import { MOUTH, siteMouths, groupSystems } from './caves/sites.js'
+import { siteMouths, siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
 import { CaveMouths } from './render/cave-mouths.js'
@@ -540,6 +540,7 @@ scene = sceneEl.object3D
 // Every baked creature body draws from here (render/baked-puppet.js); its matrix pass is the flush.
 scene.add(bakedRoot)
 camera = sceneEl.camera
+cullBakedTo(camera)
 // The mouse-drag look handler assigns rotation.x/y directly (not via
 // quaternion), and three's default Euler order ('XYZ') couples yaw into roll
 // as pitch grows -- without this she twists onto her side and eventually
@@ -3649,7 +3650,8 @@ function townInside(t, i) {
 /** Town `t`'s building `i` rolled at twice its size, set down 250 m over it on its own floor, its folk in and her walk swapped for its own; where she stands in it is the caller's. */
 async function openTownHouse(t, i) {
   const b = townPlan.towns[t].buildings[i]
-  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, shop: b.trade === 'potions' ? 'potions' : null })
+  const cellar = caveSites.cellarOf.has(t * 256 + i) ? caveSites.cellarOf.get(t * 256 + i) : null
+  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, shop: b.trade === 'potions' || b.trade === 'inn' ? b.trade : null, cellar: cellar !== null })
   const ox = b.x, oy = b.y + 250, oz = b.z
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
   scene.add(view.group)
@@ -3657,7 +3659,7 @@ async function openTownHouse(t, i) {
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
   const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz })
   const e = townDoor(t, i)
-  indoors = { town: { t, i }, e, back: e.back, room, view, residents, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, outside: walk }
+  indoors = { town: { t, i }, e, back: e.back, room, view, residents, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, cellar, outside: walk }
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
@@ -3704,6 +3706,12 @@ function houseTest(blink) {
     return side <= HOUSE_DOOR.side && Math.abs(out) <= HOUSE_DOOR.walk && step > 0 && (inward * -(sx * nx + sz * nz)) / step >= HOUSE_DOOR.into
   }
   if (indoors) {
+    const c = indoors.cellar, o = indoors.view.group.position
+    if (c && Math.abs(feet.y - o.y) <= HOUSE_DOOR.rise && within(grow(indoors.room.cellar.hole, -0.2), feet.x - o.x, feet.z - o.z)) {
+      const sys = caveSites.systems[c.system]
+      enterCave(sys, sys.mouths.length + sys.cellars.indexOf(c.id), indoors.back).catch(reportRuntimeError)
+      return true
+    }
     const d = indoors.door
     if (!through(d.x, d.z, d.nx, d.nz, -1)) return false
     leaveHouse().catch(reportRuntimeError)
@@ -3739,7 +3747,7 @@ const CAVE_OY = -2000
 // A system is meshed once she comes this near one of its mouths, and dropped once she is CAVE_DROP_M from all of them.
 const CAVE_WARM_M = 90
 const CAVE_DROP_M = 250
-// The overworld's mouths and systems (caves/sites.js), and their hoods; null in a village.
+// The overworld's mouths and systems (caves/sites.js), and their arches; null in a village.
 let caveSites = null
 let caveMouths = null
 // The one system meshed ahead of her or around her: { sys, plan, room, near (resolves once the chunks round her arrival are in) }.
@@ -3754,6 +3762,12 @@ const caveHidden = new Set()
 // The chalk lumps of the system meshed, for her hands; and a pen a hand, its strokes on the system she is in.
 const chalkStones = new ChalkStones()
 for (const m of chalkStones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-chalk' })
+// The boulders' stone tile, worn by the cave rock and the chalk lumps.
+const caveStone = new THREE.TextureLoader().load(ROOST_MAPS.stone)
+caveStone.colorSpace = THREE.SRGBColorSpace
+caveStone.wrapS = caveStone.wrapT = THREE.RepeatWrapping
+caveStone.anisotropy = 4
+chalkStones.setStone(caveStone)
 const chalkPens = Object.fromEntries(HAND_KEYS.map((key) => [key, new ChalkPen((pts) => chalk.draw(cave.sys.seed, pts, cave.sys.cx, cave.sys.cz))]))
 // How far off the rock a held lump's centre still draws: its radius and a little.
 const CHALK_TOUCH_M = 0.1
@@ -3773,10 +3787,11 @@ function siteCaves(heightmap, height, layers, townPlan) {
     return level !== null && height.heightAt(x, z) < level + 0.3
   }
   const mouths = siteMouths({ heightmap, field: height, wet, keepOut: (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) })
-  const systems = groupSystems(mouths, SEED)
+  const cellars = siteCellars(townPlan.towns, SEED)
+  const systems = groupSystems(mouths, SEED, cellars)
   layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
-  console.log(`[v2] caves: ${mouths.length} mouths in ${systems.length} systems, sited in ${(performance.now() - t0).toFixed(0)} ms`)
-  return { mouths, systems }
+  console.log(`[v2] caves: ${mouths.length} mouths and ${cellars.length} cellars in ${systems.length} systems, sited in ${(performance.now() - t0).toFixed(0)} ms`)
+  return { mouths, cellars, systems, cellarOf: new Map(cellars.map((c) => [c.t * 256 + c.i, c])) }
 }
 
 /** System `sys` planned here and meshed on the worker, its door `door`'s chunks first; the build under way when it is already this system's. */
@@ -3784,9 +3799,9 @@ function buildCave(sys, door) {
   if (caveBuild !== null && caveBuild.sys === sys) return caveBuild
   dropCaveBuild()
   const t0 = performance.now()
-  const entries = sys.mouths.map((i) => ({ x: caveSites.mouths[i].x, z: caveSites.mouths[i].z, dx: -caveSites.mouths[i].nx, dz: -caveSites.mouths[i].nz }))
+  const entries = caveEntries(sys, caveSites.mouths, caveSites.cellars)
   const plan = planCave({ seed: sys.seed, entries })
-  const room = new CaveRoom(plan, CAVE_OY, lighting)
+  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone)
   chalkStones.setRoom(room)
   chalkShown = -1
   const id = ++caveJob
@@ -3814,14 +3829,17 @@ function dropCaveBuild() {
   caveBuild = null
 }
 
-/** In the overworld, each frame: the system of a mouth she nears meshed ahead of her, and one she has left behind let go. */
+/** In the overworld, each frame: the system of a mouth she nears, or of the cellar under the house she is in, meshed ahead of her, and one she has left behind let go. */
 function warmCave(feet) {
   if (caveMouths === null || cave !== null || doorBusy) return
   const m = caveMouths.near(feet.x, feet.z, CAVE_WARM_M)
-  if (m !== null) {
+  if (indoors !== null && indoors.cellar !== null) {
+    const sys = caveSites.systems[indoors.cellar.system]
+    buildCave(sys, sys.mouths.length + sys.cellars.indexOf(indoors.cellar.id))
+  } else if (m !== null) {
     const sys = caveSites.systems[m.system]
     buildCave(sys, sys.mouths.indexOf(m.id))
-  } else if (caveBuild !== null && caveBuild.sys.mouths.every((i) => Math.hypot(feet.x - caveSites.mouths[i].x, feet.z - caveSites.mouths[i].z) > CAVE_DROP_M)) dropCaveBuild()
+  } else if (caveBuild !== null && caveEntries(caveBuild.sys, caveSites.mouths, caveSites.cellars).every((e) => Math.hypot(feet.x - e.x, feet.z - e.z) > CAVE_DROP_M)) dropCaveBuild()
 }
 
 /** After the step: into the mouth her feet just walked into, or underground, out by the door she walked back to. True while she is in a cave or going in. */
@@ -3832,7 +3850,8 @@ function caveTest() {
   if (cave === null) {
     const m = caveMouths.entered(feet.x, feet.y, feet.z)
     if (m === null) return false
-    enterCave(m).catch(reportRuntimeError)
+    const sys = caveSites.systems[m.system]
+    enterCave(sys, sys.mouths.indexOf(m.id), caveMouths.apron(m)).catch(reportRuntimeError)
     return true
   }
   const doors = caveBuild.plan.doors
@@ -3845,20 +3864,20 @@ function caveTest() {
   return true
 }
 
-/** Into mouth `m`'s cave under the fade: its walk hers, her feet at its door inside, facing in. Waits on the worker for the rock round her. */
-async function enterCave(m) {
+/** Into system `sys` by its door `door` (caveEntries' order) under the fade: the house she is in shut, the cave's walk hers, her feet at that door inside, facing in. `back` is where a save made down here wakes her. Waits on the worker for the rock round her. */
+async function enterCave(sys, door, back) {
   doorBusy = true
+  if (indoors !== null && ambience) sound.play('door', { bus: 'near', gain: 0.3 })
   makeBlackout()
   ready = false
   await fade(1)
-  const sys = caveSites.systems[m.system]
-  const door = sys.mouths.indexOf(m.id)
+  closeHouse()
   if (wildStriders && wildStriders.riding) wildStriders.letGo()
   const { plan, room, near } = buildCave(sys, door)
   await near
   const inner = new CaveWalk(plan.field, plan.graph, plan.props.obstacles, CAVE_OY)
   scene.add(room.group)
-  cave = { sys, door, back: caveApron(m), walk: inner, outside: walk }
+  cave = { sys, door, back, walk: inner, outside: walk }
   if (sound) sound.setIndoors(true)
   hideTeleport()
   const d = plan.doors[door]
@@ -3869,32 +3888,37 @@ async function enterCave(m) {
   hands.water = caveWater
   player.teleportTo(d.x, d.z, d.y + CAVE_OY)
   faceAlong(d.dx, d.dz)
-  console.log(`[v2] into cave ${sys.id} by mouth ${m.id} (door ${door} of ${sys.mouths.length})`)
+  console.log(`[v2] into cave ${sys.id} by door ${door} of ${sys.mouths.length} mouths and ${sys.cellars.length} cellars`)
   ready = true
   await fade(0)
   doorBusy = false
 }
 
-/** Out of the cave by its door `i`, onto the apron before that door's mouth, facing away from the cliff. */
+/** Out of the cave by its door `i`: onto the apron before a mouth, facing away from the cliff, or up a cellar's stair into its house, facing into the room. */
 async function leaveCave(i) {
   doorBusy = true
   makeBlackout()
   ready = false
   await fade(1)
-  const m = caveSites.mouths[cave.sys.mouths[i]]
+  const { sys } = cave
   closeCave()
-  const at = caveApron(m)
-  player.teleportTo(at.x, at.z, at.y)
-  faceAlong(m.nx, m.nz)
+  if (i < sys.mouths.length) {
+    const m = caveSites.mouths[sys.mouths[i]]
+    const at = caveMouths.apron(m)
+    player.teleportTo(at.x, at.z, at.y)
+    faceAlong(m.nx, m.nz)
+  } else {
+    const c = caveSites.cellars[sys.cellars[i - sys.mouths.length]]
+    if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
+    await townsfolk.ready
+    await openTownHouse(c.t, c.i)
+    const o = indoors.view.group.position, d = indoors.room.cellar
+    player.teleportTo(o.x + d.in.x, o.z + d.in.z)
+    faceAlong(-d.nx, -d.nz)
+  }
   ready = true
   await fade(0)
   doorBusy = false
-}
-
-/** The step before mouth m's hood, clear of its rock. */
-function caveApron(m) {
-  const s = MOUTH.hoodOut + 1
-  return { x: m.x + m.nx * s, y: m.y, z: m.z + m.nz * s }
 }
 
 /** The overworld back on screen and its walk hers again, the system kept meshed for her return; nothing when she is above ground. */
@@ -3994,7 +4018,11 @@ function underWater(x, y, z) {
 }
 
 // Into a cave from the console: `v2cave(3)` by mouth 3, `v2cave(null)` out by the door she came in; `v2caves()` what is sited, meshed and entered.
-window.v2cave = (k) => (k === null ? leaveCave(cave.door) : enterCave(caveSites.mouths[k]))
+window.v2cave = (k) => {
+  if (k === null) return leaveCave(cave.door)
+  const m = caveSites.mouths[k], sys = caveSites.systems[m.system]
+  return enterCave(sys, sys.mouths.indexOf(m.id), caveMouths.apron(m))
+}
 window.v2caves = () => ({ sites: caveSites, mouths: caveMouths, build: caveBuild, cave })
 
 // The swap without the walk: `v2enter()` into the glade by the mouth she last
@@ -4171,10 +4199,6 @@ async function buildRoom(room, at) {
   // and the tint above both need its uniforms -- so without this the mesh would
   // draw with a surface nobody ships. See plainTerrainRung.
   applyTerrainShader()
-  if (caveSites !== null) {
-    caveMouths = new CaveMouths(caveSites.mouths, plainTerrainRung(false))
-    scene.add(caveMouths.group)
-  }
 
   // The authored surfaces. Water before the spawn search, which asks it what is
   // wet before the player is placed. A road draws nothing of its own: the
@@ -4226,7 +4250,7 @@ async function buildRoom(room, at) {
   // `batch.visible` and the beds are placed and stepped either way, so what the
   // trees see does not change when the rocks are switched off.
   await bootStep('rocks')
-  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds, keepOut: townPlan ? (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) : null })
+  rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds, keepOut: townPlan ? (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) || layers.clefts.occupiesAt(x, z, r) : null })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
@@ -4348,8 +4372,8 @@ async function buildRoom(room, at) {
     // the scatter itself, so the clearings are the same on every boot.
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
-    // and in a village one in the clearing, through a hut, on a lamp, in the gathering place, on a stool or over a garden.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : towns ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || towns.occupiesAt(x, z, pad) } : deadwood,
+    // in a village one in the clearing, through a hut, on a lamp, in the gathering place, on a stool or over a garden, and in the overworld one in a town or a cave mouth's notch.
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : towns ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || towns.occupiesAt(x, z, pad) || layers.clefts.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
     bounds,
@@ -4815,6 +4839,10 @@ async function buildRoom(room, at) {
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)
   console.log(`[v2] entrances ${entrances.stats.placed} mouths in ${entrances.placeMs.toFixed(1)} ms, refused ${JSON.stringify(entrances.stats.rejected)}`)
+  if (caveSites !== null) {
+    caveMouths = new CaveMouths(caveSites.mouths, scene, height, waterSurfaces, rocks, await banks.mouth)
+    for (const m of caveMouths.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  }
   window.v2entrances = entrances
 
   // One leafkin a village (render/leafkin.js), out of its mouth into the wood for mushrooms, its caps carried by the hands' pool. None inside a village.
@@ -7342,10 +7370,7 @@ function tick() {
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
   }
   if (boats) boats.settle()
-  if (caveMouths !== null && cave === null) {
-    caveMouths.collide(player.rig.position)
-    warmCave(player.rig.position)
-  }
+  if (caveMouths !== null && cave === null) warmCave(player.rig.position)
   portalTest()
   spikes.lap('player')
   // A mouth she stepped into has just torn the room down under this frame.
@@ -7378,139 +7403,13 @@ function tick() {
   if (questToggles.mirror) peerAvatars.mirror({ id: 'double', pose: mirroredPose(pose), hands: poseHands, avatar: netplay.avatar, scale: herScale(), foot, aboard: boatNet?.aboard })
   netplay.update(now)
   spikes.lap('net')
-  // Altitude and gaze both feed the split rule: y makes the range term 3D and
-  // yaw is what stops two thirds of the slot pool going to terrain behind her.
-  if (questToggles.terrain || questToggles.terrainWire) {
-    terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
-    terrainWire.update()
-  }
-  spikes.lap('terrain')
-  // Rocks first, and it is the same hard ordering the construction has: the tree,
-  // fern, grass and litter scatters all ask the stone where it is before they
-  // place anything, so a tile of stone has to be grown before the tile of wood
-  // over it.
-  //
-  // A LAYER TOGGLE HALTS THE SCATTER, it does not merely hide the batch. The
-  // hidden-but-stepping version cost 2.4 ms a frame in `rocks` alone at 1000 m/s
-  // (headless, desktop node -- a Quest 2 core is several times slower) against
-  // 0.65 ms standing, spent on a layer the panel said was off, which made the
-  // panel unable to answer the one question it exists for. The stale-anchor consequence is
-  // real and accepted: with rocks frozen and trees on, wood placed in ground you
-  // fly into afterwards does not know about stone that was never grown there, so
-  // trees may sit where a boulder would have pushed them. That is invisible while
-  // the boulder is, and an ablation panel that cannot ablate is worth less than an
-  // exact one.
-  if (questToggles.boulders) {
-    rocks.update(headTmp.x, headTmp.y, headTmp.z)
-    // After the rocks: a mouth follows its boulder's residency.
-    if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
-    if (boulders) boulders.update(headTmp.x, headTmp.y, headTmp.z)
-  }
-  spikes.lap('rocks')
-  // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
-  if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
-  if (towns) towns.update(headTmp.x, headTmp.z)
-  spikes.lap('towns')
-  if (signposts) signposts.update(headTmp)
-  spikes.lap('signposts')
-  if (bridges) bridges.update(headTmp)
-  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
-  spikes.lap('townsfolk')
-  if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
-  spikes.lap('trees')
-  if (questToggles.ferns) {
-    ferns.update(headTmp.x, headTmp.y, headTmp.z)
-    carrots.update(headTmp.x, headTmp.y, headTmp.z)
-  }
-  if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
-  spikes.lap('ferns+grass')
-  // Three layers on one `litter` row, hidden AND frozen together -- see the row's
-  // own note for why they share a button. Cheap per frame standing still, which is
-  // what "the cheapest layers in the world" was measured at; all three are tiled
-  // ground scatters, so at flight speed they churn their whole footprint like
-  // every other one and the row has to be able to take that away.
-  if (questToggles.litter) {
-    litter.update(headTmp.x, headTmp.y, headTmp.z)
-    // After rocks, and for the same reason the construction and the relief
-    // re-place are: a clump follows the anchors, so it wants them stepped first.
-    mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
-    deadwood.update(headTmp.x, headTmp.y, headTmp.z)
-    sticks.update(headTmp.x, headTmp.y, headTmp.z)
-    bones.update(headTmp.x, headTmp.y, headTmp.z)
-  }
-  // The rowboats sit on the water row: moored where they were placed, so this
-  // is the rim sweep and the mesh-to-card step alone.
-  if (questToggles.water) rowboats.update(headTmp.x, headTmp.y, headTmp.z)
-  spikes.lap('litter')
-  // The animals are simulations as well as scatters, so they take dt. Each is
-  // frozen with its row, and all of them with the `animals` row.
-  //
-  // WHAT IS UNDER THE SURFACE IS ONLY DRAWN FROM UNDER IT. The water is nearly
-  // opaque from above (WATER.clarity), so with her head in the air every fish
-  // and every sunk crab is triangles and a step spent on something nobody can
-  // see; a village's pond is the exception, clear from the shore (VILLAGE_POND),
-  // so its fish are drawn from above. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
-  // no fish stepped, one frame in fish.js FOLLOW_EVERY -- so the lake is stocked
-  // the moment she dives; a sunk crab simply pauses on its stone. `submerged` is last frame's answer (see
-  // applySubmersion), one frame late on the dive and the surfacing, which the
-  // eye cannot tell from the splash.
-  //
-  // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
-  // shows: ten-odd layers behind one switch is exactly the shape where a guess at
-  // which one costs what is worthless.
-  //
-  // WHAT SHE HOLDS IS A LURE to the fish, the frogs, the wildlife and the
-  // dragons, each layer choosing what it wants from the list (hands.js lures):
-  // where the hand nodes are this frame, ahead of hands.update, which only
-  // moves the items to them.
+  // WHAT SHE HOLDS IS A LURE to the fish, the frogs, the wildlife, the dragons
+  // and a house's residents, each choosing what it wants from the list (hands.js
+  // lures): where the hand nodes are this frame, ahead of hands.update, which
+  // only moves the items to them.
   lures.length = 0
   hands.lures(lures)
-  const fishShown = animalOn('fish') && (submerged || currentRoom.village)
-  fish.batch.visible = fishShown
-  // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
-  stepAnimal('fish', () => {
-    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
-    else fish.follow(headTmp.x, headTmp.y, headTmp.z)
-    fishLeap.update(dt, headTmp, submerged)
-  })
-  fishLeap.group.visible = animalOn('fish')
-  // The frogs hunt the hobs too, and are seen to by the villagers holding them (render/villagers.js claims), last frame's.
-  stepAnimal('frogs', () => {
-    frogLures.length = 0
-    frogLures.push(...lures)
-    if (hobs) hobs.lures(frogLures)
-    frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, frogLures, villagers ? villagers.claims : undefined)
-  })
-  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
-  // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
-  stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds))
-  // The grasshoppers run on the room's clock too, and read the night off it themselves at a segment's turn; the scalar is only for a world with no clock.
-  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, dayness))
-  // The fireflies exist only after dark, off the same scalar.
-  stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
-  // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
-  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
-  // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
-  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
-  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
-  // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
-  stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
-  // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
-  if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
-  // The villagers likewise, under the leafkin's row.
-  if (villagers) stepAnimal('leafkin', () => {
-    frogChases.length = 0
-    frogs.chasers(frogChases)
-    villagers.update(player.originPosition(), headTmp, clock.seconds, dt, frogChases, lures, trustsHer)
-    hobs.update(headTmp, clock.seconds, dt, frogChases)
-  })
-  // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
-  if (dragons) stepAnimal('dragons', () => {
-    roosts.update(headTmp.x, headTmp.y, headTmp.z)
-    dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, dragonQuarry())
-  })
-  bankAnimalMs(dt)
-  spikes.lap('animals')
+  if (cave === null) stepOverworld(dt, now)
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
@@ -7606,6 +7505,137 @@ function tick() {
   // A-Frame renders the scene itself after every registered component's tick()
   // runs (see the `v2-quest-tick` component below) -- a renderer.render here
   // would be a second render of the same frame.
+}
+
+/** The overworld's layers and creatures, each frame above ground. Underground they are frozen as they stand: kept in memory, neither stepped nor tracked (stepCave hides them). */
+function stepOverworld(dt, now) {
+  // Altitude and gaze both feed the split rule: y makes the range term 3D and
+  // yaw is what stops two thirds of the slot pool going to terrain behind her.
+  if (questToggles.terrain || questToggles.terrainWire) {
+    terrain.update({ x: headTmp.x, y: headTmp.y, z: headTmp.z, yaw: player.headYaw() })
+    terrainWire.update()
+  }
+  spikes.lap('terrain')
+  // Rocks first, and it is the same hard ordering the construction has: the tree,
+  // fern, grass and litter scatters all ask the stone where it is before they
+  // place anything, so a tile of stone has to be grown before the tile of wood
+  // over it.
+  //
+  // A LAYER TOGGLE HALTS THE SCATTER, it does not merely hide the batch. The
+  // hidden-but-stepping version cost 2.4 ms a frame in `rocks` alone at 1000 m/s
+  // (headless, desktop node -- a Quest 2 core is several times slower) against
+  // 0.65 ms standing, spent on a layer the panel said was off, which made the
+  // panel unable to answer the one question it exists for. The stale-anchor consequence is
+  // real and accepted: with rocks frozen and trees on, wood placed in ground you
+  // fly into afterwards does not know about stone that was never grown there, so
+  // trees may sit where a boulder would have pushed them. That is invisible while
+  // the boulder is, and an ablation panel that cannot ablate is worth less than an
+  // exact one.
+  if (questToggles.boulders) {
+    rocks.update(headTmp.x, headTmp.y, headTmp.z)
+    // After the rocks: a mouth follows its boulder's residency.
+    if (entrances) entrances.update(headTmp.x, headTmp.y, headTmp.z)
+    if (caveMouths) caveMouths.update(headTmp.x, headTmp.y, headTmp.z)
+    if (boulders) boulders.update(headTmp.x, headTmp.y, headTmp.z)
+  }
+  spikes.lap('rocks')
+  // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
+  if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
+  if (towns) towns.update(headTmp.x, headTmp.z)
+  spikes.lap('towns')
+  if (signposts) signposts.update(headTmp)
+  spikes.lap('signposts')
+  if (bridges) bridges.update(headTmp)
+  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
+  spikes.lap('townsfolk')
+  if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('trees')
+  if (questToggles.ferns) {
+    ferns.update(headTmp.x, headTmp.y, headTmp.z)
+    carrots.update(headTmp.x, headTmp.y, headTmp.z)
+  }
+  if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('ferns+grass')
+  // Three layers on one `litter` row, hidden AND frozen together -- see the row's
+  // own note for why they share a button. Cheap per frame standing still, which is
+  // what "the cheapest layers in the world" was measured at; all three are tiled
+  // ground scatters, so at flight speed they churn their whole footprint like
+  // every other one and the row has to be able to take that away.
+  if (questToggles.litter) {
+    litter.update(headTmp.x, headTmp.y, headTmp.z)
+    // After rocks, and for the same reason the construction and the relief
+    // re-place are: a clump follows the anchors, so it wants them stepped first.
+    mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+    deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+    sticks.update(headTmp.x, headTmp.y, headTmp.z)
+    bones.update(headTmp.x, headTmp.y, headTmp.z)
+  }
+  // The rowboats sit on the water row: moored where they were placed, so this
+  // is the rim sweep and the mesh-to-card step alone.
+  if (questToggles.water) rowboats.update(headTmp.x, headTmp.y, headTmp.z)
+  spikes.lap('litter')
+  // The animals are simulations as well as scatters, so they take dt. Each is
+  // frozen with its row, and all of them with the `animals` row.
+  //
+  // WHAT IS UNDER THE SURFACE IS ONLY DRAWN FROM UNDER IT. The water is nearly
+  // opaque from above (WATER.clarity), so with her head in the air every fish
+  // and every sunk crab is triangles and a step spent on something nobody can
+  // see; a village's pond is the exception, clear from the shore (VILLAGE_POND),
+  // so its fish are drawn from above. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
+  // no fish stepped, one frame in fish.js FOLLOW_EVERY -- so the lake is stocked
+  // the moment she dives; a sunk crab simply pauses on its stone. `submerged` is last frame's answer (see
+  // applySubmersion), one frame late on the dive and the surfacing, which the
+  // eye cannot tell from the splash.
+  //
+  // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
+  // shows: ten-odd layers behind one switch is exactly the shape where a guess at
+  // which one costs what is worthless.
+  const fishShown = animalOn('fish') && (submerged || currentRoom.village)
+  fish.batch.visible = fishShown
+  // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
+  stepAnimal('fish', () => {
+    if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
+    else fish.follow(headTmp.x, headTmp.y, headTmp.z)
+    fishLeap.update(dt, headTmp, submerged)
+  })
+  fishLeap.group.visible = animalOn('fish')
+  // The frogs hunt the hobs too, and are seen to by the villagers holding them (render/villagers.js claims), last frame's.
+  stepAnimal('frogs', () => {
+    frogLures.length = 0
+    frogLures.push(...lures)
+    if (hobs) hobs.lures(frogLures)
+    frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, frogLures, villagers ? villagers.claims : undefined)
+  })
+  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
+  // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
+  stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds))
+  // The grasshoppers run on the room's clock too, and read the night off it themselves at a segment's turn; the scalar is only for a world with no clock.
+  stepAnimal('grasshoppers', () => grasshoppers.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, dayness))
+  // The fireflies exist only after dark, off the same scalar.
+  stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
+  // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
+  // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
+  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
+  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
+  // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
+  stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
+  // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
+  if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
+  // The villagers likewise, under the leafkin's row.
+  if (villagers) stepAnimal('leafkin', () => {
+    frogChases.length = 0
+    frogs.chasers(frogChases)
+    villagers.update(player.originPosition(), headTmp, clock.seconds, dt, frogChases, lures, trustsHer)
+    hobs.update(headTmp, clock.seconds, dt, frogChases)
+  })
+  // After the wildlife, whose stags the dragons hunt this same frame; the roosts first, because a dragon lives where its roost is resident. The dragons run on the room's clock (sim/score.js), last frame's reading, the same on every client.
+  if (dragons) stepAnimal('dragons', () => {
+    roosts.update(headTmp.x, headTmp.y, headTmp.z)
+    dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, dragonQuarry())
+  })
+  bankAnimalMs(dt)
+  spikes.lap('animals')
 }
 
 // A-Frame drives its own render loop via component tick() methods, not

@@ -29,7 +29,7 @@ const SEG_CELL = 32
 const STRIDE = 8
 
 const DEFAULT_RIVER_DEPTH = 2.0
-const DEFAULT_ROAD_FEATHER = 8
+export const DEFAULT_ROAD_FEATHER = 8
 // Metres past a road's edge its dirt paint reaches (dirtAt), against the feather the height and the detail suppression ramp over (flattenAt). The two were one number, and a verge painted four fifths dirt two metres off the kerb tinted every blade of grass standing on it: the strip the grass grows tallest in read as dead. A trodden margin is about a metre.
 export const ROAD_DIRT_FEATHER = 1
 

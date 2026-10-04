@@ -50,7 +50,7 @@ import { Entrances, HOLE, MOUTH_STEP_M, PORTAL, mouthBankFrom } from '../src/v2/
 import { DOOR, HOUSE_BOUNDS, ROOF, RoomProps } from '../src/v2/render/room-props.js'
 import { Boulders } from '../src/v2/render/boulders.js'
 import { CELL as SHELL_CELL, GRAIN, Shell } from '../src/v2/render/shell.js'
-import { LAMP, LAMP_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
+import { LAMP, LAMP_GLB, LAMP_LOD1_GLB, LAMP_ORIGIN, Lamps, lampBankFrom } from '../src/v2/render/lamps.js'
 import { Stools } from '../src/v2/render/stools.js'
 import { HEARTH, feetGround } from '../src/v2/render/hearth.js'
 import { SEAT_M } from '../src/v2/render/villagers.js'
@@ -103,7 +103,7 @@ const KEYS = ['hollow:-1018.0:-2759.0', 'hollow:160.0:-356.0', 'hollow:3660.0:19
 
 const texArray = buildTextureArray()
 const bank = buildRockBank()
-const lampBank = lampBankFrom(readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(LAMP_GLB)), { origin: LAMP_ORIGIN }))
+const lampBank = lampBankFrom(...[LAMP_GLB, LAMP_LOD1_GLB].map((url) => readShippedAsset(path.join(GEN_PROPS_DIR, path.basename(url)), { origin: LAMP_ORIGIN })))
 const overworld = new V2Height({
   heightmap: await Heightmap.read({ path: 'public/world/height.png', metaPath: 'public/world/height.json' }),
   layers: Layers.deserialize(validate(JSON.parse(await readFile('public/world/layers.json', 'utf8')))),
@@ -807,7 +807,13 @@ console.log('\nthe lamps')
   const layer = new Lamps(new THREE.Scene(), field, { bank: lampBank, lamps, windows, seed, patch: (m) => m })
   const postH = layer.scale * layer.bank.bounds.height
   check(Math.abs(postH - LAMP.height) < 0.05 && layer.posts.count === lamps.length && layer.flames.count === lamps.length, `${LAMP.height} m posts, one a lamp, a flame in every dish`, `${postH.toFixed(2)} m, ${layer.posts.count} posts, ${layer.flames.count} flames`)
-  check(layer.postMaterial.side === THREE.DoubleSide, 'a post shows both faces: the dish and the hood are open shells', `side ${layer.postMaterial.side}`)
+  {
+    const eye = layer.lamps[0], far = layer.lamps.filter((l) => Math.hypot(l.x - eye.x, l.z - eye.z) > LAMP.lod1).length
+    layer.update(0, 1, { x: eye.x, y: eye.y, z: eye.z })
+    const [nearTris, farTris] = layer.bank.geometries.map((g) => g.index.count / 3)
+    check(far > 0 && layer.postsFar.count === far && layer.posts.count === lamps.length - far && farTris < nearTris, `a post past ${LAMP.lod1} m draws the decimated tier`, `${layer.posts.count} near at ${nearTris} tris, ${layer.postsFar.count} of ${far} far at ${farTris} tris`)
+  }
+  check(layer.postMaterial.side === THREE.DoubleSide,'a post shows both faces: the dish and the hood are open shells', `side ${layer.postMaterial.side}`)
   const flameP = new THREE.Vector3(), flameS = new THREE.Vector3()
   let inDish = 0, wick = 0
   layer.lamps.forEach((l, i) => {

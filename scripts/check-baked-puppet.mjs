@@ -5,8 +5,8 @@
 // What can go wrong without throwing: a texture laid out one way and read another (a body drawn as a crumpled star); a sample that wraps into the next clip; a bone a layer reads that is not where the drawn body has it (a saddle or a grip off the animal); a fade or tint drawn through the wrong batch; a puppet that never leaves the active set.
 
 import * as THREE from 'three'
-import { BakedPuppet, bakedBatches, bakedRoot, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub } from '../src/v2/render/baked-puppet.js'
-import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
+import { BakedPuppet, bakedBatches, bakedRoot, cullBakedTo, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub } from '../src/v2/render/baked-puppet.js'
+import { Puppet, makePuppetMaterials, makeSettledMaterial, poseSphere } from '../src/v2/render/puppet.js'
 import { TIER_TINTS, setTierTint } from '../src/v2/render/critters.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 import { SHAKE, paddleHz, striderClips } from '../src/v2/render/strider-clips.js'
@@ -245,6 +245,31 @@ console.log('the colours')
   const reddest = Math.max(...rolls.map((c) => c.r / c.g)), greenest = Math.max(...rolls.map((c) => c.g / c.r))
   check(reddest > 1.5 && greenest > 1.5, 'rolls reach both a red and a green cast', `r/g ${reddest.toFixed(2)}, g/r ${greenest.toFixed(2)}`)
   check(rollTint(mulberry32(3)).equals(rollTint(mulberry32(3))), 'the same seed rolls the same colour')
+}
+
+console.log('the cull')
+{
+  // An eye at (0, 1, 10) looking down -Z at the origin; each body is found in the batches by where it stands.
+  const cam = new THREE.PerspectiveCamera(60, 1, 0.1, 1000)
+  cam.position.set(0, 1, 10); cam.lookAt(0, 1, 0); cam.updateMatrixWorld(true)
+  const at = (x, z) => { const p = new BakedPuppet(asset, mats()); scene.add(p.group); p.group.matrix.makeTranslation(x, 0, z); p.group.matrixWorldNeedsUpdate = true; p.show(0, 0); p.play('wave'); return p }
+  const drawnAt = (x, z) => bakedBatches().some((b) => { for (let i = 0; i < b.n; i++) { const e = b.mesh.instanceMatrix.array; if (e[i * 16 + 12] === x && e[i * 16 + 14] === z) return true } return false })
+  // The edge body: its pose sphere just clear of the frustum, inside the frame's head-turn margin.
+  const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse))
+  const sphere = new THREE.Sphere()
+  let edge = 0
+  while (frustum.intersectsSphere(sphere.copy(poseSphere(asset.tiers)).applyMatrix4(new THREE.Matrix4().makeTranslation(edge, 0, 0)))) edge += 0.25
+  edge += 0.5
+  const ahead = at(0.125, 0), behind = at(0.375, 30), side = at(edge, 0), far = at(60, 0)
+  cullBakedTo(cam)
+  flushBaked()
+  check(drawnAt(0.125, 0) && !drawnAt(0.375, 30), 'a body ahead of the eye is drawn and one behind it is not')
+  check(drawnAt(edge, 0), 'one just out of view is drawn, against a frame\'s head turn', `${edge.toFixed(2)} m to the side`)
+  check(!drawnAt(60, 0), 'one far out to the side is not')
+  cullBakedTo(null)
+  flushBaked()
+  check(drawnAt(0.375, 30) && drawnAt(60, 0), 'with no camera to cull to, every body is drawn')
+  for (const p of [ahead, behind, side, far]) { p.release(); p.group.removeFromParent() }
 }
 
 console.log('the strider clips')

@@ -154,7 +154,8 @@ export class CaveWalk {
       const local = b.levelAt(x, z)
       if (local === null) continue
       const level = local + this.oy
-      if (y > level + 3 || y < level - 12) continue
+      // Floors stack, so a body over (x, z) is hers only if she is not under its bed: a river on the floor above is someone else's.
+      if (y > level + 3 || y < b.bed + this.oy - 1.5) continue
       return level
     }
     return null
@@ -178,7 +179,7 @@ function crossing(f, x, z, yRock, yAir) {
   return a + ((b - a) * fa) / (fa - fb)
 }
 
-/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore). Pure; the renderer draws the same list. */
+/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore), which also leaves the body's bed under the point in `bed`. Pure; the renderer draws the same list. */
 export function waterBodies(graph) {
   const out = []
   for (const p of graph.pools) {
@@ -187,7 +188,7 @@ export function waterBodies(graph) {
       const c = Math.cos(n.rot), s = Math.sin(n.rot)
       const r = Math.max(n.rx, n.rz)
       out.push({
-        kind: 'pool', node: n.i, level: p.level, x: n.x, z: n.z, rx: n.rx, rz: n.rz, rot: n.rot,
+        kind: 'pool', node: n.i, level: p.level, x: n.x, z: n.z, rx: n.rx, rz: n.rz, rot: n.rot, bed: n.y - n.dish,
         x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r,
         levelAt(x, z) {
           const dx = x - n.x, dz = z - n.z
@@ -213,7 +214,7 @@ function alongEdge(kind, e, levelOf, half) {
     x0 = Math.min(x0, q.x - w); x1 = Math.max(x1, q.x + w); z0 = Math.min(z0, q.z - w); z1 = Math.max(z1, q.z + w)
   }
   return {
-    kind, edge: e.i, pts, levelOf, half, x0, x1, z0, z1,
+    kind, edge: e.i, pts, levelOf, half, x0, x1, z0, z1, bed: 0,
     levelAt(x, z) {
       let best = Infinity, at = null
       const q = { y: 0, w: 0, cut: 0 }
@@ -226,6 +227,7 @@ function alongEdge(kind, e, levelOf, half) {
         if (d < best) { best = d; at = q; q.y = a.y + (b.y - a.y) * u; q.w = a.w + (b.w - a.w) * u; q.cut = a.cut + (b.cut - a.cut) * u }
       }
       if (at === null || best > half(at)) return null
+      this.bed = at.y - at.cut
       return levelOf(at)
     },
   }

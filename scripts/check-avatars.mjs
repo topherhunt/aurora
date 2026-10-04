@@ -26,6 +26,7 @@ import fs from 'node:fs'
 import { VILLAGERS, BIPEDS } from '../tools/creatures/ship-biped.mjs'
 import { CREATURES } from '../tools/creatures/creature-roster.mjs'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
+import { TRADES } from '../src/v2/layers/trades.js'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
@@ -93,6 +94,24 @@ for (const { id, biped, byName } of shipped) {
   const top = rest(biped.head[biped.head.length - 1])
   const aboveShoulders = !VILLAGERS.includes(id) || arms.every((a) => top.y > rest(a.shoulder).y)
   check(aboveShoulders && top.y > 0.7 * biped.height && top.y < biped.height, `${id}: the top of the head chain sits in the head${VILLAGERS.includes(id) ? ', above the shoulders' : ''}`, `${top.y.toFixed(3)} of ${biped.height.toFixed(3)}`)
+}
+// A town body's seat, as townsfolk.js `underside` measures it at load (and throws outside these bounds): the hip joints less a thigh's half-depth in the clip's first frame.
+for (const id of TRADES.bodies) {
+  const { json, biped, root, byName } = loadShipped(id)
+  const { bin } = readGlb(new URL(`${id}.glb`, OUT))
+  for (const clip of ['idle-sit', 'ride']) {
+    const anim = json.animations.find((a) => a.name === clip)
+    for (const ch of anim.channels) {
+      const bone = byName.get(sane(json.nodes[ch.target.node].name))
+      if (!bone || ch.target.path === 'weights') continue
+      const acc = json.accessors[anim.samplers[ch.sampler].output], view = json.bufferViews[acc.bufferView]
+      const v = new Float32Array(bin.buffer, bin.byteOffset + (view.byteOffset ?? 0) + (acc.byteOffset ?? 0), ch.target.path === 'rotation' ? 4 : 3)
+      ;({ translation: bone.position, rotation: bone.quaternion, scale: bone.scale })[ch.target.path].fromArray(v)
+    }
+    root.updateMatrixWorld(true)
+    const y = biped.legs.reduce((s, l) => s + byName.get(sane(l.chain[0])).getWorldPosition(new THREE.Vector3()).y, 0) / biped.legs.length / biped.height - 0.05
+    check(y > 0.05 && y < 0.5, `${id}: its ${clip} seat sits 5-50% of its height up`, y.toFixed(3))
+  }
 }
 if (failures) {
   console.log(`\n${failures} failing -- the extras must ship before the body can be checked`)

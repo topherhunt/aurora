@@ -4,7 +4,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TriFlames, TRI_FIRE } from './fire-tris.js'
 import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross } from './interior.js'
-import { S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
+import { S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, minus, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
 
 const TAU = 2 * Math.PI
 // The outer wall's depth, as the roller insets it.
@@ -232,7 +232,8 @@ function buildShell(room, M, K, rng) {
           windowPane(M, K, L, h, timber)
         } else if (h.door) {
           reveal(M.wall, L, h, T, wallTint(-0.04), { sill: false })
-          doorLeaf(M, K, L, h, timber)
+          const p = pt(L, (h.u0 + h.u1) / 2, -T + 0.05)
+          doorLeaf(M, K, { x: p.x, y: 0, z: p.z, ax: L.axis === 'x' ? [1, 0, 0] : [0, 0, 1], ay: [0, 1, 0], az: inward(L) }, h.u1 - h.u0, h.y1)
         } else if (h.depth > 0) reveal(M.wall, L, h, h.depth, wallTint(-0.04), { sill: false })
         if (!h.win && h.depth !== 0) frameAround(M, L, h, timber)
       }
@@ -254,7 +255,8 @@ function buildShell(room, M, K, rng) {
   })
 
   // The floor, flag or plank; the doorways' floors are the same.
-  for (const r of room.inside) sheet(M.floor, r, () => 0, 1, floorTint, FLOOR_M)
+  for (const r of room.inside) for (const q of room.cellar ? minus(r, room.cellar.hole) : [r]) sheet(M.floor, q, () => 0, 1, floorTint, FLOOR_M)
+  if (room.cellar) cellarWell(M, K, room)
   for (const p of room.partitions) partition(M, room, p, wallTint(-0.02), timber)
   hearthAt(M, K, room, timber)
   if (room.upper) upperFloor(M, K, room, timber)
@@ -321,22 +323,37 @@ function windowPane(M, K, L, h, timber) {
   frameAround(M, L, { ...h, y0: h.y0 - 0.06 }, timber, [0.02])
 }
 
-/** The front door, shut in the outer face of its reveal: boards on ledges, strap hinges and a ring. */
-function doorLeaf(M, K, L, h, timber) {
-  const n = inward(L), u = L.axis === 'x' ? [1, 0, 0] : [0, 0, 1]
-  const p0 = pt(L, (h.u0 + h.u1) / 2, -T + 0.05)
-  const F = { x: p0.x, y: 0, z: p0.z, ax: u, ay: [0, 1, 0], az: n }
-  const w = h.u1 - h.u0, boards = 5
+/** A door leaf `w` wide and `top` tall standing on F's origin, its face to F's +z: boards on ledges, strap hinges and a ring. */
+function doorLeaf(M, K, F, w, top) {
+  const h = { y1: top }, boards = 5
   for (let i = 0; i < boards; i++) {
     const x0 = -w / 2 + (w * i) / boards + 0.003, x1 = -w / 2 + (w * (i + 1)) / boards - 0.003
     hewn(M.grain, K, F, [x0, 0.01, -0.05], [x1, h.y1 - 0.01, 0], WOOD(0.3 + i * 0.05, -0.1), 0.003)
   }
-  for (const y of [0.35, h.y1 - 0.45]) {
+  for (const y of [Math.min(0.35, top * 0.2), top - Math.min(0.45, top * 0.25)]) {
     hewn(M.grain, K, F, [-w / 2 + 0.05, y - 0.08, 0], [w / 2 - 0.05, y + 0.08, 0.035], WOOD(0.4, -0.12), 0.003)
     slab(M.grain, F, [-w / 2 + 0.02, y - 0.03, 0.035], [w * 0.2, y + 0.03, 0.045], IRON, woodUV)
     for (let k = 0; k < 4; k++) K.blob(M.grain, F, [-w / 2 + 0.08 + k * 0.15, y, 0.048], 0.012, 0.012, 0.006, IRON, { segs: 6, rows: 4 })
   }
-  K.tube(M.grain, Array.from({ length: 13 }, (_, k) => { const q = (k / 12) * TAU; return put(F, w * 0.3 + Math.sin(q) * 0.07, 1.0 - 0.07 + Math.cos(q) * 0.07, 0.06) }), Array(13).fill(0.009), IRON, { segs: 6, caps: false })
+  K.tube(M.grain, Array.from({ length: 13 }, (_, k) => { const q = (k / 12) * TAU; return put(F, w * 0.3 + Math.sin(q) * 0.07, Math.min(0.93, top / 2) + Math.cos(q) * 0.07, 0.06) }), Array(13).fill(0.009), IRON, { segs: 6, caps: false })
+}
+
+/** The cellar hatch's well (design/39-caves.md §2): stone steps from the hole's open end down into the corner and on under the floor into the dark, its two leaves stood open against the wall. */
+function cellarWell(M, K, room) {
+  const c = room.cellar, L = { axis: c.axis, at: c.at, ix: c.ix, iz: c.iz }
+  const o = pt(L, c.top, 0), w = c.w, len = c.u1 - c.u0, down = [c.nx, 0, c.nz]
+  const F = { x: o.x, y: 0, z: o.z, ax: inward(L), ay: [0, 1, 0], az: down }
+  const RISE = 0.2, RUN = 0.28, STEPS = 12, end = STEPS * RUN, foot = -STEPS * RISE - 0.3
+  // Lit from the room above, dark by the foot of the flight.
+  const stone = (d) => rgb(0.08, 0.06, 0.42 * Math.max(0.08, 1 - d / end))
+  const sUV = (p, n) => (n[0] ? [p[2] / STONE_M, p[1] / STONE_M] : n[1] ? [p[0] / STONE_M, p[2] / STONE_M] : [p[0] / STONE_M, p[1] / STONE_M])
+  const face = (n, at) => M.stone.grid(1, 1, (i, j) => { const [x, y, d] = at(i, j); return { p: put(F, x, y, d), n, uv: [(x + d) / STONE_M, y / STONE_M], tint: stone(d) } }, null, 1)
+  for (let k = 0; k < STEPS; k++) slab(M.stone, F, [0, -(k + 2) * RISE, k * RUN], [w, -(k + 1) * RISE, (k + 1) * RUN], stone(k * RUN), sUV)
+  for (const [x, s] of [[0, 1], [w, -1]]) face(turn(F, s, 0, 0), (i, j) => [x, j ? 0 : foot, i * end])
+  face(turn(F, 0, 0, 1), (i, j) => [i * w, j ? 0 : -RISE, 0])
+  face(turn(F, 0, 0, -1), (i, j) => [i * w, j ? 0 : foot, end])
+  face([0, -1, 0], (i, j) => [i * w, 0, len + j * (end - len)])
+  for (const k of [0, 1]) doorLeaf(M, K, { ...F, ...xyz(put(F, 0.06, 0, ((k + 0.5) * len) / 2)), ax: down, az: inward(L) }, len / 2 - 0.02, w)
 }
 
 /** The hearth: a stone chimney breast to the roof with a fire in its mouth, a beam for a mantel, a hearthstone, logs and a pot on a crane. */

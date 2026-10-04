@@ -122,7 +122,14 @@ export const TOWNSFOLK = {
   sit: [25, 70],
   homing: 60,
   talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
-  errands: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
+  // Each class's errands (TRADES.roles): a guard patrols the ways, a traveller sits at the fire and minds the striders, a child runs between the doors. A child's pace is `childPace` times its own.
+  errands: {
+    folk: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
+    travel: [['visit', 0.15], ['home', 0.1], ['sit', 0.4], ['wander', 0.2], ['lead', 0.15]],
+    guard: [['visit', 0.05], ['home', 0.1], ['sit', 0.1], ['wander', 0.75], ['lead', 0.03]],
+    child: [['visit', 0.4], ['home', 0.1], ['sit', 0.1], ['wander', 0.4]],
+  },
+  childPace: 1.2,
   // An errand's chance of being its trade's round instead; a shopkeeper's (potions, inn) times indoors are `keep` times as long. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
   trade: {
     work: 0.65, keep: 3,
@@ -297,7 +304,9 @@ export class TownLife {
       const body = TOWNSFOLK.bodies.indexOf(f.body)
       if (!(body >= 0 && body < bodies.length)) throw new Error(`TownLife: ${town.id}'s ${f.body} is not among the ${bodies.length} bodies`)
       const size = bodies[body].heightM * (1 + TOWNSFOLK.sizeVar * (2 * rand() - 1))
-      const c = this._person(id, body, size, this.graph.doors[f.home], between(rand, TOWNSFOLK.pace), false)
+      const role = TRADES.roles[f.body]
+      const c = this._person(id, body, size, this.graph.doors[f.home], between(rand, TOWNSFOLK.pace) * (role === 'child' ? TOWNSFOLK.childPace : 1), false)
+      c.role = role
       c.trade = f.trade
       c.work = f.work
       this.all.push(c)
@@ -374,8 +383,8 @@ export class TownLife {
       clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0, from: -1,
       // A traveller's: its job's steps, the strider it sits, the hop on or off (0 afoot, 1 in the saddle) between the ground point `hopA` and the saddle `hopB`, and its own body under a journey member's borrowed one.
       guest, job: null, mount: null, hop: 0, phop: 0, hopA: null, hopB: null, own: null, planned: false,
-      // Its trade (layers/trades.js castFolk) and the town.works index it keeps, or null.
-      trade: null, work: null,
+      // Its trade (layers/trades.js castFolk), the town.works index it keeps or null, and its class (TRADES.roles); a guest is a traveller.
+      trade: null, work: null, role: guest ? 'travel' : 'folk',
     }
   }
 
@@ -406,7 +415,8 @@ export class TownLife {
       c.hop = c.phop = 0
       c.planned = false
       c.rs = hash32(this.seed, c.id, index)
-      if (c.guest) { c.state = 'away'; c.hidden = true; continue }
+      // A guest keeps no trace of last chapter's visit, or a town woken late differs from one watched.
+      if (c.guest) { Object.assign(c, { state: 'away', hidden: true, x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, heading: 0, ph: 0, aim: 0 }); continue }
       const door = this.graph.nodes[c.home]
       c.x = c.px = door.x
       c.z = c.pz = door.z
@@ -588,7 +598,7 @@ export class TownLife {
 
   _errand(c) {
     if (this.homing) { this._go(c, c.home, 'enter'); return }
-    const kind = pick(c.rand, TOWNSFOLK.errands)
+    const kind = pick(c.rand, TOWNSFOLK.errands[c.role])
     if (kind === 'lead' && this._lead(c)) return
     if (c.work !== null && c.rand() < TOWNSFOLK.trade.work) { this._trade(c); return }
     const { doors, targets } = this.graph
