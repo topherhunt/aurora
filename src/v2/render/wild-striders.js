@@ -5,6 +5,7 @@ import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S } from './snowmen.js'
 import { clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
 import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
+import { solverStub } from './baked-puppet.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -212,7 +213,7 @@ export class WildStriders {
       if (i < 0) throw new Error(`WildStriders: no bone named ${name}`)
       return i
     })
-    for (const p of this.inner.puppets) p.paddle.then = new HeadTurn(p, chain)
+    for (const p of this.inner.puppets) p.paddle.then = p.baked ? solverStub() : new HeadTurn(p, chain)
     const d = (name) => asset.clips.find((c) => c.name === name).duration
     this.dur = { attack: d('attack'), peck: d('peck'), fidget: d('fidget'), sit: d('sit') }
     // At the shipped size; a body's are these times its size.

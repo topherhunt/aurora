@@ -19,7 +19,8 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { CARRIERS } from '../hands.js'
 import { CARRY_SPAN } from './leafkin.js'
-import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, WHIMPER_S, gripAt } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
@@ -121,7 +122,7 @@ export class Residents {
     const mats = makePuppetMaterials('residents', this.plain)
     for (const m of [mats.in, mats.out]) roomLit(m, this.light).map = this.asset.map
     this.materials.push(mats.in, mats.out)
-    const puppet = new Puppet(this.asset, mats, { clipFade: FADE_S })
+    const puppet = makePuppet(this.asset, mats, { clipFade: FADE_S })
     puppet.mixer.timeScale = pace
     this.group.add(puppet.group)
     puppet.show(0, atDoor ? FADE_S : 0.01)

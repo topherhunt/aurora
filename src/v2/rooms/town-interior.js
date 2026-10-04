@@ -82,10 +82,11 @@ export function levelCeilingAt(room, level, x, z) {
 export const townRoomAt = (room, level, x, z) => room.rooms.find((r) => r.level === level && within(r.rect, x, z)) || null
 
 /**
- * The inside of the building planned as `plan`, house `index` of the world seeded `seed`. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
+ * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, kept as a `shop` ('potions') or not (null). Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
  */
-export function rollTownInterior({ seed, index, plan }) {
+export function rollTownInterior({ seed, index, plan, shop = null }) {
   if (!Number.isInteger(seed) || !Number.isInteger(index) || !plan || !Array.isArray(plan.masses)) throw new Error('rollTownInterior: needs an integer seed and index and a building plan')
+  if (shop !== null && shop !== 'potions') throw new Error(`rollTownInterior: no shop called ${shop}`)
   const rng = mulberry32(hash32(seed, index, plan.seed | 0, 0x7041))
   const range = (lo, hi) => lo + (hi - lo) * rng()
   const pick = (list) => list[Math.floor(rng() * list.length)]
@@ -96,7 +97,7 @@ export function rollTownInterior({ seed, index, plan }) {
   if (!main) throw new Error('rollTownInterior: the plan has no main mass')
   const inset = (m) => ({ x0: S * (m.cx - m.w / 2) + T, x1: S * (m.cx + m.w / 2) - T, z0: S * (m.cz - m.d / 2) + T, z1: S * (m.cz + m.d / 2) - T })
   const M = inset(main)
-  const room = { town: true, seed, index, plan, kind: plan.kind, M }
+  const room = { town: true, seed, index, plan, kind: plan.kind, shop, M }
   const roofAt = (x, z) => townCeilingAt(room, x, z)
   const LM = lines(M)
   // The main walls by compass, as the junctions and the hearth name them.
@@ -632,8 +633,9 @@ export function rollTownInterior({ seed, index, plan }) {
     store: ['jar', 'jar', 'crock', 'crock'],
     bedroom: ['books', 'candle', 'box', 'jug'],
     parlour: ['books', 'jug', 'box', 'plate'],
+    potions: ['potion', 'potion', 'potion', 'jar', 'potion'],
   }
-  const shelf = (rm, hx = range(0.45, 0.7)) => {
+  const shelf = (rm, hx = range(0.45, 0.7), stock = rm.kind) => {
     for (const e of shuffle(edgesOf(rm))) {
       for (const u of shuffle(Array.from({ length: Math.max(0, Math.floor((e.hi - e.lo - 2 * hx - 0.6) / 0.2)) }, (_, i) => e.lo + hx + 0.3 + i * 0.2))) {
         const band = strip(e, u - hx, u + hx, 0, 0.4)
@@ -642,7 +644,7 @@ export function rollTownInterior({ seed, index, plan }) {
         const wallTop = levelCeilingAt(room, rm.level, pt(e, u, 0.1).x, pt(e, u, 0.1).z)
         if (wallTop < y + 0.5) continue
         const at = pt(e, u, 0.13), load = []
-        const kinds = SHELF_LOAD[rm.kind] || SHELF_LOAD.parlour
+        const kinds = SHELF_LOAD[stock] || SHELF_LOAD.parlour
         for (let s = -hx + 0.1; s < hx - 0.08; s += range(0.14, 0.24)) load.push({ kind: pick(kinds), u: s, hue: rng(), yaw: range(-0.4, 0.4) })
         items.push({ kind: 'shelf', x: at.x, y, z: at.z, yaw: e.yaw, hx, hz: 0.13, load, room: rm.id })
         // A load's `u` runs along the shelf's own X, (cos yaw, -sin yaw), which is not always the wall's `u`.
@@ -745,7 +747,7 @@ export function rollTownInterior({ seed, index, plan }) {
   }
 
   /** A board against a wall with two chairs on its open side, for a room with no floor in the middle to spare. */
-  const board = (rm) => {
+  const board = (rm) => tx(rm.level, () => {
     const got = standing(rm, 'table', 0.6, 0.4, 0.78, { legs: 'post' }, { front: 1.3 })
     if (!got) return false
     const { c } = got, look = [-c.e.ix, -c.e.iz], y = rm.floor + 0.78
@@ -757,8 +759,7 @@ export function rollTownInterior({ seed, index, plan }) {
     }
     { const p = pt(c.e, c.u, 0.25); candle(rm, p.x, y, p.z, 'stick', 0.75) }
     if (chance(0.6)) { const p = pt(c.e, c.u - 0.45, 0.3); thing(rm, 'fruitbowl', p.x, y, p.z, { n: 3 + Math.floor(rng() * 4) }) }
-    return true
-  }
+  })
 
   const worktable = (rm) => {
     const got = standing(rm, 'worktable', range(0.7, 0.95), 0.36, 0.86, {}, { front: 1.0 })
@@ -898,7 +899,7 @@ export function rollTownInterior({ seed, index, plan }) {
   }
   const SEATS = ['chair', 'armchair', 'rocker', 'bench']
   const seats = (rm) => items.filter((it) => it.room === rm.id && SEATS.includes(it.kind)).length
-  const SMALL = ['candle', 'plate', 'mug', 'bowl', 'jug', 'loaf', 'fruitbowl', 'parchment', 'scroll', 'inkpot', 'books', 'rug', 'pot', 'jar', 'crock', 'cabbage', 'board']
+  const SMALL = ['potion', 'candle', 'plate', 'mug', 'bowl', 'jug', 'loaf', 'fruitbowl', 'parchment', 'scroll', 'inkpot', 'books', 'rug', 'pot', 'jar', 'crock', 'cabbage', 'board']
   const EXTRA = {
     hall: ['sidetable', 'basket', 'pegrail', 'chest', 'bench', 'barrel'],
     kitchen: ['basket', 'sack', 'barrel', 'crate', 'pegrail', 'stool'],
@@ -928,6 +929,42 @@ export function rollTownInterior({ seed, index, plan }) {
     for (let t = 0; t < 10 && items.filter((it) => it.room === rm.id && !SMALL.includes(it.kind)).length < want; t++) ADD[pick(EXTRA[rm.kind])](rm)
   }
 
+  /** The potion master's counter: standing free along a wall, as near the front door as it goes, in the hall, or with `anywhere` failing that another room downstairs or a short counter; the keeper's lane behind it open at one end, bottles on its top and shelves of them behind. Only the counter itself must miss the doors' keep-clear lanes, which fill a small hall. */
+  const counter = (hall, anywhere) => {
+    const hz = 0.28, top = 1.0, lane = 0.85
+    const cands = []
+    for (const hx of anywhere ? [0.7, 0.45] : [0.7]) for (const rm of [hall, ...(anywhere ? rooms.filter((r) => r.level === 0 && r !== hall && r.kind !== 'store' && r.kind !== 'bedroom') : [])]) for (const e of edgesOf(rm)) {
+      if (rm === hall && e.name === 'front') continue
+      for (let u = e.lo + hx + 0.05; u <= e.hi - hx - 0.05; u += 0.1) {
+        const c = pt(e, u, lane + hz)
+        cands.push({ hx, rm, e, u, c, d: (hx < 0.7 ? 1000 : 0) + (rm === hall ? 0 : 100) + Math.hypot(c.x - doorIn.x, c.z - doorIn.z) })
+      }
+    }
+    for (const { hx, rm, e, u, c } of cands.sort((a, b) => a.d - b.d)) {
+      const r = footprint(c.x, c.z, e.yaw, hx, hz)
+      const back = [strip(e, u - hx - 0.7, u + hx, CELL, lane), strip(e, u - hx, u + hx + 0.7, CELL, lane)].find((b) => clear(rm.level, b, SOLID))
+      const front = strip(e, u - hx, u + hx, lane + 2 * hz, lane + 2 * hz + 0.8)
+      if (!back || !clear(rm.level, grow(r, 0.02), SOLID | KEEP) || !clear(rm.level, front, SOLID) || ceilOver(rm, back) < HEAD) continue
+      const item = { kind: 'counter', x: c.x, z: c.z, yaw: e.yaw, hx, hz, top, hue: rng() }
+      const stand = pt(e, u, lane / 2)
+      const ok = tx(rm.level, () => {
+        put(rm, item, r, top, { keep: front })
+        solids[solids.length - 1].y1 = rm.floor + BLOCK
+        mark(rm.level, back, KEEP)
+        spots.push({ kind: 'shop', x: c.x, z: c.z, standX: stand.x, standZ: stand.z, lookX: e.ix, lookZ: e.iz, level: rm.level, room: rm.id })
+        hold(rm.level, stand)
+      })
+      if (!ok) continue
+      const y = rm.floor + top
+      for (let s = -hx + 0.12; s < hx - 0.1; s += range(0.11, 0.2)) { const p = pt(e, u + s, lane + hz + range(-0.1, 0.1)); thing(rm, 'potion', p.x, y, p.z) }
+      shelf(rm, 0.7, 'potions')
+      shelf(rm, 0.6, 'potions')
+      return true
+    }
+    if (!anywhere) return false
+    throw new Error(`rollTownInterior: house ${index} has no room downstairs for the potion master's counter`)
+  }
+
   const furnish = {
     hall(rm) {
       const many = plan.kind === 'inn'
@@ -935,7 +972,13 @@ export function rollTownInterior({ seed, index, plan }) {
       const short = (r) => Math.min(r.rect.x1 - r.rect.x0, r.rect.z1 - r.rect.z0)
       const dine = () => !!table(rm, many ? 0.13 : 0.2) || rooms.filter((r) => r.level === 0 && r !== rm && r.kind !== 'store').sort((a, b) => short(b) - short(a)).some((r) => table(r, 0.2)) || board(rm)
       // A bed takes a 2.5 m run off a wall that a table in the middle can leave none of, so a hall that sleeps tries both orders, then a board against the wall.
-      if (!rm.sleeps || !(tx(0, () => dine() && bed(rm, 1)) || tx(0, () => bed(rm, 1) && dine()) || tx(0, () => bed(rm, 1) && board(rm)))) dine()
+      const meals = () => {
+        if (!rm.sleeps || !(tx(0, () => dine() && bed(rm, 1)) || tx(0, () => bed(rm, 1) && dine()) || tx(0, () => bed(rm, 1) && board(rm)))) dine()
+        return items.some((it) => it.kind === 'table')
+      }
+      // The counter takes the hall first unless that leaves the house no table.
+      if (shop !== 'potions') meals()
+      else if (!tx(0, () => counter(rm, false) && meals())) { meals(); counter(rm, true) }
       if (many) { table(rm, 0.13); if (chance(0.5)) table(rm, 0.12) }
       standing(rm, 'dresser', range(0.6, 0.8), 0.26, range(1.8, 2.0), { load: 'plates' }, { front: 0.8 })
       shelf(rm)
@@ -1024,7 +1067,7 @@ export function rollTownInterior({ seed, index, plan }) {
   }
   // A room whose walls are all taken gets a candlestick on whatever stands in it.
   const perch = (rm) => {
-    const it = items.find((it) => it.room === rm.id && ['dresser', 'chest', 'press', 'sidetable', 'worktable', 'barrel', 'crate'].includes(it.kind))
+    const it = items.find((it) => it.room === rm.id && ['dresser', 'chest', 'press', 'sidetable', 'worktable', 'counter', 'barrel', 'crate'].includes(it.kind))
     if (!it) return false
     candle(rm, it.x, rm.floor + it.top, it.z, 'stick', 0.8)
     return true

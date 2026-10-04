@@ -1,18 +1,17 @@
 import THREE from '../three-instance.js'
 import { setHeadEye } from '../head-eye.js'
 
-import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, WORLD_HALF } from './config.js'
+import { HEIGHTMAP_URL, HEIGHTMAP_META_URL, SEED, SPAWN, WORLD_HALF, WORLD_PLAN_URL } from './config.js'
 import { Heightmap } from './height/heightmap.js'
 import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
-import { planTowns, townsOccupyAt } from './layers/towns.js'
+import { townsOccupyAt } from './layers/towns.js'
+import { loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
 import { Towns } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
 import { WILD, WildStriders } from './render/wild-striders.js'
 import { Journeys } from './render/journeys.js'
-import { nameTowns } from './layers/names.js'
-import { planRoads } from './layers/roads.js'
 import { Signposts } from './render/signposts.js'
 import { Bridges } from './render/bridges.js'
 import { loadStoneBridge } from '../bridges/stone-bridge.js'
@@ -27,13 +26,14 @@ import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
 import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
-import { installLogShip } from './log-ship.js'
+import { installLogShip, shipLog } from './log-ship.js'
 import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
 import { Wildfire, TORCH_CAP } from './render/wildfire.js'
 import { flicker as flameFlicker } from './render/fire.js'
 import { TriFlames } from './render/fire-tris.js'
+import { bakedRoot, puppetMode, setPuppetMode } from './render/baked-puppet.js'
 import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -122,6 +122,13 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
+import { MOUTH, siteMouths, groupSystems } from './caves/sites.js'
+import { planCave, EXIT_R } from './caves/build.js'
+import { CaveWalk } from './caves/walk.js'
+import { CaveMouths } from './render/cave-mouths.js'
+import { CaveRoom, CAVE_AIR, CAVE_MURK } from './render/cave-room.js'
+import { ChalkStones, KIND as CHALK } from './render/chalk.js'
+import { Chalk, ChalkPen, onRock, rayRock } from './caves/chalk.js'
 
 // First, before anything below can warn: a copy of every warning and error goes
 // to the dev server's tmp/client-log.txt, for the headset, which shows none of
@@ -268,10 +275,10 @@ function bootReport() {
   if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: performance.now() - bootStepAt })
   bootStepName = null
   const total = bootSteps.reduce((s, x) => s + x.ms, 0)
-  console.log(
-    `[v2] boot ${bootFmtMs(total)} in ${bootSteps.length} steps: ` +
-      bootSteps.slice().sort((a, b) => b.ms - a.ms).map((s) => `${s.name} ${bootFmtMs(s.ms)}`).join(', ')
-  )
+  const line = `[v2] boot ${bootFmtMs(total)} in ${bootSteps.length} steps: ` +
+    bootSteps.slice().sort((a, b) => b.ms - a.ms).map((s) => `${s.name} ${bootFmtMs(s.ms)}`).join(', ')
+  console.log(line)
+  shipLog(line)
 }
 const bootDone = async () => {
   await bootStep(null)
@@ -508,11 +515,29 @@ if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: 
 sceneEl.systems.light.data.defaultLightsEnabled = false
 sceneEl.systems.light.removeDefaultLights()
 renderer = sceneEl.renderer
+// No shader program is linked twice in a page's life. three deletes a program when the last material using it is disposed, and keys a ShaderMaterial's program on ids it reissues once the last material with that source is disposed, so a room swap relinked what the next room shared with the last: seconds of getProgramInfoLog on a Quest. Every program is held once more than its materials hold it, from the moment three links it (bake materials live only for one render), and the first compiled ShaderMaterial of each source is never disposed, which holds its ids. Safe only because every patch site keys all the source it varies (lighting.js variantKey, the per-site customProgramCacheKey): a site that injected room-dependent GLSL under an unchanged key would be handed the stale program.
+{
+  const programs = renderer.info.programs
+  if (!Array.isArray(programs) || programs.length > 0) throw new Error('three program cache is not the empty array this pin expects')
+  programs.push = function (program) {
+    program.usedTimes++
+    return Array.prototype.push.call(this, program)
+  }
+  const keptSources = new Set()
+  const dispose = THREE.ShaderMaterial.prototype.dispose
+  THREE.ShaderMaterial.prototype.dispose = function () {
+    const source = `${this.vertexShader}\0${this.fragmentShader}`
+    if (!keptSources.has(source) && renderer.properties.get(this).programs !== undefined) keptSources.add(source)
+    else dispose.call(this)
+  }
+}
 // `?fbscale=0.7` renders the XR eye buffers at that fraction of the headset's default size, the fill-rate A/B: fps that rises with it was GPU-bound. Read by three at session start, so it holds for the whole session. The debug panel's FB cell shows it.
 const FB_SCALE = Number(new URLSearchParams(location.search).get('fbscale') ?? 1)
 if (!(FB_SCALE > 0 && FB_SCALE <= 2)) throw new Error(`?fbscale must be a number in (0, 2], got ${new URLSearchParams(location.search).get('fbscale')}`)
 renderer.xr.setFramebufferScaleFactor(FB_SCALE)
 scene = sceneEl.object3D
+// Every baked creature body draws from here (render/baked-puppet.js); its matrix pass is the flush.
+scene.add(bakedRoot)
 camera = sceneEl.camera
 // The mouse-drag look handler assigns rotation.x/y directly (not via
 // quaternion), and three's default Euler order ('XYZ') couples yaw into roll
@@ -785,14 +810,17 @@ const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
 // Which villagers trust which player, she among them as `trust.player` (trust.js).
 const trust = new Trust()
+// Every chalk stroke on every cave's walls she knows of, hers by trust.player (caves/chalk.js).
+const chalk = new Chalk(() => trust.player)
 
 function saveGame() {
   // The rig only ever turns about Y (snap turns, recenter), so its quaternion
   // is a yaw and this is exact; rig.rotation's Euler would fold past 90 deg.
   const q = rig.quaternion
+  const back = indoors ? indoors.back : cave ? cave.back : null
   const doc = {
-    // Her feet; in a house, the landing before its door, which the room is built around. `y` keeps a load under an awning from the roof.
-    x: indoors ? indoors.back.x : rig.position.x, y: indoors ? indoors.back.y : player.standY, z: indoors ? indoors.back.z : rig.position.z,
+    // Her feet; in a house, the landing before its door, which the room is built around; in a cave, the apron before the mouth she came in by. `y` keeps a load under an awning from the roof.
+    x: back ? back.x : rig.position.x, y: back ? back.y : player.standY, z: back ? back.z : rig.position.z,
     // In a house, which one and which of its beds she slept in: a load opens it again (it is rolled, not saved) and stands her beside that bed.
     house: indoors ? { ...(indoors.town ? { town: indoors.town } : { k: indoors.e.k }), bed: sleptIn } : null,
     rigYaw: 2 * Math.atan2(q.y, q.w),
@@ -809,6 +837,7 @@ function saveGame() {
     flint: true,
     // Her player id, and every villager's trust she knows of.
     trust: trust.save(),
+    chalk: chalk.save(),
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -837,6 +866,8 @@ function applySave(doc) {
   if (doc.flint === undefined) giveFlint()
   // A save from before trust has none: she stays the player she booted as.
   if (doc.trust !== undefined) trust.load(doc.trust)
+  // After trust, whose player the strokes are hers by. A save from before chalk has none.
+  if (doc.chalk !== undefined) chalk.load(doc.chalk)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -926,6 +957,7 @@ function newGame() {
   }
   backpack.fill(null)
   flares.clear()
+  chalk.clear()
   trust.clear()
   giveFlareGun()
   giveFlint()
@@ -1238,6 +1270,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'precip', text: 'rain and snow' },
   // Every TriFlames anywhere (lamps, hearths, candles and their halos, town fires, wildfire, torches): the flames' draw only, not the light they bake onto things.
   { key: 'fire', text: 'all flames' },
+  // Baked (instanced, vertex-animated) or skinned creature bodies; a press rebuilds the room where she stands. `?puppets=` sets it at load.
+  { key: 'puppets', text: 'creature bodies', action: () => swapPuppets(), value: () => `${puppetMode()} >` },
   { key: 'auroraPattern', text: 'aurora pattern >', action: () => cycleAurora() },
   // How often the sky map is rebuilt; the dome blends the three newest. See MAP_INTERVALS in render/aurora.js.
   { key: 'auroraRate', text: 'aurora map >', action: () => cycleAuroraInterval(), value: () => `${aurora.interval}s` },
@@ -1937,7 +1971,7 @@ function strikeFlint(key, fromPack = false) {
   questPulse(key, 0.4, 30)
   hands.heldFrame(key, flintFrame)
   flintAt.copy(fromPack ? STICK_TIP : STRIKE).applyMatrix4(flintFrame)
-  if (waterSurfaces.isSubmerged(flintAt.x, flintAt.z, flintAt.y)) return
+  if (underWater(flintAt.x, flintAt.y, flintAt.z)) return
   const raining = precip.intensity > 0.05 && flintAt.y < height.snowLineAt(flintAt.x, flintAt.z)
   if (!strikeCatches(raining, Math.random())) return
   sparks.add({
@@ -1961,7 +1995,7 @@ function updateFire(dt) {
   netplay.flames.length = 0
   hands.litTips(STICK_TIP, litTipList)
   for (const t of litTipList) {
-    if (t.hand === null || !waterSurfaces.isSubmerged(t.x, t.z, t.y)) continue
+    if (t.hand === null || !underWater(t.x, t.y, t.z)) continue
     hands.holding(t.hand).lit = false
     hands.rehold(t.hand)
   }
@@ -1998,7 +2032,7 @@ const trustsHer = (id) => trust.trusts(villagers.seed, id)
 const befriended = []
 let trustWelcomes = 0
 
-/** The villagers she fed this frame trusting her, the room's trust learned, and hers told to the relay -- all of it again when it welcomes her. */
+/** The villagers she fed this frame trusting her, the room's trust and chalk learned, and hers told to the relay -- all of it again when it welcomes her. */
 function syncTrust() {
   befriended.length = 0
   if (villagers) {
@@ -2010,7 +2044,12 @@ function syncTrust() {
   netplay.trust.length = 0
   if (netplay.welcomes !== trustWelcomes) { trustWelcomes = netplay.welcomes; trust.resend() }
   trust.flush((batch) => netplay.sendTrust(batch))
+  chalk.merge(netplay.chalk)
+  netplay.chalk.length = 0
+  if (netplay.welcomes !== chalkWelcomes) { chalkWelcomes = netplay.welcomes; chalk.resend() }
+  chalk.flush((batch) => netplay.sendChalk(batch))
 }
+let chalkWelcomes = 0
 
 function buildSettingsView() {
   const group = new THREE.Group()
@@ -2894,6 +2933,10 @@ let wildStriders = null
 // The striders that trust her and how much feeding has grown them, by key, the wild ones' and the towns' alike; kept across rooms for the session.
 const striderBond = { trusted: new Set(), grown: new Map() }
 let roadPlan = null
+// The overworld's macro layout, built on the page's first overworld build and kept until the page reloads, so a return from a village rebuilds none of it: `{ relief, heightmap, height, layers, from, townPlan, roadPlan, caveSites, waterSurfaces }`. Keyed on the relief its plans were laid against; a build under another relief lays them again. In game mode nothing mutates these after the build (the editor, which does, never swaps rooms).
+let overworld = null
+// The fetch of the baked towns and roads (world/plan.json), started beside the heightmap's on an overworld build that lays them.
+let baked = null
 let signposts = null
 let bridges = null
 let roadLines = null
@@ -3166,11 +3209,6 @@ function buildGrass(style, cx, cz, opts = {}) {
 
 // --- boot -------------------------------------------------------------------
 
-// Where the overworld starts. A fixed point rather than a search, so every boot
-// and every headset opens on the same view. Chosen by hand; the boot throws if
-// the water ever rises over it, since nothing else here checks the ground.
-const SPAWN = { x: -320, z: 1367 }
-
 // The rooms she can be in (DESIGN.md §30): the overworld, a set of world files
 // under `dir`, and the village inside a hollow boulder, built in memory at boot
 // (rooms/village.js) from the boulder's own inside. `scale` is her size
@@ -3423,10 +3461,15 @@ function disposeRoom() {
   townPlan = null
   roadPlan = null
   closeHouse()
+  closeCave()
+  dropCaveBuild()
+  if (caveMouths) { caveMouths.dispose(); caveMouths = null }
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, waterSurfaces, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
+  if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
+  else gone(waterSurfaces)
   lighting.clearLamps()
   leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = null
   boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
@@ -3477,6 +3520,17 @@ async function bootRoom(room, site) {
       ` -- fade ${bootFmtMs(t1 - t0)}, teardown ${bootFmtMs(t2 - t1)}, build ${bootFmtMs(t3 - t2)}`
   )
   await fade(0)
+}
+
+/** The other kind of creature body, by rebuilding this room around her where she stands, facing as she does. Not from inside a house. */
+function swapPuppets() {
+  if (!ready || indoors || cave || doorBusy) return
+  setPuppetMode(puppetMode() === 'baked' ? 'skinned' : 'baked')
+  const yaw = player.headYaw()
+  const fx = Math.sin(yaw), fz = Math.cos(yaw), at = player.rig.position
+  bootRoom(currentRoom, { x: at.x - fx * ARRIVE_M, z: at.z - fz * ARRIVE_M, nx: fx, nz: fz })
+    .then(() => refreshQuestRow('puppets'))
+    .catch(reportRuntimeError)
 }
 
 function makeBlackout() {
@@ -3569,7 +3623,7 @@ function townInside(t, i) {
 /** Town `t`'s building `i` rolled at twice its size, set down 250 m over it on its own floor, its folk in and her walk swapped for its own; where she stands in it is the caller's. */
 async function openTownHouse(t, i) {
   const b = townPlan.towns[t].buildings[i]
-  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan })
+  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, shop: b.trade === 'potions' ? 'potions' : null })
   const ox = b.x, oy = b.y + 250, oz = b.z
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
   scene.add(view.group)
@@ -3653,6 +3707,270 @@ function houseTest(blink) {
 // A house by its index from the console: `v2house(3)` in a village's, `v2house(0, 2)` town 0's building 2, `v2house(null)` out.
 window.v2house = (k, i) => (k === null ? leaveHouse() : enterHouse(i === undefined ? () => openHouse(roomProps.entries()[k]) : () => openTownHouse(k, i)))
 
+// --- caves (design/39-caves.md) ----------------------------------------------
+// Every cave is built CAVE_OY under the overworld at its plan's own x, z, so a peer in the same cave stands where she does with nothing new on the wire.
+const CAVE_OY = -2000
+// A system is meshed once she comes this near one of its mouths, and dropped once she is CAVE_DROP_M from all of them.
+const CAVE_WARM_M = 90
+const CAVE_DROP_M = 250
+// The overworld's mouths and systems (caves/sites.js), and their hoods; null in a village.
+let caveSites = null
+let caveMouths = null
+// The one system meshed ahead of her or around her: { sys, plan, room, near (resolves once the chunks round her arrival are in) }.
+let caveBuild = null
+// The cave she is in: { sys, door (her way in), back (the apron before its mouth), walk, outside }, or null.
+let cave = null
+let caveWorker = null
+let caveJob = 0
+// Underground, every scene child but these is hidden each frame (several layers set their own visibility), and caveHidden put back as she surfaces.
+const caveKeep = new Set()
+const caveHidden = new Set()
+// The chalk lumps of the system meshed, for her hands; and a pen a hand, its strokes on the system she is in.
+const chalkStones = new ChalkStones()
+for (const m of chalkStones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-chalk' })
+const chalkPens = Object.fromEntries(HAND_KEYS.map((key) => [key, new ChalkPen((pts) => chalk.draw(cave.sys.seed, pts, cave.sys.cx, cave.sys.cz))]))
+// How far off the rock a held lump's centre still draws: its radius and a little.
+const CHALK_TOUCH_M = 0.1
+let chalkShown = -1
+let chalkLive = 0
+const chalkAt = [0, 0, 0]
+const chalkFrame = new THREE.Matrix4()
+const chalkTip = new THREE.Vector3()
+const chalkRay = new THREE.Raycaster()
+const chalkNdc = new THREE.Vector2()
+
+/** The overworld's cave mouths and their systems, sited on the uncut faces; then the clefts behind them, cut into `layers` before the terrain first reads them. */
+function siteCaves(heightmap, height, layers, townPlan) {
+  const t0 = performance.now()
+  const wet = (x, z) => {
+    const level = layers.waterLevelAt(x, z)
+    return level !== null && height.heightAt(x, z) < level + 0.3
+  }
+  const mouths = siteMouths({ heightmap, field: height, wet, keepOut: (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) })
+  const systems = groupSystems(mouths, SEED)
+  layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
+  console.log(`[v2] caves: ${mouths.length} mouths in ${systems.length} systems, sited in ${(performance.now() - t0).toFixed(0)} ms`)
+  return { mouths, systems }
+}
+
+/** System `sys` planned here and meshed on the worker, its door `door`'s chunks first; the build under way when it is already this system's. */
+function buildCave(sys, door) {
+  if (caveBuild !== null && caveBuild.sys === sys) return caveBuild
+  dropCaveBuild()
+  const t0 = performance.now()
+  const entries = sys.mouths.map((i) => ({ x: caveSites.mouths[i].x, z: caveSites.mouths[i].z, dx: -caveSites.mouths[i].nx, dz: -caveSites.mouths[i].nz }))
+  const plan = planCave({ seed: sys.seed, entries })
+  const room = new CaveRoom(plan, CAVE_OY, lighting)
+  chalkStones.setRoom(room)
+  chalkShown = -1
+  const id = ++caveJob
+  if (caveWorker === null) caveWorker = new Worker(new URL('./caves/worker.js', import.meta.url), { type: 'module' })
+  let nearIn
+  caveBuild = { sys, plan, room, near: new Promise((resolve) => { nearIn = resolve }) }
+  caveWorker.onmessage = (ev) => {
+    const d = ev.data
+    if (d.id !== caveJob) return
+    if (d.type === 'chunk') room.addChunk(d)
+    else if (d.type === 'near') nearIn()
+    else console.log(`[v2] cave ${sys.id}: ${room.chunks.size} of ${d.chunks} chunks meshed in ${(performance.now() - t0).toFixed(0)} ms`)
+  }
+  const at = plan.doors[door]
+  caveWorker.postMessage({ id, seed: sys.seed, entries, from: { x: at.x, y: at.y, z: at.z } })
+  return caveBuild
+}
+
+function dropCaveBuild() {
+  if (caveBuild === null) return
+  if (cave !== null) throw new Error('v2: dropping the cave she is in')
+  caveWorker.postMessage({ id: ++caveJob, cancel: true })
+  chalkStones.setRoom(null)
+  caveBuild.room.dispose()
+  caveBuild = null
+}
+
+/** In the overworld, each frame: the system of a mouth she nears meshed ahead of her, and one she has left behind let go. */
+function warmCave(feet) {
+  if (caveMouths === null || cave !== null || doorBusy) return
+  const m = caveMouths.near(feet.x, feet.z, CAVE_WARM_M)
+  if (m !== null) {
+    const sys = caveSites.systems[m.system]
+    buildCave(sys, sys.mouths.indexOf(m.id))
+  } else if (caveBuild !== null && caveBuild.sys.mouths.every((i) => Math.hypot(feet.x - caveSites.mouths[i].x, feet.z - caveSites.mouths[i].z) > CAVE_DROP_M)) dropCaveBuild()
+}
+
+/** After the step: into the mouth her feet just walked into, or underground, out by the door she walked back to. True while she is in a cave or going in. */
+function caveTest() {
+  if (cave === null && caveMouths === null) return false
+  if (doorBusy || EDITOR_MODE) return cave !== null
+  const feet = player.originPosition()
+  if (cave === null) {
+    const m = caveMouths.entered(feet.x, feet.y, feet.z)
+    if (m === null) return false
+    enterCave(m).catch(reportRuntimeError)
+    return true
+  }
+  const doors = caveBuild.plan.doors
+  for (let i = 0; i < doors.length; i++) {
+    const d = doors[i]
+    if (Math.hypot(feet.x - d.mx, feet.z - d.mz) > EXIT_R || Math.abs(feet.y - (d.my + CAVE_OY)) > 1.5) continue
+    leaveCave(i).catch(reportRuntimeError)
+    break
+  }
+  return true
+}
+
+/** Into mouth `m`'s cave under the fade: its walk hers, her feet at its door inside, facing in. Waits on the worker for the rock round her. */
+async function enterCave(m) {
+  doorBusy = true
+  makeBlackout()
+  ready = false
+  await fade(1)
+  const sys = caveSites.systems[m.system]
+  const door = sys.mouths.indexOf(m.id)
+  if (wildStriders && wildStriders.riding) wildStriders.letGo()
+  const { plan, room, near } = buildCave(sys, door)
+  await near
+  const inner = new CaveWalk(plan.field, plan.graph, plan.props.obstacles, CAVE_OY)
+  scene.add(room.group)
+  cave = { sys, door, back: caveApron(m), walk: inner, outside: walk }
+  if (sound) sound.setIndoors(true)
+  hideTeleport()
+  const d = plan.doors[door]
+  inner.hintY = d.y + CAVE_OY
+  walk = window.v2walk = inner
+  player.setGround(inner)
+  hands.walk = inner
+  hands.water = caveWater
+  player.teleportTo(d.x, d.z, d.y + CAVE_OY)
+  faceAlong(d.dx, d.dz)
+  console.log(`[v2] into cave ${sys.id} by mouth ${m.id} (door ${door} of ${sys.mouths.length})`)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** Out of the cave by its door `i`, onto the apron before that door's mouth, facing away from the cliff. */
+async function leaveCave(i) {
+  doorBusy = true
+  makeBlackout()
+  ready = false
+  await fade(1)
+  const m = caveSites.mouths[cave.sys.mouths[i]]
+  closeCave()
+  const at = caveApron(m)
+  player.teleportTo(at.x, at.z, at.y)
+  faceAlong(m.nx, m.nz)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** The step before mouth m's hood, clear of its rock. */
+function caveApron(m) {
+  const s = MOUTH.hoodOut + 1
+  return { x: m.x + m.nx * s, y: m.y, z: m.z + m.nz * s }
+}
+
+/** The overworld back on screen and its walk hers again, the system kept meshed for her return; nothing when she is above ground. */
+function closeCave() {
+  if (cave === null) return
+  for (const pen of Object.values(chalkPens)) pen.lift()
+  caveBuild.room.drawLive([])
+  chalkLive = 0
+  for (const o of caveHidden) o.visible = true
+  caveHidden.clear()
+  caveBuild.room.group.removeFromParent()
+  if (sound) sound.setIndoors(false)
+  walk = window.v2walk = cave.outside
+  if (player) player.setGround(walk)
+  if (hands) {
+    hands.walk = walk
+    hands.water = waterSurfaces
+  }
+  cave = null
+}
+
+/** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
+function stepCave(head, t) {
+  caveKeep.clear()
+  caveKeep.add(rig).add(heldLayer).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi).add(caveBuild.room.group)
+  for (const d of [wildfire.flames, wildfire.torches]) if (d.group) caveKeep.add(d.group)
+  if (questPanelGroup !== null) caveKeep.add(questPanelGroup)
+  if (questPointer !== null) caveKeep.add(questPointer.dot).add(questPointer.line)
+  if (teleportGfx !== null) caveKeep.add(teleportGfx.ring).add(teleportGfx.arc)
+  for (const o of scene.children) {
+    if (!o.visible || caveKeep.has(o)) continue
+    o.visible = false
+    caveHidden.add(o)
+  }
+  caveBuild.room.update(head, submerged, t)
+  stepChalk()
+}
+
+/** Underground each frame: a hand holding chalk to the rock draws on it -- the desk hand while the left button is down, where the cursor's ray meets the rock -- and the system's marks redrawn when they change. */
+function stepChalk() {
+  const { room, plan } = caveBuild
+  for (const key of HAND_KEYS) {
+    const pen = chalkPens[key]
+    const rec = hands.holding(key)
+    let on = false
+    if (rec !== null && rec.kind === CHALK) {
+      if (key !== 'desk') {
+        hands.heldFrame(key, chalkFrame)
+        chalkTip.setFromMatrixPosition(chalkFrame)
+        on = onRock(plan.field, chalkTip.x, chalkTip.y - CAVE_OY, chalkTip.z, CHALK_TOUCH_M, chalkAt)
+      } else if (dragging && !renderer.xr.isPresenting) {
+        if (mouseCaptured()) chalkNdc.set(0, 0)
+        else chalkNdc.set(cursorNdc.x, cursorNdc.y)
+        chalkRay.setFromCamera(chalkNdc, camera)
+        const { origin: o, direction: d } = chalkRay.ray
+        on = rayRock(plan.field, o.x, o.y - CAVE_OY, o.z, d.x, d.y, d.z, DESK_CLICK_M * herScale(), chalkAt)
+      }
+    }
+    if (on) pen.touch(chalkAt[0], chalkAt[1], chalkAt[2])
+    else pen.lift()
+  }
+  const sys = cave.sys
+  const rev = chalk.rev(sys.seed)
+  if (rev !== chalkShown) {
+    chalkShown = rev
+    room.drawChalk(chalk.strokes(sys.seed, sys.cx, sys.cz))
+  }
+  let n = 0
+  for (const pen of Object.values(chalkPens)) n += pen.live.length
+  if (n !== chalkLive) {
+    chalkLive = n
+    room.drawLive(Object.values(chalkPens).filter((p) => p.live.length > 0).map((p) => p.live))
+  }
+}
+
+/** Underground, the later writer over applySky and applySubmersion: no sun, sky or night lift, and air (or the murk of a sump) gone black. */
+function darkCave() {
+  sun.intensity = 0
+  hemi.intensity = 0
+  lighting.uniforms.uNightLift.value.setRGB(0, 0, 0)
+  const fog = submerged ? CAVE_MURK : CAVE_AIR
+  scene.fog.density = fog.density
+  scene.fog.color.setRGB(...fog.color)
+  scene.background.copy(scene.fog.color)
+  lighting.setAir(caveAir.set(...fog.color))
+  sinkCave()
+}
+const caveAir = new THREE.Vector3()
+// The cave's water as hands.js asks it of a dropped thing.
+const caveWater = { levelAt: (x, z) => cave.walk.trueWaterAt(x, z, cave.walk.hintY) }
+
+/** Whether (x, y, z) is under water: the cave's while she is in one, the overworld's otherwise. */
+function underWater(x, y, z) {
+  if (cave === null) return waterSurfaces.isSubmerged(x, z, y)
+  const level = cave.walk.trueWaterAt(x, z, y)
+  return level !== null && y < level
+}
+
+// Into a cave from the console: `v2cave(3)` by mouth 3, `v2cave(null)` out by the door she came in; `v2caves()` what is sited, meshed and entered.
+window.v2cave = (k) => (k === null ? leaveCave(cave.door) : enterCave(caveSites.mouths[k]))
+window.v2caves = () => ({ sites: caveSites, mouths: caveMouths, build: caveBuild, cave })
+
 // The swap without the walk: `v2enter()` into the glade by the mouth she last
 // came in by (or a named door key), `v2enter(null)` back out. What the console
 // needs to time a room swap, which is the wait she actually complains about --
@@ -3723,7 +4041,8 @@ async function buildRoom(room, at) {
   } else {
     bootSay(`loading <b>${room.height}</b> ...`)
     await bootStep('heightmap')
-    heightmap = await Heightmap.load({ url: room.height, metaUrl: room.meta })
+    if (overworld === null) baked = loadWorldPlan(WORLD_PLAN_URL)
+    heightmap = overworld !== null ? overworld.heightmap : await Heightmap.load({ url: room.height, metaUrl: room.meta })
     roomSpec = null
   }
   roomHeightmap = heightmap
@@ -3737,38 +4056,59 @@ async function buildRoom(room, at) {
   // wanted it and then move the ground out from under it.
   await bootStep('height field')
   relief = loadRelief()
+  const kept = !room.village && overworld !== null && sameRelief(overworld.relief, relief) ? overworld : null
+  if (!room.village && overworld !== null && kept === null) {
+    overworld.waterSurfaces.dispose()
+    overworld = null
+  }
 
-  // The scratch document. See the header: `bands` needs a V2Height and the snow
-  // defaults need `bands`, so something has to be constructed first.
-  height = new V2Height({ heightmap, layers: new Layers(), seed, relief })
-  const bands = height.bands
-
-  await bootStep('layers')
-  const snow = snowDefaults(bands)
-  let doc, from
-  if (room.village) {
-    // A village's document is what buildVillage drew: never the editor's.
-    doc = roomSpec.doc
-    from = 'the village build'
+  let from
+  caveSites = null
+  if (kept !== null) {
+    ;({ height, layers, from, townPlan, roadPlan, caveSites } = kept)
+    await bootStep('layers')
   } else {
-    bootSay(`loading <b>${room.dir}/layers.json</b> ...`)
-    ;({ doc, from } = await persist.loadInitial(snow))
+    // The scratch document. See the header: `bands` needs a V2Height and the snow
+    // defaults need `bands`, so something has to be constructed first.
+    height = new V2Height({ heightmap, layers: new Layers(), seed, relief })
+
+    await bootStep('layers')
+    const snow = snowDefaults(height.bands)
+    let doc
+    if (room.village) {
+      // A village's document is what buildVillage drew: never the editor's.
+      doc = roomSpec.doc
+      from = 'the village build'
+    } else {
+      bootSay(`loading <b>${room.dir}/layers.json</b> ...`)
+      ;({ doc, from } = await persist.loadInitial(snow))
+    }
+    const key = room.id === 'overworld' ? worldPlanKey({ doc, relief, seed, spawn: room.spawn }) : null
+    layers = Layers.deserialize(doc)
+    height.setLayers(layers)
+    // The towns' clearings, paths and roads go into the layers before the terrain first reads them, so the ground is shaped under them from the first chunk.
+    if (room.id === 'overworld') {
+      const t0 = performance.now()
+      const file = await (baked ?? loadWorldPlan(WORLD_PLAN_URL))
+      baked = null
+      if (file !== null && file.key === key) {
+        ;({ townPlan, roadPlan } = unpackWorldPlan(file.plan))
+        layers.addGenerated(townPlan.records)
+        layers.addGenerated(roadPlan.records)
+      } else {
+        console.warn(`[v2] ${file === null ? `no ${WORLD_PLAN_URL}` : `${WORLD_PLAN_URL} was baked against another document or relief`}; laying the towns and roads live`)
+        ;({ townPlan, roadPlan } = planWorld({ ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
+      }
+      if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
+      console.log(
+        `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
+          `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
+      )
+      // After the towns, which keep them out, and on the faces before their clefts cut them.
+      caveSites = siteCaves(heightmap, height, layers, townPlan)
+    }
   }
-  layers = Layers.deserialize(doc)
-  height.setLayers(layers)
-  // The towns' clearings, paths and roads go into the layers before the terrain first reads them, so the ground is shaped under them from the first chunk.
-  if (room.id === 'overworld') {
-    const t0 = performance.now()
-    townPlan = planTowns({ ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, keepClear: [{ ...room.spawn, r: 0 }] })
-    layers.addGenerated(townPlan.records)
-    console.log(`[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ${townPlan.records.length} roads, in ${(performance.now() - t0).toFixed(0)} ms`)
-    const t1 = performance.now()
-    nameTowns(townPlan.towns, { ground: (x, z) => heightmap.sample(x, z), layers, seed })
-    roadPlan = planRoads({ towns: townPlan.towns, ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed })
-    layers.addGenerated(roadPlan.records)
-    if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
-    console.log(`[v2] roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, in ${(performance.now() - t1).toFixed(0)} ms`)
-  }
+  const bands = height.bands
   console.log(
     `[v2] ${room.id} ${heightmap.width}x${heightmap.height} texels, ${heightmap.texelSize.toFixed(2)} m/texel, ` +
       `relief ${bands.min.toFixed(1)}..${bands.max.toFixed(1)} m, snow line ${layers.snow.base.toFixed(0)} m +/- ${layers.snow.band.toFixed(0)} m, ` +
@@ -3805,14 +4145,24 @@ async function buildRoom(room, at) {
   // and the tint above both need its uniforms -- so without this the mesh would
   // draw with a surface nobody ships. See plainTerrainRung.
   applyTerrainShader()
+  if (caveSites !== null) {
+    caveMouths = new CaveMouths(caveSites.mouths, plainTerrainRung(false))
+    scene.add(caveMouths.group)
+  }
 
   // The authored surfaces. Water before the spawn search, which asks it what is
   // wet before the player is placed. A road draws nothing of its own: the
   // smooth flattens the terrain to the spline and the litter cobbles it.
   await bootStep('water')
-  waterSurfaces = new WaterSurfaces({ water, layers, field: height })
+  if (kept !== null) {
+    waterSurfaces = kept.waterSurfaces
+    waterSurfaces.attach()
+  } else {
+    waterSurfaces = new WaterSurfaces({ water, layers, field: height })
+    waterSurfaces.rebuild()
+    if (!room.village) overworld = { relief, heightmap, height, layers, from, townPlan, roadPlan, caveSites, waterSurfaces }
+  }
   markers = new Markers({ scene, layers })
-  waterSurfaces.rebuild()
   markers.sync()
 
   await bootStep('spawn')
@@ -3936,7 +4286,7 @@ async function buildRoom(room, at) {
 
   if (townPlan) {
     await bootStep('towns')
-    towns = new Towns(scene, { towns: townPlan.towns, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    towns = new Towns(scene, { towns: townPlan.towns, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     towns.update(spawn.x, spawn.z)
     window.v2towns = towns // console: `v2towns.stats`, `v2towns.towns`
   }
@@ -4019,7 +4369,7 @@ async function buildRoom(room, at) {
   if (roomProps) walk.addStone(roomProps)
   if (towns) {
     walk.addStone(towns)
-    const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies.length }) : null
+    const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies }) : null
     townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
@@ -4391,6 +4741,7 @@ async function buildRoom(room, at) {
   hands.addSource(flareGuns, FLAREGUN)
   hands.addSource(flints, FLINT)
   hands.addSource(sticks, STICK)
+  hands.addSource(chalkStones, CHALK)
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   deskHand = new THREE.Group()
@@ -5051,6 +5402,7 @@ const HOTKEYS = [
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },
       { keys: 'e', what: 'let go of what the hand holds, where the hand is (a click no longer does)' },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
@@ -5442,6 +5794,8 @@ addEventListener('pointermove', (e) => {
   cursorNdc.y = ndc.y
   cursorNdc.seen = true
   if (!(dragging || mouseCaptured()) || orbitLocked || renderer.xr.isPresenting) return
+  // A free cursor drawing chalk moves the line, not the view.
+  if (!mouseCaptured() && chalkPens.desk.live.length > 0) return
   camera.rotation.y -= e.movementX * 0.0026
   camera.rotation.x = THREE.MathUtils.clamp(
     camera.rotation.x - e.movementY * 0.0026,
@@ -5511,6 +5865,7 @@ function applySky(state, head, elapsedReal) {
   applySubmersion(head, elapsedReal, state)
   // The same later writer for the inside of a boulder, and the murk wins under its lake.
   if (currentRoom.village && !submerged) sinkCave()
+  if (cave !== null) darkCave()
 }
 
 // --- underwater (§11) --------------------------------------------------------
@@ -5575,6 +5930,7 @@ let swayStrength = 0
  * stops at, so the three cannot disagree about where the waterline is.
  */
 function waterLevelAt(x, z) {
+  if (cave !== null) return cave.walk.trueWaterAt(x, z, cave.walk.hintY)
   if (waterSurfaces === null) return null
   // `drawn`, because the question here is not the scatter's. The scatter asks
   // where the ground is wet and wants the authored footprint; the eye asks
@@ -5609,7 +5965,7 @@ function applySubmersion(head, elapsedReal, state) {
   //
   // No null guard on `terrain`: waterSurfaces is built after it, so a non-null
   // `level` means the ground is on screen.
-  const arm = level !== null && head.y < level + CAUSTIC_ARM_M
+  const arm = cave === null && level !== null && head.y < level + CAUSTIC_ARM_M
   if (arm !== causticsArmed) {
     causticsArmed = arm
     applyTerrainShader()
@@ -5623,7 +5979,7 @@ function applySubmersion(head, elapsedReal, state) {
   // shading, which does not change when she swims up.
   const causticGain = UNDERWATER.caustic * (UNDERWATER.causticNight + (1 - UNDERWATER.causticNight) * daynessOf(state))
   lighting.setCaustic(
-    submerged ? causticGain : 0,
+    submerged && cave === null ? causticGain : 0,
     UNDERWATER.causticScale,
     level === null ? 0 : level,
     UNDERWATER.causticFade,
@@ -5690,7 +6046,7 @@ function updateAmbience(dt, state) {
     swimming: player.swimming,
     cover: state.cover,
     precip: state.precip,
-    indoors: !!indoors,
+    indoors: !!indoors || cave !== null,
   })
 }
 
@@ -5887,7 +6243,7 @@ function dragonQuarry() {
   quarry.her = null
   quarry.striders.length = 0
   if (wildStriders) wildStriders.prey(quarry.striders)
-  if (indoors) return quarry
+  if (indoors || cave) return quarry
   const feet = player.originPosition()
   herQuarry.x = feet.x; herQuarry.y = feet.y; herQuarry.z = feet.z
   herQuarry.dead = health.dead
@@ -6214,7 +6570,7 @@ function fireTeleport() {
 function portalTest() {
   const blink = portalBlink
   portalBlink = false
-  if (houseTest(blink) || indoors || !entrances) return
+  if (caveTest() || houseTest(blink) || indoors || !entrances) return
   const feet = player.originPosition()
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)
@@ -6949,6 +7305,7 @@ function tick() {
   if (boats) boats.update(dt, now)
   stepVitals(dt, now)
   portalFrom.copy(player.originPosition())
+  if (cave !== null) cave.walk.hintY = portalFrom.y
   if (!vitalsHold()) {
     // On a strider's back the sticks nudge it and it carries her, in place of her own walk; a flight takes her off it.
     if (wildStriders && wildStriders.riding && (player.travel || player.flying)) wildStriders.letGo()
@@ -6959,6 +7316,10 @@ function tick() {
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
   }
   if (boats) boats.settle()
+  if (caveMouths !== null && cave === null) {
+    caveMouths.collide(player.rig.position)
+    warmCave(player.rig.position)
+  }
   portalTest()
   spikes.lap('player')
   // A mouth she stepped into has just torn the room down under this frame.
@@ -7151,7 +7512,7 @@ function tick() {
   // means restating this hour's palette. See airHook.
   const state = clock.state()
   // A wreath she is inside is culled, and the air thickens in its place (§10). Under a roof there is no cloud and no weather.
-  if (currentRoom.village || indoors) { state.cover = 0; state.precip = 0 }
+  if (currentRoom.village || indoors || cave) { state.cover = 0; state.precip = 0 }
   if (wreaths) wreaths.visible = questToggles.wreaths && !currentRoom.village
   if (wreaths && wreaths.visible) {
     state.hazeDensity *= wreaths.hazeGain(headTmp)
@@ -7204,7 +7565,7 @@ function tick() {
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
   spikes.lap('editor+panel')
-  if (questToggles.reflections) probe.update(renderer, scene, headTmp)
+  if (questToggles.reflections && cave === null) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -7212,7 +7573,8 @@ function tick() {
   // The air hook on every frame: the linear ramp ends are wanted for every
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (questToggles.reflections) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  if (questToggles.reflections && cave === null) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  if (cave !== null) stepCave(headTmp, now / 1000)
   spikes.lap('probes')
 
   // A-Frame renders the scene itself after every registered component's tick()

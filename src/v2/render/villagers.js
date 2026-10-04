@@ -72,7 +72,8 @@ import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
 import { CARRY_SPAN, STARTLE_S } from './leafkin.js'
-import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { lodFadeS, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
 import { keyOf as frogKey } from './frogs.js'
@@ -575,7 +576,7 @@ export class Villagers {
         m.map = asset.map
         m.needsUpdate = true
       }
-      this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S }))
+      this.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S }))
     }
     this.freePuppets = this.puppets.slice()
     let fastest = null

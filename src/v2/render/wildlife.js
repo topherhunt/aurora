@@ -141,6 +141,7 @@ import {
   cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileKey, tileSeed, walkTiles,
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -486,7 +487,7 @@ export class Wildlife {
           m.map = asset.map
           m.needsUpdate = true
         }
-        sp.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
+        sp.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
       }
       sp.freePuppets = sp.puppets.slice()
 

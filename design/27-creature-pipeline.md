@@ -380,6 +380,8 @@ scripts/check-grasshoppers.mjs       its gate -- the shipped asset, the scatter 
 src/v2/render/fireflies.js           the fireflies: no asset, one instanced sprite card per firefly, tile scatter beside trunks, night only, the flash in the fragment shader
 scripts/check-fireflies.mjs          its gate -- a synthetic wood with a snow line, a pond and trees that land late
 src/v2/render/puppet.js              one near creature: the tiers over one skeleton, the clips, the dissolve between rungs, and FootIK -- a still body's feet solved to the ground
+src/v2/render/baked-puppet.js        Puppet's API over clips pre-baked into a texture: every creature of one look and tier in one instanced draw (§Baked puppets)
+scripts/check-baked-puppet.mjs       its gate -- a synthetic rig, the bake checked against a skinned Puppet and three's own skinning
 src/v2/render/spiders.js             the birch spiders in the world: groups on trunks and boulders, instanced tiers with vertex-shader legs near, one-quad cards far
 scripts/check-spiders.mjs            its gate -- the shipped GLB's shape, and a synthetic wood of trunks and stones
 src/v2/render/wildlife.js            the stag, fox and hare in the world: a hare per 3000 m2 and a stag and a fox per 6000, grazing and wandering, a three-rung puppet wherever it is drawn at all
@@ -402,6 +404,16 @@ Orchestration lives in `workspace.mjs` rather than in the Vite plugin so a batch
 **The id validator is a security boundary, not tidiness.** It arrives from a query string and is concatenated into a filesystem path, and the dev server binds to the LAN (`server.host`). `../` in that string is an arbitrary file write. The gate tests it against traversal directly.
 
 `TRIPO_API_KEY` and `OPENROUTER_API_KEY` live in `.env` (gitignored) and are read only by dev-server middleware. Neither ever reaches the browser.
+
+## Baked puppets
+
+`makePuppet` hands every creature layer a `BakedPuppet` by default and a skinned `Puppet` on request. Both answer the same API (`play`, `step`, `show`, `bones`, `meshes`, `feet`, `release`), so a layer only branches where it built a solver: dragon tail lag, strider shake and paddle, and the wild strider's head turn get `solverStub()` when `p.baked`. The player's avatar stays skinned; it is posed from the headset.
+
+**Layout.** Per skeleton (one `vatFor` per `asset.skeleton`), every clip is sampled at 30 fps (lowered until the rows fit 4096), n+1 rows per clip, and each row holds `bone.matrixWorld x boneInverse` as three RGBA float texels per bone. The vertex shader fetches two rows and blends them per instance (`aVat` = row0, row1, blend); the CPU keeps the same matrices so `bones[i].matrixWorld` still answers grip points and seat heights. One `InstancedMesh` draws one look (the plain material, twinned with the VAT splice) x one tier geometry x settled-or-fading; instance colour is `plain.color x puppet.tint`. `bakedRoot` flushes every shown puppet inside the scene's matrix pass, skipping any whose group is hidden or out of the scene.
+
+**Swap.** `?puppets=skinned` or `?puppets=baked` at load (remembered in localStorage `v2.puppets`), or the menu's "creature bodies" row, which rebuilds the room where she stands (ignored indoors). The gates that read a skinned Puppet's internals pin `setPuppetMode('skinned')`; `node tmp/skinned-gate.mjs scripts/check-x.mjs` runs any other gate skinned.
+
+**Given up.** Foot IK (planted feet do not conform to a slope), clip crossfades (a `play` cuts), the solvers above, and per-instance frustum culling (a batch is drawn whole; layers cull by `show(-1)` past range). Hob tint variants are separate plain materials and so separate draws.
 
 ## Adding a second vendor
 

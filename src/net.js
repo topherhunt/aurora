@@ -99,6 +99,8 @@ export class Netplay {
     this.flames = []
     // The trust peers have told since the last drain, `[village, villager, player]` each (v2/trust.js).
     this.trust = []
+    // The chalk strokes peers have drawn since the last drain, `[system, id, player, points]` each (v2/caves/chalk.js).
+    this.chalk = []
     this.connect()
   }
 
@@ -135,6 +137,7 @@ export class Netplay {
       if (Array.isArray(message.flares)) this.flares.push(...message.flares)
       if (Array.isArray(message.flames)) this.flames.push(...message.flames)
       if (Array.isArray(message.trust)) this.trust.push(...message.trust)
+      if (Array.isArray(message.chalk)) this.chalk.push(...message.chalk)
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours, offsetMs: this.offsetMs }
       }
@@ -214,6 +217,13 @@ export class Netplay {
   sendTrust(trust) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
     this.socket.send(JSON.stringify({ version: 1, type: 'trust', trust }))
+    return true
+  }
+
+  // Chalk strokes she drew, at most 8 (server/src/main.js CHALK_BATCH). False when there is no relay to tell.
+  sendChalk(chalk) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
+    this.socket.send(JSON.stringify({ version: 1, type: 'chalk', chalk }))
     return true
   }
 

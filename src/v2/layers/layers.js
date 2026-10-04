@@ -14,6 +14,7 @@ import { defaultDoc, validate, serialize, IdAllocator, isGenerated, GENERATED_ID
 import { SnowField, TEXEL } from './snowline.js'
 import { LakeSet, sandPatchAt } from './water-bodies.js'
 import { PathSet } from './paths.js'
+import { CleftSet } from './clefts.js'
 import { clamp01 } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
 
@@ -46,6 +47,7 @@ export class Layers {
       [...doc.rivers.map((r) => ({ ...r, kind: 'river' })), ...doc.roads.map((d) => ({ ...d, kind: 'road' }))],
       { lakes: this.lakes }
     )
+    this.clefts = new CleftSet(doc.clefts === undefined ? [] : doc.clefts)
     this.ids = new IdAllocator(doc)
     this.epoch = 0
     this._dirty = null
@@ -65,12 +67,12 @@ export class Layers {
     return this.snow.snowLineAt(x, z)
   }
 
-  // §18's evaluation order, steps 3 to 5. The coarse field and the fractal detail are the caller's business; this is everything a human placed by hand. `cell` is the caller's sampling spacing, for the river bed's band-limited relief.
+  // §18's evaluation order, steps 3 to 5, then the cave mouths' clefts, last so nothing refills them. The coarse field and the fractal detail are the caller's business; this is everything placed on top of it. `cell` is the caller's sampling spacing, for the river bed's band-limited relief.
   carve(x, z, h, cell = 0) {
     let out = this.paths.carveRivers(x, z, h, cell)
     out = this.lakes.carve(x, z, out)
     out = this.paths.smoothRoads(x, z, out)
-    return out
+    return this.clefts.count > 0 ? this.clefts.carve(x, z, out) : out
   }
 
   // 0..1: how hard the detail layer should suppress its fractal octaves here. Lakes and paths both contribute and the strongest wins -- a road along a lake shore should not get half-flattened just because two masks are competing for it.
@@ -96,7 +98,8 @@ export class Layers {
     return (
       this.paths.overlaps(minX, minZ, maxX, maxZ) ||
       this.lakes.overlaps(minX, minZ, maxX, maxZ) ||
-      this.snow.overlaps(minX, minZ, maxX, maxZ)
+      this.snow.overlaps(minX, minZ, maxX, maxZ) ||
+      this.clefts.overlaps(minX, minZ, maxX, maxZ)
     )
   }
 
@@ -239,6 +242,15 @@ export class Layers {
       this.paths.addPath({ ...r, kind: 'road' })
     }
     return this._commit(this.paths.takeDirty())
+  }
+
+  // The cave mouths' clefts (clefts.js), generated at boot: [x, z, nx, nz, y] each. Replaces any already held.
+  setClefts(list) {
+    const was = this.clefts.count > 0 ? this.clefts.rectOf(this.clefts.toJSON()) : null
+    this.clefts = new CleftSet(list)
+    if (list.length === 0 && was === null) return null
+    const now = list.length > 0 ? this.clefts.rectOf(list) : null
+    return this._commit(unionRect(was, now))
   }
 
   removePath(id) {

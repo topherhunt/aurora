@@ -501,6 +501,13 @@ const jarAt = (M, K, F, tint) => {
   K.lathe(M.linen, frame(F.x, F.y + 0.155, F.z), [[0.052, 0], [0.05, 0.012], [0.03, 0.025], [0, 0.028]], CREAM, { segs: 12, flat: true, rough: 0.12 })
   K.lathe(M.linen, frame(F.x, F.y + 0.15, F.z), [[0.044, 0], [0.047, 0.006], [0.044, 0.012]], CORD, { segs: 10, flat: true })
 }
+const BREW = [rgb(0.33, 0.6, 0.35), rgb(0.6, 0.55, 0.38), rgb(0.98, 0.65, 0.38), rgb(0.1, 0.75, 0.45), rgb(0.78, 0.45, 0.35)]
+/** A round-bellied bottle of something coloured, corked. */
+const potionAt = (M, K, F, h) => {
+  const s = 0.8 + (h * 13 % 1) * 0.5
+  K.lathe(M.linen, F, [[0, 0], [0.03 * s, 0], [0.042 * s, 0.03 * s], [0.04 * s, 0.06 * s], [0.014, 0.085 * s], [0.012, 0.085 * s + 0.04], [0.016, 0.085 * s + 0.045], [0, 0.085 * s + 0.045]], BREW[Math.floor(h * BREW.length) % BREW.length], { segs: 10, flat: true })
+  K.lathe(M.linen, frame(F.x, F.y + 0.085 * s + 0.04, F.z), [[0.011, 0], [0.012, 0.02], [0, 0.022]], CORD, { segs: 8, flat: true })
+}
 const potAt = (M, K, F) => {
   K.lathe(M.grain, F, [[0, 0.02], [0.08, 0.025], [0.11, 0.08], [0.105, 0.14], [0.095, 0.15], [0.1, 0.16], [0.09, 0.16], [0, 0.13]], IRON, { segs: 14, flat: true })
   for (const s of [-1, 1]) K.rod(M.grain, put(F, s * 0.05, 0, 0.05), put(F, s * 0.06, 0.04, 0.06), 0.008, 0.01, IRON, { flat: true })
@@ -550,6 +557,7 @@ function loadAt(M, K, F, l, rng) {
     case 'bowl': return bowlAt(M, K, f, 0.08, WOOD(l.hue))
     case 'pot': return potAt(M, K, f)
     case 'jar': return jarAt(M, K, f, CLAY(l.hue))
+    case 'potion': return potionAt(M, K, f, l.hue)
     case 'crock': return crockAt(M, K, f, CLAY(l.hue * 0.5))
     case 'books': return bookRow(M, K, F, -0.08, 0.1, rng)
     case 'scroll': return scrollAt(M, K, tip(F, 'ay', 0.1), 0.2)
@@ -643,6 +651,16 @@ const ITEMS = {
     K.blob(M.linen, F, [0.05, 0.04, 0], 0.06, 0.03, 0.04, rgb(0.1, 0.5, 0.4), { rough: 0.05 })
   },
   jar(it, M, K) { jarAt(M, K, F0(it), CLAY(it.hue)) },
+  potion(it, M, K) { potionAt(M, K, F0(it), it.hue) },
+  // Closed toward the room (+Z), open behind to a shelf for the keeper.
+  counter(it, M, K) {
+    const F = F0(it), tint = WOOD(it.hue, -0.04), T = it.top, hx = it.hx, hz = it.hz
+    hewn(M.grain, K, F, [-hx - 0.03, T - 0.05, -hz - 0.03], [hx + 0.03, T, hz + 0.04], tint, 0.004)
+    const n = Math.round((2 * hx) / 0.2)
+    for (let i = 0; i < n; i++) hewn(M.grain, K, F, [-hx + (2 * hx * i) / n + 0.003, 0, hz - 0.03], [-hx + (2 * hx * (i + 1)) / n - 0.003, T - 0.05, hz], WOOD(it.hue + K.j(0.08), -0.06), 0.003)
+    for (const s of [-1, 1]) hewn(M.grain, K, F, [s * hx - 0.03, 0, -hz], [s * hx + 0.03, T - 0.05, hz], tint, 0.004)
+    hewn(M.grain, K, F, [-hx + 0.03, 0.3, -hz + 0.02], [hx - 0.03, 0.33, hz - 0.03], tint, 0.003)
+  },
   barrel(it, M, K) {
     const F = F0(it), r = it.r, h = it.top
     K.lathe(M.grain, F, [[0, 0.01], [r * 0.82, 0.01], [r * 0.84, 0], [r * 0.95, h * 0.25], [r, h * 0.5], [r * 0.95, h * 0.75], [r * 0.84, h], [r * 0.8, h], [r * 0.79, h - 0.02], [0, h - 0.02]], WOOD(it.hue, -0.02), { segs: 22, uvM: 0.3, lobes: [18, 0.015] })
@@ -860,7 +878,7 @@ function lightPlan(room) {
   }
   rooms.forEach((R, i) => { R.borrowed = borrowed[i] })
   // Under a table, a desk or a bed the fill falls.
-  const tops = room.items.filter((it) => ['table', 'desk', 'worktable', 'bed', 'bench'].includes(it.kind)).map((it) => {
+  const tops = room.items.filter((it) => ['table', 'desk', 'worktable', 'counter', 'bed', 'bench'].includes(it.kind)).map((it) => {
     const hx = it.kind === 'bed' ? it.wid / 2 : it.hx, hz = it.kind === 'bed' ? it.len / 2 : it.hz
     return { ...footprint(it.x, it.z, it.yaw, hx, hz), y: it.y + it.top - 0.05 }
   })

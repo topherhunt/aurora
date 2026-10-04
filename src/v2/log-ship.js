@@ -67,6 +67,11 @@ const push = (level, message, stack) => {
   if (timer === null) timer = setTimeout(flush, FLUSH_MS)
 }
 
+/** One console.log line worth reading off a headset, shipped as level 'log'. A no-op until installLogShip has run. */
+export function shipLog(message) {
+  if (installLogShip.done) push('log', message)
+}
+
 /** Wrap the console and the window's error events. Dev builds only; idempotent. */
 export function installLogShip() {
   if (!import.meta.env.DEV || installLogShip.done) return

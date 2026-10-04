@@ -5,6 +5,7 @@ import { planBuilding, KINDS } from '../../buildings/plan.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
+import { TRADES, fieldOutline, fieldRows, castFolk } from './trades.js'
 
 export const TOWN = {
   // About one town per `tile`, the best-scoring site in each, then the best remaining below the snow up to `target`. A site above the snow is kept with chance `snowKeep`. Score: water within `water` metres (times `waterWeight`: flat sites by water are rare on this map), a cliff (ground ramping through the `cliff.slope` range) within `cliff.r`, a sunk valley, less unevenness.
@@ -193,7 +194,7 @@ function nearestOnSegment(ax, az, bx, bz, x, z) {
 }
 
 // A town's hitching rails (TOWN.posts): the house nearest the clearing's, then the farthest out, each rail along a house front beside its door (or, failing those, centred on its back or a side), clear of the clearing, the other houses and every way, on ground dry and level enough. A post is its rail's ends, its box, and per tether where the strider stands and faces, the knot on the rail, where a hand stands beside it (`stand`), and the rump line it is reached along (`reach`; `gate` is the first tether's).
-function planPosts({ cx, cz, clearingR, buildings, roads, paths, ground, wet }) {
+function planPosts({ cx, cz, clearingR, buildings, works, roads, paths, ground, wet }) {
   const P = TOWN.posts
   const cands = []
   buildings.forEach((b, i) => {
@@ -212,7 +213,7 @@ function planPosts({ cx, cz, clearingR, buildings, roads, paths, ground, wet }) 
       const [x, z] = at(mid, (near + far) / 2)
       const foot = { x, z, c: box.c, s: box.s, hx: ((P.tethers - 1) * P.spacing) / 2 + P.half, hz: (far - near) / 2 }
       if (pointBoxDist(foot, cx, cz) < clearingR + 1) continue
-      if (buildings.some((o) => boxesOverlap(foot, o.box, 0.3))) continue
+      if ([...buildings, ...works].some((o) => boxesOverlap(foot, o.box, 0.3))) continue
       const hits = (pts, pad) => pts.some((p, k) => k > 0 && segmentHitsBox(foot, pts[k - 1][0], pts[k - 1][2], p[0], p[2], pad))
       if (roads.some((pts) => hits(pts, TOWN.road.width / 2 / SWELL_MIN + 0.5)) || paths.some((p) => hits(p.pts, TOWN.path.width / 2 / SWELL_MIN + 0.3))) continue
       const spots = [at(lat(-0.5), rail), at(lat(P.tethers - 0.5), rail), ...Array.from({ length: P.tethers }, (_, k) => at(lat(k), rail + P.stand))]
@@ -402,39 +403,95 @@ function layoutTown(site, index, all, ctx) {
     return true
   }
 
+  // The ground under local rectangle [x0, x1] x [z0, z1] of a frame at (x, z, yaw), a 3 x 3 grid of it: its highest, its fall, and whether any is wet.
+  const footing = (x, z, yaw, x0, x1, z0, z1) => {
+    let top = -Infinity
+    let low = Infinity
+    let isWet = false
+    for (const lx of [x0, (x0 + x1) / 2, x1]) {
+      for (const lz of [z0, (z0 + z1) / 2, z1]) {
+        const [wx, wz] = toWorld(x, z, yaw, lx, lz)
+        const h = ground(wx, wz)
+        if (wet(wx, wz, h)) isWet = true
+        top = Math.max(top, h)
+        low = Math.min(low, h)
+      }
+    }
+    return { top, fall: top - low, wet: isWet }
+  }
+  // The highest and lowest ground under the same rectangle once seated. The ground's detail moves tens of centimetres between the 3 x 3 the candidates read, so the seat is read every metre; the clearing's rings will blend the ground toward yC over their feather (paths.js smoothRoads), at the widest swell.
+  const seat = (x, z, yaw, x0, x1, z0, z1) => {
+    let hi = -Infinity
+    let lo = Infinity
+    for (let lx = x0; lx <= x1 + 0.01; lx += (x1 - x0) / Math.ceil(x1 - x0)) {
+      for (let lz = z0; lz <= z1 + 0.01; lz += (z1 - z0) / Math.ceil(z1 - z0)) {
+        const [wx, wz] = toWorld(x, z, yaw, lx, lz)
+        const h = ground(wx, wz)
+        const g = yC + (h - yC) * smoothstep(0, 1, (Math.hypot(wx - cx, wz - cz) - ringEdge) / RING_FEATHER)
+        hi = Math.max(hi, h, g)
+        lo = Math.min(lo, h, g)
+      }
+    }
+    return [hi, lo]
+  }
+  // A box whose local rectangle is [x0, x1] x [z0, z1] in a frame at (x, z, yaw).
+  const frameBox = (x, z, yaw, x0, x1, z0, z1) => {
+    const [bx, bz] = toWorld(x, z, yaw, (x0 + x1) / 2, (z0 + z1) / 2)
+    return { x: bx, z: bz, c: Math.cos(yaw), s: Math.sin(yaw), hx: (x1 - x0) / 2, hz: (z1 - z0) / 2 }
+  }
+  const hitsWay = (way, box, pad) => way.some((p, i) => i > 0 && segmentHitsBox(box, way[i - 1][0], way[i - 1][1], p[0], p[1], pad))
+
   const n = TOWN.count[0] + Math.floor(rand() * (TOWN.count[1] - TOWN.count[0] + 1))
   const kinds = roster(n)
   const buildings = []
+  // Every work's footprint (TRADES): the smithy, fields, sheds and woodpiles, kept clear like the buildings'.
+  const works = []
+  const taken = () => [...buildings, ...works]
   let rMax = C.r
-  for (let k = 0; k < kinds.length; k++) {
-    const kind = kinds[k]
-    const p = 1 - k / Math.max(1, kinds.length - 1) + (rand() - 0.5) * 0.3
-    const bseed = hash32(seed, index, k, 31)
-    const style = byPrestige(KINDS[kind].styles, WALLS_BY_PRESTIGE, p)
-    const roof = byPrestige(KINDS[kind].roofs, ROOFS_BY_PRESTIGE, p)
-    const plan = planBuilding({ seed: bseed, kind, style, roof })
-    const [x0, x1, z0, z1] = planBox(plan)
-    const hx = (x1 - x0) / 2
-    const hz = (z1 - z0) / 2
-    const ox = (x0 + x1) / 2
-    const oz = (z0 + z1) / 2
-    const doorZ = z1 + 0.3
 
+  // The smithy: open to the clearing, its front a step past the clearing's edge, on dry ground falling at most smithy.range.
+  const SM = TRADES.smithy
+  {
+    const hx = SM.w / 2 + SM.over
+    const hz = SM.d / 2 + SM.over
     let best = null
-    for (let t = 0; t < TOWN.tries; t++) {
+    for (let t = 0; t < SM.tries; t++) {
       const a = rand() * Math.PI * 2
-      const r = C.r + 2 + hz + rand() * (rMax - C.r + 20)
+      const r = C.r + 1.6 + hz
       const x = cx + Math.cos(a) * r
       const z = cz + Math.sin(a) * r
-      let rank = r + rand() * 4
+      const yaw = Math.atan2(cx - x, cz - z)
+      const box = frameBox(x, z, yaw, -hx, hx, -hz, hz)
+      if (!clearOfWays(box)) continue
+      const f = footing(x, z, yaw, -hx, hx, -hz, hz)
+      const rank = f.fall + rand() * 0.2
+      if (f.wet || f.fall > SM.range || (best !== null && rank >= best.rank)) continue
+      best = { rank, x, z, yaw, box, r }
+    }
+    if (best !== null) {
+      const [hi, lo] = seat(best.x, best.z, best.yaw, -hx, hx, -hz, hz)
+      works.push({ kind: 'smithy', id: `${id}-smithy`, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, plinth: lo - hi - 0.3, anvils: rand() < 0.5 ? 1 : 2, sign: 'anvil' })
+      rMax = Math.max(rMax, best.r)
+    }
+  }
+  const smithy = works.find((w) => w.kind === 'smithy') ?? null
+
+  // The best seat for `plan` among TOWN.tries candidates `pick` rolls ({ x, z, rank }), facing the network; `extra` may turn a candidate down (null) or add to its rank, carrying what it found along.
+  const findSeat = (plan, pick, extra = null, tries = TOWN.tries) => {
+    const [x0, x1, z0, z1] = planBox(plan)
+    const doorZ = z1 + 0.3
+    let best = null
+    for (let t = 0; t < tries; t++) {
+      const { x, z, rank: r0 } = pick((z1 - z0) / 2)
+      let rank = r0
       if (best !== null && rank >= best.rank) continue
+      const r = Math.hypot(x - cx, z - cz)
       const net = nearestNetwork(x, z)
       const yaw = Math.atan2(net.x - x, net.z - z) + (rand() - 0.5) * 0.35
-      const [bx, bz] = toWorld(x, z, yaw, ox, oz)
-      const box = { x: bx, z: bz, c: Math.cos(yaw), s: Math.sin(yaw), hx, hz }
+      const box = frameBox(x, z, yaw, x0, x1, z0, z1)
       const gap = TOWN.gap[0] + TOWN.gap[1] * Math.max(0, r - C.r)
       if (pointBoxDist(box, cx, cz) < C.r + 1.5) continue
-      if (buildings.some((o) => boxesOverlap(box, o.box, gap))) continue
+      if (taken().some((o) => boxesOverlap(box, o.box, gap))) continue
       if (!clearOfWays(box)) continue
       const [dx, dz] = toWorld(x, z, yaw, plan.door.x, doorZ)
       const end = nearestNetwork(dx, dz)
@@ -442,57 +499,166 @@ function layoutTown(site, index, all, ctx) {
       rank += TOWN.path.cost * end.dist
       if (best !== null && rank >= best.rank) continue
       const way = windingPath(dx, dz, end.x, end.z)
-      const inner = { ...box, hz: hz - 0.35 }
-      let blocked = false
-      for (let i = 1; i < way.length && !blocked; i++) {
-        const [ax, az] = way[i - 1]
-        const [qx, qz] = way[i]
-        blocked = segmentHitsBox(inner, ax, az, qx, qz, 0) || buildings.some((o) => segmentHitsBox(o.box, ax, az, qx, qz, 0.3))
-      }
-      if (blocked) continue
-      // The ground under the box, a 3 x 3 grid of it.
-      const samples = []
-      let isWet = false
-      for (const lx of [x0, ox, x1]) {
-        for (const lz of [z0, oz, z1]) {
-          const [wx, wz] = toWorld(x, z, yaw, lx, lz)
-          const h = ground(wx, wz)
-          if (wet(wx, wz, h)) isWet = true
-          samples.push(h)
-        }
-      }
-      const top = Math.max(...samples)
+      if (hitsWay(way, { ...box, hz: box.hz - 0.35 }, 0) || taken().some((o) => hitsWay(way, o.box, 0.3))) continue
+      const f = footing(x, z, yaw, x0, x1, z0, z1)
       const doorH = ground(dx, dz)
-      if (isWet || wet(dx, dz, doorH) || top - Math.min(...samples) > TOWN.footRange) continue
-      if (top + plan.floorY - doorH > RISER * (TOWN.stepsMax - 1)) continue
-      best = { rank, x, z, yaw, box, door: [dx, dz], end, doorH, way, r }
-    }
-    if (best === null) continue
-
-    // The plan was drawn on flat ground at y = 0, so the building's y is the highest ground under it; its plinth reaches past the lowest and its steps down to the door's ground. The ground's detail moves tens of centimetres between the 3 x 3 the candidates read, so the chosen seat is read every metre.
-    let hi = -Infinity
-    let lo = Infinity
-    for (let lx = x0; lx <= x1 + 0.01; lx += (x1 - x0) / Math.ceil(x1 - x0)) {
-      for (let lz = z0; lz <= z1 + 0.01; lz += (z1 - z0) / Math.ceil(z1 - z0)) {
-        const [wx, wz] = toWorld(best.x, best.z, best.yaw, lx, lz)
-        const h = ground(wx, wz)
-        // The clearing's rings will blend the ground toward yC over their feather (paths.js smoothRoads), at the widest swell.
-        const s = smoothstep(0, 1, (Math.hypot(wx - cx, wz - cz) - ringEdge) / RING_FEATHER)
-        const g = yC + (h - yC) * s
-        hi = Math.max(hi, h, g)
-        lo = Math.min(lo, h, g)
+      if (f.wet || wet(dx, dz, doorH) || f.fall > TOWN.footRange) continue
+      if (f.top + plan.floorY - doorH > RISER * (TOWN.stepsMax - 1)) continue
+      let more = null
+      if (extra !== null) {
+        more = extra({ x, z, yaw, box, door: [dx, dz], way, planBox: [x0, x1, z0, z1] })
+        if (more === null) continue
+        rank += more.rank
+        if (best !== null && rank >= best.rank) continue
       }
+      best = { rank, x, z, yaw, box, door: [dx, dz], end, doorH, way, r, more }
     }
+    return best
+  }
+  // Seats the chosen building (the plan was drawn on flat ground at y = 0, so its y is the highest ground under it, its plinth reaching past the lowest and its steps down to the door's ground) and lays its path. Returns its index.
+  const commit = (kind, plan, best, k) => {
+    const [x0, x1, z0, z1] = planBox(plan)
+    const [hi, lo] = seat(best.x, best.z, best.yaw, x0, x1, z0, z1)
     plan.plinthBottom = Math.min(plan.plinthBottom, lo - hi - 0.6)
     if (plan.steps) plan.steps.groundY = best.doorH - hi
-    const bid = `${id}-b${buildings.length}`
-    buildings.push({ id: bid, kind, plan, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, door: best.door, prestige: k })
+    buildings.push({ id: `${id}-b${buildings.length}`, kind, plan, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, door: best.door, prestige: k })
     rMax = Math.max(rMax, best.r)
-
     const n = best.way.length - 1
     const pin = best.end.y - ground(best.end.x, best.end.z)
     const pts = best.way.map(([x, z], i) => [x, i === 0 ? best.doorH : i === n ? best.end.y : ground(x, z) + (i / n) * pin, z])
     paths.push({ id: `${id}-path${paths.length}`, pts })
+    return buildings.length - 1
+  }
+  const planFor = (kind, k, roof = null) => {
+    const p = 1 - k / Math.max(1, kinds.length - 1) + (rand() - 0.5) * 0.3
+    const style = byPrestige(KINDS[kind].styles, WALLS_BY_PRESTIGE, p)
+    return planBuilding({ seed: hash32(seed, index, k, 31), kind, style, roof: roof ?? byPrestige(KINDS[kind].roofs, ROOFS_BY_PRESTIGE, p) })
+  }
+  // Anywhere round the town, nearer the centre first.
+  const around = (hz) => {
+    const a = rand() * Math.PI * 2
+    const r = C.r + 2 + hz + rand() * (rMax - C.r + 20)
+    return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, rank: r + rand() * 4 }
+  }
+
+  // The smith's home: the humblest cottage, as near the smithy as it will go.
+  const homeK = smithy === null ? -1 : kinds.lastIndexOf('cottage')
+  let smithHome = null
+  if (homeK >= 0) {
+    const plan = planFor('cottage', homeK)
+    const best = findSeat(plan, (hz) => {
+      const a = rand() * Math.PI * 2
+      const r = SM.d / 2 + hz + 2 + rand() * 10
+      return { x: smithy.x + Math.cos(a) * r, z: smithy.z + Math.sin(a) * r, rank: r + rand() * 2 }
+    })
+    if (best !== null) smithHome = commit('cottage', plan, best, homeK)
+  }
+
+  // The farms: the humblest huts, thatched, past the town's edge (a hut that finds no farm's room stands as a plain hut).
+  const FM = TRADES.farm
+  const farmKs = new Set(kinds.map((kind, k) => (kind === 'hut' ? k : -1)).filter((k) => k >= 0).slice(-(rand() < FM.two ? 2 : 1)))
+
+  for (let k = 0; k < kinds.length; k++) {
+    if (k === homeK && smithHome !== null) continue
+    if (farmKs.has(k)) continue
+    const plan = planFor(kinds[k], k)
+    const best = findSeat(plan, around)
+    if (best !== null) commit(kinds[k], plan, best, k)
+  }
+
+  // A field beside the farmhouse, its front flush with the house's and its gate on that front, and a shed on the house's other side or behind the field.
+  const F = TRADES.field
+  const SH = TRADES.shed
+  const farmWorks = (outline, side) => (c) => {
+    const [x0, x1, , z1] = c.planBox
+    const xs = outline.map((p) => p[0])
+    const zs = outline.map((p) => p[1])
+    const [fx0, fx1, fz0, fz1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)]
+    for (const sx of [side, -side]) {
+      const lx = sx > 0 ? x1 + F.gap - fx0 : x0 - F.gap - fx1
+      const lz = z1 - fz1
+      const [ox, oz] = toWorld(c.x, c.z, c.yaw, lx, lz)
+      const box = frameBox(ox, oz, c.yaw, fx0, fx1, fz0, fz1)
+      if (pointBoxDist(box, cx, cz) < C.r + 3 || taken().some((o) => boxesOverlap(box, o.box, F.gap)) || !clearOfWays(box) || hitsWay(c.way, box, 0.6)) continue
+      const f = footing(ox, oz, c.yaw, fx0, fx1, fz0, fz1)
+      if (f.wet || f.fall > F.range) continue
+      const sheds = [[sx > 0 ? x0 - 1 - SH.w / 2 : x1 + 1 + SH.w / 2, c.planBox[2] + SH.d / 2], [lx + (fx0 + fx1) / 2, lz + fz0 - 1.2 - SH.d / 2]]
+      for (const [sx2, sz2] of sheds) {
+        const [hx, hz] = toWorld(c.x, c.z, c.yaw, sx2, sz2)
+        const shed = frameBox(hx, hz, c.yaw, -SH.w / 2, SH.w / 2, -SH.d / 2, SH.d / 2)
+        if (boxesOverlap(shed, c.box, 0.6) || boxesOverlap(shed, box, 0.6) || taken().some((o) => boxesOverlap(shed, o.box, 0.6)) || !clearOfWays(shed) || hitsWay(c.way, shed, 0.5)) continue
+        const g = footing(hx, hz, c.yaw, -SH.w / 2, SH.w / 2, -SH.d / 2, SH.d / 2)
+        if (g.wet || g.fall > SH.range) continue
+        return { rank: f.fall, field: { x: ox, z: oz, box }, shed: { x: hx, z: hz, box: shed } }
+      }
+    }
+    return null
+  }
+  const farms = []
+  for (const k of farmKs) {
+    const plan = planFor('hut', k, 'thatch')
+    const outline = fieldOutline(rand)
+    const side = rand() < 0.5 ? 1 : -1
+    const ring = rMax + FM.out
+    const best = findSeat(plan, (hz) => {
+      const a = rand() * Math.PI * 2
+      const r = rMax - 4 + hz + rand() * FM.keep
+      return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r, rank: Math.abs(r - ring) + rand() * 4 }
+    }, farmWorks(outline, side), TOWN.tries * 2)
+    if (best === null) {
+      const plain = findSeat(plan, around)
+      if (plain !== null) commit('hut', plan, plain, k)
+      continue
+    }
+    const home = commit('hut', plan, best, k)
+    const { field, shed } = best.more
+    // The gate is on the field's front edge, the one whose middle lies furthest toward the house's front.
+    const mids = outline.map((p, i) => (p[1] + outline[(i + 1) % outline.length][1]) / 2)
+    const gate = mids.indexOf(Math.max(...mids))
+    const [ga, gb] = [outline[gate], outline[(gate + 1) % outline.length]]
+    const [gx, gz] = [(ga[0] + gb[0]) / 2, (ga[1] + gb[1]) / 2]
+    const wi = works.length
+    works.push({ kind: 'field', id: `${id}-field${farms.length}`, x: field.x, z: field.z, yaw: best.yaw, box: field.box, outline, gate, rows: fieldRows(outline), gateOut: toWorld(field.x, field.z, best.yaw, gx, gz + 0.9), gateIn: toWorld(field.x, field.z, best.yaw, gx, gz - 0.9), home })
+    const [shi, slo] = seat(shed.x, shed.z, best.yaw, -SH.w / 2, SH.w / 2, -SH.d / 2, SH.d / 2)
+    works.push({ kind: 'shed', id: `${id}-shed${farms.length}`, x: shed.x, z: shed.z, y: shi, yaw: best.yaw, box: shed.box, plinth: slo - shi - 0.2, home })
+    farms.push({ home, field: wi })
+  }
+
+  // Signs and shop trades: the potion master keeps the grandest cottage, the inns their tankards.
+  const potions = buildings.findIndex((b, i) => b.kind === 'cottage' && i !== smithHome)
+  if (potions >= 0) Object.assign(buildings[potions], { trade: 'potions', sign: 'flask' })
+  buildings.forEach((b) => { if (b.kind === 'inn') Object.assign(b, { trade: 'inn', sign: 'tankard' }) })
+  if (smithHome !== null) buildings[smithHome].trade = 'smith'
+  for (const f of farms) buildings[f.home].trade = 'farm'
+  const folk = castFolk(rand, {
+    smithy: smithy === null ? null : { home: smithHome === null ? -1 : smithHome, work: works.indexOf(smithy) },
+    potions,
+    inn: buildings.findIndex((b) => b.kind === 'inn'),
+    farms,
+    free: buildings.map((b, i) => (b.trade === undefined ? i : -1)).filter((i) => i >= 0),
+  })
+
+  // The woodcutter's woodpile, along a side or the back of their house.
+  const cutter = folk.find((f) => f.body === 'woodcutter')
+  if (cutter !== undefined) {
+    const b = buildings[cutter.home]
+    const [x0, x1, z0, z1] = planBox(b.plan)
+    const W = TRADES.woodpile
+    for (const [lx, lz, turn] of [[x1 + 0.6 + W.d / 2, 0, Math.PI / 2], [x0 - 0.6 - W.d / 2, 0, -Math.PI / 2], [0, z0 - 0.6 - W.d / 2, Math.PI]]) {
+      const [x, z] = toWorld(b.x, b.z, b.yaw, lx, lz)
+      const yaw = b.yaw + turn
+      const box = frameBox(x, z, yaw, -W.w / 2, W.w / 2, -W.d / 2, W.d / 2)
+      if (taken().some((o) => o !== b && boxesOverlap(box, o.box, 0.4)) || !clearOfWays(box)) continue
+      const f = footing(x, z, yaw, -W.w / 2, W.w / 2, -W.d / 2, W.d / 2)
+      if (f.wet || f.fall > 0.8) continue
+      cutter.work = works.length
+      // From the door round the house's front corner to the stand behind the stump, in the house's frame.
+      const [sx, sz] = toWorld(lx, lz, turn, 0, W.stump + W.stand)
+      const cx = sx > x1 || sx < x0 ? sx : x1 + 1.2
+      const via = [[cx, z1 + 1], [cx, sz]].filter(([vx, vz]) => Math.hypot(vx - sx, vz - sz) > 0.5)
+      works.push({ kind: 'woodpile', id: `${id}-woodpile`, x, z, y: seat(x, z, yaw, -W.w / 2, W.w / 2, -W.d / 2, W.d / 2)[1], yaw, box, via: via.map(([vx, vz]) => toWorld(b.x, b.z, b.yaw, vx, vz)) })
+      break
+    }
   }
 
   // Each road stops at the outskirts: past its last point within the town's building radius plus road.past.
@@ -503,7 +669,7 @@ function layoutTown(site, index, all, ctx) {
     pts.length = Math.min(pts.length, keep + 1)
   }
 
-  const posts = planPosts({ cx, cz, clearingR: C.r, buildings, roads, paths, ground, wet })
+  const posts = planPosts({ cx, cz, clearingR: C.r, buildings, works, roads, paths, ground, wet })
 
   const records = []
   C.rings.forEach((rr, j) => {
@@ -518,16 +684,16 @@ function layoutTown(site, index, all, ctx) {
   roads.forEach((pts, j) => records.push({ id: `${id}-road${j}`, pts: pts.map(([x, y, z]) => [x, y, z, R.width]) }))
   paths.forEach((p) => records.push({ id: p.id, feather: 3, pts: p.pts.map(([x, y, z]) => [x, y, z, TOWN.path.width]) }))
 
-  return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, roads, paths, posts, records }
+  return { id, x: cx, z: cz, y: yC, clearingR: C.r, radius: rMax + 10, buildings, works, folk, roads, paths, posts, records }
 }
 
-// Whether (x, z) is within `pad` (plus a metre) of a building's or a hitching post's box: what keeps the trees and rocks out of them. The clearing and paths are roads, which they keep off already.
+// Whether (x, z) is within `pad` (plus a metre) of a building's, work's or hitching post's box: what keeps the trees and rocks out of them. The clearing and paths are roads, which they keep off already.
 export function townsOccupyAt(towns, x, z, pad) {
   for (const t of towns) {
     const dx = x - t.x
     const dz = z - t.z
     if (dx * dx + dz * dz > (t.radius + 20) ** 2) continue
-    for (const { box } of [...t.buildings, ...t.posts]) {
+    for (const { box } of [...t.buildings, ...t.works, ...t.posts]) {
       const bx = x - box.x
       const bz = z - box.z
       const lx = bx * box.c - bz * box.s

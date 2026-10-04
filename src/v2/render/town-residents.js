@@ -1,21 +1,22 @@
-// The townsfolk at home in the house she has gone into (design/38-town-interiors.md): the house's own folk indoors (townsfolk.js, state 'inside') and a homebody or two, each going between the room's places (rooms/town-interior.js `spots`) -- the table, the reading chair, the kitchen and the hearth, a window, a pair talking in the hall, a wander -- and upstairs to sleep. They walk navRoute's ways over the house's walking grid. Local to this client and stepped by the frame; residents.js is the leafkin's.
+// The townsfolk at home in the house she has gone into (design/38-town-interiors.md): the house's own folk indoors (townsfolk.js, state 'inside'), each going between the room's places (rooms/town-interior.js `spots`) -- the potion master's counter, the table, the reading chair, the kitchen and the hearth, a window, a pair talking in the hall, a wander -- and upstairs to sleep. They walk navRoute's ways over the house's walking grid. Local to this client and stepped by the frame; residents.js is the leafkin's.
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
-import { Puppet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 import { roomLit } from './residents.js'
 import { TOWNSFOLK } from './townsfolk.js'
 import { SIT, SIT_CUT, TALKS, TURN_RATE } from './villagers.js'
 import { navRoute } from '../rooms/town-interior.js'
 
-export const HOMEBODIES = 2
 // The lie clip's hold between lying back and sitting up (tools/creatures/anim/clips/human/lie.json), and how far it shuffles up the bed as it lies.
 const LIE_CUT = [1.7, 3.7]
 const LIE_SLIDE = 0.4
-const HOLD_S = { seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], bed: [40, 90], wander: [3, 8], talk: [10, 20] }
+const HOLD_S = { shop: [30, 70], seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], bed: [40, 90], wander: [3, 8], talk: [10, 20] }
 const PICK = [['seat', 0.25], ['read', 0.12], ['cook', 0.2], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.13], ['talk', 0.08]]
 const NEAR_M = 0.05
+const KEEPER = TOWNSFOLK.bodies.indexOf('alchemist')
 const FADE_S = 0.25
 const LIGHT = { amb: 0.75, candle: 0.3, win: 0.35, tint: new THREE.Color(1.0, 0.86, 0.7) }
 
@@ -29,7 +30,7 @@ export class TownResidents {
   /**
    * @param room     rollTownInterior's room, set down at (ox, oy, oz)
    * @param bodies   the townsfolk's loaded bodies (Townsfolk.bodies)
-   * @param who      the house's folk indoors, `[{ id, body, size, pace }]`; the homebodies are rolled here
+   * @param who      the house's folk indoors, `[{ id, body, size, pace }]`
    */
   constructor(scene, room, { bodies, who, seed, ox, oy, oz }) {
     if (!bodies) throw new Error('TownResidents: need the townsfolk\'s loaded bodies')
@@ -50,11 +51,6 @@ export class TownResidents {
     this.taken = new Map()
     this.all = []
     for (const w of who) this._add(w.id, w.body, w.size, w.pace, false)
-    const homebodies = Math.floor(this.rand() * (HOMEBODIES + 1))
-    for (let i = 0; i < homebodies; i++) {
-      const body = Math.floor(this.rand() * bodies.length)
-      this._add(`home:${i}`, body, bodies[body].heightM * (1 + TOWNSFOLK.sizeVar * (2 * this.rand() - 1)), between(this.rand, TOWNSFOLK.pace), false)
-    }
     if (this.all.length >= 2 && this.rand() < 0.4 && room.spots.some((s) => s.kind === 'talk')) this._talk(this.all[0], this.all[1], true)
     for (const r of this.all) if (!r.spot) this._choose(r, true)
   }
@@ -70,13 +66,13 @@ export class TownResidents {
     const mats = makePuppetMaterials(`town-residents-${body}`, this.plain[body])
     for (const m of [mats.in, mats.out]) roomLit(m, this.light).map = b.asset.map
     this.materials.push(mats.in, mats.out)
-    const puppet = new Puppet(b.asset, mats, { clipFade: FADE_S })
+    const puppet = makePuppet(b.asset, mats, { clipFade: FADE_S })
     puppet.mixer.timeScale = pace
     this.group.add(puppet.group)
     puppet.show(0, atDoor ? FADE_S : 0.01)
     const d = this.room.doorIn
     const r = {
-      id, b, size, pace, k: size / b.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI, level: 0,
+      id, kind: body, b, size, pace, k: size / b.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, leaving: false,
       body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: b.durations.walk / pace },
     }
@@ -94,9 +90,13 @@ export class TownResidents {
 
   _free(spot) { return !this.taken.has(spot) }
 
-  /** Its next place, by PICK among the free ones; `now` puts it there already at its hold. */
+  /** Its next place: the potion master mostly to the counter, else by PICK among the free ones; `now` puts it there already at its hold. */
   _choose(r, now) {
     const room = this.room
+    if (r.kind === KEEPER && this.rand() < 0.7) {
+      const shop = room.spots.find((s) => s.kind === 'shop' && this._free(s))
+      if (shop) { this._goTo(r, shop, now); return }
+    }
     for (let tries = 0; tries < 8; tries++) {
       let u = this.rand(), kind = PICK[PICK.length - 1][0]
       for (const [k, w] of PICK) { if (u < w) { kind = k; break } u -= w }
@@ -187,7 +187,7 @@ export class TownResidents {
     if (s.kind === 'seat' || s.kind === 'read' || s.kind === 'bed') {
       if (now) { r.phase = s.kind === 'bed' ? 'sleep' : 'hold'; r.on = 1; r.slide = s.kind === 'bed' ? LIE_SLIDE : 0; this._play(r, s.kind === 'bed' ? 'sleep' : 'idle-sit', r.hold) }
       else { r.phase = 'down'; this._play(r, 'sit', SIT_CUT[0], 0) }
-    } else if (s.kind === 'cook') {
+    } else if (s.kind === 'cook' || s.kind === 'shop') {
       r.phase = 'busy'; this._play(r, 'gather', r.b.durations.gather, 0)
     } else if (s.kind === 'talk') {
       r.phase = 'talk'; this._play(r, TALKS[Math.floor(this.rand() * TALKS.length)], r.b.durations['talk-gesture'])

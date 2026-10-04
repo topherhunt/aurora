@@ -209,6 +209,63 @@ function worldDoc() {
   }
 }
 
+// --- the overworld's towns and roads, baked (src/v2/layers/world-plan.js) ---
+//
+// `npm run build` writes world/plan.json into dist/ from scripts/bake-world-plan.mjs. The dev server answers the same path from tmp/world-plan/, re-baking (a few seconds, in a child process so the planner code is read fresh) whenever world/layers.json, the heightmap or any file the bake script imports has changed since.
+const BAKE_SCRIPT = 'scripts/bake-world-plan.mjs'
+function worldPlan() {
+  // The bake's inputs: the world files plus the bake script's relative-import closure.
+  const inputs = (root) => {
+    const files = ['public/world/layers.json', 'public/world/height.png', 'public/world/height.json'].map((f) => resolve(root, f))
+    const todo = [resolve(root, BAKE_SCRIPT)]
+    const seen = new Set()
+    while (todo.length) {
+      const f = todo.pop()
+      if (seen.has(f)) continue
+      seen.add(f)
+      for (const m of readFileSync(f, 'utf8').matchAll(/(?:from|import)\s*\(?\s*'(\.{1,2}\/[^']+)'/g)) todo.push(resolve(dirname(f), m[1]))
+    }
+    return [...files, ...seen].sort()
+  }
+  const bake = (root, out) =>
+    new Promise((ok, fail) => {
+      mkdirSync(dirname(out), { recursive: true })
+      execFile(process.execPath, [resolve(root, BAKE_SCRIPT), out], { cwd: root }, (err, stdout, stderr) => {
+        if (err) fail(new Error(`${BAKE_SCRIPT} failed: ${stderr || err.message}`))
+        else ok(console.log(stdout.trim()))
+      })
+    })
+  return {
+    name: 'aurora:world-plan',
+    configureServer(server) {
+      const root = server.config.root
+      const pending = new Map()
+      server.middlewares.use('/world/plan.json', async (req, res) => {
+        try {
+          const stamp = inputs(root).map((f) => `${f}:${statSync(f).mtimeMs}:${statSync(f).size}`).join('|')
+          let h = 0
+          for (let i = 0; i < stamp.length; i++) h = (Math.imul(h, 31) + stamp.charCodeAt(i)) | 0
+          const out = resolve(root, `tmp/world-plan/${(h >>> 0).toString(16)}.json`)
+          if (!existsSync(out)) {
+            if (!pending.has(out)) pending.set(out, bake(root, out).finally(() => pending.delete(out)))
+            await pending.get(out)
+          }
+          res.setHeader('content-type', 'application/json')
+          res.end(readFileSync(out))
+        } catch (e) {
+          res.statusCode = 500
+          res.end(String(e?.message ?? e))
+        }
+      })
+    },
+    async generateBundle() {
+      const out = resolve(__dirname, 'tmp/world-plan/build.json')
+      await bake(__dirname, out)
+      this.emitFile({ type: 'asset', fileName: 'world/plan.json', source: readFileSync(out) })
+    },
+  }
+}
+
 // --- the client's console, on the dev server's disk (dev only) --------------
 //
 // A headset has no devtools. A warning fired on the Quest -- a rock bed's pool
@@ -1550,7 +1607,7 @@ function bareRoutes() {
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), clientLog(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

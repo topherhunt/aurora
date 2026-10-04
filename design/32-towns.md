@@ -11,6 +11,7 @@ The overworld has human towns: 8 to 25 of §19's buildings round a dirt clearing
 | generated roads in the document | `doc.js` `GENERATED_ID`, `serialize({ authored })`; `layers.js` `addGenerated` |
 | boot | `main.js`, straight after `height.setLayers(layers)` (overworld only) |
 | hearth and townsfolk | `src/v2/render/townsfolk.js` `Townsfolk`, `TownLife`, `townGraph`, `TOWNSFOLK`; `hearth.js` (`scale`) |
+| trades: cast, works, signs | `src/v2/layers/trades.js` `TRADES`, `castFolk`, `smithyLayout`; laid out in `towns.js`; drawn by `src/v2/render/trades.js` |
 | hitching rails (three-free) | `towns.js` `planPosts`, `TOWN.posts` |
 | road travellers (three-free) | `src/v2/render/journeys.js` `Journeys`, `JOURNEYS` |
 | strider puppets, rails, reins, calls | `src/v2/render/striders.js` `Striders`, `STRIDER`; the reins' ribbons `cord.js` `Cords` |
@@ -54,13 +55,28 @@ A standing town costs 2 draws per eye (its merged mesh, plus the far pool that e
 
 Each town's clearing holds a `Hearth` (§30's leafkin fire and stools) at `scale` 1.3, sized so the stool tops meet the mean seated underside of the human avatars. Every town draws one `hearthKit` built at boot on level ground (the clearing is flat to 5 mm under its ring roads), without the decimated tier: decimateHearth costs about 200 ms to save under 300 triangles. A hearth and its flame are hidden past 220 times their height, about 5 px. `underside` measures it from a clip's first frame as the hip joints' mean less a thigh's half-depth (it also seats riders from the `ride` clip). villagers.js `seatY` does not work here: its lowest hip-skinned vertex is the coat hem at the ground.
 
-Townsfolk come from `farmer`, `shepherd` and `woodcutter`, dealt in turn, with 1 per hut or cottage and 2 per longhouse or inn. `townGraph` builds each town's ways as a graph: a 10-node ring at 4 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start, `TOWNSFOLK.replay` (400) ticks a frame shared by the towns still catching up, so a full chapter takes up to 30 frames. Its people are not drawn until it is caught up. It reads heights only on the last two ticks. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.2 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
+Townsfolk are cast by their trades (below), one of each body to a town. `townGraph` builds each town's ways as a graph: a 10-node ring at 4 m, the roads, and each door path attached where it meets the network. `TownLife` is a three-free, deterministic sim on the room clock. A town that wakes (within 250-330 m of its radius) replays its chapter from the start, `TOWNSFOLK.replay` (400) ticks a frame shared by the towns still catching up, so a full chapter takes up to 30 frames. Its people are not drawn until it is caught up. It reads heights only on the last two ticks. People leave home on errands (visit, home, sit at the fire, wander), keep right with a 0.2 m lane offset, chat when two meet (8-20 s, then a 45 s cooldown), and are all indoors by the chapter's turn.
 
 The greeting is this client's alone. When she comes within 2 m of someone walking, standing or talking, half the time they carry on. Otherwise they stop, turn to her, and wave (0.12), beckon (0.08) or just look (0.8) for 2.5-4 s, so about one meeting in ten gets a gesture. They then walk straight back to where the sim has them at 1.5x pace. The cooldown is 20 s either way.
 
 Every town's fire crackles through ambience.js's campfire rule, a loop per town placed at the clearing's centre whether or not the town is awake.
 
-The pool is 4 puppets per body, so at most 12 townsfolk draws per eye, plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 4 people who want one. A farther holder fades out to free its puppet.
+The pool is 4 puppets per body, plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 4 people who want one. A farther holder fades out to free its puppet.
+
+## Trades
+
+A town holds at most one of each of the 9 avatars (`TRADES.bodies`), so "Gisela the farmer" names one face, known by her clothes and her work. `castFolk` casts 6-7 folk (`TRADES.folk`), never all 9, so an arriving traveller's body is never a second of anyone already there (a guest only shares one when the town is over-full):
+
+- **Smith** (`blacksmith`): the smithy is an open-sided, tile-roofed shed 7 × 5 m with its front on the clearing's edge, an arched forge with its flame in the hood's mouth, 1-2 anvils and a quench tub (`smithyLayout`). The smith lives in the humblest cottage, seated as near the smithy as it will go. No smithy, no smith.
+- **Potion master** (`alchemist`) keeps the first cottage that is not the smith's, with a flask sign; inside, a counter of potions by the door (§38).
+- **Innkeeper** keeps the inn, under a tankard sign.
+- **Farmers** (`farmer`, then `shepherd`): 1 farm, 2 with chance 0.6, on the town's last huts, ringing it past the other buildings. Each is a thatched farmhouse, a fenced field beside it (a 9-13 × 7-10 m quad rolled square, trapezoid or cut-corner, carrot rows 0.8 m apart, a gate on the house's front) and a thatched shed with barrels and sacks.
+- **Woodcutter**: a woodpile with a chopping stump along a side or the back of the house, reached round the front corner.
+- The rest (hunter, miner, fisherman) fill the count with no work of their own.
+
+Signs are emblems only (anvil, flask, tankard), on a post at the front corner, its board hung toward the clearing. Every work is a footprint kept clear like a building's.
+
+An errand is the folk's trade round with chance 0.65 (`TOWNSFOLK.trade`); the others are breaks (visit, sit at the fire, wander). The smith's round is 2-4 heats: hold at the forge, strike at an anvil, quench at the tub, strike again. A farmer tends 3-6 spots along the rows; the woodcutter splits at the stump and stacks, 2-3 times. `strike` is a clip made at load from the idle with the right arm swung in the body's forward plane, holding a hammer or an axe. Shopkeepers stay indoors 3 times as long.
 
 ## Striders and the road
 
@@ -89,7 +105,7 @@ Netplay (`creature-sync.md`, prefix `ws`): calm needs no messages. A strider liv
 
 - The tints are eyeballed from a couple of distant shots.
 - Rocks, deadwood and litter keep off the town's roads but not its yards.
-- Market stalls, fences and livestock. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
+- Market stalls and livestock. A trade per body caps the cast at 9 avatars; more needs new meshes. Grass may grow over the carrot rows. Snow towns get the same farms. Townsfolk make no sound of their own, and they avoid each other only through the lane offset.
 - Rails have no collider, travellers pass through the player, townsfolk inside a town pass through each other, and only drawn folk (all that show) are avoided by running striders or eased off their bodies.
 - Trust and growth last only the session. A lent strider reappears at its rail if the sim unties it for a traveller. Riders' legs are posed for the shipped strider and may sink into a larger one.
 - Trust, growth and who a strider has charged are per client, so a peer's copy never eats, strikes or trusts. Only a strider's being tamed is shared, by its anchors, and the relay keeps those a chapter, so a player who joins later sees an untouched tamed one as wild. A dash's wobble, a swimmer's bob and the calls are each client's own roll, the first corrected by the anchors; a ridden copy walks or runs a hop rather than treading after it, plays no coax squawks, and its seat follows the rider's head, so it shifts as she leans; spots are plotted against the trunks loaded on each client. Wild striders speak with the tack striders' pitched chirp, whine and flutter.

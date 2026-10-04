@@ -47,6 +47,10 @@ import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 import { HER_SCALE, buildVillage, rollVillage } from '../src/v2/rooms/village.js'
 import { Trust } from '../src/v2/trust.js'
+import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
+
+// These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
+setPuppetMode('skinned')
 
 let failures = 0
 const check = (ok, label, detail = '') => {

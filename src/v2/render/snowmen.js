@@ -65,7 +65,8 @@ import THREE from '../../three-instance.js'
 import { lerp, mulberry32 } from '../../sim/mathx.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, keyHash, stepTo, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
-import { Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 
 export const TILE = 32
 export const RADIUS = 96
@@ -265,7 +266,7 @@ export class Snowmen {
         m.map = asset.map
         m.needsUpdate = true
       }
-      this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S }))
+      this.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S }))
     }
     this.freePuppets = this.puppets.slice()
     this.loaded = true

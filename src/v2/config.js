@@ -109,6 +109,14 @@ export const PINNED_CHUNKS = 21
 export const HEIGHTMAP_URL = 'world/height.png'
 export const HEIGHTMAP_META_URL = 'world/height.json'
 export const LAYERS_URL = 'world/layers.json'
+// The overworld's towns and roads, baked from the three above at build time (scripts/bake-world-plan.mjs).
+export const WORLD_PLAN_URL = 'world/plan.json'
+
+// Where the overworld starts. A fixed point rather than a search, so every boot
+// and every headset opens on the same view. Chosen by hand; the boot throws if
+// the water ever rises over it, since nothing else here checks the ground. The
+// towns keep clear of it, so the baked plan is keyed on it.
+export const SPAWN = { x: -320, z: 1367 }
 
 // The one seed every generated thing in v2 is derived from: the prop banks, the
 // scatters' placement, the shape of the rocks in the rock bank. It lives here

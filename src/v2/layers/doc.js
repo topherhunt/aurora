@@ -171,6 +171,16 @@ export function validate(json) {
     roadPoints(d.pts, `roads[${i}].pts`)
   }
 
+  // The cave mouths' clefts (clefts.js): generated, so absent from every saved document.
+  if (json.clefts !== undefined) {
+    array(json.clefts, 'clefts')
+    for (let i = 0; i < json.clefts.length; i++) {
+      const c = json.clefts[i]
+      if (!Array.isArray(c) || c.length !== 5) fail(`clefts[${i}]`, 'must be [x, z, nx, nz, y]', c)
+      for (let k = 0; k < 5; k++) num(c[k], `clefts[${i}][${k}]`)
+    }
+  }
+
   return json
 }
 
@@ -178,16 +188,18 @@ export function validate(json) {
 export const GENERATED_ID = /^(town|road)\d/
 export const isGenerated = (id) => GENERATED_ID.test(id)
 
-// Build the document from a live Layers. Each sub-layer knows its own compact form; this only assembles them, so there is exactly one place that decides what a lake looks like on disk. `authored` drops the generated roads -- what a save writes.
+// Build the document from a live Layers. Each sub-layer knows its own compact form; this only assembles them, so there is exactly one place that decides what a lake looks like on disk. `authored` drops the generated roads and clefts -- what a save writes.
 export function serialize(layers, { authored = false } = {}) {
   const roads = layers.paths.toJSON('road')
-  return {
+  const doc = {
     v: DOC_VERSION,
     snow: layers.snow.toJSON(),
     lakes: layers.lakes.toJSON(),
     rivers: layers.paths.toJSON('river'),
     roads: authored ? roads.filter((r) => !isGenerated(r.id)) : roads,
   }
+  if (!authored && layers.clefts.count > 0) doc.clefts = layers.clefts.toJSON()
+  return doc
 }
 
 // Stable id allocation: l1, l2 for lakes, r1 for rivers, d1 for roads.

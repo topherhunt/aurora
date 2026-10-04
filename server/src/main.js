@@ -28,7 +28,8 @@ function roomFor(name) {
     // `flares` and `frev`: the flares shot in the room, see applyFlare.
     // `flames` and `mrev`: the flames lit on trees, ferns and sticks, see applyFlame.
     // `trust` and `trev`: which villager trusts which player, see applyTrust.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0 }
+    // `chalk` and `krev`: the strokes drawn on cave walls, see applyChalk.
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0, chalk: new Map(), krev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -140,6 +141,44 @@ function trustFor(room, client) {
   const out = []
   for (const e of room.trust.values()) if (e.rev > client.seenTrev && e.by !== client.id) out.push(e.data)
   client.seenTrev = room.trev
+  return out.length ? out : null
+}
+
+// CHALK (src/v2/caves/chalk.js): [system, id, player, points], a stroke on a
+// cave's wall, `points` base64 of int16 triples. Kept for the room's life
+// (CHALK_CAP deep, about 6 MB at the longest strokes) and told to every other
+// client CHALK_SEND a snapshot; each client sends its own saved ones again on
+// every welcome, like trust.
+const CHALK_CAP = 4096
+const CHALK_BATCH = 8
+const CHALK_SEND = 32
+// STROKE_MAX points, 6 bytes each, in base64.
+const CHALK_B64 = 1600
+function validChalk(t) {
+  return Array.isArray(t) && t.length === 4 && Number.isInteger(t[0]) && t[0] >= 0 && t[0] < 2 ** 32 && Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 2 ** 31 &&
+    typeof t[2] === 'string' && /^[0-9a-z]{6,16}$/.test(t[2]) && typeof t[3] === 'string' && t[3].length > 0 && t[3].length % 8 === 0 && t[3].length <= CHALK_B64 && /^[A-Za-z0-9+/]+$/.test(t[3])
+}
+
+function applyChalk(room, client, list) {
+  for (const t of list) {
+    const key = `${t[2]} ${t[1]}`
+    if (room.chalk.has(key)) continue
+    room.chalk.set(key, { data: t, rev: ++room.krev, by: client.id })
+    if (room.chalk.size > CHALK_CAP) room.chalk.delete(room.chalk.keys().next().value)
+  }
+}
+
+/** Up to CHALK_SEND strokes this client has not been told, none of them its own; null when there are none. */
+function chalkFor(room, client) {
+  if (client.seenKrev === room.krev) return null
+  const out = []
+  let seen = room.krev
+  for (const e of room.chalk.values()) {
+    if (e.rev <= client.seenKrev || e.by === client.id) continue
+    if (out.length === CHALK_SEND) { seen = e.rev - 1; break }
+    out.push(e.data)
+  }
+  client.seenKrev = seen
   return out.length ? out : null
 }
 
@@ -405,6 +444,8 @@ wss.on('connection', (ws, request) => {
     seenMrev: 0,
     // How far through the room's trust it has been told.
     seenTrev: 0,
+    // How far through the room's chalk it has been told.
+    seenKrev: 0,
     // Who it is in this relay's log, and the diag lines it has said.
     tag: '',
     diags: 0,
@@ -467,6 +508,13 @@ wss.on('connection', (ws, request) => {
       }
       return
     }
+    if (message && message.type === 'chalk') {
+      if (Array.isArray(message.chalk) && message.chalk.length <= CHALK_BATCH && message.chalk.every(validChalk)) {
+        applyChalk(room, client, message.chalk)
+        client.lastSeen = now
+      }
+      return
+    }
     if (message && (message.type === 'anchor' || message.type === 'lured')) {
       if (applyCreature(room, client, message, now)) client.lastSeen = now
       return
@@ -522,7 +570,7 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things, the creatures, the flares, the flames and the trust ride only when something changed since this client last heard.
+      // The things, the creatures, the flares, the flames, the trust and the chalk ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
@@ -534,6 +582,8 @@ setInterval(() => {
       if (flames) snapshot.flames = flames
       const trust = trustFor(room, client)
       if (trust) snapshot.trust = trust
+      const chalk = chalkFor(room, client)
+      if (chalk) snapshot.chalk = chalk
       send(client, snapshot)
     }
   }

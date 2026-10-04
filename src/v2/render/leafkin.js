@@ -38,7 +38,8 @@ import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { TOLERANCE_M } from '../taken.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange } from './critters.js'
 import { BLOCKED, STONE } from './leafkin-ground.js'
-import { Puppet, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet, rollTint } from './baked-puppet.js'
 import { loadBipedGlb } from './snowmen.js'
 import { LEAD_TICKS, ease, easeFields, keepWas, popM, warnPop } from './net-ease.js'
 
@@ -370,7 +371,7 @@ export class Leafkin {
         m.map = asset.map
         m.needsUpdate = true
       }
-      this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S }))
+      this.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S }))
     }
     this.freePuppets = this.puppets.slice()
     this.loaded = true
@@ -1020,6 +1021,8 @@ export class Leafkin {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
+      // A baked body wears its own colour, rolled from its key so every peer and every visit agree.
+      if (p.baked) rollTint(mulberry32(hash32(keyHash(c.key), 0x71a7)), p.tint)
       this.batch.add(p.group)
       p.play(c.clip, c.cue, c.dur - c.left)
     }

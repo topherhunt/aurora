@@ -634,6 +634,17 @@ export class WaterSurfaces {
     return best < -reach ? -reach : best
   }
 
+  /** Off the scene with every body kept, for a return that re-attaches it rather than rebuilding (main.js `overworld`). */
+  detach() {
+    this.group.removeFromParent()
+  }
+
+  /** Back on the shared Water, the next updateLod reading the rungs of whatever terrain now stands. */
+  attach() {
+    this.water.group.add(this.group)
+    this.lodX = NaN
+  }
+
   dispose() {
     for (const mesh of this.meshes.values()) mesh.geometry.dispose()
     this.meshes.clear()

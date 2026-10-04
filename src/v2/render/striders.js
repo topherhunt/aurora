@@ -2,7 +2,8 @@ import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
-import { lodFadeS, Puppet, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet, solverStub } from './baked-puppet.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
 import { Cords } from './cord.js'
 import { StriderShake } from './strider-shake.js'
@@ -210,10 +211,10 @@ export class Striders {
     this.plain.needsUpdate = true
     for (const mats of this.mats) {
       for (const m of [mats.in, mats.out]) { m.map = asset.map; m.needsUpdate = true }
-      const p = new Puppet(asset, mats, { clipFade: 0.3 })
+      const p = makePuppet(asset, mats, { clipFade: 0.3 })
       // Shake, then paddle, then whatever a layer chains after `paddle.then`.
-      p.paddle = new StriderPaddle(p, asset)
-      p.solver = new StriderShake(p, asset)
+      p.paddle = p.baked ? solverStub() : new StriderPaddle(p, asset)
+      p.solver = p.baked ? solverStub() : new StriderShake(p, asset)
       p.solver.then = p.paddle
       this.puppets.push(p)
     }

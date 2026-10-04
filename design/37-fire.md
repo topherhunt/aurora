@@ -14,7 +14,7 @@ On the one-handed desktop a torch cannot be lit with a flint in one hand and a s
 
 ## Sticks
 
-`Sticks` scatters 0.5 m sticks in cells of 4 m within 10 m, clumped, only between half a stick and 3 m out from a trunk's bark (`Trees.pureTrunksInto`, so every peer agrees on ground none has grown), none in a village, none under a lake. A stick is a pure function of where it lies and the `taken` registry, so a picked stick stays gone and a peer's pick evicts it here. The mesh is nine sides, three crooked segments and jagged ends, textured with the interiors' plank grain along its length, the tip at -Z. `lies` makes `hands.js` drop it flat.
+`Sticks` scatters 0.5 m sticks in cells of 4 m within 10 m, 0.06 a square metre, only between half a stick and 3 m out from a trunk's bark (`Trees.pureTrunksInto`, so every peer agrees on ground none has grown), none in a village, none under a lake. A stick is a pure function of where it lies and the `taken` registry, so a picked stick stays gone and a peer's pick evicts it here. The mesh is nine sides, three crooked segments and jagged ends, textured with the interiors' plank grain along its length, the tip at -Z. `lies` makes `hands.js` drop it flat.
 
 ## Flames
 

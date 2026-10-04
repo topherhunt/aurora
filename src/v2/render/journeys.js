@@ -11,6 +11,8 @@ export const JOURNEYS = {
   leave: [300, 480],
   rider: 0.55,
   party: [[1, 0.5], [2, 0.3], [3, 0.2]],
+  // Trades that keep their townsfolk at home.
+  home: ['smith', 'potions', 'inn'],
   // Metres a second along the road: the strider's walk a touch brisk, and a human's.
   speed: { ride: 1.25, foot: 1.05 },
   // Metres between a party's members, and right of the road's middle each keeps to.
@@ -33,11 +35,14 @@ const pick = (rand, pairs) => {
 /**
  * Every town's routes over `plan` (roads.js planRoads), port end to port end:
  * `{ to, stub, toStub, pts: [[x, z]], s, length }`, the shortest to each town
- * the ways reach without passing a port. `bodies` is how many avatars there are.
+ * the ways reach without passing a port. `bodies` are the avatars' ids; a
+ * journey's members are townsfolk of its town (town.folk) whose trade does not
+ * keep them home, none the destination has, and none twice in a chapter.
  */
 export class Journeys {
   constructor(towns, plan, { seed, bodies }) {
-    if (!(bodies > 0)) throw new Error('Journeys: needs the body count')
+    if (!Array.isArray(bodies) || bodies.length === 0) throw new Error('Journeys: needs the avatar ids')
+    for (const t of towns) if (!Array.isArray(t.folk)) throw new Error(`Journeys: ${t.id} has no folk`)
     this.towns = towns
     this.seed = seed
     this.bodies = bodies
@@ -61,18 +66,26 @@ export class Journeys {
     const start = index * CHAPTER_S + this.offsets[ti]
     const [lo, hi] = JOURNEYS.leave
     const w = (hi - lo) / JOURNEYS.slots
+    const gone = new Set()
     for (let slot = 0; routes.length > 0 && slot < JOURNEYS.slots; slot++) {
       const rand = mulberry32(hash32(this.seed, ti, index, slot, 0x10ad))
       if (rand() >= JOURNEYS.chance) continue
       const t0 = start + lo + w * (slot + rand())
       const route = routes[(rand() * routes.length) | 0]
       const ride = rand() < JOURNEYS.rider
-      const n = ride ? 1 : pick(rand, JOURNEYS.party)
+      const there = new Set(this.towns[route.to].folk.map((f) => f.body))
+      const free = this.towns[ti].folk.filter((f) => !JOURNEYS.home.includes(f.trade) && !there.has(f.body) && !gone.has(f.body))
+      const n = Math.min(ride ? 1 : pick(rand, JOURNEYS.party), free.length)
+      if (n === 0) continue
       const speed = ride ? JOURNEYS.speed.ride : JOURNEYS.speed.foot
       const t1 = t0 + route.length / speed
       const into = t1 - chapterOf(t1, this.keys[route.to]).start
       if (into < JOURNEYS.settle[0] || into > CHAPTER_S - JOURNEYS.settle[1]) continue
-      const members = Array.from({ length: n }, () => ({ body: (rand() * this.bodies) | 0, size: 2 * rand() - 1 }))
+      const members = Array.from({ length: n }, () => {
+        const { body } = free.splice((rand() * free.length) | 0, 1)[0]
+        gone.add(body)
+        return { body: this.bodies.indexOf(body), size: 2 * rand() - 1 }
+      })
       list.push({ id: `${id}:${slot}`, from: ti, to: route.to, route, t0, t1, ride, speed, members })
     }
     if (this.cache.size > 4096) this.cache.clear()

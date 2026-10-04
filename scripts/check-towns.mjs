@@ -18,9 +18,11 @@ import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { Hearth, hearthKit } from '../src/v2/render/hearth.js'
 import { CLIPS, TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
+import { TRADES } from '../src/v2/layers/trades.js'
 import { Journeys } from '../src/v2/render/journeys.js'
 import { planRoads } from '../src/v2/layers/roads.js'
 import { SEAT_M } from '../src/v2/render/villagers.js'
+import { rollTownInterior } from '../src/v2/rooms/town-interior.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -220,7 +222,7 @@ check(longPaths > 50 && straight < longPaths * 0.1, 'door paths over 10 m wind o
 
 // --- rendering ---
 const scene = new THREE.Scene()
-const layer = new Towns(scene, { towns, textures: buildTextureArray(), patch: (m) => m })
+const layer = new Towns(scene, { towns, field, textures: buildTextureArray(), patch: (m) => m })
 const massCount = towns.reduce((s, t) => s + t.buildings.reduce((u, b) => u + b.plan.masses.length, 0), 0)
 check(layer.stats.instances === massCount, 'a far instance for every building mass', `${layer.stats.instances}`)
 const farTris = layer.far.geometry.index ? layer.far.geometry.index.count / 3 : layer.far.geometry.attributes.position.count / 3
@@ -285,6 +287,33 @@ for (const town of towns) {
   if (!g.doors.every((d) => seen[d]) || g.doors.length !== town.buildings.length) unreached.push(town.id)
 }
 check(unreached.length === 0, 'every door is reachable from the clearing', unreached.join(', '))
+
+// --- the trades (DESIGN.md §32 Trades) ---
+check(towns.every((town) => new Set(town.folk.map((f) => f.body)).size === town.folk.length && town.folk.length >= TRADES.folk[0] - 1 && town.folk.every((f) => TRADES.bodies.includes(f.body))), 'every town\'s folk are each a different avatar, 5 to 7 of them', towns.map((town) => town.folk.length).join(' '))
+const smithies = towns.map((town) => town.works.find((w) => w.kind === 'smithy')).filter(Boolean)
+check(smithies.length >= 0.9 * towns.length && towns.every((town) => {
+  const w = town.works.find((o) => o.kind === 'smithy')
+  if (!w) return true
+  const r = Math.hypot(w.x - town.x, w.z - town.z)
+  return r > TOWN.clearing.r && r < TOWN.clearing.r + 8 && town.folk.some((f) => f.body === 'blacksmith' && town.works[f.work] === w)
+}), 'nine towns in ten have a smithy facing the clearing from its edge, and its smith', `${smithies.length} of ${towns.length}`)
+const crowded = []
+for (const town of towns) for (const w of town.works) {
+  if (town.buildings.some((b) => boxesOverlap(w.box, b.box, 0)) || town.works.some((o) => o !== w && boxesOverlap(w.box, o.box, 0))) crowded.push(`${town.id} ${w.kind}`)
+}
+check(crowded.length === 0, 'no work overlaps a building or another work', crowded.slice(0, 4).join(', '))
+const farms = towns.flatMap((town) => town.works.filter((w) => w.kind === 'field').map((w) => ({ town, w, home: town.buildings[w.home] })))
+const inner = farms.filter(({ town, home }) => Math.hypot(home.x - town.x, home.z - town.z) < 0.6 * Math.max(...town.buildings.map((b) => Math.hypot(b.x - town.x, b.z - town.z))))
+check(farms.length >= towns.length && inner.length === 0 && farms.every(({ w }) => w.rows.length >= 4), 'farms stand on the outskirts, each field with its carrot rows', `${farms.length} fields, ${inner.length} inward`)
+check(towns.every((town) => town.buildings.some((b) => b.sign === 'flask')), 'every town hangs a potion master\'s sign')
+{
+  const shops = towns.flatMap((town, t) => town.buildings.map((b, i) => ({ b, index: t * 256 + i })).filter(({ b }) => b.trade === 'potions'))
+  // A house that will not roll even as a plain house is check-town-interiors' to answer for.
+  const rolls = (b, index, shop) => { try { return rollTownInterior({ seed: SEED, index, plan: b.plan, shop }) } catch { return null } }
+  const fine = shops.filter(({ b, index }) => rolls(b, index, null))
+  const bare = fine.filter(({ b, index }) => { const r = rolls(b, index, 'potions'); return !r || !r.spots.some((s) => s.kind === 'shop') })
+  check(bare.length === 0, `every potion master keeps a counter inside (${fine.length} of ${shops.length} shops roll as houses${bare.length ? `; none in ${bare.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
+}
 // Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.
 const durations = Object.fromEntries(CLIPS.map((c) => [c, c === 'sit' ? 4 : 2]))
 const bodies = TOWNSFOLK.bodies.map(() => ({ heightM: 1.7, height: 1, gait: { walk: 0.632 }, wheelbase: 0.474, sitY: SEAT_M * S / 1.7, durations }))
@@ -308,7 +337,7 @@ const wayDist = (x, z) => {
   }
   return best
 }
-for (let s = 0; s < 400; s += 2) {
+for (let s = 0; s < 590; s += 2) {
   a.advance(T0 + s)
   for (const c of a.all) {
     if (c.state in seen) seen[c.state]++
@@ -318,20 +347,20 @@ for (let s = 0; s < 400; s += 2) {
 check(seen.walk > 0 && seen.sit > 0 && seen.talk > 0 && seen.stand > 0, 'townsfolk walk, stand, sit at the fire and stop to talk', JSON.stringify(seen))
 check(offWay === 0, 'a walker keeps to its lane on the town\'s ways', `${offWay} samples off`)
 const b = life()
-b.advance(T0 + 398)
+b.advance(T0 + 588)
 check(a.all.every((c, i) => c.x === b.all[i].x && c.z === b.all[i].z && c.state === b.all[i].state), 'a town woken late replays to the same day as one watched throughout')
 const late = life()
 let frames = 0
-while (!late.caught) { late.advance(T0 + 398, TOWNSFOLK.replay); frames++ }
+while (!late.caught) { late.advance(T0 + 588, TOWNSFOLK.replay); frames++ }
 check(frames > 1 && a.all.every((c, i) => c.x === late.all[i].x && c.z === late.all[i].z && c.state === late.all[i].state), 'a town woken late catches up over several frames to the same day', `${frames} frames`)
 check(new Set(a.all.map((c) => c.seat).filter(Boolean)).size === a.all.filter((c) => c.seat).length, 'no two townsfolk hold one stool')
 
 // --- the striders at the rails, and the travellers leaving and arriving ---
 check(towns.every((town) => town.posts.length >= 3 && town.posts.every((p) => p.tethers.length > 0)), 'every town has at least 3 hitching posts, each with a tether')
 const roadPlan = planRoads({ towns, ground, surface, layers, seed: SEED })
-const journeys = new Journeys(towns, roadPlan, { seed: SEED, bodies: TOWNSFOLK.bodies.length })
+const journeys = new Journeys(towns, roadPlan, { seed: SEED, bodies: TOWNSFOLK.bodies })
 const strider = { walk: 1.06, fidget: 2 }
-const tally = { departs: 0, late: 0, worstLate: 0, walkouts: 0, arrivals: 0, stuck: [], leads: 0, fidgets: 0, maxTied: 0, errors: [] }
+const tally = { departs: 0, late: 0, worstLate: 0, walkouts: 0, arrivals: 0, stuck: [], leads: 0, fidgets: 0, maxTied: 0, errors: [], twins: [], full: 0, rounds: { smithy: 0, field: 0, woodpile: 0 }, strikes: 0 }
 for (let ti = 0; ti < towns.length; ti++) {
   const town = towns[ti]
   const tSeats = Array.from({ length: 6 }, (_, k) => {
@@ -345,9 +374,13 @@ for (let ti = 0; ti < towns.length; ti++) {
       const turn = L.turnTick
       L.advance(s)
       if (L.tick === turn - 1) for (const c of L.all) if (c.job !== null) tally.stuck.push(`${town.id} ${c.job.kind}:${c.job.step}`)
+      const about = L.all.filter((c) => c.state !== 'away').map((c) => c.body)
+      if (about.length > bodies.length) tally.full++
+      else if (new Set(about).size !== about.length && tally.twins.length < 4) tally.twins.push(`${town.id} at ${s}`)
       for (const c of L.all) {
+        if (c.clip === 'strike') tally.strikes++
         if (c.job !== null) {
-          if (!jobs.has(c)) { jobs.set(c, c.job); if (c.job.kind === 'lead') tally.leads++ }
+          if (!jobs.has(c)) { jobs.set(c, c.job); if (c.job.kind === 'lead') tally.leads++; if (c.job.kind in tally.rounds) tally.rounds[c.job.kind]++ }
           continue
         }
         const job = jobs.get(c)
@@ -375,6 +408,8 @@ for (let s = 0; s <= 590; s += 2) watched.advance(T0 + s)
 jumped.advance(T0 + 590)
 const same = (p, q) => p.x === q.x && p.z === q.z && p.state === q.state
 check(watched.all.every((c, i) => same(c, jumped.all[i])) && watched.mounts.every((m, i) => same(m, jumped.mounts[i])), 'a town with striders woken late replays to the same day as one watched throughout', JSON.stringify(watched.stats.mounts))
+check(tally.twins.length === 0, 'no town holds two of one body while it holds no more than there are bodies, its travellers included', `${tally.twins.join(', ')} (${tally.full} town-seconds over-full)`)
+check(Object.values(tally.rounds).every((n) => n > 0) && tally.strikes > 0, 'the smith works the smithy, the farmers their fields and the woodcutter the stump, striking at anvil and stump', JSON.stringify({ ...tally.rounds, strikes: tally.strikes }))
 check(tally.fidgets > 0 && tally.maxTied <= 1, 'tied striders fidget, never more than a tether each', `max ${(tally.maxTied * 100).toFixed(0)}% of tethers`)
 
 if (failures) {

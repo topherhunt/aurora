@@ -25,6 +25,11 @@ for (const kind of Object.keys(KINDS)) {
     try { houses.push(rollTownInterior({ seed: 4242, index: s, plan })) } catch (e) { threw++; console.log(`  ${kind} ${s}: ${e.message}`) }
   }
 }
+// The potion master's house is a cottage (layers/towns.js).
+for (let s = 1; s <= SEEDS; s++) {
+  const plan = planBuilding({ seed: s * 7919 + 1, kind: 'cottage' })
+  try { houses.push(rollTownInterior({ seed: 4242, index: 1000 + s, plan, shop: 'potions' })) } catch (e) { threw++; console.log(`  potions ${s}: ${e.message}`) }
+}
 console.log(`Town interiors: ${houses.length} houses over ${Object.keys(KINDS).length} kinds`)
 check(threw === 0, `every building rolls (${threw} threw)`)
 const every = (what, pred) => {
@@ -43,6 +48,14 @@ every(`the main room is the outside's main mass at ${S} times the size`, (r) => 
 every('the hall and any kitchen downstairs', (r) => r.rooms.filter((rm) => rm.kind === 'hall' || rm.kind === 'kitchen').every((rm) => rm.level === 0) && r.rooms.some((rm) => rm.kind === 'hall'))
 every('a light in every room', (r) => r.rooms.every((rm) => r.candles.some((c) => c.room === rm.id)))
 every('a bed to sleep in', (r) => r.spots.some((s) => s.kind === 'bed'))
+{
+  const shops = houses.filter((r) => r.shop === 'potions')
+  const far = shops.map((r) => { const c = r.items.find((it) => it.kind === 'counter'); return c ? Math.hypot(c.x - r.doorIn.x, c.z - r.doorIn.z) : Infinity })
+  check(shops.length === SEEDS && shops.every((r) => r.spots.some((s) => s.kind === 'shop') && r.items.filter((it) => it.kind === 'potion').length >= 4), `a potion master's house has a counter of potions to keep (${shops.length} shops)`)
+  const near = far.filter((d) => d < 4.5).length
+  check(near >= shops.length * 0.9, `the counter mostly stands near the front door (${near} of ${shops.length} within 4.5 m)`)
+  check(houses.every((r) => (r.shop === 'potions') === r.items.some((it) => it.kind === 'counter')), 'only a potion master has a counter')
+}
 every('a table with seats, and a hearth to cook at', (r) => r.items.some((it) => it.kind === 'table') && r.spots.some((s) => s.kind === 'seat') && r.spots.some((s) => s.kind === 'cook'))
 {
   const two = houses.filter((r) => r.upper), beds = (r, l) => r.items.filter((it) => it.kind === 'bed' && r.rooms[it.room].level === l).length

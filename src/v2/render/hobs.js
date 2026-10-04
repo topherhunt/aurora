@@ -15,7 +15,8 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32, swing } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
-import { Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet, rollTint } from './baked-puppet.js'
 
 export const HOB_GLB = 'creatures/hob-weevil.glb'
 export const CLIPS = ['idle', 'walk', 'run', 'eat']
@@ -29,7 +30,7 @@ export const BROODS = [0.35, 0.35, 0.2, 0.1]
 export const SIZE_M = 0.45
 export const SIZE_VAR = 0.15
 export const BABY = [0.33, 0.45]
-// Multipliers on the moss-green texture, one settled material each (puppet.js makePuppetMaterials says why not one a hob); a baby wears its parent's at TINT_KEPT.
+// A skinned hob's multipliers on the moss-green texture, one settled material each (puppet.js makePuppetMaterials says why not one a hob); a baked hob wears its own rolled colour instead. A baby wears its parent's at TINT_KEPT.
 export const TINTS = [[1, 1, 1], [1.35, 1.15, 0.7], [0.75, 1, 1.3], [1.5, 0.85, 0.65], [1.05, 0.8, 1.25], [0.6, 0.65, 0.6]]
 export const TINT_KEPT = 0.7
 // The yard: a disc of YARD_R about a point YARD_M out from the door, away from its sill; a new spot in it every slot of SLOT_S, eaten at with odds EAT.
@@ -112,6 +113,7 @@ export class Hobs {
     this.all = []
     this.calls = []
     this.cryRand = mulberry32(hash32(seed, 0xc41))
+    this.tintRand = mulberry32(hash32(seed, 0x71a7))
     const { nodes, doorNodes } = villagers.graph
     doorNodes.forEach((home, house) => {
       const rand = mulberry32(hash32(seed, 0x40b, house))
@@ -126,7 +128,9 @@ export class Hobs {
       adult.side = rand() < 0.5 ? -1 : 1
       const brood = pick(rand, BROODS)
       for (let i = 0; i < brood; i++) {
-        const baby = this._hob(rand, yard, adult.size * between(rand, BABY), rand() < TINT_KEPT ? adult.tint : (rand() * TINTS.length) | 0)
+        const kept = rand() < TINT_KEPT
+        const baby = this._hob(rand, yard, adult.size * between(rand, BABY), kept ? adult.tint : (rand() * TINTS.length) | 0)
+        if (kept) baby.color.copy(adult.color)
         baby.parent = adult
         baby.side = i % 2 ? 1 : -1
         baby.row = i >> 1
@@ -150,7 +154,8 @@ export class Hobs {
 
   _hob(rand, yard, size, tint) {
     const h = {
-      id: this.all.length, yard, size, tint, k: 1, owner: null, parent: null, side: 1, row: 0,
+      // `tint` indexes TINTS for a skinned body; `color` is a baked body's own (rollTint).
+      id: this.all.length, yard, size, tint, color: rollTint(this.tintRand), k: 1, owner: null, parent: null, side: 1, row: 0,
       slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), hush: 0, slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
       x: 0, y: 0, z: 0, heading: rand() * 2 * Math.PI, aim: 0, moving: false,
       clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null,
@@ -172,7 +177,7 @@ export class Hobs {
       m.map = asset.map
       m.needsUpdate = true
     }
-    for (const mats of this.puppetMats) this.puppets.push(new Puppet(asset, mats, { clipFade: FADE_S }))
+    for (const mats of this.puppetMats) this.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S }))
     this.freePuppets = this.puppets.slice()
     for (const h of this.all) {
       h.k = h.size / asset.span
@@ -322,9 +327,15 @@ export class Hobs {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       h.puppet = p
-      p.mats.plain = this.plains[h.tint]
-      p.mats.in.color.copy(p.mats.plain.color)
-      p.mats.out.color.copy(p.mats.plain.color)
+      if (p.baked) {
+        // Every baked hob wears the white plain, so all of them are one draw a tier, and its own colour rides its instance.
+        p.mats.plain = this.plains[0]
+        p.tint.copy(h.color)
+      } else {
+        p.mats.plain = this.plains[h.tint]
+        p.mats.in.color.copy(p.mats.plain.color)
+        p.mats.out.color.copy(p.mats.plain.color)
+      }
       this.batch.add(p.group)
       p.play(h.clip, h.cue, 0)
     }

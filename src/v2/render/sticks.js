@@ -86,11 +86,9 @@ export function buildStickGeometry(seed = 7) {
   return geo
 }
 
-// Cells are CELL_M square. A cell's sticks: BASE_PER_M2 candidates a square metre, times a clumping factor that runs 0..CLUMP_MAX over CLUMP_CELLS cells, so sticks lie in drifts with bare ground between. A candidate stands only between half a stick and NEAR_TRUNK_M out from a trunk's bark.
+// Cells are CELL_M square. A cell rolls BASE_PER_M2 candidates a square metre, uniformly over it; a candidate stands only between half a stick and NEAR_TRUNK_M out from a trunk's bark.
 export const CELL_M = 4
 const BASE_PER_M2 = 0.06
-const CLUMP_CELLS = 3
-const CLUMP_MAX = 3
 export const NEAR_TRUNK_M = 3
 const TRUNK_MAX_M = 2
 // Trees' trunk tiles held for the cells; cleared whole past this many.
@@ -109,7 +107,6 @@ const hash = (seed, a, b) => {
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39) >>> 0
   return (h ^ (h >>> 15)) >>> 0
 }
-const unit = (seed, a, b) => hash(seed, a, b) / 4294967296
 
 const _m = new THREE.Matrix4()
 const _q = new THREE.Quaternion()
@@ -201,16 +198,8 @@ export class Sticks {
     const cell = { cx, cz, ids: [] }
     this.cells.set(`${cx},${cz}`, cell)
     if (this.none) return
-    // The clump: a smooth value over the cell lattice, squared, so most ground is bare and some is strewn.
-    const gx = cx / CLUMP_CELLS, gz = cz / CLUMP_CELLS
-    const ix = Math.floor(gx), iz = Math.floor(gz)
-    const fx = gx - ix, fz = gz - iz
-    const sm = (t) => t * t * (3 - 2 * t)
-    const v = (a, b) => unit(this.seed ^ 0x51c4, a, b)
-    const n = v(ix, iz) * (1 - sm(fx)) * (1 - sm(fz)) + v(ix + 1, iz) * sm(fx) * (1 - sm(fz)) + v(ix, iz + 1) * (1 - sm(fx)) * sm(fz) + v(ix + 1, iz + 1) * sm(fx) * sm(fz)
-    const want = BASE_PER_M2 * CELL_M * CELL_M * CLUMP_MAX * n * n
     const rand = mulberry32(hash(this.seed, cx, cz))
-    const count = Math.floor(want + rand())
+    const count = Math.floor(BASE_PER_M2 * CELL_M * CELL_M + rand())
     const trunks = count > 0 ? this._trunksNear(cx, cz) : []
     for (let i = 0; i < count; i++) {
       // Every candidate draws the same randoms whether or not it survives, so one refusal never reshuffles the rest.

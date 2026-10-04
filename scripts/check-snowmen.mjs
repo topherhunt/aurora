@@ -40,6 +40,10 @@ import { LOD_FADE_S, REPLANT } from '../src/v2/render/puppet.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
+import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
+
+// These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
+setPuppetMode('skinned')
 
 let failures = 0
 const check = (ok, label, detail = '') => {

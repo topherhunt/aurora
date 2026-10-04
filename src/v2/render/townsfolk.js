@@ -1,14 +1,18 @@
 import THREE from '../../three-instance.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { clamp, mulberry32 } from '../../sim/mathx.js'
 import { JOURNEYS } from './journeys.js'
 import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth, hearthKit } from './hearth.js'
-import { lodFadeS, Puppet, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { lodFadeS, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet } from './baked-puppet.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
 import { dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
+import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
+import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
 import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
 
 // The towns' people (DESIGN.md §32): a campfire and stools in each clearing (hearth.js, grown to a human seat), and townsfolk walking the town's ways between the doors, the fire and the roads, stopping to chat, and turning to greet her. Each town's day is a deterministic sim over the room's clock, replayed from its chapter's start when the town comes alive; the greeting is this client's alone.
@@ -31,6 +35,67 @@ function underside(asset, clip) {
   return at
 }
 
+// The strike, a hammer's or an axe's blow: the idle with the right arm swung up and down in the body's forward plane. Each key is [s, shoulder°, elbow°], each bone turned about the body's side axis (left shoulder to right, measured each key: a positive turn swings a hanging arm forward and up) and conjugated into its parent's frame, so it holds whatever way the rig's bones lie.
+const STRIKE = { s: 1.1, keys: [[0, 40, 60], [0.45, 150, 100], [0.62, 35, 25], [0.8, 30, 30], [1.1, 40, 60]] }
+function strikeClip(asset, arm, left) {
+  const copies = new Map()
+  const rig = cloneBones(asset.root, copies)
+  const byName = new Map([...copies.values()].map((b) => [b.name, b]))
+  const bone = (name) => {
+    const b = byName.get(THREE.PropertyBinding.sanitizeNodeName(name))
+    if (!b) throw new Error(`Townsfolk: no bone named ${name} to strike with`)
+    return b
+  }
+  const S = bone(arm.shoulder), E = bone(arm.elbow), L = bone(left.shoulder)
+  const idle = asset.clips.find((c) => c.name === 'idle')
+  const mixer = new THREE.AnimationMixer(rig)
+  const action = mixer.clipAction(idle).play()
+  // The mixer rewrites a bone only when its idle value changes, and the idle holds the arm nearly still: without setting these two from their own tracks each key, every twist would stack on the last.
+  const rest = [S, E].map((b) => {
+    const track = idle.tracks.find((t) => t.name === `${b.name}.quaternion`)
+    if (!track) throw new Error(`Townsfolk: the idle clip does not turn ${b.name}`)
+    return { b, at: track.createInterpolant() }
+  })
+  const side = new THREE.Vector3(), at = new THREE.Vector3(), pw = new THREE.Quaternion(), turn = new THREE.Quaternion()
+  const twist = (b, deg) => {
+    b.parent.getWorldQuaternion(pw)
+    turn.setFromAxisAngle(side, (deg * Math.PI) / 180)
+    b.quaternion.premultiply(pw.clone().invert().multiply(turn).multiply(pw))
+    b.updateMatrixWorld(true)
+  }
+  const times = [], sq = [], eq = []
+  for (const [t, th, ph] of STRIKE.keys) {
+    action.time = t % idle.duration
+    mixer.update(0)
+    for (const r of rest) r.b.quaternion.fromArray(r.at.evaluate(t % idle.duration))
+    rig.updateMatrixWorld(true)
+    side.setFromMatrixPosition(S.matrixWorld).sub(at.setFromMatrixPosition(L.matrixWorld)).normalize()
+    twist(S, th)
+    twist(E, ph)
+    times.push(t)
+    sq.push(...S.quaternion.toArray())
+    eq.push(...E.quaternion.toArray())
+  }
+  const mine = [`${S.name}.quaternion`, `${E.name}.quaternion`]
+  const tracks = idle.tracks.filter((t) => !mine.includes(t.name)).map((t) => t.clone())
+  tracks.push(new THREE.QuaternionKeyframeTrack(mine[0], times, sq), new THREE.QuaternionKeyframeTrack(mine[1], times, eq))
+  return new THREE.AnimationClip('strike', STRIKE.s, tracks)
+}
+
+/** A tool along +Y from the fist (the handle's foot 6 cm behind it), its head at the far end and, for a blade, out along +X: the way the blow travels. */
+function toolGeometry([L, r, hl, hh, hw], blade) {
+  const paint = (g, [cr, cg, cb]) => g.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: g.getAttribute('position').count }, () => [cr, cg, cb]).flat(), 3))
+  const handle = new THREE.CylinderGeometry(r, r, L, 6).translate(0, L / 2 - 0.06, 0)
+  const head = new THREE.BoxGeometry(hl, hh, hw).translate(blade ? hl / 2 + r : 0, L - 0.06 - hh / 2, 0)
+  paint(handle, [0.42, 0.28, 0.16])
+  paint(head, [0.3, 0.31, 0.33])
+  const g = mergeGeometries([handle, head])
+  handle.dispose()
+  head.dispose()
+  return g
+}
+const TOOL_OF = { smithy: 'hammer', woodpile: 'axe' }
+
 function boneIndex(asset, name) {
   const i = asset.skeleton.bones.findIndex((b) => b.name === THREE.PropertyBinding.sanitizeNodeName(name))
   if (i < 0) throw new Error(`Townsfolk: no bone named ${name}`)
@@ -38,10 +103,9 @@ function boneIndex(asset, name) {
 }
 
 export const TOWNSFOLK = {
-  // The avatars (public/creatures/<id>.glb) and puppets per avatar: the most drawn at once is their product.
-  bodies: ['farmer', 'shepherd', 'woodcutter'],
-  puppets: 4,
-  people: { hut: 1, cottage: 1, longhouse: 2, inn: 2 },
+  // The avatars (public/creatures/<id>.glb), one of each to a town (layers/trades.js castFolk), and puppets per avatar: the most drawn at once is their product.
+  bodies: TRADES.bodies,
+  puppets: 2,
   sizeVar: 0.04,
   pace: [0.85, 1.15],
   // Metres past a town's radius it comes alive at, and is let go past.
@@ -59,6 +123,16 @@ export const TOWNSFOLK = {
   homing: 60,
   talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
   errands: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
+  // An errand's chance of being its trade's round instead; a shopkeeper's (potions, inn) times indoors are `keep` times as long. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
+  trade: {
+    work: 0.65, keep: 3,
+    smith: { rounds: [2, 4], forge: [4, 7], strike: [4, 7], quench: [1.5, 2.5], again: [3, 5] },
+    farm: { spots: [3, 6], tend: [6, 12] },
+    chop: { rounds: [2, 3], strike: [8, 15], stack: [2, 3] },
+  },
+  // The forge's flame, a small campfire's, and the tools a smith and woodcutter carry at work: handle length and radius, head's length, height and width, in metres.
+  forge: 0.55,
+  tools: { hammer: [0.36, 0.016, 0.15, 0.06, 0.06], axe: [0.62, 0.018, 0.1, 0.13, 0.025] },
   // The striders at the rails: spare mounts past a tether each for the chapter's arrivals, and guests to ride or walk them in; the share of tethers filled at a chapter's start; seconds tied between fidgets, at the knot, and in the hop up or down; the rein a led one keeps; the wander legs of a lead, and no lead within `clear` s of a departure's fetch or `late` s of the chapter's end. A departer fetches its strider `slack` s ahead of its own worst walk and ride to the port at `walk` m/s afoot.
   strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [16, 60], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
   // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
@@ -76,7 +150,7 @@ export const TOWNSFOLK = {
   reach: 20,
 }
 
-export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', ...TALKS]
+export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', 'gather', 'strike', ...TALKS]
 
 const LOD_TIERS = LOD_RUNGS
 const STEP_S = 2
@@ -106,7 +180,8 @@ function roll(c) {
  * the plan laid them, every path's far end spliced into the nearest edge laid
  * before it. `doors` is each building's door node, in `town.buildings` order;
  * `ports` each road's last node, at its port end; `posts` each hitching rail's
- * gate, spliced in last.
+ * gate, spliced in after them; `works` each work's way in, -1 for those
+ * reached from their keeper's door instead.
  */
 export function townGraph(town) {
   const N = TOWNSFOLK.node
@@ -168,8 +243,17 @@ export function townGraph(town) {
     link(n, onto)
     return n
   })
+  const works = town.works.map((w) => {
+    if (w.kind !== 'smithy') return -1
+    const { entry } = smithyLayout(w.anvils)
+    const [x, z] = toWorld(w.x, w.z, w.yaw, entry.x, entry.z)
+    const onto = attach(x, z)
+    const n = add(x, z, 'work')
+    link(n, onto)
+    return n
+  })
   const targets = nodes.map((_, i) => i).filter((i) => nodes[i].kind === 'ring' || nodes[i].kind === 'road' || nodes[i].kind === 'way')
-  return { nodes, adj, doors, ring, targets, ports, posts }
+  return { nodes, adj, doors, ring, targets, ports, posts, works }
 }
 
 /**
@@ -207,18 +291,17 @@ export class TownLife {
       return { ...s, node, by: null }
     })
     this.all = []
-    town.buildings.forEach((b, i) => {
-      const n = TOWNSFOLK.people[b.kind]
-      if (!(n > 0)) throw new Error(`TownLife: no head count for a ${b.kind}`)
-      for (let j = 0; j < n; j++) {
-        const id = this.all.length
-        const rand = mulberry32(hash32(this.seed, id))
-        // Dealt in turn, so no body's puppet pool runs dry while another's idles.
-        const body = (this.seed + id) % bodies.length
-        const size = bodies[body].heightM * (1 + TOWNSFOLK.sizeVar * (2 * rand() - 1))
-        this.all.push(this._person(id, body, size, this.graph.doors[i], between(rand, TOWNSFOLK.pace), false))
-      }
-    })
+    for (const f of town.folk) {
+      const id = this.all.length
+      const rand = mulberry32(hash32(this.seed, id))
+      const body = TOWNSFOLK.bodies.indexOf(f.body)
+      if (!(body >= 0 && body < bodies.length)) throw new Error(`TownLife: ${town.id}'s ${f.body} is not among the ${bodies.length} bodies`)
+      const size = bodies[body].heightM * (1 + TOWNSFOLK.sizeVar * (2 * rand() - 1))
+      const c = this._person(id, body, size, this.graph.doors[f.home], between(rand, TOWNSFOLK.pace), false)
+      c.trade = f.trade
+      c.work = f.work
+      this.all.push(c)
+    }
     const S = TOWNSFOLK.strider
     // Travellers arrived this chapter, away until they do; each takes its journey member's body.
     if (journeys) for (let g = 0; g < S.guests; g++) this.all.push(this._person(this.all.length, 0, bodies[0].heightM, this.graph.doors[0], 1, true))
@@ -291,6 +374,8 @@ export class TownLife {
       clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0, from: -1,
       // A traveller's: its job's steps, the strider it sits, the hop on or off (0 afoot, 1 in the saddle) between the ground point `hopA` and the saddle `hopB`, and its own body under a journey member's borrowed one.
       guest, job: null, mount: null, hop: 0, phop: 0, hopA: null, hopB: null, own: null, planned: false,
+      // Its trade (layers/trades.js castFolk) and the town.works index it keeps, or null.
+      trade: null, work: null,
     }
   }
 
@@ -369,11 +454,17 @@ export class TownLife {
       })
     }
     let g = 0
+    // Journeys never bring a body the town has; two arriving from different towns may share one, and the later takes a body no one here wears.
+    const here = new Set(this.all.filter((o) => !o.guest).map((o) => o.body))
     for (const j of inn) j.members.forEach((member, k) => {
       const c = this.all.filter((o) => o.guest)[g++]
       if (!c) throw new Error(`TownLife: ${this.town.id} has more than ${S.guests} arriving in a chapter`)
       c.planned = true
-      this._become(c, member)
+      let body = member.body % this.bodies.length
+      const spare = this.bodies.map((_, b) => b).filter((b) => !here.has(b))
+      if (here.has(body) && spare.length > 0) body = spare[(rand() * spare.length) | 0]
+      here.add(body)
+      this._become(c, { ...member, body })
       this.plan.push({ tick: tickAfter(j.t1), kind: j.ride ? 'ridein' : 'walkin', c, j, k })
     })
     this.plan.sort((p, q) => p.tick - q.tick)
@@ -499,6 +590,7 @@ export class TownLife {
     if (this.homing) { this._go(c, c.home, 'enter'); return }
     const kind = pick(c.rand, TOWNSFOLK.errands)
     if (kind === 'lead' && this._lead(c)) return
+    if (c.work !== null && c.rand() < TOWNSFOLK.trade.work) { this._trade(c); return }
     const { doors, targets } = this.graph
     if (kind === 'visit') {
       let door = doors[(c.rand() * doors.length) | 0]
@@ -555,7 +647,7 @@ export class TownLife {
     switch (c.then) {
       case 'stand': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.stand); this._play(c, 'idle', STEP_S); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
-      case 'enter': this._inside(c, between(c.rand, TOWNSFOLK.inside)); break
+      case 'enter': this._inside(c, between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1)); break
       case 'errand': this._errand(c); break
       case 'job': this._jobStep(c); break
       default: throw new Error(`TownLife: a route ends in ${c.then}`)
@@ -606,13 +698,14 @@ export class TownLife {
     this._jobStep(c)
   }
 
-  _work(c, hold, aim = c.heading) {
+  _work(c, hold, aim = c.heading, clip = null) {
     c.state = 'work'
     c.hold = hold
     c.aim = aim
     c.route.length = 0
     c.wp = 0
-    this._still(c)
+    if (clip) this._play(c, clip, STEP_S)
+    else this._still(c)
   }
 
   /** A tied mount no one is coming for, or null. */
@@ -654,6 +747,7 @@ export class TownLife {
   }
 
   _jobStep(c) {
+    if (c.job.marks) { this._tradeStep(c); return }
     const job = c.job, S = TOWNSFOLK.strider
     const now = this.tick * TICK_S
     const t = job.tether, m = job.mount
@@ -746,6 +840,68 @@ export class TownLife {
         return
       default: throw new Error(`TownLife: a ${job.kind} job has no step ${step}`)
     }
+  }
+
+  /**
+   * Its trade's round as a job of marks, each walked to straight and held at
+   * with its clip: in from the ways at `node` through `in`, back out through
+   * `out`. The smith works inside the smithy from its way in; a farmer and the
+   * woodcutter go from their own door, through the field's gate or round the
+   * house.
+   */
+  _trade(c) {
+    const T = TOWNSFOLK.trade, w = this.town.works[c.work], r = c.rand
+    const mark = ([x, z], h, clip, hold) => ({ x, z, h, clip, hold: between(r, hold) })
+    // Local heading `h` (0 facing the work's +Z) to the world's.
+    const face = (h) => { const [dx, dz] = toWorld(0, 0, w.yaw, Math.sin(h), Math.cos(h)); return Math.atan2(-dz, dx) }
+    const at = (lx, lz) => toWorld(w.x, w.z, w.yaw, lx, lz)
+    const marks = []
+    let node, inn, out
+    if (w.kind === 'smithy') {
+      const L = smithyLayout(w.anvils), S = T.smith
+      const entry = at(L.entry.x, L.entry.z)
+      for (let k = Math.round(between(r, S.rounds)); k > 0; k--) {
+        const a = L.stand.anvil[(r() * L.stand.anvil.length) | 0]
+        marks.push(mark(at(L.stand.forge.x, L.stand.forge.z), face(L.stand.forge.h), 'idle', S.forge))
+        marks.push(mark(at(a.x, a.z), face(a.h), 'strike', S.strike))
+        marks.push(mark(at(L.stand.tub.x, L.stand.tub.z), face(L.stand.tub.h), 'gather', S.quench))
+        marks.push(mark(at(a.x, a.z), face(a.h), 'strike', S.again))
+      }
+      node = this.graph.works[c.work]
+      inn = [entry]
+      out = [entry]
+    } else if (w.kind === 'field') {
+      const F = TRADES.field
+      for (let k = Math.round(between(r, T.farm.spots)); k > 0; k--) {
+        const row = w.rows[(r() * w.rows.length) | 0]
+        marks.push(mark(at(row.x0 + 0.3 + r() * (row.x1 - row.x0 - 0.6), row.z + F.row / 2), face(Math.PI), 'gather', T.farm.tend))
+      }
+      node = c.home
+      inn = [w.gateOut, w.gateIn]
+      out = [w.gateIn, w.gateOut]
+    } else if (w.kind === 'woodpile') {
+      const W = TRADES.woodpile
+      const [sx, sz] = at(0, W.stump + W.stand), [kx, kz] = at(0, W.stump)
+      for (let k = Math.round(between(r, T.chop.rounds)); k > 0; k--) {
+        marks.push(mark([sx, sz], Math.atan2(-(kz - sz), kx - sx), 'strike', T.chop.strike))
+        // Stacked to one side, so the walk back to the stand clears the stump.
+        marks.push(mark(at((r() < 0.5 ? -1 : 1) * (0.8 + 0.3 * r()), W.d / 2 + 0.45), face(Math.PI), 'gather', T.chop.stack))
+      }
+      node = c.home
+      inn = w.via
+      out = [...w.via].reverse()
+    } else throw new Error(`TownLife: no round for a ${w.kind}`)
+    c.job = { kind: w.kind, j: null, k: 0, step: 0, mount: null, tether: null, dest: null, legs: 0, node, in: inn.map(([x, z]) => ({ x, z })), out, marks }
+    this._tradeStep(c)
+  }
+
+  /** Even steps walk to the next mark, odd ones hold it; past the last, or once the town homes, back out the way it came. */
+  _tradeStep(c) {
+    const job = c.job, step = job.step++, i = step >> 1
+    if (step % 2 === 1) { const m = job.marks[i]; this._work(c, m.hold, m.h, m.clip); return }
+    if (i < job.marks.length && !this.homing) { this._go(c, job.node, 'job', step === 0 ? [...job.in, job.marks[0]] : [job.marks[i]]); return }
+    c.job = null
+    this._go(c, job.node, 'errand', [], step === 0 ? [] : job.out)
   }
 
   /** An arrival's last step: a door of its own, walked to and gone in. */
@@ -959,6 +1115,16 @@ const _mat = new THREE.Matrix4()
 const _hand = new THREE.Vector3()
 const _head = new THREE.Vector3()
 const _shoveOut = { x: 0, z: 0, r: 0 }
+const _side = new THREE.Vector3()
+const _along = new THREE.Vector3()
+const _across = new THREE.Vector3()
+const STEADY = [1, 1, 1]
+/** A smithy's forge flame in the world: in the hood's mouth, on the hearth. */
+const forgeAt = (w) => {
+  const { fire } = smithyLayout(w.anvils)
+  const [x, z] = toWorld(w.x, w.z, w.yaw, fire[0], fire[2])
+  return { x, y: w.y + fire[1], z }
+}
 
 export class Townsfolk {
   /**
@@ -1007,6 +1173,21 @@ export class Townsfolk {
       })
       return { id, plain, mats, free: [], puppets: [] }
     })
+    this.toolMat = new THREE.MeshLambertMaterial({ vertexColors: true })
+    this.materials.push(this.toolMat)
+    // As many of each as there are puppets of a body: one smith and one woodcutter a town.
+    this.tools = Object.fromEntries(Object.entries(TOWNSFOLK.tools).map(([name, dims]) => {
+      const geometry = toolGeometry(dims, name === 'axe')
+      const meshes = Array.from({ length: TOWNSFOLK.puppets }, () => {
+        const m = new THREE.Mesh(geometry, this.toolMat)
+        m.matrixAutoUpdate = false
+        m.visible = false
+        m.frustumCulled = false
+        this.batch.add(m)
+        return m
+      })
+      return [name, { geometry, meshes }]
+    }))
     // Its materials are the caller's to light, as these are.
     this.striders = journeys ? new Striders(scene, { walk, textures, patch }) : null
     this.bodies = null
@@ -1045,22 +1226,25 @@ export class Townsfolk {
     if (!this.striders !== !strider) throw new Error('Townsfolk: the strider asset comes with the journeys')
     if (strider) this.striders.setAsset(strider)
     this.bodies = assets.map((asset, i) => {
+      const right = asset.arms && asset.arms.find((a) => a.side === -1)
+      const left = asset.arms && asset.arms.find((a) => a.side === 1)
+      if (!right || !left) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} names no pair of arms -- re-ship it`)
+      // Before any puppet is made, so a baked one bakes it.
+      asset.clips.push(strikeClip(asset, right, left))
       for (const name of CLIPS) if (!asset.clips.some((c) => c.name === name)) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} has no ${name} clip`)
       const durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
       if (!(durations.sit > SIT_CUT[1])) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]}'s sit clip is ${durations.sit} s, cut at ${SIT_CUT}`)
-      const right = asset.arms && asset.arms.find((a) => a.side === -1)
-      if (!right) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} names no right arm -- re-ship it`)
       const pool = this.pools[i]
       pool.plain.map = asset.map
       pool.plain.needsUpdate = true
       for (const mats of pool.mats) {
         for (const m of [mats.in, mats.out]) { m.map = asset.map; m.needsUpdate = true }
-        const p = new Puppet(asset, mats, { clipFade: 0.25 })
+        const p = makePuppet(asset, mats, { clipFade: 0.25 })
         p.pool = i
         pool.puppets.push(p)
       }
       pool.free = pool.puppets.slice()
-      return { asset, heightM: heights[i], height: asset.height, gait: asset.gait, wheelbase: asset.wheelbase, sitY: underside(asset, 'idle-sit').y, ride: underside(asset, 'ride'), wrist: boneIndex(asset, right.wrist), durations }
+      return { asset, heightM: heights[i], height: asset.height, gait: asset.gait, wheelbase: asset.wheelbase, sitY: underside(asset, 'idle-sit').y, ride: underside(asset, 'ride'), wrist: boneIndex(asset, right.wrist), elbow: boneIndex(asset, right.elbow), durations }
     })
     // One hearth for every body: grown so its stools' tops meet the mean seated underside.
     this.hearthScale = this.bodies.reduce((s, b) => s + (b.sitY / b.height) * b.heightM, 0) / this.bodies.length / SEAT_M
@@ -1069,7 +1253,7 @@ export class Townsfolk {
 
   /** Every town's campfire flame, woken or not, for ambience.js: the clearing is flattened to `town.y`. */
   get fires() {
-    return this.towns.map((t) => ({ x: t.x, y: t.y + HEARTH.fire.lift * this.hearthScale, z: t.z }))
+    return [...this.towns.map((t) => ({ x: t.x, y: t.y + HEARTH.fire.lift * this.hearthScale, z: t.z })), ...this.towns.flatMap((t) => t.works.filter((w) => w.kind === 'smithy').map(forgeAt))]
   }
 
   get stats() {
@@ -1095,11 +1279,24 @@ export class Townsfolk {
     const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), ...J })
     for (const c of life.all) this._entity(c)
     for (const m of life.mounts) Object.assign(m, mountFields(1), { key: `town:${i}:${m.id}`, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
-    this.alive.set(i, { life, hearth, rails: this.striders ? this.striders.rails(town) : null })
+    // The smithy's forge burns all day; its flame's shader reads world space, so it hangs off the scene.
+    const smithy = town.works.find((w) => w.kind === 'smithy')
+    let forge = null
+    if (smithy) {
+      const f = forgeAt(smithy)
+      forge = new TriFlames(1, TRI_CAMPFIRE, { seed: hash32(this.seed, i, 0xf09e) })
+      forge.place(0, f.x, f.y, f.z, { height: TRI_CAMPFIRE.height * TOWNSFOLK.forge, radius: TRI_CAMPFIRE.radius * TOWNSFOLK.forge })
+      this.scene.add(forge.group)
+    }
+    this.alive.set(i, { life, hearth, forge, rails: this.striders ? this.striders.rails(town) : null })
   }
 
   _sleep(i) {
-    const { life, hearth, rails } = this.alive.get(i)
+    const { life, hearth, forge, rails } = this.alive.get(i)
+    if (forge) {
+      forge.group.removeFromParent()
+      forge.dispose()
+    }
     for (const c of life.all) this._release(c)
     for (const m of life.mounts) this.striders.release(m)
     if (rails) this.striders.dropRails(rails)
@@ -1128,8 +1325,9 @@ export class Townsfolk {
     })
     const drawn = [], mounts = []
     let budget = TOWNSFOLK.replay
-    for (const { life, hearth } of this.alive.values()) {
+    for (const { life, hearth, forge } of this.alive.values()) {
       hearth.update(head.x, head.y, head.z, t)
+      if (forge) forge.update(t, STEADY, head)
       if (life.caught) life.advance(seconds)
       else budget -= life.advance(seconds, budget)
       if (!life.caught) continue
@@ -1159,6 +1357,7 @@ export class Townsfolk {
     for (const c of drawn) this._draw(c, dt)
     this.shown.length = 0
     for (const c of drawn) if (c.puppet) this.shown.push(c)
+    this._tools()
     if (this.striders) {
       for (const m of mounts) this._rein(m)
       this.striders.end()
@@ -1557,6 +1756,27 @@ export class Townsfolk {
     if (puppet.done) this._release(c)
   }
 
+  /** Each smith and woodcutter drawn on its round with its hammer or axe in the right fist: the handle off the forearm a quarter turn below its line, swung in the body's forward plane as the strike swings the arm. */
+  _tools() {
+    for (const { meshes } of Object.values(this.tools)) for (const m of meshes) m.visible = false
+    const used = { hammer: 0, axe: 0 }
+    for (const c of this.shown) {
+      const name = c.job ? TOOL_OF[c.job.kind] : undefined
+      if (name === undefined || c.hidden) continue
+      const mesh = this.tools[name].meshes[used[name]++]
+      if (!mesh) continue
+      const p = c.puppet, b = this.bodies[p.pool]
+      const wrist = _hand.setFromMatrixPosition(p.skeleton.bones[b.wrist].matrixWorld).applyMatrix4(p.group.matrix)
+      const f = _head.setFromMatrixPosition(p.skeleton.bones[b.elbow].matrixWorld).applyMatrix4(p.group.matrix).subVectors(wrist, _head).normalize()
+      const side = _side.set(0, 0, 1).applyAxisAngle(UP, c.pose.heading)
+      const h = _along.crossVectors(side, f).negate().add(f).normalize()
+      const x = _across.crossVectors(h, side)
+      mesh.matrix.makeBasis(x, h, side).setPosition(wrist.addScaledVector(f, 0.08 * c.size / 1.7))
+      mesh.matrixWorldNeedsUpdate = true
+      mesh.visible = true
+    }
+  }
+
   /** In the saddle of its strider (drawn this frame) by its hop: the ride clip's underside on the saddle, rising `leap` over the line between. */
   _saddle(c) {
     const pose = c.pose, h = pose.hop
@@ -1659,6 +1879,7 @@ export class Townsfolk {
     this.batch.removeFromParent()
     if (this.striders) this.striders.dispose()
     for (const m of this.materials) m.dispose()
+    for (const { geometry } of Object.values(this.tools)) geometry.dispose()
     this.kit.dispose()
   }
 }

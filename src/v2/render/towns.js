@@ -5,6 +5,7 @@ import { LAYER } from '../../textures.js'
 import { buildBuilding2 } from '../../buildings/v2/building.js'
 import { roofHeightAt } from '../../buildings/plan.js'
 import { townsOccupyAt } from '../layers/towns.js'
+import { tradeArrays, tradeSolids } from './trades.js'
 
 export const TOWN_BANDS = { near: 60, mid: 140, far: 1500, hysteresis: 4, prebuild: 300, evict: 420 }
 // Frame budget for building geometry: a detail-2 building runs about 1.6 ms on desktop and several times that on the Quest, so no more than one of those a frame.
@@ -115,9 +116,11 @@ function mergeParts(parts) {
 }
 
 export class Towns {
-  constructor(scene, { towns, textures, patch }) {
+  /** `field.heightAt` is the live ground the works' fences and rows follow. */
+  constructor(scene, { towns, field, textures, patch }) {
     this.scene = scene
     this.towns = towns
+    this.ground = (x, z) => field.heightAt(x, z)
     this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t })))
     // Per town: the tier shown and wanted, each tier's merged geometry once built, the placed buildings of a tier still being built, and its far boxes.
     this.sites = towns.map((town) => ({ town, tier: 0, want: 0, farShown: false, geo: [null, null, null], parts: [null, [], []], mesh: null, masses: [] }))
@@ -168,8 +171,9 @@ export class Towns {
     this.far.setColorAt(0, new THREE.Color())
     scene.add(this.far)
 
+    // The buildings and the works' solids (render/trades.js tradeSolids, which carry y0 and y1) by cell.
     this.grid = new Map()
-    for (const b of this.buildings) {
+    for (const b of [...this.buildings, ...towns.flatMap((t) => tradeSolids(t).map((box) => ({ box, solid: box })))]) {
       const r = Math.hypot(b.box.hx, b.box.hz)
       for (let gx = Math.floor((b.box.x - r) / CELL); gx <= Math.floor((b.box.x + r) / CELL); gx++) {
         for (let gz = Math.floor((b.box.z - r) / CELL); gz <= Math.floor((b.box.z + r) / CELL); gz++) {
@@ -206,21 +210,21 @@ export class Towns {
     if (farDirty) this._packFar()
   }
 
-  // Places the town's next buildings at `detail` while the budget lasts (detail 2: one a frame across all towns), and merges the tier once the last is placed. Returns whether a detail-2 building was placed this frame.
+  // Places the town's next buildings at `detail` while the budget lasts (detail 2: one a frame across all towns), then its works as one part, and merges the tier once the last is placed. Returns whether a detail-2 part was placed this frame.
   _grow(s, detail, t0, heavy) {
     const parts = s.parts[detail]
     const list = s.town.buildings
-    while (parts.length < list.length && performance.now() - t0 < BUILD_MS) {
+    while (parts.length <= list.length && performance.now() - t0 < BUILD_MS) {
       if (detail === 2) {
         if (heavy) break
         heavy = true
       }
       const t1 = performance.now()
-      parts.push(placedArrays(list[parts.length], s.town, detail))
+      parts.push(parts.length < list.length ? placedArrays(list[parts.length], s.town, detail) : tradeArrays(s.town, detail, this.ground))
       this.stats.builds++
       this.stats.buildMs += performance.now() - t1
     }
-    if (parts.length === list.length) {
+    if (parts.length === list.length + 1) {
       s.geo[detail] = mergeParts(parts)
       s.parts[detail] = []
       this.stats.merges++
@@ -277,8 +281,17 @@ export class Towns {
     return this.grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`)
   }
 
-  // The building's solid over (x, z): [bottom, top] into out at span `at`, or false. Inside a mass's walls only, up to its roof there; eaves and porches are open to walk under.
+  // The building's or work's solid over (x, z): [bottom, top] into out at span `at`, or false. Inside a mass's walls only, up to its roof there; eaves and porches are open to walk under.
   _span(b, x, z, out, at) {
+    if (b.solid !== undefined) {
+      const w = b.solid
+      const dx = x - w.x
+      const dz = z - w.z
+      if (Math.abs(dx * w.c - dz * w.s) > w.hx || Math.abs(dx * w.s + dz * w.c) > w.hz) return false
+      out[at * 2] = w.y0
+      out[at * 2 + 1] = w.y1
+      return true
+    }
     const dx = x - b.x
     const dz = z - b.z
     const c = Math.cos(b.yaw)

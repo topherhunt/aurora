@@ -115,6 +115,7 @@ import {
   setCritterCard, tileSeed,
 } from './critters.js'
 import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet, solverStub } from './baked-puppet.js'
 import { TailLag } from './tail-lag.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
@@ -493,8 +494,8 @@ export class Dragons {
         m.map = asset.map
         m.needsUpdate = true
       }
-      const p = new Puppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT })
-      p.solver = new TailLag(p.bones, asset.tail)
+      const p = makePuppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT })
+      p.solver = p.baked ? solverStub() : new TailLag(p.bones, asset.tail)
       this.puppets.push(p)
     }
     this.freePuppets = this.puppets.slice()

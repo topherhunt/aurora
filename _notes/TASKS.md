@@ -26,21 +26,22 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] Working on these, to reivew:
+- [ ] Should be fixed, to review:
+  - [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
   - [ ] Torches don't look good: try the same "core flame triangles" as what candles use, with only occasional flickers upward?
   - [ ] When another player is running, don't despawn whatever they're holding in their hand (including a torch).
-  - [ ] When another player rides into pop-in distance riding a Strider, the strider's existence should get synced via netplay. Currently the player is just riding on air.
   - [ ] When 2 players are sitting on striders near each other, each player sees their own strider feather-ruffling near constantly while the other sits in a calm idle animation.
   - [ ] When riding a strider, in VR teleport mode, the strider should walk or run to its new location rather than just blink there.
   - [ ] When 2 players are in VR and teleporting on-foot down a mountain, player A will often see player B "sink into" the hillside and then run to their target location. As if person A's client is averse to keeping player B "walking as ground level".
   - [ ] Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
-  - [ ] Fix bug: if you load game in a bed, your head position is displaced.
   - [ ] Fix bug: Leafkin jump up the walls of their houses
   - [ ] Fix bug: Claire got an error about "spiders" and "leg position" when she got into a villager bed and tried to fall asleep there (or maybe when she tried to get out of the bed).
+  - [ ] Falling a long way with a Strider is always possible, but might kill you both. Damage height limit should be double what it is when on foot. Currently any amount of doable teleport-down distance will cause no damage, whereas extreme drops (say 30m?+) are red / inaccessible. That should never be inaccessible. Maybe do this by setting a max "teleport-lob descent distance" of 3m or 4m or whatever the limit is, and if you'd actually fall by more than that (meaning it would cause damage) the line becomes orange and the circle *disappears* signalling "we don't know where you'll land". And if you make the jump anyway, you teleport into the mid-air at that position & altitude, and animate falling until you hit your landing and take on however much damage.
+- [ ] Working on these, to reivew:
+  - [ ] Fix bug: if you load game in a bed, your head position is displaced.
   - [ ] Fix bug: some leafkin houses have too low awnings meaning you can't get access to the door. Lower capsule size maybe, or tighten awning boundary collision checks, or check doorway awning heights?
   - [ ] Leafkin in houses, if they don't trust you yet, should cower and whimper if you come within 2m, unless you're holding a mushroom, in which case they should act the same way leafkin do outside of houses in their glade.
   - [ ] Leafkin trust should be for "any player", not player-specific. It's more fun that way, and less tedium: you and a friend can coordinate to go around and win the trust of a whole village all at once.
-  - [ ] Falling a long way with a Strider is always possible, but might kill you both. Damage height limit should be double what it is when on foot. Currently any amount of doable teleport-down distance will cause no damage, whereas extreme drops (say 30m?+) are red / inaccessible. That should never be inaccessible. Maybe do this by setting a max "teleport-lob descent distance" of 3m or 4m or whatever the limit is, and if you'd actually fall by more than that (meaning it would cause damage) the line becomes orange and the circle *disappears* signalling "we don't know where you'll land". And if you make the jump anyway, you teleport into the mid-air at that position & altitude, and animate falling until you hit your landing and take on however much damage.
   - [ ] Snowmen should have heavy thudding footsteps, similar to the Striders but a bit deeper and louder.
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
   - [ ] Too many skeletal meshes? Bake everything down to vertex shader animations and use InstancedMeshes? (this also gives us color tinting for free)
@@ -74,7 +75,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
         - Where am I? (If you're in a village, they will talk about the village and the landscape. If you're meeting a person on a road outside of a village, they'll describe the landscape, point the way to the nearest village, and mention or warn you about any local geographic features.
         - the nearest village? (only when talking to an NPC and you're not in a village)
         - your house?
-      - Follow me!
+      - I want to show you something.
 - [ ] Castles
 - [ ] Leafkin
   - [ ] Leafkin in their glades: They're unfriendly and push you away if you try to talk to them UNLESS you bring them something they want. Then they're eager to talk.
