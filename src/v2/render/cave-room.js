@@ -10,7 +10,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
-import { CHUNK, HI_M, CULL_M, drawnRegions, chunkGap } from '../caves/mesh.js'
+import { CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../caves/mesh.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
@@ -254,7 +254,7 @@ export class CaveRoom {
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
     this.live = null
-    // key -> { x, y, z (the chunk's centre), lods: [near meshes, coarse meshes] }, a mesh per region.
+    // key -> { x, y, z (the chunk's centre), lods: [meshes per LODS tier, null until it arrives or if empty there] }, a mesh per region.
     this.chunks = new Map()
     this.region = plan.graph.nodes[plan.doors[0].node].region
     this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.waterMaterial, this.markMaterial]
@@ -287,7 +287,7 @@ export class CaveRoom {
       meshes.push(mesh)
     }
     const [i, j, k] = m.key.split(',').map(Number)
-    if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: [null, null] })
+    if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: LODS.map(() => null) })
     this.chunks.get(m.key).lods[m.lod] = meshes
   }
 
@@ -478,12 +478,10 @@ export class CaveRoom {
     const shown = drawnRegions(this.plan.graph, this._regionAt(eye.x, ly, eye.z))
     for (const c of this.chunks.values()) {
       const d = chunkGap(c, eye.x, ly, eye.z)
-      // The near LOD within HI_M, the coarse one past it; whichever has arrived while the other is still meshing.
-      const want = d < HI_M ? 0 : 1
-      const lod = c.lods[want] !== null ? want : 1 - want
-      for (let l = 0; l < 2; l++) {
+      const lod = drawnLod(c.lods, d)
+      for (let l = 0; l < LODS.length; l++) {
         if (c.lods[l] === null) continue
-        for (const mesh of c.lods[l]) mesh.visible = l === lod && d < CULL_M && shown.has(mesh.userData.region)
+        for (const mesh of c.lods[l]) mesh.visible = l === lod && shown.has(mesh.userData.region)
       }
     }
     for (const mesh of this.mushGroups) mesh.visible = shown.has(mesh.userData.region)

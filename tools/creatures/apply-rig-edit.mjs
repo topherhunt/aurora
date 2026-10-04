@@ -13,9 +13,14 @@
 //   { "reparent": { "bone_1": "0_Left_Limb_0" },
 //     "renames":  { "0_Left_Limb_0": "Body", "bone_1": "Tail1" },
 //     "delete":   [ "bone_14" ],
-//     "moves":    { "bone_26": [0, 0.31, -0.12] } }
+//     "moves":    { "bone_26": [0, 0.31, -0.12] },
+//     "add":      { "WristL": { "parent": "bone_6", "at": [0.05, 0.54, -0.23], "blend": 0.04 } } }
 //
 // `moves` is a new WORLD position for the joint, in the glb's own coordinates.
+// `add` grows a joint under `parent` at a world position, for a chain Tripo
+// stopped short of the hand. Vertices weighted to `takes` (default the parent)
+// hand their weight to it past the plane through `at`, square to the parent-to-
+// `at` axis, blending over `blend` metres. A new name is addressable by `moves`.
 //
 // WHAT EACH OPERATION DOES TO THE SKIN, which is the whole difficulty here.
 // glTF deforms a vertex by worldMatrix(joint) * inverseBindMatrix(joint), and
@@ -254,7 +259,100 @@ function appendData(json, appended, bytes) {
 
 // --- the edit ---------------------------------------------------------------
 
-const EMPTY = { renames: {}, reparent: {}, delete: [], moves: {} }
+const EMPTY = { renames: {}, reparent: {}, delete: [], moves: {}, add: {} }
+
+/**
+ * Grow joints before anything else is applied. Skinned vertices are read as
+ * modelled in joint-world space, as glTF defines them: the mesh node's own
+ * transform is ignored for a skinned mesh.
+ */
+function addJoints(json, bin, adds) {
+  if (!bin) throw new Error('adding a joint has to rewrite skinning data, and this glb was read without its BIN chunk')
+  if (json.skins?.length !== 1) throw new Error('adding a joint needs a glb with exactly one skin')
+  const skin = json.skins[0]
+  const byName = new Map(json.nodes.map((n, i) => [n.name, i]))
+  const parentOf = new Array(json.nodes.length).fill(-1)
+  json.nodes.forEach((n, i) => (n.children ?? []).forEach((c) => { parentOf[c] = i }))
+  const worldOf = (i) => (parentOf[i] < 0 ? localOf(json.nodes[i]) : mul(worldOf(parentOf[i]), localOf(json.nodes[i])))
+  const prims = []
+  for (const node of json.nodes) {
+    if (node.mesh === undefined || node.skin !== 0) continue
+    for (const prim of json.meshes[node.mesh].primitives) {
+      if (prims.some((q) => q.attributes.JOINTS_0 === prim.attributes.JOINTS_0)) continue
+      if (prim.attributes.JOINTS_1 !== undefined) throw new Error('this mesh puts more than four influences on a vertex (JOINTS_1), which the rig editor cannot reweight')
+      if (json.accessors[prim.attributes.WEIGHTS_0].componentType !== 5126) throw new Error('this mesh stores skin weights as normalized integers, which the rig editor cannot reweight')
+      prims.push(prim)
+    }
+  }
+  const data = prims.map((prim) => ({
+    pos: readAccessor(json, bin, prim.attributes.POSITION),
+    joints: readAccessor(json, bin, prim.attributes.JOINTS_0),
+    weights: readAccessor(json, bin, prim.attributes.WEIGHTS_0),
+  }))
+  const ibm = Array.from(readAccessor(json, bin, skin.inverseBindMatrices))
+  const added = []
+  for (const [name, spec] of Object.entries(adds)) {
+    if (byName.has(name)) throw new Error(`the edit adds "${name}", and this glb already has a node of that name`)
+    const parent = byName.get(spec.parent)
+    const takes = byName.get(spec.takes ?? spec.parent)
+    if (parent === undefined || takes === undefined) throw new Error(`the edit adds "${name}" under "${spec.parent}" taking from "${spec.takes ?? spec.parent}", and one of them is not a node of this glb`)
+    if (!Array.isArray(spec.at) || spec.at.length !== 3 || spec.at.some((v) => !Number.isFinite(v))) throw new Error(`the position for added "${name}" is not three finite numbers`)
+    const from = skin.joints.indexOf(takes)
+    if (from < 0) throw new Error(`"${spec.takes ?? spec.parent}" is not a joint of the skin, so it has no weights to hand over`)
+    const blend = spec.blend ?? 0.04
+    const origin = worldOf(parent).slice(9, 12)
+    const axis = spec.at.map((v, i) => v - origin[i])
+    const len = Math.hypot(...axis)
+    if (!(len > 1e-6)) throw new Error(`added "${name}" sits on its parent "${spec.parent}"`)
+    axis.forEach((_, i) => { axis[i] /= len })
+    const slot = skin.joints.length
+    let handed = 0
+    data.forEach(({ pos, joints, weights }) => {
+      for (let v = 0; v < weights.length / 4; v++) {
+        let c = -1
+        for (let k = 0; k < 4; k++) if (joints[v * 4 + k] === from && weights[v * 4 + k] > 0) c = k
+        if (c < 0) continue
+        const along = axis.reduce((sum, a, i) => sum + (pos[v * 3 + i] - spec.at[i]) * a, 0)
+        const take = weights[v * 4 + c] * Math.min(1, Math.max(0, along / blend + 0.5))
+        if (take <= 0) continue
+        let into = -1
+        for (let k = 0; k < 4; k++) if (weights[v * 4 + k] === 0) { into = k; break }
+        if (into < 0) for (let k = 0; k < 4; k++) if (k !== c && (into < 0 || weights[v * 4 + k] < weights[v * 4 + into])) into = k
+        weights[v * 4 + c] -= take
+        joints[v * 4 + into] = slot
+        weights[v * 4 + into] = take
+        const sum = weights[v * 4] + weights[v * 4 + 1] + weights[v * 4 + 2] + weights[v * 4 + 3]
+        for (let k = 0; k < 4; k++) weights[v * 4 + k] /= sum
+        handed++
+      }
+    })
+    if (!handed) throw new Error(`added "${name}" takes no vertex from "${spec.takes ?? spec.parent}" -- the position is off the mesh`)
+    const place = compose(spec.at, [0, 0, 0, 1], [1, 1, 1])
+    const local = decompose(mul(invert(worldOf(parent)), place))
+    json.nodes.push({ name, translation: local.translation, rotation: local.rotation, scale: local.scale })
+    const node = json.nodes.length - 1
+    byName.set(name, node)
+    parentOf[node] = parent
+    json.nodes[parent].children = [...(json.nodes[parent].children ?? []), node]
+    skin.joints.push(node)
+    ibm.push(...widen(invert(place)))
+    added.push(`${name} under ${spec.parent} at ${spec.at.map((v) => v.toFixed(4)).join(', ')} (${handed} vertices)`)
+  }
+  prims.forEach((prim, k) => {
+    writeAccessor(json, bin, prim.attributes.JOINTS_0, data[k].joints)
+    writeAccessor(json, bin, prim.attributes.WEIGHTS_0, data[k].weights)
+  })
+  const appended = { at: bin.length, parts: [] }
+  const floats = new Float32Array(ibm)
+  const view = appendData(json, appended, Buffer.from(floats.buffer, floats.byteOffset, floats.byteLength))
+  const acc = json.accessors[skin.inverseBindMatrices]
+  Object.assign(acc, { bufferView: view, byteOffset: 0, componentType: 5126, count: skin.joints.length, type: 'MAT4' })
+  delete acc.min
+  delete acc.max
+  const out = Buffer.concat([bin, ...appended.parts])
+  json.buffers[0].byteLength = out.length
+  return { added, bin: out }
+}
 
 /**
  * Mutates `json` in place. Returns a report of what changed plus the BIN chunk
@@ -272,6 +370,8 @@ export function applyRigEdit(json, edit, bin = null) {
   const reparent = edit.reparent ?? {}
   const removals = edit.delete ?? []
   const moves = edit.moves ?? {}
+  const grown = Object.keys(edit.add ?? {}).length ? addJoints(json, bin, edit.add) : { added: [], bin }
+  bin = grown.bin
   if (!Array.isArray(removals)) throw new Error('"delete" must be a list of node names')
 
   if (json.nodes.some((n) => !n.name)) throw new Error('this glb has unnamed nodes, so a name-keyed edit cannot address it')
@@ -509,7 +609,7 @@ export function applyRigEdit(json, edit, bin = null) {
     outBin = Buffer.concat([bin, ...appended.parts])
     json.buffers[0].byteLength = outBin.length
   }
-  return { moved, renamed, deleted, repositioned, bin: outBin }
+  return { moved, renamed, deleted, repositioned, added: grown.added, bin: outBin }
 }
 
 /** Read a sidecar, or the empty edit if none has been authored yet. */
@@ -521,6 +621,7 @@ export function readRigEdit(file) {
     reparent: edit.reparent ?? {},
     delete: edit.delete ?? [],
     moves: edit.moves ?? {},
+    add: edit.add ?? {},
   }
 }
 
@@ -548,8 +649,8 @@ if (process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1
   writeGlb(outFile, json, report.bin)
 
   console.log(`${path.relative(process.cwd(), inFile)} + ${path.basename(editFile)} -> ${path.relative(process.cwd(), outFile)}`)
-  console.log(`  ${report.moved.length} reparented, ${report.renamed.length} renamed, ${report.deleted.length} deleted, ${report.repositioned.length} moved`)
-  for (const group of ['moved', 'renamed', 'deleted', 'repositioned']) {
+  console.log(`  ${report.moved.length} reparented, ${report.renamed.length} renamed, ${report.deleted.length} deleted, ${report.repositioned.length} moved, ${report.added.length} added`)
+  for (const group of ['moved', 'renamed', 'deleted', 'repositioned', 'added']) {
     for (const line of report[group]) console.log(`    ${group}: ${line}`)
   }
 }

@@ -30,7 +30,7 @@ import { TRADES } from '../src/v2/layers/trades.js'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial } from '../src/v2/render/puppet.js'
 import {
-  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, WALK_MAX_RATE, SNAP_HEIGHTS, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M, FIT_MIN,
+  VrBody, HEAD_SLACK_M, EYE_LINE, TELEPORT_M, YAW_SLACK, YAW_SETTLE, GLIDE_STOP_M, FACE_TRAVEL_M, WALK_MAX_RATE, SNAP_HEIGHTS, MAX_TRAVEL_S, IK_OFF_M, CROUCH_FOLD, LEAN_MAX, FLY_M, FIT_MIN, wearerShoulder, gripScale,
 } from '../src/v2/render/avatar-rig.js'
 import { WALK } from '../src/v2/walk.js'
 import { HAND_GLB, HAND_GRIP, HAND_PITCH_DEG, HAND_QUAT, HAND_SCALE_M, PEER_DRAW_M, PeerAvatars, handGeometry, ownHand, peerTier } from '../src/v2/render/avatar.js'
@@ -167,8 +167,23 @@ function restOf(b, x, z, yaw) {
   const head = new THREE.Vector3(neck.x, EYE_LINE * s.biped.height * k, neck.z)
   // The headset faces the body's +X: its -Z along it.
   const headQuat = R.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2))
-  const grips = body.arms.map((arm) => ({ pos: world(arm.W.bone.name), quat: WILD_GRIP }))
-  return { head, headQuat, grips, neck }
+  // The wearer's hand that puts arm i's wrist at `wrist` (world), given the clip's rest shoulder: the inverse of the solve's grip scaling.
+  const Minv = M.clone().invert()
+  const headB = head.clone().applyMatrix4(Minv)
+  const ratioOf = (i) => {
+    const [S, E, W] = [body.arms[i].S, body.arms[i].E, body.arms[i].W].map((j) => world(j.bone.name).applyMatrix4(Minv))
+    return gripScale(S.distanceTo(E) + E.distanceTo(W), k)
+  }
+  const gripFor = (i, wrist) => {
+    const arm = body.arms[i]
+    const S = world(arm.S.bone.name).applyMatrix4(Minv)
+    const sp = wearerShoulder(headB, arm.side, k, new THREE.Vector3())
+    const ratio = ratioOf(i)
+    return sp.add(wrist.clone().applyMatrix4(Minv).sub(S).divideScalar(ratio)).applyMatrix4(M)
+  }
+  const wrists = body.arms.map((arm) => world(arm.W.bone.name))
+  const grips = wrists.map((w, i) => ({ pos: gripFor(i, w), quat: WILD_GRIP }))
+  return { head, headQuat, grips, neck, wrists, gripFor, ratioOf }
 }
 const WILD_GRIP = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 2, 3).normalize(), 2.5)
 const poseOf = (head, headQuat, grips) => [
@@ -187,9 +202,9 @@ for (const s of shipped.filter((s) => VILLAGERS.includes(s.id))) {
   run(b, pose, [true, true], 1)
   check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.abs(body.x - 3) < 1e-6 && Math.abs(body.z + 2) < 1e-6 && Math.abs(body.yaw - 0.4) < 1e-6, `${s.id}: stood where the head was, facing as it did, idle`, `at (${body.x.toFixed(3)}, ${body.z.toFixed(3)}) yaw ${body.yaw.toFixed(3)}`)
   check(body.hold === 1 && body.arms.every((a) => a.w === 1), `${s.id}: holding the head and both grips`)
-  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.grips[i].pos))
+  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.wrists[i]))
   // An arm hanging straight at rest is pulled in by REACH, half a percent of its length.
-  check(off.every((d) => d < 3e-3), `${s.id}: with the grips at the rest wrists, the wrists stay within 3 mm of them`, off.map((d) => `${(d * 1000).toFixed(2)} mm`).join(' '))
+  check(off.every((d) => d < 4e-3), `${s.id}: with the wearer's hands where their rest wrists map to, the wrists stay within 4 mm of the rest`, off.map((d) => `${(d * 1000).toFixed(2)} mm`).join(' '))
   const topName = sane(s.biped.head[s.biped.head.length - 1])
   const restTop = s.byName.get(topName).getWorldQuaternion(new THREE.Quaternion()).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4))
   check(b.turn(topName).angleTo(restTop) < 1e-3, `${s.id}: with the headset at the rest gaze, the head keeps its rest turn`, `${((b.turn(topName).angleTo(restTop) * 180) / Math.PI).toFixed(3)} deg off`)
@@ -213,19 +228,21 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
     const reach = (b.at(arm.S.bone.name).distanceTo(b.at(arm.E.bone.name)) + b.at(arm.E.bone.name).distanceTo(b.at(arm.W.bone.name)))
     return { pos: S.clone().add(new THREE.Vector3(0.7 * reach, 0.1, 0)), quat: g.quat }
   })
-  run(b, poseOf(rest.head, rest.headQuat, grips), [true, true], 1)
-  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(grips[i].pos))
+  const wristAt = grips.map((g) => g.pos)
+  const worn = grips.map((g, i) => ({ pos: rest.gripFor(i, g.pos), quat: g.quat }))
+  run(b, poseOf(rest.head, rest.headQuat, worn), [true, true], 1)
+  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(wristAt[i]))
   check(off.every((d) => d < 5e-3), 'a grip held out in front, in reach, takes the wrist to within 5 mm of it', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
-  check(body.arms.every((arm, i) => b.at(arm.E.bone.name).y < grips[i].pos.y), 'and the elbow hangs below the line to it')
+  check(body.arms.every((arm, i) => b.at(arm.E.bone.name).y < wristAt[i].y), 'and the elbow hangs below the line to it')
   check(body.arms.every((arm) => qOff(arm.W.bone.quaternion, fisher.byName.get(arm.W.bone.name).quaternion) < 1e-9), 'the wrist keeps the clip\'s own bend whatever the grip is twisted to -- the hand hangs off the forearm')
   // Out of reach: the arm straightens toward it and stops short.
-  const far = grips.map((g) => ({ pos: g.pos.clone().add(new THREE.Vector3(2, 0, 0)), quat: g.quat }))
-  run(b, poseOf(rest.head, rest.headQuat, far), [true, true], 1)
+  const far = grips.map((g, i) => ({ pos: g.pos.clone().add(new THREE.Vector3(2, 0, 0)), quat: g.quat }))
+  run(b, poseOf(rest.head, rest.headQuat, far.map((g, i) => ({ pos: rest.gripFor(i, g.pos), quat: g.quat }))), [true, true], 1)
   check(body.arms.every((arm, i) => { const S = b.at(arm.S.bone.name), W = b.at(arm.W.bone.name); const u = far[i].pos.clone().sub(S).normalize(); const along = W.clone().sub(S); return along.dot(u) > 0.95 * along.length() && W.distanceTo(far[i].pos) > 1.5 }), 'a grip out of reach straightens the arm down its line and the wrist stops short')
   // A controller put down leaves that arm to the clip.
-  run(b, poseOf(rest.head, rest.headQuat, grips), [true, false], 1)
+  run(b, poseOf(rest.head, rest.headQuat, worn), [true, false], 1)
   const right = body.arms[1]
-  check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(grips[0].pos) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
+  check(right.w === 0 && [right.S, right.E].every((j) => qOff(j.bone.quaternion, fisher.byName.get(j.bone.name).quaternion) < 1e-9) && b.at(body.arms[0].W.bone.name).distanceTo(wristAt[0]) < 5e-3, 'a controller not held leaves its arm on the clip while the other still reaches')
   // Where a peer's hand is, for the thing drawn in it (hands-net.js): each wrist as last drawn, and nothing while no body stands.
   const peers = { peers: new Map([['p', { body, puppet: b.puppet }]]) }
   const pos = new THREE.Vector3(), quat = new THREE.Quaternion()
@@ -256,8 +273,10 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   const stretched = b.at(neckName).sub(neck0)
   check(Math.abs(stretched.y - 0.05) < 1e-3 && Math.abs(stretched.x - 0.05) < 1e-3 && body.crouch === 0, 'a head 5 cm up stretches the neck 5 cm up', f3(stretched))
   run(b, poseOf(near, rest.headQuat, rest.grips), [true, true], 1)
-  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.grips[i].pos))
-  check(off.every((d) => d < 2e-3), 'with the hands still on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
+  // The shoulder moves with the head and the wearer's hand does not, so the wrist trails the head by what the grip's scaling gives away.
+  const headMove = near.clone().sub(rest.head)
+  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(rest.wrists[i].clone().addScaledVector(headMove, 1 - rest.ratioOf(i))))
+  check(off.every((d) => d < 4e-3), 'with the hands still on their grips, the wrists trail the head by what the grip scaling gives away', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
   run(b, poseOf(rest.head, rest.headQuat, rest.grips), [true, true], 1)
   // A hop: the body walks after it, brisk enough to be there inside the second, and settles.
   const hop = TELEPORT_M + 0.3
@@ -325,8 +344,8 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   check(!body.gliding && puppet.current === puppet.actions.get('idle') && Math.hypot(body.x - 4.8, body.z + 3.6) <= GLIDE_STOP_M, `arrived and idle within ${MAX_TRAVEL_S} s`, `at (${body.x.toFixed(3)}, ${body.z.toFixed(3)})`)
   run(b, pose, [true, true], 3)
   check(body.hold === 1 && !body.turning && Math.abs(body.yaw) < YAW_SETTLE, 'then takes the head and grips back up and turns back to the gaze', `yaw ${body.yaw.toFixed(3)}`)
-  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(there.grips[i].pos))
-  check(off.every((d) => d < 2e-3), 'the hands back on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
+  const off = body.arms.map((arm, i) => b.at(arm.W.bone.name).distanceTo(there.wrists[i]))
+  check(off.every((d) => d < 1e-2), 'the hands back on their grips', off.map((d) => `${(d * 1000).toFixed(1)} mm`).join(' '))
   // Past the snap nothing walked that far: a head a room away puts the body there in the frame, no trip.
   const snap = SNAP_HEIGHTS * body.height * body.k
   const gone = restOf(b, 20, -12, 0)

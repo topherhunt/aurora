@@ -62,7 +62,10 @@
 //   (tools/creatures/ship-skinned.mjs `arms`): the elbow bends by the law of
 //   cosines about the axis the clip already bends it, the shoulder aims the
 //   arm at the grip and rolls the elbow toward a pole under and behind the
-//   shoulder. The wrist is the clip's: a controller's orientation is not
+//   shoulder. The grip is the wearer's hand's offset from their own shoulder,
+//   scaled by this arm's length over theirs, so a short stylized arm sweeps the
+//   same fraction of its reach; a clavicle above the shoulder lifts it toward a
+//   hand held high. The wrist is the clip's: a controller's orientation is not
 //   read, since the hands Tripo rigs bend at the wrong joints when it is, and
 //   a hand hanging off its forearm reads right from any distance a peer is
 //   seen at. A controller not held leaves that arm to the clip.
@@ -137,6 +140,16 @@ export const IK_OFF_M = 1
 const HOLD_S = 0.2
 // An arm is never stretched past this fraction of straight.
 const REACH = 0.995
+// A wearer's shoulder is SHOULDER_DROP_M under their eyes and SHOULDER_HALF_M to a side, and their arm reaches PLAYER_ARM_M from it.
+const SHOULDER_DROP_M = 0.2
+const SHOULDER_HALF_M = 0.2
+const PLAYER_ARM_M = 0.65
+export const wearerShoulder = (head, side, k, out) => out.set(head.x, head.y - SHOULDER_DROP_M / k, head.z - side * SHOULDER_HALF_M / k)
+// How far a wearer's hand offset is scaled for an arm `reach` long (creature units) drawn at `k`.
+export const gripScale = (reach, k) => Math.min(1, (reach * k) / PLAYER_ARM_M)
+// The clavicle lifts the shoulder by SHRUG of the hand's height over it, no more than SHRUG_MAX of the arm's length.
+const SHRUG = 0.3
+const SHRUG_MAX = 0.15
 // Where an elbow goes, in body space, for a body facing +X: down, back, and out on its own side.
 const POLE = new THREE.Vector3(-0.5, -0.7, 0)
 const POLE_OUT = 0.5
@@ -155,6 +168,8 @@ const _t = new THREE.Vector3()
 const _n = new THREE.Vector3()
 const _u = new THREE.Vector3()
 const _v = new THREE.Vector3()
+const _h = new THREE.Vector3()
+const _s = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _q2 = new THREE.Quaternion()
 const _qt = new THREE.Quaternion()
@@ -257,7 +272,7 @@ export class VrBody {
       const iS = chain.indexOf(S), iE = chain.indexOf(E), iW = chain.indexOf(W)
       if (!(iS >= 0 && iE > iS && iW > iE)) throw new Error(`VrBody: arm ${a.id} does not run shoulder, elbow, wrist down its chain`)
       const pole = new THREE.Vector3(POLE.x, POLE.y, -side * POLE_OUT).normalize()
-      return { id: a.id, S: slot(S), E: slot(E), W: slot(W), pole, w: 0, on: false, target: new THREE.Vector3() }
+      return { id: a.id, side, C: iS > 0 ? slot(chain[iS - 1]) : null, S: slot(S), E: slot(E), W: slot(W), pole, w: 0, on: false, target: new THREE.Vector3() }
     })
     // Every bone a solve composes: the ancestors of both wrists, the head and the waist, in tree order.
     const need = new Set()
@@ -486,7 +501,7 @@ export class VrBody {
     for (const h of this.head) h.bone.quaternion.copy(h.saved)
     this.neck.bone.position.copy(this.neckSavedPos)
     this.waist.bone.quaternion.copy(this.waist.saved)
-    for (const arm of this.arms) for (const j of [arm.S, arm.E]) j.bone.quaternion.copy(j.saved)
+    for (const arm of this.arms) for (const j of [arm.C, arm.S, arm.E]) j?.bone.quaternion.copy(j.saved)
   }
 
   /** Off at once, nothing written: for a puppet handed back. */
@@ -519,7 +534,7 @@ export class VrBody {
     for (const h of this.head) h.saved.copy(h.bone.quaternion)
     this.neckSavedPos.copy(this.neck.bone.position)
     this.waist.saved.copy(this.waist.bone.quaternion)
-    for (const arm of this.arms) for (const j of [arm.S, arm.E]) j.saved.copy(j.bone.quaternion)
+    for (const arm of this.arms) for (const j of [arm.C, arm.S, arm.E]) j?.saved.copy(j.bone.quaternion)
     this.dirty = true
 
     if (this.lean > 0) {
@@ -554,10 +569,26 @@ export class VrBody {
 
   _solveArm(arm) {
     const S = this.pos[arm.S.i], E = this.pos[arm.E.i], W = this.pos[arm.W.i]
-    const a = S.distanceTo(E), b = E.distanceTo(W), d0 = S.distanceTo(W)
+    const a = S.distanceTo(E), b = E.distanceTo(W)
     const w = arm.w
+    // The grip: the wearer's hand off their shoulder, scaled to this arm, from this shoulder as the clip posed it.
+    wearerShoulder(this.headAt, arm.side, this.k, _s)
+    _h.subVectors(arm.target, _s).multiplyScalar(gripScale(a + b, this.k)).add(S)
+    if (arm.C) {
+      // The clavicle turns about its own joint to carry the shoulder up toward a hand held over it.
+      const lift = Math.min(SHRUG_MAX * (a + b), SHRUG * Math.max(0, _h.y - S.y)) * w
+      if (lift > 1e-6) {
+        _a.subVectors(S, this.pos[arm.C.i])
+        _b.copy(_a).addScaledVector(UP, lift)
+        _q.setFromUnitVectors(_a.normalize(), _b.normalize())
+        turnInBody(arm.C.bone, arm.C.par >= 0 ? this.quat[arm.C.par] : null, _q)
+        arm.C.bone.updateMatrix()
+        this.compose()
+      }
+    }
+    const d0 = S.distanceTo(W)
     // The target, in reach: down the shoulder's line to it, no further than the arm is long.
-    _u.subVectors(arm.target, S)
+    _u.subVectors(_h, S)
     let d = _u.length()
     if (d < 1e-6) { _u.set(0, -1, 0); d = 1e-6 } else _u.divideScalar(d)
     d = Math.min(REACH * (a + b), Math.max(Math.abs(a - b) + 1e-4, d))

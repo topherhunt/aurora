@@ -7,7 +7,7 @@
 import { planCave, EXIT_R } from '../src/v2/caves/build.js'
 import { DROP_MIN } from '../src/v2/caves/graph.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
-import { chunkList, meshChunk, CHUNK, VOXEL, VOXEL_LO, drawnRegions, chunkGap, HI_M, CULL_M } from '../src/v2/caves/mesh.js'
+import { chunkList, meshChunk, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
 import { groupSystems, caveEntries, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
 import { readFileSync } from 'node:fs'
@@ -33,7 +33,7 @@ const STRIDE = 1.5
 // Her feet under the surface afloat.
 const FLOAT = 1.32
 // Cave wall triangles CaveRoom draws at once, wherever she stands.
-const DRAWN_MAX = 150000
+const DRAWN_MAX = 80000
 const SYSTEMS = [
   { seed: 11, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }] },
   { seed: 12, entries: [{ x: 0, z: 0, dx: 0, dz: 1 }, { x: 90, z: 140, dx: -0.6, dz: -0.8 }] },
@@ -143,15 +143,16 @@ for (const sys of SYSTEMS) {
     check(level !== null && roof < level, `${tag}: sump ${e.i} is flooded to the roof at its dip`, `level ${level === null ? 'none' : level.toFixed(1)} roof ${roof.toFixed(1)}`)
   }
 
-  // The mesh: every chunk at both LODs, timed; then the triangles CaveRoom draws standing at each node, within a budget.
+  // The mesh: every chunk at every LOD, timed; then the triangles CaveRoom draws standing at each node, within a budget.
   const t2 = performance.now()
   let tris = 0
   const chunks = []
   for (const [i, j, k] of chunkList(field)) {
-    const c = { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: [new Map(), new Map()] }
-    ;[VOXEL, VOXEL_LO].forEach((voxel, lod) => {
+    const c = { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: LODS.map(() => null) }
+    LODS.forEach(({ voxel }, lod) => {
       const m = meshChunk(field, i, j, k, cave.lights, voxel)
       if (m === null) return
+      c.lods[lod] = new Map()
       for (let p = 0; p < m.parts.length; p += 3) c.lods[lod].set(m.parts[p], m.parts[p + 2] / 3)
       if (lod === 0) tris += m.index.length / 3
     })
@@ -164,8 +165,9 @@ for (const sys of SYSTEMS) {
     let drawn = 0
     for (const c of chunks) {
       const d = chunkGap(c, n.x, n.y + 1.6, n.z)
-      if (d >= CULL_M) continue
-      for (const [r, t] of c.lods[d < HI_M ? 0 : 1]) if (shown.has(r)) drawn += t
+      const lod = drawnLod(c.lods, d)
+      if (lod < 0) continue
+      for (const [r, t] of c.lods[lod]) if (shown.has(r)) drawn += t
     }
     if (drawn > worst) { worst = drawn; at = n.i }
   }

@@ -292,6 +292,42 @@ console.log('\nmoving a joint')
   check(maxDiff([...plain.slice(16, 32)], [...edited.slice(16, 32)]) > 0.01, 'and the one that moved does not')
 }
 
+console.log('\nadding a joint the chain stopped short of')
+{
+  // Positions for the fixture's three vertices: v1 sits 15 cm over the head joint, the others nowhere near it.
+  const withPositions = () => {
+    const { json, bin } = skinnedRig()
+    const head = worlds(json).get('head').slice(9)
+    const pos = new Float32Array([0, 0, 0, head[0], head[1] + 0.15, head[2], 1, 1, 1])
+    const grown = Buffer.concat([bin, Buffer.from(pos.buffer)])
+    json.bufferViews.push({ buffer: 0, byteOffset: bin.length, byteLength: 36 })
+    json.accessors.push({ bufferView: json.bufferViews.length - 1, componentType: 5126, count: 3, type: 'VEC3' })
+    json.meshes[0].primitives[0].attributes.POSITION = json.accessors.length - 1
+    json.buffers[0].byteLength = grown.length
+    return { json, bin: grown, head }
+  }
+  const { json, bin, head } = withPositions()
+  const weightBefore = totalWeight(json, bin)
+  const at = [head[0], head[1] + 0.1, head[2]]
+  const report = applyRigEdit(json, { add: { hand: { parent: 'head', at } } }, bin)
+
+  const after = worlds(json)
+  check(report.added.length === 1 && report.added[0].startsWith('hand under head'), 'the report names the joint and its parent', report.added.join())
+  check(maxDiff(after.get('hand').slice(9), at) < 1e-6, 'the new joint lands where it was told to')
+  check(json.nodes.find((n) => n.name === 'head').children.includes(json.nodes.findIndex((n) => n.name === 'hand')), 'and hangs off its parent')
+  check(json.skins[0].joints.length === 5 && json.nodes[json.skins[0].joints[4]].name === 'hand', 'it is the skin\'s last joint')
+  const joints = [...readAccessor(json, report.bin, 0)]
+  const weights = [...readAccessor(json, report.bin, 1)]
+  check(joints.slice(4, 8).includes(4) && Math.abs(weights[4 + joints.slice(4, 8).indexOf(4)] - 0.5) < 1e-6 && joints.slice(4, 8).includes(1), 'a vertex past the plane hands the parent\'s weight to it and keeps its other influence', `${joints.slice(4, 8)} @ ${weights.slice(4, 8)}`)
+  check(!joints.slice(0, 4).includes(4) && !joints.slice(8, 12).includes(4), 'and a vertex short of it is left alone')
+  check(Math.abs(totalWeight(json, report.bin) - weightBefore) < 1e-6, 'no weight is created or lost', `${totalWeight(json, report.bin).toFixed(4)} vs ${weightBefore.toFixed(4)}`)
+  check(restResidual(json, report.bin) < 1e-5, 'the rest pose is still the identity', restResidual(json, report.bin).toExponential(1))
+  const off = withPositions()
+  check(throws(() => applyRigEdit(off.json, { add: { hand: { parent: 'head', at: [5, 5, 5] } } }, off.bin)), 'a joint placed off the mesh, taking no vertex, is refused')
+  const again = withPositions()
+  check(throws(() => applyRigEdit(again.json, { add: { chest: { parent: 'head', at } } }, again.bin)), 'a name the glb already has is refused')
+}
+
 console.log('\ndeleting and moving together')
 {
   const { json, bin } = skinnedRig()

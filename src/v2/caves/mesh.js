@@ -4,13 +4,18 @@
 
 import { PALETTES } from './regions.js'
 
-// The near mesh's voxel and the coarse one drawn past the room's HI_M; both tile the same 16 m chunks.
-export const VOXEL = 0.5
-export const VOXEL_LO = 1
 export const CHUNK = 16
-// CaveRoom draws chunks within CULL_M of her, the near LOD within HI_M, and only her region and those it touches.
-export const HI_M = 10
-export const CULL_M = 85
+// Each LOD's voxel and the chunk gap CaveRoom draws it out to; all tile the same chunks. Past the last nothing is drawn, and only her region and those it touches ever are. The 2 m tier can drop a thin wall or close a narrow passage, which the black fog past 25 m hides.
+export const LODS = [{ voxel: 0.5, to: 10 }, { voxel: 1, to: 25 }, { voxel: 2, to: 85 }]
+export const CULL_M = LODS[LODS.length - 1].to
+
+/** The tier of `lods` (one per LODS tier, null where missing) drawn at chunk gap `d`: the one wanted there, else the nearest present, since a tier may still be meshing or too coarse to catch a small surface. -1 past CULL_M or with none. */
+export function drawnLod(lods, d) {
+  const want = LODS.findIndex((l) => d < l.to)
+  let lod = -1
+  if (want >= 0) for (let l = 0; l < LODS.length; l++) if (lods[l] !== null && (lod < 0 || Math.abs(l - want) < Math.abs(lod - want))) lod = l
+  return lod
+}
 
 /** The regions drawn from inside region `r`: it and the regions it touches. */
 export function drawnRegions(graph, r) {
@@ -40,7 +45,7 @@ export function chunkList(field) {
  * Meshes chunk [ci, cj, ck] on a grid of `voxel` metres. `lights` are [{ x, y, z, color, reach }] baked into the glow attribute where they can see the wall.
  * Returns null for a chunk with no surface, else { position, normal, color, glow, index, parts } typed arrays, the triangles grouped by region and `parts` holding [region, first index, index count] for each group.
  */
-export function meshChunk(field, ci, cj, ck, lights, voxel = VOXEL) {
+export function meshChunk(field, ci, cj, ck, lights, voxel = LODS[0].voxel) {
   const CELLS = Math.round(CHUNK / voxel)
   const S = CELLS + 3
   const idx = (i, j, k) => ((k + 1) * S + (j + 1)) * S + (i + 1)
