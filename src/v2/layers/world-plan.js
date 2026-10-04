@@ -1,18 +1,29 @@
-// The overworld's towns, names and roads as one plan, which scripts/bake-world-plan.mjs lays at build time and the client lays live only when the baked one was laid against other inputs. Three-free.
+// The overworld's towns, names, roads, cave mouths and their trails as one plan, which scripts/bake-world-plan.mjs lays at build time and the client lays live only when the baked one was laid against other inputs. Three-free.
 import { planBuilding } from '../../buildings/plan.js'
-import { planTowns } from './towns.js'
+import { TOWN, planTowns, townsOccupyAt } from './towns.js'
 import { nameTowns } from './names.js'
 import { planRoads } from './roads.js'
+import { routeTrails } from './trails.js'
+import { siteMouths } from '../caves/sites.js'
 import { RELIEF_KNOBS } from '../height/relief.js'
 
-/** Lays towns, names and roads into `layers` (adding their records), as the overworld boot needs them. `ground` is the raw heightmap, `surface` the live field over `layers`. */
-export function planWorld({ ground, surface, layers, seed, spawn }) {
+/** Lays towns, names, roads and cave trails into `layers` (adding their records), as the overworld boot needs them. `ground` samples the raw `heightmap`, `surface` is the live field over `layers`. The mouths are sited on the roads' ground and before their trails, which would move them. */
+export function planWorld({ heightmap, ground, surface, layers, seed, spawn }) {
   const townPlan = planTowns({ ground, surface, layers, seed, keepClear: [{ ...spawn, r: 0 }] })
   layers.addGenerated(townPlan.records)
   nameTowns(townPlan.towns, { ground, layers, seed })
   const roadPlan = planRoads({ towns: townPlan.towns, ground, surface, layers, seed })
   layers.addGenerated(roadPlan.records)
-  return { townPlan, roadPlan }
+  const wet = (x, z) => {
+    const level = layers.waterLevelAt(x, z)
+    return level !== null && surface(x, z) < level + 0.3
+  }
+  const route = routeTrails({ towns: townPlan.towns, roadPlan, surface, layers })
+  // Off the mirrored strip past the real map, as the roads keep (roads.js buildGrid), and only where a trail can reach.
+  const mouths = siteMouths({ heightmap, field: { heightAt: surface }, wet, keepOut: (x, z, r) => Math.abs(z) > TOWN.realZ - 60 || townsOccupyAt(townPlan.towns, x, z, r), reaches: (m) => route.start(m) >= 0 })
+  const trailPlan = route.lay(mouths)
+  layers.addGenerated(trailPlan.records)
+  return { townPlan, roadPlan, mouths, trailPlan }
 }
 
 /** What a plan was laid against, short of the heightmap and the planner code, which ship in the same deploy as the bake. `doc` is the layers document as loaded, before Layers.deserialize. */
@@ -21,7 +32,7 @@ export function worldPlanKey({ doc, relief, seed, spawn }) {
 }
 
 // Each building plan travels as the planBuilding inputs plus the two fields layoutTown seats it with, since the full plan is half the file and regenerates in ~20 ms for the lot. A post's `gate` is its first tether's `reach` and townPlan.records is every town's records: both are shared objects that JSON would split, so they are dropped here and rejoined in unpack.
-export function packWorldPlan({ townPlan, roadPlan }) {
+export function packWorldPlan({ townPlan, roadPlan, mouths, trailPlan }) {
   const towns = townPlan.towns.map((t) => ({
     ...t,
     buildings: t.buildings.map((b) => ({
@@ -30,10 +41,10 @@ export function packWorldPlan({ townPlan, roadPlan }) {
     })),
     posts: t.posts.map(({ gate, ...p }) => p),
   }))
-  return { towns, roadPlan }
+  return { towns, roadPlan, mouths, trailPlan }
 }
 
-export function unpackWorldPlan({ towns, roadPlan }) {
+export function unpackWorldPlan({ towns, roadPlan, mouths, trailPlan }) {
   for (const t of towns) {
     for (const b of t.buildings) {
       const p = b.plan
@@ -43,7 +54,8 @@ export function unpackWorldPlan({ towns, roadPlan }) {
     }
     for (const post of t.posts) post.gate = post.tethers[0].reach
   }
-  return { townPlan: { towns, records: towns.flatMap((t) => t.records) }, roadPlan }
+  if (mouths === undefined || trailPlan === undefined) throw new Error('unpackWorldPlan: the plan carries no cave mouths or trails; re-bake it')
+  return { townPlan: { towns, records: towns.flatMap((t) => t.records) }, roadPlan, mouths, trailPlan }
 }
 
 /** The baked `{ key, plan }`, or null when the deploy carries none (the dev server answers index.html for a missing file). */

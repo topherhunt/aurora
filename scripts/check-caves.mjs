@@ -9,13 +9,15 @@ import { DROP_MIN } from '../src/v2/caves/graph.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
 import { chunkList, meshChunk, CHUNK, VOXEL, VOXEL_LO, drawnRegions, chunkGap, HI_M, CULL_M } from '../src/v2/caves/mesh.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
-import { groupSystems, caveEntries, siteMouths, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
+import { groupSystems, caveEntries, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
 import { readFileSync } from 'node:fs'
-import { SEED } from '../src/v2/config.js'
+import { SEED, SPAWN } from '../src/v2/config.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { planWorld } from '../src/v2/layers/world-plan.js'
+import { ROAD } from '../src/v2/layers/roads.js'
 import { mouthBankFrom } from '../src/v2/render/entrances.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
 
@@ -258,17 +260,13 @@ for (const sys of SYSTEMS) {
 }
 
 {
-  // design/39-caves.md §2 on the shipped world: every mouth's notch levels the floor under its arch and stands a wall behind it, and no system outgrows chalk. Towns are not kept out here, so this sites a superset of the game's mouths.
+  // design/39-caves.md §2 on the shipped world, as the game lays it: every mouth's notch levels the floor under its arch and stands a wall behind it, a trail runs from it to the roads, and no system outgrows chalk.
   const root = new URL('../public/world/', import.meta.url)
   const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: new URL('height.json', root) })
   const layers = Layers.deserialize(JSON.parse(readFileSync(new URL('layers.json', root), 'utf8')))
   const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
   field.setLayers(layers)
-  const wet = (x, z) => {
-    const level = layers.waterLevelAt(x, z)
-    return level !== null && field.heightAt(x, z) < level + 0.3
-  }
-  const mouths = siteMouths({ heightmap: hm, field, wet, keepOut: () => false })
+  const { roadPlan, mouths, trailPlan } = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
   layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
   const bank = mouthBankFrom(readShippedLadder('cave-mouth'))
   const half = (bank.width * MOUTH.scale) / 2, depth = bank.depth * MOUTH.scale
@@ -289,6 +287,32 @@ for (const sys of SYSTEMS) {
   }
   check(mouths.length >= 100 && rough === 0 && low === 0, "every mouth's notch is level under its arch with a wall behind it", `${mouths.length} mouths, floor within ${worstFloor.toFixed(3)} m, wall at least ${worstWall.toFixed(1)} m`)
   check(grown === 0 && fenced === 0, 'trees and rocks keep off every notch and the approach to its arch, and no further', `${grown} spots refused nothing, ${fenced} mouths kept clear 30 m out`)
+  // Trails: one per mouth, from its floor to a road or another trail, half a road wide, and no signpost by where it joins.
+  const distTo = (pts, x, z) => {
+    let best = Infinity
+    for (let k = 1; k < pts.length; k++) {
+      const [ax, , az] = pts[k - 1], [bx, , bz] = pts[k]
+      const vx = bx - ax, vz = bz - az
+      const f = Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / (vx * vx + vz * vz)))
+      best = Math.min(best, Math.hypot(ax + vx * f - x, az + vz * f - z))
+    }
+    return best
+  }
+  const byId = new Map(trailPlan.records.map((r) => [r.id, r]))
+  let loose = 0, signed = 0, wrong = 0, steep = 0
+  for (const t of trailPlan.trails) {
+    const m = mouths[t.mouth], pts = byId.get(t.record).pts
+    const [x0, y0, z0] = pts[0]
+    if (Math.hypot(x0 - m.x + m.nx * (MOUTH.wall - 0.5), z0 - m.z + m.nz * (MOUTH.wall - 0.5)) > 1e-6 || y0 !== m.y || pts.some((p) => p[3] !== ROAD.width / 2)) wrong++
+    const [x1, , z1] = pts.at(-1)
+    const lines = t.onto === 'road' ? roadPlan.ways.filter((w) => w.crossing < 0).map((w) => w.pts) : [byId.get(t.onto).pts]
+    if (Math.min(...lines.map((l) => distTo(l, x1, z1))) > 0.01) loose++
+    if (roadPlan.signs.some((g) => Math.hypot(g.x - x1, g.z - z1) < 20)) signed++
+    for (let k = 1; k < pts.length; k++) steep = Math.max(steep, Math.abs(pts[k][1] - pts[k - 1][1]) / Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][2] - pts[k - 1][2]))
+  }
+  const lengths = trailPlan.trails.map((t) => t.length).sort((a, b) => a - b)
+  check(trailPlan.failed.length === 0 && trailPlan.trails.length === mouths.length && wrong === 0 && steep < MAX_TAN, "a walkable trail half a road wide runs out from every mouth's floor", `${trailPlan.trails.length} trails, median ${lengths[lengths.length >> 1].toFixed(0)} m, longest ${lengths.at(-1).toFixed(0)} m, steepest pitch ${steep.toFixed(2)}`)
+  check(loose === 0 && signed === 0, 'every trail ends on a road or another trail, with no signpost by the join', `${trailPlan.trails.filter((t) => t.onto !== 'road').length} join another trail`)
   const systems = groupSystems(mouths, SEED)
   const span = Math.max(...systems.map((s) => Math.max(...s.mouths.map((i) => Math.hypot(mouths[i].x - s.cx, mouths[i].z - s.cz)))))
   const biggest = Math.max(...systems.map((s) => s.mouths.length))

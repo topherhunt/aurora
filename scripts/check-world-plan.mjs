@@ -24,7 +24,7 @@ const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: n
 const layers = Layers.deserialize(doc)
 const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 field.setLayers(layers)
-const live = planWorld({ ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
+const live = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
 
 const text = JSON.stringify(packWorldPlan(live))
 const back = unpackWorldPlan(JSON.parse(text))

@@ -74,6 +74,8 @@ const cellOf = (x, z) => {
   const j = Math.floor((z + WORLD_HALF) / ROAD.cell)
   return i < 0 || j < 0 || i >= N || j >= N ? -1 : j * N + i
 }
+// The grid and its cells for the cave trails (trails.js), which route on the same costs.
+export { buildGrid, N as GRID_N, cx as cellX, cz as cellZ, cellOf }
 
 // The highest lake plane whose footprint covers (x, z), or null: the water WaterSurfaces draws. Not LakeSet.levelAt, which answers the lake the point is deepest inside, and inside a small lake that is the ocean under the whole map.
 function lakeLevelOf(layers) {

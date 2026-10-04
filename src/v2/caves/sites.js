@@ -38,9 +38,9 @@ export const CELLAR_LINK_M = 250
 
 /**
  * The mouths, best faces first, as `{ id, x, z, y, nx, nz }`: the foot of the face at (x, z), its floor `y`, and (nx, nz) the unit plan direction OUT of the cliff.
- * `field.heightAt` is the walker's height; `wet(x, z)` and `keepOut(x, z, r)` refuse water and towns.
+ * `field.heightAt` is the walker's height; `wet(x, z)` and `keepOut(x, z, r)` refuse water and towns, and `reaches(m)` a mouth no trail can reach (layers/trails.js).
  */
-export function siteMouths({ heightmap, field, wet, keepOut }) {
+export function siteMouths({ heightmap, field, wet, keepOut, reaches = () => true }) {
   const { width: W, height: H, field: t } = heightmap
   const step = heightmap.texelSize
   const cands = []
@@ -68,7 +68,7 @@ export function siteMouths({ heightmap, field, wet, keepOut }) {
     const [di, dj] = DIRS[c.d]
     const len = Math.hypot(di, dj)
     const m = refine(field, x0, z0, di / len, dj / len)
-    if (m === null || wet(m.x, m.z) || wet(m.x + m.nx * 3, m.z + m.nz * 3) || keepOut(m.x, m.z, 30)) continue
+    if (m === null || wet(m.x, m.z) || wet(m.x + m.nx * 3, m.z + m.nz * 3) || keepOut(m.x, m.z, 30) || !reaches(m)) continue
     m.id = mouths.length
     mouths.push(m)
   }
@@ -86,7 +86,8 @@ function refine(field, x0, z0, dx, dz) {
     if (Math.abs(h(x - dx * 3, z - dz * 3) - y) > 1.0) return null
     if (Math.abs(h(x - dz * 2, z + dx * 2) - h(x + dz * 2, z - dx * 2)) > 2.0) return null
     if (h(x + dx * 5, z + dz * 5) - y < 4.5) return null
-    return { id: -1, x, z, y, nx: -dx, nz: -dz }
+    // 0 - d, not -d: a -0 comes back from the baked plan's JSON as 0.
+    return { id: -1, x, z, y, nx: 0 - dx, nz: 0 - dz }
   }
   return null
 }

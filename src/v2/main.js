@@ -123,7 +123,7 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
-import { siteMouths, siteCellars, groupSystems, caveEntries } from './caves/sites.js'
+import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
 import { CaveMouths } from './render/cave-mouths.js'
@@ -3779,14 +3779,9 @@ const chalkTip = new THREE.Vector3()
 const chalkRay = new THREE.Raycaster()
 const chalkNdc = new THREE.Vector2()
 
-/** The overworld's cave mouths and their systems, sited on the uncut faces; then the clefts behind them, cut into `layers` before the terrain first reads them. */
-function siteCaves(heightmap, height, layers, townPlan) {
+/** The overworld's cave systems over the world plan's mouths; then the clefts behind them, cut into `layers` before the terrain first reads them. */
+function siteCaves(mouths, layers, townPlan) {
   const t0 = performance.now()
-  const wet = (x, z) => {
-    const level = layers.waterLevelAt(x, z)
-    return level !== null && height.heightAt(x, z) < level + 0.3
-  }
-  const mouths = siteMouths({ heightmap, field: height, wet, keepOut: (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) })
   const cellars = siteCellars(townPlan.towns, SEED)
   const systems = groupSystems(mouths, SEED, cellars)
   layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
@@ -4145,21 +4140,24 @@ async function buildRoom(room, at) {
       const t0 = performance.now()
       const file = await (baked ?? loadWorldPlan(WORLD_PLAN_URL))
       baked = null
+      let mouths, trailPlan
       if (file !== null && file.key === key) {
-        ;({ townPlan, roadPlan } = unpackWorldPlan(file.plan))
+        ;({ townPlan, roadPlan, mouths, trailPlan } = unpackWorldPlan(file.plan))
         layers.addGenerated(townPlan.records)
         layers.addGenerated(roadPlan.records)
+        layers.addGenerated(trailPlan.records)
       } else {
         console.warn(`[v2] ${file === null ? `no ${WORLD_PLAN_URL}` : `${WORLD_PLAN_URL} was baked against another document or relief`}; laying the towns and roads live`)
-        ;({ townPlan, roadPlan } = planWorld({ ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
+        ;({ townPlan, roadPlan, mouths, trailPlan } = planWorld({ heightmap, ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
       }
       if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
+      if (trailPlan.failed.length > 0) console.warn(`[v2] trails: no road reaches mouths ${trailPlan.failed.join(', ')}`)
       console.log(
         `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
           `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
       // After the towns, which keep them out, and on the faces before their clefts cut them.
-      caveSites = siteCaves(heightmap, height, layers, townPlan)
+      caveSites = siteCaves(mouths, layers, townPlan)
     }
   }
   const bands = height.bands
