@@ -83,7 +83,7 @@ export class CaveWalk {
   }
 
   /** WalkSurface.fits: no rock in her head volume on her line or round her shoulder. */
-  fits(x, z, standY, out) {
+  fits(x, z, standY, out, radius = this.radius) {
     const lo = standY + this.reach, hi = standY + this.height
     if (this.crossed(x, z, lo, hi)) {
       if (out) out.x = out.z = 0
@@ -91,7 +91,7 @@ export class CaveWalk {
     }
     let px = 0, pz = 0, hit = 0
     for (let k = 0; k < RING.length; k++) {
-      if (!this.crossed(x + RING[k][0] * this.radius, z + RING[k][1] * this.radius, lo, hi)) continue
+      if (!this.crossed(x + RING[k][0] * radius, z + RING[k][1] * radius, lo, hi)) continue
       hit++
       px -= RING[k][0]
       pz -= RING[k][1]

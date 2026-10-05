@@ -1167,5 +1167,24 @@ console.log('\nthe creatures')
   one.dispose()
 }
 
+{
+  console.log('\nthe hearth\'s light')
+  // One lamp and, 40 m off on flat ground, one campfire: the fire lights its own pool, in its group's channel only, out to LAMP.fire.reach and no further, from the flame's height.
+  const flat = { heightAt: () => 0 }
+  const lit = new Lamps(new THREE.Scene(), flat, { bank: lampBank, lamps: [{ x: 0, z: 0 }], fires: [{ x: 40, y: 0.1, z: 0 }], seed: 1, patch: (m) => m })
+  const { frame, tex } = lit.map
+  const at = (x, z) => {
+    const i = Math.floor((x - frame.x0) / LAMP.texel), j = Math.floor((z - frame.z0) / LAMP.texel)
+    const o = (j * tex.image.width + i) * 4
+    return { rgb: [0, 1, 2].map((c) => tex.image.data[o + c]), y: frame.y0 + (tex.image.data[o + 3] / 255) * frame.span }
+  }
+  const foot = at(40, 0), edge = at(40 + LAMP.fire.reach - 2, 0), past = at(40 + LAMP.fire.reach + 1, 0)
+  const others = foot.rgb.filter((_, c) => c !== LAMP.fire.group)
+  check(foot.rgb[LAMP.fire.group] > 200 && others.every((v) => v === 0), `the fire lights its foot in flicker group ${LAMP.fire.group} alone`, `rgb ${foot.rgb.join(' ')}`)
+  check(edge.rgb[LAMP.fire.group] > 0 && past.rgb.every((v) => v === 0), `the fire's pool reaches ${LAMP.fire.reach} m and no further`, `${edge.rgb[LAMP.fire.group]} 2 m inside, ${past.rgb.join(' ')} past`)
+  check(Math.abs(foot.y - 0.1) < 0.05, 'the pool is lit from the flame\'s height', `${foot.y.toFixed(2)} m`)
+  lit.dispose()
+}
+
 console.log(failures ? `\n${failures} failure(s)` : '\nall ok')
 process.exit(failures ? 1 : 0)

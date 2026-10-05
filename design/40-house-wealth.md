@@ -26,7 +26,7 @@ A room with no candle lights from a sconce or a perch (a stool or bookcase count
 
 ## Surfaces
 
-- **Floor.** `earth` when `wrng() < by(0.9, -0.6)` (so never in the richest third), else `plank` 55% or `flag`. Earth uses the speckle map, darkened by `EARTH_M`.
+- **Floor.** `earth` when `wrng() < by(0.9, -0.6)` (so never in the richest third), else `plank` 55% or `flag`. Earth is the speckle map in a dark brown, repeating every `EARTH_M` 1.2 m.
 - **Walls** come from the outside style (`wallKind`). A style with no rule throws.
 
 | style | walls |

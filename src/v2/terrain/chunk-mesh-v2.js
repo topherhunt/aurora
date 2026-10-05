@@ -37,12 +37,13 @@ import { forestKeepAt } from '../layers/forest.js'
 // refreshes it -- so within a ring it drifts up to 2x from ideal. Rough by
 // design.
 //
-// STIPPLE_TILE_PER_M is the tile's size as a fraction of viewing distance: 0.5
-// puts one 256-texel tile across ~29 degrees, a texel across ~0.11 degrees,
-// about two Quest pixels. STIPPLE_TILE_MIN stops the tile shrinking under the
-// feet, where distance goes to eye height.
-export const STIPPLE_TILE_PER_M = 0.5
-export const STIPPLE_TILE_MIN = 1.5
+// STIPPLE_TILE_PER_M is the tile's size as a fraction of viewing distance: 0.25
+// puts one 256-texel tile across ~14 degrees, a texel across ~0.056 degrees,
+// about one Quest pixel. STIPPLE_TILE_MIN stops the tile shrinking under the
+// feet, where distance goes to eye height. Scale the two together: their ratio
+// sets the distances where the tile size steps.
+export const STIPPLE_TILE_PER_M = 0.25
+export const STIPPLE_TILE_MIN = 0.75
 
 /** Tiles per metre for ground at this distance: the nearest power-of-two step. */
 export function stippleTilesPerM(dist) {

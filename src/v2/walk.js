@@ -163,7 +163,7 @@ export class WalkSurface {
   /**
    * Whether her capsule fits standing at (x, z) with her feet at `standY`: no
    * stone crosses the head volume (standY + reach, standY + height) on her own
-   * vertical line or on the RING at her shoulder. A stone topping out inside
+   * vertical line or on the RING at her shoulder (`radius`, hers by default). A stone topping out inside
    * `reach` is a step beside her and does not count, whatever its height.
    *
    * When it does not fit, `out` gets the plan direction AWAY from the stone as a
@@ -171,7 +171,7 @@ export class WalkSurface {
    * caller to slide along, or zero when it is her own line that is blocked and
    * there is no side to favour. Untouched when she fits.
    */
-  fits(x, z, standY, out) {
+  fits(x, z, standY, out, radius = this.radius) {
     const lo = standY + this.reach
     const hi = standY + this.height
     if (this.crossed(x, z, lo, hi)) {
@@ -182,7 +182,7 @@ export class WalkSurface {
     let pz = 0
     let hit = 0
     for (let k = 0; k < RING.length; k++) {
-      if (!this.crossed(x + RING[k][0] * this.radius, z + RING[k][1] * this.radius, lo, hi)) continue
+      if (!this.crossed(x + RING[k][0] * radius, z + RING[k][1] * radius, lo, hi)) continue
       hit++
       px -= RING[k][0]
       pz -= RING[k][1]

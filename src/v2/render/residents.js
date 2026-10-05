@@ -21,6 +21,7 @@ import { CARRIERS } from '../hands.js'
 import { CARRY_SPAN } from './leafkin.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
+import { DARK_FILL } from './interior.js'
 import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, WHIMPER_S, gripAt } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
@@ -48,6 +49,13 @@ const NEAR_M = 0.05
 const FADE_S = 0.25
 // What lights them, against the room's own light terms (render/interior.js): ambient, candle, window.
 const LIGHT = { amb: 0.75, candle: 0.3, win: 0.35, tint: new THREE.Color(1.0, 0.86, 0.7) }
+
+/** Sets `out` (a vec3 uniform's value) to a resident's light in a house of uniforms `u`: the night's fill and the candles, and the daylit fill and the windows in the colour of the light through the glass. */
+export function residentLight(u, out) {
+  const k = LIGHT.amb * u.uAmb.value * DARK_FILL + LIGHT.candle * u.uCandle.value * u.uFlicker.value
+  const w = LIGHT.amb * u.uAmb.value * (1 - DARK_FILL) + LIGHT.win * u.uWin.value, sky = u.uSky.value
+  return out.set(LIGHT.tint.r * (k + w * sky.r), LIGHT.tint.g * (k + w * sky.g), LIGHT.tint.b * (k + w * sky.b))
+}
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -407,9 +415,7 @@ export class Residents {
 
   update(dt, view, feet, lures, trusts) {
     this._her(dt, feet, lures, trusts)
-    const u = view.uniforms
-    const k = LIGHT.amb * u.uAmb.value + LIGHT.candle * u.uCandle.value * u.uFlicker.value + LIGHT.win * u.uWin.value * (0.15 + 0.85 * u.uDay.value)
-    this.light.value.set(LIGHT.tint.r * k, LIGHT.tint.g * k, LIGHT.tint.b * k)
+    residentLight(view.uniforms, this.light.value)
     for (const r of this.all.slice()) {
       this._step(r, dt)
       if (r.state === 'gone' || r.state === 'cower' || r.state === 'court' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue

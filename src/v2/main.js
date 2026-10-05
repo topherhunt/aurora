@@ -4369,15 +4369,15 @@ async function buildRoom(room, at) {
     plots = weedGardens(plots, roomProps)
     console.log(`[v2] huts ${roomProps.stats.placed}, gardens ${plots.length} plots, ${plots.reduce((n, p) => n + p.spots.length, 0)}/${sown} carrots clear of the roots`)
     window.v2village = roomSpec // console: `v2village.lake`, `v2village.props`
-    // The lamps where the build put them (render/lamps.js), their light and the huts' windows' baked into every lit material until the room goes.
-    lamps = new Lamps(scene, height, { bank: await banks.lamp, lamps: roomSpec.lamps, windows: roomProps.windows(), seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
-    if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
-    console.log(`[v2] lamps ${lamps.lamps.length}`)
-    window.v2lamps = lamps // console: `v2lamps.lamps`, `v2lamps.postMaterial`
     // The gathering place at the clearing's centre (render/hearth.js): the fire, its ring and the stools round it, its card baked with the rock cards.
     hearth = new Hearth(scene, height, { bank, at: roomSpec.clearing, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     console.log(`[v2] hearth ${hearth.stats.stools} stools, ${hearth.tris.join('/')} tris`)
     window.v2hearth = hearth // console: `v2hearth.stats`, `v2hearth.tier`
+    // The lamps where the build put them (render/lamps.js), their light, the huts' windows' and the hearth's baked into every lit material until the room goes.
+    lamps = new Lamps(scene, height, { bank: await banks.lamp, lamps: roomSpec.lamps, windows: roomProps.windows(), fires: [hearth.fire], seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-lamps' }) })
+    if (lamps.map) lighting.setLamps(lamps.map.tex, lamps.map.frame)
+    console.log(`[v2] lamps ${lamps.lamps.length}`)
+    window.v2lamps = lamps // console: `v2lamps.lamps`, `v2lamps.postMaterial`
     // The scattered stools where the build put them (render/stools.js): by the outlying doors and on the shore, the villagers' other seats.
     stools = new Stools(scene, height, { sites: roomSpec.stools, textures: propTextures, seed: villageSeed(), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     console.log(`[v2] stools ${stools.stats.stools}`)
@@ -6592,6 +6592,8 @@ const TELEPORT_OK = 0x7fd7ff
 const TELEPORT_NO = 0xff5a5a
 const TELEPORT_HURT = 0xffa030
 const TELEPORT_MAX_SLOPE = (LOCOMOTION.maxSlopeDeg * Math.PI) / 180
+// Metres at her full size: how far a refused landing may slide back toward her, in steps of.
+const TELEPORT_SNAP = { max: 0.5, step: 0.05 }
 // How far the ring floats over the drawn ground. Enough that a chunk mesh
 // sitting a little proud of the field does not swallow it, not so much that it
 // reads as hovering.
@@ -6902,11 +6904,23 @@ function aimTeleport(origin, dir) {
   // height is asked from a foot height -- hers at the start, the landing's at
   // the end -- so stone over either is headroom, not a wall.
   // A door's landing is always one: the blink takes her through it.
-  const standable = door !== null || hit !== null && (mount ? wildStriders.hopOpen(hit.x, hit.z) :
-    (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
-    !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y) ||
-    // A free bed is a landing even where its edge is too steep a step: it lays her in it (stepVitals).
-    worldBeds().some((b) => b.free && feetOnBed(b, hit, 0)))
+  const lands = (h) => (onWater || h.y <= feet.y || walk.slopeAt(h.x, h.z, undefined, h.y) <= TELEPORT_MAX_SLOPE) &&
+    !walk.obstacleAt(h.x, h.z, teleportObstacle) && player.pathClear(feet.x, feet.z, h.x, h.z, feet.y)
+  // The lob stops AT a wall or a table's edge, where her shoulder never fits: refused there, the landing slides back toward her, up to TELEPORT_SNAP, to the first spot that lands.
+  const settle = () => {
+    if (lands(hit)) return true
+    if (onWater) return false
+    const d = Math.hypot(hit.x - feet.x, hit.z - feet.z), ux = (feet.x - hit.x) / d, uz = (feet.z - hit.z) / d
+    for (let s = TELEPORT_SNAP.step * k; s <= TELEPORT_SNAP.max * k && s < d; s += TELEPORT_SNAP.step * k) {
+      const q = { x: hit.x + ux * s, y: 0, z: hit.z + uz * s }
+      q.y = walk.heightAt(q.x, q.z, hit.y + 0.05 * k)
+      if (waterLevelAt(q.x, q.z) === null && lands(q)) { Object.assign(hit, q); return true }
+    }
+    return false
+  }
+  // A free bed is a landing even where its edge is too steep a step: it lays her in it (stepVitals).
+  const onBed = hit !== null && worldBeds().some((b) => b.free && feetOnBed(b, hit, 0))
+  const standable = door !== null || onBed || hit !== null && (mount ? wildStriders.hopOpen(hit.x, hit.z) : settle())
   teleportTarget.valid = standable
   teleportTarget.reach = full
   teleportTarget.swim = false

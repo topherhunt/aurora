@@ -7,7 +7,8 @@
 import { planBuilding, KINDS } from '../src/buildings/plan.js'
 import { CELLAR, S, TownInteriorStone, navRoute, rollTownInterior, townFloorAt, within } from '../src/v2/rooms/town-interior.js'
 import { WalkSurface } from '../src/v2/walk.js'
-import { LOCOMOTION } from '../src/player.js'
+import * as THREE from 'three'
+import { LOCOMOTION, Player } from '../src/player.js'
 
 let failures = 0
 const check = (ok, what) => {
@@ -181,6 +182,29 @@ function flood(room) {
   check(upstairs.length === 0, `she climbs the stair to the upper floor${show(upstairs)}`)
   check(block.length === 0, `a teleport lob meets each stair as one block, landing on the tread${show(block)}`)
   check(ways.length === 0, `the residents' ways join the door to every place${show(ways)}`)
+}
+
+{
+  // A teleport across open floor -- a straight line that keeps 15 cm off every piece of furniture at her head -- is allowed: a table's BLOCK stone must not eat a metre-wide aisle (player.js PATH_SHOULDER).
+  let open = 0, refused = 0
+  for (const r of houses.slice(0, 24)) {
+    const walk = new WalkSurface({ heightAt: (x, z) => townFloorAt(r, x, z) }, new TownInteriorStone(r, 0, 0, 0), { trunkAt: () => null }, { scale: 1 })
+    const rig = new THREE.Group(), cam = new THREE.PerspectiveCamera(); rig.add(cam)
+    const player = new Player(rig, cam, walk, { scale: 1 })
+    const clearAt = (x, z) => Math.abs(walk.heightAt(x, z, 0.05)) < 0.02 && r.inside.some((q) => within(q, x, z)) && walk.fits(x, z, 0, null, 0.15)
+    const b = r.bounds, pts = []
+    for (let x = b.x0; x <= b.x1; x += 0.25) for (let z = b.z0; z <= b.z1; z += 0.25) if (walk.fits(x, z, walk.heightAt(x, z, 0.05), null) && clearAt(x, z)) pts.push([x, z])
+    for (let i = 0; i < pts.length; i += 3) for (let j = i + 1; j < pts.length; j += 7) {
+      const [x0, z0] = pts[i], [x1, z1] = pts[j], d = Math.hypot(x1 - x0, z1 - z0)
+      if (d > 6) continue
+      let clear = true
+      for (let s = 0.05; s < d && clear; s += 0.05) clear = clearAt(x0 + ((x1 - x0) * s) / d, z0 + ((z1 - z0) * s) / d)
+      if (!clear) continue
+      open++
+      if (!player.pathClear(x0, z0, x1, z1, 0)) refused++
+    }
+  }
+  check(open > 1000 && refused <= open * 0.01, `a teleport across open floor between the furniture is allowed (${refused} of ${open} refused)`)
 }
 
 {

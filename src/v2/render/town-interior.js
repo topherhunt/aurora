@@ -3,7 +3,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TriFlames, TRI_FIRE } from './fire-tris.js'
-import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross } from './interior.js'
+import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross, LEVELS, DARK_FILL, PANE_LIT, houseUniforms, skyThroughGlass } from './interior.js'
 import { CELLAR, S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, minus, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
 
 const TAU = 2 * Math.PI
@@ -12,12 +12,11 @@ const T = 0.15
 // Tessellation: the bake is per vertex, so a candle's pool needs vertices this close.
 const STEP = 0.25
 // Texture metres per repeat: floors and walls, the hearth's stones, the leaded panes.
-const FLOOR_M = 2.0, WALL_M = 2.0, STONE_M = 1.0, LEAD_M = 0.5, EARTH_M = 0.6
+const FLOOR_M = 2.0, WALL_M = 2.0, STONE_M = 1.0, LEAD_M = 0.5, EARTH_M = 1.2
 const MESHES = ['floor', 'plank', 'wall', 'stone', 'grain', 'linen', 'pages', 'window']
 
-// The bake (design/38 §Light). `amb` is the fill of a room with a window's worth of glass, `dark` the share of it a windowless room keeps; `bleed` of a brighter neighbour's fill comes through the doorway. A candle gives `candle` times its `i`, falling by e every `reach` metres, saturating at `cap`; the hearth is a candle of `fire` falling over `fireReach`. A doorway passes `door` of what reaches it on to the next room as a light of its own. Windows are leafkin's spill-and-beam over `spillM` and `beamM`, scaled by their glass. Under a table or a bed the fill falls to `under`.
-const SHADE = { amb: 0.2, dark: 0.3, bleed: 0.3, glass: 1.2, corner: 0.5, candle: 2.4, reach: 1.0, torchReach: 1.6, cap: 1.8, fire: 3.0, fireReach: 1.7, door: 0.45, doorReach: 1.3, spill: 2.0, spillM: 1.2, beamM: 1.6, under: 0.4 }
-const PANE_LIT = [0.35, 0.1, 1.5]
+// The bake (design/38 §Light). `amb` is the fill of a room with a window's worth of glass, DARK_FILL the share of it a windowless room, or any room at night, keeps; `bleed` of a brighter neighbour's fill comes through the doorway. A candle gives `candle` times its `i`, falling by e every `reach` metres, saturating at `cap`; the hearth is a candle of `fire` falling over `fireReach`. A doorway passes `door` of what reaches it on to the next room as a light of its own. Windows are leafkin's spill-and-beam over `spillM` and `beamM`, scaled by their glass. Under a table or a bed the fill falls to `under`.
+const SHADE = { amb: 0.2, bleed: 0.3, glass: 1.2, corner: 0.5, candle: 2.4, reach: 1.0, torchReach: 1.6, cap: 1.8, fire: 3.0, fireReach: 1.7, door: 0.45, doorReach: 1.3, spill: 2.0, spillM: 1.2, beamM: 1.6, under: 0.4 }
 
 // Medieval country colours: oak and elm browns, pewter, iron, earthenware, dyed wool.
 const WOOD = (h, dl = 0) => rgb(0.065 + h * 0.035, 0.36 + h * 0.12, 0.2 + h * 0.13 + dl)
@@ -264,7 +263,7 @@ function holesOn(room, cell, name, L) {
 function buildShell(room, M, K, rng) {
   const woodWall = (dl = 0) => rgb(0.07 + room.wall.hue * 0.05, 0.3 + room.wall.hue * 0.12, 0.3 * room.wall.tone + dl)
   const wallTint = (dl = 0) => (room.wall.kind === 'plaster' || room.wall.kind === 'timbered' ? rgb(0.1 + room.wall.hue * 0.03, 0.2, 0.62 * room.wall.tone + dl) : woodWall(dl))
-  const floorTint = room.floor.kind === 'earth' ? rgb(0.07 + room.floor.hue * 0.03, 0.32, 0.5 * room.floor.tone) : room.floor.kind === 'plank' ? rgb(0.07 + room.floor.hue * 0.04, 0.35, 0.28 * room.floor.tone) : rgb(0.08 + room.floor.hue * 0.06, 0.08 + room.floor.hue * 0.06, 0.42 * room.floor.tone)
+  const floorTint = room.floor.kind === 'earth' ? rgb(0.06 + room.floor.hue * 0.03, 0.3, 0.24 * room.floor.tone) : room.floor.kind === 'plank' ? rgb(0.07 + room.floor.hue * 0.04, 0.35, 0.28 * room.floor.tone) : rgb(0.08 + room.floor.hue * 0.06, 0.08 + room.floor.hue * 0.06, 0.42 * room.floor.tone)
   const floorM = room.floor.kind === 'earth' ? EARTH_M : FLOOR_M
   const timber = DARKWOOD(room.wall.hue)
   const ceilTint = rgb(0.07, 0.3, 0.2)
@@ -980,7 +979,7 @@ function lightPlan(room) {
     portals.push({ a: a.id, b: b.id, p: [cx, U - SLAB / 2, cz] })
   }
   // A room's fill from its glass, then a share of a brighter neighbour's.
-  const own = rooms.map((R) => SHADE.dark + (1 - SHADE.dark) * Math.min(1, R.glass / 1.2))
+  const own = rooms.map((R) => DARK_FILL + (1 - DARK_FILL) * Math.min(1, R.glass / 1.2))
   for (const R of rooms) R.fill = own[R.r.id]
   for (const P of portals) {
     rooms[P.a].fill += SHADE.bleed * Math.max(0, own[P.b] - own[P.a])
@@ -1020,14 +1019,14 @@ function roomOfVertex(room, x, y, z) {
   return best
 }
 
-/** Per vertex: x fill, y candle and hearth, z window. */
+/** Per vertex: x the night's fill, y candle and hearth, z window and the daylit fill. */
 function bake(room, m, plan) {
   const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
   for (let i = 0; i < n; i++) {
     const px = P[i * 3], py = P[i * 3 + 1], pz = P[i * 3 + 2], nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2]
     const rm = roomOfVertex(room, px, py, pz), R = plan.rooms[rm.id], r = rm.rect
     const up = py - rm.floor
-    let amb = SHADE.amb * R.fill * (0.8 + 0.2 * ny)
+    let amb = SHADE.amb * (0.8 + 0.2 * ny)
     const edge = Math.max(0, Math.min(px - r.x0, r.x1 - px, pz - r.z0, r.z1 - pz))
     amb *= 1 - (1 - SHADE.corner) * (1 - smooth(0, 0.6, up)) * (1 - smooth(0, 0.8, edge))
     let shaded = 1
@@ -1052,9 +1051,9 @@ function bake(room, m, plan) {
       cand += SHADE.candle * b.c * k
       win += b.w * k
     }
-    L[i * 3] = amb
+    L[i * 3] = amb * DARK_FILL
     L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap))
-    L[i * 3 + 2] = win * (0.5 + 0.5 * shaded) * smooth(0, 0.6, edge + 0.3)
+    L[i * 3 + 2] = win * (0.5 + 0.5 * shaded) * smooth(0, 0.6, edge + 0.3) + amb * (R.fill - DARK_FILL) * LEVELS.amb / LEVELS.win
   }
   m.lit = L
 }
@@ -1068,7 +1067,7 @@ export class TownInteriorView {
     this.room = room
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
-    this.uniforms = { uAmb: { value: 0.55 }, uCandle: { value: 1.0 }, uWin: { value: 0.9 }, uDay: { value: 1 }, uFlicker: { value: 1 } }
+    this.uniforms = houseUniforms()
     const rng = mulberry32(hash32(room.seed, room.index, 0x70e1))
     const K = kit(rng)
     const M = Object.fromEntries(MESHES.map((id) => [id, new Mesher()]))
@@ -1117,7 +1116,7 @@ export class TownInteriorView {
   update(t, dayness, eye) {
     const f = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
     this.uniforms.uFlicker.value = f
-    this.uniforms.uDay.value = dayness
+    skyThroughGlass(dayness, this.uniforms.uSky.value)
     if (this.flames) this.flames.update(t, f, eye)
     this.fire.update(t, [f, f, f], eye)
   }

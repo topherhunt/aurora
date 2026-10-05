@@ -42,6 +42,7 @@ import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
 import { CARRIERS, CARRY_MAX } from '../src/v2/hands.js'
 import { rollInterior } from '../src/v2/rooms/interior.js'
 import { Residents } from '../src/v2/render/residents.js'
+import { houseUniforms } from '../src/v2/render/interior.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
@@ -893,7 +894,7 @@ console.log('\nat home')
 {
   const room = rollInterior({ seed: spec.seed, index: 0, height: 5 })
   const sitY = make().sitY
-  const view = { uniforms: Object.fromEntries(['uAmb', 'uCandle', 'uFlicker', 'uWin', 'uDay'].map((k) => [k, { value: 1 }])) }
+  const view = { uniforms: houseUniforms() }
   const at = (trusts) => {
     const hands = fakeHands()
     // No carrier free, so a feast never asks the stand-in for the fist it lacks.

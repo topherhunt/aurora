@@ -45,7 +45,7 @@ A house sited a cellar (design/39 §2 Cellars) rolls with `cellar: true`, before
 
 ## Light
 
-A per-vertex bake (`SHADE` in the renderer; vertices every 0.25 m so candle pools resolve) that stops at walls. A room's fill is `amb` scaled by its glass, falling to `dark` of that with no window; a brighter neighbour bleeds `bleed` through a doorway. Candles and the hearth fall off exponentially and saturate at `cap`. A doorway re-emits `door` of what reaches it into the next room, which is what makes closed-off rooms darker than the open leafkin interiors. Windows are the leafkin spill-and-beam. Under tables and beds the fill falls to `under`. The hearth plays the campfire loop (`ambience.js`, reach 8 m) while she is inside.
+A per-vertex bake (`SHADE` in the renderer; vertices every 0.25 m so candle pools resolve) that stops at walls. A room's fill is `amb` scaled by its glass, falling to `DARK_FILL` of that with no window or at night, the windows' light and the daylit fill taking the hour's colour as in the leafkin rooms (design/30, Interiors); a brighter neighbour bleeds `bleed` through a doorway. Candles and the hearth fall off exponentially and saturate at `cap`. A doorway re-emits `door` of what reaches it into the next room, which is what makes closed-off rooms darker than the open leafkin interiors. Windows are the leafkin spill-and-beam. Under tables and beds the fill falls to `under`. The hearth plays the campfire loop (`ambience.js`, reach 8 m) while she is inside.
 
 ## Residents
 

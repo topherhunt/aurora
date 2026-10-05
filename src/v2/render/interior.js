@@ -14,6 +14,25 @@ const FLAT = [0.5, 0.5]
 // The speckle every surface carries on top of its texture: `px` square, one repeat `m` metres on the plane its normal faces most, whole on the flat-coloured (FLAT) and `textured` of it on the rest.
 const SPECK = { px: 64, m: 0.3, textured: 0.35 }
 
+// The house shaders' uniform levels of fill, candle and window light. A room's fill is daylight through its glass but for `DARK_FILL` of it, which a windowless room or a night keeps; the bakes carry the daylit share in the window channel, scaled by amb / win so the shader's uWin gives it back.
+export const LEVELS = { amb: 0.55, candle: 1.0, win: 0.9 }
+export const DARK_FILL = 0.3
+// A pane's own light: no fill and a faint catch of the candles, so at night it is near-black glass. Linear 0.1 already reads mid-grey once encoded to sRGB.
+export const PANE_LIT = [0, 0.03, 1.5]
+// The light through glass by dayness (clock.js daynessOfElev; 0.6 is the sun on the horizon): none at night, blue in the twilight, warm at sunrise and sunset, white by day.
+const GLASS_SKY = [[0, 0, 0, 0], [0.3, 0.06, 0.08, 0.18], [0.6, 0.8, 0.45, 0.28], [0.85, 1.0, 0.82, 0.62], [1, 1, 1, 1]]
+
+/** The house shaders' uniforms, `uSky` the colour of the light through the glass. */
+export const houseUniforms = () => ({ uAmb: { value: LEVELS.amb }, uCandle: { value: LEVELS.candle }, uWin: { value: LEVELS.win }, uSky: { value: new THREE.Color(1, 1, 1) }, uFlicker: { value: 1 } })
+
+/** Sets colour `out` to the light through a window at `dayness`. */
+export function skyThroughGlass(dayness, out) {
+  let i = 1
+  while (i < GLASS_SKY.length - 1 && dayness > GLASS_SKY[i][0]) i++
+  const a = GLASS_SKY[i - 1], b = GLASS_SKY[i], t = Math.max(0, Math.min(1, (dayness - a[0]) / (b[0] - a[0])))
+  return out.setRGB(a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t)
+}
+
 let texReady = null
 /** The interior textures, loaded once. */
 export function loadInteriorTextures() {
@@ -51,7 +70,7 @@ uniform sampler2D map;
 uniform float uAmb;
 uniform float uCandle;
 uniform float uWin;
-uniform float uDay;
+uniform vec3 uSky;
 uniform float uFlicker;
 uniform sampler2D speckMap;
 varying vec2 vUv;
@@ -64,7 +83,7 @@ void main() {
   vec3 an = abs(vNrm);
   vec2 sp = an.y >= an.x && an.y >= an.z ? vPos.xz : an.x >= an.z ? vPos.zy : vPos.xy;
   vec3 t = texture2D(map, vUv).rgb * mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
-  float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
+  vec3 lit = vec3(uAmb * vLight.x + uCandle * vLight.y * uFlicker) + uWin * vLight.z * uSky;
   gl_FragColor = vec4(t * vTint * lit, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -86,7 +105,7 @@ const WATER_FRAG = /* glsl */ `
 uniform float uAmb;
 uniform float uCandle;
 uniform float uWin;
-uniform float uDay;
+uniform vec3 uSky;
 uniform float uFlicker;
 uniform float uTime;
 uniform vec4 uGlint[3];
@@ -101,7 +120,7 @@ void main() {
   g += 0.00015 * cos(dot(p, k2) + 4.1) * sin(uTime * 1.7 + 4.0) * k2;
   vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
   vec3 v = normalize(vView), r = reflect(v, n);
-  float lit = uAmb * vLight.x + uCandle * vLight.y * uFlicker + uWin * vLight.z * (0.15 + 0.85 * uDay);
+  vec3 lit = vec3(uAmb * vLight.x + uCandle * vLight.y * uFlicker) + uWin * vLight.z * uSky;
   vec3 room = vec3(0.16, 0.1, 0.055) * (0.45 + 0.25 * r.y + 0.35 * sin(r.x * 23.0) * sin(r.z * 17.0));
   float fres = 0.3 + 0.7 * pow(1.0 - max(0.0, dot(-v, n)), 5.0);
   vec3 c = mix(vec3(0.012, 0.02, 0.018), room, fres) * lit;
@@ -392,7 +411,7 @@ export class InteriorView {
     this.room = room
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
-    this.uniforms = { uAmb: { value: 0.55 }, uCandle: { value: 1.0 }, uWin: { value: 0.9 }, uDay: { value: 1 }, uFlicker: { value: 1 } }
+    this.uniforms = houseUniforms()
     const rng = mulberry32(hash32(room.seed, room.index, 0x1d1))
     const K = kit(rng)
     const M = Object.fromEntries(TEX.map((id) => [id, new Mesher()]))
@@ -410,7 +429,7 @@ export class InteriorView {
       if (m.count === 0) continue
       bake(room, m, tops)
       // The panes are lit from outside, not by the room.
-      if (id === 'window') for (let i = 0; i < m.count; i++) m.lit.set([0.35, 0.1, 1.5], i * 3)
+      if (id === 'window') for (let i = 0; i < m.count; i++) m.lit.set(PANE_LIT, i * 3)
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
       g.setAttribute('normal', new THREE.Float32BufferAttribute(m.nrm, 3))
@@ -437,7 +456,7 @@ export class InteriorView {
   update(t, dayness, eye) {
     const f = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
     this.uniforms.uFlicker.value = f
-    this.uniforms.uDay.value = dayness
+    skyThroughGlass(dayness, this.uniforms.uSky.value)
     this.uTime.value = t
     this.flames.update(t, f, eye)
   }
@@ -758,7 +777,7 @@ function bandIn(room, s, x, z) {
   return Math.min(side, deep)
 }
 
-/** Per vertex: x fill, y candle, z window. */
+/** Per vertex: x the night's fill, y candle, z window and the daylit fill. */
 function bake(room, m, tops) {
   const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
   const wins = room.windows.map((w) => {
@@ -800,7 +819,7 @@ function bake(room, m, tops) {
       win += w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
     }
     // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
-    L[i * 3] = amb; L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap)); L[i * 3 + 2] = win * (amb / SHADE.amb)
+    L[i * 3] = amb * DARK_FILL; L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap)); L[i * 3 + 2] = win * (amb / SHADE.amb) + amb * (1 - DARK_FILL) * LEVELS.amb / LEVELS.win
   }
   m.lit = L
 }

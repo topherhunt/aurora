@@ -124,6 +124,8 @@ const UP = new THREE.Vector3(0, 1, 0)
 // Metres between the samples pathClear takes along a line. Under the smallest
 // padded trunk's diameter (a 3 cm sapling plus WalkSurface's 15 cm pad).
 const PATH_STEP = 0.3
+// Her shoulder ring's share in pathClear: a table's BLOCK stone at full ring eats most of a metre-wide aisle, and walking keeps the full ring.
+const PATH_SHOULDER = 0.5
 // Fraction of her pace she sidles along a trunk or a wall she walks straight
 // into, rather than stopping dead at it (_along).
 const SIDLE = 0.3
@@ -941,9 +943,8 @@ export class Player {
     let x = x0
     let z = z0
     // Walked from her feet at `y0` (standing under an awning), else from the
-    // topmost surface at the start; the headroom along the way is her own line
-    // only, since a lob is a coarse question and the ring's shoulder test at
-    // 30 cm buys nothing.
+    // topmost surface at the start; the headroom along the way is her capsule
+    // at PATH_SHOULDER of her ring.
     let y = this.th.heightAt(x, z, y0)
     // Starting in a trunk, a body or stone at her head, every rule is waived
     // until the path first comes clear, as _enters waives a step: else the
@@ -970,10 +971,10 @@ export class Player {
     return !leaving
   }
 
-  // Whether (x, z) is in a trunk or a body, or her capsule there with feet at the higher of `y` and `h` meets stone.
+  // Whether (x, z) is in a trunk or a body, or her capsule there (PATH_SHOULDER of her ring) with feet at the higher of `y` and `h` meets stone.
   _blocked(x, z, y, h) {
     return !!(this.obstacles && this.obstacles.obstacleAt(x, z, this._obstacle)) ||
-      !!(this.capsule && !this.capsule.fits(x, z, y > h ? y : h, null))
+      !!(this.capsule && !this.capsule.fits(x, z, y > h ? y : h, null, this.capsule.radius * PATH_SHOULDER))
   }
 
   /**

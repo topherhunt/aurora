@@ -5,7 +5,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
-import { roomLit } from './residents.js'
+import { residentLight, roomLit } from './residents.js'
 import { TOWNSFOLK } from './townsfolk.js'
 import { SIT, SIT_CUT, TALKS, TURN_RATE } from './villagers.js'
 import { navRoute } from '../rooms/town-interior.js'
@@ -19,7 +19,6 @@ const NEAR_M = 0.05
 // Who keeps a `shop` spot: the potion master's counter, the innkeeper's bar.
 const KEEPERS = ['alchemist', 'innkeeper'].map((b) => TOWNSFOLK.bodies.indexOf(b))
 const FADE_S = 0.25
-const LIGHT = { amb: 0.75, candle: 0.3, win: 0.35, tint: new THREE.Color(1.0, 0.86, 0.7) }
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -247,9 +246,7 @@ export class TownResidents {
   }
 
   update(dt, view) {
-    const u = view.uniforms
-    const k = LIGHT.amb * u.uAmb.value + LIGHT.candle * u.uCandle.value * u.uFlicker.value + LIGHT.win * u.uWin.value * (0.15 + 0.85 * u.uDay.value)
-    this.light.value.set(LIGHT.tint.r * k, LIGHT.tint.g * k, LIGHT.tint.b * k)
+    residentLight(view.uniforms, this.light.value)
     for (const r of this.all.slice()) this._step(r, dt)
   }
 

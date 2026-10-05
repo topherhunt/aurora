@@ -13,7 +13,7 @@ import { TRI_LAMP, TriFlames } from './fire-tris.js'
 // lamp map (lighting.js LAMP_GLSL), baked here once and flickered by the same
 // three groups the flames burn on, so the pool of light and the flame breathe
 // together; the huts' windows go into the same map as cones out of their
-// walls. The post itself is lit by the map like any other surface, and by
+// walls, and the hearth's fire as one more, wider pool. The post itself is lit by the map like any other surface, and by
 // nothing else: a glow term on the dish blew the pale trunk under it out white.
 // A post is stone to the walker and a trunk keeps off it. Past LAMP.lod1 a post
 // draws the pick's first decimated tier, the only one shipped.
@@ -38,6 +38,8 @@ export const LAMP = {
   gain: 0.3,
   // A window's light: how far it reaches, its gain against a lamp's, and how tightly it is coned out of the wall.
   window: { reach: 6, gain: 0.5, cone: 2 },
+  // A campfire's light (the hearth's): its reach and gain against a lamp's, and the flicker group it breathes with. A channel saturates at a lamp's foot, so a gain over 1 widens the bright core rather than brightening it.
+  fire: { reach: 14, gain: 1, group: 0 },
   // The lamp map's texel, metres, and the margin it runs past the last lamp.
   texel: 0.5,
   // Dayness (clock.js daynessOfElev) under which the lamps are lit, and over which they are out.
@@ -62,13 +64,15 @@ export class Lamps {
    * @param opts.bank  loadLampBank's answer. Required.
    * @param opts.lamps  `[{ x, z }]` from the build. Required.
    * @param opts.windows  RoomProps.windows(): `[{ x, y, z, dx, dz }]`, lit into the map as cones. Optional.
+   * @param opts.fires  `[{ x, y, z }]`, campfires (Hearth.fire) lit into the map at LAMP.fire. Optional.
    * @param opts.patch  (material) => material, the lighting patch for the posts. Required.
    */
-  constructor(scene, field, { bank = null, lamps = null, windows = [], seed = 1, patch = null } = {}) {
+  constructor(scene, field, { bank = null, lamps = null, windows = [], fires = [], seed = 1, patch = null } = {}) {
     if (!bank || bank.geometries?.length !== 2 || !bank.bounds) throw new Error('Lamps: needs the bank from loadLampBank (or lampBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Lamps: needs a V2Height with heightAt')
     if (!Array.isArray(lamps) || lamps.some((l) => !Number.isFinite(l.x) || !Number.isFinite(l.z))) throw new Error('Lamps: `lamps` is a list of { x, z }')
     if (!Array.isArray(windows) || windows.some((w) => ![w.x, w.y, w.z, w.dx, w.dz].every(Number.isFinite))) throw new Error('Lamps: `windows` is a list of { x, y, z, dx, dz }')
+    if (!Array.isArray(fires) || fires.some((f) => ![f.x, f.y, f.z].every(Number.isFinite))) throw new Error('Lamps: `fires` is a list of { x, y, z }')
     if (typeof patch !== 'function') throw new Error('Lamps: needs the lighting patch')
     const rand = mulberry32(seed)
     const flameY = LAMP.height * LAMP.bowl
@@ -78,6 +82,7 @@ export class Lamps {
       return { x, y, z, flameY: y + flameY, group: i % 3, phase: rand() * Math.PI * 2, yaw: rand() * Math.PI * 2 }
     })
     this.windows = windows.map((w) => ({ ...w }))
+    this.fires = fires.map((f) => ({ ...f }))
     this.bank = bank
     this.scale = LAMP.height / bank.bounds.height
     this.postMaterial = patch(createGenPropMaterial())
@@ -112,20 +117,20 @@ export class Lamps {
   }
 
   /**
-   * The lamp map (lighting.js LAMP_GLSL): every lamp's falloff summed into its
-   * group's channel over the plan, every window's cone spread over all three
+   * The lamp map (lighting.js LAMP_GLSL): every lamp's and fire's falloff summed
+   * into its group's channel over the plan, every window's cone spread over all three
    * (so it breathes at the three flickers' mean), the emitters' height in the
    * alpha, with the frame lighting.setLamps takes.
    */
   _bake() {
-    const L = this.lamps, W = this.windows
+    const L = this.lamps, W = this.windows, F = this.fires
     if (L.length === 0) return null
-    const pad = LAMP.reach + LAMP.texel
-    const all = [...L, ...W]
+    const pad = Math.max(LAMP.reach, F.length ? LAMP.fire.reach : 0) + LAMP.texel
+    const all = [...L, ...W, ...F]
     const x0 = Math.min(...all.map((l) => l.x)) - pad, z0 = Math.min(...all.map((l) => l.z)) - pad
     const w = Math.max(...all.map((l) => l.x)) + pad - x0, h = Math.max(...all.map((l) => l.z)) + pad - z0
     const nx = Math.ceil(w / LAMP.texel), nz = Math.ceil(h / LAMP.texel)
-    const ys = [...L.map((l) => l.flameY), ...W.map((w) => w.y)]
+    const ys = [...L.map((l) => l.flameY), ...W.map((w) => w.y), ...F.map((f) => f.y)]
     const y0 = Math.min(...ys), span = Math.max(1, Math.max(...ys) - y0)
     const data = new Uint8Array(nx * nz * 4)
     const sum = new Float32Array(4)
@@ -141,6 +146,14 @@ export class Lamps {
           const f = 1 - d / LAMP.reach
           sum[l.group] += f * f
           sum[3] += f * f * (l.flameY - y0)
+          weight += f * f
+        }
+        for (const fire of F) {
+          const d = Math.hypot(x - fire.x, z - fire.z)
+          if (d >= LAMP.fire.reach) continue
+          const f = (1 - d / LAMP.fire.reach) * LAMP.fire.gain
+          sum[LAMP.fire.group] += f * f
+          sum[3] += f * f * (fire.y - y0)
           weight += f * f
         }
         for (const wd of W) {

@@ -54,10 +54,11 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Double the frequency of glowy mushrooms.
   - [ ] Water surfaces should behave the way water in the overworld does: nearly opaque (slightly transparent when looking straight down), cubemap capture (just one, on the nearest water body)
 - [ ] Human villages
-  - [ ] Experiment with giving each NPC combinatorial accoutrements: hats, helmets, scarves, cloaks, etc.
+  - [ ] Experiment with giving each NPC combinatorial accoutrements: hats, helmets, beards, scarves, cloaks, etc.
     - Claude recommends I test out 2 approaches: 
     - (1) load up each NPC's "source mesh" with a bunch of overlapping parts and then hide the unworn parts per instance in the shader. Tag each vertex with which part it belongs to, and give each instance a bitmask of the parts it wears. The vertex shader squashes unworn parts down to nothing, so the GPU skips drawing them. Everything stays in one draw call, and each instance can show any mix. The cost is that every hidden vertex still runs the vertex shader, but an early exit makes that cheap. 
-    - (2) OR make each accoutrement a separate mesh and 
+    - (2) OR make each accoutrement a separate mesh and "socket it" to the head bone of the wearer, etc. (= separate draw call per accoutrement shown)
+  - [ ] Improve house interior props. Plates should have shininess and just vertex coloring rather than a fabricky texture. Same with inkpots Pots, and metal parts of farm tools etc, should be both mottled and shiny. Scrolls should flare at the end and have a bit of a spiral coil, like real scrolls.
   - [ ] Human village, building exteriors: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc. Carefully monitor tri budget.
   - [ ] Farmland. Crops, livestock.
   - [ ] Stables w striders.
