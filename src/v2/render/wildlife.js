@@ -58,23 +58,23 @@
 // which are two clips and not one played at two rates because a hop is
 // ballistic and a slowed clip floats.
 //
-// SHE IS FURNITURE, UNLESS SHE HOLDS A LURE. An animal takes no notice of her
-// at any distance -- it grazes with her standing over it -- until a thing in
-// a hand (hands.js lures, hers or a peer's) is one its species wants (LURES: a
-// carrot for a stag or a hare, a fish or a crab for a fox) and within LURE_M
-// of it. Then it is LIVE, off its score: it looks up (`notice`) and courts the
-// lure -- `follow`s it, re-aimed every tick and its gait picked by how far
-// behind it is, off its tether and detouring round blocked ground, stops
-// STANDOFF_M short and there does what its species does (`court`: a stag looks
-// at her or begs, a fox looks, a hare frolics about her feet), sets off again
-// once she is RESUME_M further, and with the lure held to its face `beg`s --
-// the graze clips at the thing, over and over, and nothing is ever eaten. The
-// lurer's client is the authority and publishes an anchor every ANCHOR_S; a
-// peer's client runs the same rule on the relayed hand and is nudged onto each
-// anchor over CORRECT_S. It forgets the lure past LURE_FORGET_M or the moment
-// the hand is empty, and then REJOINS the score: a walk to the start pose of
-// the next planned phrase it can reach, and a stand until that phrase begins,
-// a closed-form chain every client derives from the one rejoin anchor.
+// WHAT SHE DOES TO THEM. An animal is LIVE, off its score, in one of three
+// modes. LURE: a thing in a hand (hands.js lures, hers or a peer's) its
+// species wants (a carrot for a stag or a hare, a fish or a crab for a fox)
+// within its notice range has it look up (`notice`) and face the lure. A fox
+// `follow`s it, off its tether and detouring round blocked ground, to its
+// standoff and courts it there; a WARY one (stag, hare) holds still and
+// `gaze`s. A lure at its face is `beg`ged at -- unless the animal is wary and
+// the carrot hers, which it EATS (opts.eat takes it from her hand) with a
+// contented call. TAME: from then on it follows her to its `heel` and gazes
+// there, until she is past LURE_FORGET_M. FLEE: a wary animal with her head
+// within FLEE_M and no lure looks up, turned to her (`startle`), and runs from
+// her until FLEE_CLEAR_M off or FLEE_S. The client that set it live is the
+// authority and publishes an anchor every ANCHOR_S; a peer runs a lure on the
+// relayed hand and a flee or tame after the anchors, nudged onto each over
+// CORRECT_S. Going off the score ends in a REJOIN: a walk to the start pose
+// of the next planned phrase it can reach, and a stand until that phrase
+// begins, a closed-form chain every client derives from the one rejoin anchor.
 //
 // IT TURNS, IT DOES NOT SNAP. `heading` is where a body faces and `aim` is
 // where it wants to face; the gap closes at TURN_RATE and never faster, so
@@ -217,20 +217,27 @@ const WALK_M = 4
 // Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.25
 
-// LURES. An animal notices a thing in a hand its species wants within LURE_M of it and forgets it past LURE_FORGET_M.
+// LURES. An animal notices a thing in a hand its species wants within LURE_M of it (a wary one within FLEE_M, where it would otherwise run) and forgets it past LURE_FORGET_M; a tame one forgets her there too.
 export const LURE_M = 3
 export const LURE_FORGET_M = 30
-// Following, it stops STANDOFF_M (SPECIES.standoff) from the lure and sets off again past that plus RESUME_M; a follow step is re-picked every FOLLOW_STEP_S and re-aimed every tick, except for DETOUR_S after the ground ahead blocked it.
+// FRIGHT. Her head within FLEE_M across the ground (and as near in height) of a wary animal on its score startles it for STARTLE_S, then it runs until FLEE_CLEAR_M from her or FLEE_S, whichever is first.
+export const FLEE_M = 6
+export const STARTLE_S = 0.8
+export const FLEE_CLEAR_M = 25
+export const FLEE_S = 8
+// Chews of `eat-loop` when it eats a carrot.
+const EAT_CHEWS = [1, 2]
+// A peer's tame copy closes on its anchor to within this.
+const ANCHOR_NEAR_M = 0.3
+// Following, it stops at its standoff (SPECIES.standoff, or `heel` when tame) and sets off again past that plus RESUME_M; a follow step is re-picked every FOLLOW_STEP_S and re-aimed every tick, except for DETOUR_S after the ground ahead blocked it.
 export const RESUME_M = 0.8
 export const FOLLOW_STEP_S = 1
 const DETOUR_S = 1
 // A lure within FACE_M body lengths of the nose, and no more than FACE_DY body lengths above or below the feet, is begged at: a stag reaches a carrot held at her waist, a hare one held at her shins.
 export const FACE_M = 0.7
 export const FACE_DY = 0.8
-// At its standoff an animal holds a look at her for GAZE_S, or a hare bounds FROLIC_S across the lure, a quarter turn off its bearing.
+// A gaze is an idle held GAZE_S, then one alert look.
 const GAZE_S = [1.5, 4]
-const FROLIC_S = [0.4, 0.8]
-const FROLIC_SWING = 1.2
 // The authority publishes a live animal's anchor every ANCHOR_S; a peer's anchor older than ANCHOR_STALE_S with no hand in sight ends the lure here; a peer's animal is nudged onto each anchor over CORRECT_S.
 export const ANCHOR_S = 1
 // Tiles rolled for the dragons past the resident set, and the stags' free plans kept for them.
@@ -239,6 +246,8 @@ const FREE_PLANS = 256
 export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
+// The modes an anchor may carry besides 'rejoin', each a live animal.
+const LIVE_MODES = new Set(['lure', 'flee', 'tame'])
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
@@ -267,6 +276,9 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * courts, `standoff` how near it follows one to, `follow` the gait it follows
  * at by how many metres behind it is (the first whose figure it is under), and
  * `court` what it does once it is there and the lure is not at its face.
+ * A `wary` one flees her at its `flee` gait, holds still at a lure, eats a
+ * carrot of hers and is then tame, following her to its `heel` and voicing
+ * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats.
  * `prefix` is the first word of its creatures' keys.
  */
 export const SPECIES = [
@@ -275,6 +287,7 @@ export const SPECIES = [
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
     lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
+    wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.15, 0.9, 0.8]]), // greyer, brown, redder
   },
   {
@@ -288,7 +301,9 @@ export const SPECIES = [
     key: 'hare', prefix: 'hr', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
     gaits: [['hop', 6], ['bound', 4]],
-    lures: ['carrot'], standoff: 0.6, follow: [['bound', Infinity]], court: 'frolic',
+    lures: ['carrot'], standoff: 0.6, follow: [['hop', 3], ['bound', Infinity]], court: 'gaze',
+    // The grunt pitched up near two octaves: there is no hare clip.
+    wary: true, flee: 'bound', heel: 1.2, call: { sound: 'deerGrunt', rate: [1.9, 2.3] },
     tint: tintRange([[1.05, 1.05, 1.06], [0.62, 0.62, 0.63], [0.78, 0.58, 0.4]]), // white, grey, brown
   },
 ]
@@ -357,8 +372,9 @@ export class Wildlife {
    * @param opts.dayness  the world's day scalar at a world time (clock.js WorldClock.daynessAt), read by the plan; noon when absent
    * @param opts.assets a loaded asset per species, keyed by SPECIES.key, for a gate; the world fetches the GLBs
    * @param opts.species the SPECIES keys this room holds; every one when absent
+   * @param opts.eat  (lure) => true once her hand holding it has lost it (hands.js eatLure); a wary animal with her carrot at its face calls it
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
     }
@@ -366,6 +382,8 @@ export class Wildlife {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Wildlife needs the WalkSurface, for heightAt and normalAt')
     if (dayness !== null && typeof dayness !== 'function') throw new Error('Wildlife: dayness must be a function of world time')
     if (avoid !== null && typeof avoid !== 'function') throw new Error('Wildlife: avoid must be a function of (x, z)')
+    if (eat !== null && typeof eat !== 'function') throw new Error('Wildlife: eat must be a function of a lure')
+    this.eat = eat
     // (x, z) -> true where no animal may stand or walk (the towns' buildings). Must be pure in position, like seat.
     this.avoid = avoid
     this.height = height
@@ -420,6 +438,8 @@ export class Wildlife {
           act: 'stand', queue: [], clip: 'idle', stepStart: 0, stepEndTick: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
           // Live: `{ mode, by, anchor, sendTick, rand }` while after a lure (hands.js lures: kind, x, y, z, by), the lure itself, and the ticks of detour left before it is re-aimed at it.
           live: null, lure: null, detour: 0,
+          // What a live body faces and follows -- the lure, her head, or a peer's anchor (`mark`) -- and how near it stops.
+          goal: null, near: 0, mark: { x: 0, z: 0 },
           // The ladder rung it is on, CARD_RUNGS being past the last rung and so neither drawn nor simulated.
           lod: CARD_RUNGS, puppet: null,
           // Whether the card is the thing this animal should be drawing, and how
@@ -457,6 +477,10 @@ export class Wildlife {
     this.fading = []
     this.fadingCards = []
     this.lures = NO_LURES
+    // Her head this frame, what a wary animal flees and a tame one follows.
+    this.head = { x: Infinity, y: Infinity, z: Infinity }
+    // One-shots since the ear last drained them (voices).
+    this.said = []
 
     if (assets) {
       this.setAssets(assets)
@@ -478,7 +502,7 @@ export class Wildlife {
       const asset = assets[sp.key]
       if (!asset) throw new Error(`Wildlife.setAssets: nothing for ${sp.key}`)
       if (!(asset.span > 0) || !(asset.width > 0) || !(asset.height > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no body extents -- re-ship it`)
-      for (const [gait] of sp.gaits) if (!(asset.gait[gait] > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no ground speed for its ${gait}`)
+      for (const gait of [...sp.gaits, ...sp.follow].map(([g]) => g).concat(sp.wary ? [sp.flee] : [])) if (!(asset.gait[gait] > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no ground speed for its ${gait}`)
       sp.asset = asset
       // The ladder's rungs are a ratio of the body's LARGEST extent (critters.js), and `size` is its length: for a four-legged animal those are the same thing, and `bulk` says so rather than assuming it.
       sp.bulk = Math.max(asset.span, asset.width, asset.height) / asset.span
@@ -733,6 +757,19 @@ export class Wildlife {
     return into
   }
 
+  /** The calls since the last call (audio/ambience.js voiced), moved into `into`. */
+  voices(into) {
+    for (const v of this.said) into.push(v)
+    this.said.length = 0
+    return into
+  }
+
+  /** A wary animal's contented call, from where it stands. */
+  _say(c) {
+    const { sound, rate } = c.sp.call
+    this.said.push({ sound, x: c.sx, y: c.y, z: c.sz, rate: between(c.live.rand, rate) })
+  }
+
   // -------------------------------------------------------------------------
   // PREY. The dragons (render/dragons.js) hunt the stags, and what they need
   // of this layer is a few verbs: the stags to roll a hunt over and where the
@@ -907,8 +944,8 @@ export class Wildlife {
     const d = sp.durations
     switch (act) {
       case 'stand': return [['idle', onGrid(between(rand, STAND_S))]]
-      case 'graze': case 'beg': {
-        const chews = Math.round(between(rand, GRAZE_LOOPS))
+      case 'graze': case 'beg': case 'eat': {
+        const chews = Math.round(between(rand, act === 'eat' ? EAT_CHEWS : GRAZE_LOOPS))
         return [['eat-down', onGrid(d['eat-down'])], ['eat-loop', onGrid(chews * d['eat-loop'])], ['eat-up', onGrid(d['eat-up'])]]
       }
       case 'rest': {
@@ -918,8 +955,9 @@ export class Wildlife {
       }
       case 'dig': return [['dig', onGrid(between(rand, DIG_S))], ['alert', onGrid(between(rand, ALERT_S))]]
       case 'notice': return [['alert', onGrid(d.alert)]]
-      case 'gaze': return [['idle', onGrid(between(rand, GAZE_S))]]
-      case 'frolic': return [['bound', onGrid(between(rand, FROLIC_S))]]
+      case 'startle': return [['alert', onGrid(STARTLE_S)]]
+      case 'flee': return [[sp.flee, onGrid(FLEE_S)]]
+      case 'gaze': return [['idle', onGrid(between(rand, GAZE_S))], ['alert', onGrid(d.alert)]]
       default: throw new Error(`Wildlife: no activity named ${act}`)
     }
   }
@@ -1168,11 +1206,11 @@ export class Wildlife {
   // Behaviour: one tick at a time, from the phrase and its own dice.
   // -------------------------------------------------------------------------
 
-  /** The queue's next step from world time `now`, or, live, the lure's next activity; a phrase whose steps have run out holds `idle` to its end. */
+  /** The queue's next step from world time `now`, or, live, the mode's next activity; a phrase whose steps have run out holds `idle` to its end. */
   _next(c, now) {
     const step = c.queue.shift()
     if (!step) {
-      if (c.live) { this._court(c, now); return }
+      if (c.live) { if (c.live.mode === 'flee') this._begin(c, 'flee', now); else this._court(c, now); return }
       c.queue.push(['idle', Infinity])
       this._next(c, now)
       return
@@ -1185,30 +1223,31 @@ export class Wildlife {
     c.cue++
     const speed = c.sp.asset.gait[c.clip]
     c.speed = speed === undefined ? 0 : speed * c.k
+    if (c.act === 'eat' && c.clip === 'eat-up') this._say(c)
   }
 
-  /** A lure's activity begun at `now`: its steps, and the aim it needs. Every one of them but the frolic is aimed at the lure by _heed each tick. */
+  /** A live activity begun at `now`: its steps. Eating takes her carrot, and makes the animal tame; one that cannot have it begs. */
   _begin(c, act, now) {
     const rand = c.live.rand
     const q = c.queue
     q.length = 0
-    switch (act) {
-      case 'follow': {
-        const behind = Math.hypot(c.lure.x - c.sx, c.lure.z - c.sz)
-        q.push([c.sp.follow.find(([, m]) => behind < m)[0], FOLLOW_STEP_S])
-        break
+    if (act === 'follow') {
+      const behind = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
+      q.push([c.sp.follow.find(([, m]) => behind < m)[0], FOLLOW_STEP_S])
+    } else {
+      if (act === 'eat') {
+        if (this.eat === null) throw new Error('Wildlife: a carrot of hers at its face, and no eat() to take it with')
+        if (this.eat(c.lure)) {
+          c.live.mode = 'tame'
+          c.lure = null
+          // The room hears it tame on this tick, not a second on.
+          c.live.sendTick = tickOf(now)
+          this._say(c)
+        } else act = 'beg'
       }
-      case 'frolic': {
-        // Across the lure, a quarter turn off its bearing on whichever side is the lesser turn, and no more than FROLIC_SWING of a turn at that, so the bound is a bound and not a pivot, and the bounds ring her feet.
-        const at = bearing({ x: c.sx, z: c.sz }, c.lure)
-        const off = Math.PI / 2 + (rand() - 0.5)
-        const sw = Math.abs(swing(c.sh, at + off)) < Math.abs(swing(c.sh, at - off)) ? swing(c.sh, at + off) : swing(c.sh, at - off)
-        c.aim = c.sh + clamp(sw, -FROLIC_SWING, FROLIC_SWING)
-        q.push(...this._steps(c.sp, act, rand))
-        break
-      }
-      default:
-        q.push(...this._steps(c.sp, act, rand))
+      // The room hears the run the tick it begins, its heading the way it runs.
+      if (act === 'flee' && c.live.by === null) c.live.sendTick = tickOf(now)
+      q.push(...this._steps(c.sp, act, rand))
     }
     c.act = act
     this._next(c, now)
@@ -1253,10 +1292,10 @@ export class Wildlife {
   }
 
   // -------------------------------------------------------------------------
-  // LURES: a thing in a hand its species wants.
+  // LIVE: after a lure, fleeing her, or tame at her heel.
   // -------------------------------------------------------------------------
 
-  /** The lure this animal is on this tick: the nearest of the frame's lures of a kind its species wants, noticed within LURE_M and kept to LURE_FORGET_M; null for none. */
+  /** The lure this animal is on this tick: the nearest of the frame's lures of a kind its species wants, noticed within LURE_M (FLEE_M for a wary one) and kept to LURE_FORGET_M; null for none. */
   _lure(c) {
     let lure = null
     let best = Infinity
@@ -1265,40 +1304,53 @@ export class Wildlife {
       const d = Math.hypot(l.x - c.sx, l.z - c.sz)
       if (d < best) { best = d; lure = l }
     }
-    return lure !== null && best <= (c.live ? LURE_FORGET_M : LURE_M) ? lure : null
+    return lure !== null && best <= (c.live ? LURE_FORGET_M : c.sp.wary ? FLEE_M : LURE_M) ? lure : null
   }
 
-  /** Off the score and after the lure, live from `now`. `by` is the lurer's client id, null for this client, which then owes the room the anchors. Its dice are the moment it went live. */
-  _golive(c, lure, by, now) {
-    c.live = { mode: 'lure', by, anchor: null, sendTick: tickOf(now), rand: mulberry32(hash32(keyHash(c.key), tickOf(now))) }
+  /** Her head within FLEE_M of this animal, across the ground and in height. */
+  _startled(c) {
+    const h = this.head
+    return Math.hypot(h.x - c.sx, h.z - c.sz) <= FLEE_M && Math.abs(h.y - c.y) <= FLEE_M
+  }
+
+  /** Off the score in `mode`, live from `now`. `by` is the client that set it live, null for this client, which then owes the room the anchors. Its dice are the moment it went live. */
+  _golive(c, mode, lure, by, now) {
+    c.live = { mode, by, anchor: null, sendTick: tickOf(now), rand: mulberry32(hash32(keyHash(c.key), tickOf(now))) }
     c.rejoin = null
     c.lure = lure
+    c.goal = null
     c.detour = 0
-    this._begin(c, 'notice', now)
+    this._begin(c, mode === 'lure' ? 'notice' : mode === 'tame' ? 'gaze' : 'startle', now)
   }
 
   /**
-   * One tick courting the lure. A follower that has closed to its standoff
-   * stops there and then; a gazer whose lure has gone further than the
-   * standoff and RESUME_M sets off after it, and a beggar whose lure has left
-   * its face lifts its head. Whatever it is doing but a frolic, it faces the
-   * lure -- a follower once its detour is over.
+   * One tick after its goal. A follower that has closed to `near` stops
+   * there and then; a gazer whose goal has gone RESUME_M further sets off
+   * after it -- unless it is wary and the goal is a lure, which it waits for
+   * -- a beggar whose lure has left its face lifts its head, and a wary one
+   * with her own carrot at its face leaves off whatever it was doing to eat
+   * it. It faces the goal, a follower once its detour is over.
    */
   _heed(c, k) {
-    const l = c.lure
-    const dist = Math.hypot(l.x - c.sx, l.z - c.sz)
-    if (c.act === 'follow' && dist <= c.sp.standoff) {
+    const g = c.goal
+    const dist = Math.hypot(g.x - c.sx, g.z - c.sz)
+    if (c.sp.wary && c.lure !== null && c.lure.by === null && this._atFace(c)) {
       c.queue.length = 0
       c.stepEndTick = k
-    } else if ((c.act === 'gaze' && dist > c.sp.standoff + RESUME_M) || (c.act === 'beg' && !this._atFace(c))) {
+    } else if (c.act === 'follow' && dist <= c.near) {
+      c.queue.length = 0
+      c.stepEndTick = k
+    } else if ((c.act === 'gaze' && this._roams(c) && dist > c.near + RESUME_M) || (c.act === 'beg' && !this._atFace(c))) {
       c.queue.length = 0
       if (c.clip === 'eat-down' || c.clip === 'eat-loop') c.queue.push(['eat-up', onGrid(c.sp.durations['eat-up'])])
       c.stepEndTick = k
     }
-    if (c.act === 'frolic' || c.act === 'notice') return
     if (c.detour > 0) { c.detour--; return }
-    c.aim = bearing({ x: c.sx, z: c.sz }, l)
+    c.aim = bearing({ x: c.sx, z: c.sz }, g)
   }
+
+  /** Whether it follows its goal: anything but a wary animal after a lure. */
+  _roams(c) { return !(c.sp.wary && c.live.mode === 'lure') }
 
   /** The lure is at its face: within FACE_M body lengths of its nose, half a length ahead, and no more than FACE_DY lengths above or below its feet. */
   _atFace(c) {
@@ -1310,57 +1362,121 @@ export class Wildlife {
   }
 
   /**
-   * The lure's next activity, when the last has run out: begging with the
-   * lure at its face, following past its standoff (or, once following, until
-   * it is at it), and otherwise its species' court.
+   * The next activity after a lure or at her heel, when the last has run
+   * out: with a lure at its face, eating it (wary, and the carrot hers) or
+   * begging; following past `near` (or, once following, until it is at it)
+   * if it roams; and otherwise its species' court.
    */
   _court(c, now) {
     const l = c.lure
-    if (this._atFace(c)) { this._begin(c, 'beg', now); return }
-    const dist = Math.hypot(l.x - c.sx, l.z - c.sz)
-    if (dist > c.sp.standoff + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
+    if (l !== null && this._atFace(c)) { this._begin(c, c.sp.wary && l.by === null ? 'eat' : 'beg', now); return }
+    const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
+    if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
     this._begin(c, c.sp.court, now)
   }
 
-  /** One tick live: after the hand while there is one, standing alert at a peer's fresh anchor while there is not, nudged onto that anchor; the authority's anchor owed every ANCHOR_S. No hand and no fresh anchor ends the lure. */
+  /** One tick live, by mode; then, on a peer's animal, the nudge onto its anchor, and on this client's, the anchor owed every ANCHOR_S. */
   _stepLive(c, k, now) {
+    const live = c.live
+    const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now) : live.mode === 'flee' ? this._fleeTick(c, k, now) : this._tameTick(c, k, now)
+    if (!on) return
+    if (live.anchor !== null && live.by !== null) {
+      const [, T, ax, , az, ah] = live.anchor
+      const f = Math.min(1, TICK_S / CORRECT_S)
+      // A runner's anchor is where it was: it is nudged onto where it has run to since.
+      const ran = live.mode === 'flee' ? c.speed * (now - T) : 0
+      c.sx += (ax + Math.cos(ah) * ran - c.sx) * f
+      c.sz += (az - Math.sin(ah) * ran - c.sz) * f
+      c.sh += swing(c.sh, ah) * f
+    }
+    if (live.by === null && k >= live.sendTick) {
+      this._owe(c, now, live.mode)
+      live.sendTick = k + ticksOf(ANCHOR_S)
+    }
+  }
+
+  /** The body's ground for the tick: a step along its heading at its gait, or a turn on the spot. */
+  _move(c, k) {
+    if (c.speed > 0) this._walkLive(c, k)
+    else this._turn(c)
+  }
+
+  /** After the hand while there is one, standing alert at a peer's fresh anchor while there is not. No hand and no fresh anchor ends the lure. False once it is off. */
+  _lureTick(c, k, now) {
     const live = c.live
     const lure = this._lure(c)
     const fresh = live.anchor !== null && now - live.anchor[1] < ANCHOR_STALE_S
-    if (lure === null && !fresh) { this._unlive(c, now); return }
+    if (lure === null && !fresh) { this._unlive(c, now); return false }
     if (lure !== null) {
-      c.lure = lure
+      c.lure = c.goal = lure
+      c.near = c.sp.standoff
       live.by = lure.by ?? null
       this._heed(c, k)
       if (k >= c.stepEndTick) this._next(c, now)
-      if (c.speed > 0) this._walkLive(c, k)
-      else this._turn(c)
+      this._move(c, k)
     } else {
       if (c.clip !== 'alert') { c.queue.length = 0; c.act = 'notice'; c.queue.push(['alert', Infinity]); this._next(c, now) }
       c.aim = live.anchor[5]
       this._turn(c)
     }
-    if (live.anchor !== null && live.by !== null) {
-      const [, , ax, , az, ah] = live.anchor
-      const f = Math.min(1, TICK_S / CORRECT_S)
-      c.sx += (ax - c.sx) * f
-      c.sz += (az - c.sz) * f
-      c.sh += swing(c.sh, ah) * f
+    return true
+  }
+
+  /** Startled, turned to her; then running from her, round blocked ground, until FLEE_CLEAR_M off or the run is over. False once it is off. */
+  _fleeTick(c, k, now) {
+    const h = this.head
+    if (c.act === 'flee' && (k >= c.stepEndTick || Math.hypot(c.sx - h.x, c.sz - h.z) > FLEE_CLEAR_M)) { this._unlive(c, now); return false }
+    if (k >= c.stepEndTick) this._next(c, now)
+    if (c.act === 'startle') c.aim = bearing({ x: c.sx, z: c.sz }, h)
+    else if (c.detour > 0) c.detour--
+    else c.aim = bearing(h, { x: c.sx, z: c.sz })
+    this._move(c, k)
+    return true
+  }
+
+  /** At her heel, still while it eats. Her past LURE_FORGET_M ends it. False once it is off. */
+  _tameTick(c, k, now) {
+    const h = this.head
+    if (Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
+    c.goal = h
+    c.near = c.sp.heel
+    if (c.act !== 'eat') this._heed(c, k)
+    if (k >= c.stepEndTick) this._next(c, now)
+    this._move(c, k)
+    return true
+  }
+
+  /** A peer's flee or tame animal, after its fresh anchor: startled and running along the anchor's heading, or following to the anchor's place and facing its way. A stale anchor ends it. False once it is off. */
+  _anchorTick(c, k, now) {
+    const anchor = c.live.anchor
+    if (now - anchor[1] >= ANCHOR_STALE_S) { this._unlive(c, now); return false }
+    if (c.live.mode === 'flee') {
+      if (k >= c.stepEndTick) this._next(c, now)
+      if (c.detour > 0) c.detour--
+      else c.aim = anchor[5]
+    } else {
+      c.mark.x = anchor[2]
+      c.mark.z = anchor[4]
+      c.goal = c.mark
+      c.near = ANCHOR_NEAR_M
+      if (c.act !== 'eat') this._heed(c, k)
+      if (k >= c.stepEndTick) this._next(c, now)
+      // Stopped on the mark, it would face the ground under itself: it faces the anchor's way instead.
+      if (c.act !== 'follow') c.aim = anchor[5]
     }
-    if (live.by === null && k >= live.sendTick) {
-      this._owe(c, now, 'lure')
-      live.sendTick = k + ticksOf(ANCHOR_S)
-    }
+    this._move(c, k)
+    return true
   }
 
   /** This animal's anchor at `now`, owed to the room, and kept as the room's latest for it, so that put to sleep and woken again it resumes as its peers have it. */
   _owe(c, now, mode) {
-    const anchor = [c.key, now, c.sx, c.y, c.sz, c.sh, -1, mode, null]
+    // A runner's heading is where it is running to, its body not turned there yet when the run begins.
+    const anchor = [c.key, now, c.sx, c.y, c.sz, mode === 'flee' ? c.aim : c.sh, -1, mode, null]
     this.outbox.push(anchor)
     this.anchored.set(c.key, anchor)
   }
 
-  /** The lure over at `now`: the rejoin built from here, owed to the room if this client was the authority, and entered. */
+  /** Live over at `now`: the rejoin built from here, owed to the room if this client was the authority, and entered. */
   _unlive(c, now) {
     const mine = c.live.by === null
     c.live = null
@@ -1399,19 +1515,19 @@ export class Wildlife {
     throw new Error(`Wildlife: no phrase to rejoin within two chapters of ${t}`)
   }
 
-  /** The animal put where the room's anchor has it: live at a peer's hand while the anchor is fresh; else on the rejoin from the anchor's time (a live anchor gone stale, from ANCHOR_STALE_S after it, when every client gave the lure up), placed at the phrase now playing. */
+  /** The animal put where the room's anchor has it: live in its mode while the anchor is fresh; else on the rejoin from the anchor's time (a live anchor gone stale, from ANCHOR_STALE_S after it, when its authority gave it up), placed at the phrase now playing. */
   _fromAnchor(c, anchor, now) {
     const [, T, x, , z, heading, , mode, by] = anchor
-    if (mode === 'lure' && now - T < ANCHOR_STALE_S) {
-      this._place(c, { x, z, heading })
+    const live = LIVE_MODES.has(mode)
+    if (!live && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
+    this._place(c, { x, z, heading })
+    if (live && now - T < ANCHOR_STALE_S) {
       c.rec.tick = tickOf(now)
-      this._golive(c, null, by, now)
+      this._golive(c, mode, null, by, now)
       c.live.anchor = anchor
       return
     }
-    if (mode !== 'lure' && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
-    this._place(c, { x, z, heading })
-    this._startRejoin(c, mode === 'lure' ? T + ANCHOR_STALE_S : T)
+    this._startRejoin(c, live ? T + ANCHOR_STALE_S : T)
     this._fromPlan(c, now)
   }
 
@@ -1426,12 +1542,13 @@ export class Wildlife {
     const [key, T, , , , , , mode, by] = anchor
     if (!Number.isFinite(T)) throw new Error(`Wildlife: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
-    if (mode !== 'lure' && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
+    if (!LIVE_MODES.has(mode) && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
     this.anchored.set(key, anchor)
     const c = this.byKey.get(key)
     if (!c) return
-    if (mode === 'lure') {
-      if (!c.live) this._golive(c, null, by, now)
+    if (LIVE_MODES.has(mode)) {
+      if (c.live?.mode === 'lure' && mode === 'tame') this._say(c)
+      if (c.live?.mode !== mode) this._golive(c, mode, null, by, now)
       c.live.anchor = anchor
       c.live.by = by
     } else {
@@ -1463,7 +1580,8 @@ export class Wildlife {
     }
     if (c.act === 'dead') { this._posed(c, k - c.phraseTick0); return }
     const lure = this._lure(c)
-    if (lure !== null) { this._golive(c, lure, lure.by ?? null, now); return }
+    if (lure !== null) { this._golive(c, 'lure', lure, lure.by ?? null, now); return }
+    if (c.sp.wary && this._startled(c)) { this._golive(c, 'flee', null, null, now); return }
     if (k >= c.stepEndTick) this._next(c, now)
     this._posed(c, k - c.phraseTick0)
   }
@@ -1579,6 +1697,9 @@ export class Wildlife {
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
     this.last = now
     this.lures = lures
+    this.head.x = hx
+    this.head.y = hy
+    this.head.z = hz
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
       this.walkedX = hx

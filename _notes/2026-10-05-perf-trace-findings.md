@@ -43,10 +43,10 @@ Source: three production batteries from the Quest 2 at 90 Hz (11.1 ms budget), c
 ## Recommendations, by subject
 
 ### Litter (3.0 ms, 26 calls)
-- Your guess is right in structure. One draw per tier per variant: pebbles 1, sticks 1, deadwood 2 variants x (3 mesh LODs + card) = 8, bones 8, and the mushroom bank (I did not count its variants) covers the rest. CPU is about 1.8 ms render (26 x 0.07) plus 0.7 ms js for ring maintenance.
-- Fix 1: set `visible = false` on any tier mesh whose count is zero, so three skips its program setup entirely. Most tiers are empty at any spot (no bones, no skull). Biggest low-risk saving, probably half the calls.
-- Fix 2: merge the far tiers. The cards of all prop types can share one atlas and one InstancedMesh; stumps/logs/skeletons/skulls in cards are the same quad.
-- Fix 3: drop bones and sticks entirely beyond about 25 m (they are decoration) and shorten litter `DRAW_RADIUS` for mushrooms from 55.
+- One draw call per (tier, variant) mesh: pebbles 1, sticks 1, deadwood 2 variants x up to 4 tiers, bones 2 x up to 4, mushrooms 5 species x 3 tiers (two meshes, one spun triangle). Up to about 33 meshes, 26 non-empty in T3. CPU is about 1.8 ms render (26 x 0.07) plus 0.7 ms js for ring maintenance.
+- Fix 1: set `visible = false` on any tier mesh whose count is zero, so three skips its program setup entirely. Probably a few calls, since 26 is already the non-empty count.
+- Fix 2: merge the card tiers into one shared InstancedMesh with a per-instance texture layer (mushroom triangles, stump and skull quads, crossed log and skeleton quads padded to one shape). Cuts about 9 calls in litter alone. `PropMeshes` already lets several scatters share one mesh set (the six rock beds do).
+- Fix 3: shortening radii saves instance and tile work, not draw calls, because a mesh costs the same whether it holds 5 or 5000 instances. Only a radius cut that empties a whole tier mesh saves calls. Sticks already reach just 10 m (`REACH_M`). Mushrooms draw to 55 m (`DRAW_RADIUS`), which is the same radius their tiles load at; a 13 cm mushroom is 2 px at 60 m.
 - Acceptance: T3 `scatter/litter` calls 26 to under 12 with the same visuals.
 
 ### Boulders (1.7) and ferns (1.6)
@@ -60,7 +60,7 @@ Source: three production batteries from the Quest 2 at 90 Hz (11.1 ms budget), c
 - Not done: needs the wildlife, leafkin and hob code read for their per-creature state, and the nearest-frame gates (`check-crabs`, `check-grasshoppers`, `check-butterflies`) pass fixed times that a stride would perturb.
 
 ### Fish
-- Fish are drawn only when submerged or `currentRoom.village` (`main.js` fishShown). The Leafkin glade pools show fish from above because the village pond is deliberately clear (VILLAGE_POND comment). That is why you saw them. If you want them gone until the player dives, drop `|| currentRoom.village`, at the cost of the visible-fish pond. Decision for you; I left it.
+- Fish are drawn only when submerged (`fishShown` in `main.js`). The village pond stays clear to look into from the shore, but its fish no longer draw from above.
 
 ### Outdoor sound while inside
 - Done: halved gain and darker filter. A true background-sounds engine (occasional muffled realistic sounds in proportion to real frequency, aware of the surroundings, no sim) is a design item, not built. Sketch: sample the surroundings once at door entry (biome, water within 60 m, night/day, weather), then Poisson-schedule from a per-biome table of one-shot clips through the existing `INDOORS` bus, with rate = real-world frequency x a constant. No creature state.

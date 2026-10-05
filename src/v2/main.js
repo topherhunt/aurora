@@ -4694,7 +4694,7 @@ async function buildRoom(room, at) {
   // A village seeds them on the seed its build found a school for in its lake.
   await bootStep('fish')
   fish = new Fish(scene, height, waterSurfaces, { seed: room.village ? roomSpec.fishSeed : seed })
-  // A village's pond is clear: seen into from the shore (VILLAGE_POND), and its fish drawn from above (the frame loop's fishShown), where the overworld's lakes are mirrors until she dives.
+  // A village's pond is clear: seen into from the shore (VILLAGE_POND). Its fish, like every lake's, are drawn only once she is submerged (the frame loop's fishShown).
   water.uniforms.uClarity.value.set(room.village ? VILLAGE_POND.clarity : WATER.clarity, Math.sin(((room.village ? VILLAGE_POND.clarityAngle : WATER.clarityAngle) * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
@@ -4766,7 +4766,7 @@ async function buildRoom(room, at) {
   // the first frame after they land fills the tiles around her. A village holds
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure) => hands.eatLure(lure) })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -4938,7 +4938,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -7757,7 +7757,7 @@ function stepOverworld(dt, now) {
   // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
   // shows: ten-odd layers behind one switch is exactly the shape where a guess at
   // which one costs what is worthless.
-  const fishShown = animalOn('fish') && (submerged || currentRoom.village)
+  const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
   // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
   stepAnimal('fish', () => {

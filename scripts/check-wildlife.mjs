@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT } from '../src/v2/render/puppet.js'
@@ -220,8 +220,11 @@ const assets = () => Object.fromEntries(SPECIES.map((sp) => [sp.key, makeAsset(s
 
 // --- construction ---------------------------------------------------------------
 const scene = new THREE.Scene()
-const make = (seed, world = { walk, water, height }, dayness = null) =>
-  new Wildlife(scene, world.height ?? fieldOf(world.walk), world.water, { seed, walk: world.walk, dayness, assets: assets() })
+// `eat` is hands.js eatLure: whether her carrot was hers to give.
+const make = (seed, world = { walk, water, height }, dayness = null, eat = () => true) =>
+  new Wildlife(scene, world.height ?? fieldOf(world.walk), world.water, { seed, walk: world.walk, dayness, eat, assets: assets() })
+// For a gate about something else: her head on top of a wary animal without it bolting.
+const calm = (of) => { of._startled = () => false; return of }
 const w = make(7)
 check(w.loaded && w.species.length === 3 && w.species.map((s) => s.key).join(',') === 'stag,fox,hare', 'the three of them are loaded')
 check(w.species.every((sp) => sp.puppets.length === PUPPETS && sp.freePuppets.length === PUPPETS && sp.slots.length === MAX && sp.free.length === MAX), `${PUPPETS} puppets and ${MAX} slots a species, all free`)
@@ -266,10 +269,11 @@ const step = (of, hx, hy, hz, dt = 0, lures) => {
 const jump = (of, t) => clocks.set(of, t)
 // Waking is the update's job, not place()'s, so a gate that wants animals runs a frame.
 const wake = (of, hx = 0, hz = 0) => { step(of, hx, GROUND + 1.6, hz, 0); return of }
-// A hare's cull is under thirty metres, so the only way to see one alive is to go and stand by it.
+// A hare's cull is under thirty metres, so the only way to see one alive is to go and stand over it.
 const beside = (of, key) => {
   const s = scatter(of).find((c) => c.sp.key === key)
-  step(of, s.x, s.y + 1.6, s.z, 0)
+  // Her head past FLEE_M over it, so a wary one wakes on its score and not running from her.
+  step(of, s.x, s.y + FLEE_M + 1, s.z, 0)
   return of.species.find((sp) => sp.key === key).slots.find((c) => c.spawn === s)
 }
 // Put an animal into a phrase of the gate's choosing at the instance's clock: the score is the
@@ -455,8 +459,8 @@ const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
   const dt = 1 / 60
   const from = c.phrase.from
   const FRAMES = 30
-  // Her head a few metres off, so it is on a mesh rung and stepped every frame.
-  for (let f = 0; f < FRAMES; f++) step(k, c.x + 5, GROUND + 1.6, c.z, dt)
+  // Her head just past FLEE_M, so it is on a mesh rung and stepped every frame.
+  for (let f = 0; f < FRAMES; f++) step(k, c.x + FLEE_M + 1, GROUND + 1.6, c.z, dt)
   const moved = Math.hypot(c.x - from.x, c.z - from.z)
   const owed = c.speed * (timeOf(k) - c.phraseTick0 * TICK_S)
   check(c.lod < LOD_RUNGS && Math.abs(moved - owed) < 1e-6, 'a moving animal covers exactly the ground its clip was built for, closed-form from the phrase\'s first tick -- it does not skate', `${moved.toFixed(4)} m in ${(FRAMES * dt).toFixed(2)} s at ${c.speed.toFixed(3)} m/s, rung ${c.lod}`)
@@ -675,7 +679,7 @@ const differ = (p, q) => {
   wake(k)
   const dt = 1 / 60
   const c = alive(k).find((a) => a.sp.key === 'stag')
-  // The hardest turn there is: a body asked to go back the way it came. Her head beside it, so it is on a mesh rung.
+  // The hardest turn there is: a body asked to go back the way it came. Her head just past FLEE_M, so it is on a mesh rung.
   walkOn(k, c, c.sh + Math.PI, 'walk', 200)
   const from = c.phrase.from
   let worst = 0
@@ -683,7 +687,7 @@ const differ = (p, q) => {
   let prev = c.heading
   let crept = 0
   while (Math.abs(swing(c.heading, c.aim)) > 1e-9 && frames < 600) {
-    step(k, from.x + 5, GROUND + 1.6, from.z, dt)
+    step(k, from.x + FLEE_M + 1, GROUND + 1.6, from.z, dt)
     worst = Math.max(worst, Math.abs(swing(prev, c.heading)))
     prev = c.heading
     frames++
@@ -695,15 +699,15 @@ const differ = (p, q) => {
   k.dispose()
 }
 
-// --- she is furniture ------------------------------------------------------------
+// --- past FLEE_M she is furniture ------------------------------------------------
 {
   const dt = 1 / 60
-  // Her head straight up over the animal, so her horizontal position is the
-  // animal's own and no tile shifts between runs: height is the only thing that
-  // changes. Height is nothing to an animal but the rung it is drawn on and, out
-  // past the near rungs, how often it is stepped -- so two lifts on the SAME rung
-  // must trace identically, frame for frame, and on any rung every tick it is
-  // stepped to must be the score's.
+  // Her head straight up over the animal, past FLEE_M, so her horizontal position
+  // is the animal's own and no tile shifts between runs: height is the only thing
+  // that changes. Height is nothing to an animal but the rung it is drawn on and,
+  // out past the near rungs, how often it is stepped -- so two lifts on the SAME
+  // rung must trace identically, frame for frame, and on any rung every tick it
+  // is stepped to must be the score's.
   const trace = (key, lift) => {
     const k = make(7)
     k.place(0, 0)
@@ -723,11 +727,12 @@ const differ = (p, q) => {
     k.dispose()
     return out
   }
-  const under = trace('stag', 1.6)
+  const above = FLEE_M + 1
+  const under = trace('stag', above)
   const eye = lodReach(under.lodSize, 0) * 0.85
   const over = trace('stag', eye)
   const at = under.log.findIndex((s, i) => s !== over.log[i])
-  check(at < 0 && under.rung === over.rung, `fifteen seconds with her standing on top of it, and the stag does exactly what it would have done with her ${eye.toFixed(0)} metres up -- the same rung, and she is nothing to it either way`, at < 0 ? under.log[899].split('/').slice(0, 2).join('/') : `parted at frame ${at}: ${under.log[at]} vs ${over.log[at]}`)
+  check(at < 0 && under.rung === over.rung, `fifteen seconds with her ${above} metres over it, and the stag does exactly what it would have done with her ${eye.toFixed(0)} metres up -- the same rung, and she is nothing to it either way`, at < 0 ? under.log[899].split('/').slice(0, 2).join('/') : `parted at frame ${at}: ${under.log[at]} vs ${over.log[at]}`)
   // And out along the whole ladder, where she IS far enough to change how often it is stepped: every tick it reaches is the same tick.
   for (let k = 0; k <= LOD_RUNGS; k++) {
     const t = trace('stag', lodReach(under.lodSize, k) * 0.9)
@@ -735,106 +740,141 @@ const differ = (p, q) => {
     const parted = shared.find(([tick, v]) => under.ticks.get(tick) !== v)
     check(t.rung === k && shared.length > 100 && !parted && t.away <= TETHER_M + 0.01, `on rung ${k}${k === LOD_RUNGS ? ', its card' : ''} every tick is the score's tick, and it is on its tether`, parted ? `parted at tick ${parted[0]}: ${parted[1]} vs ${under.ticks.get(parted[0])}` : `${shared.length} ticks alike, ${t.away.toFixed(2)} m from home, rung ${t.rung}`)
   }
-  const hare = trace('hare', 1.6)
-  check(hare.away <= TETHER_M + 0.01, 'and the hare she is standing on has not bolted either', `${hare.away.toFixed(2)} m from home in 15 s`)
+  const hare = trace('hare', above)
+  check(hare.away <= TETHER_M + 0.01, `and the hare ${above} metres under her has not bolted either`, `${hare.away.toFixed(2)} m from home in 15 s`)
 }
 
-// --- unless she holds a lure ------------------------------------------------------
+// --- inside FLEE_M a wary one looks up, faces her and runs -------------------------
 {
   const dt = 1 / 60
-  // On the flat plain, so thirty metres of following crosses no pond and no crag.
-  // The carrot is a hands.js lure: a kind and where the hand is. Held a metre over the stag's feet.
-  const carrot = { kind: 'carrot', x: 0, y: 0, z: 0 }
-  const k = make(7, { walk: plain, water: noWater })
-  k.place(0, 0)
-  const c = beside(k, 'stag')
-  const sp = c.sp
-  const hold = (x, z) => { carrot.x = x; carrot.y = c.y + 1; carrot.z = z }
-  const run = (s, lures, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { step(k, carrot.x, c.y + 1.6, carrot.z, dt, lures); seen.add(`${c.act}/${c.clip}`) } return seen }
-  const gap = () => Math.hypot(carrot.x - c.x, carrot.z - c.z)
-  const facing = () => Math.abs(swing(c.heading, Math.atan2(-(carrot.z - c.z), carrot.x - c.x)))
-  still(k, c, 'graze', 'eat-loop')
-  const [x0, z0] = [c.x, c.z]
-  hold(x0 + LURE_M + 1, z0)
-  run(2, [carrot])
-  check(!c.live && c.act === 'graze' && c.x === x0 && c.z === z0, `a carrot ${LURE_M + 1} m off is nothing to a grazing stag`, `${c.act}/${c.clip}`)
-  run(2, [{ kind: 'fish', x: x0 + 1, y: c.y + 1, z: z0 }])
-  check(!c.live && c.act === 'graze', 'nor is a fish a metre off: a stag wants a carrot, not a fish')
-  check(k.pending().length === 0, 'and nothing on its score owes the room a word')
-  hold(x0 + LURE_M - 0.1, z0)
-  run(3 / 60, [carrot])
-  const wentLive = timeOf(k)
-  check(c.live && c.lure === carrot && c.live.by === null && c.act === 'notice' && c.clip === 'alert', `a carrot inside ${LURE_M} m has it look up from its graze, live at her own hand`, `${c.act}/${c.clip}`)
-  let seen = run(8, [carrot])
-  check(seen.has('follow/walk') && gap() <= sp.standoff + 0.1 && c.speed === 0 && (c.act === 'gaze' || c.act === 'beg'), `it walks up to the carrot and stops ${sp.standoff} m short of it, standing there and looking or begging`, `${gap().toFixed(2)} m off, ${c.act}/${c.clip}`)
-  check(seen.has('beg/eat-loop') && c.act === 'beg', 'the carrot at its standoff is at its nose, so it begs: the eat clip at the carrot, over and over, the carrot never eaten', [...seen].join(' '))
-  check(facing() < 0.15, 'and it faces the carrot', `${facing().toFixed(3)} rad off`)
-  // What it owes the room meanwhile: an anchor a second on the tick grid from the tick after it went live, each the body's tick pose in lure mode from this client.
-  const owed = k.pending()
-  const ticks = owed.map((a) => tickOf(a[1]))
-  const every = Math.round(ANCHOR_S * TICK_HZ)
-  check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9, `and it has owed the room an anchor every ${ANCHOR_S} s since it went live, on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
-  check(owed.every((a) => a.length === 9 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && [1, 2, 3, 4, 5].every((i) => Number.isFinite(a[i])) && onTicks(a[1])), 'each [key, T, x, y, z, heading, -1, "lure", null], T on the grid', JSON.stringify(owed[owed.length - 1].map((v) => (typeof v === 'number' ? +v.toFixed(3) : v))))
-  check(k.anchored.get(c.key) === owed[owed.length - 1], 'and keeps its latest as the room\'s, so put to sleep and woken again it resumes as its peers have it')
-  // She walks six metres away with it: the stag trots after her and stops at its standoff again.
-  const [x1, z1] = [c.x, c.z]
-  hold(carrot.x + 6, z0)
-  seen = run(8, [carrot])
-  check(seen.has('follow/trot') && gap() <= sp.standoff + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 5, 'carried six metres off, it trots after it and stops at its standoff again', `${[...seen].join(' ')}; ${gap().toFixed(2)} m off, moved ${Math.hypot(c.x - x1, c.z - z1).toFixed(1)} m`)
-  hold(carrot.x + 20, z0)
-  seen = run(12, [carrot])
-  check(seen.has('follow/run') && gap() <= sp.standoff + 0.1, 'carried twenty metres off, it runs', `${[...seen].join(' ')}; ${gap().toFixed(2)} m off`)
-  check(Math.hypot(c.x - x0, c.z - z0) > TETHER_M, `and is now further from where it grazed than its ${TETHER_M} m tether, which a lure takes it off`, `${Math.hypot(c.x - x0, c.z - z0).toFixed(1)} m`)
-  // The carrot lifted three metres over its head: not at its face, so the beg ends with the head coming up, and it gazes instead.
-  carrot.y = c.y + 3
-  seen = run(1, [carrot])
-  check(seen.has('beg/eat-up') && c.act === 'gaze' && c.clip === 'idle', 'lifted out of its reach, it raises its head and gazes', [...seen].join(' '))
-  seen = run(6, [carrot])
-  check(!seen.has('beg/eat-down'), 'and does not beg again while it is up there', [...seen].join(' '))
-  // The carrot put away: the lure is over, it owes the room where that left it, and the rejoin walks it to the score.
-  k.pending()
-  const [x2, z2] = [c.sx, c.sz]
-  const t2 = timeOf(k)
-  seen = run(4, [])
-  const last = k.pending()
-  check(!c.live && c.lure === null && c.rejoin !== null && !['notice', 'follow', 'gaze', 'beg', 'frolic'].includes(c.act), 'the carrot put away, it forgets it and takes the rejoin', `${c.act}/${c.clip}`)
-  check(last.length === 1 && last[0][7] === 'rejoin' && last[0][8] === null && last[0][2] === x2 && last[0][4] === z2 && last[0][1] > t2 && last[0][1] <= t2 + TICK_S + 1e-9, 'owing the room one rejoin anchor from where the lure left it, and nothing more', JSON.stringify(last.map((a) => a.map((v) => (typeof v === 'number' ? +v.toFixed(3) : v)))))
-  const rj = c.rejoin
-  const ch = k.score.chapter(c.key, rj.end)
-  const join = ch.phrases[ch.starts.findIndex((s) => Math.abs(ch.start + s - rj.end) < 1e-9)]
-  const stand = rj.phrases[rj.phrases.length - 1]
-  check(join !== undefined && rj.start === last[0][1] && stand.kind === 'stand' && stand.to.x === join.from.x && stand.to.z === join.from.z && stand.to.heading === join.from.heading && (rj.phrases.length === 1 || (rj.phrases.length === 2 && rj.phrases[0].mps !== undefined && rj.phrases[0].to === stand.from)), 'the rejoin is a walk to the start pose of a phrase of the score, and a stand there, turned to its heading, until it starts', `${rj.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')} to phrase ${ch.phrases.indexOf(join)}`)
-  const before = Math.hypot(x2 - stand.to.x, z2 - stand.to.z)
-  const after = Math.hypot(c.x - stand.to.x, c.z - stand.to.z)
-  check(after < 1e-6 || after <= before - 1, 'and four seconds on it is nearer that pose', `${after.toFixed(1)} m off, from ${before.toFixed(1)}`)
-  // Held on and carried past LURE_FORGET_M, it gives up.
-  hold(c.x + 2, c.z)
-  run(1, [carrot])
-  check(c.live !== null, 'a carrot two metres off has it again')
-  hold(c.x + LURE_FORGET_M + 1, c.z)
-  run(1, [carrot])
-  check(!c.live, `and carried ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
-  k.dispose()
+  for (const key of ['stag', 'hare']) {
+    const k = make(7, { walk: plain, water: noWater })
+    k.place(0, 0)
+    const c = beside(k, key)
+    still(k, c, 'graze', 'eat-loop')
+    const [x0, z0] = [c.x, c.z]
+    const her = { x: x0 + FLEE_M + 1, z: z0 }
+    const run = (s, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { step(k, her.x, c.y + 1.6, her.z, dt); seen.add(`${c.act}/${c.clip}`) } return seen }
+    run(2)
+    check(!c.live && c.act === 'graze' && c.x === x0 && c.z === z0, `${key}: her ${FLEE_M + 1} m off, it grazes on`, `${c.act}/${c.clip}`)
+    k.pending()
+    her.x = x0 + FLEE_M - 0.5
+    run(3 / 60)
+    check(c.live?.mode === 'flee' && c.live.by === null && c.act === 'startle' && c.clip === 'alert', `${key}: her inside ${FLEE_M} m, it looks up alert`, `${c.act}/${c.clip}`)
+    run(STARTLE_S - 0.1)
+    const facing = Math.abs(swing(c.heading, Math.atan2(-(her.z - c.z), her.x - c.x)))
+    check(c.act === 'startle' && facing < 0.15 && Math.hypot(c.x - x0, c.z - z0) < 1e-6, `${key}: and turns on the spot to face her`, `${c.act}/${c.clip}, ${facing.toFixed(3)} rad off, moved ${Math.hypot(c.x - x0, c.z - z0).toFixed(3)} m`)
+    const seen = run(2)
+    const off = Math.hypot(c.x - her.x, c.z - her.z)
+    check(seen.has(`flee/${c.sp.flee}`) && off > FLEE_M + 2, `${key}: then it ${c.sp.flee}s from her`, `${[...seen].join(' ')}; ${off.toFixed(1)} m off`)
+    const owed = k.pending()
+    check(owed.length >= 2 && owed.every((a) => a[0] === c.key && a[7] === 'flee' && a[8] === null), `${key}: owing the room flee anchors as it goes`, `${owed.map((a) => a[7]).join(' ')}`)
+    const ran = c.stepStart
+    for (let f = 0; f < 10 * 60 && c.live; f++) step(k, her.x, c.y + 1.6, her.z, dt)
+    const last = k.pending()
+    const clear = Math.hypot(c.x - her.x, c.z - her.z)
+    check(!c.live && c.rejoin !== null && (clear > FLEE_CLEAR_M - 1 || c.rejoin.start - ran >= FLEE_S - TICK_S) && last.at(-1)[7] === 'rejoin' && last.slice(0, -1).every((a) => a[7] === 'flee'), `${key}: ${FLEE_CLEAR_M} m clear of her or ${FLEE_S} s run, it takes the rejoin and says so`, `${c.act}/${c.clip}, ${clear.toFixed(1)} m off after ${(c.rejoin?.start - ran).toFixed(1)} s, ${last.map((a) => a[7]).join(' ')}`)
+    k.dispose()
+  }
+}
 
-  // A hare with a carrot frolics at her feet; a fox wants a fish or a crab and comes to its own standoff.
+// --- unless she holds a carrot ------------------------------------------------------
+{
+  const dt = 1 / 60
+  // On the flat plain, so following her crosses no pond and no crag. The carrot is a hands.js lure: a kind, where the hand is, and whose.
+  for (const key of ['stag', 'hare']) {
+    const eaten = []
+    const k = make(7, { walk: plain, water: noWater }, null, (l) => { eaten.push(l); return true })
+    k.place(0, 0)
+    const c = beside(k, key)
+    const sp = c.sp
+    const carrot = { kind: 'carrot', x: 0, y: 0, z: 0, by: null }
+    const head = { x: 0, z: 0 }
+    const hold = (x, z, l = carrot) => { l.x = head.x = x; l.y = c.y + 1; l.z = head.z = z }
+    // At its nose, a little up: what _atFace takes for its face.
+    const toFace = (l) => { hold(c.sx + Math.cos(c.sh) * c.size * 0.5, c.sz - Math.sin(c.sh) * c.size * 0.5, l); l.y = c.y + c.size * 0.3 }
+    const run = (s, lures, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { step(k, head.x, c.y + 1.6, head.z, dt, lures); seen.add(`${c.act}/${c.clip}`) } return seen }
+    const facing = (l) => Math.abs(swing(c.heading, Math.atan2(-(l.z - c.z), l.x - c.x)))
+    still(k, c, 'graze', 'eat-loop')
+    let [x0, z0] = [c.x, c.z]
+    hold(x0 + FLEE_M + 1, z0)
+    run(2, [carrot])
+    check(!c.live && c.act === 'graze', `${key}: a carrot ${FLEE_M + 1} m off is nothing to it`, `${c.act}/${c.clip}`)
+    head.x = x0 + FLEE_M - 1
+    run(2, [{ kind: 'fish', x: head.x, y: c.y + 1, z: z0, by: null }])
+    check(c.live?.mode === 'flee', `${key}: nor is a fish: inside ${FLEE_M} m with one, it startles as if she held nothing`)
+    still(k, c, 'graze', 'eat-loop')
+    ;[x0, z0] = [c.x, c.z]
+    k.pending()
+    hold(x0 + FLEE_M - 1, z0)
+    run(3 / 60, [carrot])
+    const wentLive = timeOf(k)
+    check(c.live?.mode === 'lure' && c.lure === carrot && c.live.by === null && c.act === 'notice' && c.clip === 'alert', `${key}: inside ${FLEE_M} m with a carrot, it looks up and does not run`, `${c.act}/${c.clip}`)
+    let seen = run(8, [carrot])
+    const moved = () => Math.hypot(c.x - x0, c.z - z0)
+    check(c.live?.mode === 'lure' && seen.has('gaze/idle') && seen.has('gaze/alert') && ![...seen].some((s) => s.startsWith('follow') || s.startsWith('flee')) && moved() < 1e-6 && facing(carrot) < 0.15, `${key}: eight seconds on it stands where it was, facing the carrot, idle and alert by turns`, `${[...seen].join(' ')}; moved ${moved().toFixed(3)} m, ${facing(carrot).toFixed(3)} rad off`)
+    const owed = k.pending()
+    const ticks = owed.map((a) => tickOf(a[1]))
+    const every = Math.round(ANCHOR_S * TICK_HZ)
+    check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9 && owed.every((a) => a.length === 9 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && onTicks(a[1])), `${key}: owing the room [key, T, x, y, z, heading, -1, "lure", null] every ${ANCHOR_S} s on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
+    check(k.anchored.get(c.key) === owed[owed.length - 1], `${key}: and keeping its latest as the room's`)
+    hold(carrot.x + 4, z0)
+    seen = run(4, [carrot])
+    check(c.live?.mode === 'lure' && moved() < 1e-6, `${key}: carried four metres further, it waits for her and does not follow`, `${[...seen].join(' ')}`)
+    // Someone else's carrot at its face: it begs and is not given it.
+    const theirs = { kind: 'carrot', x: 0, y: 0, z: 0, by: 7 }
+    toFace(theirs)
+    seen = run(8, [theirs])
+    check(seen.has('beg/eat-loop') && eaten.length === 0 && c.live?.mode === 'lure', `${key}: a peer's carrot at its face, it begs at it and it is not its to eat`, `${[...seen].join(' ')}`)
+    k.voices([])
+    k.pending()
+    toFace(carrot)
+    seen = new Set()
+    for (let f = 0; f < 8 * 60 && c.live?.mode !== 'tame'; f++) run(1 / 60, [carrot], seen)
+    const said = k.voices([])
+    check(c.live?.mode === 'tame' && eaten.length === 1 && eaten[0] === carrot && c.act === 'eat' && c.lure === null, `${key}: her own carrot at its face, it eats it out of her hand and is tame`, `${c.act}/${c.clip}; ${eaten.length} eaten`)
+    check(said.length === 1 && said[0].sound === sp.call.sound && said[0].rate >= sp.call.rate[0] && said[0].rate <= sp.call.rate[1] && Math.abs(said[0].x - c.sx) < 1, `${key}: with a contented ${sp.call.sound} from where it stands`, JSON.stringify(said))
+    run(2 / 60, [])
+    check(k.pending().some((a) => a[7] === 'tame' && a[8] === null), `${key}: and the room hears it tame at once`)
+    const ate = timeOf(k)
+    for (let f = 0; f < 20 * 60 && c.act === 'eat'; f++) run(1 / 60, [], seen)
+    check(seen.has('eat/eat-loop') && seen.has('eat/eat-up') && c.act !== 'eat' && k.voices([]).length === 1, `${key}: it chews, lifts its head, and calls again`, `${[...seen].join(' ')} in ${(timeOf(k) - ate).toFixed(1)} s`)
+    const [x1, z1] = [c.x, c.z]
+    head.x += 10
+    seen = run(10, [])
+    const gap = Math.hypot(head.x - c.x, head.z - c.z)
+    check(c.live?.mode === 'tame' && [...seen].some((s) => s.startsWith('follow/')) && gap <= sp.heel + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 6, `${key}: she walks ten metres off and it follows her, to ${sp.heel} m of her`, `${[...seen].join(' ')}; ${gap.toFixed(2)} m off her`)
+    if (key === 'stag') {
+      // She goes past LURE_FORGET_M: it is wild again, owing the room where that left it, and the rejoin walks it to the score.
+      k.pending()
+      const [x2, z2] = [c.sx, c.sz]
+      const t2 = timeOf(k)
+      head.x = c.x + LURE_FORGET_M + 1
+      run(4, [])
+      const last = k.pending()
+      check(!c.live && c.rejoin !== null && !['notice', 'follow', 'gaze', 'beg', 'eat'].includes(c.act), `her past ${LURE_FORGET_M} m, it forgets her and takes the rejoin`, `${c.act}/${c.clip}`)
+      check(last.length === 1 && last[0][7] === 'rejoin' && last[0][8] === null && last[0][2] === x2 && last[0][4] === z2 && last[0][1] > t2 && last[0][1] <= t2 + TICK_S + 1e-9, 'owing the room one rejoin anchor from where it left her, and nothing more', JSON.stringify(last.map((a) => a.map((v) => (typeof v === 'number' ? +v.toFixed(3) : v)))))
+      const rj = c.rejoin
+      const ch = k.score.chapter(c.key, rj.end)
+      const join = ch.phrases[ch.starts.findIndex((s) => Math.abs(ch.start + s - rj.end) < 1e-9)]
+      const stand = rj.phrases[rj.phrases.length - 1]
+      check(join !== undefined && rj.start === last[0][1] && stand.kind === 'stand' && stand.to.x === join.from.x && stand.to.z === join.from.z && stand.to.heading === join.from.heading && (rj.phrases.length === 1 || (rj.phrases.length === 2 && rj.phrases[0].mps !== undefined && rj.phrases[0].to === stand.from)), 'the rejoin is a walk to the start pose of a phrase of the score, and a stand there, turned to its heading, until it starts', `${rj.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')} to phrase ${ch.phrases.indexOf(join)}`)
+      const before = Math.hypot(x2 - stand.to.x, z2 - stand.to.z)
+      const after = Math.hypot(c.x - stand.to.x, c.z - stand.to.z)
+      check(after < 1e-6 || after <= before - 1, 'and four seconds on it is nearer that pose', `${after.toFixed(1)} m off, from ${before.toFixed(1)}`)
+      hold(c.x + 4, c.z)
+      run(1, [carrot])
+      check(c.live?.mode === 'lure', 'a carrot four metres off has it again', `${c.live?.mode} ${c.act}/${c.clip}`)
+      hold(c.x + LURE_FORGET_M + 1, c.z)
+      run(1, [carrot])
+      check(!c.live, `and carried ${LURE_FORGET_M + 1} m off in a bound, it is given up`)
+    }
+    k.dispose()
+  }
+
+  // A fox is not wary: it wants a fish or a crab, and comes to its own standoff for one.
   const h = make(7, { walk: plain, water: noWater })
   h.place(0, 0)
-  const r = beside(h, 'hare')
-  const rc = { kind: 'carrot', x: r.x + 1, y: r.y + 1, z: r.z }
-  const hops = new Set()
-  let moved = 0
-  let lx = r.x, lz = r.z
-  for (let f = 0; f < 8 * 60; f++) {
-    step(h, rc.x, r.y + 1.6, rc.z, dt, [rc])
-    hops.add(`${r.act}/${r.clip}`)
-    moved += Math.hypot(r.x - lx, r.z - lz); lx = r.x; lz = r.z
-  }
-  const near = Math.hypot(rc.x - r.x, rc.z - r.z)
-  check(r.live && hops.has('frolic/bound') && !hops.has('beg/eat-down') && near < 2.5 && moved > 4, 'a hare with a carrot a metre up and a metre off bounds about at her feet for eight seconds, never far, and cannot reach it to beg', `${[...hops].join(' ')}; ${near.toFixed(2)} m off, ${moved.toFixed(1)} m hopped`)
-  rc.y = r.y + 0.2
-  const begs = new Set()
-  for (let f = 0; f < 6 * 60; f++) { step(h, rc.x, r.y + 1.6, rc.z, dt, [rc]); begs.add(`${r.act}/${r.clip}`) }
-  check(begs.has('beg/eat-loop'), 'lowered to its shins, it begs when a bound brings its nose to it', [...begs].join(' '))
   const x = beside(h, 'fox')
   const fish = { kind: 'fish', x: x.x + LURE_M - 0.2, y: x.y + 1, z: x.z }
   still(h, x, 'rest', 'lie')
@@ -847,7 +887,8 @@ const differ = (p, q) => {
 
 // --- and the room sees it -----------------------------------------------------------
 // Two clients on the one clock: a's hand holds the carrot, b hears a's anchors as
-// client 7's, and b's copy of the stag has to be a's copy of the stag.
+// client 7's, and b's copy of the stag has to be a's copy of the stag. b's own
+// head stands well past FLEE_M, so nothing but a moves b's stag.
 {
   const dt = 1 / 60
   const a = make(7, { walk: plain, water: noWater })
@@ -857,39 +898,55 @@ const differ = (p, q) => {
   const ca = beside(a, 'stag')
   const cb = beside(b, 'stag')
   check(ca.key === cb.key && ca.home.x === cb.home.x && cb.live === null, 'both clients wake the same stag, by key, at the same home')
-  const carrot = { kind: 'carrot', x: ca.x + LURE_M - 0.1, y: ca.y + 1, z: ca.z }
+  const carrot = { kind: 'carrot', x: ca.x + FLEE_M - 1, y: ca.y + 1, z: ca.z, by: null }
+  const aHead = { x: carrot.x, z: carrot.z }
+  const bHead = { x: ca.home.x - 20, z: ca.home.z }
   const relay = (to, from, by = 7) => { let n = 0; for (const anchor of from.pending()) { to.apply([...anchor.slice(0, 8), by], timeOf(to)); n++ } return n }
   // Both step together; every anchor a owes is applied to b the frame it is owed.
   const together = (s, lures, onFrame) => {
     for (let f = 0; f < s * 60; f++) {
-      step(a, carrot.x, ca.y + 1.6, carrot.z, dt, lures)
-      step(b, carrot.x, cb.y + 1.6, carrot.z, dt)
+      step(a, aHead.x, ca.y + 1.6, aHead.z, dt, lures)
+      step(b, bHead.x, cb.y + 1.6, bHead.z, dt)
       if (onFrame) onFrame()
     }
   }
   together(1, [carrot], () => relay(b, a))
-  check(ca.live && ca.live.by === null && cb.live && cb.live.by === 7 && cb.live.anchor !== null && cb.lure === null, 'a\'s stag is live at her hand; a second on, b\'s is live at client 7\'s, on the anchor, with no lure of its own to follow', `b: ${cb.act}/${cb.clip} by ${cb.live?.by}`)
+  check(ca.live?.mode === 'lure' && ca.live.by === null && cb.live?.mode === 'lure' && cb.live.by === 7 && cb.live.anchor !== null && cb.lure === null, 'a\'s stag is live at her carrot; a second on, b\'s is live at client 7\'s, on the anchor, with no lure of its own', `b: ${cb.act}/${cb.clip} by ${cb.live?.by}`)
   check(cb.act === 'notice' && cb.clip === 'alert' && b.pending().length === 0, 'and stands alert there, owing the room nothing: the lurer is the authority', `${cb.act}/${cb.clip}`)
-  // She walks it eight metres: a's stag follows the hand, b's follows the anchors.
-  carrot.x += 8
+  // a holds the carrot to its face: a's stag eats it and is tame, and b hears so.
+  b.voices([])
+  for (let f = 0; f < 10 * 60 && ca.live?.mode !== 'tame'; f++) {
+    carrot.x = aHead.x = ca.sx + Math.cos(ca.sh) * ca.size * 0.5
+    carrot.z = aHead.z = ca.sz - Math.sin(ca.sh) * ca.size * 0.5
+    carrot.y = ca.y + ca.size * 0.3
+    together(1 / 60, [carrot], () => relay(b, a))
+  }
+  for (let f = 0; f < 20 * 60 && ca.act === 'eat'; f++) together(1 / 60, [], () => relay(b, a))
+  check(ca.live?.mode === 'tame' && cb.live?.mode === 'tame' && cb.live.by === 7 && b.voices([]).length === 1, 'fed from a\'s hand, a\'s stag is tame, and b\'s is too, with the call heard there', `a ${ca.live?.mode}, b ${cb.live?.mode} ${cb.act}/${cb.clip}`)
+  // She walks eight metres: a's stag follows her, b's follows the anchors.
+  aHead.x += 8
   let apart = 0
-  together(12, [carrot], () => { relay(b, a); apart = Math.max(apart, Math.hypot(ca.x - cb.x, ca.z - cb.z)) })
+  together(12, [], () => { relay(b, a); apart = Math.max(apart, Math.hypot(ca.x - cb.x, ca.z - cb.z)) })
   const gapAB = Math.hypot(ca.x - cb.x, ca.z - cb.z)
-  check(Math.hypot(ca.x - carrot.x, ca.z - carrot.z) < ca.sp.standoff + 0.1 && gapAB < 0.5 && apart < 8, 'carried eight metres, b\'s copy has kept within eight metres of a\'s on the way and is within half a metre once a\'s has stopped a while', `${apart.toFixed(2)} m apart at most, ${gapAB.toFixed(2)} m now`)
+  check(Math.hypot(ca.x - aHead.x, ca.z - aHead.z) < ca.sp.heel + 0.1 && gapAB < 0.5 && apart < 8, 'she walks eight metres, and b\'s copy has kept within eight metres of a\'s on the way and is within half a metre once a\'s has stopped a while', `${apart.toFixed(2)} m apart at most, ${gapAB.toFixed(2)} m now`)
   check(Math.abs(swing(ca.heading, cb.heading)) < 0.2, 'facing the way a\'s faces', `${Math.abs(swing(ca.heading, cb.heading)).toFixed(3)} rad apart`)
-  // The relay goes quiet: b's copy holds the last anchor for ANCHOR_STALE_S, then gives the lure up on its own and rejoins, owing nothing.
+  // The relay goes quiet: b's copy keeps to the last anchor for ANCHOR_STALE_S, then gives it up on its own and rejoins, owing nothing.
   const T = cb.live.anchor[1]
-  while (timeOf(b) + dt < T + ANCHOR_STALE_S - 0.05) together(1 / 60, [carrot])
-  check(cb.live !== null && cb.act === 'notice', `b's copy holds its alert through ${ANCHOR_STALE_S} s of silence`, `${cb.act}/${cb.clip} at ${(timeOf(b) - T).toFixed(2)} s`)
-  together(0.3, [carrot])
-  check(cb.live === null && cb.rejoin !== null && b.pending().length === 0, `and past ${ANCHOR_STALE_S} s gives the lure up for the rejoin, owing the room nothing`, `${cb.act}/${cb.clip}`)
-  // a puts the carrot away: its rejoin anchor puts b's copy on the very same rejoin, and the two agree to the bit from there.
+  while (timeOf(b) + dt < T + ANCHOR_STALE_S - 0.05) together(1 / 60, [])
+  check(cb.live?.mode === 'tame', `b's copy keeps to it through ${ANCHOR_STALE_S} s of silence`, `${cb.act}/${cb.clip} at ${(timeOf(b) - T).toFixed(2)} s`)
+  together(0.3, [])
+  check(cb.live === null && cb.rejoin !== null && b.pending().length === 0, `and past ${ANCHOR_STALE_S} s gives it up for the rejoin, owing the room nothing`, `${cb.act}/${cb.clip}`)
+  // a walks off past LURE_FORGET_M: its rejoin anchor puts b's copy on the very same rejoin, and the two agree to the bit from there.
   a.pending()
+  aHead.x = ca.x + LURE_FORGET_M + 1
   let last = []
   for (let f = 0; f < 5 && last.length === 0; f++) { together(1 / 60, []); last = a.pending() }
-  check(last.length === 1 && last[0][7] === 'rejoin', 'a\'s stag owes one rejoin anchor when the carrot is put away')
+  check(last.length === 1 && last[0][7] === 'rejoin', 'a\'s stag owes one rejoin anchor when she leaves it')
   b.apply([...last[0].slice(0, 8), 7], timeOf(b))
   check(cb.rejoin !== null && cb.rejoin.start === ca.rejoin.start && cb.rejoin.end === ca.rejoin.end && cb.rejoin.phrases.length === ca.rejoin.phrases.length && cb.rejoin.phrases.every((p, i) => p.dur === ca.rejoin.phrases[i].dur && p.to.x === ca.rejoin.phrases[i].to.x), 'applied on b, the anchor derives the same rejoin: the same walk, the same wait, the same phrase to join', `${cb.rejoin?.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')}`)
+  // Both heads in one place, so both are stepped alike from here.
+  aHead.x = bHead.x
+  aHead.z = bHead.z
   const same = () => [ca, cb].map((c) => [c.x, c.z, c.heading, c.sx, c.sz, c.sh, c.rec.tick, c.act, c.clip, c.stepStart, c.rejoin !== null].join('/'))
   together(5, [])
   let [pa, pb] = same()
@@ -899,6 +956,12 @@ const differ = (p, q) => {
   together(1, [])
   ;[pa, pb] = same()
   check(pa === pb && ca.rejoin === null && cb.rejoin === null, 'and twenty seconds past the rejoin both have it back on the score, alike', pa === pb ? pa.split('/').slice(6).join('/') : `${pa} vs ${pb}`)
+  // a walks up on it with nothing in hand: it flees, and b's copy runs with it.
+  a.pending()
+  aHead.x = ca.sx + FLEE_M - 1
+  aHead.z = ca.sz
+  together(STARTLE_S + 1.5, [], () => relay(b, a))
+  check(ca.live?.mode === 'flee' && cb.live?.mode === 'flee' && cb.live.by === 7 && cb.clip === 'run' && Math.hypot(ca.x - cb.x, ca.z - cb.z) < 1.5, 'startled by a, a\'s stag runs, and b\'s runs with it', `b ${cb.live?.mode} ${cb.act}/${cb.clip}, ${Math.hypot(ca.x - cb.x, ca.z - cb.z).toFixed(2)} m apart`)
   // What the room's map does for a client that was not there: kept while the animal sleeps and used the frame it wakes.
   if (chapterOf(timeOf(b) + 15, ca.key).start !== chapterOf(timeOf(b), ca.key).start) jump(b, timeOf(b) + 20)
   // Her head ten kilometres up, so the tiles stay and every animal on them is past its forget range; sleep waits on each body's dissolve, so a few seconds of it.
@@ -927,7 +990,7 @@ const differ = (p, q) => {
   b.apply([ca.key, timeOf(b), 1, 2, 3, 4, -1, 'lure', null], timeOf(b))
   check(b.anchored.size === size && b.anchored.get(ca.key) === old && planned.live === null, 'its own anchors echoed back (by null) are ignored')
   const refused = (anchor) => { try { b.apply(anchor, timeOf(b)); return '' } catch (e) { return e.message } }
-  check(/mode/.test(refused([ca.key, timeOf(b), 0, 0, 0, 0, -1, 'flee', 7])) && /time/.test(refused([ca.key, NaN, 0, 0, 0, 0, -1, 'lure', 7])), 'a mode it does not know, or an anchor with no time, is refused out loud')
+  check(/mode/.test(refused([ca.key, timeOf(b), 0, 0, 0, 0, -1, 'bolt', 7])) && /time/.test(refused([ca.key, NaN, 0, 0, 0, 0, -1, 'lure', 7])), 'a mode it does not know, or an anchor with no time, is refused out loud')
   a.dispose()
   b.dispose()
 }
@@ -940,7 +1003,7 @@ const differ = (p, q) => {
 {
   const TILT = 0.15
   const tilted = { heightAt: (x, z) => GROUND + TILT * z, normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { const len = Math.hypot(TILT, 1); out.x = 0; out.y = 1 / len; out.z = -TILT / len; return out } }
-  const t = make(11, { walk: tilted, water: noWater })
+  const t = calm(make(11, { walk: tilted, water: noWater }))
   t.place(0, 0)
   wake(t)
   const dt = 1 / 60
@@ -1258,7 +1321,7 @@ const differ = (p, q) => {
 // so an animal on its card is still a live animal, walking -- just thinking a
 // fifth as often as one at her feet.
 {
-  const k = make(7)
+  const k = calm(make(7))
   k.place(0, 0)
   const c = beside(k, 'hare')
   const spawn = c.spawn
@@ -1296,7 +1359,7 @@ const differ = (p, q) => {
   // The next waking is not a reset to home: it stands the hare where the score has it, which is where any other client waking it at that moment stands it.
   step(k, spawn.x, spawn.y + 1.6, spawn.z, 0)
   const again = k.species.find((sp) => sp.key === 'hare').slots.find((s) => s.spawn === spawn)
-  const twin = make(7)
+  const twin = calm(make(7))
   jump(twin, timeOf(k))
   step(twin, spawn.x, spawn.y + 1.6, spawn.z, 0)
   const other = twin.byKey.get(spawn.key)
@@ -1689,7 +1752,7 @@ const differ = (p, q) => {
 // to frame, `speed > 0` on the ones on a gait. A frozen one is not listed, nor
 // is anything on a hidden layer.
 {
-  const k = make(7)
+  const k = calm(make(7))
   k.place(0, 0)
   const c = beside(k, 'stag')
   const dt = 1 / 60

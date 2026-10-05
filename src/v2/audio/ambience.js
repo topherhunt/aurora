@@ -185,6 +185,8 @@ export const RULES = {
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.
   striderCall: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.8, 1.0] },
+  // A tamed stag's or hare's contented grunt as it eats from her hand (wildlife.js voices()), pitched up; the grunt is mastered hot.
+  contented: { reach: 15, near: 2, edge: 5, level: 0.25, gain: [0.8, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
   door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
