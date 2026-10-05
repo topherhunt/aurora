@@ -1,8 +1,8 @@
 // The perf trace: one debug-panel press runs the battery in perf-suite.js --
 // takes groups of layers away, measures each state, drills into the groups that
 // mattered -- and POSTs the result to /__trace on the dev server (vite.config.js) or /trace on
-// the deployed relay (server/src/main.js), so a
-// headset with no devtools can be profiled by sitting still for a minute.
+// the deployed relay (server/src/main.js), so a headset with no devtools can be
+// profiled by sitting still for a minute. record-trace.js shares the HUD and upload.
 // Read the result with `node scripts/trace-report.mjs`.
 //
 // Baselines are re-measured between states and every saving is taken against
@@ -25,8 +25,55 @@ const MIN_FRAMES = 30
 const _pos = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 
-const quantile = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
-const r2 = (v) => Math.round(v * 100) / 100
+export const quantile = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+export const r2 = (v) => Math.round(v * 100) / 100
+
+/** POSTs a finished trace; resolves to the id the server filed it under. */
+export async function postTrace(trace) {
+  const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(trace) })
+  if (!res.ok) throw new Error(`${ENDPOINT} answered ${res.status}: ${(await res.text()).slice(0, 120)}`)
+  return (await res.json()).id
+}
+
+/** A text strip floating below the gaze, shared by the traces; redrawn only when the text changes so it stays one draw call. */
+export class TraceHud {
+  constructor(camera) {
+    const canvas = document.createElement('canvas')
+    canvas.width = 768
+    canvas.height = 96
+    this.canvas = canvas
+    this.ctx = canvas.getContext('2d')
+    this.tex = new THREE.CanvasTexture(canvas)
+    this.tex.colorSpace = THREE.SRGBColorSpace
+    this.mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.075),
+      new THREE.MeshBasicMaterial({ map: this.tex, transparent: true, toneMapped: false, depthTest: false, depthWrite: false }),
+    )
+    this.mesh.position.set(0, -0.3, -1.2)
+    this.mesh.renderOrder = 999
+    this.mesh.visible = false
+    this.text = ''
+    camera.add(this.mesh)
+  }
+
+  show(text, color) {
+    this.mesh.visible = true
+    if (text === this.text) return
+    this.text = text
+    const { canvas, ctx } = this
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = 'rgba(10,16,28,0.8)'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = color
+    ctx.font = '38px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
+    this.tex.needsUpdate = true
+  }
+
+  hide() { this.mesh.visible = false }
+}
 
 /** Baselines on either side of `t`, linearly interpolated; one side alone when the other does not exist. */
 function baselineAt(bases, t, field) {
@@ -62,8 +109,7 @@ export class PerfTrace {
     this.status = ''
     this.trace = null
     this.frameMs = new Float32Array(MAX_FRAMES)
-    this.hud = this.buildHud()
-    this.hudText = ''
+    this.hud = new TraceHud(host.camera)
     this.lastAt = 0
   }
 
@@ -73,40 +119,6 @@ export class PerfTrace {
   label() {
     if (this.state === 'running') return `step ${this.trace.samples.length + 1}`
     return this.status || 'press'
-  }
-
-  buildHud() {
-    const canvas = document.createElement('canvas')
-    canvas.width = 768
-    canvas.height = 96
-    const tex = new THREE.CanvasTexture(canvas)
-    tex.colorSpace = THREE.SRGBColorSpace
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.6, 0.075),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false, depthTest: false, depthWrite: false }),
-    )
-    mesh.position.set(0, -0.3, -1.2)
-    mesh.renderOrder = 999
-    mesh.visible = false
-    this.host.camera.add(mesh)
-    return { canvas, ctx: canvas.getContext('2d'), tex, mesh }
-  }
-
-  // Redrawn only when the text changes -- about once a second -- so the HUD is a constant one draw call in every state.
-  showHud(text, color) {
-    const { canvas, ctx, tex, mesh } = this.hud
-    mesh.visible = true
-    if (text === this.hudText) return
-    this.hudText = text
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.fillStyle = 'rgba(10,16,28,0.8)'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.fillStyle = color
-    ctx.font = '38px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
-    tex.needsUpdate = true
   }
 
   start() {
@@ -182,7 +194,7 @@ export class PerfTrace {
     const ms = now - this.lastAt
     this.lastAt = now
     if (this.state === 'done' || this.state === 'failed') {
-      if (now - this.endedAt > DONE_SHOWN_MS) this.hud.mesh.visible = false
+      if (now - this.endedAt > DONE_SHOWN_MS) this.hud.hide()
       return
     }
     if (this.state !== 'running') return
@@ -193,7 +205,7 @@ export class PerfTrace {
     const into = now - this.stepAt
     const left = Math.ceil((this.queue.length * (SETTLE_MS + MEASURE_MS) + Math.max(0, SETTLE_MS + MEASURE_MS - into)) / 1000)
     const what = this.step.kind === 'base' ? 'baseline' : `${this.step.name} off`
-    this.showHud(`TRACE ${this.trace.samples.length + 1}  ${what}  ~${left}s${this.drilled ? '' : '+'}  hold still`, '#ffd27a')
+    this.hud.show(`TRACE ${this.trace.samples.length + 1}  ${what}  ~${left}s${this.drilled ? '' : '+'}  hold still`, '#ffd27a')
     if (into < SETTLE_MS) return
 
     const cam = this.host.camera
@@ -273,15 +285,13 @@ export class PerfTrace {
     this.trace.savings = this.trace.samples.some((s) => s.kind === 'base') ? this.savings() : []
     window.v2trace = this.trace // console: the last run, uploaded or not
     this.state = 'saving'
-    this.showHud(aborted ? 'TRACE ABORTED, saving partial' : 'TRACE MEASURED, saving', '#cfe3ff')
+    this.hud.show(aborted ? 'TRACE ABORTED, saving partial' : 'TRACE MEASURED, saving', '#cfe3ff')
     this.upload()
   }
 
   async upload() {
     try {
-      const res = await fetch(ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(this.trace) })
-      if (!res.ok) throw new Error(`${ENDPOINT} answered ${res.status}: ${(await res.text()).slice(0, 120)}`)
-      const { id } = await res.json()
+      const id = await postTrace(this.trace)
       this.end('done', `saved ${id}`, `TRACE ${this.trace.aborted ? 'ABORTED' : 'DONE'}  saved ${id}`, '#8fd48f')
       for (const [i, rate] of [1, 1.26, 1.5].entries()) setTimeout(() => this.host.play('uiPop', rate, 0.6), i * 180)
       this.host.pulse(0.8, 300)
@@ -296,7 +306,7 @@ export class PerfTrace {
     this.state = state
     this.status = status
     this.endedAt = performance.now()
-    this.showHud(hud, color)
+    this.hud.show(hud, color)
     this.host.refresh()
   }
 }

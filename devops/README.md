@@ -35,7 +35,7 @@ only Aurora's unit.
 
 ## Perf traces from the headset
 
-The in-VR perf trace POSTs its result to the relay's `/trace` (Caddy proxies that one path), which writes `REMOTE_DIR/traces/<time>.json` stamped with the deployed commit from `dist/build.json`. After adding this to an existing host, re-run `./devops/provision.sh` once (it adds the Caddy route, the traces directory and `TRACE_DIR`), then `./devops/deploy.sh`. Pull the files down with `./devops/fetch-traces.sh` and read them with `node scripts/trace-report.mjs`.
+The in-VR perf trace (debug panel `perf trace`, a 70 s battery) and the `record trace` row (press to start, fly or walk, press again to stop; logs frame cost and stage breakdown by position) POST their result to the relay's `/trace` (Caddy proxies that one path), which writes `REMOTE_DIR/traces/<time>.json` stamped with the deployed commit from `dist/build.json`. After adding this to an existing host, re-run `./devops/provision.sh` once (it adds the Caddy route, the traces directory and `TRACE_DIR`), then `./devops/deploy.sh`. Pull the files down with `./devops/fetch-traces.sh` and read them with `node scripts/trace-report.mjs`.
 
 ## Later netplay work
 

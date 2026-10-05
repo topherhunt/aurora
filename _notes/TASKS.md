@@ -28,16 +28,27 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
   - [ ] Run a perf trace, in overworld and in the glen.
+- [ ] Village NPCs - dialog & quests:
+  - *In general, I need to figure out a way to build out quest lines that will please and surprise me. Like, it needs to not just be a stock bucket of standard quest types, each of which I can recognize individually and know exactly how this is gonna play out. It needs to be elements that can be woven together in surprising ways.*
+  - [ ] Someone needs a traveler to deliver a letter to <location>, you'll be paid dearly if you can bring it
+  - [ ] Someone needs a rare resource which can only be gotten from the caves near <location> for their potion-mixing
+  - [ ] Someone's kid is lost, ask around and figure out what happened
+  - [ ] My wife <name> disappeared, and nobody can tell me a straight story about what happened to her (unraveling the village gossip & social shadow)
+  - [ ] <name> didn't come back from an expedition in the caves. Assuming he didn't make it. Could you give them the peace of mind of helping them
+- [ ] **Vision for a mainline quest**
+  - You start the game standing in a ceremonial circle in a dark nighttime forest, ringed by torch-lamps. Across from you stands a shadowy cloaked figure, facing away from you. He's mid-conversation with you. "Well. All that's ancient history now. And the why doesn't matter anymore. The dragons are returning, and they will be the end of human dominion on this land. You are one of the blessed few who could stop them, as silly as it sounds <chuckle>. (dramatic pause, and then he turns to face you -- it's a sketelon with glowing electric-blue eyes) And I am the only one who can stop you. <He walks up to you slowly, draws a dagger, and stabs you in the chest. Your vision flashes red, and then fades to black.
+  - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up.
 - Troubleshoot: it's really easy to get blocked in when teleport-walking around houses. The teleporter space placement should be more forgiving, ie obstacle hitboxes need to be tighter to their respective meshes. I might need an "obstacle boundary wireframes" debug view mode. And if you're "in" an obstacle, you should be able to teleport out to an available space freely.
 - Fix: Wild striders should not be saddled.
 - Fix: physically turning, while mounted on a strider, should cause it to turn gradually to match your facing direction. Teleporting to the side or back while mounted on a strider should not cause your camera to rotate -- that's disorienting -- instead, strider-mounted teleport motion in a direction that's not forward is massively lower-range, like, down to 10% of your forward range as you get further from the straight-line.
 - (partly fixed) Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
   - [ ] Issue: currently your height adjusts after a cooldown period at a low framerate, and it's nauseating. Make it smoother, at least 30fps please.
   - [ ] Issue: the hands are way below you when you're sitting down. Your hands need to follow your head height (ie your hands and head stay at the correct relative position as what they are in real life) rather than just your head floating up/down and your hands staying put.
+- [ ] Village houses should have a range of niceness. Props should be more rough and humble, along with walls and carpet colors etc, in line with the distance from the village center and the house's exterior prestige level appearance. Thatch log huts should have log-wall interiors.
 - [ ] SNOWBOARDINGGGGGG
 - [ ] Falling a long way when mounted on a strider doesn't appear to cause any damage.
-- [ ] 
-- [ ] 
+- \[ \]
+- \[ \]
 - [ ] Human villages
   - [ ] Human village, building exteriors: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc. Carefully monitor tri budget.
   - [ ] Farmland. Crops, livestock.
@@ -86,7 +97,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] Snowpeak quest:
   - [ ] the yetis follow you until you leave the snowline or reach a giant skeleton. If they see a giant skeleton, they will kneel down and start praying in front of it. If you get three Yeti's praying around a giant skeleton, then the skeleton will rumble and shake and come to life and start roaming around the countryside, at which point the Yeti's will run away screaming (skeleton wakefulness is persisted world state in your savefile).
   - [ ] Snowpeak quest: if you get too close to a yeti, it will make threatening sounds and then hit you which knocks you back. At which point it will laugh and resume normal conversation. Yetis will follow you if they see you. If you give a yeti a flower (occasionally NPCs in human villages will mention that they've heard Yeti's Love Flowers, human village NPCs are a good source of hints about what you can do in the world. If you can get reliable information out of them, since sometimes they just make stuff up to sound impressive.) then the Yeti will hold the flower, gaze at it for a while, totally lose interest in you, and then walk back to its village. Yeti villages are inside entrances in giant rock sides, covered by a rock slab. When a yeti goes back to its village, it moves the rock slab for 3 seconds, and if you're fast, you can sneak in behind it. This lets you into the world of the Yeti village, which is in the gigantic interior of a rock similar to leaf kin villages. There are paths and hillsides and terraces and flowing water, trees and huts and yetis roaming around doing their thing. If they discover you, they will scream in shock, become aggressive, push you or knock you back a couple of times, and then pick you up and evict you from the village. But if you stay out of their line of sight, you can sneak around and find some valuable items. Also, some yetis are approachable and will even talk with you and help you if you are holding an item that they value or want.
-- [ ] 
+- \[ \]
 - [ ] Adjust the terrain to be more jagged:
   - Peaks need more jaggedness.
   - sheer cliffs: lips at tops & bottoms of many cliffs, rather than rounding (ie steep angles tend steeper)

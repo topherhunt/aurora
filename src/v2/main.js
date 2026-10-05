@@ -28,6 +28,7 @@ import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip, shipLog } from './log-ship.js'
 import { PerfTrace } from './perf-trace.js'
+import { RecordTrace } from './record-trace.js'
 import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
@@ -1279,7 +1280,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'auroraRate', text: 'aurora map >', action: () => cycleAuroraInterval(), value: () => `${aurora.interval}s` },
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
   // The whole debug grid as a one-press battery, uploaded to the dev server; see perf-trace.js.
-  { key: 'perfTrace', text: 'perf trace', action: () => perfTrace.start(), value: () => `${perfTrace.label()} >` },
+  { key: 'perfTrace', text: 'perf trace', action: () => { if (!recordTrace.recording) perfTrace.start() }, value: () => `${perfTrace.label()} >` },
+  { key: 'perfRecord', text: 'record trace', action: () => { if (!perfTrace.running) recordTrace.toggle() }, value: () => `${recordTrace.label()} >` },
   // Holds the weather channel (§10) at one of WEATHER.presets, this client
   // only; peers stay under the room's live sky. See cycleWeather.
   { key: 'weather', text: 'weather >', action: () => cycleWeather(), value: () => weatherLabel() },
@@ -6234,6 +6236,18 @@ const airHook = {
 let last = performance.now()
 const spikes = new Spikes()
 window.v2spikes = spikes // console: `v2spikes.recent`
+const recordTrace = new RecordTrace({
+  camera,
+  spikes,
+  position: () => player.rig.position,
+  flying: () => player.flying,
+  context: () => perfTrace.host.context(),
+  hidePanel: () => perfTrace.host.hidePanel(),
+  play: (clip, rate, gain) => perfTrace.host.play(clip, rate, gain),
+  pulse: (intensity, ms) => perfTrace.host.pulse(intensity, ms),
+  refresh: () => refreshQuestRow('perfRecord'),
+})
+window.v2record = recordTrace // console: `v2record.toggle()` starts and stops it on the desktop
 let frames = 0
 let acc = 0
 let avgMs = 0
@@ -7704,6 +7718,7 @@ AFRAME.registerComponent('v2-quest-tick', {
     perfTraceFrame.calls = mainRender.calls
     perfTraceFrame.tris = mainRender.triangles
     perfTrace.frame(perfTraceFrame)
+    recordTrace.frame(perfTraceFrame)
     renderOverlay()
     spikes.end()
   },
