@@ -776,6 +776,15 @@ export class InteriorStone {
     const lx = x - this.ox, lz = z - this.oz
     return Math.hypot(lx, lz) < rAt(this.room.rs, Math.atan2(lz, lx)) - FILLET
   }
+
+  /** WalkSurface.stairAt: the loft stair's treads, each filled to the next one's top, the highest to the loft's. */
+  stairAt(x, y, z) {
+    const room = this.room, lx = x - this.ox, ly = y - this.oy, lz = z - this.oz
+    if (!room.stairs.length || ly < 0 || ly >= room.loft.y) return null
+    const rho = Math.hypot(lx, lz), a = Math.atan2(lz, lx)
+    const s = room.stairs.find((s, j) => ly < (j ? room.stairs[j - 1].top : room.loft.y) && inside({ kind: 'band', a0: s.a0, a1: s.a1, from: -0.5, to: s.w }, lx, lz, rho, a, room))
+    return s ? this.oy + s.top : null
+  }
 }
 
 function inside(s, lx, lz, rho, a, room) {

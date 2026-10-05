@@ -5,8 +5,7 @@
 // Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; a shop has its counter, an inn a taproom of tables and its bedrooms upstairs; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
 
 import { planBuilding, KINDS } from '../src/buildings/plan.js'
-import { flatField } from '../src/v2/rooms/interior.js'
-import { S, TownInteriorStone, navRoute, rollTownInterior, within } from '../src/v2/rooms/town-interior.js'
+import { CELLAR, S, TownInteriorStone, navRoute, rollTownInterior, townFloorAt, within } from '../src/v2/rooms/town-interior.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { LOCOMOTION } from '../src/player.js'
 
@@ -99,14 +98,14 @@ every('every upstairs gable room has a window', (r) => r.rooms.every((rm) => rm.
 const CELL = 0.1
 const MAX_TAN = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180), STRIDE = LOCOMOTION.stride
 function flood(room) {
-  const walk = new WalkSurface(flatField(0), new TownInteriorStone(room, 0, 0, 0), { trunkAt: () => null }, { scale: 1 })
+  const walk = new WalkSurface({ heightAt: (x, z) => townFloorAt(room, x, z) }, new TownInteriorStone(room, 0, 0, 0), { trunkAt: () => null }, { scale: 1 })
   const b = room.bounds, X0 = b.x0 - 1, Z0 = b.z0 - 1, NX = Math.ceil((b.x1 - b.x0 + 2) / CELL), NZ = Math.ceil((b.z1 - b.z0 + 2) / CELL)
   const xOf = (i) => X0 + i * CELL, zOf = (k) => Z0 + k * CELL
   const seen = new Map(), queue = []
   const land = walk.heightAt(room.doorIn.x, room.doorIn.z, 0)
   const i0 = Math.round((room.doorIn.x - X0) / CELL), k0 = Math.round((room.doorIn.z - Z0) / CELL)
   seen.set(k0 * NX + i0, [land]); queue.push([i0, k0, land])
-  let out = 0
+  let out = 0, deep = 0
   while (queue.length) {
     const [i, k, y] = queue.pop()
     for (const [di, dk] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
@@ -125,6 +124,7 @@ function flood(room) {
       got.push(h)
       seen.set(c * NX + a, got)
       queue.push([a, c, h])
+      deep = Math.min(deep, h)
       if (!room.inside.some((r) => within(r, x, z))) out++
     }
   }
@@ -134,17 +134,25 @@ function flood(room) {
     for (let dk = -near; dk <= near; dk++) for (let di = -near; di <= near; di++) if ((seen.get((k + dk) * NX + i + di) || []).some((g) => Math.abs(g - y) < 0.15)) return true
     return false
   }
-  return { land, out, reached }
+  return { land, out, reached, deep }
 }
 
 {
-  const lost = [], walls = [], landed = [], upstairs = [], ways = []
+  const lost = [], walls = [], landed = [], upstairs = [], ways = [], block = []
   for (const r of houses) {
     const f = flood(r), tag = `${r.kind}/${r.index}`
     if (Math.abs(f.land) > 0.05) landed.push(`${tag} at ${f.land.toFixed(2)}`)
     if (f.out > 0) walls.push(`${tag} (${f.out} cells)`)
     for (const s of r.spots) if (!f.reached(s.standX, s.standZ, r.nav.floors[s.level])) lost.push(`${tag} ${s.kind} on ${s.level}`)
     if (r.upper && !f.reached(r.stair.top.x, r.stair.top.z, r.nav.floors[1])) upstairs.push(tag)
+    // A teleport lob meets the stair as one block (main.js aimTeleport): the notch over each tread is in it, the air a rise over that is not.
+    if (r.upper) {
+      const stone = new TownInteriorStone(r, 0, 0, 0)
+      for (const t of r.stair.treads) {
+        const x = (t.x0 + t.x1) / 2, z = (t.z0 + t.z1) / 2
+        if (stone.stairAt(x, t.top + r.stair.rise / 2, z) !== t.top || stone.stairAt(x, t.top + r.stair.rise * 1.5, z) !== null) { block.push(tag); break }
+      }
+    }
     for (const s of r.spots) if (!navRoute(r, { x: r.doorIn.x, z: r.doorIn.z, level: 0 }, { x: s.standX, z: s.standZ, level: s.level })) ways.push(`${tag} ${s.kind}`)
   }
   const show = (list) => (list.length ? ` -- ${list.slice(0, 4).join(', ')}` : '')
@@ -152,27 +160,31 @@ function flood(room) {
   check(walls.length === 0, `she never walks out through a wall${show(walls)}`)
   check(lost.length === 0, `she walks to every resident's place${show(lost)}`)
   check(upstairs.length === 0, `she climbs the stair to the upper floor${show(upstairs)}`)
+  check(block.length === 0, `a teleport lob meets each stair as one block, landing on the tread${show(block)}`)
   check(ways.length === 0, `the residents' ways join the door to every place${show(ways)}`)
 }
 
 {
-  // design/39-caves.md §2: a house with a cellar (never a hut) has its hatch in a ground-floor corner well away from the front door, walked to from it, its other rooms still all reached; check-towns rolls every house the map actually sites one in.
-  const threwC = [], lostC = [], wallsC = [], spotsC = [], nearC = []
+  // design/38 Cellar: a house with a cellar (never a hut) has its stair in a ground-floor corner well away from the front door, screened by a board wall, walked to and down from the door, its other rooms still all reached; check-towns rolls every house the map actually sites one in.
+  const threwC = [], lostC = [], wallsC = [], spotsC = [], nearC = [], screenC = []
   for (const kind of Object.keys(KINDS).filter((k) => k !== 'hut')) for (let s = 1; s <= SEEDS; s++) {
     const plan = planBuilding({ seed: s * 7919, kind }), tag = `${kind}/${s}`
     let r
     try { r = rollTownInterior({ seed: 4242, index: s, plan, cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
     const f = flood(r)
-    if (!f.reached(r.cellar.x + r.cellar.nx * 0.3, r.cellar.z + r.cellar.nz * 0.3, 0)) lostC.push(tag)
+    if (f.deep > -CELLAR.fade) lostC.push(`${tag} down to ${f.deep.toFixed(2)} m`)
     const h = r.cellar.hole, d = Math.hypot((h.x0 + h.x1) / 2 - r.doorIn.x, (h.z0 + h.z1) / 2 - r.doorIn.z)
     if (d < 4) nearC.push(`${tag} ${d.toFixed(1)} m`)
+    const sc = r.cellar.screen
+    if (!r.solids.some((b) => b.kind === 'wall' && b.y0 === 0 && b.y1 >= 2.2 && (sc.axis === 'x' ? b.z0 < sc.at && b.z1 > sc.at && b.x0 <= Math.min(h.x0, h.x1) + 0.01 && b.x1 >= h.x1 - 0.01 : b.x0 < sc.at && b.x1 > sc.at && b.z0 <= h.z0 + 0.01 && b.z1 >= h.z1 - 0.01))) screenC.push(tag)
     if (f.out > 0) wallsC.push(tag)
     for (const sp of r.spots) if (!f.reached(sp.standX, sp.standZ, r.nav.floors[sp.level])) { spotsC.push(`${tag} ${sp.kind}`); break }
   }
   const show = (list) => (list.length ? ` -- ${list.slice(0, 4).join(', ')}` : '')
-  check(threwC.length === 0, `every building but a hut rolls with a cellar hatch${show(threwC)}`)
-  check(lostC.length === 0, `she walks from the front door into the cellar hatch${show(lostC)}`)
-  check(nearC.length === 0, `the cellar hatch is tucked away from the front door${show(nearC)}`)
+  check(threwC.length === 0, `every building but a hut rolls with a cellar stair${show(threwC)}`)
+  check(lostC.length === 0, `she walks from the front door down the cellar stair into the cave${show(lostC)}`)
+  check(nearC.length === 0, `the cellar stair is tucked away from the front door${show(nearC)}`)
+  check(screenC.length === 0, `a board wall screens the cellar stair along its length${show(screenC)}`)
   check(wallsC.length === 0, `a cellar house never lets her out through a wall${show(wallsC)}`)
   check(spotsC.length === 0, `a cellar house still reaches every resident's place${show(spotsC)}`)
 }

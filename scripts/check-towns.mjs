@@ -325,7 +325,7 @@ check(towns.every((town) => town.buildings.some((b) => b.sign === 'flask')), 'ev
   const cellars = siteCellars(towns, SEED).map((c) => ({ b: towns[c.t].buildings[c.i], index: c.t * 256 + c.i }))
   const plain = cellars.filter(({ b, index }) => rolls(b, index, shopOf(b)))
   const shut = plain.filter(({ b, index }) => { try { return !rollTownInterior({ seed: SEED, index, plan: b.plan, shop: shopOf(b), cellar: true }).cellar } catch { return true } })
-  check(cellars.length >= towns.length / 2 && shut.length === 0, `every house sited a cellar fits its hatch (${plain.length} of ${cellars.length} roll as houses${shut.length ? `; not in ${shut.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
+  check(cellars.length >= towns.length / 2 && shut.length === 0, `every house sited a cellar fits its stair (${plain.length} of ${cellars.length} roll as houses${shut.length ? `; not in ${shut.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
 }
 // Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.
 const durations = Object.fromEntries(CLIPS.map((c) => [c, c === 'sit' ? 4 : 2]))

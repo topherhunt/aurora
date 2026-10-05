@@ -216,6 +216,15 @@ export class WalkSurface {
     return low
   }
 
+  /** The top of the tread under (x, y, z) when that is in a stair as a teleport lob meets it, each tread filled up to the next one's top so the flight is one block; else null. From a layer's optional `stairAt`. */
+  stairAt(x, y, z) {
+    for (let s = 0; s < this.stone.length; s++) {
+      const top = this.stone[s].stairAt ? this.stone[s].stairAt(x, y, z) : null
+      if (top !== null) return top
+    }
+    return null
+  }
+
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
   _crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {

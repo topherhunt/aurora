@@ -4,7 +4,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TriFlames, TRI_FIRE } from './fire-tris.js'
 import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross } from './interior.js'
-import { S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, minus, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
+import { CELLAR, S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, minus, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
 
 const TAU = 2 * Math.PI
 // The outer wall's depth, as the roller insets it.
@@ -256,7 +256,7 @@ function buildShell(room, M, K, rng) {
 
   // The floor, flag or plank; the doorways' floors are the same.
   for (const r of room.inside) for (const q of room.cellar ? minus(r, room.cellar.hole) : [r]) sheet(M.floor, q, () => 0, 1, floorTint, FLOOR_M)
-  if (room.cellar) cellarWell(M, K, room)
+  if (room.cellar) cellarWell(M, room, wallTint(-0.02))
   for (const p of room.partitions) partition(M, room, p, wallTint(-0.02), timber)
   hearthAt(M, K, room, timber)
   if (room.upper) upperFloor(M, K, room, timber)
@@ -338,12 +338,12 @@ function doorLeaf(M, K, F, w, top) {
   K.tube(M.grain, Array.from({ length: 13 }, (_, k) => { const q = (k / 12) * TAU; return put(F, w * 0.3 + Math.sin(q) * 0.07, Math.min(0.93, top / 2) + Math.cos(q) * 0.07, 0.06) }), Array(13).fill(0.009), IRON, { segs: 6, caps: false })
 }
 
-/** The cellar hatch's well (design/39-caves.md §2): stone steps from the hole's open end down into the corner and on under the floor into the dark, its two leaves stood open against the wall. */
-function cellarWell(M, K, room) {
+/** The cellar stair (design/38 Cellar): stone steps from its head down into the corner and on under the floor into the dark, and the board wall screening it from the room. */
+function cellarWell(M, room, tint) {
   const c = room.cellar, L = { axis: c.axis, at: c.at, ix: c.ix, iz: c.iz }
   const o = pt(L, c.top, 0), w = c.w, len = c.u1 - c.u0, down = [c.nx, 0, c.nz]
   const F = { x: o.x, y: 0, z: o.z, ax: inward(L), ay: [0, 1, 0], az: down }
-  const RISE = 0.2, RUN = 0.28, STEPS = 12, end = STEPS * RUN, foot = -STEPS * RISE - 0.3
+  const { rise: RISE, run: RUN } = CELLAR, STEPS = 12, end = STEPS * RUN, foot = -STEPS * RISE - 0.3
   // Lit from the room above, dark by the foot of the flight.
   const stone = (d) => rgb(0.08, 0.06, 0.42 * Math.max(0.08, 1 - d / end))
   const sUV = (p, n) => (n[0] ? [p[2] / STONE_M, p[1] / STONE_M] : n[1] ? [p[0] / STONE_M, p[2] / STONE_M] : [p[0] / STONE_M, p[1] / STONE_M])
@@ -353,7 +353,15 @@ function cellarWell(M, K, room) {
   face(turn(F, 0, 0, 1), (i, j) => [i * w, j ? 0 : -RISE, 0])
   face(turn(F, 0, 0, -1), (i, j) => [i * w, j ? 0 : foot, end])
   face([0, -1, 0], (i, j) => [i * w, 0, len + j * (end - len)])
-  for (const k of [0, 1]) doorLeaf(M, K, { ...F, ...xyz(put(F, 0.06, 0, ((k + 0.5) * len) / 2)), ax: down, az: inward(L) }, len / 2 - 0.02, w)
+  const sc = c.screen, along = sc.axis === 'x', hw = PART / 2
+  const top = (u) => (sc.y1 < 1e2 ? sc.y1 : (along ? townCeilingAt(room, u, sc.at) : townCeilingAt(room, sc.at, u)) + 0.1)
+  for (const s of [-1, 1]) wallFace(M.wall, { axis: sc.axis, at: sc.at + s * hw, ix: along ? 0 : s, iz: along ? s : 0 }, 0, sc.lo, sc.hi, 0, top, [], [], tint)
+  const head = -Math.sign(c.nx + c.nz)
+  wallFace(M.wall, { axis: along ? 'z' : 'x', at: c.top, ix: along ? head : 0, iz: along ? 0 : head }, 0, sc.at - hw, sc.at + hw, 0, () => top(c.top), [], [], tint)
+  if (c.cap) {
+    const far = sc.at + Math.sign(sc.at - c.at) * hw, lo = Math.min(c.at, far), hi = Math.max(c.at, far)
+    for (const [at, n] of [[c.cap.u, head], [c.cap.u - head * PART, -head]]) wallFace(M.wall, { axis: along ? 'z' : 'x', at, ix: along ? n : 0, iz: along ? 0 : n }, 0, lo, hi, 0, () => top(c.cap.u), [], [], tint)
+  }
 }
 
 /** The hearth: a stone chimney breast to the roof with a fire in its mouth, a beam for a mantel, a hearthstone, logs and a pot on a crane. */

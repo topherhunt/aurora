@@ -71,7 +71,7 @@ import { Residents } from './render/residents.js'
 import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js'
 import { TownInteriorView } from './render/town-interior.js'
 import { TownResidents } from './render/town-residents.js'
-import { TownInteriorStone, grow, rollTownInterior, within } from './rooms/town-interior.js'
+import { CELLAR, TownInteriorStone, rollTownInterior, townFloorAt, within } from './rooms/town-interior.js'
 import { Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
@@ -3655,7 +3655,7 @@ async function openTownHouse(t, i) {
   const ox = b.x, oy = b.y + 250, oz = b.z
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
   scene.add(view.group)
-  const inner = new WalkSurface(flatField(oy), new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
+  const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
   const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz })
   const e = townDoor(t, i)
@@ -3707,7 +3707,7 @@ function houseTest(blink) {
   }
   if (indoors) {
     const c = indoors.cellar, o = indoors.view.group.position
-    if (c && Math.abs(feet.y - o.y) <= HOUSE_DOOR.rise && within(grow(indoors.room.cellar.hole, -0.2), feet.x - o.x, feet.z - o.z)) {
+    if (c && feet.y - o.y <= -CELLAR.fade && within(indoors.room.cellar.hole, feet.x - o.x, feet.z - o.z)) {
       const sys = caveSites.systems[c.system]
       enterCave(sys, sys.mouths.length + sys.cellars.indexOf(c.id), indoors.back).catch(reportRuntimeError)
       return true
@@ -6505,6 +6505,8 @@ const RIDE_GROW_S = 0.8
 // spacing. 40 samples is 1.6 s of flight, past which the lob is a fall.
 const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
+// The lob's step against stairs (aimTeleport).
+const TELEPORT_STAIR_M = 0.02
 // A landing is refused where she could not have walked to: a slope past the
 // limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
 // the ONLY thing that turns it red. A landing far enough below her to cost
@@ -6689,8 +6691,14 @@ function aimTeleport(origin, dir) {
     const p = at(t)
     const level = waterLevelAt(p.x, p.z)
     return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) && p.y >= floor &&
-      walk.ceilingAt(p.x, p.z, p.y) > -Infinity &&
+      walk.ceilingAt(p.x, p.z, p.y) > -Infinity && walk.stairAt(p.x, p.y, p.z) === null &&
       !walk.obstacleAt(p.x, p.z, teleportObstacle, mount) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
+  }
+  // A sample's step is wider than a tread, so the lob is asked of stairs every few centimetres between samples, or it can pass through a flight's corner and land beyond it.
+  const stairBefore = (t0, t1) => {
+    const a = at(t0), b = at(t1), n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) / TELEPORT_STAIR_M)
+    for (let j = 1; j < n; j++) { const ts = t0 + ((t1 - t0) * j) / n, q = at(ts); if (walk.stairAt(q.x, q.y, q.z) !== null) return ts }
+    return t1
   }
   let count = 0
   let hit = null
@@ -6701,9 +6709,10 @@ function aimTeleport(origin, dir) {
   for (let i = 0; i < TELEPORT_SAMPLES; i++) {
     const t = i * stepS
     const p = at(t)
-    if (i > 0 && !clear(t)) {
+    const ts = i > 0 ? stairBefore(prevT, t) : t
+    if (i > 0 && (ts < t || !clear(t))) {
       let lo = prevT
-      let hi = t
+      let hi = ts
       for (let k = 0; k < 12; k++) {
         const mid = (lo + hi) * 0.5
         if (clear(mid)) lo = mid
@@ -6719,7 +6728,10 @@ function aimTeleport(origin, dir) {
       } else {
         // The surface just crossed: the highest ground at or a hair above the
         // crossing, never the awning over it -- or the water standing over that.
-        hit = { x: end.x, y: walk.heightAt(end.x, end.z, end.y - walk.reach + 0.05 * k), z: end.z }
+        // A stair is one block to the lob: one into its side, or into the wall over it, lands on the tread there, not the floor under it.
+        const ground = walk.heightAt(end.x, end.z, end.y - walk.reach + 0.05 * k), back = at(lo)
+        const tread = walk.stairAt(end.x, end.y, end.z) !== null ? walk.stairAt(end.x, end.y, end.z) : walk.stairAt(back.x, ground + 0.01, back.z)
+        hit = { x: end.x, y: tread !== null ? tread : ground, z: end.z }
         const level = waterLevelAt(hit.x, hit.z)
         if (level !== null && hit.y < level) {
           hit.y = level

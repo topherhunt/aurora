@@ -9,8 +9,8 @@ const T = 0.15
 export const PART = 0.12
 export const DOORWAY = { w: 1.1, h: 2.2 }
 export const DOOR = { w: 1.25, h: 2.25 }
-// The cellar hatch's hole: `w` out from its wall, `len` along it. Its leaves stand open `w` tall against the wall, under a ground-floor window's 0.85 m sill.
-export const HATCH = { w: 0.8, len: 2.5 }
+// The cellar stair: its well the first of `w` out from an outer wall that keeps its screen off the corner wall's windows, `len` along it, `land` of floor before its head, stone steps `rise` by `run`. Where every width meets a window it stands `slide` off the corner, its deep end boarded. She goes into the cave `fade` below the floor.
+export const CELLAR = { w: [0.9, 1.05, 0.8, 1.2], len: 2.5, land: 1.0, slide: 0.6, rise: 0.2, run: 0.28, fade: 1.0 }
 export const SLAB = 0.2
 export const STAIR = { run: 0.26, w: 0.95 }
 // Headroom a walker needs: the townsfolk run to 1.85 m, her crown (walk.js WALK.height) to 1.9.
@@ -86,7 +86,7 @@ export function levelCeilingAt(room, level, x, z) {
 export const townRoomAt = (room, level, x, z) => room.rooms.find((r) => r.level === level && within(r.rect, x, z)) || null
 
 /**
- * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a floor hatch down to a `cellar` cave or not. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
+ * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a stair down to a `cellar` cave or not. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
  */
 export function rollTownInterior({ seed, index, plan, shop = null, cellar = false }) {
   if (!Number.isInteger(seed) || !Number.isInteger(index) || !plan || !Array.isArray(plan.masses)) throw new Error('rollTownInterior: needs an integer seed and index and a building plan')
@@ -534,40 +534,50 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
     }
   }
 
-  // --- the cellar hatch (design/39-caves.md §2): a hole in the ground floor along an outer wall, its stair running down into the room's corner, as far from the front door as fits, its two leaves stood open against the wall. Its own rng, so a house without one rolls as it always did.
+  // --- the cellar stair (design/38 Cellar): a well along an outer wall running down into a ground room's corner, as far from the front door as fits, screened from the room by a board wall so it shows only from its head. Its own rng, so a house without one rolls as it always did.
   room.cellar = null
   if (cellar) {
     const crng = mulberry32(hash32(seed, index, 0xce11))
+    const { len, land } = CELLAR
     const cands = []
     for (const rm of rooms) {
       if (rm.level !== 0) continue
-      for (const e of outside(0, rm.rect).edges) {
-        if (e.hi - e.lo < HATCH.len + 1.2) continue
-        for (const s of [-1, 1]) {
-          const [u0, u1] = s < 0 ? [e.lo, e.lo + HATCH.len] : [e.hi - HATCH.len, e.hi], top = s < 0 ? u1 : u0
-          const hole = strip(e, u0, u1, 0, HATCH.w)
-          if (!clear(0, grow(hole, -CELL), SOLID | KEEP | LOW) || !clear(0, grow(hole, 0.3), KEEP)) continue
+      for (const e of outside(0, rm.rect).edges) for (const s of [-1, 1]) {
+        corner: for (const off of [0, CELLAR.slide]) for (const W of CELLAR.w) {
+          if (e.hi - e.lo < len + land + 0.2 + off) break corner
+          const [u0, u1] = s < 0 ? [e.lo + off, e.lo + off + len] : [e.hi - off - len, e.hi - off], top = s < 0 ? u1 : u0, deep = s < 0 ? u0 : u1
+          const hole = strip(e, u0, u1, 0, W), screen = strip(e, u0, u1, W, W + PART), head = strip(e, top, top - s * land, 0, W)
+          const cap = off > 0 ? strip(e, deep, deep + s * PART, 0, W + PART) : null
+          if (cap && !clear(0, grow(cap, -CELL), SOLID | KEEP)) continue
+          if (!clear(0, grow(hole, -CELL), SOLID | KEEP | LOW) || !clear(0, grow(hole, 0.3), KEEP) || !clear(0, strip(e, u0 + 0.3, u1 - 0.3, W - 0.15, W + PART + 0.15), SOLID | KEEP) || !clear(0, grow(head, -CELL), SOLID | LOW)) continue
+          const mid = pt(e, deep, W + PART / 2)
+          if (!cap && windows.some((w) => w.level === 0 && w.axis !== e.axis && Math.abs(w.at - deep) < 0.01 && Math.abs(w.u - (e.axis === 'x' ? mid.z : mid.x)) < w.w / 2 + 0.25)) continue
           let open = true
-          for (let u = u0; u <= u1 && open; u += 0.1) open = !inJunction(e, u)
+          for (let u = Math.min(u0, top - s * land); u <= Math.max(u1, top - s * land) && open; u += 0.1) open = !inJunction(e, u)
           if (!open) continue
-          const c = pt(e, (u0 + u1) / 2, HATCH.w / 2)
-          cands.push({ e, s, u0, u1, top, hole, score: -Math.hypot(c.x - doorIn.x, c.z - doorIn.z) + crng() * 0.5 })
+          const c = pt(e, (u0 + u1) / 2, W / 2)
+          cands.push({ rm, e, s, W, u0, u1, top, deep, hole, screen, cap, score: -Math.hypot(c.x - doorIn.x, c.z - doorIn.z) + crng() * 0.5 })
+          break corner
         }
       }
     }
     cands.sort((p, q) => p.score - q.score)
-    for (const { e, s, u0, u1, top, hole } of cands) {
-      const g = grids[0].slice(), inn = pt(e, top - s * 0.9, HATCH.w / 2)
+    for (const { rm, e, s, W, u0, u1, top, deep, hole, screen, cap } of cands) {
+      const g = grids[0].slice(), ns = solids.length, inn = pt(e, top - s * 0.6, W / 2)
+      const y1 = upper && rm.role === 'main' ? U - SLAB : 1e3
       mark(0, hole, SOLID)
+      const wall = box(screen, 0, y1, 'wall')
+      solids.push(wall); rasterSolid(wall)
+      if (cap) { const b = box(cap, 0, y1, 'wall'); solids.push(b); rasterSolid(b) }
       anchors[0].push(inn)
-      if (!reaches(0)) { anchors[0].pop(); grids[0].set(g); continue }
-      mark(0, strip(e, top - s * 1.3, top, 0, HATCH.w + 0.3), KEEP)
+      if (!reaches(0)) { anchors[0].pop(); solids.length = ns; grids[0].set(g); continue }
+      mark(0, strip(e, top - s * (land + 0.3), top, 0, W + 0.3), KEEP)
       mark(0, strip(e, u0, u1, 0, 0.5), HUNG)
-      const edge = pt(e, top, HATCH.w / 2)
-      room.cellar = { axis: e.axis, at: e.at, ix: e.ix, iz: e.iz, u0, u1, top, w: HATCH.w, hole, x: edge.x, z: edge.z, nx: e.axis === 'x' ? s : 0, nz: e.axis === 'x' ? 0 : s, in: inn }
+      const edge = pt(e, top, W / 2)
+      room.cellar = { axis: e.axis, at: e.at, ix: e.ix, iz: e.iz, u0, u1, top, w: W, hole, screen: { axis: e.axis, at: e.axis === 'x' ? (screen.z0 + screen.z1) / 2 : (screen.x0 + screen.x1) / 2, lo: Math.min(u0, cap ? deep + s * PART : u0), hi: Math.max(u1, cap ? deep + s * PART : u1), y1 }, cap: cap && { u: deep }, x: edge.x, z: edge.z, nx: e.axis === 'x' ? s : 0, nz: e.axis === 'x' ? 0 : s, in: inn }
       break
     }
-    if (room.cellar === null) throw new Error(`rollTownInterior: no ground-floor corner of house ${index} takes its cellar hatch`)
+    if (room.cellar === null) throw new Error(`rollTownInterior: no ground-floor corner of house ${index} takes its cellar stair`)
   }
 
   // --- furnishing ------------------------------------------------------------------
@@ -1167,6 +1177,13 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
 /**
  * The house as stone to the walker (walk.js addStone's contract), set down with its room-local origin at (ox, oy, oz): everything off the floor plan is wall, the roof (or the upper floor's slab, a solid like any other) is over every point, and every solid stands where it is. `blockTopAt` is the top of the stone stacked up from the ground floor, so a teleport lands under the upper floor, not on it.
  */
+/** The floor's height at room-local (x, z): 0, or down the cellar stair a ramp through its treads' middles, so her feet ride the flight. */
+export function townFloorAt(room, x, z) {
+  const c = room.cellar
+  if (c === null || !within(c.hole, x, z)) return 0
+  return -CELLAR.rise / 2 - (CELLAR.rise / CELLAR.run) * Math.max(0, (x - c.x) * c.nx + (z - c.z) * c.nz)
+}
+
 export class TownInteriorStone {
   constructor(room, ox, oy, oz) {
     this.room = room
@@ -1235,6 +1252,14 @@ export class TownInteriorStone {
 
   deckAt(x, z) {
     return this.room.inside.some((r) => within(r, x - this.ox, z - this.oz))
+  }
+
+  /** WalkSurface.stairAt: the up-stair's treads, each filled to the next one's top. */
+  stairAt(x, y, z) {
+    const st = this.room.stair, ly = y - this.oy
+    if (st === null || ly < 0) return null
+    const t = st.treads.find((t) => ly < t.top + st.rise && within(t, x - this.ox, z - this.oz))
+    return t ? this.oy + t.top : null
   }
 }
 
