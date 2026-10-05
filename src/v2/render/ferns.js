@@ -56,12 +56,13 @@ import { taken, TOLERANCE_M } from '../taken.js'
 // (the far tier) stops being optional.
 //
 // WHAT HALF A FERN PER SQUARE METRE COSTS. With DENSITY 0.5, FULL_RADIUS 35,
-// DRAW_RADIUS 90 and FALLOFF 3 the graded law integrates to
-// pi*F^2*D + 2*pi*D*F^2*(1 - F/R) = ~1,900 inside plus ~2,400 beyond. Measured
-// over flat unrejecting ground it comes out at ~6,700 placed -- well above the
+// DRAW_RADIUS 65 and FALLOFF 3 the graded law integrates to
+// pi*F^2*D + 2*pi*D*F^2*(1 - F/R) = ~1,900 inside plus ~1,800 beyond. Measured
+// at a 90 m rim over flat unrejecting ground it came out at ~6,700 placed -- well above the
 // closed form, which is the deliberate over-keep the forest's header explains,
 // and the rim then dissolves the surplus away rather than drawing it. What a
-// walking camera actually SUBMITS, averaged over a 40 m walk:
+// walking camera actually SUBMITS at that 90 m rim, averaged over a 40 m walk
+// (the 65 m rim draws about 40% fewer far instances):
 //
 //   0-5 m    LOD0 (6 seg)          36 x 108 =  3.9k tri
 //   5-10 m   LOD2 (2 seg)         133 x 36  =  4.8k tri
@@ -114,7 +115,7 @@ import { taken, TOLERANCE_M } from '../taken.js'
 // frustum culling to be had either, so the two thirds of the disc behind the
 // player are drawn, and this class's own update walks the near tiles every frame
 // regardless (0.09 ms mean, 0.42 ms worst over a 400 m walk). That is what sets
-// DRAW_RADIUS at 90 m rather than the forest's 1500: FALLOFF 3 makes the far
+// DRAW_RADIUS at 65 m rather than the forest's 1500: FALLOFF 3 makes the far
 // field cheap in triangles long before it is cheap in instances, so a kilometre
 // of ferns would cost almost nothing to DRAW and would still walk eleven times
 // this many tiles. If the bed ever has to reach further, the piece to build is
@@ -211,8 +212,8 @@ const FULL_RADIUS = 35
 // biggest lever on what this layer costs. 1 is the halving-per-octave the tree
 // and card beds use; 3 is the blade bed's, and it is here for the blade bed's
 // reason -- 96% of this scatter is in the far tier, so an exponent on the far
-// field is worth more than any saving available per instance. At the 90 m rim it
-// keeps (35/90)^3 = 5.9% of full density where 1 left 39%, which is the far
+// field is worth more than any saving available per instance. At the 65 m rim it
+// keeps (35/65)^3 = 15.6% of full density where 1 left 39%, which is the far
 // field reading as patches of fern rather than as a lawn of them.
 const FALLOFF = 3
 
@@ -225,7 +226,7 @@ const FALLOFF = 3
 // One entry per MESH ring, in the same order as RING_TIERS, and the two lists
 // have to stay the same length -- the card ring is the one past the end.
 const LOD_BANDS = [5, 10]
-const DRAW_RADIUS = 90
+const DRAW_RADIUS = 65
 
 // Which of fern-bank.js's tiers each mesh ring draws, finest first. By NAME
 // because FERN_TIERS is authored coarsest-first, where it reads as a cost curve.
@@ -549,7 +550,7 @@ export class Ferns {
     // rings share ONE material -- which is what keeps the layer at three draw
     // calls rather than three materials' worth of state changes, and the reason
     // the card is a shader trick rather than a mesh with a material of its own.
-    // The whole bed is inside DRAW_RADIUS 90, which is inside the wind's own
+    // The whole bed is inside DRAW_RADIUS 65, which is inside the wind's own
     // 100 m reach, so every fern sways -- billboards included. A spun card takes
     // the screen-parallel cheat (material.js's windVertex explains why it is the
     // right one on a 0.5 m plant at 14 m and out).

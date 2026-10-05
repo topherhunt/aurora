@@ -5,7 +5,7 @@ import { celestial, CLOCK } from '../clock.js'
 
 export const MAX_HP = 100
 // A fall up to `safeM` of her own metres (`riddenM` on a strider's back) is free; every metre past it costs `hpPerM`.
-export const FALL = { safeM: 4, riddenM: 8, hpPerM: 10 }
+export const FALL = { safeM: 4, riddenM: 8, hpPerM: 5 }
 export const fallDamage = (m, safe = FALL.safeM) => Math.round(Math.max(0, m - safe) * FALL.hpPerM)
 
 export class Health {

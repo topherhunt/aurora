@@ -9,7 +9,7 @@ import { lodFadeS, cloneBones, groundFeet, makePuppetMaterials, makeSettledMater
 import { makePuppet } from './baked-puppet.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
-import { dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
+import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
 import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
@@ -147,7 +147,7 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
-  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy), and then stands `wait` s and walks back to its rail the way it ran, by the points it dropped every `crumb` m.
+  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy, not from its face), and then stands `wait` s and walks back to its rail the way it ran, by the points it dropped every `crumb` m.
   shy: { ...WILD.shy, wait: [3, 6], crumb: 0.5 },
   // Metres a peer's startled copy is put straight to its owner's anchor rather than eased there.
   shySnap: 2,
@@ -1288,7 +1288,10 @@ export class Townsfolk {
     const J = this.striders ? { journeys: this.journeys, strider: this.striders.sim } : {}
     const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), ...J })
     for (const c of life.all) this._entity(c)
-    for (const m of life.mounts) Object.assign(m, mountFields(1), { key: `town:${i}:${m.id}`, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
+    for (const m of life.mounts) {
+      const key = `town:${i}:${m.id}`
+      Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
+    }
     // The smithy's forge burns all day; its flame's shader reads world space, so it hangs off the scene.
     const smithy = town.works.find((w) => w.kind === 'smithy')
     let forge = null
@@ -1396,7 +1399,7 @@ export class Townsfolk {
     }
     if (!m.shy) {
       if (m.state !== 'tied' || m.gone || m.treat || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
-      if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
+      if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || atFace(p, head) || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
       this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
       this._oweShy(m, 'run')
     }
@@ -1658,7 +1661,7 @@ export class Townsfolk {
     Object.assign(c.pose, { clip: j.ride ? 'ride' : 'walk', speed: j.speed, cue: 0, from: -1, scale: 1, hop: j.ride ? 1 : 0 })
     let m = null
     if (j.ride) {
-      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296)))
+      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296), hash32(this.seed, j.from, j.to, Math.round(j.t0), k, 0x71a7)))
       Object.assign(m.pose, { clip: 'walk', speed: j.speed })
       c.mount = m
     }
@@ -1836,7 +1839,30 @@ export class Townsfolk {
     return null
   }
 
-  /** `m` hidden at its rail while she rides it; what WildStriders.borrow needs of it. */
+  /** Whether her hand may take tied `m`'s rein: tamed by anyone (`tamed`, WildStriders.isTamed). */
+  _leadable(m, tamed) {
+    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && !m.shy && tamed(m.key)
+  }
+
+  /** The tied strider tamed by anyone whose jowl `hand` is at (WILD.lead.grab), or null. */
+  leadableAt(hand, tamed) {
+    for (const { life } of this.alive.values()) for (const m of life.mounts) {
+      if (m.dist < 3 * m.pose.size && this._leadable(m, tamed) && this.striders.jowl(m, _hand) && _hand.distanceTo(hand) < (WILD.lead.grab * m.pose.size) / STRIDER.size.mean) return m
+    }
+    return null
+  }
+
+  /** The tied strider tamed by anyone whose jowl a ray from `origin` along unit `dir` passes within WILD.lead.grab of, within `far`, or null. */
+  leadableOnRay(origin, dir, far, tamed) {
+    for (const { life } of this.alive.values()) for (const m of life.mounts) {
+      if (m.dist > far + 2 || !this._leadable(m, tamed) || !this.striders.jowl(m, _hand)) continue
+      const along = _hand.sub(origin).dot(dir)
+      if (along > 0 && along < far && _hand.addScaledVector(dir, -along).length() < (WILD.lead.grab * m.pose.size) / STRIDER.size.mean) return m
+    }
+    return null
+  }
+
+  /** `m` hidden at its rail while she rides or leads it; what WildStriders.borrow and borrowLed need of it. */
   lend(m) {
     this.lent.add(m.key)
     m.gone = true

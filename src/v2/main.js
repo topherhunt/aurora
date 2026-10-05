@@ -19,6 +19,7 @@ import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
 import { TerrainV2 } from './terrain/terrain-v2.js'
 import { TerrainWire } from './terrain/wire.js'
+import { ObstacleWire } from './render/obstacle-wire.js'
 import { LOD, MIN_TRI_DEG, MAX_TRI_DEG } from './terrain/quadtree-v2.js'
 import { Markers } from './render/markers.js'
 import { WaterSurfaces } from './render/water-surfaces.js'
@@ -29,6 +30,7 @@ import * as persist from './edit/persist.js'
 import { installLogShip, shipLog } from './log-ship.js'
 import { PerfTrace } from './perf-trace.js'
 import { RecordTrace } from './record-trace.js'
+import { GpuTimer } from './gpu-timer.js'
 import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
@@ -65,7 +67,7 @@ import { Trust } from './trust.js'
 import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank, loadRoostMaps, MAPS as ROOST_MAPS } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
-import { Entrances, PORTAL, SCREEN_POOL, loadMouthBank } from './render/entrances.js'
+import { Entrances, PORTAL, SCREEN_POOL, holeBox, loadMouthBank } from './render/entrances.js'
 import { HOUSE_BOUNDS, RoomProps } from './render/room-props.js'
 import { InteriorView, loadInteriorTextures } from './render/interior.js'
 import { Residents } from './render/residents.js'
@@ -560,6 +562,12 @@ rightHandEl = sceneEl.querySelector('#right-hand')
 rig = rigEl.object3D
 leftGrip = leftHandEl.object3D
 rightGrip = rightHandEl.object3D
+// A-Frame's tracked-controls poses the grips against a reference space of its own, re-requested on every input-source change, so an offset set on renderer.xr (Player.liftXR, recenterXR) would move her head and leave her hands where they were. It reads the renderer's instead.
+{
+  const trackedControls = sceneEl.systems['tracked-controls']
+  if (!trackedControls) throw new Error("A-Frame's tracked-controls system is missing: the hands would not follow the lifted reference space")
+  Object.defineProperty(trackedControls, 'referenceSpace', { get: () => renderer.xr.getReferenceSpace(), set() {} })
+}
 // LASER-CONTROLS' OWN RAYCASTER AND LINE ARE SWITCHED OFF THE MOMENT IT PUTS
 // THEM ON. Its raycaster lists no objects, so it intersects every entity in the
 // scene -- the other hand's line and controller model included -- and three
@@ -1217,6 +1225,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'terrainWire', text: 'terrain wireframe' },
   // The road network as blue lines drawn over everything, readable from a flight; see buildRoadLines.
   { key: 'roadLines', text: 'road network lines' },
+  // What stops her feet and the teleport round her, as outlines read off the walk: see render/obstacle-wire.js.
+  { key: 'obstacleWire', text: 'obstacle wireframes' },
   { key: 'trees', text: 'trees' },
   { key: 'boulders', text: 'boulders & rubble' },
   { key: 'grass', text: 'grass' },
@@ -1318,6 +1328,7 @@ function applyQuestToggle(key) {
     case 'terrain': terrain.batch.visible = enabled; break
     case 'terrainWire': terrainWire.visible = enabled; break
     case 'roadLines': if (roadLines) roadLines.visible = enabled; break
+    case 'obstacleWire': (obstacleWire ??= new ObstacleWire(scene)).visible = enabled; break
     case 'trees': trees.batch.visible = enabled; break
     // Both rows read "the world as it ships" as ON, so the toggle is what gets
     // REMOVED -- the same polarity as `wind`.
@@ -1385,7 +1396,7 @@ function applyQuestToggle(key) {
     // it is where it should be the moment the row goes back on.
     case 'sound': if (sound) sound.setMuted(!enabled); break
     case 'standHeight':
-      if (!enabled && eyeLevel.applied !== 0 && player) player.liftXR(renderer, -eyeLevel.applied)
+      if (!enabled && eyeLevel.lift !== 0 && player) player.liftXR(renderer, 0)
       eyeLevel.reset()
       break
   }
@@ -1897,6 +1908,22 @@ function mountStrider(find) {
   return true
 }
 
+/** Her empty hand `key` on the head of the tamed strider `find(layer, tamed)` answers: a wild one's rein taken, or let go of if she already leads it; else a town's tied one lent to her on its rein. */
+function takeRein(find, key) {
+  if (!wildStriders || !wildStriders.loaded || hands.holding(key) !== null) return false
+  const tamed = (k) => wildStriders.isTamed(k)
+  const wild = find(wildStriders, tamed)
+  if (wild) {
+    if (wild === wildStriders.led) wildStriders.unlead()
+    else wildStriders.lead(wild, key)
+    return true
+  }
+  const tied = townsfolk && townsfolk.striders ? find(townsfolk, tamed) : null
+  if (!tied) return false
+  wildStriders.borrowLed(townsfolk.lend(tied), key)
+  return true
+}
+
 const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
@@ -2257,8 +2284,9 @@ function buildQuestPanel() {
       }
       if (!hands) return
       const key = el === leftHandEl ? 'left' : 'right'
-      // A finger on a friendly strider's back, from its side, puts her on it.
+      // A finger at a tamed strider's jowl takes its rein; on a friendly one's back, from its side, it puts her on it.
       const finger = hands.pointOf(key, new THREE.Vector3())
+      if (takeRein((layer, tamed) => layer.leadableAt(finger, tamed), key)) return
       if (mountStrider((layer) => layer.mountableAt(finger, handsHead()))) return
       if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
       else if (holdsFlint(key) && !hands.wouldStow(key, handsHead())) strikeFlint(key)
@@ -2316,6 +2344,7 @@ function buildQuestPanel() {
     const reach = BED_REACH_M * herScale()
     const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
     if (bed) { lieDown(bed, false); return }
+    if (takeRein((layer, tamed) => layer.leadableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), tamed), 'desk')) return
     if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
@@ -2866,6 +2895,8 @@ let height = null
 let layers = null
 let terrain = null
 let terrainWire = null
+// Built on the first press of its row, and kept across rooms: it reads whichever walk she is on.
+let obstacleWire = null
 let terrainTint = null
 let player = null
 let walk = null
@@ -2905,9 +2936,10 @@ const HAND_KEYS = ['left', 'right', 'desk']
 // shows partly off screen, as if carried near her face by a hand out of frame.
 let deskHand = null
 const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
-// Her rein riding (WildStriders hand): in the headset the left hand, as a rider holds it, unless only the right is empty; on the desktop the desk hand.
-function reinHand(out) {
+// Her rein (WildStriders hand): on the desktop the desk hand; in the headset the hand `key` that took a led one's, and riding the left hand, as a rider holds it, unless only the right is empty.
+function reinHand(out, key) {
   if (!renderer.xr.isPresenting) return deskHand.getWorldPosition(out)
+  if (key === 'left' || key === 'right') return (key === 'left' ? leftGrip : rightGrip).getWorldPosition(out)
   const left = hands.holding('left') === null || hands.holding('right') !== null
   return (left ? leftGrip : rightGrip).getWorldPosition(out)
 }
@@ -2981,6 +3013,7 @@ const villageSeed = () => keyHash(cameInBy.key)
 // The village doors (DESIGN.md §30, entrances.js PORTAL): where the step began, the mouths in reach, whether it was a teleport, and the door she stands in, so a mouth takes her once a visit.
 const portalFrom = new THREE.Vector3()
 const portalSites = []
+const teleportSites = []
 let portalBlink = false
 let portalIn = null
 // The house she has gone into (design/30-leafkin.md, Interiors; design/38-town-interiors.md), or null: its entry (RoomProps.entries, or townDoor's with `town` { t, i }), the step before its door she comes back out to, the rolled room, its view, its residents, the door inside, and the walk its own stands in for while she is in.
@@ -3031,7 +3064,7 @@ const questToggles = {
   water: true, reflections: true, aurora: true, clouds: true, precip: true, fire: true, sound: true,
   // Off until the summit wreaths are redone; the menu row still turns them on.
   wreaths: false,
-  critterTint: false, mirror: false, terrainWire: false, roadLines: false,
+  critterTint: false, mirror: false, terrainWire: false, roadLines: false, obstacleWire: false,
   wind: true, treeTiers: true, treeCutout: true,
   // See QUEST_SETTING_ROWS.
   teleport: true, standHeight: true,
@@ -3041,6 +3074,8 @@ const _eyeDir = new THREE.Vector3()
 
 const perfTrace = new PerfTrace({
   camera,
+  spikes: () => spikes,
+  gpuTake: () => gpuTimer.take(),
   toggles: questToggles,
   setToggle: (key, on) => { if (questToggles[key] !== on) activateQuestButton(key) },
   anyPress: () => ['left', 'right'].some((hand) => Object.values(input.state[hand].buttons).some((b) => b.justPressed)),
@@ -3653,7 +3688,7 @@ function townInside(t, i) {
 async function openTownHouse(t, i) {
   const b = townPlan.towns[t].buildings[i]
   const cellar = caveSites.cellarOf.has(t * 256 + i) ? caveSites.cellarOf.get(t * 256 + i) : null
-  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, shop: b.trade === 'potions' || b.trade === 'inn' ? b.trade : null, cellar: cellar !== null })
+  const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, wealth: b.wealth, shop: b.trade === 'potions' || b.trade === 'inn' ? b.trade : null, cellar: cellar !== null })
   const ox = b.x, oy = b.y + 250, oz = b.z
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
   scene.add(view.group)
@@ -3689,6 +3724,8 @@ function closeHouse() {
   if (!indoors) return
   indoors.view.dispose()
   indoors.residents.dispose()
+  for (const o of houseHidden) o.visible = true
+  houseHidden.clear()
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = indoors.outside
   if (player) player.setGround(walk)
@@ -3761,6 +3798,9 @@ let caveJob = 0
 // Underground, every scene child but these is hidden each frame (several layers set their own visibility), and caveHidden put back as she surfaces.
 const caveKeep = new Set()
 const caveHidden = new Set()
+// In a house, the same hiding: everything but its view and residents, put back by closeHouse.
+const houseKeep = new Set()
+const houseHidden = new Set()
 // The chalk lumps of the system meshed, for her hands; and a pen a hand, its strokes on the system she is in.
 const chalkStones = new ChalkStones()
 for (const m of chalkStones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-chalk' })
@@ -3937,19 +3977,37 @@ function closeCave() {
   cave = null
 }
 
+/** Fills `keep` with the scene children that draw under any roof: her rig, hands, held things, peers, effects, the lights and the panel. */
+function keepUnderRoof(keep) {
+  keep.add(rig).add(heldLayer).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi)
+  for (const d of [wildfire.flames, wildfire.torches]) if (d.group) keep.add(d.group)
+  if (questPanelGroup !== null) keep.add(questPanelGroup)
+  if (questPointer !== null) keep.add(questPointer.dot).add(questPointer.line)
+  if (teleportGfx !== null) keep.add(teleportGfx.ring).add(teleportGfx.arc)
+  return keep
+}
+
+/** Hides every visible scene child not in `keep` (several layers set their own visibility each frame, so this runs every frame), noting each in `hidden`. */
+function hideOutside(keep, hidden) {
+  for (const o of scene.children) {
+    if (!o.visible || keep.has(o)) continue
+    o.visible = false
+    hidden.add(o)
+  }
+}
+
+/** Each frame in a house, after every layer's own update: the overworld out of the draw, its view and residents kept. */
+function stepIndoors() {
+  houseKeep.clear()
+  keepUnderRoof(houseKeep).add(indoors.view.group).add(indoors.residents.group)
+  hideOutside(houseKeep, houseHidden)
+}
+
 /** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
 function stepCave(head, t) {
   caveKeep.clear()
-  caveKeep.add(rig).add(heldLayer).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi).add(caveBuild.room.group)
-  for (const d of [wildfire.flames, wildfire.torches]) if (d.group) caveKeep.add(d.group)
-  if (questPanelGroup !== null) caveKeep.add(questPanelGroup)
-  if (questPointer !== null) caveKeep.add(questPointer.dot).add(questPointer.line)
-  if (teleportGfx !== null) caveKeep.add(teleportGfx.ring).add(teleportGfx.arc)
-  for (const o of scene.children) {
-    if (!o.visible || caveKeep.has(o)) continue
-    o.visible = false
-    caveHidden.add(o)
-  }
+  keepUnderRoof(caveKeep).add(caveBuild.room.group)
+  hideOutside(caveKeep, caveHidden)
   caveBuild.room.update(head, submerged, t)
   stepChalk()
 }
@@ -6239,6 +6297,7 @@ window.v2spikes = spikes // console: `v2spikes.recent`
 const recordTrace = new RecordTrace({
   camera,
   spikes,
+  gpuTake: () => gpuTimer.take(),
   position: () => player.rig.position,
   flying: () => player.flying,
   context: () => perfTrace.host.context(),
@@ -6283,6 +6342,8 @@ let shownError = ''
 const mainRender = { triangles: 0, calls: 0 }
 // Main-thread ms a frame, meaned over CPU_FRAMES: `jsMs` is tick() (every layer's step), `renderMs` from tick()'s end to tock() (A-Frame's other ticks and renderer.render's CPU side). A frame MS well over their sum is waiting on the GPU. A GPU backlog can also stall inside renderer.render, so a large `renderMs` beside a small `jsMs` does not by itself say CPU.
 const CPU_FRAMES = 30
+// GPU ms per frame where the browser exposes a timer query; the traces record it beside the CPU laps (gpu-timer.js).
+const gpuTimer = new GpuTimer(renderer)
 const cpuTime = { tickAt: 0, tickEnd: 0, js: 0, render: 0, n: 0, jsMs: 0, renderMs: 0 }
 function bankCpuTime() {
   cpuTime.js += cpuTime.tickEnd - cpuTime.tickAt
@@ -6521,6 +6582,8 @@ const TELEPORT_STEP_S = 0.04
 const TELEPORT_SAMPLES = 40
 // The lob's step against stairs (aimTeleport).
 const TELEPORT_STAIR_M = 0.02
+// A door is a landing, not a wall: a lob that meets its opening -- `depth` m either side of its face, from `below` m under its sill to its top -- lands `land` m out from the face on her side, inside every portal's trigger, so it takes her through. Any new entrance or exit belongs in teleportDoors too, or aiming at it turns the arc red. A cave mouth's notch wall rises `mouthDepth` m behind its hole. A cave's exit has no face, only a dead end round its node: `exitH` m tall and `exitDepth` m either side.
+const TELEPORT_DOOR = { depth: 0.6, below: 0.3, land: 0.3, mouthDepth: 1.2, exitH: 3, exitDepth: EXIT_R + 1 }
 // A landing is refused where she could not have walked to: a slope past the
 // limiter's, or inside a trunk. The arc turns TELEPORT_NO to say so, and it is
 // the ONLY thing that turns it red. A landing far enough below her to cost
@@ -6661,6 +6724,55 @@ function portalTest() {
   bootRoom(out ? ROOMS.overworld : ROOMS.leafkin, out ? by : null).catch(reportRuntimeError)
 }
 
+/** The doors a lob along `dir` from her `feet` may land at (TELEPORT_DOOR): every door houseTest, portalTest and caveTest would take her through, within the reach, that the lob heads into from her side. */
+function teleportDoors(feet, dir) {
+  const doors = []
+  if (doorBusy || EDITOR_MODE) return doors
+  const add = (d, w, h, side, depth = TELEPORT_DOOR.depth) => {
+    if ((dir.x * d.nx + dir.z * d.nz) * side >= 0 || Math.hypot(d.x - feet.x, d.z - feet.z) > TELEPORT_RANGE * herScale() + depth) return
+    const x = d.x + d.nx * side * TELEPORT_DOOR.land, z = d.z + d.nz * side * TELEPORT_DOOR.land
+    doors.push({ x: d.x, y: d.y, z: d.z, nx: d.nx, nz: d.nz, half: w / 2, h, depth, land: { x, y: walk.heightAt(x, z, d.y), z } })
+  }
+  // An arch's black hole, out of its record (entrances.js sites).
+  const arch = (s, depth) => {
+    const [u0, u1, v0, v1] = holeBox()
+    add({ x: s.holeX, y: s.ay + v0 * s.scale, z: s.holeZ, nx: s.nx, nz: s.nz }, 2 * Math.max(-u0, u1) * s.scale, (v1 - v0) * s.scale, 1, depth)
+  }
+  if (cave !== null) {
+    // Each way out faces in, so she lobs at it from its +normal side; its box stands on the floor, up to 0.7 m under the node.
+    for (const d of caveBuild.plan.doors) add({ x: d.mx, y: walk.heightAt(d.mx, d.mz, d.my + CAVE_OY), z: d.mz, nx: d.dx, nz: d.dz }, 2 * EXIT_R, TELEPORT_DOOR.exitH, 1, TELEPORT_DOOR.exitDepth)
+    return doors
+  }
+  if (indoors) {
+    const r = indoors.room.door
+    if (indoors.town) add(indoors.door, r.w, r.h, -1)
+    else add(indoors.door, 2 * r.r, r.y + r.r, -1)
+  } else if (currentRoom.village && roomProps && villagers?.loaded) {
+    for (const e of roomProps.entries()) add(e, e.w, e.h, 1)
+  } else if (townsfolk && townsfolk.loaded) {
+    for (const t of townsfolk.alive.keys()) {
+      const town = townPlan.towns[t]
+      if (Math.hypot(feet.x - town.x, feet.z - town.z) > town.radius + 10) continue
+      for (let i = 0; i < town.buildings.length; i++) add(townDoor(t, i), town.buildings[i].plan.door.width, town.buildings[i].plan.door.height, 1)
+    }
+  }
+  if (indoors) return doors
+  teleportSites.length = 0
+  if (entrances) for (const s of entrances.sites(teleportSites)) arch(s, TELEPORT_DOOR.depth)
+  teleportSites.length = 0
+  if (caveMouths) for (const s of caveMouths.arches.sites(teleportSites)) arch(s, TELEPORT_DOOR.mouthDepth)
+  return doors
+}
+
+/** The landing of the door in `doors` whose opening (x, y, z) is in, or null. */
+function doorwayAt(doors, x, y, z) {
+  for (const d of doors) {
+    const out = (x - d.x) * d.nx + (z - d.z) * d.nz, side = (x - d.x) * d.nz - (z - d.z) * d.nx
+    if (Math.abs(out) <= d.depth && Math.abs(side) <= d.half && y >= d.y - TELEPORT_DOOR.below && y <= d.y + d.h) return d.land
+  }
+  return null
+}
+
 /**
  * Fly the lob from `origin` along `dir` (unit), write the arc, place the ring
  * where it meets the WALK surface -- the field plus the rock tops, the same
@@ -6675,7 +6787,7 @@ function portalTest() {
  * one crossing and the same bisection finds it to the same precision as the
  * ground's. Stopped at the reach the arc is over open air, so the ring goes on
  * the ground (or the water) below -- which is then asked the same questions as
- * any other landing.
+ * any other landing. A house door stops it too, and lands it (teleportDoors).
  */
 function aimTeleport(origin, dir) {
   if (player.swimming) {
@@ -6683,13 +6795,13 @@ function aimTeleport(origin, dir) {
     return
   }
   const { ring, arc } = ensureTeleportGfx()
-  // Riding, the strider hops: the lob is her walking one scaled by its reach (the throw's speed and every sample's time by its root, under the same gravity), grown from the stick's push, from the strider's feet, past its own body.
+  // Riding, the strider hops: the lob is her walking one scaled by its reach (the throw's speed and every sample's time by its root, under the same gravity), grown from the stick's push and cut short off its way (hopAim), from the strider's feet, past its own body.
   const mount = wildStriders && wildStriders.riding ? wildStriders.ridden : null
   const feet = mount ? mount.pose : player.originPosition()
   const k = herScale()
   const scale = mount ? wildStriders.hopReach : 1
   const full = TELEPORT_RANGE * k * scale
-  const reach = full * (mount ? teleportAllowance(Math.max(teleportFiredAt, teleportArmedAt), RIDE_GROW_S) : teleportAllowance(teleportFiredAt))
+  const reach = full * (mount ? teleportAllowance(Math.max(teleportFiredAt, teleportArmedAt), RIDE_GROW_S) * wildStriders.hopAim(dir.x, dir.z) : teleportAllowance(teleportFiredAt))
   const lob = Math.sqrt(scale)
   const vx = dir.x * TELEPORT_LOB * k * lob
   const vy = dir.y * TELEPORT_LOB * k * lob
@@ -6701,12 +6813,14 @@ function aimTeleport(origin, dir) {
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
   // Stone is asked as spans on the line, not as its topmost surface, so the
   // lob flies under an awning or an overhang and only stops IN stone.
+  const solid = (p) => walk.ceilingAt(p.x, p.z, p.y) === -Infinity || walk.stairAt(p.x, p.y, p.z) !== null || walk.obstacleAt(p.x, p.z, teleportObstacle, mount) !== null
+  // Thrown from inside a trunk, a body or a wall, the lob passes through it until it first comes clear, or nothing could get her out (pathClear waives the same).
+  let leaving = solid(at(0))
   const clear = (t) => {
     const p = at(t)
     const level = waterLevelAt(p.x, p.z)
     return p.y > walk.field.heightAt(p.x, p.z) && (level === null || p.y > level) && p.y >= floor &&
-      walk.ceilingAt(p.x, p.z, p.y) > -Infinity && walk.stairAt(p.x, p.y, p.z) === null &&
-      !walk.obstacleAt(p.x, p.z, teleportObstacle, mount) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
+      (leaving || !solid(p)) && Math.hypot(p.x - feet.x, p.z - feet.z) <= reach
   }
   // A sample's step is wider than a tread, so the lob is asked of stairs every few centimetres between samples, or it can pass through a flight's corner and land beyond it.
   const stairBefore = (t0, t1) => {
@@ -6714,8 +6828,10 @@ function aimTeleport(origin, dir) {
     for (let j = 1; j < n; j++) { const ts = t0 + ((t1 - t0) * j) / n, q = at(ts); if (walk.stairAt(q.x, q.y, q.z) !== null) return ts }
     return t1
   }
+  const doors = mount ? [] : teleportDoors(feet, dir)
   let count = 0
   let hit = null
+  let door = null
   let onWater = false
   let leap = null
   let stopped = false
@@ -6723,8 +6839,9 @@ function aimTeleport(origin, dir) {
   for (let i = 0; i < TELEPORT_SAMPLES; i++) {
     const t = i * stepS
     const p = at(t)
-    const ts = i > 0 ? stairBefore(prevT, t) : t
-    if (i > 0 && (ts < t || !clear(t))) {
+    const ts = i > 0 && !leaving ? stairBefore(prevT, t) : t
+    if (i > 0 && (door = doorwayAt(doors, p.x, p.y, p.z)) !== null) stopped = true
+    else if (i > 0 && (ts < t || !clear(t))) {
       let lo = prevT
       let hi = ts
       for (let k = 0; k < 12; k++) {
@@ -6734,7 +6851,9 @@ function aimTeleport(origin, dir) {
       }
       const end = at(hi)
       stopped = true
-      if (walk.obstacleAt(end.x, end.z, teleportObstacle, mount)) {
+      if ((door = doorwayAt(doors, end.x, end.y, end.z)) !== null) {
+        // Into a doorway's frame: the door's landing, below.
+      } else if (walk.obstacleAt(end.x, end.z, teleportObstacle, mount)) {
         // Bark: the last bead sits on the trunk, nothing to land on.
         p.x = end.x
         p.y = end.y
@@ -6760,8 +6879,16 @@ function aimTeleport(origin, dir) {
         }
       }
     }
+    if (door !== null) {
+      hit = { ...door }
+      p.x = hit.x
+      p.y = hit.y
+      p.z = hit.z
+    }
     arc.setMatrixAt(count++, teleportBead.makeScale(k, k, k).setPosition(p.x, p.y, p.z))
     if (stopped) break
+    // Only between samples, so the next crossing is bisected from a point clear of it.
+    if (leaving && !solid(p)) leaving = false
     prevT = t
   }
   arc.count = count
@@ -6774,7 +6901,8 @@ function aimTeleport(origin, dir) {
   // onto. Reach is not asked here: the flight already stopped at it. Every
   // height is asked from a foot height -- hers at the start, the landing's at
   // the end -- so stone over either is headroom, not a wall.
-  const standable = hit !== null && (mount ? wildStriders.hopOpen(hit.x, hit.z) :
+  // A door's landing is always one: the blink takes her through it.
+  const standable = door !== null || hit !== null && (mount ? wildStriders.hopOpen(hit.x, hit.z) :
     (onWater || hit.y <= feet.y || walk.slopeAt(hit.x, hit.z, undefined, hit.y) <= TELEPORT_MAX_SLOPE) &&
     !walk.obstacleAt(hit.x, hit.z, teleportObstacle) && player.pathClear(feet.x, feet.z, hit.x, hit.z, feet.y) ||
     // A free bed is a landing even where its edge is too steep a step: it lays her in it (stepVitals).
@@ -6983,8 +7111,7 @@ function readInput(dt) {
     if (st.left.buttons.STICK?.justPressed || st.right.buttons.STICK?.justPressed) player.recenterXR(renderer)
     if (questToggles.standHeight && renderer.xr.isPresenting) {
       const eyeY = (camera.getWorldPosition(_eyeDir).y - rig.position.y) / rig.scale.y
-      const lift = eyeLevel.update(dt, eyeY, Math.asin(Math.max(-1, Math.min(1, camera.getWorldDirection(_eyeDir).y))))
-      if (lift !== 0) player.liftXR(renderer, lift)
+      if (eyeLevel.update(dt, eyeY, Math.asin(Math.max(-1, Math.min(1, camera.getWorldDirection(_eyeDir).y))))) player.liftXR(renderer, eyeLevel.lift)
     }
     if (hands) {
       for (const hand of ['left', 'right']) {
@@ -7002,7 +7129,7 @@ function readInput(dt) {
       } else if (Math.abs(turn) < LOCOMOTION.snapExit) rideSnapArmed = true
       const push = -moveAxis
       if (!questToggles.teleport || wildStriders.afloat) {
-        moveInput.ride = { push, steer: 0 }
+        moveInput.ride = { push, steer: 0, face: true }
         hideTeleport()
         questTeleportArmed = false
         return
@@ -7399,6 +7526,7 @@ function tick() {
   spikes.lap('player')
   // A mouth she stepped into has just torn the room down under this frame.
   if (!ready) return
+  if (obstacleWire !== null) obstacleWire.update(cave !== null ? cave.walk : walk, player.originPosition(), herScale(), now)
 
   updateQuestPanel()
 
@@ -7433,7 +7561,7 @@ function tick() {
   // only moves the items to them.
   lures.length = 0
   hands.lures(lures)
-  if (cave === null) stepOverworld(dt, now)
+  if (cave === null && !indoors) stepOverworld(dt, now)
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
@@ -7514,7 +7642,7 @@ function tick() {
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
   spikes.lap('editor+panel')
-  if (questToggles.reflections && cave === null) probe.update(renderer, scene, headTmp)
+  if (questToggles.reflections && cave === null && !indoors) probe.update(renderer, scene, headTmp)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -7522,8 +7650,9 @@ function tick() {
   // The air hook on every frame: the linear ramp ends are wanted for every
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (questToggles.reflections && cave === null) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  if (questToggles.reflections && cave === null && !indoors) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
   if (cave !== null) stepCave(headTmp, now / 1000)
+  else if (indoors) stepIndoors()
   spikes.lap('probes')
 
   // A-Frame renders the scene itself after every registered component's tick()
@@ -7711,6 +7840,7 @@ AFRAME.registerComponent('v2-quest-tick', {
   tock: () => {
     spikes.lap('render')
     bankCpuTime()
+    gpuTimer.poll()
     mainRender.triangles = renderer.info.render.triangles
     mainRender.calls = renderer.info.render.calls
     perfTraceFrame.jsMs = cpuTime.tickEnd - cpuTime.tickAt

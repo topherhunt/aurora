@@ -272,11 +272,11 @@ export class Entrances {
 
   /**
    * Every resident mouth, for the portal (main.js) and the leafkin: `{ key,
-   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank, flankReach, screened }`
+   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, scale, state, flank, flankReach, screened }`
    * -- the point on the ground MOUTH_STEP_M + MOUTH_SINK_M out from the arch's
    * centre, the face's outward normal in the plane, the boulder's hull radius
    * about its centre, the arch's own position, the hole's plane on the ground
-   * line (MOUTH_SINK_M + HOLE.proud out from the arch), the site's own record,
+   * line (MOUTH_SINK_M + HOLE.proud out from the arch), the arch's and hole's scale, the site's own record,
    * which survives eviction, its screen's pieces (`{ kind, x, z, y, r, top,
    * cover, low }`: `r` the column she and the leafkin meet, `cover` the
    * radius it hides the arch within from `low` to `top`), how far from the
@@ -507,7 +507,7 @@ export class Entrances {
       state = {}
       this.memory.set(key, state)
     }
-    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, state, flank: [], flankReach: 0, shadow: null }
+    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, scale, state, flank: [], flankReach: 0, shadow: null }
     if (r > 0) this._screen(site, hx, hz)
     this.resident.set(key, site)
     this._restone(site)

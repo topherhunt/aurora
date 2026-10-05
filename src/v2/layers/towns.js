@@ -535,7 +535,7 @@ function layoutTown(site, index, all, ctx) {
     const [hi, lo] = seat(best.x, best.z, best.yaw, x0, x1, z0, z1)
     plan.plinthBottom = Math.min(plan.plinthBottom, lo - hi - 0.6)
     if (plan.steps) plan.steps.groundY = best.doorH - hi
-    buildings.push({ id: `${id}-b${buildings.length}`, kind, plan, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, door: best.door, prestige: k })
+    buildings.push({ id: `${id}-b${buildings.length}`, kind, plan, x: best.x, z: best.z, y: hi, yaw: best.yaw, box: best.box, door: best.door, prestige: k, wealth: plan.wealth })
     rMax = Math.max(rMax, best.r)
     const n = best.way.length - 1
     const pin = best.end.y - ground(best.end.x, best.end.z)
@@ -546,7 +546,10 @@ function layoutTown(site, index, all, ctx) {
   const planFor = (kind, k, roof = null) => {
     const p = 1 - k / Math.max(1, kinds.length - 1) + (rand() - 0.5) * 0.3
     const style = byPrestige(KINDS[kind].styles, WALLS_BY_PRESTIGE, p)
-    return planBuilding({ seed: hash32(seed, index, k, 31), kind, style, roof: roof ?? byPrestige(KINDS[kind].roofs, ROOFS_BY_PRESTIGE, p) })
+    const plan = planBuilding({ seed: hash32(seed, index, k, 31), kind, style, roof: roof ?? byPrestige(KINDS[kind].roofs, ROOFS_BY_PRESTIGE, p) })
+    // The household's means, 0 poorest to 1 richest, that furnishes its inside (design/40-house-wealth.md).
+    plan.wealth = Math.min(1, Math.max(0, p))
+    return plan
   }
   // Anywhere round the town, nearer the centre first.
   const around = (hz) => {

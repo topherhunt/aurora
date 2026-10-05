@@ -1073,6 +1073,19 @@ console.log('\nthe boot')
   }
   check(walkedOut === 0, 'walked at the wall on every bearing, she stays in the hull', `${walkedOut} of 12 bearings out`)
   check(landedPast === 0, 'no teleport lands past the wall', `${landedPast} of 12 bearings clear`)
+  // Stood inside a hut's stone or a trunk round it -- room-scale drift puts her there -- some teleport out is allowed: pathClear waives what she starts in until it comes clear.
+  let inside = 0, trapped = 0
+  for (const h of roomProps.props) {
+    for (let dx = -h.reach; dx <= h.reach; dx += 0.5) for (let dz = -h.reach; dz <= h.reach; dz += 0.5) {
+      const x = h.x + dx, z = h.z + dz, y = walk.heightAt(x, z)
+      if (walk.fits(x, z, y) && !walk.obstacleAt(x, z, {})) continue
+      inside++
+      let out = false
+      for (let b = 0; b < 16 && !out; b++) for (const d of [1, 2, 3]) if (player.pathClear(x, z, x + Math.cos(b * Math.PI / 8) * d, z + Math.sin(b * Math.PI / 8) * d, y)) { out = true; break }
+      if (!out) trapped++
+    }
+  }
+  check(inside > 0 && trapped === 0, 'stood inside a hut or a trunk, she can always teleport out', `${trapped} of ${inside} spots trapped`)
   player.teleportTo(arrive.x, arrive.z)
   rig.updateMatrixWorld(true)
   player.setFlying(true)

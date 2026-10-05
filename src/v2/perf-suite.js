@@ -16,6 +16,8 @@ export const DRILL_MIN_MS = 1
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
 export const MAX_DRILL = 6
 
+const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire']
+
 // Each group is measured twice (forward, then reverse); its `drill` states
 // once, and only when the group crossed DRILL_MIN_MS.
 export const GROUPS = [
@@ -41,15 +43,17 @@ export const GROUPS = [
     ],
   },
   {
-    name: 'sky', off: ['aurora', 'clouds', 'precip'],
+    name: 'sky+fire', off: ['aurora', 'clouds', 'precip', 'fire'],
     drill: [
       { name: 'aurora', off: ['aurora'] },
       { name: 'clouds', off: ['clouds'] },
       { name: 'precip', off: ['precip'] },
+      { name: 'fire', off: ['fire'] },
     ],
   },
   { name: 'water', off: ['water', 'reflections'], drill: [{ name: 'reflections', off: ['reflections'] }] },
-  { name: 'fire', off: ['fire'], drill: [] },
-  // The floor: what a frame costs with the world taken away.
-  { name: 'everything', off: ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire'], drill: [] },
+  // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and
+  // waitMs say where that cost is when no layer is drawing; `floor+terrain` puts only the ground back.
+  { name: 'everything', off: EVERYTHING, drill: [] },
+  { name: 'floor+terrain', off: EVERYTHING.filter((k) => k !== 'terrain'), drill: [] },
 ]

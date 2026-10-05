@@ -115,7 +115,7 @@ import {
   setCritterCard, tileSeed,
 } from './critters.js'
 import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet, solverStub } from './baked-puppet.js'
+import { makePuppet, rollTint, solverStub, tintFor } from './baked-puppet.js'
 import { TailLag } from './tail-lag.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
@@ -665,6 +665,7 @@ export class Dragons {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       d.puppet = p
+      tintFor(p, d.key, rollTint)
       this.batch.add(p.group)
       p.play(d.clip, d.cue)
     }

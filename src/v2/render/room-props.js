@@ -250,7 +250,7 @@ export class RoomProps {
         x, y, z, yaw, height, scale: height, sink, fiddle, table,
         r: HOUSE_BOUNDS.halfX * height, reach: built.reach, top: y + built.top,
         eave: built.eave.r, trunk: built.trunk.r,
-        door: { ...at(d.p), ...way(d.n), sill: d.sill, steps: d.steps, landing: d.landing },
+        door: { ...at(d.p), ...way(d.n), w: d.w, h: d.h, sill: d.sill, steps: d.steps, landing: d.landing },
         windows: built.windows.map((w) => ({ ...at(w.p), ...way(w.n) })),
       }
     })
@@ -276,11 +276,11 @@ export class RoomProps {
     }))
   }
 
-  /** Each house's doorway, on the face of its door at its sill's height `y`, with the way out and the house's height, for going inside, and where she stands on the top step coming back out: `[{ k, x, y, z, nx, nz, height, back: { x, y, z } }]`. */
+  /** Each house's doorway, on the face of its door at its sill's height `y`, with the way out, the doorway's width `w` and height `h`, and the house's height, for going inside, and where she stands on the top step coming back out: `[{ k, x, y, z, nx, nz, w, h, height, back: { x, y, z } }]`. */
   entries() {
     return this.props.map((h, k) => {
       const d = h.door, y = h.y + d.sill
-      return { k, x: d.x, y, z: d.z, nx: d.dx, nz: d.dz, height: h.height, back: { x: d.x + d.dx * SILL, y: h.y + d.landing, z: d.z + d.dz * SILL } }
+      return { k, x: d.x, y, z: d.z, nx: d.dx, nz: d.dz, w: d.w, h: d.h, height: h.height, back: { x: d.x + d.dx * SILL, y: h.y + d.landing, z: d.z + d.dz * SILL } }
     })
   }
 

@@ -37,19 +37,27 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] <name> didn't come back from an expedition in the caves. Assuming he didn't make it. Could you give them the peace of mind of helping them
 - [ ] **Vision for a mainline quest**
   - You start the game standing in a ceremonial circle in a dark nighttime forest, ringed by torch-lamps. Across from you stands a shadowy cloaked figure, facing away from you. He's mid-conversation with you. "Well. All that's ancient history now. And the why doesn't matter anymore. The dragons are returning, and they will be the end of human dominion on this land. You are one of the blessed few who could stop them, as silly as it sounds <chuckle>. (dramatic pause, and then he turns to face you -- it's a sketelon with glowing electric-blue eyes) And I am the only one who can stop you. <He walks up to you slowly, draws a dagger, and stabs you in the chest. Your vision flashes red, and then fades to black.
-  - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up.
+  - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up. Maybe you glimpse some of the creatures running off. And then you're alone with the crickets and fireflies in a dark forest.
 - Troubleshoot: it's really easy to get blocked in when teleport-walking around houses. The teleporter space placement should be more forgiving, ie obstacle hitboxes need to be tighter to their respective meshes. I might need an "obstacle boundary wireframes" debug view mode. And if you're "in" an obstacle, you should be able to teleport out to an available space freely.
-- Fix: Wild striders should not be saddled.
-- Fix: physically turning, while mounted on a strider, should cause it to turn gradually to match your facing direction. Teleporting to the side or back while mounted on a strider should not cause your camera to rotate -- that's disorienting -- instead, strider-mounted teleport motion in a direction that's not forward is massively lower-range, like, down to 10% of your forward range as you get further from the straight-line.
-- (partly fixed) Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
-  - [ ] Issue: currently your height adjusts after a cooldown period at a low framerate, and it's nauseating. Make it smoother, at least 30fps please.
-  - [ ] Issue: the hands are way below you when you're sitting down. Your hands need to follow your head height (ie your hands and head stay at the correct relative position as what they are in real life) rather than just your head floating up/down and your hands staying put.
-- [ ] Village houses should have a range of niceness. Props should be more rough and humble, along with walls and carpet colors etc, in line with the distance from the village center and the house's exterior prestige level appearance. Thatch log huts should have log-wall interiors.
+- [x] Fix: Wild striders should not be saddled.
+- [x] Fix: physically turning, while mounted on a strider, should cause it to turn gradually to match your facing direction. Teleporting to the side or back while mounted on a strider should not cause your camera to rotate -- that's disorienting -- instead, strider-mounted teleport motion in a direction that's not forward is massively lower-range, like, down to 10% of your forward range as you get further from the straight-line.
+- [x] (partly fixed) Need to figure out how to make the game sitting-friendly. Claire likes to play it seated; she needs to not be penalized for that. Maybe you're just always standing and you're a standard height so we don't penalize seated players. This eliminates "crouch and bend down" mechanics
+  - [x] Issue: currently your height adjusts after a cooldown period at a low framerate, and it's at a low stuttery framerate which is nauseating. Make it smoother, at least 30fps please.
+  - [x] Issue: the hands are way below you when you're sitting down. Your hands need to follow your head height (ie your hands and head stay at the correct relative position as what they are in real life) rather than just your head floating up/down and your hands staying put.
+- [x] Falling a long way when mounted on a strider doesn't appear to cause any damage.
+- [x] Village houses should have a range of niceness. Props should be more rough and humble, along with walls and carpet colors etc, in line with the distance from the village center and the house's exterior prestige level appearance. Thatch log huts should have log-wall interiors.
 - [ ] SNOWBOARDINGGGGGG
-- [ ] Falling a long way when mounted on a strider doesn't appear to cause any damage.
-- \[ \]
-- \[ \]
+- [ ] Caves
+  - [ ] Chunk border vertices need to line up with the closer chunk. So the chunk's nearer hem needs 2x more vertices than the rest of the chunk has.
+  - [ ] The cave entrance, rather than visibly being a rounded-off dead end, should "fold outward" and then be faced by a colored 2-tri plane that's white if it's daytime and dark blue if it's nighttime (blended between those depending on time of day) and the rock walls' lighting around 
+  - [ ] The rock walls should look more jagged and less rounded. Currently they're very rounded.
+  - [ ] Double the frequency of glowy mushrooms.
+  - [ ] Water surfaces should behave the way water in the overworld does: nearly opaque (slightly transparent when looking straight down), cubemap capture (just one, on the nearest water body)
 - [ ] Human villages
+  - [ ] Experiment with giving each NPC combinatorial accoutrements: hats, helmets, scarves, cloaks, etc.
+    - Claude recommends I test out 2 approaches: 
+    - (1) load up each NPC's "source mesh" with a bunch of overlapping parts and then hide the unworn parts per instance in the shader. Tag each vertex with which part it belongs to, and give each instance a bitmask of the parts it wears. The vertex shader squashes unworn parts down to nothing, so the GPU skips drawing them. Everything stays in one draw call, and each instance can show any mix. The cost is that every hidden vertex still runs the vertex shader, but an early exit makes that cheap. 
+    - (2) OR make each accoutrement a separate mesh and 
   - [ ] Human village, building exteriors: more visual variety. Vines crawling up, flowerpots hanging near windows, windowsills with flowerbed, etc. Carefully monitor tri budget.
   - [ ] Farmland. Crops, livestock.
   - [ ] Stables w striders.

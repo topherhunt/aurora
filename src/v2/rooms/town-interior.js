@@ -29,6 +29,15 @@ const HEARTH = { w: 1.9, d: 0.75 }
 const SOLID = 1, KEEP = 2, WIN = 4, LOW = 8, HUNG = 16
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+// The inside walls a house of exterior `style` has, `r` a roll in 0..1 and `rich` its means (design/40-house-wealth.md).
+function wallKind(style, r, rich) {
+  if (style === 'log') return 'logs'
+  if (style === 'stave') return r < 0.85 ? 'boards' : 'panel'
+  if (style === 'halfTimber') return r < 0.75 ? 'timbered' : 'boards'
+  if (style === 'stoneBase') return r < 0.2 + 0.5 * rich ? 'plaster' : r < 0.6 + 0.3 * rich ? 'panel' : 'boards'
+  if (style === 'masonry') return r < 0.6 - 0.3 * rich ? 'plaster' : 'panel'
+  throw new Error(`rollTownInterior: no inside walls for a ${style} house`)
+}
 const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.z0 < b.z1 && b.z0 < a.z1
 export const within = (r, x, z) => x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1
 export const grow = (r, d) => ({ x0: r.x0 - d, x1: r.x1 + d, z0: r.z0 - d, z1: r.z1 + d })
@@ -86,22 +95,28 @@ export function levelCeilingAt(room, level, x, z) {
 export const townRoomAt = (room, level, x, z) => room.rooms.find((r) => r.level === level && within(r.rect, x, z)) || null
 
 /**
- * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a stair down to a `cellar` cave or not. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
+ * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, its household's `wealth` 0 (poorest) to 1, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a stair down to a `cellar` cave or not. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
  */
-export function rollTownInterior({ seed, index, plan, shop = null, cellar = false }) {
+export function rollTownInterior({ seed, index, plan, wealth, shop = null, cellar = false }) {
   if (!Number.isInteger(seed) || !Number.isInteger(index) || !plan || !Array.isArray(plan.masses)) throw new Error('rollTownInterior: needs an integer seed and index and a building plan')
+  if (!(wealth >= 0 && wealth <= 1)) throw new Error(`rollTownInterior: wealth ${wealth} is not in 0..1`)
   if (shop !== null && shop !== 'potions' && shop !== 'inn') throw new Error(`rollTownInterior: no shop called ${shop}`)
   const rng = mulberry32(hash32(seed, index, plan.seed | 0, 0x7041))
   const range = (lo, hi) => lo + (hi - lo) * rng()
   const pick = (list) => list[Math.floor(rng() * list.length)]
   const chance = (p) => rng() < p
   const shuffle = (list) => { for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [list[i], list[j]] = [list[j], list[i]] } return list }
+  // The household's means (design/40-house-wealth.md): its wealth knocked about a little, each chance below running from the poorest's to the richest's. Its own rng, so wealth never moves the walls.
+  const wrng = mulberry32(hash32(seed, index, 0x3ea1))
+  const rich = clamp(wealth + (wrng() - 0.5) * 0.24, 0, 1)
+  const by = (poor, best) => poor + (best - poor) * rich
+  const means = { cushion: by(0.03, 0.75), arms: by(0, 0.6), bench: by(0.75, 0.2), armchair: by(0.03, 0.85), rocker: by(0.05, 0.9), candle: by(0.12, 1), rug: by(0.1, 1), posts: by(0, 0.55), wide: by(0.25, 0.7), fruit: by(0.3, 0.85), books: by(0, 0.6), letters: by(0.1, 1), dresser: by(0.25, 1), fine: by(0.15, 1), torch: by(0.95, 0.05), tools: by(1, 0.05), hanging: by(0.9, 0.3), glass: by(9, 4.5) }
 
   const main = plan.masses.find((m) => m.role === 'main')
   if (!main) throw new Error('rollTownInterior: the plan has no main mass')
   const inset = (m) => ({ x0: S * (m.cx - m.w / 2) + T, x1: S * (m.cx + m.w / 2) - T, z0: S * (m.cz - m.d / 2) + T, z1: S * (m.cz + m.d / 2) - T })
   const M = inset(main)
-  const room = { town: true, seed, index, plan, kind: plan.kind, shop, M }
+  const room = { town: true, seed, index, plan, kind: plan.kind, shop, M, wealth: rich, tin: by(0, 0.9), dyed: by(0.1, 1), rough: 1 - rich }
   const roofAt = (x, z) => townCeilingAt(room, x, z)
   const LM = lines(M)
   // The main walls by compass, as the junctions and the hearth name them.
@@ -474,6 +489,8 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
     else if (r.role === 'wing') r.kind = upper ? pick(['parlour', 'workroom', 'parlour', 'bedroom']) : pick(['bedroom', 'bedroom', 'workroom', 'parlour'])
     else r.kind = upper ? pick(['parlour', 'workroom', 'parlour']) : pick(['bedroom', 'parlour', 'workroom'])
   }
+  // A household that keeps no letters keeps its stores there instead; a shop keeps its accounts, and its counter can stand in a workroom.
+  if (shop === null) for (const r of rooms) if (r.kind === 'workroom' && wrng() >= means.letters) r.kind = 'store'
   if (!rooms.some((r) => r.kind === 'bedroom')) {
     const spare = rooms.find((r) => r.level === 1) || rooms.find((r) => r.kind !== 'hall' && r.kind !== 'kitchen')
     if (spare) spare.kind = 'bedroom'
@@ -497,7 +514,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
     if (rm.level === 1) edges.sort((a, b) => (a.axis === 'z' ? 0 : 1) - (b.axis === 'z' ? 0 : 1))
     let open = 0
     for (const e of edges) for (let u = e.lo + 0.05; u < e.hi; u += 0.1) if (!inJunction(e, u)) open += 0.1
-    const want = Math.max(1, Math.round(open / 5))
+    const want = Math.max(1, Math.round(open / means.glass))
     const has = (e) => windows.filter((w) => w.level === rm.level && within(grow(rm.rect, 0.05), w.x, w.z) && (!e || onLine(w, e))).length
     for (const e of edges) {
       const len = e.hi - e.lo, n = Math.max(1, Math.round(len / 4))
@@ -716,11 +733,30 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
         if (!clear(rm.level, band, WIN | HUNG | KEEP)) continue
         const at = pt(e, u, 0.12), y = Math.min(rm.floor + 1.75, levelCeilingAt(room, rm.level, at.x, at.z) - 0.5)
         if (y < rm.floor + 1.1) continue
-        items.push({ kind: 'sconce', x: at.x, y, z: at.z, yaw: e.yaw, room: rm.id })
-        candles.push({ x: at.x, y: y + 0.24, z: at.z, i: 0.9, room: rm.id, level: rm.level })
+        const torch = chance(means.torch)
+        items.push({ kind: 'sconce', x: at.x, y, z: at.z, yaw: e.yaw, torch, room: rm.id })
+        candles.push({ x: at.x, y: y + (torch ? 0.3 : 0.24), z: at.z, i: torch ? 1.2 : 0.9, torch, room: rm.id, level: rm.level })
         mark(rm.level, band, HUNG)
         return true
       }
+    }
+    return false
+  }
+  /** Farm tools stood against the wall nearest the front door. */
+  const toolRack = (rm) => {
+    const cands = atWall(rm, 0.45, 0.12, { tall: true, front: 0.4 }).filter((c) => ceilOver(rm, c.r) > 1.9).sort((a, b) => Math.hypot(a.x - doorIn.x, a.z - doorIn.z) - Math.hypot(b.x - doorIn.x, b.z - doorIn.z))
+    const set = shuffle(['fork', 'rake', 'hoe', 'flail', 'scythe', 'spade']).slice(0, 2 + Math.floor(rng() * 3))
+    for (const c of cands.slice(0, 8)) if (tx(rm.level, () => put(rm, { kind: 'tools', x: c.x, z: c.z, yaw: c.yaw, hx: 0.45, hz: 0.12, top: 1.75, set, hue: rng() }, c.r, 1.75, { keep: c.front, band: c.band }))) return true
+    return false
+  }
+  /** A bunch of onions, herbs or garlic hung from the ceiling, wherever it is high enough to walk under. */
+  const hang = (rm) => {
+    const R = rm.rect
+    for (let t = 0; t < 20; t++) {
+      const x = range(R.x0 + 0.4, R.x1 - 0.4), z = range(R.z0 + 0.4, R.z1 - 0.4), ceil = levelCeilingAt(room, rm.level, x, z)
+      if (ceil - rm.floor < 2.6) continue
+      items.push({ kind: 'hanging', x, y: ceil, z, drop: Math.min(0.7, ceil - rm.floor - 2.0), load: pick(['onions', 'herbs', 'garlic']), yaw: range(0, 2 * Math.PI), hue: rng(), room: rm.id })
+      return true
     }
     return false
   }
@@ -766,7 +802,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
         put(rm, { kind: 'table', x: at.x, z: at.z, yaw, hx: hl, hz: hw, top, legs: pick(['trestle', 'post']), hue: rng() }, footprint(at.x, at.z, yaw, hl, hw), BLOCK, { keep: rect(at.x - gx, at.x + gx, at.z - gz, at.z + gz) })
         for (const s of [-1, 1]) {
           const k = Math.max(1, Math.floor((2 * hl - 0.1) / 0.62))
-          const bench = chance(0.35)
+          const bench = chance(means.bench)
           const look = [-side[0] * s, -side[1] * s]
           if (bench) {
             const c = { x: at.x + side[0] * s * (hw + 0.3), z: at.z + side[1] * s * (hw + 0.3) }
@@ -775,7 +811,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
           for (let i = 0; i < k; i++) {
             const u = -hl + (2 * hl * (i + 0.5)) / k
             const c = { x: at.x + ax[0] * u + side[0] * s * (hw + 0.3), z: at.z + ax[1] * u + side[1] * s * (hw + 0.3) }
-            if (!bench) put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
+            if (!bench) put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion) ? rng() : null, hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
             seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * STAND, z: c.z - look[1] * STAND })
             const p = { x: at.x + ax[0] * u + side[0] * s * (hw - 0.2), z: at.z + ax[1] * u + side[1] * s * (hw - 0.2) }
             if (chance(0.8)) thing(rm, 'plate', p.x, y, p.z)
@@ -786,17 +822,17 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
           if (!chance(0.7)) continue
           const look = [-ax[0] * s, -ax[1] * s]
           const c = { x: at.x + ax[0] * s * (hl + 0.32), z: at.z + ax[1] * s * (hl + 0.32) }
-          put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, arms: chance(0.4), hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
+          put(rm, { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion) ? rng() : null, arms: chance(means.arms), hue: rng() }, rect(c.x - 0.22, c.x + 0.22, c.z - 0.22, c.z + 0.22), 0.46)
           seat(rm, c.x, c.z, 0.46, look, { x: c.x - look[0] * STAND, z: c.z - look[1] * STAND })
         }
-        if (chance(0.75)) thing(rm, 'fruitbowl', at.x, y, at.z, { n: 4 + Math.floor(rng() * 5) })
+        if (chance(means.fruit)) thing(rm, 'fruitbowl', at.x, y, at.z, { n: 4 + Math.floor(rng() * 5) })
         const sticks = hl > 1.05 ? [-0.55, 0.55] : [chance(0.5) ? -0.45 : 0.45]
-        for (const u of sticks) candle(rm, at.x + ax[0] * u * hl, y, at.z + ax[1] * u * hl, 'stick', 0.75)
+        for (const u of sticks) if (chance(means.candle)) candle(rm, at.x + ax[0] * u * hl, y, at.z + ax[1] * u * hl, 'stick', 0.75)
         if (chance(0.5)) thing(rm, 'jug', at.x + ax[0] * hl * -0.25 + side[0] * 0.12, y, at.z + ax[1] * hl * -0.25 + side[1] * 0.12)
         if (chance(0.4)) thing(rm, 'loaf', at.x + ax[0] * hl * 0.25 - side[0] * 0.1, y, at.z + ax[1] * hl * 0.25 - side[1] * 0.1)
       })
       if (!ok) continue
-      if (chance(0.45)) rug(rm, at.x, at.z, gx + 0.1, gz + 0.1)
+      if (chance(0.45 * means.rug)) rug(rm, at.x, at.z, gx + 0.1, gz + 0.1)
       return at
     }
     return null
@@ -809,12 +845,12 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
     const { c } = got, look = [-c.e.ix, -c.e.iz], y = rm.floor + 0.78
     for (const s of [-0.3, 0.3]) {
       const ch = pt(c.e, c.u + s, 0.82 + 0.32), p = pt(c.e, c.u + s, 0.6)
-      put(rm, { kind: 'chair', x: ch.x, z: ch.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }, rect(ch.x - 0.22, ch.x + 0.22, ch.z - 0.22, ch.z + 0.22), 0.46)
+      put(rm, { kind: 'chair', x: ch.x, z: ch.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion) ? rng() : null, hue: rng() }, rect(ch.x - 0.22, ch.x + 0.22, ch.z - 0.22, ch.z + 0.22), 0.46)
       seat(rm, ch.x, ch.z, 0.46, look, { x: ch.x - look[0] * 0.65, z: ch.z - look[1] * 0.65 })
       thing(rm, 'plate', p.x, y, p.z)
     }
-    { const p = pt(c.e, c.u, 0.25); candle(rm, p.x, y, p.z, 'stick', 0.75) }
-    if (chance(0.6)) { const p = pt(c.e, c.u - 0.45, 0.3); thing(rm, 'fruitbowl', p.x, y, p.z, { n: 3 + Math.floor(rng() * 4) }) }
+    if (chance(means.candle)) { const p = pt(c.e, c.u, 0.25); candle(rm, p.x, y, p.z, 'stick', 0.75) }
+    if (chance(means.fruit * 0.8)) { const p = pt(c.e, c.u - 0.45, 0.3); thing(rm, 'fruitbowl', p.x, y, p.z, { n: 3 + Math.floor(rng() * 4) }) }
   })
 
   const worktable = (rm) => {
@@ -830,12 +866,12 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       const p = pt(c.e, c.u + s, 0.36)
       thing(rm, pick(['bowl', 'loaf', 'crock', 'cabbage', 'board', 'jar']), p.x, y, p.z)
     }
-    if (chance(0.6)) { const p = pt(c.e, c.u + item.hx - 0.12, 0.2); candle(rm, p.x, y, p.z, 'dish', 0.7) }
+    if (chance(0.6 * means.candle)) { const p = pt(c.e, c.u + item.hx - 0.12, 0.2); candle(rm, p.x, y, p.z, 'dish', 0.7) }
   }
 
   /** A bed head to a wall of `rm`, kept clear down one side and past its foot (a `cot` is shorter, its foot to the far wall); its spot's `stands` are every side that was clear, then the foot, for the reach test to choose from. */
   const bed = (rm, b, cot = false) => {
-    const wid = b === 0 && !cot && chance(0.5) ? 1.45 : 1.0, len = cot ? 1.9 : 2.05, top = 0.55, front = cot ? 0 : 0.5
+    const wid = b === 0 && !cot && chance(means.wide) ? 1.45 : 1.0, len = cot ? 1.9 : 2.05, top = 0.55, front = cot ? 0 : 0.5
     const cands = shuffle(atWall(rm, wid / 2, len / 2, { front })).filter((c) => ceilOver(rm, c.r) >= 1.4)
     for (const c of cands.slice(0, 16)) {
       const pillow = [c.e.ix * -1, c.e.iz * -1], acr = [pillow[1], -pillow[0]]
@@ -850,7 +886,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       const sd = sides.find((d) => tall(d.mid)) || sides[0]
       const yaw = c.yaw + Math.PI
       const foot = { x: c.x - pillow[0] * (len / 2 + 0.3), z: c.z - pillow[1] * (len / 2 + 0.3) }
-      const item = { kind: 'bed', x: c.x, z: c.z, yaw, len, wid, top, blanket: rng(), pillows: wid > 1.2 ? 2 : 1, posts: chance(0.3), hue: rng() }
+      const item = { kind: 'bed', x: c.x, z: c.z, yaw, len, wid, top, blanket: rng(), pillows: wid > 1.2 ? 2 : 1, posts: chance(means.posts), hue: rng() }
       const ok = tx(rm.level, () => {
         put(rm, item, c.r, top, { keep: sd.keep })
         spots.push({ kind: 'bed', x: c.x, z: c.z, top: rm.floor + top, floor: rm.floor, yaw, len, wid, lookX: Math.sin(yaw), lookZ: Math.cos(yaw), standX: sd.mid.x, standZ: sd.mid.z, stands, level: rm.level, room: rm.id })
@@ -861,8 +897,8 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       if (clear(rm.level, fr, SOLID | KEEP) && ceilOver(rm, fr) > 0.9) tx(rm.level, () => put(rm, { kind: 'chest', x: foot.x, z: foot.z, yaw: c.yaw + Math.PI, hx: Math.min(0.45, wid / 2 - 0.05), hz: 0.24, top: 0.5, hue: rng() }, fr, 0.5))
       const st = { x: c.x - acr[0] * sd.s * (wid / 2 + 0.28) + pillow[0] * (len / 2 - 0.3), z: c.z - acr[1] * sd.s * (wid / 2 + 0.28) + pillow[1] * (len / 2 - 0.3) }
       const sr = rect(st.x - 0.18, st.x + 0.18, st.z - 0.18, st.z + 0.18)
-      if (clear(rm.level, sr, SOLID | KEEP) && ceilOver(rm, sr) > 1.0 && tx(rm.level, () => put(rm, { kind: 'stool', x: st.x, z: st.z, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, sr, 0.5))) candle(rm, st.x, rm.floor + 0.5, st.z, 'dish', 0.7)
-      if (chance(0.5)) rug(rm, sd.mid.x, sd.mid.z, Math.abs(acr[0]) > 0.5 ? 0.45 : 0.8, Math.abs(acr[0]) > 0.5 ? 0.8 : 0.45)
+      if (clear(rm.level, sr, SOLID | KEEP) && ceilOver(rm, sr) > 1.0 && tx(rm.level, () => put(rm, { kind: 'stool', x: st.x, z: st.z, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, sr, 0.5)) && chance(means.candle)) candle(rm, st.x, rm.floor + 0.5, st.z, 'dish', 0.7)
+      if (chance(0.5 * means.rug)) rug(rm, sd.mid.x, sd.mid.z, Math.abs(acr[0]) > 0.5 ? 0.45 : 0.8, Math.abs(acr[0]) > 0.5 ? 0.8 : 0.45)
       return true
     }
     return false
@@ -876,7 +912,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       if (clear(0, grow(r, 0.02), SOLID | KEEP) && tx(0, () => put(rm, { kind: 'logpile', x: p.x, z: p.z, yaw: L.yaw, hx: 0.32, hz: 0.2, top: 0.4, hue: rng() }, r, 0.4))) break
     }
     for (const s of [1, -1]) {
-      const arm = chance(0.5), half = arm ? 0.45 : 0.22
+      const arm = chance(means.armchair * 0.6), half = arm ? 0.45 : 0.22
       for (let t = 0; t < 10; t++) {
         const u = hearth.u + s * (HEARTH.w / 2 + 0.15 + half + range(0, 0.4)), d = half + 0.4 + range(0.1, 0.6)
         // She stands to sit from the room side: between the chair and the fire is within a body of the hearth.
@@ -884,7 +920,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
         const f = hearth.fire, n = Math.hypot(f.x - c.x, f.z - c.z), look = [(f.x - c.x) / n, (f.z - c.z) / n]
         const r = rect(c.x - half, c.x + half, c.z - half, c.z + half)
         if (!clear(0, r, SOLID | KEEP) || !within(rm.rect, c.x, c.z)) continue
-        const item = arm ? { kind: 'armchair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: half, hz: half, top: 0.45, hue: rng() } : { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.6) ? rng() : null, hue: rng() }
+        const item = arm ? { kind: 'armchair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: half, hz: half, top: 0.45, hue: rng() } : { kind: 'chair', x: c.x, z: c.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion) ? rng() : null, hue: rng() }
         if (tx(0, () => { put(rm, item, r, item.top); seat(rm, c.x, c.z, item.top, look, stand) })) break
       }
     }
@@ -893,7 +929,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
   const dress = (rm, it, wash) => {
     const y = rm.floor + it.top, at = (s) => ({ x: it.x + s * Math.cos(it.yaw), z: it.z - s * Math.sin(it.yaw) })
     if (wash) { thing(rm, 'bowl', it.x, y, it.z); const p = at(0.14); thing(rm, 'jug', p.x, y, p.z); return }
-    if (chance(0.5)) { const p = at(-0.1); candle(rm, p.x, y, p.z, 'stick', 0.7) }
+    if (chance(0.6 * means.candle)) { const p = at(-0.1); candle(rm, p.x, y, p.z, 'stick', 0.7) }
     const p = at(0.1)
     thing(rm, pick(['jug', 'books', 'bowl', 'mug']), p.x, y, p.z, { n: 2 + Math.floor(rng() * 2) })
   }
@@ -906,11 +942,11 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
   const wallChair = (rm) => {
     let got = null
     const ok = tx(rm.level, () => {
-      got = standing(rm, 'chair', 0.22, 0.22, 0.46, { cushion: chance(0.5) ? rng() : null }, { front: 0.6 })
+      got = standing(rm, 'chair', 0.22, 0.22, 0.46, { cushion: chance(means.cushion) ? rng() : null }, { front: 0.6 })
       if (!got) return false
       seat(rm, got.c.x, got.c.z, 0.46, [got.c.e.ix, got.c.e.iz], pt(got.c.e, got.c.u, 0.96))
     })
-    if (ok && chance(0.4)) {
+    if (ok && chance(0.4 * means.fine)) {
       const { e, u } = got.c
       for (const s of shuffle([0.55, -0.55])) {
         const p = pt(e, u + s, 0.27), r = footprint(p.x, p.z, e.yaw, 0.25, 0.25), it = { kind: 'sidetable', x: p.x, z: p.z, yaw: e.yaw, hx: 0.25, hz: 0.25, top: 0.62, hue: rng() }
@@ -927,7 +963,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       if (n < 0.5) continue
       const look = [(mx - x) / n, (mz - z) / n], r = rect(x - 0.22, x + 0.22, z - 0.22, z + 0.22), stand = { x: x + look[0] * 0.6, z: z + look[1] * 0.6 }
       if (!clear(rm.level, grow(r, 0.05), SOLID | KEEP) || ceilOver(rm, r) < 1.0 || levelCeilingAt(room, rm.level, stand.x, stand.z) - rm.floor < HEAD) continue
-      const item = { kind: 'chair', x, z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.5) ? rng() : null, hue: rng() }
+      const item = { kind: 'chair', x, z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion) ? rng() : null, hue: rng() }
       if (tx(rm.level, () => { put(rm, item, r, 0.46); seat(rm, x, z, 0.46, look, stand) })) return true
     }
     return false
@@ -955,7 +991,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
   }
   const SEATS = ['chair', 'armchair', 'rocker', 'bench']
   const seats = (rm) => items.filter((it) => it.room === rm.id && SEATS.includes(it.kind)).length
-  const SMALL = ['potion', 'candle', 'plate', 'mug', 'bowl', 'jug', 'loaf', 'fruitbowl', 'parchment', 'scroll', 'inkpot', 'books', 'rug', 'pot', 'jar', 'crock', 'cabbage', 'board']
+  const SMALL = ['potion', 'candle', 'plate', 'mug', 'bowl', 'jug', 'loaf', 'fruitbowl', 'parchment', 'scroll', 'inkpot', 'books', 'rug', 'pot', 'jar', 'crock', 'cabbage', 'board', 'hanging']
   const EXTRA = {
     hall: ['sidetable', 'basket', 'pegrail', 'chest', 'bench', 'barrel'],
     kitchen: ['basket', 'sack', 'barrel', 'crate', 'pegrail', 'stool'],
@@ -973,16 +1009,23 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
     bench: wallBench,
     barrel: (rm) => tucked(rm, 'barrel', 0.3, 0.9),
     sack: (rm) => tucked(rm, 'sack', 0.25, 0.5),
+    bucket: (rm) => tucked(rm, 'bucket', 0.15, 0.32),
     crate: (rm) => { const s = range(0.42, 0.55); return tucked(rm, 'crate', s / 2, s, { s, stack: 1 }) },
     stool: (rm) => loose(rm, 'stool', 0.18, 0.45),
     bookcase: (rm) => standing(rm, 'bookcase', 0.5, 0.18, 2.0, {}, { front: 0.7 }),
     scrollbin: (rm) => tucked(rm, 'scrollbin', 0.24, 0.6),
     press: (rm) => standing(rm, 'press', 0.6, 0.3, 1.95, {}, { front: 0.7 }),
   }
+  // A household without the means for fine furniture makes do with plainer things.
+  const FINE = ['bookcase', 'press', 'sidetable', 'washstand']
+  const POOR = { hall: ['sack', 'bucket', 'basket'], kitchen: ['bucket', 'sack', 'basket'], bedroom: ['sack', 'basket'], store: ['bucket', 'sack'], parlour: ['basket', 'sack'], workroom: ['crate', 'sack'] }
   /** More of what the room is for, until it holds about a piece to every 4 m². */
   const fill = (rm) => {
     const want = Math.ceil(area(rm.rect) * 0.25)
-    for (let t = 0; t < 10 && items.filter((it) => it.room === rm.id && !SMALL.includes(it.kind)).length < want; t++) ADD[pick(EXTRA[rm.kind])](rm)
+    for (let t = 0; t < 10 && items.filter((it) => it.room === rm.id && !SMALL.includes(it.kind)).length < want; t++) {
+      const k = pick(EXTRA[rm.kind])
+      ADD[FINE.includes(k) && !chance(means.fine) ? pick(POOR[rm.kind]) : k](rm)
+    }
   }
 
   /** The shop's counter (the potion master's, or an inn's bar): standing free along a wall, as near the front door as it goes, in the hall, or with `anywhere` failing that another room downstairs or a short counter; the keeper's lane behind it open at one end, its wares (bottles, or mugs and jugs) on its top and shelves of them behind. Only the counter itself must miss the doors' keep-clear lanes, which fill a small hall. */
@@ -1040,10 +1083,11 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       // An inn's taproom takes tables until its floor is full: a table tries only a dozen spots, so one miss is not yet full.
       if (shop === 'inn') { for (let n = 0, miss = 0; n < 8 && miss < 4;) if (table(rm, 0.12)) n++; else miss++ }
       else if (many) { table(rm, 0.13); if (chance(0.5)) table(rm, 0.12) }
-      standing(rm, 'dresser', range(0.6, 0.8), 0.26, range(1.8, 2.0), { load: 'plates' }, { front: 0.8 })
+      if (chance(means.tools)) toolRack(rm)
+      if (!chance(means.dresser) || !standing(rm, 'dresser', range(0.6, 0.8), 0.26, range(1.8, 2.0), { load: 'plates' }, { front: 0.8 })) shelf(rm)
       shelf(rm)
       if (chance(0.5)) shelf(rm)
-      if (chance(0.4)) { const a = corner(rm, 'armchair', 0.45, 0.45); if (a) seat(rm, a.item.x, a.item.z, 0.45, a.look, { x: a.item.x + a.look[0] * 0.75, z: a.item.z + a.look[1] * 0.75 }) }
+      if (chance(0.5 * means.armchair)) { const a = corner(rm, 'armchair', 0.45, 0.45); if (a) seat(rm, a.item.x, a.item.z, 0.45, a.look, { x: a.item.x + a.look[0] * 0.75, z: a.item.z + a.look[1] * 0.75 }) }
       if (rm.hearth) furnish.kitchen(rm, true)
     },
     kitchen(rm, shared = false) {
@@ -1056,21 +1100,22 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       for (let i = 0, n = shared ? 1 : 1 + Math.floor(rng() * 3); i < n; i++) tucked(rm, 'sack', 0.25, 0.5)
       shelf(rm)
       if (!shared) { shelf(rm); if (chance(0.6)) loose(rm, 'stool', 0.18, 0.45) }
-      rug(rm, hearth.cook.x, hearth.cook.z, hearth.axis === 'x' ? 0.9 : 0.6, hearth.axis === 'x' ? 0.6 : 0.9)
+      if (chance(means.hanging)) for (let i = 0, n = 1 + Math.floor(rng() * 3); i < n; i++) hang(rm)
+      if (chance(means.rug)) rug(rm, hearth.cook.x, hearth.cook.z, hearth.axis === 'x' ? 0.9 : 0.6, hearth.axis === 'x' ? 0.6 : 0.9)
     },
     parlour(rm) {
-      const a = corner(rm, 'armchair', 0.45, 0.45)
+      const a = chance(means.armchair) && corner(rm, 'armchair', 0.45, 0.45)
       if (a) {
         seat(rm, a.item.x, a.item.z, 0.45, a.look, { x: a.item.x + a.look[0] * 0.75, z: a.item.z + a.look[1] * 0.75 })
         const sx = a.item.x + a.look[1] * 0.75, sz = a.item.z - a.look[0] * 0.75
         const st = rect(sx - 0.18, sx + 0.18, sz - 0.18, sz + 0.18)
-        if (clear(rm.level, st, SOLID | KEEP) && tx(rm.level, () => put(rm, { kind: 'stool', x: sx, z: sz, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, st, 0.5))) candle(rm, sx, rm.floor + 0.5, sz, 'dish', 0.8)
+        if (clear(rm.level, st, SOLID | KEEP) && tx(rm.level, () => put(rm, { kind: 'stool', x: sx, z: sz, yaw: 0, r: 0.18, top: 0.5, hue: rng() }, st, 0.5)) && chance(means.candle)) candle(rm, sx, rm.floor + 0.5, sz, 'dish', 0.8)
       }
-      const r = corner(rm, 'rocker', 0.42, 0.45)
+      const r = chance(means.rocker) && corner(rm, 'rocker', 0.42, 0.45)
       if (r) seat(rm, r.item.x, r.item.z, 0.45, r.look, { x: r.item.x + r.look[0] * 0.75, z: r.item.z + r.look[1] * 0.75 })
-      if (chance(0.65)) { const R = rm.rect; rug(rm, (R.x0 + R.x1) / 2, (R.z0 + R.z1) / 2, range(0.9, 1.4), range(0.7, 1.1)) }
+      if (chance(0.65 * means.rug)) { const R = rm.rect; rug(rm, (R.x0 + R.x1) / 2, (R.z0 + R.z1) / 2, range(0.9, 1.4), range(0.7, 1.1)) }
       shelf(rm)
-      if (chance(0.4)) standing(rm, 'bookcase', 0.5, 0.18, 2.0, {}, { front: 0.7 })
+      if (chance(means.books)) standing(rm, 'bookcase', 0.5, 0.18, 2.0, {}, { front: 0.7 })
       if (chance(0.4)) standing(rm, 'chest', 0.45, 0.26, 0.5, {}, { front: 0.5 })
     },
     workroom(rm) {
@@ -1080,7 +1125,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
         solids[solids.length - 1].y1 = rm.floor + BLOCK
         const look = [-c.e.ix, -c.e.iz], ch = pt(c.e, c.u, 0.72 + 0.32)
         const r = rect(ch.x - 0.22, ch.x + 0.22, ch.z - 0.22, ch.z + 0.22)
-        if (tx(rm.level, () => put(rm, { kind: 'chair', x: ch.x, z: ch.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(0.4) ? rng() : null, hue: rng() }, r, 0.46))) {
+        if (tx(rm.level, () => put(rm, { kind: 'chair', x: ch.x, z: ch.z, yaw: Math.atan2(look[0], look[1]), hx: 0.22, hz: 0.22, top: 0.46, cushion: chance(means.cushion * 0.8) ? rng() : null, hue: rng() }, r, 0.46))) {
           seat(rm, ch.x, ch.z, 0.46, look, { x: ch.x - look[0] * 0.65, z: ch.z - look[1] * 0.65 }, 'read')
         }
         const y = rm.floor + item.top
@@ -1106,7 +1151,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
       const area = (rm.rect.x1 - rm.rect.x0) * (rm.rect.z1 - rm.rect.z0)
       const n = Math.min(most, area > 16 && chance(0.55) ? 2 : 1)
       for (let b = 0; b < n; b++) if (!bed(rm, b)) break
-      if (chance(0.45)) standing(rm, 'press', 0.6, 0.3, 1.95, {}, { front: 0.7 })
+      if (chance(0.2 + 0.4 * rich)) standing(rm, 'press', 0.6, 0.3, 1.95, {}, { front: 0.7 })
       if (chance(0.4)) shelf(rm)
     },
   }
@@ -1127,7 +1172,7 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
   }
   // A room whose walls are all taken gets a candlestick on whatever stands in it.
   const perch = (rm) => {
-    const it = items.find((it) => it.room === rm.id && ['dresser', 'chest', 'press', 'sidetable', 'worktable', 'counter', 'barrel', 'crate'].includes(it.kind))
+    const it = items.find((it) => it.room === rm.id && ['dresser', 'chest', 'press', 'sidetable', 'worktable', 'counter', 'barrel', 'crate', 'stool', 'bookcase'].includes(it.kind))
     if (!it) return false
     candle(rm, it.x, rm.floor + it.top, it.z, 'stick', 0.8)
     return true
@@ -1166,8 +1211,8 @@ export function rollTownInterior({ seed, index, plan, shop = null, cellar = fals
   Object.assign(room, {
     rise, cells: cells.map((c) => ({ role: c.role, r: c.r })), junctions: junctions.map(({ side, line, lo, hi, band, gap, cell, P }) => ({ side, line, lo, hi, band, gap, cell, P })),
     door, doorIn, hearth, partitions, doorways, windows, rooms, items, solids, candles, spots: kept,
-    floor: { kind: chance(0.55) ? 'plank' : 'flag', hue: rng(), tone: range(0.75, 1.15) },
-    wall: { kind: chance(0.6) ? 'boards' : 'panel', hue: rng(), tone: range(0.8, 1.15) },
+    floor: { kind: wrng() < by(0.9, -0.6) ? 'earth' : wrng() < 0.55 ? 'plank' : 'flag', hue: rng(), tone: range(0.75, 1.15) },
+    wall: { kind: wallKind(plan.style, wrng(), rich), hue: rng(), tone: range(0.8, 1.15) },
     bounds, R: Math.hypot(X1 - X0, Z1 - Z0) / 2,
     inside: [...floorRects[0], door.reveal],
   })

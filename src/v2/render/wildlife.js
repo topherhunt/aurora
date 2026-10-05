@@ -126,8 +126,8 @@
 // the skeletons are not -- plus one instanced draw call a species for every card
 // behind them. Each of those draws is a bone texture re-uploaded, so the mesh
 // range and not the herd is what the layer costs; the settled ones at least
-// share one material a species, which is why no animal wears a colour of its
-// own (puppet.js makePuppetMaterials). design/27-creature-pipeline.md has the
+// share one material a species (puppet.js makePuppetMaterials).
+// design/27-creature-pipeline.md has the
 // numbers.
 // ---------------------------------------------------------------------------
 
@@ -141,7 +141,7 @@ import {
   cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileKey, tileSeed, walkTiles,
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet } from './baked-puppet.js'
+import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -261,9 +261,9 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * animal needs something new to do, the first gait its pace home; `rate` is
  * the species' share of DENSITY; the size of a body is its length, the shipped
  * figure times `scale` times a roll of `vary` either way, and no two animals
- * are the same size. None of them wears a colour of its own: a skinned body
- * can only take one through a uniform and a uniform costs a material an animal
- * (puppet.js makePuppetMaterials). `lures` are the kinds of thing in a hand it
+ * are the same size. A baked body wears a colour of its own rolled along
+ * `tint` (tintRange), kept to its kind's coats; a skinned one cannot (puppet.js
+ * makePuppetMaterials). `lures` are the kinds of thing in a hand it
  * courts, `standoff` how near it follows one to, `follow` the gait it follows
  * at by how many metres behind it is (the first whose figure it is under), and
  * `court` what it does once it is there and the lure is not at its face.
@@ -275,18 +275,21 @@ export const SPECIES = [
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
     lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
+    tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.15, 0.9, 0.8]]), // greyer, brown, redder
   },
   {
     key: 'fox', prefix: 'fx', glb: CRITTER_GLB.fox, vary: 0.25, scale: 1.5, rate: 0.5,
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
     lures: ['fish', 'crab'], standoff: 1.2, follow: [['trot', 8], ['run', Infinity]], court: 'gaze',
+    tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.12, 0.85, 0.8]]),
   },
   {
     key: 'hare', prefix: 'hr', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
     gaits: [['hop', 6], ['bound', 4]],
     lures: ['carrot'], standoff: 0.6, follow: [['bound', Infinity]], court: 'frolic',
+    tint: tintRange([[1.05, 1.05, 1.06], [0.62, 0.62, 0.63], [0.78, 0.58, 0.4]]), // white, grey, brown
   },
 ]
 
@@ -1491,6 +1494,7 @@ export class Wildlife {
       const p = sp.freePuppets.pop()
       if (!p) { this.starved++; return null }
       c.puppet = p
+      tintFor(p, c.key, sp.tint)
       this.batch.add(p.group)
       // Joined where the step already is, so an animal that walks into range is not caught halfway through bowing into a graze it began a minute ago; a one-shot holds its last frame rather than wrapping.
       p.play(c.clip, c.cue, ONE_SHOT.has(c.clip) ? Math.min(offset, c.cycle - 1e-3) : offset)

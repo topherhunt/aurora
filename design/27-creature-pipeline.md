@@ -413,7 +413,7 @@ Orchestration lives in `workspace.mjs` rather than in the Vite plugin so a batch
 
 **Swap.** `?puppets=skinned` or `?puppets=baked` at load (remembered in localStorage `v2.puppets`), or the menu's "creature bodies" row, which rebuilds the room where she stands (ignored indoors). The gates that read a skinned Puppet's internals pin `setPuppetMode('skinned')`; `node tmp/skinned-gate.mjs scripts/check-x.mjs` runs any other gate skinned.
 
-**Given up.** Foot IK (planted feet do not conform to a slope), clip crossfades (a `play` cuts), and the solvers above. In exchange each body wears its own colour for free on the instance colour: baked hobs and leafkin roll one (`rollTint`) and share a single plain material.
+**Given up.** Foot IK (planted feet do not conform to a slope), clip crossfades (a `play` cuts), and the solvers above. In exchange each body wears its own colour for free on the instance colour: baked hobs, leafkin and dragons roll any light hue (`rollTint`), wildlife and striders one along their kind's natural coats (`tintRange`), each seeded by its key (`tintFor`), and all share a single plain material. A tier drawn short (a wild strider's bare body, its full one's buffers short of the tack) keeps its draw range in its batch.
 
 ## Adding a second vendor
 

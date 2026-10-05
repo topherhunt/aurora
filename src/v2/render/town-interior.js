@@ -1,4 +1,4 @@
-// A town house's inside, meshed from rollTownInterior (design/38-town-interiors.md): board walls cut for its doors and windows, a flag or plank floor, the roof's underside on its rafters, the upper floor on its joists, a slat stair, a stone hearth, and the furniture. One merged mesh per texture, lit by a per-vertex bake that stops at the walls: a room sees its own candles, windows and hearth, and its neighbours' only through the doorways between them. The group is set at the room's anchor; everything inside it is room-local metres.
+// A town house's inside, meshed from rollTownInterior (design/38-town-interiors.md, its means design/40-house-wealth.md): log, board, panelled or plastered walls cut for its doors and windows, a flag or plank floor, the roof's underside on its rafters, the upper floor on its joists, a slat stair, a stone hearth, and the furniture. One merged mesh per texture, lit by a per-vertex bake that stops at the walls: a room sees its own candles, windows and hearth, and its neighbours' only through the doorways between them. The group is set at the room's anchor; everything inside it is room-local metres.
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
@@ -12,17 +12,20 @@ const T = 0.15
 // Tessellation: the bake is per vertex, so a candle's pool needs vertices this close.
 const STEP = 0.25
 // Texture metres per repeat: floors and walls, the hearth's stones, the leaded panes.
-const FLOOR_M = 2.0, WALL_M = 2.0, STONE_M = 1.0, LEAD_M = 0.5
+const FLOOR_M = 2.0, WALL_M = 2.0, STONE_M = 1.0, LEAD_M = 0.5, EARTH_M = 0.6
 const MESHES = ['floor', 'plank', 'wall', 'stone', 'grain', 'linen', 'pages', 'window']
 
 // The bake (design/38 §Light). `amb` is the fill of a room with a window's worth of glass, `dark` the share of it a windowless room keeps; `bleed` of a brighter neighbour's fill comes through the doorway. A candle gives `candle` times its `i`, falling by e every `reach` metres, saturating at `cap`; the hearth is a candle of `fire` falling over `fireReach`. A doorway passes `door` of what reaches it on to the next room as a light of its own. Windows are leafkin's spill-and-beam over `spillM` and `beamM`, scaled by their glass. Under a table or a bed the fill falls to `under`.
-const SHADE = { amb: 0.2, dark: 0.3, bleed: 0.3, glass: 1.2, corner: 0.5, candle: 2.4, reach: 1.0, cap: 1.8, fire: 3.0, fireReach: 1.7, door: 0.45, doorReach: 1.3, spill: 2.0, spillM: 1.2, beamM: 1.6, under: 0.4 }
+const SHADE = { amb: 0.2, dark: 0.3, bleed: 0.3, glass: 1.2, corner: 0.5, candle: 2.4, reach: 1.0, torchReach: 1.6, cap: 1.8, fire: 3.0, fireReach: 1.7, door: 0.45, doorReach: 1.3, spill: 2.0, spillM: 1.2, beamM: 1.6, under: 0.4 }
 const PANE_LIT = [0.35, 0.1, 1.5]
 
 // Medieval country colours: oak and elm browns, pewter, iron, earthenware, dyed wool.
 const WOOD = (h, dl = 0) => rgb(0.065 + h * 0.035, 0.36 + h * 0.12, 0.2 + h * 0.13 + dl)
 const DARKWOOD = (h) => WOOD(h, -0.08)
 const WOOL = (h) => rgb([0.0, 0.03, 0.09, 0.3, 0.58, 0.62, 0.95][Math.floor(h * 7) % 7] + (h * 7 % 1) * 0.02, 0.38, 0.3)
+// Wool a household could not afford to dye: fleece browns, oatmeal, grey. `cloth` is dyed as often as the house has the means.
+const UNDYED = [rgb(0.08, 0.25, 0.36), rgb(0.1, 0.2, 0.55), rgb(0.07, 0.06, 0.42), rgb(0.06, 0.3, 0.26)]
+const cloth = (room, h) => ((h * 9.37) % 1 < room.dyed ? WOOL(h) : UNDYED[Math.floor(h * 4) % 4])
 const FRUIT = [rgb(0.01, 0.6, 0.38), rgb(0.2, 0.5, 0.42), rgb(0.12, 0.6, 0.48), rgb(0.85, 0.35, 0.25), rgb(0.07, 0.65, 0.45)]
 const SOOT = rgb(0.06, 0.1, 0.07)
 
@@ -124,10 +127,23 @@ function leadedTexture(n, seed) {
   })
 }
 
+/** Limewash over daub, mottled. */
+const plasterLum = (noise, fine, n) => (x, y) => 0.84 + 0.1 * noise(x / n * 8, y / n * 8) + 0.05 * (fine(x / n * 64, y / n * 64) - 0.5)
+function plasterTexture(n, seed) { return greyTexture(n, plasterLum(lattice(8, seed), lattice(64, seed + 1), n)) }
+/** Studs, a rail and a brace of dark oak through limewashed panels: two bays a repeat. */
+function timberedTexture(n, seed) {
+  const plaster = plasterLum(lattice(8, seed), lattice(64, seed + 1), n), grain = lattice(16, seed + 2), w = n * 0.07
+  return greyTexture(n, (x, y) => {
+    const bx = x % (n / 2), brace = Math.abs(bx - (y - n / 2)) / Math.SQRT2
+    const oak = bx < w || Math.abs(y - n * 0.5) < w / 2 || (y > n / 2 && x < n / 2 && brace < w / 2)
+    return oak ? 0.28 + 0.08 * grain(x / n * 4, y / n * 16) : plaster(x, y)
+  })
+}
+
 let made = null
 /** The house textures made in code, once; `shared` the leafkin interior's grain, linen and pages. */
 function houseTextures(shared) {
-  made ??= { plank: boardsTexture(256, 10, false, 0x91a7), flag: flagTexture(256, 0xf1a6), boards: boardsTexture(256, 8, true, 0xb0a2), panel: panelTexture(256, 0x9a7e), leaded: leadedTexture(128, 0x1ead) }
+  made ??= { plank: boardsTexture(256, 10, false, 0x91a7), flag: flagTexture(256, 0xf1a6), boards: boardsTexture(256, 8, true, 0xb0a2), panel: panelTexture(256, 0x9a7e), plaster: plasterTexture(128, 0x91a5), timbered: timberedTexture(256, 0x7b3e), leaded: leadedTexture(128, 0x1ead) }
   return { ...made, grain: shared.grain, linen: shared.linen, pages: shared.pages }
 }
 
@@ -201,6 +217,38 @@ const woodUV = (p, n) => (n[0] ? [p[2] / WOOD_M, p[1] / WOOD_M] : n[1] ? [p[0] /
 /** A hewn block in `F` from lo to hi, knocked `a` off square. */
 const hewn = (m, K, F, lo, hi, tint, a = 0.008) => slab(m, K.crook(F, a), lo, hi, tint, woodUV)
 
+/**
+ * Round logs laid in courses along `L` over the chinking behind them, set into the wall's depth so their fronts stand at its face: cut round the `holes`, stopped under `top(u)`, run on `over` past a corner into the next wall's logs. A poorer house's logs are thicker and less true (design/40-house-wealth.md).
+ */
+function logWall(M, L, u0, u1, top, holes, ys, room, rng, over) {
+  const rough = room.rough, c = 0.22 + 0.06 * rough, dc = -T + 0.01, ud = L.axis === 'x' ? [1, 0, 0] : [0, 0, 1], RING = 4
+  const a0 = u0 - over[0], a1 = u1 + over[1]
+  wallFace(M.stone, L, dc + c * 0.15, a0, a1, 0, top, holes, ys, rgb(0.09, 0.18, 0.22), { uvM: STONE_M })
+  for (let yc = c / 2; ; yc += c) {
+    const r = c * (0.5 + (rng() - 0.5) * 0.06 * rough), y = yc + (rng() - 0.5) * 0.02 * rough, ph = rng() * TAU
+    const tint = rgb(0.07 + rng() * 0.02, 0.36 - 0.1 * rough, 0.22 + rng() * 0.06 - 0.04 * rough)
+    const cut = holes.filter((h) => h.y0 < y + r && h.y1 > y - r)
+    const ok = (u) => top(u) - 0.02 > y + r && !cut.some((h) => u > h.u0 - 0.005 && u < h.u1 + 0.005)
+    if (!ok(a0) && !ok((a0 + a1) / 2) && y > Math.max(top(a0), top(a1), top((a0 + a1) / 2))) break
+    // Columns every STEP, plus each hole's edges, so a run stops flush at a window.
+    const us = [...new Set([a0, a1, ...cut.flatMap((h) => [h.u0 - 0.005, h.u1 + 0.005]).filter((u) => u > a0 && u < a1)])].sort((p, q) => p - q), cols = []
+    for (let i = 0; i + 1 < us.length; i++) { const k = Math.max(1, Math.ceil((us[i + 1] - us[i]) / STEP)); for (let j = 0; j < k; j++) cols.push(us[i] + ((us[i + 1] - us[i]) * j) / k) }
+    cols.push(a1)
+    const runs = []
+    for (const u of cols) { if (!ok(u)) { runs.push([]); continue } if (!runs.length) runs.push([]); runs[runs.length - 1].push(u) }
+    for (const run of runs.filter((q) => q.length > 1)) {
+      const rad = (u) => r * (1 + 0.05 * rough * Math.sin(u * 1.7 + ph)), at = (u, q) => { const p = pt(L, u, dc + rad(u) * Math.cos(q)); return [p.x, y + rad(u) * Math.sin(q), p.z] }
+      const q = (j) => -Math.PI / 2 + (Math.PI * j) / RING
+      M.grain.grid(run.length - 1, RING, (i, j) => ({ p: at(run[i], q(j)), n: add(inward(L, Math.cos(q(j))), [0, Math.sin(q(j)), 0]), uv: [run[i] / WOOD_M, (r * q(j)) / WOOD_M] }), tint, 1)
+      for (const [u, s] of [[run[0], -1], [run[run.length - 1], 1]]) {
+        const n = ud.map((v) => v * s), mid = pt(L, u, dc), o = M.grain.v([mid.x, y, mid.z], n, [0, 0], tint)
+        const ring = Array.from({ length: RING + 1 }, (_, j) => M.grain.v(at(u, q(j)), n, [Math.cos(q(j)) * 0.1, Math.sin(q(j)) * 0.1], tint))
+        for (let j = 0; j < RING; j++) M.grain.tri(o, ring[j], ring[j + 1])
+      }
+    }
+  }
+}
+
 /** The holes in the wall along `L` (a cell's line `name`): its windows, the front door, the doorways through to the other cells. */
 function holesOn(room, cell, name, L) {
   const on = (o) => o.axis === L.axis && Math.abs(o.at - L.at) < 0.01
@@ -214,8 +262,10 @@ function holesOn(room, cell, name, L) {
 }
 
 function buildShell(room, M, K, rng) {
-  const wallTint = (dl = 0) => rgb(0.07 + room.wall.hue * 0.05, 0.3 + room.wall.hue * 0.12, 0.3 * room.wall.tone + dl)
-  const floorTint = room.floor.kind === 'plank' ? rgb(0.07 + room.floor.hue * 0.04, 0.35, 0.28 * room.floor.tone) : rgb(0.08 + room.floor.hue * 0.06, 0.08 + room.floor.hue * 0.06, 0.42 * room.floor.tone)
+  const woodWall = (dl = 0) => rgb(0.07 + room.wall.hue * 0.05, 0.3 + room.wall.hue * 0.12, 0.3 * room.wall.tone + dl)
+  const wallTint = (dl = 0) => (room.wall.kind === 'plaster' || room.wall.kind === 'timbered' ? rgb(0.1 + room.wall.hue * 0.03, 0.2, 0.62 * room.wall.tone + dl) : woodWall(dl))
+  const floorTint = room.floor.kind === 'earth' ? rgb(0.07 + room.floor.hue * 0.03, 0.32, 0.5 * room.floor.tone) : room.floor.kind === 'plank' ? rgb(0.07 + room.floor.hue * 0.04, 0.35, 0.28 * room.floor.tone) : rgb(0.08 + room.floor.hue * 0.06, 0.08 + room.floor.hue * 0.06, 0.42 * room.floor.tone)
+  const floorM = room.floor.kind === 'earth' ? EARTH_M : FLOOR_M
   const timber = DARKWOOD(room.wall.hue)
   const ceilTint = rgb(0.07, 0.3, 0.2)
   // The roof's underside at the wall's foot, plus a little: it runs up behind the ceiling so no seam opens at a ridge.
@@ -224,8 +274,9 @@ function buildShell(room, M, K, rng) {
   room.cells.forEach((cell) => {
     const Ls = lines(cell.r), main = cell.role === 'main'
     for (const [name, L] of Object.entries(Ls)) {
-      const holes = holesOn(room, cell, name, L)
-      wallFace(M.wall, L, 0, L.lo, L.hi, 0, roofTop(L), holes, main && room.upper ? [room.U - SLAB, room.U] : [], wallTint())
+      const holes = holesOn(room, cell, name, L), ys = main && room.upper ? [room.U - SLAB, room.U] : []
+      if (room.wall.kind === 'logs') logWall(M, L, L.lo, L.hi, roofTop(L), holes, ys, room, rng, [T, T])
+      else wallFace(M.wall, L, 0, L.lo, L.hi, 0, roofTop(L), holes, ys, wallTint())
       for (const h of holes) {
         if (h.win) {
           reveal(M.wall, L, h, T, wallTint(-0.04))
@@ -237,11 +288,12 @@ function buildShell(room, M, K, rng) {
         } else if (h.depth > 0) reveal(M.wall, L, h, h.depth, wallTint(-0.04), { sill: false })
         if (!h.win && h.depth !== 0) frameAround(M, L, h, timber)
       }
-      // A skirting timber along the foot of the wall, broken at its doorways.
-      const gaps = holes.filter((h) => h.y0 < 0.1).sort((a, b) => a.u0 - b.u0)
-      let from = L.lo
-      for (const g of [...gaps, { u0: L.hi, u1: L.hi }]) {
-        if (g.u0 - from > 0.2) { const a = pt(L, from, 0.025), b = pt(L, g.u0, 0.025); beam(M.grain, [a.x, 0.07, a.z], [b.x, 0.07, b.z], 0.025, 0.07, timber) }
+      // A skirting timber along the foot of the wall, broken at its doorways. Logs instead get the floor run out under them, past the corners: they sit back in the wall's depth, and the floor stops at its face.
+      const logs = room.wall.kind === 'logs', gaps = holes.filter((h) => h.y0 < 0.1 && !(logs && h.door)).sort((a, b) => a.u0 - b.u0)
+      let from = logs ? L.lo - T : L.lo
+      for (const g of [...gaps, logs ? { u0: L.hi + T, u1: L.hi + T } : { u0: L.hi, u1: L.hi }]) {
+        if (logs && g.u0 > from) { const a = pt(L, from, 0), b = pt(L, g.u0, -T); sheet(M.floor, { x0: Math.min(a.x, b.x), x1: Math.max(a.x, b.x), z0: Math.min(a.z, b.z), z1: Math.max(a.z, b.z) }, () => 0, 1, floorTint, floorM) }
+        else if (!logs && g.u0 - from > 0.2) { const a = pt(L, from, 0.025), b = pt(L, g.u0, 0.025); beam(M.grain, [a.x, 0.07, a.z], [b.x, 0.07, b.z], 0.025, 0.07, timber) }
         from = g.u1
       }
     }
@@ -254,8 +306,8 @@ function buildShell(room, M, K, rng) {
     rafters(M, room, cell.r, roof, timber)
   })
 
-  // The floor, flag or plank; the doorways' floors are the same.
-  for (const r of room.inside) for (const q of room.cellar ? minus(r, room.cellar.hole) : [r]) sheet(M.floor, q, () => 0, 1, floorTint, FLOOR_M)
+  // The floor, flag, plank or earth; the doorways' floors are the same.
+  for (const r of room.inside) for (const q of room.cellar ? minus(r, room.cellar.hole) : [r]) sheet(M.floor, q, () => 0, 1, floorTint, floorM)
   if (room.cellar) cellarWell(M, room, wallTint(-0.02))
   for (const p of room.partitions) partition(M, room, p, wallTint(-0.02), timber)
   hearthAt(M, K, room, timber)
@@ -474,7 +526,7 @@ function chairAt(M, K, F, it, { arms = false, cushion = null, tint }) {
     hewn(M.grain, K, F, [sx * (hw - 0.03) - 0.02, T, hd - 0.05], [sx * (hw - 0.03) + 0.02, T + 0.22, hd - 0.01], tint, 0.005)
     hewn(M.grain, K, F, [sx * (hw - 0.03) - 0.03, T + 0.22, -hd + 0.02], [sx * (hw - 0.03) + 0.03, T + 0.25, hd + 0.02], tint, 0.005)
   }
-  if (cushion !== null) K.box(M.linen, F, 0, T + 0.025, 0.01, hw - 0.02, 0.028, hd - 0.02, WOOL(cushion), { round: 0.7, uvM: 0.3 })
+  if (cushion !== null) K.box(M.linen, F, 0, T + 0.025, 0.01, hw - 0.02, 0.028, hd - 0.02, cushion, { round: 0.7, uvM: 0.3 })
 }
 
 function tableAt(M, K, it, tint) {
@@ -573,10 +625,10 @@ function bookRow(M, K, F, x0, x1, rng) {
 const xyz = (p) => ({ x: p[0], y: p[1], z: p[2] })
 
 /** One thing off a shelf's load, at `F` on the board. */
-function loadAt(M, K, F, l, rng) {
+function loadAt(M, K, F, l, room, rng) {
   const f = tip(F, 'ay', l.yaw)
   switch (l.kind) {
-    case 'plate': return plateAt(M, K, { ...F, ...xyz(put(F, 0, 0, -0.06)) }, 0.1, rng() < 0.5 ? TIN : WOOD(l.hue), true)
+    case 'plate': return plateAt(M, K, { ...F, ...xyz(put(F, 0, 0, -0.06)) }, 0.1, rng() < room.tin ? TIN : WOOD(l.hue), true)
     case 'mug': return mugAt(M, K, f, WOOD(l.hue))
     case 'jug': return jugAt(M, K, f, CLAY(l.hue))
     case 'bowl': return bowlAt(M, K, f, 0.08, WOOD(l.hue))
@@ -595,14 +647,14 @@ function loadAt(M, K, F, l, rng) {
 
 const ITEMS = {
   table(it, M, K) { tableAt(M, K, it, WOOD(it.hue, -0.04)) },
-  chair(it, M, K) { chairAt(M, K, F0(it), it, { arms: !!it.arms, cushion: it.cushion, tint: WOOD(it.hue, -0.05) }) },
+  chair(it, M, K, room) { chairAt(M, K, F0(it), it, { arms: !!it.arms, cushion: it.cushion === null ? null : cloth(room, it.cushion), tint: WOOD(it.hue, -0.05) }) },
   bench(it, M, K) {
     const F = F0(it), T = it.top, tint = WOOD(it.hue, -0.05)
     hewn(M.grain, K, F, [-it.hx, T - 0.05, -it.hz], [it.hx, T, it.hz], tint, 0.004)
     for (const s of [-1, 1]) hewn(M.grain, K, F, [s * (it.hx - 0.15) - 0.03, 0, -it.hz + 0.02], [s * (it.hx - 0.15) + 0.03, T - 0.05, it.hz - 0.02], tint, 0.008)
     hewn(M.grain, K, F, [-it.hx + 0.15, 0.18, -0.03], [it.hx - 0.15, 0.25, 0.03], tint, 0.004)
   },
-  plate(it, M, K) { plateAt(M, K, F0(it), 0.11, it.hue < 0.5 ? TIN : WOOD(it.hue)) },
+  plate(it, M, K, room) { plateAt(M, K, F0(it), 0.11, it.hue < room.tin ? TIN : WOOD(it.hue)) },
   mug(it, M, K) { mugAt(M, K, F0(it), WOOD(it.hue)) },
   bowl(it, M, K) { bowlAt(M, K, F0(it), 0.09, WOOD(it.hue)) },
   jug(it, M, K) { jugAt(M, K, F0(it), CLAY(it.hue)) },
@@ -623,15 +675,15 @@ const ITEMS = {
       candleOn(M, K, it.x, it.y + 0.188, it.z, it.h, IRON)
     } else candleOn(M, K, it.x, it.y, it.z, it.h, CLAY(0.4))
   },
-  rug(it, M, K) {
-    const n = it.stripes * 2 + 1, base = WOOL(it.hue), band = WOOL((it.hue + 0.37) % 1)
+  rug(it, M, K, room) {
+    const n = it.stripes * 2 + 1, base = cloth(room, it.hue), band = cloth(room, (it.hue + 0.37) % 1)
     for (let i = 0; i < n; i++) {
       const x0 = -it.hx + (2 * it.hx * i) / n, x1 = -it.hx + (2 * it.hx * (i + 1)) / n
       const r = { x0: it.x + x0, x1: it.x + x1, z0: it.z - it.hz, z1: it.z + it.hz }
       sheet(M.linen, r, () => it.y + 0.015, 1, i % 2 ? band : base, 0.5)
     }
   },
-  dresser(it, M, K) {
+  dresser(it, M, K, room) {
     const F = F0(it), tint = WOOD(it.hue, -0.05), hx = it.hx, hz = it.hz, T = it.top
     hewn(M.grain, K, F, [-hx, 0, -hz], [hx, 0.85, hz], tint, 0.004)
     hewn(M.grain, K, F, [-hx - 0.02, 0.85, -hz - 0.01], [hx + 0.02, 0.89, hz + 0.03], tint, 0.004)
@@ -646,7 +698,7 @@ const ITEMS = {
       if (y > T - 0.25) continue
       hewn(M.grain, K, F, [-hx + 0.02, y - 0.025, -hz + 0.03], [hx - 0.02, y, -hz + 0.19], tint, 0.003)
       hewn(M.grain, K, F, [-hx + 0.02, y + 0.03, -hz + 0.17], [hx - 0.02, y + 0.05, -hz + 0.19], tint, 0.003)
-      for (let x = -hx + 0.14; x < hx - 0.1; x += 0.24) plateAt(M, K, { ...F, ...xyz(put(F, x, y, -hz + 0.1)) }, 0.1, it.load === 'plates' && (x * 7) % 2 > 1 ? WOOD(it.hue) : TIN, true)
+      for (let x = -hx + 0.14; x < hx - 0.1; x += 0.24) plateAt(M, K, { ...F, ...xyz(put(F, x, y, -hz + 0.1)) }, 0.1, it.load === 'plates' && ((x * 7) % 2 > 1 || (x * 3.7) % 1 > room.tin) ? WOOD(it.hue) : TIN, true)
     }
   },
   shelf(it, M, K, room, rng) {
@@ -657,7 +709,7 @@ const ITEMS = {
       K.rod(M.grain, put(F, x, -0.035, -it.hz + 0.01), put(F, x, -0.035, it.hz - 0.03), 0.009, 0.009, IRON, { flat: true })
       K.rod(M.grain, put(F, x, -0.22, -it.hz + 0.01), put(F, x, -0.035, it.hz - 0.04), 0.008, 0.008, IRON, { flat: true })
     }
-    for (const l of it.load) loadAt(M, K, { ...F, ...xyz(put(F, l.u, 0, 0.01)) }, l, rng)
+    for (const l of it.load) loadAt(M, K, { ...F, ...xyz(put(F, l.u, 0, 0.01)) }, l, room, rng)
   },
   worktable(it, M, K) {
     const F = F0(it), tint = WOOD(it.hue, -0.03), T = it.top
@@ -701,16 +753,16 @@ const ITEMS = {
     for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) hewn(M.grain, K, tip({ ...F, ...xyz(put(F, sx * (h - 0.05), 0, sz * (h * 0.8 - 0.05))) }, 'az', sx * 0.08), [-0.018, 0, -0.018], [0.018, T - 0.04, 0.018], tint, 0.005)
     for (const s of [-1, 1]) hewn(M.grain, K, F, [-h + 0.05, 0.12, s * (h * 0.8 - 0.05) - 0.01], [h - 0.05, 0.15, s * (h * 0.8 - 0.05) + 0.01], tint, 0.004)
   },
-  armchair(it, M, K) {
+  armchair(it, M, K, room) {
     const F = F0(it), tint = WOOD(it.hue, -0.07), T = it.top, w = 0.34, d = 0.32
     hewn(M.grain, K, F, [-w, 0, -d], [w, T - 0.04, d], tint, 0.005)
     for (const s of [-1, 1]) hewn(M.grain, K, F, [s * w - 0.04, 0, -d], [s * w + 0.04, T + 0.25, d + 0.02], tint, 0.005)
     hewn(M.grain, K, F, [-w - 0.04, 0, -d - 0.06], [w + 0.04, T + 0.75, -d + 0.02], tint, 0.005)
     hewn(M.grain, K, F, [-w - 0.08, T + 0.73, -d - 0.08], [w + 0.08, T + 0.8, -d + 0.04], tint, 0.005)
-    K.box(M.linen, F, 0, T + 0.02, 0.02, w - 0.05, 0.06, d - 0.03, WOOL(it.hue), { round: 0.7, uvM: 0.3 })
-    K.box(M.linen, tip({ ...F, ...xyz(put(F, 0, T + 0.35, -d + 0.08)) }, 'ax', -0.15), 0, 0, 0, w - 0.08, 0.24, 0.05, WOOL(it.hue), { round: 0.7, uvM: 0.3 })
+    K.box(M.linen, F, 0, T + 0.02, 0.02, w - 0.05, 0.06, d - 0.03, cloth(room, it.hue), { round: 0.7, uvM: 0.3 })
+    K.box(M.linen, tip({ ...F, ...xyz(put(F, 0, T + 0.35, -d + 0.08)) }, 'ax', -0.15), 0, 0, 0, w - 0.08, 0.24, 0.05, cloth(room, it.hue), { round: 0.7, uvM: 0.3 })
   },
-  rocker(it, M, K) {
+  rocker(it, M, K, room) {
     const F = F0(it), tint = WOOD(it.hue, -0.04), T = it.top
     for (const s of [-1, 1]) K.tube(M.grain, Array.from({ length: 9 }, (_, k) => { const t = -0.45 + (0.9 * k) / 8; return put(F, s * 0.22, 0.02 + 0.25 * t * t, t) }), Array(9).fill(0.02), tint, { segs: 6 })
     for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) K.rod(M.grain, put(F, sx * 0.22, 0.03 + 0.25 * 0.04, sz * 0.2), put(F, sx * 0.21, T, sz * 0.2), 0.018, 0.016, tint)
@@ -721,7 +773,7 @@ const ITEMS = {
     for (let k = -2; k <= 2; k++) K.rod(M.grain, put(back, k * 0.07, 0.05, 0), put(back, k * 0.07, 0.57, 0), 0.009, 0.009, tint)
     for (const s of [-1, 1]) hewn(M.grain, K, F, [s * 0.22 - 0.03, T + 0.22, -0.2], [s * 0.22 + 0.03, T + 0.25, 0.22], tint, 0.005)
     for (const s of [-1, 1]) K.rod(M.grain, put(F, s * 0.22, T, 0.2), put(F, s * 0.22, T + 0.22, 0.2), 0.014, 0.014, tint)
-    K.box(M.linen, F, 0, T + 0.02, 0.01, 0.2, 0.025, 0.2, WOOL(it.hue * 0.7), { round: 0.7, uvM: 0.3 })
+    K.box(M.linen, F, 0, T + 0.02, 0.01, 0.2, 0.025, 0.2, cloth(room, it.hue * 0.7), { round: 0.7, uvM: 0.3 })
   },
   bookcase(it, M, K, room, rng) {
     const F = F0(it), tint = WOOD(it.hue, -0.08), hx = it.hx, hz = it.hz, T = it.top
@@ -798,8 +850,8 @@ const ITEMS = {
     for (let k = 0; k < 5; k++) {
       const q = (k / 5) * TAU + K.j(0.4), c = [Math.cos(q) * r * 0.45, h - 0.03, Math.sin(q) * r * 0.45]
       if (it.load === 'apples') K.blob(M.linen, F, c, 0.04, 0.038, 0.04, FRUIT[Math.floor(rng() * FRUIT.length)], { segs: 10, rows: 6 })
-      else if (it.load === 'wool') K.blob(M.linen, F, c, 0.06, 0.055, 0.06, WOOL((it.hue + k * 0.13) % 1), { rough: 0.06 })
-      else if (k < 3) K.box(M.linen, tip({ ...F, ...xyz(put(F, 0, h - 0.04 + k * 0.035, 0)) }, 'ay', K.j(0.5)), 0, 0, 0, r * 0.6, 0.016, r * 0.45, k === 1 ? WOOL(it.hue) : CREAM, { round: 0.6, uvM: 0.3 })
+      else if (it.load === 'wool') K.blob(M.linen, F, c, 0.06, 0.055, 0.06, cloth(room, (it.hue + k * 0.13) % 1), { rough: 0.06 })
+      else if (k < 3) K.box(M.linen, tip({ ...F, ...xyz(put(F, 0, h - 0.04 + k * 0.035, 0)) }, 'ay', K.j(0.5)), 0, 0, 0, r * 0.6, 0.016, r * 0.45, k === 1 ? cloth(room, it.hue) : CREAM, { round: 0.6, uvM: 0.3 })
     }
   },
   logpile(it, M, K) {
@@ -809,13 +861,13 @@ const ITEMS = {
       K.tube(M.grain, [put(F, -l, y, z), put(F, l, y + K.j(0.01), z + K.j(0.02))], [r + K.j(0.01), r + K.j(0.01)], bark, { segs: 8 })
     }
   },
-  pegrail(it, M, K) {
+  pegrail(it, M, K, room) {
     const F = F0(it), tint = WOOD(it.hue, -0.06)
     hewn(M.grain, K, F, [-it.hx, -0.05, 0], [it.hx, 0.05, 0.025], tint, 0.002)
     it.hang.forEach((h, i) => {
       const x = -it.hx + 0.125 + i * 0.25
       K.rod(M.grain, put(F, x, 0, 0.025), put(F, x, 0.03, 0.11), 0.012, 0.01, tint)
-      if (h === 'cloak') K.blob(M.linen, F, [x, -0.42, 0.07], 0.16, 0.45, 0.06, WOOL((it.hue + i * 0.29) % 1), { rough: 0.05 })
+      if (h === 'cloak') K.blob(M.linen, F, [x, -0.42, 0.07], 0.16, 0.45, 0.06, cloth(room, (it.hue + i * 0.29) % 1), { rough: 0.05 })
       else if (h === 'bag') {
         K.blob(M.linen, F, [x, -0.25, 0.08], 0.1, 0.13, 0.07, BURLAP((it.hue + i * 0.17) % 1), { rough: 0.06 })
         K.tube(M.linen, [put(F, x - 0.07, -0.15, 0.08), put(F, x, 0.03, 0.1), put(F, x + 0.07, -0.15, 0.08)], [0.008, 0.008, 0.008], BURLAP(it.hue), { segs: 5 })
@@ -831,7 +883,7 @@ const ITEMS = {
     hewn(M.grain, K, F, [-hw, 0.2, -hl], [hw, 0.62, -hl + 0.04], tint, 0.004)
     if (it.posts) for (const s of [-1, 1]) hewn(M.grain, K, F, [-hw - 0.03, 1.62, s * hl - 0.03], [hw + 0.03, 1.7, s * hl + 0.03], tint, 0.004)
     K.box(M.linen, F, 0, T - 0.08, 0, hw - 0.04, 0.08, hl - 0.05, rgb(0.11, 0.25, 0.62), { round: 0.5, uvM: 0.4 })
-    K.box(M.linen, F, 0, T - 0.02, -0.18, hw - 0.01, 0.06, hl - 0.25, WOOL(it.blanket), { round: 0.5, uvM: 0.4 })
+    K.box(M.linen, F, 0, T - 0.02, -0.18, hw - 0.01, 0.06, hl - 0.25, cloth(room, it.blanket), { round: 0.5, uvM: 0.4 })
     K.box(M.linen, F, 0, T + 0.035, hl - 0.48, hw - 0.01, 0.015, 0.1, CREAM, { round: 0.6, uvM: 0.4 })
     for (let p = 0; p < it.pillows; p++) {
       const x = it.pillows === 1 ? 0 : (p - 0.5) * (hw - 0.05)
@@ -854,8 +906,53 @@ const ITEMS = {
   sconce(it, M, K) {
     const F = F0(it)
     slab(M.grain, F, [-0.05, -0.12, -0.12], [0.05, 0.12, -0.11], IRON, woodUV)
+    // A torch stands in a ring on a bracket, leaning out from the wall, its pitch-soaked head blackened.
+    if (it.torch) {
+      K.tube(M.grain, [put(F, 0, -0.04, -0.11), put(F, 0, -0.04, -0.03)], [0.008, 0.008], IRON, { segs: 6 })
+      K.lathe(M.grain, frame(...put(F, 0, -0.05, -0.03), it.yaw), [[0.026, 0], [0.03, 0], [0.03, 0.02], [0.026, 0.02]], IRON, { segs: 10, flat: true })
+      K.rod(M.grain, put(F, 0, -0.2, -0.06), put(F, 0, 0.2, 0), 0.016, 0.02, WOOD(0.3, -0.1))
+      K.blob(M.grain, F, [0, 0.23, 0.004], 0.032, 0.06, 0.032, SOOT, { rough: 0.2 })
+      return
+    }
     K.tube(M.grain, [put(F, 0, -0.06, -0.11), put(F, 0, 0.0, -0.04), put(F, 0, 0.06, 0), put(F, 0, 0.09, 0)], [0.008, 0.008, 0.008, 0.008], IRON, { segs: 6 })
     candleOn(M, K, it.x, it.y + 0.09, it.z, 0.12, IRON)
+  },
+  tools(it, M, K) {
+    const F = F0(it), hx = it.hx, n = it.set.length, ash = WOOD(0.45, -0.04)
+    it.set.forEach((kind, i) => {
+      const x = -hx + (2 * hx * (i + 0.5)) / n + K.j(0.04), len = kind === 'flail' ? 1.25 : kind === 'scythe' ? 1.6 : 1.45
+      // Stood on its foot a hand off the wall, its top resting against it.
+      const foot = [x, kind === 'spade' ? 0.3 : 0.02, 0.06], head = [x + K.j(0.08), len, -it.hz + 0.03]
+      const L = (p, dy = 0, dz = 0, dx = 0) => put(F, p[0] + dx, p[1] + dy, p[2] + dz)
+      K.rod(M.grain, L(foot), L(head), 0.016, 0.014, ash)
+      if (kind === 'fork') for (const s of [-1, 0, 1]) K.rod(M.grain, L(head, -0.02, 0, s * 0.03), L(head, 0.22, 0.03, s * 0.05), 0.006, 0.004, IRON, { flat: true })
+      else if (kind === 'rake') {
+        K.rod(M.grain, L(head, 0, 0, -0.2), L(head, 0, 0, 0.2), 0.016, 0.016, ash)
+        for (let k = -3; k <= 3; k++) K.rod(M.grain, L(head, 0, 0, k * 0.06), L(head, -0.01, 0.08, k * 0.06), 0.006, 0.005, ash)
+      } else if (kind === 'hoe') slab(M.grain, F, [head[0] - 0.08, head[1] - 0.02, head[2] + 0.02], [head[0] + 0.08, head[1] + 0.005, head[2] + 0.14], IRON, woodUV)
+      else if (kind === 'spade') {
+        K.box(M.grain, F, x, 0.15, 0.06, 0.09, 0.15, 0.008, IRON, { round: 0.2 })
+        K.rod(M.grain, L(head, 0, 0, -0.07), L(head, 0, 0, 0.07), 0.014, 0.014, ash)
+      } else if (kind === 'scythe') K.tube(M.grain, Array.from({ length: 6 }, (_, k) => L(head, -0.02 - 0.05 * Math.sin((k / 5) * Math.PI), 0.06, 0.1 * k)), Array(6).fill(0.007), IRON, { segs: 4 })
+      else if (kind === 'flail') K.rod(M.grain, L(head, 0.02, 0.03, 0.02), L(head, -0.55, 0.06, 0.06), 0.018, 0.018, ash)
+    })
+  },
+  bucket(it, M, K) {
+    const F = F0(it), r = it.r, h = it.top
+    K.lathe(M.grain, F, [[0, 0.01], [r * 0.8, 0.01], [r * 0.82, 0], [r, h], [r * 0.93, h], [r * 0.76, 0.03], [0, 0.03]], WOOD(it.hue, -0.03), { segs: 16, uvM: 0.2, lobes: [12, 0.01] })
+    for (const t of [0.2, 0.8]) { const rr = r * (0.82 + 0.18 * t) + 0.004; K.lathe(M.grain, F, [[rr, h * t - 0.012], [rr + 0.003, h * t], [rr, h * t + 0.012]], IRON, { segs: 16, flat: true }) }
+    K.tube(M.grain, Array.from({ length: 7 }, (_, k) => { const q = (k / 6) * Math.PI; return put(F, Math.cos(q) * r, h + Math.sin(q) * r * 0.9, 0) }), Array(7).fill(0.005), IRON, { segs: 4 })
+  },
+  // Onions or garlic plaited on a cord, or a bunch of herbs, from a hook in the ceiling.
+  hanging(it, M, K, room, rng) {
+    const F = F0(it, it.y - it.drop)
+    K.rod(M.linen, [it.x, it.y, it.z], [it.x, it.y - it.drop, it.z], 0.004, 0.004, CORD, { segs: 4, flat: true })
+    if (it.load === 'herbs') {
+      for (let s = 0; s < 9; s++) { const q = rng() * TAU, spread = 0.2 + rng() * 0.3; K.leaf(M.linen, [it.x, it.y - it.drop, it.z], norm([Math.cos(q) * spread, -1, Math.sin(q) * spread]), 0.2 + rng() * 0.08, 0.02, [Math.sin(q), 0, -Math.cos(q)], rgb(0.24 + rng() * 0.06, 0.3, 0.3)) }
+      return
+    }
+    const bulb = it.load === 'onions' ? rgb(0.08, 0.55, 0.42) : rgb(0.12, 0.15, 0.72), r = it.load === 'onions' ? 0.04 : 0.03
+    for (let k = 0; k < 9; k++) K.blob(M.linen, F, [Math.cos(k * 2.4) * r, -0.04 - k * r * 0.9, Math.sin(k * 2.4) * r], r, r * 0.9, r, bulb, { segs: 8, rows: 5, rough: 0.08 })
   },
 }
 
@@ -867,7 +964,7 @@ const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a
 function lightPlan(room) {
   const U = room.U
   const rooms = room.rooms.map((r) => ({ r, cand: [], win: [], glass: 0 }))
-  for (const c of room.candles) rooms[c.room].cand.push({ x: c.x, y: c.y, z: c.z, i: c.i, reach: SHADE.reach })
+  for (const c of room.candles) rooms[c.room].cand.push({ x: c.x, y: c.y, z: c.z, i: c.i, reach: c.torch ? SHADE.torchReach : SHADE.reach })
   const h = room.hearth
   rooms[h.room].cand.push({ x: h.fire.x, y: 0.45, z: h.fire.z, i: SHADE.fire, reach: SHADE.fireReach })
   for (const w of room.windows) {
@@ -982,9 +1079,9 @@ export class TownInteriorView {
       make(it, M, K, room, rng)
     }
     const T2 = houseTextures(tex)
-    const maps = { floor: room.floor.kind === 'plank' ? T2.plank : T2.flag, plank: T2.plank, wall: room.wall.kind === 'boards' ? T2.boards : T2.panel, stone: T2.flag, grain: T2.grain, linen: T2.linen, pages: T2.pages, window: T2.leaded }
-    const plan = lightPlan(room)
     const speckMap = speckleTexture()
+    const maps = { floor: { plank: T2.plank, flag: T2.flag, earth: speckMap }[room.floor.kind], plank: T2.plank, wall: { logs: T2.boards, boards: T2.boards, panel: T2.panel, plaster: T2.plaster, timbered: T2.timbered }[room.wall.kind], stone: T2.flag, grain: T2.grain, linen: T2.linen, pages: T2.pages, window: T2.leaded }
+    const plan = lightPlan(room)
     for (const id of MESHES) {
       const m = M[id]
       if (m.count === 0) continue
@@ -1004,11 +1101,16 @@ export class TownInteriorView {
       mesh.frustumCulled = false
       this.group.add(mesh)
     }
-    this.flames = buildFlames(room.candles, ox, oy, oz)
-    this.group.add(this.flames.group)
-    const f = room.hearth.fire
-    this.fire = new TriFlames(1, TRI_FIRE, { seed: room.index + 7 })
+    if (!maps.floor || !maps.wall) throw new Error(`TownInteriorView: no texture for a ${room.floor.kind} floor or ${room.wall.kind} walls`)
+    // A poor house can be lit by torches alone, and then has no candle flames.
+    const candles = room.candles.filter((c) => !c.torch)
+    this.flames = candles.length ? buildFlames(candles, ox, oy, oz) : null
+    if (this.flames) this.group.add(this.flames.group)
+    // The hearth's fire and each torch's are one set of fire flames, the hearth first.
+    const f = room.hearth.fire, torches = room.candles.filter((c) => c.torch)
+    this.fire = new TriFlames(1 + torches.length, TRI_FIRE, { seed: room.index + 7 })
     this.fire.place(0, ox + f.x, oy + f.y, oz + f.z, { height: 0.5, radius: 0.22 })
+    torches.forEach((c, i) => this.fire.place(1 + i, ox + c.x, oy + c.y - 0.08, oz + c.z, { height: 0.22, radius: 0.06, phase: i * 1.7 }))
     this.group.add(this.fire.group)
   }
 
@@ -1016,7 +1118,7 @@ export class TownInteriorView {
     const f = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
     this.uniforms.uFlicker.value = f
     this.uniforms.uDay.value = dayness
-    this.flames.update(t, f, eye)
+    if (this.flames) this.flames.update(t, f, eye)
     this.fire.update(t, [f, f, f], eye)
   }
 
@@ -1027,7 +1129,7 @@ export class TownInteriorView {
       o.geometry?.dispose()
       if (o.material && o.material.isShaderMaterial) o.material.dispose()
     })
-    this.flames.dispose()
+    if (this.flames) this.flames.dispose()
     this.fire.dispose()
   }
 }

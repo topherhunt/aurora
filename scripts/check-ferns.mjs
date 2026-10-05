@@ -448,11 +448,11 @@ console.log('\n6. the ferns a room plants\n')
   const key = Math.floor(3.5 / 12) * 0x10000 + Math.floor(4.25 / 12)
   const before = both.tiles.get(key).n
   let t6 = 0
-  for (let f = 0; f < 240; f++) { t6 += 1 / 72; setPropClock(t6); both.update(100, GROUND + 1.6, 0) }
+  for (let f = 0; f < 240; f++) { t6 += 1 / 72; setPropClock(t6); both.update(74, GROUND + 1.6, 0) }
   const home = both.tiles.get(key)
   let stands = false
   for (let k = 0; k < home.n; k++) if (both.instX[home.ids[k]] === 3.5 && both.instZ[home.ids[k]] === 4.25) stands = true
-  check(stands && home.n < before / 4, 'a plant survives the thinning that cuts the ferns rolled beside it', `${home.n} of ${before} left in its tile a hundred metres off`)
+  check(stands && home.n < before / 4, 'a plant survives the thinning that cuts the ferns rolled beside it', `${home.n} of ${before} left in its tile seventy-four metres off`)
   nothing.dispose(); bed.dispose(); wild.dispose(); both.dispose()
   taken.clear()
 }

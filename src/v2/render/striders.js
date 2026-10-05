@@ -3,7 +3,7 @@ import { createPropMaterial } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet } from './baked-puppet.js'
+import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
 import { Cords } from './cord.js'
 import { PADDLE, paddleHz, striderClips } from './strider-clips.js'
@@ -25,6 +25,8 @@ export const STRIDER = {
   said: 32,
   // Each strider is `mean` times the shipped body, spread over `vary` of that, and grows by `fed` a fish once tame.
   size: { mean: 1.5, vary: [0.85, 1.2], fed: 1.05 },
+  // Each one's colour, browner through its own slate to bluer (tintRange).
+  tint: tintRange([[1.15, 1, 0.8], [1, 1, 1], [0.85, 0.95, 1.18]], 0.06),
   // A fish within `bite` m times its size of the middle of its head, beak and all, is at its mouth.
   bite: 0.4,
 }
@@ -95,11 +97,11 @@ export function dashAim(walk, m, want, v, dt, crowd = null) {
   return h
 }
 
-/** What this layer keeps on a mount the sim or the road hands it, `size` times the shipped body (striderSize). */
-export function mountFields(size) {
+/** What this layer keeps on a mount the sim or the road hands it, `size` times the shipped body (striderSize), its colour rolled from `hue` (a creature key, tintFor). */
+export function mountFields(size, hue) {
   if (!(size > 0)) throw new Error(`mountFields: a strider's size must be positive, not ${size}`)
   const [lo, hi] = STRIDER.call
-  return { pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0, swim: false }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
+  return { hue, pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0, swim: false }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
 }
 
 /** A body's matrix from its pose: at x, y, z, turned `heading` about the up, scaled `k`. */
@@ -111,6 +113,12 @@ export function poseMatrix(pose, k, out) {
 export function fromSide(pose, head) {
   const c = Math.cos(pose.heading), s = Math.sin(pose.heading), dx = head.x - pose.x, dz = head.z - pose.z
   return Math.abs(-dx * s - dz * c) > Math.abs(dx * c - dz * s)
+}
+
+/** Whether `head` is at its face: more ahead of `pose` than to its side. */
+export function atFace(pose, head) {
+  const c = Math.cos(pose.heading), s = Math.sin(pose.heading), dx = head.x - pose.x, dz = head.z - pose.z
+  return dx * c - dz * s > Math.abs(-dx * s - dz * c)
 }
 
 /**
@@ -246,6 +254,7 @@ export class Striders {
       const p = this.free.pop()
       if (!p) { this.starved++; return }
       m.puppet = p
+      tintFor(p, m.hue, STRIDER.tint)
       this.batch.add(p.group)
       p.play(clipOf(pose), pose.cue, 0)
     }

@@ -20,8 +20,6 @@ export const LEVEL_GAZE = (35 * Math.PI) / 180
 export const LIFT_MIN_M = -0.4
 export const LIFT_MAX_M = 0.9
 export const LIFT_RATE_M_S = 0.15
-// The reference space is re-offset only once the eased lift has moved this far: every re-offset nests another space.
-export const LIFT_STEP_M = 0.02
 
 export class EyeLevel {
   constructor() {
@@ -30,22 +28,21 @@ export class EyeLevel {
     this.next = 0
     this.count = 0
     this.sampleIn = 0
-    // The lift wanted, the lift eased toward it, and the lift the reference space carries.
+    // The lift wanted, and the lift eased toward it that the reference space carries.
     this.want = 0
-    this.eased = 0
-    this.applied = 0
+    this.lift = 0
   }
 
   /**
    * One frame. `eyeY` is the headset's height over the floor as the reference
-   * space reports it (so with `applied` already in it), `pitch` the gaze's
-   * angle off level. Returns the metres to raise the reference space by now: 0 to leave it.
+   * space reports it (so with `lift` already in it), `pitch` the gaze's angle
+   * off level. Returns whether `lift` moved, for the caller to re-offset the space.
    */
   update(dt, eyeY, pitch) {
     this.sampleIn -= dt
     if (this.sampleIn <= 0 && Math.abs(pitch) < LEVEL_GAZE) {
       this.sampleIn = SAMPLE_EVERY_S
-      this.samples[this.next] = eyeY - this.applied
+      this.samples[this.next] = eyeY - this.lift
       this.next = (this.next + 1) % WINDOW
       this.count = Math.min(WINDOW, this.count + 1)
       if (this.count >= MIN_SAMPLES) {
@@ -56,19 +53,17 @@ export class EyeLevel {
         this.want = Math.max(LIFT_MIN_M, Math.min(LIFT_MAX_M, STAND_EYE_M - real))
       }
     }
+    const gap = this.want - this.lift
+    if (gap === 0) return false
     const step = LIFT_RATE_M_S * dt
-    const gap = this.want - this.eased
-    this.eased = Math.abs(gap) <= step ? this.want : this.eased + Math.sign(gap) * step
-    const d = this.eased - this.applied
-    if (d === 0 || (Math.abs(d) < LIFT_STEP_M && this.eased !== this.want)) return 0
-    this.applied = this.eased
-    return d
+    this.lift = Math.abs(gap) <= step ? this.want : this.lift + Math.sign(gap) * step
+    return true
   }
 
   /** Off, or a new session: no lift wanted, the samples forgotten. The space's own lift is the caller's to undo. */
   reset() {
     this.next = this.count = 0
     this.sampleIn = 0
-    this.want = this.eased = this.applied = 0
+    this.want = this.lift = 0
   }
 }

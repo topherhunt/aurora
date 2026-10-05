@@ -82,7 +82,7 @@ export const ECHO_TAPS = [[0.47, 0.32], [1.05, 0.25]]
 export const ECHO_LP = 1500
 export const ECHO_LEVEL = 0.7
 // The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds. Crickets and songbirds are nearly all above 2.5 kHz: a cutoff much lower than this silences them outright.
-export const INDOORS = { lp: 2500, gain: 0.5, tau: 0.3 }
+export const INDOORS = { lp: 1100, gain: 0.25, tau: 0.3 }
 
 // Equal-power fade curve, sampled once; scaled per cycle by the cycle's gain.
 const FADE_STEPS = 32

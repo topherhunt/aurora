@@ -11,6 +11,8 @@
 import THREE from '../../three-instance.js'
 import { Puppet, cloneBones, lodFadeS, poseSphere } from './puppet.js'
 import { TIER_TINTS, tierTintOn } from './critters.js'
+import { mulberry32 } from '../../sim/mathx.js'
+import { hash32, keyHash } from '../../sim/score.js'
 
 // Samples per second of clip, lowered per skeleton until its rows fit MAX_ROWS.
 const FPS = 30
@@ -63,6 +65,24 @@ export function rollTint(rand, out = new THREE.Color()) {
   out.setHSL(hue, 1, 0.5)
   out.setRGB(1 - s + s * out.r, 1 - s + s * out.g, 1 - s + s * out.b)
   return out.multiplyScalar((3 * v) / (out.r + out.g + out.b))
+}
+
+/**
+ * A roll like rollTint's kept to a species' natural range: anywhere along `path`,
+ * linear RGB multipliers on its texture walked end to end, brightness spread
+ * `spread` either way.
+ */
+export function tintRange(path, spread = 0.08) {
+  const cols = path.map((c) => new THREE.Color().setRGB(...c))
+  return (rand, out) => {
+    const t = rand() * (cols.length - 1), i = Math.min(Math.floor(t), cols.length - 2)
+    return out.copy(cols[i]).lerp(cols[i + 1], t - i).multiplyScalar(1 - spread + 2 * spread * rand())
+  }
+}
+
+/** A baked puppet taken for the creature keyed `key` wears its `roll` (rollTint, a tintRange) seeded by that key, so every peer and every visit agree; a skinned one is left white. */
+export function tintFor(puppet, key, roll) {
+  if (puppet.baked) roll(mulberry32(hash32(keyHash(key), 0x71a7)), puppet.tint)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +350,8 @@ function makeBatch(tier, material, fade, cap) {
   const geometry = new THREE.BufferGeometry()
   geometry.setIndex(tier.index)
   for (const name in tier.attributes) geometry.setAttribute(name, tier.attributes[name])
+  // A wild strider's bare tier is its full one drawn short of the tack: dropped here, every wild one wears a saddle.
+  geometry.setDrawRange(tier.drawRange.start, tier.drawRange.count)
   const b = { geometry, material, fade, cap: 0, n: 0, mesh: null, vat: null, fadeAttr: null }
   grow(b, cap)
   return b

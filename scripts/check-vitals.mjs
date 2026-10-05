@@ -10,6 +10,7 @@ import { Player, LOCOMOTION } from '../src/player.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
 import { InteriorStone, flatField, rollInterior } from '../src/v2/rooms/interior.js'
 import { celestial, CLOCK } from '../src/clock.js'
+import { WILD, WildStriders } from '../src/v2/render/wild-striders.js'
 import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
 
 let failures = 0
@@ -51,12 +52,25 @@ const cliff = (drop) => ({ heightAt: (x) => (x < 10 ? GROUND : GROUND - drop) })
 console.log('\n=== vitals checks ===\n')
 
 console.log('falling')
-check(fallDamage(FALL.safeM) === 0 && fallDamage(9) === 50 && fallDamage(14) === MAX_HP, 'a fall costs nothing to 4 m and 10 HP a metre past it', `9 m: ${fallDamage(9)}, 14 m: ${fallDamage(14)}`)
-check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fallDamage(12, FALL.riddenM) === 40, 'on a strider a fall is free to twice that, 8 m', `12 m: ${fallDamage(12, FALL.riddenM)}`)
+check(fallDamage(FALL.safeM) === 0 && fallDamage(9) === 25 && fallDamage(20) === 80 && fallDamage(24) === MAX_HP, 'a fall costs nothing to 4 m and 5 HP a metre past it, so she survives 20 m', `9 m: ${fallDamage(9)}, 20 m: ${fallDamage(20)}, 24 m: ${fallDamage(24)}`)
+check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fallDamage(12, FALL.riddenM) === 20, 'on a strider a fall is free to twice that, 8 m', `12 m: ${fallDamage(12, FALL.riddenM)}`)
+{
+  // A ridden leap off a 12 m drop through the real hop and _fall on a stub mount: aimTeleport leaps from WILD.hop.cap under its feet.
+  const P = WildStriders.prototype, hurts = []
+  const m = { pose: { x: 0, z: 0, y: 12, heading: 0, size: 1 }, ride: { last: null, gain: 1, still: 0, base: {}, off: {}, fall: null, lastY: 0 } }
+  const ws = Object.assign(Object.create(P), {
+    ridden: m, harm: (n) => hurts.push(n), walk: { heightAt: () => 0, waterAt: () => null }, _deep: () => false,
+    _seat: (mm, out) => out.set(mm.pose.x, mm.pose.y, mm.pose.z), _float() {}, _say() {}, _set() {}, _chirp() {},
+  })
+  const rider = { scale: 1, carry() {} }
+  ws.hop(3, 12 - WILD.hop.cap, 0, 6, rider, true)
+  for (let i = 0; i < 2000 && m.ride.fall; i++) ws._fall(m, DT, rider)
+  check(m.pose.y === 0 && hurts.length === 1 && hurts[0] === fallDamage(12, FALL.riddenM), 'a 12 m leap on a strider is priced from its feet, not where the leap starts', `hurt ${hurts}`)
+}
 {
   const { p, fell } = walkOff(cliff(9))
   check(p.standY === GROUND - 9 && Math.abs(fell - 9) < 1e-6, 'walking off a 9 m cliff is a fall of 9 m', `fell ${fell.toFixed(3)}, feet at ${p.standY}`)
-  check(fallDamage(fell) === 50, 'which costs her 50 HP', `${fallDamage(fell)}`)
+  check(fallDamage(fell) === 25, 'which costs her 25 HP', `${fallDamage(fell)}`)
 }
 {
   const { fell } = walkOff(cliff(4))
@@ -64,7 +78,7 @@ check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fa
 }
 {
   const { fell } = walkOff(cliff(4), { scale: 0.5 })
-  check(Math.abs(fell - 8) < 1e-6 && fallDamage(fell) === 40, 'at half size a 4 m drop is 8 of her metres, 40 HP', `fell ${fell.toFixed(3)}`)
+  check(Math.abs(fell - 8) < 1e-6 && fallDamage(fell) === 20, 'at half size a 4 m drop is 8 of her metres, 20 HP', `fell ${fell.toFixed(3)}`)
 }
 {
   const slope = Math.tan((30 * Math.PI) / 180)

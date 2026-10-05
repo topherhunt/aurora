@@ -16,7 +16,7 @@ const DONE_SHOWN_MS = 12000
 export class RecordTrace {
   /**
    * host: {
-   *   camera, spikes (the Spikes instance, whose laps for the current frame are read in frame()),
+   *   camera, gpuTake() (mean GPU ms since the last call, or null), spikes (the Spikes instance, whose laps for the current frame are read in frame()),
    *   position() -> {x, y, z}, flying() -> bool, context(), hidePanel(),
    *   play(clip, rate, gain), pulse(intensity, ms), refresh()
    * }
@@ -69,6 +69,7 @@ export class RecordTrace {
     this.js = this.render = this.calls = this.tris = 0
     this.stages = {}
     this.stageMs = 0
+    this.host.gpuTake()
   }
 
   /** Every frame, after the main render and before the overlay lap. `f` is { jsMs, renderMs, calls, tris }. */
@@ -128,11 +129,12 @@ export class RecordTrace {
       const p = this.host.position()
       const stages = {}
       for (const [k, v] of Object.entries(this.stages)) if (v / n >= SPIKES.floor) stages[k] = r2(v / n)
+      const gpu = this.host.gpuTake()
       this.trace.samples.push({
         t: r2((now - this.startedAt) / 1000),
         x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), flying: this.host.flying(),
         frames: n, ms: r2(span / n), p50: r2(quantile(sorted, 0.5)), p95: r2(quantile(sorted, 0.95)), max: r2(sorted[kept - 1]),
-        jsMs: r2(this.js / n), renderMs: r2(this.render / n),
+        jsMs: r2(this.js / n), renderMs: r2(this.render / n), gpuMs: gpu === null ? null : r2(gpu),
         calls: Math.round(this.calls / n), tris: Math.round(this.tris / n),
         stages,
       })

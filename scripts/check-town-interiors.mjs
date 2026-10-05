@@ -16,23 +16,25 @@ const check = (ok, what) => {
 }
 
 const SEEDS = 24
+// A household's wealth, spread over 0..1 by its index so every kind is rolled poor and rich.
+const W = (index) => ((index * 7) % 11) / 10
 const houses = []
 let threw = 0
 for (const kind of Object.keys(KINDS)) {
   for (let s = 1; s <= SEEDS; s++) {
     const plan = planBuilding({ seed: s * 7919, kind })
-    try { houses.push(rollTownInterior({ seed: 4242, index: s, plan })) } catch (e) { threw++; console.log(`  ${kind} ${s}: ${e.message}`) }
+    try { houses.push(rollTownInterior({ seed: 4242, index: s, plan, wealth: W(s) })) } catch (e) { threw++; console.log(`  ${kind} ${s}: ${e.message}`) }
   }
 }
 // The potion master's house is a cottage (layers/towns.js).
 for (let s = 1; s <= SEEDS; s++) {
   const plan = planBuilding({ seed: s * 7919 + 1, kind: 'cottage' })
-  try { houses.push(rollTownInterior({ seed: 4242, index: 1000 + s, plan, shop: 'potions' })) } catch (e) { threw++; console.log(`  potions ${s}: ${e.message}`) }
+  try { houses.push(rollTownInterior({ seed: 4242, index: 1000 + s, plan, wealth: W(s), shop: 'potions' })) } catch (e) { threw++; console.log(`  potions ${s}: ${e.message}`) }
 }
 // The inn is an inn-kind building, or the town's grandest when it has none (layers/towns.js).
 for (let s = 1; s <= SEEDS; s++) {
   const plan = planBuilding({ seed: s * 7919 + 2, kind: s % 3 === 0 ? 'longhouse' : 'inn' })
-  try { houses.push(rollTownInterior({ seed: 4242, index: 2000 + s, plan, shop: 'inn' })) } catch (e) { threw++; console.log(`  inn ${s}: ${e.message}`) }
+  try { houses.push(rollTownInterior({ seed: 4242, index: 2000 + s, plan, wealth: W(s), shop: 'inn' })) } catch (e) { threw++; console.log(`  inn ${s}: ${e.message}`) }
 }
 console.log(`Town interiors: ${houses.length} houses over ${Object.keys(KINDS).length} kinds`)
 check(threw === 0, `every building rolls (${threw} threw)`)
@@ -42,7 +44,7 @@ const every = (what, pred) => {
 }
 
 {
-  const r = houses[5], again = rollTownInterior({ seed: 4242, index: r.index, plan: r.plan })
+  const r = houses[5], again = rollTownInterior({ seed: 4242, index: r.index, plan: r.plan, wealth: W(r.index % 1000) })
   check(JSON.stringify(again.items) === JSON.stringify(r.items), 'a house rolls the same room twice')
 }
 every(`the main room is the outside's main mass at ${S} times the size`, (r) => {
@@ -82,6 +84,23 @@ every('a table with seats, and a hearth to cook at', (r) => r.items.some((it) =>
 {
   const work = houses.filter((r) => r.rooms.some((rm) => rm.kind === 'workroom'))
   check(work.length > 0 && work.every((r) => r.items.some((it) => ['parchment', 'scroll', 'bookcase', 'books', 'desk'].includes(it.kind))), `a workroom has its parchment, scrolls or books (${work.length} houses have one)`)
+}
+{
+  // design/40 House wealth: the household's means furnish the inside.
+  every('a log house has log walls inside', (r) => r.plan.style !== 'log' || r.wall.kind === 'logs')
+  const poor = houses.filter((r) => r.shop === null && r.wealth < 0.3), rich = houses.filter((r) => r.shop === null && r.wealth > 0.7)
+  const per = (list, f) => list.reduce((n, r) => n + f(r), 0) / list.length
+  const sticks = (r) => r.items.filter((it) => it.kind === 'candle' && it.holder === 'stick').length
+  const cushions = (r) => r.items.filter((it) => it.kind === 'chair' && it.cushion !== null).length
+  const padded = (r) => r.items.filter((it) => it.kind === 'armchair' || it.kind === 'rocker').length
+  const torches = (r) => r.items.filter((it) => it.kind === 'sconce' && it.torch).length
+  const tools = (list) => list.filter((r) => r.items.some((it) => it.kind === 'tools')).length
+  console.log(`  poor ${poor.length}: ${per(poor, sticks).toFixed(1)} candlesticks, ${per(poor, cushions).toFixed(1)} cushions, ${per(poor, padded).toFixed(1)} padded seats, ${per(poor, torches).toFixed(1)} torches; rich ${rich.length}: ${per(rich, sticks).toFixed(1)}, ${per(rich, cushions).toFixed(1)}, ${per(rich, padded).toFixed(1)}, ${per(rich, torches).toFixed(1)}`)
+  check(poor.length >= 20 && rich.length >= 20, `houses are rolled both poor and rich (${poor.length} poor, ${rich.length} rich)`)
+  check(per(poor, sticks) * 3 < per(rich, sticks) && per(poor, cushions) * 3 < per(rich, cushions) && per(poor, padded) * 3 < per(rich, padded), 'a poor house has far fewer candlesticks, cushions and padded seats than a rich one')
+  check(per(poor, torches) > per(rich, torches), 'a poor house lights a torch where a rich one has a sconce candle')
+  check(tools(poor) >= poor.length * 0.8 && tools(rich) <= rich.length * 0.2, `a poor house keeps its farm tools by the door, a rich one rarely (${tools(poor)} of ${poor.length} poor, ${tools(rich)} of ${rich.length} rich)`)
+  check(poor.filter((r) => r.floor.kind === 'earth').length >= poor.length * 0.6 && rich.every((r) => r.floor.kind !== 'earth'), 'a poor house mostly has an earth floor, a rich one never')
 }
 every('every upstairs gable room has a window', (r) => r.rooms.every((rm) => rm.level === 0 || (Math.abs(rm.rect.x0 - r.M.x0) > 0.01 && Math.abs(rm.rect.x1 - r.M.x1) > 0.01) || r.windows.some((w) => w.room === rm.id)))
 {
@@ -170,7 +189,7 @@ function flood(room) {
   for (const kind of Object.keys(KINDS).filter((k) => k !== 'hut')) for (let s = 1; s <= SEEDS; s++) {
     const plan = planBuilding({ seed: s * 7919, kind }), tag = `${kind}/${s}`
     let r
-    try { r = rollTownInterior({ seed: 4242, index: s, plan, cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
+    try { r = rollTownInterior({ seed: 4242, index: s, plan, wealth: W(s), cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
     const f = flood(r)
     if (f.deep > -CELLAR.fade) lostC.push(`${tag} down to ${f.deep.toFixed(2)} m`)
     const h = r.cellar.hole, d = Math.hypot((h.x0 + h.x1) / 2 - r.doorIn.x, (h.z0 + h.z1) / 2 - r.doorIn.z)

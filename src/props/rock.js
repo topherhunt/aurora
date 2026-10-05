@@ -78,16 +78,16 @@ export const ROCK_TIERS = [rockTier(3), rockTier(1), rockTier(0), rockTier(0, 'f
 // the third, and the six-triangle T6 hull beyond it.
 //
 // Per metre because what decides whether a triangle is worth drawing is ANGULAR
-// size. A 2 m rock holds its finest mesh to 8 m, its second to 15, its third to 50,
-// and is T6 past that; a 12 m tor holds T320 to 48 m and reaches T6 at 300. One
+// size. A 2 m rock holds its finest mesh to 6 m, its second to 11, its third to 36,
+// and is T6 past that; a 12 m tor holds T320 to 36 m and reaches T6 at 216. One
 // system for every rock -- they all step at the same apparent size, only the
 // metres differ.
 //
 // Deliberately tighter than a pixel-error argument, which wants ~70 m per metre
-// before T6 against this 25: the ladder is set to buy back triangles, not to be
+// before T6 against this 18: the ladder is set to buy back triangles, not to be
 // invisible. This is the number to move if a band looks wrong -- nothing else in
 // the system encodes a distance.
-export const ROCK_LOD_AT = [4, 7.5, 25]
+export const ROCK_LOD_AT = [3, 5.5, 18]
 
 // A rock only LEAVES a tier it is on this much further out than it entered it,
 // so a camera parked on a threshold does not flicker between two meshes.

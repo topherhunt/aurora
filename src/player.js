@@ -945,20 +945,35 @@ export class Player {
     // only, since a lob is a coarse question and the ring's shoulder test at
     // 30 cm buys nothing.
     let y = this.th.heightAt(x, z, y0)
+    // Starting in a trunk, a body or stone at her head, every rule is waived
+    // until the path first comes clear, as _enters waives a step: else the
+    // first sample is still inside and nothing could get her out. It must
+    // still end clear.
+    let leaving = this._blocked(x, z, y, y)
     for (let i = 0; i < n; i++) {
       let h = y
       if (step > 1e-6) {
         h = this._walkable(x, z, y, dx, dz, step)
-        if (Number.isNaN(h)) return false
+        if (Number.isNaN(h)) {
+          if (!leaving) return false
+          h = this.th.heightAt(x + dx, z + dz, y)
+        }
       }
       x += dx
       z += dz
-      if (this.obstacles && this.obstacles.obstacleAt(x, z, this._obstacle)) return false
       // The higher foot height, as _enters does, so a path can step down.
-      if (this.capsule && !this.capsule.fits(x, z, y > h ? y : h, null)) return false
+      if (this._blocked(x, z, y, h)) {
+        if (!leaving) return false
+      } else leaving = false
       y = h
     }
-    return true
+    return !leaving
+  }
+
+  // Whether (x, z) is in a trunk or a body, or her capsule there with feet at the higher of `y` and `h` meets stone.
+  _blocked(x, z, y, h) {
+    return !!(this.obstacles && this.obstacles.obstacleAt(x, z, this._obstacle)) ||
+      !!(this.capsule && !this.capsule.fits(x, z, y > h ? y : h, null))
   }
 
   /**
@@ -1006,12 +1021,32 @@ export class Player {
     console.warn('unstick found no walkable cell within 80 m')
   }
 
-  // Raises her headset and hands `d` of her metres over the floor the headset
+  // The session's own reference space and what recentring and the lift have
+  // added to it. Every offset is rebuilt from that base: offsetting the current
+  // space nests one more space per call, and the lift changes every frame.
+  _xrSpace(renderer) {
+    const session = renderer.xr.getSession()
+    if (!session) return false
+    if (session !== this._xrSession) {
+      const base = renderer.xr.getReferenceSpace()
+      if (!base) return false
+      this._xrSession = session
+      this._xrBase = base
+      this._xrX = this._xrZ = this._xrLift = 0
+    }
+    return true
+  }
+
+  _applyXRSpace(renderer) {
+    renderer.xr.setReferenceSpace(this._xrBase.getOffsetReferenceSpace(new XRRigidTransform({ x: this._xrX, y: -this._xrLift, z: this._xrZ })))
+  }
+
+  // Holds her headset and hands `lift` of her metres over the floor the headset
   // reports, the rig and so her feet staying where they are (v2/eye-level.js).
-  liftXR(renderer, d) {
-    const base = renderer.xr.getReferenceSpace()
-    if (!base) return false
-    renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(new XRRigidTransform({ x: 0, y: -d, z: 0 })))
+  liftXR(renderer, lift) {
+    if (!this._xrSpace(renderer)) return false
+    this._xrLift = lift
+    this._applyXRSpace(renderer)
     return true
   }
 
@@ -1022,11 +1057,11 @@ export class Player {
   // Position only, never yaw. Recentring yaw spins the world underneath her,
   // which is precisely the vestibular mismatch §12 exists to avoid.
   recenterXR(renderer) {
-    const base = renderer.xr.getReferenceSpace()
-    if (!base) return false
+    if (!this._xrSpace(renderer)) return false
     const local = this.camera.position // pose within the reference space
-    const offset = new XRRigidTransform({ x: local.x, y: 0, z: local.z })
-    renderer.xr.setReferenceSpace(base.getOffsetReferenceSpace(offset))
+    this._xrX += local.x
+    this._xrZ += local.z
+    this._applyXRSpace(renderer)
 
     // The pose is in the reference space's metres; the rig's scale takes it to the world's.
     const shift = new THREE.Vector3(local.x, 0, local.z).applyQuaternion(this.rig.quaternion).multiplyScalar(this.scale)

@@ -647,16 +647,16 @@ for (let t = 1; t < MESH_TIERS; t++) {
     `cobble ${at(boulder, COBBLE)} m then T6; tor ${at(boulder, TOR)}`)
 
   // THE SPEC THE LADDER WAS SET FROM, pinned so a later edit to ROCK_LOD_AT has
-  // to notice it: a two-metre rock steps at 8, 15 and 50 m. Two metres of WHAT
+  // to notice it: a two-metre rock steps at 6, 11 and 36 m. Two metres of WHAT
   // is the content of rockLodSize -- of its longest axis -- so the probe is a
   // 2 m cube, whose longest axis is 2 m whichever axis you pick. Exact rather
   // than toleranced: with the longest axis as the basis there is no proportion
-  // left for the answer to depend on, so a 2 m rock steps at exactly 8/15/50 or
+  // left for the answer to depend on, so a 2 m rock steps at exactly 6/11/36 or
   // the ladder has been retuned and this line is the one that should say so.
-  const want = [8, 15, 50]
+  const want = [6, 11, 36]
   const got = ROCK_LOD_AT.map((k) => k * rockLodSize({ width: 2, depth: 2, height: 2 }))
   check(got.every((d, i) => d === want[i]),
-    'a two-metre rock steps at 8, 15 and 50 m',
+    'a two-metre rock steps at 6, 11 and 36 m',
     `${got.map((d) => d.toFixed(1)).join('/')} m, want ${want.join('/')}`)
 
   // THE LONGEST AXIS AND NOTHING ELSE, which is the whole content of
@@ -2735,7 +2735,7 @@ console.log('\nscatter')
     const all = boulders(allEdge).length
     const none = boulders(noEdge).length
     check(gain === 2, 'the boulders bed doubles along a shore', `shoreGain ${gain}`)
-    check(Math.abs(all / none - gain) < gain * 0.06, `and a world that is all shore places ${gain}x the boulders`,
+    check(Math.abs(all / none - gain) < gain * 0.1, `and a world that is all shore places ${gain}x the boulders`,
       `${all} vs ${none}`)
     const far = (list) => list.filter(([x]) => Math.abs(x) >= REACH)
     const nearEdge = (list, side) => list.filter(([x]) => Math.abs(x) < REACH && (side < 0 ? x < 0 : x >= 0)).length

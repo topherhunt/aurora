@@ -174,7 +174,7 @@ export class WalkSurface {
   fits(x, z, standY, out) {
     const lo = standY + this.reach
     const hi = standY + this.height
-    if (this._crossed(x, z, lo, hi)) {
+    if (this.crossed(x, z, lo, hi)) {
       if (out) out.x = out.z = 0
       return false
     }
@@ -182,7 +182,7 @@ export class WalkSurface {
     let pz = 0
     let hit = 0
     for (let k = 0; k < RING.length; k++) {
-      if (!this._crossed(x + RING[k][0] * this.radius, z + RING[k][1] * this.radius, lo, hi)) continue
+      if (!this.crossed(x + RING[k][0] * this.radius, z + RING[k][1] * this.radius, lo, hi)) continue
       hit++
       px -= RING[k][0]
       pz -= RING[k][1]
@@ -226,7 +226,7 @@ export class WalkSurface {
   }
 
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
-  _crossed(x, z, lo, hi) {
+  crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {
       const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
       if (n >= SPAN_CAP) return true

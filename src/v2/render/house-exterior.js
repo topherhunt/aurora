@@ -698,20 +698,31 @@ export function buildHouse(o) {
   }
   /** A knotted tendril wandering up the wall from (th0, y0), turning dth and climbing dy over n steps, in leaf. */
   const strand = (th0, y0, dth, dy, n, r0, r1) => {
+    // Wander runs ACROSS the direction of travel (nx, ny in arc-metres, y): wander in th alone leaves a sideways branch a dead-straight rod.
+    // The noise can run flat for a whole strand; the sine guarantees it winds.
     const ph = de() * 50, pts = [], ths = [], radii = []
+    const len = Math.hypot(dy, dth * R0), nx = -dy / len, ny = (dth * R0) / len
+    const wA = Math.min(0.15, len * 0.12), wF = TAU * len / lerp(0.5, 0.9, de()), wP = de() * TAU
+    n = Math.max(n, Math.round(len / 0.08))
     for (let s = 0; s <= n; s++) {
-      const t = s / n, th = th0 + dth * t + 0.2 * (nWall(ph, t * 3, 0) - nWall(ph, 0, 0)) + 0.07 * (nWall(ph + 9, t * 11, 3) - nWall(ph + 9, 0, 3))
-      const r = lerp(r0, r1, t) * (s && de() < 0.14 ? lerp(1.7, 2.5, de()) : lerp(0.85, 1.15, de()))
-      pts.push(wallPt(th, y0 + dy * t + (s ? jit(de, 0.04) : 0), r * 0.8)); ths.push(th); radii.push(r)
+      const t = s / n, w = R0 * (0.2 * (nWall(ph, t * 3, 0) - nWall(ph, 0, 0)) + 0.07 * (nWall(ph + 9, t * 11, 3) - nWall(ph + 9, 0, 3))) + wA * (Math.sin(wF * t + wP) - Math.sin(wP))
+      const th = th0 + dth * t + (w * nx) / R0, r = lerp(r0, r1, t) * (s && de() < 0.14 ? lerp(1.7, 2.5, de()) : lerp(0.85, 1.15, de()))
+      pts.push(wallPt(th, y0 + dy * t + w * ny + (s ? jit(de, 0.04) : 0), r * 0.8)); ths.push(th); radii.push(r)
     }
     tube(m, pts, radii, MAT.vine, { sides: 4 })
     for (let s = 1; s <= n; s++) if (de() < 0.65) ivy(pts[s], radial(ths[s]), lerp(0.09, 0.17, de()))
     return { pts, ths }
   }
-  /** A strand hanging from the eave at th, `len` long. */
-  const hang = (th, len, n) => {
-    const top = roofAt(th, 0.02), side = [-Math.sin(th), 0, Math.cos(th)], sway = jit(de, 0.15)
-    return Array.from({ length: n + 1 }, (_, s) => { const t = s / n; return add(top, add(mul(side, sway * t * t + (s ? jit(de, 0.02) : 0)), [0, -len * t, 0])) })
+  /** A strand hanging from the eave at th, `len` long; `wind` metres of irregular S-curve sideways and outward (a rope hangs plumb, ivy never does). */
+  const hang = (th, len, n, wind = 0) => {
+    const top = roofAt(th, 0.02), side = [-Math.sin(th), 0, Math.cos(th)], out = radial(th), sway = jit(de, 0.15)
+    const ph = de() * 50, wF = TAU * len / lerp(0.35, 0.6, de()), wP = de() * TAU
+    return Array.from({ length: n + 1 }, (_, s) => {
+      const t = s / n, k = s ? jit(de, wind ? 0.03 : 0.02) : 0
+      const w = wind * Math.sqrt(t) * (Math.sin(wF * t + wP) + 0.8 * (nWall(ph, t * 4, 7) - nWall(ph, 0, 7)))
+      const o = wind * 0.5 * t * (1 + Math.sin(wF * 0.7 * t + wP + 1))
+      return add(top, add(add(mul(side, sway * t * t + w + k), mul(out, o)), [0, -len * t, 0]))
+    })
   }
   const DECOR = {
     fungi() {
@@ -802,9 +813,9 @@ export function buildHouse(o) {
     hangvine() {
       const th = de() * TAU
       if (!offDoor(th, 0.5)) return
-      const n = 8, pts = hang(th, lerp(0.5, 1.3, de()), n)
+      const n = 14, pts = hang(th, lerp(0.5, 1.3, de()), n, lerp(0.07, 0.12, de()))
       tube(m, pts, pts.map((_, s) => lerp(0.018, 0.008, s / n)), MAT.vine, { sides: 3 })
-      for (let s = 1; s <= n; s++) ivy(pts[s], radial(th), lerp(0.08, 0.14, de()))
+      for (let s = 1; s <= n; s++) if (de() < 0.6) ivy(pts[s], radial(th), lerp(0.08, 0.14, de()))
     },
     rope() {
       const th = de() * TAU

@@ -5,7 +5,7 @@
 // What can go wrong without throwing: a texture laid out one way and read another (a body drawn as a crumpled star); a sample that wraps into the next clip; a bone a layer reads that is not where the drawn body has it (a saddle or a grip off the animal); a fade or tint drawn through the wrong batch; a puppet that never leaves the active set.
 
 import * as THREE from 'three'
-import { BakedPuppet, bakedBatches, bakedRoot, cullBakedTo, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub } from '../src/v2/render/baked-puppet.js'
+import { BakedPuppet, bakedBatches, bakedRoot, cullBakedTo, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub, tintFor, tintRange } from '../src/v2/render/baked-puppet.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial, poseSphere } from '../src/v2/render/puppet.js'
 import { TIER_TINTS, setTierTint } from '../src/v2/render/critters.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -198,6 +198,16 @@ console.log('the batches')
   flushBaked()
   check(bakedBatches().some((x) => x.mesh.geometry.index === swap.index), 'a layer swapping a tier\'s geometry draws through a batch of its own')
 
+  // A wild strider's bare tier: the full one's buffers, drawn short of the tack.
+  const bare = new THREE.BufferGeometry()
+  for (const [name, attr] of Object.entries(asset.tiers[1].attributes)) bare.setAttribute(name, attr)
+  bare.setIndex(asset.tiers[1].index)
+  bare.setDrawRange(0, 12)
+  b.meshes[1].geometry = bare
+  flushBaked()
+  const short = bakedBatches().find((x) => x.mesh.geometry.index === bare.index && x.mesh.geometry.drawRange.count === 12)
+  check(short !== undefined, 'a tier drawn short (a strider without its saddle) is drawn short in its batch')
+
   for (let i = 0; i < 40; i++) {
     const p = new BakedPuppet(asset, mats())
     scene.add(p.group); p.show(0, 0)
@@ -245,6 +255,15 @@ console.log('the colours')
   const reddest = Math.max(...rolls.map((c) => c.r / c.g)), greenest = Math.max(...rolls.map((c) => c.g / c.r))
   check(reddest > 1.5 && greenest > 1.5, 'rolls reach both a red and a green cast', `r/g ${reddest.toFixed(2)}, g/r ${greenest.toFixed(2)}`)
   check(rollTint(mulberry32(3)).equals(rollTint(mulberry32(3))), 'the same seed rolls the same colour')
+  const worn = (key) => { const p = new BakedPuppet(asset, mats()); tintFor(p, key, rollTint); return p.tint }
+  check(worn('st:1,2:0').equals(worn('st:1,2:0')) && !worn('st:1,2:0').equals(worn('st:1,2:1')) && !worn(7).equals(new THREE.Color(1, 1, 1)), 'a creature\'s key picks its colour, the same on every take, another key another')
+  check(!throws(() => tintFor(new Puppet(asset, mats()), 'st:1,2:0', rollTint)), 'a skinned body, with nowhere to wear one, is left alone')
+  check(throws(() => tintFor(new BakedPuppet(asset, mats()), undefined, rollTint)), 'and a body taken with no key throws')
+  const path = [[1.05, 1.05, 1.06], [0.62, 0.62, 0.63], [0.78, 0.58, 0.4]], roll = tintRange(path, 0.08)
+  const along = Array.from({ length: 500 }, (_, i) => roll(mulberry32(i), new THREE.Color()))
+  const inside = along.every((c) => ['r', 'g', 'b'].every((ch, j) => c[ch] >= Math.min(...path.map((p) => p[j])) * 0.92 - 1e-9 && c[ch] <= Math.max(...path.map((p) => p[j])) * 1.08 + 1e-9))
+  check(inside && along.every((c) => c.g <= c.r * 1.0001 && c.b <= c.r * 1.03), 'a tintRange rolls only along its path: a white-grey-brown hare is never green or blue')
+  check(Math.max(...along.map((c) => c.r)) - Math.min(...along.map((c) => c.r)) > 0.35, 'and over the whole of it, not one spot')
 }
 
 console.log('the cull')

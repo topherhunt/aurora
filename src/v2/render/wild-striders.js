@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { CHAPTER_S, hash32, keyHash, swing } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S } from './snowmen.js'
-import { clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
+import { atFace, clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
 import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
 import { solverStub } from './baked-puppet.js'
@@ -16,7 +16,7 @@ export const WILD = {
   home: 12, amble: 0.9, posts: 5, grid: 16, walking: 0.7, snap: 30,
   // Wary within `see` m of her head, charges within `strike`, calm again past `calm`; backs off at `back` m/s once it faces her within `facing` rad.
   see: 10, strike: 4, calm: 12, back: 0.8, facing: 0.5,
-  // One tamed by anyone never charges: one that does not trust her, her head within `m` m and no fish of hers in reach, shrieks and runs off `run` m at `pace` of its run, calms there, and will not again for `cool` s.
+  // One tamed by anyone never charges: one that does not trust her, her head within `m` m from its side or behind (from its front she may take its rein) and no fish of hers in reach, shrieks and runs off `run` m at `pace` of its run, calms there, and will not again for `cool` s.
   shy: { m: 3, run: [3, 10], pace: 0.7, cool: 5 },
   // It charges at `pace` of its run until `close` m off (times its size) or `s` s on, then strikes: her hurt `harm` at the clip's `lunge` s if within `reach` m more. Then it flees `s` seconds or `m` metres.
   charge: { pace: 0.6, close: 1.2, s: 2.5, reach: 1.2 }, harm: 10, lunge: 0.66, flee: { s: 6, m: 40 },
@@ -24,6 +24,8 @@ export const WILD = {
   fish: { see: 6, lose: 9, hold: [1.6, 3.0], eat: 0.7 },
   // A fed one keeps `stand` m from her, walks after her past `walk` and runs past `run`, and goes back to the wild past `lose`.
   follow: { stand: 2.5, walk: 4, run: 10, lose: 60 },
+  // Her empty hand within `grab` m (times its size over the mean) of a tamed one's jowl, or a desk click ray passing that near, takes its rein, `rein` m long at the mean size: led, it keeps `stand` m from her, walks after her past `walk` and runs past `run`; past `lose` the rein slips from her hand.
+  lead: { grab: 0.5, rein: 3.5, stand: 2, walk: 3, run: 8, lose: 25 },
   // A share of the homes that come into range once she is under way charge past her at `pace` times their run, missing by `miss` m, calling every `call` s.
   panic: { chance: 0.1, pace: 1.1, miss: [4, 18], call: [0.3, 0.8] },
   // Radians a second it turns, and the steepest rise a step takes it up.
@@ -47,21 +49,21 @@ export const WILD = {
     step: 0.3, climb: 50, drop: 1.0,
     // The neck swings `neck` rad at full steer over `neckTau` s and leans `lean` of that; the body follows at speed/`radius` but at least `pivot` rad/s standing, at most `spin` rad/s.
     neck: 1.2, neckTau: 0.25, lean: 0.125, radius: 3, pivot: 0.7, spin: 0.9,
-    // A snap turn turns her at once and the body after her, its neck leading: at most `swing` rad/s, critically damped over `heave` s.
-    swing: 1.2, heave: 0.15,
+    // A snap turn turns her at once and the body after her, its neck leading: at most `swing` rad/s, critically damped over `heave` s. In the headset it swings the same way to face where she has physically turned, once her head has been more than `face` rad off its way for `dwell` s, so a glance does not turn it.
+    swing: 1.2, heave: 0.15, face: 0.35, dwell: 0.6,
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
     // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface: it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), bobs `duck` m every `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
     swim: { draft: 0.5, speed: 1.4, stroke: [0.35, 1], back: -0.8, duck: 0.08, paddle: 0.8, splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
   },
-  // In the headset it hops where she lobs (main.js aimTeleport): `reach` times her walking lob, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. The lob stops `cap` m of her own under its feet: a hop there is a leap, and it falls. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
-  hop: { reach: 2, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [6, 16], shift: 0.03, sway: 0.04 },
+  // In the headset it hops where she lobs (main.js aimTeleport), keeping its heading: `reach` times her walking lob straight ahead, falling off as the square of the cosine off its way to `side` of that at a right angle and behind, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. The lob stops `cap` m of her own under its feet: a hop there is a leap, and it falls. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
+  hop: { reach: 2, side: 0.1, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [6, 16], shift: 0.03, sway: 0.04 },
 }
 
 const MORE_CLIPS = ['peck', 'sit', 'attack']
 const WIRE = 'ws:'
 // The live states a client anchors to the room; `rejoin` is one gone calm there.
-const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'ridden', 'panic', 'shy', 'swim']
+const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'led', 'ridden', 'panic', 'shy', 'swim']
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
 const ACTS = [['peck', 0.45], ['idle', 0.45], ['fidget', 0.1]]
 const _calm = { x: 0, z: 0, heading: 0, speed: 0, act: 'idle', seg: 0 }
@@ -149,7 +151,7 @@ export class WildStriders {
    * @param opts.bond      { trusted: Set, grown: Map } of strider keys, shared with the towns' (townsfolk.js) and outliving the room
    * @param opts.returned  (key) => a town's strider lent to her (borrow) gone from this layer
    * @param opts.lend      (key) => the town's strider under that key lent as for borrow, for a peer riding it, or null where its town is not awake here
-   * @param opts.hand      (out) => the hand her rein is in, in the world, into `out` (a Vector3) as of now; none, she rides without one
+   * @param opts.hand      (out, key) => the hand her rein is in, in the world, into `out` (a Vector3) as of now: riding, `key` null; leading, the hand that took it (lead). None, she rides and leads without one
    */
   constructor(scene, { walk, textures, patch, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null, hand = null }) {
     this.walk = walk
@@ -177,6 +179,9 @@ export class WildStriders {
     this.struck = new Set()
     this.homes = new Map()
     this.ridden = null
+    // The one she leads by the rein in her hand `leadBy` (lead).
+    this.led = null
+    this.leadBy = null
     this.booted = false
     this.ids = 0
     this.list = []
@@ -266,7 +271,7 @@ export class WildStriders {
   /** A body keyed `key` standing at `home`, `base` times the shipped size before what feeding has grown it: by `by` the client it is live on, null for this one. */
   _body(key, home, base, tack) {
     const h = keyHash(key)
-    const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1)), {
+    const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1), key), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
       state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity, aim: 0,
       // Room time this client took it live from calm (apply's tie-break), and (a peer's ridden copy) until its relayed shake ends.
@@ -309,17 +314,22 @@ export class WildStriders {
   }
 
   /**
-   * A town's strider (townsfolk.js) off its rail and under her: `key` its
-   * bond key, `pose` where it stands and `size` its size. It is this layer's
-   * from here, saddled, until it despawns (then `returned`).
+   * A town's strider (townsfolk.js lend) off its rail, under her (borrow) or
+   * on her rein (borrowLed): `key` its bond key, `pose` where it stands and
+   * `size` its size. It is this layer's from here, saddled, until it despawns
+   * (then `returned`).
    */
-  borrow({ key, pose, size }, player) {
+  _lent({ key, pose, size }) {
     if (this.live.has(key)) throw new Error(`WildStriders: ${key} is already out`)
     const m = this._body(key, pose, size / (this.bond.grown.get(key) ?? 1), true)
     m.pose.y = pose.y
     m.pose.heading = pose.heading
-    this.mount(m, player)
+    return m
   }
+
+  borrow(lent, player) { this.mount(this._lent(lent), player) }
+
+  borrowLed(lent, key) { this.lead(this._lent(lent), key) }
 
   // -- the frame ---------------------------------------------------------------
 
@@ -371,7 +381,11 @@ export class WildStriders {
       }
     }
     const r = this.ridden
-    if (r && this.hand && S.jowl(r, _v)) S.rein(this.hand(_hand), _v, (STRIDER.rein.held * r.pose.size) / STRIDER.size.mean)
+    if (r && this.hand && S.jowl(r, _v)) S.rein(this.hand(_hand, null), _v, (STRIDER.rein.held * r.pose.size) / STRIDER.size.mean)
+    const l = this.led
+    // A peer that took it live (apply), or its going anything but led, takes it from her hand.
+    if (l && (l.by !== null || l.state !== 'led' || this.live.get(l.key) !== l)) this.led = null
+    else if (l && this.hand && S.jowl(l, _v)) S.rein(this.hand(_hand, this.leadBy), _v, (WILD.lead.rein * l.pose.size) / STRIDER.size.mean)
     S.end()
   }
 
@@ -510,7 +524,7 @@ export class WildStriders {
     m.t += dt
     const near = Math.hypot(p.x - head.x, p.z - head.z)
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
-    const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this._tamed(m.key)
+    const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this.isTamed(m.key)
     switch (m.state) {
       case 'panic': {
         // Its aim is the owner's roll, which a peer's copy takes from the anchors (_fromAnchor).
@@ -524,7 +538,7 @@ export class WildStriders {
           const fish = trusted ? null : this._fish(m, lures, W.fish.see)
           if (fish) { m.lure = fish; this._enter(m, 'meek'); return }
           if (tamed) {
-            if (!trusted && near < W.shy.m && this.now >= m.shyAt) { this._enter(m, 'shy'); return }
+            if (!trusted && near < W.shy.m && !atFace(p, head) && this.now >= m.shyAt) { this._enter(m, 'shy'); return }
             if (m.state === 'wary') { this._enter(m, 'calm'); return }
           } else {
             if (near < W.strike) { this._enter(m, this.struck.has(m.key) ? 'flee' : 'charge'); return }
@@ -633,10 +647,10 @@ export class WildStriders {
         this._bob(m, dt, level, p.speed)
         return
       }
-      case 'follow': {
-        const F = W.follow, d = Math.hypot(feet.x - p.x, feet.z - p.z)
+      case 'follow': case 'led': {
+        const F = m.state === 'led' ? W.lead : W.follow, d = Math.hypot(feet.x - p.x, feet.z - p.z)
         if (mine && d > F.lose) { this._enter(m, 'calm'); return }
-        if (mine && this._offered(m, lures)) { this._enter(m, 'eat'); return }
+        if (mine && m.state === 'follow' && this._offered(m, lures)) { this._enter(m, 'eat'); return }
         if (d > F.walk) m.moving = true
         else if (d < F.stand) m.moving = false
         if (m.moving) {
@@ -869,13 +883,13 @@ export class WildStriders {
   // -- the room: anchors (creature-net.js) -------------------------------------
 
   /** Whether any player in the room has tamed the strider keyed `key`. */
-  _tamed(key) { return this.bond.trusted.has(key) || this.tamed.has(key) }
+  isTamed(key) { return this.bond.trusted.has(key) || this.tamed.has(key) }
 
   /** Its anchor owed the room now, in `mode`, and kept as the room's latest for it. */
   _owe(m, mode) {
     const p = m.pose
     const shake = m === this.ridden ? Math.max(0, m.ride.fid) : 0
-    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this._tamed(m.key) ? 1 : 0, snap(m.aim), snap(m.since), snap(shake)]
+    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this.isTamed(m.key) ? 1 : 0, snap(m.aim), snap(m.since), snap(shake)]
     this.outbox.push(a)
     // Alone in the room nothing drains it: only the latest few could matter.
     if (this.outbox.length > 64) this.outbox.shift()
@@ -976,7 +990,50 @@ export class WildStriders {
   _seat(m, out) { return out.copy(this._saddle(m).rest).applyMatrix4(poseMatrix(m.pose, this.k * m.pose.size, _m)) }
 
   _mountable(m, head) {
-    return m !== this.ridden && m.by === null && this.bond.trusted.has(m.key) && ['calm', 'follow', 'swim'].includes(m.state) && fromSide(m.pose, head)
+    return m !== this.ridden && m.by === null && this.bond.trusted.has(m.key) && ['calm', 'follow', 'led', 'swim'].includes(m.state) && fromSide(m.pose, head)
+  }
+
+  /** Whether her hand may take `m`'s rein, or let go of it: tamed by anyone, and standing or after her. */
+  _leadable(m) {
+    return m !== this.ridden && m.by === null && this.isTamed(m.key) && ['calm', 'wary', 'follow', 'led'].includes(m.state)
+  }
+
+  /** WILD.lead.grab for `m`'s size. */
+  _grab(m) { return (WILD.lead.grab * m.pose.size) / STRIDER.size.mean }
+
+  /** The tamed strider whose jowl `hand` is at (WILD.lead.grab), or null. */
+  leadableAt(hand) {
+    for (const m of this.live.values()) {
+      if (m.dist < 3 * m.pose.size && this._leadable(m) && this.inner.jowl(m, _v) && _v.distanceTo(hand) < this._grab(m)) return m
+    }
+    return null
+  }
+
+  /** The tamed strider whose jowl a ray from `origin` along unit `dir` passes within WILD.lead.grab of, within `far`, or null. */
+  leadableOnRay(origin, dir, far) {
+    for (const m of this.live.values()) {
+      if (m.dist > far + 2 || !this._leadable(m) || !this.inner.jowl(m, _v)) continue
+      const along = _v.sub(origin).dot(dir)
+      if (along > 0 && along < far && _v.addScaledVector(dir, -along).length() < this._grab(m)) return m
+    }
+    return null
+  }
+
+  /** Her hand `key` takes `m`'s rein: it is led (WILD.lead) till she lets go (unlead), mounts it or leaves it WILD.lead.lose behind. */
+  lead(m, key) {
+    this.unlead()
+    this.led = m
+    this.leadBy = key
+    this._enter(m, 'led')
+    this._chirp(m, 1.1, 0.7)
+  }
+
+  /** The rein let go of: the one she led stands where it is. */
+  unlead() {
+    const m = this.led
+    if (!m) return
+    this.led = null
+    if (m.state === 'led') this._enter(m, 'calm')
   }
 
   /** WalkSurface's body layer (walk.addBody): a live strider's body at (x, z) within `pad`, never `skip`'s. */
@@ -1018,6 +1075,7 @@ export class WildStriders {
 
   /** Her onto `m`'s back, facing its way. */
   mount(m, player) {
+    if (m === this.led) this.led = null
     this.ridden = m
     if (m.state === 'calm') m.since = this.now
     m.state = 'ridden'
@@ -1028,6 +1086,8 @@ export class WildStriders {
     m.ride = {
       // The snap turn the body still owes her (snap), how fast it is swinging through it, and its neck's lead.
       want: 'stop', goal: 'stop', wait: 0, pace: 1, v: 0, a: 0, neck: 0, y: _v.y, bob: 0, phase: 0, lastY: _v.y, turn: 0, w: 0, lead: 0,
+      // Seconds her head has been off its way past WILD.ride.face (_face).
+      askew: 0,
       // The headset's hops: the momentum `gain`, the last hop's way, seconds standing, treading and to the next fidget, and the spot the fidget sways about.
       gain: 1, last: null, still: 0, tread: 0, fidget: between(WILD.hop.fidget), fid: 0, base: { x: m.pose.x, z: m.pose.z, h: m.pose.heading }, off: { x: 0, z: 0, h: 0 },
       // Its fall after a leap ({ vy, top }).
@@ -1063,12 +1123,14 @@ export class WildStriders {
   }
 
   /**
-   * Her mount's frame, in place of her own walk: `input` { push, steer } in
-   * -1..1 nudges it, it moves, and she is carried with it.
+   * Her mount's frame, in place of her own walk: `input` { push, steer, face } in
+   * -1..1 nudges it, it moves, and she is carried with it; with `face` (the
+   * headset) it turns after her body (_face).
    */
   ride(dt, input, player) {
     const m = this.ridden, R = WILD.ride, r = m.ride, p = m.pose, big = p.size / STRIDER.size.mean
     if (r.fall) return this._fall(m, dt, player)
+    if (input.face) this._face(m, dt, player)
     this._seat(m, _sat)
     const push = input.push, steer = Math.abs(input.steer) > R.push ? input.steer : 0
     const want = push > R.push ? (push > R.gallop ? 'run' : 'walk') : push < -R.push ? 'back' : 'stop'
@@ -1231,7 +1293,8 @@ export class WildStriders {
 
   /**
    * Her ride hopped to (x, y, z), `reach` m the most her lob could have gone:
-   * it faces the way it went and she is carried with it, it treads on the
+   * it keeps its heading (a turn she did not make is what makes a rider sick;
+   * _face turns it) and she is carried with it, it treads on the
    * spot as long as the way would have taken, and her momentum grows on a
    * long hop in line with the last and is shed by a turn. With `fall` it is
    * put there in the air, at y, and falls (_fall). A peer's copy walks or
@@ -1247,14 +1310,13 @@ export class WildStriders {
     r.last = way
     r.still = 0
     this._seat(m, _sat)
-    const h0 = p.heading
     p.x = x
     p.z = z
-    p.heading = way
     if (fall) {
+      // The fall is priced from its feet before the leap: `y` is already WILD.hop.cap below them.
+      r.fall = { vy: 0, top: p.y }
       p.y = y
       r.v = r.a = 0
-      r.fall = { vy: 0, top: y }
     } else {
       p.y = this.walk.heightAt(x, z, y)
       const was = r.swim
@@ -1263,14 +1325,31 @@ export class WildStriders {
       r.tread = H.tread[0] + (H.tread[1] - H.tread[0]) * clamp(d / reach, 0, 1)
     }
     r.off.x = r.off.z = r.off.h = 0
-    Object.assign(r.base, { x, z, h: way })
+    Object.assign(r.base, { x, z, h: p.heading })
     this._seat(m, _v)
     const dy = _v.y - r.lastY
     r.y = r.lastY = _v.y
     r.bob = 0
-    // She already faces the turn the body still owed her.
-    player.carry(_v.x - _sat.x, dy, _v.z - _sat.z, wrap(way - h0 - r.turn), _v.x, _v.z)
-    r.turn = r.w = 0
+    player.carry(_v.x - _sat.x, dy, _v.z - _sat.z, 0, 0, 0)
+  }
+
+  /** What of her riding lob's reach is left aimed along (dx, dz): all of it along the way her ride is turning to, WILD.hop.side at a right angle and behind. */
+  hopAim(dx, dz) {
+    const d = Math.hypot(dx, dz), r = this.ridden.ride
+    if (d < 1e-6) return 1
+    const h = r.base.h + r.turn, c = Math.max(0, (dx * Math.cos(h) - dz * Math.sin(h)) / d)
+    return WILD.hop.side + (1 - WILD.hop.side) * c * c
+  }
+
+  /** The headset's ride owes the turn to face her head's way once it has been WILD.ride.face off for WILD.ride.dwell s (_swing turns it, and she is not turned). */
+  _face(m, dt, player) {
+    const R = WILD.ride, r = m.ride, yaw = player.headYaw()
+    const off = swing(r.base.h + r.turn, Math.atan2(-Math.cos(yaw), Math.sin(yaw)))
+    r.askew = Math.abs(off) > R.face ? r.askew + dt : 0
+    if (r.askew < R.dwell) return
+    r.turn = wrap(r.turn + off)
+    r.last = null
+    r.askew = 0
   }
 
   /** Ridden `m` falling after hop's leap with her on its back, and landing: her hurt past FALL.riddenM of her metres. */
@@ -1323,7 +1402,7 @@ export class WildStriders {
   }
 
   /**
-   * Her ride's frame between hops: swinging round after a snap turn, treading
+   * Her ride's frame between hops: swinging round after a snap turn or her own (_face), treading
    * after a hop and then clucking now and then, else standing and fidgeting,
    * swaying by WILD.hop.shift and sway; standing past `rest` sheds her
    * momentum. She is carried by the seat and never turned: a turn of the view
@@ -1332,6 +1411,7 @@ export class WildStriders {
   sit(dt, player) {
     const m = this.ridden, H = WILD.hop, R = WILD.ride, r = m.ride, p = m.pose
     if (r.fall) return this._fall(m, dt, player)
+    this._face(m, dt, player)
     this._seat(m, _sat)
     if ((r.still += dt) > H.rest) r.gain = Math.max(1, r.gain - ((H.most - 1) * dt) / H.fade)
     r.base.h = wrap(r.base.h + this._swing(m, dt))
